@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <!-- 命令组定义 -->
+    <command_groups>
+        <!-- 基础命令组 -->
+        <group name="nn_cli_show">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>show</name>
+                    <description>显示系统信息</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>cli</name>
+                    <description>CLI信息</description>
+                </element>
+                <element id="3" type="keyword">
+                    <name>tree</name>
+                    <description>命令树结构</description>
+                </element>
+            </elements>
+            
+            <commands>
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>global</views>
+                    <callback>cmd_show_tree</callback>
+                </command>
+            </commands>
+        </group>
+
+        <group name="nn_cli_operation">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>quit</name>
+                    <description>退出</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>configure</name>
+                    <description>进入配置模式</description>
+                </element>
+            </elements>
+            
+            <commands>
+                <command>
+                    <expression>1</expression>
+                    <views>global</views>
+                    <callback>cmd_exit</callback>
+                </command>
+            
+                <command>
+                    <expression>2</expression>
+                    <views>user</views>
+                    <callback>cmd_configure</callback>
+                </command>
+            </commands>
+        </group>
+    </command_groups>
+</configuration>

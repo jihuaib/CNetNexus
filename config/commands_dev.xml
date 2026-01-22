@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <!-- 命令组定义 -->
+    <command_groups>
+        <!-- 基础命令组 -->
+        <group name="nn_dev_show">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>show</name>
+                    <description>显示系统信息</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>version</name>
+                    <description>版本信息</description>
+                </element>
+            </elements>
+            
+            <commands>
+                <command>
+                    <expression>1 2</expression>
+                    <views>global</views>
+                    <callback>cmd_show_version</callback>
+                </command>
+            </commands>
+        </group>
+
+        <!-- System configuration group -->
+        <group name="nn_dev_system">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>sysname</name>
+                    <description>设置系统名称</description>
+                </element>
+                <element id="2" type="parameter">
+                    <name>&lt;hostname&gt;</name>
+                    <description>主机名(1-63字符)</description>
+                </element>
+            </elements>
+            
+            <commands>
+                <command>
+                    <expression>1 2</expression>
+                    <views>config</views>
+                    <callback>cmd_sysname</callback>
+                </command>
+            </commands>
+        </group>
+    </command_groups>
+</configuration>

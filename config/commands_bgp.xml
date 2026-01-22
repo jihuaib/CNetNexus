@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <!-- 视图定义 -->
+    <views>
+        <view name="bgp">
+            <template>&lt;{hostname}(config-bgp)&gt;</template>
+        </view>
+    </views>
+
+    <!-- 命令组定义 -->
+    <command_groups>
+        <!-- 配置命令组 -->
+        <group name="config">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>bgp</name>
+                    <description>BGP协议</description>
+                </element>
+            </elements>
+            
+            <commands>
+                <command>
+                    <expression>1</expression>
+                    <views>config</views>
+                    <callback>cmd_bgp</callback>
+                </command>
+            </commands>
+        </group>
+    </command_groups>
+</configuration>
