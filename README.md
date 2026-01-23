@@ -118,12 +118,30 @@ The project structure is prepared for future protocol implementations:
 - **BMP (BGP Monitoring Protocol)**: `src/bmp/` with internal headers  
 - **RPKI (Resource Public Key Infrastructure)**: `src/rpki/` with internal headers
 
+## Dependencies
+
+### System Dependencies
+- **C11 Compiler**: GCC recommended
+- **Build System**: [CMake](https://cmake.org/) (3.10 or higher)
+- **libxml2**: Used for XML configuration parsing
+- **pthreads**: POSIX threads for concurrent client handling
+
+### Installation (Ubuntu/Debian)
+```bash
+sudo apt update
+sudo apt install build-essential cmake libxml2-dev pkg-config
+```
+
+### Development Tools (Optional)
+- **Clang Tools**: `clang-format` and `clang-tidy` for code quality
+```bash
+sudo apt install clang-format clang-tidy
+```
+
 ## Requirements
 
-- GCC compiler
-- CMake 3.10 or higher
 - POSIX-compliant system (Linux, Unix, macOS)
-- pthread library
+- Network connectivity on port 3788
 
 ## Notes
 

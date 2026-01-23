@@ -1,5 +1,5 @@
-#ifndef nn_cli_ELEMENT_H
-#define nn_cli_ELEMENT_H
+#ifndef NN_CLI_ELEMENT_H
+#define NN_CLI_ELEMENT_H
 
 #include <stdint.h>
 
@@ -38,4 +38,4 @@ void nn_cli_group_add_element(nn_cli_command_group_t *group, nn_cli_element_t *e
 nn_cli_element_t *nn_cli_group_find_element(nn_cli_command_group_t *group, uint32_t id);
 void nn_cli_group_free(nn_cli_command_group_t *group);
 
-#endif // nn_cli_ELEMENT_H
+#endif // NN_CLI_ELEMENT_H
