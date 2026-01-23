@@ -10,6 +10,18 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra")
 set(CMAKE_C_FLAGS_DEBUG "-g -O0")
 set(CMAKE_C_FLAGS_RELEASE "-O2")
 
+# Build shared libraries by default
+set(BUILD_SHARED_LIBS ON)
+
+# Set output directories
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+
+# Set RPATH for finding shared libraries at runtime
+set(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib")
+set(CMAKE_BUILD_WITH_INSTALL_RPATH FALSE)
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+
 # Find pthread library
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
@@ -17,50 +29,23 @@ find_package(Threads REQUIRED)
 # Find libxml2
 find_package(LibXml2 REQUIRED)
 
-# Include directories
+# Find GLib
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(GLIB REQUIRED glib-2.0)
+
+# Include directories (global)
 include_directories(${PROJECT_SOURCE_DIR}/include)
 include_directories(${PROJECT_SOURCE_DIR}/src)
 include_directories(${LIBXML2_INCLUDE_DIR})
+include_directories(${GLIB_INCLUDE_DIRS})
 
-# Source files
-set(nn_cli_SOURCES
-        src/cli/nn_cli_handler.c
-        src/cli/nn_cli_tree.c
-        src/cli/nn_cli_xml_parser.c
-        src/cli/nn_cli_element.c
-        src/cli/nn_cli_view.c
-)
-
-set(MAIN_SOURCES
-    src/main.c
-)
-
-# Create executable
-add_executable(netnexus 
-    ${MAIN_SOURCES}
-    ${nn_cli_SOURCES}
-)
-
-# Link libraries
-target_link_libraries(netnexus PRIVATE 
-    Threads::Threads
-    ${LIBXML2_LIBRARIES}
-)
-
-# Installation
-install(TARGETS netnexus
-    RUNTIME DESTINATION bin
-)
-
-# Install config files
-install(FILES config/commands.xml
-    DESTINATION etc/netnexus
-)
+# Add src subdirectory
+add_subdirectory(src)
 
 # Custom target for running the server
 add_custom_target(run
     COMMAND netnexus
     DEPENDS netnexus
-    WORKING_DIRECTORY ${CMAKE_PROJECT_DIR}
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     COMMENT "Running NetNexus Telnet CLI Server"
 )

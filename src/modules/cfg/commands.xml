@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<configuration>
+<configuration module="cfg">
     <!-- 命令组定义 -->
     <command_groups>
         <!-- 基础命令组 -->
-        <group name="nn_cli_show">
+        <group name="nn_cfg_show">
             <elements>
                 <element id="1" type="keyword">
                     <name>show</name>
@@ -18,7 +18,7 @@
                     <description>命令树结构</description>
                 </element>
             </elements>
-            
+
             <commands>
                 <command>
                     <expression>1 2 3</expression>
@@ -28,7 +28,7 @@
             </commands>
         </group>
 
-        <group name="nn_cli_operation">
+        <group name="nn_cfg_config">
             <elements>
                 <element id="1" type="keyword">
                     <name>quit</name>
@@ -39,14 +39,14 @@
                     <description>进入配置模式</description>
                 </element>
             </elements>
-            
+
             <commands>
                 <command>
                     <expression>1</expression>
                     <views>global</views>
                     <callback>cmd_exit</callback>
                 </command>
-            
+
                 <command>
                     <expression>2</expression>
                     <views>user</views>

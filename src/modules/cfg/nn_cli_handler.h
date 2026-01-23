@@ -16,10 +16,7 @@ typedef struct
 } nn_cli_session_t;
 
 // Function prototypes
-uint32_t nn_cli_init(void);
 void nn_cli_cleanup(void);
-uint32_t nn_cli_register_module(const char *xml_file);
-uint32_t nn_cli_register_all_modules(const char *config_dir);
 void handle_client(uint32_t client_fd);
 void send_prompt(uint32_t client_fd, nn_cli_session_t *session);
 void send_message(uint32_t client_fd, const char *message);

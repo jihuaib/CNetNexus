@@ -34,6 +34,7 @@ struct nn_cli_tree_node
     char *description;          // Help text
     nn_cli_node_type_t type;    // Node type
     nn_cli_callback_t callback; // Command callback (NULL for intermediate nodes)
+    char *module_name;          // Associated module name for message dispatch (optional)
 
     // Children nodes
     nn_cli_tree_node_t **children; // Array of child nodes
@@ -48,6 +49,7 @@ nn_cli_tree_node_t *nn_cli_tree_find_child(nn_cli_tree_node_t *parent, const cha
 uint32_t nn_cli_tree_find_partial_matches(nn_cli_tree_node_t *parent, const char *partial, nn_cli_tree_node_t **matches,
                                           uint32_t max_matches);
 void nn_cli_tree_set_callback(nn_cli_tree_node_t *node, nn_cli_callback_t callback);
+void nn_cli_tree_set_module_name(nn_cli_tree_node_t *node, const char *module_name);
 void nn_cli_tree_free(nn_cli_tree_node_t *root);
 nn_cli_tree_node_t *nn_cli_tree_clone(nn_cli_tree_node_t *node); // Clone a tree node and its children
 

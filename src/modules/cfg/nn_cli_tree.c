@@ -20,6 +20,7 @@ nn_cli_tree_node_t *nn_cli_tree_create_node(const char *name, const char *descri
     node->description = description ? strdup(description) : NULL;
     node->type = type;
     node->callback = NULL;
+    node->module_name = NULL;
     node->children = NULL;
     node->num_children = 0;
     node->children_capacity = 0;
@@ -132,6 +133,16 @@ void nn_cli_tree_set_callback(nn_cli_tree_node_t *node, nn_cli_callback_t callba
     }
 }
 
+// Set module name for a node
+void nn_cli_tree_set_module_name(nn_cli_tree_node_t *node, const char *module_name)
+{
+    if (node)
+    {
+        free(node->module_name);
+        node->module_name = module_name ? strdup(module_name) : NULL;
+    }
+}
+
 // Free a tree node and all its children
 void nn_cli_tree_free(nn_cli_tree_node_t *root)
 {
@@ -149,6 +160,7 @@ void nn_cli_tree_free(nn_cli_tree_node_t *root)
     free(root->children);
     free(root->name);
     free(root->description);
+    free(root->module_name);
     free(root);
 }
 
@@ -167,8 +179,9 @@ nn_cli_tree_node_t *nn_cli_tree_clone(nn_cli_tree_node_t *node)
         return NULL;
     }
 
-    // Copy callback
+    // Copy callback and module name
     clone->callback = node->callback;
+    clone->module_name = node->module_name ? strdup(node->module_name) : NULL;
 
     // Clone all children recursively
     for (uint32_t i = 0; i < node->num_children; i++)

@@ -9,9 +9,10 @@
 
 #include "nn_cli_tree.h"
 #include "nn_cli_xml_parser.h"
+#include "nn_cli_dispatch.h"
 
 // Global CLI view tree
-static nn_cli_view_tree_t g_view_tree = {NULL, NULL};
+nn_cli_view_tree_t g_view_tree = {NULL, NULL};
 
 // Global hostname
 static char g_hostname[MAX_HOSTNAME_LEN] = "NetNexus";
@@ -151,49 +152,86 @@ void cmd_show_version(uint32_t client_fd, const char *args)
     send_message(client_fd, "\r\n");
 }
 
-// Forward declaration
-static void print_view_tree(nn_cli_view_node_t *view, uint32_t client_fd, uint32_t indent);
+// Forward declarations
+static void print_view_commands_flat(nn_cli_view_node_t *view, uint32_t client_fd);
+static void print_commands_recursive(uint32_t client_fd, const char *view_name, const char *prefix, nn_cli_tree_node_t *node);
 
 // Show tree command handler
 void cmd_show_tree(uint32_t client_fd, const char *args)
 {
     (void)args;
 
-    send_message(client_fd, "\r\nCLI View Tree Structure:\r\n");
-    send_message(client_fd, "========================\r\n");
+    send_message(client_fd, "\r\nCLI Commands List:\r\n");
+    send_message(client_fd, "===================\r\n");
+    send_message(client_fd, "  VIEW            MODULE          COMMAND\r\n");
+    send_message(client_fd, "  ----            ------          -------\r\n");
 
     if (g_view_tree.root)
     {
-        // Print view hierarchy
-        send_message(client_fd, "\r\nView Hierarchy:\r\n");
-        print_view_tree(g_view_tree.root, client_fd, 0);
+        print_view_commands_flat(g_view_tree.root, client_fd);
     }
 
     send_message(client_fd, "\r\n");
 }
 
-// Helper to print view tree
-static void print_view_tree(nn_cli_view_node_t *view, uint32_t client_fd, uint32_t indent)
+// Helper to print all commands in a view and its children
+static void print_view_commands_flat(nn_cli_view_node_t *view, uint32_t client_fd)
 {
     if (!view)
     {
         return;
     }
 
-    char buffer[256];
-    char indent_str[64] = "";
-    for (uint32_t i = 0; i < indent && i < 30; i++)
+    // Print commands for this view
+    if (view->cmd_tree)
     {
-        strcat(indent_str, "  ");
+        for (uint32_t i = 0; i < view->cmd_tree->num_children; i++)
+        {
+            print_commands_recursive(client_fd, view->name, "", view->cmd_tree->children[i]);
+        }
     }
 
-    snprintf(buffer, sizeof(buffer), "%s- %s (%d commands)\r\n", indent_str, view->name ? view->name : "unknown",
-             view->cmd_tree ? view->cmd_tree->num_children : 0);
-    send_message(client_fd, buffer);
-
+    // Recurse into child views
     for (uint32_t i = 0; i < view->num_children; i++)
     {
-        print_view_tree(view->children[i], client_fd, indent + 1);
+        print_view_commands_flat(view->children[i], client_fd);
+    }
+}
+
+// Helper to recursively traverse command tree and print commands
+static void print_commands_recursive(uint32_t client_fd, const char *view_name, const char *prefix, nn_cli_tree_node_t *node)
+{
+    if (!node)
+    {
+        return;
+    }
+
+    char new_prefix[MAX_CMD_LEN];
+    if (strlen(prefix) > 0)
+    {
+        snprintf(new_prefix, sizeof(new_prefix), "%s %s", prefix, node->name ? node->name : "");
+    }
+    else
+    {
+        strncpy(new_prefix, node->name ? node->name : "", sizeof(new_prefix) - 1);
+        new_prefix[sizeof(new_prefix) - 1] = '\0';
+    }
+
+    // If node has a callback or module_name, it's an executable command or a leaf
+    if (node->callback || node->module_name)
+    {
+        char buffer[2048];
+        snprintf(buffer, sizeof(buffer), "  %-15s %-15s %s\r\n", 
+                 view_name ? view_name : "unknown",
+                 node->module_name ? node->module_name : "builtin",
+                 new_prefix);
+        send_message(client_fd, buffer);
+    }
+
+    // Recurse into children
+    for (uint32_t i = 0; i < node->num_children; i++)
+    {
+        print_commands_recursive(client_fd, view_name, new_prefix, node->children[i]);
     }
 }
 
@@ -272,6 +310,9 @@ void process_command(uint32_t client_fd, const char *cmd_line, nn_cli_session_t 
             }
         }
 
+        // Dispatch to module if associated
+        nn_cli_dispatch_to_module(node, trimmed, remaining_args);
+
         // Execute callback
         if (strcmp(trimmed, "exit") != 0 || !session->current_view->parent)
         {
@@ -296,42 +337,6 @@ void process_command(uint32_t client_fd, const char *cmd_line, nn_cli_session_t 
     }
 
     free(remaining_args);
-}
-
-// Initialize CLI from base configuration
-uint32_t nn_cli_init(void)
-{
-    // Free existing tree if any
-    nn_cli_cleanup();
-
-    // Load base view structure
-    if (nn_cli_xml_load_view_tree("../config/commands_base.xml", &g_view_tree) != 0)
-    {
-        fprintf(stderr, "Failed to load base CLI views\n");
-        return -1;
-    }
-
-    printf("CLI base views loaded successfully\n");
-    return 0;
-}
-
-// Register module commands to existing views
-uint32_t nn_cli_register_module(const char *xml_file)
-{
-    if (!xml_file)
-    {
-        return -1;
-    }
-
-    // Load commands from module file
-    if (nn_cli_xml_load_commands(xml_file, &g_view_tree) != 0)
-    {
-        fprintf(stderr, "Failed to load module from %s\n", xml_file);
-        return -1;
-    }
-
-    printf("Module loaded: %s\n", xml_file);
-    return 0;
 }
 
 // Cleanup CLI trees
@@ -601,57 +606,6 @@ void handle_client(uint32_t client_fd)
             write(client_fd, &c, 1);
         }
     }
-}
-
-// Scan directory and register all command modules
-uint32_t nn_cli_register_all_modules(const char *config_dir)
-{
-    if (!config_dir)
-    {
-        return -1;
-    }
-
-    DIR *dir = opendir(config_dir);
-    if (!dir)
-    {
-        fprintf(stderr, "Failed to open config directory: %s\n", config_dir);
-        return -1;
-    }
-
-    struct dirent *entry;
-    uint32_t loaded_count = 0;
-    char filepath[512];
-
-    while ((entry = readdir(dir)) != NULL)
-    {
-        // Skip if not a regular file
-        if (entry->d_type != DT_REG)
-        {
-            continue;
-        }
-
-        // Check if filename starts with "commands_" and ends with ".xml"
-        const char *filename = entry->d_name;
-        size_t len = strlen(filename);
-
-        if (len > 13 && // "commands_X.xml" minimum length
-            strncmp(filename, "commands_", 9) == 0 && strcmp(filename + len - 4, ".xml") == 0)
-        {
-            // Build full path
-            snprintf(filepath, sizeof(filepath), "%s/%s", config_dir, filename);
-
-            // Register module
-            if (nn_cli_register_module(filepath) == 0)
-            {
-                loaded_count++;
-            }
-        }
-    }
-
-    closedir(dir);
-
-    printf("Total modules loaded: %u\n", loaded_count);
-    return 0;
 }
 
 // Sysname command handler

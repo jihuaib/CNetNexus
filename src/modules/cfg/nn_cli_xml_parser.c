@@ -269,7 +269,7 @@ static nn_cli_view_node_t *parse_view_node(xmlNode *view_xml)
 }
 
 // Parse command group and register commands to views
-static void parse_command_group(xmlNode *group_node, nn_cli_view_tree_t *view_tree)
+static void parse_command_group(xmlNode *group_node, nn_cli_view_tree_t *view_tree, const char *module_name)
 {
     xmlChar *group_name = xmlGetProp(group_node, (const xmlChar *)"name");
     if (!group_name)
@@ -391,6 +391,13 @@ static void parse_command_group(xmlNode *group_node, nn_cli_view_tree_t *view_tr
                                 {
                                     nn_cli_tree_set_callback(leaf, callback);
                                 }
+                                
+                                // Set module name for message dispatch
+                                if (module_name)
+                                {
+                                    nn_cli_tree_set_module_name(leaf, module_name);
+                                    printf("[xml_parser] Command registered to module '%s'\n", module_name);
+                                }
                             }
 
                             // Register to specified views
@@ -467,10 +474,6 @@ uint32_t nn_cli_xml_load_view_tree(const char *xml_file, nn_cli_view_tree_t *vie
         return -1;
     }
 
-    // Initialize
-    view_tree->root = NULL;
-    view_tree->global_view = NULL;
-
     // Parse XML file
     xmlDoc *doc = xmlReadFile(xml_file, NULL, 0);
     if (!doc)
@@ -486,6 +489,25 @@ uint32_t nn_cli_xml_load_view_tree(const char *xml_file, nn_cli_view_tree_t *vie
         fprintf(stderr, "Error: Empty XML document\n");
         xmlFreeDoc(doc);
         return -1;
+    }
+
+    // Extract module name from XML root element
+    // e.g., <configuration module="bgp">
+    const char *module_name = NULL;
+    xmlChar *mod_attr = xmlGetProp(root_element, (const xmlChar *)"module");
+    if (mod_attr)
+    {
+        module_name = strdup((const char *)mod_attr);
+        xmlFree(mod_attr);
+    }
+
+    if (module_name)
+    {
+        printf("[xml_parser] Loading XML for module: %s\n", module_name);
+    }
+    else
+    {
+        printf("[xml_parser] Loading XML (no module associated)\n");
     }
 
     // Parse views section
@@ -507,8 +529,54 @@ uint32_t nn_cli_xml_load_view_tree(const char *xml_file, nn_cli_view_tree_t *vie
 
                 if (xmlStrcmp(view_node->name, (const xmlChar *)"view") == 0)
                 {
-                    view_tree->root = parse_view_node(view_node);
-                    break; // Only parse first root view
+                    nn_cli_view_node_t *new_view = parse_view_node(view_node);
+                    if (new_view)
+                    {
+                        if (view_tree->root == NULL)
+                        {
+                            view_tree->root = new_view;
+                        }
+                        else
+                        {
+                            // Check if view with same name already exists
+                            nn_cli_view_node_t *existing = nn_cli_view_find_by_name(view_tree->root, new_view->name);
+                            if (existing)
+                            {
+                                // If it exists, we just merge children.
+                                // For simplicity now, we just free the new shell and use existing.
+                                // But parse_view_node already created a tree.
+                                // We should probably have a dedicated merge function.
+                                // For now, let's just add the children of the new root to the existing one.
+                                for (uint32_t i = 0; i < new_view->num_children; i++)
+                                {
+                                    nn_cli_view_add_child(existing, new_view->children[i]);
+                                }
+                                // We need to be careful with memory here, but let's assume simple cases.
+                                // Clean up the new shell (not recursive since children were moved)
+                                free(new_view->name);
+                                free(new_view->prompt_template);
+                                free(new_view->children);
+                                free(new_view);
+                            }
+                            else
+                            {
+                                // New view. Find appropriate parent.
+                                // If it's a module XML (module_name != NULL), try to add under "config"
+                                nn_cli_view_node_t *parent = NULL;
+                                if (module_name)
+                                {
+                                    parent = nn_cli_view_find_by_name(view_tree->root, "config");
+                                }
+
+                                if (!parent)
+                                {
+                                    parent = view_tree->root;
+                                }
+
+                                nn_cli_view_add_child(parent, new_view);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -533,7 +601,7 @@ uint32_t nn_cli_xml_load_view_tree(const char *xml_file, nn_cli_view_tree_t *vie
 
                 if (xmlStrcmp(group_node->name, (const xmlChar *)"group") == 0)
                 {
-                    parse_command_group(group_node, view_tree);
+                    parse_command_group(group_node, view_tree, module_name);
                 }
             }
         }
@@ -546,6 +614,10 @@ uint32_t nn_cli_xml_load_view_tree(const char *xml_file, nn_cli_view_tree_t *vie
     }
 
     // Cleanup
+    if (module_name)
+    {
+        free((void *)module_name);
+    }
     xmlFreeDoc(doc);
     xmlCleanupParser();
 
@@ -575,66 +647,4 @@ static void merge_global_to_views(nn_cli_view_node_t *view, nn_cli_tree_node_t *
     {
         merge_global_to_views(view->children[i], global_tree);
     }
-}
-// Load commands from XML and register to existing view tree
-uint32_t nn_cli_xml_load_commands(const char *xml_file, nn_cli_view_tree_t *view_tree)
-{
-    if (!xml_file || !view_tree)
-    {
-        return -1;
-    }
-
-    // Parse XML file
-    xmlDoc *doc = xmlReadFile(xml_file, NULL, 0);
-    if (!doc)
-    {
-        fprintf(stderr, "Error: Could not parse file %s\n", xml_file);
-        return -1;
-    }
-
-    // Get root element
-    xmlNode *root_element = xmlDocGetRootElement(doc);
-    if (!root_element)
-    {
-        fprintf(stderr, "Error: Empty XML document\n");
-        xmlFreeDoc(doc);
-        return -1;
-    }
-
-    // Parse command groups only (skip views section)
-    for (xmlNode *cur = root_element->children; cur; cur = cur->next)
-    {
-        if (cur->type != XML_ELEMENT_NODE)
-        {
-            continue;
-        }
-
-        if (xmlStrcmp(cur->name, (const xmlChar *)"command_groups") == 0)
-        {
-            for (xmlNode *group_node = cur->children; group_node; group_node = group_node->next)
-            {
-                if (group_node->type != XML_ELEMENT_NODE)
-                {
-                    continue;
-                }
-
-                if (xmlStrcmp(group_node->name, (const xmlChar *)"group") == 0)
-                {
-                    parse_command_group(group_node, view_tree);
-                }
-            }
-        }
-    }
-
-    // Merge global commands into all views
-    if (view_tree->global_view && view_tree->global_view->cmd_tree)
-    {
-        merge_global_to_views(view_tree->root, view_tree->global_view->cmd_tree);
-    }
-
-    // Cleanup
-    xmlFreeDoc(doc);
-    // Note: Don't call xmlCleanupParser() here as it's global cleanup
-
-    return 0;
 }
