@@ -1,32 +1,32 @@
-#include "nn_dev.h"
-
 #include <stdint.h>
 #include <stdio.h>
+
+#include "nn_cfg.h"
+#include "nn_dev.h"
+#include "nn_dev_module.h"
+#include "nn_errcode.h"
 
 // Forward declarations of dev command callbacks
 extern void cmd_show_version(uint32_t client_fd, const char *args);
 extern void cmd_sysname(uint32_t client_fd, const char *args);
 
 // Module initialization
-static int32_t dev_module_init(void)
+static int32_t dev_module_init(void *data)
 {
+    nn_dev_mq_info_t info;
+
+    memset(&info, 0, sizeof(info));
+
     // Create message queue
-    nn_module_mq_t *mq = nn_mq_create();
-    if (!mq)
+    int ret = nn_mq_create(data, &info);
+    if (ret == NN_ERRCODE_FAIL)
     {
         fprintf(stderr, "[dev] Failed to create message queue\n");
-        return -1;
+        return NN_ERRCODE_FAIL;
     }
-    
-    // Register message queue with module
-    nn_dev_module_t *self = nn_get_module("dev");
-    if (self)
-    {
-        nn_module_set_mq(self, mq);
-    }
-    
-    printf("[dev] Dev module initialized (eventfd=%d)\n", nn_mq_get_eventfd(mq));
-    return 0;
+
+    printf("[dev] Dev module initialized (eventfd=%d)\n", info.fd);
+    return NN_ERRCODE_SUCCESS;
 }
 
 // Module cleanup
@@ -39,4 +39,5 @@ static void dev_module_cleanup(void)
 static void __attribute__((constructor)) register_dev_module(void)
 {
     nn_dev_register_module(NN_MODULE_ID_DEV, "nn_dev", dev_module_init, dev_module_cleanup);
+    nn_cfg_register_module_xml(NN_MODULE_ID_DEV, "../../src/dev/commands.xml");
 }

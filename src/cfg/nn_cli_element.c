@@ -1,5 +1,6 @@
 #include "nn_cli_element.h"
 
+#include <glib.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -7,11 +8,7 @@
 nn_cli_element_t *nn_cli_element_create(uint32_t id, element_type_t type, const char *name, const char *description,
                                         const char *range)
 {
-    nn_cli_element_t *element = (nn_cli_element_t *)malloc(sizeof(nn_cli_element_t));
-    if (!element)
-    {
-        return NULL;
-    }
+    nn_cli_element_t *element = (nn_cli_element_t *)g_malloc(sizeof(nn_cli_element_t));
 
     element->id = id;
     element->type = type;
@@ -30,20 +27,16 @@ void nn_cli_element_free(nn_cli_element_t *element)
         return;
     }
 
-    free(element->name);
-    free(element->description);
-    free(element->range);
-    free(element);
+    g_free(element->name);
+    g_free(element->description);
+    g_free(element->range);
+    g_free(element);
 }
 
 // Create a command group
 nn_cli_command_group_t *nn_cli_group_create(const char *name)
 {
-    nn_cli_command_group_t *group = (nn_cli_command_group_t *)malloc(sizeof(nn_cli_command_group_t));
-    if (!group)
-    {
-        return NULL;
-    }
+    nn_cli_command_group_t *group = (nn_cli_command_group_t *)g_malloc(sizeof(nn_cli_command_group_t));
 
     group->name = name ? strdup(name) : NULL;
     group->elements = NULL;
@@ -102,7 +95,7 @@ void nn_cli_group_free(nn_cli_command_group_t *group)
         nn_cli_element_free(group->elements[i]);
     }
 
-    free(group->elements);
-    free(group->name);
-    free(group);
+    g_free(group->elements);
+    g_free(group->name);
+    g_free(group);
 }

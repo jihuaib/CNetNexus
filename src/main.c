@@ -3,7 +3,9 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+#include "dev/nn_dev_module.h"
 #include "nn_dev.h"
+#include "nn_errcode.h"
 
 // Signal handler for graceful shutdown
 static void signal_handler(int signum)
@@ -22,7 +24,7 @@ int main(int argc, char *argv[])
     signal(SIGTERM, signal_handler);
 
     // Initialize all registered modules
-    if (nn_init_all_modules() != 0)
+    if (nn_dev_init_all_modules() != NN_ERRCODE_SUCCESS)
     {
         fprintf(stderr, "Warning: Some modules failed to initialize\n");
     }

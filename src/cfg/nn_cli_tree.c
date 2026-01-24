@@ -1,20 +1,19 @@
 #include "nn_cli_tree.h"
 
 #include <ctype.h>
+#include <glib.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+#include "nn_errcode.h"
 
 #define INITIAL_CHILDREN_CAPACITY 4
 
 // Create a new CLI tree node
 nn_cli_tree_node_t *nn_cli_tree_create_node(const char *name, const char *description, nn_cli_node_type_t type)
 {
-    nn_cli_tree_node_t *node = (nn_cli_tree_node_t *)malloc(sizeof(nn_cli_tree_node_t));
-    if (!node)
-    {
-        return NULL;
-    }
+    nn_cli_tree_node_t *node = (nn_cli_tree_node_t *)g_malloc(sizeof(nn_cli_tree_node_t));
 
     node->name = name ? strdup(name) : NULL;
     node->description = description ? strdup(description) : NULL;
@@ -54,10 +53,10 @@ void nn_cli_tree_add_child(nn_cli_tree_node_t *parent, nn_cli_tree_node_t *child
         }
 
         // Free the new node (but not its children, as they were moved)
-        free(child->name);
-        free(child->description);
-        free(child->children);
-        free(child);
+        g_free(child->name);
+        g_free(child->description);
+        g_free(child->children);
+        g_free(child);
         return;
     }
 
@@ -66,7 +65,7 @@ void nn_cli_tree_add_child(nn_cli_tree_node_t *parent, nn_cli_tree_node_t *child
     if (parent->num_children >= parent->children_capacity)
     {
         uint32_t new_capacity =
-            parent->children_capacity == 0 ? INITIAL_CHILDREN_CAPACITY : parent->children_capacity * 2;
+            parent->children_capacity == NN_ERRCODE_SUCCESS ? INITIAL_CHILDREN_CAPACITY : parent->children_capacity * 2;
         nn_cli_tree_node_t **new_children =
             (nn_cli_tree_node_t **)realloc(parent->children, new_capacity * sizeof(nn_cli_tree_node_t *));
         if (!new_children)
@@ -91,7 +90,7 @@ nn_cli_tree_node_t *nn_cli_tree_find_child(nn_cli_tree_node_t *parent, const cha
 
     for (uint32_t i = 0; i < parent->num_children; i++)
     {
-        if (parent->children[i]->name && strcmp(parent->children[i]->name, name) == 0)
+        if (parent->children[i]->name && strcmp(parent->children[i]->name, name) == NN_ERRCODE_SUCCESS)
         {
             return parent->children[i];
         }
@@ -106,7 +105,7 @@ uint32_t nn_cli_tree_find_partial_matches(nn_cli_tree_node_t *parent, const char
 {
     if (!parent || !partial)
     {
-        return 0;
+        return NN_ERRCODE_SUCCESS;
     }
 
     uint32_t count = 0;
@@ -115,7 +114,7 @@ uint32_t nn_cli_tree_find_partial_matches(nn_cli_tree_node_t *parent, const char
     for (uint32_t i = 0; i < parent->num_children && count < max_matches; i++)
     {
         nn_cli_tree_node_t *child = parent->children[i];
-        if (child->name && strncmp(child->name, partial, partial_len) == 0)
+        if (child->name && strncmp(child->name, partial, partial_len) == NN_ERRCODE_SUCCESS)
         {
             matches[count++] = child;
         }
@@ -138,7 +137,7 @@ void nn_cli_tree_set_module_name(nn_cli_tree_node_t *node, const char *module_na
 {
     if (node)
     {
-        free(node->module_name);
+        g_free(node->module_name);
         node->module_name = module_name ? strdup(module_name) : NULL;
     }
 }
@@ -157,11 +156,11 @@ void nn_cli_tree_free(nn_cli_tree_node_t *root)
         nn_cli_tree_free(root->children[i]);
     }
 
-    free(root->children);
-    free(root->name);
-    free(root->description);
-    free(root->module_name);
-    free(root);
+    g_free(root->children);
+    g_free(root->name);
+    g_free(root->description);
+    g_free(root->module_name);
+    g_free(root);
 }
 
 // Clone a tree node and all its children
@@ -205,7 +204,7 @@ static char *trim_whitespace(char *str)
     {
         str++;
     }
-    if (*str == 0)
+    if (*str == NN_ERRCODE_SUCCESS)
     {
         return str;
     }
@@ -235,9 +234,9 @@ nn_cli_tree_node_t *nn_cli_tree_match_command(nn_cli_tree_node_t *root, const ch
     }
 
     char *trimmed = trim_whitespace(cmd_copy);
-    if (strlen(trimmed) == 0)
+    if (strlen(trimmed) == NN_ERRCODE_SUCCESS)
     {
-        free(cmd_copy);
+        g_free(cmd_copy);
         if (remaining_args)
         {
             *remaining_args = strdup("");
@@ -305,7 +304,7 @@ nn_cli_tree_node_t *nn_cli_tree_match_command(nn_cli_tree_node_t *root, const ch
         }
     }
 
-    free(cmd_copy);
+    g_free(cmd_copy);
     return last_match ? last_match : root;
 }
 

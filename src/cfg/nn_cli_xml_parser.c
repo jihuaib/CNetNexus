@@ -1,6 +1,7 @@
 #include "nn_cli_xml_parser.h"
 
 #include <ctype.h>
+#include <glib.h>
 #include <libxml/parser.h>
 #include <libxml/tree.h>
 #include <stdint.h>
@@ -11,6 +12,7 @@
 #include "nn_cli_element.h"
 #include "nn_cli_tree.h"
 #include "nn_cli_view.h"
+#include "nn_errcode.h"
 
 // Forward declaration of command callbacks
 extern void cmd_help(uint32_t client_fd, const char *args);
@@ -29,31 +31,31 @@ static nn_cli_callback_t get_callback_by_name(const char *name)
         return NULL;
     }
 
-    if (strcmp(name, "cmd_help") == 0)
+    if (strcmp(name, "cmd_help") == NN_ERRCODE_SUCCESS)
     {
         return cmd_help;
     }
-    if (strcmp(name, "cmd_exit") == 0)
+    if (strcmp(name, "cmd_exit") == NN_ERRCODE_SUCCESS)
     {
         return cmd_exit;
     }
-    if (strcmp(name, "cmd_show_version") == 0)
+    if (strcmp(name, "cmd_show_version") == NN_ERRCODE_SUCCESS)
     {
         return cmd_show_version;
     }
-    if (strcmp(name, "cmd_show_tree") == 0)
+    if (strcmp(name, "cmd_show_tree") == NN_ERRCODE_SUCCESS)
     {
         return cmd_show_tree;
     }
-    if (strcmp(name, "cmd_configure") == 0)
+    if (strcmp(name, "cmd_configure") == NN_ERRCODE_SUCCESS)
     {
         return cmd_configure;
     }
-    if (strcmp(name, "cmd_end") == 0)
+    if (strcmp(name, "cmd_end") == NN_ERRCODE_SUCCESS)
     {
         return cmd_end;
     }
-    if (strcmp(name, "cmd_sysname") == 0)
+    if (strcmp(name, "cmd_sysname") == NN_ERRCODE_SUCCESS)
     {
         return cmd_sysname;
     }
@@ -74,11 +76,7 @@ static uint32_t *parse_expression(const char *expr, uint32_t *count)
 
     *count = 0;
     uint32_t capacity = 10;
-    uint32_t *ids = (uint32_t *)malloc(capacity * sizeof(uint32_t));
-    if (!ids)
-    {
-        return NULL;
-    }
+    uint32_t *ids = (uint32_t *)g_malloc(capacity * sizeof(uint32_t));
 
     char *expr_copy = strdup(expr);
     char *token = strtok(expr_copy, " \t\n");
@@ -91,8 +89,8 @@ static uint32_t *parse_expression(const char *expr, uint32_t *count)
             uint32_t *new_ids = (uint32_t *)realloc(ids, capacity * sizeof(uint32_t));
             if (!new_ids)
             {
-                free(ids);
-                free(expr_copy);
+                g_free(ids);
+                g_free(expr_copy);
                 return NULL;
             }
             ids = new_ids;
@@ -102,7 +100,7 @@ static uint32_t *parse_expression(const char *expr, uint32_t *count)
         token = strtok(NULL, " \t\n");
     }
 
-    free(expr_copy);
+    g_free(expr_copy);
     return ids;
 }
 
@@ -110,7 +108,7 @@ static uint32_t *parse_expression(const char *expr, uint32_t *count)
 static nn_cli_tree_node_t *build_tree_from_expression(uint32_t *element_ids, uint32_t count,
                                                       nn_cli_command_group_t *group)
 {
-    if (!element_ids || count == 0 || !group)
+    if (!element_ids || count == NN_ERRCODE_SUCCESS || !group)
     {
         return NULL;
     }
@@ -165,8 +163,8 @@ static nn_cli_element_t *parse_element(xmlNode *element_node)
     }
 
     uint32_t id = atoi((const char *)id_str);
-    element_type_t type =
-        (strcmp((const char *)type_str, "keyword") == 0) ? ELEMENT_TYPE_KEYWORD : ELEMENT_TYPE_PARAMETER;
+    element_type_t type = (strcmp((const char *)type_str, "keyword") == NN_ERRCODE_SUCCESS) ? ELEMENT_TYPE_KEYWORD
+                                                                                            : ELEMENT_TYPE_PARAMETER;
 
     xmlFree(id_str);
     xmlFree(type_str);
@@ -183,19 +181,19 @@ static nn_cli_element_t *parse_element(xmlNode *element_node)
             continue;
         }
 
-        if (xmlStrcmp(cur->name, (const xmlChar *)"name") == 0)
+        if (xmlStrcmp(cur->name, (const xmlChar *)"name") == NN_ERRCODE_SUCCESS)
         {
             xmlChar *content = xmlNodeGetContent(cur);
             name = strdup((const char *)content);
             xmlFree(content);
         }
-        else if (xmlStrcmp(cur->name, (const xmlChar *)"description") == 0)
+        else if (xmlStrcmp(cur->name, (const xmlChar *)"description") == NN_ERRCODE_SUCCESS)
         {
             xmlChar *content = xmlNodeGetContent(cur);
             description = strdup((const char *)content);
             xmlFree(content);
         }
-        else if (xmlStrcmp(cur->name, (const xmlChar *)"range") == 0)
+        else if (xmlStrcmp(cur->name, (const xmlChar *)"range") == NN_ERRCODE_SUCCESS)
         {
             xmlChar *content = xmlNodeGetContent(cur);
             range = strdup((const char *)content);
@@ -205,9 +203,9 @@ static nn_cli_element_t *parse_element(xmlNode *element_node)
 
     nn_cli_element_t *element = nn_cli_element_create(id, type, name, description, range);
 
-    free(name);
-    free(description);
-    free(range);
+    g_free(name);
+    g_free(description);
+    g_free(range);
 
     return element;
 }
@@ -229,7 +227,7 @@ static nn_cli_view_node_t *parse_view_node(xmlNode *view_xml)
         {
             continue;
         }
-        if (xmlStrcmp(cur->name, (const xmlChar *)"template") == 0)
+        if (xmlStrcmp(cur->name, (const xmlChar *)"template") == NN_ERRCODE_SUCCESS)
         {
             xmlChar *content = xmlNodeGetContent(cur);
             template = strdup((const char *)content);
@@ -241,7 +239,7 @@ static nn_cli_view_node_t *parse_view_node(xmlNode *view_xml)
     // Create view node
     nn_cli_view_node_t *view = nn_cli_view_create((const char *)view_name, template);
     xmlFree(view_name);
-    free(template);
+    g_free(template);
 
     if (!view)
     {
@@ -255,7 +253,7 @@ static nn_cli_view_node_t *parse_view_node(xmlNode *view_xml)
         {
             continue;
         }
-        if (xmlStrcmp(cur->name, (const xmlChar *)"view") == 0)
+        if (xmlStrcmp(cur->name, (const xmlChar *)"view") == NN_ERRCODE_SUCCESS)
         {
             nn_cli_view_node_t *child = parse_view_node(cur);
             if (child)
@@ -293,7 +291,7 @@ static void parse_command_group(xmlNode *group_node, nn_cli_view_tree_t *view_tr
             continue;
         }
 
-        if (xmlStrcmp(cur->name, (const xmlChar *)"elements") == 0)
+        if (xmlStrcmp(cur->name, (const xmlChar *)"elements") == NN_ERRCODE_SUCCESS)
         {
             for (xmlNode *elem = cur->children; elem; elem = elem->next)
             {
@@ -302,7 +300,7 @@ static void parse_command_group(xmlNode *group_node, nn_cli_view_tree_t *view_tr
                     continue;
                 }
 
-                if (xmlStrcmp(elem->name, (const xmlChar *)"element") == 0)
+                if (xmlStrcmp(elem->name, (const xmlChar *)"element") == NN_ERRCODE_SUCCESS)
                 {
                     nn_cli_element_t *element = parse_element(elem);
                     if (element)
@@ -322,7 +320,7 @@ static void parse_command_group(xmlNode *group_node, nn_cli_view_tree_t *view_tr
             continue;
         }
 
-        if (xmlStrcmp(cur->name, (const xmlChar *)"commands") == 0)
+        if (xmlStrcmp(cur->name, (const xmlChar *)"commands") == NN_ERRCODE_SUCCESS)
         {
             for (xmlNode *cmd = cur->children; cmd; cmd = cmd->next)
             {
@@ -331,7 +329,7 @@ static void parse_command_group(xmlNode *group_node, nn_cli_view_tree_t *view_tr
                     continue;
                 }
 
-                if (xmlStrcmp(cmd->name, (const xmlChar *)"command") == 0)
+                if (xmlStrcmp(cmd->name, (const xmlChar *)"command") == NN_ERRCODE_SUCCESS)
                 {
                     char *expression = NULL;
                     char *views = NULL;
@@ -344,24 +342,24 @@ static void parse_command_group(xmlNode *group_node, nn_cli_view_tree_t *view_tr
                             continue;
                         }
 
-                        if (xmlStrcmp(child->name, (const xmlChar *)"expression") == 0)
+                        if (xmlStrcmp(child->name, (const xmlChar *)"expression") == NN_ERRCODE_SUCCESS)
                         {
                             xmlChar *content = xmlNodeGetContent(child);
-                            free(expression); // Free previous allocation if any
+                            g_free(expression); // Free previous allocation if any
                             expression = strdup((const char *)content);
                             xmlFree(content);
                         }
-                        else if (xmlStrcmp(child->name, (const xmlChar *)"views") == 0)
+                        else if (xmlStrcmp(child->name, (const xmlChar *)"views") == NN_ERRCODE_SUCCESS)
                         {
                             xmlChar *content = xmlNodeGetContent(child);
-                            free(views); // Free previous allocation if any
+                            g_free(views); // Free previous allocation if any
                             views = strdup((const char *)content);
                             xmlFree(content);
                         }
-                        else if (xmlStrcmp(child->name, (const xmlChar *)"callback") == 0)
+                        else if (xmlStrcmp(child->name, (const xmlChar *)"callback") == NN_ERRCODE_SUCCESS)
                         {
                             xmlChar *content = xmlNodeGetContent(child);
-                            free(callback_name); // Free previous allocation if any
+                            g_free(callback_name); // Free previous allocation if any
                             callback_name = strdup((const char *)content);
                             xmlFree(content);
                         }
@@ -391,7 +389,7 @@ static void parse_command_group(xmlNode *group_node, nn_cli_view_tree_t *view_tr
                                 {
                                     nn_cli_tree_set_callback(leaf, callback);
                                 }
-                                
+
                                 // Set module name for message dispatch
                                 if (module_name)
                                 {
@@ -401,7 +399,7 @@ static void parse_command_group(xmlNode *group_node, nn_cli_view_tree_t *view_tr
                             }
 
                             // Register to specified views
-                            if (strcmp(views, "global") == 0)
+                            if (strcmp(views, "global") == NN_ERRCODE_SUCCESS)
                             {
                                 // Add to global view
                                 if (!view_tree->global_view)
@@ -448,16 +446,16 @@ static void parse_command_group(xmlNode *group_node, nn_cli_view_tree_t *view_tr
                                     view_token = strtok(NULL, ",");
                                 }
 
-                                free(views_copy);
+                                g_free(views_copy);
                             }
                         }
 
-                        free(element_ids);
+                        g_free(element_ids);
                     }
 
-                    free(expression);
-                    free(views);
-                    free(callback_name);
+                    g_free(expression);
+                    g_free(views);
+                    g_free(callback_name);
                 }
             }
         }
@@ -471,7 +469,7 @@ uint32_t nn_cli_xml_load_view_tree(const char *xml_file, nn_cli_view_tree_t *vie
 {
     if (!xml_file || !view_tree)
     {
-        return -1;
+        return NN_ERRCODE_FAIL;
     }
 
     // Parse XML file
@@ -479,7 +477,7 @@ uint32_t nn_cli_xml_load_view_tree(const char *xml_file, nn_cli_view_tree_t *vie
     if (!doc)
     {
         fprintf(stderr, "Error: Could not parse file %s\n", xml_file);
-        return -1;
+        return NN_ERRCODE_FAIL;
     }
 
     // Get root element
@@ -488,7 +486,7 @@ uint32_t nn_cli_xml_load_view_tree(const char *xml_file, nn_cli_view_tree_t *vie
     {
         fprintf(stderr, "Error: Empty XML document\n");
         xmlFreeDoc(doc);
-        return -1;
+        return NN_ERRCODE_FAIL;
     }
 
     // Extract module name from XML root element
@@ -517,7 +515,7 @@ uint32_t nn_cli_xml_load_view_tree(const char *xml_file, nn_cli_view_tree_t *vie
             continue;
         }
 
-        if (xmlStrcmp(cur->name, (const xmlChar *)"views") == 0)
+        if (xmlStrcmp(cur->name, (const xmlChar *)"views") == NN_ERRCODE_SUCCESS)
         {
             for (xmlNode *view_node = cur->children; view_node; view_node = view_node->next)
             {
@@ -526,7 +524,7 @@ uint32_t nn_cli_xml_load_view_tree(const char *xml_file, nn_cli_view_tree_t *vie
                     continue;
                 }
 
-                if (xmlStrcmp(view_node->name, (const xmlChar *)"view") == 0)
+                if (xmlStrcmp(view_node->name, (const xmlChar *)"view") == NN_ERRCODE_SUCCESS)
                 {
                     nn_cli_view_node_t *new_view = parse_view_node(view_node);
                     if (new_view)
@@ -542,7 +540,7 @@ uint32_t nn_cli_xml_load_view_tree(const char *xml_file, nn_cli_view_tree_t *vie
                             if (existing)
                             {
                                 // If it exists, we just merge children.
-                                // For simplicity now, we just free the new shell and use existing.
+                                // For simplicity now, we just g_free the new shell and use existing.
                                 // But parse_view_node already created a tree.
                                 // We should probably have a dedicated merge function.
                                 // For now, let's just add the children of the new root to the existing one.
@@ -552,10 +550,10 @@ uint32_t nn_cli_xml_load_view_tree(const char *xml_file, nn_cli_view_tree_t *vie
                                 }
                                 // We need to be careful with memory here, but let's assume simple cases.
                                 // Clean up the new shell (not recursive since children were moved)
-                                free(new_view->name);
-                                free(new_view->prompt_template);
-                                free(new_view->children);
-                                free(new_view);
+                                g_free(new_view->name);
+                                g_free(new_view->prompt_template);
+                                g_free(new_view->children);
+                                g_free(new_view);
                             }
                             else
                             {
@@ -589,7 +587,7 @@ uint32_t nn_cli_xml_load_view_tree(const char *xml_file, nn_cli_view_tree_t *vie
             continue;
         }
 
-        if (xmlStrcmp(cur->name, (const xmlChar *)"command_groups") == 0)
+        if (xmlStrcmp(cur->name, (const xmlChar *)"command_groups") == NN_ERRCODE_SUCCESS)
         {
             for (xmlNode *group_node = cur->children; group_node; group_node = group_node->next)
             {
@@ -598,7 +596,7 @@ uint32_t nn_cli_xml_load_view_tree(const char *xml_file, nn_cli_view_tree_t *vie
                     continue;
                 }
 
-                if (xmlStrcmp(group_node->name, (const xmlChar *)"group") == 0)
+                if (xmlStrcmp(group_node->name, (const xmlChar *)"group") == NN_ERRCODE_SUCCESS)
                 {
                     parse_command_group(group_node, view_tree, module_name);
                 }
@@ -615,12 +613,12 @@ uint32_t nn_cli_xml_load_view_tree(const char *xml_file, nn_cli_view_tree_t *vie
     // Cleanup
     if (module_name)
     {
-        free((void *)module_name);
+        g_free((void *)module_name);
     }
     xmlFreeDoc(doc);
     xmlCleanupParser();
 
-    return 0;
+    return NN_ERRCODE_SUCCESS;
 }
 
 // Helper to merge global commands into all views

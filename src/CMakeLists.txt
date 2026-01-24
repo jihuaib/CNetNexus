@@ -9,7 +9,6 @@ add_executable(netnexus main.c)
 # Link against libraries
 # Use --no-as-needed to ensure module constructor functions are called
 target_link_libraries(netnexus PRIVATE
-    nn_core
     -Wl,--no-as-needed
     nn_cfg
     nn_bgp

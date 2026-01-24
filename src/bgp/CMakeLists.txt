@@ -6,9 +6,6 @@ set(NN_BGP_SOURCES
 # Create shared library for BGP module
 add_library(nn_bgp SHARED ${NN_BGP_SOURCES})
 
-# Link against core library
-target_link_libraries(nn_bgp PRIVATE nn_core)
-
 # Include directories
 target_include_directories(nn_bgp PRIVATE
     ${PROJECT_SOURCE_DIR}/include

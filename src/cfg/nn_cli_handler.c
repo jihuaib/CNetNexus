@@ -2,14 +2,16 @@
 
 #include <ctype.h>
 #include <dirent.h>
+#include <glib.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
+#include "nn_cli_dispatch.h"
 #include "nn_cli_tree.h"
 #include "nn_cli_xml_parser.h"
-#include "nn_cli_dispatch.h"
+#include "nn_errcode.h"
 
 // Global CLI view tree
 nn_cli_view_tree_t g_view_tree = {NULL, NULL};
@@ -109,7 +111,7 @@ static char *trim(char *str)
         str++;
     }
 
-    if (*str == 0)
+    if (*str == NN_ERRCODE_SUCCESS)
     {
         return str;
     }
@@ -154,7 +156,8 @@ void cmd_show_version(uint32_t client_fd, const char *args)
 
 // Forward declarations
 static void print_view_commands_flat(nn_cli_view_node_t *view, uint32_t client_fd);
-static void print_commands_recursive(uint32_t client_fd, const char *view_name, const char *prefix, nn_cli_tree_node_t *node);
+static void print_commands_recursive(uint32_t client_fd, const char *view_name, const char *prefix,
+                                     nn_cli_tree_node_t *node);
 
 // Show tree command handler
 void cmd_show_tree(uint32_t client_fd, const char *args)
@@ -199,7 +202,8 @@ static void print_view_commands_flat(nn_cli_view_node_t *view, uint32_t client_f
 }
 
 // Helper to recursively traverse command tree and print commands
-static void print_commands_recursive(uint32_t client_fd, const char *view_name, const char *prefix, nn_cli_tree_node_t *node)
+static void print_commands_recursive(uint32_t client_fd, const char *view_name, const char *prefix,
+                                     nn_cli_tree_node_t *node)
 {
     if (!node)
     {
@@ -221,10 +225,8 @@ static void print_commands_recursive(uint32_t client_fd, const char *view_name, 
     if (node->callback || node->module_name)
     {
         char buffer[2048];
-        snprintf(buffer, sizeof(buffer), "  %-15s %-15s %s\r\n", 
-                 view_name ? view_name : "unknown",
-                 node->module_name ? node->module_name : "builtin",
-                 new_prefix);
+        snprintf(buffer, sizeof(buffer), "  %-15s %-15s %s\r\n", view_name ? view_name : "unknown",
+                 node->module_name ? node->module_name : "builtin", new_prefix);
         send_message(client_fd, buffer);
     }
 
@@ -261,7 +263,7 @@ void process_command(uint32_t client_fd, const char *cmd_line, nn_cli_session_t 
     char *trimmed = trim(buffer);
 
     // Empty command
-    if (strlen(trimmed) == 0)
+    if (strlen(trimmed) == NN_ERRCODE_SUCCESS)
     {
         return;
     }
@@ -280,7 +282,7 @@ void process_command(uint32_t client_fd, const char *cmd_line, nn_cli_session_t 
     if (node && node->callback)
     {
         // Handle view-switching commands
-        if (strcmp(trimmed, "configure") == 0)
+        if (strcmp(trimmed, "configure") == NN_ERRCODE_SUCCESS)
         {
             nn_cli_view_node_t *config_view = nn_cli_view_find_by_name(g_view_tree.root, "config");
             if (config_view)
@@ -289,12 +291,12 @@ void process_command(uint32_t client_fd, const char *cmd_line, nn_cli_session_t 
                 update_prompt(session);
             }
         }
-        else if (strcmp(trimmed, "end") == 0)
+        else if (strcmp(trimmed, "end") == NN_ERRCODE_SUCCESS)
         {
             session->current_view = g_view_tree.root;
             update_prompt(session);
         }
-        else if (strcmp(trimmed, "exit") == 0)
+        else if (strcmp(trimmed, "exit") == NN_ERRCODE_SUCCESS)
         {
             if (session->current_view->parent)
             {
@@ -305,7 +307,7 @@ void process_command(uint32_t client_fd, const char *cmd_line, nn_cli_session_t 
             {
                 // Root view - actually exit
                 node->callback(client_fd, remaining_args);
-                free(remaining_args);
+                g_free(remaining_args);
                 return;
             }
         }
@@ -314,7 +316,7 @@ void process_command(uint32_t client_fd, const char *cmd_line, nn_cli_session_t 
         nn_cli_dispatch_to_module(node, trimmed, remaining_args);
 
         // Execute callback
-        if (strcmp(trimmed, "exit") != 0 || !session->current_view->parent)
+        if (strcmp(trimmed, "exit") != NN_ERRCODE_SUCCESS || !session->current_view->parent)
         {
             node->callback(client_fd, remaining_args);
 
@@ -336,7 +338,7 @@ void process_command(uint32_t client_fd, const char *cmd_line, nn_cli_session_t 
         send_message(client_fd, error_msg);
     }
 
-    free(remaining_args);
+    g_free(remaining_args);
 }
 
 // Cleanup CLI trees
@@ -481,7 +483,8 @@ void handle_client(uint32_t client_fd)
                         {
                             // Check if child name starts with prefix
                             uint32_t prefix_len = strlen(search_prefix);
-                            if (prefix_len == 0 || strncmp(child->name, search_prefix, prefix_len) == 0)
+                            if (prefix_len == NN_ERRCODE_SUCCESS ||
+                                strncmp(child->name, search_prefix, prefix_len) == NN_ERRCODE_SUCCESS)
                             {
                                 matches[num_matches++] = child;
                             }
@@ -534,7 +537,7 @@ void handle_client(uint32_t client_fd)
                     send_prompt(client_fd, &session);
                     send_message(client_fd, line_buffer);
                 }
-                else if (num_matches == 0 && search_root && search_root->num_children > 0)
+                else if (num_matches == NN_ERRCODE_SUCCESS && search_root && search_root->num_children > 0)
                 {
                     // No matches but context has children - show all children
                     send_message(client_fd, "\r\n");
@@ -549,7 +552,7 @@ void handle_client(uint32_t client_fd)
                     send_message(client_fd, line_buffer);
                 }
 
-                free(remaining);
+                g_free(remaining);
             }
         }
         // Handle ?
@@ -593,7 +596,7 @@ void handle_client(uint32_t client_fd)
                     nn_cli_tree_print_help(help_root, client_fd);
                 }
 
-                free(remaining);
+                g_free(remaining);
             }
 
             send_prompt(client_fd, &session);
@@ -611,7 +614,7 @@ void handle_client(uint32_t client_fd)
 // Sysname command handler
 void cmd_sysname(uint32_t client_fd, const char *args)
 {
-    if (!args || strlen(args) == 0)
+    if (!args || strlen(args) == NN_ERRCODE_SUCCESS)
     {
         // Show current hostname
         char msg[128];
@@ -626,7 +629,7 @@ void cmd_sysname(uint32_t client_fd, const char *args)
         args++;
     }
 
-    if (strlen(args) == 0)
+    if (strlen(args) == NN_ERRCODE_SUCCESS)
     {
         send_message(client_fd, "\r\nError: Hostname cannot be empty\r\n");
         return;

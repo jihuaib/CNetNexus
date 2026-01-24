@@ -6,6 +6,7 @@ set(NN_CFG_SOURCES
     nn_cli_element.c
     nn_cli_xml_parser.c
     nn_cli_dispatch.c
+    nn_cfg_registry.c
     nn_cfg_main.c
 )
 
@@ -21,8 +22,8 @@ target_include_directories(nn_cfg PUBLIC
 
 # Link dependencies
 target_link_libraries(nn_cfg PUBLIC
-    nn_core
     ${LIBXML2_LIBRARIES}
+    ${GLIB_LIBRARIES}
     Threads::Threads
 )
 
