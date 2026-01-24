@@ -178,7 +178,7 @@ int nn_mq_wait(nn_dev_module_mq_t *mq, int timeout_ms)
     {
         return 1; // Message available
     }
-    else if (ret == NN_ERRCODE_SUCCESS)
+    if (ret == NN_ERRCODE_SUCCESS)
     {
         return NN_ERRCODE_SUCCESS; // Timeout
     }

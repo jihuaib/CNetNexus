@@ -49,3 +49,7 @@ CheckOptions:
     value: 'UPPER_CASE'
   - key: readability-identifier-naming.MacroCase
     value: 'UPPER_CASE'
+  - key: readability-implicit-bool-conversion.AllowPointerConditions
+    value: 'false'
+  - key: readability-implicit-bool-conversion.AllowIntegerConditions
+    value: 'false'

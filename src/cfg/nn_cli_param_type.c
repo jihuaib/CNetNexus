@@ -111,7 +111,8 @@ nn_cli_param_type_t *nn_cli_param_type_parse(const char *type_str)
         param_type->validate = nn_param_validate_string;
 
         // Parse string length range
-        int64_t min_val = 0, max_val = 255;
+        int64_t min_val = 0;
+        int64_t max_val = 255;
         if (range_str[0] != '\0')
         {
             parse_range(range_str, &min_val, &max_val);
@@ -125,7 +126,8 @@ nn_cli_param_type_t *nn_cli_param_type_parse(const char *type_str)
         param_type->validate = nn_param_validate_uint;
 
         // Parse unsigned integer range
-        int64_t min_val = 0, max_val = UINT32_MAX;
+        int64_t min_val = 0;
+        int64_t max_val = UINT32_MAX;
         if (range_str[0] != '\0')
         {
             parse_range(range_str, &min_val, &max_val);
@@ -139,7 +141,8 @@ nn_cli_param_type_t *nn_cli_param_type_parse(const char *type_str)
         param_type->validate = nn_param_validate_int;
 
         // Parse signed integer range
-        int64_t min_val = INT32_MIN, max_val = INT32_MAX;
+        int64_t min_val = INT32_MIN;
+        int64_t max_val = INT32_MAX;
         if (range_str[0] != '\0')
         {
             parse_range(range_str, &min_val, &max_val);
@@ -208,24 +211,24 @@ const char *nn_cli_param_type_get_desc(const nn_cli_param_type_t *param_type)
 
     switch (param_type->type)
     {
-    case NN_PARAM_TYPE_STRING:
-        return "string";
-    case NN_PARAM_TYPE_UINT:
-        return "unsigned integer";
-    case NN_PARAM_TYPE_INT:
-        return "integer";
-    case NN_PARAM_TYPE_IPV4:
-        return "IPv4 address";
-    case NN_PARAM_TYPE_IPV6:
-        return "IPv6 address";
-    case NN_PARAM_TYPE_IP:
-        return "IP address";
-    case NN_PARAM_TYPE_MAC:
-        return "MAC address";
-    case NN_PARAM_TYPE_ENUM:
-        return "enumeration";
-    default:
-        return "unknown";
+        case NN_PARAM_TYPE_STRING:
+            return "string";
+        case NN_PARAM_TYPE_UINT:
+            return "unsigned integer";
+        case NN_PARAM_TYPE_INT:
+            return "integer";
+        case NN_PARAM_TYPE_IPV4:
+            return "IPv4 address";
+        case NN_PARAM_TYPE_IPV6:
+            return "IPv6 address";
+        case NN_PARAM_TYPE_IP:
+            return "IP address";
+        case NN_PARAM_TYPE_MAC:
+            return "MAC address";
+        case NN_PARAM_TYPE_ENUM:
+            return "enumeration";
+        default:
+            return "unknown";
     }
 }
 
@@ -502,7 +505,11 @@ bool nn_param_validate_mac(const nn_cli_param_type_t *param_type, const char *va
 
     // Accept formats: XX:XX:XX:XX:XX:XX or XX-XX-XX-XX-XX-XX
     int octets[6];
-    char sep1, sep2, sep3, sep4, sep5;
+    char sep1;
+    char sep2;
+    char sep3;
+    char sep4;
+    char sep5;
 
     // Try colon format
     if (sscanf(value, "%x%c%x%c%x%c%x%c%x%c%x", &octets[0], &sep1, &octets[1], &sep2, &octets[2], &sep3, &octets[3],

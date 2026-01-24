@@ -9,7 +9,10 @@
 #include "nn_cli_param_type.h"
 #include "nn_errcode.h"
 
-#define INITIAL_CHILDREN_CAPACITY 4
+enum
+{
+    INITIAL_CHILDREN_CAPACITY = 4
+};
 
 // Create a new CLI tree node
 nn_cli_tree_node_t *nn_cli_tree_create_node(const char *name, const char *description, nn_cli_node_type_t type)
@@ -116,7 +119,8 @@ nn_cli_tree_node_t *nn_cli_tree_find_child_input_token(nn_cli_tree_node_t *paren
     for (uint32_t i = 0; i < parent->num_children; i++)
     {
         nn_cli_tree_node_t *child = parent->children[i];
-        if (child->type == NN_CLI_NODE_COMMAND && child->name && strncmp(child->name, token, strlen(token)) == NN_ERRCODE_SUCCESS)
+        if (child->type == NN_CLI_NODE_COMMAND && child->name &&
+            strncmp(child->name, token, strlen(token)) == NN_ERRCODE_SUCCESS)
         {
             return child;
         }
@@ -183,30 +187,6 @@ uint32_t nn_cli_tree_find_children_input_token(nn_cli_tree_node_t *parent, const
                     matches[count++] = parent->children[i];
                 }
             }
-        }
-    }
-
-    return count;
-}
-
-// Find children by partial name match (for TAB completion)
-uint32_t nn_cli_tree_find_partial_matches(nn_cli_tree_node_t *parent, const char *partial, nn_cli_tree_node_t **matches,
-                                          uint32_t max_matches)
-{
-    if (!parent || !partial)
-    {
-        return NN_ERRCODE_SUCCESS;
-    }
-
-    uint32_t count = 0;
-    size_t partial_len = strlen(partial);
-
-    for (uint32_t i = 0; i < parent->num_children && count < max_matches; i++)
-    {
-        nn_cli_tree_node_t *child = parent->children[i];
-        if (child->name && strncmp(child->name, partial, partial_len) == NN_ERRCODE_SUCCESS)
-        {
-            matches[count++] = child;
         }
     }
 
@@ -482,27 +462,5 @@ void nn_cli_tree_print_help(nn_cli_tree_node_t *node, uint32_t client_fd)
             }
         }
         write(client_fd, "\r\n", 2);
-    }
-}
-
-// View to string conversion (for prompts)
-const char *nn_cli_view_to_string(nn_cli_view_t view)
-{
-    switch (view)
-    {
-        case NN_CLI_VIEW_USER:
-            return "user";
-        case NN_CLI_VIEW_CONFIG:
-            return "config";
-        case NN_CLI_VIEW_BGP:
-            return "config-bgp";
-        case NN_CLI_VIEW_BMP:
-            return "config-bmp";
-        case NN_CLI_VIEW_RPKI:
-            return "config-rpki";
-        case NN_CLI_VIEW_ALL:
-            return "all";
-        default:
-            return "unknown";
     }
 }

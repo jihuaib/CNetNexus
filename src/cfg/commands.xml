@@ -35,7 +35,7 @@
                     <description>Exit current mode</description>
                 </element>
                 <element id="2" type="keyword">
-                    <name>configure</name>
+                    <name>config</name>
                     <description>Enter configuration mode</description>
                 </element>
             </elements>

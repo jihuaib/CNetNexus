@@ -113,7 +113,8 @@ static void handle_tab_completion(uint32_t client_fd, nn_cli_session_t *session,
 
     // Get all matches for the last token
     nn_cli_tree_node_t *matches[50];
-    uint32_t num_matches = nn_cli_tree_match_command_get_matches(session->current_view->cmd_tree, line_buffer, matches, 50);
+    uint32_t num_matches =
+        nn_cli_tree_match_command_get_matches(session->current_view->cmd_tree, line_buffer, matches, 50);
 
     // Check if we have a trailing space
     uint32_t has_trailing_space = (*line_pos > 0 && line_buffer[*line_pos - 1] == ' ');
@@ -122,12 +123,12 @@ static void handle_tab_completion(uint32_t client_fd, nn_cli_session_t *session,
     {
         // Single match - show on new line
         nn_cli_tree_node_t *match = matches[0];
-        
+
         send_message(client_fd, "\r\n");
 
         // Redisplay prompt and current input
         send_prompt(client_fd, session);
-        
+
         if (match->type == NN_CLI_NODE_COMMAND)
         {
             // KEYWORD: Auto-complete
@@ -154,7 +155,7 @@ static void handle_tab_completion(uint32_t client_fd, nn_cli_session_t *session,
                     line_buffer[*line_pos] = ' ';
                     (*line_pos)++;
                 }
-                
+
                 line_buffer[*line_pos] = '\0';
             }
         }
@@ -167,7 +168,7 @@ static void handle_tab_completion(uint32_t client_fd, nn_cli_session_t *session,
                 line_buffer[*line_pos] = '\0';
             }
         }
-        
+
         send_message(client_fd, line_buffer);
     }
     else if (num_matches > 1)
@@ -281,8 +282,7 @@ static void handle_help_request(uint32_t client_fd, nn_cli_session_t *session, c
                 {
                     if (matches[i]->type == NN_CLI_NODE_COMMAND && matches[i]->name && matches[i]->description)
                     {
-                        snprintf(buffer, sizeof(buffer), "  %-25s - %s\r\n", matches[i]->name,
-                                 matches[i]->description);
+                        snprintf(buffer, sizeof(buffer), "  %-25s - %s\r\n", matches[i]->name, matches[i]->description);
                         send_message(client_fd, buffer);
                     }
                 }
@@ -505,7 +505,7 @@ void process_command(uint32_t client_fd, const char *cmd_line, nn_cli_session_t 
     if (node && node->callback)
     {
         // Handle view-switching commands
-        if (strcmp(trimmed, "configure") == NN_ERRCODE_SUCCESS)
+        if (strcmp(trimmed, "config") == NN_ERRCODE_SUCCESS)
         {
             nn_cli_view_node_t *config_view = nn_cli_view_find_by_name(g_view_tree.root, "config");
             if (config_view)

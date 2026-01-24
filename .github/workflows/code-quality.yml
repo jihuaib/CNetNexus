@@ -1,0 +1,89 @@
+name: Code Quality Checks
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+jobs:
+  clang-format:
+    name: Check Code Formatting
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install clang-format
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang-format
+    
+    - name: Check code formatting
+      run: |
+        FAILED=0
+        while IFS= read -r file; do
+          if ! clang-format --dry-run --Werror "$file" 2>/dev/null; then
+            echo "❌ Format issues in: $file"
+            FAILED=1
+          fi
+        done < <(find src include -name '*.c' -o -name '*.h')
+        
+        if [ $FAILED -eq 1 ]; then
+          echo ""
+          echo "Code formatting issues found. Please run: ./scripts/format-code.sh"
+          exit 1
+        fi
+
+  clang-tidy:
+    name: Static Analysis
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libglib2.0-dev libxml2-dev clang-tidy
+    
+    - name: Configure CMake
+      run: cmake -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+    
+    - name: Run clang-tidy
+      run: |
+        ERROR_COUNT=0
+        WARNING_COUNT=0
+        
+        echo "Running clang-tidy analysis..."
+        TIDY_OUTPUT=$(mktemp)
+        
+        find src include \( -name '*.c' -o -name '*.h' \) | while read file; do
+          echo "Analyzing: $file"
+          clang-tidy -p build "$file" 2>&1 | tee -a "$TIDY_OUTPUT" || true
+        done
+        
+        # Count errors and warnings
+        ERROR_COUNT=$(grep -c "error:" "$TIDY_OUTPUT" || echo "0")
+        WARNING_COUNT=$(grep -c "warning:" "$TIDY_OUTPUT" || echo "0")
+        
+        echo ""
+        echo "Analysis Results:"
+        echo "  Errors: $ERROR_COUNT"
+        echo "  Warnings: $WARNING_COUNT"
+        
+        if [ "$ERROR_COUNT" -gt 0 ]; then
+          echo ""
+          echo "❌ Static analysis FAILED - Errors found:"
+          grep "error:" "$TIDY_OUTPUT" | head -20
+          exit 1
+        elif [ "$WARNING_COUNT" -gt 0 ]; then
+          echo ""
+          echo "⚠️  Static analysis completed with warnings"
+          grep "warning:" "$TIDY_OUTPUT" | head -20
+          # Don't fail on warnings
+        else
+          echo "✅ Static analysis PASSED"
+        fi
+        
+        rm -f "$TIDY_OUTPUT"

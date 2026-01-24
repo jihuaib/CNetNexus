@@ -9,7 +9,7 @@
 // Element types
 typedef enum
 {
-    ELEMENT_TYPE_KEYWORD,  // Fixed keyword (e.g., "show", "configure")
+    ELEMENT_TYPE_KEYWORD,  // Fixed keyword (e.g., "show", "config")
     ELEMENT_TYPE_PARAMETER // Variable parameter (e.g., <as-number>, <ip-address>)
 } element_type_t;
 

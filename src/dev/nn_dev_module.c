@@ -86,7 +86,8 @@ int32_t nn_dev_init_all_modules(void)
 
     // Iterate through all modules using GHashTable iterator
     GHashTableIter iter;
-    gpointer key, value;
+    gpointer key;
+    gpointer value;
 
     g_hash_table_iter_init(&iter, g_module_registry);
     while (g_hash_table_iter_next(&iter, &key, &value))
@@ -131,7 +132,8 @@ void nn_cleanup_all_modules(void)
 
     // Cleanup all modules using iterator
     GHashTableIter iter;
-    gpointer key, value;
+    gpointer key;
+    gpointer value;
 
     g_hash_table_iter_init(&iter, g_module_registry);
     while (g_hash_table_iter_next(&iter, &key, &value))

@@ -48,26 +48,31 @@ struct nn_cli_tree_node
 
 // Function prototypes
 nn_cli_tree_node_t *nn_cli_tree_create_node(const char *name, const char *description, nn_cli_node_type_t type);
+
 void nn_cli_tree_add_child(nn_cli_tree_node_t *parent, nn_cli_tree_node_t *child);
+
 nn_cli_tree_node_t *nn_cli_tree_find_child(nn_cli_tree_node_t *parent, const char *name);
-uint32_t nn_cli_tree_find_partial_matches(nn_cli_tree_node_t *parent, const char *partial, nn_cli_tree_node_t **matches,
-                                          uint32_t max_matches);
+
 void nn_cli_tree_set_callback(nn_cli_tree_node_t *node, nn_cli_callback_t callback);
+
 void nn_cli_tree_set_module_name(nn_cli_tree_node_t *node, const char *module_name);
+
 void nn_cli_tree_set_param_type(nn_cli_tree_node_t *node, nn_cli_param_type_t *param_type);
+
 void nn_cli_tree_free(nn_cli_tree_node_t *root);
+
 nn_cli_tree_node_t *nn_cli_tree_clone(nn_cli_tree_node_t *node); // Clone a tree node and its children
 
 // Command matching
 nn_cli_tree_node_t *nn_cli_tree_find_child_input_token(nn_cli_tree_node_t *parent, const char *token);
+
 uint32_t nn_cli_tree_find_children_input_token(nn_cli_tree_node_t *parent, const char *token,
                                                nn_cli_tree_node_t **matches, uint32_t max_matches);
+
 nn_cli_tree_node_t *nn_cli_tree_match_command(nn_cli_tree_node_t *root, const char *cmd_line);
+
 uint32_t nn_cli_tree_match_command_get_matches(nn_cli_tree_node_t *root, const char *cmd_line,
                                                nn_cli_tree_node_t **matches, uint32_t max_matches);
 void nn_cli_tree_print_help(nn_cli_tree_node_t *node, uint32_t client_fd);
-
-// View utilities
-const char *nn_cli_view_to_string(nn_cli_view_t view);
 
 #endif // nn_cli_TREE_H

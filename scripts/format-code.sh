@@ -1,12 +1,12 @@
 #!/bin/bash
-# Format all C source files with clang-format
+# Format all C source and header files using clang-format
 
 echo "Formatting C source files..."
 
-# Find and format all C source files
-find src include -name "*.c" -o -name "*.h" | while read file; do
+# Find all .c and .h files and format them
+find src include -name '*.c' -o -name '*.h' | while read -r file; do
     echo "Formatting: $file"
     clang-format -i "$file"
 done
 
-echo "Formatting complete!"
+echo "Done! All files have been formatted."

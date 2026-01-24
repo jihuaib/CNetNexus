@@ -6,7 +6,10 @@
 
 #include "nn_errcode.h"
 
-#define INITIAL_CHILDREN_CAPACITY 4
+enum
+{
+    INITIAL_CHILDREN_CAPACITY = 4
+};
 
 // Create a new view node
 nn_cli_view_node_t *nn_cli_view_create(const char *name, const char *prompt_template)

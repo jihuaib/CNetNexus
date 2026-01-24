@@ -15,8 +15,11 @@
 #include "nn_dev.h"
 #include "nn_errcode.h"
 
-#define CFG_PORT 3788
-#define CFG_BACKLOG 5
+enum
+{
+    CFG_PORT = 3788,
+    CFG_BACKLOG = 5
+};
 
 // Server state
 static int g_server_socket = -1;

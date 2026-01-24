@@ -64,7 +64,7 @@ Views and commands are defined in XML config files, not C code.
 
 ### Command Tree
 Commands are hierarchical trees where root-to-leaf paths form complete commands. Nodes are either:
-- `KEYWORD`: Fixed tokens (e.g., "show", "configure")
+- `KEYWORD`: Fixed tokens (e.g., "show", "config")
 - `ARGUMENT`: Variable parameters (e.g., `<hostname>`)
 
 ### Directory Structure
