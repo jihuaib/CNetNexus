@@ -1,4 +1,4 @@
-#include "nn_module_registry.h"
+#include "nn_dev.h"
 
 #include <pthread.h>
 #include <stdint.h>
@@ -13,7 +13,7 @@ static int g_bgp_running = 0;
 static nn_module_mq_t *g_bgp_mq = NULL;
 
 // Handle incoming message
-static void bgp_handle_message(nn_message_t *msg)
+static void bgp_handle_message(nn_dev_message_t *msg)
 {
     printf("[bgp] Received message: type=%s, len=%zu\n", msg->type, msg->data_len);
     
@@ -48,7 +48,7 @@ static void *bgp_worker_thread(void *arg)
         if (ret > 0)
         {
             // Process all pending messages
-            nn_message_t *msg;
+            nn_dev_message_t *msg;
             while ((msg = nn_mq_receive(mq)) != NULL)
             {
                 bgp_handle_message(msg);
@@ -83,7 +83,7 @@ static int32_t bgp_module_init(void)
     }
     
     // Register message queue with module
-    nn_module_t *self = nn_get_module("bgp");
+    nn_dev_module_t *self = nn_get_module("bgp");
     if (self)
     {
         nn_module_set_mq(self, g_bgp_mq);
@@ -117,5 +117,5 @@ static void bgp_module_cleanup(void)
 // Register BGP module using constructor attribute
 static void __attribute__((constructor)) register_bgp_module(void)
 {
-    nn_register_module("bgp", "../../src/modules/bgp/commands.xml", bgp_module_init, bgp_module_cleanup);
+    nn_dev_register_module(NN_MODULE_ID_CFG, "nn_bgp", bgp_module_init, bgp_module_cleanup);
 }

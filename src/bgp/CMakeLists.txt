@@ -1,10 +1,10 @@
 # BGP module sources
-set(BGP_MODULE_SOURCES
-    bgp_module.c
+set(NN_BGP_SOURCES
+    nn_bgp_main.c
 )
 
 # Create shared library for BGP module
-add_library(nn_bgp SHARED ${BGP_MODULE_SOURCES})
+add_library(nn_bgp SHARED ${NN_BGP_SOURCES})
 
 # Link against core library
 target_link_libraries(nn_bgp PRIVATE nn_core)

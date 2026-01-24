@@ -14,7 +14,7 @@ int nn_cli_dispatch_to_module(nn_cli_tree_node_t *node, const char *cmd_line, co
     }
 
     // Get the target module
-    nn_module_t *module = nn_get_module(node->module_name);
+    nn_dev_module_t *module = nn_get_module(node->module_name);
     if (!module)
     {
         fprintf(stderr, "[dispatch] Module '%s' not found\n", node->module_name);
@@ -47,7 +47,7 @@ int nn_cli_dispatch_to_module(nn_cli_tree_node_t *node, const char *cmd_line, co
     }
 
     // Create message
-    nn_message_t *msg = nn_message_create("command", msg_data, msg_len, free);
+    nn_dev_message_t *msg = nn_message_create("command", msg_data, msg_len, free);
     if (!msg)
     {
         free(msg_data);

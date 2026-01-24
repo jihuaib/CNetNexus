@@ -1,16 +1,16 @@
 # CLI library sources
-set(CFG_SOURCES
+set(NN_CFG_SOURCES
     nn_cli_handler.c
     nn_cli_tree.c
     nn_cli_view.c
     nn_cli_element.c
     nn_cli_xml_parser.c
     nn_cli_dispatch.c
-    cfg_module.c
+    nn_cfg_main.c
 )
 
 # Create shared library for CLI
-add_library(nn_cfg SHARED ${CFG_SOURCES})
+add_library(nn_cfg SHARED ${NN_CFG_SOURCES})
 
 # Include directories for CLI library
 target_include_directories(nn_cfg PUBLIC

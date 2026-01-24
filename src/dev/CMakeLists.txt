@@ -1,10 +1,10 @@
 # Dev module sources
-set(DEV_MODULE_SOURCES
-    dev_module.c
+set(NN_DEV_SOURCES
+    nn_dev_main.c
 )
 
 # Create shared library for dev module
-add_library(nn_dev SHARED ${DEV_MODULE_SOURCES})
+add_library(nn_dev SHARED ${NN_DEV_SOURCES})
 
 # Link against core library
 target_link_libraries(nn_dev PRIVATE nn_core)

@@ -1,4 +1,4 @@
-#include "nn_module_registry.h"
+#include "nn_dev.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -122,7 +122,7 @@ static int32_t cfg_module_init(void)
         g_hash_table_iter_init(&iter, module_registry);
         while (g_hash_table_iter_next(&iter, &key, &value))
         {
-            nn_module_t *module = (nn_module_t *)value;
+            nn_dev_module_t *module = (nn_dev_module_t *)value;
             if (module->xml_path)
             {
                 printf("[cfg] Loading commands from: %s\n", module->xml_path);
@@ -212,6 +212,5 @@ static void cfg_module_cleanup(void)
 // Register cfg module using constructor attribute
 static void __attribute__((constructor)) register_cfg_module(void)
 {
-    // Register with XML path so it's loaded in the common loop
-    nn_register_module("cfg", "../../src/modules/cfg/commands.xml", cfg_module_init, cfg_module_cleanup);
+    nn_dev_register_module(NN_MODULE_ID_CFG, "nn_cfg", cfg_module_init, cfg_module_cleanup);
 }

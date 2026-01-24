@@ -1,7 +1,7 @@
 # Build order: core first, then cfg, then other modules
-add_subdirectory(core)
-add_subdirectory(modules/cfg)
-add_subdirectory(modules)
+add_subdirectory(cfg)
+add_subdirectory(dev)
+add_subdirectory(bgp)
 
 # Create main executable
 add_executable(netnexus main.c)

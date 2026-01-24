@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<configuration module="dev">
+<configuration module_id="2">
     <!-- 命令组定义 -->
     <command_groups>
         <!-- 基础命令组 -->

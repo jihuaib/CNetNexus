@@ -1,4 +1,4 @@
-#include "nn_module_registry.h"
+#include "nn_dev.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -19,7 +19,7 @@ static int32_t dev_module_init(void)
     }
     
     // Register message queue with module
-    nn_module_t *self = nn_get_module("dev");
+    nn_dev_module_t *self = nn_get_module("dev");
     if (self)
     {
         nn_module_set_mq(self, mq);
@@ -38,5 +38,5 @@ static void dev_module_cleanup(void)
 // Register dev module using constructor attribute
 static void __attribute__((constructor)) register_dev_module(void)
 {
-    nn_register_module("dev", "../../src/modules/dev/commands.xml", dev_module_init, dev_module_cleanup);
+    nn_dev_register_module(NN_MODULE_ID_DEV, "nn_dev", dev_module_init, dev_module_cleanup);
 }

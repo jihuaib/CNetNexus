@@ -492,9 +492,8 @@ uint32_t nn_cli_xml_load_view_tree(const char *xml_file, nn_cli_view_tree_t *vie
     }
 
     // Extract module name from XML root element
-    // e.g., <configuration module="bgp">
     const char *module_name = NULL;
-    xmlChar *mod_attr = xmlGetProp(root_element, (const xmlChar *)"module");
+    xmlChar *mod_attr = xmlGetProp(root_element, (const xmlChar *)"module_id");
     if (mod_attr)
     {
         module_name = strdup((const char *)mod_attr);

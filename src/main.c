@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-#include "nn_module_registry.h"
+#include "nn_dev.h"
 
 // Signal handler for graceful shutdown
 static void signal_handler(int signum)

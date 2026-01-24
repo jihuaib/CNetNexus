@@ -2,7 +2,7 @@
 #define NN_CLI_DISPATCH_H
 
 #include "nn_cli_tree.h"
-#include "nn_module_registry.h"
+#include "nn_dev.h"
 
 // Dispatch command to module via message queue
 // If node has module_name set, sends a message to that module's queue
