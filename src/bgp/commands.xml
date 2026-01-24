@@ -1,26 +1,31 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <configuration module_id="3">
-    <!-- 视图定义 -->
+    <!-- View definitions -->
     <views>
         <view name="bgp">
             <template>&lt;{hostname}(config-bgp)&gt;</template>
         </view>
     </views>
 
-    <!-- 命令组定义 -->
+    <!-- Command group definitions -->
     <command_groups>
-        <!-- 配置命令组 -->
+        <!-- Configuration command group -->
         <group name="config">
             <elements>
                 <element id="1" type="keyword">
                     <name>bgp</name>
-                    <description>BGP协议</description>
+                    <description>BGP protocol configuration</description>
+                </element>
+                <element id="2" type="parameter">
+                    <name>&lt;as-number&gt;</name>
+                    <type>uint(1-63)</type>
+                    <description>BGP as-number</description>
                 </element>
             </elements>
             
             <commands>
                 <command>
-                    <expression>1</expression>
+                    <expression>1 2</expression>
                     <views>config</views>
                     <callback>cmd_bgp</callback>
                 </command>

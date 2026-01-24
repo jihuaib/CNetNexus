@@ -1,17 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <configuration module_id="2">
-    <!-- 命令组定义 -->
+    <!-- Command group definitions -->
     <command_groups>
-        <!-- 基础命令组 -->
+        <!-- Basic command group -->
         <group name="nn_dev_show">
             <elements>
                 <element id="1" type="keyword">
                     <name>show</name>
-                    <description>显示系统信息</description>
+                    <description>Display system information</description>
                 </element>
                 <element id="2" type="keyword">
                     <name>version</name>
-                    <description>版本信息</description>
+                    <description>Version information</description>
                 </element>
             </elements>
             
@@ -29,11 +29,12 @@
             <elements>
                 <element id="1" type="keyword">
                     <name>sysname</name>
-                    <description>设置系统名称</description>
+                    <description>Set system name</description>
                 </element>
                 <element id="2" type="parameter">
                     <name>&lt;hostname&gt;</name>
-                    <description>主机名(1-63字符)</description>
+                    <type>string(1-63)</type>
+                    <description>Hostname</description>
                 </element>
             </elements>
             

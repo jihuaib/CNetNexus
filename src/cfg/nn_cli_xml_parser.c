@@ -128,6 +128,18 @@ static nn_cli_tree_node_t *build_tree_from_expression(uint32_t *element_ids, uin
             nn_cli_tree_create_node(element->name, element->description,
                                     element->type == ELEMENT_TYPE_KEYWORD ? NN_CLI_NODE_COMMAND : NN_CLI_NODE_ARGUMENT);
 
+        // Set param_type for ARGUMENT nodes
+        if (element->type == ELEMENT_TYPE_PARAMETER && element->param_type)
+        {
+            // Clone the param_type from element to node
+            nn_cli_param_type_t *param_type_copy = NULL;
+            if (element->param_type->type_str)
+            {
+                param_type_copy = nn_cli_param_type_parse(element->param_type->type_str);
+            }
+            nn_cli_tree_set_param_type(node, param_type_copy);
+        }
+
         if (!root)
         {
             root = node;
@@ -169,10 +181,11 @@ static nn_cli_element_t *parse_element(xmlNode *element_node)
     xmlFree(id_str);
     xmlFree(type_str);
 
-    // Get name, description, range
+    // Get name, description, range, type (for parameters)
     char *name = NULL;
     char *description = NULL;
     char *range = NULL;
+    char *param_type_str = NULL;
 
     for (xmlNode *cur = element_node->children; cur; cur = cur->next)
     {
@@ -199,13 +212,30 @@ static nn_cli_element_t *parse_element(xmlNode *element_node)
             range = strdup((const char *)content);
             xmlFree(content);
         }
+        else if (xmlStrcmp(cur->name, (const xmlChar *)"type") == NN_ERRCODE_SUCCESS)
+        {
+            xmlChar *content = xmlNodeGetContent(cur);
+            param_type_str = strdup((const char *)content);
+            xmlFree(content);
+        }
     }
 
-    nn_cli_element_t *element = nn_cli_element_create(id, type, name, description, range);
+    nn_cli_element_t *element = NULL;
+
+    // If parameter type string is provided, use the new constructor
+    if (type == ELEMENT_TYPE_PARAMETER && param_type_str)
+    {
+        element = nn_cli_element_create_with_type(id, type, name, description, param_type_str);
+    }
+    else
+    {
+        element = nn_cli_element_create(id, type, name, description, range);
+    }
 
     g_free(name);
     g_free(description);
     g_free(range);
+    g_free(param_type_str);
 
     return element;
 }

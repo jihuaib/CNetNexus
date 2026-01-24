@@ -1,8 +1,11 @@
 #include "nn_cli_element.h"
 
 #include <glib.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "nn_cli_param_type.h"
 
 // Create a CLI element
 nn_cli_element_t *nn_cli_element_create(uint32_t id, element_type_t type, const char *name, const char *description,
@@ -15,6 +18,32 @@ nn_cli_element_t *nn_cli_element_create(uint32_t id, element_type_t type, const 
     element->name = name ? strdup(name) : NULL;
     element->description = description ? strdup(description) : NULL;
     element->range = range ? strdup(range) : NULL;
+    element->param_type = NULL;
+
+    return element;
+}
+
+// Create a CLI element with type string parsing
+nn_cli_element_t *nn_cli_element_create_with_type(uint32_t id, element_type_t type, const char *name,
+                                                  const char *description, const char *type_str)
+{
+    nn_cli_element_t *element = (nn_cli_element_t *)g_malloc(sizeof(nn_cli_element_t));
+
+    element->id = id;
+    element->type = type;
+    element->name = name ? strdup(name) : NULL;
+    element->description = description ? strdup(description) : NULL;
+    element->range = NULL;
+
+    // Parse type string to create param_type
+    if (type == ELEMENT_TYPE_PARAMETER && type_str)
+    {
+        element->param_type = nn_cli_param_type_parse(type_str);
+    }
+    else
+    {
+        element->param_type = NULL;
+    }
 
     return element;
 }
@@ -30,6 +59,12 @@ void nn_cli_element_free(nn_cli_element_t *element)
     g_free(element->name);
     g_free(element->description);
     g_free(element->range);
+
+    if (element->param_type)
+    {
+        nn_cli_param_type_free(element->param_type);
+    }
+
     g_free(element);
 }
 
@@ -98,4 +133,32 @@ void nn_cli_group_free(nn_cli_command_group_t *group)
     g_free(group->elements);
     g_free(group->name);
     g_free(group);
+}
+
+// Validate a parameter value against element's type definition
+bool nn_cli_element_validate_param(nn_cli_element_t *element, const char *value, char *error_msg,
+                                   uint32_t error_msg_size)
+{
+    if (!element || !value)
+    {
+        if (error_msg && error_msg_size > 0)
+        {
+            snprintf(error_msg, error_msg_size, "Invalid element or value");
+        }
+        return false;
+    }
+
+    // Keywords don't need validation
+    if (element->type == ELEMENT_TYPE_KEYWORD)
+    {
+        return true;
+    }
+
+    // If no param_type defined, accept any value
+    if (!element->param_type)
+    {
+        return true;
+    }
+
+    return nn_cli_param_type_validate(element->param_type, value, error_msg, error_msg_size);
 }

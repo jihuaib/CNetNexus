@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 #include "nn_cli_dispatch.h"
+#include "nn_cli_param_type.h"
 #include "nn_cli_tree.h"
 #include "nn_cli_xml_parser.h"
 #include "nn_errcode.h"
@@ -98,6 +99,230 @@ void send_prompt(uint32_t client_fd, nn_cli_session_t *session)
 {
     send_message(client_fd, session->prompt);
     send_message(client_fd, " ");
+}
+
+// Handle TAB key auto-completion
+static void handle_tab_completion(uint32_t client_fd, nn_cli_session_t *session, char *line_buffer, uint32_t *line_pos)
+{
+    if (!session->current_view || !session->current_view->cmd_tree)
+    {
+        return;
+    }
+
+    line_buffer[*line_pos] = '\0';
+
+    // Get all matches for the last token
+    nn_cli_tree_node_t *matches[50];
+    uint32_t num_matches = nn_cli_tree_match_command_get_matches(session->current_view->cmd_tree, line_buffer, matches, 50);
+
+    // Check if we have a trailing space
+    uint32_t has_trailing_space = (*line_pos > 0 && line_buffer[*line_pos - 1] == ' ');
+
+    if (num_matches == 1)
+    {
+        // Single match - show on new line
+        nn_cli_tree_node_t *match = matches[0];
+        
+        send_message(client_fd, "\r\n");
+
+        // Redisplay prompt and current input
+        send_prompt(client_fd, session);
+        
+        if (match->type == NN_CLI_NODE_COMMAND)
+        {
+            // KEYWORD: Auto-complete
+            if (!has_trailing_space)
+            {
+                // Find the last token in line_buffer
+                char *last_space = strrchr(line_buffer, ' ');
+                char *last_token_start = last_space ? last_space + 1 : line_buffer;
+
+                // Calculate new line position
+                *line_pos = last_token_start - line_buffer;
+
+                // Write the complete keyword
+                const char *match_name = match->name;
+                for (uint32_t i = 0; match_name[i] && *line_pos < MAX_CMD_LEN - 1; i++)
+                {
+                    line_buffer[*line_pos] = match_name[i];
+                    (*line_pos)++;
+                }
+
+                // Add space after keyword
+                if (*line_pos < MAX_CMD_LEN - 1)
+                {
+                    line_buffer[*line_pos] = ' ';
+                    (*line_pos)++;
+                }
+                
+                line_buffer[*line_pos] = '\0';
+            }
+        }
+        else if (match->type == NN_CLI_NODE_ARGUMENT)
+        {
+            // ARGUMENT: Remove trailing space if exists
+            if (has_trailing_space)
+            {
+                (*line_pos)--;
+                line_buffer[*line_pos] = '\0';
+            }
+        }
+        
+        send_message(client_fd, line_buffer);
+    }
+    else if (num_matches > 1)
+    {
+        // Multiple matches - Show all options on new lines
+        send_message(client_fd, "\r\n");
+        for (uint32_t i = 0; i < num_matches; i++)
+        {
+            char option[256];
+            char name_display[128];
+
+            // Format name based on node type
+            if (matches[i]->type == NN_CLI_NODE_ARGUMENT && matches[i]->param_type && matches[i]->param_type->type_str)
+            {
+                // ARGUMENT: Display as <type(range)>
+                snprintf(name_display, sizeof(name_display), "<%s>", matches[i]->param_type->type_str);
+            }
+            else if (matches[i]->name)
+            {
+                // COMMAND or ARGUMENT without param_type: Display name as-is
+                strncpy(name_display, matches[i]->name, sizeof(name_display) - 1);
+                name_display[sizeof(name_display) - 1] = '\0';
+            }
+            else
+            {
+                // No name, skip
+                continue;
+            }
+
+            snprintf(option, sizeof(option), "  %-25s - %s\r\n", name_display,
+                     matches[i]->description ? matches[i]->description : "");
+            send_message(client_fd, option);
+        }
+        send_prompt(client_fd, session);
+        if (has_trailing_space)
+        {
+            (*line_pos)--;
+            line_buffer[*line_pos] = '\0';
+        }
+        send_message(client_fd, line_buffer);
+    }
+    else
+    {
+        send_message(client_fd, "\r\n");
+        send_prompt(client_fd, session);
+        send_message(client_fd, line_buffer);
+    }
+}
+
+// Handle ? key for help
+static void handle_help_request(uint32_t client_fd, nn_cli_session_t *session, char *line_buffer, uint32_t line_pos)
+{
+    if (!session->current_view || !session->current_view->cmd_tree)
+    {
+        return;
+    }
+
+    line_buffer[line_pos] = '\0';
+    send_message(client_fd, "\r\n");
+
+    // Check if we have a trailing space
+    uint32_t has_trailing_space = (line_pos > 0 && line_buffer[line_pos - 1] == ' ');
+    char buffer[256];
+
+    if (has_trailing_space)
+    {
+        // Case: "xx ?" - Show next token's children
+        nn_cli_tree_node_t *context = nn_cli_tree_match_command(session->current_view->cmd_tree, line_buffer);
+
+        if (context && context != session->current_view->cmd_tree)
+        {
+            // Found valid context, show its children
+            nn_cli_tree_print_help(context, client_fd);
+        }
+        else
+        {
+            // Command not found
+            send_message(client_fd, "Error: Invalid command\r\n");
+        }
+    }
+    else
+    {
+        // Case: "xx?" - Show matching keywords or argument help
+        nn_cli_tree_node_t *matches[50];
+        uint32_t num_matches =
+            nn_cli_tree_match_command_get_matches(session->current_view->cmd_tree, line_buffer, matches, 50);
+        printf("%u\r\n", num_matches);
+
+        if (num_matches > 0)
+        {
+            // Check if all matches are KEYWORD or if there's an ARGUMENT
+            uint32_t has_keyword = 0;
+            uint32_t has_argument = 0;
+
+            for (uint32_t i = 0; i < num_matches; i++)
+            {
+                if (matches[i]->type == NN_CLI_NODE_COMMAND)
+                {
+                    has_keyword = 1;
+                }
+                else if (matches[i]->type == NN_CLI_NODE_ARGUMENT)
+                {
+                    has_argument = 1;
+                }
+            }
+
+            if (has_keyword)
+            {
+                // Show all matching KEYWORD nodes
+                for (uint32_t i = 0; i < num_matches; i++)
+                {
+                    if (matches[i]->type == NN_CLI_NODE_COMMAND && matches[i]->name && matches[i]->description)
+                    {
+                        snprintf(buffer, sizeof(buffer), "  %-25s - %s\r\n", matches[i]->name,
+                                 matches[i]->description);
+                        send_message(client_fd, buffer);
+                    }
+                }
+                send_message(client_fd, "\r\n");
+            }
+            else if (has_argument)
+            {
+                // Show ARGUMENT help (validation passed)
+                nn_cli_tree_node_t *arg = matches[0];
+
+                char name_display[128];
+                if (arg->param_type && arg->param_type->type_str)
+                {
+                    snprintf(name_display, sizeof(name_display), "<%s>", arg->param_type->type_str);
+                }
+                else if (arg->name)
+                {
+                    strncpy(name_display, arg->name, sizeof(name_display) - 1);
+                    name_display[sizeof(name_display) - 1] = '\0';
+                }
+                else
+                {
+                    strcpy(name_display, "<parameter>");
+                }
+
+                snprintf(buffer, sizeof(buffer), "  %-25s - %s\r\n", name_display,
+                         arg->description ? arg->description : "");
+                send_message(client_fd, buffer);
+                send_message(client_fd, "\r\n");
+            }
+        }
+        else
+        {
+            // No matches found - command error
+            send_message(client_fd, "Error: Invalid command\r\n");
+        }
+    }
+
+    send_prompt(client_fd, session);
+    send_message(client_fd, line_buffer);
 }
 
 // Trim whitespace from both ends of a string
@@ -275,9 +500,7 @@ void process_command(uint32_t client_fd, const char *cmd_line, nn_cli_session_t 
         return;
     }
 
-    // Match command in tree
-    char *remaining_args = NULL;
-    nn_cli_tree_node_t *node = nn_cli_tree_match_command(session->current_view->cmd_tree, trimmed, &remaining_args);
+    nn_cli_tree_node_t *node = nn_cli_tree_match_command(session->current_view->cmd_tree, trimmed);
 
     if (node && node->callback)
     {
@@ -306,19 +529,18 @@ void process_command(uint32_t client_fd, const char *cmd_line, nn_cli_session_t 
             else
             {
                 // Root view - actually exit
-                node->callback(client_fd, remaining_args);
-                g_free(remaining_args);
+                node->callback(client_fd, NULL);
                 return;
             }
         }
 
         // Dispatch to module if associated
-        nn_cli_dispatch_to_module(node, trimmed, remaining_args);
+        nn_cli_dispatch_to_module(node, trimmed, NULL);
 
         // Execute callback
         if (strcmp(trimmed, "exit") != NN_ERRCODE_SUCCESS || !session->current_view->parent)
         {
-            node->callback(client_fd, remaining_args);
+            node->callback(client_fd, NULL);
 
             // Update prompt after command execution (in case hostname changed)
             update_prompt(session);
@@ -337,8 +559,6 @@ void process_command(uint32_t client_fd, const char *cmd_line, nn_cli_session_t 
         snprintf(error_msg, sizeof(error_msg), "\r\nUnknown command: %s\r\n", trimmed);
         send_message(client_fd, error_msg);
     }
-
-    g_free(remaining_args);
 }
 
 // Cleanup CLI trees
@@ -378,7 +598,7 @@ void handle_client(uint32_t client_fd)
     // Send welcome message
     send_message(client_fd, "\r\n");
     send_message(client_fd, "Welcome to NetNexus CLI\r\n");
-    send_message(client_fd, "Type 'help' for available commands\r\n");
+    send_message(client_fd, "Type '?' for available commands\r\n");
     send_message(client_fd, "\r\n");
 
     // Send initial prompt
@@ -427,180 +647,12 @@ void handle_client(uint32_t client_fd)
         // Handle TAB
         else if (c == '\t')
         {
-            line_buffer[line_pos] = '\0';
-
-            if (session.current_view && session.current_view->cmd_tree)
-            {
-                // Try to match the current input to find context
-                char *remaining = NULL;
-                nn_cli_tree_node_t *context =
-                    nn_cli_tree_match_command(session.current_view->cmd_tree, line_buffer, &remaining);
-
-                // Determine what to complete
-                nn_cli_tree_node_t *search_root = NULL;
-                char *search_prefix = "";
-
-                // Check if we have a trailing space - indicates we want subcommands
-                uint32_t has_trailing_space = (line_pos > 0 && line_buffer[line_pos - 1] == ' ');
-
-                if (context && context != session.current_view->cmd_tree && has_trailing_space)
-                {
-                    // Matched a command with trailing space - show its children
-                    search_root = context;
-                    search_prefix = "";
-                }
-                else if (context && context != session.current_view->cmd_tree && remaining && strlen(remaining) > 0)
-                {
-                    // Matched a command with remaining text - complete from its children
-                    search_root = context;
-                    search_prefix = remaining;
-                }
-                else
-                {
-                    // No match or at root - complete from root
-                    search_root = session.current_view->cmd_tree;
-                    search_prefix = line_buffer;
-
-                    // Trim trailing space from prefix
-                    if (has_trailing_space && strlen(search_prefix) > 0)
-                    {
-                        char *temp = strdup(search_prefix);
-                        temp[strlen(temp) - 1] = '\0';
-                        search_prefix = temp;
-                    }
-                }
-
-                // Find partial matches
-                nn_cli_tree_node_t *matches[50];
-                uint32_t num_matches = 0;
-
-                if (search_root)
-                {
-                    for (uint32_t i = 0; i < search_root->num_children && num_matches < 50; i++)
-                    {
-                        nn_cli_tree_node_t *child = search_root->children[i];
-                        if (child->name)
-                        {
-                            // Check if child name starts with prefix
-                            uint32_t prefix_len = strlen(search_prefix);
-                            if (prefix_len == NN_ERRCODE_SUCCESS ||
-                                strncmp(child->name, search_prefix, prefix_len) == NN_ERRCODE_SUCCESS)
-                            {
-                                matches[num_matches++] = child;
-                            }
-                        }
-                    }
-                }
-
-                if (num_matches == 1 && !has_trailing_space)
-                {
-                    // Single match without trailing space - complete it
-                    const char *match_name = matches[0]->name;
-                    uint32_t prefix_len = strlen(search_prefix);
-
-                    // Add the remaining characters
-                    for (uint32_t i = prefix_len; match_name[i] && line_pos < MAX_CMD_LEN - 1; i++)
-                    {
-                        line_buffer[line_pos++] = match_name[i];
-                        write(client_fd, &match_name[i], 1);
-                    }
-
-                    // Add space after completion
-                    if (line_pos < MAX_CMD_LEN - 1)
-                    {
-                        line_buffer[line_pos++] = ' ';
-                        write(client_fd, " ", 1);
-                    }
-                }
-                else if (num_matches == 1 && has_trailing_space)
-                {
-                    // Single match with trailing space - just show hint
-                    send_message(client_fd, "\r\n");
-                    char option[256];
-                    snprintf(option, sizeof(option), "  %-20s - %s\r\n", matches[0]->name,
-                             matches[0]->description ? matches[0]->description : "");
-                    send_message(client_fd, option);
-                    send_prompt(client_fd, &session);
-                    send_message(client_fd, line_buffer);
-                }
-                else if (num_matches > 1)
-                {
-                    // Multiple matches - show options
-                    send_message(client_fd, "\r\n");
-                    for (uint32_t i = 0; i < num_matches; i++)
-                    {
-                        char option[256];
-                        snprintf(option, sizeof(option), "  %-20s - %s\r\n", matches[i]->name,
-                                 matches[i]->description ? matches[i]->description : "");
-                        send_message(client_fd, option);
-                    }
-                    send_prompt(client_fd, &session);
-                    send_message(client_fd, line_buffer);
-                }
-                else if (num_matches == NN_ERRCODE_SUCCESS && search_root && search_root->num_children > 0)
-                {
-                    // No matches but context has children - show all children
-                    send_message(client_fd, "\r\n");
-                    for (uint32_t i = 0; i < search_root->num_children; i++)
-                    {
-                        char option[256];
-                        snprintf(option, sizeof(option), "  %-20s - %s\r\n", search_root->children[i]->name,
-                                 search_root->children[i]->description ? search_root->children[i]->description : "");
-                        send_message(client_fd, option);
-                    }
-                    send_prompt(client_fd, &session);
-                    send_message(client_fd, line_buffer);
-                }
-
-                g_free(remaining);
-            }
+            handle_tab_completion(client_fd, &session, line_buffer, &line_pos);
         }
         // Handle ?
         else if (c == '?')
         {
-            line_buffer[line_pos] = '\0';
-            send_message(client_fd, "\r\n");
-
-            if (session.current_view && session.current_view->cmd_tree)
-            {
-                // Try to match the current input to find context (same as TAB)
-                char *remaining = NULL;
-                nn_cli_tree_node_t *context =
-                    nn_cli_tree_match_command(session.current_view->cmd_tree, line_buffer, &remaining);
-
-                // Determine what to show
-                nn_cli_tree_node_t *help_root = NULL;
-
-                // Check if we have a trailing space
-                uint32_t has_trailing_space = (line_pos > 0 && line_buffer[line_pos - 1] == ' ');
-
-                if (context && context != session.current_view->cmd_tree && has_trailing_space)
-                {
-                    // Matched a command with trailing space - show its children
-                    help_root = context;
-                }
-                else if (context && context != session.current_view->cmd_tree && remaining && strlen(remaining) > 0)
-                {
-                    // Matched a command with remaining text - show its children
-                    help_root = context;
-                }
-                else
-                {
-                    // No match or at root - show root commands
-                    help_root = session.current_view->cmd_tree;
-                }
-
-                // Print help for the determined context
-                if (help_root)
-                {
-                    nn_cli_tree_print_help(help_root, client_fd);
-                }
-
-                g_free(remaining);
-            }
-
-            send_prompt(client_fd, &session);
-            send_message(client_fd, line_buffer);
+            handle_help_request(client_fd, &session, line_buffer, line_pos);
         }
         // Regular character
         else if (line_pos < MAX_CMD_LEN - 1 && c >= 32 && c < 127)

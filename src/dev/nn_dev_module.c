@@ -58,27 +58,6 @@ nn_dev_module_t *nn_get_module(const char *name)
     return (nn_dev_module_t *)g_hash_table_lookup(g_module_registry, name);
 }
 
-// Helper: Set module message queue
-void nn_module_set_mq(nn_dev_module_t *module, nn_dev_module_mq_t *mq)
-{
-    if (module)
-    {
-        module->mq = mq;
-    }
-}
-
-// Helper: Get module message queue
-nn_dev_module_mq_t *nn_module_get_mq(nn_dev_module_t *module)
-{
-    return module ? module->mq : NULL;
-}
-
-// Get the global module registry (for cfg module to iterate)
-GHashTable *nn_get_module_registry(void)
-{
-    return g_module_registry;
-}
-
 // Request shutdown
 void nn_request_shutdown(void)
 {

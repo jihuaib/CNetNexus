@@ -1,7 +1,10 @@
 #ifndef NN_CLI_ELEMENT_H
 #define NN_CLI_ELEMENT_H
 
+#include <stdbool.h>
 #include <stdint.h>
+
+#include "nn_cli_param_type.h"
 
 // Element types
 typedef enum
@@ -13,11 +16,12 @@ typedef enum
 // CLI element definition
 typedef struct
 {
-    uint32_t id;         // Unique element ID
-    element_type_t type; // Keyword or parameter
-    char *name;          // Element name
-    char *description;   // Help text
-    char *range;         // For parameters: validation range (e.g., "1-65535")
+    uint32_t id;                     // Unique element ID
+    element_type_t type;             // Keyword or parameter
+    char *name;                      // Element name
+    char *description;               // Help text
+    char *range;                     // For parameters: validation range (e.g., "1-65535") - deprecated
+    nn_cli_param_type_t *param_type; // Parameter type with validation (for ELEMENT_TYPE_PARAMETER)
 } nn_cli_element_t;
 
 // Command group
@@ -31,7 +35,13 @@ typedef struct
 // Function prototypes
 nn_cli_element_t *nn_cli_element_create(uint32_t id, element_type_t type, const char *name, const char *description,
                                         const char *range);
+nn_cli_element_t *nn_cli_element_create_with_type(uint32_t id, element_type_t type, const char *name,
+                                                  const char *description, const char *type_str);
 void nn_cli_element_free(nn_cli_element_t *element);
+
+// Parameter validation
+bool nn_cli_element_validate_param(nn_cli_element_t *element, const char *value, char *error_msg,
+                                   uint32_t error_msg_size);
 
 nn_cli_command_group_t *nn_cli_group_create(const char *name);
 void nn_cli_group_add_element(nn_cli_command_group_t *group, nn_cli_element_t *element);

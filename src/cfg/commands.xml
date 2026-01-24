@@ -1,21 +1,21 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <configuration module_id="1">
-    <!-- 命令组定义 -->
+    <!-- Command group definitions -->
     <command_groups>
-        <!-- 基础命令组 -->
+        <!-- Basic command group -->
         <group name="nn_cfg_show">
             <elements>
                 <element id="1" type="keyword">
                     <name>show</name>
-                    <description>显示系统信息</description>
+                    <description>Display system information</description>
                 </element>
                 <element id="2" type="keyword">
                     <name>cli</name>
-                    <description>CLI信息</description>
+                    <description>CLI information</description>
                 </element>
                 <element id="3" type="keyword">
                     <name>tree</name>
-                    <description>命令树结构</description>
+                    <description>Command tree structure</description>
                 </element>
             </elements>
 
@@ -32,11 +32,11 @@
             <elements>
                 <element id="1" type="keyword">
                     <name>quit</name>
-                    <description>退出</description>
+                    <description>Exit current mode</description>
                 </element>
                 <element id="2" type="keyword">
                     <name>configure</name>
-                    <description>进入配置模式</description>
+                    <description>Enter configuration mode</description>
                 </element>
             </elements>
 

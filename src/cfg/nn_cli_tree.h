@@ -27,14 +27,18 @@ typedef enum
 // Command callback function type
 typedef void (*nn_cli_callback_t)(uint32_t client_fd, const char *args);
 
+// Forward declaration
+typedef struct nn_cli_param_type nn_cli_param_type_t;
+
 // CLI tree node structure
 struct nn_cli_tree_node
 {
-    char *name;                 // Node name/keyword
-    char *description;          // Help text
-    nn_cli_node_type_t type;    // Node type
-    nn_cli_callback_t callback; // Command callback (NULL for intermediate nodes)
-    char *module_name;          // Associated module name for message dispatch (optional)
+    char *name;                      // Node name/keyword
+    char *description;               // Help text
+    nn_cli_node_type_t type;         // Node type
+    nn_cli_callback_t callback;      // Command callback (NULL for intermediate nodes)
+    char *module_name;               // Associated module name for message dispatch (optional)
+    nn_cli_param_type_t *param_type; // Parameter type for validation (only for ARGUMENT nodes)
 
     // Children nodes
     nn_cli_tree_node_t **children; // Array of child nodes
@@ -50,13 +54,18 @@ uint32_t nn_cli_tree_find_partial_matches(nn_cli_tree_node_t *parent, const char
                                           uint32_t max_matches);
 void nn_cli_tree_set_callback(nn_cli_tree_node_t *node, nn_cli_callback_t callback);
 void nn_cli_tree_set_module_name(nn_cli_tree_node_t *node, const char *module_name);
+void nn_cli_tree_set_param_type(nn_cli_tree_node_t *node, nn_cli_param_type_t *param_type);
 void nn_cli_tree_free(nn_cli_tree_node_t *root);
 nn_cli_tree_node_t *nn_cli_tree_clone(nn_cli_tree_node_t *node); // Clone a tree node and its children
 
 // Command matching
-nn_cli_tree_node_t *nn_cli_tree_match_command(nn_cli_tree_node_t *root, const char *cmd_line, char **remaining_args);
+nn_cli_tree_node_t *nn_cli_tree_find_child_input_token(nn_cli_tree_node_t *parent, const char *token);
+uint32_t nn_cli_tree_find_children_input_token(nn_cli_tree_node_t *parent, const char *token,
+                                               nn_cli_tree_node_t **matches, uint32_t max_matches);
+nn_cli_tree_node_t *nn_cli_tree_match_command(nn_cli_tree_node_t *root, const char *cmd_line);
+uint32_t nn_cli_tree_match_command_get_matches(nn_cli_tree_node_t *root, const char *cmd_line,
+                                               nn_cli_tree_node_t **matches, uint32_t max_matches);
 void nn_cli_tree_print_help(nn_cli_tree_node_t *node, uint32_t client_fd);
-void nn_cli_tree_print_structure(nn_cli_tree_node_t *node, uint32_t client_fd, uint32_t indent_level);
 
 // View utilities
 const char *nn_cli_view_to_string(nn_cli_view_t view);

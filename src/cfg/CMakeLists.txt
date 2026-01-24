@@ -4,6 +4,7 @@ set(NN_CFG_SOURCES
     nn_cli_tree.c
     nn_cli_view.c
     nn_cli_element.c
+    nn_cli_param_type.c
     nn_cli_xml_parser.c
     nn_cli_dispatch.c
     nn_cfg_registry.c
