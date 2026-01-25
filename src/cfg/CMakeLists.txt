@@ -17,12 +17,13 @@ add_library(nn_cfg SHARED ${NN_CFG_SOURCES})
 # Include directories for CLI library
 target_include_directories(nn_cfg PUBLIC
     .
-    ../../../include
+    ${PROJECT_SOURCE_DIR}/include
     ${LIBXML2_INCLUDE_DIR}
 )
 
 # Link dependencies
 target_link_libraries(nn_cfg PUBLIC
+    nn_dev
     ${LIBXML2_LIBRARIES}
     ${GLIB_LIBRARIES}
     Threads::Threads

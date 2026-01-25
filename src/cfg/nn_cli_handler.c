@@ -36,8 +36,8 @@ void nn_cli_set_hostname(const char *hostname)
     }
 }
 
-// Send a message to the client
-void send_message(uint32_t client_fd, const char *message)
+// Send a message to the client (must be null-terminated)
+void nn_cfg_send_message(uint32_t client_fd, const char *message)
 {
     if (message)
     {
@@ -45,60 +45,70 @@ void send_message(uint32_t client_fd, const char *message)
     }
 }
 
-// Update session prompt based on current view
-static void update_prompt(nn_cli_session_t *session)
+// Send raw data to the client with explicit length
+void nn_cfg_send_data(uint32_t client_fd, const void *data, size_t len)
+{
+    if (data && len > 0)
+    {
+        write(client_fd, data, len);
+    }
+}
+
+// Helper: Replace {hostname} in template and store in session prompt
+static void replace_hostname_in_prompt(nn_cli_session_t *session, const char *template)
+{
+    char temp[128] = {0};
+    const char *hostname_placeholder = "{hostname}";
+    const char *pos = strstr(template, hostname_placeholder);
+
+    if (pos)
+    {
+        size_t prefix_len = pos - template;
+        size_t placeholder_len = strlen(hostname_placeholder);
+
+        strncpy(temp, template, prefix_len);
+        temp[prefix_len] = '\0';
+        strncat(temp, nn_cli_get_hostname(), sizeof(temp) - strlen(temp) - 1);
+        strncat(temp, pos + placeholder_len, sizeof(temp) - strlen(temp) - 1);
+    }
+    else
+    {
+        strncpy(temp, template, sizeof(temp) - 1);
+        temp[sizeof(temp) - 1] = '\0';
+    }
+
+    strncpy(session->prompt, temp, sizeof(session->prompt) - 1);
+    session->prompt[sizeof(session->prompt) - 1] = '\0';
+}
+
+// Update session prompt based on current view (for views without module-specific placeholders)
+void update_prompt(nn_cli_session_t *session)
 {
     if (!session || !session->current_view)
     {
         return;
     }
 
-    if (session->current_view->prompt_template)
+    replace_hostname_in_prompt(session, session->current_view->prompt_template);
+}
+
+// Update session prompt from module-filled template (module has already filled its placeholders)
+void update_prompt_from_template(nn_cli_session_t *session, const char *module_prompt)
+{
+    if (!session || !module_prompt)
     {
-        // Check if template contains {hostname} placeholder
-        const char *placeholder = "{hostname}";
-        const char *template = session->current_view->prompt_template;
-        const char *pos = strstr(template, placeholder);
-
-        if (pos)
-        {
-            // Replace {hostname} with actual hostname
-            char temp[64];
-            size_t prefix_len = pos - template;
-            size_t placeholder_len = strlen(placeholder);
-
-            // Copy prefix
-            strncpy(temp, template, prefix_len);
-            temp[prefix_len] = '\0';
-
-            // Append hostname
-            strncat(temp, nn_cli_get_hostname(), sizeof(temp) - strlen(temp) - 1);
-
-            // Append suffix
-            strncat(temp, pos + placeholder_len, sizeof(temp) - strlen(temp) - 1);
-
-            strncpy(session->prompt, temp, sizeof(session->prompt) - 1);
-            session->prompt[sizeof(session->prompt) - 1] = '\0';
-        }
-        else
-        {
-            // No placeholder, use template as-is
-            strncpy(session->prompt, template, sizeof(session->prompt) - 1);
-            session->prompt[sizeof(session->prompt) - 1] = '\0';
-        }
+        return;
     }
-    else
-    {
-        snprintf(session->prompt, sizeof(session->prompt), "<%s>",
-                 session->current_view->name ? session->current_view->name : nn_cli_get_hostname());
-    }
+
+    // Module has filled its placeholders, we only need to replace {hostname}
+    replace_hostname_in_prompt(session, module_prompt);
 }
 
 // Send the prompt to the client
 void send_prompt(uint32_t client_fd, nn_cli_session_t *session)
 {
-    send_message(client_fd, session->prompt);
-    send_message(client_fd, " ");
+    nn_cfg_send_message(client_fd, session->prompt);
+    nn_cfg_send_message(client_fd, " ");
 }
 
 // Handle TAB key auto-completion
@@ -124,7 +134,7 @@ static void handle_tab_completion(uint32_t client_fd, nn_cli_session_t *session,
         // Single match - show on new line
         nn_cli_tree_node_t *match = matches[0];
 
-        send_message(client_fd, "\r\n");
+        nn_cfg_send_message(client_fd, "\r\n");
 
         // Redisplay prompt and current input
         send_prompt(client_fd, session);
@@ -169,12 +179,12 @@ static void handle_tab_completion(uint32_t client_fd, nn_cli_session_t *session,
             }
         }
 
-        send_message(client_fd, line_buffer);
+        nn_cfg_send_message(client_fd, line_buffer);
     }
     else if (num_matches > 1)
     {
         // Multiple matches - Show all options on new lines
-        send_message(client_fd, "\r\n");
+        nn_cfg_send_message(client_fd, "\r\n");
         for (uint32_t i = 0; i < num_matches; i++)
         {
             char option[256];
@@ -200,7 +210,7 @@ static void handle_tab_completion(uint32_t client_fd, nn_cli_session_t *session,
 
             snprintf(option, sizeof(option), "  %-25s - %s\r\n", name_display,
                      matches[i]->description ? matches[i]->description : "");
-            send_message(client_fd, option);
+            nn_cfg_send_message(client_fd, option);
         }
         send_prompt(client_fd, session);
         if (has_trailing_space)
@@ -208,13 +218,13 @@ static void handle_tab_completion(uint32_t client_fd, nn_cli_session_t *session,
             (*line_pos)--;
             line_buffer[*line_pos] = '\0';
         }
-        send_message(client_fd, line_buffer);
+        nn_cfg_send_message(client_fd, line_buffer);
     }
     else
     {
-        send_message(client_fd, "\r\n");
+        nn_cfg_send_message(client_fd, "\r\n");
         send_prompt(client_fd, session);
-        send_message(client_fd, line_buffer);
+        nn_cfg_send_message(client_fd, line_buffer);
     }
 }
 
@@ -227,7 +237,7 @@ static void handle_help_request(uint32_t client_fd, nn_cli_session_t *session, c
     }
 
     line_buffer[line_pos] = '\0';
-    send_message(client_fd, "\r\n");
+    nn_cfg_send_message(client_fd, "\r\n");
 
     // Check if we have a trailing space
     uint32_t has_trailing_space = (line_pos > 0 && line_buffer[line_pos - 1] == ' ');
@@ -238,15 +248,15 @@ static void handle_help_request(uint32_t client_fd, nn_cli_session_t *session, c
         // Case: "xx ?" - Show next token's children
         nn_cli_tree_node_t *context = nn_cli_tree_match_command(session->current_view->cmd_tree, line_buffer);
 
-        if (context && context != session->current_view->cmd_tree)
+        if (context)
         {
-            // Found valid context, show its children
+            // Found valid context (could be root), show its children
             nn_cli_tree_print_help(context, client_fd);
         }
         else
         {
             // Command not found
-            send_message(client_fd, "Error: Invalid command\r\n");
+            nn_cfg_send_message(client_fd, "Error: Invalid command.\r\n");
         }
     }
     else
@@ -255,7 +265,6 @@ static void handle_help_request(uint32_t client_fd, nn_cli_session_t *session, c
         nn_cli_tree_node_t *matches[50];
         uint32_t num_matches =
             nn_cli_tree_match_command_get_matches(session->current_view->cmd_tree, line_buffer, matches, 50);
-        printf("%u\r\n", num_matches);
 
         if (num_matches > 0)
         {
@@ -283,10 +292,10 @@ static void handle_help_request(uint32_t client_fd, nn_cli_session_t *session, c
                     if (matches[i]->type == NN_CLI_NODE_COMMAND && matches[i]->name && matches[i]->description)
                     {
                         snprintf(buffer, sizeof(buffer), "  %-25s - %s\r\n", matches[i]->name, matches[i]->description);
-                        send_message(client_fd, buffer);
+                        nn_cfg_send_message(client_fd, buffer);
                     }
                 }
-                send_message(client_fd, "\r\n");
+                nn_cfg_send_message(client_fd, "\r\n");
             }
             else if (has_argument)
             {
@@ -310,19 +319,43 @@ static void handle_help_request(uint32_t client_fd, nn_cli_session_t *session, c
 
                 snprintf(buffer, sizeof(buffer), "  %-25s - %s\r\n", name_display,
                          arg->description ? arg->description : "");
-                send_message(client_fd, buffer);
-                send_message(client_fd, "\r\n");
+                nn_cfg_send_message(client_fd, buffer);
+                nn_cfg_send_message(client_fd, "\r\n");
             }
         }
         else
         {
-            // No matches found - command error
-            send_message(client_fd, "Error: Invalid command\r\n");
+            // No matches found
+            // Check if line_buffer is empty or only whitespace
+            uint32_t is_empty = 1;
+            for (uint32_t i = 0; i < line_pos; i++)
+            {
+                if (!isspace((unsigned char)line_buffer[i]))
+                {
+                    is_empty = 0;
+                    break;
+                }
+            }
+
+            if (is_empty)
+            {
+                // Empty command - show help for current context
+                nn_cli_tree_node_t *context = session->current_view->cmd_tree;
+                if (context)
+                {
+                    nn_cli_tree_print_help(context, client_fd);
+                }
+            }
+            else
+            {
+                // Invalid command
+                nn_cfg_send_message(client_fd, "Error: Invalid command.\r\n");
+            }
         }
     }
 
     send_prompt(client_fd, session);
-    send_message(client_fd, line_buffer);
+    nn_cfg_send_message(client_fd, line_buffer);
 }
 
 // Trim whitespace from both ends of a string
@@ -358,14 +391,14 @@ static char *trim(char *str)
 void cmd_help(uint32_t client_fd, const char *args)
 {
     (void)args;
-    send_message(client_fd, "\r\nAvailable commands - use TAB for completion, ? for help\r\n");
+    nn_cfg_send_message(client_fd, "\r\nAvailable commands - use TAB for completion, ? for help\r\n");
 }
 
 // Exit command handler
 void cmd_exit(uint32_t client_fd, const char *args)
 {
     (void)args;
-    send_message(client_fd, "\r\nGoodbye!\r\n");
+    nn_cfg_send_message(client_fd, "\r\nGoodbye!\r\n");
     close(client_fd);
 }
 
@@ -373,15 +406,15 @@ void cmd_exit(uint32_t client_fd, const char *args)
 void cmd_show_version(uint32_t client_fd, const char *args)
 {
     (void)args;
-    send_message(client_fd, "\r\nNetNexus Telnet CLI Server\r\n");
-    send_message(client_fd, "Version: 1.0.0\r\n");
-    send_message(client_fd, "Build Date: " __DATE__ " " __TIME__ "\r\n");
-    send_message(client_fd, "\r\n");
+    nn_cfg_send_message(client_fd, "\r\nNetNexus Telnet CLI Server\r\n");
+    nn_cfg_send_message(client_fd, "Version: 1.0.0\r\n");
+    nn_cfg_send_message(client_fd, "Build Date: " __DATE__ " " __TIME__ "\r\n");
+    nn_cfg_send_message(client_fd, "\r\n");
 }
 
 // Forward declarations
 static void print_view_commands_flat(nn_cli_view_node_t *view, uint32_t client_fd);
-static void print_commands_recursive(uint32_t client_fd, const char *view_name, const char *prefix,
+static void print_commands_recursive(uint32_t client_fd, uint32_t view_id, const char *prefix,
                                      nn_cli_tree_node_t *node);
 
 // Show tree command handler
@@ -389,17 +422,17 @@ void cmd_show_tree(uint32_t client_fd, const char *args)
 {
     (void)args;
 
-    send_message(client_fd, "\r\nCLI Commands List:\r\n");
-    send_message(client_fd, "===================\r\n");
-    send_message(client_fd, "  VIEW            MODULE          COMMAND\r\n");
-    send_message(client_fd, "  ----            ------          -------\r\n");
+    nn_cfg_send_message(client_fd, "\r\nCLI Commands List:\r\n");
+    nn_cfg_send_message(client_fd, "===================\r\n");
+    nn_cfg_send_message(client_fd, "  VIEW            MODULE          COMMAND\r\n");
+    nn_cfg_send_message(client_fd, "  ----            ------          -------\r\n");
 
     if (g_view_tree.root)
     {
         print_view_commands_flat(g_view_tree.root, client_fd);
     }
 
-    send_message(client_fd, "\r\n");
+    nn_cfg_send_message(client_fd, "\r\n");
 }
 
 // Helper to print all commands in a view and its children
@@ -415,7 +448,7 @@ static void print_view_commands_flat(nn_cli_view_node_t *view, uint32_t client_f
     {
         for (uint32_t i = 0; i < view->cmd_tree->num_children; i++)
         {
-            print_commands_recursive(client_fd, view->name, "", view->cmd_tree->children[i]);
+            print_commands_recursive(client_fd, view->view_id, "", view->cmd_tree->children[i]);
         }
     }
 
@@ -427,8 +460,7 @@ static void print_view_commands_flat(nn_cli_view_node_t *view, uint32_t client_f
 }
 
 // Helper to recursively traverse command tree and print commands
-static void print_commands_recursive(uint32_t client_fd, const char *view_name, const char *prefix,
-                                     nn_cli_tree_node_t *node)
+static void print_commands_recursive(uint32_t client_fd, uint32_t view_id, const char *prefix, nn_cli_tree_node_t *node)
 {
     if (!node)
     {
@@ -446,19 +478,10 @@ static void print_commands_recursive(uint32_t client_fd, const char *view_name, 
         new_prefix[sizeof(new_prefix) - 1] = '\0';
     }
 
-    // If node has a callback or module_name, it's an executable command or a leaf
-    if (node->callback || node->module_name)
-    {
-        char buffer[2048];
-        snprintf(buffer, sizeof(buffer), "  %-15s %-15s %s\r\n", view_name ? view_name : "unknown",
-                 node->module_name ? node->module_name : "builtin", new_prefix);
-        send_message(client_fd, buffer);
-    }
-
     // Recurse into children
     for (uint32_t i = 0; i < node->num_children; i++)
     {
-        print_commands_recursive(client_fd, view_name, new_prefix, node->children[i]);
+        print_commands_recursive(client_fd, view_id, new_prefix, node->children[i]);
     }
 }
 
@@ -496,68 +519,68 @@ void process_command(uint32_t client_fd, const char *cmd_line, nn_cli_session_t 
     // Get current view's command tree
     if (!session->current_view || !session->current_view->cmd_tree)
     {
-        send_message(client_fd, "\r\nError: No command tree for current view\r\n");
+        nn_cfg_send_message(client_fd, "\r\nError: No command tree for current view\r\n");
         return;
     }
 
-    nn_cli_tree_node_t *node = nn_cli_tree_match_command(session->current_view->cmd_tree, trimmed);
+    // Use full match to get all element IDs and values
+    nn_cli_match_result_t *match_result = nn_cli_tree_match_command_full(session->current_view->cmd_tree, trimmed);
+    nn_cli_tree_node_t *node = match_result ? match_result->final_node : NULL;
 
-    if (node && node->callback)
+    if (node)
     {
-        // Handle view-switching commands
-        if (strcmp(trimmed, "config") == NN_ERRCODE_SUCCESS)
+        // Check if command is complete (no required children)
+        if (node->num_children > 0)
         {
-            nn_cli_view_node_t *config_view = nn_cli_view_find_by_name(g_view_tree.root, "config");
+            // Incomplete command - node has children that need to be specified
+            nn_cfg_send_message(client_fd, "Error: Incomplete command.\r\n");
+
+            // Free match result and return
+            if (match_result)
+            {
+                nn_cli_match_result_free(match_result);
+            }
+            return;
+        }
+
+        // Command is complete - proceed with execution
+        // Handle view-switching commands
+        if (strcmp(node->name, "config") == NN_ERRCODE_SUCCESS)
+        {
+            nn_cli_view_node_t *config_view = nn_cli_view_find_by_id(g_view_tree.root, NN_CFG_CLI_VIEW_CONFIG);
             if (config_view)
             {
                 session->current_view = config_view;
                 update_prompt(session);
             }
         }
-        else if (strcmp(trimmed, "end") == NN_ERRCODE_SUCCESS)
+        // Check for 'exit' on root view to close connection
+        if (strcmp(node->name, "exit") == NN_ERRCODE_SUCCESS && session->current_view->parent == NULL)
         {
-            session->current_view = g_view_tree.root;
-            update_prompt(session);
-        }
-        else if (strcmp(trimmed, "exit") == NN_ERRCODE_SUCCESS)
-        {
-            if (session->current_view->parent)
+            nn_cfg_send_message(client_fd, "\r\nGoodbye!\r\n");
+            close(client_fd);
+            if (match_result)
             {
-                session->current_view = session->current_view->parent;
-                update_prompt(session);
+                nn_cli_match_result_free(match_result);
             }
-            else
-            {
-                // Root view - actually exit
-                node->callback(client_fd, NULL);
-                return;
-            }
+            return;
         }
 
-        // Dispatch to module if associated
-        nn_cli_dispatch_to_module(node, trimmed, NULL);
-
-        // Execute callback
-        if (strcmp(trimmed, "exit") != NN_ERRCODE_SUCCESS || !session->current_view->parent)
+        // Dispatch to module if module_id is set
+        if (match_result && match_result->module_id != 0)
         {
-            node->callback(client_fd, NULL);
-
-            // Update prompt after command execution (in case hostname changed)
-            update_prompt(session);
+            nn_cli_dispatch_to_module(match_result, client_fd, session);
         }
-    }
-    else if (node && node->num_children > 0)
-    {
-        // Incomplete command
-        send_message(client_fd, "\r\nIncomplete command. Available options:\r\n");
-        nn_cli_tree_print_help(node, client_fd);
     }
     else
     {
-        // Unknown command
-        char error_msg[MAX_CMD_LEN + 64];
-        snprintf(error_msg, sizeof(error_msg), "\r\nUnknown command: %s\r\n", trimmed);
-        send_message(client_fd, error_msg);
+        nn_cfg_send_message(client_fd, "Error: Invalid command.\r\n");
+    }
+
+    // Free match result
+    if (match_result)
+    {
+        nn_cli_match_result_free(match_result);
     }
 }
 
@@ -593,13 +616,13 @@ void handle_client(uint32_t client_fd)
         255, 251, 3,  // IAC WILL SUPPRESS_GO_AHEAD
         255, 253, 34, // IAC DO LINEMODE (with MODE 0 for character mode)
     };
-    write(client_fd, telnet_opts, sizeof(telnet_opts));
+    nn_cfg_send_data(client_fd, telnet_opts, sizeof(telnet_opts));
 
     // Send welcome message
-    send_message(client_fd, "\r\n");
-    send_message(client_fd, "Welcome to NetNexus CLI\r\n");
-    send_message(client_fd, "Type '?' for available commands\r\n");
-    send_message(client_fd, "\r\n");
+    nn_cfg_send_message(client_fd, "\r\n");
+    nn_cfg_send_message(client_fd, "Welcome to NetNexus CLI\r\n");
+    nn_cfg_send_message(client_fd, "Type '?' for available commands\r\n");
+    nn_cfg_send_message(client_fd, "\r\n");
 
     // Send initial prompt
     send_prompt(client_fd, &session);
@@ -620,7 +643,7 @@ void handle_client(uint32_t client_fd)
         // Handle Enter
         if (c == '\r' || c == '\n')
         {
-            send_message(client_fd, "\r\n");
+            nn_cfg_send_message(client_fd, "\r\n");
 
             if (line_pos > 0)
             {
@@ -641,7 +664,7 @@ void handle_client(uint32_t client_fd)
             if (line_pos > 0)
             {
                 line_pos--;
-                send_message(client_fd, "\b \b");
+                nn_cfg_send_message(client_fd, "\b \b");
             }
         }
         // Handle TAB
@@ -658,7 +681,7 @@ void handle_client(uint32_t client_fd)
         else if (line_pos < MAX_CMD_LEN - 1 && c >= 32 && c < 127)
         {
             line_buffer[line_pos++] = c;
-            write(client_fd, &c, 1);
+            nn_cfg_send_data(client_fd, &c, 1);
         }
     }
 }
@@ -671,7 +694,7 @@ void cmd_sysname(uint32_t client_fd, const char *args)
         // Show current hostname
         char msg[128];
         snprintf(msg, sizeof(msg), "\r\nCurrent hostname: %s\r\n", nn_cli_get_hostname());
-        send_message(client_fd, msg);
+        nn_cfg_send_message(client_fd, msg);
         return;
     }
 
@@ -683,13 +706,13 @@ void cmd_sysname(uint32_t client_fd, const char *args)
 
     if (strlen(args) == NN_ERRCODE_SUCCESS)
     {
-        send_message(client_fd, "\r\nError: Hostname cannot be empty\r\n");
+        nn_cfg_send_message(client_fd, "\r\nError: Hostname cannot be empty\r\n");
         return;
     }
 
     if (strlen(args) >= MAX_HOSTNAME_LEN)
     {
-        send_message(client_fd, "\r\nError: Hostname too long (max 63 characters)\r\n");
+        nn_cfg_send_message(client_fd, "\r\nError: Hostname too long (max 63 characters)\r\n");
         return;
     }
 
@@ -698,5 +721,5 @@ void cmd_sysname(uint32_t client_fd, const char *args)
 
     char msg[128];
     snprintf(msg, sizeof(msg), "\r\nHostname set to: %s\r\n", nn_cli_get_hostname());
-    send_message(client_fd, msg);
+    nn_cfg_send_message(client_fd, msg);
 }

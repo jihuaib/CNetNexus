@@ -15,15 +15,19 @@ enum
 };
 
 // Create a new CLI tree node
-nn_cli_tree_node_t *nn_cli_tree_create_node(const char *name, const char *description, nn_cli_node_type_t type)
+nn_cli_tree_node_t *nn_cli_tree_create_node(uint32_t element_id, const char *name, const char *description,
+                                            nn_cli_node_type_t type, uint32_t module_id, uint32_t group_id,
+                                            uint32_t view_id)
 {
-    nn_cli_tree_node_t *node = (nn_cli_tree_node_t *)g_malloc(sizeof(nn_cli_tree_node_t));
+    nn_cli_tree_node_t *node = (nn_cli_tree_node_t *)g_malloc0(sizeof(nn_cli_tree_node_t));
 
+    node->element_id = element_id;
+    node->module_id = module_id;
+    node->group_id = group_id;
     node->name = name ? strdup(name) : NULL;
     node->description = description ? strdup(description) : NULL;
     node->type = type;
-    node->callback = NULL;
-    node->module_name = NULL;
+    node->view_id = view_id;
     node->param_type = NULL;
     node->children = NULL;
     node->num_children = 0;
@@ -49,12 +53,6 @@ void nn_cli_tree_add_child(nn_cli_tree_node_t *parent, nn_cli_tree_node_t *child
         for (uint32_t i = 0; i < child->num_children; i++)
         {
             nn_cli_tree_add_child(existing, child->children[i]);
-        }
-
-        // Update callback if new node has one
-        if (child->callback)
-        {
-            existing->callback = child->callback;
         }
 
         // Free the new node (but not its children, as they were moved)
@@ -193,25 +191,6 @@ uint32_t nn_cli_tree_find_children_input_token(nn_cli_tree_node_t *parent, const
     return count;
 }
 
-// Set callback for a node
-void nn_cli_tree_set_callback(nn_cli_tree_node_t *node, nn_cli_callback_t callback)
-{
-    if (node)
-    {
-        node->callback = callback;
-    }
-}
-
-// Set module name for a node
-void nn_cli_tree_set_module_name(nn_cli_tree_node_t *node, const char *module_name)
-{
-    if (node)
-    {
-        g_free(node->module_name);
-        node->module_name = module_name ? strdup(module_name) : NULL;
-    }
-}
-
 // Set parameter type for a node
 void nn_cli_tree_set_param_type(nn_cli_tree_node_t *node, nn_cli_param_type_t *param_type)
 {
@@ -242,7 +221,6 @@ void nn_cli_tree_free(nn_cli_tree_node_t *root)
     g_free(root->children);
     g_free(root->name);
     g_free(root->description);
-    g_free(root->module_name);
     if (root->param_type)
     {
         nn_cli_param_type_free(root->param_type);
@@ -259,15 +237,12 @@ nn_cli_tree_node_t *nn_cli_tree_clone(nn_cli_tree_node_t *node)
     }
 
     // Create new node with same properties
-    nn_cli_tree_node_t *clone = nn_cli_tree_create_node(node->name, node->description, node->type);
+    nn_cli_tree_node_t *clone = nn_cli_tree_create_node(node->element_id, node->name, node->description, node->type,
+                                                        node->module_id, node->group_id, node->view_id);
     if (!clone)
     {
         return NULL;
     }
-
-    // Copy callback and module name
-    clone->callback = node->callback;
-    clone->module_name = node->module_name ? strdup(node->module_name) : NULL;
 
     // Clone param_type if exists
     if (node->param_type && node->param_type->type_str)
@@ -458,9 +433,177 @@ void nn_cli_tree_print_help(nn_cli_tree_node_t *node, uint32_t client_fd)
                 }
 
                 snprintf(buffer, sizeof(buffer), "  %-25s - %s\r\n", name_display, child->description);
-                write(client_fd, buffer, strlen(buffer));
+                nn_cfg_send_message(client_fd, buffer);
             }
         }
-        write(client_fd, "\r\n", 2);
     }
+}
+
+// ============================================================================
+// Command Match Result Functions
+// ============================================================================
+
+#define MATCH_RESULT_INITIAL_CAPACITY 8
+
+// Create a new match result
+nn_cli_match_result_t *nn_cli_match_result_create(void)
+{
+    nn_cli_match_result_t *result = g_malloc0(sizeof(nn_cli_match_result_t));
+
+    result->module_id = 0;
+    result->group_id = 0;
+    result->elements = g_malloc0(MATCH_RESULT_INITIAL_CAPACITY * sizeof(nn_cli_match_element_t));
+    result->num_elements = 0;
+    result->capacity = MATCH_RESULT_INITIAL_CAPACITY;
+    result->final_node = NULL;
+
+    return result;
+}
+
+// Add an element to match result
+void nn_cli_match_result_add_element(nn_cli_match_result_t *result, uint32_t element_id, nn_cli_node_type_t type,
+                                     const char *value, nn_cli_param_type_t *param_type)
+{
+    if (!result)
+    {
+        return;
+    }
+
+    // Expand array if needed
+    if (result->num_elements >= result->capacity)
+    {
+        result->capacity *= 2;
+        result->elements = g_realloc(result->elements, result->capacity * sizeof(nn_cli_match_element_t));
+    }
+
+    nn_cli_match_element_t *elem = &result->elements[result->num_elements++];
+    elem->element_id = element_id;
+    elem->type = type;
+
+    // Clone param_type to avoid sharing pointers
+    if (param_type && param_type->type_str)
+    {
+        elem->param_type = nn_cli_param_type_parse(param_type->type_str);
+    }
+    else
+    {
+        elem->param_type = NULL;
+    }
+
+    if (value)
+    {
+        elem->value = g_strdup(value);
+
+        // Calculate length based on parameter type
+        if (param_type)
+        {
+            elem->value_len = nn_cli_param_type_get_value_length(param_type, value);
+        }
+        else
+        {
+            // Fallback to strlen if no param_type
+            elem->value_len = strlen(value);
+        }
+    }
+    else
+    {
+        elem->value = NULL;
+        elem->value_len = 0;
+    }
+}
+
+// Free match result
+void nn_cli_match_result_free(nn_cli_match_result_t *result)
+{
+    if (!result)
+    {
+        return;
+    }
+
+    for (uint32_t i = 0; i < result->num_elements; i++)
+    {
+        g_free(result->elements[i].value);
+        if (result->elements[i].param_type)
+        {
+            nn_cli_param_type_free(result->elements[i].param_type);
+        }
+    }
+
+    g_free(result->elements);
+    g_free(result);
+}
+
+// Match command and return full result with all matched elements
+nn_cli_match_result_t *nn_cli_tree_match_command_full(nn_cli_tree_node_t *root, const char *cmd_line)
+{
+    if (!root || !cmd_line)
+    {
+        return NULL;
+    }
+
+    char *cmd_copy = strdup(cmd_line);
+    if (!cmd_copy)
+    {
+        return NULL;
+    }
+
+    char *trimmed = trim_whitespace(cmd_copy);
+    if (strlen(trimmed) == 0)
+    {
+        g_free(cmd_copy);
+        return NULL;
+    }
+
+    nn_cli_match_result_t *result = nn_cli_match_result_create();
+    nn_cli_tree_node_t *current = root;
+
+    // Save original string for extracting values
+    char *cmd_for_values = strdup(cmd_line);
+    char *trimmed_values = trim_whitespace(cmd_for_values);
+    char *saveptr = NULL;
+    char *value_token = strtok_r(trimmed_values, " ", &saveptr);
+
+    char *token = strtok(trimmed, " ");
+
+    while (token && value_token)
+    {
+        nn_cli_tree_node_t *child = nn_cli_tree_find_child_input_token(current, token);
+
+        if (child)
+        {
+            // Add matched element to result
+            if (child->type == NN_CLI_NODE_ARGUMENT)
+            {
+                // ARGUMENT: include the value
+                nn_cli_match_result_add_element(result, child->element_id, child->type, value_token, child->param_type);
+            }
+            else
+            {
+                // COMMAND/KEYWORD: no value
+                nn_cli_match_result_add_element(result, child->element_id, child->type, NULL, NULL);
+            }
+
+            result->module_id = child->module_id;
+            result->group_id = child->group_id;
+
+            current = child;
+            token = strtok(NULL, " ");
+            value_token = strtok_r(NULL, " ", &saveptr);
+        }
+        else
+        {
+            // No match - free result and return NULL
+            nn_cli_match_result_free(result);
+            g_free(cmd_copy);
+            g_free(cmd_for_values);
+            return NULL;
+        }
+    }
+
+    result->final_node = current;
+
+    g_free(cmd_copy);
+    g_free(cmd_for_values);
+
+    return result;
 }

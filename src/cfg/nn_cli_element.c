@@ -11,7 +11,7 @@
 nn_cli_element_t *nn_cli_element_create(uint32_t id, element_type_t type, const char *name, const char *description,
                                         const char *range)
 {
-    nn_cli_element_t *element = (nn_cli_element_t *)g_malloc(sizeof(nn_cli_element_t));
+    nn_cli_element_t *element = (nn_cli_element_t *)g_malloc0(sizeof(nn_cli_element_t));
 
     element->id = id;
     element->type = type;
@@ -27,7 +27,7 @@ nn_cli_element_t *nn_cli_element_create(uint32_t id, element_type_t type, const 
 nn_cli_element_t *nn_cli_element_create_with_type(uint32_t id, element_type_t type, const char *name,
                                                   const char *description, const char *type_str)
 {
-    nn_cli_element_t *element = (nn_cli_element_t *)g_malloc(sizeof(nn_cli_element_t));
+    nn_cli_element_t *element = (nn_cli_element_t *)g_malloc0(sizeof(nn_cli_element_t));
 
     element->id = id;
     element->type = type;
@@ -69,11 +69,11 @@ void nn_cli_element_free(nn_cli_element_t *element)
 }
 
 // Create a command group
-nn_cli_command_group_t *nn_cli_group_create(const char *name)
+nn_cli_command_group_t *nn_cli_group_create(uint32_t group_id)
 {
-    nn_cli_command_group_t *group = (nn_cli_command_group_t *)g_malloc(sizeof(nn_cli_command_group_t));
+    nn_cli_command_group_t *group = (nn_cli_command_group_t *)g_malloc0(sizeof(nn_cli_command_group_t));
 
-    group->name = name ? strdup(name) : NULL;
+    group->group_id = group_id;
     group->elements = NULL;
     group->num_elements = 0;
 
@@ -131,7 +131,6 @@ void nn_cli_group_free(nn_cli_command_group_t *group)
     }
 
     g_free(group->elements);
-    g_free(group->name);
     g_free(group);
 }
 

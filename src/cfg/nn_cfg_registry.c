@@ -15,7 +15,7 @@ void nn_cfg_register_module_xml(uint32_t module_id, const char *xml_path)
         return;
     }
 
-    nn_cfg_xml_entry_t *entry = g_malloc(sizeof(nn_cfg_xml_entry_t));
+    nn_cfg_xml_entry_t *entry = g_malloc0(sizeof(nn_cfg_xml_entry_t));
     entry->module_id = module_id;
     entry->xml_path = g_strdup(xml_path);
 

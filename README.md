@@ -138,6 +138,77 @@ sudo apt install build-essential cmake libxml2-dev pkg-config
 sudo apt install clang-format clang-tidy
 ```
 
+- **Memory Leak Detection**: Valgrind for comprehensive leak checking
+```bash
+sudo apt install valgrind
+```
+
+## Memory Leak Detection
+
+NetNexus includes integrated support for memory leak detection during local development using two complementary tools:
+
+### Method 1: Valgrind (Recommended for Comprehensive Analysis)
+
+Valgrind provides detailed memory leak reports without requiring recompilation.
+
+**Prerequisites:**
+```bash
+sudo apt install valgrind
+```
+
+**Usage:**
+1. Build the project in Debug mode:
+   ```bash
+   cmake -B build -DCMAKE_BUILD_TYPE=Debug
+   cmake --build build
+   ```
+
+2. Run with Valgrind:
+   ```bash
+   ./scripts/check-memory-leaks.sh
+   ```
+
+3. Use the application (connect via telnet, run commands, etc.)
+
+4. Stop the server with Ctrl+C
+
+5. Review the leak report:
+   ```bash
+   cat valgrind-report.txt
+   ```
+
+**Note:** The included `valgrind.supp` file suppresses known false positives from GLib and system libraries.
+
+### Method 2: AddressSanitizer (Fast Development Workflow)
+
+AddressSanitizer (ASan) provides fast memory error detection with minimal overhead.
+
+**Usage:**
+1. Build with AddressSanitizer:
+   ```bash
+   ./scripts/build-with-asan.sh
+   ```
+
+2. Run the binary:
+   ```bash
+   ./build-asan/bin/netnexus
+   ```
+
+3. ASan will automatically report memory leaks when the program exits.
+
+**Advanced Options:**
+```bash
+# Save ASan output to a file
+export ASAN_OPTIONS=detect_leaks=1:log_path=asan.log
+./build-asan/bin/netnexus
+```
+
+### Interpreting Results
+
+- **Valgrind**: Look for "definitely lost" and "indirectly lost" in the leak summary
+- **AddressSanitizer**: Reports will show stack traces of leaked allocations
+- Both tools will highlight the source file and line number where memory was allocated but not freed
+
 ## Requirements
 
 - POSIX-compliant system (Linux, Unix, macOS)

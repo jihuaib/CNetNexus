@@ -1,0 +1,146 @@
+# Valgrind suppression file for NetNexus
+# This file suppresses known false positives from GLib and system libraries
+
+# GLib internal allocations that are intentionally not freed
+{
+   glib_internal_alloc_1
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:g_malloc0
+}
+
+{
+   glib_internal_alloc_2
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:g_malloc0
+}
+
+{
+   glib_internal_alloc_3
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:g_realloc
+}
+
+{
+   glib_slice_alloc
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:g_slice_alloc
+}
+
+{
+   glib_slice_alloc0
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:g_slice_alloc0
+}
+
+# GLib type system initialization
+{
+   glib_type_init
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:g_type_init*
+}
+
+{
+   glib_type_register
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:g_type_register_*
+}
+
+# GLib hash table internal allocations
+{
+   glib_hash_table
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:g_hash_table_new*
+}
+
+# GLib list allocations
+{
+   glib_list
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:g_list_*
+}
+
+{
+   glib_slist
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:g_slist_*
+}
+
+# GLib string functions
+{
+   glib_strdup
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:g_strdup
+}
+
+{
+   glib_strndup
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:g_strndup
+}
+
+# System library suppressions
+{
+   dl_init
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:_dl_init
+}
+
+{
+   dl_open
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:dlopen*
+}
+
+# pthread library
+{
+   pthread_create
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:pthread_create*
+}
+
+# libxml2 internal allocations
+{
+   libxml2_init
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   obj:*/libxml2.so*
+}
+
+{
+   libxml2_parser
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:xmlParse*
+}

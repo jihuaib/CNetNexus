@@ -20,7 +20,7 @@ static void ensure_registry_initialized(void)
 {
     if (!g_module_registry)
     {
-        g_module_registry = g_hash_table_new(g_str_hash, g_str_equal);
+        g_module_registry = g_hash_table_new(g_int_hash, g_int_equal);
     }
 }
 
@@ -34,7 +34,7 @@ void nn_dev_register_module(uint32_t id, const char *name, nn_module_init_fn ini
 
     ensure_registry_initialized();
 
-    nn_dev_module_t *module = (nn_dev_module_t *)g_malloc(sizeof(nn_dev_module_t));
+    nn_dev_module_t *module = (nn_dev_module_t *)g_malloc0(sizeof(nn_dev_module_t));
 
     module->module_id = id;
     strlcpy(module->name, name, sizeof(module->name));
@@ -43,19 +43,9 @@ void nn_dev_register_module(uint32_t id, const char *name, nn_module_init_fn ini
     module->mq = NULL; // Message queue not initialized yet
 
     // Add to hash table for fast lookup
-    g_hash_table_insert(g_module_registry, (gpointer)module->name, module);
+    g_hash_table_insert(g_module_registry, (gpointer) & (module->module_id), module);
 
-    printf("[dev]Registered module: %s\n", name);
-}
-
-// Get module by name (O(1) lookup)
-nn_dev_module_t *nn_get_module(const char *name)
-{
-    if (!g_module_registry || !name)
-    {
-        return NULL;
-    }
-    return (nn_dev_module_t *)g_hash_table_lookup(g_module_registry, name);
+    printf("[dev] Registered module: %s\n", name);
 }
 
 // Request shutdown
@@ -93,27 +83,27 @@ int32_t nn_dev_init_all_modules(void)
     while (g_hash_table_iter_next(&iter, &key, &value))
     {
         nn_dev_module_t *module = (nn_dev_module_t *)value;
-        printf("[dev]Initializing module: %s\n", module->name);
+        printf("[dev] Initializing module: %s\n", module->name);
 
         if (module->init)
         {
             if (module->init((void *)module) == NN_ERRCODE_SUCCESS)
             {
-                printf("[dev]%s initialized OK\n", module->name);
+                printf("[dev] %s initialized OK\n", module->name);
             }
             else
             {
-                fprintf(stderr, "[dev]%s initialization failed\n", module->name);
+                fprintf(stderr, "[dev] %s initialization failed\n", module->name);
                 failed_count++;
             }
         }
         else
         {
-            printf("[dev]%s has no init function\n", module->name);
+            printf("[dev] %s has no init function\n", module->name);
         }
     }
 
-    printf("\n[dev]Module initialization complete (failures: %d)\n\n", failed_count);
+    printf("\n[dev] Module initialization complete (failures: %d)\n\n", failed_count);
 
     return failed_count;
 }
@@ -121,12 +111,12 @@ int32_t nn_dev_init_all_modules(void)
 // Cleanup all registered modules
 void nn_cleanup_all_modules(void)
 {
-    printf("\n[dev]Cleaning up modules:\n");
+    printf("\n[dev] Cleaning up modules:\n");
     printf("====================\n");
 
     if (!g_module_registry)
     {
-        printf("[dev]No modules to clean up\n");
+        printf("[dev] No modules to clean up\n");
         return;
     }
 
@@ -139,7 +129,7 @@ void nn_cleanup_all_modules(void)
     while (g_hash_table_iter_next(&iter, &key, &value))
     {
         nn_dev_module_t *module = (nn_dev_module_t *)value;
-        printf("[dev]Cleaning up module: %s\n", module->name);
+        printf("[dev] Cleaning up module: %s\n", module->name);
 
         if (module->cleanup)
         {
@@ -150,7 +140,7 @@ void nn_cleanup_all_modules(void)
         // Destroy message queue if exists
         if (module->mq)
         {
-            nn_mq_destroy(module->mq);
+            nn_nn_mq_destroy(module->mq);
         }
 
         g_free(module);
@@ -160,5 +150,5 @@ void nn_cleanup_all_modules(void)
     g_hash_table_destroy(g_module_registry);
     g_module_registry = NULL;
 
-    printf("\n[dev]Module cleanup complete\n");
+    printf("\n[dev] Module cleanup complete\n");
 }

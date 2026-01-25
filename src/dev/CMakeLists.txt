@@ -3,6 +3,7 @@ set(NN_DEV_SOURCES
     nn_dev_main.c
         nn_dev_module.c
         nn_dev_mq.c
+        nn_dev_pubsub.c
 )
 
 # Create shared library for dev module

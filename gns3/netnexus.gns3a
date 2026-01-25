@@ -1,0 +1,58 @@
+{
+  "name": "NetNexus",
+  "category": "router",
+  "description": "NetNexus Network Device - BGP/BMP/RPKI Router",
+  "vendor_name": "NetNexus",
+  "vendor_url": "https://github.com/yourrepo/netnexus",
+  "documentation_url": "https://github.com/yourrepo/netnexus/wiki",
+  "product_name": "NetNexus",
+  "product_url": "https://github.com/yourrepo/netnexus",
+  "registry_version": 4,
+  "status": "stable",
+  "maintainer": "NetNexus Team",
+  "maintainer_email": "team@netnexus.io",
+  "usage": "Connect via Console (telnet port 3788) to access CLI. Use Tab for auto-completion and ? for help.",
+  "symbol": "router.svg",
+  "port_name_format": "eth{0}",
+  "qemu": {
+    "adapter_type": "e1000",
+    "adapters": 4,
+    "ram": 512,
+    "cpus": 1,
+    "hda_disk_interface": "ide",
+    "arch": "x86_64",
+    "console_type": "telnet",
+    "boot_priority": "c",
+    "kvm": "allow",
+    "options": "-nographic"
+  },
+  "docker": {
+    "adapters": 4,
+    "image": "netnexus:latest",
+    "console_type": "telnet",
+    "console_http_port": 3788,
+    "console_http_path": "/",
+    "environment": "",
+    "extra_hosts": "",
+    "extra_volumes": [],
+    "extra_docker_options": "--cap-add=SYS_PTRACE --cap-add=NET_ADMIN --security-opt seccomp=unconfined"
+  },
+  "images": [
+    {
+      "filename": "netnexus-latest.tar.gz",
+      "version": "1.0.0",
+      "md5sum": "",
+      "filesize": 0,
+      "download_url": "https://github.com/yourrepo/netnexus/releases",
+      "direct_download_url": ""
+    }
+  ],
+  "versions": [
+    {
+      "name": "1.0.0",
+      "images": {
+        "docker_image": "netnexus:latest"
+      }
+    }
+  ]
+}

@@ -232,6 +232,43 @@ const char *nn_cli_param_type_get_desc(const nn_cli_param_type_t *param_type)
     }
 }
 
+// Get the binary value length for TLV encoding based on parameter type
+uint16_t nn_cli_param_type_get_value_length(const nn_cli_param_type_t *param_type, const char *value)
+{
+    if (!param_type || !value)
+    {
+        return 0;
+    }
+
+    switch (param_type->type)
+    {
+        case NN_PARAM_TYPE_UINT:
+        case NN_PARAM_TYPE_INT:
+            // Integers are encoded as 4 bytes (uint32_t/int32_t) in network byte order
+            return 4;
+
+        case NN_PARAM_TYPE_IPV4:
+            // IPv4 addresses are encoded as 4 bytes
+            return 4;
+
+        case NN_PARAM_TYPE_IPV6:
+            // IPv6 addresses are encoded as 16 bytes
+            return 16;
+
+        case NN_PARAM_TYPE_MAC:
+            // MAC addresses are encoded as 6 bytes
+            return 6;
+
+        case NN_PARAM_TYPE_STRING:
+        case NN_PARAM_TYPE_IP:
+        case NN_PARAM_TYPE_ENUM:
+        case NN_PARAM_TYPE_UNKNOWN:
+        default:
+            // Strings and unknown types use the actual string length
+            return (uint16_t)strlen(value);
+    }
+}
+
 // Free parameter type
 void nn_cli_param_type_free(nn_cli_param_type_t *param_type)
 {

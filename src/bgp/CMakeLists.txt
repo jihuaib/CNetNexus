@@ -1,6 +1,7 @@
 # BGP module sources
 set(NN_BGP_SOURCES
     nn_bgp_main.c
+    nn_bgp_cfg.c
 )
 
 # Create shared library for BGP module
@@ -8,8 +9,8 @@ add_library(nn_bgp SHARED ${NN_BGP_SOURCES})
 
 # Include directories
 target_include_directories(nn_bgp PRIVATE
+    .
     ${PROJECT_SOURCE_DIR}/include
-        ../cfg
 )
 
 # Set library version

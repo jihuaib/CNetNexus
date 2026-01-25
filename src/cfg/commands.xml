@@ -3,7 +3,7 @@
     <!-- Command group definitions -->
     <command_groups>
         <!-- Basic command group -->
-        <group name="nn_cfg_show">
+        <group group_id="1">
             <elements>
                 <element id="1" type="keyword">
                     <name>show</name>
@@ -22,35 +22,41 @@
             <commands>
                 <command>
                     <expression>1 2 3</expression>
-                    <views>global</views>
-                    <callback>cmd_show_tree</callback>
+                    <views>1</views>
                 </command>
             </commands>
         </group>
 
-        <group name="nn_cfg_config">
+        <group group_id="2">
             <elements>
                 <element id="1" type="keyword">
-                    <name>quit</name>
+                    <name>exit</name>
                     <description>Exit current mode</description>
                 </element>
                 <element id="2" type="keyword">
                     <name>config</name>
                     <description>Enter configuration mode</description>
                 </element>
+                <element id="3" type="keyword">
+                    <name>end</name>
+                    <description>Return to user view</description>
+                </element>
             </elements>
 
             <commands>
                 <command>
                     <expression>1</expression>
-                    <views>global</views>
-                    <callback>cmd_exit</callback>
+                    <views>1</views>
                 </command>
 
                 <command>
                     <expression>2</expression>
-                    <views>user</views>
-                    <callback>cmd_configure</callback>
+                    <views>2</views>
+                </command>
+
+                <command>
+                    <expression>3</expression>
+                    <views>1</views>
                 </command>
             </commands>
         </group>

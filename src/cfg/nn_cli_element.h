@@ -27,7 +27,7 @@ typedef struct
 // Command group
 typedef struct
 {
-    char *name;                  // Group name (e.g., "basic", "bgp")
+    uint32_t group_id;           // Group id
     nn_cli_element_t **elements; // Array of elements
     uint32_t num_elements;       // Number of elements
 } nn_cli_command_group_t;
@@ -43,9 +43,12 @@ void nn_cli_element_free(nn_cli_element_t *element);
 bool nn_cli_element_validate_param(nn_cli_element_t *element, const char *value, char *error_msg,
                                    uint32_t error_msg_size);
 
-nn_cli_command_group_t *nn_cli_group_create(const char *name);
+nn_cli_command_group_t *nn_cli_group_create(uint32_t group_id);
+
 void nn_cli_group_add_element(nn_cli_command_group_t *group, nn_cli_element_t *element);
+
 nn_cli_element_t *nn_cli_group_find_element(nn_cli_command_group_t *group, uint32_t id);
+
 void nn_cli_group_free(nn_cli_command_group_t *group);
 
 #endif // NN_CLI_ELEMENT_H

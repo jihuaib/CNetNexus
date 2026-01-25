@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration module_id="4">
+    <!-- Interface configuration commands -->
+    <command_groups>
+        <!-- Interface command group -->
+        <group name="nn_interface_config">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>interface</name>
+                    <description>Configure network interface</description>
+                </element>
+                <element id="2" type="parameter">
+                    <name>interface-name</name>
+                    <description>Interface name (e.g., veth0, eth0)</description>
+                    <param_type>string</param_type>
+                </element>
+            </elements>
+            <handler>nn_cmd_interface</handler>
+            <view>config</view>
+        </group>
+
+        <!-- IP address configuration (in interface mode) -->
+        <group name="nn_interface_ip">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>ip</name>
+                    <description>IP configuration</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>address</name>
+                    <description>Set IP address</description>
+                </element>
+                <element id="3" type="parameter">
+                    <name>ip-addr</name>
+                    <description>IP address (e.g., 192.168.1.1)</description>
+                    <param_type>ipv4</param_type>
+                </element>
+                <element id="4" type="parameter">
+                    <name>netmask</name>
+                    <description>Netmask (e.g., 255.255.255.0)</description>
+                    <param_type>ipv4</param_type>
+                </element>
+            </elements>
+            <handler>nn_cmd_ip_address</handler>
+            <view>interface</view>
+        </group>
+
+        <!-- Shutdown/no shutdown -->
+        <group name="nn_interface_shutdown">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>shutdown</name>
+                    <description>Shutdown interface</description>
+                </element>
+            </elements>
+            <handler>nn_cmd_shutdown</handler>
+            <view>interface</view>
+        </group>
+
+        <group name="nn_interface_no_shutdown">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>no</name>
+                    <description>Negate a command</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>shutdown</name>
+                    <description>Enable interface</description>
+                </element>
+            </elements>
+            <handler>nn_cmd_no_shutdown</handler>
+            <view>interface</view>
+        </group>
+
+        <!-- Show interface commands -->
+        <group name="nn_show_interface">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>show</name>
+                    <description>Display information</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>interface</name>
+                    <description>Interface information</description>
+                </element>
+                <element id="3" type="parameter">
+                    <name>interface-name</name>
+                    <description>Interface name (optional)</description>
+                    <param_type>string</param_type>
+                    <optional>true</optional>
+                </element>
+            </elements>
+            <handler>nn_cmd_show_interface</handler>
+            <view>user</view>
+        </group>
+
+        <group name="nn_show_ip_interface">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>show</name>
+                    <description>Display information</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>ip</name>
+                    <description>IP information</description>
+                </element>
+                <element id="3" type="keyword">
+                    <name>interface</name>
+                    <description>Interface information</description>
+                </element>
+                <element id="4" type="parameter">
+                    <name>interface-name</name>
+                    <description>Interface name (optional)</description>
+                    <param_type>string</param_type>
+                    <optional>true</optional>
+                </element>
+            </elements>
+            <handler>nn_cmd_show_ip_interface</handler>
+            <view>user</view>
+        </group>
+    </command_groups>
+</configuration>

@@ -1,0 +1,7 @@
+# NetNexus Interface Mapping - GNS3/Docker
+# For use in GNS3 Docker containers
+
+port0 = eth0
+port1 = eth1
+port2 = eth2
+port3 = eth3

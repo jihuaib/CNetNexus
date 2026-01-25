@@ -1,7 +1,7 @@
 #ifndef NN_CLI_VIEW_H
 #define NN_CLI_VIEW_H
 
-#include "basetype.h"
+#include "nn_cfg.h"
 #include "nn_cli_tree.h"
 
 // Forward declaration
@@ -10,8 +10,8 @@ typedef struct nn_cli_view_node nn_cli_view_node_t;
 // View node structure - represents a CLI view with its command tree
 struct nn_cli_view_node
 {
-    char *name;                   // View name (e.g., "user", "config")
-    char *prompt_template;        // Prompt template (e.g., "<NetNexus>")
+    uint32_t view_id;
+    char prompt_template[NN_CFG_CLI_MAX_VIEW_LEN];
     nn_cli_tree_node_t *cmd_tree; // Command tree for this view
 
     // View hierarchy
@@ -29,9 +29,9 @@ typedef struct
 } nn_cli_view_tree_t;
 
 // Function prototypes
-nn_cli_view_node_t *nn_cli_view_create(const char *name, const char *prompt_template);
+nn_cli_view_node_t *nn_cli_view_create(uint32_t view_id, const char *prompt_template);
 void nn_cli_view_add_child(nn_cli_view_node_t *parent, nn_cli_view_node_t *child);
-nn_cli_view_node_t *nn_cli_view_find_by_name(nn_cli_view_node_t *root, const char *name);
+nn_cli_view_node_t *nn_cli_view_find_by_id(nn_cli_view_node_t *root, uint32_t view_id);
 void nn_cli_view_free(nn_cli_view_node_t *view);
 
 #endif // NN_CLI_VIEW_H

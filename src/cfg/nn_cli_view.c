@@ -4,7 +4,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "nn_cfg.h"
 #include "nn_errcode.h"
+
+// External reference to global view tree (defined in nn_cli_handler.c)
+extern nn_cli_view_tree_t g_view_tree;
 
 enum
 {
@@ -12,13 +16,16 @@ enum
 };
 
 // Create a new view node
-nn_cli_view_node_t *nn_cli_view_create(const char *name, const char *prompt_template)
+nn_cli_view_node_t *nn_cli_view_create(uint32_t view_id, const char *prompt_template)
 {
-    nn_cli_view_node_t *view = (nn_cli_view_node_t *)g_malloc(sizeof(nn_cli_view_node_t));
+    nn_cli_view_node_t *view = (nn_cli_view_node_t *)g_malloc0(sizeof(nn_cli_view_node_t));
 
-    view->name = name ? strdup(name) : NULL;
-    view->prompt_template = prompt_template ? strdup(prompt_template) : NULL;
-    view->cmd_tree = nn_cli_tree_create_node(NULL, "Root", NN_CLI_NODE_COMMAND);
+    view->view_id = view_id;
+    if (prompt_template != NULL)
+    {
+        strlcpy(view->prompt_template, prompt_template, NN_CFG_CLI_MAX_VIEW_LEN);
+    }
+    view->cmd_tree = nn_cli_tree_create_node(0, NULL, "Root", NN_CLI_NODE_COMMAND, 0, 0, NULL);
 
     view->parent = NULL;
     view->children = NULL;
@@ -57,15 +64,15 @@ void nn_cli_view_add_child(nn_cli_view_node_t *parent, nn_cli_view_node_t *child
 }
 
 // Find a view by name (recursive search)
-nn_cli_view_node_t *nn_cli_view_find_by_name(nn_cli_view_node_t *root, const char *name)
+nn_cli_view_node_t *nn_cli_view_find_by_id(nn_cli_view_node_t *root, uint32_t view_id)
 {
-    if (!root || !name)
+    if (!root)
     {
         return NULL;
     }
 
     // Check current node
-    if (root->name && strcmp(root->name, name) == NN_ERRCODE_SUCCESS)
+    if (root->view_id == view_id)
     {
         return root;
     }
@@ -73,7 +80,7 @@ nn_cli_view_node_t *nn_cli_view_find_by_name(nn_cli_view_node_t *root, const cha
     // Search children recursively
     for (uint32_t i = 0; i < root->num_children; i++)
     {
-        nn_cli_view_node_t *found = nn_cli_view_find_by_name(root->children[i], name);
+        nn_cli_view_node_t *found = nn_cli_view_find_by_id(root->children[i], view_id);
         if (found)
         {
             return found;
@@ -98,11 +105,26 @@ void nn_cli_view_free(nn_cli_view_node_t *view)
     }
 
     g_free(view->children);
-    g_free(view->name);
-    g_free(view->prompt_template);
     if (view->cmd_tree)
     {
         nn_cli_tree_free(view->cmd_tree);
     }
     g_free(view);
+}
+
+// Get view prompt template by view name (for modules to fill placeholders)
+const char *nn_cfg_get_view_prompt_template(uint32_t view_id)
+{
+    if (!g_view_tree.root)
+    {
+        return NULL;
+    }
+
+    nn_cli_view_node_t *view = nn_cli_view_find_by_id(g_view_tree.root, view_id);
+    if (view)
+    {
+        return view->prompt_template;
+    }
+
+    return NULL;
 }

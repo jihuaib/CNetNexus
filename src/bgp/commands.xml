@@ -2,15 +2,15 @@
 <configuration module_id="3">
     <!-- View definitions -->
     <views>
-        <view name="bgp">
-            <template>&lt;{hostname}(config-bgp)&gt;</template>
+        <view view-id="4">
+            <template>&lt;{hostname}(config-bgp-%u)&gt;</template>
         </view>
     </views>
 
     <!-- Command group definitions -->
     <command_groups>
         <!-- Configuration command group -->
-        <group name="config">
+        <group group_id="1">
             <elements>
                 <element id="1" type="keyword">
                     <name>bgp</name>
@@ -18,7 +18,7 @@
                 </element>
                 <element id="2" type="parameter">
                     <name>&lt;as-number&gt;</name>
-                    <type>uint(1-63)</type>
+                    <type>uint(1-4294967295)</type>
                     <description>BGP as-number</description>
                 </element>
             </elements>
@@ -26,8 +26,8 @@
             <commands>
                 <command>
                     <expression>1 2</expression>
-                    <views>config</views>
-                    <callback>cmd_bgp</callback>
+                    <views>3</views>
+                    <view-id>4</view-id>
                 </command>
             </commands>
         </group>

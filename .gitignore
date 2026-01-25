@@ -2,6 +2,7 @@
 build/
 build-release/
 cmake-build-*/
+build-asan/
 
 # Object files
 *.o
@@ -30,3 +31,9 @@ Makefile.in
 *.idb
 *.pdb
 /.claude/
+
+# Docker exports
+*.tar.gz
+netnexus-gns3.tar.gz
+
+valgrind-report.txt

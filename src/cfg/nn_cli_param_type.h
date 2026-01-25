@@ -85,6 +85,14 @@ bool nn_cli_param_type_validate(const nn_cli_param_type_t *param_type, const cha
 const char *nn_cli_param_type_get_desc(const nn_cli_param_type_t *param_type);
 
 /**
+ * Get the binary value length for TLV encoding based on parameter type
+ * @param param_type The parameter type
+ * @param value The string value to convert
+ * @return Length in bytes for TLV encoding
+ */
+uint16_t nn_cli_param_type_get_value_length(const nn_cli_param_type_t *param_type, const char *value);
+
+/**
  * Free a parameter type structure
  * @param param_type The structure to free
  */

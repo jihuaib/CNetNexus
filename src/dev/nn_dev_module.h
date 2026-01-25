@@ -6,7 +6,6 @@
 #include <stdint.h>
 
 #include "nn_dev.h"
-#include "nn_dev_mq.h"
 
 #define NN_MODULE_NAME_MAX_LEN 12
 
@@ -20,9 +19,6 @@ typedef struct nn_module
     // Message queue for inter-module communication
     nn_dev_module_mq_t *mq; // Module message queue (NULL if not initialized)
 } nn_dev_module_t;
-
-// Get a module by name
-nn_dev_module_t *nn_get_module(const char *name);
 
 int32_t nn_dev_init_all_modules(void);
 

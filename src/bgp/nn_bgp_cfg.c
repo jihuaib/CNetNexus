@@ -1,0 +1,217 @@
+//
+// BGP CLI Command Handler
+// Processes CLI commands received via pub/sub TLV messages
+//
+
+#include "nn_bgp_cfg.h"
+
+#include <stdio.h>
+#include <string.h>
+
+#include "nn_cfg.h"
+#include "nn_dev.h"
+#include "nn_errcode.h"
+
+// ============================================================================
+// Group Dispatch Table
+// ============================================================================
+typedef int (*nn_bgp_group_handler_t)(nn_cfg_tlv_parser_t parser, nn_bgp_cfg_out_t *cfg_out,
+                                      nn_bgp_resp_out_t *resp_out);
+
+typedef struct nn_bgp_group_dispatch
+{
+    uint32_t group_id;
+    nn_bgp_group_handler_t handler;
+} nn_bgp_group_dispatch_t;
+
+int handle_bgp_config(nn_cfg_tlv_parser_t parser, nn_bgp_cfg_out_t *cfg_out, nn_bgp_resp_out_t *resp_out);
+
+static const nn_bgp_group_dispatch_t g_bgp_group_dispatch[] = {
+    {NN_BGP_CLI_GROUP_ID_BGP, handle_bgp_config},
+};
+
+#define BGP_GROUP_DISPATCH_COUNT (sizeof(g_bgp_group_dispatch) / sizeof(g_bgp_group_dispatch[0]))
+
+typedef int (*nn_bgp_cfg_resp_t)(nn_dev_message_t *msg, const nn_bgp_cfg_out_t *cfg_out,
+                                 const nn_bgp_resp_out_t *resp_out);
+
+typedef struct nn_bgp_cli_resp_dispatch
+{
+    uint32_t group_id;
+    nn_bgp_cfg_resp_t handler;
+} nn_bgp_cli_resp_dispatch_t;
+
+int handle_bgp_config_resp(nn_dev_message_t *msg, const nn_bgp_cfg_out_t *cfg_out, const nn_bgp_resp_out_t *resp_out);
+
+static const nn_bgp_cli_resp_dispatch_t g_nn_bgp_cfg_dispatch[] = {
+    {NN_BGP_CLI_GROUP_ID_BGP, handle_bgp_config_resp},
+};
+
+#define NN_BGP_CFG_RESP_DISPATCH_COUNT (sizeof(g_nn_bgp_cfg_dispatch) / sizeof(g_nn_bgp_cfg_dispatch[0]))
+
+/**
+ * @brief Handle "bgp <as-number>" command (group_id = 1)
+ */
+int handle_bgp_config(nn_cfg_tlv_parser_t parser, nn_bgp_cfg_out_t *cfg_out, nn_bgp_resp_out_t *resp_out)
+{
+    uint32_t as_number = 0;
+    int has_as_number = 0;
+
+    // Parse TLV elements
+    NN_CFG_TLV_FOREACH(parser, elem_id, value, len)
+    {
+        printf("[bgp_cfg]   Element ID: %u, Length: %u\n", elem_id, len);
+
+        switch (elem_id)
+        {
+            case NN_BGP_CLI_BGP_ELEM_ID_BGP:
+                printf("[bgp_cfg]     Keyword: bgp\n");
+                break;
+
+            case NN_BGP_CLI_BGP_ELEM_ID_BGP_AS:
+                NN_CFG_TLV_GET_UINT32(value, len, as_number);
+                has_as_number = 1;
+                printf("[bgp_cfg]     AS Number: %u\n", as_number);
+                break;
+
+            default:
+                printf("[bgp_cfg]     Unknown element ID: %u\n", elem_id);
+                break;
+        }
+    }
+
+    // Validate and execute
+    if (!has_as_number)
+    {
+        snprintf(resp_out->message, sizeof(resp_out->message), "BGP Error: Missing required AS number parameter.\r\n");
+        resp_out->success = 0;
+        return NN_ERRCODE_FAIL;
+    }
+
+    // Configure BGP
+    printf("[bgp_cli] Configuring BGP with AS number: %u\n", as_number);
+
+    // Set configuration output for view switching
+    cfg_out->data.bgp.as_number = as_number;
+
+    // Set response output
+    snprintf(resp_out->message, sizeof(resp_out->message), "BGP: AS %u configured.\r\n", as_number);
+    resp_out->success = 1;
+
+    return NN_ERRCODE_SUCCESS;
+}
+
+/**
+ * @brief Dispatch command to handler by group_id
+ */
+static int dispatch_by_group_id(uint32_t group_id, nn_cfg_tlv_parser_t parser, nn_bgp_cfg_out_t *cfg_out,
+                                nn_bgp_resp_out_t *resp_out)
+{
+    for (size_t i = 0; i < BGP_GROUP_DISPATCH_COUNT; i++)
+    {
+        if (g_bgp_group_dispatch[i].group_id == group_id)
+        {
+            printf("[bgp_cfg] Dispatching to group (group_id=%u)\n", group_id);
+            return g_bgp_group_dispatch[i].handler(parser, cfg_out, resp_out);
+        }
+    }
+
+    printf("[bgp_cfg] Error: Unknown group_id: %u\n", group_id);
+    snprintf(resp_out->message, sizeof(resp_out->message), "BGP Error: Unknown command group.\r\n");
+    resp_out->success = 0;
+    return NN_ERRCODE_FAIL;
+}
+
+int handle_bgp_config_resp(nn_dev_message_t *msg, const nn_bgp_cfg_out_t *cfg_out, const nn_bgp_resp_out_t *resp_out)
+{
+    char out_prompt[NN_CFG_CLI_MAX_PROMPT_LEN];
+
+    out_prompt[0] = '\0';
+
+    (void)resp_out;
+
+    const char *template = nn_cfg_get_view_prompt_template(NN_CFG_CLI_VIEW_BGP);
+    if (!template)
+    {
+        return NN_ERRCODE_FAIL;
+    }
+
+    snprintf(out_prompt, NN_CFG_CLI_MAX_PROMPT_LEN, template, cfg_out->data.bgp.as_number);
+    char *msg_out = g_malloc0(NN_CFG_CLI_MAX_PROMPT_LEN);
+    memcpy(msg_out, out_prompt, NN_CFG_CLI_MAX_PROMPT_LEN);
+
+    nn_dev_message_t *resp = nn_dev_message_create(NN_CFG_MSG_TYPE_CLI_VIEW_CHG, NN_DEV_MODULE_ID_BGP, msg->request_id,
+                                                   msg_out, NN_CFG_CLI_MAX_PROMPT_LEN, g_free);
+    if (resp)
+    {
+        nn_dev_pubsub_send_response(msg->sender_id, resp);
+        nn_dev_message_free(resp);
+    }
+
+    return NN_ERRCODE_SUCCESS;
+}
+
+/**
+ * @brief Send response back to sender based on cfg_out and resp_out
+ */
+static void nn_bgp_cfg_send_response(nn_dev_message_t *msg, const nn_bgp_cfg_out_t *cfg_out,
+                                     const nn_bgp_resp_out_t *resp_out)
+{
+    if (msg->sender_id == 0)
+    {
+        return; // No sender to respond to
+    }
+
+    for (size_t i = 0; i < BGP_GROUP_DISPATCH_COUNT; i++)
+    {
+        if (g_nn_bgp_cfg_dispatch[i].group_id == cfg_out->group_id)
+        {
+            printf("[bgp_cfg] Dispatching resp to group (group_id=%u)\n", cfg_out->group_id);
+            (void)g_nn_bgp_cfg_dispatch[i].handler(msg, cfg_out, resp_out);
+        }
+    }
+}
+
+// ============================================================================
+// Main Entry Point
+// ============================================================================
+
+/**
+ * @brief Parse and dispatch BGP CLI command from TLV message
+ */
+int nn_bgp_cfg_handle_message(nn_dev_message_t *msg)
+{
+    if (!msg || !msg->data)
+    {
+        return NN_ERRCODE_FAIL;
+    }
+
+    if (msg->msg_type != NN_CFG_MSG_TYPE_CLI)
+    {
+        printf("[bgp_cfg] Ignoring non-CLI message type: 0x%08X\n", msg->msg_type);
+        return NN_ERRCODE_FAIL;
+    }
+
+    // Initialize output structures
+    nn_bgp_cfg_out_t cfg_out;
+    nn_bgp_resp_out_t resp_out;
+
+    memset(&cfg_out, 0, sizeof(cfg_out));
+    memset(&resp_out, 0, sizeof(resp_out));
+
+    int result = NN_ERRCODE_FAIL;
+
+    // Parse and dispatch command
+    NN_CFG_TLV_PARSE_BEGIN(msg->data, msg->data_len, parser, group_id)
+    {
+        printf("[bgp_cfg] Received CLI command (group_id=%u)\n", group_id);
+        cfg_out.group_id = group_id;
+        result = dispatch_by_group_id(group_id, parser, &cfg_out, &resp_out);
+    }
+    NN_CFG_TLV_PARSE_END();
+
+    // Send response based on cfg_out and resp_out
+    nn_bgp_cfg_send_response(msg, &cfg_out, &resp_out);
+
+    return result;
+}

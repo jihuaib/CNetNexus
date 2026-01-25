@@ -1,0 +1,32 @@
+# Build directories
+build/
+build-release/
+cmake-build-*/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+docs/
+*.md
+
+# CI/CD
+.github/
+scripts/
+
+# Docker
+.dockerignore
+Dockerfile
+*.sh
+
+# Misc
+.claude/
+*.tar.gz
