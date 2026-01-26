@@ -11,10 +11,6 @@
 #include "nn_errcode.h"
 #include "nn_path_utils.h"
 
-// Forward declarations of dev command callbacks
-extern void cmd_show_version(uint32_t client_fd, const char *args);
-extern void cmd_sysname(uint32_t client_fd, const char *args);
-
 // BGP module context
 typedef struct nn_dev_context
 {
@@ -45,7 +41,7 @@ static int32_t dev_module_init()
     if (event_fd < 0)
     {
         nn_dev_pubsub_cleanup();
-        nn_nn_mq_destroy(mq);
+        nn_dev_mq_destroy(mq);
         fprintf(stderr, "[dev] Failed to create event fd\n");
         return NN_ERRCODE_FAIL;
     }
@@ -59,7 +55,7 @@ static int32_t dev_module_init()
     {
         nn_dev_pubsub_cleanup();
         close(g_nn_dev_ctx.epoll_fd);
-        nn_nn_mq_destroy(mq);
+        nn_dev_mq_destroy(mq);
         perror("[dev] Failed to create epoll");
         return NN_ERRCODE_FAIL;
     }
@@ -72,7 +68,7 @@ static int32_t dev_module_init()
     {
         nn_dev_pubsub_cleanup();
         close(g_nn_dev_ctx.epoll_fd);
-        nn_nn_mq_destroy(mq);
+        nn_dev_mq_destroy(mq);
         perror("[dev] Failed to add eventfd to epoll");
         return NN_ERRCODE_FAIL;
     }
@@ -83,7 +79,7 @@ static int32_t dev_module_init()
     {
         nn_dev_pubsub_cleanup();
         close(g_nn_dev_ctx.epoll_fd);
-        nn_nn_mq_destroy(mq);
+        nn_dev_mq_destroy(mq);
         fprintf(stderr, "[dev] Failed to register with pub/sub system\n");
         return NN_ERRCODE_FAIL;
     }

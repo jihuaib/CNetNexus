@@ -1,3 +1,5 @@
+#include "nn_cfg_main.h"
+
 #include <arpa/inet.h>
 #include <glib.h>
 #include <netinet/in.h>
@@ -8,7 +10,7 @@
 #include <string.h>
 #include <sys/eventfd.h>
 #include <sys/socket.h>
-#include <unistd.h>
+#include <sys/epoll.h>
 
 #include "nn_cfg.h"
 #include "nn_cfg_registry.h"
@@ -24,35 +26,13 @@ enum
     CFG_BACKLOG = 5
 };
 
-// Server state
-static int g_server_socket = -1;
-static pthread_t g_server_thread;
-static pthread_t g_worker_thread;
-static int g_server_running = 0;
-static int g_worker_running = 0;
+#define CFG_MAX_EPOLL_EVENTS 16
 
-static int g_cfg_event_fd = -1;
-static nn_dev_module_mq_t *g_cfg_mq = NULL;
+nn_cfg_local_t *g_nn_cfg_local = NULL;
 
 // Forward declarations
 static void *cfg_server_thread(void *arg);
-static void *cfg_client_thread(void *arg);
-static void *cfg_worker_thread(void *arg);
 
-// Client thread function
-static void *cfg_client_thread(void *arg)
-{
-    int client_fd = *(int *)arg;
-    g_free(arg);
-
-    pthread_detach(pthread_self());
-
-    printf("[cfg] Client connected (fd: %d)\n", client_fd);
-    handle_client(client_fd);
-    printf("[cfg] Client disconnected (fd: %d)\n", client_fd);
-
-    return NULL;
-}
 
 // Server thread function
 static void *cfg_server_thread(void *arg)
@@ -61,66 +41,279 @@ static void *cfg_server_thread(void *arg)
 
     struct sockaddr_in client_addr;
     socklen_t client_len;
-    int client_fd;
-    pthread_t thread_id;
 
-    printf("[cfg] Server thread started on port %d\n", CFG_PORT);
-
-    while (g_server_running && !nn_shutdown_requested())
+    while (!nn_shutdown_requested())
     {
-        client_len = sizeof(client_addr);
-        client_fd = accept(g_server_socket, (struct sockaddr *)&client_addr, &client_len);
+        struct epoll_event events[CFG_MAX_EPOLL_EVENTS];
+        // Wait for events with 1 second timeout
+        int nfds = epoll_wait(g_nn_cfg_local->epoll_fd, events, CFG_MAX_EPOLL_EVENTS, 1000);
 
-        if (client_fd < 0)
+        if (nfds < 0)
         {
-            if (g_server_running && !nn_shutdown_requested())
+            if (errno == EINTR)
             {
-                perror("[cfg] Accept failed");
+                continue;
             }
+            perror("[bgp] epoll_wait failed");
+            break;
+        }
+
+        if (nfds == 0)
+        {
+            // Timeout - do periodic BGP tasks
             continue;
         }
 
-        int *client_fd_ptr = g_malloc0(sizeof(int));
-
-        *client_fd_ptr = client_fd;
-
-        if (pthread_create(&thread_id, NULL, cfg_client_thread, client_fd_ptr) != NN_ERRCODE_SUCCESS)
+        // Process events
+        for (int i = 0; i < nfds; i++)
         {
-            perror("[cfg] Failed to create client thread");
-            g_free(client_fd_ptr);
-            close(client_fd);
+            if (events[i].data.fd == g_nn_cfg_local->event_fd)
+            {
+                // Message queue has data
+                // nn_cfg_process_messages(g_nn_cfg_local);
+            }
+            else if (events[i].data.fd == g_nn_cfg_local->listen_sock)
+            {
+                // New connection
+                client_len = sizeof(client_addr);
+                int conn_fd = accept(g_nn_cfg_local->listen_sock, (struct sockaddr *)&client_addr, &client_len);
+
+                if (conn_fd < 0)
+                {
+                    if (!nn_shutdown_requested())
+                    {
+                        perror("[cfg] Accept failed");
+                    }
+                    continue;
+                }
+
+                int *fd_key = g_malloc(sizeof(int));
+                *fd_key = conn_fd;
+
+                nn_cli_session_t *session = nn_cli_session_create(conn_fd);
+                if (session)
+                {
+                    g_hash_table_insert(g_nn_cfg_local->sessions, fd_key, session);
+
+                    struct epoll_event client_ev;
+                    client_ev.events = EPOLLIN;
+                    client_ev.data.fd = conn_fd;
+                    if (epoll_ctl(g_nn_cfg_local->epoll_fd, EPOLL_CTL_ADD, conn_fd, &client_ev) < 0)
+                    {
+                        perror("[cfg] Failed to add client to epoll");
+                        g_hash_table_remove(g_nn_cfg_local->sessions, fd_key);
+                        // session_destroy will close conn_fd
+                    }
+                    else
+                    {
+                        printf("[cfg] Client connected (fd: %d)\n", conn_fd);
+                    }
+                }
+                else
+                {
+                    g_free(fd_key);
+                    close(conn_fd);
+                }
+            }
+            else
+            {
+                // Input from existing client
+                int fd = events[i].data.fd;
+                nn_cli_session_t *session = g_hash_table_lookup(g_nn_cfg_local->sessions, &fd);
+                if (session)
+                {
+                    if (nn_cli_process_input(session) < 0)
+                    {
+                        printf("[cfg] Client disconnected (fd: %d)\n", fd);
+                        epoll_ctl(g_nn_cfg_local->epoll_fd, EPOLL_CTL_DEL, fd, NULL);
+                        g_hash_table_remove(g_nn_cfg_local->sessions, &fd);
+                    }
+                }
+            }
         }
     }
 
-    printf("[cfg] Server thread exiting\n");
     return NULL;
+}
+
+int32_t nn_cfg_create_listen_sock()
+{
+    // Create server socket
+    int32_t server_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_socket < 0)
+    {
+        perror("[cfg] Failed to create socket");
+        return NN_DEV_INVALID_FD;
+    }
+
+    int opt = 1;
+    if (setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
+    {
+        close(server_socket);
+        perror("[cfg] Failed to set socket options");
+        return NN_DEV_INVALID_FD;
+    }
+
+    struct sockaddr_in server_addr;
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(CFG_PORT);
+
+    if (bind(server_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
+    {
+        close(server_socket);
+        perror("[cfg] Failed to bind socket");
+        return NN_DEV_INVALID_FD;
+    }
+
+    if (listen(server_socket, CFG_BACKLOG) < 0)
+    {
+        close(server_socket);
+        perror("[cfg] Failed to listen");
+        return NN_DEV_INVALID_FD;
+    }
+
+    return server_socket;
+}
+
+static int nn_cfg_init_local()
+{
+    g_nn_cfg_local = g_malloc0(sizeof(nn_cfg_local_t));
+    pthread_mutex_init(&g_nn_cfg_local->history_mutex, NULL);
+    g_nn_cfg_local->epoll_fd = NN_DEV_INVALID_FD;
+    g_nn_cfg_local->event_fd = NN_DEV_INVALID_FD;
+    g_nn_cfg_local->listen_sock = NN_DEV_INVALID_FD;
+    g_nn_cfg_local->worker_thread = 0;
+    g_nn_cfg_local->sessions = g_hash_table_new_full(g_int_hash, g_int_equal, g_free, (GDestroyNotify)nn_cli_session_destroy);
+
+    nn_dev_module_mq_t *mq = nn_dev_mq_create();
+    if (mq == NULL)
+    {
+        fprintf(stderr, "[cfg] Failed to create message queue\n");
+        return NN_ERRCODE_FAIL;
+    }
+    g_nn_cfg_local->mq = mq;
+
+    int event_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (event_fd < 0)
+    {
+        fprintf(stderr, "[cfg] Failed to create event fd\n");
+        return NN_ERRCODE_FAIL;
+    }
+    g_nn_cfg_local->event_fd = event_fd;
+
+    int epoll_fd = epoll_create1(EPOLL_CLOEXEC);
+    if (epoll_fd < 0)
+    {
+        perror("[cfg] Failed to create epoll");
+        return NN_ERRCODE_FAIL;
+    }
+    g_nn_cfg_local->epoll_fd = epoll_fd;
+
+    struct epoll_event ev;
+    ev.events = EPOLLIN;
+    ev.data.fd = event_fd;
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, event_fd, &ev) < 0)
+    {
+        perror("[cfg] Failed to add eventfd to epoll");
+        return NN_ERRCODE_FAIL;
+    }
+
+    int32_t listen_sock = nn_cfg_create_listen_sock();
+    if (listen_sock < 0)
+    {
+        return NN_ERRCODE_FAIL;
+    }
+    g_nn_cfg_local->listen_sock = listen_sock;
+
+    ev.events = EPOLLIN;
+    ev.data.fd = listen_sock;
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, listen_sock, &ev) < 0)
+    {
+        perror("[cfg] Failed to add listen socket to epoll");
+        return NN_ERRCODE_FAIL;
+    }
+
+    // Start server thread
+    if (pthread_create(&g_nn_cfg_local->worker_thread, NULL, cfg_server_thread, NULL) != NN_ERRCODE_SUCCESS)
+    {
+        perror("[cfg] Failed to create server thread");
+        return NN_ERRCODE_FAIL;
+    }
+
+    printf("[cfg] Telnet server listening on port %d\n", CFG_PORT);
+
+    return NN_ERRCODE_SUCCESS;
+}
+
+static void nn_cfg_cleanup_local()
+{
+    nn_cli_global_history_cleanup(&g_nn_cfg_local->global_history);
+    pthread_mutex_destroy(&g_nn_cfg_local->history_mutex);
+
+    if (g_nn_cfg_local->mq != NULL)
+    {
+        nn_dev_mq_destroy(g_nn_cfg_local->mq);
+    }
+
+    if (g_nn_cfg_local->event_fd != NN_DEV_INVALID_FD)
+    {
+        close(g_nn_cfg_local->event_fd);
+    }
+
+    if (g_nn_cfg_local->listen_sock != NN_DEV_INVALID_FD)
+    {
+        close(g_nn_cfg_local->listen_sock);
+    }
+
+    if (g_nn_cfg_local->epoll_fd != NN_DEV_INVALID_FD)
+    {
+        close(g_nn_cfg_local->epoll_fd);
+    }
+
+    if (g_nn_cfg_local->worker_thread != 0)
+    {
+        pthread_join(g_nn_cfg_local->worker_thread, NULL);
+    }
+
+    if (g_nn_cfg_local->sessions != NULL)
+    {
+        g_hash_table_destroy(g_nn_cfg_local->sessions);
+    }
+
+    g_free(g_nn_cfg_local);
 }
 
 // Module initialization
 static int32_t cfg_module_init()
 {
-    extern nn_cli_view_tree_t g_view_tree;
-
-    // 1. Initialize CLI view tree
-    nn_cli_cleanup();
+    int ret = nn_cfg_init_local();
+    if (ret != NN_ERRCODE_SUCCESS)
+    {
+        nn_cfg_cleanup_local();
+        return NN_ERRCODE_FAIL;
+    }
 
     nn_cli_view_node_t *user_view = nn_cli_view_create(NN_CFG_CLI_VIEW_USER, "user", "<{hostname}>");
     if (!user_view)
     {
+        nn_cfg_cleanup_local();
         fprintf(stderr, "[cfg] Failed to create user view\n");
         return NN_ERRCODE_FAIL;
     }
-    g_view_tree.root = user_view;
+    g_nn_cfg_local->view_tree.root = user_view;
 
     nn_cli_view_node_t *config_view = nn_cli_view_create(NN_CFG_CLI_VIEW_CONFIG, "config", "<{hostname}(config)>");
     if (!config_view)
     {
+        nn_cfg_cleanup_local();
         fprintf(stderr, "[cfg] Failed to create config view\n");
         return NN_ERRCODE_FAIL;
     }
     nn_cli_view_add_child(user_view, config_view);
 
-    // 2. Initialize all modules that registered XML (iterate g_xml_registry)
+    // Initialize all modules that registered XML (iterate g_xml_registry)
     printf("[cfg] Initializing cli modules:\n");
     printf("======================================\n");
 
@@ -133,7 +326,7 @@ static int32_t cfg_module_init()
 
         // Load XML
         printf("[cfg] Loading: %s\n", entry->xml_path);
-        if (nn_cli_xml_load_view_tree(entry->xml_path, &g_view_tree) == NN_ERRCODE_SUCCESS)
+        if (nn_cli_xml_load_view_tree(entry->xml_path, &g_nn_cfg_local->view_tree) == NN_ERRCODE_SUCCESS)
         {
             printf("[cfg]   ✓ Commands loaded\n");
         }
@@ -146,52 +339,6 @@ static int32_t cfg_module_init()
 
     printf("\n[cfg] Module cli initialization complete (failures: %d)\n\n", failed_count);
 
-    // Create server socket
-    g_server_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (g_server_socket < 0)
-    {
-        perror("[cfg] Failed to create socket");
-        return NN_ERRCODE_FAIL;
-    }
-
-    int opt = 1;
-    if (setsockopt(g_server_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
-    {
-        perror("[cfg] Failed to set socket options");
-        close(g_server_socket);
-        return NN_ERRCODE_FAIL;
-    }
-
-    struct sockaddr_in server_addr;
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(CFG_PORT);
-
-    if (bind(g_server_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
-    {
-        perror("[cfg] Failed to bind socket");
-        close(g_server_socket);
-        return NN_ERRCODE_FAIL;
-    }
-
-    if (listen(g_server_socket, CFG_BACKLOG) < 0)
-    {
-        perror("[cfg] Failed to listen");
-        close(g_server_socket);
-        return NN_ERRCODE_FAIL;
-    }
-
-    // Start server thread
-    g_server_running = 1;
-    if (pthread_create(&g_server_thread, NULL, cfg_server_thread, NULL) != NN_ERRCODE_SUCCESS)
-    {
-        perror("[cfg] Failed to create server thread");
-        close(g_server_socket);
-        return NN_ERRCODE_FAIL;
-    }
-
-    printf("[cfg] Telnet server listening on port %d\n", CFG_PORT);
     return NN_ERRCODE_SUCCESS;
 }
 
@@ -199,32 +346,8 @@ static int32_t cfg_module_init()
 static void cfg_module_cleanup(void)
 {
     printf("[cfg] Shutting down server...\n");
-
-    g_server_running = 0;
-    g_worker_running = 0;
-
-    if (g_server_socket >= 0)
-    {
-        // Use shutdown() to unblock accept()
-        shutdown(g_server_socket, SHUT_RDWR);
-        close(g_server_socket);
-        g_server_socket = -1;
-    }
-
-    // Wait for server thread to exit
-    pthread_join(g_server_thread, NULL);
-    pthread_join(g_worker_thread, NULL);
-
-    if (g_cfg_event_fd >= 0)
-    {
-        close(g_cfg_event_fd);
-    }
-    if (g_cfg_mq)
-    {
-        nn_nn_mq_destroy(g_cfg_mq);
-    }
-
     nn_cli_cleanup();
+    nn_cfg_cleanup_local();
     printf("[cfg] Server shutdown complete\n");
 }
 

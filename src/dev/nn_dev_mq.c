@@ -54,7 +54,7 @@ nn_dev_module_mq_t *nn_dev_mq_create()
 }
 
 // Destroy module message queue
-void nn_nn_mq_destroy(nn_dev_module_mq_t *mq)
+void nn_dev_mq_destroy(nn_dev_module_mq_t *mq)
 {
     if (mq == NULL)
     {

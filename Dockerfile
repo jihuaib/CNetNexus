@@ -64,7 +64,7 @@ COPY --from=builder /build/src/cfg/commands.xml /opt/netnexus/config/cfg_command
 
 # Set library path and XML directory
 ENV LD_LIBRARY_PATH=/opt/netnexus/bin
-ENV NETNEXUS_XML_DIR=/opt/netnexus/config
+ENV NN_XML_DIR=/opt/netnexus/config
 
 # Expose telnet console port
 EXPOSE 3788

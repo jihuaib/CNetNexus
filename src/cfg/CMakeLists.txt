@@ -7,9 +7,10 @@ set(NN_CFG_SOURCES
     nn_cli_param_type.c
     nn_cli_xml_parser.c
     nn_cli_dispatch.c
+    nn_cli_history.c
     nn_cfg_registry.c
     nn_cfg_main.c
-        nn_cfg_cli.c nn_cfg_cli.h)
+    nn_cfg_cli.c)
 
 # Create shared library for CLI
 add_library(nn_cfg SHARED ${NN_CFG_SOURCES})

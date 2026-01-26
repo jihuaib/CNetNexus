@@ -119,7 +119,7 @@ static int32_t bgp_module_init()
     int event_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     if (event_fd < 0)
     {
-        nn_nn_mq_destroy(mq);
+        nn_dev_mq_destroy(mq);
         fprintf(stderr, "[bgp] Failed to create event fd\n");
         return NN_ERRCODE_FAIL;
     }
@@ -132,7 +132,7 @@ static int32_t bgp_module_init()
     if (g_nn_bgp_ctx.epoll_fd < 0)
     {
         close(g_nn_bgp_ctx.epoll_fd);
-        nn_nn_mq_destroy(mq);
+        nn_dev_mq_destroy(mq);
         perror("[bgp] Failed to create epoll");
         return NN_ERRCODE_FAIL;
     }
@@ -144,7 +144,7 @@ static int32_t bgp_module_init()
     if (epoll_ctl(g_nn_bgp_ctx.epoll_fd, EPOLL_CTL_ADD, g_nn_bgp_ctx.event_fd, &ev) < 0)
     {
         close(g_nn_bgp_ctx.epoll_fd);
-        nn_nn_mq_destroy(mq);
+        nn_dev_mq_destroy(mq);
         perror("[bgp] Failed to add eventfd to epoll");
         return NN_ERRCODE_FAIL;
     }
@@ -154,7 +154,7 @@ static int32_t bgp_module_init()
     if (ret != NN_ERRCODE_SUCCESS)
     {
         close(g_nn_bgp_ctx.epoll_fd);
-        nn_nn_mq_destroy(mq);
+        nn_dev_mq_destroy(mq);
         fprintf(stderr, "[bgp] Failed to register with pub/sub system\n");
         return NN_ERRCODE_FAIL;
     }
@@ -168,7 +168,7 @@ static int32_t bgp_module_init()
     {
         nn_dev_pubsub_unregister(NN_DEV_MODULE_ID_BGP);
         close(g_nn_bgp_ctx.epoll_fd);
-        nn_nn_mq_destroy(mq);
+        nn_dev_mq_destroy(mq);
         perror("[bgp] Failed to create worker thread");
         return NN_ERRCODE_FAIL;
     }

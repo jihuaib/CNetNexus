@@ -533,7 +533,7 @@ nn_dev_message_t *nn_dev_pubsub_query(uint32_t publisher_id, uint32_t event_id, 
     {
         if (temp_mq)
         {
-            nn_nn_mq_destroy(temp_mq);
+            nn_dev_mq_destroy(temp_mq);
         }
         if (temp_event_fd >= 0)
         {
@@ -545,7 +545,7 @@ nn_dev_message_t *nn_dev_pubsub_query(uint32_t publisher_id, uint32_t event_id, 
     // Register temporary module
     if (nn_dev_pubsub_register(temp_module_id, temp_event_fd, temp_mq) != NN_ERRCODE_SUCCESS)
     {
-        nn_nn_mq_destroy(temp_mq);
+        nn_dev_mq_destroy(temp_mq);
         close(temp_event_fd);
         return NULL;
     }
@@ -561,7 +561,7 @@ nn_dev_message_t *nn_dev_pubsub_query(uint32_t publisher_id, uint32_t event_id, 
     if (nn_dev_pubsub_publish_to_module(publisher_id, event_id, target_module_id, msg) != NN_ERRCODE_SUCCESS)
     {
         nn_dev_pubsub_unregister(temp_module_id);
-        nn_nn_mq_destroy(temp_mq);
+        nn_dev_mq_destroy(temp_mq);
         close(temp_event_fd);
         return NULL;
     }
@@ -592,7 +592,7 @@ nn_dev_message_t *nn_dev_pubsub_query(uint32_t publisher_id, uint32_t event_id, 
 
     // Cleanup
     nn_dev_pubsub_unregister(temp_module_id);
-    nn_nn_mq_destroy(temp_mq);
+    nn_dev_mq_destroy(temp_mq);
     close(temp_event_fd);
 
     return response;

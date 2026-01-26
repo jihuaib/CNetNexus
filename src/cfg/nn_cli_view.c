@@ -5,10 +5,8 @@
 #include <string.h>
 
 #include "nn_cfg.h"
+#include "nn_cfg_main.h"
 #include "nn_errcode.h"
-
-// External reference to global view tree (defined in nn_cli_handler.c)
-extern nn_cli_view_tree_t g_view_tree;
 
 enum
 {
@@ -116,12 +114,12 @@ void nn_cli_view_free(nn_cli_view_node_t *view)
 // Get view prompt template by view name (for modules to fill placeholders)
 const char *nn_cfg_get_view_prompt_template(uint32_t view_id)
 {
-    if (!g_view_tree.root)
+    if (!g_nn_cfg_local->view_tree.root)
     {
         return NULL;
     }
 
-    nn_cli_view_node_t *view = nn_cli_view_find_by_id(g_view_tree.root, view_id);
+    nn_cli_view_node_t *view = nn_cli_view_find_by_id(g_nn_cfg_local->view_tree.root, view_id);
     if (view)
     {
         return view->prompt_template;

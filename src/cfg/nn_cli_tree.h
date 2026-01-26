@@ -1,6 +1,7 @@
 #ifndef NN_CLI_TREE_H
 #define NN_CLI_TREE_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 // Forward declaration
@@ -38,6 +39,7 @@ struct nn_cli_tree_node
     nn_cli_node_type_t type;         // Node type
     uint32_t view_id;                // Target view name to switch to after execution (optional)
     nn_cli_param_type_t *param_type; // Parameter type for validation (only for ARGUMENT nodes)
+    bool is_end_node;                // 1 if this node is a valid command end point, 0 otherwise
 
     // Children nodes
     nn_cli_tree_node_t **children; // Array of child nodes
@@ -100,6 +102,5 @@ nn_cli_tree_node_t *nn_cli_tree_match_command(nn_cli_tree_node_t *root, const ch
 
 uint32_t nn_cli_tree_match_command_get_matches(nn_cli_tree_node_t *root, const char *cmd_line,
                                                nn_cli_tree_node_t **matches, uint32_t max_matches);
-void nn_cli_tree_print_help(nn_cli_tree_node_t *node, uint32_t client_fd);
 
 #endif // nn_cli_TREE_H

@@ -140,7 +140,7 @@ void nn_cleanup_all_modules(void)
         // Destroy message queue if exists
         if (module->mq)
         {
-            nn_nn_mq_destroy(module->mq);
+            nn_dev_mq_destroy(module->mq);
         }
 
         g_free(module);
@@ -151,4 +151,22 @@ void nn_cleanup_all_modules(void)
     g_module_registry = NULL;
 
     printf("\n[dev] Module cleanup complete\n");
+}
+
+int nn_dev_get_module_name(uint32_t module_id, char *module_name)
+{
+    if (!g_module_registry || !module_name)
+    {
+        snprintf(module_name, NN_DEV_MODULE_NAME_MAX_LEN, "unknown");
+        return NN_ERRCODE_FAIL;
+    }
+
+    nn_dev_module_t *module = (nn_dev_module_t *)g_hash_table_lookup(g_module_registry, &module_id);
+    if (module)
+    {
+        strlcpy(module_name, module->name, NN_DEV_MODULE_NAME_MAX_LEN);
+        return NN_ERRCODE_SUCCESS;
+    }
+
+    return NN_ERRCODE_FAIL;
 }

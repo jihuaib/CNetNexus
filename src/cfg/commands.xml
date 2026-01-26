@@ -17,11 +17,19 @@
                     <name>command-info</name>
                     <description>Command info</description>
                 </element>
+                <element id="4" type="keyword">
+                    <name>history</name>
+                    <description>Command history</description>
+                </element>
             </elements>
 
             <commands>
                 <command>
                     <expression>1 2 3</expression>
+                    <views>1</views>
+                </command>
+                <command>
+                    <expression>1 2 4</expression>
                     <views>1</views>
                 </command>
             </commands>

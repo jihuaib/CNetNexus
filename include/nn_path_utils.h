@@ -19,7 +19,7 @@ int nn_get_exe_dir(char *buf, size_t size);
  * @return 0 on success, -1 on failure
  *
  * This function resolves XML paths in the following order:
- * 1. Environment variable NETNEXUS_XML_DIR if set
+ * 1. Environment variable NN_XML_DIR if set
  * 2. Relative to executable directory (for development builds)
  * 3. System installation path (for production)
  */

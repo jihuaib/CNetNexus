@@ -1,14 +1,14 @@
 #include "nn_cli_tree.h"
 
-#include <stdio.h>
 #include <ctype.h>
 #include <glib.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
-#include "nn_cli_param_type.h"
 #include "nn_cli_handler.h"
+#include "nn_cli_param_type.h"
 #include "nn_errcode.h"
 
 enum
@@ -31,6 +31,7 @@ nn_cli_tree_node_t *nn_cli_tree_create_node(uint32_t element_id, const char *nam
     node->type = type;
     node->view_id = view_id;
     node->param_type = NULL;
+    node->is_end_node = false; // Default: not an end node
     node->children = NULL;
     node->num_children = 0;
     node->children_capacity = 0;
@@ -252,6 +253,9 @@ nn_cli_tree_node_t *nn_cli_tree_clone(nn_cli_tree_node_t *node)
         clone->param_type = nn_cli_param_type_parse(node->param_type->type_str);
     }
 
+    // Clone is_end_node flag
+    clone->is_end_node = node->is_end_node;
+
     // Clone all children recursively
     for (uint32_t i = 0; i < node->num_children; i++)
     {
@@ -396,49 +400,6 @@ uint32_t nn_cli_tree_match_command_get_matches(nn_cli_tree_node_t *root, const c
 
     g_free(cmd_copy);
     return count;
-}
-
-// Print help for a node
-void nn_cli_tree_print_help(nn_cli_tree_node_t *node, uint32_t client_fd)
-{
-    if (!node)
-    {
-        return;
-    }
-
-    char buffer[512];
-
-    if (node->num_children > 0)
-    {
-        for (uint32_t i = 0; i < node->num_children; i++)
-        {
-            nn_cli_tree_node_t *child = node->children[i];
-            if (child->description)
-            {
-                char name_display[128];
-
-                if (child->type == NN_CLI_NODE_ARGUMENT && child->param_type && child->param_type->type_str)
-                {
-                    // ARGUMENT: Display as <type(range)>
-                    snprintf(name_display, sizeof(name_display), "<%s>", child->param_type->type_str);
-                }
-                else if (child->name)
-                {
-                    // COMMAND or ARGUMENT without param_type: Display name as-is
-                    strncpy(name_display, child->name, sizeof(name_display) - 1);
-                    name_display[sizeof(name_display) - 1] = '\0';
-                }
-                else
-                {
-                    // No name, skip this child
-                    continue;
-                }
-
-                snprintf(buffer, sizeof(buffer), "  %-25s - %s\r\n", name_display, child->description);
-                nn_cfg_send_message(client_fd, buffer);
-            }
-        }
-    }
 }
 
 // ============================================================================

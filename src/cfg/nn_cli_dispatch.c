@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include "nn_cfg.h"
+#include "nn_cfg_main.h"
 #include "nn_cli_param_type.h"
 #include "nn_dev.h"
 #include "nn_errcode.h"
@@ -136,7 +137,7 @@ uint8_t *nn_cli_dispatch_pack_tlv(nn_cli_match_result_t *result, uint32_t *out_l
 }
 
 // Dispatch command to target module via pub/sub (synchronous)
-int nn_cli_dispatch_to_module(nn_cli_match_result_t *result, uint32_t client_fd, nn_cli_session_t *session)
+int nn_cli_dispatch_to_module(nn_cli_match_result_t *result, nn_cli_session_t *session)
 {
     if (!result || result->module_id == 0 || !session)
     {
@@ -182,7 +183,7 @@ int nn_cli_dispatch_to_module(nn_cli_match_result_t *result, uint32_t client_fd,
 
             if (result->final_node != NULL)
             {
-                view = nn_cli_view_find_by_id(g_view_tree.root, result->final_node->view_id);
+                view = nn_cli_view_find_by_id(g_nn_cfg_local->view_tree.root, result->final_node->view_id);
             }
 
             // Update prompt: use module-filled prompt if available, otherwise use view template
@@ -198,7 +199,7 @@ int nn_cli_dispatch_to_module(nn_cli_match_result_t *result, uint32_t client_fd,
     }
     else
     {
-        nn_cfg_send_message(client_fd, "Error: Module timed out or failed to respond.\r\n");
+        nn_cfg_send_message(session, "Error: Module timed out or failed to respond.\r\n");
         return NN_ERRCODE_FAIL;
     }
 }

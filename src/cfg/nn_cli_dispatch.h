@@ -39,6 +39,6 @@ uint8_t *nn_cli_dispatch_pack_tlv(nn_cli_match_result_t *result, uint32_t *out_l
 
 // Dispatch command to target module via pub/sub
 // Returns 0 on success, -1 on failure
-int nn_cli_dispatch_to_module(nn_cli_match_result_t *result, uint32_t client_fd, nn_cli_session_t *session);
+int nn_cli_dispatch_to_module(nn_cli_match_result_t *result, nn_cli_session_t *session);
 
 #endif // NN_CLI_DISPATCH_H

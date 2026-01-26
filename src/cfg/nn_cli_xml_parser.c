@@ -14,10 +14,6 @@
 #include "nn_cli_view.h"
 #include "nn_errcode.h"
 
-extern void cmd_show_version(uint32_t client_fd, const char *args);
-extern void cmd_show_tree(uint32_t client_fd, const char *args);
-extern void cmd_sysname(uint32_t client_fd, const char *args);
-
 // Forward declarations
 static void merge_global_to_views(nn_cli_view_node_t *view, nn_cli_tree_node_t *global_tree);
 
@@ -107,6 +103,12 @@ static nn_cli_tree_node_t *build_tree_from_expression(uint32_t *element_ids, uin
             nn_cli_tree_add_child(current, node);
             current = node;
         }
+    }
+
+    // Mark the last node as an end node (valid command completion point)
+    if (current)
+    {
+        current->is_end_node = true;
     }
 
     return root;

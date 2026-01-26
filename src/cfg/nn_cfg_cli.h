@@ -2,8 +2,8 @@
 // Created by j31397 on 2026/1/26.
 //
 
-#ifndef NETNEXUS_NN_CFG_CLI_H
-#define NETNEXUS_NN_CFG_CLI_H
+#ifndef NN_CFG_CLI_H
+#define NN_CFG_CLI_H
 
 #include <stdbool.h>
 
@@ -14,12 +14,22 @@
 // Command Group and Element IDs
 // ============================================================================
 
-#define NN_CFG_CLI_GROUP_ID_SHOW_CLI 0x00000001
+#define NN_CFG_CLI_GROUP_ID_SHOW 0x00000001
+#define NN_CFG_CLI_SHOW_ELEM_ID_SHOW 0x00000001
+#define NN_CFG_CLI_SHOW_ELEM_ID_CLI 0x00000002
+#define NN_CFG_CLI_SHOW_ELEM_ID_COMMON_INFO 0x00000003
+#define NN_CFG_CLI_SHOW_ELEM_ID_HISTORY 0x00000004
 
 #define NN_CFG_CLI_GROUP_ID_OP 0x00000002
 #define NN_CFG_CLI_OP_ELEM_ID_EXIT 0x00000001
 #define NN_CFG_CLI_OP_ELEM_ID_CONFIG 0x00000002
 #define NN_CFG_CLI_OP_ELEM_ID_END 0x00000003
+
+typedef struct nn_cli_cfg_show
+{
+    bool is_common_info;
+    bool is_history;
+} nn_cli_cfg_show_t;
 
 typedef struct nn_cli_cfg_op
 {
@@ -33,6 +43,7 @@ typedef struct nn_cfg_cli_out
     uint32_t group_id;
     union
     {
+        nn_cli_cfg_show_t cfg_show;
         nn_cli_cfg_op_t cfg_op;
     } data;
 } nn_cfg_cli_out_t;
@@ -43,6 +54,6 @@ typedef struct nn_cfg_cli_resp_out
     int success;
 } nn_cfg_cli_resp_out_t;
 
-int nn_cfg_cli_handle(nn_cli_match_result_t *result, uint32_t client_fd, nn_cli_session_t *session);
+int nn_cfg_cli_handle(nn_cli_match_result_t *result, nn_cli_session_t *session);
 
-#endif // NETNEXUS_NN_CFG_CLI_H
+#endif // NN_CFG_CLI_H

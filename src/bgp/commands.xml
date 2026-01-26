@@ -14,7 +14,7 @@
             <elements>
                 <element id="1" type="keyword">
                     <name>bgp</name>
-                    <description>BGP protocol configuration</description>
+                    <description>BGP protocol</description>
                 </element>
                 <element id="2" type="parameter">
                     <name>&lt;as-number&gt;</name>
@@ -28,6 +28,34 @@
                     <expression>1 2</expression>
                     <views>3</views>
                     <view-id>4</view-id>
+                </command>
+            </commands>
+        </group>
+
+        <group group_id="2">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>show</name>
+                    <description>Display system information</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>bgp</name>
+                    <description>BGP protocol</description>
+                </element>
+                <element id="3" type="keyword">
+                    <name>peer</name>
+                    <description>BGP peer</description>
+                </element>
+            </elements>
+            
+            <commands>
+                <command>
+                    <expression>1 2</expression>
+                    <views>1</views>
+                </command>
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>1</views>
                 </command>
             </commands>
         </group>

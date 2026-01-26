@@ -40,7 +40,7 @@ int nn_get_exe_dir(char *buf, size_t size)
 
 int nn_resolve_xml_path(const char *module_name, char *buf, size_t size)
 {
-    const char *xml_dir = getenv("NETNEXUS_XML_DIR");
+    const char *xml_dir = getenv("NN_XML_DIR");
 
     // Priority 1: Environment variable (for Docker/production)
     if (xml_dir != NULL)

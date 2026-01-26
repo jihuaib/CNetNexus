@@ -23,6 +23,8 @@
 
 #define NN_DEV_INVALID_FD (-1)
 
+#define NN_DEV_MODULE_NAME_MAX_LEN 12
+
 // Module initialization callback type
 // Returns 0 on success, non-zero on failure
 typedef int32_t (*nn_module_init_fn)();
@@ -38,6 +40,8 @@ void nn_request_shutdown(void);
 
 // Check if shutdown was requested
 int nn_shutdown_requested(void);
+
+int nn_dev_get_module_name(uint32_t module_id, char *module_name);
 
 // ============================================================================
 // MQ System APIs
@@ -71,7 +75,7 @@ void nn_dev_message_free(nn_dev_message_t *msg);
 // Create module message queue
 nn_dev_module_mq_t *nn_dev_mq_create();
 
-void nn_nn_mq_destroy(nn_dev_module_mq_t *mq);
+void nn_dev_mq_destroy(nn_dev_module_mq_t *mq);
 
 // Send message to module queue (thread-safe)
 int nn_nn_mq_send(int event_fd, nn_dev_module_mq_t *mq, nn_dev_message_t *msg);
