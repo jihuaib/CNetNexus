@@ -2,7 +2,7 @@
 <configuration module_id="3">
     <!-- View definitions -->
     <views>
-        <view view-id="4">
+        <view view-id="4" view-name="bgp">
             <template>&lt;{hostname}(config-bgp-%u)&gt;</template>
         </view>
     </views>

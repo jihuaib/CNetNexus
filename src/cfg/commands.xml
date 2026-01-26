@@ -14,8 +14,8 @@
                     <description>CLI information</description>
                 </element>
                 <element id="3" type="keyword">
-                    <name>tree</name>
-                    <description>Command tree structure</description>
+                    <name>command-info</name>
+                    <description>Command info</description>
                 </element>
             </elements>
 

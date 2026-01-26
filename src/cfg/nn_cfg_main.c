@@ -39,56 +39,6 @@ static void *cfg_server_thread(void *arg);
 static void *cfg_client_thread(void *arg);
 static void *cfg_worker_thread(void *arg);
 
-// Worker thread to handle messages sent to CFG module (ID 1)
-static void *cfg_worker_thread(void *arg)
-{
-    (void)arg;
-    struct pollfd pfd;
-    pfd.fd = g_cfg_event_fd;
-    pfd.events = POLLIN;
-
-    printf("[cfg] Worker thread started\n");
-
-    while (g_worker_running && !nn_shutdown_requested())
-    {
-        int ret = poll(&pfd, 1, 1000);
-        if (ret > 0)
-        {
-            if (pfd.revents & POLLIN)
-            {
-                nn_dev_message_t *msg = nn_nn_mq_receive(g_cfg_event_fd, g_cfg_mq);
-                while (msg)
-                {
-                    if (msg->msg_type == NN_CFG_MSG_TYPE_CLI)
-                    {
-                        // Reply to CLI request with success (using TLV format)
-                        if (msg->sender_id != 0)
-                        {
-                            // Pack a simple TLV with just the group ID header for CFG internal commands
-                            uint32_t *resp_data = g_malloc0(4);
-                            *resp_data = htonl(0);
-
-                            nn_dev_message_t *resp =
-                                nn_dev_message_create(NN_CFG_MSG_TYPE_CLI_VIEW_CHG, NN_DEV_MODULE_ID_CFG,
-                                                      msg->request_id, resp_data, 4, g_free);
-                            if (resp)
-                            {
-                                nn_dev_pubsub_send_response(msg->sender_id, resp);
-                                nn_dev_message_free(resp);
-                            }
-                        }
-                    }
-                    nn_dev_message_free(msg);
-                    msg = nn_nn_mq_receive(g_cfg_event_fd, g_cfg_mq);
-                }
-            }
-        }
-    }
-
-    printf("[cfg] Worker thread exiting\n");
-    return NULL;
-}
-
 // Client thread function
 static void *cfg_client_thread(void *arg)
 {
@@ -154,7 +104,7 @@ static int32_t cfg_module_init()
     // 1. Initialize CLI view tree
     nn_cli_cleanup();
 
-    nn_cli_view_node_t *user_view = nn_cli_view_create(NN_CFG_CLI_VIEW_USER, "<{hostname}>");
+    nn_cli_view_node_t *user_view = nn_cli_view_create(NN_CFG_CLI_VIEW_USER, "user", "<{hostname}>");
     if (!user_view)
     {
         fprintf(stderr, "[cfg] Failed to create user view\n");
@@ -162,7 +112,7 @@ static int32_t cfg_module_init()
     }
     g_view_tree.root = user_view;
 
-    nn_cli_view_node_t *config_view = nn_cli_view_create(NN_CFG_CLI_VIEW_CONFIG, "<{hostname}(config)>");
+    nn_cli_view_node_t *config_view = nn_cli_view_create(NN_CFG_CLI_VIEW_CONFIG, "config", "<{hostname}(config)>");
     if (!config_view)
     {
         fprintf(stderr, "[cfg] Failed to create config view\n");
@@ -195,34 +145,6 @@ static int32_t cfg_module_init()
     }
 
     printf("\n[cfg] Module cli initialization complete (failures: %d)\n\n", failed_count);
-
-    // Initialize MQ and eventfd for CFG module
-    g_cfg_mq = nn_dev_mq_create();
-    g_cfg_event_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-
-    if (!g_cfg_mq || g_cfg_event_fd < 0)
-    {
-        fprintf(stderr, "[cfg] Failed to initialize MQ or eventfd\n");
-        return NN_ERRCODE_FAIL;
-    }
-
-    // Register with pub/sub
-    if (nn_dev_pubsub_register(NN_DEV_MODULE_ID_CFG, g_cfg_event_fd, g_cfg_mq) != NN_ERRCODE_SUCCESS)
-    {
-        fprintf(stderr, "[cfg] Failed to register with pub/sub\n");
-        return NN_ERRCODE_FAIL;
-    }
-
-    // Subscribe to internal events if needed
-    nn_dev_pubsub_subscribe(NN_DEV_MODULE_ID_CFG, NN_DEV_MODULE_ID_CFG, NN_DEV_EVENT_CFG);
-
-    // Start worker thread
-    g_worker_running = 1;
-    if (pthread_create(&g_worker_thread, NULL, cfg_worker_thread, NULL) != NN_ERRCODE_SUCCESS)
-    {
-        perror("[cfg] Failed to create worker thread");
-        return NN_ERRCODE_FAIL;
-    }
 
     // Create server socket
     g_server_socket = socket(AF_INET, SOCK_STREAM, 0);

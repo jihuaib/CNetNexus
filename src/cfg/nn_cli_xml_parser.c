@@ -14,13 +14,8 @@
 #include "nn_cli_view.h"
 #include "nn_errcode.h"
 
-// Forward declaration of command callbacks
-extern void cmd_help(uint32_t client_fd, const char *args);
-extern void cmd_exit(uint32_t client_fd, const char *args);
 extern void cmd_show_version(uint32_t client_fd, const char *args);
 extern void cmd_show_tree(uint32_t client_fd, const char *args);
-extern void cmd_configure(uint32_t client_fd, const char *args);
-extern void cmd_end(uint32_t client_fd, const char *args);
 extern void cmd_sysname(uint32_t client_fd, const char *args);
 
 // Forward declarations
@@ -205,6 +200,8 @@ static nn_cli_element_t *parse_element(xmlNode *element_node)
 // Parse view node recursively
 static nn_cli_view_node_t *parse_view_node(xmlNode *view_xml)
 {
+    char view_name[NN_CFG_CLI_MAX_VIEW_NAME_LEN];
+
     xmlChar *view_id_str = xmlGetProp(view_xml, (const xmlChar *)"view-id");
     if (!view_id_str)
     {
@@ -212,7 +209,15 @@ static nn_cli_view_node_t *parse_view_node(xmlNode *view_xml)
     }
 
     uint32_t view_id = atoi((const char *)view_id_str);
+    xmlFree(view_id_str);
 
+    xmlChar *view_name_str = xmlGetProp(view_xml, (const xmlChar *)"view-name");
+    if (view_name_str != NULL)
+    {
+        view_name[0] = '\0';
+        strlcpy(view_name, (const char *)view_name_str, NN_CFG_CLI_MAX_VIEW_NAME_LEN);
+        xmlFree(view_name_str);
+    }
     // Get template
     char *template = NULL;
     for (xmlNode *cur = view_xml->children; cur; cur = cur->next)
@@ -231,8 +236,8 @@ static nn_cli_view_node_t *parse_view_node(xmlNode *view_xml)
     }
 
     // Create view node
-    nn_cli_view_node_t *view = nn_cli_view_create(view_id, template);
-    xmlFree(view_id_str);
+    nn_cli_view_node_t *view = nn_cli_view_create(view_id, view_name, template);
+
     g_free(template);
 
     if (!view)
@@ -385,7 +390,7 @@ static void parse_command_group(xmlNode *group_node, nn_cli_view_tree_t *view_tr
                                 // Add to global view
                                 if (!view_tree->global_view)
                                 {
-                                    view_tree->global_view = nn_cli_view_create(NN_CFG_CLI_VIEW_GLOBAL, NULL);
+                                    view_tree->global_view = nn_cli_view_create(NN_CFG_CLI_VIEW_GLOBAL, "global", NULL);
                                 }
                                 if (view_tree->global_view && view_tree->global_view->cmd_tree == NULL)
                                 {

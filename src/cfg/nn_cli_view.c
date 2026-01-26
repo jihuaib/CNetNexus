@@ -16,11 +16,12 @@ enum
 };
 
 // Create a new view node
-nn_cli_view_node_t *nn_cli_view_create(uint32_t view_id, const char *prompt_template)
+nn_cli_view_node_t *nn_cli_view_create(uint32_t view_id, const char *view_name, const char *prompt_template)
 {
     nn_cli_view_node_t *view = (nn_cli_view_node_t *)g_malloc0(sizeof(nn_cli_view_node_t));
 
     view->view_id = view_id;
+    strlcpy(view->view_name, view_name, NN_CFG_CLI_MAX_VIEW_NAME_LEN);
     if (prompt_template != NULL)
     {
         strlcpy(view->prompt_template, prompt_template, NN_CFG_CLI_MAX_VIEW_LEN);

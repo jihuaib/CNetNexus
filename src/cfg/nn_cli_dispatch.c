@@ -191,10 +191,6 @@ int nn_cli_dispatch_to_module(nn_cli_match_result_t *result, uint32_t client_fd,
                 session->current_view = view;
                 update_prompt_from_template(session, module_prompt);
             }
-            else
-            {
-                update_prompt(session);
-            }
         }
 
         nn_dev_message_free(response);

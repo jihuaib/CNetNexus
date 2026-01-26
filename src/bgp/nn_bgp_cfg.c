@@ -43,11 +43,11 @@ typedef struct nn_bgp_cli_resp_dispatch
 
 int handle_bgp_config_resp(nn_dev_message_t *msg, const nn_bgp_cfg_out_t *cfg_out, const nn_bgp_resp_out_t *resp_out);
 
-static const nn_bgp_cli_resp_dispatch_t g_nn_bgp_cfg_dispatch[] = {
+static const nn_bgp_cli_resp_dispatch_t g_nn_bgp_cfg_resp_dispatch[] = {
     {NN_BGP_CLI_GROUP_ID_BGP, handle_bgp_config_resp},
 };
 
-#define NN_BGP_CFG_RESP_DISPATCH_COUNT (sizeof(g_nn_bgp_cfg_dispatch) / sizeof(g_nn_bgp_cfg_dispatch[0]))
+#define NN_BGP_CFG_RESP_DISPATCH_COUNT (sizeof(g_nn_bgp_cfg_resp_dispatch) / sizeof(g_nn_bgp_cfg_resp_dispatch[0]))
 
 /**
  * @brief Handle "bgp <as-number>" command (group_id = 1)
@@ -162,12 +162,12 @@ static void nn_bgp_cfg_send_response(nn_dev_message_t *msg, const nn_bgp_cfg_out
         return; // No sender to respond to
     }
 
-    for (size_t i = 0; i < BGP_GROUP_DISPATCH_COUNT; i++)
+    for (size_t i = 0; i < NN_BGP_CFG_RESP_DISPATCH_COUNT; i++)
     {
-        if (g_nn_bgp_cfg_dispatch[i].group_id == cfg_out->group_id)
+        if (g_nn_bgp_cfg_resp_dispatch[i].group_id == cfg_out->group_id)
         {
             printf("[bgp_cfg] Dispatching resp to group (group_id=%u)\n", cfg_out->group_id);
-            (void)g_nn_bgp_cfg_dispatch[i].handler(msg, cfg_out, resp_out);
+            (void)g_nn_bgp_cfg_resp_dispatch[i].handler(msg, cfg_out, resp_out);
         }
     }
 }

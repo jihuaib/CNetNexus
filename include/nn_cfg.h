@@ -24,6 +24,8 @@ void nn_cfg_register_module_xml(uint32_t module_id, const char *xml_path);
 #define NN_CFG_CLI_VIEW_CONFIG 0x00000003
 #define NN_CFG_CLI_VIEW_BGP 0x00000004
 
+#define NN_CFG_CLI_MAX_VIEW_NAME_LEN 20
+
 #define NN_CFG_CLI_MAX_VIEW_LEN 64
 #define NN_CFG_CLI_MAX_PROMPT_LEN 128
 

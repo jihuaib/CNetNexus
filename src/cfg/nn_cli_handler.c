@@ -8,10 +8,12 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "nn_cfg_cli.h"
 #include "nn_cli_dispatch.h"
 #include "nn_cli_param_type.h"
 #include "nn_cli_tree.h"
 #include "nn_cli_xml_parser.h"
+#include "nn_dev.h"
 #include "nn_errcode.h"
 
 // Global CLI view tree
@@ -417,90 +419,6 @@ static void print_view_commands_flat(nn_cli_view_node_t *view, uint32_t client_f
 static void print_commands_recursive(uint32_t client_fd, uint32_t view_id, const char *prefix,
                                      nn_cli_tree_node_t *node);
 
-// Show tree command handler
-void cmd_show_tree(uint32_t client_fd, const char *args)
-{
-    (void)args;
-
-    nn_cfg_send_message(client_fd, "\r\nCLI Commands List:\r\n");
-    nn_cfg_send_message(client_fd, "===================\r\n");
-    nn_cfg_send_message(client_fd, "  VIEW            MODULE          COMMAND\r\n");
-    nn_cfg_send_message(client_fd, "  ----            ------          -------\r\n");
-
-    if (g_view_tree.root)
-    {
-        print_view_commands_flat(g_view_tree.root, client_fd);
-    }
-
-    nn_cfg_send_message(client_fd, "\r\n");
-}
-
-// Helper to print all commands in a view and its children
-static void print_view_commands_flat(nn_cli_view_node_t *view, uint32_t client_fd)
-{
-    if (!view)
-    {
-        return;
-    }
-
-    // Print commands for this view
-    if (view->cmd_tree)
-    {
-        for (uint32_t i = 0; i < view->cmd_tree->num_children; i++)
-        {
-            print_commands_recursive(client_fd, view->view_id, "", view->cmd_tree->children[i]);
-        }
-    }
-
-    // Recurse into child views
-    for (uint32_t i = 0; i < view->num_children; i++)
-    {
-        print_view_commands_flat(view->children[i], client_fd);
-    }
-}
-
-// Helper to recursively traverse command tree and print commands
-static void print_commands_recursive(uint32_t client_fd, uint32_t view_id, const char *prefix, nn_cli_tree_node_t *node)
-{
-    if (!node)
-    {
-        return;
-    }
-
-    char new_prefix[MAX_CMD_LEN];
-    if (strlen(prefix) > 0)
-    {
-        snprintf(new_prefix, sizeof(new_prefix), "%s %s", prefix, node->name ? node->name : "");
-    }
-    else
-    {
-        strncpy(new_prefix, node->name ? node->name : "", sizeof(new_prefix) - 1);
-        new_prefix[sizeof(new_prefix) - 1] = '\0';
-    }
-
-    // Recurse into children
-    for (uint32_t i = 0; i < node->num_children; i++)
-    {
-        print_commands_recursive(client_fd, view_id, new_prefix, node->children[i]);
-    }
-}
-
-// Configure command handler
-void cmd_configure(uint32_t client_fd, const char *args)
-{
-    (void)args;
-    (void)client_fd;
-    // View switching handled in process_command
-}
-
-// End command handler
-void cmd_end(uint32_t client_fd, const char *args)
-{
-    (void)args;
-    (void)client_fd;
-    // View switching handled in process_command
-}
-
 // Process a command line
 void process_command(uint32_t client_fd, const char *cmd_line, nn_cli_session_t *session)
 {
@@ -543,33 +461,17 @@ void process_command(uint32_t client_fd, const char *cmd_line, nn_cli_session_t 
             return;
         }
 
-        // Command is complete - proceed with execution
-        // Handle view-switching commands
-        if (strcmp(node->name, "config") == NN_ERRCODE_SUCCESS)
-        {
-            nn_cli_view_node_t *config_view = nn_cli_view_find_by_id(g_view_tree.root, NN_CFG_CLI_VIEW_CONFIG);
-            if (config_view)
-            {
-                session->current_view = config_view;
-                update_prompt(session);
-            }
-        }
-        // Check for 'exit' on root view to close connection
-        if (strcmp(node->name, "exit") == NN_ERRCODE_SUCCESS && session->current_view->parent == NULL)
-        {
-            nn_cfg_send_message(client_fd, "\r\nGoodbye!\r\n");
-            close(client_fd);
-            if (match_result)
-            {
-                nn_cli_match_result_free(match_result);
-            }
-            return;
-        }
-
         // Dispatch to module if module_id is set
         if (match_result && match_result->module_id != 0)
         {
-            nn_cli_dispatch_to_module(match_result, client_fd, session);
+            if (match_result->module_id == NN_DEV_MODULE_ID_CFG)
+            {
+                nn_cfg_cli_handle(match_result, client_fd, session);
+            }
+            else
+            {
+                nn_cli_dispatch_to_module(match_result, client_fd, session);
+            }
         }
     }
     else

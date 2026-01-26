@@ -11,6 +11,7 @@ typedef struct nn_cli_view_node nn_cli_view_node_t;
 struct nn_cli_view_node
 {
     uint32_t view_id;
+    char view_name[NN_CFG_CLI_MAX_VIEW_NAME_LEN];
     char prompt_template[NN_CFG_CLI_MAX_VIEW_LEN];
     nn_cli_tree_node_t *cmd_tree; // Command tree for this view
 
@@ -29,9 +30,12 @@ typedef struct
 } nn_cli_view_tree_t;
 
 // Function prototypes
-nn_cli_view_node_t *nn_cli_view_create(uint32_t view_id, const char *prompt_template);
+nn_cli_view_node_t *nn_cli_view_create(uint32_t view_id, const char *view_name, const char *prompt_template);
+
 void nn_cli_view_add_child(nn_cli_view_node_t *parent, nn_cli_view_node_t *child);
+
 nn_cli_view_node_t *nn_cli_view_find_by_id(nn_cli_view_node_t *root, uint32_t view_id);
+
 void nn_cli_view_free(nn_cli_view_node_t *view);
 
 #endif // NN_CLI_VIEW_H
