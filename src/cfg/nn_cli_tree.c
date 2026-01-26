@@ -1,5 +1,6 @@
 #include "nn_cli_tree.h"
 
+#include <stdio.h>
 #include <ctype.h>
 #include <glib.h>
 #include <stdlib.h>
@@ -7,6 +8,7 @@
 #include <unistd.h>
 
 #include "nn_cli_param_type.h"
+#include "nn_cli_handler.h"
 #include "nn_errcode.h"
 
 enum

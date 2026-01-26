@@ -390,7 +390,7 @@ static void parse_command_group(xmlNode *group_node, nn_cli_view_tree_t *view_tr
                                 if (view_tree->global_view && view_tree->global_view->cmd_tree == NULL)
                                 {
                                     view_tree->global_view->cmd_tree = nn_cli_tree_create_node(
-                                        0, "global_root", "global command root", NN_CLI_NODE_COMMAND, 0, 0, NULL);
+                                        0, "global_root", "global command root", NN_CLI_NODE_COMMAND, 0, 0, 0);
                                 }
                                 if (view_tree->global_view && cmd_tree)
                                 {

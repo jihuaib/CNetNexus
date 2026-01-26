@@ -25,7 +25,7 @@ nn_cli_view_node_t *nn_cli_view_create(uint32_t view_id, const char *prompt_temp
     {
         strlcpy(view->prompt_template, prompt_template, NN_CFG_CLI_MAX_VIEW_LEN);
     }
-    view->cmd_tree = nn_cli_tree_create_node(0, NULL, "Root", NN_CLI_NODE_COMMAND, 0, 0, NULL);
+    view->cmd_tree = nn_cli_tree_create_node(0, NULL, "Root", NN_CLI_NODE_COMMAND, 0, 0, 0);
 
     view->parent = NULL;
     view->children = NULL;
