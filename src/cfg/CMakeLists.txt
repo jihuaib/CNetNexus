@@ -35,8 +35,3 @@ set_target_properties(nn_cfg PROPERTIES
     VERSION 1.0.0
     SOVERSION 1
 )
-
-# Installation
-install(TARGETS nn_cfg
-    LIBRARY DESTINATION lib
-)

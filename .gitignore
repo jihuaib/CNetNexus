@@ -19,7 +19,6 @@ cmake_install.cmake
 Makefile.in
 
 # IDE files
-.vscode/
 .idea/
 *.swp
 *.swo
@@ -37,3 +36,5 @@ Makefile.in
 netnexus-gns3.tar.gz
 
 valgrind-report.txt
+
+package/

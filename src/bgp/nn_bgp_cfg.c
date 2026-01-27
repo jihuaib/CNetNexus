@@ -122,13 +122,14 @@ static int dispatch_by_group_id(uint32_t group_id, nn_cfg_tlv_parser_t parser, n
     return NN_ERRCODE_FAIL;
 }
 
-int handle_bgp_config_resp_common(nn_dev_message_t *msg, const nn_bgp_cfg_out_t *cfg_out, const nn_bgp_resp_out_t *resp_out)
+int handle_bgp_config_resp_common(nn_dev_message_t *msg, const nn_bgp_cfg_out_t *cfg_out,
+                                  const nn_bgp_resp_out_t *resp_out)
 {
     (void)cfg_out;
     (void)resp_out;
 
-    nn_dev_message_t *resp = nn_dev_message_create(NN_CFG_MSG_TYPE_CLI_RESP, NN_DEV_MODULE_ID_BGP,
-                                                   msg->request_id, NULL, 0, NULL);
+    nn_dev_message_t *resp =
+        nn_dev_message_create(NN_CFG_MSG_TYPE_CLI_RESP, NN_DEV_MODULE_ID_BGP, msg->request_id, NULL, 0, NULL);
     if (resp)
     {
         nn_dev_pubsub_send_response(msg->sender_id, resp);
@@ -206,12 +207,6 @@ int nn_bgp_cfg_handle_message(nn_dev_message_t *msg)
 {
     if (!msg || !msg->data)
     {
-        return NN_ERRCODE_FAIL;
-    }
-
-    if (msg->msg_type != NN_CFG_MSG_TYPE_CLI)
-    {
-        printf("[bgp_cfg] Ignoring non-CLI message type: 0x%08X\n", msg->msg_type);
         return NN_ERRCODE_FAIL;
     }
 

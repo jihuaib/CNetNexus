@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+#include "nn_cfg.h"
+
 // Module XML entry stored in GLib list
 typedef struct
 {

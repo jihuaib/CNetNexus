@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "../db/nn_db_registry.h"
 #include "nn_cli_element.h"
 #include "nn_cli_tree.h"
 #include "nn_cli_view.h"
@@ -16,6 +17,9 @@
 
 // Forward declarations
 static void merge_global_to_views(nn_cli_view_node_t *view, nn_cli_tree_node_t *global_tree);
+static void parse_databases_section(xmlNode *dbs_node, uint32_t module_id);
+static void parse_tables_section(xmlNode *tables_node, nn_db_definition_t *db_def);
+static void parse_fields_section(xmlNode *fields_node, nn_db_table_t *table);
 
 // Parse expression string "1 2 3" into array of IDs
 static uint32_t *parse_expression(const char *expr, uint32_t *count)
@@ -129,10 +133,9 @@ static nn_cli_element_t *parse_element(xmlNode *element_node, uint32_t element_i
     }
     if (type_str != NULL)
     {
-         type = (strcmp((const char *)type_str, "keyword") == NN_ERRCODE_SUCCESS)
-                                  ? ELEMENT_TYPE_KEYWORD
-                                  : ELEMENT_TYPE_PARAMETER;
-         xmlFree(type_str);
+        type = (strcmp((const char *)type_str, "keyword") == NN_ERRCODE_SUCCESS) ? ELEMENT_TYPE_KEYWORD
+                                                                                 : ELEMENT_TYPE_PARAMETER;
+        xmlFree(type_str);
     }
 
     // Get name, description, range, type (for parameters)
@@ -570,6 +573,20 @@ uint32_t nn_cli_xml_load_view_tree(const char *xml_file, nn_cli_view_tree_t *vie
         }
     }
 
+    // Parse databases section
+    for (xmlNode *cur = root_element->children; cur; cur = cur->next)
+    {
+        if (cur->type != XML_ELEMENT_NODE)
+        {
+            continue;
+        }
+
+        if (xmlStrcmp(cur->name, (const xmlChar *)"dbs") == 0)
+        {
+            parse_databases_section(cur, module_id);
+        }
+    }
+
     // Merge global commands into all views
     if (view_tree->global_view && view_tree->global_view->cmd_tree)
     {
@@ -604,5 +621,143 @@ static void merge_global_to_views(nn_cli_view_node_t *view, nn_cli_tree_node_t *
     for (uint32_t i = 0; i < view->num_children; i++)
     {
         merge_global_to_views(view->children[i], global_tree);
+    }
+}
+
+// ============================================================================
+// Database Definition Parsing Functions
+// ============================================================================
+
+// Parse <fields> section
+static void parse_fields_section(xmlNode *fields_node, nn_db_table_t *table)
+{
+    if (!fields_node || !table)
+    {
+        return;
+    }
+
+    for (xmlNode *field_node = fields_node->children; field_node; field_node = field_node->next)
+    {
+        if (field_node->type != XML_ELEMENT_NODE)
+        {
+            continue;
+        }
+
+        if (xmlStrcmp(field_node->name, (const xmlChar *)"field") == 0)
+        {
+            xmlChar *field_name = xmlGetProp(field_node, (const xmlChar *)"field-name");
+            xmlChar *type_str = xmlGetProp(field_node, (const xmlChar *)"type");
+
+            if (field_name && type_str)
+            {
+                nn_db_field_t *field = nn_db_field_create((const char *)field_name, (const char *)type_str);
+                nn_db_table_add_field(table, field);
+                printf("[xml_parser]       Field: %s (%s)\n", field_name, type_str);
+            }
+
+            if (field_name)
+            {
+                xmlFree(field_name);
+            }
+            if (type_str)
+            {
+                xmlFree(type_str);
+            }
+        }
+    }
+}
+
+// Parse <tables> section
+static void parse_tables_section(xmlNode *tables_node, nn_db_definition_t *db_def)
+{
+    if (!tables_node || !db_def)
+    {
+        return;
+    }
+
+    for (xmlNode *table_node = tables_node->children; table_node; table_node = table_node->next)
+    {
+        if (table_node->type != XML_ELEMENT_NODE)
+        {
+            continue;
+        }
+
+        if (xmlStrcmp(table_node->name, (const xmlChar *)"table") == 0)
+        {
+            xmlChar *table_name = xmlGetProp(table_node, (const xmlChar *)"table-name");
+            if (!table_name)
+            {
+                continue;
+            }
+
+            nn_db_table_t *table = nn_db_table_create((const char *)table_name);
+            printf("[xml_parser]     Table: %s\n", table_name);
+            xmlFree(table_name);
+
+            // Parse <fields>
+            for (xmlNode *fields_node = table_node->children; fields_node; fields_node = fields_node->next)
+            {
+                if (fields_node->type != XML_ELEMENT_NODE)
+                {
+                    continue;
+                }
+
+                if (xmlStrcmp(fields_node->name, (const xmlChar *)"fields") == 0)
+                {
+                    parse_fields_section(fields_node, table);
+                }
+            }
+
+            nn_db_definition_add_table(db_def, table);
+        }
+    }
+}
+
+// Parse <dbs> section
+static void parse_databases_section(xmlNode *dbs_node, uint32_t module_id)
+{
+    if (!dbs_node)
+    {
+        return;
+    }
+
+    for (xmlNode *db_node = dbs_node->children; db_node; db_node = db_node->next)
+    {
+        if (db_node->type != XML_ELEMENT_NODE)
+        {
+            continue;
+        }
+
+        if (xmlStrcmp(db_node->name, (const xmlChar *)"db") == 0)
+        {
+            // Get db-name attribute
+            xmlChar *db_name = xmlGetProp(db_node, (const xmlChar *)"db-name");
+            if (!db_name)
+            {
+                continue;
+            }
+
+            printf("[xml_parser]   Database: %s\n", db_name);
+
+            nn_db_definition_t *db_def = nn_db_definition_create((const char *)db_name, module_id);
+            xmlFree(db_name);
+
+            // Parse <tables>
+            for (xmlNode *tables_node = db_node->children; tables_node; tables_node = tables_node->next)
+            {
+                if (tables_node->type != XML_ELEMENT_NODE)
+                {
+                    continue;
+                }
+
+                if (xmlStrcmp(tables_node->name, (const xmlChar *)"tables") == 0)
+                {
+                    parse_tables_section(tables_node, db_def);
+                }
+            }
+
+            // Register database definition
+            nn_db_registry_add(db_def);
+        }
     }
 }

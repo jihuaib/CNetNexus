@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "nn_errcode.h"
+
 // Global XML registry using GLib's singly-linked list
 GSList *g_xml_registry = NULL;
 

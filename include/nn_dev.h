@@ -7,9 +7,10 @@
 // ============================================================================
 // Module IDs
 // ============================================================================
-#define NN_DEV_MODULE_ID_CFG 0x00000001
-#define NN_DEV_MODULE_ID_DEV 0x00000002
-#define NN_DEV_MODULE_ID_BGP 0x00000003
+#define NN_DEV_MODULE_ID_DEV 0x00000001
+#define NN_DEV_MODULE_ID_DB 0x00000002
+#define NN_DEV_MODULE_ID_CFG 0x00000003
+#define NN_DEV_MODULE_ID_BGP 0x00000004
 
 // ============================================================================
 // Event IDs (for unicast pub/sub)
@@ -35,13 +36,13 @@ typedef void (*nn_module_cleanup_fn)(void);
 // Register a module with init/cleanup callbacks
 void nn_dev_register_module(uint32_t id, const char *name, nn_module_init_fn init, nn_module_cleanup_fn cleanup);
 
+int nn_dev_get_module_name(uint32_t module_id, char *module_name);
+
 // Request shutdown of all modules
-void nn_request_shutdown(void);
+void nn_dev_request_shutdown(void);
 
 // Check if shutdown was requested
-int nn_shutdown_requested(void);
-
-int nn_dev_get_module_name(uint32_t module_id, char *module_name);
+int nn_dev_shutdown_requested(void);
 
 // ============================================================================
 // MQ System APIs
@@ -81,7 +82,7 @@ void nn_dev_mq_destroy(nn_dev_module_mq_t *mq);
 int nn_nn_mq_send(int event_fd, nn_dev_module_mq_t *mq, nn_dev_message_t *msg);
 
 // Receive message from queue (non-blocking, thread-safe)
-nn_dev_message_t *nn_nn_mq_receive(int event_fd, nn_dev_module_mq_t *mq);
+nn_dev_message_t *nn_dev_mq_receive(int event_fd, nn_dev_module_mq_t *mq);
 
 // ============================================================================
 // Pub/Sub System APIs

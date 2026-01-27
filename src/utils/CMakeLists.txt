@@ -13,8 +13,3 @@ target_include_directories(nn_utils PRIVATE
     ${PROJECT_SOURCE_DIR}/include
     ${GLIB_INCLUDE_DIRS}
 )
-
-# Installation
-install(TARGETS nn_utils
-    LIBRARY DESTINATION lib
-)

@@ -26,7 +26,7 @@ typedef struct nn_cfg_local
     nn_dev_module_mq_t *mq; // message queue
     int listen_sock;
     pthread_t worker_thread;
-    GHashTable *sessions;   // Registry: fd -> nn_cli_session_t*
+    GHashTable *sessions; // Registry: fd -> nn_cli_session_t*
 } nn_cfg_local_t;
 
 extern nn_cfg_local_t *g_nn_cfg_local;

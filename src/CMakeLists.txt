@@ -1,5 +1,6 @@
-# Build order: utils first, then cfg, then other modules
+# Build order: utils first, then db, then cfg, then other modules
 add_subdirectory(utils)
+add_subdirectory(db)
 add_subdirectory(cfg)
 add_subdirectory(dev)
 add_subdirectory(bgp)
@@ -14,6 +15,7 @@ add_executable(netnexus
 target_link_libraries(netnexus PRIVATE
     -Wl,--no-as-needed
     nn_utils
+    nn_db
     nn_cfg
     nn_bgp
     nn_dev

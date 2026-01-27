@@ -12,8 +12,8 @@ typedef struct nn_module
 {
     uint32_t module_id;
     char name[NN_DEV_MODULE_NAME_MAX_LEN]; // Module name
-    nn_module_init_fn init;            // Module initialization function
-    nn_module_cleanup_fn cleanup;      // Module cleanup function
+    nn_module_init_fn init;                // Module initialization function
+    nn_module_cleanup_fn cleanup;          // Module cleanup function
     // Message queue for inter-module communication
     nn_dev_module_mq_t *mq; // Module message queue (NULL if not initialized)
 } nn_dev_module_t;

@@ -248,7 +248,8 @@ static inline int nn_cfg_tlv_parser_next(nn_cfg_tlv_parser_t *parser, uint32_t *
     {                                                                                                                  \
         if ((_value_ptr) && (_len) == 4)                                                                               \
         {                                                                                                              \
-            snprintf((_out_str), (_max_len), "%u.%u.%u.%u", (_value_ptr)[0], (_value_ptr)[1], (_value_ptr)[2], (_value_ptr)[3]); \
+            snprintf((_out_str), (_max_len), "%u.%u.%u.%u", (_value_ptr)[0], (_value_ptr)[1], (_value_ptr)[2],         \
+                     (_value_ptr)[3]);                                                                                 \
         }                                                                                                              \
         else                                                                                                           \
         {                                                                                                              \

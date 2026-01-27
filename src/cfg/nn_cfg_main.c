@@ -8,14 +8,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/socket.h>
-#include <sys/epoll.h>
 
 #include "nn_cfg.h"
 #include "nn_cfg_registry.h"
 #include "nn_cli_handler.h"
 #include "nn_cli_xml_parser.h"
+#include "nn_db.h"
 #include "nn_dev.h"
 #include "nn_errcode.h"
 #include "nn_path_utils.h"
@@ -33,7 +34,6 @@ nn_cfg_local_t *g_nn_cfg_local = NULL;
 // Forward declarations
 static void *cfg_server_thread(void *arg);
 
-
 // Server thread function
 static void *cfg_server_thread(void *arg)
 {
@@ -42,7 +42,7 @@ static void *cfg_server_thread(void *arg)
     struct sockaddr_in client_addr;
     socklen_t client_len;
 
-    while (!nn_shutdown_requested())
+    while (!nn_dev_shutdown_requested())
     {
         struct epoll_event events[CFG_MAX_EPOLL_EVENTS];
         // Wait for events with 1 second timeout
@@ -80,7 +80,7 @@ static void *cfg_server_thread(void *arg)
 
                 if (conn_fd < 0)
                 {
-                    if (!nn_shutdown_requested())
+                    if (!nn_dev_shutdown_requested())
                     {
                         perror("[cfg] Accept failed");
                     }
@@ -185,7 +185,8 @@ static int nn_cfg_init_local()
     g_nn_cfg_local->event_fd = NN_DEV_INVALID_FD;
     g_nn_cfg_local->listen_sock = NN_DEV_INVALID_FD;
     g_nn_cfg_local->worker_thread = 0;
-    g_nn_cfg_local->sessions = g_hash_table_new_full(g_int_hash, g_int_equal, g_free, (GDestroyNotify)nn_cli_session_destroy);
+    g_nn_cfg_local->sessions =
+        g_hash_table_new_full(g_int_hash, g_int_equal, g_free, (GDestroyNotify)nn_cli_session_destroy);
 
     nn_dev_module_mq_t *mq = nn_dev_mq_create();
     if (mq == NULL)
@@ -338,6 +339,15 @@ static int32_t cfg_module_init()
     }
 
     printf("\n[cfg] Module cli initialization complete (failures: %d)\n\n", failed_count);
+
+    // Initialize databases from XML definitions
+    printf("[cfg] Initializing databases:\n");
+    printf("======================================\n");
+    if (nn_db_initialize_all() != NN_ERRCODE_SUCCESS)
+    {
+        fprintf(stderr, "[cfg] Warning: Database initialization had errors\n");
+    }
+    printf("\n[cfg] Database initialization complete\n\n");
 
     return NN_ERRCODE_SUCCESS;
 }

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration module-id="2">
+    <views></views>
+
+    <command_groups>
+        <!-- Show database information -->
+        <group group-id="1">
+            <elements>
+                <element type="keyword">
+                    <name>show</name>
+                    <description>Display system information</description>
+                </element>
+                <element type="keyword">
+                    <name>db</name>
+                    <description>Database information</description>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>1 2</expression>
+                    <views>1</views>
+                </command>
+            </commands>
+        </group>
+    </command_groups>
+</configuration>

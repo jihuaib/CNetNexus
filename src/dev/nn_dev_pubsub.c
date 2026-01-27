@@ -578,7 +578,7 @@ nn_dev_message_t *nn_dev_pubsub_query(uint32_t publisher_id, uint32_t event_id, 
     {
         if (pfd.revents & POLLIN)
         {
-            response = nn_nn_mq_receive(temp_event_fd, temp_mq);
+            response = nn_dev_mq_receive(temp_event_fd, temp_mq);
         }
     }
     else if (ret == 0)

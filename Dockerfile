@@ -11,6 +11,8 @@ RUN apt-get update && \
     cmake \
     libglib2.0-dev \
     libxml2-dev \
+    libsqlite3-dev \
+    pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy source code
@@ -43,6 +45,7 @@ RUN apt-get update && \
     apt-get install -y \
     libglib2.0-0 \
     libxml2 \
+    libsqlite3-0 \
     iproute2 \
     iputils-ping \
     net-tools \
@@ -51,20 +54,21 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/*
 
 # Create application directory
-RUN mkdir -p /opt/netnexus/bin /opt/netnexus/config
+RUN mkdir -p /opt/netnexus/bin /opt/netnexus/lib /opt/netnexus/resources /opt/netnexus/data
 
 # Copy built binaries from builder stage
 COPY --from=builder /build/build/bin/netnexus /opt/netnexus/bin/
-COPY --from=builder /build/build/lib/*.so* /opt/netnexus/bin/
+COPY --from=builder /build/build/lib/*.so* /opt/netnexus/lib/
 
-# Copy XML configuration files
-COPY --from=builder /build/src/bgp/commands.xml /opt/netnexus/config/bgp_commands.xml
-COPY --from=builder /build/src/dev/commands.xml /opt/netnexus/config/dev_commands.xml
-COPY --from=builder /build/src/cfg/commands.xml /opt/netnexus/config/cfg_commands.xml
+# Copy XML configuration files (each module in its own directory)
+COPY --from=builder /build/src/cfg/commands.xml /opt/netnexus/resources/cfg/
+COPY --from=builder /build/src/dev/commands.xml /opt/netnexus/resources/dev/
+COPY --from=builder /build/src/bgp/commands.xml /opt/netnexus/resources/bgp/
+COPY --from=builder /build/src/db/commands.xml /opt/netnexus/resources/db/
 
 # Set library path and XML directory
-ENV LD_LIBRARY_PATH=/opt/netnexus/bin
-ENV NN_XML_DIR=/opt/netnexus/config
+ENV LD_LIBRARY_PATH=/opt/netnexus/lib
+ENV NN_RESOURCES_DIR=/opt/netnexus/resources
 
 # Expose telnet console port
 EXPOSE 3788
@@ -80,6 +84,9 @@ LABEL com.gns3.security-opt="seccomp=unconfined"
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD netstat -tuln | grep 3788 || exit 1
+
+# Volume for persistent data (databases)
+VOLUME ["/opt/netnexus/data"]
 
 # Run NetNexus
 CMD ["/opt/netnexus/bin/netnexus"]

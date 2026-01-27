@@ -39,20 +39,12 @@ int nn_get_exe_dir(char *buf, size_t size)
 
 int nn_resolve_xml_path(const char *module_name, char *buf, size_t size)
 {
-    const char *xml_dir = getenv("NN_XML_DIR");
+    const char *xml_dir = getenv("NN_RESOURCES_DIR");
 
     // Priority 1: Environment variable (for Docker/production)
     if (xml_dir != NULL)
     {
-        // Check if it's Docker path
-        if (strstr(xml_dir, "/opt/netnexus") != NULL)
-        {
-            snprintf(buf, size, "%s/%s_commands.xml", xml_dir, module_name);
-        }
-        else
-        {
-            snprintf(buf, size, "%s/commands.xml", xml_dir);
-        }
+        snprintf(buf, size, "%s/%s/commands.xml", xml_dir, module_name);
 
         // Verify file exists
         struct stat st;
@@ -62,12 +54,20 @@ int nn_resolve_xml_path(const char *module_name, char *buf, size_t size)
         }
     }
 
-    // Priority 2: Relative to executable (for development builds)
+    // Priority 2: Production install path (/opt/netnexus/resources/)
+    snprintf(buf, size, "/opt/netnexus/resources/%s/commands.xml", module_name);
+    struct stat st;
+    if (stat(buf, &st) == 0)
+    {
+        return 0;
+    }
+
+    // Priority 3: Relative to executable (for development builds)
     char exe_dir[PATH_MAX];
     if (nn_get_exe_dir(exe_dir, sizeof(exe_dir)) == 0)
     {
         // Try: <exe_dir>/../src/<module>/commands.xml
-        snprintf(buf, size, "%s/../src/%s/commands.xml", exe_dir, module_name);
+        snprintf(buf, size, "%s/../src/%s/resources/commands.xml", exe_dir, module_name);
         struct stat st;
         if (stat(buf, &st) == 0)
         {
@@ -75,16 +75,15 @@ int nn_resolve_xml_path(const char *module_name, char *buf, size_t size)
         }
 
         // Try: <exe_dir>/../../src/<module>/commands.xml (for build/bin/netnexus)
-        snprintf(buf, size, "%s/../../src/%s/commands.xml", exe_dir, module_name);
+        snprintf(buf, size, "%s/../../src/%s/resources/commands.xml", exe_dir, module_name);
         if (stat(buf, &st) == 0)
         {
             return 0;
         }
     }
 
-    // Priority 3: Fallback to hardcoded relative path
-    snprintf(buf, size, "../../src/%s/commands.xml", module_name);
-    struct stat st;
+    // Priority 4: Fallback to hardcoded relative path
+    snprintf(buf, size, "../../src/%s/resources/commands.xml", module_name);
     if (stat(buf, &st) == 0)
     {
         return 0;

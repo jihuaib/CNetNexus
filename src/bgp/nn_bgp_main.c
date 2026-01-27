@@ -38,7 +38,7 @@ static void bgp_process_messages(nn_bgp_context_t *ctx)
     read(ctx->event_fd, &val, sizeof(val));
 
     // Process all pending messages
-    while ((msg = nn_nn_mq_receive(ctx->event_fd, ctx->mq)) != NULL)
+    while ((msg = nn_dev_mq_receive(ctx->event_fd, ctx->mq)) != NULL)
     {
         // Handle different message types
         switch (msg->msg_type)
@@ -66,7 +66,7 @@ static void *bgp_worker_thread(void *arg)
 
     printf("[bgp] Worker thread started (epoll_fd=%d, event_fd=%d)\n", ctx->epoll_fd, ctx->event_fd);
 
-    while (g_bgp_running && !nn_shutdown_requested())
+    while (g_bgp_running && !nn_dev_shutdown_requested())
     {
         // Wait for events with 1 second timeout
         int nfds = epoll_wait(ctx->epoll_fd, events, BGP_MAX_EPOLL_EVENTS, 1000);

@@ -102,7 +102,7 @@ int nn_nn_mq_send(int event_fd, nn_dev_module_mq_t *mq, nn_dev_message_t *msg)
 }
 
 // Receive message from queue (non-blocking, thread-safe)
-nn_dev_message_t *nn_nn_mq_receive(int event_fd, nn_dev_module_mq_t *mq)
+nn_dev_message_t *nn_dev_mq_receive(int event_fd, nn_dev_module_mq_t *mq)
 {
     if (!mq)
     {

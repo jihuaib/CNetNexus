@@ -8,8 +8,8 @@
 #include "nn_cli_param_type.h"
 
 // Create a CLI element
-nn_cli_element_t *nn_cli_element_create(uint32_t element_id, uint32_t cfg_id, element_type_t type, const char *name, const char *description,
-                                        const char *range)
+nn_cli_element_t *nn_cli_element_create(uint32_t element_id, uint32_t cfg_id, element_type_t type, const char *name,
+                                        const char *description, const char *range)
 {
     nn_cli_element_t *element = (nn_cli_element_t *)g_malloc0(sizeof(nn_cli_element_t));
 
@@ -25,8 +25,8 @@ nn_cli_element_t *nn_cli_element_create(uint32_t element_id, uint32_t cfg_id, el
 }
 
 // Create a CLI element with type string parsing
-nn_cli_element_t *nn_cli_element_create_with_type(uint32_t element_id, uint32_t cfg_id, element_type_t type, const char *name,
-                                                  const char *description, const char *type_str)
+nn_cli_element_t *nn_cli_element_create_with_type(uint32_t element_id, uint32_t cfg_id, element_type_t type,
+                                                  const char *name, const char *description, const char *type_str)
 {
     nn_cli_element_t *element = (nn_cli_element_t *)g_malloc0(sizeof(nn_cli_element_t));
 

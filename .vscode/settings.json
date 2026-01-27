@@ -1,0 +1,36 @@
+{
+    "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+    "C_Cpp.default.intelliSenseMode": "linux-gcc-x64",
+    "C_Cpp.default.compilerPath": "/usr/bin/gcc",
+    "C_Cpp.default.cStandard": "c11",
+    "C_Cpp.default.includePath": [
+        "${workspaceFolder}/include",
+        "${workspaceFolder}/src",
+        "/usr/include",
+        "/usr/local/include"
+    ],
+    "files.associations": {
+        "*.h": "c",
+        "*.c": "c"
+    },
+    "editor.formatOnSave": false,
+    "editor.tabSize": 4,
+    "editor.insertSpaces": true,
+    "files.exclude": {
+        "**/.git": true,
+        "**/build": false,
+        "**/data": true,
+        "**/package": true,
+        "**/.claude": true
+    },
+    "search.exclude": {
+        "**/build": true,
+        "**/data": true,
+        "**/package": true
+    },
+    "cmake.configureOnOpen": false,
+    "cmake.buildDirectory": "${workspaceFolder}/build",
+    "terminal.integrated.env.linux": {
+        "LD_LIBRARY_PATH": "${workspaceFolder}/build/lib:${env:LD_LIBRARY_PATH}"
+    }
+}

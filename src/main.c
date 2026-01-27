@@ -11,7 +11,7 @@
 static void signal_handler(int signum)
 {
     printf("\nReceived signal %d, requesting shutdown...\n", signum);
-    nn_request_shutdown();
+    nn_dev_request_shutdown();
 }
 
 int main(int argc, char *argv[])
@@ -32,7 +32,7 @@ int main(int argc, char *argv[])
     printf("All modules initialized. Press Ctrl+C to stop.\n\n");
 
     // Main loop - wait for shutdown signal
-    while (!nn_shutdown_requested())
+    while (!nn_dev_shutdown_requested())
     {
         sleep(1);
     }

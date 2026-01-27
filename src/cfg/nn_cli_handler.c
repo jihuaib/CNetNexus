@@ -794,7 +794,8 @@ int nn_cli_process_input(nn_cli_session_t *session)
                     {
                         // Add to global history (thread-safe)
                         pthread_mutex_lock(&g_nn_cfg_local->history_mutex);
-                        nn_cli_global_history_add(&g_nn_cfg_local->global_history, session->line_buffer, session->client_ip);
+                        nn_cli_global_history_add(&g_nn_cfg_local->global_history, session->line_buffer,
+                                                  session->client_ip);
                         pthread_mutex_unlock(&g_nn_cfg_local->history_mutex);
                     }
 
@@ -814,7 +815,8 @@ int nn_cli_process_input(nn_cli_session_t *session)
                     if (session->cursor_pos < session->line_pos)
                     {
                         // Delete in middle: shift characters left
-                        memmove(session->line_buffer + session->cursor_pos - 1, session->line_buffer + session->cursor_pos, session->line_pos - session->cursor_pos);
+                        memmove(session->line_buffer + session->cursor_pos - 1,
+                                session->line_buffer + session->cursor_pos, session->line_pos - session->cursor_pos);
                         session->line_pos--;
                         session->cursor_pos--;
                         // Redraw from cursor to end
@@ -862,7 +864,8 @@ int nn_cli_process_input(nn_cli_session_t *session)
                 if (session->cursor_pos < session->line_pos)
                 {
                     // Insert in middle: shift characters right
-                    memmove(session->line_buffer + session->cursor_pos + 1, session->line_buffer + session->cursor_pos, session->line_pos - session->cursor_pos);
+                    memmove(session->line_buffer + session->cursor_pos + 1, session->line_buffer + session->cursor_pos,
+                            session->line_pos - session->cursor_pos);
                     session->line_buffer[session->cursor_pos] = c;
                     session->line_pos++;
                     session->cursor_pos++;

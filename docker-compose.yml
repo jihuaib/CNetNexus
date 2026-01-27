@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  netnexus:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${VERSION:-dev}
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+    image: netnexus:${VERSION:-dev}
+    container_name: netnexus
+    ports:
+      - "3788:3788"
+    volumes:
+      # Persistent data storage for databases
+      - netnexus-data:/opt/netnexus/data
+      # Optional: Mount custom config (uncomment to override)
+      # - ./config:/opt/netnexus/resources:ro
+    environment:
+      - NN_RESOURCES_DIR=/opt/netnexus/resources
+      - LD_LIBRARY_PATH=/opt/netnexus/lib
+    restart: unless-stopped
+    networks:
+      - netnexus-net
+    # Health check
+    healthcheck:
+      test: ["CMD", "netstat", "-tuln", "|", "grep", "3788"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    # Resource limits (adjust as needed)
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 128M
+
+volumes:
+  netnexus-data:
+    driver: local
+
+networks:
+  netnexus-net:
+    driver: bridge

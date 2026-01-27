@@ -31,8 +31,8 @@ typedef struct nn_cli_param_type nn_cli_param_type_t;
 // CLI tree node structure
 struct nn_cli_tree_node
 {
-    uint32_t cfg_id;     // Element ID from XML definition
-    uint32_t module_id;  // Associated module ID for message dispatch
+    uint32_t cfg_id;    // Element ID from XML definition
+    uint32_t module_id; // Associated module ID for message dispatch
     uint32_t group_id;
     char *name;                      // Node name/keyword
     char *description;               // Help text

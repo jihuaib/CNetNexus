@@ -6,7 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Install dependencies (Ubuntu/Debian)
-sudo apt install build-essential cmake libxml2-dev pkg-config
+sudo apt install build-essential cmake libxml2-dev libsqlite3-dev pkg-config
+
+# Development dependencies (optional)
+sudo apt install gdb inotify-tools  # For debugging and file watching
 
 # Build
 mkdir build && cd build && cmake .. && make
@@ -16,6 +19,217 @@ cmake --build . --target run
 
 # Clean
 rm -rf build
+```
+
+## Development Workflow
+
+### Quick Start
+
+```bash
+# 1. Build
+./scripts/dev/build.sh
+
+# 2. Run
+./scripts/dev/start.sh
+
+# 3. Connect
+telnet localhost 3788
+```
+
+### Development Scripts
+
+All development scripts are in `scripts/` directory:
+
+**Build and Clean:**
+```bash
+./scripts/dev/build.sh              # Quick build (Debug mode)
+./scripts/dev/build.sh --release    # Release build
+./scripts/dev/build.sh --clean      # Clean + rebuild
+./scripts/dev/build.sh -j 8         # Build with 8 parallel jobs
+
+./scripts/dev/clean.sh              # Clean build directory only
+./scripts/dev/clean.sh --data       # Also clean data directory
+./scripts/dev/clean.sh --all        # Clean everything
+```
+
+**Run and Debug:**
+```bash
+./scripts/dev/start.sh              # Start in development mode
+./scripts/dev/debug.sh              # Start with gdb debugger
+```
+
+**Example GDB Debug Session:**
+```bash
+./scripts/dev/debug.sh
+
+# In GDB:
+(gdb) break main                    # Set breakpoint
+(gdb) run                           # Start program
+(gdb) continue                      # Continue execution
+(gdb) backtrace                     # Show call stack
+(gdb) print variable_name           # Inspect variable
+(gdb) quit                          # Exit
+```
+
+### VSCode Integration
+
+Open the project in VSCode with full debugging support:
+
+**Build Tasks (Ctrl+Shift+B):**
+- Build Debug (default)
+- Build Release
+- Clean
+- Rebuild (clean + build)
+- Watch (auto-rebuild on changes)
+
+**Debug Configurations (F5):**
+- Debug NetNexus - Build and debug
+- Attach to NetNexus - Attach to running process
+- Run NetNexus (No Debug) - Run without debugging
+
+**Keyboard Shortcuts:**
+- `Ctrl+Shift+B` - Build
+- `F5` - Start debugging
+- `Ctrl+F5` - Run without debugging
+- `Shift+F5` - Stop debugging
+- `F9` - Toggle breakpoint
+- `F10` - Step over
+- `F11` - Step into
+
+### Development Environment
+
+**Directory Structure:**
+```
+NetNexus/
+├── src/              # Source code (auto-detected for XML configs)
+├── include/          # Public headers
+├── build/            # Build output
+│   ├── bin/         # Executables
+│   └── lib/         # Libraries
+├── data/             # Development database storage
+├── scripts/          # Development and deployment scripts
+└── .vscode/          # VSCode configuration
+```
+
+**Environment Variables:**
+- `LD_LIBRARY_PATH` - Automatically set to `build/lib/`
+- `NN_RESOURCES_DIR` - Not needed in dev (auto-discovered from `src/`)
+
+**Configuration Files:**
+Config XML files are automatically discovered from source directories:
+- `src/cfg/commands.xml`
+- `src/dev/commands.xml`
+- `src/bgp/commands.xml`
+- `src/db/commands.xml`
+
+**Database Files:**
+Development databases stored in `data/`:
+```
+data/
+└── bgp/
+    └── bgp_db.db
+```
+
+When you save a `.c`, `.h`, or `.xml` file, the watch script automatically:
+1. Detects the change
+2. Rebuilds the project
+3. Shows build results
+
+Restart NetNexus (Terminal 2) to see your changes.
+
+### Debugging Tips
+
+**Memory Leaks:**
+```bash
+# Build with AddressSanitizer
+cd build
+cmake -DCMAKE_C_FLAGS="-fsanitize=address -g" ..
+make
+./bin/netnexus
+```
+
+**Valgrind:**
+```bash
+valgrind --leak-check=full --show-leak-kinds=all \
+  ./build/bin/netnexus
+```
+
+**Core Dumps:**
+```bash
+# Enable core dumps
+ulimit -c unlimited
+
+# Run and crash
+./build/bin/netnexus
+
+# Analyze core dump
+gdb ./build/bin/netnexus core
+```
+
+**Verbose Logging:**
+Add debug prints or use gdb to trace execution:
+```c
+printf("[DEBUG] %s:%d - Variable: %d\n", __FILE__, __LINE__, var);
+```
+
+### Common Development Tasks
+
+**Add a New Module:**
+1. Create `src/mymodule/` directory
+2. Add `nn_mymodule_main.c` with constructor
+3. Add `commands.xml` with CLI commands
+4. Add `CMakeLists.txt`
+5. Update `src/CMakeLists.txt` to include new module
+6. Build and test
+
+**Add a New CLI Command:**
+1. Edit `src/{module}/commands.xml`
+2. Add element definition
+3. Add command expression
+4. Add command handler in module code
+5. Rebuild and test
+
+**Debug a Crash:**
+1. Build with debug symbols: `./scripts/dev/build.sh`
+2. Run with gdb: `./scripts/dev/debug.sh`
+3. Set breakpoint: `break suspicious_function`
+4. Run: `run`
+5. Analyze: `backtrace`, `print`, `info locals`
+
+**Test Database Changes:**
+```bash
+# View database
+sqlite3 data/bgp/bgp_db.db ".schema"
+sqlite3 data/bgp/bgp_db.db "SELECT * FROM bgp_protocol;"
+
+# Reset database
+rm -rf data/
+./scripts/dev/start.sh  # Will recreate
+```
+
+### Performance Profiling
+
+**Using perf:**
+```bash
+# Record
+perf record -g ./build/bin/netnexus
+
+# Analyze
+perf report
+```
+
+**Using gprof:**
+```bash
+# Build with profiling
+cd build
+cmake -DCMAKE_C_FLAGS="-pg" ..
+make
+
+# Run
+./bin/netnexus
+
+# Analyze
+gprof ./bin/netnexus gmon.out > analysis.txt
 ```
 
 ## Code Quality
@@ -39,6 +253,7 @@ After building, the following artifacts are created:
 - `build/bin/netnexus` - Main executable
 - `build/lib/libnn_cfg.so` - CLI library (CLI framework)
 - `build/lib/libnn_utils.so` - Utility library
+- `build/lib/libnn_db.so` - Database module (SQLite storage)
 - `build/lib/libnn_bgp.so` - BGP module
 - `build/lib/libnn_dev.so` - Dev module
 
@@ -98,6 +313,12 @@ src/
 │   └── commands.xml            # Core CLI commands
 ├── utils/                      # Utility library (libnn_utils.so)
 │   └── nn_path_utils.c/h       # Path utilities
+├── db/                         # Database module (libnn_db.so)
+│   ├── nn_db_main.c/h          # Module lifecycle
+│   ├── nn_db_registry.c/h      # DB definition storage
+│   ├── nn_db_schema.c          # Schema management
+│   ├── nn_db_api.c             # CRUD operations
+│   └── commands.xml            # DB module config
 ├── interface/                  # Interface definitions
 ├── bgp/                        # BGP module (libnn_bgp.so)
 │   ├── nn_bgp_module.c/h
@@ -111,8 +332,10 @@ src/
 ```
 netnexus (executable)
 ├── libnn_cfg.so (CLI framework)
-│   └── libxml2, pthread
+│   └── libxml2, pthread, libnn_db
 ├── libnn_utils.so (utilities)
+├── libnn_db.so (database module)
+│   └── sqlite3
 ├── libnn_bgp.so (BGP module)
 └── libnn_dev.so (Dev module)
 ```
@@ -164,3 +387,107 @@ The last element in each expression is automatically marked as an `is_end_node`.
 - 4-space indent, 120-char line limit
 - Right-aligned pointers (`char *ptr`)
 - Braces required for all control statements
+
+## Deployment
+
+### Package Creation
+
+Create a deployment package with all binaries and configuration files:
+
+```bash
+# Build the project first
+mkdir build && cd build
+cmake .. && make
+cd ..
+
+# Create deployment package
+./scripts/package.sh
+
+# Output: package/netnexus-1.0.0.tar.gz
+```
+
+The package includes:
+- Binaries (`bin/netnexus`)
+- Libraries (`lib/libnn_*.so`)
+- Configuration files (`config/*/commands.xml`)
+- Deployment scripts
+
+### Production Deployment
+
+Deploy to `/opt/netnexus`:
+
+```bash
+# Extract package
+tar xzf netnexus-1.0.0.tar.gz
+cd netnexus-1.0.0
+
+# Deploy (requires sudo)
+sudo ./scripts/deploy.sh
+```
+
+The deployment script:
+- Installs to `/opt/netnexus`
+- Copies config files to `/opt/netnexus/resources/`
+- Preserves existing configs (creates `.bak` backups)
+- Installs systemd service
+- Sets up environment variables
+
+### Service Management
+
+```bash
+# Start service
+sudo systemctl start netnexus
+
+# Enable on boot
+sudo systemctl enable netnexus
+
+# Check status
+sudo systemctl status netnexus
+
+# View logs
+sudo journalctl -u netnexus -f
+
+# Manual start
+sudo /opt/netnexus/bin/start.sh
+```
+
+### Docker Deployment
+
+Build and run with Docker:
+
+```bash
+# Build Docker image
+docker build -t netnexus:latest .
+
+# Run with docker-compose
+docker-compose up -d
+
+# View logs
+docker-compose logs -f
+
+# Stop
+docker-compose down
+```
+
+Docker configuration:
+- Exposed port: `3788` (telnet)
+- Persistent data: `/opt/netnexus/data` (volume)
+- Config directory: `/opt/netnexus/resources`
+- Environment: `NN_RESOURCES_DIR=/opt/netnexus/resources`
+
+### Configuration Path Resolution
+
+The system resolves XML configuration files in this priority:
+
+1. **Environment variable** `NN_RESOURCES_DIR`: `/opt/netnexus/resources/{module}/commands.xml`
+2. **Production path**: `/opt/netnexus/resources/{module}/commands.xml`
+3. **Development path**: `build/bin/../../src/{module}/commands.xml`
+4. **Fallback**: `../../src/{module}/commands.xml`
+
+### Database Storage
+
+SQLite databases are stored in:
+- **Development**: `./data/{module}/{db_name}.db`
+- **Production**: `/opt/netnexus/data/{module}/{db_name}.db` (via environment)
+
+Example: BGP module database at `/opt/netnexus/data/bgp/bgp_db.db`

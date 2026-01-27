@@ -18,13 +18,3 @@ set_target_properties(nn_bgp PROPERTIES
     VERSION 1.0.0
     SOVERSION 1
 )
-
-# Installation
-install(TARGETS nn_bgp
-    LIBRARY DESTINATION lib
-)
-
-# Install commands.xml to share/netnexus/modules/bgp/
-install(FILES commands.xml
-    DESTINATION share/netnexus/modules/bgp
-)

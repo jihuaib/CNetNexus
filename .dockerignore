@@ -2,6 +2,7 @@
 build/
 build-release/
 cmake-build-*/
+package/
 
 # IDE and editor files
 .vscode/
@@ -16,11 +17,12 @@ cmake-build-*/
 
 # Documentation
 docs/
-*.md
+README.md
 
 # CI/CD
 .github/
 scripts/
+package/
 
 # Docker
 .dockerignore
