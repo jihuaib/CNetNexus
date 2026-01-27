@@ -1,6 +1,8 @@
 #ifndef NN_BGP_CFG_H
 #define NN_BGP_CFG_H
 
+#include <stdbool.h>
+
 #include "nn_dev.h"
 
 // ============================================================================
@@ -8,8 +10,8 @@
 // ============================================================================
 
 #define NN_BGP_CLI_GROUP_ID_BGP 0x00000001
-#define NN_BGP_CLI_BGP_ELEM_ID_BGP 0x00000001
-#define NN_BGP_CLI_BGP_ELEM_ID_BGP_AS 0x00000002
+#define NN_BGP_CLI_BGP_CFG_ID_BGP_NO 0x00000001
+#define NN_BGP_CLI_BGP_CFG_ID_BGP_AS 0x00000002
 
 // ============================================================================
 // Configuration Data Types
@@ -20,6 +22,7 @@
  */
 typedef struct nn_bgp_cfg_data_bgp
 {
+    bool no;
     uint32_t as_number;
 } nn_bgp_cfg_data_bgp_t;
 

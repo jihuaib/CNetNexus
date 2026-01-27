@@ -1,23 +1,23 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<configuration module_id="1">
+<configuration module-id="1">
     <!-- Command group definitions -->
     <command_groups>
         <!-- Basic command group -->
-        <group group_id="1">
+        <group group-id="1">
             <elements>
-                <element id="1" type="keyword">
+                <element type="keyword">
                     <name>show</name>
                     <description>Display system information</description>
                 </element>
-                <element id="2" type="keyword">
+                <element type="keyword">
                     <name>cli</name>
                     <description>CLI information</description>
                 </element>
-                <element id="3" type="keyword">
+                <element cfg-id="1" type="keyword">
                     <name>command-info</name>
                     <description>Command info</description>
                 </element>
-                <element id="4" type="keyword">
+                <element cfg-id="2" type="keyword">
                     <name>history</name>
                     <description>Command history</description>
                 </element>
@@ -35,17 +35,17 @@
             </commands>
         </group>
 
-        <group group_id="2">
+        <group group-id="2">
             <elements>
-                <element id="1" type="keyword">
+                <element cfg-id="1" type="keyword">
                     <name>exit</name>
                     <description>Exit current mode</description>
                 </element>
-                <element id="2" type="keyword">
+                <element cfg-id="2" type="keyword">
                     <name>config</name>
                     <description>Enter configuration mode</description>
                 </element>
-                <element id="3" type="keyword">
+                <element cfg-id="3" type="keyword">
                     <name>end</name>
                     <description>Return to user view</description>
                 </element>

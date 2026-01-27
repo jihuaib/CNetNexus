@@ -10,7 +10,7 @@
 #include "nn_errcode.h"
 
 // Create a message
-nn_dev_message_t *nn_dev_message_create(const uint32_t msg_type, uint32_t sender_id, uint32_t request_id, void *data,
+nn_dev_message_t *nn_dev_message_create(uint32_t msg_type, uint32_t sender_id, uint32_t request_id, void *data,
                                         size_t data_len, void (*free_fn)(void *))
 {
     nn_dev_message_t *msg = g_malloc0(sizeof(nn_dev_message_t));

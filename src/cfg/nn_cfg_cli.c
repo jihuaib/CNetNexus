@@ -144,14 +144,10 @@ int nn_cfg_cli_cmd_group_show(nn_cfg_tlv_parser_t parser, nn_cfg_cli_out_t *cfg_
 
         switch (elem_id)
         {
-            case NN_CFG_CLI_SHOW_ELEM_ID_SHOW:
-                break;
-            case NN_CFG_CLI_SHOW_ELEM_ID_CLI:
-                break;
-            case NN_CFG_CLI_SHOW_ELEM_ID_COMMON_INFO:
+            case NN_CFG_CLI_SHOW_CFG_ID_COMMON_INFO:
                 cfg_out->data.cfg_show.is_common_info = true;
                 break;
-            case NN_CFG_CLI_SHOW_ELEM_ID_HISTORY:
+            case NN_CFG_CLI_SHOW_CFG_ID_HISTORY:
                 cfg_out->data.cfg_show.is_history = true;
                 break;
             default:
@@ -172,14 +168,14 @@ int nn_cfg_cli_cmd_group_op(nn_cfg_tlv_parser_t parser, nn_cfg_cli_out_t *cfg_ou
 
         switch (elem_id)
         {
-            case NN_CFG_CLI_OP_ELEM_ID_EXIT:
+            case NN_CFG_CLI_OP_CFG_ID_EXIT:
                 cfg_out->data.cfg_op.is_exit = true;
                 break;
 
-            case NN_CFG_CLI_OP_ELEM_ID_CONFIG:
+            case NN_CFG_CLI_OP_CFG_ID_CONFIG:
                 cfg_out->data.cfg_op.is_config = true;
                 break;
-            case NN_CFG_CLI_OP_ELEM_ID_END:
+            case NN_CFG_CLI_OP_CFG_ID_END:
                 cfg_out->data.cfg_op.is_end = true;
                 break;
             default:

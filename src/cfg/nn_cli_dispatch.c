@@ -58,8 +58,8 @@ uint8_t *nn_cli_dispatch_pack_tlv(nn_cli_match_result_t *result, uint32_t *out_l
         nn_cli_match_element_t *elem = &result->elements[i];
 
         // Element ID (4 bytes, network byte order)
-        uint32_t elem_id_be = GUINT32_TO_BE(elem->element_id);
-        memcpy(ptr, &elem_id_be, NN_CFG_TLV_ELEMENT_ID_SIZE);
+        uint32_t cfg_id_be = GUINT32_TO_BE(elem->cfg_id);
+        memcpy(ptr, &cfg_id_be, NN_CFG_TLV_ELEMENT_ID_SIZE);
         ptr += NN_CFG_TLV_ELEMENT_ID_SIZE;
 
         // Length (2 bytes, network byte order)
@@ -192,6 +192,10 @@ int nn_cli_dispatch_to_module(nn_cli_match_result_t *result, nn_cli_session_t *s
                 session->current_view = view;
                 update_prompt_from_template(session, module_prompt);
             }
+        }
+        else if (response->msg_type == NN_CFG_MSG_TYPE_CLI_RESP)
+        {
+            nn_cfg_send_message(session, response->data);
         }
 
         nn_dev_message_free(response);

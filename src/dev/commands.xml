@@ -1,15 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<configuration module_id="2">
+<configuration module-id="2">
     <!-- Command group definitions -->
     <command_groups>
         <!-- Basic command group -->
-        <group group_id="1">
+        <group group-id="1">
             <elements>
-                <element id="1" type="keyword">
+                <element type="keyword">
                     <name>show</name>
                     <description>Display system information</description>
                 </element>
-                <element id="2" type="keyword">
+                <element type="keyword">
                     <name>version</name>
                     <description>Version information</description>
                 </element>
@@ -24,13 +24,13 @@
         </group>
 
         <!-- System configuration group -->
-        <group group_id="2">
+        <group group-id="2">
             <elements>
-                <element id="1" type="keyword">
+                <element type="keyword">
                     <name>sysname</name>
                     <description>Set system name</description>
                 </element>
-                <element id="2" type="parameter">
+                <element type="parameter">
                     <name>&lt;hostname&gt;</name>
                     <type>string(1-63)</type>
                     <description>Hostname</description>

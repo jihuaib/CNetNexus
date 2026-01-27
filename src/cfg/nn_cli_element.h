@@ -16,7 +16,8 @@ typedef enum
 // CLI element definition
 typedef struct
 {
-    uint32_t id;                     // Unique element ID
+    uint32_t element_id;              // Unique element ID
+    uint32_t cfg_id;
     element_type_t type;             // Keyword or parameter
     char *name;                      // Element name
     char *description;               // Help text
@@ -33,9 +34,9 @@ typedef struct
 } nn_cli_command_group_t;
 
 // Function prototypes
-nn_cli_element_t *nn_cli_element_create(uint32_t id, element_type_t type, const char *name, const char *description,
+nn_cli_element_t *nn_cli_element_create(uint32_t element_id, uint32_t cfg_id,element_type_t type, const char *name, const char *description,
                                         const char *range);
-nn_cli_element_t *nn_cli_element_create_with_type(uint32_t id, element_type_t type, const char *name,
+nn_cli_element_t *nn_cli_element_create_with_type(uint32_t element_id, uint32_t cfg_id, element_type_t type, const char *name,
                                                   const char *description, const char *type_str);
 void nn_cli_element_free(nn_cli_element_t *element);
 

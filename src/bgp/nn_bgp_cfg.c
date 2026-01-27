@@ -58,24 +58,27 @@ int handle_bgp_config(nn_cfg_tlv_parser_t parser, nn_bgp_cfg_out_t *cfg_out, nn_
     int has_as_number = 0;
 
     // Parse TLV elements
-    NN_CFG_TLV_FOREACH(parser, elem_id, value, len)
+    NN_CFG_TLV_FOREACH(parser, cfg_id, value, len)
     {
-        printf("[bgp_cfg]   Element ID: %u, Length: %u\n", elem_id, len);
+        printf("[bgp_cfg]   CFG ID: %u, Length: %u\n", cfg_id, len);
 
-        switch (elem_id)
+        switch (cfg_id)
         {
-            case NN_BGP_CLI_BGP_ELEM_ID_BGP:
-                printf("[bgp_cfg]     Keyword: bgp\n");
+            case NN_BGP_CLI_BGP_CFG_ID_BGP_NO:
+            {
+                printf("[bgp_cfg]     no:\n");
+                cfg_out->data.bgp.no = true;
                 break;
-
-            case NN_BGP_CLI_BGP_ELEM_ID_BGP_AS:
+            }
+            case NN_BGP_CLI_BGP_CFG_ID_BGP_AS:
                 NN_CFG_TLV_GET_UINT32(value, len, as_number);
                 has_as_number = 1;
                 printf("[bgp_cfg]     AS Number: %u\n", as_number);
+                cfg_out->data.bgp.as_number = as_number;
                 break;
 
             default:
-                printf("[bgp_cfg]     Unknown element ID: %u\n", elem_id);
+                printf("[bgp_cfg]     Unknown CFG ID: %u\n", cfg_id);
                 break;
         }
     }
@@ -90,9 +93,6 @@ int handle_bgp_config(nn_cfg_tlv_parser_t parser, nn_bgp_cfg_out_t *cfg_out, nn_
 
     // Configure BGP
     printf("[bgp_cli] Configuring BGP with AS number: %u\n", as_number);
-
-    // Set configuration output for view switching
-    cfg_out->data.bgp.as_number = as_number;
 
     // Set response output
     snprintf(resp_out->message, sizeof(resp_out->message), "BGP: AS %u configured.\r\n", as_number);
@@ -122,30 +122,53 @@ static int dispatch_by_group_id(uint32_t group_id, nn_cfg_tlv_parser_t parser, n
     return NN_ERRCODE_FAIL;
 }
 
-int handle_bgp_config_resp(nn_dev_message_t *msg, const nn_bgp_cfg_out_t *cfg_out, const nn_bgp_resp_out_t *resp_out)
+int handle_bgp_config_resp_common(nn_dev_message_t *msg, const nn_bgp_cfg_out_t *cfg_out, const nn_bgp_resp_out_t *resp_out)
 {
-    char out_prompt[NN_CFG_CLI_MAX_PROMPT_LEN];
-
-    out_prompt[0] = '\0';
-
+    (void)cfg_out;
     (void)resp_out;
 
-    const char *template = nn_cfg_get_view_prompt_template(NN_CFG_CLI_VIEW_BGP);
-    if (!template)
-    {
-        return NN_ERRCODE_FAIL;
-    }
-
-    snprintf(out_prompt, NN_CFG_CLI_MAX_PROMPT_LEN, template, cfg_out->data.bgp.as_number);
-    char *msg_out = g_malloc0(NN_CFG_CLI_MAX_PROMPT_LEN);
-    memcpy(msg_out, out_prompt, NN_CFG_CLI_MAX_PROMPT_LEN);
-
-    nn_dev_message_t *resp = nn_dev_message_create(NN_CFG_MSG_TYPE_CLI_VIEW_CHG, NN_DEV_MODULE_ID_BGP, msg->request_id,
-                                                   msg_out, NN_CFG_CLI_MAX_PROMPT_LEN, g_free);
+    nn_dev_message_t *resp = nn_dev_message_create(NN_CFG_MSG_TYPE_CLI_RESP, NN_DEV_MODULE_ID_BGP,
+                                                   msg->request_id, NULL, 0, NULL);
     if (resp)
     {
         nn_dev_pubsub_send_response(msg->sender_id, resp);
         nn_dev_message_free(resp);
+    }
+
+    return NN_ERRCODE_SUCCESS;
+}
+
+int handle_bgp_config_resp(nn_dev_message_t *msg, const nn_bgp_cfg_out_t *cfg_out, const nn_bgp_resp_out_t *resp_out)
+{
+    if (cfg_out->data.bgp.no == false)
+    {
+        char out_prompt[NN_CFG_CLI_MAX_PROMPT_LEN];
+
+        out_prompt[0] = '\0';
+
+        (void)resp_out;
+
+        const char *template = nn_cfg_get_view_prompt_template(NN_CFG_CLI_VIEW_BGP);
+        if (!template)
+        {
+            return NN_ERRCODE_FAIL;
+        }
+
+        snprintf(out_prompt, NN_CFG_CLI_MAX_PROMPT_LEN, template, cfg_out->data.bgp.as_number);
+        char *msg_out = g_malloc0(NN_CFG_CLI_MAX_PROMPT_LEN);
+        memcpy(msg_out, out_prompt, NN_CFG_CLI_MAX_PROMPT_LEN);
+
+        nn_dev_message_t *resp = nn_dev_message_create(NN_CFG_MSG_TYPE_CLI_VIEW_CHG, NN_DEV_MODULE_ID_BGP,
+                                                       msg->request_id, msg_out, NN_CFG_CLI_MAX_PROMPT_LEN, g_free);
+        if (resp)
+        {
+            nn_dev_pubsub_send_response(msg->sender_id, resp);
+            nn_dev_message_free(resp);
+        }
+    }
+    else
+    {
+        return handle_bgp_config_resp_common(msg, cfg_out, resp_out);
     }
 
     return NN_ERRCODE_SUCCESS;

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<configuration module_id="3">
+<configuration module-id="3">
     <!-- View definitions -->
     <views>
         <view view-id="4" view-name="bgp">
@@ -10,13 +10,17 @@
     <!-- Command group definitions -->
     <command_groups>
         <!-- Configuration command group -->
-        <group group_id="1">
+        <group group-id="1">
             <elements>
-                <element id="1" type="keyword">
+                <element cfg-id="1" type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+                <element type="keyword">
                     <name>bgp</name>
                     <description>BGP protocol</description>
                 </element>
-                <element id="2" type="parameter">
+                <element cfg-id="2" type="parameter">
                     <name>&lt;as-number&gt;</name>
                     <type>uint(1-4294967295)</type>
                     <description>BGP as-number</description>
@@ -25,24 +29,29 @@
             
             <commands>
                 <command>
-                    <expression>1 2</expression>
+                    <expression>2 3</expression>
+                    <views>3</views>
+                    <view-id>4</view-id>
+                </command>
+                <command>
+                    <expression>1 2 3</expression>
                     <views>3</views>
                     <view-id>4</view-id>
                 </command>
             </commands>
         </group>
 
-        <group group_id="2">
+        <group group-id="2">
             <elements>
-                <element id="1" type="keyword">
+                <element type="keyword">
                     <name>show</name>
                     <description>Display system information</description>
                 </element>
-                <element id="2" type="keyword">
+                <element type="keyword">
                     <name>bgp</name>
                     <description>BGP protocol</description>
                 </element>
-                <element id="3" type="keyword">
+                <element cfg-id="1" type="keyword">
                     <name>peer</name>
                     <description>BGP peer</description>
                 </element>

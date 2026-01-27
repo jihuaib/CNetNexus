@@ -17,13 +17,13 @@ enum
 };
 
 // Create a new CLI tree node
-nn_cli_tree_node_t *nn_cli_tree_create_node(uint32_t element_id, const char *name, const char *description,
+nn_cli_tree_node_t *nn_cli_tree_create_node(uint32_t cfg_id, const char *name, const char *description,
                                             nn_cli_node_type_t type, uint32_t module_id, uint32_t group_id,
                                             uint32_t view_id)
 {
     nn_cli_tree_node_t *node = (nn_cli_tree_node_t *)g_malloc0(sizeof(nn_cli_tree_node_t));
 
-    node->element_id = element_id;
+    node->cfg_id = cfg_id;
     node->module_id = module_id;
     node->group_id = group_id;
     node->name = name ? strdup(name) : NULL;
@@ -240,7 +240,7 @@ nn_cli_tree_node_t *nn_cli_tree_clone(nn_cli_tree_node_t *node)
     }
 
     // Create new node with same properties
-    nn_cli_tree_node_t *clone = nn_cli_tree_create_node(node->element_id, node->name, node->description, node->type,
+    nn_cli_tree_node_t *clone = nn_cli_tree_create_node(node->cfg_id, node->name, node->description, node->type,
                                                         node->module_id, node->group_id, node->view_id);
     if (!clone)
     {
@@ -424,7 +424,7 @@ nn_cli_match_result_t *nn_cli_match_result_create(void)
 }
 
 // Add an element to match result
-void nn_cli_match_result_add_element(nn_cli_match_result_t *result, uint32_t element_id, nn_cli_node_type_t type,
+void nn_cli_match_result_add_element(nn_cli_match_result_t *result, uint32_t cfg_id, nn_cli_node_type_t type,
                                      const char *value, nn_cli_param_type_t *param_type)
 {
     if (!result)
@@ -440,7 +440,7 @@ void nn_cli_match_result_add_element(nn_cli_match_result_t *result, uint32_t ele
     }
 
     nn_cli_match_element_t *elem = &result->elements[result->num_elements++];
-    elem->element_id = element_id;
+    elem->cfg_id = cfg_id;
     elem->type = type;
 
     // Clone param_type to avoid sharing pointers
@@ -534,16 +534,19 @@ nn_cli_match_result_t *nn_cli_tree_match_command_full(nn_cli_tree_node_t *root, 
 
         if (child)
         {
-            // Add matched element to result
-            if (child->type == NN_CLI_NODE_ARGUMENT)
+            if (child->cfg_id != 0)
             {
-                // ARGUMENT: include the value
-                nn_cli_match_result_add_element(result, child->element_id, child->type, value_token, child->param_type);
-            }
-            else
-            {
-                // COMMAND/KEYWORD: no value
-                nn_cli_match_result_add_element(result, child->element_id, child->type, NULL, NULL);
+                // Add matched element to result
+                if (child->type == NN_CLI_NODE_ARGUMENT)
+                {
+                    // ARGUMENT: include the value
+                    nn_cli_match_result_add_element(result, child->cfg_id, child->type, value_token, child->param_type);
+                }
+                else
+                {
+                    // COMMAND/KEYWORD: no value
+                    nn_cli_match_result_add_element(result, child->cfg_id, child->type, NULL, NULL);
+                }
             }
 
             result->module_id = child->module_id;

@@ -8,12 +8,13 @@
 #include "nn_cli_param_type.h"
 
 // Create a CLI element
-nn_cli_element_t *nn_cli_element_create(uint32_t id, element_type_t type, const char *name, const char *description,
+nn_cli_element_t *nn_cli_element_create(uint32_t element_id, uint32_t cfg_id, element_type_t type, const char *name, const char *description,
                                         const char *range)
 {
     nn_cli_element_t *element = (nn_cli_element_t *)g_malloc0(sizeof(nn_cli_element_t));
 
-    element->id = id;
+    element->element_id = element_id;
+    element->cfg_id = cfg_id;
     element->type = type;
     element->name = name ? strdup(name) : NULL;
     element->description = description ? strdup(description) : NULL;
@@ -24,12 +25,13 @@ nn_cli_element_t *nn_cli_element_create(uint32_t id, element_type_t type, const 
 }
 
 // Create a CLI element with type string parsing
-nn_cli_element_t *nn_cli_element_create_with_type(uint32_t id, element_type_t type, const char *name,
+nn_cli_element_t *nn_cli_element_create_with_type(uint32_t element_id, uint32_t cfg_id, element_type_t type, const char *name,
                                                   const char *description, const char *type_str)
 {
     nn_cli_element_t *element = (nn_cli_element_t *)g_malloc0(sizeof(nn_cli_element_t));
 
-    element->id = id;
+    element->element_id = element_id;
+    element->cfg_id = cfg_id;
     element->type = type;
     element->name = name ? strdup(name) : NULL;
     element->description = description ? strdup(description) : NULL;
@@ -99,7 +101,7 @@ void nn_cli_group_add_element(nn_cli_command_group_t *group, nn_cli_element_t *e
 }
 
 // Find element by ID in group
-nn_cli_element_t *nn_cli_group_find_element(nn_cli_command_group_t *group, uint32_t id)
+nn_cli_element_t *nn_cli_group_find_element(nn_cli_command_group_t *group, uint32_t element_id)
 {
     if (!group)
     {
@@ -108,7 +110,7 @@ nn_cli_element_t *nn_cli_group_find_element(nn_cli_command_group_t *group, uint3
 
     for (uint32_t i = 0; i < group->num_elements; i++)
     {
-        if (group->elements[i]->id == id)
+        if (group->elements[i]->element_id == element_id)
         {
             return group->elements[i];
         }

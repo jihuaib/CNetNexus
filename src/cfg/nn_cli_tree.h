@@ -31,7 +31,7 @@ typedef struct nn_cli_param_type nn_cli_param_type_t;
 // CLI tree node structure
 struct nn_cli_tree_node
 {
-    uint32_t element_id; // Element ID from XML definition
+    uint32_t cfg_id;     // Element ID from XML definition
     uint32_t module_id;  // Associated module ID for message dispatch
     uint32_t group_id;
     char *name;                      // Node name/keyword
@@ -50,7 +50,7 @@ struct nn_cli_tree_node
 // Command match element - stores matched element info with value
 typedef struct nn_cli_match_element
 {
-    uint32_t element_id;             // Element ID
+    uint32_t cfg_id;                 // Cfg ID
     nn_cli_node_type_t type;         // COMMAND (keyword) or ARGUMENT
     char *value;                     // Argument value (NULL for keywords)
     uint32_t value_len;              // Value length (binary length for TLV)

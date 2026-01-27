@@ -77,7 +77,7 @@ static nn_cli_tree_node_t *build_tree_from_expression(uint32_t *element_ids, uin
         }
 
         nn_cli_tree_node_t *node =
-            nn_cli_tree_create_node(element->id, element->name, element->description,
+            nn_cli_tree_create_node(element->cfg_id, element->name, element->description,
                                     element->type == ELEMENT_TYPE_KEYWORD ? NN_CLI_NODE_COMMAND : NN_CLI_NODE_ARGUMENT,
                                     module_id, group->group_id, view_id);
 
@@ -115,30 +115,25 @@ static nn_cli_tree_node_t *build_tree_from_expression(uint32_t *element_ids, uin
 }
 
 // Parse element definition
-static nn_cli_element_t *parse_element(xmlNode *element_node)
+static nn_cli_element_t *parse_element(xmlNode *element_node, uint32_t element_id)
 {
-    xmlChar *id_str = xmlGetProp(element_node, (const xmlChar *)"id");
+    xmlChar *cfg_id_str = xmlGetProp(element_node, (const xmlChar *)"cfg-id");
     xmlChar *type_str = xmlGetProp(element_node, (const xmlChar *)"type");
+    uint32_t cfg_id = 0;
+    element_type_t type = ELEMENT_TYPE_KEYWORD;
 
-    if (!id_str || !type_str)
+    if (cfg_id_str != NULL)
     {
-        if (id_str)
-        {
-            xmlFree(id_str);
-        }
-        if (type_str)
-        {
-            xmlFree(type_str);
-        }
-        return NULL;
+        cfg_id = atoi((const char *)cfg_id_str);
+        xmlFree(cfg_id_str);
     }
-
-    uint32_t id = atoi((const char *)id_str);
-    element_type_t type = (strcmp((const char *)type_str, "keyword") == NN_ERRCODE_SUCCESS) ? ELEMENT_TYPE_KEYWORD
-                                                                                            : ELEMENT_TYPE_PARAMETER;
-
-    xmlFree(id_str);
-    xmlFree(type_str);
+    if (type_str != NULL)
+    {
+         type = (strcmp((const char *)type_str, "keyword") == NN_ERRCODE_SUCCESS)
+                                  ? ELEMENT_TYPE_KEYWORD
+                                  : ELEMENT_TYPE_PARAMETER;
+         xmlFree(type_str);
+    }
 
     // Get name, description, range, type (for parameters)
     char *name = NULL;
@@ -184,11 +179,11 @@ static nn_cli_element_t *parse_element(xmlNode *element_node)
     // If parameter type string is provided, use the new constructor
     if (type == ELEMENT_TYPE_PARAMETER && param_type_str)
     {
-        element = nn_cli_element_create_with_type(id, type, name, description, param_type_str);
+        element = nn_cli_element_create_with_type(element_id, cfg_id, type, name, description, param_type_str);
     }
     else
     {
-        element = nn_cli_element_create(id, type, name, description, range);
+        element = nn_cli_element_create(element_id, cfg_id, type, name, description, range);
     }
 
     g_free(name);
@@ -270,7 +265,9 @@ static nn_cli_view_node_t *parse_view_node(xmlNode *view_xml)
 // Parse command group and register commands to views
 static void parse_command_group(xmlNode *group_node, nn_cli_view_tree_t *view_tree, uint32_t module_id)
 {
-    xmlChar *group_id_str = xmlGetProp(group_node, (const xmlChar *)"group_id");
+    uint32_t element_id = 0;
+
+    xmlChar *group_id_str = xmlGetProp(group_node, (const xmlChar *)"group-id");
     if (!group_id_str)
     {
         return;
@@ -303,7 +300,8 @@ static void parse_command_group(xmlNode *group_node, nn_cli_view_tree_t *view_tr
 
                 if (xmlStrcmp(elem->name, (const xmlChar *)"element") == NN_ERRCODE_SUCCESS)
                 {
-                    nn_cli_element_t *element = parse_element(elem);
+                    element_id++;
+                    nn_cli_element_t *element = parse_element(elem, element_id);
                     if (element)
                     {
                         nn_cli_group_add_element(group, element);
@@ -482,7 +480,7 @@ uint32_t nn_cli_xml_load_view_tree(const char *xml_file, nn_cli_view_tree_t *vie
     }
 
     // Extract module name from XML root element
-    xmlChar *module_id_str = xmlGetProp(root_element, (const xmlChar *)"module_id");
+    xmlChar *module_id_str = xmlGetProp(root_element, (const xmlChar *)"module-id");
     if (module_id_str == NULL)
     {
         fprintf(stderr, "[xml_parser] Error: parse module_id fail\n");

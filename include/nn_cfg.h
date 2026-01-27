@@ -41,10 +41,6 @@ void nn_cfg_register_module_xml(uint32_t module_id, const char *xml_path);
 #define NN_CFG_TLV_LENGTH_SIZE 2
 #define NN_CFG_TLV_HEADER_SIZE (NN_CFG_TLV_ELEMENT_ID_SIZE + NN_CFG_TLV_LENGTH_SIZE)
 
-// Response Element IDs
-#define NN_CFG_TLV_ID_RESP_MSG 0x0000FFFF
-#define NN_CFG_TLV_ID_RESP_PROMPT 0x0000FFFE // Module-filled prompt template
-
 // Get view prompt template by view name (for modules to fill placeholders)
 const char *nn_cfg_get_view_prompt_template(uint32_t view_id);
 
@@ -151,13 +147,13 @@ static inline int nn_cfg_tlv_parser_next(nn_cfg_tlv_parser_t *parser, uint32_t *
  *       }
  *   } NN_CFG_TLV_PARSE_END()
  */
-#define NN_CFG_TLV_PARSE_BEGIN(data, len, parser_var, group_id_var)                                                    \
+#define NN_CFG_TLV_PARSE_BEGIN(_data, _len, _parser_var, _group_id_var)                                                \
     do                                                                                                                 \
     {                                                                                                                  \
-        nn_cfg_tlv_parser_t parser_var;                                                                                \
-        if (nn_cfg_tlv_parser_init(&parser_var, (const uint8_t *)(data), (len)) == 0)                                  \
+        nn_cfg_tlv_parser_t _parser_var;                                                                               \
+        if (nn_cfg_tlv_parser_init(&(_parser_var), (const uint8_t *)(_data), (_len)) == 0)                             \
         {                                                                                                              \
-            uint32_t group_id_var = parser_var.group_id;
+            uint32_t _group_id_var = (_parser_var).group_id;
 
 #define NN_CFG_TLV_PARSE_END()                                                                                         \
     }                                                                                                                  \
@@ -167,92 +163,92 @@ static inline int nn_cfg_tlv_parser_next(nn_cfg_tlv_parser_t *parser, uint32_t *
 /**
  * @brief Iterate through all TLV elements
  */
-#define NN_CFG_TLV_FOREACH(parser_var, id_var, value_var, len_var)                                                     \
-    uint32_t id_var;                                                                                                   \
-    const uint8_t *value_var;                                                                                          \
-    uint16_t len_var;                                                                                                  \
+#define NN_CFG_TLV_FOREACH(_parser_var, _id_var, _value_var, _len_var)                                                 \
+    uint32_t _id_var;                                                                                                  \
+    const uint8_t *_value_var;                                                                                         \
+    uint16_t _len_var;                                                                                                 \
     int _tlv_ret_##parser_var;                                                                                         \
-    while ((_tlv_ret_##parser_var = nn_cfg_tlv_parser_next(&parser_var, &id_var, &value_var, &len_var)) == 1)
+    while ((_tlv_ret_##parser_var = nn_cfg_tlv_parser_next(&(_parser_var), &(_id_var), &(_value_var), &_len_var)) == 1)
 
 /**
  * @brief Extract string value from TLV element
  */
-#define NN_CFG_TLV_GET_STRING(value_ptr, len, out_str, max_len)                                                        \
+#define NN_CFG_TLV_GET_STRING(_value_ptr, _len, _out_str, _max_len)                                                    \
     do                                                                                                                 \
     {                                                                                                                  \
-        uint32_t _copy_len = ((len) < (max_len) - 1) ? (len) : ((max_len) - 1);                                        \
-        if (value_ptr && _copy_len > 0)                                                                                \
+        uint32_t _copy_len = ((_len) < (_max_len) - 1) ? (_len) : ((_max_len) - 1);                                    \
+        if ((_value_ptr) && (_copy_len) > 0)                                                                           \
         {                                                                                                              \
-            memcpy(out_str, value_ptr, _copy_len);                                                                     \
-            (out_str)[_copy_len] = '\0';                                                                               \
+            memcpy((_out_str), (_value_ptr), (_copy_len));                                                             \
+            (_out_str)[(_copy_len)] = '\0';                                                                            \
         }                                                                                                              \
         else                                                                                                           \
         {                                                                                                              \
-            (out_str)[0] = '\0';                                                                                       \
+            (_out_str)[0] = '\0';                                                                                      \
         }                                                                                                              \
     } while (0)
 
 /**
  * @brief Extract uint32_t value from TLV element (network byte order)
  */
-#define NN_CFG_TLV_GET_UINT32(value_ptr, len, out_val)                                                                 \
+#define NN_CFG_TLV_GET_UINT32(_value_ptr, _len, _out_val)                                                              \
     do                                                                                                                 \
     {                                                                                                                  \
-        if ((value_ptr) && (len) == sizeof(uint32_t))                                                                  \
+        if ((_value_ptr) && (_len) == sizeof(uint32_t))                                                                \
         {                                                                                                              \
             uint32_t _val_be;                                                                                          \
-            memcpy(&_val_be, value_ptr, sizeof(uint32_t));                                                             \
-            (out_val) = ntohl(_val_be);                                                                                \
+            memcpy(&(_val_be), (_value_ptr), sizeof(uint32_t));                                                        \
+            (_out_val) = ntohl(_val_be);                                                                               \
         }                                                                                                              \
         else                                                                                                           \
         {                                                                                                              \
-            (out_val) = 0;                                                                                             \
+            (_out_val) = 0;                                                                                            \
         }                                                                                                              \
     } while (0)
 
 /**
  * @brief Extract uint16_t value from TLV element (network byte order)
  */
-#define NN_CFG_TLV_GET_UINT16(value_ptr, len, out_val)                                                                 \
+#define NN_CFG_TLV_GET_UINT16(_value_ptr, _len, _out_val)                                                              \
     do                                                                                                                 \
     {                                                                                                                  \
-        if ((value_ptr) && (len) == sizeof(uint16_t))                                                                  \
+        if ((_value_ptr) && (_len) == sizeof(uint16_t))                                                                \
         {                                                                                                              \
             uint16_t _val_be;                                                                                          \
-            memcpy(&_val_be, value_ptr, sizeof(uint16_t));                                                             \
-            (out_val) = ntohs(_val_be);                                                                                \
+            memcpy(&(_val_be), (_value_ptr), sizeof(uint16_t));                                                        \
+            (_out_val) = ntohs(_val_be);                                                                               \
         }                                                                                                              \
         else                                                                                                           \
         {                                                                                                              \
-            (out_val) = 0;                                                                                             \
+            (_out_val) = 0;                                                                                            \
         }                                                                                                              \
     } while (0)
 
 /**
  * @brief Extract uint8_t value from TLV element
  */
-#define NN_CFG_TLV_GET_UINT8(value_ptr, len, out_val)                                                                  \
+#define NN_CFG_TLV_GET_UINT8(_value_ptr, _len, _out_val)                                                               \
     do                                                                                                                 \
     {                                                                                                                  \
-        if ((value_ptr) && (len) == sizeof(uint8_t))                                                                   \
+        if ((_value_ptr) && (_len) == sizeof(uint8_t))                                                                 \
         {                                                                                                              \
-            (out_val) = *(value_ptr);                                                                                  \
+            (_out_val) = *(_value_ptr);                                                                                \
         }                                                                                                              \
         else                                                                                                           \
         {                                                                                                              \
-            (out_val) = 0;                                                                                             \
+            (_out_val) = 0;                                                                                            \
         }                                                                                                              \
     } while (0)
 
 /**
  * @brief Extract IPv4 address from TLV element
  */
-#define NN_CFG_TLV_GET_IPV4(value_ptr, len, out_str, max_len)                                                          \
+#define NN_CFG_TLV_GET_IPV4(_value_ptr, _len, _out_str, _max_len)                                                      \
     do                                                                                                                 \
     {                                                                                                                  \
-        if ((value_ptr) && (len) == 4)                                                                                 \
+        if ((_value_ptr) && (_len) == 4)                                                                               \
         {                                                                                                              \
-            snprintf(out_str, max_len, "%u.%u.%u.%u", (value_ptr)[0], (value_ptr)[1], (value_ptr)[2], (value_ptr)[3]); \
+            snprintf((_out_str), (_max_len), "%u.%u.%u.%u", (_value_ptr)[0], (_value_ptr)[1], (_value_ptr)[2], (_value_ptr)[3]); \
         }                                                                                                              \
         else                                                                                                           \
         {                                                                                                              \

@@ -66,7 +66,7 @@ typedef struct nn_dev_module_mq
 } nn_dev_module_mq_t;
 
 // Create a message
-nn_dev_message_t *nn_dev_message_create(const uint32_t msg_type, uint32_t sender_id, uint32_t request_id, void *data,
+nn_dev_message_t *nn_dev_message_create(uint32_t msg_type, uint32_t sender_id, uint32_t request_id, void *data,
                                         size_t data_len, void (*free_fn)(void *));
 
 // Free a message

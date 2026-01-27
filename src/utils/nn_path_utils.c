@@ -1,4 +1,3 @@
-#define _GNU_SOURCE
 #include "nn_path_utils.h"
 
 #include <limits.h>

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<configuration module_id="4">
+<configuration module-id="4">
     <!-- Interface configuration commands -->
     <command_groups>
         <!-- Interface command group -->
