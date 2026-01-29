@@ -22,4 +22,14 @@ int32_t nn_dev_init_all_modules(void);
 
 void nn_cleanup_all_modules(void);
 
+void nn_dev_module_foreach(GTraverseFunc func, gpointer user_data);
+
+void nn_dev_register_module_inner(uint32_t id, const char *name, nn_module_init_fn init, nn_module_cleanup_fn cleanup);
+
+int nn_dev_get_module_name_inner(uint32_t module_id, char *module_name);
+
+void nn_dev_request_shutdown_inner(void);
+
+int nn_dev_shutdown_requested_inner(void);
+
 #endif // NN_DEV_MODULE_H

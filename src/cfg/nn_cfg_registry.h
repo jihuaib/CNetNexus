@@ -12,4 +12,6 @@ typedef struct
     char *xml_path;
 } nn_cfg_xml_entry_t;
 
+void nn_cfg_register_module_xml_inner(uint32_t module_id, const char *xml_path);
+
 #endif // NN_CFG_MODULE_REGISTRY_H

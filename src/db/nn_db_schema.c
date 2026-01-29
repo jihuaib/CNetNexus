@@ -227,7 +227,7 @@ int nn_db_initialize_database(nn_db_definition_t *db_def)
     conn->handle = handle;
     g_mutex_init(&conn->db_mutex);
 
-    g_hash_table_insert(g_nn_db_context->connections, g_strdup(db_def->db_name), conn);
+    g_hash_table_insert(g_nn_db_local->connections, g_strdup(db_def->db_name), conn);
 
     printf("[db] Database initialized: %s\n", db_def->db_name);
     return NN_ERRCODE_SUCCESS;

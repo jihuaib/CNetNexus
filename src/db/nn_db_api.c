@@ -13,13 +13,13 @@
 
 int nn_db_initialize_all(void)
 {
-    if (!g_nn_db_context || !g_nn_db_context->registry)
+    if (!g_nn_db_local || !g_nn_db_local->registry)
     {
         fprintf(stderr, "[db] Context or registry not initialized\n");
         return NN_ERRCODE_FAIL;
     }
 
-    nn_db_registry_t *registry = g_nn_db_context->registry;
+    nn_db_registry_t *registry = g_nn_db_local->registry;
     int failed_count = 0;
 
     g_mutex_lock(&registry->registry_mutex);
@@ -493,7 +493,7 @@ int nn_db_query(const char *db_name, const char *table_name, const char **field_
     return NN_ERRCODE_SUCCESS;
 }
 
-int nn_db_exists(const char *db_name, const char *table_name, const char *where_clause, bool *exists)
+int nn_db_exists(const char *db_name, const char *table_name, const char *where_clause, gboolean *exists)
 {
     if (!db_name || !table_name || !exists)
     {
@@ -518,19 +518,19 @@ int nn_db_exists(const char *db_name, const char *table_name, const char *where_
 // Type Validation
 // ============================================================================
 
-bool nn_db_validate_field(const char *db_name, const char *table_name, const char *field_name,
+gboolean nn_db_validate_field(const char *db_name, const char *table_name, const char *field_name,
                           const nn_db_value_t *value, char *error_msg, uint32_t error_msg_len)
 {
     if (!db_name || !table_name || !field_name || !value)
     {
-        return false;
+        return FALSE;
     }
 
     // Look up field definition from registry
     nn_db_field_t *field = nn_db_registry_find_field(db_name, table_name, field_name);
     if (!field || !field->param_type)
     {
-        return true; // No validation defined
+        return TRUE; // No validation defined
     }
 
     // Convert value to string for validation
@@ -553,9 +553,9 @@ bool nn_db_validate_field(const char *db_name, const char *table_name, const cha
     }
     else
     {
-        return true; // Skip validation for other types
+        return TRUE; // Skip validation for other types
     }
 
     // Use existing CLI validation logic
-    return nn_cli_param_type_validate(field->param_type, value_str, error_msg, error_msg_len);
+    return nn_cfg_param_type_validate(field->param_type, value_str, error_msg, error_msg_len);
 }

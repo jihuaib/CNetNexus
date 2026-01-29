@@ -1,6 +1,8 @@
 //
 // Created by jhb on 1/24/26.
 //
+#include "nn_dev_mq.h"
+
 #include <poll.h>
 #include <stdio.h>
 #include <sys/eventfd.h>
@@ -10,8 +12,8 @@
 #include "nn_errcode.h"
 
 // Create a message
-nn_dev_message_t *nn_dev_message_create(uint32_t msg_type, uint32_t sender_id, uint32_t request_id, void *data,
-                                        size_t data_len, void (*free_fn)(void *))
+nn_dev_message_t *nn_dev_message_create_inner(uint32_t msg_type, uint32_t sender_id, uint32_t request_id, void *data,
+                                              size_t data_len, void (*free_fn)(void *))
 {
     nn_dev_message_t *msg = g_malloc0(sizeof(nn_dev_message_t));
 
@@ -26,7 +28,7 @@ nn_dev_message_t *nn_dev_message_create(uint32_t msg_type, uint32_t sender_id, u
 }
 
 // Free a message
-void nn_dev_message_free(nn_dev_message_t *msg)
+void nn_dev_message_free_inner(nn_dev_message_t *msg)
 {
     if (!msg)
     {
@@ -42,7 +44,7 @@ void nn_dev_message_free(nn_dev_message_t *msg)
 }
 
 // Create module message queue
-nn_dev_module_mq_t *nn_dev_mq_create()
+nn_dev_module_mq_t *nn_dev_mq_create_inner()
 {
     nn_dev_module_mq_t *mq = g_malloc0(sizeof(nn_dev_module_mq_t));
 
@@ -54,7 +56,7 @@ nn_dev_module_mq_t *nn_dev_mq_create()
 }
 
 // Destroy module message queue
-void nn_dev_mq_destroy(nn_dev_module_mq_t *mq)
+void nn_dev_mq_destroy_inner(nn_dev_module_mq_t *mq)
 {
     if (mq == NULL)
     {
@@ -78,7 +80,7 @@ void nn_dev_mq_destroy(nn_dev_module_mq_t *mq)
 }
 
 // Send message to module queue (thread-safe)
-int nn_nn_mq_send(int event_fd, nn_dev_module_mq_t *mq, nn_dev_message_t *msg)
+int nn_nn_mq_send_inner(int event_fd, nn_dev_module_mq_t *mq, nn_dev_message_t *msg)
 {
     if (!mq || !msg)
     {
@@ -102,7 +104,7 @@ int nn_nn_mq_send(int event_fd, nn_dev_module_mq_t *mq, nn_dev_message_t *msg)
 }
 
 // Receive message from queue (non-blocking, thread-safe)
-nn_dev_message_t *nn_dev_mq_receive(int event_fd, nn_dev_module_mq_t *mq)
+nn_dev_message_t *nn_dev_mq_receive_inner(int event_fd, nn_dev_module_mq_t *mq)
 {
     if (!mq)
     {

@@ -27,6 +27,12 @@ typedef struct
     uint32_t line_pos;             // Current length of line_buffer
     uint32_t cursor_pos;           // Cursor position in buffer
     nn_cli_input_state_t state;    // Input state machine state
+
+    // Tab completion cycling state
+    uint32_t tab_cycling;            // 1 if currently cycling through matches
+    uint32_t tab_match_index;        // Current index in tab matches
+    char tab_original[MAX_CMD_LEN];  // Original input before tab cycling
+    uint32_t tab_original_pos;       // Original cursor position before tab cycling
 } nn_cli_session_t;
 
 // Function prototypes

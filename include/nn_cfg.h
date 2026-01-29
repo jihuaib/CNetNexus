@@ -4,6 +4,7 @@
 #include <arpa/inet.h>
 #include <stdint.h>
 #include <string.h>
+#include <glib.h>
 
 // ============================================================================
 // CLI MSG Definitions
@@ -12,9 +13,7 @@
 #define NN_CFG_MSG_TYPE_CLI_RESP 0x00000002
 #define NN_CFG_MSG_TYPE_CLI_VIEW_CHG 0x00000003
 
-// Register a module's XML configuration path by module ID
-// This should be called by modules in their constructor after nn_dev_register_module
-void nn_cfg_register_module_xml(uint32_t module_id, const char *xml_path);
+#define NN_CFG_CLI_MAX_RESP_LEN 4096
 
 // ============================================================================
 // CLI VIEW Definitions
@@ -41,8 +40,8 @@ void nn_cfg_register_module_xml(uint32_t module_id, const char *xml_path);
 #define NN_CFG_TLV_LENGTH_SIZE 2
 #define NN_CFG_TLV_HEADER_SIZE (NN_CFG_TLV_ELEMENT_ID_SIZE + NN_CFG_TLV_LENGTH_SIZE)
 
-// Get view prompt template by view name (for modules to fill placeholders)
-const char *nn_cfg_get_view_prompt_template(uint32_t view_id);
+// Forward declaration
+typedef struct nn_cli_param_type nn_cli_param_type_t;
 
 // ============================================================================
 // TLV Parser Context
@@ -256,5 +255,29 @@ static inline int nn_cfg_tlv_parser_next(nn_cfg_tlv_parser_t *parser, uint32_t *
             (out_str)[0] = '\0';                                                                                       \
         }                                                                                                              \
     } while (0)
+
+
+// ============================================================================
+// PUBLIC API
+// ============================================================================
+
+// Register a module's XML configuration path by module ID
+// This should be called by modules in their constructor after nn_dev_register_module
+void nn_cfg_register_module_xml(uint32_t module_id, const char *xml_path);
+
+// Get view prompt template by view name (for modules to fill placeholders)
+int nn_cfg_get_view_prompt_template(uint32_t view_id, char *view_name);
+
+/**
+ * Parse a type string like "string(1-63)" or "uint(0-65535)" into a param type structure
+ * @param type_str The type string to parse
+ * @return Newly allocated param type structure, or NULL on error
+ */
+nn_cli_param_type_t *nn_cfg_param_type_parse(const char *type_str);
+
+void nn_cfg_param_type_free(nn_cli_param_type_t *param_type);
+
+gboolean nn_cfg_param_type_validate(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
+                                    uint32_t error_msg_size);
 
 #endif // NN_CFG_H

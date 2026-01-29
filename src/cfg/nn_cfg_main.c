@@ -187,6 +187,7 @@ static int nn_cfg_init_local()
     g_nn_cfg_local->worker_thread = 0;
     g_nn_cfg_local->sessions =
         g_hash_table_new_full(g_int_hash, g_int_equal, g_free, (GDestroyNotify)nn_cli_session_destroy);
+    g_nn_cfg_local->xml_db_defs = NULL;
 
     nn_dev_module_mq_t *mq = nn_dev_mq_create();
     if (mq == NULL)
@@ -250,6 +251,11 @@ static int nn_cfg_init_local()
 
 static void nn_cfg_cleanup_local()
 {
+    if (g_nn_cfg_local == NULL)
+    {
+        return;
+    }
+
     nn_cli_global_history_cleanup(&g_nn_cfg_local->global_history);
     pthread_mutex_destroy(&g_nn_cfg_local->history_mutex);
 
@@ -283,7 +289,13 @@ static void nn_cfg_cleanup_local()
         g_hash_table_destroy(g_nn_cfg_local->sessions);
     }
 
+    if (g_nn_cfg_local->xml_db_defs != NULL)
+    {
+        g_list_free_full(g_nn_cfg_local->xml_db_defs, (GDestroyNotify)nn_cfg_xml_db_def_free);
+    }
+
     g_free(g_nn_cfg_local);
+    g_nn_cfg_local = NULL;
 }
 
 // Module initialization
@@ -339,10 +351,45 @@ static int32_t cfg_module_init()
     }
 
     printf("\n[cfg] Module cli initialization complete (failures: %d)\n\n", failed_count);
-
+ 
     // Initialize databases from XML definitions
     printf("[cfg] Initializing databases:\n");
     printf("======================================\n");
+
+    // Register all database definitions parsed from XML
+    for (GList *node = g_nn_cfg_local->xml_db_defs; node != NULL; node = node->next)
+    {
+        nn_cfg_xml_db_def_t *xml_def = (nn_cfg_xml_db_def_t *)node->data;
+        printf("[cfg] Registering database: %s\n", xml_def->db_name);
+
+        nn_db_definition_t *db_def = nn_db_definition_create(xml_def->db_name, xml_def->module_id);
+        if (db_def)
+        {
+            for (GList *t_node = xml_def->tables; t_node != NULL; t_node = t_node->next)
+            {
+                nn_cfg_xml_db_table_t *xml_table = (nn_cfg_xml_db_table_t *)t_node->data;
+                nn_db_table_t *db_table = nn_db_table_create(xml_table->table_name);
+                if (db_table)
+                {
+                    for (GList *f_node = xml_table->fields; f_node != NULL; f_node = f_node->next)
+                    {
+                        nn_cfg_xml_db_field_t *xml_field = (nn_cfg_xml_db_field_t *)f_node->data;
+                        nn_db_field_t *db_field = nn_db_field_create(xml_field->field_name, xml_field->type_str);
+                        if (db_field)
+                        {
+                            nn_db_table_add_field(db_table, db_field);
+                        }
+                    }
+                    nn_db_definition_add_table(db_def, db_table);
+                }
+            }
+            nn_db_registry_add(db_def);
+        }
+    }
+    // Clear and free the intermediate list
+    g_list_free_full(g_nn_cfg_local->xml_db_defs, (GDestroyNotify)nn_cfg_xml_db_def_free);
+    g_nn_cfg_local->xml_db_defs = NULL;
+
     if (nn_db_initialize_all() != NN_ERRCODE_SUCCESS)
     {
         fprintf(stderr, "[cfg] Warning: Database initialization had errors\n");
@@ -364,7 +411,7 @@ static void cfg_module_cleanup(void)
 // Register cfg module using constructor attribute
 static void __attribute__((constructor)) register_cfg_module(void)
 {
-    nn_dev_register_module(NN_DEV_MODULE_ID_CFG, "nn_cfg", cfg_module_init, cfg_module_cleanup);
+    nn_dev_register_module(NN_DEV_MODULE_ID_CFG, "cfg", cfg_module_init, cfg_module_cleanup);
 
     char cfg_xml_path[256];
     if (nn_resolve_xml_path("cfg", cfg_xml_path, sizeof(cfg_xml_path)) == 0)

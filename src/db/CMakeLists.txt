@@ -13,7 +13,6 @@ add_library(nn_db SHARED ${NN_DB_SOURCES})
 # Include directories
 target_include_directories(nn_db PRIVATE
     .
-    ${PROJECT_SOURCE_DIR}/include
     ${SQLite3_INCLUDE_DIRS}
 )
 

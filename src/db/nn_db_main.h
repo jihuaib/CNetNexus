@@ -24,7 +24,7 @@ typedef struct nn_db_connection
 // ============================================================================
 
 // Module context (global state)
-typedef struct nn_db_context
+typedef struct nn_db_local
 {
     GHashTable *connections;    // Map: db_name (char*) -> nn_db_connection_t*
     nn_db_registry_t *registry; // Database definitions registry
@@ -33,10 +33,13 @@ typedef struct nn_db_context
     int epoll_fd; // Epoll instance for event handling
     int event_fd; // Eventfd for message queue notifications
     void *mq;     // Message queue (nn_dev_module_mq_t)
-} nn_db_context_t;
+
+    pthread_t worker_thread;
+    volatile int running;
+} nn_db_local_t;
 
 // Global context instance
-extern nn_db_context_t *g_nn_db_context;
+extern nn_db_local_t *g_nn_db_local;
 
 // ============================================================================
 // Internal Module Functions
@@ -46,7 +49,7 @@ extern nn_db_context_t *g_nn_db_context;
  * @brief Module initialization callback
  * @return NN_ERRCODE_SUCCESS or NN_ERRCODE_FAIL
  */
-int32_t db_module_init(void *module);
+int32_t db_module_init();
 
 /**
  * @brief Module cleanup callback

@@ -1,4 +1,5 @@
 #include "nn_dev_module.h"
+#include "nn_dev_mq.h"
 
 #include <glib.h>
 #include <signal.h>
@@ -42,13 +43,8 @@ static void ensure_registry_initialized(void)
 }
 
 // Register a module
-void nn_dev_register_module(uint32_t id, const char *name, nn_module_init_fn init, nn_module_cleanup_fn cleanup)
+void nn_dev_register_module_inner(uint32_t id, const char *name, nn_module_init_fn init, nn_module_cleanup_fn cleanup)
 {
-    if (!name)
-    {
-        return;
-    }
-
     ensure_registry_initialized();
 
     nn_dev_module_t *module = (nn_dev_module_t *)g_malloc0(sizeof(nn_dev_module_t));
@@ -61,18 +57,16 @@ void nn_dev_register_module(uint32_t id, const char *name, nn_module_init_fn ini
 
     // Add to tree for sorted lookup and iteration
     g_tree_insert(g_module_registry, GUINT_TO_POINTER(module->module_id), module);
-
-    printf("[dev] Registered module: %s\n", name);
 }
 
 // Request shutdown
-void nn_dev_request_shutdown(void)
+void nn_dev_request_shutdown_inner(void)
 {
     g_shutdown_requested = 1;
 }
 
 // Check if shutdown was requested
-int nn_dev_shutdown_requested(void)
+int nn_dev_shutdown_requested_inner(void)
 {
     return g_shutdown_requested;
 }
@@ -129,11 +123,8 @@ int32_t nn_dev_init_all_modules(void)
 }
 
 // Helper for module cleanup traversal
-static gboolean cleanup_module_callback(gpointer key, gpointer value, gpointer data)
+static gboolean cleanup_module_callback(nn_dev_module_t *module)
 {
-    (void)key;
-    (void)data;
-    nn_dev_module_t *module = (nn_dev_module_t *)value;
 
     printf("[dev] Cleaning up module: %s\n", module->name);
 
@@ -154,6 +145,15 @@ static gboolean cleanup_module_callback(gpointer key, gpointer value, gpointer d
     return FALSE; // Continue traversal
 }
 
+// Helper to collect modules into a list for reverse traversal
+static gboolean collect_module_callback(gpointer key, gpointer value, gpointer data)
+{
+    (void)key;
+    GList **list = (GList **)data;
+    *list = g_list_prepend(*list, value);
+    return FALSE;
+}
+
 // Cleanup all registered modules
 void nn_cleanup_all_modules(void)
 {
@@ -166,21 +166,32 @@ void nn_cleanup_all_modules(void)
         return;
     }
 
-    // Cleanup all modules in-order
-    g_tree_foreach(g_module_registry, cleanup_module_callback, NULL);
+    // Collect all modules, then iterate in reverse order (highest ID first)
+    // g_tree_foreach visits in ascending order, g_list_prepend reverses it
+    GList *modules = NULL;
+    g_tree_foreach(g_module_registry, collect_module_callback, &modules);
 
-    // Destroy tree
+    for (GList *l = modules; l != NULL; l = l->next)
+    {
+        nn_dev_module_t *module = (nn_dev_module_t *)l->data;
+        (void)cleanup_module_callback(module);
+    }
+
+    g_list_free(modules);
+
+    // Destroy tree (nodes already freed above, so use g_tree_destroy without value_destroy_func)
     g_tree_destroy(g_module_registry);
     g_module_registry = NULL;
 
     printf("\n[dev] Module cleanup complete\n");
 }
 
-int nn_dev_get_module_name(uint32_t module_id, char *module_name)
+int nn_dev_get_module_name_inner(uint32_t module_id, char *module_name)
 {
-    if (!g_module_registry || !module_name)
+    module_name[0] = '\0';
+
+    if (!g_module_registry)
     {
-        snprintf(module_name, NN_DEV_MODULE_NAME_MAX_LEN, "unknown");
         return NN_ERRCODE_FAIL;
     }
 
@@ -192,4 +203,12 @@ int nn_dev_get_module_name(uint32_t module_id, char *module_name)
     }
 
     return NN_ERRCODE_FAIL;
+}
+
+void nn_dev_module_foreach(GTraverseFunc func, gpointer user_data)
+{
+    if (g_module_registry)
+    {
+        g_tree_foreach(g_module_registry, func, user_data);
+    }
 }

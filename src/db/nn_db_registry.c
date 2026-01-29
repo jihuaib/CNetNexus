@@ -58,7 +58,7 @@ nn_db_field_t *nn_db_field_create(const char *field_name, const char *type_str)
     field->type_str = g_strdup(type_str);
 
     // Parse type for validation
-    field->param_type = nn_cli_param_type_parse(type_str);
+    field->param_type = nn_cfg_param_type_parse(type_str);
 
     // Map to SQLite type
     field->sql_type = g_strdup(get_sql_type(type_str));
@@ -79,7 +79,7 @@ void nn_db_field_free(nn_db_field_t *field)
 
     if (field->param_type)
     {
-        nn_cli_param_type_free(field->param_type);
+        nn_cfg_param_type_free(field->param_type);
     }
 
     g_free(field);

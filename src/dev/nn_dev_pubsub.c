@@ -11,26 +11,8 @@
 #include <sys/eventfd.h>
 #include <unistd.h>
 
+#include "nn_dev_main.h"
 #include "nn_errcode.h"
-
-// ============================================================================
-// Global Data Structures
-// ============================================================================
-
-// Registered modules: module_id -> nn_dev_pubsub_subscriber_t*
-static GHashTable *g_registered_modules = NULL;
-
-// Unicast subscriptions: uint64_t key (publisher_id << 32 | event_id) -> GList of nn_dev_pubsub_subscriber_t*
-static GHashTable *g_unicast_subs = NULL;
-
-// Multicast groups: group_id -> nn_dev_pubsub_group_t*
-static GHashTable *g_multicast_groups = NULL;
-
-// Global mutex for thread-safe access
-static GMutex g_pubsub_mutex;
-
-// Initialization flag
-static int g_pubsub_initialized = 0;
 
 // ============================================================================
 // Internal Helper Functions
@@ -84,7 +66,7 @@ static int send_to_subscriber(nn_dev_pubsub_subscriber_t *sub, nn_dev_message_t 
     nn_dev_message_t *msg_copy =
         nn_dev_message_create(msg->msg_type, msg->sender_id, msg->request_id, data_copy, msg->data_len, g_free);
 
-    return nn_nn_mq_send(sub->eventfd, sub->mq, msg_copy);
+    return nn_dev_mq_send(sub->eventfd, sub->mq, msg_copy);
 }
 
 // Free multicast group
@@ -121,88 +103,64 @@ static void free_subscriber_list(gpointer data)
 
 int nn_dev_pubsub_init(void)
 {
-    if (g_pubsub_initialized)
-    {
-        return NN_ERRCODE_SUCCESS;
-    }
+    g_mutex_init(&g_nn_dev_local->pubsub_mutex);
 
-    g_mutex_init(&g_pubsub_mutex);
-
-    g_mutex_lock(&g_pubsub_mutex);
+    g_mutex_lock(&g_nn_dev_local->pubsub_mutex);
 
     // Create hash tables
-    g_registered_modules = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
-    g_unicast_subs = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, free_subscriber_list);
-    g_multicast_groups = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, free_multicast_group);
+    g_nn_dev_local->registered_modules = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
+    g_nn_dev_local->unicast_subss = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, free_subscriber_list);
+    g_nn_dev_local->multicast_groups = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, free_multicast_group);
 
-    g_pubsub_initialized = 1;
+    g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
 
-    g_mutex_unlock(&g_pubsub_mutex);
-
-    printf("[pubsub] Pub/sub system initialized\n");
+    printf("[dev] Pub/sub system initialized\n");
 
     return NN_ERRCODE_SUCCESS;
 }
 
 void nn_dev_pubsub_cleanup(void)
 {
-    if (!g_pubsub_initialized)
-    {
-        return;
-    }
-
-    g_mutex_lock(&g_pubsub_mutex);
+    g_mutex_lock(&g_nn_dev_local->pubsub_mutex);
 
     // Destroy hash tables
-    if (g_registered_modules)
+    if (g_nn_dev_local->registered_modules)
     {
-        g_hash_table_destroy(g_registered_modules);
-        g_registered_modules = NULL;
+        g_hash_table_destroy(g_nn_dev_local->registered_modules);
+        g_nn_dev_local->registered_modules = NULL;
     }
 
-    if (g_unicast_subs)
+    if (g_nn_dev_local->unicast_subss)
     {
-        g_hash_table_destroy(g_unicast_subs);
-        g_unicast_subs = NULL;
+        g_hash_table_destroy(g_nn_dev_local->unicast_subss);
+        g_nn_dev_local->unicast_subss = NULL;
     }
 
-    if (g_multicast_groups)
+    if (g_nn_dev_local->multicast_groups)
     {
-        g_hash_table_destroy(g_multicast_groups);
-        g_multicast_groups = NULL;
+        g_hash_table_destroy(g_nn_dev_local->multicast_groups);
+        g_nn_dev_local->multicast_groups = NULL;
     }
 
-    g_pubsub_initialized = 0;
+    g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
+    g_mutex_clear(&g_nn_dev_local->pubsub_mutex);
 
-    g_mutex_unlock(&g_pubsub_mutex);
-    g_mutex_clear(&g_pubsub_mutex);
-
-    printf("[pubsub] Pub/sub system cleaned up\n");
+    printf("[dev] Pub/sub system cleaned up\n");
 }
 
 // ============================================================================
 // Module Registration
 // ============================================================================
 
-int nn_dev_pubsub_register(uint32_t module_id, int eventfd, nn_dev_module_mq_t *mq)
+int nn_dev_pubsub_register_inner(uint32_t module_id, int eventfd, nn_dev_module_mq_t *mq)
 {
-    if (!g_pubsub_initialized)
-    {
-        return NN_ERRCODE_FAIL;
-    }
-
-    if (eventfd < 0 || !mq)
-    {
-        return NN_ERRCODE_FAIL;
-    }
-
-    g_mutex_lock(&g_pubsub_mutex);
+    g_mutex_lock(&g_nn_dev_local->pubsub_mutex);
 
     // Check if already registered
-    if (g_hash_table_contains(g_registered_modules, GUINT_TO_POINTER(module_id)))
+    if (g_hash_table_contains(g_nn_dev_local->registered_modules, GUINT_TO_POINTER(module_id)))
     {
-        g_mutex_unlock(&g_pubsub_mutex);
-        printf("[pubsub] Module 0x%08X already registered\n", module_id);
+        g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
+        printf("[dev] Module 0x%08X already registered\n", module_id);
         return NN_ERRCODE_FAIL;
     }
 
@@ -212,46 +170,73 @@ int nn_dev_pubsub_register(uint32_t module_id, int eventfd, nn_dev_module_mq_t *
     sub->eventfd = eventfd;
     sub->mq = mq;
 
-    g_hash_table_insert(g_registered_modules, GUINT_TO_POINTER(module_id), sub);
+    g_hash_table_insert(g_nn_dev_local->registered_modules, GUINT_TO_POINTER(module_id), sub);
 
-    g_mutex_unlock(&g_pubsub_mutex);
+    g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
 
-    printf("[pubsub] Module 0x%08X registered\n", module_id);
+    printf("[dev] Module 0x%08X registered\n", module_id);
 
     return NN_ERRCODE_SUCCESS;
 }
 
-void nn_dev_pubsub_unregister(uint32_t module_id)
+void nn_dev_pubsub_unregister_inner(uint32_t module_id)
 {
-    if (!g_pubsub_initialized)
-    {
-        return;
-    }
-
-    g_mutex_lock(&g_pubsub_mutex);
+    g_mutex_lock(&g_nn_dev_local->pubsub_mutex);
 
     // Remove from registered modules
-    g_hash_table_remove(g_registered_modules, GUINT_TO_POINTER(module_id));
+    g_hash_table_remove(g_nn_dev_local->registered_modules, GUINT_TO_POINTER(module_id));
 
     // Remove from all unicast subscriptions
+    // Collect keys to modify (can't modify hash table during iteration)
+    GList *keys_to_update = NULL;
+
     GHashTableIter iter;
     gpointer key, value;
 
-    g_hash_table_iter_init(&iter, g_unicast_subs);
+    g_hash_table_iter_init(&iter, g_nn_dev_local->unicast_subss);
     while (g_hash_table_iter_next(&iter, &key, &value))
     {
         GList *sub_list = (GList *)value;
-        GList *found = find_subscriber_in_list(sub_list, module_id);
-        if (found)
+        if (find_subscriber_in_list(sub_list, module_id))
         {
-            g_free(found->data);
-            sub_list = g_list_delete_link(sub_list, found);
-            g_hash_table_iter_replace(&iter, sub_list);
+            keys_to_update = g_list_prepend(keys_to_update, key);
         }
     }
 
+    // Now update the collected keys
+    for (GList *k = keys_to_update; k != NULL; k = k->next)
+    {
+        gpointer sub_key = k->data;
+        GList *sub_list = (GList *)g_hash_table_lookup(g_nn_dev_local->unicast_subss, sub_key);
+        if (sub_list)
+        {
+            GList *found = find_subscriber_in_list(sub_list, module_id);
+            if (found)
+            {
+                // Remove from hash table first to get ownership
+                g_hash_table_steal(g_nn_dev_local->unicast_subss, sub_key);
+
+                // Free the subscriber data and remove from list
+                g_free(found->data);
+                sub_list = g_list_delete_link(sub_list, found);
+
+                // Re-insert if list is not empty
+                if (sub_list != NULL)
+                {
+                    g_hash_table_insert(g_nn_dev_local->unicast_subss, sub_key, sub_list);
+                }
+                else
+                {
+                    // List is empty, don't re-insert (effectively removes the key)
+                }
+            }
+        }
+    }
+
+    g_list_free(keys_to_update);
+
     // Remove from all multicast groups (but don't destroy owned groups here)
-    g_hash_table_iter_init(&iter, g_multicast_groups);
+    g_hash_table_iter_init(&iter, g_nn_dev_local->multicast_groups);
     while (g_hash_table_iter_next(&iter, &key, &value))
     {
         nn_dev_pubsub_group_t *group = (nn_dev_pubsub_group_t *)value;
@@ -266,30 +251,26 @@ void nn_dev_pubsub_unregister(uint32_t module_id)
         g_mutex_unlock(&group->group_mutex);
     }
 
-    g_mutex_unlock(&g_pubsub_mutex);
+    g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
 
-    printf("[pubsub] Module 0x%08X unregistered\n", module_id);
+    printf("[dev] Module 0x%08X unregistered\n", module_id);
 }
 
 // ============================================================================
 // Unicast Channel
 // ============================================================================
 
-int nn_dev_pubsub_subscribe(uint32_t subscriber_id, uint32_t publisher_id, uint32_t event_id)
+int nn_dev_pubsub_subscribe_inner(uint32_t subscriber_id, uint32_t publisher_id, uint32_t event_id)
 {
-    if (!g_pubsub_initialized)
-    {
-        return NN_ERRCODE_FAIL;
-    }
 
-    g_mutex_lock(&g_pubsub_mutex);
+    g_mutex_lock(&g_nn_dev_local->pubsub_mutex);
 
     // Get subscriber info from registered modules
-    nn_dev_pubsub_subscriber_t *registered = g_hash_table_lookup(g_registered_modules, GUINT_TO_POINTER(subscriber_id));
+    nn_dev_pubsub_subscriber_t *registered = g_hash_table_lookup(g_nn_dev_local->registered_modules, GUINT_TO_POINTER(subscriber_id));
     if (!registered)
     {
-        g_mutex_unlock(&g_pubsub_mutex);
-        printf("[pubsub] Module 0x%08X not registered, cannot subscribe\n", subscriber_id);
+        g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
+        printf("[dev] Module 0x%08X not registered, cannot subscribe\n", subscriber_id);
         return NN_ERRCODE_FAIL;
     }
 
@@ -297,13 +278,13 @@ int nn_dev_pubsub_subscribe(uint32_t subscriber_id, uint32_t publisher_id, uint3
     uint64_t key_val = make_unicast_key(publisher_id, event_id);
 
     // Get existing subscriber list
-    GList *sub_list = g_hash_table_lookup(g_unicast_subs, &key_val);
+    GList *sub_list = g_hash_table_lookup(g_nn_dev_local->unicast_subss, &key_val);
 
     // Check if already subscribed
     if (find_subscriber_in_list(sub_list, subscriber_id))
     {
-        g_mutex_unlock(&g_pubsub_mutex);
-        printf("[pubsub] Module 0x%08X already subscribed to 0x%08X:0x%08X\n", subscriber_id, publisher_id, event_id);
+        g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
+        printf("[dev] Module 0x%08X already subscribed to 0x%08X:0x%08X\n", subscriber_id, publisher_id, event_id);
         return NN_ERRCODE_SUCCESS;
     }
 
@@ -316,7 +297,7 @@ int nn_dev_pubsub_subscribe(uint32_t subscriber_id, uint32_t publisher_id, uint3
         sub_list = g_list_append(NULL, sub_copy);
         uint64_t *key = g_malloc0(sizeof(uint64_t));
         *key = key_val;
-        g_hash_table_insert(g_unicast_subs, key, sub_list);
+        g_hash_table_insert(g_nn_dev_local->unicast_subss, key, sub_list);
     }
     else
     {
@@ -327,28 +308,24 @@ int nn_dev_pubsub_subscribe(uint32_t subscriber_id, uint32_t publisher_id, uint3
         sub_list = g_list_append(sub_list, sub_copy);
     }
 
-    g_mutex_unlock(&g_pubsub_mutex);
+    g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
 
-    printf("[pubsub] Module 0x%08X subscribed to 0x%08X:0x%08X\n", subscriber_id, publisher_id, event_id);
+    printf("[dev] Module 0x%08X subscribed to 0x%08X:0x%08X\n", subscriber_id, publisher_id, event_id);
 
     return NN_ERRCODE_SUCCESS;
 }
 
-int nn_dev_pubsub_unsubscribe(uint32_t subscriber_id, uint32_t publisher_id, uint32_t event_id)
+int nn_dev_pubsub_unsubscribe_inner(uint32_t subscriber_id, uint32_t publisher_id, uint32_t event_id)
 {
-    if (!g_pubsub_initialized)
-    {
-        return NN_ERRCODE_FAIL;
-    }
 
-    g_mutex_lock(&g_pubsub_mutex);
+    g_mutex_lock(&g_nn_dev_local->pubsub_mutex);
 
     uint64_t key_val = make_unicast_key(publisher_id, event_id);
 
-    GList *sub_list = g_hash_table_lookup(g_unicast_subs, &key_val);
+    GList *sub_list = g_hash_table_lookup(g_nn_dev_local->unicast_subss, &key_val);
     if (!sub_list)
     {
-        g_mutex_unlock(&g_pubsub_mutex);
+        g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
         return NN_ERRCODE_SUCCESS;
     }
 
@@ -363,37 +340,37 @@ int nn_dev_pubsub_unsubscribe(uint32_t subscriber_id, uint32_t publisher_id, uin
             // Need to create a new key for reinsertion
             uint64_t *new_key = g_malloc0(sizeof(uint64_t));
             *new_key = key_val;
-            g_hash_table_insert(g_unicast_subs, new_key, sub_list);
+            g_hash_table_insert(g_nn_dev_local->unicast_subss, new_key, sub_list);
         }
         else
         {
-            g_hash_table_remove(g_unicast_subs, &key_val);
+            g_hash_table_remove(g_nn_dev_local->unicast_subss, &key_val);
         }
     }
 
-    g_mutex_unlock(&g_pubsub_mutex);
+    g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
 
-    printf("[pubsub] Module 0x%08X unsubscribed from 0x%08X:0x%08X\n", subscriber_id, publisher_id, event_id);
+    printf("[dev] Module 0x%08X unsubscribed from 0x%08X:0x%08X\n", subscriber_id, publisher_id, event_id);
 
     return NN_ERRCODE_SUCCESS;
 }
 
-int nn_dev_pubsub_publish(uint32_t publisher_id, uint32_t event_id, nn_dev_message_t *msg)
+int nn_dev_pubsub_publish_inner(uint32_t publisher_id, uint32_t event_id, nn_dev_message_t *msg)
 {
-    if (!g_pubsub_initialized || !msg)
+    if (!msg)
     {
         return NN_ERRCODE_FAIL;
     }
 
-    g_mutex_lock(&g_pubsub_mutex);
+    g_mutex_lock(&g_nn_dev_local->pubsub_mutex);
 
     uint64_t key_val = make_unicast_key(publisher_id, event_id);
 
-    GList *sub_list = g_hash_table_lookup(g_unicast_subs, &key_val);
+    GList *sub_list = g_hash_table_lookup(g_nn_dev_local->unicast_subss, &key_val);
 
     if (!sub_list)
     {
-        g_mutex_unlock(&g_pubsub_mutex);
+        g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
         return NN_ERRCODE_SUCCESS; // No subscribers, not an error
     }
 
@@ -414,9 +391,9 @@ int nn_dev_pubsub_publish(uint32_t publisher_id, uint32_t event_id, nn_dev_messa
         }
     }
 
-    g_mutex_unlock(&g_pubsub_mutex);
+    g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
 
-    printf("[pubsub] Published to 0x%08X:0x%08X - sent: %d, failed: %d\n", publisher_id, event_id, success_count,
+    printf("[dev] Published to 0x%08X:0x%08X - sent: %d, failed: %d\n", publisher_id, event_id, success_count,
            fail_count);
 
     return (fail_count == 0) ? NN_ERRCODE_SUCCESS : NN_ERRCODE_FAIL;
@@ -431,25 +408,25 @@ int nn_dev_pubsub_publish(uint32_t publisher_id, uint32_t event_id, nn_dev_messa
  * @return NN_ERRCODE_SUCCESS on success, NN_ERRCODE_FAIL on failure
  */
 // Send message directly to a registered module by ID (no subscription required)
-int nn_dev_pubsub_send_response(uint32_t target_module_id, nn_dev_message_t *msg)
+int nn_dev_pubsub_send_response_inner(uint32_t target_module_id, nn_dev_message_t *msg)
 {
-    if (!g_pubsub_initialized || !msg)
+    if (!msg)
     {
         return NN_ERRCODE_FAIL;
     }
 
-    g_mutex_lock(&g_pubsub_mutex);
+    g_mutex_lock(&g_nn_dev_local->pubsub_mutex);
 
-    nn_dev_pubsub_subscriber_t *sub = g_hash_table_lookup(g_registered_modules, GUINT_TO_POINTER(target_module_id));
+    nn_dev_pubsub_subscriber_t *sub = g_hash_table_lookup(g_nn_dev_local->registered_modules, GUINT_TO_POINTER(target_module_id));
     if (!sub)
     {
-        g_mutex_unlock(&g_pubsub_mutex);
+        g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
         return NN_ERRCODE_FAIL;
     }
 
     int ret = send_to_subscriber(sub, msg);
 
-    g_mutex_unlock(&g_pubsub_mutex);
+    g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
     return ret;
 }
 
@@ -457,24 +434,24 @@ int nn_dev_pubsub_send_response(uint32_t target_module_id, nn_dev_message_t *msg
  * Publish a unicast message to a specific target module
  * Only the specified target_module_id will receive the message (if subscribed)
  */
-int nn_dev_pubsub_publish_to_module(uint32_t publisher_id, uint32_t event_id, uint32_t target_module_id,
-                                    nn_dev_message_t *msg)
+int nn_dev_pubsub_publish_to_module_inner(uint32_t publisher_id, uint32_t event_id, uint32_t target_module_id,
+                                          nn_dev_message_t *msg)
 {
-    if (!g_pubsub_initialized || !msg)
+    if (!msg)
     {
         return NN_ERRCODE_FAIL;
     }
 
-    g_mutex_lock(&g_pubsub_mutex);
+    g_mutex_lock(&g_nn_dev_local->pubsub_mutex);
 
     uint64_t key_val = make_unicast_key(publisher_id, event_id);
 
-    GList *sub_list = g_hash_table_lookup(g_unicast_subs, &key_val);
+    GList *sub_list = g_hash_table_lookup(g_nn_dev_local->unicast_subss, &key_val);
 
     if (!sub_list)
     {
-        g_mutex_unlock(&g_pubsub_mutex);
-        printf("[pubsub] No subscribers for 0x%08X:0x%08X\n", publisher_id, event_id);
+        g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
+        printf("[dev] No subscribers for 0x%08X:0x%08X\n", publisher_id, event_id);
         return NN_ERRCODE_FAIL;
     }
 
@@ -492,8 +469,8 @@ int nn_dev_pubsub_publish_to_module(uint32_t publisher_id, uint32_t event_id, ui
 
     if (!target_sub)
     {
-        g_mutex_unlock(&g_pubsub_mutex);
-        printf("[pubsub] Target module 0x%08X not subscribed to 0x%08X:0x%08X\n", target_module_id, publisher_id,
+        g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
+        printf("[dev] Target module 0x%08X not subscribed to 0x%08X:0x%08X\n", target_module_id, publisher_id,
                event_id);
         return NN_ERRCODE_FAIL;
     }
@@ -501,21 +478,21 @@ int nn_dev_pubsub_publish_to_module(uint32_t publisher_id, uint32_t event_id, ui
     // Send to the specific target module
     int ret = send_to_subscriber(target_sub, msg);
 
-    g_mutex_unlock(&g_pubsub_mutex);
+    g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
 
     if (ret == NN_ERRCODE_SUCCESS)
     {
-        printf("[pubsub] Published to module 0x%08X via 0x%08X:0x%08X\n", target_module_id, publisher_id, event_id);
+        printf("[dev] Published to module 0x%08X via 0x%08X:0x%08X\n", target_module_id, publisher_id, event_id);
     }
 
     return ret;
 }
 
 // Synchronous query: send a message and wait for a response
-nn_dev_message_t *nn_dev_pubsub_query(uint32_t publisher_id, uint32_t event_id, uint32_t target_module_id,
-                                      nn_dev_message_t *msg, uint32_t timeout_ms)
+nn_dev_message_t *nn_dev_pubsub_query_inner(uint32_t publisher_id, uint32_t event_id, uint32_t target_module_id,
+                                            nn_dev_message_t *msg, uint32_t timeout_ms)
 {
-    if (!g_pubsub_initialized || !msg)
+    if (!msg)
     {
         return NULL;
     }
@@ -583,7 +560,7 @@ nn_dev_message_t *nn_dev_pubsub_query(uint32_t publisher_id, uint32_t event_id, 
     }
     else if (ret == 0)
     {
-        printf("[pubsub] Query to 0x%08X timed out after %u ms\n", target_module_id, timeout_ms);
+        printf("[dev] Query to 0x%08X timed out after %u ms\n", target_module_id, timeout_ms);
     }
     else
     {
@@ -604,18 +581,13 @@ nn_dev_message_t *nn_dev_pubsub_query(uint32_t publisher_id, uint32_t event_id, 
 
 int nn_dev_pubsub_create_group(uint32_t owner_id, uint32_t group_id)
 {
-    if (!g_pubsub_initialized)
-    {
-        return NN_ERRCODE_FAIL;
-    }
-
-    g_mutex_lock(&g_pubsub_mutex);
+    g_mutex_lock(&g_nn_dev_local->pubsub_mutex);
 
     // Check if group already exists
-    if (g_hash_table_contains(g_multicast_groups, GUINT_TO_POINTER(group_id)))
+    if (g_hash_table_contains(g_nn_dev_local->multicast_groups, GUINT_TO_POINTER(group_id)))
     {
-        g_mutex_unlock(&g_pubsub_mutex);
-        printf("[pubsub] Group 0x%08X already exists\n", group_id);
+        g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
+        printf("[dev] Group 0x%08X already exists\n", group_id);
         return NN_ERRCODE_FAIL;
     }
 
@@ -626,73 +598,63 @@ int nn_dev_pubsub_create_group(uint32_t owner_id, uint32_t group_id)
     group->members = NULL;
     g_mutex_init(&group->group_mutex);
 
-    g_hash_table_insert(g_multicast_groups, GUINT_TO_POINTER(group_id), group);
+    g_hash_table_insert(g_nn_dev_local->multicast_groups, GUINT_TO_POINTER(group_id), group);
 
-    g_mutex_unlock(&g_pubsub_mutex);
+    g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
 
-    printf("[pubsub] Group 0x%08X created by module 0x%08X\n", group_id, owner_id);
+    printf("[dev] Group 0x%08X created by module 0x%08X\n", group_id, owner_id);
 
     return NN_ERRCODE_SUCCESS;
 }
 
 int nn_dev_pubsub_destroy_group(uint32_t owner_id, uint32_t group_id)
 {
-    if (!g_pubsub_initialized)
-    {
-        return NN_ERRCODE_FAIL;
-    }
+    g_mutex_lock(&g_nn_dev_local->pubsub_mutex);
 
-    g_mutex_lock(&g_pubsub_mutex);
-
-    nn_dev_pubsub_group_t *group = g_hash_table_lookup(g_multicast_groups, GUINT_TO_POINTER(group_id));
+    nn_dev_pubsub_group_t *group = g_hash_table_lookup(g_nn_dev_local->multicast_groups, GUINT_TO_POINTER(group_id));
     if (!group)
     {
-        g_mutex_unlock(&g_pubsub_mutex);
-        printf("[pubsub] Group 0x%08X does not exist\n", group_id);
+        g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
+        printf("[dev] Group 0x%08X does not exist\n", group_id);
         return NN_ERRCODE_FAIL;
     }
 
     // Only owner can destroy group
     if (group->owner_id != owner_id)
     {
-        g_mutex_unlock(&g_pubsub_mutex);
-        printf("[pubsub] Module 0x%08X is not owner of group 0x%08X\n", owner_id, group_id);
+        g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
+        printf("[dev] Module 0x%08X is not owner of group 0x%08X\n", owner_id, group_id);
         return NN_ERRCODE_FAIL;
     }
 
-    g_hash_table_remove(g_multicast_groups, GUINT_TO_POINTER(group_id));
+    g_hash_table_remove(g_nn_dev_local->multicast_groups, GUINT_TO_POINTER(group_id));
 
-    g_mutex_unlock(&g_pubsub_mutex);
+    g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
 
-    printf("[pubsub] Group 0x%08X destroyed by owner 0x%08X\n", group_id, owner_id);
+    printf("[dev] Group 0x%08X destroyed by owner 0x%08X\n", group_id, owner_id);
 
     return NN_ERRCODE_SUCCESS;
 }
 
 int nn_dev_pubsub_join_group(uint32_t module_id, uint32_t group_id)
 {
-    if (!g_pubsub_initialized)
-    {
-        return NN_ERRCODE_FAIL;
-    }
-
-    g_mutex_lock(&g_pubsub_mutex);
+    g_mutex_lock(&g_nn_dev_local->pubsub_mutex);
 
     // Get subscriber info from registered modules
-    nn_dev_pubsub_subscriber_t *registered = g_hash_table_lookup(g_registered_modules, GUINT_TO_POINTER(module_id));
+    nn_dev_pubsub_subscriber_t *registered = g_hash_table_lookup(g_nn_dev_local->registered_modules, GUINT_TO_POINTER(module_id));
     if (!registered)
     {
-        g_mutex_unlock(&g_pubsub_mutex);
-        printf("[pubsub] Module 0x%08X not registered, cannot join group\n", module_id);
+        g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
+        printf("[dev] Module 0x%08X not registered, cannot join group\n", module_id);
         return NN_ERRCODE_FAIL;
     }
 
     // Group must already exist
-    nn_dev_pubsub_group_t *group = g_hash_table_lookup(g_multicast_groups, GUINT_TO_POINTER(group_id));
+    nn_dev_pubsub_group_t *group = g_hash_table_lookup(g_nn_dev_local->multicast_groups, GUINT_TO_POINTER(group_id));
     if (!group)
     {
-        g_mutex_unlock(&g_pubsub_mutex);
-        printf("[pubsub] Group 0x%08X does not exist, cannot join\n", group_id);
+        g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
+        printf("[dev] Group 0x%08X does not exist, cannot join\n", group_id);
         return NN_ERRCODE_FAIL;
     }
 
@@ -702,8 +664,8 @@ int nn_dev_pubsub_join_group(uint32_t module_id, uint32_t group_id)
     if (find_subscriber_in_list(group->members, module_id))
     {
         g_mutex_unlock(&group->group_mutex);
-        g_mutex_unlock(&g_pubsub_mutex);
-        printf("[pubsub] Module 0x%08X already in group 0x%08X\n", module_id, group_id);
+        g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
+        printf("[dev] Module 0x%08X already in group 0x%08X\n", module_id, group_id);
         return NN_ERRCODE_SUCCESS;
     }
 
@@ -712,26 +674,21 @@ int nn_dev_pubsub_join_group(uint32_t module_id, uint32_t group_id)
     group->members = g_list_append(group->members, sub_copy);
 
     g_mutex_unlock(&group->group_mutex);
-    g_mutex_unlock(&g_pubsub_mutex);
+    g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
 
-    printf("[pubsub] Module 0x%08X joined group 0x%08X\n", module_id, group_id);
+    printf("[dev] Module 0x%08X joined group 0x%08X\n", module_id, group_id);
 
     return NN_ERRCODE_SUCCESS;
 }
 
 int nn_dev_pubsub_leave_group(uint32_t module_id, uint32_t group_id)
 {
-    if (!g_pubsub_initialized)
-    {
-        return NN_ERRCODE_FAIL;
-    }
+    g_mutex_lock(&g_nn_dev_local->pubsub_mutex);
 
-    g_mutex_lock(&g_pubsub_mutex);
-
-    nn_dev_pubsub_group_t *group = g_hash_table_lookup(g_multicast_groups, GUINT_TO_POINTER(group_id));
+    nn_dev_pubsub_group_t *group = g_hash_table_lookup(g_nn_dev_local->multicast_groups, GUINT_TO_POINTER(group_id));
     if (!group)
     {
-        g_mutex_unlock(&g_pubsub_mutex);
+        g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
         return NN_ERRCODE_SUCCESS;
     }
 
@@ -745,27 +702,27 @@ int nn_dev_pubsub_leave_group(uint32_t module_id, uint32_t group_id)
     }
 
     g_mutex_unlock(&group->group_mutex);
-    g_mutex_unlock(&g_pubsub_mutex);
+    g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
 
-    printf("[pubsub] Module 0x%08X left group 0x%08X\n", module_id, group_id);
+    printf("[dev] Module 0x%08X left group 0x%08X\n", module_id, group_id);
 
     return NN_ERRCODE_SUCCESS;
 }
 
 int nn_dev_pubsub_multicast(uint32_t group_id, nn_dev_message_t *msg)
 {
-    if (!g_pubsub_initialized || !msg)
+    if (!msg)
     {
         return NN_ERRCODE_FAIL;
     }
 
-    g_mutex_lock(&g_pubsub_mutex);
+    g_mutex_lock(&g_nn_dev_local->pubsub_mutex);
 
-    nn_dev_pubsub_group_t *group = g_hash_table_lookup(g_multicast_groups, GUINT_TO_POINTER(group_id));
+    nn_dev_pubsub_group_t *group = g_hash_table_lookup(g_nn_dev_local->multicast_groups, GUINT_TO_POINTER(group_id));
     if (!group)
     {
-        g_mutex_unlock(&g_pubsub_mutex);
-        printf("[pubsub] Group 0x%08X does not exist\n", group_id);
+        g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
+        printf("[dev] Group 0x%08X does not exist\n", group_id);
         return NN_ERRCODE_FAIL;
     }
 
@@ -789,9 +746,9 @@ int nn_dev_pubsub_multicast(uint32_t group_id, nn_dev_message_t *msg)
     }
 
     g_mutex_unlock(&group->group_mutex);
-    g_mutex_unlock(&g_pubsub_mutex);
+    g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
 
-    printf("[pubsub] Multicast to group 0x%08X - sent: %d, failed: %d\n", group_id, success_count, fail_count);
+    printf("[dev] Multicast to group 0x%08X - sent: %d, failed: %d\n", group_id, success_count, fail_count);
 
     return (fail_count == 0) ? NN_ERRCODE_SUCCESS : NN_ERRCODE_FAIL;
 }
@@ -802,33 +759,23 @@ int nn_dev_pubsub_multicast(uint32_t group_id, nn_dev_message_t *msg)
 
 int nn_dev_pubsub_get_subscriber_count(uint32_t publisher_id, uint32_t event_id)
 {
-    if (!g_pubsub_initialized)
-    {
-        return 0;
-    }
-
-    g_mutex_lock(&g_pubsub_mutex);
+    g_mutex_lock(&g_nn_dev_local->pubsub_mutex);
 
     uint64_t key_val = make_unicast_key(publisher_id, event_id);
-    GList *sub_list = g_hash_table_lookup(g_unicast_subs, &key_val);
+    GList *sub_list = g_hash_table_lookup(g_nn_dev_local->unicast_subss, &key_val);
 
     int count = sub_list ? g_list_length(sub_list) : 0;
 
-    g_mutex_unlock(&g_pubsub_mutex);
+    g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
 
     return count;
 }
 
 int nn_dev_pubsub_get_group_member_count(uint32_t group_id)
 {
-    if (!g_pubsub_initialized)
-    {
-        return 0;
-    }
+    g_mutex_lock(&g_nn_dev_local->pubsub_mutex);
 
-    g_mutex_lock(&g_pubsub_mutex);
-
-    nn_dev_pubsub_group_t *group = g_hash_table_lookup(g_multicast_groups, GUINT_TO_POINTER(group_id));
+    nn_dev_pubsub_group_t *group = g_hash_table_lookup(g_nn_dev_local->multicast_groups, GUINT_TO_POINTER(group_id));
     int count = 0;
 
     if (group)
@@ -838,40 +785,30 @@ int nn_dev_pubsub_get_group_member_count(uint32_t group_id)
         g_mutex_unlock(&group->group_mutex);
     }
 
-    g_mutex_unlock(&g_pubsub_mutex);
+    g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
 
     return count;
 }
 
 int nn_dev_pubsub_is_subscribed(uint32_t subscriber_id, uint32_t publisher_id, uint32_t event_id)
 {
-    if (!g_pubsub_initialized)
-    {
-        return 0;
-    }
-
-    g_mutex_lock(&g_pubsub_mutex);
+    g_mutex_lock(&g_nn_dev_local->pubsub_mutex);
 
     uint64_t key_val = make_unicast_key(publisher_id, event_id);
-    GList *sub_list = g_hash_table_lookup(g_unicast_subs, &key_val);
+    GList *sub_list = g_hash_table_lookup(g_nn_dev_local->unicast_subss, &key_val);
 
     int result = find_subscriber_in_list(sub_list, subscriber_id) != NULL;
 
-    g_mutex_unlock(&g_pubsub_mutex);
+    g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
 
     return result;
 }
 
 int nn_dev_pubsub_is_group_member(uint32_t module_id, uint32_t group_id)
 {
-    if (!g_pubsub_initialized)
-    {
-        return 0;
-    }
+    g_mutex_lock(&g_nn_dev_local->pubsub_mutex);
 
-    g_mutex_lock(&g_pubsub_mutex);
-
-    nn_dev_pubsub_group_t *group = g_hash_table_lookup(g_multicast_groups, GUINT_TO_POINTER(group_id));
+    nn_dev_pubsub_group_t *group = g_hash_table_lookup(g_nn_dev_local->multicast_groups, GUINT_TO_POINTER(group_id));
     int result = 0;
 
     if (group)
@@ -881,23 +818,28 @@ int nn_dev_pubsub_is_group_member(uint32_t module_id, uint32_t group_id)
         g_mutex_unlock(&group->group_mutex);
     }
 
-    g_mutex_unlock(&g_pubsub_mutex);
+    g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
 
     return result;
 }
 
 int nn_dev_pubsub_group_exists(uint32_t group_id)
 {
-    if (!g_pubsub_initialized)
-    {
-        return 0;
-    }
+    g_mutex_lock(&g_nn_dev_local->pubsub_mutex);
 
-    g_mutex_lock(&g_pubsub_mutex);
+    int exists = g_hash_table_contains(g_nn_dev_local->multicast_groups, GUINT_TO_POINTER(group_id));
 
-    int exists = g_hash_table_contains(g_multicast_groups, GUINT_TO_POINTER(group_id));
-
-    g_mutex_unlock(&g_pubsub_mutex);
+    g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
 
     return exists;
+}
+
+void nn_dev_pubsub_foreach_subscriber(GHFunc func, gpointer user_data)
+{
+    g_mutex_lock(&g_nn_dev_local->pubsub_mutex);
+    if (g_nn_dev_local->registered_modules)
+    {
+        g_hash_table_foreach(g_nn_dev_local->registered_modules, func, user_data);
+    }
+    g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
 }

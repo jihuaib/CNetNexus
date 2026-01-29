@@ -21,13 +21,13 @@ README.md
 
 # CI/CD
 .github/
-scripts/
+scripts/dev/
 package/
 
 # Docker
 .dockerignore
 Dockerfile
-*.sh
+build-gns3-image.sh
 
 # Misc
 .claude/

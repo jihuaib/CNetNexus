@@ -10,20 +10,13 @@
 GSList *g_xml_registry = NULL;
 
 // Register module's XML path by module ID
-void nn_cfg_register_module_xml(uint32_t module_id, const char *xml_path)
+void nn_cfg_register_module_xml_inner(uint32_t module_id, const char *xml_path)
 {
-    if (!xml_path)
-    {
-        return;
-    }
-
     nn_cfg_xml_entry_t *entry = g_malloc0(sizeof(nn_cfg_xml_entry_t));
     entry->module_id = module_id;
     entry->xml_path = g_strdup(xml_path);
 
     g_xml_registry = g_slist_prepend(g_xml_registry, entry);
-
-    printf("[cfg] Registered XML for module ID %u -> %s\n", module_id, xml_path);
 }
 
 // Find XML path for a module by its ID

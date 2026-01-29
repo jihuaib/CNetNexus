@@ -311,7 +311,50 @@ static void nn_cli_tree_print_help(nn_cli_tree_node_t *node, nn_cli_session_t *s
     }
 }
 
-// Handle TAB key auto-completion
+// Apply a tab completion match to the line buffer
+static void tab_apply_match(nn_cli_tree_node_t *match, char *line_buffer, uint32_t *line_pos,
+                            uint32_t has_trailing_space)
+{
+    if (match->type == NN_CLI_NODE_COMMAND)
+    {
+        if (!has_trailing_space)
+        {
+            // Find the last token in line_buffer
+            char *last_space = strrchr(line_buffer, ' ');
+            char *last_token_start = last_space ? last_space + 1 : line_buffer;
+
+            // Calculate new line position
+            *line_pos = last_token_start - line_buffer;
+
+            // Write the complete keyword
+            const char *match_name = match->name;
+            for (uint32_t i = 0; match_name[i] && *line_pos < MAX_CMD_LEN - 1; i++)
+            {
+                line_buffer[*line_pos] = match_name[i];
+                (*line_pos)++;
+            }
+
+            // Add space after keyword
+            if (*line_pos < MAX_CMD_LEN - 1)
+            {
+                line_buffer[*line_pos] = ' ';
+                (*line_pos)++;
+            }
+
+            line_buffer[*line_pos] = '\0';
+        }
+    }
+    else if (match->type == NN_CLI_NODE_ARGUMENT)
+    {
+        if (has_trailing_space)
+        {
+            (*line_pos)--;
+            line_buffer[*line_pos] = '\0';
+        }
+    }
+}
+
+// Handle TAB key auto-completion (cycles through matches on repeated TAB presses)
 static void handle_tab_completion(nn_cli_session_t *session, char *line_buffer, uint32_t *line_pos)
 {
     if (!session->current_view || !session->current_view->cmd_tree)
@@ -319,109 +362,73 @@ static void handle_tab_completion(nn_cli_session_t *session, char *line_buffer, 
         return;
     }
 
-    line_buffer[*line_pos] = '\0';
+    // If already cycling, use original input for matching
+    char match_input[MAX_CMD_LEN];
+    if (session->tab_cycling)
+    {
+        memcpy(match_input, session->tab_original, session->tab_original_pos);
+        match_input[session->tab_original_pos] = '\0';
+    }
+    else
+    {
+        line_buffer[*line_pos] = '\0';
+        memcpy(match_input, line_buffer, *line_pos + 1);
+    }
 
     // Get all matches for the last token
     nn_cli_tree_node_t *matches[50];
     uint32_t num_matches =
-        nn_cli_tree_match_command_get_matches(session->current_view->cmd_tree, line_buffer, matches, 50);
+        nn_cli_tree_match_command_get_matches(session->current_view->cmd_tree, match_input, matches, 50);
 
-    // Check if we have a trailing space
-    uint32_t has_trailing_space = (*line_pos > 0 && line_buffer[*line_pos - 1] == ' ');
+    // Check if we have a trailing space in the original input
+    uint32_t orig_len = session->tab_cycling ? session->tab_original_pos : *line_pos;
+    uint32_t has_trailing_space = (orig_len > 0 && match_input[orig_len - 1] == ' ');
 
     if (num_matches == 1)
     {
-        // Single match - show on new line
+        // Single match - auto-complete directly
+        session->tab_cycling = 0;
         nn_cli_tree_node_t *match = matches[0];
 
         nn_cfg_send_message(session, "\r\n");
-
-        // Redisplay prompt and current input
         send_prompt(session);
 
-        if (match->type == NN_CLI_NODE_COMMAND)
-        {
-            // KEYWORD: Auto-complete
-            if (!has_trailing_space)
-            {
-                // Find the last token in line_buffer
-                char *last_space = strrchr(line_buffer, ' ');
-                char *last_token_start = last_space ? last_space + 1 : line_buffer;
-
-                // Calculate new line position
-                *line_pos = last_token_start - line_buffer;
-
-                // Write the complete keyword
-                const char *match_name = match->name;
-                for (uint32_t i = 0; match_name[i] && *line_pos < MAX_CMD_LEN - 1; i++)
-                {
-                    line_buffer[*line_pos] = match_name[i];
-                    (*line_pos)++;
-                }
-
-                // Add space after keyword
-                if (*line_pos < MAX_CMD_LEN - 1)
-                {
-                    line_buffer[*line_pos] = ' ';
-                    (*line_pos)++;
-                }
-
-                line_buffer[*line_pos] = '\0';
-            }
-        }
-        else if (match->type == NN_CLI_NODE_ARGUMENT)
-        {
-            // ARGUMENT: Remove trailing space if exists
-            if (has_trailing_space)
-            {
-                (*line_pos)--;
-                line_buffer[*line_pos] = '\0';
-            }
-        }
-
+        tab_apply_match(match, line_buffer, line_pos, has_trailing_space);
         nn_cfg_send_message(session, line_buffer);
     }
     else if (num_matches > 1)
     {
-        // Multiple matches - Show all options on new lines
+        // Multiple matches - cycle through them one by one
+        if (!session->tab_cycling)
+        {
+            // First TAB press: save original state and start cycling
+            session->tab_cycling = 1;
+            session->tab_match_index = 0;
+            memcpy(session->tab_original, line_buffer, *line_pos);
+            session->tab_original_pos = *line_pos;
+        }
+        else
+        {
+            // Subsequent TAB press: advance to next match
+            session->tab_match_index = (session->tab_match_index + 1) % num_matches;
+        }
+
+        nn_cli_tree_node_t *match = matches[session->tab_match_index];
+
+        // Restore original input before applying new match
+        memcpy(line_buffer, session->tab_original, session->tab_original_pos);
+        *line_pos = session->tab_original_pos;
+        line_buffer[*line_pos] = '\0';
+
         nn_cfg_send_message(session, "\r\n");
-        for (uint32_t i = 0; i < num_matches; i++)
-        {
-            char option[256];
-            char name_display[128];
-
-            // Format name based on node type
-            if (matches[i]->type == NN_CLI_NODE_ARGUMENT && matches[i]->param_type && matches[i]->param_type->type_str)
-            {
-                // ARGUMENT: Display as <type(range)>
-                snprintf(name_display, sizeof(name_display), "<%s>", matches[i]->param_type->type_str);
-            }
-            else if (matches[i]->name)
-            {
-                // COMMAND or ARGUMENT without param_type: Display name as-is
-                strncpy(name_display, matches[i]->name, sizeof(name_display) - 1);
-                name_display[sizeof(name_display) - 1] = '\0';
-            }
-            else
-            {
-                // No name, skip
-                continue;
-            }
-
-            snprintf(option, sizeof(option), "  %-25s - %s\r\n", name_display,
-                     matches[i]->description ? matches[i]->description : "");
-            nn_cfg_send_message(session, option);
-        }
         send_prompt(session);
-        if (has_trailing_space)
-        {
-            (*line_pos)--;
-            line_buffer[*line_pos] = '\0';
-        }
+
+        tab_apply_match(match, line_buffer, line_pos, has_trailing_space);
         nn_cfg_send_message(session, line_buffer);
     }
     else
     {
+        session->tab_cycling = 0;
         nn_cfg_send_message(session, "\r\n");
         send_prompt(session);
         nn_cfg_send_message(session, line_buffer);
@@ -679,6 +686,10 @@ int process_command(const char *cmd_line, nn_cli_session_t *session)
 // Cleanup CLI trees
 void nn_cli_cleanup(void)
 {
+    if (g_nn_cfg_local == NULL)
+    {
+        return;
+    }
     if (g_nn_cfg_local->view_tree.root)
     {
         nn_cli_view_free(g_nn_cfg_local->view_tree.root);
@@ -775,6 +786,12 @@ int nn_cli_process_input(nn_cli_session_t *session)
             {
                 session->state = NN_CLI_STATE_ESC;
                 continue;
+            }
+
+            // Reset tab cycling state on any non-tab input
+            if (c != '\t')
+            {
+                session->tab_cycling = 0;
             }
 
             // Handle Enter

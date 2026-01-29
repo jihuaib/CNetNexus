@@ -11,12 +11,12 @@
 
 // Helper function to extract range from parentheses
 // Input: "1-63" -> min=1, max=63
-// Returns true on success
-static bool parse_range(const char *range_str, int64_t *min_val, int64_t *max_val)
+// Returns TRUE on success
+static gboolean parse_range(const char *range_str, int64_t *min_val, int64_t *max_val)
 {
     if (!range_str || !min_val || !max_val)
     {
-        return false;
+        return FALSE;
     }
 
     char *dash = strchr(range_str, '-');
@@ -28,10 +28,10 @@ static bool parse_range(const char *range_str, int64_t *min_val, int64_t *max_va
         *min_val = strtoll(range_str, &endptr, 10);
         if (errno != 0 || *endptr != '\0')
         {
-            return false;
+            return FALSE;
         }
         *max_val = *min_val;
-        return true;
+        return TRUE;
     }
 
     // Parse min value
@@ -39,7 +39,7 @@ static bool parse_range(const char *range_str, int64_t *min_val, int64_t *max_va
     size_t min_len = dash - range_str;
     if (min_len >= sizeof(min_str))
     {
-        return false;
+        return FALSE;
     }
     strncpy(min_str, range_str, min_len);
 
@@ -48,7 +48,7 @@ static bool parse_range(const char *range_str, int64_t *min_val, int64_t *max_va
     *min_val = strtoll(min_str, &endptr, 10);
     if (errno != 0 || *endptr != '\0')
     {
-        return false;
+        return FALSE;
     }
 
     // Parse max value
@@ -56,10 +56,10 @@ static bool parse_range(const char *range_str, int64_t *min_val, int64_t *max_va
     *max_val = strtoll(dash + 1, &endptr, 10);
     if (errno != 0 || *endptr != '\0')
     {
-        return false;
+        return FALSE;
     }
 
-    return true;
+    return TRUE;
 }
 
 // Parse type string like "string(1-63)" or "uint(0-65535)"
@@ -180,7 +180,7 @@ nn_cli_param_type_t *nn_cli_param_type_parse(const char *type_str)
 }
 
 // Validate a parameter value
-bool nn_cli_param_type_validate(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
+gboolean nn_cli_param_type_validate(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
                                 uint32_t error_msg_size)
 {
     if (!param_type || !value)
@@ -189,13 +189,13 @@ bool nn_cli_param_type_validate(const nn_cli_param_type_t *param_type, const cha
         {
             snprintf(error_msg, error_msg_size, "Invalid parameter or value");
         }
-        return false;
+        return FALSE;
     }
 
     // If no validation callback, accept any value
     if (!param_type->validate)
     {
-        return true;
+        return TRUE;
     }
 
     return param_type->validate(param_type, value, error_msg, error_msg_size);
@@ -282,12 +282,12 @@ void nn_cli_param_type_free(nn_cli_param_type_t *param_type)
 }
 
 // String validation
-bool nn_param_validate_string(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
+gboolean nn_param_validate_string(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
                               uint32_t error_msg_size)
 {
     if (!param_type || !value)
     {
-        return false;
+        return FALSE;
     }
 
     size_t len = strlen(value);
@@ -299,7 +299,7 @@ bool nn_param_validate_string(const nn_cli_param_type_t *param_type, const char 
             snprintf(error_msg, error_msg_size, "String too short: minimum %u characters required",
                      param_type->range.string_range.min_len);
         }
-        return false;
+        return FALSE;
     }
 
     if (len > param_type->range.string_range.max_len)
@@ -309,19 +309,19 @@ bool nn_param_validate_string(const nn_cli_param_type_t *param_type, const char 
             snprintf(error_msg, error_msg_size, "String too long: maximum %u characters allowed",
                      param_type->range.string_range.max_len);
         }
-        return false;
+        return FALSE;
     }
 
-    return true;
+    return TRUE;
 }
 
 // Unsigned integer validation
-bool nn_param_validate_uint(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
+gboolean nn_param_validate_uint(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
                             uint32_t error_msg_size)
 {
     if (!param_type || !value)
     {
-        return false;
+        return FALSE;
     }
 
     // Check for valid unsigned integer format
@@ -332,7 +332,7 @@ bool nn_param_validate_uint(const nn_cli_param_type_t *param_type, const char *v
         {
             snprintf(error_msg, error_msg_size, "Empty value");
         }
-        return false;
+        return FALSE;
     }
 
     while (*p)
@@ -343,7 +343,7 @@ bool nn_param_validate_uint(const nn_cli_param_type_t *param_type, const char *v
             {
                 snprintf(error_msg, error_msg_size, "Invalid unsigned integer format");
             }
-            return false;
+            return FALSE;
         }
         p++;
     }
@@ -359,7 +359,7 @@ bool nn_param_validate_uint(const nn_cli_param_type_t *param_type, const char *v
         {
             snprintf(error_msg, error_msg_size, "Value out of range");
         }
-        return false;
+        return FALSE;
     }
 
     // Check range
@@ -371,19 +371,19 @@ bool nn_param_validate_uint(const nn_cli_param_type_t *param_type, const char *v
                      (unsigned long)param_type->range.uint_range.min_val,
                      (unsigned long)param_type->range.uint_range.max_val);
         }
-        return false;
+        return FALSE;
     }
 
-    return true;
+    return TRUE;
 }
 
 // Signed integer validation
-bool nn_param_validate_int(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
+gboolean nn_param_validate_int(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
                            uint32_t error_msg_size)
 {
     if (!param_type || !value)
     {
-        return false;
+        return FALSE;
     }
 
     // Check for valid integer format
@@ -394,7 +394,7 @@ bool nn_param_validate_int(const nn_cli_param_type_t *param_type, const char *va
         {
             snprintf(error_msg, error_msg_size, "Empty value");
         }
-        return false;
+        return FALSE;
     }
 
     // Allow leading minus sign
@@ -409,7 +409,7 @@ bool nn_param_validate_int(const nn_cli_param_type_t *param_type, const char *va
         {
             snprintf(error_msg, error_msg_size, "Invalid integer format");
         }
-        return false;
+        return FALSE;
     }
 
     while (*p)
@@ -420,7 +420,7 @@ bool nn_param_validate_int(const nn_cli_param_type_t *param_type, const char *va
             {
                 snprintf(error_msg, error_msg_size, "Invalid integer format");
             }
-            return false;
+            return FALSE;
         }
         p++;
     }
@@ -436,7 +436,7 @@ bool nn_param_validate_int(const nn_cli_param_type_t *param_type, const char *va
         {
             snprintf(error_msg, error_msg_size, "Value out of range");
         }
-        return false;
+        return FALSE;
     }
 
     // Check range
@@ -447,21 +447,21 @@ bool nn_param_validate_int(const nn_cli_param_type_t *param_type, const char *va
             snprintf(error_msg, error_msg_size, "Value must be between %ld and %ld",
                      (long)param_type->range.int_range.min_val, (long)param_type->range.int_range.max_val);
         }
-        return false;
+        return FALSE;
     }
 
-    return true;
+    return TRUE;
 }
 
 // IPv4 address validation
-bool nn_param_validate_ipv4(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
+gboolean nn_param_validate_ipv4(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
                             uint32_t error_msg_size)
 {
     (void)param_type; // Unused for IP validation
 
     if (!value)
     {
-        return false;
+        return FALSE;
     }
 
     struct in_addr addr;
@@ -471,21 +471,21 @@ bool nn_param_validate_ipv4(const nn_cli_param_type_t *param_type, const char *v
         {
             snprintf(error_msg, error_msg_size, "Invalid IPv4 address format");
         }
-        return false;
+        return FALSE;
     }
 
-    return true;
+    return TRUE;
 }
 
 // IPv6 address validation
-bool nn_param_validate_ipv6(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
+gboolean nn_param_validate_ipv6(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
                             uint32_t error_msg_size)
 {
     (void)param_type; // Unused for IP validation
 
     if (!value)
     {
-        return false;
+        return FALSE;
     }
 
     struct in6_addr addr;
@@ -495,49 +495,49 @@ bool nn_param_validate_ipv6(const nn_cli_param_type_t *param_type, const char *v
         {
             snprintf(error_msg, error_msg_size, "Invalid IPv6 address format");
         }
-        return false;
+        return FALSE;
     }
 
-    return true;
+    return TRUE;
 }
 
 // IP address validation (IPv4 or IPv6)
-bool nn_param_validate_ip(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
+gboolean nn_param_validate_ip(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
                           uint32_t error_msg_size)
 {
     if (!value)
     {
-        return false;
+        return FALSE;
     }
 
     // Try IPv4 first
     if (nn_param_validate_ipv4(param_type, value, NULL, 0))
     {
-        return true;
+        return TRUE;
     }
 
     // Try IPv6
     if (nn_param_validate_ipv6(param_type, value, NULL, 0))
     {
-        return true;
+        return TRUE;
     }
 
     if (error_msg && error_msg_size > 0)
     {
         snprintf(error_msg, error_msg_size, "Invalid IP address format (IPv4 or IPv6 expected)");
     }
-    return false;
+    return FALSE;
 }
 
 // MAC address validation
-bool nn_param_validate_mac(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
+gboolean nn_param_validate_mac(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
                            uint32_t error_msg_size)
 {
     (void)param_type; // Unused
 
     if (!value)
     {
-        return false;
+        return FALSE;
     }
 
     // Accept formats: XX:XX:XX:XX:XX:XX or XX-XX-XX-XX-XX-XX
@@ -565,10 +565,10 @@ bool nn_param_validate_mac(const nn_cli_param_type_t *param_type, const char *va
                     {
                         snprintf(error_msg, error_msg_size, "Invalid MAC address: octet out of range");
                     }
-                    return false;
+                    return FALSE;
                 }
             }
-            return true;
+            return TRUE;
         }
     }
 
@@ -576,5 +576,5 @@ bool nn_param_validate_mac(const nn_cli_param_type_t *param_type, const char *va
     {
         snprintf(error_msg, error_msg_size, "Invalid MAC address format (expected XX:XX:XX:XX:XX:XX)");
     }
-    return false;
+    return FALSE;
 }

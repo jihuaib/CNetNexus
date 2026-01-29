@@ -1,7 +1,6 @@
 #ifndef NN_CLI_HISTORY_H
 #define NN_CLI_HISTORY_H
 
-#include <stdbool.h>
 #include <stdint.h>
 #include <time.h>
 

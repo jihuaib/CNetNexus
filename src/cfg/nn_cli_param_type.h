@@ -1,8 +1,10 @@
 #ifndef NN_CLI_PARAM_TYPE_H
 #define NN_CLI_PARAM_TYPE_H
 
-#include <stdbool.h>
 #include <stdint.h>
+#include <glib.h>
+
+#include "nn_cfg.h"
 
 // Parameter data types
 typedef enum
@@ -18,12 +20,9 @@ typedef enum
     NN_PARAM_TYPE_ENUM,        // Enumeration (predefined values)
 } nn_param_type_enum_t;
 
-// Forward declaration
-typedef struct nn_cli_param_type nn_cli_param_type_t;
-
 // Validation callback function type
-// Returns true if value is valid, false otherwise
-typedef bool (*nn_param_validate_fn)(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
+// Returns TRUE if value is valid, FALSE otherwise
+typedef gboolean (*nn_param_validate_fn)(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
                                      uint32_t error_msg_size);
 
 // Parameter type structure
@@ -60,21 +59,14 @@ struct nn_cli_param_type
 // Function prototypes
 
 /**
- * Parse a type string like "string(1-63)" or "uint(0-65535)" into a param type structure
- * @param type_str The type string to parse
- * @return Newly allocated param type structure, or NULL on error
- */
-nn_cli_param_type_t *nn_cli_param_type_parse(const char *type_str);
-
-/**
  * Validate a parameter value against its type definition
  * @param param_type The parameter type definition
  * @param value The value to validate
  * @param error_msg Buffer to store error message on failure
  * @param error_msg_size Size of error message buffer
- * @return true if valid, false otherwise
+ * @return TRUE if valid, FALSE otherwise
  */
-bool nn_cli_param_type_validate(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
+gboolean nn_cli_param_type_validate(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
                                 uint32_t error_msg_size);
 
 /**
@@ -98,20 +90,22 @@ uint16_t nn_cli_param_type_get_value_length(const nn_cli_param_type_t *param_typ
  */
 void nn_cli_param_type_free(nn_cli_param_type_t *param_type);
 
+nn_cli_param_type_t *nn_cli_param_type_parse(const char *type_str);
+
 // Built-in validation functions
-bool nn_param_validate_string(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
+gboolean nn_param_validate_string(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
                               uint32_t error_msg_size);
-bool nn_param_validate_uint(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
+gboolean nn_param_validate_uint(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
                             uint32_t error_msg_size);
-bool nn_param_validate_int(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
+gboolean nn_param_validate_int(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
                            uint32_t error_msg_size);
-bool nn_param_validate_ipv4(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
+gboolean nn_param_validate_ipv4(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
                             uint32_t error_msg_size);
-bool nn_param_validate_ipv6(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
+gboolean nn_param_validate_ipv6(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
                             uint32_t error_msg_size);
-bool nn_param_validate_ip(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
+gboolean nn_param_validate_ip(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
                           uint32_t error_msg_size);
-bool nn_param_validate_mac(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
+gboolean nn_param_validate_mac(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
                            uint32_t error_msg_size);
 
 #endif // NN_CLI_PARAM_TYPE_H

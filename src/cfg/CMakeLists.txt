@@ -10,7 +10,9 @@ set(NN_CFG_SOURCES
     nn_cli_history.c
     nn_cfg_registry.c
     nn_cfg_main.c
-    nn_cfg_cli.c)
+    nn_cfg_cli.c
+    nn_cfg_api.c
+)
 
 # Create shared library for CLI
 add_library(nn_cfg SHARED ${NN_CFG_SOURCES})
@@ -18,7 +20,6 @@ add_library(nn_cfg SHARED ${NN_CFG_SOURCES})
 # Include directories for CLI library
 target_include_directories(nn_cfg PUBLIC
     .
-    ${PROJECT_SOURCE_DIR}/include
     ${LIBXML2_INCLUDE_DIR}
 )
 

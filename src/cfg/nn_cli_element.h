@@ -1,7 +1,6 @@
 #ifndef NN_CLI_ELEMENT_H
 #define NN_CLI_ELEMENT_H
 
-#include <stdbool.h>
 #include <stdint.h>
 
 #include "nn_cli_param_type.h"
@@ -41,7 +40,7 @@ nn_cli_element_t *nn_cli_element_create_with_type(uint32_t element_id, uint32_t 
 void nn_cli_element_free(nn_cli_element_t *element);
 
 // Parameter validation
-bool nn_cli_element_validate_param(nn_cli_element_t *element, const char *value, char *error_msg,
+gboolean nn_cli_element_validate_param(nn_cli_element_t *element, const char *value, char *error_msg,
                                    uint32_t error_msg_size);
 
 nn_cli_command_group_t *nn_cli_group_create(uint32_t group_id);

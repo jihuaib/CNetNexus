@@ -31,7 +31,7 @@ nn_cli_tree_node_t *nn_cli_tree_create_node(uint32_t cfg_id, const char *name, c
     node->type = type;
     node->view_id = view_id;
     node->param_type = NULL;
-    node->is_end_node = false; // Default: not an end node
+    node->is_end_node = FALSE; // Default: not an end node
     node->children = NULL;
     node->num_children = 0;
     node->children_capacity = 0;

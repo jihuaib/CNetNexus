@@ -38,4 +38,6 @@ nn_cli_view_node_t *nn_cli_view_find_by_id(nn_cli_view_node_t *root, uint32_t vi
 
 void nn_cli_view_free(nn_cli_view_node_t *view);
 
+int nn_cfg_get_view_prompt_template_inner(uint32_t view_id, char *view_name);
+
 #endif // NN_CLI_VIEW_H

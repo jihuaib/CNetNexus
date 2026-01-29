@@ -53,7 +53,7 @@ echo "[5/6] Copying configuration files..."
 for module_dir in "${PROJECT_ROOT}/src"/*; do
     if [ -d "$module_dir" ]; then
         module_name=$(basename "$module_dir")
-        xml_file="${module_dir}/commands.xml"
+        xml_file="${module_dir}/resources/commands.xml"
 
         if [ -f "$xml_file" ]; then
             mkdir -p "${PACKAGE_DIR}/${PACKAGE_NAME}/resources/${module_name}"

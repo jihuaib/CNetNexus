@@ -44,7 +44,7 @@ static const nn_cfg_cli_cmd_group_dispatch_t g_nn_cfg_cli_cmd_group_dispatch[] =
     (sizeof(g_nn_cfg_cli_cmd_group_dispatch) / sizeof(g_nn_cfg_cli_cmd_group_dispatch[0]))
 
 typedef int (*nn_cfg_cli_cmd_resp_resp_t)(nn_cli_session_t *session, const nn_cfg_cli_out_t *cfg_out,
-                                          const nn_cfg_cli_resp_out_t *resp_out);
+                                          nn_cfg_cli_resp_out_t *resp_out);
 
 typedef struct nn_cfg_cli_cmd_resp_dispatch
 {
@@ -53,11 +53,11 @@ typedef struct nn_cfg_cli_cmd_resp_dispatch
 } nn_cfg_cli_cmd_resp_dispatch_t;
 
 int nn_cfg_cli_cmd_group_resp_show(nn_cli_session_t *session, const nn_cfg_cli_out_t *cfg_out,
-                                   const nn_cfg_cli_resp_out_t *resp_out);
+                                   nn_cfg_cli_resp_out_t *resp_out);
 int nn_cfg_cli_cmd_group_resp_op(nn_cli_session_t *session, const nn_cfg_cli_out_t *cfg_out,
-                                 const nn_cfg_cli_resp_out_t *resp_out);
+                                 nn_cfg_cli_resp_out_t *resp_out);
 void cmd_show_cli_history(nn_cli_session_t *session, const nn_cfg_cli_out_t *cfg_out,
-                          const nn_cfg_cli_resp_out_t *resp_out);
+                          nn_cfg_cli_resp_out_t *resp_out);
 
 static const nn_cfg_cli_cmd_resp_dispatch_t g_nn_cfg_cli_cmd_resp_dispatch[] = {
     {NN_CFG_CLI_GROUP_ID_SHOW, nn_cfg_cli_cmd_group_resp_show},
@@ -95,6 +95,12 @@ static void nn_cfg_cli_send_response(nn_cli_session_t *session, nn_cfg_cli_out_t
             printf("[cfg_cli] Dispatching resp to group (group_id=%u)\n", cfg_out->group_id);
             (void)g_nn_cfg_cli_cmd_resp_dispatch[i].handler(session, cfg_out, resp_out);
         }
+    }
+
+    // Unified send
+    if (resp_out->message[0] != '\0')
+    {
+        nn_cfg_send_message(session, resp_out->message);
     }
 }
 
@@ -145,10 +151,10 @@ int nn_cfg_cli_cmd_group_show(nn_cfg_tlv_parser_t parser, nn_cfg_cli_out_t *cfg_
         switch (elem_id)
         {
             case NN_CFG_CLI_SHOW_CFG_ID_COMMON_INFO:
-                cfg_out->data.cfg_show.is_common_info = true;
+                cfg_out->data.cfg_show.is_common_info = TRUE;
                 break;
             case NN_CFG_CLI_SHOW_CFG_ID_HISTORY:
-                cfg_out->data.cfg_show.is_history = true;
+                cfg_out->data.cfg_show.is_history = TRUE;
                 break;
             default:
                 printf("[cfg_cli] Unknown element ID: %u\n", elem_id);
@@ -169,14 +175,14 @@ int nn_cfg_cli_cmd_group_op(nn_cfg_tlv_parser_t parser, nn_cfg_cli_out_t *cfg_ou
         switch (elem_id)
         {
             case NN_CFG_CLI_OP_CFG_ID_EXIT:
-                cfg_out->data.cfg_op.is_exit = true;
+                cfg_out->data.cfg_op.is_exit = TRUE;
                 break;
 
             case NN_CFG_CLI_OP_CFG_ID_CONFIG:
-                cfg_out->data.cfg_op.is_config = true;
+                cfg_out->data.cfg_op.is_config = TRUE;
                 break;
             case NN_CFG_CLI_OP_CFG_ID_END:
-                cfg_out->data.cfg_op.is_end = true;
+                cfg_out->data.cfg_op.is_end = TRUE;
                 break;
             default:
                 printf("[cfg_cli] Unknown element ID: %u\n", elem_id);
@@ -187,8 +193,8 @@ int nn_cfg_cli_cmd_group_op(nn_cfg_tlv_parser_t parser, nn_cfg_cli_out_t *cfg_ou
     return NN_ERRCODE_SUCCESS;
 }
 
-static void print_commands_recursive(nn_cli_session_t *session, const char *view_name, const char *prefix,
-                                     nn_cli_tree_node_t *node)
+static void print_commands_recursive(nn_cfg_cli_resp_out_t *resp_out, const char *view_name,
+                                     const char *prefix, nn_cli_tree_node_t *node)
 {
     if (!node)
     {
@@ -206,7 +212,7 @@ static void print_commands_recursive(nn_cli_session_t *session, const char *view
         new_prefix[sizeof(new_prefix) - 1] = '\0';
     }
 
-    if (node->is_end_node == true)
+    if (node->is_end_node == TRUE)
     {
         char module_name[NN_DEV_MODULE_NAME_MAX_LEN];
         if (nn_dev_get_module_name(node->module_id, module_name) != NN_ERRCODE_SUCCESS)
@@ -215,17 +221,17 @@ static void print_commands_recursive(nn_cli_session_t *session, const char *view
         }
         char buffer[2048];
         snprintf(buffer, sizeof(buffer), "  %-15s %-15s %s\r\n", view_name, module_name, new_prefix);
-        nn_cfg_send_message(session, buffer);
+        strncat(resp_out->message, buffer, sizeof(resp_out->message) - strlen(resp_out->message) - 1);
     }
 
     // Recurse into children
     for (uint32_t i = 0; i < node->num_children; i++)
     {
-        print_commands_recursive(session, view_name, new_prefix, node->children[i]);
+        print_commands_recursive(resp_out, view_name, new_prefix, node->children[i]);
     }
 }
 
-static void print_view_commands_flat(nn_cli_view_node_t *view, nn_cli_session_t *session)
+static void print_view_commands_flat(nn_cli_view_node_t *view, nn_cfg_cli_resp_out_t *resp_out)
 {
     if (!view)
     {
@@ -237,33 +243,39 @@ static void print_view_commands_flat(nn_cli_view_node_t *view, nn_cli_session_t 
     {
         for (uint32_t i = 0; i < view->cmd_tree->num_children; i++)
         {
-            print_commands_recursive(session, view->view_name, "", view->cmd_tree->children[i]);
+            print_commands_recursive(resp_out, view->view_name, "", view->cmd_tree->children[i]);
         }
     }
 
     // Recurse into child views
     for (uint32_t i = 0; i < view->num_children; i++)
     {
-        print_view_commands_flat(view->children[i], session);
+        print_view_commands_flat(view->children[i], resp_out);
     }
 }
 
 int nn_cfg_cli_cmd_group_resp_show(nn_cli_session_t *session, const nn_cfg_cli_out_t *cfg_out,
-                                   const nn_cfg_cli_resp_out_t *resp_out)
+                                   nn_cfg_cli_resp_out_t *resp_out)
 {
+    (void)session;
+
     if (cfg_out->data.cfg_show.is_common_info)
     {
-        nn_cfg_send_message(session, "\r\nCLI Commands List:\r\n");
-        nn_cfg_send_message(session, "===================\r\n");
-        nn_cfg_send_message(session, "  VIEW            MODULE          COMMAND\r\n");
-        nn_cfg_send_message(session, "  ----            ------          -------\r\n");
+        strncat(resp_out->message, "\r\nCLI Commands List:\r\n",
+                sizeof(resp_out->message) - strlen(resp_out->message) - 1);
+        strncat(resp_out->message, "===================\r\n",
+                sizeof(resp_out->message) - strlen(resp_out->message) - 1);
+        strncat(resp_out->message, "  VIEW            MODULE          COMMAND\r\n",
+                sizeof(resp_out->message) - strlen(resp_out->message) - 1);
+        strncat(resp_out->message, "  ----            ------          -------\r\n",
+                sizeof(resp_out->message) - strlen(resp_out->message) - 1);
 
         if (g_nn_cfg_local->view_tree.root)
         {
-            print_view_commands_flat(g_nn_cfg_local->view_tree.root, session);
+            print_view_commands_flat(g_nn_cfg_local->view_tree.root, resp_out);
         }
 
-        nn_cfg_send_message(session, "\r\n");
+        strncat(resp_out->message, "\r\n", sizeof(resp_out->message) - strlen(resp_out->message) - 1);
     }
     else if (cfg_out->data.cfg_show.is_history)
     {
@@ -275,21 +287,22 @@ int nn_cfg_cli_cmd_group_resp_show(nn_cli_session_t *session, const nn_cfg_cli_o
 
 // Show CLI history command handler
 void cmd_show_cli_history(nn_cli_session_t *session, const nn_cfg_cli_out_t *cfg_out,
-                          const nn_cfg_cli_resp_out_t *resp_out)
+                          nn_cfg_cli_resp_out_t *resp_out)
 {
+    (void)session;
     (void)cfg_out;
-    (void)resp_out;
     char buffer[512];
 
     pthread_mutex_lock(&g_nn_cfg_local->history_mutex);
 
-    nn_cfg_send_message(session, "\r\n");
-    nn_cfg_send_message(session, "Command History:\r\n");
-    nn_cfg_send_message(session,
-                        "================================================================================\r\n");
-    nn_cfg_send_message(session, " No  Time                Command                          Client IP\r\n");
-    nn_cfg_send_message(session,
-                        "--------------------------------------------------------------------------------\r\n");
+    strncat(resp_out->message, "\r\n", sizeof(resp_out->message) - strlen(resp_out->message) - 1);
+    strncat(resp_out->message, "Command History:\r\n", sizeof(resp_out->message) - strlen(resp_out->message) - 1);
+    strncat(resp_out->message, "================================================================================\r\n",
+            sizeof(resp_out->message) - strlen(resp_out->message) - 1);
+    strncat(resp_out->message, " No  Time                Command                          Client IP\r\n",
+            sizeof(resp_out->message) - strlen(resp_out->message) - 1);
+    strncat(resp_out->message, "--------------------------------------------------------------------------------\r\n",
+            sizeof(resp_out->message) - strlen(resp_out->message) - 1);
 
     // Display history from oldest to newest
     for (uint32_t i = 0; i < g_nn_cfg_local->global_history.count; i++)
@@ -319,25 +332,24 @@ void cmd_show_cli_history(nn_cli_session_t *session, const nn_cfg_cli_out_t *cfg
 
             snprintf(buffer, sizeof(buffer), " %-3u %-19s %-32s %-15s\r\n", i + 1, time_str, cmd_display,
                      entry->client_ip);
-            nn_cfg_send_message(session, buffer);
+            strncat(resp_out->message, buffer, sizeof(resp_out->message) - strlen(resp_out->message) - 1);
         }
     }
 
-    nn_cfg_send_message(session,
-                        "================================================================================\r\n");
+    strncat(resp_out->message, "================================================================================\r\n",
+            sizeof(resp_out->message) - strlen(resp_out->message) - 1);
     snprintf(buffer, sizeof(buffer), "Total: %u command(s)\r\n\r\n", g_nn_cfg_local->global_history.count);
-    nn_cfg_send_message(session, buffer);
+    strncat(resp_out->message, buffer, sizeof(resp_out->message) - strlen(resp_out->message) - 1);
 
     pthread_mutex_unlock(&g_nn_cfg_local->history_mutex);
 }
 
 int nn_cfg_cli_cmd_group_resp_op(nn_cli_session_t *session, const nn_cfg_cli_out_t *cfg_out,
-                                 const nn_cfg_cli_resp_out_t *resp_out)
+                                 nn_cfg_cli_resp_out_t *resp_out)
 {
-    (void)cfg_out;
     (void)resp_out;
 
-    if (cfg_out->data.cfg_op.is_config == true)
+    if (cfg_out->data.cfg_op.is_config == TRUE)
     {
         nn_cli_view_node_t *config_view =
             nn_cli_view_find_by_id(g_nn_cfg_local->view_tree.root, NN_CFG_CLI_VIEW_CONFIG);
@@ -348,7 +360,7 @@ int nn_cfg_cli_cmd_group_resp_op(nn_cli_session_t *session, const nn_cfg_cli_out
         }
     }
 
-    if (cfg_out->data.cfg_op.is_end == true)
+    if (cfg_out->data.cfg_op.is_end == TRUE)
     {
         nn_cli_view_node_t *config_view = nn_cli_view_find_by_id(g_nn_cfg_local->view_tree.root, NN_CFG_CLI_VIEW_USER);
         if (config_view)
@@ -358,7 +370,7 @@ int nn_cfg_cli_cmd_group_resp_op(nn_cli_session_t *session, const nn_cfg_cli_out
         }
     }
 
-    if (cfg_out->data.cfg_op.is_exit == true)
+    if (cfg_out->data.cfg_op.is_exit == TRUE)
     {
         nn_cli_view_node_t *parent_view = session->current_view->parent;
         if (parent_view == NULL)

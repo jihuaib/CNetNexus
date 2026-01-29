@@ -137,7 +137,7 @@ void nn_cli_group_free(nn_cli_command_group_t *group)
 }
 
 // Validate a parameter value against element's type definition
-bool nn_cli_element_validate_param(nn_cli_element_t *element, const char *value, char *error_msg,
+gboolean nn_cli_element_validate_param(nn_cli_element_t *element, const char *value, char *error_msg,
                                    uint32_t error_msg_size)
 {
     if (!element || !value)
@@ -146,19 +146,19 @@ bool nn_cli_element_validate_param(nn_cli_element_t *element, const char *value,
         {
             snprintf(error_msg, error_msg_size, "Invalid element or value");
         }
-        return false;
+        return FALSE;
     }
 
     // Keywords don't need validation
     if (element->type == ELEMENT_TYPE_KEYWORD)
     {
-        return true;
+        return TRUE;
     }
 
     // If no param_type defined, accept any value
     if (!element->param_type)
     {
-        return true;
+        return TRUE;
     }
 
     return nn_cli_param_type_validate(element->param_type, value, error_msg, error_msg_size);

@@ -1,5 +1,3 @@
-#include "nn_db_main.h"
-
 #include <errno.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -14,15 +12,13 @@
 #include "nn_db_cli.h"
 #include "nn_dev.h"
 #include "nn_errcode.h"
+#include "nn_path_utils.h"
+#include "nn_db_main.h"
 
 #define DB_MAX_EPOLL_EVENTS 10
 
 // Global context instance
-nn_db_context_t *g_nn_db_context = NULL;
-
-// Worker thread handle and running flag
-static pthread_t g_db_thread;
-static volatile int g_db_running = 0;
+nn_db_local_t *g_nn_db_local = NULL;
 
 // ============================================================================
 // Connection Management
@@ -57,19 +53,19 @@ static void free_connection(nn_db_connection_t *conn)
 
 nn_db_connection_t *nn_db_get_connection(const char *db_name)
 {
-    if (!db_name || !g_nn_db_context)
+    if (!db_name || !g_nn_db_local)
     {
         return NULL;
     }
 
-    return g_hash_table_lookup(g_nn_db_context->connections, db_name);
+    return g_hash_table_lookup(g_nn_db_local->connections, db_name);
 }
 
 // ============================================================================
 // Message Processing
 // ============================================================================
 
-static void db_process_messages(nn_db_context_t *ctx)
+static void db_process_messages(nn_db_local_t *ctx)
 {
     nn_dev_message_t *msg;
 
@@ -95,22 +91,22 @@ static void db_process_messages(nn_db_context_t *ctx)
         }
 
         // Free message
-        nn_dev_mq_destroy(msg);
+        nn_dev_message_free(msg);
     }
 }
 
 // Worker thread
 static void *db_worker_thread(void *arg)
 {
-    nn_db_context_t *ctx = (nn_db_context_t *)arg;
+    (void)arg;
     struct epoll_event events[DB_MAX_EPOLL_EVENTS];
 
-    printf("[db] Worker thread started (epoll_fd=%d, event_fd=%d)\n", ctx->epoll_fd, ctx->event_fd);
+    printf("[db] Worker thread started (epoll_fd=%d, event_fd=%d)\n", g_nn_db_local->epoll_fd, g_nn_db_local->event_fd);
 
-    while (g_db_running && !nn_dev_shutdown_requested())
+    while (g_nn_db_local->running && !nn_dev_shutdown_requested())
     {
         // Wait for events with 1 second timeout
-        int nfds = epoll_wait(ctx->epoll_fd, events, DB_MAX_EPOLL_EVENTS, 1000);
+        int nfds = epoll_wait(g_nn_db_local->epoll_fd, events, DB_MAX_EPOLL_EVENTS, 1000);
 
         if (nfds < 0)
         {
@@ -131,10 +127,10 @@ static void *db_worker_thread(void *arg)
         // Process events
         for (int i = 0; i < nfds; i++)
         {
-            if (events[i].data.fd == ctx->event_fd)
+            if (events[i].data.fd == g_nn_db_local->event_fd)
             {
                 // Message queue has data
-                db_process_messages(ctx);
+                db_process_messages(g_nn_db_local);
             }
         }
     }
@@ -143,52 +139,37 @@ static void *db_worker_thread(void *arg)
     return NULL;
 }
 
-// ============================================================================
-// Module Lifecycle Functions
-// ============================================================================
-
-int32_t db_module_init(void *module)
+static int nn_db_init_local()
 {
-    printf("[db] Initializing database module\n");
-
     // Create context
-    g_nn_db_context = g_malloc0(sizeof(nn_db_context_t));
-    g_nn_db_context->connections =
+    g_nn_db_local = g_malloc0(sizeof(nn_db_local_t));
+    g_nn_db_local->connections =
         g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify)free_connection);
 
     // Initialize registry
-    g_nn_db_context->registry = nn_db_registry_get_instance();
+    g_nn_db_local->registry = nn_db_registry_get_instance();
 
     // Create message queue
     nn_dev_module_mq_t *mq = nn_dev_mq_create();
     if (mq == NULL)
     {
         fprintf(stderr, "[db] Failed to create message queue\n");
-        g_free(g_nn_db_context);
-        g_nn_db_context = NULL;
         return NN_ERRCODE_FAIL;
     }
-    g_nn_db_context->mq = mq;
+    g_nn_db_local->mq = mq;
 
     // Create eventfd for message queue
-    g_nn_db_context->event_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-    if (g_nn_db_context->event_fd < 0)
+    g_nn_db_local->event_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (g_nn_db_local->event_fd < 0)
     {
-        nn_dev_mq_destroy(mq);
-        g_free(g_nn_db_context);
-        g_nn_db_context = NULL;
         perror("[db] Failed to create eventfd");
         return NN_ERRCODE_FAIL;
     }
 
     // Create epoll instance
-    g_nn_db_context->epoll_fd = epoll_create1(EPOLL_CLOEXEC);
-    if (g_nn_db_context->epoll_fd < 0)
+    g_nn_db_local->epoll_fd = epoll_create1(EPOLL_CLOEXEC);
+    if (g_nn_db_local->epoll_fd < 0)
     {
-        close(g_nn_db_context->event_fd);
-        nn_dev_mq_destroy(mq);
-        g_free(g_nn_db_context);
-        g_nn_db_context = NULL;
         perror("[db] Failed to create epoll");
         return NN_ERRCODE_FAIL;
     }
@@ -197,27 +178,17 @@ int32_t db_module_init(void *module)
     struct epoll_event ev;
     memset(&ev, 0, sizeof(ev));
     ev.events = EPOLLIN;
-    ev.data.fd = g_nn_db_context->event_fd;
-    if (epoll_ctl(g_nn_db_context->epoll_fd, EPOLL_CTL_ADD, g_nn_db_context->event_fd, &ev) < 0)
+    ev.data.fd = g_nn_db_local->event_fd;
+    if (epoll_ctl(g_nn_db_local->epoll_fd, EPOLL_CTL_ADD, g_nn_db_local->event_fd, &ev) < 0)
     {
-        close(g_nn_db_context->epoll_fd);
-        close(g_nn_db_context->event_fd);
-        nn_dev_mq_destroy(mq);
-        g_free(g_nn_db_context);
-        g_nn_db_context = NULL;
         perror("[db] Failed to add eventfd to epoll");
         return NN_ERRCODE_FAIL;
     }
 
     // Register with pub/sub system
-    int ret = nn_dev_pubsub_register(NN_DEV_MODULE_ID_DB, g_nn_db_context->event_fd, g_nn_db_context->mq);
+    int ret = nn_dev_pubsub_register(NN_DEV_MODULE_ID_DB, g_nn_db_local->event_fd, g_nn_db_local->mq);
     if (ret != NN_ERRCODE_SUCCESS)
     {
-        close(g_nn_db_context->epoll_fd);
-        close(g_nn_db_context->event_fd);
-        nn_dev_mq_destroy(mq);
-        g_free(g_nn_db_context);
-        g_nn_db_context = NULL;
         fprintf(stderr, "[db] Failed to register with pub/sub system\n");
         return NN_ERRCODE_FAIL;
     }
@@ -225,77 +196,90 @@ int32_t db_module_init(void *module)
     // Subscribe to events from CFG module
     nn_dev_pubsub_subscribe(NN_DEV_MODULE_ID_DB, NN_DEV_MODULE_ID_CFG, NN_DEV_EVENT_CFG);
 
-    g_db_running = 1;
+    g_nn_db_local->running = 1;
 
     // Start worker thread
-    if (pthread_create(&g_db_thread, NULL, db_worker_thread, g_nn_db_context) != 0)
+    if (pthread_create(&g_nn_db_local->worker_thread, NULL, db_worker_thread, NULL) != 0)
     {
-        nn_dev_pubsub_unregister(NN_DEV_MODULE_ID_DB);
-        close(g_nn_db_context->epoll_fd);
-        close(g_nn_db_context->event_fd);
-        nn_dev_mq_destroy(mq);
-        g_free(g_nn_db_context);
-        g_nn_db_context = NULL;
         perror("[db] Failed to create worker thread");
         return NN_ERRCODE_FAIL;
     }
 
-    printf("[db] Database module initialized (epoll_fd=%d, event_fd=%d)\n", g_nn_db_context->epoll_fd,
-           g_nn_db_context->event_fd);
     return NN_ERRCODE_SUCCESS;
 }
 
-void db_module_cleanup(void)
+static void nn_db_cleanup_local()
 {
-    printf("[db] Cleaning up database module\n");
-
-    if (!g_nn_db_context)
+    if (!g_nn_db_local)
     {
         return;
     }
 
+    printf("[db] Cleaning up database module local state\n");
+
     // Signal worker thread to stop
-    g_db_running = 0;
+    g_nn_db_local->running = 0;
 
     // Wait for worker thread to exit
-    if (g_db_thread != 0)
+    if (g_nn_db_local->worker_thread != 0)
     {
-        pthread_join(g_db_thread, NULL);
-        g_db_thread = 0;
+        pthread_join(g_nn_db_local->worker_thread, NULL);
     }
 
     // Unregister from pub/sub
     nn_dev_pubsub_unregister(NN_DEV_MODULE_ID_DB);
 
     // Close file descriptors
-    if (g_nn_db_context->epoll_fd >= 0)
+    if (g_nn_db_local->epoll_fd >= 0)
     {
-        close(g_nn_db_context->epoll_fd);
+        close(g_nn_db_local->epoll_fd);
     }
 
-    if (g_nn_db_context->event_fd >= 0)
+    if (g_nn_db_local->event_fd >= 0)
     {
-        close(g_nn_db_context->event_fd);
+        close(g_nn_db_local->event_fd);
     }
 
     // Destroy message queue
-    if (g_nn_db_context->mq)
+    if (g_nn_db_local->mq)
     {
-        nn_dev_mq_destroy(g_nn_db_context->mq);
+        nn_dev_mq_destroy(g_nn_db_local->mq);
     }
 
     // Close all database connections
-    if (g_nn_db_context->connections)
+    if (g_nn_db_local->connections)
     {
-        g_hash_table_destroy(g_nn_db_context->connections);
+        g_hash_table_destroy(g_nn_db_local->connections);
     }
 
     // Destroy registry
     nn_db_registry_destroy();
 
-    g_free(g_nn_db_context);
-    g_nn_db_context = NULL;
+    g_free(g_nn_db_local);
+    g_nn_db_local = NULL;
+}
 
+// ============================================================================
+// Module Lifecycle Functions
+// ============================================================================
+
+int32_t db_module_init()
+{
+    int ret = nn_db_init_local();
+    if (ret != NN_ERRCODE_SUCCESS)
+    {
+        nn_db_cleanup_local();
+        return NN_ERRCODE_FAIL;
+    }
+
+    printf("[db] Database module initialized (epoll_fd=%d, event_fd=%d)\n", g_nn_db_local->epoll_fd,
+           g_nn_db_local->event_fd);
+    return NN_ERRCODE_SUCCESS;
+}
+
+void db_module_cleanup(void)
+{
+    nn_db_cleanup_local();
     printf("[db] Database module cleaned up\n");
 }
 
@@ -306,7 +290,7 @@ void db_module_cleanup(void)
 static void __attribute__((constructor)) register_db_module(void)
 {
     // Register module with init/cleanup callbacks
-    nn_dev_register_module(NN_DEV_MODULE_ID_DB, "nn_db", db_module_init, db_module_cleanup);
+    nn_dev_register_module(NN_DEV_MODULE_ID_DB, "db", db_module_init, db_module_cleanup);
 
     char cfg_xml_path[256];
     if (nn_resolve_xml_path("db", cfg_xml_path, sizeof(cfg_xml_path)) == 0)

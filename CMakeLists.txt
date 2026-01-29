@@ -49,8 +49,6 @@ include_directories(${SQLite3_INCLUDE_DIRS})
 
 # Include directories (global)
 include_directories(${PROJECT_SOURCE_DIR}/include)
-include_directories(${PROJECT_SOURCE_DIR}/src)
-include_directories(${LIBXML2_INCLUDE_DIR})
 include_directories(${GLIB_INCLUDE_DIRS})
 
 # Add src subdirectory

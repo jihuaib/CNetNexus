@@ -4,6 +4,10 @@
 # Stage 1: Build environment
 FROM ubuntu:24.04 AS builder
 
+# Version will be set via build args
+ARG VERSION=dev
+ARG GIT_COMMIT=unknown
+
 # Install build dependencies
 RUN apt-get update && \
     apt-get install -y \
@@ -22,6 +26,10 @@ COPY . /build
 WORKDIR /build
 RUN cmake -B build -DCMAKE_BUILD_TYPE=Release && \
     cmake --build build --config Release
+
+# Create deployment package using package.sh
+RUN chmod +x ./scripts/prod/package.sh && \
+    VERSION=${VERSION} ./scripts/prod/package.sh
 
 # Stage 2: Runtime environment
 FROM ubuntu:24.04
@@ -53,18 +61,12 @@ RUN apt-get update && \
     tcpdump \
     && rm -rf /var/lib/apt/lists/*
 
-# Create application directory
-RUN mkdir -p /opt/netnexus/bin /opt/netnexus/lib /opt/netnexus/resources /opt/netnexus/data
-
-# Copy built binaries from builder stage
-COPY --from=builder /build/build/bin/netnexus /opt/netnexus/bin/
-COPY --from=builder /build/build/lib/*.so* /opt/netnexus/lib/
-
-# Copy XML configuration files (each module in its own directory)
-COPY --from=builder /build/src/cfg/commands.xml /opt/netnexus/resources/cfg/
-COPY --from=builder /build/src/dev/commands.xml /opt/netnexus/resources/dev/
-COPY --from=builder /build/src/bgp/commands.xml /opt/netnexus/resources/bgp/
-COPY --from=builder /build/src/db/commands.xml /opt/netnexus/resources/db/
+# Copy and deploy using deploy.sh
+COPY --from=builder /build/package/netnexus-${VERSION}.tar.gz /tmp/
+RUN tar -xzf /tmp/netnexus-${VERSION}.tar.gz -C /tmp && \
+    cd /tmp/netnexus-${VERSION} && \
+    INSTALL_DIR=/opt/netnexus ./scripts/deploy.sh && \
+    rm -rf /tmp/netnexus-*
 
 # Set library path and XML directory
 ENV LD_LIBRARY_PATH=/opt/netnexus/lib
@@ -88,5 +90,5 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 # Volume for persistent data (databases)
 VOLUME ["/opt/netnexus/data"]
 
-# Run NetNexus
-CMD ["/opt/netnexus/bin/netnexus"]
+# Run NetNexus using the start script from the deployment package
+CMD ["/opt/netnexus/scripts/start.sh"]

@@ -14,11 +14,45 @@
                     <name>db</name>
                     <description>Database information</description>
                 </element>
+                <element type="keyword">
+                    <name>list</name>
+                    <description>Database list information</description>
+                </element>
+                <element cfg-id="1" type="parameter">
+                    <name>db-name</name>
+                    <description>Database name</description>
+                    <type>string(1-63)</type>
+                </element>
+                <element cfg-id="1" type="parameter">
+                    <name>table-list</name>
+                    <description>Show tables or table structure</description>
+                    <type>string(1-63)</type>
+                </element>
+                <element type="keyword">
+                    <name>table-field</name>
+                    <description>Show tables field</description>
+                </element>
+                <element cfg-id="2" type="parameter">
+                    <name>table-name</name>
+                    <description>Table name</description>
+                    <type>string(1-63)</type>
+                </element>
             </elements>
 
             <commands>
+                <!-- show db list-->
                 <command>
-                    <expression>1 2</expression>
+                    <expression>1 2 3</expression>
+                    <views>1</views>
+                </command>
+                <!-- show db <db-name> table-list -->
+                <command>
+                    <expression>1 2 4 5</expression>
+                    <views>1</views>
+                </command>
+                <!-- show db <db-name> table-field <table-name> -->
+                <command>
+                    <expression>1 2 3 4 5</expression>
                     <views>1</views>
                 </command>
             </commands>
