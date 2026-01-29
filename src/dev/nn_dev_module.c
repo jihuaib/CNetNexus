@@ -1,5 +1,4 @@
 #include "nn_dev_module.h"
-#include "nn_dev_mq.h"
 
 #include <glib.h>
 #include <signal.h>
@@ -8,6 +7,7 @@
 #include <string.h>
 
 #include "nn_dev.h"
+#include "nn_dev_mq.h"
 #include "nn_errcode.h"
 
 // Global module registry (GLib tree: id -> nn_dev_module_t*)
@@ -125,7 +125,6 @@ int32_t nn_dev_init_all_modules(void)
 // Helper for module cleanup traversal
 static gboolean cleanup_module_callback(nn_dev_module_t *module)
 {
-
     printf("[dev] Cleaning up module: %s\n", module->name);
 
     if (module->cleanup)

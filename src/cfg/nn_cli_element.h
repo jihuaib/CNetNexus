@@ -41,7 +41,7 @@ void nn_cli_element_free(nn_cli_element_t *element);
 
 // Parameter validation
 gboolean nn_cli_element_validate_param(nn_cli_element_t *element, const char *value, char *error_msg,
-                                   uint32_t error_msg_size);
+                                       uint32_t error_msg_size);
 
 nn_cli_command_group_t *nn_cli_group_create(uint32_t group_id);
 

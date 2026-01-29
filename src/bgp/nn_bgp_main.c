@@ -1,3 +1,5 @@
+#include "nn_bgp_main.h"
+
 #include <errno.h>
 #include <pthread.h>
 #include <stdint.h>
@@ -12,7 +14,6 @@
 #include "nn_dev.h"
 #include "nn_errcode.h"
 #include "nn_path_utils.h"
-#include "nn_bgp_main.h"
 
 #define BGP_MAX_EPOLL_EVENTS 16
 
@@ -54,7 +55,8 @@ static void *bgp_worker_thread(void *arg)
     (void)arg;
     struct epoll_event events[BGP_MAX_EPOLL_EVENTS];
 
-    printf("[bgp] Worker thread started (epoll_fd=%d, event_fd=%d)\n", g_nn_bgp_local->epoll_fd, g_nn_bgp_local->event_fd);
+    printf("[bgp] Worker thread started (epoll_fd=%d, event_fd=%d)\n", g_nn_bgp_local->epoll_fd,
+           g_nn_bgp_local->event_fd);
 
     while (g_nn_bgp_local->running && !nn_dev_shutdown_requested())
     {
@@ -210,7 +212,8 @@ static int32_t bgp_module_init()
         return NN_ERRCODE_FAIL;
     }
 
-    printf("[bgp] BGP module initialized (epoll_fd=%d, event_fd=%d)\n", g_nn_bgp_local->epoll_fd, g_nn_bgp_local->event_fd);
+    printf("[bgp] BGP module initialized (epoll_fd=%d, event_fd=%d)\n", g_nn_bgp_local->epoll_fd,
+           g_nn_bgp_local->event_fd);
     return NN_ERRCODE_SUCCESS;
 }
 

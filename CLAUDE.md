@@ -271,7 +271,7 @@ See [nn_dev_module.c](src/dev/nn_dev_module.c) for the pattern.
 ### View Hierarchy
 Views represent CLI modes (USER, CONFIG, BGP, etc.). Each view has:
 - Its own command tree
-- A prompt template with `{hostname}` placeholder
+- A prompt template with `NetNexus` placeholder
 - Optional parent view for inheritance
 
 Views and commands are defined in XML config files, not C code.

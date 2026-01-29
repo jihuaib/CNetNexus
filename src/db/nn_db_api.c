@@ -519,7 +519,7 @@ int nn_db_exists(const char *db_name, const char *table_name, const char *where_
 // ============================================================================
 
 gboolean nn_db_validate_field(const char *db_name, const char *table_name, const char *field_name,
-                          const nn_db_value_t *value, char *error_msg, uint32_t error_msg_len)
+                              const nn_db_value_t *value, char *error_msg, uint32_t error_msg_len)
 {
     if (!db_name || !table_name || !field_name || !value)
     {

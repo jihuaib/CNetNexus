@@ -1,9 +1,9 @@
 #ifndef NN_DB_H
 #define NN_DB_H
 
+#include <glib.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <glib.h>
 
 #include "nn_cfg.h"
 
@@ -185,6 +185,6 @@ void nn_db_value_free(nn_db_value_t *value);
  * @return TRUE if valid, FALSE if invalid
  */
 gboolean nn_db_validate_field(const char *db_name, const char *table_name, const char *field_name,
-                          const nn_db_value_t *value, char *error_msg, uint32_t error_msg_len);
+                              const nn_db_value_t *value, char *error_msg, uint32_t error_msg_len);
 
 #endif // NN_DB_H

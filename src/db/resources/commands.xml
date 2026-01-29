@@ -7,33 +7,36 @@
         <group group-id="1">
             <elements>
                 <element type="keyword">
-                    <name>show</name>
+                    <name>show</name> <!-- 1 -->
                     <description>Display system information</description>
                 </element>
-                <element type="keyword">
+                <element type="keyword"> <!-- 2 -->
                     <name>db</name>
                     <description>Database information</description>
                 </element>
-                <element type="keyword">
+                <element cfg-id="1" type="keyword"> <!-- 3 -->
                     <name>list</name>
                     <description>Database list information</description>
                 </element>
-                <element cfg-id="1" type="parameter">
-                    <name>db-name</name>
+                <element cfg-id="2" type="parameter"> <!-- 4 -->
+                    <name>&lt;db-name&gt;</name>
                     <description>Database name</description>
                     <type>string(1-63)</type>
                 </element>
-                <element cfg-id="1" type="parameter">
+                <element cfg-id="3" type="keyword"> <!-- 5 -->
                     <name>table-list</name>
-                    <description>Show tables or table structure</description>
-                    <type>string(1-63)</type>
+                    <description>Show table list</description>
                 </element>
-                <element type="keyword">
+                <element cfg-id="4" type="keyword"> <!-- 6 -->
                     <name>table-field</name>
-                    <description>Show tables field</description>
+                    <description>Show table field</description>
                 </element>
-                <element cfg-id="2" type="parameter">
-                    <name>table-name</name>
+                <element cfg-id="5" type="keyword"> <!-- 7 -->
+                    <name>table-data</name>
+                    <description>Show table data</description>
+                </element>
+                <element cfg-id="6" type="parameter"> <!-- 8 -->    
+                    <name>&lt;table-name&gt;</name>
                     <description>Table name</description>
                     <type>string(1-63)</type>
                 </element>
@@ -52,7 +55,12 @@
                 </command>
                 <!-- show db <db-name> table-field <table-name> -->
                 <command>
-                    <expression>1 2 3 4 5</expression>
+                    <expression>1 2 4 6 8</expression>
+                    <views>1</views>
+                </command>
+                <!-- show db <db-name> table-data <table-name> -->
+                <command>
+                    <expression>1 2 4 7 8</expression>
                     <views>1</views>
                 </command>
             </commands>

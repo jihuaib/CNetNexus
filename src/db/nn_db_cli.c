@@ -29,7 +29,7 @@ static const nn_db_group_dispatch_t g_db_group_dispatch[] = {
 #define DB_GROUP_DISPATCH_COUNT (sizeof(g_db_group_dispatch) / sizeof(g_db_group_dispatch[0]))
 
 typedef int (*nn_db_cfg_resp_t)(nn_dev_message_t *msg, const nn_db_cli_out_t *cfg_out,
-                                 const nn_db_cli_resp_out_t *resp_out);
+                                const nn_db_cli_resp_out_t *resp_out);
 
 typedef struct nn_db_cli_resp_dispatch
 {
@@ -56,17 +56,41 @@ static const nn_db_cli_resp_dispatch_t g_nn_db_cfg_resp_dispatch[] = {
  */
 static int handle_show_db(nn_cfg_tlv_parser_t parser, nn_db_cli_out_t *cfg_out, nn_db_cli_resp_out_t *resp_out)
 {
-    NN_CFG_TLV_FOREACH(parser, id, value, len)
+    NN_CFG_TLV_FOREACH(parser, cfg_id, value, len)
     {
-        if (id == 1) // db-name (cfg-id="1")
+        switch (cfg_id)
         {
-            NN_CFG_TLV_GET_STRING(value, len, cfg_out->show_db.db_name, sizeof(cfg_out->show_db.db_name));
-            cfg_out->show_db.has_db_name = 1;
-        }
-        else if (id == 2) // table-name (cfg-id="2")
-        {
-            NN_CFG_TLV_GET_STRING(value, len, cfg_out->show_db.table_name, sizeof(cfg_out->show_db.table_name));
-            cfg_out->show_db.has_table_name = 1;
+            case NN_DB_CLI_SHOW_DB_CFG_ID_LIST:
+            {
+                cfg_out->data.show_db.is_db_list = TRUE;
+                break;
+            }
+            case NN_DB_CLI_SHOW_DB_CFG_ID_DB_NAME:
+            {
+                NN_CFG_TLV_GET_STRING(value, len, cfg_out->data.show_db.db_name, sizeof(cfg_out->data.show_db.db_name));
+                break;
+            }
+            case NN_DB_CLI_SHOW_DB_CFG_ID_TABLE_LIST:
+            {
+                cfg_out->data.show_db.is_table_list = TRUE;
+                break;
+            }
+            case NN_DB_CLI_SHOW_DB_CFG_ID_TABLE_FIELD:
+            {
+                cfg_out->data.show_db.is_table_field = TRUE;
+                break;
+            }
+            case NN_DB_CLI_SHOW_DB_CFG_ID_TABLE_DATA:
+            {
+                cfg_out->data.show_db.is_table_data = TRUE;
+                break;
+            }
+            case NN_DB_CLI_SHOW_DB_CFG_ID_TABLE_NAME:
+            {
+                NN_CFG_TLV_GET_STRING(value, len, cfg_out->data.show_db.table_name,
+                                      sizeof(cfg_out->data.show_db.table_name));
+                break;
+            }
         }
     }
 
@@ -80,17 +104,18 @@ static int handle_show_db(nn_cfg_tlv_parser_t parser, nn_db_cli_out_t *cfg_out, 
 
     int offset = 0;
 
-    if (cfg_out->show_db.has_table_name)
+    if (cfg_out->data.show_db.is_table_field)
     {
         // show db <db-name> table <table-name>
-        nn_db_table_t *table = nn_db_registry_find_table(cfg_out->show_db.db_name, cfg_out->show_db.table_name);
+        nn_db_table_t *table =
+            nn_db_registry_find_table(cfg_out->data.show_db.db_name, cfg_out->data.show_db.table_name);
         if (table)
         {
-            offset += snprintf(resp_out->message + offset, sizeof(resp_out->message) - offset, "Database: %s, Table: %s\r\n",
-                               cfg_out->show_db.db_name, table->table_name);
+            offset += snprintf(resp_out->message + offset, sizeof(resp_out->message) - offset,
+                               "Database: %s, Table: %s\r\n", cfg_out->data.show_db.db_name, table->table_name);
             offset += snprintf(resp_out->message + offset, sizeof(resp_out->message) - offset, "Fields:\r\n");
-            offset += snprintf(resp_out->message + offset, sizeof(resp_out->message) - offset, "  %-20s | %-20s | %-10s\r\n",
-                               "Field Name", "Type", "SQL Type");
+            offset += snprintf(resp_out->message + offset, sizeof(resp_out->message) - offset,
+                               "  %-20s | %-20s | %-10s\r\n", "Field Name", "Type", "SQL Type");
             offset += snprintf(resp_out->message + offset, sizeof(resp_out->message) - offset,
                                "  ------------------------------------------------------------\r\n");
             for (uint32_t j = 0; j < table->num_fields; j++)
@@ -103,13 +128,13 @@ static int handle_show_db(nn_cfg_tlv_parser_t parser, nn_db_cli_out_t *cfg_out, 
         else
         {
             snprintf(resp_out->message, sizeof(resp_out->message), "Error: Table '%s' not found in database '%s'\r\n",
-                     cfg_out->show_db.table_name, cfg_out->show_db.db_name);
+                     cfg_out->data.show_db.table_name, cfg_out->data.show_db.db_name);
         }
     }
-    else if (cfg_out->show_db.has_db_name)
+    else if (cfg_out->data.show_db.is_table_list)
     {
         // show db <db-name> table
-        nn_db_definition_t *db_def = nn_db_registry_find(cfg_out->show_db.db_name);
+        nn_db_definition_t *db_def = nn_db_registry_find(cfg_out->data.show_db.db_name);
         if (db_def)
         {
             offset += snprintf(resp_out->message + offset, sizeof(resp_out->message) - offset, "Database: %s\r\n",
@@ -117,23 +142,24 @@ static int handle_show_db(nn_cfg_tlv_parser_t parser, nn_db_cli_out_t *cfg_out, 
             offset += snprintf(resp_out->message + offset, sizeof(resp_out->message) - offset, "Tables:\r\n");
             for (uint32_t i = 0; i < db_def->num_tables; i++)
             {
-                offset += snprintf(resp_out->message + offset, sizeof(resp_out->message) - offset, "  - %s (%u fields)\r\n",
-                                   db_def->tables[i]->table_name, db_def->tables[i]->num_fields);
+                offset +=
+                    snprintf(resp_out->message + offset, sizeof(resp_out->message) - offset, "  - %s (%u fields)\r\n",
+                             db_def->tables[i]->table_name, db_def->tables[i]->num_fields);
             }
         }
         else
         {
             snprintf(resp_out->message, sizeof(resp_out->message), "Error: Database '%s' not found\r\n",
-                     cfg_out->show_db.db_name);
+                     cfg_out->data.show_db.db_name);
         }
     }
-    else
+    else if (cfg_out->data.show_db.is_db_list)
     {
         // show db
         offset += snprintf(resp_out->message + offset, sizeof(resp_out->message) - offset, "Registered Databases:\r\n");
         offset += snprintf(resp_out->message + offset, sizeof(resp_out->message) - offset, "=====================\r\n");
-        offset +=
-            snprintf(resp_out->message + offset, sizeof(resp_out->message) - offset, "%-20s | %-12s | %-8s\r\n", "Name", "Module", "Tables");
+        offset += snprintf(resp_out->message + offset, sizeof(resp_out->message) - offset, "%-20s | %-12s | %-8s\r\n",
+                           "Name", "Module", "Tables");
         offset += snprintf(resp_out->message + offset, sizeof(resp_out->message) - offset,
                            "--------------------------------------------\r\n");
 
@@ -149,8 +175,8 @@ static int handle_show_db(nn_cfg_tlv_parser_t parser, nn_db_cli_out_t *cfg_out, 
             {
                 snprintf(module_name, sizeof(module_name), "0x%08X", db_def->module_id);
             }
-            offset += snprintf(resp_out->message + offset, sizeof(resp_out->message) - offset, "%-20s | %-12s | %-8u\r\n",
-                               db_def->db_name, module_name, db_def->num_tables);
+            offset += snprintf(resp_out->message + offset, sizeof(resp_out->message) - offset,
+                               "%-20s | %-12s | %-8u\r\n", db_def->db_name, module_name, db_def->num_tables);
         }
         g_mutex_unlock(&registry->registry_mutex);
     }

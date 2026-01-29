@@ -189,6 +189,7 @@ int nn_cli_dispatch_to_module(nn_cli_match_result_t *result, nn_cli_session_t *s
             // Update prompt: use module-filled prompt if available, otherwise use view template
             if (module_prompt[0] != '\0' && view != NULL)
             {
+                nn_cli_prompt_push(session);
                 session->current_view = view;
                 update_prompt_from_template(session, module_prompt);
             }

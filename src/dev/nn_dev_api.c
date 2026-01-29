@@ -1,9 +1,9 @@
+#include <stdio.h>
+
 #include "nn_dev_module.h"
 #include "nn_dev_mq.h"
 #include "nn_dev_pubsub.h"
-
 #include "nn_errcode.h"
-#include <stdio.h>
 
 void nn_dev_register_module(uint32_t id, const char *name, nn_module_init_fn init, nn_module_cleanup_fn cleanup)
 {

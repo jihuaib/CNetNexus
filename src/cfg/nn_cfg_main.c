@@ -308,7 +308,7 @@ static int32_t cfg_module_init()
         return NN_ERRCODE_FAIL;
     }
 
-    nn_cli_view_node_t *user_view = nn_cli_view_create(NN_CFG_CLI_VIEW_USER, "user", "<{hostname}>");
+    nn_cli_view_node_t *user_view = nn_cli_view_create(NN_CFG_CLI_VIEW_USER, "user", "<NetNexus>");
     if (!user_view)
     {
         nn_cfg_cleanup_local();
@@ -317,7 +317,7 @@ static int32_t cfg_module_init()
     }
     g_nn_cfg_local->view_tree.root = user_view;
 
-    nn_cli_view_node_t *config_view = nn_cli_view_create(NN_CFG_CLI_VIEW_CONFIG, "config", "<{hostname}(config)>");
+    nn_cli_view_node_t *config_view = nn_cli_view_create(NN_CFG_CLI_VIEW_CONFIG, "config", "<NetNexus(config)>");
     if (!config_view)
     {
         nn_cfg_cleanup_local();
@@ -351,7 +351,7 @@ static int32_t cfg_module_init()
     }
 
     printf("\n[cfg] Module cli initialization complete (failures: %d)\n\n", failed_count);
- 
+
     // Initialize databases from XML definitions
     printf("[cfg] Initializing databases:\n");
     printf("======================================\n");

@@ -4,8 +4,8 @@
 #include <glib.h>
 #include <stdint.h>
 
-#include "nn_db.h"
 #include "nn_cfg.h"
+#include "nn_db.h"
 
 // ============================================================================
 // Field Value Types

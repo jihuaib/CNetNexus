@@ -43,4 +43,4 @@ Displays information about BGP peers.
 
 ### 3.1 BGP View (`config-bgp`)
 This view is entered after executing the `bgp <as-number>` command.
-- **Prompt Template**: `<{hostname}(config-bgp-%u)>`
+- **Prompt Template**: `<NetNexus(config-bgp-%u)>`

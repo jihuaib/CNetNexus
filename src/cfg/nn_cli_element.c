@@ -138,7 +138,7 @@ void nn_cli_group_free(nn_cli_command_group_t *group)
 
 // Validate a parameter value against element's type definition
 gboolean nn_cli_element_validate_param(nn_cli_element_t *element, const char *value, char *error_msg,
-                                   uint32_t error_msg_size)
+                                       uint32_t error_msg_size)
 {
     if (!element || !value)
     {

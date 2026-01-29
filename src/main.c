@@ -2,9 +2,9 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
 #include <sys/epoll.h>
 #include <sys/signalfd.h>
+#include <unistd.h>
 
 #include "dev/nn_dev_module.h"
 #include "nn_dev.h"

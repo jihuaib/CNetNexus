@@ -2,9 +2,9 @@
 #define NN_CFG_H
 
 #include <arpa/inet.h>
+#include <glib.h>
 #include <stdint.h>
 #include <string.h>
-#include <glib.h>
 
 // ============================================================================
 // CLI MSG Definitions
@@ -255,7 +255,6 @@ static inline int nn_cfg_tlv_parser_next(nn_cfg_tlv_parser_t *parser, uint32_t *
             (out_str)[0] = '\0';                                                                                       \
         }                                                                                                              \
     } while (0)
-
 
 // ============================================================================
 // PUBLIC API

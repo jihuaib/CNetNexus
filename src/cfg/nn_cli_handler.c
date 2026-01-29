@@ -39,45 +39,7 @@ void nn_cfg_send_data(nn_cli_session_t *session, const void *data, size_t len)
     }
 }
 
-// Helper: Replace {hostname} in template and store in session prompt
-static void replace_hostname_in_prompt(nn_cli_session_t *session, const char *template)
-{
-    char temp[128] = {0};
-    const char *hostname_placeholder = "{hostname}";
-    const char *pos = strstr(template, hostname_placeholder);
-
-    if (pos)
-    {
-        size_t prefix_len = pos - template;
-        size_t placeholder_len = strlen(hostname_placeholder);
-
-        strncpy(temp, template, prefix_len);
-        temp[prefix_len] = '\0';
-        strncat(temp, "NetNexus", sizeof(temp) - strlen(temp) - 1);
-        strncat(temp, pos + placeholder_len, sizeof(temp) - strlen(temp) - 1);
-    }
-    else
-    {
-        strncpy(temp, template, sizeof(temp) - 1);
-        temp[sizeof(temp) - 1] = '\0';
-    }
-
-    strncpy(session->prompt, temp, sizeof(session->prompt) - 1);
-    session->prompt[sizeof(session->prompt) - 1] = '\0';
-}
-
-// Update session prompt based on current view (for views without module-specific placeholders)
-void update_prompt(nn_cli_session_t *session)
-{
-    if (!session || !session->current_view)
-    {
-        return;
-    }
-
-    replace_hostname_in_prompt(session, session->current_view->prompt_template);
-}
-
-// Update session prompt from module-filled template (module has already filled its placeholders)
+// Update session prompt from module-filled template (module has already resolved placeholders like %u)
 void update_prompt_from_template(nn_cli_session_t *session, const char *module_prompt)
 {
     if (!session || !module_prompt)
@@ -85,8 +47,34 @@ void update_prompt_from_template(nn_cli_session_t *session, const char *module_p
         return;
     }
 
-    // Module has filled its placeholders, we only need to replace {hostname}
-    replace_hostname_in_prompt(session, module_prompt);
+    strncpy(session->prompt, module_prompt, sizeof(session->prompt) - 1);
+    session->prompt[sizeof(session->prompt) - 1] = '\0';
+}
+
+// Push current prompt onto the stack (call before entering a sub-view)
+void nn_cli_prompt_push(nn_cli_session_t *session)
+{
+    if (!session || session->prompt_stack_depth >= NN_CLI_PROMPT_STACK_DEPTH)
+    {
+        return;
+    }
+
+    strncpy(session->prompt_stack[session->prompt_stack_depth], session->prompt, NN_CFG_CLI_MAX_PROMPT_LEN - 1);
+    session->prompt_stack[session->prompt_stack_depth][NN_CFG_CLI_MAX_PROMPT_LEN - 1] = '\0';
+    session->prompt_stack_depth++;
+}
+
+// Pop prompt from the stack (call when exiting a sub-view)
+void nn_cli_prompt_pop(nn_cli_session_t *session)
+{
+    if (!session || session->prompt_stack_depth == 0)
+    {
+        return;
+    }
+
+    session->prompt_stack_depth--;
+    strncpy(session->prompt, session->prompt_stack[session->prompt_stack_depth], sizeof(session->prompt) - 1);
+    session->prompt[sizeof(session->prompt) - 1] = '\0';
 }
 
 // Send the prompt to the client
@@ -721,7 +709,7 @@ nn_cli_session_t *nn_cli_session_create(int client_fd)
     session->cursor_pos = 0;
     session->state = NN_CLI_STATE_NORMAL;
 
-    update_prompt(session);
+    update_prompt_from_template(session, session->current_view->prompt_template);
     nn_cli_session_history_init(&session->history);
 
     // Get client IP address

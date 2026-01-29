@@ -181,7 +181,7 @@ nn_cli_param_type_t *nn_cli_param_type_parse(const char *type_str)
 
 // Validate a parameter value
 gboolean nn_cli_param_type_validate(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
-                                uint32_t error_msg_size)
+                                    uint32_t error_msg_size)
 {
     if (!param_type || !value)
     {
@@ -283,7 +283,7 @@ void nn_cli_param_type_free(nn_cli_param_type_t *param_type)
 
 // String validation
 gboolean nn_param_validate_string(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
-                              uint32_t error_msg_size)
+                                  uint32_t error_msg_size)
 {
     if (!param_type || !value)
     {
@@ -317,7 +317,7 @@ gboolean nn_param_validate_string(const nn_cli_param_type_t *param_type, const c
 
 // Unsigned integer validation
 gboolean nn_param_validate_uint(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
-                            uint32_t error_msg_size)
+                                uint32_t error_msg_size)
 {
     if (!param_type || !value)
     {
@@ -379,7 +379,7 @@ gboolean nn_param_validate_uint(const nn_cli_param_type_t *param_type, const cha
 
 // Signed integer validation
 gboolean nn_param_validate_int(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
-                           uint32_t error_msg_size)
+                               uint32_t error_msg_size)
 {
     if (!param_type || !value)
     {
@@ -455,7 +455,7 @@ gboolean nn_param_validate_int(const nn_cli_param_type_t *param_type, const char
 
 // IPv4 address validation
 gboolean nn_param_validate_ipv4(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
-                            uint32_t error_msg_size)
+                                uint32_t error_msg_size)
 {
     (void)param_type; // Unused for IP validation
 
@@ -479,7 +479,7 @@ gboolean nn_param_validate_ipv4(const nn_cli_param_type_t *param_type, const cha
 
 // IPv6 address validation
 gboolean nn_param_validate_ipv6(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
-                            uint32_t error_msg_size)
+                                uint32_t error_msg_size)
 {
     (void)param_type; // Unused for IP validation
 
@@ -503,7 +503,7 @@ gboolean nn_param_validate_ipv6(const nn_cli_param_type_t *param_type, const cha
 
 // IP address validation (IPv4 or IPv6)
 gboolean nn_param_validate_ip(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
-                          uint32_t error_msg_size)
+                              uint32_t error_msg_size)
 {
     if (!value)
     {
@@ -531,7 +531,7 @@ gboolean nn_param_validate_ip(const nn_cli_param_type_t *param_type, const char 
 
 // MAC address validation
 gboolean nn_param_validate_mac(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
-                           uint32_t error_msg_size)
+                               uint32_t error_msg_size)
 {
     (void)param_type; // Unused
 

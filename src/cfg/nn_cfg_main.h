@@ -14,8 +14,8 @@
 
 #include "nn_cli_handler.h"
 #include "nn_cli_view.h"
-#include "nn_dev.h"
 #include "nn_cli_xml_parser.h"
+#include "nn_dev.h"
 
 typedef struct nn_cfg_local
 {
@@ -28,7 +28,7 @@ typedef struct nn_cfg_local
     int listen_sock;
     pthread_t worker_thread;
     GHashTable *sessions; // Registry: fd -> nn_cli_session_t*
-    GList *xml_db_defs;  // Parsed database definitions from XML (intermediate)
+    GList *xml_db_defs;   // Parsed database definitions from XML (intermediate)
 } nn_cfg_local_t;
 
 extern nn_cfg_local_t *g_nn_cfg_local;

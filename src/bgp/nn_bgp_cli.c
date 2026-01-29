@@ -41,7 +41,8 @@ typedef struct nn_bgp_cli_resp_dispatch
     nn_bgp_cfg_resp_t handler;
 } nn_bgp_cli_resp_dispatch_t;
 
-int handle_bgp_config_resp(nn_dev_message_t *msg, const nn_bgp_cli_out_t *cfg_out, const nn_bgp_cli_resp_out_t *resp_out);
+int handle_bgp_config_resp(nn_dev_message_t *msg, const nn_bgp_cli_out_t *cfg_out,
+                           const nn_bgp_cli_resp_out_t *resp_out);
 
 static const nn_bgp_cli_resp_dispatch_t g_nn_bgp_cfg_resp_dispatch[] = {
     {NN_BGP_CLI_GROUP_ID_BGP, handle_bgp_config_resp},
@@ -139,7 +140,8 @@ int handle_bgp_config_resp_common(nn_dev_message_t *msg, const nn_bgp_cli_out_t 
     return NN_ERRCODE_SUCCESS;
 }
 
-int handle_bgp_config_resp(nn_dev_message_t *msg, const nn_bgp_cli_out_t *cfg_out, const nn_bgp_cli_resp_out_t *resp_out)
+int handle_bgp_config_resp(nn_dev_message_t *msg, const nn_bgp_cli_out_t *cfg_out,
+                           const nn_bgp_cli_resp_out_t *resp_out)
 {
     char view_name[NN_CFG_CLI_MAX_VIEW_LEN];
 

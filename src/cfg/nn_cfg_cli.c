@@ -56,8 +56,7 @@ int nn_cfg_cli_cmd_group_resp_show(nn_cli_session_t *session, const nn_cfg_cli_o
                                    nn_cfg_cli_resp_out_t *resp_out);
 int nn_cfg_cli_cmd_group_resp_op(nn_cli_session_t *session, const nn_cfg_cli_out_t *cfg_out,
                                  nn_cfg_cli_resp_out_t *resp_out);
-void cmd_show_cli_history(nn_cli_session_t *session, const nn_cfg_cli_out_t *cfg_out,
-                          nn_cfg_cli_resp_out_t *resp_out);
+void cmd_show_cli_history(nn_cli_session_t *session, const nn_cfg_cli_out_t *cfg_out, nn_cfg_cli_resp_out_t *resp_out);
 
 static const nn_cfg_cli_cmd_resp_dispatch_t g_nn_cfg_cli_cmd_resp_dispatch[] = {
     {NN_CFG_CLI_GROUP_ID_SHOW, nn_cfg_cli_cmd_group_resp_show},
@@ -193,8 +192,8 @@ int nn_cfg_cli_cmd_group_op(nn_cfg_tlv_parser_t parser, nn_cfg_cli_out_t *cfg_ou
     return NN_ERRCODE_SUCCESS;
 }
 
-static void print_commands_recursive(nn_cfg_cli_resp_out_t *resp_out, const char *view_name,
-                                     const char *prefix, nn_cli_tree_node_t *node)
+static void print_commands_recursive(nn_cfg_cli_resp_out_t *resp_out, const char *view_name, const char *prefix,
+                                     nn_cli_tree_node_t *node)
 {
     if (!node)
     {
@@ -286,8 +285,7 @@ int nn_cfg_cli_cmd_group_resp_show(nn_cli_session_t *session, const nn_cfg_cli_o
 }
 
 // Show CLI history command handler
-void cmd_show_cli_history(nn_cli_session_t *session, const nn_cfg_cli_out_t *cfg_out,
-                          nn_cfg_cli_resp_out_t *resp_out)
+void cmd_show_cli_history(nn_cli_session_t *session, const nn_cfg_cli_out_t *cfg_out, nn_cfg_cli_resp_out_t *resp_out)
 {
     (void)session;
     (void)cfg_out;
@@ -355,8 +353,9 @@ int nn_cfg_cli_cmd_group_resp_op(nn_cli_session_t *session, const nn_cfg_cli_out
             nn_cli_view_find_by_id(g_nn_cfg_local->view_tree.root, NN_CFG_CLI_VIEW_CONFIG);
         if (config_view)
         {
+            nn_cli_prompt_push(session);
             session->current_view = config_view;
-            update_prompt(session);
+            update_prompt_from_template(session, session->current_view->prompt_template);
         }
     }
 
@@ -366,7 +365,9 @@ int nn_cfg_cli_cmd_group_resp_op(nn_cli_session_t *session, const nn_cfg_cli_out
         if (config_view)
         {
             session->current_view = config_view;
-            update_prompt(session);
+            // Reset prompt stack and use view template directly
+            session->prompt_stack_depth = 0;
+            update_prompt_from_template(session, session->current_view->prompt_template);
         }
     }
 
@@ -384,7 +385,7 @@ int nn_cfg_cli_cmd_group_resp_op(nn_cli_session_t *session, const nn_cfg_cli_out
             if (config_view)
             {
                 session->current_view = config_view;
-                update_prompt(session);
+                nn_cli_prompt_pop(session);
             }
         }
     }

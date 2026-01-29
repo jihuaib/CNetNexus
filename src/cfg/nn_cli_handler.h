@@ -15,6 +15,8 @@ typedef enum
     NN_CLI_STATE_CSI,
 } nn_cli_input_state_t;
 
+#define NN_CLI_PROMPT_STACK_DEPTH 8
+
 // Client session structure
 typedef struct
 {
@@ -29,10 +31,14 @@ typedef struct
     nn_cli_input_state_t state;    // Input state machine state
 
     // Tab completion cycling state
-    uint32_t tab_cycling;            // 1 if currently cycling through matches
-    uint32_t tab_match_index;        // Current index in tab matches
-    char tab_original[MAX_CMD_LEN];  // Original input before tab cycling
-    uint32_t tab_original_pos;       // Original cursor position before tab cycling
+    uint32_t tab_cycling;           // 1 if currently cycling through matches
+    uint32_t tab_match_index;       // Current index in tab matches
+    char tab_original[MAX_CMD_LEN]; // Original input before tab cycling
+    uint32_t tab_original_pos;      // Original cursor position before tab cycling
+
+    // Prompt stack: saves prompt before entering sub-views
+    char prompt_stack[NN_CLI_PROMPT_STACK_DEPTH][NN_CFG_CLI_MAX_PROMPT_LEN];
+    uint32_t prompt_stack_depth;
 } nn_cli_session_t;
 
 // Function prototypes
@@ -43,6 +49,8 @@ void nn_cli_session_destroy(nn_cli_session_t *session);
 void send_prompt(nn_cli_session_t *session);
 void update_prompt(nn_cli_session_t *session);
 void update_prompt_from_template(nn_cli_session_t *session, const char *module_prompt);
+void nn_cli_prompt_push(nn_cli_session_t *session);
+void nn_cli_prompt_pop(nn_cli_session_t *session);
 void nn_cfg_send_message(nn_cli_session_t *session, const char *message);
 void nn_cfg_send_data(nn_cli_session_t *session, const void *data, size_t len);
 int process_command(const char *cmd_line, nn_cli_session_t *session);

@@ -1,8 +1,8 @@
 #include "nn_dev_cli.h"
 
 #include <stdio.h>
-#include <string.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "nn_cfg.h"
 #include "nn_dev_module.h"
@@ -21,13 +21,11 @@ static gboolean show_module_callback(gpointer key, gpointer value, gpointer data
     nn_dev_module_t *module = (nn_dev_module_t *)value;
 
     char line[128];
-    snprintf(line, sizeof(line), "  %-12u %-15s %s\r\n", 
-             module->module_id, 
-             module->name,
+    snprintf(line, sizeof(line), "  %-12u %-15s %s\r\n", module->module_id, module->name,
              module->mq ? "Initialized" : "Registered");
-    
+
     strncat(resp->message, line, sizeof(resp->message) - strlen(resp->message) - 1);
-    
+
     return FALSE; // Continue traversal
 }
 
@@ -44,11 +42,8 @@ static void show_module_mq_callback(gpointer key, gpointer value, gpointer data)
         mq_len = g_queue_get_length(sub->mq->message_queue);
     }
 
-    snprintf(line, sizeof(line), "  %-12u %-10d %-10u\r\n", 
-             sub->module_id, 
-             sub->eventfd,
-             mq_len);
-    
+    snprintf(line, sizeof(line), "  %-12u %-10d %-10u\r\n", sub->module_id, sub->eventfd, mq_len);
+
     strncat(resp->message, line, sizeof(resp->message) - strlen(resp->message) - 1);
 }
 
@@ -65,7 +60,8 @@ typedef struct nn_dev_group_dispatch
 } nn_dev_group_dispatch_t;
 
 static int handle_show_module(nn_cfg_tlv_parser_t parser, nn_dev_cli_out_t *cfg_out, nn_dev_cli_resp_out_t *resp_out);
-static int handle_show_module_mq(nn_cfg_tlv_parser_t parser, nn_dev_cli_out_t *cfg_out, nn_dev_cli_resp_out_t *resp_out);
+static int handle_show_module_mq(nn_cfg_tlv_parser_t parser, nn_dev_cli_out_t *cfg_out,
+                                 nn_dev_cli_resp_out_t *resp_out);
 static int handle_show_version(nn_cfg_tlv_parser_t parser, nn_dev_cli_out_t *cfg_out, nn_dev_cli_resp_out_t *resp_out);
 static int handle_sysname(nn_cfg_tlv_parser_t parser, nn_dev_cli_out_t *cfg_out, nn_dev_cli_resp_out_t *resp_out);
 

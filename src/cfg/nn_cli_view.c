@@ -118,7 +118,8 @@ int nn_cfg_get_view_prompt_template_inner(uint32_t view_id, char *view_name)
 
     if (!g_nn_cfg_local->view_tree.root)
     {
-        return NN_ERRCODE_FAIL;;
+        return NN_ERRCODE_FAIL;
+        ;
     }
 
     nn_cli_view_node_t *view = nn_cli_view_find_by_id(g_nn_cfg_local->view_tree.root, view_id);

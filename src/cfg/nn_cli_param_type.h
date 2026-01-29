@@ -1,8 +1,8 @@
 #ifndef NN_CLI_PARAM_TYPE_H
 #define NN_CLI_PARAM_TYPE_H
 
-#include <stdint.h>
 #include <glib.h>
+#include <stdint.h>
 
 #include "nn_cfg.h"
 
@@ -23,7 +23,7 @@ typedef enum
 // Validation callback function type
 // Returns TRUE if value is valid, FALSE otherwise
 typedef gboolean (*nn_param_validate_fn)(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
-                                     uint32_t error_msg_size);
+                                         uint32_t error_msg_size);
 
 // Parameter type structure
 struct nn_cli_param_type
@@ -67,7 +67,7 @@ struct nn_cli_param_type
  * @return TRUE if valid, FALSE otherwise
  */
 gboolean nn_cli_param_type_validate(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
-                                uint32_t error_msg_size);
+                                    uint32_t error_msg_size);
 
 /**
  * Get a human-readable description of the parameter type
@@ -94,18 +94,18 @@ nn_cli_param_type_t *nn_cli_param_type_parse(const char *type_str);
 
 // Built-in validation functions
 gboolean nn_param_validate_string(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
-                              uint32_t error_msg_size);
+                                  uint32_t error_msg_size);
 gboolean nn_param_validate_uint(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
-                            uint32_t error_msg_size);
+                                uint32_t error_msg_size);
 gboolean nn_param_validate_int(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
-                           uint32_t error_msg_size);
+                               uint32_t error_msg_size);
 gboolean nn_param_validate_ipv4(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
-                            uint32_t error_msg_size);
+                                uint32_t error_msg_size);
 gboolean nn_param_validate_ipv6(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
-                            uint32_t error_msg_size);
+                                uint32_t error_msg_size);
 gboolean nn_param_validate_ip(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
-                          uint32_t error_msg_size);
+                              uint32_t error_msg_size);
 gboolean nn_param_validate_mac(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
-                           uint32_t error_msg_size);
+                               uint32_t error_msg_size);
 
 #endif // NN_CLI_PARAM_TYPE_H

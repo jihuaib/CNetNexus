@@ -2,6 +2,7 @@
 #define NN_CLI_XML_PARSER_H
 
 #include <glib.h>
+
 #include "nn_cli_tree.h"
 #include "nn_cli_view.h"
 

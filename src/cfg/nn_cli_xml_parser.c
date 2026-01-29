@@ -23,101 +23,501 @@ static nn_cfg_xml_db_def_t *parse_databases_node(xmlNode *dbs_node, uint32_t mod
 static nn_cfg_xml_db_table_t *parse_table_node(xmlNode *table_node);
 static nn_cfg_xml_db_field_t *parse_field_node(xmlNode *field_node);
 
-// Parse expression string "1 2 3" into array of IDs
-static uint32_t *parse_expression(const char *expr, uint32_t *count)
+// ============================================================================
+// Expression AST - supports [ A | B ] (optional) and { A | B } (required)
+// ============================================================================
+
+// AST node types
+typedef enum
 {
-    if (!expr || !count)
-    {
-        return NULL;
-    }
+    EXPR_NODE_ELEMENT,  // Single element ID
+    EXPR_NODE_SEQUENCE, // Sequential list of items
+    EXPR_NODE_OPTIONAL, // [ alt1 | alt2 | ... ] — match 0 or 1
+    EXPR_NODE_REQUIRED, // { alt1 | alt2 | ... } — match exactly 1
+} expr_node_type_t;
 
-    *count = 0;
-    uint32_t capacity = 10;
-    uint32_t *ids = (uint32_t *)g_malloc0(capacity * sizeof(uint32_t));
+// AST node
+typedef struct expr_node
+{
+    expr_node_type_t type;
+    uint32_t element_id;         // For EXPR_NODE_ELEMENT
+    struct expr_node **children; // For SEQUENCE/OPTIONAL/REQUIRED
+    uint32_t num_children;
+    uint32_t children_capacity;
+} expr_node_t;
 
-    char *expr_copy = strdup(expr);
-    char *token = strtok(expr_copy, " \t\n");
+// Expression token types
+typedef enum
+{
+    EXPR_TOK_NUMBER,   // Element ID number
+    EXPR_TOK_LBRACKET, // [
+    EXPR_TOK_RBRACKET, // ]
+    EXPR_TOK_LBRACE,   // {
+    EXPR_TOK_RBRACE,   // }
+    EXPR_TOK_PIPE,     // |
+    EXPR_TOK_END,      // End of expression
+} expr_tok_type_t;
 
-    while (token)
-    {
-        if (*count >= capacity)
-        {
-            capacity *= 2;
-            uint32_t *new_ids = (uint32_t *)realloc(ids, capacity * sizeof(uint32_t));
-            if (!new_ids)
-            {
-                g_free(ids);
-                g_free(expr_copy);
-                return NULL;
-            }
-            ids = new_ids;
-        }
+// Expression token
+typedef struct
+{
+    expr_tok_type_t type;
+    uint32_t value; // For NUMBER tokens
+} expr_token_t;
 
-        ids[(*count)++] = atoi(token);
-        token = strtok(NULL, " \t\n");
-    }
+// Tokenizer state
+typedef struct
+{
+    const char *input;
+    uint32_t pos;
+} expr_tokenizer_t;
 
-    g_free(expr_copy);
-    return ids;
+// Create AST node
+static expr_node_t *expr_node_create(expr_node_type_t type)
+{
+    expr_node_t *node = g_malloc0(sizeof(expr_node_t));
+    node->type = type;
+    return node;
 }
 
-// Build tree from expression (element IDs)
-static nn_cli_tree_node_t *build_tree_from_expression(uint32_t *element_ids, uint32_t count,
-                                                      nn_cli_command_group_t *group, uint32_t module_id,
-                                                      uint32_t view_id)
+// Add child to AST node
+static void expr_node_add_child(expr_node_t *parent, expr_node_t *child)
 {
-    if (!element_ids || count == NN_ERRCODE_SUCCESS || !group)
+    if (parent->num_children >= parent->children_capacity)
     {
-        return NULL;
+        uint32_t new_cap = parent->children_capacity == 0 ? 4 : parent->children_capacity * 2;
+        parent->children = realloc(parent->children, new_cap * sizeof(expr_node_t *));
+        parent->children_capacity = new_cap;
+    }
+    parent->children[parent->num_children++] = child;
+}
+
+// Free AST
+static void expr_node_free(expr_node_t *node)
+{
+    if (!node)
+    {
+        return;
+    }
+    for (uint32_t i = 0; i < node->num_children; i++)
+    {
+        expr_node_free(node->children[i]);
+    }
+    g_free(node->children);
+    g_free(node);
+}
+
+// Get next token from expression string
+static expr_token_t expr_next_token(expr_tokenizer_t *tok)
+{
+    expr_token_t token = {.type = EXPR_TOK_END, .value = 0};
+
+    // Skip whitespace
+    while (tok->input[tok->pos] && (tok->input[tok->pos] == ' ' || tok->input[tok->pos] == '\t'))
+    {
+        tok->pos++;
     }
 
-    nn_cli_tree_node_t *root = NULL;
-    nn_cli_tree_node_t *current = NULL;
-
-    for (uint32_t i = 0; i < count; i++)
+    if (!tok->input[tok->pos])
     {
-        nn_cli_element_t *element = nn_cli_group_find_element(group, element_ids[i]);
-        if (!element)
-        {
-            continue;
-        }
+        return token;
+    }
 
-        nn_cli_tree_node_t *node =
-            nn_cli_tree_create_node(element->cfg_id, element->name, element->description,
-                                    element->type == ELEMENT_TYPE_KEYWORD ? NN_CLI_NODE_COMMAND : NN_CLI_NODE_ARGUMENT,
-                                    module_id, group->group_id, view_id);
-
-        // Set param_type for ARGUMENT nodes
-        if (element->type == ELEMENT_TYPE_PARAMETER && element->param_type)
-        {
-            // Clone the param_type from element to node
-            nn_cli_param_type_t *param_type_copy = NULL;
-            if (element->param_type->type_str)
+    char c = tok->input[tok->pos];
+    switch (c)
+    {
+        case '[':
+            token.type = EXPR_TOK_LBRACKET;
+            tok->pos++;
+            break;
+        case ']':
+            token.type = EXPR_TOK_RBRACKET;
+            tok->pos++;
+            break;
+        case '{':
+            token.type = EXPR_TOK_LBRACE;
+            tok->pos++;
+            break;
+        case '}':
+            token.type = EXPR_TOK_RBRACE;
+            tok->pos++;
+            break;
+        case '|':
+            token.type = EXPR_TOK_PIPE;
+            tok->pos++;
+            break;
+        default:
+            if (c >= '0' && c <= '9')
             {
-                param_type_copy = nn_cli_param_type_parse(element->param_type->type_str);
+                token.type = EXPR_TOK_NUMBER;
+                token.value = 0;
+                while (tok->input[tok->pos] >= '0' && tok->input[tok->pos] <= '9')
+                {
+                    token.value = token.value * 10 + (tok->input[tok->pos] - '0');
+                    tok->pos++;
+                }
             }
-            nn_cli_tree_set_param_type(node, param_type_copy);
-        }
+            else
+            {
+                // Skip unknown character
+                tok->pos++;
+                return expr_next_token(tok);
+            }
+            break;
+    }
 
-        if (!root)
+    return token;
+}
+
+// Peek at next token without consuming
+static expr_token_t expr_peek_token(expr_tokenizer_t *tok)
+{
+    uint32_t saved_pos = tok->pos;
+    expr_token_t token = expr_next_token(tok);
+    tok->pos = saved_pos;
+    return token;
+}
+
+// Forward declarations for recursive descent parser
+static expr_node_t *parse_expr(expr_tokenizer_t *tok);
+
+// Parse alternatives: expr ('|' expr)*
+static expr_node_t *parse_alternatives(expr_tokenizer_t *tok, expr_node_type_t group_type, expr_tok_type_t end_tok)
+{
+    expr_node_t *group = expr_node_create(group_type);
+
+    // Parse first alternative
+    expr_node_t *alt = parse_expr(tok);
+    if (alt)
+    {
+        expr_node_add_child(group, alt);
+    }
+
+    // Parse remaining alternatives separated by '|'
+    while (1)
+    {
+        expr_token_t peek = expr_peek_token(tok);
+        if (peek.type == EXPR_TOK_PIPE)
         {
-            root = node;
-            current = node;
+            expr_next_token(tok); // consume '|'
+            alt = parse_expr(tok);
+            if (alt)
+            {
+                expr_node_add_child(group, alt);
+            }
         }
         else
         {
-            nn_cli_tree_add_child(current, node);
-            current = node;
+            break;
         }
     }
 
-    // Mark the last node as an end node (valid command completion point)
-    if (current)
+    // Consume closing bracket/brace
+    expr_token_t close = expr_peek_token(tok);
+    if (close.type == end_tok)
     {
-        current->is_end_node = TRUE;
+        expr_next_token(tok);
     }
 
-    return root;
+    return group;
+}
+
+// Parse expression: item+
+// An item is: NUMBER | '[' alternatives ']' | '{' alternatives '}'
+static expr_node_t *parse_expr(expr_tokenizer_t *tok)
+{
+    expr_node_t *seq = expr_node_create(EXPR_NODE_SEQUENCE);
+
+    while (1)
+    {
+        expr_token_t peek = expr_peek_token(tok);
+
+        if (peek.type == EXPR_TOK_NUMBER)
+        {
+            expr_next_token(tok); // consume
+            expr_node_t *elem = expr_node_create(EXPR_NODE_ELEMENT);
+            elem->element_id = peek.value;
+            expr_node_add_child(seq, elem);
+        }
+        else if (peek.type == EXPR_TOK_LBRACKET)
+        {
+            expr_next_token(tok); // consume '['
+            expr_node_t *opt = parse_alternatives(tok, EXPR_NODE_OPTIONAL, EXPR_TOK_RBRACKET);
+            if (opt)
+            {
+                expr_node_add_child(seq, opt);
+            }
+        }
+        else if (peek.type == EXPR_TOK_LBRACE)
+        {
+            expr_next_token(tok); // consume '{'
+            expr_node_t *req = parse_alternatives(tok, EXPR_NODE_REQUIRED, EXPR_TOK_RBRACE);
+            if (req)
+            {
+                expr_node_add_child(seq, req);
+            }
+        }
+        else
+        {
+            // End of expression or closing bracket/brace/pipe
+            break;
+        }
+    }
+
+    // Simplify: if sequence has exactly one child, return the child directly
+    if (seq->num_children == 1)
+    {
+        expr_node_t *child = seq->children[0];
+        seq->children[0] = NULL;
+        seq->num_children = 0;
+        expr_node_free(seq);
+        return child;
+    }
+
+    if (seq->num_children == 0)
+    {
+        expr_node_free(seq);
+        return NULL;
+    }
+
+    return seq;
+}
+
+// ============================================================================
+// Tree building from AST using leaf-set algorithm
+// ============================================================================
+
+// Leaf set: tracks current attachment points in the tree
+typedef struct
+{
+    nn_cli_tree_node_t **nodes;
+    uint32_t count;
+    uint32_t capacity;
+} leaf_set_t;
+
+static leaf_set_t *leaf_set_create(void)
+{
+    leaf_set_t *ls = g_malloc0(sizeof(leaf_set_t));
+    ls->capacity = 8;
+    ls->nodes = g_malloc0(ls->capacity * sizeof(nn_cli_tree_node_t *));
+    return ls;
+}
+
+static void leaf_set_add(leaf_set_t *ls, nn_cli_tree_node_t *node)
+{
+    if (ls->count >= ls->capacity)
+    {
+        ls->capacity *= 2;
+        ls->nodes = realloc(ls->nodes, ls->capacity * sizeof(nn_cli_tree_node_t *));
+    }
+    ls->nodes[ls->count++] = node;
+}
+
+static void leaf_set_free(leaf_set_t *ls)
+{
+    if (ls)
+    {
+        g_free(ls->nodes);
+        g_free(ls);
+    }
+}
+
+// Create a tree node from an element
+static nn_cli_tree_node_t *create_tree_node_from_element(nn_cli_element_t *element, uint32_t module_id,
+                                                         uint32_t group_id, uint32_t view_id)
+{
+    nn_cli_tree_node_t *node =
+        nn_cli_tree_create_node(element->cfg_id, element->name, element->description,
+                                element->type == ELEMENT_TYPE_KEYWORD ? NN_CLI_NODE_COMMAND : NN_CLI_NODE_ARGUMENT,
+                                module_id, group_id, view_id);
+
+    if (element->type == ELEMENT_TYPE_PARAMETER && element->param_type)
+    {
+        nn_cli_param_type_t *param_type_copy = NULL;
+        if (element->param_type->type_str)
+        {
+            param_type_copy = nn_cli_param_type_parse(element->param_type->type_str);
+        }
+        nn_cli_tree_set_param_type(node, param_type_copy);
+    }
+
+    return node;
+}
+
+// Helper: add node to leaf set if not already present
+static void leaf_set_add_unique(leaf_set_t *ls, nn_cli_tree_node_t *node)
+{
+    for (uint32_t i = 0; i < ls->count; i++)
+    {
+        if (ls->nodes[i] == node)
+        {
+            return;
+        }
+    }
+    leaf_set_add(ls, node);
+}
+
+// Forward declaration
+static leaf_set_t *build_tree_recursive(expr_node_t *ast, leaf_set_t *parents, nn_cli_command_group_t *group,
+                                        uint32_t module_id, uint32_t view_id);
+
+// Build tree from AST node, attaching to parent leaf set.
+// Uses a virtual root as anchor so the leaf set is never empty.
+// Returns new leaf set (the nodes where next items should attach).
+static leaf_set_t *build_tree_recursive(expr_node_t *ast, leaf_set_t *parents, nn_cli_command_group_t *group,
+                                        uint32_t module_id, uint32_t view_id)
+{
+    if (!ast)
+    {
+        return parents;
+    }
+
+    switch (ast->type)
+    {
+        case EXPR_NODE_ELEMENT:
+        {
+            nn_cli_element_t *element = nn_cli_group_find_element(group, ast->element_id);
+            if (!element)
+            {
+                return parents;
+            }
+
+            // Attach to each parent in the leaf set
+            leaf_set_t *new_leaves = leaf_set_create();
+            for (uint32_t i = 0; i < parents->count; i++)
+            {
+                nn_cli_tree_node_t *node = create_tree_node_from_element(element, module_id, group->group_id, view_id);
+                nn_cli_tree_add_child(parents->nodes[i], node);
+                // After add_child, the node might have been merged. Find the actual child.
+                nn_cli_tree_node_t *actual = nn_cli_tree_find_child(parents->nodes[i], element->name);
+                if (actual)
+                {
+                    leaf_set_add_unique(new_leaves, actual);
+                }
+            }
+            leaf_set_free(parents);
+            return new_leaves;
+        }
+
+        case EXPR_NODE_SEQUENCE:
+        {
+            leaf_set_t *current_leaves = parents;
+            for (uint32_t i = 0; i < ast->num_children; i++)
+            {
+                current_leaves = build_tree_recursive(ast->children[i], current_leaves, group, module_id, view_id);
+            }
+            return current_leaves;
+        }
+
+        case EXPR_NODE_REQUIRED:
+        case EXPR_NODE_OPTIONAL:
+        {
+            // For each alternative, process it starting from the same parent set
+            // Collect all resulting leaf sets into one union
+            leaf_set_t *result_leaves = leaf_set_create();
+
+            for (uint32_t i = 0; i < ast->num_children; i++)
+            {
+                // Clone the parent leaf set for each alternative
+                leaf_set_t *alt_parents = leaf_set_create();
+                for (uint32_t j = 0; j < parents->count; j++)
+                {
+                    leaf_set_add(alt_parents, parents->nodes[j]);
+                }
+
+                leaf_set_t *alt_leaves = build_tree_recursive(ast->children[i], alt_parents, group, module_id, view_id);
+
+                // Merge alt_leaves into result
+                for (uint32_t j = 0; j < alt_leaves->count; j++)
+                {
+                    leaf_set_add_unique(result_leaves, alt_leaves->nodes[j]);
+                }
+                leaf_set_free(alt_leaves);
+            }
+
+            // For OPTIONAL: also include the original parents as leaves (skip path)
+            if (ast->type == EXPR_NODE_OPTIONAL)
+            {
+                for (uint32_t i = 0; i < parents->count; i++)
+                {
+                    leaf_set_add_unique(result_leaves, parents->nodes[i]);
+                }
+            }
+
+            leaf_set_free(parents);
+            return result_leaves;
+        }
+
+        default:
+            return parents;
+    }
+}
+
+// Build command tree from expression string (supports [ ] and { } syntax).
+// Returns a virtual root node whose children are the actual command trees.
+// The caller should add each child to the target view's cmd_tree, then free the virtual root shell.
+static nn_cli_tree_node_t *build_tree_from_expression_str(const char *expression, nn_cli_command_group_t *group,
+                                                          uint32_t module_id, uint32_t view_id)
+{
+    if (!expression || !group)
+    {
+        return NULL;
+    }
+
+    // Parse expression into AST
+    expr_tokenizer_t tok = {.input = expression, .pos = 0};
+    expr_node_t *ast = parse_expr(&tok);
+    if (!ast)
+    {
+        return NULL;
+    }
+
+    // Create virtual root as anchor so leaf set is never empty
+    nn_cli_tree_node_t *virtual_root =
+        nn_cli_tree_create_node(0, "__virtual_root__", NULL, NN_CLI_NODE_COMMAND, 0, 0, 0);
+
+    leaf_set_t *initial_parents = leaf_set_create();
+    leaf_set_add(initial_parents, virtual_root);
+
+    leaf_set_t *final_leaves = build_tree_recursive(ast, initial_parents, group, module_id, view_id);
+
+    // Mark all final leaf nodes as end nodes (skip virtual root itself)
+    if (final_leaves)
+    {
+        for (uint32_t i = 0; i < final_leaves->count; i++)
+        {
+            if (final_leaves->nodes[i] != virtual_root)
+            {
+                final_leaves->nodes[i]->is_end_node = TRUE;
+            }
+        }
+        leaf_set_free(final_leaves);
+    }
+
+    expr_node_free(ast);
+
+    // If virtual root has no children, nothing was built
+    if (virtual_root->num_children == 0)
+    {
+        nn_cli_tree_free(virtual_root);
+        return NULL;
+    }
+
+    return virtual_root;
+}
+
+// Register command trees (children of virtual root) to a target view's cmd_tree
+static void register_cmd_trees_to_view(nn_cli_tree_node_t *virtual_root, nn_cli_tree_node_t *target_cmd_tree,
+                                       uint32_t clone)
+{
+    for (uint32_t i = 0; i < virtual_root->num_children; i++)
+    {
+        nn_cli_tree_node_t *tree = clone ? nn_cli_tree_clone(virtual_root->children[i]) : virtual_root->children[i];
+        if (tree)
+        {
+            nn_cli_tree_add_child(target_cmd_tree, tree);
+        }
+    }
 }
 
 // Parse element definition
@@ -370,25 +770,13 @@ static void parse_command_group(xmlNode *group_node, nn_cli_view_tree_t *view_tr
 
                     if (expression && views)
                     {
-                        // Parse expression into element IDs
-                        uint32_t count = 0;
-                        uint32_t *element_ids = parse_expression(expression, &count);
+                        // Build tree from expression (supports [ ] and { } syntax)
+                        // Returns a virtual root whose children are the actual command trees
+                        nn_cli_tree_node_t *virtual_root =
+                            build_tree_from_expression_str(expression, group, module_id, view_id);
 
-                        if (element_ids && count > 0)
+                        if (virtual_root)
                         {
-                            // Build tree from expression
-                            nn_cli_tree_node_t *cmd_tree =
-                                build_tree_from_expression(element_ids, count, group, module_id, view_id);
-
-                            if (cmd_tree)
-                            {
-                                nn_cli_tree_node_t *leaf = cmd_tree;
-                                while (leaf->num_children > 0)
-                                {
-                                    leaf = leaf->children[0];
-                                }
-                            }
-
                             // Register to specified views
                             if (atoi(views) == NN_CFG_CLI_VIEW_GLOBAL)
                             {
@@ -402,9 +790,9 @@ static void parse_command_group(xmlNode *group_node, nn_cli_view_tree_t *view_tr
                                     view_tree->global_view->cmd_tree = nn_cli_tree_create_node(
                                         0, "global_root", "global command root", NN_CLI_NODE_COMMAND, 0, 0, 0);
                                 }
-                                if (view_tree->global_view && cmd_tree)
+                                if (view_tree->global_view)
                                 {
-                                    nn_cli_tree_add_child(view_tree->global_view->cmd_tree, cmd_tree);
+                                    register_cmd_trees_to_view(virtual_root, view_tree->global_view->cmd_tree, 0);
                                 }
                             }
                             else
@@ -430,12 +818,7 @@ static void parse_command_group(xmlNode *group_node, nn_cli_view_tree_t *view_tr
                                         nn_cli_view_find_by_id(view_tree->root, atoi(view_token));
                                     if (target_view && target_view->cmd_tree)
                                     {
-                                        nn_cli_tree_node_t *tree_to_add =
-                                            first ? cmd_tree : nn_cli_tree_clone(cmd_tree);
-                                        if (tree_to_add)
-                                        {
-                                            nn_cli_tree_add_child(target_view->cmd_tree, tree_to_add);
-                                        }
+                                        register_cmd_trees_to_view(virtual_root, target_view->cmd_tree, !first);
                                         first = 0;
                                     }
 
@@ -444,9 +827,13 @@ static void parse_command_group(xmlNode *group_node, nn_cli_view_tree_t *view_tr
 
                                 g_free(views_copy);
                             }
-                        }
 
-                        g_free(element_ids);
+                            // Free virtual root shell (children already moved)
+                            g_free(virtual_root->name);
+                            g_free(virtual_root->description);
+                            g_free(virtual_root->children);
+                            g_free(virtual_root);
+                        }
                     }
 
                     g_free(expression);
@@ -645,8 +1032,14 @@ static nn_cfg_xml_db_field_t *parse_field_node(xmlNode *field_node)
 
     if (!field_name || !type_str)
     {
-        if (field_name) xmlFree(field_name);
-        if (type_str) xmlFree(type_str);
+        if (field_name)
+        {
+            xmlFree(field_name);
+        }
+        if (type_str)
+        {
+            xmlFree(type_str);
+        }
         return NULL;
     }
 
@@ -721,7 +1114,8 @@ static nn_cfg_xml_db_def_t *parse_databases_node(xmlNode *dbs_node, uint32_t mod
             {
                 for (xmlNode *table_node = cur->children; table_node; table_node = table_node->next)
                 {
-                    if (table_node->type == XML_ELEMENT_NODE && xmlStrcmp(table_node->name, (const xmlChar *)"table") == 0)
+                    if (table_node->type == XML_ELEMENT_NODE &&
+                        xmlStrcmp(table_node->name, (const xmlChar *)"table") == 0)
                     {
                         nn_cfg_xml_db_table_t *table = parse_table_node(table_node);
                         if (table)

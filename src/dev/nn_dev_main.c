@@ -1,3 +1,7 @@
+#include "nn_dev_main.h"
+
+#include <errno.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -5,18 +9,15 @@
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <unistd.h>
-#include <pthread.h>
-#include <errno.h>
 
 #include "nn_cfg.h"
 #include "nn_dev.h"
-#include "nn_dev_module.h"
-#include "nn_dev_pubsub.h"
 #include "nn_dev_cli.h"
+#include "nn_dev_module.h"
 #include "nn_dev_mq.h"
+#include "nn_dev_pubsub.h"
 #include "nn_errcode.h"
 #include "nn_path_utils.h"
-#include "nn_dev_main.h"
 
 #define DEV_MAX_EPOLL_EVENTS 10
 
@@ -62,7 +63,8 @@ static void *dev_worker_thread(void *arg)
     (void)arg;
     struct epoll_event events[DEV_MAX_EPOLL_EVENTS];
 
-    printf("[dev] Worker thread started (epoll_fd=%d, event_fd=%d)\n", g_nn_dev_local->epoll_fd, g_nn_dev_local->event_fd);
+    printf("[dev] Worker thread started (epoll_fd=%d, event_fd=%d)\n", g_nn_dev_local->epoll_fd,
+           g_nn_dev_local->event_fd);
 
     while (g_nn_dev_local->running && !nn_dev_shutdown_requested())
     {
@@ -176,31 +178,31 @@ static void nn_dev_cleanup_local()
     }
 
     printf("[dev] Dev module cleanup\n");
-    
+
     g_nn_dev_local->running = 0;
-    
+
     if (g_nn_dev_local->worker_thread != 0)
     {
         pthread_join(g_nn_dev_local->worker_thread, NULL);
     }
 
     nn_dev_pubsub_unregister(NN_DEV_MODULE_ID_DEV);
-    
+
     if (g_nn_dev_local->epoll_fd >= 0)
     {
         close(g_nn_dev_local->epoll_fd);
     }
-    
+
     if (g_nn_dev_local->event_fd >= 0)
     {
         close(g_nn_dev_local->event_fd);
     }
-    
+
     if (g_nn_dev_local->mq)
     {
         nn_dev_mq_destroy(g_nn_dev_local->mq);
     }
-    
+
     nn_dev_pubsub_cleanup();
 
     g_free(g_nn_dev_local);
@@ -217,7 +219,8 @@ static int32_t dev_module_init()
         return NN_ERRCODE_FAIL;
     }
 
-    printf("[dev] DEV module initialized (epoll_fd=%d, event_fd=%d)\n", g_nn_dev_local->epoll_fd, g_nn_dev_local->event_fd);
+    printf("[dev] DEV module initialized (epoll_fd=%d, event_fd=%d)\n", g_nn_dev_local->epoll_fd,
+           g_nn_dev_local->event_fd);
     return NN_ERRCODE_SUCCESS;
 }
 
@@ -242,4 +245,3 @@ static void __attribute__((constructor)) register_dev_module(void)
         fprintf(stderr, "[dev] Warning: Could not resolve XML path for dev module\n");
     }
 }
-

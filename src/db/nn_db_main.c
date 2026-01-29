@@ -1,3 +1,5 @@
+#include "nn_db_main.h"
+
 #include <errno.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -13,7 +15,6 @@
 #include "nn_dev.h"
 #include "nn_errcode.h"
 #include "nn_path_utils.h"
-#include "nn_db_main.h"
 
 #define DB_MAX_EPOLL_EVENTS 10
 

@@ -1,10 +1,10 @@
 #include <stdio.h>
+
 #include "nn_cfg.h"
 #include "nn_cfg_registry.h"
-
-#include "nn_errcode.h"
-#include "nn_cli_view.h"
 #include "nn_cli_param_type.h"
+#include "nn_cli_view.h"
+#include "nn_errcode.h"
 
 void nn_cfg_register_module_xml(uint32_t module_id, const char *xml_path)
 {

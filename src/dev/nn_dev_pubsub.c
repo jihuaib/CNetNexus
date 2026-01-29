@@ -262,11 +262,11 @@ void nn_dev_pubsub_unregister_inner(uint32_t module_id)
 
 int nn_dev_pubsub_subscribe_inner(uint32_t subscriber_id, uint32_t publisher_id, uint32_t event_id)
 {
-
     g_mutex_lock(&g_nn_dev_local->pubsub_mutex);
 
     // Get subscriber info from registered modules
-    nn_dev_pubsub_subscriber_t *registered = g_hash_table_lookup(g_nn_dev_local->registered_modules, GUINT_TO_POINTER(subscriber_id));
+    nn_dev_pubsub_subscriber_t *registered =
+        g_hash_table_lookup(g_nn_dev_local->registered_modules, GUINT_TO_POINTER(subscriber_id));
     if (!registered)
     {
         g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
@@ -317,7 +317,6 @@ int nn_dev_pubsub_subscribe_inner(uint32_t subscriber_id, uint32_t publisher_id,
 
 int nn_dev_pubsub_unsubscribe_inner(uint32_t subscriber_id, uint32_t publisher_id, uint32_t event_id)
 {
-
     g_mutex_lock(&g_nn_dev_local->pubsub_mutex);
 
     uint64_t key_val = make_unicast_key(publisher_id, event_id);
@@ -417,7 +416,8 @@ int nn_dev_pubsub_send_response_inner(uint32_t target_module_id, nn_dev_message_
 
     g_mutex_lock(&g_nn_dev_local->pubsub_mutex);
 
-    nn_dev_pubsub_subscriber_t *sub = g_hash_table_lookup(g_nn_dev_local->registered_modules, GUINT_TO_POINTER(target_module_id));
+    nn_dev_pubsub_subscriber_t *sub =
+        g_hash_table_lookup(g_nn_dev_local->registered_modules, GUINT_TO_POINTER(target_module_id));
     if (!sub)
     {
         g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
@@ -641,7 +641,8 @@ int nn_dev_pubsub_join_group(uint32_t module_id, uint32_t group_id)
     g_mutex_lock(&g_nn_dev_local->pubsub_mutex);
 
     // Get subscriber info from registered modules
-    nn_dev_pubsub_subscriber_t *registered = g_hash_table_lookup(g_nn_dev_local->registered_modules, GUINT_TO_POINTER(module_id));
+    nn_dev_pubsub_subscriber_t *registered =
+        g_hash_table_lookup(g_nn_dev_local->registered_modules, GUINT_TO_POINTER(module_id));
     if (!registered)
     {
         g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);

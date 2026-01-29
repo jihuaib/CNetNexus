@@ -6,8 +6,6 @@
 
 #include "nn_dev.h"
 
-#include "nn_dev.h"
-
 // Module message queue structure
 struct nn_dev_module_mq
 {
