@@ -558,7 +558,7 @@ nn_cli_match_result_t *nn_cli_tree_match_command_full(nn_cli_tree_node_t *root, 
         }
         else
         {
-            // No match - free result and return NULL
+            // No match - g_free result and return NULL
             nn_cli_match_result_free(result);
             g_free(cmd_copy);
             g_free(cmd_for_values);

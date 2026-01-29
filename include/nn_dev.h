@@ -10,7 +10,8 @@
 #define NN_DEV_MODULE_ID_DEV 0x00000001
 #define NN_DEV_MODULE_ID_DB 0x00000002
 #define NN_DEV_MODULE_ID_CFG 0x00000003
-#define NN_DEV_MODULE_ID_BGP 0x00000004
+#define NN_DEV_MODULE_ID_IF 0x00000004
+#define NN_DEV_MODULE_ID_BGP 0x00000005
 
 // ============================================================================
 // Event IDs (for unicast pub/sub)

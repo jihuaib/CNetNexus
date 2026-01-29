@@ -40,7 +40,7 @@ void nn_cli_session_history_add(nn_cli_session_history_t *history, const char *c
 
     if (entry->command)
     {
-        free(entry->command);
+        g_free(entry->command);
     }
 
     entry->command = strdup(cmd);
@@ -89,7 +89,7 @@ void nn_cli_session_history_cleanup(nn_cli_session_history_t *history)
     {
         if (history->entries[i].command)
         {
-            free(history->entries[i].command);
+            g_free(history->entries[i].command);
             history->entries[i].command = NULL;
         }
     }
@@ -119,7 +119,7 @@ void nn_cli_global_history_add(nn_cli_global_history_t *history, const char *cmd
 
     if (entry->command)
     {
-        free(entry->command);
+        g_free(entry->command);
     }
 
     entry->command = strdup(cmd);
@@ -162,7 +162,7 @@ void nn_cli_global_history_cleanup(nn_cli_global_history_t *history)
     {
         if (history->entries[i].command)
         {
-            free(history->entries[i].command);
+            g_free(history->entries[i].command);
             history->entries[i].command = NULL;
         }
     }

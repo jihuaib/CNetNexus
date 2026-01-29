@@ -386,7 +386,7 @@ static int32_t cfg_module_init()
             nn_db_registry_add(db_def);
         }
     }
-    // Clear and free the intermediate list
+    // Clear and g_free the intermediate list
     g_list_free_full(g_nn_cfg_local->xml_db_defs, (GDestroyNotify)nn_cfg_xml_db_def_free);
     g_nn_cfg_local->xml_db_defs = NULL;
 

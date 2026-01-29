@@ -1,9 +1,10 @@
 // Interface configuration module for NetNexus
 // Provides abstraction layer for different interface types
 
-#include "nn_interface.h"
+#include "nn_if.h"
 
 #include <arpa/inet.h>
+#include <glib.h>
 #include <ifaddrs.h>
 #include <linux/if_link.h>
 #include <linux/if_packet.h>
@@ -15,13 +16,13 @@
 #include <unistd.h>
 
 #include "nn_errcode.h"
-#include "nn_interface_map.h"
+#include "nn_if_map.h"
 
 // Current interface context (for interface mode)
-static char g_current_interface[IFNAMSIZ] = {0};
+char g_current_interface[IFNAMSIZ] = {0};
 
 // Detect interface type by reading /sys/class/net/<ifname>/type
-nn_interface_type_t nn_interface_detect_type(const char *ifname)
+nn_if_type_t nn_if_detect_type(const char *ifname)
 {
     char path[256];
     char type_str[32];
@@ -78,7 +79,7 @@ nn_interface_type_t nn_interface_detect_type(const char *ifname)
 }
 
 // Convert interface type to string
-const char *nn_interface_type_to_string(nn_interface_type_t type)
+const char *nn_if_type_to_string(nn_if_type_t type)
 {
     switch (type)
     {
@@ -100,7 +101,7 @@ const char *nn_interface_type_to_string(nn_interface_type_t type)
 }
 
 // List all available interfaces
-int nn_interface_list(nn_interface_info_t **interfaces, int *count)
+int nn_if_list(nn_if_info_t **interfaces, int *count)
 {
     struct ifaddrs *ifaddr, *ifa;
     int n = 0;
@@ -123,7 +124,7 @@ int nn_interface_list(nn_interface_info_t **interfaces, int *count)
         }
     }
 
-    *interfaces = calloc(n, sizeof(nn_interface_info_t));
+    *interfaces = g_malloc0(sizeof(nn_if_info_t) * n);
     if (*interfaces == NULL)
     {
         freeifaddrs(ifaddr);
@@ -140,7 +141,7 @@ int nn_interface_list(nn_interface_info_t **interfaces, int *count)
         }
         if (ifa->ifa_addr->sa_family == AF_PACKET)
         {
-            nn_interface_get_info(ifa->ifa_name, &(*interfaces)[idx]);
+            nn_if_get_info(ifa->ifa_name, &(*interfaces)[idx]);
             idx++;
         }
     }
@@ -151,7 +152,7 @@ int nn_interface_list(nn_interface_info_t **interfaces, int *count)
 }
 
 // Get detailed interface information
-int nn_interface_get_info(const char *ifname, nn_interface_info_t *info)
+int nn_if_get_info(const char *ifname, nn_if_info_t *info)
 {
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0)
@@ -161,7 +162,7 @@ int nn_interface_get_info(const char *ifname, nn_interface_info_t *info)
 
     struct ifreq ifr;
     memset(&ifr, 0, sizeof(ifr));
-    memset(info, 0, sizeof(nn_interface_info_t));
+    memset(info, 0, sizeof(nn_if_info_t));
     strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
     strncpy(info->name, ifname, IFNAMSIZ - 1);
 
@@ -201,7 +202,7 @@ int nn_interface_get_info(const char *ifname, nn_interface_info_t *info)
     close(sock);
 
     // Detect interface type
-    info->type = nn_interface_detect_type(ifname);
+    info->type = nn_if_detect_type(ifname);
 
     // TODO: Get RX/TX statistics from /sys/class/net/<ifname>/statistics/
 
@@ -209,7 +210,7 @@ int nn_interface_get_info(const char *ifname, nn_interface_info_t *info)
 }
 
 // Check if interface exists
-int nn_interface_exists(const char *ifname)
+int nn_if_exists(const char *ifname)
 {
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0)
@@ -226,7 +227,7 @@ int nn_interface_exists(const char *ifname)
 }
 
 // Set IP address (works for any interface type)
-int nn_interface_set_ip(const char *ifname, const char *ip, const char *netmask)
+int nn_if_set_ip(const char *ifname, const char *ip, const char *netmask)
 {
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0)
@@ -272,7 +273,7 @@ int nn_interface_set_ip(const char *ifname, const char *ip, const char *netmask)
 }
 
 // Set interface state (up/down) - works for any type
-int nn_interface_set_state(const char *ifname, int up)
+int nn_if_set_state(const char *ifname, int up)
 {
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0)
@@ -313,7 +314,7 @@ int nn_interface_set_state(const char *ifname, int up)
 }
 
 // Set MTU
-int nn_interface_set_mtu(const char *ifname, int mtu)
+int nn_if_set_mtu(const char *ifname, int mtu)
 {
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0)
@@ -335,183 +336,139 @@ int nn_interface_set_mtu(const char *ifname, int mtu)
     close(sock);
     return NN_ERRCODE_SUCCESS;
 }
+#include <linux/netlink.h>
+#include <linux/rtnetlink.h>
 
-// ============================================================================
-// CLI Command Handlers
-// ============================================================================
-
-// Command: interface <name>
-int nn_cmd_interface(int client_fd, int argc, char **argv)
+// Helper to add Netlink attributes
+static void nn_if_add_attr(struct nlmsghdr *n, int maxlen, int type, const void *data, int alen)
 {
-    if (argc < 2)
+    int len = RTA_LENGTH(alen);
+    struct rtattr *rta;
+
+    if (NLMSG_ALIGN(n->nlmsg_len) + RTA_ALIGN(len) > (unsigned int)maxlen)
     {
-        dprintf(client_fd, "Error: Interface name required\r\n");
+        return;
+    }
+    rta = (struct rtattr *)(((char *)n) + NLMSG_ALIGN(n->nlmsg_len));
+    rta->rta_type = type;
+    rta->rta_len = len;
+    memcpy(RTA_DATA(rta), data, alen);
+    n->nlmsg_len = NLMSG_ALIGN(n->nlmsg_len) + RTA_ALIGN(len);
+}
+
+// Create veth pair using Netlink
+static int nn_if_create_veth_netlink(const char *ifname, const char *peer_name)
+{
+    int sock = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
+    if (sock < 0)
+    {
+        perror("[if] socket(AF_NETLINK)");
         return NN_ERRCODE_FAIL;
     }
 
-    const char *logical_name = argv[1];
-
-    // Resolve logical name to physical name
-    const char *physical_name = nn_interface_map_get_physical(logical_name);
-
-    // Check if interface exists
-    if (!nn_interface_exists(physical_name))
+    struct
     {
-        dprintf(client_fd, "Error: Interface %s (mapped to %s) does not exist\r\n", logical_name, physical_name);
+        struct nlmsghdr n;
+        struct ifinfomsg i;
+        char buf[1024];
+    } req;
+
+    memset(&req, 0, sizeof(req));
+    req.n.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+    req.n.nlmsg_flags = NLM_F_REQUEST | NLM_F_CREATE | NLM_F_EXCL | NLM_F_ACK;
+    req.n.nlmsg_type = RTM_NEWLINK;
+    req.i.ifi_family = AF_UNSPEC;
+
+    nn_if_add_attr(&req.n, sizeof(req), IFLA_IFNAME, ifname, strlen(ifname) + 1);
+
+    // IFLA_LINKINFO
+    struct rtattr *linkinfo = (struct rtattr *)(((char *)&req.n) + NLMSG_ALIGN(req.n.nlmsg_len));
+    nn_if_add_attr(&req.n, sizeof(req), IFLA_LINKINFO, NULL, 0);
+
+    nn_if_add_attr(&req.n, sizeof(req), IFLA_INFO_KIND, "veth", 5);
+
+    // IFLA_INFO_DATA
+    struct rtattr *infodata = (struct rtattr *)(((char *)&req.n) + NLMSG_ALIGN(req.n.nlmsg_len));
+    nn_if_add_attr(&req.n, sizeof(req), IFLA_INFO_DATA, NULL, 0);
+
+    // VETH_INFO_PEER
+    struct rtattr *peerinfo = (struct rtattr *)(((char *)&req.n) + NLMSG_ALIGN(req.n.nlmsg_len));
+    nn_if_add_attr(&req.n, sizeof(req), 1, NULL, 0); // VETH_INFO_PEER is 1
+
+    struct ifinfomsg peer_ifi;
+    memset(&peer_ifi, 0, sizeof(peer_ifi));
+    peer_ifi.ifi_family = AF_UNSPEC;
+
+    // Append peer ifinfomsg to the VETH_INFO_PEER attribute
+    int peer_ifi_len = sizeof(struct ifinfomsg);
+    memcpy(RTA_DATA(peerinfo), &peer_ifi, peer_ifi_len);
+    req.n.nlmsg_len += NLMSG_ALIGN(peer_ifi_len);
+    peerinfo->rta_len += NLMSG_ALIGN(peer_ifi_len);
+
+    // Add peer name as IFLA_IFNAME to the peer info
+    nn_if_add_attr(&req.n, sizeof(req), IFLA_IFNAME, peer_name, strlen(peer_name) + 1);
+    peerinfo->rta_len += RTA_ALIGN(RTA_LENGTH(strlen(peer_name) + 1));
+
+    // Fix up lengths
+    infodata->rta_len = (char *)(((char *)&req.n) + req.n.nlmsg_len) - (char *)infodata;
+    linkinfo->rta_len = (char *)(((char *)&req.n) + req.n.nlmsg_len) - (char *)linkinfo;
+
+    if (send(sock, &req, req.n.nlmsg_len, 0) < 0)
+    {
+        perror("[if] Netlink send");
+        close(sock);
         return NN_ERRCODE_FAIL;
     }
 
-    // Get interface type
-    nn_interface_type_t type = nn_interface_detect_type(physical_name);
-    const char *type_str = nn_interface_type_to_string(type);
-
-    // Enter interface configuration mode
-    strncpy(g_current_interface, physical_name, IFNAMSIZ - 1);
-
-    if (strcmp(logical_name, physical_name) == 0)
+    // Wait for ACK
+    char ans[4096];
+    int len = recv(sock, ans, sizeof(ans), 0);
+    if (len < 0)
     {
-        // Direct physical name used
-        dprintf(client_fd, "Entering interface configuration mode for %s (%s)\r\n", physical_name, type_str);
-    }
-    else
-    {
-        // Logical name mapped
-        dprintf(client_fd, "Entering interface configuration mode for %s -> %s (%s)\r\n", logical_name, physical_name,
-                type_str);
+        perror("[if] Netlink recv");
+        close(sock);
+        return NN_ERRCODE_FAIL;
     }
 
+    struct nlmsghdr *nlh = (struct nlmsghdr *)ans;
+    if (nlh->nlmsg_type == NLMSG_ERROR)
+    {
+        struct nlmsgerr *err = (struct nlmsgerr *)NLMSG_DATA(nlh);
+        if (err->error < 0)
+        {
+            fprintf(stderr, "[if] Netlink error: %s\n", strerror(-err->error));
+            close(sock);
+            return NN_ERRCODE_FAIL;
+        }
+    }
+
+    close(sock);
     return NN_ERRCODE_SUCCESS;
 }
 
-// Command: ip address <ip> <netmask>
-int nn_cmd_ip_address(int client_fd, int argc, char **argv)
+// Ensure interface exists (create if not)
+int nn_if_ensure_exists(const char *ifname)
 {
-    if (argc < 4)
+    if (nn_if_exists(ifname))
     {
-        dprintf(client_fd, "Error: Usage: ip address <ip-address> <netmask>\r\n");
-        return NN_ERRCODE_FAIL;
-    }
-
-    if (g_current_interface[0] == '\0')
-    {
-        dprintf(client_fd, "Error: Not in interface configuration mode\r\n");
-        return NN_ERRCODE_FAIL;
-    }
-
-    const char *ip = argv[2];
-    const char *netmask = argv[3];
-
-    if (nn_interface_set_ip(g_current_interface, ip, netmask) == NN_ERRCODE_SUCCESS)
-    {
-        dprintf(client_fd, "IP address %s %s configured on %s\r\n", ip, netmask, g_current_interface);
         return NN_ERRCODE_SUCCESS;
     }
 
-    dprintf(client_fd, "Error: Failed to configure IP address\r\n");
-    return NN_ERRCODE_FAIL;
-}
+    printf("[if] Interface %s not found, attempting to create veth pair via Netlink...\n", ifname);
 
-// Command: shutdown
-int nn_cmd_shutdown(int client_fd, int argc, char **argv)
-{
-    (void)argc;
-    (void)argv;
+    char peer_name[IFNAMSIZ];
+    snprintf(peer_name, sizeof(peer_name), "%s-peer", ifname);
 
-    if (g_current_interface[0] == '\0')
+    if (nn_if_create_veth_netlink(ifname, peer_name) != NN_ERRCODE_SUCCESS)
     {
-        dprintf(client_fd, "Error: Not in interface configuration mode\r\n");
+        fprintf(stderr, "[if] Error: Failed to create veth pair for %s (check CAP_NET_ADMIN)\n", ifname);
         return NN_ERRCODE_FAIL;
     }
 
-    if (nn_interface_set_state(g_current_interface, 0) == NN_ERRCODE_SUCCESS)
-    {
-        dprintf(client_fd, "Interface %s shutdown\r\n", g_current_interface);
-        return NN_ERRCODE_SUCCESS;
-    }
+    // Bring both up
+    nn_if_set_state(ifname, 1);
+    nn_if_set_state(peer_name, 1);
 
-    dprintf(client_fd, "Error: Failed to shutdown interface\r\n");
-    return NN_ERRCODE_FAIL;
-}
-
-// Command: no shutdown
-int nn_cmd_no_shutdown(int client_fd, int argc, char **argv)
-{
-    (void)argc;
-    (void)argv;
-
-    if (g_current_interface[0] == '\0')
-    {
-        dprintf(client_fd, "Error: Not in interface configuration mode\r\n");
-        return NN_ERRCODE_FAIL;
-    }
-
-    if (nn_interface_set_state(g_current_interface, 1) == NN_ERRCODE_SUCCESS)
-    {
-        dprintf(client_fd, "Interface %s enabled\r\n", g_current_interface);
-        return NN_ERRCODE_SUCCESS;
-    }
-
-    dprintf(client_fd, "Error: Failed to enable interface\r\n");
-    return NN_ERRCODE_FAIL;
-}
-
-// Command: show interface [name]
-int nn_cmd_show_interface(int client_fd, int argc, char **argv)
-{
-    nn_interface_info_t *interfaces = NULL;
-    int count = 0;
-
-    if (argc >= 3)
-    {
-        // Show specific interface
-        const char *ifname = argv[2];
-        nn_interface_info_t info;
-
-        if (nn_interface_get_info(ifname, &info) != NN_ERRCODE_SUCCESS)
-        {
-            dprintf(client_fd, "Error: Interface %s not found\r\n", ifname);
-            return NN_ERRCODE_FAIL;
-        }
-
-        dprintf(client_fd, "Interface %s:\r\n", info.name);
-        dprintf(client_fd, "  Type: %s\r\n", nn_interface_type_to_string(info.type));
-        dprintf(client_fd, "  State: %s\r\n", info.state == NN_IF_STATE_UP ? "UP" : "DOWN");
-        dprintf(client_fd, "  IP: %s\r\n", info.ip_address[0] ? info.ip_address : "not configured");
-        dprintf(client_fd, "  Netmask: %s\r\n", info.netmask[0] ? info.netmask : "not configured");
-        dprintf(client_fd, "  MAC: %02x:%02x:%02x:%02x:%02x:%02x\r\n", info.mac[0], info.mac[1], info.mac[2],
-                info.mac[3], info.mac[4], info.mac[5]);
-        dprintf(client_fd, "  MTU: %d\r\n", info.mtu);
-    }
-    else
-    {
-        // Show all interfaces
-        if (nn_interface_list(&interfaces, &count) != NN_ERRCODE_SUCCESS)
-        {
-            dprintf(client_fd, "Error: Failed to list interfaces\r\n");
-            return NN_ERRCODE_FAIL;
-        }
-
-        dprintf(client_fd, "Interface Status:\r\n");
-        dprintf(client_fd, "%-10s %-15s %-10s %-15s\r\n", "Name", "Type", "State", "IP Address");
-        dprintf(client_fd, "%-10s %-15s %-10s %-15s\r\n", "----", "----", "-----", "----------");
-
-        for (int i = 0; i < count; i++)
-        {
-            dprintf(client_fd, "%-10s %-15s %-10s %-15s\r\n", interfaces[i].name,
-                    nn_interface_type_to_string(interfaces[i].type),
-                    interfaces[i].state == NN_IF_STATE_UP ? "UP" : "DOWN",
-                    interfaces[i].ip_address[0] ? interfaces[i].ip_address : "-");
-        }
-
-        free(interfaces);
-    }
-
+    printf("[if] Successfully created %s and its peer\n", ifname);
     return NN_ERRCODE_SUCCESS;
-}
-
-// Command: show ip interface [name]
-int nn_cmd_show_ip_interface(int client_fd, int argc, char **argv)
-{
-    // Similar to show interface but IP-focused
-    return nn_cmd_show_interface(client_fd, argc, argv);
 }

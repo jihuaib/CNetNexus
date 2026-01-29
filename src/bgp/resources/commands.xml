@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<configuration module-id="4">
+<configuration module-id="5">
     <!-- View definitions -->
     <views>
         <view view-id="4" view-name="bgp">
@@ -36,7 +36,6 @@
                 <command>
                     <expression>1 2 [ 3 ]</expression>
                     <views>3</views>
-                    <view-id>4</view-id>
                 </command>
             </commands>
         </group>

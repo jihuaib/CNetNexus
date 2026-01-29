@@ -1,7 +1,7 @@
 # NetNexus Interface Mapping - Local Development
 # For use with veth interfaces created by setup-dev-interfaces.sh
 
-port0 = veth0
-port1 = veth1
-port2 = veth2
-port3 = veth3
+GE-1 = veth0
+GE-2 = veth1
+GE-3 = veth2
+GE-4 = veth3

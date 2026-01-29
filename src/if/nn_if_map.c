@@ -1,7 +1,7 @@
 // Interface mapping implementation
 // Maps logical interface names (port0, port1) to physical names (eth0, veth0, etc.)
 
-#include "nn_interface_map.h"
+#include "nn_if_map.h"
 
 #include <ifaddrs.h>
 #include <net/if.h>
@@ -10,10 +10,10 @@
 #include <string.h>
 
 #include "nn_errcode.h"
-#include "nn_interface.h"
+#include "nn_if.h"
 
 // Global interface mapping table
-nn_interface_map_t g_interface_map = {0};
+nn_if_map_t g_interface_map = {0};
 
 // Load mappings from config file
 static int load_config_file(const char *config_file)
@@ -54,7 +54,7 @@ static int load_config_file(const char *config_file)
 }
 
 // Initialize interface mapping
-int nn_interface_map_init(const char *config_file)
+int nn_if_map_init(const char *config_file)
 {
     if (config_file == NULL)
     {
@@ -67,11 +67,14 @@ int nn_interface_map_init(const char *config_file)
     {
         printf("[interface] Loaded %d interface mapping(s) from %s\n", g_interface_map.count, config_file);
 
-        // Print mappings
+        // Print mappings and ensure interfaces exist
         for (int i = 0; i < g_interface_map.count; i++)
         {
             printf("[interface]   %s -> %s\n", g_interface_map.entries[i].logical_name,
                    g_interface_map.entries[i].physical_name);
+
+            // Ensure the physical interface exists (create if virtual)
+            nn_if_ensure_exists(g_interface_map.entries[i].physical_name);
         }
 
         return NN_ERRCODE_SUCCESS;
@@ -82,7 +85,7 @@ int nn_interface_map_init(const char *config_file)
 }
 
 // Get physical interface name from logical name
-const char *nn_interface_map_get_physical(const char *logical_name)
+const char *nn_if_map_get_physical(const char *logical_name)
 {
     for (int i = 0; i < g_interface_map.count; i++)
     {
@@ -97,7 +100,7 @@ const char *nn_interface_map_get_physical(const char *logical_name)
 }
 
 // Get logical interface name from physical name
-const char *nn_interface_map_get_logical(const char *physical_name)
+const char *nn_if_map_get_logical(const char *physical_name)
 {
     for (int i = 0; i < g_interface_map.count; i++)
     {
@@ -111,7 +114,7 @@ const char *nn_interface_map_get_logical(const char *physical_name)
 }
 
 // Add manual mapping
-int nn_interface_map_add(const char *logical_name, const char *physical_name)
+int nn_if_map_add(const char *logical_name, const char *physical_name)
 {
     if (g_interface_map.count >= NN_MAX_INTERFACES)
     {
@@ -137,22 +140,8 @@ int nn_interface_map_add(const char *logical_name, const char *physical_name)
     return NN_ERRCODE_SUCCESS;
 }
 
-// List all mappings
-void nn_interface_map_list(int client_fd)
-{
-    dprintf(client_fd, "Interface Mappings:\r\n");
-    dprintf(client_fd, "%-12s %-15s\r\n", "Logical", "Physical");
-    dprintf(client_fd, "%-12s %-15s\r\n", "-------", "--------");
-
-    for (int i = 0; i < g_interface_map.count; i++)
-    {
-        dprintf(client_fd, "%-12s %-15s\r\n", g_interface_map.entries[i].logical_name,
-                g_interface_map.entries[i].physical_name);
-    }
-}
-
 // Save mappings to config file
-int nn_interface_map_save(const char *config_file)
+int nn_if_map_save(const char *config_file)
 {
     FILE *fp = fopen(config_file, "w");
     if (fp == NULL)

@@ -455,7 +455,7 @@ static leaf_set_t *build_tree_recursive(expr_node_t *ast, leaf_set_t *parents, n
 
 // Build command tree from expression string (supports [ ] and { } syntax).
 // Returns a virtual root node whose children are the actual command trees.
-// The caller should add each child to the target view's cmd_tree, then free the virtual root shell.
+// The caller should add each child to the target view's cmd_tree, then g_free the virtual root shell.
 static nn_cli_tree_node_t *build_tree_from_expression_str(const char *expression, nn_cli_command_group_t *group,
                                                           uint32_t module_id, uint32_t view_id)
 {

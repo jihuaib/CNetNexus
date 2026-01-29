@@ -4,6 +4,7 @@ add_subdirectory(db)
 add_subdirectory(cfg)
 add_subdirectory(dev)
 add_subdirectory(bgp)
+add_subdirectory(if)
 
 # Create main executable
 add_executable(netnexus 
@@ -19,6 +20,7 @@ target_link_libraries(netnexus PRIVATE
     nn_cfg
     nn_bgp
     nn_dev
+    nn_if
     -Wl,--as-needed
     Threads::Threads
 )
@@ -27,6 +29,13 @@ target_link_libraries(netnexus PRIVATE
 set_target_properties(netnexus PROPERTIES
     BUILD_RPATH "${CMAKE_BINARY_DIR}/lib"
     INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib"
+)
+
+# Automated setcap for development
+# Note: This requires sudo permissions without password for 'setcap' or the user running make must be root.
+add_custom_command(TARGET netnexus POST_BUILD
+    COMMAND sudo setcap cap_net_admin+ep $<TARGET_FILE:netnexus> || echo "Warning: Failed to setcap on netnexus. You may need to run 'sudo setcap cap_net_admin+ep ./build/bin/netnexus' manually."
+    COMMENT "Setting CAP_NET_ADMIN on netnexus executable"
 )
 
 # Installation

@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration module-id="4">
+    <views>
+        <view view-id="5" view-name="interface">
+            <template>&lt;NetNexus(config-if-%s)&gt;</template>
+        </view>
+    </views>
+
+    <command_groups>
+        <!-- Interface Entry Command -->
+        <group group-id="1">
+            <elements>
+                <element type="keyword">
+                    <name>interface</name> <!-- 1 -->
+                    <description>Enter interface configuration mode</description>
+                </element>
+                <element cfg-id="1" type="keyword">
+                    <name>GE-1</name> <!-- 2 -->
+                    <description>Interface name</description>
+                </element>
+                <element cfg-id="2" type="keyword">
+                    <name>GE-2</name> <!-- 3 -->
+                    <description>Interface name</description>
+                </element>
+                <element cfg-id="3" type="keyword">
+                    <name>GE-3</name> <!-- 4 -->
+                    <description>Interface name</description>
+                </element>
+                <element cfg-id="4" type="keyword">
+                    <name>GE-4</name> <!-- 5 -->
+                    <description>Interface name</description>
+                </element>
+            </elements>
+            <commands>
+                <command>
+                    <expression>1 { 2 | 3 | 4 | 5 }</expression>
+                    <views>3</views> <!-- Only from config view -->
+                    <view-id>5</view-id>
+                </command>
+            </commands>
+        </group>
+
+        <!-- Interface Configuration Commands -->
+        <group group-id="2">
+            <elements>
+                <element type="keyword">
+                    <name>ip</name> <!-- 1 -->
+                    <description>IP configuration</description>
+                </element>
+                <element type="keyword">
+                    <name>address</name> <!-- 2 -->
+                    <description>Configure IP address</description>
+                </element>
+                <element cfg-id="1" type="parameter">
+                    <name>&lt;ip-address&gt;</name> <!-- 3 -->
+                    <description>IPv4 address</description>
+                    <type>ip</type>
+                </element>
+                <element cfg-id="2" type="parameter">
+                    <name>&lt;netmask&gt;</name> <!-- 4 -->
+                    <description>Subnet mask</description>
+                    <type>ip</type>
+                </element>
+                <element cfg-id="3" type="keyword">
+                    <name>shutdown</name> <!-- 5 -->
+                    <description>Disable the interface</description>
+                </element>
+                <element cfg-id="4" type="keyword">
+                    <name>undo</name> <!-- 6 -->
+                    <description>Negate a command</description>
+                </element>
+            </elements>
+            <commands>
+                <!-- ip address <ip> <mask> -->
+                <command>
+                    <expression>1 2 3 4</expression>
+                    <views>5</views>
+                </command>
+                <!-- shutdown -->
+                <command>
+                    <expression>5</expression>
+                    <views>5</views>
+                </command>
+                <!-- undo shutdown -->
+                <command>
+                    <expression>6 5</expression>
+                    <views>5</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- Show Commands -->
+        <group group-id="3">
+            <elements>
+                <element type="keyword">
+                    <name>show</name> <!-- 1 -->
+                    <description>Display system information</description>
+                </element>
+                <element type="keyword">
+                    <name>interface</name> <!-- 2 -->
+                    <description>Interface information</description>
+                </element>
+                <element cfg-id="1" type="parameter">
+                    <name>&lt;interface-name&gt;</name> <!-- 3 -->
+                    <description>Interface name (optional)</description>
+                    <type>string(1-31)</type>
+                </element>
+            </elements>
+            <commands>
+                <!-- show interface -->
+                <command>
+                    <expression>1 2</expression>
+                    <views>1,2,3,5</views>
+                </command>
+                <!-- show interface <name> -->
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>1,2,3,5</views>
+                </command>
+            </commands>
+        </group>
+    </command_groups>
+</configuration>
