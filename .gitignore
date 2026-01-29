@@ -30,6 +30,7 @@ Makefile.in
 *.idb
 *.pdb
 /.claude/
+data/
 
 # Docker exports
 *.tar.gz
