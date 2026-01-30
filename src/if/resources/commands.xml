@@ -11,7 +11,7 @@
         <group group-id="1">
             <elements>
                 <element type="keyword">
-                    <name>interface</name> <!-- 1 -->
+                    <name>if</name> <!-- 1 -->
                     <description>Enter interface configuration mode</description>
                 </element>
                 <element cfg-id="1" type="keyword">
@@ -66,7 +66,7 @@
                     <description>Disable the interface</description>
                 </element>
                 <element cfg-id="4" type="keyword">
-                    <name>undo</name> <!-- 6 -->
+                    <name>no</name> <!-- 6 -->
                     <description>Negate a command</description>
                 </element>
             </elements>
@@ -81,7 +81,7 @@
                     <expression>5</expression>
                     <views>5</views>
                 </command>
-                <!-- undo shutdown -->
+                <!-- no shutdown -->
                 <command>
                     <expression>6 5</expression>
                     <views>5</views>
@@ -97,25 +97,36 @@
                     <description>Display system information</description>
                 </element>
                 <element type="keyword">
-                    <name>interface</name> <!-- 2 -->
+                    <name>if</name> <!-- 2 -->
                     <description>Interface information</description>
                 </element>
-                <element cfg-id="1" type="parameter">
-                    <name>&lt;interface-name&gt;</name> <!-- 3 -->
-                    <description>Interface name (optional)</description>
-                    <type>string(1-31)</type>
+                <element cfg-id="1" type="keyword">
+                    <name>GE-1</name> <!-- 3 -->
+                    <description>Interface name</description>
+                </element>
+                <element cfg-id="2" type="keyword">
+                    <name>GE-2</name> <!-- 4 -->
+                    <description>Interface name</description>
+                </element>
+                <element cfg-id="3" type="keyword">
+                    <name>GE-3</name> <!-- 5 -->
+                    <description>Interface name</description>
+                </element>
+                <element cfg-id="4" type="keyword">
+                    <name>GE-4</name> <!-- 6 -->
+                    <description>Interface name</description>
                 </element>
             </elements>
             <commands>
-                <!-- show interface -->
+                <!-- show if -->
                 <command>
                     <expression>1 2</expression>
                     <views>1,2,3,5</views>
                 </command>
-                <!-- show interface <name> -->
+                <!-- show if <name> -->
                 <command>
-                    <expression>1 2 3</expression>
-                    <views>1,2,3,5</views>
+                    <expression>1 2 { 3 | 4 | 5 | 6 }</expression>
+                    <views>1</views>
                 </command>
             </commands>
         </group>
