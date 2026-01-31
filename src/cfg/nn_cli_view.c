@@ -1,3 +1,9 @@
+/**
+ * @file   nn_cli_view.c
+ * @brief  CLI 视图层级管理
+ * @author jhb
+ * @date   2026/01/22
+ */
 #include "nn_cli_view.h"
 
 #include <glib.h>

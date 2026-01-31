@@ -1,3 +1,9 @@
+/**
+ * @file   main.c
+ * @brief  主程序入口，TCP 服务器、线程管理和信号处理
+ * @author jhb
+ * @date   2026/01/22
+ */
 #include <errno.h>
 #include <signal.h>
 #include <stdio.h>

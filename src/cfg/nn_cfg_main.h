@@ -1,3 +1,9 @@
+/**
+ * @file   nn_cfg_main.h
+ * @brief  CFG 模块主入口头文件
+ * @author jhb
+ * @date   2026/01/22
+ */
 #ifndef NN_CFG_MAIN_H
 #define NN_CFG_MAIN_H
 

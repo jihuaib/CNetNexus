@@ -1,3 +1,9 @@
+/**
+ * @file   nn_cli_history.c
+ * @brief  CLI 命令历史管理，会话级和全局历史
+ * @author jhb
+ * @date   2026/01/22
+ */
 #include "nn_cli_history.h"
 
 #include <stdio.h>

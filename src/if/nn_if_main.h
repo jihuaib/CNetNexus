@@ -1,3 +1,9 @@
+/**
+ * @file   nn_if_main.h
+ * @brief  接口模块主入口头文件
+ * @author jhb
+ * @date   2026/01/22
+ */
 #ifndef NN_IF_MAIN_H
 #define NN_IF_MAIN_H
 

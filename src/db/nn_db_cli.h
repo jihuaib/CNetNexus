@@ -1,3 +1,9 @@
+/**
+ * @file   nn_db_cli.h
+ * @brief  数据库模块 CLI 命令处理头文件
+ * @author jhb
+ * @date   2026/01/22
+ */
 #ifndef NN_DB_CLI_H
 #define NN_DB_CLI_H
 
@@ -43,6 +49,8 @@ typedef struct nn_db_cli_resp_out
 {
     char message[NN_CFG_CLI_MAX_RESP_LEN]; // Buffer for CLI output
     int success;
+    uint32_t has_more;                     // 1 if more data available
+    uint32_t batch_offset;                 // Continuation offset for next batch
 } nn_db_cli_resp_out_t;
 
 /**
@@ -51,5 +59,6 @@ typedef struct nn_db_cli_resp_out
  * @return NN_ERRCODE_SUCCESS or NN_ERRCODE_FAIL
  */
 int nn_db_cli_process_command(nn_dev_message_t *msg);
+int nn_db_cli_handle_continue(nn_dev_message_t *msg);
 
 #endif // NN_DB_CLI_H

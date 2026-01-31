@@ -1,3 +1,9 @@
+/**
+ * @file   nn_dev_api.c
+ * @brief  Dev 模块对外 API 实现
+ * @author jhb
+ * @date   2026/01/22
+ */
 #include <stdio.h>
 
 #include "nn_dev_module.h"

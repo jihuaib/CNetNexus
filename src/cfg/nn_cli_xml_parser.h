@@ -1,3 +1,9 @@
+/**
+ * @file   nn_cli_xml_parser.h
+ * @brief  CLI XML 配置文件解析头文件
+ * @author jhb
+ * @date   2026/01/22
+ */
 #ifndef NN_CLI_XML_PARSER_H
 #define NN_CLI_XML_PARSER_H
 

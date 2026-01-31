@@ -1,3 +1,9 @@
+/**
+ * @file   nn_dev_module.c
+ * @brief  Dev 模块注册和构造函数
+ * @author jhb
+ * @date   2026/01/22
+ */
 #include "nn_dev_module.h"
 
 #include <glib.h>

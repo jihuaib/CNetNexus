@@ -1,3 +1,9 @@
+/**
+ * @file   nn_cfg_registry.h
+ * @brief  模块注册表头文件
+ * @author jhb
+ * @date   2026/01/22
+ */
 #ifndef NN_CFG_MODULE_REGISTRY_H
 #define NN_CFG_MODULE_REGISTRY_H
 

@@ -1,3 +1,9 @@
+/**
+ * @file   nn_db_registry.c
+ * @brief  数据库定义注册表实现
+ * @author jhb
+ * @date   2026/01/22
+ */
 #include "nn_db_registry.h"
 
 #include <stdio.h>

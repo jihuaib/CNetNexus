@@ -1,3 +1,9 @@
+/**
+ * @file   nn_bgp_main.c
+ * @brief  BGP 模块主入口，模块注册和消息循环
+ * @author jhb
+ * @date   2026/01/22
+ */
 #include "nn_bgp_main.h"
 
 #include <errno.h>
@@ -38,6 +44,12 @@ static void bgp_process_messages(nn_bgp_local_t *ctx)
                 // CLI command from cfg module
                 printf("[bgp] Received CLI command message (%zu bytes)\n", msg->data_len);
                 nn_bgp_cli_handle_message(msg);
+                break;
+
+            case NN_CFG_MSG_TYPE_CLI_CONTINUE:
+                // Continue batch response
+                printf("[bgp] Received CLI continue request\n");
+                nn_bgp_cli_handle_continue(msg);
                 break;
 
             default:

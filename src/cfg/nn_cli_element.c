@@ -1,3 +1,9 @@
+/**
+ * @file   nn_cli_element.c
+ * @brief  CLI 元素处理，管理关键字和参数元素
+ * @author jhb
+ * @date   2026/01/22
+ */
 #include "nn_cli_element.h"
 
 #include <glib.h>

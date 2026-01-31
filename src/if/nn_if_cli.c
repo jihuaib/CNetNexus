@@ -1,3 +1,9 @@
+/**
+ * @file   nn_if_cli.c
+ * @brief  接口模块 CLI 命令处理
+ * @author jhb
+ * @date   2026/01/22
+ */
 #include "nn_if_cli.h"
 
 #include <stdio.h>
@@ -6,7 +12,6 @@
 
 #include "nn_cfg.h"
 #include "nn_dev.h"
-#include "nn_dev_pubsub.h"
 #include "nn_errcode.h"
 #include "nn_if.h"
 #include "nn_if_map.h"
@@ -164,6 +169,37 @@ static int handle_config_cmd(nn_cfg_tlv_parser_t parser, nn_if_cli_out_t *cfg_ou
     return NN_ERRCODE_SUCCESS;
 }
 
+// Batch output cache for show interface
+static GString *g_if_show_cache = NULL;
+static uint32_t g_if_batch_offset = 0;
+
+// Helper: chunk output from GString cache to resp_out
+static void if_cli_chunk_output(GString *full, nn_if_cli_resp_out_t *resp_out)
+{
+    uint32_t offset = resp_out->batch_offset;
+    if (offset >= full->len)
+    {
+        resp_out->message[0] = '\0';
+        resp_out->has_more = 0;
+        return;
+    }
+
+    size_t remaining = full->len - offset;
+    size_t chunk = remaining < (NN_CFG_CLI_MAX_RESP_LEN - 1) ? remaining : (NN_CFG_CLI_MAX_RESP_LEN - 1);
+    memcpy(resp_out->message, full->str + offset, chunk);
+    resp_out->message[chunk] = '\0';
+    resp_out->batch_offset = offset + chunk;
+
+    if (resp_out->batch_offset < full->len)
+    {
+        resp_out->has_more = 1;
+    }
+    else
+    {
+        resp_out->has_more = 0;
+    }
+}
+
 static int handle_show_cmd(nn_cfg_tlv_parser_t parser, nn_if_cli_out_t *cfg_out, nn_if_cli_resp_out_t *resp_out)
 {
     NN_CFG_TLV_FOREACH(parser, cfg_id, value, len)
@@ -175,33 +211,39 @@ static int handle_show_cmd(nn_cfg_tlv_parser_t parser, nn_if_cli_out_t *cfg_out,
         }
     }
 
-    int offset = 0;
+    // Generate full output to GString cache
+    if (g_if_show_cache)
+    {
+        g_string_free(g_if_show_cache, TRUE);
+    }
+    g_if_show_cache = g_string_new("");
+    g_if_batch_offset = 0;
+    resp_out->batch_offset = 0;
+
     if (cfg_out->data.show.has_ifname)
     {
         nn_if_info_t info;
         if (nn_if_get_info(cfg_out->data.show.ifname, &info) == NN_ERRCODE_SUCCESS)
         {
-            offset += snprintf(resp_out->message + offset, sizeof(resp_out->message) - offset, "Interface %s:\r\n",
-                               info.name);
-            offset += snprintf(resp_out->message + offset, sizeof(resp_out->message) - offset, "  Type: %s\r\n",
-                               nn_if_type_to_string(info.type));
-            offset += snprintf(resp_out->message + offset, sizeof(resp_out->message) - offset, "  State: %s\r\n",
-                               info.state == NN_IF_STATE_UP ? "UP" : "DOWN");
-            offset += snprintf(resp_out->message + offset, sizeof(resp_out->message) - offset, "  IP: %s\r\n",
-                               info.ip_address[0] ? info.ip_address : "not configured");
-            offset += snprintf(resp_out->message + offset, sizeof(resp_out->message) - offset, "  Netmask: %s\r\n",
-                               info.netmask[0] ? info.netmask : "not configured");
-            offset += snprintf(resp_out->message + offset, sizeof(resp_out->message) - offset,
-                               "  MAC: %02x:%02x:%02x:%02x:%02x:%02x\r\n", info.mac[0], info.mac[1], info.mac[2],
-                               info.mac[3], info.mac[4], info.mac[5]);
-            offset +=
-                snprintf(resp_out->message + offset, sizeof(resp_out->message) - offset, "  MTU: %d\r\n", info.mtu);
+            g_string_append_printf(g_if_show_cache, "Interface %s:\r\n", info.name);
+            g_string_append_printf(g_if_show_cache, "  Type: %s\r\n", nn_if_type_to_string(info.type));
+            g_string_append_printf(g_if_show_cache, "  State: %s\r\n",
+                                   info.state == NN_IF_STATE_UP ? "UP" : "DOWN");
+            g_string_append_printf(g_if_show_cache, "  IP: %s\r\n",
+                                   info.ip_address[0] ? info.ip_address : "not configured");
+            g_string_append_printf(g_if_show_cache, "  Netmask: %s\r\n",
+                                   info.netmask[0] ? info.netmask : "not configured");
+            g_string_append_printf(g_if_show_cache, "  MAC: %02x:%02x:%02x:%02x:%02x:%02x\r\n", info.mac[0],
+                                   info.mac[1], info.mac[2], info.mac[3], info.mac[4], info.mac[5]);
+            g_string_append_printf(g_if_show_cache, "  MTU: %d\r\n", info.mtu);
         }
         else
         {
             snprintf(resp_out->message, sizeof(resp_out->message), "Error: Interface %s not found\r\n",
                      cfg_out->data.show.ifname);
             resp_out->success = 0;
+            g_string_free(g_if_show_cache, TRUE);
+            g_if_show_cache = NULL;
             return NN_ERRCODE_FAIL;
         }
     }
@@ -211,19 +253,18 @@ static int handle_show_cmd(nn_cfg_tlv_parser_t parser, nn_if_cli_out_t *cfg_out,
         int count = 0;
         if (nn_if_list(&interfaces, &count) == NN_ERRCODE_SUCCESS)
         {
-            offset += snprintf(resp_out->message + offset, sizeof(resp_out->message) - offset, "Interface Status:\r\n");
-            offset += snprintf(resp_out->message + offset, sizeof(resp_out->message) - offset,
-                               "%-10s %-15s %-10s %-15s\r\n", "Name", "Type", "State", "IP Address");
-            offset += snprintf(resp_out->message + offset, sizeof(resp_out->message) - offset,
-                               "%-10s %-15s %-10s %-15s\r\n", "----", "----", "-----", "----------");
+            g_string_append_printf(g_if_show_cache, "Interface Status:\r\n");
+            g_string_append_printf(g_if_show_cache, "%-10s %-15s %-10s %-15s\r\n", "Name", "Type", "State",
+                                   "IP Address");
+            g_string_append_printf(g_if_show_cache, "%-10s %-15s %-10s %-15s\r\n", "----", "----", "-----",
+                                   "----------");
 
             for (int i = 0; i < count; i++)
             {
-                offset += snprintf(resp_out->message + offset, sizeof(resp_out->message) - offset,
-                                   "%-10s %-15s %-10s %-15s\r\n", interfaces[i].name,
-                                   nn_if_type_to_string(interfaces[i].type),
-                                   interfaces[i].state == NN_IF_STATE_UP ? "UP" : "DOWN",
-                                   interfaces[i].ip_address[0] ? interfaces[i].ip_address : "-");
+                g_string_append_printf(g_if_show_cache, "%-10s %-15s %-10s %-15s\r\n", interfaces[i].name,
+                                       nn_if_type_to_string(interfaces[i].type),
+                                       interfaces[i].state == NN_IF_STATE_UP ? "UP" : "DOWN",
+                                       interfaces[i].ip_address[0] ? interfaces[i].ip_address : "-");
             }
             g_free(interfaces);
         }
@@ -231,8 +272,20 @@ static int handle_show_cmd(nn_cfg_tlv_parser_t parser, nn_if_cli_out_t *cfg_out,
         {
             snprintf(resp_out->message, sizeof(resp_out->message), "Error: Failed to list interfaces\r\n");
             resp_out->success = 0;
+            g_string_free(g_if_show_cache, TRUE);
+            g_if_show_cache = NULL;
             return NN_ERRCODE_FAIL;
         }
+    }
+
+    // Copy first chunk from cache
+    if_cli_chunk_output(g_if_show_cache, resp_out);
+
+    // Free cache if done
+    if (!resp_out->has_more && g_if_show_cache)
+    {
+        g_string_free(g_if_show_cache, TRUE);
+        g_if_show_cache = NULL;
     }
 
     resp_out->success = 1;
@@ -254,6 +307,11 @@ static int dispatch_by_group_id(uint32_t group_id, nn_cfg_tlv_parser_t parser, n
     return NN_ERRCODE_FAIL;
 }
 
+// Save batch state for CONTINUE handling
+static nn_if_cli_out_t g_if_batch_cfg_out;
+static uint32_t g_if_batch_sender_id = 0;
+static uint32_t g_if_batch_request_id = 0;
+
 static int handle_default_resp(nn_dev_message_t *msg, const nn_if_cli_out_t *cfg_out,
                                const nn_if_cli_resp_out_t *resp_out)
 {
@@ -274,6 +332,16 @@ static int handle_default_resp(nn_dev_message_t *msg, const nn_if_cli_out_t *cfg
     }
     else
     {
+        // Use RESP_MORE if more data is available
+        if (resp_out->has_more)
+        {
+            msg_type = NN_CFG_MSG_TYPE_CLI_RESP_MORE;
+            // Save batch state for CONTINUE
+            memcpy(&g_if_batch_cfg_out, cfg_out, sizeof(nn_if_cli_out_t));
+            g_if_batch_offset = resp_out->batch_offset;
+            g_if_batch_sender_id = msg->sender_id;
+            g_if_batch_request_id = msg->request_id;
+        }
         resp_data = g_strdup(resp_out->message);
     }
 
@@ -335,4 +403,53 @@ int nn_if_cli_handle_message(nn_dev_message_t *msg)
     nn_if_cli_send_response(msg, &cfg_out, &resp_out);
 
     return result;
+}
+
+// Handle CONTINUE message - send next batch from cached output
+int nn_if_cli_handle_continue(nn_dev_message_t *msg)
+{
+    if (!g_if_show_cache || g_if_batch_offset >= g_if_show_cache->len)
+    {
+        // No more data - send empty RESP
+        char *resp_data = g_strdup("");
+        nn_dev_message_t *resp_msg =
+            nn_dev_message_create(NN_CFG_MSG_TYPE_CLI_RESP, NN_DEV_MODULE_ID_IF, msg->request_id, resp_data,
+                                 strlen(resp_data) + 1, g_free);
+        if (resp_msg)
+        {
+            nn_dev_pubsub_send_response(msg->sender_id, resp_msg);
+            nn_dev_message_free(resp_msg);
+        }
+        return NN_ERRCODE_SUCCESS;
+    }
+
+    nn_if_cli_resp_out_t resp_out;
+    memset(&resp_out, 0, sizeof(resp_out));
+    resp_out.batch_offset = g_if_batch_offset;
+
+    if_cli_chunk_output(g_if_show_cache, &resp_out);
+    g_if_batch_offset = resp_out.batch_offset;
+
+    uint32_t msg_type = resp_out.has_more ? NN_CFG_MSG_TYPE_CLI_RESP_MORE : NN_CFG_MSG_TYPE_CLI_RESP;
+
+    char *resp_data = g_strdup(resp_out.message);
+    if (resp_data)
+    {
+        nn_dev_message_t *resp_msg = nn_dev_message_create(msg_type, NN_DEV_MODULE_ID_IF, msg->request_id, resp_data,
+                                                           strlen(resp_data) + 1, g_free);
+        if (resp_msg)
+        {
+            nn_dev_pubsub_send_response(msg->sender_id, resp_msg);
+            nn_dev_message_free(resp_msg);
+        }
+    }
+
+    // Free cache when done
+    if (!resp_out.has_more && g_if_show_cache)
+    {
+        g_string_free(g_if_show_cache, TRUE);
+        g_if_show_cache = NULL;
+    }
+
+    return NN_ERRCODE_SUCCESS;
 }

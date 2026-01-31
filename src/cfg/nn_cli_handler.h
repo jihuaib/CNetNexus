@@ -1,3 +1,9 @@
+/**
+ * @file   nn_cli_handler.h
+ * @brief  CLI 客户端会话管理头文件
+ * @author jhb
+ * @date   2026/01/22
+ */
 #ifndef NN_CLI_HANDLER_H
 #define NN_CLI_HANDLER_H
 
@@ -39,6 +45,13 @@ typedef struct
     // Prompt stack: saves prompt before entering sub-views
     char prompt_stack[NN_CLI_PROMPT_STACK_DEPTH][NN_CFG_CLI_MAX_PROMPT_LEN];
     uint32_t prompt_stack_depth;
+
+    // Pager state for --More-- output
+    char *pager_buffer;              // Dynamically allocated output buffer
+    uint32_t pager_offset;           // Current position in buffer
+    uint32_t pager_total_len;        // Total buffer length
+    uint32_t pager_lines_per_page;   // Lines per screen (default 24)
+    uint32_t pager_active;           // 1 if pager is active
 } nn_cli_session_t;
 
 // Function prototypes
@@ -54,5 +67,7 @@ void nn_cli_prompt_pop(nn_cli_session_t *session);
 void nn_cfg_send_message(nn_cli_session_t *session, const char *message);
 void nn_cfg_send_data(nn_cli_session_t *session, const void *data, size_t len);
 int process_command(const char *cmd_line, nn_cli_session_t *session);
+void nn_cli_pager_output(nn_cli_session_t *session, const char *message);
+void nn_cli_pager_stop(nn_cli_session_t *session);
 
 #endif // NN_CLI_HANDLER_H

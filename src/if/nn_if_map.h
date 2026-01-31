@@ -1,3 +1,9 @@
+/**
+ * @file   nn_if_map.h
+ * @brief  接口映射头文件
+ * @author jhb
+ * @date   2026/01/22
+ */
 #ifndef NN_IF_MAP_H
 #define NN_IF_MAP_H
 

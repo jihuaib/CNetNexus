@@ -1,3 +1,9 @@
+/**
+ * @file   nn_cli_param_type.c
+ * @brief  CLI 参数类型解析和校验
+ * @author jhb
+ * @date   2026/01/22
+ */
 #include "nn_cli_param_type.h"
 
 #include <arpa/inet.h>

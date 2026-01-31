@@ -1,3 +1,9 @@
+/**
+ * @file   nn_cli_view.h
+ * @brief  CLI 视图层级管理头文件
+ * @author jhb
+ * @date   2026/01/22
+ */
 #ifndef NN_CLI_VIEW_H
 #define NN_CLI_VIEW_H
 

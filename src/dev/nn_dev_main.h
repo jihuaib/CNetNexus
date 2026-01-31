@@ -1,3 +1,9 @@
+/**
+ * @file   nn_dev_main.h
+ * @brief  Dev 模块主入口头文件
+ * @author jhb
+ * @date   2026/01/22
+ */
 #ifndef NN_DEV_MAIN_H
 #define NN_DEV_MAIN_H
 

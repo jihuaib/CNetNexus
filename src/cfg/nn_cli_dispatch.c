@@ -1,8 +1,9 @@
-//
-// Created by jhb on 1/25/26.
-// CLI command dispatch - TLV message packing and module dispatch
-//
-
+/**
+ * @file   nn_cli_dispatch.c
+ * @brief  CLI 命令分发，TLV 消息打包和模块路由
+ * @author jhb
+ * @date   2026/01/22
+ */
 #include "nn_cli_dispatch.h"
 
 #include <arpa/inet.h>
@@ -160,18 +161,32 @@ int nn_cli_dispatch_to_module(nn_cli_match_result_t *result, nn_cli_session_t *s
         return NN_ERRCODE_FAIL;
     }
 
-    // Use synchronous query to wait for response
+    // Use synchronous query to wait for response, with batch support
     printf("[dispatch] Sending query to module 0x%08X...\n", result->module_id);
-    nn_dev_message_t *response =
-        nn_dev_pubsub_query(NN_DEV_MODULE_ID_CFG, NN_DEV_EVENT_CFG, result->module_id, msg, 5000);
 
-    // Free original message (it was cloned or used)
-    nn_dev_message_free(msg);
-
+    GString *full_output = g_string_new("");
     nn_cli_view_node_t *view = NULL;
+    int done = 0;
 
-    if (response)
+    while (!done)
     {
+        nn_dev_message_t *response =
+            nn_dev_pubsub_query(NN_DEV_MODULE_ID_CFG, NN_DEV_EVENT_CFG, result->module_id, msg, 5000);
+
+        // Free the query message (original or continue)
+        nn_dev_message_free(msg);
+        msg = NULL;
+
+        if (!response)
+        {
+            if (full_output->len == 0)
+            {
+                nn_cfg_send_message(session, "Error: Module timed out or failed to respond.\r\n");
+            }
+            g_string_free(full_output, TRUE);
+            return NN_ERRCODE_FAIL;
+        }
+
         if (response->msg_type == NN_CFG_MSG_TYPE_CLI_VIEW_CHG)
         {
             char module_prompt[NN_CFG_CLI_MAX_PROMPT_LEN] = {0};
@@ -186,25 +201,55 @@ int nn_cli_dispatch_to_module(nn_cli_match_result_t *result, nn_cli_session_t *s
                 view = nn_cli_view_find_by_id(g_nn_cfg_local->view_tree.root, result->final_node->view_id);
             }
 
-            // Update prompt: use module-filled prompt if available, otherwise use view template
             if (module_prompt[0] != '\0' && view != NULL)
             {
                 nn_cli_prompt_push(session);
                 session->current_view = view;
                 update_prompt_from_template(session, module_prompt);
             }
+
+            nn_dev_message_free(response);
+            done = 1;
         }
         else if (response->msg_type == NN_CFG_MSG_TYPE_CLI_RESP)
         {
-            nn_cfg_send_message(session, response->data);
+            // Final response chunk
+            if (response->data)
+            {
+                g_string_append(full_output, response->data);
+            }
+            nn_dev_message_free(response);
+            done = 1;
         }
+        else if (response->msg_type == NN_CFG_MSG_TYPE_CLI_RESP_MORE)
+        {
+            // Partial response - append and request more
+            if (response->data)
+            {
+                g_string_append(full_output, response->data);
+            }
+            nn_dev_message_free(response);
 
-        nn_dev_message_free(response);
-        return NN_ERRCODE_SUCCESS;
+            // Send CONTINUE to request next batch
+            msg = nn_dev_message_create(NN_CFG_MSG_TYPE_CLI_CONTINUE, 0, 0, NULL, 0, NULL);
+            if (!msg)
+            {
+                done = 1;
+            }
+        }
+        else
+        {
+            nn_dev_message_free(response);
+            done = 1;
+        }
     }
-    else
+
+    // Send accumulated output through pager
+    if (full_output->len > 0)
     {
-        nn_cfg_send_message(session, "Error: Module timed out or failed to respond.\r\n");
-        return NN_ERRCODE_FAIL;
+        nn_cli_pager_output(session, full_output->str);
     }
+    g_string_free(full_output, TRUE);
+
+    return NN_ERRCODE_SUCCESS;
 }

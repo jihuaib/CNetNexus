@@ -1,3 +1,9 @@
+/**
+ * @file   nn_cfg_api.c
+ * @brief  CFG 模块对外 API 实现
+ * @author jhb
+ * @date   2026/01/22
+ */
 #include <stdio.h>
 
 #include "nn_cfg.h"

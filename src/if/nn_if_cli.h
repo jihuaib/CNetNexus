@@ -1,3 +1,9 @@
+/**
+ * @file   nn_if_cli.h
+ * @brief  接口模块 CLI 命令处理头文件
+ * @author jhb
+ * @date   2026/01/22
+ */
 #ifndef NN_IF_CLI_H
 #define NN_IF_CLI_H
 
@@ -73,8 +79,11 @@ typedef struct nn_if_cli_resp_out
 {
     char message[NN_CFG_CLI_MAX_RESP_LEN];
     int success;
+    uint32_t has_more;     // 1 if more data available
+    uint32_t batch_offset; // Continuation offset for next batch
 } nn_if_cli_resp_out_t;
 
 int nn_if_cli_handle_message(nn_dev_message_t *msg);
+int nn_if_cli_handle_continue(nn_dev_message_t *msg);
 
 #endif // NN_IF_CLI_H

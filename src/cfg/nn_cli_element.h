@@ -1,3 +1,9 @@
+/**
+ * @file   nn_cli_element.h
+ * @brief  CLI 元素处理头文件
+ * @author jhb
+ * @date   2026/01/22
+ */
 #ifndef NN_CLI_ELEMENT_H
 #define NN_CLI_ELEMENT_H
 

@@ -1,6 +1,9 @@
-//
-// Created by jhb on 1/24/26.
-//
+/**
+ * @file   nn_dev_mq.c
+ * @brief  Dev 模块消息队列实现
+ * @author jhb
+ * @date   2026/01/22
+ */
 #include "nn_dev_mq.h"
 
 #include <poll.h>

@@ -12,18 +12,11 @@ add_library(nn_if SHARED ${NN_IF_SOURCES})
 # Include directories
 target_include_directories(nn_if PRIVATE
     .
-    ${PROJECT_SOURCE_DIR}/include
-    ${PROJECT_SOURCE_DIR}/src/cfg
-    ${PROJECT_SOURCE_DIR}/src/dev
-    ${PROJECT_SOURCE_DIR}/src/utils
 )
 
 # Link libraries
 target_link_libraries(nn_if PRIVATE
     ${GLIB_LIBRARIES}
-    nn_utils
-    nn_cfg
-    nn_dev
 )
 
 # Set library version

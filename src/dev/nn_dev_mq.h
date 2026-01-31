@@ -1,3 +1,9 @@
+/**
+ * @file   nn_dev_mq.h
+ * @brief  Dev 模块消息队列头文件
+ * @author jhb
+ * @date   2026/01/22
+ */
 #ifndef NN_DEV_MQ_H
 #define NN_DEV_MQ_H
 

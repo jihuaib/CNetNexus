@@ -1,8 +1,9 @@
-//
-// Created by jhb on 1/25/26.
-// Module inter-communication pub/sub system
-//
-
+/**
+ * @file   nn_dev_pubsub.h
+ * @brief  模块间 Pub/Sub 通信系统头文件
+ * @author jhb
+ * @date   2026/01/22
+ */
 #ifndef NN_DEV_PUBSUB_H
 #define NN_DEV_PUBSUB_H
 

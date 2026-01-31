@@ -1,3 +1,9 @@
+/**
+ * @file   nn_if_main.c
+ * @brief  接口模块主入口，模块注册和消息循环
+ * @author jhb
+ * @date   2026/01/22
+ */
 #include "nn_if_main.h"
 
 #include <errno.h>
@@ -39,6 +45,12 @@ static void if_process_messages(nn_if_local_t *ctx)
                 // CLI command from cfg module
                 printf("[if] Received CLI command message (%zu bytes)\n", msg->data_len);
                 nn_if_cli_handle_message(msg);
+                break;
+
+            case NN_CFG_MSG_TYPE_CLI_CONTINUE:
+                // Continue batch response
+                printf("[if] Received CLI continue request\n");
+                nn_if_cli_handle_continue(msg);
                 break;
 
             default:

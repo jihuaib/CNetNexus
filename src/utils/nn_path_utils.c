@@ -1,3 +1,9 @@
+/**
+ * @file   nn_path_utils.c
+ * @brief  路径工具函数实现
+ * @author jhb
+ * @date   2026/01/22
+ */
 #include "nn_path_utils.h"
 
 #include <limits.h>

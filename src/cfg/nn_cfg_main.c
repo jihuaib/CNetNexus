@@ -1,3 +1,9 @@
+/**
+ * @file   nn_cfg_main.c
+ * @brief  CFG 模块主入口，模块注册和初始化
+ * @author jhb
+ * @date   2026/01/22
+ */
 #include "nn_cfg_main.h"
 
 #include <arpa/inet.h>

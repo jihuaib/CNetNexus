@@ -1,493 +1,557 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+本文件为 Claude Code (claude.ai/code) 在本仓库中工作时提供指导。
 
-## Build Commands
+## 构建命令
 
 ```bash
-# Install dependencies (Ubuntu/Debian)
+# 安装依赖 (Ubuntu/Debian)
 sudo apt install build-essential cmake libxml2-dev libsqlite3-dev pkg-config
 
-# Development dependencies (optional)
-sudo apt install gdb inotify-tools  # For debugging and file watching
+# 开发依赖（可选）
+sudo apt install gdb inotify-tools  # 用于调试和文件监控
 
-# Build
+# 构建
 mkdir build && cd build && cmake .. && make
 
-# Build and run
+# 构建并运行
 cmake --build . --target run
 
-# Clean
+# 清理
 rm -rf build
 ```
 
-## Development Workflow
+## 开发工作流
 
-### Quick Start
+### 快速开始
 
 ```bash
-# 1. Build
+# 1. 构建
 ./scripts/dev/build.sh
 
-# 2. Run
+# 2. 运行
 ./scripts/dev/start.sh
 
-# 3. Connect
+# 3. 连接
 telnet localhost 3788
 ```
 
-### Development Scripts
+### 开发脚本
 
-All development scripts are in `scripts/` directory:
+所有开发脚本位于 `scripts/` 目录：
 
-**Build and Clean:**
+**构建和清理：**
 ```bash
-./scripts/dev/build.sh              # Quick build (Debug mode)
-./scripts/dev/build.sh --release    # Release build
-./scripts/dev/build.sh --clean      # Clean + rebuild
-./scripts/dev/build.sh -j 8         # Build with 8 parallel jobs
+./scripts/dev/build.sh              # 快速构建（Debug 模式）
+./scripts/dev/build.sh --release    # Release 构建
+./scripts/dev/build.sh --clean      # 清理 + 重新构建
+./scripts/dev/build.sh -j 8         # 8 线程并行构建
 
-./scripts/dev/clean.sh              # Clean build directory only
-./scripts/dev/clean.sh --data       # Also clean data directory
-./scripts/dev/clean.sh --all        # Clean everything
+./scripts/dev/clean.sh              # 仅清理 build 目录
+./scripts/dev/clean.sh --data       # 同时清理 data 目录
+./scripts/dev/clean.sh --all        # 清理所有内容
 ```
 
-**Run and Debug:**
+**运行和调试：**
 ```bash
-./scripts/dev/start.sh              # Start in development mode
-./scripts/dev/debug.sh              # Start with gdb debugger
+./scripts/dev/start.sh              # 以开发模式启动
+./scripts/dev/debug.sh              # 使用 gdb 调试器启动
 ```
 
-**Example GDB Debug Session:**
+**GDB 调试会话示例：**
 ```bash
 ./scripts/dev/debug.sh
 
-# In GDB:
-(gdb) break main                    # Set breakpoint
-(gdb) run                           # Start program
-(gdb) continue                      # Continue execution
-(gdb) backtrace                     # Show call stack
-(gdb) print variable_name           # Inspect variable
-(gdb) quit                          # Exit
+# 在 GDB 中：
+(gdb) break main                    # 设置断点
+(gdb) run                           # 启动程序
+(gdb) continue                      # 继续执行
+(gdb) backtrace                     # 显示调用栈
+(gdb) print variable_name           # 查看变量
+(gdb) quit                          # 退出
 ```
 
-### VSCode Integration
+### VSCode 集成
 
-Open the project in VSCode with full debugging support:
+在 VSCode 中打开项目，支持完整的调试功能：
 
-**Build Tasks (Ctrl+Shift+B):**
-- Build Debug (default)
+**构建任务 (Ctrl+Shift+B)：**
+- Build Debug（默认）
 - Build Release
 - Clean
-- Rebuild (clean + build)
-- Watch (auto-rebuild on changes)
+- Rebuild（清理 + 构建）
+- Watch（修改后自动重建）
 
-**Debug Configurations (F5):**
-- Debug NetNexus - Build and debug
-- Attach to NetNexus - Attach to running process
-- Run NetNexus (No Debug) - Run without debugging
+**调试配置 (F5)：**
+- Debug NetNexus - 构建并调试
+- Attach to NetNexus - 附加到运行中的进程
+- Run NetNexus (No Debug) - 不调试直接运行
 
-**Keyboard Shortcuts:**
-- `Ctrl+Shift+B` - Build
-- `F5` - Start debugging
-- `Ctrl+F5` - Run without debugging
-- `Shift+F5` - Stop debugging
-- `F9` - Toggle breakpoint
-- `F10` - Step over
-- `F11` - Step into
+**快捷键：**
+- `Ctrl+Shift+B` - 构建
+- `F5` - 开始调试
+- `Ctrl+F5` - 不调试直接运行
+- `Shift+F5` - 停止调试
+- `F9` - 切换断点
+- `F10` - 单步跳过
+- `F11` - 单步进入
 
-### Development Environment
+### 开发环境
 
-**Directory Structure:**
+**目录结构：**
 ```
 NetNexus/
-├── src/              # Source code (auto-detected for XML configs)
-├── include/          # Public headers
-├── build/            # Build output
-│   ├── bin/         # Executables
-│   └── lib/         # Libraries
-├── data/             # Development database storage
-├── scripts/          # Development and deployment scripts
-└── .vscode/          # VSCode configuration
+├── src/              # 源代码（XML 配置自动发现）
+├── include/          # 公共头文件
+├── build/            # 构建输出
+│   ├── bin/         # 可执行文件
+│   └── lib/         # 库文件
+├── data/             # 开发数据库存储
+├── scripts/          # 开发和部署脚本
+└── .vscode/          # VSCode 配置
 ```
 
-**Environment Variables:**
-- `LD_LIBRARY_PATH` - Automatically set to `build/lib/`
-- `NN_RESOURCES_DIR` - Not needed in dev (auto-discovered from `src/`)
+**环境变量：**
+- `LD_LIBRARY_PATH` - 自动设置为 `build/lib/`
+- `NN_RESOURCES_DIR` - 开发环境无需设置（从 `src/` 自动发现）
 
-**Configuration Files:**
-Config XML files are automatically discovered from source directories:
+**配置文件：**
+XML 配置文件从源码目录自动发现：
 - `src/cfg/commands.xml`
 - `src/dev/commands.xml`
 - `src/bgp/commands.xml`
 - `src/db/commands.xml`
 
-**Database Files:**
-Development databases stored in `data/`:
+**数据库文件：**
+开发数据库存储在 `data/` 目录：
 ```
 data/
 └── bgp/
     └── bgp_db.db
 ```
 
-When you save a `.c`, `.h`, or `.xml` file, the watch script automatically:
-1. Detects the change
-2. Rebuilds the project
-3. Shows build results
+保存 `.c`、`.h` 或 `.xml` 文件时，watch 脚本会自动：
+1. 检测变更
+2. 重新构建项目
+3. 显示构建结果
 
-Restart NetNexus (Terminal 2) to see your changes.
+重启 NetNexus（终端 2）即可查看更改效果。
 
-### Debugging Tips
+### 调试技巧
 
-**Memory Leaks:**
+**内存泄漏：**
 ```bash
-# Build with AddressSanitizer
+# 使用 AddressSanitizer 构建
 cd build
 cmake -DCMAKE_C_FLAGS="-fsanitize=address -g" ..
 make
 ./bin/netnexus
 ```
 
-**Valgrind:**
+**Valgrind：**
 ```bash
 valgrind --leak-check=full --show-leak-kinds=all \
   ./build/bin/netnexus
 ```
 
-**Core Dumps:**
+**Core Dump：**
 ```bash
-# Enable core dumps
+# 启用 core dump
 ulimit -c unlimited
 
-# Run and crash
+# 运行并崩溃
 ./build/bin/netnexus
 
-# Analyze core dump
+# 分析 core dump
 gdb ./build/bin/netnexus core
 ```
 
-**Verbose Logging:**
-Add debug prints or use gdb to trace execution:
+**详细日志：**
+添加调试打印或使用 gdb 跟踪执行：
 ```c
 printf("[DEBUG] %s:%d - Variable: %d\n", __FILE__, __LINE__, var);
 ```
 
-### Common Development Tasks
+### 常见开发任务
 
-**Add a New Module:**
-1. Create `src/mymodule/` directory
-2. Add `nn_mymodule_main.c` with constructor
-3. Add `commands.xml` with CLI commands
-4. Add `CMakeLists.txt`
-5. Update `src/CMakeLists.txt` to include new module
-6. Build and test
+**添加新模块：**
+1. 创建 `src/mymodule/` 目录
+2. 添加带有 constructor 的 `nn_mymodule_main.c`
+3. 添加定义 CLI 命令的 `commands.xml`
+4. 添加 `CMakeLists.txt`
+5. 更新 `src/CMakeLists.txt` 以包含新模块
+6. 构建并测试
 
-**Add a New CLI Command:**
-1. Edit `src/{module}/commands.xml`
-2. Add element definition
-3. Add command expression
-4. Add command handler in module code
-5. Rebuild and test
+**添加新 CLI 命令：**
+1. 编辑 `src/{module}/commands.xml`
+2. 添加元素定义
+3. 添加命令表达式
+4. 在模块代码中添加命令处理函数
+5. 重新构建并测试
 
-**Debug a Crash:**
-1. Build with debug symbols: `./scripts/dev/build.sh`
-2. Run with gdb: `./scripts/dev/debug.sh`
-3. Set breakpoint: `break suspicious_function`
-4. Run: `run`
-5. Analyze: `backtrace`, `print`, `info locals`
+**调试崩溃：**
+1. 使用调试符号构建：`./scripts/dev/build.sh`
+2. 使用 gdb 运行：`./scripts/dev/debug.sh`
+3. 设置断点：`break suspicious_function`
+4. 运行：`run`
+5. 分析：`backtrace`、`print`、`info locals`
 
-**Test Database Changes:**
+**测试数据库变更：**
 ```bash
-# View database
+# 查看数据库
 sqlite3 data/bgp/bgp_db.db ".schema"
 sqlite3 data/bgp/bgp_db.db "SELECT * FROM bgp_protocol;"
 
-# Reset database
+# 重置数据库
 rm -rf data/
-./scripts/dev/start.sh  # Will recreate
+./scripts/dev/start.sh  # 会自动重新创建
 ```
 
-### Performance Profiling
+### 性能分析
 
-**Using perf:**
+**使用 perf：**
 ```bash
-# Record
+# 记录
 perf record -g ./build/bin/netnexus
 
-# Analyze
+# 分析
 perf report
 ```
 
-**Using gprof:**
+**使用 gprof：**
 ```bash
-# Build with profiling
+# 使用性能分析选项构建
 cd build
 cmake -DCMAKE_C_FLAGS="-pg" ..
 make
 
-# Run
+# 运行
 ./bin/netnexus
 
-# Analyze
+# 分析
 gprof ./bin/netnexus gmon.out > analysis.txt
 ```
 
-## Code Quality
+## 代码质量
 
 ```bash
-./scripts/format-code.sh       # Format all code with clang-format
-./scripts/check-format.sh      # Verify formatting
-./scripts/run-clang-tidy.sh    # Run static analysis
+./scripts/format-code.sh       # 使用 clang-format 格式化所有代码
+./scripts/check-format.sh      # 验证格式
+./scripts/run-clang-tidy.sh    # 运行静态分析
 ```
 
-## Running
+## 运行
 
 ```bash
-cd build/bin && ./netnexus     # Starts server on port 3788
-telnet localhost 3788          # Connect to CLI
+cd build/bin && ./netnexus     # 在端口 3788 启动服务器
+telnet localhost 3788          # 连接到 CLI
 ```
 
-## Build Output
+## 构建产物
 
-After building, the following artifacts are created:
-- `build/bin/netnexus` - Main executable
-- `build/lib/libnn_cfg.so` - CLI library (CLI framework)
-- `build/lib/libnn_utils.so` - Utility library
-- `build/lib/libnn_db.so` - Database module (SQLite storage)
-- `build/lib/libnn_bgp.so` - BGP module
-- `build/lib/libnn_dev.so` - Dev module
+构建完成后生成以下产物：
+- `build/bin/netnexus` - 主可执行文件
+- `build/lib/libnn_cfg.so` - CLI 库（CLI 框架）
+- `build/lib/libnn_utils.so` - 工具库
+- `build/lib/libnn_db.so` - 数据库模块（SQLite 存储）
+- `build/lib/libnn_bgp.so` - BGP 模块
+- `build/lib/libnn_dev.so` - Dev 模块
 
-## Architecture
+## 架构
 
-NetNexus is a modular telnet CLI server for networking protocols. Key architectural concepts:
+NetNexus 是一个模块化的 Telnet CLI 服务器，用于网络协议管理。核心架构概念：
 
-### Module System
-Modules self-register at load time using `__attribute__((constructor))`. Each module provides:
-- A registration call to `nn_cli_register_module(name, xml_path)`
-- An XML config file defining commands (in module's directory)
+### 模块系统
+模块在加载时通过 `__attribute__((constructor))` 自注册。每个模块提供：
+- 调用 `nn_cli_register_module(name, xml_path)` 进行注册
+- 定义命令的 XML 配置文件（位于模块目录中）
 
-See [nn_dev_module.c](src/dev/nn_dev_module.c) for the pattern.
+参见 [nn_dev_module.c](src/dev/nn_dev_module.c) 了解模式。
 
-### View Hierarchy
-Views represent CLI modes (USER, CONFIG, BGP, etc.). Each view has:
-- Its own command tree
-- A prompt template with `NetNexus` placeholder
-- Optional parent view for inheritance
+### 视图层级
+视图代表 CLI 模式（USER、CONFIG、BGP 等）。每个视图包含：
+- 独立的命令树
+- 带有 `NetNexus` 占位符的提示符模板
+- 可选的父视图用于继承
 
-Views and commands are defined in XML config files, not C code.
+视图和命令在 XML 配置文件中定义，而非 C 代码。
 
-### Command Tree
-Commands are hierarchical trees where root-to-leaf paths form complete commands. Nodes are either:
-- `KEYWORD`: Fixed tokens (e.g., "show", "config")
-- `ARGUMENT`: Variable parameters (e.g., `<hostname>`)
+### 命令树
+命令是层级树结构，从根到叶的路径构成完整命令。节点类型：
+- `KEYWORD`：固定令牌（如 "show"、"config"）
+- `ARGUMENT`：可变参数（如 `<hostname>`）
 
-Each tree node has an `is_end_node` flag indicating whether it's a valid command completion point. This allows both "show bgp" and "show bgp peer" to be valid commands independently - the "bgp" node is marked as an end node even though it has children.
+每个树节点有一个 `is_end_node` 标志，表示是否为有效的命令结束点。这允许 "show bgp" 和 "show bgp peer" 同时作为有效命令——"bgp" 节点被标记为结束节点，即使它有子节点。
 
-When building commands from XML `<expression>` elements, the last element in each expression is automatically marked as an end node by the parser.
+从 XML `<expression>` 元素构建命令时，每个表达式中的最后一个元素由解析器自动标记为结束节点。
 
-### CLI Input Handling
-The CLI supports full line editing with cursor positioning:
-- **ANSI Escape Sequences**: Arrow keys are detected using a state machine (STATE_NORMAL → STATE_ESC → STATE_CSI)
-- **Cursor Movement**: Up/Down arrows browse command history; Left/Right arrows move cursor within current line
-- **Mid-line Editing**: Characters can be inserted or deleted at any cursor position using `memmove()` to shift buffer contents
-- **Tab/Help**: Work based on cursor position (only text before cursor is used for matching)
-- **History**: Session-specific (20 commands) and global (200 commands) history with timestamps and client IPs
+### CLI 输入处理
+CLI 支持完整的行编辑和光标定位：
+- **ANSI 转义序列**：使用状态机检测方向键（STATE_NORMAL → STATE_ESC → STATE_CSI）
+- **光标移动**：上/下方向键浏览命令历史；左/右方向键在当前行内移动光标
+- **行内编辑**：可以在任意光标位置插入或删除字符，使用 `memmove()` 移动缓冲区内容
+- **Tab/帮助**：基于光标位置工作（仅使用光标前的文本进行匹配）
+- **历史记录**：会话级（20 条命令）和全局（200 条命令）历史，包含时间戳和客户端 IP
 
-Key functions in [nn_cli_handler.c](src/cfg/nn_cli_handler.c):
-- `handle_arrow_up/down/left/right()` - Arrow key handlers
-- `redraw_from_cursor()` - Redraw line after mid-line edits
-- `nn_cli_session_history_*()` - Session history management
-- `nn_cli_global_history_*()` - Global history with pthread mutex
+[nn_cli_handler.c](src/cfg/nn_cli_handler.c) 中的关键函数：
+- `handle_arrow_up/down/left/right()` - 方向键处理函数
+- `redraw_from_cursor()` - 行内编辑后重绘
+- `nn_cli_session_history_*()` - 会话历史管理
+- `nn_cli_global_history_*()` - 全局历史（带 pthread 互斥锁）
 
-### Directory Structure
+### 目录结构
 ```
 src/
-├── main.c                      # TCP server, threading, signal handling
-├── cfg/                        # CLI library (libnn_cfg.so)
-│   ├── nn_cli_handler.c/h      # Client sessions, command execution
-│   ├── nn_cli_history.c/h      # Command history management
-│   ├── nn_cli_tree.c/h         # Command tree matching
-│   ├── nn_cli_view.c/h         # View hierarchy management
-│   ├── nn_cli_element.c/h      # CLI element handling
-│   ├── nn_cli_xml_parser.c/h   # XML config parsing
-│   └── commands.xml            # Core CLI commands
-├── utils/                      # Utility library (libnn_utils.so)
-│   └── nn_path_utils.c/h       # Path utilities
-├── db/                         # Database module (libnn_db.so)
-│   ├── nn_db_main.c/h          # Module lifecycle
-│   ├── nn_db_registry.c/h      # DB definition storage
-│   ├── nn_db_schema.c          # Schema management
-│   ├── nn_db_api.c             # CRUD operations
-│   └── commands.xml            # DB module config
-├── interface/                  # Interface definitions
-├── bgp/                        # BGP module (libnn_bgp.so)
+├── main.c                      # TCP 服务器、线程、信号处理
+├── cfg/                        # CLI 库 (libnn_cfg.so)
+│   ├── nn_cli_handler.c/h      # 客户端会话、命令执行
+│   ├── nn_cli_history.c/h      # 命令历史管理
+│   ├── nn_cli_tree.c/h         # 命令树匹配
+│   ├── nn_cli_view.c/h         # 视图层级管理
+│   ├── nn_cli_element.c/h      # CLI 元素处理
+│   ├── nn_cli_xml_parser.c/h   # XML 配置解析
+│   └── commands.xml            # 核心 CLI 命令
+├── utils/                      # 工具库 (libnn_utils.so)
+│   └── nn_path_utils.c/h       # 路径工具
+├── db/                         # 数据库模块 (libnn_db.so)
+│   ├── nn_db_main.c/h          # 模块生命周期
+│   ├── nn_db_registry.c/h      # 数据库定义存储
+│   ├── nn_db_schema.c          # Schema 管理
+│   ├── nn_db_api.c             # CRUD 操作
+│   └── commands.xml            # 数据库模块配置
+├── interface/                  # 接口定义
+├── bgp/                        # BGP 模块 (libnn_bgp.so)
 │   ├── nn_bgp_module.c/h
 │   └── commands.xml
-└── dev/                        # Dev module (libnn_dev.so)
+└── dev/                        # Dev 模块 (libnn_dev.so)
     ├── nn_dev_module.c/h
     └── commands.xml
 ```
 
-### Library Dependencies
+### 库依赖
 ```
-netnexus (executable)
-├── libnn_cfg.so (CLI framework)
+netnexus (可执行文件)
+├── libnn_cfg.so (CLI 框架)
 │   └── libxml2, pthread, libnn_db
-├── libnn_utils.so (utilities)
-├── libnn_db.so (database module)
+├── libnn_utils.so (工具库)
+├── libnn_db.so (数据库模块)
 │   └── sqlite3
-├── libnn_bgp.so (BGP module)
-└── libnn_dev.so (Dev module)
+├── libnn_bgp.so (BGP 模块)
+└── libnn_dev.so (Dev 模块)
 ```
 
-### Globals
-- `g_nn_cfg_local->view_tree`: Root of view hierarchy
+### 全局变量
+- `g_nn_cfg_local->view_tree`：视图层级的根节点
 
-## Naming Conventions
+## 命名规范
 
-- `nn_cli_*`: CLI subsystem functions
-- `nn_*`: Module registry functions
-- `cmd_*`: Command handler functions
-- `*_t`: Type definitions
-- `g_*`: Global variables
-- `UPPER_CASE`: Macros and enums
-- `lower_case`: Functions, variables, structs
+### 文件命名
+- 文件名格式：`nn_{module}_xxx.c` / `nn_{module}_xxx.h`
+- `{module}` 为模块名，如 `cfg`、`bgp`、`dev`、`db`、`if`
+- 示例：`nn_bgp_cli.c`、`nn_db_main.h`、`nn_if_map.c`
 
-## Adding New Commands
+### 函数和结构体命名
+- 函数名格式：`nn_{module}_xxx()`
+- 结构体名格式：`nn_{module}_xxx_t`
+- `{module}` 必须与文件所属模块一致
+- 示例：`nn_bgp_cli_handle_cmd()`、`nn_db_connection_t`
+- 模块内部的静态函数可省略 `nn_{module}_` 前缀
 
-Commands are defined in XML files (`commands.xml`) within each module directory. The XML structure uses:
+### 全局变量命名
+- 全局变量格式：`g_nn_{module}_xxx`
+- 示例：`g_nn_cfg_local`、`g_nn_bgp_running`
 
-1. **Elements** - Define keywords and parameters:
+### 其他命名规则
+- `cmd_*`：命令处理函数（CLI 回调）
+- `*_t`：类型定义后缀
+- `UPPER_CASE`：宏和枚举
+- `lower_case`：函数、变量、结构体
+
+## 添加新命令
+
+命令在每个模块目录的 XML 文件（`commands.xml`）中定义。XML 结构使用：
+
+1. **元素** - 定义关键字和参数：
 ```xml
 <element id="1" type="keyword">
     <name>show</name>
-    <description>Display information</description>
+    <description>显示信息</description>
 </element>
 <element id="2" type="parameter">
     <name>&lt;hostname&gt;</name>
     <type>string(1-63)</type>
-    <description>System hostname</description>
+    <description>系统主机名</description>
 </element>
 ```
 
-2. **Commands** - Combine elements into expressions:
+2. **命令** - 将元素组合为表达式：
 ```xml
 <command>
-    <expression>1 2</expression>  <!-- References element IDs -->
-    <views>3</views>               <!-- View ID where command is available -->
-    <view-id>4</view-id>          <!-- Optional: view to switch to after execution -->
+    <expression>1 2</expression>  <!-- 引用元素 ID -->
+    <views>3</views>               <!-- 命令可用的视图 ID -->
+    <view-id>4</view-id>          <!-- 可选：执行后切换到的视图 -->
 </command>
 ```
 
-The last element in each expression is automatically marked as an `is_end_node`. For commands that should execute at intermediate points (e.g., "show bgp" and "show bgp peer" both valid), create separate command entries with different expression lengths.
+每个表达式中的最后一个元素自动标记为 `is_end_node`。对于需要在中间节点执行的命令（例如 "show bgp" 和 "show bgp peer" 都有效），需要创建不同表达式长度的独立命令条目。
 
-## Code Style
+## 代码风格
 
-- C11, LLVM-based formatting with Allman braces
-- 4-space indent, 120-char line limit
-- Right-aligned pointers (`char *ptr`)
-- Braces required for all control statements
+- C11，基于 LLVM 的格式化，Allman 风格大括号
+- 4 空格缩进，120 字符行宽限制
+- 指针右对齐（`char *ptr`）
+- 所有控制语句必须使用大括号
 
-## Deployment
+## 代码规范限制
 
-### Package Creation
+### 禁止跨模块直接包含头文件
+- 模块之间**不允许**直接 `#include` 其他模块的头文件
+- 例如：`src/if/` 下的代码**不能** `#include "nn_bgp_cli.h"`，`src/bgp/` 下的代码**不能** `#include "nn_if_cli.h"`
+- 模块间通信必须通过 `include/` 下的公共接口（如 `nn_cfg.h`、`nn_dev.h`、`nn_errcode.h`）或消息机制（pub/sub）
+- `include/` 目录下的头文件是跨模块共享的公共接口，所有模块均可包含
+- 模块内部的头文件（如 `nn_if_cli.h`、`nn_bgp_cli.h`）仅限本模块内部使用
 
-Create a deployment package with all binaries and configuration files:
+### 注释和文档语言统一使用中文
+- 所有代码注释（包括行注释 `//` 和块注释 `/* */`）必须使用中文
+- Doxygen 风格注释（`@brief`、`@param`、`@return` 等）的描述文本使用中文
+- 文档文件（`.md` 等）使用中文
+- 代码中的 `printf`/日志输出、变量名、函数名等仍使用英文
+
+### 新增文件必须包含文件注释
+所有新建的 `.c` 和 `.h` 文件必须在文件头部添加注释，格式如下：
+```c
+/**
+ * @file   nn_xxx_yyy.c
+ * @brief  简要描述文件功能
+ * @author 作者
+ * @date   创建日期
+ */
+```
+
+### include/ 目录下的公共 API 必须添加注释
+`include/` 目录下的头文件中，所有公共函数声明、结构体定义、宏定义和枚举必须添加注释说明：
+```c
+/**
+ * @brief 函数功能简要描述
+ * @param param1 参数1说明
+ * @param param2 参数2说明
+ * @return 返回值说明
+ */
+int nn_xxx_function(int param1, const char *param2);
+
+/**
+ * @brief 结构体用途说明
+ */
+typedef struct nn_xxx
+{
+    int field1;    /**< 字段说明 */
+    char name[64]; /**< 字段说明 */
+} nn_xxx_t;
+
+/** 宏定义说明 */
+#define NN_XXX_MAX_SIZE 1024
+```
+
+## 部署
+
+### 创建部署包
+
+创建包含所有二进制文件和配置文件的部署包：
 
 ```bash
-# Build the project first
+# 先构建项目
 mkdir build && cd build
 cmake .. && make
 cd ..
 
-# Create deployment package
+# 创建部署包
 ./scripts/package.sh
 
-# Output: package/netnexus-1.0.0.tar.gz
+# 输出：package/netnexus-1.0.0.tar.gz
 ```
 
-The package includes:
-- Binaries (`bin/netnexus`)
-- Libraries (`lib/libnn_*.so`)
-- Configuration files (`config/*/commands.xml`)
-- Deployment scripts
+部署包包含：
+- 二进制文件（`bin/netnexus`）
+- 库文件（`lib/libnn_*.so`）
+- 配置文件（`config/*/commands.xml`）
+- 部署脚本
 
-### Production Deployment
+### 生产环境部署
 
-Deploy to `/opt/netnexus`:
+部署到 `/opt/netnexus`：
 
 ```bash
-# Extract package
+# 解压部署包
 tar xzf netnexus-1.0.0.tar.gz
 cd netnexus-1.0.0
 
-# Deploy (requires sudo)
+# 部署（需要 sudo）
 sudo ./scripts/deploy.sh
 ```
 
-The deployment script:
-- Installs to `/opt/netnexus`
-- Copies config files to `/opt/netnexus/resources/`
-- Preserves existing configs (creates `.bak` backups)
-- Installs systemd service
-- Sets up environment variables
+部署脚本功能：
+- 安装到 `/opt/netnexus`
+- 复制配置文件到 `/opt/netnexus/resources/`
+- 保留现有配置（创建 `.bak` 备份）
+- 安装 systemd 服务
+- 设置环境变量
 
-### Service Management
+### 服务管理
 
 ```bash
-# Start service
+# 启动服务
 sudo systemctl start netnexus
 
-# Enable on boot
+# 开机自启
 sudo systemctl enable netnexus
 
-# Check status
+# 查看状态
 sudo systemctl status netnexus
 
-# View logs
+# 查看日志
 sudo journalctl -u netnexus -f
 
-# Manual start
+# 手动启动
 sudo /opt/netnexus/bin/start.sh
 ```
 
-### Docker Deployment
+### Docker 部署
 
-Build and run with Docker:
+使用 Docker 构建和运行：
 
 ```bash
-# Build Docker image
+# 构建 Docker 镜像
 docker build -t netnexus:latest .
 
-# Run with docker-compose
+# 使用 docker-compose 运行
 docker-compose up -d
 
-# View logs
+# 查看日志
 docker-compose logs -f
 
-# Stop
+# 停止
 docker-compose down
 ```
 
-Docker configuration:
-- Exposed port: `3788` (telnet)
-- Persistent data: `/opt/netnexus/data` (volume)
-- Config directory: `/opt/netnexus/resources`
-- Environment: `NN_RESOURCES_DIR=/opt/netnexus/resources`
+Docker 配置：
+- 暴露端口：`3788`（telnet）
+- 持久化数据：`/opt/netnexus/data`（卷）
+- 配置目录：`/opt/netnexus/resources`
+- 环境变量：`NN_RESOURCES_DIR=/opt/netnexus/resources`
 
-### Configuration Path Resolution
+### 配置路径解析
 
-The system resolves XML configuration files in this priority:
+系统按以下优先级解析 XML 配置文件：
 
-1. **Environment variable** `NN_RESOURCES_DIR`: `/opt/netnexus/resources/{module}/commands.xml`
-2. **Production path**: `/opt/netnexus/resources/{module}/commands.xml`
-3. **Development path**: `build/bin/../../src/{module}/commands.xml`
-4. **Fallback**: `../../src/{module}/commands.xml`
+1. **环境变量** `NN_RESOURCES_DIR`：`/opt/netnexus/resources/{module}/commands.xml`
+2. **生产路径**：`/opt/netnexus/resources/{module}/commands.xml`
+3. **开发路径**：`build/bin/../../src/{module}/commands.xml`
+4. **回退路径**：`../../src/{module}/commands.xml`
 
-### Database Storage
+### 数据库存储
 
-SQLite databases are stored in:
-- **Development**: `./data/{module}/{db_name}.db`
-- **Production**: `/opt/netnexus/data/{module}/{db_name}.db` (via environment)
+SQLite 数据库存储位置：
+- **开发环境**：`./data/{module}/{db_name}.db`
+- **生产环境**：`/opt/netnexus/data/{module}/{db_name}.db`（通过环境变量）
 
-Example: BGP module database at `/opt/netnexus/data/bgp/bgp_db.db`
+示例：BGP 模块数据库位于 `/opt/netnexus/data/bgp/bgp_db.db`

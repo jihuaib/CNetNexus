@@ -1,8 +1,9 @@
-//
-// Created by jhb on 1/25/26.
-// Module inter-communication pub/sub system implementation
-//
-
+/**
+ * @file   nn_dev_pubsub.c
+ * @brief  模块间 Pub/Sub 通信系统实现
+ * @author jhb
+ * @date   2026/01/22
+ */
 #include "nn_dev_pubsub.h"
 
 #include <poll.h>

@@ -1,3 +1,9 @@
+/**
+ * @file   nn_db_schema.c
+ * @brief  数据库 Schema 管理，表创建和迁移
+ * @author jhb
+ * @date   2026/01/22
+ */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

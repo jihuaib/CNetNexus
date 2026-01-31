@@ -1,3 +1,9 @@
+/**
+ * @file   nn_if.h
+ * @brief  接口配置模块头文件
+ * @author jhb
+ * @date   2026/01/22
+ */
 #ifndef NN_IF_H
 #define NN_IF_H
 

@@ -1,6 +1,9 @@
-// Interface mapping implementation
-// Maps logical interface names (port0, port1) to physical names (eth0, veth0, etc.)
-
+/**
+ * @file   nn_if_map.c
+ * @brief  接口映射实现，逻辑接口名到物理接口名的映射
+ * @author jhb
+ * @date   2026/01/22
+ */
 #include "nn_if_map.h"
 
 #include <ifaddrs.h>

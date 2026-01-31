@@ -1,3 +1,9 @@
+/**
+ * @file   nn_cli_param_type.h
+ * @brief  CLI 参数类型解析和校验头文件
+ * @author jhb
+ * @date   2026/01/22
+ */
 #ifndef NN_CLI_PARAM_TYPE_H
 #define NN_CLI_PARAM_TYPE_H
 

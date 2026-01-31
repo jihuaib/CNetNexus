@@ -1,3 +1,9 @@
+/**
+ * @file   nn_cfg_registry.c
+ * @brief  模块注册表实现，管理所有已注册模块
+ * @author jhb
+ * @date   2026/01/22
+ */
 #include "nn_cfg_registry.h"
 
 #include <glib.h>

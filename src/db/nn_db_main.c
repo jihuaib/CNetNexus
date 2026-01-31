@@ -1,3 +1,9 @@
+/**
+ * @file   nn_db_main.c
+ * @brief  数据库模块主入口，模块注册和消息循环
+ * @author jhb
+ * @date   2026/01/22
+ */
 #include "nn_db_main.h"
 
 #include <errno.h>
@@ -84,6 +90,12 @@ static void db_process_messages(nn_db_local_t *ctx)
                 // CLI command from cfg module
                 printf("[db] Received CLI command message (%zu bytes)\n", msg->data_len);
                 nn_db_cli_process_command(msg);
+                break;
+
+            case NN_CFG_MSG_TYPE_CLI_CONTINUE:
+                // Continue batch response
+                printf("[db] Received CLI continue request\n");
+                nn_db_cli_handle_continue(msg);
                 break;
 
             default:

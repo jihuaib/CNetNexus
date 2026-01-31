@@ -1,3 +1,9 @@
+/**
+ * @file   nn_db_registry.h
+ * @brief  数据库定义注册表头文件
+ * @author jhb
+ * @date   2026/01/22
+ */
 #ifndef NN_DB_REGISTRY_H
 #define NN_DB_REGISTRY_H
 
@@ -6,35 +12,6 @@
 
 #include "nn_cfg.h"
 #include "nn_db.h"
-
-// ============================================================================
-// Field Value Types
-// ============================================================================
-typedef enum nn_db_value_type
-{
-    NN_DB_TYPE_NULL,
-    NN_DB_TYPE_INTEGER,
-    NN_DB_TYPE_REAL,
-    NN_DB_TYPE_TEXT,
-    NN_DB_TYPE_BLOB
-} nn_db_value_type_t;
-
-// Field value container
-struct nn_db_value
-{
-    nn_db_value_type_t type;
-    union
-    {
-        int64_t i64; // INTEGER
-        double real; // REAL
-        char *text;  // TEXT (allocated, must be freed)
-        struct
-        {
-            void *data; // BLOB data
-            size_t len; // BLOB length
-        } blob;
-    } data;
-};
 
 // Database field definition (parsed from XML <field> element)
 struct nn_db_field
@@ -149,19 +126,5 @@ void nn_db_registry_destroy(void);
  * @return Global registry (creates if doesn't exist)
  */
 nn_db_registry_t *nn_db_registry_get_instance(void);
-
-struct nn_db_row
-{
-    char **field_names;    // Array of field names
-    nn_db_value_t *values; // Array of values
-    uint32_t num_fields;   // Number of fields
-};
-
-struct nn_db_result
-{
-    nn_db_row_t **rows;     // Array of rows
-    uint32_t num_rows;      // Number of rows
-    uint32_t rows_capacity; // Allocated capacity
-};
 
 #endif // NN_DB_REGISTRY_H

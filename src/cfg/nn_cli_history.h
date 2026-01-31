@@ -1,3 +1,9 @@
+/**
+ * @file   nn_cli_history.h
+ * @brief  CLI 命令历史管理头文件
+ * @author jhb
+ * @date   2026/01/22
+ */
 #ifndef NN_CLI_HISTORY_H
 #define NN_CLI_HISTORY_H
 

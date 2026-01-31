@@ -1,3 +1,9 @@
+/**
+ * @file   nn_dev_main.c
+ * @brief  Dev 模块主入口，模块注册和消息循环
+ * @author jhb
+ * @date   2026/01/22
+ */
 #include "nn_dev_main.h"
 
 #include <errno.h>
@@ -45,6 +51,12 @@ static void dev_process_messages(nn_dev_local_t *ctx)
                 // CLI command for dev module
                 printf("[dev] Received CLI command message\n");
                 nn_dev_cli_handle_message(msg);
+                break;
+
+            case NN_CFG_MSG_TYPE_CLI_CONTINUE:
+                // Continue batch response
+                printf("[dev] Received CLI continue request\n");
+                nn_dev_cli_handle_continue(msg);
                 break;
 
             default:

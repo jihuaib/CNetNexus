@@ -1,6 +1,9 @@
-// Interface configuration module for NetNexus
-// Provides abstraction layer for different interface types
-
+/**
+ * @file   nn_if.c
+ * @brief  接口配置模块，提供不同接口类型的抽象层
+ * @author jhb
+ * @date   2026/01/22
+ */
 #include "nn_if.h"
 
 #include <arpa/inet.h>

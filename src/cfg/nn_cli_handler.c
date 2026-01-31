@@ -1,3 +1,9 @@
+/**
+ * @file   nn_cli_handler.c
+ * @brief  CLI 客户端会话管理，命令输入处理和执行
+ * @author jhb
+ * @date   2026/01/22
+ */
 #include "nn_cli_handler.h"
 
 #include <arpa/inet.h>
@@ -82,6 +88,187 @@ void send_prompt(nn_cli_session_t *session)
 {
     nn_cfg_send_message(session, session->prompt);
     nn_cfg_send_message(session, " ");
+}
+
+// ============================================================================
+// Pager (--More--) implementation
+// ============================================================================
+
+#define NN_CLI_PAGER_DEFAULT_LINES 24
+#define NN_CLI_PAGER_PROMPT "--More--"
+
+// Count the number of lines in a string (count \n occurrences)
+static uint32_t pager_count_lines(const char *text)
+{
+    uint32_t count = 0;
+    for (const char *p = text; *p; p++)
+    {
+        if (*p == '\n')
+        {
+            count++;
+        }
+    }
+    return count;
+}
+
+// Display the --More-- prompt
+static void pager_show_more_prompt(nn_cli_session_t *session)
+{
+    nn_cfg_send_message(session, NN_CLI_PAGER_PROMPT);
+}
+
+// Clear the --More-- prompt from the line
+static void pager_clear_more_prompt(nn_cli_session_t *session)
+{
+    // \r moves to start, spaces overwrite, \r moves back to start
+    nn_cfg_send_message(session, "\r        \r");
+}
+
+// Show next N lines from pager buffer. Returns number of lines shown.
+static uint32_t pager_send_lines(nn_cli_session_t *session, uint32_t max_lines)
+{
+    if (!session->pager_buffer || session->pager_offset >= session->pager_total_len)
+    {
+        return 0;
+    }
+
+    uint32_t lines_sent = 0;
+    uint32_t start = session->pager_offset;
+    uint32_t pos = start;
+
+    while (pos < session->pager_total_len && lines_sent < max_lines)
+    {
+        if (session->pager_buffer[pos] == '\n')
+        {
+            lines_sent++;
+        }
+        pos++;
+    }
+
+    // Send the data from start to pos
+    if (pos > start)
+    {
+        nn_cfg_send_data(session, session->pager_buffer + start, pos - start);
+    }
+
+    session->pager_offset = pos;
+    return lines_sent;
+}
+
+// Start paged output. If content is short enough, send directly.
+void nn_cli_pager_output(nn_cli_session_t *session, const char *message)
+{
+    if (!session || !message || message[0] == '\0')
+    {
+        return;
+    }
+
+    uint32_t lines = pager_count_lines(message);
+    uint32_t page_size = session->pager_lines_per_page > 0 ? session->pager_lines_per_page : NN_CLI_PAGER_DEFAULT_LINES;
+
+    // If output fits on one screen, send directly
+    if (lines <= page_size)
+    {
+        nn_cfg_send_message(session, message);
+        return;
+    }
+
+    // Start paging: copy message to pager buffer
+    uint32_t msg_len = strlen(message);
+    session->pager_buffer = g_malloc(msg_len + 1);
+    memcpy(session->pager_buffer, message, msg_len + 1);
+    session->pager_total_len = msg_len;
+    session->pager_offset = 0;
+    session->pager_active = 1;
+
+    // Show first page
+    pager_send_lines(session, page_size);
+
+    // If there's more content, show --More-- prompt
+    if (session->pager_offset < session->pager_total_len)
+    {
+        pager_show_more_prompt(session);
+    }
+    else
+    {
+        nn_cli_pager_stop(session);
+    }
+}
+
+// Stop pager and clean up
+void nn_cli_pager_stop(nn_cli_session_t *session)
+{
+    if (!session)
+    {
+        return;
+    }
+
+    if (session->pager_active)
+    {
+        pager_clear_more_prompt(session);
+    }
+
+    if (session->pager_buffer)
+    {
+        g_free(session->pager_buffer);
+        session->pager_buffer = NULL;
+    }
+    session->pager_offset = 0;
+    session->pager_total_len = 0;
+    session->pager_active = 0;
+}
+
+// Handle pager keypress. Returns 1 if key was consumed by pager, 0 otherwise.
+static int pager_handle_key(nn_cli_session_t *session, char c)
+{
+    if (!session->pager_active)
+    {
+        return 0;
+    }
+
+    uint32_t page_size = session->pager_lines_per_page > 0 ? session->pager_lines_per_page : NN_CLI_PAGER_DEFAULT_LINES;
+
+    if (c == ' ')
+    {
+        // Next page
+        pager_clear_more_prompt(session);
+        pager_send_lines(session, page_size);
+
+        if (session->pager_offset < session->pager_total_len)
+        {
+            pager_show_more_prompt(session);
+        }
+        else
+        {
+            nn_cli_pager_stop(session);
+            send_prompt(session);
+        }
+    }
+    else if (c == '\r' || c == '\n')
+    {
+        // Next line
+        pager_clear_more_prompt(session);
+        pager_send_lines(session, 1);
+
+        if (session->pager_offset < session->pager_total_len)
+        {
+            pager_show_more_prompt(session);
+        }
+        else
+        {
+            nn_cli_pager_stop(session);
+            send_prompt(session);
+        }
+    }
+    else if (c == 'q' || c == 'Q')
+    {
+        // Quit pager
+        nn_cli_pager_stop(session);
+        send_prompt(session);
+    }
+
+    // All other keys are ignored while pager is active
+    return 1;
 }
 
 // ANSI escape sequences
@@ -240,8 +427,8 @@ static void handle_arrow_right(nn_cli_session_t *session, uint32_t line_pos, uin
     }
 }
 
-// Print help for a node
-static void nn_cli_tree_print_help(nn_cli_tree_node_t *node, nn_cli_session_t *session)
+// Print help for a node into a GString buffer
+static void nn_cli_tree_print_help(nn_cli_tree_node_t *node, GString *out)
 {
     if (!node)
     {
@@ -254,7 +441,7 @@ static void nn_cli_tree_print_help(nn_cli_tree_node_t *node, nn_cli_session_t *s
     if (node->is_end_node)
     {
         snprintf(buffer, sizeof(buffer), "  %-25s - %s\r\n", "<cr>", "Execute command");
-        nn_cfg_send_message(session, buffer);
+        g_string_append(out, buffer);
     }
 
     for (uint32_t i = 0; i < node->num_children; i++)
@@ -294,7 +481,7 @@ static void nn_cli_tree_print_help(nn_cli_tree_node_t *node, nn_cli_session_t *s
             }
 
             snprintf(buffer, sizeof(buffer), "  %-25s - %s\r\n", name_display, desc_with_marker);
-            nn_cfg_send_message(session, buffer);
+            g_string_append(out, buffer);
         }
     }
 }
@@ -442,6 +629,9 @@ static void handle_help_request(nn_cli_session_t *session, char *line_buffer, ui
     uint32_t has_trailing_space = (cursor_pos > 0 && match_buffer[cursor_pos - 1] == ' ');
     char buffer[256];
 
+    // Collect all help output into a GString for paging
+    GString *help_out = g_string_new("");
+
     if (has_trailing_space)
     {
         // Case: "xx ?" - Show next token's children
@@ -449,13 +639,11 @@ static void handle_help_request(nn_cli_session_t *session, char *line_buffer, ui
 
         if (context)
         {
-            // Found valid context (could be root), show its children
-            nn_cli_tree_print_help(context, session);
+            nn_cli_tree_print_help(context, help_out);
         }
         else
         {
-            // Command not found
-            nn_cfg_send_message(session, "Error: Invalid command.\r\n");
+            g_string_append(help_out, "Error: Invalid command.\r\n");
         }
     }
     else
@@ -467,7 +655,6 @@ static void handle_help_request(nn_cli_session_t *session, char *line_buffer, ui
 
         if (num_matches > 0)
         {
-            // Check if all matches are KEYWORD or if there's an ARGUMENT
             uint32_t has_keyword = 0;
             uint32_t has_argument = 0;
 
@@ -485,19 +672,17 @@ static void handle_help_request(nn_cli_session_t *session, char *line_buffer, ui
 
             if (has_keyword)
             {
-                // Show all matching KEYWORD nodes
                 for (uint32_t i = 0; i < num_matches; i++)
                 {
                     if (matches[i]->type == NN_CLI_NODE_COMMAND && matches[i]->name && matches[i]->description)
                     {
                         snprintf(buffer, sizeof(buffer), "  %-25s - %s\r\n", matches[i]->name, matches[i]->description);
-                        nn_cfg_send_message(session, buffer);
+                        g_string_append(help_out, buffer);
                     }
                 }
             }
             else if (has_argument)
             {
-                // Show ARGUMENT help (validation passed)
                 nn_cli_tree_node_t *arg = matches[0];
 
                 char name_display[128];
@@ -517,13 +702,11 @@ static void handle_help_request(nn_cli_session_t *session, char *line_buffer, ui
 
                 snprintf(buffer, sizeof(buffer), "  %-25s - %s\r\n", name_display,
                          arg->description ? arg->description : "");
-                nn_cfg_send_message(session, buffer);
+                g_string_append(help_out, buffer);
             }
         }
         else
         {
-            // No matches found
-            // Check if match_buffer is empty or only whitespace
             uint32_t is_empty = 1;
             for (uint32_t i = 0; i < cursor_pos; i++)
             {
@@ -536,33 +719,39 @@ static void handle_help_request(nn_cli_session_t *session, char *line_buffer, ui
 
             if (is_empty)
             {
-                // Empty command - show help for current context
                 nn_cli_tree_node_t *context = session->current_view->cmd_tree;
                 if (context)
                 {
-                    nn_cli_tree_print_help(context, session);
+                    nn_cli_tree_print_help(context, help_out);
                 }
             }
             else
             {
-                // Invalid command
-                nn_cfg_send_message(session, "Error: Invalid command.\r\n");
+                g_string_append(help_out, "Error: Invalid command.\r\n");
             }
         }
     }
+
+    // Send help output through pager
+    nn_cli_pager_output(session, help_out->str);
+    g_string_free(help_out, TRUE);
 
     // Truncate line_buffer at cursor position
     *line_pos = cursor_pos;
     line_buffer[*line_pos] = '\0';
 
-    // Clear current line and redraw with proper cursor position
-    nn_cfg_send_message(session, "\r");      // Move to start of line
-    nn_cfg_send_message(session, "\x1B[2K"); // Clear entire line
-
-    send_prompt(session);
-    if (*line_pos > 0)
+    // If pager is active, it will handle prompt when done
+    if (!session->pager_active)
     {
-        nn_cfg_send_data(session, line_buffer, *line_pos);
+        // Clear current line and redraw with proper cursor position
+        nn_cfg_send_message(session, "\r");      // Move to start of line
+        nn_cfg_send_message(session, "\x1B[2K"); // Clear entire line
+
+        send_prompt(session);
+        if (*line_pos > 0)
+        {
+            nn_cfg_send_data(session, line_buffer, *line_pos);
+        }
     }
 }
 
@@ -712,6 +901,13 @@ nn_cli_session_t *nn_cli_session_create(int client_fd)
     update_prompt_from_template(session, session->current_view->prompt_template);
     nn_cli_session_history_init(&session->history);
 
+    // Initialize pager
+    session->pager_buffer = NULL;
+    session->pager_offset = 0;
+    session->pager_total_len = 0;
+    session->pager_lines_per_page = NN_CLI_PAGER_DEFAULT_LINES;
+    session->pager_active = 0;
+
     // Get client IP address
     struct sockaddr_in client_addr;
     socklen_t addr_len = sizeof(client_addr);
@@ -766,6 +962,13 @@ int nn_cli_process_input(nn_cli_session_t *session)
             continue;
         }
 
+        // Handle pager input if active (intercept before normal processing)
+        if (session->pager_active)
+        {
+            pager_handle_key(session, c);
+            continue;
+        }
+
         // State machine for ANSI escape sequences
         if (session->state == NN_CLI_STATE_NORMAL)
         {
@@ -810,7 +1013,11 @@ int nn_cli_process_input(nn_cli_session_t *session)
                     session->history.browse_idx = -1; // Reset browse state
                 }
 
-                send_prompt(session);
+                // Don't send prompt if pager is active (pager will send it when done)
+                if (!session->pager_active)
+                {
+                    send_prompt(session);
+                }
             }
             // Handle Backspace
             else if (c == 127 || c == 8)
@@ -958,6 +1165,14 @@ void nn_cli_session_destroy(nn_cli_session_t *session)
     }
 
     nn_cli_session_history_cleanup(&session->history);
+
+    // Clean up pager
+    if (session->pager_buffer)
+    {
+        g_free(session->pager_buffer);
+        session->pager_buffer = NULL;
+    }
+
     if (session->client_fd >= 0)
     {
         close(session->client_fd);

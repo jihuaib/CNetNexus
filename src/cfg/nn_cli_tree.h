@@ -1,3 +1,9 @@
+/**
+ * @file   nn_cli_tree.h
+ * @brief  CLI 命令树匹配和补全头文件
+ * @author jhb
+ * @date   2026/01/22
+ */
 #ifndef NN_CLI_TREE_H
 #define NN_CLI_TREE_H
 

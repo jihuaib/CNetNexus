@@ -1,3 +1,9 @@
+/**
+ * @file   nn_db_api.c
+ * @brief  数据库 CRUD 操作 API 实现
+ * @author jhb
+ * @date   2026/01/22
+ */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

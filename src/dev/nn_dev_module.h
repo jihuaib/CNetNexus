@@ -1,4 +1,9 @@
-
+/**
+ * @file   nn_dev_module.h
+ * @brief  Dev 模块注册头文件
+ * @author jhb
+ * @date   2026/01/22
+ */
 #ifndef NN_DEV_MODULE_H
 #define NN_DEV_MODULE_H
 

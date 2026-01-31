@@ -1,3 +1,9 @@
+/**
+ * @file   nn_dev_cli.c
+ * @brief  Dev 模块 CLI 命令处理
+ * @author jhb
+ * @date   2026/01/22
+ */
 #include "nn_dev_cli.h"
 
 #include <stdio.h>
@@ -210,6 +216,21 @@ static void nn_dev_cli_send_response(nn_dev_message_t *msg, const nn_dev_cli_out
             (void)g_nn_dev_cfg_resp_dispatch[i].handler(msg, cfg_out, resp_out);
         }
     }
+}
+
+int nn_dev_cli_handle_continue(nn_dev_message_t *msg)
+{
+    // No batch output pending - send empty final response
+    char *resp_data = g_strdup("");
+    nn_dev_message_t *resp_msg =
+        nn_dev_message_create(NN_CFG_MSG_TYPE_CLI_RESP, NN_DEV_MODULE_ID_DEV, msg->request_id,
+                             resp_data, strlen(resp_data) + 1, g_free);
+    if (resp_msg)
+    {
+        nn_dev_pubsub_send_response(msg->sender_id, resp_msg);
+        nn_dev_message_free(resp_msg);
+    }
+    return NN_ERRCODE_SUCCESS;
 }
 
 int nn_dev_cli_handle_message(nn_dev_message_t *msg)

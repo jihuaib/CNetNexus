@@ -1,14 +1,16 @@
-//
-// BGP CLI Command Handler
-// Processes CLI commands received via pub/sub TLV messages
-//
-
+/**
+ * @file   nn_bgp_cli.c
+ * @brief  BGP 模块 CLI 命令处理
+ * @author jhb
+ * @date   2026/01/22
+ */
 #include "nn_bgp_cli.h"
 
 #include <stdio.h>
 #include <string.h>
 
 #include "nn_cfg.h"
+#include "nn_db.h"
 #include "nn_dev.h"
 #include "nn_errcode.h"
 
@@ -25,9 +27,11 @@ typedef struct nn_bgp_group_dispatch
 } nn_bgp_group_dispatch_t;
 
 int handle_bgp_config(nn_cfg_tlv_parser_t parser, nn_bgp_cli_out_t *cfg_out, nn_bgp_cli_resp_out_t *resp_out);
+int handle_show_bgp(nn_cfg_tlv_parser_t parser, nn_bgp_cli_out_t *cfg_out, nn_bgp_cli_resp_out_t *resp_out);
 
 static const nn_bgp_group_dispatch_t g_bgp_group_dispatch[] = {
     {NN_BGP_CLI_GROUP_ID_BGP, handle_bgp_config},
+    {NN_BGP_CLI_GROUP_ID_SHOW, handle_show_bgp},
 };
 
 #define BGP_GROUP_DISPATCH_COUNT (sizeof(g_bgp_group_dispatch) / sizeof(g_bgp_group_dispatch[0]))
@@ -43,9 +47,12 @@ typedef struct nn_bgp_cli_resp_dispatch
 
 int handle_bgp_config_resp(nn_dev_message_t *msg, const nn_bgp_cli_out_t *cfg_out,
                            const nn_bgp_cli_resp_out_t *resp_out);
+int handle_show_bgp_resp(nn_dev_message_t *msg, const nn_bgp_cli_out_t *cfg_out,
+                          const nn_bgp_cli_resp_out_t *resp_out);
 
 static const nn_bgp_cli_resp_dispatch_t g_nn_bgp_cfg_resp_dispatch[] = {
     {NN_BGP_CLI_GROUP_ID_BGP, handle_bgp_config_resp},
+    {NN_BGP_CLI_GROUP_ID_SHOW, handle_show_bgp_resp},
 };
 
 #define NN_BGP_CFG_RESP_DISPATCH_COUNT (sizeof(g_nn_bgp_cfg_resp_dispatch) / sizeof(g_nn_bgp_cfg_resp_dispatch[0]))
@@ -84,7 +91,30 @@ int handle_bgp_config(nn_cfg_tlv_parser_t parser, nn_bgp_cli_out_t *cfg_out, nn_
         }
     }
 
-    // Validate and execute
+    gboolean no = cfg_out->data.bgp.no;
+
+    // 删除场景
+    if (no == TRUE)
+    {
+        if (has_as_number)
+        {
+            char where[64];
+            snprintf(where, sizeof(where), "as_number = %u", as_number);
+            int rows = nn_db_delete("bgp_db", "bgp_protocol", where);
+            snprintf(resp_out->message, sizeof(resp_out->message), "BGP: AS %u deleted (%d row).\r\n", as_number,
+                     rows > 0 ? rows : 0);
+        }
+        else
+        {
+            int rows = nn_db_delete("bgp_db", "bgp_protocol", NULL);
+            snprintf(resp_out->message, sizeof(resp_out->message), "BGP: All configuration deleted (%d row).\r\n",
+                     rows > 0 ? rows : 0);
+        }
+        resp_out->success = 1;
+        return NN_ERRCODE_SUCCESS;
+    }
+
+    // 配置场景：必须有 as_number
     if (!has_as_number)
     {
         snprintf(resp_out->message, sizeof(resp_out->message), "BGP Error: Missing required AS number parameter.\r\n");
@@ -92,12 +122,115 @@ int handle_bgp_config(nn_cfg_tlv_parser_t parser, nn_bgp_cli_out_t *cfg_out, nn_
         return NN_ERRCODE_FAIL;
     }
 
-    // Configure BGP
-    printf("[bgp_cli] Configuring BGP with AS number: %u\n", as_number);
+    // 检查是否已有配置
+    gboolean exists = FALSE;
+    int ret = nn_db_exists("bgp_db", "bgp_protocol", NULL, &exists);
+    if (ret != NN_ERRCODE_SUCCESS)
+    {
+        snprintf(resp_out->message, sizeof(resp_out->message), "BGP Error: Database query failed.\r\n");
+        resp_out->success = 0;
+        return NN_ERRCODE_FAIL;
+    }
 
-    // Set response output
+    const char *field_names[] = {"as_number"};
+    nn_db_value_t values[] = {nn_db_value_int((int64_t)as_number)};
+
+    if (exists)
+    {
+        // 更新现有配置
+        int rows = nn_db_update("bgp_db", "bgp_protocol", field_names, values, 1, NULL);
+        if (rows < 0)
+        {
+            snprintf(resp_out->message, sizeof(resp_out->message), "BGP Error: Failed to update configuration.\r\n");
+            resp_out->success = 0;
+            return NN_ERRCODE_FAIL;
+        }
+        printf("[bgp_cli] Updated BGP AS number to %u\n", as_number);
+    }
+    else
+    {
+        // 插入新配置
+        ret = nn_db_insert("bgp_db", "bgp_protocol", field_names, values, 1);
+        if (ret != NN_ERRCODE_SUCCESS)
+        {
+            snprintf(resp_out->message, sizeof(resp_out->message), "BGP Error: Failed to insert configuration.\r\n");
+            resp_out->success = 0;
+            return NN_ERRCODE_FAIL;
+        }
+        printf("[bgp_cli] Inserted BGP AS number %u\n", as_number);
+    }
+
     snprintf(resp_out->message, sizeof(resp_out->message), "BGP: AS %u configured.\r\n", as_number);
     resp_out->success = 1;
+
+    return NN_ERRCODE_SUCCESS;
+}
+
+/**
+ * @brief 处理 "show bgp" 命令 (group_id = 2)
+ */
+int handle_show_bgp(nn_cfg_tlv_parser_t parser, nn_bgp_cli_out_t *cfg_out, nn_bgp_cli_resp_out_t *resp_out)
+{
+    (void)parser;
+    (void)cfg_out;
+
+    nn_db_result_t *result = NULL;
+    int ret = nn_db_query("bgp_db", "bgp_protocol", NULL, 0, NULL, &result);
+    if (ret != NN_ERRCODE_SUCCESS)
+    {
+        snprintf(resp_out->message, sizeof(resp_out->message), "BGP Error: Database query failed.\r\n");
+        resp_out->success = 0;
+        return NN_ERRCODE_FAIL;
+    }
+
+    if (result->num_rows == 0)
+    {
+        snprintf(resp_out->message, sizeof(resp_out->message), "No BGP configuration.\r\n");
+        nn_db_result_free(result);
+        resp_out->success = 1;
+        return NN_ERRCODE_SUCCESS;
+    }
+
+    int offset = 0;
+    for (uint32_t i = 0; i < result->num_rows; i++)
+    {
+        nn_db_row_t *row = result->rows[i];
+        for (uint32_t j = 0; j < row->num_fields; j++)
+        {
+            if (strcmp(row->field_names[j], "as_number") == 0 && row->values[j].type == NN_DB_TYPE_INTEGER)
+            {
+                offset += snprintf(resp_out->message + offset, sizeof(resp_out->message) - offset,
+                                   "BGP AS Number: %ld\r\n", row->values[j].data.i64);
+            }
+        }
+    }
+
+    nn_db_result_free(result);
+    resp_out->success = 1;
+    return NN_ERRCODE_SUCCESS;
+}
+
+/**
+ * @brief 发送 show bgp 命令响应
+ */
+int handle_show_bgp_resp(nn_dev_message_t *msg, const nn_bgp_cli_out_t *cfg_out, const nn_bgp_cli_resp_out_t *resp_out)
+{
+    (void)cfg_out;
+
+    char *resp_data = g_strdup(resp_out->message);
+    if (!resp_data)
+    {
+        return NN_ERRCODE_FAIL;
+    }
+
+    nn_dev_message_t *resp =
+        nn_dev_message_create(NN_CFG_MSG_TYPE_CLI_RESP, NN_DEV_MODULE_ID_BGP, msg->request_id, resp_data,
+                              strlen(resp_data) + 1, g_free);
+    if (resp)
+    {
+        nn_dev_pubsub_send_response(msg->sender_id, resp);
+        nn_dev_message_free(resp);
+    }
 
     return NN_ERRCODE_SUCCESS;
 }
@@ -209,6 +342,21 @@ static void nn_bgp_cfg_send_response(nn_dev_message_t *msg, const nn_bgp_cli_out
 /**
  * @brief Parse and dispatch BGP CLI command from TLV message
  */
+int nn_bgp_cli_handle_continue(nn_dev_message_t *msg)
+{
+    // No batch output pending - send empty final response
+    char *resp_data = g_strdup("");
+    nn_dev_message_t *resp_msg =
+        nn_dev_message_create(NN_CFG_MSG_TYPE_CLI_RESP, NN_DEV_MODULE_ID_BGP, msg->request_id,
+                             resp_data, strlen(resp_data) + 1, g_free);
+    if (resp_msg)
+    {
+        nn_dev_pubsub_send_response(msg->sender_id, resp_msg);
+        nn_dev_message_free(resp_msg);
+    }
+    return NN_ERRCODE_SUCCESS;
+}
+
 int nn_bgp_cli_handle_message(nn_dev_message_t *msg)
 {
     if (!msg || !msg->data)

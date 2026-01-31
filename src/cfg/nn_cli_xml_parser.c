@@ -1,3 +1,9 @@
+/**
+ * @file   nn_cli_xml_parser.c
+ * @brief  CLI XML 配置文件解析
+ * @author jhb
+ * @date   2026/01/22
+ */
 #include "nn_cli_xml_parser.h"
 
 #include <ctype.h>

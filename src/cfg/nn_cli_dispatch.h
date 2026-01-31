@@ -1,8 +1,9 @@
-//
-// Created by jhb on 1/25/26.
-// CLI command dispatch - TLV message packing and module dispatch
-//
-
+/**
+ * @file   nn_cli_dispatch.h
+ * @brief  CLI 命令分发头文件
+ * @author jhb
+ * @date   2026/01/22
+ */
 #ifndef NN_CLI_DISPATCH_H
 #define NN_CLI_DISPATCH_H
 

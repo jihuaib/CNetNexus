@@ -1,3 +1,9 @@
+/**
+ * @file   nn_db_main.h
+ * @brief  数据库模块主入口头文件
+ * @author jhb
+ * @date   2026/01/22
+ */
 #ifndef NN_DB_MAIN_H
 #define NN_DB_MAIN_H
 
