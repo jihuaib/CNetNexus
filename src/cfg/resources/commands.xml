@@ -21,6 +21,10 @@
                     <name>history</name>
                     <description>Command history</description>
                 </element>
+                <element cfg-id="3" type="keyword">
+                    <name>current-configuration</name>
+                    <description>Display current configuration</description>
+                </element>
             </elements>
 
             <commands>
@@ -30,6 +34,10 @@
                 </command>
                 <command>
                     <expression>1 2 4</expression>
+                    <views>1</views>
+                </command>
+                <command>
+                    <expression>1 5</expression>
                     <views>1</views>
                 </command>
             </commands>

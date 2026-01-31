@@ -65,6 +65,25 @@
         </group>
     </command_groups>
 
+    <config_templates>
+        <!-- 主配置模板 -->
+        <template-def template-name="bgp_template" priority="10" >
+            <template-def template-name="bgp_af_ipv4_uni_template"/>
+            <template-def template-name="bgp_af_ipv6_uni_template"/>
+        </template-def>
+
+        <!-- BGP 视图内的子模板 -->
+        <template template-name="bgp_template" db="bgp_db.bgp_protocol">
+ #
+ bgp {bgp_protocol.as_number}
+ #
+        </template>
+
+        <template template-name="bgp_af_ipv4_uni_template" db="bgp_db.bgp_peer">
+af ipv4-unicast
+        </template>
+    </config_templates>
+
     <dbs>
         <db db-name="bgp_db">
             <tables>

@@ -46,6 +46,10 @@ typedef struct
     char prompt_stack[NN_CLI_PROMPT_STACK_DEPTH][NN_CFG_CLI_MAX_PROMPT_LEN];
     uint32_t prompt_stack_depth;
 
+    // 视图上下文栈：保存进入子视图时模块设置的环境变量
+    uint8_t *view_context_stack[NN_CLI_PROMPT_STACK_DEPTH]; // 每层上下文 TLV 数据
+    uint32_t view_context_len[NN_CLI_PROMPT_STACK_DEPTH];   // 每层数据长度
+
     // Pager state for --More-- output
     char *pager_buffer;              // Dynamically allocated output buffer
     uint32_t pager_offset;           // Current position in buffer
@@ -64,6 +68,8 @@ void update_prompt(nn_cli_session_t *session);
 void update_prompt_from_template(nn_cli_session_t *session, const char *module_prompt);
 void nn_cli_prompt_push(nn_cli_session_t *session);
 void nn_cli_prompt_pop(nn_cli_session_t *session);
+void nn_cli_context_set(nn_cli_session_t *session, const uint8_t *data, uint32_t len);
+const uint8_t *nn_cli_context_get(nn_cli_session_t *session, uint32_t *out_len);
 void nn_cfg_send_message(nn_cli_session_t *session, const char *message);
 void nn_cfg_send_data(nn_cli_session_t *session, const void *data, size_t len);
 int process_command(const char *cmd_line, nn_cli_session_t *session);

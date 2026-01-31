@@ -295,11 +295,36 @@ int handle_bgp_config_resp(nn_dev_message_t *msg, const nn_bgp_cli_out_t *cfg_ou
         }
 
         snprintf(out_prompt, NN_CFG_CLI_MAX_PROMPT_LEN, view_name, cfg_out->data.bgp.as_number);
-        char *msg_out = g_malloc0(NN_CFG_CLI_MAX_PROMPT_LEN);
+
+        // 构建上下文 TLV: as_number
+        uint8_t ctx_buf[NN_CFG_TLV_HEADER_SIZE + sizeof(uint32_t)];
+        uint8_t *p = ctx_buf;
+
+        // cfg_id = NN_BGP_CLI_BGP_CFG_ID_BGP_AS（网络字节序）
+        uint32_t ctx_id_be = htonl(NN_BGP_CLI_BGP_CFG_ID_BGP_AS);
+        memcpy(p, &ctx_id_be, NN_CFG_TLV_ELEMENT_ID_SIZE);
+        p += NN_CFG_TLV_ELEMENT_ID_SIZE;
+
+        // 长度 = 4（网络字节序）
+        uint16_t ctx_len_be = htons(sizeof(uint32_t));
+        memcpy(p, &ctx_len_be, NN_CFG_TLV_LENGTH_SIZE);
+        p += NN_CFG_TLV_LENGTH_SIZE;
+
+        // 值 = as_number（网络字节序）
+        uint32_t as_be = htonl(cfg_out->data.bgp.as_number);
+        memcpy(p, &as_be, sizeof(uint32_t));
+        p += sizeof(uint32_t);
+
+        uint32_t ctx_total = (uint32_t)(p - ctx_buf);
+
+        // 分配 prompt + 上下文数据
+        uint32_t total_len = NN_CFG_CLI_MAX_PROMPT_LEN + ctx_total;
+        char *msg_out = g_malloc0(total_len);
         memcpy(msg_out, out_prompt, NN_CFG_CLI_MAX_PROMPT_LEN);
+        memcpy(msg_out + NN_CFG_CLI_MAX_PROMPT_LEN, ctx_buf, ctx_total);
 
         nn_dev_message_t *resp = nn_dev_message_create(NN_CFG_MSG_TYPE_CLI_VIEW_CHG, NN_DEV_MODULE_ID_BGP,
-                                                       msg->request_id, msg_out, NN_CFG_CLI_MAX_PROMPT_LEN, g_free);
+                                                       msg->request_id, msg_out, total_len, g_free);
         if (resp)
         {
             nn_dev_pubsub_send_response(msg->sender_id, resp);

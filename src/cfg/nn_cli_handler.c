@@ -67,6 +67,11 @@ void nn_cli_prompt_push(nn_cli_session_t *session)
 
     strncpy(session->prompt_stack[session->prompt_stack_depth], session->prompt, NN_CFG_CLI_MAX_PROMPT_LEN - 1);
     session->prompt_stack[session->prompt_stack_depth][NN_CFG_CLI_MAX_PROMPT_LEN - 1] = '\0';
+
+    // 初始化当前层上下文为空（上下文在 VIEW_CHG 处理时设置）
+    session->view_context_stack[session->prompt_stack_depth] = NULL;
+    session->view_context_len[session->prompt_stack_depth] = 0;
+
     session->prompt_stack_depth++;
 }
 
@@ -79,8 +84,62 @@ void nn_cli_prompt_pop(nn_cli_session_t *session)
     }
 
     session->prompt_stack_depth--;
+
+    // 释放当前层上下文数据
+    if (session->view_context_stack[session->prompt_stack_depth])
+    {
+        g_free(session->view_context_stack[session->prompt_stack_depth]);
+        session->view_context_stack[session->prompt_stack_depth] = NULL;
+        session->view_context_len[session->prompt_stack_depth] = 0;
+    }
+
     strncpy(session->prompt, session->prompt_stack[session->prompt_stack_depth], sizeof(session->prompt) - 1);
     session->prompt[sizeof(session->prompt) - 1] = '\0';
+}
+
+// 设置当前层视图上下文数据
+void nn_cli_context_set(nn_cli_session_t *session, const uint8_t *data, uint32_t len)
+{
+    if (!session || session->prompt_stack_depth == 0 || !data || len == 0)
+    {
+        return;
+    }
+
+    // 上下文保存在当前层（prompt_stack_depth - 1，即刚 push 的那一层）
+    uint32_t idx = session->prompt_stack_depth - 1;
+
+    // 释放旧数据
+    if (session->view_context_stack[idx])
+    {
+        g_free(session->view_context_stack[idx]);
+    }
+
+    session->view_context_stack[idx] = g_malloc(len);
+    memcpy(session->view_context_stack[idx], data, len);
+    session->view_context_len[idx] = len;
+}
+
+// 获取当前层视图上下文数据
+const uint8_t *nn_cli_context_get(nn_cli_session_t *session, uint32_t *out_len)
+{
+    if (!session || !out_len)
+    {
+        if (out_len)
+        {
+            *out_len = 0;
+        }
+        return NULL;
+    }
+
+    if (session->prompt_stack_depth == 0)
+    {
+        *out_len = 0;
+        return NULL;
+    }
+
+    uint32_t idx = session->prompt_stack_depth - 1;
+    *out_len = session->view_context_len[idx];
+    return session->view_context_stack[idx];
 }
 
 // Send the prompt to the client
@@ -1165,6 +1224,17 @@ void nn_cli_session_destroy(nn_cli_session_t *session)
     }
 
     nn_cli_session_history_cleanup(&session->history);
+
+    // 释放所有上下文栈数据
+    for (uint32_t i = 0; i < NN_CLI_PROMPT_STACK_DEPTH; i++)
+    {
+        if (session->view_context_stack[i])
+        {
+            g_free(session->view_context_stack[i]);
+            session->view_context_stack[i] = NULL;
+            session->view_context_len[i] = 0;
+        }
+    }
 
     // Clean up pager
     if (session->pager_buffer)

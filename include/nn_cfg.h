@@ -69,6 +69,15 @@
 /** TLV 头部大小（元素 ID + 长度） */
 #define NN_CFG_TLV_HEADER_SIZE (NN_CFG_TLV_ELEMENT_ID_SIZE + NN_CFG_TLV_LENGTH_SIZE)
 
+/** 上下文 TLV cfg_id 标记位，用于区分上下文变量和命令参数 */
+#define NN_CFG_TLV_CONTEXT_FLAG 0x80000000
+
+/** 判断 cfg_id 是否为上下文变量 */
+#define NN_CFG_TLV_IS_CONTEXT(cfg_id) (((cfg_id) & NN_CFG_TLV_CONTEXT_FLAG) != 0)
+
+/** 提取上下文变量的原始 cfg_id */
+#define NN_CFG_TLV_CONTEXT_ID(cfg_id) ((cfg_id) & ~NN_CFG_TLV_CONTEXT_FLAG)
+
 /* 前向声明 */
 typedef struct nn_cli_param_type nn_cli_param_type_t;
 
@@ -350,5 +359,20 @@ void nn_cfg_param_type_free(nn_cli_param_type_t *param_type);
  */
 gboolean nn_cfg_param_type_validate(const nn_cli_param_type_t *param_type, const char *value, char *error_msg,
                                     uint32_t error_msg_size);
+
+/**
+ * @brief 获取配置模板（由 XML 解析器加载）
+ * @param template_name 模板名称
+ * @return 模板指针（不转移所有权），未找到返回 NULL
+ */
+struct nn_config_template *nn_cfg_get_config_template(const char *template_name);
+
+/**
+ * @brief 根据模板和变量映射生成格式化的配置输出
+ * @param template_name 模板名称
+ * @param var_values 变量替换映射（GHashTable：key=variable_name, value=variable_value_string）
+ * @return 渲染后的字符串（调用者负责 g_free），失败返回 NULL
+ */
+char *nn_cfg_render_template(const char *template_name, GHashTable *var_values);
 
 #endif // NN_CFG_H

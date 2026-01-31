@@ -20,6 +20,7 @@
 #include "nn_cli_element.h"
 #include "nn_cli_tree.h"
 #include "nn_cli_view.h"
+#include "nn_config_template.h"
 #include "nn_errcode.h"
 
 static void merge_global_to_views(nn_cli_view_node_t *view, nn_cli_tree_node_t *global_tree);
@@ -28,6 +29,9 @@ static void merge_global_to_views(nn_cli_view_node_t *view, nn_cli_tree_node_t *
 static nn_cfg_xml_db_def_t *parse_databases_node(xmlNode *dbs_node, uint32_t module_id);
 static nn_cfg_xml_db_table_t *parse_table_node(xmlNode *table_node);
 static nn_cfg_xml_db_field_t *parse_field_node(xmlNode *field_node);
+
+// Template parsing (private)
+static void parse_config_templates_node(xmlNode *templates_node);
 
 // ============================================================================
 // Expression AST - supports [ A | B ] (optional) and { A | B } (required)
@@ -990,6 +994,20 @@ uint32_t nn_cli_xml_load_view_tree(const char *xml_file, nn_cli_view_tree_t *vie
         }
     }
 
+    // Parse config templates section
+    for (xmlNode *cur = root_element->children; cur; cur = cur->next)
+    {
+        if (cur->type != XML_ELEMENT_NODE)
+        {
+            continue;
+        }
+
+        if (xmlStrcmp(cur->name, (const xmlChar *)"config_templates") == 0)
+        {
+            parse_config_templates_node(cur);
+        }
+    }
+
     // Merge global commands into all views
     if (view_tree->global_view && view_tree->global_view->cmd_tree)
     {
@@ -1165,4 +1183,196 @@ void nn_cfg_xml_db_def_free(nn_cfg_xml_db_def_t *db_def)
         g_list_free_full(db_def->tables, (GDestroyNotify)nn_cfg_xml_db_table_free);
         g_free(db_def);
     }
+}
+
+// ============================================================================
+// Template Parsing
+// ============================================================================
+
+/**
+ * @brief 解析 <template> 元素（模板主体）
+ */
+/**
+ * @brief 清理模板内容：只去掉 XML 标签引入的首尾空白
+ *
+ * xmlNodeGetContent 返回的文本：
+ * - 开头有一个 \n（紧跟 <template> 开始标签后的换行）
+ * - 结尾有 \n + 缩进空格（</template> 结束标签前的缩进）
+ * 只删除这两部分，中间用户写的内容完全保留。
+ */
+static char *clean_template_content(const char *content)
+{
+    if (!content || *content == '\0')
+        return NULL;
+
+    const char *start = content;
+
+    // 开头：只跳过一个 \n（标签后的换行）
+    if (*start == '\n')
+        start++;
+
+    if (*start == '\0')
+        return NULL;
+
+    // 结尾：找到最后一个 \n，如果其后全是空格/制表符，则截断到那个 \n
+    size_t total_len = strlen(start);
+    const char *end = start + total_len;
+
+    // 从末尾向前扫描空格/制表符
+    const char *p = end - 1;
+    while (p > start && (*p == ' ' || *p == '\t'))
+        p--;
+
+    // 如果扫描到的是 \n，说明最后一行全是空格（XML缩进），去掉
+    if (p > start && *p == '\n')
+        end = p;
+
+    size_t len = end - start;
+    if (len == 0)
+        return NULL;
+
+    return g_strndup(start, len);
+}
+
+static void parse_template_body_node(xmlNode *body_node, nn_config_template_t *template)
+{
+    if (!body_node || !template)
+        return;
+
+    // 提取 db 属性
+    xmlChar *db_str = xmlGetProp(body_node, (const xmlChar *)"db");
+    if (db_str)
+    {
+        // 分割数据库名称（逗号分隔）
+        gchar **db_names = g_strsplit((const char *)db_str, ",", -1);
+        uint32_t db_count = g_strv_length(db_names);
+
+        // 移除空格
+        for (uint32_t i = 0; i < db_count; i++)
+        {
+            g_strstrip(db_names[i]);
+        }
+
+        // 获取模板内容
+        xmlChar *content = xmlNodeGetContent(body_node);
+
+        if (content)
+        {
+            // 清理内容中的不必要缩进
+            char *cleaned_content = clean_template_content((const char *)content);
+            if (cleaned_content)
+            {
+                nn_config_template_set_body(template, cleaned_content,
+                                            (const char **)db_names, db_count);
+                g_free(cleaned_content);
+            }
+            xmlFree(content);
+        }
+
+        g_strfreev(db_names);
+        xmlFree(db_str);
+    }
+}
+
+/**
+ * @brief 解析整个 <config_templates> 节点
+ */
+static void parse_config_templates_node(xmlNode *templates_node)
+{
+    if (!templates_node)
+        return;
+
+    printf("[xml_parser] Parsing config_templates section\n");
+
+    // 首先扫描所有 template-def 并创建模板
+    GHashTable *template_map = g_hash_table_new(g_str_hash, g_str_equal);
+
+    for (xmlNode *cur = templates_node->children; cur; cur = cur->next)
+    {
+        if (cur->type != XML_ELEMENT_NODE)
+            continue;
+
+        if (xmlStrcmp(cur->name, (const xmlChar *)"template-def") == 0)
+        {
+            xmlChar *name = xmlGetProp(cur, (const xmlChar *)"template-name");
+            if (name)
+            {
+                xmlChar *priority_str = xmlGetProp(cur, (const xmlChar *)"priority");
+                uint32_t priority = priority_str ? atoi((const char *)priority_str) : 0;
+                if (priority_str)
+                    xmlFree(priority_str);
+
+                nn_config_template_t *template = nn_config_template_create((const char *)name, priority);
+
+                // 处理嵌套的 template-def（子模板）
+                for (xmlNode *child = cur->children; child; child = child->next)
+                {
+                    if (child->type == XML_ELEMENT_NODE &&
+                        xmlStrcmp(child->name, (const xmlChar *)"template-def") == 0)
+                    {
+                        xmlChar *child_name = xmlGetProp(child, (const xmlChar *)"template-name");
+                        if (child_name)
+                        {
+                            nn_config_template_add_child(template, (const char *)child_name);
+
+                            // 为子模板也创建模板对象并加入 template_map
+                            if (!g_hash_table_lookup(template_map, (const char *)child_name))
+                            {
+                                nn_config_template_t *child_template =
+                                    nn_config_template_create((const char *)child_name, 0);
+                                g_hash_table_insert(template_map,
+                                                    (gpointer)child_template->template_name,
+                                                    child_template);
+                            }
+
+                            xmlFree(child_name);
+                        }
+                    }
+                }
+
+                g_hash_table_insert(template_map, (gpointer)template->template_name, template);
+                xmlFree(name);
+            }
+        }
+    }
+
+    // 然后扫描所有 template（主体）并关联到相应的定义
+    for (xmlNode *cur = templates_node->children; cur; cur = cur->next)
+    {
+        if (cur->type != XML_ELEMENT_NODE)
+            continue;
+
+        if (xmlStrcmp(cur->name, (const xmlChar *)"template") == 0)
+        {
+            xmlChar *name = xmlGetProp(cur, (const xmlChar *)"template-name");
+            if (name)
+            {
+                nn_config_template_t *template = (nn_config_template_t *)g_hash_table_lookup(
+                    template_map, (const gchar *)name);
+
+                if (template)
+                {
+                    parse_template_body_node(cur, template);
+                    printf("[xml_parser]   Template '%s' parsed with body\n", name);
+                }
+                xmlFree(name);
+            }
+        }
+    }
+
+    // 注册所有模板到全局注册表
+    GHashTableIter iter;
+    gpointer key, value;
+    g_hash_table_iter_init(&iter, template_map);
+
+    while (g_hash_table_iter_next(&iter, &key, &value))
+    {
+        nn_config_template_t *template = (nn_config_template_t *)value;
+        nn_config_template_registry_add(template);
+        printf("[xml_parser]   Template '%s' registered (priority: %u)\n", template->template_name,
+               template->priority);
+    }
+
+    // 清理临时哈希表（但不释放元素，因为它们已被注册）
+    g_hash_table_destroy(template_map);
 }

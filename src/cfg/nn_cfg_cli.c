@@ -16,6 +16,7 @@
 #include <unistd.h>
 
 #include "nn_cfg_main.h"
+#include "nn_cfg_show_config.h"
 #include "nn_cli_dispatch.h"
 #include "nn_cli_handler.h"
 #include "nn_cli_tree.h"
@@ -173,6 +174,9 @@ int nn_cfg_cli_cmd_group_show(nn_cfg_tlv_parser_t parser, nn_cfg_cli_out_t *cfg_
                 break;
             case NN_CFG_CLI_SHOW_CFG_ID_HISTORY:
                 cfg_out->data.cfg_show.is_history = TRUE;
+                break;
+            case NN_CFG_CLI_SHOW_CFG_ID_CURRENT_CONFIG:
+                cfg_out->data.cfg_show.is_current_config = TRUE;
                 break;
             default:
                 printf("[cfg_cli] Unknown element ID: %u\n", elem_id);
@@ -349,6 +353,42 @@ int nn_cfg_cli_cmd_group_resp_show(nn_cli_session_t *session, const nn_cfg_cli_o
     {
         cmd_show_cli_history(session, cfg_out, resp_out);
     }
+    else if (cfg_out->data.cfg_show.is_current_config)
+    {
+        // 处理 show current-configuration 命令
+        if (resp_out->batch_offset == 0)
+        {
+            // 第一批，生成完整配置并缓存
+            if (g_cfg_show_cache)
+            {
+                g_string_free(g_cfg_show_cache, TRUE);
+            }
+            g_cfg_show_cache = g_string_new("");
+
+            // 生成完整配置
+            char *config_output = nn_cfg_renderer_show_current_configuration();
+
+            if (config_output)
+            {
+                g_string_append(g_cfg_show_cache, config_output);
+                g_free(config_output);
+            }
+            else
+            {
+                g_string_append(g_cfg_show_cache, "No configuration found.\r\n");
+            }
+        }
+
+        // Copy chunk from cache to resp_out
+        cfg_cli_chunk_output(g_cfg_show_cache, resp_out);
+
+        // Free cache when done
+        if (!resp_out->has_more && g_cfg_show_cache)
+        {
+            g_string_free(g_cfg_show_cache, TRUE);
+            g_cfg_show_cache = NULL;
+        }
+    }
 
     return NN_ERRCODE_SUCCESS;
 }
@@ -452,7 +492,16 @@ int nn_cfg_cli_cmd_group_resp_op(nn_cli_session_t *session, const nn_cfg_cli_out
         if (config_view)
         {
             session->current_view = config_view;
-            // Reset prompt stack and use view template directly
+            // 释放所有上下文栈数据并重置 prompt 栈
+            for (uint32_t i = 0; i < session->prompt_stack_depth; i++)
+            {
+                if (session->view_context_stack[i])
+                {
+                    g_free(session->view_context_stack[i]);
+                    session->view_context_stack[i] = NULL;
+                    session->view_context_len[i] = 0;
+                }
+            }
             session->prompt_stack_depth = 0;
             update_prompt_from_template(session, session->current_view->prompt_template);
         }

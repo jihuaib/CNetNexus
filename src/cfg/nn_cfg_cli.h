@@ -17,6 +17,7 @@
 #define NN_CFG_CLI_GROUP_ID_SHOW 0x00000001
 #define NN_CFG_CLI_SHOW_CFG_ID_COMMON_INFO 0x00000001
 #define NN_CFG_CLI_SHOW_CFG_ID_HISTORY 0x00000002
+#define NN_CFG_CLI_SHOW_CFG_ID_CURRENT_CONFIG 0x00000003
 
 #define NN_CFG_CLI_GROUP_ID_OP 0x00000002
 #define NN_CFG_CLI_OP_CFG_ID_EXIT 0x00000001
@@ -27,6 +28,7 @@ typedef struct nn_cli_cfg_show
 {
     gboolean is_common_info;
     gboolean is_history;
+    gboolean is_current_config;
 } nn_cli_cfg_show_t;
 
 typedef struct nn_cli_cfg_op

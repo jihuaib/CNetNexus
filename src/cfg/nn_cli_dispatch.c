@@ -36,6 +36,66 @@ static uint32_t calculate_tlv_size(nn_cli_match_result_t *result)
     return size;
 }
 
+// 将上下文 TLV 数据中的每个 cfg_id 加上 CONTEXT_FLAG 标记后重新打包
+static uint8_t *mark_context_tlvs(const uint8_t *ctx_data, uint32_t ctx_len, uint32_t *out_len)
+{
+    if (!ctx_data || ctx_len == 0 || !out_len)
+    {
+        if (out_len)
+        {
+            *out_len = 0;
+        }
+        return NULL;
+    }
+
+    // 输出大小与输入相同（只修改 cfg_id 字段的高位）
+    uint8_t *output = g_malloc(ctx_len);
+    uint32_t offset = 0;
+    uint32_t out_offset = 0;
+
+    while (offset + NN_CFG_TLV_HEADER_SIZE <= ctx_len)
+    {
+        // 读取原始 cfg_id
+        uint32_t cfg_id_be;
+        memcpy(&cfg_id_be, ctx_data + offset, NN_CFG_TLV_ELEMENT_ID_SIZE);
+        uint32_t cfg_id = ntohl(cfg_id_be);
+
+        // 加上上下文标记
+        uint32_t marked_id = cfg_id | NN_CFG_TLV_CONTEXT_FLAG;
+        uint32_t marked_id_be = htonl(marked_id);
+        memcpy(output + out_offset, &marked_id_be, NN_CFG_TLV_ELEMENT_ID_SIZE);
+        out_offset += NN_CFG_TLV_ELEMENT_ID_SIZE;
+        offset += NN_CFG_TLV_ELEMENT_ID_SIZE;
+
+        // 读取长度
+        uint16_t len_be;
+        memcpy(&len_be, ctx_data + offset, NN_CFG_TLV_LENGTH_SIZE);
+        uint16_t val_len = ntohs(len_be);
+
+        // 复制长度字段
+        memcpy(output + out_offset, ctx_data + offset, NN_CFG_TLV_LENGTH_SIZE);
+        out_offset += NN_CFG_TLV_LENGTH_SIZE;
+        offset += NN_CFG_TLV_LENGTH_SIZE;
+
+        // 检查边界
+        if (offset + val_len > ctx_len)
+        {
+            break;
+        }
+
+        // 复制值
+        if (val_len > 0)
+        {
+            memcpy(output + out_offset, ctx_data + offset, val_len);
+            out_offset += val_len;
+            offset += val_len;
+        }
+    }
+
+    *out_len = out_offset;
+    return output;
+}
+
 // Pack match result into TLV buffer
 uint8_t *nn_cli_dispatch_pack_tlv(nn_cli_match_result_t *result, uint32_t *out_len)
 {
@@ -146,11 +206,45 @@ int nn_cli_dispatch_to_module(nn_cli_match_result_t *result, nn_cli_session_t *s
     }
 
     // Pack TLV message
-    uint32_t msg_len = 0;
-    uint8_t *msg_data = nn_cli_dispatch_pack_tlv(result, &msg_len);
-    if (!msg_data)
+    uint32_t cmd_len = 0;
+    uint8_t *cmd_data = nn_cli_dispatch_pack_tlv(result, &cmd_len);
+    if (!cmd_data)
     {
         return NN_ERRCODE_FAIL;
+    }
+
+    // 获取当前视图上下文，追加到命令消息末尾
+    uint32_t ctx_len = 0;
+    const uint8_t *ctx_data = nn_cli_context_get(session, &ctx_len);
+
+    uint8_t *msg_data = NULL;
+    uint32_t msg_len = 0;
+
+    if (ctx_data && ctx_len > 0)
+    {
+        // 将上下文 TLV 的 cfg_id 加上标记位后追加
+        uint32_t ctx_marked_len = 0;
+        uint8_t *ctx_marked = mark_context_tlvs(ctx_data, ctx_len, &ctx_marked_len);
+
+        if (ctx_marked && ctx_marked_len > 0)
+        {
+            msg_len = cmd_len + ctx_marked_len;
+            msg_data = g_malloc(msg_len);
+            memcpy(msg_data, cmd_data, cmd_len);
+            memcpy(msg_data + cmd_len, ctx_marked, ctx_marked_len);
+            g_free(cmd_data);
+            g_free(ctx_marked);
+        }
+        else
+        {
+            msg_data = cmd_data;
+            msg_len = cmd_len;
+        }
+    }
+    else
+    {
+        msg_data = cmd_data;
+        msg_len = cmd_len;
     }
 
     // Create CLI message (sender_id and request_id will be set by nn_dev_pubsub_query)
@@ -206,6 +300,15 @@ int nn_cli_dispatch_to_module(nn_cli_match_result_t *result, nn_cli_session_t *s
                 nn_cli_prompt_push(session);
                 session->current_view = view;
                 update_prompt_from_template(session, module_prompt);
+
+                // 提取上下文 TLV（prompt 之后的剩余数据）
+                if (response->data_len > NN_CFG_CLI_MAX_PROMPT_LEN)
+                {
+                    uint32_t ctx_len = response->data_len - NN_CFG_CLI_MAX_PROMPT_LEN;
+                    const uint8_t *ctx_data = (const uint8_t *)response->data + NN_CFG_CLI_MAX_PROMPT_LEN;
+                    nn_cli_context_set(session, ctx_data, ctx_len);
+                    printf("[dispatch] Saved view context (%u bytes)\n", ctx_len);
+                }
             }
 
             nn_dev_message_free(response);

@@ -12,6 +12,9 @@ set(NN_CFG_SOURCES
     nn_cfg_main.c
     nn_cfg_cli.c
     nn_cfg_api.c
+    nn_config_template.c
+    nn_cfg_template_renderer.c
+    nn_cfg_show_config.c
 )
 
 # Create shared library for CLI
