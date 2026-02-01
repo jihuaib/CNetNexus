@@ -859,6 +859,12 @@ int process_command(const char *cmd_line, nn_cli_session_t *session)
         return 0; // Empty command, don't record
     }
 
+    // 以 # 开头的行视为注释，不做任何处理
+    if (trimmed[0] == '#')
+    {
+        return 0;
+    }
+
     // Get current view's command tree
     if (!session->current_view || !session->current_view->cmd_tree)
     {

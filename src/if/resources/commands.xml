@@ -141,8 +141,9 @@
  #
  if {if_interface.name}
   ip address {if_interface.ip_address} {if_interface.netmask}
-  {if_interface.shutdown}
- #
+  {% if if_interface.shutdown == 1 %}
+  shutdown
+  {% endif %}
         </template>
     </config_templates>
 

@@ -26,7 +26,9 @@
 static gboolean template_has_data(nn_config_template_t *template)
 {
     if (!template || !template->body || template->body->num_dbs == 0)
+    {
         return FALSE;
+    }
 
     // 对于模板定义中的每个数据库表
     for (uint32_t i = 0; i < template->body->num_dbs; i++)
@@ -71,7 +73,9 @@ static GHashTable *query_template_databases(nn_config_template_t *template)
     GHashTable *query_results = g_hash_table_new(g_str_hash, g_str_equal);
 
     if (!template || !template->body || template->body->num_dbs == 0)
+    {
         return query_results;
+    }
 
     // 对于模板定义中的每个数据库表
     for (uint32_t i = 0; i < template->body->num_dbs; i++)
@@ -142,7 +146,9 @@ static GHashTable *build_var_map_for_row(nn_config_template_t *template, GHashTa
     GHashTable *var_map = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 
     if (!template || !template->body || !query_results)
+    {
         return var_map;
+    }
 
     // 遍历数据库表
     for (uint32_t i = 0; i < template->body->num_dbs; i++)
@@ -208,7 +214,9 @@ static GHashTable *build_var_map_for_row(nn_config_template_t *template, GHashTa
                     break;
                 case NN_DB_TYPE_TEXT:
                     if (row->values[j].data.text)
+                    {
                         snprintf(value_str, sizeof(value_str), "%s", row->values[j].data.text);
+                    }
                     break;
                 case NN_DB_TYPE_BLOB:
                 case NN_DB_TYPE_NULL:
@@ -261,7 +269,9 @@ static uint32_t get_max_rows(GHashTable *query_results)
 static void free_query_results(GHashTable *query_results)
 {
     if (!query_results)
+    {
         return;
+    }
 
     // 收集所有唯一的result指针进行释放
     GHashTable *freed_results = g_hash_table_new(g_direct_hash, g_direct_equal);
@@ -290,7 +300,9 @@ static void free_query_results(GHashTable *query_results)
 static char *render_template_recursive(nn_config_template_t *template, GString *output)
 {
     if (!template)
+    {
         return NULL;
+    }
 
     printf("[cfg_renderer] Rendering template: %s\n", template->template_name);
 
@@ -381,7 +393,6 @@ char *nn_cfg_template_renderer_render_all(void)
         if (template->priority > 0)
         {
             render_template_recursive(template, output);
-            g_string_append(output, "\n");
         }
 
         iter = g_list_next(iter);
@@ -395,11 +406,15 @@ char *nn_cfg_template_renderer_render_all(void)
 char *nn_cfg_template_renderer_render_by_name(const char *template_name)
 {
     if (!template_name)
+    {
         return NULL;
+    }
 
     nn_config_template_t *template = nn_config_template_find_by_name(template_name);
     if (!template)
+    {
         return NULL;
+    }
 
     GString *output = g_string_new("");
     render_template_recursive(template, output);

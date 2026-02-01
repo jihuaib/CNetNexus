@@ -47,6 +47,45 @@ telnet localhost 3788
 - `F10` - Step over
 - `F11` - Step into
 
+## IDE Configuration
+
+### clangd Setup
+
+clangd 提供代码补全、跳转定义、错误提示等 IDE 功能。
+
+**1. 安装 clangd:**
+
+```bash
+# Ubuntu/Debian
+sudo apt update
+sudo apt install clangd
+
+# 或安装特定版本
+sudo apt install clangd-14
+```
+
+**2. 生成编译数据库:**
+
+项目使用 CMake，需要生成 `compile_commands.json` 让 clangd 理解项目结构：
+
+```bash
+# 重新配置 CMake 并生成编译数据库
+cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+# 创建符号链接到项目根目录
+ln -sf build/compile_commands.json compile_commands.json
+```
+
+**3. 重启编辑器**
+
+重启 VSCode 或你的编辑器，clangd 会自动加载配置。
+
+> [!NOTE]
+> 如果修改了 `CMakeLists.txt` 或添加了新文件，需要重新运行上述 cmake 命令更新编译数据库。
+
+> [!TIP]
+> `compile_commands.json` 和 `.cache/` 目录已添加到 `.gitignore`，不会提交到版本控制。
+
 ## Project Structure
 
 ```

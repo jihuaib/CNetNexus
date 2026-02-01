@@ -32,8 +32,8 @@ nn_cli_tree_node_t *nn_cli_tree_create_node(uint32_t cfg_id, const char *name, c
     node->cfg_id = cfg_id;
     node->module_id = module_id;
     node->group_id = group_id;
-    node->name = name ? strdup(name) : NULL;
-    node->description = description ? strdup(description) : NULL;
+    node->name = name ? g_strdup(name) : NULL;
+    node->description = description ? g_strdup(description) : NULL;
     node->type = type;
     node->view_id = view_id;
     node->param_type = NULL;
@@ -307,7 +307,7 @@ nn_cli_tree_node_t *nn_cli_tree_match_command(nn_cli_tree_node_t *root, const ch
         return NULL;
     }
 
-    char *cmd_copy = strdup(cmd_line);
+    char *cmd_copy = g_strdup(cmd_line);
     if (!cmd_copy)
     {
         return NULL;
@@ -354,7 +354,7 @@ uint32_t nn_cli_tree_match_command_get_matches(nn_cli_tree_node_t *root, const c
         return NN_ERRCODE_SUCCESS;
     }
 
-    char *cmd_copy = strdup(cmd_line);
+    char *cmd_copy = g_strdup(cmd_line);
     if (!cmd_copy)
     {
         return NN_ERRCODE_SUCCESS;
@@ -510,7 +510,7 @@ nn_cli_match_result_t *nn_cli_tree_match_command_full(nn_cli_tree_node_t *root, 
         return NULL;
     }
 
-    char *cmd_copy = strdup(cmd_line);
+    char *cmd_copy = g_strdup(cmd_line);
     if (!cmd_copy)
     {
         return NULL;
@@ -527,7 +527,7 @@ nn_cli_match_result_t *nn_cli_tree_match_command_full(nn_cli_tree_node_t *root, 
     nn_cli_tree_node_t *current = root;
 
     // Save original string for extracting values
-    char *cmd_for_values = strdup(cmd_line);
+    char *cmd_for_values = g_strdup(cmd_line);
     char *trimmed_values = trim_whitespace(cmd_for_values);
     char *saveptr = NULL;
     char *value_token = strtok_r(trimmed_values, " ", &saveptr);

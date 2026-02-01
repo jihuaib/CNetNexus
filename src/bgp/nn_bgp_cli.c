@@ -47,8 +47,7 @@ typedef struct nn_bgp_cli_resp_dispatch
 
 int handle_bgp_config_resp(nn_dev_message_t *msg, const nn_bgp_cli_out_t *cfg_out,
                            const nn_bgp_cli_resp_out_t *resp_out);
-int handle_show_bgp_resp(nn_dev_message_t *msg, const nn_bgp_cli_out_t *cfg_out,
-                          const nn_bgp_cli_resp_out_t *resp_out);
+int handle_show_bgp_resp(nn_dev_message_t *msg, const nn_bgp_cli_out_t *cfg_out, const nn_bgp_cli_resp_out_t *resp_out);
 
 static const nn_bgp_cli_resp_dispatch_t g_nn_bgp_cfg_resp_dispatch[] = {
     {NN_BGP_CLI_GROUP_ID_BGP, handle_bgp_config_resp},
@@ -223,9 +222,8 @@ int handle_show_bgp_resp(nn_dev_message_t *msg, const nn_bgp_cli_out_t *cfg_out,
         return NN_ERRCODE_FAIL;
     }
 
-    nn_dev_message_t *resp =
-        nn_dev_message_create(NN_CFG_MSG_TYPE_CLI_RESP, NN_DEV_MODULE_ID_BGP, msg->request_id, resp_data,
-                              strlen(resp_data) + 1, g_free);
+    nn_dev_message_t *resp = nn_dev_message_create(NN_CFG_MSG_TYPE_CLI_RESP, NN_DEV_MODULE_ID_BGP, msg->request_id,
+                                                   resp_data, strlen(resp_data) + 1, g_free);
     if (resp)
     {
         nn_dev_pubsub_send_response(msg->sender_id, resp);
@@ -371,9 +369,8 @@ int nn_bgp_cli_handle_continue(nn_dev_message_t *msg)
 {
     // No batch output pending - send empty final response
     char *resp_data = g_strdup("");
-    nn_dev_message_t *resp_msg =
-        nn_dev_message_create(NN_CFG_MSG_TYPE_CLI_RESP, NN_DEV_MODULE_ID_BGP, msg->request_id,
-                             resp_data, strlen(resp_data) + 1, g_free);
+    nn_dev_message_t *resp_msg = nn_dev_message_create(NN_CFG_MSG_TYPE_CLI_RESP, NN_DEV_MODULE_ID_BGP, msg->request_id,
+                                                       resp_data, strlen(resp_data) + 1, g_free);
     if (resp_msg)
     {
         nn_dev_pubsub_send_response(msg->sender_id, resp_msg);

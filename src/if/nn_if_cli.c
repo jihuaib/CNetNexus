@@ -225,10 +225,24 @@ static int handle_show_cmd(nn_cfg_tlv_parser_t parser, nn_if_cli_out_t *cfg_out,
 {
     NN_CFG_TLV_FOREACH(parser, cfg_id, value, len)
     {
-        if (cfg_id == NN_IF_CLI_IF_CFG_ID_SHOW_NAME)
+        switch (cfg_id)
         {
-            NN_CFG_TLV_GET_STRING(value, len, cfg_out->data.show.ifname, sizeof(cfg_out->data.show.ifname));
-            cfg_out->data.show.has_ifname = TRUE;
+            case NN_IF_CLI_IF_CFG_ID_GE1:
+                strcpy(cfg_out->data.show.ifname, "GE-1");
+                cfg_out->data.show.has_ifname = TRUE;
+                break;
+            case NN_IF_CLI_IF_CFG_ID_GE2:
+                strcpy(cfg_out->data.show.ifname, "GE-2");
+                cfg_out->data.show.has_ifname = TRUE;
+                break;
+            case NN_IF_CLI_IF_CFG_ID_GE3:
+                strcpy(cfg_out->data.show.ifname, "GE-3");
+                cfg_out->data.show.has_ifname = TRUE;
+                break;
+            case NN_IF_CLI_IF_CFG_ID_GE4:
+                strcpy(cfg_out->data.show.ifname, "GE-4");
+                cfg_out->data.show.has_ifname = TRUE;
+                break;
         }
     }
 
@@ -243,13 +257,14 @@ static int handle_show_cmd(nn_cfg_tlv_parser_t parser, nn_if_cli_out_t *cfg_out,
 
     if (cfg_out->data.show.has_ifname)
     {
+        // 查询指定逻辑接口
+        const char *phys_name = nn_if_map_get_physical(cfg_out->data.show.ifname);
         nn_if_info_t info;
-        if (nn_if_get_info(cfg_out->data.show.ifname, &info) == NN_ERRCODE_SUCCESS)
+        if (nn_if_get_info(phys_name, &info) == NN_ERRCODE_SUCCESS)
         {
-            g_string_append_printf(g_if_show_cache, "Interface %s:\r\n", info.name);
+            g_string_append_printf(g_if_show_cache, "Interface %s:\r\n", cfg_out->data.show.ifname);
             g_string_append_printf(g_if_show_cache, "  Type: %s\r\n", nn_if_type_to_string(info.type));
-            g_string_append_printf(g_if_show_cache, "  State: %s\r\n",
-                                   info.state == NN_IF_STATE_UP ? "UP" : "DOWN");
+            g_string_append_printf(g_if_show_cache, "  State: %s\r\n", info.state == NN_IF_STATE_UP ? "UP" : "DOWN");
             g_string_append_printf(g_if_show_cache, "  IP: %s\r\n",
                                    info.ip_address[0] ? info.ip_address : "not configured");
             g_string_append_printf(g_if_show_cache, "  Netmask: %s\r\n",
@@ -270,32 +285,27 @@ static int handle_show_cmd(nn_cfg_tlv_parser_t parser, nn_if_cli_out_t *cfg_out,
     }
     else
     {
-        nn_if_info_t *interfaces = NULL;
-        int count = 0;
-        if (nn_if_list(&interfaces, &count) == NN_ERRCODE_SUCCESS)
-        {
-            g_string_append_printf(g_if_show_cache, "Interface Status:\r\n");
-            g_string_append_printf(g_if_show_cache, "%-10s %-15s %-10s %-15s\r\n", "Name", "Type", "State",
-                                   "IP Address");
-            g_string_append_printf(g_if_show_cache, "%-10s %-15s %-10s %-15s\r\n", "----", "----", "-----",
-                                   "----------");
+        // 只显示映射表中注册的接口，使用逻辑接口名
+        g_string_append_printf(g_if_show_cache, "Interface Status:\r\n");
+        g_string_append_printf(g_if_show_cache, "%-10s %-15s %-10s %-15s\r\n", "Name", "Type", "State", "IP Address");
+        g_string_append_printf(g_if_show_cache, "%-10s %-15s %-10s %-15s\r\n", "----", "----", "-----", "----------");
 
-            for (int i = 0; i < count; i++)
-            {
-                g_string_append_printf(g_if_show_cache, "%-10s %-15s %-10s %-15s\r\n", interfaces[i].name,
-                                       nn_if_type_to_string(interfaces[i].type),
-                                       interfaces[i].state == NN_IF_STATE_UP ? "UP" : "DOWN",
-                                       interfaces[i].ip_address[0] ? interfaces[i].ip_address : "-");
-            }
-            g_free(interfaces);
-        }
-        else
+        for (int i = 0; i < g_interface_map.count; i++)
         {
-            snprintf(resp_out->message, sizeof(resp_out->message), "Error: Failed to list interfaces\r\n");
-            resp_out->success = 0;
-            g_string_free(g_if_show_cache, TRUE);
-            g_if_show_cache = NULL;
-            return NN_ERRCODE_FAIL;
+            const char *logical_name = g_interface_map.entries[i].logical_name;
+            const char *phys_name = g_interface_map.entries[i].physical_name;
+
+            nn_if_info_t info;
+            if (nn_if_get_info(phys_name, &info) == NN_ERRCODE_SUCCESS)
+            {
+                g_string_append_printf(g_if_show_cache, "%-10s %-15s %-10s %-15s\r\n", logical_name,
+                                       nn_if_type_to_string(info.type), info.state == NN_IF_STATE_UP ? "UP" : "DOWN",
+                                       info.ip_address[0] ? info.ip_address : "-");
+            }
+            else
+            {
+                g_string_append_printf(g_if_show_cache, "%-10s %-15s %-10s %-15s\r\n", logical_name, "-", "DOWN", "-");
+            }
         }
     }
 
@@ -433,9 +443,8 @@ int nn_if_cli_handle_continue(nn_dev_message_t *msg)
     {
         // No more data - send empty RESP
         char *resp_data = g_strdup("");
-        nn_dev_message_t *resp_msg =
-            nn_dev_message_create(NN_CFG_MSG_TYPE_CLI_RESP, NN_DEV_MODULE_ID_IF, msg->request_id, resp_data,
-                                 strlen(resp_data) + 1, g_free);
+        nn_dev_message_t *resp_msg = nn_dev_message_create(NN_CFG_MSG_TYPE_CLI_RESP, NN_DEV_MODULE_ID_IF,
+                                                           msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
         if (resp_msg)
         {
             nn_dev_pubsub_send_response(msg->sender_id, resp_msg);

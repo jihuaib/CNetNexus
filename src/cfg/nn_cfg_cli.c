@@ -215,8 +215,7 @@ int nn_cfg_cli_cmd_group_op(nn_cfg_tlv_parser_t parser, nn_cfg_cli_out_t *cfg_ou
     return NN_ERRCODE_SUCCESS;
 }
 
-static void print_commands_recursive(GString *out, const char *view_name, const char *prefix,
-                                     nn_cli_tree_node_t *node)
+static void print_commands_recursive(GString *out, const char *view_name, const char *prefix, nn_cli_tree_node_t *node)
 {
     if (!node)
     {
@@ -415,8 +414,7 @@ void cmd_show_cli_history(nn_cli_session_t *session, const nn_cfg_cli_out_t *cfg
         g_string_append(g_cfg_history_cache, "Command History:\r\n");
         g_string_append(g_cfg_history_cache,
                         "================================================================================\r\n");
-        g_string_append(g_cfg_history_cache,
-                        " No  Time                Command                          Client IP\r\n");
+        g_string_append(g_cfg_history_cache, " No  Time                Command                          Client IP\r\n");
         g_string_append(g_cfg_history_cache,
                         "--------------------------------------------------------------------------------\r\n");
 

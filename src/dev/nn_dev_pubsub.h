@@ -136,4 +136,21 @@ int nn_dev_pubsub_group_exists(uint32_t group_id);
 
 void nn_dev_pubsub_foreach_subscriber(GHFunc func, gpointer user_data);
 
+/**
+ * @brief 遍历单播订阅回调函数类型
+ * @param publisher_id 发布者模块 ID
+ * @param event_id 事件 ID
+ * @param subscriber_id 订阅者模块 ID
+ * @param user_data 用户数据
+ */
+typedef void (*nn_dev_pubsub_unicast_foreach_fn)(uint32_t publisher_id, uint32_t event_id, uint32_t subscriber_id,
+                                                 gpointer user_data);
+
+/**
+ * @brief 遍历所有单播订阅关系
+ * @param func 回调函数，每个订阅关系调用一次
+ * @param user_data 传递给回调的用户数据
+ */
+void nn_dev_pubsub_foreach_unicast_sub(nn_dev_pubsub_unicast_foreach_fn func, gpointer user_data);
+
 #endif // NN_DEV_PUBSUB_H

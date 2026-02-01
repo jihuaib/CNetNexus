@@ -845,3 +845,36 @@ void nn_dev_pubsub_foreach_subscriber(GHFunc func, gpointer user_data)
     }
     g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
 }
+
+void nn_dev_pubsub_foreach_unicast_sub(nn_dev_pubsub_unicast_foreach_fn func, gpointer user_data)
+{
+    if (!func)
+    {
+        return;
+    }
+
+    g_mutex_lock(&g_nn_dev_local->pubsub_mutex);
+
+    if (g_nn_dev_local->unicast_subss)
+    {
+        GHashTableIter iter;
+        gpointer key, value;
+
+        g_hash_table_iter_init(&iter, g_nn_dev_local->unicast_subss);
+        while (g_hash_table_iter_next(&iter, &key, &value))
+        {
+            uint64_t key_val = *(uint64_t *)key;
+            uint32_t publisher_id = (uint32_t)(key_val >> 32);
+            uint32_t event_id = (uint32_t)(key_val & 0xFFFFFFFF);
+
+            GList *sub_list = (GList *)value;
+            for (GList *l = sub_list; l != NULL; l = l->next)
+            {
+                nn_dev_pubsub_subscriber_t *sub = (nn_dev_pubsub_subscriber_t *)l->data;
+                func(publisher_id, event_id, sub->module_id, user_data);
+            }
+        }
+    }
+
+    g_mutex_unlock(&g_nn_dev_local->pubsub_mutex);
+}

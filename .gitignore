@@ -39,3 +39,6 @@ netnexus-gns3.tar.gz
 valgrind-report.txt
 
 package/
+
+.cache/
+compile_commands.json

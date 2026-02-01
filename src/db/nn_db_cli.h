@@ -49,8 +49,8 @@ typedef struct nn_db_cli_resp_out
 {
     char message[NN_CFG_CLI_MAX_RESP_LEN]; // Buffer for CLI output
     int success;
-    uint32_t has_more;                     // 1 if more data available
-    uint32_t batch_offset;                 // Continuation offset for next batch
+    uint32_t has_more;     // 1 if more data available
+    uint32_t batch_offset; // Continuation offset for next batch
 } nn_db_cli_resp_out_t;
 
 /**

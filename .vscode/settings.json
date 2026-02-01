@@ -32,5 +32,6 @@
     "cmake.buildDirectory": "${workspaceFolder}/build",
     "terminal.integrated.env.linux": {
         "LD_LIBRARY_PATH": "${workspaceFolder}/build/lib:${env:LD_LIBRARY_PATH}"
-    }
+    },
+    "remote.autoForwardPortsFallback": 0
 }

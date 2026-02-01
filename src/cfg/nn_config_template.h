@@ -19,9 +19,9 @@
  */
 typedef struct nn_config_template_body
 {
-    char *content;          /**< 模板内容（包含 {table.field} 变量） */
-    char **db_names;        /**< 数据库表名列表（如 "bgp_protocol", "bgp_session"） */
-    uint32_t num_dbs;       /**< 数据库表数量 */
+    char *content;    /**< 模板内容（包含 {table.field} 变量） */
+    char **db_names;  /**< 数据库表名列表（如 "bgp_protocol", "bgp_session"） */
+    uint32_t num_dbs; /**< 数据库表数量 */
 } nn_config_template_body_t;
 
 /**
@@ -29,10 +29,10 @@ typedef struct nn_config_template_body
  */
 typedef struct nn_config_template_def
 {
-    char *template_name;    /**< 模板名称 */
-    uint32_t priority;      /**< 优先级（在系统视图中的顺序） */
-    char **child_names;     /**< 子模板名称列表 */
-    uint32_t num_children;  /**< 子模板数量 */
+    char *template_name;   /**< 模板名称 */
+    uint32_t priority;     /**< 优先级（在系统视图中的顺序） */
+    char **child_names;    /**< 子模板名称列表 */
+    uint32_t num_children; /**< 子模板数量 */
 } nn_config_template_def_t;
 
 /**
@@ -40,11 +40,11 @@ typedef struct nn_config_template_def
  */
 typedef struct nn_config_template
 {
-    char *template_name;              /**< 模板名称 */
-    uint32_t priority;                /**< 优先级 */
-    char **child_template_names;      /**< 子模板名称列表 */
-    uint32_t num_children;            /**< 子模板数量 */
-    nn_config_template_body_t *body;  /**< 模板主体（可选） */
+    char *template_name;             /**< 模板名称 */
+    uint32_t priority;               /**< 优先级 */
+    char **child_template_names;     /**< 子模板名称列表 */
+    uint32_t num_children;           /**< 子模板数量 */
+    nn_config_template_body_t *body; /**< 模板主体（可选） */
 } nn_config_template_t;
 
 // ============================================================================
@@ -73,8 +73,8 @@ void nn_config_template_add_child(nn_config_template_t *template, const char *ch
  * @param db_names 数据库名称数组
  * @param num_dbs 数据库数量
  */
-void nn_config_template_set_body(nn_config_template_t *template, const char *content,
-                                 const char **db_names, uint32_t num_dbs);
+void nn_config_template_set_body(nn_config_template_t *template, const char *content, const char **db_names,
+                                 uint32_t num_dbs);
 
 /**
  * @brief 释放模板
@@ -119,8 +119,8 @@ void nn_config_template_registry_clear(void);
  */
 typedef struct nn_template_var_value
 {
-    char *var_name;  /**< 变量名称（如 "bgp_protocol.as_number"） */
-    char *value;     /**< 替换值 */
+    char *var_name; /**< 变量名称（如 "bgp_protocol.as_number"） */
+    char *value;    /**< 替换值 */
 } nn_template_var_value_t;
 
 /**

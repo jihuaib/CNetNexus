@@ -26,29 +26,42 @@ static gboolean show_module_callback(gpointer key, gpointer value, gpointer data
     nn_dev_cli_resp_out_t *resp = (nn_dev_cli_resp_out_t *)data;
     nn_dev_module_t *module = (nn_dev_module_t *)value;
 
+    uint32_t mq_pending = 0;
+    if (module->mq && module->mq->message_queue)
+    {
+        mq_pending = g_queue_get_length(module->mq->message_queue);
+    }
+
     char line[128];
-    snprintf(line, sizeof(line), "  %-12u %-15s %s\r\n", module->module_id, module->name,
-             module->mq ? "Initialized" : "Registered");
+    snprintf(line, sizeof(line), "  %-12u %-15s %-15s %u\r\n", module->module_id, module->name,
+             module->mq ? "Initialized" : "Registered", mq_pending);
 
     strncat(resp->message, line, sizeof(resp->message) - strlen(resp->message) - 1);
 
-    return FALSE; // Continue traversal
+    return FALSE; // 继续遍历
 }
 
-static void show_module_mq_callback(gpointer key, gpointer value, gpointer data)
+static void show_unicast_sub_callback(uint32_t publisher_id, uint32_t event_id, uint32_t subscriber_id,
+                                      gpointer user_data)
 {
-    (void)key;
-    nn_dev_cli_resp_out_t *resp = (nn_dev_cli_resp_out_t *)data;
-    nn_dev_pubsub_subscriber_t *sub = (nn_dev_pubsub_subscriber_t *)value;
+    nn_dev_cli_resp_out_t *resp = (nn_dev_cli_resp_out_t *)user_data;
 
-    char line[128];
-    uint32_t mq_len = 0;
-    if (sub->mq && sub->mq->message_queue)
+    // 获取发布者和订阅者的模块名
+    char pub_name[NN_DEV_MODULE_NAME_MAX_LEN];
+    char sub_name[NN_DEV_MODULE_NAME_MAX_LEN];
+
+    if (nn_dev_get_module_name(publisher_id, pub_name) != NN_ERRCODE_SUCCESS)
     {
-        mq_len = g_queue_get_length(sub->mq->message_queue);
+        snprintf(pub_name, sizeof(pub_name), "0x%08X", publisher_id);
+    }
+    if (nn_dev_get_module_name(subscriber_id, sub_name) != NN_ERRCODE_SUCCESS)
+    {
+        snprintf(sub_name, sizeof(sub_name), "0x%08X", subscriber_id);
     }
 
-    snprintf(line, sizeof(line), "  %-12u %-10d %-10u\r\n", sub->module_id, sub->eventfd, mq_len);
+    char line[256];
+    snprintf(line, sizeof(line), "  %-15s %-15s 0x%08X    0x%08X    0x%08X\r\n", pub_name, sub_name, event_id,
+             publisher_id, subscriber_id);
 
     strncat(resp->message, line, sizeof(resp->message) - strlen(resp->message) - 1);
 }
@@ -112,9 +125,9 @@ static int handle_show_module(nn_cfg_tlv_parser_t parser, nn_dev_cli_out_t *cfg_
 
     snprintf(resp_out->message, sizeof(resp_out->message),
              "\r\nRegistered Modules:\r\n"
-             "  %-12s %-15s %s\r\n"
-             "  -----------------------------------------\r\n",
-             "ID", "Name", "Status");
+             "  %-12s %-15s %-15s %s\r\n"
+             "  -----------------------------------------------------------\r\n",
+             "ID", "Name", "Status", "MQ Pending");
 
     nn_dev_module_foreach(show_module_callback, resp_out);
 
@@ -129,12 +142,12 @@ static int handle_show_module_mq(nn_cfg_tlv_parser_t parser, nn_dev_cli_out_t *c
     (void)cfg_out;
 
     snprintf(resp_out->message, sizeof(resp_out->message),
-             "\r\nModule Message Queues:\r\n"
-             "  %-12s %-10s %-10s\r\n"
-             "  -----------------------------------------\r\n",
-             "Module ID", "EventFD", "Pending");
+             "\r\nUnicast Subscriptions:\r\n"
+             "  %-15s %-15s %-13s %-13s %-13s\r\n"
+             "  -----------------------------------------------------------------------\r\n",
+             "Publisher", "Subscriber", "EventID", "SendID", "RecvID");
 
-    nn_dev_pubsub_foreach_subscriber(show_module_mq_callback, resp_out);
+    nn_dev_pubsub_foreach_unicast_sub(show_unicast_sub_callback, resp_out);
 
     strncat(resp_out->message, "\r\n", sizeof(resp_out->message) - strlen(resp_out->message) - 1);
     resp_out->success = 1;
@@ -222,9 +235,8 @@ int nn_dev_cli_handle_continue(nn_dev_message_t *msg)
 {
     // No batch output pending - send empty final response
     char *resp_data = g_strdup("");
-    nn_dev_message_t *resp_msg =
-        nn_dev_message_create(NN_CFG_MSG_TYPE_CLI_RESP, NN_DEV_MODULE_ID_DEV, msg->request_id,
-                             resp_data, strlen(resp_data) + 1, g_free);
+    nn_dev_message_t *resp_msg = nn_dev_message_create(NN_CFG_MSG_TYPE_CLI_RESP, NN_DEV_MODULE_ID_DEV, msg->request_id,
+                                                       resp_data, strlen(resp_data) + 1, g_free);
     if (resp_msg)
     {
         nn_dev_pubsub_send_response(msg->sender_id, resp_msg);

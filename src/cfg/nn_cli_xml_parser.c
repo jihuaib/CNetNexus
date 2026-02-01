@@ -566,25 +566,25 @@ static nn_cli_element_t *parse_element(xmlNode *element_node, uint32_t element_i
         if (xmlStrcmp(cur->name, (const xmlChar *)"name") == NN_ERRCODE_SUCCESS)
         {
             xmlChar *content = xmlNodeGetContent(cur);
-            name = strdup((const char *)content);
+            name = g_strdup((const char *)content);
             xmlFree(content);
         }
         else if (xmlStrcmp(cur->name, (const xmlChar *)"description") == NN_ERRCODE_SUCCESS)
         {
             xmlChar *content = xmlNodeGetContent(cur);
-            description = strdup((const char *)content);
+            description = g_strdup((const char *)content);
             xmlFree(content);
         }
         else if (xmlStrcmp(cur->name, (const xmlChar *)"range") == NN_ERRCODE_SUCCESS)
         {
             xmlChar *content = xmlNodeGetContent(cur);
-            range = strdup((const char *)content);
+            range = g_strdup((const char *)content);
             xmlFree(content);
         }
         else if (xmlStrcmp(cur->name, (const xmlChar *)"type") == NN_ERRCODE_SUCCESS)
         {
             xmlChar *content = xmlNodeGetContent(cur);
-            param_type_str = strdup((const char *)content);
+            param_type_str = g_strdup((const char *)content);
             xmlFree(content);
         }
     }
@@ -641,7 +641,7 @@ static nn_cli_view_node_t *parse_view_node(xmlNode *view_xml)
         if (xmlStrcmp(cur->name, (const xmlChar *)"template") == NN_ERRCODE_SUCCESS)
         {
             xmlChar *content = xmlNodeGetContent(cur);
-            template = strdup((const char *)content);
+            template = g_strdup((const char *)content);
             xmlFree(content);
             break;
         }
@@ -760,14 +760,14 @@ static void parse_command_group(xmlNode *group_node, nn_cli_view_tree_t *view_tr
                         {
                             xmlChar *content = xmlNodeGetContent(child);
                             g_free(expression); // Free previous allocation if any
-                            expression = strdup((const char *)content);
+                            expression = g_strdup((const char *)content);
                             xmlFree(content);
                         }
                         else if (xmlStrcmp(child->name, (const xmlChar *)"views") == NN_ERRCODE_SUCCESS)
                         {
                             xmlChar *content = xmlNodeGetContent(child);
                             g_free(views); // Free previous allocation if any
-                            views = strdup((const char *)content);
+                            views = g_strdup((const char *)content);
                             xmlFree(content);
                         }
                         else if (xmlStrcmp(child->name, (const xmlChar *)"view-id") == NN_ERRCODE_SUCCESS)
@@ -808,7 +808,7 @@ static void parse_command_group(xmlNode *group_node, nn_cli_view_tree_t *view_tr
                             else
                             {
                                 // Add to specific views
-                                char *views_copy = strdup(views);
+                                char *views_copy = g_strdup(views);
                                 char *view_token = strtok(views_copy, ",");
                                 uint32_t first = 1;
 
@@ -1203,16 +1203,22 @@ void nn_cfg_xml_db_def_free(nn_cfg_xml_db_def_t *db_def)
 static char *clean_template_content(const char *content)
 {
     if (!content || *content == '\0')
+    {
         return NULL;
+    }
 
     const char *start = content;
 
     // 开头：只跳过一个 \n（标签后的换行）
     if (*start == '\n')
+    {
         start++;
+    }
 
     if (*start == '\0')
+    {
         return NULL;
+    }
 
     // 结尾：找到最后一个 \n，如果其后全是空格/制表符，则截断到那个 \n
     size_t total_len = strlen(start);
@@ -1221,15 +1227,21 @@ static char *clean_template_content(const char *content)
     // 从末尾向前扫描空格/制表符
     const char *p = end - 1;
     while (p > start && (*p == ' ' || *p == '\t'))
+    {
         p--;
+    }
 
     // 如果扫描到的是 \n，说明最后一行全是空格（XML缩进），去掉
     if (p > start && *p == '\n')
+    {
         end = p;
+    }
 
     size_t len = end - start;
     if (len == 0)
+    {
         return NULL;
+    }
 
     return g_strndup(start, len);
 }
@@ -1237,7 +1249,9 @@ static char *clean_template_content(const char *content)
 static void parse_template_body_node(xmlNode *body_node, nn_config_template_t *template)
 {
     if (!body_node || !template)
+    {
         return;
+    }
 
     // 提取 db 属性
     xmlChar *db_str = xmlGetProp(body_node, (const xmlChar *)"db");
@@ -1262,8 +1276,7 @@ static void parse_template_body_node(xmlNode *body_node, nn_config_template_t *t
             char *cleaned_content = clean_template_content((const char *)content);
             if (cleaned_content)
             {
-                nn_config_template_set_body(template, cleaned_content,
-                                            (const char **)db_names, db_count);
+                nn_config_template_set_body(template, cleaned_content, (const char **)db_names, db_count);
                 g_free(cleaned_content);
             }
             xmlFree(content);
@@ -1280,7 +1293,9 @@ static void parse_template_body_node(xmlNode *body_node, nn_config_template_t *t
 static void parse_config_templates_node(xmlNode *templates_node)
 {
     if (!templates_node)
+    {
         return;
+    }
 
     printf("[xml_parser] Parsing config_templates section\n");
 
@@ -1290,7 +1305,9 @@ static void parse_config_templates_node(xmlNode *templates_node)
     for (xmlNode *cur = templates_node->children; cur; cur = cur->next)
     {
         if (cur->type != XML_ELEMENT_NODE)
+        {
             continue;
+        }
 
         if (xmlStrcmp(cur->name, (const xmlChar *)"template-def") == 0)
         {
@@ -1300,15 +1317,16 @@ static void parse_config_templates_node(xmlNode *templates_node)
                 xmlChar *priority_str = xmlGetProp(cur, (const xmlChar *)"priority");
                 uint32_t priority = priority_str ? atoi((const char *)priority_str) : 0;
                 if (priority_str)
+                {
                     xmlFree(priority_str);
+                }
 
                 nn_config_template_t *template = nn_config_template_create((const char *)name, priority);
 
                 // 处理嵌套的 template-def（子模板）
                 for (xmlNode *child = cur->children; child; child = child->next)
                 {
-                    if (child->type == XML_ELEMENT_NODE &&
-                        xmlStrcmp(child->name, (const xmlChar *)"template-def") == 0)
+                    if (child->type == XML_ELEMENT_NODE && xmlStrcmp(child->name, (const xmlChar *)"template-def") == 0)
                     {
                         xmlChar *child_name = xmlGetProp(child, (const xmlChar *)"template-name");
                         if (child_name)
@@ -1320,8 +1338,7 @@ static void parse_config_templates_node(xmlNode *templates_node)
                             {
                                 nn_config_template_t *child_template =
                                     nn_config_template_create((const char *)child_name, 0);
-                                g_hash_table_insert(template_map,
-                                                    (gpointer)child_template->template_name,
+                                g_hash_table_insert(template_map, (gpointer)child_template->template_name,
                                                     child_template);
                             }
 
@@ -1330,7 +1347,7 @@ static void parse_config_templates_node(xmlNode *templates_node)
                     }
                 }
 
-                g_hash_table_insert(template_map, (gpointer)template->template_name, template);
+                g_hash_table_insert(template_map, (gpointer) template->template_name, template);
                 xmlFree(name);
             }
         }
@@ -1340,15 +1357,17 @@ static void parse_config_templates_node(xmlNode *templates_node)
     for (xmlNode *cur = templates_node->children; cur; cur = cur->next)
     {
         if (cur->type != XML_ELEMENT_NODE)
+        {
             continue;
+        }
 
         if (xmlStrcmp(cur->name, (const xmlChar *)"template") == 0)
         {
             xmlChar *name = xmlGetProp(cur, (const xmlChar *)"template-name");
             if (name)
             {
-                nn_config_template_t *template = (nn_config_template_t *)g_hash_table_lookup(
-                    template_map, (const gchar *)name);
+                nn_config_template_t *template =
+                    (nn_config_template_t *)g_hash_table_lookup(template_map, (const gchar *)name);
 
                 if (template)
                 {
@@ -1369,8 +1388,7 @@ static void parse_config_templates_node(xmlNode *templates_node)
     {
         nn_config_template_t *template = (nn_config_template_t *)value;
         nn_config_template_registry_add(template);
-        printf("[xml_parser]   Template '%s' registered (priority: %u)\n", template->template_name,
-               template->priority);
+        printf("[xml_parser]   Template '%s' registered (priority: %u)\n", template->template_name, template->priority);
     }
 
     // 清理临时哈希表（但不释放元素，因为它们已被注册）

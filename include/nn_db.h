@@ -56,9 +56,9 @@ typedef struct nn_db_value
 /** 查询结果行 */
 typedef struct nn_db_row
 {
-    char **field_names;  /**< 字段名称数组 */
+    char **field_names;    /**< 字段名称数组 */
     nn_db_value_t *values; /**< 值数组 */
-    uint32_t num_fields; /**< 字段数量 */
+    uint32_t num_fields;   /**< 字段数量 */
 } nn_db_row_t;
 
 /** 查询结果集 */

@@ -22,9 +22,9 @@ nn_cli_element_t *nn_cli_element_create(uint32_t element_id, uint32_t cfg_id, el
     element->element_id = element_id;
     element->cfg_id = cfg_id;
     element->type = type;
-    element->name = name ? strdup(name) : NULL;
-    element->description = description ? strdup(description) : NULL;
-    element->range = range ? strdup(range) : NULL;
+    element->name = name ? g_strdup(name) : NULL;
+    element->description = description ? g_strdup(description) : NULL;
+    element->range = range ? g_strdup(range) : NULL;
     element->param_type = NULL;
 
     return element;
@@ -39,8 +39,8 @@ nn_cli_element_t *nn_cli_element_create_with_type(uint32_t element_id, uint32_t 
     element->element_id = element_id;
     element->cfg_id = cfg_id;
     element->type = type;
-    element->name = name ? strdup(name) : NULL;
-    element->description = description ? strdup(description) : NULL;
+    element->name = name ? g_strdup(name) : NULL;
+    element->description = description ? g_strdup(description) : NULL;
     element->range = NULL;
 
     // Parse type string to create param_type

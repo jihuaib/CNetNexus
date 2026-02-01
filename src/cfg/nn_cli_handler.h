@@ -51,11 +51,11 @@ typedef struct
     uint32_t view_context_len[NN_CLI_PROMPT_STACK_DEPTH];   // 每层数据长度
 
     // Pager state for --More-- output
-    char *pager_buffer;              // Dynamically allocated output buffer
-    uint32_t pager_offset;           // Current position in buffer
-    uint32_t pager_total_len;        // Total buffer length
-    uint32_t pager_lines_per_page;   // Lines per screen (default 24)
-    uint32_t pager_active;           // 1 if pager is active
+    char *pager_buffer;            // Dynamically allocated output buffer
+    uint32_t pager_offset;         // Current position in buffer
+    uint32_t pager_total_len;      // Total buffer length
+    uint32_t pager_lines_per_page; // Lines per screen (default 24)
+    uint32_t pager_active;         // 1 if pager is active
 } nn_cli_session_t;
 
 // Function prototypes

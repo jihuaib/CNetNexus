@@ -6,6 +6,7 @@
  */
 #include "nn_cli_history.h"
 
+#include <glib.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -49,7 +50,7 @@ void nn_cli_session_history_add(nn_cli_session_history_t *history, const char *c
         g_free(entry->command);
     }
 
-    entry->command = strdup(cmd);
+    entry->command = g_strdup(cmd);
     entry->timestamp = time(NULL);
     if (client_ip)
     {
@@ -128,7 +129,7 @@ void nn_cli_global_history_add(nn_cli_global_history_t *history, const char *cmd
         g_free(entry->command);
     }
 
-    entry->command = strdup(cmd);
+    entry->command = g_strdup(cmd);
     entry->timestamp = time(NULL);
     if (client_ip)
     {

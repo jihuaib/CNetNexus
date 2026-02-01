@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "nn_cfg.h"
+#include "nn_db.h"
 #include "nn_db_registry.h"
 #include "nn_dev.h"
 #include "nn_errcode.h"
@@ -253,9 +254,8 @@ int nn_db_cli_handle_continue(nn_dev_message_t *msg)
 {
     // No batch output pending - send empty final response
     char *resp_data = g_strdup("");
-    nn_dev_message_t *resp_msg =
-        nn_dev_message_create(NN_CFG_MSG_TYPE_CLI_RESP, NN_DEV_MODULE_ID_DB, msg->request_id,
-                             resp_data, strlen(resp_data) + 1, g_free);
+    nn_dev_message_t *resp_msg = nn_dev_message_create(NN_CFG_MSG_TYPE_CLI_RESP, NN_DEV_MODULE_ID_DB, msg->request_id,
+                                                       resp_data, strlen(resp_data) + 1, g_free);
     if (resp_msg)
     {
         nn_dev_pubsub_send_response(msg->sender_id, resp_msg);
