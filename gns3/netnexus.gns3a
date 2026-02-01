@@ -14,18 +14,6 @@
   "usage": "Connect via Console (telnet port 3788) to access CLI. Use Tab for auto-completion and ? for help.",
   "symbol": "router.svg",
   "port_name_format": "eth{0}",
-  "qemu": {
-    "adapter_type": "e1000",
-    "adapters": 4,
-    "ram": 512,
-    "cpus": 1,
-    "hda_disk_interface": "ide",
-    "arch": "x86_64",
-    "console_type": "telnet",
-    "boot_priority": "c",
-    "kvm": "allow",
-    "options": "-nographic"
-  },
   "docker": {
     "adapters": 4,
     "image": "netnexus:latest",
@@ -35,16 +23,14 @@
     "environment": "",
     "extra_hosts": "",
     "extra_volumes": [],
-    "extra_docker_options": "--cap-add=SYS_PTRACE --cap-add=NET_ADMIN --security-opt seccomp=unconfined"
+    "extra_docker_options": "--privileged"
   },
   "images": [
     {
-      "filename": "netnexus-latest.tar.gz",
+      "filename": "netnexus:latest",
       "version": "1.0.0",
-      "md5sum": "",
-      "filesize": 0,
-      "download_url": "https://github.com/yourrepo/netnexus/releases",
-      "direct_download_url": ""
+      "md5sum": "00000000000000000000000000000000",
+      "filesize": 0
     }
   ],
   "versions": [

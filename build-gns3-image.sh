@@ -38,8 +38,20 @@ echo "Version: ${VERSION}"
 echo "Git commit: ${GIT_COMMIT}"
 echo ""
 
+# 支持跨平台构建：默认当前平台，可通过 PLATFORM 环境变量指定
+# 例如 ARM Mac 上构建 x86 镜像：PLATFORM=linux/amd64 ./build-gns3-image.sh
+PLATFORM="${PLATFORM:-}"
+PLATFORM_FLAG=""
+if [ -n "${PLATFORM}" ]; then
+    PLATFORM_FLAG="--platform ${PLATFORM}"
+    echo "Cross-build platform: ${PLATFORM}"
+    echo ""
+fi
+
 # Build with multiple tags
 docker build \
+    ${PLATFORM_FLAG} \
+    --target production \
     --build-arg VERSION=${VERSION} \
     --build-arg GIT_COMMIT=${GIT_COMMIT} \
     -t ${IMAGE_NAME}:latest \

@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include "nn_cfg.h"
+#include "nn_db.h"
 #include "nn_dev.h"
 #include "nn_errcode.h"
 #include "nn_if.h"
@@ -133,10 +134,23 @@ static int handle_config_cmd(nn_cfg_tlv_parser_t parser, nn_if_cli_out_t *cfg_ou
         return NN_ERRCODE_FAIL;
     }
 
+    // 将逻辑接口名转换为物理接口名
+    const char *phys_name = nn_if_map_get_physical(g_current_interface);
+
     if (cfg_out->data.config.has_ip)
     {
-        if (nn_if_set_ip(g_current_interface, cfg_out->data.config.ip, cfg_out->data.config.mask) == NN_ERRCODE_SUCCESS)
+        if (nn_if_set_ip(phys_name, cfg_out->data.config.ip, cfg_out->data.config.mask) == NN_ERRCODE_SUCCESS)
         {
+            // 持久化 IP 配置到数据库
+            char where[64];
+            snprintf(where, sizeof(where), "name = '%s'", g_current_interface);
+            const char *field_names[] = {"ip_address", "netmask"};
+            nn_db_value_t values[] = {nn_db_value_text(cfg_out->data.config.ip),
+                                      nn_db_value_text(cfg_out->data.config.mask)};
+            nn_db_update("if_db", "if_interface", field_names, values, 2, where);
+            nn_db_value_free(&values[0]);
+            nn_db_value_free(&values[1]);
+
             snprintf(resp_out->message, sizeof(resp_out->message), "IP address configured successfully on %s\r\n",
                      g_current_interface);
         }
@@ -151,8 +165,15 @@ static int handle_config_cmd(nn_cfg_tlv_parser_t parser, nn_if_cli_out_t *cfg_ou
     else if (cfg_out->data.config.shutdown)
     {
         int state = cfg_out->data.config.undo ? 1 : 0;
-        if (nn_if_set_state(g_current_interface, state) == NN_ERRCODE_SUCCESS)
+        if (nn_if_set_state(phys_name, state) == NN_ERRCODE_SUCCESS)
         {
+            // 持久化 shutdown 状态到数据库
+            char where[64];
+            snprintf(where, sizeof(where), "name = '%s'", g_current_interface);
+            const char *field_names[] = {"shutdown"};
+            nn_db_value_t values[] = {nn_db_value_int(state ? 0 : 1)};
+            nn_db_update("if_db", "if_interface", field_names, values, 1, where);
+
             snprintf(resp_out->message, sizeof(resp_out->message), "Interface %s %s\r\n", g_current_interface,
                      state ? "enabled" : "disabled");
         }

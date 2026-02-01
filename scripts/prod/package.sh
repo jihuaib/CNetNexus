@@ -51,15 +51,11 @@ cp "${BUILD_DIR}/lib"/libnn_*.so* "${PACKAGE_DIR}/${PACKAGE_NAME}/lib/" 2>/dev/n
 # Copy configuration files (XML files from src)
 echo "[5/6] Copying configuration files..."
 for module_dir in "${PROJECT_ROOT}/src"/*; do
-    if [ -d "$module_dir" ]; then
+    if [ -d "$module_dir/resources" ]; then
         module_name=$(basename "$module_dir")
-        xml_file="${module_dir}/resources/commands.xml"
-
-        if [ -f "$xml_file" ]; then
-            mkdir -p "${PACKAGE_DIR}/${PACKAGE_NAME}/resources/${module_name}"
-            cp "$xml_file" "${PACKAGE_DIR}/${PACKAGE_NAME}/resources/${module_name}/"
-            echo "  - Copied ${module_name}/commands.xml"
-        fi
+        mkdir -p "${PACKAGE_DIR}/${PACKAGE_NAME}/resources/${module_name}"
+        cp "$module_dir"/resources/* "${PACKAGE_DIR}/${PACKAGE_NAME}/resources/${module_name}/" 2>/dev/null || true
+        echo "  - Copied ${module_name}/resources/"
     fi
 done
 
@@ -67,6 +63,7 @@ done
 echo "[6/6] Copying deployment scripts..."
 cp "${SCRIPT_DIR}/deploy.sh" "${PACKAGE_DIR}/${PACKAGE_NAME}/scripts/"
 cp "${SCRIPT_DIR}/start.sh" "${PACKAGE_DIR}/${PACKAGE_NAME}/scripts/"
+cp "${SCRIPT_DIR}/gns3-entry.sh" "${PACKAGE_DIR}/${PACKAGE_NAME}/scripts/"
 chmod +x "${PACKAGE_DIR}/${PACKAGE_NAME}/scripts"/*.sh
 
 # Create version file

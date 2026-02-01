@@ -131,4 +131,33 @@
             </commands>
         </group>
     </command_groups>
+
+    <config_templates>
+        <!-- 接口配置主模板 -->
+        <template-def template-name="if_template" priority="20"/>
+
+        <!-- 接口配置内容模板（多行，每个接口一行） -->
+        <template template-name="if_template" db="if_db.if_interface">
+ #
+ if {if_interface.name}
+  ip address {if_interface.ip_address} {if_interface.netmask}
+  {if_interface.shutdown}
+ #
+        </template>
+    </config_templates>
+
+    <dbs>
+        <db db-name="if_db">
+            <tables>
+                <table table-name="if_interface">
+                    <fields>
+                        <field field-name="name" type="string(1-31)"/>
+                        <field field-name="ip_address" type="string(1-15)"/>
+                        <field field-name="netmask" type="string(1-15)"/>
+                        <field field-name="shutdown" type="uint(0-1)"/>
+                    </fields>
+                </table>
+            </tables>
+        </db>
+    </dbs>
 </configuration>

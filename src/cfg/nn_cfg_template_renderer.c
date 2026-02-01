@@ -131,12 +131,13 @@ static GHashTable *query_template_databases(nn_config_template_t *template)
 }
 
 /**
- * @brief 从查询结果构建变量映射表
+ * @brief 从查询结果构建变量映射表（指定行号）
  * @param template 模板定义
  * @param query_results 查询结果（GHashTable，key=table_name 或 db_name.table_name，value=nn_db_result_t*）
+ * @param row_index 行索引，指定使用第几行数据
  * @return 变量映射表（GHashTable，key=variable_name，value=variable_value_string）
  */
-static GHashTable *build_var_map(nn_config_template_t *template, GHashTable *query_results)
+static GHashTable *build_var_map_for_row(nn_config_template_t *template, GHashTable *query_results, uint32_t row_index)
 {
     GHashTable *var_map = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 
@@ -181,15 +182,15 @@ static GHashTable *build_var_map(nn_config_template_t *template, GHashTable *que
             result = (nn_db_result_t *)g_hash_table_lookup(query_results, table_name);
         }
 
-        if (!result || result->num_rows == 0)
+        if (!result || result->num_rows == 0 || row_index >= result->num_rows)
         {
-            printf("[cfg_renderer]   No data for table %s.%s\n", db_name, table_name);
+            printf("[cfg_renderer]   No data for table %s.%s (row_index=%u)\n", db_name, table_name, row_index);
             g_strfreev(parts);
             continue;
         }
 
-        // 提取第一行的所有字段值
-        nn_db_row_t *row = result->rows[0];
+        // 提取指定行的所有字段值
+        nn_db_row_t *row = result->rows[row_index];
         for (uint32_t j = 0; j < row->num_fields; j++)
         {
             const char *field_name = row->field_names[j];
@@ -227,6 +228,28 @@ static GHashTable *build_var_map(nn_config_template_t *template, GHashTable *que
     }
 
     return var_map;
+}
+
+/**
+ * @brief 获取查询结果中的最大行数
+ */
+static uint32_t get_max_rows(GHashTable *query_results)
+{
+    uint32_t max_rows = 0;
+    GHashTableIter iter;
+    gpointer key, value;
+
+    g_hash_table_iter_init(&iter, query_results);
+    while (g_hash_table_iter_next(&iter, &key, &value))
+    {
+        nn_db_result_t *result = (nn_db_result_t *)value;
+        if (result && result->num_rows > max_rows)
+        {
+            max_rows = result->num_rows;
+        }
+    }
+
+    return max_rows;
 }
 
 /**
@@ -281,38 +304,50 @@ static char *render_template_recursive(nn_config_template_t *template, GString *
     // 查询数据库
     GHashTable *query_results = query_template_databases(template);
 
-    // 构建变量映射表
-    GHashTable *var_map = build_var_map(template, query_results);
-
-    // 如果模板有主体内容，渲染它
-    if (template->body && template->body->content)
+    // 获取最大行数，支持多行迭代渲染
+    uint32_t max_rows = get_max_rows(query_results);
+    if (max_rows == 0)
     {
-        char *rendered = nn_config_template_render(template, var_map);
-        if (rendered)
-        {
-            g_string_append(output, rendered);
-            g_string_append(output, "\r\n");
-            g_free(rendered);
-        }
+        max_rows = 1;
     }
 
-    // 递归渲染子模板
-    if (template->num_children > 0)
+    // 对每一行数据渲染模板
+    for (uint32_t row_idx = 0; row_idx < max_rows; row_idx++)
     {
-        printf("[cfg_renderer]   Template has %u children\n", template->num_children);
-        for (uint32_t i = 0; i < template->num_children; i++)
+        // 构建当前行的变量映射表
+        GHashTable *var_map = build_var_map_for_row(template, query_results, row_idx);
+
+        // 如果模板有主体内容，渲染它
+        if (template->body && template->body->content)
         {
-            const char *child_name = template->child_template_names[i];
-            nn_config_template_t *child = nn_config_template_find_by_name(child_name);
-            if (child)
+            char *rendered = nn_config_template_render(template, var_map);
+            if (rendered)
             {
-                render_template_recursive(child, output);
+                g_string_append(output, rendered);
+                g_string_append(output, "\r\n");
+                g_free(rendered);
             }
         }
+
+        // 递归渲染子模板（仅在第一行时渲染，避免重复）
+        if (row_idx == 0 && template->num_children > 0)
+        {
+            printf("[cfg_renderer]   Template has %u children\n", template->num_children);
+            for (uint32_t i = 0; i < template->num_children; i++)
+            {
+                const char *child_name = template->child_template_names[i];
+                nn_config_template_t *child = nn_config_template_find_by_name(child_name);
+                if (child)
+                {
+                    render_template_recursive(child, output);
+                }
+            }
+        }
+
+        g_hash_table_destroy(var_map);
     }
 
     // 清理
-    g_hash_table_destroy(var_map);
     free_query_results(query_results);
 
     return NULL;
