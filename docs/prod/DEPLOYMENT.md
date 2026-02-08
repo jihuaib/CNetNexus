@@ -70,11 +70,11 @@ netnexus-1.0.0/
 ├── bin/              # Executables
 │   └── netnexus
 ├── lib/              # Shared libraries
-│   ├── libnn_cfg.so
-│   ├── libnn_db.so
-│   ├── libnn_bgp.so
-│   ├── libnn_dev.so
-│   └── libnn_utils.so
+│   ├── libcfg.so
+│   ├── libdb.so
+│   ├── libbgp.so
+│   ├── libdev.so
+│   └── libutils.so
 ├── config/           # Configuration files
 │   ├── cfg/commands.xml
 │   ├── dev/commands.xml
@@ -181,7 +181,7 @@ docker run -d \
   --name netnexus \
   -p 3788:3788 \
   -v netnexus-data:/opt/netnexus/data \
-  -e NN_RESOURCES_DIR=/opt/netnexus/resources \
+  -e RESOURCES_DIR=/opt/netnexus/resources \
   --restart unless-stopped \
   netnexus:latest
 
@@ -195,7 +195,7 @@ docker rm netnexus
 
 #### Docker Environment Variables
 
-- `NN_RESOURCES_DIR`: Configuration directory (default: `/opt/netnexus/resources`)
+- `RESOURCES_DIR`: Configuration directory (default: `/opt/netnexus/resources`)
 - `LD_LIBRARY_PATH`: Library path (default: `/opt/netnexus/lib`)
 
 #### Custom Configuration
@@ -266,7 +266,7 @@ sudo tar xzf netnexus-config-backup-20260127.tar.gz -C /
 
 The system searches for configuration files in this order:
 
-1. `$NN_RESOURCES_DIR/{module}/commands.xml` (if NN_RESOURCES_DIR set)
+1. `$RESOURCES_DIR/{module}/commands.xml` (if RESOURCES_DIR set)
 2. `/opt/netnexus/resources/{module}/commands.xml` (production)
 3. `<exe_dir>/../../src/{module}/commands.xml` (development)
 4. `../../src/{module}/commands.xml` (fallback)
@@ -323,7 +323,7 @@ ls -l /opt/netnexus/bin/netnexus
 
 ```bash
 # Check environment variable
-sudo systemctl show netnexus | grep NN_RESOURCES_DIR
+sudo systemctl show netnexus | grep RESOURCES_DIR
 
 # Verify config files exist
 ls -la /opt/netnexus/resources/*/commands.xml
@@ -370,7 +370,7 @@ docker logs netnexus
 docker exec -it netnexus /bin/bash
 
 # Check environment
-docker exec netnexus env | grep NN_
+docker exec netnexus env | grep 
 
 # Verify files inside container
 docker exec netnexus ls -la /opt/netnexus/resources/

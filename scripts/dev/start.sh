@@ -31,7 +31,7 @@ mkdir -p "${DATA_DIR}"
 export LD_LIBRARY_PATH="${BUILD_DIR}/lib:${LD_LIBRARY_PATH}"
 
 # XML files will be auto-discovered from src/ in development mode
-# No need to set NN_RESOURCES_DIR
+# No need to set RESOURCES_DIR
 
 echo "==================================="
 echo "NetNexus Development Mode"

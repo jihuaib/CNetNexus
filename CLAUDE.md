@@ -113,7 +113,7 @@ NetNexus/
 
 **环境变量：**
 - `LD_LIBRARY_PATH` - 自动设置为 `build/lib/`
-- `NN_RESOURCES_DIR` - 开发环境无需设置（从 `src/` 自动发现）
+- `RESOURCES_DIR` - 开发环境无需设置（从 `src/` 自动发现）
 
 **配置文件：**
 XML 配置文件从源码目录自动发现：
@@ -176,7 +176,7 @@ printf("[DEBUG] %s:%d - Variable: %d\n", __FILE__, __LINE__, var);
 
 **添加新模块：**
 1. 创建 `src/mymodule/` 目录
-2. 添加带有 constructor 的 `nn_mymodule_main.c`
+2. 添加带有 constructor 的 `mymodule_main.c`
 3. 添加定义 CLI 命令的 `commands.xml`
 4. 添加 `CMakeLists.txt`
 5. 更新 `src/CMakeLists.txt` 以包含新模块
@@ -251,11 +251,11 @@ telnet localhost 3788          # 连接到 CLI
 
 构建完成后生成以下产物：
 - `build/bin/netnexus` - 主可执行文件
-- `build/lib/libnn_cfg.so` - CLI 库（CLI 框架）
-- `build/lib/libnn_utils.so` - 工具库
-- `build/lib/libnn_db.so` - 数据库模块（SQLite 存储）
-- `build/lib/libnn_bgp.so` - BGP 模块
-- `build/lib/libnn_dev.so` - Dev 模块
+- `build/lib/libcfg.so` - CLI 库（CLI 框架）
+- `build/lib/libutils.so` - 工具库
+- `build/lib/libdb.so` - 数据库模块（SQLite 存储）
+- `build/lib/libbgp.so` - BGP 模块
+- `build/lib/libdev.so` - Dev 模块
 
 ## 架构
 
@@ -263,10 +263,10 @@ NetNexus 是一个模块化的 Telnet CLI 服务器，用于网络协议管理�
 
 ### 模块系统
 模块在加载时通过 `__attribute__((constructor))` 自注册。每个模块提供：
-- 调用 `nn_cli_register_module(name, xml_path)` 进行注册
+- 调用 `cli_register_module(name, xml_path)` 进行注册
 - 定义命令的 XML 配置文件（位于模块目录中）
 
-参见 [nn_dev_module.c](src/dev/nn_dev_module.c) 了解模式。
+参见 [dev_module.c](src/dev/dev_module.c) 了解模式。
 
 ### 视图层级
 视图代表 CLI 模式（USER、CONFIG、BGP 等）。每个视图包含：
@@ -293,73 +293,73 @@ CLI 支持完整的行编辑和光标定位：
 - **Tab/帮助**：基于光标位置工作（仅使用光标前的文本进行匹配）
 - **历史记录**：会话级（20 条命令）和全局（200 条命令）历史，包含时间戳和客户端 IP
 
-[nn_cli_handler.c](src/cfg/nn_cli_handler.c) 中的关键函数：
+[cli_handler.c](src/cfg/cli_handler.c) 中的关键函数：
 - `handle_arrow_up/down/left/right()` - 方向键处理函数
 - `redraw_from_cursor()` - 行内编辑后重绘
-- `nn_cli_session_history_*()` - 会话历史管理
-- `nn_cli_global_history_*()` - 全局历史（带 pthread 互斥锁）
+- `cli_session_history_*()` - 会话历史管理
+- `cli_global_history_*()` - 全局历史（带 pthread 互斥锁）
 
 ### 目录结构
 ```
 src/
 ├── main.c                      # TCP 服务器、线程、信号处理
-├── cfg/                        # CLI 库 (libnn_cfg.so)
-│   ├── nn_cli_handler.c/h      # 客户端会话、命令执行
-│   ├── nn_cli_history.c/h      # 命令历史管理
-│   ├── nn_cli_tree.c/h         # 命令树匹配
-│   ├── nn_cli_view.c/h         # 视图层级管理
-│   ├── nn_cli_element.c/h      # CLI 元素处理
-│   ├── nn_cli_xml_parser.c/h   # XML 配置解析
+├── cfg/                        # CLI 库 (libcfg.so)
+│   ├── cli_handler.c/h      # 客户端会话、命令执行
+│   ├── cli_history.c/h      # 命令历史管理
+│   ├── cli_tree.c/h         # 命令树匹配
+│   ├── cli_view.c/h         # 视图层级管理
+│   ├── cli_element.c/h      # CLI 元素处理
+│   ├── cli_xml_parser.c/h   # XML 配置解析
 │   └── commands.xml            # 核心 CLI 命令
-├── utils/                      # 工具库 (libnn_utils.so)
-│   └── nn_path_utils.c/h       # 路径工具
-├── db/                         # 数据库模块 (libnn_db.so)
-│   ├── nn_db_main.c/h          # 模块生命周期
-│   ├── nn_db_registry.c/h      # 数据库定义存储
-│   ├── nn_db_schema.c          # Schema 管理
-│   ├── nn_db_api.c             # CRUD 操作
+├── utils/                      # 工具库 (libutils.so)
+│   └── path_utils.c/h       # 路径工具
+├── db/                         # 数据库模块 (libdb.so)
+│   ├── db_main.c/h          # 模块生命周期
+│   ├── db_registry.c/h      # 数据库定义存储
+│   ├── db_schema.c          # Schema 管理
+│   ├── db_api.c             # CRUD 操作
 │   └── commands.xml            # 数据库模块配置
 ├── interface/                  # 接口定义
-├── bgp/                        # BGP 模块 (libnn_bgp.so)
-│   ├── nn_bgp_module.c/h
+├── bgp/                        # BGP 模块 (libbgp.so)
+│   ├── bgp_module.c/h
 │   └── commands.xml
-└── dev/                        # Dev 模块 (libnn_dev.so)
-    ├── nn_dev_module.c/h
+└── dev/                        # Dev 模块 (libdev.so)
+    ├── dev_module.c/h
     └── commands.xml
 ```
 
 ### 库依赖
 ```
 netnexus (可执行文件)
-├── libnn_cfg.so (CLI 框架)
-│   └── libxml2, pthread, libnn_db
-├── libnn_utils.so (工具库)
-├── libnn_db.so (数据库模块)
+├── libcfg.so (CLI 框架)
+│   └── libxml2, pthread, libdb
+├── libutils.so (工具库)
+├── libdb.so (数据库模块)
 │   └── sqlite3
-├── libnn_bgp.so (BGP 模块)
-└── libnn_dev.so (Dev 模块)
+├── libbgp.so (BGP 模块)
+└── libdev.so (Dev 模块)
 ```
 
 ### 全局变量
-- `g_nn_cfg_local->view_tree`：视图层级的根节点
+- `g_cfg_local->view_tree`：视图层级的根节点
 
 ## 命名规范
 
 ### 文件命名
-- 文件名格式：`nn_{module}_xxx.c` / `nn_{module}_xxx.h`
+- 文件名格式：`{module}_xxx.c` / `{module}_xxx.h`
 - `{module}` 为模块名，如 `cfg`、`bgp`、`dev`、`db`、`if`
-- 示例：`nn_bgp_cli.c`、`nn_db_main.h`、`nn_if_map.c`
+- 示例：`bgp_cli.c`、`db_main.h`、`if_map.c`
 
 ### 函数和结构体命名
-- 函数名格式：`nn_{module}_xxx()`
-- 结构体名格式：`nn_{module}_xxx_t`
+- 函数名格式：`{module}_xxx()`
+- 结构体名格式：`{module}_xxx_t`
 - `{module}` 必须与文件所属模块一致
-- 示例：`nn_bgp_cli_handle_cmd()`、`nn_db_connection_t`
-- 模块内部的静态函数可省略 `nn_{module}_` 前缀
+- 示例：`bgp_cli_handle_cmd()`、`db_connection_t`
+- 模块内部的静态函数可省略 `{module}_` 前缀
 
 ### 全局变量命名
-- 全局变量格式：`g_nn_{module}_xxx`
-- 示例：`g_nn_cfg_local`、`g_nn_bgp_running`
+- 全局变量格式：`g_{module}_xxx`
+- 示例：`g_cfg_local`、`g_bgp_running`
 
 ### 其他命名规则
 - `cmd_*`：命令处理函数（CLI 回调）
@@ -406,10 +406,10 @@ netnexus (可执行文件)
 
 ### 禁止跨模块直接包含头文件
 - 模块之间**不允许**直接 `#include` 其他模块的头文件
-- 例如：`src/if/` 下的代码**不能** `#include "nn_bgp_cli.h"`，`src/bgp/` 下的代码**不能** `#include "nn_if_cli.h"`
-- 模块间通信必须通过 `include/` 下的公共接口（如 `nn_cfg.h`、`nn_dev.h`、`nn_errcode.h`）或消息机制（pub/sub）
+- 例如：`src/if/` 下的代码**不能** `#include "bgp_cli.h"`，`src/bgp/` 下的代码**不能** `#include "if_cli.h"`
+- 模块间通信必须通过 `include/` 下的公共接口（如 `cfg.h`、`dev.h`、`errcode.h`）或消息机制（pub/sub）
 - `include/` 目录下的头文件是跨模块共享的公共接口，所有模块均可包含
-- 模块内部的头文件（如 `nn_if_cli.h`、`nn_bgp_cli.h`）仅限本模块内部使用
+- 模块内部的头文件（如 `if_cli.h`、`bgp_cli.h`）仅限本模块内部使用
 
 ### 注释和文档语言统一使用中文
 - 所有代码注释（包括行注释 `//` 和块注释 `/* */`）必须使用中文
@@ -421,7 +421,7 @@ netnexus (可执行文件)
 所有新建的 `.c` 和 `.h` 文件必须在文件头部添加注释，格式如下：
 ```c
 /**
- * @file   nn_xxx_yyy.c
+ * @file   xxx_yyy.c
  * @brief  简要描述文件功能
  * @author 作者
  * @date   创建日期
@@ -437,19 +437,19 @@ netnexus (可执行文件)
  * @param param2 参数2说明
  * @return 返回值说明
  */
-int nn_xxx_function(int param1, const char *param2);
+int xxx_function(int param1, const char *param2);
 
 /**
  * @brief 结构体用途说明
  */
-typedef struct nn_xxx
+typedef struct xxx
 {
     int field1;    /**< 字段说明 */
     char name[64]; /**< 字段说明 */
-} nn_xxx_t;
+} xxx_t;
 
 /** 宏定义说明 */
-#define NN_XXX_MAX_SIZE 1024
+#define XXX_MAX_SIZE 1024
 ```
 
 ## 部署
@@ -472,7 +472,7 @@ cd ..
 
 部署包包含：
 - 二进制文件（`bin/netnexus`）
-- 库文件（`lib/libnn_*.so`）
+- 库文件（`lib/lib*.so`）
 - 配置文件（`config/*/commands.xml`）
 - 部署脚本
 
@@ -537,13 +537,13 @@ Docker 配置：
 - 暴露端口：`3788`（telnet）
 - 持久化数据：`/opt/netnexus/data`（卷）
 - 配置目录：`/opt/netnexus/resources`
-- 环境变量：`NN_RESOURCES_DIR=/opt/netnexus/resources`
+- 环境变量：`RESOURCES_DIR=/opt/netnexus/resources`
 
 ### 配置路径解析
 
 系统按以下优先级解析 XML 配置文件：
 
-1. **环境变量** `NN_RESOURCES_DIR`：`/opt/netnexus/resources/{module}/commands.xml`
+1. **环境变量** `RESOURCES_DIR`：`/opt/netnexus/resources/{module}/commands.xml`
 2. **生产路径**：`/opt/netnexus/resources/{module}/commands.xml`
 3. **开发路径**：`build/bin/../../src/{module}/commands.xml`
 4. **回退路径**：`../../src/{module}/commands.xml`

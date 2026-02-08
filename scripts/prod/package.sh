@@ -46,7 +46,7 @@ chmod +x "${PACKAGE_DIR}/${PACKAGE_NAME}/bin/netnexus"
 
 # Copy libraries
 echo "[4/6] Copying libraries..."
-cp "${BUILD_DIR}/lib"/libnn_*.so* "${PACKAGE_DIR}/${PACKAGE_NAME}/lib/" 2>/dev/null || true
+cp "${BUILD_DIR}/lib"/lib*.so* "${PACKAGE_DIR}/${PACKAGE_NAME}/lib/" 2>/dev/null || true
 
 # Copy configuration files (XML files from src)
 echo "[5/6] Copying configuration files..."

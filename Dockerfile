@@ -57,7 +57,7 @@ WORKDIR /workspace
 
 EXPOSE 3788
 
-# 开发环境不需要 NN_RESOURCES_DIR，源码目录下的 XML 会被自动发现
+# 开发环境不需要 RESOURCES_DIR，源码目录下的 XML 会被自动发现
 CMD ["/bin/bash"]
 
 # ============================================================
@@ -99,7 +99,7 @@ RUN tar -xzf /tmp/netnexus-${VERSION}.tar.gz -C /tmp && \
     rm -rf /tmp/netnexus-*
 
 ENV LD_LIBRARY_PATH=/opt/netnexus/lib
-ENV NN_RESOURCES_DIR=/opt/netnexus/resources
+ENV RESOURCES_DIR=/opt/netnexus/resources
 
 EXPOSE 3788
 

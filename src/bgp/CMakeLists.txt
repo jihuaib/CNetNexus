@@ -1,20 +1,32 @@
-# BGP module sources
-set(NN_BGP_SOURCES
-    nn_bgp_main.c
-    nn_bgp_cli.c
-    nn_bgp_api.c
+# BGP 独立进程
+set(BGP_SOURCES
+    bgp_process.c
+    bgp_main.c
+    bgp_cli.c
+    bgp_api.c
 )
 
-# Create shared library for BGP module
-add_library(nn_bgp SHARED ${NN_BGP_SOURCES})
+# 构建为可执行文件
+add_executable(bgp ${BGP_SOURCES})
 
-# Include directories
-target_include_directories(nn_bgp PRIVATE
+# 包含目录
+target_include_directories(bgp PRIVATE
     .
 )
 
-# Set library version
-set_target_properties(nn_bgp PROPERTIES
-    VERSION 1.0.0
-    SOVERSION 1
+# 链接依赖
+target_link_libraries(bgp PRIVATE
+    db_client
+    cli_param
+    ipc
+    utils
+    ${GLIB_LIBRARIES}
+    Threads::Threads
+)
+
+# 设置 RPATH
+set_target_properties(bgp PROPERTIES
+    BUILD_RPATH "${CMAKE_BINARY_DIR}/lib"
+    INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
