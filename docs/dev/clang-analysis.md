@@ -31,13 +31,13 @@ Clang code analysis tools have been configured for the NetNexus project:
 ### Manual Commands
 ```bash
 # Analyze a single file
-clang-tidy src/cli/cli_handler.c -- -Iinclude -Isrc
+clang-tidy src/cli/nn_cli_handler.c -- -Iinclude -Isrc
 
 # Format a single file
-clang-format -i src/cli/cli_handler.c
+clang-format -i src/cli/nn_cli_handler.c
 
 # Check formatting without modifying
-clang-format --dry-run --Werror src/cli/cli_handler.c
+clang-format --dry-run --Werror src/cli/nn_cli_handler.c
 ```
 
 ## Clang-Tidy Checks

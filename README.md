@@ -11,8 +11,8 @@ NetNexus/
 ├── src/
 │   ├── main.c                 # Main server entry point
 │   └── cli/
-│       ├── cli_handler.h      # CLI interface (module-internal)
-│       └── cli_handler.c      # CLI implementation
+│       ├── nn_cli_handler.h      # CLI interface (module-internal)
+│       └── nn_cli_handler.c      # CLI implementation
 ├── CMakeLists.txt             # CMake build configuration
 └── README.md
 ```
@@ -101,13 +101,13 @@ The application uses a modular structure designed for extensibility:
 
 1. **src/main.c**: Main server program that handles socket creation, binding, listening, and accepting connections. Uses pthreads for multi-client support.
 
-2. **src/cli/cli_handler.c**: CLI command processor that handles user input, command parsing, and execution.
+2. **src/cli/nn_cli_handler.c**: CLI command processor that handles user input, command parsing, and execution.
 
-3. **src/cli/cli_handler.h**: CLI module header (internal to CLI module).
+3. **src/cli/nn_cli_handler.h**: CLI module header (internal to CLI module).
 
 ### Header Organization
 
-- **Module-internal headers**: Kept within their respective `src/` subdirectories (e.g., `src/cli/cli_handler.h`)
+- **Module-internal headers**: Kept within their respective `src/` subdirectories (e.g., `src/cli/nn_cli_handler.h`)
 - **Cross-module headers**: Will be placed in `include/netnexus/` when needed for inter-module communication
 
 ### Future Modules

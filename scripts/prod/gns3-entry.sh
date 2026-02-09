@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # 设置环境变量
-export RESOURCES_DIR="${INSTALL_DIR}/resources"
+export NN_RESOURCES_DIR="${INSTALL_DIR}/resources"
 export LD_LIBRARY_PATH="${INSTALL_DIR}/lib:${LD_LIBRARY_PATH}"
 
 # 创建数据目录和日志目录

@@ -9,7 +9,7 @@ INSTALL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 RESOURCE_DIR="${INSTALL_DIR}/resources"
 
 # Set environment variables
-export RESOURCES_DIR="${RESOURCE_DIR}"
+export NN_RESOURCES_DIR="${RESOURCE_DIR}"
 export LD_LIBRARY_PATH="${INSTALL_DIR}/lib:${LD_LIBRARY_PATH}"
 
 # Create data directory if needed (for development)

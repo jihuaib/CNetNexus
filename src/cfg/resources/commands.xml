@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration module-id="3">
+    <!-- Command group definitions -->
+    <command_groups>
+        <!-- Basic command group -->
+        <group group-id="1">
+            <elements>
+                <element type="keyword">
+                    <name>show</name>
+                    <description>Display system information</description>
+                </element>
+                <element type="keyword">
+                    <name>cli</name>
+                    <description>CLI information</description>
+                </element>
+                <element cfg-id="1" type="keyword">
+                    <name>command-info</name>
+                    <description>Command info</description>
+                </element>
+                <element cfg-id="2" type="keyword">
+                    <name>history</name>
+                    <description>Command history</description>
+                </element>
+                <element cfg-id="3" type="keyword">
+                    <name>current-configuration</name>
+                    <description>Display current configuration</description>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>1</views>
+                </command>
+                <command>
+                    <expression>1 2 4</expression>
+                    <views>1</views>
+                </command>
+                <command>
+                    <expression>1 5</expression>
+                    <views>1</views>
+                </command>
+            </commands>
+        </group>
+
+        <group group-id="2">
+            <elements>
+                <element cfg-id="1" type="keyword">
+                    <name>exit</name>
+                    <description>Exit current mode</description>
+                </element>
+                <element cfg-id="2" type="keyword">
+                    <name>config</name>
+                    <description>Enter configuration mode</description>
+                </element>
+                <element cfg-id="3" type="keyword">
+                    <name>end</name>
+                    <description>Return to user view</description>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>1</expression>
+                    <views>1</views>
+                </command>
+
+                <command>
+                    <expression>2</expression>
+                    <views>2</views>
+                </command>
+
+                <command>
+                    <expression>3</expression>
+                    <views>1</views>
+                </command>
+            </commands>
+        </group>
+    </command_groups>
+</configuration>

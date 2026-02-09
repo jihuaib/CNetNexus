@@ -1,42 +1,30 @@
-# DB 模块 - 添加 lib 子目录（构建 db_client.so）
-add_subdirectory(lib)
-
-# DB 守护进程源文件
-set(DB_SOURCES
-    db_main.c
-    db_registry.c
-    db_schema.c
-    db_api.c
-    db_cli.c
-    db_ipc_handler.c
-    db_ipc_registry_handler.c
-    db_process.c
+# DB module sources
+set(NN_DB_SOURCES
+    nn_db_main.c
+    nn_db_registry.c
+    nn_db_schema.c
+    nn_db_api.c
+    nn_db_cli.c
 )
 
-# 构建 DB 守护进程
-add_executable(db_proc ${DB_SOURCES})
+# Create shared library for DB module
+add_library(nn_db SHARED ${NN_DB_SOURCES})
 
-target_include_directories(db_proc PRIVATE
+# Include directories
+target_include_directories(nn_db PRIVATE
     .
-    ${CMAKE_CURRENT_SOURCE_DIR}/lib
-    ${CMAKE_SOURCE_DIR}/src/cli/param
     ${SQLite3_INCLUDE_DIRS}
 )
 
-# 链接依赖（只依赖工具库）
-target_link_libraries(db_proc PRIVATE
-    cli_param
-    ipc
-    utils
-    db_client
+# Link libraries
+target_link_libraries(nn_db PRIVATE
     ${GLIB_LIBRARIES}
     ${SQLite3_LIBRARIES}
     Threads::Threads
 )
 
-set_target_properties(db_proc PROPERTIES
-    BUILD_RPATH "${CMAKE_BINARY_DIR}/lib"
-    INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib"
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
-    OUTPUT_NAME "db"
+# Set library version
+set_target_properties(nn_db PROPERTIES
+    VERSION 1.0.0
+    SOVERSION 1
 )

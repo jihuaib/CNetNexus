@@ -114,14 +114,14 @@ NetNexus/
    mkdir -p src/mymodule
    ```
 
-2. **Create main file** (`src/mymodule/mymodule_main.c`):
+2. **Create main file** (`src/mymodule/nn_mymodule_main.c`):
    ```c
-   #include "dev.h"
-   #include "errcode.h"
+   #include "nn_dev.h"
+   #include "nn_errcode.h"
 
    static int32_t mymodule_init(void *module) {
        printf("[mymodule] Initializing\n");
-       return ERRCODE_SUCCESS;
+       return NN_ERRCODE_SUCCESS;
    }
 
    static void mymodule_cleanup(void) {
@@ -129,16 +129,16 @@ NetNexus/
    }
 
    static void __attribute__((constructor)) register_mymodule(void) {
-       dev_register_module(0x00000005, "mymodule",
+       nn_dev_register_module(0x00000005, "nn_mymodule",
                               mymodule_init, mymodule_cleanup);
    }
    ```
 
 3. **Create CMakeLists.txt:**
    ```cmake
-   add_library(mymodule SHARED mymodule_main.c)
-   target_include_directories(mymodule PRIVATE ${PROJECT_SOURCE_DIR}/include)
-   install(TARGETS mymodule LIBRARY DESTINATION lib)
+   add_library(nn_mymodule SHARED nn_mymodule_main.c)
+   target_include_directories(nn_mymodule PRIVATE ${PROJECT_SOURCE_DIR}/include)
+   install(TARGETS nn_mymodule LIBRARY DESTINATION lib)
    ```
 
 4. **Create commands.xml:**
@@ -157,7 +157,7 @@ NetNexus/
 
 6. **Link in main binary:**
    ```cmake
-   target_link_libraries(netnexus PRIVATE mymodule)
+   target_link_libraries(netnexus PRIVATE nn_mymodule)
    ```
 
 ### Add New CLI Command
@@ -268,13 +268,13 @@ rm -rf data/
 
 2. **Use in code:**
    ```c
-   #include "db.h"
+   #include "nn_db.h"
 
-   db_value_t values[1];
-   values[0] = db_value_int(12345);
+   nn_db_value_t values[1];
+   values[0] = nn_db_value_int(12345);
    const char *fields[1] = {"my_field"};
 
-   db_insert("mymodule_db", "my_table", fields, values, 1);
+   nn_db_insert("mymodule_db", "my_table", fields, values, 1);
    ```
 
 ## Testing
@@ -372,7 +372,7 @@ strace -f ./build/bin/netnexus
 ### XML Path Resolution
 
 Priority order:
-1. `$RESOURCES_DIR/{module}/commands.xml`
+1. `$NN_RESOURCES_DIR/{module}/commands.xml`
 2. `/opt/netnexus/resources/{module}/commands.xml`
 3. `<exe_dir>/../../src/{module}/commands.xml` (development)
 4. `../../src/{module}/commands.xml` (fallback)
