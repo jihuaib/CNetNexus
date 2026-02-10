@@ -10,7 +10,7 @@ build-asan/
 
 # Executables
 netnexus
-telnet_nn_cli_server
+telnet_cli_server
 
 # CMake files
 CMakeCache.txt

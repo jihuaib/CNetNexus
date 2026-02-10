@@ -12,9 +12,9 @@
 #include <sys/signalfd.h>
 #include <unistd.h>
 
-#include "dev/nn_dev_module.h"
-#include "nn_dev.h"
-#include "nn_errcode.h"
+#include "dev.h"
+#include "dev/dev_module.h"
+#include "errcode.h"
 
 int main(int argc, char *argv[])
 {
@@ -66,7 +66,7 @@ int main(int argc, char *argv[])
     }
 
     // Initialize all registered modules
-    if (nn_dev_init_all_modules() != NN_ERRCODE_SUCCESS)
+    if (dev_init_all_modules() != ERRCODE_SUCCESS)
     {
         fprintf(stderr, "Warning: Some modules failed to initialize\n");
     }
@@ -96,7 +96,7 @@ int main(int argc, char *argv[])
             if (s == sizeof(si))
             {
                 printf("\nReceived signal %d, requesting shutdown...\n", si.ssi_signo);
-                nn_dev_request_shutdown();
+                dev_request_shutdown();
                 break;
             }
         }
@@ -107,7 +107,7 @@ int main(int argc, char *argv[])
     close(epoll_fd);
 
     // Cleanup all modules
-    nn_cleanup_all_modules();
+    cleanup_all_modules();
 
     printf("\nNetNexus shutdown complete\n");
     return EXIT_SUCCESS;

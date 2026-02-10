@@ -70,11 +70,11 @@ netnexus-1.0.0/
 ├── bin/              # Executables
 │   └── netnexus
 ├── lib/              # Shared libraries
-│   ├── libnn_cfg.so
-│   ├── libnn_db.so
-│   ├── libnn_bgp.so
-│   ├── libnn_dev.so
-│   └── libnn_utils.so
+│   ├── libcfg.so
+│   ├── libdb.so
+│   ├── libbgp.so
+│   ├── libdev.so
+│   └── libutils.so
 ├── config/           # Configuration files
 │   ├── cfg/commands.xml
 │   ├── dev/commands.xml

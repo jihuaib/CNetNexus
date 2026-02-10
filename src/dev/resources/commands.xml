@@ -2,8 +2,8 @@
 <configuration module-id="1">
     <!-- Command group definitions -->
     <command_groups>
-        <!-- Basic command group -->
-        <group group-id="1">
+        <!-- show version -->
+        <group group-id="1" db="dev_db" table="dev_show_version">
             <elements>
                 <element type="keyword">
                     <name>show</name>
@@ -24,7 +24,7 @@
         </group>
 
         <!-- show dev modules -->
-        <group group-id="3">
+        <group group-id="3" db="dev_db" table="dev_show_module">
             <elements>
                 <element type="keyword">
                     <name>show</name>
@@ -48,27 +48,24 @@
             </commands>
         </group>
 
-        <!-- show dev mq -->
-        <group group-id="4">
+        <!-- sysname (placeholder) -->
+        <group group-id="2" db="dev_db" table="dev_sysname">
             <elements>
                 <element type="keyword">
-                    <name>show</name>
-                    <description>Display system information</description>
+                    <name>sysname</name>
+                    <description>Set system hostname</description>
                 </element>
-                <element type="keyword">
-                    <name>dev</name>
-                    <description>Device and module management</description>
-                </element>
-                <element type="keyword">
-                    <name>mq</name>
-                    <description>Show message queue subscriptions</description>
+                <element type="parameter" field="hostname">
+                    <name>&lt;hostname&gt;</name>
+                    <description>System hostname</description>
+                    <type>string(1-63)</type>
                 </element>
             </elements>
 
             <commands>
                 <command>
-                    <expression>1 2 3</expression>
-                    <views>1,3</views>
+                    <expression>1 2</expression>
+                    <views>3</views>
                 </command>
             </commands>
         </group>

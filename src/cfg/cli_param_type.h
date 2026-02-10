@@ -1,0 +1,117 @@
+/**
+ * @file   cli_param_type.h
+ * @brief  CLI 参数类型解析和校验头文件
+ * @author jhb
+ * @date   2026/01/22
+ */
+#ifndef CLI_PARAM_TYPE_H
+#define CLI_PARAM_TYPE_H
+
+#include <glib.h>
+#include <stdint.h>
+
+#include "cli.h"
+
+// Parameter data types
+typedef enum
+{
+    PARAM_TYPE_UNKNOWN = 0, // Unknown/unspecified type
+    PARAM_TYPE_STRING,      // String type: string(min_len-max_len)
+    PARAM_TYPE_UINT,        // Unsigned integer: uint(min-max)
+    PARAM_TYPE_INT,         // Signed integer: int(min-max)
+    PARAM_TYPE_IPV4,        // IPv4 address
+    PARAM_TYPE_IPV6,        // IPv6 address
+    PARAM_TYPE_IP,          // IPv4 or IPv6 address
+    PARAM_TYPE_MAC,         // MAC address
+    PARAM_TYPE_ENUM,        // Enumeration (predefined values)
+} param_type_enum_t;
+
+// Validation callback function type
+// Returns TRUE if value is valid, FALSE otherwise
+typedef gboolean (*param_validate_fn)(const cli_param_type_t *param_type, const char *value, char *error_msg,
+                                      uint32_t error_msg_size);
+
+// Parameter type structure
+struct cli_param_type
+{
+    param_type_enum_t type; // Data type enum
+
+    // Range values (interpretation depends on type)
+    union
+    {
+        struct
+        {
+            uint32_t min_len; // Minimum string length
+            uint32_t max_len; // Maximum string length
+        } string_range;
+
+        struct
+        {
+            int64_t min_val; // Minimum value
+            int64_t max_val; // Maximum value
+        } int_range;
+
+        struct
+        {
+            uint64_t min_val; // Minimum value
+            uint64_t max_val; // Maximum value
+        } uint_range;
+    } range;
+
+    char *type_str;             // Original type string (e.g., "string(1-63)")
+    param_validate_fn validate; // Validation callback
+};
+
+// Function prototypes
+
+/**
+ * Validate a parameter value against its type definition
+ * @param param_type The parameter type definition
+ * @param value The value to validate
+ * @param error_msg Buffer to store error message on failure
+ * @param error_msg_size Size of error message buffer
+ * @return TRUE if valid, FALSE otherwise
+ */
+gboolean cli_param_type_validate(const cli_param_type_t *param_type, const char *value, char *error_msg,
+                                 uint32_t error_msg_size);
+
+/**
+ * Get a human-readable description of the parameter type
+ * @param param_type The parameter type
+ * @return Static string describing the type
+ */
+const char *cli_param_type_get_desc(const cli_param_type_t *param_type);
+
+/**
+ * Get the binary value length for TLV encoding based on parameter type
+ * @param param_type The parameter type
+ * @param value The string value to convert
+ * @return Length in bytes for TLV encoding
+ */
+uint16_t cli_param_type_get_value_length(const cli_param_type_t *param_type, const char *value);
+
+/**
+ * Free a parameter type structure
+ * @param param_type The structure to free
+ */
+void cli_param_type_free(cli_param_type_t *param_type);
+
+cli_param_type_t *cli_param_type_parse(const char *type_str);
+
+// Built-in validation functions
+gboolean param_validate_string(const cli_param_type_t *param_type, const char *value, char *error_msg,
+                               uint32_t error_msg_size);
+gboolean param_validate_uint(const cli_param_type_t *param_type, const char *value, char *error_msg,
+                             uint32_t error_msg_size);
+gboolean param_validate_int(const cli_param_type_t *param_type, const char *value, char *error_msg,
+                            uint32_t error_msg_size);
+gboolean param_validate_ipv4(const cli_param_type_t *param_type, const char *value, char *error_msg,
+                             uint32_t error_msg_size);
+gboolean param_validate_ipv6(const cli_param_type_t *param_type, const char *value, char *error_msg,
+                             uint32_t error_msg_size);
+gboolean param_validate_ip(const cli_param_type_t *param_type, const char *value, char *error_msg,
+                           uint32_t error_msg_size);
+gboolean param_validate_mac(const cli_param_type_t *param_type, const char *value, char *error_msg,
+                            uint32_t error_msg_size);
+
+#endif // CLI_PARAM_TYPE_H

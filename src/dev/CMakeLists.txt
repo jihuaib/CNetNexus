@@ -1,28 +1,30 @@
+# IPC 子库
+add_subdirectory(lib)
+
 # Dev module sources
-set(NN_DEV_SOURCES
-    nn_dev_main.c
-    nn_dev_cli.c
-    nn_dev_module.c
-    nn_dev_mq.c
-    nn_dev_pubsub.c
-    nn_dev_api.c
+set(DEV_SOURCES
+    dev_main.c
+    dev_cli.c
+    dev_module.c
+    dev_api.c
 )
 
 # Create shared library for dev module
-add_library(nn_dev SHARED ${NN_DEV_SOURCES})
+add_library(dev SHARED ${DEV_SOURCES})
 
 # Include directories
-target_include_directories(nn_dev PRIVATE
+target_include_directories(dev PRIVATE
     .
 )
 
 # Link libraries
-target_link_libraries(nn_dev PRIVATE
+target_link_libraries(dev PRIVATE
+    ipc
     ${GLIB_LIBRARIES}
 )
 
 # Set library version
-set_target_properties(nn_dev PROPERTIES
+set_target_properties(dev PROPERTIES
     VERSION 1.0.0
     SOVERSION 1
 )

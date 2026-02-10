@@ -3,39 +3,83 @@
     <views></views>
 
     <command_groups>
-        <!-- Show database information -->
-        <group group-id="1">
+        <!-- show db list -->
+        <group group-id="1" db="db_show_db" table="db_show_meta">
             <elements>
                 <element type="keyword">
-                    <name>show</name> <!-- 1 -->
+                    <name>show</name>
                     <description>Display system information</description>
                 </element>
-                <element type="keyword"> <!-- 2 -->
+                <element type="keyword">
                     <name>db</name>
                     <description>Database information</description>
                 </element>
-                <element cfg-id="1" type="keyword"> <!-- 3 -->
+                <element type="keyword">
                     <name>list</name>
                     <description>Database list information</description>
                 </element>
-                <element cfg-id="2" type="parameter"> <!-- 4 -->
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>1</views>
+                    <show-template>db_show_list_template</show-template>
+                </command>
+            </commands>
+        </group>
+
+        <!-- show db <db-name> table-list -->
+        <group group-id="2" db="db_show_db" table="db_show_tables">
+            <elements>
+                <element type="keyword">
+                    <name>show</name>
+                    <description>Display system information</description>
+                </element>
+                <element type="keyword">
+                    <name>db</name>
+                    <description>Database information</description>
+                </element>
+                <element type="parameter" field="db_name">
                     <name>&lt;db-name&gt;</name>
                     <description>Database name</description>
                     <type>string(1-63)</type>
                 </element>
-                <element cfg-id="3" type="keyword"> <!-- 5 -->
+                <element type="keyword">
                     <name>table-list</name>
                     <description>Show table list</description>
                 </element>
-                <element cfg-id="4" type="keyword"> <!-- 6 -->
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>1 2 3 4</expression>
+                    <views>1</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- show db <db-name> table-field <table-name> -->
+        <group group-id="3" db="db_show_db" table="db_show_fields">
+            <elements>
+                <element type="keyword">
+                    <name>show</name>
+                    <description>Display system information</description>
+                </element>
+                <element type="keyword">
+                    <name>db</name>
+                    <description>Database information</description>
+                </element>
+                <element type="parameter" field="db_name">
+                    <name>&lt;db-name&gt;</name>
+                    <description>Database name</description>
+                    <type>string(1-63)</type>
+                </element>
+                <element type="keyword">
                     <name>table-field</name>
                     <description>Show table field</description>
                 </element>
-                <element cfg-id="5" type="keyword"> <!-- 7 -->
-                    <name>table-data</name>
-                    <description>Show table data</description>
-                </element>
-                <element cfg-id="6" type="parameter"> <!-- 8 -->    
+                <element type="parameter" field="table_name">
                     <name>&lt;table-name&gt;</name>
                     <description>Table name</description>
                     <type>string(1-63)</type>
@@ -43,27 +87,87 @@
             </elements>
 
             <commands>
-                <!-- show db list-->
                 <command>
-                    <expression>1 2 3</expression>
+                    <expression>1 2 3 4 5</expression>
                     <views>1</views>
                 </command>
-                <!-- show db <db-name> table-list -->
+            </commands>
+        </group>
+
+        <!-- show db <db-name> table-data <table-name> -->
+        <group group-id="4" db="db_show_db" table="db_show_data">
+            <elements>
+                <element type="keyword">
+                    <name>show</name>
+                    <description>Display system information</description>
+                </element>
+                <element type="keyword">
+                    <name>db</name>
+                    <description>Database information</description>
+                </element>
+                <element type="parameter" field="db_name">
+                    <name>&lt;db-name&gt;</name>
+                    <description>Database name</description>
+                    <type>string(1-63)</type>
+                </element>
+                <element type="keyword">
+                    <name>table-data</name>
+                    <description>Show table data</description>
+                </element>
+                <element type="parameter" field="table_name">
+                    <name>&lt;table-name&gt;</name>
+                    <description>Table name</description>
+                    <type>string(1-63)</type>
+                </element>
+            </elements>
+
+            <commands>
                 <command>
-                    <expression>1 2 4 5</expression>
-                    <views>1</views>
-                </command>
-                <!-- show db <db-name> table-field <table-name> -->
-                <command>
-                    <expression>1 2 4 6 8</expression>
-                    <views>1</views>
-                </command>
-                <!-- show db <db-name> table-data <table-name> -->
-                <command>
-                    <expression>1 2 4 7 8</expression>
+                    <expression>1 2 3 4 5</expression>
                     <views>1</views>
                 </command>
             </commands>
         </group>
     </command_groups>
+
+    <config_templates>
+        <!-- DB show list 模板（临时 DB） -->
+        <template-def template-name="db_show_list_template" priority="0">
+            <template-def template-name="db_show_row_template"/>
+        </template-def>
+
+        <template template-name="db_show_list_template" db="db_show_db.db_show_meta">
+Registered Databases:
+{% if db_show_meta.has_rows == 0 %}
+No databases registered.
+{% else %}
+Name            Module     Tables
+---------------- ---------- ------
+{% endif %}
+        </template>
+
+        <template template-name="db_show_row_template" db="db_show_db.db_show_row">
+{db_show_row.name:&lt;16} {db_show_row.module:&lt;10} {db_show_row.tables:&gt;6}
+        </template>
+    </config_templates>
+
+    <dbs>
+        <db db-name="db_show_db">
+            <tables>
+                <table table-name="db_show_meta">
+                    <fields>
+                        <field field-name="has_rows" type="uint(0-1)"/>
+                        <field field-name="total" type="uint(0-65535)"/>
+                    </fields>
+                </table>
+                <table table-name="db_show_row">
+                    <fields>
+                        <field field-name="name" type="string(1-63)"/>
+                        <field field-name="module" type="string(1-63)"/>
+                        <field field-name="tables" type="uint(0-65535)"/>
+                    </fields>
+                </table>
+            </tables>
+        </db>
+    </dbs>
 </configuration>
