@@ -55,7 +55,8 @@ static int dev_init_local()
         return ERRCODE_FAIL;
     }
 
-    /* CFG 会主动连接到 DEV，DEV 只需监听 */
+    // 主动连接到 CFG
+    ipc_connect(g_dev_local->ipc_ctx, DEV_MODULE_ID_CFG);
 
     return ERRCODE_SUCCESS;
 }

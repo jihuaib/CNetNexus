@@ -4,12 +4,10 @@ set(DB_SOURCES
     db_registry.c
     db_schema.c
     db_api.c
+    db_rpc.c
     db_cli.c
     db_serialize.c
     db_ipc_handler.c
-    db_ipc_registry_handler.c
-
-
 )
 
 # Create shared library for DB module

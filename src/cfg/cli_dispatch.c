@@ -18,6 +18,7 @@
 #include "cli_param_type.h"
 #include "config_template.h"
 #include "db.h"
+#include "db_rpc.h"
 #include "dev.h"
 #include "errcode.h"
 #include "ipc.h"
@@ -86,7 +87,7 @@ static void clear_tables_for_template(const char *template_name)
         gchar **parts = g_strsplit(table_ref, ".", 2);
         if (parts && parts[0] && parts[1])
         {
-            db_delete(parts[0], parts[1], NULL);
+            db_rpc_delete(g_cfg_local->ipc_ctx, parts[0], parts[1], NULL);
         }
         g_strfreev(parts);
     }
@@ -605,11 +606,6 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
     // 获取当前视图上下文
     uint32_t ctx_len = 0;
     const uint8_t *ctx_data = cli_context_get(session, &ctx_len);
-
-    if (is_show_cmd)
-    {
-        clear_tables_for_template(result->show_template);
-    }
 
     uint8_t *msg_data = NULL;
     uint32_t msg_len = 0;

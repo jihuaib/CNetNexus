@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<configuration module-id="1">
+<configuration module-id="1" db="dev_db">
     <!-- Command group definitions -->
     <command_groups>
         <!-- show version -->
-        <group group-id="1" db="dev_db" table="dev_show_version">
+        <group group-id="1" table="dev_show_version">
             <elements>
                 <element type="keyword">
                     <name>show</name>
@@ -24,7 +24,7 @@
         </group>
 
         <!-- show dev modules -->
-        <group group-id="3" db="dev_db" table="dev_show_module">
+        <group group-id="3" table="dev_show_module">
             <elements>
                 <element type="keyword">
                     <name>show</name>
@@ -49,7 +49,7 @@
         </group>
 
         <!-- sysname (placeholder) -->
-        <group group-id="2" db="dev_db" table="dev_sysname">
+        <group group-id="2" table="dev_sysname">
             <elements>
                 <element type="keyword">
                     <name>sysname</name>

@@ -13,6 +13,7 @@
 
 #include "cli.h"
 #include "db.h"
+#include "db_rpc.h"
 #include "dev.h"
 #include "errcode.h"
 #include "if_cli.h"
@@ -41,14 +42,14 @@ static void if_init_db(void)
         char where[64];
         snprintf(where, sizeof(where), "name = '%s'", logical_name);
         gboolean exists = FALSE;
-        int ret = db_exists("if_db", "if_interface", where, &exists);
+        int ret = db_rpc_exists(g_if_local->ipc_ctx, "if_db", "if_interface", where, &exists);
 
         if (ret == ERRCODE_SUCCESS && !exists)
         {
             // 插入默认记录
             const char *field_names[] = {"name", "ip_address", "netmask", "shutdown"};
             db_value_t values[] = {db_value_text(logical_name), db_value_text(""), db_value_text(""), db_value_int(0)};
-            db_insert("if_db", "if_interface", field_names, values, 4);
+            db_rpc_insert(g_if_local->ipc_ctx, "if_db", "if_interface", field_names, values, 4);
             db_value_free(&values[0]);
             db_value_free(&values[1]);
             db_value_free(&values[2]);
@@ -99,7 +100,8 @@ static int if_init_local()
         return ERRCODE_FAIL;
     }
 
-    /* CFG 会主动连接到 IF，IF 只需监听 */
+    // 主动连接到 CFG
+    ipc_connect(g_if_local->ipc_ctx, DEV_MODULE_ID_CFG);
 
     // 初始化接口映射
     // 优先级：RESOURCES_DIR（生产/GNS3） > 源码目录（开发）

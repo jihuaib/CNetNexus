@@ -14,6 +14,7 @@
 #include "bgp_main.h"
 #include "cli.h"
 #include "db.h"
+#include "db_rpc.h"
 #include "dev.h"
 #include "errcode.h"
 #include "ipc.h"
@@ -30,14 +31,14 @@ static int bgp_insert_show_meta(int has_rows)
 {
     const char *fields[] = {"has_rows"};
     db_value_t values[] = {db_value_int(has_rows ? 1 : 0)};
-    return db_insert(BGP_SHOW_DB, BGP_SHOW_META, fields, values, 1);
+    return db_rpc_insert(g_bgp_local->ipc_ctx, BGP_SHOW_DB, BGP_SHOW_META, fields, values, 1);
 }
 
 static int bgp_insert_show_row(int peer_index, const char *field, const char *value)
 {
     const char *fields[] = {"peer_index", "field", "value"};
     db_value_t values[] = {db_value_int(peer_index), db_value_text(field), db_value_text(value)};
-    int ret = db_insert(BGP_SHOW_DB, BGP_SHOW_ROW, fields, values, 3);
+    int ret = db_rpc_insert(g_bgp_local->ipc_ctx, BGP_SHOW_DB, BGP_SHOW_ROW, fields, values, 3);
     db_value_free(&values[1]);
     db_value_free(&values[2]);
     return ret;
@@ -119,13 +120,13 @@ static int handle_bgp_protocol_db(ipc_message_t *msg, cli_db_payload_parser_t *p
         {
             char where[64];
             snprintf(where, sizeof(where), "as_number = %u", as_number);
-            int rows = db_delete(parser->db_name, parser->table_name, where);
+            int rows = db_rpc_delete(g_bgp_local->ipc_ctx, parser->db_name, parser->table_name, where);
             snprintf(resp_msg_buf, sizeof(resp_msg_buf), "BGP: AS %u deleted (%d row).\r\n", as_number,
                      rows > 0 ? rows : 0);
         }
         else
         {
-            int rows = db_delete(parser->db_name, parser->table_name, NULL);
+            int rows = db_rpc_delete(g_bgp_local->ipc_ctx, parser->db_name, parser->table_name, NULL);
             snprintf(resp_msg_buf, sizeof(resp_msg_buf), "BGP: All configuration deleted (%d row).\r\n",
                      rows > 0 ? rows : 0);
         }
@@ -157,7 +158,7 @@ static int handle_bgp_protocol_db(ipc_message_t *msg, cli_db_payload_parser_t *p
 
     /* 插入或更新 */
     gboolean exists = FALSE;
-    int ret = db_exists(parser->db_name, parser->table_name, NULL, &exists);
+    int ret = db_rpc_exists(g_bgp_local->ipc_ctx, parser->db_name, parser->table_name, NULL, &exists);
     if (ret != ERRCODE_SUCCESS)
     {
         char *resp_data = g_strdup("BGP Error: Database query failed.\r\n");
@@ -176,12 +177,12 @@ static int handle_bgp_protocol_db(ipc_message_t *msg, cli_db_payload_parser_t *p
 
     if (exists)
     {
-        db_update(parser->db_name, parser->table_name, field_names, values, 1, NULL);
+        db_rpc_update(g_bgp_local->ipc_ctx, parser->db_name, parser->table_name, field_names, values, 1, NULL);
         printf("[bgp_cli] Updated BGP AS number to %u\n", as_number);
     }
     else
     {
-        db_insert(parser->db_name, parser->table_name, field_names, values, 1);
+        db_rpc_insert(g_bgp_local->ipc_ctx, parser->db_name, parser->table_name, field_names, values, 1);
         printf("[bgp_cli] Inserted BGP AS number %u\n", as_number);
     }
 
@@ -270,7 +271,7 @@ static int handle_bgp_protocol_db(ipc_message_t *msg, cli_db_payload_parser_t *p
 static int handle_bgp_peer_show_db(ipc_message_t *msg, cli_db_payload_parser_t *parser)
 {
     db_result_t *result = NULL;
-    int ret = db_query(parser->db_name, parser->table_name, NULL, 0, NULL, &result);
+    int ret = db_rpc_query(g_bgp_local->ipc_ctx, parser->db_name, parser->table_name, NULL, 0, NULL, &result);
 
     if (ret != ERRCODE_SUCCESS || !result)
     {

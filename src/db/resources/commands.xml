@@ -1,129 +1,66 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<configuration module-id="2">
+<configuration module-id="2" db="db_db">
     <views></views>
-
-    <command_groups>
-        <!-- show db list -->
-        <group group-id="1" db="db_show_db" table="db_show_meta">
+<command_groups>
+        <!-- DB Show Commands -->
+        <group group-id="1" table="db_show_cmd">
             <elements>
                 <element type="keyword">
-                    <name>show</name>
+                    <name>show</name> <!-- 1 -->
                     <description>Display system information</description>
                 </element>
                 <element type="keyword">
-                    <name>db</name>
+                    <name>db</name> <!-- 2 -->
                     <description>Database information</description>
                 </element>
-                <element type="keyword">
-                    <name>list</name>
+                <element type="keyword" field="action">
+                    <name>list</name> <!-- 3 -->
                     <description>Database list information</description>
+                </element>
+                <element type="parameter" field="db_name">
+                    <name>&lt;db-name&gt;</name> <!-- 4 -->
+                    <description>Database name</description>
+                    <type>string(1-63)</type>
+                </element>
+                <element type="keyword" field="action">
+                    <name>table-list</name> <!-- 5 -->
+                    <description>Show table list</description>
+                </element>
+                <element type="keyword" field="action">
+                    <name>table-field</name> <!-- 6 -->
+                    <description>Show table field</description>
+                </element>
+                <element type="parameter" field="table_name">
+                    <name>&lt;table-name&gt;</name> <!-- 7 -->
+                    <description>Table name</description>
+                    <type>string(1-63)</type>
+                </element>
+                <element type="keyword" field="action">
+                    <name>table-data</name> <!-- 8 -->
+                    <description>Show table data</description>
                 </element>
             </elements>
 
             <commands>
+                <!-- show db list -->
                 <command>
                     <expression>1 2 3</expression>
                     <views>1</views>
                     <show-template>db_show_list_template</show-template>
                 </command>
-            </commands>
-        </group>
-
-        <!-- show db <db-name> table-list -->
-        <group group-id="2" db="db_show_db" table="db_show_tables">
-            <elements>
-                <element type="keyword">
-                    <name>show</name>
-                    <description>Display system information</description>
-                </element>
-                <element type="keyword">
-                    <name>db</name>
-                    <description>Database information</description>
-                </element>
-                <element type="parameter" field="db_name">
-                    <name>&lt;db-name&gt;</name>
-                    <description>Database name</description>
-                    <type>string(1-63)</type>
-                </element>
-                <element type="keyword">
-                    <name>table-list</name>
-                    <description>Show table list</description>
-                </element>
-            </elements>
-
-            <commands>
+                <!-- show db <db-name> table-list -->
                 <command>
-                    <expression>1 2 3 4</expression>
+                    <expression>1 2 4 5</expression>
                     <views>1</views>
                 </command>
-            </commands>
-        </group>
-
-        <!-- show db <db-name> table-field <table-name> -->
-        <group group-id="3" db="db_show_db" table="db_show_fields">
-            <elements>
-                <element type="keyword">
-                    <name>show</name>
-                    <description>Display system information</description>
-                </element>
-                <element type="keyword">
-                    <name>db</name>
-                    <description>Database information</description>
-                </element>
-                <element type="parameter" field="db_name">
-                    <name>&lt;db-name&gt;</name>
-                    <description>Database name</description>
-                    <type>string(1-63)</type>
-                </element>
-                <element type="keyword">
-                    <name>table-field</name>
-                    <description>Show table field</description>
-                </element>
-                <element type="parameter" field="table_name">
-                    <name>&lt;table-name&gt;</name>
-                    <description>Table name</description>
-                    <type>string(1-63)</type>
-                </element>
-            </elements>
-
-            <commands>
+                <!-- show db <db-name> table-field <table-name> -->
                 <command>
-                    <expression>1 2 3 4 5</expression>
+                    <expression>1 2 4 6 7</expression>
                     <views>1</views>
                 </command>
-            </commands>
-        </group>
-
-        <!-- show db <db-name> table-data <table-name> -->
-        <group group-id="4" db="db_show_db" table="db_show_data">
-            <elements>
-                <element type="keyword">
-                    <name>show</name>
-                    <description>Display system information</description>
-                </element>
-                <element type="keyword">
-                    <name>db</name>
-                    <description>Database information</description>
-                </element>
-                <element type="parameter" field="db_name">
-                    <name>&lt;db-name&gt;</name>
-                    <description>Database name</description>
-                    <type>string(1-63)</type>
-                </element>
-                <element type="keyword">
-                    <name>table-data</name>
-                    <description>Show table data</description>
-                </element>
-                <element type="parameter" field="table_name">
-                    <name>&lt;table-name&gt;</name>
-                    <description>Table name</description>
-                    <type>string(1-63)</type>
-                </element>
-            </elements>
-
-            <commands>
+                <!-- show db <db-name> table-data <table-name> -->
                 <command>
-                    <expression>1 2 3 4 5</expression>
+                    <expression>1 2 4 8 7</expression>
                     <views>1</views>
                 </command>
             </commands>
@@ -136,7 +73,7 @@
             <template-def template-name="db_show_row_template"/>
         </template-def>
 
-        <template template-name="db_show_list_template" db="db_show_db.db_show_meta">
+        <template template-name="db_show_list_template" db="db_db.db_show_meta">
 Registered Databases:
 {% if db_show_meta.has_rows == 0 %}
 No databases registered.
@@ -146,15 +83,15 @@ Name            Module     Tables
 {% endif %}
         </template>
 
-        <template template-name="db_show_row_template" db="db_show_db.db_show_row">
+        <template template-name="db_show_row_template" db="db_db.db_show_row">
 {db_show_row.name:&lt;16} {db_show_row.module:&lt;10} {db_show_row.tables:&gt;6}
         </template>
     </config_templates>
 
     <dbs>
-        <db db-name="db_show_db">
+        <db db-name="db_db">
             <tables>
-                <table table-name="db_show_meta">
+             <table table-name="db_show_meta">
                     <fields>
                         <field field-name="has_rows" type="uint(0-1)"/>
                         <field field-name="total" type="uint(0-65535)"/>
@@ -166,7 +103,7 @@ Name            Module     Tables
                         <field field-name="module" type="string(1-63)"/>
                         <field field-name="tables" type="uint(0-65535)"/>
                     </fields>
-                </table>
+                </table>   
             </tables>
         </db>
     </dbs>

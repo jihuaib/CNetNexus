@@ -21,6 +21,7 @@
 #include "cli_handler.h"
 #include "cli_xml_parser.h"
 #include "db.h"
+#include "db_rpc.h"
 #include "dev.h"
 #include "errcode.h"
 #include "path_utils.h"
@@ -194,11 +195,9 @@ static int cfg_init_local()
         return ERRCODE_FAIL;
     }
 
-    // CFG 主动连接到所有可能接收命令的模块
-    ipc_connect(g_cfg_local->ipc_ctx, DEV_MODULE_ID_DEV);
+    // 各模块主动连接到 CFG，CFG 只需监听
+    // CFG 主动连接到 DB（用于 db_rpc）
     ipc_connect(g_cfg_local->ipc_ctx, DEV_MODULE_ID_DB);
-    ipc_connect(g_cfg_local->ipc_ctx, DEV_MODULE_ID_BGP);
-    ipc_connect(g_cfg_local->ipc_ctx, DEV_MODULE_ID_IF);
 
     // 创建 Telnet 服务器的 epoll
     int epoll_fd = epoll_create1(EPOLL_CLOEXEC);
@@ -341,50 +340,22 @@ static int32_t cfg_module_init()
     printf("[cfg] Initializing databases:\n");
     printf("======================================\n");
 
-    // Register all database definitions parsed from XML
+    // 通过 RPC 通知 DB 模块创建数据库（只创建数据库，不创建表）
     for (GList *node = g_cfg_local->xml_db_defs; node != NULL; node = node->next)
     {
         cfg_xml_db_def_t *xml_def = (cfg_xml_db_def_t *)node->data;
-        printf("[cfg] Registering database: %s\n", xml_def->db_name);
+        printf("[cfg] 通过 RPC 创建数据库: %s (module_id=%u)\n", xml_def->db_name, xml_def->module_id);
 
-        db_definition_t *db_def = db_definition_create(xml_def->db_name, xml_def->module_id);
-        if (db_def)
+        if (db_rpc_create_db(g_cfg_local->ipc_ctx, xml_def->db_name, xml_def->module_id) != ERRCODE_SUCCESS)
         {
-            for (GList *t_node = xml_def->tables; t_node != NULL; t_node = t_node->next)
-            {
-                cfg_xml_db_table_t *xml_table = (cfg_xml_db_table_t *)t_node->data;
-                db_table_t *db_table = db_table_create(xml_table->table_name);
-                if (db_table)
-                {
-                    for (GList *f_node = xml_table->fields; f_node != NULL; f_node = f_node->next)
-                    {
-                        cfg_xml_db_field_t *xml_field = (cfg_xml_db_field_t *)f_node->data;
-                        db_field_t *db_field = db_field_create(xml_field->field_name, xml_field->type_str);
-                        if (db_field)
-                        {
-                            db_table_add_field(db_table, db_field);
-                        }
-                    }
-                    db_definition_add_table(db_def, db_table);
-                }
-            }
-            db_registry_add(db_def);
+            fprintf(stderr, "[cfg] 创建数据库失败: %s\n", xml_def->db_name);
         }
     }
-    // Clear and g_free the intermediate list
+    // 清理中间数据
     g_list_free_full(g_cfg_local->xml_db_defs, (GDestroyNotify)cfg_xml_db_def_free);
     g_cfg_local->xml_db_defs = NULL;
 
-    // Initialize DB client with IPC context
-    if (db_client_init(g_cfg_local->ipc_ctx) != ERRCODE_SUCCESS)
-    {
-        fprintf(stderr, "[cfg] Failed to initialize DB client\n");
-    }
-
-    // Initialize connections (local/remote) based on ownership
-    db_initialize_all();
-
-    printf("\n[cfg] Database client initialized (RPC mode)\n\n");
+    printf("\n[cfg] Database RPC client initialized\n\n");
 
     return ERRCODE_SUCCESS;
 }

@@ -129,8 +129,6 @@ void ipc_message_free(ipc_message_t *msg);
 #define IPC_MSG_TYPE_DB_RESP IPC_MSG_TYPE(IPC_CATEGORY_DB, 0x0006)
 /** DB Registry 注册请求 */
 #define IPC_MSG_TYPE_DB_REGISTRY_ADD IPC_MSG_TYPE(IPC_CATEGORY_DB, 0x0007)
-/** DB 初始化所有数据库 */
-#define IPC_MSG_TYPE_DB_INIT_ALL IPC_MSG_TYPE(IPC_CATEGORY_DB, 0x0008)
 
 // ============================================================================
 // IPC 连接状态

@@ -17,7 +17,9 @@
 
 #include "cli.h"
 #include "db.h"
+#include "db_api.h"
 #include "db_cli.h"
+#include "db_main.h"
 #include "db_serialize.h"
 #include "errcode.h"
 
@@ -228,21 +230,109 @@ static void handle_db_exists(ipc_context_t *ctx, ipc_message_t *msg)
     g_free(where_clause);
 }
 
-// Forward declarations for registry handlers (assume these are implemented elsewhere or kept as is)
-// Wait, I am overwriting the file. I should check if they were implemented in the original file.
-// Checking previous view of db_ipc_handler.c...
-// They were Forward declarations:
-// void handle_db_registry_add(ipc_context_t *ctx, ipc_message_t *msg);
-// void handle_db_init_all(ipc_context_t *ctx, ipc_message_t *msg);
-// But the original file did NOT implement them! (Only declarations in Step 53/82).
-// Ah, checking line 443 in Step 82: case IPC_MSG_TYPE_DB_REGISTRY_ADD: handle_db_registry_add(ctx, msg);
-// But where is the definition?
-// It seems they are in `db_ipc_registry_handler.c`?
-// List dir showed `db_ipc_registry_handler.c`.
-// So I should keep the forward declarations.
+/**
+ * @brief 从payload中读取字符串
+ */
+static char *read_string(const uint8_t **data, uint32_t *remaining)
+{
+    if (*remaining < sizeof(uint16_t))
+    {
+        return NULL;
+    }
 
-void handle_db_registry_add(ipc_context_t *ctx, ipc_message_t *msg);
-void handle_db_init_all(ipc_context_t *ctx, ipc_message_t *msg);
+    uint16_t len_be;
+    memcpy(&len_be, *data, sizeof(len_be));
+    uint16_t len = ntohs(len_be);
+    *data += sizeof(len_be);
+    *remaining -= sizeof(len_be);
+
+    if (*remaining < len)
+    {
+        return NULL;
+    }
+
+    char *str = g_malloc(len + 1);
+    memcpy(str, *data, len);
+    str[len] = '\0';
+    *data += len;
+    *remaining -= len;
+
+    return str;
+}
+
+/**
+ * @brief 处理DB registry注册请求（只创建数据库，不创建表）
+ *
+ * payload 格式: [db_name_len(2B)] [db_name] [module_id(4B)]
+ */
+void handle_db_registry_add(ipc_context_t *ctx, ipc_message_t *msg)
+{
+    if (!msg || !msg->payload || msg->payload_len == 0)
+    {
+        fprintf(stderr, "[db_ipc] 无效的注册请求\n");
+        return;
+    }
+
+    const uint8_t *data = (const uint8_t *)msg->payload;
+    uint32_t remaining = msg->payload_len;
+
+    // 解析db_name
+    char *db_name = read_string(&data, &remaining);
+    if (!db_name)
+    {
+        fprintf(stderr, "[db_ipc] 读取 db_name 失败\n");
+        return;
+    }
+
+    // 解析module_id
+    if (remaining < sizeof(uint32_t))
+    {
+        g_free(db_name);
+        fprintf(stderr, "[db_ipc] 读取 module_id 失败\n");
+        return;
+    }
+    uint32_t module_id_be;
+    memcpy(&module_id_be, data, sizeof(module_id_be));
+    uint32_t module_id = ntohl(module_id_be);
+
+    printf("[db_ipc] 注册数据库: %s (module_id=%u)\n", db_name, module_id);
+
+    // 只创建DB定义（不创建表），表由各模块自行创建
+    db_definition_t *db_def = db_definition_create(db_name, module_id);
+    if (!db_def)
+    {
+        g_free(db_name);
+        fprintf(stderr, "[db_ipc] 创建数据库定义失败\n");
+        return;
+    }
+
+    // 注册到registry
+    db_registry_add(db_def);
+
+    // 初始化数据库连接（创建 SQLite 文件和连接）
+    if (db_initialize_database(db_def) != ERRCODE_SUCCESS)
+    {
+        fprintf(stderr, "[db_ipc] 初始化数据库连接失败: %s\n", db_name);
+    }
+    else
+    {
+        printf("[db_ipc] 数据库连接初始化成功: %s\n", db_name);
+    }
+
+    g_free(db_name);
+
+    printf("[db_ipc] 数据库注册成功\n");
+
+    // 发送响应
+    ipc_message_t *resp =
+        ipc_message_create(IPC_MSG_TYPE_DB_RESP, DEV_MODULE_ID_DB, msg->src_module_id, msg->request_id, NULL, 0, NULL);
+
+    if (resp)
+    {
+        ipc_send_response(ctx, resp);
+        ipc_message_free(resp);
+    }
+}
 
 void db_ipc_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
 {
@@ -270,9 +360,6 @@ void db_ipc_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
             break;
         case IPC_MSG_TYPE_DB_REGISTRY_ADD:
             handle_db_registry_add(ctx, msg);
-            break;
-        case IPC_MSG_TYPE_DB_INIT_ALL:
-            handle_db_init_all(ctx, msg);
             break;
         default:
             fprintf(stderr, "[db] Unknown IPC message type: 0x%08X\n", msg->msg_type);

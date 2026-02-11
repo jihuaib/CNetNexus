@@ -49,14 +49,22 @@ static void accept_new_connection(ipc_context_t *ctx);
 
 static ipc_connection_t *find_connection(ipc_context_t *ctx, uint32_t module_id)
 {
+    ipc_connection_t *fallback = NULL;
     for (int i = 0; i < ctx->num_connections; i++)
     {
         if (ctx->connections[i] && ctx->connections[i]->remote_module_id == module_id)
         {
-            return ctx->connections[i];
+            if (ctx->connections[i]->state == IPC_COCONNECTED)
+            {
+                return ctx->connections[i]; // 优先返回已连接的
+            }
+            if (!fallback)
+            {
+                fallback = ctx->connections[i];
+            }
         }
     }
-    return NULL;
+    return fallback;
 }
 
 static ipc_connection_t *find_connection_by_fd(ipc_context_t *ctx, int fd)

@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<configuration module-id="3">
+<configuration module-id="3" db="cfg_db">
     <!-- Command group definitions -->
     <command_groups>
         <!-- show cli command-info -->
-        <group group-id="1" db="cfg_db" table="cfg_show_commands">
+        <group group-id="1" table="cfg_show_commands">
             <elements>
                 <element type="keyword">
                     <name>show</name>
@@ -28,7 +28,7 @@
         </group>
 
         <!-- show cli history -->
-        <group group-id="2" db="cfg_db" table="cfg_show_history">
+        <group group-id="2" table="cfg_show_history">
             <elements>
                 <element type="keyword">
                     <name>show</name>
@@ -53,7 +53,7 @@
         </group>
 
         <!-- show current-configuration -->
-        <group group-id="3" db="cfg_db" table="cfg_show_config">
+        <group group-id="3" table="cfg_show_config">
             <elements>
                 <element type="keyword">
                     <name>show</name>
@@ -74,7 +74,7 @@
         </group>
 
         <!-- exit -->
-        <group group-id="4" db="cfg_db" table="cfg_op_exit">
+        <group group-id="4" table="cfg_op_exit">
             <elements>
                 <element type="keyword">
                     <name>exit</name>
@@ -91,7 +91,7 @@
         </group>
 
         <!-- config -->
-        <group group-id="5" db="cfg_db" table="cfg_op_config">
+        <group group-id="5" table="cfg_op_config">
             <elements>
                 <element type="keyword">
                     <name>config</name>
@@ -108,7 +108,7 @@
         </group>
 
         <!-- end -->
-        <group group-id="6" db="cfg_db" table="cfg_op_end">
+        <group group-id="6" table="cfg_op_end">
             <elements>
                 <element type="keyword">
                     <name>end</name>

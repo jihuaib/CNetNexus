@@ -1,9 +1,11 @@
 /**
  * @file   db_api.c
- * @brief  数据库 CRUD 操作 API 实现
+ * @brief  数据库 CRUD 操作 API 实现（本地 SQLite 操作）
  * @author jhb
  * @date   2026/01/22
  */
+#include "db_api.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,29 +13,12 @@
 #include "db.h"
 #include "db_main.h"
 #include "db_registry.h"
-#include "db_serialize.h"
 #include "errcode.h"
 #include "ipc.h"
 
 // ============================================================================
 // Initialization API
 // ============================================================================
-
-int db_client_init(ipc_context_t *ipc_ctx)
-{
-    if (g_db_local)
-    {
-        return ERRCODE_SUCCESS;
-    }
-
-    g_db_local = g_malloc0(sizeof(db_local_t));
-    g_db_local->connections =
-        g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify)db_connection_free);
-    g_db_local->registry = db_registry_get_instance();
-    g_db_local->ipc_ctx = ipc_ctx;
-
-    return ERRCODE_SUCCESS;
-}
 
 int db_initialize_all(void)
 {
@@ -57,39 +42,27 @@ int db_initialize_all(void)
         db_definition_t *db_def = (db_definition_t *)value;
         uint32_t my_module_id = g_db_local->ipc_ctx ? ipc_get_module_id(g_db_local->ipc_ctx) : 0;
 
-        if (db_def->module_id == my_module_id)
+        if (db_def->module_id != my_module_id)
         {
-            // Local Database used by owner
-            if (db_initialize_database(db_def) != ERRCODE_SUCCESS)
-            {
-                fprintf(stderr, "[db] Failed to initialize database: %s\n", db_def->db_name);
-                failed_count++;
-            }
-            else
-            {
-                // Update connection info
-                db_connection_t *conn = db_get_connection(db_def->db_name);
-                if (conn)
-                {
-                    conn->owner_module_id = db_def->module_id;
-                    conn->ipc_ctx = NULL; // Local access
-                }
-            }
+            /* 非本模块所有的数据库，跳过 */
+            continue;
+        }
+
+        /* 本地数据库初始化 */
+        if (db_initialize_database(db_def) != ERRCODE_SUCCESS)
+        {
+            fprintf(stderr, "[db] Failed to initialize database: %s\n", db_def->db_name);
+            failed_count++;
         }
         else
         {
-            // Remote Database (RPC)
-            db_connection_t *conn = g_malloc0(sizeof(db_connection_t));
-            conn->db_path = NULL; // Remote
-            conn->handle = NULL;  // Remote
-            conn->owner_module_id = db_def->module_id;
-            conn->ipc_ctx = g_db_local->ipc_ctx;
-            g_mutex_init(&conn->db_mutex);
-
-            // Add to connections map
-            g_hash_table_insert(g_db_local->connections, g_strdup(db_def->db_name), conn);
-
-            // printf("[db] Initialized remote connection to %s (Owner: 0x%X)\n", db_def->db_name, db_def->module_id);
+            /* 更新连接信息 */
+            db_connection_t *conn = db_get_connection(db_def->db_name);
+            if (conn)
+            {
+                conn->owner_module_id = db_def->module_id;
+                conn->ipc_ctx = NULL;
+            }
         }
     }
 
@@ -208,34 +181,6 @@ int db_insert(const char *db_name, const char *table_name, const char **field_na
         return ERRCODE_FAIL;
     }
 
-    // Check if remote (no handle, but has IPC context)
-    if (!conn->handle && conn->ipc_ctx)
-    {
-        void *payload = NULL;
-        uint32_t payload_len = 0;
-        db_serialize_request_insert(db_name, table_name, field_names, values, num_fields, &payload, &payload_len);
-
-        // Use conn->owner_module_id as destination
-        uint32_t target_id = (conn->owner_module_id << 16);
-
-        ipc_message_t *req = ipc_message_create(IPC_MSG_TYPE_DB_INSERT, ipc_get_module_id(conn->ipc_ctx),
-                                                conn->owner_module_id, 0, payload, payload_len, g_free);
-
-        ipc_message_t *resp = ipc_query(conn->ipc_ctx, target_id, req, 5000);
-        ipc_message_free(req);
-
-        if (!resp)
-        {
-            fprintf(stderr, "[db_api] RPC 插入失败: 无响应\n");
-            return ERRCODE_FAIL;
-        }
-
-        int32_t retval = ERRCODE_FAIL;
-        db_deserialize_response(resp->payload, resp->payload_len, &retval, NULL);
-        ipc_message_free(resp);
-        return retval;
-    }
-
     if (!conn->handle)
     {
         fprintf(stderr, "[db] 错误: 数据库未连接 (db=%s)\n", db_name);
@@ -337,33 +282,6 @@ int db_update(const char *db_name, const char *table_name, const char **field_na
         return -1;
     }
 
-    if (!conn->handle && conn->ipc_ctx)
-    {
-        void *payload = NULL;
-        uint32_t payload_len = 0;
-        db_serialize_request_update(db_name, table_name, field_names, values, num_fields, where_clause, &payload,
-                                    &payload_len);
-
-        uint32_t target_id = (conn->owner_module_id << 16);
-
-        ipc_message_t *req = ipc_message_create(IPC_MSG_TYPE_DB_UPDATE, ipc_get_module_id(conn->ipc_ctx),
-                                                conn->owner_module_id, 0, payload, payload_len, g_free);
-
-        ipc_message_t *resp = ipc_query(conn->ipc_ctx, target_id, req, 5000);
-        ipc_message_free(req);
-
-        if (!resp)
-        {
-            fprintf(stderr, "[db_api] RPC 更新失败: 无响应\n");
-            return -1;
-        }
-
-        int32_t retval = -1;
-        db_deserialize_response(resp->payload, resp->payload_len, &retval, NULL);
-        ipc_message_free(resp);
-        return retval;
-    }
-
     if (!conn->handle)
     {
         fprintf(stderr, "[db] 错误: 数据库未连接 (db=%s)\n", db_name);
@@ -459,32 +377,6 @@ int db_delete(const char *db_name, const char *table_name, const char *where_cla
         return -1;
     }
 
-    if (!conn->handle && conn->ipc_ctx)
-    {
-        void *payload = NULL;
-        uint32_t payload_len = 0;
-        db_serialize_request_delete(db_name, table_name, where_clause, &payload, &payload_len);
-
-        uint32_t target_id = (conn->owner_module_id << 16);
-
-        ipc_message_t *req = ipc_message_create(IPC_MSG_TYPE_DB_DELETE, ipc_get_module_id(conn->ipc_ctx),
-                                                conn->owner_module_id, 0, payload, payload_len, g_free);
-
-        ipc_message_t *resp = ipc_query(conn->ipc_ctx, target_id, req, 5000);
-        ipc_message_free(req);
-
-        if (!resp)
-        {
-            fprintf(stderr, "[db_api] RPC 删除失败: 无响应\n");
-            return -1;
-        }
-
-        int32_t retval = -1;
-        db_deserialize_response(resp->payload, resp->payload_len, &retval, NULL);
-        ipc_message_free(resp);
-        return retval;
-    }
-
     if (!conn->handle)
     {
         fprintf(stderr, "[db] 错误: 数据库未连接 (db=%s)\n", db_name);
@@ -536,32 +428,6 @@ int db_query(const char *db_name, const char *table_name, const char **field_nam
     {
         fprintf(stderr, "[db] 错误: 找不到数据库连接 (db=%s)\n", db_name);
         return ERRCODE_FAIL;
-    }
-
-    if (!conn->handle && conn->ipc_ctx)
-    {
-        void *payload = NULL;
-        uint32_t payload_len = 0;
-        db_serialize_request_query(db_name, table_name, field_names, num_fields, where_clause, &payload, &payload_len);
-
-        uint32_t target_id = (conn->owner_module_id << 16);
-
-        ipc_message_t *req = ipc_message_create(IPC_MSG_TYPE_DB_QUERY, ipc_get_module_id(conn->ipc_ctx),
-                                                conn->owner_module_id, 0, payload, payload_len, g_free);
-
-        ipc_message_t *resp = ipc_query(conn->ipc_ctx, target_id, req, 5000);
-        ipc_message_free(req);
-
-        if (!resp)
-        {
-            fprintf(stderr, "[db_api] RPC 查询失败: 无响应\n");
-            return ERRCODE_FAIL;
-        }
-
-        int32_t retval = ERRCODE_FAIL;
-        db_deserialize_response(resp->payload, resp->payload_len, &retval, result);
-        ipc_message_free(resp);
-        return retval;
     }
 
     if (!conn->handle)
@@ -684,45 +550,6 @@ int db_exists(const char *db_name, const char *table_name, const char *where_cla
     if (!db_name || !table_name || !exists)
     {
         return ERRCODE_FAIL;
-    }
-
-    // Check for local connection first
-    // Check for local connection first
-    db_connection_t *conn = db_get_connection(db_name);
-    if (!conn)
-    {
-        return ERRCODE_FAIL;
-    }
-
-    if (!conn->handle && conn->ipc_ctx)
-    {
-        void *payload = NULL;
-        uint32_t payload_len = 0;
-        db_serialize_request_exists(db_name, table_name, where_clause, &payload, &payload_len);
-
-        uint32_t target_id = (conn->owner_module_id << 16);
-
-        ipc_message_t *req = ipc_message_create(IPC_MSG_TYPE_DB_EXISTS, ipc_get_module_id(conn->ipc_ctx),
-                                                conn->owner_module_id, 0, payload, payload_len, g_free);
-        ipc_message_t *resp = ipc_query(conn->ipc_ctx, target_id, req, 5000);
-        ipc_message_free(req);
-
-        if (!resp)
-        {
-            return ERRCODE_FAIL;
-        }
-
-        int32_t retval = 0;
-        db_deserialize_response(resp->payload, resp->payload_len, &retval, NULL);
-        ipc_message_free(resp);
-
-        if (retval == ERRCODE_FAIL)
-        {
-            return ERRCODE_FAIL;
-        }
-
-        *exists = (retval != 0);
-        return ERRCODE_SUCCESS;
     }
 
     db_result_t *result = NULL;

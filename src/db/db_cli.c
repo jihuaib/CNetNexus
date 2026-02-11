@@ -11,6 +11,7 @@
 
 #include "cli.h"
 #include "db.h"
+#include "db_api.h"
 #include "db_main.h"
 #include "db_registry.h"
 #include "dev.h"
@@ -20,7 +21,11 @@
 // Show 输出写入临时 DB
 // ============================================================================
 
-#define DB_SHOW_DB "db_show_db"
+// ============================================================================
+// Show 输出写入临时 DB
+// ============================================================================
+
+#define DB_SHOW_DB "db_db"
 #define DB_SHOW_META "db_show_meta"
 #define DB_SHOW_ROW "db_show_row"
 
@@ -58,16 +63,11 @@ static void db_send_cli_response(ipc_message_t *msg, const char *text)
 }
 
 // ============================================================================
-// 按 table_name 分发的 handler
+// 统一 Show 命令 Handler
 // ============================================================================
 
-/**
- * @brief 处理 show db list 命令
- */
-static int handle_show_db_list(ipc_message_t *msg, cli_db_payload_parser_t *parser)
+static int handle_db_show_list(ipc_message_t *msg)
 {
-    (void)parser;
-
     db_registry_t *registry = db_registry_get_instance();
     if (!registry || !registry->databases)
     {
@@ -103,27 +103,8 @@ static int handle_show_db_list(ipc_message_t *msg, cli_db_payload_parser_t *pars
     return ERRCODE_SUCCESS;
 }
 
-/**
- * @brief 处理 show db <name> table-list 命令
- */
-static int handle_show_db_tables(ipc_message_t *msg, cli_db_payload_parser_t *parser)
+static int handle_db_show_tables(ipc_message_t *msg, const char *db_name)
 {
-    char db_name[64] = {0};
-
-    /* 解析字段 */
-    uint8_t ff;
-    char *fn;
-    db_value_t val;
-    while (cli_db_payload_next(parser, &ff, &fn, &val) == 1)
-    {
-        if (strcmp(fn, "db_name") == 0 && val.type == DB_TYPE_TEXT && val.data.text)
-        {
-            snprintf(db_name, sizeof(db_name), "%s", val.data.text);
-        }
-        g_free(fn);
-        db_value_free(&val);
-    }
-
     db_cli_resp_out_t resp_out;
     memset(&resp_out, 0, sizeof(resp_out));
     int offset = 0;
@@ -149,32 +130,8 @@ static int handle_show_db_tables(ipc_message_t *msg, cli_db_payload_parser_t *pa
     return ERRCODE_SUCCESS;
 }
 
-/**
- * @brief 处理 show db <name> table-field <table> 命令
- */
-static int handle_show_db_fields(ipc_message_t *msg, cli_db_payload_parser_t *parser)
+static int handle_db_show_fields(ipc_message_t *msg, const char *db_name, const char *table_name)
 {
-    char db_name[64] = {0};
-    char table_name[64] = {0};
-
-    /* 解析字段 */
-    uint8_t ff;
-    char *fn;
-    db_value_t val;
-    while (cli_db_payload_next(parser, &ff, &fn, &val) == 1)
-    {
-        if (strcmp(fn, "db_name") == 0 && val.type == DB_TYPE_TEXT && val.data.text)
-        {
-            snprintf(db_name, sizeof(db_name), "%s", val.data.text);
-        }
-        else if (strcmp(fn, "table_name") == 0 && val.type == DB_TYPE_TEXT && val.data.text)
-        {
-            snprintf(table_name, sizeof(table_name), "%s", val.data.text);
-        }
-        g_free(fn);
-        db_value_free(&val);
-    }
-
     db_cli_resp_out_t resp_out;
     memset(&resp_out, 0, sizeof(resp_out));
     int offset = 0;
@@ -206,32 +163,8 @@ static int handle_show_db_fields(ipc_message_t *msg, cli_db_payload_parser_t *pa
     return ERRCODE_SUCCESS;
 }
 
-/**
- * @brief 处理 show db <name> table-data <table> 命令
- */
-static int handle_show_db_data(ipc_message_t *msg, cli_db_payload_parser_t *parser)
+static int handle_db_show_data(ipc_message_t *msg, const char *db_name, const char *table_name)
 {
-    char db_name[64] = {0};
-    char table_name[64] = {0};
-
-    /* 解析字段 */
-    uint8_t ff;
-    char *fn;
-    db_value_t val;
-    while (cli_db_payload_next(parser, &ff, &fn, &val) == 1)
-    {
-        if (strcmp(fn, "db_name") == 0 && val.type == DB_TYPE_TEXT && val.data.text)
-        {
-            snprintf(db_name, sizeof(db_name), "%s", val.data.text);
-        }
-        else if (strcmp(fn, "table_name") == 0 && val.type == DB_TYPE_TEXT && val.data.text)
-        {
-            snprintf(table_name, sizeof(table_name), "%s", val.data.text);
-        }
-        g_free(fn);
-        db_value_free(&val);
-    }
-
     db_cli_resp_out_t resp_out;
     memset(&resp_out, 0, sizeof(resp_out));
     int offset = 0;
@@ -367,27 +300,114 @@ static int handle_show_db_data(ipc_message_t *msg, cli_db_payload_parser_t *pars
     return ERRCODE_SUCCESS;
 }
 
+static int handle_db_show_cmd(ipc_message_t *msg, cli_db_payload_parser_t *parser)
+{
+    char *action = NULL;
+    char *db_name = NULL;
+    char *table_name = NULL;
+
+    /* 解析字段 */
+    uint8_t ff;
+    char *fn;
+    db_value_t val;
+    while (cli_db_payload_next(parser, &ff, &fn, &val) == 1)
+    {
+        if (strcmp(fn, "action") == 0 && val.type == DB_TYPE_TEXT && val.data.text)
+        {
+            if (action)
+            {
+                g_free(action);
+            }
+            action = g_strdup(val.data.text);
+        }
+        else if (strcmp(fn, "db_name") == 0 && val.type == DB_TYPE_TEXT && val.data.text)
+        {
+            if (db_name)
+            {
+                g_free(db_name);
+            }
+            db_name = g_strdup(val.data.text);
+        }
+        else if (strcmp(fn, "table_name") == 0 && val.type == DB_TYPE_TEXT && val.data.text)
+        {
+            if (table_name)
+            {
+                g_free(table_name);
+            }
+            table_name = g_strdup(val.data.text);
+        }
+        g_free(fn);
+        db_value_free(&val);
+    }
+
+    int ret = ERRCODE_FAIL;
+
+    if (action)
+    {
+        if (strcmp(action, "list") == 0)
+        {
+            ret = handle_db_show_list(msg);
+        }
+        else if (strcmp(action, "table-list") == 0)
+        {
+            if (db_name)
+            {
+                ret = handle_db_show_tables(msg, db_name);
+            }
+            else
+            {
+                db_send_cli_response(msg, "Error: Missing database name.\r\n");
+            }
+        }
+        else if (strcmp(action, "table-field") == 0)
+        {
+            if (db_name && table_name)
+            {
+                ret = handle_db_show_fields(msg, db_name, table_name);
+            }
+            else
+            {
+                db_send_cli_response(msg, "Error: Missing database or table name.\r\n");
+            }
+        }
+        else if (strcmp(action, "table-data") == 0)
+        {
+            if (db_name && table_name)
+            {
+                ret = handle_db_show_data(msg, db_name, table_name);
+            }
+            else
+            {
+                db_send_cli_response(msg, "Error: Missing database or table name.\r\n");
+            }
+        }
+        else
+        {
+            db_send_cli_response(msg, "Error: Unknown action.\r\n");
+        }
+    }
+    else
+    {
+        /* 默认行为或错误 ? */
+        /* 根据命令定义，action 必填，但防御性编程 */
+        db_send_cli_response(msg, "Error: Missing action in command payload.\r\n");
+    }
+
+    g_free(action);
+    g_free(db_name);
+    g_free(table_name);
+    return ret;
+}
+
 // ============================================================================
 // 按 table_name 分发
 // ============================================================================
 
 static int db_dispatch_db_payload(ipc_message_t *msg, cli_db_payload_parser_t *parser)
 {
-    if (strcmp(parser->table_name, "db_show_meta") == 0)
+    if (strcmp(parser->table_name, "db_show_cmd") == 0)
     {
-        return handle_show_db_list(msg, parser);
-    }
-    else if (strcmp(parser->table_name, "db_show_tables") == 0)
-    {
-        return handle_show_db_tables(msg, parser);
-    }
-    else if (strcmp(parser->table_name, "db_show_fields") == 0)
-    {
-        return handle_show_db_fields(msg, parser);
-    }
-    else if (strcmp(parser->table_name, "db_show_data") == 0)
-    {
-        return handle_show_db_data(msg, parser);
+        return handle_db_show_cmd(msg, parser);
     }
 
     printf("[db_cli] 未知表名: %s\n", parser->table_name);

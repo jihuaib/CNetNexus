@@ -710,7 +710,8 @@ static cli_view_node_t *parse_view_node(xmlNode *view_xml)
 }
 
 // Parse command group and register commands to views
-static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree, uint32_t module_id)
+static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree, uint32_t module_id,
+                                const char *config_db_name)
 {
     uint32_t element_id = 0;
 
@@ -728,13 +729,11 @@ static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree,
         return;
     }
 
-    // 读取 db 和 table 属性
-    xmlChar *db_attr = xmlGetProp(group_node, (const xmlChar *)"db");
+    // 读取 table 属性，db 从 configuration 级别继承
     xmlChar *table_attr = xmlGetProp(group_node, (const xmlChar *)"table");
-    if (db_attr)
+    if (config_db_name)
     {
-        group->db_name = g_strdup((const char *)db_attr);
-        xmlFree(db_attr);
+        group->db_name = g_strdup(config_db_name);
     }
     if (table_attr)
     {
@@ -947,8 +946,11 @@ uint32_t cli_xml_load_view_tree(const char *xml_file, cli_view_tree_t *view_tree
 
     uint32_t module_id = atoi((const char *)module_id_str);
     printf("[xml_parser] Loading XML for module: %u\n", module_id);
-
     xmlFree(module_id_str);
+
+    // 读取 configuration 级别的 db 属性
+    xmlChar *config_db_attr = xmlGetProp(root_element, (const xmlChar *)"db");
+    const char *config_db_name = config_db_attr ? (const char *)config_db_attr : NULL;
 
     // Parse views section
     for (xmlNode *cur = root_element->children; cur; cur = cur->next)
@@ -1020,7 +1022,7 @@ uint32_t cli_xml_load_view_tree(const char *xml_file, cli_view_tree_t *view_tree
 
                 if (xmlStrcmp(group_node->name, (const xmlChar *)"group") == ERRCODE_SUCCESS)
                 {
-                    parse_command_group(group_node, view_tree, module_id);
+                    parse_command_group(group_node, view_tree, module_id, config_db_name);
                 }
             }
         }
@@ -1066,6 +1068,11 @@ uint32_t cli_xml_load_view_tree(const char *xml_file, cli_view_tree_t *view_tree
     if (view_tree->global_view && view_tree->global_view->cmd_tree)
     {
         merge_global_to_views(view_tree->root, view_tree->global_view->cmd_tree);
+    }
+
+    if (config_db_attr)
+    {
+        xmlFree(config_db_attr);
     }
 
     xmlFreeDoc(doc);

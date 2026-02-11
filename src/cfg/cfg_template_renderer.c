@@ -11,8 +11,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "cfg_main.h"
 #include "config_template.h"
 #include "db.h"
+#include "db_rpc.h"
 #include "errcode.h"
 
 // ============================================================================
@@ -48,7 +50,7 @@ static gboolean template_has_data(config_template_t *template)
 
         // 检查是否存在数据
         gboolean exists = FALSE;
-        int ret = db_exists(db_name, table_name, NULL, &exists);
+        int ret = db_rpc_exists(g_cfg_local->ipc_ctx, db_name, table_name, NULL, &exists);
 
         g_strfreev(parts);
 
@@ -110,7 +112,7 @@ static GHashTable *query_template_databases(config_template_t *template)
 
         // 查询数据库
         db_result_t *result = NULL;
-        int ret = db_query(db_name, table_name, NULL, 0, NULL, &result);
+        int ret = db_rpc_query(g_cfg_local->ipc_ctx, db_name, table_name, NULL, 0, NULL, &result);
 
         if (ret == ERRCODE_SUCCESS && result)
         {

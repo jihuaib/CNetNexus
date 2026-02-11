@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<configuration module-id="4">
+<configuration module-id="4" db="if_db">
     <views>
         <view view-id="5" view-name="interface">
             <template>&lt;NetNexus(config-if-%s)&gt;</template>
@@ -8,7 +8,7 @@
 
     <command_groups>
         <!-- Interface Entry Command -->
-        <group group-id="1" db="if_db" table="if_interface">
+        <group group-id="1" table="if_interface">
             <elements>
                 <element type="keyword">
                     <name>if</name> <!-- 1 -->
@@ -41,7 +41,7 @@
         </group>
 
         <!-- Interface Configuration Commands -->
-        <group group-id="2" db="if_db" table="if_interface">
+        <group group-id="2" table="if_interface">
             <elements>
                 <element type="keyword">
                     <name>ip</name> <!-- 1 -->
@@ -90,7 +90,7 @@
         </group>
 
         <!-- Show Commands -->
-        <group group-id="3" db="if_db" table="if_interface">
+        <group group-id="3" table="if_interface">
             <elements>
                 <element type="keyword" field="action">
                     <name>show</name> <!-- 1 -->

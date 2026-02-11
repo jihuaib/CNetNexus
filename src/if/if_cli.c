@@ -14,6 +14,7 @@
 
 #include "cli.h"
 #include "db.h"
+#include "db_rpc.h"
 #include "dev.h"
 #include "errcode.h"
 #include "if.h"
@@ -80,7 +81,7 @@ static int if_insert_show_meta(int has_rows)
 {
     const char *fields[] = {"title", "has_rows"};
     db_value_t values[] = {db_value_text("Interface Status"), db_value_int(has_rows ? 1 : 0)};
-    int ret = db_insert(IF_SHOW_DB, IF_SHOW_META, fields, values, 2);
+    int ret = db_rpc_insert(g_if_local->ipc_ctx, IF_SHOW_DB, IF_SHOW_META, fields, values, 2);
     db_value_free(&values[0]);
     return ret;
 }
@@ -89,7 +90,7 @@ static int if_insert_show_row(const char *name, const char *type, const char *st
 {
     const char *fields[] = {"name", "type", "state", "ip_address"};
     db_value_t values[] = {db_value_text(name), db_value_text(type), db_value_text(state), db_value_text(ip_address)};
-    int ret = db_insert(IF_SHOW_DB, IF_SHOW_ROW, fields, values, 4);
+    int ret = db_rpc_insert(g_if_local->ipc_ctx, IF_SHOW_DB, IF_SHOW_ROW, fields, values, 4);
     db_value_free(&values[0]);
     db_value_free(&values[1]);
     db_value_free(&values[2]);
@@ -103,7 +104,7 @@ static int if_insert_show_detail(const char *name, const char *type, const char 
     const char *fields[] = {"name", "type", "state", "ip_address", "netmask", "mac", "mtu"};
     db_value_t values[] = {db_value_text(name),    db_value_text(type), db_value_text(state), db_value_text(ip_address),
                            db_value_text(netmask), db_value_text(mac),  db_value_int(mtu)};
-    int ret = db_insert(IF_SHOW_DB, IF_SHOW_DETAIL, fields, values, 7);
+    int ret = db_rpc_insert(g_if_local->ipc_ctx, IF_SHOW_DB, IF_SHOW_DETAIL, fields, values, 7);
     db_value_free(&values[0]);
     db_value_free(&values[1]);
     db_value_free(&values[2]);
@@ -236,7 +237,7 @@ static int handle_if_config_db(ipc_message_t *msg, cli_db_payload_parser_t *pars
             snprintf(where, sizeof(where), "name = '%s'", ifname);
             const char *field_names[] = {"ip_address", "netmask"};
             db_value_t values[] = {db_value_text(ip), db_value_text(mask)};
-            db_update(parser->db_name, parser->table_name, field_names, values, 2, where);
+            db_rpc_update(g_if_local->ipc_ctx, parser->db_name, parser->table_name, field_names, values, 2, where);
             db_value_free(&values[0]);
             db_value_free(&values[1]);
 
@@ -263,7 +264,7 @@ static int handle_if_config_db(ipc_message_t *msg, cli_db_payload_parser_t *pars
             snprintf(where, sizeof(where), "name = '%s'", ifname);
             const char *field_names[] = {"shutdown"};
             db_value_t values[] = {db_value_int(state ? 0 : 1)};
-            db_update(parser->db_name, parser->table_name, field_names, values, 1, where);
+            db_rpc_update(g_if_local->ipc_ctx, parser->db_name, parser->table_name, field_names, values, 1, where);
 
             char resp_buf[128];
             snprintf(resp_buf, sizeof(resp_buf), "Interface %s %s\r\n", ifname, state ? "enabled" : "disabled");
