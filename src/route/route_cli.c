@@ -12,6 +12,7 @@
 
 #include "cli.h"
 #include "db.h"
+#include "db_rpc.h"
 #include "dev.h"
 #include "errcode.h"
 #include "ipc.h"
@@ -34,203 +35,93 @@ static void send_resp(ipc_message_t *msg, const char *text)
 }
 
 // ============================================================================
-// Show 输出写入临时 DB
-// ============================================================================
-
-#define ROUTE_SHOW_DB "route_show_db"
-#define ROUTE_SHOW_META "route_show_meta"
-#define ROUTE_SHOW_IPV4 "route_show_ipv4"
-#define ROUTE_SHOW_IPV6 "route_show_ipv6"
-
-static int route_insert_show_meta(int has_rows)
-{
-    const char *fields[] = {"has_rows"};
-    db_value_t values[] = {db_value_int(has_rows ? 1 : 0)};
-    return db_insert(ROUTE_SHOW_DB, ROUTE_SHOW_META, fields, values, 1);
-}
-
-static int route_insert_show_ipv4(const char *destination, const char *mask, const char *next_hop, int64_t metric,
-                                  int is_first)
-{
-    const char *fields[] = {"destination", "mask", "next_hop", "metric", "is_first"};
-    db_value_t values[] = {db_value_text(destination), db_value_text(mask), db_value_text(next_hop),
-                           db_value_int(metric), db_value_int(is_first ? 1 : 0)};
-    int ret = db_insert(ROUTE_SHOW_DB, ROUTE_SHOW_IPV4, fields, values, 5);
-    db_value_free(&values[0]);
-    db_value_free(&values[1]);
-    db_value_free(&values[2]);
-    return ret;
-}
-
-static int route_insert_show_ipv6(const char *destination, int64_t prefix_length, const char *next_hop, int64_t metric,
-                                  int is_first)
-{
-    const char *fields[] = {"destination", "prefix_length", "next_hop", "metric", "is_first"};
-    db_value_t values[] = {db_value_text(destination), db_value_int(prefix_length), db_value_text(next_hop),
-                           db_value_int(metric), db_value_int(is_first ? 1 : 0)};
-    int ret = db_insert(ROUTE_SHOW_DB, ROUTE_SHOW_IPV6, fields, values, 5);
-    db_value_free(&values[0]);
-    db_value_free(&values[2]);
-    return ret;
-}
-
-// ============================================================================
-// DB table 载荷处理函数
+// 命令处理函数
 // ============================================================================
 
 /**
- * @brief 处理 route_ipv4 表命令
+ * @brief 处理路由配置命令
  *
- * 根据字段判断操作类型：
- * - 有 destination + mask + next_hop → 添加 IPv4 路由
- * - no 命令 + destination + mask → 删除 IPv4 路由
+ * group_id=1, cfg_id:
+ *   1=no, 2=ipv4, 3=ipv6,
+ *   4=destination, 5=mask, 6=prefix_length,
+ *   7=next_hop, 8=metric
  */
-static int handle_route_ipv4_db(ipc_message_t *msg, cli_db_payload_parser_t *parser)
+static int handle_route_config(ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
-    gboolean is_no = CFG_DB_IS_NO_CMD(parser);
+    gboolean is_no = CLI_TLV_IS_NO_CMD(parser);
+    int is_ipv4 = 0;
+    int is_ipv6 = 0;
     char destination[128] = {0};
     char mask[64] = {0};
-    char next_hop[128] = {0};
-    int64_t metric = 0;
-    int has_destination = 0;
-    int has_mask = 0;
-    int has_next_hop = 0;
-    int has_metric = 0;
-
-    /* 解析字段 */
-    uint8_t ff;
-    char *fn;
-    db_value_t val;
-    while (cfg_db_payload_next(parser, &ff, &fn, &val) == 1)
-    {
-        if (strcmp(fn, "destination") == 0 && val.type == DB_TYPE_TEXT && val.data.text)
-        {
-            strncpy(destination, val.data.text, sizeof(destination) - 1);
-            has_destination = 1;
-        }
-        else if (strcmp(fn, "mask") == 0 && val.type == DB_TYPE_TEXT && val.data.text)
-        {
-            strncpy(mask, val.data.text, sizeof(mask) - 1);
-            has_mask = 1;
-        }
-        else if (strcmp(fn, "next_hop") == 0 && val.type == DB_TYPE_TEXT && val.data.text)
-        {
-            strncpy(next_hop, val.data.text, sizeof(next_hop) - 1);
-            has_next_hop = 1;
-        }
-        else if (strcmp(fn, "metric") == 0 && val.type == DB_TYPE_INTEGER)
-        {
-            metric = val.data.i64;
-            has_metric = 1;
-        }
-        g_free(fn);
-        db_value_free(&val);
-    }
-
-    char resp_msg[512];
-
-    /* 验证必填字段 */
-    if (!has_destination)
-    {
-        send_resp(msg, "Error: Destination address required\r\n");
-        return ERRCODE_FAIL;
-    }
-    if (!has_mask)
-    {
-        send_resp(msg, "Error: Subnet mask required for IPv4\r\n");
-        return ERRCODE_FAIL;
-    }
-
-    if (is_no)
-    {
-        /* 删除路由 */
-        char where_clause[512];
-        if (has_next_hop)
-        {
-            snprintf(where_clause, sizeof(where_clause), "destination='%s' AND mask='%s' AND next_hop='%s'",
-                     destination, mask, next_hop);
-        }
-        else
-        {
-            snprintf(where_clause, sizeof(where_clause), "destination='%s' AND mask='%s'", destination, mask);
-        }
-
-        int rows = db_delete("route_db", "route_ipv4", where_clause);
-        snprintf(resp_msg, sizeof(resp_msg), "Route deleted (%d row%s)\r\n", rows > 0 ? rows : 0, rows == 1 ? "" : "s");
-        send_resp(msg, resp_msg);
-    }
-    else
-    {
-        /* 添加路由 */
-        if (!has_next_hop)
-        {
-            send_resp(msg, "Error: Next hop address required\r\n");
-            return ERRCODE_FAIL;
-        }
-
-        const char *fields[] = {"destination", "mask", "next_hop", "metric"};
-        db_value_t values[4];
-        values[0] = db_value_text(destination);
-        values[1] = db_value_text(mask);
-        values[2] = db_value_text(next_hop);
-        values[3] = db_value_int(has_metric ? metric : 0);
-
-        int ret = db_insert("route_db", "route_ipv4", fields, values, 4);
-        if (ret != ERRCODE_SUCCESS)
-        {
-            send_resp(msg, "Error: Failed to add route\r\n");
-            return ERRCODE_FAIL;
-        }
-
-        send_resp(msg, "Route added successfully\r\n");
-    }
-
-    return ERRCODE_SUCCESS;
-}
-
-/**
- * @brief 处理 route_ipv6 表命令
- */
-static int handle_route_ipv6_db(ipc_message_t *msg, cli_db_payload_parser_t *parser)
-{
-    gboolean is_no = CFG_DB_IS_NO_CMD(parser);
-    char destination[128] = {0};
     int64_t prefix_length = 0;
     char next_hop[128] = {0};
     int64_t metric = 0;
     int has_destination = 0;
+    int has_mask = 0;
     int has_prefix_length = 0;
     int has_next_hop = 0;
     int has_metric = 0;
 
-    /* 解析字段 */
-    uint8_t ff;
-    char *fn;
-    db_value_t val;
-    while (cfg_db_payload_next(parser, &ff, &fn, &val) == 1)
+    /* 按 cfg_id 解析 TLV 条目 */
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
     {
-        if (strcmp(fn, "destination") == 0 && val.type == DB_TYPE_TEXT && val.data.text)
+        if (CFG_TLV_IS_CONTEXT(entry.cfg_id))
         {
-            strncpy(destination, val.data.text, sizeof(destination) - 1);
-            has_destination = 1;
+            cli_tlv_entry_free(&entry);
+            continue;
         }
-        else if (strcmp(fn, "prefix_length") == 0 && val.type == DB_TYPE_INTEGER)
+
+        switch (entry.cfg_id)
         {
-            prefix_length = val.data.i64;
-            has_prefix_length = 1;
+            case 2: /* ipv4 关键字 */
+                is_ipv4 = 1;
+                break;
+            case 3: /* ipv6 关键字 */
+                is_ipv6 = 1;
+                break;
+            case 4: /* destination 参数 */
+            {
+                const char *text = cli_tlv_entry_get_text(&entry);
+                if (text)
+                {
+                    strncpy(destination, text, sizeof(destination) - 1);
+                    has_destination = 1;
+                }
+                break;
+            }
+            case 5: /* mask 参数 */
+            {
+                const char *text = cli_tlv_entry_get_text(&entry);
+                if (text)
+                {
+                    strncpy(mask, text, sizeof(mask) - 1);
+                    has_mask = 1;
+                }
+                break;
+            }
+            case 6: /* prefix_length 参数 */
+                prefix_length = cli_tlv_entry_get_int(&entry);
+                has_prefix_length = 1;
+                break;
+            case 7: /* next_hop 参数 */
+            {
+                const char *text = cli_tlv_entry_get_text(&entry);
+                if (text)
+                {
+                    strncpy(next_hop, text, sizeof(next_hop) - 1);
+                    has_next_hop = 1;
+                }
+                break;
+            }
+            case 8: /* metric 参数 */
+                metric = cli_tlv_entry_get_int(&entry);
+                has_metric = 1;
+                break;
+            default:
+                break;
         }
-        else if (strcmp(fn, "next_hop") == 0 && val.type == DB_TYPE_TEXT && val.data.text)
-        {
-            strncpy(next_hop, val.data.text, sizeof(next_hop) - 1);
-            has_next_hop = 1;
-        }
-        else if (strcmp(fn, "metric") == 0 && val.type == DB_TYPE_INTEGER)
-        {
-            metric = val.data.i64;
-            has_metric = 1;
-        }
-        g_free(fn);
-        db_value_free(&val);
+        cli_tlv_entry_free(&entry);
     }
 
     char resp_msg[512];
@@ -241,55 +132,114 @@ static int handle_route_ipv6_db(ipc_message_t *msg, cli_db_payload_parser_t *par
         send_resp(msg, "Error: Destination address required\r\n");
         return ERRCODE_FAIL;
     }
-    if (!has_prefix_length)
-    {
-        send_resp(msg, "Error: Prefix length required for IPv6\r\n");
-        return ERRCODE_FAIL;
-    }
 
-    if (is_no)
+    if (is_ipv4)
     {
-        /* 删除路由 */
-        char where_clause[512];
-        if (has_next_hop)
+        if (!has_mask)
         {
-            snprintf(where_clause, sizeof(where_clause), "destination='%s' AND prefix_length=%ld AND next_hop='%s'",
-                     destination, prefix_length, next_hop);
+            send_resp(msg, "Error: Subnet mask required for IPv4\r\n");
+            return ERRCODE_FAIL;
+        }
+
+        if (is_no)
+        {
+            char where_clause[512];
+            if (has_next_hop)
+            {
+                snprintf(where_clause, sizeof(where_clause), "destination='%s' AND mask='%s' AND next_hop='%s'",
+                         destination, mask, next_hop);
+            }
+            else
+            {
+                snprintf(where_clause, sizeof(where_clause), "destination='%s' AND mask='%s'", destination, mask);
+            }
+
+            int rows = db_rpc_delete(g_route_local->ipc_ctx, "route_db", "route_ipv4", where_clause);
+            snprintf(resp_msg, sizeof(resp_msg), "Route deleted (%d row%s)\r\n", rows > 0 ? rows : 0,
+                     rows == 1 ? "" : "s");
+            send_resp(msg, resp_msg);
         }
         else
         {
-            snprintf(where_clause, sizeof(where_clause), "destination='%s' AND prefix_length=%ld", destination,
-                     prefix_length);
+            if (!has_next_hop)
+            {
+                send_resp(msg, "Error: Next hop address required\r\n");
+                return ERRCODE_FAIL;
+            }
+
+            const char *fields[] = {"destination", "mask", "next_hop", "metric"};
+            db_value_t values[4];
+            values[0] = db_value_text(destination);
+            values[1] = db_value_text(mask);
+            values[2] = db_value_text(next_hop);
+            values[3] = db_value_int(has_metric ? metric : 0);
+
+            int ret = db_rpc_insert(g_route_local->ipc_ctx, "route_db", "route_ipv4", fields, values, 4);
+            if (ret != ERRCODE_SUCCESS)
+            {
+                send_resp(msg, "Error: Failed to add route\r\n");
+                return ERRCODE_FAIL;
+            }
+
+            send_resp(msg, "Route added successfully\r\n");
+        }
+    }
+    else if (is_ipv6)
+    {
+        if (!has_prefix_length)
+        {
+            send_resp(msg, "Error: Prefix length required for IPv6\r\n");
+            return ERRCODE_FAIL;
         }
 
-        int rows = db_delete("route_db", "route_ipv6", where_clause);
-        snprintf(resp_msg, sizeof(resp_msg), "Route deleted (%d row%s)\r\n", rows > 0 ? rows : 0, rows == 1 ? "" : "s");
-        send_resp(msg, resp_msg);
+        if (is_no)
+        {
+            char where_clause[512];
+            if (has_next_hop)
+            {
+                snprintf(where_clause, sizeof(where_clause), "destination='%s' AND prefix_length=%ld AND next_hop='%s'",
+                         destination, prefix_length, next_hop);
+            }
+            else
+            {
+                snprintf(where_clause, sizeof(where_clause), "destination='%s' AND prefix_length=%ld", destination,
+                         prefix_length);
+            }
+
+            int rows = db_rpc_delete(g_route_local->ipc_ctx, "route_db", "route_ipv6", where_clause);
+            snprintf(resp_msg, sizeof(resp_msg), "Route deleted (%d row%s)\r\n", rows > 0 ? rows : 0,
+                     rows == 1 ? "" : "s");
+            send_resp(msg, resp_msg);
+        }
+        else
+        {
+            if (!has_next_hop)
+            {
+                send_resp(msg, "Error: Next hop address required\r\n");
+                return ERRCODE_FAIL;
+            }
+
+            const char *fields[] = {"destination", "prefix_length", "next_hop", "metric"};
+            db_value_t values[4];
+            values[0] = db_value_text(destination);
+            values[1] = db_value_int(prefix_length);
+            values[2] = db_value_text(next_hop);
+            values[3] = db_value_int(has_metric ? metric : 0);
+
+            int ret = db_rpc_insert(g_route_local->ipc_ctx, "route_db", "route_ipv6", fields, values, 4);
+            if (ret != ERRCODE_SUCCESS)
+            {
+                send_resp(msg, "Error: Failed to add route\r\n");
+                return ERRCODE_FAIL;
+            }
+
+            send_resp(msg, "Route added successfully\r\n");
+        }
     }
     else
     {
-        /* 添加路由 */
-        if (!has_next_hop)
-        {
-            send_resp(msg, "Error: Next hop address required\r\n");
-            return ERRCODE_FAIL;
-        }
-
-        const char *fields[] = {"destination", "prefix_length", "next_hop", "metric"};
-        db_value_t values[4];
-        values[0] = db_value_text(destination);
-        values[1] = db_value_int(prefix_length);
-        values[2] = db_value_text(next_hop);
-        values[3] = db_value_int(has_metric ? metric : 0);
-
-        int ret = db_insert("route_db", "route_ipv6", fields, values, 4);
-        if (ret != ERRCODE_SUCCESS)
-        {
-            send_resp(msg, "Error: Failed to add route\r\n");
-            return ERRCODE_FAIL;
-        }
-
-        send_resp(msg, "Route added successfully\r\n");
+        send_resp(msg, "Error: Must specify ipv4 or ipv6\r\n");
+        return ERRCODE_FAIL;
     }
 
     return ERRCODE_SUCCESS;
@@ -298,57 +248,61 @@ static int handle_route_ipv6_db(ipc_message_t *msg, cli_db_payload_parser_t *par
 /**
  * @brief 处理 show route 命令
  *
- * 根据 payload 的 family/destination 字段决定显示 IPv4/IPv6/ALL
+ * group_id=2, cfg_id: 1=ipv4, 2=ipv6, 3=all, 4=destination
+ * 直接构建格式化文本返回
  */
-static int handle_show_route_db(ipc_message_t *msg, cli_db_payload_parser_t *parser)
+static int handle_show_route(ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
-    /* 解析可选的 destination 与 family 过滤条件 */
-    char filter_dest[128] = {0};
-    char family[16] = {0};
     int show_ipv4 = 0;
     int show_ipv6 = 0;
+    char filter_dest[128] = {0};
 
-    uint8_t ff;
-    char *fn;
-    db_value_t val;
-    while (cfg_db_payload_next(parser, &ff, &fn, &val) == 1)
+    /* 解析 TLV 条目 */
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
     {
-        if (strcmp(fn, "destination") == 0 && val.type == DB_TYPE_TEXT && val.data.text)
+        if (CFG_TLV_IS_CONTEXT(entry.cfg_id))
         {
-            strncpy(filter_dest, val.data.text, sizeof(filter_dest) - 1);
+            cli_tlv_entry_free(&entry);
+            continue;
         }
-        else if (strcmp(fn, "family") == 0 && val.type == DB_TYPE_TEXT && val.data.text)
+
+        switch (entry.cfg_id)
         {
-            strncpy(family, val.data.text, sizeof(family) - 1);
+            case 1: /* ipv4 */
+                show_ipv4 = 1;
+                break;
+            case 2: /* ipv6 */
+                show_ipv6 = 1;
+                break;
+            case 3: /* all */
+                show_ipv4 = 1;
+                show_ipv6 = 1;
+                break;
+            case 4: /* destination 过滤 */
+            {
+                const char *text = cli_tlv_entry_get_text(&entry);
+                if (text)
+                {
+                    strncpy(filter_dest, text, sizeof(filter_dest) - 1);
+                }
+                break;
+            }
+            default:
+                break;
         }
-        g_free(fn);
-        db_value_free(&val);
+        cli_tlv_entry_free(&entry);
     }
 
-    if (family[0] == '\0' || strcmp(family, "all") == 0)
+    /* 默认显示所有 */
+    if (!show_ipv4 && !show_ipv6)
     {
         show_ipv4 = 1;
         show_ipv6 = 1;
     }
-    else if (strcmp(family, "ipv4") == 0)
-    {
-        show_ipv4 = 1;
-    }
-    else if (strcmp(family, "ipv6") == 0)
-    {
-        show_ipv6 = 1;
-    }
-    else
-    {
-        send_resp(msg, "Route Error: Invalid family.\r\n");
-        return ERRCODE_FAIL;
-    }
 
-    if (route_insert_show_meta(0) != ERRCODE_SUCCESS)
-    {
-        send_resp(msg, "Route Error: Failed to write show output.\r\n");
-        return ERRCODE_FAIL;
-    }
+    char resp_buf[CLI_MAX_RESP_LEN];
+    int offset = 0;
 
     char where_clause[256] = "";
     if (strlen(filter_dest) > 0)
@@ -356,20 +310,26 @@ static int handle_show_route_db(ipc_message_t *msg, cli_db_payload_parser_t *par
         snprintf(where_clause, sizeof(where_clause), "destination='%s'", filter_dest);
     }
 
-    int ipv4_rows = 0;
-    int ipv6_rows = 0;
-
+    /* 显示 IPv4 路由 */
     if (show_ipv4)
     {
         db_result_t *result = NULL;
-        int ret = db_query("route_db", "route_ipv4", NULL, 0, strlen(where_clause) > 0 ? where_clause : NULL, &result);
+        int ret = db_rpc_query(g_route_local->ipc_ctx, "route_db", "route_ipv4", NULL, 0,
+                               strlen(where_clause) > 0 ? where_clause : NULL, &result);
+
+        offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset,
+                           "\r\nIPv4 Routing Table:\r\n"
+                           "%-18s %-18s %-18s %-8s\r\n"
+                           "------------------ ------------------ ------------------ --------\r\n",
+                           "Destination", "Mask", "Next Hop", "Metric");
+
         if (ret == ERRCODE_SUCCESS && result != NULL)
         {
             for (uint32_t i = 0; i < result->num_rows; i++)
             {
                 db_row_t *row = result->rows[i];
                 const char *dest = "";
-                const char *mask = "";
+                const char *mask_val = "";
                 const char *next_hop_str = "";
                 int64_t metric_val = 0;
 
@@ -381,7 +341,7 @@ static int handle_show_route_db(ipc_message_t *msg, cli_db_payload_parser_t *par
                     }
                     else if (strcmp(row->field_names[j], "mask") == 0 && row->values[j].type == DB_TYPE_TEXT)
                     {
-                        mask = row->values[j].data.text;
+                        mask_val = row->values[j].data.text;
                     }
                     else if (strcmp(row->field_names[j], "next_hop") == 0 && row->values[j].type == DB_TYPE_TEXT)
                     {
@@ -393,23 +353,40 @@ static int handle_show_route_db(ipc_message_t *msg, cli_db_payload_parser_t *par
                     }
                 }
 
-                if (route_insert_show_ipv4(dest, mask, next_hop_str ? next_hop_str : "", metric_val, ipv4_rows == 0) !=
-                    ERRCODE_SUCCESS)
+                offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset, "%-18s %-18s %-18s %-8ld\r\n", dest,
+                                   mask_val, next_hop_str ? next_hop_str : "", metric_val);
+
+                if ((size_t)offset >= sizeof(resp_buf) - 128)
                 {
-                    db_result_free(result);
-                    send_resp(msg, "Route Error: Failed to write show output.\r\n");
-                    return ERRCODE_FAIL;
+                    offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset, "  ... (truncated)\r\n");
+                    break;
                 }
-                ipv4_rows++;
+            }
+            if (result->num_rows == 0)
+            {
+                offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset, "  (no routes)\r\n");
             }
             db_result_free(result);
         }
+        else
+        {
+            offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset, "  (no routes)\r\n");
+        }
     }
 
+    /* 显示 IPv6 路由 */
     if (show_ipv6)
     {
         db_result_t *result = NULL;
-        int ret = db_query("route_db", "route_ipv6", NULL, 0, strlen(where_clause) > 0 ? where_clause : NULL, &result);
+        int ret = db_rpc_query(g_route_local->ipc_ctx, "route_db", "route_ipv6", NULL, 0,
+                               strlen(where_clause) > 0 ? where_clause : NULL, &result);
+
+        offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset,
+                           "\r\nIPv6 Routing Table:\r\n"
+                           "%-30s %-8s %-30s %-8s\r\n"
+                           "------------------------------ -------- ------------------------------ --------\r\n",
+                           "Destination", "Prefix", "Next Hop", "Metric");
+
         if (ret == ERRCODE_SUCCESS && result != NULL)
         {
             for (uint32_t i = 0; i < result->num_rows; i++)
@@ -441,115 +418,31 @@ static int handle_show_route_db(ipc_message_t *msg, cli_db_payload_parser_t *par
                     }
                 }
 
-                if (route_insert_show_ipv6(dest, prefix_len, next_hop_str ? next_hop_str : "", metric_val,
-                                           ipv6_rows == 0) != ERRCODE_SUCCESS)
+                offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset, "%-30s %-8ld %-30s %-8ld\r\n", dest,
+                                   prefix_len, next_hop_str ? next_hop_str : "", metric_val);
+
+                if ((size_t)offset >= sizeof(resp_buf) - 128)
                 {
-                    db_result_free(result);
-                    send_resp(msg, "Route Error: Failed to write show output.\r\n");
-                    return ERRCODE_FAIL;
+                    offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset, "  ... (truncated)\r\n");
+                    break;
                 }
-                ipv6_rows++;
+            }
+            if (result->num_rows == 0)
+            {
+                offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset, "  (no routes)\r\n");
             }
             db_result_free(result);
         }
-    }
-
-    int has_rows = (ipv4_rows + ipv6_rows) > 0;
-    const char *fields[] = {"has_rows"};
-    db_value_t values[] = {db_value_int(has_rows ? 1 : 0)};
-    db_update(ROUTE_SHOW_DB, ROUTE_SHOW_META, fields, values, 1, NULL);
-
-    send_resp(msg, "");
-    return ERRCODE_SUCCESS;
-}
-
-/**
- * @brief 使用 DB table 载荷格式分发命令
- *
- * 根据 table_name 和字段内容区分 IPv4/IPv6：
- * - route_ipv4 + 有 mask 字段 → IPv4 配置命令
- * - route_ipv4 + 有 prefix_length 字段 → IPv6 配置命令（需要操作 route_ipv6 表）
- * - route_ipv4 + show 命令（由 group 2 发来）→ show 命令
- */
-static int route_dispatch_db_payload(ipc_message_t *msg, cli_db_payload_parser_t *parser)
-{
-    /* 预扫描字段，判断是 IPv4 还是 IPv6
-     * 注意：这会消耗迭代器，所以需要重新初始化 parser 或使用另一种方式
-     * 实际上我们可以根据字段的存在来判断：
-     * - 如果有 mask 字段 → IPv4
-     * - 如果有 prefix_length 字段 → IPv6
-     */
-
-    /* 保存原始位置用于重新解析 */
-    const uint8_t *orig_data = parser->_reader_data;
-    uint32_t orig_len = parser->_reader_len;
-
-    int has_mask = 0;
-    int has_prefix_length = 0;
-    int has_action_show = 0;
-
-    uint8_t ff;
-    char *fn;
-    db_value_t val;
-    while (cfg_db_payload_next(parser, &ff, &fn, &val) == 1)
-    {
-        if (strcmp(fn, "mask") == 0)
-        {
-            has_mask = 1;
-        }
-        else if (strcmp(fn, "prefix_length") == 0)
-        {
-            has_prefix_length = 1;
-        }
-        else if (strcmp(fn, "action") == 0 && val.type == DB_TYPE_TEXT && val.data.text &&
-                 strcmp(val.data.text, "show") == 0)
-        {
-            has_action_show = 1;
-        }
-        g_free(fn);
-        db_value_free(&val);
-    }
-
-    /* 重新初始化 parser 以便后续处理函数可以重新解析字段 */
-    cli_db_payload_parser_t new_parser;
-    if (cfg_db_payload_init(&new_parser, orig_data, orig_len) != 0)
-    {
-        send_resp(msg, "Route Error: Failed to re-parse payload.\r\n");
-        return ERRCODE_FAIL;
-    }
-
-    int result;
-
-    if (strcmp(parser->table_name, "route_ipv4") == 0)
-    {
-        if (has_action_show)
-        {
-            result = handle_show_route_db(msg, &new_parser);
-        }
-        else if (has_prefix_length)
-        {
-            /* 虽然 table_name 是 route_ipv4，但有 prefix_length 说明是 IPv6 命令 */
-            result = handle_route_ipv6_db(msg, &new_parser);
-        }
-        else if (has_mask)
-        {
-            result = handle_route_ipv4_db(msg, &new_parser);
-        }
         else
         {
-            send_resp(msg, "Route Error: Cannot determine route type.\r\n");
-            result = ERRCODE_FAIL;
+            offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset, "  (no routes)\r\n");
         }
     }
-    else
-    {
-        printf("[route_cfg] 未知表名: %s\n", parser->table_name);
-        send_resp(msg, "Route Error: Unknown table.\r\n");
-        result = ERRCODE_FAIL;
-    }
 
-    cfg_db_payload_cleanup(&new_parser);
-    return result;
+    offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset, "\r\n");
+
+    send_resp(msg, resp_buf);
+    return ERRCODE_SUCCESS;
 }
 
 // ============================================================================
@@ -558,14 +451,7 @@ static int route_dispatch_db_payload(ipc_message_t *msg, cli_db_payload_parser_t
 
 int route_cli_handle_continue(ipc_message_t *msg)
 {
-    char *resp_data = g_strdup("");
-    ipc_message_t *resp_msg = ipc_message_create(CFG_MSG_TYPE_CLI_RESP, DEV_MODULE_ID_ROUTE, msg->src_module_id,
-                                                 msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
-    if (resp_msg)
-    {
-        ipc_send_response(g_route_local->ipc_ctx, resp_msg);
-        ipc_message_free(resp_msg);
-    }
+    send_resp(msg, "");
     return ERRCODE_SUCCESS;
 }
 
@@ -576,19 +462,32 @@ int route_cli_handle_message(ipc_message_t *msg)
         return ERRCODE_FAIL;
     }
 
-    /* 尝试新 DB table 载荷格式 */
-    cli_db_payload_parser_t parser;
-    if (cfg_db_payload_init(&parser, (const uint8_t *)msg->payload, msg->payload_len) == 0)
+    cli_tlv_parser_t parser;
+    if (cli_tlv_init(&parser, (const uint8_t *)msg->payload, msg->payload_len) != 0)
     {
-        printf("[route_cfg] 收到 DB table 载荷 (db=%s, table=%s, num_fields=%u)\n", parser.db_name, parser.table_name,
-               parser.num_fields);
-
-        int result = route_dispatch_db_payload(msg, &parser);
-        cfg_db_payload_cleanup(&parser);
-        return result;
+        printf("[route_cli] 载荷解析失败\n");
+        send_resp(msg, "Route Error: Failed to parse command payload.\r\n");
+        return ERRCODE_FAIL;
     }
 
-    printf("[route_cfg] 无法解析消息\n");
-    send_resp(msg, "Route Error: Unsupported message format.\r\n");
-    return ERRCODE_FAIL;
+    printf("[route_cli] 收到 TLV 载荷 (group_id=%u)\n", parser.group_id);
+
+    int result;
+    switch (parser.group_id)
+    {
+        case 1: /* 路由配置命令 */
+            result = handle_route_config(msg, &parser);
+            break;
+        case 2: /* show route */
+            result = handle_show_route(msg, &parser);
+            break;
+        default:
+            printf("[route_cli] 未知 group_id: %u\n", parser.group_id);
+            send_resp(msg, "Route Error: Unknown command group.\r\n");
+            result = ERRCODE_FAIL;
+            break;
+    }
+
+    cli_tlv_cleanup(&parser);
+    return result;
 }

@@ -108,11 +108,11 @@ static GString *g_cfg_show_cache = NULL;
 static GString *g_cfg_history_cache = NULL;
 
 // ============================================================================
-// 按 table_name 分发的 handler
+// 按 group_id 分发的 handler
 // ============================================================================
 
 /**
- * @brief show cli command-info
+ * @brief show cli command-info (group_id=1)
  */
 static void handle_show_commands(cli_session_t *session)
 {
@@ -163,7 +163,7 @@ static void handle_show_commands(cli_session_t *session)
 }
 
 /**
- * @brief show cli history
+ * @brief show cli history (group_id=2)
  */
 static void handle_show_history(cli_session_t *session)
 {
@@ -247,7 +247,7 @@ static void handle_show_history(cli_session_t *session)
 }
 
 /**
- * @brief show current-configuration
+ * @brief show current-configuration (group_id=3)
  */
 static void handle_show_config(cli_session_t *session)
 {
@@ -264,7 +264,7 @@ static void handle_show_config(cli_session_t *session)
 }
 
 /**
- * @brief exit
+ * @brief exit (group_id=4)
  */
 static void handle_op_exit(cli_session_t *session)
 {
@@ -285,7 +285,7 @@ static void handle_op_exit(cli_session_t *session)
 }
 
 /**
- * @brief config
+ * @brief config (group_id=5)
  */
 static void handle_op_config(cli_session_t *session)
 {
@@ -299,7 +299,7 @@ static void handle_op_config(cli_session_t *session)
 }
 
 /**
- * @brief end
+ * @brief end (group_id=6)
  */
 static void handle_op_end(cli_session_t *session)
 {
@@ -333,47 +333,42 @@ int cfg_cli_handle(ipc_message_t *msg, cli_session_t *session)
         return ERRCODE_FAIL;
     }
 
-    cli_db_payload_parser_t parser;
-    if (cli_db_payload_init(&parser, (const uint8_t *)msg->payload, msg->payload_len) != 0)
+    cli_tlv_parser_t parser;
+    if (cli_tlv_init(&parser, (const uint8_t *)msg->payload, msg->payload_len) != 0)
     {
         printf("[cfg_cli] 载荷解析失败\n");
         return ERRCODE_FAIL;
     }
 
-    printf("[cfg_cli] 收到命令 (table=%s)\n", parser.table_name);
+    printf("[cfg_cli] 收到命令 (group_id=%u)\n", parser.group_id);
 
-    if (strcmp(parser.table_name, "cfg_show_commands") == 0)
+    switch (parser.group_id)
     {
-        handle_show_commands(session);
-    }
-    else if (strcmp(parser.table_name, "cfg_show_history") == 0)
-    {
-        handle_show_history(session);
-    }
-    else if (strcmp(parser.table_name, "cfg_show_config") == 0)
-    {
-        handle_show_config(session);
-    }
-    else if (strcmp(parser.table_name, "cfg_op_exit") == 0)
-    {
-        handle_op_exit(session);
-    }
-    else if (strcmp(parser.table_name, "cfg_op_config") == 0)
-    {
-        handle_op_config(session);
-    }
-    else if (strcmp(parser.table_name, "cfg_op_end") == 0)
-    {
-        handle_op_end(session);
-    }
-    else
-    {
-        printf("[cfg_cli] 未知表名: %s\n", parser.table_name);
-        cfg_send_message(session, "Error: Unknown CFG command.\r\n");
-        cli_db_payload_cleanup(&parser);
-        return ERRCODE_FAIL;
+        case 1:
+            handle_show_commands(session);
+            break;
+        case 2:
+            handle_show_history(session);
+            break;
+        case 3:
+            handle_show_config(session);
+            break;
+        case 4:
+            handle_op_exit(session);
+            break;
+        case 5:
+            handle_op_config(session);
+            break;
+        case 6:
+            handle_op_end(session);
+            break;
+        default:
+            printf("[cfg_cli] 未知 group_id: %u\n", parser.group_id);
+            cfg_send_message(session, "Error: Unknown CFG command.\r\n");
+            cli_tlv_cleanup(&parser);
+            return ERRCODE_FAIL;
     }
 
-    cli_db_payload_cleanup(&parser);
+    cli_tlv_cleanup(&parser);
     return ERRCODE_SUCCESS;
 }

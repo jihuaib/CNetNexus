@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<configuration module-id="2" db="db_db">
+<configuration module-id="2">
     <views></views>
-<command_groups>
+    <command_groups>
         <!-- DB Show Commands -->
-        <group group-id="1" table="db_show_cmd">
+        <group group-id="1">
             <elements>
                 <element type="keyword">
                     <name>show</name> <!-- 1 -->
@@ -13,29 +13,29 @@
                     <name>db</name> <!-- 2 -->
                     <description>Database information</description>
                 </element>
-                <element type="keyword" field="action">
+                <element cfg-id="1" type="keyword">
                     <name>list</name> <!-- 3 -->
                     <description>Database list information</description>
                 </element>
-                <element type="parameter" field="db_name">
+                <element cfg-id="2" type="parameter">
                     <name>&lt;db-name&gt;</name> <!-- 4 -->
                     <description>Database name</description>
                     <type>string(1-63)</type>
                 </element>
-                <element type="keyword" field="action">
+                <element cfg-id="3" type="keyword">
                     <name>table-list</name> <!-- 5 -->
                     <description>Show table list</description>
                 </element>
-                <element type="keyword" field="action">
+                <element cfg-id="4" type="keyword">
                     <name>table-field</name> <!-- 6 -->
                     <description>Show table field</description>
                 </element>
-                <element type="parameter" field="table_name">
+                <element cfg-id="5" type="parameter">
                     <name>&lt;table-name&gt;</name> <!-- 7 -->
                     <description>Table name</description>
                     <type>string(1-63)</type>
                 </element>
-                <element type="keyword" field="action">
+                <element cfg-id="6" type="keyword">
                     <name>table-data</name> <!-- 8 -->
                     <description>Show table data</description>
                 </element>
@@ -46,7 +46,6 @@
                 <command>
                     <expression>1 2 3</expression>
                     <views>1</views>
-                    <show-template>db_show_list_template</show-template>
                 </command>
                 <!-- show db <db-name> table-list -->
                 <command>
@@ -66,45 +65,4 @@
             </commands>
         </group>
     </command_groups>
-
-    <config_templates>
-        <!-- DB show list 模板（临时 DB） -->
-        <template-def template-name="db_show_list_template" priority="0">
-            <template-def template-name="db_show_row_template"/>
-        </template-def>
-
-        <template template-name="db_show_list_template" db="db_db.db_show_meta">
-Registered Databases:
-{% if db_show_meta.has_rows == 0 %}
-No databases registered.
-{% else %}
-Name            Module     Tables
----------------- ---------- ------
-{% endif %}
-        </template>
-
-        <template template-name="db_show_row_template" db="db_db.db_show_row">
-{db_show_row.name:&lt;16} {db_show_row.module:&lt;10} {db_show_row.tables:&gt;6}
-        </template>
-    </config_templates>
-
-    <dbs>
-        <db db-name="db_db">
-            <tables>
-             <table table-name="db_show_meta">
-                    <fields>
-                        <field field-name="has_rows" type="uint(0-1)"/>
-                        <field field-name="total" type="uint(0-65535)"/>
-                    </fields>
-                </table>
-                <table table-name="db_show_row">
-                    <fields>
-                        <field field-name="name" type="string(1-63)"/>
-                        <field field-name="module" type="string(1-63)"/>
-                        <field field-name="tables" type="uint(0-65535)"/>
-                    </fields>
-                </table>   
-            </tables>
-        </db>
-    </dbs>
 </configuration>

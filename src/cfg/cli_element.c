@@ -67,7 +67,6 @@ void cli_element_free(cli_element_t *element)
     g_free(element->name);
     g_free(element->description);
     g_free(element->range);
-    g_free(element->field_name);
 
     if (element->param_type)
     {
@@ -139,8 +138,6 @@ void cli_group_free(cli_command_group_t *group)
     }
 
     g_free(group->elements);
-    g_free(group->db_name);
-    g_free(group->table_name);
     g_free(group);
 }
 

@@ -20,8 +20,6 @@
 #include "cli.h"
 #include "cli_handler.h"
 #include "cli_xml_parser.h"
-#include "db.h"
-#include "db_rpc.h"
 #include "dev.h"
 #include "errcode.h"
 #include "path_utils.h"
@@ -185,7 +183,6 @@ static int cfg_init_local()
     g_cfg_local->listen_sock = DEV_INVALID_FD;
     g_cfg_local->worker_thread = 0;
     g_cfg_local->sessions = g_hash_table_new_full(g_int_hash, g_int_equal, g_free, (GDestroyNotify)cli_session_destroy);
-    g_cfg_local->xml_db_defs = NULL;
 
     // 初始化 IPC（CFG 不需要接收回调消息，设 msg_handler 为 NULL）
     g_cfg_local->ipc_ctx = ipc_init(DEV_MODULE_ID_CFG, "cfg", NULL, NULL);
@@ -194,10 +191,6 @@ static int cfg_init_local()
         fprintf(stderr, "[cfg] Failed to initialize IPC\n");
         return ERRCODE_FAIL;
     }
-
-    // 各模块主动连接到 CFG，CFG 只需监听
-    // CFG 主动连接到 DB（用于 db_rpc）
-    ipc_connect(g_cfg_local->ipc_ctx, DEV_MODULE_ID_DB);
 
     // 创建 Telnet 服务器的 epoll
     int epoll_fd = epoll_create1(EPOLL_CLOEXEC);
@@ -273,11 +266,6 @@ static void cfg_cleanup_local()
         g_hash_table_destroy(g_cfg_local->sessions);
     }
 
-    if (g_cfg_local->xml_db_defs != NULL)
-    {
-        g_list_free_full(g_cfg_local->xml_db_defs, (GDestroyNotify)cfg_xml_db_def_free);
-    }
-
     g_free(g_cfg_local);
     g_cfg_local = NULL;
 }
@@ -335,27 +323,6 @@ static int32_t cfg_module_init()
     }
 
     printf("\n[cfg] Module cli initialization complete (failures: %d)\n\n", failed_count);
-
-    // Initialize databases from XML definitions
-    printf("[cfg] Initializing databases:\n");
-    printf("======================================\n");
-
-    // 通过 RPC 通知 DB 模块创建数据库（只创建数据库，不创建表）
-    for (GList *node = g_cfg_local->xml_db_defs; node != NULL; node = node->next)
-    {
-        cfg_xml_db_def_t *xml_def = (cfg_xml_db_def_t *)node->data;
-        printf("[cfg] 通过 RPC 创建数据库: %s (module_id=%u)\n", xml_def->db_name, xml_def->module_id);
-
-        if (db_rpc_create_db(g_cfg_local->ipc_ctx, xml_def->db_name, xml_def->module_id) != ERRCODE_SUCCESS)
-        {
-            fprintf(stderr, "[cfg] 创建数据库失败: %s\n", xml_def->db_name);
-        }
-    }
-    // 清理中间数据
-    g_list_free_full(g_cfg_local->xml_db_defs, (GDestroyNotify)cfg_xml_db_def_free);
-    g_cfg_local->xml_db_defs = NULL;
-
-    printf("\n[cfg] Database RPC client initialized\n\n");
 
     return ERRCODE_SUCCESS;
 }

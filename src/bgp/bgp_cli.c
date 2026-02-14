@@ -20,32 +20,23 @@
 #include "ipc.h"
 
 // ============================================================================
-// Show 输出写入临时 DB
+// 发送 CLI 响应辅助
 // ============================================================================
 
-#define BGP_SHOW_DB "bgp_show_db"
-#define BGP_SHOW_META "bgp_show_meta"
-#define BGP_SHOW_ROW "bgp_peer_show"
-
-static int bgp_insert_show_meta(int has_rows)
+static void bgp_send_cli_response(ipc_message_t *msg, const char *text)
 {
-    const char *fields[] = {"has_rows"};
-    db_value_t values[] = {db_value_int(has_rows ? 1 : 0)};
-    return db_rpc_insert(g_bgp_local->ipc_ctx, BGP_SHOW_DB, BGP_SHOW_META, fields, values, 1);
-}
-
-static int bgp_insert_show_row(int peer_index, const char *field, const char *value)
-{
-    const char *fields[] = {"peer_index", "field", "value"};
-    db_value_t values[] = {db_value_int(peer_index), db_value_text(field), db_value_text(value)};
-    int ret = db_rpc_insert(g_bgp_local->ipc_ctx, BGP_SHOW_DB, BGP_SHOW_ROW, fields, values, 3);
-    db_value_free(&values[1]);
-    db_value_free(&values[2]);
-    return ret;
+    char *resp_data = g_strdup(text);
+    ipc_message_t *resp = ipc_message_create(CFG_MSG_TYPE_CLI_RESP, DEV_MODULE_ID_BGP, msg->src_module_id,
+                                             msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
+    if (resp)
+    {
+        ipc_send_response(g_bgp_local->ipc_ctx, resp);
+        ipc_message_free(resp);
+    }
 }
 
 // ============================================================================
-// 上下文序列化辅助（新字段格式）
+// 上下文序列化辅助（TLV 格式）
 // ============================================================================
 
 static void ctx_write_u8(GByteArray *buf, uint8_t v)
@@ -59,6 +50,12 @@ static void ctx_write_u16(GByteArray *buf, uint16_t v)
     g_byte_array_append(buf, (const uint8_t *)&be, 2);
 }
 
+static void ctx_write_u32(GByteArray *buf, uint32_t v)
+{
+    uint32_t be = htonl(v);
+    g_byte_array_append(buf, (const uint8_t *)&be, 4);
+}
+
 static void ctx_write_i64(GByteArray *buf, int64_t v)
 {
     uint32_t hi = htonl((uint32_t)(v >> 32));
@@ -67,47 +64,41 @@ static void ctx_write_i64(GByteArray *buf, int64_t v)
     g_byte_array_append(buf, (const uint8_t *)&lo, 4);
 }
 
-static void ctx_write_string(GByteArray *buf, const char *s)
-{
-    if (!s)
-    {
-        ctx_write_u16(buf, 0xFFFF);
-        return;
-    }
-    uint16_t len = (uint16_t)strlen(s);
-    ctx_write_u16(buf, len);
-    if (len > 0)
-    {
-        g_byte_array_append(buf, (const uint8_t *)s, len);
-    }
-}
-
 // ============================================================================
-// DB table 载荷处理函数
+// 命令处理函数
 // ============================================================================
 
 /**
- * @brief 处理 bgp_protocol 表命令（bgp <as-number> / no bgp [as-number]）
+ * @brief 处理 bgp 配置命令（bgp <as-number> / no bgp [as-number]）
+ *
+ * group_id=1, cfg_id: 1=no, 2=as_number
  */
-static int handle_bgp_protocol_db(ipc_message_t *msg, cli_db_payload_parser_t *parser)
+static int handle_bgp_protocol(ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
-    gboolean is_no = CFG_DB_IS_NO_CMD(parser);
+    gboolean is_no = CLI_TLV_IS_NO_CMD(parser);
     uint32_t as_number = 0;
     int has_as_number = 0;
 
-    /* 解析字段 */
-    uint8_t ff;
-    char *fn;
-    db_value_t val;
-    while (cfg_db_payload_next(parser, &ff, &fn, &val) == 1)
+    /* 按 cfg_id 解析 TLV 条目 */
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
     {
-        if (strcmp(fn, "as_number") == 0 && val.type == DB_TYPE_INTEGER)
+        if (CFG_TLV_IS_CONTEXT(entry.cfg_id))
         {
-            as_number = (uint32_t)val.data.i64;
-            has_as_number = 1;
+            cli_tlv_entry_free(&entry);
+            continue;
         }
-        g_free(fn);
-        db_value_free(&val);
+
+        switch (entry.cfg_id)
+        {
+            case 2: /* as_number 参数 */
+                as_number = (uint32_t)cli_tlv_entry_get_int(&entry);
+                has_as_number = 1;
+                break;
+            default:
+                break;
+        }
+        cli_tlv_entry_free(&entry);
     }
 
     char resp_msg_buf[CLI_MAX_RESP_LEN];
@@ -120,55 +111,34 @@ static int handle_bgp_protocol_db(ipc_message_t *msg, cli_db_payload_parser_t *p
         {
             char where[64];
             snprintf(where, sizeof(where), "as_number = %u", as_number);
-            int rows = db_rpc_delete(g_bgp_local->ipc_ctx, parser->db_name, parser->table_name, where);
+            int rows = db_rpc_delete(g_bgp_local->ipc_ctx, "bgp_db", "bgp_protocol", where);
             snprintf(resp_msg_buf, sizeof(resp_msg_buf), "BGP: AS %u deleted (%d row).\r\n", as_number,
                      rows > 0 ? rows : 0);
         }
         else
         {
-            int rows = db_rpc_delete(g_bgp_local->ipc_ctx, parser->db_name, parser->table_name, NULL);
+            int rows = db_rpc_delete(g_bgp_local->ipc_ctx, "bgp_db", "bgp_protocol", NULL);
             snprintf(resp_msg_buf, sizeof(resp_msg_buf), "BGP: All configuration deleted (%d row).\r\n",
                      rows > 0 ? rows : 0);
         }
 
-        char *resp_data = g_strdup(resp_msg_buf);
-        ipc_message_t *resp = ipc_message_create(CFG_MSG_TYPE_CLI_RESP, DEV_MODULE_ID_BGP, msg->src_module_id,
-                                                 msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
-        if (resp)
-        {
-            ipc_send_response(g_bgp_local->ipc_ctx, resp);
-            ipc_message_free(resp);
-        }
+        bgp_send_cli_response(msg, resp_msg_buf);
         return ERRCODE_SUCCESS;
     }
 
     /* 配置场景 */
     if (!has_as_number)
     {
-        char *resp_data = g_strdup("BGP Error: Missing required AS number parameter.\r\n");
-        ipc_message_t *resp = ipc_message_create(CFG_MSG_TYPE_CLI_RESP, DEV_MODULE_ID_BGP, msg->src_module_id,
-                                                 msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
-        if (resp)
-        {
-            ipc_send_response(g_bgp_local->ipc_ctx, resp);
-            ipc_message_free(resp);
-        }
+        bgp_send_cli_response(msg, "BGP Error: Missing required AS number parameter.\r\n");
         return ERRCODE_FAIL;
     }
 
     /* 插入或更新 */
     gboolean exists = FALSE;
-    int ret = db_rpc_exists(g_bgp_local->ipc_ctx, parser->db_name, parser->table_name, NULL, &exists);
+    int ret = db_rpc_exists(g_bgp_local->ipc_ctx, "bgp_db", "bgp_protocol", NULL, &exists);
     if (ret != ERRCODE_SUCCESS)
     {
-        char *resp_data = g_strdup("BGP Error: Database query failed.\r\n");
-        ipc_message_t *resp = ipc_message_create(CFG_MSG_TYPE_CLI_RESP, DEV_MODULE_ID_BGP, msg->src_module_id,
-                                                 msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
-        if (resp)
-        {
-            ipc_send_response(g_bgp_local->ipc_ctx, resp);
-            ipc_message_free(resp);
-        }
+        bgp_send_cli_response(msg, "BGP Error: Database query failed.\r\n");
         return ERRCODE_FAIL;
     }
 
@@ -177,75 +147,65 @@ static int handle_bgp_protocol_db(ipc_message_t *msg, cli_db_payload_parser_t *p
 
     if (exists)
     {
-        db_rpc_update(g_bgp_local->ipc_ctx, parser->db_name, parser->table_name, field_names, values, 1, NULL);
+        db_rpc_update(g_bgp_local->ipc_ctx, "bgp_db", "bgp_protocol", field_names, values, 1, NULL);
         printf("[bgp_cli] Updated BGP AS number to %u\n", as_number);
     }
     else
     {
-        db_rpc_insert(g_bgp_local->ipc_ctx, parser->db_name, parser->table_name, field_names, values, 1);
+        db_rpc_insert(g_bgp_local->ipc_ctx, "bgp_db", "bgp_protocol", field_names, values, 1);
         printf("[bgp_cli] Inserted BGP AS number %u\n", as_number);
     }
 
     /* 发送 VIEW_CHG 响应 */
     char view_name[CFG_CLI_MAX_VIEW_LEN];
 
-    // 通过IPC从CFG模块获取view prompt template
+    /* 通过 IPC 从 CFG 模块获取 view prompt template */
     if (g_bgp_local->ipc_ctx && ipc_is_connected(g_bgp_local->ipc_ctx, DEV_MODULE_ID_CFG))
     {
-        // 构建请求：view_id (4字节)
         uint32_t view_id_be = htonl(CLI_VIEW_BGP);
-        ipc_message_t *req =
-            ipc_message_create(CFG_MSG_TYPE_GET_VIEW_PROMPT, DEV_MODULE_ID_BGP, DEV_MODULE_ID_CFG, msg->request_id,
-                               g_memdup(&view_id_be, sizeof(view_id_be)), sizeof(view_id_be), g_free);
+        uint32_t *view_id_copy = g_malloc(sizeof(view_id_be));
+        memcpy(view_id_copy, &view_id_be, sizeof(view_id_be));
+        ipc_message_t *req = ipc_message_create(CFG_MSG_TYPE_CLI_CONTINUE, DEV_MODULE_ID_BGP, DEV_MODULE_ID_CFG,
+                                                msg->request_id, view_id_copy, sizeof(view_id_be), g_free);
 
         if (req)
         {
+            req->msg_type = IPC_MSG_TYPE(IPC_CATEGORY_CLI, 0x0010); /* GET_VIEW_PROMPT */
             ipc_message_t *resp = ipc_query(g_bgp_local->ipc_ctx, DEV_MODULE_ID_CFG, req, 1000);
             if (resp && resp->payload && resp->payload_len > 0)
             {
                 snprintf(view_name, sizeof(view_name), "%s", (char *)resp->payload);
                 ipc_message_free(resp);
-                ret = ERRCODE_SUCCESS;
             }
             else
             {
-                // IPC失败，使用默认模板
-                snprintf(view_name, sizeof(view_name), "<NetNexus(bgp-%u)>");
+                snprintf(view_name, sizeof(view_name), "<NetNexus(bgp-%%u)>");
                 if (resp)
                 {
                     ipc_message_free(resp);
                 }
-                ret = ERRCODE_SUCCESS;
             }
             ipc_message_free(req);
         }
         else
         {
-            snprintf(view_name, sizeof(view_name), "<NetNexus(bgp-%u)>");
-            ret = ERRCODE_SUCCESS;
+            snprintf(view_name, sizeof(view_name), "<NetNexus(bgp-%%u)>");
         }
     }
     else
     {
-        // CFG未连接，使用默认模板
-        snprintf(view_name, sizeof(view_name), "<NetNexus(bgp-%u)>");
-        ret = ERRCODE_SUCCESS;
-    }
-
-    if (ret != ERRCODE_SUCCESS)
-    {
-        return ERRCODE_FAIL;
+        snprintf(view_name, sizeof(view_name), "<NetNexus(bgp-%%u)>");
     }
 
     char out_prompt[CLI_CLI_MAX_PROMPT_LEN];
     snprintf(out_prompt, CLI_CLI_MAX_PROMPT_LEN, view_name, as_number);
 
-    /* 构建新格式上下文: [num_fields:u16][field_flags:u8][field_name:string][value_type:u8][value] */
+    /* 构建新格式上下文: [num:u16][cfg_id:u32][type:u8][length:u16][value] */
     GByteArray *ctx_buf = g_byte_array_new();
     ctx_write_u16(ctx_buf, 1); /* num_fields = 1 */
-    ctx_write_u8(ctx_buf, 0);  /* field_flags = 0 */
-    ctx_write_string(ctx_buf, "as_number");
+    ctx_write_u32(ctx_buf, 2); /* cfg_id = 2 (as_number) */
     ctx_write_u8(ctx_buf, (uint8_t)DB_TYPE_INTEGER);
+    ctx_write_u16(ctx_buf, 8); /* int64 长度 */
     ctx_write_i64(ctx_buf, (int64_t)as_number);
 
     uint32_t total_len = CLI_CLI_MAX_PROMPT_LEN + ctx_buf->len;
@@ -266,119 +226,67 @@ static int handle_bgp_protocol_db(ipc_message_t *msg, cli_db_payload_parser_t *p
 }
 
 /**
- * @brief 处理 bgp_peer 表 show 命令
+ * @brief 处理 show bgp peer 命令
+ *
+ * group_id=2, 直接构建格式化文本返回
  */
-static int handle_bgp_peer_show_db(ipc_message_t *msg, cli_db_payload_parser_t *parser)
+static int handle_bgp_peer_show(ipc_message_t *msg)
 {
     db_result_t *result = NULL;
-    int ret = db_rpc_query(g_bgp_local->ipc_ctx, parser->db_name, parser->table_name, NULL, 0, NULL, &result);
+    int ret = db_rpc_query(g_bgp_local->ipc_ctx, "bgp_db", "bgp_protocol", NULL, 0, NULL, &result);
 
     if (ret != ERRCODE_SUCCESS || !result)
     {
-        char *resp_data = g_strdup("BGP Error: Database query failed.\r\n");
-        ipc_message_t *resp = ipc_message_create(CFG_MSG_TYPE_CLI_RESP, DEV_MODULE_ID_BGP, msg->src_module_id,
-                                                 msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
-        if (resp)
-        {
-            ipc_send_response(g_bgp_local->ipc_ctx, resp);
-            ipc_message_free(resp);
-        }
+        bgp_send_cli_response(msg, "BGP Error: Database query failed.\r\n");
         return ERRCODE_FAIL;
     }
 
-    if (bgp_insert_show_meta(result->num_rows > 0) != ERRCODE_SUCCESS)
+    char resp_buf[CLI_MAX_RESP_LEN];
+    int offset = 0;
+
+    if (result->num_rows == 0)
     {
-        db_result_free(result);
-        char *resp_data = g_strdup("BGP Error: Failed to write show output.\r\n");
-        ipc_message_t *resp = ipc_message_create(CFG_MSG_TYPE_CLI_RESP, DEV_MODULE_ID_BGP, msg->src_module_id,
-                                                 msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
-        if (resp)
-        {
-            ipc_send_response(g_bgp_local->ipc_ctx, resp);
-            ipc_message_free(resp);
-        }
-        return ERRCODE_FAIL;
+        offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset, "No BGP configuration found.\r\n");
     }
-
-    for (uint32_t i = 0; i < result->num_rows; i++)
+    else
     {
-        db_row_t *row = result->rows[i];
-        for (uint32_t j = 0; j < row->num_fields; j++)
-        {
-            char value_str[256] = {0};
-            switch (row->values[j].type)
-            {
-                case DB_TYPE_INTEGER:
-                    snprintf(value_str, sizeof(value_str), "%ld", row->values[j].data.i64);
-                    break;
-                case DB_TYPE_REAL:
-                    snprintf(value_str, sizeof(value_str), "%.6g", row->values[j].data.real);
-                    break;
-                case DB_TYPE_TEXT:
-                    if (row->values[j].data.text)
-                    {
-                        snprintf(value_str, sizeof(value_str), "%s", row->values[j].data.text);
-                    }
-                    break;
-                default:
-                    snprintf(value_str, sizeof(value_str), "NULL");
-                    break;
-            }
+        offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset, "\r\nBGP Information:\r\n");
+        offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset, "============================\r\n");
 
-            if (bgp_insert_show_row((int)i + 1, row->field_names[j], value_str) != ERRCODE_SUCCESS)
+        for (uint32_t i = 0; i < result->num_rows; i++)
+        {
+            db_row_t *row = result->rows[i];
+            for (uint32_t j = 0; j < row->num_fields; j++)
             {
-                db_result_free(result);
-                char *resp_data = g_strdup("BGP Error: Failed to write show output.\r\n");
-                ipc_message_t *resp = ipc_message_create(CFG_MSG_TYPE_CLI_RESP, DEV_MODULE_ID_BGP, msg->src_module_id,
-                                                         msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
-                if (resp)
+                char value_str[256] = {0};
+                switch (row->values[j].type)
                 {
-                    ipc_send_response(g_bgp_local->ipc_ctx, resp);
-                    ipc_message_free(resp);
+                    case DB_TYPE_INTEGER:
+                        snprintf(value_str, sizeof(value_str), "%ld", row->values[j].data.i64);
+                        break;
+                    case DB_TYPE_REAL:
+                        snprintf(value_str, sizeof(value_str), "%.6g", row->values[j].data.real);
+                        break;
+                    case DB_TYPE_TEXT:
+                        if (row->values[j].data.text)
+                        {
+                            snprintf(value_str, sizeof(value_str), "%s", row->values[j].data.text);
+                        }
+                        break;
+                    default:
+                        snprintf(value_str, sizeof(value_str), "NULL");
+                        break;
                 }
-                return ERRCODE_FAIL;
+                offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset, "  %-20s: %s\r\n", row->field_names[j],
+                                   value_str);
             }
         }
+        offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset, "\r\n");
     }
 
     db_result_free(result);
-
-    char *resp_data = g_strdup("");
-    ipc_message_t *resp = ipc_message_create(CFG_MSG_TYPE_CLI_RESP, DEV_MODULE_ID_BGP, msg->src_module_id,
-                                             msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
-    if (resp)
-    {
-        ipc_send_response(g_bgp_local->ipc_ctx, resp);
-        ipc_message_free(resp);
-    }
-
+    bgp_send_cli_response(msg, resp_buf);
     return ERRCODE_SUCCESS;
-}
-
-/**
- * @brief 使用 DB table 载荷格式分发命令
- */
-static int bgp_dispatch_db_payload(ipc_message_t *msg, cli_db_payload_parser_t *parser)
-{
-    if (strcmp(parser->table_name, "bgp_protocol") == 0)
-    {
-        return handle_bgp_protocol_db(msg, parser);
-    }
-    else if (strcmp(parser->table_name, "bgp_peer") == 0)
-    {
-        return handle_bgp_peer_show_db(msg, parser);
-    }
-
-    printf("[bgp_cfg] 未知表名: %s\n", parser->table_name);
-    char *resp_data = g_strdup("BGP Error: Unknown table.\r\n");
-    ipc_message_t *resp = ipc_message_create(CFG_MSG_TYPE_CLI_RESP, DEV_MODULE_ID_BGP, msg->src_module_id,
-                                             msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
-    if (resp)
-    {
-        ipc_send_response(g_bgp_local->ipc_ctx, resp);
-        ipc_message_free(resp);
-    }
-    return ERRCODE_FAIL;
 }
 
 // ============================================================================
@@ -387,14 +295,7 @@ static int bgp_dispatch_db_payload(ipc_message_t *msg, cli_db_payload_parser_t *
 
 int bgp_cli_handle_continue(ipc_message_t *msg)
 {
-    char *resp_data = g_strdup("");
-    ipc_message_t *resp_msg = ipc_message_create(CFG_MSG_TYPE_CLI_RESP, DEV_MODULE_ID_BGP, msg->src_module_id,
-                                                 msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
-    if (resp_msg)
-    {
-        ipc_send_response(g_bgp_local->ipc_ctx, resp_msg);
-        ipc_message_free(resp_msg);
-    }
+    bgp_send_cli_response(msg, "");
     return ERRCODE_SUCCESS;
 }
 
@@ -405,25 +306,32 @@ int bgp_cli_handle_message(ipc_message_t *msg)
         return ERRCODE_FAIL;
     }
 
-    /* 尝试新 DB table 载荷格式 */
-    cli_db_payload_parser_t parser;
-    if (cfg_db_payload_init(&parser, (const uint8_t *)msg->payload, msg->payload_len) == 0)
+    cli_tlv_parser_t parser;
+    if (cli_tlv_init(&parser, (const uint8_t *)msg->payload, msg->payload_len) != 0)
     {
-        printf("[bgp_cfg] 收到 DB table 载荷 (db=%s, table=%s)\n", parser.db_name, parser.table_name);
-        int result = bgp_dispatch_db_payload(msg, &parser);
-        cfg_db_payload_cleanup(&parser);
-        return result;
+        printf("[bgp_cli] 载荷解析失败\n");
+        bgp_send_cli_response(msg, "BGP Error: Failed to parse command payload.\r\n");
+        return ERRCODE_FAIL;
     }
 
-    /* 回退到旧 TLV 格式（兼容） */
-    printf("[bgp_cfg] 回退到旧 TLV 格式\n");
-    char *resp_data = g_strdup("BGP Error: Unsupported message format.\r\n");
-    ipc_message_t *resp = ipc_message_create(CFG_MSG_TYPE_CLI_RESP, DEV_MODULE_ID_BGP, msg->src_module_id,
-                                             msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
-    if (resp)
+    printf("[bgp_cli] 收到 TLV 载荷 (group_id=%u)\n", parser.group_id);
+
+    int result;
+    switch (parser.group_id)
     {
-        ipc_send_response(g_bgp_local->ipc_ctx, resp);
-        ipc_message_free(resp);
+        case 1: /* bgp 配置命令 */
+            result = handle_bgp_protocol(msg, &parser);
+            break;
+        case 2: /* show bgp peer */
+            result = handle_bgp_peer_show(msg);
+            break;
+        default:
+            printf("[bgp_cli] 未知 group_id: %u\n", parser.group_id);
+            bgp_send_cli_response(msg, "BGP Error: Unknown command group.\r\n");
+            result = ERRCODE_FAIL;
+            break;
     }
-    return ERRCODE_FAIL;
+
+    cli_tlv_cleanup(&parser);
+    return result;
 }

@@ -33,7 +33,6 @@ typedef struct cfg_local
     int listen_sock; // Telnet 监听 socket
     pthread_t worker_thread;
     GHashTable *sessions;   // Registry: fd -> cli_session_t*
-    GList *xml_db_defs;     // Parsed database definitions from XML (intermediate)
     ipc_context_t *ipc_ctx; // IPC 上下文
 } cfg_local_t;
 

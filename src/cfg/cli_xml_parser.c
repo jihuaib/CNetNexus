@@ -15,23 +15,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "../db/db_registry.h"
-#include "cfg_main.h"
 #include "cli_element.h"
 #include "cli_tree.h"
 #include "cli_view.h"
-#include "config_template.h"
 #include "errcode.h"
 
 static void merge_global_to_views(cli_view_node_t *view, cli_tree_node_t *global_tree);
-
-// Database intermediate parsing (private)
-static cfg_xml_db_def_t *parse_databases_node(xmlNode *dbs_node, uint32_t module_id);
-static cfg_xml_db_table_t *parse_table_node(xmlNode *table_node);
-static cfg_xml_db_field_t *parse_field_node(xmlNode *field_node);
-
-// Template parsing (private)
-static void parse_config_templates_node(xmlNode *templates_node);
 
 // ============================================================================
 // Expression AST - supports [ A | B ] (optional) and { A | B } (required)
@@ -351,12 +340,6 @@ static cli_tree_node_t *create_tree_node_from_element(cli_element_t *element, cl
         cli_tree_set_param_type(node, param_type_copy);
     }
 
-    // 从 element 继承 field_name
-    if (element->field_name)
-    {
-        node->field_name = g_strdup(element->field_name);
-    }
-
     return node;
 }
 
@@ -473,7 +456,7 @@ static leaf_set_t *build_tree_recursive(expr_node_t *ast, leaf_set_t *parents, c
 // Returns a virtual root node whose children are the actual command trees.
 // The caller should add each child to the target view's cmd_tree, then g_free the virtual root shell.
 static cli_tree_node_t *build_tree_from_expression_str(const char *expression, cli_command_group_t *group,
-                                                       uint32_t module_id, uint32_t view_id, const char *show_template)
+                                                       uint32_t module_id, uint32_t view_id)
 {
     if (!expression || !group)
     {
@@ -497,7 +480,6 @@ static cli_tree_node_t *build_tree_from_expression_str(const char *expression, c
     leaf_set_t *final_leaves = build_tree_recursive(ast, initial_parents, group, module_id, view_id);
 
     // Mark all final leaf nodes as end nodes (skip virtual root itself)
-    // 并将 group 的 db_name/table_name 传播到 end_node
     if (final_leaves)
     {
         for (uint32_t i = 0; i < final_leaves->count; i++)
@@ -505,19 +487,6 @@ static cli_tree_node_t *build_tree_from_expression_str(const char *expression, c
             if (final_leaves->nodes[i] != virtual_root)
             {
                 final_leaves->nodes[i]->is_end_node = TRUE;
-
-                if (group->db_name && !final_leaves->nodes[i]->db_name)
-                {
-                    final_leaves->nodes[i]->db_name = g_strdup(group->db_name);
-                }
-                if (group->table_name && !final_leaves->nodes[i]->table_name)
-                {
-                    final_leaves->nodes[i]->table_name = g_strdup(group->table_name);
-                }
-                if (show_template && !final_leaves->nodes[i]->show_template)
-                {
-                    final_leaves->nodes[i]->show_template = g_strdup(show_template);
-                }
             }
         }
         leaf_set_free(final_leaves);
@@ -607,9 +576,6 @@ static cli_element_t *parse_element(xmlNode *element_node, uint32_t element_id)
         }
     }
 
-    // 读取 field 属性（参数元素关联 DB 字段）
-    xmlChar *field_str = xmlGetProp(element_node, (const xmlChar *)"field");
-
     cli_element_t *element = NULL;
 
     // If parameter type string is provided, use the new constructor
@@ -620,17 +586,6 @@ static cli_element_t *parse_element(xmlNode *element_node, uint32_t element_id)
     else
     {
         element = cli_element_create(element_id, cfg_id, type, name, description, range);
-    }
-
-    // 设置 field_name
-    if (element && field_str)
-    {
-        element->field_name = g_strdup((const char *)field_str);
-    }
-
-    if (field_str)
-    {
-        xmlFree(field_str);
     }
 
     g_free(name);
@@ -710,8 +665,7 @@ static cli_view_node_t *parse_view_node(xmlNode *view_xml)
 }
 
 // Parse command group and register commands to views
-static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree, uint32_t module_id,
-                                const char *config_db_name)
+static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree, uint32_t module_id)
 {
     uint32_t element_id = 0;
 
@@ -727,18 +681,6 @@ static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree,
     if (!group)
     {
         return;
-    }
-
-    // 读取 table 属性，db 从 configuration 级别继承
-    xmlChar *table_attr = xmlGetProp(group_node, (const xmlChar *)"table");
-    if (config_db_name)
-    {
-        group->db_name = g_strdup(config_db_name);
-    }
-    if (table_attr)
-    {
-        group->table_name = g_strdup((const char *)table_attr);
-        xmlFree(table_attr);
     }
 
     // Parse elements
@@ -792,7 +734,6 @@ static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree,
                 {
                     char *expression = NULL;
                     char *views = NULL;
-                    char *show_template = NULL;
                     uint32_t view_id = 0;
 
                     for (xmlNode *child = cmd->children; child; child = child->next)
@@ -805,14 +746,14 @@ static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree,
                         if (xmlStrcmp(child->name, (const xmlChar *)"expression") == ERRCODE_SUCCESS)
                         {
                             xmlChar *content = xmlNodeGetContent(child);
-                            g_free(expression); // Free previous allocation if any
+                            g_free(expression);
                             expression = g_strdup((const char *)content);
                             xmlFree(content);
                         }
                         else if (xmlStrcmp(child->name, (const xmlChar *)"views") == ERRCODE_SUCCESS)
                         {
                             xmlChar *content = xmlNodeGetContent(child);
-                            g_free(views); // Free previous allocation if any
+                            g_free(views);
                             views = g_strdup((const char *)content);
                             xmlFree(content);
                         }
@@ -822,28 +763,19 @@ static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree,
                             view_id = atoi((const char *)content);
                             xmlFree(content);
                         }
-                        else if (xmlStrcmp(child->name, (const xmlChar *)"show-template") == ERRCODE_SUCCESS)
-                        {
-                            xmlChar *content = xmlNodeGetContent(child);
-                            g_free(show_template);
-                            show_template = g_strdup((const char *)content);
-                            xmlFree(content);
-                        }
                     }
 
                     if (expression && views)
                     {
                         // Build tree from expression (supports [ ] and { } syntax)
-                        // Returns a virtual root whose children are the actual command trees
                         cli_tree_node_t *virtual_root =
-                            build_tree_from_expression_str(expression, group, module_id, view_id, show_template);
+                            build_tree_from_expression_str(expression, group, module_id, view_id);
 
                         if (virtual_root)
                         {
                             // Register to specified views
                             if (atoi(views) == CLI_VIEW_GLOBAL)
                             {
-                                // Add to global view
                                 if (!view_tree->global_view)
                                 {
                                     view_tree->global_view = cli_view_create(CLI_VIEW_GLOBAL, "global", NULL);
@@ -860,7 +792,6 @@ static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree,
                             }
                             else
                             {
-                                // Add to specific views
                                 char *views_copy = g_strdup(views);
                                 char *view_token = strtok(views_copy, ",");
                                 uint32_t first = 1;
@@ -901,7 +832,6 @@ static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree,
 
                     g_free(expression);
                     g_free(views);
-                    g_free(show_template);
                 }
             }
         }
@@ -948,10 +878,6 @@ uint32_t cli_xml_load_view_tree(const char *xml_file, cli_view_tree_t *view_tree
     printf("[xml_parser] Loading XML for module: %u\n", module_id);
     xmlFree(module_id_str);
 
-    // 读取 configuration 级别的 db 属性
-    xmlChar *config_db_attr = xmlGetProp(root_element, (const xmlChar *)"db");
-    const char *config_db_name = config_db_attr ? (const char *)config_db_attr : NULL;
-
     // Parse views section
     for (xmlNode *cur = root_element->children; cur; cur = cur->next)
     {
@@ -980,7 +906,6 @@ uint32_t cli_xml_load_view_tree(const char *xml_file, cli_view_tree_t *view_tree
                         }
                         else
                         {
-                            // Check if view with same name already exists
                             cli_view_node_t *existing = cli_view_find_by_id(view_tree->root, new_view->view_id);
                             if (existing == NULL)
                             {
@@ -1022,45 +947,9 @@ uint32_t cli_xml_load_view_tree(const char *xml_file, cli_view_tree_t *view_tree
 
                 if (xmlStrcmp(group_node->name, (const xmlChar *)"group") == ERRCODE_SUCCESS)
                 {
-                    parse_command_group(group_node, view_tree, module_id, config_db_name);
+                    parse_command_group(group_node, view_tree, module_id);
                 }
             }
-        }
-    }
-
-    // Parse databases section
-    for (xmlNode *cur = root_element->children; cur; cur = cur->next)
-    {
-        if (cur->type != XML_ELEMENT_NODE)
-        {
-            continue;
-        }
-
-        if (xmlStrcmp(cur->name, (const xmlChar *)"dbs") == 0)
-        {
-            cfg_xml_db_def_t *xml_db_def = parse_databases_node(cur, module_id);
-            if (xml_db_def && g_cfg_local)
-            {
-                g_cfg_local->xml_db_defs = g_list_append(g_cfg_local->xml_db_defs, xml_db_def);
-            }
-            else if (xml_db_def)
-            {
-                cfg_xml_db_def_free(xml_db_def);
-            }
-        }
-    }
-
-    // Parse config templates section
-    for (xmlNode *cur = root_element->children; cur; cur = cur->next)
-    {
-        if (cur->type != XML_ELEMENT_NODE)
-        {
-            continue;
-        }
-
-        if (xmlStrcmp(cur->name, (const xmlChar *)"config_templates") == 0)
-        {
-            parse_config_templates_node(cur);
         }
     }
 
@@ -1068,11 +957,6 @@ uint32_t cli_xml_load_view_tree(const char *xml_file, cli_view_tree_t *view_tree
     if (view_tree->global_view && view_tree->global_view->cmd_tree)
     {
         merge_global_to_views(view_tree->root, view_tree->global_view->cmd_tree);
-    }
-
-    if (config_db_attr)
-    {
-        xmlFree(config_db_attr);
     }
 
     xmlFreeDoc(doc);
@@ -1104,353 +988,4 @@ static void merge_global_to_views(cli_view_node_t *view, cli_tree_node_t *global
     {
         merge_global_to_views(view->children[i], global_tree);
     }
-}
-
-// ============================================================================
-// Database Definition Parsing Functions (to intermediate structures)
-// ============================================================================
-
-static cfg_xml_db_field_t *parse_field_node(xmlNode *field_node)
-{
-    xmlChar *field_name = xmlGetProp(field_node, (const xmlChar *)"field-name");
-    xmlChar *type_str = xmlGetProp(field_node, (const xmlChar *)"type");
-
-    if (!field_name || !type_str)
-    {
-        if (field_name)
-        {
-            xmlFree(field_name);
-        }
-        if (type_str)
-        {
-            xmlFree(type_str);
-        }
-        return NULL;
-    }
-
-    cfg_xml_db_field_t *field = g_malloc0(sizeof(cfg_xml_db_field_t));
-    field->field_name = g_strdup((const char *)field_name);
-    field->type_str = g_strdup((const char *)type_str);
-
-    xmlFree(field_name);
-    xmlFree(type_str);
-
-    return field;
-}
-
-static cfg_xml_db_table_t *parse_table_node(xmlNode *table_node)
-{
-    xmlChar *table_name = xmlGetProp(table_node, (const xmlChar *)"table-name");
-    if (!table_name)
-    {
-        return NULL;
-    }
-
-    cfg_xml_db_table_t *table = g_malloc0(sizeof(cfg_xml_db_table_t));
-    table->table_name = g_strdup((const char *)table_name);
-    xmlFree(table_name);
-
-    for (xmlNode *cur = table_node->children; cur; cur = cur->next)
-    {
-        if (cur->type != XML_ELEMENT_NODE || xmlStrcmp(cur->name, (const xmlChar *)"fields") != 0)
-        {
-            continue;
-        }
-
-        for (xmlNode *field_node = cur->children; field_node; field_node = field_node->next)
-        {
-            if (field_node->type == XML_ELEMENT_NODE && xmlStrcmp(field_node->name, (const xmlChar *)"field") == 0)
-            {
-                cfg_xml_db_field_t *field = parse_field_node(field_node);
-                if (field)
-                {
-                    table->fields = g_list_append(table->fields, field);
-                }
-            }
-        }
-    }
-
-    return table;
-}
-
-static cfg_xml_db_def_t *parse_databases_node(xmlNode *dbs_node, uint32_t module_id)
-{
-    for (xmlNode *db_node = dbs_node->children; db_node; db_node = db_node->next)
-    {
-        if (db_node->type != XML_ELEMENT_NODE || xmlStrcmp(db_node->name, (const xmlChar *)"db") != 0)
-        {
-            continue;
-        }
-
-        xmlChar *db_name = xmlGetProp(db_node, (const xmlChar *)"db-name");
-        if (!db_name)
-        {
-            continue;
-        }
-
-        cfg_xml_db_def_t *db_def = g_malloc0(sizeof(cfg_xml_db_def_t));
-        db_def->db_name = g_strdup((const char *)db_name);
-        db_def->module_id = module_id;
-        xmlFree(db_name);
-
-        for (xmlNode *cur = db_node->children; cur; cur = cur->next)
-        {
-            if (cur->type == XML_ELEMENT_NODE && xmlStrcmp(cur->name, (const xmlChar *)"tables") == 0)
-            {
-                for (xmlNode *table_node = cur->children; table_node; table_node = table_node->next)
-                {
-                    if (table_node->type == XML_ELEMENT_NODE &&
-                        xmlStrcmp(table_node->name, (const xmlChar *)"table") == 0)
-                    {
-                        cfg_xml_db_table_t *table = parse_table_node(table_node);
-                        if (table)
-                        {
-                            db_def->tables = g_list_append(db_def->tables, table);
-                        }
-                    }
-                }
-            }
-        }
-        return db_def;
-    }
-    return NULL;
-}
-
-static void cfg_xml_db_field_free(cfg_xml_db_field_t *field)
-{
-    if (field)
-    {
-        g_free(field->field_name);
-        g_free(field->type_str);
-        g_free(field);
-    }
-}
-
-static void cfg_xml_db_table_free(cfg_xml_db_table_t *table)
-{
-    if (table)
-    {
-        g_free(table->table_name);
-        g_list_free_full(table->fields, (GDestroyNotify)cfg_xml_db_field_free);
-        g_free(table);
-    }
-}
-
-void cfg_xml_db_def_free(cfg_xml_db_def_t *db_def)
-{
-    if (db_def)
-    {
-        g_free(db_def->db_name);
-        g_list_free_full(db_def->tables, (GDestroyNotify)cfg_xml_db_table_free);
-        g_free(db_def);
-    }
-}
-
-// ============================================================================
-// Template Parsing
-// ============================================================================
-
-/**
- * @brief 解析 <template> 元素（模板主体）
- */
-/**
- * @brief 清理模板内容：只去掉 XML 标签引入的首尾空白
- *
- * xmlNodeGetContent 返回的文本：
- * - 开头有一个 \n（紧跟 <template> 开始标签后的换行）
- * - 结尾有 \n + 缩进空格（</template> 结束标签前的缩进）
- * 只删除这两部分，中间用户写的内容完全保留。
- */
-static char *clean_template_content(const char *content)
-{
-    if (!content || *content == '\0')
-    {
-        return NULL;
-    }
-
-    const char *start = content;
-
-    // 开头：只跳过一个 \n（标签后的换行）
-    if (*start == '\n')
-    {
-        start++;
-    }
-
-    if (*start == '\0')
-    {
-        return NULL;
-    }
-
-    // 结尾：找到最后一个 \n，如果其后全是空格/制表符，则截断到那个 \n
-    size_t total_len = strlen(start);
-    const char *end = start + total_len;
-
-    // 从末尾向前扫描空格/制表符
-    const char *p = end - 1;
-    while (p > start && (*p == ' ' || *p == '\t'))
-    {
-        p--;
-    }
-
-    // 如果扫描到的是 \n，说明最后一行全是空格（XML缩进），去掉
-    if (p > start && *p == '\n')
-    {
-        end = p;
-    }
-
-    size_t len = end - start;
-    if (len == 0)
-    {
-        return NULL;
-    }
-
-    return g_strndup(start, len);
-}
-
-static void parse_template_body_node(xmlNode *body_node, config_template_t *template)
-{
-    if (!body_node || !template)
-    {
-        return;
-    }
-
-    // 提取 db 属性
-    xmlChar *db_str = xmlGetProp(body_node, (const xmlChar *)"db");
-    if (db_str)
-    {
-        // 分割数据库名称（逗号分隔）
-        gchar **db_names = g_strsplit((const char *)db_str, ",", -1);
-        uint32_t db_count = g_strv_length(db_names);
-
-        // 移除空格
-        for (uint32_t i = 0; i < db_count; i++)
-        {
-            g_strstrip(db_names[i]);
-        }
-
-        // 获取模板内容
-        xmlChar *content = xmlNodeGetContent(body_node);
-
-        if (content)
-        {
-            // 清理内容中的不必要缩进
-            char *cleaned_content = clean_template_content((const char *)content);
-            if (cleaned_content)
-            {
-                config_template_set_body(template, cleaned_content, (const char **)db_names, db_count);
-                g_free(cleaned_content);
-            }
-            xmlFree(content);
-        }
-
-        g_strfreev(db_names);
-        xmlFree(db_str);
-    }
-}
-
-/**
- * @brief 解析整个 <config_templates> 节点
- */
-static void parse_config_templates_node(xmlNode *templates_node)
-{
-    if (!templates_node)
-    {
-        return;
-    }
-
-    printf("[xml_parser] Parsing config_templates section\n");
-
-    // 首先扫描所有 template-def 并创建模板
-    GHashTable *template_map = g_hash_table_new(g_str_hash, g_str_equal);
-
-    for (xmlNode *cur = templates_node->children; cur; cur = cur->next)
-    {
-        if (cur->type != XML_ELEMENT_NODE)
-        {
-            continue;
-        }
-
-        if (xmlStrcmp(cur->name, (const xmlChar *)"template-def") == 0)
-        {
-            xmlChar *name = xmlGetProp(cur, (const xmlChar *)"template-name");
-            if (name)
-            {
-                xmlChar *priority_str = xmlGetProp(cur, (const xmlChar *)"priority");
-                uint32_t priority = priority_str ? atoi((const char *)priority_str) : 0;
-                if (priority_str)
-                {
-                    xmlFree(priority_str);
-                }
-
-                config_template_t *template = config_template_create((const char *)name, priority);
-
-                // 处理嵌套的 template-def（子模板）
-                for (xmlNode *child = cur->children; child; child = child->next)
-                {
-                    if (child->type == XML_ELEMENT_NODE && xmlStrcmp(child->name, (const xmlChar *)"template-def") == 0)
-                    {
-                        xmlChar *child_name = xmlGetProp(child, (const xmlChar *)"template-name");
-                        if (child_name)
-                        {
-                            config_template_add_child(template, (const char *)child_name);
-
-                            // 为子模板也创建模板对象并加入 template_map
-                            if (!g_hash_table_lookup(template_map, (const char *)child_name))
-                            {
-                                config_template_t *child_template = config_template_create((const char *)child_name, 0);
-                                g_hash_table_insert(template_map, (gpointer)child_template->template_name,
-                                                    child_template);
-                            }
-
-                            xmlFree(child_name);
-                        }
-                    }
-                }
-
-                g_hash_table_insert(template_map, (gpointer) template->template_name, template);
-                xmlFree(name);
-            }
-        }
-    }
-
-    // 然后扫描所有 template（主体）并关联到相应的定义
-    for (xmlNode *cur = templates_node->children; cur; cur = cur->next)
-    {
-        if (cur->type != XML_ELEMENT_NODE)
-        {
-            continue;
-        }
-
-        if (xmlStrcmp(cur->name, (const xmlChar *)"template") == 0)
-        {
-            xmlChar *name = xmlGetProp(cur, (const xmlChar *)"template-name");
-            if (name)
-            {
-                config_template_t *template =
-                    (config_template_t *)g_hash_table_lookup(template_map, (const gchar *)name);
-
-                if (template)
-                {
-                    parse_template_body_node(cur, template);
-                    printf("[xml_parser]   Template '%s' parsed with body\n", name);
-                }
-                xmlFree(name);
-            }
-        }
-    }
-
-    // 注册所有模板到全局注册表
-    GHashTableIter iter;
-    gpointer key, value;
-    g_hash_table_iter_init(&iter, template_map);
-
-    while (g_hash_table_iter_next(&iter, &key, &value))
-    {
-        config_template_t *template = (config_template_t *)value;
-        config_template_registry_add(template);
-        printf("[xml_parser]   Template '%s' registered (priority: %u)\n", template->template_name, template->priority);
-    }
-
-    // 清理临时哈希表（但不释放元素，因为它们已被注册）
-    g_hash_table_destroy(template_map);
 }

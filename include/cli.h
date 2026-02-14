@@ -11,7 +11,6 @@
 #include <arpa/inet.h>
 #include <glib.h>
 #include <stdint.h>
-#include <string.h>
 
 #include "ipc.h"
 
@@ -128,84 +127,83 @@ void cfg_param_type_free(cli_param_type_t *param_type);
 gboolean cfg_param_type_validate(const cli_param_type_t *param_type, const char *value, char *error_msg,
                                  uint32_t error_msg_size);
 
-/**
- * @brief 获取配置模板（由 XML 解析器加载）
- * @param template_name 模板名称
- * @return 模板指针（不转移所有权），未找到返回 NULL
- */
-struct config_template *cfg_get_config_template(const char *template_name);
-
-/**
- * @brief 根据模板和变量映射生成格式化的配置输出
- * @param template_name 模板名称
- * @param var_values 变量替换映射（GHashTable：key=variable_name, value=variable_value_string）
- * @return 渲染后的字符串（调用者负责 g_free），失败返回 NULL
- */
-char *cfg_render_template(const char *template_name, GHashTable *var_values);
-
 // ============================================================================
-// DB table 载荷格式定义
+// TLV 载荷格式定义
 // ============================================================================
 
 /** 载荷 flags: "no" 前缀命令（删除操作） */
 #define CLI_PAYLOAD_FLAG_NO_CMD 0x01
 
-/** 字段 flags: 上下文字段（非当前命令参数） */
-#define CLI_FIELD_FLAG_CONTEXT 0x01
-
-/** 判断是否为 no 命令 */
-#define CLI_DB_IS_NO_CMD(p) (((p)->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0)
-
-/** 判断字段是否为上下文字段 */
-#define CLI_DB_IS_CONTEXT(ff) (((ff) & CLI_FIELD_FLAG_CONTEXT) != 0)
+/**
+ * @brief TLV 条目（解析后的单个字段）
+ */
+typedef struct cli_tlv_entry
+{
+    uint32_t cfg_id; /**< 配置 ID（高位可能有 CONTEXT_FLAG） */
+    uint8_t type;    /**< 值类型（DB_TYPE_*） */
+    uint16_t length; /**< 值长度 */
+    uint8_t *value;  /**< 值数据（已分配，entry_free 释放） */
+} cli_tlv_entry_t;
 
 /**
- * @brief DB table 载荷解析器
+ * @brief TLV 载荷解析器
  */
-typedef struct cli_db_payload_parser
+typedef struct cli_tlv_parser
 {
-    uint8_t flags;        /**< 载荷标志位 */
-    char *db_name;        /**< 数据库名称（已分配，cleanup 释放） */
-    char *table_name;     /**< 表名称（已分配，cleanup 释放） */
-    uint16_t num_fields;  /**< 总字段数 */
-    uint16_t fields_read; /**< 已读取字段数 */
+    uint8_t flags;     /**< 载荷标志位 */
+    uint32_t group_id; /**< 命令组 ID */
 
     /* 内部读取状态 */
-    const uint8_t *_reader_data; /**< 原始数据缓冲区 */
-    uint32_t _reader_len;        /**< 缓冲区总长度 */
-    uint32_t _reader_pos;        /**< 当前读取位置 */
-} cli_db_payload_parser_t;
+    const uint8_t *_data; /**< 原始数据缓冲区 */
+    uint32_t _len;        /**< 缓冲区总长度 */
+    uint32_t _pos;        /**< 当前读取位置 */
+} cli_tlv_parser_t;
 
 /**
- * @brief 初始化 DB table 载荷解析器
+ * @brief 初始化 TLV 载荷解析器
  * @param p 解析器
  * @param data 载荷数据
  * @param len 数据长度
  * @return 成功返回 0，失败返回 -1
  */
-int cli_db_payload_init(cli_db_payload_parser_t *p, const uint8_t *data, uint32_t len);
+int cli_tlv_init(cli_tlv_parser_t *p, const uint8_t *data, uint32_t len);
 
 /**
- * @brief 读取下一个字段
+ * @brief 读取下一个 TLV 条目
  * @param p 解析器
- * @param out_flags 输出字段标志位
- * @param out_field_name 输出字段名（调用者 g_free）
- * @param out_value 输出字段值（调用者 db_value_free）
- * @return 1=成功读取, 0=无更多字段, -1=错误
+ * @param entry 输出条目（调用者需 cli_tlv_entry_free）
+ * @return 1=成功读取, 0=无更多条目, -1=错误
  */
-int cli_db_payload_next(cli_db_payload_parser_t *p, uint8_t *out_flags, char **out_field_name, void *out_value);
+int cli_tlv_next(cli_tlv_parser_t *p, cli_tlv_entry_t *entry);
 
 /**
- * @brief 清理载荷解析器资源
+ * @brief 释放 TLV 条目资源
+ * @param entry 条目
+ */
+void cli_tlv_entry_free(cli_tlv_entry_t *entry);
+
+/**
+ * @brief 清理 TLV 解析器资源
  * @param p 解析器
  */
-void cli_db_payload_cleanup(cli_db_payload_parser_t *p);
+void cli_tlv_cleanup(cli_tlv_parser_t *p);
 
-/* 向后兼容别名（cfg_ → cli_） */
-#define cfg_db_payload_init cli_db_payload_init
-#define cfg_db_payload_next cli_db_payload_next
-#define cfg_db_payload_cleanup cli_db_payload_cleanup
-#define CFG_DB_IS_NO_CMD CLI_DB_IS_NO_CMD
+/** 判断是否为 no 命令 */
+#define CLI_TLV_IS_NO_CMD(p) (((p)->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0)
+
+/**
+ * @brief 从 TLV 条目中读取整数值
+ * @param entry TLV 条目
+ * @return 整数值，类型不匹配返回 0
+ */
+int64_t cli_tlv_entry_get_int(const cli_tlv_entry_t *entry);
+
+/**
+ * @brief 从 TLV 条目中读取字符串值
+ * @param entry TLV 条目
+ * @return 字符串（内部指针，不转移所有权），类型不匹配返回 NULL
+ */
+const char *cli_tlv_entry_get_text(const cli_tlv_entry_t *entry);
 
 // ============================================================================
 // 公共 API
@@ -249,25 +247,6 @@ void cli_param_type_free_str(cli_param_type_t *param_type);
  */
 gboolean cli_param_type_validate_str(const cli_param_type_t *param_type, const char *value, char *error_msg,
                                      uint32_t error_msg_size);
-
-/**
- * @brief 获取配置模板（由 XML 解析器加载）
- * @param template_name 模板名称
- * @return 模板指针（不转移所有权），未找到返回 NULL
- */
-struct config_template *cli_get_config_template(const char *template_name);
-
-/**
- * @brief 根据模板和变量映射生成格式化的配置输出
- * @param template_name 模板名称
- * @param var_values 变量替换映射
- * @return 渲染后的字符串（调用者负责 g_free），失败返回 NULL
- */
-char *cli_render_template(const char *template_name, GHashTable *var_values);
-
-// ============================================================================
-// CLI Engine 和 XML Parser 类型定义
-// ============================================================================
 
 // ============================================================================
 // CLI Engine 公共 API

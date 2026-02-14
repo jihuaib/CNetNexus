@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<configuration module-id="4" db="if_db">
+<configuration module-id="4">
     <views>
         <view view-id="5" view-name="interface">
             <template>&lt;NetNexus(config-if-%s)&gt;</template>
@@ -8,25 +8,25 @@
 
     <command_groups>
         <!-- Interface Entry Command -->
-        <group group-id="1" table="if_interface">
+        <group group-id="1">
             <elements>
                 <element type="keyword">
                     <name>if</name> <!-- 1 -->
                     <description>Enter interface configuration mode</description>
                 </element>
-                <element cfg-id="1" type="keyword" field="name">
+                <element cfg-id="1" type="keyword">
                     <name>GE-1</name> <!-- 2 -->
                     <description>Interface name</description>
                 </element>
-                <element cfg-id="2" type="keyword" field="name">
+                <element cfg-id="2" type="keyword">
                     <name>GE-2</name> <!-- 3 -->
                     <description>Interface name</description>
                 </element>
-                <element cfg-id="3" type="keyword" field="name">
+                <element cfg-id="3" type="keyword">
                     <name>GE-3</name> <!-- 4 -->
                     <description>Interface name</description>
                 </element>
-                <element cfg-id="4" type="keyword" field="name">
+                <element cfg-id="4" type="keyword">
                     <name>GE-4</name> <!-- 5 -->
                     <description>Interface name</description>
                 </element>
@@ -41,7 +41,7 @@
         </group>
 
         <!-- Interface Configuration Commands -->
-        <group group-id="2" table="if_interface">
+        <group group-id="2">
             <elements>
                 <element type="keyword">
                     <name>ip</name> <!-- 1 -->
@@ -51,12 +51,12 @@
                     <name>address</name> <!-- 2 -->
                     <description>Configure IP address</description>
                 </element>
-                <element cfg-id="1" type="parameter" field="ip_address">
+                <element cfg-id="1" type="parameter">
                     <name>&lt;ip-address&gt;</name> <!-- 3 -->
                     <description>IPv4 address</description>
                     <type>ip</type>
                 </element>
-                <element cfg-id="2" type="parameter" field="netmask">
+                <element cfg-id="2" type="parameter">
                     <name>&lt;netmask&gt;</name> <!-- 4 -->
                     <description>Subnet mask</description>
                     <type>ip</type>
@@ -90,9 +90,9 @@
         </group>
 
         <!-- Show Commands -->
-        <group group-id="3" table="if_interface">
+        <group group-id="3">
             <elements>
-                <element type="keyword" field="action">
+                <element type="keyword">
                     <name>show</name> <!-- 1 -->
                     <description>Display system information</description>
                 </element>
@@ -100,19 +100,19 @@
                     <name>if</name> <!-- 2 -->
                     <description>Interface information</description>
                 </element>
-                <element cfg-id="1" type="keyword" field="name">
+                <element cfg-id="1" type="keyword">
                     <name>GE-1</name> <!-- 3 -->
                     <description>Interface name</description>
                 </element>
-                <element cfg-id="2" type="keyword" field="name">
+                <element cfg-id="2" type="keyword">
                     <name>GE-2</name> <!-- 4 -->
                     <description>Interface name</description>
                 </element>
-                <element cfg-id="3" type="keyword" field="name">
+                <element cfg-id="3" type="keyword">
                     <name>GE-3</name> <!-- 5 -->
                     <description>Interface name</description>
                 </element>
-                <element cfg-id="4" type="keyword" field="name">
+                <element cfg-id="4" type="keyword">
                     <name>GE-4</name> <!-- 6 -->
                     <description>Interface name</description>
                 </element>
@@ -122,104 +122,13 @@
                 <command>
                     <expression>1 2</expression>
                     <views>1,2,3,5</views>
-                    <show-template>if_show_list_template</show-template>
                 </command>
                 <!-- show if <name> -->
                 <command>
                     <expression>1 2 { 3 | 4 | 5 | 6 }</expression>
                     <views>1</views>
-                    <show-template>if_show_detail_template</show-template>
                 </command>
             </commands>
         </group>
     </command_groups>
-
-    <config_templates>
-        <!-- 接口配置主模板 -->
-        <template-def template-name="if_template" priority="20"/>
-        <!-- 接口 show 模板（临时 DB） -->
-        <template-def template-name="if_show_list_template" priority="0">
-            <template-def template-name="if_show_row_template"/>
-        </template-def>
-        <template-def template-name="if_show_detail_template" priority="0"/>
-
-        <!-- 接口配置内容模板（多行，每个接口一行） -->
-        <template template-name="if_template" db="if_db.if_interface">
- #
- if {if_interface.name}
-  ip address {if_interface.ip_address} {if_interface.netmask}
-  {% if if_interface.shutdown == 1 %}
-  shutdown
-  {% endif %}
-        </template>
-
-        <template template-name="if_show_list_template" db="if_show_db.if_show_meta">
-{% if if_show_meta.has_rows == 0 %}
-No interface information.
-{% else %}
-{if_show_meta.title}:
-Name Type State IP Address
----- ---- ----- ----------
-{% endif %}
-        </template>
-
-        <template template-name="if_show_row_template" db="if_show_db.if_show_row">
-{if_show_row.name} {if_show_row.type} {if_show_row.state} {if_show_row.ip_address}
-        </template>
-
-        <template template-name="if_show_detail_template" db="if_show_db.if_show_detail">
-Interface {if_show_detail.name}:
-  Type: {if_show_detail.type}
-  State: {if_show_detail.state}
-  IP: {if_show_detail.ip_address}
-  Netmask: {if_show_detail.netmask}
-  MAC: {if_show_detail.mac}
-  MTU: {if_show_detail.mtu}
-        </template>
-    </config_templates>
-
-    <dbs>
-        <db db-name="if_db">
-            <tables>
-                <table table-name="if_interface">
-                    <fields>
-                        <field field-name="name" type="string(1-31)"/>
-                        <field field-name="ip_address" type="string(1-15)"/>
-                        <field field-name="netmask" type="string(1-15)"/>
-                        <field field-name="shutdown" type="uint(0-1)"/>
-                    </fields>
-                </table>
-            </tables>
-        </db>
-
-        <db db-name="if_show_db">
-            <tables>
-                <table table-name="if_show_meta">
-                    <fields>
-                        <field field-name="title" type="string(1-63)"/>
-                        <field field-name="has_rows" type="uint(0-1)"/>
-                    </fields>
-                </table>
-                <table table-name="if_show_row">
-                    <fields>
-                        <field field-name="name" type="string(1-31)"/>
-                        <field field-name="type" type="string(1-31)"/>
-                        <field field-name="state" type="string(1-15)"/>
-                        <field field-name="ip_address" type="string(1-31)"/>
-                    </fields>
-                </table>
-                <table table-name="if_show_detail">
-                    <fields>
-                        <field field-name="name" type="string(1-31)"/>
-                        <field field-name="type" type="string(1-31)"/>
-                        <field field-name="state" type="string(1-15)"/>
-                        <field field-name="ip_address" type="string(1-31)"/>
-                        <field field-name="netmask" type="string(1-31)"/>
-                        <field field-name="mac" type="string(1-31)"/>
-                        <field field-name="mtu" type="uint(0-9000)"/>
-                    </fields>
-                </table>
-            </tables>
-        </db>
-    </dbs>
 </configuration>

@@ -25,6 +25,8 @@
 #define DEV_MODULE_ID_IF 0x00000004
 /** BGP 模块 */
 #define DEV_MODULE_ID_BGP 0x00000005
+/** Route 模块 */
+#define DEV_MODULE_ID_ROUTE 0x00000006
 
 /** 无效文件描述符 */
 #define DEV_INVALID_FD (-1)

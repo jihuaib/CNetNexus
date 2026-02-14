@@ -18,35 +18,6 @@
 #include "errcode.h"
 
 // ============================================================================
-// Show 输出写入临时 DB
-// ============================================================================
-
-// ============================================================================
-// Show 输出写入临时 DB
-// ============================================================================
-
-#define DB_SHOW_DB "db_db"
-#define DB_SHOW_META "db_show_meta"
-#define DB_SHOW_ROW "db_show_row"
-
-static int db_insert_show_meta(int has_rows, uint32_t total)
-{
-    const char *fields[] = {"has_rows", "total"};
-    db_value_t values[] = {db_value_int(has_rows ? 1 : 0), db_value_int(total)};
-    return db_insert(DB_SHOW_DB, DB_SHOW_META, fields, values, 2);
-}
-
-static int db_insert_show_row(const char *name, const char *module, uint32_t tables)
-{
-    const char *fields[] = {"name", "module", "tables"};
-    db_value_t values[] = {db_value_text(name), db_value_text(module), db_value_int(tables)};
-    int ret = db_insert(DB_SHOW_DB, DB_SHOW_ROW, fields, values, 3);
-    db_value_free(&values[0]);
-    db_value_free(&values[1]);
-    return ret;
-}
-
-// ============================================================================
 // 发送 CLI 响应辅助
 // ============================================================================
 
@@ -63,7 +34,7 @@ static void db_send_cli_response(ipc_message_t *msg, const char *text)
 }
 
 // ============================================================================
-// 统一 Show 命令 Handler
+// Show 命令处理函数
 // ============================================================================
 
 static int handle_db_show_list(ipc_message_t *msg)
@@ -71,14 +42,23 @@ static int handle_db_show_list(ipc_message_t *msg)
     db_registry_t *registry = db_registry_get_instance();
     if (!registry || !registry->databases)
     {
-        db_send_cli_response(msg, "");
+        db_send_cli_response(msg, "No databases registered.\r\n");
         return ERRCODE_SUCCESS;
     }
 
-    uint32_t total = 0;
+    db_cli_resp_out_t resp_out;
+    memset(&resp_out, 0, sizeof(resp_out));
+    int offset = 0;
+
     g_mutex_lock(&registry->registry_mutex);
-    total = g_hash_table_size(registry->databases);
-    db_insert_show_meta(total > 0, total);
+    uint32_t total = g_hash_table_size(registry->databases);
+
+    /* 输出标题 */
+    offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset,
+                       "Registered Databases:\r\n"
+                       "%-16s %-10s %s\r\n"
+                       "---------------- ---------- ------\r\n",
+                       "Name", "Module", "Tables");
 
     if (total > 0)
     {
@@ -93,13 +73,13 @@ static int handle_db_show_list(ipc_message_t *msg)
             {
                 snprintf(module_name, sizeof(module_name), "0x%08X", db_def->module_id);
             }
-            db_insert_show_row(db_def->db_name, module_name, db_def->num_tables);
+            offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset, "%-16s %-10s %u\r\n",
+                               db_def->db_name, module_name, db_def->num_tables);
         }
     }
     g_mutex_unlock(&registry->registry_mutex);
 
-    /* show-template 会渲染输出，发送空响应 */
-    db_send_cli_response(msg, "");
+    db_send_cli_response(msg, resp_out.message);
     return ERRCODE_SUCCESS;
 }
 
@@ -300,56 +280,75 @@ static int handle_db_show_data(ipc_message_t *msg, const char *db_name, const ch
     return ERRCODE_SUCCESS;
 }
 
-static int handle_db_show_cmd(ipc_message_t *msg, cli_db_payload_parser_t *parser)
+// ============================================================================
+// 统一 Show 命令 Handler（按 cfg_id 解析 TLV 条目）
+// ============================================================================
+
+static int handle_db_show_cmd(ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
-    char *action = NULL;
+    int action = 0; /* 由关键字 cfg_id 决定动作 */
     char *db_name = NULL;
     char *table_name = NULL;
 
-    /* 解析字段 */
-    uint8_t ff;
-    char *fn;
-    db_value_t val;
-    while (cli_db_payload_next(parser, &ff, &fn, &val) == 1)
+    /* 遍历 TLV 条目，按 cfg_id 解析 */
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
     {
-        if (strcmp(fn, "action") == 0 && val.type == DB_TYPE_TEXT && val.data.text)
+        /* 跳过上下文条目 */
+        if (CFG_TLV_IS_CONTEXT(entry.cfg_id))
         {
-            if (action)
-            {
-                g_free(action);
-            }
-            action = g_strdup(val.data.text);
+            cli_tlv_entry_free(&entry);
+            continue;
         }
-        else if (strcmp(fn, "db_name") == 0 && val.type == DB_TYPE_TEXT && val.data.text)
+
+        switch (entry.cfg_id)
         {
-            if (db_name)
+            case 1: /* "list" 关键字 */
+                action = 1;
+                break;
+            case 2: /* db_name 参数 */
             {
-                g_free(db_name);
+                const char *text = cli_tlv_entry_get_text(&entry);
+                if (text)
+                {
+                    g_free(db_name);
+                    db_name = g_strdup(text);
+                }
+                break;
             }
-            db_name = g_strdup(val.data.text);
-        }
-        else if (strcmp(fn, "table_name") == 0 && val.type == DB_TYPE_TEXT && val.data.text)
-        {
-            if (table_name)
+            case 3: /* "table-list" 关键字 */
+                action = 3;
+                break;
+            case 4: /* "table-field" 关键字 */
+                action = 4;
+                break;
+            case 5: /* table_name 参数 */
             {
-                g_free(table_name);
+                const char *text = cli_tlv_entry_get_text(&entry);
+                if (text)
+                {
+                    g_free(table_name);
+                    table_name = g_strdup(text);
+                }
+                break;
             }
-            table_name = g_strdup(val.data.text);
+            case 6: /* "table-data" 关键字 */
+                action = 6;
+                break;
+            default:
+                break;
         }
-        g_free(fn);
-        db_value_free(&val);
+        cli_tlv_entry_free(&entry);
     }
 
     int ret = ERRCODE_FAIL;
 
-    if (action)
+    switch (action)
     {
-        if (strcmp(action, "list") == 0)
-        {
+        case 1: /* show db list */
             ret = handle_db_show_list(msg);
-        }
-        else if (strcmp(action, "table-list") == 0)
-        {
+            break;
+        case 3: /* show db <name> table-list */
             if (db_name)
             {
                 ret = handle_db_show_tables(msg, db_name);
@@ -358,9 +357,8 @@ static int handle_db_show_cmd(ipc_message_t *msg, cli_db_payload_parser_t *parse
             {
                 db_send_cli_response(msg, "Error: Missing database name.\r\n");
             }
-        }
-        else if (strcmp(action, "table-field") == 0)
-        {
+            break;
+        case 4: /* show db <name> table-field <table> */
             if (db_name && table_name)
             {
                 ret = handle_db_show_fields(msg, db_name, table_name);
@@ -369,9 +367,8 @@ static int handle_db_show_cmd(ipc_message_t *msg, cli_db_payload_parser_t *parse
             {
                 db_send_cli_response(msg, "Error: Missing database or table name.\r\n");
             }
-        }
-        else if (strcmp(action, "table-data") == 0)
-        {
+            break;
+        case 6: /* show db <name> table-data <table> */
             if (db_name && table_name)
             {
                 ret = handle_db_show_data(msg, db_name, table_name);
@@ -380,41 +377,15 @@ static int handle_db_show_cmd(ipc_message_t *msg, cli_db_payload_parser_t *parse
             {
                 db_send_cli_response(msg, "Error: Missing database or table name.\r\n");
             }
-        }
-        else
-        {
-            db_send_cli_response(msg, "Error: Unknown action.\r\n");
-        }
-    }
-    else
-    {
-        /* 默认行为或错误 ? */
-        /* 根据命令定义，action 必填，但防御性编程 */
-        db_send_cli_response(msg, "Error: Missing action in command payload.\r\n");
+            break;
+        default:
+            db_send_cli_response(msg, "Error: Unknown or missing action in command payload.\r\n");
+            break;
     }
 
-    g_free(action);
     g_free(db_name);
     g_free(table_name);
     return ret;
-}
-
-// ============================================================================
-// 按 table_name 分发
-// ============================================================================
-
-static int db_dispatch_db_payload(ipc_message_t *msg, cli_db_payload_parser_t *parser)
-{
-    if (strcmp(parser->table_name, "db_show_cmd") == 0)
-    {
-        return handle_db_show_cmd(msg, parser);
-    }
-
-    printf("[db_cli] 未知表名: %s\n", parser->table_name);
-    char err_msg[256];
-    snprintf(err_msg, sizeof(err_msg), "DB Error: Unknown table '%s'.\r\n", parser->table_name);
-    db_send_cli_response(msg, err_msg);
-    return ERRCODE_FAIL;
 }
 
 // ============================================================================
@@ -435,16 +406,29 @@ int db_cli_process_command(ipc_message_t *msg)
         return ERRCODE_FAIL;
     }
 
-    cli_db_payload_parser_t parser;
-    if (cli_db_payload_init(&parser, (const uint8_t *)msg->payload, msg->payload_len) != 0)
+    cli_tlv_parser_t parser;
+    if (cli_tlv_init(&parser, (const uint8_t *)msg->payload, msg->payload_len) != 0)
     {
         printf("[db_cli] 载荷解析失败\n");
         db_send_cli_response(msg, "DB Error: Failed to parse command payload.\r\n");
         return ERRCODE_FAIL;
     }
 
-    printf("[db_cli] 收到 DB table 载荷 (db=%s, table=%s)\n", parser.db_name, parser.table_name);
-    int result = db_dispatch_db_payload(msg, &parser);
-    cli_db_payload_cleanup(&parser);
+    printf("[db_cli] 收到 TLV 载荷 (group_id=%u)\n", parser.group_id);
+
+    int result;
+    switch (parser.group_id)
+    {
+        case 1: /* DB show 命令组 */
+            result = handle_db_show_cmd(msg, &parser);
+            break;
+        default:
+            printf("[db_cli] 未知 group_id: %u\n", parser.group_id);
+            db_send_cli_response(msg, "DB Error: Unknown command group.\r\n");
+            result = ERRCODE_FAIL;
+            break;
+    }
+
+    cli_tlv_cleanup(&parser);
     return result;
 }

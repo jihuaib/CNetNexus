@@ -228,10 +228,6 @@ void cli_tree_free(cli_tree_node_t *root)
     g_free(root->children);
     g_free(root->name);
     g_free(root->description);
-    g_free(root->db_name);
-    g_free(root->table_name);
-    g_free(root->show_template);
-    g_free(root->field_name);
     if (root->param_type)
     {
         cli_param_type_free(root->param_type);
@@ -260,12 +256,6 @@ cli_tree_node_t *cli_tree_clone(cli_tree_node_t *node)
     {
         clone->param_type = cli_param_type_parse(node->param_type->type_str);
     }
-
-    // Clone db/table/field
-    clone->db_name = node->db_name ? g_strdup(node->db_name) : NULL;
-    clone->table_name = node->table_name ? g_strdup(node->table_name) : NULL;
-    clone->show_template = node->show_template ? g_strdup(node->show_template) : NULL;
-    clone->field_name = node->field_name ? g_strdup(node->field_name) : NULL;
 
     // Clone is_end_node flag
     clone->is_end_node = node->is_end_node;
@@ -456,7 +446,6 @@ void cli_match_result_add_element(cli_match_result_t *result, uint32_t cfg_id, c
     cli_match_element_t *elem = &result->elements[result->num_elements++];
     elem->cfg_id = cfg_id;
     elem->type = type;
-    elem->field_name = NULL;
 
     // Clone param_type to avoid sharing pointers
     if (param_type && param_type->type_str)
@@ -501,7 +490,6 @@ void cli_match_result_free(cli_match_result_t *result)
     for (uint32_t i = 0; i < result->num_elements; i++)
     {
         g_free(result->elements[i].value);
-        g_free(result->elements[i].field_name);
         if (result->elements[i].param_type)
         {
             cli_param_type_free(result->elements[i].param_type);
@@ -509,9 +497,6 @@ void cli_match_result_free(cli_match_result_t *result)
     }
 
     g_free(result->elements);
-    g_free(result->db_name);
-    g_free(result->table_name);
-    g_free(result->show_template);
     g_free(result);
 }
 
@@ -555,28 +540,20 @@ cli_match_result_t *cli_tree_match_command_full(cli_tree_node_t *root, const cha
         {
             if (child->cfg_id != 0)
             {
-                // Add matched element to result
+                /* 有 cfg_id 的元素写入 match result */
                 const char *elem_value = NULL;
                 if (child->type == CLI_NODE_ARGUMENT)
                 {
-                    // ARGUMENT: include the value
                     elem_value = value_token;
                 }
-                else if (child->field_name)
+                else
                 {
-                    // KEYWORD with field_name: capture literal token as value
+                    /* 关键字也捕获字面令牌作为值 */
                     elem_value = value_token;
                 }
 
                 cli_match_result_add_element(result, child->cfg_id, child->type, elem_value,
                                              (child->type == CLI_NODE_ARGUMENT) ? child->param_type : NULL);
-
-                // 复制 field_name 到最新添加的 match element
-                if (child->field_name && result->num_elements > 0)
-                {
-                    cli_match_element_t *last = &result->elements[result->num_elements - 1];
-                    last->field_name = g_strdup(child->field_name);
-                }
             }
 
             result->module_id = child->module_id;
@@ -597,20 +574,6 @@ cli_match_result_t *cli_tree_match_command_full(cli_tree_node_t *root, const cha
     }
 
     result->final_node = current;
-
-    // 从 final_node 继承 db_name/table_name
-    if (current->db_name)
-    {
-        result->db_name = g_strdup(current->db_name);
-    }
-    if (current->table_name)
-    {
-        result->table_name = g_strdup(current->table_name);
-    }
-    if (current->show_template)
-    {
-        result->show_template = g_strdup(current->show_template);
-    }
 
     g_free(cmd_copy);
     g_free(cmd_for_values);

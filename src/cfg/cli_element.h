@@ -28,7 +28,6 @@ typedef struct
     char *description;            // Help text
     char *range;                  // For parameters: validation range (e.g., "1-65535") - deprecated
     cli_param_type_t *param_type; // Parameter type with validation (for ELEMENT_TYPE_PARAMETER)
-    char *field_name;             // DB 字段名称（仅参数类型），如 "as_number"
 } cli_element_t;
 
 // Command group
@@ -37,8 +36,6 @@ typedef struct
     uint32_t group_id;        // Group id
     cli_element_t **elements; // Array of elements
     uint32_t num_elements;    // Number of elements
-    char *db_name;            // 关联数据库名称，如 "bgp_db"
-    char *table_name;         // 关联表名称，如 "bgp_protocol"
 } cli_command_group_t;
 
 // Function prototypes

@@ -87,9 +87,6 @@ int route_init(void)
         return ERRCODE_FAIL;
     }
 
-    /* 设置 DB 客户端代理使用的 IPC 上下文 */
-    db_client_set_ipc(g_route_local->ipc_ctx);
-
     g_route_local->running = 1;
 
     printf("[route] Route 模块初始化完成\n");

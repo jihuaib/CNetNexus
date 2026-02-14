@@ -12,8 +12,6 @@ set(CFG_SOURCES
     cfg_main.c
     cfg_cli.c
     cfg_api.c
-    config_template.c
-    cfg_template_renderer.c
     cfg_show_config.c
 )
 

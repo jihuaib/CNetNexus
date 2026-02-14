@@ -34,10 +34,6 @@ struct cli_tree_node
     cli_node_type_t type;         // Node type
     uint32_t view_id;             // Target view name to switch to after execution (optional)
     cli_param_type_t *param_type; // Parameter type for validation (only for ARGUMENT nodes)
-    char *db_name;                // 关联数据库名称（从 group 继承到 end_node）
-    char *table_name;             // 关联表名称（从 group 继承到 end_node）
-    char *show_template;          // Show 命令显示模板名称（可选）
-    char *field_name;             // DB 字段名（仅参数节点）
     gboolean is_end_node;         // 1 if this node is a valid command end point, 0 otherwise
 
     // Children nodes
@@ -54,7 +50,6 @@ typedef struct cli_match_element
     char *value;                  // Argument value (NULL for keywords)
     uint32_t value_len;           // Value length (binary length for TLV)
     cli_param_type_t *param_type; // Parameter type (for conversion during TLV packing)
-    char *field_name;             // DB 字段名（仅参数节点）
 } cli_match_element_t;
 
 // Command match result - stores all matched elements along the path
@@ -62,9 +57,6 @@ typedef struct cli_match_result
 {
     uint32_t module_id; // Target module ID
     uint32_t group_id;
-    char *db_name;                 // 关联数据库名称
-    char *table_name;              // 关联表名称
-    char *show_template;           // Show 命令显示模板名称（可选）
     cli_match_element_t *elements; // Array of matched elements
     uint32_t num_elements;         // Number of elements
     uint32_t capacity;             // Allocated capacity

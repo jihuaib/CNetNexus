@@ -3,6 +3,9 @@ add_subdirectory(utils)
 add_subdirectory(dev)
 add_subdirectory(db)
 add_subdirectory(cfg)
+add_subdirectory(if)
+add_subdirectory(route)
+add_subdirectory(bgp)
 
 # Create main executable
 add_executable(netnexus 
@@ -17,6 +20,8 @@ target_link_libraries(netnexus PRIVATE
     dev
     db
     cfg
+    if
+    bgp
     -Wl,--as-needed
     Threads::Threads
 )

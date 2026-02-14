@@ -28,12 +28,12 @@ static void bgp_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
     {
         case CFG_MSG_TYPE_CLI:
             printf("[bgp] Received CLI command message\n");
-            bgp_cli_handle_message(ctx, msg);
+            bgp_cli_handle_message(msg);
             break;
 
         case CFG_MSG_TYPE_CLI_CONTINUE:
             printf("[bgp] Received CLI continue request\n");
-            bgp_cli_handle_continue(ctx, msg);
+            bgp_cli_handle_continue(msg);
             break;
 
         default:

@@ -50,13 +50,11 @@ static void dev_send_cli_response(ipc_context_t *ctx, ipc_message_t *msg, const 
 }
 
 // ============================================================================
-// 命令处理函数（按 table_name 分发）
+// 命令处理函数（按 group_id 分发）
 // ============================================================================
 
-static int handle_show_module(ipc_context_t *ctx, ipc_message_t *msg, cli_db_payload_parser_t *parser)
+static int handle_show_module(ipc_context_t *ctx, ipc_message_t *msg)
 {
-    (void)parser;
-
     dev_cli_resp_out_t resp_out;
     memset(&resp_out, 0, sizeof(resp_out));
 
@@ -74,10 +72,8 @@ static int handle_show_module(ipc_context_t *ctx, ipc_message_t *msg, cli_db_pay
     return ERRCODE_SUCCESS;
 }
 
-static int handle_show_version(ipc_context_t *ctx, ipc_message_t *msg, cli_db_payload_parser_t *parser)
+static int handle_show_version(ipc_context_t *ctx, ipc_message_t *msg)
 {
-    (void)parser;
-
     char buf[CLI_MAX_RESP_LEN];
     snprintf(buf, sizeof(buf), "NetNexus Version 1.0.0\r\nBuild Time: %s %s\r\n", __DATE__, __TIME__);
 
@@ -85,36 +81,10 @@ static int handle_show_version(ipc_context_t *ctx, ipc_message_t *msg, cli_db_pa
     return ERRCODE_SUCCESS;
 }
 
-static int handle_sysname(ipc_context_t *ctx, ipc_message_t *msg, cli_db_payload_parser_t *parser)
+static int handle_sysname(ipc_context_t *ctx, ipc_message_t *msg)
 {
-    (void)parser;
-
     dev_send_cli_response(ctx, msg, "Command 'sysname' not yet implemented in dev module.\r\n");
     return ERRCODE_SUCCESS;
-}
-
-// ============================================================================
-// 按 table_name 分发
-// ============================================================================
-
-static int dev_dispatch_db_payload(ipc_context_t *ctx, ipc_message_t *msg, cli_db_payload_parser_t *parser)
-{
-    if (strcmp(parser->table_name, "dev_show_version") == 0)
-    {
-        return handle_show_version(ctx, msg, parser);
-    }
-    else if (strcmp(parser->table_name, "dev_show_module") == 0)
-    {
-        return handle_show_module(ctx, msg, parser);
-    }
-    else if (strcmp(parser->table_name, "dev_sysname") == 0)
-    {
-        return handle_sysname(ctx, msg, parser);
-    }
-
-    printf("[dev_cli] 未知表名: %s\n", parser->table_name);
-    dev_send_cli_response(ctx, msg, "Dev Error: Unknown command.\r\n");
-    return ERRCODE_FAIL;
 }
 
 // ============================================================================
@@ -134,16 +104,35 @@ int dev_cli_handle_message(ipc_context_t *ctx, ipc_message_t *msg)
         return ERRCODE_FAIL;
     }
 
-    cli_db_payload_parser_t parser;
-    if (cli_db_payload_init(&parser, (const uint8_t *)msg->payload, msg->payload_len) != 0)
+    cli_tlv_parser_t parser;
+    if (cli_tlv_init(&parser, (const uint8_t *)msg->payload, msg->payload_len) != 0)
     {
         printf("[dev_cli] 载荷解析失败\n");
         dev_send_cli_response(ctx, msg, "Dev Error: Failed to parse command payload.\r\n");
         return ERRCODE_FAIL;
     }
 
-    printf("[dev_cli] 收到 DB table 载荷 (db=%s, table=%s)\n", parser.db_name, parser.table_name);
-    int result = dev_dispatch_db_payload(ctx, msg, &parser);
-    cli_db_payload_cleanup(&parser);
+    printf("[dev_cli] 收到 TLV 载荷 (group_id=%u)\n", parser.group_id);
+
+    int result;
+    switch (parser.group_id)
+    {
+        case 1:
+            result = handle_show_version(ctx, msg);
+            break;
+        case 3:
+            result = handle_show_module(ctx, msg);
+            break;
+        case 2:
+            result = handle_sysname(ctx, msg);
+            break;
+        default:
+            printf("[dev_cli] 未知 group_id: %u\n", parser.group_id);
+            dev_send_cli_response(ctx, msg, "Dev Error: Unknown command.\r\n");
+            result = ERRCODE_FAIL;
+            break;
+    }
+
+    cli_tlv_cleanup(&parser);
     return result;
 }

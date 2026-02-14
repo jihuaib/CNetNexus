@@ -6,7 +6,7 @@
  */
 #include "cfg_show_config.h"
 
-#include "cfg_template_renderer.h"
+#include <glib.h>
 
 // ============================================================================
 // 命令处理实现
@@ -14,6 +14,5 @@
 
 char *cfg_renderer_show_current_configuration(void)
 {
-    // 直接调用模板渲染器
-    return cfg_template_renderer_render_all();
+    return g_strdup("show current-configuration: not implemented\r\n");
 }

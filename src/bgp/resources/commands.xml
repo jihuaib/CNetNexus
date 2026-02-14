@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<configuration module-id="5" db="bgp_db">
+<configuration module-id="5">
     <!-- View definitions -->
     <views>
         <view view-id="4" view-name="bgp">
@@ -10,7 +10,7 @@
     <!-- Command group definitions -->
     <command_groups>
         <!-- Configuration command group -->
-        <group group-id="1" table="bgp_protocol">
+        <group group-id="1">
             <elements>
                 <element cfg-id="1" type="keyword">
                     <name>no</name>
@@ -20,13 +20,13 @@
                     <name>bgp</name>
                     <description>BGP protocol</description>
                 </element>
-                <element cfg-id="2" type="parameter" field="as_number">
+                <element cfg-id="2" type="parameter">
                     <name>&lt;as-number&gt;</name>
                     <type>uint(1-4294967295)</type>
                     <description>BGP as-number</description>
                 </element>
             </elements>
-            
+
             <commands>
                 <command>
                     <expression>2 3</expression>
@@ -40,9 +40,9 @@
             </commands>
         </group>
 
-        <group group-id="2" table="bgp_peer">
+        <group group-id="2">
             <elements>
-                <element type="keyword" field="action">
+                <element type="keyword">
                     <name>show</name>
                     <description>Display system information</description>
                 </element>
@@ -55,78 +55,13 @@
                     <description>BGP peer</description>
                 </element>
             </elements>
-            
+
             <commands>
                 <command>
                     <expression>1 2 [ 3 ]</expression>
                     <views>1</views>
-                    <show-template>bgp_peer_show_template</show-template>
                 </command>
             </commands>
         </group>
     </command_groups>
-
-    <config_templates>
-        <!-- 主配置模板 -->
-        <template-def template-name="bgp_template" priority="10" >
-            <template-def template-name="bgp_af_ipv4_uni_template"/>
-            <template-def template-name="bgp_af_ipv6_uni_template"/>
-        </template-def>
-
-        <!-- BGP show 模板（临时 DB） -->
-        <template-def template-name="bgp_peer_show_template" priority="0">
-            <template-def template-name="bgp_peer_show_row_template"/>
-        </template-def>
-
-        <!-- BGP 视图内的子模板 -->
-        <template template-name="bgp_template" db="bgp_db.bgp_protocol">
- #
- bgp {bgp_protocol.as_number}
- #
-        </template>
-
-        <template template-name="bgp_af_ipv4_uni_template" db="bgp_db.bgp_peer">
-af ipv4-unicast
-        </template>
-
-        <template template-name="bgp_peer_show_template" db="bgp_show_db.bgp_show_meta">
-BGP Peers:
-{% if bgp_show_meta.has_rows == 0 %}
-No BGP peer configuration.
-{% endif %}
-        </template>
-
-        <template template-name="bgp_peer_show_row_template" db="bgp_show_db.bgp_peer_show">
-Peer {bgp_peer_show.peer_index} {bgp_peer_show.field}: {bgp_peer_show.value}
-        </template>
-    </config_templates>
-
-    <dbs>
-        <db db-name="bgp_db">
-            <tables>
-                <table table-name="bgp_protocol">
-                    <fields>
-                        <field field-name="as_number" type="uint(1-4294967295)"/>
-                    </fields>
-                </table>
-            </tables>
-        </db>
-
-        <db db-name="bgp_show_db">
-            <tables>
-                <table table-name="bgp_show_meta">
-                    <fields>
-                        <field field-name="has_rows" type="uint(0-1)"/>
-                    </fields>
-                </table>
-                <table table-name="bgp_peer_show">
-                    <fields>
-                        <field field-name="peer_index" type="uint(0-65535)"/>
-                        <field field-name="field" type="string(1-63)"/>
-                        <field field-name="value" type="string(1-255)"/>
-                    </fields>
-                </table>
-            </tables>
-        </db>
-    </dbs>
 </configuration>

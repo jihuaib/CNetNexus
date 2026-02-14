@@ -13,8 +13,9 @@ target_include_directories(route PRIVATE
 )
 
 target_link_libraries(route PRIVATE
-    db_client
-    cli_param
+    cfg
+    db
+    dev
     ipc
     utils
     ${GLIB_LIBRARIES}
