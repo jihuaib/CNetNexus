@@ -14,6 +14,7 @@
 #include "dev.h"
 #include "errcode.h"
 #include "ipc.h"
+#include "path_utils.h"
 #include "route_cli.h"
 
 route_local_t *g_route_local = NULL;
@@ -114,4 +115,15 @@ void route_cleanup(void)
     g_route_local = NULL;
 
     printf("[route] Route 模块清理完成\n");
+}
+
+static void __attribute__((constructor)) register_route_module(void)
+{
+    dev_register_module(DEV_MODULE_ID_ROUTE, "route", route_init, route_cleanup);
+
+    char route_xml_path[256];
+    if (resolve_xml_path("route", route_xml_path, sizeof(route_xml_path)) == 0)
+    {
+        cfg_register_module_xml(DEV_MODULE_ID_ROUTE, route_xml_path);
+    }
 }

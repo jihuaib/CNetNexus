@@ -21,6 +21,7 @@ target_link_libraries(netnexus PRIVATE
     db
     cfg
     if
+        route
     bgp
     -Wl,--as-needed
     Threads::Threads

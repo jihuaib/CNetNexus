@@ -82,7 +82,9 @@ static gboolean init_module_callback(gpointer key, gpointer value, gpointer data
     int32_t *failed_count = (int32_t *)data;
     dev_module_t *module = (dev_module_t *)value;
 
+
     printf("[dev] Initializing module: %s\n", module->name);
+    printf("[dev] ============================================\n");
 
     if (module->init)
     {
@@ -101,6 +103,8 @@ static gboolean init_module_callback(gpointer key, gpointer value, gpointer data
         printf("[dev] %s has no init function\n", module->name);
     }
 
+    printf("[dev] ============================================\n");
+
     return FALSE; // Continue traversal
 }
 
@@ -109,19 +113,19 @@ int32_t dev_init_all_modules(void)
 {
     int32_t failed_count = 0;
 
-    printf("\nInitializing modules:\n");
-    printf("=====================\n");
+    printf("[dev] Initializing modules:\n");
+    printf("[dev] =====================\n");
 
     if (!g_module_registry)
     {
-        printf("No modules registered\n");
+        printf("[dev] No modules registered\n");
         return ERRCODE_SUCCESS;
     }
 
     // Iterate through all modules in-order (by module_id)
     g_tree_foreach(g_module_registry, init_module_callback, &failed_count);
 
-    printf("\n[dev] Module initialization complete (failures: %d)\n\n", failed_count);
+    printf("[dev] Module initialization complete (failures: %d)\n\n", failed_count);
 
     return failed_count;
 }
@@ -130,14 +134,17 @@ int32_t dev_init_all_modules(void)
 static gboolean cleanup_module_callback(dev_module_t *module)
 {
     printf("[dev] Cleaning up module: %s\n", module->name);
+    printf("[dev] ============================================\n");
 
     if (module->cleanup)
     {
         module->cleanup();
-        printf("[dev]%s cleaned up ok\n", module->name);
+        printf("[dev] %s cleaned up ok\n", module->name);
     }
 
     g_free(module);
+
+    printf("[dev] ============================================\n");
 
     return FALSE; // Continue traversal
 }
@@ -154,7 +161,7 @@ static gboolean collect_module_callback(gpointer key, gpointer value, gpointer d
 // Cleanup all registered modules
 void cleanup_all_modules(void)
 {
-    printf("\n[dev] Cleaning up modules:\n");
+    printf("[dev] Cleaning up modules:\n");
     printf("====================\n");
 
     if (!g_module_registry)
@@ -180,7 +187,7 @@ void cleanup_all_modules(void)
     g_tree_destroy(g_module_registry);
     g_module_registry = NULL;
 
-    printf("\n[dev] Module cleanup complete\n");
+    printf("[dev] Module cleanup complete\n");
 }
 
 int dev_get_module_name_inner(uint32_t module_id, char *module_name)
