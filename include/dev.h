@@ -8,7 +8,6 @@
 #ifndef DEV_H
 #define DEV_H
 
-#include <glib.h>
 #include <stdint.h>
 
 // ============================================================================
@@ -34,29 +33,31 @@
 /** 模块名称最大长度 */
 #define DEV_MODULE_NAME_MAX_LEN 12
 
-/**
- * @brief 模块初始化回调函数类型
- * @return 成功返回 0，失败返回非零值
- */
-typedef int32_t (*module_init_fn)();
+// ============================================================================
+// 前向声明
+// ============================================================================
+
+typedef struct ipc_context ipc_context_t;
+typedef struct ipc_message ipc_message_t;
 
 /**
- * @brief 模块清理回调函数类型
+ * @brief IPC 消息处理回调函数类型
+ * @param ctx IPC 上下文
+ * @param msg 接收到的消息
  */
-typedef void (*module_cleanup_fn)(void);
+typedef void (*ipc_msg_handler_fn)(ipc_context_t *ctx, ipc_message_t *msg);
 
 // ============================================================================
 // 公共 API
 // ============================================================================
 
 /**
- * @brief 注册模块（包含初始化和清理回调）
+ * @brief 注册模块（三阶段初始化，仅需提供消息处理回调）
  * @param id 模块 ID
  * @param name 模块名称
- * @param init 初始化回调函数
- * @param cleanup 清理回调函数
+ * @param handler 消息处理回调函数
  */
-void dev_register_module(uint32_t id, const char *name, module_init_fn init, module_cleanup_fn cleanup);
+void dev_register_module(uint32_t id, const char *name, ipc_msg_handler_fn handler);
 
 /**
  * @brief 根据模块 ID 获取模块名称

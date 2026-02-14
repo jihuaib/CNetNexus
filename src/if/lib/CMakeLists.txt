@@ -1,0 +1,26 @@
+# IF API 模块源码
+set(IF_API_SOURCES
+    if_api.c
+)
+
+# 创建 IF API 共享库
+add_library(if_api SHARED ${IF_API_SOURCES})
+
+# 包含目录
+target_include_directories(if_api PRIVATE
+    .
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+)
+
+# 链接依赖
+target_link_libraries(if_api PUBLIC
+    if
+    ipc
+    ${GLIB_LIBRARIES}
+)
+
+# 设置库版本
+set_target_properties(if_api PROPERTIES
+    VERSION 1.0.0
+    SOVERSION 1
+)

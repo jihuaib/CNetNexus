@@ -1,6 +1,6 @@
 /**
  * @file   cfg_main.c
- * @brief  CFG 模块主入口，模块注册和初始化
+ * @brief  CFG 模块主入口，三阶段初始化
  * @author jhb
  * @date   2026/01/22
  */
@@ -22,7 +22,6 @@
 #include "cli_xml_parser.h"
 #include "dev.h"
 #include "errcode.h"
-#include "path_utils.h"
 
 enum
 {
@@ -57,13 +56,12 @@ static void *cfg_server_thread(void *arg)
             {
                 continue;
             }
-            perror("[bgp] epoll_wait failed");
+            perror("[cfg] epoll_wait failed");
             break;
         }
 
         if (nfds == 0)
         {
-            // Timeout - do periodic BGP tasks
             continue;
         }
 
@@ -100,7 +98,6 @@ static void *cfg_server_thread(void *arg)
                     {
                         perror("[cfg] Failed to add client to epoll");
                         g_hash_table_remove(g_cfg_local->sessions, fd_key);
-                        // session_destroy will close conn_fd
                     }
                     else
                     {
@@ -136,7 +133,6 @@ static void *cfg_server_thread(void *arg)
 
 int32_t cfg_create_listen_sock()
 {
-    // Create server socket
     int32_t server_socket = socket(AF_INET, SOCK_STREAM, 0);
     if (server_socket < 0)
     {
@@ -175,76 +171,149 @@ int32_t cfg_create_listen_sock()
     return server_socket;
 }
 
-static int cfg_init_local()
+// ============================================================================
+// 三阶段回调辅助函数
+// ============================================================================
+
+static void send_phase_response(ipc_context_t *ctx, ipc_message_t *msg, int32_t result)
 {
+    ipc_message_t *resp = ipc_message_create(IPC_MSG_TYPE_DEV_MODULE_RESP, DEV_MODULE_ID_CFG, msg->src_module_id,
+                                             msg->request_id, NULL, 0, NULL);
+    ipc_send_response(ctx, resp);
+    ipc_message_free(msg);
+    (void)result;
+}
+
+// ============================================================================
+// Phase 1: MODULE_START - 创建上下文、epoll、Telnet
+// ============================================================================
+
+static void cfg_on_start(ipc_context_t *ctx, ipc_message_t *msg)
+{
+    printf("[cfg] Phase 1: MODULE_START\n");
+
     g_cfg_local = g_malloc0(sizeof(cfg_local_t));
     pthread_mutex_init(&g_cfg_local->history_mutex, NULL);
     g_cfg_local->epoll_fd = DEV_INVALID_FD;
     g_cfg_local->listen_sock = DEV_INVALID_FD;
     g_cfg_local->worker_thread = 0;
+    g_cfg_local->ipc_ctx = ctx;
     g_cfg_local->sessions = g_hash_table_new_full(g_int_hash, g_int_equal, g_free, (GDestroyNotify)cli_session_destroy);
 
-    // 初始化 IPC（CFG 不需要接收回调消息，设 msg_handler 为 NULL）
-    g_cfg_local->ipc_ctx = ipc_init(DEV_MODULE_ID_CFG, "cfg", NULL, NULL);
-    if (!g_cfg_local->ipc_ctx)
-    {
-        fprintf(stderr, "[cfg] Failed to initialize IPC\n");
-        return ERRCODE_FAIL;
-    }
-
-    // 创建 Telnet 服务器的 epoll
+    /* 创建 Telnet 服务器的 epoll */
     int epoll_fd = epoll_create1(EPOLL_CLOEXEC);
     if (epoll_fd < 0)
     {
         perror("[cfg] Failed to create epoll");
-        return ERRCODE_FAIL;
+        send_phase_response(ctx, msg, ERRCODE_FAIL);
+        return;
     }
     g_cfg_local->epoll_fd = epoll_fd;
-
-    struct epoll_event ev;
 
     int32_t listen_sock = cfg_create_listen_sock();
     if (listen_sock < 0)
     {
-        return ERRCODE_FAIL;
+        send_phase_response(ctx, msg, ERRCODE_FAIL);
+        return;
     }
     g_cfg_local->listen_sock = listen_sock;
 
+    struct epoll_event ev;
     ev.events = EPOLLIN;
     ev.data.fd = listen_sock;
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, listen_sock, &ev) < 0)
     {
         perror("[cfg] Failed to add listen socket to epoll");
-        return ERRCODE_FAIL;
+        send_phase_response(ctx, msg, ERRCODE_FAIL);
+        return;
     }
 
-    // Start server thread
+    /* 启动 server 线程 */
     if (pthread_create(&g_cfg_local->worker_thread, NULL, cfg_server_thread, NULL) != ERRCODE_SUCCESS)
     {
         perror("[cfg] Failed to create server thread");
-        return ERRCODE_FAIL;
+        send_phase_response(ctx, msg, ERRCODE_FAIL);
+        return;
     }
 
     printf("[cfg] Telnet server listening on port %d\n", CFG_PORT);
 
-    return ERRCODE_SUCCESS;
-}
-
-static void cfg_cleanup_local()
-{
-    if (g_cfg_local == NULL)
+    /* 创建视图树 */
+    cli_view_node_t *user_view = cli_view_create(CLI_VIEW_USER, "user", "<NetNexus>");
+    if (!user_view)
     {
+        fprintf(stderr, "[cfg] Failed to create user view\n");
+        send_phase_response(ctx, msg, ERRCODE_FAIL);
         return;
     }
+    g_cfg_local->view_tree.root = user_view;
+
+    cli_view_node_t *config_view = cli_view_create(CLI_VIEW_CONFIG, "config", "<NetNexus(config)>");
+    if (!config_view)
+    {
+        fprintf(stderr, "[cfg] Failed to create config view\n");
+        send_phase_response(ctx, msg, ERRCODE_FAIL);
+        return;
+    }
+    cli_view_add_child(user_view, config_view);
+
+    printf("[cfg] Module started\n");
+    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
+}
+
+// ============================================================================
+// Phase 2: MODULE_CONNECT - CFG 不主动连接其他模块
+// ============================================================================
+
+static void cfg_on_connect(ipc_context_t *ctx, ipc_message_t *msg)
+{
+    printf("[cfg] Phase 2: MODULE_CONNECT (无需主动连接)\n");
+    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
+}
+
+// ============================================================================
+// Phase 3: MODULE_READY - 加载所有 XML
+// ============================================================================
+
+static void cfg_on_ready(ipc_context_t *ctx, ipc_message_t *msg)
+{
+    printf("[cfg] Phase 3: MODULE_READY - 加载 XML\n");
+
+    int failed_count = 0;
+    extern GSList *g_xml_registry;
+
+    for (GSList *node = g_xml_registry; node != NULL; node = node->next)
+    {
+        cfg_xml_entry_t *entry = (cfg_xml_entry_t *)node->data;
+
+        printf("[cfg] Loading: %s\n", entry->xml_path);
+        if (cli_xml_load_view_tree(entry->xml_path, &g_cfg_local->view_tree) == ERRCODE_SUCCESS)
+        {
+            printf("[cfg] Commands loaded success\n");
+        }
+        else
+        {
+            fprintf(stderr, "[cfg] Failed to load XML\n");
+            failed_count++;
+        }
+    }
+
+    printf("[cfg] Module cli initialization complete (failures: %d)\n", failed_count);
+    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
+}
+
+// ============================================================================
+// Shutdown - 清理本地状态
+// ============================================================================
+
+static void cfg_on_shutdown(ipc_context_t *ctx, ipc_message_t *msg)
+{
+    printf("[cfg] Shutting down server...\n");
+
+    cli_cleanup();
 
     cli_global_history_cleanup(&g_cfg_local->global_history);
     pthread_mutex_destroy(&g_cfg_local->history_mutex);
-
-    // 销毁 IPC
-    if (g_cfg_local->ipc_ctx)
-    {
-        ipc_destroy(g_cfg_local->ipc_ctx);
-    }
 
     if (g_cfg_local->listen_sock != DEV_INVALID_FD)
     {
@@ -266,88 +335,46 @@ static void cfg_cleanup_local()
         g_hash_table_destroy(g_cfg_local->sessions);
     }
 
+    /* 注意: ipc_ctx 由 DEV 管理，此处不销毁 */
+    g_cfg_local->ipc_ctx = NULL;
+
     g_free(g_cfg_local);
     g_cfg_local = NULL;
-}
 
-// Module initialization
-static int32_t cfg_module_init()
-{
-    int ret = cfg_init_local();
-    if (ret != ERRCODE_SUCCESS)
-    {
-        cfg_cleanup_local();
-        return ERRCODE_FAIL;
-    }
-
-    cli_view_node_t *user_view = cli_view_create(CLI_VIEW_USER, "user", "<NetNexus>");
-    if (!user_view)
-    {
-        cfg_cleanup_local();
-        fprintf(stderr, "[cfg] Failed to create user view\n");
-        return ERRCODE_FAIL;
-    }
-    g_cfg_local->view_tree.root = user_view;
-
-    cli_view_node_t *config_view = cli_view_create(CLI_VIEW_CONFIG, "config", "<NetNexus(config)>");
-    if (!config_view)
-    {
-        cfg_cleanup_local();
-        fprintf(stderr, "[cfg] Failed to create config view\n");
-        return ERRCODE_FAIL;
-    }
-    cli_view_add_child(user_view, config_view);
-
-    // Initialize all modules that registered XML (iterate g_xml_registry)
-    printf("[cfg] Initializing cli modules:\n");
-    printf("======================================\n");
-
-    int failed_count = 0;
-    extern GSList *g_xml_registry; // Access cfg registry's list directly
-
-    for (GSList *node = g_xml_registry; node != NULL; node = node->next)
-    {
-        cfg_xml_entry_t *entry = (cfg_xml_entry_t *)node->data;
-
-        // Load XML
-        printf("[cfg] Loading: %s\n", entry->xml_path);
-        if (cli_xml_load_view_tree(entry->xml_path, &g_cfg_local->view_tree) == ERRCODE_SUCCESS)
-        {
-            printf("[cfg]   ✓ Commands loaded\n");
-        }
-        else
-        {
-            fprintf(stderr, "[cfg]   ✗ Failed to load XML\n");
-            failed_count++;
-        }
-    }
-
-    printf("\n[cfg] Module cli initialization complete (failures: %d)\n\n", failed_count);
-
-    return ERRCODE_SUCCESS;
-}
-
-// Module cleanup
-static void cfg_module_cleanup(void)
-{
-    printf("[cfg] Shutting down server...\n");
-    cli_cleanup();
-    cfg_cleanup_local();
     printf("[cfg] Server shutdown complete\n");
+    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
-// Register cfg module using constructor attribute
-static void __attribute__((constructor)) register_cfg_module(void)
+// ============================================================================
+// IPC 消息处理回调
+// ============================================================================
+
+void cfg_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
 {
-    dev_register_module(DEV_MODULE_ID_CFG, "cfg", cfg_module_init, cfg_module_cleanup);
+    switch (msg->msg_type)
+    {
+        /* ---- DEV 生命周期消息 ---- */
+        case IPC_MSG_TYPE_DEV_MODULE_START:
+            cfg_on_start(ctx, msg);
+            return;
+        case IPC_MSG_TYPE_DEV_MODULE_CONNECT:
+            cfg_on_connect(ctx, msg);
+            return;
+        case IPC_MSG_TYPE_DEV_MODULE_READY:
+            cfg_on_ready(ctx, msg);
+            return;
+        case IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN:
+            cfg_on_shutdown(ctx, msg);
+            return;
 
-    char cfg_xml_path[256];
-    if (resolve_xml_path("cfg", cfg_xml_path, sizeof(cfg_xml_path)) == 0)
-    {
-        cfg_register_module_xml(DEV_MODULE_ID_CFG, cfg_xml_path);
+        default:
+            break;
     }
-    else
-    {
-        fprintf(stderr, "[cfg] Warning: Could not resolve XML path for cfg module\n");
-    }
+
+    ipc_message_free(msg);
 }
+
+// ============================================================================
+// 入口函数：创建 IPC 上下文
+// ============================================================================
+

@@ -1,6 +1,6 @@
 /**
  * @file   route_main.c
- * @brief  Route 模块主入口，IPC 初始化与消息分发
+ * @brief  Route 模块主入口，三阶段初始化和 IPC 消息分发
  * @author jhb
  * @date   2026/02/01
  */
@@ -14,20 +14,107 @@
 #include "dev.h"
 #include "errcode.h"
 #include "ipc.h"
-#include "path_utils.h"
 #include "route_cli.h"
 
 route_local_t *g_route_local = NULL;
 
-/**
- * @brief IPC 消息处理回调
- * @param ctx IPC 上下文
- * @param msg 接收到的消息
- */
-static void route_ipc_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
-{
-    (void)ctx;
+// ============================================================================
+// 三阶段回调辅助
+// ============================================================================
 
+static void send_phase_response(ipc_context_t *ctx, ipc_message_t *msg, int32_t result)
+{
+    ipc_message_t *resp = ipc_message_create(IPC_MSG_TYPE_DEV_MODULE_RESP, DEV_MODULE_ID_ROUTE, msg->src_module_id,
+                                             msg->request_id, NULL, 0, NULL);
+    ipc_send_response(ctx, resp);
+    ipc_message_free(msg);
+    (void)result;
+}
+
+// ============================================================================
+// Phase 1: MODULE_START - 创建上下文
+// ============================================================================
+
+static void route_on_start(ipc_context_t *ctx, ipc_message_t *msg)
+{
+    printf("[route] Phase 1: MODULE_START\n");
+
+    g_route_local = calloc(1, sizeof(route_local_t));
+    if (g_route_local == NULL)
+    {
+        fprintf(stderr, "[route] 分配 route 上下文失败\n");
+        send_phase_response(ctx, msg, ERRCODE_FAIL);
+        return;
+    }
+
+    g_route_local->ipc_ctx = ctx;
+    g_route_local->running = 1;
+
+    printf("[route] Module started\n");
+    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
+}
+
+// ============================================================================
+// Phase 2: MODULE_CONNECT - 连接到 DB, CFG
+// ============================================================================
+
+static void route_on_connect(ipc_context_t *ctx, ipc_message_t *msg)
+{
+    printf("[route] Phase 2: MODULE_CONNECT\n");
+
+    if (ipc_connect(ctx, DEV_MODULE_ID_DB) < 0)
+    {
+        fprintf(stderr, "[route] 连接 DB 模块失败\n");
+    }
+
+    if (ipc_connect(ctx, DEV_MODULE_ID_CFG) != 0)
+    {
+        fprintf(stderr, "[route] 连接 CFG 模块失败\n");
+    }
+
+    printf("[route] 已连接到 DB, CFG\n");
+    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
+}
+
+// ============================================================================
+// Phase 3: MODULE_READY
+// ============================================================================
+
+static void route_on_ready(ipc_context_t *ctx, ipc_message_t *msg)
+{
+    printf("[route] Phase 3: MODULE_READY\n");
+    printf("[route] Route 模块初始化完成\n");
+    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
+}
+
+// ============================================================================
+// Shutdown
+// ============================================================================
+
+static void route_on_shutdown(ipc_context_t *ctx, ipc_message_t *msg)
+{
+    printf("[route] 正在关闭 Route 模块...\n");
+
+    if (g_route_local)
+    {
+        g_route_local->running = 0;
+        /* ipc_ctx 由 DEV 管理 */
+        g_route_local->ipc_ctx = NULL;
+
+        free(g_route_local);
+        g_route_local = NULL;
+    }
+
+    printf("[route] Route 模块清理完成\n");
+    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
+}
+
+// ============================================================================
+// IPC 消息处理回调
+// ============================================================================
+
+void route_ipc_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
+{
     if (msg == NULL)
     {
         return;
@@ -35,6 +122,21 @@ static void route_ipc_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
 
     switch (msg->msg_type)
     {
+        /* ---- DEV 生命周期消息 ---- */
+        case IPC_MSG_TYPE_DEV_MODULE_START:
+            route_on_start(ctx, msg);
+            return;
+        case IPC_MSG_TYPE_DEV_MODULE_CONNECT:
+            route_on_connect(ctx, msg);
+            return;
+        case IPC_MSG_TYPE_DEV_MODULE_READY:
+            route_on_ready(ctx, msg);
+            return;
+        case IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN:
+            route_on_shutdown(ctx, msg);
+            return;
+
+        /* ---- CLI 消息 ---- */
         case CFG_MSG_TYPE_CLI:
             printf("[route] 收到 CLI 命令消息 (%u bytes)\n", msg->payload_len);
             route_cli_handle_message(msg);
@@ -53,77 +155,7 @@ static void route_ipc_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
     ipc_message_free(msg);
 }
 
-int route_init(void)
-{
-    g_route_local = calloc(1, sizeof(route_local_t));
-    if (g_route_local == NULL)
-    {
-        fprintf(stderr, "[route] 分配 route 上下文失败\n");
-        return ERRCODE_FAIL;
-    }
+// ============================================================================
+// 入口函数：创建 IPC 上下文
+// ============================================================================
 
-    /* 初始化 IPC */
-    g_route_local->ipc_ctx = ipc_init(DEV_MODULE_ID_ROUTE, "route", NULL, route_ipc_msg_handler);
-    if (g_route_local->ipc_ctx == NULL)
-    {
-        fprintf(stderr, "[route] IPC 初始化失败\n");
-        free(g_route_local);
-        g_route_local = NULL;
-        return ERRCODE_FAIL;
-    }
-
-    /* 连接到 DB 进程 */
-    if (ipc_connect(g_route_local->ipc_ctx, DEV_MODULE_ID_DB) < 0)
-    {
-        fprintf(stderr, "[route] 连接 DB 模块失败\n");
-    }
-
-    /* 连接到 CFG 模块 */
-    if (ipc_connect(g_route_local->ipc_ctx, DEV_MODULE_ID_CFG) != 0)
-    {
-        fprintf(stderr, "[route] 连接 CFG 模块失败\n");
-        ipc_destroy(g_route_local->ipc_ctx);
-        free(g_route_local);
-        g_route_local = NULL;
-        return ERRCODE_FAIL;
-    }
-
-    g_route_local->running = 1;
-
-    printf("[route] Route 模块初始化完成\n");
-    return ERRCODE_SUCCESS;
-}
-
-void route_cleanup(void)
-{
-    if (g_route_local == NULL)
-    {
-        return;
-    }
-
-    printf("[route] 正在关闭 Route 模块...\n");
-
-    g_route_local->running = 0;
-
-    if (g_route_local->ipc_ctx != NULL)
-    {
-        ipc_destroy(g_route_local->ipc_ctx);
-        g_route_local->ipc_ctx = NULL;
-    }
-
-    free(g_route_local);
-    g_route_local = NULL;
-
-    printf("[route] Route 模块清理完成\n");
-}
-
-static void __attribute__((constructor)) register_route_module(void)
-{
-    dev_register_module(DEV_MODULE_ID_ROUTE, "route", route_init, route_cleanup);
-
-    char route_xml_path[256];
-    if (resolve_xml_path("route", route_xml_path, sizeof(route_xml_path)) == 0)
-    {
-        cfg_register_module_xml(DEV_MODULE_ID_ROUTE, route_xml_path);
-    }
-}

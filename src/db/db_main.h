@@ -18,7 +18,6 @@
 // Runtime Database Connection
 // ============================================================================
 
-// Runtime database connection
 typedef struct db_connection
 {
     char *db_path;            // Path to SQLite database file
@@ -32,32 +31,18 @@ typedef struct db_connection
 // Module Context
 // ============================================================================
 
-// Module context (global state)
 typedef struct db_local
 {
-    GHashTable *connections; // Map: db_name (char*) -> db_connection_t*
-    db_registry_t *registry; // Database definitions registry
-
-    ipc_context_t *ipc_ctx;
+    GHashTable *connections;  // Map: db_name (char*) -> db_connection_t*
+    db_registry_t *registry;  // Database definitions registry
+    ipc_context_t *ipc_ctx;   // IPC 上下文（由 DEV 创建和管理）
 } db_local_t;
 
-// Global context instance
 extern db_local_t *g_db_local;
 
 // ============================================================================
 // Internal Module Functions
 // ============================================================================
-
-/**
- * @brief Module initialization callback
- * @return ERRCODE_SUCCESS or ERRCODE_FAIL
- */
-int32_t db_module_init();
-
-/**
- * @brief Module cleanup callback
- */
-void db_module_cleanup(void);
 
 /**
  * @brief Get database connection by name
@@ -100,5 +85,10 @@ int db_create_table(sqlite3 *handle, const char *table_name, db_table_t *table_d
  * @return ERRCODE_SUCCESS or ERRCODE_FAIL
  */
 int db_initialize_database(db_definition_t *db_def);
+
+/**
+ * @brief IPC 消息处理回调（供 API 层引用）
+ */
+void db_msg_handler(ipc_context_t *ctx, ipc_message_t *msg);
 
 #endif // DB_MAIN_H

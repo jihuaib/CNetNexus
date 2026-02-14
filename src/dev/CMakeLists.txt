@@ -7,6 +7,7 @@ set(DEV_SOURCES
     dev_cli.c
     dev_module.c
     dev_api.c
+    dev_conf_parser.c
 )
 
 # Create shared library for dev module
@@ -20,6 +21,7 @@ target_include_directories(dev PRIVATE
 # Link libraries
 target_link_libraries(dev PRIVATE
     ipc
+    dl
     ${GLIB_LIBRARIES}
 )
 

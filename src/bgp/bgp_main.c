@@ -1,6 +1,6 @@
 /**
  * @file   bgp_main.c
- * @brief  BGP 模块主入口，模块注册和 IPC 消息处理
+ * @brief  BGP 模块主入口，三阶段初始化和 IPC 消息处理
  * @author jhb
  * @date   2026/01/22
  */
@@ -14,18 +14,102 @@
 #include "cli.h"
 #include "dev.h"
 #include "errcode.h"
-#include "path_utils.h"
 
 bgp_local_t *g_bgp_local = NULL;
+
+// ============================================================================
+// 三阶段回调辅助
+// ============================================================================
+
+static void send_phase_response(ipc_context_t *ctx, ipc_message_t *msg, int32_t result)
+{
+    ipc_message_t *resp = ipc_message_create(IPC_MSG_TYPE_DEV_MODULE_RESP, DEV_MODULE_ID_BGP, msg->src_module_id,
+                                             msg->request_id, NULL, 0, NULL);
+    ipc_send_response(ctx, resp);
+    ipc_message_free(msg);
+    (void)result;
+}
+
+// ============================================================================
+// Phase 1: MODULE_START - 创建上下文
+// ============================================================================
+
+static void bgp_on_start(ipc_context_t *ctx, ipc_message_t *msg)
+{
+    printf("[bgp] Phase 1: MODULE_START\n");
+
+    g_bgp_local = g_malloc0(sizeof(bgp_local_t));
+    g_bgp_local->ipc_ctx = ctx;
+
+    printf("[bgp] Module started\n");
+    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
+}
+
+// ============================================================================
+// Phase 2: MODULE_CONNECT - 连接到 CFG
+// ============================================================================
+
+static void bgp_on_connect(ipc_context_t *ctx, ipc_message_t *msg)
+{
+    printf("[bgp] Phase 2: MODULE_CONNECT\n");
+
+    ipc_connect(ctx, DEV_MODULE_ID_CFG);
+
+    printf("[bgp] 已连接到 CFG\n");
+    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
+}
+
+// ============================================================================
+// Phase 3: MODULE_READY
+// ============================================================================
+
+static void bgp_on_ready(ipc_context_t *ctx, ipc_message_t *msg)
+{
+    printf("[bgp] Phase 3: MODULE_READY\n");
+    printf("[bgp] BGP module initialized\n");
+    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
+}
+
+// ============================================================================
+// Shutdown
+// ============================================================================
+
+static void bgp_on_shutdown(ipc_context_t *ctx, ipc_message_t *msg)
+{
+    printf("[bgp] BGP module cleanup\n");
+
+    /* ipc_ctx 由 DEV 管理 */
+    g_bgp_local->ipc_ctx = NULL;
+
+    g_free(g_bgp_local);
+    g_bgp_local = NULL;
+
+    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
+}
 
 // ============================================================================
 // IPC 消息处理回调
 // ============================================================================
 
-static void bgp_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
+void bgp_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
 {
     switch (msg->msg_type)
     {
+        /* ---- DEV 生命周期消息 ---- */
+        case IPC_MSG_TYPE_DEV_MODULE_START:
+            bgp_on_start(ctx, msg);
+            return;
+        case IPC_MSG_TYPE_DEV_MODULE_CONNECT:
+            bgp_on_connect(ctx, msg);
+            return;
+        case IPC_MSG_TYPE_DEV_MODULE_READY:
+            bgp_on_ready(ctx, msg);
+            return;
+        case IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN:
+            bgp_on_shutdown(ctx, msg);
+            return;
+
+        /* ---- CLI 消息 ---- */
         case CFG_MSG_TYPE_CLI:
             printf("[bgp] Received CLI command message\n");
             bgp_cli_handle_message(msg);
@@ -43,73 +127,7 @@ static void bgp_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
     ipc_message_free(msg);
 }
 
-static int bgp_init_local()
-{
-    g_bgp_local = g_malloc0(sizeof(bgp_local_t));
+// ============================================================================
+// 入口函数：创建 IPC 上下文
+// ============================================================================
 
-    g_bgp_local->ipc_ctx = ipc_init(DEV_MODULE_ID_BGP, "bgp", NULL, bgp_msg_handler);
-    if (!g_bgp_local->ipc_ctx)
-    {
-        fprintf(stderr, "[bgp] Failed to initialize IPC\n");
-        return ERRCODE_FAIL;
-    }
-
-    // 主动连接到 CFG
-    ipc_connect(g_bgp_local->ipc_ctx, DEV_MODULE_ID_CFG);
-
-    return ERRCODE_SUCCESS;
-}
-
-static void bgp_cleanup_local()
-{
-    if (g_bgp_local == NULL)
-    {
-        return;
-    }
-
-    printf("[bgp] BGP module cleanup\n");
-
-    if (g_bgp_local->ipc_ctx)
-    {
-        ipc_destroy(g_bgp_local->ipc_ctx);
-    }
-
-    g_free(g_bgp_local);
-    g_bgp_local = NULL;
-}
-
-// 模块初始化
-static int32_t bgp_module_init()
-{
-    int ret = bgp_init_local();
-    if (ret != ERRCODE_SUCCESS)
-    {
-        bgp_cleanup_local();
-        return ERRCODE_FAIL;
-    }
-
-    printf("[bgp] BGP module initialized (IPC)\n");
-    return ERRCODE_SUCCESS;
-}
-
-// 模块清理
-static void bgp_module_cleanup(void)
-{
-    bgp_cleanup_local();
-}
-
-// 构造函数注册 BGP 模块
-static void __attribute__((constructor)) register_bgp_module(void)
-{
-    dev_register_module(DEV_MODULE_ID_BGP, "bgp", bgp_module_init, bgp_module_cleanup);
-
-    char bgp_xml_path[256];
-    if (resolve_xml_path("bgp", bgp_xml_path, sizeof(bgp_xml_path)) == 0)
-    {
-        cfg_register_module_xml(DEV_MODULE_ID_BGP, bgp_xml_path);
-    }
-    else
-    {
-        fprintf(stderr, "[bgp] Warning: Could not resolve XML path for bgp module\n");
-    }
-}

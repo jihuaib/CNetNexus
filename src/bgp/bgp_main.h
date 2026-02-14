@@ -17,4 +17,9 @@ typedef struct bgp_local
 
 extern bgp_local_t *g_bgp_local;
 
+/**
+ * @brief IPC 消息处理回调（供 API 层引用）
+ */
+void bgp_msg_handler(ipc_context_t *ctx, ipc_message_t *msg);
+
 #endif // BGP_MAIN_H

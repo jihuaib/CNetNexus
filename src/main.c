@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #include "dev.h"
+#include "dev/dev_main.h"
 #include "dev/dev_module.h"
 #include "errcode.h"
 
@@ -65,7 +66,22 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
-    // Initialize all registered modules
+    // DEV 自身初始化（创建 DEV 的 IPC context + 注册到 GTree）
+    if (dev_init_self() != ERRCODE_SUCCESS)
+    {
+        fprintf(stderr, "Fatal: DEV module self-init failed\n");
+        close(signal_fd);
+        close(epoll_fd);
+        return EXIT_FAILURE;
+    }
+
+    // 扫描 module.conf，动态加载所有模块（dlopen + 入口函数）
+    if (dev_scan_and_load_modules() != ERRCODE_SUCCESS)
+    {
+        fprintf(stderr, "Warning: Some modules failed to load\n");
+    }
+
+    // 三阶段初始化所有模块
     if (dev_init_all_modules() != ERRCODE_SUCCESS)
     {
         fprintf(stderr, "Warning: Some modules failed to initialize\n");
@@ -106,8 +122,11 @@ int main(int argc, char *argv[])
     close(signal_fd);
     close(epoll_fd);
 
-    // Cleanup all modules
+    // 清理所有模块（包含逆序 shutdown RPC + IPC 销毁）
     cleanup_all_modules();
+
+    // DEV 本地状态清理
+    dev_cleanup_self();
 
     printf("\nNetNexus shutdown complete\n");
     return EXIT_SUCCESS;

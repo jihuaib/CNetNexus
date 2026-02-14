@@ -20,7 +20,6 @@
 
 #include "cli_handler.h"
 #include "cli_view.h"
-#include "cli_xml_parser.h"
 #include "dev.h"
 #include "ipc.h"
 
@@ -37,5 +36,10 @@ typedef struct cfg_local
 } cfg_local_t;
 
 extern cfg_local_t *g_cfg_local;
+
+/**
+ * @brief IPC 消息处理回调（供 API 层引用）
+ */
+void cfg_msg_handler(ipc_context_t *ctx, ipc_message_t *msg);
 
 #endif // CFG_MAIN_H

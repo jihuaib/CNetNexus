@@ -13,18 +13,15 @@ add_executable(netnexus
 )
 
 # Link against libraries
-# Use --no-as-needed to ensure module constructor functions are called
+# Module libraries (db, cfg, if, route, bgp) are loaded dynamically via dlopen
+# --unresolved-symbols=ignore-in-shared-libs: dev 引用了 cfg/db 的符号,
+# 这些符号将在运行时通过 dlopen 加载的 .so 中解析
 target_link_libraries(netnexus PRIVATE
-    -Wl,--no-as-needed
     utils
     dev
-    db
-    cfg
-    if
-        route
-    bgp
-    -Wl,--as-needed
+    dl
     Threads::Threads
+    -Wl,--unresolved-symbols=ignore-in-shared-libs
 )
 
 # Set RPATH to find libraries in lib/ directory at runtime

@@ -37,6 +37,8 @@ extern ipc_context_t *g_ipc_context;
 
 /** IPC 内部消息大类 */
 #define IPC_CATEGORY_INTERNAL 0x0000
+/** DEV 模块消息大类 */
+#define IPC_CATEGORY_DEV 0x0001
 /** DB 模块消息大类 */
 #define IPC_CATEGORY_DB 0x0002
 /** CLI 模块消息大类 */
@@ -112,6 +114,21 @@ void ipc_message_free(ipc_message_t *msg);
 #define IPC_MSG_TYPE_SHUTDOWN IPC_MSG_TYPE(IPC_CATEGORY_INTERNAL, 0x0005)
 
 // ============================================================================
+// DEV 模块生命周期消息子类（大类 = IPC_CATEGORY_DEV）
+// ============================================================================
+
+/** 模块启动通知（Phase 1） */
+#define IPC_MSG_TYPE_DEV_MODULE_START IPC_MSG_TYPE(IPC_CATEGORY_DEV, 0x0001)
+/** 模块建连通知（Phase 2） */
+#define IPC_MSG_TYPE_DEV_MODULE_CONNECT IPC_MSG_TYPE(IPC_CATEGORY_DEV, 0x0002)
+/** 模块就绪通知（Phase 3） */
+#define IPC_MSG_TYPE_DEV_MODULE_READY IPC_MSG_TYPE(IPC_CATEGORY_DEV, 0x0003)
+/** 模块关闭通知 */
+#define IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN IPC_MSG_TYPE(IPC_CATEGORY_DEV, 0x0004)
+/** 模块阶段响应 */
+#define IPC_MSG_TYPE_DEV_MODULE_RESP IPC_MSG_TYPE(IPC_CATEGORY_DEV, 0x000F)
+
+// ============================================================================
 // DB RPC 消息子类（大类 = IPC_CATEGORY_DB）
 // ============================================================================
 
@@ -164,19 +181,6 @@ typedef enum ipc_costate
 #define IPC_QUERY_TIMEOUT_DEFAULT 5000
 /** 接收缓冲区大小 */
 #define IPC_RECV_BUF_SIZE 65536
-
-// ============================================================================
-// 前向声明
-// ============================================================================
-
-typedef struct ipc_context ipc_context_t;
-
-/**
- * @brief IPC 消息处理回调函数类型
- * @param ctx IPC 上下文
- * @param msg 接收到的消息（处理后由回调释放或转移所有权）
- */
-typedef void (*ipc_msg_handler_fn)(ipc_context_t *ctx, ipc_message_t *msg);
 
 // ============================================================================
 // 核心 API

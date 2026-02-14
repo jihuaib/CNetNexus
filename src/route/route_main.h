@@ -17,7 +17,9 @@ typedef struct route_local
 
 extern route_local_t *g_route_local;
 
-int route_init(void);
-void route_cleanup(void);
+/**
+ * @brief IPC 消息处理回调（供 API 层引用）
+ */
+void route_ipc_msg_handler(ipc_context_t *ctx, ipc_message_t *msg);
 
 #endif // ROUTE_MAIN_H

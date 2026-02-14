@@ -2,7 +2,6 @@
 set(BGP_SOURCES
     bgp_main.c
     bgp_cli.c
-    bgp_api.c
 )
 
 # Create shared library for BGP module
@@ -23,3 +22,5 @@ set_target_properties(bgp PROPERTIES
     VERSION 1.0.0
     SOVERSION 1
 )
+
+add_subdirectory(lib)

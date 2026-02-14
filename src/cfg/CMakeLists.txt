@@ -11,7 +11,6 @@ set(CFG_SOURCES
     cfg_registry.c
     cfg_main.c
     cfg_cli.c
-    cfg_api.c
     cfg_show_config.c
 )
 
@@ -38,3 +37,5 @@ set_target_properties(cfg PROPERTIES
     VERSION 1.0.0
     SOVERSION 1
 )
+
+add_subdirectory(lib)

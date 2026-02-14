@@ -54,3 +54,17 @@ gboolean cfg_param_type_validate(const cli_param_type_t *param_type, const char 
 {
     return cli_param_type_validate(param_type, value, error_msg, error_msg_size);
 }
+
+// ============================================================================
+// Module Entry Function（动态加载入口）
+// ============================================================================
+
+#include "cfg_main.h"
+#include "dev.h"
+#include "ipc.h"
+
+ipc_context_t *cfg_module_init(void)
+{
+    printf("[cfg] 模块入口函数执行\n");
+    return ipc_init(DEV_MODULE_ID_CFG, "cfg", NULL, cfg_msg_handler);
+}

@@ -1,6 +1,6 @@
 /**
  * @file   db_main.c
- * @brief  数据库模块主入口，模块注册和 IPC 消息处理
+ * @brief  数据库模块主入口，三阶段初始化和 IPC 消息处理
  * @author jhb
  * @date   2026/01/22
  */
@@ -17,13 +17,12 @@
 #include "db_registry.h"
 #include "dev.h"
 #include "errcode.h"
-#include "path_utils.h"
 
-// Global context instance
+/* 全局上下文 */
 db_local_t *g_db_local = NULL;
 
 // ============================================================================
-// Connection Management
+// 连接管理
 // ============================================================================
 
 void db_connection_free(db_connection_t *conn)
@@ -54,19 +53,123 @@ db_connection_t *db_get_connection(const char *db_name)
 }
 
 // ============================================================================
+// 三阶段回调辅助
+// ============================================================================
+
+static void send_phase_response(ipc_context_t *ctx, ipc_message_t *msg, int32_t result)
+{
+    ipc_message_t *resp = ipc_message_create(IPC_MSG_TYPE_DEV_MODULE_RESP, DEV_MODULE_ID_DB, msg->src_module_id,
+                                             msg->request_id, NULL, 0, NULL);
+    ipc_send_response(ctx, resp);
+    ipc_message_free(msg);
+    (void)result;
+}
+
+// ============================================================================
+// Phase 1: MODULE_START - 创建上下文、hash table
+// ============================================================================
+
+static void db_on_start(ipc_context_t *ctx, ipc_message_t *msg)
+{
+    printf("[db] Phase 1: MODULE_START\n");
+
+    g_db_local = g_malloc0(sizeof(db_local_t));
+    g_db_local->connections =
+        g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify)db_connection_free);
+    g_db_local->registry = db_registry_get_instance();
+    g_db_local->ipc_ctx = ctx;
+
+    printf("[db] Module started\n");
+    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
+}
+
+// ============================================================================
+// Phase 2: MODULE_CONNECT - 连接到 CFG
+// ============================================================================
+
+static void db_on_connect(ipc_context_t *ctx, ipc_message_t *msg)
+{
+    printf("[db] Phase 2: MODULE_CONNECT\n");
+
+    ipc_connect(ctx, DEV_MODULE_ID_CFG);
+
+    printf("[db] 已连接到 CFG\n");
+    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
+}
+
+// ============================================================================
+// Phase 3: MODULE_READY
+// ============================================================================
+
+static void db_on_ready(ipc_context_t *ctx, ipc_message_t *msg)
+{
+    printf("[db] Phase 3: MODULE_READY\n");
+    printf("[db] Database module initialized\n");
+    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
+}
+
+// ============================================================================
+// Shutdown
+// ============================================================================
+
+static void db_on_shutdown(ipc_context_t *ctx, ipc_message_t *msg)
+{
+    printf("[db] Cleaning up database module local state\n");
+
+    /* 关闭所有数据库连接 */
+    if (g_db_local->connections)
+    {
+        g_hash_table_destroy(g_db_local->connections);
+        g_db_local->connections = NULL;
+    }
+
+    /* 销毁 registry */
+    db_registry_destroy();
+
+    /* ipc_ctx 由 DEV 管理 */
+    g_db_local->ipc_ctx = NULL;
+
+    g_free(g_db_local);
+    g_db_local = NULL;
+
+    printf("[db] Database module cleaned up\n");
+    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
+}
+
+// ============================================================================
 // IPC 消息处理回调
 // ============================================================================
 
-static void db_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
+void db_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
 {
-    uint32_t category = IPC_MSG_CATEGORY(msg->msg_type);
+    /* DEV 生命周期消息 */
+    switch (msg->msg_type)
+    {
+        case IPC_MSG_TYPE_DEV_MODULE_START:
+            db_on_start(ctx, msg);
+            return;
+        case IPC_MSG_TYPE_DEV_MODULE_CONNECT:
+            db_on_connect(ctx, msg);
+            return;
+        case IPC_MSG_TYPE_DEV_MODULE_READY:
+            db_on_ready(ctx, msg);
+            return;
+        case IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN:
+            db_on_shutdown(ctx, msg);
+            return;
+        default:
+            break;
+    }
 
+    /* DB RPC 消息 */
+    uint32_t category = IPC_MSG_CATEGORY(msg->msg_type);
     if (category == IPC_CATEGORY_DB)
     {
         db_ipc_msg_handler(ctx, msg);
         return;
     }
 
+    /* CLI 消息 */
     switch (msg->msg_type)
     {
         case CFG_MSG_TYPE_CLI:
@@ -87,97 +190,7 @@ static void db_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
     ipc_message_free(msg);
 }
 
-static int db_init_local()
-{
-    // Create context
-    g_db_local = g_malloc0(sizeof(db_local_t));
-    g_db_local->connections =
-        g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify)db_connection_free);
-
-    // Initialize registry
-    g_db_local->registry = db_registry_get_instance();
-
-    // 初始化 IPC
-    g_db_local->ipc_ctx = ipc_init(DEV_MODULE_ID_DB, "db", NULL, db_msg_handler);
-    if (!g_db_local->ipc_ctx)
-    {
-        fprintf(stderr, "[db] Failed to initialize IPC\n");
-        return ERRCODE_FAIL;
-    }
-
-    // 主动连接到 CFG
-    ipc_connect(g_db_local->ipc_ctx, DEV_MODULE_ID_CFG);
-
-    return ERRCODE_SUCCESS;
-}
-
-static void db_cleanup_local()
-{
-    if (!g_db_local)
-    {
-        return;
-    }
-
-    printf("[db] Cleaning up database module local state\n");
-
-    // 销毁 IPC
-    if (g_db_local->ipc_ctx)
-    {
-        ipc_destroy(g_db_local->ipc_ctx);
-    }
-
-    // Close all database connections
-    if (g_db_local->connections)
-    {
-        g_hash_table_destroy(g_db_local->connections);
-    }
-
-    // Destroy registry
-    db_registry_destroy();
-
-    g_free(g_db_local);
-    g_db_local = NULL;
-}
-
 // ============================================================================
-// Module Lifecycle Functions
+// 入口函数：创建 IPC 上下文
 // ============================================================================
 
-int32_t db_module_init()
-{
-    int ret = db_init_local();
-    if (ret != ERRCODE_SUCCESS)
-    {
-        db_cleanup_local();
-        return ERRCODE_FAIL;
-    }
-
-    printf("[db] Database module initialized (IPC)\n");
-    return ERRCODE_SUCCESS;
-}
-
-void db_module_cleanup(void)
-{
-    db_cleanup_local();
-    printf("[db] Database module cleaned up\n");
-}
-
-// ============================================================================
-// Module Registration (Constructor)
-// ============================================================================
-
-static void __attribute__((constructor)) register_db_module(void)
-{
-    // Register module with init/cleanup callbacks
-    dev_register_module(DEV_MODULE_ID_DB, "db", db_module_init, db_module_cleanup);
-
-    char cfg_xml_path[256];
-    if (resolve_xml_path("db", cfg_xml_path, sizeof(cfg_xml_path)) == 0)
-    {
-        cfg_register_module_xml(DEV_MODULE_ID_DB, cfg_xml_path);
-    }
-    else
-    {
-        fprintf(stderr, "[db] Warning: Could not resolve XML path for cfg module\n");
-    }
-}

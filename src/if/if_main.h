@@ -17,4 +17,9 @@ typedef struct
 
 extern if_local_t *g_if_local;
 
+/**
+ * @brief IPC 消息处理回调（供 API 层引用）
+ */
+void if_msg_handler(ipc_context_t *ctx, ipc_message_t *msg);
+
 #endif // IF_MAIN_H

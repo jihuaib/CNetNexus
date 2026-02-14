@@ -15,7 +15,6 @@
 #include "dev_cli.h"
 #include "dev_module.h"
 #include "errcode.h"
-#include "path_utils.h"
 
 dev_local_t *g_dev_local = NULL;
 
@@ -23,7 +22,7 @@ dev_local_t *g_dev_local = NULL;
 // IPC 消息处理回调
 // ============================================================================
 
-static void dev_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
+void dev_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
 {
     switch (msg->msg_type)
     {
@@ -44,7 +43,13 @@ static void dev_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
     ipc_message_free(msg);
 }
 
-static int dev_init_local()
+/**
+ * @brief DEV 自身初始化（在三阶段流程开始前调用）
+ *
+ * 创建 DEV 的 IPC context 并设置到全局上下文和模块注册表中。
+ * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL
+ */
+int dev_init_self(void)
 {
     g_dev_local = g_malloc0(sizeof(dev_local_t));
 
@@ -52,16 +57,35 @@ static int dev_init_local()
     if (!g_dev_local->ipc_ctx)
     {
         fprintf(stderr, "[dev] Failed to initialize IPC\n");
+        g_free(g_dev_local);
+        g_dev_local = NULL;
         return ERRCODE_FAIL;
     }
 
-    // 主动连接到 CFG
-    ipc_connect(g_dev_local->ipc_ctx, DEV_MODULE_ID_CFG);
+    /* 注册 DEV 模块到 GTree */
+    dev_register_module(DEV_MODULE_ID_DEV, "dev", dev_msg_handler);
 
+    printf("[dev] DEV 自身 IPC 初始化完成\n");
     return ERRCODE_SUCCESS;
 }
 
-static void dev_cleanup_local()
+/**
+ * @brief 获取 DEV 的 IPC context
+ * @return DEV 的 IPC context
+ */
+ipc_context_t *dev_get_ipc_ctx(void)
+{
+    if (g_dev_local)
+    {
+        return g_dev_local->ipc_ctx;
+    }
+    return NULL;
+}
+
+/**
+ * @brief DEV 清理
+ */
+void dev_cleanup_self(void)
 {
     if (g_dev_local == NULL)
     {
@@ -70,47 +94,9 @@ static void dev_cleanup_local()
 
     printf("[dev] Dev module cleanup\n");
 
-    if (g_dev_local->ipc_ctx)
-    {
-        ipc_destroy(g_dev_local->ipc_ctx);
-    }
+    /* 注意：IPC context 的销毁由 cleanup_all_modules() 统一处理 */
+    g_dev_local->ipc_ctx = NULL;
 
     g_free(g_dev_local);
     g_dev_local = NULL;
-}
-
-// Module initialization
-static int32_t dev_module_init()
-{
-    int ret = dev_init_local();
-    if (ret != ERRCODE_SUCCESS)
-    {
-        dev_cleanup_local();
-        return ERRCODE_FAIL;
-    }
-
-    printf("[dev] DEV module initialized (IPC)\n");
-    return ERRCODE_SUCCESS;
-}
-
-// Module cleanup
-static void dev_module_cleanup(void)
-{
-    dev_cleanup_local();
-}
-
-// Register dev module using constructor attribute
-static void __attribute__((constructor)) register_dev_module(void)
-{
-    dev_register_module(DEV_MODULE_ID_DEV, "dev", dev_module_init, dev_module_cleanup);
-
-    char dev_xml_path[256];
-    if (resolve_xml_path("dev", dev_xml_path, sizeof(dev_xml_path)) == 0)
-    {
-        cfg_register_module_xml(DEV_MODULE_ID_DEV, dev_xml_path);
-    }
-    else
-    {
-        fprintf(stderr, "[dev] Warning: Could not resolve XML path for dev module\n");
-    }
 }

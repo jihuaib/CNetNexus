@@ -611,3 +611,13 @@ gboolean db_validate_field(const char *db_name, const char *table_name, const ch
     // Use existing CLI validation logic
     return cfg_param_type_validate(field->param_type, value_str, error_msg, error_msg_len);
 }
+
+// ============================================================================
+// Module Entry Function（动态加载入口）
+// ============================================================================
+
+ipc_context_t *db_module_init(void)
+{
+    printf("[db] 模块入口函数执行\n");
+    return ipc_init(DEV_MODULE_ID_DB, "db", NULL, db_msg_handler);
+}

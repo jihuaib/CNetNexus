@@ -2,7 +2,6 @@
 set(ROUTE_SOURCES
         route_main.c
     route_cli.c
-    route_api.c
 )
 
 add_library(route ${ROUTE_SOURCES})
@@ -21,3 +20,5 @@ set_target_properties(route PROPERTIES
         VERSION 1.0.0
         SOVERSION 1
         )
+
+add_subdirectory(lib)
