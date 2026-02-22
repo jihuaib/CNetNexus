@@ -4,6 +4,8 @@
  * @author jhb
  * @date   2026/01/22
  */
+#define LOG_TAG "cfg"
+
 #include "cfg_cli.h"
 
 #include <pthread.h>
@@ -16,6 +18,7 @@
 #include "cli_handler.h"
 #include "dev.h"
 #include "errcode.h"
+#include "log.h"
 
 // ============================================================================
 // 命令树打印
@@ -336,11 +339,11 @@ int cfg_cli_handle(ipc_message_t *msg, cli_session_t *session)
     cli_tlv_parser_t parser;
     if (cli_tlv_init(&parser, (const uint8_t *)msg->payload, msg->payload_len) != 0)
     {
-        printf("[cfg_cli] 载荷解析失败\n");
+        LOG_ERROR("载荷解析失败");
         return ERRCODE_FAIL;
     }
 
-    printf("[cfg_cli] 收到命令 (group_id=%u)\n", parser.group_id);
+    LOG_DEBUG("收到命令 (group_id=%u)", parser.group_id);
 
     switch (parser.group_id)
     {
@@ -363,7 +366,7 @@ int cfg_cli_handle(ipc_message_t *msg, cli_session_t *session)
             handle_op_end(session);
             break;
         default:
-            printf("[cfg_cli] 未知 group_id: %u\n", parser.group_id);
+            LOG_WARN("未知 group_id: %u", parser.group_id);
             cfg_send_message(session, "Error: Unknown CFG command.\r\n");
             cli_tlv_cleanup(&parser);
             return ERRCODE_FAIL;

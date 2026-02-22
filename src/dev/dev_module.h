@@ -16,31 +16,25 @@
 /** 模块初始化阶段 */
 enum
 {
-    DEV_PHASE_REGISTERED = 0, /**< 已注册 */
-    DEV_PHASE_IPC_CREATED,    /**< IPC 上下文已创建（入口函数执行完毕） */
-    DEV_PHASE_STARTED,        /**< Phase 1: MODULE_START 已完成 */
-    DEV_PHASE_CONNECTED,      /**< Phase 2: MODULE_CONNECT 已完成 */
-    DEV_PHASE_READY           /**< Phase 3: MODULE_READY 已完成 */
+    DEV_PHASE_REGISTERED = 0, /**< 已注册（无 IPC） */
+    DEV_PHASE_LOADED,         /**< 已加载（constructor 执行完毕，IPC+本地状态已初始化） */
+    DEV_PHASE_IPC_READY,      /**< Phase 1: IPC 连接已建立 */
+    DEV_PHASE_DB_RECOVERED,   /**< Phase 2: 预留（DB 恢复） */
+    DEV_PHASE_READY           /**< Phase 3: 预留 */
 };
-
-/** 模块入口函数类型：创建 IPC 上下文并返回 */
-typedef ipc_context_t *(*module_entry_fn)(void);
 
 /** 模块描述结构体 */
 typedef struct module
 {
-    uint32_t module_id;                     /**< 模块 ID */
-    char name[DEV_MODULE_NAME_MAX_LEN];     /**< 模块名称 */
-    ipc_msg_handler_fn msg_handler;         /**< 消息处理回调 */
-    ipc_context_t *ipc_ctx;                 /**< IPC 上下文 */
-    char *db_name;                          /**< 数据库名称（从 .conf 读取，可为 NULL） */
-    char *xml_path;                         /**< commands.xml 路径（自动发现，可为 NULL） */
-    void *dl_handle;                        /**< dlopen 句柄（动态加载，可为 NULL） */
-    uint8_t phase;                          /**< 当前初始化阶段 */
+    uint32_t module_id;                 /**< 模块 ID */
+    char name[DEV_MODULE_NAME_MAX_LEN]; /**< 模块名称 */
+    char *db_name;                      /**< 数据库名称（从 .conf 读取，可为 NULL） */
+    void *dl_handle;                    /**< dlopen 句柄（动态加载，可为 NULL） */
+    uint8_t phase;                      /**< 当前初始化阶段 */
 } dev_module_t;
 
 /**
- * @brief 扫描并加载所有模块（从 module.conf 发现，dlopen + 调用入口函数）
+ * @brief 扫描并加载所有模块（从 module.conf 发现，dlopen 触发 constructor 自注册）
  * @return 成功返回 0，失败返回 -1
  */
 int32_t dev_scan_and_load_modules(void);
@@ -64,12 +58,12 @@ void cleanup_all_modules(void);
 void dev_module_foreach(GTraverseFunc func, gpointer user_data);
 
 /**
- * @brief 内部注册模块
- * @param id 模块 ID
+ * @brief 将模块添加到注册表（GTree）
+ * @param module_id 模块 ID
  * @param name 模块名称
- * @param handler 消息处理回调
+ * @return 成功返回指向新建 dev_module_t 的指针，失败返回 NULL
  */
-void dev_register_module_inner(uint32_t id, const char *name, ipc_msg_handler_fn handler);
+dev_module_t *dev_add_module_to_registry(uint32_t module_id, const char *name);
 
 /**
  * @brief 内部获取模块名称

@@ -4,6 +4,7 @@
  * @author jhb
  * @date   2026/01/22
  */
+#define LOG_TAG "dev"
 #include "dev_module.h"
 
 #include <dirent.h>
@@ -16,11 +17,12 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include "cli.h"
 #include "db_rpc.h"
 #include "dev.h"
 #include "dev_conf_parser.h"
+#include "dev_main.h"
 #include "errcode.h"
+#include "log.h"
 #include "path_utils.h"
 
 /* 前向声明 */
@@ -56,24 +58,6 @@ static void ensure_registry_initialized(void)
     {
         g_module_registry = g_tree_new(module_id_compare);
     }
-}
-
-// ============================================================================
-// 注册接口
-// ============================================================================
-
-void dev_register_module_inner(uint32_t id, const char *name, ipc_msg_handler_fn handler)
-{
-    ensure_registry_initialized();
-
-    dev_module_t *module = (dev_module_t *)g_malloc0(sizeof(dev_module_t));
-
-    module->module_id = id;
-    strlcpy(module->name, name, sizeof(module->name));
-    module->msg_handler = handler;
-    module->phase = DEV_PHASE_REGISTERED;
-
-    g_tree_insert(g_module_registry, GUINT_TO_POINTER(module->module_id), module);
 }
 
 // ============================================================================
@@ -121,33 +105,19 @@ void dev_module_foreach(GTraverseFunc func, gpointer user_data)
     }
 }
 
-
-
-// ============================================================================
-// 自动发现 commands.xml 并注册到 cfg_xml_registry
-// ============================================================================
-
-static gboolean discover_xml_callback(gpointer key, gpointer value, gpointer data)
+dev_module_t *dev_add_module_to_registry(uint32_t module_id, const char *name)
 {
-    (void)key;
-    (void)data;
-    dev_module_t *module = (dev_module_t *)value;
+    ensure_registry_initialized();
 
-    char xml_path[256];
-    if (resolve_xml_path(module->name, xml_path, sizeof(xml_path)) == 0)
-    {
-        module->xml_path = g_strdup(xml_path);
-        cfg_register_module_xml(module->module_id, xml_path);
-        printf("[dev] 发现 XML: %s -> %s\n", module->name, xml_path);
-    }
+    dev_module_t *module = g_malloc0(sizeof(dev_module_t));
+    module->module_id = module_id;
+    strlcpy(module->name, name, DEV_MODULE_NAME_MAX_LEN);
+    module->phase = DEV_PHASE_LOADED;
 
-    return FALSE;
-}
+    g_tree_insert(g_module_registry, GUINT_TO_POINTER(module_id), module);
+    LOG_INFO("模块 %s (id=%u) 已添加到注册表", name, module_id);
 
-static void dev_discover_xml_paths(void)
-{
-    printf("[dev] 自动发现 commands.xml...\n");
-    g_tree_foreach(g_module_registry, discover_xml_callback, NULL);
+    return module;
 }
 
 // ============================================================================
@@ -176,9 +146,9 @@ static int dev_scan_dir_for_modules(const char *base_dir)
             continue;
         }
 
-        /* 检查子目录下是否有 module.conf */
+        /* 检查子目录下是否有 module.conf（在 resources/ 子目录中） */
         char conf_path[PATH_MAX];
-        snprintf(conf_path, sizeof(conf_path), "%s/%s/module.conf", base_dir, entry->d_name);
+        snprintf(conf_path, sizeof(conf_path), "%s/%s/resources/module.conf", base_dir, entry->d_name);
 
         struct stat st;
         if (stat(conf_path, &st) != 0)
@@ -190,7 +160,7 @@ static int dev_scan_dir_for_modules(const char *base_dir)
         dev_module_conf_t conf;
         if (dev_conf_parse(conf_path, &conf) != 0)
         {
-            fprintf(stderr, "[dev] 解析 %s 失败\n", conf_path);
+            LOG_ERROR("解析 %s 失败", conf_path);
             continue;
         }
 
@@ -200,69 +170,45 @@ static int dev_scan_dir_for_modules(const char *base_dir)
             continue;
         }
 
-        /* 必须有 entry 和 so */
-        if (conf.entry_func[0] == '\0' || conf.apiso_name[0] == '\0')
+        /* 必须有 so */
+        if (conf.so_name[0] == '\0')
         {
-            printf("[dev] 模块 %s 缺少 entry 或 so 字段，跳过\n", conf.name);
+            LOG_WARN("模块 %s 缺少 so 字段，跳过", conf.name);
             continue;
         }
 
-        printf("[dev] 发现模块: %s (id=%u, so=%s, entry=%s)\n",
-               conf.name, conf.module_id, conf.apiso_name, conf.entry_func);
+        LOG_INFO("发现模块: %s (id=%u, so=%s)", conf.name, conf.module_id, conf.so_name);
 
-        /* dlopen 加载共享库 */
-        void *dl_handle = dlopen(conf.apiso_name, RTLD_NOW | RTLD_GLOBAL);
+        /* dlopen 加载共享库 — constructor 自动触发
+         * 使用 RTLD_LAZY 因为模块间存在交叉依赖（如 db→cfg），
+         * 加载时并非所有符号都已可用，实际调用时再解析即可 */
+        void *dl_handle = dlopen(conf.so_name, RTLD_LAZY | RTLD_GLOBAL);
         if (!dl_handle)
         {
-            fprintf(stderr, "[dev] dlopen(%s) 失败: %s\n", conf.apiso_name, dlerror());
+            LOG_ERROR("dlopen(%s) 失败: %s", conf.so_name, dlerror());
             continue;
         }
 
-        /* dlsym 查找入口函数 */
-        module_entry_fn entry_fn = (module_entry_fn)dlsym(dl_handle, conf.entry_func);
-        if (!entry_fn)
-        {
-            fprintf(stderr, "[dev] dlsym(%s) 失败: %s\n", conf.entry_func, dlerror());
-            dlclose(dl_handle);
-            continue;
-        }
-
-        /* 注册模块到 GTree（handler 为 NULL，由入口函数内部设置） */
-        dev_register_module_inner(conf.module_id, conf.name, NULL);
-
-        /* 查找已注册的 module 结构体 */
-        dev_module_t *module =
-            (dev_module_t *)g_tree_lookup(g_module_registry, GUINT_TO_POINTER(conf.module_id));
+        /* 创建模块并添加到注册表 */
+        dev_module_t *module = dev_add_module_to_registry(conf.module_id, conf.name);
         if (!module)
         {
-            fprintf(stderr, "[dev] 模块 %s 注册失败\n", conf.name);
+            LOG_ERROR("模块 %s 注册失败", conf.name);
             dlclose(dl_handle);
             continue;
         }
 
+        /* 设置 DEV 管理的元数据 */
         module->dl_handle = dl_handle;
 
-        /* 设置 db_name */
         if (conf.db_name[0] != '\0')
         {
             module->db_name = g_strdup(conf.db_name);
-            printf("[dev] 模块 %s 需要数据库: %s\n", conf.name, module->db_name);
+            LOG_INFO("模块 %s 需要数据库: %s", conf.name, module->db_name);
         }
 
-        /* 调用入口函数，创建 IPC 上下文 */
-        printf("[dev] 调用入口函数: %s()\n", conf.entry_func);
-        ipc_context_t *ipc_ctx = entry_fn();
-        if (!ipc_ctx)
-        {
-            fprintf(stderr, "[dev] 模块 %s 入口函数返回 NULL\n", conf.name);
-            continue;
-        }
-
-        module->ipc_ctx = ipc_ctx;
-        module->phase = DEV_PHASE_IPC_CREATED;
         loaded++;
-
-        printf("[dev] 模块 %s 加载成功 (IPC 已创建)\n", conf.name);
+        LOG_INFO("模块 %s 加载成功 (constructor 已执行)", conf.name);
     }
 
     closedir(dir);
@@ -273,9 +219,16 @@ int32_t dev_scan_and_load_modules(void)
 {
     ensure_registry_initialized();
 
-    printf("[dev] =============================================\n");
-    printf("[dev] 开始扫描并加载模块\n");
-    printf("[dev] =============================================\n");
+    LOG_INFO("=============================================");
+    LOG_INFO("开始扫描并加载模块");
+    LOG_INFO("=============================================");
+
+    // DEV 自身初始化（创建 DEV 的 IPC context + 注册到 GTree）
+    if (dev_init_self() != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("Fatal: DEV module self-init failed");
+        return ERRCODE_FAIL;
+    }
 
     int total_loaded = 0;
 
@@ -286,7 +239,7 @@ int32_t dev_scan_and_load_modules(void)
         total_loaded = dev_scan_dir_for_modules(resources_dir);
         if (total_loaded > 0)
         {
-            printf("[dev] 从 RESOURCES_DIR 加载了 %d 个模块\n", total_loaded);
+            LOG_INFO("从 RESOURCES_DIR 加载了 %d 个模块", total_loaded);
             return ERRCODE_SUCCESS;
         }
     }
@@ -295,7 +248,7 @@ int32_t dev_scan_and_load_modules(void)
     total_loaded = dev_scan_dir_for_modules("/opt/netnexus/resources");
     if (total_loaded > 0)
     {
-        printf("[dev] 从生产路径加载了 %d 个模块\n", total_loaded);
+        LOG_INFO("从生产路径加载了 %d 个模块", total_loaded);
         return ERRCODE_SUCCESS;
     }
 
@@ -309,7 +262,7 @@ int32_t dev_scan_and_load_modules(void)
         total_loaded = dev_scan_dir_for_modules(dev_path);
         if (total_loaded > 0)
         {
-            printf("[dev] 从开发路径加载了 %d 个模块\n", total_loaded);
+            LOG_INFO("从开发路径加载了 %d 个模块", total_loaded);
             return ERRCODE_SUCCESS;
         }
 
@@ -317,14 +270,14 @@ int32_t dev_scan_and_load_modules(void)
         total_loaded = dev_scan_dir_for_modules(dev_path);
         if (total_loaded > 0)
         {
-            printf("[dev] 从开发路径加载了 %d 个模块\n", total_loaded);
+            LOG_INFO("从开发路径加载了 %d 个模块", total_loaded);
             return ERRCODE_SUCCESS;
         }
     }
 
     if (total_loaded == 0)
     {
-        fprintf(stderr, "[dev] 未找到任何模块\n");
+        LOG_ERROR("未找到任何模块");
         return ERRCODE_FAIL;
     }
 
@@ -343,9 +296,9 @@ static gboolean dev_connect_to_module_callback(gpointer key, gpointer value, gpo
         return FALSE;
     }
 
-    if (module->phase >= DEV_PHASE_IPC_CREATED)
+    if (module->phase >= DEV_PHASE_LOADED)
     {
-        printf("[dev] 连接到模块: %s\n", module->name);
+        LOG_INFO("连接到模块: %s", module->name);
         ipc_connect(dev_ctx, module->module_id);
     }
 
@@ -364,38 +317,30 @@ static gboolean phase1_start_callback(gpointer key, gpointer value, gpointer dat
 
     if (module->module_id == DEV_MODULE_ID_DEV)
     {
-        module->phase = DEV_PHASE_STARTED;
+        module->phase = DEV_PHASE_IPC_READY;
         return FALSE;
     }
 
-    if (module->phase < DEV_PHASE_IPC_CREATED)
+    if (module->phase < DEV_PHASE_LOADED)
     {
         return FALSE;
     }
 
-    printf("[dev] Phase 1: 发送 MODULE_START -> %s\n", module->name);
-
-    /* 通过 DEV 的 IPC ctx 发送 RPC 到目标模块 */
-    dev_module_t *dev_mod = (dev_module_t *)g_tree_lookup(g_module_registry, GUINT_TO_POINTER(DEV_MODULE_ID_DEV));
-    if (!dev_mod || !dev_mod->ipc_ctx)
-    {
-        (*failed_count)++;
-        return FALSE;
-    }
+    LOG_INFO("Phase 1: 发送 MODULE_START -> %s", module->name);
 
     ipc_message_t *req =
         ipc_message_create(IPC_MSG_TYPE_DEV_MODULE_START, DEV_MODULE_ID_DEV, module->module_id, 0, NULL, 0, NULL);
 
-    ipc_message_t *resp = ipc_query(dev_mod->ipc_ctx, module->module_id, req, 5000);
+    ipc_message_t *resp = ipc_query(g_dev_local->ipc_ctx, module->module_id, req, 5000);
     if (resp)
     {
-        printf("[dev] Phase 1: %s 启动成功\n", module->name);
-        module->phase = DEV_PHASE_STARTED;
+        LOG_INFO("Phase 1: %s IPC 连接已建立", module->name);
+        module->phase = DEV_PHASE_IPC_READY;
         ipc_message_free(resp);
     }
     else
     {
-        fprintf(stderr, "[dev] Phase 1: %s 启动超时或失败\n", module->name);
+        LOG_ERROR("Phase 1: %s IPC 连接超时或失败", module->name);
         (*failed_count)++;
     }
 
@@ -414,37 +359,30 @@ static gboolean phase2_connect_callback(gpointer key, gpointer value, gpointer d
 
     if (module->module_id == DEV_MODULE_ID_DEV)
     {
-        module->phase = DEV_PHASE_CONNECTED;
+        module->phase = DEV_PHASE_DB_RECOVERED;
         return FALSE;
     }
 
-    if (module->phase < DEV_PHASE_STARTED)
+    if (module->phase < DEV_PHASE_IPC_READY)
     {
         return FALSE;
     }
 
-    printf("[dev] Phase 2: 发送 MODULE_CONNECT -> %s\n", module->name);
-
-    dev_module_t *dev_mod = (dev_module_t *)g_tree_lookup(g_module_registry, GUINT_TO_POINTER(DEV_MODULE_ID_DEV));
-    if (!dev_mod || !dev_mod->ipc_ctx)
-    {
-        (*failed_count)++;
-        return FALSE;
-    }
+    LOG_INFO("Phase 2: 发送 MODULE_CONNECT -> %s", module->name);
 
     ipc_message_t *req =
         ipc_message_create(IPC_MSG_TYPE_DEV_MODULE_CONNECT, DEV_MODULE_ID_DEV, module->module_id, 0, NULL, 0, NULL);
 
-    ipc_message_t *resp = ipc_query(dev_mod->ipc_ctx, module->module_id, req, 5000);
+    ipc_message_t *resp = ipc_query(g_dev_local->ipc_ctx, module->module_id, req, 5000);
     if (resp)
     {
-        printf("[dev] Phase 2: %s 建连成功\n", module->name);
-        module->phase = DEV_PHASE_CONNECTED;
+        LOG_INFO("Phase 2: %s 预留阶段完成", module->name);
+        module->phase = DEV_PHASE_DB_RECOVERED;
         ipc_message_free(resp);
     }
     else
     {
-        fprintf(stderr, "[dev] Phase 2: %s 建连超时或失败\n", module->name);
+        LOG_ERROR("Phase 2: %s 预留阶段超时或失败", module->name);
         (*failed_count)++;
     }
 
@@ -466,17 +404,10 @@ static gboolean create_db_callback(gpointer key, gpointer value, gpointer data)
         return FALSE;
     }
 
-    /* 使用 DEV 的 IPC ctx 调用 db_rpc_create_db */
-    dev_module_t *dev_mod = (dev_module_t *)g_tree_lookup(g_module_registry, GUINT_TO_POINTER(DEV_MODULE_ID_DEV));
-    if (!dev_mod || !dev_mod->ipc_ctx)
+    LOG_INFO("创建数据库: %s (module=%u)", module->db_name, module->module_id);
+    if (db_rpc_create_db(g_dev_local->ipc_ctx, module->db_name, module->module_id) != ERRCODE_SUCCESS)
     {
-        return FALSE;
-    }
-
-    printf("[dev] 创建数据库: %s (module=%u)\n", module->db_name, module->module_id);
-    if (db_rpc_create_db(dev_mod->ipc_ctx, module->db_name, module->module_id) != ERRCODE_SUCCESS)
-    {
-        fprintf(stderr, "[dev] 创建数据库失败: %s\n", module->db_name);
+        LOG_ERROR("创建数据库失败: %s", module->db_name);
     }
 
     return FALSE;
@@ -484,7 +415,7 @@ static gboolean create_db_callback(gpointer key, gpointer value, gpointer data)
 
 static void dev_create_databases(void)
 {
-    printf("[dev] 创建模块数据库...\n");
+    LOG_INFO("创建模块数据库...");
     g_tree_foreach(g_module_registry, create_db_callback, NULL);
 }
 
@@ -504,33 +435,26 @@ static gboolean phase3_ready_callback(gpointer key, gpointer value, gpointer dat
         return FALSE;
     }
 
-    if (module->phase < DEV_PHASE_CONNECTED)
+    if (module->phase < DEV_PHASE_DB_RECOVERED)
     {
         return FALSE;
     }
 
-    printf("[dev] Phase 3: 发送 MODULE_READY -> %s\n", module->name);
-
-    dev_module_t *dev_mod = (dev_module_t *)g_tree_lookup(g_module_registry, GUINT_TO_POINTER(DEV_MODULE_ID_DEV));
-    if (!dev_mod || !dev_mod->ipc_ctx)
-    {
-        (*failed_count)++;
-        return FALSE;
-    }
+    LOG_INFO("Phase 3: 发送 MODULE_READY -> %s", module->name);
 
     ipc_message_t *req =
         ipc_message_create(IPC_MSG_TYPE_DEV_MODULE_READY, DEV_MODULE_ID_DEV, module->module_id, 0, NULL, 0, NULL);
 
-    ipc_message_t *resp = ipc_query(dev_mod->ipc_ctx, module->module_id, req, 5000);
+    ipc_message_t *resp = ipc_query(g_dev_local->ipc_ctx, module->module_id, req, 5000);
     if (resp)
     {
-        printf("[dev] Phase 3: %s 就绪\n", module->name);
+        LOG_INFO("Phase 3: %s 就绪", module->name);
         module->phase = DEV_PHASE_READY;
         ipc_message_free(resp);
     }
     else
     {
-        fprintf(stderr, "[dev] Phase 3: %s 就绪超时或失败\n", module->name);
+        LOG_ERROR("Phase 3: %s 就绪超时或失败", module->name);
         (*failed_count)++;
     }
 
@@ -545,81 +469,71 @@ int32_t dev_init_all_modules(void)
 {
     int32_t failed_count = 0;
 
-    printf("[dev] =============================================\n");
-    printf("[dev] 开始三阶段模块初始化\n");
-    printf("[dev] =============================================\n");
+    LOG_INFO("=============================================");
+    LOG_INFO("开始三阶段模块初始化");
+    LOG_INFO("=============================================");
 
     if (!g_module_registry)
     {
-        printf("[dev] 没有已注册的模块\n");
+        LOG_INFO("没有已注册的模块");
         return ERRCODE_SUCCESS;
     }
 
-    /* Step 1: 自动发现 commands.xml，注册到 cfg_xml_registry */
-    printf("[dev] Step 1: 自动发现 XML\n");
-    dev_discover_xml_paths();
-
     /* DEV 连接到所有模块 */
-    dev_module_t *dev_mod = (dev_module_t *)g_tree_lookup(g_module_registry, GUINT_TO_POINTER(DEV_MODULE_ID_DEV));
-    if (dev_mod && dev_mod->ipc_ctx)
-    {
-        printf("[dev] DEV 连接到所有模块\n");
-        g_tree_foreach(g_module_registry, dev_connect_to_module_callback, dev_mod->ipc_ctx);
-    }
+
+    LOG_INFO("DEV 连接到所有模块");
+    g_tree_foreach(g_module_registry, dev_connect_to_module_callback, g_dev_local->ipc_ctx);
 
     /* 等待所有 IPC 连接完成握手 */
-    if (dev_mod && dev_mod->ipc_ctx)
+    LOG_INFO("等待 IPC 连接就绪...");
+    for (int retry = 0; retry < 50; retry++)
     {
-        printf("[dev] 等待 IPC 连接就绪...\n");
-        for (int retry = 0; retry < 50; retry++)
-        {
-            int all_connected = 1;
-            GList *wait_modules = NULL;
-            g_tree_foreach(g_module_registry, collect_module_callback, &wait_modules);
+        int all_connected = 1;
+        GList *wait_modules = NULL;
+        g_tree_foreach(g_module_registry, collect_module_callback, &wait_modules);
 
-            for (GList *l = wait_modules; l != NULL; l = l->next)
+        for (GList *l = wait_modules; l != NULL; l = l->next)
+        {
+            dev_module_t *m = (dev_module_t *)l->data;
+            if (m->module_id != DEV_MODULE_ID_DEV && m->phase >= DEV_PHASE_LOADED)
             {
-                dev_module_t *m = (dev_module_t *)l->data;
-                if (m->module_id != DEV_MODULE_ID_DEV && m->phase >= DEV_PHASE_IPC_CREATED)
+                if (!ipc_is_connected(g_dev_local->ipc_ctx, m->module_id))
                 {
-                    if (!ipc_is_connected(dev_mod->ipc_ctx, m->module_id))
-                    {
-                        all_connected = 0;
-                        break;
-                    }
+                    all_connected = 0;
+                    break;
                 }
             }
-            g_list_free(wait_modules);
-
-            if (all_connected)
-            {
-                printf("[dev] 所有 IPC 连接就绪\n");
-                break;
-            }
-            usleep(100000); /* 100ms */
         }
+        g_list_free(wait_modules);
+
+        if (all_connected)
+        {
+            LOG_INFO("所有 IPC 连接就绪");
+            break;
+        }
+        usleep(100000); /* 100ms */
     }
 
-    /* Phase 1: 发送 MODULE_START */
-    printf("\n[dev] === Phase 1: MODULE_START ===\n");
+    /* Phase 1: 发送 MODULE_START — 模块建立 IPC 连接 */
+    LOG_INFO("=== Phase 1: MODULE_START (IPC 建立) ===");
     g_tree_foreach(g_module_registry, phase1_start_callback, &failed_count);
 
-    /* Phase 2: 发送 MODULE_CONNECT */
-    printf("\n[dev] === Phase 2: MODULE_CONNECT ===\n");
-    g_tree_foreach(g_module_registry, phase2_connect_callback, &failed_count);
-    printf("[dev] Phase 2: 所有模块建连完成\n");
-
-    /* 创建数据库（Phase 2 之后） */
-    printf("\n[dev] === 创建数据库 ===\n");
+    /* 创建数据库（Phase 1 之后、Phase 2 之前） */
+    LOG_INFO("=== 创建数据库 ===");
     dev_create_databases();
 
-    /* Phase 3: 发送 MODULE_READY */
-    printf("\n[dev] === Phase 3: MODULE_READY ===\n");
+    /* Phase 2: 发送 MODULE_CONNECT — 预留（DB 恢复） */
+    LOG_INFO("=== Phase 2: MODULE_CONNECT (预留) ===");
+    g_tree_foreach(g_module_registry, phase2_connect_callback, &failed_count);
+    LOG_INFO("Phase 2: 所有模块预留阶段完成");
+
+    /* Phase 3: 发送 MODULE_READY — 预留（CFG 加载 XML） */
+    LOG_INFO("=== Phase 3: MODULE_READY (预留) ===");
     g_tree_foreach(g_module_registry, phase3_ready_callback, &failed_count);
 
-    printf("\n[dev] =============================================\n");
-    printf("[dev] 三阶段初始化完成 (失败: %d)\n", failed_count);
-    printf("[dev] =============================================\n\n");
+    LOG_INFO("=============================================");
+    LOG_INFO("三阶段初始化完成 (失败: %d)", failed_count);
+    LOG_INFO("=============================================");
 
     return failed_count;
 }
@@ -639,21 +553,17 @@ static gboolean collect_module_callback(gpointer key, gpointer value, gpointer d
 
 void cleanup_all_modules(void)
 {
-    printf("[dev] 清理模块:\n");
-    printf("====================\n");
+    LOG_INFO("==================== 清理模块 ====================");
 
     if (!g_module_registry)
     {
-        printf("[dev] 没有需要清理的模块\n");
+        LOG_INFO("没有需要清理的模块");
         return;
     }
 
     /* 收集模块，g_list_prepend 得到逆序（高 ID 先） */
     GList *modules = NULL;
     g_tree_foreach(g_module_registry, collect_module_callback, &modules);
-
-    /* 获取 DEV 的 IPC ctx 用于发送 shutdown */
-    dev_module_t *dev_mod = (dev_module_t *)g_tree_lookup(g_module_registry, GUINT_TO_POINTER(DEV_MODULE_ID_DEV));
 
     /* Step 1: 逆序发送 MODULE_SHUTDOWN RPC */
     for (GList *l = modules; l != NULL; l = l->next)
@@ -665,14 +575,14 @@ void cleanup_all_modules(void)
             continue;
         }
 
-        if (module->phase >= DEV_PHASE_STARTED && dev_mod && dev_mod->ipc_ctx)
+        if (module->phase >= DEV_PHASE_LOADED)
         {
-            printf("[dev] 发送 MODULE_SHUTDOWN -> %s\n", module->name);
+            LOG_INFO("发送 MODULE_SHUTDOWN -> %s", module->name);
 
             ipc_message_t *req = ipc_message_create(IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN, DEV_MODULE_ID_DEV,
                                                     module->module_id, 0, NULL, 0, NULL);
 
-            ipc_message_t *resp = ipc_query(dev_mod->ipc_ctx, module->module_id, req, 3000);
+            ipc_message_t *resp = ipc_query(g_dev_local->ipc_ctx, module->module_id, req, 3000);
             if (resp)
             {
                 ipc_message_free(resp);
@@ -690,14 +600,7 @@ void cleanup_all_modules(void)
             continue;
         }
 
-        printf("[dev] 销毁 IPC: %s\n", module->name);
-        printf("[dev] ============================================\n");
-
-        if (module->ipc_ctx)
-        {
-            ipc_destroy(module->ipc_ctx);
-            module->ipc_ctx = NULL;
-        }
+        LOG_INFO("销毁模块: %s", module->name);
 
         if (module->dl_handle)
         {
@@ -706,24 +609,16 @@ void cleanup_all_modules(void)
         }
 
         g_free(module->db_name);
-        g_free(module->xml_path);
         g_free(module);
-
-        printf("[dev] ============================================\n");
     }
 
-    /* Step 3: 销毁 DEV 自己的 IPC context */
-    if (dev_mod)
+    /* Step 3: 销毁 DEV */
+    LOG_INFO("销毁 DEV");
+    dev_module_t *dev_self = (dev_module_t *)g_tree_lookup(g_module_registry, GUINT_TO_POINTER(DEV_MODULE_ID_DEV));
+    if (dev_self)
     {
-        printf("[dev] 销毁 DEV IPC\n");
-        if (dev_mod->ipc_ctx)
-        {
-            ipc_destroy(dev_mod->ipc_ctx);
-            dev_mod->ipc_ctx = NULL;
-        }
-        g_free(dev_mod->db_name);
-        g_free(dev_mod->xml_path);
-        g_free(dev_mod);
+        g_free(dev_self->db_name);
+        g_free(dev_self);
     }
 
     g_list_free(modules);
@@ -731,5 +626,5 @@ void cleanup_all_modules(void)
     g_tree_destroy(g_module_registry);
     g_module_registry = NULL;
 
-    printf("[dev] 模块清理完成\n");
+    LOG_INFO("模块清理完成");
 }

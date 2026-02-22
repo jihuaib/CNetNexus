@@ -6,23 +6,10 @@
  */
 #include <stdio.h>
 
-#include "cfg_registry.h"
 #include "cli.h"
 #include "cli_param_type.h"
 #include "cli_view.h"
 #include "errcode.h"
-
-void cfg_register_module_xml(uint32_t module_id, const char *xml_path)
-{
-    if (!xml_path)
-    {
-        return;
-    }
-
-    cfg_register_module_xml_inner(module_id, xml_path);
-
-    printf("[cfg] Registered XML for module ID %u -> %s\n", module_id, xml_path);
-}
 
 // Get view prompt template by view name (for modules to fill placeholders)
 int cfg_get_view_prompt_template(uint32_t view_id, char *view_name)
@@ -53,18 +40,4 @@ gboolean cfg_param_type_validate(const cli_param_type_t *param_type, const char 
                                  uint32_t error_msg_size)
 {
     return cli_param_type_validate(param_type, value, error_msg, error_msg_size);
-}
-
-// ============================================================================
-// Module Entry Function（动态加载入口）
-// ============================================================================
-
-#include "cfg_main.h"
-#include "dev.h"
-#include "ipc.h"
-
-ipc_context_t *cfg_module_init(void)
-{
-    printf("[cfg] 模块入口函数执行\n");
-    return ipc_init(DEV_MODULE_ID_CFG, "cfg", NULL, cfg_msg_handler);
 }

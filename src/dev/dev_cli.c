@@ -4,6 +4,8 @@
  * @author jhb
  * @date   2026/01/22
  */
+#define LOG_TAG "dev"
+
 #include "dev_cli.h"
 
 #include <stdio.h>
@@ -14,6 +16,7 @@
 #include "dev_main.h"
 #include "dev_module.h"
 #include "errcode.h"
+#include "log.h"
 
 // ============================================================================
 // 内部辅助函数：show 命令
@@ -107,12 +110,12 @@ int dev_cli_handle_message(ipc_context_t *ctx, ipc_message_t *msg)
     cli_tlv_parser_t parser;
     if (cli_tlv_init(&parser, (const uint8_t *)msg->payload, msg->payload_len) != 0)
     {
-        printf("[dev_cli] 载荷解析失败\n");
+        LOG_ERROR("载荷解析失败");
         dev_send_cli_response(ctx, msg, "Dev Error: Failed to parse command payload.\r\n");
         return ERRCODE_FAIL;
     }
 
-    printf("[dev_cli] 收到 TLV 载荷 (group_id=%u)\n", parser.group_id);
+    LOG_DEBUG("收到 TLV 载荷 (group_id=%u)", parser.group_id);
 
     int result;
     switch (parser.group_id)
@@ -127,7 +130,7 @@ int dev_cli_handle_message(ipc_context_t *ctx, ipc_message_t *msg)
             result = handle_sysname(ctx, msg);
             break;
         default:
-            printf("[dev_cli] 未知 group_id: %u\n", parser.group_id);
+            LOG_WARN("未知 group_id: %u", parser.group_id);
             dev_send_cli_response(ctx, msg, "Dev Error: Unknown command.\r\n");
             result = ERRCODE_FAIL;
             break;

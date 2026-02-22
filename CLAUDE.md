@@ -262,10 +262,6 @@ telnet localhost 3788          # 连接到 CLI
 NetNexus 是一个模块化的 Telnet CLI 服务器，用于网络协议管理。核心架构概念：
 
 ### 模块系统
-模块在加载时通过 `__attribute__((constructor))` 自注册。每个模块提供：
-- 调用 `cli_register_module(name, xml_path)` 进行注册
-- 定义命令的 XML 配置文件（位于模块目录中）
-
 参见 [dev_module.c](src/dev/dev_module.c) 了解模式。
 
 ### 视图层级

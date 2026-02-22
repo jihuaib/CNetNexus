@@ -4,10 +4,14 @@
  * @author jhb
  * @date   2026/01/22
  */
+#define LOG_TAG "cfg"
+
 #include "cfg_main.h"
 
 #include <arpa/inet.h>
+#include <dirent.h>
 #include <glib.h>
+#include <limits.h>
 #include <netinet/in.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -15,13 +19,15 @@
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 
-#include "cfg_registry.h"
 #include "cli.h"
 #include "cli_handler.h"
 #include "cli_xml_parser.h"
 #include "dev.h"
 #include "errcode.h"
+#include "log.h"
+#include "path_utils.h"
 
 enum
 {
@@ -56,7 +62,7 @@ static void *cfg_server_thread(void *arg)
             {
                 continue;
             }
-            perror("[cfg] epoll_wait failed");
+            LOG_PERROR("epoll_wait failed");
             break;
         }
 
@@ -78,7 +84,7 @@ static void *cfg_server_thread(void *arg)
                 {
                     if (!dev_shutdown_requested())
                     {
-                        perror("[cfg] Accept failed");
+                        LOG_PERROR("Accept failed");
                     }
                     continue;
                 }
@@ -96,12 +102,12 @@ static void *cfg_server_thread(void *arg)
                     client_ev.data.fd = conn_fd;
                     if (epoll_ctl(g_cfg_local->epoll_fd, EPOLL_CTL_ADD, conn_fd, &client_ev) < 0)
                     {
-                        perror("[cfg] Failed to add client to epoll");
+                        LOG_PERROR("Failed to add client to epoll");
                         g_hash_table_remove(g_cfg_local->sessions, fd_key);
                     }
                     else
                     {
-                        printf("[cfg] Client connected (fd: %d)\n", conn_fd);
+                        LOG_INFO("Client connected (fd: %d)", conn_fd);
                     }
                 }
                 else
@@ -119,7 +125,7 @@ static void *cfg_server_thread(void *arg)
                 {
                     if (cli_process_input(session) < 0)
                     {
-                        printf("[cfg] Client disconnected (fd: %d)\n", fd);
+                        LOG_INFO("Client disconnected (fd: %d)", fd);
                         epoll_ctl(g_cfg_local->epoll_fd, EPOLL_CTL_DEL, fd, NULL);
                         g_hash_table_remove(g_cfg_local->sessions, &fd);
                     }
@@ -136,7 +142,7 @@ int32_t cfg_create_listen_sock()
     int32_t server_socket = socket(AF_INET, SOCK_STREAM, 0);
     if (server_socket < 0)
     {
-        perror("[cfg] Failed to create socket");
+        LOG_PERROR("Failed to create socket");
         return DEV_INVALID_FD;
     }
 
@@ -144,7 +150,7 @@ int32_t cfg_create_listen_sock()
     if (setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
     {
         close(server_socket);
-        perror("[cfg] Failed to set socket options");
+        LOG_PERROR("Failed to set socket options");
         return DEV_INVALID_FD;
     }
 
@@ -157,14 +163,14 @@ int32_t cfg_create_listen_sock()
     if (bind(server_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
     {
         close(server_socket);
-        perror("[cfg] Failed to bind socket");
+        LOG_PERROR("Failed to bind socket");
         return DEV_INVALID_FD;
     }
 
     if (listen(server_socket, CFG_BACKLOG) < 0)
     {
         close(server_socket);
-        perror("[cfg] Failed to listen");
+        LOG_PERROR("Failed to listen");
         return DEV_INVALID_FD;
     }
 
@@ -185,13 +191,123 @@ static void send_phase_response(ipc_context_t *ctx, ipc_message_t *msg, int32_t 
 }
 
 // ============================================================================
-// Phase 1: MODULE_START - 创建上下文、epoll、Telnet
+// 自动发现并加载 commands.xml
 // ============================================================================
 
-static void cfg_on_start(ipc_context_t *ctx, ipc_message_t *msg)
+/**
+ * @brief 扫描指定目录下所有子目录的 resources/commands.xml 并加载到视图树
+ * @param base_dir 基础目录路径
+ * @return 成功加载的 XML 数量
+ */
+static int cfg_scan_and_load_xml(const char *base_dir)
 {
-    printf("[cfg] Phase 1: MODULE_START\n");
+    DIR *dir = opendir(base_dir);
+    if (!dir)
+    {
+        return 0;
+    }
 
+    int loaded = 0;
+    struct dirent *entry;
+
+    while ((entry = readdir(dir)) != NULL)
+    {
+        if (entry->d_name[0] == '.')
+        {
+            continue;
+        }
+
+        char xml_path[PATH_MAX];
+        snprintf(xml_path, sizeof(xml_path), "%s/%s/resources/commands.xml", base_dir, entry->d_name);
+
+        struct stat st;
+        if (stat(xml_path, &st) != 0)
+        {
+            continue;
+        }
+
+        LOG_INFO("发现 XML: %s", xml_path);
+        if (cli_xml_load_view_tree(xml_path, &g_cfg_local->view_tree) == ERRCODE_SUCCESS)
+        {
+            LOG_INFO("加载 XML 成功: %s", entry->d_name);
+            loaded++;
+        }
+        else
+        {
+            LOG_ERROR("加载 XML 失败: %s", xml_path);
+        }
+    }
+
+    closedir(dir);
+    return loaded;
+}
+
+/**
+ * @brief 自动发现并加载所有模块的 commands.xml
+ *
+ * 按以下优先级扫描目录：
+ * 1. 环境变量 RESOURCES_DIR
+ * 2. 生产路径 /opt/netnexus/resources
+ * 3. 相对于可执行文件的开发路径
+ */
+static void cfg_discover_and_load_xml(void)
+{
+    LOG_INFO("自动发现并加载 commands.xml...");
+
+    int total = 0;
+
+    /* 优先级 1: 环境变量 RESOURCES_DIR */
+    const char *resources_dir = getenv("RESOURCES_DIR");
+    if (resources_dir)
+    {
+        total = cfg_scan_and_load_xml(resources_dir);
+        if (total > 0)
+        {
+            LOG_INFO("从 RESOURCES_DIR 加载了 %d 个 XML 配置", total);
+            return;
+        }
+    }
+
+    /* 优先级 2: 生产路径 */
+    total = cfg_scan_and_load_xml("/opt/netnexus/resources");
+    if (total > 0)
+    {
+        LOG_INFO("从生产路径加载了 %d 个 XML 配置", total);
+        return;
+    }
+
+    /* 优先级 3: 相对于可执行文件的开发路径 */
+    char exe_dir[PATH_MAX];
+    if (get_exe_dir(exe_dir, sizeof(exe_dir)) == 0)
+    {
+        char dev_path[PATH_MAX];
+
+        snprintf(dev_path, sizeof(dev_path), "%s/../src", exe_dir);
+        total = cfg_scan_and_load_xml(dev_path);
+        if (total > 0)
+        {
+            LOG_INFO("从开发路径加载了 %d 个 XML 配置", total);
+            return;
+        }
+
+        snprintf(dev_path, sizeof(dev_path), "%s/../../src", exe_dir);
+        total = cfg_scan_and_load_xml(dev_path);
+        if (total > 0)
+        {
+            LOG_INFO("从开发路径加载了 %d 个 XML 配置", total);
+            return;
+        }
+    }
+
+    LOG_ERROR("未发现任何 commands.xml");
+}
+
+// ============================================================================
+// 本地状态初始化（从 constructor 调用）
+// ============================================================================
+
+void cfg_init_local(ipc_context_t *ctx)
+{
     g_cfg_local = g_malloc0(sizeof(cfg_local_t));
     pthread_mutex_init(&g_cfg_local->history_mutex, NULL);
     g_cfg_local->epoll_fd = DEV_INVALID_FD;
@@ -200,16 +316,68 @@ static void cfg_on_start(ipc_context_t *ctx, ipc_message_t *msg)
     g_cfg_local->ipc_ctx = ctx;
     g_cfg_local->sessions = g_hash_table_new_full(g_int_hash, g_int_equal, g_free, (GDestroyNotify)cli_session_destroy);
 
-    /* 创建 Telnet 服务器的 epoll */
+    /* 创建视图树 */
+    cli_view_node_t *user_view = cli_view_create(CLI_VIEW_USER, "user", "<NetNexus>");
+    if (!user_view)
+    {
+        LOG_ERROR("Failed to create user view");
+        return;
+    }
+    g_cfg_local->view_tree.root = user_view;
+
+    cli_view_node_t *config_view = cli_view_create(CLI_VIEW_CONFIG, "config", "<NetNexus(config)>");
+    if (!config_view)
+    {
+        LOG_ERROR("Failed to create config view");
+        return;
+    }
+    cli_view_add_child(user_view, config_view);
+
+    /* 自动发现并加载所有模块的 commands.xml */
+    cfg_discover_and_load_xml();
+
+    LOG_INFO("本地状态初始化完成");
+}
+
+// ============================================================================
+// Phase 1: MODULE_START — CFG 不需要连接其他模块，直接回复 OK
+// ============================================================================
+
+static void cfg_on_start(ipc_context_t *ctx, ipc_message_t *msg)
+{
+    LOG_INFO("Phase 1: MODULE_START (无需连接其他模块)");
+    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
+}
+
+// ============================================================================
+// Phase 2: MODULE_CONNECT — 预留（直接回复 OK）
+// ============================================================================
+
+static void cfg_on_connect(ipc_context_t *ctx, ipc_message_t *msg)
+{
+    LOG_INFO("Phase 2: MODULE_CONNECT (预留)");
+    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
+}
+
+// ============================================================================
+// Phase 3: MODULE_READY — 加载所有 XML
+// ============================================================================
+
+static void cfg_on_ready(ipc_context_t *ctx, ipc_message_t *msg)
+{
+    LOG_INFO("Phase 3: MODULE_READY — 启动 Telnet 服务器");
+
+    /* 创建 epoll */
     int epoll_fd = epoll_create1(EPOLL_CLOEXEC);
     if (epoll_fd < 0)
     {
-        perror("[cfg] Failed to create epoll");
+        LOG_PERROR("Failed to create epoll");
         send_phase_response(ctx, msg, ERRCODE_FAIL);
         return;
     }
     g_cfg_local->epoll_fd = epoll_fd;
 
+    /* 创建监听 socket */
     int32_t listen_sock = cfg_create_listen_sock();
     if (listen_sock < 0)
     {
@@ -218,87 +386,26 @@ static void cfg_on_start(ipc_context_t *ctx, ipc_message_t *msg)
     }
     g_cfg_local->listen_sock = listen_sock;
 
+    /* 将监听 socket 加入 epoll */
     struct epoll_event ev;
     ev.events = EPOLLIN;
     ev.data.fd = listen_sock;
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, listen_sock, &ev) < 0)
     {
-        perror("[cfg] Failed to add listen socket to epoll");
+        LOG_PERROR("Failed to add listen socket to epoll");
         send_phase_response(ctx, msg, ERRCODE_FAIL);
         return;
     }
 
-    /* 启动 server 线程 */
-    if (pthread_create(&g_cfg_local->worker_thread, NULL, cfg_server_thread, NULL) != ERRCODE_SUCCESS)
+    /* 启动 Telnet server 线程 */
+    if (pthread_create(&g_cfg_local->worker_thread, NULL, cfg_server_thread, NULL) != 0)
     {
-        perror("[cfg] Failed to create server thread");
+        LOG_PERROR("Failed to create server thread");
         send_phase_response(ctx, msg, ERRCODE_FAIL);
         return;
     }
 
-    printf("[cfg] Telnet server listening on port %d\n", CFG_PORT);
-
-    /* 创建视图树 */
-    cli_view_node_t *user_view = cli_view_create(CLI_VIEW_USER, "user", "<NetNexus>");
-    if (!user_view)
-    {
-        fprintf(stderr, "[cfg] Failed to create user view\n");
-        send_phase_response(ctx, msg, ERRCODE_FAIL);
-        return;
-    }
-    g_cfg_local->view_tree.root = user_view;
-
-    cli_view_node_t *config_view = cli_view_create(CLI_VIEW_CONFIG, "config", "<NetNexus(config)>");
-    if (!config_view)
-    {
-        fprintf(stderr, "[cfg] Failed to create config view\n");
-        send_phase_response(ctx, msg, ERRCODE_FAIL);
-        return;
-    }
-    cli_view_add_child(user_view, config_view);
-
-    printf("[cfg] Module started\n");
-    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
-}
-
-// ============================================================================
-// Phase 2: MODULE_CONNECT - CFG 不主动连接其他模块
-// ============================================================================
-
-static void cfg_on_connect(ipc_context_t *ctx, ipc_message_t *msg)
-{
-    printf("[cfg] Phase 2: MODULE_CONNECT (无需主动连接)\n");
-    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
-}
-
-// ============================================================================
-// Phase 3: MODULE_READY - 加载所有 XML
-// ============================================================================
-
-static void cfg_on_ready(ipc_context_t *ctx, ipc_message_t *msg)
-{
-    printf("[cfg] Phase 3: MODULE_READY - 加载 XML\n");
-
-    int failed_count = 0;
-    extern GSList *g_xml_registry;
-
-    for (GSList *node = g_xml_registry; node != NULL; node = node->next)
-    {
-        cfg_xml_entry_t *entry = (cfg_xml_entry_t *)node->data;
-
-        printf("[cfg] Loading: %s\n", entry->xml_path);
-        if (cli_xml_load_view_tree(entry->xml_path, &g_cfg_local->view_tree) == ERRCODE_SUCCESS)
-        {
-            printf("[cfg] Commands loaded success\n");
-        }
-        else
-        {
-            fprintf(stderr, "[cfg] Failed to load XML\n");
-            failed_count++;
-        }
-    }
-
-    printf("[cfg] Module cli initialization complete (failures: %d)\n", failed_count);
+    LOG_INFO("Telnet server listening on port %d", CFG_PORT);
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
@@ -308,7 +415,7 @@ static void cfg_on_ready(ipc_context_t *ctx, ipc_message_t *msg)
 
 static void cfg_on_shutdown(ipc_context_t *ctx, ipc_message_t *msg)
 {
-    printf("[cfg] Shutting down server...\n");
+    LOG_INFO("Shutting down server...");
 
     cli_cleanup();
 
@@ -341,7 +448,7 @@ static void cfg_on_shutdown(ipc_context_t *ctx, ipc_message_t *msg)
     g_free(g_cfg_local);
     g_cfg_local = NULL;
 
-    printf("[cfg] Server shutdown complete\n");
+    LOG_INFO("Server shutdown complete");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
@@ -375,6 +482,25 @@ void cfg_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
 }
 
 // ============================================================================
-// 入口函数：创建 IPC 上下文
+// .so constructor（dlopen 时自动触发）
 // ============================================================================
 
+#include "cfg_main.h"
+#include "dev.h"
+#include "ipc.h"
+
+__attribute__((constructor)) static void cfg_so_init(void)
+{
+    LOG_INFO(".so 加载，自初始化");
+
+    /* 创建 IPC 上下文 */
+    ipc_context_t *ctx = ipc_init(DEV_MODULE_ID_CFG, "cfg", NULL, cfg_msg_handler);
+    if (!ctx)
+    {
+        LOG_ERROR("IPC 初始化失败");
+        return;
+    }
+
+    /* 初始化本地状态（epoll、socket、server thread、view tree） */
+    cfg_init_local(ctx);
+}

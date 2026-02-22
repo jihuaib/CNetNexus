@@ -8,7 +8,6 @@ set(CFG_SOURCES
     cli_xml_parser.c
     cli_dispatch.c
     cli_history.c
-    cfg_registry.c
     cfg_main.c
     cfg_cli.c
     cfg_show_config.c
@@ -27,6 +26,7 @@ target_include_directories(cfg PUBLIC
 target_link_libraries(cfg PUBLIC
     dev
     ipc
+    utils
     ${LIBXML2_LIBRARIES}
     ${GLIB_LIBRARIES}
     Threads::Threads

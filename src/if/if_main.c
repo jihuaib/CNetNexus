@@ -4,6 +4,7 @@
  * @author jhb
  * @date   2026/01/22
  */
+#define LOG_TAG "if"
 #include "if_main.h"
 
 #include <limits.h>
@@ -19,6 +20,7 @@
 #include "if_cli.h"
 #include "if_map.h"
 #include "ipc.h"
+#include "log.h"
 #include "path_utils.h"
 
 if_local_t *g_if_local = NULL;
@@ -47,11 +49,11 @@ static void if_init_db(void)
             db_value_free(&values[0]);
             db_value_free(&values[1]);
             db_value_free(&values[2]);
-            printf("[if] Inserted interface %s into database\n", logical_name);
+            LOG_INFO("Inserted interface %s into database", logical_name);
         }
         else if (ret == ERRCODE_SUCCESS && exists)
         {
-            printf("[if] Interface %s already exists in database, preserving config\n", logical_name);
+            LOG_DEBUG("Interface %s already exists in database, preserving config", logical_name);
         }
     }
 }
@@ -70,73 +72,40 @@ static void send_phase_response(ipc_context_t *ctx, ipc_message_t *msg, int32_t 
 }
 
 // ============================================================================
-// Phase 1: MODULE_START - 创建上下文，加载 if_map
+// Phase 1: MODULE_START — 建立 IPC 连接到 CFG
 // ============================================================================
 
 static void if_on_start(ipc_context_t *ctx, ipc_message_t *msg)
 {
-    printf("[if] Phase 1: MODULE_START\n");
+    LOG_INFO("Phase 1: MODULE_START — 建立 IPC 连接");
 
-    g_if_local = g_malloc0(sizeof(if_local_t));
-    g_if_local->ipc_ctx = ctx;
+    ipc_connect(ctx, DEV_MODULE_ID_CFG);
 
-    /* 初始化接口映射 */
-    char if_map_path[PATH_MAX];
-    const char *resources_dir = getenv("RESOURCES_DIR");
-    if (resources_dir != NULL)
-    {
-        snprintf(if_map_path, sizeof(if_map_path), "%s/if/if_map.conf.gns3", resources_dir);
-        printf("[if] Using GNS3 interface mapping: %s\n", if_map_path);
-    }
-    else
-    {
-        char exe_dir[PATH_MAX];
-        if (get_exe_dir(exe_dir, sizeof(exe_dir)) != 0)
-        {
-            fprintf(stderr, "[if] Failed to get exe directory\n");
-            send_phase_response(ctx, msg, ERRCODE_FAIL);
-            return;
-        }
-        snprintf(if_map_path, sizeof(if_map_path), "%s/../../src/if/resources/if_map.conf.local", exe_dir);
-        printf("[if] Using local interface mapping: %s\n", if_map_path);
-    }
-
-    if (if_map_init(if_map_path) != ERRCODE_SUCCESS)
-    {
-        fprintf(stderr, "[if] Failed to load interface mapping\n");
-        send_phase_response(ctx, msg, ERRCODE_FAIL);
-        return;
-    }
-
-    printf("[if] Module started\n");
+    LOG_INFO("已连接到 CFG");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
 // ============================================================================
-// Phase 2: MODULE_CONNECT - 连接到 CFG
+// Phase 2: MODULE_CONNECT — 预留（直接回复 OK）
 // ============================================================================
 
 static void if_on_connect(ipc_context_t *ctx, ipc_message_t *msg)
 {
-    printf("[if] Phase 2: MODULE_CONNECT\n");
-
-    ipc_connect(ctx, DEV_MODULE_ID_CFG);
-
-    printf("[if] 已连接到 CFG\n");
+    LOG_INFO("Phase 2: MODULE_CONNECT (预留)");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
 // ============================================================================
-// Phase 3: MODULE_READY - 将接口写入数据库
+// Phase 3: MODULE_READY — 将接口写入数据库
 // ============================================================================
 
 static void if_on_ready(ipc_context_t *ctx, ipc_message_t *msg)
 {
-    printf("[if] Phase 3: MODULE_READY\n");
+    LOG_INFO("Phase 3: MODULE_READY");
 
     if_init_db();
 
-    printf("[if] IF module ready\n");
+    LOG_INFO("IF module ready");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
@@ -146,7 +115,7 @@ static void if_on_ready(ipc_context_t *ctx, ipc_message_t *msg)
 
 static void if_on_shutdown(ipc_context_t *ctx, ipc_message_t *msg)
 {
-    printf("[if] Shutting down if module...\n");
+    LOG_INFO("Shutting down if module...");
 
     /* ipc_ctx 由 DEV 管理 */
     g_if_local->ipc_ctx = NULL;
@@ -154,7 +123,7 @@ static void if_on_shutdown(ipc_context_t *ctx, ipc_message_t *msg)
     g_free(g_if_local);
     g_if_local = NULL;
 
-    printf("[if] if module cleanup complete\n");
+    LOG_INFO("if module cleanup complete");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
@@ -182,17 +151,17 @@ void if_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
 
         /* ---- CLI 消息 ---- */
         case CFG_MSG_TYPE_CLI:
-            printf("[if] Received CLI command message\n");
+            LOG_DEBUG("Received CLI command message");
             if_cli_handle_message(msg);
             break;
 
         case CFG_MSG_TYPE_CLI_CONTINUE:
-            printf("[if] Received CLI continue request\n");
+            LOG_DEBUG("Received CLI continue request");
             if_cli_handle_continue(msg);
             break;
 
         default:
-            printf("[if] Received unknown message type: 0x%08X\n", msg->msg_type);
+            LOG_WARN("Received unknown message type: 0x%08X", msg->msg_type);
             break;
     }
 
@@ -200,6 +169,47 @@ void if_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
 }
 
 // ============================================================================
-// 入口函数：创建 IPC 上下文
+// .so constructor（dlopen 时自动触发）
 // ============================================================================
 
+__attribute__((constructor)) static void if_so_init(void)
+{
+    LOG_INFO(".so 加载，自初始化");
+
+    /* 创建 IPC 上下文 */
+    ipc_context_t *ctx = ipc_init(DEV_MODULE_ID_IF, "if", NULL, if_msg_handler);
+    if (!ctx)
+    {
+        LOG_ERROR("IPC 初始化失败");
+        return;
+    }
+
+    /* 初始化本地状态（原 if_on_start 逻辑） */
+    g_if_local = g_malloc0(sizeof(if_local_t));
+    g_if_local->ipc_ctx = ctx;
+
+    /* 初始化接口映射 */
+    char if_map_path[PATH_MAX];
+    const char *resources_dir = getenv("RESOURCES_DIR");
+    if (resources_dir != NULL)
+    {
+        snprintf(if_map_path, sizeof(if_map_path), "%s/if/if_map.conf.gns3", resources_dir);
+        LOG_INFO("Using GNS3 interface mapping: %s", if_map_path);
+    }
+    else
+    {
+        char exe_dir[PATH_MAX];
+        if (get_exe_dir(exe_dir, sizeof(exe_dir)) != 0)
+        {
+            LOG_ERROR("Failed to get exe directory");
+            return;
+        }
+        snprintf(if_map_path, sizeof(if_map_path), "%s/../../src/if/resources/if_map.conf.local", exe_dir);
+        LOG_INFO("Using local interface mapping: %s", if_map_path);
+    }
+
+    if (if_map_init(if_map_path) != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("Failed to load interface mapping");
+    }
+}

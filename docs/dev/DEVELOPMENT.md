@@ -127,11 +127,6 @@ NetNexus/
    static void mymodule_cleanup(void) {
        printf("[mymodule] Cleaning up\n");
    }
-
-   static void __attribute__((constructor)) register_mymodule(void) {
-       dev_register_module(0x00000005, "mymodule",
-                              mymodule_init, mymodule_cleanup);
-   }
    ```
 
 3. **Create CMakeLists.txt:**

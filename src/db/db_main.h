@@ -33,9 +33,9 @@ typedef struct db_connection
 
 typedef struct db_local
 {
-    GHashTable *connections;  // Map: db_name (char*) -> db_connection_t*
-    db_registry_t *registry;  // Database definitions registry
-    ipc_context_t *ipc_ctx;   // IPC 上下文（由 DEV 创建和管理）
+    GHashTable *connections; // Map: db_name (char*) -> db_connection_t*
+    db_registry_t *registry; // Database definitions registry
+    ipc_context_t *ipc_ctx;  // IPC 上下文（由 DEV 创建和管理）
 } db_local_t;
 
 extern db_local_t *g_db_local;

@@ -4,6 +4,7 @@
  * @author jhb
  * @date   2026/01/22
  */
+#define LOG_TAG "bgp"
 #include "bgp_cli.h"
 
 #include <arpa/inet.h>
@@ -18,6 +19,7 @@
 #include "dev.h"
 #include "errcode.h"
 #include "ipc.h"
+#include "log.h"
 
 // ============================================================================
 // 发送 CLI 响应辅助
@@ -148,12 +150,12 @@ static int handle_bgp_protocol(ipc_message_t *msg, cli_tlv_parser_t *parser)
     if (exists)
     {
         db_rpc_update(g_bgp_local->ipc_ctx, "bgp_db", "bgp_protocol", field_names, values, 1, NULL);
-        printf("[bgp_cli] Updated BGP AS number to %u\n", as_number);
+        LOG_INFO("Updated BGP AS number to %u", as_number);
     }
     else
     {
         db_rpc_insert(g_bgp_local->ipc_ctx, "bgp_db", "bgp_protocol", field_names, values, 1);
-        printf("[bgp_cli] Inserted BGP AS number %u\n", as_number);
+        LOG_INFO("Inserted BGP AS number %u", as_number);
     }
 
     /* 发送 VIEW_CHG 响应 */
@@ -309,12 +311,12 @@ int bgp_cli_handle_message(ipc_message_t *msg)
     cli_tlv_parser_t parser;
     if (cli_tlv_init(&parser, (const uint8_t *)msg->payload, msg->payload_len) != 0)
     {
-        printf("[bgp_cli] 载荷解析失败\n");
+        LOG_ERROR("载荷解析失败");
         bgp_send_cli_response(msg, "BGP Error: Failed to parse command payload.\r\n");
         return ERRCODE_FAIL;
     }
 
-    printf("[bgp_cli] 收到 TLV 载荷 (group_id=%u)\n", parser.group_id);
+    LOG_DEBUG("收到 TLV 载荷 (group_id=%u)", parser.group_id);
 
     int result;
     switch (parser.group_id)
@@ -326,7 +328,7 @@ int bgp_cli_handle_message(ipc_message_t *msg)
             result = handle_bgp_peer_show(msg);
             break;
         default:
-            printf("[bgp_cli] 未知 group_id: %u\n", parser.group_id);
+            LOG_WARN("未知 group_id: %u", parser.group_id);
             bgp_send_cli_response(msg, "BGP Error: Unknown command group.\r\n");
             result = ERRCODE_FAIL;
             break;

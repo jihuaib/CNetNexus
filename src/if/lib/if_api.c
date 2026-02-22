@@ -4,18 +4,14 @@
  * @author jhb
  * @date   2026/02/14
  */
+#include <glib.h>
+#include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 
-#include "if_main.h"
 #include "dev.h"
+#include "errcode.h"
+#include "if_main.h"
+#include "if_map.h"
 #include "ipc.h"
-
-// ============================================================================
-// Module Entry Function（动态加载入口）
-// ============================================================================
-
-ipc_context_t *if_module_init(void)
-{
-    printf("[if] 模块入口函数执行\n");
-    return ipc_init(DEV_MODULE_ID_IF, "if", NULL, if_msg_handler);
-}
+#include "path_utils.h"

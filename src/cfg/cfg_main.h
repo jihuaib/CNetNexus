@@ -42,4 +42,10 @@ extern cfg_local_t *g_cfg_local;
  */
 void cfg_msg_handler(ipc_context_t *ctx, ipc_message_t *msg);
 
+/**
+ * @brief CFG 本地状态初始化（从 constructor 调用）
+ * @param ctx IPC 上下文
+ */
+void cfg_init_local(ipc_context_t *ctx);
+
 #endif // CFG_MAIN_H

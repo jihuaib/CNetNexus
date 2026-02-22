@@ -4,6 +4,7 @@
  * @author jhb
  * @date   2026/01/22
  */
+#define LOG_TAG "db"
 #include "db_cli.h"
 
 #include <stdio.h>
@@ -16,6 +17,7 @@
 #include "db_registry.h"
 #include "dev.h"
 #include "errcode.h"
+#include "log.h"
 
 // ============================================================================
 // 发送 CLI 响应辅助
@@ -409,12 +411,12 @@ int db_cli_process_command(ipc_message_t *msg)
     cli_tlv_parser_t parser;
     if (cli_tlv_init(&parser, (const uint8_t *)msg->payload, msg->payload_len) != 0)
     {
-        printf("[db_cli] 载荷解析失败\n");
+        LOG_ERROR("载荷解析失败");
         db_send_cli_response(msg, "DB Error: Failed to parse command payload.\r\n");
         return ERRCODE_FAIL;
     }
 
-    printf("[db_cli] 收到 TLV 载荷 (group_id=%u)\n", parser.group_id);
+    LOG_DEBUG("收到 TLV 载荷 (group_id=%u)", parser.group_id);
 
     int result;
     switch (parser.group_id)
@@ -423,7 +425,7 @@ int db_cli_process_command(ipc_message_t *msg)
             result = handle_db_show_cmd(msg, &parser);
             break;
         default:
-            printf("[db_cli] 未知 group_id: %u\n", parser.group_id);
+            LOG_WARN("未知 group_id: %u", parser.group_id);
             db_send_cli_response(msg, "DB Error: Unknown command group.\r\n");
             result = ERRCODE_FAIL;
             break;

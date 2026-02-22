@@ -9,18 +9,6 @@
 #include "dev_module.h"
 #include "errcode.h"
 
-void dev_register_module(uint32_t id, const char *name, ipc_msg_handler_fn handler)
-{
-    if (!name)
-    {
-        return;
-    }
-
-    dev_register_module_inner(id, name, handler);
-
-    printf("[dev] Registered module: %s\n", name);
-}
-
 int dev_get_module_name(uint32_t module_id, char *module_name)
 {
     if (!module_name)

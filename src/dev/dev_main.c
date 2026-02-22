@@ -4,6 +4,8 @@
  * @author jhb
  * @date   2026/01/22
  */
+#define LOG_TAG "dev"
+
 #include "dev_main.h"
 
 #include <stdio.h>
@@ -15,6 +17,7 @@
 #include "dev_cli.h"
 #include "dev_module.h"
 #include "errcode.h"
+#include "log.h"
 
 dev_local_t *g_dev_local = NULL;
 
@@ -27,12 +30,12 @@ void dev_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
     switch (msg->msg_type)
     {
         case CFG_MSG_TYPE_CLI:
-            printf("[dev] Received CLI command message\n");
+            LOG_DEBUG("Received CLI command message");
             dev_cli_handle_message(ctx, msg);
             break;
 
         case CFG_MSG_TYPE_CLI_CONTINUE:
-            printf("[dev] Received CLI continue request\n");
+            LOG_DEBUG("Received CLI continue request");
             dev_cli_handle_continue(ctx, msg);
             break;
 
@@ -56,16 +59,16 @@ int dev_init_self(void)
     g_dev_local->ipc_ctx = ipc_init(DEV_MODULE_ID_DEV, "dev", NULL, dev_msg_handler);
     if (!g_dev_local->ipc_ctx)
     {
-        fprintf(stderr, "[dev] Failed to initialize IPC\n");
+        LOG_ERROR("Failed to initialize IPC");
         g_free(g_dev_local);
         g_dev_local = NULL;
         return ERRCODE_FAIL;
     }
 
     /* 注册 DEV 模块到 GTree */
-    dev_register_module(DEV_MODULE_ID_DEV, "dev", dev_msg_handler);
+    dev_add_module_to_registry(DEV_MODULE_ID_DEV, "dev");
 
-    printf("[dev] DEV 自身 IPC 初始化完成\n");
+    LOG_INFO("DEV 自身 IPC 初始化完成");
     return ERRCODE_SUCCESS;
 }
 
@@ -92,7 +95,7 @@ void dev_cleanup_self(void)
         return;
     }
 
-    printf("[dev] Dev module cleanup\n");
+    LOG_INFO("Dev module cleanup");
 
     /* 注意：IPC context 的销毁由 cleanup_all_modules() 统一处理 */
     g_dev_local->ipc_ctx = NULL;

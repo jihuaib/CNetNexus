@@ -4,6 +4,7 @@
  * @author jhb
  * @date   2026/01/22
  */
+#define LOG_TAG "if"
 #include "if_map.h"
 
 #include <ifaddrs.h>
@@ -14,6 +15,7 @@
 
 #include "errcode.h"
 #include "if.h"
+#include "log.h"
 
 // Global interface mapping table
 if_map_t g_interface_map = {0};
@@ -61,20 +63,19 @@ int if_map_init(const char *config_file)
 {
     if (config_file == NULL)
     {
-        printf("[interface] Error: No config file specified\n");
+        LOG_ERROR("No config file specified");
         return ERRCODE_FAIL;
     }
 
     // Load from config file
     if (load_config_file(config_file) == ERRCODE_SUCCESS)
     {
-        printf("[interface] Loaded %d interface mapping(s) from %s\n", g_interface_map.count, config_file);
+        LOG_INFO("Loaded %d interface mapping(s) from %s", g_interface_map.count, config_file);
 
         // Print mappings and ensure interfaces exist
         for (int i = 0; i < g_interface_map.count; i++)
         {
-            printf("[interface]   %s -> %s\n", g_interface_map.entries[i].logical_name,
-                   g_interface_map.entries[i].physical_name);
+            LOG_INFO("  %s -> %s", g_interface_map.entries[i].logical_name, g_interface_map.entries[i].physical_name);
 
             // Ensure the physical interface exists (create if virtual)
             if_ensure_exists(g_interface_map.entries[i].physical_name);
@@ -83,7 +84,7 @@ int if_map_init(const char *config_file)
         return ERRCODE_SUCCESS;
     }
 
-    printf("[interface] Warning: Failed to load config file %s\n", config_file);
+    LOG_WARN("Failed to load config file %s", config_file);
     return ERRCODE_FAIL;
 }
 

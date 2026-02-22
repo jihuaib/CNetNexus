@@ -7,6 +7,7 @@
  * 接收来自其他进程的 DB RPC 消息，反序列化参数后调用本地
  * db_api.c 函数执行操作，将结果序列化后发送响应。
  */
+#define LOG_TAG "db"
 
 #include "db_ipc_handler.h"
 
@@ -22,6 +23,7 @@
 #include "db_main.h"
 #include "db_serialize.h"
 #include "errcode.h"
+#include "log.h"
 
 /**
  * @brief 发送 DB RPC 响应
@@ -60,7 +62,7 @@ static void handle_db_insert(ipc_context_t *ctx, ipc_message_t *msg)
     if (db_deserialize_request_insert(msg->payload, msg->payload_len, &db_name, &table_name, &field_names, &values,
                                       &num_fields) < 0)
     {
-        fprintf(stderr, "[db] Failed to deserialize INSERT request\n");
+        LOG_ERROR("Failed to deserialize INSERT request");
         send_db_response(ctx, msg, ERRCODE_FAIL, NULL);
         return;
     }
@@ -104,7 +106,7 @@ static void handle_db_update(ipc_context_t *ctx, ipc_message_t *msg)
     if (db_deserialize_request_update(msg->payload, msg->payload_len, &db_name, &table_name, &field_names, &values,
                                       &num_fields, &where_clause) < 0)
     {
-        fprintf(stderr, "[db] Failed to deserialize UPDATE request\n");
+        LOG_ERROR("Failed to deserialize UPDATE request");
         send_db_response(ctx, msg, ERRCODE_FAIL, NULL);
         return;
     }
@@ -144,7 +146,7 @@ static void handle_db_delete(ipc_context_t *ctx, ipc_message_t *msg)
 
     if (db_deserialize_request_delete(msg->payload, msg->payload_len, &db_name, &table_name, &where_clause) < 0)
     {
-        fprintf(stderr, "[db] Failed to deserialize DELETE request\n");
+        LOG_ERROR("Failed to deserialize DELETE request");
         send_db_response(ctx, msg, ERRCODE_FAIL, NULL);
         return;
     }
@@ -171,7 +173,7 @@ static void handle_db_query(ipc_context_t *ctx, ipc_message_t *msg)
     if (db_deserialize_request_query(msg->payload, msg->payload_len, &db_name, &table_name, &field_names, &num_fields,
                                      &where_clause) < 0)
     {
-        fprintf(stderr, "[db] Failed to deserialize QUERY request\n");
+        LOG_ERROR("Failed to deserialize QUERY request");
         send_db_response(ctx, msg, ERRCODE_FAIL, NULL);
         return;
     }
@@ -208,7 +210,7 @@ static void handle_db_exists(ipc_context_t *ctx, ipc_message_t *msg)
 
     if (db_deserialize_request_exists(msg->payload, msg->payload_len, &db_name, &table_name, &where_clause) < 0)
     {
-        fprintf(stderr, "[db] Failed to deserialize EXISTS request\n");
+        LOG_ERROR("Failed to deserialize EXISTS request");
         send_db_response(ctx, msg, ERRCODE_FAIL, NULL);
         return;
     }
@@ -269,7 +271,7 @@ void handle_db_registry_add(ipc_context_t *ctx, ipc_message_t *msg)
 {
     if (!msg || !msg->payload || msg->payload_len == 0)
     {
-        fprintf(stderr, "[db_ipc] 无效的注册请求\n");
+        LOG_ERROR("无效的注册请求");
         return;
     }
 
@@ -280,7 +282,7 @@ void handle_db_registry_add(ipc_context_t *ctx, ipc_message_t *msg)
     char *db_name = read_string(&data, &remaining);
     if (!db_name)
     {
-        fprintf(stderr, "[db_ipc] 读取 db_name 失败\n");
+        LOG_ERROR("读取 db_name 失败");
         return;
     }
 
@@ -288,21 +290,21 @@ void handle_db_registry_add(ipc_context_t *ctx, ipc_message_t *msg)
     if (remaining < sizeof(uint32_t))
     {
         g_free(db_name);
-        fprintf(stderr, "[db_ipc] 读取 module_id 失败\n");
+        LOG_ERROR("读取 module_id 失败");
         return;
     }
     uint32_t module_id_be;
     memcpy(&module_id_be, data, sizeof(module_id_be));
     uint32_t module_id = ntohl(module_id_be);
 
-    printf("[db_ipc] 注册数据库: %s (module_id=%u)\n", db_name, module_id);
+    LOG_INFO("注册数据库: %s (module_id=%u)", db_name, module_id);
 
     // 只创建DB定义（不创建表），表由各模块自行创建
     db_definition_t *db_def = db_definition_create(db_name, module_id);
     if (!db_def)
     {
         g_free(db_name);
-        fprintf(stderr, "[db_ipc] 创建数据库定义失败\n");
+        LOG_ERROR("创建数据库定义失败");
         return;
     }
 
@@ -312,16 +314,16 @@ void handle_db_registry_add(ipc_context_t *ctx, ipc_message_t *msg)
     // 初始化数据库连接（创建 SQLite 文件和连接）
     if (db_initialize_database(db_def) != ERRCODE_SUCCESS)
     {
-        fprintf(stderr, "[db_ipc] 初始化数据库连接失败: %s\n", db_name);
+        LOG_ERROR("初始化数据库连接失败: %s", db_name);
     }
     else
     {
-        printf("[db_ipc] 数据库连接初始化成功: %s\n", db_name);
+        LOG_INFO("数据库连接初始化成功: %s", db_name);
     }
 
     g_free(db_name);
 
-    printf("[db_ipc] 数据库注册成功\n");
+    LOG_INFO("数据库注册成功");
 
     // 发送响应
     ipc_message_t *resp =
@@ -362,7 +364,7 @@ void db_ipc_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
             handle_db_registry_add(ctx, msg);
             break;
         default:
-            fprintf(stderr, "[db] Unknown IPC message type: 0x%08X\n", msg->msg_type);
+            LOG_WARN("Unknown IPC message type: 0x%08X", msg->msg_type);
             break;
     }
 

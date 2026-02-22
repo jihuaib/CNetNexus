@@ -4,6 +4,7 @@
  * @author jhb
  * @date   2026/01/22
  */
+#define LOG_TAG "db"
 #include "db_api.h"
 
 #include <stdio.h>
@@ -15,67 +16,7 @@
 #include "db_registry.h"
 #include "errcode.h"
 #include "ipc.h"
-
-// ============================================================================
-// Initialization API
-// ============================================================================
-
-int db_initialize_all(void)
-{
-    if (!g_db_local || !g_db_local->registry)
-    {
-        fprintf(stderr, "[db] Context or registry not initialized\n");
-        return ERRCODE_FAIL;
-    }
-
-    db_registry_t *registry = g_db_local->registry;
-    int failed_count = 0;
-
-    g_mutex_lock(&registry->registry_mutex);
-
-    GHashTableIter iter;
-    gpointer key, value;
-
-    g_hash_table_iter_init(&iter, registry->databases);
-    while (g_hash_table_iter_next(&iter, &key, &value))
-    {
-        db_definition_t *db_def = (db_definition_t *)value;
-        uint32_t my_module_id = g_db_local->ipc_ctx ? ipc_get_module_id(g_db_local->ipc_ctx) : 0;
-
-        if (db_def->module_id != my_module_id)
-        {
-            /* 非本模块所有的数据库，跳过 */
-            continue;
-        }
-
-        /* 本地数据库初始化 */
-        if (db_initialize_database(db_def) != ERRCODE_SUCCESS)
-        {
-            fprintf(stderr, "[db] Failed to initialize database: %s\n", db_def->db_name);
-            failed_count++;
-        }
-        else
-        {
-            /* 更新连接信息 */
-            db_connection_t *conn = db_get_connection(db_def->db_name);
-            if (conn)
-            {
-                conn->owner_module_id = db_def->module_id;
-                conn->ipc_ctx = NULL;
-            }
-        }
-    }
-
-    g_mutex_unlock(&registry->registry_mutex);
-
-    if (failed_count > 0)
-    {
-        fprintf(stderr, "[db] %d database(s) failed to initialize\n", failed_count);
-        return ERRCODE_FAIL;
-    }
-
-    return ERRCODE_SUCCESS;
-}
+#include "log.h"
 
 // ============================================================================
 // Value Helper Functions
@@ -177,13 +118,13 @@ int db_insert(const char *db_name, const char *table_name, const char **field_na
     db_connection_t *conn = db_get_connection(db_name);
     if (!conn)
     {
-        fprintf(stderr, "[db] 错误: 找不到数据库连接 (db=%s)\n", db_name);
+        LOG_ERROR("错误: 找不到数据库连接 (db=%s)", db_name);
         return ERRCODE_FAIL;
     }
 
     if (!conn->handle)
     {
-        fprintf(stderr, "[db] 错误: 数据库未连接 (db=%s)\n", db_name);
+        LOG_ERROR("错误: 数据库未连接 (db=%s)", db_name);
         return ERRCODE_DB_NOT_OPEN;
     }
 
@@ -222,7 +163,7 @@ int db_insert(const char *db_name, const char *table_name, const char **field_na
     int rc = sqlite3_prepare_v2(conn->handle, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK)
     {
-        fprintf(stderr, "[db] Failed to prepare INSERT: %s\n", sqlite3_errmsg(conn->handle));
+        LOG_ERROR("Failed to prepare INSERT: %s", sqlite3_errmsg(conn->handle));
         g_mutex_unlock(&conn->db_mutex);
         return ERRCODE_FAIL;
     }
@@ -260,7 +201,7 @@ int db_insert(const char *db_name, const char *table_name, const char **field_na
 
     if (rc != SQLITE_DONE)
     {
-        fprintf(stderr, "[db] INSERT failed: %s\n", sqlite3_errmsg(conn->handle));
+        LOG_ERROR("INSERT failed: %s", sqlite3_errmsg(conn->handle));
         return ERRCODE_FAIL;
     }
 
@@ -278,13 +219,13 @@ int db_update(const char *db_name, const char *table_name, const char **field_na
     db_connection_t *conn = db_get_connection(db_name);
     if (!conn)
     {
-        fprintf(stderr, "[db] 错误: 找不到数据库连接 (db=%s)\n", db_name);
+        LOG_ERROR("错误: 找不到数据库连接 (db=%s)", db_name);
         return -1;
     }
 
     if (!conn->handle)
     {
-        fprintf(stderr, "[db] 错误: 数据库未连接 (db=%s)\n", db_name);
+        LOG_ERROR("错误: 数据库未连接 (db=%s)", db_name);
         return -1;
     }
 
@@ -317,7 +258,7 @@ int db_update(const char *db_name, const char *table_name, const char **field_na
     int rc = sqlite3_prepare_v2(conn->handle, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK)
     {
-        fprintf(stderr, "[db] Failed to prepare UPDATE: %s\n", sqlite3_errmsg(conn->handle));
+        LOG_ERROR("Failed to prepare UPDATE: %s", sqlite3_errmsg(conn->handle));
         g_mutex_unlock(&conn->db_mutex);
         return -1;
     }
@@ -356,7 +297,7 @@ int db_update(const char *db_name, const char *table_name, const char **field_na
 
     if (rc != SQLITE_DONE)
     {
-        fprintf(stderr, "[db] UPDATE failed: %s\n", sqlite3_errmsg(conn->handle));
+        LOG_ERROR("UPDATE failed: %s", sqlite3_errmsg(conn->handle));
         return -1;
     }
 
@@ -373,13 +314,13 @@ int db_delete(const char *db_name, const char *table_name, const char *where_cla
     db_connection_t *conn = db_get_connection(db_name);
     if (!conn)
     {
-        fprintf(stderr, "[db] 错误: 找不到数据库连接 (db=%s)\n", db_name);
+        LOG_ERROR("错误: 找不到数据库连接 (db=%s)", db_name);
         return -1;
     }
 
     if (!conn->handle)
     {
-        fprintf(stderr, "[db] 错误: 数据库未连接 (db=%s)\n", db_name);
+        LOG_ERROR("错误: 数据库未连接 (db=%s)", db_name);
         return -1;
     }
 
@@ -407,7 +348,7 @@ int db_delete(const char *db_name, const char *table_name, const char *where_cla
 
     if (rc != SQLITE_OK)
     {
-        fprintf(stderr, "[db] DELETE failed: %s\n", err_msg);
+        LOG_ERROR("DELETE failed: %s", err_msg);
         sqlite3_free(err_msg);
         return -1;
     }
@@ -426,13 +367,13 @@ int db_query(const char *db_name, const char *table_name, const char **field_nam
     db_connection_t *conn = db_get_connection(db_name);
     if (!conn)
     {
-        fprintf(stderr, "[db] 错误: 找不到数据库连接 (db=%s)\n", db_name);
+        LOG_ERROR("错误: 找不到数据库连接 (db=%s)", db_name);
         return ERRCODE_FAIL;
     }
 
     if (!conn->handle)
     {
-        fprintf(stderr, "[db] 错误: 数据库未连接 (db=%s)\n", db_name);
+        LOG_ERROR("错误: 数据库未连接 (db=%s)", db_name);
         return ERRCODE_FAIL;
     }
 
@@ -474,7 +415,7 @@ int db_query(const char *db_name, const char *table_name, const char **field_nam
     int rc = sqlite3_prepare_v2(conn->handle, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK)
     {
-        fprintf(stderr, "[db] Failed to prepare SELECT: %s\n", sqlite3_errmsg(conn->handle));
+        LOG_ERROR("Failed to prepare SELECT: %s", sqlite3_errmsg(conn->handle));
         g_mutex_unlock(&conn->db_mutex);
         return ERRCODE_FAIL;
     }
@@ -536,7 +477,7 @@ int db_query(const char *db_name, const char *table_name, const char **field_nam
 
     if (rc != SQLITE_DONE)
     {
-        fprintf(stderr, "[db] SELECT failed: %s\n", sqlite3_errmsg(conn->handle));
+        LOG_ERROR("SELECT failed: %s", sqlite3_errmsg(conn->handle));
         db_result_free(res);
         return ERRCODE_FAIL;
     }
@@ -610,14 +551,4 @@ gboolean db_validate_field(const char *db_name, const char *table_name, const ch
 
     // Use existing CLI validation logic
     return cfg_param_type_validate(field->param_type, value_str, error_msg, error_msg_len);
-}
-
-// ============================================================================
-// Module Entry Function（动态加载入口）
-// ============================================================================
-
-ipc_context_t *db_module_init(void)
-{
-    printf("[db] 模块入口函数执行\n");
-    return ipc_init(DEV_MODULE_ID_DB, "db", NULL, db_msg_handler);
 }

@@ -5,6 +5,8 @@
  * @date   2026/02/02
  */
 
+#define LOG_TAG "ipc"
+
 #include "ipc_connection.h"
 
 #include <arpa/inet.h>
@@ -19,6 +21,7 @@
 #include <unistd.h>
 
 #include "errcode.h"
+#include "log.h"
 
 ipc_connection_t *ipc_connection_create(uint32_t remote_module_id, int is_initiator)
 {
@@ -56,7 +59,7 @@ int ipc_connection_initiate(ipc_connection_t *conn, const char *host, uint16_t p
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0)
     {
-        perror("[ipc] socket");
+        LOG_PERROR("socket");
         return ERRCODE_FAIL;
     }
 

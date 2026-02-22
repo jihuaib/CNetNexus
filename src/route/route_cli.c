@@ -4,6 +4,7 @@
  * @author jhb
  * @date   2026/02/01
  */
+#define LOG_TAG "route"
 #include "route_cli.h"
 
 #include <glib.h>
@@ -16,6 +17,7 @@
 #include "dev.h"
 #include "errcode.h"
 #include "ipc.h"
+#include "log.h"
 #include "route_main.h"
 
 // ============================================================================
@@ -465,12 +467,12 @@ int route_cli_handle_message(ipc_message_t *msg)
     cli_tlv_parser_t parser;
     if (cli_tlv_init(&parser, (const uint8_t *)msg->payload, msg->payload_len) != 0)
     {
-        printf("[route_cli] 载荷解析失败\n");
+        LOG_ERROR("载荷解析失败");
         send_resp(msg, "Route Error: Failed to parse command payload.\r\n");
         return ERRCODE_FAIL;
     }
 
-    printf("[route_cli] 收到 TLV 载荷 (group_id=%u)\n", parser.group_id);
+    LOG_DEBUG("收到 TLV 载荷 (group_id=%u)", parser.group_id);
 
     int result;
     switch (parser.group_id)
@@ -482,7 +484,7 @@ int route_cli_handle_message(ipc_message_t *msg)
             result = handle_show_route(msg, &parser);
             break;
         default:
-            printf("[route_cli] 未知 group_id: %u\n", parser.group_id);
+            LOG_WARN("未知 group_id: %u", parser.group_id);
             send_resp(msg, "Route Error: Unknown command group.\r\n");
             result = ERRCODE_FAIL;
             break;

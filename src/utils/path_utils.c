@@ -4,6 +4,7 @@
  * @author jhb
  * @date   2026/01/22
  */
+#define LOG_TAG "path"
 #include "path_utils.h"
 
 #include <limits.h>
@@ -12,6 +13,8 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#include "log.h"
 
 int get_exe_dir(char *buf, size_t size)
 {
@@ -96,6 +99,6 @@ int resolve_xml_path(const char *module_name, char *buf, size_t size)
     }
 
     // If all else fails, return the last attempted path
-    fprintf(stderr, "[path] Warning: Could not find XML file for module '%s'\n", module_name);
+    LOG_WARN("Could not find XML file for module '%s'", module_name);
     return -1;
 }

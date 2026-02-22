@@ -5,6 +5,8 @@
  * @date   2026/02/02
  */
 
+#define LOG_TAG "ipc"
+
 #include "ipc_config.h"
 
 #include <limits.h>
@@ -14,6 +16,7 @@
 #include <unistd.h>
 
 #include "errcode.h"
+#include "log.h"
 #include "path_utils.h"
 
 int ipc_config_load(const char *path, ipc_config_t *config)
@@ -28,7 +31,7 @@ int ipc_config_load(const char *path, ipc_config_t *config)
     FILE *fp = fopen(path, "r");
     if (!fp)
     {
-        fprintf(stderr, "[ipc] 无法打开配置文件: %s\n", path);
+        LOG_ERROR("无法打开配置文件: %s", path);
         return ERRCODE_FAIL;
     }
 
@@ -43,7 +46,7 @@ int ipc_config_load(const char *path, ipc_config_t *config)
 
         if (config->num_modules >= 16)
         {
-            fprintf(stderr, "[ipc] 配置文件模块数超过上限\n");
+            LOG_ERROR("配置文件模块数超过上限");
             break;
         }
 
@@ -62,7 +65,7 @@ int ipc_config_load(const char *path, ipc_config_t *config)
     }
 
     fclose(fp);
-    printf("[ipc] 加载配置: %d 个模块 (from %s)\n", config->num_modules, path);
+    LOG_INFO("加载配置: %d 个模块 (from %s)", config->num_modules, path);
     return ERRCODE_SUCCESS;
 }
 

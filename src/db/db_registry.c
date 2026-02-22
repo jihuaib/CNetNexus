@@ -4,12 +4,14 @@
  * @author jhb
  * @date   2026/01/22
  */
+#define LOG_TAG "db"
 #include "db_registry.h"
 
 #include <stdio.h>
 #include <string.h>
 
 #include "errcode.h"
+#include "log.h"
 
 // Global registry instance
 static db_registry_t *g_db_registry = NULL;
@@ -226,7 +228,7 @@ void db_registry_add(db_definition_t *db_def)
     g_hash_table_insert(g_db_registry->databases, db_def->db_name, db_def);
     g_mutex_unlock(&g_db_registry->registry_mutex);
 
-    printf("[db] Registered database definition: %s (module_id: 0x%08X)\n", db_def->db_name, db_def->module_id);
+    LOG_INFO("Registered database definition: %s (module_id: 0x%08X)", db_def->db_name, db_def->module_id);
 }
 
 db_definition_t *db_registry_find(const char *db_name)

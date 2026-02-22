@@ -4,6 +4,7 @@
  * @author jhb
  * @date   2026/01/22
  */
+#define LOG_TAG "if"
 #include "if.h"
 
 #include <arpa/inet.h>
@@ -20,6 +21,7 @@
 
 #include "errcode.h"
 #include "if_map.h"
+#include "log.h"
 
 // Current interface context (for interface mode)
 char g_current_interface[IFNAMSIZ] = {0};
@@ -365,7 +367,7 @@ static int if_create_veth_netlink(const char *ifname, const char *peer_name)
     int sock = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
     if (sock < 0)
     {
-        perror("[if] socket(AF_NETLINK)");
+        LOG_PERROR("socket(AF_NETLINK)");
         return ERRCODE_FAIL;
     }
 
@@ -418,7 +420,7 @@ static int if_create_veth_netlink(const char *ifname, const char *peer_name)
 
     if (send(sock, &req, req.n.nlmsg_len, 0) < 0)
     {
-        perror("[if] Netlink send");
+        LOG_PERROR("Netlink send");
         close(sock);
         return ERRCODE_FAIL;
     }
@@ -428,7 +430,7 @@ static int if_create_veth_netlink(const char *ifname, const char *peer_name)
     int len = recv(sock, ans, sizeof(ans), 0);
     if (len < 0)
     {
-        perror("[if] Netlink recv");
+        LOG_PERROR("Netlink recv");
         close(sock);
         return ERRCODE_FAIL;
     }
@@ -439,7 +441,7 @@ static int if_create_veth_netlink(const char *ifname, const char *peer_name)
         struct nlmsgerr *err = (struct nlmsgerr *)NLMSG_DATA(nlh);
         if (err->error < 0)
         {
-            fprintf(stderr, "[if] Netlink error: %s\n", strerror(-err->error));
+            LOG_ERROR("Netlink error: %s", strerror(-err->error));
             close(sock);
             return ERRCODE_FAIL;
         }
@@ -457,14 +459,14 @@ int if_ensure_exists(const char *ifname)
         return ERRCODE_SUCCESS;
     }
 
-    printf("[if] Interface %s not found, attempting to create veth pair via Netlink...\n", ifname);
+    LOG_INFO("Interface %s not found, attempting to create veth pair via Netlink...", ifname);
 
     char peer_name[IFNAMSIZ];
     snprintf(peer_name, sizeof(peer_name), "%s-peer", ifname);
 
     if (if_create_veth_netlink(ifname, peer_name) != ERRCODE_SUCCESS)
     {
-        fprintf(stderr, "[if] Error: Failed to create veth pair for %s (check CAP_NET_ADMIN)\n", ifname);
+        LOG_ERROR("Failed to create veth pair for %s (check CAP_NET_ADMIN)", ifname);
         return ERRCODE_FAIL;
     }
 
@@ -472,6 +474,6 @@ int if_ensure_exists(const char *ifname)
     if_set_state(ifname, 1);
     if_set_state(peer_name, 1);
 
-    printf("[if] Successfully created %s and its peer\n", ifname);
+    LOG_INFO("Successfully created %s and its peer", ifname);
     return ERRCODE_SUCCESS;
 }

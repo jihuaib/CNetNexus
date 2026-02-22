@@ -1,6 +1,6 @@
 # DB API 模块源码
 set(DB_API_SOURCES
-    db_api.c
+    db_rpc.c
 )
 
 # 创建 DB API 共享库
@@ -12,9 +12,8 @@ target_include_directories(db_api PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/..
 )
 
-# 链接依赖（链接主模块 .so 以获得 db_msg_handler 等符号）
+# 链接依赖
 target_link_libraries(db_api PUBLIC
-    db
     ipc
     ${GLIB_LIBRARIES}
 )

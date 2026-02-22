@@ -4,6 +4,7 @@
  * @author jhb
  * @date   2026/01/22
  */
+#define LOG_TAG "if"
 #include "if_cli.h"
 
 #include <arpa/inet.h>
@@ -21,6 +22,7 @@
 #include "if_main.h"
 #include "if_map.h"
 #include "ipc.h"
+#include "log.h"
 
 // ============================================================================
 // 上下文序列化辅助（TLV 格式）
@@ -445,12 +447,12 @@ int if_cli_handle_message(ipc_message_t *msg)
     cli_tlv_parser_t parser;
     if (cli_tlv_init(&parser, (const uint8_t *)msg->payload, msg->payload_len) != 0)
     {
-        printf("[if_cli] 载荷解析失败\n");
+        LOG_ERROR("载荷解析失败");
         send_resp(msg, CFG_MSG_TYPE_CLI_RESP, "IF Error: Failed to parse command payload.\r\n");
         return ERRCODE_FAIL;
     }
 
-    printf("[if_cli] 收到 TLV 载荷 (group_id=%u)\n", parser.group_id);
+    LOG_DEBUG("收到 TLV 载荷 (group_id=%u)", parser.group_id);
 
     int result;
     switch (parser.group_id)
@@ -465,7 +467,7 @@ int if_cli_handle_message(ipc_message_t *msg)
             result = handle_if_show(msg, &parser);
             break;
         default:
-            printf("[if_cli] 未知 group_id: %u\n", parser.group_id);
+            LOG_WARN("未知 group_id: %u", parser.group_id);
             send_resp(msg, CFG_MSG_TYPE_CLI_RESP, "IF Error: Unknown command group.\r\n");
             result = ERRCODE_FAIL;
             break;

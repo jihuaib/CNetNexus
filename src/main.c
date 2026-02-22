@@ -4,6 +4,8 @@
  * @author jhb
  * @date   2026/01/22
  */
+#define LOG_TAG "main"
+
 #include <errno.h>
 #include <signal.h>
 #include <stdio.h>
@@ -16,6 +18,7 @@
 #include "dev/dev_main.h"
 #include "dev/dev_module.h"
 #include "errcode.h"
+#include "log.h"
 
 int main(int argc, char *argv[])
 {
@@ -33,7 +36,7 @@ int main(int argc, char *argv[])
 
     if (sigprocmask(SIG_BLOCK, &mask, NULL) == -1)
     {
-        perror("sigprocmask");
+        LOG_PERROR("sigprocmask");
         return EXIT_FAILURE;
     }
 
@@ -41,7 +44,7 @@ int main(int argc, char *argv[])
     signal_fd = signalfd(-1, &mask, SFD_CLOEXEC);
     if (signal_fd == -1)
     {
-        perror("signalfd");
+        LOG_PERROR("signalfd");
         return EXIT_FAILURE;
     }
 
@@ -49,7 +52,7 @@ int main(int argc, char *argv[])
     epoll_fd = epoll_create1(EPOLL_CLOEXEC);
     if (epoll_fd == -1)
     {
-        perror("epoll_create1");
+        LOG_PERROR("epoll_create1");
         close(signal_fd);
         return EXIT_FAILURE;
     }
@@ -60,16 +63,7 @@ int main(int argc, char *argv[])
     ev.data.fd = signal_fd;
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, signal_fd, &ev) == -1)
     {
-        perror("epoll_ctl");
-        close(signal_fd);
-        close(epoll_fd);
-        return EXIT_FAILURE;
-    }
-
-    // DEV 自身初始化（创建 DEV 的 IPC context + 注册到 GTree）
-    if (dev_init_self() != ERRCODE_SUCCESS)
-    {
-        fprintf(stderr, "Fatal: DEV module self-init failed\n");
+        LOG_PERROR("epoll_ctl");
         close(signal_fd);
         close(epoll_fd);
         return EXIT_FAILURE;
@@ -78,16 +72,16 @@ int main(int argc, char *argv[])
     // 扫描 module.conf，动态加载所有模块（dlopen + 入口函数）
     if (dev_scan_and_load_modules() != ERRCODE_SUCCESS)
     {
-        fprintf(stderr, "Warning: Some modules failed to load\n");
+        LOG_WARN("Some modules failed to load");
     }
 
     // 三阶段初始化所有模块
     if (dev_init_all_modules() != ERRCODE_SUCCESS)
     {
-        fprintf(stderr, "Warning: Some modules failed to initialize\n");
+        LOG_WARN("Some modules failed to initialize");
     }
 
-    printf("All modules initialized. Press Ctrl+C to stop.\n\n");
+    LOG_INFO("All modules initialized. Press Ctrl+C to stop.");
 
     // Main event loop - wait for shutdown signal via epoll
     struct epoll_event events[1];
@@ -100,7 +94,7 @@ int main(int argc, char *argv[])
             {
                 continue; // Interrupted by signal, retry
             }
-            perror("epoll_wait");
+            LOG_PERROR("epoll_wait");
             break;
         }
 
@@ -111,7 +105,7 @@ int main(int argc, char *argv[])
             ssize_t s = read(signal_fd, &si, sizeof(si));
             if (s == sizeof(si))
             {
-                printf("\nReceived signal %d, requesting shutdown...\n", si.ssi_signo);
+                LOG_INFO("Received signal %d, requesting shutdown...", si.ssi_signo);
                 dev_request_shutdown();
                 break;
             }
@@ -128,6 +122,6 @@ int main(int argc, char *argv[])
     // DEV 本地状态清理
     dev_cleanup_self();
 
-    printf("\nNetNexus shutdown complete\n");
+    LOG_INFO("NetNexus shutdown complete");
     return EXIT_SUCCESS;
 }

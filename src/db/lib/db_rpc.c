@@ -4,6 +4,7 @@
  * @author jhb
  * @date   2026/02/11
  */
+#define LOG_TAG "db"
 #include "db_rpc.h"
 
 #include <arpa/inet.h>
@@ -14,6 +15,7 @@
 
 #include "db_serialize.h"
 #include "errcode.h"
+#include "log.h"
 
 // ============================================================================
 // 数据库创建 API
@@ -37,7 +39,7 @@ int db_rpc_create_db(ipc_context_t *ctx, const char *db_name, uint32_t module_id
     }
     if (!ipc_is_connected(ctx, DEV_MODULE_ID_DB))
     {
-        fprintf(stderr, "[db_rpc] 错误: 无法连接到 DB 模块\n");
+        LOG_ERROR("错误: 无法连接到 DB 模块");
         return ERRCODE_FAIL;
     }
 
@@ -65,12 +67,12 @@ int db_rpc_create_db(ipc_context_t *ctx, const char *db_name, uint32_t module_id
 
     if (!resp)
     {
-        fprintf(stderr, "[db_rpc] RPC 创建数据库失败: 无响应 (db=%s)\n", db_name);
+        LOG_ERROR("RPC 创建数据库失败: 无响应 (db=%s)", db_name);
         return ERRCODE_FAIL;
     }
 
     ipc_message_free(resp);
-    printf("[db_rpc] 数据库创建成功: %s\n", db_name);
+    LOG_INFO("数据库创建成功: %s", db_name);
     return ERRCODE_SUCCESS;
 }
 
@@ -98,7 +100,7 @@ int db_rpc_insert(ipc_context_t *ctx, const char *db_name, const char *table_nam
 
     if (!resp)
     {
-        fprintf(stderr, "[db_rpc] RPC 插入失败: 无响应\n");
+        LOG_ERROR("RPC 插入失败: 无响应");
         return ERRCODE_FAIL;
     }
 
@@ -129,7 +131,7 @@ int db_rpc_update(ipc_context_t *ctx, const char *db_name, const char *table_nam
 
     if (!resp)
     {
-        fprintf(stderr, "[db_rpc] RPC 更新失败: 无响应\n");
+        LOG_ERROR("RPC 更新失败: 无响应");
         return -1;
     }
 
@@ -158,7 +160,7 @@ int db_rpc_delete(ipc_context_t *ctx, const char *db_name, const char *table_nam
 
     if (!resp)
     {
-        fprintf(stderr, "[db_rpc] RPC 删除失败: 无响应\n");
+        LOG_ERROR("RPC 删除失败: 无响应");
         return -1;
     }
 
@@ -188,7 +190,7 @@ int db_rpc_query(ipc_context_t *ctx, const char *db_name, const char *table_name
 
     if (!resp)
     {
-        fprintf(stderr, "[db_rpc] RPC 查询失败: 无响应\n");
+        LOG_ERROR("RPC 查询失败: 无响应");
         return ERRCODE_FAIL;
     }
 

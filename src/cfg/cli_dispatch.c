@@ -4,6 +4,8 @@
  * @author jhb
  * @date   2026/01/22
  */
+#define LOG_TAG "cfg"
+
 #include "cli_dispatch.h"
 
 #include <arpa/inet.h>
@@ -19,6 +21,7 @@
 #include "dev.h"
 #include "errcode.h"
 #include "ipc.h"
+#include "log.h"
 
 /* ========================================================================= */
 /* TLV 载荷写入辅助函数                                                       */
@@ -374,7 +377,7 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
     }
 
     /* 使用同步查询等待响应，支持批量传输 */
-    printf("[dispatch] Sending query to module 0x%08X...\n", result->module_id);
+    LOG_DEBUG("Sending query to module 0x%08X...", result->module_id);
 
     GString *full_output = g_string_new("");
     cli_view_node_t *view = NULL;
@@ -424,7 +427,7 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
                     uint32_t view_ctx_len = response->payload_len - CLI_CLI_MAX_PROMPT_LEN;
                     const uint8_t *view_ctx_data = (const uint8_t *)response->payload + CLI_CLI_MAX_PROMPT_LEN;
                     cli_context_set(session, view_ctx_data, view_ctx_len);
-                    printf("[dispatch] Saved view context (%u bytes)\n", view_ctx_len);
+                    LOG_DEBUG("Saved view context (%u bytes)", view_ctx_len);
                 }
             }
 

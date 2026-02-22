@@ -4,6 +4,7 @@
  * @author jhb
  * @date   2026/01/22
  */
+#define LOG_TAG "db"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +16,7 @@
 #include "db_registry.h"
 #include "dev.h"
 #include "errcode.h"
+#include "log.h"
 
 // ============================================================================
 // Helper Functions
@@ -95,7 +97,7 @@ int db_create_database_file(const char *db_name, const char *db_path, sqlite3 **
         *last_slash = '\0';
         if (create_directory_recursive(dir_path) != 0)
         {
-            fprintf(stderr, "[db] Failed to create directory: %s\n", dir_path);
+            LOG_ERROR("Failed to create directory: %s", dir_path);
             return ERRCODE_FAIL;
         }
     }
@@ -104,7 +106,7 @@ int db_create_database_file(const char *db_name, const char *db_path, sqlite3 **
     int rc = sqlite3_open(db_path, handle);
     if (rc != SQLITE_OK)
     {
-        fprintf(stderr, "[db] Failed to open database %s: %s\n", db_name, sqlite3_errmsg(*handle));
+        LOG_ERROR("Failed to open database %s: %s", db_name, sqlite3_errmsg(*handle));
         sqlite3_close(*handle);
         return ERRCODE_FAIL;
     }
@@ -116,7 +118,7 @@ int db_create_database_file(const char *db_name, const char *db_path, sqlite3 **
     rc = sqlite3_exec(*handle, "PRAGMA journal_mode=WAL;", NULL, NULL, &err_msg);
     if (rc != SQLITE_OK)
     {
-        fprintf(stderr, "[db] Failed to enable WAL mode: %s\n", err_msg);
+        LOG_WARN("Failed to enable WAL mode: %s", err_msg);
         sqlite3_free(err_msg);
         // Non-fatal, continue
     }
@@ -125,7 +127,7 @@ int db_create_database_file(const char *db_name, const char *db_path, sqlite3 **
     rc = sqlite3_exec(*handle, "PRAGMA foreign_keys=ON;", NULL, NULL, &err_msg);
     if (rc != SQLITE_OK)
     {
-        fprintf(stderr, "[db] Failed to enable foreign keys: %s\n", err_msg);
+        LOG_WARN("Failed to enable foreign keys: %s", err_msg);
         sqlite3_free(err_msg);
         // Non-fatal, continue
     }
@@ -133,7 +135,7 @@ int db_create_database_file(const char *db_name, const char *db_path, sqlite3 **
     // Set busy timeout
     sqlite3_busy_timeout(*handle, 5000);
 
-    printf("[db] Created database file: %s\n", db_path);
+    LOG_INFO("Created database file: %s", db_path);
     return ERRCODE_SUCCESS;
 }
 
@@ -176,12 +178,12 @@ int db_create_table(sqlite3 *handle, const char *table_name, db_table_t *table_d
     int rc = sqlite3_exec(handle, sql, NULL, NULL, &err_msg);
     if (rc != SQLITE_OK)
     {
-        fprintf(stderr, "[db] Failed to create table %s: %s\n", table_name, err_msg);
+        LOG_ERROR("Failed to create table %s: %s", table_name, err_msg);
         sqlite3_free(err_msg);
         return ERRCODE_FAIL;
     }
 
-    printf("[db]   Created table: %s\n", table_name);
+    LOG_INFO("Created table: %s", table_name);
     return ERRCODE_SUCCESS;
 }
 
@@ -199,13 +201,13 @@ int db_initialize_database(db_definition_t *db_def)
         return ERRCODE_FAIL;
     }
 
-    printf("[db] Initializing database: %s\n", db_def->db_name);
+    LOG_INFO("Initializing database: %s", db_def->db_name);
 
     // Get database file path
     char db_path[512];
     if (get_database_path(db_def->db_name, db_def->module_id, db_path, sizeof(db_path)) != 0)
     {
-        fprintf(stderr, "[db] Failed to get database path for: %s\n", db_def->db_name);
+        LOG_ERROR("Failed to get database path for: %s", db_def->db_name);
         return ERRCODE_FAIL;
     }
 
@@ -235,6 +237,6 @@ int db_initialize_database(db_definition_t *db_def)
 
     g_hash_table_insert(g_db_local->connections, g_strdup(db_def->db_name), conn);
 
-    printf("[db] Database initialized: %s\n", db_def->db_name);
+    LOG_INFO("Database initialized: %s", db_def->db_name);
     return ERRCODE_SUCCESS;
 }

@@ -1,6 +1,7 @@
 # Utils library - Common utilities
 add_library(utils SHARED
     path_utils.c
+    log.c
 )
 
 # Link dependencies

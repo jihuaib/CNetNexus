@@ -4,6 +4,7 @@
  * @author jhb
  * @date   2026/01/22
  */
+#define LOG_TAG "db"
 #include "db_main.h"
 
 #include <stdio.h>
@@ -17,6 +18,7 @@
 #include "db_registry.h"
 #include "dev.h"
 #include "errcode.h"
+#include "log.h"
 
 /* 全局上下文 */
 db_local_t *g_db_local = NULL;
@@ -66,45 +68,36 @@ static void send_phase_response(ipc_context_t *ctx, ipc_message_t *msg, int32_t 
 }
 
 // ============================================================================
-// Phase 1: MODULE_START - 创建上下文、hash table
+// Phase 1: MODULE_START — 建立 IPC 连接到 CFG
 // ============================================================================
 
 static void db_on_start(ipc_context_t *ctx, ipc_message_t *msg)
 {
-    printf("[db] Phase 1: MODULE_START\n");
+    LOG_INFO("Phase 1: MODULE_START — 建立 IPC 连接");
 
-    g_db_local = g_malloc0(sizeof(db_local_t));
-    g_db_local->connections =
-        g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify)db_connection_free);
-    g_db_local->registry = db_registry_get_instance();
-    g_db_local->ipc_ctx = ctx;
+    ipc_connect(ctx, DEV_MODULE_ID_CFG);
 
-    printf("[db] Module started\n");
+    LOG_INFO("已连接到 CFG");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
 // ============================================================================
-// Phase 2: MODULE_CONNECT - 连接到 CFG
+// Phase 2: MODULE_CONNECT — 预留（直接回复 OK）
 // ============================================================================
 
 static void db_on_connect(ipc_context_t *ctx, ipc_message_t *msg)
 {
-    printf("[db] Phase 2: MODULE_CONNECT\n");
-
-    ipc_connect(ctx, DEV_MODULE_ID_CFG);
-
-    printf("[db] 已连接到 CFG\n");
+    LOG_INFO("Phase 2: MODULE_CONNECT (预留)");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
 // ============================================================================
-// Phase 3: MODULE_READY
+// Phase 3: MODULE_READY — 预留（直接回复 OK）
 // ============================================================================
 
 static void db_on_ready(ipc_context_t *ctx, ipc_message_t *msg)
 {
-    printf("[db] Phase 3: MODULE_READY\n");
-    printf("[db] Database module initialized\n");
+    LOG_INFO("Phase 3: MODULE_READY (预留)");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
@@ -114,7 +107,7 @@ static void db_on_ready(ipc_context_t *ctx, ipc_message_t *msg)
 
 static void db_on_shutdown(ipc_context_t *ctx, ipc_message_t *msg)
 {
-    printf("[db] Cleaning up database module local state\n");
+    LOG_INFO("Cleaning up database module local state");
 
     /* 关闭所有数据库连接 */
     if (g_db_local->connections)
@@ -132,7 +125,7 @@ static void db_on_shutdown(ipc_context_t *ctx, ipc_message_t *msg)
     g_free(g_db_local);
     g_db_local = NULL;
 
-    printf("[db] Database module cleaned up\n");
+    LOG_INFO("Database module cleaned up");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
@@ -173,17 +166,17 @@ void db_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
     switch (msg->msg_type)
     {
         case CFG_MSG_TYPE_CLI:
-            printf("[db] Received CLI command message\n");
+            LOG_DEBUG("Received CLI command message");
             db_cli_process_command(msg);
             break;
 
         case CFG_MSG_TYPE_CLI_CONTINUE:
-            printf("[db] Received CLI continue request\n");
+            LOG_DEBUG("Received CLI continue request");
             db_cli_handle_continue(msg);
             break;
 
         default:
-            fprintf(stderr, "[db] Received unknown message type: 0x%08X\n", msg->msg_type);
+            LOG_WARN("Received unknown message type: 0x%08X", msg->msg_type);
             break;
     }
 
@@ -191,6 +184,27 @@ void db_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
 }
 
 // ============================================================================
-// 入口函数：创建 IPC 上下文
+// .so constructor（dlopen 时自动触发）
 // ============================================================================
 
+#include "dev.h"
+
+__attribute__((constructor)) static void db_so_init(void)
+{
+    LOG_INFO(".so 加载，自初始化");
+
+    /* 创建 IPC 上下文 */
+    ipc_context_t *ctx = ipc_init(DEV_MODULE_ID_DB, "db", NULL, db_msg_handler);
+    if (!ctx)
+    {
+        LOG_ERROR("IPC 初始化失败");
+        return;
+    }
+
+    /* 初始化本地状态（原 db_on_start 逻辑） */
+    g_db_local = g_malloc0(sizeof(db_local_t));
+    g_db_local->connections =
+        g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify)db_connection_free);
+    g_db_local->registry = db_registry_get_instance();
+    g_db_local->ipc_ctx = ctx;
+}

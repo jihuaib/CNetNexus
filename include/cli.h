@@ -87,15 +87,6 @@ typedef struct cli_param_type cli_param_type_t;
 // ============================================================================
 
 /**
- * @brief 注册模块的 XML 配置文件路径
- * @param module_id 模块 ID
- * @param xml_path XML 配置文件路径
- *
- * 模块应在其 constructor 中调用 dev_register_module 之后调用此函数
- */
-void cfg_register_module_xml(uint32_t module_id, const char *xml_path);
-
-/**
  * @brief 根据视图 ID 获取视图提示符模板
  * @param view_id 视图 ID
  * @param view_name 输出视图名称缓冲区
@@ -208,13 +199,6 @@ const char *cli_tlv_entry_get_text(const cli_tlv_entry_t *entry);
 // ============================================================================
 // 公共 API
 // ============================================================================
-
-/**
- * @brief 注册模块的 XML 配置文件路径
- * @param module_id 模块 ID
- * @param xml_path XML 配置文件路径
- */
-void cli_register_module_xml(uint32_t module_id, const char *xml_path);
 
 /**
  * @brief 根据视图 ID 获取视图提示符模板

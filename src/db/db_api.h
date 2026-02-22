@@ -14,14 +14,6 @@
 #include "db.h"
 
 /**
- * @brief 根据已注册的定义初始化所有本地数据库
- *
- * 基于 XML 定义创建数据库文件和表，仅处理本模块所有的数据库
- * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL
- */
-int db_initialize_all(void);
-
-/**
  * @brief 向表中插入一行数据（本地 SQLite 操作）
  * @param db_name 数据库名称
  * @param table_name 表名称

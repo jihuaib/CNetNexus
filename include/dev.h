@@ -52,14 +52,6 @@ typedef void (*ipc_msg_handler_fn)(ipc_context_t *ctx, ipc_message_t *msg);
 // ============================================================================
 
 /**
- * @brief 注册模块（三阶段初始化，仅需提供消息处理回调）
- * @param id 模块 ID
- * @param name 模块名称
- * @param handler 消息处理回调函数
- */
-void dev_register_module(uint32_t id, const char *name, ipc_msg_handler_fn handler);
-
-/**
  * @brief 根据模块 ID 获取模块名称
  * @param module_id 模块 ID
  * @param module_name 输出模块名称缓冲区

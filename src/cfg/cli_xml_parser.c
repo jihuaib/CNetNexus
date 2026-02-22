@@ -4,6 +4,8 @@
  * @author jhb
  * @date   2026/01/22
  */
+#define LOG_TAG "cfg"
+
 #include "cli_xml_parser.h"
 
 #include <ctype.h>
@@ -19,6 +21,7 @@
 #include "cli_tree.h"
 #include "cli_view.h"
 #include "errcode.h"
+#include "log.h"
 
 static void merge_global_to_views(cli_view_node_t *view, cli_tree_node_t *global_tree);
 
@@ -852,7 +855,7 @@ uint32_t cli_xml_load_view_tree(const char *xml_file, cli_view_tree_t *view_tree
     xmlDoc *doc = xmlReadFile(xml_file, NULL, 0);
     if (!doc)
     {
-        fprintf(stderr, "[xml_parser] Error: Could not parse file %s\n", xml_file);
+        LOG_ERROR("Could not parse file %s", xml_file);
         return ERRCODE_FAIL;
     }
 
@@ -860,7 +863,7 @@ uint32_t cli_xml_load_view_tree(const char *xml_file, cli_view_tree_t *view_tree
     xmlNode *root_element = xmlDocGetRootElement(doc);
     if (!root_element)
     {
-        fprintf(stderr, "[xml_parser] Error: Empty XML document\n");
+        LOG_ERROR("Empty XML document");
         xmlFreeDoc(doc);
         return ERRCODE_FAIL;
     }
@@ -869,13 +872,13 @@ uint32_t cli_xml_load_view_tree(const char *xml_file, cli_view_tree_t *view_tree
     xmlChar *module_id_str = xmlGetProp(root_element, (const xmlChar *)"module-id");
     if (module_id_str == NULL)
     {
-        fprintf(stderr, "[xml_parser] Error: parse module_id fail\n");
+        LOG_ERROR("parse module_id fail");
         xmlFreeDoc(doc);
         return ERRCODE_FAIL;
     }
 
     uint32_t module_id = atoi((const char *)module_id_str);
-    printf("[xml_parser] Loading XML for module: %u\n", module_id);
+    LOG_INFO("Loading XML for module: %u", module_id);
     xmlFree(module_id_str);
 
     // Parse views section
@@ -912,14 +915,14 @@ uint32_t cli_xml_load_view_tree(const char *xml_file, cli_view_tree_t *view_tree
                                 cli_view_node_t *parent = cli_view_find_by_id(view_tree->root, CLI_VIEW_CONFIG);
                                 if (parent == NULL)
                                 {
-                                    fprintf(stderr, "[xml_parser] Error: config view does not exist\n");
+                                    LOG_ERROR("config view does not exist");
                                     continue;
                                 }
                                 cli_view_add_child(parent, new_view);
                             }
                             else
                             {
-                                fprintf(stderr, "[xml_parser] Error: view %u exist\n", new_view->view_id);
+                                LOG_ERROR("view %u exist", new_view->view_id);
                             }
                         }
                     }

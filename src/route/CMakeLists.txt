@@ -13,6 +13,7 @@ target_include_directories(route PRIVATE
 # Link libraries
 target_link_libraries(route PRIVATE
         ipc
+        db_api
         )
 
 # Set library version
