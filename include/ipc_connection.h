@@ -17,9 +17,13 @@
 /** 单条 TCP 连接 */
 typedef struct ipc_connection
 {
-    uint32_t remote_module_id; /**< 对端模块 ID */
-    int fd;                    /**< socket 文件描述符 */
-    ipc_costate_t state;       /**< 连接状态 */
+    uint32_t remote_module_id;    /**< 对端模块 ID */
+    int fd;                       /**< socket 文件描述符 */
+    ipc_costate_t state;          /**< 连接状态 */
+
+    /* 目标地址（仅主动连接方使用，用于断连后重连） */
+    char remote_host[64]; /**< 目标主机地址 */
+    uint16_t remote_port; /**< 目标端口 */
 
     /* 接收缓冲区 */
     uint8_t recv_buf[IPC_RECV_BUF_SIZE]; /**< 接收缓冲区 */

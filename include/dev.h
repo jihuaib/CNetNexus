@@ -1,6 +1,6 @@
 /**
  * @file   dev.h
- * @brief  设备模块公共接口，定义模块 ID、模块注册和 shutdown API
+ * @brief  设备模块公共接口，定义模块 ID 和模块注册 API
  * @author jhb
  * @date   2026/01/22
  */
@@ -52,22 +52,12 @@ typedef void (*ipc_msg_handler_fn)(ipc_context_t *ctx, ipc_message_t *msg);
 // ============================================================================
 
 /**
- * @brief 根据模块 ID 获取模块名称
+ * @brief 通过 DEV RPC 根据模块 ID 获取模块名称
+ * @param ctx 调用方 IPC 上下文
  * @param module_id 模块 ID
  * @param module_name 输出模块名称缓冲区
  * @return 成功返回 0，失败返回 -1
  */
-int dev_get_module_name(uint32_t module_id, char *module_name);
-
-/**
- * @brief 请求关闭所有模块
- */
-void dev_request_shutdown(void);
-
-/**
- * @brief 检查是否已请求关闭
- * @return 已请求关闭返回非零值，否则返回 0
- */
-int dev_shutdown_requested(void);
+int dev_get_module_name(ipc_context_t *ctx, uint32_t module_id, char *module_name);
 
 #endif // DEV_H

@@ -16,6 +16,7 @@
 #include "errcode.h"
 #include "ipc.h"
 #include "log.h"
+#include "module_ports.h"
 #include "route_cli.h"
 
 route_local_t *g_route_local = NULL;
@@ -41,12 +42,20 @@ static void route_on_start(ipc_context_t *ctx, ipc_message_t *msg)
 {
     LOG_INFO("Phase 1: MODULE_START — 建立 IPC 连接");
 
-    if (ipc_connect(ctx, DEV_MODULE_ID_DB) < 0)
+    /* 提取 DEV 下发的本模块名称并存入 local */
+    if (msg->payload && msg->payload_len == sizeof(ipc_module_info_t))
+    {
+        const ipc_module_info_t *info = (const ipc_module_info_t *)msg->payload;
+        strlcpy(g_route_local->name, info->name, DEV_MODULE_NAME_MAX_LEN);
+        LOG_INFO("本模块名称: %s", g_route_local->name);
+    }
+
+    if (ipc_connect(ctx, DEV_MODULE_ID_DB, IPC_HOST_LOCAL, MODULE_PORT_DB) < 0)
     {
         LOG_ERROR("连接 DB 模块失败");
     }
 
-    if (ipc_connect(ctx, DEV_MODULE_ID_CFG) != 0)
+    if (ipc_connect(ctx, DEV_MODULE_ID_CFG, IPC_HOST_LOCAL, MODULE_PORT_CFG) != 0)
     {
         LOG_ERROR("连接 CFG 模块失败");
     }
@@ -152,7 +161,7 @@ __attribute__((constructor)) static void route_so_init(void)
     LOG_INFO(".so 加载，自初始化");
 
     /* 创建 IPC 上下文 */
-    ipc_context_t *ctx = ipc_init(DEV_MODULE_ID_ROUTE, "route", NULL, route_ipc_msg_handler);
+    ipc_context_t *ctx = ipc_init(DEV_MODULE_ID_ROUTE, "route", MODULE_PORT_ROUTE, route_ipc_msg_handler);
     if (!ctx)
     {
         LOG_ERROR("IPC 初始化失败");

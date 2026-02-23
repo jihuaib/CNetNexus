@@ -10,7 +10,6 @@
 #include <dirent.h>
 #include <dlfcn.h>
 #include <glib.h>
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,16 +22,15 @@
 #include "dev_main.h"
 #include "errcode.h"
 #include "log.h"
+#include "module_ports.h"
 #include "path_utils.h"
 
 /* 前向声明 */
 static gboolean collect_module_callback(gpointer key, gpointer value, gpointer data);
+static void *dev_dlopen_module(const char *so_name);
 
 /* 全局模块注册表（GLib tree: id -> dev_module_t*） */
 static GTree *g_module_registry = NULL;
-
-/* 全局关闭标志 */
-static volatile sig_atomic_t g_shutdown_requested = 0;
 
 /* GTree 比较函数 */
 static gint module_id_compare(gconstpointer a, gconstpointer b)
@@ -58,20 +56,6 @@ static void ensure_registry_initialized(void)
     {
         g_module_registry = g_tree_new(module_id_compare);
     }
-}
-
-// ============================================================================
-// Shutdown 控制
-// ============================================================================
-
-void dev_request_shutdown_inner(void)
-{
-    g_shutdown_requested = 1;
-}
-
-int dev_shutdown_requested_inner(void)
-{
-    return g_shutdown_requested;
 }
 
 // ============================================================================
@@ -182,7 +166,7 @@ static int dev_scan_dir_for_modules(const char *base_dir)
         /* dlopen 加载共享库 — constructor 自动触发
          * 使用 RTLD_LAZY 因为模块间存在交叉依赖（如 db→cfg），
          * 加载时并非所有符号都已可用，实际调用时再解析即可 */
-        void *dl_handle = dlopen(conf.so_name, RTLD_LAZY | RTLD_GLOBAL);
+        void *dl_handle = dev_dlopen_module(conf.so_name);
         if (!dl_handle)
         {
             LOG_ERROR("dlopen(%s) 失败: %s", conf.so_name, dlerror());
@@ -201,6 +185,8 @@ static int dev_scan_dir_for_modules(const char *base_dir)
         /* 设置 DEV 管理的元数据 */
         module->dl_handle = dl_handle;
 
+        module->port = conf.port;
+
         if (conf.db_name[0] != '\0')
         {
             module->db_name = g_strdup(conf.db_name);
@@ -213,6 +199,58 @@ static int dev_scan_dir_for_modules(const char *base_dir)
 
     closedir(dir);
     return loaded;
+}
+
+/**
+ * @brief 优先按名称加载模块，失败后尝试常见绝对路径，兼容 AT_SECURE 场景
+ */
+static void *dev_dlopen_module(const char *so_name)
+{
+    void *dl_handle = dlopen(so_name, RTLD_LAZY | RTLD_GLOBAL);
+    if (dl_handle)
+    {
+        return dl_handle;
+    }
+
+    /* 已提供绝对/相对路径时，不再做目录推断 */
+    if (strchr(so_name, '/') != NULL)
+    {
+        return NULL;
+    }
+
+    char exe_dir[PATH_MAX];
+    char *so_path = NULL;
+
+    if (get_exe_dir(exe_dir, sizeof(exe_dir)) == 0)
+    {
+        so_path = g_build_filename(exe_dir, "..", "lib", so_name, NULL);
+        dl_handle = dlopen(so_path, RTLD_LAZY | RTLD_GLOBAL);
+        g_free(so_path);
+        so_path = NULL;
+        if (dl_handle)
+        {
+            return dl_handle;
+        }
+
+        so_path = g_build_filename(exe_dir, "..", "..", "lib", so_name, NULL);
+        dl_handle = dlopen(so_path, RTLD_LAZY | RTLD_GLOBAL);
+        g_free(so_path);
+        so_path = NULL;
+        if (dl_handle)
+        {
+            return dl_handle;
+        }
+    }
+
+    so_path = g_build_filename("/opt/netnexus/lib", so_name, NULL);
+    dl_handle = dlopen(so_path, RTLD_LAZY | RTLD_GLOBAL);
+    g_free(so_path);
+    if (dl_handle)
+    {
+        return dl_handle;
+    }
+
+    return NULL;
 }
 
 int32_t dev_scan_and_load_modules(void)
@@ -298,22 +336,22 @@ static gboolean dev_connect_to_module_callback(gpointer key, gpointer value, gpo
 
     if (module->phase >= DEV_PHASE_LOADED)
     {
-        LOG_INFO("连接到模块: %s", module->name);
-        ipc_connect(dev_ctx, module->module_id);
+        LOG_INFO("连接到模块: %s (port=%u)", module->name, module->port);
+        ipc_connect(dev_ctx, module->module_id, IPC_HOST_LOCAL, module->port);
     }
 
     return FALSE;
 }
 
 // ============================================================================
-// Phase 1: 发送 MODULE_START RPC
+// Phase 1: 发送 MODULE_START RPC（携带模块名称表 payload）
 // ============================================================================
 
 static gboolean phase1_start_callback(gpointer key, gpointer value, gpointer data)
 {
     (void)key;
-    int32_t *failed_count = (int32_t *)data;
-    dev_module_t *module = (dev_module_t *)value;
+    int32_t      *failed_count = (int32_t *)data;
+    dev_module_t *module       = (dev_module_t *)value;
 
     if (module->module_id == DEV_MODULE_ID_DEV)
     {
@@ -328,8 +366,13 @@ static gboolean phase1_start_callback(gpointer key, gpointer value, gpointer dat
 
     LOG_INFO("Phase 1: 发送 MODULE_START -> %s", module->name);
 
-    ipc_message_t *req =
-        ipc_message_create(IPC_MSG_TYPE_DEV_MODULE_START, DEV_MODULE_ID_DEV, module->module_id, 0, NULL, 0, NULL);
+    /* 将目标模块自身的 info 作为 payload 下发，令其知晓自己的 name */
+    ipc_module_info_t *info = g_malloc0(sizeof(ipc_module_info_t));
+    info->module_id = module->module_id;
+    strlcpy(info->name, module->name, DEV_MODULE_NAME_MAX_LEN);
+
+    ipc_message_t *req = ipc_message_create(IPC_MSG_TYPE_DEV_MODULE_START, DEV_MODULE_ID_DEV, module->module_id, 0,
+                                            info, sizeof(ipc_module_info_t), g_free);
 
     ipc_message_t *resp = ipc_query(g_dev_local->ipc_ctx, module->module_id, req, 5000);
     if (resp)

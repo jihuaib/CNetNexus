@@ -25,14 +25,16 @@
 
 typedef struct cfg_local
 {
-    cli_view_tree_t view_tree;
+    cli_view_tree_t     view_tree;
     cli_global_history_t global_history;
-    pthread_mutex_t history_mutex;
-    int epoll_fd;    // epoll file descriptor（Telnet 用）
-    int listen_sock; // Telnet 监听 socket
-    pthread_t worker_thread;
-    GHashTable *sessions;   // Registry: fd -> cli_session_t*
-    ipc_context_t *ipc_ctx; // IPC 上下文
+    pthread_mutex_t     history_mutex;
+    volatile int        running;      /**< Telnet 工作线程运行标志 */
+    int                 epoll_fd;     /**< epoll 文件描述符（Telnet 用） */
+    int                 listen_sock;  /**< Telnet 监听 socket */
+    pthread_t           worker_thread;
+    GHashTable         *sessions;     /**< 注册表: fd -> cli_session_t* */
+    ipc_context_t *ipc_ctx;                        /**< IPC 上下文 */
+    char           name[DEV_MODULE_NAME_MAX_LEN];  /**< DEV 在 Phase 1 下发的本模块名称 */
 } cfg_local_t;
 
 extern cfg_local_t *g_cfg_local;

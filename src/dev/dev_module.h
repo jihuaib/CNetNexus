@@ -31,6 +31,7 @@ typedef struct module
     char *db_name;                      /**< 数据库名称（从 .conf 读取，可为 NULL） */
     void *dl_handle;                    /**< dlopen 句柄（动态加载，可为 NULL） */
     uint8_t phase;                      /**< 当前初始化阶段 */
+    uint16_t port;                      /**< IPC 监听端口（从 module.conf 读取） */
 } dev_module_t;
 
 /**
@@ -72,11 +73,5 @@ dev_module_t *dev_add_module_to_registry(uint32_t module_id, const char *name);
  * @return 成功返回 0，失败返回 -1
  */
 int dev_get_module_name_inner(uint32_t module_id, char *module_name);
-
-/** 请求关闭 */
-void dev_request_shutdown_inner(void);
-
-/** 检查关闭标志 */
-int dev_shutdown_requested_inner(void);
 
 #endif // DEV_MODULE_H

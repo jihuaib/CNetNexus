@@ -71,7 +71,7 @@ static int handle_db_show_list(ipc_message_t *msg)
         {
             db_definition_t *db_def = (db_definition_t *)value;
             char module_name[64];
-            if (dev_get_module_name(db_def->module_id, module_name) != ERRCODE_SUCCESS)
+            if (dev_get_module_name(g_db_local->ipc_ctx, db_def->module_id, module_name) != ERRCODE_SUCCESS)
             {
                 snprintf(module_name, sizeof(module_name), "0x%08X", db_def->module_id);
             }

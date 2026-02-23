@@ -25,7 +25,7 @@ target_include_directories(cfg PUBLIC
 # Link dependencies
 target_link_libraries(cfg PUBLIC
     dev
-    ipc
+    dev_api
     utils
     ${LIBXML2_LIBRARIES}
     ${GLIB_LIBRARIES}

@@ -69,5 +69,31 @@
                 </command>
             </commands>
         </group>
+
+        <!-- dev log-level <level> -->
+        <group group-id="4">
+            <elements>
+                <element type="keyword">
+                    <name>dev</name>
+                    <description>Device and module management</description>
+                </element>
+                <element type="keyword">
+                    <name>log-level</name>
+                    <description>Set runtime log level</description>
+                </element>
+                <element cfg-id="1" type="parameter">
+                    <name>&lt;level&gt;</name>
+                    <description>debug/info/warn/error</description>
+                    <type>string(4-5)</type>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>3</views>
+                </command>
+            </commands>
+        </group>
     </command_groups>
 </configuration>

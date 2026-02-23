@@ -27,6 +27,13 @@
 #include "ipc_frame.h"
 #include "log.h"
 
+/** 将模块 ID 格式化为可读字符串（用于日志），结果写入 buf */
+static const char *fmt_module_id(uint32_t module_id, char *buf, size_t buf_size)
+{
+    snprintf(buf, buf_size, "0x%08X", module_id);
+    return buf;
+}
+
 #define IPC_MAX_EPOLL_EVENTS 32
 
 // 全局 IPC 上下文实例，用于其他模块方便获取
@@ -165,7 +172,8 @@ static void handle_frame(ipc_context_t *ctx, ipc_connection_t *conn, ipc_message
                 memcpy(&remote_id_be, payload, sizeof(uint32_t));
                 uint32_t remote_id = ntohl(remote_id_be);
                 conn->remote_module_id = remote_id;
-                LOG_INFO("<%s> 收到 %s 的握手", ctx->name, ipc_get_module_name(remote_id));
+                char _buf[16];
+                LOG_INFO("<%s> 收到 %s 的握手", ctx->name, fmt_module_id(remote_id, _buf, sizeof(_buf)));
             }
 
             /* 发送握手响应 */
@@ -189,7 +197,7 @@ static void handle_frame(ipc_context_t *ctx, ipc_connection_t *conn, ipc_message
             conn->state = IPC_COCONNECTED;
             conn->last_heartbeat_recv = time(NULL);
             ipc_connection_reset_reconnect(conn);
-            LOG_INFO("<%s> 与 %s 连接建立", ctx->name, ipc_get_module_name(conn->remote_module_id));
+            { char _buf[16]; LOG_INFO("<%s> 与 %s 连接建立", ctx->name, fmt_module_id(conn->remote_module_id, _buf, sizeof(_buf))); }
             break;
         }
 
@@ -204,7 +212,7 @@ static void handle_frame(ipc_context_t *ctx, ipc_connection_t *conn, ipc_message
             conn->state = IPC_COCONNECTED;
             conn->last_heartbeat_recv = time(NULL);
             ipc_connection_reset_reconnect(conn);
-            LOG_INFO("<%s> 与 %s 握手完成", ctx->name, ipc_get_module_name(conn->remote_module_id));
+            { char _buf[16]; LOG_INFO("<%s> 与 %s 握手完成", ctx->name, fmt_module_id(conn->remote_module_id, _buf, sizeof(_buf))); }
             break;
         }
 
@@ -337,7 +345,7 @@ static void check_heartbeats(ipc_context_t *ctx)
         /* 检查心跳超时 */
         if (now - conn->last_heartbeat_recv > IPC_HEARTBEAT_TIMEOUT)
         {
-            LOG_WARN("<%s> 心跳超时，断开 %s", ctx->name, ipc_get_module_name(conn->remote_module_id));
+            { char _buf[16]; LOG_WARN("<%s> 心跳超时，断开 %s", ctx->name, fmt_module_id(conn->remote_module_id, _buf, sizeof(_buf))); }
             epoll_ctl(ctx->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
             ipc_connection_close(conn);
             if (conn->is_initiator)
@@ -370,16 +378,10 @@ static void attempt_reconnects(ipc_context_t *ctx)
             continue;
         }
 
-        /* 查找目标地址 */
-        const ipc_module_addr_t *addr = ipc_config_find(&ctx->config, conn->remote_module_id);
-        if (!addr)
-        {
-            continue;
-        }
+        LOG_INFO("<%s> 重连 module(0x%08X) (%s:%u)...", ctx->name, conn->remote_module_id, conn->remote_host,
+                 conn->remote_port);
 
-        LOG_INFO("<%s> 重连 %s (%s:%u)...", ctx->name, addr->name, addr->host, addr->port);
-
-        if (ipc_connection_initiate(conn, addr->host, addr->port) == ERRCODE_SUCCESS)
+        if (ipc_connection_initiate(conn, conn->remote_host, conn->remote_port) == ERRCODE_SUCCESS)
         {
             /* 添加到 epoll */
             struct epoll_event ev;
@@ -525,7 +527,7 @@ static void *ipc_io_thread(void *arg)
                 {
                     if (n == 0 || (errno != EAGAIN && errno != EINTR))
                     {
-                        LOG_WARN("<%s> 连接断开 (module=%s)", ctx->name, ipc_get_module_name(conn->remote_module_id));
+                        { char _buf[16]; LOG_WARN("<%s> 连接断开 (module=%s)", ctx->name, fmt_module_id(conn->remote_module_id, _buf, sizeof(_buf))); }
                         epoll_ctl(ctx->epoll_fd, EPOLL_CTL_DEL, fd, NULL);
                         ipc_connection_close(conn);
                         if (conn->is_initiator)
@@ -608,15 +610,15 @@ static int create_listen_socket(const char *host, uint16_t port)
 // 公共 API 实现
 // ============================================================================
 
-ipc_context_t *ipc_init(uint32_t module_id, const char *name, const char *config_path, ipc_msg_handler_fn msg_handler)
+ipc_context_t *ipc_init(uint32_t module_id, const char *name, uint16_t listen_port, ipc_msg_handler_fn msg_handler)
 {
     ipc_context_t *ctx = g_malloc0(sizeof(ipc_context_t));
     if (!ctx)
     {
-        return NULL; // simple guard
+        return NULL;
     }
 
-    // Set global context if not already set
+    /* 设置全局上下文（若尚未设置） */
     if (!g_ipc_context)
     {
         g_ipc_context = ctx;
@@ -632,22 +634,6 @@ ipc_context_t *ipc_init(uint32_t module_id, const char *name, const char *config
     ctx->num_connections = 0;
     pthread_mutex_init(&ctx->comutex, NULL);
 
-    /* 加载配置 */
-    char resolved_path[PATH_MAX];
-    if (ipc_resolve_config_path(config_path, resolved_path, sizeof(resolved_path)) != ERRCODE_SUCCESS)
-    {
-        LOG_ERROR("<%s> 无法找到 IPC 配置文件", ctx->name);
-        g_free(ctx);
-        return NULL;
-    }
-
-    if (ipc_config_load(resolved_path, &ctx->config) != ERRCODE_SUCCESS)
-    {
-        LOG_ERROR("<%s> 加载 IPC 配置失败", ctx->name);
-        g_free(ctx);
-        return NULL;
-    }
-
     /* 创建查询管理器 */
     ctx->query_mgr = ipc_query_mgr_create();
 
@@ -660,22 +646,21 @@ ipc_context_t *ipc_init(uint32_t module_id, const char *name, const char *config
         return NULL;
     }
 
-    /* 创建并绑定 IPC 监听端口 */
-    const ipc_module_addr_t *my_addr = ipc_config_find(&ctx->config, module_id);
-    if (my_addr)
+    /* 绑定本模块 IPC 监听端口（由调用方传入） */
+    if (listen_port > 0)
     {
-        ctx->listen_fd = create_listen_socket(my_addr->host, my_addr->port);
+        ctx->listen_fd = create_listen_socket("127.0.0.1", listen_port);
         if (ctx->listen_fd >= 0)
         {
             struct epoll_event ev;
             ev.events = EPOLLIN;
             ev.data.fd = ctx->listen_fd;
             epoll_ctl(ctx->epoll_fd, EPOLL_CTL_ADD, ctx->listen_fd, &ev);
-            LOG_INFO("<%s> IPC 监听端口 %u", ctx->name, my_addr->port);
+            LOG_INFO("<%s> IPC 监听端口 %u", ctx->name, listen_port);
         }
         else
         {
-            LOG_ERROR("<%s> 无法绑定 IPC 端口 %u", ctx->name, my_addr->port);
+            LOG_ERROR("<%s> 无法绑定 IPC 端口 %u", ctx->name, listen_port);
         }
     }
 
@@ -732,17 +717,10 @@ void ipc_destroy(ipc_context_t *ctx)
     g_free(ctx);
 }
 
-int ipc_connect(ipc_context_t *ctx, uint32_t target_module_id)
+int ipc_connect(ipc_context_t *ctx, uint32_t target_module_id, const char *host, uint16_t port)
 {
-    if (!ctx)
+    if (!ctx || !host || port == 0)
     {
-        return ERRCODE_FAIL;
-    }
-
-    const ipc_module_addr_t *addr = ipc_config_find(&ctx->config, target_module_id);
-    if (!addr)
-    {
-        LOG_ERROR("<%s> 未找到模块 0x%08X 的地址配置", ctx->name, target_module_id);
         return ERRCODE_FAIL;
     }
 
@@ -762,12 +740,15 @@ int ipc_connect(ipc_context_t *ctx, uint32_t target_module_id)
     }
 
     ipc_connection_t *conn = ipc_connection_create(target_module_id, 1);
+    /* 存储目标地址，供断连后重连使用 */
+    snprintf(conn->remote_host, sizeof(conn->remote_host), "%s", host);
+    conn->remote_port = port;
     ctx->connections[ctx->num_connections++] = conn;
     pthread_mutex_unlock(&ctx->comutex);
 
-    LOG_INFO("<%s> 连接 %s (%s:%u)...", ctx->name, addr->name, addr->host, addr->port);
+    LOG_INFO("<%s> 连接 module(0x%08X) (%s:%u)...", ctx->name, target_module_id, host, port);
 
-    if (ipc_connection_initiate(conn, addr->host, addr->port) == ERRCODE_SUCCESS)
+    if (ipc_connection_initiate(conn, host, port) == ERRCODE_SUCCESS)
     {
         struct epoll_event ev;
         ev.events = EPOLLIN | EPOLLOUT;

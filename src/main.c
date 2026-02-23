@@ -14,7 +14,6 @@
 #include <sys/signalfd.h>
 #include <unistd.h>
 
-#include "dev.h"
 #include "dev/dev_main.h"
 #include "dev/dev_module.h"
 #include "errcode.h"
@@ -106,7 +105,6 @@ int main(int argc, char *argv[])
             if (s == sizeof(si))
             {
                 LOG_INFO("Received signal %d, requesting shutdown...", si.ssi_signo);
-                dev_request_shutdown();
                 break;
             }
         }

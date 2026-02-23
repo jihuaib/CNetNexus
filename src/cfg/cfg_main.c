@@ -50,7 +50,7 @@ static void *cfg_server_thread(void *arg)
     struct sockaddr_in client_addr;
     socklen_t client_len;
 
-    while (!dev_shutdown_requested())
+    while (g_cfg_local && g_cfg_local->running)
     {
         struct epoll_event events[CFG_MAX_EPOLL_EVENTS];
         // Wait for events with 1 second timeout
@@ -82,7 +82,7 @@ static void *cfg_server_thread(void *arg)
 
                 if (conn_fd < 0)
                 {
-                    if (!dev_shutdown_requested())
+                    if (g_cfg_local && g_cfg_local->running)
                     {
                         LOG_PERROR("Accept failed");
                     }
@@ -310,6 +310,7 @@ void cfg_init_local(ipc_context_t *ctx)
 {
     g_cfg_local = g_malloc0(sizeof(cfg_local_t));
     pthread_mutex_init(&g_cfg_local->history_mutex, NULL);
+    g_cfg_local->running = 0;
     g_cfg_local->epoll_fd = DEV_INVALID_FD;
     g_cfg_local->listen_sock = DEV_INVALID_FD;
     g_cfg_local->worker_thread = 0;
@@ -346,6 +347,15 @@ void cfg_init_local(ipc_context_t *ctx)
 static void cfg_on_start(ipc_context_t *ctx, ipc_message_t *msg)
 {
     LOG_INFO("Phase 1: MODULE_START (无需连接其他模块)");
+
+    /* 提取 DEV 下发的本模块名称并存入 local */
+    if (msg->payload && msg->payload_len == sizeof(ipc_module_info_t))
+    {
+        const ipc_module_info_t *info = (const ipc_module_info_t *)msg->payload;
+        strlcpy(g_cfg_local->name, info->name, DEV_MODULE_NAME_MAX_LEN);
+        LOG_INFO("本模块名称: %s", g_cfg_local->name);
+    }
+
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
@@ -401,9 +411,11 @@ static void cfg_on_ready(ipc_context_t *ctx, ipc_message_t *msg)
     if (pthread_create(&g_cfg_local->worker_thread, NULL, cfg_server_thread, NULL) != 0)
     {
         LOG_PERROR("Failed to create server thread");
+        g_cfg_local->running = 0;
         send_phase_response(ctx, msg, ERRCODE_FAIL);
         return;
     }
+    g_cfg_local->running = 1;
 
     LOG_INFO("Telnet server listening on port %d", CFG_PORT);
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
@@ -416,6 +428,7 @@ static void cfg_on_ready(ipc_context_t *ctx, ipc_message_t *msg)
 static void cfg_on_shutdown(ipc_context_t *ctx, ipc_message_t *msg)
 {
     LOG_INFO("Shutting down server...");
+    g_cfg_local->running = 0;
 
     cli_cleanup();
 
@@ -488,13 +501,14 @@ void cfg_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
 #include "cfg_main.h"
 #include "dev.h"
 #include "ipc.h"
+#include "module_ports.h"
 
 __attribute__((constructor)) static void cfg_so_init(void)
 {
     LOG_INFO(".so 加载，自初始化");
 
     /* 创建 IPC 上下文 */
-    ipc_context_t *ctx = ipc_init(DEV_MODULE_ID_CFG, "cfg", NULL, cfg_msg_handler);
+    ipc_context_t *ctx = ipc_init(DEV_MODULE_ID_CFG, "cfg", MODULE_PORT_CFG, cfg_msg_handler);
     if (!ctx)
     {
         LOG_ERROR("IPC 初始化失败");

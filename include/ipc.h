@@ -125,6 +125,10 @@ void ipc_message_free(ipc_message_t *msg);
 #define IPC_MSG_TYPE_DEV_MODULE_READY IPC_MSG_TYPE(IPC_CATEGORY_DEV, 0x0003)
 /** 模块关闭通知 */
 #define IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN IPC_MSG_TYPE(IPC_CATEGORY_DEV, 0x0004)
+/** 查询模块名称请求 */
+#define IPC_MSG_TYPE_DEV_GET_MODULE_NAME IPC_MSG_TYPE(IPC_CATEGORY_DEV, 0x0005)
+/** 查询模块名称响应 */
+#define IPC_MSG_TYPE_DEV_GET_MODULE_NAME_RESP IPC_MSG_TYPE(IPC_CATEGORY_DEV, 0x0006)
 /** 模块阶段响应 */
 #define IPC_MSG_TYPE_DEV_MODULE_RESP IPC_MSG_TYPE(IPC_CATEGORY_DEV, 0x000F)
 
@@ -183,18 +187,42 @@ typedef enum ipc_costate
 #define IPC_RECV_BUF_SIZE 65536
 
 // ============================================================================
+// MODULE_START payload：模块名称表
+// ============================================================================
+
+/** MODULE_START payload：DEV 将目标模块自身的 name 下发给该模块 */
+typedef struct ipc_module_info
+{
+    uint32_t module_id;                     /**< 模块 ID */
+    char     name[DEV_MODULE_NAME_MAX_LEN]; /**< 模块名称 */
+} ipc_module_info_t;
+
+/** DEV_GET_MODULE_NAME 请求载荷 */
+typedef struct ipc_dev_get_module_name_req
+{
+    uint32_t module_id; /**< 待查询模块 ID */
+} ipc_dev_get_module_name_req_t;
+
+/** DEV_GET_MODULE_NAME 响应载荷 */
+typedef struct ipc_dev_get_module_name_resp
+{
+    int32_t result;                      /**< ERRCODE_SUCCESS/ERRCODE_FAIL */
+    char    name[DEV_MODULE_NAME_MAX_LEN]; /**< 模块名称 */
+} ipc_dev_get_module_name_resp_t;
+
+// ============================================================================
 // 核心 API
 // ============================================================================
 
 /**
  * @brief 初始化 IPC 上下文
- * @param module_id 本模块 ID
- * @param name 模块名称
- * @param config_path IPC 配置文件路径（可为 NULL，使用默认路径）
+ * @param module_id   本模块 ID
+ * @param name        模块名称
+ * @param listen_port 本模块 IPC 监听端口（由调用方指定）
  * @param msg_handler 消息处理回调函数
  * @return IPC 上下文，失败返回 NULL
  */
-ipc_context_t *ipc_init(uint32_t module_id, const char *name, const char *config_path, ipc_msg_handler_fn msg_handler);
+ipc_context_t *ipc_init(uint32_t module_id, const char *name, uint16_t listen_port, ipc_msg_handler_fn msg_handler);
 
 /**
  * @brief 销毁 IPC 上下文
@@ -204,11 +232,13 @@ void ipc_destroy(ipc_context_t *ctx);
 
 /**
  * @brief 连接到目标模块
- * @param ctx IPC 上下文
+ * @param ctx              IPC 上下文
  * @param target_module_id 目标模块 ID
+ * @param host             目标主机地址（如 "127.0.0.1"）
+ * @param port             目标模块 IPC 监听端口
  * @return 成功返回 0，失败返回 -1
  */
-int ipc_connect(ipc_context_t *ctx, uint32_t target_module_id);
+int ipc_connect(ipc_context_t *ctx, uint32_t target_module_id, const char *host, uint16_t port);
 
 /**
  * @brief 发送消息到目标模块（异步）
@@ -249,13 +279,6 @@ int ipc_shutdown_requested(ipc_context_t *ctx);
  * @param ctx IPC 上下文
  */
 void ipc_request_shutdown(ipc_context_t *ctx);
-
-/**
- * @brief 获取模块名称
- * @param module_id 模块 ID
- * @return 模块名称字符串，未找到返回 "unknown"
- */
-const char *ipc_get_module_name(uint32_t module_id);
 
 /**
  * @brief 获取 IPC 上下文的模块 ID

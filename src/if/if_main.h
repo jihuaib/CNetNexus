@@ -13,6 +13,7 @@
 typedef struct
 {
     ipc_context_t *ipc_ctx;
+    char           name[DEV_MODULE_NAME_MAX_LEN]; /**< DEV 在 Phase 1 下发的本模块名称 */
 } if_local_t;
 
 extern if_local_t *g_if_local;

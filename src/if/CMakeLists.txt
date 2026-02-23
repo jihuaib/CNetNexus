@@ -16,7 +16,7 @@ target_include_directories(if PRIVATE
 
 # Link libraries
 target_link_libraries(if PRIVATE
-    ipc
+    dev_api
     ${GLIB_LIBRARIES}
 )
 

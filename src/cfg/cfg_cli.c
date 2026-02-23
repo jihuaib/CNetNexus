@@ -45,7 +45,7 @@ static void print_commands_recursive(GString *out, const char *view_name, const 
     if (node->is_end_node == TRUE)
     {
         char module_name[DEV_MODULE_NAME_MAX_LEN];
-        if (dev_get_module_name(node->module_id, module_name) != ERRCODE_SUCCESS)
+        if (dev_get_module_name(g_cfg_local->ipc_ctx, node->module_id, module_name) != ERRCODE_SUCCESS)
         {
             snprintf(module_name, sizeof(module_name), "unknown");
         }

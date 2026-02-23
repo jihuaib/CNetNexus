@@ -19,6 +19,7 @@ typedef struct dev_module_conf
     char name[16];                      /**< name 字段 */
     char db_name[DEV_CONF_DB_NAME_MAX]; /**< db 字段（可选，为空表示无数据库） */
     char so_name[64];                   /**< so 字段：共享库文件名 */
+    uint16_t port;                      /**< port 字段：IPC 监听端口，dev连接使用 */
 } dev_module_conf_t;
 
 /**

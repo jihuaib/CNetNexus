@@ -21,7 +21,7 @@ target_include_directories(db PRIVATE
 
 # Link libraries
 target_link_libraries(db PRIVATE
-    ipc
+    dev_api
     ${GLIB_LIBRARIES}
     ${SQLite3_LIBRARIES}
     Threads::Threads

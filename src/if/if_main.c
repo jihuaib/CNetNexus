@@ -21,6 +21,7 @@
 #include "if_map.h"
 #include "ipc.h"
 #include "log.h"
+#include "module_ports.h"
 #include "path_utils.h"
 
 if_local_t *g_if_local = NULL;
@@ -79,7 +80,15 @@ static void if_on_start(ipc_context_t *ctx, ipc_message_t *msg)
 {
     LOG_INFO("Phase 1: MODULE_START — 建立 IPC 连接");
 
-    ipc_connect(ctx, DEV_MODULE_ID_CFG);
+    /* 提取 DEV 下发的本模块名称并存入 local */
+    if (msg->payload && msg->payload_len == sizeof(ipc_module_info_t))
+    {
+        const ipc_module_info_t *info = (const ipc_module_info_t *)msg->payload;
+        strlcpy(g_if_local->name, info->name, DEV_MODULE_NAME_MAX_LEN);
+        LOG_INFO("本模块名称: %s", g_if_local->name);
+    }
+
+    ipc_connect(ctx, DEV_MODULE_ID_CFG, IPC_HOST_LOCAL, MODULE_PORT_CFG);
 
     LOG_INFO("已连接到 CFG");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
@@ -177,7 +186,7 @@ __attribute__((constructor)) static void if_so_init(void)
     LOG_INFO(".so 加载，自初始化");
 
     /* 创建 IPC 上下文 */
-    ipc_context_t *ctx = ipc_init(DEV_MODULE_ID_IF, "if", NULL, if_msg_handler);
+    ipc_context_t *ctx = ipc_init(DEV_MODULE_ID_IF, "if", MODULE_PORT_IF, if_msg_handler);
     if (!ctx)
     {
         LOG_ERROR("IPC 初始化失败");

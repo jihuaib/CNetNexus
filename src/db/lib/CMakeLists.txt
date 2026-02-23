@@ -14,7 +14,7 @@ target_include_directories(db_api PRIVATE
 
 # 链接依赖
 target_link_libraries(db_api PUBLIC
-    ipc
+    dev_api
     ${GLIB_LIBRARIES}
 )
 

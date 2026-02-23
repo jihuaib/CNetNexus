@@ -15,7 +15,7 @@ target_include_directories(cfg_api PRIVATE
 # 链接依赖
 target_link_libraries(cfg_api PUBLIC
     cfg
-    ipc
+    dev_api
     ${GLIB_LIBRARIES}
 )
 

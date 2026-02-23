@@ -6,7 +6,6 @@ set(DEV_SOURCES
     dev_main.c
     dev_cli.c
     dev_module.c
-    dev_api.c
     dev_conf_parser.c
 )
 
@@ -20,7 +19,7 @@ target_include_directories(dev PRIVATE
 
 # Link libraries
 target_link_libraries(dev PRIVATE
-    ipc
+    dev_api
     dl
     ${GLIB_LIBRARIES}
 )

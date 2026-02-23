@@ -62,18 +62,10 @@ static int create_directory_recursive(const char *path)
 /**
  * @brief Get database file path for a given database name and module ID
  */
-static int get_database_path(const char *db_name, uint32_t module_id, char *path_buf, size_t buf_size)
+static int get_database_path(const char *db_name, char *path_buf, size_t buf_size)
 {
-    char module_name[32];
-
-    // Get module name
-    if (dev_get_module_name(module_id, module_name) != ERRCODE_SUCCESS)
-    {
-        snprintf(module_name, sizeof(module_name), "module_%u", module_id);
-    }
-
     // Use ./data for development
-    snprintf(path_buf, buf_size, "./data/%s/%s.db", module_name, db_name);
+    snprintf(path_buf, buf_size, "./data/%s.db", db_name);
 
     return 0;
 }
@@ -205,7 +197,7 @@ int db_initialize_database(db_definition_t *db_def)
 
     // Get database file path
     char db_path[512];
-    if (get_database_path(db_def->db_name, db_def->module_id, db_path, sizeof(db_path)) != 0)
+    if (get_database_path(db_def->db_name, db_path, sizeof(db_path)) != 0)
     {
         LOG_ERROR("Failed to get database path for: %s", db_def->db_name);
         return ERRCODE_FAIL;

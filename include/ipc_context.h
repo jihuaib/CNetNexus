@@ -12,7 +12,6 @@
 #include <stdint.h>
 
 #include "ipc.h"
-#include "ipc_config.h"
 #include "ipc_connection.h"
 #include "ipc_query.h"
 
@@ -22,9 +21,6 @@ struct ipc_context
     /* 本模块信息 */
     uint32_t module_id;             /**< 本模块 ID */
     char name[IPC_MODULE_NAME_MAX]; /**< 模块名称 */
-
-    /* 配置 */
-    ipc_config_t config; /**< IPC 配置 */
 
     /* 消息处理 */
     ipc_msg_handler_fn msg_handler; /**< 消息处理回调 */

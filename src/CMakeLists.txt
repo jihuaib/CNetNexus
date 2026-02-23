@@ -1,4 +1,3 @@
-# Build order: utils first, then dev/ipc, then db, then cfg
 add_subdirectory(utils)
 add_subdirectory(dev)
 add_subdirectory(db)
