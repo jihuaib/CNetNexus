@@ -22,33 +22,6 @@
 
 dev_local_t *g_dev_local = NULL;
 
-static void dev_handle_get_module_name(ipc_context_t *ctx, ipc_message_t *msg)
-{
-    ipc_dev_get_module_name_resp_t *resp_payload = g_malloc0(sizeof(ipc_dev_get_module_name_resp_t));
-    resp_payload->result = ERRCODE_FAIL;
-
-    if (msg->payload && msg->payload_len == sizeof(ipc_dev_get_module_name_req_t))
-    {
-        const ipc_dev_get_module_name_req_t *req = (const ipc_dev_get_module_name_req_t *)msg->payload;
-        if (dev_get_module_name_inner(req->module_id, resp_payload->name) == ERRCODE_SUCCESS)
-        {
-            resp_payload->result = ERRCODE_SUCCESS;
-        }
-    }
-
-    ipc_message_t *resp = ipc_message_create(IPC_MSG_TYPE_DEV_GET_MODULE_NAME_RESP, DEV_MODULE_ID_DEV, msg->src_module_id,
-                                             msg->request_id, resp_payload, sizeof(*resp_payload), g_free);
-    if (resp)
-    {
-        ipc_send_response(ctx, resp);
-        ipc_message_free(resp);
-    }
-    else
-    {
-        g_free(resp_payload);
-    }
-}
-
 // ============================================================================
 // IPC 消息处理回调
 // ============================================================================
@@ -65,9 +38,6 @@ void dev_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
         case CFG_MSG_TYPE_CLI_CONTINUE:
             LOG_DEBUG("Received CLI continue request");
             dev_cli_handle_continue(ctx, msg);
-            break;
-        case IPC_MSG_TYPE_DEV_GET_MODULE_NAME:
-            dev_handle_get_module_name(ctx, msg);
             break;
 
         default:

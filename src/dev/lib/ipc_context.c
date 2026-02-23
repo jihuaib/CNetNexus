@@ -713,6 +713,8 @@ void ipc_destroy(ipc_context_t *ctx)
         ipc_query_mgr_destroy(ctx->query_mgr);
     }
 
+    g_free(ctx->module_table);
+
     pthread_mutex_destroy(&ctx->comutex);
     g_free(ctx);
 }
@@ -890,4 +892,23 @@ int ipc_is_connected(ipc_context_t *ctx, uint32_t target_module_id)
     pthread_mutex_unlock(&ctx->comutex);
 
     return connected;
+}
+
+void ipc_set_module_table(ipc_context_t *ctx, const ipc_module_table_t *table)
+{
+    if (!ctx || !table)
+    {
+        return;
+    }
+
+    g_free(ctx->module_table);
+
+    size_t total_size = sizeof(ipc_module_table_t) + table->count * sizeof(ipc_module_info_t);
+    ctx->module_table = g_malloc(total_size);
+    memcpy(ctx->module_table, table, total_size);
+}
+
+const ipc_module_table_t *ipc_get_module_table(ipc_context_t *ctx)
+{
+    return ctx ? ctx->module_table : NULL;
 }

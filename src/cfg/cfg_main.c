@@ -348,12 +348,21 @@ static void cfg_on_start(ipc_context_t *ctx, ipc_message_t *msg)
 {
     LOG_INFO("Phase 1: MODULE_START (无需连接其他模块)");
 
-    /* 提取 DEV 下发的本模块名称并存入 local */
-    if (msg->payload && msg->payload_len == sizeof(ipc_module_info_t))
+    /* 提取 DEV 下发的模块名称表 */
+    if (msg->payload && msg->payload_len >= sizeof(ipc_module_table_t))
     {
-        const ipc_module_info_t *info = (const ipc_module_info_t *)msg->payload;
-        strlcpy(g_cfg_local->name, info->name, DEV_MODULE_NAME_MAX_LEN);
-        LOG_INFO("本模块名称: %s", g_cfg_local->name);
+        const ipc_module_table_t *table = (const ipc_module_table_t *)msg->payload;
+        ipc_set_module_table(ctx, table);
+
+        for (uint32_t i = 0; i < table->count; i++)
+        {
+            if (table->entries[i].module_id == table->self_module_id)
+            {
+                strlcpy(g_cfg_local->name, table->entries[i].name, DEV_MODULE_NAME_MAX_LEN);
+                LOG_INFO("本模块名称: %s", g_cfg_local->name);
+                break;
+            }
+        }
     }
 
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);

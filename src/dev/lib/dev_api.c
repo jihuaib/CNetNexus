@@ -21,42 +21,20 @@ int dev_get_module_name(ipc_context_t *ctx, uint32_t module_id, char *module_nam
 
     module_name[0] = '\0';
 
-    /* DEV 自查询直接走本地注册表，避免自环 IPC */
-    if (ipc_get_module_id(ctx) == DEV_MODULE_ID_DEV)
-    {
-        return ERRCODE_SUCCESS;
-    }
-
-    ipc_dev_get_module_name_req_t *req_payload = g_malloc0(sizeof(ipc_dev_get_module_name_req_t));
-    req_payload->module_id = module_id;
-
-    ipc_message_t *req = ipc_message_create(IPC_MSG_TYPE_DEV_GET_MODULE_NAME, ipc_get_module_id(ctx), DEV_MODULE_ID_DEV,
-                                            0, req_payload, sizeof(*req_payload), g_free);
-    if (!req)
-    {
-        g_free(req_payload);
-        return ERRCODE_FAIL;
-    }
-
-    ipc_message_t *resp = ipc_query(ctx, DEV_MODULE_ID_DEV, req, IPC_QUERY_TIMEOUT_DEFAULT);
-    ipc_message_free(req);
-    if (!resp)
+    const ipc_module_table_t *table = ipc_get_module_table(ctx);
+    if (!table)
     {
         return ERRCODE_FAIL;
     }
 
-    int ret = ERRCODE_FAIL;
-    if (resp->msg_type == IPC_MSG_TYPE_DEV_GET_MODULE_NAME_RESP &&
-        resp->payload_len == sizeof(ipc_dev_get_module_name_resp_t) && resp->payload)
+    for (uint32_t i = 0; i < table->count; i++)
     {
-        const ipc_dev_get_module_name_resp_t *payload = (const ipc_dev_get_module_name_resp_t *)resp->payload;
-        if (payload->result == ERRCODE_SUCCESS)
+        if (table->entries[i].module_id == module_id)
         {
-            strlcpy(module_name, payload->name, DEV_MODULE_NAME_MAX_LEN);
-            ret = ERRCODE_SUCCESS;
+            strlcpy(module_name, table->entries[i].name, DEV_MODULE_NAME_MAX_LEN);
+            return ERRCODE_SUCCESS;
         }
     }
 
-    ipc_message_free(resp);
-    return ret;
+    return ERRCODE_FAIL;
 }

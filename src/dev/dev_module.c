@@ -344,8 +344,32 @@ static gboolean dev_connect_to_module_callback(gpointer key, gpointer value, gpo
 }
 
 // ============================================================================
-// Phase 1: 发送 MODULE_START RPC（携带模块名称表 payload）
+// Phase 1: 发送 MODULE_START RPC（携带完整模块名称表 payload）
 // ============================================================================
+
+/** 收集模块条目的辅助结构 */
+typedef struct phase1_ctx
+{
+    ipc_module_table_t *table; /**< 模块名称表（已分配） */
+    uint32_t            idx;   /**< 当前填充索引 */
+} phase1_ctx_t;
+
+/** 收集模块到名称表 */
+static gboolean phase1_collect_callback(gpointer key, gpointer value, gpointer data)
+{
+    (void)key;
+    phase1_ctx_t *pctx = (phase1_ctx_t *)data;
+    dev_module_t *module = (dev_module_t *)value;
+
+    if (pctx->idx < pctx->table->count)
+    {
+        pctx->table->entries[pctx->idx].module_id = module->module_id;
+        strlcpy(pctx->table->entries[pctx->idx].name, module->name, DEV_MODULE_NAME_MAX_LEN);
+        pctx->idx++;
+    }
+
+    return FALSE;
+}
 
 static gboolean phase1_start_callback(gpointer key, gpointer value, gpointer data)
 {
@@ -366,13 +390,18 @@ static gboolean phase1_start_callback(gpointer key, gpointer value, gpointer dat
 
     LOG_INFO("Phase 1: 发送 MODULE_START -> %s", module->name);
 
-    /* 将目标模块自身的 info 作为 payload 下发，令其知晓自己的 name */
-    ipc_module_info_t *info = g_malloc0(sizeof(ipc_module_info_t));
-    info->module_id = module->module_id;
-    strlcpy(info->name, module->name, DEV_MODULE_NAME_MAX_LEN);
+    /* 构造完整模块名称表 payload */
+    uint32_t total_modules = (uint32_t)g_tree_nnodes(g_module_registry);
+    size_t table_size = sizeof(ipc_module_table_t) + total_modules * sizeof(ipc_module_info_t);
+    ipc_module_table_t *table = g_malloc0(table_size);
+    table->self_module_id = module->module_id;
+    table->count = total_modules;
+
+    phase1_ctx_t pctx = { .table = table, .idx = 0 };
+    g_tree_foreach(g_module_registry, phase1_collect_callback, &pctx);
 
     ipc_message_t *req = ipc_message_create(IPC_MSG_TYPE_DEV_MODULE_START, DEV_MODULE_ID_DEV, module->module_id, 0,
-                                            info, sizeof(ipc_module_info_t), g_free);
+                                            table, table_size, g_free);
 
     ipc_message_t *resp = ipc_query(g_dev_local->ipc_ctx, module->module_id, req, 5000);
     if (resp)
@@ -555,6 +584,20 @@ int32_t dev_init_all_modules(void)
             break;
         }
         usleep(100000); /* 100ms */
+    }
+
+    /* 构建 DEV 自身的模块名称表（令 dev_get_module_name 可本地查表） */
+    {
+        uint32_t total_modules = (uint32_t)g_tree_nnodes(g_module_registry);
+        size_t table_size = sizeof(ipc_module_table_t) + total_modules * sizeof(ipc_module_info_t);
+        ipc_module_table_t *dev_table = g_malloc0(table_size);
+        dev_table->self_module_id = DEV_MODULE_ID_DEV;
+        dev_table->count = total_modules;
+        phase1_ctx_t dev_pctx = { .table = dev_table, .idx = 0 };
+        g_tree_foreach(g_module_registry, phase1_collect_callback, &dev_pctx);
+        ipc_set_module_table(g_dev_local->ipc_ctx, dev_table);
+        g_free(dev_table);
+        LOG_INFO("DEV 模块名称表已建立 (%u 模块)", total_modules);
     }
 
     /* Phase 1: 发送 MODULE_START — 模块建立 IPC 连接 */
