@@ -1,7 +1,6 @@
 # DB module sources
 set(DB_SOURCES
     db_main.c
-    db_registry.c
     db_schema.c
     db_api.c
     db_cli.c

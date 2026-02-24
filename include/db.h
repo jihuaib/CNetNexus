@@ -12,12 +12,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "cli.h"
-
-typedef struct db_field db_field_t;
-typedef struct db_table db_table_t;
-typedef struct db_definition db_definition_t;
-
 // ============================================================================
 // 字段值类型
 // ============================================================================
@@ -70,51 +64,35 @@ typedef struct db_result
 } db_result_t;
 
 // ============================================================================
-// 数据库定义 API
+// 建表定义
 // ============================================================================
 
-/**
- * @brief 创建字段定义
- * @param field_name 字段名称
- * @param type_str 类型字符串（如 "uint(1-4294967295)"）
- * @return 新分配的字段定义
- */
-db_field_t *db_field_create(const char *field_name, const char *type_str);
+/** 列约束标志位 */
+typedef enum db_column_constraint
+{
+    DB_COL_NONE = 0,                 /**< 无约束 */
+    DB_COL_PRIMARY_KEY = (1 << 0),   /**< 主键 */
+    DB_COL_NOT_NULL = (1 << 1),      /**< 非空 */
+    DB_COL_UNIQUE = (1 << 2),        /**< 唯一 */
+    DB_COL_AUTOINCREMENT = (1 << 3), /**< 自增（仅 INTEGER PRIMARY KEY 有效） */
+} db_column_constraint_t;
 
-/**
- * @brief 创建数据库定义
- * @param db_name 数据库名称
- * @param module_id 模块 ID
- * @return 新分配的数据库定义
- */
-db_definition_t *db_definition_create(const char *db_name, uint32_t module_id);
+/** 单列定义 */
+typedef struct db_column_def
+{
+    const char *name;        /**< 列名 */
+    db_value_type_t type;    /**< 数据类型 */
+    uint32_t constraints;    /**< 约束标志位（db_column_constraint_t 的位组合） */
+    const char *default_val; /**< 默认值表达式（SQL 字面量），NULL 表示无默认值 */
+} db_column_def_t;
 
-/**
- * @brief 创建表定义
- * @param table_name 表名称
- * @return 新分配的表定义
- */
-db_table_t *db_table_create(const char *table_name);
-
-/**
- * @brief 向表中添加字段
- * @param table 目标表
- * @param field 待添加的字段（所有权转移）
- */
-void db_table_add_field(db_table_t *table, db_field_t *field);
-
-/**
- * @brief 向数据库定义中添加表
- * @param db_def 数据库定义
- * @param table 待添加的表（所有权转移）
- */
-void db_definition_add_table(db_definition_t *db_def, db_table_t *table);
-
-/**
- * @brief 将数据库定义添加到注册表
- * @param db_def 待添加的数据库定义（所有权转移）
- */
-void db_registry_add(db_definition_t *db_def);
+/** 建表定义（结构化描述，替代裸 DDL 字符串） */
+typedef struct db_table_def
+{
+    const char *table_name;      /**< 表名 */
+    const db_column_def_t *cols; /**< 列定义数组 */
+    uint32_t num_cols;           /**< 列数量 */
+} db_table_def_t;
 
 // ============================================================================
 // 内存管理
@@ -158,22 +136,5 @@ db_value_t db_value_null(void);
  * @param value 待释放的值
  */
 void db_value_free(db_value_t *value);
-
-// ============================================================================
-// 类型验证（基于 XML 类型定义）
-// ============================================================================
-
-/**
- * @brief 根据 XML 中字段的类型定义验证值的有效性
- * @param db_name 数据库名称
- * @param table_name 表名称
- * @param field_name 字段名称
- * @param value 待验证的值
- * @param error_msg 错误信息输出缓冲区（可选）
- * @param error_msg_len 错误信息缓冲区长度
- * @return 有效返回 TRUE，无效返回 FALSE
- */
-gboolean db_validate_field(const char *db_name, const char *table_name, const char *field_name, const db_value_t *value,
-                           char *error_msg, uint32_t error_msg_len);
 
 #endif // DB_H

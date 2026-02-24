@@ -70,4 +70,37 @@ int db_query(const char *db_name, const char *table_name, const char **field_nam
  */
 int db_exists(const char *db_name, const char *table_name, const char *where_clause, gboolean *exists);
 
+/**
+ * @brief 执行建表 DDL 语句（本地 SQLite 操作）
+ * @param db_name 数据库名称
+ * @param ddl     完整的 CREATE TABLE ... SQL 语句（通常含 IF NOT EXISTS）
+ * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL
+ */
+int db_create_table(const char *db_name, const char *ddl);
+
+/**
+ * @brief 按结构化定义建表（本地 SQLite 操作，自动生成 DDL 并打印 SQL）
+ * @param db_name 数据库名称
+ * @param def     表定义（表名、列列表及约束）
+ * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL
+ */
+int db_create_table_from_def(const char *db_name, const db_table_def_t *def);
+
+/**
+ * @brief 执行 DML/DDL SQL（本地 SQLite 操作），返回影响行数
+ * @param db_name 数据库名称
+ * @param sql     完整 SQL 语句
+ * @return 影响行数（>=0），错误返回 -1
+ */
+int db_exec_sql(const char *db_name, const char *sql);
+
+/**
+ * @brief 执行 SELECT SQL（本地 SQLite 操作），返回结果集
+ * @param db_name 数据库名称
+ * @param sql     完整 SELECT SQL 语句
+ * @param result  输出结果集（调用者须通过 db_result_free 释放）
+ * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL
+ */
+int db_query_sql(const char *db_name, const char *sql, db_result_t **result);
+
 #endif // DB_API_H

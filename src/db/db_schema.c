@@ -13,7 +13,6 @@
 #include <unistd.h>
 
 #include "db_main.h"
-#include "db_registry.h"
 #include "dev.h"
 #include "errcode.h"
 #include "log.h"
@@ -60,13 +59,11 @@ static int create_directory_recursive(const char *path)
 }
 
 /**
- * @brief Get database file path for a given database name and module ID
+ * @brief 获取统一数据库文件路径（所有模块共享同一个数据库文件）
  */
-static int get_database_path(const char *db_name, char *path_buf, size_t buf_size)
+static int get_database_path(char *path_buf, size_t buf_size)
 {
-    // Use ./data for development
-    snprintf(path_buf, buf_size, "./data/%s.db", db_name);
-
+    snprintf(path_buf, buf_size, "./data/netnexus.db");
     return 0;
 }
 
@@ -132,103 +129,38 @@ int db_create_database_file(const char *db_name, const char *db_path, sqlite3 **
 }
 
 // ============================================================================
-// Table Creation
-// ============================================================================
-
-/**
- * @brief Create a table from its definition
- */
-int db_create_table(sqlite3 *handle, const char *table_name, db_table_t *table_def)
-{
-    if (!handle || !table_name || !table_def)
-    {
-        return ERRCODE_FAIL;
-    }
-
-    // Build CREATE TABLE SQL
-    char sql[4096];
-    int offset = 0;
-
-    offset += snprintf(sql + offset, sizeof(sql) - offset, "CREATE TABLE IF NOT EXISTS %s (", table_name);
-
-    for (uint32_t i = 0; i < table_def->num_fields; i++)
-    {
-        db_field_t *field = table_def->fields[i];
-
-        if (i > 0)
-        {
-            offset += snprintf(sql + offset, sizeof(sql) - offset, ", ");
-        }
-
-        offset += snprintf(sql + offset, sizeof(sql) - offset, "%s %s", field->field_name, field->sql_type);
-    }
-
-    offset += snprintf(sql + offset, sizeof(sql) - offset, ");");
-
-    // Execute CREATE TABLE
-    char *err_msg = NULL;
-    int rc = sqlite3_exec(handle, sql, NULL, NULL, &err_msg);
-    if (rc != SQLITE_OK)
-    {
-        LOG_ERROR("Failed to create table %s: %s", table_name, err_msg);
-        sqlite3_free(err_msg);
-        return ERRCODE_FAIL;
-    }
-
-    LOG_INFO("Created table: %s", table_name);
-    return ERRCODE_SUCCESS;
-}
-
-// ============================================================================
 // Schema Initialization
 // ============================================================================
 
 /**
- * @brief Initialize database schema from definition
+ * @brief 打开统一数据库文件，建立 main_conn（仅执行一次）
  */
-int db_initialize_database(db_definition_t *db_def)
+int db_initialize_database(void)
 {
-    if (!db_def)
+    if (g_db_local->main_conn)
     {
-        return ERRCODE_FAIL;
+        return ERRCODE_SUCCESS;
     }
 
-    LOG_INFO("Initializing database: %s", db_def->db_name);
-
-    // Get database file path
     char db_path[512];
-    if (get_database_path(db_def->db_name, db_path, sizeof(db_path)) != 0)
+    if (get_database_path(db_path, sizeof(db_path)) != 0)
     {
-        LOG_ERROR("Failed to get database path for: %s", db_def->db_name);
+        LOG_ERROR("获取统一数据库路径失败");
         return ERRCODE_FAIL;
     }
 
-    // Create database file and open connection
     sqlite3 *handle = NULL;
-    if (db_create_database_file(db_def->db_name, db_path, &handle) != ERRCODE_SUCCESS)
+    if (db_create_database_file("netnexus", db_path, &handle) != ERRCODE_SUCCESS)
     {
         return ERRCODE_FAIL;
     }
 
-    // Create tables
-    for (uint32_t i = 0; i < db_def->num_tables; i++)
-    {
-        db_table_t *table = db_def->tables[i];
-        if (db_create_table(handle, table->table_name, table) != ERRCODE_SUCCESS)
-        {
-            sqlite3_close(handle);
-            return ERRCODE_FAIL;
-        }
-    }
-
-    // Store connection in context
     db_connection_t *conn = g_malloc0(sizeof(db_connection_t));
     conn->db_path = g_strdup(db_path);
     conn->handle = handle;
     g_mutex_init(&conn->db_mutex);
 
-    g_hash_table_insert(g_db_local->connections, g_strdup(db_def->db_name), conn);
-
-    LOG_INFO("Database initialized: %s", db_def->db_name);
+    g_db_local->main_conn = conn;
+    LOG_INFO("统一数据库连接已建立: %s", db_path);
     return ERRCODE_SUCCESS;
 }

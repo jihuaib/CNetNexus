@@ -2,6 +2,7 @@
 set(BGP_SOURCES
     bgp_main.c
     bgp_cli.c
+    bgp_db.c
 )
 
 # Create shared library for BGP module

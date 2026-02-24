@@ -190,14 +190,19 @@ static void handle_frame(ipc_context_t *ctx, ipc_connection_t *conn, ipc_message
             uint32_t buf_len = 0;
             if (ipc_frame_serialize(&ack, &buf, &buf_len) == ERRCODE_SUCCESS)
             {
+                pthread_mutex_lock(&ctx->comutex);
                 ipc_connection_send(conn, buf, buf_len);
+                pthread_mutex_unlock(&ctx->comutex);
                 g_free(buf);
             }
 
             conn->state = IPC_COCONNECTED;
             conn->last_heartbeat_recv = time(NULL);
             ipc_connection_reset_reconnect(conn);
-            { char _buf[16]; LOG_INFO("<%s> 与 %s 连接建立", ctx->name, fmt_module_id(conn->remote_module_id, _buf, sizeof(_buf))); }
+            {
+                char _buf[16];
+                LOG_INFO("<%s> 与 %s 连接建立", ctx->name, fmt_module_id(conn->remote_module_id, _buf, sizeof(_buf)));
+            }
             break;
         }
 
@@ -212,7 +217,10 @@ static void handle_frame(ipc_context_t *ctx, ipc_connection_t *conn, ipc_message
             conn->state = IPC_COCONNECTED;
             conn->last_heartbeat_recv = time(NULL);
             ipc_connection_reset_reconnect(conn);
-            { char _buf[16]; LOG_INFO("<%s> 与 %s 握手完成", ctx->name, fmt_module_id(conn->remote_module_id, _buf, sizeof(_buf))); }
+            {
+                char _buf[16];
+                LOG_INFO("<%s> 与 %s 握手完成", ctx->name, fmt_module_id(conn->remote_module_id, _buf, sizeof(_buf)));
+            }
             break;
         }
 
@@ -230,7 +238,9 @@ static void handle_frame(ipc_context_t *ctx, ipc_connection_t *conn, ipc_message
             uint32_t buf_len = 0;
             if (ipc_frame_serialize(&ack, &buf, &buf_len) == ERRCODE_SUCCESS)
             {
+                pthread_mutex_lock(&ctx->comutex);
                 ipc_connection_send(conn, buf, buf_len);
+                pthread_mutex_unlock(&ctx->comutex);
                 g_free(buf);
             }
             break;
@@ -268,15 +278,8 @@ static void handle_frame(ipc_context_t *ctx, ipc_connection_t *conn, ipc_message
                 }
             }
 
-            /* 调用应用消息处理回调 */
-            if (ctx->msg_handler)
-            {
-                ctx->msg_handler(ctx, app_msg);
-            }
-            else
-            {
-                ipc_message_free(app_msg);
-            }
+            /* 推入 worker 队列，IO 线程立即返回继续 epoll */
+            g_async_queue_push(ctx->msg_queue, app_msg);
             break;
         }
     }
@@ -345,7 +348,11 @@ static void check_heartbeats(ipc_context_t *ctx)
         /* 检查心跳超时 */
         if (now - conn->last_heartbeat_recv > IPC_HEARTBEAT_TIMEOUT)
         {
-            { char _buf[16]; LOG_WARN("<%s> 心跳超时，断开 %s", ctx->name, fmt_module_id(conn->remote_module_id, _buf, sizeof(_buf))); }
+            {
+                char _buf[16];
+                LOG_WARN("<%s> 心跳超时，断开 %s", ctx->name,
+                         fmt_module_id(conn->remote_module_id, _buf, sizeof(_buf)));
+            }
             epoll_ctl(ctx->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
             ipc_connection_close(conn);
             if (conn->is_initiator)
@@ -445,6 +452,39 @@ static void accept_new_connection(ipc_context_t *ctx)
 }
 
 // ============================================================================
+// Worker 线程：执行业务 msg_handler，可安全调用 ipc_query（嵌套 RPC）
+// ============================================================================
+
+static void *ipc_worker_thread(void *arg)
+{
+    ipc_context_t *ctx = (ipc_context_t *)arg;
+
+    LOG_INFO("<%s> Worker 线程启动", ctx->name);
+
+    while (1)
+    {
+        /* 阻塞等待业务消息；NULL 为退出哨兵 */
+        ipc_message_t *msg = g_async_queue_pop(ctx->msg_queue);
+        if (!msg)
+        {
+            break;
+        }
+
+        if (ctx->msg_handler)
+        {
+            ctx->msg_handler(ctx, msg);
+        }
+        else
+        {
+            ipc_message_free(msg);
+        }
+    }
+
+    LOG_INFO("<%s> Worker 线程退出", ctx->name);
+    return NULL;
+}
+
+// ============================================================================
 // IO 线程
 // ============================================================================
 
@@ -506,7 +546,9 @@ static void *ipc_io_thread(void *arg)
                         ev.data.fd = fd;
                         epoll_ctl(ctx->epoll_fd, EPOLL_CTL_MOD, fd, &ev);
 
+                        pthread_mutex_lock(&ctx->comutex);
                         send_handshake(ctx, conn);
+                        pthread_mutex_unlock(&ctx->comutex);
                     }
                     else
                     {
@@ -527,7 +569,11 @@ static void *ipc_io_thread(void *arg)
                 {
                     if (n == 0 || (errno != EAGAIN && errno != EINTR))
                     {
-                        { char _buf[16]; LOG_WARN("<%s> 连接断开 (module=%s)", ctx->name, fmt_module_id(conn->remote_module_id, _buf, sizeof(_buf))); }
+                        {
+                            char _buf[16];
+                            LOG_WARN("<%s> 连接断开 (module=%s)", ctx->name,
+                                     fmt_module_id(conn->remote_module_id, _buf, sizeof(_buf)));
+                        }
                         epoll_ctl(ctx->epoll_fd, EPOLL_CTL_DEL, fd, NULL);
                         ipc_connection_close(conn);
                         if (conn->is_initiator)
@@ -664,11 +710,23 @@ ipc_context_t *ipc_init(uint32_t module_id, const char *name, uint16_t listen_po
         }
     }
 
+    /* 创建业务消息队列 */
+    ctx->msg_queue = g_async_queue_new();
+
     /* 启动 IO 线程 */
     ctx->running = 1;
     if (pthread_create(&ctx->io_thread, NULL, ipc_io_thread, ctx) != 0)
     {
-        LOG_PERROR("pthread_create");
+        LOG_PERROR("pthread_create (io)");
+        ctx->running = 0;
+        ipc_destroy(ctx);
+        return NULL;
+    }
+
+    /* 启动 Worker 线程 */
+    if (pthread_create(&ctx->worker_thread, NULL, ipc_worker_thread, ctx) != 0)
+    {
+        LOG_PERROR("pthread_create (worker)");
         ctx->running = 0;
         ipc_destroy(ctx);
         return NULL;
@@ -690,6 +748,21 @@ void ipc_destroy(ipc_context_t *ctx)
     if (ctx->io_thread != 0)
     {
         pthread_join(ctx->io_thread, NULL);
+    }
+
+    /* 发送 NULL 哨兵唤醒 worker 线程使其退出 */
+    if (ctx->msg_queue)
+    {
+        g_async_queue_push(ctx->msg_queue, NULL);
+    }
+    if (ctx->worker_thread != 0)
+    {
+        pthread_join(ctx->worker_thread, NULL);
+    }
+    if (ctx->msg_queue)
+    {
+        g_async_queue_unref(ctx->msg_queue);
+        ctx->msg_queue = NULL;
     }
 
     /* 关闭所有连接 */

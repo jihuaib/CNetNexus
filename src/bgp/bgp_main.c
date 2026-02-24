@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include "bgp_cli.h"
+#include "bgp_db.h"
 #include "cli.h"
 #include "dev.h"
 #include "errcode.h"
@@ -59,8 +60,9 @@ static void bgp_on_start(ipc_context_t *ctx, ipc_message_t *msg)
     }
 
     ipc_connect(ctx, DEV_MODULE_ID_CFG, IPC_HOST_LOCAL, MODULE_PORT_CFG);
+    ipc_connect(ctx, DEV_MODULE_ID_DB, IPC_HOST_LOCAL, MODULE_PORT_DB);
 
-    LOG_INFO("已连接到 CFG");
+    LOG_INFO("已连接到 CFG 和 DB");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
@@ -80,7 +82,14 @@ static void bgp_on_connect(ipc_context_t *ctx, ipc_message_t *msg)
 
 static void bgp_on_ready(ipc_context_t *ctx, ipc_message_t *msg)
 {
-    LOG_INFO("Phase 3: MODULE_READY (预留)");
+    LOG_INFO("Phase 3: MODULE_READY — 初始化 BGP 数据库");
+
+    /* 建立 BGP 数据库表（IF NOT EXISTS，幂等操作） */
+    if (bgp_db_init(ctx) != 0)
+    {
+        LOG_WARN("BGP 数据库初始化失败，继续启动");
+    }
+
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 

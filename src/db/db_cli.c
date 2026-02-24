@@ -1,6 +1,6 @@
 /**
  * @file   db_cli.c
- * @brief  数据库模块 CLI 命令处理
+ * @brief  数据库模块 CLI 命令处理（直接查询 SQLite，无需 registry）
  * @author jhb
  * @date   2026/01/22
  */
@@ -12,9 +12,7 @@
 
 #include "cli.h"
 #include "db.h"
-#include "db_api.h"
 #include "db_main.h"
-#include "db_registry.h"
 #include "dev.h"
 #include "errcode.h"
 #include "log.h"
@@ -36,237 +34,188 @@ static void db_send_cli_response(ipc_message_t *msg, const char *text)
 }
 
 // ============================================================================
-// Show 命令处理函数
+// show db table-list
 // ============================================================================
 
-static int handle_db_show_list(ipc_message_t *msg)
+static int handle_db_show_table_list(ipc_message_t *msg)
 {
-    db_registry_t *registry = db_registry_get_instance();
-    if (!registry || !registry->databases)
+    db_connection_t *conn = g_db_local->main_conn;
+    if (!conn || !conn->handle)
     {
-        db_send_cli_response(msg, "No databases registered.\r\n");
-        return ERRCODE_SUCCESS;
+        db_send_cli_response(msg, "Error: Database not open.\r\n");
+        return ERRCODE_FAIL;
     }
 
     db_cli_resp_out_t resp_out;
     memset(&resp_out, 0, sizeof(resp_out));
     int offset = 0;
 
-    g_mutex_lock(&registry->registry_mutex);
-    uint32_t total = g_hash_table_size(registry->databases);
-
-    /* 输出标题 */
     offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset,
-                       "Registered Databases:\r\n"
-                       "%-16s %-10s %s\r\n"
-                       "---------------- ---------- ------\r\n",
-                       "Name", "Module", "Tables");
+                       "Tables in netnexus.db:\r\n"
+                       "  %-40s\r\n"
+                       "  ----------------------------------------\r\n",
+                       "Name");
 
-    if (total > 0)
+    const char *sql = "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name;";
+    sqlite3_stmt *stmt;
+
+    g_mutex_lock(&conn->db_mutex);
+    int rc = sqlite3_prepare_v2(conn->handle, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK)
     {
-        GHashTableIter iter;
-        gpointer key, value;
-        g_hash_table_iter_init(&iter, registry->databases);
-        while (g_hash_table_iter_next(&iter, &key, &value))
-        {
-            db_definition_t *db_def = (db_definition_t *)value;
-            char module_name[64];
-            if (dev_get_module_name(g_db_local->ipc_ctx, db_def->module_id, module_name) != ERRCODE_SUCCESS)
-            {
-                snprintf(module_name, sizeof(module_name), "0x%08X", db_def->module_id);
-            }
-            offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset, "%-16s %-10s %u\r\n",
-                               db_def->db_name, module_name, db_def->num_tables);
-        }
+        g_mutex_unlock(&conn->db_mutex);
+        db_send_cli_response(msg, "Error: Failed to query table list.\r\n");
+        return ERRCODE_FAIL;
     }
-    g_mutex_unlock(&registry->registry_mutex);
+
+    while (sqlite3_step(stmt) == SQLITE_ROW)
+    {
+        const char *name = (const char *)sqlite3_column_text(stmt, 0);
+        offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset, "  %s\r\n", name ? name : "");
+    }
+    sqlite3_finalize(stmt);
+    g_mutex_unlock(&conn->db_mutex);
 
     db_send_cli_response(msg, resp_out.message);
     return ERRCODE_SUCCESS;
 }
 
-static int handle_db_show_tables(ipc_message_t *msg, const char *db_name)
+// ============================================================================
+// show db table-field <table-name>
+// ============================================================================
+
+static int handle_db_show_table_field(ipc_message_t *msg, const char *table_name)
 {
+    db_connection_t *conn = g_db_local->main_conn;
+    if (!conn || !conn->handle)
+    {
+        db_send_cli_response(msg, "Error: Database not open.\r\n");
+        return ERRCODE_FAIL;
+    }
+
     db_cli_resp_out_t resp_out;
     memset(&resp_out, 0, sizeof(resp_out));
     int offset = 0;
 
-    db_definition_t *db_def = db_registry_find(db_name);
-    if (db_def)
+    offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset,
+                       "Fields of table '%s':\r\n"
+                       "  %-4s  %-24s  %-12s  %-8s  %s\r\n"
+                       "  -------------------------------------------------------\r\n",
+                       table_name, "cid", "name", "type", "notnull", "pk");
+
+    char sql[256];
+    snprintf(sql, sizeof(sql), "PRAGMA table_info(%s);", table_name);
+    sqlite3_stmt *stmt;
+
+    g_mutex_lock(&conn->db_mutex);
+    int rc = sqlite3_prepare_v2(conn->handle, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK)
     {
-        offset +=
-            snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset, "Database: %s\r\n", db_def->db_name);
-        offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset, "Tables:\r\n");
-        for (uint32_t i = 0; i < db_def->num_tables; i++)
-        {
-            offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset, "  - %s (%u fields)\r\n",
-                               db_def->tables[i]->table_name, db_def->tables[i]->num_fields);
-        }
+        g_mutex_unlock(&conn->db_mutex);
+        snprintf(resp_out.message, sizeof(resp_out.message), "Error: Table '%s' not found.\r\n", table_name);
+        db_send_cli_response(msg, resp_out.message);
+        return ERRCODE_FAIL;
     }
-    else
+
+    int row_count = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW)
     {
-        snprintf(resp_out.message, sizeof(resp_out.message), "Error: Database '%s' not found\r\n", db_name);
-    }
-
-    db_send_cli_response(msg, resp_out.message);
-    return ERRCODE_SUCCESS;
-}
-
-static int handle_db_show_fields(ipc_message_t *msg, const char *db_name, const char *table_name)
-{
-    db_cli_resp_out_t resp_out;
-    memset(&resp_out, 0, sizeof(resp_out));
-    int offset = 0;
-
-    db_table_t *table = db_registry_find_table(db_name, table_name);
-    if (table)
-    {
-        offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset, "Database: %s, Table: %s\r\n",
-                           db_name, table->table_name);
-        offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset, "Fields:\r\n");
-        offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset, "  %-20s | %-20s | %-10s\r\n",
-                           "Field Name", "Type", "SQL Type");
+        int cid = sqlite3_column_int(stmt, 0);
+        const char *name = (const char *)sqlite3_column_text(stmt, 1);
+        const char *type = (const char *)sqlite3_column_text(stmt, 2);
+        int notnull = sqlite3_column_int(stmt, 3);
+        int pk = sqlite3_column_int(stmt, 5);
         offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset,
-                           "  ------------------------------------------------------------\r\n");
-        for (uint32_t j = 0; j < table->num_fields; j++)
-        {
-            db_field_t *field = table->fields[j];
-            offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset,
-                               "  %-20s | %-20s | %-10s\r\n", field->field_name, field->type_str, field->sql_type);
-        }
+                           "  %-4d  %-24s  %-12s  %-8d  %d\r\n", cid, name ? name : "", type ? type : "", notnull, pk);
+        row_count++;
     }
-    else
+    sqlite3_finalize(stmt);
+    g_mutex_unlock(&conn->db_mutex);
+
+    if (row_count == 0)
     {
-        snprintf(resp_out.message, sizeof(resp_out.message), "Error: Table '%s' not found in database '%s'\r\n",
-                 table_name, db_name);
+        snprintf(resp_out.message, sizeof(resp_out.message), "Error: Table '%s' not found.\r\n", table_name);
     }
 
     db_send_cli_response(msg, resp_out.message);
     return ERRCODE_SUCCESS;
 }
 
-static int handle_db_show_data(ipc_message_t *msg, const char *db_name, const char *table_name)
+// ============================================================================
+// show db table-data <table-name>
+// ============================================================================
+
+static int handle_db_show_table_data(ipc_message_t *msg, const char *table_name)
 {
+    db_connection_t *conn = g_db_local->main_conn;
+    if (!conn || !conn->handle)
+    {
+        db_send_cli_response(msg, "Error: Database not open.\r\n");
+        return ERRCODE_FAIL;
+    }
+
     db_cli_resp_out_t resp_out;
     memset(&resp_out, 0, sizeof(resp_out));
     int offset = 0;
 
-    db_table_t *table_def = db_registry_find_table(db_name, table_name);
-    if (!table_def)
+    char sql[256];
+    snprintf(sql, sizeof(sql), "SELECT * FROM %s;", table_name);
+    sqlite3_stmt *stmt;
+
+    g_mutex_lock(&conn->db_mutex);
+    int rc = sqlite3_prepare_v2(conn->handle, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK)
     {
-        snprintf(resp_out.message, sizeof(resp_out.message), "Error: Table '%s' not found in database '%s'\r\n",
-                 table_name, db_name);
+        g_mutex_unlock(&conn->db_mutex);
+        snprintf(resp_out.message, sizeof(resp_out.message), "Error: Table '%s' not found.\r\n", table_name);
         db_send_cli_response(msg, resp_out.message);
-        return ERRCODE_SUCCESS;
+        return ERRCODE_FAIL;
     }
 
-    /* 查询所有行 */
-    db_result_t *result = NULL;
-    int ret = db_query(db_name, table_name, NULL, 0, NULL, &result);
-    if (ret != ERRCODE_SUCCESS || !result)
-    {
-        snprintf(resp_out.message, sizeof(resp_out.message), "Error: Failed to query table '%s'\r\n", table_name);
-        db_send_cli_response(msg, resp_out.message);
-        return ERRCODE_SUCCESS;
-    }
-
-    /* 计算每列最大宽度 */
-    uint32_t num_cols = table_def->num_fields;
-    int *col_widths = g_malloc0(sizeof(int) * num_cols);
-
-    for (uint32_t c = 0; c < num_cols; c++)
-    {
-        col_widths[c] = (int)strlen(table_def->fields[c]->field_name);
-    }
-
-    for (uint32_t r = 0; r < result->num_rows; r++)
-    {
-        db_row_t *row = result->rows[r];
-        for (uint32_t c = 0; c < row->num_fields && c < num_cols; c++)
-        {
-            int val_len = 0;
-            switch (row->values[c].type)
-            {
-                case DB_TYPE_INTEGER:
-                {
-                    char tmp[32];
-                    val_len = snprintf(tmp, sizeof(tmp), "%ld", (long)row->values[c].data.i64);
-                    break;
-                }
-                case DB_TYPE_REAL:
-                {
-                    char tmp[32];
-                    val_len = snprintf(tmp, sizeof(tmp), "%.6g", row->values[c].data.real);
-                    break;
-                }
-                case DB_TYPE_TEXT:
-                    val_len = row->values[c].data.text ? (int)strlen(row->values[c].data.text) : 4;
-                    break;
-                default:
-                    val_len = 4; /* "NULL" */
-                    break;
-            }
-            if (val_len > col_widths[c])
-            {
-                col_widths[c] = val_len;
-            }
-        }
-    }
-
-    /* 输出标题 */
-    offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset,
-                       "Database: %s, Table: %s (%u rows)\r\n", db_name, table_name, result->num_rows);
+    int col_count = sqlite3_column_count(stmt);
 
     /* 输出列头 */
-    offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset, "  ");
-    for (uint32_t c = 0; c < num_cols; c++)
+    offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset, "Table: %s\r\n  ", table_name);
+    for (int c = 0; c < col_count; c++)
     {
-        offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset, "%-*s", col_widths[c] + 2,
-                           table_def->fields[c]->field_name);
+        offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset, "%-20s",
+                           sqlite3_column_name(stmt, c));
     }
     offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset, "\r\n  ");
-
-    /* 输出分隔线 */
-    for (uint32_t c = 0; c < num_cols; c++)
+    for (int c = 0; c < col_count; c++)
     {
-        for (int k = 0; k < col_widths[c] + 2; k++)
-        {
-            if ((size_t)(offset + 1) < sizeof(resp_out.message))
-            {
-                resp_out.message[offset++] = '-';
-            }
-        }
+        offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset, "--------------------");
     }
     offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset, "\r\n");
 
     /* 输出数据行 */
-    for (uint32_t r = 0; r < result->num_rows; r++)
+    uint32_t row_count = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW)
     {
-        db_row_t *row = result->rows[r];
         offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset, "  ");
-        for (uint32_t c = 0; c < row->num_fields && c < num_cols; c++)
+        for (int c = 0; c < col_count; c++)
         {
-            char val_buf[256];
-            switch (row->values[c].type)
+            int col_type = sqlite3_column_type(stmt, c);
+            char val_buf[64];
+            switch (col_type)
             {
-                case DB_TYPE_INTEGER:
-                    snprintf(val_buf, sizeof(val_buf), "%ld", (long)row->values[c].data.i64);
+                case SQLITE_INTEGER:
+                    snprintf(val_buf, sizeof(val_buf), "%lld", (long long)sqlite3_column_int64(stmt, c));
                     break;
-                case DB_TYPE_REAL:
-                    snprintf(val_buf, sizeof(val_buf), "%.6g", row->values[c].data.real);
+                case SQLITE_FLOAT:
+                    snprintf(val_buf, sizeof(val_buf), "%.6g", sqlite3_column_double(stmt, c));
                     break;
-                case DB_TYPE_TEXT:
-                    snprintf(val_buf, sizeof(val_buf), "%s",
-                             row->values[c].data.text ? row->values[c].data.text : "NULL");
+                case SQLITE_TEXT:
+                    snprintf(val_buf, sizeof(val_buf), "%s", sqlite3_column_text(stmt, c));
                     break;
                 default:
                     snprintf(val_buf, sizeof(val_buf), "NULL");
                     break;
             }
-            offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset, "%-*s", col_widths[c] + 2,
-                               val_buf);
+            offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset, "%-20s", val_buf);
         }
         offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset, "\r\n");
+        row_count++;
 
         if ((size_t)offset >= sizeof(resp_out.message) - 128)
         {
@@ -274,29 +223,34 @@ static int handle_db_show_data(ipc_message_t *msg, const char *db_name, const ch
             break;
         }
     }
+    sqlite3_finalize(stmt);
+    g_mutex_unlock(&conn->db_mutex);
 
-    g_free(col_widths);
-    db_result_free(result);
+    if (row_count == 0)
+    {
+        offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset, "  (no rows)\r\n");
+    }
+    else
+    {
+        offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset, "  %u row(s)\r\n", row_count);
+    }
 
     db_send_cli_response(msg, resp_out.message);
     return ERRCODE_SUCCESS;
 }
 
 // ============================================================================
-// 统一 Show 命令 Handler（按 cfg_id 解析 TLV 条目）
+// 统一 Show 命令 Handler
 // ============================================================================
 
 static int handle_db_show_cmd(ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
-    int action = 0; /* 由关键字 cfg_id 决定动作 */
-    char *db_name = NULL;
+    int action = 0; /* 1=table-list  2=table-field  3=table-data */
     char *table_name = NULL;
 
-    /* 遍历 TLV 条目，按 cfg_id 解析 */
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
     {
-        /* 跳过上下文条目 */
         if (CFG_TLV_IS_CONTEXT(entry.cfg_id))
         {
             cli_tlv_entry_free(&entry);
@@ -305,26 +259,16 @@ static int handle_db_show_cmd(ipc_message_t *msg, cli_tlv_parser_t *parser)
 
         switch (entry.cfg_id)
         {
-            case 1: /* "list" 关键字 */
+            case 1: /* "table-list" */
                 action = 1;
                 break;
-            case 2: /* db_name 参数 */
-            {
-                const char *text = cli_tlv_entry_get_text(&entry);
-                if (text)
-                {
-                    g_free(db_name);
-                    db_name = g_strdup(text);
-                }
+            case 2: /* "table-field" */
+                action = 2;
                 break;
-            }
-            case 3: /* "table-list" 关键字 */
+            case 3: /* "table-data" */
                 action = 3;
                 break;
-            case 4: /* "table-field" 关键字 */
-                action = 4;
-                break;
-            case 5: /* table_name 参数 */
+            case 4: /* <table-name> 参数 */
             {
                 const char *text = cli_tlv_entry_get_text(&entry);
                 if (text)
@@ -334,58 +278,46 @@ static int handle_db_show_cmd(ipc_message_t *msg, cli_tlv_parser_t *parser)
                 }
                 break;
             }
-            case 6: /* "table-data" 关键字 */
-                action = 6;
-                break;
             default:
                 break;
         }
         cli_tlv_entry_free(&entry);
     }
 
-    int ret = ERRCODE_FAIL;
-
+    int ret;
     switch (action)
     {
-        case 1: /* show db list */
-            ret = handle_db_show_list(msg);
+        case 1:
+            ret = handle_db_show_table_list(msg);
             break;
-        case 3: /* show db <name> table-list */
-            if (db_name)
+        case 2:
+            if (table_name)
             {
-                ret = handle_db_show_tables(msg, db_name);
+                ret = handle_db_show_table_field(msg, table_name);
             }
             else
             {
-                db_send_cli_response(msg, "Error: Missing database name.\r\n");
+                db_send_cli_response(msg, "Error: Missing table name.\r\n");
+                ret = ERRCODE_FAIL;
             }
             break;
-        case 4: /* show db <name> table-field <table> */
-            if (db_name && table_name)
+        case 3:
+            if (table_name)
             {
-                ret = handle_db_show_fields(msg, db_name, table_name);
+                ret = handle_db_show_table_data(msg, table_name);
             }
             else
             {
-                db_send_cli_response(msg, "Error: Missing database or table name.\r\n");
-            }
-            break;
-        case 6: /* show db <name> table-data <table> */
-            if (db_name && table_name)
-            {
-                ret = handle_db_show_data(msg, db_name, table_name);
-            }
-            else
-            {
-                db_send_cli_response(msg, "Error: Missing database or table name.\r\n");
+                db_send_cli_response(msg, "Error: Missing table name.\r\n");
+                ret = ERRCODE_FAIL;
             }
             break;
         default:
-            db_send_cli_response(msg, "Error: Unknown or missing action in command payload.\r\n");
+            db_send_cli_response(msg, "Error: Unknown command.\r\n");
+            ret = ERRCODE_FAIL;
             break;
     }
 
-    g_free(db_name);
     g_free(table_name);
     return ret;
 }
@@ -396,7 +328,6 @@ static int handle_db_show_cmd(ipc_message_t *msg, cli_tlv_parser_t *parser)
 
 int db_cli_handle_continue(ipc_message_t *msg)
 {
-    /* 无待发送的批量数据 - 发送空的最终响应 */
     db_send_cli_response(msg, "");
     return ERRCODE_SUCCESS;
 }
@@ -421,7 +352,7 @@ int db_cli_process_command(ipc_message_t *msg)
     int result;
     switch (parser.group_id)
     {
-        case 1: /* DB show 命令组 */
+        case 1:
             result = handle_db_show_cmd(msg, &parser);
             break;
         default:

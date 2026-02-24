@@ -12,10 +12,10 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "bgp_db.h"
 #include "bgp_main.h"
 #include "cli.h"
 #include "db.h"
-#include "db_rpc.h"
 #include "dev.h"
 #include "errcode.h"
 #include "ipc.h"
@@ -109,21 +109,17 @@ static int handle_bgp_protocol(ipc_message_t *msg, cli_tlv_parser_t *parser)
     /* 删除场景 */
     if (is_no)
     {
+        int rows = bgp_db_del_as(g_bgp_local->ipc_ctx, as_number, has_as_number);
         if (has_as_number)
         {
-            char where[64];
-            snprintf(where, sizeof(where), "as_number = %u", as_number);
-            int rows = db_rpc_delete(g_bgp_local->ipc_ctx, "bgp_db", "bgp_protocol", where);
             snprintf(resp_msg_buf, sizeof(resp_msg_buf), "BGP: AS %u deleted (%d row).\r\n", as_number,
                      rows > 0 ? rows : 0);
         }
         else
         {
-            int rows = db_rpc_delete(g_bgp_local->ipc_ctx, "bgp_db", "bgp_protocol", NULL);
             snprintf(resp_msg_buf, sizeof(resp_msg_buf), "BGP: All configuration deleted (%d row).\r\n",
                      rows > 0 ? rows : 0);
         }
-
         bgp_send_cli_response(msg, resp_msg_buf);
         return ERRCODE_SUCCESS;
     }
@@ -136,26 +132,10 @@ static int handle_bgp_protocol(ipc_message_t *msg, cli_tlv_parser_t *parser)
     }
 
     /* 插入或更新 */
-    gboolean exists = FALSE;
-    int ret = db_rpc_exists(g_bgp_local->ipc_ctx, "bgp_db", "bgp_protocol", NULL, &exists);
-    if (ret != ERRCODE_SUCCESS)
+    if (bgp_db_set_as(g_bgp_local->ipc_ctx, as_number) != 0)
     {
-        bgp_send_cli_response(msg, "BGP Error: Database query failed.\r\n");
+        bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
         return ERRCODE_FAIL;
-    }
-
-    const char *field_names[] = {"as_number"};
-    db_value_t values[] = {db_value_int((int64_t)as_number)};
-
-    if (exists)
-    {
-        db_rpc_update(g_bgp_local->ipc_ctx, "bgp_db", "bgp_protocol", field_names, values, 1, NULL);
-        LOG_INFO("Updated BGP AS number to %u", as_number);
-    }
-    else
-    {
-        db_rpc_insert(g_bgp_local->ipc_ctx, "bgp_db", "bgp_protocol", field_names, values, 1);
-        LOG_INFO("Inserted BGP AS number %u", as_number);
     }
 
     /* 发送 VIEW_CHG 响应 */
@@ -235,9 +215,9 @@ static int handle_bgp_protocol(ipc_message_t *msg, cli_tlv_parser_t *parser)
 static int handle_bgp_peer_show(ipc_message_t *msg)
 {
     db_result_t *result = NULL;
-    int ret = db_rpc_query(g_bgp_local->ipc_ctx, "bgp_db", "bgp_protocol", NULL, 0, NULL, &result);
+    int ret = bgp_db_query(g_bgp_local->ipc_ctx, &result);
 
-    if (ret != ERRCODE_SUCCESS || !result)
+    if (ret != 0 || !result)
     {
         bgp_send_cli_response(msg, "BGP Error: Database query failed.\r\n");
         return ERRCODE_FAIL;

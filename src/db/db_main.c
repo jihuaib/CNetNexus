@@ -15,7 +15,6 @@
 #include "cli.h"
 #include "db_cli.h"
 #include "db_ipc_handler.h"
-#include "db_registry.h"
 #include "dev.h"
 #include "errcode.h"
 #include "log.h"
@@ -47,12 +46,13 @@ void db_connection_free(db_connection_t *conn)
 
 db_connection_t *db_get_connection(const char *db_name)
 {
-    if (!db_name || !g_db_local)
+    (void)db_name;
+    if (!g_db_local)
     {
         return NULL;
     }
 
-    return g_hash_table_lookup(g_db_local->connections, db_name);
+    return g_db_local->main_conn;
 }
 
 // ============================================================================
@@ -95,6 +95,12 @@ static void db_on_start(ipc_context_t *ctx, ipc_message_t *msg)
 
     ipc_connect(ctx, DEV_MODULE_ID_CFG, IPC_HOST_LOCAL, MODULE_PORT_CFG);
 
+    /* 打开统一数据库文件 */
+    if (db_initialize_database() != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("统一数据库初始化失败");
+    }
+
     LOG_INFO("已连接到 CFG");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
@@ -127,15 +133,12 @@ static void db_on_shutdown(ipc_context_t *ctx, ipc_message_t *msg)
 {
     LOG_INFO("Cleaning up database module local state");
 
-    /* 关闭所有数据库连接 */
-    if (g_db_local->connections)
+    /* 释放统一数据库连接 */
+    if (g_db_local->main_conn)
     {
-        g_hash_table_destroy(g_db_local->connections);
-        g_db_local->connections = NULL;
+        db_connection_free(g_db_local->main_conn);
+        g_db_local->main_conn = NULL;
     }
-
-    /* 销毁 registry */
-    db_registry_destroy();
 
     /* ipc_ctx 由 DEV 管理 */
     g_db_local->ipc_ctx = NULL;
@@ -221,8 +224,6 @@ __attribute__((constructor)) static void db_so_init(void)
 
     /* 初始化本地状态（原 db_on_start 逻辑） */
     g_db_local = g_malloc0(sizeof(db_local_t));
-    g_db_local->connections =
-        g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify)db_connection_free);
-    g_db_local->registry = db_registry_get_instance();
+    g_db_local->main_conn = NULL;
     g_db_local->ipc_ctx = ctx;
 }

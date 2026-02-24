@@ -14,52 +14,38 @@
                     <description>Database information</description>
                 </element>
                 <element cfg-id="1" type="keyword">
-                    <name>list</name> <!-- 3 -->
-                    <description>Database list information</description>
+                    <name>table-list</name> <!-- 3 -->
+                    <description>Show all tables in the database</description>
                 </element>
-                <element cfg-id="2" type="parameter">
-                    <name>&lt;db-name&gt;</name> <!-- 4 -->
-                    <description>Database name</description>
-                    <type>string(1-63)</type>
+                <element cfg-id="2" type="keyword">
+                    <name>table-field</name> <!-- 4 -->
+                    <description>Show fields of a table</description>
                 </element>
                 <element cfg-id="3" type="keyword">
-                    <name>table-list</name> <!-- 5 -->
-                    <description>Show table list</description>
+                    <name>table-data</name> <!-- 5 -->
+                    <description>Show data in a table</description>
                 </element>
-                <element cfg-id="4" type="keyword">
-                    <name>table-field</name> <!-- 6 -->
-                    <description>Show table field</description>
-                </element>
-                <element cfg-id="5" type="parameter">
-                    <name>&lt;table-name&gt;</name> <!-- 7 -->
+                <element cfg-id="4" type="parameter">
+                    <name>&lt;table-name&gt;</name> <!-- 6 -->
                     <description>Table name</description>
                     <type>string(1-63)</type>
-                </element>
-                <element cfg-id="6" type="keyword">
-                    <name>table-data</name> <!-- 8 -->
-                    <description>Show table data</description>
                 </element>
             </elements>
 
             <commands>
-                <!-- show db list -->
+                <!-- show db table-list -->
                 <command>
                     <expression>1 2 3</expression>
                     <views>1</views>
                 </command>
-                <!-- show db <db-name> table-list -->
+                <!-- show db table-field <table-name> -->
                 <command>
-                    <expression>1 2 4 5</expression>
+                    <expression>1 2 4 6</expression>
                     <views>1</views>
                 </command>
-                <!-- show db <db-name> table-field <table-name> -->
+                <!-- show db table-data <table-name> -->
                 <command>
-                    <expression>1 2 4 6 7</expression>
-                    <views>1</views>
-                </command>
-                <!-- show db <db-name> table-data <table-name> -->
-                <command>
-                    <expression>1 2 4 8 7</expression>
+                    <expression>1 2 5 6</expression>
                     <views>1</views>
                 </command>
             </commands>

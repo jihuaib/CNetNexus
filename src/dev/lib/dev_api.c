@@ -4,10 +4,9 @@
  * @author jhb
  * @date   2026/01/22
  */
+#include <glib.h>
 #include <stdio.h>
 #include <string.h>
-
-#include <glib.h>
 
 #include "errcode.h"
 #include "ipc.h"

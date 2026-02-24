@@ -130,22 +130,16 @@ void ipc_message_free(ipc_message_t *msg);
 
 // ============================================================================
 // DB RPC 消息子类（大类 = IPC_CATEGORY_DB）
+//
+// 统一 SQL 传输模型：客户端构建完整 SQL 字符串，服务端直接执行。
 // ============================================================================
 
-/** DB INSERT 操作 */
-#define IPC_MSG_TYPE_DB_INSERT IPC_MSG_TYPE(IPC_CATEGORY_DB, 0x0001)
-/** DB UPDATE 操作 */
-#define IPC_MSG_TYPE_DB_UPDATE IPC_MSG_TYPE(IPC_CATEGORY_DB, 0x0002)
-/** DB DELETE 操作 */
-#define IPC_MSG_TYPE_DB_DELETE IPC_MSG_TYPE(IPC_CATEGORY_DB, 0x0003)
-/** DB QUERY 操作 */
-#define IPC_MSG_TYPE_DB_QUERY IPC_MSG_TYPE(IPC_CATEGORY_DB, 0x0004)
-/** DB EXISTS 操作 */
-#define IPC_MSG_TYPE_DB_EXISTS IPC_MSG_TYPE(IPC_CATEGORY_DB, 0x0005)
+/** DB 执行 DML/DDL SQL（INSERT/UPDATE/DELETE/CREATE TABLE），返回影响行数或错误码 */
+#define IPC_MSG_TYPE_DB_EXEC_SQL IPC_MSG_TYPE(IPC_CATEGORY_DB, 0x0001)
+/** DB 执行 SELECT SQL，返回结果集 */
+#define IPC_MSG_TYPE_DB_QUERY_SQL IPC_MSG_TYPE(IPC_CATEGORY_DB, 0x0002)
 /** DB 操作响应 */
-#define IPC_MSG_TYPE_DB_RESP IPC_MSG_TYPE(IPC_CATEGORY_DB, 0x0006)
-/** DB Registry 注册请求 */
-#define IPC_MSG_TYPE_DB_REGISTRY_ADD IPC_MSG_TYPE(IPC_CATEGORY_DB, 0x0007)
+#define IPC_MSG_TYPE_DB_RESP IPC_MSG_TYPE(IPC_CATEGORY_DB, 0x0003)
 
 // ============================================================================
 // IPC 连接状态
@@ -189,16 +183,16 @@ typedef enum ipc_costate
 /** 单条模块信息条目（用于模块名称表） */
 typedef struct ipc_module_info
 {
-    uint32_t module_id;                     /**< 模块 ID */
-    char     name[DEV_MODULE_NAME_MAX_LEN]; /**< 模块名称 */
+    uint32_t module_id;                 /**< 模块 ID */
+    char name[DEV_MODULE_NAME_MAX_LEN]; /**< 模块名称 */
 } ipc_module_info_t;
 
 /** MODULE_START payload：DEV 将完整模块名称表下发给每个模块 */
 typedef struct ipc_module_table
 {
-    uint32_t self_module_id;       /**< 目标模块自身的 ID */
-    uint32_t count;                /**< 模块数量 */
-    ipc_module_info_t entries[];   /**< 柔性数组：所有模块信息 */
+    uint32_t self_module_id;     /**< 目标模块自身的 ID */
+    uint32_t count;              /**< 模块数量 */
+    ipc_module_info_t entries[]; /**< 柔性数组：所有模块信息 */
 } ipc_module_table_t;
 
 // ============================================================================

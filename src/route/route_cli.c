@@ -156,7 +156,7 @@ static int handle_route_config(ipc_message_t *msg, cli_tlv_parser_t *parser)
                 snprintf(where_clause, sizeof(where_clause), "destination='%s' AND mask='%s'", destination, mask);
             }
 
-            int rows = db_rpc_delete(g_route_local->ipc_ctx, "route_db", "route_ipv4", where_clause);
+            int rows = db_rpc_delete(g_route_local->ipc_ctx, "route_ipv4", where_clause);
             snprintf(resp_msg, sizeof(resp_msg), "Route deleted (%d row%s)\r\n", rows > 0 ? rows : 0,
                      rows == 1 ? "" : "s");
             send_resp(msg, resp_msg);
@@ -176,7 +176,7 @@ static int handle_route_config(ipc_message_t *msg, cli_tlv_parser_t *parser)
             values[2] = db_value_text(next_hop);
             values[3] = db_value_int(has_metric ? metric : 0);
 
-            int ret = db_rpc_insert(g_route_local->ipc_ctx, "route_db", "route_ipv4", fields, values, 4);
+            int ret = db_rpc_insert(g_route_local->ipc_ctx, "route_ipv4", fields, values, 4);
             if (ret != ERRCODE_SUCCESS)
             {
                 send_resp(msg, "Error: Failed to add route\r\n");
@@ -208,7 +208,7 @@ static int handle_route_config(ipc_message_t *msg, cli_tlv_parser_t *parser)
                          prefix_length);
             }
 
-            int rows = db_rpc_delete(g_route_local->ipc_ctx, "route_db", "route_ipv6", where_clause);
+            int rows = db_rpc_delete(g_route_local->ipc_ctx, "route_ipv6", where_clause);
             snprintf(resp_msg, sizeof(resp_msg), "Route deleted (%d row%s)\r\n", rows > 0 ? rows : 0,
                      rows == 1 ? "" : "s");
             send_resp(msg, resp_msg);
@@ -228,7 +228,7 @@ static int handle_route_config(ipc_message_t *msg, cli_tlv_parser_t *parser)
             values[2] = db_value_text(next_hop);
             values[3] = db_value_int(has_metric ? metric : 0);
 
-            int ret = db_rpc_insert(g_route_local->ipc_ctx, "route_db", "route_ipv6", fields, values, 4);
+            int ret = db_rpc_insert(g_route_local->ipc_ctx, "route_ipv6", fields, values, 4);
             if (ret != ERRCODE_SUCCESS)
             {
                 send_resp(msg, "Error: Failed to add route\r\n");
@@ -316,7 +316,7 @@ static int handle_show_route(ipc_message_t *msg, cli_tlv_parser_t *parser)
     if (show_ipv4)
     {
         db_result_t *result = NULL;
-        int ret = db_rpc_query(g_route_local->ipc_ctx, "route_db", "route_ipv4", NULL, 0,
+        int ret = db_rpc_query(g_route_local->ipc_ctx, "route_ipv4", NULL, 0,
                                strlen(where_clause) > 0 ? where_clause : NULL, &result);
 
         offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset,
@@ -380,7 +380,7 @@ static int handle_show_route(ipc_message_t *msg, cli_tlv_parser_t *parser)
     if (show_ipv6)
     {
         db_result_t *result = NULL;
-        int ret = db_rpc_query(g_route_local->ipc_ctx, "route_db", "route_ipv6", NULL, 0,
+        int ret = db_rpc_query(g_route_local->ipc_ctx, "route_ipv6", NULL, 0,
                                strlen(where_clause) > 0 ? where_clause : NULL, &result);
 
         offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset,

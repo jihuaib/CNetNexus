@@ -274,7 +274,7 @@ static int handle_if_config(ipc_message_t *msg, cli_tlv_parser_t *parser)
             snprintf(where, sizeof(where), "name = '%s'", ifname);
             const char *field_names[] = {"ip_address", "netmask"};
             db_value_t values[] = {db_value_text(ip), db_value_text(mask)};
-            db_rpc_update(g_if_local->ipc_ctx, "if_db", "if_interface", field_names, values, 2, where);
+            db_rpc_update(g_if_local->ipc_ctx, "if_interface", field_names, values, 2, where);
             db_value_free(&values[0]);
             db_value_free(&values[1]);
 
@@ -300,7 +300,7 @@ static int handle_if_config(ipc_message_t *msg, cli_tlv_parser_t *parser)
             snprintf(where, sizeof(where), "name = '%s'", ifname);
             const char *field_names[] = {"shutdown"};
             db_value_t values[] = {db_value_int(state ? 0 : 1)};
-            db_rpc_update(g_if_local->ipc_ctx, "if_db", "if_interface", field_names, values, 1, where);
+            db_rpc_update(g_if_local->ipc_ctx, "if_interface", field_names, values, 1, where);
 
             char resp_buf[128];
             snprintf(resp_buf, sizeof(resp_buf), "Interface %s %s\r\n", ifname, state ? "enabled" : "disabled");

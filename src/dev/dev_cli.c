@@ -28,7 +28,7 @@
 typedef struct show_module_ctx
 {
     dev_cli_resp_out_t *resp;
-    ipc_context_t      *ipc_ctx;
+    ipc_context_t *ipc_ctx;
 } show_module_ctx_t;
 
 static const char *log_level_to_string(log_level_t level)
@@ -173,13 +173,12 @@ static gboolean show_module_callback(gpointer key, gpointer value, gpointer data
     dev_cli_resp_out_t *resp = ctx->resp;
     dev_module_t *module = (dev_module_t *)value;
     const char *phase = dev_phase_to_string(module->phase);
-    const char *db_name = module->db_name ? module->db_name : "-";
     const char *ipc_state =
         (module->module_id == DEV_MODULE_ID_DEV || ipc_is_connected(ctx->ipc_ctx, module->module_id)) ? "up" : "down";
 
     char line[192];
-    snprintf(line, sizeof(line), "  %-10u %-14s %-12s %-6u %-6s %s\r\n", module->module_id, module->name, phase,
-             module->port, ipc_state, db_name);
+    snprintf(line, sizeof(line), "  %-10u %-14s %-12s %-6u %s\r\n", module->module_id, module->name, phase,
+             module->port, ipc_state);
 
     strncat(resp->message, line, sizeof(resp->message) - strlen(resp->message) - 1);
 
@@ -218,9 +217,9 @@ static int handle_show_module(ipc_context_t *ctx, ipc_message_t *msg)
 
     snprintf(resp_out.message, sizeof(resp_out.message),
              "\r\nRegistered Modules:\r\n"
-             "  %-10s %-14s %-12s %-6s %-6s %s\r\n"
-             "  ----------------------------------------------------------------\r\n",
-             "ID", "Name", "Phase", "Port", "IPC", "DB");
+             "  %-10s %-14s %-12s %-6s %s\r\n"
+             "  --------------------------------------------------------\r\n",
+             "ID", "Name", "Phase", "Port", "IPC");
 
     dev_module_foreach(show_module_callback, &show_ctx);
 
@@ -244,7 +243,7 @@ static int handle_show_version(ipc_context_t *ctx, ipc_message_t *msg)
     {                                                                                                                  \
         if (off < sizeof(buf))                                                                                         \
         {                                                                                                              \
-            int written = snprintf(buf + off, sizeof(buf) - off, fmt, ##__VA_ARGS__);                                 \
+            int written = snprintf(buf + off, sizeof(buf) - off, fmt, ##__VA_ARGS__);                                  \
             if (written > 0)                                                                                           \
             {                                                                                                          \
                 off += (size_t)written;                                                                                \

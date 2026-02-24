@@ -8,6 +8,7 @@
 #ifndef IPC_CONTEXT_H
 #define IPC_CONTEXT_H
 
+#include <glib.h>
 #include <pthread.h>
 #include <stdint.h>
 
@@ -38,6 +39,10 @@ struct ipc_context
     pthread_t io_thread;             /**< IO 线程 */
     volatile int running;            /**< 运行标志 */
     volatile int shutdown_requested; /**< 关闭请求标志 */
+
+    /* Worker 线程 */
+    GAsyncQueue *msg_queue;  /**< 业务消息队列（IO线程投递，Worker线程消费） */
+    pthread_t worker_thread; /**< Worker 线程（执行 msg_handler，可安全调用 ipc_query） */
 
     /* 同步查询 */
     ipc_query_mgr_t *query_mgr; /**< 查询管理器 */

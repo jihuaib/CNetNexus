@@ -13,7 +13,6 @@
 
 #include "db.h"
 #include "db_main.h"
-#include "db_registry.h"
 #include "errcode.h"
 #include "ipc.h"
 #include "log.h"
@@ -156,6 +155,8 @@ int db_insert(const char *db_name, const char *table_name, const char **field_na
 
     offset += snprintf(sql + offset, sizeof(sql) - offset, ");");
 
+    LOG_INFO("[SQL] %s", sql);
+
     // Prepare statement
     sqlite3_stmt *stmt;
     g_mutex_lock(&conn->db_mutex);
@@ -251,6 +252,8 @@ int db_update(const char *db_name, const char *table_name, const char **field_na
 
     offset += snprintf(sql + offset, sizeof(sql) - offset, ";");
 
+    LOG_INFO("[SQL] %s", sql);
+
     // Prepare statement
     sqlite3_stmt *stmt;
     g_mutex_lock(&conn->db_mutex);
@@ -337,6 +340,8 @@ int db_delete(const char *db_name, const char *table_name, const char *where_cla
 
     offset += snprintf(sql + offset, sizeof(sql) - offset, ";");
 
+    LOG_INFO("[SQL] %s", sql);
+
     // Execute
     g_mutex_lock(&conn->db_mutex);
 
@@ -407,6 +412,8 @@ int db_query(const char *db_name, const char *table_name, const char **field_nam
     }
 
     offset += snprintf(sql + offset, sizeof(sql) - offset, ";");
+
+    LOG_INFO("[SQL] %s", sql);
 
     // Prepare statement
     sqlite3_stmt *stmt;
@@ -486,6 +493,135 @@ int db_query(const char *db_name, const char *table_name, const char **field_nam
     return ERRCODE_SUCCESS;
 }
 
+int db_create_table(const char *db_name, const char *ddl)
+{
+    if (!db_name || !ddl || ddl[0] == '\0')
+    {
+        return ERRCODE_FAIL;
+    }
+
+    db_connection_t *conn = db_get_connection(db_name);
+    if (!conn)
+    {
+        LOG_ERROR("错误: 找不到数据库连接 (db=%s)", db_name);
+        return ERRCODE_FAIL;
+    }
+
+    if (!conn->handle)
+    {
+        LOG_ERROR("错误: 数据库未连接 (db=%s)", db_name);
+        return ERRCODE_FAIL;
+    }
+
+    LOG_INFO("[SQL] %s", ddl);
+
+    g_mutex_lock(&conn->db_mutex);
+    char *err_msg = NULL;
+    int rc = sqlite3_exec(conn->handle, ddl, NULL, NULL, &err_msg);
+    g_mutex_unlock(&conn->db_mutex);
+
+    if (rc != SQLITE_OK)
+    {
+        LOG_ERROR("CREATE TABLE 失败: %s", err_msg);
+        sqlite3_free(err_msg);
+        return ERRCODE_FAIL;
+    }
+
+    return ERRCODE_SUCCESS;
+}
+
+// ============================================================================
+// 建表定义辅助函数
+// ============================================================================
+
+/**
+ * @brief 将 db_value_type_t 映射为 SQLite 类型字符串
+ */
+static const char *col_type_to_sql(db_value_type_t type)
+{
+    switch (type)
+    {
+        case DB_TYPE_INTEGER:
+            return "INTEGER";
+        case DB_TYPE_REAL:
+            return "REAL";
+        case DB_TYPE_TEXT:
+            return "TEXT";
+        case DB_TYPE_BLOB:
+            return "BLOB";
+        default:
+            return "TEXT";
+    }
+}
+
+/**
+ * @brief 根据 db_table_def_t 生成 CREATE TABLE IF NOT EXISTS SQL 语句
+ * @param def      表定义
+ * @param buf      输出缓冲区
+ * @param buf_size 缓冲区大小
+ * @return 写入的字节数，不含终止符
+ */
+static int build_create_table_sql(const db_table_def_t *def, char *buf, size_t buf_size)
+{
+    int offset = 0;
+    offset += snprintf(buf + offset, buf_size - offset, "CREATE TABLE IF NOT EXISTS %s (\n", def->table_name);
+
+    for (uint32_t i = 0; i < def->num_cols; i++)
+    {
+        const db_column_def_t *col = &def->cols[i];
+        offset += snprintf(buf + offset, buf_size - offset, "  %s %s", col->name, col_type_to_sql(col->type));
+
+        if (col->constraints & DB_COL_PRIMARY_KEY)
+        {
+            offset += snprintf(buf + offset, buf_size - offset, " PRIMARY KEY");
+        }
+        if (col->constraints & DB_COL_AUTOINCREMENT)
+        {
+            offset += snprintf(buf + offset, buf_size - offset, " AUTOINCREMENT");
+        }
+        if (col->constraints & DB_COL_NOT_NULL)
+        {
+            offset += snprintf(buf + offset, buf_size - offset, " NOT NULL");
+        }
+        if (col->constraints & DB_COL_UNIQUE)
+        {
+            offset += snprintf(buf + offset, buf_size - offset, " UNIQUE");
+        }
+        if (col->default_val)
+        {
+            offset += snprintf(buf + offset, buf_size - offset, " DEFAULT %s", col->default_val);
+        }
+
+        /* 末列不加逗号 */
+        if (i < def->num_cols - 1)
+        {
+            offset += snprintf(buf + offset, buf_size - offset, ",\n");
+        }
+        else
+        {
+            offset += snprintf(buf + offset, buf_size - offset, "\n");
+        }
+    }
+
+    offset += snprintf(buf + offset, buf_size - offset, ");");
+    return offset;
+}
+
+int db_create_table_from_def(const char *db_name, const db_table_def_t *def)
+{
+    if (!db_name || !def || !def->table_name || !def->cols || def->num_cols == 0)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    char sql[4096];
+    build_create_table_sql(def, sql, sizeof(sql));
+
+    LOG_INFO("[SQL] %s", sql);
+
+    return db_create_table(db_name, sql);
+}
+
 int db_exists(const char *db_name, const char *table_name, const char *where_clause, gboolean *exists)
 {
     if (!db_name || !table_name || !exists)
@@ -508,47 +644,118 @@ int db_exists(const char *db_name, const char *table_name, const char *where_cla
 }
 
 // ============================================================================
-// Type Validation
+// 通用 SQL 执行接口（供服务端 IPC handler 调用）
 // ============================================================================
 
-gboolean db_validate_field(const char *db_name, const char *table_name, const char *field_name, const db_value_t *value,
-                           char *error_msg, uint32_t error_msg_len)
+int db_exec_sql(const char *db_name, const char *sql)
 {
-    if (!db_name || !table_name || !field_name || !value)
+    if (!db_name || !sql || sql[0] == '\0')
     {
-        return FALSE;
+        return -1;
     }
 
-    // Look up field definition from registry
-    db_field_t *field = db_registry_find_field(db_name, table_name, field_name);
-    if (!field || !field->param_type)
+    db_connection_t *conn = db_get_connection(db_name);
+    if (!conn || !conn->handle)
     {
-        return TRUE; // No validation defined
+        LOG_ERROR("错误: 找不到数据库连接 (db=%s)", db_name);
+        return -1;
     }
 
-    // Convert value to string for validation
-    char value_str[256];
+    LOG_INFO("[SQL] %s", sql);
 
-    if (value->type == DB_TYPE_INTEGER)
+    g_mutex_lock(&conn->db_mutex);
+    char *err_msg = NULL;
+    int rc = sqlite3_exec(conn->handle, sql, NULL, NULL, &err_msg);
+    int rows_changed = sqlite3_changes(conn->handle);
+    g_mutex_unlock(&conn->db_mutex);
+
+    if (rc != SQLITE_OK)
     {
-        snprintf(value_str, sizeof(value_str), "%ld", value->data.i64);
+        LOG_ERROR("exec_sql 失败: %s", err_msg);
+        sqlite3_free(err_msg);
+        return -1;
     }
-    else if (value->type == DB_TYPE_TEXT)
+
+    return rows_changed;
+}
+
+int db_query_sql(const char *db_name, const char *sql, db_result_t **result)
+{
+    if (!db_name || !sql || sql[0] == '\0' || !result)
     {
-        if (value->data.text)
+        return ERRCODE_FAIL;
+    }
+
+    db_connection_t *conn = db_get_connection(db_name);
+    if (!conn || !conn->handle)
+    {
+        LOG_ERROR("错误: 找不到数据库连接 (db=%s)", db_name);
+        return ERRCODE_FAIL;
+    }
+
+    LOG_INFO("[SQL] %s", sql);
+
+    sqlite3_stmt *stmt;
+    g_mutex_lock(&conn->db_mutex);
+
+    int rc = sqlite3_prepare_v2(conn->handle, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK)
+    {
+        LOG_ERROR("Failed to prepare query_sql: %s", sqlite3_errmsg(conn->handle));
+        g_mutex_unlock(&conn->db_mutex);
+        return ERRCODE_FAIL;
+    }
+
+    db_result_t *res = g_malloc0(sizeof(db_result_t));
+    int col_count = sqlite3_column_count(stmt);
+
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW)
+    {
+        if (res->num_rows >= res->rows_capacity)
         {
-            snprintf(value_str, sizeof(value_str), "%s", value->data.text);
+            res->rows_capacity = (res->rows_capacity == 0) ? 8 : res->rows_capacity * 2;
+            res->rows = g_realloc(res->rows, res->rows_capacity * sizeof(db_row_t *));
         }
-        else
+
+        db_row_t *row = g_malloc0(sizeof(db_row_t));
+        row->num_fields = col_count;
+        row->field_names = g_malloc0(col_count * sizeof(char *));
+        row->values = g_malloc0(col_count * sizeof(db_value_t));
+
+        for (int i = 0; i < col_count; i++)
         {
-            value_str[0] = '\0';
+            row->field_names[i] = g_strdup((const char *)sqlite3_column_name(stmt, i));
+
+            switch (sqlite3_column_type(stmt, i))
+            {
+                case SQLITE_INTEGER:
+                    row->values[i] = db_value_int(sqlite3_column_int64(stmt, i));
+                    break;
+                case SQLITE_FLOAT:
+                    row->values[i] = db_value_real(sqlite3_column_double(stmt, i));
+                    break;
+                case SQLITE_TEXT:
+                    row->values[i] = db_value_text((const char *)sqlite3_column_text(stmt, i));
+                    break;
+                default:
+                    row->values[i] = db_value_null();
+                    break;
+            }
         }
-    }
-    else
-    {
-        return TRUE; // Skip validation for other types
+
+        res->rows[res->num_rows++] = row;
     }
 
-    // Use existing CLI validation logic
-    return cfg_param_type_validate(field->param_type, value_str, error_msg, error_msg_len);
+    sqlite3_finalize(stmt);
+    g_mutex_unlock(&conn->db_mutex);
+
+    if (rc != SQLITE_DONE)
+    {
+        LOG_ERROR("query_sql 失败: %s", sqlite3_errmsg(conn->handle));
+        db_result_free(res);
+        return ERRCODE_FAIL;
+    }
+
+    *result = res;
+    return ERRCODE_SUCCESS;
 }

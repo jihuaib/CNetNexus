@@ -82,10 +82,6 @@ int dev_conf_parse(const char *path, dev_module_conf_t *conf)
         {
             snprintf(conf->name, sizeof(conf->name), "%s", value);
         }
-        else if (strcmp(key, "db") == 0)
-        {
-            snprintf(conf->db_name, sizeof(conf->db_name), "%s", value);
-        }
         else if (strcmp(key, "so") == 0)
         {
             snprintf(conf->so_name, sizeof(conf->so_name), "%s", value);

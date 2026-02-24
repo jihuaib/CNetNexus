@@ -3,96 +3,289 @@
  * @brief  数据库 RPC 接口实现，供其他模块通过 IPC 调用 DB 模块
  * @author jhb
  * @date   2026/02/11
+ *
+ * 统一 SQL 传输模型：
+ *   - 客户端（本文件）负责将参数组装为完整 SQL 字符串并打印
+ *   - 服务端（db_ipc_handler.c）直接执行收到的 SQL 字符串
+ *
+ * 全局只有一个 SQLite 数据库，db_name 在此固定，调用方只需传入表名。
  */
 #define LOG_TAG "db"
 #include "db_rpc.h"
 
-#include <arpa/inet.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 #include "db_serialize.h"
 #include "errcode.h"
 #include "log.h"
 
+/** 全局唯一数据库名（与 db_schema.c 中路径对应） */
+#define DB_GLOBAL_NAME "netnexus"
+
 // ============================================================================
-// 数据库创建 API
+// SQL 构建辅助函数
 // ============================================================================
 
-int db_rpc_create_db(ipc_context_t *ctx, const char *db_name, uint32_t module_id)
+/**
+ * @brief 将 db_value_t 格式化为 SQL 字面量，写入 buf，返回写入字节数
+ *
+ * - INTEGER → 十进制整数
+ * - REAL    → %.17g 浮点数
+ * - TEXT    → 单引号包围，内部单引号转义为 ''
+ * - BLOB    → X'HEXSTRING' 格式
+ * - NULL    → NULL
+ */
+static int value_to_sql_literal(const db_value_t *val, char *buf, size_t buf_size)
 {
-    if (!ctx || !db_name)
+    if (!val || buf_size == 0)
     {
-        return ERRCODE_FAIL;
+        return 0;
     }
 
-    // 等待与 DB 模块的连接建立（异步握手可能尚未完成）
-    for (int i = 0; i < 100; i++) // 最多等待 5 秒
+    switch (val->type)
     {
-        if (ipc_is_connected(ctx, DEV_MODULE_ID_DB))
+        case DB_TYPE_NULL:
+            return snprintf(buf, buf_size, "NULL");
+
+        case DB_TYPE_INTEGER:
+            return snprintf(buf, buf_size, "%" PRId64, val->data.i64);
+
+        case DB_TYPE_REAL:
+            return snprintf(buf, buf_size, "%.17g", val->data.real);
+
+        case DB_TYPE_TEXT:
         {
-            break;
+            int offset = snprintf(buf, buf_size, "'");
+            const char *s = val->data.text ? val->data.text : "";
+            while (*s && (size_t)offset < buf_size - 2)
+            {
+                if (*s == '\'')
+                {
+                    if ((size_t)offset + 2 >= buf_size)
+                    {
+                        break;
+                    }
+                    buf[offset++] = '\'';
+                    buf[offset++] = '\'';
+                    buf[offset] = '\0';
+                }
+                else
+                {
+                    buf[offset++] = *s;
+                    buf[offset] = '\0';
+                }
+                s++;
+            }
+            offset += snprintf(buf + offset, buf_size - offset, "'");
+            return offset;
         }
-        usleep(50000); // 50ms
+
+        case DB_TYPE_BLOB:
+        {
+            int offset = snprintf(buf, buf_size, "X'");
+            const uint8_t *data = (const uint8_t *)val->data.blob.data;
+            for (size_t i = 0; i < val->data.blob.len; i++)
+            {
+                if ((size_t)offset + 3 >= buf_size)
+                {
+                    break;
+                }
+                offset += snprintf(buf + offset, buf_size - offset, "%02X", data[i]);
+            }
+            offset += snprintf(buf + offset, buf_size - offset, "'");
+            return offset;
+        }
     }
-    if (!ipc_is_connected(ctx, DEV_MODULE_ID_DB))
+    return 0;
+}
+
+/**
+ * @brief 构建 INSERT SQL：INSERT INTO table (col1, col2) VALUES (val1, val2);
+ */
+static int build_insert_sql(const char *table_name, const char **field_names, const db_value_t *values,
+                            uint32_t num_fields, char *buf, size_t buf_size)
+{
+    int offset = snprintf(buf, buf_size, "INSERT INTO %s (", table_name);
+
+    for (uint32_t i = 0; i < num_fields; i++)
     {
-        LOG_ERROR("错误: 无法连接到 DB 模块");
-        return ERRCODE_FAIL;
+        if (i > 0)
+        {
+            offset += snprintf(buf + offset, buf_size - offset, ", ");
+        }
+        offset += snprintf(buf + offset, buf_size - offset, "%s", field_names[i]);
     }
 
-    // 序列化 payload: [db_name_len(2B)] [db_name] [module_id(4B)]
-    uint16_t name_len = (uint16_t)strlen(db_name);
-    uint32_t payload_len = sizeof(uint16_t) + name_len + sizeof(uint32_t);
-    uint8_t *payload = g_malloc(payload_len);
-    uint8_t *ptr = payload;
+    offset += snprintf(buf + offset, buf_size - offset, ") VALUES (");
 
-    uint16_t name_len_be = htons(name_len);
-    memcpy(ptr, &name_len_be, sizeof(name_len_be));
-    ptr += sizeof(name_len_be);
-
-    memcpy(ptr, db_name, name_len);
-    ptr += name_len;
-
-    uint32_t module_id_be = htonl(module_id);
-    memcpy(ptr, &module_id_be, sizeof(module_id_be));
-
-    ipc_message_t *req = ipc_message_create(IPC_MSG_TYPE_DB_REGISTRY_ADD, ipc_get_module_id(ctx), DEV_MODULE_ID_DB, 0,
-                                            payload, payload_len, g_free);
-
-    ipc_message_t *resp = ipc_query(ctx, DEV_MODULE_ID_DB, req, 5000);
-    ipc_message_free(req);
-
-    if (!resp)
+    for (uint32_t i = 0; i < num_fields; i++)
     {
-        LOG_ERROR("RPC 创建数据库失败: 无响应 (db=%s)", db_name);
-        return ERRCODE_FAIL;
+        if (i > 0)
+        {
+            offset += snprintf(buf + offset, buf_size - offset, ", ");
+        }
+        offset += value_to_sql_literal(&values[i], buf + offset, buf_size - offset);
     }
 
-    ipc_message_free(resp);
-    LOG_INFO("数据库创建成功: %s", db_name);
-    return ERRCODE_SUCCESS;
+    offset += snprintf(buf + offset, buf_size - offset, ");");
+    return offset;
+}
+
+/**
+ * @brief 构建 UPDATE SQL：UPDATE table SET col1=val1, col2=val2 [WHERE ...];
+ */
+static int build_update_sql(const char *table_name, const char **field_names, const db_value_t *values,
+                            uint32_t num_fields, const char *where_clause, char *buf, size_t buf_size)
+{
+    int offset = snprintf(buf, buf_size, "UPDATE %s SET ", table_name);
+
+    for (uint32_t i = 0; i < num_fields; i++)
+    {
+        if (i > 0)
+        {
+            offset += snprintf(buf + offset, buf_size - offset, ", ");
+        }
+        offset += snprintf(buf + offset, buf_size - offset, "%s = ", field_names[i]);
+        offset += value_to_sql_literal(&values[i], buf + offset, buf_size - offset);
+    }
+
+    if (where_clause && where_clause[0] != '\0')
+    {
+        offset += snprintf(buf + offset, buf_size - offset, " WHERE %s", where_clause);
+    }
+
+    offset += snprintf(buf + offset, buf_size - offset, ";");
+    return offset;
+}
+
+/**
+ * @brief 构建 DELETE SQL：DELETE FROM table [WHERE ...];
+ */
+static int build_delete_sql(const char *table_name, const char *where_clause, char *buf, size_t buf_size)
+{
+    int offset = snprintf(buf, buf_size, "DELETE FROM %s", table_name);
+
+    if (where_clause && where_clause[0] != '\0')
+    {
+        offset += snprintf(buf + offset, buf_size - offset, " WHERE %s", where_clause);
+    }
+
+    offset += snprintf(buf + offset, buf_size - offset, ";");
+    return offset;
+}
+
+/**
+ * @brief 将 db_value_type_t 映射为 SQLite 类型字符串
+ */
+static const char *rpc_col_type_to_sql(db_value_type_t type)
+{
+    switch (type)
+    {
+        case DB_TYPE_INTEGER:
+            return "INTEGER";
+        case DB_TYPE_REAL:
+            return "REAL";
+        case DB_TYPE_TEXT:
+            return "TEXT";
+        case DB_TYPE_BLOB:
+            return "BLOB";
+        default:
+            return "TEXT";
+    }
+}
+
+/**
+ * @brief 根据 db_table_def_t 生成 CREATE TABLE IF NOT EXISTS SQL
+ */
+static int rpc_build_create_table_sql(const db_table_def_t *def, char *buf, size_t buf_size)
+{
+    int offset = snprintf(buf, buf_size, "CREATE TABLE IF NOT EXISTS %s (\n", def->table_name);
+
+    for (uint32_t i = 0; i < def->num_cols; i++)
+    {
+        const db_column_def_t *col = &def->cols[i];
+        offset += snprintf(buf + offset, buf_size - offset, "  %s %s", col->name, rpc_col_type_to_sql(col->type));
+
+        if (col->constraints & DB_COL_PRIMARY_KEY)
+        {
+            offset += snprintf(buf + offset, buf_size - offset, " PRIMARY KEY");
+        }
+        if (col->constraints & DB_COL_AUTOINCREMENT)
+        {
+            offset += snprintf(buf + offset, buf_size - offset, " AUTOINCREMENT");
+        }
+        if (col->constraints & DB_COL_NOT_NULL)
+        {
+            offset += snprintf(buf + offset, buf_size - offset, " NOT NULL");
+        }
+        if (col->constraints & DB_COL_UNIQUE)
+        {
+            offset += snprintf(buf + offset, buf_size - offset, " UNIQUE");
+        }
+        if (col->default_val)
+        {
+            offset += snprintf(buf + offset, buf_size - offset, " DEFAULT %s", col->default_val);
+        }
+
+        offset += snprintf(buf + offset, buf_size - offset, (i < def->num_cols - 1) ? ",\n" : "\n");
+    }
+
+    offset += snprintf(buf + offset, buf_size - offset, ");");
+    return offset;
+}
+
+/**
+ * @brief 构建 SELECT SQL：SELECT col1, col2 FROM table [WHERE ...];
+ */
+static int build_select_sql(const char *table_name, const char **field_names, uint32_t num_fields,
+                            const char *where_clause, char *buf, size_t buf_size)
+{
+    int offset = snprintf(buf, buf_size, "SELECT ");
+
+    if (num_fields == 0 || !field_names)
+    {
+        offset += snprintf(buf + offset, buf_size - offset, "*");
+    }
+    else
+    {
+        for (uint32_t i = 0; i < num_fields; i++)
+        {
+            if (i > 0)
+            {
+                offset += snprintf(buf + offset, buf_size - offset, ", ");
+            }
+            offset += snprintf(buf + offset, buf_size - offset, "%s", field_names[i]);
+        }
+    }
+
+    offset += snprintf(buf + offset, buf_size - offset, " FROM %s", table_name);
+
+    if (where_clause && where_clause[0] != '\0')
+    {
+        offset += snprintf(buf + offset, buf_size - offset, " WHERE %s", where_clause);
+    }
+
+    offset += snprintf(buf + offset, buf_size - offset, ";");
+    return offset;
 }
 
 // ============================================================================
-// RPC CRUD 操作
+// 通用 RPC 发送辅助
 // ============================================================================
 
-int db_rpc_insert(ipc_context_t *ctx, const char *db_name, const char *table_name, const char **field_names,
-                  const db_value_t *values, uint32_t num_fields)
+/**
+ * @brief 发送 EXEC_SQL 请求（DML/DDL），返回影响行数或错误码
+ */
+static int send_exec_sql(ipc_context_t *ctx, const char *sql)
 {
-    if (!ctx || !db_name || !table_name || !field_names || !values || num_fields == 0)
-    {
-        return ERRCODE_FAIL;
-    }
-
     void *payload = NULL;
     uint32_t payload_len = 0;
-    db_serialize_request_insert(db_name, table_name, field_names, values, num_fields, &payload, &payload_len);
+    db_serialize_request_sql(DB_GLOBAL_NAME, sql, &payload, &payload_len);
 
-    ipc_message_t *req = ipc_message_create(IPC_MSG_TYPE_DB_INSERT, ipc_get_module_id(ctx), DEV_MODULE_ID_DB, 0,
+    ipc_message_t *req = ipc_message_create(IPC_MSG_TYPE_DB_EXEC_SQL, ipc_get_module_id(ctx), DEV_MODULE_ID_DB, 0,
                                             payload, payload_len, g_free);
 
     ipc_message_t *resp = ipc_query(ctx, DEV_MODULE_ID_DB, req, 5000);
@@ -100,38 +293,7 @@ int db_rpc_insert(ipc_context_t *ctx, const char *db_name, const char *table_nam
 
     if (!resp)
     {
-        LOG_ERROR("RPC 插入失败: 无响应");
-        return ERRCODE_FAIL;
-    }
-
-    int32_t retval = ERRCODE_FAIL;
-    db_deserialize_response(resp->payload, resp->payload_len, &retval, NULL);
-    ipc_message_free(resp);
-    return retval;
-}
-
-int db_rpc_update(ipc_context_t *ctx, const char *db_name, const char *table_name, const char **field_names,
-                  const db_value_t *values, uint32_t num_fields, const char *where_clause)
-{
-    if (!ctx || !db_name || !table_name || !field_names || !values || num_fields == 0)
-    {
-        return -1;
-    }
-
-    void *payload = NULL;
-    uint32_t payload_len = 0;
-    db_serialize_request_update(db_name, table_name, field_names, values, num_fields, where_clause, &payload,
-                                &payload_len);
-
-    ipc_message_t *req = ipc_message_create(IPC_MSG_TYPE_DB_UPDATE, ipc_get_module_id(ctx), DEV_MODULE_ID_DB, 0,
-                                            payload, payload_len, g_free);
-
-    ipc_message_t *resp = ipc_query(ctx, DEV_MODULE_ID_DB, req, 5000);
-    ipc_message_free(req);
-
-    if (!resp)
-    {
-        LOG_ERROR("RPC 更新失败: 无响应");
+        LOG_ERROR("RPC exec_sql 失败: 无响应");
         return -1;
     }
 
@@ -141,18 +303,16 @@ int db_rpc_update(ipc_context_t *ctx, const char *db_name, const char *table_nam
     return retval;
 }
 
-int db_rpc_delete(ipc_context_t *ctx, const char *db_name, const char *table_name, const char *where_clause)
+/**
+ * @brief 发送 QUERY_SQL 请求（SELECT），返回结果集
+ */
+static int send_query_sql(ipc_context_t *ctx, const char *sql, db_result_t **result)
 {
-    if (!ctx || !db_name || !table_name)
-    {
-        return -1;
-    }
-
     void *payload = NULL;
     uint32_t payload_len = 0;
-    db_serialize_request_delete(db_name, table_name, where_clause, &payload, &payload_len);
+    db_serialize_request_sql(DB_GLOBAL_NAME, sql, &payload, &payload_len);
 
-    ipc_message_t *req = ipc_message_create(IPC_MSG_TYPE_DB_DELETE, ipc_get_module_id(ctx), DEV_MODULE_ID_DB, 0,
+    ipc_message_t *req = ipc_message_create(IPC_MSG_TYPE_DB_QUERY_SQL, ipc_get_module_id(ctx), DEV_MODULE_ID_DB, 0,
                                             payload, payload_len, g_free);
 
     ipc_message_t *resp = ipc_query(ctx, DEV_MODULE_ID_DB, req, 5000);
@@ -160,37 +320,7 @@ int db_rpc_delete(ipc_context_t *ctx, const char *db_name, const char *table_nam
 
     if (!resp)
     {
-        LOG_ERROR("RPC 删除失败: 无响应");
-        return -1;
-    }
-
-    int32_t retval = -1;
-    db_deserialize_response(resp->payload, resp->payload_len, &retval, NULL);
-    ipc_message_free(resp);
-    return retval;
-}
-
-int db_rpc_query(ipc_context_t *ctx, const char *db_name, const char *table_name, const char **field_names,
-                 uint32_t num_fields, const char *where_clause, db_result_t **result)
-{
-    if (!ctx || !db_name || !table_name || !result)
-    {
-        return ERRCODE_FAIL;
-    }
-
-    void *payload = NULL;
-    uint32_t payload_len = 0;
-    db_serialize_request_query(db_name, table_name, field_names, num_fields, where_clause, &payload, &payload_len);
-
-    ipc_message_t *req = ipc_message_create(IPC_MSG_TYPE_DB_QUERY, ipc_get_module_id(ctx), DEV_MODULE_ID_DB, 0, payload,
-                                            payload_len, g_free);
-
-    ipc_message_t *resp = ipc_query(ctx, DEV_MODULE_ID_DB, req, 5000);
-    ipc_message_free(req);
-
-    if (!resp)
-    {
-        LOG_ERROR("RPC 查询失败: 无响应");
+        LOG_ERROR("RPC query_sql 失败: 无响应");
         return ERRCODE_FAIL;
     }
 
@@ -200,38 +330,120 @@ int db_rpc_query(ipc_context_t *ctx, const char *db_name, const char *table_name
     return retval;
 }
 
-int db_rpc_exists(ipc_context_t *ctx, const char *db_name, const char *table_name, const char *where_clause,
-                  gboolean *exists)
+// ============================================================================
+// 公共 RPC 接口实现
+// ============================================================================
+
+int db_rpc_insert(ipc_context_t *ctx, const char *table_name, const char **field_names, const db_value_t *values,
+                  uint32_t num_fields)
 {
-    if (!ctx || !db_name || !table_name || !exists)
+    if (!ctx || !table_name || !field_names || !values || num_fields == 0)
     {
         return ERRCODE_FAIL;
     }
 
-    void *payload = NULL;
-    uint32_t payload_len = 0;
-    db_serialize_request_exists(db_name, table_name, where_clause, &payload, &payload_len);
+    char sql[4096];
+    build_insert_sql(table_name, field_names, values, num_fields, sql, sizeof(sql));
+    LOG_INFO("[SQL] %s", sql);
 
-    ipc_message_t *req = ipc_message_create(IPC_MSG_TYPE_DB_EXISTS, ipc_get_module_id(ctx), DEV_MODULE_ID_DB, 0,
-                                            payload, payload_len, g_free);
+    int rows = send_exec_sql(ctx, sql);
+    return (rows >= 0) ? ERRCODE_SUCCESS : ERRCODE_FAIL;
+}
 
-    ipc_message_t *resp = ipc_query(ctx, DEV_MODULE_ID_DB, req, 5000);
-    ipc_message_free(req);
+int db_rpc_update(ipc_context_t *ctx, const char *table_name, const char **field_names, const db_value_t *values,
+                  uint32_t num_fields, const char *where_clause)
+{
+    if (!ctx || !table_name || !field_names || !values || num_fields == 0)
+    {
+        return -1;
+    }
 
-    if (!resp)
+    char sql[4096];
+    build_update_sql(table_name, field_names, values, num_fields, where_clause, sql, sizeof(sql));
+    LOG_INFO("[SQL] %s", sql);
+
+    return send_exec_sql(ctx, sql);
+}
+
+int db_rpc_delete(ipc_context_t *ctx, const char *table_name, const char *where_clause)
+{
+    if (!ctx || !table_name)
+    {
+        return -1;
+    }
+
+    char sql[2048];
+    build_delete_sql(table_name, where_clause, sql, sizeof(sql));
+    LOG_INFO("[SQL] %s", sql);
+
+    return send_exec_sql(ctx, sql);
+}
+
+int db_rpc_query(ipc_context_t *ctx, const char *table_name, const char **field_names, uint32_t num_fields,
+                 const char *where_clause, db_result_t **result)
+{
+    if (!ctx || !table_name || !result)
     {
         return ERRCODE_FAIL;
     }
 
-    int32_t retval = 0;
-    db_deserialize_response(resp->payload, resp->payload_len, &retval, NULL);
-    ipc_message_free(resp);
+    char sql[4096];
+    build_select_sql(table_name, field_names, num_fields, where_clause, sql, sizeof(sql));
+    LOG_INFO("[SQL] %s", sql);
 
-    if (retval == ERRCODE_FAIL)
+    return send_query_sql(ctx, sql, result);
+}
+
+int db_rpc_exists(ipc_context_t *ctx, const char *table_name, const char *where_clause, gboolean *exists)
+{
+    if (!ctx || !table_name || !exists)
     {
         return ERRCODE_FAIL;
     }
 
-    *exists = (retval != 0);
-    return ERRCODE_SUCCESS;
+    /* 用 SELECT 1 检查是否存在，避免传输完整行数据 */
+    const char *fields[] = {"1"};
+    char sql[2048];
+    build_select_sql(table_name, fields, 1, where_clause, sql, sizeof(sql));
+    LOG_INFO("[SQL] %s", sql);
+
+    db_result_t *result = NULL;
+    int ret = send_query_sql(ctx, sql, &result);
+
+    if (ret == ERRCODE_SUCCESS)
+    {
+        *exists = (result != NULL && result->num_rows > 0);
+        db_result_free(result);
+        return ERRCODE_SUCCESS;
+    }
+
+    return ERRCODE_FAIL;
+}
+
+int db_rpc_create_table(ipc_context_t *ctx, const char *ddl)
+{
+    if (!ctx || !ddl || ddl[0] == '\0')
+    {
+        return ERRCODE_FAIL;
+    }
+
+    LOG_INFO("[SQL] %s", ddl);
+
+    int rows = send_exec_sql(ctx, ddl);
+    return (rows >= 0) ? ERRCODE_SUCCESS : ERRCODE_FAIL;
+}
+
+int db_rpc_create_table_from_def(ipc_context_t *ctx, const db_table_def_t *def)
+{
+    if (!ctx || !def || !def->table_name || !def->cols || def->num_cols == 0)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    char sql[4096];
+    rpc_build_create_table_sql(def, sql, sizeof(sql));
+    LOG_INFO("[SQL] %s", sql);
+
+    int rows = send_exec_sql(ctx, sql);
+    return (rows >= 0) ? ERRCODE_SUCCESS : ERRCODE_FAIL;
 }

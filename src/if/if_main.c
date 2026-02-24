@@ -40,13 +40,13 @@ static void if_init_db(void)
         char where[64];
         snprintf(where, sizeof(where), "name = '%s'", logical_name);
         gboolean exists = FALSE;
-        int ret = db_rpc_exists(g_if_local->ipc_ctx, "if_db", "if_interface", where, &exists);
+        int ret = db_rpc_exists(g_if_local->ipc_ctx, "if_interface", where, &exists);
 
         if (ret == ERRCODE_SUCCESS && !exists)
         {
             const char *field_names[] = {"name", "ip_address", "netmask", "shutdown"};
             db_value_t values[] = {db_value_text(logical_name), db_value_text(""), db_value_text(""), db_value_int(0)};
-            db_rpc_insert(g_if_local->ipc_ctx, "if_db", "if_interface", field_names, values, 4);
+            db_rpc_insert(g_if_local->ipc_ctx, "if_interface", field_names, values, 4);
             db_value_free(&values[0]);
             db_value_free(&values[1]);
             db_value_free(&values[2]);
@@ -98,8 +98,9 @@ static void if_on_start(ipc_context_t *ctx, ipc_message_t *msg)
     }
 
     ipc_connect(ctx, DEV_MODULE_ID_CFG, IPC_HOST_LOCAL, MODULE_PORT_CFG);
+    ipc_connect(ctx, DEV_MODULE_ID_DB, IPC_HOST_LOCAL, MODULE_PORT_DB);
 
-    LOG_INFO("已连接到 CFG");
+    LOG_INFO("已连接到 CFG 和 DB");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
@@ -117,10 +118,28 @@ static void if_on_connect(ipc_context_t *ctx, ipc_message_t *msg)
 // Phase 3: MODULE_READY — 将接口写入数据库
 // ============================================================================
 
+/* if_interface 表建表 DDL */
+static const char IF_INTERFACE_DDL[] = "CREATE TABLE IF NOT EXISTS if_interface ("
+                                       "  name       TEXT    PRIMARY KEY,"
+                                       "  ip_address TEXT    NOT NULL DEFAULT '',"
+                                       "  netmask    TEXT    NOT NULL DEFAULT '',"
+                                       "  shutdown   INTEGER NOT NULL DEFAULT 0"
+                                       ");";
+
 static void if_on_ready(ipc_context_t *ctx, ipc_message_t *msg)
 {
-    LOG_INFO("Phase 3: MODULE_READY");
+    LOG_INFO("Phase 3: MODULE_READY — 初始化 IF 数据库");
 
+    /* 建表（IF NOT EXISTS，幂等操作） */
+    int ret = db_rpc_create_table(ctx, IF_INTERFACE_DDL);
+    if (ret != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("IF 建表失败，跳过数据库初始化");
+        send_phase_response(ctx, msg, ERRCODE_SUCCESS);
+        return;
+    }
+
+    /* 将接口映射表写入数据库 */
     if_init_db();
 
     LOG_INFO("IF module ready");

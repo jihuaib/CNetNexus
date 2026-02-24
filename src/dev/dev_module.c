@@ -187,12 +187,6 @@ static int dev_scan_dir_for_modules(const char *base_dir)
 
         module->port = conf.port;
 
-        if (conf.db_name[0] != '\0')
-        {
-            module->db_name = g_strdup(conf.db_name);
-            LOG_INFO("模块 %s 需要数据库: %s", conf.name, module->db_name);
-        }
-
         loaded++;
         LOG_INFO("模块 %s 加载成功 (constructor 已执行)", conf.name);
     }
@@ -351,7 +345,7 @@ static gboolean dev_connect_to_module_callback(gpointer key, gpointer value, gpo
 typedef struct phase1_ctx
 {
     ipc_module_table_t *table; /**< 模块名称表（已分配） */
-    uint32_t            idx;   /**< 当前填充索引 */
+    uint32_t idx;              /**< 当前填充索引 */
 } phase1_ctx_t;
 
 /** 收集模块到名称表 */
@@ -374,8 +368,8 @@ static gboolean phase1_collect_callback(gpointer key, gpointer value, gpointer d
 static gboolean phase1_start_callback(gpointer key, gpointer value, gpointer data)
 {
     (void)key;
-    int32_t      *failed_count = (int32_t *)data;
-    dev_module_t *module       = (dev_module_t *)value;
+    int32_t *failed_count = (int32_t *)data;
+    dev_module_t *module = (dev_module_t *)value;
 
     if (module->module_id == DEV_MODULE_ID_DEV)
     {
@@ -397,7 +391,7 @@ static gboolean phase1_start_callback(gpointer key, gpointer value, gpointer dat
     table->self_module_id = module->module_id;
     table->count = total_modules;
 
-    phase1_ctx_t pctx = { .table = table, .idx = 0 };
+    phase1_ctx_t pctx = {.table = table, .idx = 0};
     g_tree_foreach(g_module_registry, phase1_collect_callback, &pctx);
 
     ipc_message_t *req = ipc_message_create(IPC_MSG_TYPE_DEV_MODULE_START, DEV_MODULE_ID_DEV, module->module_id, 0,
@@ -459,36 +453,6 @@ static gboolean phase2_connect_callback(gpointer key, gpointer value, gpointer d
     }
 
     return FALSE;
-}
-
-// ============================================================================
-// 创建数据库（Phase 2 之后、Phase 3 之前）
-// ============================================================================
-
-static gboolean create_db_callback(gpointer key, gpointer value, gpointer data)
-{
-    (void)key;
-    (void)data;
-    dev_module_t *module = (dev_module_t *)value;
-
-    if (!module->db_name)
-    {
-        return FALSE;
-    }
-
-    LOG_INFO("创建数据库: %s (module=%u)", module->db_name, module->module_id);
-    if (db_rpc_create_db(g_dev_local->ipc_ctx, module->db_name, module->module_id) != ERRCODE_SUCCESS)
-    {
-        LOG_ERROR("创建数据库失败: %s", module->db_name);
-    }
-
-    return FALSE;
-}
-
-static void dev_create_databases(void)
-{
-    LOG_INFO("创建模块数据库...");
-    g_tree_foreach(g_module_registry, create_db_callback, NULL);
 }
 
 // ============================================================================
@@ -593,7 +557,7 @@ int32_t dev_init_all_modules(void)
         ipc_module_table_t *dev_table = g_malloc0(table_size);
         dev_table->self_module_id = DEV_MODULE_ID_DEV;
         dev_table->count = total_modules;
-        phase1_ctx_t dev_pctx = { .table = dev_table, .idx = 0 };
+        phase1_ctx_t dev_pctx = {.table = dev_table, .idx = 0};
         g_tree_foreach(g_module_registry, phase1_collect_callback, &dev_pctx);
         ipc_set_module_table(g_dev_local->ipc_ctx, dev_table);
         g_free(dev_table);
@@ -603,10 +567,6 @@ int32_t dev_init_all_modules(void)
     /* Phase 1: 发送 MODULE_START — 模块建立 IPC 连接 */
     LOG_INFO("=== Phase 1: MODULE_START (IPC 建立) ===");
     g_tree_foreach(g_module_registry, phase1_start_callback, &failed_count);
-
-    /* 创建数据库（Phase 1 之后、Phase 2 之前） */
-    LOG_INFO("=== 创建数据库 ===");
-    dev_create_databases();
 
     /* Phase 2: 发送 MODULE_CONNECT — 预留（DB 恢复） */
     LOG_INFO("=== Phase 2: MODULE_CONNECT (预留) ===");
@@ -694,7 +654,6 @@ void cleanup_all_modules(void)
             module->dl_handle = NULL;
         }
 
-        g_free(module->db_name);
         g_free(module);
     }
 
@@ -703,7 +662,6 @@ void cleanup_all_modules(void)
     dev_module_t *dev_self = (dev_module_t *)g_tree_lookup(g_module_registry, GUINT_TO_POINTER(DEV_MODULE_ID_DEV));
     if (dev_self)
     {
-        g_free(dev_self->db_name);
         g_free(dev_self);
     }
 

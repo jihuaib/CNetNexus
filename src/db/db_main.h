@@ -11,7 +11,6 @@
 #include <sqlite3.h>
 #include <stdint.h>
 
-#include "db_registry.h"
 #include "ipc.h"
 
 // ============================================================================
@@ -33,10 +32,9 @@ typedef struct db_connection
 
 typedef struct db_local
 {
-    GHashTable         *connections;  /**< Map: db_name (char*) -> db_connection_t* */
-    db_registry_t      *registry;     /**< 数据库定义注册表 */
-    ipc_context_t *ipc_ctx;                         /**< IPC 上下文（由 DEV 创建和管理） */
-    char           name[DEV_MODULE_NAME_MAX_LEN];   /**< DEV 在 Phase 1 下发的本模块名称 */
+    db_connection_t *main_conn; /**< 全局统一数据库连接（所有模块共享同一个 SQLite 文件） */
+    ipc_context_t *ipc_ctx;     /**< IPC 上下文（由 DEV 创建和管理） */
+    char name[DEV_MODULE_NAME_MAX_LEN]; /**< DEV 在 Phase 1 下发的本模块名称 */
 } db_local_t;
 
 extern db_local_t *g_db_local;
@@ -72,20 +70,10 @@ void db_connection_free(db_connection_t *conn);
 int db_create_database_file(const char *db_name, const char *db_path, sqlite3 **handle);
 
 /**
- * @brief Create a table from its definition
- * @param handle SQLite handle
- * @param table_name Table name
- * @param table_def Table definition
+ * @brief 打开统一数据库文件，建立 main_conn（仅执行一次）
  * @return ERRCODE_SUCCESS or ERRCODE_FAIL
  */
-int db_create_table(sqlite3 *handle, const char *table_name, db_table_t *table_def);
-
-/**
- * @brief Initialize database schema from definition
- * @param db_def Database definition
- * @return ERRCODE_SUCCESS or ERRCODE_FAIL
- */
-int db_initialize_database(db_definition_t *db_def);
+int db_initialize_database(void);
 
 /**
  * @brief IPC 消息处理回调（供 API 层引用）

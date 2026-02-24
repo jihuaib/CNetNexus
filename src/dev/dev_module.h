@@ -28,7 +28,6 @@ typedef struct module
 {
     uint32_t module_id;                 /**< 模块 ID */
     char name[DEV_MODULE_NAME_MAX_LEN]; /**< 模块名称 */
-    char *db_name;                      /**< 数据库名称（从 .conf 读取，可为 NULL） */
     void *dl_handle;                    /**< dlopen 句柄（动态加载，可为 NULL） */
     uint8_t phase;                      /**< 当前初始化阶段 */
     uint16_t port;                      /**< IPC 监听端口（从 module.conf 读取） */

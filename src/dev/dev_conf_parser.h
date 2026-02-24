@@ -9,17 +9,13 @@
 
 #include <stdint.h>
 
-/** .conf 文件中 db 名称最大长度 */
-#define DEV_CONF_DB_NAME_MAX 64
-
 /** 模块配置结构体（从 module.conf 解析） */
 typedef struct dev_module_conf
 {
-    uint32_t module_id;                 /**< module-id 字段 */
-    char name[16];                      /**< name 字段 */
-    char db_name[DEV_CONF_DB_NAME_MAX]; /**< db 字段（可选，为空表示无数据库） */
-    char so_name[64];                   /**< so 字段：共享库文件名 */
-    uint16_t port;                      /**< port 字段：IPC 监听端口，dev连接使用 */
+    uint32_t module_id; /**< module-id 字段 */
+    char name[16];      /**< name 字段 */
+    char so_name[64];   /**< so 字段：共享库文件名 */
+    uint16_t port;      /**< port 字段：IPC 监听端口，dev连接使用 */
 } dev_module_conf_t;
 
 /**
