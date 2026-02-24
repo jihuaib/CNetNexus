@@ -5,9 +5,9 @@
  * @date   2026/01/22
  */
 #include <glib.h>
-#include <stdio.h>
 #include <string.h>
 
+#include "dev.h"
 #include "errcode.h"
 #include "ipc.h"
 
@@ -20,20 +20,28 @@ int dev_get_module_name(ipc_context_t *ctx, uint32_t module_id, char *module_nam
 
     module_name[0] = '\0';
 
-    const ipc_module_table_t *table = ipc_get_module_table(ctx);
-    if (!table)
+    /* 构建请求 payload: 4 字节模块 ID */
+    ipc_message_t *req =
+        ipc_message_create(IPC_MSG_TYPE_DEV_GET_MODULE_NAME, ipc_get_module_id(ctx), DEV_MODULE_ID_DEV, 0, &module_id,
+                           sizeof(uint32_t), NULL);
+    if (!req)
     {
         return ERRCODE_FAIL;
     }
 
-    for (uint32_t i = 0; i < table->count; i++)
+    ipc_message_t *resp = ipc_query(ctx, DEV_MODULE_ID_DEV, req, 0);
+    ipc_message_free(req);
+
+    if (!resp)
     {
-        if (table->entries[i].module_id == module_id)
-        {
-            strlcpy(module_name, table->entries[i].name, DEV_MODULE_NAME_MAX_LEN);
-            return ERRCODE_SUCCESS;
-        }
+        return ERRCODE_FAIL;
     }
 
-    return ERRCODE_FAIL;
+    if (resp->payload && resp->payload_len > 0)
+    {
+        strlcpy(module_name, (const char *)resp->payload, DEV_MODULE_NAME_MAX_LEN);
+    }
+
+    ipc_message_free(resp);
+    return ERRCODE_SUCCESS;
 }

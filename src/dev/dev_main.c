@@ -12,6 +12,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <glib.h>
+#include <string.h>
+
 #include "cli.h"
 #include "dev.h"
 #include "dev_cli.h"
@@ -26,10 +29,35 @@ dev_local_t *g_dev_local = NULL;
 // IPC 消息处理回调
 // ============================================================================
 
+/** 处理模块名称查询请求 */
+static void handle_dev_get_module_name(ipc_context_t *ctx, ipc_message_t *msg)
+{
+    char name[DEV_MODULE_NAME_MAX_LEN] = "";
+
+    if (msg->payload && msg->payload_len >= sizeof(uint32_t))
+    {
+        uint32_t module_id;
+        memcpy(&module_id, msg->payload, sizeof(uint32_t));
+        dev_get_module_name_inner(module_id, name);
+    }
+
+    /* 响应 payload 为模块名称字符串（含终止符） */
+    size_t name_len = strlen(name) + 1;
+    char *resp_data = g_strdup(name);
+    ipc_message_t *resp = ipc_message_create(IPC_MSG_TYPE_DEV_MODULE_RESP, DEV_MODULE_ID_DEV, msg->src_module_id,
+                                             msg->request_id, resp_data, name_len, g_free);
+    ipc_send_response(ctx, resp);
+    ipc_message_free(resp);
+}
+
 void dev_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
 {
     switch (msg->msg_type)
     {
+        case IPC_MSG_TYPE_DEV_GET_MODULE_NAME:
+            handle_dev_get_module_name(ctx, msg);
+            break;
+
         case CFG_MSG_TYPE_CLI:
             LOG_DEBUG("Received CLI command message");
             dev_cli_handle_message(ctx, msg);

@@ -125,6 +125,8 @@ void ipc_message_free(ipc_message_t *msg);
 #define IPC_MSG_TYPE_DEV_MODULE_READY IPC_MSG_TYPE(IPC_CATEGORY_DEV, 0x0003)
 /** 模块关闭通知 */
 #define IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN IPC_MSG_TYPE(IPC_CATEGORY_DEV, 0x0004)
+/** 查询模块名称 */
+#define IPC_MSG_TYPE_DEV_GET_MODULE_NAME IPC_MSG_TYPE(IPC_CATEGORY_DEV, 0x0005)
 /** 模块阶段响应 */
 #define IPC_MSG_TYPE_DEV_MODULE_RESP IPC_MSG_TYPE(IPC_CATEGORY_DEV, 0x000F)
 
@@ -175,25 +177,6 @@ typedef enum ipc_costate
 #define IPC_QUERY_TIMEOUT_DEFAULT 5000
 /** 接收缓冲区大小 */
 #define IPC_RECV_BUF_SIZE 65536
-
-// ============================================================================
-// MODULE_START payload：模块名称表
-// ============================================================================
-
-/** 单条模块信息条目（用于模块名称表） */
-typedef struct ipc_module_info
-{
-    uint32_t module_id;                 /**< 模块 ID */
-    char name[DEV_MODULE_NAME_MAX_LEN]; /**< 模块名称 */
-} ipc_module_info_t;
-
-/** MODULE_START payload：DEV 将完整模块名称表下发给每个模块 */
-typedef struct ipc_module_table
-{
-    uint32_t self_module_id;     /**< 目标模块自身的 ID */
-    uint32_t count;              /**< 模块数量 */
-    ipc_module_info_t entries[]; /**< 柔性数组：所有模块信息 */
-} ipc_module_table_t;
 
 // ============================================================================
 // 核心 API
@@ -281,17 +264,10 @@ uint32_t ipc_get_module_id(ipc_context_t *ctx);
 int ipc_is_connected(ipc_context_t *ctx, uint32_t target_module_id);
 
 /**
- * @brief 设置模块名称表（深拷贝）
+ * @brief 获取本模块名称
  * @param ctx IPC 上下文
- * @param table 模块名称表（Phase 1 由 DEV 下发）
+ * @return 本模块名称字符串（初始化时由调用方传入，生命周期与 ctx 相同）
  */
-void ipc_set_module_table(ipc_context_t *ctx, const ipc_module_table_t *table);
-
-/**
- * @brief 获取模块名称表
- * @param ctx IPC 上下文
- * @return 只读模块名称表指针，未设置时返回 NULL
- */
-const ipc_module_table_t *ipc_get_module_table(ipc_context_t *ctx);
+const char *ipc_get_self_name(ipc_context_t *ctx);
 
 #endif // IPC_H

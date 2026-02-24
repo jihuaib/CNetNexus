@@ -34,7 +34,6 @@ typedef struct db_local
 {
     db_connection_t *main_conn; /**< 全局统一数据库连接（所有模块共享同一个 SQLite 文件） */
     ipc_context_t *ipc_ctx;     /**< IPC 上下文（由 DEV 创建和管理） */
-    char name[DEV_MODULE_NAME_MAX_LEN]; /**< DEV 在 Phase 1 下发的本模块名称 */
 } db_local_t;
 
 extern db_local_t *g_db_local;

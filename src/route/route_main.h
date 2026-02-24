@@ -13,7 +13,6 @@ typedef struct route_local
 {
     ipc_context_t *ipc_ctx;
     volatile int running;
-    char name[DEV_MODULE_NAME_MAX_LEN]; /**< DEV 在 Phase 1 下发的本模块名称 */
 } route_local_t;
 
 extern route_local_t *g_route_local;

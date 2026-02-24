@@ -34,7 +34,6 @@ typedef struct cfg_local
     pthread_t worker_thread;
     GHashTable *sessions;               /**< 注册表: fd -> cli_session_t* */
     ipc_context_t *ipc_ctx;             /**< IPC 上下文 */
-    char name[DEV_MODULE_NAME_MAX_LEN]; /**< DEV 在 Phase 1 下发的本模块名称 */
 } cfg_local_t;
 
 extern cfg_local_t *g_cfg_local;

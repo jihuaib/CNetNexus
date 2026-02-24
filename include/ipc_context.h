@@ -46,9 +46,6 @@ struct ipc_context
 
     /* 同步查询 */
     ipc_query_mgr_t *query_mgr; /**< 查询管理器 */
-
-    /* 模块名称表（Phase 1 由 DEV 下发） */
-    ipc_module_table_t *module_table; /**< 模块名称表 */
 };
 
 #endif // IPC_CONTEXT_H
