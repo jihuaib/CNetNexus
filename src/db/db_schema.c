@@ -4,7 +4,6 @@
  * @author jhb
  * @date   2026/01/22
  */
-#define LOG_TAG "db"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -60,10 +59,21 @@ static int create_directory_recursive(const char *path)
 
 /**
  * @brief 获取统一数据库文件路径（所有模块共享同一个数据库文件）
+ *
+ * 设置了 NN_WORK_DIR 时使用 $NN_WORK_DIR/data/netnexus.db，
+ * 否则回退到 ./data/netnexus.db（开发环境）。
  */
 static int get_database_path(char *path_buf, size_t buf_size)
 {
-    snprintf(path_buf, buf_size, "./data/netnexus.db");
+    const char *work_dir = getenv("NN_WORK_DIR");
+    if (work_dir != NULL)
+    {
+        snprintf(path_buf, buf_size, "%s/data/netnexus.db", work_dir);
+    }
+    else
+    {
+        snprintf(path_buf, buf_size, "./data/netnexus.db");
+    }
     return 0;
 }
 

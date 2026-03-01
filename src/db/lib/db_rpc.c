@@ -10,7 +10,6 @@
  *
  * 全局只有一个 SQLite 数据库，db_name 在此固定，调用方只需传入表名。
  */
-#define LOG_TAG "db"
 #include "db_rpc.h"
 
 #include <inttypes.h>

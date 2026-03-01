@@ -4,7 +4,6 @@
  * @author jhb
  * @date   2026/02/23
  */
-#define LOG_TAG "bgp"
 #include "bgp_db.h"
 
 #include <stdio.h>

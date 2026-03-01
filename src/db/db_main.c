@@ -4,7 +4,6 @@
  * @author jhb
  * @date   2026/01/22
  */
-#define LOG_TAG "db"
 #include "db_main.h"
 
 #include <stdio.h>

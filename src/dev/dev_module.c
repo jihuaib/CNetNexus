@@ -4,7 +4,6 @@
  * @author jhb
  * @date   2026/01/22
  */
-#define LOG_TAG "dev"
 #include "dev_module.h"
 
 #include <dirent.h>
@@ -130,14 +129,20 @@ static int dev_scan_dir_for_modules(const char *base_dir)
             continue;
         }
 
-        /* 检查子目录下是否有 module.conf（在 resources/ 子目录中） */
+        /* 检查子目录下是否有 module.conf
+         * 兼容两种布局：
+         *   dev  布局: {base_dir}/{module}/resources/module.conf  (源码树)
+         *   prod 布局: {base_dir}/{module}/module.conf            (部署包) */
         char conf_path[PATH_MAX];
-        snprintf(conf_path, sizeof(conf_path), "%s/%s/resources/module.conf", base_dir, entry->d_name);
-
         struct stat st;
+        snprintf(conf_path, sizeof(conf_path), "%s/%s/resources/module.conf", base_dir, entry->d_name);
         if (stat(conf_path, &st) != 0)
         {
-            continue;
+            snprintf(conf_path, sizeof(conf_path), "%s/%s/module.conf", base_dir, entry->d_name);
+            if (stat(conf_path, &st) != 0)
+            {
+                continue;
+            }
         }
 
         /* 解析 module.conf */
@@ -165,8 +170,11 @@ static int dev_scan_dir_for_modules(const char *base_dir)
 
         /* dlopen 加载共享库 — constructor 自动触发
          * 使用 RTLD_LAZY 因为模块间存在交叉依赖（如 db→cfg），
-         * 加载时并非所有符号都已可用，实际调用时再解析即可 */
+         * 加载时并非所有符号都已可用，实际调用时再解析即可。
+         * constructor 调用 ipc_init() 会把主线程标签改为该模块名，
+         * dlopen 返回后恢复为 "dev"，保持扫描期间日志标签一致。 */
         void *dl_handle = dev_dlopen_module(conf.so_name);
+        log_set_tag("dev"); /* 恢复：constructor 已把标签改为各自模块名 */
         if (!dl_handle)
         {
             LOG_ERROR("dlopen(%s) 失败: %s", conf.so_name, dlerror());
@@ -251,27 +259,31 @@ int32_t dev_scan_and_load_modules(void)
 {
     ensure_registry_initialized();
 
-    LOG_INFO("=============================================");
-    LOG_INFO("开始扫描并加载模块");
-    LOG_INFO("=============================================");
-
-    // DEV 自身初始化（创建 DEV 的 IPC context + 注册到 GTree）
+    /* DEV 自身初始化（创建 DEV 的 IPC context + 注册到 GTree）
+     * ipc_init() 内部会把调用线程标签设为 "dev"，在 dlopen 触发各模块
+     * constructor 之前，日志已标记为 "dev" */
     if (dev_init_self() != ERRCODE_SUCCESS)
     {
         LOG_ERROR("Fatal: DEV module self-init failed");
         return ERRCODE_FAIL;
     }
 
+    LOG_INFO("=============================================");
+    LOG_INFO("开始扫描并加载模块");
+    LOG_INFO("=============================================");
+
     int total_loaded = 0;
 
-    /* 优先级 1: 环境变量 RESOURCES_DIR */
-    const char *resources_dir = getenv("RESOURCES_DIR");
-    if (resources_dir)
+    /* 优先级 1: 环境变量 NN_WORK_DIR */
+    const char *work_dir = getenv("NN_WORK_DIR");
+    if (work_dir)
     {
+        char resources_dir[PATH_MAX];
+        snprintf(resources_dir, sizeof(resources_dir), "%s/resources", work_dir);
         total_loaded = dev_scan_dir_for_modules(resources_dir);
         if (total_loaded > 0)
         {
-            LOG_INFO("从 RESOURCES_DIR 加载了 %d 个模块", total_loaded);
+            LOG_INFO("从 NN_WORK_DIR 加载了 %d 个模块", total_loaded);
             return ERRCODE_SUCCESS;
         }
     }
@@ -469,6 +481,10 @@ static gboolean phase3_ready_callback(gpointer key, gpointer value, gpointer dat
 
 int32_t dev_init_all_modules(void)
 {
+    /* 所有模块 constructor 执行完毕后，主线程的日志标签已被最后一个模块改写。
+     * 在三阶段初始化期间统一恢复为 "dev"，使日志便于识别。 */
+    log_set_tag("dev");
+
     int32_t failed_count = 0;
 
     LOG_INFO("=============================================");
@@ -482,15 +498,15 @@ int32_t dev_init_all_modules(void)
     }
 
     /* DEV 连接到所有模块 */
-
     LOG_INFO("DEV 连接到所有模块");
     g_tree_foreach(g_module_registry, dev_connect_to_module_callback, g_dev_local->ipc_ctx);
 
-    /* 等待所有 IPC 连接完成握手 */
+    /* 等待所有 IPC 连接完成握手（最多 5 秒） */
     LOG_INFO("等待 IPC 连接就绪...");
+    int all_connected = 0;
     for (int retry = 0; retry < 50; retry++)
     {
-        int all_connected = 1;
+        all_connected = 1;
         GList *wait_modules = NULL;
         g_tree_foreach(g_module_registry, collect_module_callback, &wait_modules);
 
@@ -502,7 +518,10 @@ int32_t dev_init_all_modules(void)
                 if (!ipc_is_connected(g_dev_local->ipc_ctx, m->module_id))
                 {
                     all_connected = 0;
-                    break;
+                    if (retry % 10 == 9) /* 每 1 秒记录一次等待中的模块 */
+                    {
+                        LOG_WARN("等待 IPC 连接: %s (id=0x%08X) 未就绪", m->name, m->module_id);
+                    }
                 }
             }
         }
@@ -510,10 +529,29 @@ int32_t dev_init_all_modules(void)
 
         if (all_connected)
         {
-            LOG_INFO("所有 IPC 连接就绪");
+            LOG_INFO("所有 IPC 连接就绪 (耗时约 %d ms)", retry * 100);
             break;
         }
         usleep(100000); /* 100ms */
+    }
+
+    if (!all_connected)
+    {
+        LOG_WARN("等待超时（5 秒），部分模块 IPC 连接未就绪，继续初始化");
+        /* 打印每个模块的最终连接状态 */
+        GList *mods = NULL;
+        g_tree_foreach(g_module_registry, collect_module_callback, &mods);
+        for (GList *l = mods; l != NULL; l = l->next)
+        {
+            dev_module_t *m = (dev_module_t *)l->data;
+            if (m->module_id != DEV_MODULE_ID_DEV)
+            {
+                int connected = ipc_is_connected(g_dev_local->ipc_ctx, m->module_id);
+                LOG_WARN("  模块 %s (id=0x%08X): %s", m->name, m->module_id,
+                         connected ? "已连接" : "未连接");
+            }
+        }
+        g_list_free(mods);
     }
 
     /* Phase 1: 发送 MODULE_START — 模块建立 IPC 连接 */

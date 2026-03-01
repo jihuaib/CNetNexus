@@ -4,7 +4,6 @@
  * @author jhb
  * @date   2026/01/22
  */
-#define LOG_TAG "if"
 #include "if_main.h"
 
 #include <limits.h>
@@ -210,10 +209,10 @@ __attribute__((constructor)) static void if_so_init(void)
 
     /* 初始化接口映射 */
     char if_map_path[PATH_MAX];
-    const char *resources_dir = getenv("RESOURCES_DIR");
-    if (resources_dir != NULL)
+    const char *work_dir = getenv("NN_WORK_DIR");
+    if (work_dir != NULL)
     {
-        snprintf(if_map_path, sizeof(if_map_path), "%s/if/if_map.conf.gns3", resources_dir);
+        snprintf(if_map_path, sizeof(if_map_path), "%s/resources/if/if_map.conf.gns3", work_dir);
         LOG_INFO("Using GNS3 interface mapping: %s", if_map_path);
     }
     else

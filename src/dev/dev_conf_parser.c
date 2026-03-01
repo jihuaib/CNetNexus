@@ -106,11 +106,11 @@ int dev_conf_resolve_and_parse(const char *module_name, dev_module_conf_t *conf)
     char path[PATH_MAX];
     struct stat st;
 
-    /* 优先级 1: 环境变量 RESOURCES_DIR */
-    const char *resources_dir = getenv("RESOURCES_DIR");
-    if (resources_dir)
+    /* 优先级 1: 环境变量 NN_WORK_DIR */
+    const char *work_dir = getenv("NN_WORK_DIR");
+    if (work_dir)
     {
-        snprintf(path, sizeof(path), "%s/%s/module.conf", resources_dir, module_name);
+        snprintf(path, sizeof(path), "%s/resources/%s/module.conf", work_dir, module_name);
         if (stat(path, &st) == 0)
         {
             return dev_conf_parse(path, conf);

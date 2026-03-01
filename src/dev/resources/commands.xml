@@ -70,6 +70,28 @@
             </commands>
         </group>
 
+        <!-- ping <ip-address> -->
+        <group group-id="5">
+            <elements>
+                <element type="keyword">
+                    <name>ping</name>
+                    <description>Ping a remote host</description>
+                </element>
+                <element cfg-id="1" type="parameter">
+                    <name>&lt;ip-address&gt;</name>
+                    <description>Target IPv4 address</description>
+                    <type>ip</type>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>1 2</expression>
+                    <views>1,3</views>
+                </command>
+            </commands>
+        </group>
+
         <!-- dev log-level <level> -->
         <group group-id="4">
             <elements>

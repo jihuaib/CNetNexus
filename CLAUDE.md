@@ -113,7 +113,7 @@ NetNexus/
 
 **环境变量：**
 - `LD_LIBRARY_PATH` - 自动设置为 `build/lib/`
-- `NN_RESOURCES_DIR` - 开发环境无需设置（从 `src/` 自动发现）
+- `NN_WORK_DIR` - 开发环境无需设置（从 `src/` 自动发现）
 
 **配置文件：**
 XML 配置文件从源码目录自动发现：
@@ -534,13 +534,13 @@ Docker 配置：
 - 暴露端口：`3788`（telnet）
 - 持久化数据：`/opt/netnexus/data`（卷）
 - 配置目录：`/opt/netnexus/resources`
-- 环境变量：`NN_RESOURCES_DIR=/opt/netnexus/resources`
+- 环境变量：`NN_WORK_DIR=/opt/netnexus`
 
 ### 配置路径解析
 
 系统按以下优先级解析 XML 配置文件：
 
-1. **环境变量** `NN_RESOURCES_DIR`：`/opt/netnexus/resources/{module}/commands.xml`
+1. **环境变量** `NN_WORK_DIR`：`/opt/netnexus/resources/{module}/commands.xml`
 2. **生产路径**：`/opt/netnexus/resources/{module}/commands.xml`
 3. **开发路径**：`build/bin/../../src/{module}/commands.xml`
 4. **回退路径**：`../../src/{module}/commands.xml`

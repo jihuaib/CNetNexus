@@ -4,8 +4,6 @@
  * @author jhb
  * @date   2026/01/22
  */
-#define LOG_TAG "main"
-
 #include <errno.h>
 #include <signal.h>
 #include <stdio.h>
@@ -23,6 +21,16 @@ int main(int argc, char *argv[])
 {
     (void)argc;
     (void)argv;
+    log_set_tag("main");
+
+    /* 若设置了 NN_WORK_DIR，则将日志写入 $NN_WORK_DIR/log/netnexus.log */
+    const char *work_dir = getenv("NN_WORK_DIR");
+    if (work_dir)
+    {
+        char log_path[512];
+        snprintf(log_path, sizeof(log_path), "%s/log/netnexus.log", work_dir);
+        log_open_file(log_path);
+    }
 
     int epoll_fd = -1;
     int signal_fd = -1;

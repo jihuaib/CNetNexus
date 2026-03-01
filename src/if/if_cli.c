@@ -4,7 +4,6 @@
  * @author jhb
  * @date   2026/01/22
  */
-#define LOG_TAG "if"
 #include "if_cli.h"
 
 #include <arpa/inet.h>

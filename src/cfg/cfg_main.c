@@ -4,8 +4,6 @@
  * @author jhb
  * @date   2026/01/22
  */
-#define LOG_TAG "cfg"
-
 #include "cfg_main.h"
 
 #include <arpa/inet.h>
@@ -46,6 +44,7 @@ static void *cfg_server_thread(void *arg);
 static void *cfg_server_thread(void *arg)
 {
     (void)arg;
+    log_set_tag(ipc_get_self_name(g_cfg_local->ipc_ctx));
 
     struct sockaddr_in client_addr;
     socklen_t client_len;
@@ -217,13 +216,19 @@ static int cfg_scan_and_load_xml(const char *base_dir)
             continue;
         }
 
+        /* 兼容两种布局：
+         *   dev  布局: {base_dir}/{module}/resources/commands.xml  (源码树)
+         *   prod 布局: {base_dir}/{module}/commands.xml            (部署包) */
         char xml_path[PATH_MAX];
-        snprintf(xml_path, sizeof(xml_path), "%s/%s/resources/commands.xml", base_dir, entry->d_name);
-
         struct stat st;
+        snprintf(xml_path, sizeof(xml_path), "%s/%s/resources/commands.xml", base_dir, entry->d_name);
         if (stat(xml_path, &st) != 0)
         {
-            continue;
+            snprintf(xml_path, sizeof(xml_path), "%s/%s/commands.xml", base_dir, entry->d_name);
+            if (stat(xml_path, &st) != 0)
+            {
+                continue;
+            }
         }
 
         LOG_INFO("发现 XML: %s", xml_path);
@@ -246,7 +251,7 @@ static int cfg_scan_and_load_xml(const char *base_dir)
  * @brief 自动发现并加载所有模块的 commands.xml
  *
  * 按以下优先级扫描目录：
- * 1. 环境变量 RESOURCES_DIR
+ * 1. 环境变量 NN_WORK_DIR（取 resources 子目录）
  * 2. 生产路径 /opt/netnexus/resources
  * 3. 相对于可执行文件的开发路径
  */
@@ -256,14 +261,16 @@ static void cfg_discover_and_load_xml(void)
 
     int total = 0;
 
-    /* 优先级 1: 环境变量 RESOURCES_DIR */
-    const char *resources_dir = getenv("RESOURCES_DIR");
-    if (resources_dir)
+    /* 优先级 1: 环境变量 NN_WORK_DIR */
+    const char *work_dir = getenv("NN_WORK_DIR");
+    if (work_dir)
     {
+        char resources_dir[PATH_MAX];
+        snprintf(resources_dir, sizeof(resources_dir), "%s/resources", work_dir);
         total = cfg_scan_and_load_xml(resources_dir);
         if (total > 0)
         {
-            LOG_INFO("从 RESOURCES_DIR 加载了 %d 个 XML 配置", total);
+            LOG_INFO("从 NN_WORK_DIR 加载了 %d 个 XML 配置", total);
             return;
         }
     }

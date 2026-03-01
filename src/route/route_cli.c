@@ -4,7 +4,6 @@
  * @author jhb
  * @date   2026/02/01
  */
-#define LOG_TAG "route"
 #include "route_cli.h"
 
 #include <glib.h>

@@ -9,6 +9,7 @@
 #include "log.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdarg.h>
 #include <string.h>
 #include <sys/syscall.h>
@@ -21,6 +22,31 @@
 
 /** 全局日志级别，默认 INFO */
 log_level_t g_log_level = LOG_LEVEL_INFO;
+
+/** 日志文件描述符（-1 表示未启用文件输出） */
+static int g_log_fd = -1;
+
+void log_open_file(const char *path)
+{
+    if (g_log_fd >= 0)
+    {
+        close(g_log_fd);
+        g_log_fd = -1;
+    }
+    if (!path)
+    {
+        return;
+    }
+    g_log_fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+}
+
+/** 当前线程的模块标签（线程局部，初始为 "unknown"） */
+_Thread_local const char *g_log_tag = "unknown";
+
+void log_set_tag(const char *tag)
+{
+    g_log_tag = tag ? tag : "unknown";
+}
 
 /** 日志级别名称映射 */
 static const char *level_names[] = {
@@ -106,8 +132,13 @@ void log_output(log_level_t level, const char *tag, const char *file, int line, 
         buf[offset++] = '\n';
     }
 
-    /* 原子写入 stderr */
+    /* 写入 stderr（串口/终端） */
     write(STDERR_FILENO, buf, offset);
+    /* 同时写入日志文件（若已打开） */
+    if (g_log_fd >= 0)
+    {
+        write(g_log_fd, buf, offset);
+    }
 }
 
 void log_output_perror(log_level_t level, const char *tag, const char *file, int line, const char *func,
@@ -147,4 +178,8 @@ void log_output_perror(log_level_t level, const char *tag, const char *file, int
     }
 
     write(STDERR_FILENO, buf, offset);
+    if (g_log_fd >= 0)
+    {
+        write(g_log_fd, buf, offset);
+    }
 }

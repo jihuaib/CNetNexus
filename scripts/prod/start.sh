@@ -6,23 +6,21 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-RESOURCE_DIR="${INSTALL_DIR}/resources"
 
-# Set environment variables
-export NN_RESOURCES_DIR="${RESOURCE_DIR}"
+# 统一工作目录：resources/data/log 均从此派生
+export NN_WORK_DIR="${INSTALL_DIR}"
 export LD_LIBRARY_PATH="${INSTALL_DIR}/lib:${LD_LIBRARY_PATH}"
 
-# Create data directory if needed (for development)
-if [ ! -d "${INSTALL_DIR}/data" ]; then
-    mkdir -p "${INSTALL_DIR}/data"
-fi
+# 创建必要目录
+mkdir -p "${INSTALL_DIR}/data"
+mkdir -p "${INSTALL_DIR}/log"
 
 # Display startup information
 echo "==================================="
 echo "NetNexus Starting"
 echo "==================================="
 echo "Install dir: ${INSTALL_DIR}"
-echo "Config dir:  ${RESOURCE_DIR}"
+echo "Work dir:    ${NN_WORK_DIR}"
 echo "Library path: ${LD_LIBRARY_PATH}"
 echo ""
 
@@ -33,8 +31,8 @@ if [ ! -f "${INSTALL_DIR}/bin/netnexus" ]; then
 fi
 
 # Check if resources directory exists
-if [ ! -d "${RESOURCE_DIR}" ]; then
-    echo "Error: Config directory not found at ${RESOURCE_DIR}"
+if [ ! -d "${INSTALL_DIR}/resources" ]; then
+    echo "Error: Config directory not found at ${INSTALL_DIR}/resources"
     exit 1
 fi
 

@@ -4,10 +4,10 @@
  * @author jhb
  * @date   2026/01/22
  */
-#define LOG_TAG "dev"
 
 #include "dev_cli.h"
 
+#include <arpa/inet.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -101,15 +101,10 @@ static int resolve_version_file(char *path, size_t path_size)
         return ERRCODE_SUCCESS;
     }
 
-    const char *resources_dir = getenv("RESOURCES_DIR");
-    if (resources_dir && resources_dir[0] != '\0')
+    const char *work_dir = getenv("NN_WORK_DIR");
+    if (work_dir && work_dir[0] != '\0')
     {
-        snprintf(path, path_size, "%s/../VERSION", resources_dir);
-        if (access(path, R_OK) == 0)
-        {
-            return ERRCODE_SUCCESS;
-        }
-        snprintf(path, path_size, "%s/VERSION", resources_dir);
+        snprintf(path, path_size, "%s/VERSION", work_dir);
         if (access(path, R_OK) == 0)
         {
             return ERRCODE_SUCCESS;
@@ -331,6 +326,80 @@ static int handle_set_log_level(ipc_context_t *ctx, ipc_message_t *msg, cli_tlv_
     return ERRCODE_FAIL;
 }
 
+static int handle_ping(ipc_context_t *ctx, ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    char ip[64] = {0};
+
+    /* 解析目标 IP 地址参数（cfg_id=1） */
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (CFG_TLV_IS_CONTEXT(entry.cfg_id))
+        {
+            cli_tlv_entry_free(&entry);
+            continue;
+        }
+
+        if (entry.cfg_id == 1)
+        {
+            const char *text = cli_tlv_entry_get_text(&entry);
+            if (text)
+            {
+                strlcpy(ip, text, sizeof(ip));
+            }
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    if (ip[0] == '\0')
+    {
+        dev_send_cli_response(ctx, msg, "Error: missing IP address\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    /* 验证 IP 地址格式，防止命令注入 */
+    struct in_addr addr;
+    if (inet_pton(AF_INET, ip, &addr) != 1)
+    {
+        dev_send_cli_response(ctx, msg, "Error: invalid IP address format\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    /* 构造 ping 命令并执行 */
+    char cmd[128];
+    snprintf(cmd, sizeof(cmd), "ping -c 4 -W 2 %s 2>&1", ip);
+
+    FILE *fp = popen(cmd, "r");
+    if (!fp)
+    {
+        dev_send_cli_response(ctx, msg, "Error: failed to execute ping command\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    char result[CLI_MAX_RESP_LEN];
+    size_t off = 0;
+    result[0] = '\0';
+
+    /* 首行空行 */
+    off += (size_t)snprintf(result + off, sizeof(result) - off, "\r\n");
+
+    char line[256];
+    while (fgets(line, sizeof(line), fp) != NULL && off < sizeof(result) - 4)
+    {
+        /* 去掉行尾 \n，统一替换为 \r\n */
+        size_t len = strlen(line);
+        if (len > 0 && line[len - 1] == '\n')
+        {
+            line[--len] = '\0';
+        }
+        off += (size_t)snprintf(result + off, sizeof(result) - off, "%s\r\n", line);
+    }
+    pclose(fp);
+
+    dev_send_cli_response(ctx, msg, result);
+    return ERRCODE_SUCCESS;
+}
+
 // ============================================================================
 // 主入口
 // ============================================================================
@@ -372,6 +441,9 @@ int dev_cli_handle_message(ipc_context_t *ctx, ipc_message_t *msg)
             break;
         case DEV_CLI_GROUP_ID_LOG_LEVEL:
             result = handle_set_log_level(ctx, msg, &parser);
+            break;
+        case DEV_CLI_GROUP_ID_PING:
+            result = handle_ping(ctx, msg, &parser);
             break;
         default:
             LOG_WARN("未知 group_id: %u", parser.group_id);

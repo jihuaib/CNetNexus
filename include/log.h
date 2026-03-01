@@ -24,11 +24,26 @@ typedef enum
 /** 全局日志级别（运行时可配置） */
 extern log_level_t g_log_level;
 
+/** 当前线程的模块标签，由 log_set_tag() 设置，初始为 "unknown" */
+extern _Thread_local const char *g_log_tag;
+
+/**
+ * @brief 设置当前线程的模块日志标签
+ * @param tag 标签字符串（通常为模块名，生命周期须长于线程）
+ */
+void log_set_tag(const char *tag);
+
 /**
  * @brief 初始化日志系统
  * @param level 初始日志级别
  */
 void log_init(log_level_t level);
+
+/**
+ * @brief 打开日志文件（同时写 stderr 和文件）
+ * @param path 日志文件路径，NULL 则关闭文件输出
+ */
+void log_open_file(const char *path);
 
 /**
  * @brief 设置日志级别
@@ -73,16 +88,12 @@ void log_output(log_level_t level, const char *tag, const char *file, int line, 
 void log_output_perror(log_level_t level, const char *tag, const char *file, int line, const char *func,
                        const char *fmt, ...) __attribute__((format(printf, 6, 7)));
 
-#ifndef LOG_TAG
-#    define LOG_TAG "unknown"
-#endif
-
 /** 调试日志 */
 #define LOG_DEBUG(fmt, ...)                                                                                            \
     do                                                                                                                 \
     {                                                                                                                  \
         if (g_log_level <= LOG_LEVEL_DEBUG)                                                                            \
-            log_output(LOG_LEVEL_DEBUG, LOG_TAG, __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__);                    \
+            log_output(LOG_LEVEL_DEBUG, g_log_tag, __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__);                  \
     } while (0)
 
 /** 信息日志 */
@@ -90,7 +101,7 @@ void log_output_perror(log_level_t level, const char *tag, const char *file, int
     do                                                                                                                 \
     {                                                                                                                  \
         if (g_log_level <= LOG_LEVEL_INFO)                                                                             \
-            log_output(LOG_LEVEL_INFO, LOG_TAG, __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__);                     \
+            log_output(LOG_LEVEL_INFO, g_log_tag, __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__);                   \
     } while (0)
 
 /** 警告日志 */
@@ -98,7 +109,7 @@ void log_output_perror(log_level_t level, const char *tag, const char *file, int
     do                                                                                                                 \
     {                                                                                                                  \
         if (g_log_level <= LOG_LEVEL_WARN)                                                                             \
-            log_output(LOG_LEVEL_WARN, LOG_TAG, __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__);                     \
+            log_output(LOG_LEVEL_WARN, g_log_tag, __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__);                   \
     } while (0)
 
 /** 错误日志 */
@@ -106,14 +117,14 @@ void log_output_perror(log_level_t level, const char *tag, const char *file, int
     do                                                                                                                 \
     {                                                                                                                  \
         if (g_log_level <= LOG_LEVEL_ERROR)                                                                            \
-            log_output(LOG_LEVEL_ERROR, LOG_TAG, __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__);                    \
+            log_output(LOG_LEVEL_ERROR, g_log_tag, __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__);                  \
     } while (0)
 
 /** 替代 perror()，输出 errno 描述 */
 #define LOG_PERROR(fmt, ...)                                                                                           \
     do                                                                                                                 \
     {                                                                                                                  \
-        log_output_perror(LOG_LEVEL_ERROR, LOG_TAG, __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__);                 \
+        log_output_perror(LOG_LEVEL_ERROR, g_log_tag, __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__);               \
     } while (0)
 
 #endif // LOG_H

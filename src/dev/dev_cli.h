@@ -16,6 +16,7 @@
 #define DEV_CLI_GROUP_ID_SYSNAME 2
 #define DEV_CLI_GROUP_ID_SHOW_MODULE 3
 #define DEV_CLI_GROUP_ID_LOG_LEVEL 4
+#define DEV_CLI_GROUP_ID_PING 5
 
 typedef struct dev_cli_out
 {

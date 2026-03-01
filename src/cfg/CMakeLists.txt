@@ -30,6 +30,7 @@ target_link_libraries(cfg PUBLIC
     ${LIBXML2_LIBRARIES}
     ${GLIB_LIBRARIES}
     Threads::Threads
+    util
 )
 
 # Set library version

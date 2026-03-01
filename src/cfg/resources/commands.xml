@@ -123,5 +123,22 @@
                 </command>
             </commands>
         </group>
+
+        <!-- bash -->
+        <group group-id="7">
+            <elements>
+                <element type="keyword">
+                    <name>bash</name>
+                    <description>Enter bash shell</description>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>1</expression>
+                    <views>1</views>
+                </command>
+            </commands>
+        </group>
     </command_groups>
 </configuration>

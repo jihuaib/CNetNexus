@@ -19,7 +19,7 @@ services:
       # Optional: Mount custom config (uncomment to override)
       # - ./config:/opt/netnexus/resources:ro
     environment:
-      - NN_RESOURCES_DIR=/opt/netnexus/resources
+      - NN_WORK_DIR=/opt/netnexus
       - LD_LIBRARY_PATH=/opt/netnexus/lib
     # 特权模式：创建 veth 接口需要完整的网络管理权限
     # macOS Docker Desktop 的 VM 层下 cap_add: NET_ADMIN 不够

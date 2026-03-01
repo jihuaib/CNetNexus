@@ -1069,8 +1069,8 @@ int cli_process_input(cli_session_t *session)
                     session->history.browse_idx = -1; // Reset browse state
                 }
 
-                // Don't send prompt if pager is active (pager will send it when done)
-                if (!session->pager_active)
+                // pager 或 bash 模式激活时不发送提示符（由对应子系统负责）
+                if (!session->pager_active && !session->bash_mode)
                 {
                     send_prompt(session);
                 }

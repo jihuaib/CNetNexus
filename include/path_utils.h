@@ -26,7 +26,7 @@ int get_exe_dir(char *buf, size_t size);
  * @return 成功返回 0，失败返回 -1
  *
  * 按以下优先级解析 XML 路径：
- * 1. 环境变量 RESOURCES_DIR（如已设置）
+ * 1. 环境变量 NN_WORK_DIR（取 resources 子目录）
  * 2. 相对于可执行文件目录（开发构建）
  * 3. 系统安装路径（生产环境）
  */

@@ -7,7 +7,6 @@
  * 接收来自其他模块的 SQL 字符串，直接调用本地 db_exec_sql / db_query_sql 执行，
  * 将结果序列化后发送响应。
  */
-#define LOG_TAG "db"
 
 #include "db_ipc_handler.h"
 

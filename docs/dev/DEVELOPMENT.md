@@ -367,7 +367,7 @@ strace -f ./build/bin/netnexus
 ### XML Path Resolution
 
 Priority order:
-1. `$NN_RESOURCES_DIR/{module}/commands.xml`
+1. `$NN_WORK_DIR/{module}/commands.xml`
 2. `/opt/netnexus/resources/{module}/commands.xml`
 3. `<exe_dir>/../../src/{module}/commands.xml` (development)
 4. `../../src/{module}/commands.xml` (fallback)

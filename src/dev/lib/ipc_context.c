@@ -5,8 +5,6 @@
  * @date   2026/02/02
  */
 
-#define LOG_TAG "ipc"
-
 #include "ipc_context.h"
 
 #include <arpa/inet.h>
@@ -458,6 +456,7 @@ static void accept_new_connection(ipc_context_t *ctx)
 static void *ipc_worker_thread(void *arg)
 {
     ipc_context_t *ctx = (ipc_context_t *)arg;
+    log_set_tag(ctx->name);
 
     LOG_INFO("<%s> Worker 线程启动", ctx->name);
 
@@ -491,6 +490,7 @@ static void *ipc_worker_thread(void *arg)
 static void *ipc_io_thread(void *arg)
 {
     ipc_context_t *ctx = (ipc_context_t *)arg;
+    log_set_tag(ctx->name);
     struct epoll_event events[IPC_MAX_EPOLL_EVENTS];
 
     LOG_INFO("<%s> IO 线程启动", ctx->name);
@@ -672,6 +672,8 @@ ipc_context_t *ipc_init(uint32_t module_id, const char *name, uint16_t listen_po
 
     ctx->module_id = module_id;
     snprintf(ctx->name, sizeof(ctx->name), "%s", name ? name : "unknown");
+    /* 为调用方线程（constructor/初始化线程）设置日志标签，使初始化期间的日志也能显示模块名 */
+    log_set_tag(ctx->name);
     ctx->msg_handler = msg_handler;
     ctx->listen_fd = -1;
     ctx->epoll_fd = -1;
@@ -832,6 +834,7 @@ int ipc_connect(ipc_context_t *ctx, uint32_t target_module_id, const char *host,
     else
     {
         /* 连接失败，稍后重试 */
+        LOG_WARN("<%s> 初始连接 module(0x%08X) (%s:%u) 失败，IO 线程将重试", ctx->name, target_module_id, host, port);
         ipc_connection_backoff_reconnect(conn);
         return ERRCODE_SUCCESS; /* 不报错，IO 线程会重试 */
     }
@@ -913,6 +916,10 @@ int ipc_send_response(ipc_context_t *ctx, ipc_message_t *msg)
     ipc_connection_t *conn = find_connection(ctx, target_id);
     if (!conn || conn->state != IPC_COCONNECTED)
     {
+        char _buf[16];
+        LOG_WARN("<%s> ipc_send_response: 无法路由到 %s (num_connections=%d, %s)",
+                 ctx->name, fmt_module_id(target_id, _buf, sizeof(_buf)), ctx->num_connections,
+                 conn ? "连接存在但未就绪" : "连接不存在");
         pthread_mutex_unlock(&ctx->comutex);
         return ERRCODE_FAIL;
     }

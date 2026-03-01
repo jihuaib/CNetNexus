@@ -49,7 +49,9 @@ if [ -n "${PLATFORM}" ]; then
 fi
 
 # Build with multiple tags
+# --network=host 让构建容器复用宿主机网络，解决容器内 DNS 解析失败的问题
 docker build \
+    --network=host \
     ${PLATFORM_FLAG} \
     --target production \
     --build-arg VERSION=${VERSION} \

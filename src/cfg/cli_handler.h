@@ -56,6 +56,9 @@ typedef struct
     uint32_t pager_total_len;      // Total buffer length
     uint32_t pager_lines_per_page; // Lines per screen (default 24)
     uint32_t pager_active;         // 1 if pager is active
+
+    // Bash 模式标志：1 表示当前在后台 bash shell 中，主循环不发送提示符
+    uint32_t bash_mode;
 } cli_session_t;
 
 // Function prototypes

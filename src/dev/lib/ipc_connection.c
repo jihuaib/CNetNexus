@@ -5,8 +5,6 @@
  * @date   2026/02/02
  */
 
-#define LOG_TAG "ipc"
-
 #include "ipc_connection.h"
 
 #include <arpa/inet.h>
@@ -87,6 +85,7 @@ int ipc_connection_initiate(ipc_connection_t *conn, const char *host, uint16_t p
     int ret = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
     if (ret < 0 && errno != EINPROGRESS)
     {
+        LOG_WARN("connect to %s:%u 失败: %s", host, port, strerror(errno));
         close(fd);
         return ERRCODE_FAIL;
     }

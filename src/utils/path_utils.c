@@ -4,7 +4,6 @@
  * @author jhb
  * @date   2026/01/22
  */
-#define LOG_TAG "path"
 #include "path_utils.h"
 
 #include <limits.h>
@@ -48,14 +47,12 @@ int get_exe_dir(char *buf, size_t size)
 
 int resolve_xml_path(const char *module_name, char *buf, size_t size)
 {
-    const char *xml_dir = getenv("RESOURCES_DIR");
-
-    // Priority 1: Environment variable (for Docker/production)
-    if (xml_dir != NULL)
+    // Priority 1: NN_WORK_DIR（统一工作目录）
+    const char *work_dir = getenv("NN_WORK_DIR");
+    if (work_dir != NULL)
     {
-        snprintf(buf, size, "%s/%s/commands.xml", xml_dir, module_name);
+        snprintf(buf, size, "%s/resources/%s/commands.xml", work_dir, module_name);
 
-        // Verify file exists
         struct stat st;
         if (stat(buf, &st) == 0)
         {
