@@ -6,6 +6,7 @@
  */
 #include "path_utils.h"
 
+#include <glib.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,55 +48,37 @@ int get_exe_dir(char *buf, size_t size)
 
 int resolve_xml_path(const char *module_name, char *buf, size_t size)
 {
-    // Priority 1: NN_WORK_DIR（统一工作目录）
+    struct stat st;
+    char *path = NULL;
+
+    /* 优先级 1: 环境变量 NN_WORK_DIR（生产环境） */
     const char *work_dir = getenv("NN_WORK_DIR");
     if (work_dir != NULL)
     {
-        snprintf(buf, size, "%s/resources/%s/commands.xml", work_dir, module_name);
-
-        struct stat st;
-        if (stat(buf, &st) == 0)
+        path = g_build_filename(work_dir, "resources", module_name, "commands.xml", NULL);
+        if (stat(path, &st) == 0)
         {
+            strlcpy(buf, path, size);
+            g_free(path);
             return 0;
         }
+        g_free(path);
     }
 
-    // Priority 2: Production install path (/opt/netnexus/resources/)
-    snprintf(buf, size, "/opt/netnexus/resources/%s/commands.xml", module_name);
-    struct stat st;
-    if (stat(buf, &st) == 0)
-    {
-        return 0;
-    }
-
-    // Priority 3: Relative to executable (for development builds)
+    /* 优先级 2: 相对于可执行文件的开发路径 */
     char exe_dir[PATH_MAX];
     if (get_exe_dir(exe_dir, sizeof(exe_dir)) == 0)
     {
-        // Try: <exe_dir>/../src/<module>/commands.xml
-        snprintf(buf, size, "%s/../src/%s/resources/commands.xml", exe_dir, module_name);
-        struct stat st;
-        if (stat(buf, &st) == 0)
+        path = g_build_filename(exe_dir, "..", "..", "src", module_name, "resources", "commands.xml", NULL);
+        if (stat(path, &st) == 0)
         {
+            strlcpy(buf, path, size);
+            g_free(path);
             return 0;
         }
-
-        // Try: <exe_dir>/../../src/<module>/commands.xml (for build/bin/netnexus)
-        snprintf(buf, size, "%s/../../src/%s/resources/commands.xml", exe_dir, module_name);
-        if (stat(buf, &st) == 0)
-        {
-            return 0;
-        }
+        g_free(path);
     }
 
-    // Priority 4: Fallback to hardcoded relative path
-    snprintf(buf, size, "../../src/%s/resources/commands.xml", module_name);
-    if (stat(buf, &st) == 0)
-    {
-        return 0;
-    }
-
-    // If all else fails, return the last attempted path
     LOG_WARN("Could not find XML file for module '%s'", module_name);
     return -1;
 }

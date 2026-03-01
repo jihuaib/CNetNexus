@@ -219,14 +219,15 @@ static int cfg_scan_and_load_xml(const char *base_dir)
         /* 兼容两种布局：
          *   dev  布局: {base_dir}/{module}/resources/commands.xml  (源码树)
          *   prod 布局: {base_dir}/{module}/commands.xml            (部署包) */
-        char xml_path[PATH_MAX];
         struct stat st;
-        snprintf(xml_path, sizeof(xml_path), "%s/%s/resources/commands.xml", base_dir, entry->d_name);
+        char *xml_path = g_build_filename(base_dir, entry->d_name, "resources", "commands.xml", NULL);
         if (stat(xml_path, &st) != 0)
         {
-            snprintf(xml_path, sizeof(xml_path), "%s/%s/commands.xml", base_dir, entry->d_name);
+            g_free(xml_path);
+            xml_path = g_build_filename(base_dir, entry->d_name, "commands.xml", NULL);
             if (stat(xml_path, &st) != 0)
             {
+                g_free(xml_path);
                 continue;
             }
         }
@@ -241,6 +242,7 @@ static int cfg_scan_and_load_xml(const char *base_dir)
         {
             LOG_ERROR("加载 XML 失败: %s", xml_path);
         }
+        g_free(xml_path);
     }
 
     closedir(dir);
@@ -252,8 +254,7 @@ static int cfg_scan_and_load_xml(const char *base_dir)
  *
  * 按以下优先级扫描目录：
  * 1. 环境变量 NN_WORK_DIR（取 resources 子目录）
- * 2. 生产路径 /opt/netnexus/resources
- * 3. 相对于可执行文件的开发路径
+ * 2. 相对于可执行文件的开发路径
  */
 static void cfg_discover_and_load_xml(void)
 {
@@ -261,13 +262,13 @@ static void cfg_discover_and_load_xml(void)
 
     int total = 0;
 
-    /* 优先级 1: 环境变量 NN_WORK_DIR */
+    /* 优先级 1: 环境变量 NN_WORK_DIR（生产环境） */
     const char *work_dir = getenv("NN_WORK_DIR");
     if (work_dir)
     {
-        char resources_dir[PATH_MAX];
-        snprintf(resources_dir, sizeof(resources_dir), "%s/resources", work_dir);
+        char *resources_dir = g_build_filename(work_dir, "resources", NULL);
         total = cfg_scan_and_load_xml(resources_dir);
+        g_free(resources_dir);
         if (total > 0)
         {
             LOG_INFO("从 NN_WORK_DIR 加载了 %d 个 XML 配置", total);
@@ -275,30 +276,13 @@ static void cfg_discover_and_load_xml(void)
         }
     }
 
-    /* 优先级 2: 生产路径 */
-    total = cfg_scan_and_load_xml("/opt/netnexus/resources");
-    if (total > 0)
-    {
-        LOG_INFO("从生产路径加载了 %d 个 XML 配置", total);
-        return;
-    }
-
-    /* 优先级 3: 相对于可执行文件的开发路径 */
+    /* 优先级 2: 相对于可执行文件的开发路径 */
     char exe_dir[PATH_MAX];
     if (get_exe_dir(exe_dir, sizeof(exe_dir)) == 0)
     {
-        char dev_path[PATH_MAX];
-
-        snprintf(dev_path, sizeof(dev_path), "%s/../src", exe_dir);
+        char *dev_path = g_build_filename(exe_dir, "..", "..", "src", NULL);
         total = cfg_scan_and_load_xml(dev_path);
-        if (total > 0)
-        {
-            LOG_INFO("从开发路径加载了 %d 个 XML 配置", total);
-            return;
-        }
-
-        snprintf(dev_path, sizeof(dev_path), "%s/../../src", exe_dir);
-        total = cfg_scan_and_load_xml(dev_path);
+        g_free(dev_path);
         if (total > 0)
         {
             LOG_INFO("从开发路径加载了 %d 个 XML 配置", total);

@@ -24,6 +24,9 @@ typedef struct db_cli_resp_out
     uint32_t batch_offset; /**< 续传偏移量 */
 } db_cli_resp_out_t;
 
+/** DB CLI group_id 定义（与 commands.xml 中 group-id 一致） */
+#define DB_CLI_GROUP_ID_SHOW 1 /**< show db 命令 */
+
 /**
  * @brief DB CLI 命令处理主入口
  * @param msg 来自 cfg 模块的 CLI 命令消息

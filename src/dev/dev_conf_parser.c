@@ -6,6 +6,7 @@
  */
 #include "dev_conf_parser.h"
 
+#include <glib.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -103,42 +104,36 @@ int dev_conf_resolve_and_parse(const char *module_name, dev_module_conf_t *conf)
         return -1;
     }
 
-    char path[PATH_MAX];
     struct stat st;
+    char *path = NULL;
+    int ret;
 
-    /* 优先级 1: 环境变量 NN_WORK_DIR */
+    /* 优先级 1: 环境变量 NN_WORK_DIR（生产环境） */
     const char *work_dir = getenv("NN_WORK_DIR");
     if (work_dir)
     {
-        snprintf(path, sizeof(path), "%s/resources/%s/module.conf", work_dir, module_name);
+        path = g_build_filename(work_dir, "resources", module_name, "module.conf", NULL);
         if (stat(path, &st) == 0)
         {
-            return dev_conf_parse(path, conf);
+            ret = dev_conf_parse(path, conf);
+            g_free(path);
+            return ret;
         }
+        g_free(path);
     }
 
-    /* 优先级 2: 生产路径 */
-    snprintf(path, sizeof(path), "/opt/netnexus/resources/%s/module.conf", module_name);
-    if (stat(path, &st) == 0)
-    {
-        return dev_conf_parse(path, conf);
-    }
-
-    /* 优先级 3: 相对于可执行文件的开发路径 */
+    /* 优先级 2: 相对于可执行文件的开发路径 */
     char exe_dir[PATH_MAX];
     if (get_exe_dir(exe_dir, sizeof(exe_dir)) == 0)
     {
-        snprintf(path, sizeof(path), "%s/../src/%s/resources/module.conf", exe_dir, module_name);
+        path = g_build_filename(exe_dir, "..", "..", "src", module_name, "resources", "module.conf", NULL);
         if (stat(path, &st) == 0)
         {
-            return dev_conf_parse(path, conf);
+            ret = dev_conf_parse(path, conf);
+            g_free(path);
+            return ret;
         }
-
-        snprintf(path, sizeof(path), "%s/../../src/%s/resources/module.conf", exe_dir, module_name);
-        if (stat(path, &st) == 0)
-        {
-            return dev_conf_parse(path, conf);
-        }
+        g_free(path);
     }
 
     return -1;

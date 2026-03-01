@@ -133,14 +133,15 @@ static int dev_scan_dir_for_modules(const char *base_dir)
          * 兼容两种布局：
          *   dev  布局: {base_dir}/{module}/resources/module.conf  (源码树)
          *   prod 布局: {base_dir}/{module}/module.conf            (部署包) */
-        char conf_path[PATH_MAX];
         struct stat st;
-        snprintf(conf_path, sizeof(conf_path), "%s/%s/resources/module.conf", base_dir, entry->d_name);
+        char *conf_path = g_build_filename(base_dir, entry->d_name, "resources", "module.conf", NULL);
         if (stat(conf_path, &st) != 0)
         {
-            snprintf(conf_path, sizeof(conf_path), "%s/%s/module.conf", base_dir, entry->d_name);
+            g_free(conf_path);
+            conf_path = g_build_filename(base_dir, entry->d_name, "module.conf", NULL);
             if (stat(conf_path, &st) != 0)
             {
+                g_free(conf_path);
                 continue;
             }
         }
@@ -150,8 +151,11 @@ static int dev_scan_dir_for_modules(const char *base_dir)
         if (dev_conf_parse(conf_path, &conf) != 0)
         {
             LOG_ERROR("解析 %s 失败", conf_path);
+            g_free(conf_path);
             continue;
         }
+        g_free(conf_path);
+        conf_path = NULL;
 
         /* 跳过 DEV 模块（由 dev_init_self 单独处理） */
         if (conf.module_id == DEV_MODULE_ID_DEV)
@@ -204,7 +208,13 @@ static int dev_scan_dir_for_modules(const char *base_dir)
 }
 
 /**
- * @brief 优先按名称加载模块，失败后尝试常见绝对路径，兼容 AT_SECURE 场景
+ * @brief 优先按名称加载模块，失败后依次尝试生产路径、开发路径
+ *
+ * 查找顺序：
+ *   1. 直接 dlopen（利用 LD_LIBRARY_PATH / RPATH 等系统机制）
+ *   2. 生产环境：NN_WORK_DIR/lib/
+ *   3. 生产环境：/opt/netnexus/lib/（固定路径）
+ *   4. 开发环境：可执行文件相对路径 ../lib/ 和 ../../lib/
  */
 static void *dev_dlopen_module(const char *so_name)
 {
@@ -220,9 +230,24 @@ static void *dev_dlopen_module(const char *so_name)
         return NULL;
     }
 
-    char exe_dir[PATH_MAX];
     char *so_path = NULL;
 
+    /* 生产环境 1: 环境变量 NN_WORK_DIR */
+    const char *work_dir = getenv("NN_WORK_DIR");
+    if (work_dir)
+    {
+        so_path = g_build_filename(work_dir, "lib", so_name, NULL);
+        dl_handle = dlopen(so_path, RTLD_LAZY | RTLD_GLOBAL);
+        g_free(so_path);
+        so_path = NULL;
+        if (dl_handle)
+        {
+            return dl_handle;
+        }
+    }
+
+    /* 开发环境: 相对于可执行文件的路径 */
+    char exe_dir[PATH_MAX];
     if (get_exe_dir(exe_dir, sizeof(exe_dir)) == 0)
     {
         so_path = g_build_filename(exe_dir, "..", "lib", so_name, NULL);
@@ -233,23 +258,6 @@ static void *dev_dlopen_module(const char *so_name)
         {
             return dl_handle;
         }
-
-        so_path = g_build_filename(exe_dir, "..", "..", "lib", so_name, NULL);
-        dl_handle = dlopen(so_path, RTLD_LAZY | RTLD_GLOBAL);
-        g_free(so_path);
-        so_path = NULL;
-        if (dl_handle)
-        {
-            return dl_handle;
-        }
-    }
-
-    so_path = g_build_filename("/opt/netnexus/lib", so_name, NULL);
-    dl_handle = dlopen(so_path, RTLD_LAZY | RTLD_GLOBAL);
-    g_free(so_path);
-    if (dl_handle)
-    {
-        return dl_handle;
     }
 
     return NULL;
@@ -268,19 +276,17 @@ int32_t dev_scan_and_load_modules(void)
         return ERRCODE_FAIL;
     }
 
-    LOG_INFO("=============================================");
-    LOG_INFO("开始扫描并加载模块");
-    LOG_INFO("=============================================");
+    LOG_INFO("开始扫描并加载模块=============================================");
 
     int total_loaded = 0;
 
-    /* 优先级 1: 环境变量 NN_WORK_DIR */
+    /* 优先级 1: 环境变量 NN_WORK_DIR（生产环境） */
     const char *work_dir = getenv("NN_WORK_DIR");
     if (work_dir)
     {
-        char resources_dir[PATH_MAX];
-        snprintf(resources_dir, sizeof(resources_dir), "%s/resources", work_dir);
+        char *resources_dir = g_build_filename(work_dir, "resources", NULL);
         total_loaded = dev_scan_dir_for_modules(resources_dir);
+        g_free(resources_dir);
         if (total_loaded > 0)
         {
             LOG_INFO("从 NN_WORK_DIR 加载了 %d 个模块", total_loaded);
@@ -288,30 +294,13 @@ int32_t dev_scan_and_load_modules(void)
         }
     }
 
-    /* 优先级 2: 生产路径 */
-    total_loaded = dev_scan_dir_for_modules("/opt/netnexus/resources");
-    if (total_loaded > 0)
-    {
-        LOG_INFO("从生产路径加载了 %d 个模块", total_loaded);
-        return ERRCODE_SUCCESS;
-    }
-
-    /* 优先级 3: 相对于可执行文件的开发路径 */
+    /* 优先级 2: 相对于可执行文件的开发路径 */
     char exe_dir[PATH_MAX];
     if (get_exe_dir(exe_dir, sizeof(exe_dir)) == 0)
     {
-        char dev_path[PATH_MAX];
-
-        snprintf(dev_path, sizeof(dev_path), "%s/../src", exe_dir);
+        char *dev_path = g_build_filename(exe_dir, "..", "..", "src", NULL);
         total_loaded = dev_scan_dir_for_modules(dev_path);
-        if (total_loaded > 0)
-        {
-            LOG_INFO("从开发路径加载了 %d 个模块", total_loaded);
-            return ERRCODE_SUCCESS;
-        }
-
-        snprintf(dev_path, sizeof(dev_path), "%s/../../src", exe_dir);
-        total_loaded = dev_scan_dir_for_modules(dev_path);
+        g_free(dev_path);
         if (total_loaded > 0)
         {
             LOG_INFO("从开发路径加载了 %d 个模块", total_loaded);
@@ -324,6 +313,8 @@ int32_t dev_scan_and_load_modules(void)
         LOG_ERROR("未找到任何模块");
         return ERRCODE_FAIL;
     }
+
+    LOG_INFO("结束扫描并加载模块=============================================");
 
     return ERRCODE_SUCCESS;
 }
@@ -547,8 +538,7 @@ int32_t dev_init_all_modules(void)
             if (m->module_id != DEV_MODULE_ID_DEV)
             {
                 int connected = ipc_is_connected(g_dev_local->ipc_ctx, m->module_id);
-                LOG_WARN("  模块 %s (id=0x%08X): %s", m->name, m->module_id,
-                         connected ? "已连接" : "未连接");
+                LOG_WARN("  模块 %s (id=0x%08X): %s", m->name, m->module_id, connected ? "已连接" : "未连接");
             }
         }
         g_list_free(mods);

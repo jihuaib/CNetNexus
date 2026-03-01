@@ -6,6 +6,7 @@
  */
 #include "if_main.h"
 
+#include <glib.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -207,12 +208,16 @@ __attribute__((constructor)) static void if_so_init(void)
     g_if_local = g_malloc0(sizeof(if_local_t));
     g_if_local->ipc_ctx = ctx;
 
-    /* 初始化接口映射 */
-    char if_map_path[PATH_MAX];
+    /* 初始化接口映射
+     * 查找顺序：
+     *   1. 生产环境：NN_WORK_DIR/resources/if/if_map.conf.gns3
+     *   2. 开发环境：可执行文件相对路径 ../src 和 ../../src */
+    char *if_map_path = NULL;
+
     const char *work_dir = getenv("NN_WORK_DIR");
     if (work_dir != NULL)
     {
-        snprintf(if_map_path, sizeof(if_map_path), "%s/resources/if/if_map.conf.gns3", work_dir);
+        if_map_path = g_build_filename(work_dir, "resources", "if", "if_map.conf.gns3", NULL);
         LOG_INFO("Using GNS3 interface mapping: %s", if_map_path);
     }
     else
@@ -223,7 +228,8 @@ __attribute__((constructor)) static void if_so_init(void)
             LOG_ERROR("Failed to get exe directory");
             return;
         }
-        snprintf(if_map_path, sizeof(if_map_path), "%s/../../src/if/resources/if_map.conf.local", exe_dir);
+
+        if_map_path = g_build_filename(exe_dir, "..", "..", "src", "if", "resources", "if_map.conf.local", NULL);
         LOG_INFO("Using local interface mapping: %s", if_map_path);
     }
 
@@ -231,4 +237,5 @@ __attribute__((constructor)) static void if_so_init(void)
     {
         LOG_ERROR("Failed to load interface mapping");
     }
+    g_free(if_map_path);
 }

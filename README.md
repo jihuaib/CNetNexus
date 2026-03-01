@@ -165,7 +165,7 @@ sudo apt install valgrind
 
 2. Run with Valgrind:
    ```bash
-   ./scripts/check-memory-leaks.sh
+   ./scripts/dev/check-memory-leaks.sh
    ```
 
 3. Use the application (connect via telnet, run commands, etc.)
@@ -186,7 +186,7 @@ AddressSanitizer (ASan) provides fast memory error detection with minimal overhe
 **Usage:**
 1. Build with AddressSanitizer:
    ```bash
-   ./scripts/build-with-asan.sh
+   ./scripts/dev/build-with-asan.sh
    ```
 
 2. Run the binary:

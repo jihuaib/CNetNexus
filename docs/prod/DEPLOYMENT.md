@@ -1,15 +1,14 @@
 # NetNexus Deployment Guide
 
-This guide covers packaging, deployment, and running NetNexus in various environments.
+This guide covers deployment and running NetNexus in various environments.
 
 ## Table of Contents
 
 - [Prerequisites](#prerequisites)
 - [Building](#building)
-- [Packaging](#packaging)
 - [Deployment Options](#deployment-options)
+  - [Docker（推荐）](#docker-deployment)
   - [Production Server](#production-server-deployment)
-  - [Docker Container](#docker-deployment)
   - [Development](#development-deployment)
 - [Configuration Management](#configuration-management)
 - [Troubleshooting](#troubleshooting)
@@ -50,41 +49,6 @@ make -j$(nproc)
 
 # Verify build
 ./bin/netnexus --help || echo "Build successful"
-```
-
-## Packaging
-
-Create a deployment package with all necessary files:
-
-```bash
-# From project root
-./scripts/package.sh
-
-# Output
-package/netnexus-1.0.0.tar.gz
-```
-
-The package contains:
-```
-netnexus-1.0.0/
-├── bin/              # Executables
-│   └── netnexus
-├── lib/              # Shared libraries
-│   ├── libcfg.so
-│   ├── libdb.so
-│   ├── libbgp.so
-│   ├── libdev.so
-│   └── libutils.so
-├── config/           # Configuration files
-│   ├── cfg/commands.xml
-│   ├── dev/commands.xml
-│   ├── bgp/commands.xml
-│   └── db/commands.xml
-├── scripts/          # Deployment scripts
-│   ├── deploy.sh
-│   └── start.sh
-├── VERSION
-└── README.txt
 ```
 
 ## Deployment Options
@@ -139,17 +103,39 @@ telnet localhost 3788
 
 ### Docker Deployment
 
-#### Build Image
+#### 安装 Docker（首次）
 
 ```bash
-# Build with Docker
-docker build -t netnexus:latest .
+./scripts/docker/install-docker.sh
+```
 
-# Or with version tag
-VERSION=1.0.0 docker build \
-  --build-arg VERSION=1.0.0 \
-  --build-arg GIT_COMMIT=$(git rev-parse HEAD) \
-  -t netnexus:1.0.0 .
+#### 构建镜像
+
+```bash
+# 本地快速构建（当前架构，适合开发 / GNS3 直接导入）
+./scripts/dev/build-gns3-image.sh
+
+# 多架构发布包（生成 .tar.gz，用于 GitHub Release）
+./scripts/prod/publish.sh                      # amd64 + arm64 + armv7
+./scripts/prod/publish.sh amd64                # 仅 amd64
+
+# 输出
+package/
+├── netnexus-1.0.0-docker-amd64.tar.gz
+└── netnexus-1.0.0-docker-arm64.tar.gz
+```
+
+> 多架构构建前置条件（一次性设置）：
+> ```bash
+> docker run --privileged --rm tonistiigi/binfmt --install all
+> docker buildx create --name netnexus-builder --driver docker-container --driver-opt network=host --use
+> docker buildx inspect --bootstrap
+> ```
+
+#### 加载发布镜像
+
+```bash
+docker load < netnexus-1.0.0-docker-amd64.tar.gz
 ```
 
 #### Run Container
@@ -181,7 +167,6 @@ docker run -d \
   --name netnexus \
   -p 3788:3788 \
   -v netnexus-data:/opt/netnexus/data \
-  -e NN_WORK_DIR=/opt/netnexus \
   --restart unless-stopped \
   netnexus:latest
 
@@ -452,11 +437,13 @@ docker volume rm netnexus-data
 ### Docker
 
 ```bash
-# Pull new image
-docker pull netnexus:1.1.0
+# 构建新版本镜像
+./scripts/dev/build-gns3-image.sh
 
-# Update docker-compose.yml with new version
-# Then restart
+# 或从发布包加载
+docker load < netnexus-1.1.0-docker-amd64.tar.gz
+
+# 更新 docker-compose.yml 中的版本号，然后重启
 docker-compose up -d
 ```
 

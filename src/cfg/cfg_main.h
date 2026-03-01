@@ -32,8 +32,8 @@ typedef struct cfg_local
     int epoll_fd;         /**< epoll 文件描述符（Telnet 用） */
     int listen_sock;      /**< Telnet 监听 socket */
     pthread_t worker_thread;
-    GHashTable *sessions;               /**< 注册表: fd -> cli_session_t* */
-    ipc_context_t *ipc_ctx;             /**< IPC 上下文 */
+    GHashTable *sessions;   /**< 注册表: fd -> cli_session_t* */
+    ipc_context_t *ipc_ctx; /**< IPC 上下文 */
 } cfg_local_t;
 
 extern cfg_local_t *g_cfg_local;

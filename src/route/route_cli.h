@@ -11,6 +11,10 @@
 #include "cli.h"
 #include "dev.h"
 
+/** Route CLI group_id 定义（与 commands.xml 中 group-id 一致） */
+#define ROUTE_CLI_GROUP_ID_CONFIG 1 /**< 路由配置命令 */
+#define ROUTE_CLI_GROUP_ID_SHOW 2   /**< show route 命令 */
+
 /**
  * @brief 处理来自 CFG 模块的 CLI 命令消息
  * @param msg 消息

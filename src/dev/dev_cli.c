@@ -8,6 +8,7 @@
 #include "dev_cli.h"
 
 #include <arpa/inet.h>
+#include <glib.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -97,43 +98,42 @@ static int resolve_version_file(char *path, size_t path_size)
     const char *env_version_file = getenv("NETNEXUS_VERSION_FILE");
     if (env_version_file && env_version_file[0] != '\0')
     {
-        snprintf(path, path_size, "%s", env_version_file);
+        strlcpy(path, env_version_file, path_size);
         return ERRCODE_SUCCESS;
     }
 
+    char *p = NULL;
+
+    /* 生产环境 1: 环境变量 NN_WORK_DIR */
     const char *work_dir = getenv("NN_WORK_DIR");
     if (work_dir && work_dir[0] != '\0')
     {
-        snprintf(path, path_size, "%s/VERSION", work_dir);
-        if (access(path, R_OK) == 0)
+        p = g_build_filename(work_dir, "VERSION", NULL);
+        if (access(p, R_OK) == 0)
         {
+            strlcpy(path, p, path_size);
+            g_free(p);
             return ERRCODE_SUCCESS;
         }
+        g_free(p);
     }
 
-    snprintf(path, path_size, "/opt/netnexus/VERSION");
-    if (access(path, R_OK) == 0)
-    {
-        return ERRCODE_SUCCESS;
-    }
-
+    /* 开发环境: 相对于可执行文件的路径 */
     char exe_dir[PATH_MAX];
     if (get_exe_dir(exe_dir, sizeof(exe_dir)) == 0)
     {
-        snprintf(path, path_size, "%s/../VERSION", exe_dir);
-        if (access(path, R_OK) == 0)
+        p = g_build_filename(exe_dir, "..", "..", "VERSION", NULL);
+        if (access(p, R_OK) == 0)
         {
+            strlcpy(path, p, path_size);
+            g_free(p);
             return ERRCODE_SUCCESS;
         }
-
-        snprintf(path, path_size, "%s/../../VERSION", exe_dir);
-        if (access(path, R_OK) == 0)
-        {
-            return ERRCODE_SUCCESS;
-        }
+        g_free(p);
     }
 
-    snprintf(path, path_size, "VERSION");
+    /* 回退: 当前目录 */
+    strlcpy(path, "VERSION", path_size);
     if (access(path, R_OK) == 0)
     {
         return ERRCODE_SUCCESS;
@@ -228,23 +228,9 @@ static int handle_show_version(ipc_context_t *ctx, ipc_message_t *msg)
 {
     char buf[CLI_MAX_RESP_LEN];
     char version[64] = "unknown";
-    char module_name[DEV_MODULE_NAME_MAX_LEN] = "dev";
     char version_path[PATH_MAX];
     size_t off = 0;
     (void)ctx;
-
-#define APPEND_FMT(fmt, ...)                                                                                           \
-    do                                                                                                                 \
-    {                                                                                                                  \
-        if (off < sizeof(buf))                                                                                         \
-        {                                                                                                              \
-            int written = snprintf(buf + off, sizeof(buf) - off, fmt, ##__VA_ARGS__);                                  \
-            if (written > 0)                                                                                           \
-            {                                                                                                          \
-                off += (size_t)written;                                                                                \
-            }                                                                                                          \
-        }                                                                                                              \
-    } while (0)
 
     if (resolve_version_file(version_path, sizeof(version_path)) == ERRCODE_SUCCESS)
     {
@@ -254,22 +240,14 @@ static int handle_show_version(ipc_context_t *ctx, ipc_message_t *msg)
         }
     }
 
-    if (dev_get_module_name(ctx, DEV_MODULE_ID_DEV, module_name) != ERRCODE_SUCCESS)
-    {
-        strlcpy(module_name, "dev", sizeof(module_name));
-    }
-
-    APPEND_FMT("\r\nNetNexus Version Information:\r\n");
-    APPEND_FMT("  Version      : %s\r\n", version);
-    APPEND_FMT("  Build Time   : %s %s\r\n", __DATE__, __TIME__);
-    APPEND_FMT("  Build Profile: %s\r\n", build_profile_string());
-    APPEND_FMT("  Compiler     : %s\r\n", __VERSION__);
-    APPEND_FMT("  ASAN         : %s\r\n", asan_enabled_string());
-    APPEND_FMT("  Log Level    : %s\r\n", log_level_to_string(log_get_level()));
-    APPEND_FMT("  Module       : %s (id=%u)\r\n", module_name, DEV_MODULE_ID_DEV);
-    APPEND_FMT("  PID          : %d\r\n\r\n", (int)getpid());
-
-#undef APPEND_FMT
+    CLI_BUF_APPEND(buf, sizeof(buf), off, "\r\nNetNexus Version Information:\r\n");
+    CLI_BUF_APPEND(buf, sizeof(buf), off, "  Version      : %s\r\n", version);
+    CLI_BUF_APPEND(buf, sizeof(buf), off, "  Build Time   : %s %s\r\n", __DATE__, __TIME__);
+    CLI_BUF_APPEND(buf, sizeof(buf), off, "  Build Profile: %s\r\n", build_profile_string());
+    CLI_BUF_APPEND(buf, sizeof(buf), off, "  Compiler     : %s\r\n", __VERSION__);
+    CLI_BUF_APPEND(buf, sizeof(buf), off, "  ASAN         : %s\r\n", asan_enabled_string());
+    CLI_BUF_APPEND(buf, sizeof(buf), off, "  Log Level    : %s\r\n", log_level_to_string(log_get_level()));
+    CLI_BUF_APPEND(buf, sizeof(buf), off, "  PID          : %d\r\n\r\n", (int)getpid());
 
     dev_send_cli_response(ctx, msg, buf);
     return ERRCODE_SUCCESS;

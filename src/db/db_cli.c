@@ -351,7 +351,7 @@ int db_cli_process_command(ipc_message_t *msg)
     int result;
     switch (parser.group_id)
     {
-        case 1:
+        case DB_CLI_GROUP_ID_SHOW:
             result = handle_db_show_cmd(msg, &parser);
             break;
         default:

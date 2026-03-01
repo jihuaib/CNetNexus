@@ -10,6 +10,10 @@
 #include "cli.h"
 #include "dev.h"
 
+/** BGP CLI group_id 定义（与 commands.xml 中 group-id 一致） */
+#define BGP_CLI_GROUP_ID_PROTOCOL 1 /**< bgp 协议配置命令 */
+#define BGP_CLI_GROUP_ID_SHOW 2     /**< show bgp 命令 */
+
 /**
  * @brief 处理来自 CFG 模块的 CLI 命令消息
  * @param msg 消息

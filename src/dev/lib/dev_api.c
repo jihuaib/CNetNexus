@@ -21,9 +21,8 @@ int dev_get_module_name(ipc_context_t *ctx, uint32_t module_id, char *module_nam
     module_name[0] = '\0';
 
     /* 构建请求 payload: 4 字节模块 ID */
-    ipc_message_t *req =
-        ipc_message_create(IPC_MSG_TYPE_DEV_GET_MODULE_NAME, ipc_get_module_id(ctx), DEV_MODULE_ID_DEV, 0, &module_id,
-                           sizeof(uint32_t), NULL);
+    ipc_message_t *req = ipc_message_create(IPC_MSG_TYPE_DEV_GET_MODULE_NAME, ipc_get_module_id(ctx), DEV_MODULE_ID_DEV,
+                                            0, &module_id, sizeof(uint32_t), NULL);
     if (!req)
     {
         return ERRCODE_FAIL;

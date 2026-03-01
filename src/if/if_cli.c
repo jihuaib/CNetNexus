@@ -346,7 +346,7 @@ static int handle_if_show(ipc_message_t *msg, cli_tlv_parser_t *parser)
     }
 
     char resp_buf[CLI_MAX_RESP_LEN];
-    int offset = 0;
+    size_t offset = 0;
 
     if (ifname)
     {
@@ -364,22 +364,21 @@ static int handle_if_show(ipc_message_t *msg, cli_tlv_parser_t *parser)
             const char *ip_str = info.ip_address[0] ? info.ip_address : "not configured";
             const char *mask_str = info.netmask[0] ? info.netmask : "not configured";
 
-            offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset,
-                               "\r\nInterface %s Detail:\r\n"
-                               "============================\r\n"
-                               "  Name       : %s\r\n"
-                               "  Type       : %s\r\n"
-                               "  State      : %s\r\n"
-                               "  IP Address : %s\r\n"
-                               "  Netmask    : %s\r\n"
-                               "  MAC        : %s\r\n"
-                               "  MTU        : %d\r\n\r\n",
-                               ifname, ifname, type_str, state_str, ip_str, mask_str, mac_str, info.mtu);
+            CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset,
+                           "\r\nInterface %s Detail:\r\n"
+                           "============================\r\n"
+                           "  Name       : %s\r\n"
+                           "  Type       : %s\r\n"
+                           "  State      : %s\r\n"
+                           "  IP Address : %s\r\n"
+                           "  Netmask    : %s\r\n"
+                           "  MAC        : %s\r\n"
+                           "  MTU        : %d\r\n\r\n",
+                           ifname, ifname, type_str, state_str, ip_str, mask_str, mac_str, info.mtu);
         }
         else
         {
-            offset +=
-                snprintf(resp_buf + offset, sizeof(resp_buf) - offset, "Error: Interface %s not found\r\n", ifname);
+            CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "Error: Interface %s not found\r\n", ifname);
             send_resp(msg, CFG_MSG_TYPE_CLI_RESP, resp_buf);
             return ERRCODE_FAIL;
         }
@@ -387,11 +386,11 @@ static int handle_if_show(ipc_message_t *msg, cli_tlv_parser_t *parser)
     else
     {
         /* 显示所有接口 */
-        offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset,
-                           "\r\nInterface Status:\r\n"
-                           "%-12s %-10s %-6s %-16s\r\n"
-                           "------------ ---------- ------ ----------------\r\n",
-                           "Name", "Type", "State", "IP Address");
+        CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset,
+                       "\r\nInterface Status:\r\n"
+                       "%-12s %-10s %-6s %-16s\r\n"
+                       "------------ ---------- ------ ----------------\r\n",
+                       "Name", "Type", "State", "IP Address");
 
         for (int i = 0; i < g_interface_map.count; i++)
         {
@@ -404,22 +403,22 @@ static int handle_if_show(ipc_message_t *msg, cli_tlv_parser_t *parser)
                 const char *type_str = if_type_to_string(info.type);
                 const char *state_str = info.state == IF_STATE_UP ? "UP" : "DOWN";
                 const char *ip_str = info.ip_address[0] ? info.ip_address : "-";
-                offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset, "%-12s %-10s %-6s %-16s\r\n",
-                                   logical_name, type_str, state_str, ip_str);
+                CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "%-12s %-10s %-6s %-16s\r\n", logical_name, type_str,
+                               state_str, ip_str);
             }
             else
             {
-                offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset, "%-12s %-10s %-6s %-16s\r\n",
-                                   logical_name, "-", "DOWN", "-");
+                CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "%-12s %-10s %-6s %-16s\r\n", logical_name, "-",
+                               "DOWN", "-");
             }
 
-            if ((size_t)offset >= sizeof(resp_buf) - 128)
+            if (offset >= sizeof(resp_buf) - 128)
             {
-                offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset, "  ... (truncated)\r\n");
+                CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "  ... (truncated)\r\n");
                 break;
             }
         }
-        offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset, "\r\n");
+        CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "\r\n");
     }
 
     send_resp(msg, CFG_MSG_TYPE_CLI_RESP, resp_buf);
@@ -456,13 +455,13 @@ int if_cli_handle_message(ipc_message_t *msg)
     int result;
     switch (parser.group_id)
     {
-        case 1: /* 接口进入（视图切换） */
+        case IF_CLI_GROUP_ID_ENTRY:
             result = handle_if_entry(msg, &parser);
             break;
-        case 2: /* 接口配置（ip address / shutdown） */
+        case IF_CLI_GROUP_ID_CONFIG:
             result = handle_if_config(msg, &parser);
             break;
-        case 3: /* show interface */
+        case IF_CLI_GROUP_ID_SHOW:
             result = handle_if_show(msg, &parser);
             break;
         default:

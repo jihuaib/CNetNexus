@@ -819,11 +819,14 @@ int ipc_connect(ipc_context_t *ctx, uint32_t target_module_id, const char *host,
     snprintf(conn->remote_host, sizeof(conn->remote_host), "%s", host);
     conn->remote_port = port;
     ctx->connections[ctx->num_connections++] = conn;
+
+    /* 在持锁期间发起连接，使 conn->state 立即进入 COCONNECTING，
+     * 避免 IO 线程的 attempt_reconnects() 看到 DISCONNECTED 状态后重复发起连接 */
+    LOG_INFO("<%s> 连接 module(0x%08X) (%s:%u)...", ctx->name, target_module_id, host, port);
+    int init_ok = (ipc_connection_initiate(conn, host, port) == ERRCODE_SUCCESS);
     pthread_mutex_unlock(&ctx->comutex);
 
-    LOG_INFO("<%s> 连接 module(0x%08X) (%s:%u)...", ctx->name, target_module_id, host, port);
-
-    if (ipc_connection_initiate(conn, host, port) == ERRCODE_SUCCESS)
+    if (init_ok)
     {
         struct epoll_event ev;
         ev.events = EPOLLIN | EPOLLOUT;
@@ -917,8 +920,8 @@ int ipc_send_response(ipc_context_t *ctx, ipc_message_t *msg)
     if (!conn || conn->state != IPC_COCONNECTED)
     {
         char _buf[16];
-        LOG_WARN("<%s> ipc_send_response: 无法路由到 %s (num_connections=%d, %s)",
-                 ctx->name, fmt_module_id(target_id, _buf, sizeof(_buf)), ctx->num_connections,
+        LOG_WARN("<%s> ipc_send_response: 无法路由到 %s (num_connections=%d, %s)", ctx->name,
+                 fmt_module_id(target_id, _buf, sizeof(_buf)), ctx->num_connections,
                  conn ? "连接存在但未就绪" : "连接不存在");
         pthread_mutex_unlock(&ctx->comutex);
         return ERRCODE_FAIL;

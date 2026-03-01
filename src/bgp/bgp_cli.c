@@ -223,16 +223,16 @@ static int handle_bgp_peer_show(ipc_message_t *msg)
     }
 
     char resp_buf[CLI_MAX_RESP_LEN];
-    int offset = 0;
+    size_t offset = 0;
 
     if (result->num_rows == 0)
     {
-        offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset, "No BGP configuration found.\r\n");
+        CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "No BGP configuration found.\r\n");
     }
     else
     {
-        offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset, "\r\nBGP Information:\r\n");
-        offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset, "============================\r\n");
+        CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "\r\nBGP Information:\r\n");
+        CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "============================\r\n");
 
         for (uint32_t i = 0; i < result->num_rows; i++)
         {
@@ -258,11 +258,10 @@ static int handle_bgp_peer_show(ipc_message_t *msg)
                         snprintf(value_str, sizeof(value_str), "NULL");
                         break;
                 }
-                offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset, "  %-20s: %s\r\n", row->field_names[j],
-                                   value_str);
+                CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "  %-20s: %s\r\n", row->field_names[j], value_str);
             }
         }
-        offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset, "\r\n");
+        CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "\r\n");
     }
 
     db_result_free(result);
@@ -300,10 +299,10 @@ int bgp_cli_handle_message(ipc_message_t *msg)
     int result;
     switch (parser.group_id)
     {
-        case 1: /* bgp 配置命令 */
+        case BGP_CLI_GROUP_ID_PROTOCOL:
             result = handle_bgp_protocol(msg, &parser);
             break;
-        case 2: /* show bgp peer */
+        case BGP_CLI_GROUP_ID_SHOW:
             result = handle_bgp_peer_show(msg);
             break;
         default:

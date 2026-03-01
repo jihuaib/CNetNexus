@@ -518,25 +518,25 @@ int cfg_cli_handle(ipc_message_t *msg, cli_session_t *session)
 
     switch (parser.group_id)
     {
-        case 1:
+        case CFG_CLI_GROUP_ID_SHOW_COMMANDS:
             handle_show_commands(session);
             break;
-        case 2:
+        case CFG_CLI_GROUP_ID_SHOW_HISTORY:
             handle_show_history(session);
             break;
-        case 3:
+        case CFG_CLI_GROUP_ID_SHOW_CONFIG:
             handle_show_config(session);
             break;
-        case 4:
+        case CFG_CLI_GROUP_ID_EXIT:
             handle_op_exit(session);
             break;
-        case 5:
+        case CFG_CLI_GROUP_ID_CONFIG:
             handle_op_config(session);
             break;
-        case 6:
+        case CFG_CLI_GROUP_ID_END:
             handle_op_end(session);
             break;
-        case 7:
+        case CFG_CLI_GROUP_ID_BASH:
             handle_op_bash(session);
             break;
         default:

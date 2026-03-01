@@ -303,7 +303,7 @@ static int handle_show_route(ipc_message_t *msg, cli_tlv_parser_t *parser)
     }
 
     char resp_buf[CLI_MAX_RESP_LEN];
-    int offset = 0;
+    size_t offset = 0;
 
     char where_clause[256] = "";
     if (strlen(filter_dest) > 0)
@@ -318,11 +318,11 @@ static int handle_show_route(ipc_message_t *msg, cli_tlv_parser_t *parser)
         int ret = db_rpc_query(g_route_local->ipc_ctx, "route_ipv4", NULL, 0,
                                strlen(where_clause) > 0 ? where_clause : NULL, &result);
 
-        offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset,
-                           "\r\nIPv4 Routing Table:\r\n"
-                           "%-18s %-18s %-18s %-8s\r\n"
-                           "------------------ ------------------ ------------------ --------\r\n",
-                           "Destination", "Mask", "Next Hop", "Metric");
+        CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset,
+                       "\r\nIPv4 Routing Table:\r\n"
+                       "%-18s %-18s %-18s %-8s\r\n"
+                       "------------------ ------------------ ------------------ --------\r\n",
+                       "Destination", "Mask", "Next Hop", "Metric");
 
         if (ret == ERRCODE_SUCCESS && result != NULL)
         {
@@ -354,24 +354,24 @@ static int handle_show_route(ipc_message_t *msg, cli_tlv_parser_t *parser)
                     }
                 }
 
-                offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset, "%-18s %-18s %-18s %-8ld\r\n", dest,
-                                   mask_val, next_hop_str ? next_hop_str : "", metric_val);
+                CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "%-18s %-18s %-18s %-8ld\r\n", dest, mask_val,
+                               next_hop_str ? next_hop_str : "", metric_val);
 
-                if ((size_t)offset >= sizeof(resp_buf) - 128)
+                if (offset >= sizeof(resp_buf) - 128)
                 {
-                    offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset, "  ... (truncated)\r\n");
+                    CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "  ... (truncated)\r\n");
                     break;
                 }
             }
             if (result->num_rows == 0)
             {
-                offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset, "  (no routes)\r\n");
+                CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "  (no routes)\r\n");
             }
             db_result_free(result);
         }
         else
         {
-            offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset, "  (no routes)\r\n");
+            CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "  (no routes)\r\n");
         }
     }
 
@@ -382,11 +382,11 @@ static int handle_show_route(ipc_message_t *msg, cli_tlv_parser_t *parser)
         int ret = db_rpc_query(g_route_local->ipc_ctx, "route_ipv6", NULL, 0,
                                strlen(where_clause) > 0 ? where_clause : NULL, &result);
 
-        offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset,
-                           "\r\nIPv6 Routing Table:\r\n"
-                           "%-30s %-8s %-30s %-8s\r\n"
-                           "------------------------------ -------- ------------------------------ --------\r\n",
-                           "Destination", "Prefix", "Next Hop", "Metric");
+        CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset,
+                       "\r\nIPv6 Routing Table:\r\n"
+                       "%-30s %-8s %-30s %-8s\r\n"
+                       "------------------------------ -------- ------------------------------ --------\r\n",
+                       "Destination", "Prefix", "Next Hop", "Metric");
 
         if (ret == ERRCODE_SUCCESS && result != NULL)
         {
@@ -419,28 +419,28 @@ static int handle_show_route(ipc_message_t *msg, cli_tlv_parser_t *parser)
                     }
                 }
 
-                offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset, "%-30s %-8ld %-30s %-8ld\r\n", dest,
-                                   prefix_len, next_hop_str ? next_hop_str : "", metric_val);
+                CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "%-30s %-8ld %-30s %-8ld\r\n", dest, prefix_len,
+                               next_hop_str ? next_hop_str : "", metric_val);
 
-                if ((size_t)offset >= sizeof(resp_buf) - 128)
+                if (offset >= sizeof(resp_buf) - 128)
                 {
-                    offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset, "  ... (truncated)\r\n");
+                    CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "  ... (truncated)\r\n");
                     break;
                 }
             }
             if (result->num_rows == 0)
             {
-                offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset, "  (no routes)\r\n");
+                CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "  (no routes)\r\n");
             }
             db_result_free(result);
         }
         else
         {
-            offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset, "  (no routes)\r\n");
+            CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "  (no routes)\r\n");
         }
     }
 
-    offset += snprintf(resp_buf + offset, sizeof(resp_buf) - offset, "\r\n");
+    CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "\r\n");
 
     send_resp(msg, resp_buf);
     return ERRCODE_SUCCESS;
@@ -476,10 +476,10 @@ int route_cli_handle_message(ipc_message_t *msg)
     int result;
     switch (parser.group_id)
     {
-        case 1: /* 路由配置命令 */
+        case ROUTE_CLI_GROUP_ID_CONFIG:
             result = handle_route_config(msg, &parser);
             break;
-        case 2: /* show route */
+        case ROUTE_CLI_GROUP_ID_SHOW:
             result = handle_show_route(msg, &parser);
             break;
         default:

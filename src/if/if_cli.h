@@ -10,6 +10,11 @@
 #include "cli.h"
 #include "dev.h"
 
+/** IF CLI group_id 定义（与 commands.xml 中 group-id 一致） */
+#define IF_CLI_GROUP_ID_ENTRY 1  /**< 接口视图进入命令 */
+#define IF_CLI_GROUP_ID_CONFIG 2 /**< 接口配置命令（ip address / shutdown） */
+#define IF_CLI_GROUP_ID_SHOW 3   /**< show interface 命令 */
+
 /**
  * @brief 处理来自 CFG 模块的 CLI 命令消息
  * @param msg 消息

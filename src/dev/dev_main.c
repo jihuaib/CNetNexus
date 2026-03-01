@@ -7,11 +7,9 @@
 
 #include "dev_main.h"
 
+#include <glib.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-
-#include <glib.h>
 #include <string.h>
 
 #include "cli.h"
@@ -82,6 +80,7 @@ void dev_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
  */
 int dev_init_self(void)
 {
+    LOG_INFO("DEV 自身 IPC 初始化开始========================");
     g_dev_local = g_malloc0(sizeof(dev_local_t));
 
     g_dev_local->ipc_ctx = ipc_init(DEV_MODULE_ID_DEV, "dev", MODULE_PORT_DEV, dev_msg_handler);
@@ -93,10 +92,14 @@ int dev_init_self(void)
         return ERRCODE_FAIL;
     }
 
-    /* 注册 DEV 模块到 GTree */
-    dev_add_module_to_registry(DEV_MODULE_ID_DEV, "dev");
+    /* 注册 DEV 模块到 GTree，并补充端口号 */
+    dev_module_t *dev_self = dev_add_module_to_registry(DEV_MODULE_ID_DEV, "dev");
+    if (dev_self)
+    {
+        dev_self->port = MODULE_PORT_DEV;
+    }
 
-    LOG_INFO("DEV 自身 IPC 初始化完成");
+    LOG_INFO("DEV 自身 IPC 初始化完成========================");
     return ERRCODE_SUCCESS;
 }
 

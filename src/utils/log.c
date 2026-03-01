@@ -20,8 +20,8 @@
 /** 日志输出缓冲区大小 */
 #define LOG_BUF_SIZE 2048
 
-/** 全局日志级别，默认 INFO */
-log_level_t g_log_level = LOG_LEVEL_INFO;
+/** 全局日志级别，默认 DEBUG */
+log_level_t g_log_level = LOG_LEVEL_DEBUG;
 
 /** 日志文件描述符（-1 表示未启用文件输出） */
 static int g_log_fd = -1;
@@ -116,9 +116,13 @@ void log_output(log_level_t level, const char *tag, const char *file, int line, 
     struct tm tm;
     localtime_r(&tv.tv_sec, &tm);
 
-    offset += snprintf(buf + offset, LOG_BUF_SIZE - offset, "[%s][%-6s] %02d:%02d:%02d.%03d %s:%d %s tid=%ld | ",
-                       level_names[level], tag, tm.tm_hour, tm.tm_min, tm.tm_sec, (int)(tv.tv_usec / 1000),
-                       get_basename(file), line, func, syscall(SYS_gettid));
+    /* 将文件名:行号组合为固定宽度字段，保证后续列对齐 */
+    char loc[32];
+    snprintf(loc, sizeof(loc), "%s:%d", get_basename(file), line);
+
+    offset += snprintf(buf + offset, LOG_BUF_SIZE - offset, "[%s][%-6s] %02d:%02d:%02d.%03d %-25s %s tid=%ld | ",
+                       level_names[level], tag, tm.tm_hour, tm.tm_min, tm.tm_sec, (int)(tv.tv_usec / 1000), loc, func,
+                       syscall(SYS_gettid));
 
     /* 用户消息 */
     va_list ap;
@@ -156,9 +160,13 @@ void log_output_perror(log_level_t level, const char *tag, const char *file, int
     struct tm tm;
     localtime_r(&tv.tv_sec, &tm);
 
-    offset += snprintf(buf + offset, LOG_BUF_SIZE - offset, "[%s][%-6s] %02d:%02d:%02d.%03d %s:%d %s tid=%ld | ",
-                       level_names[level], tag, tm.tm_hour, tm.tm_min, tm.tm_sec, (int)(tv.tv_usec / 1000),
-                       get_basename(file), line, func, syscall(SYS_gettid));
+    /* 将文件名:行号组合为固定宽度字段，保证后续列对齐 */
+    char loc[32];
+    snprintf(loc, sizeof(loc), "%s:%d", get_basename(file), line);
+
+    offset += snprintf(buf + offset, LOG_BUF_SIZE - offset, "[%s][%-6s] %02d:%02d:%02d.%03d %-25s %s tid=%ld | ",
+                       level_names[level], tag, tm.tm_hour, tm.tm_min, tm.tm_sec, (int)(tv.tv_usec / 1000), loc, func,
+                       syscall(SYS_gettid));
 
     /* 用户消息 */
     va_list ap;

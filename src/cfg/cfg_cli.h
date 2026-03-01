@@ -11,6 +11,15 @@
 #include "cli_handler.h"
 #include "cli_tree.h"
 
+/** CFG CLI group_id 定义（与 commands.xml 中 group-id 一致） */
+#define CFG_CLI_GROUP_ID_SHOW_COMMANDS 1 /**< show cli command-info */
+#define CFG_CLI_GROUP_ID_SHOW_HISTORY 2  /**< show cli history */
+#define CFG_CLI_GROUP_ID_SHOW_CONFIG 3   /**< show current-configuration */
+#define CFG_CLI_GROUP_ID_EXIT 4          /**< exit */
+#define CFG_CLI_GROUP_ID_CONFIG 5        /**< config */
+#define CFG_CLI_GROUP_ID_END 6           /**< end */
+#define CFG_CLI_GROUP_ID_BASH 7          /**< bash */
+
 /**
  * @brief 响应输出结构
  */

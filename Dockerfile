@@ -40,9 +40,6 @@ WORKDIR /build
 RUN cmake -B build -DCMAKE_BUILD_TYPE=Release && \
     cmake --build build --config Release
 
-RUN chmod +x ./scripts/prod/package.sh && \
-    VERSION=${VERSION} ./scripts/prod/package.sh
-
 # ============================================================
 # Stage 3: 开发环境（用于容器内编码、构建、调试）
 # 使用方式: docker build --target dev -t netnexus:dev .
@@ -91,12 +88,22 @@ RUN apt-get update && \
     telnet \
     && rm -rf /var/lib/apt/lists/*
 
-# 从 builder 阶段复制部署包并安装
-COPY --from=builder /build/package/netnexus-${VERSION}.tar.gz /tmp/
-RUN tar -xzf /tmp/netnexus-${VERSION}.tar.gz -C /tmp && \
-    cd /tmp/netnexus-${VERSION} && \
-    INSTALL_DIR=/opt/netnexus ./scripts/deploy.sh && \
-    rm -rf /tmp/netnexus-*
+# 从 builder 阶段直接复制构建产物并安装
+COPY --from=builder /build/build/bin/       /opt/netnexus/bin/
+COPY --from=builder /build/build/lib/       /opt/netnexus/lib/
+COPY --from=builder /build/scripts/prod/start.sh      /opt/netnexus/scripts/
+COPY --from=builder /build/scripts/prod/gns3-entry.sh /opt/netnexus/scripts/
+
+# 复制各模块资源文件（commands.xml、module.conf 等）
+RUN mkdir -p /opt/netnexus/data /opt/netnexus/resources
+COPY --from=builder /build/src/ /build/src/
+RUN find /build/src -type d -name resources | while read d; do \
+        mod=$(basename "$(dirname "$d")"); \
+        mkdir -p /opt/netnexus/resources/"$mod"; \
+        cp "$d"/* /opt/netnexus/resources/"$mod"/; \
+    done && rm -rf /build
+
+RUN chmod +x /opt/netnexus/bin/* /opt/netnexus/scripts/*.sh
 
 ENV LD_LIBRARY_PATH=/opt/netnexus/lib
 ENV NN_WORK_DIR=/opt/netnexus
