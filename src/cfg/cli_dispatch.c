@@ -19,7 +19,6 @@
 #include "db.h"
 #include "dev.h"
 #include "errcode.h"
-#include "ipc.h"
 #include "log.h"
 
 /* ========================================================================= */
@@ -359,8 +358,8 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
     uint8_t *msg_data = pack_tlv_payload(result, ctx_data, ctx_len, &msg_len);
 
     /* 创建 CLI 消息 */
-    ipc_message_t *msg =
-        ipc_message_create(CFG_MSG_TYPE_CLI, DEV_MODULE_ID_CFG, result->module_id, 0, msg_data, msg_len, g_free);
+    dev_ipc_message_t *msg =
+        dev_ipc_message_create(CFG_MSG_TYPE_CLI, DEV_MODULE_ID_CFG, result->module_id, 0, msg_data, msg_len, g_free);
     if (!msg)
     {
         g_free(msg_data);
@@ -371,7 +370,7 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
     if (result->module_id == DEV_MODULE_ID_CFG)
     {
         cfg_cli_handle(msg, session);
-        ipc_message_free(msg);
+        dev_ipc_message_free(msg);
         return ERRCODE_SUCCESS;
     }
 
@@ -384,10 +383,10 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
 
     while (!done)
     {
-        ipc_message_t *response = ipc_query(g_cfg_local->ipc_ctx, result->module_id, msg, 5000);
+        dev_ipc_message_t *response = dev_ipc_query(g_cfg_local->dev_ipc_ctx, result->module_id, msg, 5000);
 
         /* 释放查询消息（原始或 continue） */
-        ipc_message_free(msg);
+        dev_ipc_message_free(msg);
         msg = NULL;
 
         if (!response)
@@ -430,7 +429,7 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
                 }
             }
 
-            ipc_message_free(response);
+            dev_ipc_message_free(response);
             done = 1;
         }
         else if (response->msg_type == CFG_MSG_TYPE_CLI_RESP)
@@ -440,7 +439,7 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
             {
                 g_string_append(full_output, response->payload);
             }
-            ipc_message_free(response);
+            dev_ipc_message_free(response);
             done = 1;
         }
         else if (response->msg_type == CFG_MSG_TYPE_CLI_RESP_MORE)
@@ -450,10 +449,11 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
             {
                 g_string_append(full_output, response->payload);
             }
-            ipc_message_free(response);
+            dev_ipc_message_free(response);
 
             /* 发送 CONTINUE 请求下一批 */
-            msg = ipc_message_create(CFG_MSG_TYPE_CLI_CONTINUE, DEV_MODULE_ID_CFG, result->module_id, 0, NULL, 0, NULL);
+            msg = dev_ipc_message_create(CFG_MSG_TYPE_CLI_CONTINUE, DEV_MODULE_ID_CFG, result->module_id, 0, NULL, 0,
+                                         NULL);
             if (!msg)
             {
                 done = 1;
@@ -461,7 +461,7 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
         }
         else
         {
-            ipc_message_free(response);
+            dev_ipc_message_free(response);
             done = 1;
         }
     }
@@ -470,10 +470,6 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
     if (full_output->len > 0)
     {
         cli_pager_output(session, full_output->str);
-    }
-    else
-    {
-        cfg_send_message(session, "No data.\r\n");
     }
 
     g_string_free(full_output, TRUE);

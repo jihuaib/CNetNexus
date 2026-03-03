@@ -18,7 +18,6 @@
 #include "dev_module.h"
 #include "errcode.h"
 #include "log.h"
-#include "module_ports.h"
 
 dev_local_t *g_dev_local = NULL;
 
@@ -27,7 +26,7 @@ dev_local_t *g_dev_local = NULL;
 // ============================================================================
 
 /** 处理模块名称查询请求 */
-static void handle_dev_get_module_name(ipc_context_t *ctx, ipc_message_t *msg)
+static void handle_dev_get_module_name(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     char name[DEV_MODULE_NAME_MAX_LEN] = "";
 
@@ -41,17 +40,17 @@ static void handle_dev_get_module_name(ipc_context_t *ctx, ipc_message_t *msg)
     /* 响应 payload 为模块名称字符串（含终止符） */
     size_t name_len = strlen(name) + 1;
     char *resp_data = g_strdup(name);
-    ipc_message_t *resp = ipc_message_create(IPC_MSG_TYPE_DEV_MODULE_RESP, DEV_MODULE_ID_DEV, msg->src_module_id,
-                                             msg->request_id, resp_data, name_len, g_free);
-    ipc_send_response(ctx, resp);
-    ipc_message_free(resp);
+    dev_ipc_message_t *resp = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_MODULE_RESP, DEV_MODULE_ID_DEV,
+                                                     msg->src_module_id, msg->request_id, resp_data, name_len, g_free);
+    dev_ipc_send_response(ctx, resp);
+    dev_ipc_message_free(resp);
 }
 
-void dev_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
+void dev_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     switch (msg->msg_type)
     {
-        case IPC_MSG_TYPE_DEV_GET_MODULE_NAME:
+        case DEV_IPC_MSG_TYPE_DEV_GET_MODULE_NAME:
             handle_dev_get_module_name(ctx, msg);
             break;
 
@@ -69,7 +68,7 @@ void dev_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
             break;
     }
 
-    ipc_message_free(msg);
+    dev_ipc_message_free(msg);
 }
 
 /**
@@ -83,8 +82,8 @@ int dev_init_self(void)
     LOG_INFO("DEV 自身 IPC 初始化开始========================");
     g_dev_local = g_malloc0(sizeof(dev_local_t));
 
-    g_dev_local->ipc_ctx = ipc_init(DEV_MODULE_ID_DEV, "dev", MODULE_PORT_DEV, dev_msg_handler);
-    if (!g_dev_local->ipc_ctx)
+    g_dev_local->dev_ipc_ctx = dev_ipc_init(DEV_MODULE_ID_DEV, "dev", DEV_MODULE_PORT_DEV, dev_msg_handler);
+    if (!g_dev_local->dev_ipc_ctx)
     {
         LOG_ERROR("Failed to initialize IPC");
         g_free(g_dev_local);
@@ -96,7 +95,7 @@ int dev_init_self(void)
     dev_module_t *dev_self = dev_add_module_to_registry(DEV_MODULE_ID_DEV, "dev");
     if (dev_self)
     {
-        dev_self->port = MODULE_PORT_DEV;
+        dev_self->port = DEV_MODULE_PORT_DEV;
     }
 
     LOG_INFO("DEV 自身 IPC 初始化完成========================");
@@ -107,11 +106,11 @@ int dev_init_self(void)
  * @brief 获取 DEV 的 IPC context
  * @return DEV 的 IPC context
  */
-ipc_context_t *dev_get_ipc_ctx(void)
+dev_ipc_context_t *dev_get_ipc_ctx(void)
 {
     if (g_dev_local)
     {
-        return g_dev_local->ipc_ctx;
+        return g_dev_local->dev_ipc_ctx;
     }
     return NULL;
 }
@@ -129,7 +128,7 @@ void dev_cleanup_self(void)
     LOG_INFO("Dev module cleanup");
 
     /* 注意：IPC context 的销毁由 cleanup_all_modules() 统一处理 */
-    g_dev_local->ipc_ctx = NULL;
+    g_dev_local->dev_ipc_ctx = NULL;
 
     g_free(g_dev_local);
     g_dev_local = NULL;

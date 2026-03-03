@@ -29,7 +29,7 @@
 typedef struct show_module_ctx
 {
     dev_cli_resp_out_t *resp;
-    ipc_context_t *ipc_ctx;
+    dev_ipc_context_t *dev_ipc_ctx;
 } show_module_ctx_t;
 
 static const char *log_level_to_string(log_level_t level)
@@ -151,7 +151,7 @@ static const char *dev_phase_to_string(uint8_t phase)
         case DEV_PHASE_LOADED:
             return "LOADED";
         case DEV_PHASE_IPC_READY:
-            return "IPC_READY";
+            return "DEV_IPC_READY";
         case DEV_PHASE_DB_RECOVERED:
             return "DB_RECOVERED";
         case DEV_PHASE_READY:
@@ -168,12 +168,13 @@ static gboolean show_module_callback(gpointer key, gpointer value, gpointer data
     dev_cli_resp_out_t *resp = ctx->resp;
     dev_module_t *module = (dev_module_t *)value;
     const char *phase = dev_phase_to_string(module->phase);
-    const char *ipc_state =
-        (module->module_id == DEV_MODULE_ID_DEV || ipc_is_connected(ctx->ipc_ctx, module->module_id)) ? "up" : "down";
+    const char *dev_ipc_state =
+        (module->module_id == DEV_MODULE_ID_DEV || dev_ipc_is_connected(ctx->dev_ipc_ctx, module->module_id)) ? "up"
+                                                                                                              : "down";
 
     char line[192];
     snprintf(line, sizeof(line), "  %-10u %-14s %-12s %-6u %s\r\n", module->module_id, module->name, phase,
-             module->port, ipc_state);
+             module->port, dev_ipc_state);
 
     strncat(resp->message, line, sizeof(resp->message) - strlen(resp->message) - 1);
 
@@ -184,15 +185,15 @@ static gboolean show_module_callback(gpointer key, gpointer value, gpointer data
 // 发送 CLI 响应辅助
 // ============================================================================
 
-static void dev_send_cli_response(ipc_context_t *ctx, ipc_message_t *msg, const char *text)
+static void dev_send_cli_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, const char *text)
 {
     char *resp_data = g_strdup(text);
-    ipc_message_t *resp_msg = ipc_message_create(CFG_MSG_TYPE_CLI_RESP, DEV_MODULE_ID_DEV, msg->src_module_id,
-                                                 msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
+    dev_ipc_message_t *resp_msg = dev_ipc_message_create(CFG_MSG_TYPE_CLI_RESP, DEV_MODULE_ID_DEV, msg->src_module_id,
+                                                         msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
     if (resp_msg)
     {
-        ipc_send_response(ctx, resp_msg);
-        ipc_message_free(resp_msg);
+        dev_ipc_send_response(ctx, resp_msg);
+        dev_ipc_message_free(resp_msg);
     }
 }
 
@@ -200,7 +201,7 @@ static void dev_send_cli_response(ipc_context_t *ctx, ipc_message_t *msg, const 
 // 命令处理函数（按 group_id 分发）
 // ============================================================================
 
-static int handle_show_module(ipc_context_t *ctx, ipc_message_t *msg)
+static int handle_show_module(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     dev_cli_resp_out_t resp_out;
     show_module_ctx_t show_ctx;
@@ -208,7 +209,7 @@ static int handle_show_module(ipc_context_t *ctx, ipc_message_t *msg)
     memset(&show_ctx, 0, sizeof(show_ctx));
 
     show_ctx.resp = &resp_out;
-    show_ctx.ipc_ctx = ctx;
+    show_ctx.dev_ipc_ctx = ctx;
 
     snprintf(resp_out.message, sizeof(resp_out.message),
              "\r\nRegistered Modules:\r\n"
@@ -224,7 +225,7 @@ static int handle_show_module(ipc_context_t *ctx, ipc_message_t *msg)
     return ERRCODE_SUCCESS;
 }
 
-static int handle_show_version(ipc_context_t *ctx, ipc_message_t *msg)
+static int handle_show_version(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     char buf[CLI_MAX_RESP_LEN];
     char version[64] = "unknown";
@@ -253,13 +254,13 @@ static int handle_show_version(ipc_context_t *ctx, ipc_message_t *msg)
     return ERRCODE_SUCCESS;
 }
 
-static int handle_sysname(ipc_context_t *ctx, ipc_message_t *msg)
+static int handle_sysname(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     dev_send_cli_response(ctx, msg, "Command 'sysname' not yet implemented in dev module.\r\n");
     return ERRCODE_SUCCESS;
 }
 
-static int handle_set_log_level(ipc_context_t *ctx, ipc_message_t *msg, cli_tlv_parser_t *parser)
+static int handle_set_log_level(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
     cli_tlv_entry_t entry;
 
@@ -304,7 +305,7 @@ static int handle_set_log_level(ipc_context_t *ctx, ipc_message_t *msg, cli_tlv_
     return ERRCODE_FAIL;
 }
 
-static int handle_ping(ipc_context_t *ctx, ipc_message_t *msg, cli_tlv_parser_t *parser)
+static int handle_ping(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
     char ip[64] = {0};
 
@@ -382,13 +383,13 @@ static int handle_ping(ipc_context_t *ctx, ipc_message_t *msg, cli_tlv_parser_t 
 // 主入口
 // ============================================================================
 
-int dev_cli_handle_continue(ipc_context_t *ctx, ipc_message_t *msg)
+int dev_cli_handle_continue(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     dev_send_cli_response(ctx, msg, "");
     return ERRCODE_SUCCESS;
 }
 
-int dev_cli_handle_message(ipc_context_t *ctx, ipc_message_t *msg)
+int dev_cli_handle_message(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     if (!msg || !msg->payload)
     {

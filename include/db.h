@@ -44,6 +44,37 @@ typedef struct db_value
 } db_value_t;
 
 // ============================================================================
+// 条件过滤类型
+// ============================================================================
+
+/** 条件比较操作符 */
+typedef enum db_compare_op
+{
+    DB_CMP_EQ,   /**< 等于 (=) */
+    DB_CMP_NE,   /**< 不等于 (!=) */
+    DB_CMP_GT,   /**< 大于 (>) */
+    DB_CMP_GTE,  /**< 大于等于 (>=) */
+    DB_CMP_LT,   /**< 小于 (<) */
+    DB_CMP_LTE,  /**< 小于等于 (<=) */
+    DB_CMP_LIKE, /**< LIKE 匹配 */
+} db_compare_op_t;
+
+/** 单个查询条件（field op value） */
+typedef struct db_condition
+{
+    const char *field_name; /**< 字段名 */
+    db_compare_op_t op;     /**< 比较操作符 */
+    db_value_t value;       /**< 比较值 */
+} db_condition_t;
+
+/** 过滤条件集合（当前为 AND 关系） */
+typedef struct db_filter
+{
+    const db_condition_t *conditions; /**< 条件数组 */
+    uint32_t num_conditions;          /**< 条件数量 */
+} db_filter_t;
+
+// ============================================================================
 // 行/结果类型
 // ============================================================================
 
@@ -136,5 +167,88 @@ db_value_t db_value_null(void);
  * @param value 待释放的值
  */
 void db_value_free(db_value_t *value);
+
+// ============================================================================
+// 前向声明
+// ============================================================================
+
+typedef struct dev_ipc_context dev_ipc_context_t;
+
+// ============================================================================
+// 数据库 RPC 接口（通过 IPC 调用 DB 模块）
+// ============================================================================
+
+/**
+ * @brief 通过 RPC 向数据库表中插入一行数据
+ * @param ctx        调用方模块的 IPC 上下文
+ * @param table_name 表名称
+ * @param field_names 字段名称数组
+ * @param values     值数组（长度须与 field_names 一致）
+ * @param num_fields 字段数量
+ * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL
+ */
+int db_rpc_insert(dev_ipc_context_t *ctx, const char *table_name, const char **field_names, const db_value_t *values,
+                  uint32_t num_fields);
+
+/**
+ * @brief 通过 RPC 更新数据库中符合条件的行
+ * @param ctx        调用方模块的 IPC 上下文
+ * @param table_name 表名称
+ * @param field_names 待更新的字段名称数组
+ * @param values     新值数组
+ * @param num_fields 待更新的字段数量
+ * @param filter    结构化过滤条件（为 NULL 或空则更新所有行）
+ * @return 更新的行数，错误返回 -1
+ */
+int db_rpc_update(dev_ipc_context_t *ctx, const char *table_name, const char **field_names, const db_value_t *values,
+                  uint32_t num_fields, const db_filter_t *filter);
+
+/**
+ * @brief 通过 RPC 删除数据库中符合条件的行
+ * @param ctx        调用方模块的 IPC 上下文
+ * @param table_name 表名称
+ * @param filter    结构化过滤条件（为 NULL 或空则删除所有行）
+ * @return 删除的行数，错误返回 -1
+ */
+int db_rpc_delete(dev_ipc_context_t *ctx, const char *table_name, const db_filter_t *filter);
+
+/**
+ * @brief 通过 RPC 查询数据库表中的行
+ * @param ctx        调用方模块的 IPC 上下文
+ * @param table_name 表名称
+ * @param field_names 待查询的字段名称数组（为 NULL 则查询所有字段）
+ * @param num_fields 字段数量（为 0 则查询所有字段）
+ * @param filter    结构化过滤条件（为 NULL 或空则查询所有行）
+ * @param result     输出结果集（调用者须通过 db_result_free 释放）
+ * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL
+ */
+int db_rpc_query(dev_ipc_context_t *ctx, const char *table_name, const char **field_names, uint32_t num_fields,
+                 const db_filter_t *filter, db_result_t **result);
+
+/**
+ * @brief 通过 RPC 检查数据库中是否存在符合条件的行
+ * @param ctx        调用方模块的 IPC 上下文
+ * @param table_name 表名称
+ * @param filter    结构化过滤条件（为 NULL 或空则检查表是否存在任意行）
+ * @param exists     输出布尔值（存在则为 TRUE）
+ * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL
+ */
+int db_rpc_exists(dev_ipc_context_t *ctx, const char *table_name, const db_filter_t *filter, gboolean *exists);
+
+/**
+ * @brief 通过 RPC 执行建表 DDL
+ * @param ctx  调用方模块的 IPC 上下文
+ * @param ddl  完整的 CREATE TABLE ... SQL 语句（通常含 IF NOT EXISTS）
+ * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL
+ */
+int db_rpc_create_table(dev_ipc_context_t *ctx, const char *ddl);
+
+/**
+ * @brief 通过 RPC 按结构化定义建表并自动补齐缺失列
+ * @param ctx 调用方模块的 IPC 上下文
+ * @param def 表定义（表名、列列表及约束）
+ * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL
+ */
+int db_rpc_create_table_from_def(dev_ipc_context_t *ctx, const db_table_def_t *def);
 
 #endif // DB_H

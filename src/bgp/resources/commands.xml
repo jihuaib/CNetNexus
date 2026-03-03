@@ -5,11 +5,14 @@
         <view view-id="4" view-name="bgp">
             <template>&lt;NetNexus(config-bgp-%u)&gt;</template>
         </view>
+        <view view-id="7" view-name="bgp-af-ipv4">
+            <template>&lt;NetNexus(config-bgp-%u-af-ipv4)&gt;</template>
+        </view>
     </views>
 
     <!-- Command group definitions -->
     <command_groups>
-        <!-- Configuration command group -->
+        <!-- BGP 协议配置命令（bgp <as-number> / no bgp [as-number]） -->
         <group group-id="1">
             <elements>
                 <element cfg-id="1" type="keyword">
@@ -40,6 +43,7 @@
             </commands>
         </group>
 
+        <!-- show bgp peer -->
         <group group-id="2">
             <elements>
                 <element type="keyword">
@@ -60,6 +64,105 @@
                 <command>
                     <expression>1 2 [ 3 ]</expression>
                     <views>1</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- neighbor <ip> as <as-num> / no neighbor <ip> -->
+        <group group-id="3">
+            <elements>
+                <element cfg-id="1" type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+                <element type="keyword">
+                    <name>neighbor</name>
+                    <description>BGP neighbor configuration</description>
+                </element>
+                <element cfg-id="2" type="parameter">
+                    <name>&lt;ip-address&gt;</name>
+                    <type>ip</type>
+                    <description>Neighbor IP address</description>
+                </element>
+                <element type="keyword">
+                    <name>as</name>
+                    <description>Remote AS number</description>
+                </element>
+                <element cfg-id="3" type="parameter">
+                    <name>&lt;as-number&gt;</name>
+                    <type>uint(1-4294967295)</type>
+                    <description>Remote AS number</description>
+                </element>
+            </elements>
+
+            <commands>
+                <!-- neighbor <ip> as <as-num> -->
+                <command>
+                    <expression>2 3 4 5</expression>
+                    <views>4</views>
+                </command>
+                <!-- no neighbor <ip> -->
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>4</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- af ipv4-unicast -->
+        <group group-id="4">
+            <elements>
+                <element type="keyword">
+                    <name>af</name>
+                    <description>Enter address family configuration</description>
+                </element>
+                <element cfg-id="1" type="keyword">
+                    <name>ipv4-unicast</name>
+                    <description>IPv4 unicast address family</description>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>1 2</expression>
+                    <views>4</views>
+                    <view-id>7</view-id>
+                </command>
+            </commands>
+        </group>
+
+        <!-- neighbor <ip> enable / no neighbor <ip> (in address-family view) -->
+        <group group-id="5">
+            <elements>
+                <element cfg-id="1" type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+                <element type="keyword">
+                    <name>neighbor</name>
+                    <description>BGP neighbor</description>
+                </element>
+                <element cfg-id="2" type="parameter">
+                    <name>&lt;ip-address&gt;</name>
+                    <type>ip</type>
+                    <description>Neighbor IP address</description>
+                </element>
+                <element cfg-id="3" type="keyword">
+                    <name>enable</name>
+                    <description>Enable neighbor for this address family</description>
+                </element>
+            </elements>
+
+            <commands>
+                <!-- neighbor <ip> enable -->
+                <command>
+                    <expression>2 3 4</expression>
+                    <views>7</views>
+                </command>
+                <!-- no neighbor <ip> -->
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>7</views>
                 </command>
             </commands>
         </group>

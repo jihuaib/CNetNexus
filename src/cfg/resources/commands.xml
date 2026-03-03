@@ -136,7 +136,7 @@
             <commands>
                 <command>
                     <expression>1</expression>
-                    <views>1</views>
+                    <views>2</views>
                 </command>
             </commands>
         </group>

@@ -1,19 +1,18 @@
 /**
- * @file   ipc_query.c
+ * @file   dev_ipc_query.c
  * @brief  IPC 同步查询支持实现
  * @author jhb
  * @date   2026/02/02
  */
 
-#include "ipc_query.h"
-
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
 
+#include "dev.h"
 #include "errcode.h"
 
-static void free_pending_query(ipc_pending_query_t *pq)
+static void free_pending_query(dev_ipc_pending_query_t *pq)
 {
     if (!pq)
     {
@@ -23,21 +22,21 @@ static void free_pending_query(ipc_pending_query_t *pq)
     pthread_cond_destroy(&pq->cond);
     if (pq->response)
     {
-        ipc_message_free(pq->response);
+        dev_ipc_message_free(pq->response);
     }
     g_free(pq);
 }
 
-ipc_query_mgr_t *ipc_query_mgr_create(void)
+dev_ipc_query_mgr_t *dev_ipc_query_mgr_create(void)
 {
-    ipc_query_mgr_t *mgr = g_malloc0(sizeof(ipc_query_mgr_t));
+    dev_ipc_query_mgr_t *mgr = g_malloc0(sizeof(dev_ipc_query_mgr_t));
     mgr->pending = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, (GDestroyNotify)free_pending_query);
     pthread_mutex_init(&mgr->lock, NULL);
     mgr->next_id = 1;
     return mgr;
 }
 
-void ipc_query_mgr_destroy(ipc_query_mgr_t *mgr)
+void dev_ipc_query_mgr_destroy(dev_ipc_query_mgr_t *mgr)
 {
     if (!mgr)
     {
@@ -50,7 +49,7 @@ void ipc_query_mgr_destroy(ipc_query_mgr_t *mgr)
     g_free(mgr);
 }
 
-uint32_t ipc_query_mgr_register(ipc_query_mgr_t *mgr)
+uint32_t dev_ipc_query_mgr_register(dev_ipc_query_mgr_t *mgr)
 {
     pthread_mutex_lock(&mgr->lock);
 
@@ -60,7 +59,7 @@ uint32_t ipc_query_mgr_register(ipc_query_mgr_t *mgr)
         mgr->next_id = 1; /* 避免 0 */
     }
 
-    ipc_pending_query_t *pq = g_malloc0(sizeof(ipc_pending_query_t));
+    dev_ipc_pending_query_t *pq = g_malloc0(sizeof(dev_ipc_pending_query_t));
     pq->request_id = id;
     pq->response = NULL;
     pq->completed = 0;
@@ -73,11 +72,11 @@ uint32_t ipc_query_mgr_register(ipc_query_mgr_t *mgr)
     return id;
 }
 
-ipc_message_t *ipc_query_mgr_wait(ipc_query_mgr_t *mgr, uint32_t request_id, uint32_t timeout_ms)
+dev_ipc_message_t *dev_ipc_query_mgr_wait(dev_ipc_query_mgr_t *mgr, uint32_t request_id, uint32_t timeout_ms)
 {
     /* 查找挂起查询 */
     pthread_mutex_lock(&mgr->lock);
-    ipc_pending_query_t *pq = g_hash_table_lookup(mgr->pending, GUINT_TO_POINTER(request_id));
+    dev_ipc_pending_query_t *pq = g_hash_table_lookup(mgr->pending, GUINT_TO_POINTER(request_id));
     pthread_mutex_unlock(&mgr->lock);
 
     if (!pq)
@@ -105,7 +104,7 @@ ipc_message_t *ipc_query_mgr_wait(ipc_query_mgr_t *mgr, uint32_t request_id, uin
             break; /* 超时或错误 */
         }
     }
-    ipc_message_t *response = pq->response;
+    dev_ipc_message_t *response = pq->response;
     pq->response = NULL; /* 转移所有权 */
     pthread_mutex_unlock(&pq->mutex);
 
@@ -117,10 +116,10 @@ ipc_message_t *ipc_query_mgr_wait(ipc_query_mgr_t *mgr, uint32_t request_id, uin
     return response;
 }
 
-int ipc_query_mgr_complete(ipc_query_mgr_t *mgr, uint32_t request_id, ipc_message_t *response)
+int dev_ipc_query_mgr_complete(dev_ipc_query_mgr_t *mgr, uint32_t request_id, dev_ipc_message_t *response)
 {
     pthread_mutex_lock(&mgr->lock);
-    ipc_pending_query_t *pq = g_hash_table_lookup(mgr->pending, GUINT_TO_POINTER(request_id));
+    dev_ipc_pending_query_t *pq = g_hash_table_lookup(mgr->pending, GUINT_TO_POINTER(request_id));
     pthread_mutex_unlock(&mgr->lock);
 
     if (!pq)

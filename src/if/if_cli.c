@@ -14,13 +14,11 @@
 
 #include "cli.h"
 #include "db.h"
-#include "db_rpc.h"
 #include "dev.h"
 #include "errcode.h"
 #include "if.h"
 #include "if_main.h"
 #include "if_map.h"
-#include "ipc.h"
 #include "log.h"
 
 // ============================================================================
@@ -48,15 +46,15 @@ static void ctx_write_u32(GByteArray *buf, uint32_t v)
 // 发送响应辅助
 // ============================================================================
 
-static void send_resp(ipc_message_t *msg, uint32_t msg_type, const char *text)
+static void send_resp(dev_ipc_message_t *msg, uint32_t msg_type, const char *text)
 {
     char *resp_data = g_strdup(text);
-    ipc_message_t *resp = ipc_message_create(msg_type, DEV_MODULE_ID_IF, msg->src_module_id, msg->request_id, resp_data,
-                                             strlen(resp_data) + 1, g_free);
+    dev_ipc_message_t *resp = dev_ipc_message_create(msg_type, DEV_MODULE_ID_IF, msg->src_module_id, msg->request_id,
+                                                     resp_data, strlen(resp_data) + 1, g_free);
     if (resp)
     {
-        ipc_send_response(g_if_local->ipc_ctx, resp);
-        ipc_message_free(resp);
+        dev_ipc_send_response(g_if_local->dev_ipc_ctx, resp);
+        dev_ipc_message_free(resp);
     }
 }
 
@@ -90,7 +88,7 @@ static const char *if_cfgid_to_name(uint32_t cfg_id)
  *
  * group_id=1, cfg_id: 1=GE-1, 2=GE-2, 3=GE-3, 4=GE-4
  */
-static int handle_if_entry(ipc_message_t *msg, cli_tlv_parser_t *parser)
+static int handle_if_entry(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
     const char *ifname = NULL;
     uint32_t if_cfg_id = 0;
@@ -126,32 +124,32 @@ static int handle_if_entry(ipc_message_t *msg, cli_tlv_parser_t *parser)
     /* 获取 view prompt template */
     char view_name[CFG_CLI_MAX_VIEW_LEN];
 
-    if (g_if_local->ipc_ctx && ipc_is_connected(g_if_local->ipc_ctx, DEV_MODULE_ID_CFG))
+    if (g_if_local->dev_ipc_ctx && dev_ipc_is_connected(g_if_local->dev_ipc_ctx, DEV_MODULE_ID_CFG))
     {
         uint32_t view_id_be = htonl(CLI_VIEW_IF);
         uint32_t *view_id_copy = g_malloc(sizeof(view_id_be));
         memcpy(view_id_copy, &view_id_be, sizeof(view_id_be));
-        ipc_message_t *req = ipc_message_create(CFG_MSG_TYPE_CLI_CONTINUE, DEV_MODULE_ID_IF, DEV_MODULE_ID_CFG,
-                                                msg->request_id, view_id_copy, sizeof(view_id_be), g_free);
+        dev_ipc_message_t *req = dev_ipc_message_create(CFG_MSG_TYPE_CLI_CONTINUE, DEV_MODULE_ID_IF, DEV_MODULE_ID_CFG,
+                                                        msg->request_id, view_id_copy, sizeof(view_id_be), g_free);
 
         if (req)
         {
-            req->msg_type = IPC_MSG_TYPE(IPC_CATEGORY_CLI, 0x0010); /* GET_VIEW_PROMPT */
-            ipc_message_t *resp = ipc_query(g_if_local->ipc_ctx, DEV_MODULE_ID_CFG, req, 1000);
+            req->msg_type = DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0010); /* GET_VIEW_PROMPT */
+            dev_ipc_message_t *resp = dev_ipc_query(g_if_local->dev_ipc_ctx, DEV_MODULE_ID_CFG, req, 1000);
             if (resp && resp->payload && resp->payload_len > 0)
             {
                 snprintf(view_name, sizeof(view_name), "%s", (char *)resp->payload);
-                ipc_message_free(resp);
+                dev_ipc_message_free(resp);
             }
             else
             {
                 snprintf(view_name, sizeof(view_name), "<NetNexus(config-if-%%s)>");
                 if (resp)
                 {
-                    ipc_message_free(resp);
+                    dev_ipc_message_free(resp);
                 }
             }
-            ipc_message_free(req);
+            dev_ipc_message_free(req);
         }
         else
         {
@@ -181,12 +179,12 @@ static int handle_if_entry(ipc_message_t *msg, cli_tlv_parser_t *parser)
     memcpy(msg_out + CLI_CLI_MAX_PROMPT_LEN, ctx_buf->data, ctx_buf->len);
     g_byte_array_free(ctx_buf, TRUE);
 
-    ipc_message_t *resp = ipc_message_create(CFG_MSG_TYPE_CLI_VIEW_CHG, DEV_MODULE_ID_IF, msg->src_module_id,
-                                             msg->request_id, msg_out, total_len, g_free);
+    dev_ipc_message_t *resp = dev_ipc_message_create(CFG_MSG_TYPE_CLI_VIEW_CHG, DEV_MODULE_ID_IF, msg->src_module_id,
+                                                     msg->request_id, msg_out, total_len, g_free);
     if (resp)
     {
-        ipc_send_response(g_if_local->ipc_ctx, resp);
-        ipc_message_free(resp);
+        dev_ipc_send_response(g_if_local->dev_ipc_ctx, resp);
+        dev_ipc_message_free(resp);
     }
 
     return ERRCODE_SUCCESS;
@@ -198,9 +196,9 @@ static int handle_if_entry(ipc_message_t *msg, cli_tlv_parser_t *parser)
  * group_id=2, cfg_id: 1=ip_address, 2=netmask, 3=shutdown, 4=no
  * 上下文 cfg_id 1-4 对应接口名
  */
-static int handle_if_config(ipc_message_t *msg, cli_tlv_parser_t *parser)
+static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
-    gboolean is_no = CLI_TLV_IS_NO_CMD(parser);
+    gboolean is_no = FALSE;
     char ip[20] = {0};
     char mask[20] = {0};
     gboolean has_ip = FALSE;
@@ -269,13 +267,16 @@ static int handle_if_config(ipc_message_t *msg, cli_tlv_parser_t *parser)
         /* ip address <ip> <mask> */
         if (if_set_ip(phys_name, ip, mask) == ERRCODE_SUCCESS)
         {
-            char where[64];
-            snprintf(where, sizeof(where), "name = '%s'", ifname);
             const char *field_names[] = {"ip_address", "netmask"};
             db_value_t values[] = {db_value_text(ip), db_value_text(mask)};
-            db_rpc_update(g_if_local->ipc_ctx, "if_interface", field_names, values, 2, where);
+            db_condition_t conditions[] = {
+                {.field_name = "name", .op = DB_CMP_EQ, .value = db_value_text(ifname)},
+            };
+            db_filter_t filter = {.conditions = conditions, .num_conditions = G_N_ELEMENTS(conditions)};
+            db_rpc_update(g_if_local->dev_ipc_ctx, "if_interface", field_names, values, 2, &filter);
             db_value_free(&values[0]);
             db_value_free(&values[1]);
+            db_value_free(&conditions[0].value);
 
             char resp_buf[128];
             snprintf(resp_buf, sizeof(resp_buf), "IP address configured successfully on %s\r\n", ifname);
@@ -295,11 +296,14 @@ static int handle_if_config(ipc_message_t *msg, cli_tlv_parser_t *parser)
         int state = is_no ? 1 : 0; /* no shutdown → UP(1), shutdown → DOWN(0) */
         if (if_set_state(phys_name, state) == ERRCODE_SUCCESS)
         {
-            char where[64];
-            snprintf(where, sizeof(where), "name = '%s'", ifname);
             const char *field_names[] = {"shutdown"};
             db_value_t values[] = {db_value_int(state ? 0 : 1)};
-            db_rpc_update(g_if_local->ipc_ctx, "if_interface", field_names, values, 1, where);
+            db_condition_t conditions[] = {
+                {.field_name = "name", .op = DB_CMP_EQ, .value = db_value_text(ifname)},
+            };
+            db_filter_t filter = {.conditions = conditions, .num_conditions = G_N_ELEMENTS(conditions)};
+            db_rpc_update(g_if_local->dev_ipc_ctx, "if_interface", field_names, values, 1, &filter);
+            db_value_free(&conditions[0].value);
 
             char resp_buf[128];
             snprintf(resp_buf, sizeof(resp_buf), "Interface %s %s\r\n", ifname, state ? "enabled" : "disabled");
@@ -324,7 +328,7 @@ static int handle_if_config(ipc_message_t *msg, cli_tlv_parser_t *parser)
  * group_id=3, cfg_id: 1=GE-1, 2=GE-2, 3=GE-3, 4=GE-4
  * 直接构建格式化文本返回
  */
-static int handle_if_show(ipc_message_t *msg, cli_tlv_parser_t *parser)
+static int handle_if_show(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
     const char *ifname = NULL;
 
@@ -429,13 +433,13 @@ static int handle_if_show(ipc_message_t *msg, cli_tlv_parser_t *parser)
 // 主入口
 // ============================================================================
 
-int if_cli_handle_continue(ipc_message_t *msg)
+int if_cli_handle_continue(dev_ipc_message_t *msg)
 {
     send_resp(msg, CFG_MSG_TYPE_CLI_RESP, "");
     return ERRCODE_SUCCESS;
 }
 
-int if_cli_handle_message(ipc_message_t *msg)
+int if_cli_handle_message(dev_ipc_message_t *msg)
 {
     if (!msg || !msg->payload)
     {

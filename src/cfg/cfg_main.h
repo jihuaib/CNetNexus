@@ -21,7 +21,6 @@
 #include "cli_handler.h"
 #include "cli_view.h"
 #include "dev.h"
-#include "ipc.h"
 
 typedef struct cfg_local
 {
@@ -32,8 +31,8 @@ typedef struct cfg_local
     int epoll_fd;         /**< epoll 文件描述符（Telnet 用） */
     int listen_sock;      /**< Telnet 监听 socket */
     pthread_t worker_thread;
-    GHashTable *sessions;   /**< 注册表: fd -> cli_session_t* */
-    ipc_context_t *ipc_ctx; /**< IPC 上下文 */
+    GHashTable *sessions;           /**< 注册表: fd -> cli_session_t* */
+    dev_ipc_context_t *dev_ipc_ctx; /**< IPC 上下文 */
 } cfg_local_t;
 
 extern cfg_local_t *g_cfg_local;
@@ -41,12 +40,12 @@ extern cfg_local_t *g_cfg_local;
 /**
  * @brief IPC 消息处理回调（供 API 层引用）
  */
-void cfg_msg_handler(ipc_context_t *ctx, ipc_message_t *msg);
+void cfg_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
 
 /**
  * @brief CFG 本地状态初始化（从 constructor 调用）
  * @param ctx IPC 上下文
  */
-void cfg_init_local(ipc_context_t *ctx);
+void cfg_init_local(dev_ipc_context_t *ctx);
 
 #endif // CFG_MAIN_H

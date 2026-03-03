@@ -11,7 +11,6 @@
 
 #include "cli.h"
 #include "dev.h"
-#include "ipc.h"
 
 /**
  * @brief 响应输出结构
@@ -32,13 +31,13 @@ typedef struct db_cli_resp_out
  * @param msg 来自 cfg 模块的 CLI 命令消息
  * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL
  */
-int db_cli_process_command(ipc_message_t *msg);
+int db_cli_process_command(dev_ipc_message_t *msg);
 
 /**
  * @brief 处理 CLI continue 消息
  * @param msg 来自 cfg 模块的 continue 消息
  * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL
  */
-int db_cli_handle_continue(ipc_message_t *msg);
+int db_cli_handle_continue(dev_ipc_message_t *msg);
 
 #endif // DB_CLI_H

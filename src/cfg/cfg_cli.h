@@ -37,6 +37,6 @@ typedef struct cfg_cli_resp_out
  * @param session CLI 会话
  * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL
  */
-int cfg_cli_handle(ipc_message_t *msg, cli_session_t *session);
+int cfg_cli_handle(dev_ipc_message_t *msg, cli_session_t *session);
 
 #endif // CFG_CLI_H

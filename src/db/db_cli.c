@@ -20,15 +20,15 @@
 // 发送 CLI 响应辅助
 // ============================================================================
 
-static void db_send_cli_response(ipc_message_t *msg, const char *text)
+static void db_send_cli_response(dev_ipc_message_t *msg, const char *text)
 {
     char *resp_data = g_strdup(text);
-    ipc_message_t *resp = ipc_message_create(CFG_MSG_TYPE_CLI_RESP, DEV_MODULE_ID_DB, msg->src_module_id,
-                                             msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
+    dev_ipc_message_t *resp = dev_ipc_message_create(CFG_MSG_TYPE_CLI_RESP, DEV_MODULE_ID_DB, msg->src_module_id,
+                                                     msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
     if (resp)
     {
-        ipc_send_response(g_db_local->ipc_ctx, resp);
-        ipc_message_free(resp);
+        dev_ipc_send_response(g_db_local->dev_ipc_ctx, resp);
+        dev_ipc_message_free(resp);
     }
 }
 
@@ -36,7 +36,7 @@ static void db_send_cli_response(ipc_message_t *msg, const char *text)
 // show db table-list
 // ============================================================================
 
-static int handle_db_show_table_list(ipc_message_t *msg)
+static int handle_db_show_table_list(dev_ipc_message_t *msg)
 {
     db_connection_t *conn = g_db_local->main_conn;
     if (!conn || !conn->handle)
@@ -83,7 +83,7 @@ static int handle_db_show_table_list(ipc_message_t *msg)
 // show db table-field <table-name>
 // ============================================================================
 
-static int handle_db_show_table_field(ipc_message_t *msg, const char *table_name)
+static int handle_db_show_table_field(dev_ipc_message_t *msg, const char *table_name)
 {
     db_connection_t *conn = g_db_local->main_conn;
     if (!conn || !conn->handle)
@@ -144,7 +144,7 @@ static int handle_db_show_table_field(ipc_message_t *msg, const char *table_name
 // show db table-data <table-name>
 // ============================================================================
 
-static int handle_db_show_table_data(ipc_message_t *msg, const char *table_name)
+static int handle_db_show_table_data(dev_ipc_message_t *msg, const char *table_name)
 {
     db_connection_t *conn = g_db_local->main_conn;
     if (!conn || !conn->handle)
@@ -242,7 +242,7 @@ static int handle_db_show_table_data(ipc_message_t *msg, const char *table_name)
 // 统一 Show 命令 Handler
 // ============================================================================
 
-static int handle_db_show_cmd(ipc_message_t *msg, cli_tlv_parser_t *parser)
+static int handle_db_show_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
     int action = 0; /* 1=table-list  2=table-field  3=table-data */
     char *table_name = NULL;
@@ -325,13 +325,13 @@ static int handle_db_show_cmd(ipc_message_t *msg, cli_tlv_parser_t *parser)
 // 主入口
 // ============================================================================
 
-int db_cli_handle_continue(ipc_message_t *msg)
+int db_cli_handle_continue(dev_ipc_message_t *msg)
 {
     db_send_cli_response(msg, "");
     return ERRCODE_SUCCESS;
 }
 
-int db_cli_process_command(ipc_message_t *msg)
+int db_cli_process_command(dev_ipc_message_t *msg)
 {
     if (!msg || !msg->payload)
     {

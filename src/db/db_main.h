@@ -11,7 +11,7 @@
 #include <sqlite3.h>
 #include <stdint.h>
 
-#include "ipc.h"
+#include "dev.h"
 
 // ============================================================================
 // Runtime Database Connection
@@ -19,11 +19,11 @@
 
 typedef struct db_connection
 {
-    char *db_path;            // Path to SQLite database file
-    sqlite3 *handle;          // SQLite handle
-    GMutex db_mutex;          // Per-database mutex for thread safety
-    uint32_t owner_module_id; // Module ID that owns this DB
-    ipc_context_t *ipc_ctx;   // IPC context for RPC (if remote)
+    char *db_path;                  // Path to SQLite database file
+    sqlite3 *handle;                // SQLite handle
+    GMutex db_mutex;                // Per-database mutex for thread safety
+    uint32_t owner_module_id;       // Module ID that owns this DB
+    dev_ipc_context_t *dev_ipc_ctx; // IPC context for RPC (if remote)
 } db_connection_t;
 
 // ============================================================================
@@ -32,8 +32,8 @@ typedef struct db_connection
 
 typedef struct db_local
 {
-    db_connection_t *main_conn; /**< 全局统一数据库连接（所有模块共享同一个 SQLite 文件） */
-    ipc_context_t *ipc_ctx;     /**< IPC 上下文（由 DEV 创建和管理） */
+    db_connection_t *main_conn;     /**< 全局统一数据库连接（所有模块共享同一个 SQLite 文件） */
+    dev_ipc_context_t *dev_ipc_ctx; /**< IPC 上下文（由 DEV 创建和管理） */
 } db_local_t;
 
 extern db_local_t *g_db_local;
@@ -77,6 +77,6 @@ int db_initialize_database(void);
 /**
  * @brief IPC 消息处理回调（供 API 层引用）
  */
-void db_msg_handler(ipc_context_t *ctx, ipc_message_t *msg);
+void db_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
 
 #endif // DB_MAIN_H

@@ -1,19 +1,18 @@
 /**
- * @file   ipc_frame.c
+ * @file   dev_ipc_frame.c
  * @brief  IPC 消息帧序列化/反序列化实现
  * @author jhb
  * @date   2026/02/02
  */
 
-#include "ipc_frame.h"
-
 #include <arpa/inet.h>
 #include <glib.h>
 #include <string.h>
 
+#include "dev.h"
 #include "errcode.h"
 
-int ipc_frame_serialize(const ipc_message_t *msg, uint8_t **out_buf, uint32_t *out_len)
+int dev_ipc_frame_serialize(const dev_ipc_message_t *msg, uint8_t **out_buf, uint32_t *out_len)
 {
     if (!msg || !out_buf || !out_len)
     {
@@ -21,13 +20,13 @@ int ipc_frame_serialize(const ipc_message_t *msg, uint8_t **out_buf, uint32_t *o
     }
 
     uint32_t payload_len = (uint32_t)msg->payload_len;
-    uint32_t total_len = IPC_FRAME_HEADER_SIZE + payload_len;
+    uint32_t total_len = DEV_IPC_FRAME_HEADER_SIZE + payload_len;
 
     uint8_t *buf = g_malloc(total_len);
     uint8_t *p = buf;
 
     /* 写入帧头部（网络字节序） */
-    uint32_t magic_be = htonl(IPC_MAGIC);
+    uint32_t magic_be = htonl(DEV_IPC_MAGIC);
     memcpy(p, &magic_be, 4);
     p += 4;
 
@@ -62,7 +61,7 @@ int ipc_frame_serialize(const ipc_message_t *msg, uint8_t **out_buf, uint32_t *o
     return ERRCODE_SUCCESS;
 }
 
-int ipc_frame_parse_header(const uint8_t *buf, ipc_message_t *header)
+int dev_ipc_frame_parse_header(const uint8_t *buf, dev_ipc_message_t *header)
 {
     if (!buf || !header)
     {
@@ -96,7 +95,7 @@ int ipc_frame_parse_header(const uint8_t *buf, ipc_message_t *header)
     header->payload_len = ntohl(val);
 
     /* 校验魔数 */
-    if (header->magic != IPC_MAGIC)
+    if (header->magic != DEV_IPC_MAGIC)
     {
         return ERRCODE_FAIL;
     }
@@ -104,7 +103,7 @@ int ipc_frame_parse_header(const uint8_t *buf, ipc_message_t *header)
     return ERRCODE_SUCCESS;
 }
 
-ipc_message_t *ipc_frame_to_message(const ipc_message_t *header, const uint8_t *payload)
+dev_ipc_message_t *dev_ipc_frame_to_message(const dev_ipc_message_t *header, const uint8_t *payload)
 {
     if (!header)
     {
@@ -117,6 +116,6 @@ ipc_message_t *ipc_frame_to_message(const ipc_message_t *header, const uint8_t *
         data_copy = g_memdup2(payload, header->payload_len);
     }
 
-    return ipc_message_create(header->msg_type, header->src_module_id, header->dst_module_id, header->request_id,
-                              data_copy, header->payload_len, g_free);
+    return dev_ipc_message_create(header->msg_type, header->src_module_id, header->dst_module_id, header->request_id,
+                                  data_copy, header->payload_len, g_free);
 }

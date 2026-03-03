@@ -26,19 +26,20 @@
 /**
  * @brief 发送 DB RPC 响应
  */
-static void send_db_response(ipc_context_t *ctx, ipc_message_t *req_msg, int32_t retval, const db_result_t *result)
+static void send_db_response(dev_ipc_context_t *ctx, dev_ipc_message_t *req_msg, int32_t retval,
+                             const db_result_t *result)
 {
     void *resp_data = NULL;
     uint32_t resp_len = 0;
 
     db_serialize_response(retval, result, &resp_data, &resp_len);
 
-    ipc_message_t *resp = ipc_message_create(IPC_MSG_TYPE_DB_RESP, DEV_MODULE_ID_DB, req_msg->src_module_id,
-                                             req_msg->request_id, resp_data, resp_len, g_free);
+    dev_ipc_message_t *resp = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DB_RESP, DEV_MODULE_ID_DB, req_msg->src_module_id,
+                                                     req_msg->request_id, resp_data, resp_len, g_free);
     if (resp)
     {
-        ipc_send_response(ctx, resp);
-        ipc_message_free(resp);
+        dev_ipc_send_response(ctx, resp);
+        dev_ipc_message_free(resp);
     }
     else
     {
@@ -51,7 +52,7 @@ static void send_db_response(ipc_context_t *ctx, ipc_message_t *req_msg, int32_t
  *
  * payload: db_name + sql 字符串，服务端直接执行，返回影响行数。
  */
-static void handle_db_exec_sql(ipc_context_t *ctx, ipc_message_t *msg)
+static void handle_db_exec_sql(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     char *db_name = NULL;
     char *sql = NULL;
@@ -75,7 +76,7 @@ static void handle_db_exec_sql(ipc_context_t *ctx, ipc_message_t *msg)
  *
  * payload: db_name + sql 字符串，服务端直接执行并返回结果集。
  */
-static void handle_db_query_sql(ipc_context_t *ctx, ipc_message_t *msg)
+static void handle_db_query_sql(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     char *db_name = NULL;
     char *sql = NULL;
@@ -99,7 +100,7 @@ static void handle_db_query_sql(ipc_context_t *ctx, ipc_message_t *msg)
     g_free(sql);
 }
 
-void db_ipc_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
+void db_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     if (!ctx || !msg)
     {
@@ -108,10 +109,10 @@ void db_ipc_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
 
     switch (msg->msg_type)
     {
-        case IPC_MSG_TYPE_DB_EXEC_SQL:
+        case DEV_IPC_MSG_TYPE_DB_EXEC_SQL:
             handle_db_exec_sql(ctx, msg);
             break;
-        case IPC_MSG_TYPE_DB_QUERY_SQL:
+        case DEV_IPC_MSG_TYPE_DB_QUERY_SQL:
             handle_db_query_sql(ctx, msg);
             break;
         default:
@@ -119,5 +120,5 @@ void db_ipc_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
             break;
     }
 
-    ipc_message_free(msg);
+    dev_ipc_message_free(msg);
 }

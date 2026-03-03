@@ -1,11 +1,9 @@
 /**
- * @file   ipc_connection.c
+ * @file   dev_ipc_connection.c
  * @brief  IPC TCP 连接管理实现
  * @author jhb
  * @date   2026/02/02
  */
-
-#include "ipc_connection.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -18,35 +16,36 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "dev.h"
 #include "errcode.h"
 #include "log.h"
 
-ipc_connection_t *ipc_connection_create(uint32_t remote_module_id, int is_initiator)
+dev_ipc_connection_t *dev_ipc_connection_create(uint32_t remote_module_id, int is_initiator)
 {
-    ipc_connection_t *conn = g_malloc0(sizeof(ipc_connection_t));
+    dev_ipc_connection_t *conn = g_malloc0(sizeof(dev_ipc_connection_t));
     conn->remote_module_id = remote_module_id;
     conn->fd = -1;
-    conn->state = IPC_CODISCONNECTED;
+    conn->state = DEV_IPC_CODISCONNECTED;
     conn->recv_len = 0;
     conn->last_heartbeat_sent = 0;
     conn->last_heartbeat_recv = 0;
-    conn->reconnect_delay_ms = IPC_RECONNECT_DELAY_MIN;
+    conn->reconnect_delay_ms = DEV_IPC_RECONNECT_DELAY_MIN;
     conn->next_reconnect_time = 0;
     conn->is_initiator = is_initiator;
     return conn;
 }
 
-void ipc_connection_destroy(ipc_connection_t *conn)
+void dev_ipc_connection_destroy(dev_ipc_connection_t *conn)
 {
     if (!conn)
     {
         return;
     }
-    ipc_connection_close(conn);
+    dev_ipc_connection_close(conn);
     g_free(conn);
 }
 
-int ipc_connection_initiate(ipc_connection_t *conn, const char *host, uint16_t port)
+int dev_ipc_connection_initiate(dev_ipc_connection_t *conn, const char *host, uint16_t port)
 {
     if (!conn || !host)
     {
@@ -91,14 +90,14 @@ int ipc_connection_initiate(ipc_connection_t *conn, const char *host, uint16_t p
     }
 
     conn->fd = fd;
-    conn->state = (ret == 0) ? IPC_COHANDSHAKING : IPC_COCONNECTING;
+    conn->state = (ret == 0) ? DEV_IPC_COHANDSHAKING : DEV_IPC_COCONNECTING;
     conn->recv_len = 0;
     conn->last_heartbeat_recv = time(NULL);
 
     return ERRCODE_SUCCESS;
 }
 
-void ipc_connection_close(ipc_connection_t *conn)
+void dev_ipc_connection_close(dev_ipc_connection_t *conn)
 {
     if (!conn)
     {
@@ -110,11 +109,11 @@ void ipc_connection_close(ipc_connection_t *conn)
         close(conn->fd);
         conn->fd = -1;
     }
-    conn->state = IPC_CODISCONNECTED;
+    conn->state = DEV_IPC_CODISCONNECTED;
     conn->recv_len = 0;
 }
 
-int ipc_connection_send(ipc_connection_t *conn, const uint8_t *data, uint32_t len)
+int dev_ipc_connection_send(dev_ipc_connection_t *conn, const uint8_t *data, uint32_t len)
 {
     if (!conn || conn->fd < 0 || !data || len == 0)
     {
@@ -145,24 +144,24 @@ int ipc_connection_send(ipc_connection_t *conn, const uint8_t *data, uint32_t le
     return ERRCODE_SUCCESS;
 }
 
-void ipc_connection_reset_reconnect(ipc_connection_t *conn)
+void dev_ipc_connection_reset_reconnect(dev_ipc_connection_t *conn)
 {
     if (conn)
     {
-        conn->reconnect_delay_ms = IPC_RECONNECT_DELAY_MIN;
+        conn->reconnect_delay_ms = DEV_IPC_RECONNECT_DELAY_MIN;
     }
 }
 
-void ipc_connection_backoff_reconnect(ipc_connection_t *conn)
+void dev_ipc_connection_backoff_reconnect(dev_ipc_connection_t *conn)
 {
     if (!conn)
     {
         return;
     }
     conn->reconnect_delay_ms *= 2;
-    if (conn->reconnect_delay_ms > IPC_RECONNECT_DELAY_MAX)
+    if (conn->reconnect_delay_ms > DEV_IPC_RECONNECT_DELAY_MAX)
     {
-        conn->reconnect_delay_ms = IPC_RECONNECT_DELAY_MAX;
+        conn->reconnect_delay_ms = DEV_IPC_RECONNECT_DELAY_MAX;
     }
     conn->next_reconnect_time = time(NULL) + (conn->reconnect_delay_ms / 1000);
 }

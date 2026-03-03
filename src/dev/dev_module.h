@@ -11,7 +11,6 @@
 #include <stdint.h>
 
 #include "dev.h"
-#include "ipc.h"
 
 /** 模块初始化阶段 */
 enum

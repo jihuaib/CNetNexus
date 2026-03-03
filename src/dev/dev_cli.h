@@ -9,7 +9,6 @@
 
 #include "cli.h"
 #include "dev.h"
-#include "ipc.h"
 
 // 命令组 ID（对应 commands.xml）
 #define DEV_CLI_GROUP_ID_SHOW_VERSION 1
@@ -34,7 +33,7 @@ typedef struct dev_cli_resp_out
     uint32_t batch_offset; /**< 续传偏移量 */
 } dev_cli_resp_out_t;
 
-int dev_cli_handle_message(ipc_context_t *ctx, ipc_message_t *msg);
-int dev_cli_handle_continue(ipc_context_t *ctx, ipc_message_t *msg);
+int dev_cli_handle_message(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
+int dev_cli_handle_continue(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
 
 #endif // DEV_CLI_H

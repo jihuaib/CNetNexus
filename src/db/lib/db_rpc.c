@@ -10,14 +10,14 @@
  *
  * 全局只有一个 SQLite 数据库，db_name 在此固定，调用方只需传入表名。
  */
-#include "db_rpc.h"
-
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "db.h"
 #include "db_serialize.h"
+#include "dev.h"
 #include "errcode.h"
 #include "log.h"
 
@@ -102,6 +102,69 @@ static int value_to_sql_literal(const db_value_t *val, char *buf, size_t buf_siz
 }
 
 /**
+ * @brief 将比较操作符映射为 SQL 操作符
+ */
+static const char *compare_op_to_sql(db_compare_op_t op)
+{
+    switch (op)
+    {
+        case DB_CMP_EQ:
+            return "=";
+        case DB_CMP_NE:
+            return "!=";
+        case DB_CMP_GT:
+            return ">";
+        case DB_CMP_GTE:
+            return ">=";
+        case DB_CMP_LT:
+            return "<";
+        case DB_CMP_LTE:
+            return "<=";
+        case DB_CMP_LIKE:
+            return "LIKE";
+        default:
+            return "=";
+    }
+}
+
+/**
+ * @brief 根据结构化过滤条件构建 WHERE 子句内容（不含 WHERE 关键字）
+ */
+static int build_where_clause(const db_filter_t *filter, char *buf, size_t buf_size)
+{
+    if (!buf || buf_size == 0)
+    {
+        return -1;
+    }
+
+    buf[0] = '\0';
+    if (!filter || !filter->conditions || filter->num_conditions == 0)
+    {
+        return 0;
+    }
+
+    int offset = 0;
+    for (uint32_t i = 0; i < filter->num_conditions; i++)
+    {
+        const db_condition_t *cond = &filter->conditions[i];
+        if (!cond->field_name || cond->field_name[0] == '\0')
+        {
+            return -1;
+        }
+
+        if (i > 0)
+        {
+            offset += snprintf(buf + offset, buf_size - offset, " AND ");
+        }
+
+        offset += snprintf(buf + offset, buf_size - offset, "%s %s ", cond->field_name, compare_op_to_sql(cond->op));
+        offset += value_to_sql_literal(&cond->value, buf + offset, buf_size - offset);
+    }
+
+    return offset;
+}
+
+/**
  * @brief 构建 INSERT SQL：INSERT INTO table (col1, col2) VALUES (val1, val2);
  */
 static int build_insert_sql(const char *table_name, const char **field_names, const db_value_t *values,
@@ -137,7 +200,7 @@ static int build_insert_sql(const char *table_name, const char **field_names, co
  * @brief 构建 UPDATE SQL：UPDATE table SET col1=val1, col2=val2 [WHERE ...];
  */
 static int build_update_sql(const char *table_name, const char **field_names, const db_value_t *values,
-                            uint32_t num_fields, const char *where_clause, char *buf, size_t buf_size)
+                            uint32_t num_fields, const db_filter_t *filter, char *buf, size_t buf_size)
 {
     int offset = snprintf(buf, buf_size, "UPDATE %s SET ", table_name);
 
@@ -151,7 +214,13 @@ static int build_update_sql(const char *table_name, const char **field_names, co
         offset += value_to_sql_literal(&values[i], buf + offset, buf_size - offset);
     }
 
-    if (where_clause && where_clause[0] != '\0')
+    char where_clause[2048];
+    int where_len = build_where_clause(filter, where_clause, sizeof(where_clause));
+    if (where_len < 0)
+    {
+        return -1;
+    }
+    if (where_len > 0)
     {
         offset += snprintf(buf + offset, buf_size - offset, " WHERE %s", where_clause);
     }
@@ -163,11 +232,17 @@ static int build_update_sql(const char *table_name, const char **field_names, co
 /**
  * @brief 构建 DELETE SQL：DELETE FROM table [WHERE ...];
  */
-static int build_delete_sql(const char *table_name, const char *where_clause, char *buf, size_t buf_size)
+static int build_delete_sql(const char *table_name, const db_filter_t *filter, char *buf, size_t buf_size)
 {
     int offset = snprintf(buf, buf_size, "DELETE FROM %s", table_name);
 
-    if (where_clause && where_clause[0] != '\0')
+    char where_clause[2048];
+    int where_len = build_where_clause(filter, where_clause, sizeof(where_clause));
+    if (where_len < 0)
+    {
+        return -1;
+    }
+    if (where_len > 0)
     {
         offset += snprintf(buf + offset, buf_size - offset, " WHERE %s", where_clause);
     }
@@ -237,10 +312,87 @@ static int rpc_build_create_table_sql(const db_table_def_t *def, char *buf, size
 }
 
 /**
+ * @brief 检查 PRAGMA table_info 结果中是否包含指定列名
+ */
+static gboolean rpc_schema_has_column(const db_result_t *schema, const char *column_name)
+{
+    if (!schema || !column_name)
+    {
+        return FALSE;
+    }
+
+    for (uint32_t i = 0; i < schema->num_rows; i++)
+    {
+        const db_row_t *row = schema->rows[i];
+        if (!row)
+        {
+            continue;
+        }
+
+        for (uint32_t j = 0; j < row->num_fields; j++)
+        {
+            if (strcmp(row->field_names[j], "name") != 0)
+            {
+                continue;
+            }
+
+            if (row->values[j].type == DB_TYPE_TEXT && row->values[j].data.text &&
+                strcmp(row->values[j].data.text, column_name) == 0)
+            {
+                return TRUE;
+            }
+        }
+    }
+
+    return FALSE;
+}
+
+/**
+ * @brief 为新增列构建 ALTER TABLE ... ADD COLUMN SQL
+ */
+static int rpc_build_add_column_sql(const char *table_name, const db_column_def_t *col, char *buf, size_t buf_size)
+{
+    if (!table_name || !col || !col->name || !buf || buf_size == 0)
+    {
+        return -1;
+    }
+
+    if ((col->constraints & DB_COL_PRIMARY_KEY) || (col->constraints & DB_COL_AUTOINCREMENT) ||
+        (col->constraints & DB_COL_UNIQUE))
+    {
+        LOG_ERROR("新增列 %s.%s 包含 SQLite ADD COLUMN 不支持的约束（PRIMARY KEY/UNIQUE/AUTOINCREMENT）", table_name,
+                  col->name);
+        return -1;
+    }
+
+    if ((col->constraints & DB_COL_NOT_NULL) && (!col->default_val || col->default_val[0] == '\0'))
+    {
+        LOG_ERROR("新增 NOT NULL 列必须提供默认值: %s.%s", table_name, col->name);
+        return -1;
+    }
+
+    int offset = snprintf(buf, buf_size, "ALTER TABLE %s ADD COLUMN %s %s", table_name, col->name,
+                          rpc_col_type_to_sql(col->type));
+
+    if (col->constraints & DB_COL_NOT_NULL)
+    {
+        offset += snprintf(buf + offset, buf_size - offset, " NOT NULL");
+    }
+
+    if (col->default_val && col->default_val[0] != '\0')
+    {
+        offset += snprintf(buf + offset, buf_size - offset, " DEFAULT %s", col->default_val);
+    }
+
+    offset += snprintf(buf + offset, buf_size - offset, ";");
+    return offset;
+}
+
+/**
  * @brief 构建 SELECT SQL：SELECT col1, col2 FROM table [WHERE ...];
  */
 static int build_select_sql(const char *table_name, const char **field_names, uint32_t num_fields,
-                            const char *where_clause, char *buf, size_t buf_size)
+                            const db_filter_t *filter, char *buf, size_t buf_size)
 {
     int offset = snprintf(buf, buf_size, "SELECT ");
 
@@ -262,7 +414,13 @@ static int build_select_sql(const char *table_name, const char **field_names, ui
 
     offset += snprintf(buf + offset, buf_size - offset, " FROM %s", table_name);
 
-    if (where_clause && where_clause[0] != '\0')
+    char where_clause[2048];
+    int where_len = build_where_clause(filter, where_clause, sizeof(where_clause));
+    if (where_len < 0)
+    {
+        return -1;
+    }
+    if (where_len > 0)
     {
         offset += snprintf(buf + offset, buf_size - offset, " WHERE %s", where_clause);
     }
@@ -278,17 +436,17 @@ static int build_select_sql(const char *table_name, const char **field_names, ui
 /**
  * @brief 发送 EXEC_SQL 请求（DML/DDL），返回影响行数或错误码
  */
-static int send_exec_sql(ipc_context_t *ctx, const char *sql)
+static int send_exec_sql(dev_ipc_context_t *ctx, const char *sql)
 {
     void *payload = NULL;
     uint32_t payload_len = 0;
     db_serialize_request_sql(DB_GLOBAL_NAME, sql, &payload, &payload_len);
 
-    ipc_message_t *req = ipc_message_create(IPC_MSG_TYPE_DB_EXEC_SQL, ipc_get_module_id(ctx), DEV_MODULE_ID_DB, 0,
-                                            payload, payload_len, g_free);
+    dev_ipc_message_t *req = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DB_EXEC_SQL, dev_ipc_get_module_id(ctx),
+                                                    DEV_MODULE_ID_DB, 0, payload, payload_len, g_free);
 
-    ipc_message_t *resp = ipc_query(ctx, DEV_MODULE_ID_DB, req, 5000);
-    ipc_message_free(req);
+    dev_ipc_message_t *resp = dev_ipc_query(ctx, DEV_MODULE_ID_DB, req, 5000);
+    dev_ipc_message_free(req);
 
     if (!resp)
     {
@@ -298,24 +456,24 @@ static int send_exec_sql(ipc_context_t *ctx, const char *sql)
 
     int32_t retval = -1;
     db_deserialize_response(resp->payload, resp->payload_len, &retval, NULL);
-    ipc_message_free(resp);
+    dev_ipc_message_free(resp);
     return retval;
 }
 
 /**
  * @brief 发送 QUERY_SQL 请求（SELECT），返回结果集
  */
-static int send_query_sql(ipc_context_t *ctx, const char *sql, db_result_t **result)
+static int send_query_sql(dev_ipc_context_t *ctx, const char *sql, db_result_t **result)
 {
     void *payload = NULL;
     uint32_t payload_len = 0;
     db_serialize_request_sql(DB_GLOBAL_NAME, sql, &payload, &payload_len);
 
-    ipc_message_t *req = ipc_message_create(IPC_MSG_TYPE_DB_QUERY_SQL, ipc_get_module_id(ctx), DEV_MODULE_ID_DB, 0,
-                                            payload, payload_len, g_free);
+    dev_ipc_message_t *req = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DB_QUERY_SQL, dev_ipc_get_module_id(ctx),
+                                                    DEV_MODULE_ID_DB, 0, payload, payload_len, g_free);
 
-    ipc_message_t *resp = ipc_query(ctx, DEV_MODULE_ID_DB, req, 5000);
-    ipc_message_free(req);
+    dev_ipc_message_t *resp = dev_ipc_query(ctx, DEV_MODULE_ID_DB, req, 5000);
+    dev_ipc_message_free(req);
 
     if (!resp)
     {
@@ -325,15 +483,63 @@ static int send_query_sql(ipc_context_t *ctx, const char *sql, db_result_t **res
 
     int32_t retval = ERRCODE_FAIL;
     db_deserialize_response(resp->payload, resp->payload_len, &retval, result);
-    ipc_message_free(resp);
+    dev_ipc_message_free(resp);
     return retval;
+}
+
+/**
+ * @brief 根据表定义自动补齐缺失列（仅新增列，不改动已有列）
+ */
+static int rpc_sync_table_columns(dev_ipc_context_t *ctx, const db_table_def_t *def)
+{
+    char pragma_sql[512];
+    snprintf(pragma_sql, sizeof(pragma_sql), "PRAGMA table_info(%s);", def->table_name);
+    LOG_INFO("[SQL] %s", pragma_sql);
+
+    db_result_t *schema = NULL;
+    int ret = send_query_sql(ctx, pragma_sql, &schema);
+    if (ret != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("读取表结构失败: %s", def->table_name);
+        return ERRCODE_FAIL;
+    }
+
+    for (uint32_t i = 0; i < def->num_cols; i++)
+    {
+        const db_column_def_t *col = &def->cols[i];
+        if (rpc_schema_has_column(schema, col->name))
+        {
+            continue;
+        }
+
+        char alter_sql[1024];
+        if (rpc_build_add_column_sql(def->table_name, col, alter_sql, sizeof(alter_sql)) < 0)
+        {
+            db_result_free(schema);
+            return ERRCODE_FAIL;
+        }
+
+        LOG_INFO("[SQL] %s", alter_sql);
+        int rows = send_exec_sql(ctx, alter_sql);
+        if (rows < 0)
+        {
+            LOG_ERROR("补齐列失败: %s.%s", def->table_name, col->name);
+            db_result_free(schema);
+            return ERRCODE_FAIL;
+        }
+
+        LOG_INFO("已自动补齐列: %s.%s", def->table_name, col->name);
+    }
+
+    db_result_free(schema);
+    return ERRCODE_SUCCESS;
 }
 
 // ============================================================================
 // 公共 RPC 接口实现
 // ============================================================================
 
-int db_rpc_insert(ipc_context_t *ctx, const char *table_name, const char **field_names, const db_value_t *values,
+int db_rpc_insert(dev_ipc_context_t *ctx, const char *table_name, const char **field_names, const db_value_t *values,
                   uint32_t num_fields)
 {
     if (!ctx || !table_name || !field_names || !values || num_fields == 0)
@@ -349,8 +555,8 @@ int db_rpc_insert(ipc_context_t *ctx, const char *table_name, const char **field
     return (rows >= 0) ? ERRCODE_SUCCESS : ERRCODE_FAIL;
 }
 
-int db_rpc_update(ipc_context_t *ctx, const char *table_name, const char **field_names, const db_value_t *values,
-                  uint32_t num_fields, const char *where_clause)
+int db_rpc_update(dev_ipc_context_t *ctx, const char *table_name, const char **field_names, const db_value_t *values,
+                  uint32_t num_fields, const db_filter_t *filter)
 {
     if (!ctx || !table_name || !field_names || !values || num_fields == 0)
     {
@@ -358,13 +564,17 @@ int db_rpc_update(ipc_context_t *ctx, const char *table_name, const char **field
     }
 
     char sql[4096];
-    build_update_sql(table_name, field_names, values, num_fields, where_clause, sql, sizeof(sql));
+    if (build_update_sql(table_name, field_names, values, num_fields, filter, sql, sizeof(sql)) < 0)
+    {
+        LOG_ERROR("构建 UPDATE SQL 失败: 非法过滤条件");
+        return -1;
+    }
     LOG_INFO("[SQL] %s", sql);
 
     return send_exec_sql(ctx, sql);
 }
 
-int db_rpc_delete(ipc_context_t *ctx, const char *table_name, const char *where_clause)
+int db_rpc_delete(dev_ipc_context_t *ctx, const char *table_name, const db_filter_t *filter)
 {
     if (!ctx || !table_name)
     {
@@ -372,14 +582,18 @@ int db_rpc_delete(ipc_context_t *ctx, const char *table_name, const char *where_
     }
 
     char sql[2048];
-    build_delete_sql(table_name, where_clause, sql, sizeof(sql));
+    if (build_delete_sql(table_name, filter, sql, sizeof(sql)) < 0)
+    {
+        LOG_ERROR("构建 DELETE SQL 失败: 非法过滤条件");
+        return -1;
+    }
     LOG_INFO("[SQL] %s", sql);
 
     return send_exec_sql(ctx, sql);
 }
 
-int db_rpc_query(ipc_context_t *ctx, const char *table_name, const char **field_names, uint32_t num_fields,
-                 const char *where_clause, db_result_t **result)
+int db_rpc_query(dev_ipc_context_t *ctx, const char *table_name, const char **field_names, uint32_t num_fields,
+                 const db_filter_t *filter, db_result_t **result)
 {
     if (!ctx || !table_name || !result)
     {
@@ -387,13 +601,17 @@ int db_rpc_query(ipc_context_t *ctx, const char *table_name, const char **field_
     }
 
     char sql[4096];
-    build_select_sql(table_name, field_names, num_fields, where_clause, sql, sizeof(sql));
+    if (build_select_sql(table_name, field_names, num_fields, filter, sql, sizeof(sql)) < 0)
+    {
+        LOG_ERROR("构建 SELECT SQL 失败: 非法过滤条件");
+        return ERRCODE_FAIL;
+    }
     LOG_INFO("[SQL] %s", sql);
 
     return send_query_sql(ctx, sql, result);
 }
 
-int db_rpc_exists(ipc_context_t *ctx, const char *table_name, const char *where_clause, gboolean *exists)
+int db_rpc_exists(dev_ipc_context_t *ctx, const char *table_name, const db_filter_t *filter, gboolean *exists)
 {
     if (!ctx || !table_name || !exists)
     {
@@ -403,7 +621,11 @@ int db_rpc_exists(ipc_context_t *ctx, const char *table_name, const char *where_
     /* 用 SELECT 1 检查是否存在，避免传输完整行数据 */
     const char *fields[] = {"1"};
     char sql[2048];
-    build_select_sql(table_name, fields, 1, where_clause, sql, sizeof(sql));
+    if (build_select_sql(table_name, fields, 1, filter, sql, sizeof(sql)) < 0)
+    {
+        LOG_ERROR("构建 EXISTS 查询 SQL 失败: 非法过滤条件");
+        return ERRCODE_FAIL;
+    }
     LOG_INFO("[SQL] %s", sql);
 
     db_result_t *result = NULL;
@@ -419,7 +641,7 @@ int db_rpc_exists(ipc_context_t *ctx, const char *table_name, const char *where_
     return ERRCODE_FAIL;
 }
 
-int db_rpc_create_table(ipc_context_t *ctx, const char *ddl)
+int db_rpc_create_table(dev_ipc_context_t *ctx, const char *ddl)
 {
     if (!ctx || !ddl || ddl[0] == '\0')
     {
@@ -432,7 +654,7 @@ int db_rpc_create_table(ipc_context_t *ctx, const char *ddl)
     return (rows >= 0) ? ERRCODE_SUCCESS : ERRCODE_FAIL;
 }
 
-int db_rpc_create_table_from_def(ipc_context_t *ctx, const db_table_def_t *def)
+int db_rpc_create_table_from_def(dev_ipc_context_t *ctx, const db_table_def_t *def)
 {
     if (!ctx || !def || !def->table_name || !def->cols || def->num_cols == 0)
     {
@@ -444,5 +666,10 @@ int db_rpc_create_table_from_def(ipc_context_t *ctx, const db_table_def_t *def)
     LOG_INFO("[SQL] %s", sql);
 
     int rows = send_exec_sql(ctx, sql);
-    return (rows >= 0) ? ERRCODE_SUCCESS : ERRCODE_FAIL;
+    if (rows < 0)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    return rpc_sync_table_columns(ctx, def);
 }

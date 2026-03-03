@@ -8,5 +8,4 @@
 #include <stdlib.h>
 
 #include "dev.h"
-#include "ipc.h"
 #include "route_main.h"

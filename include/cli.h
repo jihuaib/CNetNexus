@@ -12,22 +12,22 @@
 #include <glib.h>
 #include <stdint.h>
 
-#include "ipc.h"
+#include "dev.h"
 
 // ============================================================================
 // CLI 消息类型定义（使用 IPC 编码）
 // ============================================================================
 
 /** CLI 命令消息 */
-#define CFG_MSG_TYPE_CLI IPC_MSG_TYPE(IPC_CATEGORY_CLI, 0x0001)
+#define CFG_MSG_TYPE_CLI DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0001)
 /** CLI 响应消息 */
-#define CFG_MSG_TYPE_CLI_RESP IPC_MSG_TYPE(IPC_CATEGORY_CLI, 0x0002)
+#define CFG_MSG_TYPE_CLI_RESP DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0002)
 /** CLI 视图切换消息 */
-#define CFG_MSG_TYPE_CLI_VIEW_CHG IPC_MSG_TYPE(IPC_CATEGORY_CLI, 0x0003)
+#define CFG_MSG_TYPE_CLI_VIEW_CHG DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0003)
 /** CLI 响应（还有更多数据待发送） */
-#define CFG_MSG_TYPE_CLI_RESP_MORE IPC_MSG_TYPE(IPC_CATEGORY_CLI, 0x0004)
+#define CFG_MSG_TYPE_CLI_RESP_MORE DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0004)
 /** CLI 请求下一批数据 */
-#define CFG_MSG_TYPE_CLI_CONTINUE IPC_MSG_TYPE(IPC_CATEGORY_CLI, 0x0005)
+#define CFG_MSG_TYPE_CLI_CONTINUE DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0005)
 
 /** CLI 响应消息最大长度 */
 #define CLI_MAX_RESP_LEN 4096
@@ -46,6 +46,10 @@
 #define CLI_VIEW_BGP 0x00000004
 /** 接口视图 */
 #define CLI_VIEW_IF 0x00000005
+/** 路由视图 */
+#define CLI_VIEW_ROUTE 0x00000006
+/** BGP 地址族 IPv4 单播视图 */
+#define CLI_VIEW_BGP_AF_IPV4 0x00000007
 
 /** 视图名称最大长度 */
 #define CLI_CLI_MAX_VIEW_LEN 20
@@ -178,9 +182,6 @@ void cli_tlv_entry_free(cli_tlv_entry_t *entry);
  * @param p 解析器
  */
 void cli_tlv_cleanup(cli_tlv_parser_t *p);
-
-/** 判断是否为 no 命令 */
-#define CLI_TLV_IS_NO_CMD(p) (((p)->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0)
 
 /**
  * @brief 向 CLI 响应缓冲区追加格式化字符串

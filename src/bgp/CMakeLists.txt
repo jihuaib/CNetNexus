@@ -3,6 +3,14 @@ set(BGP_SOURCES
     bgp_main.c
     bgp_cli.c
     bgp_db.c
+    bgp_peer.c
+    bgp_conn.c
+    bgp_session.c
+    bgp_instance.c
+    bgp_vrf.c
+    bgp_protocol.c
+
+    bgp_listen.c
 )
 
 # Create shared library for BGP module
@@ -16,6 +24,7 @@ target_include_directories(bgp PRIVATE
 # Link libraries
 target_link_libraries(bgp PRIVATE
     dev_api
+    utils
 )
 
 # Set library version

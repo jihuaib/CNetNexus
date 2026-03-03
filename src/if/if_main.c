@@ -14,14 +14,11 @@
 
 #include "cli.h"
 #include "db.h"
-#include "db_rpc.h"
 #include "dev.h"
 #include "errcode.h"
 #include "if_cli.h"
 #include "if_map.h"
-#include "ipc.h"
 #include "log.h"
-#include "module_ports.h"
 #include "path_utils.h"
 
 if_local_t *g_if_local = NULL;
@@ -37,16 +34,19 @@ static void if_init_db(void)
     {
         const char *logical_name = g_interface_map.entries[i].logical_name;
 
-        char where[64];
-        snprintf(where, sizeof(where), "name = '%s'", logical_name);
+        db_condition_t conditions[] = {
+            {.field_name = "name", .op = DB_CMP_EQ, .value = db_value_text(logical_name)},
+        };
+        db_filter_t filter = {.conditions = conditions, .num_conditions = G_N_ELEMENTS(conditions)};
         gboolean exists = FALSE;
-        int ret = db_rpc_exists(g_if_local->ipc_ctx, "if_interface", where, &exists);
+        int ret = db_rpc_exists(g_if_local->dev_ipc_ctx, "if_interface", &filter, &exists);
+        db_value_free(&conditions[0].value);
 
         if (ret == ERRCODE_SUCCESS && !exists)
         {
             const char *field_names[] = {"name", "ip_address", "netmask", "shutdown"};
             db_value_t values[] = {db_value_text(logical_name), db_value_text(""), db_value_text(""), db_value_int(0)};
-            db_rpc_insert(g_if_local->ipc_ctx, "if_interface", field_names, values, 4);
+            db_rpc_insert(g_if_local->dev_ipc_ctx, "if_interface", field_names, values, 4);
             db_value_free(&values[0]);
             db_value_free(&values[1]);
             db_value_free(&values[2]);
@@ -63,12 +63,12 @@ static void if_init_db(void)
 // 三阶段回调辅助
 // ============================================================================
 
-static void send_phase_response(ipc_context_t *ctx, ipc_message_t *msg, int32_t result)
+static void send_phase_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, int32_t result)
 {
-    ipc_message_t *resp = ipc_message_create(IPC_MSG_TYPE_DEV_MODULE_RESP, DEV_MODULE_ID_IF, msg->src_module_id,
-                                             msg->request_id, NULL, 0, NULL);
-    ipc_send_response(ctx, resp);
-    ipc_message_free(msg);
+    dev_ipc_message_t *resp = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_MODULE_RESP, DEV_MODULE_ID_IF,
+                                                     msg->src_module_id, msg->request_id, NULL, 0, NULL);
+    dev_ipc_send_response(ctx, resp);
+    dev_ipc_message_free(msg);
     (void)result;
 }
 
@@ -76,12 +76,12 @@ static void send_phase_response(ipc_context_t *ctx, ipc_message_t *msg, int32_t 
 // Phase 1: MODULE_START — 建立 IPC 连接到 CFG
 // ============================================================================
 
-static void if_on_start(ipc_context_t *ctx, ipc_message_t *msg)
+static void if_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     LOG_INFO("Phase 1: MODULE_START — 建立 IPC 连接");
 
-    ipc_connect(ctx, DEV_MODULE_ID_CFG, IPC_HOST_LOCAL, MODULE_PORT_CFG);
-    ipc_connect(ctx, DEV_MODULE_ID_DB, IPC_HOST_LOCAL, MODULE_PORT_DB);
+    dev_ipc_connect(ctx, DEV_MODULE_ID_CFG, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CFG);
+    dev_ipc_connect(ctx, DEV_MODULE_ID_DB, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_DB);
 
     LOG_INFO("已连接到 CFG 和 DB");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
@@ -91,7 +91,7 @@ static void if_on_start(ipc_context_t *ctx, ipc_message_t *msg)
 // Phase 2: MODULE_CONNECT — 预留（直接回复 OK）
 // ============================================================================
 
-static void if_on_connect(ipc_context_t *ctx, ipc_message_t *msg)
+static void if_on_connect(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     LOG_INFO("Phase 2: MODULE_CONNECT (预留)");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
@@ -101,20 +101,26 @@ static void if_on_connect(ipc_context_t *ctx, ipc_message_t *msg)
 // Phase 3: MODULE_READY — 将接口写入数据库
 // ============================================================================
 
-/* if_interface 表建表 DDL */
-static const char IF_INTERFACE_DDL[] = "CREATE TABLE IF NOT EXISTS if_interface ("
-                                       "  name       TEXT    PRIMARY KEY,"
-                                       "  ip_address TEXT    NOT NULL DEFAULT '',"
-                                       "  netmask    TEXT    NOT NULL DEFAULT '',"
-                                       "  shutdown   INTEGER NOT NULL DEFAULT 0"
-                                       ");";
+/* if_interface 表结构定义 */
+static const db_column_def_t IF_INTERFACE_COLS[] = {
+    {"name", DB_TYPE_TEXT, DB_COL_PRIMARY_KEY, NULL},
+    {"ip_address", DB_TYPE_TEXT, DB_COL_NOT_NULL, "''"},
+    {"netmask", DB_TYPE_TEXT, DB_COL_NOT_NULL, "''"},
+    {"shutdown", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},
+};
 
-static void if_on_ready(ipc_context_t *ctx, ipc_message_t *msg)
+static const db_table_def_t IF_INTERFACE_TABLE = {
+    .table_name = "if_interface",
+    .cols = IF_INTERFACE_COLS,
+    .num_cols = G_N_ELEMENTS(IF_INTERFACE_COLS),
+};
+
+static void if_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     LOG_INFO("Phase 3: MODULE_READY — 初始化 IF 数据库");
 
     /* 建表（IF NOT EXISTS，幂等操作） */
-    int ret = db_rpc_create_table(ctx, IF_INTERFACE_DDL);
+    int ret = db_rpc_create_table_from_def(ctx, &IF_INTERFACE_TABLE);
     if (ret != ERRCODE_SUCCESS)
     {
         LOG_WARN("IF 建表失败，跳过数据库初始化");
@@ -133,12 +139,12 @@ static void if_on_ready(ipc_context_t *ctx, ipc_message_t *msg)
 // Shutdown
 // ============================================================================
 
-static void if_on_shutdown(ipc_context_t *ctx, ipc_message_t *msg)
+static void if_on_shutdown(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     LOG_INFO("Shutting down if module...");
 
-    /* ipc_ctx 由 DEV 管理 */
-    g_if_local->ipc_ctx = NULL;
+    /* dev_ipc_ctx 由 DEV 管理 */
+    g_if_local->dev_ipc_ctx = NULL;
 
     g_free(g_if_local);
     g_if_local = NULL;
@@ -151,21 +157,21 @@ static void if_on_shutdown(ipc_context_t *ctx, ipc_message_t *msg)
 // IPC 消息处理回调
 // ============================================================================
 
-void if_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
+void if_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     switch (msg->msg_type)
     {
         /* ---- DEV 生命周期消息 ---- */
-        case IPC_MSG_TYPE_DEV_MODULE_START:
+        case DEV_IPC_MSG_TYPE_DEV_MODULE_START:
             if_on_start(ctx, msg);
             return;
-        case IPC_MSG_TYPE_DEV_MODULE_CONNECT:
+        case DEV_IPC_MSG_TYPE_DEV_MODULE_CONNECT:
             if_on_connect(ctx, msg);
             return;
-        case IPC_MSG_TYPE_DEV_MODULE_READY:
+        case DEV_IPC_MSG_TYPE_DEV_MODULE_READY:
             if_on_ready(ctx, msg);
             return;
-        case IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN:
+        case DEV_IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN:
             if_on_shutdown(ctx, msg);
             return;
 
@@ -185,7 +191,7 @@ void if_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
             break;
     }
 
-    ipc_message_free(msg);
+    dev_ipc_message_free(msg);
 }
 
 // ============================================================================
@@ -197,7 +203,7 @@ __attribute__((constructor)) static void if_so_init(void)
     LOG_INFO(".so 加载，自初始化");
 
     /* 创建 IPC 上下文 */
-    ipc_context_t *ctx = ipc_init(DEV_MODULE_ID_IF, "if", MODULE_PORT_IF, if_msg_handler);
+    dev_ipc_context_t *ctx = dev_ipc_init(DEV_MODULE_ID_IF, "if", DEV_MODULE_PORT_IF, if_msg_handler);
     if (!ctx)
     {
         LOG_ERROR("IPC 初始化失败");
@@ -206,7 +212,7 @@ __attribute__((constructor)) static void if_so_init(void)
 
     /* 初始化本地状态（原 if_on_start 逻辑） */
     g_if_local = g_malloc0(sizeof(if_local_t));
-    g_if_local->ipc_ctx = ctx;
+    g_if_local->dev_ipc_ctx = ctx;
 
     /* 初始化接口映射
      * 查找顺序：

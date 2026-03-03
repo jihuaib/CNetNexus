@@ -2,6 +2,7 @@
 add_library(utils SHARED
     path_utils.c
     log.c
+    net_addr.c
 )
 
 # Link dependencies

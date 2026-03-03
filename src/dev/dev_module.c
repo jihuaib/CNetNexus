@@ -15,13 +15,12 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include "db_rpc.h"
+#include "db.h"
 #include "dev.h"
 #include "dev_conf_parser.h"
 #include "dev_main.h"
 #include "errcode.h"
 #include "log.h"
-#include "module_ports.h"
 #include "path_utils.h"
 
 /* 前向声明 */
@@ -175,7 +174,7 @@ static int dev_scan_dir_for_modules(const char *base_dir)
         /* dlopen 加载共享库 — constructor 自动触发
          * 使用 RTLD_LAZY 因为模块间存在交叉依赖（如 db→cfg），
          * 加载时并非所有符号都已可用，实际调用时再解析即可。
-         * constructor 调用 ipc_init() 会把主线程标签改为该模块名，
+         * constructor 调用 dev_ipc_init() 会把主线程标签改为该模块名，
          * dlopen 返回后恢复为 "dev"，保持扫描期间日志标签一致。 */
         void *dl_handle = dev_dlopen_module(conf.so_name);
         log_set_tag("dev"); /* 恢复：constructor 已把标签改为各自模块名 */
@@ -268,7 +267,7 @@ int32_t dev_scan_and_load_modules(void)
     ensure_registry_initialized();
 
     /* DEV 自身初始化（创建 DEV 的 IPC context + 注册到 GTree）
-     * ipc_init() 内部会把调用线程标签设为 "dev"，在 dlopen 触发各模块
+     * dev_ipc_init() 内部会把调用线程标签设为 "dev"，在 dlopen 触发各模块
      * constructor 之前，日志已标记为 "dev" */
     if (dev_init_self() != ERRCODE_SUCCESS)
     {
@@ -324,7 +323,7 @@ static gboolean dev_connect_to_module_callback(gpointer key, gpointer value, gpo
 {
     (void)key;
     dev_module_t *module = (dev_module_t *)value;
-    ipc_context_t *dev_ctx = (ipc_context_t *)data;
+    dev_ipc_context_t *dev_ctx = (dev_ipc_context_t *)data;
 
     if (module->module_id == DEV_MODULE_ID_DEV)
     {
@@ -334,14 +333,14 @@ static gboolean dev_connect_to_module_callback(gpointer key, gpointer value, gpo
     if (module->phase >= DEV_PHASE_LOADED)
     {
         LOG_INFO("连接到模块: %s (port=%u)", module->name, module->port);
-        ipc_connect(dev_ctx, module->module_id, IPC_HOST_LOCAL, module->port);
+        dev_ipc_connect(dev_ctx, module->module_id, DEV_IPC_HOST_LOCAL, module->port);
     }
 
     return FALSE;
 }
 
 // ============================================================================
-// Phase 1: 发送 MODULE_START RPC（无 payload，各模块名称已在 ipc_init 中配置）
+// Phase 1: 发送 MODULE_START RPC（无 payload，各模块名称已在 dev_ipc_init 中配置）
 // ============================================================================
 
 static gboolean phase1_start_callback(gpointer key, gpointer value, gpointer data)
@@ -363,15 +362,15 @@ static gboolean phase1_start_callback(gpointer key, gpointer value, gpointer dat
 
     LOG_INFO("Phase 1: 发送 MODULE_START -> %s", module->name);
 
-    ipc_message_t *req =
-        ipc_message_create(IPC_MSG_TYPE_DEV_MODULE_START, DEV_MODULE_ID_DEV, module->module_id, 0, NULL, 0, NULL);
+    dev_ipc_message_t *req = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_MODULE_START, DEV_MODULE_ID_DEV,
+                                                    module->module_id, 0, NULL, 0, NULL);
 
-    ipc_message_t *resp = ipc_query(g_dev_local->ipc_ctx, module->module_id, req, 5000);
+    dev_ipc_message_t *resp = dev_ipc_query(g_dev_local->dev_ipc_ctx, module->module_id, req, 5000);
     if (resp)
     {
         LOG_INFO("Phase 1: %s IPC 连接已建立", module->name);
         module->phase = DEV_PHASE_IPC_READY;
-        ipc_message_free(resp);
+        dev_ipc_message_free(resp);
     }
     else
     {
@@ -405,15 +404,15 @@ static gboolean phase2_connect_callback(gpointer key, gpointer value, gpointer d
 
     LOG_INFO("Phase 2: 发送 MODULE_CONNECT -> %s", module->name);
 
-    ipc_message_t *req =
-        ipc_message_create(IPC_MSG_TYPE_DEV_MODULE_CONNECT, DEV_MODULE_ID_DEV, module->module_id, 0, NULL, 0, NULL);
+    dev_ipc_message_t *req = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_MODULE_CONNECT, DEV_MODULE_ID_DEV,
+                                                    module->module_id, 0, NULL, 0, NULL);
 
-    ipc_message_t *resp = ipc_query(g_dev_local->ipc_ctx, module->module_id, req, 5000);
+    dev_ipc_message_t *resp = dev_ipc_query(g_dev_local->dev_ipc_ctx, module->module_id, req, 5000);
     if (resp)
     {
         LOG_INFO("Phase 2: %s 预留阶段完成", module->name);
         module->phase = DEV_PHASE_DB_RECOVERED;
-        ipc_message_free(resp);
+        dev_ipc_message_free(resp);
     }
     else
     {
@@ -447,15 +446,15 @@ static gboolean phase3_ready_callback(gpointer key, gpointer value, gpointer dat
 
     LOG_INFO("Phase 3: 发送 MODULE_READY -> %s", module->name);
 
-    ipc_message_t *req =
-        ipc_message_create(IPC_MSG_TYPE_DEV_MODULE_READY, DEV_MODULE_ID_DEV, module->module_id, 0, NULL, 0, NULL);
+    dev_ipc_message_t *req = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_MODULE_READY, DEV_MODULE_ID_DEV,
+                                                    module->module_id, 0, NULL, 0, NULL);
 
-    ipc_message_t *resp = ipc_query(g_dev_local->ipc_ctx, module->module_id, req, 5000);
+    dev_ipc_message_t *resp = dev_ipc_query(g_dev_local->dev_ipc_ctx, module->module_id, req, 5000);
     if (resp)
     {
         LOG_INFO("Phase 3: %s 就绪", module->name);
         module->phase = DEV_PHASE_READY;
-        ipc_message_free(resp);
+        dev_ipc_message_free(resp);
     }
     else
     {
@@ -490,7 +489,7 @@ int32_t dev_init_all_modules(void)
 
     /* DEV 连接到所有模块 */
     LOG_INFO("DEV 连接到所有模块");
-    g_tree_foreach(g_module_registry, dev_connect_to_module_callback, g_dev_local->ipc_ctx);
+    g_tree_foreach(g_module_registry, dev_connect_to_module_callback, g_dev_local->dev_ipc_ctx);
 
     /* 等待所有 IPC 连接完成握手（最多 5 秒） */
     LOG_INFO("等待 IPC 连接就绪...");
@@ -506,7 +505,7 @@ int32_t dev_init_all_modules(void)
             dev_module_t *m = (dev_module_t *)l->data;
             if (m->module_id != DEV_MODULE_ID_DEV && m->phase >= DEV_PHASE_LOADED)
             {
-                if (!ipc_is_connected(g_dev_local->ipc_ctx, m->module_id))
+                if (!dev_ipc_is_connected(g_dev_local->dev_ipc_ctx, m->module_id))
                 {
                     all_connected = 0;
                     if (retry % 10 == 9) /* 每 1 秒记录一次等待中的模块 */
@@ -537,7 +536,7 @@ int32_t dev_init_all_modules(void)
             dev_module_t *m = (dev_module_t *)l->data;
             if (m->module_id != DEV_MODULE_ID_DEV)
             {
-                int connected = ipc_is_connected(g_dev_local->ipc_ctx, m->module_id);
+                int connected = dev_ipc_is_connected(g_dev_local->dev_ipc_ctx, m->module_id);
                 LOG_WARN("  模块 %s (id=0x%08X): %s", m->name, m->module_id, connected ? "已连接" : "未连接");
             }
         }
@@ -605,13 +604,13 @@ void cleanup_all_modules(void)
         {
             LOG_INFO("发送 MODULE_SHUTDOWN -> %s", module->name);
 
-            ipc_message_t *req = ipc_message_create(IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN, DEV_MODULE_ID_DEV,
-                                                    module->module_id, 0, NULL, 0, NULL);
+            dev_ipc_message_t *req = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN, DEV_MODULE_ID_DEV,
+                                                            module->module_id, 0, NULL, 0, NULL);
 
-            ipc_message_t *resp = ipc_query(g_dev_local->ipc_ctx, module->module_id, req, 3000);
+            dev_ipc_message_t *resp = dev_ipc_query(g_dev_local->dev_ipc_ctx, module->module_id, req, 3000);
             if (resp)
             {
-                ipc_message_free(resp);
+                dev_ipc_message_free(resp);
             }
         }
     }

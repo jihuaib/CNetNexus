@@ -1,9 +1,10 @@
 /**
  * @file   db_schema.c
- * @brief  数据库 Schema 管理，表创建和迁移
+ * @brief  数据库 Schema 初始化与连接管理
  * @author jhb
  * @date   2026/01/22
  */
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

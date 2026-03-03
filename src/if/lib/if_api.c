@@ -13,5 +13,4 @@
 #include "errcode.h"
 #include "if_main.h"
 #include "if_map.h"
-#include "ipc.h"
 #include "path_utils.h"

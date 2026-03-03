@@ -44,7 +44,7 @@ static void *cfg_server_thread(void *arg);
 static void *cfg_server_thread(void *arg)
 {
     (void)arg;
-    log_set_tag(ipc_get_self_name(g_cfg_local->ipc_ctx));
+    log_set_tag(dev_ipc_get_self_name(g_cfg_local->dev_ipc_ctx));
 
     struct sockaddr_in client_addr;
     socklen_t client_len;
@@ -180,12 +180,12 @@ int32_t cfg_create_listen_sock()
 // 三阶段回调辅助函数
 // ============================================================================
 
-static void send_phase_response(ipc_context_t *ctx, ipc_message_t *msg, int32_t result)
+static void send_phase_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, int32_t result)
 {
-    ipc_message_t *resp = ipc_message_create(IPC_MSG_TYPE_DEV_MODULE_RESP, DEV_MODULE_ID_CFG, msg->src_module_id,
-                                             msg->request_id, NULL, 0, NULL);
-    ipc_send_response(ctx, resp);
-    ipc_message_free(msg);
+    dev_ipc_message_t *resp = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_MODULE_RESP, DEV_MODULE_ID_CFG,
+                                                     msg->src_module_id, msg->request_id, NULL, 0, NULL);
+    dev_ipc_send_response(ctx, resp);
+    dev_ipc_message_free(msg);
     (void)result;
 }
 
@@ -297,7 +297,7 @@ static void cfg_discover_and_load_xml(void)
 // 本地状态初始化（从 constructor 调用）
 // ============================================================================
 
-void cfg_init_local(ipc_context_t *ctx)
+void cfg_init_local(dev_ipc_context_t *ctx)
 {
     g_cfg_local = g_malloc0(sizeof(cfg_local_t));
     pthread_mutex_init(&g_cfg_local->history_mutex, NULL);
@@ -305,7 +305,7 @@ void cfg_init_local(ipc_context_t *ctx)
     g_cfg_local->epoll_fd = DEV_INVALID_FD;
     g_cfg_local->listen_sock = DEV_INVALID_FD;
     g_cfg_local->worker_thread = 0;
-    g_cfg_local->ipc_ctx = ctx;
+    g_cfg_local->dev_ipc_ctx = ctx;
     g_cfg_local->sessions = g_hash_table_new_full(g_int_hash, g_int_equal, g_free, (GDestroyNotify)cli_session_destroy);
 
     /* 创建视图树 */
@@ -335,7 +335,7 @@ void cfg_init_local(ipc_context_t *ctx)
 // Phase 1: MODULE_START — CFG 不需要连接其他模块，直接回复 OK
 // ============================================================================
 
-static void cfg_on_start(ipc_context_t *ctx, ipc_message_t *msg)
+static void cfg_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     LOG_INFO("Phase 1: MODULE_START (无需连接其他模块)");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
@@ -345,7 +345,7 @@ static void cfg_on_start(ipc_context_t *ctx, ipc_message_t *msg)
 // Phase 2: MODULE_CONNECT — 预留（直接回复 OK）
 // ============================================================================
 
-static void cfg_on_connect(ipc_context_t *ctx, ipc_message_t *msg)
+static void cfg_on_connect(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     LOG_INFO("Phase 2: MODULE_CONNECT (预留)");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
@@ -355,7 +355,7 @@ static void cfg_on_connect(ipc_context_t *ctx, ipc_message_t *msg)
 // Phase 3: MODULE_READY — 加载所有 XML
 // ============================================================================
 
-static void cfg_on_ready(ipc_context_t *ctx, ipc_message_t *msg)
+static void cfg_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     LOG_INFO("Phase 3: MODULE_READY — 启动 Telnet 服务器");
 
@@ -407,7 +407,7 @@ static void cfg_on_ready(ipc_context_t *ctx, ipc_message_t *msg)
 // Shutdown - 清理本地状态
 // ============================================================================
 
-static void cfg_on_shutdown(ipc_context_t *ctx, ipc_message_t *msg)
+static void cfg_on_shutdown(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     LOG_INFO("Shutting down server...");
     g_cfg_local->running = 0;
@@ -437,8 +437,8 @@ static void cfg_on_shutdown(ipc_context_t *ctx, ipc_message_t *msg)
         g_hash_table_destroy(g_cfg_local->sessions);
     }
 
-    /* 注意: ipc_ctx 由 DEV 管理，此处不销毁 */
-    g_cfg_local->ipc_ctx = NULL;
+    /* 注意: dev_ipc_ctx 由 DEV 管理，此处不销毁 */
+    g_cfg_local->dev_ipc_ctx = NULL;
 
     g_free(g_cfg_local);
     g_cfg_local = NULL;
@@ -451,21 +451,21 @@ static void cfg_on_shutdown(ipc_context_t *ctx, ipc_message_t *msg)
 // IPC 消息处理回调
 // ============================================================================
 
-void cfg_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
+void cfg_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     switch (msg->msg_type)
     {
         /* ---- DEV 生命周期消息 ---- */
-        case IPC_MSG_TYPE_DEV_MODULE_START:
+        case DEV_IPC_MSG_TYPE_DEV_MODULE_START:
             cfg_on_start(ctx, msg);
             return;
-        case IPC_MSG_TYPE_DEV_MODULE_CONNECT:
+        case DEV_IPC_MSG_TYPE_DEV_MODULE_CONNECT:
             cfg_on_connect(ctx, msg);
             return;
-        case IPC_MSG_TYPE_DEV_MODULE_READY:
+        case DEV_IPC_MSG_TYPE_DEV_MODULE_READY:
             cfg_on_ready(ctx, msg);
             return;
-        case IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN:
+        case DEV_IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN:
             cfg_on_shutdown(ctx, msg);
             return;
 
@@ -473,7 +473,7 @@ void cfg_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
             break;
     }
 
-    ipc_message_free(msg);
+    dev_ipc_message_free(msg);
 }
 
 // ============================================================================
@@ -481,16 +481,13 @@ void cfg_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
 // ============================================================================
 
 #include "cfg_main.h"
-#include "dev.h"
-#include "ipc.h"
-#include "module_ports.h"
 
 __attribute__((constructor)) static void cfg_so_init(void)
 {
     LOG_INFO(".so 加载，自初始化");
 
     /* 创建 IPC 上下文 */
-    ipc_context_t *ctx = ipc_init(DEV_MODULE_ID_CFG, "cfg", MODULE_PORT_CFG, cfg_msg_handler);
+    dev_ipc_context_t *ctx = dev_ipc_init(DEV_MODULE_ID_CFG, "cfg", DEV_MODULE_PORT_CFG, cfg_msg_handler);
     if (!ctx)
     {
         LOG_ERROR("IPC 初始化失败");

@@ -50,7 +50,7 @@ static void print_commands_recursive(GString *out, const char *view_name, const 
     if (node->is_end_node == TRUE)
     {
         char module_name[DEV_MODULE_NAME_MAX_LEN];
-        if (dev_get_module_name(g_cfg_local->ipc_ctx, node->module_id, module_name) != ERRCODE_SUCCESS)
+        if (dev_get_module_name(g_cfg_local->dev_ipc_ctx, node->module_id, module_name) != ERRCODE_SUCCESS)
         {
             snprintf(module_name, sizeof(module_name), "unknown");
         }
@@ -500,7 +500,7 @@ static void handle_op_end(cli_session_t *session)
 // 主入口
 // ============================================================================
 
-int cfg_cli_handle(ipc_message_t *msg, cli_session_t *session)
+int cfg_cli_handle(dev_ipc_message_t *msg, cli_session_t *session)
 {
     if (!msg || !msg->payload || !session)
     {

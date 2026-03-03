@@ -11,25 +11,52 @@
 #include <string.h>
 
 #include "cli.h"
+#include "db.h"
 #include "dev.h"
 #include "errcode.h"
-#include "ipc.h"
 #include "log.h"
-#include "module_ports.h"
 #include "route_cli.h"
 
 route_local_t *g_route_local = NULL;
+
+/* route_ipv4 表结构定义 */
+static const db_column_def_t ROUTE_IPV4_COLS[] = {
+    {"destination", DB_TYPE_TEXT, DB_COL_NOT_NULL, NULL},
+    {"mask", DB_TYPE_TEXT, DB_COL_NOT_NULL, NULL},
+    {"next_hop", DB_TYPE_TEXT, DB_COL_NOT_NULL, NULL},
+    {"metric", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},
+};
+
+static const db_table_def_t ROUTE_IPV4_TABLE = {
+    .table_name = "route_ipv4",
+    .cols = ROUTE_IPV4_COLS,
+    .num_cols = G_N_ELEMENTS(ROUTE_IPV4_COLS),
+};
+
+/* route_ipv6 表结构定义 */
+static const db_column_def_t ROUTE_IPV6_COLS[] = {
+    {"destination", DB_TYPE_TEXT, DB_COL_NOT_NULL, NULL},
+    {"prefix_length", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
+    {"next_hop", DB_TYPE_TEXT, DB_COL_NOT_NULL, NULL},
+    {"metric", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},
+};
+
+static const db_table_def_t ROUTE_IPV6_TABLE = {
+    .table_name = "route_ipv6",
+    .cols = ROUTE_IPV6_COLS,
+    .num_cols = G_N_ELEMENTS(ROUTE_IPV6_COLS),
+};
 
 // ============================================================================
 // 三阶段回调辅助
 // ============================================================================
 
-static void send_phase_response(ipc_context_t *ctx, ipc_message_t *msg, int32_t result)
+static void send_phase_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, int32_t result)
 {
-    ipc_message_t *resp = ipc_message_create(IPC_MSG_TYPE_DEV_MODULE_RESP, DEV_MODULE_ID_ROUTE, msg->src_module_id,
-                                             msg->request_id, NULL, 0, NULL);
-    ipc_send_response(ctx, resp);
-    ipc_message_free(msg);
+    dev_ipc_message_t *resp = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_MODULE_RESP, DEV_MODULE_ID_ROUTE,
+                                                     msg->src_module_id, msg->request_id, NULL, 0, NULL);
+    dev_ipc_send_response(ctx, resp);
+    dev_ipc_message_free(msg);
     (void)result;
 }
 
@@ -37,16 +64,16 @@ static void send_phase_response(ipc_context_t *ctx, ipc_message_t *msg, int32_t 
 // Phase 1: MODULE_START — 建立 IPC 连接到 DB, CFG
 // ============================================================================
 
-static void route_on_start(ipc_context_t *ctx, ipc_message_t *msg)
+static void route_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     LOG_INFO("Phase 1: MODULE_START — 建立 IPC 连接");
 
-    if (ipc_connect(ctx, DEV_MODULE_ID_DB, IPC_HOST_LOCAL, MODULE_PORT_DB) < 0)
+    if (dev_ipc_connect(ctx, DEV_MODULE_ID_DB, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_DB) < 0)
     {
         LOG_ERROR("连接 DB 模块失败");
     }
 
-    if (ipc_connect(ctx, DEV_MODULE_ID_CFG, IPC_HOST_LOCAL, MODULE_PORT_CFG) != 0)
+    if (dev_ipc_connect(ctx, DEV_MODULE_ID_CFG, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CFG) != 0)
     {
         LOG_ERROR("连接 CFG 模块失败");
     }
@@ -59,19 +86,37 @@ static void route_on_start(ipc_context_t *ctx, ipc_message_t *msg)
 // Phase 2: MODULE_CONNECT — 预留（直接回复 OK）
 // ============================================================================
 
-static void route_on_connect(ipc_context_t *ctx, ipc_message_t *msg)
+static void route_on_connect(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     LOG_INFO("Phase 2: MODULE_CONNECT (预留)");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
 // ============================================================================
-// Phase 3: MODULE_READY — 预留（直接回复 OK）
+// Phase 3: MODULE_READY — 初始化 Route 数据库
 // ============================================================================
 
-static void route_on_ready(ipc_context_t *ctx, ipc_message_t *msg)
+static void route_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    LOG_INFO("Phase 3: MODULE_READY (预留)");
+    LOG_INFO("Phase 3: MODULE_READY — 初始化 Route 数据库");
+
+    int ret = db_rpc_create_table_from_def(ctx, &ROUTE_IPV4_TABLE);
+    if (ret != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("Route 建表失败: route_ipv4");
+        send_phase_response(ctx, msg, ERRCODE_SUCCESS);
+        return;
+    }
+
+    ret = db_rpc_create_table_from_def(ctx, &ROUTE_IPV6_TABLE);
+    if (ret != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("Route 建表失败: route_ipv6");
+        send_phase_response(ctx, msg, ERRCODE_SUCCESS);
+        return;
+    }
+
+    LOG_INFO("Route 数据库表已就绪");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
@@ -79,15 +124,15 @@ static void route_on_ready(ipc_context_t *ctx, ipc_message_t *msg)
 // Shutdown
 // ============================================================================
 
-static void route_on_shutdown(ipc_context_t *ctx, ipc_message_t *msg)
+static void route_on_shutdown(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     LOG_INFO("正在关闭 Route 模块...");
 
     if (g_route_local)
     {
         g_route_local->running = 0;
-        /* ipc_ctx 由 DEV 管理 */
-        g_route_local->ipc_ctx = NULL;
+        /* dev_ipc_ctx 由 DEV 管理 */
+        g_route_local->dev_ipc_ctx = NULL;
 
         free(g_route_local);
         g_route_local = NULL;
@@ -101,7 +146,7 @@ static void route_on_shutdown(ipc_context_t *ctx, ipc_message_t *msg)
 // IPC 消息处理回调
 // ============================================================================
 
-void route_ipc_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
+void route_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     if (msg == NULL)
     {
@@ -111,16 +156,16 @@ void route_ipc_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
     switch (msg->msg_type)
     {
         /* ---- DEV 生命周期消息 ---- */
-        case IPC_MSG_TYPE_DEV_MODULE_START:
+        case DEV_IPC_MSG_TYPE_DEV_MODULE_START:
             route_on_start(ctx, msg);
             return;
-        case IPC_MSG_TYPE_DEV_MODULE_CONNECT:
+        case DEV_IPC_MSG_TYPE_DEV_MODULE_CONNECT:
             route_on_connect(ctx, msg);
             return;
-        case IPC_MSG_TYPE_DEV_MODULE_READY:
+        case DEV_IPC_MSG_TYPE_DEV_MODULE_READY:
             route_on_ready(ctx, msg);
             return;
-        case IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN:
+        case DEV_IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN:
             route_on_shutdown(ctx, msg);
             return;
 
@@ -140,7 +185,7 @@ void route_ipc_msg_handler(ipc_context_t *ctx, ipc_message_t *msg)
             break;
     }
 
-    ipc_message_free(msg);
+    dev_ipc_message_free(msg);
 }
 
 // ============================================================================
@@ -152,7 +197,7 @@ __attribute__((constructor)) static void route_so_init(void)
     LOG_INFO(".so 加载，自初始化");
 
     /* 创建 IPC 上下文 */
-    ipc_context_t *ctx = ipc_init(DEV_MODULE_ID_ROUTE, "route", MODULE_PORT_ROUTE, route_ipc_msg_handler);
+    dev_ipc_context_t *ctx = dev_ipc_init(DEV_MODULE_ID_ROUTE, "route", DEV_MODULE_PORT_ROUTE, route_ipc_msg_handler);
     if (!ctx)
     {
         LOG_ERROR("IPC 初始化失败");
@@ -166,6 +211,6 @@ __attribute__((constructor)) static void route_so_init(void)
         LOG_ERROR("分配 route 上下文失败");
         return;
     }
-    g_route_local->ipc_ctx = ctx;
+    g_route_local->dev_ipc_ctx = ctx;
     g_route_local->running = 1;
 }

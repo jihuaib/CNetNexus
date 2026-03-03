@@ -1,11 +1,9 @@
 /**
- * @file   ipc_context.c
+ * @file   dev_ipc_context.c
  * @brief  IPC 上下文实现，包含 IO 线程、连接管理和公共 API
  * @author jhb
  * @date   2026/02/02
  */
-
-#include "ipc_context.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -21,8 +19,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "dev.h"
 #include "errcode.h"
-#include "ipc_frame.h"
 #include "log.h"
 
 /** 将模块 ID 格式化为可读字符串（用于日志），结果写入 buf */
@@ -32,37 +30,38 @@ static const char *fmt_module_id(uint32_t module_id, char *buf, size_t buf_size)
     return buf;
 }
 
-#define IPC_MAX_EPOLL_EVENTS 32
+#define DEV_IPC_MAX_EPOLL_EVENTS 32
 
 // 全局 IPC 上下文实例，用于其他模块方便获取
-ipc_context_t *g_ipc_context = NULL;
+dev_ipc_context_t *g_ipc_context = NULL;
 
 // ============================================================================
 // 内部函数前向声明
 // ============================================================================
 
-static ipc_connection_t *find_connection(ipc_context_t *ctx, uint32_t module_id);
-static ipc_connection_t *find_connection_by_fd(ipc_context_t *ctx, int fd);
-static int send_handshake(ipc_context_t *ctx, ipc_connection_t *conn);
-static int send_heartbeat(ipc_context_t *ctx, ipc_connection_t *conn);
-static void process_received_data(ipc_context_t *ctx, ipc_connection_t *conn);
-static void handle_frame(ipc_context_t *ctx, ipc_connection_t *conn, ipc_message_t *header, const uint8_t *payload);
-static void check_heartbeats(ipc_context_t *ctx);
-static void attempt_reconnects(ipc_context_t *ctx);
-static void accept_new_connection(ipc_context_t *ctx);
+static dev_ipc_connection_t *find_connection(dev_ipc_context_t *ctx, uint32_t module_id);
+static dev_ipc_connection_t *find_connection_by_fd(dev_ipc_context_t *ctx, int fd);
+static int send_handshake(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn);
+static int send_heartbeat(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn);
+static void process_received_data(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn);
+static void handle_frame(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn, dev_ipc_message_t *header,
+                         const uint8_t *payload);
+static void check_heartbeats(dev_ipc_context_t *ctx);
+static void attempt_reconnects(dev_ipc_context_t *ctx);
+static void accept_new_connection(dev_ipc_context_t *ctx);
 
 // ============================================================================
 // 连接查找
 // ============================================================================
 
-static ipc_connection_t *find_connection(ipc_context_t *ctx, uint32_t module_id)
+static dev_ipc_connection_t *find_connection(dev_ipc_context_t *ctx, uint32_t module_id)
 {
-    ipc_connection_t *fallback = NULL;
+    dev_ipc_connection_t *fallback = NULL;
     for (int i = 0; i < ctx->num_connections; i++)
     {
         if (ctx->connections[i] && ctx->connections[i]->remote_module_id == module_id)
         {
-            if (ctx->connections[i]->state == IPC_COCONNECTED)
+            if (ctx->connections[i]->state == DEV_IPC_COCONNECTED)
             {
                 return ctx->connections[i]; // 优先返回已连接的
             }
@@ -75,7 +74,7 @@ static ipc_connection_t *find_connection(ipc_context_t *ctx, uint32_t module_id)
     return fallback;
 }
 
-static ipc_connection_t *find_connection_by_fd(ipc_context_t *ctx, int fd)
+static dev_ipc_connection_t *find_connection_by_fd(dev_ipc_context_t *ctx, int fd)
 {
     for (int i = 0; i < ctx->num_connections; i++)
     {
@@ -91,13 +90,13 @@ static ipc_connection_t *find_connection_by_fd(ipc_context_t *ctx, int fd)
 // 握手和心跳
 // ============================================================================
 
-static int send_handshake(ipc_context_t *ctx, ipc_connection_t *conn)
+static int send_handshake(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn)
 {
     /* 握手消息: payload 为本模块 ID (4 字节，网络字节序) */
     uint32_t id_be = htonl(ctx->module_id);
-    ipc_message_t msg;
+    dev_ipc_message_t msg;
     memset(&msg, 0, sizeof(msg));
-    msg.msg_type = IPC_MSG_TYPE_HANDSHAKE;
+    msg.msg_type = DEV_IPC_MSG_TYPE_HANDSHAKE;
     msg.src_module_id = ctx->module_id;
     msg.dst_module_id = conn->remote_module_id;
     msg.request_id = 0;
@@ -107,27 +106,27 @@ static int send_handshake(ipc_context_t *ctx, ipc_connection_t *conn)
 
     uint8_t *buf = NULL;
     uint32_t buf_len = 0;
-    if (ipc_frame_serialize(&msg, &buf, &buf_len) != ERRCODE_SUCCESS)
+    if (dev_ipc_frame_serialize(&msg, &buf, &buf_len) != ERRCODE_SUCCESS)
     {
         return ERRCODE_FAIL;
     }
 
-    int ret = ipc_connection_send(conn, buf, buf_len);
+    int ret = dev_ipc_connection_send(conn, buf, buf_len);
     g_free(buf);
 
     if (ret == ERRCODE_SUCCESS)
     {
-        conn->state = IPC_COHANDSHAKING;
+        conn->state = DEV_IPC_COHANDSHAKING;
     }
 
     return ret;
 }
 
-static int send_heartbeat(ipc_context_t *ctx, ipc_connection_t *conn)
+static int send_heartbeat(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn)
 {
-    ipc_message_t msg;
+    dev_ipc_message_t msg;
     memset(&msg, 0, sizeof(msg));
-    msg.msg_type = IPC_MSG_TYPE_HEARTBEAT;
+    msg.msg_type = DEV_IPC_MSG_TYPE_HEARTBEAT;
     msg.src_module_id = ctx->module_id;
     msg.dst_module_id = conn->remote_module_id;
     msg.request_id = 0;
@@ -137,12 +136,12 @@ static int send_heartbeat(ipc_context_t *ctx, ipc_connection_t *conn)
 
     uint8_t *buf = NULL;
     uint32_t buf_len = 0;
-    if (ipc_frame_serialize(&msg, &buf, &buf_len) != ERRCODE_SUCCESS)
+    if (dev_ipc_frame_serialize(&msg, &buf, &buf_len) != ERRCODE_SUCCESS)
     {
         return ERRCODE_FAIL;
     }
 
-    int ret = ipc_connection_send(conn, buf, buf_len);
+    int ret = dev_ipc_connection_send(conn, buf, buf_len);
     g_free(buf);
 
     if (ret == ERRCODE_SUCCESS)
@@ -157,11 +156,12 @@ static int send_heartbeat(ipc_context_t *ctx, ipc_connection_t *conn)
 // 帧处理
 // ============================================================================
 
-static void handle_frame(ipc_context_t *ctx, ipc_connection_t *conn, ipc_message_t *header, const uint8_t *payload)
+static void handle_frame(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn, dev_ipc_message_t *header,
+                         const uint8_t *payload)
 {
     switch (header->msg_type)
     {
-        case IPC_MSG_TYPE_HANDSHAKE:
+        case DEV_IPC_MSG_TYPE_HANDSHAKE:
         {
             /* 收到握手：提取对端模块 ID */
             if (header->payload_len >= sizeof(uint32_t) && payload)
@@ -176,9 +176,9 @@ static void handle_frame(ipc_context_t *ctx, ipc_connection_t *conn, ipc_message
 
             /* 发送握手响应 */
             uint32_t id_be = htonl(ctx->module_id);
-            ipc_message_t ack;
+            dev_ipc_message_t ack;
             memset(&ack, 0, sizeof(ack));
-            ack.msg_type = IPC_MSG_TYPE_HANDSHAKE_ACK;
+            ack.msg_type = DEV_IPC_MSG_TYPE_HANDSHAKE_ACK;
             ack.src_module_id = ctx->module_id;
             ack.dst_module_id = conn->remote_module_id;
             ack.payload = &id_be;
@@ -186,17 +186,17 @@ static void handle_frame(ipc_context_t *ctx, ipc_connection_t *conn, ipc_message
 
             uint8_t *buf = NULL;
             uint32_t buf_len = 0;
-            if (ipc_frame_serialize(&ack, &buf, &buf_len) == ERRCODE_SUCCESS)
+            if (dev_ipc_frame_serialize(&ack, &buf, &buf_len) == ERRCODE_SUCCESS)
             {
                 pthread_mutex_lock(&ctx->comutex);
-                ipc_connection_send(conn, buf, buf_len);
+                dev_ipc_connection_send(conn, buf, buf_len);
                 pthread_mutex_unlock(&ctx->comutex);
                 g_free(buf);
             }
 
-            conn->state = IPC_COCONNECTED;
+            conn->state = DEV_IPC_COCONNECTED;
             conn->last_heartbeat_recv = time(NULL);
-            ipc_connection_reset_reconnect(conn);
+            dev_ipc_connection_reset_reconnect(conn);
             {
                 char _buf[16];
                 LOG_INFO("<%s> 与 %s 连接建立", ctx->name, fmt_module_id(conn->remote_module_id, _buf, sizeof(_buf)));
@@ -204,7 +204,7 @@ static void handle_frame(ipc_context_t *ctx, ipc_connection_t *conn, ipc_message
             break;
         }
 
-        case IPC_MSG_TYPE_HANDSHAKE_ACK:
+        case DEV_IPC_MSG_TYPE_HANDSHAKE_ACK:
         {
             if (header->payload_len >= sizeof(uint32_t) && payload)
             {
@@ -212,9 +212,9 @@ static void handle_frame(ipc_context_t *ctx, ipc_connection_t *conn, ipc_message
                 memcpy(&remote_id_be, payload, sizeof(uint32_t));
                 conn->remote_module_id = ntohl(remote_id_be);
             }
-            conn->state = IPC_COCONNECTED;
+            conn->state = DEV_IPC_COCONNECTED;
             conn->last_heartbeat_recv = time(NULL);
-            ipc_connection_reset_reconnect(conn);
+            dev_ipc_connection_reset_reconnect(conn);
             {
                 char _buf[16];
                 LOG_INFO("<%s> 与 %s 握手完成", ctx->name, fmt_module_id(conn->remote_module_id, _buf, sizeof(_buf)));
@@ -222,35 +222,35 @@ static void handle_frame(ipc_context_t *ctx, ipc_connection_t *conn, ipc_message
             break;
         }
 
-        case IPC_MSG_TYPE_HEARTBEAT:
+        case DEV_IPC_MSG_TYPE_HEARTBEAT:
         {
             conn->last_heartbeat_recv = time(NULL);
             /* 发送心跳响应 */
-            ipc_message_t ack;
+            dev_ipc_message_t ack;
             memset(&ack, 0, sizeof(ack));
-            ack.msg_type = IPC_MSG_TYPE_HEARTBEAT_ACK;
+            ack.msg_type = DEV_IPC_MSG_TYPE_HEARTBEAT_ACK;
             ack.src_module_id = ctx->module_id;
             ack.dst_module_id = conn->remote_module_id;
 
             uint8_t *buf = NULL;
             uint32_t buf_len = 0;
-            if (ipc_frame_serialize(&ack, &buf, &buf_len) == ERRCODE_SUCCESS)
+            if (dev_ipc_frame_serialize(&ack, &buf, &buf_len) == ERRCODE_SUCCESS)
             {
                 pthread_mutex_lock(&ctx->comutex);
-                ipc_connection_send(conn, buf, buf_len);
+                dev_ipc_connection_send(conn, buf, buf_len);
                 pthread_mutex_unlock(&ctx->comutex);
                 g_free(buf);
             }
             break;
         }
 
-        case IPC_MSG_TYPE_HEARTBEAT_ACK:
+        case DEV_IPC_MSG_TYPE_HEARTBEAT_ACK:
         {
             conn->last_heartbeat_recv = time(NULL);
             break;
         }
 
-        case IPC_MSG_TYPE_SHUTDOWN:
+        case DEV_IPC_MSG_TYPE_SHUTDOWN:
         {
             LOG_INFO("<%s> 收到关闭通知", ctx->name);
             ctx->shutdown_requested = 1;
@@ -260,7 +260,7 @@ static void handle_frame(ipc_context_t *ctx, ipc_connection_t *conn, ipc_message
         default:
         {
             /* 应用消息 */
-            ipc_message_t *app_msg = ipc_frame_to_message(header, payload);
+            dev_ipc_message_t *app_msg = dev_ipc_frame_to_message(header, payload);
             if (!app_msg)
             {
                 break;
@@ -269,7 +269,7 @@ static void handle_frame(ipc_context_t *ctx, ipc_connection_t *conn, ipc_message
             /* 检查是否是对同步查询的响应 */
             if (app_msg->request_id != 0 && ctx->query_mgr)
             {
-                int completed = ipc_query_mgr_complete(ctx->query_mgr, app_msg->request_id, app_msg);
+                int completed = dev_ipc_query_mgr_complete(ctx->query_mgr, app_msg->request_id, app_msg);
                 if (completed == ERRCODE_SUCCESS)
                 {
                     break; /* 已交付给等待者，不调用 msg_handler */
@@ -283,29 +283,29 @@ static void handle_frame(ipc_context_t *ctx, ipc_connection_t *conn, ipc_message
     }
 }
 
-static void process_received_data(ipc_context_t *ctx, ipc_connection_t *conn)
+static void process_received_data(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn)
 {
-    while (conn->recv_len >= IPC_FRAME_HEADER_SIZE)
+    while (conn->recv_len >= DEV_IPC_FRAME_HEADER_SIZE)
     {
         /* 尝试解析帧头部 */
-        ipc_message_t header;
-        if (ipc_frame_parse_header(conn->recv_buf, &header) != ERRCODE_SUCCESS)
+        dev_ipc_message_t header;
+        if (dev_ipc_frame_parse_header(conn->recv_buf, &header) != ERRCODE_SUCCESS)
         {
             /* 无效帧，断开连接 */
             LOG_WARN("<%s> 收到无效帧，断开连接", ctx->name);
-            ipc_connection_close(conn);
+            dev_ipc_connection_close(conn);
             return;
         }
 
         /* 检查是否有完整帧 */
-        uint32_t frame_total = IPC_FRAME_HEADER_SIZE + header.payload_len;
+        uint32_t frame_total = DEV_IPC_FRAME_HEADER_SIZE + header.payload_len;
         if (conn->recv_len < frame_total)
         {
             break; /* 等待更多数据 */
         }
 
         /* 提取负载 */
-        const uint8_t *payload = (header.payload_len > 0) ? (conn->recv_buf + IPC_FRAME_HEADER_SIZE) : NULL;
+        const uint8_t *payload = (header.payload_len > 0) ? (conn->recv_buf + DEV_IPC_FRAME_HEADER_SIZE) : NULL;
 
         /* 处理帧 */
         handle_frame(ctx, conn, &header, payload);
@@ -324,27 +324,27 @@ static void process_received_data(ipc_context_t *ctx, ipc_connection_t *conn)
 // 心跳检查和重连
 // ============================================================================
 
-static void check_heartbeats(ipc_context_t *ctx)
+static void check_heartbeats(dev_ipc_context_t *ctx)
 {
     time_t now = time(NULL);
 
     pthread_mutex_lock(&ctx->comutex);
     for (int i = 0; i < ctx->num_connections; i++)
     {
-        ipc_connection_t *conn = ctx->connections[i];
-        if (!conn || conn->state != IPC_COCONNECTED)
+        dev_ipc_connection_t *conn = ctx->connections[i];
+        if (!conn || conn->state != DEV_IPC_COCONNECTED)
         {
             continue;
         }
 
         /* 发送心跳 */
-        if (now - conn->last_heartbeat_sent >= IPC_HEARTBEAT_INTERVAL)
+        if (now - conn->last_heartbeat_sent >= DEV_IPC_HEARTBEAT_INTERVAL)
         {
             send_heartbeat(ctx, conn);
         }
 
         /* 检查心跳超时 */
-        if (now - conn->last_heartbeat_recv > IPC_HEARTBEAT_TIMEOUT)
+        if (now - conn->last_heartbeat_recv > DEV_IPC_HEARTBEAT_TIMEOUT)
         {
             {
                 char _buf[16];
@@ -352,29 +352,29 @@ static void check_heartbeats(ipc_context_t *ctx)
                          fmt_module_id(conn->remote_module_id, _buf, sizeof(_buf)));
             }
             epoll_ctl(ctx->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
-            ipc_connection_close(conn);
+            dev_ipc_connection_close(conn);
             if (conn->is_initiator)
             {
-                ipc_connection_backoff_reconnect(conn);
+                dev_ipc_connection_backoff_reconnect(conn);
             }
         }
     }
     pthread_mutex_unlock(&ctx->comutex);
 }
 
-static void attempt_reconnects(ipc_context_t *ctx)
+static void attempt_reconnects(dev_ipc_context_t *ctx)
 {
     time_t now = time(NULL);
 
     pthread_mutex_lock(&ctx->comutex);
     for (int i = 0; i < ctx->num_connections; i++)
     {
-        ipc_connection_t *conn = ctx->connections[i];
+        dev_ipc_connection_t *conn = ctx->connections[i];
         if (!conn || !conn->is_initiator)
         {
             continue;
         }
-        if (conn->state != IPC_CODISCONNECTED)
+        if (conn->state != DEV_IPC_CODISCONNECTED)
         {
             continue;
         }
@@ -386,7 +386,7 @@ static void attempt_reconnects(ipc_context_t *ctx)
         LOG_INFO("<%s> 重连 module(0x%08X) (%s:%u)...", ctx->name, conn->remote_module_id, conn->remote_host,
                  conn->remote_port);
 
-        if (ipc_connection_initiate(conn, conn->remote_host, conn->remote_port) == ERRCODE_SUCCESS)
+        if (dev_ipc_connection_initiate(conn, conn->remote_host, conn->remote_port) == ERRCODE_SUCCESS)
         {
             /* 添加到 epoll */
             struct epoll_event ev;
@@ -396,7 +396,7 @@ static void attempt_reconnects(ipc_context_t *ctx)
         }
         else
         {
-            ipc_connection_backoff_reconnect(conn);
+            dev_ipc_connection_backoff_reconnect(conn);
         }
     }
     pthread_mutex_unlock(&ctx->comutex);
@@ -406,7 +406,7 @@ static void attempt_reconnects(ipc_context_t *ctx)
 // 接受新连接
 // ============================================================================
 
-static void accept_new_connection(ipc_context_t *ctx)
+static void accept_new_connection(dev_ipc_context_t *ctx)
 {
     struct sockaddr_in addr;
     socklen_t addr_len = sizeof(addr);
@@ -425,16 +425,16 @@ static void accept_new_connection(ipc_context_t *ctx)
 
     /* 创建连接对象（被接受方，module_id 在握手后确定） */
     pthread_mutex_lock(&ctx->comutex);
-    if (ctx->num_connections >= IPC_MAX_CONNECTIONS)
+    if (ctx->num_connections >= DEV_IPC_MAX_CONNECTIONS)
     {
         pthread_mutex_unlock(&ctx->comutex);
         close(fd);
         return;
     }
 
-    ipc_connection_t *conn = ipc_connection_create(0, 0);
+    dev_ipc_connection_t *conn = dev_ipc_connection_create(0, 0);
     conn->fd = fd;
-    conn->state = IPC_COHANDSHAKING;
+    conn->state = DEV_IPC_COHANDSHAKING;
     conn->last_heartbeat_recv = time(NULL);
 
     ctx->connections[ctx->num_connections++] = conn;
@@ -450,12 +450,12 @@ static void accept_new_connection(ipc_context_t *ctx)
 }
 
 // ============================================================================
-// Worker 线程：执行业务 msg_handler，可安全调用 ipc_query（嵌套 RPC）
+// Worker 线程：执行业务 msg_handler，可安全调用 dev_ipc_query（嵌套 RPC）
 // ============================================================================
 
-static void *ipc_worker_thread(void *arg)
+static void *dev_ipc_worker_thread(void *arg)
 {
-    ipc_context_t *ctx = (ipc_context_t *)arg;
+    dev_ipc_context_t *ctx = (dev_ipc_context_t *)arg;
     log_set_tag(ctx->name);
 
     LOG_INFO("<%s> Worker 线程启动", ctx->name);
@@ -463,7 +463,7 @@ static void *ipc_worker_thread(void *arg)
     while (1)
     {
         /* 阻塞等待业务消息；NULL 为退出哨兵 */
-        ipc_message_t *msg = g_async_queue_pop(ctx->msg_queue);
+        dev_ipc_message_t *msg = g_async_queue_pop(ctx->msg_queue);
         if (!msg)
         {
             break;
@@ -475,7 +475,7 @@ static void *ipc_worker_thread(void *arg)
         }
         else
         {
-            ipc_message_free(msg);
+            dev_ipc_message_free(msg);
         }
     }
 
@@ -487,17 +487,17 @@ static void *ipc_worker_thread(void *arg)
 // IO 线程
 // ============================================================================
 
-static void *ipc_io_thread(void *arg)
+static void *dev_ipc_io_thread(void *arg)
 {
-    ipc_context_t *ctx = (ipc_context_t *)arg;
+    dev_ipc_context_t *ctx = (dev_ipc_context_t *)arg;
     log_set_tag(ctx->name);
-    struct epoll_event events[IPC_MAX_EPOLL_EVENTS];
+    struct epoll_event events[DEV_IPC_MAX_EPOLL_EVENTS];
 
     LOG_INFO("<%s> IO 线程启动", ctx->name);
 
     while (ctx->running)
     {
-        int nfds = epoll_wait(ctx->epoll_fd, events, IPC_MAX_EPOLL_EVENTS, 1000);
+        int nfds = epoll_wait(ctx->epoll_fd, events, DEV_IPC_MAX_EPOLL_EVENTS, 1000);
 
         if (nfds < 0)
         {
@@ -520,7 +520,7 @@ static void *ipc_io_thread(void *arg)
             }
 
             pthread_mutex_lock(&ctx->comutex);
-            ipc_connection_t *conn = find_connection_by_fd(ctx, fd);
+            dev_ipc_connection_t *conn = find_connection_by_fd(ctx, fd);
             pthread_mutex_unlock(&ctx->comutex);
 
             if (!conn)
@@ -531,7 +531,7 @@ static void *ipc_io_thread(void *arg)
             /* 处理可写（连接建立完成） */
             if (events[i].events & EPOLLOUT)
             {
-                if (conn->state == IPC_COCONNECTING)
+                if (conn->state == DEV_IPC_COCONNECTING)
                 {
                     /* 检查连接是否成功 */
                     int err = 0;
@@ -554,8 +554,8 @@ static void *ipc_io_thread(void *arg)
                     {
                         /* 连接失败 */
                         epoll_ctl(ctx->epoll_fd, EPOLL_CTL_DEL, fd, NULL);
-                        ipc_connection_close(conn);
-                        ipc_connection_backoff_reconnect(conn);
+                        dev_ipc_connection_close(conn);
+                        dev_ipc_connection_backoff_reconnect(conn);
                     }
                 }
             }
@@ -563,7 +563,7 @@ static void *ipc_io_thread(void *arg)
             /* 处理可读 */
             if (events[i].events & EPOLLIN)
             {
-                ssize_t n = read(fd, conn->recv_buf + conn->recv_len, IPC_RECV_BUF_SIZE - conn->recv_len);
+                ssize_t n = read(fd, conn->recv_buf + conn->recv_len, DEV_IPC_RECV_BUF_SIZE - conn->recv_len);
 
                 if (n <= 0)
                 {
@@ -575,10 +575,10 @@ static void *ipc_io_thread(void *arg)
                                      fmt_module_id(conn->remote_module_id, _buf, sizeof(_buf)));
                         }
                         epoll_ctl(ctx->epoll_fd, EPOLL_CTL_DEL, fd, NULL);
-                        ipc_connection_close(conn);
+                        dev_ipc_connection_close(conn);
                         if (conn->is_initiator)
                         {
-                            ipc_connection_backoff_reconnect(conn);
+                            dev_ipc_connection_backoff_reconnect(conn);
                         }
                     }
                     continue;
@@ -592,10 +592,10 @@ static void *ipc_io_thread(void *arg)
             if (events[i].events & (EPOLLERR | EPOLLHUP))
             {
                 epoll_ctl(ctx->epoll_fd, EPOLL_CTL_DEL, fd, NULL);
-                ipc_connection_close(conn);
+                dev_ipc_connection_close(conn);
                 if (conn->is_initiator)
                 {
-                    ipc_connection_backoff_reconnect(conn);
+                    dev_ipc_connection_backoff_reconnect(conn);
                 }
             }
         }
@@ -656,9 +656,10 @@ static int create_listen_socket(const char *host, uint16_t port)
 // 公共 API 实现
 // ============================================================================
 
-ipc_context_t *ipc_init(uint32_t module_id, const char *name, uint16_t listen_port, ipc_msg_handler_fn msg_handler)
+dev_ipc_context_t *dev_ipc_init(uint32_t module_id, const char *name, uint16_t listen_port,
+                                dev_ipc_msg_handler_fn msg_handler)
 {
-    ipc_context_t *ctx = g_malloc0(sizeof(ipc_context_t));
+    dev_ipc_context_t *ctx = g_malloc0(sizeof(dev_ipc_context_t));
     if (!ctx)
     {
         return NULL;
@@ -683,13 +684,13 @@ ipc_context_t *ipc_init(uint32_t module_id, const char *name, uint16_t listen_po
     pthread_mutex_init(&ctx->comutex, NULL);
 
     /* 创建查询管理器 */
-    ctx->query_mgr = ipc_query_mgr_create();
+    ctx->query_mgr = dev_ipc_query_mgr_create();
 
     /* 创建 epoll */
     ctx->epoll_fd = epoll_create1(EPOLL_CLOEXEC);
     if (ctx->epoll_fd < 0)
     {
-        ipc_query_mgr_destroy(ctx->query_mgr);
+        dev_ipc_query_mgr_destroy(ctx->query_mgr);
         g_free(ctx);
         return NULL;
     }
@@ -717,20 +718,20 @@ ipc_context_t *ipc_init(uint32_t module_id, const char *name, uint16_t listen_po
 
     /* 启动 IO 线程 */
     ctx->running = 1;
-    if (pthread_create(&ctx->io_thread, NULL, ipc_io_thread, ctx) != 0)
+    if (pthread_create(&ctx->io_thread, NULL, dev_ipc_io_thread, ctx) != 0)
     {
         LOG_PERROR("pthread_create (io)");
         ctx->running = 0;
-        ipc_destroy(ctx);
+        dev_ipc_destroy(ctx);
         return NULL;
     }
 
     /* 启动 Worker 线程 */
-    if (pthread_create(&ctx->worker_thread, NULL, ipc_worker_thread, ctx) != 0)
+    if (pthread_create(&ctx->worker_thread, NULL, dev_ipc_worker_thread, ctx) != 0)
     {
         LOG_PERROR("pthread_create (worker)");
         ctx->running = 0;
-        ipc_destroy(ctx);
+        dev_ipc_destroy(ctx);
         return NULL;
     }
 
@@ -738,7 +739,7 @@ ipc_context_t *ipc_init(uint32_t module_id, const char *name, uint16_t listen_po
     return ctx;
 }
 
-void ipc_destroy(ipc_context_t *ctx)
+void dev_ipc_destroy(dev_ipc_context_t *ctx)
 {
     if (!ctx)
     {
@@ -770,7 +771,7 @@ void ipc_destroy(ipc_context_t *ctx)
     /* 关闭所有连接 */
     for (int i = 0; i < ctx->num_connections; i++)
     {
-        ipc_connection_destroy(ctx->connections[i]);
+        dev_ipc_connection_destroy(ctx->connections[i]);
     }
 
     if (ctx->listen_fd >= 0)
@@ -785,14 +786,14 @@ void ipc_destroy(ipc_context_t *ctx)
 
     if (ctx->query_mgr)
     {
-        ipc_query_mgr_destroy(ctx->query_mgr);
+        dev_ipc_query_mgr_destroy(ctx->query_mgr);
     }
 
     pthread_mutex_destroy(&ctx->comutex);
     g_free(ctx);
 }
 
-int ipc_connect(ipc_context_t *ctx, uint32_t target_module_id, const char *host, uint16_t port)
+int dev_ipc_connect(dev_ipc_context_t *ctx, uint32_t target_module_id, const char *host, uint16_t port)
 {
     if (!ctx || !host || port == 0)
     {
@@ -808,13 +809,13 @@ int ipc_connect(ipc_context_t *ctx, uint32_t target_module_id, const char *host,
         return ERRCODE_SUCCESS;
     }
 
-    if (ctx->num_connections >= IPC_MAX_CONNECTIONS)
+    if (ctx->num_connections >= DEV_IPC_MAX_CONNECTIONS)
     {
         pthread_mutex_unlock(&ctx->comutex);
         return ERRCODE_FAIL;
     }
 
-    ipc_connection_t *conn = ipc_connection_create(target_module_id, 1);
+    dev_ipc_connection_t *conn = dev_ipc_connection_create(target_module_id, 1);
     /* 存储目标地址，供断连后重连使用 */
     snprintf(conn->remote_host, sizeof(conn->remote_host), "%s", host);
     conn->remote_port = port;
@@ -823,7 +824,7 @@ int ipc_connect(ipc_context_t *ctx, uint32_t target_module_id, const char *host,
     /* 在持锁期间发起连接，使 conn->state 立即进入 COCONNECTING，
      * 避免 IO 线程的 attempt_reconnects() 看到 DISCONNECTED 状态后重复发起连接 */
     LOG_INFO("<%s> 连接 module(0x%08X) (%s:%u)...", ctx->name, target_module_id, host, port);
-    int init_ok = (ipc_connection_initiate(conn, host, port) == ERRCODE_SUCCESS);
+    int init_ok = (dev_ipc_connection_initiate(conn, host, port) == ERRCODE_SUCCESS);
     pthread_mutex_unlock(&ctx->comutex);
 
     if (init_ok)
@@ -838,12 +839,12 @@ int ipc_connect(ipc_context_t *ctx, uint32_t target_module_id, const char *host,
     {
         /* 连接失败，稍后重试 */
         LOG_WARN("<%s> 初始连接 module(0x%08X) (%s:%u) 失败，IO 线程将重试", ctx->name, target_module_id, host, port);
-        ipc_connection_backoff_reconnect(conn);
+        dev_ipc_connection_backoff_reconnect(conn);
         return ERRCODE_SUCCESS; /* 不报错，IO 线程会重试 */
     }
 }
 
-int ipc_send(ipc_context_t *ctx, uint32_t target_module_id, ipc_message_t *msg)
+int dev_ipc_send(dev_ipc_context_t *ctx, uint32_t target_module_id, dev_ipc_message_t *msg)
 {
     if (!ctx || !msg)
     {
@@ -854,8 +855,8 @@ int ipc_send(ipc_context_t *ctx, uint32_t target_module_id, ipc_message_t *msg)
     msg->dst_module_id = target_module_id;
 
     pthread_mutex_lock(&ctx->comutex);
-    ipc_connection_t *conn = find_connection(ctx, target_module_id);
-    if (!conn || conn->state != IPC_COCONNECTED)
+    dev_ipc_connection_t *conn = find_connection(ctx, target_module_id);
+    if (!conn || conn->state != DEV_IPC_COCONNECTED)
     {
         pthread_mutex_unlock(&ctx->comutex);
         return ERRCODE_FAIL;
@@ -863,20 +864,21 @@ int ipc_send(ipc_context_t *ctx, uint32_t target_module_id, ipc_message_t *msg)
 
     uint8_t *buf = NULL;
     uint32_t buf_len = 0;
-    if (ipc_frame_serialize(msg, &buf, &buf_len) != ERRCODE_SUCCESS)
+    if (dev_ipc_frame_serialize(msg, &buf, &buf_len) != ERRCODE_SUCCESS)
     {
         pthread_mutex_unlock(&ctx->comutex);
         return ERRCODE_FAIL;
     }
 
-    int ret = ipc_connection_send(conn, buf, buf_len);
+    int ret = dev_ipc_connection_send(conn, buf, buf_len);
     pthread_mutex_unlock(&ctx->comutex);
 
     g_free(buf);
     return ret;
 }
 
-ipc_message_t *ipc_query(ipc_context_t *ctx, uint32_t target_module_id, ipc_message_t *msg, uint32_t timeout_ms)
+dev_ipc_message_t *dev_ipc_query(dev_ipc_context_t *ctx, uint32_t target_module_id, dev_ipc_message_t *msg,
+                                 uint32_t timeout_ms)
 {
     if (!ctx || !msg)
     {
@@ -885,25 +887,25 @@ ipc_message_t *ipc_query(ipc_context_t *ctx, uint32_t target_module_id, ipc_mess
 
     if (timeout_ms == 0)
     {
-        timeout_ms = IPC_QUERY_TIMEOUT_DEFAULT;
+        timeout_ms = DEV_IPC_QUERY_TIMEOUT_DEFAULT;
     }
 
     /* 分配请求 ID */
-    uint32_t request_id = ipc_query_mgr_register(ctx->query_mgr);
+    uint32_t request_id = dev_ipc_query_mgr_register(ctx->query_mgr);
     msg->request_id = request_id;
     msg->src_module_id = ctx->module_id;
 
     /* 发送消息 */
-    if (ipc_send(ctx, target_module_id, msg) != ERRCODE_SUCCESS)
+    if (dev_ipc_send(ctx, target_module_id, msg) != ERRCODE_SUCCESS)
     {
         return NULL;
     }
 
     /* 等待响应 */
-    return ipc_query_mgr_wait(ctx->query_mgr, request_id, timeout_ms);
+    return dev_ipc_query_mgr_wait(ctx->query_mgr, request_id, timeout_ms);
 }
 
-int ipc_send_response(ipc_context_t *ctx, ipc_message_t *msg)
+int dev_ipc_send_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     if (!ctx || !msg)
     {
@@ -916,11 +918,11 @@ int ipc_send_response(ipc_context_t *ctx, ipc_message_t *msg)
 
     /* 查找连接 */
     pthread_mutex_lock(&ctx->comutex);
-    ipc_connection_t *conn = find_connection(ctx, target_id);
-    if (!conn || conn->state != IPC_COCONNECTED)
+    dev_ipc_connection_t *conn = find_connection(ctx, target_id);
+    if (!conn || conn->state != DEV_IPC_COCONNECTED)
     {
         char _buf[16];
-        LOG_WARN("<%s> ipc_send_response: 无法路由到 %s (num_connections=%d, %s)", ctx->name,
+        LOG_WARN("<%s> dev_ipc_send_response: 无法路由到 %s (num_connections=%d, %s)", ctx->name,
                  fmt_module_id(target_id, _buf, sizeof(_buf)), ctx->num_connections,
                  conn ? "连接存在但未就绪" : "连接不存在");
         pthread_mutex_unlock(&ctx->comutex);
@@ -929,25 +931,25 @@ int ipc_send_response(ipc_context_t *ctx, ipc_message_t *msg)
 
     uint8_t *buf = NULL;
     uint32_t buf_len = 0;
-    if (ipc_frame_serialize(msg, &buf, &buf_len) != ERRCODE_SUCCESS)
+    if (dev_ipc_frame_serialize(msg, &buf, &buf_len) != ERRCODE_SUCCESS)
     {
         pthread_mutex_unlock(&ctx->comutex);
         return ERRCODE_FAIL;
     }
 
-    int ret = ipc_connection_send(conn, buf, buf_len);
+    int ret = dev_ipc_connection_send(conn, buf, buf_len);
     pthread_mutex_unlock(&ctx->comutex);
 
     g_free(buf);
     return ret;
 }
 
-int ipc_shutdown_requested(ipc_context_t *ctx)
+int dev_ipc_shutdown_requested(dev_ipc_context_t *ctx)
 {
     return ctx ? ctx->shutdown_requested : 1;
 }
 
-void ipc_request_shutdown(ipc_context_t *ctx)
+void dev_ipc_request_shutdown(dev_ipc_context_t *ctx)
 {
     if (ctx)
     {
@@ -955,12 +957,12 @@ void ipc_request_shutdown(ipc_context_t *ctx)
     }
 }
 
-uint32_t ipc_get_module_id(ipc_context_t *ctx)
+uint32_t dev_ipc_get_module_id(dev_ipc_context_t *ctx)
 {
     return ctx ? ctx->module_id : 0;
 }
 
-int ipc_is_connected(ipc_context_t *ctx, uint32_t target_module_id)
+int dev_ipc_is_connected(dev_ipc_context_t *ctx, uint32_t target_module_id)
 {
     if (!ctx)
     {
@@ -968,14 +970,14 @@ int ipc_is_connected(ipc_context_t *ctx, uint32_t target_module_id)
     }
 
     pthread_mutex_lock(&ctx->comutex);
-    ipc_connection_t *conn = find_connection(ctx, target_module_id);
-    int connected = (conn && conn->state == IPC_COCONNECTED) ? 1 : 0;
+    dev_ipc_connection_t *conn = find_connection(ctx, target_module_id);
+    int connected = (conn && conn->state == DEV_IPC_COCONNECTED) ? 1 : 0;
     pthread_mutex_unlock(&ctx->comutex);
 
     return connected;
 }
 
-const char *ipc_get_self_name(ipc_context_t *ctx)
+const char *dev_ipc_get_self_name(dev_ipc_context_t *ctx)
 {
     return ctx ? ctx->name : NULL;
 }

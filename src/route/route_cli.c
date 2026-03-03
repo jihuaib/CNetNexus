@@ -12,10 +12,8 @@
 
 #include "cli.h"
 #include "db.h"
-#include "db_rpc.h"
 #include "dev.h"
 #include "errcode.h"
-#include "ipc.h"
 #include "log.h"
 #include "route_main.h"
 
@@ -23,15 +21,15 @@
 // 辅助函数
 // ============================================================================
 
-static void send_resp(ipc_message_t *msg, const char *text)
+static void send_resp(dev_ipc_message_t *msg, const char *text)
 {
     char *resp_data = g_strdup(text);
-    ipc_message_t *resp = ipc_message_create(CFG_MSG_TYPE_CLI_RESP, DEV_MODULE_ID_ROUTE, msg->src_module_id,
-                                             msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
+    dev_ipc_message_t *resp = dev_ipc_message_create(CFG_MSG_TYPE_CLI_RESP, DEV_MODULE_ID_ROUTE, msg->src_module_id,
+                                                     msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
     if (resp)
     {
-        ipc_send_response(g_route_local->ipc_ctx, resp);
-        ipc_message_free(resp);
+        dev_ipc_send_response(g_route_local->dev_ipc_ctx, resp);
+        dev_ipc_message_free(resp);
     }
 }
 
@@ -47,9 +45,9 @@ static void send_resp(ipc_message_t *msg, const char *text)
  *   4=destination, 5=mask, 6=prefix_length,
  *   7=next_hop, 8=metric
  */
-static int handle_route_config(ipc_message_t *msg, cli_tlv_parser_t *parser)
+static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
-    gboolean is_no = CLI_TLV_IS_NO_CMD(parser);
+    gboolean is_no = FALSE;
     int is_ipv4 = 0;
     int is_ipv6 = 0;
     char destination[128] = {0};
@@ -75,6 +73,9 @@ static int handle_route_config(ipc_message_t *msg, cli_tlv_parser_t *parser)
 
         switch (entry.cfg_id)
         {
+            case 1: /* no 前缀 */
+                is_no = TRUE;
+                break;
             case 2: /* ipv4 关键字 */
                 is_ipv4 = 1;
                 break;
@@ -144,18 +145,33 @@ static int handle_route_config(ipc_message_t *msg, cli_tlv_parser_t *parser)
 
         if (is_no)
         {
-            char where_clause[512];
+            db_condition_t conditions[3];
+            uint32_t num_conditions = 0;
+            conditions[num_conditions++] = (db_condition_t){
+                .field_name = "destination",
+                .op = DB_CMP_EQ,
+                .value = db_value_text(destination),
+            };
+            conditions[num_conditions++] = (db_condition_t){
+                .field_name = "mask",
+                .op = DB_CMP_EQ,
+                .value = db_value_text(mask),
+            };
             if (has_next_hop)
             {
-                snprintf(where_clause, sizeof(where_clause), "destination='%s' AND mask='%s' AND next_hop='%s'",
-                         destination, mask, next_hop);
+                conditions[num_conditions++] = (db_condition_t){
+                    .field_name = "next_hop",
+                    .op = DB_CMP_EQ,
+                    .value = db_value_text(next_hop),
+                };
             }
-            else
-            {
-                snprintf(where_clause, sizeof(where_clause), "destination='%s' AND mask='%s'", destination, mask);
-            }
+            db_filter_t filter = {.conditions = conditions, .num_conditions = num_conditions};
 
-            int rows = db_rpc_delete(g_route_local->ipc_ctx, "route_ipv4", where_clause);
+            int rows = db_rpc_delete(g_route_local->dev_ipc_ctx, "route_ipv4", &filter);
+            for (uint32_t i = 0; i < num_conditions; i++)
+            {
+                db_value_free(&conditions[i].value);
+            }
             snprintf(resp_msg, sizeof(resp_msg), "Route deleted (%d row%s)\r\n", rows > 0 ? rows : 0,
                      rows == 1 ? "" : "s");
             send_resp(msg, resp_msg);
@@ -175,7 +191,10 @@ static int handle_route_config(ipc_message_t *msg, cli_tlv_parser_t *parser)
             values[2] = db_value_text(next_hop);
             values[3] = db_value_int(has_metric ? metric : 0);
 
-            int ret = db_rpc_insert(g_route_local->ipc_ctx, "route_ipv4", fields, values, 4);
+            int ret = db_rpc_insert(g_route_local->dev_ipc_ctx, "route_ipv4", fields, values, 4);
+            db_value_free(&values[0]);
+            db_value_free(&values[1]);
+            db_value_free(&values[2]);
             if (ret != ERRCODE_SUCCESS)
             {
                 send_resp(msg, "Error: Failed to add route\r\n");
@@ -195,19 +214,33 @@ static int handle_route_config(ipc_message_t *msg, cli_tlv_parser_t *parser)
 
         if (is_no)
         {
-            char where_clause[512];
+            db_condition_t conditions[3];
+            uint32_t num_conditions = 0;
+            conditions[num_conditions++] = (db_condition_t){
+                .field_name = "destination",
+                .op = DB_CMP_EQ,
+                .value = db_value_text(destination),
+            };
+            conditions[num_conditions++] = (db_condition_t){
+                .field_name = "prefix_length",
+                .op = DB_CMP_EQ,
+                .value = db_value_int(prefix_length),
+            };
             if (has_next_hop)
             {
-                snprintf(where_clause, sizeof(where_clause), "destination='%s' AND prefix_length=%ld AND next_hop='%s'",
-                         destination, prefix_length, next_hop);
+                conditions[num_conditions++] = (db_condition_t){
+                    .field_name = "next_hop",
+                    .op = DB_CMP_EQ,
+                    .value = db_value_text(next_hop),
+                };
             }
-            else
-            {
-                snprintf(where_clause, sizeof(where_clause), "destination='%s' AND prefix_length=%ld", destination,
-                         prefix_length);
-            }
+            db_filter_t filter = {.conditions = conditions, .num_conditions = num_conditions};
 
-            int rows = db_rpc_delete(g_route_local->ipc_ctx, "route_ipv6", where_clause);
+            int rows = db_rpc_delete(g_route_local->dev_ipc_ctx, "route_ipv6", &filter);
+            for (uint32_t i = 0; i < num_conditions; i++)
+            {
+                db_value_free(&conditions[i].value);
+            }
             snprintf(resp_msg, sizeof(resp_msg), "Route deleted (%d row%s)\r\n", rows > 0 ? rows : 0,
                      rows == 1 ? "" : "s");
             send_resp(msg, resp_msg);
@@ -227,7 +260,9 @@ static int handle_route_config(ipc_message_t *msg, cli_tlv_parser_t *parser)
             values[2] = db_value_text(next_hop);
             values[3] = db_value_int(has_metric ? metric : 0);
 
-            int ret = db_rpc_insert(g_route_local->ipc_ctx, "route_ipv6", fields, values, 4);
+            int ret = db_rpc_insert(g_route_local->dev_ipc_ctx, "route_ipv6", fields, values, 4);
+            db_value_free(&values[0]);
+            db_value_free(&values[2]);
             if (ret != ERRCODE_SUCCESS)
             {
                 send_resp(msg, "Error: Failed to add route\r\n");
@@ -252,7 +287,7 @@ static int handle_route_config(ipc_message_t *msg, cli_tlv_parser_t *parser)
  * group_id=2, cfg_id: 1=ipv4, 2=ipv6, 3=all, 4=destination
  * 直接构建格式化文本返回
  */
-static int handle_show_route(ipc_message_t *msg, cli_tlv_parser_t *parser)
+static int handle_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
     int show_ipv4 = 0;
     int show_ipv6 = 0;
@@ -305,18 +340,25 @@ static int handle_show_route(ipc_message_t *msg, cli_tlv_parser_t *parser)
     char resp_buf[CLI_MAX_RESP_LEN];
     size_t offset = 0;
 
-    char where_clause[256] = "";
+    db_condition_t dest_condition;
+    db_filter_t *query_filter = NULL;
+    db_filter_t filter;
     if (strlen(filter_dest) > 0)
     {
-        snprintf(where_clause, sizeof(where_clause), "destination='%s'", filter_dest);
+        dest_condition = (db_condition_t){
+            .field_name = "destination",
+            .op = DB_CMP_EQ,
+            .value = db_value_text(filter_dest),
+        };
+        filter = (db_filter_t){.conditions = &dest_condition, .num_conditions = 1};
+        query_filter = &filter;
     }
 
     /* 显示 IPv4 路由 */
     if (show_ipv4)
     {
         db_result_t *result = NULL;
-        int ret = db_rpc_query(g_route_local->ipc_ctx, "route_ipv4", NULL, 0,
-                               strlen(where_clause) > 0 ? where_clause : NULL, &result);
+        int ret = db_rpc_query(g_route_local->dev_ipc_ctx, "route_ipv4", NULL, 0, query_filter, &result);
 
         CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset,
                        "\r\nIPv4 Routing Table:\r\n"
@@ -379,8 +421,7 @@ static int handle_show_route(ipc_message_t *msg, cli_tlv_parser_t *parser)
     if (show_ipv6)
     {
         db_result_t *result = NULL;
-        int ret = db_rpc_query(g_route_local->ipc_ctx, "route_ipv6", NULL, 0,
-                               strlen(where_clause) > 0 ? where_clause : NULL, &result);
+        int ret = db_rpc_query(g_route_local->dev_ipc_ctx, "route_ipv6", NULL, 0, query_filter, &result);
 
         CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset,
                        "\r\nIPv6 Routing Table:\r\n"
@@ -440,6 +481,11 @@ static int handle_show_route(ipc_message_t *msg, cli_tlv_parser_t *parser)
         }
     }
 
+    if (query_filter)
+    {
+        db_value_free(&dest_condition.value);
+    }
+
     CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "\r\n");
 
     send_resp(msg, resp_buf);
@@ -450,13 +496,13 @@ static int handle_show_route(ipc_message_t *msg, cli_tlv_parser_t *parser)
 // 主入口
 // ============================================================================
 
-int route_cli_handle_continue(ipc_message_t *msg)
+int route_cli_handle_continue(dev_ipc_message_t *msg)
 {
     send_resp(msg, "");
     return ERRCODE_SUCCESS;
 }
 
-int route_cli_handle_message(ipc_message_t *msg)
+int route_cli_handle_message(dev_ipc_message_t *msg)
 {
     if (!msg || !msg->payload)
     {
