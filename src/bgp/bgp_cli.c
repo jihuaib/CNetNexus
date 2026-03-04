@@ -220,6 +220,7 @@ static int handle_bgp_protocol(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             }
         }
 
+        bgp_listen_stop();
         bgp_protocol_destroy(g_bgp_local->protocol);
         g_bgp_local->protocol = NULL;
 
@@ -232,6 +233,7 @@ static int handle_bgp_protocol(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     if (g_bgp_local->protocol == NULL)
     {
         g_bgp_local->protocol = bgp_protocol_create(as_number);
+        bgp_listen_start();
         if (bgp_db_set_as(g_bgp_local->dev_ipc_ctx, as_number) != 0)
         {
             bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");

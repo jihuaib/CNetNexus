@@ -19,7 +19,6 @@
 #include <unistd.h>
 
 #include "cfg_main.h"
-#include "cfg_show_config.h"
 #include "cli_handler.h"
 #include "dev.h"
 #include "errcode.h"
@@ -256,19 +255,56 @@ static void handle_show_history(cli_session_t *session)
 
 /**
  * @brief show current-configuration (group_id=3)
+ *
+ * 向所有业务模块发送 CFG_MSG_TYPE_SHOW_CONFIG，收集响应并聚合输出。
+ * 未连接的模块直接跳过，避免超时等待。
  */
 static void handle_show_config(cli_session_t *session)
 {
-    char *config_output = cfg_renderer_show_current_configuration();
-    if (config_output && config_output[0] != '\0')
+    /* 需要查询配置的业务模块列表 */
+    static const uint32_t config_modules[] = {DEV_MODULE_ID_BGP};
+
+    GString *output = g_string_new("");
+
+    for (size_t i = 0; i < G_N_ELEMENTS(config_modules); i++)
     {
-        cli_pager_output(session, config_output);
+        uint32_t mod_id = config_modules[i];
+        if (!dev_ipc_is_connected(g_cfg_local->dev_ipc_ctx, mod_id))
+        {
+            continue;
+        }
+
+        dev_ipc_message_t *req =
+            dev_ipc_message_create(CFG_MSG_TYPE_SHOW_CONFIG, DEV_MODULE_ID_CFG, mod_id, 0, NULL, 0, NULL);
+        if (!req)
+        {
+            continue;
+        }
+
+        dev_ipc_message_t *resp = dev_ipc_query(g_cfg_local->dev_ipc_ctx, mod_id, req, 2000);
+        dev_ipc_message_free(req);
+
+        if (resp)
+        {
+            /* payload 为 NULL 结尾的字符串，payload_len > 1 才有实际内容 */
+            if (resp->payload && resp->payload_len > 1)
+            {
+                g_string_append(output, (char *)resp->payload);
+            }
+            dev_ipc_message_free(resp);
+        }
+    }
+
+    if (output->len > 0)
+    {
+        cli_pager_output(session, output->str);
     }
     else
     {
         cfg_send_message(session, "No configuration found.\r\n");
     }
-    g_free(config_output);
+
+    g_string_free(output, TRUE);
 }
 
 /**

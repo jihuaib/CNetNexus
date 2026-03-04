@@ -1,0 +1,45 @@
+# 强制所有文本文件使用 LF 换行符
+* text=auto eol=lf
+
+# 源代码文件
+*.c text eol=lf
+*.h text eol=lf
+
+# 脚本文件
+*.sh text eol=lf
+
+# 构建文件
+CMakeLists.txt text eol=lf
+*.cmake text eol=lf
+Makefile text eol=lf
+
+# 配置文件
+*.xml text eol=lf
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.conf text eol=lf
+
+# 文档
+*.md text eol=lf
+*.txt text eol=lf
+
+# Docker
+Dockerfile text eol=lf
+.dockerignore text eol=lf
+
+# EditorConfig / Git
+.editorconfig text eol=lf
+.gitattributes text eol=lf
+.gitignore text eol=lf
+.clang-format text eol=lf
+.clang-tidy text eol=lf
+
+# 二进制文件 - 不做换行符转换
+*.gz binary
+*.so binary
+*.o binary
+*.a binary
+*.out binary
+*.bin binary
+*.gns3a binary

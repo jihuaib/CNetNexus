@@ -16,16 +16,16 @@
 /**
  * @brief BGP 会话结构（一条 neighbor 配置）
  *
- * pri_conn：本方主动发起的连接（fd=-1 表示无）
- * sec_conn：对端被动接入的连接（fd=-1 表示无）
+ * pri_conn：主连接指针（NULL=无连接）；碰撞解决后唯一存活的连接始终在此
+ * sec_conn：次连接指针（NULL=无连接）；被动接入时临时使用，碰撞解决后置 NULL
  * peers：per-AF peer 借用引用链表，由 bgp_instance_t 持有所有权
  */
 typedef struct bgp_session
 {
     net_addr_t neighbor_addr; /**< 邻居 IP 地址（sess_hash 的键） */
     uint32_t remote_as;       /**< 远端 AS 号 */
-    bgp_conn_t pri_conn;      /**< 主连接（内嵌，fd=-1=无） */
-    bgp_conn_t sec_conn;      /**< 次连接（内嵌，fd=-1=无） */
+    bgp_conn_t *pri_conn;     /**< 主连接（NULL=无） */
+    bgp_conn_t *sec_conn;     /**< 次连接（NULL=无） */
     GList *peers;             /**< per-AF peer 借用引用列表（bgp_peer_t*，由 bgp_instance_t 负责销毁） */
 } bgp_session_t;
 

@@ -9,6 +9,7 @@
 #include <glib.h>
 #include <string.h>
 
+#include "bgp_conn.h"
 #include "log.h"
 
 bgp_session_t *bgp_session_create(const net_addr_t *addr, uint32_t remote_as)
@@ -19,8 +20,8 @@ bgp_session_t *bgp_session_create(const net_addr_t *addr, uint32_t remote_as)
         memcpy(&sess->neighbor_addr, addr, sizeof(*addr));
     }
     sess->remote_as = remote_as;
-    bgp_conn_init(&sess->pri_conn);
-    bgp_conn_init(&sess->sec_conn);
+    sess->pri_conn = NULL;
+    sess->sec_conn = NULL;
     sess->peers = NULL;
 
     char addr_str[64] = "";
@@ -43,8 +44,10 @@ void bgp_session_destroy(bgp_session_t *session)
     net_addr_to_str(&session->neighbor_addr, addr_str, sizeof(addr_str));
     LOG_INFO("BGP 会话已销毁: neighbor=%s", addr_str);
 
-    bgp_conn_cleanup(&session->pri_conn);
-    bgp_conn_cleanup(&session->sec_conn);
+    bgp_conn_destroy(session->pri_conn);
+    session->pri_conn = NULL;
+    bgp_conn_destroy(session->sec_conn);
+    session->sec_conn = NULL;
 
     /* peers 是借用引用，bgp_peer_t 由 bgp_instance_t 负责销毁，仅释放链表节点 */
     if (session->peers)

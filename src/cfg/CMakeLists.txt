@@ -10,7 +10,6 @@ set(CFG_SOURCES
     cli_history.c
     cfg_main.c
     cfg_cli.c
-    cfg_show_config.c
 )
 
 # Create shared library for CLI

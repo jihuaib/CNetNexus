@@ -30,7 +30,6 @@ Makefile.in
 *.su
 *.idb
 *.pdb
-/.claude/
 data/
 
 # Docker exports
@@ -43,3 +42,4 @@ package/
 
 .cache/
 compile_commands.json
+.claude/settings.local.json

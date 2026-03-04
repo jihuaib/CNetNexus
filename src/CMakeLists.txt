@@ -32,8 +32,8 @@ set_target_properties(netnexus PROPERTIES
 # Automated setcap for development
 # Note: This requires sudo permissions without password for 'setcap' or the user running make must be root.
 add_custom_command(TARGET netnexus POST_BUILD
-    COMMAND sudo setcap cap_net_admin+ep $<TARGET_FILE:netnexus> || echo "Warning: Failed to setcap on netnexus. You may need to run 'sudo setcap cap_net_admin+ep ./build/bin/netnexus' manually."
-    COMMENT "Setting CAP_NET_ADMIN on netnexus executable"
+    COMMAND sudo -n setcap cap_net_admin,cap_net_bind_service=+ep $<TARGET_FILE:netnexus> || echo "提示：如需绑定 179 端口，请手动执行：sudo setcap cap_net_admin,cap_net_bind_service=+ep $<TARGET_FILE:netnexus>"
+    COMMENT "授予 cap_net_admin + cap_net_bind_service"
 )
 
 # Installation

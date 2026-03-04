@@ -29,7 +29,7 @@ static const uint8_t BGP_MARKER[16] = {
 // 生命周期
 // ============================================================================
 
-void bgp_conn_init(bgp_conn_t *conn)
+static void bgp_conn_init(bgp_conn_t *conn)
 {
     if (!conn)
     {
@@ -43,7 +43,7 @@ void bgp_conn_init(bgp_conn_t *conn)
     snprintf(conn->remote_id, sizeof(conn->remote_id), "0.0.0.0");
 }
 
-void bgp_conn_cleanup(bgp_conn_t *conn)
+static void bgp_conn_cleanup(bgp_conn_t *conn)
 {
     if (!conn)
     {
@@ -62,6 +62,24 @@ void bgp_conn_cleanup(bgp_conn_t *conn)
     conn->is_active = FALSE;
     conn->is_connecting = FALSE;
     conn->recv_len = 0;
+}
+
+bgp_conn_t *bgp_conn_create(struct bgp_session *sess)
+{
+    bgp_conn_t *conn = g_malloc0(sizeof(bgp_conn_t));
+    bgp_conn_init(conn);
+    conn->session = sess;
+    return conn;
+}
+
+void bgp_conn_destroy(bgp_conn_t *conn)
+{
+    if (!conn)
+    {
+        return;
+    }
+    bgp_conn_cleanup(conn);
+    g_free(conn);
 }
 
 // ============================================================================
@@ -119,10 +137,10 @@ int bgp_conn_start_active(bgp_conn_t *conn, const net_addr_t *peer_addr, int epo
         return -1;
     }
 
-    /* 注册 EPOLLOUT（等待 connect 完成）和 EPOLLERR */
+    /* 注册 EPOLLOUT（等待 connect 完成）和 EPOLLERR，data.ptr 指向 conn 本身 */
     struct epoll_event ev;
     ev.events = EPOLLOUT | EPOLLERR;
-    ev.data.fd = sock;
+    ev.data.ptr = conn;
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, sock, &ev) < 0)
     {
         LOG_PERROR("BGP: epoll_ctl ADD 主动连接 socket 失败");
@@ -139,16 +157,6 @@ int bgp_conn_start_active(bgp_conn_t *conn, const net_addr_t *peer_addr, int epo
     net_addr_to_str(peer_addr, addr_str, sizeof(addr_str));
     LOG_INFO("BGP: 向 %s:%d 发起主动连接 (fd=%d)", addr_str, BGP_PORT, sock);
     return sock;
-}
-
-void bgp_conn_cancel(bgp_conn_t *conn, int epoll_fd)
-{
-    if (!conn || conn->fd < 0)
-    {
-        return;
-    }
-    epoll_ctl(epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
-    bgp_conn_cleanup(conn);
 }
 
 // ============================================================================

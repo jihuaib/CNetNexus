@@ -7,25 +7,18 @@
 #ifndef BGP_MAIN_H
 #define BGP_MAIN_H
 
-#include <glib.h>
 #include <pthread.h>
 
 #include "bgp_conn.h"
-#include "bgp_listen.h"
 #include "bgp_protocol.h"
 #include "dev.h"
 
 /**
- * @brief 描述 epoll 中每个非 listener fd 的元数据
+ * @brief BGP 模块本地状态
  *
- * is_active/is_connecting 通过 entry->conn->is_active/is_connecting 访问
+ * epoll 事件通过 data.ptr 直接携带 bgp_conn_t*（连接 fd）或 &bgp_listen_tag（listener），
+ * 无需额外的 fd → conn 映射表。
  */
-typedef struct bgp_fd_entry
-{
-    bgp_session_t *session; /**< 所属 session（借用引用，不持有所有权） */
-    bgp_conn_t *conn;       /**< 指向 session->pri_conn 或 session->sec_conn（借用引用） */
-} bgp_fd_entry_t;
-
 typedef struct bgp_local
 {
     dev_ipc_context_t *dev_ipc_ctx;
@@ -36,9 +29,7 @@ typedef struct bgp_local
     int running;             /**< server 线程运行标志 */
     pthread_t server_thread; /**< BGP server 线程句柄 */
 
-    bgp_listen_t *listener;   /**< 全局 0.0.0.0:179 listen socket */
-    GHashTable *fd_entries;   /**< int* fd → bgp_fd_entry_t*（所有 non-listener fd） */
-    pthread_mutex_t fd_mutex; /**< 保护 fd_entries（CLI 线程和 server 线程均访问） */
+    int listen_fd; /**< 全局 0.0.0.0:179 listen socket fd，-1 表示未监听 */
 } bgp_local_t;
 
 extern bgp_local_t *g_bgp_local;
@@ -47,6 +38,16 @@ extern bgp_local_t *g_bgp_local;
  * @brief IPC 消息处理回调（供 API 层引用）
  */
 void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
+
+/**
+ * @brief 启动全局 BGP listen socket（绑定 0.0.0.0:179 并加入 epoll），已监听时幂等
+ */
+void bgp_listen_start(void);
+
+/**
+ * @brief 停止全局 BGP listen socket（从 epoll 移除并关闭），未监听时幂等
+ */
+void bgp_listen_stop(void);
 
 /**
  * @brief AF neighbor 使能后启动主动 TCP 连接到 session->neighbor_addr:179

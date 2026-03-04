@@ -28,6 +28,8 @@
 #define CFG_MSG_TYPE_CLI_RESP_MORE DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0004)
 /** CLI 请求下一批数据 */
 #define CFG_MSG_TYPE_CLI_CONTINUE DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0005)
+/** 向业务模块请求当前配置（用于 show current-configuration 汇聚） */
+#define CFG_MSG_TYPE_SHOW_CONFIG DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0006)
 
 /** CLI 响应消息最大长度 */
 #define CLI_MAX_RESP_LEN 4096
