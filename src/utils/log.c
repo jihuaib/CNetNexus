@@ -5,7 +5,6 @@
  * @date   2026/02/18
  */
 
-#define _GNU_SOURCE
 #include "log.h"
 
 #include <errno.h>

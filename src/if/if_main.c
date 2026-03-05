@@ -44,12 +44,13 @@ static void if_init_db(void)
 
         if (ret == ERRCODE_SUCCESS && !exists)
         {
-            const char *field_names[] = {"name", "ip_address", "netmask", "shutdown"};
-            db_value_t values[] = {db_value_text(logical_name), db_value_text(""), db_value_text(""), db_value_int(0)};
-            db_rpc_insert(g_if_local->dev_ipc_ctx, "if_interface", field_names, values, 4);
-            db_value_free(&values[0]);
-            db_value_free(&values[1]);
-            db_value_free(&values[2]);
+            db_record_t *rec = db_record_new();
+            db_record_set_text(rec, "name", logical_name);
+            db_record_set_text(rec, "ip_address", "");
+            db_record_set_text(rec, "netmask", "");
+            db_record_set_int(rec, "shutdown", 0);
+            db_rpc_insert_record(g_if_local->dev_ipc_ctx, "if_interface", rec);
+            db_record_free(rec);
             LOG_INFO("Inserted interface %s into database", logical_name);
         }
         else if (ret == ERRCODE_SUCCESS && exists)

@@ -4,9 +4,9 @@
     <views>
         <view view-id="4" view-name="bgp">
             <template>&lt;NetNexus(config-bgp)&gt;</template>
-        </view>
-        <view view-id="7" view-name="bgp-af-ipv4">
-            <template>&lt;NetNexus(config-bgp-af-ipv4-uni)&gt;</template>
+            <view view-id="7" view-name="bgp-af-ipv4-uni">
+                <template>&lt;NetNexus(config-bgp-af-ipv4-uni)&gt;</template>
+            </view>
         </view>
     </views>
 

@@ -179,31 +179,6 @@ typedef struct dev_ipc_context dev_ipc_context_t;
 // ============================================================================
 
 /**
- * @brief 通过 RPC 向数据库表中插入一行数据
- * @param ctx        调用方模块的 IPC 上下文
- * @param table_name 表名称
- * @param field_names 字段名称数组
- * @param values     值数组（长度须与 field_names 一致）
- * @param num_fields 字段数量
- * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL
- */
-int db_rpc_insert(dev_ipc_context_t *ctx, const char *table_name, const char **field_names, const db_value_t *values,
-                  uint32_t num_fields);
-
-/**
- * @brief 通过 RPC 更新数据库中符合条件的行
- * @param ctx        调用方模块的 IPC 上下文
- * @param table_name 表名称
- * @param field_names 待更新的字段名称数组
- * @param values     新值数组
- * @param num_fields 待更新的字段数量
- * @param filter    结构化过滤条件（为 NULL 或空则更新所有行）
- * @return 更新的行数，错误返回 -1
- */
-int db_rpc_update(dev_ipc_context_t *ctx, const char *table_name, const char **field_names, const db_value_t *values,
-                  uint32_t num_fields, const db_filter_t *filter);
-
-/**
  * @brief 通过 RPC 删除数据库中符合条件的行
  * @param ctx        调用方模块的 IPC 上下文
  * @param table_name 表名称
@@ -236,19 +211,118 @@ int db_rpc_query(dev_ipc_context_t *ctx, const char *table_name, const char **fi
 int db_rpc_exists(dev_ipc_context_t *ctx, const char *table_name, const db_filter_t *filter, gboolean *exists);
 
 /**
- * @brief 通过 RPC 执行建表 DDL
- * @param ctx  调用方模块的 IPC 上下文
- * @param ddl  完整的 CREATE TABLE ... SQL 语句（通常含 IF NOT EXISTS）
- * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL
- */
-int db_rpc_create_table(dev_ipc_context_t *ctx, const char *ddl);
-
-/**
  * @brief 通过 RPC 按结构化定义建表并自动补齐缺失列
  * @param ctx 调用方模块的 IPC 上下文
  * @param def 表定义（表名、列列表及约束）
  * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL
  */
 int db_rpc_create_table_from_def(dev_ipc_context_t *ctx, const db_table_def_t *def);
+
+// ============================================================================
+// db_record_t — 写操作键值构建器
+// ============================================================================
+
+/** 写操作记录构建器（不透明类型，通过 db_record_* 函数操作） */
+typedef struct db_record db_record_t;
+
+/**
+ * @brief 创建一个空的记录构建器
+ * @return 新分配的 db_record_t，须通过 db_record_free 释放
+ */
+db_record_t *db_record_new(void);
+
+/**
+ * @brief 释放记录构建器及其所有内部资源
+ * @param rec 待释放的记录
+ */
+void db_record_free(db_record_t *rec);
+
+/**
+ * @brief 向记录中设置整数字段
+ * @param rec   目标记录
+ * @param field 字段名
+ * @param value 整数值
+ */
+void db_record_set_int(db_record_t *rec, const char *field, int64_t value);
+
+/**
+ * @brief 向记录中设置文本字段（内部复制字符串）
+ * @param rec   目标记录
+ * @param field 字段名
+ * @param value 文本值
+ */
+void db_record_set_text(db_record_t *rec, const char *field, const char *value);
+
+/**
+ * @brief 向记录中设置浮点字段
+ * @param rec   目标记录
+ * @param field 字段名
+ * @param value 浮点值
+ */
+void db_record_set_real(db_record_t *rec, const char *field, double value);
+
+// ============================================================================
+// db_row_t 读取辅助（按字段名查找）
+// ============================================================================
+
+/**
+ * @brief 按字段名从结果行中读取整数值
+ * @param row         结果行
+ * @param field       字段名
+ * @param default_val 字段不存在或类型不匹配时返回的默认值
+ * @return 字段整数值或 default_val
+ */
+int64_t db_row_get_int(const db_row_t *row, const char *field, int64_t default_val);
+
+/**
+ * @brief 按字段名从结果行中读取文本值
+ * @param row         结果行
+ * @param field       字段名
+ * @param default_val 字段不存在或类型不匹配时返回的默认值
+ * @return 字段文本指针（生命周期与 row 绑定）或 default_val
+ */
+const char *db_row_get_text(const db_row_t *row, const char *field, const char *default_val);
+
+/**
+ * @brief 按字段名从结果行中读取浮点值
+ * @param row         结果行
+ * @param field       字段名
+ * @param default_val 字段不存在或类型不匹配时返回的默认值
+ * @return 字段浮点值或 default_val
+ */
+double db_row_get_real(const db_row_t *row, const char *field, double default_val);
+
+// ============================================================================
+// 基于 db_record_t 的新 RPC 函数
+// ============================================================================
+
+/**
+ * @brief 通过 RPC 向数据库表中插入一条记录
+ * @param ctx   调用方模块的 IPC 上下文
+ * @param table 表名
+ * @param rec   记录构建器
+ * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL
+ */
+int db_rpc_insert_record(dev_ipc_context_t *ctx, const char *table, const db_record_t *rec);
+
+/**
+ * @brief 通过 RPC 更新数据库中符合条件的记录
+ * @param ctx    调用方模块的 IPC 上下文
+ * @param table  表名
+ * @param rec    记录构建器（待更新的字段和值）
+ * @param filter 过滤条件
+ * @return 更新行数，错误返回 -1
+ */
+int db_rpc_update_record(dev_ipc_context_t *ctx, const char *table, const db_record_t *rec, const db_filter_t *filter);
+
+/**
+ * @brief 通过 RPC 执行 upsert：存在则 update，不存在则 insert
+ * @param ctx    调用方模块的 IPC 上下文
+ * @param table  表名
+ * @param rec    记录构建器
+ * @param filter 用于检测是否存在及 update 的过滤条件
+ * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL
+ */
+int db_rpc_upsert(dev_ipc_context_t *ctx, const char *table, const db_record_t *rec, const db_filter_t *filter);
 
 #endif // DB_H

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <configuration module-id="4">
     <views>
-        <view view-id="5" view-name="interface">
+        <view view-id="5" view-name="if">
             <template>&lt;NetNexus(config-if-%s)&gt;</template>
         </view>
     </views>

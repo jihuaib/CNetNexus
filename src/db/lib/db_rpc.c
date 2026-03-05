@@ -539,41 +539,6 @@ static int rpc_sync_table_columns(dev_ipc_context_t *ctx, const db_table_def_t *
 // 公共 RPC 接口实现
 // ============================================================================
 
-int db_rpc_insert(dev_ipc_context_t *ctx, const char *table_name, const char **field_names, const db_value_t *values,
-                  uint32_t num_fields)
-{
-    if (!ctx || !table_name || !field_names || !values || num_fields == 0)
-    {
-        return ERRCODE_FAIL;
-    }
-
-    char sql[4096];
-    build_insert_sql(table_name, field_names, values, num_fields, sql, sizeof(sql));
-    LOG_INFO("[SQL] %s", sql);
-
-    int rows = send_exec_sql(ctx, sql);
-    return (rows >= 0) ? ERRCODE_SUCCESS : ERRCODE_FAIL;
-}
-
-int db_rpc_update(dev_ipc_context_t *ctx, const char *table_name, const char **field_names, const db_value_t *values,
-                  uint32_t num_fields, const db_filter_t *filter)
-{
-    if (!ctx || !table_name || !field_names || !values || num_fields == 0)
-    {
-        return -1;
-    }
-
-    char sql[4096];
-    if (build_update_sql(table_name, field_names, values, num_fields, filter, sql, sizeof(sql)) < 0)
-    {
-        LOG_ERROR("构建 UPDATE SQL 失败: 非法过滤条件");
-        return -1;
-    }
-    LOG_INFO("[SQL] %s", sql);
-
-    return send_exec_sql(ctx, sql);
-}
-
 int db_rpc_delete(dev_ipc_context_t *ctx, const char *table_name, const db_filter_t *filter)
 {
     if (!ctx || !table_name)
@@ -641,19 +606,6 @@ int db_rpc_exists(dev_ipc_context_t *ctx, const char *table_name, const db_filte
     return ERRCODE_FAIL;
 }
 
-int db_rpc_create_table(dev_ipc_context_t *ctx, const char *ddl)
-{
-    if (!ctx || !ddl || ddl[0] == '\0')
-    {
-        return ERRCODE_FAIL;
-    }
-
-    LOG_INFO("[SQL] %s", ddl);
-
-    int rows = send_exec_sql(ctx, ddl);
-    return (rows >= 0) ? ERRCODE_SUCCESS : ERRCODE_FAIL;
-}
-
 int db_rpc_create_table_from_def(dev_ipc_context_t *ctx, const db_table_def_t *def)
 {
     if (!ctx || !def || !def->table_name || !def->cols || def->num_cols == 0)
@@ -672,4 +624,261 @@ int db_rpc_create_table_from_def(dev_ipc_context_t *ctx, const db_table_def_t *d
     }
 
     return rpc_sync_table_columns(ctx, def);
+}
+
+// ============================================================================
+// db_record_t — 写操作键值构建器实现
+// ============================================================================
+
+/** 单个字段-值对 */
+typedef struct
+{
+    char *field;      /**< 字段名（已分配） */
+    db_value_t value; /**< 值 */
+} db_record_entry_t;
+
+/** db_record_t 内部结构 */
+struct db_record
+{
+    GArray *entries; /**< db_record_entry_t 数组 */
+};
+
+db_record_t *db_record_new(void)
+{
+    db_record_t *rec = g_new0(db_record_t, 1);
+    rec->entries = g_array_new(FALSE, FALSE, sizeof(db_record_entry_t));
+    return rec;
+}
+
+void db_record_free(db_record_t *rec)
+{
+    if (!rec)
+    {
+        return;
+    }
+
+    for (guint i = 0; i < rec->entries->len; i++)
+    {
+        db_record_entry_t *e = &g_array_index(rec->entries, db_record_entry_t, i);
+        g_free(e->field);
+        db_value_free(&e->value);
+    }
+    g_array_free(rec->entries, TRUE);
+    g_free(rec);
+}
+
+/**
+ * @brief 在 record 中查找已有字段，返回其索引；不存在返回 -1
+ */
+static int record_find_field(db_record_t *rec, const char *field)
+{
+    for (guint i = 0; i < rec->entries->len; i++)
+    {
+        db_record_entry_t *e = &g_array_index(rec->entries, db_record_entry_t, i);
+        if (strcmp(e->field, field) == 0)
+        {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+/**
+ * @brief 设置或覆盖字段值（已存在则替换）
+ */
+static void record_set(db_record_t *rec, const char *field, db_value_t value)
+{
+    if (!rec || !field)
+    {
+        db_value_free(&value);
+        return;
+    }
+
+    int idx = record_find_field(rec, field);
+    if (idx >= 0)
+    {
+        /* 覆盖已有字段 */
+        db_record_entry_t *e = &g_array_index(rec->entries, db_record_entry_t, idx);
+        db_value_free(&e->value);
+        e->value = value;
+    }
+    else
+    {
+        db_record_entry_t entry;
+        entry.field = g_strdup(field);
+        entry.value = value;
+        g_array_append_val(rec->entries, entry);
+    }
+}
+
+void db_record_set_int(db_record_t *rec, const char *field, int64_t value)
+{
+    record_set(rec, field, db_value_int(value));
+}
+
+void db_record_set_text(db_record_t *rec, const char *field, const char *value)
+{
+    record_set(rec, field, db_value_text(value));
+}
+
+void db_record_set_real(db_record_t *rec, const char *field, double value)
+{
+    record_set(rec, field, db_value_real(value));
+}
+
+// ============================================================================
+// db_row_t 读取辅助实现
+// ============================================================================
+
+int64_t db_row_get_int(const db_row_t *row, const char *field, int64_t default_val)
+{
+    if (!row || !field)
+    {
+        return default_val;
+    }
+
+    for (uint32_t i = 0; i < row->num_fields; i++)
+    {
+        if (strcmp(row->field_names[i], field) == 0)
+        {
+            if (row->values[i].type == DB_TYPE_INTEGER)
+            {
+                return row->values[i].data.i64;
+            }
+            return default_val;
+        }
+    }
+    return default_val;
+}
+
+const char *db_row_get_text(const db_row_t *row, const char *field, const char *default_val)
+{
+    if (!row || !field)
+    {
+        return default_val;
+    }
+
+    for (uint32_t i = 0; i < row->num_fields; i++)
+    {
+        if (strcmp(row->field_names[i], field) == 0)
+        {
+            if (row->values[i].type == DB_TYPE_TEXT)
+            {
+                return row->values[i].data.text;
+            }
+            return default_val;
+        }
+    }
+    return default_val;
+}
+
+double db_row_get_real(const db_row_t *row, const char *field, double default_val)
+{
+    if (!row || !field)
+    {
+        return default_val;
+    }
+
+    for (uint32_t i = 0; i < row->num_fields; i++)
+    {
+        if (strcmp(row->field_names[i], field) == 0)
+        {
+            if (row->values[i].type == DB_TYPE_REAL)
+            {
+                return row->values[i].data.real;
+            }
+            return default_val;
+        }
+    }
+    return default_val;
+}
+
+// ============================================================================
+// 基于 db_record_t 的新 RPC 函数实现
+// ============================================================================
+
+int db_rpc_insert_record(dev_ipc_context_t *ctx, const char *table, const db_record_t *rec)
+{
+    if (!ctx || !table || !rec || rec->entries->len == 0)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    uint32_t n = rec->entries->len;
+    const char **field_names = g_new(const char *, n);
+    db_value_t *values = g_new(db_value_t, n);
+
+    for (uint32_t i = 0; i < n; i++)
+    {
+        db_record_entry_t *e = &g_array_index(rec->entries, db_record_entry_t, i);
+        field_names[i] = e->field;
+        values[i] = e->value;
+    }
+
+    char sql[4096];
+    build_insert_sql(table, field_names, values, n, sql, sizeof(sql));
+    g_free(field_names);
+    g_free(values);
+    LOG_INFO("[SQL] %s", sql);
+
+    int rows = send_exec_sql(ctx, sql);
+    return (rows >= 0) ? ERRCODE_SUCCESS : ERRCODE_FAIL;
+}
+
+int db_rpc_update_record(dev_ipc_context_t *ctx, const char *table, const db_record_t *rec, const db_filter_t *filter)
+{
+    if (!ctx || !table || !rec || rec->entries->len == 0)
+    {
+        return -1;
+    }
+
+    uint32_t n = rec->entries->len;
+    const char **field_names = g_new(const char *, n);
+    db_value_t *values = g_new(db_value_t, n);
+
+    for (uint32_t i = 0; i < n; i++)
+    {
+        db_record_entry_t *e = &g_array_index(rec->entries, db_record_entry_t, i);
+        field_names[i] = e->field;
+        values[i] = e->value;
+    }
+
+    char sql[4096];
+    int sql_len = build_update_sql(table, field_names, values, n, filter, sql, sizeof(sql));
+    g_free(field_names);
+    g_free(values);
+    if (sql_len < 0)
+    {
+        LOG_ERROR("构建 UPDATE SQL 失败: 非法过滤条件");
+        return -1;
+    }
+    LOG_INFO("[SQL] %s", sql);
+
+    return send_exec_sql(ctx, sql);
+}
+
+int db_rpc_upsert(dev_ipc_context_t *ctx, const char *table, const db_record_t *rec, const db_filter_t *filter)
+{
+    if (!ctx || !table || !rec)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    gboolean exists = FALSE;
+    int ret = db_rpc_exists(ctx, table, filter, &exists);
+    if (ret != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("db_rpc_upsert: 检查存在性失败, table=%s", table);
+        return ERRCODE_FAIL;
+    }
+
+    if (exists)
+    {
+        int rows = db_rpc_update_record(ctx, table, rec, filter);
+        return (rows >= 0) ? ERRCODE_SUCCESS : ERRCODE_FAIL;
+    }
+    else
+    {
+        return db_rpc_insert_record(ctx, table, rec);
+    }
 }

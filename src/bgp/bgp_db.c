@@ -15,13 +15,6 @@
 #include "log.h"
 #include "net_addr.h"
 
-/* BGP 协议配置表名 */
-#define BGP_TABLE_PROTOCOL "bgp_protocol"
-/* BGP 会话表名（BGP 视图 neighbor 命令） */
-#define BGP_TABLE_SESSION "bgp_session"
-/* BGP 邻居表名（地址族视图 neighbor enable 命令） */
-#define BGP_TABLE_NEIGHBOR "bgp_neighbor"
-
 // ============================================================================
 // 表定义
 // ============================================================================
@@ -77,7 +70,7 @@ static const db_table_def_t BGP_NEIGHBOR_TABLE = {
 static bgp_protocol_t *restore_protocol(dev_ipc_context_t *ctx)
 {
     db_result_t *result = NULL;
-    if (bgp_db_query(ctx, &result) != 0 || !result)
+    if (db_rpc_query(ctx, BGP_TABLE_PROTOCOL, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
     {
         return NULL;
     }
@@ -90,33 +83,21 @@ static bgp_protocol_t *restore_protocol(dev_ipc_context_t *ctx)
     }
 
     db_row_t *row = result->rows[0];
-    uint32_t as_number = 0;
-    const char *router_id = NULL;
+    uint32_t as_number = (uint32_t)db_row_get_int(row, "as_number", 0);
+    const char *router_id = db_row_get_text(row, "router_id", NULL);
 
-    for (uint32_t j = 0; j < row->num_fields; j++)
+    bgp_protocol_t *proto = NULL;
+    if (as_number != 0)
     {
-        if (strcmp(row->field_names[j], "as_number") == 0 && row->values[j].type == DB_TYPE_INTEGER)
+        proto = bgp_protocol_create(as_number);
+        if (router_id && strcmp(router_id, "0.0.0.0") != 0)
         {
-            as_number = (uint32_t)row->values[j].data.i64;
+            snprintf(proto->router_id, sizeof(proto->router_id), "%s", router_id);
         }
-        else if (strcmp(row->field_names[j], "router_id") == 0 && row->values[j].type == DB_TYPE_TEXT)
-        {
-            router_id = row->values[j].data.text;
-        }
+        LOG_INFO("BGP 协议已恢复: AS %u, router-id %s", proto->as_number, proto->router_id);
     }
+
     db_result_free(result);
-
-    if (as_number == 0)
-    {
-        return NULL;
-    }
-
-    bgp_protocol_t *proto = bgp_protocol_create(as_number);
-    if (router_id && strcmp(router_id, "0.0.0.0") != 0)
-    {
-        snprintf(proto->router_id, sizeof(proto->router_id), "%s", router_id);
-    }
-    LOG_INFO("BGP 协议已恢复: AS %u, router-id %s", proto->as_number, proto->router_id);
     return proto;
 }
 
@@ -132,7 +113,7 @@ static void restore_sessions(dev_ipc_context_t *ctx, bgp_vrf_t *vrf0)
     }
 
     db_result_t *result = NULL;
-    if (bgp_db_query_sessions(ctx, &result) != 0 || !result)
+    if (db_rpc_query(ctx, BGP_TABLE_SESSION, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
     {
         return;
     }
@@ -140,20 +121,8 @@ static void restore_sessions(dev_ipc_context_t *ctx, bgp_vrf_t *vrf0)
     for (uint32_t i = 0; i < result->num_rows; i++)
     {
         db_row_t *row = result->rows[i];
-        const char *ip_val = NULL;
-        uint32_t as_val = 0;
-
-        for (uint32_t j = 0; j < row->num_fields; j++)
-        {
-            if (strcmp(row->field_names[j], "neighbor_ip") == 0 && row->values[j].type == DB_TYPE_TEXT)
-            {
-                ip_val = row->values[j].data.text;
-            }
-            else if (strcmp(row->field_names[j], "remote_as") == 0 && row->values[j].type == DB_TYPE_INTEGER)
-            {
-                as_val = (uint32_t)row->values[j].data.i64;
-            }
-        }
+        const char *ip_val = db_row_get_text(row, "neighbor_ip", NULL);
+        uint32_t as_val = (uint32_t)db_row_get_int(row, "remote_as", 0);
 
         if (!ip_val)
         {
@@ -185,7 +154,7 @@ static void restore_neighbors(dev_ipc_context_t *ctx, bgp_vrf_t *vrf0)
     }
 
     db_result_t *result = NULL;
-    if (bgp_db_query_neighbors(ctx, &result) != 0 || !result)
+    if (db_rpc_query(ctx, BGP_TABLE_NEIGHBOR, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
     {
         return;
     }
@@ -193,20 +162,8 @@ static void restore_neighbors(dev_ipc_context_t *ctx, bgp_vrf_t *vrf0)
     for (uint32_t i = 0; i < result->num_rows; i++)
     {
         db_row_t *row = result->rows[i];
-        const char *nb_ip = NULL;
-        const char *afi_str = NULL;
-
-        for (uint32_t j = 0; j < row->num_fields; j++)
-        {
-            if (strcmp(row->field_names[j], "neighbor_ip") == 0 && row->values[j].type == DB_TYPE_TEXT)
-            {
-                nb_ip = row->values[j].data.text;
-            }
-            else if (strcmp(row->field_names[j], "afi") == 0 && row->values[j].type == DB_TYPE_TEXT)
-            {
-                afi_str = row->values[j].data.text;
-            }
-        }
+        const char *nb_ip = db_row_get_text(row, "neighbor_ip", NULL);
+        const char *afi_str = db_row_get_text(row, "afi", NULL);
 
         if (!nb_ip || !afi_str)
         {
@@ -307,38 +264,19 @@ int bgp_db_set_as(dev_ipc_context_t *ctx, uint32_t as_number)
         return -1;
     }
 
-    gboolean exists = FALSE;
-    int ret = db_rpc_exists(ctx, BGP_TABLE_PROTOCOL, NULL, &exists);
+    db_record_t *rec = db_record_new();
+    db_record_set_int(rec, "as_number", (int64_t)as_number);
+
+    int ret = db_rpc_upsert(ctx, BGP_TABLE_PROTOCOL, rec, NULL);
+    db_record_free(rec);
+
     if (ret != ERRCODE_SUCCESS)
     {
-        LOG_ERROR("BGP 查询 AS 存在性失败");
+        LOG_ERROR("BGP 写入 AS 号 %u 失败", as_number);
         return -1;
     }
 
-    const char *field_names[] = {"as_number"};
-    db_value_t values[] = {db_value_int((int64_t)as_number)};
-
-    if (exists)
-    {
-        int rows = db_rpc_update(ctx, BGP_TABLE_PROTOCOL, field_names, values, 1, NULL);
-        if (rows < 0)
-        {
-            LOG_ERROR("BGP 更新 AS 号 %u 失败", as_number);
-            return -1;
-        }
-        LOG_INFO("BGP AS 号已更新为 %u", as_number);
-    }
-    else
-    {
-        ret = db_rpc_insert(ctx, BGP_TABLE_PROTOCOL, field_names, values, 1);
-        if (ret != ERRCODE_SUCCESS)
-        {
-            LOG_ERROR("BGP 插入 AS 号 %u 失败", as_number);
-            return -1;
-        }
-        LOG_INFO("BGP AS 号 %u 已写入", as_number);
-    }
-
+    LOG_INFO("BGP AS 号 %u 已写入", as_number);
     return 0;
 }
 
@@ -365,27 +303,6 @@ int bgp_db_del_as(dev_ipc_context_t *ctx)
 }
 
 // ============================================================================
-// 查询全部 BGP 配置
-// ============================================================================
-
-int bgp_db_query(dev_ipc_context_t *ctx, db_result_t **result)
-{
-    if (!ctx || !result)
-    {
-        return -1;
-    }
-
-    int ret = db_rpc_query(ctx, BGP_TABLE_PROTOCOL, NULL, 0, NULL, result);
-    if (ret != ERRCODE_SUCCESS)
-    {
-        LOG_ERROR("BGP 查询配置失败");
-        return -1;
-    }
-
-    return 0;
-}
-
-// ============================================================================
 // BGP Session 操作
 // ============================================================================
 
@@ -404,49 +321,23 @@ int bgp_db_set_session(dev_ipc_context_t *ctx, const char *vrf, const char *neig
     };
     db_filter_t key_filter = {.conditions = key_conditions, .num_conditions = G_N_ELEMENTS(key_conditions)};
 
-    gboolean exists = FALSE;
-    int ret = db_rpc_exists(ctx, BGP_TABLE_SESSION, &key_filter, &exists);
+    db_record_t *rec = db_record_new();
+    db_record_set_text(rec, "neighbor_ip", neighbor_ip);
+    db_record_set_int(rec, "remote_as", (int64_t)remote_as);
+    db_record_set_text(rec, "vrf", vrf_val);
+
+    int ret = db_rpc_upsert(ctx, BGP_TABLE_SESSION, rec, &key_filter);
+    db_record_free(rec);
+    db_value_free(&key_conditions[0].value);
+    db_value_free(&key_conditions[1].value);
+
     if (ret != ERRCODE_SUCCESS)
     {
-        db_value_free(&key_conditions[0].value);
-        db_value_free(&key_conditions[1].value);
-        LOG_ERROR("BGP 查询 session 存在性失败");
+        LOG_ERROR("BGP 写入 session vrf=%s neighbor=%s 失败", vrf_val, neighbor_ip);
         return -1;
     }
 
-    if (exists)
-    {
-        const char *field_names[] = {"remote_as"};
-        db_value_t values[] = {db_value_int((int64_t)remote_as)};
-        int rows = db_rpc_update(ctx, BGP_TABLE_SESSION, field_names, values, 1, &key_filter);
-        if (rows < 0)
-        {
-            db_value_free(&key_conditions[0].value);
-            db_value_free(&key_conditions[1].value);
-            LOG_ERROR("BGP 更新 session vrf=%s neighbor=%s 失败", vrf_val, neighbor_ip);
-            return -1;
-        }
-        LOG_INFO("BGP session vrf=%s neighbor=%s AS=%u 已更新", vrf_val, neighbor_ip, remote_as);
-    }
-    else
-    {
-        const char *field_names[] = {"neighbor_ip", "remote_as", "vrf"};
-        db_value_t values[] = {db_value_text(neighbor_ip), db_value_int((int64_t)remote_as), db_value_text(vrf_val)};
-        ret = db_rpc_insert(ctx, BGP_TABLE_SESSION, field_names, values, 3);
-        db_value_free(&values[0]);
-        db_value_free(&values[2]);
-        if (ret != ERRCODE_SUCCESS)
-        {
-            db_value_free(&key_conditions[0].value);
-            db_value_free(&key_conditions[1].value);
-            LOG_ERROR("BGP 插入 session vrf=%s neighbor=%s 失败", vrf_val, neighbor_ip);
-            return -1;
-        }
-        LOG_INFO("BGP session vrf=%s neighbor=%s AS=%u 已创建", vrf_val, neighbor_ip, remote_as);
-    }
-
-    db_value_free(&key_conditions[0].value);
-    db_value_free(&key_conditions[1].value);
+    LOG_INFO("BGP session vrf=%s neighbor=%s AS=%u 已写入", vrf_val, neighbor_ip, remote_as);
     return 0;
 }
 
@@ -517,23 +408,6 @@ int bgp_db_del_session(dev_ipc_context_t *ctx, const char *vrf, const char *neig
     return rows;
 }
 
-int bgp_db_query_sessions(dev_ipc_context_t *ctx, db_result_t **result)
-{
-    if (!ctx || !result)
-    {
-        return -1;
-    }
-
-    int ret = db_rpc_query(ctx, BGP_TABLE_SESSION, NULL, 0, NULL, result);
-    if (ret != ERRCODE_SUCCESS)
-    {
-        LOG_ERROR("BGP 查询 session 失败");
-        return -1;
-    }
-
-    return 0;
-}
-
 // ============================================================================
 // BGP Neighbor 操作（地址族）
 // ============================================================================
@@ -551,39 +425,36 @@ int bgp_db_set_neighbor(dev_ipc_context_t *ctx, const char *neighbor_ip, const c
     };
     db_filter_t key_filter = {.conditions = key_conditions, .num_conditions = G_N_ELEMENTS(key_conditions)};
 
+    /* neighbor 记录以 (neighbor_ip, afi) 为主键，已存在时无需更新，直接幂等插入 */
     gboolean exists = FALSE;
     int ret = db_rpc_exists(ctx, BGP_TABLE_NEIGHBOR, &key_filter, &exists);
+    db_value_free(&key_conditions[0].value);
+    db_value_free(&key_conditions[1].value);
+
     if (ret != ERRCODE_SUCCESS)
     {
-        db_value_free(&key_conditions[0].value);
-        db_value_free(&key_conditions[1].value);
         LOG_ERROR("BGP 查询 neighbor 存在性失败");
         return -1;
     }
 
     if (exists)
     {
-        db_value_free(&key_conditions[0].value);
-        db_value_free(&key_conditions[1].value);
         LOG_INFO("BGP neighbor %s afi %s 已存在", neighbor_ip, afi);
         return 0;
     }
 
-    const char *field_names[] = {"neighbor_ip", "afi"};
-    db_value_t values[] = {db_value_text(neighbor_ip), db_value_text(afi)};
-    ret = db_rpc_insert(ctx, BGP_TABLE_NEIGHBOR, field_names, values, 2);
-    db_value_free(&values[0]);
-    db_value_free(&values[1]);
+    db_record_t *rec = db_record_new();
+    db_record_set_text(rec, "neighbor_ip", neighbor_ip);
+    db_record_set_text(rec, "afi", afi);
+    ret = db_rpc_insert_record(ctx, BGP_TABLE_NEIGHBOR, rec);
+    db_record_free(rec);
+
     if (ret != ERRCODE_SUCCESS)
     {
-        db_value_free(&key_conditions[0].value);
-        db_value_free(&key_conditions[1].value);
         LOG_ERROR("BGP 插入 neighbor %s afi %s 失败", neighbor_ip, afi);
         return -1;
     }
 
-    db_value_free(&key_conditions[0].value);
-    db_value_free(&key_conditions[1].value);
     LOG_INFO("BGP neighbor %s afi %s 已使能", neighbor_ip, afi);
     return 0;
 }
@@ -626,21 +497,4 @@ int bgp_db_del_neighbor(dev_ipc_context_t *ctx, const char *neighbor_ip, const c
 
     LOG_INFO("BGP 删除 neighbor %s，影响行数: %d", neighbor_ip, rows);
     return rows;
-}
-
-int bgp_db_query_neighbors(dev_ipc_context_t *ctx, db_result_t **result)
-{
-    if (!ctx || !result)
-    {
-        return -1;
-    }
-
-    int ret = db_rpc_query(ctx, BGP_TABLE_NEIGHBOR, NULL, 0, NULL, result);
-    if (ret != ERRCODE_SUCCESS)
-    {
-        LOG_ERROR("BGP 查询 neighbor 失败");
-        return -1;
-    }
-
-    return 0;
 }

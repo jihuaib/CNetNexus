@@ -184,17 +184,13 @@ static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                 return ERRCODE_FAIL;
             }
 
-            const char *fields[] = {"destination", "mask", "next_hop", "metric"};
-            db_value_t values[4];
-            values[0] = db_value_text(destination);
-            values[1] = db_value_text(mask);
-            values[2] = db_value_text(next_hop);
-            values[3] = db_value_int(has_metric ? metric : 0);
-
-            int ret = db_rpc_insert(g_route_local->dev_ipc_ctx, "route_ipv4", fields, values, 4);
-            db_value_free(&values[0]);
-            db_value_free(&values[1]);
-            db_value_free(&values[2]);
+            db_record_t *rec = db_record_new();
+            db_record_set_text(rec, "destination", destination);
+            db_record_set_text(rec, "mask", mask);
+            db_record_set_text(rec, "next_hop", next_hop);
+            db_record_set_int(rec, "metric", has_metric ? metric : 0);
+            int ret = db_rpc_insert_record(g_route_local->dev_ipc_ctx, "route_ipv4", rec);
+            db_record_free(rec);
             if (ret != ERRCODE_SUCCESS)
             {
                 send_resp(msg, "Error: Failed to add route\r\n");
@@ -253,16 +249,13 @@ static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                 return ERRCODE_FAIL;
             }
 
-            const char *fields[] = {"destination", "prefix_length", "next_hop", "metric"};
-            db_value_t values[4];
-            values[0] = db_value_text(destination);
-            values[1] = db_value_int(prefix_length);
-            values[2] = db_value_text(next_hop);
-            values[3] = db_value_int(has_metric ? metric : 0);
-
-            int ret = db_rpc_insert(g_route_local->dev_ipc_ctx, "route_ipv6", fields, values, 4);
-            db_value_free(&values[0]);
-            db_value_free(&values[2]);
+            db_record_t *rec = db_record_new();
+            db_record_set_text(rec, "destination", destination);
+            db_record_set_int(rec, "prefix_length", prefix_length);
+            db_record_set_text(rec, "next_hop", next_hop);
+            db_record_set_int(rec, "metric", has_metric ? metric : 0);
+            int ret = db_rpc_insert_record(g_route_local->dev_ipc_ctx, "route_ipv6", rec);
+            db_record_free(rec);
             if (ret != ERRCODE_SUCCESS)
             {
                 send_resp(msg, "Error: Failed to add route\r\n");
@@ -371,33 +364,13 @@ static int handle_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             for (uint32_t i = 0; i < result->num_rows; i++)
             {
                 db_row_t *row = result->rows[i];
-                const char *dest = "";
-                const char *mask_val = "";
-                const char *next_hop_str = "";
-                int64_t metric_val = 0;
-
-                for (uint32_t j = 0; j < row->num_fields; j++)
-                {
-                    if (strcmp(row->field_names[j], "destination") == 0 && row->values[j].type == DB_TYPE_TEXT)
-                    {
-                        dest = row->values[j].data.text;
-                    }
-                    else if (strcmp(row->field_names[j], "mask") == 0 && row->values[j].type == DB_TYPE_TEXT)
-                    {
-                        mask_val = row->values[j].data.text;
-                    }
-                    else if (strcmp(row->field_names[j], "next_hop") == 0 && row->values[j].type == DB_TYPE_TEXT)
-                    {
-                        next_hop_str = row->values[j].data.text;
-                    }
-                    else if (strcmp(row->field_names[j], "metric") == 0 && row->values[j].type == DB_TYPE_INTEGER)
-                    {
-                        metric_val = row->values[j].data.i64;
-                    }
-                }
+                const char *dest = db_row_get_text(row, "destination", "");
+                const char *mask_val = db_row_get_text(row, "mask", "");
+                const char *next_hop_str = db_row_get_text(row, "next_hop", "");
+                int64_t metric_val = db_row_get_int(row, "metric", 0);
 
                 CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "%-18s %-18s %-18s %-8ld\r\n", dest, mask_val,
-                               next_hop_str ? next_hop_str : "", metric_val);
+                               next_hop_str, metric_val);
 
                 if (offset >= sizeof(resp_buf) - 128)
                 {
@@ -434,34 +407,13 @@ static int handle_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             for (uint32_t i = 0; i < result->num_rows; i++)
             {
                 db_row_t *row = result->rows[i];
-                const char *dest = "";
-                int64_t prefix_len = 0;
-                const char *next_hop_str = "";
-                int64_t metric_val = 0;
-
-                for (uint32_t j = 0; j < row->num_fields; j++)
-                {
-                    if (strcmp(row->field_names[j], "destination") == 0 && row->values[j].type == DB_TYPE_TEXT)
-                    {
-                        dest = row->values[j].data.text;
-                    }
-                    else if (strcmp(row->field_names[j], "prefix_length") == 0 &&
-                             row->values[j].type == DB_TYPE_INTEGER)
-                    {
-                        prefix_len = row->values[j].data.i64;
-                    }
-                    else if (strcmp(row->field_names[j], "next_hop") == 0 && row->values[j].type == DB_TYPE_TEXT)
-                    {
-                        next_hop_str = row->values[j].data.text;
-                    }
-                    else if (strcmp(row->field_names[j], "metric") == 0 && row->values[j].type == DB_TYPE_INTEGER)
-                    {
-                        metric_val = row->values[j].data.i64;
-                    }
-                }
+                const char *dest = db_row_get_text(row, "destination", "");
+                int64_t prefix_len = db_row_get_int(row, "prefix_length", 0);
+                const char *next_hop_str = db_row_get_text(row, "next_hop", "");
+                int64_t metric_val = db_row_get_int(row, "metric", 0);
 
                 CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "%-30s %-8ld %-30s %-8ld\r\n", dest, prefix_len,
-                               next_hop_str ? next_hop_str : "", metric_val);
+                               next_hop_str, metric_val);
 
                 if (offset >= sizeof(resp_buf) - 128)
                 {

@@ -12,6 +12,7 @@
 #include "bgp_main.h"
 #include "cli.h"
 #include "dev.h"
+#include "errcode.h"
 #include "log.h"
 
 /** 最多支持的 AFI 种类数 */
@@ -49,7 +50,8 @@ static void send_config_resp(dev_ipc_message_t *msg, const char *text)
 static gboolean bdr_append_protocol(dev_ipc_context_t *ctx, char *buf, size_t buf_size, size_t *off)
 {
     db_result_t *result = NULL;
-    if (bgp_db_query(ctx, &result) != 0 || !result || result->num_rows == 0)
+    if (db_rpc_query(ctx, BGP_TABLE_PROTOCOL, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result ||
+        result->num_rows == 0)
     {
         if (result)
         {
@@ -58,21 +60,9 @@ static gboolean bdr_append_protocol(dev_ipc_context_t *ctx, char *buf, size_t bu
         return FALSE;
     }
 
-    uint32_t as_number = 0;
-    const char *router_id = NULL;
     db_row_t *row = result->rows[0];
-
-    for (uint32_t j = 0; j < row->num_fields; j++)
-    {
-        if (strcmp(row->field_names[j], "as_number") == 0 && row->values[j].type == DB_TYPE_INTEGER)
-        {
-            as_number = (uint32_t)row->values[j].data.i64;
-        }
-        else if (strcmp(row->field_names[j], "router_id") == 0 && row->values[j].type == DB_TYPE_TEXT)
-        {
-            router_id = row->values[j].data.text;
-        }
-    }
+    uint32_t as_number = (uint32_t)db_row_get_int(row, "as_number", 0);
+    const char *router_id = db_row_get_text(row, "router_id", NULL);
 
     CLI_BUF_APPEND(buf, buf_size, *off, "!\r\n");
     CLI_BUF_APPEND(buf, buf_size, *off, "bgp %u\r\n", as_number);
@@ -91,7 +81,7 @@ static gboolean bdr_append_protocol(dev_ipc_context_t *ctx, char *buf, size_t bu
 static void bdr_append_sessions(dev_ipc_context_t *ctx, char *buf, size_t buf_size, size_t *off)
 {
     db_result_t *result = NULL;
-    if (bgp_db_query_sessions(ctx, &result) != 0 || !result)
+    if (db_rpc_query(ctx, BGP_TABLE_SESSION, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
     {
         return;
     }
@@ -99,20 +89,8 @@ static void bdr_append_sessions(dev_ipc_context_t *ctx, char *buf, size_t buf_si
     for (uint32_t i = 0; i < result->num_rows; i++)
     {
         db_row_t *row = result->rows[i];
-        const char *ip = NULL;
-        int64_t remote_as = 0;
-
-        for (uint32_t j = 0; j < row->num_fields; j++)
-        {
-            if (strcmp(row->field_names[j], "neighbor_ip") == 0 && row->values[j].type == DB_TYPE_TEXT)
-            {
-                ip = row->values[j].data.text;
-            }
-            else if (strcmp(row->field_names[j], "remote_as") == 0 && row->values[j].type == DB_TYPE_INTEGER)
-            {
-                remote_as = row->values[j].data.i64;
-            }
-        }
+        const char *ip = db_row_get_text(row, "neighbor_ip", NULL);
+        int64_t remote_as = db_row_get_int(row, "remote_as", 0);
 
         if (ip)
         {
@@ -129,7 +107,8 @@ static void bdr_append_sessions(dev_ipc_context_t *ctx, char *buf, size_t buf_si
 static void bdr_append_af_neighbors(dev_ipc_context_t *ctx, char *buf, size_t buf_size, size_t *off)
 {
     db_result_t *result = NULL;
-    if (bgp_db_query_neighbors(ctx, &result) != 0 || !result || result->num_rows == 0)
+    if (db_rpc_query(ctx, BGP_TABLE_NEIGHBOR, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result ||
+        result->num_rows == 0)
     {
         if (result)
         {
@@ -145,15 +124,7 @@ static void bdr_append_af_neighbors(dev_ipc_context_t *ctx, char *buf, size_t bu
     for (uint32_t i = 0; i < result->num_rows; i++)
     {
         db_row_t *row = result->rows[i];
-        const char *afi = NULL;
-        for (uint32_t j = 0; j < row->num_fields; j++)
-        {
-            if (strcmp(row->field_names[j], "afi") == 0 && row->values[j].type == DB_TYPE_TEXT)
-            {
-                afi = row->values[j].data.text;
-                break;
-            }
-        }
+        const char *afi = db_row_get_text(row, "afi", NULL);
         if (!afi)
         {
             continue;
@@ -181,19 +152,8 @@ static void bdr_append_af_neighbors(dev_ipc_context_t *ctx, char *buf, size_t bu
         for (uint32_t i = 0; i < result->num_rows; i++)
         {
             db_row_t *row = result->rows[i];
-            const char *ip = NULL;
-            const char *afi = NULL;
-            for (uint32_t j = 0; j < row->num_fields; j++)
-            {
-                if (strcmp(row->field_names[j], "neighbor_ip") == 0 && row->values[j].type == DB_TYPE_TEXT)
-                {
-                    ip = row->values[j].data.text;
-                }
-                else if (strcmp(row->field_names[j], "afi") == 0 && row->values[j].type == DB_TYPE_TEXT)
-                {
-                    afi = row->values[j].data.text;
-                }
-            }
+            const char *ip = db_row_get_text(row, "neighbor_ip", NULL);
+            const char *afi = db_row_get_text(row, "afi", NULL);
             if (ip && afi && strcmp(afi, afi_list[k]) == 0)
             {
                 CLI_BUF_APPEND(buf, buf_size, *off, "  neighbor %s enable\r\n", ip);

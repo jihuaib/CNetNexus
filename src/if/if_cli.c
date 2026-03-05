@@ -267,15 +267,15 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         /* ip address <ip> <mask> */
         if (if_set_ip(phys_name, ip, mask) == ERRCODE_SUCCESS)
         {
-            const char *field_names[] = {"ip_address", "netmask"};
-            db_value_t values[] = {db_value_text(ip), db_value_text(mask)};
             db_condition_t conditions[] = {
                 {.field_name = "name", .op = DB_CMP_EQ, .value = db_value_text(ifname)},
             };
             db_filter_t filter = {.conditions = conditions, .num_conditions = G_N_ELEMENTS(conditions)};
-            db_rpc_update(g_if_local->dev_ipc_ctx, "if_interface", field_names, values, 2, &filter);
-            db_value_free(&values[0]);
-            db_value_free(&values[1]);
+            db_record_t *rec = db_record_new();
+            db_record_set_text(rec, "ip_address", ip);
+            db_record_set_text(rec, "netmask", mask);
+            db_rpc_update_record(g_if_local->dev_ipc_ctx, "if_interface", rec, &filter);
+            db_record_free(rec);
             db_value_free(&conditions[0].value);
 
             char resp_buf[128];
@@ -296,13 +296,14 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         int state = is_no ? 1 : 0; /* no shutdown → UP(1), shutdown → DOWN(0) */
         if (if_set_state(phys_name, state) == ERRCODE_SUCCESS)
         {
-            const char *field_names[] = {"shutdown"};
-            db_value_t values[] = {db_value_int(state ? 0 : 1)};
             db_condition_t conditions[] = {
                 {.field_name = "name", .op = DB_CMP_EQ, .value = db_value_text(ifname)},
             };
             db_filter_t filter = {.conditions = conditions, .num_conditions = G_N_ELEMENTS(conditions)};
-            db_rpc_update(g_if_local->dev_ipc_ctx, "if_interface", field_names, values, 1, &filter);
+            db_record_t *rec = db_record_new();
+            db_record_set_int(rec, "shutdown", state ? 0 : 1);
+            db_rpc_update_record(g_if_local->dev_ipc_ctx, "if_interface", rec, &filter);
+            db_record_free(rec);
             db_value_free(&conditions[0].value);
 
             char resp_buf[128];

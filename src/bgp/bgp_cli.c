@@ -498,7 +498,7 @@ static int handle_bgp_af_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
 static int handle_bgp_peer_show(dev_ipc_message_t *msg)
 {
     db_result_t *result = NULL;
-    int ret = bgp_db_query(g_bgp_local->dev_ipc_ctx, &result);
+    int ret = db_rpc_query(g_bgp_local->dev_ipc_ctx, BGP_TABLE_PROTOCOL, NULL, 0, NULL, &result);
 
     if (ret != 0 || !result)
     {
@@ -552,7 +552,7 @@ static int handle_bgp_peer_show(dev_ipc_message_t *msg)
 
     /* 查询并显示 session 信息 */
     db_result_t *session_result = NULL;
-    ret = bgp_db_query_sessions(g_bgp_local->dev_ipc_ctx, &session_result);
+    ret = db_rpc_query(g_bgp_local->dev_ipc_ctx, BGP_TABLE_SESSION, NULL, 0, NULL, &session_result);
     if (ret == 0 && session_result && session_result->num_rows > 0)
     {
         CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "BGP Sessions:\r\n");
@@ -560,19 +560,8 @@ static int handle_bgp_peer_show(dev_ipc_message_t *msg)
         for (uint32_t i = 0; i < session_result->num_rows; i++)
         {
             db_row_t *row = session_result->rows[i];
-            const char *ip = "N/A";
-            int64_t as_num = 0;
-            for (uint32_t j = 0; j < row->num_fields; j++)
-            {
-                if (strcmp(row->field_names[j], "neighbor_ip") == 0 && row->values[j].type == DB_TYPE_TEXT)
-                {
-                    ip = row->values[j].data.text ? row->values[j].data.text : "N/A";
-                }
-                else if (strcmp(row->field_names[j], "remote_as") == 0 && row->values[j].type == DB_TYPE_INTEGER)
-                {
-                    as_num = row->values[j].data.i64;
-                }
-            }
+            const char *ip = db_row_get_text(row, "neighbor_ip", "N/A");
+            int64_t as_num = db_row_get_int(row, "remote_as", 0);
             CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "  Neighbor: %-15s  AS: %ld\r\n", ip, as_num);
         }
         CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "\r\n");
@@ -584,7 +573,7 @@ static int handle_bgp_peer_show(dev_ipc_message_t *msg)
 
     /* 查询并显示 neighbor 信息 */
     db_result_t *neighbor_result = NULL;
-    ret = bgp_db_query_neighbors(g_bgp_local->dev_ipc_ctx, &neighbor_result);
+    ret = db_rpc_query(g_bgp_local->dev_ipc_ctx, BGP_TABLE_NEIGHBOR, NULL, 0, NULL, &neighbor_result);
     if (ret == 0 && neighbor_result && neighbor_result->num_rows > 0)
     {
         CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "BGP Address-Family Neighbors:\r\n");
@@ -592,19 +581,8 @@ static int handle_bgp_peer_show(dev_ipc_message_t *msg)
         for (uint32_t i = 0; i < neighbor_result->num_rows; i++)
         {
             db_row_t *row = neighbor_result->rows[i];
-            const char *ip = "N/A";
-            const char *afi = "N/A";
-            for (uint32_t j = 0; j < row->num_fields; j++)
-            {
-                if (strcmp(row->field_names[j], "neighbor_ip") == 0 && row->values[j].type == DB_TYPE_TEXT)
-                {
-                    ip = row->values[j].data.text ? row->values[j].data.text : "N/A";
-                }
-                else if (strcmp(row->field_names[j], "afi") == 0 && row->values[j].type == DB_TYPE_TEXT)
-                {
-                    afi = row->values[j].data.text ? row->values[j].data.text : "N/A";
-                }
-            }
+            const char *ip = db_row_get_text(row, "neighbor_ip", "N/A");
+            const char *afi = db_row_get_text(row, "afi", "N/A");
             CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "  Neighbor: %-15s  AFI: %s\r\n", ip, afi);
         }
         CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "\r\n");
