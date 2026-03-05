@@ -372,6 +372,7 @@ static void bgp_handle_data(bgp_conn_t *conn)
 static void *bgp_server_thread(void *arg)
 {
     (void)arg;
+    pthread_setname_np(pthread_self(), "bgp-server");
     log_set_tag("bgp");
 
     struct epoll_event events[BGP_MAX_EPOLL_EVENTS];

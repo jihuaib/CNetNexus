@@ -360,6 +360,7 @@ typedef struct
  */
 static void *bash_bridge_thread(void *arg)
 {
+    pthread_setname_np(pthread_self(), "cfg-bash");
     bash_bridge_ctx_t *ctx = (bash_bridge_ctx_t *)arg;
     cli_session_t *session = ctx->session;
     int client_fd = ctx->client_fd;

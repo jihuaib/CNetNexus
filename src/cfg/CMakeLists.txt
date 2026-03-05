@@ -37,5 +37,3 @@ set_target_properties(cfg PROPERTIES
     VERSION 1.0.0
     SOVERSION 1
 )
-
-add_subdirectory(lib)

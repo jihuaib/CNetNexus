@@ -72,53 +72,6 @@ static void ctx_write_i64(GByteArray *buf, int64_t v)
 // ============================================================================
 
 /**
- * @brief 获取视图提示符模板（通过 IPC 从 CFG 模块获取）
- * @param view_id     视图 ID
- * @param msg         原始消息（用于 request_id）
- * @param view_name   输出视图名称缓冲区
- * @param fallback    获取失败时使用的回退模板
- */
-static void bgp_get_view_prompt(uint32_t view_id, dev_ipc_message_t *msg, char *view_name, const char *fallback)
-{
-    if (g_bgp_local->dev_ipc_ctx && dev_ipc_is_connected(g_bgp_local->dev_ipc_ctx, DEV_MODULE_ID_CFG))
-    {
-        uint32_t view_id_be = htonl(view_id);
-        uint32_t *view_id_copy = g_malloc(sizeof(view_id_be));
-        memcpy(view_id_copy, &view_id_be, sizeof(view_id_be));
-        dev_ipc_message_t *req = dev_ipc_message_create(CFG_MSG_TYPE_CLI_CONTINUE, DEV_MODULE_ID_BGP, DEV_MODULE_ID_CFG,
-                                                        msg->request_id, view_id_copy, sizeof(view_id_be), g_free);
-
-        if (req)
-        {
-            req->msg_type = DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0010); /* GET_VIEW_PROMPT */
-            dev_ipc_message_t *resp = dev_ipc_query(g_bgp_local->dev_ipc_ctx, DEV_MODULE_ID_CFG, req, 1000);
-            if (resp && resp->payload && resp->payload_len > 0)
-            {
-                snprintf(view_name, CFG_CLI_MAX_VIEW_LEN, "%s", (char *)resp->payload);
-                dev_ipc_message_free(resp);
-            }
-            else
-            {
-                snprintf(view_name, CFG_CLI_MAX_VIEW_LEN, "%s", fallback);
-                if (resp)
-                {
-                    dev_ipc_message_free(resp);
-                }
-            }
-            dev_ipc_message_free(req);
-        }
-        else
-        {
-            snprintf(view_name, CFG_CLI_MAX_VIEW_LEN, "%s", fallback);
-        }
-    }
-    else
-    {
-        snprintf(view_name, CFG_CLI_MAX_VIEW_LEN, "%s", fallback);
-    }
-}
-
-/**
  * @brief 发送视图切换消息
  * @param msg        原始消息
  * @param ctx_buf    上下文 TLV 数据（已序列化）
@@ -141,48 +94,34 @@ static void bgp_send_view_change(dev_ipc_message_t *msg, GByteArray *ctx_buf, co
 }
 
 // ============================================================================
-// 从上下文 TLV 中提取 as_number
-// ============================================================================
-
-/**
- * @brief 从 TLV parser 中提取上下文中的 as_number
- * @param parser TLV 解析器
- * @return as_number，未找到返回 0
- */
-static uint32_t bgp_extract_ctx_as_number(cli_tlv_parser_t *parser)
-{
-    uint32_t as_number = 0;
-    cli_tlv_entry_t entry;
-
-    while (cli_tlv_next(parser, &entry) == 1)
-    {
-        if (CFG_TLV_IS_CONTEXT(entry.cfg_id) && CFG_TLV_CONTEXT_ID(entry.cfg_id) == 2)
-        {
-            as_number = (uint32_t)cli_tlv_entry_get_int(&entry);
-        }
-        cli_tlv_entry_free(&entry);
-    }
-
-    return as_number;
-}
-
-// ============================================================================
 // 命令处理函数
 // ============================================================================
 
 /**
  * @brief 处理 bgp 配置命令（bgp <as-number> / no bgp [as-number]）
  *
- * group_id=1, cfg_id: 1=no, 2=as_number
+ * group_id=1, cfg_id: 2=as_number
  */
 static int handle_bgp_protocol(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
-    gboolean is_no = FALSE;
+    gboolean is_no = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
     uint32_t as_number = 0;
+    char view_template[CFG_CLI_MAX_VIEW_LEN] = {0};
 
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
     {
+        if (CFG_TLV_IS_VIEW_TEMPLATE(entry.cfg_id))
+        {
+            /* 提取 CFG 下发的视图模板 */
+            const char *tmpl = cli_tlv_entry_get_text(&entry);
+            if (tmpl)
+            {
+                snprintf(view_template, sizeof(view_template), "%s", tmpl);
+            }
+            cli_tlv_entry_free(&entry);
+            continue;
+        }
         if (CFG_TLV_IS_CONTEXT(entry.cfg_id))
         {
             cli_tlv_entry_free(&entry);
@@ -191,9 +130,6 @@ static int handle_bgp_protocol(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 
         switch (entry.cfg_id)
         {
-            case 1: /* no 前缀 */
-                is_no = TRUE;
-                break;
             case 2: /* as_number 参数 */
                 as_number = (uint32_t)cli_tlv_entry_get_int(&entry);
                 break;
@@ -249,12 +185,8 @@ static int handle_bgp_protocol(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         }
     }
 
-    /* 发送 VIEW_CHG 响应 */
-    char view_name[CFG_CLI_MAX_VIEW_LEN];
-    bgp_get_view_prompt(CLI_VIEW_BGP, msg, view_name, "<NetNexus(bgp-%u)>");
-
     char out_prompt[CLI_CLI_MAX_PROMPT_LEN];
-    snprintf(out_prompt, CLI_CLI_MAX_PROMPT_LEN, view_name, as_number);
+    snprintf(out_prompt, CLI_CLI_MAX_PROMPT_LEN, view_template, as_number);
 
     GByteArray *ctx_buf = g_byte_array_new();
     ctx_write_u16(ctx_buf, 1);
@@ -272,11 +204,11 @@ static int handle_bgp_protocol(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 /**
  * @brief 处理 neighbor <ip> as <as-num> / no neighbor <ip> 命令
  *
- * group_id=3, cfg_id: 1=no, 2=ip-address, 3=as-number
+ * group_id=3, cfg_id: 2=ip-address, 3=as-number
  */
 static int handle_bgp_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
-    gboolean is_no = FALSE;
+    gboolean is_no = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
     uint32_t remote_as = 0;
     int has_remote_as = 0;
     char ip_buf[64] = {0};
@@ -292,9 +224,6 @@ static int handle_bgp_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 
         switch (entry.cfg_id)
         {
-            case 1: /* no 前缀 */
-                is_no = TRUE;
-                break;
             case 2: /* ip-address 参数 */
             {
                 const char *ip_str = cli_tlv_entry_get_text(&entry);
@@ -409,13 +338,31 @@ static int handle_bgp_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
  */
 static int handle_bgp_addr_family(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
-    uint32_t as_number = bgp_extract_ctx_as_number(parser);
+    uint32_t as_number = 0;
+    char view_template[CFG_CLI_MAX_VIEW_LEN] = {0};
 
-    char view_name[CFG_CLI_MAX_VIEW_LEN];
-    bgp_get_view_prompt(CLI_VIEW_BGP_AF_IPV4, msg, view_name, "<NetNexus(bgp-%u-af-ipv4)>");
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (CFG_TLV_IS_VIEW_TEMPLATE(entry.cfg_id))
+        {
+            const char *tmpl = cli_tlv_entry_get_text(&entry);
+            if (tmpl)
+            {
+                snprintf(view_template, sizeof(view_template), "%s", tmpl);
+            }
+            cli_tlv_entry_free(&entry);
+            continue;
+        }
+        if (CFG_TLV_IS_CONTEXT(entry.cfg_id) && CFG_TLV_CONTEXT_ID(entry.cfg_id) == 2)
+        {
+            as_number = (uint32_t)cli_tlv_entry_get_int(&entry);
+        }
+        cli_tlv_entry_free(&entry);
+    }
 
     char out_prompt[CLI_CLI_MAX_PROMPT_LEN];
-    snprintf(out_prompt, CLI_CLI_MAX_PROMPT_LEN, view_name, as_number);
+    snprintf(out_prompt, CLI_CLI_MAX_PROMPT_LEN, view_template, as_number);
 
     GByteArray *ctx_buf = g_byte_array_new();
     ctx_write_u16(ctx_buf, 1);
@@ -433,11 +380,11 @@ static int handle_bgp_addr_family(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
 /**
  * @brief 处理 neighbor <ip> enable / no neighbor <ip> 命令（地址族视图）
  *
- * group_id=5, cfg_id: 1=no, 2=ip-address, 3=enable (keyword)
+ * group_id=5, cfg_id: 2=ip-address, 3=enable (keyword)
  */
 static int handle_bgp_af_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
-    gboolean is_no = FALSE;
+    gboolean is_no = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
     char ip_buf[64] = {0};
 
     cli_tlv_entry_t entry;
@@ -451,9 +398,6 @@ static int handle_bgp_af_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
 
         switch (entry.cfg_id)
         {
-            case 1: /* no 前缀 */
-                is_no = TRUE;
-                break;
             case 2: /* ip-address 参数 */
             {
                 const char *ip_str = cli_tlv_entry_get_text(&entry);

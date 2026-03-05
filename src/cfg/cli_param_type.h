@@ -26,6 +26,8 @@ typedef enum
     PARAM_TYPE_ENUM,        // Enumeration (predefined values)
 } param_type_enum_t;
 
+typedef struct cli_param_type cli_param_type_t;
+
 // Validation callback function type
 // Returns TRUE if value is valid, FALSE otherwise
 typedef gboolean (*param_validate_fn)(const cli_param_type_t *param_type, const char *value, char *error_msg,

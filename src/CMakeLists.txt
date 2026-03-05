@@ -5,6 +5,7 @@ add_subdirectory(cfg)
 add_subdirectory(if)
 add_subdirectory(route)
 add_subdirectory(bgp)
+add_subdirectory(vrf)
 
 # Create main executable
 add_executable(netnexus 

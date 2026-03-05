@@ -44,6 +44,7 @@ static void *cfg_server_thread(void *arg);
 static void *cfg_server_thread(void *arg)
 {
     (void)arg;
+    pthread_setname_np(pthread_self(), "cfg-telnet");
     log_set_tag(dev_ipc_get_self_name(g_cfg_local->dev_ipc_ctx));
 
     struct sockaddr_in client_addr;

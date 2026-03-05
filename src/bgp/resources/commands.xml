@@ -3,10 +3,10 @@
     <!-- View definitions -->
     <views>
         <view view-id="4" view-name="bgp">
-            <template>&lt;NetNexus(config-bgp-%u)&gt;</template>
+            <template>&lt;NetNexus(config-bgp)&gt;</template>
         </view>
         <view view-id="7" view-name="bgp-af-ipv4">
-            <template>&lt;NetNexus(config-bgp-%u-af-ipv4)&gt;</template>
+            <template>&lt;NetNexus(config-bgp-af-ipv4-uni)&gt;</template>
         </view>
     </views>
 
@@ -15,7 +15,7 @@
         <!-- BGP 协议配置命令（bgp <as-number> / no bgp [as-number]） -->
         <group group-id="1">
             <elements>
-                <element cfg-id="1" type="keyword">
+                <element type="keyword">
                     <name>no</name>
                     <description>Delete</description>
                 </element>
@@ -71,7 +71,7 @@
         <!-- neighbor <ip> as <as-num> / no neighbor <ip> -->
         <group group-id="3">
             <elements>
-                <element cfg-id="1" type="keyword">
+                <element type="keyword">
                     <name>no</name>
                     <description>Delete</description>
                 </element>
@@ -134,7 +134,7 @@
         <!-- neighbor <ip> enable / no neighbor <ip> (in address-family view) -->
         <group group-id="5">
             <elements>
-                <element cfg-id="1" type="keyword">
+                <element type="keyword">
                     <name>no</name>
                     <description>Delete</description>
                 </element>

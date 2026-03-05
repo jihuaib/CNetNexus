@@ -61,6 +61,7 @@ typedef struct cli_match_result
     uint32_t num_elements;         // Number of elements
     uint32_t capacity;             // Allocated capacity
     cli_tree_node_t *final_node;   // Final matched node
+    gboolean has_no_prefix;        // 命令是否带有 "no" 前缀（无需 cfg-id 亦可检测）
 } cli_match_result_t;
 
 // Match result functions

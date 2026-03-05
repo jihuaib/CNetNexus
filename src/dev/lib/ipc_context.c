@@ -456,6 +456,9 @@ static void accept_new_connection(dev_ipc_context_t *ctx)
 static void *dev_ipc_worker_thread(void *arg)
 {
     dev_ipc_context_t *ctx = (dev_ipc_context_t *)arg;
+    char tname[16];
+    snprintf(tname, sizeof(tname), "ipc-wk-%.8s", ctx->name);
+    pthread_setname_np(pthread_self(), tname);
     log_set_tag(ctx->name);
 
     LOG_INFO("<%s> Worker 线程启动", ctx->name);
@@ -490,6 +493,9 @@ static void *dev_ipc_worker_thread(void *arg)
 static void *dev_ipc_io_thread(void *arg)
 {
     dev_ipc_context_t *ctx = (dev_ipc_context_t *)arg;
+    char tname[16];
+    snprintf(tname, sizeof(tname), "ipc-io-%.8s", ctx->name);
+    pthread_setname_np(pthread_self(), tname);
     log_set_tag(ctx->name);
     struct epoll_event events[DEV_IPC_MAX_EPOLL_EVENTS];
 

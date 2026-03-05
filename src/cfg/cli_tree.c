@@ -538,6 +538,12 @@ cli_match_result_t *cli_tree_match_command_full(cli_tree_node_t *root, const cha
 
         if (child)
         {
+            /* 检测 "no" 前缀关键字（无需 cfg-id） */
+            if (child->type == CLI_NODE_COMMAND && child->name && strcmp(child->name, "no") == 0)
+            {
+                result->has_no_prefix = TRUE;
+            }
+
             if (child->cfg_id != 0)
             {
                 /* 有 cfg_id 的元素写入 match result */

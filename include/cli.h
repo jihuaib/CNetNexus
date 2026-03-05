@@ -52,6 +52,8 @@
 #define CLI_VIEW_ROUTE 0x00000006
 /** BGP 地址族 IPv4 单播视图 */
 #define CLI_VIEW_BGP_AF_IPV4 0x00000007
+/** VRF 配置视图 */
+#define CLI_VIEW_VRF 0x00000008
 
 /** 视图名称最大长度 */
 #define CLI_CLI_MAX_VIEW_LEN 20
@@ -85,44 +87,11 @@
 /** 提取上下文变量的原始 cfg_id */
 #define CFG_TLV_CONTEXT_ID(cfg_id) ((cfg_id) & ~CFG_TLV_CONTEXT_FLAG)
 
-/* 前向声明 */
-typedef struct cli_param_type cli_param_type_t;
+/** 视图模板 TLV 专用 cfg_id（CFG 在发送视图切换命令时附带，模块提取后填充动态参数） */
+#define CFG_TLV_VIEW_TEMPLATE_ID 0x40000000
 
-// ============================================================================
-// 公共 API
-// ============================================================================
-
-/**
- * @brief 根据视图 ID 获取视图提示符模板
- * @param view_id 视图 ID
- * @param view_name 输出视图名称缓冲区
- * @return 成功返回 0，失败返回 -1
- */
-int cfg_get_view_prompt_template(uint32_t view_id, char *view_name);
-
-/**
- * @brief 解析类型字符串为参数类型结构
- * @param type_str 类型字符串（如 "string(1-63)" 或 "uint(0-65535)"）
- * @return 新分配的参数类型结构，错误时返回 NULL
- */
-cli_param_type_t *cfg_param_type_parse(const char *type_str);
-
-/**
- * @brief 释放参数类型结构
- * @param param_type 待释放的参数类型结构
- */
-void cfg_param_type_free(cli_param_type_t *param_type);
-
-/**
- * @brief 根据参数类型定义验证值的有效性
- * @param param_type 参数类型定义
- * @param value 待验证的值
- * @param error_msg 错误信息输出缓冲区
- * @param error_msg_size 错误信息缓冲区大小
- * @return 有效返回 TRUE，无效返回 FALSE
- */
-gboolean cfg_param_type_validate(const cli_param_type_t *param_type, const char *value, char *error_msg,
-                                 uint32_t error_msg_size);
+/** 判断 cfg_id 是否为视图模板条目 */
+#define CFG_TLV_IS_VIEW_TEMPLATE(cfg_id) ((cfg_id) == CFG_TLV_VIEW_TEMPLATE_ID)
 
 // ============================================================================
 // TLV 载荷格式定义

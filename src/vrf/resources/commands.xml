@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration module-id="7">
+
+    <!-- View definitions -->
+    <views>
+        <view view-id="8" view-name="vrf">
+            <template>&lt;NetNexus(config-vrf-%s)&gt;</template>
+        </view>
+    </views>
+
+    <!-- Command group definitions -->
+    <command_groups>
+
+        <!-- group 1: vrf <vrf-name>（配置视图，创建 VRF） -->
+        <group group-id="1">
+            <elements>
+                <element cfg-id="1" type="keyword">
+                    <name>vrf</name>
+                    <description>Configure VRF instance</description>
+                </element>
+                <element cfg-id="2" type="parameter">
+                    <name>&lt;vrf-name&gt;</name>
+                    <type>string(1-63)</type>
+                    <description>VRF name</description>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>1 2</expression>
+                    <views>3</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- group 2: show vrf（用户视图 + 配置视图） -->
+        <group group-id="2">
+            <elements>
+                <element type="keyword">
+                    <name>show</name>
+                    <description>Display system information</description>
+                </element>
+                <element type="keyword">
+                    <name>vrf</name>
+                    <description>VRF table</description>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>1 2</expression>
+                    <views>2,3</views>
+                </command>
+            </commands>
+        </group>
+
+    </command_groups>
+</configuration>
