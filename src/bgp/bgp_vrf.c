@@ -15,16 +15,17 @@
 // VRF 生命周期
 // ============================================================================
 
-bgp_vrf_t *bgp_vrf_create(uint32_t vrf_id, const char *name)
+bgp_vrf_t *bgp_vrf_create(uint32_t vrf_id)
 {
     bgp_vrf_t *vrf = g_malloc0(sizeof(bgp_vrf_t));
     vrf->vrf_id = vrf_id;
-    snprintf(vrf->name, sizeof(vrf->name), "%s", name ? name : BGP_VRF_PUBLIC_NAME);
+    vrf->keepalive = BGP_TIMER_DEFAULT_KEEPALIVE;
+    vrf->hold_time = BGP_TIMER_DEFAULT_HOLD;
     /* sess_hash: key = addr_str(gchar*)，value = bgp_session_t*（负责销毁） */
     vrf->sess_hash = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify)bgp_session_destroy);
     /* inst_hash: key = "afi-safi"(gchar*)，value = bgp_instance_t*（负责销毁） */
     vrf->inst_hash = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify)bgp_instance_destroy);
-    LOG_INFO("BGP VRF 已创建: id=%u name=%s", vrf_id, vrf->name);
+    LOG_INFO("BGP VRF 已创建: id=%u", vrf_id);
     return vrf;
 }
 
@@ -34,7 +35,7 @@ void bgp_vrf_destroy(bgp_vrf_t *vrf)
     {
         return;
     }
-    LOG_INFO("BGP VRF 已销毁: id=%u name=%s", vrf->vrf_id, vrf->name);
+    LOG_INFO("BGP VRF 已销毁: id=%u", vrf->vrf_id);
     /* 先销毁 inst_hash（释放 bgp_peer_t），再销毁 sess_hash（仅释放借用引用链表节点） */
     if (vrf->inst_hash)
     {
@@ -63,7 +64,7 @@ void bgp_vrf_add_session(bgp_vrf_t *vrf, bgp_session_t *session)
     net_addr_to_str(&session->neighbor_addr, addr_key, sizeof(addr_key));
     g_hash_table_insert(vrf->sess_hash, g_strdup(addr_key), session);
 
-    LOG_INFO("BGP session 已加入 VRF %s: neighbor=%s AS=%u", vrf->name, addr_key, session->remote_as);
+    LOG_INFO("BGP session 已加入 VRF %u: neighbor=%s AS=%u", vrf->vrf_id, addr_key, session->remote_as);
 }
 
 void bgp_vrf_del_session(bgp_vrf_t *vrf, const net_addr_t *addr)
@@ -76,7 +77,7 @@ void bgp_vrf_del_session(bgp_vrf_t *vrf, const net_addr_t *addr)
     net_addr_to_str(addr, addr_key, sizeof(addr_key));
     /* g_hash_table_remove 会触发 bgp_session_destroy */
     g_hash_table_remove(vrf->sess_hash, addr_key);
-    LOG_INFO("BGP session 已从 VRF %s 删除: neighbor=%s", vrf->name, addr_key);
+    LOG_INFO("BGP session 已从 VRF %u 删除: neighbor=%s", vrf->vrf_id, addr_key);
 }
 
 bgp_session_t *bgp_vrf_find_session(bgp_vrf_t *vrf, const net_addr_t *addr)
@@ -120,7 +121,7 @@ int bgp_vrf_af_enable_neighbor(bgp_vrf_t *vrf, bgp_afi_t afi, bgp_safi_t safi, c
     {
         inst = bgp_instance_create(afi, safi);
         g_hash_table_insert(vrf->inst_hash, g_strdup(inst_key), inst);
-        LOG_INFO("BGP: 创建地址族实例 %s (VRF %s)", inst_key, vrf->name);
+        LOG_INFO("BGP: 创建地址族实例 %s (VRF %u)", inst_key, vrf->vrf_id);
     }
 
     /* 若该邻居在此实例下已使能，直接返回 */
@@ -137,10 +138,7 @@ int bgp_vrf_af_enable_neighbor(bgp_vrf_t *vrf, bgp_afi_t afi, bgp_safi_t safi, c
     bgp_peer_t *peer = bgp_peer_create(afi, safi, addr);
     g_hash_table_insert(inst->peer_hash, g_strdup(addr_key), peer);
 
-    /* 将 peer 挂入 session.peers（借用引用） */
-    sess->peers = g_list_append(sess->peers, peer);
-
-    LOG_INFO("BGP: 邻居 %s 已在实例 %s (VRF %s) 下使能", addr_key, inst_key, vrf->name);
+    LOG_INFO("BGP: 邻居 %s 已在实例 %s (VRF %u) 下使能", addr_key, inst_key, vrf->vrf_id);
     return 0;
 }
 
@@ -169,18 +167,37 @@ int bgp_vrf_af_disable_neighbor(bgp_vrf_t *vrf, bgp_afi_t afi, bgp_safi_t safi, 
         return 0; /* 邻居未在该实例下使能 */
     }
 
-    /* 先从 session.peers 中移除借用引用（在 bgp_peer_destroy 调用之前） */
-    bgp_session_t *sess = bgp_vrf_find_session(vrf, addr);
-    if (sess)
-    {
-        sess->peers = g_list_remove(sess->peers, peer);
-    }
-
     /* 从 instance.peer_hash 中删除，触发 bgp_peer_destroy */
     g_hash_table_remove(inst->peer_hash, addr_key);
 
-    LOG_INFO("BGP: 邻居 %s 已从实例 %s (VRF %s) 下停用", addr_key, inst_key, vrf->name);
+    LOG_INFO("BGP: 邻居 %s 已从实例 %s (VRF %u) 下停用", addr_key, inst_key, vrf->vrf_id);
     return 0;
+}
+
+GList *bgp_vrf_get_session_peers(bgp_vrf_t *vrf, const net_addr_t *addr)
+{
+    if (!vrf || !addr || !vrf->inst_hash)
+    {
+        return NULL;
+    }
+
+    char addr_key[64];
+    net_addr_to_str(addr, addr_key, sizeof(addr_key));
+
+    GList *result = NULL;
+    GHashTableIter iter;
+    gpointer key, value;
+    g_hash_table_iter_init(&iter, vrf->inst_hash);
+    while (g_hash_table_iter_next(&iter, &key, &value))
+    {
+        bgp_instance_t *inst = (bgp_instance_t *)value;
+        bgp_peer_t *peer = g_hash_table_lookup(inst->peer_hash, addr_key);
+        if (peer)
+        {
+            result = g_list_append(result, peer);
+        }
+    }
+    return result;
 }
 
 gboolean bgp_vrf_neighbor_has_any_af(bgp_vrf_t *vrf, const net_addr_t *addr)

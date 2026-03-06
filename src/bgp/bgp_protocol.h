@@ -21,7 +21,6 @@
 typedef struct bgp_protocol
 {
     uint32_t as_number;   /**< 本地 AS 号 */
-    char router_id[16];   /**< Router ID（点分十进制，默认 "0.0.0.0"） */
     GHashTable *vrf_hash; /**< uint32_t* vrf_id -> bgp_vrf_t*（持有所有权） */
 } bgp_protocol_t;
 
@@ -50,9 +49,8 @@ bgp_vrf_t *bgp_protocol_get_vrf(bgp_protocol_t *proto, uint32_t vrf_id);
  * @brief 查找 VRF，不存在时创建
  * @param proto  协议结构
  * @param vrf_id VRF ID
- * @param name   VRF 名称（创建时使用）
  * @return bgp_vrf_t 指针
  */
-bgp_vrf_t *bgp_protocol_get_or_create_vrf(bgp_protocol_t *proto, uint32_t vrf_id, const char *name);
+bgp_vrf_t *bgp_protocol_get_or_create_vrf(bgp_protocol_t *proto, uint32_t vrf_id);
 
 #endif /* BGP_PROTOCOL_H */

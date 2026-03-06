@@ -20,10 +20,7 @@
 // ============================================================================
 
 /* bgp_protocol 表列定义 */
-static const db_column_def_t BGP_PROTOCOL_COLS[] = {
-    {"as_number", DB_TYPE_INTEGER, DB_COL_PRIMARY_KEY, NULL},
-    {"router_id", DB_TYPE_TEXT, DB_COL_NOT_NULL, "'0.0.0.0'"},
-};
+static const db_column_def_t BGP_PROTOCOL_COLS[] = {{"as_number", DB_TYPE_INTEGER, DB_COL_PRIMARY_KEY, NULL}};
 
 /* bgp_protocol 表定义 */
 static const db_table_def_t BGP_PROTOCOL_TABLE = {
@@ -36,7 +33,7 @@ static const db_table_def_t BGP_PROTOCOL_TABLE = {
 static const db_column_def_t BGP_SESSION_COLS[] = {
     {"neighbor_ip", DB_TYPE_TEXT, DB_COL_PRIMARY_KEY, NULL},
     {"remote_as", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
-    {"vrf", DB_TYPE_TEXT, DB_COL_NOT_NULL, "'default'"},
+    {"vrf_id", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},
 };
 
 /* bgp_session 表定义 */
@@ -58,6 +55,24 @@ static const db_table_def_t BGP_NEIGHBOR_TABLE = {
     .cols = BGP_NEIGHBOR_COLS,
     .num_cols = G_N_ELEMENTS(BGP_NEIGHBOR_COLS),
 };
+
+/* bgp_vrf 表列定义 */
+static const db_column_def_t BGP_VRF_COLS[] = {
+    {"vrf_id", DB_TYPE_INTEGER, DB_COL_PRIMARY_KEY, NULL},
+    {"router_id", DB_TYPE_TEXT, DB_COL_NOT_NULL, "0.0.0.0"},
+    {"keepalive", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "60"},
+    {"hold_time", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "180"},
+};
+
+/* bgp_vrf 表定义 */
+static const db_table_def_t BGP_VRF_TABLE = {
+    .table_name = BGP_TABLE_VRF,
+    .cols = BGP_VRF_COLS,
+    .num_cols = G_N_ELEMENTS(BGP_VRF_COLS),
+};
+
+/* 前向声明（write_defaults 中调用） */
+int bgp_db_set_vrf_timers(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t keepalive, uint16_t hold_time);
 
 // ============================================================================
 // 启动恢复 - 内部函数（按表拆分）
@@ -84,17 +99,12 @@ static bgp_protocol_t *restore_protocol(dev_ipc_context_t *ctx)
 
     db_row_t *row = result->rows[0];
     uint32_t as_number = (uint32_t)db_row_get_int(row, "as_number", 0);
-    const char *router_id = db_row_get_text(row, "router_id", NULL);
 
     bgp_protocol_t *proto = NULL;
     if (as_number != 0)
     {
         proto = bgp_protocol_create(as_number);
-        if (router_id && strcmp(router_id, "0.0.0.0") != 0)
-        {
-            snprintf(proto->router_id, sizeof(proto->router_id), "%s", router_id);
-        }
-        LOG_INFO("BGP 协议已恢复: AS %u, router-id %s", proto->as_number, proto->router_id);
+        LOG_INFO("BGP 协议已恢复: AS %u", proto->as_number);
     }
 
     db_result_free(result);
@@ -192,6 +202,49 @@ static void restore_neighbors(dev_ipc_context_t *ctx, bgp_vrf_t *vrf0)
     db_result_free(result);
 }
 
+/**
+ * @brief 从 bgp_vrf 表恢复 VRF 级配置（router-id、keepalive、hold_time）到内存
+ * @param proto 已恢复的协议对象（不可为 NULL）
+ */
+static void restore_vrf(dev_ipc_context_t *ctx, bgp_protocol_t *proto)
+{
+    db_result_t *result = NULL;
+    if (db_rpc_query(ctx, BGP_TABLE_VRF, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
+    {
+        return;
+    }
+
+    for (uint32_t i = 0; i < result->num_rows; i++)
+    {
+        db_row_t *row = result->rows[i];
+        uint32_t vrf_id = (uint32_t)db_row_get_int(row, "vrf_id", BGP_VRF_PUBLIC_ID);
+
+        bgp_vrf_t *vrf = bgp_protocol_get_vrf(proto, vrf_id);
+        if (!vrf)
+        {
+            continue;
+        }
+
+        const char *router_id = db_row_get_text(row, "router_id", NULL);
+        if (router_id && strcmp(router_id, "0.0.0.0") != 0)
+        {
+            snprintf(vrf->router_id, sizeof(vrf->router_id), "%s", router_id);
+            LOG_INFO("BGP 恢复: VRF %u router-id=%s", vrf_id, router_id);
+        }
+
+        uint16_t keepalive = (uint16_t)db_row_get_int(row, "keepalive", BGP_TIMER_DEFAULT_KEEPALIVE);
+        uint16_t hold_time = (uint16_t)db_row_get_int(row, "hold_time", BGP_TIMER_DEFAULT_HOLD);
+        if (keepalive > 0 && hold_time > keepalive)
+        {
+            vrf->keepalive = keepalive;
+            vrf->hold_time = hold_time;
+            LOG_INFO("BGP 恢复: VRF %u keepalive=%u hold=%u", vrf_id, keepalive, hold_time);
+        }
+    }
+
+    db_result_free(result);
+}
+
 // ============================================================================
 // 启动恢复
 // ============================================================================
@@ -212,6 +265,7 @@ bgp_protocol_t *bgp_db_restore(dev_ipc_context_t *ctx)
     bgp_vrf_t *vrf0 = bgp_protocol_get_vrf(proto, BGP_VRF_PUBLIC_ID);
     restore_sessions(ctx, vrf0);
     restore_neighbors(ctx, vrf0);
+    restore_vrf(ctx, proto);
     return proto;
 }
 
@@ -226,31 +280,85 @@ int bgp_db_init(dev_ipc_context_t *ctx)
         return -1;
     }
 
-    int ret = db_rpc_create_table_from_def(ctx, &BGP_PROTOCOL_TABLE);
-    if (ret != ERRCODE_SUCCESS)
-    {
-        LOG_ERROR("BGP 建表失败: %s", BGP_TABLE_PROTOCOL);
-        return -1;
-    }
-    LOG_INFO("BGP 数据库表 %s 已就绪", BGP_TABLE_PROTOCOL);
+    static const db_table_def_t *BGP_TABLES[] = {
+        &BGP_PROTOCOL_TABLE,
+        &BGP_VRF_TABLE,
+        &BGP_SESSION_TABLE,
+        &BGP_NEIGHBOR_TABLE,
+    };
 
-    ret = db_rpc_create_table_from_def(ctx, &BGP_SESSION_TABLE);
-    if (ret != ERRCODE_SUCCESS)
+    for (size_t i = 0; i < G_N_ELEMENTS(BGP_TABLES); i++)
     {
-        LOG_ERROR("BGP 建表失败: %s", BGP_TABLE_SESSION);
-        return -1;
+        int ret = db_rpc_create_table_from_def(ctx, BGP_TABLES[i]);
+        if (ret != ERRCODE_SUCCESS)
+        {
+            LOG_ERROR("BGP 建表失败: %s", BGP_TABLES[i]->table_name);
+            return -1;
+        }
+        LOG_INFO("BGP 数据库表 %s 已就绪", BGP_TABLES[i]->table_name);
     }
-    LOG_INFO("BGP 数据库表 %s 已就绪", BGP_TABLE_SESSION);
-
-    ret = db_rpc_create_table_from_def(ctx, &BGP_NEIGHBOR_TABLE);
-    if (ret != ERRCODE_SUCCESS)
-    {
-        LOG_ERROR("BGP 建表失败: %s", BGP_TABLE_NEIGHBOR);
-        return -1;
-    }
-    LOG_INFO("BGP 数据库表 %s 已就绪", BGP_TABLE_NEIGHBOR);
 
     return 0;
+}
+
+// ============================================================================
+// 默认值写入
+// ============================================================================
+
+/**
+ * @brief 检查指定表是否为空（查询失败按空表处理，保守写入默认值）
+ */
+static gboolean table_is_empty(dev_ipc_context_t *ctx, const char *table_name)
+{
+    db_result_t *result = NULL;
+    if (db_rpc_query(ctx, table_name, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
+    {
+        return TRUE;
+    }
+    gboolean empty = (result->num_rows == 0);
+    db_result_free(result);
+    return empty;
+}
+
+/**
+ * @brief 按表逐一检查并写入各自的默认值
+ *
+ * 每张表独立判断：为空则写入，非空则跳过，互不影响。
+ */
+static void write_defaults(dev_ipc_context_t *ctx)
+{
+    if (table_is_empty(ctx, BGP_TABLE_PROTOCOL))
+    {
+        LOG_INFO("BGP %s 表为空，写入默认配置", BGP_TABLE_PROTOCOL);
+        /* bgp_db_set_as(ctx, DEFAULT_AS); */
+    }
+
+    if (table_is_empty(ctx, BGP_TABLE_SESSION))
+    {
+        LOG_INFO("BGP %s 表为空，写入默认配置", BGP_TABLE_SESSION);
+        /* bgp_db_set_session(ctx, ...); */
+    }
+
+    if (table_is_empty(ctx, BGP_TABLE_NEIGHBOR))
+    {
+        LOG_INFO("BGP %s 表为空，写入默认配置", BGP_TABLE_NEIGHBOR);
+        /* bgp_db_set_neighbor(ctx, ...); */
+    }
+
+    if (table_is_empty(ctx, BGP_TABLE_VRF))
+    {
+        LOG_INFO("BGP %s 表为空，写入默认 VRF 定时器", BGP_TABLE_VRF);
+        bgp_db_set_vrf_timers(ctx, BGP_VRF_PUBLIC_ID, BGP_TIMER_DEFAULT_KEEPALIVE, BGP_TIMER_DEFAULT_HOLD);
+    }
+}
+
+void bgp_db_ensure_defaults(dev_ipc_context_t *ctx)
+{
+    if (!ctx)
+    {
+        return;
+    }
+    write_defaults(ctx);
 }
 
 // ============================================================================
@@ -306,25 +414,23 @@ int bgp_db_del_as(dev_ipc_context_t *ctx)
 // BGP Session 操作
 // ============================================================================
 
-int bgp_db_set_session(dev_ipc_context_t *ctx, const char *vrf, const char *neighbor_ip, uint32_t remote_as)
+int bgp_db_set_session(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *neighbor_ip, uint32_t remote_as)
 {
     if (!ctx || !neighbor_ip)
     {
         return -1;
     }
 
-    const char *vrf_val = vrf ? vrf : BGP_VRF_PUBLIC_NAME;
-
     db_condition_t key_conditions[] = {
         {.field_name = "neighbor_ip", .op = DB_CMP_EQ, .value = db_value_text(neighbor_ip)},
-        {.field_name = "vrf", .op = DB_CMP_EQ, .value = db_value_text(vrf_val)},
+        {.field_name = "vrf_id", .op = DB_CMP_EQ, .value = db_value_int((int64_t)vrf_id)},
     };
     db_filter_t key_filter = {.conditions = key_conditions, .num_conditions = G_N_ELEMENTS(key_conditions)};
 
     db_record_t *rec = db_record_new();
     db_record_set_text(rec, "neighbor_ip", neighbor_ip);
     db_record_set_int(rec, "remote_as", (int64_t)remote_as);
-    db_record_set_text(rec, "vrf", vrf_val);
+    db_record_set_int(rec, "vrf_id", (int64_t)vrf_id);
 
     int ret = db_rpc_upsert(ctx, BGP_TABLE_SESSION, rec, &key_filter);
     db_record_free(rec);
@@ -333,15 +439,15 @@ int bgp_db_set_session(dev_ipc_context_t *ctx, const char *vrf, const char *neig
 
     if (ret != ERRCODE_SUCCESS)
     {
-        LOG_ERROR("BGP 写入 session vrf=%s neighbor=%s 失败", vrf_val, neighbor_ip);
+        LOG_ERROR("BGP 写入 session vrf_id=%u neighbor=%s 失败", vrf_id, neighbor_ip);
         return -1;
     }
 
-    LOG_INFO("BGP session vrf=%s neighbor=%s AS=%u 已写入", vrf_val, neighbor_ip, remote_as);
+    LOG_INFO("BGP session vrf_id=%u neighbor=%s AS=%u 已写入", vrf_id, neighbor_ip, remote_as);
     return 0;
 }
 
-int bgp_db_del_session(dev_ipc_context_t *ctx, const char *vrf, const char *neighbor_ip)
+int bgp_db_del_session(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *neighbor_ip)
 {
     if (!ctx)
     {
@@ -350,51 +456,31 @@ int bgp_db_del_session(dev_ipc_context_t *ctx, const char *vrf, const char *neig
 
     int rows;
 
-    if (!vrf && !neighbor_ip)
+    if (!neighbor_ip)
     {
-        db_rpc_delete(ctx, BGP_TABLE_NEIGHBOR, NULL);
-        rows = db_rpc_delete(ctx, BGP_TABLE_SESSION, NULL);
+        /* 删除 vrf 内所有 session */
+        db_condition_t vrf_cond = {.field_name = "vrf_id", .op = DB_CMP_EQ, .value = db_value_int((int64_t)vrf_id)};
+        db_filter_t vrf_filter = {.conditions = &vrf_cond, .num_conditions = 1};
+        rows = db_rpc_delete(ctx, BGP_TABLE_SESSION, &vrf_filter);
+        db_value_free(&vrf_cond.value);
     }
     else
     {
-        db_condition_t conditions[2];
-        uint32_t num = 0;
-
-        if (neighbor_ip)
-        {
-            conditions[num++] = (db_condition_t){
-                .field_name = "neighbor_ip",
-                .op = DB_CMP_EQ,
-                .value = db_value_text(neighbor_ip),
-            };
-        }
-        if (vrf)
-        {
-            conditions[num++] = (db_condition_t){
-                .field_name = "vrf",
-                .op = DB_CMP_EQ,
-                .value = db_value_text(vrf),
-            };
-        }
-
-        db_filter_t filter = {.conditions = conditions, .num_conditions = num};
+        db_condition_t conditions[] = {
+            {.field_name = "neighbor_ip", .op = DB_CMP_EQ, .value = db_value_text(neighbor_ip)},
+            {.field_name = "vrf_id", .op = DB_CMP_EQ, .value = db_value_int((int64_t)vrf_id)},
+        };
+        db_filter_t filter = {.conditions = conditions, .num_conditions = G_N_ELEMENTS(conditions)};
 
         /* 同时清理 neighbor 记录 */
-        if (neighbor_ip)
-        {
-            db_condition_t nb_cond = {
-                .field_name = "neighbor_ip", .op = DB_CMP_EQ, .value = db_value_text(neighbor_ip)};
-            db_filter_t nb_filter = {.conditions = &nb_cond, .num_conditions = 1};
-            db_rpc_delete(ctx, BGP_TABLE_NEIGHBOR, &nb_filter);
-            db_value_free(&nb_cond.value);
-        }
+        db_condition_t nb_cond = {.field_name = "neighbor_ip", .op = DB_CMP_EQ, .value = db_value_text(neighbor_ip)};
+        db_filter_t nb_filter = {.conditions = &nb_cond, .num_conditions = 1};
+        db_rpc_delete(ctx, BGP_TABLE_NEIGHBOR, &nb_filter);
+        db_value_free(&nb_cond.value);
 
         rows = db_rpc_delete(ctx, BGP_TABLE_SESSION, &filter);
-
-        for (uint32_t i = 0; i < num; i++)
-        {
-            db_value_free(&conditions[i].value);
-        }
+        db_value_free(&conditions[0].value);
+        db_value_free(&conditions[1].value);
     }
 
     if (rows < 0)
@@ -403,8 +489,7 @@ int bgp_db_del_session(dev_ipc_context_t *ctx, const char *vrf, const char *neig
         return -1;
     }
 
-    LOG_INFO("BGP 删除 session（vrf=%s neighbor=%s），影响行数: %d", vrf ? vrf : "*", neighbor_ip ? neighbor_ip : "*",
-             rows);
+    LOG_INFO("BGP 删除 session（vrf_id=%u neighbor=%s），影响行数: %d", vrf_id, neighbor_ip ? neighbor_ip : "*", rows);
     return rows;
 }
 
@@ -497,4 +582,110 @@ int bgp_db_del_neighbor(dev_ipc_context_t *ctx, const char *neighbor_ip, const c
 
     LOG_INFO("BGP 删除 neighbor %s，影响行数: %d", neighbor_ip, rows);
     return rows;
+}
+
+// ============================================================================
+// BGP VRF 操作（router-id）
+// ============================================================================
+
+int bgp_db_set_vrf_router_id(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *router_id)
+{
+    if (!ctx || !router_id)
+    {
+        return -1;
+    }
+
+    db_condition_t key_cond = {
+        .field_name = "vrf_id",
+        .op = DB_CMP_EQ,
+        .value = db_value_int((int64_t)vrf_id),
+    };
+    db_filter_t key_filter = {.conditions = &key_cond, .num_conditions = 1};
+
+    db_record_t *rec = db_record_new();
+    db_record_set_int(rec, "vrf_id", (int64_t)vrf_id);
+    db_record_set_text(rec, "router_id", router_id);
+
+    int ret = db_rpc_upsert(ctx, BGP_TABLE_VRF, rec, &key_filter);
+    db_record_free(rec);
+    db_value_free(&key_cond.value);
+
+    if (ret != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("BGP 写入 VRF %u router-id=%s 失败", vrf_id, router_id);
+        return -1;
+    }
+
+    LOG_INFO("BGP VRF %u router-id=%s 已写入", vrf_id, router_id);
+    return 0;
+}
+
+int bgp_db_del_vrf_router_id(dev_ipc_context_t *ctx, uint32_t vrf_id)
+{
+    if (!ctx)
+    {
+        return -1;
+    }
+
+    db_condition_t cond = {
+        .field_name = "vrf_id",
+        .op = DB_CMP_EQ,
+        .value = db_value_int((int64_t)vrf_id),
+    };
+    db_filter_t filter = {.conditions = &cond, .num_conditions = 1};
+
+    int rows = db_rpc_delete(ctx, BGP_TABLE_VRF, &filter);
+    db_value_free(&cond.value);
+
+    if (rows < 0)
+    {
+        LOG_ERROR("BGP 删除 VRF %u router-id 失败", vrf_id);
+        return -1;
+    }
+
+    LOG_INFO("BGP VRF %u router-id 已删除，影响行数: %d", vrf_id, rows);
+    return rows;
+}
+
+// ============================================================================
+// BGP VRF 操作（定时器）
+// ============================================================================
+
+int bgp_db_set_vrf_timers(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t keepalive, uint16_t hold_time)
+{
+    if (!ctx)
+    {
+        return -1;
+    }
+
+    db_condition_t key_cond = {
+        .field_name = "vrf_id",
+        .op = DB_CMP_EQ,
+        .value = db_value_int((int64_t)vrf_id),
+    };
+    db_filter_t key_filter = {.conditions = &key_cond, .num_conditions = 1};
+
+    db_record_t *rec = db_record_new();
+    db_record_set_int(rec, "vrf_id", (int64_t)vrf_id);
+    db_record_set_int(rec, "keepalive", (int64_t)keepalive);
+    db_record_set_int(rec, "hold_time", (int64_t)hold_time);
+
+    int ret = db_rpc_upsert(ctx, BGP_TABLE_VRF, rec, &key_filter);
+    db_record_free(rec);
+    db_value_free(&key_cond.value);
+
+    if (ret != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("BGP 写入 VRF %u timers keepalive=%u hold=%u 失败", vrf_id, keepalive, hold_time);
+        return -1;
+    }
+
+    LOG_INFO("BGP VRF %u timers keepalive=%u hold=%u 已写入", vrf_id, keepalive, hold_time);
+    return 0;
+}
+
+int bgp_db_del_vrf_timers(dev_ipc_context_t *ctx, uint32_t vrf_id)
+{
+    /* 重置为默认值 */
+    return bgp_db_set_vrf_timers(ctx, vrf_id, BGP_TIMER_DEFAULT_KEEPALIVE, BGP_TIMER_DEFAULT_HOLD);
 }

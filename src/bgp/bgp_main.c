@@ -227,12 +227,15 @@ static void bgp_handle_passive_accept(void)
 
     bgp_vrf_t *vrf0 = bgp_protocol_get_vrf(proto, BGP_VRF_PUBLIC_ID);
     bgp_session_t *sess = vrf0 ? bgp_vrf_find_session(vrf0, &from_addr) : NULL;
-    if (!sess || !sess->peers)
+    if (!sess || !bgp_vrf_neighbor_has_any_af(vrf0, &from_addr))
     {
         LOG_WARN("BGP: 拒绝来自 %s 的连接（未配置 AF 邻居）", from_ip);
         close(conn_fd);
         return;
     }
+
+    /* 新连接开始前重置 session 接收缓冲区 */
+    sess->recv_len = 0;
 
     /* sec_conn 已存在：防御性拒绝（正常不应出现） */
     if (sess->sec_conn)
@@ -283,7 +286,9 @@ static void bgp_handle_passive_accept(void)
         sess->pri_conn = conn;
     }
 
-    bgp_conn_send_open(conn, proto->as_number, proto->router_id, sess->peers);
+    GList *af_peers = bgp_vrf_get_session_peers(vrf0, &from_addr);
+    bgp_conn_send_open(conn, proto->as_number, vrf0->router_id, af_peers);
+    g_list_free(af_peers);
 }
 
 /**
@@ -339,7 +344,10 @@ static void bgp_handle_active_connect(bgp_conn_t *conn)
 
     if (proto)
     {
-        bgp_conn_send_open(conn, proto->as_number, proto->router_id, sess->peers);
+        bgp_vrf_t *vrf0 = bgp_protocol_get_vrf(proto, BGP_VRF_PUBLIC_ID);
+        GList *af_peers = vrf0 ? bgp_vrf_get_session_peers(vrf0, &sess->neighbor_addr) : NULL;
+        bgp_conn_send_open(conn, proto->as_number, vrf0 ? vrf0->router_id : NULL, af_peers);
+        g_list_free(af_peers);
     }
 }
 
@@ -437,6 +445,9 @@ void bgp_server_start_active_conn(bgp_session_t *session)
         return;
     }
 
+    /* 新主动连接开始前重置 session 接收缓冲区 */
+    session->recv_len = 0;
+
     bgp_conn_t *conn = bgp_conn_create(session);
     int fd = bgp_conn_start_active(conn, &session->neighbor_addr, g_bgp_local->epoll_fd);
     if (fd < 0)
@@ -491,13 +502,9 @@ static void bgp_on_connect(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
 static void bgp_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    LOG_INFO("Phase 3: MODULE_READY — 初始化 BGP 数据库并启动 server");
+    LOG_INFO("Phase 3: MODULE_READY — 尝试恢复 BGP 状态");
 
-    if (bgp_db_init(ctx) != 0)
-    {
-        LOG_WARN("BGP 数据库初始化失败，继续启动");
-    }
-
+    /* 仅恢复：表不存在（BGP 未曾配置）时静默返回 NULL，不建表也不写默认值 */
     g_bgp_local->protocol = bgp_db_restore(ctx);
 
     int epoll_fd = epoll_create1(EPOLL_CLOEXEC);
@@ -539,7 +546,7 @@ static void bgp_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
                 while (g_hash_table_iter_next(&sess_iter, &sess_key, &sess_val))
                 {
                     bgp_session_t *sess = (bgp_session_t *)sess_val;
-                    if (sess->peers)
+                    if (bgp_vrf_neighbor_has_any_af(vrf, &sess->neighbor_addr))
                     {
                         bgp_server_start_active_conn(sess);
                     }

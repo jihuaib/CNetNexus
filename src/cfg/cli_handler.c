@@ -1006,16 +1006,37 @@ int cli_process_input(cli_session_t *session)
 
     while ((n = read(session->client_fd, &c, 1)) > 0)
     {
-        // Filter out telnet protocol commands (IAC sequences)
+        // 过滤 Telnet 协议协商字节（IAC 序列）
+        // IAC = 0xFF，序列格式：
+        //   IAC WILL/WONT/DO/DONT <option>  → 3 字节
+        //   IAC NOP/DM/BRK/...              → 2 字节（单字节命令）
+        //   IAC SB <option> <data> IAC SE   → 变长子协商
         if ((unsigned char)c == 255)
         { // IAC
-            // Read and discard the next 2 bytes (command and option)
-            char discard[2];
-            if (read(session->client_fd, discard, 2) < 0)
+            char cmd;
+            if (read(session->client_fd, &cmd, 1) < 1)
             {
-                // This shouldn't happen usually but for non-blocking...
-                // In character mode, telnet opts should arrive together.
+                continue;
             }
+            unsigned char ucmd = (unsigned char)cmd;
+            if (ucmd == 250)
+            { // SB：子协商，读取直到 IAC SE（0xFF 0xF0）
+                char prev = 0, cur;
+                while (read(session->client_fd, &cur, 1) == 1)
+                {
+                    if ((unsigned char)prev == 255 && (unsigned char)cur == 240)
+                    {
+                        break; // IAC SE，子协商结束
+                    }
+                    prev = cur;
+                }
+            }
+            else if (ucmd >= 251 && ucmd <= 254)
+            { // WILL/WONT/DO/DONT：后跟 1 字节 option
+                char opt;
+                read(session->client_fd, &opt, 1);
+            }
+            // 其他单字节命令（NOP、DM、BRK 等）直接丢弃，无需额外读取
             continue;
         }
 

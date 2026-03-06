@@ -19,12 +19,11 @@ bgp_protocol_t *bgp_protocol_create(uint32_t as_number)
 {
     bgp_protocol_t *proto = g_malloc0(sizeof(bgp_protocol_t));
     proto->as_number = as_number;
-    snprintf(proto->router_id, sizeof(proto->router_id), "0.0.0.0");
     /* vrf_hash: key = uint32_t*(vrf_id)，value = bgp_vrf_t*（负责销毁） */
     proto->vrf_hash = g_hash_table_new_full(g_int_hash, g_int_equal, g_free, (GDestroyNotify)bgp_vrf_destroy);
 
     /* 自动创建 vrf_id=0 的默认公网 VRF */
-    bgp_vrf_t *default_vrf = bgp_vrf_create(BGP_VRF_PUBLIC_ID, BGP_VRF_PUBLIC_NAME);
+    bgp_vrf_t *default_vrf = bgp_vrf_create(BGP_VRF_PUBLIC_ID);
     uint32_t *vrf_key = g_malloc(sizeof(uint32_t));
     *vrf_key = BGP_VRF_PUBLIC_ID;
     g_hash_table_insert(proto->vrf_hash, vrf_key, default_vrf);
@@ -61,7 +60,7 @@ bgp_vrf_t *bgp_protocol_get_vrf(bgp_protocol_t *proto, uint32_t vrf_id)
     return g_hash_table_lookup(proto->vrf_hash, &vrf_id);
 }
 
-bgp_vrf_t *bgp_protocol_get_or_create_vrf(bgp_protocol_t *proto, uint32_t vrf_id, const char *name)
+bgp_vrf_t *bgp_protocol_get_or_create_vrf(bgp_protocol_t *proto, uint32_t vrf_id)
 {
     if (!proto)
     {
@@ -72,7 +71,7 @@ bgp_vrf_t *bgp_protocol_get_or_create_vrf(bgp_protocol_t *proto, uint32_t vrf_id
     {
         return vrf;
     }
-    vrf = bgp_vrf_create(vrf_id, name);
+    vrf = bgp_vrf_create(vrf_id);
     uint32_t *key = g_malloc(sizeof(uint32_t));
     *key = vrf_id;
     g_hash_table_insert(proto->vrf_hash, key, vrf);

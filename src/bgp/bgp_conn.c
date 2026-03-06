@@ -15,6 +15,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "bgp_session.h"
 #include "log.h"
 
 /** BGP 协议标准端口 */
@@ -40,7 +41,6 @@ static void bgp_conn_init(bgp_conn_t *conn)
     conn->is_active = FALSE;
     conn->is_connecting = FALSE;
     conn->state = BGP_CONN_STATE_OPEN_SENT;
-    snprintf(conn->remote_id, sizeof(conn->remote_id), "0.0.0.0");
 }
 
 static void bgp_conn_cleanup(bgp_conn_t *conn)
@@ -54,14 +54,8 @@ static void bgp_conn_cleanup(bgp_conn_t *conn)
         close(conn->fd);
         conn->fd = -1;
     }
-    if (conn->negotiated_afs)
-    {
-        g_list_free_full(conn->negotiated_afs, g_free);
-        conn->negotiated_afs = NULL;
-    }
     conn->is_active = FALSE;
     conn->is_connecting = FALSE;
-    conn->recv_len = 0;
 }
 
 bgp_conn_t *bgp_conn_create(struct bgp_session *sess)
@@ -289,14 +283,14 @@ static int parse_bgp_open(bgp_conn_t *conn, const uint8_t *body, uint16_t body_l
 
     uint16_t remote_as_be;
     memcpy(&remote_as_be, body + 1, 2);
-    conn->remote_as = ntohs(remote_as_be);
+    conn->session->remote_as = ntohs(remote_as_be);
 
     /* BGP Router ID 始终为 IPv4 格式（协议规定） */
     struct in_addr bgp_id;
     memcpy(&bgp_id, body + 5, 4);
-    inet_ntop(AF_INET, &bgp_id, conn->remote_id, sizeof(conn->remote_id));
+    inet_ntop(AF_INET, &bgp_id, conn->session->remote_id, sizeof(conn->session->remote_id));
 
-    LOG_INFO("BGP: 收到 %s 的 OPEN (AS=%u, ID=%s)", _ip, conn->remote_as, conn->remote_id);
+    LOG_INFO("BGP: 收到 %s 的 OPEN (AS=%u, ID=%s)", _ip, conn->session->remote_as, conn->session->remote_id);
 
     /* 解析 Optional Parameters，提取 MP 扩展能力 */
     uint8_t opt_len = body[9];
@@ -327,7 +321,7 @@ static int parse_bgp_open(bgp_conn_t *conn, const uint8_t *body, uint16_t body_l
 
                     char af_key[32];
                     snprintf(af_key, sizeof(af_key), "%u-%u", afi, safi);
-                    conn->negotiated_afs = g_list_append(conn->negotiated_afs, g_strdup(af_key));
+                    conn->session->negotiated_afs = g_list_append(conn->session->negotiated_afs, g_strdup(af_key));
                     LOG_INFO("BGP: peer %s 携带 MP 能力: AFI=%u SAFI=%u", _ip, afi, safi);
                 }
                 cap_pos += cap_len;
@@ -345,8 +339,10 @@ int bgp_conn_on_data(bgp_conn_t *conn)
     char _ip[64];
     net_addr_to_str(&conn->peer_addr, _ip, sizeof(_ip));
 
+    bgp_session_t *sess = conn->session;
+
     /* 将数据追加到接收缓冲区 */
-    ssize_t n = recv(conn->fd, conn->recv_buf + conn->recv_len, BGP_RECV_BUF_SIZE - conn->recv_len, 0);
+    ssize_t n = recv(conn->fd, sess->recv_buf + sess->recv_len, BGP_RECV_BUF_SIZE - sess->recv_len, 0);
 
     if (n == 0)
     {
@@ -363,20 +359,20 @@ int bgp_conn_on_data(bgp_conn_t *conn)
         return -1;
     }
 
-    conn->recv_len += (uint32_t)n;
+    sess->recv_len += (uint32_t)n;
 
     /* 逐帧解析 BGP 报文 */
-    while (conn->recv_len >= BGP_MSG_HEADER_SIZE)
+    while (sess->recv_len >= BGP_MSG_HEADER_SIZE)
     {
         /* 校验 Marker */
-        if (memcmp(conn->recv_buf, BGP_MARKER, 16) != 0)
+        if (memcmp(sess->recv_buf, BGP_MARKER, 16) != 0)
         {
             LOG_ERROR("BGP: peer %s Marker 校验失败，关闭连接", _ip);
             return -1;
         }
 
         uint16_t msg_len_be;
-        memcpy(&msg_len_be, conn->recv_buf + 16, 2);
+        memcpy(&msg_len_be, sess->recv_buf + 16, 2);
         uint16_t msg_len = ntohs(msg_len_be);
 
         if (msg_len < BGP_MSG_HEADER_SIZE || msg_len > BGP_RECV_BUF_SIZE)
@@ -385,14 +381,14 @@ int bgp_conn_on_data(bgp_conn_t *conn)
             return -1;
         }
 
-        if (conn->recv_len < msg_len)
+        if (sess->recv_len < msg_len)
         {
             /* 数据未到齐，等待下次读取 */
             break;
         }
 
-        uint8_t msg_type = conn->recv_buf[18];
-        const uint8_t *body = conn->recv_buf + BGP_MSG_HEADER_SIZE;
+        uint8_t msg_type = sess->recv_buf[18];
+        const uint8_t *body = sess->recv_buf + BGP_MSG_HEADER_SIZE;
         uint16_t body_len = msg_len - BGP_MSG_HEADER_SIZE;
 
         switch (msg_type)
@@ -414,7 +410,7 @@ int bgp_conn_on_data(bgp_conn_t *conn)
                 if (conn->state == BGP_CONN_STATE_OPEN_CONFIRM)
                 {
                     conn->state = BGP_CONN_STATE_ESTABLISHED;
-                    LOG_INFO("BGP: 与 %s (AS%u) 会话已建立", _ip, conn->remote_as);
+                    LOG_INFO("BGP: 与 %s (AS%u) 会话已建立", _ip, sess->remote_as);
                 }
                 else
                 {
@@ -437,12 +433,12 @@ int bgp_conn_on_data(bgp_conn_t *conn)
         }
 
         /* 将已处理的报文从缓冲区移除 */
-        uint32_t remaining = conn->recv_len - msg_len;
+        uint32_t remaining = sess->recv_len - msg_len;
         if (remaining > 0)
         {
-            memmove(conn->recv_buf, conn->recv_buf + msg_len, remaining);
+            memmove(sess->recv_buf, sess->recv_buf + msg_len, remaining);
         }
-        conn->recv_len = remaining;
+        sess->recv_len = remaining;
     }
 
     return 0;

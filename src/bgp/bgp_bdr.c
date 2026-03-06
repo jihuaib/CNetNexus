@@ -62,17 +62,48 @@ static gboolean bdr_append_protocol(dev_ipc_context_t *ctx, char *buf, size_t bu
 
     db_row_t *row = result->rows[0];
     uint32_t as_number = (uint32_t)db_row_get_int(row, "as_number", 0);
-    const char *router_id = db_row_get_text(row, "router_id", NULL);
 
     CLI_BUF_APPEND(buf, buf_size, *off, "!\r\n");
     CLI_BUF_APPEND(buf, buf_size, *off, "bgp %u\r\n", as_number);
-    if (router_id && strcmp(router_id, "0.0.0.0") != 0)
-    {
-        CLI_BUF_APPEND(buf, buf_size, *off, " bgp router-id %s\r\n", router_id);
-    }
 
     db_result_free(result);
     return TRUE;
+}
+
+/**
+ * @brief 追加 VRF 级配置（router-id）
+ */
+static void bdr_append_vrf_config(dev_ipc_context_t *ctx, char *buf, size_t buf_size, size_t *off)
+{
+    db_result_t *result = NULL;
+    if (db_rpc_query(ctx, BGP_TABLE_VRF, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result || result->num_rows == 0)
+    {
+        if (result)
+        {
+            db_result_free(result);
+        }
+        return;
+    }
+
+    for (uint32_t i = 0; i < result->num_rows; i++)
+    {
+        db_row_t *row = result->rows[i];
+        const char *router_id = db_row_get_text(row, "router_id", NULL);
+        int64_t keepalive = db_row_get_int(row, "keepalive", BGP_TIMER_DEFAULT_KEEPALIVE);
+        int64_t hold_time = db_row_get_int(row, "hold_time", BGP_TIMER_DEFAULT_HOLD);
+
+        if (router_id && strcmp(router_id, "0.0.0.0") != 0)
+        {
+            CLI_BUF_APPEND(buf, buf_size, *off, " router-id %s\r\n", router_id);
+        }
+
+        if (keepalive != BGP_TIMER_DEFAULT_KEEPALIVE || hold_time != BGP_TIMER_DEFAULT_HOLD)
+        {
+            CLI_BUF_APPEND(buf, buf_size, *off, " timer keepalive %ld hold %ld\r\n", keepalive, hold_time);
+        }
+    }
+
+    db_result_free(result);
 }
 
 /**
@@ -181,6 +212,7 @@ void bgp_bdr_show_config(dev_ipc_message_t *msg)
         return;
     }
 
+    bdr_append_vrf_config(ctx, buf, sizeof(buf), &off);
     bdr_append_sessions(ctx, buf, sizeof(buf), &off);
     bdr_append_af_neighbors(ctx, buf, sizeof(buf), &off);
     CLI_BUF_APPEND(buf, sizeof(buf), off, "!\r\n");

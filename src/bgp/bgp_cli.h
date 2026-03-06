@@ -16,6 +16,8 @@
 #define BGP_CLI_GROUP_ID_NEIGHBOR 3    /**< neighbor 会话配置命令 */
 #define BGP_CLI_GROUP_ID_ADDR_FAMILY 4 /**< address-family 进入子视图 */
 #define BGP_CLI_GROUP_ID_AF_NEIGHBOR 5 /**< 地址族 neighbor enable 命令 */
+#define BGP_CLI_GROUP_ID_ROUTER_ID 6   /**< router-id 配置命令 */
+#define BGP_CLI_GROUP_ID_TIMERS 7      /**< timer keepalive/hold 配置命令 */
 
 /**
  * @brief 处理来自 CFG 模块的 CLI 命令消息

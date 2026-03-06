@@ -37,7 +37,7 @@
                     <view-id>4</view-id>
                 </command>
                 <command>
-                    <expression>1 2 [ 3 ]</expression>
+                    <expression>1 2</expression>
                     <views>3</views>
                 </command>
             </commands>
@@ -163,6 +163,72 @@
                 <command>
                     <expression>1 2 3</expression>
                     <views>7</views>
+                </command>
+            </commands>
+        </group>
+        <!-- router-id <ip-address> / no router-id (在 BGP 视图下) -->
+        <group group-id="6">
+            <elements>
+                <element type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+                <element type="keyword">
+                    <name>router-id</name>
+                    <description>BGP Router ID</description>
+                </element>
+                <element cfg-id="1" type="parameter">
+                    <name>&lt;ip-address&gt;</name>
+                    <type>ip</type>
+                    <description>Router ID (IPv4 address)</description>
+                </element>
+            </elements>
+
+            <commands>
+                <!-- router-id <ip-address> -->
+                <command>
+                    <expression>2 3</expression>
+                    <views>4</views>
+                </command>
+                <!-- no router-id -->
+                <command>
+                    <expression>1 2</expression>
+                    <views>4</views>
+                </command>
+            </commands>
+        </group>
+        <!-- timer keepalive <keepalive-time> hold <hold-time> / no timer keepalive (BGP 视图) -->
+        <group group-id="7">
+            <elements>
+                <element type="keyword">
+                    <name>timer</name>
+                    <description>BGP timer configuration</description>
+                </element>
+                <element type="keyword">
+                    <name>keepalive</name>
+                    <description>Keepalive interval</description>
+                </element>
+                <element cfg-id="1" type="parameter">
+                    <name>&lt;keepalive-time&gt;</name>
+                    <type>uint(1-65535)</type>
+                    <description>Keepalive time in seconds</description>
+                </element>
+                <element type="keyword">
+                    <name>hold</name>
+                    <description>Hold time</description>
+                </element>
+                <element cfg-id="2" type="parameter">
+                    <name>&lt;hold-time&gt;</name>
+                    <type>uint(1-65535)</type>
+                    <description>Hold time in seconds (must be greater than keepalive)</description>
+                </element>
+            </elements>
+
+            <commands>
+                <!-- timer keepalive <n> hold <n> -->
+                <command>
+                    <expression>1 2 3 4 5</expression>
+                    <views>4</views>
                 </command>
             </commands>
         </group>

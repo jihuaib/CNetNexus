@@ -147,14 +147,6 @@ static int handle_bgp_protocol(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             bgp_send_cli_response(msg, "");
             return ERRCODE_FAIL;
         }
-        if (as_number != 0)
-        {
-            if (g_bgp_local->protocol->as_number != as_number)
-            {
-                bgp_send_cli_response(msg, "BGP Error: AS number mismatch.\r\n");
-                return ERRCODE_FAIL;
-            }
-        }
 
         bgp_listen_stop();
         bgp_protocol_destroy(g_bgp_local->protocol);
@@ -168,13 +160,21 @@ static int handle_bgp_protocol(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 
     if (g_bgp_local->protocol == NULL)
     {
-        g_bgp_local->protocol = bgp_protocol_create(as_number);
-        bgp_listen_start();
+        /* 首次配置：建表并写入默认值 */
+        if (bgp_db_init(g_bgp_local->dev_ipc_ctx) != 0)
+        {
+            bgp_send_cli_response(msg, "BGP Error: Database initialization failed.\r\n");
+            return ERRCODE_FAIL;
+        }
+        bgp_db_ensure_defaults(g_bgp_local->dev_ipc_ctx);
+
         if (bgp_db_set_as(g_bgp_local->dev_ipc_ctx, as_number) != 0)
         {
             bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
             return ERRCODE_FAIL;
         }
+        g_bgp_local->protocol = bgp_protocol_create(as_number);
+        bgp_listen_start();
     }
     else
     {
@@ -280,7 +280,7 @@ static int handle_bgp_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             bgp_vrf_del_session(vrf0, &ip_addr);
         }
 
-        int rows = bgp_db_del_session(g_bgp_local->dev_ipc_ctx, BGP_VRF_PUBLIC_NAME, ip_buf);
+        int rows = bgp_db_del_session(g_bgp_local->dev_ipc_ctx, BGP_VRF_PUBLIC_ID, ip_buf);
         snprintf(resp_buf, sizeof(resp_buf), "BGP: Neighbor %s deleted (%d row).\r\n", ip_buf, rows > 0 ? rows : 0);
         bgp_send_cli_response(msg, resp_buf);
         return ERRCODE_SUCCESS;
@@ -305,7 +305,7 @@ static int handle_bgp_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         return ERRCODE_FAIL;
     }
 
-    if (bgp_db_set_session(g_bgp_local->dev_ipc_ctx, BGP_VRF_PUBLIC_NAME, ip_buf, remote_as) != 0)
+    if (bgp_db_set_session(g_bgp_local->dev_ipc_ctx, BGP_VRF_PUBLIC_ID, ip_buf, remote_as) != 0)
     {
         bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
         return ERRCODE_FAIL;
@@ -472,21 +472,189 @@ static int handle_bgp_af_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
         return ERRCODE_FAIL;
     }
 
+    /* 首个 AF 使能时需启动主动连接，先检查使能前的状态 */
+    gboolean first_af = !bgp_vrf_neighbor_has_any_af(vrf0, &ip_addr);
+
     if (bgp_vrf_af_enable_neighbor(vrf0, BGP_AFI_IPV4, BGP_SAFI_UNICAST, &ip_addr) != 0)
     {
         bgp_send_cli_response(msg, "BGP Error: Failed to enable AF neighbor.\r\n");
         return ERRCODE_FAIL;
     }
 
-    /* 若是该 session 的第一个 AF peer，启动主动 TCP 连接 */
-    bgp_session_t *sess = bgp_vrf_find_session(vrf0, &ip_addr);
-    if (sess && g_list_length(sess->peers) == 1)
+    /* 若是该 session 的第一个 AF，启动主动 TCP 连接 */
+    if (first_af)
     {
-        bgp_server_start_active_conn(sess);
+        bgp_session_t *sess = bgp_vrf_find_session(vrf0, &ip_addr);
+        if (sess)
+        {
+            bgp_server_start_active_conn(sess);
+        }
     }
 
     snprintf(resp_buf, sizeof(resp_buf), "BGP: Neighbor %s enabled for ipv4-unicast.\r\n", ip_buf);
     bgp_send_cli_response(msg, resp_buf);
+    return ERRCODE_SUCCESS;
+}
+
+/**
+ * @brief 处理 "timer keepalive <n> hold <n>" / "no timer keepalive" 命令
+ *
+ * group_id=7, cfg_id: 1=keepalive-time, 2=hold-time
+ */
+static int handle_bgp_timers(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    gboolean is_no = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
+    uint32_t keepalive = 0;
+    uint32_t hold_time = 0;
+
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (CFG_TLV_IS_VIEW_TEMPLATE(entry.cfg_id) || CFG_TLV_IS_CONTEXT(entry.cfg_id))
+        {
+            cli_tlv_entry_free(&entry);
+            continue;
+        }
+        switch (entry.cfg_id)
+        {
+            case 1:
+                keepalive = (uint32_t)cli_tlv_entry_get_int(&entry);
+                break;
+            case 2:
+                hold_time = (uint32_t)cli_tlv_entry_get_int(&entry);
+                break;
+            default:
+                break;
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    if (!g_bgp_local->protocol)
+    {
+        bgp_send_cli_response(msg, "BGP Error: BGP not configured.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    bgp_vrf_t *vrf0 = bgp_protocol_get_vrf(g_bgp_local->protocol, BGP_VRF_PUBLIC_ID);
+
+    /* 删除场景：重置为默认值 */
+    if (is_no)
+    {
+        if (vrf0)
+        {
+            vrf0->keepalive = BGP_TIMER_DEFAULT_KEEPALIVE;
+            vrf0->hold_time = BGP_TIMER_DEFAULT_HOLD;
+        }
+        (void)bgp_db_del_vrf_timers(g_bgp_local->dev_ipc_ctx, BGP_VRF_PUBLIC_ID);
+        bgp_send_cli_response(msg, "");
+        return ERRCODE_SUCCESS;
+    }
+
+    /* 配置场景：参数校验 */
+    if (keepalive == 0 || hold_time == 0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Missing timer parameters.\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (hold_time <= keepalive)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Hold time must be greater than keepalive time.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    if (bgp_db_set_vrf_timers(g_bgp_local->dev_ipc_ctx, BGP_VRF_PUBLIC_ID, (uint16_t)keepalive, (uint16_t)hold_time) !=
+        0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    if (vrf0)
+    {
+        vrf0->keepalive = (uint16_t)keepalive;
+        vrf0->hold_time = (uint16_t)hold_time;
+    }
+
+    bgp_send_cli_response(msg, "");
+    return ERRCODE_SUCCESS;
+}
+
+/**
+ * @brief 处理 router-id <ip-address> / no router-id 命令
+ *
+ * group_id=6, cfg_id: 1=ip-address
+ */
+static int handle_bgp_router_id(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    gboolean is_no = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
+    char ip_buf[16] = {0}; /* IPv4 最长 15 字符 + '\0' */
+
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (CFG_TLV_IS_VIEW_TEMPLATE(entry.cfg_id) || CFG_TLV_IS_CONTEXT(entry.cfg_id))
+        {
+            cli_tlv_entry_free(&entry);
+            continue;
+        }
+
+        if (entry.cfg_id == 1)
+        {
+            const char *s = cli_tlv_entry_get_text(&entry);
+            if (s)
+            {
+                snprintf(ip_buf, sizeof(ip_buf), "%s", s);
+            }
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    if (!g_bgp_local->protocol)
+    {
+        bgp_send_cli_response(msg, "BGP Error: BGP not configured.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    bgp_vrf_t *vrf0 = bgp_protocol_get_vrf(g_bgp_local->protocol, BGP_VRF_PUBLIC_ID);
+
+    /* 删除场景 */
+    if (is_no)
+    {
+        if (vrf0)
+        {
+            vrf0->router_id[0] = '\0';
+        }
+        (void)bgp_db_del_vrf_router_id(g_bgp_local->dev_ipc_ctx, BGP_VRF_PUBLIC_ID);
+        bgp_send_cli_response(msg, "");
+        return ERRCODE_SUCCESS;
+    }
+
+    /* 配置场景 */
+    if (ip_buf[0] == '\0')
+    {
+        bgp_send_cli_response(msg, "BGP Error: Missing router-id IP address.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    struct in_addr addr;
+    if (inet_pton(AF_INET, ip_buf, &addr) != 1)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Invalid IPv4 address.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    if (bgp_db_set_vrf_router_id(g_bgp_local->dev_ipc_ctx, BGP_VRF_PUBLIC_ID, ip_buf) != 0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    if (vrf0)
+    {
+        snprintf(vrf0->router_id, sizeof(vrf0->router_id), "%s", ip_buf);
+    }
+
+    bgp_send_cli_response(msg, "");
     return ERRCODE_SUCCESS;
 }
 
@@ -640,6 +808,12 @@ int bgp_cli_handle_message(dev_ipc_message_t *msg)
             break;
         case BGP_CLI_GROUP_ID_AF_NEIGHBOR:
             result = handle_bgp_af_neighbor(msg, &parser);
+            break;
+        case BGP_CLI_GROUP_ID_ROUTER_ID:
+            result = handle_bgp_router_id(msg, &parser);
+            break;
+        case BGP_CLI_GROUP_ID_TIMERS:
+            result = handle_bgp_timers(msg, &parser);
             break;
         default:
             LOG_WARN("未知 group_id: %u", parser.group_id);

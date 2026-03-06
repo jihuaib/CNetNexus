@@ -49,17 +49,12 @@ struct bgp_session;
  */
 typedef struct bgp_conn
 {
-    struct bgp_session *session;         /**< 所属 session 反向指针（借用引用，不持有所有权） */
-    int fd;                              /**< TCP socket fd；-1 表示无连接 */
-    net_addr_t peer_addr;                /**< 对端 IP 地址 */
-    gboolean is_active;                  /**< TRUE=本方发起的主动连接；FALSE=被动接入 */
-    gboolean is_connecting;              /**< TRUE=TCP 握手中；FALSE=已建立或无连接 */
-    bgp_conn_state_t state;              /**< BGP 协议握手状态（fd>=0 且 is_connecting=FALSE 时有效） */
-    uint32_t remote_as;                  /**< 对端 AS 号（OPEN 解析后填入） */
-    char remote_id[16];                  /**< 对端 BGP Router ID（点分十进制） */
-    uint8_t recv_buf[BGP_RECV_BUF_SIZE]; /**< 接收缓冲区 */
-    uint32_t recv_len;                   /**< 缓冲区中已有数据长度 */
-    GList *negotiated_afs;               /**< 协商地址族列表（gchar* "afi-safi"，如 "1-1"） */
+    struct bgp_session *session; /**< 所属 session 反向指针（借用引用，不持有所有权） */
+    int fd;                      /**< TCP socket fd；-1 表示无连接 */
+    net_addr_t peer_addr;        /**< 对端 IP 地址 */
+    gboolean is_active;          /**< TRUE=本方发起的主动连接；FALSE=被动接入 */
+    gboolean is_connecting;      /**< TRUE=TCP 握手中；FALSE=已建立或无连接 */
+    bgp_conn_state_t state;      /**< BGP 协议握手状态（fd>=0 且 is_connecting=FALSE 时有效） */
 } bgp_conn_t;
 
 /**

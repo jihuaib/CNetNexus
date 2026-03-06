@@ -22,7 +22,9 @@ bgp_session_t *bgp_session_create(const net_addr_t *addr, uint32_t remote_as)
     sess->remote_as = remote_as;
     sess->pri_conn = NULL;
     sess->sec_conn = NULL;
-    sess->peers = NULL;
+    snprintf(sess->remote_id, sizeof(sess->remote_id), "0.0.0.0");
+    sess->recv_len = 0;
+    sess->negotiated_afs = NULL;
 
     char addr_str[64] = "";
     if (addr)
@@ -49,11 +51,10 @@ void bgp_session_destroy(bgp_session_t *session)
     bgp_conn_destroy(session->sec_conn);
     session->sec_conn = NULL;
 
-    /* peers 是借用引用，bgp_peer_t 由 bgp_instance_t 负责销毁，仅释放链表节点 */
-    if (session->peers)
+    if (session->negotiated_afs)
     {
-        g_list_free(session->peers);
-        session->peers = NULL;
+        g_list_free_full(session->negotiated_afs, g_free);
+        session->negotiated_afs = NULL;
     }
     g_free(session);
 }

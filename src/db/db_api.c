@@ -588,7 +588,14 @@ static int build_create_table_sql(const db_table_def_t *def, char *buf, size_t b
         }
         if (col->default_val)
         {
-            offset += snprintf(buf + offset, buf_size - offset, " DEFAULT %s", col->default_val);
+            if (col->type == DB_TYPE_TEXT)
+            {
+                offset += snprintf(buf + offset, buf_size - offset, " DEFAULT '%s'", col->default_val);
+            }
+            else
+            {
+                offset += snprintf(buf + offset, buf_size - offset, " DEFAULT %s", col->default_val);
+            }
         }
 
         /* 末列不加逗号 */
