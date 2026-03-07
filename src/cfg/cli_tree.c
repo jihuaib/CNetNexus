@@ -63,9 +63,18 @@ void cli_tree_add_child(cli_tree_node_t *parent, cli_tree_node_t *child)
             cli_tree_add_child(existing, child->children[i]);
         }
 
+        // 转移 context_out（若子节点有而现有节点没有）
+        if (child->context_out && !existing->context_out)
+        {
+            existing->context_out = child->context_out;
+            existing->num_context_out = child->num_context_out;
+            child->context_out = NULL;
+        }
+
         // Free the new node (but not its children, as they were moved)
         g_free(child->name);
         g_free(child->description);
+        g_free(child->context_out);
         g_free(child->children);
         g_free(child);
         return;
@@ -228,6 +237,7 @@ void cli_tree_free(cli_tree_node_t *root)
     g_free(root->children);
     g_free(root->name);
     g_free(root->description);
+    g_free(root->context_out);
     if (root->param_type)
     {
         cli_param_type_free(root->param_type);
@@ -259,6 +269,14 @@ cli_tree_node_t *cli_tree_clone(cli_tree_node_t *node)
 
     // Clone is_end_node flag
     clone->is_end_node = node->is_end_node;
+
+    // Clone context_out entries
+    if (node->context_out && node->num_context_out > 0)
+    {
+        clone->context_out = g_malloc(node->num_context_out * sizeof(cli_ctx_out_entry_t));
+        memcpy(clone->context_out, node->context_out, node->num_context_out * sizeof(cli_ctx_out_entry_t));
+        clone->num_context_out = node->num_context_out;
+    }
 
     // Clone all children recursively
     for (uint32_t i = 0; i < node->num_children; i++)

@@ -102,8 +102,9 @@ static void tlv_write_entry(GByteArray *buf, uint32_t cfg_id, cli_match_element_
 /**
  * @brief 追加上下文 TLV 条目到载荷
  *
- * 上下文格式: [num:u16][cfg_id:u32][type:u8][length:u16][value]...
- * 写入载荷时加 CFG_TLV_CONTEXT_FLAG
+ * 存储格式: [num:u16][ctx_id:u32][CLI_TLV_TYPE_CTX:u8][len:u16][value...]...
+ * payload 格式与存储格式相同（ctx_id 不与 cfg_id 共享命名空间，无需 flag 操作）
+ * 直接将条目字节追加到 buf，跳过开头 num:u16 头部。
  */
 static void append_context_tlv(GByteArray *buf, const uint8_t *ctx_data, uint32_t ctx_len)
 {
@@ -114,54 +115,15 @@ static void append_context_tlv(GByteArray *buf, const uint8_t *ctx_data, uint32_
 
     uint16_t num_be;
     memcpy(&num_be, ctx_data, 2);
-    uint16_t num = ntohs(num_be);
-
-    if (num == 0)
+    if (ntohs(num_be) == 0)
     {
         return;
     }
 
-    uint32_t pos = 2;
-    for (uint16_t i = 0; i < num && pos < ctx_len; i++)
+    /* 存储格式与 payload 格式完全一致，直接追加条目字节 */
+    if (ctx_len > 2)
     {
-        /* 读取 cfg_id */
-        if (pos + 4 > ctx_len)
-        {
-            break;
-        }
-        uint32_t cfg_id_be;
-        memcpy(&cfg_id_be, ctx_data + pos, 4);
-        uint32_t cfg_id = ntohl(cfg_id_be);
-        pos += 4;
-
-        /* 读取 type */
-        if (pos >= ctx_len)
-        {
-            break;
-        }
-        uint8_t type = ctx_data[pos];
-        pos++;
-
-        /* 读取 length */
-        if (pos + 2 > ctx_len)
-        {
-            break;
-        }
-        uint16_t length_be;
-        memcpy(&length_be, ctx_data + pos, 2);
-        uint16_t length = ntohs(length_be);
-        pos += 2;
-
-        /* 写入条目，加 CONTEXT_FLAG */
-        tlv_write_u32(buf, cfg_id | CFG_TLV_CONTEXT_FLAG);
-        tlv_write_u8(buf, type);
-        tlv_write_u16(buf, length);
-
-        if (length > 0 && pos + length <= ctx_len)
-        {
-            g_byte_array_append(buf, ctx_data + pos, length);
-            pos += length;
-        }
+        g_byte_array_append(buf, ctx_data + 2, ctx_len - 2);
     }
 }
 
@@ -347,6 +309,181 @@ const char *cli_tlv_entry_get_text(const cli_tlv_entry_t *entry)
 }
 
 /* ========================================================================= */
+/* 提示符占位符格式化                                                         */
+/* ========================================================================= */
+
+/**
+ * @brief 格式化视图提示符模板，替换 {ctx:N} 为上下文变量整数值
+ *
+ * 示例: "<NetNexus(config-bgp-{ctx:1})>" + ctx_id=1=65000 → "<NetNexus(config-bgp-65000)>"
+ *
+ * @param tmpl     视图 prompt_template 字符串
+ * @param ctx      合并后的上下文 TLV 字节（格式: [num:u16][ctx_id:u32][CLI_TLV_TYPE_CTX:u8][8:u16][i64]...）
+ * @param ctx_len  上下文字节长度
+ * @param out      输出缓冲区
+ * @param out_size 缓冲区大小
+ */
+static void format_prompt_with_ctx(const char *tmpl, const uint8_t *ctx, uint32_t ctx_len, char *out, size_t out_size)
+{
+    if (!tmpl || !out || out_size == 0)
+    {
+        return;
+    }
+
+    size_t out_pos = 0;
+    const char *p = tmpl;
+
+    while (*p && out_pos < out_size - 1)
+    {
+        /* 匹配 {ctx:N} 模式 */
+        if (p[0] == '{' && p[1] == 'c' && p[2] == 't' && p[3] == 'x' && p[4] == ':')
+        {
+            char *endp = NULL;
+            uint32_t ctx_id = (uint32_t)strtoul(p + 5, &endp, 10);
+            if (endp && *endp == '}')
+            {
+                /* 在上下文中查找 ctx_id */
+                int64_t found_val = 0;
+                if (ctx && ctx_len >= 2)
+                {
+                    uint16_t num_be;
+                    memcpy(&num_be, ctx, 2);
+                    uint16_t num = ntohs(num_be);
+                    uint32_t pos = 2;
+                    for (uint16_t i = 0; i < num && pos < ctx_len; i++)
+                    {
+                        if (pos + 4 > ctx_len)
+                        {
+                            break;
+                        }
+                        uint32_t id_be;
+                        memcpy(&id_be, ctx + pos, 4);
+                        uint32_t id = ntohl(id_be);
+                        pos += 4;
+                        if (pos >= ctx_len)
+                        {
+                            break;
+                        }
+                        uint8_t type = ctx[pos++];
+                        if (pos + 2 > ctx_len)
+                        {
+                            break;
+                        }
+                        uint16_t len_be;
+                        memcpy(&len_be, ctx + pos, 2);
+                        uint16_t elen = ntohs(len_be);
+                        pos += 2;
+                        if (id == ctx_id && type == CLI_TLV_TYPE_CTX && elen == 8 && pos + 8 <= ctx_len)
+                        {
+                            uint32_t hi, lo;
+                            memcpy(&hi, ctx + pos, 4);
+                            memcpy(&lo, ctx + pos + 4, 4);
+                            found_val = ((int64_t)ntohl(hi) << 32) | (int64_t)(uint32_t)ntohl(lo);
+                        }
+                        pos += elen;
+                    }
+                }
+
+                /* 写入整数值字符串 */
+                char num_str[32];
+                int n = snprintf(num_str, sizeof(num_str), "%lld", (long long)found_val);
+                for (int k = 0; k < n && out_pos < out_size - 1; k++)
+                {
+                    out[out_pos++] = num_str[k];
+                }
+                p = endp + 1; /* 跳过 '}' */
+                continue;
+            }
+        }
+        out[out_pos++] = *p++;
+    }
+    out[out_pos] = '\0';
+}
+
+/* ========================================================================= */
+/* 上下文自动积累辅助                                                         */
+/* ========================================================================= */
+
+/**
+ * @brief 合并父视图上下文 + 新增条目，生成新层完整上下文 TLV
+ *
+ * 格式: [num:u16][cfg_id:u32][type:u8][len:u16][value...]...
+ * 仅支持整数型值（DB_TYPE_INTEGER, 8 字节 i64）。
+ *
+ * @param session    当前会话（从中读取父层上下文）
+ * @param result     命令匹配结果（用于 from_param 取值）
+ * @param new_entries context_out 条目数组
+ * @param num_new    条目数量
+ * @param out_ctx    输出分配的 TLV 字节（调用者负责 g_free）
+ * @param out_len    输出长度
+ */
+static void cli_context_build_merged(cli_session_t *session, cli_match_result_t *result,
+                                     const cli_ctx_out_entry_t *new_entries, uint32_t num_new, uint8_t **out_ctx,
+                                     uint32_t *out_len)
+{
+    /* 读取父层上下文 */
+    uint32_t parent_len = 0;
+    const uint8_t *parent = cli_context_get(session, &parent_len);
+
+    /* 解析父层条目数 */
+    uint16_t parent_num = 0;
+    if (parent && parent_len >= 2)
+    {
+        uint16_t be;
+        memcpy(&be, parent, 2);
+        parent_num = ntohs(be);
+    }
+
+    GByteArray *buf = g_byte_array_new();
+
+    /* 写入总条目数 */
+    uint16_t total_be = htons(parent_num + (uint16_t)num_new);
+    g_byte_array_append(buf, (const uint8_t *)&total_be, 2);
+
+    /* 复制父层条目原始字节（跳过开头 u16 num） */
+    if (parent && parent_len > 2)
+    {
+        g_byte_array_append(buf, parent + 2, parent_len - 2);
+    }
+
+    /* 追加新条目：[ctx_id:u32][CLI_TLV_TYPE_CTX:u8][8:u16][i64_value] */
+    for (uint32_t i = 0; i < num_new; i++)
+    {
+        const cli_ctx_out_entry_t *e = &new_entries[i];
+
+        int64_t val = e->fixed_value;
+        if (e->from_param >= 0)
+        {
+            /* 从命令匹配参数中按 cfg_id（XML cfg-id）取值 */
+            for (uint32_t j = 0; j < result->num_elements; j++)
+            {
+                if ((int32_t)result->elements[j].cfg_id == e->from_param && result->elements[j].value)
+                {
+                    char *endptr;
+                    val = strtoll(result->elements[j].value, &endptr, 10);
+                    break;
+                }
+            }
+        }
+
+        /* ctx_id 独立命名空间，type 用 CLI_TLV_TYPE_CTX 与命令参数区分 */
+        uint32_t ctx_id_be = htonl(e->ctx_id);
+        g_byte_array_append(buf, (const uint8_t *)&ctx_id_be, 4);
+        uint8_t type = CLI_TLV_TYPE_CTX;
+        g_byte_array_append(buf, &type, 1);
+        uint16_t len_be = htons(8);
+        g_byte_array_append(buf, (const uint8_t *)&len_be, 2);
+        uint32_t hi = htonl((uint32_t)((uint64_t)val >> 32));
+        uint32_t lo = htonl((uint32_t)(val & 0xFFFFFFFFu));
+        g_byte_array_append(buf, (const uint8_t *)&hi, 4);
+        g_byte_array_append(buf, (const uint8_t *)&lo, 4);
+    }
+
+    *out_len = buf->len;
+    *out_ctx = g_byte_array_free(buf, FALSE);
+}
+
+/* ========================================================================= */
 /* 命令分发                                                                   */
 /* ========================================================================= */
 
@@ -396,7 +533,6 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
     LOG_DEBUG("Sending query to module 0x%08X...", result->module_id);
 
     GString *full_output = g_string_new("");
-    cli_view_node_t *view = NULL;
     int done = 0;
 
     while (!done)
@@ -417,46 +553,43 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
             return ERRCODE_FAIL;
         }
 
-        if (response->msg_type == CFG_MSG_TYPE_CLI_VIEW_CHG)
-        {
-            char module_prompt[CLI_CLI_MAX_PROMPT_LEN] = {0};
-
-            if (response->payload && response->payload_len > 0)
-            {
-                snprintf(module_prompt, sizeof(module_prompt), "%s", (char *)response->payload);
-            }
-
-            if (result->final_node != NULL)
-            {
-                view = cli_view_find_by_id(g_cfg_local->view_tree.root, result->final_node->view_id);
-            }
-
-            if (module_prompt[0] != '\0' && view != NULL)
-            {
-                cli_prompt_push(session);
-                session->current_view = view;
-                update_prompt_from_template(session, module_prompt);
-
-                /* 提取上下文 TLV（prompt 之后的剩余数据） */
-                if (response->payload_len > CLI_CLI_MAX_PROMPT_LEN)
-                {
-                    uint32_t view_ctx_len = response->payload_len - CLI_CLI_MAX_PROMPT_LEN;
-                    const uint8_t *view_ctx_data = (const uint8_t *)response->payload + CLI_CLI_MAX_PROMPT_LEN;
-                    cli_context_set(session, view_ctx_data, view_ctx_len);
-                    LOG_DEBUG("Saved view context (%u bytes)", view_ctx_len);
-                }
-            }
-
-            dev_ipc_message_free(response);
-            done = 1;
-        }
-        else if (response->msg_type == CFG_MSG_TYPE_CLI_RESP)
+        if (response->msg_type == CFG_MSG_TYPE_CLI_RESP)
         {
             /* 最终响应块 */
             if (response->payload)
             {
                 g_string_append(full_output, response->payload);
             }
+
+            /* 自动视图切换：响应为空 + 命令有 view_id + XML 定义了 context-out */
+            gboolean payload_empty = (!response->payload || strlen(response->payload) == 0);
+            if (payload_empty && result->final_node && result->final_node->view_id != 0 &&
+                result->final_node->num_context_out > 0)
+            {
+                cli_view_node_t *tgt_view =
+                    cli_view_find_by_id(g_cfg_local->view_tree.root, result->final_node->view_id);
+                if (tgt_view)
+                {
+                    uint8_t *new_ctx = NULL;
+                    uint32_t new_ctx_len = 0;
+                    cli_context_build_merged(session, result, result->final_node->context_out,
+                                             result->final_node->num_context_out, &new_ctx, &new_ctx_len);
+
+                    cli_prompt_push(session);
+                    session->current_view = tgt_view;
+                    /* 支持 {ctx:N} 占位符，用合并后的上下文值格式化提示符 */
+                    format_prompt_with_ctx(tgt_view->prompt_template, new_ctx, new_ctx_len, session->prompt,
+                                           sizeof(session->prompt));
+
+                    if (new_ctx)
+                    {
+                        cli_context_set(session, new_ctx, new_ctx_len);
+                        g_free(new_ctx);
+                    }
+                    LOG_DEBUG("框架自动切换到视图 %u，上下文 %u 字节", tgt_view->view_id, new_ctx_len);
+                }
+            }
+
             dev_ipc_message_free(response);
             done = 1;
         }

@@ -22,35 +22,21 @@
 #include "log.h"
 
 // ============================================================================
-// 上下文序列化辅助（TLV 格式）
+// 接口上下文变量 ID（独立命名空间，ctx-id=5 对应 XML <context-out ctx-id="5">）
 // ============================================================================
 
-static void ctx_write_u8(GByteArray *buf, uint8_t v)
-{
-    g_byte_array_append(buf, &v, 1);
-}
-
-static void ctx_write_u16(GByteArray *buf, uint16_t v)
-{
-    uint16_t be = htons(v);
-    g_byte_array_append(buf, (const uint8_t *)&be, 2);
-}
-
-static void ctx_write_u32(GByteArray *buf, uint32_t v)
-{
-    uint32_t be = htonl(v);
-    g_byte_array_append(buf, (const uint8_t *)&be, 4);
-}
+/** 接口索引 ctx 变量：值 1-4 分别对应 GE-1 到 GE-4 */
+#define IF_CTX_VAR_IDX 5
 
 // ============================================================================
 // 发送响应辅助
 // ============================================================================
 
-static void send_resp(dev_ipc_message_t *msg, uint32_t msg_type, const char *text)
+static void send_resp(dev_ipc_message_t *msg, const char *text)
 {
     char *resp_data = g_strdup(text);
-    dev_ipc_message_t *resp = dev_ipc_message_create(msg_type, DEV_MODULE_ID_IF, msg->src_module_id, msg->request_id,
-                                                     resp_data, strlen(resp_data) + 1, g_free);
+    dev_ipc_message_t *resp = dev_ipc_message_create(CFG_MSG_TYPE_CLI_RESP, DEV_MODULE_ID_IF, msg->src_module_id,
+                                                     msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
     if (resp)
     {
         dev_ipc_send_response(g_if_local->dev_ipc_ctx, resp);
@@ -90,103 +76,15 @@ static const char *if_cfgid_to_name(uint32_t cfg_id)
  */
 static int handle_if_entry(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
-    const char *ifname = NULL;
-    uint32_t if_cfg_id = 0;
-
-    /* 解析 TLV 条目获取接口名 */
+    /* 框架根据 XML <context-out ctx-id="5" value="N"/> 自动切换视图并写入上下文，
+     * 视图 template "<NetNexus(config-if-GE-{ctx:5})>" 由框架格式化为 "GE-1/2/3/4"。
+     * 模块只需验证并返回空 OK。 */
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
     {
-        if (CFG_TLV_IS_CONTEXT(entry.cfg_id))
-        {
-            cli_tlv_entry_free(&entry);
-            continue;
-        }
-
-        if (entry.cfg_id >= 1 && entry.cfg_id <= 4)
-        {
-            ifname = if_cfgid_to_name(entry.cfg_id);
-            if_cfg_id = entry.cfg_id;
-        }
         cli_tlv_entry_free(&entry);
     }
-
-    if (!ifname)
-    {
-        send_resp(msg, CFG_MSG_TYPE_CLI_RESP, "Error: Invalid interface name\r\n");
-        return ERRCODE_FAIL;
-    }
-
-    /* 设置当前接口 */
-    extern char g_current_interface[IFNAMSIZ];
-    strncpy(g_current_interface, ifname, IFNAMSIZ - 1);
-
-    /* 获取 view prompt template */
-    char view_name[CFG_CLI_MAX_VIEW_LEN];
-
-    if (g_if_local->dev_ipc_ctx && dev_ipc_is_connected(g_if_local->dev_ipc_ctx, DEV_MODULE_ID_CFG))
-    {
-        uint32_t view_id_be = htonl(CLI_VIEW_IF);
-        uint32_t *view_id_copy = g_malloc(sizeof(view_id_be));
-        memcpy(view_id_copy, &view_id_be, sizeof(view_id_be));
-        dev_ipc_message_t *req = dev_ipc_message_create(CFG_MSG_TYPE_CLI_CONTINUE, DEV_MODULE_ID_IF, DEV_MODULE_ID_CFG,
-                                                        msg->request_id, view_id_copy, sizeof(view_id_be), g_free);
-
-        if (req)
-        {
-            req->msg_type = DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0010); /* GET_VIEW_PROMPT */
-            dev_ipc_message_t *resp = dev_ipc_query(g_if_local->dev_ipc_ctx, DEV_MODULE_ID_CFG, req, 1000);
-            if (resp && resp->payload && resp->payload_len > 0)
-            {
-                snprintf(view_name, sizeof(view_name), "%s", (char *)resp->payload);
-                dev_ipc_message_free(resp);
-            }
-            else
-            {
-                snprintf(view_name, sizeof(view_name), "<NetNexus(config-if-%%s)>");
-                if (resp)
-                {
-                    dev_ipc_message_free(resp);
-                }
-            }
-            dev_ipc_message_free(req);
-        }
-        else
-        {
-            snprintf(view_name, sizeof(view_name), "<NetNexus(config-if-%%s)>");
-        }
-    }
-    else
-    {
-        snprintf(view_name, sizeof(view_name), "<NetNexus(config-if-%%s)>");
-    }
-
-    char out_prompt[CLI_CLI_MAX_PROMPT_LEN];
-    snprintf(out_prompt, CLI_CLI_MAX_PROMPT_LEN, view_name, ifname);
-
-    /* 构建上下文: [num:u16][cfg_id:u32][type:u8][length:u16][value] */
-    GByteArray *ctx_buf = g_byte_array_new();
-    ctx_write_u16(ctx_buf, 1);                    /* num_fields = 1 */
-    ctx_write_u32(ctx_buf, if_cfg_id);            /* cfg_id（接口编号） */
-    ctx_write_u8(ctx_buf, (uint8_t)DB_TYPE_TEXT); /* 类型 */
-    uint16_t name_len = (uint16_t)strlen(ifname);
-    ctx_write_u16(ctx_buf, name_len); /* 长度 */
-    g_byte_array_append(ctx_buf, (const uint8_t *)ifname, name_len);
-
-    uint32_t total_len = CLI_CLI_MAX_PROMPT_LEN + ctx_buf->len;
-    char *msg_out = g_malloc0(total_len);
-    memcpy(msg_out, out_prompt, CLI_CLI_MAX_PROMPT_LEN);
-    memcpy(msg_out + CLI_CLI_MAX_PROMPT_LEN, ctx_buf->data, ctx_buf->len);
-    g_byte_array_free(ctx_buf, TRUE);
-
-    dev_ipc_message_t *resp = dev_ipc_message_create(CFG_MSG_TYPE_CLI_VIEW_CHG, DEV_MODULE_ID_IF, msg->src_module_id,
-                                                     msg->request_id, msg_out, total_len, g_free);
-    if (resp)
-    {
-        dev_ipc_send_response(g_if_local->dev_ipc_ctx, resp);
-        dev_ipc_message_free(resp);
-    }
-
+    send_resp(msg, "");
     return ERRCODE_SUCCESS;
 }
 
@@ -203,19 +101,18 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     char mask[20] = {0};
     gboolean has_ip = FALSE;
     gboolean has_shutdown = FALSE;
-    char ctx_ifname[32] = {0};
 
     /* 解析 TLV 条目 */
+    uint32_t if_idx = 0; /* 接口索引（ctx_id=IF_CTX_VAR_IDX 的值，1-4） */
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
     {
-        if (CFG_TLV_IS_CONTEXT(entry.cfg_id))
+        if (CLI_TLV_IS_CTX(&entry))
         {
-            /* 上下文字段 - 接口名 */
-            const char *text = cli_tlv_entry_get_text(&entry);
-            if (text)
+            /* 上下文变量：ctx_id=IF_CTX_VAR_IDX → 接口索引 */
+            if (entry.cfg_id == IF_CTX_VAR_IDX)
             {
-                strncpy(ctx_ifname, text, sizeof(ctx_ifname) - 1);
+                if_idx = (uint32_t)cli_tlv_entry_get_int(&entry);
             }
             cli_tlv_entry_free(&entry);
             continue;
@@ -251,12 +148,11 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         cli_tlv_entry_free(&entry);
     }
 
-    /* 判断接口名 */
-    extern char g_current_interface[IFNAMSIZ];
-    const char *ifname = ctx_ifname[0] ? ctx_ifname : g_current_interface;
-    if (ifname[0] == '\0')
+    /* 从上下文索引解析接口名 */
+    const char *ifname = if_cfgid_to_name(if_idx);
+    if (!ifname)
     {
-        send_resp(msg, CFG_MSG_TYPE_CLI_RESP, "Error: No interface selected\r\n");
+        send_resp(msg, "Error: No interface selected\r\n");
         return ERRCODE_FAIL;
     }
 
@@ -280,13 +176,13 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 
             char resp_buf[128];
             snprintf(resp_buf, sizeof(resp_buf), "IP address configured successfully on %s\r\n", ifname);
-            send_resp(msg, CFG_MSG_TYPE_CLI_RESP, resp_buf);
+            send_resp(msg, resp_buf);
         }
         else
         {
             char resp_buf[128];
             snprintf(resp_buf, sizeof(resp_buf), "Error: Failed to set IP address on %s\r\n", ifname);
-            send_resp(msg, CFG_MSG_TYPE_CLI_RESP, resp_buf);
+            send_resp(msg, resp_buf);
             return ERRCODE_FAIL;
         }
     }
@@ -308,13 +204,13 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 
             char resp_buf[128];
             snprintf(resp_buf, sizeof(resp_buf), "Interface %s %s\r\n", ifname, state ? "enabled" : "disabled");
-            send_resp(msg, CFG_MSG_TYPE_CLI_RESP, resp_buf);
+            send_resp(msg, resp_buf);
         }
         else
         {
             char resp_buf[128];
             snprintf(resp_buf, sizeof(resp_buf), "Error: Failed to change state for %s\r\n", ifname);
-            send_resp(msg, CFG_MSG_TYPE_CLI_RESP, resp_buf);
+            send_resp(msg, resp_buf);
             return ERRCODE_FAIL;
         }
     }
@@ -337,7 +233,7 @@ static int handle_if_show(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
     {
-        if (CFG_TLV_IS_CONTEXT(entry.cfg_id))
+        if (CLI_TLV_IS_CTX(&entry))
         {
             cli_tlv_entry_free(&entry);
             continue;
@@ -384,7 +280,7 @@ static int handle_if_show(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         else
         {
             CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "Error: Interface %s not found\r\n", ifname);
-            send_resp(msg, CFG_MSG_TYPE_CLI_RESP, resp_buf);
+            send_resp(msg, resp_buf);
             return ERRCODE_FAIL;
         }
     }
@@ -426,7 +322,7 @@ static int handle_if_show(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "\r\n");
     }
 
-    send_resp(msg, CFG_MSG_TYPE_CLI_RESP, resp_buf);
+    send_resp(msg, resp_buf);
     return ERRCODE_SUCCESS;
 }
 
@@ -436,7 +332,7 @@ static int handle_if_show(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 
 int if_cli_handle_continue(dev_ipc_message_t *msg)
 {
-    send_resp(msg, CFG_MSG_TYPE_CLI_RESP, "");
+    send_resp(msg, "");
     return ERRCODE_SUCCESS;
 }
 
@@ -451,7 +347,7 @@ int if_cli_handle_message(dev_ipc_message_t *msg)
     if (cli_tlv_init(&parser, (const uint8_t *)msg->payload, msg->payload_len) != 0)
     {
         LOG_ERROR("载荷解析失败");
-        send_resp(msg, CFG_MSG_TYPE_CLI_RESP, "IF Error: Failed to parse command payload.\r\n");
+        send_resp(msg, "IF Error: Failed to parse command payload.\r\n");
         return ERRCODE_FAIL;
     }
 
@@ -471,7 +367,7 @@ int if_cli_handle_message(dev_ipc_message_t *msg)
             break;
         default:
             LOG_WARN("未知 group_id: %u", parser.group_id);
-            send_resp(msg, CFG_MSG_TYPE_CLI_RESP, "IF Error: Unknown command group.\r\n");
+            send_resp(msg, "IF Error: Unknown command group.\r\n");
             result = ERRCODE_FAIL;
             break;
     }

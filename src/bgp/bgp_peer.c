@@ -15,15 +15,15 @@
 // bgp_peer_t 生命周期（per-AF peer）
 // ============================================================================
 
-bgp_peer_t *bgp_peer_create(bgp_afi_t afi, bgp_safi_t safi, const net_addr_t *addr)
+bgp_peer_t *bgp_peer_create(bgp_vrf_t *vrf, bgp_instance_t *inst, const net_addr_t *addr)
 {
     bgp_peer_t *peer = g_malloc0(sizeof(bgp_peer_t));
     if (addr)
     {
         memcpy(&peer->addr, addr, sizeof(*addr));
     }
-    peer->afi = afi;
-    peer->safi = safi;
+    peer->vrf = vrf;
+    peer->inst = inst;
     peer->established = false;
     return peer;
 }

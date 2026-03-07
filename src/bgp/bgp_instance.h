@@ -1,6 +1,6 @@
 /**
  * @file   bgp_instance.h
- * @brief  BGP 地址族实例结构定义（无 VRF 字段，按 afi/safi 索引）
+ * @brief  BGP 地址族实例结构定义（按 afi/safi 索引，持有 VRF 反向指针）
  * @author jhb
  * @date   2026/03/03
  */
@@ -12,6 +12,8 @@
 
 #include "bgp_peer.h"
 
+/* bgp_peer.h 已前向声明 bgp_vrf_t，此处直接使用 */
+
 /**
  * @brief BGP 地址族实例（持有该 AF 下所有已使能邻居的 bgp_peer_t 所有权）
  */
@@ -20,24 +22,28 @@ typedef struct bgp_instance
     bgp_afi_t afi;         /**< 地址族 */
     bgp_safi_t safi;       /**< 子地址族 */
     GHashTable *peer_hash; /**< addr_str(gchar*) -> bgp_peer_t*（持有所有权） */
+    bgp_vrf_t *vrf;        /**< 所属 VRF（借用引用，不持有所有权） */
 } bgp_instance_t;
 
 /**
- * @brief 构造地址族实例键字符串（如 "1-1" 表示 IPv4 Unicast）
+ * @brief 计算 inst_hash 的键值（将 afi/safi 打包为 gpointer，无需堆分配）
  * @param afi  地址族
  * @param safi 子地址族
- * @param buf  输出缓冲区
- * @param sz   缓冲区大小
+ * @return gpointer 键值，直接传入 g_hash_table_lookup / insert / remove
  */
-void bgp_instance_make_key(bgp_afi_t afi, bgp_safi_t safi, char *buf, size_t sz);
+static inline gpointer bgp_inst_hash_key(bgp_afi_t afi, bgp_safi_t safi)
+{
+    return GUINT_TO_POINTER(((guint32)afi << 16) | (guint32)safi);
+}
 
 /**
  * @brief 创建地址族实例结构
  * @param afi  地址族
  * @param safi 子地址族
+ * @param vrf  所属 VRF（借用引用）
  * @return 新建的 bgp_instance_t 指针
  */
-bgp_instance_t *bgp_instance_create(bgp_afi_t afi, bgp_safi_t safi);
+bgp_instance_t *bgp_instance_create(bgp_afi_t afi, bgp_safi_t safi, bgp_vrf_t *vrf);
 
 /**
  * @brief 销毁地址族实例结构（同时销毁所有 peer_hash 中的 bgp_peer_t）

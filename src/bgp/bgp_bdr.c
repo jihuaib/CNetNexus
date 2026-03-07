@@ -19,6 +19,23 @@
 #define BGP_BDR_MAX_AFI 8
 
 // ============================================================================
+// AFI/SAFI 转换辅助
+// ============================================================================
+
+/**
+ * @brief 将 bgp_instance 表中的整数 afi/safi 转为 bgp_neighbor 表使用的文本标识
+ * @return 文本字符串（静态常量），不支持的组合返回 NULL
+ */
+static const char *afi_safi_to_str(int64_t afi, int64_t safi)
+{
+    if (afi == 1 && safi == 1)
+    {
+        return "ipv4-unicast"; /* BGP_AFI_IPV4 + BGP_SAFI_UNICAST */
+    }
+    return NULL;
+}
+
+// ============================================================================
 // 内部辅助
 // ============================================================================
 
@@ -91,6 +108,7 @@ static void bdr_append_vrf_config(dev_ipc_context_t *ctx, char *buf, size_t buf_
         const char *router_id = db_row_get_text(row, "router_id", NULL);
         int64_t keepalive = db_row_get_int(row, "keepalive", BGP_TIMER_DEFAULT_KEEPALIVE);
         int64_t hold_time = db_row_get_int(row, "hold_time", BGP_TIMER_DEFAULT_HOLD);
+        int64_t connect_retry = db_row_get_int(row, "connect_retry", BGP_TIMER_DEFAULT_CONNECT_RETRY);
 
         if (router_id && strcmp(router_id, "0.0.0.0") != 0)
         {
@@ -100,6 +118,11 @@ static void bdr_append_vrf_config(dev_ipc_context_t *ctx, char *buf, size_t buf_
         if (keepalive != BGP_TIMER_DEFAULT_KEEPALIVE || hold_time != BGP_TIMER_DEFAULT_HOLD)
         {
             CLI_BUF_APPEND(buf, buf_size, *off, " timer keepalive %ld hold %ld\r\n", keepalive, hold_time);
+        }
+
+        if (connect_retry != BGP_TIMER_DEFAULT_CONNECT_RETRY)
+        {
+            CLI_BUF_APPEND(buf, buf_size, *off, " timer connect-retry %ld\r\n", connect_retry);
         }
     }
 
@@ -133,67 +156,81 @@ static void bdr_append_sessions(dev_ipc_context_t *ctx, char *buf, size_t buf_si
 }
 
 /**
- * @brief 追加地址族配置块（af <afi> / neighbor <ip> enable / !）
+ * @brief 追加某 AF 下使能邻居配置行（neighbor <ip> enable）
+ * @param afi_str 文本 AFI 标识（如 "ipv4-unicast"）
  */
-static void bdr_append_af_neighbors(dev_ipc_context_t *ctx, char *buf, size_t buf_size, size_t *off)
+static void bdr_append_af_peers(dev_ipc_context_t *ctx, char *buf, size_t buf_size, size_t *off, const char *afi_str)
 {
+    db_condition_t cond = {.field_name = "afi", .op = DB_CMP_EQ, .value = db_value_text(afi_str)};
+    db_filter_t filter = {.conditions = &cond, .num_conditions = 1};
+
     db_result_t *result = NULL;
-    if (db_rpc_query(ctx, BGP_TABLE_NEIGHBOR, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result ||
-        result->num_rows == 0)
+    if (db_rpc_query(ctx, BGP_TABLE_NEIGHBOR, NULL, 0, &filter, &result) != ERRCODE_SUCCESS || !result)
     {
-        if (result)
-        {
-            db_result_free(result);
-        }
+        db_value_free(&cond.value);
         return;
     }
-
-    /* 收集所有唯一的 AFI */
-    char afi_list[BGP_BDR_MAX_AFI][64];
-    uint32_t afi_count = 0;
 
     for (uint32_t i = 0; i < result->num_rows; i++)
     {
         db_row_t *row = result->rows[i];
-        const char *afi = db_row_get_text(row, "afi", NULL);
-        if (!afi)
+        const char *ip = db_row_get_text(row, "neighbor_ip", NULL);
+        if (ip)
+        {
+            CLI_BUF_APPEND(buf, buf_size, *off, "  neighbor %s enable\r\n", ip);
+        }
+    }
+
+    db_result_free(result);
+    db_value_free(&cond.value);
+}
+
+/**
+ * @brief 追加单个 AF 完整配置块（af <afi> / 各子表配置 / !）
+ * @param afi_str 文本 AFI 标识（如 "ipv4-unicast"）
+ */
+static void bdr_append_af_block(dev_ipc_context_t *ctx, char *buf, size_t buf_size, size_t *off, const char *afi_str)
+{
+    CLI_BUF_APPEND(buf, buf_size, *off, " af %s\r\n", afi_str);
+
+    /* AF 下各子表 BDR，按需扩展 */
+    bdr_append_af_peers(ctx, buf, buf_size, off, afi_str);
+
+    CLI_BUF_APPEND(buf, buf_size, *off, " !\r\n");
+}
+
+/**
+ * @brief 遍历 bgp_instance 表，对每个 AF 实例输出完整配置块
+ */
+static void bdr_append_af_instances(dev_ipc_context_t *ctx, char *buf, size_t buf_size, size_t *off)
+{
+    db_result_t *inst_result = NULL;
+    if (db_rpc_query(ctx, BGP_TABLE_INSTANCE, NULL, 0, NULL, &inst_result) != ERRCODE_SUCCESS || !inst_result ||
+        inst_result->num_rows == 0)
+    {
+        if (inst_result)
+        {
+            db_result_free(inst_result);
+        }
+        return;
+    }
+
+    for (uint32_t i = 0; i < inst_result->num_rows; i++)
+    {
+        db_row_t *row = inst_result->rows[i];
+        int64_t afi_int = db_row_get_int(row, "afi", 0);
+        int64_t safi_int = db_row_get_int(row, "safi", 0);
+
+        const char *afi_str = afi_safi_to_str(afi_int, safi_int);
+        if (!afi_str)
         {
             continue;
         }
 
-        gboolean found = FALSE;
-        for (uint32_t k = 0; k < afi_count; k++)
-        {
-            if (strcmp(afi_list[k], afi) == 0)
-            {
-                found = TRUE;
-                break;
-            }
-        }
-        if (!found && afi_count < BGP_BDR_MAX_AFI)
-        {
-            snprintf(afi_list[afi_count++], sizeof(afi_list[0]), "%s", afi);
-        }
+        bdr_append_af_block(ctx, buf, buf_size, off, afi_str);
     }
 
-    /* 逐 AFI 输出地址族块 */
-    for (uint32_t k = 0; k < afi_count; k++)
-    {
-        CLI_BUF_APPEND(buf, buf_size, *off, " af %s\r\n", afi_list[k]);
-        for (uint32_t i = 0; i < result->num_rows; i++)
-        {
-            db_row_t *row = result->rows[i];
-            const char *ip = db_row_get_text(row, "neighbor_ip", NULL);
-            const char *afi = db_row_get_text(row, "afi", NULL);
-            if (ip && afi && strcmp(afi, afi_list[k]) == 0)
-            {
-                CLI_BUF_APPEND(buf, buf_size, *off, "  neighbor %s enable\r\n", ip);
-            }
-        }
-        CLI_BUF_APPEND(buf, buf_size, *off, " !\r\n");
-    }
-
-    db_result_free(result);
+    db_result_free(inst_result);
 }
 
 // ============================================================================
@@ -214,7 +251,7 @@ void bgp_bdr_show_config(dev_ipc_message_t *msg)
 
     bdr_append_vrf_config(ctx, buf, sizeof(buf), &off);
     bdr_append_sessions(ctx, buf, sizeof(buf), &off);
-    bdr_append_af_neighbors(ctx, buf, sizeof(buf), &off);
+    bdr_append_af_instances(ctx, buf, sizeof(buf), &off);
     CLI_BUF_APPEND(buf, sizeof(buf), off, "!\r\n");
 
     send_config_resp(msg, buf);

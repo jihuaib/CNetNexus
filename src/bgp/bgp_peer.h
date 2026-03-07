@@ -25,23 +25,27 @@ typedef enum bgp_safi
     BGP_SAFI_UNICAST = 1, /**< 单播 */
 } bgp_safi_t;
 
+/* 前向声明，避免循环包含 */
+typedef struct bgp_vrf bgp_vrf_t;
+typedef struct bgp_instance bgp_instance_t;
+
 /** BGP per-AF peer：在某地址族下使能的邻居实例 */
 typedef struct bgp_peer
 {
-    net_addr_t addr;  /**< 邻居 IP 地址 */
-    bgp_afi_t afi;    /**< 地址族，方便 OPEN 构建 MP capability */
-    bgp_safi_t safi;  /**< 子地址族 */
-    bool established; /**< 已通过 OPEN 协商激活 */
+    net_addr_t addr;      /**< 邻居 IP 地址 */
+    bool established;     /**< 已通过 OPEN 协商激活 */
+    bgp_vrf_t *vrf;       /**< 所属 VRF（借用引用，不持有所有权） */
+    bgp_instance_t *inst; /**< 所属 AF 实例（借用引用，不持有所有权） */
 } bgp_peer_t;
 
 /**
  * @brief 创建 per-AF peer 实例
- * @param afi  地址族
- * @param safi 子地址族
+ * @param vrf  所属 VRF（借用引用）
+ * @param inst 所属 AF 实例（借用引用）
  * @param addr 邻居 IP 地址
  * @return 新建的 peer 指针
  */
-bgp_peer_t *bgp_peer_create(bgp_afi_t afi, bgp_safi_t safi, const net_addr_t *addr);
+bgp_peer_t *bgp_peer_create(bgp_vrf_t *vrf, bgp_instance_t *inst, const net_addr_t *addr);
 
 /**
  * @brief 销毁 per-AF peer 实例

@@ -6,20 +6,16 @@
  */
 #include "bgp_instance.h"
 
-#include <stdio.h>
+#include <glib.h>
 
 #include "log.h"
 
-void bgp_instance_make_key(bgp_afi_t afi, bgp_safi_t safi, char *buf, size_t sz)
-{
-    snprintf(buf, sz, "%u-%u", (unsigned)afi, (unsigned)safi);
-}
-
-bgp_instance_t *bgp_instance_create(bgp_afi_t afi, bgp_safi_t safi)
+bgp_instance_t *bgp_instance_create(bgp_afi_t afi, bgp_safi_t safi, bgp_vrf_t *vrf)
 {
     bgp_instance_t *inst = g_malloc0(sizeof(bgp_instance_t));
     inst->afi = afi;
     inst->safi = safi;
+    inst->vrf = vrf;
     /* key: gchar*(addr_str)，value: bgp_peer_t*（负责销毁） */
     inst->peer_hash = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify)bgp_peer_destroy);
     return inst;

@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "bgp_protocol.h"
+#include "bgp_session.h"
 #include "bgp_vrf.h"
 #include "errcode.h"
 #include "log.h"
@@ -34,6 +35,7 @@ static const db_column_def_t BGP_SESSION_COLS[] = {
     {"neighbor_ip", DB_TYPE_TEXT, DB_COL_PRIMARY_KEY, NULL},
     {"remote_as", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
     {"vrf_id", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},
+    {"open_caps", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "3"}, /* 默认值 3 = AS4(bit0) + Route-Refresh(bit1) */
 };
 
 /* bgp_session 表定义 */
@@ -56,12 +58,25 @@ static const db_table_def_t BGP_NEIGHBOR_TABLE = {
     .num_cols = G_N_ELEMENTS(BGP_NEIGHBOR_COLS),
 };
 
+/* bgp_instance 表列定义（vrf_id + afi + safi 三列联合唯一，无单列主键） */
+static const db_column_def_t BGP_INSTANCE_COLS[] = {
+    {"vrf_id", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},
+    {"afi", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
+    {"safi", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
+};
+
+/* bgp_instance 表定义 */
+static const db_table_def_t BGP_INSTANCE_TABLE = {
+    .table_name = BGP_TABLE_INSTANCE,
+    .cols = BGP_INSTANCE_COLS,
+    .num_cols = G_N_ELEMENTS(BGP_INSTANCE_COLS),
+};
+
 /* bgp_vrf 表列定义 */
 static const db_column_def_t BGP_VRF_COLS[] = {
-    {"vrf_id", DB_TYPE_INTEGER, DB_COL_PRIMARY_KEY, NULL},
-    {"router_id", DB_TYPE_TEXT, DB_COL_NOT_NULL, "0.0.0.0"},
-    {"keepalive", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "60"},
-    {"hold_time", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "180"},
+    {"vrf_id", DB_TYPE_INTEGER, DB_COL_PRIMARY_KEY, NULL},      {"router_id", DB_TYPE_TEXT, DB_COL_NOT_NULL, "0.0.0.0"},
+    {"keepalive", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "60"},      {"hold_time", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "180"},
+    {"connect_retry", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "120"},
 };
 
 /* bgp_vrf 表定义 */
@@ -73,6 +88,7 @@ static const db_table_def_t BGP_VRF_TABLE = {
 
 /* 前向声明（write_defaults 中调用） */
 int bgp_db_set_vrf_timers(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t keepalive, uint16_t hold_time);
+int bgp_db_set_vrf_connect_retry(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t connect_retry);
 
 // ============================================================================
 // 启动恢复 - 内部函数（按表拆分）
@@ -145,7 +161,12 @@ static void restore_sessions(dev_ipc_context_t *ctx, bgp_vrf_t *vrf0)
             LOG_WARN("BGP 恢复: session 邻居地址 %s 解析失败，跳过", ip_val);
             continue;
         }
-        bgp_session_t *sess = bgp_session_create(&nb_addr, as_val);
+        bgp_session_t *sess = bgp_session_create(&nb_addr, as_val, vrf0);
+
+        /* 从数据库恢复 OPEN 能力标记位（缺失时使用默认值） */
+        uint32_t open_caps = (uint32_t)db_row_get_int(row, "open_caps", (int64_t)BGP_SESS_CAP_DEFAULT);
+        sess->flags = open_caps;
+
         bgp_vrf_add_session(vrf0, sess);
     }
 
@@ -203,6 +224,43 @@ static void restore_neighbors(dev_ipc_context_t *ctx, bgp_vrf_t *vrf0)
 }
 
 /**
+ * @brief 从 bgp_instance 表恢复 AF 实例到各 VRF 的 inst_hash
+ * @param proto 已恢复的协议对象（不可为 NULL）
+ */
+static void restore_instances(dev_ipc_context_t *ctx, bgp_protocol_t *proto)
+{
+    db_result_t *result = NULL;
+    if (db_rpc_query(ctx, BGP_TABLE_INSTANCE, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
+    {
+        return;
+    }
+
+    for (uint32_t i = 0; i < result->num_rows; i++)
+    {
+        db_row_t *row = result->rows[i];
+        uint32_t vrf_id = (uint32_t)db_row_get_int(row, "vrf_id", BGP_VRF_PUBLIC_ID);
+        bgp_afi_t afi = (bgp_afi_t)db_row_get_int(row, "afi", 0);
+        bgp_safi_t safi = (bgp_safi_t)db_row_get_int(row, "safi", 0);
+
+        if (afi == 0 || safi == 0)
+        {
+            continue;
+        }
+
+        bgp_vrf_t *vrf = bgp_protocol_get_vrf(proto, vrf_id);
+        if (!vrf)
+        {
+            continue;
+        }
+
+        bgp_vrf_get_or_create_instance(vrf, afi, safi);
+        LOG_INFO("BGP 恢复: VRF %u AF 实例 afi=%u safi=%u", vrf_id, (unsigned)afi, (unsigned)safi);
+    }
+
+    db_result_free(result);
+}
+
+/**
  * @brief 从 bgp_vrf 表恢复 VRF 级配置（router-id、keepalive、hold_time）到内存
  * @param proto 已恢复的协议对象（不可为 NULL）
  */
@@ -240,6 +298,13 @@ static void restore_vrf(dev_ipc_context_t *ctx, bgp_protocol_t *proto)
             vrf->hold_time = hold_time;
             LOG_INFO("BGP 恢复: VRF %u keepalive=%u hold=%u", vrf_id, keepalive, hold_time);
         }
+
+        uint16_t connect_retry = (uint16_t)db_row_get_int(row, "connect_retry", BGP_TIMER_DEFAULT_CONNECT_RETRY);
+        if (connect_retry > 0)
+        {
+            vrf->connect_retry = connect_retry;
+            LOG_INFO("BGP 恢复: VRF %u connect-retry=%u", vrf_id, connect_retry);
+        }
     }
 
     db_result_free(result);
@@ -264,6 +329,7 @@ bgp_protocol_t *bgp_db_restore(dev_ipc_context_t *ctx)
 
     bgp_vrf_t *vrf0 = bgp_protocol_get_vrf(proto, BGP_VRF_PUBLIC_ID);
     restore_sessions(ctx, vrf0);
+    restore_instances(ctx, proto);
     restore_neighbors(ctx, vrf0);
     restore_vrf(ctx, proto);
     return proto;
@@ -281,10 +347,7 @@ int bgp_db_init(dev_ipc_context_t *ctx)
     }
 
     static const db_table_def_t *BGP_TABLES[] = {
-        &BGP_PROTOCOL_TABLE,
-        &BGP_VRF_TABLE,
-        &BGP_SESSION_TABLE,
-        &BGP_NEIGHBOR_TABLE,
+        &BGP_PROTOCOL_TABLE, &BGP_VRF_TABLE, &BGP_SESSION_TABLE, &BGP_INSTANCE_TABLE, &BGP_NEIGHBOR_TABLE,
     };
 
     for (size_t i = 0; i < G_N_ELEMENTS(BGP_TABLES); i++)
@@ -349,6 +412,7 @@ static void write_defaults(dev_ipc_context_t *ctx)
     {
         LOG_INFO("BGP %s 表为空，写入默认 VRF 定时器", BGP_TABLE_VRF);
         bgp_db_set_vrf_timers(ctx, BGP_VRF_PUBLIC_ID, BGP_TIMER_DEFAULT_KEEPALIVE, BGP_TIMER_DEFAULT_HOLD);
+        bgp_db_set_vrf_connect_retry(ctx, BGP_VRF_PUBLIC_ID, BGP_TIMER_DEFAULT_CONNECT_RETRY);
     }
 }
 
@@ -688,4 +752,183 @@ int bgp_db_del_vrf_timers(dev_ipc_context_t *ctx, uint32_t vrf_id)
 {
     /* 重置为默认值 */
     return bgp_db_set_vrf_timers(ctx, vrf_id, BGP_TIMER_DEFAULT_KEEPALIVE, BGP_TIMER_DEFAULT_HOLD);
+}
+
+// ============================================================================
+// BGP VRF 操作（connect-retry 定时器）
+// ============================================================================
+
+int bgp_db_set_vrf_connect_retry(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t connect_retry)
+{
+    if (!ctx)
+    {
+        return -1;
+    }
+
+    db_condition_t key_cond = {
+        .field_name = "vrf_id",
+        .op = DB_CMP_EQ,
+        .value = db_value_int((int64_t)vrf_id),
+    };
+    db_filter_t key_filter = {.conditions = &key_cond, .num_conditions = 1};
+
+    db_record_t *rec = db_record_new();
+    db_record_set_int(rec, "vrf_id", (int64_t)vrf_id);
+    db_record_set_int(rec, "connect_retry", (int64_t)connect_retry);
+
+    int ret = db_rpc_upsert(ctx, BGP_TABLE_VRF, rec, &key_filter);
+    db_record_free(rec);
+    db_value_free(&key_cond.value);
+
+    if (ret != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("BGP 写入 VRF %u connect-retry=%u 失败", vrf_id, connect_retry);
+        return -1;
+    }
+
+    LOG_INFO("BGP VRF %u connect-retry=%u 已写入", vrf_id, connect_retry);
+    return 0;
+}
+
+int bgp_db_del_vrf_connect_retry(dev_ipc_context_t *ctx, uint32_t vrf_id)
+{
+    /* 重置为默认值 */
+    return bgp_db_set_vrf_connect_retry(ctx, vrf_id, BGP_TIMER_DEFAULT_CONNECT_RETRY);
+}
+
+// ============================================================================
+// BGP 地址族实例操作（bgp_instance 表）
+// ============================================================================
+
+int bgp_db_set_instance(dev_ipc_context_t *ctx, uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi)
+{
+    if (!ctx)
+    {
+        return -1;
+    }
+
+    db_condition_t key_conditions[] = {
+        {.field_name = "vrf_id", .op = DB_CMP_EQ, .value = db_value_int((int64_t)vrf_id)},
+        {.field_name = "afi", .op = DB_CMP_EQ, .value = db_value_int((int64_t)afi)},
+        {.field_name = "safi", .op = DB_CMP_EQ, .value = db_value_int((int64_t)safi)},
+    };
+    db_filter_t key_filter = {.conditions = key_conditions, .num_conditions = G_N_ELEMENTS(key_conditions)};
+
+    gboolean exists = FALSE;
+    int ret = db_rpc_exists(ctx, BGP_TABLE_INSTANCE, &key_filter, &exists);
+    db_value_free(&key_conditions[0].value);
+    db_value_free(&key_conditions[1].value);
+    db_value_free(&key_conditions[2].value);
+
+    if (ret != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("BGP 查询 instance 存在性失败");
+        return -1;
+    }
+    if (exists)
+    {
+        LOG_INFO("BGP instance vrf=%u afi=%u safi=%u 已存在", vrf_id, (unsigned)afi, (unsigned)safi);
+        return 0;
+    }
+
+    db_record_t *rec = db_record_new();
+    db_record_set_int(rec, "vrf_id", (int64_t)vrf_id);
+    db_record_set_int(rec, "afi", (int64_t)afi);
+    db_record_set_int(rec, "safi", (int64_t)safi);
+    ret = db_rpc_insert_record(ctx, BGP_TABLE_INSTANCE, rec);
+    db_record_free(rec);
+
+    if (ret != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("BGP 插入 instance vrf=%u afi=%u safi=%u 失败", vrf_id, (unsigned)afi, (unsigned)safi);
+        return -1;
+    }
+
+    LOG_INFO("BGP instance vrf=%u afi=%u safi=%u 已写入", vrf_id, (unsigned)afi, (unsigned)safi);
+    return 0;
+}
+
+int bgp_db_del_instance(dev_ipc_context_t *ctx, uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi)
+{
+    if (!ctx)
+    {
+        return -1;
+    }
+
+    db_condition_t conditions[] = {
+        {.field_name = "vrf_id", .op = DB_CMP_EQ, .value = db_value_int((int64_t)vrf_id)},
+        {.field_name = "afi", .op = DB_CMP_EQ, .value = db_value_int((int64_t)afi)},
+        {.field_name = "safi", .op = DB_CMP_EQ, .value = db_value_int((int64_t)safi)},
+    };
+    db_filter_t filter = {.conditions = conditions, .num_conditions = G_N_ELEMENTS(conditions)};
+
+    int rows = db_rpc_delete(ctx, BGP_TABLE_INSTANCE, &filter);
+    db_value_free(&conditions[0].value);
+    db_value_free(&conditions[1].value);
+    db_value_free(&conditions[2].value);
+
+    if (rows < 0)
+    {
+        LOG_ERROR("BGP 删除 instance 失败");
+        return -1;
+    }
+
+    LOG_INFO("BGP 删除 instance vrf=%u afi=%u safi=%u，影响行数: %d", vrf_id, (unsigned)afi, (unsigned)safi, rows);
+    return rows;
+}
+
+int bgp_db_set_session_caps(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *neighbor_ip, uint32_t open_caps)
+{
+    if (!ctx || !neighbor_ip)
+    {
+        return -1;
+    }
+
+    db_condition_t key_conditions[] = {
+        {.field_name = "neighbor_ip", .op = DB_CMP_EQ, .value = db_value_text(neighbor_ip)},
+        {.field_name = "vrf_id", .op = DB_CMP_EQ, .value = db_value_int((int64_t)vrf_id)},
+    };
+    db_filter_t key_filter = {.conditions = key_conditions, .num_conditions = G_N_ELEMENTS(key_conditions)};
+
+    db_record_t *rec = db_record_new();
+    db_record_set_text(rec, "neighbor_ip", neighbor_ip);
+    db_record_set_int(rec, "vrf_id", (int64_t)vrf_id);
+    db_record_set_int(rec, "open_caps", (int64_t)open_caps);
+
+    int ret = db_rpc_upsert(ctx, BGP_TABLE_SESSION, rec, &key_filter);
+    db_record_free(rec);
+    db_value_free(&key_conditions[0].value);
+    db_value_free(&key_conditions[1].value);
+
+    if (ret != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("BGP 写入 session open_caps vrf_id=%u neighbor=%s 失败", vrf_id, neighbor_ip);
+        return -1;
+    }
+
+    LOG_INFO("BGP session neighbor=%s open_caps=0x%02X 已写入", neighbor_ip, open_caps);
+    return 0;
+}
+
+int bgp_db_del_neighbors_by_afi(dev_ipc_context_t *ctx, const char *afi)
+{
+    if (!ctx || !afi)
+    {
+        return -1;
+    }
+
+    db_condition_t cond = {.field_name = "afi", .op = DB_CMP_EQ, .value = db_value_text(afi)};
+    db_filter_t filter = {.conditions = &cond, .num_conditions = 1};
+
+    int rows = db_rpc_delete(ctx, BGP_TABLE_NEIGHBOR, &filter);
+    db_value_free(&cond.value);
+
+    if (rows < 0)
+    {
+        LOG_ERROR("BGP 批量删除 neighbor afi=%s 失败", afi);
+        return -1;
+    }
+
+    LOG_INFO("BGP 批量删除 neighbor afi=%s，影响行数: %d", afi, rows);
+    return rows;
 }

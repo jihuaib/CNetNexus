@@ -22,8 +22,6 @@
 #define CFG_MSG_TYPE_CLI DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0001)
 /** CLI 响应消息 */
 #define CFG_MSG_TYPE_CLI_RESP DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0002)
-/** CLI 视图切换消息 */
-#define CFG_MSG_TYPE_CLI_VIEW_CHG DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0003)
 /** CLI 响应（还有更多数据待发送） */
 #define CFG_MSG_TYPE_CLI_RESP_MORE DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0004)
 /** CLI 请求下一批数据 */
@@ -78,14 +76,16 @@
 /** TLV 头部大小（元素 ID + 长度） */
 #define CFG_TLV_HEADER_SIZE (CFG_TLV_ELEMENT_ID_SIZE + CFG_TLV_LENGTH_SIZE)
 
-/** 上下文 TLV cfg_id 标记位，用于区分上下文变量和命令参数 */
-#define CFG_TLV_CONTEXT_FLAG 0x80000000
+/**
+ * 上下文 TLV 类型字节（type 字段）。
+ * 值 0x80 不与 DB_TYPE_* (0-4) 冲突。
+ * Context 条目格式: [ctx_id:u32][CLI_TLV_TYPE_CTX:u8][len:u16][value...]
+ * 命令参数条目格式: [cfg_id:u32][DB_TYPE_*:u8][len:u16][value...]
+ */
+#define CLI_TLV_TYPE_CTX 0x80
 
-/** 判断 cfg_id 是否为上下文变量 */
-#define CFG_TLV_IS_CONTEXT(cfg_id) (((cfg_id) & CFG_TLV_CONTEXT_FLAG) != 0)
-
-/** 提取上下文变量的原始 cfg_id */
-#define CFG_TLV_CONTEXT_ID(cfg_id) ((cfg_id) & ~CFG_TLV_CONTEXT_FLAG)
+/** 判断 TLV 条目是否为上下文变量（基于 type 字节，不再使用 cfg_id 标志位） */
+#define CLI_TLV_IS_CTX(entry_ptr) ((entry_ptr)->type == CLI_TLV_TYPE_CTX)
 
 /** 视图模板 TLV 专用 cfg_id（CFG 在发送视图切换命令时附带，模块提取后填充动态参数） */
 #define CFG_TLV_VIEW_TEMPLATE_ID 0x40000000

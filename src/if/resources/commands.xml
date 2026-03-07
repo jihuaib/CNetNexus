@@ -2,7 +2,8 @@
 <configuration module-id="4">
     <views>
         <view view-id="5" view-name="if">
-            <template>&lt;NetNexus(config-if-%s)&gt;</template>
+            <!-- {ctx:5} 由框架替换为 IF_CTX_VAR_IDX 值（1=GE-1, 2=GE-2, 3=GE-3, 4=GE-4） -->
+            <template>&lt;NetNexus(config-if-GE-{ctx:5})&gt;</template>
         </view>
     </views>
 
@@ -32,10 +33,41 @@
                 </element>
             </elements>
             <commands>
+                <!-- if GE-1: ctx-id=5(IF_CTX_VAR_IDX)=1 -->
                 <command>
-                    <expression>1 { 2 | 3 | 4 | 5 }</expression>
-                    <views>3</views> <!-- Only from config view -->
+                    <expression>1 2</expression>
+                    <views>3</views>
                     <view-id>5</view-id>
+                    <context-out>
+                        <entry ctx-id="5" value="1"/>
+                    </context-out>
+                </command>
+                <!-- if GE-2: ctx-id=5=2 -->
+                <command>
+                    <expression>1 3</expression>
+                    <views>3</views>
+                    <view-id>5</view-id>
+                    <context-out>
+                        <entry ctx-id="5" value="2"/>
+                    </context-out>
+                </command>
+                <!-- if GE-3: ctx-id=5=3 -->
+                <command>
+                    <expression>1 4</expression>
+                    <views>3</views>
+                    <view-id>5</view-id>
+                    <context-out>
+                        <entry ctx-id="5" value="3"/>
+                    </context-out>
+                </command>
+                <!-- if GE-4: ctx-id=5=4 -->
+                <command>
+                    <expression>1 5</expression>
+                    <views>3</views>
+                    <view-id>5</view-id>
+                    <context-out>
+                        <entry ctx-id="5" value="4"/>
+                    </context-out>
                 </command>
             </commands>
         </group>

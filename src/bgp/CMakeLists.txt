@@ -6,6 +6,7 @@ set(BGP_SOURCES
     bgp_bdr.c
     bgp_peer.c
     bgp_conn.c
+    bgp_pkt.c
     bgp_session.c
     bgp_instance.c
     bgp_vrf.c

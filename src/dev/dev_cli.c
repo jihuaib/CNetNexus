@@ -266,7 +266,7 @@ static int handle_set_log_level(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, 
 
     while (cli_tlv_next(parser, &entry) == 1)
     {
-        if (CFG_TLV_IS_CONTEXT(entry.cfg_id))
+        if (CLI_TLV_IS_CTX(&entry))
         {
             cli_tlv_entry_free(&entry);
             continue;
@@ -313,7 +313,7 @@ static int handle_ping(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_p
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
     {
-        if (CFG_TLV_IS_CONTEXT(entry.cfg_id))
+        if (CLI_TLV_IS_CTX(&entry))
         {
             cli_tlv_entry_free(&entry);
             continue;

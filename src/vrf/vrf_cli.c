@@ -52,7 +52,7 @@ static int handle_vrf_create(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
     {
-        if (!CFG_TLV_IS_CONTEXT(entry.cfg_id) && entry.cfg_id == 2)
+        if (!CLI_TLV_IS_CTX(&entry) && entry.cfg_id == 2)
         {
             const char *s = cli_tlv_entry_get_text(&entry);
             if (s)

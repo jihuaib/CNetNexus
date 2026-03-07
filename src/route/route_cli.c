@@ -65,7 +65,7 @@ static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
     {
-        if (CFG_TLV_IS_CONTEXT(entry.cfg_id))
+        if (CLI_TLV_IS_CTX(&entry))
         {
             cli_tlv_entry_free(&entry);
             continue;
@@ -290,7 +290,7 @@ static int handle_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
     {
-        if (CFG_TLV_IS_CONTEXT(entry.cfg_id))
+        if (CLI_TLV_IS_CTX(&entry))
         {
             cli_tlv_entry_free(&entry);
             continue;

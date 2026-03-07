@@ -22,6 +22,8 @@
 #define BGP_TABLE_NEIGHBOR "bgp_neighbor"
 /** BGP VRF 配置表名 */
 #define BGP_TABLE_VRF "bgp_vrf"
+/** BGP 地址族实例表名 */
+#define BGP_TABLE_INSTANCE "bgp_instance"
 
 /**
  * @brief 从数据库恢复 BGP 协议内存状态
@@ -83,6 +85,16 @@ int bgp_db_set_session(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *neig
  */
 int bgp_db_del_session(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *neighbor_ip);
 
+/**
+ * @brief 更新指定 session 的 OPEN 能力标记位（BGP_SESS_CAP_*）
+ * @param ctx         BGP 模块的 IPC 上下文
+ * @param vrf_id      VRF ID（0 为默认公网 VRF）
+ * @param neighbor_ip 邻居 IP 地址字符串
+ * @param open_caps   能力标记位值（BGP_SESS_CAP_AS4 | BGP_SESS_CAP_ROUTE_REFRESH 等）
+ * @return 0 成功，-1 失败
+ */
+int bgp_db_set_session_caps(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *neighbor_ip, uint32_t open_caps);
+
 // ============================================================================
 // BGP Neighbor 操作（地址族视图 neighbor enable 命令）
 // ============================================================================
@@ -143,5 +155,58 @@ int bgp_db_set_vrf_timers(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t keep
  * @return 0 成功，-1 失败
  */
 int bgp_db_del_vrf_timers(dev_ipc_context_t *ctx, uint32_t vrf_id);
+
+// ============================================================================
+// BGP 地址族实例操作（bgp_instance 表）
+// ============================================================================
+
+/**
+ * @brief 写入 AF 实例记录（幂等，已存在则跳过）
+ * @param ctx    BGP 模块的 IPC 上下文
+ * @param vrf_id VRF ID
+ * @param afi    地址族（bgp_afi_t）
+ * @param safi   子地址族（bgp_safi_t）
+ * @return 0 成功，-1 失败
+ */
+int bgp_db_set_instance(dev_ipc_context_t *ctx, uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi);
+
+/**
+ * @brief 删除 AF 实例记录
+ * @param ctx    BGP 模块的 IPC 上下文
+ * @param vrf_id VRF ID
+ * @param afi    地址族
+ * @param safi   子地址族
+ * @return 删除行数，-1 失败
+ */
+int bgp_db_del_instance(dev_ipc_context_t *ctx, uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi);
+
+/**
+ * @brief 删除指定 AFI 下的所有邻居使能记录（no af 时批量清理）
+ * @param ctx BGP 模块的 IPC 上下文
+ * @param afi AFI 文本标识（如 "ipv4-unicast"）
+ * @return 删除行数，-1 失败
+ */
+int bgp_db_del_neighbors_by_afi(dev_ipc_context_t *ctx, const char *afi);
+
+// ============================================================================
+// BGP VRF 操作（connect-retry 定时器）
+// ============================================================================
+
+/**
+ * @brief 设置 VRF 的 connect-retry 定时器（upsert）
+ * @param ctx           BGP 模块的 IPC 上下文
+ * @param vrf_id        VRF ID（0 为默认公网 VRF）
+ * @param connect_retry 主动连接失败后重试间隔（秒）
+ * @return 0 成功，-1 失败
+ */
+int bgp_db_set_vrf_connect_retry(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t connect_retry);
+
+/**
+ * @brief 将 VRF connect-retry 定时器重置为默认值（120 秒）
+ * @param ctx    BGP 模块的 IPC 上下文
+ * @param vrf_id VRF ID
+ * @return 0 成功，-1 失败
+ */
+int bgp_db_del_vrf_connect_retry(dev_ipc_context_t *ctx, uint32_t vrf_id);
 
 #endif /* BGP_DB_H */

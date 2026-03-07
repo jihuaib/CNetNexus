@@ -23,6 +23,16 @@ typedef enum
 // Forward declaration
 typedef struct cli_param_type cli_param_type_t;
 
+/**
+ * @brief 命令切换视图时自动写入的上下文条目（来自 XML <context-out>）
+ */
+typedef struct
+{
+    uint32_t ctx_id;    /**< 上下文变量 ID（独立命名空间，与 XML cfg-id 无关） */
+    int32_t from_param; /**< ≥0: 从匹配命令参数中 cfg_id==from_param 的元素取值；-1: 使用 fixed_value */
+    int64_t fixed_value; /**< from_param==-1 时的固定整数值 */
+} cli_ctx_out_entry_t;
+
 // CLI tree node structure
 struct cli_tree_node
 {
@@ -35,6 +45,10 @@ struct cli_tree_node
     uint32_t view_id;             // Target view name to switch to after execution (optional)
     cli_param_type_t *param_type; // Parameter type for validation (only for ARGUMENT nodes)
     gboolean is_end_node;         // 1 if this node is a valid command end point, 0 otherwise
+
+    /** XML <context-out> 条目数组：视图切换成功时由框架自动写入上下文（NULL 表示无） */
+    cli_ctx_out_entry_t *context_out;
+    uint32_t num_context_out;
 
     // Children nodes
     cli_tree_node_t **children; // Array of child nodes

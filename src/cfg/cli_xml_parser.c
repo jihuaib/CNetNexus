@@ -666,6 +666,27 @@ static cli_view_node_t *parse_view_node(xmlNode *view_xml)
     return view;
 }
 
+/**
+ * @brief 在虚拟根的所有叶子节点（is_end_node）上设置 context_out 条目
+ */
+static void set_context_out_on_leaves(cli_tree_node_t *node, const cli_ctx_out_entry_t *entries, uint32_t count)
+{
+    if (!node || count == 0)
+    {
+        return;
+    }
+    if (node->is_end_node && !node->context_out)
+    {
+        node->context_out = g_malloc(count * sizeof(cli_ctx_out_entry_t));
+        memcpy(node->context_out, entries, count * sizeof(cli_ctx_out_entry_t));
+        node->num_context_out = count;
+    }
+    for (uint32_t i = 0; i < node->num_children; i++)
+    {
+        set_context_out_on_leaves(node->children[i], entries, count);
+    }
+}
+
 // Parse command group and register commands to views
 static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree, uint32_t module_id)
 {
@@ -738,6 +759,10 @@ static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree,
                     char *views = NULL;
                     uint32_t view_id = 0;
 
+                    /* context-out 条目临时数组（最多 16 条） */
+                    cli_ctx_out_entry_t ctx_out_buf[16];
+                    uint32_t num_ctx_out = 0;
+
                     for (xmlNode *child = cmd->children; child; child = child->next)
                     {
                         if (child->type != XML_ELEMENT_NODE)
@@ -765,6 +790,56 @@ static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree,
                             view_id = atoi((const char *)content);
                             xmlFree(content);
                         }
+                        else if (xmlStrcmp(child->name, (const xmlChar *)"context-out") == ERRCODE_SUCCESS)
+                        {
+                            /* 解析 <context-out> 子元素 <entry cfg-id="N" from-param="N"|value="V"/> */
+                            for (xmlNode *e = child->children; e; e = e->next)
+                            {
+                                if (e->type != XML_ELEMENT_NODE)
+                                {
+                                    continue;
+                                }
+                                if (xmlStrcmp(e->name, (const xmlChar *)"entry") != ERRCODE_SUCCESS)
+                                {
+                                    continue;
+                                }
+                                if (num_ctx_out >= 16)
+                                {
+                                    break;
+                                }
+
+                                cli_ctx_out_entry_t *ce = &ctx_out_buf[num_ctx_out];
+                                ce->ctx_id = 0;
+                                ce->from_param = -1;
+                                ce->fixed_value = 0;
+
+                                /* 使用独立的 ctx-id 命名空间，与命令参数 cfg-id 无关 */
+                                xmlChar *ctx_id_str = xmlGetProp(e, (const xmlChar *)"ctx-id");
+                                if (ctx_id_str)
+                                {
+                                    ce->ctx_id = (uint32_t)atoi((const char *)ctx_id_str);
+                                    xmlFree(ctx_id_str);
+                                }
+
+                                xmlChar *from_param_str = xmlGetProp(e, (const xmlChar *)"from-param");
+                                if (from_param_str)
+                                {
+                                    ce->from_param = atoi((const char *)from_param_str);
+                                    xmlFree(from_param_str);
+                                }
+                                else
+                                {
+                                    xmlChar *value_str = xmlGetProp(e, (const xmlChar *)"value");
+                                    if (value_str)
+                                    {
+                                        ce->fixed_value = (int64_t)atoll((const char *)value_str);
+                                        xmlFree(value_str);
+                                    }
+                                }
+
+                                num_ctx_out++;
+                            }
+                        }
                     }
 
                     if (expression && views)
@@ -772,6 +847,12 @@ static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree,
                         // Build tree from expression (supports [ ] and { } syntax)
                         cli_tree_node_t *virtual_root =
                             build_tree_from_expression_str(expression, group, module_id, view_id);
+
+                        /* 将 context-out 条目附加到叶子节点 */
+                        if (virtual_root && num_ctx_out > 0)
+                        {
+                            set_context_out_on_leaves(virtual_root, ctx_out_buf, num_ctx_out);
+                        }
 
                         if (virtual_root)
                         {
