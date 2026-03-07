@@ -102,20 +102,26 @@ int bgp_db_set_session_caps(dev_ipc_context_t *ctx, uint32_t vrf_id, const char 
 /**
  * @brief 使能地址族邻居（neighbor <ip> enable）
  * @param ctx         BGP 模块的 IPC 上下文
+ * @param vrf_id      VRF ID（0 为默认公网 VRF）
  * @param neighbor_ip 邻居 IP 地址字符串
- * @param afi         地址族标识（如 "ipv4-unicast"）
+ * @param afi         地址族（bgp_afi_t）
+ * @param safi        子地址族（bgp_safi_t）
  * @return 0 成功，-1 失败
  */
-int bgp_db_set_neighbor(dev_ipc_context_t *ctx, const char *neighbor_ip, const char *afi);
+int bgp_db_set_neighbor(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *neighbor_ip, bgp_afi_t afi,
+                        bgp_safi_t safi);
 
 /**
  * @brief 删除地址族邻居
  * @param ctx         BGP 模块的 IPC 上下文
+ * @param vrf_id      VRF ID（0 为默认公网 VRF）
  * @param neighbor_ip 邻居 IP 地址字符串
- * @param afi         地址族标识（如 "ipv4-unicast"），为 NULL 则删除该 IP 所有地址族
+ * @param afi         地址族（bgp_afi_t）
+ * @param safi        子地址族（bgp_safi_t）
  * @return 删除的行数，错误返回 -1
  */
-int bgp_db_del_neighbor(dev_ipc_context_t *ctx, const char *neighbor_ip, const char *afi);
+int bgp_db_del_neighbor(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *neighbor_ip, bgp_afi_t afi,
+                        bgp_safi_t safi);
 
 // ============================================================================
 // BGP VRF 操作（VRF 级配置，如 router-id）
@@ -181,12 +187,14 @@ int bgp_db_set_instance(dev_ipc_context_t *ctx, uint32_t vrf_id, bgp_afi_t afi, 
 int bgp_db_del_instance(dev_ipc_context_t *ctx, uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi);
 
 /**
- * @brief 删除指定 AFI 下的所有邻居使能记录（no af 时批量清理）
- * @param ctx BGP 模块的 IPC 上下文
- * @param afi AFI 文本标识（如 "ipv4-unicast"）
+ * @brief 删除指定地址族下的所有邻居使能记录（no af 时批量清理）
+ * @param ctx    BGP 模块的 IPC 上下文
+ * @param vrf_id VRF ID（0 为默认公网 VRF）
+ * @param afi    地址族（bgp_afi_t）
+ * @param safi   子地址族（bgp_safi_t）
  * @return 删除行数，-1 失败
  */
-int bgp_db_del_neighbors_by_afi(dev_ipc_context_t *ctx, const char *afi);
+int bgp_db_del_neighbors_by_afi(dev_ipc_context_t *ctx, uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi);
 
 // ============================================================================
 // BGP VRF 操作（connect-retry 定时器）

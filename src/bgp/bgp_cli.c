@@ -130,7 +130,7 @@ static int handle_bgp_protocol(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
     {
-        if (CFG_TLV_IS_VIEW_TEMPLATE(entry.cfg_id) || CLI_TLV_IS_CTX(&entry))
+        if (CLI_TLV_IS_CTX(&entry))
         {
             cli_tlv_entry_free(&entry);
             continue;
@@ -344,11 +344,6 @@ static int handle_bgp_addr_family(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
     {
-        if (CFG_TLV_IS_VIEW_TEMPLATE(entry.cfg_id))
-        {
-            cli_tlv_entry_free(&entry);
-            continue;
-        }
         if (CLI_TLV_IS_CTX(&entry))
         {
             bgp_cli_ctx_parse(&ctx, &entry);
@@ -381,7 +376,6 @@ static int handle_bgp_addr_family(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
         return ERRCODE_FAIL;
     }
 
-    const char *af_name = bgp_af_str(ctx.afi, ctx.safi);
     bgp_instance_t *inst = g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(ctx.afi, ctx.safi));
 
     /* 先做同配置短路 */
@@ -405,7 +399,7 @@ static int handle_bgp_addr_family(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
 
     if (is_no)
     {
-        bgp_db_del_neighbors_by_afi(g_bgp_local->dev_ipc_ctx, af_name);
+        bgp_db_del_neighbors_by_afi(g_bgp_local->dev_ipc_ctx, ctx.vrf_id, ctx.afi, ctx.safi);
         bgp_db_del_instance(g_bgp_local->dev_ipc_ctx, ctx.vrf_id, ctx.afi, ctx.safi);
         bgp_send_cli_response(msg, "");
         return ERRCODE_SUCCESS;
@@ -526,14 +520,14 @@ static int handle_bgp_af_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
 
     if (is_no)
     {
-        int rows = bgp_db_del_neighbor(g_bgp_local->dev_ipc_ctx, ip_buf, af_name);
+        int rows = bgp_db_del_neighbor(g_bgp_local->dev_ipc_ctx, ctx.vrf_id, ip_buf, ctx.afi, ctx.safi);
         snprintf(resp_buf, sizeof(resp_buf), "BGP: Neighbor %s disabled for %s (%d row).\r\n", ip_buf, af_name,
                  rows > 0 ? rows : 0);
         bgp_send_cli_response(msg, resp_buf);
         return ERRCODE_SUCCESS;
     }
 
-    if (bgp_db_set_neighbor(g_bgp_local->dev_ipc_ctx, ip_buf, af_name) != 0)
+    if (bgp_db_set_neighbor(g_bgp_local->dev_ipc_ctx, ctx.vrf_id, ip_buf, ctx.afi, ctx.safi) != 0)
     {
         bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
         return ERRCODE_FAIL;
@@ -559,11 +553,6 @@ static int handle_bgp_timers(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
     {
-        if (CFG_TLV_IS_VIEW_TEMPLATE(entry.cfg_id))
-        {
-            cli_tlv_entry_free(&entry);
-            continue;
-        }
         if (CLI_TLV_IS_CTX(&entry))
         {
             bgp_cli_ctx_parse(&ctx, &entry);
@@ -659,11 +648,6 @@ static int handle_bgp_router_id(dev_ipc_message_t *msg, cli_tlv_parser_t *parser
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
     {
-        if (CFG_TLV_IS_VIEW_TEMPLATE(entry.cfg_id))
-        {
-            cli_tlv_entry_free(&entry);
-            continue;
-        }
         if (CLI_TLV_IS_CTX(&entry))
         {
             bgp_cli_ctx_parse(&ctx, &entry);
@@ -865,11 +849,6 @@ static int handle_bgp_connect_retry(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
     {
-        if (CFG_TLV_IS_VIEW_TEMPLATE(entry.cfg_id))
-        {
-            cli_tlv_entry_free(&entry);
-            continue;
-        }
         if (CLI_TLV_IS_CTX(&entry))
         {
             bgp_cli_ctx_parse(&ctx, &entry);
@@ -956,11 +935,6 @@ static int handle_bgp_open_capability(dev_ipc_message_t *msg, cli_tlv_parser_t *
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
     {
-        if (CFG_TLV_IS_VIEW_TEMPLATE(entry.cfg_id))
-        {
-            cli_tlv_entry_free(&entry);
-            continue;
-        }
         /* 解析父视图上下文变量（如 vrf_id） */
         if (CLI_TLV_IS_CTX(&entry))
         {

@@ -87,12 +87,6 @@
 /** 判断 TLV 条目是否为上下文变量（基于 type 字节，不再使用 cfg_id 标志位） */
 #define CLI_TLV_IS_CTX(entry_ptr) ((entry_ptr)->type == CLI_TLV_TYPE_CTX)
 
-/** 视图模板 TLV 专用 cfg_id（CFG 在发送视图切换命令时附带，模块提取后填充动态参数） */
-#define CFG_TLV_VIEW_TEMPLATE_ID 0x40000000
-
-/** 判断 cfg_id 是否为视图模板条目 */
-#define CFG_TLV_IS_VIEW_TEMPLATE(cfg_id) ((cfg_id) == CFG_TLV_VIEW_TEMPLATE_ID)
-
 // ============================================================================
 // TLV 载荷格式定义
 // ============================================================================

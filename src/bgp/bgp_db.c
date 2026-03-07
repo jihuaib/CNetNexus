@@ -569,24 +569,29 @@ int bgp_db_del_session(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *neig
 // BGP Neighbor 操作（地址族）
 // ============================================================================
 
-int bgp_db_set_neighbor(dev_ipc_context_t *ctx, const char *neighbor_ip, const char *afi)
+int bgp_db_set_neighbor(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *neighbor_ip, bgp_afi_t afi,
+                        bgp_safi_t safi)
 {
-    if (!ctx || !neighbor_ip || !afi)
+    if (!ctx || !neighbor_ip)
     {
         return -1;
     }
 
     db_condition_t key_conditions[] = {
+        {.field_name = "vrf_id", .op = DB_CMP_EQ, .value = db_value_int((int64_t)vrf_id)},
+        {.field_name = "afi", .op = DB_CMP_EQ, .value = db_value_int((int64_t)afi)},
+        {.field_name = "safi", .op = DB_CMP_EQ, .value = db_value_int((int64_t)safi)},
         {.field_name = "neighbor_ip", .op = DB_CMP_EQ, .value = db_value_text(neighbor_ip)},
-        {.field_name = "afi", .op = DB_CMP_EQ, .value = db_value_text(afi)},
     };
     db_filter_t key_filter = {.conditions = key_conditions, .num_conditions = G_N_ELEMENTS(key_conditions)};
 
-    /* neighbor 记录以 (neighbor_ip, afi) 为主键，已存在时无需更新，直接幂等插入 */
+    /* neighbor 记录以 (vrf_id, afi, safi, neighbor_ip) 四列联合为键，已存在时无需更新，直接幂等插入 */
     gboolean exists = FALSE;
     int ret = db_rpc_exists(ctx, BGP_TABLE_NEIGHBOR, &key_filter, &exists);
     db_value_free(&key_conditions[0].value);
     db_value_free(&key_conditions[1].value);
+    db_value_free(&key_conditions[2].value);
+    db_value_free(&key_conditions[3].value);
 
     if (ret != ERRCODE_SUCCESS)
     {
@@ -596,63 +601,59 @@ int bgp_db_set_neighbor(dev_ipc_context_t *ctx, const char *neighbor_ip, const c
 
     if (exists)
     {
-        LOG_INFO("BGP neighbor %s afi %s 已存在", neighbor_ip, afi);
+        LOG_INFO("BGP neighbor vrf=%u %s afi=%u safi=%u 已存在", vrf_id, neighbor_ip, (unsigned)afi, (unsigned)safi);
         return 0;
     }
 
     db_record_t *rec = db_record_new();
+    db_record_set_int(rec, "vrf_id", (int64_t)vrf_id);
+    db_record_set_int(rec, "afi", (int64_t)afi);
+    db_record_set_int(rec, "safi", (int64_t)safi);
     db_record_set_text(rec, "neighbor_ip", neighbor_ip);
-    db_record_set_text(rec, "afi", afi);
     ret = db_rpc_insert_record(ctx, BGP_TABLE_NEIGHBOR, rec);
     db_record_free(rec);
 
     if (ret != ERRCODE_SUCCESS)
     {
-        LOG_ERROR("BGP 插入 neighbor %s afi %s 失败", neighbor_ip, afi);
+        LOG_ERROR("BGP 插入 neighbor vrf=%u %s afi=%u safi=%u 失败", vrf_id, neighbor_ip, (unsigned)afi,
+                  (unsigned)safi);
         return -1;
     }
 
-    LOG_INFO("BGP neighbor %s afi %s 已使能", neighbor_ip, afi);
+    LOG_INFO("BGP neighbor vrf=%u %s afi=%u safi=%u 已使能", vrf_id, neighbor_ip, (unsigned)afi, (unsigned)safi);
     return 0;
 }
 
-int bgp_db_del_neighbor(dev_ipc_context_t *ctx, const char *neighbor_ip, const char *afi)
+int bgp_db_del_neighbor(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *neighbor_ip, bgp_afi_t afi,
+                        bgp_safi_t safi)
 {
     if (!ctx || !neighbor_ip)
     {
         return -1;
     }
 
-    db_condition_t conditions[2];
-    uint32_t num_conditions = 0;
-    conditions[num_conditions++] = (db_condition_t){
-        .field_name = "neighbor_ip",
-        .op = DB_CMP_EQ,
-        .value = db_value_text(neighbor_ip),
+    db_condition_t conditions[] = {
+        {.field_name = "vrf_id", .op = DB_CMP_EQ, .value = db_value_int((int64_t)vrf_id)},
+        {.field_name = "afi", .op = DB_CMP_EQ, .value = db_value_int((int64_t)afi)},
+        {.field_name = "safi", .op = DB_CMP_EQ, .value = db_value_int((int64_t)safi)},
+        {.field_name = "neighbor_ip", .op = DB_CMP_EQ, .value = db_value_text(neighbor_ip)},
     };
-    if (afi)
-    {
-        conditions[num_conditions++] = (db_condition_t){
-            .field_name = "afi",
-            .op = DB_CMP_EQ,
-            .value = db_value_text(afi),
-        };
-    }
-    db_filter_t filter = {.conditions = conditions, .num_conditions = num_conditions};
+    db_filter_t filter = {.conditions = conditions, .num_conditions = G_N_ELEMENTS(conditions)};
 
     int rows = db_rpc_delete(ctx, BGP_TABLE_NEIGHBOR, &filter);
     db_value_free(&conditions[0].value);
-    if (afi)
-    {
-        db_value_free(&conditions[1].value);
-    }
+    db_value_free(&conditions[1].value);
+    db_value_free(&conditions[2].value);
+    db_value_free(&conditions[3].value);
+
     if (rows < 0)
     {
         LOG_ERROR("BGP 删除 neighbor 失败");
         return -1;
     }
 
-    LOG_INFO("BGP 删除 neighbor %s，影响行数: %d", neighbor_ip, rows);
+    LOG_INFO("BGP 删除 neighbor vrf=%u %s afi=%u safi=%u，影响行数: %d", vrf_id, neighbor_ip, (unsigned)afi,
+             (unsigned)safi, rows);
     return rows;
 }
 
@@ -918,25 +919,31 @@ int bgp_db_set_session_caps(dev_ipc_context_t *ctx, uint32_t vrf_id, const char 
     return 0;
 }
 
-int bgp_db_del_neighbors_by_afi(dev_ipc_context_t *ctx, const char *afi)
+int bgp_db_del_neighbors_by_afi(dev_ipc_context_t *ctx, uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi)
 {
-    if (!ctx || !afi)
+    if (!ctx)
     {
         return -1;
     }
 
-    db_condition_t cond = {.field_name = "afi", .op = DB_CMP_EQ, .value = db_value_text(afi)};
-    db_filter_t filter = {.conditions = &cond, .num_conditions = 1};
+    db_condition_t conditions[] = {
+        {.field_name = "vrf_id", .op = DB_CMP_EQ, .value = db_value_int((int64_t)vrf_id)},
+        {.field_name = "afi", .op = DB_CMP_EQ, .value = db_value_int((int64_t)afi)},
+        {.field_name = "safi", .op = DB_CMP_EQ, .value = db_value_int((int64_t)safi)},
+    };
+    db_filter_t filter = {.conditions = conditions, .num_conditions = G_N_ELEMENTS(conditions)};
 
     int rows = db_rpc_delete(ctx, BGP_TABLE_NEIGHBOR, &filter);
-    db_value_free(&cond.value);
+    db_value_free(&conditions[0].value);
+    db_value_free(&conditions[1].value);
+    db_value_free(&conditions[2].value);
 
     if (rows < 0)
     {
-        LOG_ERROR("BGP 批量删除 neighbor afi=%s 失败", afi);
+        LOG_ERROR("BGP 批量删除 neighbor vrf=%u afi=%u safi=%u 失败", vrf_id, (unsigned)afi, (unsigned)safi);
         return -1;
     }
 
-    LOG_INFO("BGP 批量删除 neighbor afi=%s，影响行数: %d", afi, rows);
+    LOG_INFO("BGP 批量删除 neighbor vrf=%u afi=%u safi=%u，影响行数: %d", vrf_id, (unsigned)afi, (unsigned)safi, rows);
     return rows;
 }

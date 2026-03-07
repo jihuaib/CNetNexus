@@ -1158,8 +1158,9 @@ int cli_process_input(cli_session_t *session)
                     session->line_buffer[session->cursor_pos] = c;
                     session->line_pos++;
                     session->cursor_pos++;
-                    // Redraw from cursor-1 to end
-                    redraw_from_cursor(session, session->line_buffer, session->cursor_pos - 1, session->line_pos);
+                    // Redraw from new cursor_pos (the char is already at cursor_pos-1)
+                    cfg_send_data(session, &c, 1);
+                    redraw_from_cursor(session, session->line_buffer, session->cursor_pos, session->line_pos);
                 }
                 else
                 {

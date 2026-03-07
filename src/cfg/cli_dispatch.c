@@ -135,11 +135,10 @@ static void append_context_tlv(GByteArray *buf, const uint8_t *ctx_data, uint32_
  * @param result        命令匹配结果
  * @param ctx_data      上下文 TLV 数据
  * @param ctx_len       上下文数据长度
- * @param view_template 目标视图的提示符模板字符串（NULL 表示无视图切换）
  * @param out_len       输出载荷长度
  */
 static uint8_t *pack_tlv_payload(cli_match_result_t *result, const uint8_t *ctx_data, uint32_t ctx_len,
-                                 const char *view_template, uint32_t *out_len)
+                                 uint32_t *out_len)
 {
     GByteArray *buf = g_byte_array_new();
 
@@ -161,16 +160,6 @@ static uint8_t *pack_tlv_payload(cli_match_result_t *result, const uint8_t *ctx_
 
     /* 4. 上下文 TLV 条目（加 CONTEXT_FLAG） */
     append_context_tlv(buf, ctx_data, ctx_len);
-
-    /* 5. 视图模板（目标视图存在时附带，模块提取后填充动态参数生成提示符） */
-    if (view_template && view_template[0] != '\0')
-    {
-        uint16_t tlen = (uint16_t)strlen(view_template);
-        tlv_write_u32(buf, CFG_TLV_VIEW_TEMPLATE_ID);
-        tlv_write_u8(buf, DB_TYPE_TEXT);
-        tlv_write_u16(buf, tlen);
-        g_byte_array_append(buf, (const uint8_t *)view_template, tlen);
-    }
 
     *out_len = buf->len;
     return g_byte_array_free(buf, FALSE);
@@ -498,19 +487,8 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
     uint32_t ctx_len = 0;
     const uint8_t *ctx_data = cli_context_get(session, &ctx_len);
 
-    /* 查找目标视图模板（命令有 view_id 时，将模板嵌入载荷供模块填充） */
-    const char *view_template = NULL;
-    if (result->final_node && result->final_node->view_id != 0)
-    {
-        cli_view_node_t *tgt_view = cli_view_find_by_id(g_cfg_local->view_tree.root, result->final_node->view_id);
-        if (tgt_view)
-        {
-            view_template = tgt_view->prompt_template;
-        }
-    }
-
     uint32_t msg_len = 0;
-    uint8_t *msg_data = pack_tlv_payload(result, ctx_data, ctx_len, view_template, &msg_len);
+    uint8_t *msg_data = pack_tlv_payload(result, ctx_data, ctx_len, &msg_len);
 
     /* 创建 CLI 消息 */
     dev_ipc_message_t *msg =
