@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "bgp_cfg_apply.h"
 #include "bgp_db.h"
 #include "bgp_main.h"
 #include "bgp_protocol.h"
@@ -141,53 +142,70 @@ static int handle_bgp_protocol(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         cli_tlv_entry_free(&entry);
     }
 
-    /* 删除场景 */
-    if (is_no)
+    if (!is_no)
+    {
+        if (g_bgp_local->protocol != NULL)
+        {
+            if (g_bgp_local->protocol->as_number == as_number)
+            {
+                bgp_send_cli_response(msg, "");
+                return ERRCODE_SUCCESS;
+            }
+            else
+            {
+                bgp_send_cli_response(msg, "BGP Error: AS number mismatch.\r\n");
+                return ERRCODE_FAIL;
+            }
+        }
+    }
+    else
     {
         if (g_bgp_local->protocol == NULL)
         {
             bgp_send_cli_response(msg, "");
-            return ERRCODE_FAIL;
+            return ERRCODE_SUCCESS;
         }
+    }
 
-        bgp_listen_stop();
-        bgp_protocol_destroy(g_bgp_local->protocol);
-        g_bgp_local->protocol = NULL;
+    if (!is_no && as_number == 0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Missing AS number.\r\n");
+        return ERRCODE_FAIL;
+    }
 
+    uint32_t apply_ret = bgp_cfg_apply_protocol(is_no, as_number);
+    if (apply_ret != ERRCODE_SUCCESS)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Failed to apply protocol configuration.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    /* no bgp：内存删除成功后再清理持久化 */
+    if (is_no)
+    {
         (void)bgp_db_del_as(g_bgp_local->dev_ipc_ctx);
-
         bgp_send_cli_response(msg, "");
         return ERRCODE_SUCCESS;
     }
 
-    if (g_bgp_local->protocol == NULL)
+    if (bgp_db_init(g_bgp_local->dev_ipc_ctx) != 0)
     {
-        /* 首次配置：建表并写入默认值 */
-        if (bgp_db_init(g_bgp_local->dev_ipc_ctx) != 0)
-        {
-            bgp_send_cli_response(msg, "BGP Error: Database initialization failed.\r\n");
-            return ERRCODE_FAIL;
-        }
-        bgp_db_ensure_defaults(g_bgp_local->dev_ipc_ctx);
-
-        if (bgp_db_set_as(g_bgp_local->dev_ipc_ctx, as_number) != 0)
-        {
-            bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
-            return ERRCODE_FAIL;
-        }
-        g_bgp_local->protocol = bgp_protocol_create(as_number);
-        bgp_listen_start();
-    }
-    else
-    {
-        if (g_bgp_local->protocol->as_number != as_number)
-        {
-            bgp_send_cli_response(msg, "BGP Error: AS number mismatch.\r\n");
-            return ERRCODE_FAIL;
-        }
+        bgp_send_cli_response(msg, "BGP Error: Database initialization failed.\r\n");
+        return ERRCODE_FAIL;
     }
 
-    /* 框架根据 XML <context-out> 自动切换视图并写入上下文，模块只需返回空 OK */
+    if (bgp_db_set_as(g_bgp_local->dev_ipc_ctx, as_number) != 0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    if (bgp_db_set_vrf_router_id(g_bgp_local->dev_ipc_ctx, BGP_VRF_PUBLIC_ID, "0.0.0.0") != 0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
+        return ERRCODE_FAIL;
+    }
+
     bgp_send_cli_response(msg, "");
     return ERRCODE_SUCCESS;
 }
@@ -245,78 +263,67 @@ static int handle_bgp_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         return ERRCODE_FAIL;
     }
 
-    bgp_vrf_t *vrf0 = bgp_protocol_get_vrf(g_bgp_local->protocol, ctx.vrf_id);
+    bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_local->protocol, ctx.vrf_id);
+
+    net_addr_t ip_addr;
+    gboolean has_valid_ip = (ip_buf[0] != '\0' && net_addr_from_str(ip_buf, &ip_addr) == 0);
+
+    /* 先做同配置短路 */
+    if (is_no)
+    {
+        bgp_session_t *existing = (has_valid_ip && vrf) ? bgp_vrf_find_session(vrf, &ip_addr) : NULL;
+        if (!existing)
+        {
+            bgp_send_cli_response(msg, "");
+            return ERRCODE_SUCCESS;
+        }
+    }
+    else
+    {
+        bgp_session_t *existing = (has_valid_ip && has_remote_as && vrf) ? bgp_vrf_find_session(vrf, &ip_addr) : NULL;
+        if (existing && existing->remote_as == remote_as)
+        {
+            bgp_send_cli_response(msg, "");
+            return ERRCODE_SUCCESS;
+        }
+    }
+
+    /* 参数校验 */
+    if (ip_buf[0] == '\0')
+    {
+        bgp_send_cli_response(msg, "BGP Error: Missing neighbor IP address.\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (!has_valid_ip)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Invalid IP address.\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (!is_no && !has_remote_as)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Missing remote AS number.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    uint32_t apply_ret = bgp_cfg_apply_neighbor(is_no, vrf, &ip_addr, remote_as);
+    if (apply_ret != ERRCODE_SUCCESS)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Failed to apply neighbor configuration.\r\n");
+        return ERRCODE_FAIL;
+    }
 
     if (is_no)
     {
-        if (ip_buf[0] == '\0')
-        {
-            bgp_send_cli_response(msg, "BGP Error: Missing neighbor IP address.\r\n");
-            return ERRCODE_FAIL;
-        }
-
-        net_addr_t ip_addr;
-        if (net_addr_from_str(ip_buf, &ip_addr) != 0)
-        {
-            bgp_send_cli_response(msg, "BGP Error: Invalid IP address.\r\n");
-            return ERRCODE_FAIL;
-        }
-
-        if (vrf0)
-        {
-            bgp_session_t *del_sess = bgp_vrf_find_session(vrf0, &ip_addr);
-            if (del_sess)
-            {
-                bgp_vrf_af_disable_neighbor(vrf0, BGP_AFI_IPV4, BGP_SAFI_UNICAST, &ip_addr);
-                bgp_server_stop_session_conns(del_sess);
-            }
-            bgp_vrf_del_session(vrf0, &ip_addr);
-        }
-
         int rows = bgp_db_del_session(g_bgp_local->dev_ipc_ctx, ctx.vrf_id, ip_buf);
         snprintf(resp_buf, sizeof(resp_buf), "BGP: Neighbor %s deleted (%d row).\r\n", ip_buf, rows > 0 ? rows : 0);
         bgp_send_cli_response(msg, resp_buf);
         return ERRCODE_SUCCESS;
     }
 
-    /* neighbor <ip> as <as-num> — 创建/更新 session */
-    if (ip_buf[0] == '\0')
-    {
-        bgp_send_cli_response(msg, "BGP Error: Missing neighbor IP address.\r\n");
-        return ERRCODE_FAIL;
-    }
-    if (!has_remote_as)
-    {
-        bgp_send_cli_response(msg, "BGP Error: Missing remote AS number.\r\n");
-        return ERRCODE_FAIL;
-    }
-
-    net_addr_t ip_addr;
-    if (net_addr_from_str(ip_buf, &ip_addr) != 0)
-    {
-        bgp_send_cli_response(msg, "BGP Error: Invalid IP address.\r\n");
-        return ERRCODE_FAIL;
-    }
-
     if (bgp_db_set_session(g_bgp_local->dev_ipc_ctx, ctx.vrf_id, ip_buf, remote_as) != 0)
     {
         bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
         return ERRCODE_FAIL;
-    }
-
-    if (vrf0)
-    {
-        bgp_session_t *existing = bgp_vrf_find_session(vrf0, &ip_addr);
-        if (existing)
-        {
-            existing->remote_as = remote_as;
-        }
-        else
-        {
-            bgp_session_t *sess = bgp_session_create(&ip_addr, remote_as, vrf0);
-            bgp_vrf_add_session(vrf0, sess);
-            LOG_INFO("BGP: neighbor %s 已配置，等待地址族使能后再启动监听", ip_buf);
-        }
     }
 
     snprintf(resp_buf, sizeof(resp_buf), "BGP: Neighbor %s AS %u configured.\r\n", ip_buf, remote_as);
@@ -368,63 +375,48 @@ static int handle_bgp_addr_family(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
     }
 
     bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_local->protocol, ctx.vrf_id);
-    const char *af_name = bgp_af_str(ctx.afi, ctx.safi);
-
-    /* 删除场景：no af ipv4-unicast */
-    if (is_no)
+    if (!vrf)
     {
-        if (vrf)
-        {
-            /* 收集该 AF 实例下的邻居地址，逐个停用，避免遍历中修改哈希表 */
-            bgp_instance_t *inst = g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(ctx.afi, ctx.safi));
-            if (inst && inst->peer_hash)
-            {
-                GList *addr_strs = NULL;
-                GHashTableIter iter;
-                gpointer k, v;
-                g_hash_table_iter_init(&iter, inst->peer_hash);
-                while (g_hash_table_iter_next(&iter, &k, &v))
-                {
-                    addr_strs = g_list_append(addr_strs, g_strdup((const char *)k));
-                }
-                for (GList *l = addr_strs; l; l = l->next)
-                {
-                    net_addr_t addr;
-                    if (net_addr_from_str((const char *)l->data, &addr) == 0)
-                    {
-                        bgp_vrf_af_disable_neighbor(vrf, ctx.afi, ctx.safi, &addr);
-                        bgp_session_t *sess = bgp_vrf_find_session(vrf, &addr);
-                        if (sess && !bgp_vrf_neighbor_has_any_af(vrf, &addr))
-                        {
-                            bgp_server_stop_session_conns(sess);
-                        }
-                    }
-                }
-                g_list_free_full(addr_strs, g_free);
-            }
-            bgp_vrf_del_instance(vrf, ctx.afi, ctx.safi);
-        }
+        bgp_send_cli_response(msg, "BGP Error: VRF not found.\r\n");
+        return ERRCODE_FAIL;
+    }
 
-        bgp_db_del_neighbors_by_afi(g_bgp_local->dev_ipc_ctx, af_name);
-        bgp_db_del_instance(g_bgp_local->dev_ipc_ctx, ctx.vrf_id, ctx.afi, ctx.safi);
+    const char *af_name = bgp_af_str(ctx.afi, ctx.safi);
+    bgp_instance_t *inst = g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(ctx.afi, ctx.safi));
 
+    /* 先做同配置短路 */
+    if (is_no && !inst)
+    {
+        bgp_send_cli_response(msg, "");
+        return ERRCODE_SUCCESS;
+    }
+    if (!is_no && inst)
+    {
         bgp_send_cli_response(msg, "");
         return ERRCODE_SUCCESS;
     }
 
-    /* 配置场景：af ipv4-unicast — 持久化实例并切换视图 */
+    uint32_t apply_ret = bgp_cfg_apply_instance(is_no, vrf, ctx.afi, ctx.safi);
+    if (apply_ret != ERRCODE_SUCCESS)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Failed to apply instance configuration.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    if (is_no)
+    {
+        bgp_db_del_neighbors_by_afi(g_bgp_local->dev_ipc_ctx, af_name);
+        bgp_db_del_instance(g_bgp_local->dev_ipc_ctx, ctx.vrf_id, ctx.afi, ctx.safi);
+        bgp_send_cli_response(msg, "");
+        return ERRCODE_SUCCESS;
+    }
+
     if (bgp_db_set_instance(g_bgp_local->dev_ipc_ctx, ctx.vrf_id, ctx.afi, ctx.safi) != 0)
     {
         bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
         return ERRCODE_FAIL;
     }
 
-    if (vrf)
-    {
-        bgp_vrf_get_or_create_instance(vrf, ctx.afi, ctx.safi);
-    }
-
-    /* 框架根据 XML <context-out> 自动切换视图并写入上下文，模块只需返回空 OK */
     bgp_send_cli_response(msg, "");
     return ERRCODE_SUCCESS;
 }
@@ -470,42 +462,70 @@ static int handle_bgp_af_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
     char resp_buf[CLI_MAX_RESP_LEN];
     resp_buf[0] = '\0';
 
-    if (ip_buf[0] == '\0')
-    {
-        bgp_send_cli_response(msg, "BGP Error: Missing neighbor IP address.\r\n");
-        return ERRCODE_FAIL;
-    }
-
     if (!g_bgp_local->protocol)
     {
         bgp_send_cli_response(msg, "BGP Error: BGP not configured.\r\n");
         return ERRCODE_FAIL;
     }
 
+    bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_local->protocol, ctx.vrf_id);
+    const char *af_name = bgp_af_str(ctx.afi, ctx.safi);
+
     net_addr_t ip_addr;
-    if (net_addr_from_str(ip_buf, &ip_addr) != 0)
+    gboolean has_valid_ip = (ip_buf[0] != '\0' && net_addr_from_str(ip_buf, &ip_addr) == 0);
+    gboolean af_enabled = FALSE;
+    if (has_valid_ip && vrf)
+    {
+        char addr_key[64];
+        net_addr_to_str(&ip_addr, addr_key, sizeof(addr_key));
+        bgp_instance_t *inst = g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(ctx.afi, ctx.safi));
+        af_enabled = (inst && inst->peer_hash && g_hash_table_lookup(inst->peer_hash, addr_key));
+    }
+
+    /* 先做同配置短路 */
+    if (is_no && !af_enabled)
+    {
+        bgp_send_cli_response(msg, "");
+        return ERRCODE_SUCCESS;
+    }
+    if (!is_no && af_enabled)
+    {
+        bgp_send_cli_response(msg, "");
+        return ERRCODE_SUCCESS;
+    }
+
+    /* 参数校验 */
+    if (ip_buf[0] == '\0')
+    {
+        bgp_send_cli_response(msg, "BGP Error: Missing neighbor IP address.\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (!has_valid_ip)
     {
         bgp_send_cli_response(msg, "BGP Error: Invalid IP address.\r\n");
         return ERRCODE_FAIL;
     }
+    if (!vrf)
+    {
+        bgp_send_cli_response(msg, "BGP Error: VRF not found.\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (!is_no && !bgp_vrf_find_session(vrf, &ip_addr))
+    {
+        bgp_send_cli_response(msg,
+                              "BGP Error: Neighbor session not configured. Run 'neighbor <ip> as <as>' first.\r\n");
+        return ERRCODE_FAIL;
+    }
 
-    bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_local->protocol, ctx.vrf_id);
-    const char *af_name = bgp_af_str(ctx.afi, ctx.safi);
+    uint32_t apply_ret = bgp_cfg_apply_af_neighbor(is_no, vrf, ctx.afi, ctx.safi, &ip_addr);
+    if (apply_ret != ERRCODE_SUCCESS)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Failed to apply AF neighbor configuration.\r\n");
+        return ERRCODE_FAIL;
+    }
 
     if (is_no)
     {
-        bgp_session_t *sess = vrf ? bgp_vrf_find_session(vrf, &ip_addr) : NULL;
-
-        if (vrf)
-        {
-            bgp_vrf_af_disable_neighbor(vrf, ctx.afi, ctx.safi, &ip_addr);
-        }
-
-        if (sess && vrf && !bgp_vrf_neighbor_has_any_af(vrf, &ip_addr))
-        {
-            bgp_server_stop_session_conns(sess);
-        }
-
         int rows = bgp_db_del_neighbor(g_bgp_local->dev_ipc_ctx, ip_buf, af_name);
         snprintf(resp_buf, sizeof(resp_buf), "BGP: Neighbor %s disabled for %s (%d row).\r\n", ip_buf, af_name,
                  rows > 0 ? rows : 0);
@@ -513,37 +533,10 @@ static int handle_bgp_af_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
         return ERRCODE_SUCCESS;
     }
 
-    /* neighbor <ip> enable — 使能地址族邻居 */
-    if (!vrf || !bgp_vrf_find_session(vrf, &ip_addr))
-    {
-        bgp_send_cli_response(msg,
-                              "BGP Error: Neighbor session not configured. Run 'neighbor <ip> as <as>' first.\r\n");
-        return ERRCODE_FAIL;
-    }
-
     if (bgp_db_set_neighbor(g_bgp_local->dev_ipc_ctx, ip_buf, af_name) != 0)
     {
         bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
         return ERRCODE_FAIL;
-    }
-
-    /* 首个 AF 使能时需启动主动连接，先检查使能前的状态 */
-    gboolean first_af = !bgp_vrf_neighbor_has_any_af(vrf, &ip_addr);
-
-    if (bgp_vrf_af_enable_neighbor(vrf, ctx.afi, ctx.safi, &ip_addr) != 0)
-    {
-        bgp_send_cli_response(msg, "BGP Error: Failed to enable AF neighbor.\r\n");
-        return ERRCODE_FAIL;
-    }
-
-    /* 若是该 session 的第一个 AF，启动主动 TCP 连接 */
-    if (first_af)
-    {
-        bgp_session_t *sess = bgp_vrf_find_session(vrf, &ip_addr);
-        if (sess)
-        {
-            bgp_server_start_active_conn(sess);
-        }
     }
 
     snprintf(resp_buf, sizeof(resp_buf), "BGP: Neighbor %s enabled for %s.\r\n", ip_buf, af_name);
@@ -598,42 +591,54 @@ static int handle_bgp_timers(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     }
 
     bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_local->protocol, ctx.vrf_id);
-
-    /* 删除场景：重置为默认值 */
-    if (is_no)
+    if (!vrf)
     {
-        if (vrf)
-        {
-            vrf->keepalive = BGP_TIMER_DEFAULT_KEEPALIVE;
-            vrf->hold_time = BGP_TIMER_DEFAULT_HOLD;
-        }
-        (void)bgp_db_del_vrf_timers(g_bgp_local->dev_ipc_ctx, ctx.vrf_id);
+        bgp_send_cli_response(msg, "BGP Error: VRF not found.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    /* 先做同配置短路 */
+    if (is_no && vrf->keepalive == BGP_TIMER_DEFAULT_KEEPALIVE && vrf->hold_time == BGP_TIMER_DEFAULT_HOLD)
+    {
+        bgp_send_cli_response(msg, "");
+        return ERRCODE_SUCCESS;
+    }
+    if (!is_no && keepalive == vrf->keepalive && hold_time == vrf->hold_time)
+    {
         bgp_send_cli_response(msg, "");
         return ERRCODE_SUCCESS;
     }
 
-    /* 配置场景：参数校验 */
-    if (keepalive == 0 || hold_time == 0)
+    /* 参数校验 */
+    if (!is_no && (keepalive == 0 || hold_time == 0))
     {
         bgp_send_cli_response(msg, "BGP Error: Missing timer parameters.\r\n");
         return ERRCODE_FAIL;
     }
-    if (hold_time <= keepalive)
+    if (!is_no && hold_time <= keepalive)
     {
         bgp_send_cli_response(msg, "BGP Error: Hold time must be greater than keepalive time.\r\n");
         return ERRCODE_FAIL;
+    }
+
+    uint32_t apply_ret = bgp_cfg_apply_timers(is_no, vrf, (uint16_t)keepalive, (uint16_t)hold_time);
+    if (apply_ret != ERRCODE_SUCCESS)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Failed to apply timer configuration.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    if (is_no)
+    {
+        (void)bgp_db_del_vrf_timers(g_bgp_local->dev_ipc_ctx, ctx.vrf_id);
+        bgp_send_cli_response(msg, "");
+        return ERRCODE_SUCCESS;
     }
 
     if (bgp_db_set_vrf_timers(g_bgp_local->dev_ipc_ctx, ctx.vrf_id, (uint16_t)keepalive, (uint16_t)hold_time) != 0)
     {
         bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
         return ERRCODE_FAIL;
-    }
-
-    if (vrf)
-    {
-        vrf->keepalive = (uint16_t)keepalive;
-        vrf->hold_time = (uint16_t)hold_time;
     }
 
     bgp_send_cli_response(msg, "");
@@ -684,42 +689,56 @@ static int handle_bgp_router_id(dev_ipc_message_t *msg, cli_tlv_parser_t *parser
     }
 
     bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_local->protocol, ctx.vrf_id);
-
-    /* 删除场景 */
-    if (is_no)
+    if (!vrf)
     {
-        if (vrf)
-        {
-            vrf->router_id[0] = '\0';
-        }
-        (void)bgp_db_del_vrf_router_id(g_bgp_local->dev_ipc_ctx, ctx.vrf_id);
+        bgp_send_cli_response(msg, "BGP Error: VRF not found.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    /* 先做同配置短路 */
+    if (is_no && vrf->router_id[0] == '\0')
+    {
+        bgp_send_cli_response(msg, "");
+        return ERRCODE_SUCCESS;
+    }
+    if (!is_no && ip_buf[0] != '\0' && strcmp(vrf->router_id, ip_buf) == 0)
+    {
         bgp_send_cli_response(msg, "");
         return ERRCODE_SUCCESS;
     }
 
-    /* 配置场景 */
-    if (ip_buf[0] == '\0')
+    /* 参数校验 */
+    if (!is_no && ip_buf[0] == '\0')
     {
         bgp_send_cli_response(msg, "BGP Error: Missing router-id IP address.\r\n");
         return ERRCODE_FAIL;
     }
 
     struct in_addr addr;
-    if (inet_pton(AF_INET, ip_buf, &addr) != 1)
+    if (!is_no && inet_pton(AF_INET, ip_buf, &addr) != 1)
     {
         bgp_send_cli_response(msg, "BGP Error: Invalid IPv4 address.\r\n");
         return ERRCODE_FAIL;
+    }
+
+    uint32_t apply_ret = bgp_cfg_apply_router_id(is_no, vrf, ip_buf);
+    if (apply_ret != ERRCODE_SUCCESS)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Failed to apply router-id configuration.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    if (is_no)
+    {
+        (void)bgp_db_del_vrf_router_id(g_bgp_local->dev_ipc_ctx, ctx.vrf_id);
+        bgp_send_cli_response(msg, "");
+        return ERRCODE_SUCCESS;
     }
 
     if (bgp_db_set_vrf_router_id(g_bgp_local->dev_ipc_ctx, ctx.vrf_id, ip_buf) != 0)
     {
         bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
         return ERRCODE_FAIL;
-    }
-
-    if (vrf)
-    {
-        snprintf(vrf->router_id, sizeof(vrf->router_id), "%s", ip_buf);
     }
 
     bgp_send_cli_response(msg, "");
@@ -871,35 +890,49 @@ static int handle_bgp_connect_retry(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
     }
 
     bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_local->protocol, ctx.vrf_id);
-
-    /* 删除场景：重置为默认值 */
-    if (is_no)
+    if (!vrf)
     {
-        if (vrf)
-        {
-            vrf->connect_retry = BGP_TIMER_DEFAULT_CONNECT_RETRY;
-        }
-        (void)bgp_db_del_vrf_connect_retry(g_bgp_local->dev_ipc_ctx, ctx.vrf_id);
+        bgp_send_cli_response(msg, "BGP Error: VRF not found.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    /* 先做同配置短路 */
+    if (is_no && vrf->connect_retry == BGP_TIMER_DEFAULT_CONNECT_RETRY)
+    {
+        bgp_send_cli_response(msg, "");
+        return ERRCODE_SUCCESS;
+    }
+    if (!is_no && connect_retry == vrf->connect_retry)
+    {
         bgp_send_cli_response(msg, "");
         return ERRCODE_SUCCESS;
     }
 
-    /* 配置场景：参数校验 */
-    if (connect_retry == 0)
+    /* 参数校验 */
+    if (!is_no && connect_retry == 0)
     {
         bgp_send_cli_response(msg, "BGP Error: Missing connect-retry parameter.\r\n");
         return ERRCODE_FAIL;
+    }
+
+    uint32_t apply_ret = bgp_cfg_apply_connect_retry(is_no, vrf, (uint16_t)connect_retry);
+    if (apply_ret != ERRCODE_SUCCESS)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Failed to apply connect-retry configuration.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    if (is_no)
+    {
+        (void)bgp_db_del_vrf_connect_retry(g_bgp_local->dev_ipc_ctx, ctx.vrf_id);
+        bgp_send_cli_response(msg, "");
+        return ERRCODE_SUCCESS;
     }
 
     if (bgp_db_set_vrf_connect_retry(g_bgp_local->dev_ipc_ctx, ctx.vrf_id, (uint16_t)connect_retry) != 0)
     {
         bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
         return ERRCODE_FAIL;
-    }
-
-    if (vrf)
-    {
-        vrf->connect_retry = (uint16_t)connect_retry;
     }
 
     bgp_send_cli_response(msg, "");
@@ -960,6 +993,12 @@ static int handle_bgp_open_capability(dev_ipc_message_t *msg, cli_tlv_parser_t *
         cli_tlv_entry_free(&entry);
     }
 
+    if (!g_bgp_local->protocol)
+    {
+        bgp_send_cli_response(msg, "BGP Error: BGP not configured.\r\n");
+        return ERRCODE_FAIL;
+    }
+
     if (ip_buf[0] == '\0')
     {
         bgp_send_cli_response(msg, "BGP Error: Missing neighbor IP address.\r\n");
@@ -968,11 +1007,6 @@ static int handle_bgp_open_capability(dev_ipc_message_t *msg, cli_tlv_parser_t *
     if (!has_as4 && !has_rr)
     {
         bgp_send_cli_response(msg, "BGP Error: Unknown capability.\r\n");
-        return ERRCODE_FAIL;
-    }
-    if (!g_bgp_local->protocol)
-    {
-        bgp_send_cli_response(msg, "BGP Error: BGP not configured.\r\n");
         return ERRCODE_FAIL;
     }
 
@@ -991,7 +1025,7 @@ static int handle_bgp_open_capability(dev_ipc_message_t *msg, cli_tlv_parser_t *
         return ERRCODE_FAIL;
     }
 
-    /* 更新内存标记位 */
+    /* 计算目标能力位 */
     uint32_t cap_bit = 0;
     const char *cap_name = "";
     if (has_as4)
@@ -1005,13 +1039,23 @@ static int handle_bgp_open_capability(dev_ipc_message_t *msg, cli_tlv_parser_t *
         cap_name = "route-refresh";
     }
 
-    if (is_no)
+    /* 先做同配置短路 */
+    if (is_no && !BIT_TEST(sess->flags, cap_bit))
     {
-        BIT_CLR(sess->flags, cap_bit);
+        bgp_send_cli_response(msg, "");
+        return ERRCODE_SUCCESS;
     }
-    else
+    if (!is_no && BIT_TEST(sess->flags, cap_bit))
     {
-        BIT_SET(sess->flags, cap_bit);
+        bgp_send_cli_response(msg, "");
+        return ERRCODE_SUCCESS;
+    }
+
+    uint32_t apply_ret = bgp_cfg_apply_open_capability(is_no, sess, cap_bit);
+    if (apply_ret != ERRCODE_SUCCESS)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Failed to apply capability configuration.\r\n");
+        return ERRCODE_FAIL;
     }
 
     /* 持久化到数据库 */

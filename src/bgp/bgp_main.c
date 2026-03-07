@@ -584,7 +584,13 @@ static void bgp_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     LOG_INFO("Phase 3: MODULE_READY — 尝试恢复 BGP 状态");
 
     /* 仅恢复：表不存在（BGP 未曾配置）时静默返回 NULL，不建表也不写默认值 */
-    g_bgp_local->protocol = bgp_db_restore(ctx);
+    uint32_t ret = bgp_db_restore(ctx);
+    if (ret != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("BGP: 从数据库恢复状态失败");
+        send_phase_response(ctx, msg, ERRCODE_FAIL);
+        return;
+    }
 
     int epoll_fd = epoll_create1(EPOLL_CLOEXEC);
     if (epoll_fd < 0)

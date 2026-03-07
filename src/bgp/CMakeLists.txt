@@ -2,6 +2,7 @@
 set(BGP_SOURCES
     bgp_main.c
     bgp_cli.c
+    bgp_cfg_apply.c
     bgp_db.c
     bgp_bdr.c
     bgp_peer.c

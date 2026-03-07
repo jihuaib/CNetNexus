@@ -30,7 +30,7 @@
  * @param ctx BGP 模块的 IPC 上下文
  * @return 恢复的协议结构指针（调用者持有，最终由 bgp_protocol_destroy 释放），无配置时返回 NULL
  */
-bgp_protocol_t *bgp_db_restore(dev_ipc_context_t *ctx);
+uint32_t bgp_db_restore(dev_ipc_context_t *ctx);
 
 /**
  * @brief 初始化 BGP 数据库（建表，如已存在则跳过）

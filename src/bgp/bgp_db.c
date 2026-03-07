@@ -9,6 +9,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "bgp_cfg_apply.h"
+#include "bgp_main.h"
 #include "bgp_protocol.h"
 #include "bgp_session.h"
 #include "bgp_vrf.h"
@@ -47,8 +49,10 @@ static const db_table_def_t BGP_SESSION_TABLE = {
 
 /* bgp_neighbor 表列定义 */
 static const db_column_def_t BGP_NEIGHBOR_COLS[] = {
+    {"vrf_id", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},
+    {"afi", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
+    {"safi", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
     {"neighbor_ip", DB_TYPE_TEXT, DB_COL_NOT_NULL, NULL},
-    {"afi", DB_TYPE_TEXT, DB_COL_NOT_NULL, NULL},
 };
 
 /* bgp_neighbor 表定义 */
@@ -98,46 +102,43 @@ int bgp_db_set_vrf_connect_retry(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16
  * @brief 从 bgp_protocol 表恢复协议对象
  * @return 恢复的 bgp_protocol_t 指针，无配置或失败返回 NULL
  */
-static bgp_protocol_t *restore_protocol(dev_ipc_context_t *ctx)
+static uint32_t restore_protocol(dev_ipc_context_t *ctx)
 {
     db_result_t *result = NULL;
     if (db_rpc_query(ctx, BGP_TABLE_PROTOCOL, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
     {
-        return NULL;
+        return ERRCODE_FAIL;
     }
 
     if (result->num_rows == 0)
     {
         db_result_free(result);
         LOG_INFO("BGP 数据库无配置，跳过恢复");
-        return NULL;
+        return ERRCODE_SUCCESS;
     }
 
     db_row_t *row = result->rows[0];
     uint32_t as_number = (uint32_t)db_row_get_int(row, "as_number", 0);
 
-    bgp_protocol_t *proto = NULL;
     if (as_number != 0)
     {
-        proto = bgp_protocol_create(as_number);
-        LOG_INFO("BGP 协议已恢复: AS %u", proto->as_number);
+        uint32_t apply_ret = bgp_cfg_apply_protocol(FALSE, as_number);
+        if (apply_ret == ERRCODE_SUCCESS)
+        {
+            LOG_INFO("BGP 协议已恢复: AS %u", as_number);
+        }
+        else
+        {
+            LOG_ERROR("BGP 恢复: 协议创建失败 (as=%u, ret=%d)", as_number, (int)apply_ret);
+        }
     }
 
     db_result_free(result);
-    return proto;
+    return ERRCODE_SUCCESS;
 }
 
-/**
- * @brief 从 bgp_session 表恢复会话到 VRF
- * @param vrf0 目标 VRF（为 NULL 时直接返回）
- */
-static void restore_sessions(dev_ipc_context_t *ctx, bgp_vrf_t *vrf0)
+static void restore_sessions(dev_ipc_context_t *ctx)
 {
-    if (!vrf0)
-    {
-        return;
-    }
-
     db_result_t *result = NULL;
     if (db_rpc_query(ctx, BGP_TABLE_SESSION, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
     {
@@ -149,6 +150,14 @@ static void restore_sessions(dev_ipc_context_t *ctx, bgp_vrf_t *vrf0)
         db_row_t *row = result->rows[i];
         const char *ip_val = db_row_get_text(row, "neighbor_ip", NULL);
         uint32_t as_val = (uint32_t)db_row_get_int(row, "remote_as", 0);
+        uint32_t vrf_id = (uint32_t)db_row_get_int(row, "vrf_id", BGP_VRF_PUBLIC_ID);
+        uint32_t open_caps = (uint32_t)db_row_get_int(row, "open_caps", (int64_t)BGP_SESS_CAP_DEFAULT);
+
+        bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_local->protocol, vrf_id);
+        if (!vrf)
+        {
+            continue;
+        }
 
         if (!ip_val)
         {
@@ -161,13 +170,17 @@ static void restore_sessions(dev_ipc_context_t *ctx, bgp_vrf_t *vrf0)
             LOG_WARN("BGP 恢复: session 邻居地址 %s 解析失败，跳过", ip_val);
             continue;
         }
-        bgp_session_t *sess = bgp_session_create(&nb_addr, as_val, vrf0);
 
-        /* 从数据库恢复 OPEN 能力标记位（缺失时使用默认值） */
-        uint32_t open_caps = (uint32_t)db_row_get_int(row, "open_caps", (int64_t)BGP_SESS_CAP_DEFAULT);
-        sess->flags = open_caps;
+        bgp_cfg_apply_neighbor(FALSE, vrf, &nb_addr, as_val);
 
-        bgp_vrf_add_session(vrf0, sess);
+        bgp_session_t *sess = bgp_vrf_find_session(vrf, &nb_addr);
+        if (!sess)
+        {
+            LOG_WARN("BGP 恢复: session 邻居 %s 创建失败，跳过", ip_val);
+            continue;
+        }
+
+        bgp_cfg_apply_open_capability(FALSE, sess, open_caps);
     }
 
     db_result_free(result);
@@ -177,13 +190,8 @@ static void restore_sessions(dev_ipc_context_t *ctx, bgp_vrf_t *vrf0)
  * @brief 从 bgp_neighbor 表恢复地址族邻居到 VRF
  * @param vrf0 目标 VRF（为 NULL 时直接返回）
  */
-static void restore_neighbors(dev_ipc_context_t *ctx, bgp_vrf_t *vrf0)
+static void restore_neighbors(dev_ipc_context_t *ctx)
 {
-    if (!vrf0)
-    {
-        return;
-    }
-
     db_result_t *result = NULL;
     if (db_rpc_query(ctx, BGP_TABLE_NEIGHBOR, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
     {
@@ -194,30 +202,28 @@ static void restore_neighbors(dev_ipc_context_t *ctx, bgp_vrf_t *vrf0)
     {
         db_row_t *row = result->rows[i];
         const char *nb_ip = db_row_get_text(row, "neighbor_ip", NULL);
-        const char *afi_str = db_row_get_text(row, "afi", NULL);
+        bgp_afi_t afi = (bgp_afi_t)db_row_get_int(row, "afi", 0);
+        bgp_safi_t safi = (bgp_safi_t)db_row_get_int(row, "safi", 0);
+        uint32_t vrf_id = (uint32_t)db_row_get_int(row, "vrf_id", BGP_VRF_PUBLIC_ID);
 
-        if (!nb_ip || !afi_str)
+        if (!nb_ip)
         {
             continue;
         }
 
-        /* 目前仅支持 "ipv4-unicast"，按需扩展 */
-        bgp_afi_t afi = BGP_AFI_IPV4;
-        bgp_safi_t safi = BGP_SAFI_UNICAST;
+        bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_local->protocol, vrf_id);
+        if (!vrf)
+        {
+            continue;
+        }
 
         net_addr_t nb_addr;
         if (net_addr_from_str(nb_ip, &nb_addr) != 0)
         {
-            LOG_WARN("BGP 恢复: 邻居地址 %s 解析失败，跳过", nb_ip);
+            LOG_WARN("BGP 恢复: peer 邻居地址 %s 解析失败，跳过", nb_ip);
+            continue;
         }
-        else if (bgp_vrf_af_enable_neighbor(vrf0, afi, safi, &nb_addr) != 0)
-        {
-            LOG_WARN("BGP 恢复: 邻居 %s AF %s 使能失败（session 可能不存在）", nb_ip, afi_str);
-        }
-        else
-        {
-            LOG_INFO("BGP 恢复: 邻居 %s AF %s 已恢复", nb_ip, afi_str);
-        }
+        bgp_cfg_apply_af_neighbor(FALSE, vrf, afi, safi, &nb_addr);
     }
 
     db_result_free(result);
@@ -227,7 +233,7 @@ static void restore_neighbors(dev_ipc_context_t *ctx, bgp_vrf_t *vrf0)
  * @brief 从 bgp_instance 表恢复 AF 实例到各 VRF 的 inst_hash
  * @param proto 已恢复的协议对象（不可为 NULL）
  */
-static void restore_instances(dev_ipc_context_t *ctx, bgp_protocol_t *proto)
+static void restore_instances(dev_ipc_context_t *ctx)
 {
     db_result_t *result = NULL;
     if (db_rpc_query(ctx, BGP_TABLE_INSTANCE, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
@@ -247,24 +253,20 @@ static void restore_instances(dev_ipc_context_t *ctx, bgp_protocol_t *proto)
             continue;
         }
 
-        bgp_vrf_t *vrf = bgp_protocol_get_vrf(proto, vrf_id);
+        bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_local->protocol, vrf_id);
         if (!vrf)
         {
             continue;
         }
 
-        bgp_vrf_get_or_create_instance(vrf, afi, safi);
+        bgp_cfg_apply_instance(FALSE, vrf, afi, safi);
         LOG_INFO("BGP 恢复: VRF %u AF 实例 afi=%u safi=%u", vrf_id, (unsigned)afi, (unsigned)safi);
     }
 
     db_result_free(result);
 }
 
-/**
- * @brief 从 bgp_vrf 表恢复 VRF 级配置（router-id、keepalive、hold_time）到内存
- * @param proto 已恢复的协议对象（不可为 NULL）
- */
-static void restore_vrf(dev_ipc_context_t *ctx, bgp_protocol_t *proto)
+static void restore_vrf(dev_ipc_context_t *ctx)
 {
     db_result_t *result = NULL;
     if (db_rpc_query(ctx, BGP_TABLE_VRF, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
@@ -277,16 +279,18 @@ static void restore_vrf(dev_ipc_context_t *ctx, bgp_protocol_t *proto)
         db_row_t *row = result->rows[i];
         uint32_t vrf_id = (uint32_t)db_row_get_int(row, "vrf_id", BGP_VRF_PUBLIC_ID);
 
-        bgp_vrf_t *vrf = bgp_protocol_get_vrf(proto, vrf_id);
-        if (!vrf)
+        bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_local->protocol, vrf_id);
+        if (vrf == NULL)
         {
-            continue;
+            bgp_vrf_t *new_vrf = bgp_vrf_create(vrf_id);
+            g_hash_table_insert(g_bgp_local->protocol->vrf_hash, GINT_TO_POINTER(vrf_id), new_vrf);
+            vrf = new_vrf;
         }
 
         const char *router_id = db_row_get_text(row, "router_id", NULL);
         if (router_id && strcmp(router_id, "0.0.0.0") != 0)
         {
-            snprintf(vrf->router_id, sizeof(vrf->router_id), "%s", router_id);
+            bgp_cfg_apply_router_id(FALSE, vrf, router_id);
             LOG_INFO("BGP 恢复: VRF %u router-id=%s", vrf_id, router_id);
         }
 
@@ -294,15 +298,14 @@ static void restore_vrf(dev_ipc_context_t *ctx, bgp_protocol_t *proto)
         uint16_t hold_time = (uint16_t)db_row_get_int(row, "hold_time", BGP_TIMER_DEFAULT_HOLD);
         if (keepalive > 0 && hold_time > keepalive)
         {
-            vrf->keepalive = keepalive;
-            vrf->hold_time = hold_time;
+            bgp_cfg_apply_timers(FALSE, vrf, keepalive, hold_time);
             LOG_INFO("BGP 恢复: VRF %u keepalive=%u hold=%u", vrf_id, keepalive, hold_time);
         }
 
         uint16_t connect_retry = (uint16_t)db_row_get_int(row, "connect_retry", BGP_TIMER_DEFAULT_CONNECT_RETRY);
         if (connect_retry > 0)
         {
-            vrf->connect_retry = connect_retry;
+            bgp_cfg_apply_connect_retry(FALSE, vrf, connect_retry);
             LOG_INFO("BGP 恢复: VRF %u connect-retry=%u", vrf_id, connect_retry);
         }
     }
@@ -314,25 +317,30 @@ static void restore_vrf(dev_ipc_context_t *ctx, bgp_protocol_t *proto)
 // 启动恢复
 // ============================================================================
 
-bgp_protocol_t *bgp_db_restore(dev_ipc_context_t *ctx)
+uint32_t bgp_db_restore(dev_ipc_context_t *ctx)
 {
     if (!ctx)
     {
-        return NULL;
+        return ERRCODE_FAIL;
     }
 
-    bgp_protocol_t *proto = restore_protocol(ctx);
-    if (!proto)
+    uint32_t ret = restore_protocol(ctx);
+    if (ret != ERRCODE_SUCCESS)
     {
-        return NULL;
+        return ERRCODE_FAIL;
     }
 
-    bgp_vrf_t *vrf0 = bgp_protocol_get_vrf(proto, BGP_VRF_PUBLIC_ID);
-    restore_sessions(ctx, vrf0);
-    restore_instances(ctx, proto);
-    restore_neighbors(ctx, vrf0);
-    restore_vrf(ctx, proto);
-    return proto;
+    if (!g_bgp_local || !g_bgp_local->protocol)
+    {
+        return ERRCODE_SUCCESS;
+    }
+
+    restore_vrf(ctx);
+    restore_sessions(ctx);
+    restore_instances(ctx);
+    restore_neighbors(ctx);
+
+    return ERRCODE_SUCCESS;
 }
 
 // ============================================================================
