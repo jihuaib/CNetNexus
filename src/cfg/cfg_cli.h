@@ -19,6 +19,7 @@
 #define CFG_CLI_GROUP_ID_CONFIG 5        /**< config */
 #define CFG_CLI_GROUP_ID_END 6           /**< end */
 #define CFG_CLI_GROUP_ID_BASH 7          /**< bash */
+#define CFG_CLI_GROUP_ID_SHOW_CONTEXT 8  /**< show cli context */
 
 /**
  * @brief 响应输出结构

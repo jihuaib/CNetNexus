@@ -4,6 +4,7 @@ project(NetNexus C)
 # Set C standard
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Compiler flags
 add_definitions(-D_GNU_SOURCE)

@@ -510,6 +510,111 @@ static void handle_op_bash(cli_session_t *session)
 }
 
 /**
+ * @brief 将已知 ctx_id 映射为可读名称
+ */
+static const char *ctx_id_name(uint32_t id)
+{
+    switch (id)
+    {
+        case CLI_CTX_ID_BGP_VRF:
+            return "BGP_VRF";
+        case CLI_CTX_ID_BGP_AFI:
+            return "BGP_AFI";
+        case CLI_CTX_ID_BGP_SAFI:
+            return "BGP_SAFI";
+        case CLI_CTX_ID_VRF_NAME:
+            return "VRF_NAME";
+        default:
+            return "unknown";
+    }
+}
+
+/**
+ * @brief show cli context (group_id=8)：打印当前会话上下文 TLV 中所有变量
+ */
+static void handle_show_context(cli_session_t *session)
+{
+    uint32_t ctx_len = 0;
+    const uint8_t *ctx = cli_context_get(session, &ctx_len);
+
+    GString *out = g_string_new("\r\nCLI Context Variables:\r\n");
+    g_string_append(out, "  ctx-id  name          type  value\r\n");
+    g_string_append(out, "  ------  ------------  ----  -----\r\n");
+
+    if (!ctx || ctx_len < 2)
+    {
+        g_string_append(out, "  (no context)\r\n");
+        cli_pager_output(session, out->str);
+        g_string_free(out, TRUE);
+        return;
+    }
+
+    uint16_t num_be;
+    memcpy(&num_be, ctx, 2);
+    uint16_t num = ntohs(num_be);
+    uint32_t pos = 2;
+
+    if (num == 0)
+    {
+        g_string_append(out, "  (no context)\r\n");
+    }
+
+    for (uint16_t i = 0; i < num && pos < ctx_len; i++)
+    {
+        if (pos + 4 > ctx_len)
+        {
+            break;
+        }
+        uint32_t id_be;
+        memcpy(&id_be, ctx + pos, 4);
+        uint32_t id = ntohl(id_be);
+        pos += 4;
+
+        if (pos >= ctx_len)
+        {
+            break;
+        }
+        uint8_t type = ctx[pos++];
+
+        if (pos + 2 > ctx_len)
+        {
+            break;
+        }
+        uint16_t len_be;
+        memcpy(&len_be, ctx + pos, 2);
+        uint16_t elen = ntohs(len_be);
+        pos += 2;
+
+        char val_buf[128] = "(invalid)";
+        if (type == CLI_TLV_TYPE_CTX && elen == 4 && pos + 4 <= ctx_len)
+        {
+            uint32_t v;
+            memcpy(&v, ctx + pos, 4);
+            snprintf(val_buf, sizeof(val_buf), "%u", ntohl(v));
+        }
+        else if (type == CLI_TLV_TYPE_CTX_STR && pos + elen <= ctx_len)
+        {
+            uint16_t copy_len = elen < (uint16_t)(sizeof(val_buf) - 3) ? elen : (uint16_t)(sizeof(val_buf) - 3);
+            val_buf[0] = '"';
+            memcpy(val_buf + 1, ctx + pos, copy_len);
+            val_buf[1 + copy_len] = '"';
+            val_buf[2 + copy_len] = '\0';
+        }
+
+        const char *type_str = (type == CLI_TLV_TYPE_CTX) ? "INT" : (type == CLI_TLV_TYPE_CTX_STR) ? "STR" : "???";
+        char line[256];
+        snprintf(line, sizeof(line), "  %-6u  %-12s  %-4s  %s\r\n", id, ctx_id_name(id), type_str, val_buf);
+        g_string_append(out, line);
+
+        pos += elen;
+    }
+
+    g_string_append(out, "\r\n");
+    cli_pager_output(session, out->str);
+    g_string_free(out, TRUE);
+}
+
+/**
  * @brief end (group_id=6)
  */
 static void handle_op_end(cli_session_t *session)
@@ -575,6 +680,9 @@ int cfg_cli_handle(dev_ipc_message_t *msg, cli_session_t *session)
             break;
         case CFG_CLI_GROUP_ID_BASH:
             handle_op_bash(session);
+            break;
+        case CFG_CLI_GROUP_ID_SHOW_CONTEXT:
+            handle_show_context(session);
             break;
         default:
             LOG_WARN("未知 group_id: %u", parser.group_id);

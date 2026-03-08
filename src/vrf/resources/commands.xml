@@ -4,7 +4,7 @@
     <!-- View definitions -->
     <views>
         <view view-id="8" view-name="vrf">
-            <template>&lt;NetNexus(config-vrf-{ctx:8})&gt;</template>
+            <template>&lt;NetNexus(config-vrf-{ctx:5})&gt;</template>
         </view>
     </views>
 
@@ -36,7 +36,7 @@
                     <views>3</views>
                     <view-id>8</view-id>
                     <context-out>
-                        <entry ctx-id="8" from-param="1"/>
+                        <entry ctx-id="5" from-param="1"/>
                     </context-out>
                 </command>
                 <!-- no vrf <vrf-name> -->

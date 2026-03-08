@@ -7,7 +7,6 @@ set(CMAKE_C_STANDARD 11)
 # =========================
 # Modules
 # =========================
-
 add_subdirectory(utils)
 add_subdirectory(dev)
 
@@ -22,7 +21,6 @@ add_subdirectory(vrf)
 # =========================
 # Main executable
 # =========================
-
 add_executable(netnexus
         main.c
 )
@@ -37,51 +35,47 @@ add_executable(netnexus
 #   1. IDE 符号索引
 #   2. dev 模块引用符号
 #
-
 target_link_libraries(netnexus PRIVATE
-        utils
-        dev
+    utils
+    dev
 
-        # plugin libs (IDE symbol resolution)
-        cfg
-        db
-        if
-        route
-        bgp
-        vrf
+    # plugin libs (IDE symbol resolution)
+    cfg
+    db
+    if
+    route
+    bgp
+    vrf
 
-        dl
-        Threads::Threads
+    dl
+    Threads::Threads
 )
 
 # 允许 unresolved symbols（插件架构）
 target_link_options(netnexus PRIVATE
-        -Wl,--unresolved-symbols=ignore-in-shared-libs
+    -Wl,--unresolved-symbols=ignore-in-shared-libs
 )
 
 # =========================
 # RPATH
 # =========================
-
 set_target_properties(netnexus PROPERTIES
-        BUILD_RPATH "${CMAKE_BINARY_DIR}/lib"
-        INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib"
+    BUILD_RPATH "${CMAKE_BINARY_DIR}/lib"
+    INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib"
 )
 
 # =========================
 # Auto setcap (dev only)
 # =========================
-
 add_custom_command(TARGET netnexus POST_BUILD
-        COMMAND sudo -n setcap cap_net_admin,cap_net_bind_service=+ep $<TARGET_FILE:netnexus>
-        || echo "提示：如需绑定 179 端口，请手动执行：sudo setcap cap_net_admin,cap_net_bind_service=+ep $<TARGET_FILE:netnexus>"
-        COMMENT "授予 cap_net_admin + cap_net_bind_service"
+    COMMAND sudo -n setcap cap_net_admin,cap_net_bind_service=+ep $<TARGET_FILE:netnexus>
+    || echo "提示：如需绑定 179 端口，请手动执行：sudo setcap cap_net_admin,cap_net_bind_service=+ep $<TARGET_FILE:netnexus>"
+    COMMENT "授予 cap_net_admin + cap_net_bind_service"
 )
 
 # =========================
 # Install
 # =========================
-
 install(TARGETS netnexus
-        RUNTIME DESTINATION bin
+    RUNTIME DESTINATION bin
 )

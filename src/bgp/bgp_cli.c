@@ -49,13 +49,7 @@ static void bgp_send_cli_response(dev_ipc_message_t *msg, const char *text)
 // 上下文 ID 定义及解析辅助
 // ============================================================================
 
-/**
- * BGP 上下文变量 ID（独立命名空间，与 XML cfg-id 无关）
- * 与 commands.xml <context-out ctx-id="N"> 中的 N 对应
- */
-#define BGP_CTX_VAR_VRF 1  /**< VRF ID */
-#define BGP_CTX_VAR_AFI 2  /**< 地址族（bgp_afi_t） */
-#define BGP_CTX_VAR_SAFI 3 /**< 子地址族（bgp_safi_t） */
+/* BGP 上下文变量 ID 使用 cli.h 中全局定义的 CLI_CTX_ID_BGP_* */
 
 /** 从 TLV 上下文提取的视图参数，带默认值（公网 VRF + IPv4 单播） */
 typedef struct bgp_cli_ctx
@@ -82,13 +76,13 @@ static void bgp_cli_ctx_parse(bgp_cli_ctx_t *ctx, cli_tlv_entry_t *entry)
     /* entry->cfg_id 即 ctx_id（独立命名空间），type == CLI_TLV_TYPE_CTX 已由调用者检查 */
     switch (entry->cfg_id)
     {
-        case BGP_CTX_VAR_VRF:
+        case CLI_CTX_ID_BGP_VRF:
             ctx->vrf_id = cli_tlv_entry_get_ctx_uint32(entry);
             break;
-        case BGP_CTX_VAR_AFI:
+        case CLI_CTX_ID_BGP_AFI:
             ctx->afi = (bgp_afi_t)cli_tlv_entry_get_ctx_uint32(entry);
             break;
-        case BGP_CTX_VAR_SAFI:
+        case CLI_CTX_ID_BGP_SAFI:
             ctx->safi = (bgp_safi_t)cli_tlv_entry_get_ctx_uint32(entry);
             break;
         default:

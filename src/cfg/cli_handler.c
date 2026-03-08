@@ -783,6 +783,33 @@ static void handle_tab_completion(cli_session_t *session, char *line_buffer, uin
             char *last_space = strrchr(match_input, ' ');
             prefix = last_space ? last_space + 1 : match_input;
         }
+        else
+        {
+            /* 尾部有空格（动态补全后自动追加的空格）：
+             * 取紧邻空格前的最后一个 token 作为前缀，
+             * 避免 prefix 为空串导致所有候选都被匹配 */
+            int search_end = (int)orig_len - 1;
+            while (search_end >= 0 && match_input[search_end] == ' ')
+            {
+                search_end--;
+            }
+            int token_start = 0;
+            for (int i = search_end; i > 0; i--)
+            {
+                if (match_input[i - 1] == ' ')
+                {
+                    token_start = i;
+                    break;
+                }
+            }
+            if (search_end >= token_start)
+            {
+                int token_len = search_end - token_start + 1;
+                memcpy(prefix_buf, match_input + token_start, token_len);
+                prefix_buf[token_len] = '\0';
+                prefix = prefix_buf;
+            }
+        }
         strncpy(prefix_buf, prefix, sizeof(prefix_buf) - 1);
         prefix_buf[sizeof(prefix_buf) - 1] = '\0';
         uint32_t prefix_len = (uint32_t)strlen(prefix_buf);

@@ -57,6 +57,22 @@
 /** VRF 配置视图 */
 #define CLI_VIEW_VRF 0x00000008
 
+// ============================================================================
+// CLI 上下文变量 ID 定义（全局唯一，新增时在此处登记，避免冲突）
+// 上下文条目在会话中跨视图累积，ctx_id 必须全局不重复
+// ============================================================================
+
+/** BGP VRF ID 上下文 */
+#define CLI_CTX_ID_BGP_VRF 1
+/** BGP 地址族 AFI 上下文 */
+#define CLI_CTX_ID_BGP_AFI 2
+/** BGP 地址族 SAFI 上下文 */
+#define CLI_CTX_ID_BGP_SAFI 3
+/** 接口索引 ctx 变量：值 1-4 分别对应 GE-1 到 GE-4 */
+#define CLI_CTX_ID_IF_IDX 4
+/** VRF 名称上下文 */
+#define CLI_CTX_ID_VRF_NAME 5
+
 /** 视图名称最大长度 */
 #define CLI_CLI_MAX_VIEW_LEN 20
 /** 视图最大长度 */
@@ -82,14 +98,18 @@
 
 /**
  * 上下文 TLV 类型字节（type 字段）。
- * 值 0x80 不与 DB_TYPE_* (0-4) 冲突。
- * Context 条目格式: [ctx_id:u32][CLI_TLV_TYPE_CTX:u8][len:u16][value...]
+ * 值 0x80/0x81 不与 DB_TYPE_* (0-4) 冲突。
+ * 整数上下文条目格式: [ctx_id:u32][CLI_TLV_TYPE_CTX:u8][4:u16][u32_value]
+ * 字符串上下文条目格式: [ctx_id:u32][CLI_TLV_TYPE_CTX_STR:u8][len:u16][string_bytes]
  * 命令参数条目格式: [cfg_id:u32][DB_TYPE_*:u8][len:u16][value...]
  */
 #define CLI_TLV_TYPE_CTX 0x80
 
-/** 判断 TLV 条目是否为上下文变量（基于 type 字节，不再使用 cfg_id 标志位） */
-#define CLI_TLV_IS_CTX(entry_ptr) ((entry_ptr)->type == CLI_TLV_TYPE_CTX)
+/** 字符串上下文 TLV 类型字节（用于存储 VRF 名称等字符串型上下文参数） */
+#define CLI_TLV_TYPE_CTX_STR 0x81
+
+/** 判断 TLV 条目是否为上下文变量（整数或字符串类型均属于上下文） */
+#define CLI_TLV_IS_CTX(entry_ptr) ((entry_ptr)->type == CLI_TLV_TYPE_CTX || (entry_ptr)->type == CLI_TLV_TYPE_CTX_STR)
 
 // ============================================================================
 // TLV 载荷格式定义

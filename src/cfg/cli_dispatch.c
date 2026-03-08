@@ -200,7 +200,9 @@ static void format_prompt_with_ctx(const char *tmpl, const uint8_t *ctx, uint32_
             if (endp && *endp == '}')
             {
                 /* 在上下文中查找 ctx_id */
-                int64_t found_val = 0;
+                int64_t found_int = 0;
+                const uint8_t *found_str_ptr = NULL;
+                uint16_t found_str_len = 0;
                 if (ctx && ctx_len >= 2)
                 {
                     uint16_t num_be;
@@ -230,22 +232,41 @@ static void format_prompt_with_ctx(const char *tmpl, const uint8_t *ctx, uint32_
                         memcpy(&len_be, ctx + pos, 2);
                         uint16_t elen = ntohs(len_be);
                         pos += 2;
-                        if (id == ctx_id && type == CLI_TLV_TYPE_CTX && elen == 4 && pos + 4 <= ctx_len)
+                        if (id == ctx_id)
                         {
-                            uint32_t v;
-                            memcpy(&v, ctx + pos, 4);
-                            found_val = (int64_t)(uint32_t)ntohl(v);
+                            if (type == CLI_TLV_TYPE_CTX && elen == 4 && pos + 4 <= ctx_len)
+                            {
+                                uint32_t v;
+                                memcpy(&v, ctx + pos, 4);
+                                found_int = (int64_t)(uint32_t)ntohl(v);
+                                found_str_ptr = NULL;
+                            }
+                            else if (type == CLI_TLV_TYPE_CTX_STR && pos + elen <= ctx_len)
+                            {
+                                found_str_ptr = ctx + pos;
+                                found_str_len = elen;
+                            }
                         }
                         pos += elen;
                     }
                 }
 
-                /* 写入整数值字符串 */
-                char num_str[32];
-                int n = snprintf(num_str, sizeof(num_str), "%lld", (long long)found_val);
-                for (int k = 0; k < n && out_pos < out_size - 1; k++)
+                /* 写入值：字符串或整数 */
+                if (found_str_ptr)
                 {
-                    out[out_pos++] = num_str[k];
+                    for (uint16_t k = 0; k < found_str_len && out_pos < out_size - 1; k++)
+                    {
+                        out[out_pos++] = (char)found_str_ptr[k];
+                    }
+                }
+                else
+                {
+                    char num_str[32];
+                    int n = snprintf(num_str, sizeof(num_str), "%lld", (long long)found_int);
+                    for (int k = 0; k < n && out_pos < out_size - 1; k++)
+                    {
+                        out[out_pos++] = num_str[k];
+                    }
                 }
                 p = endp + 1; /* 跳过 '}' */
                 continue;
@@ -302,35 +323,78 @@ static void cli_context_build_merged(cli_session_t *session, cli_match_result_t 
         g_byte_array_append(buf, parent + 2, parent_len - 2);
     }
 
-    /* 追加新条目：[ctx_id:u32][CLI_TLV_TYPE_CTX:u8][4:u16][u32_value] */
+    /* 追加新条目：整数用 CLI_TLV_TYPE_CTX（4 字节 u32），字符串用 CLI_TLV_TYPE_CTX_STR（变长） */
     for (uint32_t i = 0; i < num_new; i++)
     {
         const cli_ctx_out_entry_t *e = &new_entries[i];
+        uint32_t ctx_id_be = htonl(e->ctx_id);
 
-        uint32_t val = e->fixed_value;
         if (e->from_param != 0xFFFFFFFFU)
         {
-            /* 从命令匹配参数中按 cfg_id（XML cfg-id）取值 */
+            /* 从命令匹配参数中按 cfg_id 取值 */
+            const char *param_val = NULL;
             for (uint32_t j = 0; j < result->num_elements; j++)
             {
                 if (result->elements[j].cfg_id == e->from_param && result->elements[j].value)
                 {
-                    char *endptr;
-                    val = (uint32_t)strtoul(result->elements[j].value, &endptr, 10);
+                    param_val = result->elements[j].value;
                     break;
                 }
             }
-        }
 
-        /* ctx_id 独立命名空间，type 用 CLI_TLV_TYPE_CTX 与命令参数区分 */
-        uint32_t ctx_id_be = htonl(e->ctx_id);
-        g_byte_array_append(buf, (const uint8_t *)&ctx_id_be, 4);
-        uint8_t type = CLI_TLV_TYPE_CTX;
-        g_byte_array_append(buf, &type, 1);
-        uint16_t len_be = htons(4);
-        g_byte_array_append(buf, (const uint8_t *)&len_be, 2);
-        uint32_t val_be = htonl(val);
-        g_byte_array_append(buf, (const uint8_t *)&val_be, 4);
+            if (param_val)
+            {
+                char *endptr;
+                unsigned long ival = strtoul(param_val, &endptr, 10);
+                if (*endptr == '\0')
+                {
+                    /* 纯整数：存为 4 字节 u32 */
+                    g_byte_array_append(buf, (const uint8_t *)&ctx_id_be, 4);
+                    uint8_t type = CLI_TLV_TYPE_CTX;
+                    g_byte_array_append(buf, &type, 1);
+                    uint16_t len_be = htons(4);
+                    g_byte_array_append(buf, (const uint8_t *)&len_be, 2);
+                    uint32_t val_be = htonl((uint32_t)ival);
+                    g_byte_array_append(buf, (const uint8_t *)&val_be, 4);
+                }
+                else
+                {
+                    /* 字符串：存为变长 CLI_TLV_TYPE_CTX_STR */
+                    uint16_t slen = (uint16_t)strlen(param_val);
+                    g_byte_array_append(buf, (const uint8_t *)&ctx_id_be, 4);
+                    uint8_t type = CLI_TLV_TYPE_CTX_STR;
+                    g_byte_array_append(buf, &type, 1);
+                    uint16_t len_be = htons(slen);
+                    g_byte_array_append(buf, (const uint8_t *)&len_be, 2);
+                    if (slen > 0)
+                    {
+                        g_byte_array_append(buf, (const uint8_t *)param_val, slen);
+                    }
+                }
+            }
+            else
+            {
+                /* 参数未找到，用固定值回退 */
+                g_byte_array_append(buf, (const uint8_t *)&ctx_id_be, 4);
+                uint8_t type = CLI_TLV_TYPE_CTX;
+                g_byte_array_append(buf, &type, 1);
+                uint16_t len_be = htons(4);
+                g_byte_array_append(buf, (const uint8_t *)&len_be, 2);
+                uint32_t val_be = htonl(e->fixed_value);
+                g_byte_array_append(buf, (const uint8_t *)&val_be, 4);
+            }
+        }
+        else
+        {
+            /* 固定值：存为 4 字节 u32 */
+            g_byte_array_append(buf, (const uint8_t *)&ctx_id_be, 4);
+            uint8_t type = CLI_TLV_TYPE_CTX;
+            g_byte_array_append(buf, &type, 1);
+            uint16_t len_be = htons(4);
+            g_byte_array_append(buf, (const uint8_t *)&len_be, 2);
+            uint32_t val_be = htonl(e->fixed_value);
+            g_byte_array_append(buf, (const uint8_t *)&val_be, 4);
+        }
     }
 
     *out_len = buf->len;
@@ -404,10 +468,9 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
                 g_string_append(full_output, response->payload);
             }
 
-            /* 自动视图切换：响应为空 + 命令有 view_id + XML 定义了 context-out */
+            /* 自动视图切换：响应为空 + 命令有 view_id（context-out 可选） */
             gboolean payload_empty = (!response->payload || strlen(response->payload) == 0);
-            if (payload_empty && result->final_node && result->final_node->view_id != 0 &&
-                result->final_node->num_context_out > 0)
+            if (payload_empty && result->final_node && result->final_node->view_id != 0)
             {
                 cli_view_node_t *tgt_view =
                     cli_view_find_by_id(g_cfg_local->view_tree.root, result->final_node->view_id);

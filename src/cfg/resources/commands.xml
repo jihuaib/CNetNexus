@@ -124,6 +124,31 @@
             </commands>
         </group>
 
+        <!-- show cli context -->
+        <group group-id="8">
+            <elements>
+                <element type="keyword">
+                    <name>show</name>
+                    <description>Display system information</description>
+                </element>
+                <element type="keyword">
+                    <name>cli</name>
+                    <description>CLI information</description>
+                </element>
+                <element type="keyword">
+                    <name>context</name>
+                    <description>Current view context variables</description>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>1</views>
+                </command>
+            </commands>
+        </group>
+
         <!-- bash -->
         <group group-id="7">
             <elements>

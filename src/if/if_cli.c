@@ -27,7 +27,7 @@
 // ============================================================================
 
 /** 接口索引 ctx 变量：值 1-4 分别对应 GE-1 到 GE-4 */
-#define IF_CTX_VAR_IDX 5
+#define CLI_CTX_ID_IF_IDX 5
 
 // ============================================================================
 // 发送响应辅助
@@ -109,7 +109,7 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     {
         if (CLI_TLV_IS_CTX(&entry))
         {
-            if (entry.cfg_id == IF_CTX_VAR_IDX)
+            if (entry.cfg_id == CLI_CTX_ID_IF_IDX)
             {
                 if_idx = cli_tlv_entry_get_ctx_uint32(&entry);
             }
