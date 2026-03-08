@@ -35,10 +35,6 @@
                     <expression>2 3</expression>
                     <views>3</views>
                     <view-id>4</view-id>
-                    <!-- as_number 从命令参数 cfg-id=2 取值，写入上下文变量 ctx-id=1(BGP_CTX_VAR_AS) -->
-                    <context-out>
-                        <entry ctx-id="1" from-param="2"/>
-                    </context-out>
                 </command>
                 <command>
                     <expression>1 2</expression>
@@ -139,8 +135,8 @@
                     <!-- afi/safi 固定值写入上下文，父视图的 as_number 由框架自动叠加 -->
                     <!-- ctx-id=3(BGP_CTX_VAR_AFI), ctx-id=4(BGP_CTX_VAR_SAFI) -->
                     <context-out>
+                        <entry ctx-id="2" value="1"/>
                         <entry ctx-id="3" value="1"/>
-                        <entry ctx-id="4" value="1"/>
                     </context-out>
                 </command>
                 <!-- no af ipv4-unicast -->

@@ -1,43 +1,87 @@
+cmake_minimum_required(VERSION 3.16)
+
+project(netnexus C)
+
+set(CMAKE_C_STANDARD 11)
+
+# =========================
+# Modules
+# =========================
+
 add_subdirectory(utils)
 add_subdirectory(dev)
-add_subdirectory(cfg)   # cfg/lib 先创建 cli_api，供后续模块使用
+
+# plugin modules
+add_subdirectory(cfg)
 add_subdirectory(db)
 add_subdirectory(if)
 add_subdirectory(route)
 add_subdirectory(bgp)
 add_subdirectory(vrf)
 
-# Create main executable
-add_executable(netnexus 
-    main.c
+# =========================
+# Main executable
+# =========================
+
+add_executable(netnexus
+        main.c
 )
 
-# Link against libraries
-# Module libraries (db, cfg, if, route, bgp) are loaded dynamically via dlopen
-# --unresolved-symbols=ignore-in-shared-libs: dev 引用了 cfg/db 的符号,
-# 这些符号将在运行时通过 dlopen 加载的 .so 中解析
+# =========================
+# Link libraries
+# =========================
+#
+# 注意：
+# cfg/db/if/route/bgp/vrf 实际运行时通过 dlopen 加载
+# 这里链接仅用于：
+#   1. IDE 符号索引
+#   2. dev 模块引用符号
+#
+
 target_link_libraries(netnexus PRIVATE
-    utils
-    dev
-    dl
-    Threads::Threads
-    -Wl,--unresolved-symbols=ignore-in-shared-libs
+        utils
+        dev
+
+        # plugin libs (IDE symbol resolution)
+        cfg
+        db
+        if
+        route
+        bgp
+        vrf
+
+        dl
+        Threads::Threads
 )
 
-# Set RPATH to find libraries in lib/ directory at runtime
+# 允许 unresolved symbols（插件架构）
+target_link_options(netnexus PRIVATE
+        -Wl,--unresolved-symbols=ignore-in-shared-libs
+)
+
+# =========================
+# RPATH
+# =========================
+
 set_target_properties(netnexus PROPERTIES
-    BUILD_RPATH "${CMAKE_BINARY_DIR}/lib"
-    INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib"
+        BUILD_RPATH "${CMAKE_BINARY_DIR}/lib"
+        INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib"
 )
 
-# Automated setcap for development
-# Note: This requires sudo permissions without password for 'setcap' or the user running make must be root.
+# =========================
+# Auto setcap (dev only)
+# =========================
+
 add_custom_command(TARGET netnexus POST_BUILD
-    COMMAND sudo -n setcap cap_net_admin,cap_net_bind_service=+ep $<TARGET_FILE:netnexus> || echo "提示：如需绑定 179 端口，请手动执行：sudo setcap cap_net_admin,cap_net_bind_service=+ep $<TARGET_FILE:netnexus>"
-    COMMENT "授予 cap_net_admin + cap_net_bind_service"
+        COMMAND sudo -n setcap cap_net_admin,cap_net_bind_service=+ep $<TARGET_FILE:netnexus>
+        || echo "提示：如需绑定 179 端口，请手动执行：sudo setcap cap_net_admin,cap_net_bind_service=+ep $<TARGET_FILE:netnexus>"
+        COMMENT "授予 cap_net_admin + cap_net_bind_service"
 )
 
-# Installation
+# =========================
+# Install
+# =========================
+
 install(TARGETS netnexus
-    RUNTIME DESTINATION bin
+        RUNTIME DESTINATION bin
 )

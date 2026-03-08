@@ -43,7 +43,7 @@
             <commands>
                 <command>
                     <expression>1 2 3</expression>
-                    <views>1,3</views>
+                    <views>1</views>
                 </command>
             </commands>
         </group>
@@ -87,7 +87,7 @@
             <commands>
                 <command>
                     <expression>1 2</expression>
-                    <views>1,3</views>
+                    <views>1</views>
                 </command>
             </commands>
         </group>

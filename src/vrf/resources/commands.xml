@@ -4,30 +4,44 @@
     <!-- View definitions -->
     <views>
         <view view-id="8" view-name="vrf">
-            <template>&lt;NetNexus(config-vrf-%s)&gt;</template>
+            <template>&lt;NetNexus(config-vrf-{ctx:8})&gt;</template>
         </view>
     </views>
 
     <!-- Command group definitions -->
     <command_groups>
 
-        <!-- group 1: vrf <vrf-name>（配置视图，创建 VRF） -->
+        <!-- group 1: vrf <vrf-name>（配置视图，创建 VRF） / no vrf <vrf-name> -->
         <group group-id="1">
             <elements>
-                <element cfg-id="1" type="keyword">
+                <element type="keyword">
                     <name>vrf</name>
                     <description>Configure VRF instance</description>
                 </element>
-                <element cfg-id="2" type="parameter">
+                <element cfg-id="1" type="parameter">
                     <name>&lt;vrf-name&gt;</name>
                     <type>dynamic(string(1-63))</type>
                     <description>VRF name</description>
                 </element>
+                <element type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
             </elements>
 
             <commands>
+                <!-- vrf <vrf-name> -->
                 <command>
                     <expression>1 2</expression>
+                    <views>3</views>
+                    <view-id>8</view-id>
+                    <context-out>
+                        <entry ctx-id="8" from-param="1"/>
+                    </context-out>
+                </command>
+                <!-- no vrf <vrf-name> -->
+                <command>
+                    <expression>3 1 2</expression>
                     <views>3</views>
                 </command>
             </commands>
@@ -56,42 +70,17 @@
                 <!-- show vrf：显示所有 VRF -->
                 <command>
                     <expression>1 2</expression>
-                    <views>2,3</views>
+                    <views>1</views>
                 </command>
                 <!-- show vrf <vrf-name>：显示指定 VRF 详情 -->
                 <command>
                     <expression>1 2 3</expression>
-                    <views>2,3</views>
+                    <views>1</views>
                 </command>
             </commands>
         </group>
 
-        <!-- group 3: no vrf <vrf-name>（配置视图，删除 VRF） -->
-        <!-- <vrf-name> 使用 dynamic 类型，Tab/? 时 RPC 仅返回可删除的 VRF（排除公网 VRF） -->
-        <group group-id="3">
-            <elements>
-                <element cfg-id="1" type="keyword">
-                    <name>no</name>
-                    <description>Delete</description>
-                </element>
-                <element cfg-id="2" type="keyword">
-                    <name>vrf</name>
-                    <description>Delete VRF instance</description>
-                </element>
-                <element cfg-id="4" type="parameter">
-                    <name>&lt;vrf-name&gt;</name>
-                    <type>dynamic(string(1-63))</type>
-                    <description>Existing VRF name</description>
-                </element>
-            </elements>
 
-            <commands>
-                <command>
-                    <expression>1 2 3</expression>
-                    <views>3</views>
-                </command>
-            </commands>
-        </group>
 
     </command_groups>
 </configuration>

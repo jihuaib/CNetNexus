@@ -53,10 +53,9 @@ static void bgp_send_cli_response(dev_ipc_message_t *msg, const char *text)
  * BGP 上下文变量 ID（独立命名空间，与 XML cfg-id 无关）
  * 与 commands.xml <context-out ctx-id="N"> 中的 N 对应
  */
-#define BGP_CTX_VAR_AS 1   /**< BGP AS 号（BGP 视图及 AF 视图均携带） */
-#define BGP_CTX_VAR_VRF 2  /**< VRF ID */
-#define BGP_CTX_VAR_AFI 3  /**< 地址族（bgp_afi_t） */
-#define BGP_CTX_VAR_SAFI 4 /**< 子地址族（bgp_safi_t） */
+#define BGP_CTX_VAR_VRF 1  /**< VRF ID */
+#define BGP_CTX_VAR_AFI 2  /**< 地址族（bgp_afi_t） */
+#define BGP_CTX_VAR_SAFI 3 /**< 子地址族（bgp_safi_t） */
 
 /** 从 TLV 上下文提取的视图参数，带默认值（公网 VRF + IPv4 单播） */
 typedef struct bgp_cli_ctx

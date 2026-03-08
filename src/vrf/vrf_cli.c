@@ -15,17 +15,13 @@
 #include "log.h"
 #include "vrf_main.h"
 
-/** CLI 命令组 ID：vrf <vrf-name>（创建） */
+/** CLI 命令组 ID：vrf <vrf-name>（创建） 和 no vrf <vrf-name>（删除） */
 #define VRF_CLI_GROUP_ID_CREATE 1
 /** CLI 命令组 ID：show vrf [<vrf-name>] */
 #define VRF_CLI_GROUP_ID_SHOW 2
-/** CLI 命令组 ID：no vrf <vrf-name>（删除） */
-#define VRF_CLI_GROUP_ID_DELETE 3
 
 /** show vrf <vrf-name> 的参数 cfg_id */
 #define VRF_CFGID_SHOW_NAME 3
-/** no vrf <vrf-name> 的参数 cfg_id（同时用于 QUERY_CANDIDATES 过滤） */
-#define VRF_CFGID_DELETE_NAME 4
 
 // ============================================================================
 // 发送 CLI 响应辅助
@@ -48,18 +44,19 @@ static void vrf_send_cli_response(dev_ipc_message_t *msg, const char *text)
 // ============================================================================
 
 /**
- * @brief 处理 "vrf <vrf-name>" 命令（group_id=1）
+ * @brief 处理 "vrf <vrf-name>" 和 "no vrf <vrf-name>" 命令（group_id=1）
  *
- * cfg_id: 1=vrf(keyword) 2=vrf-name(parameter)
+ * cfg_id: 1=vrf(keyword) 2=vrf-name(parameter) 4=delete-vrf-name(parameter)
  */
 static int handle_vrf_create(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
+    gboolean is_no = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
     char vrf_name[VRF_NAME_MAX_LEN] = {0};
 
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
     {
-        if (!CLI_TLV_IS_CTX(&entry) && entry.cfg_id == 2)
+        if (!CLI_TLV_IS_CTX(&entry) && entry.cfg_id == 1)
         {
             const char *s = cli_tlv_entry_get_text(&entry);
             if (s)
@@ -76,33 +73,47 @@ static int handle_vrf_create(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         return ERRCODE_FAIL;
     }
 
-    /* 公网 VRF 不允许手动创建 */
+    /* 公网 VRF 不允许手动创建或删除 */
     if (strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) == 0)
     {
-        vrf_send_cli_response(msg, "VRF Error: 公网 VRF 不可手动创建\r\n");
+        vrf_send_cli_response(msg, is_no ? "VRF Error: 公网 VRF 不可删除\r\n" : "VRF Error: 公网 VRF 不可手动创建\r\n");
         return ERRCODE_FAIL;
     }
 
-    /* 检查名称是否已存在（幂等：已存在则提示） */
-    if (vrf_find_by_name(vrf_name))
+    if (is_no)
     {
+        if (vrf_delete(vrf_name) != ERRCODE_SUCCESS)
+        {
+            char errbuf[128];
+            snprintf(errbuf, sizeof(errbuf), "VRF Error: '%s' 不存在\r\n", vrf_name);
+            vrf_send_cli_response(msg, errbuf);
+            return ERRCODE_FAIL;
+        }
+
         char buf[128];
-        snprintf(buf, sizeof(buf), "VRF '%s' 已存在\r\n", vrf_name);
+        snprintf(buf, sizeof(buf), "VRF '%s' 已删除\r\n", vrf_name);
         vrf_send_cli_response(msg, buf);
         return ERRCODE_SUCCESS;
     }
-
-    vrf_entry_t *entry2 = vrf_create(vrf_name);
-    if (!entry2)
+    else
     {
-        vrf_send_cli_response(msg, "VRF Error: 创建失败\r\n");
-        return ERRCODE_FAIL;
-    }
+        /* 检查名称是否已存在 */
+        if (vrf_find_by_name(vrf_name))
+        {
+            vrf_send_cli_response(msg, "");
+            return ERRCODE_SUCCESS;
+        }
 
-    char buf[128];
-    snprintf(buf, sizeof(buf), "VRF '%s' 创建成功 (id=%u)\r\n", entry2->name, entry2->vrf_id);
-    vrf_send_cli_response(msg, buf);
-    return ERRCODE_SUCCESS;
+        vrf_entry_t *entry2 = vrf_create(vrf_name);
+        if (!entry2)
+        {
+            vrf_send_cli_response(msg, "VRF Error: 创建失败\r\n");
+            return ERRCODE_FAIL;
+        }
+
+        vrf_send_cli_response(msg, "");
+        return ERRCODE_SUCCESS;
+    }
 }
 
 /**
@@ -187,55 +198,6 @@ static int handle_vrf_show(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     return ERRCODE_SUCCESS;
 }
 
-/**
- * @brief 处理 "no vrf <vrf-name>" 命令（group_id=3）
- *
- * cfg_id=4 携带 VRF 名称。不允许删除公网 VRF。
- */
-static int handle_vrf_delete(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
-{
-    char vrf_name[VRF_NAME_MAX_LEN] = {0};
-
-    cli_tlv_entry_t entry;
-    while (cli_tlv_next(parser, &entry) == 1)
-    {
-        if (!CLI_TLV_IS_CTX(&entry) && entry.cfg_id == VRF_CFGID_DELETE_NAME)
-        {
-            const char *s = cli_tlv_entry_get_text(&entry);
-            if (s)
-            {
-                snprintf(vrf_name, sizeof(vrf_name), "%s", s);
-            }
-        }
-        cli_tlv_entry_free(&entry);
-    }
-
-    if (vrf_name[0] == '\0')
-    {
-        vrf_send_cli_response(msg, "VRF Error: 缺少 VRF 名称\r\n");
-        return ERRCODE_FAIL;
-    }
-
-    if (strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) == 0)
-    {
-        vrf_send_cli_response(msg, "VRF Error: 公网 VRF 不可删除\r\n");
-        return ERRCODE_FAIL;
-    }
-
-    if (vrf_delete(vrf_name) != ERRCODE_SUCCESS)
-    {
-        char errbuf[128];
-        snprintf(errbuf, sizeof(errbuf), "VRF Error: '%s' 不存在\r\n", vrf_name);
-        vrf_send_cli_response(msg, errbuf);
-        return ERRCODE_FAIL;
-    }
-
-    char buf[128];
-    snprintf(buf, sizeof(buf), "VRF '%s' 已删除\r\n", vrf_name);
-    vrf_send_cli_response(msg, buf);
-    return ERRCODE_SUCCESS;
-}
-
 // ============================================================================
 // 消息 dispatch
 // ============================================================================
@@ -265,9 +227,6 @@ int vrf_cli_handle_message(dev_ipc_message_t *msg)
             break;
         case VRF_CLI_GROUP_ID_SHOW:
             result = handle_vrf_show(msg, &parser);
-            break;
-        case VRF_CLI_GROUP_ID_DELETE:
-            result = handle_vrf_delete(msg, &parser);
             break;
         default:
             LOG_WARN("未知 group_id: %u", parser.group_id);
@@ -301,6 +260,8 @@ void vrf_cli_handle_query_candidates(dev_ipc_context_t *ctx, dev_ipc_message_t *
         cfg_id = g_ntohl(net_id);
     }
 
+    (void)cfg_id; // 当前命令仅一个候选值查询，无需区分 cfg_id
+
     /* 按 vrf_id 升序枚举所有 VRF */
     GList *list = g_hash_table_get_values(g_vrf_local->vrf_by_id);
     list = g_list_sort(list, compare_vrf_by_id);
@@ -310,12 +271,6 @@ void vrf_cli_handle_query_candidates(dev_ipc_context_t *ctx, dev_ipc_message_t *
     for (GList *node = list; node; node = node->next)
     {
         const vrf_entry_t *e = (const vrf_entry_t *)node->data;
-
-        /* cfg_id=VRF_CFGID_DELETE_NAME（no vrf）时排除公网 VRF */
-        if (cfg_id == VRF_CFGID_DELETE_NAME && e->vrf_id == VRF_PUBLIC_VRF_ID)
-        {
-            continue;
-        }
 
         g_byte_array_append(buf, (const guint8 *)e->name, (guint)strlen(e->name) + 1);
     }

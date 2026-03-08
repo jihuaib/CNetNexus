@@ -558,23 +558,31 @@ static char **cfg_query_dynamic_candidates(const cli_tree_node_t *node)
 }
 
 /**
- * @brief 将动态候选值填入行缓冲区（替换最后一个 token）
- * @param candidate        候选字符串
- * @param has_trailing_space 输入是否以空格结尾
- * @param line_buffer      行缓冲区（in/out）
- * @param line_pos         行长度（in/out）
+ * @brief 将动态候选值填入行缓冲区（始终替换最后一个 token，兼容尾部空格）
+ * @param candidate   候选字符串
+ * @param line_buffer 行缓冲区（in/out）
+ * @param line_pos    行长度（in/out）
  */
-static void tab_apply_dynamic_match(const char *candidate, uint32_t has_trailing_space, char *line_buffer,
-                                    uint32_t *line_pos)
+static void tab_apply_dynamic_match(const char *candidate, char *line_buffer, uint32_t *line_pos)
 {
-    if (!has_trailing_space)
+    /* 向前跳过尾部空格，找到最后一个有效字符的位置 */
+    uint32_t search_end = *line_pos;
+    while (search_end > 0 && line_buffer[search_end - 1] == ' ')
     {
-        /* 替换最后一个 token */
-        char *last_space = strrchr(line_buffer, ' ');
-        char *start = last_space ? last_space + 1 : line_buffer;
-        *line_pos = (uint32_t)(start - line_buffer);
+        search_end--;
     }
-    /* has_trailing_space=1 时直接从 *line_pos 处写入（空格已在缓冲区中） */
+
+    /* 从有效字符起向前找最近的空格，确定最后一个 token 的起始位置 */
+    uint32_t token_start = 0;
+    for (uint32_t i = search_end; i > 0; i--)
+    {
+        if (line_buffer[i - 1] == ' ')
+        {
+            token_start = i;
+            break;
+        }
+    }
+    *line_pos = token_start;
 
     for (uint32_t i = 0; candidate[i] && *line_pos < MAX_CMD_LEN - 1; i++)
     {
@@ -817,7 +825,7 @@ static void handle_tab_completion(cli_session_t *session, char *line_buffer, uin
                 line_buffer[*line_pos] = '\0';
                 cfg_send_message(session, "\r\n");
                 send_prompt(session);
-                tab_apply_dynamic_match((const char *)matched->pdata[0], has_trailing_space, line_buffer, line_pos);
+                tab_apply_dynamic_match((const char *)matched->pdata[0], line_buffer, line_pos);
                 cfg_send_message(session, line_buffer);
             }
             else
@@ -841,8 +849,7 @@ static void handle_tab_completion(cli_session_t *session, char *line_buffer, uin
 
                 cfg_send_message(session, "\r\n");
                 send_prompt(session);
-                tab_apply_dynamic_match((const char *)matched->pdata[session->tab_match_index], has_trailing_space,
-                                        line_buffer, line_pos);
+                tab_apply_dynamic_match((const char *)matched->pdata[session->tab_match_index], line_buffer, line_pos);
                 cfg_send_message(session, line_buffer);
             }
 
