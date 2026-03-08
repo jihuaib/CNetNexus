@@ -810,7 +810,7 @@ static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree,
 
                                 cli_ctx_out_entry_t *ce = &ctx_out_buf[num_ctx_out];
                                 ce->ctx_id = 0;
-                                ce->from_param = -1;
+                                ce->from_param = 0xFFFFFFFFU;
                                 ce->fixed_value = 0;
 
                                 /* 使用独立的 ctx-id 命名空间，与命令参数 cfg-id 无关 */
@@ -824,7 +824,7 @@ static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree,
                                 xmlChar *from_param_str = xmlGetProp(e, (const xmlChar *)"from-param");
                                 if (from_param_str)
                                 {
-                                    ce->from_param = atoi((const char *)from_param_str);
+                                    ce->from_param = (uint32_t)atoi((const char *)from_param_str);
                                     xmlFree(from_param_str);
                                 }
                                 else
@@ -832,7 +832,7 @@ static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree,
                                     xmlChar *value_str = xmlGetProp(e, (const xmlChar *)"value");
                                     if (value_str)
                                     {
-                                        ce->fixed_value = (int64_t)atoll((const char *)value_str);
+                                        ce->fixed_value = (uint32_t)strtoul((const char *)value_str, NULL, 10);
                                         xmlFree(value_str);
                                     }
                                 }
@@ -870,14 +870,16 @@ static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree,
                                 }
                                 if (view_tree->global_view)
                                 {
-                                    register_cmd_trees_to_view(virtual_root, view_tree->global_view->cmd_tree, 0);
+                                    register_cmd_trees_to_view(virtual_root, view_tree->global_view->cmd_tree, 1);
                                 }
                             }
                             else
                             {
+                                /* 对每个目标 view 克隆注册：避免 cli_tree_add_child
+                                 * 在合并同名节点时释放原始节点，导致后续 view 的
+                                 * clone 操作读到已释放内存（use-after-free）。*/
                                 char *views_copy = g_strdup(views);
                                 char *view_token = strtok(views_copy, ",");
-                                uint32_t first = 1;
 
                                 while (view_token)
                                 {
@@ -895,8 +897,7 @@ static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree,
                                         cli_view_find_by_id(view_tree->root, atoi(view_token));
                                     if (target_view && target_view->cmd_tree)
                                     {
-                                        register_cmd_trees_to_view(virtual_root, target_view->cmd_tree, !first);
-                                        first = 0;
+                                        register_cmd_trees_to_view(virtual_root, target_view->cmd_tree, 1);
                                     }
 
                                     view_token = strtok(NULL, ",");
@@ -905,11 +906,8 @@ static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree,
                                 g_free(views_copy);
                             }
 
-                            // Free virtual root shell (children already moved)
-                            g_free(virtual_root->name);
-                            g_free(virtual_root->description);
-                            g_free(virtual_root->children);
-                            g_free(virtual_root);
+                            /* 释放 virtual_root 及其完整子树（均已克隆到目标 view） */
+                            cli_tree_free(virtual_root);
                         }
                     }
 

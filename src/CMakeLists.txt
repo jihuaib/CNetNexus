@@ -1,7 +1,7 @@
 add_subdirectory(utils)
 add_subdirectory(dev)
+add_subdirectory(cfg)   # cfg/lib 先创建 cli_api，供后续模块使用
 add_subdirectory(db)
-add_subdirectory(cfg)
 add_subdirectory(if)
 add_subdirectory(route)
 add_subdirectory(bgp)

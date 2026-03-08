@@ -262,7 +262,7 @@ static void handle_show_history(cli_session_t *session)
 static void handle_show_config(cli_session_t *session)
 {
     /* 需要查询配置的业务模块列表 */
-    static const uint32_t config_modules[] = {DEV_MODULE_ID_BGP};
+    static const uint32_t config_modules[] = {DEV_MODULE_ID_IF, DEV_MODULE_ID_BGP};
 
     GString *output = g_string_new("");
 

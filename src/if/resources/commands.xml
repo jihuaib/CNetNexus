@@ -89,9 +89,9 @@
                     <type>ip</type>
                 </element>
                 <element cfg-id="2" type="parameter">
-                    <name>&lt;netmask&gt;</name> <!-- 4 -->
-                    <description>Subnet mask</description>
-                    <type>ip</type>
+                    <name>&lt;prefix-len&gt;</name> <!-- 4 -->
+                    <description>Prefix length (0-32)</description>
+                    <type>integer(0-32)</type>
                 </element>
                 <element cfg-id="3" type="keyword">
                     <name>shutdown</name> <!-- 5 -->
@@ -103,7 +103,7 @@
                 </element>
             </elements>
             <commands>
-                <!-- ip address <ip> <mask> -->
+                <!-- ip address <ip> <prefix-len> -->
                 <command>
                     <expression>1 2 3 4</expression>
                     <views>5</views>

@@ -10,15 +10,19 @@
 #include <net/if.h>
 #include <stdint.h>
 
+#include "net_addr.h"
+
 #define MAX_INTERFACES 16
 #define LOGICAL_NAME_LEN 32
 
-// Interface mapping entry
+/** 接口映射条目（同时作为接口内存态配置） */
 typedef struct
 {
-    char logical_name[LOGICAL_NAME_LEN]; // e.g., "port0", "port1"
-    char physical_name[IFNAMSIZ];        // e.g., "eth0", "veth0", "ens33"
-    uint32_t auto_mapped;
+    char logical_name[LOGICAL_NAME_LEN]; /**< 逻辑名，如 "GE-1" */
+    char physical_name[IFNAMSIZ];        /**< 物理名，如 "eth0" */
+    uint32_t auto_mapped;                /**< 是否自动映射 */
+    net_prefix_t prefix;                 /**< 已配置的 IP/前缀；addr.family=0 表示未配置 */
+    int shutdown;                        /**< 1=shutdown（down），0=no shutdown（up） */
 } if_map_entry_t;
 
 // Interface mapping table
@@ -27,9 +31,6 @@ typedef struct
     if_map_entry_t entries[MAX_INTERFACES];
     int count;
 } if_map_t;
-
-// Global interface map
-extern if_map_t g_interface_map;
 
 // Initialize interface mapping (auto-detect or load from config)
 int if_map_init(const char *config_file);

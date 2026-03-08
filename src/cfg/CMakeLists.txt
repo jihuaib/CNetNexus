@@ -1,3 +1,5 @@
+add_subdirectory(lib)
+
 # CLI library sources
 set(CFG_SOURCES
     cli_handler.c
@@ -25,6 +27,7 @@ target_include_directories(cfg PUBLIC
 target_link_libraries(cfg PUBLIC
     dev
     dev_api
+    cli_api
     utils
     ${LIBXML2_LIBRARIES}
     ${GLIB_LIBRARIES}

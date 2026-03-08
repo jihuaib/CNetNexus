@@ -177,6 +177,11 @@ void db_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             db_cli_handle_continue(msg);
             break;
 
+        case CFG_MSG_TYPE_QUERY_CANDIDATES:
+            LOG_DEBUG("Received query candidates request");
+            db_cli_handle_query_candidates(ctx, msg);
+            return; /* msg 由被调函数释放 */
+
         default:
             LOG_WARN("Received unknown message type: 0x%08X", msg->msg_type);
             break;

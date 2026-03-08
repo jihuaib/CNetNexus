@@ -25,6 +25,7 @@ target_include_directories(bgp PRIVATE
 # Link libraries
 target_link_libraries(bgp PRIVATE
     dev_api
+    cli_api
     utils
 )
 

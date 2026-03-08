@@ -322,6 +322,58 @@ static int handle_db_show_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 }
 
 // ============================================================================
+// 动态候选值查询：返回所有用户表名
+// ============================================================================
+
+void db_cli_handle_query_candidates(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+{
+    db_connection_t *conn = g_db_local->main_conn;
+
+    GByteArray *buf = g_byte_array_new();
+
+    if (conn && conn->handle)
+    {
+        const char *sql =
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name;";
+        sqlite3_stmt *stmt;
+
+        g_mutex_lock(&conn->db_mutex);
+        int rc = sqlite3_prepare_v2(conn->handle, sql, -1, &stmt, NULL);
+        if (rc == SQLITE_OK)
+        {
+            while (sqlite3_step(stmt) == SQLITE_ROW)
+            {
+                const char *name = (const char *)sqlite3_column_text(stmt, 0);
+                if (name && name[0] != '\0')
+                {
+                    g_byte_array_append(buf, (const guint8 *)name, (guint)(strlen(name) + 1));
+                }
+            }
+            sqlite3_finalize(stmt);
+        }
+        g_mutex_unlock(&conn->db_mutex);
+    }
+
+    /* 追加结束空字节 */
+    guint8 terminator = '\0';
+    g_byte_array_append(buf, &terminator, 1);
+
+    guint payload_len = buf->len;
+    guint8 *payload = g_memdup2(buf->data, payload_len);
+    g_byte_array_free(buf, TRUE);
+
+    dev_ipc_message_t *resp = dev_ipc_message_create(CFG_MSG_TYPE_QUERY_CANDIDATES_RESP, DEV_MODULE_ID_DB,
+                                                     msg->src_module_id, msg->request_id, payload, payload_len, g_free);
+    if (resp)
+    {
+        dev_ipc_send_response(ctx, resp);
+        dev_ipc_message_free(resp);
+    }
+
+    dev_ipc_message_free(msg);
+}
+
+// ============================================================================
 // 主入口
 // ============================================================================
 

@@ -159,10 +159,19 @@ typedef dev_ipc_costate_t dev_ipc_costate_t;
 // DEV IPC 配置
 // ============================================================================
 
-/** 心跳间隔（秒） */
-#define DEV_IPC_HEARTBEAT_INTERVAL 5
-/** 心跳超时（秒） */
-#define DEV_IPC_HEARTBEAT_TIMEOUT 15
+/** 同步查询默认超时（毫秒） */
+#ifdef NDEBUG
+/* Release 模式：正常心跳参数 */
+#    define DEV_IPC_HEARTBEAT_INTERVAL 5
+#    define DEV_IPC_HEARTBEAT_TIMEOUT 15
+#    define DEV_IPC_QUERY_TIMEOUT_DEFAULT 5000
+#else
+/* Debug 模式：延长心跳和超时，方便 GDB 调试 */
+#    define DEV_IPC_HEARTBEAT_INTERVAL 300
+#    define DEV_IPC_HEARTBEAT_TIMEOUT 600
+#    define DEV_IPC_QUERY_TIMEOUT_DEFAULT 30000
+#endif
+
 /** 初始重连延迟（毫秒） */
 #define DEV_IPC_RECONNECT_DELAY_MIN 500
 /** 最大重连延迟（毫秒） */
@@ -171,8 +180,6 @@ typedef dev_ipc_costate_t dev_ipc_costate_t;
 #define DEV_IPC_MODULE_NAME_MAX 32
 /** 最大连接数 */
 #define DEV_IPC_MAX_CONNECTIONS 16
-/** 同步查询默认超时（毫秒） */
-#define DEV_IPC_QUERY_TIMEOUT_DEFAULT 5000
 /** 接收缓冲区大小 */
 #define DEV_IPC_RECV_BUF_SIZE 65536
 

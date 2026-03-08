@@ -2,8 +2,10 @@
 set(IF_SOURCES
     if.c
     if_map.c
+    if_cfg_apply.c
     if_main.c
     if_cli.c
+        if_bdr.c
 )
 
 # Create shared library for if module
@@ -17,6 +19,7 @@ target_include_directories(if PRIVATE
 # Link libraries
 target_link_libraries(if PRIVATE
     dev_api
+    cli_api
     ${GLIB_LIBRARIES}
 )
 

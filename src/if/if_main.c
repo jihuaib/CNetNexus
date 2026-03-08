@@ -16,9 +16,11 @@
 #include "db.h"
 #include "dev.h"
 #include "errcode.h"
+#include "if_bdr.h"
+#include "if_cfg_apply.h"
 #include "if_cli.h"
-#include "if_map.h"
 #include "log.h"
+#include "net_addr.h"
 #include "path_utils.h"
 
 if_local_t *g_if_local = NULL;
@@ -28,36 +30,82 @@ if_local_t *g_if_local = NULL;
  */
 static void if_init_db(void)
 {
-    extern if_map_t g_interface_map;
-
-    for (int i = 0; i < g_interface_map.count; i++)
+    for (int i = 0; i < g_if_local->interface_map.count; i++)
     {
-        const char *logical_name = g_interface_map.entries[i].logical_name;
+        const char *logical_name = g_if_local->interface_map.entries[i].logical_name;
 
-        db_condition_t conditions[] = {
-            {.field_name = "name", .op = DB_CMP_EQ, .value = db_value_text(logical_name)},
-        };
-        db_filter_t filter = {.conditions = conditions, .num_conditions = G_N_ELEMENTS(conditions)};
+        db_condition_t cond = {.field_name = "name", .op = DB_CMP_EQ, .value = db_value_text(logical_name)};
+        db_filter_t filter = {.conditions = &cond, .num_conditions = 1};
         gboolean exists = FALSE;
         int ret = db_rpc_exists(g_if_local->dev_ipc_ctx, "if_interface", &filter, &exists);
-        db_value_free(&conditions[0].value);
+        db_value_free(&cond.value);
 
         if (ret == ERRCODE_SUCCESS && !exists)
         {
             db_record_t *rec = db_record_new();
             db_record_set_text(rec, "name", logical_name);
             db_record_set_text(rec, "ip_address", "");
-            db_record_set_text(rec, "netmask", "");
+            db_record_set_int(rec, "prefix_len", 0);
             db_record_set_int(rec, "shutdown", 0);
             db_rpc_insert_record(g_if_local->dev_ipc_ctx, "if_interface", rec);
             db_record_free(rec);
-            LOG_INFO("Inserted interface %s into database", logical_name);
+            LOG_INFO("接口 %s 已写入数据库", logical_name);
         }
         else if (ret == ERRCODE_SUCCESS && exists)
         {
-            LOG_DEBUG("Interface %s already exists in database, preserving config", logical_name);
+            LOG_DEBUG("接口 %s 已在数据库中，保留原有配置", logical_name);
         }
     }
+}
+
+/**
+ * @brief 从数据库恢复接口配置到内存态
+ *
+ * 复用 if_cfg_apply_* 流程，与 CLI 配置路径完全一致。
+ */
+static void if_db_restore(dev_ipc_context_t *ctx)
+{
+    db_result_t *result = NULL;
+    if (db_rpc_query(ctx, "if_interface", NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
+    {
+        LOG_WARN("IF: 恢复数据库配置失败");
+        return;
+    }
+
+    for (uint32_t i = 0; i < result->num_rows; i++)
+    {
+        db_row_t *row = result->rows[i];
+        const char *name = db_row_get_text(row, "name", NULL);
+        const char *ip_str = db_row_get_text(row, "ip_address", NULL);
+        int64_t prefix_len = db_row_get_int(row, "prefix_len", 0);
+        int64_t shutdown = db_row_get_int(row, "shutdown", 0);
+
+        if (!name)
+        {
+            continue;
+        }
+
+        /* 恢复 IP（非空时） */
+        if (ip_str && ip_str[0] != '\0')
+        {
+            net_prefix_t pfx;
+            memset(&pfx, 0, sizeof(pfx));
+            if (net_addr_from_str(ip_str, &pfx.addr) == 0)
+            {
+                pfx.prefix_len = (uint8_t)prefix_len;
+                if_cfg_apply_ip(FALSE, name, &pfx);
+            }
+        }
+
+        /* 恢复 shutdown 状态 */
+        if (shutdown)
+        {
+            if_cfg_apply_shutdown(FALSE, name); /* shutdown */
+        }
+    }
+
+    db_result_free(result);
+    LOG_INFO("IF: 数据库配置恢复完成");
 }
 
 // ============================================================================
@@ -106,7 +154,7 @@ static void if_on_connect(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 static const db_column_def_t IF_INTERFACE_COLS[] = {
     {"name", DB_TYPE_TEXT, DB_COL_PRIMARY_KEY, NULL},
     {"ip_address", DB_TYPE_TEXT, DB_COL_NOT_NULL, "''"},
-    {"netmask", DB_TYPE_TEXT, DB_COL_NOT_NULL, "''"},
+    {"prefix_len", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},
     {"shutdown", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},
 };
 
@@ -129,8 +177,11 @@ static void if_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         return;
     }
 
-    /* 将接口映射表写入数据库 */
+    /* 将新接口写入数据库（已有条目保留） */
     if_init_db();
+
+    /* 从数据库恢复配置到内存态 */
+    if_db_restore(ctx);
 
     LOG_INFO("IF module ready");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
@@ -187,6 +238,10 @@ void if_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             if_cli_handle_continue(msg);
             break;
 
+        case CFG_MSG_TYPE_SHOW_CONFIG:
+            LOG_DEBUG("Received show current-configuration request");
+            if_bdr_show_config(msg);
+            return;
         default:
             LOG_WARN("Received unknown message type: 0x%08X", msg->msg_type);
             break;

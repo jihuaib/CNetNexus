@@ -486,6 +486,109 @@ static void handle_arrow_right(cli_session_t *session, uint32_t line_pos, uint32
     }
 }
 
+// ============================================================================
+// 动态补全辅助函数
+// ============================================================================
+
+/**
+ * @brief 向目标模块发起同步 RPC，查询动态候选值列表
+ *
+ * 目标模块和 query_id 优先从 param_type->range.dynamic 中读取；
+ * 若为 0（同模块场景），则回退到 node 自身的 module_id / cfg_id。
+ *
+ * @param node 动态参数树节点（含 module_id、cfg_id 及 param_type）
+ * @return NULL 结尾的字符串数组（g_strfreev 释放），失败返回 NULL
+ */
+static char **cfg_query_dynamic_candidates(const cli_tree_node_t *node)
+{
+    const cli_param_type_t *pt = node->param_type;
+
+    /* 优先使用 param_type 中显式指定的目标模块和 query_id */
+    uint32_t module_id = pt->range.dynamic.candidates_module_id;
+    if (module_id == 0)
+    {
+        module_id = node->module_id;
+    }
+
+    uint32_t query_id = pt->range.dynamic.candidates_query_id;
+    if (query_id == 0)
+    {
+        query_id = node->cfg_id;
+    }
+
+    uint32_t *payload = g_new(uint32_t, 1);
+    *payload = g_htonl(query_id);
+
+    dev_ipc_message_t *req = dev_ipc_message_create(CFG_MSG_TYPE_QUERY_CANDIDATES, DEV_MODULE_ID_CFG, module_id, 0,
+                                                    payload, sizeof(uint32_t), g_free);
+    if (!req)
+    {
+        g_free(payload);
+        return NULL;
+    }
+
+    dev_ipc_message_t *resp = dev_ipc_query(g_cfg_local->dev_ipc_ctx, module_id, req, 2000);
+    dev_ipc_message_free(req);
+
+    if (!resp || !resp->payload || resp->payload_len < 2)
+    {
+        if (resp)
+        {
+            dev_ipc_message_free(resp);
+        }
+        return NULL;
+    }
+
+    /* 解析 "val1\0val2\0\0" 格式 */
+    GPtrArray *arr = g_ptr_array_new();
+    const char *p = (const char *)resp->payload;
+    const char *end = p + resp->payload_len;
+
+    while (p < end && *p != '\0')
+    {
+        g_ptr_array_add(arr, g_strdup(p));
+        p += strlen(p) + 1;
+    }
+
+    g_ptr_array_add(arr, NULL); /* NULL 结尾 */
+    char **result = (char **)g_ptr_array_free(arr, FALSE);
+
+    dev_ipc_message_free(resp);
+    return result;
+}
+
+/**
+ * @brief 将动态候选值填入行缓冲区（替换最后一个 token）
+ * @param candidate        候选字符串
+ * @param has_trailing_space 输入是否以空格结尾
+ * @param line_buffer      行缓冲区（in/out）
+ * @param line_pos         行长度（in/out）
+ */
+static void tab_apply_dynamic_match(const char *candidate, uint32_t has_trailing_space, char *line_buffer,
+                                    uint32_t *line_pos)
+{
+    if (!has_trailing_space)
+    {
+        /* 替换最后一个 token */
+        char *last_space = strrchr(line_buffer, ' ');
+        char *start = last_space ? last_space + 1 : line_buffer;
+        *line_pos = (uint32_t)(start - line_buffer);
+    }
+    /* has_trailing_space=1 时直接从 *line_pos 处写入（空格已在缓冲区中） */
+
+    for (uint32_t i = 0; candidate[i] && *line_pos < MAX_CMD_LEN - 1; i++)
+    {
+        line_buffer[*line_pos] = candidate[i];
+        (*line_pos)++;
+    }
+    if (*line_pos < MAX_CMD_LEN - 1)
+    {
+        line_buffer[*line_pos] = ' ';
+        (*line_pos)++;
+    }
+    line_buffer[*line_pos] = '\0';
+}
+
 // Print help for a node into a GString buffer
 static void cli_tree_print_help(cli_tree_node_t *node, GString *out)
 {
@@ -506,42 +609,75 @@ static void cli_tree_print_help(cli_tree_node_t *node, GString *out)
     for (uint32_t i = 0; i < node->num_children; i++)
     {
         cli_tree_node_t *child = node->children[i];
-        if (child->description)
+        if (!child->description)
         {
-            char name_display[128];
-            char desc_with_marker[256];
-
-            if (child->type == CLI_NODE_ARGUMENT && child->param_type && child->param_type->type_str)
-            {
-                // ARGUMENT: Display as <type(range)>
-                snprintf(name_display, sizeof(name_display), "<%s>", child->param_type->type_str);
-            }
-            else if (child->name)
-            {
-                // COMMAND or ARGUMENT without param_type: Display name as-is
-                strncpy(name_display, child->name, sizeof(name_display) - 1);
-                name_display[sizeof(name_display) - 1] = '\0';
-            }
-            else
-            {
-                // No name, skip this child
-                continue;
-            }
-
-            // Add marker if child is also an end node
-            if (child->is_end_node)
-            {
-                snprintf(desc_with_marker, sizeof(desc_with_marker), "%s", child->description);
-            }
-            else
-            {
-                strncpy(desc_with_marker, child->description, sizeof(desc_with_marker) - 1);
-                desc_with_marker[sizeof(desc_with_marker) - 1] = '\0';
-            }
-
-            snprintf(buffer, sizeof(buffer), "  %-25s - %s\r\n", name_display, desc_with_marker);
-            g_string_append(out, buffer);
+            continue;
         }
+
+        /* 动态参数：先显示内层类型范围，再逐条展示 RPC 候选值 */
+        if (child->type == CLI_NODE_ARGUMENT && child->param_type && child->param_type->type == PARAM_TYPE_DYNAMIC)
+        {
+            /* 首行：展示内层类型约束，提示用户输入合法范围 */
+            const cli_param_type_t *inner = child->param_type->range.dynamic.inner;
+            char type_display[64];
+            if (inner && inner->type_str)
+            {
+                snprintf(type_display, sizeof(type_display), "<%s>", inner->type_str);
+            }
+            else
+            {
+                snprintf(type_display, sizeof(type_display), "<%s>", child->param_type->type_str);
+            }
+            snprintf(buffer, sizeof(buffer), "  %-25s - %s\r\n", type_display, child->description);
+            g_string_append(out, buffer);
+
+            /* 后续行：RPC 查询并展示当前已有候选值 */
+            char **candidates = cfg_query_dynamic_candidates(child);
+            if (candidates)
+            {
+                for (uint32_t j = 0; candidates[j]; j++)
+                {
+                    snprintf(buffer, sizeof(buffer), "  %-25s - %s\r\n", candidates[j], child->description);
+                    g_string_append(out, buffer);
+                }
+                g_strfreev(candidates);
+            }
+            continue;
+        }
+
+        char name_display[128];
+        char desc_with_marker[256];
+
+        if (child->type == CLI_NODE_ARGUMENT && child->param_type && child->param_type->type_str)
+        {
+            // ARGUMENT: Display as <type(range)>
+            snprintf(name_display, sizeof(name_display), "<%s>", child->param_type->type_str);
+        }
+        else if (child->name)
+        {
+            // COMMAND or ARGUMENT without param_type: Display name as-is
+            strncpy(name_display, child->name, sizeof(name_display) - 1);
+            name_display[sizeof(name_display) - 1] = '\0';
+        }
+        else
+        {
+            // No name, skip this child
+            continue;
+        }
+
+        // Add marker if child is also an end node
+        if (child->is_end_node)
+        {
+            snprintf(desc_with_marker, sizeof(desc_with_marker), "%s", child->description);
+        }
+        else
+        {
+            strncpy(desc_with_marker, child->description, sizeof(desc_with_marker) - 1);
+            desc_with_marker[sizeof(desc_with_marker) - 1] = '\0';
+        }
+
+        snprintf(buffer, sizeof(buffer), "  %-25s - %s\r\n", name_display, desc_with_marker);
+        g_string_append(out, buffer);
     }
 }
 
@@ -617,7 +753,104 @@ static void handle_tab_completion(cli_session_t *session, char *line_buffer, uin
     uint32_t orig_len = session->tab_cycling ? session->tab_original_pos : *line_pos;
     uint32_t has_trailing_space = (orig_len > 0 && match_input[orig_len - 1] == ' ');
 
-    if (num_matches == 1)
+    /* 检查是否存在 DYNAMIC ARGUMENT 匹配 */
+    cli_tree_node_t *dynamic_match = NULL;
+    for (uint32_t i = 0; i < num_matches; i++)
+    {
+        if (matches[i]->type == CLI_NODE_ARGUMENT && matches[i]->param_type &&
+            matches[i]->param_type->type == PARAM_TYPE_DYNAMIC)
+        {
+            dynamic_match = matches[i];
+            break;
+        }
+    }
+
+    if (dynamic_match)
+    {
+        /* 获取用于前缀过滤的当前 token */
+        const char *prefix = "";
+        char prefix_buf[MAX_CMD_LEN];
+        if (!has_trailing_space)
+        {
+            char *last_space = strrchr(match_input, ' ');
+            prefix = last_space ? last_space + 1 : match_input;
+        }
+        strncpy(prefix_buf, prefix, sizeof(prefix_buf) - 1);
+        prefix_buf[sizeof(prefix_buf) - 1] = '\0';
+        uint32_t prefix_len = (uint32_t)strlen(prefix_buf);
+
+        /* RPC 查询候选值 */
+        char **candidates = cfg_query_dynamic_candidates(dynamic_match);
+        if (!candidates)
+        {
+            session->tab_cycling = 0;
+            cfg_send_message(session, "\r\n");
+            send_prompt(session);
+            cfg_send_message(session, line_buffer);
+        }
+        else
+        {
+            /* 收集匹配前缀的候选值 */
+            GPtrArray *matched = g_ptr_array_new();
+            for (uint32_t i = 0; candidates[i]; i++)
+            {
+                if (strncmp(candidates[i], prefix_buf, prefix_len) == 0)
+                {
+                    g_ptr_array_add(matched, candidates[i]);
+                }
+            }
+
+            uint32_t num_dyn = matched->len;
+            if (num_dyn == 0)
+            {
+                session->tab_cycling = 0;
+                cfg_send_message(session, "\r\n");
+                send_prompt(session);
+                cfg_send_message(session, line_buffer);
+            }
+            else if (num_dyn == 1)
+            {
+                session->tab_cycling = 0;
+                /* 保证缓冲区从原始输入状态开始替换 */
+                memcpy(line_buffer, match_input, orig_len);
+                *line_pos = orig_len;
+                line_buffer[*line_pos] = '\0';
+                cfg_send_message(session, "\r\n");
+                send_prompt(session);
+                tab_apply_dynamic_match((const char *)matched->pdata[0], has_trailing_space, line_buffer, line_pos);
+                cfg_send_message(session, line_buffer);
+            }
+            else
+            {
+                /* 多个候选：循环补全 */
+                if (!session->tab_cycling)
+                {
+                    session->tab_cycling = 1;
+                    session->tab_match_index = 0;
+                    memcpy(session->tab_original, line_buffer, *line_pos);
+                    session->tab_original_pos = *line_pos;
+                }
+                else
+                {
+                    session->tab_match_index = (session->tab_match_index + 1) % num_dyn;
+                }
+
+                memcpy(line_buffer, session->tab_original, session->tab_original_pos);
+                *line_pos = session->tab_original_pos;
+                line_buffer[*line_pos] = '\0';
+
+                cfg_send_message(session, "\r\n");
+                send_prompt(session);
+                tab_apply_dynamic_match((const char *)matched->pdata[session->tab_match_index], has_trailing_space,
+                                        line_buffer, line_pos);
+                cfg_send_message(session, line_buffer);
+            }
+
+            g_ptr_array_free(matched, FALSE);
+            g_strfreev(candidates);
+        }
+    }
+    else if (num_matches == 1)
     {
         // Single match - auto-complete directly
         session->tab_cycling = 0;
@@ -743,24 +976,77 @@ static void handle_help_request(cli_session_t *session, char *line_buffer, uint3
             {
                 cli_tree_node_t *arg = matches[0];
 
-                char name_display[128];
-                if (arg->param_type && arg->param_type->type_str)
+                /* 动态参数：先显示内层类型范围，再按前缀过滤 RPC 候选值 */
+                if (arg->param_type && arg->param_type->type == PARAM_TYPE_DYNAMIC)
                 {
-                    snprintf(name_display, sizeof(name_display), "<%s>", arg->param_type->type_str);
-                }
-                else if (arg->name)
-                {
-                    strncpy(name_display, arg->name, sizeof(name_display) - 1);
-                    name_display[sizeof(name_display) - 1] = '\0';
+                    /* 提取当前 token 作为前缀 */
+                    const char *prefix = "";
+                    char *last_space = strrchr(match_buffer, ' ');
+                    if (last_space)
+                    {
+                        prefix = last_space + 1;
+                    }
+                    else if (cursor_pos > 0)
+                    {
+                        prefix = match_buffer;
+                    }
+                    uint32_t prefix_len = (uint32_t)strlen(prefix);
+
+                    /* 首行：内层类型约束（前缀匹配时才显示） */
+                    const cli_param_type_t *inner = arg->param_type->range.dynamic.inner;
+                    char type_display[64];
+                    if (inner && inner->type_str)
+                    {
+                        snprintf(type_display, sizeof(type_display), "<%s>", inner->type_str);
+                    }
+                    else
+                    {
+                        snprintf(type_display, sizeof(type_display), "<%s>", arg->param_type->type_str);
+                    }
+                    if (strncmp(type_display + 1, prefix, prefix_len) == 0 || prefix_len == 0)
+                    {
+                        snprintf(buffer, sizeof(buffer), "  %-25s - %s\r\n", type_display,
+                                 arg->description ? arg->description : "");
+                        g_string_append(help_out, buffer);
+                    }
+
+                    /* 后续行：RPC 候选值按前缀过滤 */
+                    char **candidates = cfg_query_dynamic_candidates(arg);
+                    if (candidates)
+                    {
+                        for (uint32_t ci = 0; candidates[ci]; ci++)
+                        {
+                            if (strncmp(candidates[ci], prefix, prefix_len) == 0)
+                            {
+                                snprintf(buffer, sizeof(buffer), "  %-25s - %s\r\n", candidates[ci],
+                                         arg->description ? arg->description : "");
+                                g_string_append(help_out, buffer);
+                            }
+                        }
+                        g_strfreev(candidates);
+                    }
                 }
                 else
                 {
-                    strcpy(name_display, "<parameter>");
-                }
+                    char name_display[128];
+                    if (arg->param_type && arg->param_type->type_str)
+                    {
+                        snprintf(name_display, sizeof(name_display), "<%s>", arg->param_type->type_str);
+                    }
+                    else if (arg->name)
+                    {
+                        strncpy(name_display, arg->name, sizeof(name_display) - 1);
+                        name_display[sizeof(name_display) - 1] = '\0';
+                    }
+                    else
+                    {
+                        strcpy(name_display, "<parameter>");
+                    }
 
-                snprintf(buffer, sizeof(buffer), "  %-25s - %s\r\n", name_display,
-                         arg->description ? arg->description : "");
-                g_string_append(help_out, buffer);
+                    snprintf(buffer, sizeof(buffer), "  %-25s - %s\r\n", name_display,
+                             arg->description ? arg->description : "");
+                    g_string_append(help_out, buffer);
+                }
             }
         }
         else
@@ -858,8 +1144,8 @@ int process_command(const char *cmd_line, cli_session_t *session)
         return 0; // Empty command, don't record
     }
 
-    // 以 # 开头的行视为注释，不做任何处理
-    if (trimmed[0] == '#')
+    // 以 ! 开头的行视为注释，不做任何处理
+    if (trimmed[0] == '!')
     {
         return 0;
     }

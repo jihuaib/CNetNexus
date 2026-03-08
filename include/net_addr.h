@@ -48,4 +48,39 @@ void net_addr_to_str(const net_addr_t *addr, char *buf, size_t sz);
  */
 gboolean net_addr_equal(const net_addr_t *a, const net_addr_t *b);
 
+// ============================================================================
+// IP 前缀（地址 + 前缀长度）
+// ============================================================================
+
+/**
+ * @brief IP 地址 + 前缀长度（CIDR 表示），可作为通用 IP 配置结构
+ */
+typedef struct
+{
+    net_addr_t addr;    /**< IP 地址；family=0 表示未配置 */
+    uint8_t prefix_len; /**< 前缀长度（IPv4: 0-32，IPv6: 0-128） */
+} net_prefix_t;
+
+/**
+ * @brief 判断前缀是否已配置（addr.family != 0）
+ * @param p 前缀指针
+ * @return TRUE 已配置，FALSE 未配置
+ */
+gboolean net_prefix_is_set(const net_prefix_t *p);
+
+/**
+ * @brief 将前缀转为 "addr/len" 字符串，如 "192.168.1.1/24"
+ * @param p   前缀指针
+ * @param buf 输出缓冲区（建议 70 字节）
+ * @param sz  缓冲区大小
+ */
+void net_prefix_to_str(const net_prefix_t *p, char *buf, size_t sz);
+
+/**
+ * @brief 将前缀长度转为点分十进制掩码字符串（仅 IPv4）
+ * @param prefix_len 前缀长度（0-32）
+ * @param buf        输出缓冲区（至少 16 字节）
+ */
+void net_prefix_len_to_mask_str(uint8_t prefix_len, char *buf);
+
 #endif /* NET_ADDR_H */

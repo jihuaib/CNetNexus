@@ -63,4 +63,11 @@ vrf_entry_t *vrf_find_by_id(uint32_t vrf_id);
  */
 vrf_entry_t *vrf_find_by_name(const char *name);
 
+/**
+ * @brief 按名称删除 VRF 表项
+ * @param name VRF 名称
+ * @return 成功返回 ERRCODE_SUCCESS，未找到返回 ERRCODE_FAIL
+ */
+int vrf_delete(const char *name);
+
 #endif /* VRF_MAIN_H */

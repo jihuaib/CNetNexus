@@ -24,6 +24,7 @@ typedef enum
     PARAM_TYPE_IP,          // IPv4 or IPv6 address
     PARAM_TYPE_MAC,         // MAC address
     PARAM_TYPE_ENUM,        // Enumeration (predefined values)
+    PARAM_TYPE_DYNAMIC,     // 动态候选：校验委托给 inner，候选值运行时 RPC 查询
 } param_type_enum_t;
 
 typedef struct cli_param_type cli_param_type_t;
@@ -58,6 +59,13 @@ struct cli_param_type
             uint64_t min_val; // Minimum value
             uint64_t max_val; // Maximum value
         } uint_range;
+
+        struct
+        {
+            struct cli_param_type *inner; /**< 内层校验类型（如 string(1-63)），NULL 则接受任意非空字符串 */
+            uint32_t candidates_module_id; /**< 候选值来源模块 ID，0 表示使用命令节点自身的 module_id */
+            uint32_t candidates_query_id; /**< 候选值查询 ID，0 表示使用命令节点自身的 cfg_id */
+        } dynamic;
     } range;
 
     char *type_str;             // Original type string (e.g., "string(1-63)")
@@ -115,5 +123,7 @@ gboolean param_validate_ip(const cli_param_type_t *param_type, const char *value
                            uint32_t error_msg_size);
 gboolean param_validate_mac(const cli_param_type_t *param_type, const char *value, char *error_msg,
                             uint32_t error_msg_size);
+gboolean param_validate_dynamic(const cli_param_type_t *param_type, const char *value, char *error_msg,
+                                uint32_t error_msg_size);
 
 #endif // CLI_PARAM_TYPE_H

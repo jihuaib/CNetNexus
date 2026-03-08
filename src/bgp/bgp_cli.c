@@ -84,13 +84,13 @@ static void bgp_cli_ctx_parse(bgp_cli_ctx_t *ctx, cli_tlv_entry_t *entry)
     switch (entry->cfg_id)
     {
         case BGP_CTX_VAR_VRF:
-            ctx->vrf_id = (uint32_t)cli_tlv_entry_get_int(entry);
+            ctx->vrf_id = cli_tlv_entry_get_ctx_uint32(entry);
             break;
         case BGP_CTX_VAR_AFI:
-            ctx->afi = (bgp_afi_t)cli_tlv_entry_get_int(entry);
+            ctx->afi = (bgp_afi_t)cli_tlv_entry_get_ctx_uint32(entry);
             break;
         case BGP_CTX_VAR_SAFI:
-            ctx->safi = (bgp_safi_t)cli_tlv_entry_get_int(entry);
+            ctx->safi = (bgp_safi_t)cli_tlv_entry_get_ctx_uint32(entry);
             break;
         default:
             break;
@@ -186,12 +186,6 @@ static int handle_bgp_protocol(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         (void)bgp_db_del_as(g_bgp_local->dev_ipc_ctx);
         bgp_send_cli_response(msg, "");
         return ERRCODE_SUCCESS;
-    }
-
-    if (bgp_db_init(g_bgp_local->dev_ipc_ctx) != 0)
-    {
-        bgp_send_cli_response(msg, "BGP Error: Database initialization failed.\r\n");
-        return ERRCODE_FAIL;
     }
 
     if (bgp_db_set_as(g_bgp_local->dev_ipc_ctx, as_number) != 0)

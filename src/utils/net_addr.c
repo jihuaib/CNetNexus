@@ -80,3 +80,37 @@ gboolean net_addr_equal(const net_addr_t *a, const net_addr_t *b)
 
     return FALSE;
 }
+
+// ============================================================================
+// net_prefix_t 实现
+// ============================================================================
+
+gboolean net_prefix_is_set(const net_prefix_t *p)
+{
+    return (p && p->addr.family != 0) ? TRUE : FALSE;
+}
+
+void net_prefix_to_str(const net_prefix_t *p, char *buf, size_t sz)
+{
+    if (!p || !buf || sz == 0)
+    {
+        return;
+    }
+
+    char addr_str[64] = {0};
+    net_addr_to_str(&p->addr, addr_str, sizeof(addr_str));
+    snprintf(buf, sz, "%s/%u", addr_str, p->prefix_len);
+}
+
+void net_prefix_len_to_mask_str(uint8_t prefix_len, char *buf)
+{
+    if (!buf)
+    {
+        return;
+    }
+
+    uint32_t mask = (prefix_len == 0) ? 0 : (~0U << (32 - prefix_len));
+    struct in_addr in;
+    in.s_addr = htonl(mask);
+    inet_ntop(AF_INET, &in, buf, 16);
+}

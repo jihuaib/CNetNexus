@@ -15,10 +15,17 @@
 #include "log.h"
 #include "vrf_main.h"
 
-/** CLI 命令组 ID：vrf <vrf-name> */
+/** CLI 命令组 ID：vrf <vrf-name>（创建） */
 #define VRF_CLI_GROUP_ID_CREATE 1
-/** CLI 命令组 ID：show vrf */
+/** CLI 命令组 ID：show vrf [<vrf-name>] */
 #define VRF_CLI_GROUP_ID_SHOW 2
+/** CLI 命令组 ID：no vrf <vrf-name>（删除） */
+#define VRF_CLI_GROUP_ID_DELETE 3
+
+/** show vrf <vrf-name> 的参数 cfg_id */
+#define VRF_CFGID_SHOW_NAME 3
+/** no vrf <vrf-name> 的参数 cfg_id（同时用于 QUERY_CANDIDATES 过滤） */
+#define VRF_CFGID_DELETE_NAME 4
 
 // ============================================================================
 // 发送 CLI 响应辅助
@@ -117,35 +124,114 @@ static gint compare_vrf_by_id(gconstpointer a, gconstpointer b)
 }
 
 /**
- * @brief 处理 "show vrf" 命令（group_id=2）
+ * @brief 处理 "show vrf [<vrf-name>]" 命令（group_id=2）
+ *
+ * 无参数时列出所有 VRF；有 cfg_id=3 参数时显示指定 VRF 详情。
  */
 static int handle_vrf_show(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
-    /* 跳过所有 TLV（show 命令无额外参数） */
+    char vrf_name[VRF_NAME_MAX_LEN] = {0};
+
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
     {
+        if (!CLI_TLV_IS_CTX(&entry) && entry.cfg_id == VRF_CFGID_SHOW_NAME)
+        {
+            const char *s = cli_tlv_entry_get_text(&entry);
+            if (s)
+            {
+                snprintf(vrf_name, sizeof(vrf_name), "%s", s);
+            }
+        }
         cli_tlv_entry_free(&entry);
     }
-
-    /* 按 vrf_id 排序后输出 */
-    GList *list = g_hash_table_get_values(g_vrf_local->vrf_by_id);
-    list = g_list_sort(list, compare_vrf_by_id);
 
     char buf[CLI_MAX_RESP_LEN];
     size_t off = 0;
 
-    CLI_BUF_APPEND(buf, sizeof(buf), off, "VRF Table:\r\n");
-    CLI_BUF_APPEND(buf, sizeof(buf), off, "  %-8s  %s\r\n", "VRF-ID", "Name");
-    CLI_BUF_APPEND(buf, sizeof(buf), off, "  --------  --------------------------------\r\n");
-
-    for (GList *node = list; node; node = node->next)
+    if (vrf_name[0] != '\0')
     {
-        const vrf_entry_t *e = (const vrf_entry_t *)node->data;
-        CLI_BUF_APPEND(buf, sizeof(buf), off, "  %-8u  %s\r\n", e->vrf_id, e->name);
-    }
-    g_list_free(list);
+        /* show vrf <vrf-name>：显示单条 VRF 详情 */
+        const vrf_entry_t *e = vrf_find_by_name(vrf_name);
+        if (!e)
+        {
+            char errbuf[128];
+            snprintf(errbuf, sizeof(errbuf), "VRF Error: '%s' 不存在\r\n", vrf_name);
+            vrf_send_cli_response(msg, errbuf);
+            return ERRCODE_FAIL;
+        }
 
+        CLI_BUF_APPEND(buf, sizeof(buf), off, "\r\nVRF Detail:\r\n");
+        CLI_BUF_APPEND(buf, sizeof(buf), off, "  VRF-ID : %u\r\n", e->vrf_id);
+        CLI_BUF_APPEND(buf, sizeof(buf), off, "  Name   : %s\r\n\r\n", e->name);
+    }
+    else
+    {
+        /* show vrf：列出所有 VRF */
+        GList *list = g_hash_table_get_values(g_vrf_local->vrf_by_id);
+        list = g_list_sort(list, compare_vrf_by_id);
+
+        CLI_BUF_APPEND(buf, sizeof(buf), off, "VRF Table:\r\n");
+        CLI_BUF_APPEND(buf, sizeof(buf), off, "  %-8s  %s\r\n", "VRF-ID", "Name");
+        CLI_BUF_APPEND(buf, sizeof(buf), off, "  --------  --------------------------------\r\n");
+
+        for (GList *node = list; node; node = node->next)
+        {
+            const vrf_entry_t *e = (const vrf_entry_t *)node->data;
+            CLI_BUF_APPEND(buf, sizeof(buf), off, "  %-8u  %s\r\n", e->vrf_id, e->name);
+        }
+        g_list_free(list);
+    }
+
+    vrf_send_cli_response(msg, buf);
+    return ERRCODE_SUCCESS;
+}
+
+/**
+ * @brief 处理 "no vrf <vrf-name>" 命令（group_id=3）
+ *
+ * cfg_id=4 携带 VRF 名称。不允许删除公网 VRF。
+ */
+static int handle_vrf_delete(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    char vrf_name[VRF_NAME_MAX_LEN] = {0};
+
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (!CLI_TLV_IS_CTX(&entry) && entry.cfg_id == VRF_CFGID_DELETE_NAME)
+        {
+            const char *s = cli_tlv_entry_get_text(&entry);
+            if (s)
+            {
+                snprintf(vrf_name, sizeof(vrf_name), "%s", s);
+            }
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    if (vrf_name[0] == '\0')
+    {
+        vrf_send_cli_response(msg, "VRF Error: 缺少 VRF 名称\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    if (strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) == 0)
+    {
+        vrf_send_cli_response(msg, "VRF Error: 公网 VRF 不可删除\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    if (vrf_delete(vrf_name) != ERRCODE_SUCCESS)
+    {
+        char errbuf[128];
+        snprintf(errbuf, sizeof(errbuf), "VRF Error: '%s' 不存在\r\n", vrf_name);
+        vrf_send_cli_response(msg, errbuf);
+        return ERRCODE_FAIL;
+    }
+
+    char buf[128];
+    snprintf(buf, sizeof(buf), "VRF '%s' 已删除\r\n", vrf_name);
     vrf_send_cli_response(msg, buf);
     return ERRCODE_SUCCESS;
 }
@@ -180,6 +266,9 @@ int vrf_cli_handle_message(dev_ipc_message_t *msg)
         case VRF_CLI_GROUP_ID_SHOW:
             result = handle_vrf_show(msg, &parser);
             break;
+        case VRF_CLI_GROUP_ID_DELETE:
+            result = handle_vrf_delete(msg, &parser);
+            break;
         default:
             LOG_WARN("未知 group_id: %u", parser.group_id);
             vrf_send_cli_response(msg, "VRF Error: 未知命令\r\n");
@@ -195,4 +284,60 @@ int vrf_cli_handle_continue(dev_ipc_message_t *msg)
 {
     vrf_send_cli_response(msg, "");
     return ERRCODE_SUCCESS;
+}
+
+// ============================================================================
+// 动态候选值查询
+// ============================================================================
+
+void vrf_cli_handle_query_candidates(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+{
+    /* 解析 cfg_id（网络字节序） */
+    uint32_t cfg_id = 0;
+    if (msg->payload && msg->payload_len >= sizeof(uint32_t))
+    {
+        uint32_t net_id;
+        memcpy(&net_id, msg->payload, sizeof(uint32_t));
+        cfg_id = g_ntohl(net_id);
+    }
+
+    /* 按 vrf_id 升序枚举所有 VRF */
+    GList *list = g_hash_table_get_values(g_vrf_local->vrf_by_id);
+    list = g_list_sort(list, compare_vrf_by_id);
+
+    /* 构建 "name1\0name2\0\0" 格式负载 */
+    GByteArray *buf = g_byte_array_new();
+    for (GList *node = list; node; node = node->next)
+    {
+        const vrf_entry_t *e = (const vrf_entry_t *)node->data;
+
+        /* cfg_id=VRF_CFGID_DELETE_NAME（no vrf）时排除公网 VRF */
+        if (cfg_id == VRF_CFGID_DELETE_NAME && e->vrf_id == VRF_PUBLIC_VRF_ID)
+        {
+            continue;
+        }
+
+        g_byte_array_append(buf, (const guint8 *)e->name, (guint)strlen(e->name) + 1);
+    }
+    g_list_free(list);
+
+    /* 末尾额外 '\0' 标记结束 */
+    guint8 nul = '\0';
+    g_byte_array_append(buf, &nul, 1);
+
+    guint payload_len = buf->len;
+    uint8_t *payload = g_byte_array_free(buf, FALSE);
+
+    dev_ipc_message_t *resp = dev_ipc_message_create(CFG_MSG_TYPE_QUERY_CANDIDATES_RESP, DEV_MODULE_ID_VRF,
+                                                     msg->src_module_id, msg->request_id, payload, payload_len, g_free);
+    if (resp)
+    {
+        dev_ipc_send_response(ctx, resp);
+        dev_ipc_message_free(resp);
+    }
+    else
+    {
+        g_free(payload);
+    }
+    dev_ipc_message_free(msg);
 }

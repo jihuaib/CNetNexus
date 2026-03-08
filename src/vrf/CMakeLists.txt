@@ -9,6 +9,7 @@ target_include_directories(vrf PRIVATE .)
 
 target_link_libraries(vrf PRIVATE
     dev_api
+    cli_api
     utils
 )
 

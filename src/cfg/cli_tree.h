@@ -28,9 +28,9 @@ typedef struct cli_param_type cli_param_type_t;
  */
 typedef struct
 {
-    uint32_t ctx_id;    /**< 上下文变量 ID（独立命名空间，与 XML cfg-id 无关） */
-    int32_t from_param; /**< ≥0: 从匹配命令参数中 cfg_id==from_param 的元素取值；-1: 使用 fixed_value */
-    int64_t fixed_value; /**< from_param==-1 时的固定整数值 */
+    uint32_t ctx_id; /**< 上下文变量 ID（独立命名空间，与 XML cfg-id 无关） */
+    uint32_t from_param; /**< 有效值: 从匹配命令参数中 cfg_id==from_param 的元素取值；0xFFFFFFFF: 使用 fixed_value */
+    uint32_t fixed_value; /**< from_param==0xFFFFFFFF 时的固定无符号整数值 */
 } cli_ctx_out_entry_t;
 
 // CLI tree node structure

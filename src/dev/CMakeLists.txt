@@ -20,6 +20,7 @@ target_include_directories(dev PRIVATE
 # Link libraries
 target_link_libraries(dev PRIVATE
     dev_api
+    cli_api
     dl
     ${GLIB_LIBRARIES}
 )

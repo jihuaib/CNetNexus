@@ -129,9 +129,10 @@ void log_output(log_level_t level, const char *tag, const char *file, int line, 
     offset += vsnprintf(buf + offset, LOG_BUF_SIZE - offset, fmt, ap);
     va_end(ap);
 
-    /* 换行 */
-    if (offset < LOG_BUF_SIZE - 1)
+    /* 换行（\r\n 兼容串口终端） */
+    if (offset < LOG_BUF_SIZE - 2)
     {
+        buf[offset++] = '\r';
         buf[offset++] = '\n';
     }
 
@@ -173,14 +174,15 @@ void log_output_perror(log_level_t level, const char *tag, const char *file, int
     offset += vsnprintf(buf + offset, LOG_BUF_SIZE - offset, fmt, ap);
     va_end(ap);
 
-    /* errno 描述 */
+    /* errno 描述（GNU strerror_r 返回实际字符串指针，可能不写入 errbuf） */
     char errbuf[256];
-    strerror_r(saved_errno, errbuf, sizeof(errbuf));
-    offset += snprintf(buf + offset, LOG_BUF_SIZE - offset, ": %s", errbuf);
+    const char *errstr = strerror_r(saved_errno, errbuf, sizeof(errbuf));
+    offset += snprintf(buf + offset, LOG_BUF_SIZE - offset, ": %s", errstr);
 
-    /* 换行 */
-    if (offset < LOG_BUF_SIZE - 1)
+    /* 换行（\r\n 兼容串口终端） */
+    if (offset < LOG_BUF_SIZE - 2)
     {
+        buf[offset++] = '\r';
         buf[offset++] = '\n';
     }
 

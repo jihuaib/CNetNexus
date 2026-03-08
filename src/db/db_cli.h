@@ -40,4 +40,14 @@ int db_cli_process_command(dev_ipc_message_t *msg);
  */
 int db_cli_handle_continue(dev_ipc_message_t *msg);
 
+/**
+ * @brief 处理动态候选值查询（CFG_MSG_TYPE_QUERY_CANDIDATES）
+ *
+ * 查询 SQLite 中所有用户表名，以 "name1\0name2\0\0" 格式响应。
+ *
+ * @param ctx IPC 上下文
+ * @param msg 原始 IPC 消息（函数负责释放）
+ */
+void db_cli_handle_query_candidates(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
+
 #endif // DB_CLI_H

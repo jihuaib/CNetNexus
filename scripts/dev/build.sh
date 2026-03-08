@@ -88,9 +88,9 @@ echo "[3/3] Building..."
 START_TIME=$(date +%s)
 
 if [ $VERBOSE -eq 1 ]; then
-    make -j${JOBS} VERBOSE=1
+    sudo make -j${JOBS} VERBOSE=1
 else
-    make -j${JOBS}
+    sudo make -j${JOBS}
 fi
 
 END_TIME=$(date +%s)

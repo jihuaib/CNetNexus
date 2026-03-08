@@ -23,4 +23,16 @@ int vrf_cli_handle_message(dev_ipc_message_t *msg);
  */
 int vrf_cli_handle_continue(dev_ipc_message_t *msg);
 
+/**
+ * @brief 处理动态候选值查询（CFG_MSG_TYPE_QUERY_CANDIDATES）
+ *
+ * payload 为 uint32_t cfg_id（网络字节序）：
+ *   cfg_id=3 → 返回所有 VRF 名称
+ *   cfg_id=4 → 返回可删除的 VRF 名称（排除公网 VRF）
+ *
+ * @param ctx IPC 上下文
+ * @param msg 原始 IPC 消息（函数负责释放）
+ */
+void vrf_cli_handle_query_candidates(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
+
 #endif /* VRF_CLI_H */

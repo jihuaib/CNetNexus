@@ -157,17 +157,23 @@ static void bdr_append_sessions(dev_ipc_context_t *ctx, char *buf, size_t buf_si
 
 /**
  * @brief 追加某 AF 下使能邻居配置行（neighbor <ip> enable）
- * @param afi_str 文本 AFI 标识（如 "ipv4-unicast"）
+ * @param afi  整数 AFI（与 bgp_neighbor 表存储一致）
+ * @param safi 整数 SAFI
  */
-static void bdr_append_af_peers(dev_ipc_context_t *ctx, char *buf, size_t buf_size, size_t *off, const char *afi_str)
+static void bdr_append_af_peers(dev_ipc_context_t *ctx, char *buf, size_t buf_size, size_t *off, int64_t afi,
+                                int64_t safi)
 {
-    db_condition_t cond = {.field_name = "afi", .op = DB_CMP_EQ, .value = db_value_text(afi_str)};
-    db_filter_t filter = {.conditions = &cond, .num_conditions = 1};
+    db_condition_t conds[] = {
+        {.field_name = "afi", .op = DB_CMP_EQ, .value = db_value_int(afi)},
+        {.field_name = "safi", .op = DB_CMP_EQ, .value = db_value_int(safi)},
+    };
+    db_filter_t filter = {.conditions = conds, .num_conditions = G_N_ELEMENTS(conds)};
 
     db_result_t *result = NULL;
     if (db_rpc_query(ctx, BGP_TABLE_NEIGHBOR, NULL, 0, &filter, &result) != ERRCODE_SUCCESS || !result)
     {
-        db_value_free(&cond.value);
+        db_value_free(&conds[0].value);
+        db_value_free(&conds[1].value);
         return;
     }
 
@@ -182,19 +188,22 @@ static void bdr_append_af_peers(dev_ipc_context_t *ctx, char *buf, size_t buf_si
     }
 
     db_result_free(result);
-    db_value_free(&cond.value);
+    db_value_free(&conds[0].value);
+    db_value_free(&conds[1].value);
 }
 
 /**
  * @brief 追加单个 AF 完整配置块（af <afi> / 各子表配置 / !）
- * @param afi_str 文本 AFI 标识（如 "ipv4-unicast"）
+ * @param afi     整数 AFI
+ * @param safi    整数 SAFI
  */
-static void bdr_append_af_block(dev_ipc_context_t *ctx, char *buf, size_t buf_size, size_t *off, const char *afi_str)
+static void bdr_append_af_block(dev_ipc_context_t *ctx, char *buf, size_t buf_size, size_t *off, const char *afi_str,
+                                int64_t afi, int64_t safi)
 {
     CLI_BUF_APPEND(buf, buf_size, *off, " af %s\r\n", afi_str);
 
     /* AF 下各子表 BDR，按需扩展 */
-    bdr_append_af_peers(ctx, buf, buf_size, off, afi_str);
+    bdr_append_af_peers(ctx, buf, buf_size, off, afi, safi);
 
     CLI_BUF_APPEND(buf, buf_size, *off, " !\r\n");
 }
@@ -227,7 +236,7 @@ static void bdr_append_af_instances(dev_ipc_context_t *ctx, char *buf, size_t bu
             continue;
         }
 
-        bdr_append_af_block(ctx, buf, buf_size, off, afi_str);
+        bdr_append_af_block(ctx, buf, buf_size, off, afi_str, afi_int, safi_int);
     }
 
     db_result_free(inst_result);

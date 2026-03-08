@@ -14,10 +14,11 @@
 
 #include "errcode.h"
 #include "if.h"
+#include "if_main.h"
 #include "log.h"
 
-// Global interface mapping table
-if_map_t g_interface_map = {0};
+/* 使用 g_if_local->interface_map，不再维护独立全局变量 */
+#define g_interface_map (g_if_local->interface_map)
 
 // Load mappings from config file
 static int load_config_file(const char *config_file)

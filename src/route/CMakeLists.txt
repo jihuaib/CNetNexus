@@ -13,6 +13,7 @@ target_include_directories(route PRIVATE
 # Link libraries
 target_link_libraries(route PRIVATE
         dev_api
+        cli_api
         db_api
         )
 

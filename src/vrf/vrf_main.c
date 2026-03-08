@@ -60,6 +60,23 @@ vrf_entry_t *vrf_find_by_name(const char *name)
     return g_hash_table_lookup(g_vrf_local->vrf_by_name, name);
 }
 
+int vrf_delete(const char *name)
+{
+    vrf_entry_t *entry = vrf_find_by_name(name);
+    if (!entry)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    uint32_t vrf_id = entry->vrf_id;
+    g_hash_table_remove(g_vrf_local->vrf_by_name, entry->name);
+    g_hash_table_remove(g_vrf_local->vrf_by_id, GUINT_TO_POINTER(vrf_id));
+    g_free(entry);
+
+    LOG_INFO("VRF 删除: id=%u name=%s", vrf_id, name);
+    return ERRCODE_SUCCESS;
+}
+
 // ============================================================================
 // 三阶段辅助
 // ============================================================================
@@ -200,6 +217,9 @@ void vrf_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             return;
         case VRF_MSG_TYPE_GET_NAME:
             vrf_handle_get_name(ctx, msg);
+            return;
+        case CFG_MSG_TYPE_QUERY_CANDIDATES:
+            vrf_cli_handle_query_candidates(ctx, msg);
             return;
         case CFG_MSG_TYPE_CLI:
             vrf_cli_handle_message(msg);

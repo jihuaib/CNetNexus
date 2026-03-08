@@ -166,138 +166,6 @@ static uint8_t *pack_tlv_payload(cli_match_result_t *result, const uint8_t *ctx_
 }
 
 /* ========================================================================= */
-/* TLV 载荷解析器实现                                                         */
-/* ========================================================================= */
-
-int cli_tlv_init(cli_tlv_parser_t *p, const uint8_t *data, uint32_t len)
-{
-    if (!p || !data || len < 5)
-    {
-        return -1;
-    }
-
-    memset(p, 0, sizeof(*p));
-    p->_data = data;
-    p->_len = len;
-    p->_pos = 0;
-
-    /* flags: u8 */
-    p->flags = data[p->_pos++];
-
-    /* group_id: u32 */
-    if (p->_pos + 4 > p->_len)
-    {
-        return -1;
-    }
-    uint32_t be;
-    memcpy(&be, data + p->_pos, 4);
-    p->group_id = ntohl(be);
-    p->_pos += 4;
-
-    return 0;
-}
-
-int cli_tlv_next(cli_tlv_parser_t *p, cli_tlv_entry_t *entry)
-{
-    if (!p || !entry)
-    {
-        return -1;
-    }
-
-    if (p->_pos >= p->_len)
-    {
-        return 0;
-    }
-
-    /* cfg_id: u32 */
-    if (p->_pos + 4 > p->_len)
-    {
-        return 0;
-    }
-    uint32_t id_be;
-    memcpy(&id_be, p->_data + p->_pos, 4);
-    entry->cfg_id = ntohl(id_be);
-    p->_pos += 4;
-
-    /* type: u8 */
-    if (p->_pos >= p->_len)
-    {
-        return -1;
-    }
-    entry->type = p->_data[p->_pos++];
-
-    /* length: u16 */
-    if (p->_pos + 2 > p->_len)
-    {
-        return -1;
-    }
-    uint16_t len_be;
-    memcpy(&len_be, p->_data + p->_pos, 2);
-    entry->length = ntohs(len_be);
-    p->_pos += 2;
-
-    /* value: bytes（多分配 1 字节用于 NUL 终止，方便文本读取） */
-    if (entry->length > 0)
-    {
-        if (p->_pos + entry->length > p->_len)
-        {
-            return -1;
-        }
-        entry->value = g_malloc(entry->length + 1);
-        memcpy(entry->value, p->_data + p->_pos, entry->length);
-        entry->value[entry->length] = '\0';
-        p->_pos += entry->length;
-    }
-    else
-    {
-        entry->value = NULL;
-    }
-
-    return 1;
-}
-
-void cli_tlv_entry_free(cli_tlv_entry_t *entry)
-{
-    if (entry)
-    {
-        g_free(entry->value);
-        entry->value = NULL;
-    }
-}
-
-void cli_tlv_cleanup(cli_tlv_parser_t *p)
-{
-    if (p)
-    {
-        memset(p, 0, sizeof(*p));
-    }
-}
-
-int64_t cli_tlv_entry_get_int(const cli_tlv_entry_t *entry)
-{
-    if (!entry || entry->type != DB_TYPE_INTEGER || entry->length != 8 || !entry->value)
-    {
-        return 0;
-    }
-    uint32_t hi, lo;
-    memcpy(&hi, entry->value, 4);
-    memcpy(&lo, entry->value + 4, 4);
-    hi = ntohl(hi);
-    lo = ntohl(lo);
-    return ((int64_t)hi << 32) | lo;
-}
-
-const char *cli_tlv_entry_get_text(const cli_tlv_entry_t *entry)
-{
-    if (!entry || entry->type != DB_TYPE_TEXT || !entry->value)
-    {
-        return NULL;
-    }
-    /* value 在 tlv_next 中多分配了 1 字节并追加了 NUL */
-    return (const char *)entry->value;
-}
-
-/* ========================================================================= */
 /* 提示符占位符格式化                                                         */
 /* ========================================================================= */
 
@@ -307,7 +175,7 @@ const char *cli_tlv_entry_get_text(const cli_tlv_entry_t *entry)
  * 示例: "<NetNexus(config-bgp-{ctx:1})>" + ctx_id=1=65000 → "<NetNexus(config-bgp-65000)>"
  *
  * @param tmpl     视图 prompt_template 字符串
- * @param ctx      合并后的上下文 TLV 字节（格式: [num:u16][ctx_id:u32][CLI_TLV_TYPE_CTX:u8][8:u16][i64]...）
+ * @param ctx      合并后的上下文 TLV 字节（格式: [num:u16][ctx_id:u32][CLI_TLV_TYPE_CTX:u8][4:u16][u32]...）
  * @param ctx_len  上下文字节长度
  * @param out      输出缓冲区
  * @param out_size 缓冲区大小
@@ -362,12 +230,11 @@ static void format_prompt_with_ctx(const char *tmpl, const uint8_t *ctx, uint32_
                         memcpy(&len_be, ctx + pos, 2);
                         uint16_t elen = ntohs(len_be);
                         pos += 2;
-                        if (id == ctx_id && type == CLI_TLV_TYPE_CTX && elen == 8 && pos + 8 <= ctx_len)
+                        if (id == ctx_id && type == CLI_TLV_TYPE_CTX && elen == 4 && pos + 4 <= ctx_len)
                         {
-                            uint32_t hi, lo;
-                            memcpy(&hi, ctx + pos, 4);
-                            memcpy(&lo, ctx + pos + 4, 4);
-                            found_val = ((int64_t)ntohl(hi) << 32) | (int64_t)(uint32_t)ntohl(lo);
+                            uint32_t v;
+                            memcpy(&v, ctx + pos, 4);
+                            found_val = (int64_t)(uint32_t)ntohl(v);
                         }
                         pos += elen;
                     }
@@ -435,21 +302,21 @@ static void cli_context_build_merged(cli_session_t *session, cli_match_result_t 
         g_byte_array_append(buf, parent + 2, parent_len - 2);
     }
 
-    /* 追加新条目：[ctx_id:u32][CLI_TLV_TYPE_CTX:u8][8:u16][i64_value] */
+    /* 追加新条目：[ctx_id:u32][CLI_TLV_TYPE_CTX:u8][4:u16][u32_value] */
     for (uint32_t i = 0; i < num_new; i++)
     {
         const cli_ctx_out_entry_t *e = &new_entries[i];
 
-        int64_t val = e->fixed_value;
-        if (e->from_param >= 0)
+        uint32_t val = e->fixed_value;
+        if (e->from_param != 0xFFFFFFFFU)
         {
             /* 从命令匹配参数中按 cfg_id（XML cfg-id）取值 */
             for (uint32_t j = 0; j < result->num_elements; j++)
             {
-                if ((int32_t)result->elements[j].cfg_id == e->from_param && result->elements[j].value)
+                if (result->elements[j].cfg_id == e->from_param && result->elements[j].value)
                 {
                     char *endptr;
-                    val = strtoll(result->elements[j].value, &endptr, 10);
+                    val = (uint32_t)strtoul(result->elements[j].value, &endptr, 10);
                     break;
                 }
             }
@@ -460,12 +327,10 @@ static void cli_context_build_merged(cli_session_t *session, cli_match_result_t 
         g_byte_array_append(buf, (const uint8_t *)&ctx_id_be, 4);
         uint8_t type = CLI_TLV_TYPE_CTX;
         g_byte_array_append(buf, &type, 1);
-        uint16_t len_be = htons(8);
+        uint16_t len_be = htons(4);
         g_byte_array_append(buf, (const uint8_t *)&len_be, 2);
-        uint32_t hi = htonl((uint32_t)((uint64_t)val >> 32));
-        uint32_t lo = htonl((uint32_t)(val & 0xFFFFFFFFu));
-        g_byte_array_append(buf, (const uint8_t *)&hi, 4);
-        g_byte_array_append(buf, (const uint8_t *)&lo, 4);
+        uint32_t val_be = htonl(val);
+        g_byte_array_append(buf, (const uint8_t *)&val_be, 4);
     }
 
     *out_len = buf->len;

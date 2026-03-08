@@ -28,6 +28,10 @@
 #define CFG_MSG_TYPE_CLI_CONTINUE DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0005)
 /** 向业务模块请求当前配置（用于 show current-configuration 汇聚） */
 #define CFG_MSG_TYPE_SHOW_CONFIG DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0006)
+/** CFG → 模块：查询动态补全候选值（payload: uint32_t cfg_id，网络字节序） */
+#define CFG_MSG_TYPE_QUERY_CANDIDATES DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0007)
+/** 模块 → CFG：返回候选值列表（payload: "val1\0val2\0\0"，双 null 结尾） */
+#define CFG_MSG_TYPE_QUERY_CANDIDATES_RESP DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0008)
 
 /** CLI 响应消息最大长度 */
 #define CLI_MAX_RESP_LEN 4096
@@ -181,6 +185,13 @@ void cli_tlv_cleanup(cli_tlv_parser_t *p);
  * @return 整数值，类型不匹配返回 0
  */
 int64_t cli_tlv_entry_get_int(const cli_tlv_entry_t *entry);
+
+/**
+ * @brief 从 CTX TLV 条目中读取 uint32 值（type==CLI_TLV_TYPE_CTX，len==4）
+ * @param entry TLV 条目
+ * @return 无符号整数值，类型/长度不匹配返回 0
+ */
+uint32_t cli_tlv_entry_get_ctx_uint32(const cli_tlv_entry_t *entry);
 
 /**
  * @brief 从 TLV 条目中读取字符串值

@@ -17,9 +17,10 @@
 #include "dev.h"
 #include "errcode.h"
 #include "if.h"
+#include "if_cfg_apply.h"
 #include "if_main.h"
-#include "if_map.h"
 #include "log.h"
+#include "net_addr.h"
 
 // ============================================================================
 // 接口上下文变量 ID（独立命名空间，ctx-id=5 对应 XML <context-out ctx-id="5">）
@@ -96,23 +97,21 @@ static int handle_if_entry(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
  */
 static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
-    gboolean is_no = FALSE;
-    char ip[20] = {0};
-    char mask[20] = {0};
+    gboolean is_no = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
+    net_prefix_t prefix;
+    memset(&prefix, 0, sizeof(prefix));
     gboolean has_ip = FALSE;
     gboolean has_shutdown = FALSE;
+    uint32_t if_idx = 0;
 
-    /* 解析 TLV 条目 */
-    uint32_t if_idx = 0; /* 接口索引（ctx_id=IF_CTX_VAR_IDX 的值，1-4） */
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
     {
         if (CLI_TLV_IS_CTX(&entry))
         {
-            /* 上下文变量：ctx_id=IF_CTX_VAR_IDX → 接口索引 */
             if (entry.cfg_id == IF_CTX_VAR_IDX)
             {
-                if_idx = (uint32_t)cli_tlv_entry_get_int(&entry);
+                if_idx = cli_tlv_entry_get_ctx_uint32(&entry);
             }
             cli_tlv_entry_free(&entry);
             continue;
@@ -123,19 +122,18 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             case 1: /* ip_address 参数 */
             {
                 const char *text = cli_tlv_entry_get_text(&entry);
-                if (text)
+                if (text && net_addr_from_str(text, &prefix.addr) == 0)
                 {
-                    strncpy(ip, text, sizeof(ip) - 1);
                     has_ip = TRUE;
                 }
                 break;
             }
-            case 2: /* netmask 参数 */
+            case 2: /* prefix_len 参数（整数） */
             {
                 const char *text = cli_tlv_entry_get_text(&entry);
                 if (text)
                 {
-                    strncpy(mask, text, sizeof(mask) - 1);
+                    prefix.prefix_len = (uint8_t)atoi(text);
                 }
                 break;
             }
@@ -156,66 +154,61 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         return ERRCODE_FAIL;
     }
 
-    const char *phys_name = if_map_get_physical(ifname);
-
     if (has_ip)
     {
-        /* ip address <ip> <mask> */
-        if (if_set_ip(phys_name, ip, mask) == ERRCODE_SUCCESS)
-        {
-            db_condition_t conditions[] = {
-                {.field_name = "name", .op = DB_CMP_EQ, .value = db_value_text(ifname)},
-            };
-            db_filter_t filter = {.conditions = conditions, .num_conditions = G_N_ELEMENTS(conditions)};
-            db_record_t *rec = db_record_new();
-            db_record_set_text(rec, "ip_address", ip);
-            db_record_set_text(rec, "netmask", mask);
-            db_rpc_update_record(g_if_local->dev_ipc_ctx, "if_interface", rec, &filter);
-            db_record_free(rec);
-            db_value_free(&conditions[0].value);
-
-            char resp_buf[128];
-            snprintf(resp_buf, sizeof(resp_buf), "IP address configured successfully on %s\r\n", ifname);
-            send_resp(msg, resp_buf);
-        }
-        else
+        /* ip address <ip> <prefix-len> */
+        if (if_cfg_apply_ip(is_no, ifname, &prefix) != ERRCODE_SUCCESS)
         {
             char resp_buf[128];
             snprintf(resp_buf, sizeof(resp_buf), "Error: Failed to set IP address on %s\r\n", ifname);
             send_resp(msg, resp_buf);
             return ERRCODE_FAIL;
         }
+
+        /* 持久化 */
+        char ip_str[64] = "";
+        if (!is_no)
+        {
+            net_addr_to_str(&prefix.addr, ip_str, sizeof(ip_str));
+        }
+        db_condition_t cond = {.field_name = "name", .op = DB_CMP_EQ, .value = db_value_text(ifname)};
+        db_filter_t filter = {.conditions = &cond, .num_conditions = 1};
+        db_record_t *rec = db_record_new();
+        db_record_set_text(rec, "ip_address", ip_str);
+        db_record_set_int(rec, "prefix_len", is_no ? 0 : (int64_t)prefix.prefix_len);
+        db_rpc_update_record(g_if_local->dev_ipc_ctx, "if_interface", rec, &filter);
+        db_record_free(rec);
+        db_value_free(&cond.value);
+
+        char resp_buf[128];
+        snprintf(resp_buf, sizeof(resp_buf), "IP address %s on %s\r\n", is_no ? "cleared" : "configured", ifname);
+        send_resp(msg, resp_buf);
     }
-    else
+    else if (has_shutdown)
     {
         /* shutdown / no shutdown */
-        int state = is_no ? 1 : 0; /* no shutdown → UP(1), shutdown → DOWN(0) */
-        if (if_set_state(phys_name, state) == ERRCODE_SUCCESS)
-        {
-            db_condition_t conditions[] = {
-                {.field_name = "name", .op = DB_CMP_EQ, .value = db_value_text(ifname)},
-            };
-            db_filter_t filter = {.conditions = conditions, .num_conditions = G_N_ELEMENTS(conditions)};
-            db_record_t *rec = db_record_new();
-            db_record_set_int(rec, "shutdown", state ? 0 : 1);
-            db_rpc_update_record(g_if_local->dev_ipc_ctx, "if_interface", rec, &filter);
-            db_record_free(rec);
-            db_value_free(&conditions[0].value);
-
-            char resp_buf[128];
-            snprintf(resp_buf, sizeof(resp_buf), "Interface %s %s\r\n", ifname, state ? "enabled" : "disabled");
-            send_resp(msg, resp_buf);
-        }
-        else
+        if (if_cfg_apply_shutdown(is_no, ifname) != ERRCODE_SUCCESS)
         {
             char resp_buf[128];
             snprintf(resp_buf, sizeof(resp_buf), "Error: Failed to change state for %s\r\n", ifname);
             send_resp(msg, resp_buf);
             return ERRCODE_FAIL;
         }
+
+        /* 持久化 */
+        db_condition_t cond = {.field_name = "name", .op = DB_CMP_EQ, .value = db_value_text(ifname)};
+        db_filter_t filter = {.conditions = &cond, .num_conditions = 1};
+        db_record_t *rec = db_record_new();
+        db_record_set_int(rec, "shutdown", is_no ? 0 : 1);
+        db_rpc_update_record(g_if_local->dev_ipc_ctx, "if_interface", rec, &filter);
+        db_record_free(rec);
+        db_value_free(&cond.value);
+
+        char resp_buf[128];
+        snprintf(resp_buf, sizeof(resp_buf), "Interface %s %s\r\n", ifname, is_no ? "enabled" : "disabled");
+        send_resp(msg, resp_buf);
     }
 
-    (void)has_shutdown;
     return ERRCODE_SUCCESS;
 }
 
@@ -251,67 +244,72 @@ static int handle_if_show(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 
     if (ifname)
     {
-        /* show if <name> - 显示单个接口 */
-        const char *phys_name = if_map_get_physical(ifname);
-        if_info_t info;
-        if (if_get_info(phys_name, &info) == ERRCODE_SUCCESS)
-        {
-            char mac_str[32];
-            snprintf(mac_str, sizeof(mac_str), "%02x:%02x:%02x:%02x:%02x:%02x", info.mac[0], info.mac[1], info.mac[2],
-                     info.mac[3], info.mac[4], info.mac[5]);
-
-            const char *type_str = if_type_to_string(info.type);
-            const char *state_str = info.state == IF_STATE_UP ? "UP" : "DOWN";
-            const char *ip_str = info.ip_address[0] ? info.ip_address : "not configured";
-            const char *mask_str = info.netmask[0] ? info.netmask : "not configured";
-
-            CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset,
-                           "\r\nInterface %s Detail:\r\n"
-                           "============================\r\n"
-                           "  Name       : %s\r\n"
-                           "  Type       : %s\r\n"
-                           "  State      : %s\r\n"
-                           "  IP Address : %s\r\n"
-                           "  Netmask    : %s\r\n"
-                           "  MAC        : %s\r\n"
-                           "  MTU        : %d\r\n\r\n",
-                           ifname, ifname, type_str, state_str, ip_str, mask_str, mac_str, info.mtu);
-        }
-        else
+        /* show if <name> - 显示单个接口详情 */
+        if_map_entry_t *entry = if_cfg_find_entry(ifname);
+        if (!entry)
         {
             CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "Error: Interface %s not found\r\n", ifname);
             send_resp(msg, resp_buf);
             return ERRCODE_FAIL;
         }
+
+        /* MAC / MTU / 类型 从 OS 取 */
+        if_info_t info;
+        gboolean has_info = (if_get_info(entry->physical_name, &info) == ERRCODE_SUCCESS);
+
+        char ip_str[70] = "-";
+        if (net_prefix_is_set(&entry->prefix))
+        {
+            net_prefix_to_str(&entry->prefix, ip_str, sizeof(ip_str));
+        }
+
+        char mac_str[32] = "-";
+        const char *type_str = "-";
+        int mtu = 0;
+        if (has_info)
+        {
+            snprintf(mac_str, sizeof(mac_str), "%02x:%02x:%02x:%02x:%02x:%02x", info.mac[0], info.mac[1], info.mac[2],
+                     info.mac[3], info.mac[4], info.mac[5]);
+            type_str = if_type_to_string(info.type);
+            mtu = info.mtu;
+        }
+
+        const char *state_str = entry->shutdown ? "DOWN" : "UP";
+
+        CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset,
+                       "\r\nInterface %s Detail:\r\n"
+                       "============================\r\n"
+                       "  Name       : %s\r\n"
+                       "  Type       : %s\r\n"
+                       "  State      : %s\r\n"
+                       "  IP Address : %s/%u\r\n"
+                       "  MAC        : %s\r\n"
+                       "  MTU        : %d\r\n\r\n",
+                       ifname, ifname, type_str, state_str, ip_str, entry->prefix.prefix_len, mac_str, mtu);
     }
     else
     {
         /* 显示所有接口 */
         CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset,
                        "\r\nInterface Status:\r\n"
-                       "%-12s %-10s %-6s %-16s\r\n"
-                       "------------ ---------- ------ ----------------\r\n",
-                       "Name", "Type", "State", "IP Address");
+                       "%-12s %-6s %-20s\r\n"
+                       "------------ ------ --------------------\r\n",
+                       "Name", "State", "IP Address");
 
-        for (int i = 0; i < g_interface_map.count; i++)
+        if_map_t *map = &g_if_local->interface_map;
+        for (int i = 0; i < map->count; i++)
         {
-            const char *logical_name = g_interface_map.entries[i].logical_name;
-            const char *phys_name = g_interface_map.entries[i].physical_name;
+            if_map_entry_t *e = &map->entries[i];
+            const char *state_str = e->shutdown ? "DOWN" : "UP";
 
-            if_info_t info;
-            if (if_get_info(phys_name, &info) == ERRCODE_SUCCESS)
+            char ip_str[70] = "-";
+            if (net_prefix_is_set(&e->prefix))
             {
-                const char *type_str = if_type_to_string(info.type);
-                const char *state_str = info.state == IF_STATE_UP ? "UP" : "DOWN";
-                const char *ip_str = info.ip_address[0] ? info.ip_address : "-";
-                CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "%-12s %-10s %-6s %-16s\r\n", logical_name, type_str,
-                               state_str, ip_str);
+                net_prefix_to_str(&e->prefix, ip_str, sizeof(ip_str));
             }
-            else
-            {
-                CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "%-12s %-10s %-6s %-16s\r\n", logical_name, "-",
-                               "DOWN", "-");
-            }
+
+            CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "%-12s %-6s %-20s\r\n", e->logical_name, state_str,
+                           ip_str);
 
             if (offset >= sizeof(resp_buf) - 128)
             {

@@ -8,10 +8,12 @@
 #define IF_MAIN_H
 
 #include "dev.h"
+#include "if_map.h"
 
 typedef struct
 {
     dev_ipc_context_t *dev_ipc_ctx;
+    if_map_t interface_map; /**< 接口逻辑名到物理名的映射表 */
 } if_local_t;
 
 extern if_local_t *g_if_local;

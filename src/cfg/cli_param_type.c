@@ -79,9 +79,10 @@ cli_param_type_t *cli_param_type_parse(const char *type_str)
     cli_param_type_t *param_type = g_malloc0(sizeof(cli_param_type_t));
     param_type->type_str = g_strdup(type_str);
 
-    // Find opening parenthesis
+    /* 用 strrchr 定位最后一个 ')'，使嵌套括号（如 dynamic(string(1-63))）
+     * 能正确提取到完整的内层类型字符串 */
     char *paren_open = strchr(type_str, '(');
-    char *paren_close = paren_open ? strchr(paren_open, ')') : NULL;
+    char *paren_close = paren_open ? strrchr(paren_open, ')') : NULL;
 
     // Extract type name
     char type_name[64] = {0};
@@ -98,11 +99,11 @@ cli_param_type_t *cli_param_type_parse(const char *type_str)
         *p = tolower(*p);
     }
 
-    // Extract range string if present
-    char range_str[64] = {0};
+    /* 提取括号内的范围字符串（支持嵌套，如 "string(1-63)" 或 "7:3,string(1-63)"） */
+    char range_str[256] = {0};
     if (paren_open && paren_close && paren_close > paren_open + 1)
     {
-        size_t range_len = paren_close - paren_open - 1;
+        size_t range_len = (size_t)(paren_close - paren_open - 1);
         if (range_len >= sizeof(range_str))
         {
             range_len = sizeof(range_str) - 1;
@@ -176,6 +177,35 @@ cli_param_type_t *cli_param_type_parse(const char *type_str)
         param_type->type = PARAM_TYPE_MAC;
         param_type->validate = param_validate_mac;
     }
+    else if (strcmp(type_name, "dynamic") == 0)
+    {
+        param_type->type = PARAM_TYPE_DYNAMIC;
+        param_type->validate = param_validate_dynamic;
+
+        /* 解析可选的 "module_id:query_id," 前缀
+         * 格式：dynamic(<module_id>:<query_id>,<inner_type>) — 跨模块查询
+         *       dynamic(<inner_type>)                        — 同模块查询（向后兼容）
+         * 示例：dynamic(7:3,string(1-63)) 表示向模块 7 发 query_id=3 的 RPC */
+        uint32_t mod_id = 0;
+        uint32_t qry_id = 0;
+        const char *inner_str = range_str;
+
+        if (range_str[0] != '\0' && isdigit((unsigned char)range_str[0]))
+        {
+            char *colon = strchr(range_str, ':');
+            char *comma = strchr(range_str, ',');
+            if (colon && comma && colon < comma)
+            {
+                mod_id = (uint32_t)strtoul(range_str, NULL, 10);
+                qry_id = (uint32_t)strtoul(colon + 1, NULL, 10);
+                inner_str = comma + 1;
+            }
+        }
+
+        param_type->range.dynamic.candidates_module_id = mod_id;
+        param_type->range.dynamic.candidates_query_id = qry_id;
+        param_type->range.dynamic.inner = (inner_str[0] != '\0') ? cli_param_type_parse(inner_str) : NULL;
+    }
     else
     {
         param_type->type = PARAM_TYPE_UNKNOWN;
@@ -233,6 +263,8 @@ const char *cli_param_type_get_desc(const cli_param_type_t *param_type)
             return "MAC address";
         case PARAM_TYPE_ENUM:
             return "enumeration";
+        case PARAM_TYPE_DYNAMIC:
+            return "dynamic";
         default:
             return "unknown";
     }
@@ -265,6 +297,7 @@ uint16_t cli_param_type_get_value_length(const cli_param_type_t *param_type, con
             // MAC addresses are encoded as 6 bytes
             return 6;
 
+        case PARAM_TYPE_DYNAMIC:
         case PARAM_TYPE_STRING:
         case PARAM_TYPE_IP:
         case PARAM_TYPE_ENUM:
@@ -281,6 +314,13 @@ void cli_param_type_free(cli_param_type_t *param_type)
     if (!param_type)
     {
         return;
+    }
+
+    /* DYNAMIC 类型需递归释放内层类型 */
+    if (param_type->type == PARAM_TYPE_DYNAMIC && param_type->range.dynamic.inner)
+    {
+        cli_param_type_free(param_type->range.dynamic.inner);
+        param_type->range.dynamic.inner = NULL;
     }
 
     g_free(param_type->type_str);
@@ -583,4 +623,25 @@ gboolean param_validate_mac(const cli_param_type_t *param_type, const char *valu
         snprintf(error_msg, error_msg_size, "Invalid MAC address format (expected XX:XX:XX:XX:XX:XX)");
     }
     return FALSE;
+}
+
+// Dynamic parameter validation — 委托给内层类型，无内层则接受任意非空字符串
+gboolean param_validate_dynamic(const cli_param_type_t *param_type, const char *value, char *error_msg,
+                                uint32_t error_msg_size)
+{
+    if (!value || value[0] == '\0')
+    {
+        if (error_msg && error_msg_size > 0)
+        {
+            snprintf(error_msg, error_msg_size, "值不能为空");
+        }
+        return FALSE;
+    }
+
+    if (param_type->range.dynamic.inner)
+    {
+        return cli_param_type_validate(param_type->range.dynamic.inner, value, error_msg, error_msg_size);
+    }
+
+    return TRUE;
 }
