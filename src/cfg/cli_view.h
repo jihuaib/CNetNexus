@@ -16,8 +16,7 @@ typedef struct cli_view_node cli_view_node_t;
 // View node structure - represents a CLI view with its command tree
 struct cli_view_node
 {
-    uint32_t view_id;
-    char view_name[CLI_CLI_MAX_VIEW_LEN];
+    char view_name[CLI_CLI_MAX_VIEW_LEN]; // 视图名称，作为唯一标识
     char prompt_template[CFG_CLI_MAX_VIEW_LEN];
     cli_tree_node_t *cmd_tree; // Command tree for this view
 
@@ -31,19 +30,18 @@ struct cli_view_node
 // View tree container
 typedef struct
 {
-    cli_view_node_t *root;        // Root view (usually "user")
-    cli_view_node_t *global_view; // Global commands view
+    cli_view_node_t *root;            // Root view (usually "user")
+    cli_view_node_t *global_view;     // Global commands view
+    cli_tree_node_t *global_cmd_tree; // 全局命令树快捷指针（非持有，指向 global_view->cmd_tree）
 } cli_view_tree_t;
 
 // Function prototypes
-cli_view_node_t *cli_view_create(uint32_t view_id, const char *view_name, const char *prompt_template);
+cli_view_node_t *cli_view_create(const char *view_name, const char *prompt_template);
 
 void cli_view_add_child(cli_view_node_t *parent, cli_view_node_t *child);
 
-cli_view_node_t *cli_view_find_by_id(cli_view_node_t *root, uint32_t view_id);
+cli_view_node_t *cli_view_find_by_name(cli_view_node_t *root, const char *view_name);
 
 void cli_view_free(cli_view_node_t *view);
-
-int cfg_get_view_prompt_template_inner(uint32_t view_id, char *view_name);
 
 #endif // CLI_VIEW_H

@@ -310,7 +310,7 @@ void cfg_init_local(dev_ipc_context_t *ctx)
     g_cfg_local->sessions = g_hash_table_new_full(g_int_hash, g_int_equal, g_free, (GDestroyNotify)cli_session_destroy);
 
     /* 创建视图树 */
-    cli_view_node_t *user_view = cli_view_create(CLI_VIEW_USER, "user", "<NetNexus>");
+    cli_view_node_t *user_view = cli_view_create(CLI_VIEW_USER, "<NetNexus>");
     if (!user_view)
     {
         LOG_ERROR("Failed to create user view");
@@ -318,7 +318,7 @@ void cfg_init_local(dev_ipc_context_t *ctx)
     }
     g_cfg_local->view_tree.root = user_view;
 
-    cli_view_node_t *config_view = cli_view_create(CLI_VIEW_CONFIG, "config", "<NetNexus(config)>");
+    cli_view_node_t *config_view = cli_view_create(CLI_VIEW_CONFIG, "<NetNexus(config)>");
     if (!config_view)
     {
         LOG_ERROR("Failed to create config view");

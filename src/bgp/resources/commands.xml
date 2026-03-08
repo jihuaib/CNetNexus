@@ -2,10 +2,13 @@
 <configuration module-id="5">
     <!-- View definitions -->
     <views>
-        <view view-id="4" view-name="bgp">
+        <view view-name="bgp">
             <template>&lt;NetNexus(config-bgp)&gt;</template>
-            <view view-id="7" view-name="bgp-af-ipv4-uni">
+            <view view-name="bgp-af-ipv4-uni">
                 <template>&lt;NetNexus(config-bgp-af-ipv4-uni)&gt;</template>
+            </view>
+            <view view-name="bgp-af-ipv6-uni">
+                <template>&lt;NetNexus(config-bgp-af-ipv6-uni)&gt;</template>
             </view>
         </view>
     </views>
@@ -33,12 +36,12 @@
             <commands>
                 <command>
                     <expression>2 3</expression>
-                    <views>3</views>
-                    <view-id>4</view-id>
+                    <views>config</views>
+                    <to-view>bgp</to-view>
                 </command>
                 <command>
                     <expression>1 2</expression>
-                    <views>3</views>
+                    <views>config</views>
                 </command>
             </commands>
         </group>
@@ -63,7 +66,7 @@
             <commands>
                 <command>
                     <expression>1 2 [ 3 ]</expression>
-                    <views>1</views>
+                    <views>global</views>
                 </command>
             </commands>
         </group>
@@ -99,12 +102,12 @@
                 <!-- neighbor <ip> as <as-num> -->
                 <command>
                     <expression>2 3 4 5</expression>
-                    <views>4</views>
+                    <views>bgp</views>
                 </command>
                 <!-- no neighbor <ip> -->
                 <command>
                     <expression>1 2 3</expression>
-                    <views>4</views>
+                    <views>bgp</views>
                 </command>
             </commands>
         </group>
@@ -124,25 +127,36 @@
                     <name>ipv4-unicast</name>
                     <description>IPv4 unicast address family</description>
                 </element>
+                 <element cfg-id="2" type="keyword">
+                    <name>ipv6-unicast</name>
+                    <description>IPv6 unicast address family</description>
+                </element>           
             </elements>
 
             <commands>
-                <!-- af ipv4-unicast (cfg-id=11=AFI_IPV4=1, cfg-id=12=SAFI_UNICAST=1) -->
+                <!-- af ipv4-unicast -->
                 <command>
                     <expression>2 3</expression>
-                    <views>4</views>
-                    <view-id>7</view-id>
-                    <!-- afi/safi 固定值写入上下文，父视图的 as_number 由框架自动叠加 -->
-                    <!-- ctx-id=3(BGP_CTX_VAR_AFI), ctx-id=4(BGP_CTX_VAR_SAFI) -->
+                    <views>bgp</views>
+                    <to-view>bgp-af-ipv4-uni</to-view>
                     <context-out>
                         <entry ctx-id="2" value="1"/>
                         <entry ctx-id="3" value="1"/>
                     </context-out>
                 </command>
+                <command>
+                    <expression>2 4</expression>
+                    <views>bgp</views>
+                    <to-view>bgp-af-ipv6-uni</to-view>
+                    <context-out>
+                        <entry ctx-id="2" value="2"/>
+                        <entry ctx-id="3" value="1"/>
+                    </context-out>
+                </command>
                 <!-- no af ipv4-unicast -->
                 <command>
-                    <expression>1 2 3</expression>
-                    <views>4</views>
+                    <expression>1  2  { 3 | 4 }</expression>
+                    <views>bgp</views>
                 </command>
             </commands>
         </group>
@@ -173,12 +187,12 @@
                 <!-- neighbor <ip> enable -->
                 <command>
                     <expression>2 3 4</expression>
-                    <views>7</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni</views>
                 </command>
                 <!-- no neighbor <ip> -->
                 <command>
                     <expression>1 2 3</expression>
-                    <views>7</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni</views>
                 </command>
             </commands>
         </group>
@@ -204,12 +218,12 @@
                 <!-- router-id <ip-address> -->
                 <command>
                     <expression>2 3</expression>
-                    <views>4</views>
+                    <views>bgp</views>
                 </command>
                 <!-- no router-id -->
                 <command>
                     <expression>1 2</expression>
-                    <views>4</views>
+                    <views>bgp</views>
                 </command>
             </commands>
         </group>
@@ -239,12 +253,12 @@
                 <!-- timer connect-retry <seconds> -->
                 <command>
                     <expression>2 3 4</expression>
-                    <views>4</views>
+                    <views>bgp</views>
                 </command>
                 <!-- no timer connect-retry -->
                 <command>
                     <expression>1 2 3</expression>
-                    <views>4</views>
+                    <views>bgp</views>
                 </command>
             </commands>
         </group>
@@ -280,7 +294,7 @@
                 <!-- timer keepalive <n> hold <n> -->
                 <command>
                     <expression>1 2 3 4 5</expression>
-                    <views>4</views>
+                    <views>bgp</views>
                 </command>
             </commands>
         </group>
@@ -318,22 +332,22 @@
                 <!-- neighbor <ip> open-capability as4 -->
                 <command>
                     <expression>2 3 4 5</expression>
-                    <views>4</views>
+                    <views>bgp</views>
                 </command>
                 <!-- neighbor <ip> open-capability route-refresh -->
                 <command>
                     <expression>2 3 4 6</expression>
-                    <views>4</views>
+                    <views>bgp</views>
                 </command>
                 <!-- no neighbor <ip> open-capability as4 -->
                 <command>
                     <expression>1 2 3 4 5</expression>
-                    <views>4</views>
+                    <views>bgp</views>
                 </command>
                 <!-- no neighbor <ip> open-capability route-refresh -->
                 <command>
                     <expression>1 2 3 4 6</expression>
-                    <views>4</views>
+                    <views>bgp</views>
                 </command>
             </commands>
         </group>

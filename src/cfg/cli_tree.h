@@ -42,7 +42,7 @@ struct cli_tree_node
     char *name;                   // Node name/keyword
     char *description;            // Help text
     cli_node_type_t type;         // Node type
-    uint32_t view_id;             // Target view name to switch to after execution (optional)
+    char *target_view_name;       // 命令执行成功后切换到的视图名称（NULL 表示不切换）
     cli_param_type_t *param_type; // Parameter type for validation (only for ARGUMENT nodes)
     gboolean is_end_node;         // 1 if this node is a valid command end point, 0 otherwise
 
@@ -89,7 +89,8 @@ cli_match_result_t *cli_tree_match_command_full(cli_tree_node_t *root, const cha
 
 // Function prototypes
 cli_tree_node_t *cli_tree_create_node(uint32_t element_id, const char *name, const char *description,
-                                      cli_node_type_t type, uint32_t module_id, uint32_t group_id, uint32_t view_id);
+                                      cli_node_type_t type, uint32_t module_id, uint32_t group_id,
+                                      const char *target_view_name);
 
 void cli_tree_add_child(cli_tree_node_t *parent, cli_tree_node_t *child);
 
@@ -111,5 +112,13 @@ cli_tree_node_t *cli_tree_match_command(cli_tree_node_t *root, const char *cmd_l
 
 uint32_t cli_tree_match_command_get_matches(cli_tree_node_t *root, const char *cmd_line, cli_tree_node_t **matches,
                                             uint32_t max_matches);
+
+// 双树匹配：同时在 view_root 和 global_root 两棵树中查找，结果合并去重
+uint32_t cli_tree_match_command_get_matches_dual(cli_tree_node_t *view_root, cli_tree_node_t *global_root,
+                                                 const char *cmd_line, cli_tree_node_t **matches, uint32_t max_matches);
+
+// 双树全量匹配：先尝试 view_root，失败后回退 global_root
+cli_match_result_t *cli_tree_match_command_full_dual(cli_tree_node_t *view_root, cli_tree_node_t *global_root,
+                                                     const char *cmd_line);
 
 #endif // cli_TREE_H

@@ -205,7 +205,7 @@ __attribute__((constructor)) static void route_so_init(void)
     }
 
     /* 初始化本地状态（原 route_on_start 逻辑） */
-    g_route_local = calloc(1, sizeof(route_local_t));
+    g_route_local = g_malloc0(sizeof(route_local_t));
     if (!g_route_local)
     {
         LOG_ERROR("分配 route 上下文失败");

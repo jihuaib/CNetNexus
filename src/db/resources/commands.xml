@@ -37,17 +37,17 @@
                 <!-- show db table-list -->
                 <command>
                     <expression>1 2 3</expression>
-                    <views>1</views>
+                    <views>global</views>
                 </command>
                 <!-- show db table-field <table-name> -->
                 <command>
                     <expression>1 2 4 6</expression>
-                    <views>1</views>
+                    <views>global</views>
                 </command>
                 <!-- show db table-data <table-name> -->
                 <command>
                     <expression>1 2 5 6</expression>
-                    <views>1</views>
+                    <views>global</views>
                 </command>
             </commands>
         </group>

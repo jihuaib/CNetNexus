@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <configuration module-id="4">
     <views>
-        <view view-id="5" view-name="if">
+        <view view-name="if">
             <!-- {ctx:5} 由框架替换为 CLI_CTX_ID_IF_IDX 值（1=GE-1, 2=GE-2, 3=GE-3, 4=GE-4） -->
             <template>&lt;NetNexus(config-if-GE-{ctx:4})&gt;</template>
         </view>
@@ -36,8 +36,8 @@
                 <!-- if GE-1: ctx-id=5(CLI_CTX_ID_IF_IDX)=1 -->
                 <command>
                     <expression>1 2</expression>
-                    <views>3</views>
-                    <view-id>5</view-id>
+                    <views>config</views>
+                    <to-view>if</to-view>
                     <context-out>
                         <entry ctx-id="4" value="1"/>
                     </context-out>
@@ -45,8 +45,8 @@
                 <!-- if GE-2: ctx-id=4=2 -->
                 <command>
                     <expression>1 3</expression>
-                    <views>3</views>
-                    <view-id>5</view-id>
+                    <views>config</views>
+                    <to-view>if</to-view>
                     <context-out>
                         <entry ctx-id="4" value="2"/>
                     </context-out>
@@ -54,8 +54,8 @@
                 <!-- if GE-3: ctx-id=4=3 -->
                 <command>
                     <expression>1 4</expression>
-                    <views>3</views>
-                    <view-id>5</view-id>
+                    <views>config</views>
+                    <to-view>if</to-view>
                     <context-out>
                         <entry ctx-id="4" value="3"/>
                     </context-out>
@@ -63,8 +63,8 @@
                 <!-- if GE-4: ctx-id=4=4 -->
                 <command>
                     <expression>1 5</expression>
-                    <views>3</views>
-                    <view-id>5</view-id>
+                    <views>config</views>
+                    <to-view>if</to-view>
                     <context-out>
                         <entry ctx-id="4" value="4"/>
                     </context-out>
@@ -106,17 +106,17 @@
                 <!-- ip address <ip> <prefix-len> -->
                 <command>
                     <expression>1 2 3 4</expression>
-                    <views>5</views>
+                    <views>if</views>
                 </command>
                 <!-- shutdown -->
                 <command>
                     <expression>5</expression>
-                    <views>5</views>
+                    <views>if</views>
                 </command>
                 <!-- no shutdown -->
                 <command>
                     <expression>6 5</expression>
-                    <views>5</views>
+                    <views>if</views>
                 </command>
             </commands>
         </group>
@@ -153,12 +153,12 @@
                 <!-- show if -->
                 <command>
                     <expression>1 2</expression>
-                    <views>1</views>
+                    <views>global</views>
                 </command>
                 <!-- show if <name> -->
                 <command>
                     <expression>1 2 { 3 | 4 | 5 | 6 }</expression>
-                    <views>1</views>
+                    <views>global</views>
                 </command>
             </commands>
         </group>

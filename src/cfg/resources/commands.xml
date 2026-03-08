@@ -22,7 +22,7 @@
             <commands>
                 <command>
                     <expression>1 2 3</expression>
-                    <views>1</views>
+                    <views>global</views>
                 </command>
             </commands>
         </group>
@@ -47,7 +47,7 @@
             <commands>
                 <command>
                     <expression>1 2 3</expression>
-                    <views>1</views>
+                    <views>global</views>
                 </command>
             </commands>
         </group>
@@ -68,7 +68,7 @@
             <commands>
                 <command>
                     <expression>1 2</expression>
-                    <views>1</views>
+                    <views>global</views>
                 </command>
             </commands>
         </group>
@@ -85,7 +85,7 @@
             <commands>
                 <command>
                     <expression>1</expression>
-                    <views>1</views>
+                    <views>global</views>
                 </command>
             </commands>
         </group>
@@ -102,7 +102,7 @@
             <commands>
                 <command>
                     <expression>1</expression>
-                    <views>2</views>
+                    <views>user</views>
                 </command>
             </commands>
         </group>
@@ -119,7 +119,7 @@
             <commands>
                 <command>
                     <expression>1</expression>
-                    <views>1</views>
+                    <views>global</views>
                 </command>
             </commands>
         </group>
@@ -144,7 +144,7 @@
             <commands>
                 <command>
                     <expression>1 2 3</expression>
-                    <views>1</views>
+                    <views>global</views>
                 </command>
             </commands>
         </group>
@@ -161,7 +161,7 @@
             <commands>
                 <command>
                     <expression>1</expression>
-                    <views>2</views>
+                    <views>user</views>
                 </command>
             </commands>
         </group>

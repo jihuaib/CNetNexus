@@ -32,6 +32,10 @@ static const char *afi_safi_to_str(int64_t afi, int64_t safi)
     {
         return "ipv4-unicast"; /* BGP_AFI_IPV4 + BGP_SAFI_UNICAST */
     }
+    if (afi == 2 && safi == 1)
+    {
+        return "ipv6-unicast"; /* BGP_AFI_IPV6 + BGP_SAFI_UNICAST */
+    }
     return NULL;
 }
 

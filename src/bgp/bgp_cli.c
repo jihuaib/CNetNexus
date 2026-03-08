@@ -344,6 +344,10 @@ static int handle_bgp_addr_family(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
                 ctx.afi = BGP_AFI_IPV4;
                 ctx.safi = BGP_SAFI_UNICAST;
                 break;
+            case 2: /* ipv6-unicast 关键字 */
+                ctx.afi = BGP_AFI_IPV6;
+                ctx.safi = BGP_SAFI_UNICAST;
+                break;
             default:
                 break;
         }

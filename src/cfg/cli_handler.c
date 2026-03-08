@@ -752,10 +752,11 @@ static void handle_tab_completion(cli_session_t *session, char *line_buffer, uin
         memcpy(match_input, line_buffer, *line_pos + 1);
     }
 
-    // Get all matches for the last token
+    // Get all matches for the last token（view tree + global tree 双树查找）
     cli_tree_node_t *matches[50];
+    cli_tree_node_t *global_tree = g_cfg_local->view_tree.global_cmd_tree;
     uint32_t num_matches =
-        cli_tree_match_command_get_matches(session->current_view->cmd_tree, match_input, matches, 50);
+        cli_tree_match_command_get_matches_dual(session->current_view->cmd_tree, global_tree, match_input, matches, 50);
 
     // Check if we have a trailing space in the original input
     uint32_t orig_len = session->tab_cycling ? session->tab_original_pos : *line_pos;
@@ -957,14 +958,23 @@ static void handle_help_request(cli_session_t *session, char *line_buffer, uint3
     // Collect all help output into a GString for paging
     GString *help_out = g_string_new("");
 
+    cli_tree_node_t *help_global_tree = g_cfg_local->view_tree.global_cmd_tree;
     if (has_trailing_space)
     {
-        // Case: "xx ?" - Show next token's children
-        cli_tree_node_t *context = cli_tree_match_command(session->current_view->cmd_tree, match_buffer);
+        // Case: "xx ?" - 在 view tree 和 global tree 中各查一次，分别展示子命令
+        cli_tree_node_t *ctx_view = cli_tree_match_command(session->current_view->cmd_tree, match_buffer);
+        cli_tree_node_t *ctx_global = help_global_tree ? cli_tree_match_command(help_global_tree, match_buffer) : NULL;
 
-        if (context)
+        if (ctx_view || ctx_global)
         {
-            cli_tree_print_help(context, help_out);
+            if (ctx_view)
+            {
+                cli_tree_print_help(ctx_view, help_out);
+            }
+            if (ctx_global)
+            {
+                cli_tree_print_help(ctx_global, help_out);
+            }
         }
         else
         {
@@ -975,8 +985,8 @@ static void handle_help_request(cli_session_t *session, char *line_buffer, uint3
     {
         // Case: "xx?" - Show matching keywords or argument help
         cli_tree_node_t *matches[50];
-        uint32_t num_matches =
-            cli_tree_match_command_get_matches(session->current_view->cmd_tree, match_buffer, matches, 50);
+        uint32_t num_matches = cli_tree_match_command_get_matches_dual(session->current_view->cmd_tree,
+                                                                       help_global_tree, match_buffer, matches, 50);
 
         if (num_matches > 0)
         {
@@ -1097,10 +1107,14 @@ static void handle_help_request(cli_session_t *session, char *line_buffer, uint3
 
             if (is_empty)
             {
-                cli_tree_node_t *context = session->current_view->cmd_tree;
-                if (context)
+                /* 空输入 "?"：展示 view tree 和 global tree 的所有根级子命令 */
+                if (session->current_view->cmd_tree)
                 {
-                    cli_tree_print_help(context, help_out);
+                    cli_tree_print_help(session->current_view->cmd_tree, help_out);
+                }
+                if (help_global_tree)
+                {
+                    cli_tree_print_help(help_global_tree, help_out);
                 }
             }
             else
@@ -1191,8 +1205,9 @@ int process_command(const char *cmd_line, cli_session_t *session)
         return 0; // Error
     }
 
-    // Use full match to get all element IDs and values
-    cli_match_result_t *match_result = cli_tree_match_command_full(session->current_view->cmd_tree, trimmed);
+    // Use full match to get all element IDs and values（view tree 优先，失败后回退 global tree）
+    cli_match_result_t *match_result = cli_tree_match_command_full_dual(
+        session->current_view->cmd_tree, g_cfg_local->view_tree.global_cmd_tree, trimmed);
     cli_tree_node_t *node = match_result ? match_result->final_node : NULL;
 
     if (node)
@@ -1253,6 +1268,7 @@ void cli_cleanup(void)
     {
         cli_view_free(g_cfg_local->view_tree.global_view);
         g_cfg_local->view_tree.global_view = NULL;
+        g_cfg_local->view_tree.global_cmd_tree = NULL; /* 非持有指针，随 global_view 释放 */
     }
 }
 

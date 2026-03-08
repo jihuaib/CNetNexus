@@ -468,12 +468,12 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
                 g_string_append(full_output, response->payload);
             }
 
-            /* 自动视图切换：响应为空 + 命令有 view_id（context-out 可选） */
+            /* 自动视图切换：响应为空 + 命令有目标视图名（context-out 可选） */
             gboolean payload_empty = (!response->payload || strlen(response->payload) == 0);
-            if (payload_empty && result->final_node && result->final_node->view_id != 0)
+            if (payload_empty && result->final_node && result->final_node->target_view_name != NULL)
             {
                 cli_view_node_t *tgt_view =
-                    cli_view_find_by_id(g_cfg_local->view_tree.root, result->final_node->view_id);
+                    cli_view_find_by_name(g_cfg_local->view_tree.root, result->final_node->target_view_name);
                 if (tgt_view)
                 {
                     uint8_t *new_ctx = NULL;
@@ -492,7 +492,7 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
                         cli_context_set(session, new_ctx, new_ctx_len);
                         g_free(new_ctx);
                     }
-                    LOG_DEBUG("框架自动切换到视图 %u，上下文 %u 字节", tgt_view->view_id, new_ctx_len);
+                    LOG_DEBUG("框架自动切换到视图 %s，上下文 %u 字节", tgt_view->view_name, new_ctx_len);
                 }
             }
 

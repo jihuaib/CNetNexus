@@ -20,17 +20,16 @@ enum
 };
 
 // Create a new view node
-cli_view_node_t *cli_view_create(uint32_t view_id, const char *view_name, const char *prompt_template)
+cli_view_node_t *cli_view_create(const char *view_name, const char *prompt_template)
 {
     cli_view_node_t *view = (cli_view_node_t *)g_malloc0(sizeof(cli_view_node_t));
 
-    view->view_id = view_id;
     strlcpy(view->view_name, view_name, CLI_CLI_MAX_VIEW_LEN);
     if (prompt_template != NULL)
     {
         strlcpy(view->prompt_template, prompt_template, CFG_CLI_MAX_VIEW_LEN);
     }
-    view->cmd_tree = cli_tree_create_node(0, NULL, "Root", CLI_NODE_COMMAND, 0, 0, 0);
+    view->cmd_tree = cli_tree_create_node(0, NULL, "Root", CLI_NODE_COMMAND, 0, 0, NULL);
 
     view->parent = NULL;
     view->children = NULL;
@@ -68,24 +67,22 @@ void cli_view_add_child(cli_view_node_t *parent, cli_view_node_t *child)
     child->parent = parent;
 }
 
-// Find a view by name (recursive search)
-cli_view_node_t *cli_view_find_by_id(cli_view_node_t *root, uint32_t view_id)
+// 按名称递归查找视图
+cli_view_node_t *cli_view_find_by_name(cli_view_node_t *root, const char *view_name)
 {
-    if (!root)
+    if (!root || !view_name)
     {
         return NULL;
     }
 
-    // Check current node
-    if (root->view_id == view_id)
+    if (strcmp(root->view_name, view_name) == 0)
     {
         return root;
     }
 
-    // Search children recursively
     for (uint32_t i = 0; i < root->num_children; i++)
     {
-        cli_view_node_t *found = cli_view_find_by_id(root->children[i], view_id);
+        cli_view_node_t *found = cli_view_find_by_name(root->children[i], view_name);
         if (found)
         {
             return found;
@@ -115,25 +112,4 @@ void cli_view_free(cli_view_node_t *view)
         cli_tree_free(view->cmd_tree);
     }
     g_free(view);
-}
-
-// Get view prompt template by view name (for modules to fill placeholders)
-int cfg_get_view_prompt_template_inner(uint32_t view_id, char *view_name)
-{
-    view_name[0] = '\0';
-
-    if (!g_cfg_local->view_tree.root)
-    {
-        return ERRCODE_FAIL;
-        ;
-    }
-
-    cli_view_node_t *view = cli_view_find_by_id(g_cfg_local->view_tree.root, view_id);
-    if (view)
-    {
-        strlcpy(view_name, view->prompt_template, CFG_CLI_MAX_VIEW_LEN);
-        return ERRCODE_SUCCESS;
-    }
-
-    return ERRCODE_FAIL;
 }

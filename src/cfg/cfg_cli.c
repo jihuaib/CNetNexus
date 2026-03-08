@@ -145,6 +145,12 @@ static void handle_show_commands(cli_session_t *session)
         print_view_commands_flat(g_cfg_local->view_tree.root, g_cfg_show_cache);
     }
 
+    /* 全局命令不再克隆进各视图，单独打印 global_view */
+    if (g_cfg_local->view_tree.global_view)
+    {
+        print_view_commands_flat(g_cfg_local->view_tree.global_view, g_cfg_show_cache);
+    }
+
     g_string_append(g_cfg_show_cache, "\r\n");
 
     /* 分批读取 */
@@ -319,12 +325,9 @@ static void handle_op_exit(cli_session_t *session)
     }
     else
     {
-        cli_view_node_t *config_view = cli_view_find_by_id(g_cfg_local->view_tree.root, parent_view->view_id);
-        if (config_view)
-        {
-            session->current_view = config_view;
-            cli_prompt_pop(session);
-        }
+        /* parent_view 指针即目标视图，直接使用 */
+        session->current_view = parent_view;
+        cli_prompt_pop(session);
     }
 }
 
@@ -333,7 +336,7 @@ static void handle_op_exit(cli_session_t *session)
  */
 static void handle_op_config(cli_session_t *session)
 {
-    cli_view_node_t *config_view = cli_view_find_by_id(g_cfg_local->view_tree.root, CLI_VIEW_CONFIG);
+    cli_view_node_t *config_view = cli_view_find_by_name(g_cfg_local->view_tree.root, CLI_VIEW_CONFIG);
     if (config_view)
     {
         cli_prompt_push(session);
@@ -510,26 +513,6 @@ static void handle_op_bash(cli_session_t *session)
 }
 
 /**
- * @brief 将已知 ctx_id 映射为可读名称
- */
-static const char *ctx_id_name(uint32_t id)
-{
-    switch (id)
-    {
-        case CLI_CTX_ID_BGP_VRF:
-            return "BGP_VRF";
-        case CLI_CTX_ID_BGP_AFI:
-            return "BGP_AFI";
-        case CLI_CTX_ID_BGP_SAFI:
-            return "BGP_SAFI";
-        case CLI_CTX_ID_VRF_NAME:
-            return "VRF_NAME";
-        default:
-            return "unknown";
-    }
-}
-
-/**
  * @brief show cli context (group_id=8)：打印当前会话上下文 TLV 中所有变量
  */
 static void handle_show_context(cli_session_t *session)
@@ -538,8 +521,8 @@ static void handle_show_context(cli_session_t *session)
     const uint8_t *ctx = cli_context_get(session, &ctx_len);
 
     GString *out = g_string_new("\r\nCLI Context Variables:\r\n");
-    g_string_append(out, "  ctx-id  name          type  value\r\n");
-    g_string_append(out, "  ------  ------------  ----  -----\r\n");
+    g_string_append(out, "  ctx-id  type  value\r\n");
+    g_string_append(out, "  ------  ----  -----\r\n");
 
     if (!ctx || ctx_len < 2)
     {
@@ -603,7 +586,7 @@ static void handle_show_context(cli_session_t *session)
 
         const char *type_str = (type == CLI_TLV_TYPE_CTX) ? "INT" : (type == CLI_TLV_TYPE_CTX_STR) ? "STR" : "???";
         char line[256];
-        snprintf(line, sizeof(line), "  %-6u  %-12s  %-4s  %s\r\n", id, ctx_id_name(id), type_str, val_buf);
+        snprintf(line, sizeof(line), "  %-6u  %-4s  %s\r\n", id, type_str, val_buf);
         g_string_append(out, line);
 
         pos += elen;
@@ -619,7 +602,7 @@ static void handle_show_context(cli_session_t *session)
  */
 static void handle_op_end(cli_session_t *session)
 {
-    cli_view_node_t *user_view = cli_view_find_by_id(g_cfg_local->view_tree.root, CLI_VIEW_USER);
+    cli_view_node_t *user_view = cli_view_find_by_name(g_cfg_local->view_tree.root, CLI_VIEW_USER);
     if (user_view)
     {
         session->current_view = user_view;

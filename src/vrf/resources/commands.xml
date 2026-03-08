@@ -3,7 +3,7 @@
 
     <!-- View definitions -->
     <views>
-        <view view-id="8" view-name="vrf">
+        <view view-name="vrf">
             <template>&lt;NetNexus(config-vrf-{ctx:5})&gt;</template>
         </view>
     </views>
@@ -33,8 +33,8 @@
                 <!-- vrf <vrf-name> -->
                 <command>
                     <expression>1 2</expression>
-                    <views>3</views>
-                    <view-id>8</view-id>
+                    <views>config</views>
+                    <to-view>vrf</to-view>
                     <context-out>
                         <entry ctx-id="5" from-param="1"/>
                     </context-out>
@@ -42,7 +42,7 @@
                 <!-- no vrf <vrf-name> -->
                 <command>
                     <expression>3 1 2</expression>
-                    <views>3</views>
+                    <views>config</views>
                 </command>
             </commands>
         </group>
@@ -70,12 +70,12 @@
                 <!-- show vrf：显示所有 VRF -->
                 <command>
                     <expression>1 2</expression>
-                    <views>1</views>
+                    <views>global</views>
                 </command>
                 <!-- show vrf <vrf-name>：显示指定 VRF 详情 -->
                 <command>
                     <expression>1 2 3</expression>
-                    <views>1</views>
+                    <views>global</views>
                 </command>
             </commands>
         </group>

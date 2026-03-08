@@ -24,7 +24,7 @@ enum
 
 // Create a new CLI tree node
 cli_tree_node_t *cli_tree_create_node(uint32_t cfg_id, const char *name, const char *description, cli_node_type_t type,
-                                      uint32_t module_id, uint32_t group_id, uint32_t view_id)
+                                      uint32_t module_id, uint32_t group_id, const char *target_view_name)
 {
     cli_tree_node_t *node = (cli_tree_node_t *)g_malloc0(sizeof(cli_tree_node_t));
 
@@ -34,9 +34,9 @@ cli_tree_node_t *cli_tree_create_node(uint32_t cfg_id, const char *name, const c
     node->name = name ? g_strdup(name) : NULL;
     node->description = description ? g_strdup(description) : NULL;
     node->type = type;
-    node->view_id = view_id;
+    node->target_view_name = target_view_name ? g_strdup(target_view_name) : NULL;
     node->param_type = NULL;
-    node->is_end_node = FALSE; // Default: not an end node
+    node->is_end_node = FALSE;
     node->children = NULL;
     node->num_children = 0;
     node->children_capacity = 0;
@@ -71,10 +71,24 @@ void cli_tree_add_child(cli_tree_node_t *parent, cli_tree_node_t *child)
             child->context_out = NULL;
         }
 
+        // 转移 target_view_name（若子节点有而现有节点没有）
+        if (child->target_view_name && !existing->target_view_name)
+        {
+            existing->target_view_name = child->target_view_name;
+            child->target_view_name = NULL;
+        }
+
+        // 转移 is_end_node 标志
+        if (child->is_end_node)
+        {
+            existing->is_end_node = TRUE;
+        }
+
         // Free the new node (but not its children, as they were moved)
         g_free(child->name);
         g_free(child->description);
         g_free(child->context_out);
+        g_free(child->target_view_name);
         g_free(child->children);
         g_free(child);
         return;
@@ -237,6 +251,7 @@ void cli_tree_free(cli_tree_node_t *root)
     g_free(root->children);
     g_free(root->name);
     g_free(root->description);
+    g_free(root->target_view_name);
     g_free(root->context_out);
     if (root->param_type)
     {
@@ -255,7 +270,7 @@ cli_tree_node_t *cli_tree_clone(cli_tree_node_t *node)
 
     // Create new node with same properties
     cli_tree_node_t *clone = cli_tree_create_node(node->cfg_id, node->name, node->description, node->type,
-                                                  node->module_id, node->group_id, node->view_id);
+                                                  node->module_id, node->group_id, node->target_view_name);
     if (!clone)
     {
         return NULL;
@@ -422,6 +437,73 @@ uint32_t cli_tree_match_command_get_matches(cli_tree_node_t *root, const char *c
 
     g_free(cmd_copy);
     return count;
+}
+
+// 双树 get_matches：先从 view 树收集，再从 global 树收集，按名称去重
+uint32_t cli_tree_match_command_get_matches_dual(cli_tree_node_t *view_root, cli_tree_node_t *global_root,
+                                                 const char *cmd_line, cli_tree_node_t **matches, uint32_t max_matches)
+{
+    if (!matches || max_matches == 0)
+    {
+        return 0;
+    }
+
+    uint32_t count = 0;
+
+    /* 先从 view tree 收集 */
+    if (view_root)
+    {
+        count = cli_tree_match_command_get_matches(view_root, cmd_line, matches, max_matches);
+    }
+
+    /* 再从 global tree 收集，按名称去重后追加 */
+    if (global_root && count < max_matches)
+    {
+        cli_tree_node_t *global_matches[50];
+        uint32_t global_count =
+            cli_tree_match_command_get_matches(global_root, cmd_line, global_matches, max_matches - count);
+
+        for (uint32_t i = 0; i < global_count && count < max_matches; i++)
+        {
+            gboolean dup = FALSE;
+            for (uint32_t j = 0; j < count; j++)
+            {
+                if (matches[j]->name && global_matches[i]->name &&
+                    strcmp(matches[j]->name, global_matches[i]->name) == 0)
+                {
+                    dup = TRUE;
+                    break;
+                }
+            }
+            if (!dup)
+            {
+                matches[count++] = global_matches[i];
+            }
+        }
+    }
+
+    return count;
+}
+
+// 双树全量匹配：先尝试 view tree，失败后回退 global tree
+cli_match_result_t *cli_tree_match_command_full_dual(cli_tree_node_t *view_root, cli_tree_node_t *global_root,
+                                                     const char *cmd_line)
+{
+    if (view_root)
+    {
+        cli_match_result_t *result = cli_tree_match_command_full(view_root, cmd_line);
+        if (result)
+        {
+            return result;
+        }
+    }
+
+    if (global_root)
+    {
+        return cli_tree_match_command_full(global_root, cmd_line);
+    }
+
+    return NULL;
 }
 
 // ============================================================================

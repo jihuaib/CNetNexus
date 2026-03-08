@@ -22,8 +22,6 @@
 #include "errcode.h"
 #include "log.h"
 
-static void merge_global_to_views(cli_view_node_t *view, cli_tree_node_t *global_tree);
-
 // ============================================================================
 // Expression AST - supports [ A | B ] (optional) and { A | B } (required)
 // ============================================================================
@@ -325,12 +323,12 @@ static void leaf_set_free(leaf_set_t *ls)
 
 // Create a tree node from an element
 static cli_tree_node_t *create_tree_node_from_element(cli_element_t *element, cli_command_group_t *group,
-                                                      uint32_t module_id, uint32_t view_id)
+                                                      uint32_t module_id, const char *target_view_name)
 {
     cli_tree_node_t *node =
         cli_tree_create_node(element->cfg_id, element->name, element->description,
                              element->type == ELEMENT_TYPE_KEYWORD ? CLI_NODE_COMMAND : CLI_NODE_ARGUMENT, module_id,
-                             group->group_id, view_id);
+                             group->group_id, target_view_name);
 
     if (element->type == ELEMENT_TYPE_PARAMETER && element->param_type)
     {
@@ -360,13 +358,13 @@ static void leaf_set_add_unique(leaf_set_t *ls, cli_tree_node_t *node)
 
 // Forward declaration
 static leaf_set_t *build_tree_recursive(expr_node_t *ast, leaf_set_t *parents, cli_command_group_t *group,
-                                        uint32_t module_id, uint32_t view_id);
+                                        uint32_t module_id, const char *target_view_name);
 
 // Build tree from AST node, attaching to parent leaf set.
 // Uses a virtual root as anchor so the leaf set is never empty.
 // Returns new leaf set (the nodes where next items should attach).
 static leaf_set_t *build_tree_recursive(expr_node_t *ast, leaf_set_t *parents, cli_command_group_t *group,
-                                        uint32_t module_id, uint32_t view_id)
+                                        uint32_t module_id, const char *target_view_name)
 {
     if (!ast)
     {
@@ -387,7 +385,7 @@ static leaf_set_t *build_tree_recursive(expr_node_t *ast, leaf_set_t *parents, c
             leaf_set_t *new_leaves = leaf_set_create();
             for (uint32_t i = 0; i < parents->count; i++)
             {
-                cli_tree_node_t *node = create_tree_node_from_element(element, group, module_id, view_id);
+                cli_tree_node_t *node = create_tree_node_from_element(element, group, module_id, target_view_name);
                 cli_tree_add_child(parents->nodes[i], node);
                 // After add_child, the node might have been merged. Find the actual child.
                 cli_tree_node_t *actual = cli_tree_find_child(parents->nodes[i], element->name);
@@ -405,7 +403,8 @@ static leaf_set_t *build_tree_recursive(expr_node_t *ast, leaf_set_t *parents, c
             leaf_set_t *current_leaves = parents;
             for (uint32_t i = 0; i < ast->num_children; i++)
             {
-                current_leaves = build_tree_recursive(ast->children[i], current_leaves, group, module_id, view_id);
+                current_leaves =
+                    build_tree_recursive(ast->children[i], current_leaves, group, module_id, target_view_name);
             }
             return current_leaves;
         }
@@ -426,7 +425,8 @@ static leaf_set_t *build_tree_recursive(expr_node_t *ast, leaf_set_t *parents, c
                     leaf_set_add(alt_parents, parents->nodes[j]);
                 }
 
-                leaf_set_t *alt_leaves = build_tree_recursive(ast->children[i], alt_parents, group, module_id, view_id);
+                leaf_set_t *alt_leaves =
+                    build_tree_recursive(ast->children[i], alt_parents, group, module_id, target_view_name);
 
                 // Merge alt_leaves into result
                 for (uint32_t j = 0; j < alt_leaves->count; j++)
@@ -458,7 +458,7 @@ static leaf_set_t *build_tree_recursive(expr_node_t *ast, leaf_set_t *parents, c
 // Returns a virtual root node whose children are the actual command trees.
 // The caller should add each child to the target view's cmd_tree, then g_free the virtual root shell.
 static cli_tree_node_t *build_tree_from_expression_str(const char *expression, cli_command_group_t *group,
-                                                       uint32_t module_id, uint32_t view_id)
+                                                       uint32_t module_id, const char *target_view_name)
 {
     if (!expression || !group)
     {
@@ -474,12 +474,12 @@ static cli_tree_node_t *build_tree_from_expression_str(const char *expression, c
     }
 
     // Create virtual root as anchor so leaf set is never empty
-    cli_tree_node_t *virtual_root = cli_tree_create_node(0, "__virtual_root__", NULL, CLI_NODE_COMMAND, 0, 0, 0);
+    cli_tree_node_t *virtual_root = cli_tree_create_node(0, "__virtual_root__", NULL, CLI_NODE_COMMAND, 0, 0, NULL);
 
     leaf_set_t *initial_parents = leaf_set_create();
     leaf_set_add(initial_parents, virtual_root);
 
-    leaf_set_t *final_leaves = build_tree_recursive(ast, initial_parents, group, module_id, view_id);
+    leaf_set_t *final_leaves = build_tree_recursive(ast, initial_parents, group, module_id, target_view_name);
 
     // Mark all final leaf nodes as end nodes (skip virtual root itself)
     if (final_leaves)
@@ -598,27 +598,20 @@ static cli_element_t *parse_element(xmlNode *element_node, uint32_t element_id)
     return element;
 }
 
-// Parse view node recursively
+// Parse view node recursively（视图以 view-name 作为唯一标识）
 static cli_view_node_t *parse_view_node(xmlNode *view_xml)
 {
     char view_name[CLI_CLI_MAX_VIEW_LEN];
+    view_name[0] = '\0';
 
-    xmlChar *view_id_str = xmlGetProp(view_xml, (const xmlChar *)"view-id");
-    if (!view_id_str)
+    xmlChar *view_name_str = xmlGetProp(view_xml, (const xmlChar *)"view-name");
+    if (!view_name_str)
     {
         return NULL;
     }
+    strlcpy(view_name, (const char *)view_name_str, CLI_CLI_MAX_VIEW_LEN);
+    xmlFree(view_name_str);
 
-    uint32_t view_id = atoi((const char *)view_id_str);
-    xmlFree(view_id_str);
-
-    xmlChar *view_name_str = xmlGetProp(view_xml, (const xmlChar *)"view-name");
-    if (view_name_str != NULL)
-    {
-        view_name[0] = '\0';
-        strlcpy(view_name, (const char *)view_name_str, CLI_CLI_MAX_VIEW_LEN);
-        xmlFree(view_name_str);
-    }
     // Get template
     char *template = NULL;
     for (xmlNode *cur = view_xml->children; cur; cur = cur->next)
@@ -637,7 +630,7 @@ static cli_view_node_t *parse_view_node(xmlNode *view_xml)
     }
 
     // Create view node
-    cli_view_node_t *view = cli_view_create(view_id, view_name, template);
+    cli_view_node_t *view = cli_view_create(view_name, template);
 
     g_free(template);
 
@@ -757,7 +750,7 @@ static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree,
                 {
                     char *expression = NULL;
                     char *views = NULL;
-                    uint32_t view_id = 0;
+                    char *target_view_name = NULL; /* <to-view> 内容，命令执行后切换到的视图名称 */
 
                     /* context-out 条目临时数组（最多 16 条） */
                     cli_ctx_out_entry_t ctx_out_buf[16];
@@ -784,10 +777,11 @@ static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree,
                             views = g_strdup((const char *)content);
                             xmlFree(content);
                         }
-                        else if (xmlStrcmp(child->name, (const xmlChar *)"view-id") == ERRCODE_SUCCESS)
+                        else if (xmlStrcmp(child->name, (const xmlChar *)"to-view") == ERRCODE_SUCCESS)
                         {
                             xmlChar *content = xmlNodeGetContent(child);
-                            view_id = atoi((const char *)content);
+                            g_free(target_view_name);
+                            target_view_name = g_strdup((const char *)content);
                             xmlFree(content);
                         }
                         else if (xmlStrcmp(child->name, (const xmlChar *)"context-out") == ERRCODE_SUCCESS)
@@ -846,7 +840,7 @@ static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree,
                     {
                         // Build tree from expression (supports [ ] and { } syntax)
                         cli_tree_node_t *virtual_root =
-                            build_tree_from_expression_str(expression, group, module_id, view_id);
+                            build_tree_from_expression_str(expression, group, module_id, target_view_name);
 
                         /* 将 context-out 条目附加到叶子节点 */
                         if (virtual_root && num_ctx_out > 0)
@@ -857,16 +851,16 @@ static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree,
                         if (virtual_root)
                         {
                             // Register to specified views
-                            if (atoi(views) == CLI_VIEW_GLOBAL)
+                            if (strcmp(views, CLI_VIEW_GLOBAL) == 0)
                             {
                                 if (!view_tree->global_view)
                                 {
-                                    view_tree->global_view = cli_view_create(CLI_VIEW_GLOBAL, "global", NULL);
+                                    view_tree->global_view = cli_view_create(CLI_VIEW_GLOBAL, NULL);
                                 }
                                 if (view_tree->global_view && view_tree->global_view->cmd_tree == NULL)
                                 {
                                     view_tree->global_view->cmd_tree = cli_tree_create_node(
-                                        0, "global_root", "global command root", CLI_NODE_COMMAND, 0, 0, 0);
+                                        0, "global_root", "global command root", CLI_NODE_COMMAND, 0, 0, NULL);
                                 }
                                 if (view_tree->global_view)
                                 {
@@ -893,11 +887,10 @@ static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree,
                                         *end-- = '\0';
                                     }
 
-                                    cli_view_node_t *target_view =
-                                        cli_view_find_by_id(view_tree->root, atoi(view_token));
-                                    if (target_view && target_view->cmd_tree)
+                                    cli_view_node_t *tgt = cli_view_find_by_name(view_tree->root, view_token);
+                                    if (tgt && tgt->cmd_tree)
                                     {
-                                        register_cmd_trees_to_view(virtual_root, target_view->cmd_tree, 1);
+                                        register_cmd_trees_to_view(virtual_root, tgt->cmd_tree, 1);
                                     }
 
                                     view_token = strtok(NULL, ",");
@@ -913,6 +906,7 @@ static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree,
 
                     g_free(expression);
                     g_free(views);
+                    g_free(target_view_name);
                 }
             }
         }
@@ -987,10 +981,10 @@ uint32_t cli_xml_load_view_tree(const char *xml_file, cli_view_tree_t *view_tree
                         }
                         else
                         {
-                            cli_view_node_t *existing = cli_view_find_by_id(view_tree->root, new_view->view_id);
+                            cli_view_node_t *existing = cli_view_find_by_name(view_tree->root, new_view->view_name);
                             if (existing == NULL)
                             {
-                                cli_view_node_t *parent = cli_view_find_by_id(view_tree->root, CLI_VIEW_CONFIG);
+                                cli_view_node_t *parent = cli_view_find_by_name(view_tree->root, CLI_VIEW_CONFIG);
                                 if (parent == NULL)
                                 {
                                     LOG_ERROR("config view does not exist");
@@ -1000,7 +994,7 @@ uint32_t cli_xml_load_view_tree(const char *xml_file, cli_view_tree_t *view_tree
                             }
                             else
                             {
-                                LOG_ERROR("view %u exist", new_view->view_id);
+                                LOG_ERROR("view %s exist", new_view->view_name);
                             }
                         }
                     }
@@ -1034,39 +1028,14 @@ uint32_t cli_xml_load_view_tree(const char *xml_file, cli_view_tree_t *view_tree
         }
     }
 
-    // Merge global commands into all views
+    /* 更新全局命令树快捷指针（不克隆，供双树回退匹配使用） */
     if (view_tree->global_view && view_tree->global_view->cmd_tree)
     {
-        merge_global_to_views(view_tree->root, view_tree->global_view->cmd_tree);
+        view_tree->global_cmd_tree = view_tree->global_view->cmd_tree;
     }
 
     xmlFreeDoc(doc);
     xmlCleanupParser();
 
     return ERRCODE_SUCCESS;
-}
-
-// Helper to merge global commands into all views
-static void merge_global_to_views(cli_view_node_t *view, cli_tree_node_t *global_tree)
-{
-    if (!view || !global_tree)
-    {
-        return;
-    }
-
-    // Clone global commands into this view
-    for (uint32_t i = 0; i < global_tree->num_children; i++)
-    {
-        cli_tree_node_t *global_cmd = cli_tree_clone(global_tree->children[i]);
-        if (global_cmd && view->cmd_tree)
-        {
-            cli_tree_add_child(view->cmd_tree, global_cmd);
-        }
-    }
-
-    // Recursively merge into child views
-    for (uint32_t i = 0; i < view->num_children; i++)
-    {
-        merge_global_to_views(view->children[i], global_tree);
-    }
 }

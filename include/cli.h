@@ -37,25 +37,27 @@
 #define CLI_MAX_RESP_LEN 4096
 
 // ============================================================================
-// CLI 视图 ID 定义
+// CLI 视图名称定义（内存和 XML 均以名称字符串作为唯一标识）
 // ============================================================================
 
-/** 全局视图 */
-#define CLI_VIEW_GLOBAL 0x00000001
+/** 全局视图（命令在所有视图中可用） */
+#define CLI_VIEW_GLOBAL "global"
 /** 用户视图 */
-#define CLI_VIEW_USER 0x00000002
+#define CLI_VIEW_USER "user"
 /** 配置视图 */
-#define CLI_VIEW_CONFIG 0x00000003
+#define CLI_VIEW_CONFIG "config"
 /** BGP 视图 */
-#define CLI_VIEW_BGP 0x00000004
+#define CLI_VIEW_BGP "bgp"
 /** 接口视图 */
-#define CLI_VIEW_IF 0x00000005
+#define CLI_VIEW_IF "if"
 /** 路由视图 */
-#define CLI_VIEW_ROUTE 0x00000006
+#define CLI_VIEW_ROUTE "route"
 /** BGP 地址族 IPv4 单播视图 */
-#define CLI_VIEW_BGP_AF_IPV4 0x00000007
+#define CLI_VIEW_BGP_AF_IPV4 "bgp-af-ipv4-uni"
+/** BGP 地址族 IPv6 单播视图 */
+#define CLI_VIEW_BGP_AF_IPV6 "bgp-af-ipv6-uni"
 /** VRF 配置视图 */
-#define CLI_VIEW_VRF 0x00000008
+#define CLI_VIEW_VRF "vrf"
 
 // ============================================================================
 // CLI 上下文变量 ID 定义（全局唯一，新增时在此处登记，避免冲突）
