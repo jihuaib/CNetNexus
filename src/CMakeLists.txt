@@ -17,6 +17,7 @@ add_subdirectory(if)
 add_subdirectory(route)
 add_subdirectory(bgp)
 add_subdirectory(vrf)
+add_subdirectory(sbmp)
 
 # =========================
 # Main executable
@@ -46,6 +47,7 @@ target_link_libraries(netnexus PRIVATE
     route
     bgp
     vrf
+    sbmp
 
     dl
     Threads::Threads

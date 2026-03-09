@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration module-id="8">
+    <!-- 视图定义 -->
+    <views>
+        <view view-name="sbmp">
+            <template>&lt;NetNexus(config-bmp-server)&gt;</template>
+        </view>
+    </views>
+
+    <!-- 命令组定义 -->
+    <command_groups>
+        <!-- Group 1: bmp-server / no bmp-server (config 视图) -->
+        <group group-id="1">
+            <elements>
+                <element type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+                <element type="keyword">
+                    <name>bmp-server</name>
+                    <description>BMP server configuration</description>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>2</expression>
+                    <views>config</views>
+                    <to-view>sbmp</to-view>
+                </command>
+                <command>
+                    <expression>1 2</expression>
+                    <views>config</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- Group 2: server port <port> / no server port (sbmp 视图) -->
+        <group group-id="2">
+            <elements>
+                <element type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+                <element type="keyword">
+                    <name>server</name>
+                    <description>BMP server settings</description>
+                </element>
+                <element type="keyword">
+                    <name>port</name>
+                    <description>Listening port</description>
+                </element>
+                <element cfg-id="2" type="parameter">
+                    <name>&lt;port-number&gt;</name>
+                    <type>uint(1-65535)</type>
+                    <description>BMP server listening port number</description>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>2 3 4</expression>
+                    <views>sbmp</views>
+                </command>
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>sbmp</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- Group 3: show bmp server (global 视图) -->
+        <group group-id="3">
+            <elements>
+                <element type="keyword">
+                    <name>show</name>
+                    <description>Display information</description>
+                </element>
+                <element type="keyword">
+                    <name>bmp</name>
+                    <description>BGP Monitoring Protocol</description>
+                </element>
+                <element type="keyword">
+                    <name>server</name>
+                    <description>BMP server status</description>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>global</views>
+                </command>
+            </commands>
+        </group>
+    </command_groups>
+</configuration>
