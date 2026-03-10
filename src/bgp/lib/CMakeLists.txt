@@ -14,7 +14,6 @@ target_include_directories(bgp_api PRIVATE
 
 # 链接依赖
 target_link_libraries(bgp_api PUBLIC
-    bgp
     dev_api
     ${GLIB_LIBRARIES}
 )

@@ -38,4 +38,10 @@ void sbmp_listen_start(uint16_t port);
  */
 void sbmp_listen_stop(void);
 
+/**
+ * @brief SBMP 模块初始化（由 sbmp_proc.c main() 显式调用）
+ * @return 0 成功，-1 失败
+ */
+int sbmp_module_init(void);
+
 #endif /* SBMP_MAIN_H */

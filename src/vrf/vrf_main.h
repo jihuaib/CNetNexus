@@ -70,4 +70,10 @@ vrf_entry_t *vrf_find_by_name(const char *name);
  */
 int vrf_delete(const char *name);
 
+/**
+ * @brief VRF 模块初始化（由 vrf_proc.c main() 显式调用）
+ * @return 0 成功，-1 失败
+ */
+int vrf_module_init(void);
+
 #endif /* VRF_MAIN_H */

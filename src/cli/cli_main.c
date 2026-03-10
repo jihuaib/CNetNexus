@@ -1,10 +1,10 @@
 /**
- * @file   cfg_main.c
- * @brief  CFG 模块主入口，三阶段初始化
+ * @file   cli_main.c
+ * @brief  CLI 模块主入口，三阶段初始化
  * @author jhb
  * @date   2026/01/22
  */
-#include "cfg_main.h"
+#include "cli_main.h"
 
 #include <arpa/inet.h>
 #include <dirent.h>
@@ -29,32 +29,32 @@
 
 enum
 {
-    CFG_PORT = 3788,
-    CFG_BACKLOG = 5
+    CLI_PORT = 3788,
+    CLI_BACKLOG = 5
 };
 
-#define CFG_MAX_EPOLL_EVENTS 16
+#define CLI_MAX_EPOLL_EVENTS 16
 
-cfg_local_t *g_cfg_local = NULL;
+cli_local_t *g_cli_local = NULL;
 
 // Forward declarations
-static void *cfg_server_thread(void *arg);
+static void *cli_server_thread(void *arg);
 
 // Server thread function
-static void *cfg_server_thread(void *arg)
+static void *cli_server_thread(void *arg)
 {
     (void)arg;
-    pthread_setname_np(pthread_self(), "cfg-telnet");
-    log_set_tag(dev_ipc_get_self_name(g_cfg_local->dev_ipc_ctx));
+    pthread_setname_np(pthread_self(), "cli-telnet");
+    log_set_tag(dev_ipc_get_self_name(g_cli_local->dev_ipc_ctx));
 
     struct sockaddr_in client_addr;
     socklen_t client_len;
 
-    while (g_cfg_local && g_cfg_local->running)
+    while (g_cli_local && g_cli_local->running)
     {
-        struct epoll_event events[CFG_MAX_EPOLL_EVENTS];
+        struct epoll_event events[CLI_MAX_EPOLL_EVENTS];
         // Wait for events with 1 second timeout
-        int nfds = epoll_wait(g_cfg_local->epoll_fd, events, CFG_MAX_EPOLL_EVENTS, 1000);
+        int nfds = epoll_wait(g_cli_local->epoll_fd, events, CLI_MAX_EPOLL_EVENTS, 1000);
 
         if (nfds < 0)
         {
@@ -74,15 +74,15 @@ static void *cfg_server_thread(void *arg)
         // Process events
         for (int i = 0; i < nfds; i++)
         {
-            if (events[i].data.fd == g_cfg_local->listen_sock)
+            if (events[i].data.fd == g_cli_local->listen_sock)
             {
                 // New connection
                 client_len = sizeof(client_addr);
-                int conn_fd = accept(g_cfg_local->listen_sock, (struct sockaddr *)&client_addr, &client_len);
+                int conn_fd = accept(g_cli_local->listen_sock, (struct sockaddr *)&client_addr, &client_len);
 
                 if (conn_fd < 0)
                 {
-                    if (g_cfg_local && g_cfg_local->running)
+                    if (g_cli_local && g_cli_local->running)
                     {
                         LOG_PERROR("Accept failed");
                     }
@@ -95,15 +95,15 @@ static void *cfg_server_thread(void *arg)
                 cli_session_t *session = cli_session_create(conn_fd);
                 if (session)
                 {
-                    g_hash_table_insert(g_cfg_local->sessions, fd_key, session);
+                    g_hash_table_insert(g_cli_local->sessions, fd_key, session);
 
                     struct epoll_event client_ev;
                     client_ev.events = EPOLLIN;
                     client_ev.data.fd = conn_fd;
-                    if (epoll_ctl(g_cfg_local->epoll_fd, EPOLL_CTL_ADD, conn_fd, &client_ev) < 0)
+                    if (epoll_ctl(g_cli_local->epoll_fd, EPOLL_CTL_ADD, conn_fd, &client_ev) < 0)
                     {
                         LOG_PERROR("Failed to add client to epoll");
-                        g_hash_table_remove(g_cfg_local->sessions, fd_key);
+                        g_hash_table_remove(g_cli_local->sessions, fd_key);
                     }
                     else
                     {
@@ -120,14 +120,14 @@ static void *cfg_server_thread(void *arg)
             {
                 // Input from existing client
                 int fd = events[i].data.fd;
-                cli_session_t *session = g_hash_table_lookup(g_cfg_local->sessions, &fd);
+                cli_session_t *session = g_hash_table_lookup(g_cli_local->sessions, &fd);
                 if (session)
                 {
                     if (cli_process_input(session) < 0)
                     {
                         LOG_INFO("Client disconnected (fd: %d)", fd);
-                        epoll_ctl(g_cfg_local->epoll_fd, EPOLL_CTL_DEL, fd, NULL);
-                        g_hash_table_remove(g_cfg_local->sessions, &fd);
+                        epoll_ctl(g_cli_local->epoll_fd, EPOLL_CTL_DEL, fd, NULL);
+                        g_hash_table_remove(g_cli_local->sessions, &fd);
                     }
                 }
             }
@@ -137,7 +137,7 @@ static void *cfg_server_thread(void *arg)
     return NULL;
 }
 
-int32_t cfg_create_listen_sock()
+int32_t cli_create_listen_sock()
 {
     int32_t server_socket = socket(AF_INET, SOCK_STREAM, 0);
     if (server_socket < 0)
@@ -158,7 +158,7 @@ int32_t cfg_create_listen_sock()
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(CFG_PORT);
+    server_addr.sin_port = htons(CLI_PORT);
 
     if (bind(server_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
     {
@@ -167,7 +167,7 @@ int32_t cfg_create_listen_sock()
         return DEV_INVALID_FD;
     }
 
-    if (listen(server_socket, CFG_BACKLOG) < 0)
+    if (listen(server_socket, CLI_BACKLOG) < 0)
     {
         close(server_socket);
         LOG_PERROR("Failed to listen");
@@ -183,7 +183,7 @@ int32_t cfg_create_listen_sock()
 
 static void send_phase_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, int32_t result)
 {
-    dev_ipc_message_t *resp = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_MODULE_RESP, DEV_MODULE_ID_CFG,
+    dev_ipc_message_t *resp = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_MODULE_RESP, DEV_MODULE_ID_CLI,
                                                      msg->src_module_id, msg->request_id, NULL, 0, NULL);
     dev_ipc_send_response(ctx, resp);
     dev_ipc_message_free(msg);
@@ -199,7 +199,7 @@ static void send_phase_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, 
  * @param base_dir 基础目录路径
  * @return 成功加载的 XML 数量
  */
-static int cfg_scan_and_load_xml(const char *base_dir)
+static int cli_scan_and_load_xml(const char *base_dir)
 {
     DIR *dir = opendir(base_dir);
     if (!dir)
@@ -234,7 +234,7 @@ static int cfg_scan_and_load_xml(const char *base_dir)
         }
 
         LOG_INFO("发现 XML: %s", xml_path);
-        if (cli_xml_load_view_tree(xml_path, &g_cfg_local->view_tree) == ERRCODE_SUCCESS)
+        if (cli_xml_load_view_tree(xml_path, &g_cli_local->view_tree) == ERRCODE_SUCCESS)
         {
             LOG_INFO("加载 XML 成功: %s", entry->d_name);
             loaded++;
@@ -257,7 +257,7 @@ static int cfg_scan_and_load_xml(const char *base_dir)
  * 1. 环境变量 NN_WORK_DIR（取 resources 子目录）
  * 2. 相对于可执行文件的开发路径
  */
-static void cfg_discover_and_load_xml(void)
+static void cli_discover_and_load_xml(void)
 {
     LOG_INFO("自动发现并加载 commands.xml...");
 
@@ -268,7 +268,7 @@ static void cfg_discover_and_load_xml(void)
     if (work_dir)
     {
         char *resources_dir = g_build_filename(work_dir, "resources", NULL);
-        total = cfg_scan_and_load_xml(resources_dir);
+        total = cli_scan_and_load_xml(resources_dir);
         g_free(resources_dir);
         if (total > 0)
         {
@@ -282,7 +282,7 @@ static void cfg_discover_and_load_xml(void)
     if (get_exe_dir(exe_dir, sizeof(exe_dir)) == 0)
     {
         char *dev_path = g_build_filename(exe_dir, "..", "..", "src", NULL);
-        total = cfg_scan_and_load_xml(dev_path);
+        total = cli_scan_and_load_xml(dev_path);
         g_free(dev_path);
         if (total > 0)
         {
@@ -298,16 +298,16 @@ static void cfg_discover_and_load_xml(void)
 // 本地状态初始化（从 constructor 调用）
 // ============================================================================
 
-void cfg_init_local(dev_ipc_context_t *ctx)
+void cli_init_local(dev_ipc_context_t *ctx)
 {
-    g_cfg_local = g_malloc0(sizeof(cfg_local_t));
-    pthread_mutex_init(&g_cfg_local->history_mutex, NULL);
-    g_cfg_local->running = 0;
-    g_cfg_local->epoll_fd = DEV_INVALID_FD;
-    g_cfg_local->listen_sock = DEV_INVALID_FD;
-    g_cfg_local->worker_thread = 0;
-    g_cfg_local->dev_ipc_ctx = ctx;
-    g_cfg_local->sessions = g_hash_table_new_full(g_int_hash, g_int_equal, g_free, (GDestroyNotify)cli_session_destroy);
+    g_cli_local = g_malloc0(sizeof(cli_local_t));
+    pthread_mutex_init(&g_cli_local->history_mutex, NULL);
+    g_cli_local->running = 0;
+    g_cli_local->epoll_fd = DEV_INVALID_FD;
+    g_cli_local->listen_sock = DEV_INVALID_FD;
+    g_cli_local->worker_thread = 0;
+    g_cli_local->dev_ipc_ctx = ctx;
+    g_cli_local->sessions = g_hash_table_new_full(g_int_hash, g_int_equal, g_free, (GDestroyNotify)cli_session_destroy);
 
     /* 创建视图树 */
     cli_view_node_t *user_view = cli_view_create(CLI_VIEW_USER, "<NetNexus>");
@@ -316,7 +316,7 @@ void cfg_init_local(dev_ipc_context_t *ctx)
         LOG_ERROR("Failed to create user view");
         return;
     }
-    g_cfg_local->view_tree.root = user_view;
+    g_cli_local->view_tree.root = user_view;
 
     cli_view_node_t *config_view = cli_view_create(CLI_VIEW_CONFIG, "<NetNexus(config)>");
     if (!config_view)
@@ -327,7 +327,7 @@ void cfg_init_local(dev_ipc_context_t *ctx)
     cli_view_add_child(user_view, config_view);
 
     /* 自动发现并加载所有模块的 commands.xml */
-    cfg_discover_and_load_xml();
+    cli_discover_and_load_xml();
 
     LOG_INFO("本地状态初始化完成");
 }
@@ -336,7 +336,7 @@ void cfg_init_local(dev_ipc_context_t *ctx)
 // Phase 1: MODULE_START — CFG 不需要连接其他模块，直接回复 OK
 // ============================================================================
 
-static void cfg_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static void cli_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     LOG_INFO("Phase 1: MODULE_START (无需连接其他模块)");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
@@ -346,7 +346,7 @@ static void cfg_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 // Phase 2: MODULE_CONNECT — 预留（直接回复 OK）
 // ============================================================================
 
-static void cfg_on_connect(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static void cli_on_connect(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     LOG_INFO("Phase 2: MODULE_CONNECT (预留)");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
@@ -356,7 +356,7 @@ static void cfg_on_connect(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 // Phase 3: MODULE_READY — 加载所有 XML
 // ============================================================================
 
-static void cfg_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static void cli_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     LOG_INFO("Phase 3: MODULE_READY — 启动 Telnet 服务器");
 
@@ -368,16 +368,16 @@ static void cfg_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         send_phase_response(ctx, msg, ERRCODE_FAIL);
         return;
     }
-    g_cfg_local->epoll_fd = epoll_fd;
+    g_cli_local->epoll_fd = epoll_fd;
 
     /* 创建监听 socket */
-    int32_t listen_sock = cfg_create_listen_sock();
+    int32_t listen_sock = cli_create_listen_sock();
     if (listen_sock < 0)
     {
         send_phase_response(ctx, msg, ERRCODE_FAIL);
         return;
     }
-    g_cfg_local->listen_sock = listen_sock;
+    g_cli_local->listen_sock = listen_sock;
 
     /* 将监听 socket 加入 epoll */
     struct epoll_event ev;
@@ -391,16 +391,16 @@ static void cfg_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     }
 
     /* 启动 Telnet server 线程 */
-    if (pthread_create(&g_cfg_local->worker_thread, NULL, cfg_server_thread, NULL) != 0)
+    if (pthread_create(&g_cli_local->worker_thread, NULL, cli_server_thread, NULL) != 0)
     {
         LOG_PERROR("Failed to create server thread");
-        g_cfg_local->running = 0;
+        g_cli_local->running = 0;
         send_phase_response(ctx, msg, ERRCODE_FAIL);
         return;
     }
-    g_cfg_local->running = 1;
+    g_cli_local->running = 1;
 
-    LOG_INFO("Telnet server listening on port %d", CFG_PORT);
+    LOG_INFO("Telnet server listening on port %d", CLI_PORT);
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
@@ -408,41 +408,41 @@ static void cfg_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 // Shutdown - 清理本地状态
 // ============================================================================
 
-static void cfg_on_shutdown(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static void cli_on_shutdown(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     LOG_INFO("Shutting down server...");
-    g_cfg_local->running = 0;
+    g_cli_local->running = 0;
 
     cli_cleanup();
 
-    cli_global_history_cleanup(&g_cfg_local->global_history);
-    pthread_mutex_destroy(&g_cfg_local->history_mutex);
+    cli_global_history_cleanup(&g_cli_local->global_history);
+    pthread_mutex_destroy(&g_cli_local->history_mutex);
 
-    if (g_cfg_local->listen_sock != DEV_INVALID_FD)
+    if (g_cli_local->listen_sock != DEV_INVALID_FD)
     {
-        close(g_cfg_local->listen_sock);
+        close(g_cli_local->listen_sock);
     }
 
-    if (g_cfg_local->epoll_fd != DEV_INVALID_FD)
+    if (g_cli_local->epoll_fd != DEV_INVALID_FD)
     {
-        close(g_cfg_local->epoll_fd);
+        close(g_cli_local->epoll_fd);
     }
 
-    if (g_cfg_local->worker_thread != 0)
+    if (g_cli_local->worker_thread != 0)
     {
-        pthread_join(g_cfg_local->worker_thread, NULL);
+        pthread_join(g_cli_local->worker_thread, NULL);
     }
 
-    if (g_cfg_local->sessions != NULL)
+    if (g_cli_local->sessions != NULL)
     {
-        g_hash_table_destroy(g_cfg_local->sessions);
+        g_hash_table_destroy(g_cli_local->sessions);
     }
 
     /* 注意: dev_ipc_ctx 由 DEV 管理，此处不销毁 */
-    g_cfg_local->dev_ipc_ctx = NULL;
+    g_cli_local->dev_ipc_ctx = NULL;
 
-    g_free(g_cfg_local);
-    g_cfg_local = NULL;
+    g_free(g_cli_local);
+    g_cli_local = NULL;
 
     LOG_INFO("Server shutdown complete");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
@@ -452,22 +452,22 @@ static void cfg_on_shutdown(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 // IPC 消息处理回调
 // ============================================================================
 
-void cfg_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+void cli_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     switch (msg->msg_type)
     {
         /* ---- DEV 生命周期消息 ---- */
         case DEV_IPC_MSG_TYPE_DEV_MODULE_START:
-            cfg_on_start(ctx, msg);
+            cli_on_start(ctx, msg);
             return;
         case DEV_IPC_MSG_TYPE_DEV_MODULE_CONNECT:
-            cfg_on_connect(ctx, msg);
+            cli_on_connect(ctx, msg);
             return;
         case DEV_IPC_MSG_TYPE_DEV_MODULE_READY:
-            cfg_on_ready(ctx, msg);
+            cli_on_ready(ctx, msg);
             return;
         case DEV_IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN:
-            cfg_on_shutdown(ctx, msg);
+            cli_on_shutdown(ctx, msg);
             return;
 
         default:
@@ -481,20 +481,21 @@ void cfg_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 // .so constructor（dlopen 时自动触发）
 // ============================================================================
 
-#include "cfg_main.h"
+#include "cli_main.h"
 
-__attribute__((constructor)) static void cfg_so_init(void)
+int cli_module_init(void)
 {
-    LOG_INFO(".so 加载，自初始化");
+    LOG_INFO("模块初始化");
 
     /* 创建 IPC 上下文 */
-    dev_ipc_context_t *ctx = dev_ipc_init(DEV_MODULE_ID_CFG, "cfg", DEV_MODULE_PORT_CFG, cfg_msg_handler);
+    dev_ipc_context_t *ctx = dev_ipc_init(DEV_MODULE_ID_CLI, "cli", DEV_MODULE_PORT_CLI, cli_msg_handler);
     if (!ctx)
     {
         LOG_ERROR("IPC 初始化失败");
-        return;
+        return -1;
     }
 
     /* 初始化本地状态（epoll、socket、server thread、view tree） */
-    cfg_init_local(ctx);
+    cli_init_local(ctx);
+    return 0;
 }

@@ -10,8 +10,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "cfg_main.h"
 #include "cli.h"
+#include "cli_main.h"
 #include "errcode.h"
 
 enum
@@ -27,7 +27,7 @@ cli_view_node_t *cli_view_create(const char *view_name, const char *prompt_templ
     strlcpy(view->view_name, view_name, CLI_CLI_MAX_VIEW_LEN);
     if (prompt_template != NULL)
     {
-        strlcpy(view->prompt_template, prompt_template, CFG_CLI_MAX_VIEW_LEN);
+        strlcpy(view->prompt_template, prompt_template, CLI_MAX_VIEW_LEN);
     }
     view->cmd_tree = cli_tree_create_node(0, NULL, "Root", CLI_NODE_COMMAND, 0, 0, NULL);
 

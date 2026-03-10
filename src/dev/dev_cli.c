@@ -188,7 +188,7 @@ static gboolean show_module_callback(gpointer key, gpointer value, gpointer data
 static void dev_send_cli_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, const char *text)
 {
     char *resp_data = g_strdup(text);
-    dev_ipc_message_t *resp_msg = dev_ipc_message_create(CFG_MSG_TYPE_CLI_RESP, DEV_MODULE_ID_DEV, msg->src_module_id,
+    dev_ipc_message_t *resp_msg = dev_ipc_message_create(CLI_MSG_TYPE_RESP, DEV_MODULE_ID_DEV, msg->src_module_id,
                                                          msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
     if (resp_msg)
     {
@@ -305,6 +305,209 @@ static int handle_set_log_level(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, 
     return ERRCODE_FAIL;
 }
 
+static const char *ipc_state_to_string(dev_ipc_costate_t state)
+{
+    switch (state)
+    {
+        case DEV_IPC_CODISCONNECTED:
+            return "DISCONNECTED";
+        case DEV_IPC_COCONNECTING:
+            return "CONNECTING";
+        case DEV_IPC_COHANDSHAKING:
+            return "HANDSHAKING";
+        case DEV_IPC_COCONNECTED:
+            return "CONNECTED";
+        case DEV_IPC_CORECONNECTING:
+            return "RECONNECTING";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+/* IPC 连接 wire format 中每条 entry 的大小（见 ipc_context.c 注释） */
+#define IPC_QCONNS_ENTRY_SIZE 100
+
+/**
+ * @brief 从 QUERY_IPC_CONNS 响应 payload 中解析并格式化第 i 条连接信息到 buf
+ */
+static void format_ipc_conn_entry(const uint8_t *entry, int idx, char *buf, size_t buf_size, size_t *off)
+{
+    const uint8_t *p = entry;
+    uint32_t v;
+    uint16_t v16;
+
+    memcpy(&v, p, 4);
+    uint32_t remote_module_id = ntohl(v);
+    p += 4;
+    memcpy(&v, p, 4);
+    uint32_t state = ntohl(v);
+    p += 4;
+    memcpy(&v, p, 4);
+    uint32_t is_initiator = ntohl(v);
+    p += 4;
+    char remote_host[65];
+    memcpy(remote_host, p, 64);
+    remote_host[64] = '\0';
+    p += 64;
+    memcpy(&v16, p, 2);
+    uint16_t remote_port = ntohs(v16);
+    p += 4; /* port + pad */
+
+    uint32_t hi, lo;
+    memcpy(&hi, p, 4);
+    hi = ntohl(hi);
+    p += 4;
+    memcpy(&lo, p, 4);
+    lo = ntohl(lo);
+    p += 4;
+    time_t last_hb_sent = (time_t)(((uint64_t)hi << 32) | lo);
+
+    memcpy(&hi, p, 4);
+    hi = ntohl(hi);
+    p += 4;
+    memcpy(&lo, p, 4);
+    lo = ntohl(lo);
+    p += 4;
+    time_t last_hb_recv = (time_t)(((uint64_t)hi << 32) | lo);
+
+    memcpy(&v, p, 4);
+    uint32_t reconnect_delay_ms = ntohl(v);
+
+    /* 格式化心跳时间 */
+    char hb_sent_str[32] = "N/A";
+    char hb_recv_str[32] = "N/A";
+    if (last_hb_sent > 0)
+    {
+        struct tm *t = localtime(&last_hb_sent);
+        strftime(hb_sent_str, sizeof(hb_sent_str), "%H:%M:%S", t);
+    }
+    if (last_hb_recv > 0)
+    {
+        struct tm *t = localtime(&last_hb_recv);
+        strftime(hb_recv_str, sizeof(hb_recv_str), "%H:%M:%S", t);
+    }
+
+    *off +=
+        (size_t)snprintf(buf + *off, buf_size - *off, "  Connection #%d (peer: 0x%08X):\r\n", idx, remote_module_id);
+    *off += (size_t)snprintf(buf + *off, buf_size - *off, "    %-16s: %s\r\n", "Direction",
+                             is_initiator ? "Active (Initiator)" : "Passive (Acceptor)");
+    *off += (size_t)snprintf(buf + *off, buf_size - *off, "    %-16s: %s\r\n", "State",
+                             ipc_state_to_string((dev_ipc_costate_t)state));
+    if (is_initiator && remote_host[0] != '\0')
+    {
+        *off += (size_t)snprintf(buf + *off, buf_size - *off, "    %-16s: %s:%u\r\n", "Remote Addr", remote_host,
+                                 remote_port);
+    }
+    *off += (size_t)snprintf(buf + *off, buf_size - *off, "    %-16s: %s\r\n", "HB Sent", hb_sent_str);
+    *off += (size_t)snprintf(buf + *off, buf_size - *off, "    %-16s: %s\r\n", "HB Recv", hb_recv_str);
+    *off +=
+        (size_t)snprintf(buf + *off, buf_size - *off, "    %-16s: %u ms\r\n", "Reconnect Delay", reconnect_delay_ms);
+}
+
+static int handle_show_ipc(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    char module_name[DEV_MODULE_NAME_MAX_LEN] = {0};
+
+    /* 解析模块名称参数（cfg_id=1） */
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (CLI_TLV_IS_CTX(&entry))
+        {
+            cli_tlv_entry_free(&entry);
+            continue;
+        }
+        if (entry.cfg_id == 1)
+        {
+            const char *text = cli_tlv_entry_get_text(&entry);
+            if (text)
+            {
+                strlcpy(module_name, text, sizeof(module_name));
+            }
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    if (module_name[0] == '\0')
+    {
+        dev_send_cli_response(ctx, msg, "Error: missing module name.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    /* 从注册表查找模块 ID */
+    uint32_t target_id = 0;
+    if (dev_get_module_id_by_name(module_name, &target_id) != ERRCODE_SUCCESS)
+    {
+        char err[128];
+        snprintf(err, sizeof(err), "Error: module '%s' not found in registry.\r\n", module_name);
+        dev_send_cli_response(ctx, msg, err);
+        return ERRCODE_FAIL;
+    }
+
+    /* 向目标模块发 RPC，查询其自身所有 IPC 连接 */
+    dev_ipc_message_t *req =
+        dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_QUERY_IPC_CONNS, DEV_MODULE_ID_DEV, target_id, 0, NULL, 0, NULL);
+    if (!req)
+    {
+        dev_send_cli_response(ctx, msg, "Error: failed to create IPC query message.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    dev_ipc_message_t *resp = dev_ipc_query(ctx, target_id, req, 3000);
+    dev_ipc_message_free(req);
+
+    char buf[CLI_MAX_RESP_LEN];
+    size_t off = 0;
+
+    if (!resp || !resp->payload || resp->payload_len < 4)
+    {
+        off += (size_t)snprintf(buf + off, sizeof(buf) - off,
+                                "\r\nError: no response from module '%s' (timeout or not connected).\r\n\r\n",
+                                module_name);
+        dev_send_cli_response(ctx, msg, buf);
+        if (resp)
+        {
+            dev_ipc_message_free(resp);
+        }
+        return ERRCODE_FAIL;
+    }
+
+    /* 反序列化响应 payload */
+    const uint8_t *p = (const uint8_t *)resp->payload;
+    uint32_t v;
+    memcpy(&v, p, 4);
+    uint32_t num_conns = ntohl(v);
+    p += 4;
+
+    off += (size_t)snprintf(buf + off, sizeof(buf) - off,
+                            "\r\nIPC Connections of module '%s' (ID: 0x%08X) — %u connection(s):\r\n", module_name,
+                            target_id, num_conns);
+
+    uint32_t expected_len = 4 + num_conns * IPC_QCONNS_ENTRY_SIZE;
+    if (resp->payload_len < expected_len)
+    {
+        off += (size_t)snprintf(buf + off, sizeof(buf) - off,
+                                "  Error: response payload truncated (%u < %u bytes).\r\n\r\n", resp->payload_len,
+                                expected_len);
+    }
+    else if (num_conns == 0)
+    {
+        off += (size_t)snprintf(buf + off, sizeof(buf) - off, "  (no connections)\r\n\r\n");
+    }
+    else
+    {
+        for (uint32_t i = 0; i < num_conns && off < sizeof(buf) - 256; i++)
+        {
+            format_ipc_conn_entry(p + i * IPC_QCONNS_ENTRY_SIZE, (int)i, buf, sizeof(buf), &off);
+            off += (size_t)snprintf(buf + off, sizeof(buf) - off, "\r\n");
+        }
+    }
+
+    dev_ipc_message_free(resp);
+    dev_send_cli_response(ctx, msg, buf);
+    return ERRCODE_SUCCESS;
+}
+
 static int handle_ping(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
     char ip[64] = {0};
@@ -380,6 +583,45 @@ static int handle_ping(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_p
 }
 
 // ============================================================================
+// 动态候选值查询（Tab/? 补全）
+// ============================================================================
+
+static gboolean collect_module_name_cb(gpointer key, gpointer value, gpointer data)
+{
+    (void)key;
+    dev_module_t *module = (dev_module_t *)value;
+    GByteArray *buf = (GByteArray *)data;
+    g_byte_array_append(buf, (const guint8 *)module->name, (guint)strlen(module->name) + 1);
+    return FALSE;
+}
+
+void dev_cli_handle_query_candidates(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+{
+    GByteArray *buf = g_byte_array_new();
+    dev_module_foreach(collect_module_name_cb, buf);
+
+    /* 末尾额外 '\0' 标记结束 */
+    guint8 nul = '\0';
+    g_byte_array_append(buf, &nul, 1);
+
+    guint payload_len = buf->len;
+    uint8_t *payload = g_byte_array_free(buf, FALSE);
+
+    dev_ipc_message_t *resp = dev_ipc_message_create(CLI_MSG_TYPE_QUERY_CANDIDATES_RESP, DEV_MODULE_ID_DEV,
+                                                     msg->src_module_id, msg->request_id, payload, payload_len, g_free);
+    if (resp)
+    {
+        dev_ipc_send_response(ctx, resp);
+        dev_ipc_message_free(resp);
+    }
+    else
+    {
+        g_free(payload);
+    }
+    dev_ipc_message_free(msg);
+}
+
+// ============================================================================
 // 主入口
 // ============================================================================
 
@@ -423,6 +665,9 @@ int dev_cli_handle_message(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             break;
         case DEV_CLI_GROUP_ID_PING:
             result = handle_ping(ctx, msg, &parser);
+            break;
+        case DEV_CLI_GROUP_ID_SHOW_IPC:
+            result = handle_show_ipc(ctx, msg, &parser);
             break;
         default:
             LOG_WARN("未知 group_id: %u", parser.group_id);

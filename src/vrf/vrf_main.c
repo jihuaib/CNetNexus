@@ -97,7 +97,7 @@ static void send_phase_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, 
 static void vrf_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     LOG_INFO("Phase 1: MODULE_START — 建立 IPC 连接");
-    dev_ipc_connect(ctx, DEV_MODULE_ID_CFG, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CFG);
+    dev_ipc_connect(ctx, DEV_MODULE_ID_CLI, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CLI);
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
@@ -218,13 +218,13 @@ void vrf_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         case VRF_MSG_TYPE_GET_NAME:
             vrf_handle_get_name(ctx, msg);
             return;
-        case CFG_MSG_TYPE_QUERY_CANDIDATES:
+        case CLI_MSG_TYPE_QUERY_CANDIDATES:
             vrf_cli_handle_query_candidates(ctx, msg);
             return;
-        case CFG_MSG_TYPE_CLI:
+        case CLI_MSG_TYPE:
             vrf_cli_handle_message(msg);
             break;
-        case CFG_MSG_TYPE_CLI_CONTINUE:
+        case CLI_MSG_TYPE_CONTINUE:
             vrf_cli_handle_continue(msg);
             break;
         default:
@@ -236,18 +236,18 @@ void vrf_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 }
 
 // ============================================================================
-// .so 构造器
+// 模块初始化
 // ============================================================================
 
-__attribute__((constructor)) static void vrf_so_init(void)
+int vrf_module_init(void)
 {
-    LOG_INFO(".so 加载，自初始化");
+    LOG_INFO("模块初始化");
 
     dev_ipc_context_t *ctx = dev_ipc_init(DEV_MODULE_ID_VRF, "vrf", DEV_MODULE_PORT_VRF, vrf_msg_handler);
     if (!ctx)
     {
         LOG_ERROR("IPC 初始化失败");
-        return;
+        return -1;
     }
 
     g_vrf_local = g_new0(vrf_local_t, 1);
@@ -255,4 +255,5 @@ __attribute__((constructor)) static void vrf_so_init(void)
     g_vrf_local->vrf_by_id = g_hash_table_new(g_direct_hash, g_direct_equal);
     g_vrf_local->vrf_by_name = g_hash_table_new(g_str_hash, g_str_equal);
     g_vrf_local->next_id = 1; /* 0 保留给公网 VRF */
+    return 0;
 }

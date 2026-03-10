@@ -1,11 +1,11 @@
 /**
- * @file   cfg_main.h
+ * @file   cli_main.h
  * @brief  CFG 模块主入口头文件
  * @author jhb
  * @date   2026/01/22
  */
-#ifndef CFG_MAIN_H
-#define CFG_MAIN_H
+#ifndef CLI_MAIN_H
+#define CLI_MAIN_H
 
 #include <arpa/inet.h>
 #include <ctype.h>
@@ -22,7 +22,7 @@
 #include "cli_view.h"
 #include "dev.h"
 
-typedef struct cfg_local
+typedef struct cli_local
 {
     cli_view_tree_t view_tree;
     cli_global_history_t global_history;
@@ -33,19 +33,25 @@ typedef struct cfg_local
     pthread_t worker_thread;
     GHashTable *sessions;           /**< 注册表: fd -> cli_session_t* */
     dev_ipc_context_t *dev_ipc_ctx; /**< IPC 上下文 */
-} cfg_local_t;
+} cli_local_t;
 
-extern cfg_local_t *g_cfg_local;
+extern cli_local_t *g_cli_local;
 
 /**
  * @brief IPC 消息处理回调（供 API 层引用）
  */
-void cfg_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
+void cli_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
 
 /**
- * @brief CFG 本地状态初始化（从 constructor 调用）
+ * @brief CFG 本地状态初始化（由 cli_module_init 调用）
  * @param ctx IPC 上下文
  */
-void cfg_init_local(dev_ipc_context_t *ctx);
+void cli_init_local(dev_ipc_context_t *ctx);
 
-#endif // CFG_MAIN_H
+/**
+ * @brief CFG 模块初始化（由 cli_proc.c main() 显式调用）
+ * @return 0 成功，-1 失败
+ */
+int cli_module_init(void);
+
+#endif // CLI_MAIN_H

@@ -23,7 +23,7 @@
 /** DB 模块 */
 #define DEV_MODULE_ID_DB 0x00000002
 /** CFG 模块 */
-#define DEV_MODULE_ID_CFG 0x00000003
+#define DEV_MODULE_ID_CLI 0x00000003
 /** IF 接口模块 */
 #define DEV_MODULE_ID_IF 0x00000004
 /** BGP 模块 */
@@ -53,7 +53,7 @@
 /** DB 模块 IPC 监听端口 */
 #define DEV_MODULE_PORT_DB 4002
 /** CFG 模块 IPC 监听端口 */
-#define DEV_MODULE_PORT_CFG 4003
+#define DEV_MODULE_PORT_CLI 4003
 /** IF 模块 IPC 监听端口 */
 #define DEV_MODULE_PORT_IF 4004
 /** BGP 模块 IPC 监听端口 */
@@ -311,6 +311,10 @@ extern dev_ipc_context_t *g_dev_ipc_context;
 #define DEV_IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_DEV, 0x0004)
 /** 查询模块名称 */
 #define DEV_IPC_MSG_TYPE_DEV_GET_MODULE_NAME DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_DEV, 0x0005)
+/** 查询目标模块的所有 IPC 连接状态（由 IPC 库层自动处理，无需应用层介入） */
+#define DEV_IPC_MSG_TYPE_DEV_QUERY_IPC_CONNS DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_DEV, 0x0006)
+/** QUERY_IPC_CONNS 的响应（msg_type 与请求不同，确保 query_mgr 能正确路由） */
+#define DEV_IPC_MSG_TYPE_DEV_QUERY_IPC_CONNS_RESP DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_DEV, 0x0007)
 /** 模块阶段响应 */
 #define DEV_IPC_MSG_TYPE_DEV_MODULE_RESP DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_DEV, 0x000F)
 

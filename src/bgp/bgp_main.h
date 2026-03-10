@@ -40,6 +40,12 @@ extern bgp_local_t *g_bgp_local;
 void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
 
 /**
+ * @brief BGP 模块初始化（由 bgp_proc.c main() 显式调用）
+ * @return 0 成功，-1 失败
+ */
+int bgp_module_init(void);
+
+/**
  * @brief 启动全局 BGP listen socket（绑定 0.0.0.0:179 并加入 epoll），已监听时幂等
  */
 void bgp_listen_start(void);

@@ -1,11 +1,11 @@
 /**
- * @file   cfg_cli.c
+ * @file   cli_cfg.c
  * @brief  CFG 模块 CLI 命令处理，处理 show、exit、config 等核心命令
  * @author jhb
  * @date   2026/01/22
  */
 
-#include "cfg_cli.h"
+#include "cli_cfg.h"
 
 #include <errno.h>
 #include <poll.h>
@@ -18,8 +18,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include "cfg_main.h"
 #include "cli_handler.h"
+#include "cli_main.h"
 #include "dev.h"
 #include "errcode.h"
 #include "log.h"
@@ -49,7 +49,7 @@ static void print_commands_recursive(GString *out, const char *view_name, const 
     if (node->is_end_node == TRUE)
     {
         char module_name[DEV_MODULE_NAME_MAX_LEN];
-        if (dev_get_module_name(g_cfg_local->dev_ipc_ctx, node->module_id, module_name) != ERRCODE_SUCCESS)
+        if (dev_get_module_name(g_cli_local->dev_ipc_ctx, node->module_id, module_name) != ERRCODE_SUCCESS)
         {
             snprintf(module_name, sizeof(module_name), "unknown");
         }
@@ -89,7 +89,7 @@ static void print_view_commands_flat(cli_view_node_t *view, GString *out)
 // 分批输出辅助
 // ============================================================================
 
-static void cfg_cli_chunk_output(GString *full, cfg_cli_resp_out_t *resp_out)
+static void cli_chunk_output(GString *full, cli_resp_out_t *resp_out)
 {
     uint32_t offset = resp_out->batch_offset;
     if (offset >= full->len)
@@ -109,10 +109,10 @@ static void cfg_cli_chunk_output(GString *full, cfg_cli_resp_out_t *resp_out)
 }
 
 /* 缓存 show 输出 */
-static GString *g_cfg_show_cache = NULL;
+static GString *g_cli_show_cache = NULL;
 
 /* 缓存 history 输出 */
-static GString *g_cfg_history_cache = NULL;
+static GString *g_cli_history_cache = NULL;
 
 // ============================================================================
 // 按 group_id 分发的 handler
@@ -125,48 +125,48 @@ static void handle_show_commands(cli_session_t *session)
 {
     GString *full_output = g_string_new("");
 
-    cfg_cli_resp_out_t resp_out;
+    cli_resp_out_t resp_out;
     memset(&resp_out, 0, sizeof(resp_out));
 
     /* 生成完整输出到缓存 */
-    if (g_cfg_show_cache)
+    if (g_cli_show_cache)
     {
-        g_string_free(g_cfg_show_cache, TRUE);
+        g_string_free(g_cli_show_cache, TRUE);
     }
-    g_cfg_show_cache = g_string_new("");
+    g_cli_show_cache = g_string_new("");
 
-    g_string_append(g_cfg_show_cache, "\r\nCLI Commands List:\r\n");
-    g_string_append(g_cfg_show_cache, "===================\r\n");
-    g_string_append(g_cfg_show_cache, "  VIEW            MODULE          COMMAND\r\n");
-    g_string_append(g_cfg_show_cache, "  ----            ------          -------\r\n");
+    g_string_append(g_cli_show_cache, "\r\nCLI Commands List:\r\n");
+    g_string_append(g_cli_show_cache, "===================\r\n");
+    g_string_append(g_cli_show_cache, "  VIEW            MODULE          COMMAND\r\n");
+    g_string_append(g_cli_show_cache, "  ----            ------          -------\r\n");
 
-    if (g_cfg_local->view_tree.root)
+    if (g_cli_local->view_tree.root)
     {
-        print_view_commands_flat(g_cfg_local->view_tree.root, g_cfg_show_cache);
+        print_view_commands_flat(g_cli_local->view_tree.root, g_cli_show_cache);
     }
 
     /* 全局命令不再克隆进各视图，单独打印 global_view */
-    if (g_cfg_local->view_tree.global_view)
+    if (g_cli_local->view_tree.global_view)
     {
-        print_view_commands_flat(g_cfg_local->view_tree.global_view, g_cfg_show_cache);
+        print_view_commands_flat(g_cli_local->view_tree.global_view, g_cli_show_cache);
     }
 
-    g_string_append(g_cfg_show_cache, "\r\n");
+    g_string_append(g_cli_show_cache, "\r\n");
 
     /* 分批读取 */
     do
     {
         resp_out.message[0] = '\0';
         resp_out.has_more = 0;
-        cfg_cli_chunk_output(g_cfg_show_cache, &resp_out);
+        cli_chunk_output(g_cli_show_cache, &resp_out);
         if (resp_out.message[0] != '\0')
         {
             g_string_append(full_output, resp_out.message);
         }
     } while (resp_out.has_more);
 
-    g_string_free(g_cfg_show_cache, TRUE);
-    g_cfg_show_cache = NULL;
+    g_string_free(g_cli_show_cache, TRUE);
+    g_cli_show_cache = NULL;
 
     if (full_output->len > 0)
     {
@@ -181,30 +181,30 @@ static void handle_show_commands(cli_session_t *session)
 static void handle_show_history(cli_session_t *session)
 {
     GString *full_output = g_string_new("");
-    cfg_cli_resp_out_t resp_out;
+    cli_resp_out_t resp_out;
     memset(&resp_out, 0, sizeof(resp_out));
 
-    if (g_cfg_history_cache)
+    if (g_cli_history_cache)
     {
-        g_string_free(g_cfg_history_cache, TRUE);
+        g_string_free(g_cli_history_cache, TRUE);
     }
-    g_cfg_history_cache = g_string_new("");
+    g_cli_history_cache = g_string_new("");
     char buffer[512];
 
-    pthread_mutex_lock(&g_cfg_local->history_mutex);
+    pthread_mutex_lock(&g_cli_local->history_mutex);
 
-    g_string_append(g_cfg_history_cache, "\r\n");
-    g_string_append(g_cfg_history_cache, "Command History:\r\n");
-    g_string_append(g_cfg_history_cache,
+    g_string_append(g_cli_history_cache, "\r\n");
+    g_string_append(g_cli_history_cache, "Command History:\r\n");
+    g_string_append(g_cli_history_cache,
                     "================================================================================\r\n");
-    g_string_append(g_cfg_history_cache, " No  Time                Command                          Client IP\r\n");
-    g_string_append(g_cfg_history_cache,
+    g_string_append(g_cli_history_cache, " No  Time                Command                          Client IP\r\n");
+    g_string_append(g_cli_history_cache,
                     "--------------------------------------------------------------------------------\r\n");
 
-    for (uint32_t i = 0; i < g_cfg_local->global_history.count; i++)
+    for (uint32_t i = 0; i < g_cli_local->global_history.count; i++)
     {
         const cli_history_entry_t *entry =
-            cli_global_history_get_entry(&g_cfg_local->global_history, g_cfg_local->global_history.count - 1 - i);
+            cli_global_history_get_entry(&g_cli_local->global_history, g_cli_local->global_history.count - 1 - i);
         if (entry && entry->command)
         {
             struct tm *timeinfo = localtime(&entry->timestamp);
@@ -227,30 +227,30 @@ static void handle_show_history(cli_session_t *session)
 
             snprintf(buffer, sizeof(buffer), " %-3u %-19s %-32s %-15s\r\n", i + 1, time_str, cmd_display,
                      entry->client_ip);
-            g_string_append(g_cfg_history_cache, buffer);
+            g_string_append(g_cli_history_cache, buffer);
         }
     }
 
-    g_string_append(g_cfg_history_cache,
+    g_string_append(g_cli_history_cache,
                     "================================================================================\r\n");
-    snprintf(buffer, sizeof(buffer), "Total: %u command(s)\r\n\r\n", g_cfg_local->global_history.count);
-    g_string_append(g_cfg_history_cache, buffer);
+    snprintf(buffer, sizeof(buffer), "Total: %u command(s)\r\n\r\n", g_cli_local->global_history.count);
+    g_string_append(g_cli_history_cache, buffer);
 
-    pthread_mutex_unlock(&g_cfg_local->history_mutex);
+    pthread_mutex_unlock(&g_cli_local->history_mutex);
 
     do
     {
         resp_out.message[0] = '\0';
         resp_out.has_more = 0;
-        cfg_cli_chunk_output(g_cfg_history_cache, &resp_out);
+        cli_chunk_output(g_cli_history_cache, &resp_out);
         if (resp_out.message[0] != '\0')
         {
             g_string_append(full_output, resp_out.message);
         }
     } while (resp_out.has_more);
 
-    g_string_free(g_cfg_history_cache, TRUE);
-    g_cfg_history_cache = NULL;
+    g_string_free(g_cli_history_cache, TRUE);
+    g_cli_history_cache = NULL;
 
     if (full_output->len > 0)
     {
@@ -262,7 +262,7 @@ static void handle_show_history(cli_session_t *session)
 /**
  * @brief show current-configuration (group_id=3)
  *
- * 向所有业务模块发送 CFG_MSG_TYPE_SHOW_CONFIG，收集响应并聚合输出。
+ * 向所有业务模块发送 CLI_MSG_TYPE_SHOW_CONFIG，收集响应并聚合输出。
  * 未连接的模块直接跳过，避免超时等待。
  */
 static void handle_show_config(cli_session_t *session)
@@ -275,19 +275,19 @@ static void handle_show_config(cli_session_t *session)
     for (size_t i = 0; i < G_N_ELEMENTS(config_modules); i++)
     {
         uint32_t mod_id = config_modules[i];
-        if (!dev_ipc_is_connected(g_cfg_local->dev_ipc_ctx, mod_id))
+        if (!dev_ipc_is_connected(g_cli_local->dev_ipc_ctx, mod_id))
         {
             continue;
         }
 
         dev_ipc_message_t *req =
-            dev_ipc_message_create(CFG_MSG_TYPE_SHOW_CONFIG, DEV_MODULE_ID_CFG, mod_id, 0, NULL, 0, NULL);
+            dev_ipc_message_create(CLI_MSG_TYPE_SHOW_CONFIG, DEV_MODULE_ID_CLI, mod_id, 0, NULL, 0, NULL);
         if (!req)
         {
             continue;
         }
 
-        dev_ipc_message_t *resp = dev_ipc_query(g_cfg_local->dev_ipc_ctx, mod_id, req, 2000);
+        dev_ipc_message_t *resp = dev_ipc_query(g_cli_local->dev_ipc_ctx, mod_id, req, 2000);
         dev_ipc_message_free(req);
 
         if (resp)
@@ -307,7 +307,7 @@ static void handle_show_config(cli_session_t *session)
     }
     else
     {
-        cfg_send_message(session, "No configuration found.\r\n");
+        cli_send_message(session, "No configuration found.\r\n");
     }
 
     g_string_free(output, TRUE);
@@ -336,7 +336,7 @@ static void handle_op_exit(cli_session_t *session)
  */
 static void handle_op_config(cli_session_t *session)
 {
-    cli_view_node_t *config_view = cli_view_find_by_name(g_cfg_local->view_tree.root, CLI_VIEW_CONFIG);
+    cli_view_node_t *config_view = cli_view_find_by_name(g_cli_local->view_tree.root, CLI_VIEW_CONFIG);
     if (config_view)
     {
         cli_prompt_push(session);
@@ -377,12 +377,12 @@ static void *bash_bridge_thread(void *arg)
     if (pid < 0)
     {
         /* fork 失败，恢复 epoll 监听 */
-        cfg_send_message(session, "Error: Failed to start bash.\r\n");
+        cli_send_message(session, "Error: Failed to start bash.\r\n");
         session->bash_mode = 0;
         struct epoll_event ev;
         ev.events = EPOLLIN;
         ev.data.fd = client_fd;
-        epoll_ctl(g_cfg_local->epoll_fd, EPOLL_CTL_ADD, client_fd, &ev);
+        epoll_ctl(g_cli_local->epoll_fd, EPOLL_CTL_ADD, client_fd, &ev);
         send_prompt(session);
         return NULL;
     }
@@ -466,9 +466,9 @@ static void *bash_bridge_thread(void *arg)
     struct epoll_event ev;
     ev.events = EPOLLIN;
     ev.data.fd = client_fd;
-    epoll_ctl(g_cfg_local->epoll_fd, EPOLL_CTL_ADD, client_fd, &ev);
+    epoll_ctl(g_cli_local->epoll_fd, EPOLL_CTL_ADD, client_fd, &ev);
 
-    cfg_send_message(session, "\r\nBash 会话结束，返回 CLI...\r\n");
+    cli_send_message(session, "\r\nBash 会话结束，返回 CLI...\r\n");
     send_prompt(session);
 
     return NULL;
@@ -480,12 +480,12 @@ static void *bash_bridge_thread(void *arg)
 static void handle_op_bash(cli_session_t *session)
 {
     /* 从 epoll 中移除，防止主线程继续读取该 socket */
-    epoll_ctl(g_cfg_local->epoll_fd, EPOLL_CTL_DEL, session->client_fd, NULL);
+    epoll_ctl(g_cli_local->epoll_fd, EPOLL_CTL_DEL, session->client_fd, NULL);
 
     /* 标记会话进入 bash 模式（主循环不再发送 CLI 提示符） */
     session->bash_mode = 1;
 
-    cfg_send_message(session, "\r\n进入 bash shell，输入 'exit' 返回 CLI。\r\n\r\n");
+    cli_send_message(session, "\r\n进入 bash shell，输入 'exit' 返回 CLI。\r\n\r\n");
 
     /* 创建桥接线程 */
     bash_bridge_ctx_t *ctx = g_malloc(sizeof(*ctx));
@@ -505,8 +505,8 @@ static void handle_op_bash(cli_session_t *session)
         struct epoll_event ev;
         ev.events = EPOLLIN;
         ev.data.fd = session->client_fd;
-        epoll_ctl(g_cfg_local->epoll_fd, EPOLL_CTL_ADD, session->client_fd, &ev);
-        cfg_send_message(session, "Error: Failed to create bash thread.\r\n");
+        epoll_ctl(g_cli_local->epoll_fd, EPOLL_CTL_ADD, session->client_fd, &ev);
+        cli_send_message(session, "Error: Failed to create bash thread.\r\n");
     }
 
     pthread_attr_destroy(&attr);
@@ -602,7 +602,7 @@ static void handle_show_context(cli_session_t *session)
  */
 static void handle_op_end(cli_session_t *session)
 {
-    cli_view_node_t *user_view = cli_view_find_by_name(g_cfg_local->view_tree.root, CLI_VIEW_USER);
+    cli_view_node_t *user_view = cli_view_find_by_name(g_cli_local->view_tree.root, CLI_VIEW_USER);
     if (user_view)
     {
         session->current_view = user_view;
@@ -625,7 +625,7 @@ static void handle_op_end(cli_session_t *session)
 // 主入口
 // ============================================================================
 
-int cfg_cli_handle(dev_ipc_message_t *msg, cli_session_t *session)
+int cli_handle(dev_ipc_message_t *msg, cli_session_t *session)
 {
     if (!msg || !msg->payload || !session)
     {
@@ -643,33 +643,33 @@ int cfg_cli_handle(dev_ipc_message_t *msg, cli_session_t *session)
 
     switch (parser.group_id)
     {
-        case CFG_CLI_GROUP_ID_SHOW_COMMANDS:
+        case CLI_GROUP_ID_SHOW_COMMANDS:
             handle_show_commands(session);
             break;
-        case CFG_CLI_GROUP_ID_SHOW_HISTORY:
+        case CLI_GROUP_ID_SHOW_HISTORY:
             handle_show_history(session);
             break;
-        case CFG_CLI_GROUP_ID_SHOW_CONFIG:
+        case CLI_GROUP_ID_SHOW_CONFIG:
             handle_show_config(session);
             break;
-        case CFG_CLI_GROUP_ID_EXIT:
+        case CLI_GROUP_ID_EXIT:
             handle_op_exit(session);
             break;
-        case CFG_CLI_GROUP_ID_CONFIG:
+        case CLI_GROUP_ID_CONFIG:
             handle_op_config(session);
             break;
-        case CFG_CLI_GROUP_ID_END:
+        case CLI_GROUP_ID_END:
             handle_op_end(session);
             break;
-        case CFG_CLI_GROUP_ID_BASH:
+        case CLI_GROUP_ID_BASH:
             handle_op_bash(session);
             break;
-        case CFG_CLI_GROUP_ID_SHOW_CONTEXT:
+        case CLI_GROUP_ID_SHOW_CONTEXT:
             handle_show_context(session);
             break;
         default:
             LOG_WARN("未知 group_id: %u", parser.group_id);
-            cfg_send_message(session, "Error: Unknown CFG command.\r\n");
+            cli_send_message(session, "Error: Unknown CFG command.\r\n");
             cli_tlv_cleanup(&parser);
             return ERRCODE_FAIL;
     }

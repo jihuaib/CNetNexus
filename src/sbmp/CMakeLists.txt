@@ -1,4 +1,3 @@
-# SBMP module sources
 set(SBMP_SOURCES
     sbmp_main.c
     sbmp_cli.c
@@ -6,23 +5,20 @@ set(SBMP_SOURCES
     sbmp_bdr.c
 )
 
-# Create shared library for SBMP module
-add_library(sbmp SHARED ${SBMP_SOURCES})
+add_executable(netnexus-sbmp sbmp_proc.c ${SBMP_SOURCES})
 
-# Include directories
-target_include_directories(sbmp PRIVATE
-    .
-)
+target_include_directories(netnexus-sbmp PRIVATE .)
 
-# Link libraries
-target_link_libraries(sbmp PRIVATE
+target_link_libraries(netnexus-sbmp PRIVATE
     dev_api
     cli_api
+    db_api
     utils
 )
 
-# Set library version
-set_target_properties(sbmp PROPERTIES
-    VERSION 1.0.0
-    SOVERSION 1
+set_target_properties(netnexus-sbmp PROPERTIES
+    BUILD_RPATH "${CMAKE_BINARY_DIR}/lib"
+    INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib"
 )
+
+install(TARGETS netnexus-sbmp RUNTIME DESTINATION bin)

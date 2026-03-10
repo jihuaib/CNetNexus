@@ -14,7 +14,6 @@ target_include_directories(if_api PRIVATE
 
 # 链接依赖
 target_link_libraries(if_api PUBLIC
-    if
     dev_api
     ${GLIB_LIBRARIES}
 )

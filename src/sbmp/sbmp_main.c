@@ -109,7 +109,7 @@ static void send_phase_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, 
 static void sbmp_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     LOG_INFO("SBMP Phase 1: MODULE_START — 建立 IPC 连接");
-    dev_ipc_connect(ctx, DEV_MODULE_ID_CFG, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CFG);
+    dev_ipc_connect(ctx, DEV_MODULE_ID_CLI, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CLI);
     dev_ipc_connect(ctx, DEV_MODULE_ID_DB, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_DB);
     LOG_INFO("SBMP: 已连接到 CFG 和 DB");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
@@ -188,15 +188,15 @@ void sbmp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         case DEV_IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN:
             sbmp_on_shutdown(ctx, msg);
             return;
-        case CFG_MSG_TYPE_CLI:
+        case CLI_MSG_TYPE:
             LOG_DEBUG("SBMP: 收到 CLI 命令消息");
             sbmp_cli_handle_message(msg);
             break;
-        case CFG_MSG_TYPE_CLI_CONTINUE:
+        case CLI_MSG_TYPE_CONTINUE:
             LOG_DEBUG("SBMP: 收到 CLI continue 请求");
             sbmp_cli_handle_continue(msg);
             break;
-        case CFG_MSG_TYPE_SHOW_CONFIG:
+        case CLI_MSG_TYPE_SHOW_CONFIG:
             LOG_DEBUG("SBMP: 收到 show current-configuration 请求");
             sbmp_bdr_show_config(msg);
             return;
@@ -209,22 +209,23 @@ void sbmp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 }
 
 // ============================================================================
-// .so constructor（dlopen 时自动触发）
+// 模块初始化
 // ============================================================================
 
-__attribute__((constructor)) static void sbmp_so_init(void)
+int sbmp_module_init(void)
 {
-    LOG_INFO("SBMP: .so 加载，自初始化");
+    LOG_INFO("模块初始化");
 
     dev_ipc_context_t *ctx = dev_ipc_init(DEV_MODULE_ID_SBMP, "sbmp", DEV_MODULE_PORT_SBMP, sbmp_msg_handler);
     if (!ctx)
     {
-        LOG_ERROR("SBMP: IPC 初始化失败");
-        return;
+        LOG_ERROR("IPC 初始化失败");
+        return -1;
     }
 
     g_sbmp_local = g_malloc0(sizeof(sbmp_local_t));
     g_sbmp_local->dev_ipc_ctx = ctx;
     g_sbmp_local->server_port = 0;
     g_sbmp_local->listen_fd = -1;
+    return 0;
 }

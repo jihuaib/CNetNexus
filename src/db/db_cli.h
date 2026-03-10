@@ -41,7 +41,7 @@ int db_cli_process_command(dev_ipc_message_t *msg);
 int db_cli_handle_continue(dev_ipc_message_t *msg);
 
 /**
- * @brief 处理动态候选值查询（CFG_MSG_TYPE_QUERY_CANDIDATES）
+ * @brief 处理动态候选值查询（CLI_MSG_TYPE_QUERY_CANDIDATES）
  *
  * 查询 SQLite 中所有用户表名，以 "name1\0name2\0\0" 格式响应。
  *

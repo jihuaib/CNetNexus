@@ -23,20 +23,13 @@
 #include "net_addr.h"
 
 // ============================================================================
-// 接口上下文变量 ID（独立命名空间，ctx-id=5 对应 XML <context-out ctx-id="5">）
-// ============================================================================
-
-/** 接口索引 ctx 变量：值 1-4 分别对应 GE-1 到 GE-4 */
-#define CLI_CTX_ID_IF_IDX 5
-
-// ============================================================================
 // 发送响应辅助
 // ============================================================================
 
 static void send_resp(dev_ipc_message_t *msg, const char *text)
 {
     char *resp_data = g_strdup(text);
-    dev_ipc_message_t *resp = dev_ipc_message_create(CFG_MSG_TYPE_CLI_RESP, DEV_MODULE_ID_IF, msg->src_module_id,
+    dev_ipc_message_t *resp = dev_ipc_message_create(CLI_MSG_TYPE_RESP, DEV_MODULE_ID_IF, msg->src_module_id,
                                                      msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
     if (resp)
     {

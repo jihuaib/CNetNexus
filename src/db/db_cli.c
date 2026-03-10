@@ -23,7 +23,7 @@
 static void db_send_cli_response(dev_ipc_message_t *msg, const char *text)
 {
     char *resp_data = g_strdup(text);
-    dev_ipc_message_t *resp = dev_ipc_message_create(CFG_MSG_TYPE_CLI_RESP, DEV_MODULE_ID_DB, msg->src_module_id,
+    dev_ipc_message_t *resp = dev_ipc_message_create(CLI_MSG_TYPE_RESP, DEV_MODULE_ID_DB, msg->src_module_id,
                                                      msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
     if (resp)
     {
@@ -362,7 +362,7 @@ void db_cli_handle_query_candidates(dev_ipc_context_t *ctx, dev_ipc_message_t *m
     guint8 *payload = g_memdup2(buf->data, payload_len);
     g_byte_array_free(buf, TRUE);
 
-    dev_ipc_message_t *resp = dev_ipc_message_create(CFG_MSG_TYPE_QUERY_CANDIDATES_RESP, DEV_MODULE_ID_DB,
+    dev_ipc_message_t *resp = dev_ipc_message_create(CLI_MSG_TYPE_QUERY_CANDIDATES_RESP, DEV_MODULE_ID_DB,
                                                      msg->src_module_id, msg->request_id, payload, payload_len, g_free);
     if (resp)
     {

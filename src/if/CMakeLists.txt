@@ -1,32 +1,28 @@
-# If module sources
 set(IF_SOURCES
     if.c
     if_map.c
     if_cfg_apply.c
     if_main.c
     if_cli.c
-        if_bdr.c
+    if_bdr.c
 )
 
-# Create shared library for if module
-add_library(if SHARED ${IF_SOURCES})
+add_executable(netnexus-if if_proc.c ${IF_SOURCES})
 
-# Include directories
-target_include_directories(if PRIVATE
-    .
-)
+target_include_directories(netnexus-if PRIVATE .)
 
-# Link libraries
-target_link_libraries(if PRIVATE
+target_link_libraries(netnexus-if PRIVATE
     dev_api
     cli_api
+    db_api
     ${GLIB_LIBRARIES}
 )
 
-# Set library version
-set_target_properties(if PROPERTIES
-    VERSION 1.0.0
-    SOVERSION 1
+set_target_properties(netnexus-if PROPERTIES
+    BUILD_RPATH "${CMAKE_BINARY_DIR}/lib"
+    INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib"
 )
+
+install(TARGETS netnexus-if RUNTIME DESTINATION bin)
 
 add_subdirectory(lib)

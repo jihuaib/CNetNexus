@@ -18,9 +18,9 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include "cfg_cli.h"
-#include "cfg_main.h"
+#include "cli_cfg.h"
 #include "cli_dispatch.h"
+#include "cli_main.h"
 #include "cli_param_type.h"
 #include "cli_tree.h"
 #include "cli_xml_parser.h"
@@ -28,7 +28,7 @@
 #include "errcode.h"
 
 // Send a message to the client (must be null-terminated)
-void cfg_send_message(cli_session_t *session, const char *message)
+void cli_send_message(cli_session_t *session, const char *message)
 {
     if (message)
     {
@@ -37,7 +37,7 @@ void cfg_send_message(cli_session_t *session, const char *message)
 }
 
 // Send raw data to the client with explicit length
-void cfg_send_data(cli_session_t *session, const void *data, size_t len)
+void cli_send_data(cli_session_t *session, const void *data, size_t len)
 {
     if (data && len > 0)
     {
@@ -145,8 +145,8 @@ const uint8_t *cli_context_get(cli_session_t *session, uint32_t *out_len)
 // Send the prompt to the client
 void send_prompt(cli_session_t *session)
 {
-    cfg_send_message(session, session->prompt);
-    cfg_send_message(session, " ");
+    cli_send_message(session, session->prompt);
+    cli_send_message(session, " ");
 }
 
 // ============================================================================
@@ -173,14 +173,14 @@ static uint32_t pager_count_lines(const char *text)
 // Display the --More-- prompt
 static void pager_show_more_prompt(cli_session_t *session)
 {
-    cfg_send_message(session, CLI_PAGER_PROMPT);
+    cli_send_message(session, CLI_PAGER_PROMPT);
 }
 
 // Clear the --More-- prompt from the line
 static void pager_clear_more_prompt(cli_session_t *session)
 {
     // \r moves to start, spaces overwrite, \r moves back to start
-    cfg_send_message(session, "\r        \r");
+    cli_send_message(session, "\r        \r");
 }
 
 // Show next N lines from pager buffer. Returns number of lines shown.
@@ -207,7 +207,7 @@ static uint32_t pager_send_lines(cli_session_t *session, uint32_t max_lines)
     // Send the data from start to pos
     if (pos > start)
     {
-        cfg_send_data(session, session->pager_buffer + start, pos - start);
+        cli_send_data(session, session->pager_buffer + start, pos - start);
     }
 
     session->pager_offset = pos;
@@ -228,7 +228,7 @@ void cli_pager_output(cli_session_t *session, const char *message)
     // If output fits on one screen, send directly
     if (lines <= page_size)
     {
-        cfg_send_message(session, message);
+        cli_send_message(session, message);
         return;
     }
 
@@ -342,17 +342,17 @@ static void redraw_from_cursor(cli_session_t *session, const char *buffer, uint3
     // Send characters from from_pos to end
     if (total_len > from_pos)
     {
-        cfg_send_data(session, buffer + from_pos, total_len - from_pos);
+        cli_send_data(session, buffer + from_pos, total_len - from_pos);
     }
 
     // Send a space to clear any old character
-    cfg_send_message(session, " ");
+    cli_send_message(session, " ");
 
     // Move cursor back to correct position
     uint32_t move_back = total_len - from_pos + 1;
     for (uint32_t i = 0; i < move_back; i++)
     {
-        cfg_send_message(session, "\b");
+        cli_send_message(session, "\b");
     }
 }
 
@@ -360,8 +360,8 @@ static void redraw_from_cursor(cli_session_t *session, const char *buffer, uint3
 static void clear_and_redraw_line(cli_session_t *session, const char *buffer, uint32_t len, uint32_t cursor_pos)
 {
     // Move to start of line and clear it
-    cfg_send_message(session, "\r");
-    cfg_send_message(session, ANSI_CLEAR_LINE);
+    cli_send_message(session, "\r");
+    cli_send_message(session, ANSI_CLEAR_LINE);
 
     // Redraw prompt
     send_prompt(session);
@@ -369,7 +369,7 @@ static void clear_and_redraw_line(cli_session_t *session, const char *buffer, ui
     // Redraw buffer content
     if (len > 0)
     {
-        cfg_send_data(session, buffer, len);
+        cli_send_data(session, buffer, len);
     }
 
     // Move cursor to correct position
@@ -378,7 +378,7 @@ static void clear_and_redraw_line(cli_session_t *session, const char *buffer, ui
         uint32_t move_back = len - cursor_pos;
         for (uint32_t i = 0; i < move_back; i++)
         {
-            cfg_send_message(session, "\b");
+            cli_send_message(session, "\b");
         }
     }
 }
@@ -472,7 +472,7 @@ static void handle_arrow_left(cli_session_t *session, uint32_t *cursor_pos)
     if (*cursor_pos > 0)
     {
         (*cursor_pos)--;
-        cfg_send_message(session, "\b");
+        cli_send_message(session, "\b");
     }
 }
 
@@ -481,7 +481,7 @@ static void handle_arrow_right(cli_session_t *session, uint32_t line_pos, uint32
 {
     if (*cursor_pos < line_pos)
     {
-        cfg_send_message(session, ANSI_CURSOR_RIGHT);
+        cli_send_message(session, ANSI_CURSOR_RIGHT);
         (*cursor_pos)++;
     }
 }
@@ -519,7 +519,7 @@ static char **cfg_query_dynamic_candidates(const cli_tree_node_t *node)
     uint32_t *payload = g_new(uint32_t, 1);
     *payload = g_htonl(query_id);
 
-    dev_ipc_message_t *req = dev_ipc_message_create(CFG_MSG_TYPE_QUERY_CANDIDATES, DEV_MODULE_ID_CFG, module_id, 0,
+    dev_ipc_message_t *req = dev_ipc_message_create(CLI_MSG_TYPE_QUERY_CANDIDATES, DEV_MODULE_ID_CLI, module_id, 0,
                                                     payload, sizeof(uint32_t), g_free);
     if (!req)
     {
@@ -527,7 +527,7 @@ static char **cfg_query_dynamic_candidates(const cli_tree_node_t *node)
         return NULL;
     }
 
-    dev_ipc_message_t *resp = dev_ipc_query(g_cfg_local->dev_ipc_ctx, module_id, req, 2000);
+    dev_ipc_message_t *resp = dev_ipc_query(g_cli_local->dev_ipc_ctx, module_id, req, 2000);
     dev_ipc_message_free(req);
 
     if (!resp || !resp->payload || resp->payload_len < 2)
@@ -754,7 +754,7 @@ static void handle_tab_completion(cli_session_t *session, char *line_buffer, uin
 
     // Get all matches for the last token（view tree + global tree 双树查找）
     cli_tree_node_t *matches[50];
-    cli_tree_node_t *global_tree = g_cfg_local->view_tree.global_cmd_tree;
+    cli_tree_node_t *global_tree = g_cli_local->view_tree.global_cmd_tree;
     uint32_t num_matches =
         cli_tree_match_command_get_matches_dual(session->current_view->cmd_tree, global_tree, match_input, matches, 50);
 
@@ -820,9 +820,9 @@ static void handle_tab_completion(cli_session_t *session, char *line_buffer, uin
         if (!candidates)
         {
             session->tab_cycling = 0;
-            cfg_send_message(session, "\r\n");
+            cli_send_message(session, "\r\n");
             send_prompt(session);
-            cfg_send_message(session, line_buffer);
+            cli_send_message(session, line_buffer);
         }
         else
         {
@@ -840,9 +840,9 @@ static void handle_tab_completion(cli_session_t *session, char *line_buffer, uin
             if (num_dyn == 0)
             {
                 session->tab_cycling = 0;
-                cfg_send_message(session, "\r\n");
+                cli_send_message(session, "\r\n");
                 send_prompt(session);
-                cfg_send_message(session, line_buffer);
+                cli_send_message(session, line_buffer);
             }
             else if (num_dyn == 1)
             {
@@ -851,10 +851,10 @@ static void handle_tab_completion(cli_session_t *session, char *line_buffer, uin
                 memcpy(line_buffer, match_input, orig_len);
                 *line_pos = orig_len;
                 line_buffer[*line_pos] = '\0';
-                cfg_send_message(session, "\r\n");
+                cli_send_message(session, "\r\n");
                 send_prompt(session);
                 tab_apply_dynamic_match((const char *)matched->pdata[0], line_buffer, line_pos);
-                cfg_send_message(session, line_buffer);
+                cli_send_message(session, line_buffer);
             }
             else
             {
@@ -875,10 +875,10 @@ static void handle_tab_completion(cli_session_t *session, char *line_buffer, uin
                 *line_pos = session->tab_original_pos;
                 line_buffer[*line_pos] = '\0';
 
-                cfg_send_message(session, "\r\n");
+                cli_send_message(session, "\r\n");
                 send_prompt(session);
                 tab_apply_dynamic_match((const char *)matched->pdata[session->tab_match_index], line_buffer, line_pos);
-                cfg_send_message(session, line_buffer);
+                cli_send_message(session, line_buffer);
             }
 
             g_ptr_array_free(matched, FALSE);
@@ -891,11 +891,11 @@ static void handle_tab_completion(cli_session_t *session, char *line_buffer, uin
         session->tab_cycling = 0;
         cli_tree_node_t *match = matches[0];
 
-        cfg_send_message(session, "\r\n");
+        cli_send_message(session, "\r\n");
         send_prompt(session);
 
         tab_apply_match(match, line_buffer, line_pos, has_trailing_space);
-        cfg_send_message(session, line_buffer);
+        cli_send_message(session, line_buffer);
     }
     else if (num_matches > 1)
     {
@@ -921,18 +921,18 @@ static void handle_tab_completion(cli_session_t *session, char *line_buffer, uin
         *line_pos = session->tab_original_pos;
         line_buffer[*line_pos] = '\0';
 
-        cfg_send_message(session, "\r\n");
+        cli_send_message(session, "\r\n");
         send_prompt(session);
 
         tab_apply_match(match, line_buffer, line_pos, has_trailing_space);
-        cfg_send_message(session, line_buffer);
+        cli_send_message(session, line_buffer);
     }
     else
     {
         session->tab_cycling = 0;
-        cfg_send_message(session, "\r\n");
+        cli_send_message(session, "\r\n");
         send_prompt(session);
-        cfg_send_message(session, line_buffer);
+        cli_send_message(session, line_buffer);
     }
 }
 
@@ -944,7 +944,7 @@ static void handle_help_request(cli_session_t *session, char *line_buffer, uint3
         return;
     }
 
-    cfg_send_message(session, "\r\n");
+    cli_send_message(session, "\r\n");
 
     // Create temp buffer with only [0, cursor_pos) for matching
     char match_buffer[MAX_CMD_LEN];
@@ -958,7 +958,7 @@ static void handle_help_request(cli_session_t *session, char *line_buffer, uint3
     // Collect all help output into a GString for paging
     GString *help_out = g_string_new("");
 
-    cli_tree_node_t *help_global_tree = g_cfg_local->view_tree.global_cmd_tree;
+    cli_tree_node_t *help_global_tree = g_cli_local->view_tree.global_cmd_tree;
     if (has_trailing_space)
     {
         // Case: "xx ?" - 在 view tree 和 global tree 中各查一次，分别展示子命令
@@ -1136,13 +1136,13 @@ static void handle_help_request(cli_session_t *session, char *line_buffer, uint3
     if (!session->pager_active)
     {
         // Clear current line and redraw with proper cursor position
-        cfg_send_message(session, "\r");      // Move to start of line
-        cfg_send_message(session, "\x1B[2K"); // Clear entire line
+        cli_send_message(session, "\r");      // Move to start of line
+        cli_send_message(session, "\x1B[2K"); // Clear entire line
 
         send_prompt(session);
         if (*line_pos > 0)
         {
-            cfg_send_data(session, line_buffer, *line_pos);
+            cli_send_data(session, line_buffer, *line_pos);
         }
     }
 }
@@ -1201,13 +1201,13 @@ int process_command(const char *cmd_line, cli_session_t *session)
     // Get current view's command tree
     if (!session->current_view || !session->current_view->cmd_tree)
     {
-        cfg_send_message(session, "\r\nError: No command tree for current view\r\n");
+        cli_send_message(session, "\r\nError: No command tree for current view\r\n");
         return 0; // Error
     }
 
     // Use full match to get all element IDs and values（view tree 优先，失败后回退 global tree）
     cli_match_result_t *match_result = cli_tree_match_command_full_dual(
-        session->current_view->cmd_tree, g_cfg_local->view_tree.global_cmd_tree, trimmed);
+        session->current_view->cmd_tree, g_cli_local->view_tree.global_cmd_tree, trimmed);
     cli_tree_node_t *node = match_result ? match_result->final_node : NULL;
 
     if (node)
@@ -1216,7 +1216,7 @@ int process_command(const char *cmd_line, cli_session_t *session)
         if (!node->is_end_node)
         {
             // Incomplete command - node is not a valid command end point
-            cfg_send_message(session, "Error: Incomplete command.\r\n");
+            cli_send_message(session, "Error: Incomplete command.\r\n");
 
             // Free match result and return
             if (match_result)
@@ -1241,7 +1241,7 @@ int process_command(const char *cmd_line, cli_session_t *session)
     }
     else
     {
-        cfg_send_message(session, "Error: Invalid command.\r\n");
+        cli_send_message(session, "Error: Invalid command.\r\n");
 
         // Free match result
         if (match_result)
@@ -1255,20 +1255,20 @@ int process_command(const char *cmd_line, cli_session_t *session)
 // Cleanup CLI trees
 void cli_cleanup(void)
 {
-    if (g_cfg_local == NULL)
+    if (g_cli_local == NULL)
     {
         return;
     }
-    if (g_cfg_local->view_tree.root)
+    if (g_cli_local->view_tree.root)
     {
-        cli_view_free(g_cfg_local->view_tree.root);
-        g_cfg_local->view_tree.root = NULL;
+        cli_view_free(g_cli_local->view_tree.root);
+        g_cli_local->view_tree.root = NULL;
     }
-    if (g_cfg_local->view_tree.global_view)
+    if (g_cli_local->view_tree.global_view)
     {
-        cli_view_free(g_cfg_local->view_tree.global_view);
-        g_cfg_local->view_tree.global_view = NULL;
-        g_cfg_local->view_tree.global_cmd_tree = NULL; /* 非持有指针，随 global_view 释放 */
+        cli_view_free(g_cli_local->view_tree.global_view);
+        g_cli_local->view_tree.global_view = NULL;
+        g_cli_local->view_tree.global_cmd_tree = NULL; /* 非持有指针，随 global_view 释放 */
     }
 }
 
@@ -1286,7 +1286,7 @@ cli_session_t *cli_session_create(int client_fd)
     fcntl(client_fd, F_SETFL, flags | O_NONBLOCK);
 
     session->client_fd = client_fd;
-    session->current_view = g_cfg_local->view_tree.root;
+    session->current_view = g_cli_local->view_tree.root;
     session->line_pos = 0;
     session->cursor_pos = 0;
     session->state = CLI_STATE_NORMAL;
@@ -1319,13 +1319,13 @@ cli_session_t *cli_session_create(int client_fd)
         255, 251, 3,  // IAC WILL SUPPRESS_GO_AHEAD
         255, 253, 34, // IAC DO LINEMODE (with MODE 0 for character mode)
     };
-    cfg_send_data(session, telnet_opts, sizeof(telnet_opts));
+    cli_send_data(session, telnet_opts, sizeof(telnet_opts));
 
     // Send welcome message
-    cfg_send_message(session, "\r\n");
-    cfg_send_message(session, "Welcome to NetNexus CLI\r\n");
-    cfg_send_message(session, "Type '?' for available commands\r\n");
-    cfg_send_message(session, "\r\n");
+    cli_send_message(session, "\r\n");
+    cli_send_message(session, "Welcome to NetNexus CLI\r\n");
+    cli_send_message(session, "Type '?' for available commands\r\n");
+    cli_send_message(session, "\r\n");
 
     // Send initial prompt
     send_prompt(session);
@@ -1402,7 +1402,7 @@ int cli_process_input(cli_session_t *session)
             // Handle Enter
             if (c == '\r' || c == '\n')
             {
-                cfg_send_message(session, "\r\n");
+                cli_send_message(session, "\r\n");
 
                 if (session->line_pos > 0)
                 {
@@ -1415,9 +1415,9 @@ int cli_process_input(cli_session_t *session)
                     if (cmd_success)
                     {
                         // Add to global history (thread-safe)
-                        pthread_mutex_lock(&g_cfg_local->history_mutex);
-                        cli_global_history_add(&g_cfg_local->global_history, session->line_buffer, session->client_ip);
-                        pthread_mutex_unlock(&g_cfg_local->history_mutex);
+                        pthread_mutex_lock(&g_cli_local->history_mutex);
+                        cli_global_history_add(&g_cli_local->global_history, session->line_buffer, session->client_ip);
+                        pthread_mutex_unlock(&g_cli_local->history_mutex);
                     }
 
                     // Reset line buffer
@@ -1445,7 +1445,7 @@ int cli_process_input(cli_session_t *session)
                         session->line_pos--;
                         session->cursor_pos--;
                         // Redraw from cursor to end
-                        cfg_send_message(session, "\b");
+                        cli_send_message(session, "\b");
                         redraw_from_cursor(session, session->line_buffer, session->cursor_pos, session->line_pos);
                     }
                     else
@@ -1453,7 +1453,7 @@ int cli_process_input(cli_session_t *session)
                         // Delete at end (original logic)
                         session->line_pos--;
                         session->cursor_pos--;
-                        cfg_send_message(session, "\b \b");
+                        cli_send_message(session, "\b \b");
                     }
                 }
             }
@@ -1495,7 +1495,7 @@ int cli_process_input(cli_session_t *session)
                     session->line_pos++;
                     session->cursor_pos++;
                     // Redraw from new cursor_pos (the char is already at cursor_pos-1)
-                    cfg_send_data(session, &c, 1);
+                    cli_send_data(session, &c, 1);
                     redraw_from_cursor(session, session->line_buffer, session->cursor_pos, session->line_pos);
                 }
                 else
@@ -1503,7 +1503,7 @@ int cli_process_input(cli_session_t *session)
                     // Append at end (original logic)
                     session->line_buffer[session->line_pos++] = c;
                     session->cursor_pos++;
-                    cfg_send_data(session, &c, 1);
+                    cli_send_data(session, &c, 1);
                 }
             }
         }

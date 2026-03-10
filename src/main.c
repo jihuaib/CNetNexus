@@ -12,6 +12,7 @@
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/signalfd.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "dev/dev_main.h"
@@ -83,6 +84,7 @@ int main(int argc, char *argv[])
     sigset_t mask;
     sigemptyset(&mask);
     sigaddset(&mask, SIGTERM);
+    sigaddset(&mask, SIGCHLD); /* 子进程退出通知 */
 
     if (sigprocmask(SIG_BLOCK, &mask, NULL) == -1)
     {
@@ -164,13 +166,25 @@ int main(int argc, char *argv[])
         {
             if (events[i].data.fd == signal_fd)
             {
-                // SIGTERM received via signalfd
                 struct signalfd_siginfo si;
                 ssize_t s = read(signal_fd, &si, sizeof(si));
                 if (s == sizeof(si))
                 {
-                    LOG_INFO("Received SIGTERM (%d), requesting shutdown...", si.ssi_signo);
-                    shutdown = 1;
+                    if (si.ssi_signo == SIGTERM)
+                    {
+                        LOG_INFO("Received SIGTERM, requesting shutdown...");
+                        shutdown = 1;
+                    }
+                    else if (si.ssi_signo == SIGCHLD)
+                    {
+                        /* 回收已退出的子进程，记录异常退出 */
+                        int wstatus;
+                        pid_t dead = waitpid(-1, &wstatus, WNOHANG);
+                        if (dead > 0)
+                        {
+                            LOG_WARN("子进程 pid=%d 已退出 (status=%d)", dead, wstatus);
+                        }
+                    }
                 }
             }
             else if (events[i].data.fd == g_shutdown_pipe[0])

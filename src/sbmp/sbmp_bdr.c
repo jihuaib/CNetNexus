@@ -25,7 +25,7 @@
 static void send_config_resp(dev_ipc_message_t *msg, const char *text)
 {
     char *resp_data = g_strdup(text);
-    dev_ipc_message_t *resp = dev_ipc_message_create(CFG_MSG_TYPE_CLI_RESP, DEV_MODULE_ID_SBMP, msg->src_module_id,
+    dev_ipc_message_t *resp = dev_ipc_message_create(CLI_MSG_TYPE_RESP, DEV_MODULE_ID_SBMP, msg->src_module_id,
                                                      msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
     if (resp)
     {

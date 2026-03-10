@@ -73,7 +73,7 @@ static void route_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         LOG_ERROR("连接 DB 模块失败");
     }
 
-    if (dev_ipc_connect(ctx, DEV_MODULE_ID_CFG, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CFG) != 0)
+    if (dev_ipc_connect(ctx, DEV_MODULE_ID_CLI, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CLI) != 0)
     {
         LOG_ERROR("连接 CFG 模块失败");
     }
@@ -170,12 +170,12 @@ void route_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             return;
 
         /* ---- CLI 消息 ---- */
-        case CFG_MSG_TYPE_CLI:
+        case CLI_MSG_TYPE:
             LOG_DEBUG("收到 CLI 命令消息 (%u bytes)", msg->payload_len);
             route_cli_handle_message(msg);
             break;
 
-        case CFG_MSG_TYPE_CLI_CONTINUE:
+        case CLI_MSG_TYPE_CONTINUE:
             LOG_DEBUG("收到 CLI 继续请求");
             route_cli_handle_continue(msg);
             break;
@@ -189,19 +189,19 @@ void route_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 }
 
 // ============================================================================
-// .so constructor（dlopen 时自动触发）
+// 模块初始化
 // ============================================================================
 
-__attribute__((constructor)) static void route_so_init(void)
+int route_module_init(void)
 {
-    LOG_INFO(".so 加载，自初始化");
+    LOG_INFO("模块初始化");
 
     /* 创建 IPC 上下文 */
     dev_ipc_context_t *ctx = dev_ipc_init(DEV_MODULE_ID_ROUTE, "route", DEV_MODULE_PORT_ROUTE, route_ipc_msg_handler);
     if (!ctx)
     {
         LOG_ERROR("IPC 初始化失败");
-        return;
+        return -1;
     }
 
     /* 初始化本地状态（原 route_on_start 逻辑） */
@@ -209,8 +209,9 @@ __attribute__((constructor)) static void route_so_init(void)
     if (!g_route_local)
     {
         LOG_ERROR("分配 route 上下文失败");
-        return;
+        return -1;
     }
     g_route_local->dev_ipc_ctx = ctx;
     g_route_local->running = 1;
+    return 0;
 }

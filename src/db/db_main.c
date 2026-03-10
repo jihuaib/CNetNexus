@@ -74,7 +74,7 @@ static void db_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     LOG_INFO("Phase 1: MODULE_START — 建立 IPC 连接");
 
-    dev_ipc_connect(ctx, DEV_MODULE_ID_CFG, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CFG);
+    dev_ipc_connect(ctx, DEV_MODULE_ID_CLI, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CLI);
 
     /* 打开统一数据库文件 */
     if (db_initialize_database() != ERRCODE_SUCCESS)
@@ -167,17 +167,17 @@ void db_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     /* CLI 消息 */
     switch (msg->msg_type)
     {
-        case CFG_MSG_TYPE_CLI:
+        case CLI_MSG_TYPE:
             LOG_DEBUG("Received CLI command message");
             db_cli_process_command(msg);
             break;
 
-        case CFG_MSG_TYPE_CLI_CONTINUE:
+        case CLI_MSG_TYPE_CONTINUE:
             LOG_DEBUG("Received CLI continue request");
             db_cli_handle_continue(msg);
             break;
 
-        case CFG_MSG_TYPE_QUERY_CANDIDATES:
+        case CLI_MSG_TYPE_QUERY_CANDIDATES:
             LOG_DEBUG("Received query candidates request");
             db_cli_handle_query_candidates(ctx, msg);
             return; /* msg 由被调函数释放 */
@@ -194,20 +194,21 @@ void db_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 // .so constructor（dlopen 时自动触发）
 // ============================================================================
 
-__attribute__((constructor)) static void db_so_init(void)
+int db_module_init(void)
 {
-    LOG_INFO(".so 加载，自初始化");
+    LOG_INFO("模块初始化");
 
     /* 创建 IPC 上下文 */
     dev_ipc_context_t *ctx = dev_ipc_init(DEV_MODULE_ID_DB, "db", DEV_MODULE_PORT_DB, db_msg_handler);
     if (!ctx)
     {
         LOG_ERROR("IPC 初始化失败");
-        return;
+        return -1;
     }
 
     /* 初始化本地状态（原 db_on_start 逻辑） */
     g_db_local = g_malloc0(sizeof(db_local_t));
     g_db_local->main_conn = NULL;
     g_db_local->dev_ipc_ctx = ctx;
+    return 0;
 }

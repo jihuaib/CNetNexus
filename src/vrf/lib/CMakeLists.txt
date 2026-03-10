@@ -10,7 +10,6 @@ target_include_directories(vrf_api PRIVATE
 )
 
 target_link_libraries(vrf_api PUBLIC
-    vrf
     dev_api
     ${GLIB_LIBRARIES}
 )

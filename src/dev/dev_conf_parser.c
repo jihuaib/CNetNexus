@@ -83,9 +83,9 @@ int dev_conf_parse(const char *path, dev_module_conf_t *conf)
         {
             snprintf(conf->name, sizeof(conf->name), "%s", value);
         }
-        else if (strcmp(key, "so") == 0)
+        else if (strcmp(key, "exe") == 0)
         {
-            snprintf(conf->so_name, sizeof(conf->so_name), "%s", value);
+            snprintf(conf->exe_name, sizeof(conf->exe_name), "%s", value);
         }
         else if (strcmp(key, "port") == 0)
         {

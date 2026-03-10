@@ -3,19 +3,21 @@ set(VRF_SOURCES
     vrf_cli.c
 )
 
-add_library(vrf SHARED ${VRF_SOURCES})
+add_executable(netnexus-vrf vrf_proc.c ${VRF_SOURCES})
 
-target_include_directories(vrf PRIVATE .)
+target_include_directories(netnexus-vrf PRIVATE .)
 
-target_link_libraries(vrf PRIVATE
+target_link_libraries(netnexus-vrf PRIVATE
     dev_api
     cli_api
     utils
 )
 
-set_target_properties(vrf PROPERTIES
-    VERSION 1.0.0
-    SOVERSION 1
+set_target_properties(netnexus-vrf PROPERTIES
+    BUILD_RPATH "${CMAKE_BINARY_DIR}/lib"
+    INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib"
 )
+
+install(TARGETS netnexus-vrf RUNTIME DESTINATION bin)
 
 add_subdirectory(lib)

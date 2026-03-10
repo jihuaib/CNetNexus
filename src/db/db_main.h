@@ -79,4 +79,10 @@ int db_initialize_database(void);
  */
 void db_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
 
+/**
+ * @brief DB 模块初始化（由 db_proc.c main() 显式调用）
+ * @return 0 成功，-1 失败
+ */
+int db_module_init(void);
+
 #endif // DB_MAIN_H

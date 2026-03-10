@@ -17,7 +17,7 @@ typedef struct cli_view_node cli_view_node_t;
 struct cli_view_node
 {
     char view_name[CLI_CLI_MAX_VIEW_LEN]; // 视图名称，作为唯一标识
-    char prompt_template[CFG_CLI_MAX_VIEW_LEN];
+    char prompt_template[CLI_MAX_VIEW_LEN];
     cli_tree_node_t *cmd_tree; // Command tree for this view
 
     // View hierarchy

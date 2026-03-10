@@ -1,6 +1,8 @@
 # DB API 模块源码
 set(DB_API_SOURCES
     db_rpc.c
+    db_value.c
+    db_serialize.c
 )
 
 # 创建 DB API 共享库

@@ -14,7 +14,6 @@ target_include_directories(route_api PRIVATE
 
 # 链接依赖
 target_link_libraries(route_api PUBLIC
-    route
     dev_api
     ${GLIB_LIBRARIES}
 )

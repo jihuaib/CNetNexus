@@ -27,7 +27,7 @@ typedef struct module
 {
     uint32_t module_id;                 /**< 模块 ID */
     char name[DEV_MODULE_NAME_MAX_LEN]; /**< 模块名称 */
-    void *dl_handle;                    /**< dlopen 句柄（动态加载，可为 NULL） */
+    pid_t child_pid;                    /**< 子进程 PID（多进程模式，0 表示未启动） */
     uint8_t phase;                      /**< 当前初始化阶段 */
     uint16_t port;                      /**< IPC 监听端口（从 module.conf 读取） */
 } dev_module_t;
@@ -67,9 +67,17 @@ dev_module_t *dev_add_module_to_registry(uint32_t module_id, const char *name);
 /**
  * @brief 内部获取模块名称
  * @param module_id 模块 ID
- * @param module_name 输出缓冲区
+ * @param module_name 输出缓冲区（至少 DEV_MODULE_NAME_MAX_LEN 字节）
  * @return 成功返回 0，失败返回 -1
  */
 int dev_get_module_name_inner(uint32_t module_id, char *module_name);
+
+/**
+ * @brief 按名称反向查找模块 ID
+ * @param name      模块名称字符串
+ * @param module_id 输出模块 ID
+ * @return 成功返回 ERRCODE_SUCCESS，未找到返回 ERRCODE_FAIL
+ */
+int dev_get_module_id_by_name(const char *name, uint32_t *module_id);
 
 #endif // DEV_MODULE_H

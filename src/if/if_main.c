@@ -129,7 +129,7 @@ static void if_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     LOG_INFO("Phase 1: MODULE_START — 建立 IPC 连接");
 
-    dev_ipc_connect(ctx, DEV_MODULE_ID_CFG, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CFG);
+    dev_ipc_connect(ctx, DEV_MODULE_ID_CLI, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CLI);
     dev_ipc_connect(ctx, DEV_MODULE_ID_DB, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_DB);
 
     LOG_INFO("已连接到 CFG 和 DB");
@@ -228,17 +228,17 @@ void if_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             return;
 
         /* ---- CLI 消息 ---- */
-        case CFG_MSG_TYPE_CLI:
+        case CLI_MSG_TYPE:
             LOG_DEBUG("Received CLI command message");
             if_cli_handle_message(msg);
             break;
 
-        case CFG_MSG_TYPE_CLI_CONTINUE:
+        case CLI_MSG_TYPE_CONTINUE:
             LOG_DEBUG("Received CLI continue request");
             if_cli_handle_continue(msg);
             break;
 
-        case CFG_MSG_TYPE_SHOW_CONFIG:
+        case CLI_MSG_TYPE_SHOW_CONFIG:
             LOG_DEBUG("Received show current-configuration request");
             if_bdr_show_config(msg);
             return;
@@ -251,19 +251,19 @@ void if_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 }
 
 // ============================================================================
-// .so constructor（dlopen 时自动触发）
+// 模块初始化
 // ============================================================================
 
-__attribute__((constructor)) static void if_so_init(void)
+int if_module_init(void)
 {
-    LOG_INFO(".so 加载，自初始化");
+    LOG_INFO("模块初始化");
 
     /* 创建 IPC 上下文 */
     dev_ipc_context_t *ctx = dev_ipc_init(DEV_MODULE_ID_IF, "if", DEV_MODULE_PORT_IF, if_msg_handler);
     if (!ctx)
     {
         LOG_ERROR("IPC 初始化失败");
-        return;
+        return -1;
     }
 
     /* 初始化本地状态（原 if_on_start 逻辑） */
@@ -288,7 +288,7 @@ __attribute__((constructor)) static void if_so_init(void)
         if (get_exe_dir(exe_dir, sizeof(exe_dir)) != 0)
         {
             LOG_ERROR("Failed to get exe directory");
-            return;
+            return -1;
         }
 
         if_map_path = g_build_filename(exe_dir, "..", "..", "src", "if", "resources", "if_map.conf.local", NULL);
@@ -300,4 +300,5 @@ __attribute__((constructor)) static void if_so_init(void)
         LOG_ERROR("Failed to load interface mapping");
     }
     g_free(if_map_path);
+    return 0;
 }

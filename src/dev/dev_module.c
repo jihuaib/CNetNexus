@@ -7,12 +7,14 @@
 #include "dev_module.h"
 
 #include <dirent.h>
-#include <dlfcn.h>
+#include <errno.h>
 #include <glib.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "db.h"
@@ -25,7 +27,7 @@
 
 /* 前向声明 */
 static gboolean collect_module_callback(gpointer key, gpointer value, gpointer data);
-static void *dev_dlopen_module(const char *so_name);
+static pid_t dev_spawn_module(const char *exe_name, const char *module_name);
 
 /* 全局模块注册表（GLib tree: id -> dev_module_t*） */
 static GTree *g_module_registry = NULL;
@@ -73,6 +75,48 @@ int dev_get_module_name_inner(uint32_t module_id, char *module_name)
     if (module)
     {
         strlcpy(module_name, module->name, DEV_MODULE_NAME_MAX_LEN);
+        return ERRCODE_SUCCESS;
+    }
+
+    return ERRCODE_FAIL;
+}
+
+/* 按名称查找模块 ID 的遍历上下文 */
+typedef struct
+{
+    const char *name;
+    uint32_t module_id;
+    int found;
+} find_by_name_ctx_t;
+
+static gboolean find_module_by_name_cb(gpointer key, gpointer value, gpointer data)
+{
+    (void)key;
+    dev_module_t *module = (dev_module_t *)value;
+    find_by_name_ctx_t *ctx = (find_by_name_ctx_t *)data;
+
+    if (strcmp(module->name, ctx->name) == 0)
+    {
+        ctx->module_id = module->module_id;
+        ctx->found = 1;
+        return TRUE; /* 停止遍历 */
+    }
+    return FALSE;
+}
+
+int dev_get_module_id_by_name(const char *name, uint32_t *module_id)
+{
+    if (!g_module_registry || !name || !module_id)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    find_by_name_ctx_t ctx = {.name = name, .module_id = 0, .found = 0};
+    g_tree_foreach(g_module_registry, find_module_by_name_cb, &ctx);
+
+    if (ctx.found)
+    {
+        *module_id = ctx.module_id;
         return ERRCODE_SUCCESS;
     }
 
@@ -162,25 +206,20 @@ static int dev_scan_dir_for_modules(const char *base_dir)
             continue;
         }
 
-        /* 必须有 so */
-        if (conf.so_name[0] == '\0')
+        /* 必须有 exe */
+        if (conf.exe_name[0] == '\0')
         {
-            LOG_WARN("模块 %s 缺少 so 字段，跳过", conf.name);
+            LOG_WARN("模块 %s 缺少 exe 字段，跳过", conf.name);
             continue;
         }
 
-        LOG_INFO("发现模块: %s (id=%u, so=%s)", conf.name, conf.module_id, conf.so_name);
+        LOG_INFO("发现模块: %s (id=%u, exe=%s)", conf.name, conf.module_id, conf.exe_name);
 
-        /* dlopen 加载共享库 — constructor 自动触发
-         * 使用 RTLD_LAZY 因为模块间存在交叉依赖（如 db→cfg），
-         * 加载时并非所有符号都已可用，实际调用时再解析即可。
-         * constructor 调用 dev_ipc_init() 会把主线程标签改为该模块名，
-         * dlopen 返回后恢复为 "dev"，保持扫描期间日志标签一致。 */
-        void *dl_handle = dev_dlopen_module(conf.so_name);
-        log_set_tag("dev"); /* 恢复：constructor 已把标签改为各自模块名 */
-        if (!dl_handle)
+        /* fork+exec 启动模块子进程 */
+        pid_t child_pid = dev_spawn_module(conf.exe_name, conf.name);
+        if (child_pid < 0)
         {
-            LOG_ERROR("dlopen(%s) 失败: %s", conf.so_name, dlerror());
+            LOG_ERROR("启动模块 %s 失败", conf.name);
             continue;
         }
 
@@ -189,17 +228,15 @@ static int dev_scan_dir_for_modules(const char *base_dir)
         if (!module)
         {
             LOG_ERROR("模块 %s 注册失败", conf.name);
-            dlclose(dl_handle);
+            kill(child_pid, SIGKILL);
             continue;
         }
 
-        /* 设置 DEV 管理的元数据 */
-        module->dl_handle = dl_handle;
-
+        module->child_pid = child_pid;
         module->port = conf.port;
 
         loaded++;
-        LOG_INFO("模块 %s 加载成功 (constructor 已执行)", conf.name);
+        LOG_INFO("模块 %s 已启动 (pid=%d)", conf.name, child_pid);
     }
 
     closedir(dir);
@@ -207,59 +244,106 @@ static int dev_scan_dir_for_modules(const char *base_dir)
 }
 
 /**
- * @brief 优先按名称加载模块，失败后依次尝试生产路径、开发路径
+ * @brief 关闭除 stdin/stdout/stderr 之外的所有文件描述符
  *
- * 查找顺序：
- *   1. 直接 dlopen（利用 LD_LIBRARY_PATH / RPATH 等系统机制）
- *   2. 生产环境：NN_WORK_DIR/lib/
- *   3. 生产环境：/opt/netnexus/lib/（固定路径）
- *   4. 开发环境：可执行文件相对路径 ../lib/ 和 ../../lib/
+ * 在 fork 后的子进程中调用，防止子进程继承 DEV 的 IPC socket 等资源。
  */
-static void *dev_dlopen_module(const char *so_name)
+static void close_inherited_fds(void)
 {
-    void *dl_handle = dlopen(so_name, RTLD_LAZY | RTLD_GLOBAL);
-    if (dl_handle)
+    DIR *dir = opendir("/proc/self/fd");
+    if (!dir)
     {
-        return dl_handle;
-    }
-
-    /* 已提供绝对/相对路径时，不再做目录推断 */
-    if (strchr(so_name, '/') != NULL)
-    {
-        return NULL;
-    }
-
-    char *so_path = NULL;
-
-    /* 生产环境 1: 环境变量 NN_WORK_DIR */
-    const char *work_dir = getenv("NN_WORK_DIR");
-    if (work_dir)
-    {
-        so_path = g_build_filename(work_dir, "lib", so_name, NULL);
-        dl_handle = dlopen(so_path, RTLD_LAZY | RTLD_GLOBAL);
-        g_free(so_path);
-        so_path = NULL;
-        if (dl_handle)
+        /* 回退：按上限遍历 */
+        int max_fd = (int)sysconf(_SC_OPEN_MAX);
+        for (int i = 3; i < max_fd; i++)
         {
-            return dl_handle;
+            close(i);
+        }
+        return;
+    }
+
+    int dir_fd = dirfd(dir);
+    struct dirent *ent;
+    while ((ent = readdir(dir)) != NULL)
+    {
+        if (ent->d_name[0] == '.')
+        {
+            continue;
+        }
+        int fd = atoi(ent->d_name);
+        if (fd > 2 && fd != dir_fd)
+        {
+            close(fd);
         }
     }
+    closedir(dir);
+}
 
-    /* 开发环境: 相对于可执行文件的路径 */
+/**
+ * @brief 解析可执行文件路径并 fork+exec 启动模块子进程
+ *
+ * 查找顺序：
+ *   1. 与 netnexus 同目录（开发环境 build/bin/）
+ *   2. NN_WORK_DIR/bin/（生产环境）
+ */
+static pid_t dev_spawn_module(const char *exe_name, const char *module_name)
+{
+    char exe_path[PATH_MAX] = {0};
+
+    /* 优先：与 DEV 可执行文件同目录 */
     char exe_dir[PATH_MAX];
     if (get_exe_dir(exe_dir, sizeof(exe_dir)) == 0)
     {
-        so_path = g_build_filename(exe_dir, "..", "lib", so_name, NULL);
-        dl_handle = dlopen(so_path, RTLD_LAZY | RTLD_GLOBAL);
-        g_free(so_path);
-        so_path = NULL;
-        if (dl_handle)
+        char *p = g_build_filename(exe_dir, exe_name, NULL);
+        if (access(p, X_OK) == 0)
         {
-            return dl_handle;
+            strlcpy(exe_path, p, sizeof(exe_path));
+        }
+        g_free(p);
+    }
+
+    /* 其次：NN_WORK_DIR/bin/ */
+    if (exe_path[0] == '\0')
+    {
+        const char *work_dir = getenv("NN_WORK_DIR");
+        if (work_dir)
+        {
+            char *p = g_build_filename(work_dir, "bin", exe_name, NULL);
+            if (access(p, X_OK) == 0)
+            {
+                strlcpy(exe_path, p, sizeof(exe_path));
+            }
+            g_free(p);
         }
     }
 
-    return NULL;
+    if (exe_path[0] == '\0')
+    {
+        LOG_ERROR("找不到模块可执行文件: %s", exe_name);
+        return -1;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0)
+    {
+        LOG_ERROR("fork 失败 (%s): %s", module_name, strerror(errno));
+        return -1;
+    }
+
+    if (pid == 0)
+    {
+        /* 子进程：关闭继承自 DEV 的所有 fd，防止端口/资源冲突 */
+        close_inherited_fds();
+
+        char *const args[] = {(char *)exe_name, NULL};
+        execv(exe_path, args);
+
+        /* execv 失败 */
+        fprintf(stderr, "[dev] execv(%s) 失败: %s\n", exe_path, strerror(errno));
+        _exit(127);
+    }
+
+    return pid;
 }
 
 int32_t dev_scan_and_load_modules(void)
@@ -615,22 +699,49 @@ void cleanup_all_modules(void)
         }
     }
 
-    /* Step 2: 逆序销毁每个模块的 IPC context */
+    /* Step 2: 向所有子进程发 SIGTERM，等待优雅退出 */
     for (GList *l = modules; l != NULL; l = l->next)
     {
         dev_module_t *module = (dev_module_t *)l->data;
 
-        if (module->module_id == DEV_MODULE_ID_DEV)
+        if (module->module_id == DEV_MODULE_ID_DEV || module->child_pid <= 0)
         {
             continue;
         }
 
-        LOG_INFO("销毁模块: %s", module->name);
+        LOG_INFO("终止模块进程: %s (pid=%d)", module->name, module->child_pid);
+        kill(module->child_pid, SIGTERM);
+    }
 
-        if (module->dl_handle)
+    /* Step 3: 等待子进程退出（最多 3 秒），超时则 SIGKILL */
+    for (GList *l = modules; l != NULL; l = l->next)
+    {
+        dev_module_t *module = (dev_module_t *)l->data;
+
+        if (module->module_id == DEV_MODULE_ID_DEV || module->child_pid <= 0)
         {
-            dlclose(module->dl_handle);
-            module->dl_handle = NULL;
+            continue;
+        }
+
+        int exited = 0;
+        for (int i = 0; i < 30; i++)
+        {
+            int status;
+            pid_t r = waitpid(module->child_pid, &status, WNOHANG);
+            if (r == module->child_pid)
+            {
+                LOG_INFO("模块 %s (pid=%d) 已退出", module->name, module->child_pid);
+                exited = 1;
+                break;
+            }
+            usleep(100000); /* 100ms */
+        }
+
+        if (!exited)
+        {
+            LOG_WARN("模块 %s (pid=%d) 未响应，强制终止", module->name, module->child_pid);
+            kill(module->child_pid, SIGKILL);
+            waitpid(module->child_pid, NULL, 0);
         }
 
         g_free(module);

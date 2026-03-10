@@ -559,7 +559,7 @@ void bgp_server_stop_session_conns(bgp_session_t *session)
 static void bgp_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     LOG_INFO("Phase 1: MODULE_START — 建立 IPC 连接");
-    dev_ipc_connect(ctx, DEV_MODULE_ID_CFG, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CFG);
+    dev_ipc_connect(ctx, DEV_MODULE_ID_CLI, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CLI);
     dev_ipc_connect(ctx, DEV_MODULE_ID_DB, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_DB);
     LOG_INFO("已连接到 CFG 和 DB");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
@@ -727,15 +727,15 @@ void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         case DEV_IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN:
             bgp_on_shutdown(ctx, msg);
             return;
-        case CFG_MSG_TYPE_CLI:
+        case CLI_MSG_TYPE:
             LOG_DEBUG("Received CLI command message");
             bgp_cli_handle_message(msg);
             break;
-        case CFG_MSG_TYPE_CLI_CONTINUE:
+        case CLI_MSG_TYPE_CONTINUE:
             LOG_DEBUG("Received CLI continue request");
             bgp_cli_handle_continue(msg);
             break;
-        case CFG_MSG_TYPE_SHOW_CONFIG:
+        case CLI_MSG_TYPE_SHOW_CONFIG:
             LOG_DEBUG("Received show current-configuration request");
             bgp_bdr_show_config(msg);
             return;
@@ -747,22 +747,23 @@ void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 }
 
 // ============================================================================
-// .so constructor
+// 模块初始化
 // ============================================================================
 
-__attribute__((constructor)) static void bgp_so_init(void)
+int bgp_module_init(void)
 {
-    LOG_INFO(".so 加载，自初始化");
+    LOG_INFO("模块初始化");
 
     dev_ipc_context_t *ctx = dev_ipc_init(DEV_MODULE_ID_BGP, "bgp", DEV_MODULE_PORT_BGP, bgp_msg_handler);
     if (!ctx)
     {
         LOG_ERROR("IPC 初始化失败");
-        return;
+        return -1;
     }
 
     g_bgp_local = g_malloc0(sizeof(bgp_local_t));
     g_bgp_local->dev_ipc_ctx = ctx;
     g_bgp_local->epoll_fd = DEV_INVALID_FD;
     g_bgp_local->listen_fd = -1;
+    return 0;
 }

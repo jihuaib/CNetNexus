@@ -23,4 +23,10 @@ extern if_local_t *g_if_local;
  */
 void if_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
 
+/**
+ * @brief IF 模块初始化（由 if_proc.c main() 显式调用）
+ * @return 0 成功，-1 失败
+ */
+int if_module_init(void);
+
 #endif // IF_MAIN_H

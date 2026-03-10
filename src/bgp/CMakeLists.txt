@@ -1,4 +1,3 @@
-# BGP module sources
 set(BGP_SOURCES
     bgp_main.c
     bgp_cli.c
@@ -14,25 +13,28 @@ set(BGP_SOURCES
     bgp_protocol.c
 )
 
-# Create shared library for BGP module
-add_library(bgp SHARED ${BGP_SOURCES})
+add_executable(netnexus-bgp bgp_proc.c ${BGP_SOURCES})
 
-# Include directories
-target_include_directories(bgp PRIVATE
-    .
-)
+target_include_directories(netnexus-bgp PRIVATE .)
 
-# Link libraries
-target_link_libraries(bgp PRIVATE
+target_link_libraries(netnexus-bgp PRIVATE
     dev_api
     cli_api
+    db_api
     utils
 )
 
-# Set library version
-set_target_properties(bgp PROPERTIES
-    VERSION 1.0.0
-    SOVERSION 1
+set_target_properties(netnexus-bgp PROPERTIES
+    BUILD_RPATH "${CMAKE_BINARY_DIR}/lib"
+    INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib"
 )
+
+add_custom_command(TARGET netnexus-bgp POST_BUILD
+    COMMAND sudo -n setcap cap_net_admin,cap_net_bind_service=+ep $<TARGET_FILE:netnexus-bgp>
+    || echo "提示：如需绑定 179 端口，请手动执行：sudo setcap cap_net_admin,cap_net_bind_service=+ep $<TARGET_FILE:netnexus-bgp>"
+    COMMENT "授予 netnexus-bgp 端口绑定权限"
+)
+
+install(TARGETS netnexus-bgp RUNTIME DESTINATION bin)
 
 add_subdirectory(lib)

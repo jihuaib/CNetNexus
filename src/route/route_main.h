@@ -22,4 +22,10 @@ extern route_local_t *g_route_local;
  */
 void route_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
 
+/**
+ * @brief Route 模块初始化（由 route_proc.c main() 显式调用）
+ * @return 0 成功，-1 失败
+ */
+int route_module_init(void);
+
 #endif // ROUTE_MAIN_H

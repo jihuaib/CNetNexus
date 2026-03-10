@@ -92,6 +92,36 @@
             </commands>
         </group>
 
+        <!-- show dev ipc <module-name> -->
+        <group group-id="6">
+            <elements>
+                <element type="keyword">
+                    <name>show</name>
+                    <description>Display system information</description>
+                </element>
+                <element type="keyword">
+                    <name>dev</name>
+                    <description>Device and module management</description>
+                </element>
+                <element type="keyword">
+                    <name>ipc</name>
+                    <description>IPC connection information</description>
+                </element>
+                <element cfg-id="1" type="parameter">
+                    <name>&lt;module-name&gt;</name>
+                    <description>Module name (e.g. bgp, cfg, db)</description>
+                    <type>dynamic(string(1-12))</type>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>1 2 3 4</expression>
+                    <views>global</views>
+                </command>
+            </commands>
+        </group>
+
         <!-- dev log-level <level> -->
         <group group-id="4">
             <elements>

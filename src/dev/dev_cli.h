@@ -16,6 +16,7 @@
 #define DEV_CLI_GROUP_ID_SHOW_MODULE 3
 #define DEV_CLI_GROUP_ID_LOG_LEVEL 4
 #define DEV_CLI_GROUP_ID_PING 5
+#define DEV_CLI_GROUP_ID_SHOW_IPC 6
 
 typedef struct dev_cli_out
 {
@@ -35,5 +36,6 @@ typedef struct dev_cli_resp_out
 
 int dev_cli_handle_message(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
 int dev_cli_handle_continue(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
+void dev_cli_handle_query_candidates(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
 
 #endif // DEV_CLI_H

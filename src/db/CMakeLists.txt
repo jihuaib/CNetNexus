@@ -1,4 +1,3 @@
-# DB module sources
 set(DB_SOURCES
     db_main.c
     db_schema.c
@@ -8,18 +7,14 @@ set(DB_SOURCES
     db_ipc_handler.c
 )
 
-# Create shared library for DB module
-add_library(db SHARED ${DB_SOURCES})
+add_executable(netnexus-db db_proc.c ${DB_SOURCES})
 
-# Include directories
-target_include_directories(db PRIVATE
+target_include_directories(netnexus-db PRIVATE
     .
-    lib
     ${SQLite3_INCLUDE_DIRS}
 )
 
-# Link libraries
-target_link_libraries(db PRIVATE
+target_link_libraries(netnexus-db PRIVATE
     dev_api
     cli_api
     ${GLIB_LIBRARIES}
@@ -27,10 +22,11 @@ target_link_libraries(db PRIVATE
     Threads::Threads
 )
 
-# Set library version
-set_target_properties(db PROPERTIES
-    VERSION 1.0.0
-    SOVERSION 1
+set_target_properties(netnexus-db PROPERTIES
+    BUILD_RPATH "${CMAKE_BINARY_DIR}/lib"
+    INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib"
 )
+
+install(TARGETS netnexus-db RUNTIME DESTINATION bin)
 
 add_subdirectory(lib)

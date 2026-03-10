@@ -12,9 +12,9 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "cfg_cli.h"
-#include "cfg_main.h"
 #include "cli.h"
+#include "cli_cfg.h"
+#include "cli_main.h"
 #include "cli_param_type.h"
 #include "db.h"
 #include "dev.h"
@@ -421,7 +421,7 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
 
     /* 创建 CLI 消息 */
     dev_ipc_message_t *msg =
-        dev_ipc_message_create(CFG_MSG_TYPE_CLI, DEV_MODULE_ID_CFG, result->module_id, 0, msg_data, msg_len, g_free);
+        dev_ipc_message_create(CLI_MSG_TYPE, DEV_MODULE_ID_CLI, result->module_id, 0, msg_data, msg_len, g_free);
     if (!msg)
     {
         g_free(msg_data);
@@ -429,9 +429,9 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
     }
 
     /* CFG 模块本地处理（不走 IPC） */
-    if (result->module_id == DEV_MODULE_ID_CFG)
+    if (result->module_id == DEV_MODULE_ID_CLI)
     {
-        cfg_cli_handle(msg, session);
+        cli_handle(msg, session);
         dev_ipc_message_free(msg);
         return ERRCODE_SUCCESS;
     }
@@ -444,7 +444,7 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
 
     while (!done)
     {
-        dev_ipc_message_t *response = dev_ipc_query(g_cfg_local->dev_ipc_ctx, result->module_id, msg, 5000);
+        dev_ipc_message_t *response = dev_ipc_query(g_cli_local->dev_ipc_ctx, result->module_id, msg, 5000);
 
         /* 释放查询消息（原始或 continue） */
         dev_ipc_message_free(msg);
@@ -454,13 +454,13 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
         {
             if (full_output->len == 0)
             {
-                cfg_send_message(session, "Error: Module timed out or failed to respond.\r\n");
+                cli_send_message(session, "Error: Module timed out or failed to respond.\r\n");
             }
             g_string_free(full_output, TRUE);
             return ERRCODE_FAIL;
         }
 
-        if (response->msg_type == CFG_MSG_TYPE_CLI_RESP)
+        if (response->msg_type == CLI_MSG_TYPE_RESP)
         {
             /* 最终响应块 */
             if (response->payload)
@@ -473,7 +473,7 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
             if (payload_empty && result->final_node && result->final_node->target_view_name != NULL)
             {
                 cli_view_node_t *tgt_view =
-                    cli_view_find_by_name(g_cfg_local->view_tree.root, result->final_node->target_view_name);
+                    cli_view_find_by_name(g_cli_local->view_tree.root, result->final_node->target_view_name);
                 if (tgt_view)
                 {
                     uint8_t *new_ctx = NULL;
@@ -499,7 +499,7 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
             dev_ipc_message_free(response);
             done = 1;
         }
-        else if (response->msg_type == CFG_MSG_TYPE_CLI_RESP_MORE)
+        else if (response->msg_type == CLI_MSG_TYPE_RESP_MORE)
         {
             /* 部分响应 - 追加并请求更多 */
             if (response->payload)
@@ -509,8 +509,7 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
             dev_ipc_message_free(response);
 
             /* 发送 CONTINUE 请求下一批 */
-            msg = dev_ipc_message_create(CFG_MSG_TYPE_CLI_CONTINUE, DEV_MODULE_ID_CFG, result->module_id, 0, NULL, 0,
-                                         NULL);
+            msg = dev_ipc_message_create(CLI_MSG_TYPE_CONTINUE, DEV_MODULE_ID_CLI, result->module_id, 0, NULL, 0, NULL);
             if (!msg)
             {
                 done = 1;

@@ -14,7 +14,7 @@ typedef struct dev_module_conf
 {
     uint32_t module_id; /**< module-id 字段 */
     char name[16];      /**< name 字段 */
-    char so_name[64];   /**< so 字段：共享库文件名 */
+    char exe_name[64];  /**< exe 字段：独立进程可执行文件名 */
     uint16_t port;      /**< port 字段：IPC 监听端口，dev连接使用 */
 } dev_module_conf_t;
 

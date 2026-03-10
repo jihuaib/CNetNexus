@@ -337,7 +337,7 @@ netnexus (可执行文件)
 ```
 
 ### 全局变量
-- `g_cfg_local->view_tree`：视图层级的根节点
+- `g_cli_local->view_tree`：视图层级的根节点
 
 ## 命名规范
 
@@ -355,7 +355,7 @@ netnexus (可执行文件)
 
 ### 全局变量命名
 - 全局变量格式：`g_{module}_xxx`
-- 示例：`g_cfg_local`、`g_bgp_running`
+- 示例：`g_cli_local`、`g_bgp_running`
 
 ### 其他命名规则
 - `cmd_*`：命令处理函数（CLI 回调）

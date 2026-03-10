@@ -54,12 +54,16 @@ void dev_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             handle_dev_get_module_name(ctx, msg);
             break;
 
-        case CFG_MSG_TYPE_CLI:
+        case CLI_MSG_TYPE_QUERY_CANDIDATES:
+            dev_cli_handle_query_candidates(ctx, msg);
+            return; /* msg 由 handler 内部释放 */
+
+        case CLI_MSG_TYPE:
             LOG_DEBUG("Received CLI command message");
             dev_cli_handle_message(ctx, msg);
             break;
 
-        case CFG_MSG_TYPE_CLI_CONTINUE:
+        case CLI_MSG_TYPE_CONTINUE:
             LOG_DEBUG("Received CLI continue request");
             dev_cli_handle_continue(ctx, msg);
             break;

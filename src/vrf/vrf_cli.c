@@ -30,7 +30,7 @@
 static void vrf_send_cli_response(dev_ipc_message_t *msg, const char *text)
 {
     char *resp_data = g_strdup(text);
-    dev_ipc_message_t *resp = dev_ipc_message_create(CFG_MSG_TYPE_CLI_RESP, DEV_MODULE_ID_VRF, msg->src_module_id,
+    dev_ipc_message_t *resp = dev_ipc_message_create(CLI_MSG_TYPE_RESP, DEV_MODULE_ID_VRF, msg->src_module_id,
                                                      msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
     if (resp)
     {
@@ -283,7 +283,7 @@ void vrf_cli_handle_query_candidates(dev_ipc_context_t *ctx, dev_ipc_message_t *
     guint payload_len = buf->len;
     uint8_t *payload = g_byte_array_free(buf, FALSE);
 
-    dev_ipc_message_t *resp = dev_ipc_message_create(CFG_MSG_TYPE_QUERY_CANDIDATES_RESP, DEV_MODULE_ID_VRF,
+    dev_ipc_message_t *resp = dev_ipc_message_create(CLI_MSG_TYPE_QUERY_CANDIDATES_RESP, DEV_MODULE_ID_VRF,
                                                      msg->src_module_id, msg->request_id, payload, payload_len, g_free);
     if (resp)
     {

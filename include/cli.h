@@ -19,19 +19,19 @@
 // ============================================================================
 
 /** CLI 命令消息 */
-#define CFG_MSG_TYPE_CLI DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0001)
+#define CLI_MSG_TYPE DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0001)
 /** CLI 响应消息 */
-#define CFG_MSG_TYPE_CLI_RESP DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0002)
+#define CLI_MSG_TYPE_RESP DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0002)
 /** CLI 响应（还有更多数据待发送） */
-#define CFG_MSG_TYPE_CLI_RESP_MORE DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0004)
+#define CLI_MSG_TYPE_RESP_MORE DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0004)
 /** CLI 请求下一批数据 */
-#define CFG_MSG_TYPE_CLI_CONTINUE DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0005)
+#define CLI_MSG_TYPE_CONTINUE DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0005)
 /** 向业务模块请求当前配置（用于 show current-configuration 汇聚） */
-#define CFG_MSG_TYPE_SHOW_CONFIG DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0006)
+#define CLI_MSG_TYPE_SHOW_CONFIG DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0006)
 /** CFG → 模块：查询动态补全候选值（payload: uint32_t cfg_id，网络字节序） */
-#define CFG_MSG_TYPE_QUERY_CANDIDATES DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0007)
+#define CLI_MSG_TYPE_QUERY_CANDIDATES DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0007)
 /** 模块 → CFG：返回候选值列表（payload: "val1\0val2\0\0"，双 null 结尾） */
-#define CFG_MSG_TYPE_QUERY_CANDIDATES_RESP DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0008)
+#define CLI_MSG_TYPE_QUERY_CANDIDATES_RESP DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0008)
 
 /** CLI 响应消息最大长度 */
 #define CLI_MAX_RESP_LEN 4096
@@ -78,25 +78,9 @@
 /** 视图名称最大长度 */
 #define CLI_CLI_MAX_VIEW_LEN 20
 /** 视图最大长度 */
-#define CFG_CLI_MAX_VIEW_LEN 64
+#define CLI_MAX_VIEW_LEN 64
 /** 提示符最大长度 */
 #define CLI_CLI_MAX_PROMPT_LEN 128
-
-// ============================================================================
-// TLV 格式定义
-// ============================================================================
-
-// TLV 消息格式：
-// [组 ID: 4 字节] [元素1: ID(4) + 长度(2) + 值] [元素2: ...] ...
-
-/** TLV 组 ID 大小（字节） */
-#define CFG_TLV_GROUP_ID_SIZE 4
-/** TLV 元素 ID 大小（字节） */
-#define CFG_TLV_ELEMENT_ID_SIZE 4
-/** TLV 长度字段大小（字节） */
-#define CFG_TLV_LENGTH_SIZE 2
-/** TLV 头部大小（元素 ID + 长度） */
-#define CFG_TLV_HEADER_SIZE (CFG_TLV_ELEMENT_ID_SIZE + CFG_TLV_LENGTH_SIZE)
 
 /**
  * 上下文 TLV 类型字节（type 字段）。
