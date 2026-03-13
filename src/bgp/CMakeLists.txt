@@ -8,11 +8,12 @@ set(BGP_SOURCES
     bgp_conn.c
     bgp_pkt.c
     bgp_session.c
-    bgp_rib.c
     bgp_instance.c
     bgp_vrf.c
     bgp_protocol.c
 )
+
+add_subdirectory(lib)
 
 add_executable(netnexus-bgp bgp_proc.c ${BGP_SOURCES})
 
@@ -23,6 +24,7 @@ target_link_libraries(netnexus-bgp PRIVATE
     cli_api
     db_api
     utils
+    bgp_rib
     bgp_parse
 )
 
@@ -38,5 +40,3 @@ add_custom_command(TARGET netnexus-bgp POST_BUILD
 )
 
 install(TARGETS netnexus-bgp RUNTIME DESTINATION bin)
-
-add_subdirectory(lib)

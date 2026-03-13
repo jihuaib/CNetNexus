@@ -46,33 +46,8 @@
             </commands>
         </group>
 
-        <!-- show bgp peer -->
-        <group group-id="2">
-            <elements>
-                <element type="keyword">
-                    <name>show</name>
-                    <description>Display system information</description>
-                </element>
-                <element type="keyword">
-                    <name>bgp</name>
-                    <description>BGP protocol</description>
-                </element>
-                <element cfg-id="1" type="keyword">
-                    <name>peer</name>
-                    <description>BGP peer</description>
-                </element>
-            </elements>
-
-            <commands>
-                <command>
-                    <expression>1 2 [ 3 ]</expression>
-                    <views>global</views>
-                </command>
-            </commands>
-        </group>
-
         <!-- neighbor <ip> as <as-num> / no neighbor <ip> -->
-        <group group-id="3">
+        <group group-id="2">
             <elements>
                 <element type="keyword">
                     <name>no</name>
@@ -113,7 +88,7 @@
         </group>
 
         <!-- af ipv4-unicast / no af ipv4-unicast -->
-        <group group-id="4">
+        <group group-id="3">
             <elements>
                 <element type="keyword">
                     <name>no</name>
@@ -162,7 +137,7 @@
         </group>
 
         <!-- neighbor <ip> enable / no neighbor <ip> (in address-family view) -->
-        <group group-id="5">
+        <group group-id="4">
             <elements>
                 <element type="keyword">
                     <name>no</name>
@@ -197,7 +172,7 @@
             </commands>
         </group>
         <!-- router-id <ip-address> / no router-id (在 BGP 视图下) -->
-        <group group-id="6">
+        <group group-id="5">
             <elements>
                 <element type="keyword">
                     <name>no</name>
@@ -228,7 +203,7 @@
             </commands>
         </group>
         <!-- timer connect-retry <seconds> / no timer connect-retry (BGP 视图) -->
-        <group group-id="8">
+        <group group-id="6">
             <elements>
                 <element type="keyword">
                     <name>no</name>
@@ -299,7 +274,7 @@
             </commands>
         </group>
         <!-- neighbor <ip> open-capability as4|route-refresh / no neighbor <ip> open-capability ... -->
-        <group group-id="9">
+        <group group-id="8">
             <elements>
                 <element type="keyword">
                     <name>no</name>
@@ -351,8 +326,8 @@
                 </command>
             </commands>
         </group>
-        <!-- show bgp neighbor af-ipv4u <ip-address> -->
-        <group group-id="10">
+        <!-- show bgp neighbor af ipv4-unicast|ipv6-unicast [<ip-address>] -->
+        <group group-id="9">
             <elements>
                 <element type="keyword">
                     <name>show</name>
@@ -366,11 +341,19 @@
                     <name>neighbor</name>
                     <description>BGP neighbor</description>
                 </element>
-                <element cfg-id="1" type="keyword">
-                    <name>af-ipv4u</name>
-                    <description>IPv4 unicast address family context</description>
+                <element type="keyword">
+                    <name>af</name>
+                    <description>Address-family selector</description>
                 </element>
-                <element cfg-id="2" type="parameter">
+                <element cfg-id="1" type="keyword">
+                    <name>ipv4-unicast</name>
+                    <description>IPv4 unicast address family</description>
+                </element>
+                <element cfg-id="2" type="keyword">
+                    <name>ipv6-unicast</name>
+                    <description>IPv6 unicast address family</description>
+                </element>
+                <element cfg-id="3" type="parameter">
                     <name>&lt;ip-address&gt;</name>
                     <type>ip</type>
                     <description>Neighbor IP address</description>
@@ -378,14 +361,65 @@
             </elements>
 
             <commands>
-                <!-- show bgp neighbor af-ipv4u（显示所有邻居摘要） -->
-                <command>
-                    <expression>1 2 3 4</expression>
-                    <views>global</views>
-                </command>
-                <!-- show bgp neighbor af-ipv4u <ip>（显示指定邻居详情） -->
+                <!-- show bgp neighbor af ipv4-unicast（显示所有邻居摘要） -->
                 <command>
                     <expression>1 2 3 4 5</expression>
+                    <views>global</views>
+                </command>
+                <!-- show bgp neighbor af ipv6-unicast（显示所有邻居摘要） -->
+                <command>
+                    <expression>1 2 3 4 6</expression>
+                    <views>global</views>
+                </command>
+                <!-- show bgp neighbor af ipv4-unicast <ip>（显示指定邻居详情） -->
+                <command>
+                    <expression>1 2 3 4 5 7</expression>
+                    <views>global</views>
+                </command>
+                <!-- show bgp neighbor af ipv6-unicast <ip>（显示指定邻居详情） -->
+                <command>
+                    <expression>1 2 3 4 6 7</expression>
+                    <views>global</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- show bgp route af ipv4-unicast|ipv6-unicast -->
+        <group group-id="10">
+            <elements>
+                <element type="keyword">
+                    <name>show</name>
+                    <description>Display system information</description>
+                </element>
+                <element type="keyword">
+                    <name>bgp</name>
+                    <description>BGP protocol</description>
+                </element>
+                <element type="keyword">
+                    <name>route</name>
+                    <description>BGP routes</description>
+                </element>
+                <element type="keyword">
+                    <name>af</name>
+                    <description>Address-family selector</description>
+                </element>
+                <element cfg-id="1" type="keyword">
+                    <name>ipv4-unicast</name>
+                    <description>Show IPv4 unicast routes</description>
+                </element>
+                <element cfg-id="2" type="keyword">
+                    <name>ipv6-unicast</name>
+                    <description>Show IPv6 unicast routes</description>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>1 2 3 4 5</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 6</expression>
                     <views>global</views>
                 </command>
             </commands>

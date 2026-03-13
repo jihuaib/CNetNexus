@@ -13,7 +13,10 @@
 /** SBMP CLI group_id 定义（与 commands.xml 中 group-id 一致） */
 #define SBMP_CLI_GROUP_ID_BMP_SERVER 1  /**< bmp-server 进入视图命令 */
 #define SBMP_CLI_GROUP_ID_SERVER_PORT 2 /**< server port 配置命令 */
-#define SBMP_CLI_GROUP_ID_SHOW 3        /**< show bmp server 命令 */
+#define SBMP_CLI_GROUP_ID_SHOW_STATUS 3 /**< show bmp-server */
+#define SBMP_CLI_GROUP_ID_SHOW_CLIENT 4 /**< show bmp-server client [id] */
+#define SBMP_CLI_GROUP_ID_SHOW_PEER 5   /**< show bmp-server peer ... */
+#define SBMP_CLI_GROUP_ID_SHOW_ROUTE 6  /**< show bmp-server route ... */
 
 /**
  * @brief 处理来自 CFG 模块的 CLI 命令消息

@@ -1,18 +1,18 @@
 # SBMP (BMP Server) CLI Documentation
 
-This document describes the BMP server commands provided by the SBMP module (module-id: 8).
+This document describes BMP server commands provided by the SBMP module (module-id: 8).
 
 ## 1. Configuration Commands (config view)
 
 ### 1.1 `bmp-server`
-Enters the BMP server configuration view.
+Enters BMP server configuration view.
 
 - **Usage**: `bmp-server`
 - **View**: `config`
-- **Transition**: Switches to the `config-bmp-server` view.
+- **Transition**: switches to `config-bmp-server`
 
 ### 1.2 `no bmp-server`
-Removes BMP server configuration, stops listening, and clears the server port setting.
+Removes BMP server configuration and stops listener.
 
 - **Usage**: `no bmp-server`
 - **View**: `config`
@@ -20,26 +20,37 @@ Removes BMP server configuration, stops listening, and clears the server port se
 ## 2. BMP Server View Commands (`config-bmp-server`)
 
 ### 2.1 `server port <port-number>`
-Configures the BMP server listening port and starts the listener. If a previous port was configured, the old listener is stopped first.
+Configures BMP server listening port and starts listener.
 
 - **Usage**: `server port <port-number>`
 - **View**: `config-bmp-server`
 - **Parameters**:
-    - `<port-number>`: Listening port number (`uint`, 1-65535).
+    - `<port-number>`: listening port (`uint`, 1-65535)
 
 ### 2.2 `no server port`
-Stops the BMP server listener and removes the port configuration.
+Stops listener and removes configured port.
 
 - **Usage**: `no server port`
 - **View**: `config-bmp-server`
 
 ## 3. Show Commands (global view)
 
-### 3.1 `show bmp server`
-Displays the current BMP server status, including configured port and running state.
+### 3.1 `show bmp-server`
+Shows BMP server status and runtime totals.
 
-- **Usage**: `show bmp server`
-- **View**: `global` (available in all views)
+### 3.2 `show bmp-server client [<client-id>]`
+Shows BMP client summary or one client detail.
+
+### 3.3 `show bmp-server peer [client <client-id>] [peer <peer-id>]`
+Shows peer runtime state with optional client/peer filters.
+
+### 3.4 `show bmp-server route af { ipv4-unicast | ipv6-unicast } [client <client-id>] [peer <peer-id>] [policy { pre | post | loc-rib }]`
+Shows in-memory mirrored routes with optional client/peer filters.
+
+- `policy pre`: pre-policy route view (Adj-RIB-In)
+- `policy post`: post-policy route view
+- `policy loc-rib`: Loc-RIB route view
+- policy omitted: show pre/post/loc-rib
 
 ## 4. View Contexts
 

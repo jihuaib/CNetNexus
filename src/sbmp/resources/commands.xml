@@ -69,7 +69,7 @@
             </commands>
         </group>
 
-        <!-- Group 3: show bmp server (global 视图) -->
+        <!-- Group 3: show bmp-server -->
         <group group-id="3">
             <elements>
                 <element type="keyword">
@@ -77,18 +77,298 @@
                     <description>Display information</description>
                 </element>
                 <element type="keyword">
-                    <name>bmp</name>
-                    <description>BGP Monitoring Protocol</description>
-                </element>
-                <element type="keyword">
-                    <name>server</name>
+                    <name>bmp-server</name>
                     <description>BMP server status</description>
                 </element>
             </elements>
 
             <commands>
                 <command>
+                    <expression>1 2</expression>
+                    <views>global</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- Group 4: show bmp-server client [<client-id>] -->
+        <group group-id="4">
+            <elements>
+                <element type="keyword">
+                    <name>show</name>
+                    <description>Display information</description>
+                </element>
+                <element type="keyword">
+                    <name>bmp-server</name>
+                    <description>BMP server status</description>
+                </element>
+                <element cfg-id="1" type="keyword">
+                    <name>client</name>
+                    <description>BMP clients</description>
+                </element>
+                <element cfg-id="2" type="parameter">
+                    <name>&lt;client-id&gt;</name>
+                    <type>string</type>
+                    <description>BMP client ID (source IP)</description>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
                     <expression>1 2 3</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4</expression>
+                    <views>global</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- Group 5: show bmp-server peer [client <id>] [peer <ip>] -->
+        <group group-id="5">
+            <elements>
+                <element type="keyword">
+                    <name>show</name>
+                    <description>Display information</description>
+                </element>
+                <element type="keyword">
+                    <name>bmp-server</name>
+                    <description>BMP server status</description>
+                </element>
+                <element type="keyword">
+                    <name>peer</name>
+                    <description>BMP peers</description>
+                </element>
+                <element cfg-id="1" type="keyword">
+                    <name>client</name>
+                    <description>Filter by BMP client</description>
+                </element>
+                <element cfg-id="2" type="parameter">
+                    <name>&lt;client-id&gt;</name>
+                    <type>string</type>
+                    <description>BMP client ID (source IP)</description>
+                </element>
+                <element cfg-id="3" type="keyword">
+                    <name>peer</name>
+                    <description>Filter by peer IP</description>
+                </element>
+                <element cfg-id="4" type="parameter">
+                    <name>&lt;peer-ip&gt;</name>
+                    <type>string</type>
+                    <description>Peer ID (IP or loc-rib key)</description>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 5</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 6 7</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 5 6 7</expression>
+                    <views>global</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- Group 6: show bmp-server route af ... [client <id>] [peer <ip>] [policy pre|post] -->
+        <group group-id="6">
+            <elements>
+                <element type="keyword">
+                    <name>show</name>
+                    <description>Display information</description>
+                </element>
+                <element type="keyword">
+                    <name>bmp-server</name>
+                    <description>BMP server status</description>
+                </element>
+                <element type="keyword">
+                    <name>route</name>
+                    <description>BMP mirrored routes</description>
+                </element>
+                <element type="keyword">
+                    <name>af</name>
+                    <description>Address-family selector</description>
+                </element>
+                <element cfg-id="1" type="keyword">
+                    <name>ipv4-unicast</name>
+                    <description>IPv4 unicast routes</description>
+                </element>
+                <element cfg-id="2" type="keyword">
+                    <name>ipv6-unicast</name>
+                    <description>IPv6 unicast routes</description>
+                </element>
+                <element type="keyword">
+                    <name>client</name>
+                    <description>Filter by BMP client</description>
+                </element>
+                <element cfg-id="3" type="parameter">
+                    <name>&lt;client-id&gt;</name>
+                    <type>string</type>
+                    <description>BMP client ID (source IP)</description>
+                </element>
+                <element type="keyword">
+                    <name>peer</name>
+                    <description>Filter by peer IP</description>
+                </element>
+                <element cfg-id="4" type="parameter">
+                    <name>&lt;peer-ip&gt;</name>
+                    <type>string</type>
+                    <description>Peer ID (IP or loc-rib key)</description>
+                </element>
+                <element type="keyword">
+                    <name>policy</name>
+                    <description>Route policy view</description>
+                </element>
+                <element cfg-id="5" type="keyword">
+                    <name>pre</name>
+                    <description>Pre-policy (Adj-RIB-In)</description>
+                </element>
+                <element cfg-id="6" type="keyword">
+                    <name>post</name>
+                    <description>Post-policy routes</description>
+                </element>
+                <element cfg-id="7" type="keyword">
+                    <name>loc-rib</name>
+                    <description>Loc-RIB routes</description>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>1 2 3 4 5</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 6</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 5 7 8</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 6 7 8</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 5 9 10</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 6 9 10</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 5 7 8 9 10</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 6 7 8 9 10</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 5 11 12</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 6 11 12</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 5 11 13</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 6 11 13</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 5 11 14</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 6 11 14</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 5 7 8 11 12</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 6 7 8 11 12</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 5 7 8 11 13</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 6 7 8 11 13</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 5 7 8 11 14</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 6 7 8 11 14</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 5 9 10 11 12</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 6 9 10 11 12</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 5 9 10 11 13</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 6 9 10 11 13</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 5 9 10 11 14</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 6 9 10 11 14</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 5 7 8 9 10 11 12</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 6 7 8 9 10 11 12</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 5 7 8 9 10 11 13</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 6 7 8 9 10 11 13</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 5 7 8 9 10 11 14</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 6 7 8 9 10 11 14</expression>
                     <views>global</views>
                 </command>
             </commands>

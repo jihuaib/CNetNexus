@@ -51,4 +51,24 @@ set_target_properties(bgp_parse PROPERTIES
     SOVERSION 1
 )
 
-install(TARGETS bgp_parse LIBRARY DESTINATION lib)
+# BGP RIB 内存库（供 bgp / sbmp / 测试复用）
+set(BGP_RIB_SOURCES
+    ${CMAKE_SOURCE_DIR}/src/bgp/bgp_rib.c
+)
+
+add_library(bgp_rib SHARED ${BGP_RIB_SOURCES})
+
+target_include_directories(bgp_rib
+    PUBLIC ${CMAKE_SOURCE_DIR}/include
+)
+
+target_link_libraries(bgp_rib PUBLIC
+    ${GLIB_LIBRARIES}
+)
+
+set_target_properties(bgp_rib PROPERTIES
+    VERSION 1.0.0
+    SOVERSION 1
+)
+
+install(TARGETS bgp_parse bgp_rib LIBRARY DESTINATION lib)

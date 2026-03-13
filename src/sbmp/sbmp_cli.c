@@ -8,7 +8,9 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
+#include "bgp_rib.h"
 #include "cli.h"
 #include "db.h"
 #include "dev.h"
@@ -34,6 +36,121 @@ static void sbmp_send_cli_response(dev_ipc_message_t *msg, const char *text)
 }
 
 // ============================================================================
+// 文本格式化辅助
+// ============================================================================
+
+static void fmt_time_usec(gint64 usec, char *buf, size_t sz)
+{
+    if (!buf || sz == 0)
+    {
+        return;
+    }
+
+    if (usec <= 0)
+    {
+        snprintf(buf, sz, "-");
+        return;
+    }
+
+    time_t sec = (time_t)(usec / 1000000);
+    struct tm tmv;
+    if (!localtime_r(&sec, &tmv))
+    {
+        snprintf(buf, sz, "-");
+        return;
+    }
+
+    strftime(buf, sz, "%Y-%m-%d %H:%M:%S", &tmv);
+}
+
+static const char *bgp_origin_str(bgp_origin_t origin)
+{
+    switch (origin)
+    {
+        case BGP_ORIGIN_IGP:
+            return "IGP";
+        case BGP_ORIGIN_EGP:
+            return "EGP";
+        case BGP_ORIGIN_INCOMPLETE:
+            return "INCOMPLETE";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+static void bgp_nexthop_to_str(const bgp_nexthop_t *nexthop, char *buf, size_t sz)
+{
+    if (!buf || sz == 0)
+    {
+        return;
+    }
+
+    char global[64] = "-";
+    if (nexthop && nexthop->global.family != 0)
+    {
+        net_addr_to_str(&nexthop->global, global, sizeof(global));
+    }
+
+    if (nexthop && nexthop->has_link_local && nexthop->link_local.family != 0)
+    {
+        char ll[64];
+        net_addr_to_str(&nexthop->link_local, ll, sizeof(ll));
+        snprintf(buf, sz, "%s (ll:%s)", global, ll);
+        return;
+    }
+
+    snprintf(buf, sz, "%s", global);
+}
+
+static const char *sbmp_policy_str(sbmp_route_policy_t policy)
+{
+    if (policy == SBMP_ROUTE_POLICY_POST)
+    {
+        return "post";
+    }
+    if (policy == SBMP_ROUTE_POLICY_LOC_RIB)
+    {
+        return "loc-rib";
+    }
+    return "pre";
+}
+
+static const bgp_rib_t *sbmp_client_rib(const sbmp_client_t *client, uint16_t afi, uint8_t safi,
+                                        sbmp_route_policy_t policy)
+{
+    if (!client || safi != BGP_SAFI_UNICAST)
+    {
+        return NULL;
+    }
+
+    if (afi == BGP_AFI_IPV4)
+    {
+        if (policy == SBMP_ROUTE_POLICY_POST)
+        {
+            return client->rib_v4u_post;
+        }
+        if (policy == SBMP_ROUTE_POLICY_LOC_RIB)
+        {
+            return client->rib_v4u_loc_rib;
+        }
+        return client->rib_v4u_pre;
+    }
+    if (afi == BGP_AFI_IPV6)
+    {
+        if (policy == SBMP_ROUTE_POLICY_POST)
+        {
+            return client->rib_v6u_post;
+        }
+        if (policy == SBMP_ROUTE_POLICY_LOC_RIB)
+        {
+            return client->rib_v6u_loc_rib;
+        }
+        return client->rib_v6u_pre;
+    }
+    return NULL;
+}
+
+// ============================================================================
 // 命令处理函数
 // ============================================================================
 
@@ -46,7 +163,6 @@ static int handle_bmp_server(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
     gboolean is_no = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
 
-    /* 消费 TLV 条目（本命令无参数，仅清空解析器） */
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
     {
@@ -55,12 +171,10 @@ static int handle_bmp_server(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 
     if (!is_no)
     {
-        /* bmp-server：进入视图由 CLI 框架处理，此处只需回复 OK */
         sbmp_send_cli_response(msg, "");
         return ERRCODE_SUCCESS;
     }
 
-    /* no bmp-server：清除 server port 配置并停止监听 */
     sbmp_listen_stop();
     sbmp_db_del_server_port(g_sbmp_local->dev_ipc_ctx);
     g_sbmp_local->server_port = 0;
@@ -96,7 +210,6 @@ static int handle_server_port(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 
     if (is_no)
     {
-        /* no server port：停止监听并删除配置 */
         if (g_sbmp_local->server_port == 0)
         {
             sbmp_send_cli_response(msg, "");
@@ -109,7 +222,6 @@ static int handle_server_port(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         return ERRCODE_SUCCESS;
     }
 
-    /* server port <port>：参数校验 */
     if (port == 0 || port > 65535)
     {
         sbmp_send_cli_response(msg, "SBMP Error: Invalid port number (1-65535).\r\n");
@@ -118,21 +230,22 @@ static int handle_server_port(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 
     if (g_sbmp_local->server_port == (uint16_t)port)
     {
-        /* 同配置短路 */
         sbmp_send_cli_response(msg, "");
         return ERRCODE_SUCCESS;
     }
 
-    /* 若已在其他端口监听，先停止 */
     if (g_sbmp_local->server_port != 0)
     {
         sbmp_listen_stop();
     }
 
-    /* 启动新端口监听 */
     sbmp_listen_start((uint16_t)port);
+    if (g_sbmp_local->listen_fd < 0 || g_sbmp_local->server_port != (uint16_t)port)
+    {
+        sbmp_send_cli_response(msg, "SBMP Error: Failed to start BMP server listener.\r\n");
+        return ERRCODE_FAIL;
+    }
 
-    /* 写入数据库 */
     if (sbmp_db_set_server_port(g_sbmp_local->dev_ipc_ctx, (uint16_t)port) != 0)
     {
         sbmp_send_cli_response(msg, "SBMP Error: Database write failed.\r\n");
@@ -146,13 +259,10 @@ static int handle_server_port(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 }
 
 /**
- * @brief 处理 "show bmp server" 命令
- *
- * group_id=3：展示当前 BMP server 运行状态
+ * @brief 处理 "show bmp-server" 命令
  */
 static int handle_show_bmp_server(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
-    /* 消费 TLV 条目 */
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
     {
@@ -162,18 +272,543 @@ static int handle_show_bmp_server(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
     char buf[CLI_MAX_RESP_LEN];
     size_t off = 0;
 
+    uint32_t client_total = 0;
+    uint32_t client_connected = 0;
+    uint32_t peer_total = 0;
+    uint32_t routes_pre_v4 = 0;
+    uint32_t routes_pre_v6 = 0;
+    uint32_t routes_post_v4 = 0;
+    uint32_t routes_post_v6 = 0;
+    uint32_t routes_loc_rib_v4 = 0;
+    uint32_t routes_loc_rib_v6 = 0;
+
+    sbmp_runtime_lock();
+    if (g_sbmp_local->client_hash)
+    {
+        client_total = (uint32_t)g_hash_table_size(g_sbmp_local->client_hash);
+
+        GHashTableIter iter;
+        gpointer key, val;
+        g_hash_table_iter_init(&iter, g_sbmp_local->client_hash);
+        while (g_hash_table_iter_next(&iter, &key, &val))
+        {
+            (void)key;
+            sbmp_client_t *c = (sbmp_client_t *)val;
+            if (c->connected)
+            {
+                client_connected++;
+            }
+            peer_total += (uint32_t)g_hash_table_size(c->peer_hash);
+            routes_pre_v4 += bgp_rib_route_count(c->rib_v4u_pre);
+            routes_pre_v6 += bgp_rib_route_count(c->rib_v6u_pre);
+            routes_post_v4 += bgp_rib_route_count(c->rib_v4u_post);
+            routes_post_v6 += bgp_rib_route_count(c->rib_v6u_post);
+            routes_loc_rib_v4 += bgp_rib_route_count(c->rib_v4u_loc_rib);
+            routes_loc_rib_v6 += bgp_rib_route_count(c->rib_v6u_loc_rib);
+        }
+    }
+    sbmp_runtime_unlock();
+
     CLI_BUF_APPEND(buf, sizeof(buf), off, "BMP Server Status\r\n");
     CLI_BUF_APPEND(buf, sizeof(buf), off, "-----------------\r\n");
 
     if (g_sbmp_local->server_port == 0)
     {
-        CLI_BUF_APPEND(buf, sizeof(buf), off, "  State : not configured\r\n");
+        CLI_BUF_APPEND(buf, sizeof(buf), off, "  State            : not configured\r\n");
     }
     else
     {
         const char *state = (g_sbmp_local->listen_fd >= 0) ? "running" : "stopped";
-        CLI_BUF_APPEND(buf, sizeof(buf), off, "  Port  : %u\r\n", g_sbmp_local->server_port);
-        CLI_BUF_APPEND(buf, sizeof(buf), off, "  State : %s\r\n", state);
+        CLI_BUF_APPEND(buf, sizeof(buf), off, "  Port             : %u\r\n", g_sbmp_local->server_port);
+        CLI_BUF_APPEND(buf, sizeof(buf), off, "  State            : %s\r\n", state);
+    }
+
+    CLI_BUF_APPEND(buf, sizeof(buf), off, "  Clients(total/up): %u/%u\r\n", client_total, client_connected);
+    CLI_BUF_APPEND(buf, sizeof(buf), off, "  Peers(total)     : %u\r\n", peer_total);
+    CLI_BUF_APPEND(buf, sizeof(buf), off, "  Routes pre(v4/v6): %u/%u\r\n", routes_pre_v4, routes_pre_v6);
+    CLI_BUF_APPEND(buf, sizeof(buf), off, "  Routes post(v4/v6): %u/%u\r\n", routes_post_v4, routes_post_v6);
+    CLI_BUF_APPEND(buf, sizeof(buf), off, "  Routes loc-rib(v4/v6): %u/%u\r\n", routes_loc_rib_v4, routes_loc_rib_v6);
+
+    sbmp_send_cli_response(msg, buf);
+    return ERRCODE_SUCCESS;
+}
+
+/**
+ * @brief 处理 "show bmp-server client [<client-id>]"
+ *
+ * group_id=4, cfg_id: 2=client-id
+ */
+static int handle_show_bmp_client(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    char client_id[SBMP_CLIENT_ID_MAX] = {0};
+
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (entry.cfg_id == 2)
+        {
+            const char *s = cli_tlv_entry_get_text(&entry);
+            if (s)
+            {
+                snprintf(client_id, sizeof(client_id), "%s", s);
+            }
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    char buf[CLI_MAX_RESP_LEN];
+    size_t off = 0;
+
+    sbmp_runtime_lock();
+
+    if (client_id[0] != '\0')
+    {
+        sbmp_client_t *c = sbmp_runtime_find_client_locked(client_id);
+        if (!c)
+        {
+            sbmp_runtime_unlock();
+            sbmp_send_cli_response(msg, "SBMP Error: BMP client not found.\r\n");
+            return ERRCODE_FAIL;
+        }
+
+        char t_conn[32], t_active[32];
+        fmt_time_usec(c->connected_at_usec, t_conn, sizeof(t_conn));
+        fmt_time_usec(c->last_active_usec, t_active, sizeof(t_active));
+
+        CLI_BUF_APPEND(buf, sizeof(buf), off, "BMP Client: %s\r\n", c->client_id);
+        CLI_BUF_APPEND(buf, sizeof(buf), off, "----------------------------------------\r\n");
+        CLI_BUF_APPEND(buf, sizeof(buf), off, "  Source          : %s:%u\r\n", c->source_ip, c->source_port);
+        CLI_BUF_APPEND(buf, sizeof(buf), off, "  Connected       : %s\r\n", c->connected ? "yes" : "no");
+        CLI_BUF_APPEND(buf, sizeof(buf), off, "  Connected-At    : %s\r\n", t_conn);
+        CLI_BUF_APPEND(buf, sizeof(buf), off, "  Last-Active     : %s\r\n", t_active);
+        CLI_BUF_APPEND(buf, sizeof(buf), off, "  Peers           : %u\r\n", (uint32_t)g_hash_table_size(c->peer_hash));
+        CLI_BUF_APPEND(buf, sizeof(buf), off, "  RIB pre  IPv4   : heads=%u routes=%u\r\n",
+                       bgp_rib_head_count(c->rib_v4u_pre), bgp_rib_route_count(c->rib_v4u_pre));
+        CLI_BUF_APPEND(buf, sizeof(buf), off, "  RIB post IPv4   : heads=%u routes=%u\r\n",
+                       bgp_rib_head_count(c->rib_v4u_post), bgp_rib_route_count(c->rib_v4u_post));
+        CLI_BUF_APPEND(buf, sizeof(buf), off, "  RIB loc-rib IPv4: heads=%u routes=%u\r\n",
+                       bgp_rib_head_count(c->rib_v4u_loc_rib), bgp_rib_route_count(c->rib_v4u_loc_rib));
+        CLI_BUF_APPEND(buf, sizeof(buf), off, "  RIB pre  IPv6   : heads=%u routes=%u\r\n",
+                       bgp_rib_head_count(c->rib_v6u_pre), bgp_rib_route_count(c->rib_v6u_pre));
+        CLI_BUF_APPEND(buf, sizeof(buf), off, "  RIB post IPv6   : heads=%u routes=%u\r\n",
+                       bgp_rib_head_count(c->rib_v6u_post), bgp_rib_route_count(c->rib_v6u_post));
+        CLI_BUF_APPEND(buf, sizeof(buf), off, "  RIB loc-rib IPv6: heads=%u routes=%u\r\n",
+                       bgp_rib_head_count(c->rib_v6u_loc_rib), bgp_rib_route_count(c->rib_v6u_loc_rib));
+        CLI_BUF_APPEND(buf, sizeof(buf), off, "  BMP Msg(total/err): %llu/%llu\r\n", (unsigned long long)c->msg_total,
+                       (unsigned long long)c->msg_parse_err);
+        CLI_BUF_APPEND(buf, sizeof(buf), off, "  Msg RM(total/pre/post/loc): %llu/%llu/%llu/%llu\r\n",
+                       (unsigned long long)c->route_monitor_msgs, (unsigned long long)c->route_monitor_pre_msgs,
+                       (unsigned long long)c->route_monitor_post_msgs,
+                       (unsigned long long)c->route_monitor_loc_rib_msgs);
+        CLI_BUF_APPEND(buf, sizeof(buf), off, "  Msg UPDATE(pre/post/loc): %llu/%llu/%llu\r\n",
+                       (unsigned long long)c->update_pre_msgs, (unsigned long long)c->update_post_msgs,
+                       (unsigned long long)c->update_loc_rib_msgs);
+        CLI_BUF_APPEND(buf, sizeof(buf), off, "  Msg UP/DOWN/STAT: %llu/%llu/%llu\r\n",
+                       (unsigned long long)c->peer_up_msgs, (unsigned long long)c->peer_down_msgs,
+                       (unsigned long long)c->stats_report_msgs);
+    }
+    else
+    {
+        CLI_BUF_APPEND(buf, sizeof(buf), off, "BMP Clients\r\n");
+        CLI_BUF_APPEND(buf, sizeof(buf), off, "-----------\r\n");
+        CLI_BUF_APPEND(buf, sizeof(buf), off, "  %-18s %-10s %-6s %-5s %-14s %-14s\r\n", "Client-ID", "State", "Peers",
+                       "FD", "V4(p/q/l)", "V6(p/q/l)");
+        CLI_BUF_APPEND(buf, sizeof(buf), off, "  %-18s %-10s %-6s %-5s %-14s %-14s\r\n", "------------------",
+                       "----------", "------", "-----", "--------------", "--------------");
+
+        GHashTableIter iter;
+        gpointer key, val;
+        g_hash_table_iter_init(&iter, g_sbmp_local->client_hash);
+        while (g_hash_table_iter_next(&iter, &key, &val))
+        {
+            (void)key;
+            sbmp_client_t *c = (sbmp_client_t *)val;
+            CLI_BUF_APPEND(buf, sizeof(buf), off, "  %-18s %-10s %-6u %-5d %3u/%-3u/%-3u %3u/%-3u/%-3u\r\n",
+                           c->client_id, c->connected ? "connected" : "down", (uint32_t)g_hash_table_size(c->peer_hash),
+                           c->fd, bgp_rib_route_count(c->rib_v4u_pre), bgp_rib_route_count(c->rib_v4u_post),
+                           bgp_rib_route_count(c->rib_v4u_loc_rib), bgp_rib_route_count(c->rib_v6u_pre),
+                           bgp_rib_route_count(c->rib_v6u_post), bgp_rib_route_count(c->rib_v6u_loc_rib));
+        }
+    }
+
+    sbmp_runtime_unlock();
+
+    sbmp_send_cli_response(msg, buf);
+    return ERRCODE_SUCCESS;
+}
+
+static void append_peer_rows(char *buf, size_t buf_size, size_t *off, const sbmp_client_t *client,
+                             const char *peer_filter, uint32_t *listed)
+{
+    GHashTableIter iter;
+    gpointer key, val;
+    g_hash_table_iter_init(&iter, client->peer_hash);
+
+    while (g_hash_table_iter_next(&iter, &key, &val))
+    {
+        (void)key;
+        const sbmp_peer_t *p = (const sbmp_peer_t *)val;
+        if (peer_filter && peer_filter[0] != '\0' && strcmp(peer_filter, p->peer_ip) != 0)
+        {
+            continue;
+        }
+
+        char t_change[32];
+        fmt_time_usec(p->last_change_usec, t_change, sizeof(t_change));
+        CLI_BUF_APPEND(buf, buf_size, *off, "  %-16s %-17s %-10u %-10s %-8llu %-8llu\r\n", client->client_id,
+                       p->peer_ip, p->peer_as, p->is_up ? "up" : "down", (unsigned long long)p->up_count,
+                       (unsigned long long)p->down_count);
+        CLI_BUF_APPEND(
+            buf, buf_size, *off,
+            "    bgp-id=%s last-change=%s loc-rib-filtered=%s rm(total/pre/post/loc)=%llu/%llu/%llu/%llu\r\n",
+            p->bgp_id, t_change, p->is_loc_rib_filtered ? "yes" : "no", (unsigned long long)p->route_monitor_msgs,
+            (unsigned long long)p->route_monitor_pre_msgs, (unsigned long long)p->route_monitor_post_msgs,
+            (unsigned long long)p->route_monitor_loc_rib_msgs);
+        CLI_BUF_APPEND(buf, buf_size, *off, "    upd(total/pre/post/loc)=%llu/%llu/%llu/%llu upd-err=%llu\r\n",
+                       (unsigned long long)p->update_msgs, (unsigned long long)p->update_pre_msgs,
+                       (unsigned long long)p->update_post_msgs, (unsigned long long)p->update_loc_rib_msgs,
+                       (unsigned long long)p->update_parse_errs);
+        (*listed)++;
+    }
+}
+
+/**
+ * @brief 处理 "show bmp-server peer [client <id>] [peer <ip>]"
+ *
+ * group_id=5, cfg_id: 2=client-id, 4=peer-id
+ */
+static int handle_show_bmp_peer(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    char client_id[SBMP_CLIENT_ID_MAX] = {0};
+    char peer_ip[SBMP_PEER_IP_MAX] = {0};
+
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (entry.cfg_id == 2)
+        {
+            const char *s = cli_tlv_entry_get_text(&entry);
+            if (s)
+            {
+                snprintf(client_id, sizeof(client_id), "%s", s);
+            }
+        }
+        else if (entry.cfg_id == 4)
+        {
+            const char *s = cli_tlv_entry_get_text(&entry);
+            if (s)
+            {
+                snprintf(peer_ip, sizeof(peer_ip), "%s", s);
+            }
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    char buf[CLI_MAX_RESP_LEN];
+    size_t off = 0;
+    uint32_t listed = 0;
+
+    CLI_BUF_APPEND(buf, sizeof(buf), off, "BMP Peers\r\n");
+    CLI_BUF_APPEND(buf, sizeof(buf), off, "---------\r\n");
+    CLI_BUF_APPEND(buf, sizeof(buf), off, "  %-16s %-17s %-10s %-10s %-8s %-8s\r\n", "Client", "Peer", "AS", "State",
+                   "UpCnt", "DownCnt");
+
+    sbmp_runtime_lock();
+
+    if (client_id[0] != '\0')
+    {
+        sbmp_client_t *c = sbmp_runtime_find_client_locked(client_id);
+        if (!c)
+        {
+            sbmp_runtime_unlock();
+            sbmp_send_cli_response(msg, "SBMP Error: BMP client not found.\r\n");
+            return ERRCODE_FAIL;
+        }
+
+        append_peer_rows(buf, sizeof(buf), &off, c, peer_ip, &listed);
+    }
+    else
+    {
+        GHashTableIter iter;
+        gpointer key, val;
+        g_hash_table_iter_init(&iter, g_sbmp_local->client_hash);
+        while (g_hash_table_iter_next(&iter, &key, &val))
+        {
+            (void)key;
+            sbmp_client_t *c = (sbmp_client_t *)val;
+            append_peer_rows(buf, sizeof(buf), &off, c, peer_ip, &listed);
+        }
+    }
+
+    sbmp_runtime_unlock();
+
+    if (listed == 0)
+    {
+        CLI_BUF_APPEND(buf, sizeof(buf), off, "  (no peers)\r\n");
+    }
+
+    sbmp_send_cli_response(msg, buf);
+    return ERRCODE_SUCCESS;
+}
+
+typedef struct sbmp_show_route_ctx
+{
+    char *buf;
+    size_t buf_size;
+    size_t off;
+    const char *peer_filter;
+    uint32_t listed_heads;
+    uint32_t listed_routes;
+} sbmp_show_route_ctx_t;
+
+static gboolean sbmp_show_route_head_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    const bgp_rthead_t *head = (const bgp_rthead_t *)value;
+    sbmp_show_route_ctx_t *ctx = (sbmp_show_route_ctx_t *)user_data;
+
+    if (!head || !ctx)
+    {
+        return FALSE;
+    }
+
+    gboolean printed_head = FALSE;
+
+    GHashTableIter iter;
+    gpointer rkey, rval;
+    g_hash_table_iter_init(&iter, (GHashTable *)head->route_hash);
+    while (g_hash_table_iter_next(&iter, &rkey, &rval))
+    {
+        (void)rkey;
+        const bgp_route_node_t *route = (const bgp_route_node_t *)rval;
+        if (!route)
+        {
+            continue;
+        }
+
+        if (ctx->peer_filter && ctx->peer_filter[0] != '\0' && strcmp(route->source, ctx->peer_filter) != 0)
+        {
+            continue;
+        }
+
+        if (!printed_head)
+        {
+            const char *nlri_key = head->nlri.key[0] ? head->nlri.key : head->key;
+            CLI_BUF_APPEND(ctx->buf, ctx->buf_size, ctx->off, "%s\r\n", nlri_key);
+            printed_head = TRUE;
+            ctx->listed_heads++;
+        }
+
+        char nh[128];
+        char lp[16];
+        char med[16];
+        char as_path[96];
+
+        bgp_nexthop_to_str(&route->nexthop, nh, sizeof(nh));
+        snprintf(lp, sizeof(lp), "%s", route->attr.has_local_pref ? "set" : "-");
+        snprintf(med, sizeof(med), "%s", route->attr.has_med ? "set" : "-");
+
+        if (route->attr.as_path[0] == '\0')
+        {
+            snprintf(as_path, sizeof(as_path), "-");
+        }
+        else
+        {
+            snprintf(as_path, sizeof(as_path), "%.80s", route->attr.as_path);
+        }
+
+        CLI_BUF_APPEND(ctx->buf, ctx->buf_size, ctx->off, "  - peer=%s nh=%s lp=%s med=%s origin=%s as-path=%s\r\n",
+                       route->source, nh, lp, med, bgp_origin_str(route->attr.origin), as_path);
+        ctx->listed_routes++;
+    }
+
+    if (printed_head)
+    {
+        CLI_BUF_APPEND(ctx->buf, ctx->buf_size, ctx->off, "\r\n");
+    }
+
+    return FALSE;
+}
+
+static void append_client_routes(char *buf, size_t buf_size, size_t *off, const sbmp_client_t *client, uint16_t afi,
+                                 uint8_t safi, sbmp_route_policy_t policy, const char *peer_filter,
+                                 uint32_t *total_heads, uint32_t *total_routes)
+{
+    const bgp_rib_t *rib = sbmp_client_rib(client, afi, safi, policy);
+
+    if (!rib || bgp_rib_route_count(rib) == 0)
+    {
+        return;
+    }
+
+    sbmp_show_route_ctx_t ctx;
+    ctx.buf = buf;
+    ctx.buf_size = buf_size;
+    ctx.off = *off;
+    ctx.peer_filter = peer_filter;
+    ctx.listed_heads = 0;
+    ctx.listed_routes = 0;
+
+    CLI_BUF_APPEND(ctx.buf, ctx.buf_size, ctx.off, "\r\nClient: %s  Policy: %s\r\n", client->client_id,
+                   sbmp_policy_str(policy));
+    CLI_BUF_APPEND(ctx.buf, ctx.buf_size, ctx.off, "  RIB Heads: %u  Routes: %u\r\n\r\n", bgp_rib_head_count(rib),
+                   bgp_rib_route_count(rib));
+
+    g_tree_foreach((GTree *)rib->head_tree, sbmp_show_route_head_cb, &ctx);
+
+    if (ctx.listed_routes > 0)
+    {
+        CLI_BUF_APPEND(ctx.buf, ctx.buf_size, ctx.off, "  Listed Heads: %u  Listed Routes: %u\r\n", ctx.listed_heads,
+                       ctx.listed_routes);
+        *total_heads += ctx.listed_heads;
+        *total_routes += ctx.listed_routes;
+    }
+
+    *off = ctx.off;
+}
+
+/**
+ * @brief 处理 "show bmp-server route af ipv4-unicast|ipv6-unicast [client <id>] [peer <id>] [policy pre|post|loc-rib]"
+ *
+ * group_id=6, cfg_id: 1=ipv4-unicast, 2=ipv6-unicast, 3=client-id, 4=peer-id, 5=pre, 6=post, 7=loc-rib
+ */
+static int handle_show_bmp_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    uint16_t afi = 0;
+    uint8_t safi = BGP_SAFI_UNICAST;
+    gboolean has_af = FALSE;
+    gboolean has_policy = FALSE;
+    sbmp_route_policy_t policy = SBMP_ROUTE_POLICY_PRE;
+    char client_id[SBMP_CLIENT_ID_MAX] = {0};
+    char peer_ip[SBMP_PEER_IP_MAX] = {0};
+
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        switch (entry.cfg_id)
+        {
+            case 1:
+                afi = BGP_AFI_IPV4;
+                has_af = TRUE;
+                break;
+            case 2:
+                afi = BGP_AFI_IPV6;
+                has_af = TRUE;
+                break;
+            case 3:
+            {
+                const char *s = cli_tlv_entry_get_text(&entry);
+                if (s)
+                {
+                    snprintf(client_id, sizeof(client_id), "%s", s);
+                }
+                break;
+            }
+            case 4:
+            {
+                const char *s = cli_tlv_entry_get_text(&entry);
+                if (s)
+                {
+                    snprintf(peer_ip, sizeof(peer_ip), "%s", s);
+                }
+                break;
+            }
+            case 5:
+                policy = SBMP_ROUTE_POLICY_PRE;
+                has_policy = TRUE;
+                break;
+            case 6:
+                policy = SBMP_ROUTE_POLICY_POST;
+                has_policy = TRUE;
+                break;
+            case 7:
+                policy = SBMP_ROUTE_POLICY_LOC_RIB;
+                has_policy = TRUE;
+                break;
+            default:
+                break;
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    if (!has_af)
+    {
+        sbmp_send_cli_response(msg,
+                               "SBMP Error: Missing address-family. Use 'af ipv4-unicast' or 'af ipv6-unicast'.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    char buf[CLI_MAX_RESP_LEN];
+    size_t off = 0;
+    uint32_t total_heads = 0;
+    uint32_t total_routes = 0;
+
+    CLI_BUF_APPEND(buf, sizeof(buf), off, "BMP Routes (AF: %s, Policy: %s)\r\n",
+                   afi == BGP_AFI_IPV4 ? "ipv4-unicast" : "ipv6-unicast", has_policy ? sbmp_policy_str(policy) : "all");
+    CLI_BUF_APPEND(buf, sizeof(buf), off, "============================================================\r\n");
+
+    sbmp_runtime_lock();
+
+    if (client_id[0] != '\0')
+    {
+        sbmp_client_t *c = sbmp_runtime_find_client_locked(client_id);
+        if (!c)
+        {
+            sbmp_runtime_unlock();
+            sbmp_send_cli_response(msg, "SBMP Error: BMP client not found.\r\n");
+            return ERRCODE_FAIL;
+        }
+
+        if (has_policy)
+        {
+            append_client_routes(buf, sizeof(buf), &off, c, afi, safi, policy, peer_ip, &total_heads, &total_routes);
+        }
+        else
+        {
+            append_client_routes(buf, sizeof(buf), &off, c, afi, safi, SBMP_ROUTE_POLICY_PRE, peer_ip, &total_heads,
+                                 &total_routes);
+            append_client_routes(buf, sizeof(buf), &off, c, afi, safi, SBMP_ROUTE_POLICY_POST, peer_ip, &total_heads,
+                                 &total_routes);
+            append_client_routes(buf, sizeof(buf), &off, c, afi, safi, SBMP_ROUTE_POLICY_LOC_RIB, peer_ip, &total_heads,
+                                 &total_routes);
+        }
+    }
+    else
+    {
+        GHashTableIter iter;
+        gpointer key, val;
+        g_hash_table_iter_init(&iter, g_sbmp_local->client_hash);
+        while (g_hash_table_iter_next(&iter, &key, &val))
+        {
+            (void)key;
+            sbmp_client_t *c = (sbmp_client_t *)val;
+            if (has_policy)
+            {
+                append_client_routes(buf, sizeof(buf), &off, c, afi, safi, policy, peer_ip, &total_heads,
+                                     &total_routes);
+            }
+            else
+            {
+                append_client_routes(buf, sizeof(buf), &off, c, afi, safi, SBMP_ROUTE_POLICY_PRE, peer_ip, &total_heads,
+                                     &total_routes);
+                append_client_routes(buf, sizeof(buf), &off, c, afi, safi, SBMP_ROUTE_POLICY_POST, peer_ip,
+                                     &total_heads, &total_routes);
+                append_client_routes(buf, sizeof(buf), &off, c, afi, safi, SBMP_ROUTE_POLICY_LOC_RIB, peer_ip,
+                                     &total_heads, &total_routes);
+            }
+        }
+    }
+
+    sbmp_runtime_unlock();
+
+    if (total_routes == 0)
+    {
+        CLI_BUF_APPEND(buf, sizeof(buf), off, "  (no routes)\r\n");
+    }
+    else
+    {
+        CLI_BUF_APPEND(buf, sizeof(buf), off, "\r\nTotal Listed Heads: %u  Total Listed Routes: %u\r\n", total_heads,
+                       total_routes);
     }
 
     sbmp_send_cli_response(msg, buf);
@@ -210,8 +845,17 @@ int sbmp_cli_handle_message(dev_ipc_message_t *msg)
         case SBMP_CLI_GROUP_ID_SERVER_PORT:
             result = handle_server_port(msg, &parser);
             break;
-        case SBMP_CLI_GROUP_ID_SHOW:
+        case SBMP_CLI_GROUP_ID_SHOW_STATUS:
             result = handle_show_bmp_server(msg, &parser);
+            break;
+        case SBMP_CLI_GROUP_ID_SHOW_CLIENT:
+            result = handle_show_bmp_client(msg, &parser);
+            break;
+        case SBMP_CLI_GROUP_ID_SHOW_PEER:
+            result = handle_show_bmp_peer(msg, &parser);
+            break;
+        case SBMP_CLI_GROUP_ID_SHOW_ROUTE:
+            result = handle_show_bmp_route(msg, &parser);
             break;
         default:
             LOG_WARN("SBMP: 未知 group_id: %u", parser.group_id);

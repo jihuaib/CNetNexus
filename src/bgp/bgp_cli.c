@@ -17,6 +17,7 @@
 #include "bgp_main.h"
 #include "bgp_pkt.h"
 #include "bgp_protocol.h"
+#include "bgp_rib.h"
 #include "bgp_session.h"
 #include "bgp_vrf.h"
 #include "cli.h"
@@ -723,112 +724,6 @@ static int handle_bgp_router_id(dev_ipc_message_t *msg, cli_tlv_parser_t *parser
 }
 
 /**
- * @brief 处理 show bgp peer 命令
- *
- * group_id=2，直接构建格式化文本返回
- */
-static int handle_bgp_peer_show(dev_ipc_message_t *msg)
-{
-    db_result_t *result = NULL;
-    int ret = db_rpc_query(g_bgp_local->dev_ipc_ctx, BGP_TABLE_PROTOCOL, NULL, 0, NULL, &result);
-
-    if (ret != 0 || !result)
-    {
-        bgp_send_cli_response(msg, "BGP Error: Database query failed.\r\n");
-        return ERRCODE_FAIL;
-    }
-
-    char resp_buf[CLI_MAX_RESP_LEN];
-    size_t offset = 0;
-
-    if (result->num_rows == 0)
-    {
-        CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "No BGP configuration found.\r\n");
-    }
-    else
-    {
-        CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "\r\nBGP Information:\r\n");
-        CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "============================\r\n");
-
-        for (uint32_t i = 0; i < result->num_rows; i++)
-        {
-            db_row_t *row = result->rows[i];
-            for (uint32_t j = 0; j < row->num_fields; j++)
-            {
-                char value_str[256] = {0};
-                switch (row->values[j].type)
-                {
-                    case DB_TYPE_INTEGER:
-                        snprintf(value_str, sizeof(value_str), "%ld", row->values[j].data.i64);
-                        break;
-                    case DB_TYPE_REAL:
-                        snprintf(value_str, sizeof(value_str), "%.6g", row->values[j].data.real);
-                        break;
-                    case DB_TYPE_TEXT:
-                        if (row->values[j].data.text)
-                        {
-                            snprintf(value_str, sizeof(value_str), "%s", row->values[j].data.text);
-                        }
-                        break;
-                    default:
-                        snprintf(value_str, sizeof(value_str), "NULL");
-                        break;
-                }
-                CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "  %-20s: %s\r\n", row->field_names[j], value_str);
-            }
-        }
-        CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "\r\n");
-    }
-
-    db_result_free(result);
-
-    /* 查询并显示 session 信息 */
-    db_result_t *session_result = NULL;
-    ret = db_rpc_query(g_bgp_local->dev_ipc_ctx, BGP_TABLE_SESSION, NULL, 0, NULL, &session_result);
-    if (ret == 0 && session_result && session_result->num_rows > 0)
-    {
-        CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "BGP Sessions:\r\n");
-        CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "----------------------------\r\n");
-        for (uint32_t i = 0; i < session_result->num_rows; i++)
-        {
-            db_row_t *row = session_result->rows[i];
-            const char *ip = db_row_get_text(row, "neighbor_ip", "N/A");
-            int64_t as_num = db_row_get_int(row, "remote_as", 0);
-            CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "  Neighbor: %-15s  AS: %ld\r\n", ip, as_num);
-        }
-        CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "\r\n");
-    }
-    if (session_result)
-    {
-        db_result_free(session_result);
-    }
-
-    /* 查询并显示 neighbor 信息 */
-    db_result_t *neighbor_result = NULL;
-    ret = db_rpc_query(g_bgp_local->dev_ipc_ctx, BGP_TABLE_NEIGHBOR, NULL, 0, NULL, &neighbor_result);
-    if (ret == 0 && neighbor_result && neighbor_result->num_rows > 0)
-    {
-        CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "BGP Address-Family Neighbors:\r\n");
-        CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "----------------------------\r\n");
-        for (uint32_t i = 0; i < neighbor_result->num_rows; i++)
-        {
-            db_row_t *row = neighbor_result->rows[i];
-            const char *ip = db_row_get_text(row, "neighbor_ip", "N/A");
-            const char *afi = db_row_get_text(row, "afi", "N/A");
-            CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "  Neighbor: %-15s  AFI: %s\r\n", ip, afi);
-        }
-        CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "\r\n");
-    }
-    if (neighbor_result)
-    {
-        db_result_free(neighbor_result);
-    }
-
-    bgp_send_cli_response(msg, resp_buf);
-    return ERRCODE_SUCCESS;
-}
-
-/**
  * @brief 处理 "timer connect-retry <n>" / "no timer connect-retry" 命令
  *
  * group_id=8, cfg_id: 1=connect-retry-time
@@ -1074,32 +969,245 @@ static const char *cap_yn(uint32_t caps, uint32_t bit)
     return BIT_TEST(caps, bit) ? "Yes" : "No";
 }
 
-/**
- * @brief 处理 show bgp neighbor af-ipv4u <ip> 命令
- *
- * group_id=10, cfg_id: 1=af-ipv4u (keyword), 2=ip-address
- */
-static int handle_bgp_show_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+/** ORIGIN 可读字符串 */
+static const char *bgp_origin_str(bgp_origin_t origin)
 {
-    char ip_buf[64] = {0};
+    switch (origin)
+    {
+        case BGP_ORIGIN_IGP:
+            return "IGP";
+        case BGP_ORIGIN_EGP:
+            return "EGP";
+        case BGP_ORIGIN_INCOMPLETE:
+            return "INCOMPLETE";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+/** 将 nexthop 结构格式化为单行文本 */
+static void bgp_nexthop_to_str(const bgp_nexthop_t *nexthop, char *buf, size_t sz)
+{
+    if (!buf || sz == 0)
+    {
+        return;
+    }
+
+    char global[64] = "-";
+    if (nexthop && nexthop->global.family != 0)
+    {
+        net_addr_to_str(&nexthop->global, global, sizeof(global));
+    }
+
+    if (nexthop && nexthop->has_link_local && nexthop->link_local.family != 0)
+    {
+        char ll[64];
+        net_addr_to_str(&nexthop->link_local, ll, sizeof(ll));
+        snprintf(buf, sz, "%s (ll:%s)", global, ll);
+        return;
+    }
+
+    snprintf(buf, sz, "%s", global);
+}
+
+typedef struct bgp_show_route_ctx
+{
+    char *buf;
+    size_t buf_size;
+    size_t off;
+    uint32_t listed_heads;
+    uint32_t listed_routes;
+} bgp_show_route_ctx_t;
+
+static gboolean bgp_show_route_head_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    bgp_rthead_t *head = (bgp_rthead_t *)value;
+    bgp_show_route_ctx_t *ctx = (bgp_show_route_ctx_t *)user_data;
+    if (!head || !ctx)
+    {
+        return FALSE;
+    }
+
+    const char *nlri_key = head->nlri.key[0] ? head->nlri.key : head->key;
+    CLI_BUF_APPEND(ctx->buf, ctx->buf_size, ctx->off, "%s\r\n", nlri_key);
+    ctx->listed_heads++;
+
+    GHashTableIter iter;
+    gpointer rkey, rval;
+    g_hash_table_iter_init(&iter, head->route_hash);
+    while (g_hash_table_iter_next(&iter, &rkey, &rval))
+    {
+        (void)rkey;
+        bgp_route_node_t *route = (bgp_route_node_t *)rval;
+        if (!route)
+        {
+            continue;
+        }
+
+        char nh[128];
+        char lp[16];
+        char med[16];
+        char as_path[96];
+
+        bgp_nexthop_to_str(&route->nexthop, nh, sizeof(nh));
+        if (route->attr.has_local_pref)
+        {
+            snprintf(lp, sizeof(lp), "%u", route->attr.local_pref);
+        }
+        else
+        {
+            snprintf(lp, sizeof(lp), "-");
+        }
+        if (route->attr.has_med)
+        {
+            snprintf(med, sizeof(med), "%u", route->attr.med);
+        }
+        else
+        {
+            snprintf(med, sizeof(med), "-");
+        }
+
+        if (route->attr.as_path[0] == '\0')
+        {
+            snprintf(as_path, sizeof(as_path), "-");
+        }
+        else
+        {
+            snprintf(as_path, sizeof(as_path), "%.80s", route->attr.as_path);
+        }
+
+        CLI_BUF_APPEND(ctx->buf, ctx->buf_size, ctx->off, "  - src=%s nh=%s lp=%s med=%s origin=%s as-path=%s\r\n",
+                       route->source, nh, lp, med, bgp_origin_str(route->attr.origin), as_path);
+        ctx->listed_routes++;
+    }
+
+    CLI_BUF_APPEND(ctx->buf, ctx->buf_size, ctx->off, "\r\n");
+    return FALSE;
+}
+
+/**
+ * @brief 处理 show bgp route af ipv4-unicast|ipv6-unicast 命令
+ *
+ * group_id=10, cfg_id: 1=ipv4-unicast, 2=ipv6-unicast
+ */
+static int handle_bgp_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
     bgp_cli_ctx_t ctx = bgp_cli_ctx_default();
+    gboolean has_af = FALSE;
 
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
     {
         if (CLI_TLV_IS_CTX(&entry))
         {
-            bgp_cli_ctx_parse(&ctx, &entry);
             cli_tlv_entry_free(&entry);
             continue;
         }
         switch (entry.cfg_id)
         {
-            case 1: /* af-ipv4u 关键字：固定 IPv4 单播 */
+            case 1:
                 ctx.afi = BGP_AFI_IPV4;
                 ctx.safi = BGP_SAFI_UNICAST;
+                has_af = TRUE;
                 break;
-            case 2: /* <ip-address> 参数 */
+            case 2:
+                ctx.afi = BGP_AFI_IPV6;
+                ctx.safi = BGP_SAFI_UNICAST;
+                has_af = TRUE;
+                break;
+            default:
+                break;
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    if (!has_af)
+    {
+        bgp_send_cli_response(msg,
+                              "BGP Error: Missing address-family. Use 'af ipv4-unicast' or 'af ipv6-unicast'.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    if (!g_bgp_local->protocol)
+    {
+        bgp_send_cli_response(msg, "BGP Error: BGP not configured.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_local->protocol, ctx.vrf_id);
+    if (!vrf)
+    {
+        bgp_send_cli_response(msg, "BGP Error: VRF not found.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    bgp_instance_t *inst = g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(ctx.afi, ctx.safi));
+
+    char resp_buf[CLI_MAX_RESP_LEN];
+    bgp_show_route_ctx_t show_ctx;
+    show_ctx.buf = resp_buf;
+    show_ctx.buf_size = sizeof(resp_buf);
+    show_ctx.off = 0;
+    show_ctx.listed_heads = 0;
+    show_ctx.listed_routes = 0;
+
+    CLI_BUF_APPEND(show_ctx.buf, show_ctx.buf_size, show_ctx.off, "\r\nBGP Routes (AF: %s)\r\n",
+                   bgp_af_str(ctx.afi, ctx.safi));
+    CLI_BUF_APPEND(show_ctx.buf, show_ctx.buf_size, show_ctx.off,
+                   "============================================================\r\n");
+
+    if (!inst || !inst->rib || bgp_rib_route_count(inst->rib) == 0)
+    {
+        CLI_BUF_APPEND(show_ctx.buf, show_ctx.buf_size, show_ctx.off, "  (no routes)\r\n\r\n");
+        bgp_send_cli_response(msg, show_ctx.buf);
+        return ERRCODE_SUCCESS;
+    }
+
+    CLI_BUF_APPEND(show_ctx.buf, show_ctx.buf_size, show_ctx.off, "  RIB Heads: %u  Routes: %u\r\n\r\n",
+                   bgp_rib_head_count(inst->rib), bgp_rib_route_count(inst->rib));
+
+    g_tree_foreach(inst->rib->head_tree, bgp_show_route_head_cb, &show_ctx);
+
+    CLI_BUF_APPEND(show_ctx.buf, show_ctx.buf_size, show_ctx.off, "Listed Heads: %u  Listed Routes: %u\r\n\r\n",
+                   show_ctx.listed_heads, show_ctx.listed_routes);
+
+    bgp_send_cli_response(msg, show_ctx.buf);
+    return ERRCODE_SUCCESS;
+}
+
+/**
+ * @brief 处理 show bgp neighbor af ipv4-unicast|ipv6-unicast [<ip>] 命令
+ *
+ * group_id=9, cfg_id: 1=ipv4-unicast, 2=ipv6-unicast, 3=ip-address
+ */
+static int handle_bgp_show_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    char ip_buf[64] = {0};
+    bgp_cli_ctx_t ctx = bgp_cli_ctx_default();
+    gboolean has_af = FALSE;
+
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (CLI_TLV_IS_CTX(&entry))
+        {
+            cli_tlv_entry_free(&entry);
+            continue;
+        }
+        switch (entry.cfg_id)
+        {
+            case 1: /* ipv4-unicast */
+                ctx.afi = BGP_AFI_IPV4;
+                ctx.safi = BGP_SAFI_UNICAST;
+                has_af = TRUE;
+                break;
+            case 2: /* ipv6-unicast */
+                ctx.afi = BGP_AFI_IPV6;
+                ctx.safi = BGP_SAFI_UNICAST;
+                has_af = TRUE;
+                break;
+            case 3: /* <ip-address> 参数 */
             {
                 const char *s = cli_tlv_entry_get_text(&entry);
                 if (s)
@@ -1112,6 +1220,13 @@ static int handle_bgp_show_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
                 break;
         }
         cli_tlv_entry_free(&entry);
+    }
+
+    if (!has_af)
+    {
+        bgp_send_cli_response(msg,
+                              "BGP Error: Missing address-family. Use 'af ipv4-unicast' or 'af ipv6-unicast'.\r\n");
+        return ERRCODE_FAIL;
     }
 
     if (!g_bgp_local->protocol)
@@ -1251,7 +1366,9 @@ static int handle_bgp_show_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
     }
 
     /* AF 使能状态 */
-    CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), off, "\r\n  %-24s: %s\r\n", "AF IPv4 Unicast",
+    char af_label[64];
+    snprintf(af_label, sizeof(af_label), "AF %s", bgp_af_str(ctx.afi, ctx.safi));
+    CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), off, "\r\n  %-24s: %s\r\n", af_label,
                    af_enabled ? "Enabled" : "Disabled");
     CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), off, "\r\n");
 
@@ -1292,9 +1409,6 @@ int bgp_cli_handle_message(dev_ipc_message_t *msg)
         case BGP_CLI_GROUP_ID_PROTOCOL:
             result = handle_bgp_protocol(msg, &parser);
             break;
-        case BGP_CLI_GROUP_ID_SHOW:
-            result = handle_bgp_peer_show(msg);
-            break;
         case BGP_CLI_GROUP_ID_NEIGHBOR:
             result = handle_bgp_neighbor(msg, &parser);
             break;
@@ -1318,6 +1432,9 @@ int bgp_cli_handle_message(dev_ipc_message_t *msg)
             break;
         case BGP_CLI_GROUP_ID_SHOW_NEIGHBOR:
             result = handle_bgp_show_neighbor(msg, &parser);
+            break;
+        case BGP_CLI_GROUP_ID_SHOW_ROUTE:
+            result = handle_bgp_show_route(msg, &parser);
             break;
         default:
             LOG_WARN("未知 group_id: %u", parser.group_id);
