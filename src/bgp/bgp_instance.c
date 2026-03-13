@@ -8,6 +8,7 @@
 
 #include <glib.h>
 
+#include "bgp_rib.h"
 #include "log.h"
 
 bgp_instance_t *bgp_instance_create(bgp_afi_t afi, bgp_safi_t safi, bgp_vrf_t *vrf)
@@ -18,6 +19,7 @@ bgp_instance_t *bgp_instance_create(bgp_afi_t afi, bgp_safi_t safi, bgp_vrf_t *v
     inst->vrf = vrf;
     /* key: gchar*(addr_str)，value: bgp_peer_t*（负责销毁） */
     inst->peer_hash = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify)bgp_peer_destroy);
+    inst->rib = bgp_rib_create();
     return inst;
 }
 
@@ -31,6 +33,11 @@ void bgp_instance_destroy(bgp_instance_t *inst)
     {
         g_hash_table_destroy(inst->peer_hash);
         inst->peer_hash = NULL;
+    }
+    if (inst->rib)
+    {
+        bgp_rib_destroy(inst->rib);
+        inst->rib = NULL;
     }
     g_free(inst);
 }

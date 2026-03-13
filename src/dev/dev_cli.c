@@ -404,6 +404,43 @@ static void format_ipc_conn_entry(const uint8_t *entry, int idx, char *buf, size
         (size_t)snprintf(buf + *off, buf_size - *off, "    %-16s: %u ms\r\n", "Reconnect Delay", reconnect_delay_ms);
 }
 
+/**
+ * @brief 将 QUERY_IPC_CONNS 响应 payload 格式化为可读文本，追加到 buf[*off]
+ */
+static void format_conns_payload(const uint8_t *payload, uint32_t payload_len, const char *module_name,
+                                 uint32_t target_id, char *buf, size_t buf_size, size_t *off)
+{
+    const uint8_t *p = payload;
+    uint32_t v;
+    memcpy(&v, p, 4);
+    uint32_t num_conns = ntohl(v);
+    p += 4;
+
+    *off += (size_t)snprintf(buf + *off, buf_size - *off,
+                             "\r\nIPC Connections of module '%s' (ID: 0x%08X) — %u connection(s):\r\n", module_name,
+                             target_id, num_conns);
+
+    uint32_t expected_len = 4 + num_conns * IPC_QCONNS_ENTRY_SIZE;
+    if (payload_len < expected_len)
+    {
+        *off +=
+            (size_t)snprintf(buf + *off, buf_size - *off,
+                             "  Error: response payload truncated (%u < %u bytes).\r\n\r\n", payload_len, expected_len);
+    }
+    else if (num_conns == 0)
+    {
+        *off += (size_t)snprintf(buf + *off, buf_size - *off, "  (no connections)\r\n\r\n");
+    }
+    else
+    {
+        for (uint32_t i = 0; i < num_conns && *off < buf_size - 256; i++)
+        {
+            format_ipc_conn_entry(p + i * IPC_QCONNS_ENTRY_SIZE, (int)i, buf, buf_size, off);
+            *off += (size_t)snprintf(buf + *off, buf_size - *off, "\r\n");
+        }
+    }
+}
+
 static int handle_show_ipc(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
     char module_name[DEV_MODULE_NAME_MAX_LEN] = {0};
@@ -444,66 +481,49 @@ static int handle_show_ipc(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_t
         return ERRCODE_FAIL;
     }
 
-    /* 向目标模块发 RPC，查询其自身所有 IPC 连接 */
-    dev_ipc_message_t *req =
-        dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_QUERY_IPC_CONNS, DEV_MODULE_ID_DEV, target_id, 0, NULL, 0, NULL);
-    if (!req)
-    {
-        dev_send_cli_response(ctx, msg, "Error: failed to create IPC query message.\r\n");
-        return ERRCODE_FAIL;
-    }
-
-    dev_ipc_message_t *resp = dev_ipc_query(ctx, target_id, req, 3000);
-    dev_ipc_message_free(req);
-
     char buf[CLI_MAX_RESP_LEN];
     size_t off = 0;
 
-    if (!resp || !resp->payload || resp->payload_len < 4)
+    if (target_id == DEV_MODULE_ID_DEV)
     {
-        off += (size_t)snprintf(buf + off, sizeof(buf) - off,
-                                "\r\nError: no response from module '%s' (timeout or not connected).\r\n\r\n",
-                                module_name);
-        dev_send_cli_response(ctx, msg, buf);
-        if (resp)
-        {
-            dev_ipc_message_free(resp);
-        }
-        return ERRCODE_FAIL;
-    }
-
-    /* 反序列化响应 payload */
-    const uint8_t *p = (const uint8_t *)resp->payload;
-    uint32_t v;
-    memcpy(&v, p, 4);
-    uint32_t num_conns = ntohl(v);
-    p += 4;
-
-    off += (size_t)snprintf(buf + off, sizeof(buf) - off,
-                            "\r\nIPC Connections of module '%s' (ID: 0x%08X) — %u connection(s):\r\n", module_name,
-                            target_id, num_conns);
-
-    uint32_t expected_len = 4 + num_conns * IPC_QCONNS_ENTRY_SIZE;
-    if (resp->payload_len < expected_len)
-    {
-        off += (size_t)snprintf(buf + off, sizeof(buf) - off,
-                                "  Error: response payload truncated (%u < %u bytes).\r\n\r\n", resp->payload_len,
-                                expected_len);
-    }
-    else if (num_conns == 0)
-    {
-        off += (size_t)snprintf(buf + off, sizeof(buf) - off, "  (no connections)\r\n\r\n");
+        /* 自查询：DEV 无自连接，直接从 ctx 构造载荷 */
+        uint32_t pl_len;
+        uint8_t *pl = dev_ipc_build_conns_payload(ctx, &pl_len);
+        format_conns_payload(pl, pl_len, module_name, target_id, buf, sizeof(buf), &off);
+        g_free(pl);
     }
     else
     {
-        for (uint32_t i = 0; i < num_conns && off < sizeof(buf) - 256; i++)
+        /* 向目标模块发 RPC，查询其自身所有 IPC 连接 */
+        dev_ipc_message_t *req = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_QUERY_IPC_CONNS, DEV_MODULE_ID_DEV,
+                                                        target_id, 0, NULL, 0, NULL);
+        if (!req)
         {
-            format_ipc_conn_entry(p + i * IPC_QCONNS_ENTRY_SIZE, (int)i, buf, sizeof(buf), &off);
-            off += (size_t)snprintf(buf + off, sizeof(buf) - off, "\r\n");
+            dev_send_cli_response(ctx, msg, "Error: failed to create IPC query message.\r\n");
+            return ERRCODE_FAIL;
         }
+
+        dev_ipc_message_t *resp = dev_ipc_query(ctx, target_id, req, 3000);
+        dev_ipc_message_free(req);
+
+        if (!resp || !resp->payload || resp->payload_len < 4)
+        {
+            off += (size_t)snprintf(buf + off, sizeof(buf) - off,
+                                    "\r\nError: no response from module '%s' (timeout or not connected).\r\n\r\n",
+                                    module_name);
+            dev_send_cli_response(ctx, msg, buf);
+            if (resp)
+            {
+                dev_ipc_message_free(resp);
+            }
+            return ERRCODE_FAIL;
+        }
+
+        format_conns_payload((const uint8_t *)resp->payload, resp->payload_len, module_name, target_id, buf,
+                             sizeof(buf), &off);
+        dev_ipc_message_free(resp);
     }
 
-    dev_ipc_message_free(resp);
     dev_send_cli_response(ctx, msg, buf);
     return ERRCODE_SUCCESS;
 }

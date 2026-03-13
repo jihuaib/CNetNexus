@@ -20,6 +20,7 @@
 #include "bgp_cli.h"
 #include "bgp_conn.h"
 #include "bgp_db.h"
+#include "bgp_parse.h"
 #include "bgp_pkt.h"
 #include "bgp_session.h"
 #include "cli.h"
@@ -363,7 +364,7 @@ static void bgp_handle_active_connect(bgp_conn_t *conn)
 /**
  * @brief 处理已建立连接上的 BGP 数据（EPOLLIN）
  *
- * 碰撞检测已在 TCP 层完成，此处只负责数据处理和连接关闭。
+ * 碰撞检测已在 TCP 层完成，此处负责数据处理、定时器管理和连接关闭。
  *
  * @param conn 接收数据的连接结构
  */
@@ -371,21 +372,52 @@ static void bgp_handle_data(bgp_conn_t *conn)
 {
     bgp_session_t *sess = conn->session;
     bgp_conn_t **slot = (sess->pri_conn == conn) ? &sess->pri_conn : &sess->sec_conn;
-    gboolean was_active = conn->is_active; /* 关闭前捕获，bgp_conn_close 会清零 */
+    gboolean was_active = conn->is_active;
+    bgp_conn_state_t old_state = sess->state;
 
     int ret = bgp_pkt_on_data(conn);
+
     if (ret < 0)
     {
+        /* 连接关闭：取消 KA 和 Hold 定时器 */
+        bgp_session_cancel_keepalive(sess, g_bgp_local->epoll_fd);
+        bgp_session_cancel_hold(sess, g_bgp_local->epoll_fd);
+
         char addr_str[64];
         net_addr_to_str(&conn->peer_addr, addr_str, sizeof(addr_str));
         LOG_INFO("BGP: 与 %s 的连接关闭 (fd=%d)", addr_str, conn->fd);
         bgp_conn_close(slot);
 
-        /* 若是主动连接断开且无后备，按 connect-retry 定时器调度重连 */
+        if (!sess->pri_conn && !sess->sec_conn)
+        {
+            (void)bgp_vrf_purge_session_routes(sess->vrf, &sess->neighbor_addr);
+        }
+
         if (was_active && !sess->pri_conn)
         {
             bgp_arm_retry(sess);
         }
+        return;
+    }
+
+    /* 状态变为 ESTABLISHED：启动 KA 和 Hold 定时器 */
+    if (old_state != BGP_CONN_STATE_ESTABLISHED && sess->state == BGP_CONN_STATE_ESTABLISHED)
+    {
+        bgp_protocol_t *proto = g_bgp_local->protocol;
+        bgp_vrf_t *vrf0 = proto ? bgp_protocol_get_vrf(proto, BGP_VRF_PUBLIC_ID) : NULL;
+        uint16_t ka_sec = vrf0 ? vrf0->keepalive : BGP_TIMER_DEFAULT_KEEPALIVE;
+        bgp_session_arm_keepalive(sess, g_bgp_local->epoll_fd, ka_sec);
+        if (sess->negotiated_hold > 0)
+        {
+            bgp_session_arm_hold(sess, g_bgp_local->epoll_fd, sess->negotiated_hold);
+        }
+    }
+
+    /* 收到 KA 或 UPDATE：重置 Hold 定时器 */
+    if (sess->hold_reset_pending)
+    {
+        sess->hold_reset_pending = FALSE;
+        bgp_session_reset_hold(sess);
     }
 }
 
@@ -404,14 +436,66 @@ static void bgp_arm_retry(bgp_session_t *sess)
 }
 
 /**
+ * @brief 处理 keepalive 周期 timerfd 到期（向对端发送 KEEPALIVE）
+ */
+static void bgp_handle_ka_timer(bgp_session_t *sess)
+{
+    uint64_t expirations;
+    if (read(sess->ka_timerfd, &expirations, sizeof(expirations)) < 0 && errno != EAGAIN)
+    {
+        LOG_PERROR("BGP: 读取 ka timerfd 失败");
+    }
+
+    /* 仅在 ESTABLISHED 状态发送 KA；连接不存在时定时器应已被取消 */
+    bgp_conn_t *conn = sess->pri_conn;
+    if (!conn || conn->fd < 0 || sess->state != BGP_CONN_STATE_ESTABLISHED)
+    {
+        return;
+    }
+
+    if (bgp_pkt_send_keepalive(conn) < 0)
+    {
+        char addr_str[64];
+        net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
+        LOG_WARN("BGP: 向 %s 发送 KEEPALIVE 失败，关闭连接", addr_str);
+        bgp_session_cancel_keepalive(sess, g_bgp_local->epoll_fd);
+        bgp_session_cancel_hold(sess, g_bgp_local->epoll_fd);
+        bgp_conn_close(&sess->pri_conn);
+        (void)bgp_vrf_purge_session_routes(sess->vrf, &sess->neighbor_addr);
+        bgp_arm_retry(sess);
+    }
+}
+
+/**
+ * @brief 处理 hold time 超时 timerfd 到期（session 超时，关闭连接）
+ */
+static void bgp_handle_hold_timer(bgp_session_t *sess)
+{
+    uint64_t expirations;
+    if (read(sess->hold_timerfd, &expirations, sizeof(expirations)) < 0 && errno != EAGAIN)
+    {
+        LOG_PERROR("BGP: 读取 hold timerfd 失败");
+    }
+
+    char addr_str[64];
+    net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
+    LOG_WARN("BGP: neighbor %s hold time 超时，关闭 session", addr_str);
+
+    bgp_session_cancel_keepalive(sess, g_bgp_local->epoll_fd);
+    bgp_session_cancel_hold(sess, g_bgp_local->epoll_fd);
+    bgp_conn_close(&sess->pri_conn);
+    bgp_conn_close(&sess->sec_conn);
+    (void)bgp_vrf_purge_session_routes(sess->vrf, &sess->neighbor_addr);
+    bgp_arm_retry(sess);
+}
+
+/**
  * @brief 处理 connect-retry timerfd 到期事件
  *
- * @param sentinel epoll data.ptr 去掉 bit0 后得到的 bgp_retry_sentinel_t*
+ * @param sentinel epoll data.ptr 去掉 bit0 后得到的 bgp_timer_sentinel_t*
  */
-static void bgp_handle_retry_timer(bgp_retry_sentinel_t *sentinel)
+static void bgp_handle_retry_timer(bgp_session_t *sess)
 {
-    bgp_session_t *sess = sentinel->session;
-
     /* 读取 timerfd，清除 EPOLLIN（不读会持续触发） */
     uint64_t expirations;
     if (read(sess->retry_timerfd, &expirations, sizeof(expirations)) < 0 && errno != EAGAIN)
@@ -477,11 +561,24 @@ static void *bgp_server_thread(void *arg)
                 continue;
             }
 
-            /* bit0=1 表示 connect-retry timerfd 事件 */
+            /* bit0=1 表示 timerfd 事件（retry / keepalive / hold） */
             if (raw & 1UL)
             {
-                bgp_retry_sentinel_t *sentinel = (bgp_retry_sentinel_t *)(raw & ~1UL);
-                bgp_handle_retry_timer(sentinel);
+                bgp_timer_sentinel_t *sentinel = (bgp_timer_sentinel_t *)(raw & ~1UL);
+                switch (sentinel->type)
+                {
+                    case BGP_TIMER_TYPE_RETRY:
+                        bgp_handle_retry_timer(sentinel->session);
+                        break;
+                    case BGP_TIMER_TYPE_KEEPALIVE:
+                        bgp_handle_ka_timer(sentinel->session);
+                        break;
+                    case BGP_TIMER_TYPE_HOLD:
+                        bgp_handle_hold_timer(sentinel->session);
+                        break;
+                    default:
+                        break;
+                }
                 continue;
             }
 
@@ -546,10 +643,12 @@ void bgp_server_stop_session_conns(bgp_session_t *session)
     {
         return;
     }
-    /* 取消 connect-retry 定时器，避免停用后仍触发重连 */
     bgp_session_cancel_retry(session, g_bgp_local->epoll_fd);
+    bgp_session_cancel_keepalive(session, g_bgp_local->epoll_fd);
+    bgp_session_cancel_hold(session, g_bgp_local->epoll_fd);
     bgp_conn_close(&session->pri_conn);
     bgp_conn_close(&session->sec_conn);
+    (void)bgp_vrf_purge_session_routes(session->vrf, &session->neighbor_addr);
 }
 
 // ============================================================================
@@ -753,6 +852,9 @@ void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 int bgp_module_init(void)
 {
     LOG_INFO("模块初始化");
+
+    /* 注册所有内置 AFI/SAFI 解析器 */
+    bgp_parse_init();
 
     dev_ipc_context_t *ctx = dev_ipc_init(DEV_MODULE_ID_BGP, "bgp", DEV_MODULE_PORT_BGP, bgp_msg_handler);
     if (!ctx)

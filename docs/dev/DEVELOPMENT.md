@@ -113,6 +113,11 @@ NetNexus/
 │   ├── bgp/         # BGP module
 │   ├── dev/         # Dev module
 │   └── utils/       # Utilities
+├── tests/            # Unit tests（按模块拆分）
+│   ├── CMakeLists.txt
+│   └── bgp/
+│       ├── CMakeLists.txt
+│       └── bgp_parse_tests.c
 ├── include/          # Public headers
 ├── build/            # Build output
 │   ├── bin/         # Executables
@@ -291,6 +296,22 @@ rm -rf data/
 
 ## Testing
 
+### Unit Testing（CMake/CTest）
+
+```bash
+# Configure (tests enabled by default)
+cmake -S . -B build-tests -DCMAKE_BUILD_TYPE=Debug
+
+# Build all tests
+cmake --build build-tests -j
+
+# Run all module tests
+ctest --test-dir build-tests --output-on-failure
+
+# Run one module test (BGP)
+ctest --test-dir build-tests -R bgp_parse_tests --output-on-failure
+```
+
 ### Manual Testing
 
 ```bash
@@ -307,7 +328,7 @@ netnexus> config
 netnexus(config)> ?
 ```
 
-### Automated Testing
+### Automated CLI Testing
 
 ```bash
 # Using expect script

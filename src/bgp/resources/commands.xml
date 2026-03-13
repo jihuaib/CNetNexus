@@ -351,5 +351,44 @@
                 </command>
             </commands>
         </group>
+        <!-- show bgp neighbor af-ipv4u <ip-address> -->
+        <group group-id="10">
+            <elements>
+                <element type="keyword">
+                    <name>show</name>
+                    <description>Display system information</description>
+                </element>
+                <element type="keyword">
+                    <name>bgp</name>
+                    <description>BGP protocol</description>
+                </element>
+                <element type="keyword">
+                    <name>neighbor</name>
+                    <description>BGP neighbor</description>
+                </element>
+                <element cfg-id="1" type="keyword">
+                    <name>af-ipv4u</name>
+                    <description>IPv4 unicast address family context</description>
+                </element>
+                <element cfg-id="2" type="parameter">
+                    <name>&lt;ip-address&gt;</name>
+                    <type>ip</type>
+                    <description>Neighbor IP address</description>
+                </element>
+            </elements>
+
+            <commands>
+                <!-- show bgp neighbor af-ipv4u（显示所有邻居摘要） -->
+                <command>
+                    <expression>1 2 3 4</expression>
+                    <views>global</views>
+                </command>
+                <!-- show bgp neighbor af-ipv4u <ip>（显示指定邻居详情） -->
+                <command>
+                    <expression>1 2 3 4 5</expression>
+                    <views>global</views>
+                </command>
+            </commands>
+        </group>
     </command_groups>
 </configuration>

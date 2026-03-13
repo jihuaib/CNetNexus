@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "bgp_rib.h"
 #include "log.h"
 
 // ============================================================================
@@ -74,6 +75,7 @@ void bgp_vrf_del_session(bgp_vrf_t *vrf, const net_addr_t *addr)
     {
         return;
     }
+    (void)bgp_vrf_purge_session_routes(vrf, addr);
     char addr_key[64];
     net_addr_to_str(addr, addr_key, sizeof(addr_key));
     /* g_hash_table_remove 会触发 bgp_session_destroy */
@@ -245,4 +247,153 @@ void bgp_vrf_del_instance(bgp_vrf_t *vrf, bgp_afi_t afi, bgp_safi_t safi)
     /* g_hash_table_remove 触发 bgp_instance_destroy（含所有 peer） */
     g_hash_table_remove(vrf->inst_hash, bgp_inst_hash_key(afi, safi));
     LOG_INFO("BGP: 删除地址族实例 afi=%u safi=%u (VRF %u)", (unsigned)afi, (unsigned)safi, vrf->vrf_id);
+}
+
+void bgp_vrf_apply_update(bgp_vrf_t *vrf, const net_addr_t *src, const bgp_update_result_t *upd,
+                          bgp_rib_update_stats_t *stats)
+{
+    if (stats)
+    {
+        memset(stats, 0, sizeof(*stats));
+    }
+    if (!vrf || !src || !upd)
+    {
+        return;
+    }
+
+    char src_key[64];
+    net_addr_to_str(src, src_key, sizeof(src_key));
+
+    for (uint32_t i = 0; i < upd->reach_len; i++)
+    {
+        const bgp_nlri_entry_t *e = &upd->reach[i];
+        bgp_instance_t *inst = bgp_vrf_get_or_create_instance(vrf, (bgp_afi_t)e->afi, (bgp_safi_t)e->safi);
+        if (!inst || !inst->rib)
+        {
+            continue;
+        }
+
+        int rc = bgp_rib_reach_one(inst->rib, e, src_key, &upd->attr, &upd->nexthop);
+        if (!stats)
+        {
+            continue;
+        }
+        if (rc == 1)
+        {
+            stats->reach_new++;
+        }
+        else if (rc == 0)
+        {
+            stats->reach_update++;
+        }
+    }
+
+    for (uint32_t i = 0; i < upd->unreach_len; i++)
+    {
+        const bgp_nlri_entry_t *e = &upd->unreach[i];
+        bgp_instance_t *inst =
+            g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key((bgp_afi_t)e->afi, (bgp_safi_t)e->safi));
+        if (!inst || !inst->rib)
+        {
+            if (stats)
+            {
+                stats->unreach_miss++;
+            }
+            continue;
+        }
+
+        int rc = bgp_rib_unreach_one(inst->rib, e, src_key);
+        if (!stats)
+        {
+            continue;
+        }
+        if (rc == 1)
+        {
+            stats->unreach_removed++;
+        }
+        else if (rc == 0)
+        {
+            stats->unreach_miss++;
+        }
+    }
+}
+
+uint32_t bgp_vrf_purge_session_routes(bgp_vrf_t *vrf, const net_addr_t *addr)
+{
+    if (!vrf || !addr)
+    {
+        return 0;
+    }
+
+    char src_key[64];
+    net_addr_to_str(addr, src_key, sizeof(src_key));
+
+    uint32_t total_routes = 0;
+    uint32_t total_heads = 0;
+
+    GHashTableIter iter;
+    gpointer key, val;
+    g_hash_table_iter_init(&iter, vrf->inst_hash);
+    while (g_hash_table_iter_next(&iter, &key, &val))
+    {
+        (void)key;
+        bgp_instance_t *inst = (bgp_instance_t *)val;
+        if (!inst || !inst->rib)
+        {
+            continue;
+        }
+
+        uint32_t removed_routes = 0;
+        uint32_t removed_heads = 0;
+        bgp_rib_remove_source(inst->rib, src_key, &removed_routes, &removed_heads);
+        total_routes += removed_routes;
+        total_heads += removed_heads;
+    }
+
+    if (total_routes > 0)
+    {
+        LOG_INFO("BGP: VRF %u 清理邻居 %s 路由: routes=%u heads=%u", vrf->vrf_id, src_key, total_routes, total_heads);
+    }
+
+    return total_routes;
+}
+
+uint32_t bgp_vrf_rib_head_count(const bgp_vrf_t *vrf)
+{
+    if (!vrf)
+    {
+        return 0;
+    }
+
+    uint32_t total = 0;
+    GHashTableIter iter;
+    gpointer key, val;
+    g_hash_table_iter_init(&iter, (GHashTable *)vrf->inst_hash);
+    while (g_hash_table_iter_next(&iter, &key, &val))
+    {
+        (void)key;
+        const bgp_instance_t *inst = (const bgp_instance_t *)val;
+        total += bgp_rib_head_count(inst ? inst->rib : NULL);
+    }
+    return total;
+}
+
+uint32_t bgp_vrf_rib_route_count(const bgp_vrf_t *vrf)
+{
+    if (!vrf)
+    {
+        return 0;
+    }
+
+    uint32_t total = 0;
+    GHashTableIter iter;
+    gpointer key, val;
+    g_hash_table_iter_init(&iter, (GHashTable *)vrf->inst_hash);
+    while (g_hash_table_iter_next(&iter, &key, &val))
+    {
+        (void)key;
+        const bgp_instance_t *inst = (const bgp_instance_t *)val;
+        total += bgp_rib_route_count(inst ? inst->rib : NULL);
+    }
+    return total;
 }

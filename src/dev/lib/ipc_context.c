@@ -87,6 +87,78 @@ static dev_ipc_connection_t *find_connection_by_fd(dev_ipc_context_t *ctx, int f
 }
 
 // ============================================================================
+// 连接状态序列化（供 QUERY_IPC_CONNS 响应和自查询使用）
+// ============================================================================
+
+#define IPC_QCONNS_ENTRY_SIZE 100
+
+uint8_t *dev_ipc_build_conns_payload(dev_ipc_context_t *ctx, uint32_t *out_len)
+{
+    pthread_mutex_lock(&ctx->comutex);
+
+    int n = ctx->num_connections;
+    uint32_t pl_len = 4 + (uint32_t)n * IPC_QCONNS_ENTRY_SIZE;
+    uint8_t *pl = g_malloc0(pl_len);
+    uint8_t *p = pl;
+
+    uint32_t n_be = htonl((uint32_t)n);
+    memcpy(p, &n_be, 4);
+    p += 4;
+
+    for (int i = 0; i < n; i++)
+    {
+        dev_ipc_connection_t *c = ctx->connections[i];
+        if (!c)
+        {
+            p += IPC_QCONNS_ENTRY_SIZE;
+            continue;
+        }
+
+        uint32_t v;
+        uint16_t v16;
+
+        v = htonl(c->remote_module_id);
+        memcpy(p, &v, 4);
+        p += 4;
+        v = htonl((uint32_t)c->state);
+        memcpy(p, &v, 4);
+        p += 4;
+        v = htonl((uint32_t)c->is_initiator);
+        memcpy(p, &v, 4);
+        p += 4;
+        strlcpy((char *)p, c->remote_host, 64);
+        p += 64;
+        v16 = htons(c->remote_port);
+        memcpy(p, &v16, 2);
+        p += 2;
+        p += 2; /* pad */
+
+        uint64_t ts = (uint64_t)c->last_heartbeat_sent;
+        v = htonl((uint32_t)(ts >> 32));
+        memcpy(p, &v, 4);
+        p += 4;
+        v = htonl((uint32_t)(ts & 0xFFFFFFFF));
+        memcpy(p, &v, 4);
+        p += 4;
+        ts = (uint64_t)c->last_heartbeat_recv;
+        v = htonl((uint32_t)(ts >> 32));
+        memcpy(p, &v, 4);
+        p += 4;
+        v = htonl((uint32_t)(ts & 0xFFFFFFFF));
+        memcpy(p, &v, 4);
+        p += 4;
+        v = htonl(c->reconnect_delay_ms);
+        memcpy(p, &v, 4);
+        p += 4;
+    }
+
+    pthread_mutex_unlock(&ctx->comutex);
+
+    *out_len = pl_len;
+    return pl;
+}
+
+// ============================================================================
 // 握手和心跳
 // ============================================================================
 
@@ -259,87 +331,14 @@ static void handle_frame(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn, dev
 
         case DEV_IPC_MSG_TYPE_DEV_QUERY_IPC_CONNS:
         {
-            /* IPC 状态查询：序列化本模块所有连接并直接回复，无需经过应用层
-             *
-             * 响应 payload wire format（全部 big-endian）：
-             *   uint32_t  num_connections
-             *   Per entry (100 bytes each):
-             *     uint32_t  remote_module_id
-             *     uint32_t  state (dev_ipc_costate_t)
-             *     uint32_t  is_initiator
-             *     char      remote_host[64]
-             *     uint16_t  remote_port
-             *     uint8_t   _pad[2]
-             *     uint32_t  last_hb_sent_hi
-             *     uint32_t  last_hb_sent_lo
-             *     uint32_t  last_hb_recv_hi
-             *     uint32_t  last_hb_recv_lo
-             *     uint32_t  reconnect_delay_ms
-             */
-#define IPC_QCONNS_ENTRY_SIZE 100
+            /* IPC 状态查询：序列化本模块所有连接并直接回复，无需经过应用层 */
+            uint32_t pl_len;
+            uint8_t *pl = dev_ipc_build_conns_payload(ctx, &pl_len);
 
-            pthread_mutex_lock(&ctx->comutex);
-
-            int n = ctx->num_connections;
-            uint32_t pl_len = 4 + (uint32_t)n * IPC_QCONNS_ENTRY_SIZE;
-            uint8_t *pl = g_malloc0(pl_len);
-            uint8_t *p = pl;
-
-            uint32_t n_be = htonl((uint32_t)n);
-            memcpy(p, &n_be, 4);
-            p += 4;
-
-            for (int i = 0; i < n; i++)
-            {
-                dev_ipc_connection_t *c = ctx->connections[i];
-                if (!c)
-                {
-                    p += IPC_QCONNS_ENTRY_SIZE;
-                    continue;
-                }
-
-                uint32_t v;
-                uint16_t v16;
-
-                v = htonl(c->remote_module_id);
-                memcpy(p, &v, 4);
-                p += 4;
-                v = htonl((uint32_t)c->state);
-                memcpy(p, &v, 4);
-                p += 4;
-                v = htonl((uint32_t)c->is_initiator);
-                memcpy(p, &v, 4);
-                p += 4;
-                strlcpy((char *)p, c->remote_host, 64);
-                p += 64;
-                v16 = htons(c->remote_port);
-                memcpy(p, &v16, 2);
-                p += 2;
-                p += 2; /* pad */
-
-                uint64_t ts = (uint64_t)c->last_heartbeat_sent;
-                v = htonl((uint32_t)(ts >> 32));
-                memcpy(p, &v, 4);
-                p += 4;
-                v = htonl((uint32_t)(ts & 0xFFFFFFFF));
-                memcpy(p, &v, 4);
-                p += 4;
-                ts = (uint64_t)c->last_heartbeat_recv;
-                v = htonl((uint32_t)(ts >> 32));
-                memcpy(p, &v, 4);
-                p += 4;
-                v = htonl((uint32_t)(ts & 0xFFFFFFFF));
-                memcpy(p, &v, 4);
-                p += 4;
-                v = htonl(c->reconnect_delay_ms);
-                memcpy(p, &v, 4);
-                p += 4;
-            }
-
-            /* 构造响应帧，回填 request_id 以匹配 RPC 等待方 */
+            /* 使用 _RESP 子类型，确保请求方的 query_mgr 能正确路由（不触发递归处理） */
             dev_ipc_message_t resp_hdr;
             memset(&resp_hdr, 0, sizeof(resp_hdr));
-            resp_hdr.msg_type = DEV_IPC_MSG_TYPE_DEV_QUERY_IPC_CONNS;
+            resp_hdr.msg_type = DEV_IPC_MSG_TYPE_DEV_QUERY_IPC_CONNS_RESP;
             resp_hdr.src_module_id = ctx->module_id;
             resp_hdr.dst_module_id = header->src_module_id;
             resp_hdr.request_id = header->request_id;
@@ -350,11 +349,12 @@ static void handle_frame(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn, dev
             uint32_t frame_len = 0;
             if (dev_ipc_frame_serialize(&resp_hdr, &frame_buf, &frame_len) == ERRCODE_SUCCESS)
             {
+                pthread_mutex_lock(&ctx->comutex);
                 dev_ipc_connection_send(conn, frame_buf, frame_len);
+                pthread_mutex_unlock(&ctx->comutex);
                 g_free(frame_buf);
             }
             g_free(pl);
-            pthread_mutex_unlock(&ctx->comutex);
             break;
         }
 

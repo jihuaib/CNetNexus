@@ -25,11 +25,10 @@ jobs:
         sudo apt-get install -y libglib2.0-dev libxml2-dev libsqlite3-dev
 
     - name: Configure CMake
-      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DBUILD_TESTING=ON
 
     - name: Build
       run: cmake --build ${{github.workspace}}/build --config ${{ matrix.build_type }}
 
-    - name: Test
-      working-directory: ${{github.workspace}}/build
-      run: ctest -C ${{ matrix.build_type }}
+    - name: Run CTest
+      run: ctest --test-dir ${{github.workspace}}/build --output-on-failure -C ${{ matrix.build_type }}

@@ -1,6 +1,6 @@
 /**
  * @file   bgp_session.h
- * @brief  BGP 会话结构定义（内嵌 pri_conn/sec_conn，持有 VRF 反向指针）
+ * @brief  BGP 会话结构定义（内嵌三类 timerfd 哨兵，持有 VRF 反向指针）
  * @author jhb
  * @date   2026/03/03
  */
@@ -25,81 +25,119 @@
 typedef struct bgp_vrf bgp_vrf_t;
 typedef struct bgp_peer bgp_peer_t;
 
-/* 前向声明，避免 bgp_retry_sentinel_t 与 bgp_session_t 的循环依赖 */
+/* 前向声明：bgp_timer_sentinel_t 与 bgp_session_t 互相引用 */
 struct bgp_session;
 
+/** timerfd 定时器类型 */
+typedef enum bgp_timer_type
+{
+    BGP_TIMER_TYPE_RETRY = 0,     /**< connect-retry 定时器 */
+    BGP_TIMER_TYPE_KEEPALIVE = 1, /**< keepalive 周期定时器 */
+    BGP_TIMER_TYPE_HOLD = 2,      /**< hold time 超时定时器 */
+} bgp_timer_type_t;
+
 /**
- * @brief epoll timerfd 反向引用结构
+ * @brief epoll timerfd 反向引用结构（内嵌于 bgp_session_t，通用于三类定时器）
  *
- * 内嵌于 bgp_session_t。注册 timerfd 到 epoll 时，data.ptr 设为
- * (void *)((uintptr_t)&sess->retry_sentinel | 1UL)，以 bit0=1
- * 与 bgp_conn_t* 区分，无需修改 bgp_conn_t。
+ * 注册 timerfd 到 epoll 时，data.ptr 设为
+ * (void *)((uintptr_t)&sess->xxx_sentinel | 1UL)，以 bit0=1
+ * 与 bgp_conn_t* 区分；type 字段区分三种定时器。
  */
-typedef struct bgp_retry_sentinel
+typedef struct bgp_timer_sentinel
 {
     struct bgp_session *session; /**< 所属 session（借用引用，不持有所有权） */
-} bgp_retry_sentinel_t;
+    bgp_timer_type_t type;       /**< 定时器类型 */
+} bgp_timer_sentinel_t;
 
 /**
  * @brief BGP 会话结构（一条 neighbor 配置）
  *
- * pri_conn：主连接指针（NULL=无连接）；碰撞解决后唯一存活的连接始终在此
- * sec_conn：次连接指针（NULL=无连接）；被动接入时临时使用，碰撞解决后置 NULL
- * remote_id / negotiated_afs：由 OPEN 报文协商填入，连接断开后保留到下次连接覆盖
- * recv_buf / recv_len：TCP 接收缓冲区，每次新建连接前由调用方重置 recv_len
- * peer_list：当前 session 在各 AF 下使能的 bgp_peer_t* 列表（借用引用，所有权在 inst->peer_hash）
+ * pri_conn：主连接；碰撞解决后唯一存活的连接始终在此
+ * sec_conn：被动接入时临时使用，碰撞解决后置 NULL
+ * remote_id / negotiated_afs：由 OPEN 报文协商填入
+ * recv_buf / recv_len：TCP 接收缓冲区
+ * peer_list：当前 session 在各 AF 下使能的 bgp_peer_t* 列表（借用引用）
+ *
+ * timerfd 生命周期：
+ *   retry_timerfd  — connect 失败后单次触发，成功后取消
+ *   ka_timerfd     — ESTABLISHED 后周期触发，断开后取消
+ *   hold_timerfd   — ESTABLISHED 后单次触发，每收到 KA/UPDATE 重置，断开后取消
  */
 typedef struct bgp_session
 {
     net_addr_t neighbor_addr;            /**< 邻居 IP 地址（sess_hash 的键） */
-    uint32_t remote_as;                  /**< 远端 AS 号（配置值，OPEN 协商后也写入此字段） */
+    uint32_t remote_as;                  /**< 远端 AS 号（配置值） */
     bgp_conn_t *pri_conn;                /**< 主连接（NULL=无） */
     bgp_conn_t *sec_conn;                /**< 次连接（NULL=无） */
-    char remote_id[16];                  /**< 对端 BGP Router ID（点分十进制，OPEN 后填入） */
+    char remote_id[16];                  /**< 对端 BGP Router ID（点分十进制） */
     uint8_t recv_buf[BGP_RECV_BUF_SIZE]; /**< TCP 接收缓冲区 */
     uint32_t recv_len;                   /**< 缓冲区中已有数据长度 */
-    GList *negotiated_afs;               /**< 协商地址族列表（gchar* "afi-safi"，如 "1-1"） */
-    GList *peer_list;  /**< 此 session 在各 AF 下使能的 bgp_peer_t*（借用引用，不持有所有权） */
-    uint32_t flags;    /**< 能力标记位（BGP_SESS_CAP_*），控制 OPEN 报文携带的能力集合 */
-    int retry_timerfd; /**< connect-retry timerfd，-1 表示未调度 */
-    bgp_retry_sentinel_t retry_sentinel; /**< timerfd 注册 epoll 时使用的 data.ptr 目标（bit0=1 标记） */
-    bgp_vrf_t *vrf;                      /**< 所属 VRF（借用引用，不持有所有权） */
-    bgp_conn_state_t state;              /**< BGP 协议握手状态（fd>=0 且 is_connecting=FALSE 时有效） */
+    GList *negotiated_afs;               /**< 协商地址族列表（gchar* "afi-safi"） */
+    GList *peer_list;                    /**< 各 AF 下使能的 bgp_peer_t*（借用引用） */
+
+    /* ---- 能力字段 ---- */
+    uint32_t flags;           /**< 已配置的本地能力集（BGP_SESS_CAP_*） */
+    uint32_t local_caps;      /**< 最近一次 OPEN 发出时实际携带的能力集 */
+    uint32_t remote_caps;     /**< 对端 OPEN 报告的能力集 */
+    uint32_t negotiated_caps; /**< 协商能力集 = local_caps ∩ remote_caps */
+    uint16_t remote_hold;     /**< 对端 OPEN 报告的 Hold Time（秒） */
+    uint16_t negotiated_hold; /**< 协商后的 Hold Time = min(本地, 对端) */
+
+    /* ---- 定时器字段 ---- */
+    int retry_timerfd;                   /**< connect-retry timerfd，-1 表示未调度 */
+    int ka_timerfd;                      /**< keepalive 周期 timerfd，-1 表示未调度 */
+    int hold_timerfd;                    /**< hold time 超时 timerfd，-1 表示未调度 */
+    bgp_timer_sentinel_t retry_sentinel; /**< epoll data.ptr 目标（bit0=1 标记，type=RETRY） */
+    bgp_timer_sentinel_t ka_sentinel;    /**< epoll data.ptr 目标（bit0=1 标记，type=KEEPALIVE） */
+    bgp_timer_sentinel_t hold_sentinel;  /**< epoll data.ptr 目标（bit0=1 标记，type=HOLD） */
+
+    gboolean hold_reset_pending; /**< 收到 KA 或 UPDATE 后需由 bgp_main 重置 hold 定时器 */
+
+    bgp_vrf_t *vrf;         /**< 所属 VRF（借用引用，不持有所有权） */
+    bgp_conn_state_t state; /**< BGP 协议握手状态 */
 } bgp_session_t;
 
 /**
  * @brief 创建 BGP 会话结构
- * @param addr      邻居 IP 地址
- * @param remote_as 远端 AS 号
- * @param vrf       所属 VRF（借用引用）
- * @return 新建的会话结构指针
  */
 bgp_session_t *bgp_session_create(const net_addr_t *addr, uint32_t remote_as, bgp_vrf_t *vrf);
 
 /**
- * @brief 销毁 BGP 会话结构（cleanup 两个 conn，释放 negotiated_afs）
- * @param session 会话结构指针（允许为 NULL）
+ * @brief 销毁 BGP 会话结构
  */
 void bgp_session_destroy(bgp_session_t *session);
 
-/**
- * @brief 为 session 启动 connect-retry timerfd 并注册到 epoll
- *
- * 若已调度（retry_timerfd >= 0）则幂等跳过。
- * timerfd 注册时 data.ptr 携带 bit0=1 标记，与 bgp_conn_t* 区分。
- *
- * @param sess      会话结构
- * @param epoll_fd  BGP server 的 epoll fd
- * @param retry_sec connect-retry 间隔（秒），取自 VRF 配置
- */
+/* ---- connect-retry 定时器 ---- */
 void bgp_session_arm_retry(bgp_session_t *sess, int epoll_fd, uint16_t retry_sec);
+void bgp_session_cancel_retry(bgp_session_t *sess, int epoll_fd);
+
+/* ---- keepalive 周期定时器 ---- */
+/**
+ * @brief 启动 keepalive 周期定时器（ESTABLISHED 后调用）
+ * @param ka_sec keepalive 间隔（秒），0 时不启动
+ */
+void bgp_session_arm_keepalive(bgp_session_t *sess, int epoll_fd, uint16_t ka_sec);
 
 /**
- * @brief 取消 session 的 connect-retry timerfd（从 epoll 移除并关闭）
- *
- * @param sess     会话结构
- * @param epoll_fd BGP server 的 epoll fd
+ * @brief 取消 keepalive 定时器（断开连接时调用）
  */
-void bgp_session_cancel_retry(bgp_session_t *sess, int epoll_fd);
+void bgp_session_cancel_keepalive(bgp_session_t *sess, int epoll_fd);
+
+/* ---- hold time 超时定时器 ---- */
+/**
+ * @brief 启动 hold time 单次超时定时器（ESTABLISHED 后调用）
+ * @param hold_sec hold time（秒），0 时不启动（无限 hold）
+ */
+void bgp_session_arm_hold(bgp_session_t *sess, int epoll_fd, uint16_t hold_sec);
+
+/**
+ * @brief 重置 hold time 定时器（收到 KA 或 UPDATE 后调用，不需要 epoll_fd）
+ */
+void bgp_session_reset_hold(bgp_session_t *sess);
+
+/**
+ * @brief 取消 hold time 定时器（断开连接时调用）
+ */
+void bgp_session_cancel_hold(bgp_session_t *sess, int epoll_fd);
 
 #endif /* BGP_SESSION_H */

@@ -109,7 +109,7 @@
                 </element>
                 <element cfg-id="1" type="parameter">
                     <name>&lt;module-name&gt;</name>
-                    <description>Module name (e.g. bgp, cfg, db)</description>
+                    <description>Module name</description>
                     <type>dynamic(string(1-12))</type>
                 </element>
             </elements>

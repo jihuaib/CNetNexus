@@ -8,6 +8,7 @@ set(BGP_SOURCES
     bgp_conn.c
     bgp_pkt.c
     bgp_session.c
+    bgp_rib.c
     bgp_instance.c
     bgp_vrf.c
     bgp_protocol.c
@@ -22,6 +23,7 @@ target_link_libraries(netnexus-bgp PRIVATE
     cli_api
     db_api
     utils
+    bgp_parse
 )
 
 set_target_properties(netnexus-bgp PROPERTIES

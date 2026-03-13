@@ -13,6 +13,10 @@
 #include "bgp_instance.h"
 #include "bgp_session.h"
 
+/* 前向声明：避免在头文件中引入 bgp_route.h 与 bgp_peer.h 常量名冲突 */
+typedef struct bgp_update_result bgp_update_result_t;
+typedef struct bgp_rib_update_stats bgp_rib_update_stats_t;
+
 /** 默认公网 VRF ID */
 #define BGP_VRF_PUBLIC_ID 0
 
@@ -124,5 +128,29 @@ bgp_instance_t *bgp_vrf_get_or_create_instance(bgp_vrf_t *vrf, bgp_afi_t afi, bg
  * @param safi 子地址族
  */
 void bgp_vrf_del_instance(bgp_vrf_t *vrf, bgp_afi_t afi, bgp_safi_t safi);
+
+/**
+ * @brief 将解析后的 UPDATE 应用于 VRF 内存 RIB（按 entry.afi/entry.safi 分发）
+ * @param vrf   目标 VRF
+ * @param src   路径来源邻居地址
+ * @param upd   解析后的 UPDATE 结果
+ * @param stats 输出统计（可为 NULL）
+ */
+void bgp_vrf_apply_update(bgp_vrf_t *vrf, const net_addr_t *src, const bgp_update_result_t *upd,
+                          bgp_rib_update_stats_t *stats);
+
+/**
+ * @brief 清理某邻居在 VRF 下的全部路由
+ * @param vrf  目标 VRF
+ * @param addr 邻居地址
+ * @return 删除的 route 数
+ */
+uint32_t bgp_vrf_purge_session_routes(bgp_vrf_t *vrf, const net_addr_t *addr);
+
+/**
+ * @brief 获取 VRF 所有 AF RIB 统计
+ */
+uint32_t bgp_vrf_rib_head_count(const bgp_vrf_t *vrf);
+uint32_t bgp_vrf_rib_route_count(const bgp_vrf_t *vrf);
 
 #endif /* BGP_VRF_H */

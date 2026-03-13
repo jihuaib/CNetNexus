@@ -56,6 +56,12 @@ include_directories(${GLIB_INCLUDE_DIRS})
 # Add src subdirectory
 add_subdirectory(src)
 
+# Unit tests
+include(CTest)
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()
+
 # Custom target for running the server
 add_custom_target(run
     COMMAND netnexus

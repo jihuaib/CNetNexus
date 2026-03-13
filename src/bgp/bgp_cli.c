@@ -12,8 +12,10 @@
 #include <string.h>
 
 #include "bgp_cfg_apply.h"
+#include "bgp_conn.h"
 #include "bgp_db.h"
 #include "bgp_main.h"
+#include "bgp_pkt.h"
 #include "bgp_protocol.h"
 #include "bgp_session.h"
 #include "bgp_vrf.h"
@@ -1038,6 +1040,226 @@ static int handle_bgp_open_capability(dev_ipc_message_t *msg, cli_tlv_parser_t *
 }
 
 // ============================================================================
+// 连接状态描述辅助
+// ============================================================================
+
+/** 返回 session 当前状态字符串 */
+static const char *sess_state_str(const bgp_session_t *sess)
+{
+    const bgp_conn_t *conn = sess->pri_conn ? sess->pri_conn : sess->sec_conn;
+    if (!conn || conn->fd == -1)
+    {
+        return "Idle";
+    }
+    if (conn->is_connecting)
+    {
+        return "Connect";
+    }
+    switch (sess->state)
+    {
+        case BGP_CONN_STATE_OPEN_SENT:
+            return "OpenSent";
+        case BGP_CONN_STATE_OPEN_CONFIRM:
+            return "OpenConfirm";
+        case BGP_CONN_STATE_ESTABLISHED:
+            return "Established";
+        default:
+            return "Unknown";
+    }
+}
+
+/** 返回能力位对应的可读字符串 */
+static const char *cap_yn(uint32_t caps, uint32_t bit)
+{
+    return BIT_TEST(caps, bit) ? "Yes" : "No";
+}
+
+/**
+ * @brief 处理 show bgp neighbor af-ipv4u <ip> 命令
+ *
+ * group_id=10, cfg_id: 1=af-ipv4u (keyword), 2=ip-address
+ */
+static int handle_bgp_show_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    char ip_buf[64] = {0};
+    bgp_cli_ctx_t ctx = bgp_cli_ctx_default();
+
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (CLI_TLV_IS_CTX(&entry))
+        {
+            bgp_cli_ctx_parse(&ctx, &entry);
+            cli_tlv_entry_free(&entry);
+            continue;
+        }
+        switch (entry.cfg_id)
+        {
+            case 1: /* af-ipv4u 关键字：固定 IPv4 单播 */
+                ctx.afi = BGP_AFI_IPV4;
+                ctx.safi = BGP_SAFI_UNICAST;
+                break;
+            case 2: /* <ip-address> 参数 */
+            {
+                const char *s = cli_tlv_entry_get_text(&entry);
+                if (s)
+                {
+                    snprintf(ip_buf, sizeof(ip_buf), "%s", s);
+                }
+                break;
+            }
+            default:
+                break;
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    if (!g_bgp_local->protocol)
+    {
+        bgp_send_cli_response(msg, "BGP Error: BGP not configured.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_local->protocol, ctx.vrf_id);
+    if (!vrf)
+    {
+        bgp_send_cli_response(msg, "BGP Error: VRF not found.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    /* show-all 模式：无 IP 参数时显示当前 AF 实例下所有邻居摘要 */
+    if (ip_buf[0] == '\0')
+    {
+        bgp_instance_t *inst = g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(ctx.afi, ctx.safi));
+
+        char resp_buf[CLI_MAX_RESP_LEN];
+        size_t off = 0;
+
+        CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), off, "\r\nBGP Neighbors (AF: %s)\r\n",
+                       bgp_af_str(ctx.afi, ctx.safi));
+        CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), off,
+                       "============================================================\r\n");
+
+        if (!inst || g_hash_table_size(inst->peer_hash) == 0)
+        {
+            CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), off, "  (no neighbors configured)\r\n");
+        }
+        else
+        {
+            CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), off, "  %-17s%-11s%-17s%s\r\n", "Neighbor", "Remote-AS",
+                           "Router-ID", "State");
+            CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), off, "  %-17s%-11s%-17s%s\r\n", "---------------", "---------",
+                           "---------------", "-----------");
+
+            GHashTableIter iter;
+            gpointer key, val;
+            g_hash_table_iter_init(&iter, inst->peer_hash);
+            while (g_hash_table_iter_next(&iter, &key, &val))
+            {
+                bgp_peer_t *peer = (bgp_peer_t *)val;
+                bgp_session_t *psess = bgp_vrf_find_session(vrf, &peer->addr);
+
+                char nbr_ip[64];
+                net_addr_to_str(&peer->addr, nbr_ip, sizeof(nbr_ip));
+
+                const char *rid = psess && psess->remote_id[0] ? psess->remote_id : "0.0.0.0";
+                uint32_t ras = psess ? psess->remote_as : 0;
+                const char *state = psess ? sess_state_str(psess) : "Idle";
+
+                CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), off, "  %-17s%-11u%-17s%s\r\n", nbr_ip, ras, rid, state);
+            }
+        }
+
+        CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), off, "\r\n");
+        bgp_send_cli_response(msg, resp_buf);
+        return ERRCODE_SUCCESS;
+    }
+
+    net_addr_t ip_addr;
+    if (net_addr_from_str(ip_buf, &ip_addr) != 0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Invalid IP address.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    bgp_session_t *sess = bgp_vrf_find_session(vrf, &ip_addr);
+    if (!sess)
+    {
+        char tmp[128];
+        snprintf(tmp, sizeof(tmp), "BGP Error: Neighbor %s not found.\r\n", ip_buf);
+        bgp_send_cli_response(msg, tmp);
+        return ERRCODE_FAIL;
+    }
+
+    /* 查找 AF 实例，判断邻居是否在该 AF 下使能 */
+    bgp_instance_t *inst = g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(ctx.afi, ctx.safi));
+    char addr_key[64];
+    net_addr_to_str(&ip_addr, addr_key, sizeof(addr_key));
+    gboolean af_enabled = (inst && g_hash_table_lookup(inst->peer_hash, addr_key));
+
+    /* 构建显示内容 */
+    char resp_buf[CLI_MAX_RESP_LEN];
+    size_t off = 0;
+
+    CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), off, "\r\nBGP Neighbor: %s\r\n", ip_buf);
+    CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), off, "==========================================\r\n");
+    CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), off, "  %-24s: %u\r\n", "Remote AS", sess->remote_as);
+    CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), off, "  %-24s: %s\r\n", "Remote Router-ID",
+                   sess->remote_id[0] ? sess->remote_id : "(未建立)");
+    CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), off, "  %-24s: %s\r\n", "Session State", sess_state_str(sess));
+
+    /* 能力表格 */
+    CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), off, "\r\n  Capabilities:\r\n");
+    CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), off, "  %-16s  %-10s  %-10s  %-10s\r\n", "Feature", "Local", "Remote",
+                   "Negotiated");
+    CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), off, "  %-16s  %-10s  %-10s  %-10s\r\n", "---------------", "---------",
+                   "---------", "---------");
+    CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), off, "  %-16s  %-10s  %-10s  %-10s\r\n", "AS4",
+                   cap_yn(sess->flags, BGP_SESS_CAP_AS4), cap_yn(sess->remote_caps, BGP_SESS_CAP_AS4),
+                   cap_yn(sess->negotiated_caps, BGP_SESS_CAP_AS4));
+    CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), off, "  %-16s  %-10s  %-10s  %-10s\r\n", "Route-Refresh",
+                   cap_yn(sess->flags, BGP_SESS_CAP_ROUTE_REFRESH),
+                   cap_yn(sess->remote_caps, BGP_SESS_CAP_ROUTE_REFRESH),
+                   cap_yn(sess->negotiated_caps, BGP_SESS_CAP_ROUTE_REFRESH));
+
+    /* Hold Time */
+    CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), off, "\r\n  Hold Time:\r\n");
+    CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), off, "  %-24s: %u s\r\n", "Local (sent)", BGP_HOLD_TIME);
+    CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), off, "  %-24s: %s\r\n", "Remote (received)",
+                   sess->remote_hold ? "" : "(未建立)");
+    if (sess->remote_hold)
+    {
+        /* 重写最后一行：补上数值 */
+        off -= 2; /* 回退 \r\n */
+        resp_buf[off] = '\0';
+        CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), off, "%u s\r\n", sess->remote_hold);
+    }
+    CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), off, "  %-24s: %u s\r\n", "Negotiated", sess->negotiated_hold);
+
+    /* 协商地址族 */
+    CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), off, "\r\n  Negotiated Address Families:\r\n");
+    if (sess->negotiated_afs)
+    {
+        for (GList *l = sess->negotiated_afs; l; l = l->next)
+        {
+            CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), off, "    %s\r\n", (const char *)l->data);
+        }
+    }
+    else
+    {
+        CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), off, "    (none)\r\n");
+    }
+
+    /* AF 使能状态 */
+    CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), off, "\r\n  %-24s: %s\r\n", "AF IPv4 Unicast",
+                   af_enabled ? "Enabled" : "Disabled");
+    CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), off, "\r\n");
+
+    bgp_send_cli_response(msg, resp_buf);
+    return ERRCODE_SUCCESS;
+}
+
+// ============================================================================
 // 主入口
 // ============================================================================
 
@@ -1093,6 +1315,9 @@ int bgp_cli_handle_message(dev_ipc_message_t *msg)
             break;
         case BGP_CLI_GROUP_ID_OPEN_CAP:
             result = handle_bgp_open_capability(msg, &parser);
+            break;
+        case BGP_CLI_GROUP_ID_SHOW_NEIGHBOR:
+            result = handle_bgp_show_neighbor(msg, &parser);
             break;
         default:
             LOG_WARN("未知 group_id: %u", parser.group_id);

@@ -560,6 +560,28 @@ int dev_ipc_frame_parse_header(const uint8_t *buf, dev_ipc_message_t *header);
  */
 dev_ipc_message_t *dev_ipc_frame_to_message(const dev_ipc_message_t *header, const uint8_t *payload);
 
+/**
+ * @brief 序列化本模块所有 IPC 连接状态为 QUERY_IPC_CONNS wire format 二进制载荷
+ *
+ * 载荷格式（全部 big-endian）：
+ *   uint32_t  num_connections
+ *   Per entry (100 bytes each):
+ *     uint32_t  remote_module_id
+ *     uint32_t  state
+ *     uint32_t  is_initiator
+ *     char      remote_host[64]
+ *     uint16_t  remote_port
+ *     uint8_t   _pad[2]
+ *     uint32_t  last_hb_sent_hi/lo
+ *     uint32_t  last_hb_recv_hi/lo
+ *     uint32_t  reconnect_delay_ms
+ *
+ * @param ctx     IPC 上下文
+ * @param out_len 输出载荷长度
+ * @return 序列化后的载荷（调用者负责 g_free），失败返回 NULL
+ */
+uint8_t *dev_ipc_build_conns_payload(dev_ipc_context_t *ctx, uint32_t *out_len);
+
 // ============================================================================
 // DEV RPC API
 // ============================================================================

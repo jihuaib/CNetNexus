@@ -14,7 +14,10 @@
 #include <unistd.h>
 
 #include "bgp_instance.h"
+#include "bgp_parse.h"
+#include "bgp_rib.h"
 #include "bgp_session.h"
+#include "bgp_vrf.h"
 #include "log.h"
 
 /** BGP 报文 Marker：16 字节全 0xFF */
@@ -31,13 +34,24 @@ int bgp_pkt_send_open(bgp_conn_t *conn, uint32_t local_as, const char *router_id
     char _ip[64];
     net_addr_to_str(&conn->peer_addr, _ip, sizeof(_ip));
 
-    /* 计算 Optional Parameters 长度：每个 AF 占 8 字节 */
+    /* 从 session->flags 读取本地配置的能力集 */
+    uint32_t cap_flags = (conn->session) ? conn->session->flags : BGP_SESS_CAP_DEFAULT;
+    gboolean send_rr = BIT_TEST(cap_flags, BGP_SESS_CAP_ROUTE_REFRESH);
+    gboolean send_as4 = BIT_TEST(cap_flags, BGP_SESS_CAP_AS4);
+
+    /* 计算 Optional Parameters 长度：
+     *   每个 AF  = type(1)+len(1)+cap_code(1)+cap_len(1)+AFI(2)+rsv(1)+SAFI(1) = 8 B
+     *   Route Refresh = type(1)+len(1)+cap_code(1)+cap_len(1)                   = 4 B
+     *   AS4     = type(1)+len(1)+cap_code(1)+cap_len(1)+AS(4)                   = 8 B
+     */
     guint n_afs = af_peers ? g_list_length(af_peers) : 0;
-    uint8_t opt_len = (uint8_t)(8 * n_afs);
+    uint8_t extra_len = (uint8_t)((send_rr ? 4U : 0U) + (send_as4 ? 8U : 0U));
+    uint8_t opt_len = (uint8_t)(8U * n_afs + extra_len);
 
     /* BGP OPEN: header(19) + version(1) + my-as(2) + hold-time(2) + bgp-id(4) + opt-len(1) + opt(n) */
     uint16_t total_len = (uint16_t)(29 + opt_len);
-    uint8_t msg[29 + 8 * 16]; /* 最多支持 16 个 AF */
+    /* 最多 16 个 AF(128 B) + Route Refresh(4 B) + AS4(8 B) = 140 B extra */
+    uint8_t msg[29 + 8 * 16 + 12];
 
     memcpy(msg, BGP_MARKER, 16);
 
@@ -47,7 +61,9 @@ int bgp_pkt_send_open(bgp_conn_t *conn, uint32_t local_as, const char *router_id
 
     msg[19] = 4; /* BGP 版本 */
 
-    uint16_t as_be = htons((uint16_t)local_as);
+    /* my-as：AS4 时 RFC 6793 要求填写 AS_TRANS(23456)；简化实现直接截断 */
+    uint16_t as_field = send_as4 ? (local_as > 65535U ? 23456U : (uint16_t)local_as) : (uint16_t)local_as;
+    uint16_t as_be = htons(as_field);
     memcpy(msg + 20, &as_be, 2);
 
     uint16_t hold_be = htons(BGP_HOLD_TIME);
@@ -62,27 +78,48 @@ int bgp_pkt_send_open(bgp_conn_t *conn, uint32_t local_as, const char *router_id
 
     msg[28] = opt_len;
 
-    /* 填充 MP 扩展能力 Optional Parameters */
-    if (n_afs > 0)
+    uint8_t *opt_ptr = msg + 29;
+
+    /* 填充 MP 扩展能力（每个 AF 一个 Optional Parameter） */
+    for (GList *l = af_peers; l != NULL; l = l->next)
     {
-        uint8_t *opt_ptr = msg + 29;
-        for (GList *l = af_peers; l != NULL; l = l->next)
-        {
-            bgp_peer_t *ap = (bgp_peer_t *)l->data;
-            /* Optional Parameter: type=2(Capability), len=6 */
-            opt_ptr[0] = 2;
-            opt_ptr[1] = 6;
-            /* Capability: code=1(MP Extensions), cap-len=4 */
-            opt_ptr[2] = 1;
-            opt_ptr[3] = 4;
-            /* AFI(2B) + reserved(1B) + SAFI(1B)，从所属 instance 获取 afi/safi */
-            uint16_t afi_be = htons((uint16_t)ap->inst->afi);
-            memcpy(opt_ptr + 4, &afi_be, 2);
-            opt_ptr[6] = 0;
-            opt_ptr[7] = (uint8_t)ap->inst->safi;
-            opt_ptr += 8;
-        }
-        LOG_INFO("BGP: 携带 %u 个 AF 能力参数发送 OPEN", n_afs);
+        bgp_peer_t *ap = (bgp_peer_t *)l->data;
+        opt_ptr[0] = 2; /* type=Capability */
+        opt_ptr[1] = 6; /* len=6 */
+        opt_ptr[2] = 1; /* code=MP Extensions */
+        opt_ptr[3] = 4; /* cap-len=4 */
+        uint16_t afi_be = htons((uint16_t)ap->inst->afi);
+        memcpy(opt_ptr + 4, &afi_be, 2);
+        opt_ptr[6] = 0;
+        opt_ptr[7] = (uint8_t)ap->inst->safi;
+        opt_ptr += 8;
+    }
+
+    /* 填充 Route Refresh 能力（RFC 2918）*/
+    if (send_rr)
+    {
+        opt_ptr[0] = 2;                     /* type=Capability */
+        opt_ptr[1] = 2;                     /* len=2 */
+        opt_ptr[2] = BGP_CAP_ROUTE_REFRESH; /* code=2 */
+        opt_ptr[3] = 0;                     /* cap-len=0 */
+        opt_ptr += 4;
+    }
+
+    /* 填充 4 字节 AS 能力（RFC 6793）*/
+    if (send_as4)
+    {
+        opt_ptr[0] = 2;           /* type=Capability */
+        opt_ptr[1] = 6;           /* len=6 */
+        opt_ptr[2] = BGP_CAP_AS4; /* code=65 */
+        opt_ptr[3] = 4;           /* cap-len=4 */
+        uint32_t as4_be = htonl(local_as);
+        memcpy(opt_ptr + 4, &as4_be, 4);
+        opt_ptr += 8;
+    }
+
+    if (n_afs > 0 || send_rr || send_as4)
+    {
+        LOG_INFO("BGP: OPEN 能力集: AF=%u%s%s", n_afs, send_rr ? " RR" : "", send_as4 ? " AS4" : "");
     }
 
     ssize_t n = send(conn->fd, msg, total_len, MSG_NOSIGNAL);
@@ -90,6 +127,12 @@ int bgp_pkt_send_open(bgp_conn_t *conn, uint32_t local_as, const char *router_id
     {
         LOG_ERROR("BGP: 向 %s 发送 OPEN 失败", _ip);
         return -1;
+    }
+
+    /* 记录本次 OPEN 实际发出的能力集 */
+    if (conn->session)
+    {
+        conn->session->local_caps = cap_flags;
     }
 
     LOG_INFO("BGP: 已向 %s 发送 OPEN (AS=%u, ID=%s)", _ip, local_as, router_id ? router_id : "0.0.0.0");
@@ -136,68 +179,51 @@ static int parse_bgp_open(bgp_conn_t *conn, const uint8_t *body, uint16_t body_l
     char _ip[64];
     net_addr_to_str(&conn->peer_addr, _ip, sizeof(_ip));
 
-    /* 最小 OPEN 报文体：version(1)+as(2)+hold(2)+bgp-id(4)+opt-len(1) = 10 */
-    if (body_len < 10)
+    bgp_open_msg_t msg;
+    if (bgp_open_parse(body, body_len, &msg) < 0)
     {
-        LOG_ERROR("BGP: peer %s OPEN 报文体过短 (%u)", _ip, body_len);
+        LOG_ERROR("BGP: peer %s OPEN 解析失败", _ip);
         return -1;
     }
 
-    uint8_t version = body[0];
-    if (version != 4)
+    /* 优先使用 4 字节 AS（RFC 6793 AS_TRANS 处理） */
+    conn->session->remote_as = msg.cap_as4 ? msg.cap_as4 : msg.my_as;
+
+    strncpy(conn->session->remote_id, msg.bgp_id, sizeof(conn->session->remote_id) - 1);
+    conn->session->remote_id[sizeof(conn->session->remote_id) - 1] = '\0';
+
+    /* 记录远端能力集 */
+    uint32_t remote_caps = 0;
+    if (msg.cap_route_refresh)
     {
-        LOG_WARN("BGP: peer %s OPEN version=%u 不支持", _ip, version);
-        return -1;
+        BIT_SET(remote_caps, BGP_SESS_CAP_ROUTE_REFRESH);
     }
-
-    uint16_t remote_as_be;
-    memcpy(&remote_as_be, body + 1, 2);
-    conn->session->remote_as = ntohs(remote_as_be);
-
-    /* BGP Router ID 始终为 IPv4 格式（协议规定） */
-    struct in_addr bgp_id;
-    memcpy(&bgp_id, body + 5, 4);
-    inet_ntop(AF_INET, &bgp_id, conn->session->remote_id, sizeof(conn->session->remote_id));
-
-    LOG_INFO("BGP: 收到 %s 的 OPEN (AS=%u, ID=%s)", _ip, conn->session->remote_as, conn->session->remote_id);
-
-    /* 解析 Optional Parameters，提取 MP 扩展能力 */
-    uint8_t opt_len = body[9];
-    uint16_t pos = 10;
-    while (pos + 2 <= (uint16_t)(10 + opt_len) && pos + 2 <= body_len)
+    if (msg.cap_as4)
     {
-        uint8_t param_type = body[pos];
-        uint8_t param_len = body[pos + 1];
-        pos += 2;
+        BIT_SET(remote_caps, BGP_SESS_CAP_AS4);
+    }
+    conn->session->remote_caps = remote_caps;
+    conn->session->negotiated_caps = conn->session->local_caps & remote_caps;
 
-        if (param_type == 2) /* Capability */
-        {
-            uint8_t cap_end = (uint8_t)(pos + param_len);
-            uint8_t cap_pos = (uint8_t)pos;
-            while (cap_pos + 2 <= cap_end && cap_pos + 2 <= body_len)
-            {
-                uint8_t cap_code = body[cap_pos];
-                uint8_t cap_len = body[cap_pos + 1];
-                cap_pos += 2;
+    /* 记录并协商 Hold Time（取本地与远端的较小值，RFC 4271 §4.2） */
+    conn->session->remote_hold = msg.hold_time;
+    conn->session->negotiated_hold = (msg.hold_time < BGP_HOLD_TIME) ? msg.hold_time : BGP_HOLD_TIME;
 
-                if (cap_code == 1 && cap_len >= 4 && cap_pos + 4 <= body_len)
-                {
-                    /* Multiprotocol Extensions (RFC 4760) */
-                    uint16_t afi_be;
-                    memcpy(&afi_be, body + cap_pos, 2);
-                    uint16_t afi = ntohs(afi_be);
-                    uint8_t safi = body[cap_pos + 3];
+    LOG_INFO("BGP: 收到 %s 的 OPEN (AS=%u, ID=%s, hold=%u, caps=0x%02X)", _ip, conn->session->remote_as,
+             conn->session->remote_id, msg.hold_time, remote_caps);
 
-                    char af_key[32];
-                    snprintf(af_key, sizeof(af_key), "%u-%u", afi, safi);
-                    conn->session->negotiated_afs = g_list_append(conn->session->negotiated_afs, g_strdup(af_key));
-                    LOG_INFO("BGP: peer %s 携带 MP 能力: AFI=%u SAFI=%u", _ip, afi, safi);
-                }
-                cap_pos += cap_len;
-            }
-        }
-
-        pos += param_len;
+    /* 将 MP 能力写入 negotiated_afs */
+    if (conn->session->negotiated_afs)
+    {
+        g_list_free_full(conn->session->negotiated_afs, g_free);
+        conn->session->negotiated_afs = NULL;
+    }
+    for (uint8_t i = 0; i < msg.mp_count; i++)
+    {
+        char af_key[32];
+        snprintf(af_key, sizeof(af_key), "%u-%u", msg.mp_afs[i], msg.mp_safis[i]);
+        conn->session->negotiated_afs = g_list_append(conn->session->negotiated_afs, g_strdup(af_key));
+        LOG_INFO("BGP: peer %s MP 能力: AFI=%u SAFI=%u", _ip, msg.mp_afs[i], msg.mp_safis[i]);
     }
 
     return 0;
@@ -283,18 +309,51 @@ int bgp_pkt_on_data(bgp_conn_t *conn)
                 }
                 else
                 {
-                    /* ESTABLISHED 状态下的周期 KEEPALIVE */
+                    /* ESTABLISHED 状态下的周期 KEEPALIVE：通知 bgp_main 重置 Hold 定时器 */
                     LOG_DEBUG("BGP: 收到 %s KEEPALIVE", _ip);
+                    sess->hold_reset_pending = TRUE;
                 }
                 break;
 
             case BGP_MSG_UPDATE:
-                LOG_INFO("BGP: 收到 %s UPDATE 报文（暂未处理）", _ip);
+            {
+                bgp_update_result_t *upd = NULL;
+                uint32_t parse_flags = BGP_PARSE_FLAG_AS4;
+                if (bgp_update_parse(body, body_len, parse_flags, &upd) == 0 && upd)
+                {
+                    bgp_rib_update_stats_t rib_stats = {0};
+                    bgp_vrf_apply_update(sess->vrf, &sess->neighbor_addr, upd, &rib_stats);
+
+                    LOG_INFO(
+                        "BGP: %s UPDATE: afi=%u safi=%u +%u -%u | RIB new=%u upd=%u wd=%u miss=%u heads=%u routes=%u",
+                        _ip, upd->afi, upd->safi, upd->reach_len, upd->unreach_len, rib_stats.reach_new,
+                        rib_stats.reach_update, rib_stats.unreach_removed, rib_stats.unreach_miss,
+                        bgp_vrf_rib_head_count(sess->vrf), bgp_vrf_rib_route_count(sess->vrf));
+                    bgp_update_result_free(upd);
+                }
+                else
+                {
+                    LOG_WARN("BGP: %s UPDATE 解析失败", _ip);
+                }
+                /* UPDATE 也重置 Hold 定时器（RFC 4271 §8.2.2） */
+                sess->hold_reset_pending = TRUE;
                 break;
+            }
 
             case BGP_MSG_NOTIFICATION:
-                LOG_WARN("BGP: 收到 %s NOTIFICATION 报文，关闭会话", _ip);
+            {
+                bgp_notif_msg_t notif;
+                if (bgp_notif_parse(body, body_len, &notif) == 0)
+                {
+                    LOG_WARN("BGP: 收到 %s NOTIFICATION: %s (code=%u sub=%u)", _ip, notif.error_str, notif.error_code,
+                             notif.error_subcode);
+                }
+                else
+                {
+                    LOG_WARN("BGP: 收到 %s NOTIFICATION 报文，关闭会话", _ip);
+                }
                 return -1;
+            }
 
             default:
                 LOG_WARN("BGP: peer %s 未知报文类型 %u，关闭连接", _ip, msg_type);
