@@ -50,7 +50,7 @@ bgp_session_t *bgp_session_create(const net_addr_t *addr, uint32_t remote_as, bg
     {
         net_addr_to_str(addr, addr_str, sizeof(addr_str));
     }
-    LOG_INFO("BGP 会话已创建: neighbor=%s AS=%u", addr_str, remote_as);
+    LOG_INFO("BGP session created: neighbor=%s AS=%u", addr_str, remote_as);
     return sess;
 }
 
@@ -63,7 +63,7 @@ void bgp_session_destroy(bgp_session_t *session)
 
     char addr_str[64];
     net_addr_to_str(&session->neighbor_addr, addr_str, sizeof(addr_str));
-    LOG_INFO("BGP 会话已销毁: neighbor=%s", addr_str);
+    LOG_INFO("BGP session destroyed: neighbor=%s", addr_str);
 
     bgp_conn_destroy(session->pri_conn);
     session->pri_conn = NULL;
@@ -120,7 +120,7 @@ static int timer_arm(bgp_timer_sentinel_t *sentinel, int epoll_fd, uint16_t init
     int tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
     if (tfd < 0)
     {
-        LOG_PERROR("BGP: timerfd_create 失败");
+        LOG_PERROR("BGP: timerfd_create failed");
         return -1;
     }
 
@@ -132,7 +132,7 @@ static int timer_arm(bgp_timer_sentinel_t *sentinel, int epoll_fd, uint16_t init
 
     if (timerfd_settime(tfd, 0, &ts, NULL) < 0)
     {
-        LOG_PERROR("BGP: timerfd_settime 失败");
+        LOG_PERROR("BGP: timerfd_settime failed");
         close(tfd);
         return -1;
     }
@@ -142,7 +142,7 @@ static int timer_arm(bgp_timer_sentinel_t *sentinel, int epoll_fd, uint16_t init
     ev.data.ptr = (void *)((uintptr_t)sentinel | 1UL);
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, tfd, &ev) < 0)
     {
-        LOG_PERROR("BGP: epoll_ctl ADD timerfd 失败");
+        LOG_PERROR("BGP: epoll_ctl ADD timerfd failed");
         close(tfd);
         return -1;
     }
@@ -180,7 +180,7 @@ void bgp_session_arm_retry(bgp_session_t *sess, int epoll_fd, uint16_t retry_sec
     {
         char addr_str[64];
         net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
-        LOG_INFO("BGP: neighbor %s 调度 connect-retry，%u 秒后重试", addr_str, (unsigned)retry_sec);
+        LOG_INFO("BGP: neighbor %s scheduling connect-retry, retrying in %u seconds", addr_str, (unsigned)retry_sec);
     }
 }
 
@@ -205,7 +205,7 @@ void bgp_session_arm_keepalive(bgp_session_t *sess, int epoll_fd, uint16_t ka_se
     {
         char addr_str[64];
         net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
-        LOG_INFO("BGP: neighbor %s 启动 keepalive 定时器，周期 %u 秒", addr_str, (unsigned)ka_sec);
+        LOG_INFO("BGP: neighbor %s starting keepalive timer, interval %u seconds", addr_str, (unsigned)ka_sec);
     }
 }
 
@@ -230,7 +230,7 @@ void bgp_session_arm_hold(bgp_session_t *sess, int epoll_fd, uint16_t hold_sec)
     {
         char addr_str[64];
         net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
-        LOG_INFO("BGP: neighbor %s 启动 hold 定时器，%u 秒", addr_str, (unsigned)hold_sec);
+        LOG_INFO("BGP: neighbor %s starting hold timer, %u seconds", addr_str, (unsigned)hold_sec);
     }
 }
 

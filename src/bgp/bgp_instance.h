@@ -20,11 +20,12 @@ typedef struct bgp_rib bgp_rib_t;
  */
 typedef struct bgp_instance
 {
-    bgp_afi_t afi;         /**< 地址族 */
-    bgp_safi_t safi;       /**< 子地址族 */
-    GHashTable *peer_hash; /**< addr_str(gchar*) -> bgp_peer_t*（持有所有权） */
-    bgp_rib_t *rib;        /**< 该 AFI/SAFI 的内存 RIB（持有所有权） */
-    bgp_vrf_t *vrf;        /**< 所属 VRF（借用引用，不持有所有权） */
+    bgp_afi_t afi;          /**< 地址族 */
+    bgp_safi_t safi;        /**< 子地址族 */
+    GHashTable *peer_hash;  /**< addr_str(gchar*) -> bgp_peer_t*（持有所有权） */
+    bgp_rib_t *rib;         /**< 该 AFI/SAFI 的内存 RIB（持有所有权） */
+    bgp_vrf_t *vrf;         /**< 所属 VRF（借用引用，不持有所有权） */
+    uint32_t import_protos; /**< 已导入协议位掩码：bit N 置 1 表示 protocol=N 已导入 */
 } bgp_instance_t;
 
 /**

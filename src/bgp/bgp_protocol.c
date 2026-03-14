@@ -28,7 +28,7 @@ bgp_protocol_t *bgp_protocol_create(uint32_t as_number)
     *vrf_key = BGP_VRF_PUBLIC_ID;
     g_hash_table_insert(proto->vrf_hash, vrf_key, default_vrf);
 
-    LOG_INFO("BGP 协议结构已创建: AS %u", as_number);
+    LOG_INFO("BGP protocol structure created: AS %u", as_number);
     return proto;
 }
 
@@ -38,7 +38,7 @@ void bgp_protocol_destroy(bgp_protocol_t *proto)
     {
         return;
     }
-    LOG_INFO("BGP 协议结构已销毁: AS %u", proto->as_number);
+    LOG_INFO("BGP protocol structure destroyed: AS %u", proto->as_number);
     if (proto->vrf_hash)
     {
         g_hash_table_destroy(proto->vrf_hash);

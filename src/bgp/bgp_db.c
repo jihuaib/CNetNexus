@@ -113,7 +113,7 @@ static uint32_t restore_protocol(dev_ipc_context_t *ctx)
     if (result->num_rows == 0)
     {
         db_result_free(result);
-        LOG_INFO("BGP 数据库无配置，跳过恢复");
+        LOG_INFO("BGP database has no config, skipping restore");
         return ERRCODE_SUCCESS;
     }
 
@@ -125,11 +125,11 @@ static uint32_t restore_protocol(dev_ipc_context_t *ctx)
         uint32_t apply_ret = bgp_cfg_apply_protocol(FALSE, as_number);
         if (apply_ret == ERRCODE_SUCCESS)
         {
-            LOG_INFO("BGP 协议已恢复: AS %u", as_number);
+            LOG_INFO("BGP protocol restored: AS %u", as_number);
         }
         else
         {
-            LOG_ERROR("BGP 恢复: 协议创建失败 (as=%u, ret=%d)", as_number, (int)apply_ret);
+            LOG_ERROR("BGP restore: Protocol creation failed (as=%u, ret=%d)", as_number, (int)apply_ret);
         }
     }
 
@@ -167,7 +167,7 @@ static void restore_sessions(dev_ipc_context_t *ctx)
         net_addr_t nb_addr;
         if (net_addr_from_str(ip_val, &nb_addr) != 0)
         {
-            LOG_WARN("BGP 恢复: session 邻居地址 %s 解析失败，跳过", ip_val);
+            LOG_WARN("BGP restore: Session neighbor address %s parse failed, skipping", ip_val);
             continue;
         }
 
@@ -176,7 +176,7 @@ static void restore_sessions(dev_ipc_context_t *ctx)
         bgp_session_t *sess = bgp_vrf_find_session(vrf, &nb_addr);
         if (!sess)
         {
-            LOG_WARN("BGP 恢复: session 邻居 %s 创建失败，跳过", ip_val);
+            LOG_WARN("BGP restore: Session neighbor %s creation failed, skipping", ip_val);
             continue;
         }
 
@@ -220,7 +220,7 @@ static void restore_neighbors(dev_ipc_context_t *ctx)
         net_addr_t nb_addr;
         if (net_addr_from_str(nb_ip, &nb_addr) != 0)
         {
-            LOG_WARN("BGP 恢复: peer 邻居地址 %s 解析失败，跳过", nb_ip);
+            LOG_WARN("BGP restore: Peer neighbor address %s parse failed, skipping", nb_ip);
             continue;
         }
         bgp_cfg_apply_af_neighbor(FALSE, vrf, afi, safi, &nb_addr);
@@ -260,7 +260,7 @@ static void restore_instances(dev_ipc_context_t *ctx)
         }
 
         bgp_cfg_apply_instance(FALSE, vrf, afi, safi);
-        LOG_INFO("BGP 恢复: VRF %u AF 实例 afi=%u safi=%u", vrf_id, (unsigned)afi, (unsigned)safi);
+        LOG_INFO("BGP restore: VRF %u AF instance afi=%u safi=%u", vrf_id, (unsigned)afi, (unsigned)safi);
     }
 
     db_result_free(result);
@@ -291,7 +291,7 @@ static void restore_vrf(dev_ipc_context_t *ctx)
         if (router_id && strcmp(router_id, "0.0.0.0") != 0)
         {
             bgp_cfg_apply_router_id(FALSE, vrf, router_id);
-            LOG_INFO("BGP 恢复: VRF %u router-id=%s", vrf_id, router_id);
+            LOG_INFO("BGP restore: VRF %u router-id=%s", vrf_id, router_id);
         }
 
         uint16_t keepalive = (uint16_t)db_row_get_int(row, "keepalive", BGP_TIMER_DEFAULT_KEEPALIVE);
@@ -299,14 +299,14 @@ static void restore_vrf(dev_ipc_context_t *ctx)
         if (keepalive > 0 && hold_time > keepalive)
         {
             bgp_cfg_apply_timers(FALSE, vrf, keepalive, hold_time);
-            LOG_INFO("BGP 恢复: VRF %u keepalive=%u hold=%u", vrf_id, keepalive, hold_time);
+            LOG_INFO("BGP restore: VRF %u keepalive=%u hold=%u", vrf_id, keepalive, hold_time);
         }
 
         uint16_t connect_retry = (uint16_t)db_row_get_int(row, "connect_retry", BGP_TIMER_DEFAULT_CONNECT_RETRY);
         if (connect_retry > 0)
         {
             bgp_cfg_apply_connect_retry(FALSE, vrf, connect_retry);
-            LOG_INFO("BGP 恢复: VRF %u connect-retry=%u", vrf_id, connect_retry);
+            LOG_INFO("BGP restore: VRF %u connect-retry=%u", vrf_id, connect_retry);
         }
     }
 
@@ -363,10 +363,10 @@ int bgp_db_init(dev_ipc_context_t *ctx)
         int ret = db_rpc_create_table_from_def(ctx, BGP_TABLES[i]);
         if (ret != ERRCODE_SUCCESS)
         {
-            LOG_ERROR("BGP 建表失败: %s", BGP_TABLES[i]->table_name);
+            LOG_ERROR("BGP table creation failed: %s", BGP_TABLES[i]->table_name);
             return -1;
         }
-        LOG_INFO("BGP 数据库表 %s 已就绪", BGP_TABLES[i]->table_name);
+        LOG_INFO("BGP database table %s ready", BGP_TABLES[i]->table_name);
     }
 
     return 0;
@@ -400,25 +400,25 @@ static void write_defaults(dev_ipc_context_t *ctx)
 {
     if (table_is_empty(ctx, BGP_TABLE_PROTOCOL))
     {
-        LOG_INFO("BGP %s 表为空，写入默认配置", BGP_TABLE_PROTOCOL);
+        LOG_INFO("BGP %s table empty, writing default config", BGP_TABLE_PROTOCOL);
         /* bgp_db_set_as(ctx, DEFAULT_AS); */
     }
 
     if (table_is_empty(ctx, BGP_TABLE_SESSION))
     {
-        LOG_INFO("BGP %s 表为空，写入默认配置", BGP_TABLE_SESSION);
+        LOG_INFO("BGP %s table empty, writing default config", BGP_TABLE_SESSION);
         /* bgp_db_set_session(ctx, ...); */
     }
 
     if (table_is_empty(ctx, BGP_TABLE_NEIGHBOR))
     {
-        LOG_INFO("BGP %s 表为空，写入默认配置", BGP_TABLE_NEIGHBOR);
+        LOG_INFO("BGP %s table empty, writing default config", BGP_TABLE_NEIGHBOR);
         /* bgp_db_set_neighbor(ctx, ...); */
     }
 
     if (table_is_empty(ctx, BGP_TABLE_VRF))
     {
-        LOG_INFO("BGP %s 表为空，写入默认 VRF 定时器", BGP_TABLE_VRF);
+        LOG_INFO("BGP %s table empty, writing default VRF timers", BGP_TABLE_VRF);
         bgp_db_set_vrf_timers(ctx, BGP_VRF_PUBLIC_ID, BGP_TIMER_DEFAULT_KEEPALIVE, BGP_TIMER_DEFAULT_HOLD);
         bgp_db_set_vrf_connect_retry(ctx, BGP_VRF_PUBLIC_ID, BGP_TIMER_DEFAULT_CONNECT_RETRY);
     }
@@ -452,11 +452,11 @@ int bgp_db_set_as(dev_ipc_context_t *ctx, uint32_t as_number)
 
     if (ret != ERRCODE_SUCCESS)
     {
-        LOG_ERROR("BGP 写入 AS 号 %u 失败", as_number);
+        LOG_ERROR("BGP failed to write AS number %u", as_number);
         return -1;
     }
 
-    LOG_INFO("BGP AS 号 %u 已写入", as_number);
+    LOG_INFO("BGP AS number %u written", as_number);
     return 0;
 }
 
@@ -474,11 +474,11 @@ int bgp_db_del_as(dev_ipc_context_t *ctx)
     int rows = db_rpc_delete(ctx, BGP_TABLE_PROTOCOL, NULL);
     if (rows < 0)
     {
-        LOG_ERROR("BGP 删除 AS 配置失败");
+        LOG_ERROR("BGP failed to delete AS config");
         return -1;
     }
 
-    LOG_INFO("BGP 删除 AS 配置，影响行数: %d", rows);
+    LOG_INFO("BGP deleted AS config, affected rows: %d", rows);
     return rows;
 }
 
@@ -511,11 +511,11 @@ int bgp_db_set_session(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *neig
 
     if (ret != ERRCODE_SUCCESS)
     {
-        LOG_ERROR("BGP 写入 session vrf_id=%u neighbor=%s 失败", vrf_id, neighbor_ip);
+        LOG_ERROR("BGP failed to write session vrf_id=%u neighbor=%s", vrf_id, neighbor_ip);
         return -1;
     }
 
-    LOG_INFO("BGP session vrf_id=%u neighbor=%s AS=%u 已写入", vrf_id, neighbor_ip, remote_as);
+    LOG_INFO("BGP session vrf_id=%u neighbor=%s AS=%u written", vrf_id, neighbor_ip, remote_as);
     return 0;
 }
 
@@ -557,11 +557,12 @@ int bgp_db_del_session(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *neig
 
     if (rows < 0)
     {
-        LOG_ERROR("BGP 删除 session 失败");
+        LOG_ERROR("BGP failed to delete session");
         return -1;
     }
 
-    LOG_INFO("BGP 删除 session（vrf_id=%u neighbor=%s），影响行数: %d", vrf_id, neighbor_ip ? neighbor_ip : "*", rows);
+    LOG_INFO("BGP deleted session (vrf_id=%u neighbor=%s), affected rows: %d", vrf_id, neighbor_ip ? neighbor_ip : "*",
+             rows);
     return rows;
 }
 
@@ -595,13 +596,14 @@ int bgp_db_set_neighbor(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *nei
 
     if (ret != ERRCODE_SUCCESS)
     {
-        LOG_ERROR("BGP 查询 neighbor 存在性失败");
+        LOG_ERROR("BGP failed to query neighbor existence");
         return -1;
     }
 
     if (exists)
     {
-        LOG_INFO("BGP neighbor vrf=%u %s afi=%u safi=%u 已存在", vrf_id, neighbor_ip, (unsigned)afi, (unsigned)safi);
+        LOG_INFO("BGP neighbor vrf=%u %s afi=%u safi=%u already exists", vrf_id, neighbor_ip, (unsigned)afi,
+                 (unsigned)safi);
         return 0;
     }
 
@@ -615,12 +617,12 @@ int bgp_db_set_neighbor(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *nei
 
     if (ret != ERRCODE_SUCCESS)
     {
-        LOG_ERROR("BGP 插入 neighbor vrf=%u %s afi=%u safi=%u 失败", vrf_id, neighbor_ip, (unsigned)afi,
+        LOG_ERROR("BGP failed to insert neighbor vrf=%u %s afi=%u safi=%u", vrf_id, neighbor_ip, (unsigned)afi,
                   (unsigned)safi);
         return -1;
     }
 
-    LOG_INFO("BGP neighbor vrf=%u %s afi=%u safi=%u 已使能", vrf_id, neighbor_ip, (unsigned)afi, (unsigned)safi);
+    LOG_INFO("BGP neighbor vrf=%u %s afi=%u safi=%u enabled", vrf_id, neighbor_ip, (unsigned)afi, (unsigned)safi);
     return 0;
 }
 
@@ -648,11 +650,11 @@ int bgp_db_del_neighbor(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *nei
 
     if (rows < 0)
     {
-        LOG_ERROR("BGP 删除 neighbor 失败");
+        LOG_ERROR("BGP failed to delete neighbor");
         return -1;
     }
 
-    LOG_INFO("BGP 删除 neighbor vrf=%u %s afi=%u safi=%u，影响行数: %d", vrf_id, neighbor_ip, (unsigned)afi,
+    LOG_INFO("BGP deleted neighbor vrf=%u %s afi=%u safi=%u, affected rows: %d", vrf_id, neighbor_ip, (unsigned)afi,
              (unsigned)safi, rows);
     return rows;
 }
@@ -685,11 +687,11 @@ int bgp_db_set_vrf_router_id(dev_ipc_context_t *ctx, uint32_t vrf_id, const char
 
     if (ret != ERRCODE_SUCCESS)
     {
-        LOG_ERROR("BGP 写入 VRF %u router-id=%s 失败", vrf_id, router_id);
+        LOG_ERROR("BGP failed to write VRF %u router-id=%s", vrf_id, router_id);
         return -1;
     }
 
-    LOG_INFO("BGP VRF %u router-id=%s 已写入", vrf_id, router_id);
+    LOG_INFO("BGP VRF %u router-id=%s written", vrf_id, router_id);
     return 0;
 }
 
@@ -712,11 +714,11 @@ int bgp_db_del_vrf_router_id(dev_ipc_context_t *ctx, uint32_t vrf_id)
 
     if (rows < 0)
     {
-        LOG_ERROR("BGP 删除 VRF %u router-id 失败", vrf_id);
+        LOG_ERROR("BGP failed to delete VRF %u router-id", vrf_id);
         return -1;
     }
 
-    LOG_INFO("BGP VRF %u router-id 已删除，影响行数: %d", vrf_id, rows);
+    LOG_INFO("BGP VRF %u router-id deleted, affected rows: %d", vrf_id, rows);
     return rows;
 }
 
@@ -749,11 +751,11 @@ int bgp_db_set_vrf_timers(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t keep
 
     if (ret != ERRCODE_SUCCESS)
     {
-        LOG_ERROR("BGP 写入 VRF %u timers keepalive=%u hold=%u 失败", vrf_id, keepalive, hold_time);
+        LOG_ERROR("BGP failed to write VRF %u timers keepalive=%u hold=%u", vrf_id, keepalive, hold_time);
         return -1;
     }
 
-    LOG_INFO("BGP VRF %u timers keepalive=%u hold=%u 已写入", vrf_id, keepalive, hold_time);
+    LOG_INFO("BGP VRF %u timers keepalive=%u hold=%u written", vrf_id, keepalive, hold_time);
     return 0;
 }
 
@@ -791,11 +793,11 @@ int bgp_db_set_vrf_connect_retry(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16
 
     if (ret != ERRCODE_SUCCESS)
     {
-        LOG_ERROR("BGP 写入 VRF %u connect-retry=%u 失败", vrf_id, connect_retry);
+        LOG_ERROR("BGP failed to write VRF %u connect-retry=%u", vrf_id, connect_retry);
         return -1;
     }
 
-    LOG_INFO("BGP VRF %u connect-retry=%u 已写入", vrf_id, connect_retry);
+    LOG_INFO("BGP VRF %u connect-retry=%u written", vrf_id, connect_retry);
     return 0;
 }
 
@@ -831,12 +833,12 @@ int bgp_db_set_instance(dev_ipc_context_t *ctx, uint32_t vrf_id, bgp_afi_t afi, 
 
     if (ret != ERRCODE_SUCCESS)
     {
-        LOG_ERROR("BGP 查询 instance 存在性失败");
+        LOG_ERROR("BGP failed to query instance existence");
         return -1;
     }
     if (exists)
     {
-        LOG_INFO("BGP instance vrf=%u afi=%u safi=%u 已存在", vrf_id, (unsigned)afi, (unsigned)safi);
+        LOG_INFO("BGP instance vrf=%u afi=%u safi=%u already exists", vrf_id, (unsigned)afi, (unsigned)safi);
         return 0;
     }
 
@@ -849,11 +851,11 @@ int bgp_db_set_instance(dev_ipc_context_t *ctx, uint32_t vrf_id, bgp_afi_t afi, 
 
     if (ret != ERRCODE_SUCCESS)
     {
-        LOG_ERROR("BGP 插入 instance vrf=%u afi=%u safi=%u 失败", vrf_id, (unsigned)afi, (unsigned)safi);
+        LOG_ERROR("BGP failed to insert instance vrf=%u afi=%u safi=%u", vrf_id, (unsigned)afi, (unsigned)safi);
         return -1;
     }
 
-    LOG_INFO("BGP instance vrf=%u afi=%u safi=%u 已写入", vrf_id, (unsigned)afi, (unsigned)safi);
+    LOG_INFO("BGP instance vrf=%u afi=%u safi=%u written", vrf_id, (unsigned)afi, (unsigned)safi);
     return 0;
 }
 
@@ -878,11 +880,12 @@ int bgp_db_del_instance(dev_ipc_context_t *ctx, uint32_t vrf_id, bgp_afi_t afi, 
 
     if (rows < 0)
     {
-        LOG_ERROR("BGP 删除 instance 失败");
+        LOG_ERROR("BGP failed to delete instance");
         return -1;
     }
 
-    LOG_INFO("BGP 删除 instance vrf=%u afi=%u safi=%u，影响行数: %d", vrf_id, (unsigned)afi, (unsigned)safi, rows);
+    LOG_INFO("BGP deleted instance vrf=%u afi=%u safi=%u, affected rows: %d", vrf_id, (unsigned)afi, (unsigned)safi,
+             rows);
     return rows;
 }
 
@@ -911,11 +914,11 @@ int bgp_db_set_session_caps(dev_ipc_context_t *ctx, uint32_t vrf_id, const char 
 
     if (ret != ERRCODE_SUCCESS)
     {
-        LOG_ERROR("BGP 写入 session open_caps vrf_id=%u neighbor=%s 失败", vrf_id, neighbor_ip);
+        LOG_ERROR("BGP failed to write session open_caps vrf_id=%u neighbor=%s", vrf_id, neighbor_ip);
         return -1;
     }
 
-    LOG_INFO("BGP session neighbor=%s open_caps=0x%02X 已写入", neighbor_ip, open_caps);
+    LOG_INFO("BGP session neighbor=%s open_caps=0x%02X written", neighbor_ip, open_caps);
     return 0;
 }
 
@@ -940,10 +943,11 @@ int bgp_db_del_neighbors_by_afi(dev_ipc_context_t *ctx, uint32_t vrf_id, bgp_afi
 
     if (rows < 0)
     {
-        LOG_ERROR("BGP 批量删除 neighbor vrf=%u afi=%u safi=%u 失败", vrf_id, (unsigned)afi, (unsigned)safi);
+        LOG_ERROR("BGP failed to batch delete neighbor vrf=%u afi=%u safi=%u", vrf_id, (unsigned)afi, (unsigned)safi);
         return -1;
     }
 
-    LOG_INFO("BGP 批量删除 neighbor vrf=%u afi=%u safi=%u，影响行数: %d", vrf_id, (unsigned)afi, (unsigned)safi, rows);
+    LOG_INFO("BGP batch deleted neighbor vrf=%u afi=%u safi=%u, affected rows: %d", vrf_id, (unsigned)afi,
+             (unsigned)safi, rows);
     return rows;
 }

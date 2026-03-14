@@ -28,7 +28,7 @@
 
 typedef struct show_module_ctx
 {
-    dev_cli_resp_out_t *resp;
+    GString *resp;
     dev_ipc_context_t *dev_ipc_ctx;
 } show_module_ctx_t;
 
@@ -165,18 +165,13 @@ static gboolean show_module_callback(gpointer key, gpointer value, gpointer data
 {
     (void)key;
     show_module_ctx_t *ctx = (show_module_ctx_t *)data;
-    dev_cli_resp_out_t *resp = ctx->resp;
     dev_module_t *module = (dev_module_t *)value;
     const char *phase = dev_phase_to_string(module->phase);
     const char *dev_ipc_state =
         (module->module_id == DEV_MODULE_ID_DEV || dev_ipc_is_connected(ctx->dev_ipc_ctx, module->module_id)) ? "up"
                                                                                                               : "down";
-
-    char line[192];
-    snprintf(line, sizeof(line), "  %-10u %-14s %-12s %-6u %s\r\n", module->module_id, module->name, phase,
-             module->port, dev_ipc_state);
-
-    strncat(resp->message, line, sizeof(resp->message) - strlen(resp->message) - 1);
+    g_string_append_printf(ctx->resp, "  %-10u %-14s %-12s %-6u %s\r\n", module->module_id, module->name, phase,
+                           module->port, dev_ipc_state);
 
     return FALSE;
 }
@@ -203,35 +198,38 @@ static void dev_send_cli_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg
 
 static int handle_show_module(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    dev_cli_resp_out_t resp_out;
     show_module_ctx_t show_ctx;
-    memset(&resp_out, 0, sizeof(resp_out));
     memset(&show_ctx, 0, sizeof(show_ctx));
 
-    show_ctx.resp = &resp_out;
+    show_ctx.resp = g_string_new("");
+    if (!show_ctx.resp)
+    {
+        dev_send_cli_response(ctx, msg, "Dev Error: out of memory.\r\n");
+        return ERRCODE_FAIL;
+    }
     show_ctx.dev_ipc_ctx = ctx;
 
-    snprintf(resp_out.message, sizeof(resp_out.message),
-             "\r\nRegistered Modules:\r\n"
-             "  %-10s %-14s %-12s %-6s %s\r\n"
-             "  --------------------------------------------------------\r\n",
-             "ID", "Name", "Phase", "Port", "IPC");
+    g_string_append_printf(show_ctx.resp,
+                           "\r\nRegistered Modules:\r\n"
+                           "  %-10s %-14s %-12s %-6s %s\r\n"
+                           "  --------------------------------------------------------\r\n",
+                           "ID", "Name", "Phase", "Port", "IPC");
 
     dev_module_foreach(show_module_callback, &show_ctx);
-
-    strncat(resp_out.message, "\r\n", sizeof(resp_out.message) - strlen(resp_out.message) - 1);
-
-    dev_send_cli_response(ctx, msg, resp_out.message);
-    return ERRCODE_SUCCESS;
+    g_string_append(show_ctx.resp, "\r\n");
+    return cli_chunk_stream_start(&g_dev_local->show_stream, ctx, DEV_MODULE_ID_DEV, msg, show_ctx.resp);
 }
 
 static int handle_show_version(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    char buf[CLI_MAX_RESP_LEN];
     char version[64] = "unknown";
     char version_path[PATH_MAX];
-    size_t off = 0;
-    (void)ctx;
+    GString *buf = g_string_new("");
+    if (!buf)
+    {
+        dev_send_cli_response(ctx, msg, "Dev Error: out of memory.\r\n");
+        return ERRCODE_FAIL;
+    }
 
     if (resolve_version_file(version_path, sizeof(version_path)) == ERRCODE_SUCCESS)
     {
@@ -241,17 +239,16 @@ static int handle_show_version(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         }
     }
 
-    CLI_BUF_APPEND(buf, sizeof(buf), off, "\r\nNetNexus Version Information:\r\n");
-    CLI_BUF_APPEND(buf, sizeof(buf), off, "  Version      : %s\r\n", version);
-    CLI_BUF_APPEND(buf, sizeof(buf), off, "  Build Time   : %s %s\r\n", __DATE__, __TIME__);
-    CLI_BUF_APPEND(buf, sizeof(buf), off, "  Build Profile: %s\r\n", build_profile_string());
-    CLI_BUF_APPEND(buf, sizeof(buf), off, "  Compiler     : %s\r\n", __VERSION__);
-    CLI_BUF_APPEND(buf, sizeof(buf), off, "  ASAN         : %s\r\n", asan_enabled_string());
-    CLI_BUF_APPEND(buf, sizeof(buf), off, "  Log Level    : %s\r\n", log_level_to_string(log_get_level()));
-    CLI_BUF_APPEND(buf, sizeof(buf), off, "  PID          : %d\r\n\r\n", (int)getpid());
+    g_string_append(buf, "\r\nNetNexus Version Information:\r\n");
+    g_string_append_printf(buf, "  Version      : %s\r\n", version);
+    g_string_append_printf(buf, "  Build Time   : %s %s\r\n", __DATE__, __TIME__);
+    g_string_append_printf(buf, "  Build Profile: %s\r\n", build_profile_string());
+    g_string_append_printf(buf, "  Compiler     : %s\r\n", __VERSION__);
+    g_string_append_printf(buf, "  ASAN         : %s\r\n", asan_enabled_string());
+    g_string_append_printf(buf, "  Log Level    : %s\r\n", log_level_to_string(log_get_level()));
+    g_string_append_printf(buf, "  PID          : %d\r\n\r\n", (int)getpid());
 
-    dev_send_cli_response(ctx, msg, buf);
-    return ERRCODE_SUCCESS;
+    return cli_chunk_stream_start(&g_dev_local->show_stream, ctx, DEV_MODULE_ID_DEV, msg, buf);
 }
 
 static int handle_sysname(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
@@ -330,7 +327,7 @@ static const char *ipc_state_to_string(dev_ipc_costate_t state)
 /**
  * @brief 从 QUERY_IPC_CONNS 响应 payload 中解析并格式化第 i 条连接信息到 buf
  */
-static void format_ipc_conn_entry(const uint8_t *entry, int idx, char *buf, size_t buf_size, size_t *off)
+static void format_ipc_conn_entry(const uint8_t *entry, int idx, GString *buf)
 {
     const uint8_t *p = entry;
     uint32_t v;
@@ -387,28 +384,24 @@ static void format_ipc_conn_entry(const uint8_t *entry, int idx, char *buf, size
         strftime(hb_recv_str, sizeof(hb_recv_str), "%H:%M:%S", t);
     }
 
-    *off +=
-        (size_t)snprintf(buf + *off, buf_size - *off, "  Connection #%d (peer: 0x%08X):\r\n", idx, remote_module_id);
-    *off += (size_t)snprintf(buf + *off, buf_size - *off, "    %-16s: %s\r\n", "Direction",
-                             is_initiator ? "Active (Initiator)" : "Passive (Acceptor)");
-    *off += (size_t)snprintf(buf + *off, buf_size - *off, "    %-16s: %s\r\n", "State",
-                             ipc_state_to_string((dev_ipc_costate_t)state));
+    g_string_append_printf(buf, "  Connection #%d (peer: 0x%08X):\r\n", idx, remote_module_id);
+    g_string_append_printf(buf, "    %-16s: %s\r\n", "Direction",
+                           is_initiator ? "Active (Initiator)" : "Passive (Acceptor)");
+    g_string_append_printf(buf, "    %-16s: %s\r\n", "State", ipc_state_to_string((dev_ipc_costate_t)state));
     if (is_initiator && remote_host[0] != '\0')
     {
-        *off += (size_t)snprintf(buf + *off, buf_size - *off, "    %-16s: %s:%u\r\n", "Remote Addr", remote_host,
-                                 remote_port);
+        g_string_append_printf(buf, "    %-16s: %s:%u\r\n", "Remote Addr", remote_host, remote_port);
     }
-    *off += (size_t)snprintf(buf + *off, buf_size - *off, "    %-16s: %s\r\n", "HB Sent", hb_sent_str);
-    *off += (size_t)snprintf(buf + *off, buf_size - *off, "    %-16s: %s\r\n", "HB Recv", hb_recv_str);
-    *off +=
-        (size_t)snprintf(buf + *off, buf_size - *off, "    %-16s: %u ms\r\n", "Reconnect Delay", reconnect_delay_ms);
+    g_string_append_printf(buf, "    %-16s: %s\r\n", "HB Sent", hb_sent_str);
+    g_string_append_printf(buf, "    %-16s: %s\r\n", "HB Recv", hb_recv_str);
+    g_string_append_printf(buf, "    %-16s: %u ms\r\n", "Reconnect Delay", reconnect_delay_ms);
 }
 
 /**
  * @brief 将 QUERY_IPC_CONNS 响应 payload 格式化为可读文本，追加到 buf[*off]
  */
 static void format_conns_payload(const uint8_t *payload, uint32_t payload_len, const char *module_name,
-                                 uint32_t target_id, char *buf, size_t buf_size, size_t *off)
+                                 uint32_t target_id, GString *buf)
 {
     const uint8_t *p = payload;
     uint32_t v;
@@ -416,27 +409,25 @@ static void format_conns_payload(const uint8_t *payload, uint32_t payload_len, c
     uint32_t num_conns = ntohl(v);
     p += 4;
 
-    *off += (size_t)snprintf(buf + *off, buf_size - *off,
-                             "\r\nIPC Connections of module '%s' (ID: 0x%08X) — %u connection(s):\r\n", module_name,
-                             target_id, num_conns);
+    g_string_append_printf(buf, "\r\nIPC Connections of module '%s' (ID: 0x%08X) — %u connection(s):\r\n", module_name,
+                           target_id, num_conns);
 
     uint32_t expected_len = 4 + num_conns * IPC_QCONNS_ENTRY_SIZE;
     if (payload_len < expected_len)
     {
-        *off +=
-            (size_t)snprintf(buf + *off, buf_size - *off,
-                             "  Error: response payload truncated (%u < %u bytes).\r\n\r\n", payload_len, expected_len);
+        g_string_append_printf(buf, "  Error: response payload truncated (%u < %u bytes).\r\n\r\n", payload_len,
+                               expected_len);
     }
     else if (num_conns == 0)
     {
-        *off += (size_t)snprintf(buf + *off, buf_size - *off, "  (no connections)\r\n\r\n");
+        g_string_append(buf, "  (no connections)\r\n\r\n");
     }
     else
     {
-        for (uint32_t i = 0; i < num_conns && *off < buf_size - 256; i++)
+        for (uint32_t i = 0; i < num_conns; i++)
         {
-            format_ipc_conn_entry(p + i * IPC_QCONNS_ENTRY_SIZE, (int)i, buf, buf_size, off);
-            *off += (size_t)snprintf(buf + *off, buf_size - *off, "\r\n");
+            format_ipc_conn_entry(p + i * IPC_QCONNS_ENTRY_SIZE, (int)i, buf);
+            g_string_append(buf, "\r\n");
         }
     }
 }
@@ -481,15 +472,19 @@ static int handle_show_ipc(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_t
         return ERRCODE_FAIL;
     }
 
-    char buf[CLI_MAX_RESP_LEN];
-    size_t off = 0;
+    GString *buf = g_string_new("");
+    if (!buf)
+    {
+        dev_send_cli_response(ctx, msg, "Dev Error: out of memory.\r\n");
+        return ERRCODE_FAIL;
+    }
 
     if (target_id == DEV_MODULE_ID_DEV)
     {
         /* 自查询：DEV 无自连接，直接从 ctx 构造载荷 */
         uint32_t pl_len;
         uint8_t *pl = dev_ipc_build_conns_payload(ctx, &pl_len);
-        format_conns_payload(pl, pl_len, module_name, target_id, buf, sizeof(buf), &off);
+        format_conns_payload(pl, pl_len, module_name, target_id, buf);
         g_free(pl);
     }
     else
@@ -508,10 +503,10 @@ static int handle_show_ipc(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_t
 
         if (!resp || !resp->payload || resp->payload_len < 4)
         {
-            off += (size_t)snprintf(buf + off, sizeof(buf) - off,
-                                    "\r\nError: no response from module '%s' (timeout or not connected).\r\n\r\n",
-                                    module_name);
-            dev_send_cli_response(ctx, msg, buf);
+            g_string_append_printf(buf, "\r\nError: no response from module '%s' (timeout or not connected).\r\n\r\n",
+                                   module_name);
+            dev_send_cli_response(ctx, msg, buf->str);
+            g_string_free(buf, TRUE);
             if (resp)
             {
                 dev_ipc_message_free(resp);
@@ -519,13 +514,11 @@ static int handle_show_ipc(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_t
             return ERRCODE_FAIL;
         }
 
-        format_conns_payload((const uint8_t *)resp->payload, resp->payload_len, module_name, target_id, buf,
-                             sizeof(buf), &off);
+        format_conns_payload((const uint8_t *)resp->payload, resp->payload_len, module_name, target_id, buf);
         dev_ipc_message_free(resp);
     }
 
-    dev_send_cli_response(ctx, msg, buf);
-    return ERRCODE_SUCCESS;
+    return cli_chunk_stream_start(&g_dev_local->show_stream, ctx, DEV_MODULE_ID_DEV, msg, buf);
 }
 
 static int handle_ping(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
@@ -645,10 +638,19 @@ void dev_cli_handle_query_candidates(dev_ipc_context_t *ctx, dev_ipc_message_t *
 // 主入口
 // ============================================================================
 
+int dev_cli_handle_show_config(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+{
+    return cli_chunk_stream_start(&g_dev_local->show_stream, ctx, DEV_MODULE_ID_DEV, msg, NULL);
+}
+
 int dev_cli_handle_continue(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    dev_send_cli_response(ctx, msg, "");
-    return ERRCODE_SUCCESS;
+    return cli_chunk_stream_continue(&g_dev_local->show_stream, ctx, DEV_MODULE_ID_DEV, msg);
+}
+
+void dev_cli_cleanup_state(void)
+{
+    cli_chunk_stream_reset(&g_dev_local->show_stream);
 }
 
 int dev_cli_handle_message(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
@@ -658,15 +660,17 @@ int dev_cli_handle_message(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         return ERRCODE_FAIL;
     }
 
+    cli_chunk_stream_reset(&g_dev_local->show_stream);
+
     cli_tlv_parser_t parser;
     if (cli_tlv_init(&parser, (const uint8_t *)msg->payload, msg->payload_len) != 0)
     {
-        LOG_ERROR("载荷解析失败");
+        LOG_ERROR("Payload parsing failed");
         dev_send_cli_response(ctx, msg, "Dev Error: Failed to parse command payload.\r\n");
         return ERRCODE_FAIL;
     }
 
-    LOG_DEBUG("收到 TLV 载荷 (group_id=%u)", parser.group_id);
+    LOG_DEBUG("Received TLV payload (group_id=%u)", parser.group_id);
 
     int result;
     switch (parser.group_id)
@@ -690,7 +694,7 @@ int dev_cli_handle_message(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             result = handle_show_ipc(ctx, msg, &parser);
             break;
         default:
-            LOG_WARN("未知 group_id: %u", parser.group_id);
+            LOG_WARN("Unknown group_id: %u", parser.group_id);
             dev_send_cli_response(ctx, msg, "Dev Error: Unknown command.\r\n");
             result = ERRCODE_FAIL;
             break;

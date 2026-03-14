@@ -11,6 +11,7 @@
 
 #include "bgp_conn.h"
 #include "bgp_protocol.h"
+#include "cli.h"
 #include "dev.h"
 
 /**
@@ -22,7 +23,8 @@
 typedef struct bgp_local
 {
     dev_ipc_context_t *dev_ipc_ctx;
-    bgp_protocol_t *protocol; /**< BGP 协议结构（bgp 使能后非 NULL） */
+    cli_chunk_stream_t show_stream; /**< CLI show 命令分片输出状态 */
+    bgp_protocol_t *protocol;       /**< BGP 协议结构（bgp 使能后非 NULL） */
 
     /* BGP TCP server */
     int epoll_fd;            /**< BGP server epoll fd */

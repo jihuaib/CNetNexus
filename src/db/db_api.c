@@ -116,13 +116,13 @@ int db_insert(const char *db_name, const char *table_name, const char **field_na
     db_connection_t *conn = db_get_connection(db_name);
     if (!conn)
     {
-        LOG_ERROR("错误: 找不到数据库连接 (db=%s)", db_name);
+        LOG_ERROR("Error: Database connection not found (db=%s)", db_name);
         return ERRCODE_FAIL;
     }
 
     if (!conn->handle)
     {
-        LOG_ERROR("错误: 数据库未连接 (db=%s)", db_name);
+        LOG_ERROR("Error: Database not connected (db=%s)", db_name);
         return ERRCODE_DB_NOT_OPEN;
     }
 
@@ -219,13 +219,13 @@ int db_update(const char *db_name, const char *table_name, const char **field_na
     db_connection_t *conn = db_get_connection(db_name);
     if (!conn)
     {
-        LOG_ERROR("错误: 找不到数据库连接 (db=%s)", db_name);
+        LOG_ERROR("Error: Database connection not found (db=%s)", db_name);
         return -1;
     }
 
     if (!conn->handle)
     {
-        LOG_ERROR("错误: 数据库未连接 (db=%s)", db_name);
+        LOG_ERROR("Error: Database not connected (db=%s)", db_name);
         return -1;
     }
 
@@ -316,13 +316,13 @@ int db_delete(const char *db_name, const char *table_name, const char *where_cla
     db_connection_t *conn = db_get_connection(db_name);
     if (!conn)
     {
-        LOG_ERROR("错误: 找不到数据库连接 (db=%s)", db_name);
+        LOG_ERROR("Error: Database connection not found (db=%s)", db_name);
         return -1;
     }
 
     if (!conn->handle)
     {
-        LOG_ERROR("错误: 数据库未连接 (db=%s)", db_name);
+        LOG_ERROR("Error: Database not connected (db=%s)", db_name);
         return -1;
     }
 
@@ -371,13 +371,13 @@ int db_query(const char *db_name, const char *table_name, const char **field_nam
     db_connection_t *conn = db_get_connection(db_name);
     if (!conn)
     {
-        LOG_ERROR("错误: 找不到数据库连接 (db=%s)", db_name);
+        LOG_ERROR("Error: Database connection not found (db=%s)", db_name);
         return ERRCODE_FAIL;
     }
 
     if (!conn->handle)
     {
-        LOG_ERROR("错误: 数据库未连接 (db=%s)", db_name);
+        LOG_ERROR("Error: Database not connected (db=%s)", db_name);
         return ERRCODE_FAIL;
     }
 
@@ -502,13 +502,13 @@ int db_create_table(const char *db_name, const char *ddl)
     db_connection_t *conn = db_get_connection(db_name);
     if (!conn)
     {
-        LOG_ERROR("错误: 找不到数据库连接 (db=%s)", db_name);
+        LOG_ERROR("Error: Database connection not found (db=%s)", db_name);
         return ERRCODE_FAIL;
     }
 
     if (!conn->handle)
     {
-        LOG_ERROR("错误: 数据库未连接 (db=%s)", db_name);
+        LOG_ERROR("Error: Database not connected (db=%s)", db_name);
         return ERRCODE_FAIL;
     }
 
@@ -521,7 +521,7 @@ int db_create_table(const char *db_name, const char *ddl)
 
     if (rc != SQLITE_OK)
     {
-        LOG_ERROR("CREATE TABLE 失败: %s", err_msg);
+        LOG_ERROR("CREATE TABLE failed: %s", err_msg);
         sqlite3_free(err_msg);
         return ERRCODE_FAIL;
     }
@@ -663,7 +663,7 @@ int db_exec_sql(const char *db_name, const char *sql)
     db_connection_t *conn = db_get_connection(db_name);
     if (!conn || !conn->handle)
     {
-        LOG_ERROR("错误: 找不到数据库连接 (db=%s)", db_name);
+        LOG_ERROR("Error: Database connection not found (db=%s)", db_name);
         return -1;
     }
 
@@ -677,7 +677,7 @@ int db_exec_sql(const char *db_name, const char *sql)
 
     if (rc != SQLITE_OK)
     {
-        LOG_ERROR("exec_sql 失败: %s", err_msg);
+        LOG_ERROR("exec_sql failed: %s", err_msg);
         sqlite3_free(err_msg);
         return -1;
     }
@@ -695,7 +695,7 @@ int db_query_sql(const char *db_name, const char *sql, db_result_t **result)
     db_connection_t *conn = db_get_connection(db_name);
     if (!conn || !conn->handle)
     {
-        LOG_ERROR("错误: 找不到数据库连接 (db=%s)", db_name);
+        LOG_ERROR("Error: Database connection not found (db=%s)", db_name);
         return ERRCODE_FAIL;
     }
 
@@ -757,7 +757,7 @@ int db_query_sql(const char *db_name, const char *sql, db_result_t **result)
 
     if (rc != SQLITE_DONE)
     {
-        LOG_ERROR("query_sql 失败: %s", sqlite3_errmsg(conn->handle));
+        LOG_ERROR("query_sql failed: %s", sqlite3_errmsg(conn->handle));
         db_result_free(res);
         return ERRCODE_FAIL;
     }

@@ -38,6 +38,11 @@ static void send_resp(dev_ipc_message_t *msg, const char *text)
     }
 }
 
+int if_cli_send_chunked_response(dev_ipc_message_t *msg, GString *full_text)
+{
+    return cli_chunk_stream_start(&g_if_local->show_stream, g_if_local->dev_ipc_ctx, DEV_MODULE_ID_IF, msg, full_text);
+}
+
 // ============================================================================
 // 接口名称映射表（cfg_id → 逻辑接口名）
 // ============================================================================
@@ -232,8 +237,12 @@ static int handle_if_show(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         cli_tlv_entry_free(&entry);
     }
 
-    char resp_buf[CLI_MAX_RESP_LEN];
-    size_t offset = 0;
+    GString *resp_buf = g_string_new("");
+    if (!resp_buf)
+    {
+        send_resp(msg, "IF Error: Out of memory.\r\n");
+        return ERRCODE_FAIL;
+    }
 
     if (ifname)
     {
@@ -241,8 +250,9 @@ static int handle_if_show(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         if_map_entry_t *entry = if_cfg_find_entry(ifname);
         if (!entry)
         {
-            CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "Error: Interface %s not found\r\n", ifname);
-            send_resp(msg, resp_buf);
+            g_string_append_printf(resp_buf, "Error: Interface %s not found\r\n", ifname);
+            send_resp(msg, resp_buf->str);
+            g_string_free(resp_buf, TRUE);
             return ERRCODE_FAIL;
         }
 
@@ -269,25 +279,25 @@ static int handle_if_show(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 
         const char *state_str = entry->shutdown ? "DOWN" : "UP";
 
-        CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset,
-                       "\r\nInterface %s Detail:\r\n"
-                       "============================\r\n"
-                       "  Name       : %s\r\n"
-                       "  Type       : %s\r\n"
-                       "  State      : %s\r\n"
-                       "  IP Address : %s/%u\r\n"
-                       "  MAC        : %s\r\n"
-                       "  MTU        : %d\r\n\r\n",
-                       ifname, ifname, type_str, state_str, ip_str, entry->prefix.prefix_len, mac_str, mtu);
+        g_string_append_printf(resp_buf,
+                               "\r\nInterface %s Detail:\r\n"
+                               "============================\r\n"
+                               "  Name       : %s\r\n"
+                               "  Type       : %s\r\n"
+                               "  State      : %s\r\n"
+                               "  IP Address : %s/%u\r\n"
+                               "  MAC        : %s\r\n"
+                               "  MTU        : %d\r\n\r\n",
+                               ifname, ifname, type_str, state_str, ip_str, entry->prefix.prefix_len, mac_str, mtu);
     }
     else
     {
         /* 显示所有接口 */
-        CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset,
-                       "\r\nInterface Status:\r\n"
-                       "%-12s %-6s %-20s\r\n"
-                       "------------ ------ --------------------\r\n",
-                       "Name", "State", "IP Address");
+        g_string_append_printf(resp_buf,
+                               "\r\nInterface Status:\r\n"
+                               "%-12s %-6s %-20s\r\n"
+                               "------------ ------ --------------------\r\n",
+                               "Name", "State", "IP Address");
 
         if_map_t *map = &g_if_local->interface_map;
         for (int i = 0; i < map->count; i++)
@@ -301,20 +311,12 @@ static int handle_if_show(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                 net_prefix_to_str(&e->prefix, ip_str, sizeof(ip_str));
             }
 
-            CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "%-12s %-6s %-20s\r\n", e->logical_name, state_str,
-                           ip_str);
-
-            if (offset >= sizeof(resp_buf) - 128)
-            {
-                CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "  ... (truncated)\r\n");
-                break;
-            }
+            g_string_append_printf(resp_buf, "%-12s %-6s %-20s\r\n", e->logical_name, state_str, ip_str);
         }
-        CLI_BUF_APPEND(resp_buf, sizeof(resp_buf), offset, "\r\n");
+        g_string_append(resp_buf, "\r\n");
     }
 
-    send_resp(msg, resp_buf);
-    return ERRCODE_SUCCESS;
+    return if_cli_send_chunked_response(msg, resp_buf);
 }
 
 // ============================================================================
@@ -323,8 +325,12 @@ static int handle_if_show(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 
 int if_cli_handle_continue(dev_ipc_message_t *msg)
 {
-    send_resp(msg, "");
-    return ERRCODE_SUCCESS;
+    return cli_chunk_stream_continue(&g_if_local->show_stream, g_if_local->dev_ipc_ctx, DEV_MODULE_ID_IF, msg);
+}
+
+void if_cli_cleanup_state(void)
+{
+    cli_chunk_stream_reset(&g_if_local->show_stream);
 }
 
 int if_cli_handle_message(dev_ipc_message_t *msg)
@@ -334,15 +340,17 @@ int if_cli_handle_message(dev_ipc_message_t *msg)
         return ERRCODE_FAIL;
     }
 
+    cli_chunk_stream_reset(&g_if_local->show_stream);
+
     cli_tlv_parser_t parser;
     if (cli_tlv_init(&parser, (const uint8_t *)msg->payload, msg->payload_len) != 0)
     {
-        LOG_ERROR("载荷解析失败");
+        LOG_ERROR("Payload parsing failed");
         send_resp(msg, "IF Error: Failed to parse command payload.\r\n");
         return ERRCODE_FAIL;
     }
 
-    LOG_DEBUG("收到 TLV 载荷 (group_id=%u)", parser.group_id);
+    LOG_DEBUG("Received TLV payload (group_id=%u)", parser.group_id);
 
     int result;
     switch (parser.group_id)
@@ -357,7 +365,7 @@ int if_cli_handle_message(dev_ipc_message_t *msg)
             result = handle_if_show(msg, &parser);
             break;
         default:
-            LOG_WARN("未知 group_id: %u", parser.group_id);
+            LOG_WARN("Unknown group_id: %u", parser.group_id);
             send_resp(msg, "IF Error: Unknown command group.\r\n");
             result = ERRCODE_FAIL;
             break;

@@ -156,7 +156,7 @@ int db_initialize_database(void)
     char db_path[512];
     if (get_database_path(db_path, sizeof(db_path)) != 0)
     {
-        LOG_ERROR("获取统一数据库路径失败");
+        LOG_ERROR("Failed to get unified database path");
         return ERRCODE_FAIL;
     }
 
@@ -172,6 +172,6 @@ int db_initialize_database(void)
     g_mutex_init(&conn->db_mutex);
 
     g_db_local->main_conn = conn;
-    LOG_INFO("统一数据库连接已建立: %s", db_path);
+    LOG_INFO("Unified database connection established: %s", db_path);
     return ERRCODE_SUCCESS;
 }

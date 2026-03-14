@@ -45,15 +45,18 @@ static int handle_db_show_table_list(dev_ipc_message_t *msg)
         return ERRCODE_FAIL;
     }
 
-    db_cli_resp_out_t resp_out;
-    memset(&resp_out, 0, sizeof(resp_out));
-    int offset = 0;
+    GString *resp_out = g_string_new("");
+    if (!resp_out)
+    {
+        db_send_cli_response(msg, "Error: Out of memory.\r\n");
+        return ERRCODE_FAIL;
+    }
 
-    offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset,
-                       "Tables in netnexus.db:\r\n"
-                       "  %-40s\r\n"
-                       "  ----------------------------------------\r\n",
-                       "Name");
+    g_string_append_printf(resp_out,
+                           "Tables in netnexus.db:\r\n"
+                           "  %-40s\r\n"
+                           "  ----------------------------------------\r\n",
+                           "Name");
 
     const char *sql = "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name;";
     sqlite3_stmt *stmt;
@@ -64,19 +67,19 @@ static int handle_db_show_table_list(dev_ipc_message_t *msg)
     {
         g_mutex_unlock(&conn->db_mutex);
         db_send_cli_response(msg, "Error: Failed to query table list.\r\n");
+        g_string_free(resp_out, TRUE);
         return ERRCODE_FAIL;
     }
 
     while (sqlite3_step(stmt) == SQLITE_ROW)
     {
         const char *name = (const char *)sqlite3_column_text(stmt, 0);
-        offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset, "  %s\r\n", name ? name : "");
+        g_string_append_printf(resp_out, "  %s\r\n", name ? name : "");
     }
     sqlite3_finalize(stmt);
     g_mutex_unlock(&conn->db_mutex);
 
-    db_send_cli_response(msg, resp_out.message);
-    return ERRCODE_SUCCESS;
+    return cli_chunk_stream_start(&g_db_local->show_stream, g_db_local->dev_ipc_ctx, DEV_MODULE_ID_DB, msg, resp_out);
 }
 
 // ============================================================================
@@ -92,15 +95,18 @@ static int handle_db_show_table_field(dev_ipc_message_t *msg, const char *table_
         return ERRCODE_FAIL;
     }
 
-    db_cli_resp_out_t resp_out;
-    memset(&resp_out, 0, sizeof(resp_out));
-    int offset = 0;
+    GString *resp_out = g_string_new("");
+    if (!resp_out)
+    {
+        db_send_cli_response(msg, "Error: Out of memory.\r\n");
+        return ERRCODE_FAIL;
+    }
 
-    offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset,
-                       "Fields of table '%s':\r\n"
-                       "  %-4s  %-24s  %-12s  %-8s  %s\r\n"
-                       "  -------------------------------------------------------\r\n",
-                       table_name, "cid", "name", "type", "notnull", "pk");
+    g_string_append_printf(resp_out,
+                           "Fields of table '%s':\r\n"
+                           "  %-4s  %-24s  %-12s  %-8s  %s\r\n"
+                           "  -------------------------------------------------------\r\n",
+                           table_name, "cid", "name", "type", "notnull", "pk");
 
     char sql[256];
     snprintf(sql, sizeof(sql), "PRAGMA table_info(%s);", table_name);
@@ -111,8 +117,10 @@ static int handle_db_show_table_field(dev_ipc_message_t *msg, const char *table_
     if (rc != SQLITE_OK)
     {
         g_mutex_unlock(&conn->db_mutex);
-        snprintf(resp_out.message, sizeof(resp_out.message), "Error: Table '%s' not found.\r\n", table_name);
-        db_send_cli_response(msg, resp_out.message);
+        char errbuf[256];
+        snprintf(errbuf, sizeof(errbuf), "Error: Table '%s' not found.\r\n", table_name);
+        db_send_cli_response(msg, errbuf);
+        g_string_free(resp_out, TRUE);
         return ERRCODE_FAIL;
     }
 
@@ -124,8 +132,8 @@ static int handle_db_show_table_field(dev_ipc_message_t *msg, const char *table_
         const char *type = (const char *)sqlite3_column_text(stmt, 2);
         int notnull = sqlite3_column_int(stmt, 3);
         int pk = sqlite3_column_int(stmt, 5);
-        offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset,
-                           "  %-4d  %-24s  %-12s  %-8d  %d\r\n", cid, name ? name : "", type ? type : "", notnull, pk);
+        g_string_append_printf(resp_out, "  %-4d  %-24s  %-12s  %-8d  %d\r\n", cid, name ? name : "", type ? type : "",
+                               notnull, pk);
         row_count++;
     }
     sqlite3_finalize(stmt);
@@ -133,11 +141,10 @@ static int handle_db_show_table_field(dev_ipc_message_t *msg, const char *table_
 
     if (row_count == 0)
     {
-        snprintf(resp_out.message, sizeof(resp_out.message), "Error: Table '%s' not found.\r\n", table_name);
+        g_string_printf(resp_out, "Error: Table '%s' not found.\r\n", table_name);
     }
 
-    db_send_cli_response(msg, resp_out.message);
-    return ERRCODE_SUCCESS;
+    return cli_chunk_stream_start(&g_db_local->show_stream, g_db_local->dev_ipc_ctx, DEV_MODULE_ID_DB, msg, resp_out);
 }
 
 // ============================================================================
@@ -153,9 +160,12 @@ static int handle_db_show_table_data(dev_ipc_message_t *msg, const char *table_n
         return ERRCODE_FAIL;
     }
 
-    db_cli_resp_out_t resp_out;
-    memset(&resp_out, 0, sizeof(resp_out));
-    int offset = 0;
+    GString *resp_out = g_string_new("");
+    if (!resp_out)
+    {
+        db_send_cli_response(msg, "Error: Out of memory.\r\n");
+        return ERRCODE_FAIL;
+    }
 
     char sql[256];
     snprintf(sql, sizeof(sql), "SELECT * FROM %s;", table_name);
@@ -166,32 +176,32 @@ static int handle_db_show_table_data(dev_ipc_message_t *msg, const char *table_n
     if (rc != SQLITE_OK)
     {
         g_mutex_unlock(&conn->db_mutex);
-        snprintf(resp_out.message, sizeof(resp_out.message), "Error: Table '%s' not found.\r\n", table_name);
-        db_send_cli_response(msg, resp_out.message);
+        g_string_printf(resp_out, "Error: Table '%s' not found.\r\n", table_name);
+        db_send_cli_response(msg, resp_out->str);
+        g_string_free(resp_out, TRUE);
         return ERRCODE_FAIL;
     }
 
     int col_count = sqlite3_column_count(stmt);
 
     /* 输出列头 */
-    offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset, "Table: %s\r\n  ", table_name);
+    g_string_append_printf(resp_out, "Table: %s\r\n  ", table_name);
     for (int c = 0; c < col_count; c++)
     {
-        offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset, "%-20s",
-                           sqlite3_column_name(stmt, c));
+        g_string_append_printf(resp_out, "%-20s", sqlite3_column_name(stmt, c));
     }
-    offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset, "\r\n  ");
+    g_string_append(resp_out, "\r\n  ");
     for (int c = 0; c < col_count; c++)
     {
-        offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset, "--------------------");
+        g_string_append(resp_out, "--------------------");
     }
-    offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset, "\r\n");
+    g_string_append(resp_out, "\r\n");
 
     /* 输出数据行 */
     uint32_t row_count = 0;
     while (sqlite3_step(stmt) == SQLITE_ROW)
     {
-        offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset, "  ");
+        g_string_append(resp_out, "  ");
         for (int c = 0; c < col_count; c++)
         {
             int col_type = sqlite3_column_type(stmt, c);
@@ -205,37 +215,33 @@ static int handle_db_show_table_data(dev_ipc_message_t *msg, const char *table_n
                     snprintf(val_buf, sizeof(val_buf), "%.6g", sqlite3_column_double(stmt, c));
                     break;
                 case SQLITE_TEXT:
-                    snprintf(val_buf, sizeof(val_buf), "%s", sqlite3_column_text(stmt, c));
+                {
+                    const unsigned char *txt = sqlite3_column_text(stmt, c);
+                    snprintf(val_buf, sizeof(val_buf), "%s", txt ? (const char *)txt : "");
                     break;
+                }
                 default:
                     snprintf(val_buf, sizeof(val_buf), "NULL");
                     break;
             }
-            offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset, "%-20s", val_buf);
+            g_string_append_printf(resp_out, "%-20s", val_buf);
         }
-        offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset, "\r\n");
+        g_string_append(resp_out, "\r\n");
         row_count++;
-
-        if ((size_t)offset >= sizeof(resp_out.message) - 128)
-        {
-            offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset, "  ... (truncated)\r\n");
-            break;
-        }
     }
     sqlite3_finalize(stmt);
     g_mutex_unlock(&conn->db_mutex);
 
     if (row_count == 0)
     {
-        offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset, "  (no rows)\r\n");
+        g_string_append(resp_out, "  (no rows)\r\n");
     }
     else
     {
-        offset += snprintf(resp_out.message + offset, sizeof(resp_out.message) - offset, "  %u row(s)\r\n", row_count);
+        g_string_append_printf(resp_out, "  %u row(s)\r\n", row_count);
     }
 
-    db_send_cli_response(msg, resp_out.message);
-    return ERRCODE_SUCCESS;
+    return cli_chunk_stream_start(&g_db_local->show_stream, g_db_local->dev_ipc_ctx, DEV_MODULE_ID_DB, msg, resp_out);
 }
 
 // ============================================================================
@@ -377,10 +383,19 @@ void db_cli_handle_query_candidates(dev_ipc_context_t *ctx, dev_ipc_message_t *m
 // 主入口
 // ============================================================================
 
+int db_cli_handle_show_config(dev_ipc_message_t *msg)
+{
+    return cli_chunk_stream_start(&g_db_local->show_stream, g_db_local->dev_ipc_ctx, DEV_MODULE_ID_DB, msg, NULL);
+}
+
 int db_cli_handle_continue(dev_ipc_message_t *msg)
 {
-    db_send_cli_response(msg, "");
-    return ERRCODE_SUCCESS;
+    return cli_chunk_stream_continue(&g_db_local->show_stream, g_db_local->dev_ipc_ctx, DEV_MODULE_ID_DB, msg);
+}
+
+void db_cli_cleanup_state(void)
+{
+    cli_chunk_stream_reset(&g_db_local->show_stream);
 }
 
 int db_cli_process_command(dev_ipc_message_t *msg)
@@ -390,15 +405,17 @@ int db_cli_process_command(dev_ipc_message_t *msg)
         return ERRCODE_FAIL;
     }
 
+    cli_chunk_stream_reset(&g_db_local->show_stream);
+
     cli_tlv_parser_t parser;
     if (cli_tlv_init(&parser, (const uint8_t *)msg->payload, msg->payload_len) != 0)
     {
-        LOG_ERROR("载荷解析失败");
+        LOG_ERROR("Payload parsing failed");
         db_send_cli_response(msg, "DB Error: Failed to parse command payload.\r\n");
         return ERRCODE_FAIL;
     }
 
-    LOG_DEBUG("收到 TLV 载荷 (group_id=%u)", parser.group_id);
+    LOG_DEBUG("Received TLV payload (group_id=%u)", parser.group_id);
 
     int result;
     switch (parser.group_id)
@@ -407,7 +424,7 @@ int db_cli_process_command(dev_ipc_message_t *msg)
             result = handle_db_show_cmd(msg, &parser);
             break;
         default:
-            LOG_WARN("未知 group_id: %u", parser.group_id);
+            LOG_WARN("Unknown group_id: %u", parser.group_id);
             db_send_cli_response(msg, "DB Error: Unknown command group.\r\n");
             result = ERRCODE_FAIL;
             break;

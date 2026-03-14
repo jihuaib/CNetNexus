@@ -233,15 +233,15 @@ static int cli_scan_and_load_xml(const char *base_dir)
             }
         }
 
-        LOG_INFO("发现 XML: %s", xml_path);
+        LOG_INFO("Found XML: %s", xml_path);
         if (cli_xml_load_view_tree(xml_path, &g_cli_local->view_tree) == ERRCODE_SUCCESS)
         {
-            LOG_INFO("加载 XML 成功: %s", entry->d_name);
+            LOG_INFO("Loaded XML successfully: %s", entry->d_name);
             loaded++;
         }
         else
         {
-            LOG_ERROR("加载 XML 失败: %s", xml_path);
+            LOG_ERROR("Failed to load XML: %s", xml_path);
         }
         g_free(xml_path);
     }
@@ -259,7 +259,7 @@ static int cli_scan_and_load_xml(const char *base_dir)
  */
 static void cli_discover_and_load_xml(void)
 {
-    LOG_INFO("自动发现并加载 commands.xml...");
+    LOG_INFO("Auto-discovering and loading commands.xml...");
 
     int total = 0;
 
@@ -272,7 +272,7 @@ static void cli_discover_and_load_xml(void)
         g_free(resources_dir);
         if (total > 0)
         {
-            LOG_INFO("从 NN_WORK_DIR 加载了 %d 个 XML 配置", total);
+            LOG_INFO("Loaded %d XML configs from NN_WORK_DIR", total);
             return;
         }
     }
@@ -286,12 +286,12 @@ static void cli_discover_and_load_xml(void)
         g_free(dev_path);
         if (total > 0)
         {
-            LOG_INFO("从开发路径加载了 %d 个 XML 配置", total);
+            LOG_INFO("Loaded %d XML configs from dev path", total);
             return;
         }
     }
 
-    LOG_ERROR("未发现任何 commands.xml");
+    LOG_ERROR("No commands.xml found");
 }
 
 // ============================================================================
@@ -329,7 +329,7 @@ void cli_init_local(dev_ipc_context_t *ctx)
     /* 自动发现并加载所有模块的 commands.xml */
     cli_discover_and_load_xml();
 
-    LOG_INFO("本地状态初始化完成");
+    LOG_INFO("Local state initialization complete");
 }
 
 // ============================================================================
@@ -338,7 +338,7 @@ void cli_init_local(dev_ipc_context_t *ctx)
 
 static void cli_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    LOG_INFO("Phase 1: MODULE_START (无需连接其他模块)");
+    LOG_INFO("Phase 1: MODULE_START (no external connections needed)");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
@@ -348,7 +348,7 @@ static void cli_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
 static void cli_on_connect(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    LOG_INFO("Phase 2: MODULE_CONNECT (预留)");
+    LOG_INFO("Phase 2: MODULE_CONNECT (reserved)");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
@@ -358,7 +358,7 @@ static void cli_on_connect(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
 static void cli_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    LOG_INFO("Phase 3: MODULE_READY — 启动 Telnet 服务器");
+    LOG_INFO("Phase 3: MODULE_READY - Starting Telnet server");
 
     /* 创建 epoll */
     int epoll_fd = epoll_create1(EPOLL_CLOEXEC);
@@ -485,13 +485,13 @@ void cli_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
 int cli_module_init(void)
 {
-    LOG_INFO("模块初始化");
+    LOG_INFO("Module initialization");
 
     /* 创建 IPC 上下文 */
     dev_ipc_context_t *ctx = dev_ipc_init(DEV_MODULE_ID_CLI, "cli", DEV_MODULE_PORT_CLI, cli_msg_handler);
     if (!ctx)
     {
-        LOG_ERROR("IPC 初始化失败");
+        LOG_ERROR("IPC initialization failed");
         return -1;
     }
 

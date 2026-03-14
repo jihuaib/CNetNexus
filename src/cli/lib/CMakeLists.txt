@@ -1,6 +1,7 @@
 # CLI API 模块源码
 set(CLI_API_SOURCES
     cli_tlv.c
+    cli_stream.c
 )
 
 # 创建 CLI API 共享库

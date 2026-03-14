@@ -492,7 +492,7 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
                         cli_context_set(session, new_ctx, new_ctx_len);
                         g_free(new_ctx);
                     }
-                    LOG_DEBUG("框架自动切换到视图 %s，上下文 %u 字节", tgt_view->view_name, new_ctx_len);
+                    LOG_DEBUG("Framework auto-switched to view %s, context %u bytes", tgt_view->view_name, new_ctx_len);
                 }
             }
 

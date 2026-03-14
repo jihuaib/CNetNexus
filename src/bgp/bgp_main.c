@@ -20,14 +20,18 @@
 #include "bgp_cli.h"
 #include "bgp_conn.h"
 #include "bgp_db.h"
+#include "bgp_instance.h"
 #include "bgp_parse.h"
 #include "bgp_pkt.h"
+#include "bgp_rib.h"
 #include "bgp_session.h"
+#include "bgp_vrf.h"
 #include "cli.h"
 #include "dev.h"
 #include "errcode.h"
 #include "log.h"
 #include "net_addr.h"
+#include "route.h"
 
 /** BGP server epoll 单次最大事件数 */
 #define BGP_MAX_EPOLL_EVENTS 16
@@ -58,7 +62,7 @@ void bgp_listen_start(void)
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0)
     {
-        LOG_PERROR("BGP: 创建 listen socket 失败");
+        LOG_PERROR("BGP: Failed to create listen socket");
         return;
     }
 
@@ -74,14 +78,14 @@ void bgp_listen_start(void)
 
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0)
     {
-        LOG_PERROR("BGP: bind 0.0.0.0:179 失败");
+        LOG_PERROR("BGP: bind 0.0.0.0:179 failed");
         close(fd);
         return;
     }
 
     if (listen(fd, 32) < 0)
     {
-        LOG_PERROR("BGP: listen 失败");
+        LOG_PERROR("BGP: listen failed");
         close(fd);
         return;
     }
@@ -91,13 +95,13 @@ void bgp_listen_start(void)
     ev.data.ptr = &bgp_listen_tag;
     if (epoll_ctl(g_bgp_local->epoll_fd, EPOLL_CTL_ADD, fd, &ev) < 0)
     {
-        LOG_PERROR("BGP: epoll_ctl ADD listen fd 失败");
+        LOG_PERROR("BGP: epoll_ctl ADD listen fd failed");
         close(fd);
         return;
     }
 
     g_bgp_local->listen_fd = fd;
-    LOG_INFO("BGP: 开始监听 0.0.0.0:179 (fd=%d)", fd);
+    LOG_INFO("BGP: Listening on 0.0.0.0:179 (fd=%d)", fd);
 }
 
 void bgp_listen_stop(void)
@@ -112,7 +116,7 @@ void bgp_listen_stop(void)
     }
     close(g_bgp_local->listen_fd);
     g_bgp_local->listen_fd = -1;
-    LOG_INFO("BGP: 停止监听 0.0.0.0:179");
+    LOG_INFO("BGP: Stopped listening on 0.0.0.0:179");
 }
 
 // ============================================================================
@@ -160,7 +164,7 @@ static void bgp_session_promote_sec(bgp_session_t *sess)
 {
     char addr_str[64];
     net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
-    LOG_INFO("BGP: 被动连接 fd=%d 提升为 pri_conn (neighbor=%s)", sess->sec_conn->fd, addr_str);
+    LOG_INFO("BGP: Passive connection fd=%d promoted to pri_conn (neighbor=%s)", sess->sec_conn->fd, addr_str);
     sess->pri_conn = sess->sec_conn;
     sess->sec_conn = NULL;
 }
@@ -192,7 +196,7 @@ static void bgp_handle_passive_accept(void)
     {
         if (errno != EAGAIN && errno != EWOULDBLOCK)
         {
-            LOG_PERROR("BGP: accept 失败");
+            LOG_PERROR("BGP: accept failed");
         }
         return;
     }
@@ -218,14 +222,14 @@ static void bgp_handle_passive_accept(void)
     }
     else
     {
-        LOG_WARN("BGP: 拒绝未知地址族的连接");
+        LOG_WARN("BGP: Rejecting connection with unknown address family");
         close(conn_fd);
         return;
     }
 
     if (!proto)
     {
-        LOG_WARN("BGP: 协议未初始化，拒绝来自 %s 的连接", from_ip);
+        LOG_WARN("BGP: Protocol not initialized, rejecting connection from %s", from_ip);
         close(conn_fd);
         return;
     }
@@ -234,7 +238,7 @@ static void bgp_handle_passive_accept(void)
     bgp_session_t *sess = vrf0 ? bgp_vrf_find_session(vrf0, &from_addr) : NULL;
     if (!sess || !bgp_vrf_neighbor_has_any_af(vrf0, &from_addr))
     {
-        LOG_WARN("BGP: 拒绝来自 %s 的连接（未配置 AF 邻居）", from_ip);
+        LOG_WARN("BGP: Rejecting connection from %s (no AF neighbor configured)", from_ip);
         close(conn_fd);
         return;
     }
@@ -245,7 +249,7 @@ static void bgp_handle_passive_accept(void)
     /* sec_conn 已存在：防御性拒绝（正常不应出现） */
     if (sess->sec_conn)
     {
-        LOG_WARN("BGP: 拒绝来自 %s 的连接（sec_conn 已存在 fd=%d）", from_ip, sess->sec_conn->fd);
+        LOG_WARN("BGP: Rejecting connection from %s (sec_conn already exists fd=%d)", from_ip, sess->sec_conn->fd);
         close(conn_fd);
         return;
     }
@@ -253,12 +257,13 @@ static void bgp_handle_passive_accept(void)
     /* pri_conn 已建立（!is_connecting）→ 连接已在协商中，拒绝新的被动连接 */
     if (sess->pri_conn && !sess->pri_conn->is_connecting)
     {
-        LOG_INFO("BGP: neighbor %s pri_conn fd=%d 已建立，拒绝被动连接 fd=%d", from_ip, sess->pri_conn->fd, conn_fd);
+        LOG_INFO("BGP: neighbor %s pri_conn fd=%d established, rejecting passive connection fd=%d", from_ip,
+                 sess->pri_conn->fd, conn_fd);
         close(conn_fd);
         return;
     }
 
-    LOG_INFO("BGP: neighbor %s 被动 TCP 连接（fd=%d）", from_ip, conn_fd);
+    LOG_INFO("BGP: neighbor %s passive TCP connection (fd=%d)", from_ip, conn_fd);
 
     /* 创建被动连接对象 */
     bgp_conn_t *conn = bgp_conn_create(sess);
@@ -273,7 +278,7 @@ static void bgp_handle_passive_accept(void)
     ev.data.ptr = conn;
     if (epoll_ctl(g_bgp_local->epoll_fd, EPOLL_CTL_ADD, conn_fd, &ev) < 0)
     {
-        LOG_PERROR("BGP: epoll_ctl ADD 被动连接失败");
+        LOG_PERROR("BGP: epoll_ctl ADD passive connection failed");
         bgp_conn_destroy(conn);
         return;
     }
@@ -281,8 +286,9 @@ static void bgp_handle_passive_accept(void)
     if (sess->pri_conn)
     {
         /* pri_conn 还在 connecting：被动 TCP 先建立，暂存 sec_conn，等 EPOLLOUT 解决 */
-        LOG_INFO("BGP: neighbor %s 被动连接 fd=%d 先建立（主动连接 fd=%d 仍在握手中）", from_ip, conn_fd,
-                 sess->pri_conn->fd);
+        LOG_INFO(
+            "BGP: neighbor %s passive connection fd=%d established first (active connection fd=%d still handshaking)",
+            from_ip, conn_fd, sess->pri_conn->fd);
         sess->sec_conn = conn;
     }
     else
@@ -320,7 +326,7 @@ static void bgp_handle_active_connect(bgp_conn_t *conn)
 
     if (err != 0)
     {
-        LOG_WARN("BGP: 主动连接到 %s 失败: %s (fd=%d)", addr_str, strerror(err), conn->fd);
+        LOG_WARN("BGP: Active connection to %s failed: %s (fd=%d)", addr_str, strerror(err), conn->fd);
         bgp_conn_close(&sess->pri_conn);
         if (sess->sec_conn)
         {
@@ -338,14 +344,15 @@ static void bgp_handle_active_connect(bgp_conn_t *conn)
     if (sess->sec_conn)
     {
         /* 被动 TCP 先建立（sec_conn 已在协商中）→ 放弃主动连接，使用被动连接 */
-        LOG_INFO("BGP: neighbor %s 被动连接 fd=%d 先建立，放弃主动连接 fd=%d", addr_str, sess->sec_conn->fd, conn->fd);
+        LOG_INFO("BGP: neighbor %s passive connection fd=%d established first, abandoning active connection fd=%d",
+                 addr_str, sess->sec_conn->fd, conn->fd);
         bgp_conn_close(&sess->pri_conn);
         bgp_session_promote_sec(sess);
         return;
     }
 
     /* 主动连接胜出：转 EPOLLIN，发送 OPEN */
-    LOG_INFO("BGP: 主动连接到 %s TCP 已建立 (fd=%d)", addr_str, conn->fd);
+    LOG_INFO("BGP: Active TCP connection to %s established (fd=%d)", addr_str, conn->fd);
     conn->is_connecting = FALSE;
     struct epoll_event ev;
     ev.events = EPOLLIN;
@@ -385,7 +392,7 @@ static void bgp_handle_data(bgp_conn_t *conn)
 
         char addr_str[64];
         net_addr_to_str(&conn->peer_addr, addr_str, sizeof(addr_str));
-        LOG_INFO("BGP: 与 %s 的连接关闭 (fd=%d)", addr_str, conn->fd);
+        LOG_INFO("BGP: Connection with %s closed (fd=%d)", addr_str, conn->fd);
         bgp_conn_close(slot);
 
         if (!sess->pri_conn && !sess->sec_conn)
@@ -443,10 +450,10 @@ static void bgp_handle_ka_timer(bgp_session_t *sess)
     uint64_t expirations;
     if (read(sess->ka_timerfd, &expirations, sizeof(expirations)) < 0 && errno != EAGAIN)
     {
-        LOG_PERROR("BGP: 读取 ka timerfd 失败");
+        LOG_PERROR("BGP: Failed to read ka timerfd");
     }
 
-    /* 仅在 ESTABLISHED 状态发送 KA；连接不存在时定时器应已被取消 */
+    /* 仅在 ESTABLISHED 状态发送 KA；connection does not exist时定时器应已被取消 */
     bgp_conn_t *conn = sess->pri_conn;
     if (!conn || conn->fd < 0 || sess->state != BGP_CONN_STATE_ESTABLISHED)
     {
@@ -457,7 +464,7 @@ static void bgp_handle_ka_timer(bgp_session_t *sess)
     {
         char addr_str[64];
         net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
-        LOG_WARN("BGP: 向 %s 发送 KEEPALIVE 失败，关闭连接", addr_str);
+        LOG_WARN("BGP: Failed to send KEEPALIVE to %s, closing connection", addr_str);
         bgp_session_cancel_keepalive(sess, g_bgp_local->epoll_fd);
         bgp_session_cancel_hold(sess, g_bgp_local->epoll_fd);
         bgp_conn_close(&sess->pri_conn);
@@ -474,12 +481,12 @@ static void bgp_handle_hold_timer(bgp_session_t *sess)
     uint64_t expirations;
     if (read(sess->hold_timerfd, &expirations, sizeof(expirations)) < 0 && errno != EAGAIN)
     {
-        LOG_PERROR("BGP: 读取 hold timerfd 失败");
+        LOG_PERROR("BGP: Failed to read hold timerfd");
     }
 
     char addr_str[64];
     net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
-    LOG_WARN("BGP: neighbor %s hold time 超时，关闭 session", addr_str);
+    LOG_WARN("BGP: neighbor %s hold time expired, closing session", addr_str);
 
     bgp_session_cancel_keepalive(sess, g_bgp_local->epoll_fd);
     bgp_session_cancel_hold(sess, g_bgp_local->epoll_fd);
@@ -500,7 +507,7 @@ static void bgp_handle_retry_timer(bgp_session_t *sess)
     uint64_t expirations;
     if (read(sess->retry_timerfd, &expirations, sizeof(expirations)) < 0 && errno != EAGAIN)
     {
-        LOG_PERROR("BGP: 读取 timerfd 失败");
+        LOG_PERROR("BGP: Failed to read timerfd");
     }
 
     /* 关闭 timerfd，从 epoll 移除 */
@@ -521,7 +528,7 @@ static void bgp_handle_retry_timer(bgp_session_t *sess)
 
     char addr_str[64];
     net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
-    LOG_INFO("BGP: connect-retry 到期，重新连接 neighbor %s", addr_str);
+    LOG_INFO("BGP: connect-retry expired, reconnecting neighbor %s", addr_str);
     bgp_server_start_active_conn(sess);
 }
 
@@ -547,7 +554,7 @@ static void *bgp_server_thread(void *arg)
             {
                 continue;
             }
-            LOG_PERROR("BGP: epoll_wait 失败");
+            LOG_PERROR("BGP: epoll_wait failed");
             break;
         }
 
@@ -627,7 +634,7 @@ void bgp_server_start_active_conn(bgp_session_t *session)
     {
         char addr_str[64];
         net_addr_to_str(&session->neighbor_addr, addr_str, sizeof(addr_str));
-        LOG_WARN("BGP: 为 neighbor %s 发起主动连接失败，调度 connect-retry", addr_str);
+        LOG_WARN("BGP: Failed to initiate active connection for neighbor %s, scheduling connect-retry", addr_str);
         bgp_conn_destroy(conn);
         bgp_arm_retry(session);
         return;
@@ -657,10 +664,11 @@ void bgp_server_stop_session_conns(bgp_session_t *session)
 
 static void bgp_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    LOG_INFO("Phase 1: MODULE_START — 建立 IPC 连接");
+    LOG_INFO("Phase 1: MODULE_START - Establishing IPC connections");
     dev_ipc_connect(ctx, DEV_MODULE_ID_CLI, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CLI);
     dev_ipc_connect(ctx, DEV_MODULE_ID_DB, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_DB);
-    LOG_INFO("已连接到 CFG 和 DB");
+    dev_ipc_connect(ctx, DEV_MODULE_ID_ROUTE, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_ROUTE);
+    LOG_INFO("Connected to CFG, DB and ROUTE");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
@@ -670,7 +678,7 @@ static void bgp_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
 static void bgp_on_connect(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    LOG_INFO("Phase 2: MODULE_CONNECT (预留)");
+    LOG_INFO("Phase 2: MODULE_CONNECT (reserved)");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
@@ -680,12 +688,12 @@ static void bgp_on_connect(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
 static void bgp_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    LOG_INFO("Phase 3: MODULE_READY — 初始化数据库表并恢复 BGP 状态");
+    LOG_INFO("Phase 3: MODULE_READY - Initializing database tables and restoring BGP state");
 
     /* 建表（幂等，首次启动时创建，后续启动时跳过） */
     if (bgp_db_init(ctx) != 0)
     {
-        LOG_ERROR("BGP: 数据库表初始化失败");
+        LOG_ERROR("BGP: Database table initialization failed");
         send_phase_response(ctx, msg, ERRCODE_FAIL);
         return;
     }
@@ -694,7 +702,7 @@ static void bgp_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     uint32_t ret = bgp_db_restore(ctx);
     if (ret != ERRCODE_SUCCESS)
     {
-        LOG_ERROR("BGP: 从数据库恢复状态失败");
+        LOG_ERROR("BGP: Failed to restore state from database");
         send_phase_response(ctx, msg, ERRCODE_FAIL);
         return;
     }
@@ -702,7 +710,7 @@ static void bgp_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     int epoll_fd = epoll_create1(EPOLL_CLOEXEC);
     if (epoll_fd < 0)
     {
-        LOG_PERROR("BGP: 创建 epoll 失败");
+        LOG_PERROR("BGP: Failed to create epoll");
         send_phase_response(ctx, msg, ERRCODE_FAIL);
         return;
     }
@@ -711,7 +719,7 @@ static void bgp_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     g_bgp_local->running = 1;
     if (pthread_create(&g_bgp_local->server_thread, NULL, bgp_server_thread, NULL) != 0)
     {
-        LOG_PERROR("BGP: 创建 server 线程失败");
+        LOG_PERROR("BGP: Failed to create server thread");
         close(epoll_fd);
         g_bgp_local->epoll_fd = DEV_INVALID_FD;
         g_bgp_local->running = 0;
@@ -747,7 +755,7 @@ static void bgp_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         }
     }
 
-    LOG_INFO("BGP server 线程已启动");
+    LOG_INFO("BGP server thread started");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
@@ -758,6 +766,8 @@ static void bgp_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 static void bgp_on_shutdown(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     LOG_INFO("BGP module cleanup");
+
+    bgp_cli_cleanup_state();
 
     g_bgp_local->running = 0;
     if (g_bgp_local->server_thread)
@@ -807,6 +817,104 @@ static void bgp_on_shutdown(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 }
 
 // ============================================================================
+// ROUTE 模块推送的路由更新处理
+// ============================================================================
+
+/**
+ * @brief 处理 ROUTE 模块推送的增量路由更新（ROUTE_MSG_TYPE_UPDATE）
+ *
+ * 将静态路由导入到对应地址族实例的 BGP RIB。
+ * 仅当实例的 import_protos 标志中包含对应协议时才执行导入。
+ */
+static void bgp_handle_route_update(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+{
+    if (!msg->payload || msg->payload_len < sizeof(route_msg_entry_t))
+    {
+        LOG_WARN("BGP: ROUTE_UPDATE payload too short: %u bytes", msg->payload_len);
+        dev_ipc_message_free(msg);
+        return;
+    }
+
+    const route_msg_entry_t *entry = (const route_msg_entry_t *)msg->payload;
+
+    if (!g_bgp_local || !g_bgp_local->protocol)
+    {
+        dev_ipc_message_free(msg);
+        return;
+    }
+
+    /* 当前仅处理默认公网 VRF */
+    bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_local->protocol, BGP_VRF_PUBLIC_ID);
+    if (!vrf)
+    {
+        dev_ipc_message_free(msg);
+        return;
+    }
+
+    /* 查找对应 AFI/SAFI 实例（不自动创建：未配置 af 则忽略） */
+    bgp_afi_t afi = (bgp_afi_t)entry->afi;
+    bgp_safi_t safi = BGP_SAFI_UNICAST;
+    bgp_instance_t *inst = (bgp_instance_t *)g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(afi, safi));
+
+    if (!inst || !(inst->import_protos & (1u << entry->protocol)))
+    {
+        /* 该 AF 未配置 import-route 对应协议，丢弃 */
+        dev_ipc_message_free(msg);
+        return;
+    }
+
+    /* 构建 NLRI entry（IP 前缀类型） */
+    bgp_nlri_entry_t nlri;
+    memset(&nlri, 0, sizeof(nlri));
+    nlri.afi = (uint16_t)afi;
+    nlri.safi = (uint8_t)safi;
+    nlri.type = BGP_NLRI_PREFIX;
+    nlri.prefix.prefix.prefix_len = entry->prefix_len;
+    nlri.prefix.has_rd = false;
+    nlri.prefix.has_label = false;
+
+    if (net_addr_from_str(entry->prefix, &nlri.prefix.prefix.addr) != 0)
+    {
+        LOG_WARN("BGP: Route import: invalid prefix '%s'", entry->prefix);
+        dev_ipc_message_free(msg);
+        return;
+    }
+
+    /* key 格式与 bgp_rib.c 中 build_head_key 一致："prefix/len" */
+    snprintf(nlri.key, sizeof(nlri.key), "%s/%u", entry->prefix, (unsigned)entry->prefix_len);
+
+    if (entry->is_withdraw)
+    {
+        bgp_rib_unreach_one(inst->rib, &nlri, entry->source);
+        LOG_DEBUG("BGP: Import route withdraw %s/%u src=%s", entry->prefix, entry->prefix_len, entry->source);
+    }
+    else
+    {
+        /* 构建合成 BGP 属性（ORIGIN=INCOMPLETE，AS_PATH 为空） */
+        bgp_attr_t attr;
+        memset(&attr, 0, sizeof(attr));
+        attr.origin = BGP_ORIGIN_INCOMPLETE;
+        attr.local_pref = 100;
+        attr.has_local_pref = true;
+
+        bgp_nexthop_t nexthop;
+        memset(&nexthop, 0, sizeof(nexthop));
+        nexthop.has_link_local = false;
+        if (net_addr_from_str(entry->nexthop, &nexthop.global) != 0)
+        {
+            nexthop.global.family = (afi == BGP_AFI_IPV4) ? AF_INET : AF_INET6;
+        }
+
+        bgp_rib_reach_one(inst->rib, &nlri, entry->source, &attr, &nexthop);
+        LOG_DEBUG("BGP: Import route add %s/%u nh=%s src=%s", entry->prefix, entry->prefix_len, entry->nexthop,
+                  entry->source);
+    }
+
+    dev_ipc_message_free(msg);
+    (void)ctx;
+}
+
+// ============================================================================
 // IPC 消息处理回调
 // ============================================================================
 
@@ -838,6 +946,9 @@ void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             LOG_DEBUG("Received show current-configuration request");
             bgp_bdr_show_config(msg);
             return;
+        case ROUTE_MSG_TYPE_UPDATE:
+            bgp_handle_route_update(ctx, msg);
+            return;
         default:
             break;
     }
@@ -846,12 +957,12 @@ void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 }
 
 // ============================================================================
-// 模块初始化
+// Module initialization
 // ============================================================================
 
 int bgp_module_init(void)
 {
-    LOG_INFO("模块初始化");
+    LOG_INFO("Module initialization");
 
     /* 注册所有内置 AFI/SAFI 解析器 */
     bgp_parse_init();
@@ -859,7 +970,7 @@ int bgp_module_init(void)
     dev_ipc_context_t *ctx = dev_ipc_init(DEV_MODULE_ID_BGP, "bgp", DEV_MODULE_PORT_BGP, bgp_msg_handler);
     if (!ctx)
     {
-        LOG_ERROR("IPC 初始化失败");
+        LOG_ERROR("IPC initialization failed");
         return -1;
     }
 

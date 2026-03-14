@@ -141,7 +141,7 @@ dev_module_t *dev_add_module_to_registry(uint32_t module_id, const char *name)
     module->phase = DEV_PHASE_LOADED;
 
     g_tree_insert(g_module_registry, GUINT_TO_POINTER(module_id), module);
-    LOG_INFO("模块 %s (id=%u) 已添加到注册表", name, module_id);
+    LOG_INFO("Module %s (id=%u) added to registry", name, module_id);
 
     return module;
 }
@@ -193,7 +193,7 @@ static int dev_scan_dir_for_modules(const char *base_dir)
         dev_module_conf_t conf;
         if (dev_conf_parse(conf_path, &conf) != 0)
         {
-            LOG_ERROR("解析 %s 失败", conf_path);
+            LOG_ERROR("Failed to parse %s", conf_path);
             g_free(conf_path);
             continue;
         }
@@ -209,17 +209,17 @@ static int dev_scan_dir_for_modules(const char *base_dir)
         /* 必须有 exe */
         if (conf.exe_name[0] == '\0')
         {
-            LOG_WARN("模块 %s 缺少 exe 字段，跳过", conf.name);
+            LOG_WARN("Module %s missing exe field, skipping", conf.name);
             continue;
         }
 
-        LOG_INFO("发现模块: %s (id=%u, exe=%s)", conf.name, conf.module_id, conf.exe_name);
+        LOG_INFO("Found module: %s (id=%u, exe=%s)", conf.name, conf.module_id, conf.exe_name);
 
         /* fork+exec 启动模块子进程 */
         pid_t child_pid = dev_spawn_module(conf.exe_name, conf.name);
         if (child_pid < 0)
         {
-            LOG_ERROR("启动模块 %s 失败", conf.name);
+            LOG_ERROR("Failed to start module %s", conf.name);
             continue;
         }
 
@@ -227,7 +227,7 @@ static int dev_scan_dir_for_modules(const char *base_dir)
         dev_module_t *module = dev_add_module_to_registry(conf.module_id, conf.name);
         if (!module)
         {
-            LOG_ERROR("模块 %s 注册失败", conf.name);
+            LOG_ERROR("Module %s registration failed", conf.name);
             kill(child_pid, SIGKILL);
             continue;
         }
@@ -236,7 +236,7 @@ static int dev_scan_dir_for_modules(const char *base_dir)
         module->port = conf.port;
 
         loaded++;
-        LOG_INFO("模块 %s 已启动 (pid=%d)", conf.name, child_pid);
+        LOG_INFO("Module %s started (pid=%d)", conf.name, child_pid);
     }
 
     closedir(dir);
@@ -319,14 +319,14 @@ static pid_t dev_spawn_module(const char *exe_name, const char *module_name)
 
     if (exe_path[0] == '\0')
     {
-        LOG_ERROR("找不到模块可执行文件: %s", exe_name);
+        LOG_ERROR("Module executable not found: %s", exe_name);
         return -1;
     }
 
     pid_t pid = fork();
     if (pid < 0)
     {
-        LOG_ERROR("fork 失败 (%s): %s", module_name, strerror(errno));
+        LOG_ERROR("fork failed (%s): %s", module_name, strerror(errno));
         return -1;
     }
 
@@ -339,7 +339,7 @@ static pid_t dev_spawn_module(const char *exe_name, const char *module_name)
         execv(exe_path, args);
 
         /* execv 失败 */
-        fprintf(stderr, "[dev] execv(%s) 失败: %s\n", exe_path, strerror(errno));
+        fprintf(stderr, "[dev] execv(%s) failed: %s\n", exe_path, strerror(errno));
         _exit(127);
     }
 
@@ -359,7 +359,7 @@ int32_t dev_scan_and_load_modules(void)
         return ERRCODE_FAIL;
     }
 
-    LOG_INFO("开始扫描并加载模块=============================================");
+    LOG_INFO("Begin scanning and loading modules=============================================");
 
     int total_loaded = 0;
 
@@ -372,7 +372,7 @@ int32_t dev_scan_and_load_modules(void)
         g_free(resources_dir);
         if (total_loaded > 0)
         {
-            LOG_INFO("从 NN_WORK_DIR 加载了 %d 个模块", total_loaded);
+            LOG_INFO("Loaded %d modules from NN_WORK_DIR", total_loaded);
             return ERRCODE_SUCCESS;
         }
     }
@@ -386,23 +386,23 @@ int32_t dev_scan_and_load_modules(void)
         g_free(dev_path);
         if (total_loaded > 0)
         {
-            LOG_INFO("从开发路径加载了 %d 个模块", total_loaded);
+            LOG_INFO("Loaded %d modules from dev path", total_loaded);
             return ERRCODE_SUCCESS;
         }
     }
 
     if (total_loaded == 0)
     {
-        LOG_ERROR("未找到任何模块");
+        LOG_ERROR("No modules found");
         return ERRCODE_FAIL;
     }
 
-    LOG_INFO("结束扫描并加载模块=============================================");
+    LOG_INFO("End scanning and loading modules=============================================");
 
     return ERRCODE_SUCCESS;
 }
 
-/* DEV 连接到所有模块 */
+/* DEV connecting to all modules */
 static gboolean dev_connect_to_module_callback(gpointer key, gpointer value, gpointer data)
 {
     (void)key;
@@ -416,7 +416,7 @@ static gboolean dev_connect_to_module_callback(gpointer key, gpointer value, gpo
 
     if (module->phase >= DEV_PHASE_LOADED)
     {
-        LOG_INFO("连接到模块: %s (port=%u)", module->name, module->port);
+        LOG_INFO("Connecting to module: %s (port=%u)", module->name, module->port);
         dev_ipc_connect(dev_ctx, module->module_id, DEV_IPC_HOST_LOCAL, module->port);
     }
 
@@ -444,7 +444,7 @@ static gboolean phase1_start_callback(gpointer key, gpointer value, gpointer dat
         return FALSE;
     }
 
-    LOG_INFO("Phase 1: 发送 MODULE_START -> %s", module->name);
+    LOG_INFO("Phase 1: Sending MODULE_START -> %s", module->name);
 
     dev_ipc_message_t *req = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_MODULE_START, DEV_MODULE_ID_DEV,
                                                     module->module_id, 0, NULL, 0, NULL);
@@ -452,13 +452,13 @@ static gboolean phase1_start_callback(gpointer key, gpointer value, gpointer dat
     dev_ipc_message_t *resp = dev_ipc_query(g_dev_local->dev_ipc_ctx, module->module_id, req, 5000);
     if (resp)
     {
-        LOG_INFO("Phase 1: %s IPC 连接已建立", module->name);
+        LOG_INFO("Phase 1: %s IPC connection established", module->name);
         module->phase = DEV_PHASE_IPC_READY;
         dev_ipc_message_free(resp);
     }
     else
     {
-        LOG_ERROR("Phase 1: %s IPC 连接超时或失败", module->name);
+        LOG_ERROR("Phase 1: %s IPC connection timeout or failed", module->name);
         (*failed_count)++;
     }
 
@@ -486,7 +486,7 @@ static gboolean phase2_connect_callback(gpointer key, gpointer value, gpointer d
         return FALSE;
     }
 
-    LOG_INFO("Phase 2: 发送 MODULE_CONNECT -> %s", module->name);
+    LOG_INFO("Phase 2: Sending MODULE_CONNECT -> %s", module->name);
 
     dev_ipc_message_t *req = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_MODULE_CONNECT, DEV_MODULE_ID_DEV,
                                                     module->module_id, 0, NULL, 0, NULL);
@@ -494,13 +494,13 @@ static gboolean phase2_connect_callback(gpointer key, gpointer value, gpointer d
     dev_ipc_message_t *resp = dev_ipc_query(g_dev_local->dev_ipc_ctx, module->module_id, req, 5000);
     if (resp)
     {
-        LOG_INFO("Phase 2: %s 预留阶段完成", module->name);
+        LOG_INFO("Phase 2: %s reserved phase complete", module->name);
         module->phase = DEV_PHASE_DB_RECOVERED;
         dev_ipc_message_free(resp);
     }
     else
     {
-        LOG_ERROR("Phase 2: %s 预留阶段超时或失败", module->name);
+        LOG_ERROR("Phase 2: %s reserved phase timeout or failed", module->name);
         (*failed_count)++;
     }
 
@@ -528,7 +528,7 @@ static gboolean phase3_ready_callback(gpointer key, gpointer value, gpointer dat
         return FALSE;
     }
 
-    LOG_INFO("Phase 3: 发送 MODULE_READY -> %s", module->name);
+    LOG_INFO("Phase 3: Sending MODULE_READY -> %s", module->name);
 
     dev_ipc_message_t *req = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_MODULE_READY, DEV_MODULE_ID_DEV,
                                                     module->module_id, 0, NULL, 0, NULL);
@@ -536,13 +536,13 @@ static gboolean phase3_ready_callback(gpointer key, gpointer value, gpointer dat
     dev_ipc_message_t *resp = dev_ipc_query(g_dev_local->dev_ipc_ctx, module->module_id, req, 5000);
     if (resp)
     {
-        LOG_INFO("Phase 3: %s 就绪", module->name);
+        LOG_INFO("Phase 3: %s ready", module->name);
         module->phase = DEV_PHASE_READY;
         dev_ipc_message_free(resp);
     }
     else
     {
-        LOG_ERROR("Phase 3: %s 就绪超时或失败", module->name);
+        LOG_ERROR("Phase 3: %s ready timeout or failed", module->name);
         (*failed_count)++;
     }
 
@@ -562,21 +562,21 @@ int32_t dev_init_all_modules(void)
     int32_t failed_count = 0;
 
     LOG_INFO("=============================================");
-    LOG_INFO("开始三阶段模块初始化");
+    LOG_INFO("Starting three-phase module initialization");
     LOG_INFO("=============================================");
 
     if (!g_module_registry)
     {
-        LOG_INFO("没有已注册的模块");
+        LOG_INFO("No registered modules");
         return ERRCODE_SUCCESS;
     }
 
-    /* DEV 连接到所有模块 */
-    LOG_INFO("DEV 连接到所有模块");
+    /* DEV connecting to all modules */
+    LOG_INFO("DEV connecting to all modules");
     g_tree_foreach(g_module_registry, dev_connect_to_module_callback, g_dev_local->dev_ipc_ctx);
 
     /* 等待所有 IPC 连接完成握手（最多 5 秒） */
-    LOG_INFO("等待 IPC 连接就绪...");
+    LOG_INFO("Waiting for IPC connections to be ready...");
     int all_connected = 0;
     for (int retry = 0; retry < 50; retry++)
     {
@@ -594,7 +594,7 @@ int32_t dev_init_all_modules(void)
                     all_connected = 0;
                     if (retry % 10 == 9) /* 每 1 秒记录一次等待中的模块 */
                     {
-                        LOG_WARN("等待 IPC 连接: %s (id=0x%08X) 未就绪", m->name, m->module_id);
+                        LOG_WARN("Waiting for IPC connection: %s (id=0x%08X) not ready", m->name, m->module_id);
                     }
                 }
             }
@@ -603,7 +603,7 @@ int32_t dev_init_all_modules(void)
 
         if (all_connected)
         {
-            LOG_INFO("所有 IPC 连接就绪 (耗时约 %d ms)", retry * 100);
+            LOG_INFO("All IPC connections ready (took ~%d ms)", retry * 100);
             break;
         }
         usleep(100000); /* 100ms */
@@ -611,7 +611,7 @@ int32_t dev_init_all_modules(void)
 
     if (!all_connected)
     {
-        LOG_WARN("等待超时（5 秒），部分模块 IPC 连接未就绪，继续初始化");
+        LOG_WARN("Wait timeout (5 seconds), some module IPC connections not ready, continuing initialization");
         /* 打印每个模块的最终连接状态 */
         GList *mods = NULL;
         g_tree_foreach(g_module_registry, collect_module_callback, &mods);
@@ -621,27 +621,28 @@ int32_t dev_init_all_modules(void)
             if (m->module_id != DEV_MODULE_ID_DEV)
             {
                 int connected = dev_ipc_is_connected(g_dev_local->dev_ipc_ctx, m->module_id);
-                LOG_WARN("  模块 %s (id=0x%08X): %s", m->name, m->module_id, connected ? "已连接" : "未连接");
+                LOG_WARN("  Module %s (id=0x%08X): %s", m->name, m->module_id,
+                         connected ? "connected" : "not connected");
             }
         }
         g_list_free(mods);
     }
 
     /* Phase 1: 发送 MODULE_START — 模块建立 IPC 连接 */
-    LOG_INFO("=== Phase 1: MODULE_START (IPC 建立) ===");
+    LOG_INFO("=== Phase 1: MODULE_START (IPC setup) ===");
     g_tree_foreach(g_module_registry, phase1_start_callback, &failed_count);
 
     /* Phase 2: 发送 MODULE_CONNECT — 预留（DB 恢复） */
-    LOG_INFO("=== Phase 2: MODULE_CONNECT (预留) ===");
+    LOG_INFO("=== Phase 2: MODULE_CONNECT (reserved) ===");
     g_tree_foreach(g_module_registry, phase2_connect_callback, &failed_count);
-    LOG_INFO("Phase 2: 所有模块预留阶段完成");
+    LOG_INFO("Phase 2: All modules reserved phase complete");
 
     /* Phase 3: 发送 MODULE_READY — 预留（CFG 加载 XML） */
-    LOG_INFO("=== Phase 3: MODULE_READY (预留) ===");
+    LOG_INFO("=== Phase 3: MODULE_READY (reserved) ===");
     g_tree_foreach(g_module_registry, phase3_ready_callback, &failed_count);
 
     LOG_INFO("=============================================");
-    LOG_INFO("三阶段初始化完成 (失败: %d)", failed_count);
+    LOG_INFO("Three-phase initialization complete (failed: %d)", failed_count);
     LOG_INFO("=============================================");
 
     return failed_count;
@@ -662,11 +663,11 @@ static gboolean collect_module_callback(gpointer key, gpointer value, gpointer d
 
 void cleanup_all_modules(void)
 {
-    LOG_INFO("==================== 清理模块 ====================");
+    LOG_INFO("==================== Cleaning up modules ====================");
 
     if (!g_module_registry)
     {
-        LOG_INFO("没有需要清理的模块");
+        LOG_INFO("No modules to clean up");
         return;
     }
 
@@ -686,7 +687,7 @@ void cleanup_all_modules(void)
 
         if (module->phase >= DEV_PHASE_LOADED)
         {
-            LOG_INFO("发送 MODULE_SHUTDOWN -> %s", module->name);
+            LOG_INFO("Sending MODULE_SHUTDOWN -> %s", module->name);
 
             dev_ipc_message_t *req = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN, DEV_MODULE_ID_DEV,
                                                             module->module_id, 0, NULL, 0, NULL);
@@ -709,7 +710,7 @@ void cleanup_all_modules(void)
             continue;
         }
 
-        LOG_INFO("终止模块进程: %s (pid=%d)", module->name, module->child_pid);
+        LOG_INFO("Terminating module process: %s (pid=%d)", module->name, module->child_pid);
         kill(module->child_pid, SIGTERM);
     }
 
@@ -730,7 +731,7 @@ void cleanup_all_modules(void)
             pid_t r = waitpid(module->child_pid, &status, WNOHANG);
             if (r == module->child_pid)
             {
-                LOG_INFO("模块 %s (pid=%d) 已退出", module->name, module->child_pid);
+                LOG_INFO("Module %s (pid=%d) exited", module->name, module->child_pid);
                 exited = 1;
                 break;
             }
@@ -739,7 +740,7 @@ void cleanup_all_modules(void)
 
         if (!exited)
         {
-            LOG_WARN("模块 %s (pid=%d) 未响应，强制终止", module->name, module->child_pid);
+            LOG_WARN("Module %s (pid=%d) not responding, force killing", module->name, module->child_pid);
             kill(module->child_pid, SIGKILL);
             waitpid(module->child_pid, NULL, 0);
         }
@@ -747,8 +748,8 @@ void cleanup_all_modules(void)
         g_free(module);
     }
 
-    /* Step 3: 销毁 DEV */
-    LOG_INFO("销毁 DEV");
+    /* Step 3: Destroying DEV */
+    LOG_INFO("Destroying DEV");
     dev_module_t *dev_self = (dev_module_t *)g_tree_lookup(g_module_registry, GUINT_TO_POINTER(DEV_MODULE_ID_DEV));
     if (dev_self)
     {
@@ -760,5 +761,5 @@ void cleanup_all_modules(void)
     g_tree_destroy(g_module_registry);
     g_module_registry = NULL;
 
-    LOG_INFO("模块清理完成");
+    LOG_INFO("Module cleanup complete");
 }

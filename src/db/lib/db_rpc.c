@@ -367,14 +367,15 @@ static int rpc_build_add_column_sql(const char *table_name, const db_column_def_
     if ((col->constraints & DB_COL_PRIMARY_KEY) || (col->constraints & DB_COL_AUTOINCREMENT) ||
         (col->constraints & DB_COL_UNIQUE))
     {
-        LOG_ERROR("新增列 %s.%s 包含 SQLite ADD COLUMN 不支持的约束（PRIMARY KEY/UNIQUE/AUTOINCREMENT）", table_name,
-                  col->name);
+        LOG_ERROR("New column %s.%s contains constraints not supported by SQLite ADD COLUMN (PRIMARY "
+                  "KEY/UNIQUE/AUTOINCREMENT)",
+                  table_name, col->name);
         return -1;
     }
 
     if ((col->constraints & DB_COL_NOT_NULL) && (!col->default_val || col->default_val[0] == '\0'))
     {
-        LOG_ERROR("新增 NOT NULL 列必须提供默认值: %s.%s", table_name, col->name);
+        LOG_ERROR("New NOT NULL column must have a default value: %s.%s", table_name, col->name);
         return -1;
     }
 
@@ -457,7 +458,7 @@ static int send_exec_sql(dev_ipc_context_t *ctx, const char *sql)
 
     if (!resp)
     {
-        LOG_ERROR("RPC exec_sql 失败: 无响应");
+        LOG_ERROR("RPC exec_sql failed: no response");
         return -1;
     }
 
@@ -484,7 +485,7 @@ static int send_query_sql(dev_ipc_context_t *ctx, const char *sql, db_result_t *
 
     if (!resp)
     {
-        LOG_ERROR("RPC query_sql 失败: 无响应");
+        LOG_ERROR("RPC query_sql failed: no response");
         return ERRCODE_FAIL;
     }
 
@@ -507,7 +508,7 @@ static int rpc_sync_table_columns(dev_ipc_context_t *ctx, const db_table_def_t *
     int ret = send_query_sql(ctx, pragma_sql, &schema);
     if (ret != ERRCODE_SUCCESS)
     {
-        LOG_ERROR("读取表结构失败: %s", def->table_name);
+        LOG_ERROR("Failed to read table structure: %s", def->table_name);
         return ERRCODE_FAIL;
     }
 
@@ -530,12 +531,12 @@ static int rpc_sync_table_columns(dev_ipc_context_t *ctx, const db_table_def_t *
         int rows = send_exec_sql(ctx, alter_sql);
         if (rows < 0)
         {
-            LOG_ERROR("补齐列失败: %s.%s", def->table_name, col->name);
+            LOG_ERROR("Failed to add missing column: %s.%s", def->table_name, col->name);
             db_result_free(schema);
             return ERRCODE_FAIL;
         }
 
-        LOG_INFO("已自动补齐列: %s.%s", def->table_name, col->name);
+        LOG_INFO("Auto-added missing column: %s.%s", def->table_name, col->name);
     }
 
     db_result_free(schema);
@@ -556,7 +557,7 @@ int db_rpc_delete(dev_ipc_context_t *ctx, const char *table_name, const db_filte
     char sql[2048];
     if (build_delete_sql(table_name, filter, sql, sizeof(sql)) < 0)
     {
-        LOG_ERROR("构建 DELETE SQL 失败: 非法过滤条件");
+        LOG_ERROR("Failed to build DELETE SQL: invalid filter condition");
         return -1;
     }
     LOG_INFO("[SQL] %s", sql);
@@ -575,7 +576,7 @@ int db_rpc_query(dev_ipc_context_t *ctx, const char *table_name, const char **fi
     char sql[4096];
     if (build_select_sql(table_name, field_names, num_fields, filter, sql, sizeof(sql)) < 0)
     {
-        LOG_ERROR("构建 SELECT SQL 失败: 非法过滤条件");
+        LOG_ERROR("Failed to build SELECT SQL: invalid filter condition");
         return ERRCODE_FAIL;
     }
     LOG_INFO("[SQL] %s", sql);
@@ -595,7 +596,7 @@ int db_rpc_exists(dev_ipc_context_t *ctx, const char *table_name, const db_filte
     char sql[2048];
     if (build_select_sql(table_name, fields, 1, filter, sql, sizeof(sql)) < 0)
     {
-        LOG_ERROR("构建 EXISTS 查询 SQL 失败: 非法过滤条件");
+        LOG_ERROR("Failed to build EXISTS query SQL: invalid filter condition");
         return ERRCODE_FAIL;
     }
     LOG_INFO("[SQL] %s", sql);
@@ -856,7 +857,7 @@ int db_rpc_update_record(dev_ipc_context_t *ctx, const char *table, const db_rec
     g_free(values);
     if (sql_len < 0)
     {
-        LOG_ERROR("构建 UPDATE SQL 失败: 非法过滤条件");
+        LOG_ERROR("Failed to build UPDATE SQL: invalid filter condition");
         return -1;
     }
     LOG_INFO("[SQL] %s", sql);
@@ -875,7 +876,7 @@ int db_rpc_upsert(dev_ipc_context_t *ctx, const char *table, const db_record_t *
     int ret = db_rpc_exists(ctx, table, filter, &exists);
     if (ret != ERRCODE_SUCCESS)
     {
-        LOG_ERROR("db_rpc_upsert: 检查存在性失败, table=%s", table);
+        LOG_ERROR("db_rpc_upsert: existence check failed, table=%s", table);
         return ERRCODE_FAIL;
     }
 

@@ -67,22 +67,22 @@ static void send_phase_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, 
 }
 
 // ============================================================================
-// Phase 1: MODULE_START — 建立 IPC 连接到 CFG
+// Phase 1: MODULE_START - Establishing IPC connections到 CFG
 // ============================================================================
 
 static void db_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    LOG_INFO("Phase 1: MODULE_START — 建立 IPC 连接");
+    LOG_INFO("Phase 1: MODULE_START - Establishing IPC connections");
 
     dev_ipc_connect(ctx, DEV_MODULE_ID_CLI, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CLI);
 
     /* 打开统一数据库文件 */
     if (db_initialize_database() != ERRCODE_SUCCESS)
     {
-        LOG_ERROR("统一数据库初始化失败");
+        LOG_ERROR("Unified database initialization failed");
     }
 
-    LOG_INFO("已连接到 CFG");
+    LOG_INFO("Connected to CFG");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
@@ -92,7 +92,7 @@ static void db_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
 static void db_on_connect(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    LOG_INFO("Phase 2: MODULE_CONNECT (预留)");
+    LOG_INFO("Phase 2: MODULE_CONNECT (reserved)");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
@@ -102,7 +102,7 @@ static void db_on_connect(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
 static void db_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    LOG_INFO("Phase 3: MODULE_READY (预留)");
+    LOG_INFO("Phase 3: MODULE_READY (reserved)");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
@@ -113,6 +113,8 @@ static void db_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 static void db_on_shutdown(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     LOG_INFO("Cleaning up database module local state");
+
+    db_cli_cleanup_state();
 
     /* 释放统一数据库连接 */
     if (g_db_local->main_conn)
@@ -177,6 +179,11 @@ void db_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             db_cli_handle_continue(msg);
             break;
 
+        case CLI_MSG_TYPE_SHOW_CONFIG:
+            LOG_DEBUG("Received show current-configuration request");
+            db_cli_handle_show_config(msg);
+            break;
+
         case CLI_MSG_TYPE_QUERY_CANDIDATES:
             LOG_DEBUG("Received query candidates request");
             db_cli_handle_query_candidates(ctx, msg);
@@ -196,13 +203,13 @@ void db_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
 int db_module_init(void)
 {
-    LOG_INFO("模块初始化");
+    LOG_INFO("Module initialization");
 
     /* 创建 IPC 上下文 */
     dev_ipc_context_t *ctx = dev_ipc_init(DEV_MODULE_ID_DB, "db", DEV_MODULE_PORT_DB, db_msg_handler);
     if (!ctx)
     {
-        LOG_ERROR("IPC 初始化失败");
+        LOG_ERROR("IPC initialization failed");
         return -1;
     }
 

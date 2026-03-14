@@ -4,7 +4,6 @@
  * @author jhb
  * @date   2026/02/01
  */
-
 #ifndef ROUTE_CLI_H
 #define ROUTE_CLI_H
 
@@ -14,6 +13,7 @@
 /** Route CLI group_id 定义（与 commands.xml 中 group-id 一致） */
 #define ROUTE_CLI_GROUP_ID_CONFIG 1 /**< 路由配置命令 */
 #define ROUTE_CLI_GROUP_ID_SHOW 2   /**< show route 命令 */
+#define ROUTE_CLI_GROUP_ID_BATCH 3  /**< 批量路由命令 */
 
 /**
  * @brief 处理来自 CFG 模块的 CLI 命令消息
@@ -29,4 +29,16 @@ int route_cli_handle_message(dev_ipc_message_t *msg);
  */
 int route_cli_handle_continue(dev_ipc_message_t *msg);
 
-#endif // ROUTE_CLI_H
+/**
+ * @brief 处理 show current-configuration 请求
+ * @param msg 消息
+ * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL
+ */
+int route_cli_handle_show_config(dev_ipc_message_t *msg);
+
+/**
+ * @brief 清理 Route CLI 内部状态（如分片输出缓存）
+ */
+void route_cli_cleanup_state(void);
+
+#endif /* ROUTE_CLI_H */

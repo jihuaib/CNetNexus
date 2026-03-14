@@ -1,17 +1,22 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <configuration module-id="6">
-    <!-- View definitions -->
+    <!-- 视图定义 -->
     <views>
     </views>
 
-    <!-- Command group definitions -->
+    <!-- 命令组定义 -->
     <command_groups>
-        <!-- Route configuration command group -->
+
+        <!-- ================================================================
+             Group 1: 静态路由配置
+             cfg-id: 1=no, 2=ipv4, 3=ipv6, 4=prefix(dest),
+                     5=mask(IPv4), 6=prefix_len(IPv6), 7=nexthop, 8=metric_value
+             ================================================================ -->
         <group group-id="1">
             <elements>
                 <element cfg-id="1" type="keyword">
                     <name>no</name>
-                    <description>Delete</description>
+                    <description>Delete route</description>
                 </element>
                 <element type="keyword">
                     <name>route</name>
@@ -26,57 +31,85 @@
                     <description>IPv6 route</description>
                 </element>
                 <element cfg-id="4" type="parameter">
-                    <name>&lt;destination&gt;</name>
+                    <name>&lt;prefix&gt;</name>
                     <type>string</type>
                     <description>Destination network address</description>
                 </element>
                 <element cfg-id="5" type="parameter">
                     <name>&lt;mask&gt;</name>
                     <type>string</type>
-                    <description>Network mask (IPv4)</description>
+                    <description>Subnet mask (IPv4, e.g. 255.255.255.0)</description>
                 </element>
                 <element cfg-id="6" type="parameter">
                     <name>&lt;prefix-length&gt;</name>
                     <type>uint(0-128)</type>
-                    <description>Prefix length (IPv6)</description>
+                    <description>Prefix length (IPv6, 0-128)</description>
                 </element>
                 <element cfg-id="7" type="parameter">
-                    <name>&lt;next-hop&gt;</name>
+                    <name>&lt;nexthop&gt;</name>
                     <type>string</type>
-                    <description>Next hop address</description>
+                    <description>Next-hop address</description>
+                </element>
+                <element type="keyword">
+                    <name>metric</name>
+                    <description>Set metric value</description>
                 </element>
                 <element cfg-id="8" type="parameter">
-                    <name>&lt;metric&gt;</name>
+                    <name>&lt;metric-value&gt;</name>
                     <type>uint(0-255)</type>
-                    <description>Route metric</description>
+                    <description>Route metric value (0-255)</description>
                 </element>
             </elements>
 
             <commands>
-                <!-- route ipv4 <destination> <mask> <next-hop> [metric] -->
+                <!-- route ipv4 <prefix> <mask> <nexthop> -->
                 <command>
-                    <expression>2 3 5 6 8 [ 9 ]</expression>
+                    <expression>2 3 5 6 8</expression>
                     <views>config</views>
                 </command>
-                <!-- route ipv6 <destination> <prefix-length> <next-hop> [metric] -->
+                <!-- route ipv4 <prefix> <mask> <nexthop> metric <value> -->
                 <command>
-                    <expression>2 4 5 7 8 [ 9 ]</expression>
+                    <expression>2 3 5 6 8 9 10</expression>
                     <views>config</views>
                 </command>
-                <!-- no route ipv4 <destination> <mask> [next-hop] -->
+                <!-- no route ipv4 <prefix> <mask> -->
                 <command>
-                    <expression>1 2 3 5 6 [ 8 ]</expression>
+                    <expression>1 2 3 5 6</expression>
                     <views>config</views>
                 </command>
-                <!-- no route ipv6 <destination> <prefix-length> [next-hop] -->
+                <!-- no route ipv4 <prefix> <mask> <nexthop> -->
                 <command>
-                    <expression>1 2 4 5 7 [ 8 ]</expression>
+                    <expression>1 2 3 5 6 8</expression>
+                    <views>config</views>
+                </command>
+                <!-- route ipv6 <prefix> <prefix-length> <nexthop> -->
+                <command>
+                    <expression>2 4 5 7 8</expression>
+                    <views>config</views>
+                </command>
+                <!-- route ipv6 <prefix> <prefix-length> <nexthop> metric <value> -->
+                <command>
+                    <expression>2 4 5 7 8 9 10</expression>
+                    <views>config</views>
+                </command>
+                <!-- no route ipv6 <prefix> <prefix-length> -->
+                <command>
+                    <expression>1 2 4 5 7</expression>
+                    <views>config</views>
+                </command>
+                <!-- no route ipv6 <prefix> <prefix-length> <nexthop> -->
+                <command>
+                    <expression>1 2 4 5 7 8</expression>
                     <views>config</views>
                 </command>
             </commands>
         </group>
 
-        <!-- Show route command group -->
+        <!-- ================================================================
+             Group 2: show route 命令
+             cfg-id: 1=ipv4, 2=ipv6, 3=all, 4=dest_filter,
+                     5=proto:static, 6=proto:bgp, 7=proto:ospf, 8=summary
+             ================================================================ -->
         <group group-id="2">
             <elements>
                 <element type="keyword">
@@ -97,24 +130,54 @@
                 </element>
                 <element cfg-id="3" type="keyword">
                     <name>all</name>
-                    <description>All routes (IPv4 and IPv6)</description>
+                    <description>All routes (IPv4 + IPv6)</description>
                 </element>
                 <element cfg-id="4" type="parameter">
                     <name>&lt;destination&gt;</name>
                     <type>string</type>
                     <description>Filter by destination address</description>
                 </element>
+                <element type="keyword">
+                    <name>proto</name>
+                    <description>Filter by protocol type</description>
+                </element>
+                <element cfg-id="5" type="keyword">
+                    <name>static</name>
+                    <description>Static routes</description>
+                </element>
+                <element cfg-id="6" type="keyword">
+                    <name>bgp</name>
+                    <description>BGP routes</description>
+                </element>
+                <element cfg-id="7" type="keyword">
+                    <name>ospf</name>
+                    <description>OSPF routes</description>
+                </element>
+                <element cfg-id="8" type="keyword">
+                    <name>summary</name>
+                    <description>Route summary statistics</description>
+                </element>
             </elements>
 
             <commands>
-                <!-- show route ipv4 [destination] -->
+                <!-- show route ipv4 -->
                 <command>
-                    <expression>1 2 3 [ 6 ]</expression>
+                    <expression>1 2 3</expression>
                     <views>global</views>
                 </command>
-                <!-- show route ipv6 [destination] -->
+                <!-- show route ipv4 <destination> -->
                 <command>
-                    <expression>1 2 4 [ 6 ]</expression>
+                    <expression>1 2 3 6</expression>
+                    <views>global</views>
+                </command>
+                <!-- show route ipv6 -->
+                <command>
+                    <expression>1 2 4</expression>
+                    <views>global</views>
+                </command>
+                <!-- show route ipv6 <destination> -->
+                <command>
+                    <expression>1 2 4 6</expression>
                     <views>global</views>
                 </command>
                 <!-- show route all -->
@@ -122,7 +185,110 @@
                     <expression>1 2 5</expression>
                     <views>global</views>
                 </command>
+                <!-- show route proto static -->
+                <command>
+                    <expression>1 2 7 8</expression>
+                    <views>global</views>
+                </command>
+                <!-- show route proto bgp -->
+                <command>
+                    <expression>1 2 7 9</expression>
+                    <views>global</views>
+                </command>
+                <!-- show route proto ospf -->
+                <command>
+                    <expression>1 2 7 10</expression>
+                    <views>global</views>
+                </command>
+                <!-- show route summary -->
+                <command>
+                    <expression>1 2 11</expression>
+                    <views>global</views>
+                </command>
             </commands>
         </group>
+
+        <!-- ================================================================
+             Group 3: 批量路由命令
+             cfg-id: 1=no, 2=batch, 3=ipv4, 4=ipv6,
+                     5=start_addr, 6=mask(IPv4), 7=prefix_len(IPv6),
+                     8=count_value, 9=nexthop_value
+             ================================================================ -->
+        <group group-id="3">
+            <elements>
+                <element cfg-id="1" type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+                <element type="keyword">
+                    <name>route</name>
+                    <description>Route</description>
+                </element>
+                <element cfg-id="2" type="keyword">
+                    <name>batch</name>
+                    <description>Batch route operation</description>
+                </element>
+                <element cfg-id="3" type="keyword">
+                    <name>ipv4</name>
+                    <description>IPv4 batch route</description>
+                </element>
+                <element cfg-id="4" type="keyword">
+                    <name>ipv6</name>
+                    <description>IPv6 batch route</description>
+                </element>
+                <element cfg-id="5" type="parameter">
+                    <name>&lt;start-address&gt;</name>
+                    <type>string</type>
+                    <description>Starting network address</description>
+                </element>
+                <element cfg-id="6" type="parameter">
+                    <name>&lt;mask&gt;</name>
+                    <type>string</type>
+                    <description>Subnet mask (IPv4)</description>
+                </element>
+                <element cfg-id="7" type="parameter">
+                    <name>&lt;prefix-length&gt;</name>
+                    <type>uint(0-128)</type>
+                    <description>Prefix length (IPv6)</description>
+                </element>
+                <element type="keyword">
+                    <name>count</name>
+                    <description>Route count</description>
+                </element>
+                <element cfg-id="8" type="parameter">
+                    <name>&lt;count&gt;</name>
+                    <type>uint(1-100000)</type>
+                    <description>Number of routes to generate</description>
+                </element>
+                <element type="keyword">
+                    <name>nexthop</name>
+                    <description>Next-hop</description>
+                </element>
+                <element cfg-id="9" type="parameter">
+                    <name>&lt;nexthop&gt;</name>
+                    <type>string</type>
+                    <description>Next-hop address</description>
+                </element>
+            </elements>
+
+            <commands>
+                <!-- route batch ipv4 <start> <mask> count <N> nexthop <nh> -->
+                <command>
+                    <expression>2 3 4 6 7 9 10 11 12</expression>
+                    <views>config</views>
+                </command>
+                <!-- route batch ipv6 <start> <pfxlen> count <N> nexthop <nh> -->
+                <command>
+                    <expression>2 3 5 6 8 9 10 11 12</expression>
+                    <views>config</views>
+                </command>
+                <!-- no route batch -->
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>config</views>
+                </command>
+            </commands>
+        </group>
+
     </command_groups>
 </configuration>

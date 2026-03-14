@@ -12,6 +12,7 @@
 #include "db.h"
 #include "dev.h"
 #include "errcode.h"
+#include "if_cli.h"
 #include "if_main.h"
 #include "log.h"
 
@@ -20,55 +21,36 @@
 // ============================================================================
 
 /**
- * @brief 向请求方发送配置文本响应
- * @param msg  原始请求消息
- * @param text 配置文本（空字符串表示该模块无配置）
- */
-static void send_config_resp(dev_ipc_message_t *msg, const char *text)
-{
-    char *resp_data = g_strdup(text);
-    dev_ipc_message_t *resp = dev_ipc_message_create(CLI_MSG_TYPE_RESP, DEV_MODULE_ID_IF, msg->src_module_id,
-                                                     msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
-    if (resp)
-    {
-        dev_ipc_send_response(g_if_local->dev_ipc_ctx, resp);
-        dev_ipc_message_free(resp);
-    }
-}
-
-/**
  * @brief 追加单个接口配置块（if GE-x / ip address / shutdown / !）
  *
  * 仅在接口存在非默认配置时输出（有 IP 或已关闭）。
  *
- * @param buf        输出缓冲区
- * @param buf_size   缓冲区大小
- * @param off        当前写入偏移量（in/out）
+ * @param out        输出文本
  * @param name       逻辑接口名（如 "GE-1"）
  * @param ip_str     IP 地址字符串（空字符串表示未配置）
  * @param prefix_len 前缀长度
  * @param shutdown   1=已关闭，0=正常
  */
-static void bdr_append_interface(char *buf, size_t buf_size, size_t *off, const char *name, const char *ip_str,
-                                 int64_t prefix_len, int64_t shutdown)
+static void bdr_append_interface(GString *out, const char *name, const char *ip_str, int64_t prefix_len,
+                                 int64_t shutdown)
 {
     gboolean has_ip = (ip_str && ip_str[0] != '\0');
     gboolean is_shutdown = (shutdown != 0);
 
-    CLI_BUF_APPEND(buf, buf_size, *off, "!\r\n");
-    CLI_BUF_APPEND(buf, buf_size, *off, "if %s\r\n", name);
+    g_string_append(out, "!\r\n");
+    g_string_append_printf(out, "if %s\r\n", name);
 
     if (has_ip)
     {
-        CLI_BUF_APPEND(buf, buf_size, *off, " ip address %s %ld\r\n", ip_str, prefix_len);
+        g_string_append_printf(out, " ip address %s %ld\r\n", ip_str, prefix_len);
     }
 
     if (is_shutdown)
     {
-        CLI_BUF_APPEND(buf, buf_size, *off, " shutdown\r\n");
+        g_string_append(out, " shutdown\r\n");
     }
 
-    CLI_BUF_APPEND(buf, buf_size, *off, "!\r\n");
+    g_string_append(out, "!\r\n");
 }
 
 // ============================================================================
@@ -78,14 +60,17 @@ static void bdr_append_interface(char *buf, size_t buf_size, size_t *off, const 
 void if_bdr_show_config(dev_ipc_message_t *msg)
 {
     dev_ipc_context_t *ctx = g_if_local->dev_ipc_ctx;
-    char buf[CLI_MAX_RESP_LEN];
-    size_t off = 0;
-    buf[0] = '\0';
+    GString *out = g_string_new("");
+    if (!out)
+    {
+        (void)if_cli_send_chunked_response(msg, NULL);
+        return;
+    }
 
     db_result_t *result = NULL;
     if (db_rpc_query(ctx, "if_interface", NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
     {
-        send_config_resp(msg, "");
+        (void)if_cli_send_chunked_response(msg, out);
         return;
     }
 
@@ -102,9 +87,9 @@ void if_bdr_show_config(dev_ipc_message_t *msg)
             continue;
         }
 
-        bdr_append_interface(buf, sizeof(buf), &off, name, ip_str, prefix_len, shutdown);
+        bdr_append_interface(out, name, ip_str, prefix_len, shutdown);
     }
 
     db_result_free(result);
-    send_config_resp(msg, buf);
+    (void)if_cli_send_chunked_response(msg, out);
 }

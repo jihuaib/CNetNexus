@@ -84,7 +84,7 @@ int dev_ipc_connection_initiate(dev_ipc_connection_t *conn, const char *host, ui
     int ret = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
     if (ret < 0 && errno != EINPROGRESS)
     {
-        LOG_WARN("connect to %s:%u 失败: %s", host, port, strerror(errno));
+        LOG_WARN("connect to %s:%u failed: %s", host, port, strerror(errno));
         close(fd);
         return ERRCODE_FAIL;
     }

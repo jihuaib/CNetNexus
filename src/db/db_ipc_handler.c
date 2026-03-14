@@ -59,7 +59,7 @@ static void handle_db_exec_sql(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
     if (db_deserialize_request_sql(msg->payload, msg->payload_len, &db_name, &sql) < 0)
     {
-        LOG_ERROR("反序列化 EXEC_SQL 请求失败");
+        LOG_ERROR("Failed to deserialize EXEC_SQL request");
         send_db_response(ctx, msg, ERRCODE_FAIL, NULL);
         return;
     }
@@ -83,7 +83,7 @@ static void handle_db_query_sql(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
     if (db_deserialize_request_sql(msg->payload, msg->payload_len, &db_name, &sql) < 0)
     {
-        LOG_ERROR("反序列化 QUERY_SQL 请求失败");
+        LOG_ERROR("Failed to deserialize QUERY_SQL request");
         send_db_response(ctx, msg, ERRCODE_FAIL, NULL);
         return;
     }

@@ -48,7 +48,7 @@ int if_cfg_apply_ip(gboolean is_no, const char *logical_name, const net_prefix_t
     if_map_entry_t *entry = if_cfg_find_entry(logical_name);
     if (!entry)
     {
-        LOG_ERROR("IF: 未找到接口 %s", logical_name);
+        LOG_ERROR("IF: Interface %s not found", logical_name);
         return ERRCODE_FAIL;
     }
 
@@ -56,7 +56,7 @@ int if_cfg_apply_ip(gboolean is_no, const char *logical_name, const net_prefix_t
     {
         memset(&entry->prefix, 0, sizeof(entry->prefix));
         if_set_ip(entry->physical_name, "0.0.0.0", "0.0.0.0");
-        LOG_INFO("IF: %s IP 已清除", logical_name);
+        LOG_INFO("IF: %s IP cleared", logical_name);
         return ERRCODE_SUCCESS;
     }
 
@@ -74,12 +74,12 @@ int if_cfg_apply_ip(gboolean is_no, const char *logical_name, const net_prefix_t
 
     if (if_set_ip(entry->physical_name, ip_str, mask_str) != ERRCODE_SUCCESS)
     {
-        LOG_ERROR("IF: 配置物理接口 %s IP 失败", entry->physical_name);
+        LOG_ERROR("IF: Failed to configure physical interface %s IP", entry->physical_name);
         return ERRCODE_FAIL;
     }
 
     entry->prefix = *prefix;
-    LOG_INFO("IF: %s IP=%s/%u 已配置", logical_name, ip_str, prefix->prefix_len);
+    LOG_INFO("IF: %s IP=%s/%u configured", logical_name, ip_str, prefix->prefix_len);
     return ERRCODE_SUCCESS;
 }
 
@@ -93,7 +93,7 @@ int if_cfg_apply_shutdown(gboolean is_no, const char *logical_name)
     if_map_entry_t *entry = if_cfg_find_entry(logical_name);
     if (!entry)
     {
-        LOG_ERROR("IF: 未找到接口 %s", logical_name);
+        LOG_ERROR("IF: Interface %s not found", logical_name);
         return ERRCODE_FAIL;
     }
 
@@ -102,7 +102,7 @@ int if_cfg_apply_shutdown(gboolean is_no, const char *logical_name)
 
     if (if_set_state(entry->physical_name, up) != ERRCODE_SUCCESS)
     {
-        LOG_ERROR("IF: 设置接口 %s 状态失败", entry->physical_name);
+        LOG_ERROR("IF: Failed to set interface %s state", entry->physical_name);
         return ERRCODE_FAIL;
     }
 

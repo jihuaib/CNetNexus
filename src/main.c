@@ -182,7 +182,7 @@ int main(int argc, char *argv[])
                         pid_t dead = waitpid(-1, &wstatus, WNOHANG);
                         if (dead > 0)
                         {
-                            LOG_WARN("子进程 pid=%d 已退出 (status=%d)", dead, wstatus);
+                            LOG_WARN("Child process pid=%d exited (status=%d)", dead, wstatus);
                         }
                     }
                 }

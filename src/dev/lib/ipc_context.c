@@ -63,7 +63,7 @@ static dev_ipc_connection_t *find_connection(dev_ipc_context_t *ctx, uint32_t mo
         {
             if (ctx->connections[i]->state == DEV_IPC_COCONNECTED)
             {
-                return ctx->connections[i]; // 优先返回已连接的
+                return ctx->connections[i]; // 优先返回connected的
             }
             if (!fallback)
             {
@@ -243,7 +243,7 @@ static void handle_frame(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn, dev
                 uint32_t remote_id = ntohl(remote_id_be);
                 conn->remote_module_id = remote_id;
                 char _buf[16];
-                LOG_INFO("<%s> 收到 %s 的握手", ctx->name, fmt_module_id(remote_id, _buf, sizeof(_buf)));
+                LOG_INFO("<%s> Received handshake from %s", ctx->name, fmt_module_id(remote_id, _buf, sizeof(_buf)));
             }
 
             /* 发送握手响应 */
@@ -271,7 +271,8 @@ static void handle_frame(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn, dev
             dev_ipc_connection_reset_reconnect(conn);
             {
                 char _buf[16];
-                LOG_INFO("<%s> 与 %s 连接建立", ctx->name, fmt_module_id(conn->remote_module_id, _buf, sizeof(_buf)));
+                LOG_INFO("<%s> Connection established with %s", ctx->name,
+                         fmt_module_id(conn->remote_module_id, _buf, sizeof(_buf)));
             }
             break;
         }
@@ -289,7 +290,8 @@ static void handle_frame(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn, dev
             dev_ipc_connection_reset_reconnect(conn);
             {
                 char _buf[16];
-                LOG_INFO("<%s> 与 %s 握手完成", ctx->name, fmt_module_id(conn->remote_module_id, _buf, sizeof(_buf)));
+                LOG_INFO("<%s> Handshake completed with %s", ctx->name,
+                         fmt_module_id(conn->remote_module_id, _buf, sizeof(_buf)));
             }
             break;
         }
@@ -324,7 +326,7 @@ static void handle_frame(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn, dev
 
         case DEV_IPC_MSG_TYPE_SHUTDOWN:
         {
-            LOG_INFO("<%s> 收到关闭通知", ctx->name);
+            LOG_INFO("<%s> Received shutdown notification", ctx->name);
             ctx->shutdown_requested = 1;
             break;
         }
@@ -393,7 +395,7 @@ static void process_received_data(dev_ipc_context_t *ctx, dev_ipc_connection_t *
         if (dev_ipc_frame_parse_header(conn->recv_buf, &header) != ERRCODE_SUCCESS)
         {
             /* 无效帧，断开连接 */
-            LOG_WARN("<%s> 收到无效帧，断开连接", ctx->name);
+            LOG_WARN("<%s> Received invalid frame, disconnecting", ctx->name);
             dev_ipc_connection_close(conn);
             return;
         }
@@ -449,7 +451,7 @@ static void check_heartbeats(dev_ipc_context_t *ctx)
         {
             {
                 char _buf[16];
-                LOG_WARN("<%s> 心跳超时，断开 %s", ctx->name,
+                LOG_WARN("<%s> Heartbeat timeout, disconnecting %s", ctx->name,
                          fmt_module_id(conn->remote_module_id, _buf, sizeof(_buf)));
             }
             epoll_ctl(ctx->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
@@ -484,7 +486,7 @@ static void attempt_reconnects(dev_ipc_context_t *ctx)
             continue;
         }
 
-        LOG_INFO("<%s> 重连 module(0x%08X) (%s:%u)...", ctx->name, conn->remote_module_id, conn->remote_host,
+        LOG_INFO("<%s> Reconnecting module(0x%08X) (%s:%u)...", ctx->name, conn->remote_module_id, conn->remote_host,
                  conn->remote_port);
 
         if (dev_ipc_connection_initiate(conn, conn->remote_host, conn->remote_port) == ERRCODE_SUCCESS)
@@ -547,7 +549,7 @@ static void accept_new_connection(dev_ipc_context_t *ctx)
     ev.data.fd = fd;
     epoll_ctl(ctx->epoll_fd, EPOLL_CTL_ADD, fd, &ev);
 
-    LOG_DEBUG("<%s> 接受新连接 (fd=%d)", ctx->name, fd);
+    LOG_DEBUG("<%s> Accepted new connection (fd=%d)", ctx->name, fd);
 }
 
 // ============================================================================
@@ -562,7 +564,7 @@ static void *dev_ipc_worker_thread(void *arg)
     pthread_setname_np(pthread_self(), tname);
     log_set_tag(ctx->name);
 
-    LOG_INFO("<%s> Worker 线程启动", ctx->name);
+    LOG_INFO("<%s> Worker thread started", ctx->name);
 
     while (1)
     {
@@ -583,7 +585,7 @@ static void *dev_ipc_worker_thread(void *arg)
         }
     }
 
-    LOG_INFO("<%s> Worker 线程退出", ctx->name);
+    LOG_INFO("<%s> Worker thread exited", ctx->name);
     return NULL;
 }
 
@@ -600,7 +602,7 @@ static void *dev_ipc_io_thread(void *arg)
     log_set_tag(ctx->name);
     struct epoll_event events[DEV_IPC_MAX_EPOLL_EVENTS];
 
-    LOG_INFO("<%s> IO 线程启动", ctx->name);
+    LOG_INFO("<%s> IO thread started", ctx->name);
 
     while (ctx->running)
     {
@@ -678,7 +680,7 @@ static void *dev_ipc_io_thread(void *arg)
                     {
                         {
                             char _buf[16];
-                            LOG_WARN("<%s> 连接断开 (module=%s)", ctx->name,
+                            LOG_WARN("<%s> Connection lost (module=%s)", ctx->name,
                                      fmt_module_id(conn->remote_module_id, _buf, sizeof(_buf)));
                         }
                         epoll_ctl(ctx->epoll_fd, EPOLL_CTL_DEL, fd, NULL);
@@ -712,7 +714,7 @@ static void *dev_ipc_io_thread(void *arg)
         attempt_reconnects(ctx);
     }
 
-    LOG_INFO("<%s> IO 线程退出", ctx->name);
+    LOG_INFO("<%s> IO thread exited", ctx->name);
     return NULL;
 }
 
@@ -812,11 +814,11 @@ dev_ipc_context_t *dev_ipc_init(uint32_t module_id, const char *name, uint16_t l
             ev.events = EPOLLIN;
             ev.data.fd = ctx->listen_fd;
             epoll_ctl(ctx->epoll_fd, EPOLL_CTL_ADD, ctx->listen_fd, &ev);
-            LOG_INFO("<%s> IPC 监听端口 %u", ctx->name, listen_port);
+            LOG_INFO("<%s> IPC listening on port %u", ctx->name, listen_port);
         }
         else
         {
-            LOG_ERROR("<%s> 无法绑定 IPC 端口 %u", ctx->name, listen_port);
+            LOG_ERROR("<%s> Failed to bind IPC port %u", ctx->name, listen_port);
         }
     }
 
@@ -842,7 +844,7 @@ dev_ipc_context_t *dev_ipc_init(uint32_t module_id, const char *name, uint16_t l
         return NULL;
     }
 
-    LOG_INFO("<%s> IPC 初始化完成 (module_id=0x%08X)", ctx->name, module_id);
+    LOG_INFO("<%s> IPC initialization complete (module_id=0x%08X)", ctx->name, module_id);
     return ctx;
 }
 
@@ -930,7 +932,7 @@ int dev_ipc_connect(dev_ipc_context_t *ctx, uint32_t target_module_id, const cha
 
     /* 在持锁期间发起连接，使 conn->state 立即进入 COCONNECTING，
      * 避免 IO 线程的 attempt_reconnects() 看到 DISCONNECTED 状态后重复发起连接 */
-    LOG_INFO("<%s> 连接 module(0x%08X) (%s:%u)...", ctx->name, target_module_id, host, port);
+    LOG_INFO("<%s> Connecting to module(0x%08X) (%s:%u)...", ctx->name, target_module_id, host, port);
     int init_ok = (dev_ipc_connection_initiate(conn, host, port) == ERRCODE_SUCCESS);
     pthread_mutex_unlock(&ctx->comutex);
 
@@ -945,7 +947,8 @@ int dev_ipc_connect(dev_ipc_context_t *ctx, uint32_t target_module_id, const cha
     else
     {
         /* 连接失败，稍后重试 */
-        LOG_WARN("<%s> 初始连接 module(0x%08X) (%s:%u) 失败，IO 线程将重试", ctx->name, target_module_id, host, port);
+        LOG_WARN("<%s> Initial connection to module(0x%08X) (%s:%u) failed, IO thread will retry", ctx->name,
+                 target_module_id, host, port);
         dev_ipc_connection_backoff_reconnect(conn);
         return ERRCODE_SUCCESS; /* 不报错，IO 线程会重试 */
     }
@@ -1029,9 +1032,9 @@ int dev_ipc_send_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     if (!conn || conn->state != DEV_IPC_COCONNECTED)
     {
         char _buf[16];
-        LOG_WARN("<%s> dev_ipc_send_response: 无法路由到 %s (num_connections=%d, %s)", ctx->name,
+        LOG_WARN("<%s> dev_ipc_send_response: Cannot route to %s (num_connections=%d, %s)", ctx->name,
                  fmt_module_id(target_id, _buf, sizeof(_buf)), ctx->num_connections,
-                 conn ? "连接存在但未就绪" : "连接不存在");
+                 conn ? "connection exists but not ready" : "connection does not exist");
         pthread_mutex_unlock(&ctx->comutex);
         return ERRCODE_FAIL;
     }

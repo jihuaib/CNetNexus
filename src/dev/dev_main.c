@@ -68,6 +68,11 @@ void dev_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             dev_cli_handle_continue(ctx, msg);
             break;
 
+        case CLI_MSG_TYPE_SHOW_CONFIG:
+            LOG_DEBUG("Received show current-configuration request");
+            dev_cli_handle_show_config(ctx, msg);
+            break;
+
         default:
             break;
     }
@@ -83,7 +88,7 @@ void dev_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
  */
 int dev_init_self(void)
 {
-    LOG_INFO("DEV 自身 IPC 初始化开始========================");
+    LOG_INFO("DEV IPC initialization started========================");
     g_dev_local = g_malloc0(sizeof(dev_local_t));
 
     g_dev_local->dev_ipc_ctx = dev_ipc_init(DEV_MODULE_ID_DEV, "dev", DEV_MODULE_PORT_DEV, dev_msg_handler);
@@ -102,7 +107,7 @@ int dev_init_self(void)
         dev_self->port = DEV_MODULE_PORT_DEV;
     }
 
-    LOG_INFO("DEV 自身 IPC 初始化完成========================");
+    LOG_INFO("DEV IPC initialization complete========================");
     return ERRCODE_SUCCESS;
 }
 
@@ -130,6 +135,8 @@ void dev_cleanup_self(void)
     }
 
     LOG_INFO("Dev module cleanup");
+
+    dev_cli_cleanup_state();
 
     /* 注意：IPC context 的销毁由 cleanup_all_modules() 统一处理 */
     g_dev_local->dev_ipc_ctx = NULL;

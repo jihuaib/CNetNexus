@@ -22,6 +22,12 @@ int vrf_cli_handle_message(dev_ipc_message_t *msg);
  * @return 成功返回 ERRCODE_SUCCESS
  */
 int vrf_cli_handle_continue(dev_ipc_message_t *msg);
+int vrf_cli_handle_show_config(dev_ipc_message_t *msg);
+
+/**
+ * @brief 清理 VRF CLI 分片状态
+ */
+void vrf_cli_cleanup_state(void);
 
 /**
  * @brief 处理动态候选值查询（CLI_MSG_TYPE_QUERY_CANDIDATES）

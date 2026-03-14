@@ -42,7 +42,7 @@ vrf_entry_t *vrf_create(const char *name)
     g_hash_table_insert(g_vrf_local->vrf_by_id, GUINT_TO_POINTER(entry->vrf_id), entry);
     g_hash_table_insert(g_vrf_local->vrf_by_name, entry->name, entry);
 
-    LOG_INFO("VRF 创建: id=%u name=%s", entry->vrf_id, entry->name);
+    LOG_INFO("VRF created: id=%u name=%s", entry->vrf_id, entry->name);
     return entry;
 }
 
@@ -73,7 +73,7 @@ int vrf_delete(const char *name)
     g_hash_table_remove(g_vrf_local->vrf_by_id, GUINT_TO_POINTER(vrf_id));
     g_free(entry);
 
-    LOG_INFO("VRF 删除: id=%u name=%s", vrf_id, name);
+    LOG_INFO("VRF deleted: id=%u name=%s", vrf_id, name);
     return ERRCODE_SUCCESS;
 }
 
@@ -96,7 +96,7 @@ static void send_phase_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, 
 
 static void vrf_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    LOG_INFO("Phase 1: MODULE_START — 建立 IPC 连接");
+    LOG_INFO("Phase 1: MODULE_START - Establishing IPC connections");
     dev_ipc_connect(ctx, DEV_MODULE_ID_CLI, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CLI);
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
@@ -107,17 +107,17 @@ static void vrf_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
 static void vrf_on_connect(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    LOG_INFO("Phase 2: MODULE_CONNECT (预留)");
+    LOG_INFO("Phase 2: MODULE_CONNECT (reserved)");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
 // ============================================================================
-// Phase 3: MODULE_READY — 创建公网 VRF
+// Phase 3: MODULE_READY - Creating public VRF
 // ============================================================================
 
 static void vrf_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    LOG_INFO("Phase 3: MODULE_READY — 创建公网 VRF");
+    LOG_INFO("Phase 3: MODULE_READY - Creating public VRF");
 
     /* 手动插入公网 VRF（ID=0，跳过 next_id 分配） */
     vrf_entry_t *pub = g_new0(vrf_entry_t, 1);
@@ -125,7 +125,7 @@ static void vrf_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     snprintf(pub->name, sizeof(pub->name), "%s", VRF_PUBLIC_VRF_NAME);
     g_hash_table_insert(g_vrf_local->vrf_by_id, GUINT_TO_POINTER(pub->vrf_id), pub);
     g_hash_table_insert(g_vrf_local->vrf_by_name, pub->name, pub);
-    LOG_INFO("公网 VRF 创建: id=%u name=%s", pub->vrf_id, pub->name);
+    LOG_INFO("Public VRF created: id=%u name=%s", pub->vrf_id, pub->name);
 
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
@@ -136,7 +136,9 @@ static void vrf_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
 static void vrf_on_shutdown(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    LOG_INFO("VRF 模块清理");
+    LOG_INFO("VRF module cleanup");
+
+    vrf_cli_cleanup_state();
 
     if (g_vrf_local->vrf_by_id)
     {
@@ -227,8 +229,11 @@ void vrf_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         case CLI_MSG_TYPE_CONTINUE:
             vrf_cli_handle_continue(msg);
             break;
+        case CLI_MSG_TYPE_SHOW_CONFIG:
+            vrf_cli_handle_show_config(msg);
+            break;
         default:
-            LOG_WARN("未知消息类型: 0x%08X", msg->msg_type);
+            LOG_WARN("Unknown message type: 0x%08X", msg->msg_type);
             break;
     }
 
@@ -236,17 +241,17 @@ void vrf_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 }
 
 // ============================================================================
-// 模块初始化
+// Module initialization
 // ============================================================================
 
 int vrf_module_init(void)
 {
-    LOG_INFO("模块初始化");
+    LOG_INFO("Module initialization");
 
     dev_ipc_context_t *ctx = dev_ipc_init(DEV_MODULE_ID_VRF, "vrf", DEV_MODULE_PORT_VRF, vrf_msg_handler);
     if (!ctx)
     {
-        LOG_ERROR("IPC 初始化失败");
+        LOG_ERROR("IPC initialization failed");
         return -1;
     }
 

@@ -39,6 +39,12 @@ int db_cli_process_command(dev_ipc_message_t *msg);
  * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL
  */
 int db_cli_handle_continue(dev_ipc_message_t *msg);
+int db_cli_handle_show_config(dev_ipc_message_t *msg);
+
+/**
+ * @brief 清理 DB CLI 分片状态
+ */
+void db_cli_cleanup_state(void);
 
 /**
  * @brief 处理动态候选值查询（CLI_MSG_TYPE_QUERY_CANDIDATES）

@@ -633,7 +633,7 @@ gboolean param_validate_dynamic(const cli_param_type_t *param_type, const char *
     {
         if (error_msg && error_msg_size > 0)
         {
-            snprintf(error_msg, error_msg_size, "值不能为空");
+            snprintf(error_msg, error_msg_size, "Value cannot be empty");
         }
         return FALSE;
     }

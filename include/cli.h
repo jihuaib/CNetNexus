@@ -130,6 +130,16 @@ typedef struct cli_tlv_parser
 } cli_tlv_parser_t;
 
 /**
+ * @brief CLI 文本分片流状态（用于 RESP_MORE / CONTINUE）
+ */
+typedef struct cli_chunk_stream
+{
+    GString *full_text;     /**< 完整待输出文本 */
+    gsize offset;           /**< 已发送偏移 */
+    uint32_t src_module_id; /**< 当前分片所属请求源模块 ID */
+} cli_chunk_stream_t;
+
+/**
  * @brief 初始化 TLV 载荷解析器
  * @param p 解析器
  * @param data 载荷数据
@@ -159,33 +169,6 @@ void cli_tlv_entry_free(cli_tlv_entry_t *entry);
 void cli_tlv_cleanup(cli_tlv_parser_t *p);
 
 /**
- * @brief 向 CLI 响应缓冲区追加格式化字符串
- * @param buf      目标字符缓冲区（char[]，非指针）
- * @param buf_size 缓冲区总大小（字节）
- * @param off      当前已写入偏移量（size_t 变量，宏内自动更新）
- * @param fmt      格式化字符串（及可变参数）
- *
- * 使用示例：
- * @code
- *   char buf[CLI_MAX_RESP_LEN];
- *   size_t off = 0;
- *   CLI_BUF_APPEND(buf, sizeof(buf), off, "value: %d\r\n", val);
- * @endcode
- */
-#define CLI_BUF_APPEND(buf, buf_size, off, fmt, ...)                                                                   \
-    do                                                                                                                 \
-    {                                                                                                                  \
-        if ((off) < (buf_size))                                                                                        \
-        {                                                                                                              \
-            int _cli_written = snprintf((buf) + (off), (buf_size) - (off), fmt, ##__VA_ARGS__);                        \
-            if (_cli_written > 0)                                                                                      \
-            {                                                                                                          \
-                (off) += (size_t)_cli_written;                                                                         \
-            }                                                                                                          \
-        }                                                                                                              \
-    } while (0)
-
-/**
  * @brief 从 TLV 条目中读取整数值
  * @param entry TLV 条目
  * @return 整数值，类型不匹配返回 0
@@ -205,5 +188,34 @@ uint32_t cli_tlv_entry_get_ctx_uint32(const cli_tlv_entry_t *entry);
  * @return 字符串（内部指针，不转移所有权），类型不匹配返回 NULL
  */
 const char *cli_tlv_entry_get_text(const cli_tlv_entry_t *entry);
+
+/**
+ * @brief 重置并释放分片流状态
+ * @param stream 分片流状态
+ */
+void cli_chunk_stream_reset(cli_chunk_stream_t *stream);
+
+/**
+ * @brief 启动分片输出（必要时首包发送 RESP_MORE）
+ * @param stream 分片流状态
+ * @param ctx IPC 上下文
+ * @param self_module_id 本模块 ID
+ * @param req 原始 CLI 请求消息（用于回填 dst/request_id）
+ * @param full_text 完整输出文本（函数接管所有权，可为 NULL）
+ * @return ERRCODE_SUCCESS/ERRCODE_FAIL
+ */
+int cli_chunk_stream_start(cli_chunk_stream_t *stream, dev_ipc_context_t *ctx, uint32_t self_module_id,
+                           const dev_ipc_message_t *req, GString *full_text);
+
+/**
+ * @brief 处理 CLI_MSG_TYPE_CONTINUE，发送下一片
+ * @param stream 分片流状态
+ * @param ctx IPC 上下文
+ * @param self_module_id 本模块 ID
+ * @param req CONTINUE 请求消息
+ * @return ERRCODE_SUCCESS/ERRCODE_FAIL
+ */
+int cli_chunk_stream_continue(cli_chunk_stream_t *stream, dev_ipc_context_t *ctx, uint32_t self_module_id,
+                              const dev_ipc_message_t *req);
 
 #endif // CLI_H

@@ -49,11 +49,11 @@ static void if_init_db(void)
             db_record_set_int(rec, "shutdown", 0);
             db_rpc_insert_record(g_if_local->dev_ipc_ctx, "if_interface", rec);
             db_record_free(rec);
-            LOG_INFO("接口 %s 已写入数据库", logical_name);
+            LOG_INFO("Interface %s written to database", logical_name);
         }
         else if (ret == ERRCODE_SUCCESS && exists)
         {
-            LOG_DEBUG("接口 %s 已在数据库中，保留原有配置", logical_name);
+            LOG_DEBUG("Interface %s already in database, keeping existing config", logical_name);
         }
     }
 }
@@ -68,7 +68,7 @@ static void if_db_restore(dev_ipc_context_t *ctx)
     db_result_t *result = NULL;
     if (db_rpc_query(ctx, "if_interface", NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
     {
-        LOG_WARN("IF: 恢复数据库配置失败");
+        LOG_WARN("IF: Failed to restore database config");
         return;
     }
 
@@ -105,7 +105,7 @@ static void if_db_restore(dev_ipc_context_t *ctx)
     }
 
     db_result_free(result);
-    LOG_INFO("IF: 数据库配置恢复完成");
+    LOG_INFO("IF: Database config restoration complete");
 }
 
 // ============================================================================
@@ -122,17 +122,17 @@ static void send_phase_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, 
 }
 
 // ============================================================================
-// Phase 1: MODULE_START — 建立 IPC 连接到 CFG
+// Phase 1: MODULE_START - Establishing IPC connections到 CFG
 // ============================================================================
 
 static void if_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    LOG_INFO("Phase 1: MODULE_START — 建立 IPC 连接");
+    LOG_INFO("Phase 1: MODULE_START - Establishing IPC connections");
 
     dev_ipc_connect(ctx, DEV_MODULE_ID_CLI, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CLI);
     dev_ipc_connect(ctx, DEV_MODULE_ID_DB, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_DB);
 
-    LOG_INFO("已连接到 CFG 和 DB");
+    LOG_INFO("Connected to CFG and DB");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
@@ -142,7 +142,7 @@ static void if_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
 static void if_on_connect(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    LOG_INFO("Phase 2: MODULE_CONNECT (预留)");
+    LOG_INFO("Phase 2: MODULE_CONNECT (reserved)");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
@@ -166,13 +166,13 @@ static const db_table_def_t IF_INTERFACE_TABLE = {
 
 static void if_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    LOG_INFO("Phase 3: MODULE_READY — 初始化 IF 数据库");
+    LOG_INFO("Phase 3: MODULE_READY - Initializing IF database");
 
     /* 建表（IF NOT EXISTS，幂等操作） */
     int ret = db_rpc_create_table_from_def(ctx, &IF_INTERFACE_TABLE);
     if (ret != ERRCODE_SUCCESS)
     {
-        LOG_WARN("IF 建表失败，跳过数据库初始化");
+        LOG_WARN("IF table creation failed, skipping database initialization");
         send_phase_response(ctx, msg, ERRCODE_SUCCESS);
         return;
     }
@@ -194,6 +194,8 @@ static void if_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 static void if_on_shutdown(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     LOG_INFO("Shutting down if module...");
+
+    if_cli_cleanup_state();
 
     /* dev_ipc_ctx 由 DEV 管理 */
     g_if_local->dev_ipc_ctx = NULL;
@@ -251,18 +253,18 @@ void if_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 }
 
 // ============================================================================
-// 模块初始化
+// Module initialization
 // ============================================================================
 
 int if_module_init(void)
 {
-    LOG_INFO("模块初始化");
+    LOG_INFO("Module initialization");
 
     /* 创建 IPC 上下文 */
     dev_ipc_context_t *ctx = dev_ipc_init(DEV_MODULE_ID_IF, "if", DEV_MODULE_PORT_IF, if_msg_handler);
     if (!ctx)
     {
-        LOG_ERROR("IPC 初始化失败");
+        LOG_ERROR("IPC initialization failed");
         return -1;
     }
 

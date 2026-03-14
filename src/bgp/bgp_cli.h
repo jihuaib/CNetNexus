@@ -21,6 +21,7 @@
 #define BGP_CLI_GROUP_ID_OPEN_CAP 8      /**< neighbor open-capability 配置命令 */
 #define BGP_CLI_GROUP_ID_SHOW_NEIGHBOR 9 /**< show bgp neighbor 详情命令 */
 #define BGP_CLI_GROUP_ID_SHOW_ROUTE 10   /**< show bgp route af-* 路由显示命令 */
+#define BGP_CLI_GROUP_ID_IMPORT_ROUTE 11 /**< import-route 协议导入命令 */
 
 /**
  * @brief 处理来自 CFG 模块的 CLI 命令消息
@@ -35,5 +36,14 @@ int bgp_cli_handle_message(dev_ipc_message_t *msg);
  * @return ERRCODE_SUCCESS 成功
  */
 int bgp_cli_handle_continue(dev_ipc_message_t *msg);
+void bgp_cli_cleanup_state(void);
+
+/**
+ * @brief 通过 BGP CLI 分片流发送文本（供 show 与 show current-configuration 共用）
+ * @param msg 原始请求消息
+ * @param full_text 完整文本（函数接管所有权，可为 NULL）
+ * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL
+ */
+int bgp_cli_send_chunked_response(dev_ipc_message_t *msg, GString *full_text);
 
 #endif // BGP_CLI_H

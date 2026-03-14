@@ -260,46 +260,154 @@ static void handle_show_history(cli_session_t *session)
 }
 
 /**
+ * @brief 拉取单个模块 show current-configuration 的完整输出（支持 RESP_MORE/CONTINUE）
+ */
+static void collect_module_show_config(uint32_t mod_id, GString *output)
+{
+    dev_ipc_message_t *req =
+        dev_ipc_message_create(CLI_MSG_TYPE_SHOW_CONFIG, DEV_MODULE_ID_CLI, mod_id, 0, NULL, 0, NULL);
+    if (!req)
+    {
+        return;
+    }
+
+    /* 保护上限：防止异常模块无限 RESP_MORE */
+    const uint32_t max_chunks = 4096;
+    uint32_t chunks = 0;
+
+    while (req && chunks < max_chunks)
+    {
+        /* 首包用较短超时，避免不支持 SHOW_CONFIG 的模块拖慢整体 */
+        uint32_t timeout_ms = (chunks == 0) ? 1000 : 5000;
+        dev_ipc_message_t *resp = dev_ipc_query(g_cli_local->dev_ipc_ctx, mod_id, req, timeout_ms);
+        dev_ipc_message_free(req);
+        req = NULL;
+        chunks++;
+
+        if (!resp)
+        {
+            LOG_WARN("show current-configuration: module 0x%08X query timeout", mod_id);
+            break;
+        }
+
+        if (resp->msg_type == CLI_MSG_TYPE_RESP || resp->msg_type == CLI_MSG_TYPE_RESP_MORE)
+        {
+            /* payload 为 NULL 结尾字符串，payload_len > 1 才有实际内容 */
+            if (resp->payload && resp->payload_len > 1)
+            {
+                g_string_append(output, (const char *)resp->payload);
+            }
+
+            if (resp->msg_type == CLI_MSG_TYPE_RESP_MORE)
+            {
+                req = dev_ipc_message_create(CLI_MSG_TYPE_CONTINUE, DEV_MODULE_ID_CLI, mod_id, 0, NULL, 0, NULL);
+                if (!req)
+                {
+                    LOG_WARN("show current-configuration: create CONTINUE failed for module 0x%08X", mod_id);
+                }
+            }
+        }
+        else
+        {
+            LOG_WARN("show current-configuration: module 0x%08X returned unexpected msg_type=0x%08X", mod_id,
+                     resp->msg_type);
+        }
+
+        dev_ipc_message_free(resp);
+    }
+
+    if (req)
+    {
+        dev_ipc_message_free(req);
+    }
+
+    if (chunks >= max_chunks)
+    {
+        LOG_WARN("show current-configuration: module 0x%08X exceeded max chunks(%u), stop collecting", mod_id,
+                 max_chunks);
+    }
+}
+
+static gint cmp_uint32_asc(gconstpointer a, gconstpointer b)
+{
+    uint32_t va = *(const uint32_t *)a;
+    uint32_t vb = *(const uint32_t *)b;
+    if (va < vb)
+    {
+        return -1;
+    }
+    if (va > vb)
+    {
+        return 1;
+    }
+    return 0;
+}
+
+/**
+ * @brief 动态收集当前与 CLI 已建立 IPC 的模块 ID（去重、升序）
+ */
+static GArray *collect_connected_modules_for_show_config(void)
+{
+    GArray *modules = g_array_new(FALSE, FALSE, sizeof(uint32_t));
+    if (!g_cli_local || !g_cli_local->dev_ipc_ctx)
+    {
+        return modules;
+    }
+
+    dev_ipc_context_t *ctx = g_cli_local->dev_ipc_ctx;
+    pthread_mutex_lock(&ctx->comutex);
+    for (int i = 0; i < ctx->num_connections; i++)
+    {
+        dev_ipc_connection_t *conn = ctx->connections[i];
+        if (!conn || conn->state != DEV_IPC_COCONNECTED)
+        {
+            continue;
+        }
+
+        uint32_t mod_id = conn->remote_module_id;
+        if (mod_id == DEV_MODULE_ID_CLI)
+        {
+            continue;
+        }
+
+        gboolean exists = FALSE;
+        for (guint j = 0; j < modules->len; j++)
+        {
+            if (g_array_index(modules, uint32_t, j) == mod_id)
+            {
+                exists = TRUE;
+                break;
+            }
+        }
+
+        if (!exists)
+        {
+            g_array_append_val(modules, mod_id);
+        }
+    }
+    pthread_mutex_unlock(&ctx->comutex);
+
+    g_array_sort(modules, cmp_uint32_asc);
+    return modules;
+}
+
+/**
  * @brief show current-configuration (group_id=3)
  *
  * 向所有业务模块发送 CLI_MSG_TYPE_SHOW_CONFIG，收集响应并聚合输出。
- * 未连接的模块直接跳过，避免超时等待。
+ * not connected的模块直接跳过，避免超时等待。
  */
 static void handle_show_config(cli_session_t *session)
 {
-    /* 需要查询配置的业务模块列表 */
-    static const uint32_t config_modules[] = {DEV_MODULE_ID_IF, DEV_MODULE_ID_BGP};
-
     GString *output = g_string_new("");
-
-    for (size_t i = 0; i < G_N_ELEMENTS(config_modules); i++)
+    GArray *modules = collect_connected_modules_for_show_config();
+    for (guint i = 0; i < modules->len; i++)
     {
-        uint32_t mod_id = config_modules[i];
-        if (!dev_ipc_is_connected(g_cli_local->dev_ipc_ctx, mod_id))
-        {
-            continue;
-        }
-
-        dev_ipc_message_t *req =
-            dev_ipc_message_create(CLI_MSG_TYPE_SHOW_CONFIG, DEV_MODULE_ID_CLI, mod_id, 0, NULL, 0, NULL);
-        if (!req)
-        {
-            continue;
-        }
-
-        dev_ipc_message_t *resp = dev_ipc_query(g_cli_local->dev_ipc_ctx, mod_id, req, 2000);
-        dev_ipc_message_free(req);
-
-        if (resp)
-        {
-            /* payload 为 NULL 结尾的字符串，payload_len > 1 才有实际内容 */
-            if (resp->payload && resp->payload_len > 1)
-            {
-                g_string_append(output, (char *)resp->payload);
-            }
-            dev_ipc_message_free(resp);
-        }
+        uint32_t mod_id = g_array_index(modules, uint32_t, i);
+        /* 先完整拉取当前模块，再切下一个模块 */
+        collect_module_show_config(mod_id, output);
     }
+    g_array_free(modules, TRUE);
 
     if (output->len > 0)
     {
@@ -468,7 +576,7 @@ static void *bash_bridge_thread(void *arg)
     ev.data.fd = client_fd;
     epoll_ctl(g_cli_local->epoll_fd, EPOLL_CTL_ADD, client_fd, &ev);
 
-    cli_send_message(session, "\r\nBash 会话结束，返回 CLI...\r\n");
+    cli_send_message(session, "\r\nBash session ended, returning to CLI...\r\n");
     send_prompt(session);
 
     return NULL;
@@ -485,7 +593,7 @@ static void handle_op_bash(cli_session_t *session)
     /* 标记会话进入 bash 模式（主循环不再发送 CLI 提示符） */
     session->bash_mode = 1;
 
-    cli_send_message(session, "\r\n进入 bash shell，输入 'exit' 返回 CLI。\r\n\r\n");
+    cli_send_message(session, "\r\nEntering bash shell, type 'exit' to return to CLI.\r\n\r\n");
 
     /* 创建桥接线程 */
     bash_bridge_ctx_t *ctx = g_malloc(sizeof(*ctx));
@@ -635,11 +743,11 @@ int cli_handle(dev_ipc_message_t *msg, cli_session_t *session)
     cli_tlv_parser_t parser;
     if (cli_tlv_init(&parser, (const uint8_t *)msg->payload, msg->payload_len) != 0)
     {
-        LOG_ERROR("载荷解析失败");
+        LOG_ERROR("Payload parsing failed");
         return ERRCODE_FAIL;
     }
 
-    LOG_DEBUG("收到命令 (group_id=%u)", parser.group_id);
+    LOG_DEBUG("Received command (group_id=%u)", parser.group_id);
 
     switch (parser.group_id)
     {
@@ -668,7 +776,7 @@ int cli_handle(dev_ipc_message_t *msg, cli_session_t *session)
             handle_show_context(session);
             break;
         default:
-            LOG_WARN("未知 group_id: %u", parser.group_id);
+            LOG_WARN("Unknown group_id: %u", parser.group_id);
             cli_send_message(session, "Error: Unknown CFG command.\r\n");
             cli_tlv_cleanup(&parser);
             return ERRCODE_FAIL;

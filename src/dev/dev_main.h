@@ -7,11 +7,13 @@
 #ifndef DEV_MAIN_H
 #define DEV_MAIN_H
 
+#include "cli.h"
 #include "dev.h"
 
 typedef struct dev_local
 {
     dev_ipc_context_t *dev_ipc_ctx;
+    cli_chunk_stream_t show_stream; /**< CLI show 命令分片输出状态 */
 } dev_local_t;
 
 extern dev_local_t *g_dev_local;

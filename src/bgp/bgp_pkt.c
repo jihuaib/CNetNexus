@@ -119,13 +119,13 @@ int bgp_pkt_send_open(bgp_conn_t *conn, uint32_t local_as, const char *router_id
 
     if (n_afs > 0 || send_rr || send_as4)
     {
-        LOG_INFO("BGP: OPEN 能力集: AF=%u%s%s", n_afs, send_rr ? " RR" : "", send_as4 ? " AS4" : "");
+        LOG_INFO("BGP: OPEN capabilities: AF=%u%s%s", n_afs, send_rr ? " RR" : "", send_as4 ? " AS4" : "");
     }
 
     ssize_t n = send(conn->fd, msg, total_len, MSG_NOSIGNAL);
     if (n != (ssize_t)total_len)
     {
-        LOG_ERROR("BGP: 向 %s 发送 OPEN 失败", _ip);
+        LOG_ERROR("BGP: Failed to send OPEN to %s", _ip);
         return -1;
     }
 
@@ -135,7 +135,7 @@ int bgp_pkt_send_open(bgp_conn_t *conn, uint32_t local_as, const char *router_id
         conn->session->local_caps = cap_flags;
     }
 
-    LOG_INFO("BGP: 已向 %s 发送 OPEN (AS=%u, ID=%s)", _ip, local_as, router_id ? router_id : "0.0.0.0");
+    LOG_INFO("BGP: Sent OPEN to %s (AS=%u, ID=%s)", _ip, local_as, router_id ? router_id : "0.0.0.0");
     return 0;
 }
 
@@ -155,11 +155,11 @@ int bgp_pkt_send_keepalive(bgp_conn_t *conn)
     ssize_t n = send(conn->fd, msg, sizeof(msg), MSG_NOSIGNAL);
     if (n != (ssize_t)sizeof(msg))
     {
-        LOG_ERROR("BGP: 向 %s 发送 KEEPALIVE 失败", _ip);
+        LOG_ERROR("BGP: Failed to send KEEPALIVE to %s", _ip);
         return -1;
     }
 
-    LOG_DEBUG("BGP: 已向 %s 发送 KEEPALIVE", _ip);
+    LOG_DEBUG("BGP: Sent KEEPALIVE to %s", _ip);
     return 0;
 }
 
@@ -182,7 +182,7 @@ static int parse_bgp_open(bgp_conn_t *conn, const uint8_t *body, uint16_t body_l
     bgp_open_msg_t msg;
     if (bgp_open_parse(body, body_len, &msg) < 0)
     {
-        LOG_ERROR("BGP: peer %s OPEN 解析失败", _ip);
+        LOG_ERROR("BGP: peer %s OPEN parse failed", _ip);
         return -1;
     }
 
@@ -209,7 +209,7 @@ static int parse_bgp_open(bgp_conn_t *conn, const uint8_t *body, uint16_t body_l
     conn->session->remote_hold = msg.hold_time;
     conn->session->negotiated_hold = (msg.hold_time < BGP_HOLD_TIME) ? msg.hold_time : BGP_HOLD_TIME;
 
-    LOG_INFO("BGP: 收到 %s 的 OPEN (AS=%u, ID=%s, hold=%u, caps=0x%02X)", _ip, conn->session->remote_as,
+    LOG_INFO("BGP: Received OPEN from %s (AS=%u, ID=%s, hold=%u, caps=0x%02X)", _ip, conn->session->remote_as,
              conn->session->remote_id, msg.hold_time, remote_caps);
 
     /* 将 MP 能力写入 negotiated_afs */
@@ -223,7 +223,7 @@ static int parse_bgp_open(bgp_conn_t *conn, const uint8_t *body, uint16_t body_l
         char af_key[32];
         snprintf(af_key, sizeof(af_key), "%u-%u", msg.mp_afs[i], msg.mp_safis[i]);
         conn->session->negotiated_afs = g_list_append(conn->session->negotiated_afs, g_strdup(af_key));
-        LOG_INFO("BGP: peer %s MP 能力: AFI=%u SAFI=%u", _ip, msg.mp_afs[i], msg.mp_safis[i]);
+        LOG_INFO("BGP: peer %s MP capability: AFI=%u SAFI=%u", _ip, msg.mp_afs[i], msg.mp_safis[i]);
     }
 
     return 0;
@@ -241,7 +241,7 @@ int bgp_pkt_on_data(bgp_conn_t *conn)
 
     if (n == 0)
     {
-        LOG_INFO("BGP: peer %s 关闭了连接", _ip);
+        LOG_INFO("BGP: peer %s closed connection", _ip);
         return -1;
     }
     if (n < 0)
@@ -250,7 +250,7 @@ int bgp_pkt_on_data(bgp_conn_t *conn)
         {
             return 0; /* 暂无数据，继续等待 */
         }
-        LOG_PERROR("BGP: recv from %s 失败", _ip);
+        LOG_PERROR("BGP: recv from %s failed", _ip);
         return -1;
     }
 
@@ -262,7 +262,7 @@ int bgp_pkt_on_data(bgp_conn_t *conn)
         /* 校验 Marker */
         if (memcmp(sess->recv_buf, BGP_MARKER, 16) != 0)
         {
-            LOG_ERROR("BGP: peer %s Marker 校验失败，关闭连接", _ip);
+            LOG_ERROR("BGP: peer %s Marker validation failed, closing connection", _ip);
             return -1;
         }
 
@@ -272,7 +272,7 @@ int bgp_pkt_on_data(bgp_conn_t *conn)
 
         if (msg_len < BGP_MSG_HEADER_SIZE || msg_len > BGP_RECV_BUF_SIZE)
         {
-            LOG_ERROR("BGP: peer %s 报文长度 %u 非法", _ip, msg_len);
+            LOG_ERROR("BGP: peer %s message length %u invalid", _ip, msg_len);
             return -1;
         }
 
@@ -305,12 +305,12 @@ int bgp_pkt_on_data(bgp_conn_t *conn)
                 if (conn->session->state == BGP_CONN_STATE_OPEN_CONFIRM)
                 {
                     conn->session->state = BGP_CONN_STATE_ESTABLISHED;
-                    LOG_INFO("BGP: 与 %s (AS%u) 会话已建立", _ip, sess->remote_as);
+                    LOG_INFO("BGP: Session established with %s (AS%u)", _ip, sess->remote_as);
                 }
                 else
                 {
                     /* ESTABLISHED 状态下的周期 KEEPALIVE：通知 bgp_main 重置 Hold 定时器 */
-                    LOG_DEBUG("BGP: 收到 %s KEEPALIVE", _ip);
+                    LOG_DEBUG("BGP: Received %s KEEPALIVE", _ip);
                     sess->hold_reset_pending = TRUE;
                 }
                 break;
@@ -333,7 +333,7 @@ int bgp_pkt_on_data(bgp_conn_t *conn)
                 }
                 else
                 {
-                    LOG_WARN("BGP: %s UPDATE 解析失败", _ip);
+                    LOG_WARN("BGP: %s UPDATE parse failed", _ip);
                 }
                 /* UPDATE 也重置 Hold 定时器（RFC 4271 §8.2.2） */
                 sess->hold_reset_pending = TRUE;
@@ -345,18 +345,18 @@ int bgp_pkt_on_data(bgp_conn_t *conn)
                 bgp_notif_msg_t notif;
                 if (bgp_notif_parse(body, body_len, &notif) == 0)
                 {
-                    LOG_WARN("BGP: 收到 %s NOTIFICATION: %s (code=%u sub=%u)", _ip, notif.error_str, notif.error_code,
-                             notif.error_subcode);
+                    LOG_WARN("BGP: Received %s NOTIFICATION: %s (code=%u sub=%u)", _ip, notif.error_str,
+                             notif.error_code, notif.error_subcode);
                 }
                 else
                 {
-                    LOG_WARN("BGP: 收到 %s NOTIFICATION 报文，关闭会话", _ip);
+                    LOG_WARN("BGP: Received %s NOTIFICATION message, closing session", _ip);
                 }
                 return -1;
             }
 
             default:
-                LOG_WARN("BGP: peer %s 未知报文类型 %u，关闭连接", _ip, msg_type);
+                LOG_WARN("BGP: peer %s unknown message type %u, closing connection", _ip, msg_type);
                 return -1;
         }
 

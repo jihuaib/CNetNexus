@@ -36,7 +36,7 @@ int sbmp_db_init(dev_ipc_context_t *ctx)
 {
     if (db_rpc_create_table_from_def(ctx, &SBMP_SERVER_TABLE) != ERRCODE_SUCCESS)
     {
-        LOG_ERROR("SBMP: 建表 %s 失败", SBMP_TABLE_SERVER);
+        LOG_ERROR("SBMP: Failed to create table %s", SBMP_TABLE_SERVER);
         return -1;
     }
     return 0;
@@ -53,7 +53,7 @@ int sbmp_db_restore(dev_ipc_context_t *ctx)
     if (result->num_rows == 0)
     {
         db_result_free(result);
-        LOG_INFO("SBMP: 数据库无配置，跳过恢复");
+        LOG_INFO("SBMP: Database has no config, skipping restore");
         return ERRCODE_SUCCESS;
     }
 
@@ -63,7 +63,7 @@ int sbmp_db_restore(dev_ipc_context_t *ctx)
 
     if (port > 0)
     {
-        LOG_INFO("SBMP: 恢复 server port=%u", port);
+        LOG_INFO("SBMP: Restoring server port=%u", port);
         sbmp_listen_start(port);
     }
 
@@ -84,7 +84,7 @@ int sbmp_db_set_server_port(dev_ipc_context_t *ctx, uint16_t port)
 
     if (ret != ERRCODE_SUCCESS)
     {
-        LOG_ERROR("SBMP: 写入 server_port=%u 失败", port);
+        LOG_ERROR("SBMP: Failed to write server_port=%u", port);
         return -1;
     }
     return 0;

@@ -11,6 +11,7 @@
 #include <sqlite3.h>
 #include <stdint.h>
 
+#include "cli.h"
 #include "dev.h"
 
 // ============================================================================
@@ -34,6 +35,7 @@ typedef struct db_local
 {
     db_connection_t *main_conn;     /**< 全局统一数据库连接（所有模块共享同一个 SQLite 文件） */
     dev_ipc_context_t *dev_ipc_ctx; /**< IPC 上下文（由 DEV 创建和管理） */
+    cli_chunk_stream_t show_stream; /**< CLI show 命令分片输出状态 */
 } db_local_t;
 
 extern db_local_t *g_db_local;

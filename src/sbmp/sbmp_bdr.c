@@ -12,27 +12,9 @@
 #include "dev.h"
 #include "errcode.h"
 #include "log.h"
+#include "sbmp_cli.h"
 #include "sbmp_db.h"
 #include "sbmp_main.h"
-
-// ============================================================================
-// 内部辅助
-// ============================================================================
-
-/**
- * @brief 向请求方发送配置文本响应
- */
-static void send_config_resp(dev_ipc_message_t *msg, const char *text)
-{
-    char *resp_data = g_strdup(text);
-    dev_ipc_message_t *resp = dev_ipc_message_create(CLI_MSG_TYPE_RESP, DEV_MODULE_ID_SBMP, msg->src_module_id,
-                                                     msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
-    if (resp)
-    {
-        dev_ipc_send_response(g_sbmp_local->dev_ipc_ctx, resp);
-        dev_ipc_message_free(resp);
-    }
-}
 
 // ============================================================================
 // 公共 API
@@ -41,8 +23,12 @@ static void send_config_resp(dev_ipc_message_t *msg, const char *text)
 void sbmp_bdr_show_config(dev_ipc_message_t *msg)
 {
     dev_ipc_context_t *ctx = g_sbmp_local->dev_ipc_ctx;
-    char buf[CLI_MAX_RESP_LEN];
-    size_t off = 0;
+    GString *out = g_string_new("");
+    if (!out)
+    {
+        (void)sbmp_cli_send_chunked_response(msg, NULL);
+        return;
+    }
 
     /* 查询 sbmp_server 表 */
     db_result_t *result = NULL;
@@ -54,7 +40,7 @@ void sbmp_bdr_show_config(dev_ipc_message_t *msg)
             db_result_free(result);
         }
         /* 无配置，返回空字符串 */
-        send_config_resp(msg, "");
+        (void)sbmp_cli_send_chunked_response(msg, out);
         return;
     }
 
@@ -64,14 +50,14 @@ void sbmp_bdr_show_config(dev_ipc_message_t *msg)
 
     if (port <= 0)
     {
-        send_config_resp(msg, "");
+        (void)sbmp_cli_send_chunked_response(msg, out);
         return;
     }
 
-    CLI_BUF_APPEND(buf, sizeof(buf), off, "!\r\n");
-    CLI_BUF_APPEND(buf, sizeof(buf), off, "bmp-server\r\n");
-    CLI_BUF_APPEND(buf, sizeof(buf), off, " server port %ld\r\n", port);
-    CLI_BUF_APPEND(buf, sizeof(buf), off, "!\r\n");
+    g_string_append(out, "!\r\n");
+    g_string_append(out, "bmp-server\r\n");
+    g_string_append_printf(out, " server port %ld\r\n", port);
+    g_string_append(out, "!\r\n");
 
-    send_config_resp(msg, buf);
+    (void)sbmp_cli_send_chunked_response(msg, out);
 }

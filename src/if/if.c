@@ -256,7 +256,7 @@ int if_set_ip(const char *ifname, const char *ip, const char *netmask)
 
     if (ioctl(sock, SIOCSIFADDR, &ifr) < 0)
     {
-        LOG_ERROR("设置接口 %s IP地址失败: %s (errno=%d)", ifname, strerror(errno), errno);
+        LOG_ERROR("Failed to set interface %s IP address: %s (errno=%d)", ifname, strerror(errno), errno);
         close(sock);
         return ERRCODE_FAIL;
     }
@@ -264,14 +264,14 @@ int if_set_ip(const char *ifname, const char *ip, const char *netmask)
     // Set netmask
     if (inet_pton(AF_INET, netmask, &addr->sin_addr) != 1)
     {
-        LOG_ERROR("无效的子网掩码: %s", netmask);
+        LOG_ERROR("Invalid subnet mask: %s", netmask);
         close(sock);
         return ERRCODE_FAIL;
     }
 
     if (ioctl(sock, SIOCSIFNETMASK, &ifr) < 0)
     {
-        LOG_ERROR("设置接口 %s 子网掩码失败: %s (errno=%d)", ifname, strerror(errno), errno);
+        LOG_ERROR("Failed to set interface %s subnet mask: %s (errno=%d)", ifname, strerror(errno), errno);
         close(sock);
         return ERRCODE_FAIL;
     }

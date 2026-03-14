@@ -10,6 +10,7 @@
 #include <glib.h>
 #include <stdint.h>
 
+#include "cli.h"
 #include "vrf.h"
 
 /**
@@ -27,6 +28,7 @@ typedef struct
 typedef struct
 {
     dev_ipc_context_t *dev_ipc_ctx; /**< IPC 上下文 */
+    cli_chunk_stream_t show_stream; /**< CLI show 命令分片输出状态 */
     GHashTable *vrf_by_id;          /**< uint32_t → vrf_entry_t*（按 ID 索引） */
     GHashTable *vrf_by_name;        /**< const char* → vrf_entry_t*（按名称索引） */
     uint32_t next_id;               /**< 下一个可分配的 VRF ID（从 1 开始） */

@@ -81,7 +81,7 @@ int bgp_conn_start_active(bgp_conn_t *conn, const net_addr_t *peer_addr, int epo
     int sock = socket(peer_addr->family, SOCK_STREAM | SOCK_NONBLOCK, 0);
     if (sock < 0)
     {
-        LOG_PERROR("BGP: 创建主动连接 socket 失败");
+        LOG_PERROR("BGP: Failed to create active connection socket");
         return -1;
     }
 
@@ -108,7 +108,7 @@ int bgp_conn_start_active(bgp_conn_t *conn, const net_addr_t *peer_addr, int epo
     {
         char addr_str[64];
         net_addr_to_str(peer_addr, addr_str, sizeof(addr_str));
-        LOG_WARN("BGP: 主动连接：不支持的地址族 %d (peer=%s)", peer_addr->family, addr_str);
+        LOG_WARN("BGP: Active connection: unsupported address family %d (peer=%s)", peer_addr->family, addr_str);
         close(sock);
         return -1;
     }
@@ -117,7 +117,7 @@ int bgp_conn_start_active(bgp_conn_t *conn, const net_addr_t *peer_addr, int epo
     {
         char addr_str[64];
         net_addr_to_str(peer_addr, addr_str, sizeof(addr_str));
-        LOG_PERROR("BGP: connect 到 %s:%d 失败", addr_str, BGP_PORT);
+        LOG_PERROR("BGP: connect to %s:%d failed", addr_str, BGP_PORT);
         close(sock);
         return -1;
     }
@@ -128,7 +128,7 @@ int bgp_conn_start_active(bgp_conn_t *conn, const net_addr_t *peer_addr, int epo
     ev.data.ptr = conn;
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, sock, &ev) < 0)
     {
-        LOG_PERROR("BGP: epoll_ctl ADD 主动连接 socket 失败");
+        LOG_PERROR("BGP: epoll_ctl ADD active connection socket failed");
         close(sock);
         return -1;
     }
@@ -140,6 +140,6 @@ int bgp_conn_start_active(bgp_conn_t *conn, const net_addr_t *peer_addr, int epo
 
     char addr_str[64];
     net_addr_to_str(peer_addr, addr_str, sizeof(addr_str));
-    LOG_INFO("BGP: 向 %s:%d 发起主动连接 (fd=%d)", addr_str, BGP_PORT, sock);
+    LOG_INFO("BGP: Initiating active connection to %s:%d (fd=%d)", addr_str, BGP_PORT, sock);
     return sock;
 }

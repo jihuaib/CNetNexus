@@ -10,6 +10,7 @@
 #include <pthread.h>
 
 #include "bgp_rib.h"
+#include "cli.h"
 #include "dev.h"
 
 /** BMP 客户端 ID / IP 字符串最大长度 */
@@ -109,6 +110,7 @@ typedef struct sbmp_client
 typedef struct sbmp_local
 {
     dev_ipc_context_t *dev_ipc_ctx; /**< IPC 上下文 */
+    cli_chunk_stream_t show_stream; /**< CLI show 命令分片输出状态 */
     uint16_t server_port;           /**< BMP 监听端口（0 = 未配置） */
     int listen_fd;                  /**< BMP TCP 监听 fd（-1 = 未监听） */
 

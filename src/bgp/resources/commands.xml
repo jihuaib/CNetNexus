@@ -384,6 +384,38 @@
             </commands>
         </group>
 
+        <!-- import-route static / no import-route static（地址族视图） -->
+        <!-- cfg-id: 1=no, 2=static -->
+        <group group-id="11">
+            <elements>
+                <element cfg-id="1" type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+                <element type="keyword">
+                    <name>import-route</name>
+                    <description>Import external routes</description>
+                </element>
+                <element cfg-id="2" type="keyword">
+                    <name>static</name>
+                    <description>Import static routes</description>
+                </element>
+            </elements>
+
+            <commands>
+                <!-- import-route static -->
+                <command>
+                    <expression>2 3</expression>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni</views>
+                </command>
+                <!-- no import-route static -->
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni</views>
+                </command>
+            </commands>
+        </group>
+
         <!-- show bgp route af ipv4-unicast|ipv6-unicast -->
         <group group-id="10">
             <elements>

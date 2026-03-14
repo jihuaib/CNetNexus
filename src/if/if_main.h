@@ -7,13 +7,15 @@
 #ifndef IF_MAIN_H
 #define IF_MAIN_H
 
+#include "cli.h"
 #include "dev.h"
 #include "if_map.h"
 
 typedef struct
 {
     dev_ipc_context_t *dev_ipc_ctx;
-    if_map_t interface_map; /**< 接口逻辑名到物理名的映射表 */
+    cli_chunk_stream_t show_stream; /**< CLI show 命令分片输出状态 */
+    if_map_t interface_map;         /**< 接口逻辑名到物理名的映射表 */
 } if_local_t;
 
 extern if_local_t *g_if_local;

@@ -607,13 +607,13 @@ static void sbmp_accept_clients(void)
             {
                 break;
             }
-            LOG_PERROR("SBMP: accept 失败");
+            LOG_PERROR("SBMP: accept failed");
             break;
         }
 
         if (set_nonblock(fd) != 0)
         {
-            LOG_PERROR("SBMP: client fd 设为 non-blocking 失败");
+            LOG_PERROR("SBMP: Failed to set client fd to non-blocking");
             close(fd);
             continue;
         }
@@ -667,7 +667,7 @@ static void sbmp_accept_clients(void)
         ev.data.fd = fd;
         if (epoll_ctl(g_sbmp_local->epoll_fd, EPOLL_CTL_ADD, fd, &ev) < 0)
         {
-            LOG_PERROR("SBMP: epoll_ctl ADD client fd 失败");
+            LOG_PERROR("SBMP: epoll_ctl ADD client fd failed");
             sbmp_close_client_fd(fd);
             continue;
         }
@@ -693,7 +693,7 @@ static void *sbmp_server_thread(void *arg)
             {
                 continue;
             }
-            LOG_PERROR("SBMP: epoll_wait 失败");
+            LOG_PERROR("SBMP: epoll_wait failed");
             break;
         }
 
@@ -745,7 +745,7 @@ void sbmp_listen_start(uint16_t port)
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0)
     {
-        LOG_PERROR("SBMP: 创建 listen socket 失败");
+        LOG_PERROR("SBMP: Failed to create listen socket");
         return;
     }
 
@@ -755,7 +755,7 @@ void sbmp_listen_start(uint16_t port)
 
     if (set_nonblock(fd) != 0)
     {
-        LOG_PERROR("SBMP: listen socket 设为 non-blocking 失败");
+        LOG_PERROR("SBMP: Failed to set listen socket to non-blocking");
         close(fd);
         return;
     }
@@ -768,14 +768,14 @@ void sbmp_listen_start(uint16_t port)
 
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0)
     {
-        LOG_PERROR("SBMP: bind 0.0.0.0:%u 失败", port);
+        LOG_PERROR("SBMP: bind 0.0.0.0:%u failed", port);
         close(fd);
         return;
     }
 
     if (listen(fd, 32) < 0)
     {
-        LOG_PERROR("SBMP: listen 失败");
+        LOG_PERROR("SBMP: listen failed");
         close(fd);
         return;
     }
@@ -785,14 +785,14 @@ void sbmp_listen_start(uint16_t port)
     ev.data.fd = fd;
     if (epoll_ctl(g_sbmp_local->epoll_fd, EPOLL_CTL_ADD, fd, &ev) < 0)
     {
-        LOG_PERROR("SBMP: epoll_ctl ADD listen fd 失败");
+        LOG_PERROR("SBMP: epoll_ctl ADD listen fd failed");
         close(fd);
         return;
     }
 
     g_sbmp_local->listen_fd = fd;
     g_sbmp_local->server_port = port;
-    LOG_INFO("SBMP: 开始监听 0.0.0.0:%u (fd=%d)", port, fd);
+    LOG_INFO("SBMP: Listening on 0.0.0.0:%u (fd=%d)", port, fd);
 }
 
 void sbmp_listen_stop(void)
@@ -805,7 +805,7 @@ void sbmp_listen_stop(void)
     epoll_ctl(g_sbmp_local->epoll_fd, EPOLL_CTL_DEL, g_sbmp_local->listen_fd, NULL);
     close(g_sbmp_local->listen_fd);
     g_sbmp_local->listen_fd = -1;
-    LOG_INFO("SBMP: 停止监听端口 %u", g_sbmp_local->server_port);
+    LOG_INFO("SBMP: Stopped listening on port %u", g_sbmp_local->server_port);
 }
 
 // ============================================================================
@@ -822,15 +822,15 @@ static void send_phase_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, 
 }
 
 // ============================================================================
-// Phase 1: MODULE_START — 建立 IPC 连接到 CFG
+// Phase 1: MODULE_START - Establishing IPC connections到 CFG
 // ============================================================================
 
 static void sbmp_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    LOG_INFO("SBMP Phase 1: MODULE_START — 建立 IPC 连接");
+    LOG_INFO("SBMP Phase 1: MODULE_START - Establishing IPC connections");
     dev_ipc_connect(ctx, DEV_MODULE_ID_CLI, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CLI);
     dev_ipc_connect(ctx, DEV_MODULE_ID_DB, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_DB);
-    LOG_INFO("SBMP: 已连接到 CFG 和 DB");
+    LOG_INFO("SBMP: Connected to CFG and DB");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
@@ -840,7 +840,7 @@ static void sbmp_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
 static void sbmp_on_connect(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    LOG_INFO("SBMP Phase 2: MODULE_CONNECT (预留)");
+    LOG_INFO("SBMP Phase 2: MODULE_CONNECT (reserved)");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
@@ -850,18 +850,18 @@ static void sbmp_on_connect(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
 static void sbmp_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    LOG_INFO("SBMP Phase 3: MODULE_READY — 初始化数据库表并恢复状态");
+    LOG_INFO("SBMP Phase 3: MODULE_READY - Initializing database tables and restoring state");
 
     if (sbmp_db_init(ctx) != 0)
     {
-        LOG_ERROR("SBMP: 数据库表初始化失败");
+        LOG_ERROR("SBMP: Database table initialization failed");
         send_phase_response(ctx, msg, ERRCODE_FAIL);
         return;
     }
 
     if (sbmp_db_restore(ctx) != ERRCODE_SUCCESS)
     {
-        LOG_ERROR("SBMP: 从数据库恢复状态失败");
+        LOG_ERROR("SBMP: Failed to restore state from database");
         send_phase_response(ctx, msg, ERRCODE_FAIL);
         return;
     }
@@ -875,7 +875,9 @@ static void sbmp_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
 static void sbmp_on_shutdown(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    LOG_INFO("SBMP: 清理模块状态");
+    LOG_INFO("SBMP: Cleaning up module state");
+
+    sbmp_cli_cleanup_state();
 
     sbmp_listen_stop();
 
@@ -908,7 +910,7 @@ static void sbmp_on_shutdown(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     g_free(g_sbmp_local);
     g_sbmp_local = NULL;
 
-    LOG_INFO("SBMP: 模块清理完成");
+    LOG_INFO("SBMP: Module cleanup complete");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
@@ -933,19 +935,19 @@ void sbmp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             sbmp_on_shutdown(ctx, msg);
             return;
         case CLI_MSG_TYPE:
-            LOG_DEBUG("SBMP: 收到 CLI 命令消息");
+            LOG_DEBUG("SBMP: Received CLI command message");
             sbmp_cli_handle_message(msg);
             break;
         case CLI_MSG_TYPE_CONTINUE:
-            LOG_DEBUG("SBMP: 收到 CLI continue 请求");
+            LOG_DEBUG("SBMP: Received CLI continue request");
             sbmp_cli_handle_continue(msg);
             break;
         case CLI_MSG_TYPE_SHOW_CONFIG:
-            LOG_DEBUG("SBMP: 收到 show current-configuration 请求");
+            LOG_DEBUG("SBMP: Received show current-configuration request");
             sbmp_bdr_show_config(msg);
             return;
         default:
-            LOG_WARN("SBMP: 未知消息类型: 0x%08X", msg->msg_type);
+            LOG_WARN("SBMP: Unknown message type: 0x%08X", msg->msg_type);
             break;
     }
 
@@ -953,12 +955,12 @@ void sbmp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 }
 
 // ============================================================================
-// 模块初始化
+// Module initialization
 // ============================================================================
 
 int sbmp_module_init(void)
 {
-    LOG_INFO("模块初始化");
+    LOG_INFO("Module initialization");
 
     /* 复用 bgp_parse 库解析 BMP 携带的 BGP PDU */
     bgp_parse_init();
@@ -966,7 +968,7 @@ int sbmp_module_init(void)
     dev_ipc_context_t *ctx = dev_ipc_init(DEV_MODULE_ID_SBMP, "sbmp", DEV_MODULE_PORT_SBMP, sbmp_msg_handler);
     if (!ctx)
     {
-        LOG_ERROR("IPC 初始化失败");
+        LOG_ERROR("IPC initialization failed");
         return -1;
     }
 
@@ -978,7 +980,7 @@ int sbmp_module_init(void)
     g_sbmp_local->epoll_fd = epoll_create1(EPOLL_CLOEXEC);
     if (g_sbmp_local->epoll_fd < 0)
     {
-        LOG_PERROR("SBMP: 创建 epoll 失败");
+        LOG_PERROR("SBMP: Failed to create epoll");
         g_free(g_sbmp_local);
         g_sbmp_local = NULL;
         return -1;
@@ -992,7 +994,7 @@ int sbmp_module_init(void)
     g_sbmp_local->running = 1;
     if (pthread_create(&g_sbmp_local->server_thread, NULL, sbmp_server_thread, NULL) != 0)
     {
-        LOG_PERROR("SBMP: 创建 server 线程失败");
+        LOG_PERROR("SBMP: Failed to create server thread");
         g_hash_table_destroy(g_sbmp_local->fd_hash);
         g_hash_table_destroy(g_sbmp_local->client_hash);
         close(g_sbmp_local->epoll_fd);
