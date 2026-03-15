@@ -29,7 +29,7 @@ if CI_DIR is None:
 if str(CI_DIR) not in sys.path:
     sys.path.insert(0, str(CI_DIR))
 
-from module_api import require_devices, run_cmds, step, wait_checks  # noqa: E402
+from module_api import reboot_device, require_devices, run_cmds, step, wait_checks  # noqa: E402
 from top_runner import TopologyRuntime, find_peer_ip  # noqa: E402
 
 
@@ -49,6 +49,7 @@ STATIC_ROUTES: list[dict[str, str]] = [
 
 SESSION_TIMEOUT_SEC = 30
 ROUTE_TIMEOUT_SEC = 30
+REBOOT_RECOVER_TIMEOUT_SEC = 90
 ROUTE_CHECKS: list[dict[str, str]] = [
     {"device": "r1", "af": "ipv4-unicast", "prefix": "10.10.10.0/24"},
 ]
@@ -111,12 +112,13 @@ def build_session_checks(rt: TopologyRuntime, top: dict[str, Any]) -> list[dict[
     return session_checks
 
 
-def apply_static_routes(rt: TopologyRuntime) -> None:
+def apply_static_routes(rt: TopologyRuntime, *, strict: bool = True) -> None:
     step("Apply static routes")
     for route in STATIC_ROUTES:
         run_cmds(
             rt=rt,
             device=str(route["device"]),
+            strict=strict,
             commands=[
                 "config",
                 f"route ipv4 {route['prefix']} {route['mask']} {route['nexthop']}",
@@ -133,12 +135,8 @@ def run(rt: TopologyRuntime, top: dict[str, Any]) -> None:
     validate_session_references(top)
 
     session_checks = build_session_checks(rt, top)
-    apply_static_routes(rt)
+    apply_static_routes(rt, strict=True)
 
-    step("Wait BGP sessions")
-    wait_checks(rt, session_checks, timeout=SESSION_TIMEOUT_SEC)
-
-    step("Wait BGP routes")
     route_checks = [
         {
             "device": str(chk["device"]),
@@ -148,6 +146,23 @@ def run(rt: TopologyRuntime, top: dict[str, Any]) -> None:
         }
         for chk in ROUTE_CHECKS
     ]
+
+    step("Wait BGP sessions")
+    wait_checks(rt, session_checks, timeout=SESSION_TIMEOUT_SEC)
+
+    step("Wait BGP routes")
+    wait_checks(rt, route_checks, timeout=ROUTE_TIMEOUT_SEC)
+
+    step("Reboot r1 and wait CLI reconnect")
+    reboot_device(rt, "r1", timeout=REBOOT_RECOVER_TIMEOUT_SEC)
+
+    step("Wait BGP sessions after reboot")
+    wait_checks(rt, session_checks, timeout=SESSION_TIMEOUT_SEC)
+
+    step("Replay static routes after reboot")
+    apply_static_routes(rt, strict=False)
+
+    step("Wait BGP routes after reboot")
     wait_checks(rt, route_checks, timeout=ROUTE_TIMEOUT_SEC)
 
     print("BGP basic check passed.")

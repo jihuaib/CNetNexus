@@ -382,6 +382,12 @@ void dev_ipc_destroy(dev_ipc_context_t *ctx);
 int dev_ipc_connect(dev_ipc_context_t *ctx, uint32_t target_module_id, const char *host, uint16_t port);
 
 /**
+ * @brief 清空 IPC 上下文中的所有连接（用于 DEV 软件重启前重置连接状态）
+ * @param ctx IPC 上下文
+ */
+void dev_ipc_clear_connections(dev_ipc_context_t *ctx);
+
+/**
  * @brief 发送消息到目标模块（异步）
  * @param ctx IPC 上下文
  * @param target_module_id 目标模块 ID

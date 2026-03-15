@@ -350,13 +350,34 @@ int32_t dev_scan_and_load_modules(void)
 {
     ensure_registry_initialized();
 
-    /* DEV 自身初始化（创建 DEV 的 IPC context + 注册到 GTree）
-     * dev_ipc_init() 内部会把调用线程标签设为 "dev"，在 dlopen 触发各模块
-     * constructor 之前，日志已标记为 "dev" */
-    if (dev_init_self() != ERRCODE_SUCCESS)
+    /* 首次启动需要创建 DEV IPC context；软件重启路径复用现有 context。 */
+    if (!g_dev_local || !g_dev_local->dev_ipc_ctx)
     {
-        LOG_ERROR("Fatal: DEV module self-init failed");
-        return ERRCODE_FAIL;
+        /* DEV 自身初始化（创建 DEV 的 IPC context + 注册到 GTree）
+         * dev_ipc_init() 内部会把调用线程标签设为 "dev"，在扫描模块之前日志已标记为 "dev" */
+        if (dev_init_self() != ERRCODE_SUCCESS)
+        {
+            LOG_ERROR("Fatal: DEV module self-init failed");
+            return ERRCODE_FAIL;
+        }
+    }
+    else
+    {
+        dev_module_t *dev_self = (dev_module_t *)g_tree_lookup(g_module_registry, GUINT_TO_POINTER(DEV_MODULE_ID_DEV));
+        if (!dev_self)
+        {
+            dev_self = dev_add_module_to_registry(DEV_MODULE_ID_DEV, "dev");
+            if (!dev_self)
+            {
+                LOG_ERROR("Fatal: failed to register DEV module in registry");
+                return ERRCODE_FAIL;
+            }
+        }
+        dev_self->port = DEV_MODULE_PORT_DEV;
+        if (dev_self->phase < DEV_PHASE_LOADED)
+        {
+            dev_self->phase = DEV_PHASE_LOADED;
+        }
     }
 
     LOG_INFO("Begin scanning and loading modules=============================================");
@@ -399,6 +420,34 @@ int32_t dev_scan_and_load_modules(void)
 
     LOG_INFO("End scanning and loading modules=============================================");
 
+    return ERRCODE_SUCCESS;
+}
+
+int32_t dev_reboot_software(void)
+{
+    LOG_WARN("Software reboot requested: restarting all modules");
+
+    cleanup_all_modules();
+
+    /* 清理 DEV IPC 连接状态，避免复用旧连接对象导致重连受阻。 */
+    if (g_dev_local && g_dev_local->dev_ipc_ctx)
+    {
+        dev_ipc_clear_connections(g_dev_local->dev_ipc_ctx);
+    }
+
+    if (dev_scan_and_load_modules() != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("Software reboot failed: scan/load modules failed");
+        return ERRCODE_FAIL;
+    }
+
+    if (dev_init_all_modules() != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("Software reboot failed: module initialization failed");
+        return ERRCODE_FAIL;
+    }
+
+    LOG_INFO("Software reboot complete");
     return ERRCODE_SUCCESS;
 }
 

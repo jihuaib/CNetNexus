@@ -50,6 +50,12 @@ int32_t dev_init_all_modules(void);
 void cleanup_all_modules(void);
 
 /**
+ * @brief 软件级重启（重启全部业务模块并重新完成三阶段初始化）
+ * @return 成功返回 ERRCODE_SUCCESS，失败返回 ERRCODE_FAIL
+ */
+int32_t dev_reboot_software(void);
+
+/**
  * @brief 遍历模块注册表
  * @param func 遍历回调
  * @param user_data 用户数据

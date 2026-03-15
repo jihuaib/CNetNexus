@@ -85,7 +85,7 @@ Common options:
 - `--keep`: keep case containers/networks for debugging
 - `--cmd-timeout <sec>`: runtime CLI command timeout
 - `--connect-timeout <sec>`: runtime CLI initial connect timeout
-- `--verbose-modules`: print command-level logs
+- `--verbose-modules`: enable low-level CLI debug logs (for example `... rx N bytes ...`)
 
 ## Run All Modules (Scan + Execute)
 
@@ -121,6 +121,8 @@ Enable verbose runtime logs only when needed:
 scripts/ci/run_all.sh --verbose-modules
 ```
 
+By default, command send/response logs are kept for troubleshooting (including config/show command output).
+
 `module_runner.py` will:
 
 - scan case directories that contain `top.yaml`
@@ -155,3 +157,14 @@ python3 scripts/ci/module_runner.py \
 
 - Default: each module clears its containers and networks in `finally`.
 - If `--keep` is passed to a module, resources are preserved for troubleshooting.
+- One-shot cleanup for stale CI resources:
+
+```bash
+scripts/ci/cleanup.sh
+```
+
+- Preview only (no deletion):
+
+```bash
+scripts/ci/cleanup.sh --dry-run
+```

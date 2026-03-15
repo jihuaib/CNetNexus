@@ -147,5 +147,22 @@
                 </command>
             </commands>
         </group>
+
+        <!-- reboot -->
+        <group group-id="7">
+            <elements>
+                <element type="keyword">
+                    <name>reboot</name>
+                    <description>Reboot NetNexus software stack</description>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>1</expression>
+                    <views>global</views>
+                </command>
+            </commands>
+        </group>
     </command_groups>
 </configuration>

@@ -55,6 +55,10 @@ def run_cmds(
     return outputs
 
 
+def reboot_device(rt: TopologyRuntime, device: str, *, timeout: int = 90) -> None:
+    rt.reboot_device(device, reconnect_timeout=timeout)
+
+
 def wait_checks(
     rt: TopologyRuntime,
     checks: list[dict[str, object]],

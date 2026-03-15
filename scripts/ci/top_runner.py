@@ -81,12 +81,21 @@ class Endpoint:
 
 
 class NetNexusCli:
-    def __init__(self, host: str, port: int, name: str, cmd_timeout: int = 20, verbose: bool = False) -> None:
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        name: str,
+        cmd_timeout: int = 20,
+        verbose: bool = False,
+        log_commands: bool = True,
+    ) -> None:
         self.host = host
         self.port = port
         self.name = name
         self.cmd_timeout = cmd_timeout
         self.verbose = verbose
+        self.log_commands = log_commands
         self.tn: telnetlib.Telnet | None = None
         self._rx_buf = bytearray()
 
@@ -117,12 +126,12 @@ class NetNexusCli:
         if not self.tn:
             raise RuntimeError(f"{self.name}: CLI not connected")
         eff_timeout = timeout if timeout is not None else self.cmd_timeout
-        if self.verbose:
+        if self.log_commands or self.verbose:
             print(f"[{self.name}] >>> {command}")
         self.tn.write(command.encode("ascii") + b"\n")
         out = self._read_with_prompt_recovery(command=command, timeout=eff_timeout)
         text = out.replace("\r", "")
-        if self.verbose:
+        if self.log_commands or self.verbose:
             print(f"[{self.name}] <<< {text.strip()}")
         if strict and ("BGP Error:" in text or "Error:" in text):
             raise RuntimeError(f"{self.name}: command failed: {command}\n{text}")
@@ -388,12 +397,38 @@ class TopologyRuntime:
         self.link_networks: list[str] = []
         self.cli_map: dict[str, NetNexusCli] = {}
 
+    def _container_name(self, device: str) -> str:
+        return f"{self.prefix}-{sanitize_name(device)}"
+
+    def _start_netnexus_process(self, container_name: str) -> None:
+        run_cmd(
+            [
+                "docker",
+                "exec",
+                "-d",
+                container_name,
+                "/bin/bash",
+                "-lc",
+                (
+                    "mkdir -p /opt/netnexus/log /opt/netnexus/data && "
+                    "export NN_WORK_DIR=/opt/netnexus && "
+                    "export LD_LIBRARY_PATH=/opt/netnexus/lib:${LD_LIBRARY_PATH} && "
+                    "exec /opt/netnexus/bin/netnexus > /tmp/netnexus.log 2>&1"
+                ),
+            ]
+        )
+
+    def _connect_cli(self, device: str, host: str, *, timeout: int) -> None:
+        cli = NetNexusCli(host, 3788, device, cmd_timeout=self.cmd_timeout, verbose=self.verbose)
+        cli.connect(timeout=timeout)
+        self.cli_map[device] = cli
+
     def start(self, *, configure_interfaces: bool = True) -> None:
         run_cmd(["docker", "network", "create", self.mgmt_net])
 
         # 1) Create paused containers and mount per-device if_map override.
         for dev in self.devices:
-            cname = f"{self.prefix}-{sanitize_name(dev)}"
+            cname = self._container_name(dev)
 
             map_file = self.tmpdir / f"{sanitize_name(dev)}-if_map.conf.gns3"
             build_if_map_file(map_file, self.endpoints[dev])
@@ -438,42 +473,79 @@ class TopologyRuntime:
 
         # 3) Connect each device to link networks in GE index order.
         for dev, eps in self.endpoints.items():
-            cname = f"{self.prefix}-{sanitize_name(dev)}"
+            cname = self._container_name(dev)
             for ep in eps:
                 run_cmd(["docker", "network", "connect", link_to_net[ep.link_name], cname])
 
         # 4) Start netnexus process inside each container.
         for dev in self.devices:
-            cname = f"{self.prefix}-{sanitize_name(dev)}"
-            run_cmd(
-                [
-                    "docker",
-                    "exec",
-                    "-d",
-                    cname,
-                    "/bin/bash",
-                    "-lc",
-                    (
-                        "mkdir -p /opt/netnexus/log /opt/netnexus/data && "
-                        "export NN_WORK_DIR=/opt/netnexus && "
-                        "export LD_LIBRARY_PATH=/opt/netnexus/lib:${LD_LIBRARY_PATH} && "
-                        "exec /opt/netnexus/bin/netnexus > /tmp/netnexus.log 2>&1"
-                    ),
-                ]
-            )
+            self._start_netnexus_process(self._container_name(dev))
 
         # 5) Connect CLI via management network IP.
         for dev in self.devices:
-            cname = f"{self.prefix}-{sanitize_name(dev)}"
+            cname = self._container_name(dev)
             mgmt_ip = get_container_network_ip(cname, self.mgmt_net)
-            cli = NetNexusCli(mgmt_ip, 3788, dev, cmd_timeout=self.cmd_timeout, verbose=self.verbose)
-            cli.connect(timeout=self.connect_timeout)
-            self.cli_map[dev] = cli
+            self._connect_cli(dev, mgmt_ip, timeout=self.connect_timeout)
 
         # 6) Optional interface base config from top.
         if configure_interfaces:
             for dev, eps in self.endpoints.items():
                 cli_configure_interfaces(self.cli_map[dev], eps)
+
+    def reboot_device(self, device: str, *, reconnect_timeout: int = 90) -> None:
+        if device not in self.devices:
+            raise ValueError(f"unknown device '{device}'")
+
+        # Unified software reboot path (container/non-container):
+        # DEV handles MODULE_SHUTDOWN notification before restarting modules.
+        cli = self.cli_map.get(device)
+        if cli is None:
+            raise RuntimeError(f"device '{device}' has no active CLI session to trigger reboot")
+
+        host = cli.host
+        port = cli.port
+        print(f"\n===== STEP: Reboot software on {device} =====", flush=True)
+        reboot_triggered_at = time.time()
+        try:
+            cli.cmd("reboot", strict=False, timeout=min(5, self.cmd_timeout))
+        except Exception:
+            # Reboot usually closes CLI quickly; reconnect below decides final success.
+            pass
+        finally:
+            cli.close()
+            self.cli_map.pop(device, None)
+
+        deadline = time.time() + reconnect_timeout
+        last_err: Exception | None = None
+        while time.time() < deadline:
+            # Avoid reconnecting too early while reboot worker is still about to restart modules.
+            if time.time() < reboot_triggered_at + 2.0:
+                time.sleep(0.2)
+                continue
+            new_cli: NetNexusCli | None = None
+            try:
+                new_cli = NetNexusCli(host, port, device, cmd_timeout=self.cmd_timeout, verbose=self.verbose)
+                new_cli.connect(timeout=min(10, max(2, int(deadline - time.time()))))
+
+                # Two probes reduce false-positive reconnect against pre-reboot/unstable state.
+                new_cli.cmd("show version", strict=False, timeout=min(8, self.cmd_timeout))
+                time.sleep(1)
+                new_cli.cmd("show version", strict=False, timeout=min(8, self.cmd_timeout))
+
+                self.cli_map[device] = new_cli
+                return
+            except Exception as exc:
+                last_err = exc
+                try:
+                    if new_cli is not None:
+                        new_cli.close()
+                except Exception:
+                    pass
+                time.sleep(1)
+
+        raise RuntimeError(
+            f"{device}: failed to reconnect after reboot within {reconnect_timeout}s: {last_err}"
+        )
 
     def exec_cmd(self, device: str, command: str, *, timeout: int | None = None, strict: bool = True) -> str:
         cli = self.cli_map.get(device)

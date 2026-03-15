@@ -22,6 +22,8 @@
 #include "log.h"
 #include "path_utils.h"
 
+static gint g_reboot_in_progress = 0;
+
 // ============================================================================
 // 内部辅助函数：show 命令
 // ============================================================================
@@ -255,6 +257,28 @@ static int handle_sysname(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     dev_send_cli_response(ctx, msg, "Command 'sysname' not yet implemented in dev module.\r\n");
     return ERRCODE_SUCCESS;
+}
+
+static int handle_reboot(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+{
+    if (!g_atomic_int_compare_and_exchange(&g_reboot_in_progress, 0, 1))
+    {
+        dev_send_cli_response(ctx, msg, "Dev: reboot already in progress.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    dev_send_cli_response(ctx, msg, "Dev: reboot accepted, reconnect later.\r\n");
+    /* 短暂让出，提升 ACK 送达 CLI 客户端的概率。 */
+    g_usleep(100 * 1000);
+
+    int ret = dev_reboot_software();
+    if (ret != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("Software reboot failed");
+    }
+
+    g_atomic_int_set(&g_reboot_in_progress, 0);
+    return ret;
 }
 
 static int handle_set_log_level(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
@@ -692,6 +716,9 @@ int dev_cli_handle_message(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             break;
         case DEV_CLI_GROUP_ID_SHOW_IPC:
             result = handle_show_ipc(ctx, msg, &parser);
+            break;
+        case DEV_CLI_GROUP_ID_REBOOT:
+            result = handle_reboot(ctx, msg);
             break;
         default:
             LOG_WARN("Unknown group_id: %u", parser.group_id);

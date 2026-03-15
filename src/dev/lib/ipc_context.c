@@ -902,6 +902,33 @@ void dev_ipc_destroy(dev_ipc_context_t *ctx)
     g_free(ctx);
 }
 
+void dev_ipc_clear_connections(dev_ipc_context_t *ctx)
+{
+    if (!ctx)
+    {
+        return;
+    }
+
+    pthread_mutex_lock(&ctx->comutex);
+    for (int i = 0; i < ctx->num_connections; i++)
+    {
+        dev_ipc_connection_t *conn = ctx->connections[i];
+        if (!conn)
+        {
+            continue;
+        }
+
+        if (conn->fd >= 0)
+        {
+            epoll_ctl(ctx->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
+        }
+        dev_ipc_connection_destroy(conn);
+        ctx->connections[i] = NULL;
+    }
+    ctx->num_connections = 0;
+    pthread_mutex_unlock(&ctx->comutex);
+}
+
 int dev_ipc_connect(dev_ipc_context_t *ctx, uint32_t target_module_id, const char *host, uint16_t port)
 {
     if (!ctx || !host || port == 0)

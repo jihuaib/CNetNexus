@@ -17,6 +17,7 @@
 #define DEV_CLI_GROUP_ID_LOG_LEVEL 4
 #define DEV_CLI_GROUP_ID_PING 5
 #define DEV_CLI_GROUP_ID_SHOW_IPC 6
+#define DEV_CLI_GROUP_ID_REBOOT 7
 
 typedef struct dev_cli_out
 {
