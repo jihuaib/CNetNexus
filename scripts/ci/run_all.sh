@@ -14,7 +14,7 @@ Options:
   --keep                Keep case containers/networks for debugging
   --cmd-timeout <sec>   CLI command timeout for runtime (default: 30)
   --connect-timeout <sec>  CLI initial connect timeout (default: 60)
-  --no-verbose-modules  Do not append --verbose for module scripts
+  --verbose-modules     Append --verbose-modules for module scripts (default: off)
   -h, --help            Show this help
 
 Examples:
@@ -33,7 +33,7 @@ BUILD_IMAGE=1
 KEEP_CASE=0
 CMD_TIMEOUT=30
 CONNECT_TIMEOUT=60
-VERBOSE_MODULES=1
+VERBOSE_MODULES=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -60,6 +60,10 @@ while [[ $# -gt 0 ]]; do
     --connect-timeout)
       CONNECT_TIMEOUT="$2"
       shift 2
+      ;;
+    --verbose-modules)
+      VERBOSE_MODULES=1
+      shift
       ;;
     --no-verbose-modules)
       VERBOSE_MODULES=0

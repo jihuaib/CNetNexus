@@ -112,8 +112,13 @@ python3 scripts/ci/module_runner.py \
   --image netnexus-ci:localtest \
   --report-dir scripts/ci/reports \
   --cmd-timeout 30 \
-  --connect-timeout 60 \
-  --verbose-modules
+  --connect-timeout 60
+```
+
+Enable verbose runtime logs only when needed:
+
+```bash
+scripts/ci/run_all.sh --verbose-modules
 ```
 
 `module_runner.py` will:
