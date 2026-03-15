@@ -1,10 +1,10 @@
 /**
- * @file   bgp_rib.c
- * @brief  BGP 内存 RIB 通用结构实现（rthead-tree + per-head routes）
+ * @file   sbmp_rib.c
+ * @brief  SBMP 内存路由表实现（独立于 bgp_rib，按 NLRI 二进制比较索引）
  * @author jhb
- * @date   2026/03/13
+ * @date   2026/03/15
  */
-#include "bgp_rib.h"
+#include "sbmp_rib.h"
 
 #include <string.h>
 
@@ -40,7 +40,7 @@ static int addr_cmp(const net_addr_t *a, const net_addr_t *b)
 /**
  * @brief GTree 比较函数：按 NLRI 类型分支做二进制字段比较
  *
- * 键类型：const bgp_nlri_entry_t*（指向 bgp_rthead_t.nlri，无需堆分配）
+ * 键类型：const bgp_nlri_entry_t*（指向 sbmp_rthead_t.nlri，无需堆分配）
  */
 static gint nlri_compare(gconstpointer pa, gconstpointer pb)
 {
@@ -149,20 +149,19 @@ static gint nlri_compare(gconstpointer pa, gconstpointer pb)
  * 内部辅助
  * ========================================================================== */
 
-static bgp_rthead_t *rthead_create(const bgp_nlri_entry_t *nlri, bgp_rib_t *rib)
+static sbmp_rthead_t *rthead_create(const bgp_nlri_entry_t *nlri)
 {
-    bgp_rthead_t *head = g_malloc0(sizeof(bgp_rthead_t));
+    sbmp_rthead_t *head = g_malloc0(sizeof(sbmp_rthead_t));
     if (nlri)
     {
         memcpy(&head->nlri, nlri, sizeof(*nlri));
     }
-    head->inst = rib ? rib->inst : NULL;
-    /* key: net_addr_t*（堆分配，g_free 释放），value: bgp_route_node_t*（g_free 释放） */
+    /* key: net_addr_t*（堆分配，g_free 释放），value: sbmp_route_t*（g_free 释放） */
     head->route_hash = g_hash_table_new_full(net_addr_hash, net_addr_hash_equal, g_free, g_free);
     return head;
 }
 
-static void rthead_destroy(bgp_rthead_t *head)
+static void rthead_destroy(sbmp_rthead_t *head)
 {
     if (!head)
     {
@@ -183,16 +182,16 @@ static gboolean destroy_tree_cb(gpointer key, gpointer value, gpointer user_data
 {
     (void)key; /* 键指向 head->nlri，随 head 一起释放 */
     (void)user_data;
-    rthead_destroy((bgp_rthead_t *)value);
+    rthead_destroy((sbmp_rthead_t *)value);
     return FALSE;
 }
 
 /**
  * @brief 按 NLRI 从树中移除并销毁对应 rthead
  */
-static gboolean remove_head_by_nlri(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri)
+static gboolean remove_head_by_nlri(sbmp_rib_t *rib, const bgp_nlri_entry_t *nlri)
 {
-    bgp_rthead_t *head = g_tree_lookup(rib->head_tree, nlri);
+    sbmp_rthead_t *head = g_tree_lookup(rib->head_tree, nlri);
     if (!head)
     {
         return FALSE;
@@ -212,14 +211,14 @@ static gboolean remove_head_by_nlri(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri
  * 生命周期
  * ========================================================================== */
 
-bgp_rib_t *bgp_rib_create(void)
+sbmp_rib_t *sbmp_rib_create(void)
 {
-    bgp_rib_t *rib = g_malloc0(sizeof(bgp_rib_t));
+    sbmp_rib_t *rib = g_malloc0(sizeof(sbmp_rib_t));
     rib->head_tree = g_tree_new(nlri_compare);
     return rib;
 }
 
-void bgp_rib_destroy(bgp_rib_t *rib)
+void sbmp_rib_destroy(sbmp_rib_t *rib)
 {
     if (!rib)
     {
@@ -240,28 +239,28 @@ void bgp_rib_destroy(bgp_rib_t *rib)
  * 单条 reach / unreach
  * ========================================================================== */
 
-int bgp_rib_reach_one(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_addr_t *source, const bgp_attr_t *attr,
-                      const bgp_nexthop_t *nexthop)
+int sbmp_rib_reach_one(sbmp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_addr_t *source, const bgp_attr_t *attr,
+                       const bgp_nexthop_t *nexthop)
 {
     if (!rib || !nlri || !source || source->family == 0)
     {
         return -1;
     }
 
-    bgp_rthead_t *head = g_tree_lookup(rib->head_tree, nlri);
+    sbmp_rthead_t *head = g_tree_lookup(rib->head_tree, nlri);
     if (!head)
     {
-        head = rthead_create(nlri, rib);
+        head = rthead_create(nlri);
         /* 键直接指向 head->nlri，无需额外堆分配 */
         g_tree_insert(rib->head_tree, &head->nlri, head);
         rib->head_count++;
     }
 
-    bgp_route_node_t *route = g_hash_table_lookup(head->route_hash, source);
+    sbmp_route_t *route = g_hash_table_lookup(head->route_hash, source);
     gboolean is_new = (route == NULL);
     if (is_new)
     {
-        route = g_malloc0(sizeof(bgp_route_node_t));
+        route = g_malloc0(sizeof(sbmp_route_t));
         net_addr_t *skey = g_malloc(sizeof(net_addr_t));
         *skey = *source;
         g_hash_table_insert(head->route_hash, skey, route);
@@ -282,14 +281,14 @@ int bgp_rib_reach_one(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_ad
     return is_new ? 1 : 0;
 }
 
-int bgp_rib_unreach_one(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_addr_t *source)
+int sbmp_rib_unreach_one(sbmp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_addr_t *source)
 {
     if (!rib || !nlri || !source || source->family == 0)
     {
         return -1;
     }
 
-    bgp_rthead_t *head = g_tree_lookup(rib->head_tree, nlri);
+    sbmp_rthead_t *head = g_tree_lookup(rib->head_tree, nlri);
     if (!head)
     {
         return 0;
@@ -307,7 +306,6 @@ int bgp_rib_unreach_one(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_
 
     if (g_hash_table_size(head->route_hash) == 0)
     {
-        /* 传入参数 nlri 与 head->nlri 内容相同，查找时会找到同一节点 */
         remove_head_by_nlri(rib, &head->nlri);
     }
 
@@ -318,8 +316,8 @@ int bgp_rib_unreach_one(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_
  * 批量应用与来源清理
  * ========================================================================== */
 
-void bgp_rib_apply_update(bgp_rib_t *rib, const net_addr_t *source, const bgp_update_result_t *upd,
-                          bgp_rib_update_stats_t *stats)
+void sbmp_rib_apply_update(sbmp_rib_t *rib, const net_addr_t *source, const bgp_update_result_t *upd,
+                           sbmp_rib_update_stats_t *stats)
 {
     if (stats)
     {
@@ -332,7 +330,7 @@ void bgp_rib_apply_update(bgp_rib_t *rib, const net_addr_t *source, const bgp_up
 
     for (uint32_t i = 0; i < upd->reach_len; i++)
     {
-        int rc = bgp_rib_reach_one(rib, &upd->reach[i], source, &upd->attr, &upd->nexthop);
+        int rc = sbmp_rib_reach_one(rib, &upd->reach[i], source, &upd->attr, &upd->nexthop);
         if (!stats)
         {
             continue;
@@ -349,7 +347,7 @@ void bgp_rib_apply_update(bgp_rib_t *rib, const net_addr_t *source, const bgp_up
 
     for (uint32_t i = 0; i < upd->unreach_len; i++)
     {
-        int rc = bgp_rib_unreach_one(rib, &upd->unreach[i], source);
+        int rc = sbmp_rib_unreach_one(rib, &upd->unreach[i], source);
         if (!stats)
         {
             continue;
@@ -365,18 +363,18 @@ void bgp_rib_apply_update(bgp_rib_t *rib, const net_addr_t *source, const bgp_up
     }
 }
 
-typedef struct source_purge_ctx
+typedef struct sbmp_source_purge_ctx
 {
     const net_addr_t *source;
     uint32_t removed_routes;
-    GPtrArray *empty_heads; /* bgp_rthead_t*，route_hash 已清空，待从树中移除 */
-} source_purge_ctx_t;
+    GPtrArray *empty_heads; /**< sbmp_rthead_t*，route_hash 已清空，待从树中移除 */
+} sbmp_source_purge_ctx_t;
 
 static gboolean purge_source_cb(gpointer key, gpointer value, gpointer user_data)
 {
     (void)key;
-    source_purge_ctx_t *ctx = (source_purge_ctx_t *)user_data;
-    bgp_rthead_t *head = (bgp_rthead_t *)value;
+    sbmp_source_purge_ctx_t *ctx = (sbmp_source_purge_ctx_t *)user_data;
+    sbmp_rthead_t *head = (sbmp_rthead_t *)value;
 
     if (g_hash_table_remove(head->route_hash, ctx->source))
     {
@@ -389,7 +387,8 @@ static gboolean purge_source_cb(gpointer key, gpointer value, gpointer user_data
     return FALSE;
 }
 
-void bgp_rib_remove_source(bgp_rib_t *rib, const net_addr_t *source, uint32_t *removed_routes, uint32_t *removed_heads)
+void sbmp_rib_remove_source(sbmp_rib_t *rib, const net_addr_t *source, uint32_t *removed_routes,
+                            uint32_t *removed_heads)
 {
     if (removed_routes)
     {
@@ -404,7 +403,7 @@ void bgp_rib_remove_source(bgp_rib_t *rib, const net_addr_t *source, uint32_t *r
         return;
     }
 
-    source_purge_ctx_t ctx;
+    sbmp_source_purge_ctx_t ctx;
     ctx.source = source;
     ctx.removed_routes = 0;
     /* 不需要 free_func：head 内存由 remove_head_by_nlri 释放 */
@@ -414,8 +413,7 @@ void bgp_rib_remove_source(bgp_rib_t *rib, const net_addr_t *source, uint32_t *r
 
     for (guint i = 0; i < ctx.empty_heads->len; i++)
     {
-        bgp_rthead_t *head = (bgp_rthead_t *)g_ptr_array_index(ctx.empty_heads, i);
-        /* 用 head->nlri 作为查找键（内容不变，head 尚未销毁） */
+        sbmp_rthead_t *head = (sbmp_rthead_t *)g_ptr_array_index(ctx.empty_heads, i);
         if (remove_head_by_nlri(rib, &head->nlri) && removed_heads)
         {
             (*removed_heads)++;
@@ -443,30 +441,30 @@ void bgp_rib_remove_source(bgp_rib_t *rib, const net_addr_t *source, uint32_t *r
  * 查询
  * ========================================================================== */
 
-const bgp_rthead_t *bgp_rib_lookup_head(const bgp_rib_t *rib, const bgp_nlri_entry_t *nlri)
+const sbmp_rthead_t *sbmp_rib_lookup_head(const sbmp_rib_t *rib, const bgp_nlri_entry_t *nlri)
 {
     if (!rib || !rib->head_tree || !nlri)
     {
         return NULL;
     }
-    return (const bgp_rthead_t *)g_tree_lookup(rib->head_tree, nlri);
+    return (const sbmp_rthead_t *)g_tree_lookup(rib->head_tree, nlri);
 }
 
-const bgp_route_node_t *bgp_rthead_lookup_route(const bgp_rthead_t *head, const net_addr_t *source)
+const sbmp_route_t *sbmp_rthead_lookup_route(const sbmp_rthead_t *head, const net_addr_t *source)
 {
     if (!head || !head->route_hash || !source || source->family == 0)
     {
         return NULL;
     }
-    return (const bgp_route_node_t *)g_hash_table_lookup(head->route_hash, source);
+    return (const sbmp_route_t *)g_hash_table_lookup(head->route_hash, source);
 }
 
-uint32_t bgp_rib_head_count(const bgp_rib_t *rib)
+uint32_t sbmp_rib_head_count(const sbmp_rib_t *rib)
 {
     return rib ? rib->head_count : 0;
 }
 
-uint32_t bgp_rib_route_count(const bgp_rib_t *rib)
+uint32_t sbmp_rib_route_count(const sbmp_rib_t *rib)
 {
     return rib ? rib->route_count : 0;
 }

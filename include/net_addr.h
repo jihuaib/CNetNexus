@@ -48,6 +48,21 @@ void net_addr_to_str(const net_addr_t *addr, char *buf, size_t sz);
  */
 gboolean net_addr_equal(const net_addr_t *a, const net_addr_t *b);
 
+/**
+ * @brief GLib 哈希表用 hash 函数（key 为 net_addr_t*）
+ * @param key net_addr_t 指针
+ * @return 哈希值
+ */
+guint net_addr_hash(gconstpointer key);
+
+/**
+ * @brief GLib 哈希表用 equal 函数（按值比较 net_addr_t）
+ * @param a net_addr_t 指针 a
+ * @param b net_addr_t 指针 b
+ * @return TRUE 相等，FALSE 不等
+ */
+gboolean net_addr_hash_equal(gconstpointer a, gconstpointer b);
+
 // ============================================================================
 // IP 前缀（地址 + 前缀长度）
 // ============================================================================

@@ -10,33 +10,33 @@
 #include <glib.h>
 #include <stdint.h>
 
-#include "bgp_route.h"
+#include "bgp.h"
+#include "net_addr.h"
 
-/** route 来源标识最大长度（通常为邻居 IP 字符串） */
-#define BGP_RIB_SOURCE_MAX 64
-
-/** rthead 树键最大长度（afi/safi + nlri key） */
-#define BGP_RIB_HEAD_KEY_MAX (BGP_NLRI_KEY_MAX + 32)
+/* 前向声明：bgp_instance_t 与 bgp_rib_t 相互引用 */
+typedef struct bgp_instance bgp_instance_t;
 
 /**
  * @brief 单条路径（同一 rthead 下可挂多条，按 source 区分）
  */
 typedef struct bgp_route_node
 {
-    char source[BGP_RIB_SOURCE_MAX]; /**< 路径来源，如 "192.0.2.1" */
-    bgp_attr_t attr;                 /**< 路径属性 */
-    bgp_nexthop_t nexthop;           /**< 下一跳 */
-    gint64 updated_at_usec;          /**< 最近更新时间（g_get_real_time） */
+    net_addr_t source;      /**< 路径来源（邻居 IP，二进制存储） */
+    bgp_attr_t attr;        /**< 路径属性 */
+    bgp_nexthop_t nexthop;  /**< 下一跳 */
+    gint64 updated_at_usec; /**< 最近更新时间（g_get_real_time） */
 } bgp_route_node_t;
 
 /**
  * @brief 路由头（Route Head）：表示一个唯一 NLRI 前缀
+ *
+ * 树键为 nlri.key（RIB 已按 AFI/SAFI 分实例，无需再拼接 afi/safi 前缀）
  */
 typedef struct bgp_rthead
 {
-    char key[BGP_RIB_HEAD_KEY_MAX]; /**< 树键：afi/safi/nlri_key */
-    bgp_nlri_entry_t nlri;          /**< NLRI（前缀/EVPN/FlowSpec 等） */
-    GHashTable *route_hash;         /**< source(gchar*) -> bgp_route_node_t* */
+    bgp_nlri_entry_t nlri;  /**< NLRI（前缀/EVPN/FlowSpec 等，含 afi/safi/type/key） */
+    bgp_instance_t *inst;   /**< 所属 AF 实例（借用引用，可为 NULL） */
+    GHashTable *route_hash; /**< net_addr_t* -> bgp_route_node_t*（按来源 IP 索引） */
 } bgp_rthead_t;
 
 /**
@@ -44,9 +44,10 @@ typedef struct bgp_rthead
  */
 typedef struct bgp_rib
 {
-    GTree *head_tree;     /**< key(gchar*) -> bgp_rthead_t* */
+    GTree *head_tree;     /**< key = &head->nlri（直接指入值，无需堆分配），按 NLRI 二进制比较 */
     uint32_t head_count;  /**< rthead 总数 */
     uint32_t route_count; /**< route 总数（所有 rthead 下累计） */
+    bgp_instance_t *inst; /**< 所属 AF 实例（借用引用，NULL 表示独立/测试使用） */
 } bgp_rib_t;
 
 /**
@@ -74,37 +75,37 @@ void bgp_rib_destroy(bgp_rib_t *rib);
  * @brief 对单条 NLRI 执行 reach（新增/更新一条来源路径）
  * @param rib      目标 RIB
  * @param nlri     NLRI 条目
- * @param source   路径来源（邻居标识）
+ * @param source   路径来源（邻居 IP，二进制）
  * @param attr     路径属性
  * @param nexthop  下一跳
  * @return 1=新增路径, 0=更新已有路径, -1=失败
  */
-int bgp_rib_reach_one(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const char *source, const bgp_attr_t *attr,
+int bgp_rib_reach_one(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_addr_t *source, const bgp_attr_t *attr,
                       const bgp_nexthop_t *nexthop);
 
 /**
  * @brief 对单条 NLRI 执行 unreach（删除一条来源路径）
  * @param rib      目标 RIB
  * @param nlri     NLRI 条目
- * @param source   路径来源（邻居标识）
+ * @param source   路径来源（邻居 IP，二进制）
  * @return 1=删除成功, 0=未命中, -1=失败
  */
-int bgp_rib_unreach_one(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const char *source);
+int bgp_rib_unreach_one(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_addr_t *source);
 
 /**
  * @brief 将解析后的 UPDATE 应用于 RIB
  */
-void bgp_rib_apply_update(bgp_rib_t *rib, const char *source, const bgp_update_result_t *upd,
+void bgp_rib_apply_update(bgp_rib_t *rib, const net_addr_t *source, const bgp_update_result_t *upd,
                           bgp_rib_update_stats_t *stats);
 
 /**
  * @brief 删除某来源在整个 RIB 下的所有路径（会清理空 rthead）
  * @param rib            目标 RIB
- * @param source         路径来源（邻居标识）
+ * @param source         路径来源（邻居 IP，二进制）
  * @param removed_routes 输出：删除路径数（可为 NULL）
  * @param removed_heads  输出：删除 rthead 数（可为 NULL）
  */
-void bgp_rib_remove_source(bgp_rib_t *rib, const char *source, uint32_t *removed_routes, uint32_t *removed_heads);
+void bgp_rib_remove_source(bgp_rib_t *rib, const net_addr_t *source, uint32_t *removed_routes, uint32_t *removed_heads);
 
 /**
  * @brief 通过 NLRI 查找 rthead（只读）
@@ -114,7 +115,7 @@ const bgp_rthead_t *bgp_rib_lookup_head(const bgp_rib_t *rib, const bgp_nlri_ent
 /**
  * @brief 在 rthead 下按 source 查找 route（只读）
  */
-const bgp_route_node_t *bgp_rthead_lookup_route(const bgp_rthead_t *head, const char *source);
+const bgp_route_node_t *bgp_rthead_lookup_route(const bgp_rthead_t *head, const net_addr_t *source);
 
 /**
  * @brief 获取统计值

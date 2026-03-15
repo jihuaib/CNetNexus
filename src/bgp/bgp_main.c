@@ -16,12 +16,12 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "bgp.h"
 #include "bgp_bdr.h"
 #include "bgp_cli.h"
 #include "bgp_conn.h"
 #include "bgp_db.h"
 #include "bgp_instance.h"
-#include "bgp_parse.h"
 #include "bgp_pkt.h"
 #include "bgp_rib.h"
 #include "bgp_session.h"
@@ -243,10 +243,7 @@ static void bgp_handle_passive_accept(void)
         return;
     }
 
-    /* 新连接开始前重置 session 接收缓冲区 */
-    sess->recv_len = 0;
-
-    /* sec_conn 已存在：防御性拒绝（正常不应出现） */
+    /* sec_conn 已存在：防御性拒绝（正常不应出现，碰撞检测期间最多两条连接并存） */
     if (sess->sec_conn)
     {
         LOG_WARN("BGP: Rejecting connection from %s (sec_conn already exists fd=%d)", from_ip, sess->sec_conn->fd);
@@ -254,10 +251,11 @@ static void bgp_handle_passive_accept(void)
         return;
     }
 
-    /* pri_conn 已建立（!is_connecting）→ 连接已在协商中，拒绝新的被动连接 */
-    if (sess->pri_conn && !sess->pri_conn->is_connecting)
+    /* session 已完全 ESTABLISHED → 拒绝新被动连接
+     * RFC 4271 §6.8 碰撞检测仅发生在 OPEN_SENT / OPEN_CONFIRM 状态 */
+    if (sess->pri_conn && !sess->pri_conn->is_connecting && sess->state == BGP_CONN_STATE_ESTABLISHED)
     {
-        LOG_INFO("BGP: neighbor %s pri_conn fd=%d established, rejecting passive connection fd=%d", from_ip,
+        LOG_INFO("BGP: neighbor %s session established (fd=%d), rejecting new passive connection fd=%d", from_ip,
                  sess->pri_conn->fd, conn_fd);
         close(conn_fd);
         return;
@@ -285,15 +283,23 @@ static void bgp_handle_passive_accept(void)
 
     if (sess->pri_conn)
     {
-        /* pri_conn 还在 connecting：被动 TCP 先建立，暂存 sec_conn，等 EPOLLOUT 解决 */
-        LOG_INFO(
-            "BGP: neighbor %s passive connection fd=%d established first (active connection fd=%d still handshaking)",
-            from_ip, conn_fd, sess->pri_conn->fd);
+        /* pri_conn 正在进行中（TCP 握手中或 BGP OPEN 协商中）：
+         * 暂存为 sec_conn，等待 RFC 4271 §6.8 碰撞检测在 OPEN 层面决策 */
+        if (sess->pri_conn->is_connecting)
+        {
+            LOG_INFO("BGP: neighbor %s passive connection fd=%d (active fd=%d still TCP handshaking, §6.8 pending)",
+                     from_ip, conn_fd, sess->pri_conn->fd);
+        }
+        else
+        {
+            LOG_INFO("BGP: neighbor %s passive connection fd=%d (active fd=%d in OPEN negotiation, §6.8 pending)",
+                     from_ip, conn_fd, sess->pri_conn->fd);
+        }
         sess->sec_conn = conn;
     }
     else
     {
-        /* 无主动连接，被动连接直接作为 pri_conn */
+        /* 无已存在连接，被动连接直接作为 pri_conn */
         sess->pri_conn = conn;
     }
 
@@ -341,18 +347,18 @@ static void bgp_handle_active_connect(bgp_conn_t *conn)
         return;
     }
 
+    /* 主动连接成功：转 EPOLLIN，发送 OPEN
+     * 若 sec_conn 同时存在（被动 TCP 也已建立），不在 TCP 层做决策，
+     * 让两条连接都进入 BGP OPEN 协商，由 RFC 4271 §6.8 在 OPEN 层面基于 BGP-ID 决策 */
     if (sess->sec_conn)
     {
-        /* 被动 TCP 先建立（sec_conn 已在协商中）→ 放弃主动连接，使用被动连接 */
-        LOG_INFO("BGP: neighbor %s passive connection fd=%d established first, abandoning active connection fd=%d",
-                 addr_str, sess->sec_conn->fd, conn->fd);
-        bgp_conn_close(&sess->pri_conn);
-        bgp_session_promote_sec(sess);
-        return;
+        LOG_INFO("BGP: Active TCP to %s established (fd=%d), sec_conn fd=%d also present, §6.8 collision pending",
+                 addr_str, conn->fd, sess->sec_conn->fd);
     }
-
-    /* 主动连接胜出：转 EPOLLIN，发送 OPEN */
-    LOG_INFO("BGP: Active TCP connection to %s established (fd=%d)", addr_str, conn->fd);
+    else
+    {
+        LOG_INFO("BGP: Active TCP connection to %s established (fd=%d)", addr_str, conn->fd);
+    }
     conn->is_connecting = FALSE;
     struct epoll_event ev;
     ev.events = EPOLLIN;
@@ -363,7 +369,7 @@ static void bgp_handle_active_connect(bgp_conn_t *conn)
     {
         bgp_vrf_t *vrf0 = bgp_protocol_get_vrf(proto, BGP_VRF_PUBLIC_ID);
         GList *af_peers = vrf0 ? bgp_vrf_get_session_peers(vrf0, &sess->neighbor_addr) : NULL;
-        bgp_pkt_send_open(conn, proto->as_number, vrf0 ? vrf0->router_id : NULL, af_peers);
+        bgp_pkt_send_open(conn, proto->as_number, vrf0 ? vrf0->router_id : 0, af_peers);
         g_list_free(af_peers);
     }
 }
@@ -383,6 +389,42 @@ static void bgp_handle_data(bgp_conn_t *conn)
     bgp_conn_state_t old_state = sess->state;
 
     int ret = bgp_pkt_on_data(conn);
+
+    if (ret == BGP_PKT_ON_DATA_COLLISION_CLOSE_ME)
+    {
+        /* RFC 4271 §6.8：当前 conn 因碰撞检测应关闭，另一条连接继续协商 */
+        char addr_str[64];
+        net_addr_to_str(&conn->peer_addr, addr_str, sizeof(addr_str));
+        LOG_INFO("BGP: §6.8 collision: closing %s connection (fd=%d) with %s", conn->is_active ? "active" : "passive",
+                 conn->fd, addr_str);
+        bgp_conn_close(slot);
+        /* 若 pri_conn 被关闭，将 sec_conn 提升为 pri_conn */
+        if (!sess->pri_conn && sess->sec_conn)
+        {
+            bgp_session_promote_sec(sess);
+        }
+        return;
+    }
+
+    if (ret == BGP_PKT_ON_DATA_COLLISION_CLOSE_OTHER)
+    {
+        /* RFC 4271 §6.8：当前 conn 保留（已进入 OPEN_CONFIRM），关闭另一条连接 */
+        bgp_conn_t **other_slot = (slot == &sess->pri_conn) ? &sess->sec_conn : &sess->pri_conn;
+        if (*other_slot)
+        {
+            char addr_str[64];
+            net_addr_to_str(&(*other_slot)->peer_addr, addr_str, sizeof(addr_str));
+            LOG_INFO("BGP: §6.8 collision: closing %s connection (fd=%d) with %s",
+                     (*other_slot)->is_active ? "active" : "passive", (*other_slot)->fd, addr_str);
+            bgp_conn_close(other_slot);
+        }
+        /* 若 pri_conn 被关闭（当前 conn 在 sec_conn 槽），将其提升 */
+        if (!sess->pri_conn && sess->sec_conn)
+        {
+            bgp_session_promote_sec(sess);
+        }
+        return;
+    }
 
     if (ret < 0)
     {
@@ -625,9 +667,6 @@ void bgp_server_start_active_conn(bgp_session_t *session)
         return;
     }
 
-    /* 新主动连接开始前重置 session 接收缓冲区 */
-    session->recv_len = 0;
-
     bgp_conn_t *conn = bgp_conn_create(session);
     int fd = bgp_conn_start_active(conn, &session->neighbor_addr, g_bgp_local->epoll_fd);
     if (fd < 0)
@@ -821,72 +860,66 @@ static void bgp_on_shutdown(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 // ============================================================================
 
 /**
- * @brief 处理 ROUTE 模块推送的增量路由更新（ROUTE_MSG_TYPE_UPDATE）
- *
- * 将静态路由导入到对应地址族实例的 BGP RIB。
- * 仅当实例的 import_protos 标志中包含对应协议时才执行导入。
+ * @brief 将一条 ROUTE 路由条目导入（或撤销）到 BGP RIB
+ * @return 1=已处理，0=被过滤/忽略
  */
-static void bgp_handle_route_update(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static int bgp_import_route_entry(const route_msg_entry_t *entry)
 {
-    if (!msg->payload || msg->payload_len < sizeof(route_msg_entry_t))
+    if (!entry)
     {
-        LOG_WARN("BGP: ROUTE_UPDATE payload too short: %u bytes", msg->payload_len);
-        dev_ipc_message_free(msg);
-        return;
+        return 0;
     }
-
-    const route_msg_entry_t *entry = (const route_msg_entry_t *)msg->payload;
 
     if (!g_bgp_local || !g_bgp_local->protocol)
     {
-        dev_ipc_message_free(msg);
-        return;
+        return 0;
     }
 
     /* 当前仅处理默认公网 VRF */
-    bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_local->protocol, BGP_VRF_PUBLIC_ID);
-    if (!vrf)
+    if (entry->vrf_id != ROUTE_VRF_DEFAULT)
     {
-        dev_ipc_message_free(msg);
-        return;
+        return 0;
     }
 
-    /* 查找对应 AFI/SAFI 实例（不自动创建：未配置 af 则忽略） */
+    bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_local->protocol, entry->vrf_id);
+    if (!vrf)
+    {
+        return 0;
+    }
+
+    /* 查找对应 AFI/SAFI 实例（不自动创建：未配置 AF 则忽略） */
     bgp_afi_t afi = (bgp_afi_t)entry->afi;
-    bgp_safi_t safi = BGP_SAFI_UNICAST;
+    bgp_safi_t safi = (entry->safi == 0) ? BGP_SAFI_UNICAST : (bgp_safi_t)entry->safi;
     bgp_instance_t *inst = (bgp_instance_t *)g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(afi, safi));
 
     if (!inst || !(inst->import_protos & (1u << entry->protocol)))
     {
         /* 该 AF 未配置 import-route 对应协议，丢弃 */
-        dev_ipc_message_free(msg);
-        return;
+        return 0;
     }
 
-    /* 构建 NLRI entry（IP 前缀类型） */
+    /* 构建 NLRI entry（直接使用二进制地址，无字符串转换） */
     bgp_nlri_entry_t nlri;
     memset(&nlri, 0, sizeof(nlri));
     nlri.afi = (uint16_t)afi;
     nlri.safi = (uint8_t)safi;
     nlri.type = BGP_NLRI_PREFIX;
     nlri.prefix.prefix.prefix_len = entry->prefix_len;
+    nlri.prefix.prefix.addr = entry->prefix_addr;
     nlri.prefix.has_rd = false;
     nlri.prefix.has_label = false;
 
-    if (net_addr_from_str(entry->prefix, &nlri.prefix.prefix.addr) != 0)
-    {
-        LOG_WARN("BGP: Route import: invalid prefix '%s'", entry->prefix);
-        dev_ipc_message_free(msg);
-        return;
-    }
+    /* key 字段仅用于显示，从二进制地址格式化 */
+    char prefix_str[64];
+    net_addr_to_str(&entry->prefix_addr, prefix_str, sizeof(prefix_str));
+    snprintf(nlri.key, sizeof(nlri.key), "%s/%u", prefix_str, (unsigned)entry->prefix_len);
 
-    /* key 格式与 bgp_rib.c 中 build_head_key 一致："prefix/len" */
-    snprintf(nlri.key, sizeof(nlri.key), "%s/%u", entry->prefix, (unsigned)entry->prefix_len);
+    net_addr_t src = entry->source_addr;
 
     if (entry->is_withdraw)
     {
-        bgp_rib_unreach_one(inst->rib, &nlri, entry->source);
-        LOG_DEBUG("BGP: Import route withdraw %s/%u src=%s", entry->prefix, entry->prefix_len, entry->source);
+        bgp_rib_unreach_one(inst->rib, &nlri, &src);
+        LOG_DEBUG("BGP: Import route withdraw %s", nlri.key);
     }
     else
     {
@@ -900,16 +933,66 @@ static void bgp_handle_route_update(dev_ipc_context_t *ctx, dev_ipc_message_t *m
         bgp_nexthop_t nexthop;
         memset(&nexthop, 0, sizeof(nexthop));
         nexthop.has_link_local = false;
-        if (net_addr_from_str(entry->nexthop, &nexthop.global) != 0)
-        {
-            nexthop.global.family = (afi == BGP_AFI_IPV4) ? AF_INET : AF_INET6;
-        }
+        nexthop.global = entry->nexthop_addr;
 
-        bgp_rib_reach_one(inst->rib, &nlri, entry->source, &attr, &nexthop);
-        LOG_DEBUG("BGP: Import route add %s/%u nh=%s src=%s", entry->prefix, entry->prefix_len, entry->nexthop,
-                  entry->source);
+        bgp_rib_reach_one(inst->rib, &nlri, &src, &attr, &nexthop);
+
+        char nh_str[64], src_str[64];
+        net_addr_to_str(&entry->nexthop_addr, nh_str, sizeof(nh_str));
+        net_addr_to_str(&entry->source_addr, src_str, sizeof(src_str));
+        LOG_DEBUG("BGP: Import route add %s nh=%s src=%s", nlri.key, nh_str, src_str);
     }
 
+    return 1;
+}
+
+/**
+ * @brief 处理 ROUTE 模块推送的增量路由更新（ROUTE_MSG_TYPE_UPDATE）
+ */
+static void bgp_handle_route_update(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+{
+    if (!msg->payload || msg->payload_len < sizeof(route_msg_entry_t))
+    {
+        LOG_WARN("BGP: ROUTE_UPDATE payload too short: %u bytes", msg->payload_len);
+        dev_ipc_message_free(msg);
+        return;
+    }
+
+    const route_msg_entry_t *entry = (const route_msg_entry_t *)msg->payload;
+    (void)bgp_import_route_entry(entry);
+
+    dev_ipc_message_free(msg);
+    (void)ctx;
+}
+
+/**
+ * @brief 处理 ROUTE 模块全量路由快照（ROUTE_MSG_TYPE_REPORT）
+ */
+static void bgp_handle_route_report(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+{
+    if (!msg->payload || msg->payload_len < sizeof(route_msg_report_t))
+    {
+        LOG_WARN("BGP: ROUTE_REPORT payload too short: %u bytes", msg->payload_len);
+        dev_ipc_message_free(msg);
+        return;
+    }
+
+    const route_msg_report_t *report = (const route_msg_report_t *)msg->payload;
+    size_t expected_len = sizeof(route_msg_report_t) + (size_t)report->route_count * sizeof(route_msg_entry_t);
+    if (msg->payload_len < expected_len)
+    {
+        LOG_WARN("BGP: ROUTE_REPORT malformed: payload=%u, expected>=%zu", msg->payload_len, expected_len);
+        dev_ipc_message_free(msg);
+        return;
+    }
+
+    uint32_t imported = 0;
+    for (uint32_t i = 0; i < report->route_count; ++i)
+    {
+        imported += (uint32_t)bgp_import_route_entry(&report->routes[i]);
+    }
+
+    LOG_INFO("BGP: ROUTE_REPORT received %u entries, imported %u", report->route_count, imported);
     dev_ipc_message_free(msg);
     (void)ctx;
 }
@@ -948,6 +1031,9 @@ void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             return;
         case ROUTE_MSG_TYPE_UPDATE:
             bgp_handle_route_update(ctx, msg);
+            return;
+        case ROUTE_MSG_TYPE_REPORT:
+            bgp_handle_route_report(ctx, msg);
             return;
         default:
             break;

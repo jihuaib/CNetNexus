@@ -80,19 +80,10 @@
 #define ROUTE_SUBSCRIBE_FLAG_FULL (1u << 0)
 
 // ============================================================================
-// 字符串缓冲区大小
-// ============================================================================
-
-/** 前缀字符串最大长度 */
-#define ROUTE_PREFIX_STR_MAX 64
-/** 下一跳字符串最大长度 */
-#define ROUTE_NEXTHOP_STR_MAX 64
-/** 来源标识字符串最大长度（静态路由用 nexthop，BGP 用邻居 IP） */
-#define ROUTE_SOURCE_STR_MAX 64
-
-// ============================================================================
 // IPC 载荷结构
 // ============================================================================
+
+#include "net_addr.h"
 
 /**
  * @brief 订阅请求载荷
@@ -109,18 +100,18 @@ typedef struct route_subscribe_req
  */
 typedef struct route_msg_entry
 {
-    uint32_t vrf_id;                     /**< VRF ID */
-    uint16_t afi;                        /**< 地址族 */
-    uint8_t safi;                        /**< 子地址族 */
-    uint8_t prefix_len;                  /**< 前缀长度 */
-    uint32_t protocol;                   /**< 路由协议 */
-    int32_t metric;                      /**< 度量值 */
-    int32_t preference;                  /**< 管理距离（偏好值） */
-    uint8_t is_withdraw;                 /**< 1=撤销路由, 0=新增/更新路由 */
-    uint8_t _pad[3];                     /**< 对齐填充 */
-    char prefix[ROUTE_PREFIX_STR_MAX];   /**< 前缀地址字符串 */
-    char nexthop[ROUTE_NEXTHOP_STR_MAX]; /**< 下一跳地址字符串 */
-    char source[ROUTE_SOURCE_STR_MAX];   /**< 路径来源标识 */
+    uint32_t vrf_id;         /**< VRF ID */
+    uint16_t afi;            /**< 地址族 */
+    uint8_t safi;            /**< 子地址族 */
+    uint8_t prefix_len;      /**< 前缀长度 */
+    uint32_t protocol;       /**< 路由协议 */
+    int32_t metric;          /**< 度量值 */
+    int32_t preference;      /**< 管理距离（偏好值） */
+    uint8_t is_withdraw;     /**< 1=撤销路由, 0=新增/更新路由 */
+    uint8_t _pad[3];         /**< 对齐填充 */
+    net_addr_t prefix_addr;  /**< 前缀地址（二进制） */
+    net_addr_t nexthop_addr; /**< 下一跳地址（二进制） */
+    net_addr_t source_addr;  /**< 路径来源标识（二进制 IP） */
 } route_msg_entry_t;
 
 /**

@@ -6,7 +6,7 @@
  */
 #include <string.h>
 
-#include "bgp_parse.h"
+#include "bgp.h"
 
 /* ============================================================================
  * bgp_notif_error_str

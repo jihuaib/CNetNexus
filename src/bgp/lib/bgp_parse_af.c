@@ -7,7 +7,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "bgp_parse.h"
+#include "bgp.h"
 
 /** 最大注册处理器数 */
 #define BGP_AF_PARSER_MAX 32

@@ -53,9 +53,9 @@ typedef struct bgp_timer_sentinel
  * @brief BGP 会话结构（一条 neighbor 配置）
  *
  * pri_conn：主连接；碰撞解决后唯一存活的连接始终在此
- * sec_conn：被动接入时临时使用，碰撞解决后置 NULL
- * remote_id / negotiated_afs：由 OPEN 报文协商填入
- * recv_buf / recv_len：TCP 接收缓冲区
+ * sec_conn：碰撞检测期间临时持有第二条连接，碰撞解决后置 NULL
+ * remote_id / negotiated_afs：由 OPEN 报文协商填入（afs 以 (afi<<16|safi) 打包存储，remote_id 为主机序 uint32_t）
+ * local_router_id：发送 OPEN 时使用的本地 BGP Identifier（主机序 uint32_t，用于 §6.8 碰撞检测）
  * peer_list：当前 session 在各 AF 下使能的 bgp_peer_t* 列表（借用引用）
  *
  * timerfd 生命周期：
@@ -65,15 +65,14 @@ typedef struct bgp_timer_sentinel
  */
 typedef struct bgp_session
 {
-    net_addr_t neighbor_addr;            /**< 邻居 IP 地址（sess_hash 的键） */
-    uint32_t remote_as;                  /**< 远端 AS 号（配置值） */
-    bgp_conn_t *pri_conn;                /**< 主连接（NULL=无） */
-    bgp_conn_t *sec_conn;                /**< 次连接（NULL=无） */
-    char remote_id[16];                  /**< 对端 BGP Router ID（点分十进制） */
-    uint8_t recv_buf[BGP_RECV_BUF_SIZE]; /**< TCP 接收缓冲区 */
-    uint32_t recv_len;                   /**< 缓冲区中已有数据长度 */
-    GList *negotiated_afs;               /**< 协商地址族列表（gchar* "afi-safi"） */
-    GList *peer_list;                    /**< 各 AF 下使能的 bgp_peer_t*（借用引用） */
+    net_addr_t neighbor_addr; /**< 邻居 IP 地址（sess_hash 的键） */
+    uint32_t remote_as;       /**< 远端 AS 号（配置值） */
+    bgp_conn_t *pri_conn;     /**< 主连接（NULL=无） */
+    bgp_conn_t *sec_conn;     /**< 碰撞检测期间的第二条连接（NULL=无） */
+    uint32_t remote_id;       /**< 对端 BGP Router ID（主机序 32 位，由 OPEN 填入，0 表示未建立） */
+    uint32_t local_router_id; /**< 本地 BGP Router ID（主机序 32 位，发送 OPEN 时保存，用于 RFC §6.8 比较） */
+    GArray *negotiated_afs; /**< 协商地址族列表（每元素为 guint32，以 afi<<16|safi 打包） */
+    GList *peer_list;       /**< 各 AF 下使能的 bgp_peer_t*（借用引用） */
 
     /* ---- 能力字段 ---- */
     uint32_t flags;           /**< 已配置的本地能力集（BGP_SESS_CAP_*） */

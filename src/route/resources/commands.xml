@@ -211,8 +211,9 @@
         <!-- ================================================================
              Group 3: 批量路由命令
              cfg-id: 1=no, 2=batch, 3=ipv4, 4=ipv6,
-                     5=start_addr, 6=mask(IPv4), 7=prefix_len(IPv6),
-                     8=count_value, 9=nexthop_value
+                     5=start_addr, 6=prefix_len(IPv4,0-32), 7=prefix_len(IPv6,0-128),
+                     8=count_value, 9=nexthop_value, 10=name
+             元素顺序：no route batch <name> ipv4 ipv6 <start> <pfx4> <pfx6> count <count> nexthop <nexthop>
              ================================================================ -->
         <group group-id="3">
             <elements>
@@ -228,6 +229,11 @@
                     <name>batch</name>
                     <description>Batch route operation</description>
                 </element>
+                <element cfg-id="10" type="parameter">
+                    <name>&lt;name&gt;</name>
+                    <type>string(1-63)</type>
+                    <description>Batch name (used as key)</description>
+                </element>
                 <element cfg-id="3" type="keyword">
                     <name>ipv4</name>
                     <description>IPv4 batch route</description>
@@ -242,14 +248,14 @@
                     <description>Starting network address</description>
                 </element>
                 <element cfg-id="6" type="parameter">
-                    <name>&lt;mask&gt;</name>
-                    <type>string</type>
-                    <description>Subnet mask (IPv4)</description>
+                    <name>&lt;prefix-length&gt;</name>
+                    <type>uint(0-32)</type>
+                    <description>Prefix length (IPv4, 0-32)</description>
                 </element>
                 <element cfg-id="7" type="parameter">
                     <name>&lt;prefix-length&gt;</name>
                     <type>uint(0-128)</type>
-                    <description>Prefix length (IPv6)</description>
+                    <description>Prefix length (IPv6, 0-128)</description>
                 </element>
                 <element type="keyword">
                     <name>count</name>
@@ -272,19 +278,19 @@
             </elements>
 
             <commands>
-                <!-- route batch ipv4 <start> <mask> count <N> nexthop <nh> -->
+                <!-- route batch <name> ipv4 <start> <pfx4> count <N> nexthop <nh> -->
                 <command>
-                    <expression>2 3 4 6 7 9 10 11 12</expression>
+                    <expression>2 3 4 5 7 8 10 11 12 13</expression>
                     <views>config</views>
                 </command>
-                <!-- route batch ipv6 <start> <pfxlen> count <N> nexthop <nh> -->
+                <!-- route batch <name> ipv6 <start> <pfx6> count <N> nexthop <nh> -->
                 <command>
-                    <expression>2 3 5 6 8 9 10 11 12</expression>
+                    <expression>2 3 4 6 7 9 10 11 12 13</expression>
                     <views>config</views>
                 </command>
-                <!-- no route batch -->
+                <!-- no route batch <name> -->
                 <command>
-                    <expression>1 2 3</expression>
+                    <expression>1 2 3 4</expression>
                     <views>config</views>
                 </command>
             </commands>

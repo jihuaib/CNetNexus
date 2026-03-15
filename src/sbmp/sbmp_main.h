@@ -9,9 +9,9 @@
 
 #include <pthread.h>
 
-#include "bgp_rib.h"
 #include "cli.h"
 #include "dev.h"
+#include "sbmp_rib.h"
 
 /** BMP 客户端 ID / IP 字符串最大长度 */
 #define SBMP_CLIENT_ID_MAX 64
@@ -92,13 +92,13 @@ typedef struct sbmp_client
     guint64 termination_msgs;           /**< Termination 报文计数 */
     guint64 route_mirroring_msgs;       /**< Route Mirroring 报文计数 */
 
-    GHashTable *peer_hash;      /**< key=peer_ip(gchar*) value=sbmp_peer_t* */
-    bgp_rib_t *rib_v4u_pre;     /**< pre-policy IPv4 unicast 路由（按 peer/source 区分） */
-    bgp_rib_t *rib_v4u_post;    /**< post-policy IPv4 unicast 路由（按 peer/source 区分） */
-    bgp_rib_t *rib_v4u_loc_rib; /**< Loc-RIB IPv4 unicast 路由（按 peer/source 区分） */
-    bgp_rib_t *rib_v6u_pre;     /**< pre-policy IPv6 unicast 路由（按 peer/source 区分） */
-    bgp_rib_t *rib_v6u_post;    /**< post-policy IPv6 unicast 路由（按 peer/source 区分） */
-    bgp_rib_t *rib_v6u_loc_rib; /**< Loc-RIB IPv6 unicast 路由（按 peer/source 区分） */
+    GHashTable *peer_hash;       /**< key=peer_ip(gchar*) value=sbmp_peer_t* */
+    sbmp_rib_t *rib_v4u_pre;     /**< pre-policy IPv4 unicast 路由（按 peer/source 区分） */
+    sbmp_rib_t *rib_v4u_post;    /**< post-policy IPv4 unicast 路由（按 peer/source 区分） */
+    sbmp_rib_t *rib_v4u_loc_rib; /**< Loc-RIB IPv4 unicast 路由（按 peer/source 区分） */
+    sbmp_rib_t *rib_v6u_pre;     /**< pre-policy IPv6 unicast 路由（按 peer/source 区分） */
+    sbmp_rib_t *rib_v6u_post;    /**< post-policy IPv6 unicast 路由（按 peer/source 区分） */
+    sbmp_rib_t *rib_v6u_loc_rib; /**< Loc-RIB IPv6 unicast 路由（按 peer/source 区分） */
 
     uint8_t recv_buf[SBMP_RECV_BUF_SIZE]; /**< TCP 接收缓冲区 */
     uint32_t recv_len;                    /**< 缓冲区已用字节数 */

@@ -31,14 +31,17 @@ struct bgp_session;
  *
  * fd=-1 表示无连接；is_connecting=TRUE 表示 TCP 握手中（等待 EPOLLOUT）
  * session 反向指针在 bgp_session_create / bgp_handle_passive_accept 中赋值。
+ * recv_buf/recv_len 为每连接独立接收缓冲区，支持碰撞检测期间两条连接并存。
  */
 typedef struct bgp_conn
 {
-    struct bgp_session *session; /**< 所属 session 反向指针（借用引用，不持有所有权） */
-    int fd;                      /**< TCP socket fd；-1 表示无连接 */
-    net_addr_t peer_addr;        /**< 对端 IP 地址 */
-    gboolean is_active;          /**< TRUE=本方发起的主动连接；FALSE=被动接入 */
-    gboolean is_connecting;      /**< TRUE=TCP 握手中；FALSE=已建立或无连接 */
+    struct bgp_session *session;         /**< 所属 session 反向指针（借用引用，不持有所有权） */
+    int fd;                              /**< TCP socket fd；-1 表示无连接 */
+    net_addr_t peer_addr;                /**< 对端 IP 地址 */
+    gboolean is_active;                  /**< TRUE=本方发起的主动连接；FALSE=被动接入 */
+    gboolean is_connecting;              /**< TRUE=TCP 握手中；FALSE=已建立或无连接 */
+    uint8_t recv_buf[BGP_RECV_BUF_SIZE]; /**< 每连接独立 TCP 接收缓冲区 */
+    uint32_t recv_len;                   /**< 缓冲区中已有数据长度 */
 } bgp_conn_t;
 
 /**

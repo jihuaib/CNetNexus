@@ -416,7 +416,7 @@
             </commands>
         </group>
 
-        <!-- show bgp route af ipv4-unicast|ipv6-unicast -->
+        <!-- show bgp route af ipv4-unicast|ipv6-unicast [<ip> <masklen>] -->
         <group group-id="10">
             <elements>
                 <element type="keyword">
@@ -443,15 +443,37 @@
                     <name>ipv6-unicast</name>
                     <description>Show IPv6 unicast routes</description>
                 </element>
+                <element cfg-id="3" type="parameter">
+                    <name>&lt;ip-address&gt;</name>
+                    <type>ip</type>
+                    <description>Network address to query</description>
+                </element>
+                <element cfg-id="4" type="parameter">
+                    <name>&lt;masklen&gt;</name>
+                    <type>integer(0-128)</type>
+                    <description>Prefix length (0-128)</description>
+                </element>
             </elements>
 
             <commands>
+                <!-- show bgp route af ipv4-unicast（路由表） -->
                 <command>
                     <expression>1 2 3 4 5</expression>
                     <views>global</views>
                 </command>
+                <!-- show bgp route af ipv6-unicast（路由表） -->
                 <command>
                     <expression>1 2 3 4 6</expression>
+                    <views>global</views>
+                </command>
+                <!-- show bgp route af ipv4-unicast <ip> <masklen>（路由详情） -->
+                <command>
+                    <expression>1 2 3 4 5 7 8</expression>
+                    <views>global</views>
+                </command>
+                <!-- show bgp route af ipv6-unicast <ip> <masklen>（路由详情） -->
+                <command>
+                    <expression>1 2 3 4 6 7 8</expression>
                     <views>global</views>
                 </command>
             </commands>

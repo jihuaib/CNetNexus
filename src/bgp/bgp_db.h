@@ -187,6 +187,18 @@ int bgp_db_set_instance(dev_ipc_context_t *ctx, uint32_t vrf_id, bgp_afi_t afi, 
 int bgp_db_del_instance(dev_ipc_context_t *ctx, uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi);
 
 /**
+ * @brief 更新 AF 实例的 import_protos 位掩码
+ * @param ctx           BGP 模块的 IPC 上下文
+ * @param vrf_id        VRF ID
+ * @param afi           地址族
+ * @param safi          子地址族
+ * @param import_protos 已导入协议位掩码（bit N = protocol N 已启用）
+ * @return 0 成功，-1 失败
+ */
+int bgp_db_set_import_protos(dev_ipc_context_t *ctx, uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi,
+                             uint32_t import_protos);
+
+/**
  * @brief 删除指定地址族下的所有邻居使能记录（no af 时批量清理）
  * @param ctx    BGP 模块的 IPC 上下文
  * @param vrf_id VRF ID（0 为默认公网 VRF）

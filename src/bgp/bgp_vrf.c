@@ -11,6 +11,7 @@
 
 #include "bgp_rib.h"
 #include "log.h"
+#include "net_addr.h"
 
 // ============================================================================
 // VRF 生命周期
@@ -23,8 +24,9 @@ bgp_vrf_t *bgp_vrf_create(uint32_t vrf_id)
     vrf->keepalive = BGP_TIMER_DEFAULT_KEEPALIVE;
     vrf->hold_time = BGP_TIMER_DEFAULT_HOLD;
     vrf->connect_retry = BGP_TIMER_DEFAULT_CONNECT_RETRY;
-    /* sess_hash: key = addr_str(gchar*)，value = bgp_session_t*（负责销毁） */
-    vrf->sess_hash = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify)bgp_session_destroy);
+    /* sess_hash: key = net_addr_t*（堆分配，g_free 释放），value = bgp_session_t*（负责销毁） */
+    vrf->sess_hash =
+        g_hash_table_new_full(net_addr_hash, net_addr_hash_equal, g_free, (GDestroyNotify)bgp_session_destroy);
     /* inst_hash: key = bgp_inst_hash_key(afi,safi)（gpointer 直接值），value = bgp_instance_t*（负责销毁） */
     vrf->inst_hash = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, (GDestroyNotify)bgp_instance_destroy);
     LOG_INFO("BGP VRF created: id=%u", vrf_id);
@@ -62,11 +64,13 @@ void bgp_vrf_add_session(bgp_vrf_t *vrf, bgp_session_t *session)
     {
         return;
     }
-    char addr_key[64];
-    net_addr_to_str(&session->neighbor_addr, addr_key, sizeof(addr_key));
-    g_hash_table_insert(vrf->sess_hash, g_strdup(addr_key), session);
+    net_addr_t *key = g_malloc(sizeof(net_addr_t));
+    *key = session->neighbor_addr;
+    g_hash_table_insert(vrf->sess_hash, key, session);
 
-    LOG_INFO("BGP session joined VRF %u: neighbor=%s AS=%u", vrf->vrf_id, addr_key, session->remote_as);
+    char addr_str[64];
+    net_addr_to_str(&session->neighbor_addr, addr_str, sizeof(addr_str));
+    LOG_INFO("BGP session joined VRF %u: neighbor=%s AS=%u", vrf->vrf_id, addr_str, session->remote_as);
 }
 
 void bgp_vrf_del_session(bgp_vrf_t *vrf, const net_addr_t *addr)
@@ -76,11 +80,12 @@ void bgp_vrf_del_session(bgp_vrf_t *vrf, const net_addr_t *addr)
         return;
     }
     (void)bgp_vrf_purge_session_routes(vrf, addr);
-    char addr_key[64];
-    net_addr_to_str(addr, addr_key, sizeof(addr_key));
-    /* g_hash_table_remove 会触发 bgp_session_destroy */
-    g_hash_table_remove(vrf->sess_hash, addr_key);
-    LOG_INFO("BGP session removed from VRF %u: neighbor=%s", vrf->vrf_id, addr_key);
+    /* g_hash_table_remove 使用 net_addr_hash_equal 按值匹配，触发 bgp_session_destroy */
+    g_hash_table_remove(vrf->sess_hash, addr);
+
+    char addr_str[64];
+    net_addr_to_str(addr, addr_str, sizeof(addr_str));
+    LOG_INFO("BGP session removed from VRF %u: neighbor=%s", vrf->vrf_id, addr_str);
 }
 
 bgp_session_t *bgp_vrf_find_session(bgp_vrf_t *vrf, const net_addr_t *addr)
@@ -89,9 +94,7 @@ bgp_session_t *bgp_vrf_find_session(bgp_vrf_t *vrf, const net_addr_t *addr)
     {
         return NULL;
     }
-    char addr_key[64];
-    net_addr_to_str(addr, addr_key, sizeof(addr_key));
-    return g_hash_table_lookup(vrf->sess_hash, addr_key);
+    return g_hash_table_lookup(vrf->sess_hash, addr);
 }
 
 // ============================================================================
@@ -128,24 +131,27 @@ int bgp_vrf_af_enable_neighbor(bgp_vrf_t *vrf, bgp_afi_t afi, bgp_safi_t safi, c
     }
 
     /* 若该邻居在此实例下已使能，直接返回 */
-    char addr_key[64];
-    net_addr_to_str(addr, addr_key, sizeof(addr_key));
-
-    if (g_hash_table_lookup(inst->peer_hash, addr_key))
+    if (g_hash_table_lookup(inst->peer_hash, addr))
     {
-        LOG_INFO("BGP: Neighbor %s already enabled in instance afi=%u safi=%u", addr_key, (unsigned)afi,
+        char addr_str[64];
+        net_addr_to_str(addr, addr_str, sizeof(addr_str));
+        LOG_INFO("BGP: Neighbor %s already enabled in instance afi=%u safi=%u", addr_str, (unsigned)afi,
                  (unsigned)safi);
         return 0;
     }
 
     /* 创建 per-AF peer，挂入 instance.peer_hash（inst 持有所有权） */
     bgp_peer_t *peer = bgp_peer_create(vrf, inst, addr);
-    g_hash_table_insert(inst->peer_hash, g_strdup(addr_key), peer);
+    net_addr_t *peer_key = g_malloc(sizeof(net_addr_t));
+    *peer_key = *addr;
+    g_hash_table_insert(inst->peer_hash, peer_key, peer);
 
     /* 同时将借用引用加入 session->peer_list，便于通过 session 快速查询 */
     sess->peer_list = g_list_append(sess->peer_list, peer);
 
-    LOG_INFO("BGP: Neighbor %s enabled in instance afi=%u safi=%u (VRF %u)", addr_key, (unsigned)afi, (unsigned)safi,
+    char addr_str[64];
+    net_addr_to_str(addr, addr_str, sizeof(addr_str));
+    LOG_INFO("BGP: Neighbor %s enabled in instance afi=%u safi=%u (VRF %u)", addr_str, (unsigned)afi, (unsigned)safi,
              vrf->vrf_id);
     return 0;
 }
@@ -163,10 +169,7 @@ int bgp_vrf_af_disable_neighbor(bgp_vrf_t *vrf, bgp_afi_t afi, bgp_safi_t safi, 
         return 0; /* 实例不存在，视为成功 */
     }
 
-    char addr_key[64];
-    net_addr_to_str(addr, addr_key, sizeof(addr_key));
-
-    bgp_peer_t *peer = g_hash_table_lookup(inst->peer_hash, addr_key);
+    bgp_peer_t *peer = g_hash_table_lookup(inst->peer_hash, addr);
     if (!peer)
     {
         return 0; /* 邻居未在该实例下使能 */
@@ -180,9 +183,11 @@ int bgp_vrf_af_disable_neighbor(bgp_vrf_t *vrf, bgp_afi_t afi, bgp_safi_t safi, 
     }
 
     /* 再从 instance.peer_hash 中删除，触发 bgp_peer_destroy */
-    g_hash_table_remove(inst->peer_hash, addr_key);
+    g_hash_table_remove(inst->peer_hash, addr);
 
-    LOG_INFO("BGP: Neighbor %s disabled in instance afi=%u safi=%u (VRF %u)", addr_key, (unsigned)afi, (unsigned)safi,
+    char addr_str[64];
+    net_addr_to_str(addr, addr_str, sizeof(addr_str));
+    LOG_INFO("BGP: Neighbor %s disabled in instance afi=%u safi=%u (VRF %u)", addr_str, (unsigned)afi, (unsigned)safi,
              vrf->vrf_id);
     return 0;
 }
@@ -265,9 +270,6 @@ void bgp_vrf_apply_update(bgp_vrf_t *vrf, const net_addr_t *src, const bgp_updat
         return;
     }
 
-    char src_key[64];
-    net_addr_to_str(src, src_key, sizeof(src_key));
-
     for (uint32_t i = 0; i < upd->reach_len; i++)
     {
         const bgp_nlri_entry_t *e = &upd->reach[i];
@@ -277,7 +279,7 @@ void bgp_vrf_apply_update(bgp_vrf_t *vrf, const net_addr_t *src, const bgp_updat
             continue;
         }
 
-        int rc = bgp_rib_reach_one(inst->rib, e, src_key, &upd->attr, &upd->nexthop);
+        int rc = bgp_rib_reach_one(inst->rib, e, src, &upd->attr, &upd->nexthop);
         if (!stats)
         {
             continue;
@@ -306,7 +308,7 @@ void bgp_vrf_apply_update(bgp_vrf_t *vrf, const net_addr_t *src, const bgp_updat
             continue;
         }
 
-        int rc = bgp_rib_unreach_one(inst->rib, e, src_key);
+        int rc = bgp_rib_unreach_one(inst->rib, e, src);
         if (!stats)
         {
             continue;
@@ -329,9 +331,6 @@ uint32_t bgp_vrf_purge_session_routes(bgp_vrf_t *vrf, const net_addr_t *addr)
         return 0;
     }
 
-    char src_key[64];
-    net_addr_to_str(addr, src_key, sizeof(src_key));
-
     uint32_t total_routes = 0;
     uint32_t total_heads = 0;
 
@@ -349,14 +348,16 @@ uint32_t bgp_vrf_purge_session_routes(bgp_vrf_t *vrf, const net_addr_t *addr)
 
         uint32_t removed_routes = 0;
         uint32_t removed_heads = 0;
-        bgp_rib_remove_source(inst->rib, src_key, &removed_routes, &removed_heads);
+        bgp_rib_remove_source(inst->rib, addr, &removed_routes, &removed_heads);
         total_routes += removed_routes;
         total_heads += removed_heads;
     }
 
     if (total_routes > 0)
     {
-        LOG_INFO("BGP: VRF %u cleaning up neighbor %s routes: routes=%u heads=%u", vrf->vrf_id, src_key, total_routes,
+        char src_str[64];
+        net_addr_to_str(addr, src_str, sizeof(src_str));
+        LOG_INFO("BGP: VRF %u cleaning up neighbor %s routes: routes=%u heads=%u", vrf->vrf_id, src_str, total_routes,
                  total_heads);
     }
 

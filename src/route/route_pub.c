@@ -18,22 +18,22 @@
 // ============================================================================
 
 /**
- * @brief 将 route_head_t + route_path_t 转换为 route_msg_entry_t
+ * @brief 将 route_head_t + route_path_t 转换为 route_msg_entry_t（直接二进制拷贝）
  */
 static void build_entry(route_msg_entry_t *entry, const route_head_t *head, const route_path_t *path, int is_withdraw)
 {
     memset(entry, 0, sizeof(*entry));
-    entry->vrf_id = head->vrf_id;
-    entry->afi = head->afi;
+    entry->vrf_id = head->key.vrf_id;
+    entry->afi = head->key.afi;
     entry->safi = ROUTE_SAFI_UNICAST;
-    entry->prefix_len = head->prefix_len;
-    entry->protocol = path->protocol;
+    entry->prefix_len = head->key.prefix_len;
+    entry->protocol = path->key.protocol;
     entry->metric = path->metric;
     entry->preference = path->preference;
     entry->is_withdraw = (uint8_t)is_withdraw;
-    g_strlcpy(entry->prefix, head->prefix, sizeof(entry->prefix));
-    g_strlcpy(entry->nexthop, path->nexthop, sizeof(entry->nexthop));
-    g_strlcpy(entry->source, path->source, sizeof(entry->source));
+    entry->prefix_addr = head->key.addr;
+    entry->nexthop_addr = path->nexthop;
+    entry->source_addr = path->key.source;
 }
 
 // ============================================================================
@@ -43,12 +43,12 @@ static void build_entry(route_msg_entry_t *entry, const route_head_t *head, cons
 static int subscriber_matches(const route_subscriber_t *sub, const route_head_t *head, const route_path_t *path)
 {
     /* 协议过滤 */
-    if (sub->protocol != ROUTE_PROTOCOL_MAX && sub->protocol != path->protocol)
+    if (sub->protocol != ROUTE_PROTOCOL_MAX && sub->protocol != path->key.protocol)
     {
         return 0;
     }
     /* VRF 过滤 */
-    if (sub->vrf_id != ROUTE_VRF_ALL && sub->vrf_id != head->vrf_id)
+    if (sub->vrf_id != ROUTE_VRF_ALL && sub->vrf_id != head->key.vrf_id)
     {
         return 0;
     }

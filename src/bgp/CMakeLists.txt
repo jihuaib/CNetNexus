@@ -11,6 +11,7 @@ set(BGP_SOURCES
     bgp_instance.c
     bgp_vrf.c
     bgp_protocol.c
+    bgp_rib.c
 )
 
 add_subdirectory(lib)
@@ -24,8 +25,7 @@ target_link_libraries(netnexus-bgp PRIVATE
     cli_api
     db_api
     utils
-    bgp_rib
-    bgp_parse
+    bgp_api
 )
 
 set_target_properties(netnexus-bgp PROPERTIES

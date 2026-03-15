@@ -1,0 +1,94 @@
+name: Topology Module Smoke
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "scripts/ci/**"
+      - ".github/workflows/topology-module-smoke.yml"
+
+jobs:
+  topology-module-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml
+
+      - name: Run All CI Modules And Generate Report
+        run: |
+          scripts/ci/run_all.sh \
+            --image "netnexus-ci:${{ github.sha }}" \
+            --report-dir "scripts/ci/reports" \
+            --cmd-timeout 30 \
+            --connect-timeout 60
+
+      - name: Publish CI Summary
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          summary_path = Path("scripts/ci/reports/summary.json")
+          out = Path("${GITHUB_STEP_SUMMARY}")
+
+          lines = []
+          lines.append("## Topology Module Smoke Report")
+          lines.append("")
+
+          if not summary_path.exists():
+              lines.append("summary.json not found. Please check runner logs.")
+          else:
+              data = json.loads(summary_path.read_text(encoding="utf-8"))
+              total = int(data.get("total", 0))
+              passed = int(data.get("passed", 0))
+              failed = int(data.get("failed", 0))
+              duration = data.get("duration_sec", "n/a")
+
+              lines.append(f"- Total checks: **{total}**")
+              lines.append(f"- Passed: **{passed}**")
+              lines.append(f"- Failed: **{failed}**")
+              lines.append(f"- Duration: **{duration}s**")
+              lines.append("")
+
+              if failed:
+                  lines.append("### Failed Checks")
+                  lines.append("")
+                  lines.append("| Case | Script | Return Code |")
+                  lines.append("| --- | --- | --- |")
+                  for item in data.get("results", []):
+                      if int(item.get("returncode", 0)) != 0:
+                          case = item.get("case", "")
+                          script = item.get("script", "")
+                          rc = item.get("returncode", "")
+                          lines.append(f"| `{case}` | `{script}` | `{rc}` |")
+                  lines.append("")
+
+          lines.append(
+              "Download artifact `topology-module-report-<run_id>` for full `report.html`, "
+              "`summary.json`, and `logs/*.log`."
+          )
+          lines.append("")
+
+          out.write_text("\n".join(lines), encoding="utf-8")
+          PY
+
+      - name: Upload Module Report Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: topology-module-report-${{ github.run_id }}
+          path: scripts/ci/reports
+          if-no-files-found: error

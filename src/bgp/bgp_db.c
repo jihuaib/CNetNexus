@@ -17,6 +17,7 @@
 #include "errcode.h"
 #include "log.h"
 #include "net_addr.h"
+#include "route.h"
 
 // ============================================================================
 // 表定义
@@ -67,6 +68,7 @@ static const db_column_def_t BGP_INSTANCE_COLS[] = {
     {"vrf_id", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},
     {"afi", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
     {"safi", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
+    {"import_protos", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"}, /* 已导入协议位掩码 */
 };
 
 /* bgp_instance 表定义 */
@@ -261,6 +263,31 @@ static void restore_instances(dev_ipc_context_t *ctx)
 
         bgp_cfg_apply_instance(FALSE, vrf, afi, safi);
         LOG_INFO("BGP restore: VRF %u AF instance afi=%u safi=%u", vrf_id, (unsigned)afi, (unsigned)safi);
+
+        uint32_t import_protos = (uint32_t)db_row_get_int(row, "import_protos", 0);
+        if (import_protos != 0)
+        {
+            bgp_instance_t *inst = g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(afi, safi));
+            if (inst)
+            {
+                inst->import_protos = import_protos;
+                /* 重新订阅路由模块（fire-and-forget，不阻塞） */
+                route_subscribe_req_t *req = g_malloc(sizeof(route_subscribe_req_t));
+                req->protocol = ROUTE_PROTOCOL_STATIC;
+                req->vrf_id = ROUTE_VRF_DEFAULT;
+                req->flags = ROUTE_SUBSCRIBE_FLAG_FULL;
+                dev_ipc_message_t *sub_msg =
+                    dev_ipc_message_create(ROUTE_MSG_TYPE_SUBSCRIBE, DEV_MODULE_ID_BGP, DEV_MODULE_ID_ROUTE, 0, req,
+                                           sizeof(route_subscribe_req_t), g_free);
+                if (sub_msg)
+                {
+                    dev_ipc_send(ctx, DEV_MODULE_ID_ROUTE, sub_msg);
+                    dev_ipc_message_free(sub_msg);
+                }
+                LOG_INFO("BGP 恢复: VRF %u afi=%u safi=%u import_protos=0x%08X，已重新订阅路由模块", vrf_id,
+                         (unsigned)afi, (unsigned)safi, import_protos);
+            }
+        }
     }
 
     db_result_free(result);
@@ -887,6 +914,44 @@ int bgp_db_del_instance(dev_ipc_context_t *ctx, uint32_t vrf_id, bgp_afi_t afi, 
     LOG_INFO("BGP deleted instance vrf=%u afi=%u safi=%u, affected rows: %d", vrf_id, (unsigned)afi, (unsigned)safi,
              rows);
     return rows;
+}
+
+int bgp_db_set_import_protos(dev_ipc_context_t *ctx, uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi,
+                             uint32_t import_protos)
+{
+    if (!ctx)
+    {
+        return -1;
+    }
+
+    db_condition_t key_conditions[] = {
+        {.field_name = "vrf_id", .op = DB_CMP_EQ, .value = db_value_int((int64_t)vrf_id)},
+        {.field_name = "afi", .op = DB_CMP_EQ, .value = db_value_int((int64_t)afi)},
+        {.field_name = "safi", .op = DB_CMP_EQ, .value = db_value_int((int64_t)safi)},
+    };
+    db_filter_t key_filter = {.conditions = key_conditions, .num_conditions = G_N_ELEMENTS(key_conditions)};
+
+    db_record_t *rec = db_record_new();
+    db_record_set_int(rec, "vrf_id", (int64_t)vrf_id);
+    db_record_set_int(rec, "afi", (int64_t)afi);
+    db_record_set_int(rec, "safi", (int64_t)safi);
+    db_record_set_int(rec, "import_protos", (int64_t)import_protos);
+
+    int ret = db_rpc_upsert(ctx, BGP_TABLE_INSTANCE, rec, &key_filter);
+    db_record_free(rec);
+    db_value_free(&key_conditions[0].value);
+    db_value_free(&key_conditions[1].value);
+    db_value_free(&key_conditions[2].value);
+
+    if (ret != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("BGP 写入 instance import_protos vrf=%u afi=%u safi=%u 失败", vrf_id, (unsigned)afi, (unsigned)safi);
+        return -1;
+    }
+
+    LOG_INFO("BGP instance vrf=%u afi=%u safi=%u import_protos=0x%08X 已写入", vrf_id, (unsigned)afi, (unsigned)safi,
+             import_protos);
+    return 0;
 }
 
 int bgp_db_set_session_caps(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *neighbor_ip, uint32_t open_caps)

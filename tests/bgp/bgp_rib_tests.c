@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "net_addr.h"
+
 #define TEST_ASSERT(cond)                                                                  \
     do                                                                                     \
     {                                                                                      \
@@ -15,6 +17,7 @@
         }                                                                                  \
     } while (0)
 
+/* 解析 "addr/plen" 字符串，同时填写二进制前缀字段（供 nlri_compare 使用） */
 static void make_prefix_entry(bgp_nlri_entry_t *e, uint16_t afi, uint8_t safi, const char *key)
 {
     memset(e, 0, sizeof(*e));
@@ -22,6 +25,18 @@ static void make_prefix_entry(bgp_nlri_entry_t *e, uint16_t afi, uint8_t safi, c
     e->safi = safi;
     e->type = BGP_NLRI_PREFIX;
     snprintf(e->key, sizeof(e->key), "%s", key);
+
+    /* 解析 "addr/plen" → 二进制 */
+    char addr_buf[64];
+    snprintf(addr_buf, sizeof(addr_buf), "%s", key);
+    char *slash = strchr(addr_buf, '/');
+    if (slash)
+    {
+        *slash = '\0';
+        e->prefix.prefix.prefix_len = (uint8_t)atoi(slash + 1);
+    }
+    e->prefix.prefix.addr.family = (afi == BGP_AFI_IPV6) ? AF_INET6 : AF_INET;
+    inet_pton(e->prefix.prefix.addr.family, addr_buf, &e->prefix.prefix.addr.u);
 }
 
 static void make_v4_nexthop(bgp_nexthop_t *nh, const char *ip)
@@ -29,6 +44,15 @@ static void make_v4_nexthop(bgp_nexthop_t *nh, const char *ip)
     memset(nh, 0, sizeof(*nh));
     nh->global.family = AF_INET;
     inet_pton(AF_INET, ip, &nh->global.u.v4);
+}
+
+static net_addr_t make_v4_source(const char *ip)
+{
+    net_addr_t src;
+    memset(&src, 0, sizeof(src));
+    src.family = AF_INET;
+    inet_pton(AF_INET, ip, &src.u.v4);
+    return src;
 }
 
 static int test_reach_update_unreach(void)
@@ -49,34 +73,37 @@ static int test_reach_update_unreach(void)
     attr2.has_local_pref = true;
     attr2.local_pref     = 200;
 
-    TEST_ASSERT(bgp_rib_reach_one(rib, &e1, "198.51.100.1", &attr1, &nh) == 1);
+    net_addr_t src1 = make_v4_source("198.51.100.1");
+    net_addr_t src2 = make_v4_source("198.51.100.2");
+
+    TEST_ASSERT(bgp_rib_reach_one(rib, &e1, &src1, &attr1, &nh) == 1);
     TEST_ASSERT(bgp_rib_head_count(rib) == 1);
     TEST_ASSERT(bgp_rib_route_count(rib) == 1);
 
-    TEST_ASSERT(bgp_rib_reach_one(rib, &e1, "198.51.100.1", &attr2, &nh) == 0);
+    TEST_ASSERT(bgp_rib_reach_one(rib, &e1, &src1, &attr2, &nh) == 0);
     TEST_ASSERT(bgp_rib_head_count(rib) == 1);
     TEST_ASSERT(bgp_rib_route_count(rib) == 1);
 
     const bgp_rthead_t *head = bgp_rib_lookup_head(rib, &e1);
     TEST_ASSERT(head != NULL);
-    const bgp_route_node_t *r1 = bgp_rthead_lookup_route(head, "198.51.100.1");
+    const bgp_route_node_t *r1 = bgp_rthead_lookup_route(head, &src1);
     TEST_ASSERT(r1 != NULL);
     TEST_ASSERT(r1->attr.has_local_pref);
     TEST_ASSERT(r1->attr.local_pref == 200);
 
-    TEST_ASSERT(bgp_rib_reach_one(rib, &e1, "198.51.100.2", &attr1, &nh) == 1);
+    TEST_ASSERT(bgp_rib_reach_one(rib, &e1, &src2, &attr1, &nh) == 1);
     TEST_ASSERT(bgp_rib_head_count(rib) == 1);
     TEST_ASSERT(bgp_rib_route_count(rib) == 2);
 
-    TEST_ASSERT(bgp_rib_unreach_one(rib, &e1, "198.51.100.1") == 1);
+    TEST_ASSERT(bgp_rib_unreach_one(rib, &e1, &src1) == 1);
     TEST_ASSERT(bgp_rib_head_count(rib) == 1);
     TEST_ASSERT(bgp_rib_route_count(rib) == 1);
 
-    TEST_ASSERT(bgp_rib_unreach_one(rib, &e1, "198.51.100.2") == 1);
+    TEST_ASSERT(bgp_rib_unreach_one(rib, &e1, &src2) == 1);
     TEST_ASSERT(bgp_rib_head_count(rib) == 0);
     TEST_ASSERT(bgp_rib_route_count(rib) == 0);
 
-    TEST_ASSERT(bgp_rib_unreach_one(rib, &e1, "198.51.100.2") == 0);
+    TEST_ASSERT(bgp_rib_unreach_one(rib, &e1, &src2) == 0);
 
     bgp_rib_destroy(rib);
     return 0;
@@ -97,13 +124,16 @@ static int test_remove_source_across_heads(void)
     make_prefix_entry(&e2, BGP_AFI_IPV4, BGP_SAFI_UNICAST, "10.2.0.0/24");
     make_v4_nexthop(&nh, "192.0.2.9");
 
-    TEST_ASSERT(bgp_rib_reach_one(rib, &e1, "203.0.113.1", &attr, &nh) == 1);
-    TEST_ASSERT(bgp_rib_reach_one(rib, &e2, "203.0.113.1", &attr, &nh) == 1);
-    TEST_ASSERT(bgp_rib_reach_one(rib, &e2, "203.0.113.2", &attr, &nh) == 1);
+    net_addr_t src1 = make_v4_source("203.0.113.1");
+    net_addr_t src2 = make_v4_source("203.0.113.2");
+
+    TEST_ASSERT(bgp_rib_reach_one(rib, &e1, &src1, &attr, &nh) == 1);
+    TEST_ASSERT(bgp_rib_reach_one(rib, &e2, &src1, &attr, &nh) == 1);
+    TEST_ASSERT(bgp_rib_reach_one(rib, &e2, &src2, &attr, &nh) == 1);
     TEST_ASSERT(bgp_rib_head_count(rib) == 2);
     TEST_ASSERT(bgp_rib_route_count(rib) == 3);
 
-    bgp_rib_remove_source(rib, "203.0.113.1", &removed_routes, &removed_heads);
+    bgp_rib_remove_source(rib, &src1, &removed_routes, &removed_heads);
     TEST_ASSERT(removed_routes == 2);
     TEST_ASSERT(removed_heads == 1);
     TEST_ASSERT(bgp_rib_head_count(rib) == 1);
@@ -138,7 +168,9 @@ static int test_apply_update_stats(void)
     upd.unreach_len = 0;
     make_v4_nexthop(&upd.nexthop, "192.0.2.5");
 
-    bgp_rib_apply_update(rib, "203.0.113.10", &upd, &stats);
+    net_addr_t src = make_v4_source("203.0.113.10");
+
+    bgp_rib_apply_update(rib, &src, &upd, &stats);
     TEST_ASSERT(stats.reach_new == 2);
     TEST_ASSERT(stats.reach_update == 0);
     TEST_ASSERT(stats.unreach_removed == 0);
@@ -152,7 +184,7 @@ static int test_apply_update_stats(void)
     upd.unreach = unreach_arr;
     upd.unreach_len = 1;
 
-    bgp_rib_apply_update(rib, "203.0.113.10", &upd, &stats);
+    bgp_rib_apply_update(rib, &src, &upd, &stats);
     TEST_ASSERT(stats.reach_new == 0);
     TEST_ASSERT(stats.reach_update == 1);
     TEST_ASSERT(stats.unreach_removed == 1);

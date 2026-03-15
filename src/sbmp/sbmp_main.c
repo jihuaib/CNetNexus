@@ -18,8 +18,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include "bgp_msg.h"
-#include "bgp_parse.h"
+#include "bgp.h"
 #include "cli.h"
 #include "dev.h"
 #include "errcode.h"
@@ -66,12 +65,12 @@ static sbmp_client_t *sbmp_client_create(const char *client_id, const char *ip, 
     c->connected_at_usec = g_get_real_time();
     c->last_active_usec = c->connected_at_usec;
     c->peer_hash = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify)sbmp_peer_destroy);
-    c->rib_v4u_pre = bgp_rib_create();
-    c->rib_v4u_post = bgp_rib_create();
-    c->rib_v4u_loc_rib = bgp_rib_create();
-    c->rib_v6u_pre = bgp_rib_create();
-    c->rib_v6u_post = bgp_rib_create();
-    c->rib_v6u_loc_rib = bgp_rib_create();
+    c->rib_v4u_pre = sbmp_rib_create();
+    c->rib_v4u_post = sbmp_rib_create();
+    c->rib_v4u_loc_rib = sbmp_rib_create();
+    c->rib_v6u_pre = sbmp_rib_create();
+    c->rib_v6u_post = sbmp_rib_create();
+    c->rib_v6u_loc_rib = sbmp_rib_create();
     return c;
 }
 
@@ -94,32 +93,32 @@ static void sbmp_client_destroy(sbmp_client_t *client)
     }
     if (client->rib_v4u_pre)
     {
-        bgp_rib_destroy(client->rib_v4u_pre);
+        sbmp_rib_destroy(client->rib_v4u_pre);
         client->rib_v4u_pre = NULL;
     }
     if (client->rib_v4u_post)
     {
-        bgp_rib_destroy(client->rib_v4u_post);
+        sbmp_rib_destroy(client->rib_v4u_post);
         client->rib_v4u_post = NULL;
     }
     if (client->rib_v4u_loc_rib)
     {
-        bgp_rib_destroy(client->rib_v4u_loc_rib);
+        sbmp_rib_destroy(client->rib_v4u_loc_rib);
         client->rib_v4u_loc_rib = NULL;
     }
     if (client->rib_v6u_pre)
     {
-        bgp_rib_destroy(client->rib_v6u_pre);
+        sbmp_rib_destroy(client->rib_v6u_pre);
         client->rib_v6u_pre = NULL;
     }
     if (client->rib_v6u_post)
     {
-        bgp_rib_destroy(client->rib_v6u_post);
+        sbmp_rib_destroy(client->rib_v6u_post);
         client->rib_v6u_post = NULL;
     }
     if (client->rib_v6u_loc_rib)
     {
-        bgp_rib_destroy(client->rib_v6u_loc_rib);
+        sbmp_rib_destroy(client->rib_v6u_loc_rib);
         client->rib_v6u_loc_rib = NULL;
     }
 
@@ -140,7 +139,7 @@ static sbmp_peer_t *sbmp_client_get_or_create_peer(sbmp_client_t *client, const 
     return peer;
 }
 
-static bgp_rib_t *sbmp_client_get_rib(sbmp_client_t *client, uint16_t afi, uint8_t safi, sbmp_route_policy_t policy)
+static sbmp_rib_t *sbmp_client_get_rib(sbmp_client_t *client, uint16_t afi, uint8_t safi, sbmp_route_policy_t policy)
 {
     if (!client || safi != BGP_SAFI_UNICAST)
     {
@@ -183,12 +182,18 @@ static void sbmp_client_remove_peer_routes(sbmp_client_t *client, const char *pe
         return;
     }
 
-    bgp_rib_remove_source(client->rib_v4u_pre, peer_ip, NULL, NULL);
-    bgp_rib_remove_source(client->rib_v4u_post, peer_ip, NULL, NULL);
-    bgp_rib_remove_source(client->rib_v4u_loc_rib, peer_ip, NULL, NULL);
-    bgp_rib_remove_source(client->rib_v6u_pre, peer_ip, NULL, NULL);
-    bgp_rib_remove_source(client->rib_v6u_post, peer_ip, NULL, NULL);
-    bgp_rib_remove_source(client->rib_v6u_loc_rib, peer_ip, NULL, NULL);
+    net_addr_t peer_addr;
+    if (net_addr_from_str(peer_ip, &peer_addr) != 0)
+    {
+        return;
+    }
+
+    sbmp_rib_remove_source(client->rib_v4u_pre, &peer_addr, NULL, NULL);
+    sbmp_rib_remove_source(client->rib_v4u_post, &peer_addr, NULL, NULL);
+    sbmp_rib_remove_source(client->rib_v4u_loc_rib, &peer_addr, NULL, NULL);
+    sbmp_rib_remove_source(client->rib_v6u_pre, &peer_addr, NULL, NULL);
+    sbmp_rib_remove_source(client->rib_v6u_post, &peer_addr, NULL, NULL);
+    sbmp_rib_remove_source(client->rib_v6u_loc_rib, &peer_addr, NULL, NULL);
 }
 
 // ============================================================================
@@ -244,15 +249,21 @@ static void sbmp_apply_update_to_rib(sbmp_client_t *client, const char *peer_ip,
         safi = BGP_SAFI_UNICAST;
     }
 
-    bgp_rib_t *rib = sbmp_client_get_rib(client, afi, safi, policy);
+    sbmp_rib_t *rib = sbmp_client_get_rib(client, afi, safi, policy);
 
     if (!rib)
     {
         return;
     }
 
-    bgp_rib_update_stats_t stats;
-    bgp_rib_apply_update(rib, peer_ip, upd, &stats);
+    net_addr_t peer_addr;
+    if (net_addr_from_str(peer_ip, &peer_addr) != 0)
+    {
+        return;
+    }
+
+    sbmp_rib_update_stats_t stats;
+    sbmp_rib_apply_update(rib, &peer_addr, upd, &stats);
 }
 
 static void sbmp_handle_route_monitoring(sbmp_client_t *client, const uint8_t *msg, uint32_t msg_len)

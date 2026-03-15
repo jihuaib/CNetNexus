@@ -81,6 +81,39 @@ gboolean net_addr_equal(const net_addr_t *a, const net_addr_t *b)
     return FALSE;
 }
 
+guint net_addr_hash(gconstpointer key)
+{
+    const net_addr_t *addr = (const net_addr_t *)key;
+    if (!addr)
+    {
+        return 0;
+    }
+
+    if (addr->family == AF_INET)
+    {
+        /* IPv4：直接对 4 字节整数取 GLib hash */
+        return g_int_hash(&addr->u.v4.s_addr);
+    }
+    else if (addr->family == AF_INET6)
+    {
+        /* IPv6：按字节滚动哈希 */
+        guint h = 0;
+        const uint8_t *b = addr->u.v6.s6_addr;
+        for (int i = 0; i < 16; i++)
+        {
+            h = h * 31u + b[i];
+        }
+        return h;
+    }
+
+    return (guint)addr->family;
+}
+
+gboolean net_addr_hash_equal(gconstpointer a, gconstpointer b)
+{
+    return net_addr_equal((const net_addr_t *)a, (const net_addr_t *)b);
+}
+
 // ============================================================================
 // net_prefix_t 实现
 // ============================================================================

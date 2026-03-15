@@ -6,6 +6,7 @@
  */
 #include "bgp_cfg_apply.h"
 
+#include <arpa/inet.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -191,7 +192,7 @@ uint32_t bgp_cfg_apply_router_id(gboolean is_no, bgp_vrf_t *vrf, const char *rou
 
     if (is_no)
     {
-        vrf->router_id[0] = '\0';
+        vrf->router_id = 0;
         return ERRCODE_SUCCESS;
     }
 
@@ -200,7 +201,12 @@ uint32_t bgp_cfg_apply_router_id(gboolean is_no, bgp_vrf_t *vrf, const char *rou
         return ERRCODE_FAIL;
     }
 
-    snprintf(vrf->router_id, sizeof(vrf->router_id), "%s", router_id);
+    struct in_addr addr;
+    if (inet_pton(AF_INET, router_id, &addr) != 1)
+    {
+        return ERRCODE_FAIL;
+    }
+    vrf->router_id = ntohl(addr.s_addr);
     return ERRCODE_SUCCESS;
 }
 

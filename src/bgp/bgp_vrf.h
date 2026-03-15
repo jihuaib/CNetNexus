@@ -13,7 +13,7 @@
 #include "bgp_instance.h"
 #include "bgp_session.h"
 
-/* 前向声明：避免在头文件中引入 bgp_route.h 与 bgp_peer.h 常量名冲突 */
+/* 前向声明：避免在头文件中引入 bgp.h 与 bgp_peer.h 常量名冲突 */
 typedef struct bgp_update_result bgp_update_result_t;
 typedef struct bgp_rib_update_stats bgp_rib_update_stats_t;
 
@@ -33,7 +33,7 @@ typedef struct bgp_rib_update_stats bgp_rib_update_stats_t;
 typedef struct bgp_vrf
 {
     uint32_t vrf_id;        /**< VRF ID，0 为默认公网 VRF */
-    char router_id[16];     /**< VRF Router ID（点分十进制，空字符串表示未配置） */
+    uint32_t router_id;     /**< VRF Router ID（主机序 32 位，0 表示未配置） */
     uint16_t keepalive;     /**< keepalive 定时器（秒），默认 60 */
     uint16_t hold_time;     /**< hold time（秒），默认 180，须大于 keepalive */
     uint16_t connect_retry; /**< TCP 主动连接失败后重试间隔（秒），默认 120 */

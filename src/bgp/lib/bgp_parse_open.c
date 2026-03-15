@@ -18,7 +18,7 @@
 #include <arpa/inet.h>
 #include <string.h>
 
-#include "bgp_parse.h"
+#include "bgp.h"
 
 /* BGP Marker：16 字节全 0xFF */
 static const uint8_t BGP_MARKER[16] = {

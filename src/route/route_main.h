@@ -11,18 +11,21 @@
 
 #include "cli.h"
 #include "dev.h"
+#include "net_addr.h"
 #include "route_rib.h"
 
 /**
- * @brief 批量路由追踪条目（仅在内存 RIB，不存 DB）
+ * @brief 批量路由追踪条目（内存 RIB + DB route_batch 表，以 name 为主键）
  */
 typedef struct route_batch_entry
 {
-    uint32_t vrf_id;                     /**< VRF ID */
-    uint16_t afi;                        /**< 地址族 */
-    uint8_t prefix_len;                  /**< 前缀长度 */
-    char prefix[ROUTE_RIB_PREFIX_MAX];   /**< 前缀地址 */
-    char nexthop[ROUTE_RIB_NEXTHOP_MAX]; /**< 下一跳 */
+    char name[64];           /**< batch 名称（DB 主键） */
+    uint32_t vrf_id;         /**< VRF ID */
+    uint16_t afi;            /**< 地址族 */
+    uint8_t prefix_len;      /**< 前缀长度 */
+    uint8_t _pad;            /**< 填充对齐 */
+    net_addr_t prefix_addr;  /**< 前缀地址（二进制） */
+    net_addr_t nexthop_addr; /**< 下一跳地址（二进制） */
 } route_batch_entry_t;
 
 /**

@@ -1,4 +1,4 @@
-#include "bgp_parse.h"
+#include "bgp.h"
 
 #include <arpa/inet.h>
 #include <stdbool.h>

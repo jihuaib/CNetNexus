@@ -10,7 +10,6 @@
 #include <string.h>
 #include <time.h>
 
-#include "bgp_rib.h"
 #include "cli.h"
 #include "db.h"
 #include "dev.h"
@@ -18,6 +17,7 @@
 #include "log.h"
 #include "sbmp_db.h"
 #include "sbmp_main.h"
+#include "sbmp_rib.h"
 
 // ============================================================================
 // 发送 CLI 响应辅助
@@ -121,8 +121,8 @@ static const char *sbmp_policy_str(sbmp_route_policy_t policy)
     return "pre";
 }
 
-static const bgp_rib_t *sbmp_client_rib(const sbmp_client_t *client, uint16_t afi, uint8_t safi,
-                                        sbmp_route_policy_t policy)
+static const sbmp_rib_t *sbmp_client_rib(const sbmp_client_t *client, uint16_t afi, uint8_t safi,
+                                         sbmp_route_policy_t policy)
 {
     if (!client || safi != BGP_SAFI_UNICAST)
     {
@@ -309,12 +309,12 @@ static int handle_show_bmp_server(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
                 client_connected++;
             }
             peer_total += (uint32_t)g_hash_table_size(c->peer_hash);
-            routes_pre_v4 += bgp_rib_route_count(c->rib_v4u_pre);
-            routes_pre_v6 += bgp_rib_route_count(c->rib_v6u_pre);
-            routes_post_v4 += bgp_rib_route_count(c->rib_v4u_post);
-            routes_post_v6 += bgp_rib_route_count(c->rib_v6u_post);
-            routes_loc_rib_v4 += bgp_rib_route_count(c->rib_v4u_loc_rib);
-            routes_loc_rib_v6 += bgp_rib_route_count(c->rib_v6u_loc_rib);
+            routes_pre_v4 += sbmp_rib_route_count(c->rib_v4u_pre);
+            routes_pre_v6 += sbmp_rib_route_count(c->rib_v6u_pre);
+            routes_post_v4 += sbmp_rib_route_count(c->rib_v4u_post);
+            routes_post_v6 += sbmp_rib_route_count(c->rib_v6u_post);
+            routes_loc_rib_v4 += sbmp_rib_route_count(c->rib_v4u_loc_rib);
+            routes_loc_rib_v6 += sbmp_rib_route_count(c->rib_v6u_loc_rib);
         }
     }
     sbmp_runtime_unlock();
@@ -396,18 +396,18 @@ static int handle_show_bmp_client(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
         g_string_append_printf(buf, "  Connected-At    : %s\r\n", t_conn);
         g_string_append_printf(buf, "  Last-Active     : %s\r\n", t_active);
         g_string_append_printf(buf, "  Peers           : %u\r\n", (uint32_t)g_hash_table_size(c->peer_hash));
-        g_string_append_printf(buf, "  RIB pre  IPv4   : heads=%u routes=%u\r\n", bgp_rib_head_count(c->rib_v4u_pre),
-                               bgp_rib_route_count(c->rib_v4u_pre));
-        g_string_append_printf(buf, "  RIB post IPv4   : heads=%u routes=%u\r\n", bgp_rib_head_count(c->rib_v4u_post),
-                               bgp_rib_route_count(c->rib_v4u_post));
+        g_string_append_printf(buf, "  RIB pre  IPv4   : heads=%u routes=%u\r\n", sbmp_rib_head_count(c->rib_v4u_pre),
+                               sbmp_rib_route_count(c->rib_v4u_pre));
+        g_string_append_printf(buf, "  RIB post IPv4   : heads=%u routes=%u\r\n", sbmp_rib_head_count(c->rib_v4u_post),
+                               sbmp_rib_route_count(c->rib_v4u_post));
         g_string_append_printf(buf, "  RIB loc-rib IPv4: heads=%u routes=%u\r\n",
-                               bgp_rib_head_count(c->rib_v4u_loc_rib), bgp_rib_route_count(c->rib_v4u_loc_rib));
-        g_string_append_printf(buf, "  RIB pre  IPv6   : heads=%u routes=%u\r\n", bgp_rib_head_count(c->rib_v6u_pre),
-                               bgp_rib_route_count(c->rib_v6u_pre));
-        g_string_append_printf(buf, "  RIB post IPv6   : heads=%u routes=%u\r\n", bgp_rib_head_count(c->rib_v6u_post),
-                               bgp_rib_route_count(c->rib_v6u_post));
+                               sbmp_rib_head_count(c->rib_v4u_loc_rib), sbmp_rib_route_count(c->rib_v4u_loc_rib));
+        g_string_append_printf(buf, "  RIB pre  IPv6   : heads=%u routes=%u\r\n", sbmp_rib_head_count(c->rib_v6u_pre),
+                               sbmp_rib_route_count(c->rib_v6u_pre));
+        g_string_append_printf(buf, "  RIB post IPv6   : heads=%u routes=%u\r\n", sbmp_rib_head_count(c->rib_v6u_post),
+                               sbmp_rib_route_count(c->rib_v6u_post));
         g_string_append_printf(buf, "  RIB loc-rib IPv6: heads=%u routes=%u\r\n",
-                               bgp_rib_head_count(c->rib_v6u_loc_rib), bgp_rib_route_count(c->rib_v6u_loc_rib));
+                               sbmp_rib_head_count(c->rib_v6u_loc_rib), sbmp_rib_route_count(c->rib_v6u_loc_rib));
         g_string_append_printf(buf, "  BMP Msg(total/err): %llu/%llu\r\n", (unsigned long long)c->msg_total,
                                (unsigned long long)c->msg_parse_err);
         g_string_append_printf(buf, "  Msg RM(total/pre/post/loc): %llu/%llu/%llu/%llu\r\n",
@@ -438,9 +438,9 @@ static int handle_show_bmp_client(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
             sbmp_client_t *c = (sbmp_client_t *)val;
             g_string_append_printf(buf, "  %-18s %-10s %-6u %-5d %3u/%-3u/%-3u %3u/%-3u/%-3u\r\n", c->client_id,
                                    c->connected ? "connected" : "down", (uint32_t)g_hash_table_size(c->peer_hash),
-                                   c->fd, bgp_rib_route_count(c->rib_v4u_pre), bgp_rib_route_count(c->rib_v4u_post),
-                                   bgp_rib_route_count(c->rib_v4u_loc_rib), bgp_rib_route_count(c->rib_v6u_pre),
-                                   bgp_rib_route_count(c->rib_v6u_post), bgp_rib_route_count(c->rib_v6u_loc_rib));
+                                   c->fd, sbmp_rib_route_count(c->rib_v4u_pre), sbmp_rib_route_count(c->rib_v4u_post),
+                                   sbmp_rib_route_count(c->rib_v4u_loc_rib), sbmp_rib_route_count(c->rib_v6u_pre),
+                                   sbmp_rib_route_count(c->rib_v6u_post), sbmp_rib_route_count(c->rib_v6u_loc_rib));
         }
     }
 
@@ -576,7 +576,7 @@ typedef struct sbmp_show_route_ctx
 static gboolean sbmp_show_route_head_cb(gpointer key, gpointer value, gpointer user_data)
 {
     (void)key;
-    const bgp_rthead_t *head = (const bgp_rthead_t *)value;
+    const sbmp_rthead_t *head = (const sbmp_rthead_t *)value;
     sbmp_show_route_ctx_t *ctx = (sbmp_show_route_ctx_t *)user_data;
 
     if (!head || !ctx)
@@ -592,20 +592,25 @@ static gboolean sbmp_show_route_head_cb(gpointer key, gpointer value, gpointer u
     while (g_hash_table_iter_next(&iter, &rkey, &rval))
     {
         (void)rkey;
-        const bgp_route_node_t *route = (const bgp_route_node_t *)rval;
+        const sbmp_route_t *route = (const sbmp_route_t *)rval;
         if (!route)
         {
             continue;
         }
 
-        if (ctx->peer_filter && ctx->peer_filter[0] != '\0' && strcmp(route->source, ctx->peer_filter) != 0)
+        if (ctx->peer_filter && ctx->peer_filter[0] != '\0')
         {
-            continue;
+            char src_str[64];
+            net_addr_to_str(&route->source, src_str, sizeof(src_str));
+            if (strcmp(src_str, ctx->peer_filter) != 0)
+            {
+                continue;
+            }
         }
 
         if (!printed_head)
         {
-            const char *nlri_key = head->nlri.key[0] ? head->nlri.key : head->key;
+            const char *nlri_key = head->nlri.key;
             g_string_append_printf(ctx->buf, "%s\r\n", nlri_key);
             printed_head = TRUE;
             ctx->listed_heads++;
@@ -629,8 +634,10 @@ static gboolean sbmp_show_route_head_cb(gpointer key, gpointer value, gpointer u
             snprintf(as_path, sizeof(as_path), "%.80s", route->attr.as_path);
         }
 
-        g_string_append_printf(ctx->buf, "  - peer=%s nh=%s lp=%s med=%s origin=%s as-path=%s\r\n", route->source, nh,
-                               lp, med, bgp_origin_str(route->attr.origin), as_path);
+        char peer_str[64];
+        net_addr_to_str(&route->source, peer_str, sizeof(peer_str));
+        g_string_append_printf(ctx->buf, "  - peer=%s nh=%s lp=%s med=%s origin=%s as-path=%s\r\n", peer_str, nh, lp,
+                               med, bgp_origin_str(route->attr.origin), as_path);
         ctx->listed_routes++;
     }
 
@@ -646,9 +653,9 @@ static void append_client_routes(GString *buf, const sbmp_client_t *client, uint
                                  sbmp_route_policy_t policy, const char *peer_filter, uint32_t *total_heads,
                                  uint32_t *total_routes)
 {
-    const bgp_rib_t *rib = sbmp_client_rib(client, afi, safi, policy);
+    const sbmp_rib_t *rib = sbmp_client_rib(client, afi, safi, policy);
 
-    if (!rib || bgp_rib_route_count(rib) == 0)
+    if (!rib || sbmp_rib_route_count(rib) == 0)
     {
         return;
     }
@@ -660,8 +667,8 @@ static void append_client_routes(GString *buf, const sbmp_client_t *client, uint
     ctx.listed_routes = 0;
 
     g_string_append_printf(ctx.buf, "\r\nClient: %s  Policy: %s\r\n", client->client_id, sbmp_policy_str(policy));
-    g_string_append_printf(ctx.buf, "  RIB Heads: %u  Routes: %u\r\n\r\n", bgp_rib_head_count(rib),
-                           bgp_rib_route_count(rib));
+    g_string_append_printf(ctx.buf, "  RIB Heads: %u  Routes: %u\r\n\r\n", sbmp_rib_head_count(rib),
+                           sbmp_rib_route_count(rib));
 
     g_tree_foreach((GTree *)rib->head_tree, sbmp_show_route_head_cb, &ctx);
 

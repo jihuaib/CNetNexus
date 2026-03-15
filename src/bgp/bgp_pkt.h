@@ -32,11 +32,11 @@ typedef enum bgp_msg_type
  * @brief 向对端发送 BGP OPEN 报文
  * @param conn      连接处理器
  * @param local_as  本地 AS 号
- * @param router_id 本地 BGP Identifier（点分十进制字符串）
+ * @param router_id 本地 BGP Identifier（主机序 32 位整数，0 时填充 0.0.0.0）
  * @param af_peers  地址族 peer 列表（bgp_peer_t*），非 NULL 时携带 MP 扩展能力
  * @return 0 成功，-1 失败
  */
-int bgp_pkt_send_open(bgp_conn_t *conn, uint32_t local_as, const char *router_id, GList *af_peers);
+int bgp_pkt_send_open(bgp_conn_t *conn, uint32_t local_as, uint32_t router_id, GList *af_peers);
 
 /**
  * @brief 向对端发送 BGP KEEPALIVE 报文
@@ -46,9 +46,19 @@ int bgp_pkt_send_open(bgp_conn_t *conn, uint32_t local_as, const char *router_id
 int bgp_pkt_send_keepalive(bgp_conn_t *conn);
 
 /**
+ * @brief bgp_pkt_on_data 特殊返回值
+ *
+ * RFC 4271 §6.8 碰撞检测结果：
+ *   COLLISION_CLOSE_ME    - 当前 conn 应关闭（另一条连接保留）
+ *   COLLISION_CLOSE_OTHER - 另一条连接应关闭（当前 conn 已进入 OPEN_CONFIRM）
+ */
+#define BGP_PKT_ON_DATA_COLLISION_CLOSE_ME (-2)
+#define BGP_PKT_ON_DATA_COLLISION_CLOSE_OTHER (-3)
+
+/**
  * @brief 接收并处理对端数据，驱动握手状态机
  * @param conn 连接处理器
- * @return 0 继续，-1 连接应关闭
+ * @return 0 继续；-1 连接应关闭；BGP_PKT_ON_DATA_COLLISION_CLOSE_ME/OTHER 碰撞检测结果
  */
 int bgp_pkt_on_data(bgp_conn_t *conn);
 

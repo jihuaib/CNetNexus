@@ -15,6 +15,7 @@
 #include "dev.h"
 #include "errcode.h"
 #include "log.h"
+#include "route.h"
 
 // ============================================================================
 // AFI/SAFI 转换辅助
@@ -178,15 +179,23 @@ static void bdr_append_af_peers(dev_ipc_context_t *ctx, GString *out, int64_t af
 
 /**
  * @brief 追加单个 AF 完整配置块（af <afi> / 各子表配置 / !）
- * @param afi     整数 AFI
- * @param safi    整数 SAFI
+ * @param afi           整数 AFI
+ * @param safi          整数 SAFI
+ * @param import_protos 已导入协议位掩码
  */
-static void bdr_append_af_block(dev_ipc_context_t *ctx, GString *out, const char *afi_str, int64_t afi, int64_t safi)
+static void bdr_append_af_block(dev_ipc_context_t *ctx, GString *out, const char *afi_str, int64_t afi, int64_t safi,
+                                int64_t import_protos)
 {
     g_string_append_printf(out, " af %s\r\n", afi_str);
 
     /* AF 下各子表 BDR，按需扩展 */
     bdr_append_af_peers(ctx, out, afi, safi);
+
+    /* 导入路由配置 */
+    if (import_protos & (1 << ROUTE_PROTOCOL_STATIC))
+    {
+        g_string_append(out, "  import-route static\r\n");
+    }
 
     g_string_append(out, " !\r\n");
 }
@@ -212,6 +221,7 @@ static void bdr_append_af_instances(dev_ipc_context_t *ctx, GString *out)
         db_row_t *row = inst_result->rows[i];
         int64_t afi_int = db_row_get_int(row, "afi", 0);
         int64_t safi_int = db_row_get_int(row, "safi", 0);
+        int64_t import_protos = db_row_get_int(row, "import_protos", 0);
 
         const char *afi_str = afi_safi_to_str(afi_int, safi_int);
         if (!afi_str)
@@ -219,7 +229,7 @@ static void bdr_append_af_instances(dev_ipc_context_t *ctx, GString *out)
             continue;
         }
 
-        bdr_append_af_block(ctx, out, afi_str, afi_int, safi_int);
+        bdr_append_af_block(ctx, out, afi_str, afi_int, safi_int, import_protos);
     }
 
     db_result_free(inst_result);

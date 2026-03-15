@@ -15,13 +15,14 @@
 #include "dev.h"
 #include "errcode.h"
 #include "log.h"
+#include "net_addr.h"
 #include "route.h"
 #include "route_cli.h"
 #include "route_pub.h"
 
 route_local_t *g_route_local = NULL;
 
-/* route_static 表结构定义（仅存储用户配置，批量生成路由不入库） */
+/* route_static 表：用户手动配置的静态路由 */
 static const db_column_def_t ROUTE_STATIC_COLS[] = {
     {"vrf_id", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},     {"afi", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"},
     {"prefix", DB_TYPE_TEXT, DB_COL_NOT_NULL, NULL},       {"prefix_len", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
@@ -33,6 +34,22 @@ static const db_table_def_t ROUTE_STATIC_TABLE = {
     .table_name = "route_static",
     .cols = ROUTE_STATIC_COLS,
     .num_cols = G_N_ELEMENTS(ROUTE_STATIC_COLS),
+};
+
+/* route_batch 表：批量路由配置（name 为主键，存储 batch 参数用于重启恢复） */
+static const db_column_def_t ROUTE_BATCH_COLS[] = {
+    {"name", DB_TYPE_TEXT, DB_COL_PRIMARY_KEY | DB_COL_NOT_NULL, NULL},
+    {"afi", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"},
+    {"start_addr", DB_TYPE_TEXT, DB_COL_NOT_NULL, NULL},
+    {"prefix_len", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
+    {"count", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
+    {"nexthop", DB_TYPE_TEXT, DB_COL_NOT_NULL, NULL},
+};
+
+static const db_table_def_t ROUTE_BATCH_TABLE = {
+    .table_name = "route_batch",
+    .cols = ROUTE_BATCH_COLS,
+    .num_cols = G_N_ELEMENTS(ROUTE_BATCH_COLS),
 };
 
 // ============================================================================
@@ -96,6 +113,12 @@ static void route_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         return;
     }
 
+    ret = db_rpc_create_table_from_def(ctx, &ROUTE_BATCH_TABLE);
+    if (ret != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("Route table creation failed: route_batch");
+    }
+
     /* 从 DB 恢复静态路由到内存 RIB */
     db_result_t *result = NULL;
     ret = db_rpc_query(ctx, "route_static", NULL, 0, NULL, &result);
@@ -112,12 +135,22 @@ static void route_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             const char *prefix = db_row_get_text(row, "prefix", "");
             const char *nexthop = db_row_get_text(row, "nexthop", "");
 
-            route_rib_add(g_route_local->rib, vrf_id, afi, prefix, prefix_len, ROUTE_PROTOCOL_STATIC, nexthop, nexthop,
-                          metric, preference);
+            /* DB 边界：字符串→二进制，再写入内存 RIB */
+            net_addr_t prefix_addr, nexthop_addr;
+            if (net_addr_from_str(prefix, &prefix_addr) != 0 || net_addr_from_str(nexthop, &nexthop_addr) != 0)
+            {
+                LOG_WARN("Route DB restore: invalid address prefix='%s' nexthop='%s'", prefix, nexthop);
+                continue;
+            }
+            route_rib_add(g_route_local->rib, vrf_id, afi, &prefix_addr, prefix_len, ROUTE_PROTOCOL_STATIC,
+                          &nexthop_addr, &nexthop_addr, metric, preference);
         }
         LOG_INFO("Restored %u static routes from DB to RIB", result->num_rows);
         db_result_free(result);
     }
+
+    /* 从 DB 恢复 batch 路由到内存 RIB */
+    route_batch_restore_from_db(ctx);
 
     LOG_INFO("Route database tables ready");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);

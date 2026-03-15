@@ -13,8 +13,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "bgp.h"
 #include "bgp_instance.h"
-#include "bgp_parse.h"
 #include "bgp_rib.h"
 #include "bgp_session.h"
 #include "bgp_vrf.h"
@@ -29,7 +29,7 @@ static const uint8_t BGP_MARKER[16] = {
 // 报文发送
 // ============================================================================
 
-int bgp_pkt_send_open(bgp_conn_t *conn, uint32_t local_as, const char *router_id, GList *af_peers)
+int bgp_pkt_send_open(bgp_conn_t *conn, uint32_t local_as, uint32_t router_id, GList *af_peers)
 {
     char _ip[64];
     net_addr_to_str(&conn->peer_addr, _ip, sizeof(_ip));
@@ -69,12 +69,9 @@ int bgp_pkt_send_open(bgp_conn_t *conn, uint32_t local_as, const char *router_id
     uint16_t hold_be = htons(BGP_HOLD_TIME);
     memcpy(msg + 22, &hold_be, 2);
 
-    struct in_addr bgp_id;
-    if (inet_pton(AF_INET, router_id ? router_id : "0.0.0.0", &bgp_id) <= 0)
-    {
-        bgp_id.s_addr = 0;
-    }
-    memcpy(msg + 24, &bgp_id, 4);
+    /* BGP Identifier 直接由主机序 uint32_t 转为网络序写入报文 */
+    uint32_t bgp_id_be = htonl(router_id);
+    memcpy(msg + 24, &bgp_id_be, 4);
 
     msg[28] = opt_len;
 
@@ -129,13 +126,18 @@ int bgp_pkt_send_open(bgp_conn_t *conn, uint32_t local_as, const char *router_id
         return -1;
     }
 
-    /* 记录本次 OPEN 实际发出的能力集 */
+    /* 记录本次 OPEN 实际发出的能力集和本地 BGP Identifier（用于 RFC §6.8 碰撞检测） */
     if (conn->session)
     {
         conn->session->local_caps = cap_flags;
+        conn->session->local_router_id = router_id;
     }
 
-    LOG_INFO("BGP: Sent OPEN to %s (AS=%u, ID=%s)", _ip, local_as, router_id ? router_id : "0.0.0.0");
+    char _rid_str[16];
+    struct in_addr _rid_addr;
+    _rid_addr.s_addr = htonl(router_id);
+    inet_ntop(AF_INET, &_rid_addr, _rid_str, sizeof(_rid_str));
+    LOG_INFO("BGP: Sent OPEN to %s (AS=%u, ID=%s)", _ip, local_as, _rid_str);
     return 0;
 }
 
@@ -189,8 +191,16 @@ static int parse_bgp_open(bgp_conn_t *conn, const uint8_t *body, uint16_t body_l
     /* 优先使用 4 字节 AS（RFC 6793 AS_TRANS 处理） */
     conn->session->remote_as = msg.cap_as4 ? msg.cap_as4 : msg.my_as;
 
-    strncpy(conn->session->remote_id, msg.bgp_id, sizeof(conn->session->remote_id) - 1);
-    conn->session->remote_id[sizeof(conn->session->remote_id) - 1] = '\0';
+    /* 将点分十进制 BGP Identifier 转为主机序 uint32_t 存储 */
+    struct in_addr _rid_tmp;
+    if (inet_pton(AF_INET, msg.bgp_id, &_rid_tmp) == 1)
+    {
+        conn->session->remote_id = ntohl(_rid_tmp.s_addr);
+    }
+    else
+    {
+        conn->session->remote_id = 0;
+    }
 
     /* 记录远端能力集 */
     uint32_t remote_caps = 0;
@@ -209,20 +219,25 @@ static int parse_bgp_open(bgp_conn_t *conn, const uint8_t *body, uint16_t body_l
     conn->session->remote_hold = msg.hold_time;
     conn->session->negotiated_hold = (msg.hold_time < BGP_HOLD_TIME) ? msg.hold_time : BGP_HOLD_TIME;
 
+    /* 将 remote_id 转回字符串仅用于日志 */
+    char _remote_rid_str[16];
+    struct in_addr _remote_rid_addr;
+    _remote_rid_addr.s_addr = htonl(conn->session->remote_id);
+    inet_ntop(AF_INET, &_remote_rid_addr, _remote_rid_str, sizeof(_remote_rid_str));
     LOG_INFO("BGP: Received OPEN from %s (AS=%u, ID=%s, hold=%u, caps=0x%02X)", _ip, conn->session->remote_as,
-             conn->session->remote_id, msg.hold_time, remote_caps);
+             _remote_rid_str, msg.hold_time, remote_caps);
 
-    /* 将 MP 能力写入 negotiated_afs */
+    /* 将 MP 能力写入 negotiated_afs（以 afi<<16|safi 打包为 guint32，无堆分配） */
     if (conn->session->negotiated_afs)
     {
-        g_list_free_full(conn->session->negotiated_afs, g_free);
+        g_array_free(conn->session->negotiated_afs, TRUE);
         conn->session->negotiated_afs = NULL;
     }
+    conn->session->negotiated_afs = g_array_new(FALSE, FALSE, sizeof(guint32));
     for (uint8_t i = 0; i < msg.mp_count; i++)
     {
-        char af_key[32];
-        snprintf(af_key, sizeof(af_key), "%u-%u", msg.mp_afs[i], msg.mp_safis[i]);
-        conn->session->negotiated_afs = g_list_append(conn->session->negotiated_afs, g_strdup(af_key));
+        guint32 packed = ((guint32)msg.mp_afs[i] << 16) | (guint32)msg.mp_safis[i];
+        g_array_append_val(conn->session->negotiated_afs, packed);
         LOG_INFO("BGP: peer %s MP capability: AFI=%u SAFI=%u", _ip, msg.mp_afs[i], msg.mp_safis[i]);
     }
 
@@ -236,8 +251,8 @@ int bgp_pkt_on_data(bgp_conn_t *conn)
 
     bgp_session_t *sess = conn->session;
 
-    /* 将数据追加到接收缓冲区 */
-    ssize_t n = recv(conn->fd, sess->recv_buf + sess->recv_len, BGP_RECV_BUF_SIZE - sess->recv_len, 0);
+    /* 将数据追加到每连接独立接收缓冲区 */
+    ssize_t n = recv(conn->fd, conn->recv_buf + conn->recv_len, BGP_RECV_BUF_SIZE - conn->recv_len, 0);
 
     if (n == 0)
     {
@@ -254,20 +269,20 @@ int bgp_pkt_on_data(bgp_conn_t *conn)
         return -1;
     }
 
-    sess->recv_len += (uint32_t)n;
+    conn->recv_len += (uint32_t)n;
 
     /* 逐帧解析 BGP 报文 */
-    while (sess->recv_len >= BGP_MSG_HEADER_SIZE)
+    while (conn->recv_len >= BGP_MSG_HEADER_SIZE)
     {
         /* 校验 Marker */
-        if (memcmp(sess->recv_buf, BGP_MARKER, 16) != 0)
+        if (memcmp(conn->recv_buf, BGP_MARKER, 16) != 0)
         {
             LOG_ERROR("BGP: peer %s Marker validation failed, closing connection", _ip);
             return -1;
         }
 
         uint16_t msg_len_be;
-        memcpy(&msg_len_be, sess->recv_buf + 16, 2);
+        memcpy(&msg_len_be, conn->recv_buf + 16, 2);
         uint16_t msg_len = ntohs(msg_len_be);
 
         if (msg_len < BGP_MSG_HEADER_SIZE || msg_len > BGP_RECV_BUF_SIZE)
@@ -276,29 +291,90 @@ int bgp_pkt_on_data(bgp_conn_t *conn)
             return -1;
         }
 
-        if (sess->recv_len < msg_len)
+        if (conn->recv_len < msg_len)
         {
             /* 数据未到齐，等待下次读取 */
             break;
         }
 
-        uint8_t msg_type = sess->recv_buf[18];
-        const uint8_t *body = sess->recv_buf + BGP_MSG_HEADER_SIZE;
+        uint8_t msg_type = conn->recv_buf[18];
+        const uint8_t *body = conn->recv_buf + BGP_MSG_HEADER_SIZE;
         uint16_t body_len = msg_len - BGP_MSG_HEADER_SIZE;
+
+        int collision_ret = 0; /* 碰撞检测结果，非零时提前返回 */
 
         switch (msg_type)
         {
             case BGP_MSG_OPEN:
-                /* 收到对端 OPEN -> 解析 -> 回复 KEEPALIVE -> 进入 OPEN_CONFIRM */
+                /* 收到对端 OPEN：解析后执行 RFC 4271 §6.8 碰撞检测（若两条连接并存） */
                 if (parse_bgp_open(conn, body, body_len) < 0)
                 {
                     return -1;
                 }
-                if (bgp_pkt_send_keepalive(conn) < 0)
+
+                if (sess->pri_conn && sess->sec_conn)
                 {
-                    return -1;
+                    /* 两条连接并存：按 BGP Identifier 大小决定保留哪条（直接比较主机序 uint32_t） */
+                    uint32_t local_id_n = sess->local_router_id;
+                    uint32_t remote_id_n = sess->remote_id;
+
+                    /* 日志输出时转为点分十进制 */
+                    char _col_local_str[16], _col_remote_str[16];
+                    struct in_addr _col_tmp;
+                    _col_tmp.s_addr = htonl(local_id_n);
+                    inet_ntop(AF_INET, &_col_tmp, _col_local_str, sizeof(_col_local_str));
+                    _col_tmp.s_addr = htonl(remote_id_n);
+                    inet_ntop(AF_INET, &_col_tmp, _col_remote_str, sizeof(_col_remote_str));
+
+                    LOG_INFO("BGP: %s §6.8 collision: local-id=%s(%u) remote-id=%s(%u), this conn is %s", _ip,
+                             _col_local_str, local_id_n, _col_remote_str, remote_id_n,
+                             conn->is_active ? "active" : "passive");
+
+                    if (local_id_n == remote_id_n)
+                    {
+                        /* BGP ID 相等（异常），关闭当前连接 */
+                        LOG_WARN("BGP: %s §6.8 collision: BGP ID equal, closing current connection", _ip);
+                        collision_ret = BGP_PKT_ON_DATA_COLLISION_CLOSE_ME;
+                    }
+                    else
+                    {
+                        /*
+                         * local < remote → 关闭本地主动连接（active），保留被动连接
+                         * local > remote → 关闭本地被动连接（passive），保留主动连接
+                         */
+                        gboolean shall_close_active = (local_id_n < remote_id_n);
+                        gboolean close_me =
+                            (shall_close_active && conn->is_active) || (!shall_close_active && !conn->is_active);
+
+                        if (close_me)
+                        {
+                            LOG_INFO("BGP: %s §6.8 collision: closing this %s connection", _ip,
+                                     conn->is_active ? "active" : "passive");
+                            collision_ret = BGP_PKT_ON_DATA_COLLISION_CLOSE_ME;
+                        }
+                        else
+                        {
+                            /* 当前 conn 保留：完成 OPEN 处理，通知 bgp_main 关闭另一条 */
+                            LOG_INFO("BGP: %s §6.8 collision: keeping this %s connection, closing other", _ip,
+                                     conn->is_active ? "active" : "passive");
+                            if (bgp_pkt_send_keepalive(conn) < 0)
+                            {
+                                return -1;
+                            }
+                            sess->state = BGP_CONN_STATE_OPEN_CONFIRM;
+                            collision_ret = BGP_PKT_ON_DATA_COLLISION_CLOSE_OTHER;
+                        }
+                    }
                 }
-                conn->session->state = BGP_CONN_STATE_OPEN_CONFIRM;
+                else
+                {
+                    /* 无碰撞：正常处理 */
+                    if (bgp_pkt_send_keepalive(conn) < 0)
+                    {
+                        return -1;
+                    }
+                    sess->state = BGP_CONN_STATE_OPEN_CONFIRM;
+                }
                 break;
 
             case BGP_MSG_KEEPALIVE:
@@ -361,12 +437,18 @@ int bgp_pkt_on_data(bgp_conn_t *conn)
         }
 
         /* 将已处理的报文从缓冲区移除 */
-        uint32_t remaining = sess->recv_len - msg_len;
+        uint32_t remaining = conn->recv_len - msg_len;
         if (remaining > 0)
         {
-            memmove(sess->recv_buf, sess->recv_buf + msg_len, remaining);
+            memmove(conn->recv_buf, conn->recv_buf + msg_len, remaining);
         }
-        sess->recv_len = remaining;
+        conn->recv_len = remaining;
+
+        /* 碰撞检测结果非零：缓冲区已清理，向上层返回决策结果 */
+        if (collision_ret != 0)
+        {
+            return collision_ret;
+        }
     }
 
     return 0;

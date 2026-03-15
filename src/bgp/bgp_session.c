@@ -28,8 +28,7 @@ bgp_session_t *bgp_session_create(const net_addr_t *addr, uint32_t remote_as, bg
     BIT_SET(sess->flags, BGP_SESS_CAP_DEFAULT);
     sess->pri_conn = NULL;
     sess->sec_conn = NULL;
-    snprintf(sess->remote_id, sizeof(sess->remote_id), "0.0.0.0");
-    sess->recv_len = 0;
+    /* remote_id / local_router_id 初始值为 0（g_malloc0 已置零） */
     sess->negotiated_afs = NULL;
 
     /* 初始化三类 timerfd */
@@ -72,7 +71,7 @@ void bgp_session_destroy(bgp_session_t *session)
 
     if (session->negotiated_afs)
     {
-        g_list_free_full(session->negotiated_afs, g_free);
+        g_array_free(session->negotiated_afs, TRUE);
         session->negotiated_afs = NULL;
     }
 

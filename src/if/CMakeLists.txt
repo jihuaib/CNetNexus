@@ -23,6 +23,12 @@ set_target_properties(netnexus-if PROPERTIES
     INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib"
 )
 
+add_custom_command(TARGET netnexus-if POST_BUILD
+    COMMAND sudo -n setcap cap_net_admin,cap_net_bind_service=+ep $<TARGET_FILE:netnexus-if>
+    || echo "提示：如需绑定 179 端口，请手动执行：sudo setcap cap_net_admin,cap_net_bind_service=+ep $<TARGET_FILE:netnexus-if>"
+    COMMENT "授予 cap_net_admin + cap_net_bind_service"
+)
+
 install(TARGETS netnexus-if RUNTIME DESTINATION bin)
 
 add_subdirectory(lib)

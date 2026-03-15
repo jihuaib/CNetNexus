@@ -10,8 +10,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "bgp_parse.h"
-#include "bgp_route.h"
+#include "bgp.h"
 
 /* ============================================================================
  * 路径属性解析中间结果

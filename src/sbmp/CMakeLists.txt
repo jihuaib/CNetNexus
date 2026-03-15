@@ -4,6 +4,7 @@ set(SBMP_SOURCES
     sbmp_cli.c
     sbmp_db.c
     sbmp_bdr.c
+    sbmp_rib.c
 )
 
 add_executable(netnexus-sbmp sbmp_proc.c ${SBMP_SOURCES})
@@ -17,8 +18,8 @@ target_link_libraries(netnexus-sbmp PRIVATE
     cli_api
     db_api
     utils
-    bgp_rib
-    bgp_parse
+    bgp_api
+    ${GLIB_LIBRARIES}
 )
 
 set_target_properties(netnexus-sbmp PROPERTIES

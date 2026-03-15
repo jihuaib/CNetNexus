@@ -44,3 +44,7 @@ package/
 .cache/
 compile_commands.json
 .claude/settings.local.json
+
+# Python cache
+__pycache__/
+*.py[cod]
