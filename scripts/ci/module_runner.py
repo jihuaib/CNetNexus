@@ -28,12 +28,20 @@ CI_DIR = Path(__file__).resolve().parent
 if str(CI_DIR) not in sys.path:
     sys.path.insert(0, str(CI_DIR))
 
+from module_api import load_global_top  # noqa: E402
 from top_runner import TopologyRuntime, load_topology, sanitize_name  # noqa: E402
 
 
 MAX_HTML_OUTPUT_CHARS = 200000
 TOP_CANDIDATES = ("top.yaml", "top.yml", "top.json")
 STEP_MARKER_RE = re.compile(r"^\s*=+\s*STEP:\s*(.*?)\s*=+\s*$")
+FAIL_STEP_HINTS = (
+    "===== CHECK FAIL:",
+    "Traceback (most recent call last):",
+    "RuntimeError:",
+    "ERROR:",
+    "missing:",
+)
 
 
 @dataclass
@@ -133,9 +141,11 @@ def run_check(script: Path, rt: TopologyRuntime, top: dict[str, Any]) -> CheckRe
 
     rc = 0
     try:
+        load_global_top(top)
         run_fn = load_run_callable(script)
         with contextlib.redirect_stdout(tee_out), contextlib.redirect_stderr(tee_err):
             print(f"===== RUN CHECK: {script} =====")
+            load_global_top(top)
             run_fn(rt, top)
             print(f"===== CHECK PASS: {script} =====")
     except Exception:
@@ -335,19 +345,82 @@ def render_step_blocks(steps: list[tuple[str, str]], open_all: bool) -> str:
     blocks: list[str] = []
     for i, (title, content) in enumerate(steps, start=1):
         open_attr = " open" if open_all or i == 1 else ""
+        step_text = f"{title}\n{content}"
+        status = "fail" if any(token in step_text for token in FAIL_STEP_HINTS) else "pass"
+        summary_cls = "step-summary-fail" if status == "fail" else "step-summary-pass"
         safe_title = html.escape(title)
         safe_content = html.escape(content.rstrip("\n")) or "(no output)"
         blocks.append(
             "".join(
                 [
-                    f"<details class='step'{open_attr}>",
-                    f"<summary>Step {i}: {safe_title}</summary>",
+                    f"<details class='step step-{status}'{open_attr}>",
+                    f"<summary class='{summary_cls}'>Step {i}: {safe_title}</summary>",
                     f"<pre>{safe_content}</pre>",
                     "</details>",
                 ]
             )
         )
     return "".join(blocks)
+
+
+def write_check_html(path: Path, result: CheckResult, *, index: int) -> None:
+    cls = "pass" if result.returncode == 0 else "fail"
+    case_name = html.escape(str(result.case_dir))
+    script_name = html.escape(str(result.script))
+    command = html.escape(" ".join(shlex.quote(part) for part in result.command))
+
+    combined = result.stdout
+    if result.stderr:
+        combined = f"{combined}\n\n===== STDERR =====\n{result.stderr}"
+    clipped, truncated = truncate_for_html(combined)
+    trunc_note = "<p class='trunc'>Output truncated in HTML. See logs/*.log for full content.</p>" if truncated else ""
+    steps = split_output_steps(clipped)
+    step_blocks = render_step_blocks(steps, open_all=(result.returncode != 0))
+
+    doc = f"""<!DOCTYPE html>
+<html lang=\"en\">
+<head>
+  <meta charset=\"utf-8\">
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
+  <title>CI Check Detail #{index}</title>
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 20px; color: #111; }}
+    h1 {{ margin: 0.4em 0; }}
+    .pass {{ color: #087443; font-weight: 700; }}
+    .fail {{ color: #b42318; font-weight: 700; }}
+    .meta {{ color: #444; }}
+    pre {{ background: #0b1020; color: #f4f7ff; padding: 12px; overflow: auto; border-radius: 6px; }}
+    .trunc {{ color: #7a3e00; font-weight: 600; }}
+    code {{ background: #f0f2f5; padding: 1px 4px; border-radius: 4px; }}
+    details {{ margin: 8px 0; }}
+    details > summary {{ cursor: pointer; font-weight: 600; }}
+    .script-output > summary {{ font-size: 15px; }}
+    .step {{ margin-left: 8px; padding-left: 8px; border-left: 3px solid #cfd4dc; }}
+    .step-pass {{ border-left-color: #087443; }}
+    .step-fail {{ border-left-color: #b42318; }}
+    .step-summary-pass {{ color: #087443; }}
+    .step-summary-fail {{ color: #b42318; }}
+  </style>
+</head>
+<body>
+  <p><a href=\"../report.html\">Back to Summary</a></p>
+  <h1>#{index} {script_name} - <span class=\"{cls}\">{result.status}</span></h1>
+  <p class=\"meta\">
+    <b>Case:</b> <code>{case_name}</code><br>
+    <b>Command:</b> <code>{command}</code><br>
+    <b>Start (UTC):</b> {html.escape(format_timestamp(result.started_at))}<br>
+    <b>End (UTC):</b> {html.escape(format_timestamp(result.ended_at))}<br>
+    <b>Duration:</b> {result.duration_sec:.2f}s
+  </p>
+  {trunc_note}
+  <details class='script-output' open>
+    <summary>Execution Output ({len(steps)} steps)</summary>
+    {step_blocks}
+  </details>
+</body>
+</html>
+"""
+    path.write_text(doc, encoding="utf-8")
 
 
 def write_summary_json(path: Path, results: list[CheckResult], started_at: float, ended_at: float) -> None:
@@ -375,27 +448,24 @@ def write_summary_json(path: Path, results: list[CheckResult], started_at: float
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=True), encoding="utf-8")
 
 
-def write_html_report(path: Path, results: list[CheckResult], started_at: float, ended_at: float) -> None:
+def write_html_report(
+    path: Path,
+    results: list[CheckResult],
+    started_at: float,
+    ended_at: float,
+    check_html_relpaths: list[str],
+) -> None:
     passed = sum(1 for r in results if r.returncode == 0)
     failed = sum(1 for r in results if r.returncode != 0)
     total = len(results)
 
     rows: list[str] = []
-    details: list[str] = []
-
-    for idx, result in enumerate(results, start=1):
+    for idx, (result, check_html_relpath) in enumerate(zip(results, check_html_relpaths), start=1):
         cls = "pass" if result.returncode == 0 else "fail"
         case_name = html.escape(str(result.case_dir))
         script_name = html.escape(str(result.script))
-        command = html.escape(" ".join(shlex.quote(part) for part in result.command))
-
-        combined = result.stdout
-        if result.stderr:
-            combined = f"{combined}\n\n===== STDERR =====\n{result.stderr}"
-        clipped, truncated = truncate_for_html(combined)
-        trunc_note = "<p class='trunc'>Output truncated in HTML. See logs/*.log for full content.</p>" if truncated else ""
-        steps = split_output_steps(clipped)
-        step_blocks = render_step_blocks(steps, open_all=(result.returncode != 0))
+        link = html.escape(check_html_relpath)
+        script_link = f"<a href=\"{link}\">{script_name}</a>"
 
         rows.append(
             "".join(
@@ -403,30 +473,11 @@ def write_html_report(path: Path, results: list[CheckResult], started_at: float,
                     "<tr>",
                     f"<td>{idx}</td>",
                     f"<td>{case_name}</td>",
-                    f"<td>{script_name}</td>",
+                    f"<td>{script_link}</td>",
                     f"<td class='{cls}'>{result.status}</td>",
                     f"<td>{result.returncode}</td>",
                     f"<td>{result.duration_sec:.2f}</td>",
                     "</tr>",
-                ]
-            )
-        )
-
-        details.append(
-            "".join(
-                [
-                    "<section class='module'>",
-                    f"<h2>#{idx} {script_name} - <span class='{cls}'>{result.status}</span></h2>",
-                    f"<p><b>Case:</b> <code>{case_name}</code></p>",
-                    f"<p><b>Command:</b> <code>{command}</code></p>",
-                    f"<p><b>Start (UTC):</b> {html.escape(format_timestamp(result.started_at))}<br>",
-                    f"<b>End (UTC):</b> {html.escape(format_timestamp(result.ended_at))}<br>",
-                    f"<b>Duration:</b> {result.duration_sec:.2f}s</p>",
-                    trunc_note,
-                    f"<details class='script-output'><summary>Execution Output ({len(steps)} steps)</summary>",
-                    step_blocks,
-                    "</details>",
-                    "</section>",
                 ]
             )
         )
@@ -446,14 +497,7 @@ def write_html_report(path: Path, results: list[CheckResult], started_at: float,
     .pass {{ color: #087443; font-weight: 700; }}
     .fail {{ color: #b42318; font-weight: 700; }}
     .meta {{ color: #444; }}
-    pre {{ background: #0b1020; color: #f4f7ff; padding: 12px; overflow: auto; border-radius: 6px; }}
-    .module {{ border-top: 2px solid #eceff4; padding-top: 12px; margin-top: 18px; }}
-    .trunc {{ color: #7a3e00; font-weight: 600; }}
     code {{ background: #f0f2f5; padding: 1px 4px; border-radius: 4px; }}
-    details {{ margin: 8px 0; }}
-    details > summary {{ cursor: pointer; font-weight: 600; }}
-    .script-output > summary {{ font-size: 15px; }}
-    .step {{ margin-left: 8px; }}
   </style>
 </head>
 <body>
@@ -468,27 +512,39 @@ def write_html_report(path: Path, results: list[CheckResult], started_at: float,
     Passed: <b class=\"pass\">{passed}</b> |
     Failed: <b class=\"fail\">{failed}</b>
   </p>
+  <p class=\"meta\">Per-script HTML files are under <code>checks/</code>.</p>
 
   <table>
     <thead>
-      <tr><th>#</th><th>Case</th><th>Script</th><th>Status</th><th>RC</th><th>Duration(s)</th></tr>
+      <tr><th>#</th><th>Case</th><th>Script Detail</th><th>Status</th><th>RC</th><th>Duration(s)</th></tr>
     </thead>
     <tbody>
       {''.join(rows)}
     </tbody>
   </table>
-
-  {''.join(details)}
 </body>
 </html>
 """
     path.write_text(doc, encoding="utf-8")
 
 
-def ensure_report_dir(report_dir: Path) -> tuple[Path, Path, Path]:
+def ensure_report_dir(report_dir: Path) -> tuple[Path, Path, Path, Path]:
     logs_dir = report_dir / "logs"
+    checks_dir = report_dir / "checks"
     logs_dir.mkdir(parents=True, exist_ok=True)
-    return report_dir / "report.html", report_dir / "summary.json", logs_dir
+    checks_dir.mkdir(parents=True, exist_ok=True)
+    return report_dir / "report.html", report_dir / "summary.json", logs_dir, checks_dir
+
+
+def make_artifact_base_name(index: int, result: CheckResult, modules_dir: Path) -> str:
+    try:
+        rel_case = result.case_dir.resolve().relative_to(modules_dir.resolve())
+        case_name = str(rel_case)
+    except ValueError:
+        case_name = result.case_dir.name
+    case_token = sanitize_name(case_name.replace(os.sep, "-"))
+    script_token = sanitize_name(result.script.stem)
+    return f"{index:02d}-{case_token}-{script_token}"
 
 
 def parse_args() -> argparse.Namespace:
@@ -507,7 +563,7 @@ def main() -> int:
     args = parse_args()
     modules_dir = Path(args.modules_dir).resolve()
     report_dir = Path(args.report_dir)
-    report_html, summary_json, logs_dir = ensure_report_dir(report_dir)
+    report_html, summary_json, logs_dir, checks_dir = ensure_report_dir(report_dir)
 
     run_started = time.time()
     case_dirs = discover_case_dirs(modules_dir)
@@ -516,7 +572,7 @@ def main() -> int:
     if not case_dirs:
         run_ended = time.time()
         write_summary_json(summary_json, results, run_started, run_ended)
-        write_html_report(report_html, results, run_started, run_ended)
+        write_html_report(report_html, results, run_started, run_ended, check_html_relpaths=[])
         print(f"No CI cases found under {modules_dir}")
         print(f"Report: {report_html}")
         return 1
@@ -530,19 +586,32 @@ def main() -> int:
             verbose=args.verbose_modules,
             keep=args.keep,
         )
-        for result in case_results:
-            results.append(result)
-            log_name = f"{len(results):02d}-{result.script.stem}.log"
-            write_check_log(logs_dir / log_name, result)
+        results.extend(case_results)
+
+    check_html_relpaths: list[str] = []
+    for idx, result in enumerate(results, start=1):
+        base = make_artifact_base_name(idx, result, modules_dir)
+        log_name = f"{base}.log"
+        html_name = f"{base}.html"
+        write_check_log(logs_dir / log_name, result)
+        write_check_html(checks_dir / html_name, result, index=idx)
+        check_html_relpaths.append(f"checks/{html_name}")
 
     run_ended = time.time()
     write_summary_json(summary_json, results, run_started, run_ended)
-    write_html_report(report_html, results, run_started, run_ended)
+    write_html_report(
+        report_html,
+        results,
+        run_started,
+        run_ended,
+        check_html_relpaths=check_html_relpaths,
+    )
 
     failed = sum(1 for r in results if r.returncode != 0)
     print(f"Report written: {report_html}")
     print(f"Summary written: {summary_json}")
     print(f"Logs directory: {logs_dir}")
+    print(f"Check HTML directory: {checks_dir}")
     return 1 if failed else 0
 
 

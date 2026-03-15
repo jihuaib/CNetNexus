@@ -285,10 +285,10 @@ static int handle_if_show(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                                "  Name       : %s\r\n"
                                "  Type       : %s\r\n"
                                "  State      : %s\r\n"
-                               "  IP Address : %s/%u\r\n"
+                               "  IP Address : %s\r\n"
                                "  MAC        : %s\r\n"
                                "  MTU        : %d\r\n\r\n",
-                               ifname, ifname, type_str, state_str, ip_str, entry->prefix.prefix_len, mac_str, mtu);
+                               ifname, ifname, type_str, state_str, ip_str, mac_str, mtu);
     }
     else
     {

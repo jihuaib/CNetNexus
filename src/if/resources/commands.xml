@@ -108,6 +108,11 @@
                     <expression>1 2 3 4</expression>
                     <views>if</views>
                 </command>
+                <!-- no ip address <ip> <prefix-len> -->
+                <command>
+                    <expression>6 1 2 3 4</expression>
+                    <views>if</views>
+                </command>
                 <!-- shutdown -->
                 <command>
                     <expression>5</expression>

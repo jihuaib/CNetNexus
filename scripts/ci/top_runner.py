@@ -603,86 +603,6 @@ def cli_configure_interfaces(cli: NetNexusCli, endpoints: list[Endpoint]) -> Non
     cli.cmd("end")
 
 
-def cli_configure_bgp_base(cli: NetNexusCli, asn: int, router_id: str) -> None:
-    cli.cmd("config")
-    cli.cmd(f"bgp {asn}")
-    cli.cmd(f"router-id {router_id}")
-    cli.cmd("end")
-
-
-def cli_configure_bgp_session(
-    cli: NetNexusCli,
-    local_as: int,
-    peer_ip: str,
-    peer_as: int,
-    afs: list[str],
-    import_static: bool,
-) -> None:
-    cli.cmd("config")
-    cli.cmd(f"bgp {local_as}")
-    cli.cmd(f"neighbor {peer_ip} as {peer_as}")
-    for af in afs:
-        cli.cmd(f"af {af}")
-        cli.cmd(f"neighbor {peer_ip} enable")
-        if import_static:
-            cli.cmd("import-route static")
-        cli.cmd("exit")
-    cli.cmd("end")
-
-
-def cli_add_static_route(cli: NetNexusCli, prefix: str, mask: str, nexthop: str) -> None:
-    cli.cmd("config")
-    cli.cmd(f"route ipv4 {prefix} {mask} {nexthop}")
-    cli.cmd("end")
-
-
-def wait_sessions(cli_map: dict[str, NetNexusCli], checks: list[dict[str, str]], timeout: int) -> None:
-    deadline = time.time() + timeout
-    last_out: dict[str, str] = {}
-
-    while time.time() < deadline:
-        pending = 0
-        for chk in checks:
-            dev = chk["local"]
-            peer_ip = chk["peer_ip"]
-            af = chk["af"]
-            out = cli_map[dev].cmd(f"show bgp neighbor af {af}", strict=False)
-            last_out[dev] = out
-            if peer_ip not in out or "Established" not in out:
-                pending += 1
-        if pending == 0:
-            return
-        time.sleep(2)
-
-    detail = "\n\n".join([f"[{d}]\n{v}" for d, v in last_out.items()])
-    raise RuntimeError(f"BGP sessions not established within {timeout}s\n{detail}")
-
-
-def wait_routes(cli_map: dict[str, NetNexusCli], checks: list[dict[str, str]], timeout: int) -> None:
-    if not checks:
-        return
-
-    deadline = time.time() + timeout
-    last_out: dict[str, str] = {}
-
-    while time.time() < deadline:
-        pending = 0
-        for chk in checks:
-            dev = chk["device"]
-            af = chk["af"]
-            prefix = chk["prefix"]
-            out = cli_map[dev].cmd(f"show bgp route af {af}", strict=False)
-            last_out[dev] = out
-            if prefix not in out:
-                pending += 1
-        if pending == 0:
-            return
-        time.sleep(2)
-
-    detail = "\n\n".join([f"[{d}]\n{v}" for d, v in last_out.items()])
-    raise RuntimeError(f"BGP route checks failed within {timeout}s\n{detail}")
-
-
 def dump_logs(container_names: list[str]) -> None:
     for name in container_names:
         print(f"\n===== docker logs: {name} =====")
@@ -702,7 +622,7 @@ def dump_logs(container_names: list[str]) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run NetNexus topology smoke test from top file")
+    parser = argparse.ArgumentParser(description="Run generic NetNexus topology runtime smoke test")
     parser.add_argument("--top", required=True, help="topology file path (.yaml/.yml/.json)")
     parser.add_argument("--image", required=False, help="docker image tag")
     parser.add_argument("--prefix", default=f"nn-top-{os.getpid()}", help="resource name prefix")
@@ -718,188 +638,35 @@ def main() -> int:
     if not image:
         raise SystemExit("image is required (use --image or top.image)")
 
-    prefix = sanitize_name(args.prefix)
-    mgmt_net = f"{prefix}-mgmt"
-
-    devices: dict[str, dict[str, Any]] = top["devices"]
-    endpoints = build_endpoints(top)
-    sessions = top["bgp"]["sessions"]
-    traffic = top.get("traffic", {})
-    checks_cfg = top.get("checks", {})
-    session_timeout = int(checks_cfg.get("session_timeout_sec", 60))
-    route_timeout = int(checks_cfg.get("route_timeout_sec", 60))
-    route_checks = checks_cfg.get("bgp_routes", [])
-
-    tmpdir = Path(tempfile.mkdtemp(prefix=f"{prefix}-"))
-    container_names: list[str] = []
-    link_networks: list[str] = []
-    cli_map: dict[str, NetNexusCli] = {}
+    rt = TopologyRuntime(
+        top=top,
+        image=image,
+        prefix=args.prefix,
+        keep=args.keep,
+        cmd_timeout=args.cmd_timeout,
+        connect_timeout=60,
+        verbose=args.verbose,
+    )
     failed = False
-    exit_code = 0
 
     try:
-        run_cmd(["docker", "network", "create", mgmt_net])
+        print("\n===== STEP: Runtime startup =====", flush=True)
+        rt.start(configure_interfaces=True)
 
-        # 1) Create paused containers (sleep), mount per-device if_map override.
-        for dev, cfg in devices.items():
-            cname = f"{prefix}-{sanitize_name(dev)}"
+        print("\n===== STEP: CLI probe =====", flush=True)
+        for dev in sorted(rt.devices.keys()):
+            out = rt.exec_cmd(dev, "show version", strict=False)
+            print(f"[{dev}] show version ok ({len(out.strip())} chars)")
 
-            map_file = tmpdir / f"{sanitize_name(dev)}-if_map.conf.gns3"
-            build_if_map_file(map_file, endpoints[dev])
-
-            run_cmd(
-                [
-                    "docker",
-                    "run",
-                    "-d",
-                    "--rm",
-                    "--name",
-                    cname,
-                    "--hostname",
-                    dev,
-                    "--network",
-                    mgmt_net,
-                    "--cap-add",
-                    "NET_ADMIN",
-                    "--cap-add",
-                    "NET_RAW",
-                    "-e",
-                    "NN_WORK_DIR=/opt/netnexus",
-                    "-e",
-                    "LD_LIBRARY_PATH=/opt/netnexus/lib",
-                    "-v",
-                    f"{map_file}:/opt/netnexus/resources/if/if_map.conf.gns3:ro",
-                    image,
-                    "sleep",
-                    "infinity",
-                ]
-            )
-            container_names.append(cname)
-
-        # 2) Create link networks.
-        link_to_net: dict[str, str] = {}
-        for link in top["links"]:
-            lname = str(link["name"])
-            net_name = f"{prefix}-lnk-{sanitize_name(lname)}"
-            run_cmd(["docker", "network", "create", net_name])
-            link_to_net[lname] = net_name
-            link_networks.append(net_name)
-
-        # 3) Connect each device to link networks in GE index order.
-        for dev, eps in endpoints.items():
-            cname = f"{prefix}-{sanitize_name(dev)}"
-            for ep in eps:
-                run_cmd(["docker", "network", "connect", link_to_net[ep.link_name], cname])
-
-        # 4) Start netnexus process inside each container.
-        for dev in devices:
-            cname = f"{prefix}-{sanitize_name(dev)}"
-            run_cmd(
-                [
-                    "docker",
-                    "exec",
-                    "-d",
-                    cname,
-                    "/bin/bash",
-                    "-lc",
-                    (
-                        "mkdir -p /opt/netnexus/log /opt/netnexus/data && "
-                        "export NN_WORK_DIR=/opt/netnexus && "
-                        "export LD_LIBRARY_PATH=/opt/netnexus/lib:${LD_LIBRARY_PATH} && "
-                        "exec /opt/netnexus/bin/netnexus > /tmp/netnexus.log 2>&1"
-                    ),
-                ]
-            )
-
-        # 5) Wait CLI and connect.
-        for dev in devices:
-            cname = f"{prefix}-{sanitize_name(dev)}"
-            mgmt_ip = get_container_network_ip(cname, mgmt_net)
-            cli = NetNexusCli(mgmt_ip, 3788, dev, cmd_timeout=args.cmd_timeout, verbose=args.verbose)
-            cli.connect(timeout=30)
-            cli_map[dev] = cli
-
-        # 6) Configure interface IPs.
-        for dev, eps in endpoints.items():
-            cli_configure_interfaces(cli_map[dev], eps)
-
-        # 7) Configure per-device BGP base.
-        for dev, cfg in devices.items():
-            cli_configure_bgp_base(cli_map[dev], int(cfg["asn"]), str(cfg["router_id"]))
-
-        # 8) Configure BGP sessions.
-        session_checks: list[dict[str, str]] = []
-        for sess in sessions:
-            local = str(sess["local"])
-            peer = str(sess["peer"])
-            afs = list(sess.get("afs", ["ipv4-unicast"]))
-            local_if = sess.get("local_if")
-            peer_ip = find_peer_ip(top, local, peer, local_if=local_if)
-
-            cli_configure_bgp_session(
-                cli=cli_map[local],
-                local_as=int(devices[local]["asn"]),
-                peer_ip=peer_ip,
-                peer_as=int(devices[peer]["asn"]),
-                afs=afs,
-                import_static=bool(sess.get("import_static", False)),
-            )
-
-            for af in afs:
-                session_checks.append({"local": local, "peer_ip": peer_ip, "af": af})
-
-        # 9) Optional business traffic/static route injection.
-        for route in traffic.get("static_routes", []) or []:
-            dev = str(route["device"])
-            cli_add_static_route(
-                cli_map[dev],
-                prefix=str(route["prefix"]),
-                mask=str(route["mask"]),
-                nexthop=str(route["nexthop"]),
-            )
-
-        # 10) Wait checks.
-        wait_sessions(cli_map, session_checks, timeout=session_timeout)
-
-        parsed_route_checks: list[dict[str, str]] = []
-        for chk in route_checks:
-            parsed_route_checks.append(
-                {
-                    "device": str(chk["device"]),
-                    "af": str(chk.get("af", "ipv4-unicast")),
-                    "prefix": str(chk["prefix"]),
-                }
-            )
-        wait_routes(cli_map, parsed_route_checks, timeout=route_timeout)
-
-        print("Topology smoke test passed.")
-        exit_code = 0
+        print("Topology runtime smoke test passed.")
+        return 0
     except Exception as exc:
         failed = True
-        exit_code = 1
         print(f"ERROR: {exc}", file=sys.stderr)
-        dump_logs(container_names)
+        dump_logs(rt.container_names)
+        return 1
     finally:
-        for cli in cli_map.values():
-            cli.close()
-
-        if args.keep:
-            print("Resources kept (--keep enabled).")
-            print(f"Containers: {', '.join(container_names)}")
-            print(f"Networks: {', '.join([mgmt_net] + link_networks)}")
-            print(f"Temp dir: {tmpdir}")
-        else:
-            for name in container_names:
-                run_cmd(["docker", "rm", "-f", name], check=False)
-            for net in link_networks:
-                run_cmd(["docker", "network", "rm", net], check=False)
-            run_cmd(["docker", "network", "rm", mgmt_net], check=False)
-            shutil.rmtree(tmpdir, ignore_errors=True)
-
-            if failed:
-                print("Cleanup complete after failure.", file=sys.stderr)
-
-    return exit_code
+        rt.close(failed=failed)
 
 
 if __name__ == "__main__":

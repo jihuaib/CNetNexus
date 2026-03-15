@@ -10,85 +10,55 @@ Goal:
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-from typing import Any
+from module_api import g_top, require_devices, run_cmds, step, wait_checks  # noqa: E402
+from top_runner import TopologyRuntime  # noqa: E402
 
 
-SELF_PATH = Path(__file__).resolve()
-CI_DIR: Path | None = None
-for parent in SELF_PATH.parents:
-    if (parent / "module_api.py").exists() and (parent / "top_runner.py").exists():
-        CI_DIR = parent
-        break
-if CI_DIR is None:
-    raise SystemExit(f"failed to locate scripts/ci directory from {SELF_PATH}")
+def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
+    """
+    Entry called by module_runner.
+    """
+    require_devices(top, ("r1", "r2"))
+    r1_peer_ip = str(g_top.r1.GE_1.peer_ip)
+    r2_peer_ip = str(g_top.r2.GE_1.peer_ip)
 
-if str(CI_DIR) not in sys.path:
-    sys.path.insert(0, str(CI_DIR))
-
-from module_api import require_devices, run_cmds, step, wait_checks  # noqa: E402
-from top_runner import TopologyRuntime, find_peer_ip  # noqa: E402
-
-
-DEVICE_CFG: dict[str, dict[str, Any]] = {
-    "r1": {"asn": 65001, "router_id": "1.1.1.1"},
-    "r2": {"asn": 65002, "router_id": "2.2.2.2"},
-}
-
-SESSION_TIMEOUT_SEC = 30
-ROUTE_TIMEOUT_SEC = 30
-IMPORT_PREFIX = "10.20.20.0"
-IMPORT_MASK = "255.255.255.0"
-IMPORT_CIDR = "10.20.20.0/24"
-
-
-def ensure_bgp_base(rt: TopologyRuntime) -> None:
     step("Ensure BGP base config")
-    for device, cfg in DEVICE_CFG.items():
-        # strict=False keeps this script idempotent when base config already exists.
-        run_cmds(
-            rt=rt,
-            device=device,
-            strict=False,
-            commands=[
-                "config",
-                f"bgp {int(cfg['asn'])}",
-                f"router-id {cfg['router_id']}",
-                "end",
-            ],
-        )
+    run_cmds(
+        rt=rt,
+        device="r1",
+        strict=False,
+        commands=["config", "bgp 65001", "router-id 1.1.1.1", "end"],
+    )
+    run_cmds(
+        rt=rt,
+        device="r2",
+        strict=False,
+        commands=["config", "bgp 65002", "router-id 2.2.2.2", "end"],
+    )
 
-
-def ensure_neighbors_and_import(rt: TopologyRuntime, top: dict[str, Any]) -> list[dict[str, object]]:
     step("Ensure BGP neighbors + import-route static")
-
-    r1_peer_ip = find_peer_ip(top, "r1", "r2", local_if="GE-1")
-    r2_peer_ip = find_peer_ip(top, "r2", "r1", local_if="GE-1")
-
     run_cmds(
         rt=rt,
         device="r1",
         strict=False,
         commands=[
             "config",
-            f"bgp {DEVICE_CFG['r1']['asn']}",
-            f"neighbor {r1_peer_ip} as {DEVICE_CFG['r2']['asn']}",
+            "bgp 65001",
+            f"neighbor {r1_peer_ip} as 65002",
             "af ipv4-unicast",
             f"neighbor {r1_peer_ip} enable",
             "exit",
             "end",
         ],
     )
-
     run_cmds(
         rt=rt,
         device="r2",
         strict=False,
         commands=[
             "config",
-            f"bgp {DEVICE_CFG['r2']['asn']}",
-            f"neighbor {r2_peer_ip} as {DEVICE_CFG['r1']['asn']}",
+            "bgp 65002",
+            f"neighbor {r2_peer_ip} as 65001",
             "af ipv4-unicast",
             f"neighbor {r2_peer_ip} enable",
             "import-route static",
@@ -97,50 +67,33 @@ def ensure_neighbors_and_import(rt: TopologyRuntime, top: dict[str, Any]) -> lis
         ],
     )
 
-    return [
-        {
-            "device": "r1",
-            "command": "show bgp neighbor af ipv4-unicast",
-            "contains": [r1_peer_ip, "Established"],
-            "label": "r1->r2 ipv4-unicast",
-        },
-        {
-            "device": "r2",
-            "command": "show bgp neighbor af ipv4-unicast",
-            "contains": [r2_peer_ip, "Established"],
-            "label": "r2->r1 ipv4-unicast",
-        },
-    ]
+    step("Wait BGP sessions")
+    wait_checks(
+        rt,
+        [
+            {
+                "device": "r1",
+                "command": "show bgp neighbor af ipv4-unicast",
+                "contains": [r1_peer_ip, "Established"],
+                "label": "r1->r2 ipv4-unicast",
+            },
+            {
+                "device": "r2",
+                "command": "show bgp neighbor af ipv4-unicast",
+                "contains": [r2_peer_ip, "Established"],
+                "label": "r2->r1 ipv4-unicast",
+            },
+        ],
+        timeout=30,
+    )
 
-
-def inject_static_on_r2(rt: TopologyRuntime, top: dict[str, Any]) -> None:
     step("Inject static route on r2 for import-route")
-    nexthop = find_peer_ip(top, "r2", "r1", local_if="GE-1")
     run_cmds(
         rt=rt,
         device="r2",
         strict=False,
-        commands=[
-            "config",
-            f"route ipv4 {IMPORT_PREFIX} {IMPORT_MASK} {nexthop}",
-            "end",
-        ],
+        commands=["config", f"route ipv4 10.20.20.0 255.255.255.0 {r2_peer_ip}", "end"],
     )
-
-
-def run(rt: TopologyRuntime, top: dict[str, Any]) -> None:
-    """
-    Entry called by module_runner.
-    """
-    require_devices(top, DEVICE_CFG.keys())
-
-    ensure_bgp_base(rt)
-    session_checks = ensure_neighbors_and_import(rt, top)
-
-    step("Wait BGP sessions")
-    wait_checks(rt, session_checks, timeout=SESSION_TIMEOUT_SEC)
-
-    inject_static_on_r2(rt, top)
 
     step("Check imported route appears on r2 local BGP RIB")
     wait_checks(
@@ -149,11 +102,11 @@ def run(rt: TopologyRuntime, top: dict[str, Any]) -> None:
             {
                 "device": "r2",
                 "command": "show bgp route af ipv4-unicast",
-                "contains": [IMPORT_CIDR],
+                "contains": ["10.20.20.0/24"],
                 "label": "r2 local imported static route",
             }
         ],
-        timeout=ROUTE_TIMEOUT_SEC,
+        timeout=30,
     )
 
     print("BGP import-route check passed.")
