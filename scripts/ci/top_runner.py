@@ -517,8 +517,13 @@ def execCmd(runtime: TopologyRuntime, device: str) -> DeviceExec:
 
 
 def cli_configure_interfaces(cli: NetNexusCli, endpoints: list[Endpoint]) -> None:
+    print(f"\n===== STEP: Auto configure interface IPs on {cli.name} =====", flush=True)
     cli.cmd("config")
     for ep in endpoints:
+        print(
+            f"[{cli.name}] apply interface {ep.if_name}: ip address {ep.ip} {ep.prefix}, no shutdown",
+            flush=True,
+        )
         cli.cmd(f"if {ep.if_name}")
         cli.cmd(f"ip address {ep.ip} {ep.prefix}")
         cli.cmd("no shutdown")

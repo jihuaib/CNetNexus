@@ -13,6 +13,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shlex
 import sys
 import time
@@ -32,6 +33,7 @@ from top_runner import TopologyRuntime, load_topology, sanitize_name  # noqa: E4
 
 MAX_HTML_OUTPUT_CHARS = 200000
 TOP_CANDIDATES = ("top.yaml", "top.yml", "top.json")
+STEP_MARKER_RE = re.compile(r"^\s*=+\s*STEP:\s*(.*?)\s*=+\s*$")
 
 
 @dataclass
@@ -220,6 +222,8 @@ def run_case(
     results: list[CheckResult] = []
     case_failed = False
     rt: TopologyRuntime | None = None
+    startup_stdout = ""
+    startup_stderr = ""
 
     try:
         print(f"\n===== START CASE: {case_dir} =====")
@@ -232,10 +236,26 @@ def run_case(
             connect_timeout=connect_timeout,
             verbose=verbose,
         )
-        rt.start(configure_interfaces=True)
+        startup_out_buf = io.StringIO()
+        startup_err_buf = io.StringIO()
+        startup_tee_out = Tee(sys.stdout, startup_out_buf)
+        startup_tee_err = Tee(sys.stderr, startup_err_buf)
+        with contextlib.redirect_stdout(startup_tee_out), contextlib.redirect_stderr(startup_tee_err):
+            print("===== STEP: Runtime startup =====")
+            rt.start(configure_interfaces=True)
+        startup_stdout = startup_out_buf.getvalue()
+        startup_stderr = startup_err_buf.getvalue()
 
-        for script in scripts:
+        for idx, script in enumerate(scripts):
             result = run_check(script, rt, top)
+            if idx == 0:
+                prefix_parts: list[str] = []
+                if startup_stdout:
+                    prefix_parts.append(startup_stdout)
+                if startup_stderr:
+                    prefix_parts.append(f"===== STDERR =====\n{startup_stderr}")
+                if prefix_parts:
+                    result.stdout = "\n\n".join(prefix_parts) + ("\n" if result.stdout else "") + result.stdout
             results.append(result)
             if result.returncode != 0:
                 case_failed = True
@@ -281,6 +301,55 @@ def truncate_for_html(text: str) -> tuple[str, bool]:
     return text[:MAX_HTML_OUTPUT_CHARS], True
 
 
+def split_output_steps(text: str) -> list[tuple[str, str]]:
+    """
+    Parse output by lines like:
+      ===== STEP: Configure BGP base =====
+    """
+    if not text:
+        return [("Output", "")]
+
+    steps: list[tuple[str, str]] = []
+    current_title = "Output"
+    current_lines: list[str] = []
+
+    for line in text.splitlines(keepends=True):
+        m = STEP_MARKER_RE.match(line.strip())
+        if m:
+            if current_lines or not steps:
+                steps.append((current_title, "".join(current_lines)))
+            current_title = m.group(1).strip() or "Step"
+            current_lines = []
+            continue
+        current_lines.append(line)
+
+    steps.append((current_title, "".join(current_lines)))
+
+    # Drop empty leading "Output" section when real STEP blocks exist.
+    if len(steps) > 1 and steps[0][0] == "Output" and not steps[0][1].strip():
+        steps = steps[1:]
+    return steps
+
+
+def render_step_blocks(steps: list[tuple[str, str]], open_all: bool) -> str:
+    blocks: list[str] = []
+    for i, (title, content) in enumerate(steps, start=1):
+        open_attr = " open" if open_all or i == 1 else ""
+        safe_title = html.escape(title)
+        safe_content = html.escape(content.rstrip("\n")) or "(no output)"
+        blocks.append(
+            "".join(
+                [
+                    f"<details class='step'{open_attr}>",
+                    f"<summary>Step {i}: {safe_title}</summary>",
+                    f"<pre>{safe_content}</pre>",
+                    "</details>",
+                ]
+            )
+        )
+    return "".join(blocks)
+
+
 def write_summary_json(path: Path, results: list[CheckResult], started_at: float, ended_at: float) -> None:
     payload = {
         "started_at_utc": format_timestamp(started_at),
@@ -324,8 +393,9 @@ def write_html_report(path: Path, results: list[CheckResult], started_at: float,
         if result.stderr:
             combined = f"{combined}\n\n===== STDERR =====\n{result.stderr}"
         clipped, truncated = truncate_for_html(combined)
-        out_text = html.escape(clipped)
         trunc_note = "<p class='trunc'>Output truncated in HTML. See logs/*.log for full content.</p>" if truncated else ""
+        steps = split_output_steps(clipped)
+        step_blocks = render_step_blocks(steps, open_all=(result.returncode != 0))
 
         rows.append(
             "".join(
@@ -353,7 +423,9 @@ def write_html_report(path: Path, results: list[CheckResult], started_at: float,
                     f"<b>End (UTC):</b> {html.escape(format_timestamp(result.ended_at))}<br>",
                     f"<b>Duration:</b> {result.duration_sec:.2f}s</p>",
                     trunc_note,
-                    f"<pre>{out_text}</pre>",
+                    f"<details class='script-output'><summary>Execution Output ({len(steps)} steps)</summary>",
+                    step_blocks,
+                    "</details>",
                     "</section>",
                 ]
             )
@@ -378,6 +450,10 @@ def write_html_report(path: Path, results: list[CheckResult], started_at: float,
     .module {{ border-top: 2px solid #eceff4; padding-top: 12px; margin-top: 18px; }}
     .trunc {{ color: #7a3e00; font-weight: 600; }}
     code {{ background: #f0f2f5; padding: 1px 4px; border-radius: 4px; }}
+    details {{ margin: 8px 0; }}
+    details > summary {{ cursor: pointer; font-weight: 600; }}
+    .script-output > summary {{ font-size: 15px; }}
+    .step {{ margin-left: 8px; }}
   </style>
 </head>
 <body>

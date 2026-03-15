@@ -2,10 +2,8 @@ name: Topology Module Smoke
 
 on:
   workflow_dispatch:
+  push:
   pull_request:
-    paths:
-      - "scripts/ci/**"
-      - ".github/workflows/topology-module-smoke.yml"
 
 jobs:
   topology-module-smoke:

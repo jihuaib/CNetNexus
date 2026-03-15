@@ -131,6 +131,8 @@ After run, report files are generated under `--report-dir`:
 - `summary.json`: structured result summary
 - `logs/*.log`: full stdout/stderr per module
 
+`report.html` groups output by step markers like `===== STEP: ... =====` and renders each step as a collapsible block. Use `step("...")` from `scripts/ci/module_api.py` in module scripts.
+
 ## Pass Extra Args To All Modules
 
 Common flags:
