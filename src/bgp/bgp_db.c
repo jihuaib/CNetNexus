@@ -107,12 +107,16 @@ int bgp_db_set_vrf_connect_retry(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16
 static uint32_t restore_protocol(dev_ipc_context_t *ctx)
 {
     db_result_t *result = NULL;
-    if (db_rpc_query(ctx, BGP_TABLE_PROTOCOL, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
+    if (db_rpc_query(ctx, BGP_TABLE_PROTOCOL, NULL, 0, NULL, &result) != ERRCODE_SUCCESS)
     {
         return ERRCODE_FAIL;
     }
 
-    if (result->num_rows == 0)
+    /*
+     * DB RPC layer may return NULL result for empty SELECT payload.
+     * Treat it as "no config" instead of restore failure.
+     */
+    if (!result || result->num_rows == 0)
     {
         db_result_free(result);
         LOG_INFO("BGP database has no config, skipping restore");

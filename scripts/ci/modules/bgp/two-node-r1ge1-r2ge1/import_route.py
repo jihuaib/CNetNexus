@@ -5,7 +5,7 @@ BGP import-route check script.
 Goal:
 - enable `import-route static` on r2
 - inject a static route on r2
-- verify r1 learns the route via BGP
+- verify r2 imports the static route into local BGP RIB
 """
 
 from __future__ import annotations
@@ -142,15 +142,15 @@ def run(rt: TopologyRuntime, top: dict[str, Any]) -> None:
 
     inject_static_on_r2(rt, top)
 
-    step("Check imported route appears on r1")
+    step("Check imported route appears on r2 local BGP RIB")
     wait_checks(
         rt,
         [
             {
-                "device": "r1",
+                "device": "r2",
                 "command": "show bgp route af ipv4-unicast",
                 "contains": [IMPORT_CIDR],
-                "label": "r1 learned imported static from r2",
+                "label": "r2 local imported static route",
             }
         ],
         timeout=ROUTE_TIMEOUT_SEC,

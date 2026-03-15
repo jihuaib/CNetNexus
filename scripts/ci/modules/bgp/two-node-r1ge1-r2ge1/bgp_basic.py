@@ -50,7 +50,7 @@ STATIC_ROUTES: list[dict[str, str]] = [
 SESSION_TIMEOUT_SEC = 30
 ROUTE_TIMEOUT_SEC = 30
 ROUTE_CHECKS: list[dict[str, str]] = [
-    {"device": "r2", "af": "ipv4-unicast", "prefix": "10.10.10.0/24"},
+    {"device": "r1", "af": "ipv4-unicast", "prefix": "10.10.10.0/24"},
 ]
 
 
