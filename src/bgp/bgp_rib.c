@@ -10,33 +10,6 @@
 
 #include "net_addr.h"
 
-/* ============================================================================
- * NLRI 二进制比较
- * ============================================================================
- * 树键直接使用 &head->nlri（bgp_nlri_entry_t*），无需额外堆分配。
- * 按 NLRI 类型分支做字段级二进制比较，保证全序关系。
- * ========================================================================== */
-
-/**
- * @brief 二进制比较两个 net_addr_t（family 优先，再比地址字节）
- */
-static int addr_cmp(const net_addr_t *a, const net_addr_t *b)
-{
-    if (a->family != b->family)
-    {
-        return (int)a->family - (int)b->family;
-    }
-    if (a->family == AF_INET)
-    {
-        return memcmp(&a->u.v4, &b->u.v4, 4);
-    }
-    if (a->family == AF_INET6)
-    {
-        return memcmp(&a->u.v6, &b->u.v6, 16);
-    }
-    return 0;
-}
-
 /**
  * @brief GTree 比较函数：按 NLRI 类型分支做二进制字段比较
  *
@@ -46,103 +19,7 @@ static gint nlri_compare(gconstpointer pa, gconstpointer pb)
 {
     const bgp_nlri_entry_t *a = (const bgp_nlri_entry_t *)pa;
     const bgp_nlri_entry_t *b = (const bgp_nlri_entry_t *)pb;
-    int r;
-
-    /* 先按类型排序，保证不同类型前缀不会碰撞 */
-    if (a->type != b->type)
-    {
-        return (gint)a->type - (gint)b->type;
-    }
-
-    switch (a->type)
-    {
-        case BGP_NLRI_PREFIX:
-            /* 比较地址族 + 地址 + 前缀长度 + RD + label */
-            r = addr_cmp(&a->prefix.prefix.addr, &b->prefix.prefix.addr);
-            if (r)
-            {
-                return r;
-            }
-            r = (int)a->prefix.prefix.prefix_len - (int)b->prefix.prefix.prefix_len;
-            if (r)
-            {
-                return r;
-            }
-            r = (int)a->prefix.has_rd - (int)b->prefix.has_rd;
-            if (r)
-            {
-                return r;
-            }
-            if (a->prefix.has_rd)
-            {
-                r = memcmp(a->prefix.rd.bytes, b->prefix.rd.bytes, sizeof(a->prefix.rd.bytes));
-                if (r)
-                {
-                    return r;
-                }
-            }
-            return (int)a->prefix.label - (int)b->prefix.label;
-
-        case BGP_NLRI_EVPN:
-            /* 使用完整原始字节比较（raw 字段捕获了完整 EVPN 路由内容） */
-            r = (int)a->evpn.raw_len - (int)b->evpn.raw_len;
-            if (r)
-            {
-                return r;
-            }
-            return memcmp(a->evpn.raw, b->evpn.raw, a->evpn.raw_len);
-
-        case BGP_NLRI_FLOWSPEC:
-            /* 先比 RD（VPN FlowSpec），再按组件顺序比较原始字节 */
-            r = (int)a->flowspec.has_rd - (int)b->flowspec.has_rd;
-            if (r)
-            {
-                return r;
-            }
-            if (a->flowspec.has_rd)
-            {
-                r = memcmp(a->flowspec.rd.bytes, b->flowspec.rd.bytes, sizeof(a->flowspec.rd.bytes));
-                if (r)
-                {
-                    return r;
-                }
-            }
-            r = (int)a->flowspec.count - (int)b->flowspec.count;
-            if (r)
-            {
-                return r;
-            }
-            for (uint8_t i = 0; i < a->flowspec.count; i++)
-            {
-                const bgp_fs_component_t *ca = &a->flowspec.components[i];
-                const bgp_fs_component_t *cb = &b->flowspec.components[i];
-                r = (int)ca->type - (int)cb->type;
-                if (r)
-                {
-                    return r;
-                }
-                r = (int)ca->data_len - (int)cb->data_len;
-                if (r)
-                {
-                    return r;
-                }
-                r = memcmp(ca->data, cb->data, ca->data_len);
-                if (r)
-                {
-                    return r;
-                }
-            }
-            return 0;
-
-        case BGP_NLRI_OPAQUE:
-        default:
-            r = (int)a->opaque.len - (int)b->opaque.len;
-            if (r)
-            {
-                return r;
-            }
-            return memcmp(a->opaque.data, b->opaque.data, a->opaque.len);
-    }
+    return (gint)bgp_nlri_cmp(a, b);
 }
 
 /* ============================================================================
@@ -442,6 +319,36 @@ void bgp_rib_remove_source(bgp_rib_t *rib, const net_addr_t *source, uint32_t *r
 /* ============================================================================
  * 查询
  * ========================================================================== */
+
+typedef struct
+{
+    const net_addr_t *source;
+    bgp_rib_source_nlri_cb cb;
+    gpointer user_data;
+} foreach_source_ctx_t;
+
+static gboolean foreach_source_tree_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    foreach_source_ctx_t *ctx = user_data;
+    bgp_rthead_t *head = value;
+    if (g_hash_table_lookup(head->route_hash, ctx->source))
+    {
+        ctx->cb(&head->nlri, ctx->user_data);
+    }
+    return FALSE; /* 继续遍历 */
+}
+
+void bgp_rib_foreach_source(const bgp_rib_t *rib, const net_addr_t *source, bgp_rib_source_nlri_cb cb,
+                            gpointer user_data)
+{
+    if (!rib || !rib->head_tree || !source || !cb)
+    {
+        return;
+    }
+    foreach_source_ctx_t ctx = {source, cb, user_data};
+    g_tree_foreach(rib->head_tree, foreach_source_tree_cb, &ctx);
+}
 
 const bgp_rthead_t *bgp_rib_lookup_head(const bgp_rib_t *rib, const bgp_nlri_entry_t *nlri)
 {

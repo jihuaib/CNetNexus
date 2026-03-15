@@ -190,8 +190,6 @@ int bgp_update_parse(const uint8_t *body, uint32_t body_len, uint32_t flags, bgp
                     }
                     memcpy(mp_reach_entries->opaque.data, mp_reach.nlri_data, copylen);
                     mp_reach_entries->opaque.len = copylen;
-                    snprintf(mp_reach_entries->key, BGP_NLRI_KEY_MAX, "opaque:afi=%u:safi=%u", mp_reach.afi,
-                             mp_reach.safi);
                     mp_reach_entries_len = 1;
                 }
             }

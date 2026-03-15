@@ -12,19 +12,6 @@
 
 #include "net_addr.h"
 
-/** 地址族标识符（RFC 1700） */
-typedef enum bgp_afi
-{
-    BGP_AFI_IPV4 = 1, /**< IPv4 */
-    BGP_AFI_IPV6 = 2, /**< IPv6 */
-} bgp_afi_t;
-
-/** 子地址族标识符 */
-typedef enum bgp_safi
-{
-    BGP_SAFI_UNICAST = 1, /**< 单播 */
-} bgp_safi_t;
-
 /* 前向声明，避免循环包含 */
 typedef struct bgp_vrf bgp_vrf_t;
 typedef struct bgp_instance bgp_instance_t;

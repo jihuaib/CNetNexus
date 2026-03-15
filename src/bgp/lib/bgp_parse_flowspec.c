@@ -368,30 +368,6 @@ static int parse_flowspec_nlri(const uint8_t *data, uint16_t len, int af, bgp_nl
 
         parse_fs_components(data + pos, nlri_len, af, &e->flowspec);
 
-        /* 合并所有组件字符串为 key */
-        size_t wpos = 0;
-        for (uint8_t i = 0; i < e->flowspec.count; i++)
-        {
-            if (wpos > 0 && wpos < BGP_NLRI_KEY_MAX - 1)
-            {
-                e->key[wpos++] = ',';
-            }
-            size_t slen = strlen(e->flowspec.components[i].str);
-            if (wpos + slen >= BGP_NLRI_KEY_MAX)
-            {
-                slen = BGP_NLRI_KEY_MAX - wpos - 1;
-            }
-            memcpy(e->key + wpos, e->flowspec.components[i].str, slen);
-            wpos += slen;
-        }
-        e->key[wpos] = '\0';
-
-        /* 若 key 为空，用默认值 */
-        if (e->key[0] == '\0')
-        {
-            snprintf(e->key, BGP_NLRI_KEY_MAX, "fs:empty");
-        }
-
         pos += nlri_len;
         idx++;
     }
@@ -430,10 +406,49 @@ static int fs_nexthop(const uint8_t *nh_data, uint8_t nh_len, bgp_nexthop_t *nex
     return 0;
 }
 
-static void fs_entry_to_str(bgp_nlri_entry_t *entry)
+static void fs_entry_to_str(const bgp_nlri_entry_t *entry, char *buf, size_t sz)
 {
-    /* key 已在 parse_flowspec_nlri 中填充 */
-    (void)entry;
+    if (!entry || !buf || sz == 0)
+    {
+        return;
+    }
+
+    size_t wpos = 0;
+    for (uint8_t i = 0; i < entry->flowspec.count && wpos + 1 < sz; i++)
+    {
+        const char *part = entry->flowspec.components[i].str;
+        if (!part || part[0] == '\0')
+        {
+            continue;
+        }
+
+        if (wpos > 0)
+        {
+            buf[wpos++] = ',';
+        }
+
+        size_t rem = sz - wpos;
+        int n = snprintf(buf + wpos, rem, "%s", part);
+        if (n < 0)
+        {
+            break;
+        }
+        if ((size_t)n >= rem)
+        {
+            wpos = sz - 1;
+            break;
+        }
+        wpos += (size_t)n;
+    }
+
+    if (wpos == 0)
+    {
+        snprintf(buf, sz, "fs:empty");
+    }
+    else
+    {
+        buf[wpos] = '\0';
+    }
 }
 
 /* ============================================================================

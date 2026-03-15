@@ -610,7 +610,8 @@ static gboolean sbmp_show_route_head_cb(gpointer key, gpointer value, gpointer u
 
         if (!printed_head)
         {
-            const char *nlri_key = head->nlri.key;
+            char nlri_key[BGP_NLRI_KEY_MAX];
+            bgp_nlri_to_str(&head->nlri, nlri_key, sizeof(nlri_key));
             g_string_append_printf(ctx->buf, "%s\r\n", nlri_key);
             printed_head = TRUE;
             ctx->listed_heads++;

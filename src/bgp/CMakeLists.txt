@@ -10,8 +10,8 @@ set(BGP_SOURCES
     bgp_pkt_build.c
     bgp_pkt_build_ipv4uc.c
     bgp_pkt_build_ipv6uc.c
-    bgp_pub.c
     bgp_calc.c
+    bgp_work.c
     bgp_session.c
     bgp_instance.c
     bgp_vrf.c

@@ -155,20 +155,6 @@ static int parse_vpn(const uint8_t *data, uint16_t len, int af, uint16_t afi, bg
             memcpy(&e->prefix.prefix.addr.u.v4, tmp, 4);
         }
 
-        /* 填充 key：RD:prefix/len label=X */
-        char rd_str[48];
-        char ip_str[INET6_ADDRSTRLEN];
-        bgp_rd_to_str(&e->prefix.rd, rd_str, sizeof(rd_str));
-        if (af == AF_INET6)
-        {
-            inet_ntop(AF_INET6, &e->prefix.prefix.addr.u.v6, ip_str, sizeof(ip_str));
-        }
-        else
-        {
-            inet_ntop(AF_INET, &e->prefix.prefix.addr.u.v4, ip_str, sizeof(ip_str));
-        }
-        snprintf(e->key, BGP_NLRI_KEY_MAX, "vpn:%s:%s/%u label=%u", rd_str, ip_str, ip_bits, label);
-
         pos += nbytes;
         idx++;
     }
@@ -207,27 +193,33 @@ static int vpn_ipv6_nexthop(const uint8_t *nh_data, uint8_t nh_len, bgp_nexthop_
 }
 
 /* ============================================================================
- * entry_to_str（key 在 parse_vpn 中已填充，此处幂等刷新）
+ * entry_to_str
  * ========================================================================== */
 
-static void vpn_ipv4_to_str(bgp_nlri_entry_t *e)
+static void vpn_ipv4_to_str(const bgp_nlri_entry_t *e, char *buf, size_t sz)
 {
+    if (!e || !buf || sz == 0)
+    {
+        return;
+    }
     char rd_str[48];
     char ip[INET_ADDRSTRLEN];
     bgp_rd_to_str(&e->prefix.rd, rd_str, sizeof(rd_str));
     inet_ntop(AF_INET, &e->prefix.prefix.addr.u.v4, ip, sizeof(ip));
-    snprintf(e->key, BGP_NLRI_KEY_MAX, "vpn:%s:%s/%u label=%u", rd_str, ip, e->prefix.prefix.prefix_len,
-             e->prefix.label);
+    snprintf(buf, sz, "vpn:%s:%s/%u label=%u", rd_str, ip, e->prefix.prefix.prefix_len, e->prefix.label);
 }
 
-static void vpn_ipv6_to_str(bgp_nlri_entry_t *e)
+static void vpn_ipv6_to_str(const bgp_nlri_entry_t *e, char *buf, size_t sz)
 {
+    if (!e || !buf || sz == 0)
+    {
+        return;
+    }
     char rd_str[48];
     char ip[INET6_ADDRSTRLEN];
     bgp_rd_to_str(&e->prefix.rd, rd_str, sizeof(rd_str));
     inet_ntop(AF_INET6, &e->prefix.prefix.addr.u.v6, ip, sizeof(ip));
-    snprintf(e->key, BGP_NLRI_KEY_MAX, "vpn:%s:%s/%u label=%u", rd_str, ip, e->prefix.prefix.prefix_len,
-             e->prefix.label);
+    snprintf(buf, sz, "vpn:%s:%s/%u label=%u", rd_str, ip, e->prefix.prefix.prefix_len, e->prefix.label);
 }
 
 /* ============================================================================

@@ -1100,7 +1100,8 @@ static gboolean bgp_show_route_head_cb(gpointer key, gpointer value, gpointer us
         return FALSE;
     }
 
-    const char *prefix_str = head->nlri.key;
+    char prefix_str[BGP_NLRI_KEY_MAX];
+    bgp_nlri_to_str(&head->nlri, prefix_str, sizeof(prefix_str));
     gboolean first = TRUE;
 
     GHashTableIter iter;
@@ -1296,8 +1297,6 @@ static int handle_bgp_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parse
             bgp_send_cli_response(msg, "BGP Error: Invalid IP address.\r\n");
             return ERRCODE_FAIL;
         }
-        snprintf(nlri.key, sizeof(nlri.key), "%s/%u", ip_str, masklen);
-
         g_string_append_printf(resp_buf, "\r\nBGP Route Detail: %s/%u (AF: %s)\r\n", ip_str, masklen,
                                bgp_af_str(ctx.afi, ctx.safi));
         g_string_append(resp_buf, "============================================================\r\n");

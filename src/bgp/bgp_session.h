@@ -34,6 +34,7 @@ typedef enum bgp_timer_type
     BGP_TIMER_TYPE_RETRY = 0,     /**< connect-retry 定时器 */
     BGP_TIMER_TYPE_KEEPALIVE = 1, /**< keepalive 周期定时器 */
     BGP_TIMER_TYPE_HOLD = 2,      /**< hold time 超时定时器 */
+    BGP_TIMER_TYPE_WORK = 3,      /**< 路由工作队列（优选 + 发布）定时器 */
 } bgp_timer_type_t;
 
 /**

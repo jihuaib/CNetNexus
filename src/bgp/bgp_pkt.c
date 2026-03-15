@@ -487,7 +487,9 @@ int bgp_pkt_send_update(bgp_conn_t *conn, const bgp_nlri_entry_t *nlri, const bg
         return -1;
     }
 
-    LOG_DEBUG("BGP: 已发送 UPDATE（宣告）至 %s: %s", _ip, nlri->key);
+    char key[BGP_NLRI_KEY_MAX];
+    bgp_nlri_to_str(nlri, key, sizeof(key));
+    LOG_DEBUG("BGP: 已发送 UPDATE（宣告）至 %s: %s", _ip, key);
     return 0;
 }
 
@@ -560,7 +562,9 @@ int bgp_pkt_send_withdraw(bgp_conn_t *conn, const bgp_nlri_entry_t *nlri)
         return -1;
     }
 
-    LOG_DEBUG("BGP: 已发送 UPDATE（撤销）至 %s: %s", _ip, nlri->key);
+    char key[BGP_NLRI_KEY_MAX];
+    bgp_nlri_to_str(nlri, key, sizeof(key));
+    LOG_DEBUG("BGP: 已发送 UPDATE（撤销）至 %s: %s", _ip, key);
     return 0;
 }
 

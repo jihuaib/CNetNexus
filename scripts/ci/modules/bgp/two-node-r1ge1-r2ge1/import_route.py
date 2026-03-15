@@ -6,6 +6,7 @@ Goal:
 - enable `import-route static` on r2
 - inject a static route on r2
 - verify r2 imports the static route into local BGP RIB
+- verify r1 receives the route from r2
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
     require_devices(top, ("r1", "r2"))
     r1_peer_ip = str(g_top.r1.GE_1.peer_ip)
     r2_peer_ip = str(g_top.r2.GE_1.peer_ip)
+    r2_local_ip = str(g_top.r2.GE_1.ip)
 
     step("Ensure BGP base config")
     run_cmds(
@@ -92,10 +94,10 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         rt=rt,
         device="r2",
         strict=False,
-        commands=["config", f"route ipv4 10.20.20.0 255.255.255.0 {r2_peer_ip}", "end"],
+        commands=["config", f"route ipv4 10.20.20.0 255.255.255.0 {r2_local_ip}", "end"],
     )
 
-    step("Check imported route appears on r2 local BGP RIB")
+    step("Check imported route on r2 local and r1 peer BGP RIB")
     wait_checks(
         rt,
         [
@@ -104,7 +106,13 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 "command": "show bgp route af ipv4-unicast",
                 "contains": ["10.20.20.0/24"],
                 "label": "r2 local imported static route",
-            }
+            },
+            {
+                "device": "r1",
+                "command": "show bgp route af ipv4-unicast",
+                "contains": ["10.20.20.0/24"],
+                "label": "r1 learned route from r2",
+            },
         ],
         timeout=30,
     )

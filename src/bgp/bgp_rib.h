@@ -30,11 +30,11 @@ typedef struct bgp_route_node
 /**
  * @brief 路由头（Route Head）：表示一个唯一 NLRI 前缀
  *
- * 树键为 nlri.key（RIB 已按 AFI/SAFI 分实例，无需再拼接 afi/safi 前缀）
+ * 树键为 NLRI 二进制内容（RIB 已按 AFI/SAFI 分实例）
  */
 typedef struct bgp_rthead
 {
-    bgp_nlri_entry_t nlri;  /**< NLRI（前缀/EVPN/FlowSpec 等，含 afi/safi/type/key） */
+    bgp_nlri_entry_t nlri;  /**< NLRI（前缀/EVPN/FlowSpec 等，含 afi/safi/type） */
     bgp_instance_t *inst;   /**< 所属 AF 实例（借用引用，可为 NULL） */
     GHashTable *route_hash; /**< net_addr_t* -> bgp_route_node_t*（按来源 IP 索引） */
 } bgp_rthead_t;
@@ -111,6 +111,20 @@ void bgp_rib_remove_source(bgp_rib_t *rib, const net_addr_t *source, uint32_t *r
  * @brief 通过 NLRI 查找 rthead（只读）
  */
 const bgp_rthead_t *bgp_rib_lookup_head(const bgp_rib_t *rib, const bgp_nlri_entry_t *nlri);
+
+/**
+ * @brief 遍历 RIB 中含有指定来源路径的所有 rthead，对每个 NLRI 触发回调
+ *
+ * 用于会话清理前收集受影响 NLRI，推送到 calc_queue 触发重新优选。
+ *
+ * @param rib       目标 RIB
+ * @param source    路径来源（邻居 IP）
+ * @param cb        回调函数，参数为 NLRI 指针（借用）和 user_data
+ * @param user_data 传递给回调的上下文指针
+ */
+typedef void (*bgp_rib_source_nlri_cb)(const bgp_nlri_entry_t *nlri, gpointer user_data);
+void bgp_rib_foreach_source(const bgp_rib_t *rib, const net_addr_t *source, bgp_rib_source_nlri_cb cb,
+                            gpointer user_data);
 
 /**
  * @brief 在 rthead 下按 source 查找 route（只读）

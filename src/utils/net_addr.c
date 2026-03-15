@@ -81,6 +81,39 @@ gboolean net_addr_equal(const net_addr_t *a, const net_addr_t *b)
     return FALSE;
 }
 
+int net_addr_cmp(const net_addr_t *a, const net_addr_t *b)
+{
+    if (!a && !b)
+    {
+        return 0;
+    }
+    if (!a)
+    {
+        return -1;
+    }
+    if (!b)
+    {
+        return 1;
+    }
+
+    int r = (int)a->family - (int)b->family;
+    if (r)
+    {
+        return r;
+    }
+
+    if (a->family == AF_INET)
+    {
+        return memcmp(&a->u.v4, &b->u.v4, sizeof(a->u.v4));
+    }
+    if (a->family == AF_INET6)
+    {
+        return memcmp(&a->u.v6, &b->u.v6, sizeof(a->u.v6));
+    }
+
+    return 0;
+}
+
 guint net_addr_hash(gconstpointer key)
 {
     const net_addr_t *addr = (const net_addr_t *)key;

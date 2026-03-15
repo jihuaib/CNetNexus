@@ -49,6 +49,14 @@ void net_addr_to_str(const net_addr_t *addr, char *buf, size_t sz);
 gboolean net_addr_equal(const net_addr_t *a, const net_addr_t *b);
 
 /**
+ * @brief 按字典序比较两个地址（family 优先，再比较地址字节）
+ * @param a 地址 a
+ * @param b 地址 b
+ * @return <0 表示 a<b，0 表示相等，>0 表示 a>b
+ */
+int net_addr_cmp(const net_addr_t *a, const net_addr_t *b);
+
+/**
  * @brief GLib 哈希表用 hash 函数（key 为 net_addr_t*）
  * @param key net_addr_t 指针
  * @return 哈希值

@@ -185,18 +185,24 @@ typedef struct bgp_notif_msg
  * AFI / SAFI 常量
  * ========================================================================== */
 
-/** @brief 地址族标识符（RFC 1700） */
-#define BGP_AFI_IPV4 1   /**< IPv4 */
-#define BGP_AFI_IPV6 2   /**< IPv6 */
-#define BGP_AFI_L2VPN 25 /**< L2VPN（EVPN） */
+/** 地址族标识符（RFC 1700） */
+typedef enum bgp_afi
+{
+    BGP_AFI_IPV4 = 1,  /**< IPv4 */
+    BGP_AFI_IPV6 = 2,  /**< IPv6 */
+    BGP_AFI_L2VPN = 25 /**< L2VPN（EVPN） */
+} bgp_afi_t;
 
-/** @brief 子地址族标识符 */
-#define BGP_SAFI_UNICAST 1        /**< 单播 */
-#define BGP_SAFI_LABELED 4        /**< MPLS 标签单播 */
-#define BGP_SAFI_EVPN 70          /**< EVPN（L2VPN） */
-#define BGP_SAFI_VPN_UNICAST 128  /**< VPN 单播（MPLS L3VPN） */
-#define BGP_SAFI_FLOWSPEC 133     /**< FlowSpec */
-#define BGP_SAFI_VPN_FLOWSPEC 134 /**< VPN FlowSpec */
+/** 子地址族标识符 */
+typedef enum bgp_safi
+{
+    BGP_SAFI_UNICAST = 1,       /**< 单播 */
+    BGP_SAFI_LABELED = 4,       /**< MPLS 标签单播 */
+    BGP_SAFI_EVPN = 70,         /**< EVPN（L2VPN） */
+    BGP_SAFI_VPN_UNICAST = 128, /**< VPN 单播（MPLS L3VPN） */
+    BGP_SAFI_FLOWSPEC = 133,    /**< FlowSpec */
+    BGP_SAFI_VPN_FLOWSPEC = 134 /**< VPN FlowSpec */
+} bgp_safi_t;
 
 /* ============================================================================
  * 基础类型
@@ -375,7 +381,7 @@ typedef struct bgp_nlri_flowspec
     bool has_rd;
 } bgp_nlri_flowspec_t;
 
-/** NLRI 条目 key 最大长度 */
+/** NLRI 条目字符串最大长度（显示/日志用） */
 #define BGP_NLRI_KEY_MAX 256
 
 /**
@@ -397,8 +403,26 @@ typedef struct bgp_nlri_entry
             uint16_t len;
         } opaque; /**< 原始字节（未知 AF） */
     };
-    char key[BGP_NLRI_KEY_MAX]; /**< 唯一字符串键（哈希/显示用），由 entry_to_str 填充 */
 } bgp_nlri_entry_t;
+
+/**
+ * @brief 比较两个 NLRI（字段级二进制比较）
+ *
+ * 返回值语义与 strcmp 相同：<0 / 0 / >0。
+ */
+int bgp_nlri_cmp(const bgp_nlri_entry_t *a, const bgp_nlri_entry_t *b);
+
+/**
+ * @brief 判断两个 NLRI 是否相等
+ */
+bool bgp_nlri_equal(const bgp_nlri_entry_t *a, const bgp_nlri_entry_t *b);
+
+/**
+ * @brief 将 NLRI 格式化为可读字符串
+ *
+ * 仅调用已注册 AFI/SAFI 的 entry_to_str 回调；未注册时输出空字符串。
+ */
+void bgp_nlri_to_str(const bgp_nlri_entry_t *entry, char *buf, size_t sz);
 
 /* ============================================================================
  * UPDATE 解析结果
@@ -473,10 +497,12 @@ typedef struct bgp_af_parser
     int (*parse_nexthop)(const uint8_t *nh_data, uint8_t nh_len, bgp_nexthop_t *nexthop);
 
     /**
-     * @brief 填充 entry->key 字符串（唯一键，供哈希表和显示使用）
-     * @param entry 目标条目（in/out）
+     * @brief 将 entry 格式化为字符串
+     * @param entry 输入 NLRI
+     * @param buf   输出缓冲区
+     * @param sz    输出缓冲区大小
      */
-    void (*entry_to_str)(bgp_nlri_entry_t *entry);
+    void (*entry_to_str)(const bgp_nlri_entry_t *entry, char *buf, size_t sz);
 } bgp_af_parser_t;
 
 /**

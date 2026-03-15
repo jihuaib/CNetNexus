@@ -40,7 +40,7 @@ void bgp_vrf_destroy(bgp_vrf_t *vrf)
         return;
     }
     LOG_INFO("BGP VRF destroyed: id=%u", vrf->vrf_id);
-    /* 先销毁 inst_hash（释放 bgp_peer_t 和 publist/bestlist），再销毁 sess_hash */
+    /* 先销毁 inst_hash（释放 bgp_peer_t 和 bestlist），再销毁 sess_hash */
     if (vrf->inst_hash)
     {
         g_hash_table_destroy(vrf->inst_hash);
@@ -280,6 +280,11 @@ void bgp_vrf_apply_update(bgp_vrf_t *vrf, const net_addr_t *src, const bgp_updat
         }
 
         int rc = bgp_rib_reach_one(inst->rib, e, src, &upd->attr, &upd->nexthop);
+        /* reach 成功（新增或更新）均需重新优选 */
+        if (rc >= 0 && inst->calc_queue)
+        {
+            bgp_calc_queue_push(inst->calc_queue, e);
+        }
         if (!stats)
         {
             continue;
@@ -309,6 +314,11 @@ void bgp_vrf_apply_update(bgp_vrf_t *vrf, const net_addr_t *src, const bgp_updat
         }
 
         int rc = bgp_rib_unreach_one(inst->rib, e, src);
+        /* unreach 成功（路径已删除）需重新优选（判断是否还有其他路径） */
+        if (rc == 1 && inst->calc_queue)
+        {
+            bgp_calc_queue_push(inst->calc_queue, e);
+        }
         if (!stats)
         {
             continue;
@@ -322,6 +332,13 @@ void bgp_vrf_apply_update(bgp_vrf_t *vrf, const net_addr_t *src, const bgp_updat
             stats->unreach_miss++;
         }
     }
+}
+
+/** bgp_rib_foreach_source 回调：将受影响的 NLRI 推入 calc_queue */
+static void push_nlri_to_calc_cb(const bgp_nlri_entry_t *nlri, gpointer user_data)
+{
+    bgp_calc_queue_t *q = user_data;
+    bgp_calc_queue_push(q, nlri);
 }
 
 uint32_t bgp_vrf_purge_session_routes(bgp_vrf_t *vrf, const net_addr_t *addr)
@@ -344,6 +361,12 @@ uint32_t bgp_vrf_purge_session_routes(bgp_vrf_t *vrf, const net_addr_t *addr)
         if (!inst || !inst->rib)
         {
             continue;
+        }
+
+        /* 先收集该来源的全部 NLRI，推入 calc_queue，再从 RIB 中删除 */
+        if (inst->calc_queue)
+        {
+            bgp_rib_foreach_source(inst->rib, addr, push_nlri_to_calc_cb, inst->calc_queue);
         }
 
         uint32_t removed_routes = 0;

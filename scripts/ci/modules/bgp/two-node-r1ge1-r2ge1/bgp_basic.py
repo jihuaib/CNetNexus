@@ -23,6 +23,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
     require_devices(top, ("r1", "r2"))
     r1_peer_ip = str(g_top.r1.GE_1.peer_ip)
     r2_peer_ip = str(g_top.r2.GE_1.peer_ip)
+    r1_local_ip = str(g_top.r1.GE_1.ip)
 
     step("Configure BGP base")
     run_cmds(rt=rt, device="r1", commands=["config", "bgp 65001", "router-id 1.1.1.1", "end"])
@@ -79,7 +80,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
     run_cmds(
         rt=rt,
         device="r1",
-        commands=["config", f"route ipv4 10.10.10.0 255.255.255.0 {r1_peer_ip}", "end"],
+        commands=["config", f"route ipv4 10.10.10.0 255.255.255.0 {r1_local_ip}", "end"],
     )
 
     route_checks = [
@@ -87,8 +88,14 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             "device": "r1",
             "command": "show bgp route af ipv4-unicast",
             "contains": ["10.10.10.0/24"],
-            "label": "r1 route 10.10.10.0/24",
-        }
+            "label": "r1 local route 10.10.10.0/24",
+        },
+        {
+            "device": "r2",
+            "command": "show bgp route af ipv4-unicast",
+            "contains": ["10.10.10.0/24"],
+            "label": "r2 learned route 10.10.10.0/24",
+        },
     ]
 
     step("Wait BGP routes")

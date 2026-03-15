@@ -10,7 +10,7 @@
 #include <glib.h>
 #include <stdint.h>
 
-/* 包含顺序：bgp_instance.h 传递包含 bgp_peer.h（定义枚举），之后再包含 bgp.h（定义宏） */
+/* 包含顺序：bgp_instance.h 传递包含 bgp_peer.h（定义枚举），必须先于 bgp.h（定义同名宏） */
 #include "bgp.h"
 #include "bgp_instance.h"
 
@@ -22,7 +22,7 @@
  */
 typedef struct bgp_bestpath_entry
 {
-    bgp_nlri_entry_t nlri; /**< NLRI（含 afi/safi/type/key/prefix） */
+    bgp_nlri_entry_t nlri; /**< NLRI（含 afi/safi/type/prefix） */
     bgp_attr_t attr;       /**< 最优路径的路径属性 */
     bgp_nexthop_t nexthop; /**< 最优路径的下一跳 */
     net_addr_t source;     /**< 最优路径来源（获胜对端的 IP 地址） */
@@ -64,7 +64,7 @@ void bgp_bestlist_destroy(bgp_bestlist_t *list);
 /**
  * @brief 新增或更新一条优选路由条目
  *
- * 按 nlri->key 查找：存在则更新 attr/nexthop/source；不存在则新增。
+ * 按 NLRI 二进制内容查找：存在则更新 attr/nexthop/source；不存在则新增。
  * 深拷贝所有字段，调用方无需保持传入指针的生命周期。
  *
  * @param list    优选链表
@@ -78,19 +78,19 @@ int bgp_bestlist_set(bgp_bestlist_t *list, const bgp_nlri_entry_t *nlri, const b
                      const bgp_nexthop_t *nexthop, const net_addr_t *source);
 
 /**
- * @brief 按 NLRI key 删除一条优选路由条目
+ * @brief 按 NLRI 删除一条优选路由条目
  *
  * @param list 优选链表
- * @param nlri 仅使用 key 字段匹配
+ * @param nlri NLRI 匹配键
  * @return 0 成功（已删除），-1 未找到或参数无效
  */
 int bgp_bestlist_del(bgp_bestlist_t *list, const bgp_nlri_entry_t *nlri);
 
 /**
- * @brief 按 NLRI key 查找优选路由条目（只读）
+ * @brief 按 NLRI 查找优选路由条目（只读）
  *
  * @param list 优选链表
- * @param nlri 仅使用 key 字段匹配
+ * @param nlri NLRI 匹配键
  * @return 条目指针（借用，调用方不可释放），未找到返回 NULL
  */
 const bgp_bestpath_entry_t *bgp_bestlist_find(const bgp_bestlist_t *list, const bgp_nlri_entry_t *nlri);
@@ -100,7 +100,7 @@ const bgp_bestpath_entry_t *bgp_bestlist_find(const bgp_bestlist_t *list, const 
 // ============================================================================
 
 /**
- * @brief 触发指定实例的路由优选计算
+ * @brief 触发指定实例的全量路由优选计算（占位）
  *
  * 遍历 inst->rib，对每个 NLRI 执行最优路径选择，通过 bgp_bestlist_set() /
  * bgp_bestlist_del() 更新 inst->bestlist。当前为占位实现。
@@ -109,5 +109,18 @@ const bgp_bestpath_entry_t *bgp_bestlist_find(const bgp_bestlist_t *list, const 
  * @return 0 成功，-1 失败
  */
 int bgp_calc_run(bgp_instance_t *inst);
+
+/**
+ * @brief 对单条 NLRI 执行 best-path 计算（由工作队列定时调用）
+ *
+ * 通过 NLRI 在 inst->rib 中定位 rthead，选出最优路径：
+ *   - rthead 不存在或路径哈希为空：同步发送 WITHDRAW（调用
+ *     bgp_work_send_withdraw_to_all），再从 bestlist 删除
+ *   - 有路由：选出最优路径，更新 bestlist，推 ANNOUNCE 到 pub_queue
+ *
+ * @param inst 目标地址族实例
+ * @param nlri NLRI 条目（由 calc_queue 条目提供）
+ */
+void bgp_calc_run_one(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri);
 
 #endif /* BGP_CALC_H */

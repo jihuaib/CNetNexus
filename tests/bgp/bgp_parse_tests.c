@@ -149,6 +149,27 @@ static bool addr_is_v6(const net_addr_t *addr, const char *ip)
            memcmp(&addr->u.v6, &expected, sizeof(expected)) == 0;
 }
 
+static bool nlri_key_eq(const bgp_nlri_entry_t *entry, const char *expect)
+{
+    char key[BGP_NLRI_KEY_MAX];
+    bgp_nlri_to_str(entry, key, sizeof(key));
+    return strcmp(key, expect) == 0;
+}
+
+static bool nlri_key_has(const bgp_nlri_entry_t *entry, const char *substr)
+{
+    char key[BGP_NLRI_KEY_MAX];
+    bgp_nlri_to_str(entry, key, sizeof(key));
+    return strstr(key, substr) != NULL;
+}
+
+static bool nlri_key_empty(const bgp_nlri_entry_t *entry)
+{
+    char key[BGP_NLRI_KEY_MAX];
+    bgp_nlri_to_str(entry, key, sizeof(key));
+    return key[0] == '\0';
+}
+
 static int test_af_registry(void)
 {
     bgp_parse_init();
@@ -361,12 +382,12 @@ static int test_update_legacy_ipv4(void)
     TEST_ASSERT(res->reach[0].type == BGP_NLRI_PREFIX);
     TEST_ASSERT(res->reach[0].prefix.prefix.prefix_len == 16);
     TEST_ASSERT(addr_is_v4(&res->reach[0].prefix.prefix.addr, "10.10.0.0"));
-    TEST_ASSERT(strcmp(res->reach[0].key, "10.10.0.0/16") == 0);
+    TEST_ASSERT(nlri_key_eq(&res->reach[0], "10.10.0.0/16"));
 
     TEST_ASSERT(res->unreach[0].type == BGP_NLRI_PREFIX);
     TEST_ASSERT(res->unreach[0].prefix.prefix.prefix_len == 24);
     TEST_ASSERT(addr_is_v4(&res->unreach[0].prefix.prefix.addr, "203.0.113.0"));
-    TEST_ASSERT(strcmp(res->unreach[0].key, "203.0.113.0/24") == 0);
+    TEST_ASSERT(nlri_key_eq(&res->unreach[0], "203.0.113.0/24"));
 
     TEST_ASSERT(addr_is_v4(&res->nexthop.global, "192.0.2.1"));
     TEST_ASSERT(res->attr.origin == BGP_ORIGIN_IGP);
@@ -466,7 +487,7 @@ static int test_update_unknown_af_opaque(void)
     TEST_ASSERT(res->reach[0].type == BGP_NLRI_OPAQUE);
     TEST_ASSERT(res->reach[0].opaque.len == sizeof(nlri));
     TEST_ASSERT(memcmp(res->reach[0].opaque.data, nlri, sizeof(nlri)) == 0);
-    TEST_ASSERT(strcmp(res->reach[0].key, "opaque:afi=999:safi=250") == 0);
+    TEST_ASSERT(nlri_key_empty(&res->reach[0]));
 
     bgp_update_result_free(res);
     return 0;
@@ -507,7 +528,7 @@ static int test_update_labeled_unicast(void)
     TEST_ASSERT(res->reach[0].prefix.label == 200);
     TEST_ASSERT(res->reach[0].prefix.prefix.prefix_len == 24);
     TEST_ASSERT(addr_is_v4(&res->reach[0].prefix.prefix.addr, "192.0.2.0"));
-    TEST_ASSERT(strcmp(res->reach[0].key, "192.0.2.0/24 label=200") == 0);
+    TEST_ASSERT(nlri_key_eq(&res->reach[0], "192.0.2.0/24 label=200"));
     TEST_ASSERT(addr_is_v4(&res->nexthop.global, "198.51.100.1"));
 
     bgp_update_result_free(res);
@@ -557,7 +578,7 @@ static int test_update_vpnv4_unicast(void)
     TEST_ASSERT(res->reach[0].prefix.prefix.prefix_len == 24);
     TEST_ASSERT(addr_is_v4(&res->reach[0].prefix.prefix.addr, "10.0.1.0"));
     TEST_ASSERT(addr_is_v4(&res->nexthop.global, "203.0.113.1"));
-    TEST_ASSERT(strstr(res->reach[0].key, "vpn:65000:1:10.0.1.0/24") != NULL);
+    TEST_ASSERT(nlri_key_has(&res->reach[0], "vpn:65000:1:10.0.1.0/24"));
 
     bgp_update_result_free(res);
     return 0;
@@ -623,8 +644,8 @@ static int test_update_evpn_type2(void)
     TEST_ASSERT(!res->reach[0].evpn.has_ip);
     TEST_ASSERT(memcmp(res->reach[0].evpn.mac, mac, sizeof(mac)) == 0);
     TEST_ASSERT(res->reach[0].evpn.label1 == 300);
-    TEST_ASSERT(strstr(res->reach[0].key, "evpn:2:") != NULL);
-    TEST_ASSERT(strstr(res->reach[0].key, "aa:bb:cc:dd:ee:ff") != NULL);
+    TEST_ASSERT(nlri_key_has(&res->reach[0], "evpn:2:"));
+    TEST_ASSERT(nlri_key_has(&res->reach[0], "aa:bb:cc:dd:ee:ff"));
 
     bgp_update_result_free(res);
     return 0;
@@ -665,7 +686,7 @@ static int test_update_flowspec(void)
     TEST_ASSERT(res->reach[0].flowspec.count == 2);
     TEST_ASSERT(strcmp(res->reach[0].flowspec.components[0].str, "dst=192.0.2.0/24") == 0);
     TEST_ASSERT(strcmp(res->reach[0].flowspec.components[1].str, "proto=tcp") == 0);
-    TEST_ASSERT(strcmp(res->reach[0].key, "dst=192.0.2.0/24,proto=tcp") == 0);
+    TEST_ASSERT(nlri_key_eq(&res->reach[0], "dst=192.0.2.0/24,proto=tcp"));
     TEST_ASSERT(addr_is_v4(&res->nexthop.global, "198.51.100.7"));
 
     bgp_update_result_free(res);

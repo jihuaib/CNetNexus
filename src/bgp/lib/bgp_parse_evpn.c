@@ -307,12 +307,17 @@ static bool parse_evpn_type5(const uint8_t *val, uint8_t vlen, bgp_nlri_evpn_t *
 }
 
 /* ============================================================================
- * EVPN entry_to_str（根据路由类型生成 key）
+ * EVPN entry_to_str（根据路由类型生成可读字符串）
  * ========================================================================== */
 
-static void evpn_entry_to_str(bgp_nlri_entry_t *entry)
+static void evpn_entry_to_str(const bgp_nlri_entry_t *entry, char *buf, size_t sz)
 {
-    bgp_nlri_evpn_t *e = &entry->evpn;
+    if (!entry || !buf || sz == 0)
+    {
+        return;
+    }
+
+    const bgp_nlri_evpn_t *e = &entry->evpn;
     char rd_str[48];
     char esi_str[32];
     char ip_str[INET6_ADDRSTRLEN];
@@ -321,7 +326,7 @@ static void evpn_entry_to_str(bgp_nlri_entry_t *entry)
     switch (e->route_type)
     {
         case 1: /* A-D */
-            snprintf(entry->key, BGP_NLRI_KEY_MAX, "evpn:1:rd=%s:ethag=%u:label=%u", rd_str, e->eth_tag, e->label1);
+            snprintf(buf, sz, "evpn:1:rd=%s:ethag=%u:label=%u", rd_str, e->eth_tag, e->label1);
             break;
 
         case 2: /* MAC/IP */
@@ -332,37 +337,37 @@ static void evpn_entry_to_str(bgp_nlri_entry_t *entry)
             if (e->has_ip)
             {
                 addr_to_str(&e->ip, ip_str, sizeof(ip_str));
-                snprintf(entry->key, BGP_NLRI_KEY_MAX, "evpn:2:rd=%s:mac=%s:ip=%s", rd_str, mac_str, ip_str);
+                snprintf(buf, sz, "evpn:2:rd=%s:mac=%s:ip=%s", rd_str, mac_str, ip_str);
             }
             else
             {
-                snprintf(entry->key, BGP_NLRI_KEY_MAX, "evpn:2:rd=%s:mac=%s", rd_str, mac_str);
+                snprintf(buf, sz, "evpn:2:rd=%s:mac=%s", rd_str, mac_str);
             }
             break;
         }
 
         case 3: /* IMET */
             addr_to_str(&e->ip, ip_str, sizeof(ip_str));
-            snprintf(entry->key, BGP_NLRI_KEY_MAX, "evpn:3:rd=%s:ethag=%u:ip=%s", rd_str, e->eth_tag, ip_str);
+            snprintf(buf, sz, "evpn:3:rd=%s:ethag=%u:ip=%s", rd_str, e->eth_tag, ip_str);
             break;
 
         case 4: /* Ethernet Segment */
             bgp_esi_to_str(&e->esi, esi_str, sizeof(esi_str));
             addr_to_str(&e->ip, ip_str, sizeof(ip_str));
-            snprintf(entry->key, BGP_NLRI_KEY_MAX, "evpn:4:rd=%s:esi=%s:ip=%s", rd_str, esi_str, ip_str);
+            snprintf(buf, sz, "evpn:4:rd=%s:esi=%s:ip=%s", rd_str, esi_str, ip_str);
             break;
 
         case 5: /* IP Prefix */
         {
             char prefix_str[INET6_ADDRSTRLEN];
             addr_to_str(&e->ip_prefix.addr, prefix_str, sizeof(prefix_str));
-            snprintf(entry->key, BGP_NLRI_KEY_MAX, "evpn:5:rd=%s:ethag=%u:%s/%u:label=%u", rd_str, e->eth_tag,
-                     prefix_str, e->ip_prefix.prefix_len, e->label1);
+            snprintf(buf, sz, "evpn:5:rd=%s:ethag=%u:%s/%u:label=%u", rd_str, e->eth_tag, prefix_str,
+                     e->ip_prefix.prefix_len, e->label1);
             break;
         }
 
         default:
-            snprintf(entry->key, BGP_NLRI_KEY_MAX, "evpn:type%u:rd=%s", e->route_type, rd_str);
+            snprintf(buf, sz, "evpn:type%u:rd=%s", e->route_type, rd_str);
             break;
     }
 }
@@ -462,7 +467,6 @@ static int parse_evpn_nlri(const uint8_t *data, uint16_t len, bgp_nlri_entry_t *
 
         if (ok)
         {
-            evpn_entry_to_str(e);
             idx++;
         }
 

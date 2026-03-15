@@ -125,9 +125,6 @@ static int parse_labeled(const uint8_t *data, uint16_t len, int af, uint16_t afi
             {
                 e->prefix.prefix.addr.u.v6.s6_addr[nbytes - 1] &= (uint8_t)(0xFF << (8 - (ip_bits % 8)));
             }
-            char ip[INET6_ADDRSTRLEN];
-            inet_ntop(AF_INET6, &e->prefix.prefix.addr.u.v6, ip, sizeof(ip));
-            snprintf(e->key, BGP_NLRI_KEY_MAX, "%s/%u label=%u", ip, ip_bits, label);
         }
         else
         {
@@ -138,9 +135,6 @@ static int parse_labeled(const uint8_t *data, uint16_t len, int af, uint16_t afi
                 tmp[nbytes - 1] &= (uint8_t)(0xFF << (8 - (ip_bits % 8)));
             }
             memcpy(&e->prefix.prefix.addr.u.v4, tmp, 4);
-            char ip[INET_ADDRSTRLEN];
-            inet_ntop(AF_INET, &e->prefix.prefix.addr.u.v4, ip, sizeof(ip));
-            snprintf(e->key, BGP_NLRI_KEY_MAX, "%s/%u label=%u", ip, ip_bits, label);
         }
 
         pos += nbytes;
@@ -171,11 +165,15 @@ static int ipv4_labeled_nexthop(const uint8_t *nh_data, uint8_t nh_len, bgp_next
     return 0;
 }
 
-static void ipv4_labeled_to_str(bgp_nlri_entry_t *e)
+static void ipv4_labeled_to_str(const bgp_nlri_entry_t *e, char *buf, size_t sz)
 {
+    if (!e || !buf || sz == 0)
+    {
+        return;
+    }
     char ip[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &e->prefix.prefix.addr.u.v4, ip, sizeof(ip));
-    snprintf(e->key, BGP_NLRI_KEY_MAX, "%s/%u label=%u", ip, e->prefix.prefix.prefix_len, e->prefix.label);
+    snprintf(buf, sz, "%s/%u label=%u", ip, e->prefix.prefix.prefix_len, e->prefix.label);
 }
 
 /* ============================================================================
@@ -204,11 +202,15 @@ static int ipv6_labeled_nexthop(const uint8_t *nh_data, uint8_t nh_len, bgp_next
     return 0;
 }
 
-static void ipv6_labeled_to_str(bgp_nlri_entry_t *e)
+static void ipv6_labeled_to_str(const bgp_nlri_entry_t *e, char *buf, size_t sz)
 {
+    if (!e || !buf || sz == 0)
+    {
+        return;
+    }
     char ip[INET6_ADDRSTRLEN];
     inet_ntop(AF_INET6, &e->prefix.prefix.addr.u.v6, ip, sizeof(ip));
-    snprintf(e->key, BGP_NLRI_KEY_MAX, "%s/%u label=%u", ip, e->prefix.prefix.prefix_len, e->prefix.label);
+    snprintf(buf, sz, "%s/%u label=%u", ip, e->prefix.prefix.prefix_len, e->prefix.label);
 }
 
 /* ============================================================================

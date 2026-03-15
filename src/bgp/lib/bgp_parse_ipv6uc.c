@@ -75,10 +75,6 @@ static int parse_prefixes(const uint8_t *data, uint16_t len, bgp_nlri_entry_t **
         e->safi = BGP_SAFI_UNICAST;
         e->type = BGP_NLRI_PREFIX;
 
-        char ip[INET6_ADDRSTRLEN];
-        inet_ntop(AF_INET6, &e->prefix.prefix.addr.u.v6, ip, sizeof(ip));
-        snprintf(e->key, BGP_NLRI_KEY_MAX, "%s/%u", ip, e->prefix.prefix.prefix_len);
-
         pos += consumed;
         idx++;
     }
@@ -117,11 +113,15 @@ static int parse_nexthop(const uint8_t *nh_data, uint8_t nh_len, bgp_nexthop_t *
  * entry_to_str
  * ========================================================================== */
 
-static void entry_to_str(bgp_nlri_entry_t *entry)
+static void entry_to_str(const bgp_nlri_entry_t *entry, char *buf, size_t sz)
 {
+    if (!entry || !buf || sz == 0)
+    {
+        return;
+    }
     char ip[INET6_ADDRSTRLEN];
     inet_ntop(AF_INET6, &entry->prefix.prefix.addr.u.v6, ip, sizeof(ip));
-    snprintf(entry->key, BGP_NLRI_KEY_MAX, "%s/%u", ip, entry->prefix.prefix.prefix_len);
+    snprintf(buf, sz, "%s/%u", ip, entry->prefix.prefix.prefix_len);
 }
 
 /* ============================================================================

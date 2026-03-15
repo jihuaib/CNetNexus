@@ -18,6 +18,7 @@
 
 #include "bgp.h"
 #include "bgp_bdr.h"
+#include "bgp_calc.h"
 #include "bgp_cli.h"
 #include "bgp_conn.h"
 #include "bgp_db.h"
@@ -375,6 +376,58 @@ static void bgp_handle_active_connect(bgp_conn_t *conn)
 }
 
 /**
+ * @brief 邻居会话建连后，向该连接补发当前 AF best-route 快照
+ *
+ * 说明：导入路由可能早于邻居建连完成；若仅依赖异步 pub_queue，任务可能在无 ESTABLISHED 邻居
+ * 时被消费掉。建连后补发一次 best-route，确保重启恢复后的路由可重新通告对端。
+ */
+static void bgp_reannounce_best_to_conn(bgp_session_t *sess, bgp_conn_t *conn)
+{
+    if (!sess || !conn || conn->fd < 0 || !sess->vrf)
+    {
+        return;
+    }
+
+    uint32_t sent = 0;
+    GHashTableIter iter;
+    gpointer key, val;
+    g_hash_table_iter_init(&iter, sess->vrf->inst_hash);
+    while (g_hash_table_iter_next(&iter, &key, &val))
+    {
+        (void)key;
+        bgp_instance_t *inst = (bgp_instance_t *)val;
+        if (!inst || !inst->bestlist || !inst->peer_hash)
+        {
+            continue;
+        }
+
+        /* 仅对该邻居在此 AF 下已使能时补发 */
+        if (!g_hash_table_lookup(inst->peer_hash, &sess->neighbor_addr))
+        {
+            continue;
+        }
+
+        for (GList *node = inst->bestlist->entries; node; node = node->next)
+        {
+            const bgp_bestpath_entry_t *best = (const bgp_bestpath_entry_t *)node->data;
+            if (!best)
+            {
+                continue;
+            }
+            bgp_pkt_send_update(conn, &best->nlri, &best->attr, &best->nexthop);
+            sent++;
+        }
+    }
+
+    if (sent > 0)
+    {
+        char nbr[64];
+        net_addr_to_str(&sess->neighbor_addr, nbr, sizeof(nbr));
+        LOG_INFO("BGP: Re-announced %u best route(s) to %s on session establish", sent, nbr);
+    }
+}
+
+/**
  * @brief 处理已建立连接上的 BGP 数据（EPOLLIN）
  *
  * 碰撞检测已在 TCP 层完成，此处负责数据处理、定时器管理和连接关闭。
@@ -460,6 +513,8 @@ static void bgp_handle_data(bgp_conn_t *conn)
         {
             bgp_session_arm_hold(sess, g_bgp_local->epoll_fd, sess->negotiated_hold);
         }
+
+        bgp_reannounce_best_to_conn(sess, conn);
     }
 
     /* 收到 KA 或 UPDATE：重置 Hold 定时器 */
@@ -625,6 +680,12 @@ static void *bgp_server_thread(void *arg)
                     case BGP_TIMER_TYPE_HOLD:
                         bgp_handle_hold_timer(sentinel->session);
                         break;
+                    case BGP_TIMER_TYPE_WORK:
+                    {
+                        bgp_work_sentinel_t *ws = (bgp_work_sentinel_t *)sentinel;
+                        bgp_work_process(ws->inst);
+                        break;
+                    }
                     default:
                         break;
                 }
@@ -737,15 +798,6 @@ static void bgp_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         return;
     }
 
-    /* 仅恢复：表不存在（BGP 未曾配置）时静默返回 NULL，不建表也不写默认值 */
-    uint32_t ret = bgp_db_restore(ctx);
-    if (ret != ERRCODE_SUCCESS)
-    {
-        LOG_ERROR("BGP: Failed to restore state from database");
-        send_phase_response(ctx, msg, ERRCODE_FAIL);
-        return;
-    }
-
     int epoll_fd = epoll_create1(EPOLL_CLOEXEC);
     if (epoll_fd < 0)
     {
@@ -754,6 +806,19 @@ static void bgp_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         return;
     }
     g_bgp_local->epoll_fd = epoll_fd;
+    bgp_work_set_epoll_fd(epoll_fd);
+
+    /* 仅恢复：表不存在（BGP 未曾配置）时静默返回 NULL，不建表也不写默认值 */
+    uint32_t ret = bgp_db_restore(ctx);
+    if (ret != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("BGP: Failed to restore state from database");
+        close(epoll_fd);
+        g_bgp_local->epoll_fd = DEV_INVALID_FD;
+        bgp_work_set_epoll_fd(DEV_INVALID_FD);
+        send_phase_response(ctx, msg, ERRCODE_FAIL);
+        return;
+    }
 
     g_bgp_local->running = 1;
     if (pthread_create(&g_bgp_local->server_thread, NULL, bgp_server_thread, NULL) != 0)
@@ -761,6 +826,7 @@ static void bgp_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         LOG_PERROR("BGP: Failed to create server thread");
         close(epoll_fd);
         g_bgp_local->epoll_fd = DEV_INVALID_FD;
+        bgp_work_set_epoll_fd(DEV_INVALID_FD);
         g_bgp_local->running = 0;
         send_phase_response(ctx, msg, ERRCODE_FAIL);
         return;
@@ -840,6 +906,7 @@ static void bgp_on_shutdown(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     {
         close(g_bgp_local->epoll_fd);
         g_bgp_local->epoll_fd = DEV_INVALID_FD;
+        bgp_work_set_epoll_fd(DEV_INVALID_FD);
     }
 
     if (g_bgp_local->protocol)
@@ -909,17 +976,19 @@ static int bgp_import_route_entry(const route_msg_entry_t *entry)
     nlri.prefix.has_rd = false;
     nlri.prefix.has_label = false;
 
-    /* key 字段仅用于显示，从二进制地址格式化 */
-    char prefix_str[64];
-    net_addr_to_str(&entry->prefix_addr, prefix_str, sizeof(prefix_str));
-    snprintf(nlri.key, sizeof(nlri.key), "%s/%u", prefix_str, (unsigned)entry->prefix_len);
-
     net_addr_t src = entry->source_addr;
 
     if (entry->is_withdraw)
     {
-        bgp_rib_unreach_one(inst->rib, &nlri, &src);
-        LOG_DEBUG("BGP: Import route withdraw %s", nlri.key);
+        int rc = bgp_rib_unreach_one(inst->rib, &nlri, &src);
+        /* 与对端 UPDATE 处理保持一致：撤销成功后触发一次优选，决定是否发 WITHDRAW */
+        if (rc == 1 && inst->calc_queue)
+        {
+            bgp_calc_queue_push(inst->calc_queue, &nlri);
+        }
+        char nlri_str[BGP_NLRI_KEY_MAX];
+        bgp_nlri_to_str(&nlri, nlri_str, sizeof(nlri_str));
+        LOG_DEBUG("BGP: Import route withdraw %s", nlri_str);
     }
     else
     {
@@ -935,12 +1004,19 @@ static int bgp_import_route_entry(const route_msg_entry_t *entry)
         nexthop.has_link_local = false;
         nexthop.global = entry->nexthop_addr;
 
-        bgp_rib_reach_one(inst->rib, &nlri, &src, &attr, &nexthop);
+        int rc = bgp_rib_reach_one(inst->rib, &nlri, &src, &attr, &nexthop);
+        /* 与对端 UPDATE 处理保持一致：新增/更新都触发 best-path 与发布流程 */
+        if (rc >= 0 && inst->calc_queue)
+        {
+            bgp_calc_queue_push(inst->calc_queue, &nlri);
+        }
 
         char nh_str[64], src_str[64];
         net_addr_to_str(&entry->nexthop_addr, nh_str, sizeof(nh_str));
         net_addr_to_str(&entry->source_addr, src_str, sizeof(src_str));
-        LOG_DEBUG("BGP: Import route add %s nh=%s src=%s", nlri.key, nh_str, src_str);
+        char nlri_str[BGP_NLRI_KEY_MAX];
+        bgp_nlri_to_str(&nlri, nlri_str, sizeof(nlri_str));
+        LOG_DEBUG("BGP: Import route add %s nh=%s src=%s", nlri_str, nh_str, src_str);
     }
 
     return 1;

@@ -10,6 +10,7 @@
 #include <glib.h>
 #include <stdint.h>
 
+/* 包含顺序：bgp_peer.h 定义枚举，必须先于 bgp.h（定义同名宏） */
 #include "bgp.h"
 #include "bgp_conn.h"
 #include "bgp_peer.h"

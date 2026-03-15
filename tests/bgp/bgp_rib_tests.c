@@ -18,17 +18,16 @@
     } while (0)
 
 /* 解析 "addr/plen" 字符串，同时填写二进制前缀字段（供 nlri_compare 使用） */
-static void make_prefix_entry(bgp_nlri_entry_t *e, uint16_t afi, uint8_t safi, const char *key)
+static void make_prefix_entry(bgp_nlri_entry_t *e, uint16_t afi, uint8_t safi, const char *prefix)
 {
     memset(e, 0, sizeof(*e));
     e->afi  = afi;
     e->safi = safi;
     e->type = BGP_NLRI_PREFIX;
-    snprintf(e->key, sizeof(e->key), "%s", key);
 
     /* 解析 "addr/plen" → 二进制 */
     char addr_buf[64];
-    snprintf(addr_buf, sizeof(addr_buf), "%s", key);
+    snprintf(addr_buf, sizeof(addr_buf), "%s", prefix);
     char *slash = strchr(addr_buf, '/');
     if (slash)
     {
