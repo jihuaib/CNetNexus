@@ -54,4 +54,23 @@ void route_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
  */
 int route_module_init(void);
 
+/**
+ * @brief 统一入口：向 RIB 添加一条路径，并向订阅者发送增量通知
+ *
+ * @param ctx         IPC 上下文（为 NULL 时使用 g_route_local->dev_ipc_ctx）
+ * @param vrf_id      VRF ID
+ * @param afi         地址族
+ * @param prefix_addr 前缀地址
+ * @param prefix_len  前缀长度
+ * @param protocol    协议来源
+ * @param source_addr 路径来源地址
+ * @param nexthop_addr 下一跳地址
+ * @param metric      度量
+ * @param preference  管理距离/优先级
+ * @return <0 失败；0 表示更新已有路径；>0 表示新增路径（通知失败不会回滚）
+ */
+int route_add_and_notify(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr,
+                         uint8_t prefix_len, uint32_t protocol, const net_addr_t *source_addr,
+                         const net_addr_t *nexthop_addr, int32_t metric, int32_t preference);
+
 #endif /* ROUTE_MAIN_H */

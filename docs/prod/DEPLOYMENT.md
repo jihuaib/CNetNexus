@@ -113,7 +113,7 @@ telnet localhost 3788
 
 ```bash
 # 本地快速构建（当前架构，适合开发 / GNS3 直接导入）
-./scripts/dev/build-gns3-image.sh
+./scripts/dev/build-docker-image.sh
 
 # 多架构发布包（生成 .tar.gz，用于 GitHub Release）
 ./scripts/prod/publish.sh                      # amd64 + arm64 + armv7
@@ -438,7 +438,7 @@ docker volume rm netnexus-data
 
 ```bash
 # 构建新版本镜像
-./scripts/dev/build-gns3-image.sh
+./scripts/dev/build-docker-image.sh
 
 # 或从发布包加载
 docker load < netnexus-1.1.0-docker-amd64.tar.gz

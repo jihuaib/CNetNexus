@@ -40,7 +40,7 @@ void bgp_vrf_destroy(bgp_vrf_t *vrf)
         return;
     }
     LOG_INFO("BGP VRF destroyed: id=%u", vrf->vrf_id);
-    /* 先销毁 inst_hash（释放 bgp_peer_t），再销毁 sess_hash（仅释放借用引用链表节点） */
+    /* 先销毁 inst_hash（释放 bgp_peer_t 和 publist/bestlist），再销毁 sess_hash */
     if (vrf->inst_hash)
     {
         g_hash_table_destroy(vrf->inst_hash);

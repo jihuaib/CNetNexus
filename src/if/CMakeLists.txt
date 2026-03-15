@@ -1,6 +1,7 @@
 set(IF_SOURCES
     if.c
     if_map.c
+    if_pub.c
     if_cfg_apply.c
     if_main.c
     if_cli.c
@@ -15,6 +16,7 @@ target_link_libraries(netnexus-if PRIVATE
     dev_api
     cli_api
     db_api
+    route_api
     ${GLIB_LIBRARIES}
 )
 

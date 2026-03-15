@@ -42,7 +42,7 @@ int route_cli_handle_show_config(dev_ipc_message_t *msg);
 void route_cli_cleanup_state(void);
 
 /**
- * @brief 从 DB route_batch 表恢复所有 batch 路由到内存 RIB（Phase 3 调用，不发订阅通知）
+ * @brief 从 DB route_batch 表恢复所有 batch 路由到内存 RIB（Phase 3 调用，走统一加路由通知入口）
  * @param ctx IPC 上下文
  */
 void route_batch_restore_from_db(dev_ipc_context_t *ctx);

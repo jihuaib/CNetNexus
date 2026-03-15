@@ -100,14 +100,6 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
     step("Wait BGP sessions after reboot")
     wait_checks(rt, session_checks, timeout=30)
 
-    step("Replay static route after reboot")
-    run_cmds(
-        rt=rt,
-        device="r1",
-        strict=False,
-        commands=["config", f"route ipv4 10.10.10.0 255.255.255.0 {r1_peer_ip}", "end"],
-    )
-
     step("Wait BGP routes after reboot")
     wait_checks(rt, route_checks, timeout=30)
 

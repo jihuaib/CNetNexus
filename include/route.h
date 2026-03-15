@@ -50,6 +50,8 @@
 // 管理距离（Administrative Distance）
 // ============================================================================
 
+/** 直连路由管理距离 */
+#define ROUTE_ADMIN_DIST_CONNECTED 0
 /** 静态路由管理距离 */
 #define ROUTE_ADMIN_DIST_STATIC 1
 /** OSPF 路由管理距离 */
@@ -69,6 +71,8 @@
 #define ROUTE_MSG_TYPE_REPORT DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ROUTE, 0x0003)
 /** 增量路由更新（单条路由新增/撤销） */
 #define ROUTE_MSG_TYPE_UPDATE DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ROUTE, 0x0004)
+/** 路由注入请求（其他模块 -> ROUTE，payload=route_msg_entry_t） */
+#define ROUTE_MSG_TYPE_INJECT DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ROUTE, 0x0010)
 /** 通用应答 */
 #define ROUTE_MSG_TYPE_ACK DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ROUTE, 0x00FF)
 
@@ -131,5 +135,49 @@ typedef struct route_msg_ack
 {
     int32_t result; /**< 错误码（ERRCODE_SUCCESS = 0 表示成功） */
 } route_msg_ack_t;
+
+// ============================================================================
+// ROUTE 注入 API（供其他模块调用）
+// ============================================================================
+
+/**
+ * @brief 向 ROUTE 模块发送一条路由注入消息（add/update 或 withdraw）
+ * @param ctx   调用方 IPC 上下文（需已连接到 ROUTE 模块）
+ * @param entry 路由消息条目
+ * @return 成功返回 ERRCODE_SUCCESS，失败返回 ERRCODE_FAIL
+ */
+int route_rpc_inject(dev_ipc_context_t *ctx, const route_msg_entry_t *entry);
+
+/**
+ * @brief 通过 IPC 向 ROUTE 模块添加/更新一条路径
+ * @param ctx        调用方 IPC 上下文
+ * @param vrf_id     VRF ID
+ * @param afi        地址族（ROUTE_AFI_IPV4/ROUTE_AFI_IPV6）
+ * @param prefix_addr 前缀地址（二进制）
+ * @param prefix_len 前缀长度
+ * @param protocol   路由协议（ROUTE_PROTOCOL_*）
+ * @param source     路径来源标识（用于唯一键）
+ * @param nexthop    下一跳地址
+ * @param metric     度量值
+ * @param preference 管理距离
+ * @return 成功返回 ERRCODE_SUCCESS，失败返回 ERRCODE_FAIL
+ */
+int route_rpc_add(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr,
+                  uint8_t prefix_len, uint32_t protocol, const net_addr_t *source, const net_addr_t *nexthop,
+                  int32_t metric, int32_t preference);
+
+/**
+ * @brief 通过 IPC 向 ROUTE 模块撤销一条路径
+ * @param ctx         调用方 IPC 上下文
+ * @param vrf_id      VRF ID
+ * @param afi         地址族（ROUTE_AFI_IPV4/ROUTE_AFI_IPV6）
+ * @param prefix_addr 前缀地址（二进制）
+ * @param prefix_len  前缀长度
+ * @param protocol    路由协议（ROUTE_PROTOCOL_*）
+ * @param source      路径来源标识（用于唯一键）
+ * @return 成功返回 ERRCODE_SUCCESS，失败返回 ERRCODE_FAIL
+ */
+int route_rpc_del(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr,
+                  uint8_t prefix_len, uint32_t protocol, const net_addr_t *source);
 
 #endif /* ROUTE_H */

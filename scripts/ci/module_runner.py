@@ -34,13 +34,17 @@ from top_runner import TopologyRuntime, load_topology, sanitize_name  # noqa: E4
 
 MAX_HTML_OUTPUT_CHARS = 200000
 TOP_CANDIDATES = ("top.yaml", "top.yml", "top.json")
-STEP_MARKER_RE = re.compile(r"^\s*=+\s*STEP:\s*(.*?)\s*=+\s*$")
+STEP_MARKER_RE = re.compile(r"^(?:\[[^\]]+\]\s*)?\s*=+\s*STEP:\s*(.*?)\s*=+\s*$")
 FAIL_STEP_HINTS = (
     "===== CHECK FAIL:",
     "Traceback (most recent call last):",
     "RuntimeError:",
     "ERROR:",
     "missing:",
+)
+TIMESTAMP_FMT = "%Y-%m-%dT%H:%M:%S.%fZ"
+MODULE_ROW_RE = re.compile(
+    r"^\s*(?P<id>\d+)\s+(?P<name>[A-Za-z0-9_-]+)\s+(?P<phase>[A-Za-z0-9_-]+)\s+(?P<port>\d+)\s+(?P<ipc>[A-Za-z0-9_-]+)\s*$"
 )
 
 
@@ -77,6 +81,47 @@ class Tee(io.TextIOBase):
     def flush(self) -> None:
         for target in self.targets:
             target.flush()
+
+
+class TimestampedBuffer(io.TextIOBase):
+    """
+    Capture text with per-line UTC timestamp prefix for report/log rendering.
+    """
+
+    def __init__(self) -> None:
+        self._buf = io.StringIO()
+        self._pending = ""
+
+    def _now(self) -> str:
+        return datetime.now(timezone.utc).strftime(TIMESTAMP_FMT)
+
+    def _write_line(self, line: str) -> None:
+        self._buf.write(f"[{self._now()}] {line}")
+
+    def write(self, s: str) -> int:
+        if not s:
+            return 0
+
+        text = self._pending + s
+        self._pending = ""
+
+        parts = text.splitlines(keepends=True)
+        if parts and not (parts[-1].endswith("\n") or parts[-1].endswith("\r")):
+            self._pending = parts.pop()
+
+        for part in parts:
+            self._write_line(part)
+        return len(s)
+
+    def flush(self) -> None:
+        # Keep pending fragment until newline/finalize, no-op here.
+        pass
+
+    def getvalue(self) -> str:
+        if self._pending:
+            self._write_line(self._pending)
+            self._pending = ""
+        return self._buf.getvalue()
 
 
 def format_timestamp(ts: float) -> str:
@@ -130,12 +175,48 @@ def load_run_callable(script: Path):
     return run_fn
 
 
+def ensure_device_modules_ready(rt: TopologyRuntime, top: dict[str, Any]) -> None:
+    devices = top.get("devices", {})
+    if not isinstance(devices, dict) or not devices:
+        raise RuntimeError("top.devices must be a non-empty mapping for module precheck")
+
+    print("===== STEP: Precheck device modules =====")
+    for dev in sorted(devices.keys()):
+        out = rt.exec_cmd(dev, "show dev modules", strict=False)
+        rows: list[dict[str, str]] = []
+        for line in out.splitlines():
+            m = MODULE_ROW_RE.match(line)
+            if m:
+                rows.append(
+                    {
+                        "name": m.group("name"),
+                        "phase": m.group("phase"),
+                        "ipc": m.group("ipc"),
+                    }
+                )
+
+        if not rows:
+            raise RuntimeError(f"{dev}: failed to parse module table from 'show dev modules'\n{out}")
+
+        bad = [
+            f"{r['name']}(phase={r['phase']},ipc={r['ipc']})"
+            for r in rows
+            if r["phase"].upper() != "READY" or r["ipc"].lower() != "up"
+        ]
+        if bad:
+            raise RuntimeError(
+                f"{dev}: modules not healthy (require Phase=READY and IPC=up): {', '.join(bad)}\n{out}"
+            )
+
+        print(f"[{dev}] modules READY/up OK ({len(rows)} modules)")
+
+
 def run_check(script: Path, rt: TopologyRuntime, top: dict[str, Any]) -> CheckResult:
     command = ["run(rt, top)"]
     started = time.time()
 
-    out_buf = io.StringIO()
-    err_buf = io.StringIO()
+    out_buf = TimestampedBuffer()
+    err_buf = TimestampedBuffer()
     tee_out = Tee(sys.stdout, out_buf)
     tee_err = Tee(sys.stderr, err_buf)
 
@@ -146,6 +227,7 @@ def run_check(script: Path, rt: TopologyRuntime, top: dict[str, Any]) -> CheckRe
         with contextlib.redirect_stdout(tee_out), contextlib.redirect_stderr(tee_err):
             print(f"===== RUN CHECK: {script} =====")
             load_global_top(top)
+            ensure_device_modules_ready(rt, top)
             run_fn(rt, top)
             print(f"===== CHECK PASS: {script} =====")
     except Exception:
@@ -246,8 +328,8 @@ def run_case(
             connect_timeout=connect_timeout,
             verbose=verbose,
         )
-        startup_out_buf = io.StringIO()
-        startup_err_buf = io.StringIO()
+        startup_out_buf = TimestampedBuffer()
+        startup_err_buf = TimestampedBuffer()
         startup_tee_out = Tee(sys.stdout, startup_out_buf)
         startup_tee_err = Tee(sys.stderr, startup_err_buf)
         with contextlib.redirect_stdout(startup_tee_out), contextlib.redirect_stderr(startup_tee_err):

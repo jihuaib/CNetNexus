@@ -152,7 +152,7 @@ curl http://<VM_IP>:3080/v2/version
 
 ```bash
 cd ~/code/CNetNexus
-./build-gns3-image.sh
+./scripts/dev/build-docker-image.sh
 ```
 
 ### 4.2 导出并传输到 VM
@@ -177,7 +177,7 @@ docker images | grep netnexus
 
 ```bash
 # Mac 上
-./build-gns3-image.sh
+./scripts/dev/build-docker-image.sh
 docker save netnexus:latest | gzip > netnexus-latest.tar.gz
 scp netnexus-latest.tar.gz jhb@<VM_IP>:~
 

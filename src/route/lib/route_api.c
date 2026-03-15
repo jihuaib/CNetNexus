@@ -2,10 +2,87 @@
  * @file   route_api.c
  * @brief  Route 模块对外 API 实现
  * @author jhb
- * @date   2026/02/01
+ * @date   2026/03/15
  */
-#include <stdio.h>
-#include <stdlib.h>
+#include <glib.h>
+#include <string.h>
 
-#include "dev.h"
-#include "route_main.h"
+#include "errcode.h"
+#include "route.h"
+
+int route_rpc_inject(dev_ipc_context_t *ctx, const route_msg_entry_t *entry)
+{
+    if (!ctx || !entry)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    route_msg_entry_t *payload = (route_msg_entry_t *)g_memdup2(entry, sizeof(route_msg_entry_t));
+    if (!payload)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    dev_ipc_message_t *msg = dev_ipc_message_create(ROUTE_MSG_TYPE_INJECT, dev_ipc_get_module_id(ctx),
+                                                    DEV_MODULE_ID_ROUTE, 0, payload, sizeof(route_msg_entry_t), g_free);
+    if (!msg)
+    {
+        g_free(payload);
+        return ERRCODE_FAIL;
+    }
+
+    int ret = dev_ipc_send(ctx, DEV_MODULE_ID_ROUTE, msg);
+    dev_ipc_message_free(msg);
+    return (ret == 0) ? ERRCODE_SUCCESS : ERRCODE_FAIL;
+}
+
+int route_rpc_add(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr,
+                  uint8_t prefix_len, uint32_t protocol, const net_addr_t *source, const net_addr_t *nexthop,
+                  int32_t metric, int32_t preference)
+{
+    if (!prefix_addr || !source || !nexthop)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    route_msg_entry_t entry;
+    memset(&entry, 0, sizeof(entry));
+    entry.vrf_id = vrf_id;
+    entry.afi = afi;
+    entry.safi = ROUTE_SAFI_UNICAST;
+    entry.prefix_len = prefix_len;
+    entry.protocol = protocol;
+    entry.metric = metric;
+    entry.preference = preference;
+    entry.is_withdraw = 0;
+    entry.prefix_addr = *prefix_addr;
+    entry.source_addr = *source;
+    entry.nexthop_addr = *nexthop;
+
+    return route_rpc_inject(ctx, &entry);
+}
+
+int route_rpc_del(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr,
+                  uint8_t prefix_len, uint32_t protocol, const net_addr_t *source)
+{
+    if (!prefix_addr || !source)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    route_msg_entry_t entry;
+    memset(&entry, 0, sizeof(entry));
+    entry.vrf_id = vrf_id;
+    entry.afi = afi;
+    entry.safi = ROUTE_SAFI_UNICAST;
+    entry.prefix_len = prefix_len;
+    entry.protocol = protocol;
+    entry.metric = 0;
+    entry.preference = 0;
+    entry.is_withdraw = 1;
+    entry.prefix_addr = *prefix_addr;
+    entry.source_addr = *source;
+    entry.nexthop_addr.family = source->family;
+
+    return route_rpc_inject(ctx, &entry);
+}

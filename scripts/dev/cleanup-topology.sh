@@ -4,22 +4,22 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/ci/cleanup.sh [options]
+  scripts/dev/cleanup-topology.sh [options]
 
 Options:
   --dry-run             Show matched resources without deleting
   --name-regex <regex>  Resource name regex
-                        (default: ^nn-(case|top|bgp)-)
+                        (default: ^nn-(case|top|topup|bgp)-)
   -h, --help            Show help
 
 Examples:
-  scripts/ci/cleanup.sh
-  scripts/ci/cleanup.sh --dry-run
-  scripts/ci/cleanup.sh --name-regex '^nn-case-'
+  scripts/dev/cleanup-topology.sh
+  scripts/dev/cleanup-topology.sh --dry-run
+  scripts/dev/cleanup-topology.sh --name-regex '^nn-case-'
 EOF
 }
 
-NAME_REGEX='^nn-(case|top|bgp)-'
+NAME_REGEX='^nn-(case|top|topup|bgp)-'
 DRY_RUN=0
 
 while [[ $# -gt 0 ]]; do

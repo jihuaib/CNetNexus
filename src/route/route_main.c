@@ -97,6 +97,49 @@ static void route_on_connect(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
+int route_add_and_notify(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr,
+                         uint8_t prefix_len, uint32_t protocol, const net_addr_t *source_addr,
+                         const net_addr_t *nexthop_addr, int32_t metric, int32_t preference)
+{
+    if (!g_route_local || !g_route_local->rib || !prefix_addr || !source_addr || !nexthop_addr)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    int ret = route_rib_add(g_route_local->rib, vrf_id, afi, prefix_addr, prefix_len, protocol, source_addr,
+                            nexthop_addr, metric, preference);
+    if (ret < 0)
+    {
+        return ret;
+    }
+
+    if (!g_route_local->subscribers)
+    {
+        return ret;
+    }
+
+    dev_ipc_context_t *pub_ctx = ctx ? ctx : g_route_local->dev_ipc_ctx;
+    if (!pub_ctx)
+    {
+        return ret;
+    }
+
+    const route_head_t *head = route_rib_lookup_head(g_route_local->rib, vrf_id, afi, prefix_addr, prefix_len);
+    if (!head)
+    {
+        return ret;
+    }
+
+    const route_path_t *path = route_rib_lookup_path(head, protocol, source_addr);
+    if (!path)
+    {
+        return ret;
+    }
+
+    route_pub_notify(pub_ctx, g_route_local->subscribers, head, path, 0);
+    return ret;
+}
+
 // ============================================================================
 // Phase 3: MODULE_READY — 初始化 DB 并恢复 RIB
 // ============================================================================
@@ -142,8 +185,8 @@ static void route_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
                 LOG_WARN("Route DB restore: invalid address prefix='%s' nexthop='%s'", prefix, nexthop);
                 continue;
             }
-            route_rib_add(g_route_local->rib, vrf_id, afi, &prefix_addr, prefix_len, ROUTE_PROTOCOL_STATIC,
-                          &nexthop_addr, &nexthop_addr, metric, preference);
+            (void)route_add_and_notify(ctx, vrf_id, afi, &prefix_addr, prefix_len, ROUTE_PROTOCOL_STATIC, &nexthop_addr,
+                                       &nexthop_addr, metric, preference);
         }
         LOG_INFO("Restored %u static routes from DB to RIB", result->num_rows);
         db_result_free(result);
@@ -300,6 +343,51 @@ static void handle_unsubscribe(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     dev_ipc_message_free(msg);
 }
 
+typedef struct
+{
+    dev_ipc_context_t *ctx;
+    GList *subscribers;
+} route_del_notify_ctx_t;
+
+static void route_on_path_del(const route_head_t *head, const route_path_t *path, void *userdata)
+{
+    route_del_notify_ctx_t *notify = (route_del_notify_ctx_t *)userdata;
+    if (!notify)
+    {
+        return;
+    }
+    route_pub_notify(notify->ctx, notify->subscribers, head, path, 1);
+}
+
+static void handle_inject(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+{
+    if (!msg->payload || msg->payload_len < sizeof(route_msg_entry_t))
+    {
+        LOG_WARN("ROUTE_INJECT payload too short: %u", msg->payload_len);
+        dev_ipc_message_free(msg);
+        return;
+    }
+
+    const route_msg_entry_t *entry = (const route_msg_entry_t *)msg->payload;
+    route_del_notify_ctx_t notify = {ctx, g_route_local->subscribers};
+
+    if (entry->is_withdraw)
+    {
+        int ret = route_rib_del(g_route_local->rib, entry->vrf_id, entry->afi, &entry->prefix_addr, entry->prefix_len,
+                                entry->protocol, &entry->source_addr, route_on_path_del, &notify);
+        LOG_DEBUG("ROUTE_INJECT withdraw: vrf=%u afi=%u pfxlen=%u proto=%u ret=%d", entry->vrf_id, entry->afi,
+                  entry->prefix_len, entry->protocol, ret);
+    }
+    else
+    {
+        (void)route_add_and_notify(ctx, entry->vrf_id, entry->afi, &entry->prefix_addr, entry->prefix_len,
+                                   entry->protocol, &entry->source_addr, &entry->nexthop_addr, entry->metric,
+                                   entry->preference);
+    }
+
+    dev_ipc_message_free(msg);
+}
+
 // ============================================================================
 // IPC 消息处理回调
 // ============================================================================
@@ -350,6 +438,10 @@ void route_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
         case ROUTE_MSG_TYPE_UNSUBSCRIBE:
             handle_unsubscribe(ctx, msg);
+            return;
+
+        case ROUTE_MSG_TYPE_INJECT:
+            handle_inject(ctx, msg);
             return;
 
         default:

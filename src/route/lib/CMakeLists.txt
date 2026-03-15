@@ -23,3 +23,5 @@ set_target_properties(route_api PROPERTIES
     VERSION 1.0.0
     SOVERSION 1
 )
+
+install(TARGETS route_api LIBRARY DESTINATION lib)

@@ -19,6 +19,8 @@
 #include "if_bdr.h"
 #include "if_cfg_apply.h"
 #include "if_cli.h"
+#include "if_event.h"
+#include "if_pub.h"
 #include "log.h"
 #include "net_addr.h"
 #include "path_utils.h"
@@ -121,6 +123,123 @@ static void send_phase_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, 
     (void)result;
 }
 
+static void send_if_ack(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, int32_t result)
+{
+    if (!ctx || !msg)
+    {
+        return;
+    }
+
+    if_msg_ack_t *ack = (if_msg_ack_t *)g_malloc(sizeof(if_msg_ack_t));
+    if (!ack)
+    {
+        dev_ipc_message_free(msg);
+        return;
+    }
+    ack->result = result;
+
+    dev_ipc_message_t *resp = dev_ipc_message_create(IF_MSG_TYPE_ACK, DEV_MODULE_ID_IF, msg->src_module_id,
+                                                     msg->request_id, ack, sizeof(if_msg_ack_t), g_free);
+    if (!resp)
+    {
+        g_free(ack);
+        dev_ipc_message_free(msg);
+        return;
+    }
+
+    dev_ipc_send_response(ctx, resp);
+    dev_ipc_message_free(resp);
+    dev_ipc_message_free(msg);
+}
+
+static void handle_if_subscribe(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+{
+    if (!msg->payload || msg->payload_len < sizeof(if_subscribe_req_t))
+    {
+        LOG_WARN("IF: subscribe payload invalid, len=%u", msg->payload_len);
+        send_if_ack(ctx, msg, ERRCODE_FAIL);
+        return;
+    }
+
+    const if_subscribe_req_t *req = (const if_subscribe_req_t *)msg->payload;
+    if (req->if_type_mask == 0 || req->event_mask == 0)
+    {
+        LOG_WARN("IF: subscribe request invalid: type_mask=0x%08X event_mask=0x%08X", req->if_type_mask,
+                 req->event_mask);
+        send_if_ack(ctx, msg, ERRCODE_FAIL);
+        return;
+    }
+
+    for (GList *l = g_if_local->subscribers; l; l = l->next)
+    {
+        if_subscriber_t *sub = (if_subscriber_t *)l->data;
+        if (sub->module_id == msg->src_module_id && sub->if_type_mask == req->if_type_mask &&
+            sub->event_mask == req->event_mask)
+        {
+            LOG_DEBUG("IF: duplicate subscribe ignored: module=0x%08X type=0x%08X event=0x%08X", msg->src_module_id,
+                      req->if_type_mask, req->event_mask);
+            send_if_ack(ctx, msg, ERRCODE_SUCCESS);
+            return;
+        }
+    }
+
+    if_subscriber_t *sub = (if_subscriber_t *)g_malloc0(sizeof(if_subscriber_t));
+    if (!sub)
+    {
+        send_if_ack(ctx, msg, ERRCODE_FAIL);
+        return;
+    }
+    sub->module_id = msg->src_module_id;
+    sub->if_type_mask = req->if_type_mask;
+    sub->event_mask = req->event_mask;
+    g_if_local->subscribers = g_list_append(g_if_local->subscribers, sub);
+
+    LOG_INFO("IF: module 0x%08X subscribed: type=0x%08X event=0x%08X", msg->src_module_id, req->if_type_mask,
+             req->event_mask);
+
+    send_if_ack(ctx, msg, ERRCODE_SUCCESS);
+}
+
+static void handle_if_unsubscribe(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+{
+    if (!msg->payload || msg->payload_len < sizeof(if_subscribe_req_t))
+    {
+        LOG_WARN("IF: unsubscribe payload invalid, len=%u", msg->payload_len);
+        send_if_ack(ctx, msg, ERRCODE_FAIL);
+        return;
+    }
+
+    const if_subscribe_req_t *req = (const if_subscribe_req_t *)msg->payload;
+    uint32_t type_mask = req->if_type_mask;
+    uint32_t event_mask = req->event_mask;
+
+    int removed = 0;
+    GList *l = g_if_local->subscribers;
+    while (l)
+    {
+        if_subscriber_t *sub = (if_subscriber_t *)l->data;
+        GList *next = l->next;
+
+        if (sub->module_id == msg->src_module_id)
+        {
+            gboolean match_exact = (sub->if_type_mask == type_mask && sub->event_mask == event_mask);
+            gboolean clear_all = (type_mask == 0 && event_mask == 0);
+            if (clear_all || match_exact)
+            {
+                g_if_local->subscribers = g_list_delete_link(g_if_local->subscribers, l);
+                g_free(sub);
+                removed++;
+            }
+        }
+        l = next;
+    }
+
+    LOG_INFO("IF: module 0x%08X unsubscribed, removed=%d (type=0x%08X event=0x%08X)", msg->src_module_id, removed,
+             type_mask, event_mask);
+
+    send_if_ack(ctx, msg, ERRCODE_SUCCESS);
+}
+
 // ============================================================================
 // Phase 1: MODULE_START - Establishing IPC connections到 CFG
 // ============================================================================
@@ -131,8 +250,9 @@ static void if_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
     dev_ipc_connect(ctx, DEV_MODULE_ID_CLI, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CLI);
     dev_ipc_connect(ctx, DEV_MODULE_ID_DB, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_DB);
+    dev_ipc_connect(ctx, DEV_MODULE_ID_ROUTE, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_ROUTE);
 
-    LOG_INFO("Connected to CFG and DB");
+    LOG_INFO("Connected to CFG, DB and ROUTE");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
@@ -200,6 +320,9 @@ static void if_on_shutdown(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     /* dev_ipc_ctx 由 DEV 管理 */
     g_if_local->dev_ipc_ctx = NULL;
 
+    g_list_free_full(g_if_local->subscribers, g_free);
+    g_if_local->subscribers = NULL;
+
     g_free(g_if_local);
     g_if_local = NULL;
 
@@ -243,6 +366,14 @@ void if_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         case CLI_MSG_TYPE_SHOW_CONFIG:
             LOG_DEBUG("Received show current-configuration request");
             if_bdr_show_config(msg);
+            return;
+
+        case IF_MSG_TYPE_SUBSCRIBE:
+            handle_if_subscribe(ctx, msg);
+            return;
+
+        case IF_MSG_TYPE_UNSUBSCRIBE:
+            handle_if_unsubscribe(ctx, msg);
             return;
         default:
             LOG_WARN("Received unknown message type: 0x%08X", msg->msg_type);

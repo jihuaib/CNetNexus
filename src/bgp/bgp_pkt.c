@@ -9,12 +9,14 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <glib.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 #include "bgp.h"
 #include "bgp_instance.h"
+#include "bgp_pkt_build.h"
 #include "bgp_rib.h"
 #include "bgp_session.h"
 #include "bgp_vrf.h"
@@ -162,6 +164,403 @@ int bgp_pkt_send_keepalive(bgp_conn_t *conn)
     }
 
     LOG_DEBUG("BGP: Sent KEEPALIVE to %s", _ip);
+    return 0;
+}
+
+// ============================================================================
+// UPDATE 报文发送
+// ============================================================================
+
+/** UPDATE 发送缓冲区最大长度 */
+#define BGP_UPDATE_BUF_SIZE 4096
+
+/**
+ * @brief 编码 ORIGIN 路径属性（well-known mandatory，1 字节值）
+ * @return 写入字节数，-1=空间不足
+ */
+static int encode_origin(uint8_t *buf, int buf_size, bgp_origin_t origin)
+{
+    if (buf_size < 4)
+    {
+        return -1;
+    }
+    buf[0] = BGP_PA_FLAG_TRANSITIVE;
+    buf[1] = BGP_PA_TYPE_ORIGIN;
+    buf[2] = 1;
+    buf[3] = (uint8_t)origin;
+    return 4;
+}
+
+/**
+ * @brief 从 AS_PATH 字符串解析 AS_SEQUENCE 成员，跳过 AS_SET 花括号块
+ * @return 解析到的 AS 数量
+ */
+static int parse_as_seq(const char *as_path_str, uint32_t *out, int max)
+{
+    int count = 0;
+    const char *p = as_path_str;
+    while (*p != '\0')
+    {
+        while (*p == ' ' || *p == '\t')
+        {
+            p++;
+        }
+        if (*p == '\0')
+        {
+            break;
+        }
+        /* 跳过 AS_SET 花括号块，不将其纳入 AS_SEQUENCE 编码 */
+        if (*p == '{')
+        {
+            while (*p != '\0' && *p != '}')
+            {
+                p++;
+            }
+            if (*p == '}')
+            {
+                p++;
+            }
+            continue;
+        }
+        char *end;
+        unsigned long val = strtoul(p, &end, 10);
+        if (end == p)
+        {
+            break;
+        }
+        if (count < max)
+        {
+            out[count] = (uint32_t)val;
+        }
+        count++;
+        p = end;
+    }
+    return count;
+}
+
+/**
+ * @brief 编码 AS_PATH 路径属性（单 AS_SEQUENCE 段，4 字节 AS 号）
+ * @return 写入字节数，-1=空间不足
+ */
+static int encode_as_path(uint8_t *buf, int buf_size, const char *as_path_str)
+{
+    uint32_t as_array[256];
+    int n = 0;
+    if (as_path_str && as_path_str[0] != '\0')
+    {
+        n = parse_as_seq(as_path_str, as_array, 256);
+        if (n < 0)
+        {
+            n = 0;
+        }
+    }
+    /* 非空时编码一个 AS_SEQUENCE 段（类型 1B + 长度 1B + n*4B）；空则属性值长度为 0 */
+    int seg_len = (n > 0) ? (2 + n * 4) : 0;
+    int attr_total = 3 + seg_len;
+    if (buf_size < attr_total)
+    {
+        return -1;
+    }
+    buf[0] = BGP_PA_FLAG_TRANSITIVE;
+    buf[1] = BGP_PA_TYPE_AS_PATH;
+    buf[2] = (uint8_t)seg_len;
+    if (n > 0)
+    {
+        buf[3] = 2; /* AS_SEQUENCE */
+        buf[4] = (uint8_t)n;
+        for (int i = 0; i < n; i++)
+        {
+            uint32_t asn_be = htonl(as_array[i]);
+            memcpy(buf + 5 + i * 4, &asn_be, 4);
+        }
+    }
+    return attr_total;
+}
+
+/**
+ * @brief 编码 LOCAL_PREF 路径属性（well-known discretionary，4 字节）
+ * @return 写入字节数，-1=空间不足
+ */
+static int encode_local_pref(uint8_t *buf, int buf_size, uint32_t local_pref)
+{
+    if (buf_size < 7)
+    {
+        return -1;
+    }
+    buf[0] = BGP_PA_FLAG_TRANSITIVE;
+    buf[1] = BGP_PA_TYPE_LOCAL_PREF;
+    buf[2] = 4;
+    uint32_t lp_be = htonl(local_pref);
+    memcpy(buf + 3, &lp_be, 4);
+    return 7;
+}
+
+/**
+ * @brief 编码 MED 路径属性（optional non-transitive，4 字节）
+ * @return 写入字节数，-1=空间不足
+ */
+static int encode_med(uint8_t *buf, int buf_size, uint32_t med)
+{
+    if (buf_size < 7)
+    {
+        return -1;
+    }
+    buf[0] = BGP_PA_FLAG_OPTIONAL;
+    buf[1] = BGP_PA_TYPE_MED;
+    buf[2] = 4;
+    uint32_t med_be = htonl(med);
+    memcpy(buf + 3, &med_be, 4);
+    return 7;
+}
+
+/**
+ * @brief 编码 COMMUNITY 路径属性（格式 "ASN:VAL ..."，空字符串时返回 0 跳过）
+ * @return 写入字节数，0=无 community，-1=空间不足
+ */
+static int encode_community(uint8_t *buf, int buf_size, const char *community_str)
+{
+    if (!community_str || community_str[0] == '\0')
+    {
+        return 0;
+    }
+    uint32_t comms[256];
+    int count = 0;
+    const char *p = community_str;
+    while (*p != '\0' && count < 256)
+    {
+        while (*p == ' ' || *p == '\t')
+        {
+            p++;
+        }
+        if (*p == '\0')
+        {
+            break;
+        }
+        char *end1, *end2;
+        unsigned long asn = strtoul(p, &end1, 10);
+        if (end1 == p || *end1 != ':')
+        {
+            break;
+        }
+        unsigned long val = strtoul(end1 + 1, &end2, 10);
+        comms[count++] = (uint32_t)(((asn & 0xFFFFu) << 16) | (val & 0xFFFFu));
+        p = end2;
+    }
+    if (count == 0)
+    {
+        return 0;
+    }
+    int attr_total = 3 + count * 4;
+    if (buf_size < attr_total)
+    {
+        return -1;
+    }
+    buf[0] = BGP_PA_FLAG_OPTIONAL | BGP_PA_FLAG_TRANSITIVE;
+    buf[1] = BGP_PA_TYPE_COMMUNITY;
+    buf[2] = (uint8_t)(count * 4);
+    for (int i = 0; i < count; i++)
+    {
+        uint32_t c_be = htonl(comms[i]);
+        memcpy(buf + 3 + i * 4, &c_be, 4);
+    }
+    return attr_total;
+}
+
+int bgp_pkt_send_update(bgp_conn_t *conn, const bgp_nlri_entry_t *nlri, const bgp_attr_t *attr,
+                        const bgp_nexthop_t *nexthop)
+{
+    char _ip[64];
+    net_addr_to_str(&conn->peer_addr, _ip, sizeof(_ip));
+
+    if (nlri->type != BGP_NLRI_PREFIX)
+    {
+        LOG_WARN("BGP: send_update: 不支持的 NLRI 类型 %d，peer=%s", nlri->type, _ip);
+        return -1;
+    }
+
+    /* 查找 AF 编码器（处理 NEXT_HOP / MP_REACH_NLRI / NLRI 字段等 AF 差异） */
+    const bgp_pkt_af_enc_t *enc = bgp_pkt_af_enc_find(nlri->afi, nlri->safi);
+    if (!enc)
+    {
+        LOG_WARN("BGP: send_update: AFI=%u SAFI=%u 无已注册编码器，peer=%s", nlri->afi, nlri->safi, _ip);
+        return -1;
+    }
+
+    uint8_t msg[BGP_UPDATE_BUF_SIZE];
+    int pos = BGP_MSG_HEADER_SIZE; /* 预留 19 字节 BGP header */
+    int n;
+
+    /* Withdrawn Routes Length = 0（宣告报文无撤销字段） */
+    msg[pos++] = 0;
+    msg[pos++] = 0;
+
+    /* 记录 Total Path Attribute Length 字段位置，稍后回填 */
+    int pa_len_pos = pos;
+    pos += 2;
+    int pa_body_start = pos;
+
+    /* --- 公共路径属性 --- */
+
+    n = encode_origin(msg + pos, (int)sizeof(msg) - pos, attr->origin);
+    if (n < 0)
+    {
+        LOG_ERROR("BGP: send_update: ORIGIN 编码缓冲区溢出，peer=%s", _ip);
+        return -1;
+    }
+    pos += n;
+
+    n = encode_as_path(msg + pos, (int)sizeof(msg) - pos, attr->as_path);
+    if (n < 0)
+    {
+        LOG_ERROR("BGP: send_update: AS_PATH 编码缓冲区溢出，peer=%s", _ip);
+        return -1;
+    }
+    pos += n;
+
+    /* --- AF 相关路径属性（NEXT_HOP / MP_REACH_NLRI 等，由注册编码器负责） --- */
+
+    n = enc->encode_reach_pa(msg + pos, (int)sizeof(msg) - pos, nlri, nexthop);
+    if (n < 0)
+    {
+        LOG_ERROR("BGP: send_update: AF 路径属性编码缓冲区溢出，peer=%s", _ip);
+        return -1;
+    }
+    pos += n;
+
+    /* LOCAL_PREF（可选） */
+    if (attr->has_local_pref)
+    {
+        n = encode_local_pref(msg + pos, (int)sizeof(msg) - pos, attr->local_pref);
+        if (n < 0)
+        {
+            LOG_ERROR("BGP: send_update: LOCAL_PREF 编码缓冲区溢出，peer=%s", _ip);
+            return -1;
+        }
+        pos += n;
+    }
+
+    /* MED（可选） */
+    if (attr->has_med)
+    {
+        n = encode_med(msg + pos, (int)sizeof(msg) - pos, attr->med);
+        if (n < 0)
+        {
+            LOG_ERROR("BGP: send_update: MED 编码缓冲区溢出，peer=%s", _ip);
+            return -1;
+        }
+        pos += n;
+    }
+
+    /* COMMUNITY（空时跳过） */
+    n = encode_community(msg + pos, (int)sizeof(msg) - pos, attr->communities);
+    if (n < 0)
+    {
+        LOG_ERROR("BGP: send_update: COMMUNITY 编码缓冲区溢出，peer=%s", _ip);
+        return -1;
+    }
+    pos += n;
+
+    /* 回填 Total Path Attribute Length */
+    uint16_t pa_total_be = htons((uint16_t)(pos - pa_body_start));
+    memcpy(msg + pa_len_pos, &pa_total_be, 2);
+
+    /* NLRI 字段（由 AF 编码器决定：IPv4 填前缀，IPv6 返回 0） */
+    n = enc->encode_reach_nlri(msg + pos, (int)sizeof(msg) - pos, nlri);
+    if (n < 0)
+    {
+        LOG_ERROR("BGP: send_update: NLRI 编码缓冲区溢出，peer=%s", _ip);
+        return -1;
+    }
+    pos += n;
+
+    /* 写入 BGP header */
+    uint16_t total_len = (uint16_t)pos;
+    memcpy(msg, BGP_MARKER, 16);
+    uint16_t len_be = htons(total_len);
+    memcpy(msg + 16, &len_be, 2);
+    msg[18] = (uint8_t)BGP_MSG_UPDATE;
+
+    ssize_t sent = send(conn->fd, msg, total_len, MSG_NOSIGNAL);
+    if (sent != (ssize_t)total_len)
+    {
+        LOG_ERROR("BGP: send_update 发送失败，peer=%s", _ip);
+        return -1;
+    }
+
+    LOG_DEBUG("BGP: 已发送 UPDATE（宣告）至 %s: %s", _ip, nlri->key);
+    return 0;
+}
+
+int bgp_pkt_send_withdraw(bgp_conn_t *conn, const bgp_nlri_entry_t *nlri)
+{
+    char _ip[64];
+    net_addr_to_str(&conn->peer_addr, _ip, sizeof(_ip));
+
+    if (nlri->type != BGP_NLRI_PREFIX)
+    {
+        LOG_WARN("BGP: send_withdraw: 不支持的 NLRI 类型 %d，peer=%s", nlri->type, _ip);
+        return -1;
+    }
+
+    /* 查找 AF 编码器 */
+    const bgp_pkt_af_enc_t *enc = bgp_pkt_af_enc_find(nlri->afi, nlri->safi);
+    if (!enc)
+    {
+        LOG_WARN("BGP: send_withdraw: AFI=%u SAFI=%u 无已注册编码器，peer=%s", nlri->afi, nlri->safi, _ip);
+        return -1;
+    }
+
+    uint8_t msg[BGP_UPDATE_BUF_SIZE];
+    int pos = BGP_MSG_HEADER_SIZE;
+    int n;
+
+    /* Withdrawn Routes 字段（由 AF 编码器决定：IPv4 填前缀，IPv6 返回 0） */
+    int wd_len_pos = pos;
+    pos += 2;
+    int wd_body_start = pos;
+
+    n = enc->encode_unreach_wd(msg + pos, (int)sizeof(msg) - pos, nlri);
+    if (n < 0)
+    {
+        LOG_ERROR("BGP: send_withdraw: Withdrawn Routes 编码缓冲区溢出，peer=%s", _ip);
+        return -1;
+    }
+    pos += n;
+
+    uint16_t wd_len_be = htons((uint16_t)(pos - wd_body_start));
+    memcpy(msg + wd_len_pos, &wd_len_be, 2);
+
+    /* Path Attributes（由 AF 编码器决定：IPv6 填 MP_UNREACH_NLRI，IPv4 返回 0） */
+    int pa_len_pos = pos;
+    pos += 2;
+    int pa_body_start = pos;
+
+    n = enc->encode_unreach_pa(msg + pos, (int)sizeof(msg) - pos, nlri);
+    if (n < 0)
+    {
+        LOG_ERROR("BGP: send_withdraw: 撤销 PA 编码缓冲区溢出，peer=%s", _ip);
+        return -1;
+    }
+    pos += n;
+
+    uint16_t pa_total_be = htons((uint16_t)(pos - pa_body_start));
+    memcpy(msg + pa_len_pos, &pa_total_be, 2);
+
+    /* 写入 BGP header */
+    uint16_t total_len = (uint16_t)pos;
+    memcpy(msg, BGP_MARKER, 16);
+    uint16_t len_be = htons(total_len);
+    memcpy(msg + 16, &len_be, 2);
+    msg[18] = (uint8_t)BGP_MSG_UPDATE;
+
+    ssize_t sent = send(conn->fd, msg, total_len, MSG_NOSIGNAL);
+    if (sent != (ssize_t)total_len)
+    {
+        LOG_ERROR("BGP: send_withdraw 发送失败，peer=%s", _ip);
+        return -1;
+    }
+
+    LOG_DEBUG("BGP: 已发送 UPDATE（撤销）至 %s: %s", _ip, nlri->key);
     return 0;
 }
 

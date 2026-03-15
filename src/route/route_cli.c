@@ -322,21 +322,9 @@ static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         int32_t pref = ROUTE_ADMIN_DIST_STATIC;
         int32_t m = has_metric ? (int32_t)metric : 0;
 
-        /* 更新 RIB（静态路由来源 = nexthop） */
-        route_rib_add(g_route_local->rib, ROUTE_VRF_DEFAULT, afi, &prefix_addr, prefix_len, ROUTE_PROTOCOL_STATIC,
-                      &nexthop_addr, &nexthop_addr, m, pref);
-
-        /* 通知subscribe者 */
-        const route_head_t *head =
-            route_rib_lookup_head(g_route_local->rib, ROUTE_VRF_DEFAULT, afi, &prefix_addr, prefix_len);
-        if (head)
-        {
-            const route_path_t *path = route_rib_lookup_path(head, ROUTE_PROTOCOL_STATIC, &nexthop_addr);
-            if (path)
-            {
-                route_pub_notify(g_route_local->dev_ipc_ctx, g_route_local->subscribers, head, path, 0);
-            }
-        }
+        /* 更新 RIB + 通知订阅者（统一入口） */
+        (void)route_add_and_notify(g_route_local->dev_ipc_ctx, ROUTE_VRF_DEFAULT, afi, &prefix_addr, prefix_len,
+                                   ROUTE_PROTOCOL_STATIC, &nexthop_addr, &nexthop_addr, m, pref);
 
         /* 写入 DB（upsert：存在则更新；DB 边界仍用字符串） */
         db_record_t *rec = db_record_new();
@@ -390,6 +378,8 @@ static const char *proto_name(uint32_t protocol)
 {
     switch (protocol)
     {
+        case ROUTE_PROTOCOL_CONNECTED:
+            return "C";
         case ROUTE_PROTOCOL_STATIC:
             return "S";
         case ROUTE_PROTOCOL_BGP:
@@ -573,7 +563,7 @@ static void ipv6_next_prefix(uint8_t *addr16, uint8_t prefix_len)
  * @param prefix_len 前缀长度
  * @param count      路由数量
  * @param nexthop    下一跳
- * @param do_notify  是否通知订阅者（CLI 调用传 TRUE，DB 恢复传 FALSE）
+ * @param do_notify  是否通知订阅者（当前 CLI/DB 恢复都传 TRUE；FALSE 仅保留给内部无需发布场景）
  * @return 成功添加数量，地址解析失败返回 -1
  */
 static int batch_do_add(const char *name, uint16_t afi, const char *start_addr, uint8_t prefix_len, int64_t count,
@@ -608,21 +598,16 @@ static int batch_do_add(const char *name, uint16_t afi, const char *start_addr, 
             prefix_addr.family = AF_INET;
             prefix_addr.u.v4 = cur;
 
-            route_rib_add(g_route_local->rib, ROUTE_VRF_DEFAULT, ROUTE_AFI_IPV4, &prefix_addr, prefix_len,
-                          ROUTE_PROTOCOL_STATIC, &nexthop_addr, &nexthop_addr, 0, ROUTE_ADMIN_DIST_STATIC);
-
             if (do_notify)
             {
-                const route_head_t *head = route_rib_lookup_head(g_route_local->rib, ROUTE_VRF_DEFAULT, ROUTE_AFI_IPV4,
-                                                                 &prefix_addr, prefix_len);
-                if (head)
-                {
-                    const route_path_t *path = route_rib_lookup_path(head, ROUTE_PROTOCOL_STATIC, &nexthop_addr);
-                    if (path)
-                    {
-                        route_pub_notify(g_route_local->dev_ipc_ctx, g_route_local->subscribers, head, path, 0);
-                    }
-                }
+                (void)route_add_and_notify(g_route_local->dev_ipc_ctx, ROUTE_VRF_DEFAULT, ROUTE_AFI_IPV4, &prefix_addr,
+                                           prefix_len, ROUTE_PROTOCOL_STATIC, &nexthop_addr, &nexthop_addr, 0,
+                                           ROUTE_ADMIN_DIST_STATIC);
+            }
+            else
+            {
+                route_rib_add(g_route_local->rib, ROUTE_VRF_DEFAULT, ROUTE_AFI_IPV4, &prefix_addr, prefix_len,
+                              ROUTE_PROTOCOL_STATIC, &nexthop_addr, &nexthop_addr, 0, ROUTE_ADMIN_DIST_STATIC);
             }
 
             route_batch_entry_t *be = (route_batch_entry_t *)g_malloc0(sizeof(route_batch_entry_t));
@@ -655,21 +640,16 @@ static int batch_do_add(const char *name, uint16_t afi, const char *start_addr, 
             prefix_addr.family = AF_INET6;
             prefix_addr.u.v6 = cur;
 
-            route_rib_add(g_route_local->rib, ROUTE_VRF_DEFAULT, ROUTE_AFI_IPV6, &prefix_addr, prefix_len,
-                          ROUTE_PROTOCOL_STATIC, &nexthop_addr, &nexthop_addr, 0, ROUTE_ADMIN_DIST_STATIC);
-
             if (do_notify)
             {
-                const route_head_t *head = route_rib_lookup_head(g_route_local->rib, ROUTE_VRF_DEFAULT, ROUTE_AFI_IPV6,
-                                                                 &prefix_addr, prefix_len);
-                if (head)
-                {
-                    const route_path_t *path = route_rib_lookup_path(head, ROUTE_PROTOCOL_STATIC, &nexthop_addr);
-                    if (path)
-                    {
-                        route_pub_notify(g_route_local->dev_ipc_ctx, g_route_local->subscribers, head, path, 0);
-                    }
-                }
+                (void)route_add_and_notify(g_route_local->dev_ipc_ctx, ROUTE_VRF_DEFAULT, ROUTE_AFI_IPV6, &prefix_addr,
+                                           prefix_len, ROUTE_PROTOCOL_STATIC, &nexthop_addr, &nexthop_addr, 0,
+                                           ROUTE_ADMIN_DIST_STATIC);
+            }
+            else
+            {
+                route_rib_add(g_route_local->rib, ROUTE_VRF_DEFAULT, ROUTE_AFI_IPV6, &prefix_addr, prefix_len,
+                              ROUTE_PROTOCOL_STATIC, &nexthop_addr, &nexthop_addr, 0, ROUTE_ADMIN_DIST_STATIC);
             }
 
             route_batch_entry_t *be = (route_batch_entry_t *)g_malloc0(sizeof(route_batch_entry_t));
@@ -924,7 +904,7 @@ void route_batch_restore_from_db(dev_ipc_context_t *ctx)
             continue;
         }
 
-        int added = batch_do_add(name, (uint16_t)afi, start_addr, (uint8_t)prefix_len, count, nexthop, FALSE);
+        int added = batch_do_add(name, (uint16_t)afi, start_addr, (uint8_t)prefix_len, count, nexthop, TRUE);
         if (added >= 0)
         {
             restored++;

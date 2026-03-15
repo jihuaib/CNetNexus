@@ -378,6 +378,8 @@ class TopologyRuntime:
         cmd_timeout: int = 20,
         connect_timeout: int = 60,
         verbose: bool = False,
+        publish_cli_base: int | None = None,
+        override_if_map: bool = True,
     ) -> None:
         validate_top(top)
         self.top = top
@@ -387,18 +389,46 @@ class TopologyRuntime:
         self.cmd_timeout = cmd_timeout
         self.connect_timeout = connect_timeout
         self.verbose = verbose
+        self.override_if_map = override_if_map
 
         self.mgmt_net = f"{self.prefix}-mgmt"
         self.devices: dict[str, dict[str, Any]] = top["devices"]
+        self.device_order: list[str] = sorted(self.devices.keys())
         self.endpoints = build_endpoints(top)
-        self.tmpdir = Path(tempfile.mkdtemp(prefix=f"{self.prefix}-"))
+        self.tmpdir: Path | None = (
+            Path(tempfile.mkdtemp(prefix=f"{self.prefix}-")) if self.override_if_map else None
+        )
 
         self.container_names: list[str] = []
         self.link_networks: list[str] = []
         self.cli_map: dict[str, NetNexusCli] = {}
+        self.cli_publish_ports: dict[str, int] = {}
+        if publish_cli_base is not None:
+            if publish_cli_base < 1 or publish_cli_base > 65535:
+                raise ValueError(f"publish_cli_base out of range: {publish_cli_base}")
+            end_port = publish_cli_base + len(self.device_order) - 1
+            if end_port > 65535:
+                raise ValueError(
+                    f"publish_cli_base range overflow: base={publish_cli_base}, devices={len(self.device_order)}"
+                )
+            for idx, dev in enumerate(self.device_order):
+                self.cli_publish_ports[dev] = publish_cli_base + idx
 
     def _container_name(self, device: str) -> str:
         return f"{self.prefix}-{sanitize_name(device)}"
+
+    def container_name(self, device: str) -> str:
+        if device not in self.devices:
+            raise ValueError(f"unknown device '{device}'")
+        return self._container_name(device)
+
+    def get_mgmt_ip(self, device: str) -> str:
+        return get_container_network_ip(self.container_name(device), self.mgmt_net)
+
+    def get_published_cli_port(self, device: str) -> int | None:
+        if device not in self.devices:
+            raise ValueError(f"unknown device '{device}'")
+        return self.cli_publish_ports.get(device)
 
     def _start_netnexus_process(self, container_name: str) -> None:
         run_cmd(
@@ -426,40 +456,45 @@ class TopologyRuntime:
     def start(self, *, configure_interfaces: bool = True) -> None:
         run_cmd(["docker", "network", "create", self.mgmt_net])
 
-        # 1) Create paused containers and mount per-device if_map override.
+        # 1) Create paused containers (optionally mount per-device if_map override).
         for dev in self.devices:
             cname = self._container_name(dev)
 
-            map_file = self.tmpdir / f"{sanitize_name(dev)}-if_map.conf.gns3"
-            build_if_map_file(map_file, self.endpoints[dev])
-
-            run_cmd(
-                [
-                    "docker",
-                    "run",
-                    "-d",
-                    "--rm",
-                    "--name",
-                    cname,
-                    "--hostname",
-                    dev,
-                    "--network",
-                    self.mgmt_net,
-                    "--cap-add",
-                    "NET_ADMIN",
-                    "--cap-add",
-                    "NET_RAW",
-                    "-e",
-                    "NN_WORK_DIR=/opt/netnexus",
-                    "-e",
-                    "LD_LIBRARY_PATH=/opt/netnexus/lib",
-                    "-v",
-                    f"{map_file}:/opt/netnexus/resources/if/if_map.conf.gns3:ro",
-                    self.image,
-                    "sleep",
-                    "infinity",
-                ]
-            )
+            docker_run_cmd = [
+                "docker",
+                "run",
+                "-d",
+                "--rm",
+                "--name",
+                cname,
+                "--hostname",
+                dev,
+                "--network",
+                self.mgmt_net,
+                "--cap-add",
+                "NET_ADMIN",
+                "--cap-add",
+                "NET_RAW",
+                "-e",
+                "NN_WORK_DIR=/opt/netnexus",
+                "-e",
+                "LD_LIBRARY_PATH=/opt/netnexus/lib",
+            ]
+            if self.override_if_map:
+                if self.tmpdir is None:
+                    raise RuntimeError("override_if_map=True but tmpdir is not initialized")
+                map_file = self.tmpdir / f"{sanitize_name(dev)}-if_map.conf.gns3"
+                build_if_map_file(map_file, self.endpoints[dev])
+                docker_run_cmd.extend(
+                    [
+                        "-v",
+                        f"{map_file}:/opt/netnexus/resources/if/if_map.conf.gns3:ro",
+                    ]
+                )
+            if dev in self.cli_publish_ports:
+                docker_run_cmd.extend(["-p", f"{self.cli_publish_ports[dev]}:3788"])
+            docker_run_cmd.extend([self.image, "sleep", "infinity"])
+            run_cmd(docker_run_cmd)
             self.container_names.append(cname)
 
         # 2) Create link networks.
@@ -567,7 +602,8 @@ class TopologyRuntime:
             print("Resources kept (--keep enabled).")
             print(f"Containers: {', '.join(self.container_names)}")
             print(f"Networks: {', '.join([self.mgmt_net] + self.link_networks)}")
-            print(f"Temp dir: {self.tmpdir}")
+            if self.tmpdir is not None:
+                print(f"Temp dir: {self.tmpdir}")
             return
 
         for name in self.container_names:
@@ -575,7 +611,8 @@ class TopologyRuntime:
         for net in self.link_networks:
             run_cmd(["docker", "network", "rm", net], check=False)
         run_cmd(["docker", "network", "rm", self.mgmt_net], check=False)
-        shutil.rmtree(self.tmpdir, ignore_errors=True)
+        if self.tmpdir is not None:
+            shutil.rmtree(self.tmpdir, ignore_errors=True)
 
         if failed:
             print("Cleanup complete after failure.", file=sys.stderr)

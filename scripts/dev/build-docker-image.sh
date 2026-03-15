@@ -1,11 +1,60 @@
 #!/bin/bash
-# Build NetNexus Docker image for GNS3 (Multi-stage build)
+# Build NetNexus Docker image (multi-stage build)
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$PROJECT_ROOT"
+
+usage() {
+    cat <<'EOF'
+Usage: scripts/dev/build-docker-image.sh [options]
+
+Options:
+  --docker-image <name[:tag]>  Add one extra docker tag for this build.
+                               Examples:
+                                 --docker-image netnexus-ci:localtest
+                                 --docker-image myrepo/netnexus
+  -h, --help                   Show this help.
+
+Notes:
+  - Default output tags are still generated:
+      netnexus:latest
+      netnexus:<VERSION>
+      netnexus:<VERSION>-<GIT_COMMIT>
+  - PLATFORM env is supported for cross-build:
+      PLATFORM=linux/amd64 scripts/dev/build-docker-image.sh
+EOF
+}
+
+EXTRA_DOCKER_IMAGE=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --docker-image)
+            if [[ -z "${2:-}" ]]; then
+                echo "Error: --docker-image requires a value" >&2
+                usage
+                exit 1
+            fi
+            EXTRA_DOCKER_IMAGE="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Error: unknown argument '$1'" >&2
+            usage
+            exit 1
+            ;;
+    esac
+done
+
+if [[ -n "${EXTRA_DOCKER_IMAGE}" && "${EXTRA_DOCKER_IMAGE}" != *:* ]]; then
+    EXTRA_DOCKER_IMAGE="${EXTRA_DOCKER_IMAGE}:latest"
+fi
 
 # Colors
 GREEN='\033[0;32m'
@@ -14,7 +63,7 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 echo "======================================"
-echo "Building NetNexus for GNS3"
+echo "Building NetNexus Docker image"
 echo "======================================"
 echo ""
 
@@ -40,12 +89,23 @@ echo "Git commit: ${GIT_COMMIT}"
 echo ""
 
 # 支持跨平台构建：默认当前平台，可通过 PLATFORM 环境变量指定
-# 例如 ARM Mac 上构建 x86 镜像：PLATFORM=linux/amd64 ./build-gns3-image.sh
+# 例如 ARM Mac 上构建 x86 镜像：PLATFORM=linux/amd64 ./scripts/dev/build-docker-image.sh
 PLATFORM="${PLATFORM:-}"
-PLATFORM_FLAG=""
+PLATFORM_FLAG=()
 if [ -n "${PLATFORM}" ]; then
-    PLATFORM_FLAG="--platform ${PLATFORM}"
+    PLATFORM_FLAG=(--platform "${PLATFORM}")
     echo "Cross-build platform: ${PLATFORM}"
+    echo ""
+fi
+
+BUILD_TAGS=(
+    -t "${IMAGE_NAME}:latest"
+    -t "${IMAGE_NAME}:${VERSION}"
+    -t "${IMAGE_NAME}:${VERSION}-${GIT_COMMIT}"
+)
+if [ -n "${EXTRA_DOCKER_IMAGE}" ]; then
+    BUILD_TAGS+=(-t "${EXTRA_DOCKER_IMAGE}")
+    echo "Extra tag: ${EXTRA_DOCKER_IMAGE}"
     echo ""
 fi
 
@@ -53,13 +113,11 @@ fi
 # --network=host 让构建容器复用宿主机网络，解决容器内 DNS 解析失败的问题
 docker build \
     --network=host \
-    ${PLATFORM_FLAG} \
+    "${PLATFORM_FLAG[@]}" \
     --target production \
     --build-arg VERSION=${VERSION} \
     --build-arg GIT_COMMIT=${GIT_COMMIT} \
-    -t ${IMAGE_NAME}:latest \
-    -t ${IMAGE_NAME}:${VERSION} \
-    -t ${IMAGE_NAME}:${VERSION}-${GIT_COMMIT} \
+    "${BUILD_TAGS[@]}" \
     .
 
 if [ $? -eq 0 ]; then
@@ -82,6 +140,9 @@ echo "Tags:"
 echo "  - ${IMAGE_NAME}:latest"
 echo "  - ${IMAGE_NAME}:${VERSION}"
 echo "  - ${IMAGE_NAME}:${VERSION}-${GIT_COMMIT}"
+if [ -n "${EXTRA_DOCKER_IMAGE}" ]; then
+    echo "  - ${EXTRA_DOCKER_IMAGE}"
+fi
 echo "Size: $(docker images ${IMAGE_NAME}:latest --format "{{.Size}}")"
 echo ""
 echo "Next steps:"

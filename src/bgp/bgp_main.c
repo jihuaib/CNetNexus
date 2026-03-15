@@ -1053,6 +1053,9 @@ int bgp_module_init(void)
     /* 注册所有内置 AFI/SAFI 解析器 */
     bgp_parse_init();
 
+    /* 注册所有内置 UPDATE 编码器 */
+    bgp_pkt_build_init();
+
     dev_ipc_context_t *ctx = dev_ipc_init(DEV_MODULE_ID_BGP, "bgp", DEV_MODULE_PORT_BGP, bgp_msg_handler);
     if (!ctx)
     {

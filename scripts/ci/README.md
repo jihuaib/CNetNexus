@@ -87,6 +87,25 @@ Common options:
 - `--connect-timeout <sec>`: runtime CLI initial connect timeout
 - `--verbose-modules`: enable low-level CLI debug logs (for example `... rx N bytes ...`)
 
+## Bring Up Topology Only (No Module Scripts)
+
+Use this when you only want local docker topology + interface IP config from `top.yaml`:
+
+```bash
+scripts/dev/top-up.sh \
+  --top scripts/ci/modules/if/two-node-r1ge1-r2ge1/top.yaml \
+  --image netnexus-ci:localtest
+```
+
+Notes:
+
+- default keeps containers/networks after setup
+- add `--cleanup` to remove resources before exit
+- add `--pull` to force `docker pull` first
+- uses image built-in `if_map.conf.gns3` (no runtime override in `top-up`)
+- script will print per-device CLI connect targets automatically (`telnet <mgmt-ip> 3788`)
+- add `--publish-cli` (or `--publish-cli <base-port>`) to expose CLI on host, for example `127.0.0.1:13788`
+
 ## Run All Modules (Scan + Execute)
 
 Recommended local entry script:
@@ -160,11 +179,11 @@ python3 scripts/ci/module_runner.py \
 - One-shot cleanup for stale CI resources:
 
 ```bash
-scripts/ci/cleanup.sh
+scripts/dev/cleanup-topology.sh
 ```
 
 - Preview only (no deletion):
 
 ```bash
-scripts/ci/cleanup.sh --dry-run
+scripts/dev/cleanup-topology.sh --dry-run
 ```

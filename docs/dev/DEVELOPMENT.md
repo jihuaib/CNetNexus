@@ -44,8 +44,8 @@ telnet localhost 3788
 # 安装 Docker（首次）
 ./scripts/docker/install-docker.sh
 
-# 构建 GNS3 镜像（本地，当前架构）
-./scripts/dev/build-gns3-image.sh
+# 构建 Docker 镜像（本地，当前架构）
+./scripts/dev/build-docker-image.sh
 
 # 运行容器测试
 docker run -it --rm -p 3788:3788 netnexus:latest

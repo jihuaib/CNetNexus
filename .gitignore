@@ -48,3 +48,6 @@ compile_commands.json
 # Python cache
 __pycache__/
 *.py[cod]
+
+# CI runtime artifacts
+scripts/ci/reports/

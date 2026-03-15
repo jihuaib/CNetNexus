@@ -8,6 +8,8 @@
 
 #include <glib.h>
 
+#include "bgp_calc.h"
+#include "bgp_pub.h"
 #include "bgp_rib.h"
 #include "log.h"
 #include "net_addr.h"
@@ -23,6 +25,8 @@ bgp_instance_t *bgp_instance_create(bgp_afi_t afi, bgp_safi_t safi, bgp_vrf_t *v
         g_hash_table_new_full(net_addr_hash, net_addr_hash_equal, g_free, (GDestroyNotify)bgp_peer_destroy);
     inst->rib = bgp_rib_create();
     inst->rib->inst = inst; /* 建立 RIB → instance 反向引用 */
+    inst->publist = bgp_publist_create(inst);
+    inst->bestlist = bgp_bestlist_create();
     return inst;
 }
 
@@ -32,6 +36,10 @@ void bgp_instance_destroy(bgp_instance_t *inst)
     {
         return;
     }
+    bgp_publist_destroy(inst->publist);
+    inst->publist = NULL;
+    bgp_bestlist_destroy(inst->bestlist);
+    inst->bestlist = NULL;
     if (inst->peer_hash)
     {
         g_hash_table_destroy(inst->peer_hash);
