@@ -18,7 +18,6 @@ static void free_pending_query(dev_ipc_pending_query_t *pq)
     {
         return;
     }
-    pthread_mutex_destroy(&pq->mutex);
     pthread_cond_destroy(&pq->cond);
     if (pq->response)
     {
@@ -51,6 +50,11 @@ void dev_ipc_query_mgr_destroy(dev_ipc_query_mgr_t *mgr)
 
 uint32_t dev_ipc_query_mgr_register(dev_ipc_query_mgr_t *mgr)
 {
+    if (!mgr)
+    {
+        return 0;
+    }
+
     pthread_mutex_lock(&mgr->lock);
 
     uint32_t id = mgr->next_id++;
@@ -63,7 +67,6 @@ uint32_t dev_ipc_query_mgr_register(dev_ipc_query_mgr_t *mgr)
     pq->request_id = id;
     pq->response = NULL;
     pq->completed = 0;
-    pthread_mutex_init(&pq->mutex, NULL);
     pthread_cond_init(&pq->cond, NULL);
 
     g_hash_table_insert(mgr->pending, GUINT_TO_POINTER(id), pq);
@@ -74,17 +77,19 @@ uint32_t dev_ipc_query_mgr_register(dev_ipc_query_mgr_t *mgr)
 
 dev_ipc_message_t *dev_ipc_query_mgr_wait(dev_ipc_query_mgr_t *mgr, uint32_t request_id, uint32_t timeout_ms)
 {
-    /* 查找挂起查询 */
-    pthread_mutex_lock(&mgr->lock);
-    dev_ipc_pending_query_t *pq = g_hash_table_lookup(mgr->pending, GUINT_TO_POINTER(request_id));
-    pthread_mutex_unlock(&mgr->lock);
-
-    if (!pq)
+    if (!mgr || request_id == 0)
     {
         return NULL;
     }
 
-    /* 等待响应 */
+    pthread_mutex_lock(&mgr->lock);
+    dev_ipc_pending_query_t *pq = g_hash_table_lookup(mgr->pending, GUINT_TO_POINTER(request_id));
+    if (!pq)
+    {
+        pthread_mutex_unlock(&mgr->lock);
+        return NULL;
+    }
+
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     ts.tv_sec += timeout_ms / 1000;
@@ -95,21 +100,17 @@ dev_ipc_message_t *dev_ipc_query_mgr_wait(dev_ipc_query_mgr_t *mgr, uint32_t req
         ts.tv_nsec -= 1000000000;
     }
 
-    pthread_mutex_lock(&pq->mutex);
     while (!pq->completed)
     {
-        int ret = pthread_cond_timedwait(&pq->cond, &pq->mutex, &ts);
+        int ret = pthread_cond_timedwait(&pq->cond, &mgr->lock, &ts);
         if (ret != 0)
         {
             break; /* 超时或错误 */
         }
     }
+
     dev_ipc_message_t *response = pq->response;
     pq->response = NULL; /* 转移所有权 */
-    pthread_mutex_unlock(&pq->mutex);
-
-    /* 清理挂起查询 */
-    pthread_mutex_lock(&mgr->lock);
     g_hash_table_remove(mgr->pending, GUINT_TO_POINTER(request_id));
     pthread_mutex_unlock(&mgr->lock);
 
@@ -118,20 +119,41 @@ dev_ipc_message_t *dev_ipc_query_mgr_wait(dev_ipc_query_mgr_t *mgr, uint32_t req
 
 int dev_ipc_query_mgr_complete(dev_ipc_query_mgr_t *mgr, uint32_t request_id, dev_ipc_message_t *response)
 {
-    pthread_mutex_lock(&mgr->lock);
-    dev_ipc_pending_query_t *pq = g_hash_table_lookup(mgr->pending, GUINT_TO_POINTER(request_id));
-    pthread_mutex_unlock(&mgr->lock);
-
-    if (!pq)
+    if (!mgr || request_id == 0)
     {
         return ERRCODE_FAIL;
     }
 
-    pthread_mutex_lock(&pq->mutex);
+    pthread_mutex_lock(&mgr->lock);
+    dev_ipc_pending_query_t *pq = g_hash_table_lookup(mgr->pending, GUINT_TO_POINTER(request_id));
+    if (!pq)
+    {
+        pthread_mutex_unlock(&mgr->lock);
+        return ERRCODE_FAIL;
+    }
+
+    if (pq->completed)
+    {
+        pthread_mutex_unlock(&mgr->lock);
+        return ERRCODE_FAIL;
+    }
+
     pq->response = response;
     pq->completed = 1;
     pthread_cond_signal(&pq->cond);
-    pthread_mutex_unlock(&pq->mutex);
+    pthread_mutex_unlock(&mgr->lock);
 
     return ERRCODE_SUCCESS;
+}
+
+void dev_ipc_query_mgr_cancel(dev_ipc_query_mgr_t *mgr, uint32_t request_id)
+{
+    if (!mgr || request_id == 0)
+    {
+        return;
+    }
+
+    pthread_mutex_lock(&mgr->lock);
+    g_hash_table_remove(mgr->pending, GUINT_TO_POINTER(request_id));
+    pthread_mutex_unlock(&mgr->lock);
 }

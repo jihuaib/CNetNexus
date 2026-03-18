@@ -68,7 +68,12 @@ int bgp_pkt_send_open(bgp_conn_t *conn, uint32_t local_as, uint32_t router_id, G
     uint16_t as_be = htons(as_field);
     memcpy(msg + 20, &as_be, 2);
 
-    uint16_t hold_be = htons(BGP_HOLD_TIME);
+    uint16_t local_hold = BGP_HOLD_TIME;
+    if (conn->session && conn->session->vrf && conn->session->vrf->hold_time > 0)
+    {
+        local_hold = conn->session->vrf->hold_time;
+    }
+    uint16_t hold_be = htons(local_hold);
     memcpy(msg + 22, &hold_be, 2);
 
     /* BGP Identifier 直接由主机序 uint32_t 转为网络序写入报文 */
@@ -164,6 +169,38 @@ int bgp_pkt_send_keepalive(bgp_conn_t *conn)
     }
 
     LOG_DEBUG("BGP: Sent KEEPALIVE to %s", _ip);
+    return 0;
+}
+
+int bgp_pkt_send_notification(bgp_conn_t *conn, uint8_t error_code, uint8_t error_subcode)
+{
+    if (!conn || conn->fd < 0)
+    {
+        return -1;
+    }
+
+    char _ip[64];
+    net_addr_to_str(&conn->peer_addr, _ip, sizeof(_ip));
+
+    /* NOTIFICATION：头部 19 B + error_code 1 B + error_subcode 1 B = 21 B */
+    uint8_t msg[BGP_MSG_HEADER_SIZE + 2];
+    memcpy(msg, BGP_MARKER, 16);
+
+    uint16_t len_be = htons((uint16_t)(BGP_MSG_HEADER_SIZE + 2));
+    memcpy(msg + 16, &len_be, 2);
+    msg[18] = (uint8_t)BGP_MSG_NOTIFICATION;
+    msg[19] = error_code;
+    msg[20] = error_subcode;
+
+    ssize_t n = send(conn->fd, msg, sizeof(msg), MSG_NOSIGNAL);
+    if (n != (ssize_t)sizeof(msg))
+    {
+        LOG_ERROR("BGP: Failed to send NOTIFICATION to %s (code=%u sub=%u)", _ip, error_code, error_subcode);
+        return -1;
+    }
+
+    LOG_INFO("BGP: Sent NOTIFICATION to %s: %s (code=%u sub=%u)", _ip, bgp_notif_error_str(error_code, error_subcode),
+             error_code, error_subcode);
     return 0;
 }
 
@@ -620,7 +657,12 @@ static int parse_bgp_open(bgp_conn_t *conn, const uint8_t *body, uint16_t body_l
 
     /* 记录并协商 Hold Time（取本地与远端的较小值，RFC 4271 §4.2） */
     conn->session->remote_hold = msg.hold_time;
-    conn->session->negotiated_hold = (msg.hold_time < BGP_HOLD_TIME) ? msg.hold_time : BGP_HOLD_TIME;
+    uint16_t local_hold = BGP_HOLD_TIME;
+    if (conn->session->vrf && conn->session->vrf->hold_time > 0)
+    {
+        local_hold = conn->session->vrf->hold_time;
+    }
+    conn->session->negotiated_hold = (msg.hold_time < local_hold) ? msg.hold_time : local_hold;
 
     /* 将 remote_id 转回字符串仅用于日志 */
     char _remote_rid_str[16];
@@ -764,7 +806,7 @@ int bgp_pkt_on_data(bgp_conn_t *conn)
                             {
                                 return -1;
                             }
-                            sess->state = BGP_CONN_STATE_OPEN_CONFIRM;
+                            conn->state = BGP_CONN_STATE_OPEN_CONFIRM;
                             collision_ret = BGP_PKT_ON_DATA_COLLISION_CLOSE_OTHER;
                         }
                     }
@@ -776,14 +818,14 @@ int bgp_pkt_on_data(bgp_conn_t *conn)
                     {
                         return -1;
                     }
-                    sess->state = BGP_CONN_STATE_OPEN_CONFIRM;
+                    conn->state = BGP_CONN_STATE_OPEN_CONFIRM;
                 }
                 break;
 
             case BGP_MSG_KEEPALIVE:
-                if (conn->session->state == BGP_CONN_STATE_OPEN_CONFIRM)
+                if (conn->state == BGP_CONN_STATE_OPEN_CONFIRM)
                 {
-                    conn->session->state = BGP_CONN_STATE_ESTABLISHED;
+                    conn->state = BGP_CONN_STATE_ESTABLISHED;
                     LOG_INFO("BGP: Session established with %s (AS%u)", _ip, sess->remote_as);
                 }
                 else

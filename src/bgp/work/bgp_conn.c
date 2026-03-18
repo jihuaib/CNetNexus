@@ -32,6 +32,7 @@ static void bgp_conn_init(bgp_conn_t *conn)
     conn->fd = -1;
     conn->is_active = FALSE;
     conn->is_connecting = FALSE;
+    conn->state = BGP_CONN_STATE_OPEN_SENT;
 }
 
 static void bgp_conn_cleanup(bgp_conn_t *conn)

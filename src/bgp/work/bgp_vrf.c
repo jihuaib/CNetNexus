@@ -40,7 +40,7 @@ void bgp_vrf_destroy(bgp_vrf_t *vrf)
         return;
     }
     LOG_INFO("BGP VRF destroyed: id=%u", vrf->vrf_id);
-    /* 先销毁 inst_hash（释放 bgp_peer_t 和 bestlist），再销毁 sess_hash */
+    /* 先销毁 inst_hash（释放 bgp_peer_t 和 RIB），再销毁 sess_hash */
     if (vrf->inst_hash)
     {
         g_hash_table_destroy(vrf->inst_hash);
@@ -252,8 +252,29 @@ void bgp_vrf_del_instance(bgp_vrf_t *vrf, bgp_afi_t afi, bgp_safi_t safi)
         return;
     }
 
-    /* g_hash_table_remove 触发 bgp_instance_destroy（含所有 peer） */
-    g_hash_table_remove(vrf->inst_hash, bgp_inst_hash_key(afi, safi));
+    gpointer inst_key = bgp_inst_hash_key(afi, safi);
+    bgp_instance_t *inst = g_hash_table_lookup(vrf->inst_hash, inst_key);
+    if (!inst)
+    {
+        return;
+    }
+
+    /* 销毁实例前，先从各 session->peer_list 清除借用引用，避免悬挂指针
+     * bgp_vrf_af_disable_neighbor 只清理单个邻居；此处覆盖整个实例下的所有 peer */
+    GHashTableIter iter;
+    gpointer key, val;
+    g_hash_table_iter_init(&iter, inst->peer_hash);
+    while (g_hash_table_iter_next(&iter, &key, &val))
+    {
+        bgp_session_t *sess = bgp_vrf_find_session(vrf, (const net_addr_t *)key);
+        if (sess)
+        {
+            sess->peer_list = g_list_remove(sess->peer_list, (bgp_peer_t *)val);
+        }
+    }
+
+    /* 再从 inst_hash 移除（触发 bgp_instance_destroy，含所有 peer） */
+    g_hash_table_remove(vrf->inst_hash, inst_key);
     LOG_INFO("BGP: Deleting address family instance afi=%u safi=%u (VRF %u)", (unsigned)afi, (unsigned)safi,
              vrf->vrf_id);
 }

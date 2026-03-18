@@ -142,8 +142,16 @@ static uint8_t *pack_tlv_payload(cli_match_result_t *result, const uint8_t *ctx_
 {
     GByteArray *buf = g_byte_array_new();
 
-    /* 1. flags（从 match result 的 has_no_prefix 标志检测 "no" 前缀） */
-    uint8_t flags = result->has_no_prefix ? CLI_PAYLOAD_FLAG_NO_CMD : 0;
+    /* 1. flags（从 match result 标志检测 no/show 前缀） */
+    uint8_t flags = 0;
+    if (result->has_no_prefix)
+    {
+        flags |= CLI_PAYLOAD_FLAG_NO_CMD;
+    }
+    if (result->has_show_prefix)
+    {
+        flags |= CLI_PAYLOAD_FLAG_SHOW_CMD;
+    }
     tlv_write_u8(buf, flags);
 
     /* 2. group_id */

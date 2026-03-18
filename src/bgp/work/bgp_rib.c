@@ -377,3 +377,99 @@ uint32_t bgp_rib_route_count(const bgp_rib_t *rib)
 {
     return rib ? rib->route_count : 0;
 }
+
+/* ============================================================================
+ * is_best 标记操作
+ * ========================================================================== */
+
+/** g_hash_table_foreach 回调：清除单条路径的 BGP_ROUTE_FLAG_BEST 标记 */
+static void clear_best_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    (void)user_data;
+    BIT_CLR(((bgp_route_node_t *)value)->flags, BGP_ROUTE_FLAG_BEST);
+}
+
+void bgp_rib_mark_best(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_addr_t *best_source)
+{
+    if (!rib || !nlri || !best_source)
+    {
+        return;
+    }
+    bgp_rthead_t *head = (bgp_rthead_t *)g_tree_lookup(rib->head_tree, nlri);
+    if (!head)
+    {
+        return;
+    }
+
+    /* 先清除该前缀头下所有路径的 BEST 标记 */
+    g_hash_table_foreach(head->route_hash, clear_best_cb, NULL);
+
+    /* 再对最优路径置位 */
+    bgp_route_node_t *best = (bgp_route_node_t *)g_hash_table_lookup(head->route_hash, best_source);
+    if (best)
+    {
+        BIT_SET(best->flags, BGP_ROUTE_FLAG_BEST);
+    }
+}
+
+/** g_hash_table_foreach 回调：查找带 BGP_ROUTE_FLAG_BEST 标记的路径 */
+static void find_best_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    const bgp_route_node_t **result = user_data;
+    const bgp_route_node_t *route = value;
+    if (BIT_TEST(route->flags, BGP_ROUTE_FLAG_BEST))
+    {
+        *result = route;
+    }
+}
+
+const bgp_route_node_t *bgp_rib_find_best(const bgp_rib_t *rib, const bgp_nlri_entry_t *nlri)
+{
+    if (!rib || !nlri)
+    {
+        return NULL;
+    }
+    const bgp_rthead_t *head = (const bgp_rthead_t *)g_tree_lookup(rib->head_tree, nlri);
+    if (!head)
+    {
+        return NULL;
+    }
+    const bgp_route_node_t *result = NULL;
+    g_hash_table_foreach(head->route_hash, find_best_cb, &result);
+    return result;
+}
+
+/** foreach_best 遍历时的上下文 */
+typedef struct
+{
+    bgp_rib_best_cb cb;
+    gpointer user_data;
+} foreach_best_ctx_t;
+
+/** g_tree_foreach 回调：对每个 rthead 查找 is_best 路径并调用外部回调 */
+static gboolean foreach_best_tree_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    foreach_best_ctx_t *ctx = user_data;
+    const bgp_rthead_t *head = (const bgp_rthead_t *)value;
+
+    const bgp_route_node_t *best = NULL;
+    g_hash_table_foreach(head->route_hash, find_best_cb, &best);
+    if (best)
+    {
+        ctx->cb(head, best, ctx->user_data);
+    }
+    return FALSE; /* 继续遍历 */
+}
+
+void bgp_rib_foreach_best(const bgp_rib_t *rib, bgp_rib_best_cb cb, gpointer user_data)
+{
+    if (!rib || !rib->head_tree || !cb)
+    {
+        return;
+    }
+    foreach_best_ctx_t ctx = {cb, user_data};
+    g_tree_foreach(rib->head_tree, foreach_best_tree_cb, &ctx);
+}

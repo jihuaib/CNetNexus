@@ -6,14 +6,15 @@
  */
 #include "bgp_db.h"
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 
-#include "bgp_cfg_apply.h"
+#include "bgp_cli.h"
 #include "bgp_main.h"
-#include "bgp_protocol.h"
 #include "bgp_session.h"
 #include "bgp_vrf.h"
+#include "bgp_worker.h"
 #include "errcode.h"
 #include "log.h"
 #include "net_addr.h"
@@ -128,14 +129,18 @@ static uint32_t restore_protocol(dev_ipc_context_t *ctx)
 
     if (as_number != 0)
     {
-        uint32_t apply_ret = bgp_cfg_apply_protocol(FALSE, as_number);
-        if (apply_ret == ERRCODE_SUCCESS)
+        bgp_apply_cmd_t apply;
+        memset(&apply, 0, sizeof(apply));
+        apply.group_id = BGP_CLI_GROUP_ID_PROTOCOL;
+        apply.isNo = false;
+        apply.u.protocol.as_number = as_number;
+        if (bgp_worker_dispatch_apply(&apply) == 0 && apply.rc == BGP_APPLY_RC_OK)
         {
             LOG_INFO("BGP protocol restored: AS %u", as_number);
         }
         else
         {
-            LOG_ERROR("BGP restore: Protocol creation failed (as=%u, ret=%d)", as_number, (int)apply_ret);
+            LOG_ERROR("BGP restore: Protocol creation failed (as=%u)", as_number);
         }
     }
 
@@ -145,8 +150,9 @@ static uint32_t restore_protocol(dev_ipc_context_t *ctx)
 
 static void restore_sessions(dev_ipc_context_t *ctx)
 {
+    (void)ctx;
     db_result_t *result = NULL;
-    if (db_rpc_query(ctx, BGP_TABLE_SESSION, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
+    if (db_rpc_query(g_bgp_local->dev_ipc_ctx, BGP_TABLE_SESSION, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
     {
         return;
     }
@@ -158,12 +164,6 @@ static void restore_sessions(dev_ipc_context_t *ctx)
         uint32_t as_val = (uint32_t)db_row_get_int(row, "remote_as", 0);
         uint32_t vrf_id = (uint32_t)db_row_get_int(row, "vrf_id", BGP_VRF_PUBLIC_ID);
         uint32_t open_caps = (uint32_t)db_row_get_int(row, "open_caps", (int64_t)BGP_SESS_CAP_DEFAULT);
-
-        bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_local->protocol, vrf_id);
-        if (!vrf)
-        {
-            continue;
-        }
 
         if (!ip_val)
         {
@@ -177,16 +177,37 @@ static void restore_sessions(dev_ipc_context_t *ctx)
             continue;
         }
 
-        bgp_cfg_apply_neighbor(FALSE, vrf, &nb_addr, as_val);
-
-        bgp_session_t *sess = bgp_vrf_find_session(vrf, &nb_addr);
-        if (!sess)
+        /* 恢复邻居会话 */
+        bgp_apply_cmd_t apply;
+        memset(&apply, 0, sizeof(apply));
+        apply.group_id = BGP_CLI_GROUP_ID_NEIGHBOR;
+        apply.isNo = false;
+        apply.vrf_id = vrf_id;
+        apply.u.neighbor.addr = nb_addr;
+        apply.u.neighbor.remote_as = as_val;
+        if (bgp_worker_dispatch_apply(&apply) != 0 || apply.rc != BGP_APPLY_RC_OK)
         {
             LOG_WARN("BGP restore: Session neighbor %s creation failed, skipping", ip_val);
             continue;
         }
 
-        bgp_cfg_apply_open_capability(FALSE, sess, open_caps);
+        /* 恢复能力位（按位逐一派发） */
+        uint32_t cap_bits[] = {BGP_SESS_CAP_AS4, BGP_SESS_CAP_ROUTE_REFRESH};
+        for (size_t c = 0; c < G_N_ELEMENTS(cap_bits); c++)
+        {
+            if (!(open_caps & cap_bits[c]))
+            {
+                continue; /* 能力未开启，跳过（默认关闭） */
+            }
+            bgp_apply_cmd_t cap_apply;
+            memset(&cap_apply, 0, sizeof(cap_apply));
+            cap_apply.group_id = BGP_CLI_GROUP_ID_OPEN_CAP;
+            cap_apply.isNo = false;
+            cap_apply.vrf_id = vrf_id;
+            cap_apply.u.open_cap.addr = nb_addr;
+            cap_apply.u.open_cap.cap_bit = cap_bits[c];
+            (void)bgp_worker_dispatch_apply(&cap_apply);
+        }
     }
 
     db_result_free(result);
@@ -198,8 +219,10 @@ static void restore_sessions(dev_ipc_context_t *ctx)
  */
 static void restore_neighbors(dev_ipc_context_t *ctx)
 {
+    (void)ctx;
     db_result_t *result = NULL;
-    if (db_rpc_query(ctx, BGP_TABLE_NEIGHBOR, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
+    if (db_rpc_query(g_bgp_local->dev_ipc_ctx, BGP_TABLE_NEIGHBOR, NULL, 0, NULL, &result) != ERRCODE_SUCCESS ||
+        !result)
     {
         return;
     }
@@ -217,19 +240,22 @@ static void restore_neighbors(dev_ipc_context_t *ctx)
             continue;
         }
 
-        bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_local->protocol, vrf_id);
-        if (!vrf)
-        {
-            continue;
-        }
-
         net_addr_t nb_addr;
         if (net_addr_from_str(nb_ip, &nb_addr) != 0)
         {
             LOG_WARN("BGP restore: Peer neighbor address %s parse failed, skipping", nb_ip);
             continue;
         }
-        bgp_cfg_apply_af_neighbor(FALSE, vrf, afi, safi, &nb_addr);
+
+        bgp_apply_cmd_t apply;
+        memset(&apply, 0, sizeof(apply));
+        apply.group_id = BGP_CLI_GROUP_ID_AF_NEIGHBOR;
+        apply.isNo = false;
+        apply.vrf_id = vrf_id;
+        apply.u.af_neighbor.afi = afi;
+        apply.u.af_neighbor.safi = safi;
+        apply.u.af_neighbor.addr = nb_addr;
+        (void)bgp_worker_dispatch_apply(&apply);
     }
 
     db_result_free(result);
@@ -241,8 +267,10 @@ static void restore_neighbors(dev_ipc_context_t *ctx)
  */
 static void restore_instances(dev_ipc_context_t *ctx)
 {
+    (void)ctx;
     db_result_t *result = NULL;
-    if (db_rpc_query(ctx, BGP_TABLE_INSTANCE, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
+    if (db_rpc_query(g_bgp_local->dev_ipc_ctx, BGP_TABLE_INSTANCE, NULL, 0, NULL, &result) != ERRCODE_SUCCESS ||
+        !result)
     {
         return;
     }
@@ -259,38 +287,50 @@ static void restore_instances(dev_ipc_context_t *ctx)
             continue;
         }
 
-        bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_local->protocol, vrf_id);
-        if (!vrf)
+        /* 恢复 AF 实例 */
+        bgp_apply_cmd_t apply;
+        memset(&apply, 0, sizeof(apply));
+        apply.group_id = BGP_CLI_GROUP_ID_ADDR_FAMILY;
+        apply.isNo = false;
+        apply.vrf_id = vrf_id;
+        apply.u.instance.afi = afi;
+        apply.u.instance.safi = safi;
+        if (bgp_worker_dispatch_apply(&apply) != 0 || apply.rc != BGP_APPLY_RC_OK)
         {
+            LOG_WARN("BGP restore: AF instance vrf=%u afi=%u safi=%u failed", vrf_id, (unsigned)afi, (unsigned)safi);
             continue;
         }
-
-        bgp_cfg_apply_instance(FALSE, vrf, afi, safi);
         LOG_INFO("BGP restore: VRF %u AF instance afi=%u safi=%u", vrf_id, (unsigned)afi, (unsigned)safi);
 
+        /* 恢复 import-route（当前仅支持 static） */
         uint32_t import_protos = (uint32_t)db_row_get_int(row, "import_protos", 0);
-        if (import_protos != 0)
+        if (import_protos & (1u << ROUTE_PROTOCOL_STATIC))
         {
-            bgp_instance_t *inst = g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(afi, safi));
-            if (inst)
+            bgp_apply_cmd_t imp;
+            memset(&imp, 0, sizeof(imp));
+            imp.group_id = BGP_CLI_GROUP_ID_IMPORT_ROUTE;
+            imp.isNo = false;
+            imp.vrf_id = vrf_id;
+            imp.u.import_route.afi = afi;
+            imp.u.import_route.safi = safi;
+            imp.u.import_route.import_proto = ROUTE_PROTOCOL_STATIC;
+            (void)bgp_worker_dispatch_apply(&imp);
+
+            /* 重新订阅路由模块（fire-and-forget） */
+            route_subscribe_req_t *req = g_malloc(sizeof(route_subscribe_req_t));
+            req->protocol = ROUTE_PROTOCOL_STATIC;
+            req->vrf_id = ROUTE_VRF_DEFAULT;
+            req->flags = ROUTE_SUBSCRIBE_FLAG_FULL;
+            dev_ipc_message_t *sub_msg =
+                dev_ipc_message_create(ROUTE_MSG_TYPE_SUBSCRIBE, DEV_MODULE_ID_BGP, DEV_MODULE_ID_ROUTE, 0, req,
+                                       sizeof(route_subscribe_req_t), g_free);
+            if (sub_msg)
             {
-                inst->import_protos = import_protos;
-                /* 重新订阅路由模块（fire-and-forget，不阻塞） */
-                route_subscribe_req_t *req = g_malloc(sizeof(route_subscribe_req_t));
-                req->protocol = ROUTE_PROTOCOL_STATIC;
-                req->vrf_id = ROUTE_VRF_DEFAULT;
-                req->flags = ROUTE_SUBSCRIBE_FLAG_FULL;
-                dev_ipc_message_t *sub_msg =
-                    dev_ipc_message_create(ROUTE_MSG_TYPE_SUBSCRIBE, DEV_MODULE_ID_BGP, DEV_MODULE_ID_ROUTE, 0, req,
-                                           sizeof(route_subscribe_req_t), g_free);
-                if (sub_msg)
-                {
-                    dev_ipc_send(ctx, DEV_MODULE_ID_ROUTE, sub_msg);
-                    dev_ipc_message_free(sub_msg);
-                }
-                LOG_INFO("BGP 恢复: VRF %u afi=%u safi=%u import_protos=0x%08X，已重新订阅路由模块", vrf_id,
-                         (unsigned)afi, (unsigned)safi, import_protos);
+                dev_ipc_send(g_bgp_local->dev_ipc_ctx, DEV_MODULE_ID_ROUTE, sub_msg);
+                dev_ipc_message_free(sub_msg);
             }
+            LOG_INFO("BGP restore: VRF %u afi=%u safi=%u import_protos=0x%08X，已重新订阅路由模块", vrf_id,
+                     (unsigned)afi, (unsigned)safi, import_protos);
         }
     }
 
@@ -299,8 +339,9 @@ static void restore_instances(dev_ipc_context_t *ctx)
 
 static void restore_vrf(dev_ipc_context_t *ctx)
 {
+    (void)ctx;
     db_result_t *result = NULL;
-    if (db_rpc_query(ctx, BGP_TABLE_VRF, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
+    if (db_rpc_query(g_bgp_local->dev_ipc_ctx, BGP_TABLE_VRF, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
     {
         return;
     }
@@ -310,18 +351,16 @@ static void restore_vrf(dev_ipc_context_t *ctx)
         db_row_t *row = result->rows[i];
         uint32_t vrf_id = (uint32_t)db_row_get_int(row, "vrf_id", BGP_VRF_PUBLIC_ID);
 
-        bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_local->protocol, vrf_id);
-        if (vrf == NULL)
-        {
-            bgp_vrf_t *new_vrf = bgp_vrf_create(vrf_id);
-            g_hash_table_insert(g_bgp_local->protocol->vrf_hash, GINT_TO_POINTER(vrf_id), new_vrf);
-            vrf = new_vrf;
-        }
-
         const char *router_id = db_row_get_text(row, "router_id", NULL);
         if (router_id && strcmp(router_id, "0.0.0.0") != 0)
         {
-            bgp_cfg_apply_router_id(FALSE, vrf, router_id);
+            bgp_apply_cmd_t apply;
+            memset(&apply, 0, sizeof(apply));
+            apply.group_id = BGP_CLI_GROUP_ID_ROUTER_ID;
+            apply.isNo = false;
+            apply.vrf_id = vrf_id;
+            snprintf(apply.u.router_id.id, sizeof(apply.u.router_id.id), "%s", router_id);
+            (void)bgp_worker_dispatch_apply(&apply);
             LOG_INFO("BGP restore: VRF %u router-id=%s", vrf_id, router_id);
         }
 
@@ -329,14 +368,27 @@ static void restore_vrf(dev_ipc_context_t *ctx)
         uint16_t hold_time = (uint16_t)db_row_get_int(row, "hold_time", BGP_TIMER_DEFAULT_HOLD);
         if (keepalive > 0 && hold_time > keepalive)
         {
-            bgp_cfg_apply_timers(FALSE, vrf, keepalive, hold_time);
+            bgp_apply_cmd_t apply;
+            memset(&apply, 0, sizeof(apply));
+            apply.group_id = BGP_CLI_GROUP_ID_TIMERS;
+            apply.isNo = false;
+            apply.vrf_id = vrf_id;
+            apply.u.timers.keepalive = keepalive;
+            apply.u.timers.hold_time = hold_time;
+            (void)bgp_worker_dispatch_apply(&apply);
             LOG_INFO("BGP restore: VRF %u keepalive=%u hold=%u", vrf_id, keepalive, hold_time);
         }
 
         uint16_t connect_retry = (uint16_t)db_row_get_int(row, "connect_retry", BGP_TIMER_DEFAULT_CONNECT_RETRY);
         if (connect_retry > 0)
         {
-            bgp_cfg_apply_connect_retry(FALSE, vrf, connect_retry);
+            bgp_apply_cmd_t apply;
+            memset(&apply, 0, sizeof(apply));
+            apply.group_id = BGP_CLI_GROUP_ID_CONNECT_RETRY;
+            apply.isNo = false;
+            apply.vrf_id = vrf_id;
+            apply.u.connect_retry.interval = connect_retry;
+            (void)bgp_worker_dispatch_apply(&apply);
             LOG_INFO("BGP restore: VRF %u connect-retry=%u", vrf_id, connect_retry);
         }
     }

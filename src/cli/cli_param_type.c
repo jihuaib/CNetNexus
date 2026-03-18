@@ -47,7 +47,8 @@ static gboolean parse_range(const char *range_str, int64_t *min_val, int64_t *ma
     {
         return FALSE;
     }
-    strncpy(min_str, range_str, min_len);
+    memcpy(min_str, range_str, min_len);
+    min_str[min_len] = '\0';
 
     char *endptr;
     errno = 0;
@@ -91,7 +92,8 @@ cli_param_type_t *cli_param_type_parse(const char *type_str)
     {
         name_len = sizeof(type_name) - 1;
     }
-    strncpy(type_name, type_str, name_len);
+    memcpy(type_name, type_str, name_len);
+    type_name[name_len] = '\0';
 
     // Convert to lowercase for comparison
     for (char *p = type_name; *p; p++)
@@ -108,7 +110,8 @@ cli_param_type_t *cli_param_type_parse(const char *type_str)
         {
             range_len = sizeof(range_str) - 1;
         }
-        strncpy(range_str, paren_open + 1, range_len);
+        memcpy(range_str, paren_open + 1, range_len);
+        range_str[range_len] = '\0';
     }
 
     // Determine type and set validation callback

@@ -34,6 +34,20 @@ static const char *fmt_module_id(uint32_t module_id, char *buf, size_t buf_size)
 
 // 全局 IPC 上下文实例，用于其他模块方便获取
 dev_ipc_context_t *g_ipc_context = NULL;
+/* Worker 退出哨兵（GAsyncQueue 不能推送 NULL）。 */
+static dev_ipc_message_t g_worker_exit_sentinel;
+
+/* 判定消息类型是否为“响应语义”，用于过滤超时后晚到响应。 */
+static int is_response_like_msg_type(uint32_t msg_type)
+{
+    if (msg_type == DEV_IPC_MSG_TYPE_DEV_MODULE_RESP || msg_type == DEV_IPC_MSG_TYPE_DEV_QUERY_IPC_CONNS_RESP ||
+        msg_type == DEV_IPC_MSG_TYPE_DB_RESP)
+    {
+        return 1;
+    }
+
+    return DEV_IPC_MSG_SUBTYPE(msg_type) == 0x00FF;
+}
 
 // ============================================================================
 // 内部函数前向声明
@@ -377,6 +391,14 @@ static void handle_frame(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn, dev
                 {
                     break; /* 已交付给等待者，不调用 msg_handler */
                 }
+
+                if (is_response_like_msg_type(app_msg->msg_type))
+                {
+                    LOG_WARN("<%s> Drop unmatched response: src=0x%08X type=0x%08X request_id=%u", ctx->name,
+                             app_msg->src_module_id, app_msg->msg_type, app_msg->request_id);
+                    dev_ipc_message_free(app_msg);
+                    break;
+                }
             }
 
             /* 推入 worker 队列，IO 线程立即返回继续 epoll */
@@ -568,9 +590,9 @@ static void *dev_ipc_worker_thread(void *arg)
 
     while (1)
     {
-        /* 阻塞等待业务消息；NULL 为退出哨兵 */
+        /* 阻塞等待业务消息；使用固定地址作为退出哨兵 */
         dev_ipc_message_t *msg = g_async_queue_pop(ctx->msg_queue);
-        if (!msg)
+        if (msg == &g_worker_exit_sentinel)
         {
             break;
         }
@@ -784,6 +806,8 @@ dev_ipc_context_t *dev_ipc_init(uint32_t module_id, const char *name, uint16_t l
     snprintf(ctx->name, sizeof(ctx->name), "%s", name ? name : "unknown");
     /* 为调用方线程（constructor/初始化线程）设置日志标签，使初始化期间的日志也能显示模块名 */
     log_set_tag(ctx->name);
+    /* 注册模块专属日志文件（$NN_WORK_DIR/log/{name}.log），未设置 NN_WORK_DIR 时无操作 */
+    log_register_module_auto(ctx->name);
     ctx->msg_handler = msg_handler;
     ctx->listen_fd = -1;
     ctx->epoll_fd = -1;
@@ -862,10 +886,10 @@ void dev_ipc_destroy(dev_ipc_context_t *ctx)
         pthread_join(ctx->io_thread, NULL);
     }
 
-    /* 发送 NULL 哨兵唤醒 worker 线程使其退出 */
+    /* 发送哨兵唤醒 worker 线程使其退出 */
     if (ctx->msg_queue)
     {
-        g_async_queue_push(ctx->msg_queue, NULL);
+        g_async_queue_push(ctx->msg_queue, &g_worker_exit_sentinel);
     }
     if (ctx->worker_thread != 0)
     {
@@ -909,6 +933,16 @@ void dev_ipc_clear_connections(dev_ipc_context_t *ctx)
         return;
     }
 
+    int restart_io = 0;
+    if (ctx->running && ctx->io_thread != 0 && !pthread_equal(pthread_self(), ctx->io_thread))
+    {
+        /* 先停 IO 线程，避免并发访问 conn 导致 UAF。 */
+        ctx->running = 0;
+        pthread_join(ctx->io_thread, NULL);
+        ctx->io_thread = 0;
+        restart_io = 1;
+    }
+
     pthread_mutex_lock(&ctx->comutex);
     for (int i = 0; i < ctx->num_connections; i++)
     {
@@ -927,6 +961,16 @@ void dev_ipc_clear_connections(dev_ipc_context_t *ctx)
     }
     ctx->num_connections = 0;
     pthread_mutex_unlock(&ctx->comutex);
+
+    if (restart_io)
+    {
+        ctx->running = 1;
+        if (pthread_create(&ctx->io_thread, NULL, dev_ipc_io_thread, ctx) != 0)
+        {
+            LOG_PERROR("pthread_create (io restart)");
+            ctx->running = 0;
+        }
+    }
 }
 
 int dev_ipc_connect(dev_ipc_context_t *ctx, uint32_t target_module_id, const char *host, uint16_t port)
@@ -1017,7 +1061,7 @@ int dev_ipc_send(dev_ipc_context_t *ctx, uint32_t target_module_id, dev_ipc_mess
 dev_ipc_message_t *dev_ipc_query(dev_ipc_context_t *ctx, uint32_t target_module_id, dev_ipc_message_t *msg,
                                  uint32_t timeout_ms)
 {
-    if (!ctx || !msg)
+    if (!ctx || !msg || !ctx->query_mgr)
     {
         return NULL;
     }
@@ -1029,12 +1073,17 @@ dev_ipc_message_t *dev_ipc_query(dev_ipc_context_t *ctx, uint32_t target_module_
 
     /* 分配请求 ID */
     uint32_t request_id = dev_ipc_query_mgr_register(ctx->query_mgr);
+    if (request_id == 0)
+    {
+        return NULL;
+    }
     msg->request_id = request_id;
     msg->src_module_id = ctx->module_id;
 
     /* 发送消息 */
     if (dev_ipc_send(ctx, target_module_id, msg) != ERRCODE_SUCCESS)
     {
+        dev_ipc_query_mgr_cancel(ctx->query_mgr, request_id);
         return NULL;
     }
 

@@ -40,8 +40,24 @@ void log_set_tag(const char *tag);
 void log_init(log_level_t level);
 
 /**
- * @brief 打开日志文件（同时写 stderr 和文件）
- * @param path 日志文件路径，NULL 则关闭文件输出
+ * @brief 注册模块日志文件（追加模式，覆盖同 tag 的旧注册）
+ * @param tag  模块标签（与 log_set_tag 使用的 tag 一致，生命周期须长于进程）
+ * @param path 日志文件路径
+ * @return 0 成功，-1 打开文件失败
+ */
+int log_register_module(const char *tag, const char *path);
+
+/**
+ * @brief 基于 NN_WORK_DIR 自动注册模块日志文件
+ * @param tag 模块标签
+ * @details 路径为 $NN_WORK_DIR/log/{tag}.log；未设置 NN_WORK_DIR 时无操作直接返回 0
+ * @return 0 成功，-1 失败
+ */
+int log_register_module_auto(const char *tag);
+
+/**
+ * @brief 打开日志文件（兼容旧接口，等价于 log_register_module("main", path)）
+ * @param path 日志文件路径，NULL 则无操作
  */
 void log_open_file(const char *path);
 

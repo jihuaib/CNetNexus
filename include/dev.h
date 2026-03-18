@@ -227,7 +227,6 @@ typedef struct dev_ipc_pending_query
 {
     uint32_t request_id;         /**< 请求 ID */
     dev_ipc_message_t *response; /**< 响应消息（由 IO 线程设置） */
-    pthread_mutex_t mutex;       /**< 互斥锁 */
     pthread_cond_t cond;         /**< 条件变量 */
     int completed;               /**< 是否已完成 */
 } dev_ipc_pending_query_t;
@@ -540,6 +539,13 @@ dev_ipc_message_t *dev_ipc_query_mgr_wait(dev_ipc_query_mgr_t *mgr, uint32_t req
  * @return 成功返回 0（找到对应挂起查询），未找到返回 -1
  */
 int dev_ipc_query_mgr_complete(dev_ipc_query_mgr_t *mgr, uint32_t request_id, dev_ipc_message_t *response);
+
+/**
+ * @brief 取消挂起查询并清理状态（用于发送失败等场景）
+ * @param mgr 查询管理器
+ * @param request_id 请求 ID
+ */
+void dev_ipc_query_mgr_cancel(dev_ipc_query_mgr_t *mgr, uint32_t request_id);
 
 /**
  * @brief 将 dev_ipc_message_t 序列化为 IPC 帧（头部 + 负载）

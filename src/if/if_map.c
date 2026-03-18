@@ -20,6 +20,23 @@
 /* 使用 g_if_local->interface_map，不再维护独立全局变量 */
 #define g_interface_map (g_if_local->interface_map)
 
+static void if_map_copy_str(char *dst, size_t dst_size, const char *src)
+{
+    if (!dst || dst_size == 0)
+    {
+        return;
+    }
+    if (!src)
+    {
+        dst[0] = '\0';
+        return;
+    }
+
+    size_t len = strnlen(src, dst_size - 1);
+    memcpy(dst, src, len);
+    dst[len] = '\0';
+}
+
 // Load mappings from config file
 static int load_config_file(const char *config_file)
 {
@@ -47,8 +64,10 @@ static int load_config_file(const char *config_file)
         if (sscanf(line, " %31s = %15s", logical, physical) == 2)
         {
             // Add mapping
-            strncpy(g_interface_map.entries[g_interface_map.count].logical_name, logical, LOGICAL_NAME_LEN - 1);
-            strncpy(g_interface_map.entries[g_interface_map.count].physical_name, physical, IFNAMSIZ - 1);
+            if_map_copy_str(g_interface_map.entries[g_interface_map.count].logical_name,
+                            sizeof(g_interface_map.entries[g_interface_map.count].logical_name), logical);
+            if_map_copy_str(g_interface_map.entries[g_interface_map.count].physical_name,
+                            sizeof(g_interface_map.entries[g_interface_map.count].physical_name), physical);
             g_interface_map.entries[g_interface_map.count].auto_mapped = 0;
             g_interface_map.count++;
         }
@@ -131,14 +150,17 @@ int if_map_add(const char *logical_name, const char *physical_name)
         if (strcmp(g_interface_map.entries[i].logical_name, logical_name) == 0)
         {
             // Update existing mapping
-            strncpy(g_interface_map.entries[i].physical_name, physical_name, IFNAMSIZ - 1);
+            if_map_copy_str(g_interface_map.entries[i].physical_name, sizeof(g_interface_map.entries[i].physical_name),
+                            physical_name);
             return ERRCODE_SUCCESS;
         }
     }
 
     // Add new mapping
-    strncpy(g_interface_map.entries[g_interface_map.count].logical_name, logical_name, LOGICAL_NAME_LEN - 1);
-    strncpy(g_interface_map.entries[g_interface_map.count].physical_name, physical_name, IFNAMSIZ - 1);
+    if_map_copy_str(g_interface_map.entries[g_interface_map.count].logical_name,
+                    sizeof(g_interface_map.entries[g_interface_map.count].logical_name), logical_name);
+    if_map_copy_str(g_interface_map.entries[g_interface_map.count].physical_name,
+                    sizeof(g_interface_map.entries[g_interface_map.count].physical_name), physical_name);
     g_interface_map.count++;
 
     return ERRCODE_SUCCESS;

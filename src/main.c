@@ -35,7 +35,8 @@ static void sigint_handler(int sig)
     (void)sig;
     char c = 1;
     /* 信号处理函数中只能调用 async-signal-safe 函数 */
-    write(g_shutdown_pipe[1], &c, 1);
+    ssize_t n = write(g_shutdown_pipe[1], &c, 1);
+    (void)n;
 }
 
 int main(int argc, char *argv[])
@@ -44,14 +45,8 @@ int main(int argc, char *argv[])
     (void)argv;
     log_set_tag("main");
 
-    /* 若设置了 NN_WORK_DIR，则将日志写入 $NN_WORK_DIR/log/netnexus.log */
-    const char *work_dir = getenv("NN_WORK_DIR");
-    if (work_dir)
-    {
-        char log_path[512];
-        snprintf(log_path, sizeof(log_path), "%s/log/netnexus.log", work_dir);
-        log_open_file(log_path);
-    }
+    /* 注册主线程日志文件：$NN_WORK_DIR/log/main.log（未设置 NN_WORK_DIR 时仅输出到 stderr） */
+    log_register_module_auto("main");
 
     int epoll_fd = -1;
     int signal_fd = -1;
@@ -191,7 +186,8 @@ int main(int argc, char *argv[])
             {
                 // SIGINT received via self-pipe
                 char buf[16];
-                read(g_shutdown_pipe[0], buf, sizeof(buf));
+                ssize_t n = read(g_shutdown_pipe[0], buf, sizeof(buf));
+                (void)n;
                 LOG_INFO("Received SIGINT, requesting shutdown...");
                 shutdown = 1;
             }

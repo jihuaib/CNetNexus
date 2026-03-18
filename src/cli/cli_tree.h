@@ -33,6 +33,16 @@ typedef struct
     uint32_t fixed_value; /**< from_param==0xFFFFFFFF 时的固定无符号整数值 */
 } cli_ctx_out_entry_t;
 
+/**
+ * @brief 同名共享节点下，不同命令来源（module/group）到 cfg-id 的绑定
+ */
+typedef struct
+{
+    uint32_t module_id;
+    uint32_t group_id;
+    uint32_t cfg_id;
+} cli_cfg_binding_t;
+
 // CLI tree node structure
 struct cli_tree_node
 {
@@ -49,6 +59,11 @@ struct cli_tree_node
     /** XML <context-out> 条目数组：视图切换成功时由框架自动写入上下文（NULL 表示无） */
     cli_ctx_out_entry_t *context_out;
     uint32_t num_context_out;
+
+    /** 同名节点合并后保留每个 (module_id, group_id) 对应的 cfg_id */
+    cli_cfg_binding_t *cfg_bindings;
+    uint32_t num_cfg_bindings;
+    uint32_t cfg_bindings_capacity;
 
     // Children nodes
     cli_tree_node_t **children; // Array of child nodes
@@ -76,6 +91,7 @@ typedef struct cli_match_result
     uint32_t capacity;             // Allocated capacity
     cli_tree_node_t *final_node;   // Final matched node
     gboolean has_no_prefix;        // 命令是否带有 "no" 前缀（无需 cfg-id 亦可检测）
+    gboolean has_show_prefix;      // 命令是否带有 "show" 关键字
 } cli_match_result_t;
 
 // Match result functions

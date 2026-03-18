@@ -48,6 +48,19 @@ int bgp_pkt_send_open(bgp_conn_t *conn, uint32_t local_as, uint32_t router_id, G
 int bgp_pkt_send_keepalive(bgp_conn_t *conn);
 
 /**
+ * @brief 向对端发送 BGP NOTIFICATION 报文
+ *
+ * 报文格式：BGP 头部（19 B）+ error_code（1 B）+ error_subcode（1 B）。
+ * 发送后调用方负责关闭连接，NOTIFICATION 本身不触发任何状态变更。
+ *
+ * @param conn          连接处理器（fd 必须有效）
+ * @param error_code    错误码，见 BGP_ERR_*
+ * @param error_subcode 错误子码，见 BGP_CEASE_* 等
+ * @return 0 成功，-1 发送失败
+ */
+int bgp_pkt_send_notification(bgp_conn_t *conn, uint8_t error_code, uint8_t error_subcode);
+
+/**
  * @brief 向对端发送 BGP UPDATE 报文（宣告一条路由）
  *
  * - IPv4 unicast：NEXT_HOP 属性 + NLRI 字段

@@ -93,8 +93,7 @@ typedef struct bgp_session
 
     gboolean hold_reset_pending; /**< 收到 KA 或 UPDATE 后需由 bgp_main 重置 hold 定时器 */
 
-    bgp_vrf_t *vrf;         /**< 所属 VRF（借用引用，不持有所有权） */
-    bgp_conn_state_t state; /**< BGP 协议握手状态 */
+    bgp_vrf_t *vrf; /**< 所属 VRF（借用引用，不持有所有权） */
 } bgp_session_t;
 
 /**
@@ -106,6 +105,31 @@ bgp_session_t *bgp_session_create(const net_addr_t *addr, uint32_t remote_as, bg
  * @brief 销毁 BGP 会话结构
  */
 void bgp_session_destroy(bgp_session_t *session);
+
+/**
+ * @brief 重置会话的所有协商参数
+ *
+ * 断邻居后调用，清除 OPEN 协商产生的所有中间状态，使下次重连时
+ * 重新完整协商 router-id、hold-time、能力集、地址族列表等参数。
+ *
+ * @param sess 目标会话
+ */
+void bgp_session_reset_negotiated(bgp_session_t *sess);
+
+/**
+ * @brief 主动断邻居：发送 NOTIFICATION、关闭连接、重置协商参数、调度重连
+ *
+ * 流程：
+ *   1. 向已完成 TCP 握手的 pri_conn 发送 NOTIFICATION Cease/Admin-Reset（6/4）
+ *   2. 取消 keepalive / hold / retry 定时器
+ *   3. 关闭 pri_conn 和 sec_conn，清除该邻居在 RIB 中的所有路由
+ *   4. 重置 OPEN 协商参数（router-id、hold-time、caps、negotiated-afs 等）
+ *   5. 按 vrf->connect_retry 调度重连定时器，触发后重新发起完整 OPEN 协商
+ *
+ * @param sess     目标会话（不可为 NULL）
+ * @param epoll_fd BGP server 的 epoll fd（用于定时器和连接的 epoll 操作）
+ */
+void bgp_neighbor_down(bgp_session_t *sess, int epoll_fd);
 
 /* ---- connect-retry 定时器 ---- */
 void bgp_session_arm_retry(bgp_session_t *sess, int epoll_fd, uint16_t retry_sec);

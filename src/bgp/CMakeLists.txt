@@ -1,29 +1,31 @@
 set(BGP_SOURCES
     bgp_main.c
     bgp_cli.c
-    bgp_cfg_apply.c
     bgp_db.c
     bgp_bdr.c
-    bgp_peer.c
-    bgp_conn.c
-    bgp_pkt.c
-    bgp_pkt_build.c
-    bgp_pkt_build_ipv4uc.c
-    bgp_pkt_build_ipv6uc.c
-    bgp_calc.c
-    bgp_work.c
-    bgp_session.c
-    bgp_instance.c
-    bgp_vrf.c
-    bgp_protocol.c
-    bgp_rib.c
+    work/bgp_cfg_apply.c
+    work/bgp_peer.c
+    work/bgp_conn.c
+    work/bgp_pkt.c
+    work/bgp_pkt_build.c
+    work/bgp_pkt_build_ipv4uc.c
+    work/bgp_pkt_build_ipv6uc.c
+    work/bgp_calc.c
+    work/bgp_session.c
+    work/bgp_instance.c
+    work/bgp_vrf.c
+    work/bgp_protocol.c
+    work/bgp_rib.c
+    work/bgp_show.c
+    work/bgp_worker.c
+    work/bgp_work.c
 )
 
 add_subdirectory(lib)
 
 add_executable(netnexus-bgp bgp_proc.c ${BGP_SOURCES})
 
-target_include_directories(netnexus-bgp PRIVATE .)
+target_include_directories(netnexus-bgp PRIVATE . work)
 
 target_link_libraries(netnexus-bgp PRIVATE
     dev_api

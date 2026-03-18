@@ -12,6 +12,7 @@
 
 #include "bgp_main.h"
 #include "bgp_protocol.h"
+#include "bgp_worker.h"
 #include "errcode.h"
 
 uint32_t bgp_cfg_apply_protocol(gboolean is_no, uint32_t as_number)

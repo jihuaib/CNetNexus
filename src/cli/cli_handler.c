@@ -9,6 +9,7 @@
 #include <arpa/inet.h>
 #include <ctype.h>
 #include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <glib.h>
 #include <pthread.h>
@@ -27,21 +28,46 @@
 #include "dev.h"
 #include "errcode.h"
 
+static void cli_write_best_effort(int fd, const void *data, size_t len)
+{
+    if (fd < 0 || !data || len == 0)
+    {
+        return;
+    }
+
+    const char *buf = (const char *)data;
+    while (len > 0)
+    {
+        ssize_t n = write(fd, buf, len);
+        if (n > 0)
+        {
+            buf += n;
+            len -= (size_t)n;
+            continue;
+        }
+        if (n < 0 && errno == EINTR)
+        {
+            continue;
+        }
+        break;
+    }
+}
+
 // Send a message to the client (must be null-terminated)
 void cli_send_message(cli_session_t *session, const char *message)
 {
-    if (message)
+    if (message && session)
     {
-        write(session->client_fd, message, strlen(message));
+        cli_write_best_effort(session->client_fd, message, strlen(message));
     }
 }
 
 // Send raw data to the client with explicit length
 void cli_send_data(cli_session_t *session, const void *data, size_t len)
 {
-    if (data && len > 0)
+    if (data && len > 0 && session)
     {
-        write(session->client_fd, data, len);
+        cli_write_best_effort(session->client_fd, data, len);
     }
 }
 
@@ -53,8 +79,7 @@ void update_prompt_from_template(cli_session_t *session, const char *module_prom
         return;
     }
 
-    strncpy(session->prompt, module_prompt, sizeof(session->prompt) - 1);
-    session->prompt[sizeof(session->prompt) - 1] = '\0';
+    g_strlcpy(session->prompt, module_prompt, sizeof(session->prompt));
 }
 
 // Push current prompt onto the stack (call before entering a sub-view)
@@ -65,8 +90,7 @@ void cli_prompt_push(cli_session_t *session)
         return;
     }
 
-    strncpy(session->prompt_stack[session->prompt_stack_depth], session->prompt, CLI_CLI_MAX_PROMPT_LEN - 1);
-    session->prompt_stack[session->prompt_stack_depth][CLI_CLI_MAX_PROMPT_LEN - 1] = '\0';
+    g_strlcpy(session->prompt_stack[session->prompt_stack_depth], session->prompt, CLI_CLI_MAX_PROMPT_LEN);
 
     // 初始化当前层上下文为空（上下文在 VIEW_CHG 处理时设置）
     session->view_context_stack[session->prompt_stack_depth] = NULL;
@@ -93,8 +117,7 @@ void cli_prompt_pop(cli_session_t *session)
         session->view_context_len[session->prompt_stack_depth] = 0;
     }
 
-    strncpy(session->prompt, session->prompt_stack[session->prompt_stack_depth], sizeof(session->prompt) - 1);
-    session->prompt[sizeof(session->prompt) - 1] = '\0';
+    g_strlcpy(session->prompt, session->prompt_stack[session->prompt_stack_depth], sizeof(session->prompt));
 }
 
 // 设置当前层视图上下文数据
@@ -397,8 +420,7 @@ static void handle_arrow_up(cli_session_t *session, char *line_buffer, uint32_t 
     if (history->browse_idx == -1)
     {
         line_buffer[*line_pos] = '\0';
-        strncpy(history->temp_buffer, line_buffer, MAX_CMD_LEN - 1);
-        history->temp_buffer[MAX_CMD_LEN - 1] = '\0';
+        g_strlcpy(history->temp_buffer, line_buffer, MAX_CMD_LEN);
 
         // Load newest history (index 0)
         history->browse_idx = 0;
@@ -417,8 +439,7 @@ static void handle_arrow_up(cli_session_t *session, char *line_buffer, uint32_t 
     const char *hist_cmd = cli_session_history_get(history, history->browse_idx);
     if (hist_cmd)
     {
-        strncpy(line_buffer, hist_cmd, MAX_CMD_LEN - 1);
-        line_buffer[MAX_CMD_LEN - 1] = '\0';
+        g_strlcpy(line_buffer, hist_cmd, MAX_CMD_LEN);
         *line_pos = strlen(line_buffer);
         *cursor_pos = *line_pos;
 
@@ -444,8 +465,7 @@ static void handle_arrow_down(cli_session_t *session, char *line_buffer, uint32_
         const char *hist_cmd = cli_session_history_get(history, history->browse_idx);
         if (hist_cmd)
         {
-            strncpy(line_buffer, hist_cmd, MAX_CMD_LEN - 1);
-            line_buffer[MAX_CMD_LEN - 1] = '\0';
+            g_strlcpy(line_buffer, hist_cmd, MAX_CMD_LEN);
             *line_pos = strlen(line_buffer);
             *cursor_pos = *line_pos;
 
@@ -457,8 +477,7 @@ static void handle_arrow_down(cli_session_t *session, char *line_buffer, uint32_
         // Back to current input (restore temp_buffer)
         history->browse_idx = -1;
 
-        strncpy(line_buffer, history->temp_buffer, MAX_CMD_LEN - 1);
-        line_buffer[MAX_CMD_LEN - 1] = '\0';
+        g_strlcpy(line_buffer, history->temp_buffer, MAX_CMD_LEN);
         *line_pos = strlen(line_buffer);
         *cursor_pos = *line_pos;
 
@@ -664,8 +683,7 @@ static void cli_tree_print_help(cli_tree_node_t *node, GString *out)
         else if (child->name)
         {
             // COMMAND or ARGUMENT without param_type: Display name as-is
-            strncpy(name_display, child->name, sizeof(name_display) - 1);
-            name_display[sizeof(name_display) - 1] = '\0';
+            g_strlcpy(name_display, child->name, sizeof(name_display));
         }
         else
         {
@@ -680,8 +698,7 @@ static void cli_tree_print_help(cli_tree_node_t *node, GString *out)
         }
         else
         {
-            strncpy(desc_with_marker, child->description, sizeof(desc_with_marker) - 1);
-            desc_with_marker[sizeof(desc_with_marker) - 1] = '\0';
+            g_strlcpy(desc_with_marker, child->description, sizeof(desc_with_marker));
         }
 
         snprintf(buffer, sizeof(buffer), "  %-25s - %s\r\n", name_display, desc_with_marker);
@@ -811,8 +828,7 @@ static void handle_tab_completion(cli_session_t *session, char *line_buffer, uin
                 prefix = prefix_buf;
             }
         }
-        strncpy(prefix_buf, prefix, sizeof(prefix_buf) - 1);
-        prefix_buf[sizeof(prefix_buf) - 1] = '\0';
+        g_strlcpy(prefix_buf, prefix, sizeof(prefix_buf));
         uint32_t prefix_len = (uint32_t)strlen(prefix_buf);
 
         /* RPC 查询候选值 */
@@ -1079,8 +1095,7 @@ static void handle_help_request(cli_session_t *session, char *line_buffer, uint3
                     }
                     else if (arg->name)
                     {
-                        strncpy(name_display, arg->name, sizeof(name_display) - 1);
-                        name_display[sizeof(name_display) - 1] = '\0';
+                        g_strlcpy(name_display, arg->name, sizeof(name_display));
                     }
                     else
                     {
@@ -1181,8 +1196,7 @@ static char *trim(char *str)
 int process_command(const char *cmd_line, cli_session_t *session)
 {
     char buffer[MAX_CMD_LEN];
-    strncpy(buffer, cmd_line, MAX_CMD_LEN - 1);
-    buffer[MAX_CMD_LEN - 1] = '\0';
+    g_strlcpy(buffer, cmd_line, MAX_CMD_LEN);
 
     char *trimmed = trim(buffer);
 
@@ -1370,7 +1384,11 @@ int cli_process_input(cli_session_t *session)
             else if (ucmd >= 251 && ucmd <= 254)
             { // WILL/WONT/DO/DONT：后跟 1 字节 option
                 char opt;
-                read(session->client_fd, &opt, 1);
+                ssize_t opt_read = read(session->client_fd, &opt, 1);
+                if (opt_read < 1)
+                {
+                    continue;
+                }
             }
             // 其他单字节命令（NOP、DM、BRK 等）直接丢弃，无需额外读取
             continue;

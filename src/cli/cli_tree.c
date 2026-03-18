@@ -22,6 +22,74 @@ enum
     INITIAL_CHILDREN_CAPACITY = 4
 };
 
+static void cli_tree_node_add_cfg_binding(cli_tree_node_t *node, uint32_t module_id, uint32_t group_id, uint32_t cfg_id)
+{
+    if (!node || cfg_id == 0)
+    {
+        return;
+    }
+
+    for (uint32_t i = 0; i < node->num_cfg_bindings; i++)
+    {
+        cli_cfg_binding_t *b = &node->cfg_bindings[i];
+        if (b->module_id == module_id && b->group_id == group_id)
+        {
+            b->cfg_id = cfg_id;
+            return;
+        }
+    }
+
+    if (node->num_cfg_bindings >= node->cfg_bindings_capacity)
+    {
+        uint32_t new_capacity = (node->cfg_bindings_capacity == 0) ? 4 : (node->cfg_bindings_capacity * 2);
+        cli_cfg_binding_t *new_bindings = g_realloc(node->cfg_bindings, new_capacity * sizeof(cli_cfg_binding_t));
+        if (!new_bindings)
+        {
+            return;
+        }
+        node->cfg_bindings = new_bindings;
+        node->cfg_bindings_capacity = new_capacity;
+    }
+
+    cli_cfg_binding_t *dst = &node->cfg_bindings[node->num_cfg_bindings++];
+    dst->module_id = module_id;
+    dst->group_id = group_id;
+    dst->cfg_id = cfg_id;
+}
+
+static void cli_tree_node_merge_cfg_bindings(cli_tree_node_t *dst, const cli_tree_node_t *src)
+{
+    if (!dst || !src)
+    {
+        return;
+    }
+
+    for (uint32_t i = 0; i < src->num_cfg_bindings; i++)
+    {
+        const cli_cfg_binding_t *b = &src->cfg_bindings[i];
+        cli_tree_node_add_cfg_binding(dst, b->module_id, b->group_id, b->cfg_id);
+    }
+}
+
+static uint32_t cli_tree_node_find_cfg_binding(const cli_tree_node_t *node, uint32_t module_id, uint32_t group_id)
+{
+    if (!node)
+    {
+        return 0;
+    }
+
+    for (uint32_t i = 0; i < node->num_cfg_bindings; i++)
+    {
+        const cli_cfg_binding_t *b = &node->cfg_bindings[i];
+        if (b->module_id == module_id && b->group_id == group_id)
+        {
+            return b->cfg_id;
+        }
+    }
+
+    return 0;
+}
+
 // Create a new CLI tree node
 cli_tree_node_t *cli_tree_create_node(uint32_t cfg_id, const char *name, const char *description, cli_node_type_t type,
                                       uint32_t module_id, uint32_t group_id, const char *target_view_name)
@@ -40,6 +108,10 @@ cli_tree_node_t *cli_tree_create_node(uint32_t cfg_id, const char *name, const c
     node->children = NULL;
     node->num_children = 0;
     node->children_capacity = 0;
+    node->cfg_bindings = NULL;
+    node->num_cfg_bindings = 0;
+    node->cfg_bindings_capacity = 0;
+    cli_tree_node_add_cfg_binding(node, module_id, group_id, cfg_id);
 
     return node;
 }
@@ -57,6 +129,9 @@ void cli_tree_add_child(cli_tree_node_t *parent, cli_tree_node_t *child)
 
     if (existing)
     {
+        /* 合并 cfg 绑定，确保同名共享节点可按 module/group 还原 cfg-id */
+        cli_tree_node_merge_cfg_bindings(existing, child);
+
         // Merge children from new node into existing node
         for (uint32_t i = 0; i < child->num_children; i++)
         {
@@ -89,6 +164,7 @@ void cli_tree_add_child(cli_tree_node_t *parent, cli_tree_node_t *child)
         g_free(child->description);
         g_free(child->context_out);
         g_free(child->target_view_name);
+        g_free(child->cfg_bindings);
         g_free(child->children);
         g_free(child);
         return;
@@ -253,6 +329,7 @@ void cli_tree_free(cli_tree_node_t *root)
     g_free(root->description);
     g_free(root->target_view_name);
     g_free(root->context_out);
+    g_free(root->cfg_bindings);
     if (root->param_type)
     {
         cli_param_type_free(root->param_type);
@@ -291,6 +368,14 @@ cli_tree_node_t *cli_tree_clone(cli_tree_node_t *node)
         clone->context_out = g_malloc(node->num_context_out * sizeof(cli_ctx_out_entry_t));
         memcpy(clone->context_out, node->context_out, node->num_context_out * sizeof(cli_ctx_out_entry_t));
         clone->num_context_out = node->num_context_out;
+    }
+
+    if (node->cfg_bindings && node->num_cfg_bindings > 0)
+    {
+        clone->cfg_bindings = g_malloc(node->num_cfg_bindings * sizeof(cli_cfg_binding_t));
+        memcpy(clone->cfg_bindings, node->cfg_bindings, node->num_cfg_bindings * sizeof(cli_cfg_binding_t));
+        clone->num_cfg_bindings = node->num_cfg_bindings;
+        clone->cfg_bindings_capacity = node->num_cfg_bindings;
     }
 
     // Clone all children recursively
@@ -623,6 +708,22 @@ cli_match_result_t *cli_tree_match_command_full(cli_tree_node_t *root, const cha
 
     cli_match_result_t *result = cli_match_result_create();
     cli_tree_node_t *current = root;
+    GArray *path_nodes = g_array_new(FALSE, FALSE, sizeof(cli_tree_node_t *));
+    GArray *path_values = g_array_new(FALSE, FALSE, sizeof(char *));
+    if (!path_nodes || !path_values)
+    {
+        if (path_nodes)
+        {
+            g_array_free(path_nodes, TRUE);
+        }
+        if (path_values)
+        {
+            g_array_free(path_values, TRUE);
+        }
+        cli_match_result_free(result);
+        g_free(cmd_copy);
+        return NULL;
+    }
 
     // Save original string for extracting values
     char *cmd_for_values = g_strdup(cmd_line);
@@ -636,51 +737,62 @@ cli_match_result_t *cli_tree_match_command_full(cli_tree_node_t *root, const cha
     {
         cli_tree_node_t *child = cli_tree_find_child_input_token(current, token);
 
-        if (child)
-        {
-            /* 检测 "no" 前缀关键字（无需 cfg-id） */
-            if (child->type == CLI_NODE_COMMAND && child->name && strcmp(child->name, "no") == 0)
-            {
-                result->has_no_prefix = TRUE;
-            }
-
-            if (child->cfg_id != 0)
-            {
-                /* 有 cfg_id 的元素写入 match result */
-                const char *elem_value = NULL;
-                if (child->type == CLI_NODE_ARGUMENT)
-                {
-                    elem_value = value_token;
-                }
-                else
-                {
-                    /* 关键字也捕获字面令牌作为值 */
-                    elem_value = value_token;
-                }
-
-                cli_match_result_add_element(result, child->cfg_id, child->type, elem_value,
-                                             (child->type == CLI_NODE_ARGUMENT) ? child->param_type : NULL);
-            }
-
-            result->module_id = child->module_id;
-            result->group_id = child->group_id;
-
-            current = child;
-            token = strtok(NULL, " ");
-            value_token = strtok_r(NULL, " ", &saveptr);
-        }
-        else
+        if (!child)
         {
             // No match - g_free result and return NULL
+            g_array_free(path_nodes, TRUE);
+            g_array_free(path_values, TRUE);
             cli_match_result_free(result);
             g_free(cmd_copy);
             g_free(cmd_for_values);
             return NULL;
         }
+
+        /* 检测 "no" 前缀关键字（无需 cfg-id） */
+        if (child->type == CLI_NODE_COMMAND && child->name && strcmp(child->name, "no") == 0)
+        {
+            result->has_no_prefix = TRUE;
+        }
+        /* 检测 "show" 关键字 */
+        if (child->type == CLI_NODE_COMMAND && child->name && strcmp(child->name, "show") == 0)
+        {
+            result->has_show_prefix = TRUE;
+        }
+
+        g_array_append_val(path_nodes, child);
+        g_array_append_val(path_values, value_token);
+
+        result->module_id = child->module_id;
+        result->group_id = child->group_id;
+
+        current = child;
+        token = strtok(NULL, " ");
+        value_token = strtok_r(NULL, " ", &saveptr);
     }
 
     result->final_node = current;
 
+    for (uint32_t i = 0; i < path_nodes->len && i < path_values->len; i++)
+    {
+        cli_tree_node_t *node = g_array_index(path_nodes, cli_tree_node_t *, i);
+        const char *elem_value = g_array_index(path_values, char *, i);
+
+        uint32_t cfg_id = cli_tree_node_find_cfg_binding(node, result->module_id, result->group_id);
+        if (cfg_id == 0)
+        {
+            cfg_id = node->cfg_id;
+        }
+        if (cfg_id == 0)
+        {
+            continue;
+        }
+
+        cli_match_result_add_element(result, cfg_id, node->type, elem_value,
+                                     (node->type == CLI_NODE_ARGUMENT) ? node->param_type : NULL);
+    }
+
+    g_array_free(path_nodes, TRUE);
+    g_array_free(path_values, TRUE);
     g_free(cmd_copy);
     g_free(cmd_for_values);
 

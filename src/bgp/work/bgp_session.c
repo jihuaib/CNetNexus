@@ -13,7 +13,10 @@
 #include <sys/timerfd.h>
 #include <unistd.h>
 
+#include "bgp.h"
 #include "bgp_conn.h"
+#include "bgp_pkt.h"
+#include "bgp_vrf.h"
 #include "log.h"
 
 bgp_session_t *bgp_session_create(const net_addr_t *addr, uint32_t remote_as, bgp_vrf_t *vrf)
@@ -100,6 +103,106 @@ void bgp_session_destroy(bgp_session_t *session)
     }
 
     g_free(session);
+}
+
+// ============================================================================
+// 协商参数重置
+// ============================================================================
+
+void bgp_session_reset_negotiated(bgp_session_t *sess)
+{
+    if (!sess)
+    {
+        return;
+    }
+
+    /* 清除 OPEN 协商填入的对端信息 */
+    sess->remote_id = 0;
+    sess->remote_caps = 0;
+    sess->remote_hold = 0;
+
+    /* 清除本次 OPEN 发出时记录的本地快照 */
+    sess->local_router_id = 0;
+    sess->local_caps = 0;
+
+    /* 清除协商结果 */
+    sess->negotiated_caps = 0;
+    sess->negotiated_hold = 0;
+
+    /* 清空地址族协商列表（保留 GArray 对象，仅清除内容） */
+    if (sess->negotiated_afs)
+    {
+        g_array_set_size(sess->negotiated_afs, 0);
+    }
+
+    /* 清除 hold 重置挂起标志 */
+    sess->hold_reset_pending = FALSE;
+
+    char addr_str[64];
+    net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
+    LOG_DEBUG("BGP: neighbor %s negotiated params reset", addr_str);
+}
+
+// ============================================================================
+// 断邻居
+// ============================================================================
+
+/**
+ * @brief 关闭单条连接槽位：从 epoll 移除、销毁对象、槽位置 NULL
+ *
+ * 与 bgp_main.c 中同名静态函数逻辑一致，此处供 session 层使用。
+ */
+static void session_conn_close(bgp_conn_t **slot, int epoll_fd)
+{
+    if (!slot || !*slot)
+    {
+        return;
+    }
+    bgp_conn_t *conn = *slot;
+    if (conn->fd >= 0 && epoll_fd >= 0)
+    {
+        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
+    }
+    bgp_conn_destroy(conn);
+    *slot = NULL;
+}
+
+void bgp_neighbor_down(bgp_session_t *sess, int epoll_fd)
+{
+    if (!sess)
+    {
+        return;
+    }
+
+    char addr_str[64];
+    net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
+    LOG_INFO("BGP: neighbor %s admin down — sending NOTIFICATION and resetting session", addr_str);
+
+    /* 步骤 1：向已完成 TCP 握手的主连接发送 NOTIFICATION Cease/Admin-Reset
+     *         TCP 握手中（is_connecting）的连接尚未进入 BGP 协议层，跳过 */
+    if (sess->pri_conn && sess->pri_conn->fd >= 0 && !sess->pri_conn->is_connecting)
+    {
+        bgp_pkt_send_notification(sess->pri_conn, BGP_ERR_CEASE, BGP_CEASE_ADMIN_RESET);
+    }
+
+    /* 步骤 2：取消所有定时器 */
+    bgp_session_cancel_keepalive(sess, epoll_fd);
+    bgp_session_cancel_hold(sess, epoll_fd);
+    bgp_session_cancel_retry(sess, epoll_fd);
+
+    /* 步骤 3：关闭所有 TCP 连接，清除该邻居的 RIB 路由 */
+    session_conn_close(&sess->pri_conn, epoll_fd);
+    session_conn_close(&sess->sec_conn, epoll_fd);
+    (void)bgp_vrf_purge_session_routes(sess->vrf, &sess->neighbor_addr);
+
+    /* 步骤 4：重置 OPEN 协商产生的所有参数，确保重连时完整重新协商 */
+    bgp_session_reset_negotiated(sess);
+
+    /* 步骤 5：按 VRF 配置的 connect-retry 间隔调度重连定时器
+     *         到期后触发 bgp_server_start_active_conn → bgp_pkt_send_open */
+    uint16_t retry_sec =
+        (sess->vrf && sess->vrf->connect_retry > 0) ? sess->vrf->connect_retry : BGP_TIMER_DEFAULT_CONNECT_RETRY;
+    bgp_session_arm_retry(sess, epoll_fd, retry_sec);
 }
 
 // ============================================================================

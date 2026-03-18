@@ -7,6 +7,7 @@
 #ifndef BGP_MAIN_H
 #define BGP_MAIN_H
 
+#include <glib.h>
 #include <pthread.h>
 
 #include "bgp_conn.h"
@@ -26,12 +27,16 @@ typedef struct bgp_local
     cli_chunk_stream_t show_stream; /**< CLI show 命令分片输出状态 */
     bgp_protocol_t *protocol;       /**< BGP 协议结构（bgp 使能后非 NULL） */
 
-    /* BGP TCP server */
-    int epoll_fd;            /**< BGP server epoll fd */
-    int running;             /**< server 线程运行标志 */
-    pthread_t server_thread; /**< BGP server 线程句柄 */
+    /* BGP TCP worker */
+    int epoll_fd;            /**< BGP worker epoll fd */
+    int running;             /**< worker 线程运行标志 */
+    pthread_t worker_thread; /**< BGP worker 线程句柄 */
 
     int listen_fd; /**< 全局 0.0.0.0:179 listen socket fd，-1 表示未监听 */
+
+    /* IPC worker -> BGP worker 命令投递（eventfd + queue） */
+    int cmd_eventfd;        /**< 命令唤醒 eventfd，-1 表示未创建 */
+    GAsyncQueue *cmd_queue; /**< 队列元素：bgp_worker_cmd_t*（定义在 work/bgp_worker.c） */
 } bgp_local_t;
 
 extern bgp_local_t *g_bgp_local;
@@ -46,27 +51,5 @@ void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
  * @return 0 成功，-1 失败
  */
 int bgp_module_init(void);
-
-/**
- * @brief 启动全局 BGP listen socket（绑定 0.0.0.0:179 并加入 epoll），已监听时幂等
- */
-void bgp_listen_start(void);
-
-/**
- * @brief 停止全局 BGP listen socket（从 epoll 移除并关闭），未监听时幂等
- */
-void bgp_listen_stop(void);
-
-/**
- * @brief AF neighbor 使能后启动主动 TCP 连接到 session->neighbor_addr:179
- * @param session BGP 会话结构
- */
-void bgp_server_start_active_conn(bgp_session_t *session);
-
-/**
- * @brief AF neighbor 停用或 neighbor 删除时关闭 session 的所有连接
- * @param session BGP 会话结构
- */
-void bgp_server_stop_session_conns(bgp_session_t *session);
 
 #endif /* BGP_MAIN_H */

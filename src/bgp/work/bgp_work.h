@@ -48,7 +48,7 @@ typedef struct bgp_calc_queue
  * @brief 发布工作队列
  *
  * FIFO 队列，best-path 完成后入队，定时器批量出队向邻居发包。
- * 只处理 ANNOUNCE：处理时通过 NLRI 在 bestlist 中查找最优路径信息。
+ * 只处理 ANNOUNCE：处理时通过 NLRI 在 RIB 中查找 is_best 路径信息。
  * WITHDRAW 由 bgp_calc_run_one() 同步调用 bgp_work_send_withdraw_to_all() 发出。
  * GQueue 元素为 bgp_nlri_entry_t*（NLRI 值拷贝，队列持有所有权，出队后释放）。
  */
@@ -138,7 +138,7 @@ void bgp_pub_queue_destroy(bgp_pub_queue_t *q);
 /**
  * @brief 将 NLRI 推入发布队列（仅 ANNOUNCE）
  *
- * pub_queue 存储 NLRI 值拷贝；处理时通过 NLRI 在 bestlist 中查找完整路径信息。
+ * pub_queue 存储 NLRI 值拷贝；处理时通过 NLRI 在 RIB 中查找 is_best 路径信息。
  *
  * @param q    发布队列
  * @param nlri NLRI 条目（值拷贝）

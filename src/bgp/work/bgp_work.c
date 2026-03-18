@@ -6,6 +6,7 @@
  */
 #include "bgp_work.h"
 
+#include <errno.h>
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/timerfd.h>
@@ -14,8 +15,10 @@
 #include "bgp_calc.h"
 #include "bgp_instance.h"
 #include "bgp_pkt.h"
+#include "bgp_rib.h"
 #include "bgp_vrf.h"
 #include "log.h"
+#include "net_addr.h"
 
 /* ---- 全局 epoll fd（由 bgp_main 在初始化后通过 bgp_work_set_epoll_fd 设置） ---- */
 static int g_work_epoll_fd = -1;
@@ -33,7 +36,8 @@ void bgp_work_set_epoll_fd(int epoll_fd)
 typedef struct
 {
     bgp_instance_t *inst;
-    const bgp_bestpath_entry_t *best; /**< 从 bestlist 查到的最优路径条目 */
+    const bgp_nlri_entry_t *nlri; /**< 来自 rthead 的 NLRI（借用） */
+    const bgp_route_node_t *best; /**< 带 BGP_ROUTE_FLAG_BEST 标记的路径（借用） */
 } announce_send_ctx_t;
 
 /** g_hash_table_foreach 回调：向各 ESTABLISHED 对端发送 UPDATE（ANNOUNCE） */
@@ -43,13 +47,19 @@ static void foreach_announce_send(gpointer key, gpointer value, gpointer user_da
     const net_addr_t *addr = key;
     announce_send_ctx_t *ctx = user_data;
 
-    bgp_session_t *sess = bgp_vrf_find_session(ctx->inst->vrf, addr);
-    if (!sess || sess->state != BGP_CONN_STATE_ESTABLISHED || !sess->pri_conn || sess->pri_conn->fd < 0)
+    /* Split-horizon: 不向“该最优路径的来源邻居”回灌同一路由，避免双节点反射风暴。 */
+    if (ctx->best && net_addr_equal(&ctx->best->source, addr))
     {
         return;
     }
 
-    bgp_pkt_send_update(sess->pri_conn, &ctx->best->nlri, &ctx->best->attr, &ctx->best->nexthop);
+    bgp_session_t *sess = bgp_vrf_find_session(ctx->inst->vrf, addr);
+    if (!sess || !sess->pri_conn || sess->pri_conn->fd < 0 || sess->pri_conn->state != BGP_CONN_STATE_ESTABLISHED)
+    {
+        return;
+    }
+
+    bgp_pkt_send_update(sess->pri_conn, ctx->nlri, &ctx->best->attr, &ctx->best->nexthop);
 }
 
 /** 遍历 peer_hash 时的 WITHDRAW 发送上下文 */
@@ -67,7 +77,7 @@ static void foreach_withdraw_send(gpointer key, gpointer value, gpointer user_da
     withdraw_send_ctx_t *ctx = user_data;
 
     bgp_session_t *sess = bgp_vrf_find_session(ctx->inst->vrf, addr);
-    if (!sess || sess->state != BGP_CONN_STATE_ESTABLISHED || !sess->pri_conn || sess->pri_conn->fd < 0)
+    if (!sess || !sess->pri_conn || sess->pri_conn->fd < 0 || sess->pri_conn->state != BGP_CONN_STATE_ESTABLISHED)
     {
         return;
     }
@@ -188,12 +198,13 @@ int bgp_pub_queue_process(bgp_pub_queue_t *q, bgp_instance_t *inst, int batch_si
     {
         q->count--;
 
-        /* 通过 NLRI 在 bestlist 中查找最优路径信息 */
-        const bgp_bestpath_entry_t *best = bgp_bestlist_find(inst->bestlist, nlri);
-        if (best)
+        /* 通过 NLRI 在 RIB 中查找带 BGP_ROUTE_FLAG_BEST 标记的路径 */
+        const bgp_rthead_t *head = bgp_rib_lookup_head(inst->rib, nlri);
+        const bgp_route_node_t *best = head ? bgp_rib_find_best(inst->rib, nlri) : NULL;
+        if (head && best)
         {
             /* 找到最优路径，向所有 ESTABLISHED 邻居发送 UPDATE */
-            announce_send_ctx_t ctx = {.inst = inst, .best = best};
+            announce_send_ctx_t ctx = {.inst = inst, .nlri = &head->nlri, .best = best};
             g_hash_table_foreach(inst->peer_hash, foreach_announce_send, &ctx);
         }
         /* 未找到则跳过（路由已被撤销，WITHDRAW 由 bgp_calc_run_one 同步发出） */
@@ -307,7 +318,11 @@ void bgp_work_process(bgp_instance_t *inst)
     if (inst->work_timerfd >= 0)
     {
         uint64_t expirations;
-        (void)read(inst->work_timerfd, &expirations, sizeof(expirations));
+        ssize_t n = read(inst->work_timerfd, &expirations, sizeof(expirations));
+        if (n < 0 && errno != EINTR && errno != EAGAIN)
+        {
+            LOG_PERROR("BGP: 读取 work timerfd 失败");
+        }
     }
 
     /* 批量处理优选队列：NLRI → best-path 计算 → 入 pub_queue 或同步 WITHDRAW */
@@ -316,7 +331,7 @@ void bgp_work_process(bgp_instance_t *inst)
         bgp_calc_queue_process(inst->calc_queue, inst, BGP_WORK_BATCH_SIZE);
     }
 
-    /* 批量处理发布队列：通过 NLRI 查 bestlist → 发送 UPDATE 给所有 ESTABLISHED 邻居 */
+    /* 批量处理发布队列：通过 NLRI 查 RIB is_best 路径 → 发送 UPDATE 给所有 ESTABLISHED 邻居 */
     if (inst->pub_queue)
     {
         bgp_pub_queue_process(inst->pub_queue, inst, BGP_WORK_BATCH_SIZE);

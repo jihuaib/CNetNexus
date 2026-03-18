@@ -103,6 +103,8 @@
 
 /** 载荷 flags: "no" 前缀命令（删除操作） */
 #define CLI_PAYLOAD_FLAG_NO_CMD 0x01
+/** 载荷 flags: show 命令 */
+#define CLI_PAYLOAD_FLAG_SHOW_CMD 0x02
 
 /**
  * @brief TLV 条目（解析后的单个字段）

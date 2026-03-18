@@ -24,14 +24,26 @@
 #define BGP_CLI_GROUP_ID_IMPORT_ROUTE 11 /**< import-route 协议导入命令 */
 
 /**
- * @brief 处理来自 CFG 模块的 CLI 命令消息
- * @param msg 消息
+ * @brief 处理配置类 CLI 命令（group 1-8, 11），在 IPC worker 线程调用
+ *
+ * 通过 bgp_worker_dispatch_apply() 将状态变更派发到 BGP worker 线程，
+ * 然后在 IPC worker 线程完成 DB 写入并发送响应。
+ * @param msg 消息（调用者持有所有权，调用后仍需 free）
  * @return ERRCODE_SUCCESS 成功
  */
-int bgp_cli_handle_message(dev_ipc_message_t *msg);
+int bgp_cli_handle_config_msg(dev_ipc_message_t *msg);
 
 /**
- * @brief 处理 CLI continue 消息
+ * @brief 处理 show 类 CLI 命令（group 9-10），在 BGP worker 线程调用
+ *
+ * 需访问 BGP worker 线程独占的运行时状态（show_stream、连接状态等）。
+ * @param msg 消息（调用者持有所有权，调用后仍需 free）
+ * @return ERRCODE_SUCCESS 成功
+ */
+int bgp_cli_handle_show_msg(dev_ipc_message_t *msg);
+
+/**
+ * @brief 处理 CLI continue 消息（在 BGP worker 线程调用）
  * @param msg 消息
  * @return ERRCODE_SUCCESS 成功
  */

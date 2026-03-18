@@ -11,10 +11,14 @@
 #include <stdint.h>
 
 #include "bgp.h"
+#include "bit.h"
 #include "net_addr.h"
 
 /* 前向声明：bgp_instance_t 与 bgp_rib_t 相互引用 */
 typedef struct bgp_instance bgp_instance_t;
+
+/** 路由节点标记位：是否为当前最优路径（由 bgp_calc 通过 bgp_rib_mark_best 置位） */
+#define BGP_ROUTE_FLAG_BEST (1U << 0)
 
 /**
  * @brief 单条路径（同一 rthead 下可挂多条，按 source 区分）
@@ -25,6 +29,7 @@ typedef struct bgp_route_node
     bgp_attr_t attr;        /**< 路径属性 */
     bgp_nexthop_t nexthop;  /**< 下一跳 */
     gint64 updated_at_usec; /**< 最近更新时间（g_get_real_time） */
+    uint32_t flags;         /**< 路由标记位，见 BGP_ROUTE_FLAG_* */
 } bgp_route_node_t;
 
 /**
@@ -136,5 +141,41 @@ const bgp_route_node_t *bgp_rthead_lookup_route(const bgp_rthead_t *head, const 
  */
 uint32_t bgp_rib_head_count(const bgp_rib_t *rib);
 uint32_t bgp_rib_route_count(const bgp_rib_t *rib);
+
+/**
+ * @brief 将指定来源的路径置 BGP_ROUTE_FLAG_BEST，同一 rthead 下其他路径清除该标记
+ *
+ * @param rib         目标 RIB
+ * @param nlri        NLRI 匹配键
+ * @param best_source 最优路径的来源地址
+ */
+void bgp_rib_mark_best(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_addr_t *best_source);
+
+/**
+ * @brief 在指定 NLRI 的路径中查找带 BGP_ROUTE_FLAG_BEST 的路径（只读）
+ *
+ * @param rib  目标 RIB
+ * @param nlri NLRI 匹配键
+ * @return 最优路径指针（借用，不可释放），未找到返回 NULL
+ */
+const bgp_route_node_t *bgp_rib_find_best(const bgp_rib_t *rib, const bgp_nlri_entry_t *nlri);
+
+/**
+ * @brief 遍历回调类型：对每条带 BGP_ROUTE_FLAG_BEST 的路径调用
+ *
+ * @param head      路径所属的前缀头（借用）
+ * @param route     带 BGP_ROUTE_FLAG_BEST 的路径（借用）
+ * @param user_data 调用方上下文指针
+ */
+typedef void (*bgp_rib_best_cb)(const bgp_rthead_t *head, const bgp_route_node_t *route, gpointer user_data);
+
+/**
+ * @brief 遍历 RIB 中所有带 BGP_ROUTE_FLAG_BEST 的路径，对每条调用回调
+ *
+ * @param rib       目标 RIB
+ * @param cb        回调函数
+ * @param user_data 传递给回调的上下文指针
+ */
+void bgp_rib_foreach_best(const bgp_rib_t *rib, bgp_rib_best_cb cb, gpointer user_data);
 
 #endif /* BGP_RIB_H */
