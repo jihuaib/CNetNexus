@@ -17,18 +17,25 @@
 /* 前向声明：bgp_instance_t 与 bgp_rib_t 相互引用 */
 typedef struct bgp_instance bgp_instance_t;
 
-/** 路由节点标记位：是否为当前最优路径（由 bgp_calc 通过 bgp_rib_mark_best 置位） */
+/** 路由标记位：当前最优路径（由 bgp_calc 置位，需同时满足位于链表首位） */
 #define BGP_ROUTE_FLAG_BEST (1U << 0)
+/** 路由标记位：本地导入路由（非 BGP 邻居学习，由 import-route 引入） */
+#define BGP_ROUTE_FLAG_IMPORT (1U << 1)
 
 /**
- * @brief 单条路径（同一 rthead 下可挂多条，按 source 区分）
+ * @brief 单条路径（同一 rthead 下可挂多条，按 source 来源地址区分）
+ *
+ * peer 路由：BGP_ROUTE_FLAG_IMPORT 未置位，source 为邻居 IP。
+ * import 路由：BGP_ROUTE_FLAG_IMPORT 置位，source 为来源标识地址。
+ * 最优路径：BGP_ROUTE_FLAG_BEST 置位 且 为链表首元素（两者须同时满足）。
  */
 typedef struct bgp_route_node
 {
-    net_addr_t source;      /**< 路径来源（邻居 IP，二进制存储） */
+    net_addr_t source;      /**< 路由来源标识（peer 路由=邻居IP，import 路由=来源地址） */
     bgp_attr_t attr;        /**< 路径属性 */
     bgp_nexthop_t nexthop;  /**< 下一跳 */
-    gint64 updated_at_usec; /**< 最近更新时间（g_get_real_time） */
+    gint64 added_at_usec;   /**< 路由首次加入时间（g_get_real_time，仅新增时写入） */
+    gint64 updated_at_usec; /**< 路由最近更新时间（g_get_real_time，每次 reach 写入） */
     uint32_t flags;         /**< 路由标记位，见 BGP_ROUTE_FLAG_* */
 } bgp_route_node_t;
 
@@ -39,9 +46,9 @@ typedef struct bgp_route_node
  */
 typedef struct bgp_rthead
 {
-    bgp_nlri_entry_t nlri;  /**< NLRI（前缀/EVPN/FlowSpec 等，含 afi/safi/type） */
-    bgp_instance_t *inst;   /**< 所属 AF 实例（借用引用，可为 NULL） */
-    GHashTable *route_hash; /**< net_addr_t* -> bgp_route_node_t*（按来源 IP 索引） */
+    bgp_nlri_entry_t nlri; /**< NLRI（前缀/EVPN/FlowSpec 等，含 afi/safi/type） */
+    bgp_instance_t *inst;  /**< 所属 AF 实例（借用引用，可为 NULL） */
+    GList *route_list;     /**< bgp_route_node_t* 双向链表，首元素为当前最优路径 */
 } bgp_rthead_t;
 
 /**
@@ -78,15 +85,16 @@ void bgp_rib_destroy(bgp_rib_t *rib);
 
 /**
  * @brief 对单条 NLRI 执行 reach（新增/更新一条来源路径）
- * @param rib      目标 RIB
- * @param nlri     NLRI 条目
- * @param source   路径来源（邻居 IP，二进制）
- * @param attr     路径属性
- * @param nexthop  下一跳
+ * @param rib          目标 RIB
+ * @param nlri         NLRI 条目
+ * @param source       路径来源（peer 路由=邻居IP，import 路由=来源地址）
+ * @param import_proto 是否为 import 路由（0=peer 路由，非 0=import 路由，置 BGP_ROUTE_FLAG_IMPORT）
+ * @param attr         路径属性
+ * @param nexthop      下一跳
  * @return 1=新增路径, 0=更新已有路径, -1=失败
  */
-int bgp_rib_reach_one(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_addr_t *source, const bgp_attr_t *attr,
-                      const bgp_nexthop_t *nexthop);
+int bgp_rib_reach_one(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_addr_t *source, uint32_t import_proto,
+                      const bgp_attr_t *attr, const bgp_nexthop_t *nexthop);
 
 /**
  * @brief 对单条 NLRI 执行 unreach（删除一条来源路径）
@@ -143,16 +151,20 @@ uint32_t bgp_rib_head_count(const bgp_rib_t *rib);
 uint32_t bgp_rib_route_count(const bgp_rib_t *rib);
 
 /**
- * @brief 将指定来源的路径置 BGP_ROUTE_FLAG_BEST，同一 rthead 下其他路径清除该标记
+ * @brief 将指定路径节点标记为最优（置 BGP_ROUTE_FLAG_BEST 并移至链表首位）
  *
- * @param rib         目标 RIB
- * @param nlri        NLRI 匹配键
- * @param best_source 最优路径的来源地址
+ * 同一 rthead 下其余路径的 BGP_ROUTE_FLAG_BEST 均被清除。
+ *
+ * @param rib        目标 RIB
+ * @param nlri       NLRI 匹配键（用于定位 rthead）
+ * @param best_route 待置为最优的路径节点（须属于该 rthead 的 route_list）
  */
-void bgp_rib_mark_best(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_addr_t *best_source);
+void bgp_rib_mark_best(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, bgp_route_node_t *best_route);
 
 /**
- * @brief 在指定 NLRI 的路径中查找带 BGP_ROUTE_FLAG_BEST 的路径（只读）
+ * @brief 查找当前最优路径（只读）
+ *
+ * 最优路径须同时满足：位于 route_list 首位 且 具有 BGP_ROUTE_FLAG_BEST 标记。
  *
  * @param rib  目标 RIB
  * @param nlri NLRI 匹配键

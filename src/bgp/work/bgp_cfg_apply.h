@@ -1,60 +1,59 @@
 /**
  * @file   bgp_cfg_apply.h
- * @brief  BGP 配置内存态应用接口（CLI / DB 恢复共用）
+ * @brief  BGP 配置内存态应用接口（校验 + 短路 + 内存更新 + 副作用，结果写入 apply->rc/errmsg）
  * @author jhb
  * @date   2026/03/07
  */
 #ifndef BGP_CFG_APPLY_H
 #define BGP_CFG_APPLY_H
 
-#include <glib.h>
-#include <stdint.h>
-
-#include "bgp_session.h"
-#include "bgp_vrf.h"
+/* 前向声明，避免循环包含 */
+struct bgp_apply_cmd;
+typedef struct bgp_apply_cmd bgp_apply_cmd_t;
 
 /**
- * @brief 应用 bgp/no bgp 到内存状态（不做 DB 持久化）
- * @param as_number  bgp <as-number> 参数（is_no=TRUE 时忽略）
- * @param is_no      TRUE=no bgp，FALSE=bgp <as-number>
- * @return 应用结果
+ * @brief 应用 bgp/no bgp 到内存状态（创建或销毁 bgp_protocol_t，启停监听）
  */
-uint32_t bgp_cfg_apply_protocol(gboolean is_no, uint32_t as_number);
-
-/**
- * @brief 应用 af/no af 配置到内存
- */
-uint32_t bgp_cfg_apply_instance(gboolean is_no, bgp_vrf_t *vrf, bgp_afi_t afi, bgp_safi_t safi);
+void bgp_cfg_apply_protocol(bgp_apply_cmd_t *apply);
 
 /**
  * @brief 应用 neighbor/no neighbor（BGP 视图）到内存
  */
-uint32_t bgp_cfg_apply_neighbor(gboolean is_no, bgp_vrf_t *vrf, const net_addr_t *addr, uint32_t remote_as);
+void bgp_cfg_apply_neighbor(bgp_apply_cmd_t *apply);
+
+/**
+ * @brief 应用 address-family/no address-family 到内存
+ */
+void bgp_cfg_apply_instance(bgp_apply_cmd_t *apply);
 
 /**
  * @brief 应用 AF 视图 neighbor enable/no neighbor 到内存
  */
-uint32_t bgp_cfg_apply_af_neighbor(gboolean is_no, bgp_vrf_t *vrf, bgp_afi_t afi, bgp_safi_t safi,
-                                   const net_addr_t *addr);
+void bgp_cfg_apply_af_neighbor(bgp_apply_cmd_t *apply);
 
 /**
- * @brief 应用 router-id/no router-id 到内存
+ * @brief 应用 router-id/no router-id 到内存（变更后重置所有会话）
  */
-uint32_t bgp_cfg_apply_router_id(gboolean is_no, bgp_vrf_t *vrf, const char *router_id);
+void bgp_cfg_apply_router_id(bgp_apply_cmd_t *apply);
 
 /**
- * @brief 应用 timers/no timers 到内存
+ * @brief 应用 timers/no timers 到内存（变更后重置所有会话）
  */
-uint32_t bgp_cfg_apply_timers(gboolean is_no, bgp_vrf_t *vrf, uint16_t keepalive, uint16_t hold_time);
+void bgp_cfg_apply_timers(bgp_apply_cmd_t *apply);
 
 /**
- * @brief 应用 connect-retry/no connect-retry 到内存
+ * @brief 应用 connect-retry/no connect-retry 到内存（变更后重排 retry 定时器）
  */
-uint32_t bgp_cfg_apply_connect_retry(gboolean is_no, bgp_vrf_t *vrf, uint16_t connect_retry);
+void bgp_cfg_apply_connect_retry(bgp_apply_cmd_t *apply);
 
 /**
- * @brief 应用 open-capability/no open-capability 到内存
+ * @brief 应用 open-capability/no open-capability 到内存（变更后重置会话）
  */
-uint32_t bgp_cfg_apply_open_capability(gboolean is_no, bgp_session_t *sess, uint32_t cap_bit);
+void bgp_cfg_apply_open_cap(bgp_apply_cmd_t *apply);
+
+/**
+ * @brief 应用 import-route/no import-route 到内存
+ */
+void bgp_cfg_apply_import_route(bgp_apply_cmd_t *apply);
 
 #endif /* BGP_CFG_APPLY_H */

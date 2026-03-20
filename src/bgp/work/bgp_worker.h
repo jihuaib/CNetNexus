@@ -171,6 +171,19 @@ void bgp_listen_stop(void);
 void bgp_server_start_active_conn(bgp_session_t *session);
 void bgp_server_stop_session_conns(bgp_session_t *session);
 
+/* 前向声明，避免引入 bgp_vrf.h */
+struct bgp_vrf;
+
+/**
+ * @brief 重置 VRF 内所有有活跃连接的 session（router-id / timer 变更后调用）
+ */
+void bgp_server_reset_all_sessions(struct bgp_vrf *vrf);
+
+/**
+ * @brief 按当前 VRF connect-retry 配置，重排已挂起的 retry 定时器
+ */
+void bgp_server_rearm_retry_timers(struct bgp_vrf *vrf);
+
 /**
  * @brief 停止 runtime server（发送 shutdown、join、释放 server 资源）
  */

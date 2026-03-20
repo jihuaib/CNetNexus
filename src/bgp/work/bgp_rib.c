@@ -1,6 +1,6 @@
 /**
  * @file   bgp_rib.c
- * @brief  BGP 内存 RIB 通用结构实现（rthead-tree + per-head routes）
+ * @brief  BGP 内存 RIB 通用结构实现（rthead-tree + per-head routes 双向链表）
  * @author jhb
  * @date   2026/03/13
  */
@@ -34,8 +34,7 @@ static bgp_rthead_t *rthead_create(const bgp_nlri_entry_t *nlri, bgp_rib_t *rib)
         memcpy(&head->nlri, nlri, sizeof(*nlri));
     }
     head->inst = rib ? rib->inst : NULL;
-    /* key: net_addr_t*（堆分配，g_free 释放），value: bgp_route_node_t*（g_free 释放） */
-    head->route_hash = g_hash_table_new_full(net_addr_hash, net_addr_hash_equal, g_free, g_free);
+    head->route_list = NULL; /* 路径列表，首元素为当前最优路径 */
     return head;
 }
 
@@ -45,20 +44,18 @@ static void rthead_destroy(bgp_rthead_t *head)
     {
         return;
     }
-    if (head->route_hash)
-    {
-        g_hash_table_destroy(head->route_hash);
-        head->route_hash = NULL;
-    }
+    /* 释放所有路径节点 */
+    g_list_free_full(head->route_list, g_free);
+    head->route_list = NULL;
     g_free(head);
 }
 
 /**
- * @brief 遍历回调：销毁所有 rthead（无 key 堆分配，只 free value）
+ * @brief 遍历回调：销毁所有 rthead
  */
 static gboolean destroy_tree_cb(gpointer key, gpointer value, gpointer user_data)
 {
-    (void)key; /* 键指向 head->nlri，随 head 一起释放 */
+    (void)key;
     (void)user_data;
     rthead_destroy((bgp_rthead_t *)value);
     return FALSE;
@@ -83,6 +80,20 @@ static gboolean remove_head_by_nlri(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri
         rib->head_count--;
     }
     return TRUE;
+}
+
+/** 在链表中按 source 线性查找路径节点，找到返回节点指针，否则返回 NULL */
+static bgp_route_node_t *route_list_find(GList *list, const net_addr_t *source)
+{
+    for (GList *l = list; l; l = l->next)
+    {
+        bgp_route_node_t *r = (bgp_route_node_t *)l->data;
+        if (net_addr_equal(&r->source, source))
+        {
+            return r;
+        }
+    }
+    return NULL;
 }
 
 /* ============================================================================
@@ -117,8 +128,8 @@ void bgp_rib_destroy(bgp_rib_t *rib)
  * 单条 reach / unreach
  * ========================================================================== */
 
-int bgp_rib_reach_one(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_addr_t *source, const bgp_attr_t *attr,
-                      const bgp_nexthop_t *nexthop)
+int bgp_rib_reach_one(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_addr_t *source, uint32_t import_proto,
+                      const bgp_attr_t *attr, const bgp_nexthop_t *nexthop)
 {
     if (!rib || !nlri || !source || source->family == 0)
     {
@@ -134,18 +145,28 @@ int bgp_rib_reach_one(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_ad
         rib->head_count++;
     }
 
-    bgp_route_node_t *route = g_hash_table_lookup(head->route_hash, source);
+    bgp_route_node_t *route = route_list_find(head->route_list, source);
     gboolean is_new = (route == NULL);
     if (is_new)
     {
         route = g_malloc0(sizeof(bgp_route_node_t));
-        net_addr_t *skey = g_malloc(sizeof(net_addr_t));
-        *skey = *source;
-        g_hash_table_insert(head->route_hash, skey, route);
+        route->source = *source;
+        /* 新路径追加到链表尾部（不影响当前 best-first 排序） */
+        head->route_list = g_list_append(head->route_list, route);
         rib->route_count++;
     }
 
-    route->source = *source;
+    /* 按 import_proto 置/清 IMPORT 标记；路径变更后清除 BEST（等待 calc 重新评选） */
+    if (import_proto != 0)
+    {
+        BIT_SET(route->flags, BGP_ROUTE_FLAG_IMPORT);
+    }
+    else
+    {
+        BIT_CLR(route->flags, BGP_ROUTE_FLAG_IMPORT);
+    }
+    BIT_CLR(route->flags, BGP_ROUTE_FLAG_BEST);
+
     if (attr)
     {
         memcpy(&route->attr, attr, sizeof(*attr));
@@ -155,6 +176,10 @@ int bgp_rib_reach_one(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_ad
         memcpy(&route->nexthop, nexthop, sizeof(*nexthop));
     }
     route->updated_at_usec = g_get_real_time();
+    if (is_new)
+    {
+        route->added_at_usec = route->updated_at_usec;
+    }
 
     return is_new ? 1 : 0;
 }
@@ -172,19 +197,22 @@ int bgp_rib_unreach_one(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_
         return 0;
     }
 
-    if (!g_hash_table_remove(head->route_hash, source))
+    bgp_route_node_t *route = route_list_find(head->route_list, source);
+    if (!route)
     {
         return 0;
     }
+
+    head->route_list = g_list_remove(head->route_list, route);
+    g_free(route);
 
     if (rib->route_count > 0)
     {
         rib->route_count--;
     }
 
-    if (g_hash_table_size(head->route_hash) == 0)
+    if (!head->route_list)
     {
-        /* 传入参数 nlri 与 head->nlri 内容相同，查找时会找到同一节点 */
         remove_head_by_nlri(rib, &head->nlri);
     }
 
@@ -209,7 +237,7 @@ void bgp_rib_apply_update(bgp_rib_t *rib, const net_addr_t *source, const bgp_up
 
     for (uint32_t i = 0; i < upd->reach_len; i++)
     {
-        int rc = bgp_rib_reach_one(rib, &upd->reach[i], source, &upd->attr, &upd->nexthop);
+        int rc = bgp_rib_reach_one(rib, &upd->reach[i], source, 0, &upd->attr, &upd->nexthop);
         if (!stats)
         {
             continue;
@@ -246,7 +274,7 @@ typedef struct source_purge_ctx
 {
     const net_addr_t *source;
     uint32_t removed_routes;
-    GPtrArray *empty_heads; /* bgp_rthead_t*，route_hash 已清空，待从树中移除 */
+    GPtrArray *empty_heads; /* bgp_rthead_t*，route_list 已清空，待从树中移除 */
 } source_purge_ctx_t;
 
 static gboolean purge_source_cb(gpointer key, gpointer value, gpointer user_data)
@@ -255,10 +283,13 @@ static gboolean purge_source_cb(gpointer key, gpointer value, gpointer user_data
     source_purge_ctx_t *ctx = (source_purge_ctx_t *)user_data;
     bgp_rthead_t *head = (bgp_rthead_t *)value;
 
-    if (g_hash_table_remove(head->route_hash, ctx->source))
+    bgp_route_node_t *route = route_list_find(head->route_list, ctx->source);
+    if (route)
     {
+        head->route_list = g_list_remove(head->route_list, route);
+        g_free(route);
         ctx->removed_routes++;
-        if (g_hash_table_size(head->route_hash) == 0)
+        if (!head->route_list)
         {
             g_ptr_array_add(ctx->empty_heads, head);
         }
@@ -284,7 +315,6 @@ void bgp_rib_remove_source(bgp_rib_t *rib, const net_addr_t *source, uint32_t *r
     source_purge_ctx_t ctx;
     ctx.source = source;
     ctx.removed_routes = 0;
-    /* 不需要 free_func：head 内存由 remove_head_by_nlri 释放 */
     ctx.empty_heads = g_ptr_array_new();
 
     g_tree_foreach(rib->head_tree, purge_source_cb, &ctx);
@@ -292,7 +322,6 @@ void bgp_rib_remove_source(bgp_rib_t *rib, const net_addr_t *source, uint32_t *r
     for (guint i = 0; i < ctx.empty_heads->len; i++)
     {
         bgp_rthead_t *head = (bgp_rthead_t *)g_ptr_array_index(ctx.empty_heads, i);
-        /* 用 head->nlri 作为查找键（内容不变，head 尚未销毁） */
         if (remove_head_by_nlri(rib, &head->nlri) && removed_heads)
         {
             (*removed_heads)++;
@@ -332,7 +361,7 @@ static gboolean foreach_source_tree_cb(gpointer key, gpointer value, gpointer us
     (void)key;
     foreach_source_ctx_t *ctx = user_data;
     bgp_rthead_t *head = value;
-    if (g_hash_table_lookup(head->route_hash, ctx->source))
+    if (route_list_find(head->route_list, ctx->source))
     {
         ctx->cb(&head->nlri, ctx->user_data);
     }
@@ -361,11 +390,11 @@ const bgp_rthead_t *bgp_rib_lookup_head(const bgp_rib_t *rib, const bgp_nlri_ent
 
 const bgp_route_node_t *bgp_rthead_lookup_route(const bgp_rthead_t *head, const net_addr_t *source)
 {
-    if (!head || !head->route_hash || !source || source->family == 0)
+    if (!head || !source || source->family == 0)
     {
         return NULL;
     }
-    return (const bgp_route_node_t *)g_hash_table_lookup(head->route_hash, source);
+    return route_list_find((GList *)head->route_list, source);
 }
 
 uint32_t bgp_rib_head_count(const bgp_rib_t *rib)
@@ -379,20 +408,12 @@ uint32_t bgp_rib_route_count(const bgp_rib_t *rib)
 }
 
 /* ============================================================================
- * is_best 标记操作
+ * best-first 排序
  * ========================================================================== */
 
-/** g_hash_table_foreach 回调：清除单条路径的 BGP_ROUTE_FLAG_BEST 标记 */
-static void clear_best_cb(gpointer key, gpointer value, gpointer user_data)
+void bgp_rib_mark_best(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, bgp_route_node_t *best_route)
 {
-    (void)key;
-    (void)user_data;
-    BIT_CLR(((bgp_route_node_t *)value)->flags, BGP_ROUTE_FLAG_BEST);
-}
-
-void bgp_rib_mark_best(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_addr_t *best_source)
-{
-    if (!rib || !nlri || !best_source)
+    if (!rib || !nlri || !best_route)
     {
         return;
     }
@@ -402,27 +423,16 @@ void bgp_rib_mark_best(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_a
         return;
     }
 
-    /* 先清除该前缀头下所有路径的 BEST 标记 */
-    g_hash_table_foreach(head->route_hash, clear_best_cb, NULL);
-
-    /* 再对最优路径置位 */
-    bgp_route_node_t *best = (bgp_route_node_t *)g_hash_table_lookup(head->route_hash, best_source);
-    if (best)
+    /* 清除所有路径的 BEST 标记 */
+    for (GList *l = head->route_list; l; l = l->next)
     {
-        BIT_SET(best->flags, BGP_ROUTE_FLAG_BEST);
+        BIT_CLR(((bgp_route_node_t *)l->data)->flags, BGP_ROUTE_FLAG_BEST);
     }
-}
 
-/** g_hash_table_foreach 回调：查找带 BGP_ROUTE_FLAG_BEST 标记的路径 */
-static void find_best_cb(gpointer key, gpointer value, gpointer user_data)
-{
-    (void)key;
-    const bgp_route_node_t **result = user_data;
-    const bgp_route_node_t *route = value;
-    if (BIT_TEST(route->flags, BGP_ROUTE_FLAG_BEST))
-    {
-        *result = route;
-    }
+    /* 置目标路径 BEST 标记，并移至链表首位 */
+    BIT_SET(best_route->flags, BGP_ROUTE_FLAG_BEST);
+    head->route_list = g_list_remove(head->route_list, best_route);
+    head->route_list = g_list_prepend(head->route_list, best_route);
 }
 
 const bgp_route_node_t *bgp_rib_find_best(const bgp_rib_t *rib, const bgp_nlri_entry_t *nlri)
@@ -432,13 +442,13 @@ const bgp_route_node_t *bgp_rib_find_best(const bgp_rib_t *rib, const bgp_nlri_e
         return NULL;
     }
     const bgp_rthead_t *head = (const bgp_rthead_t *)g_tree_lookup(rib->head_tree, nlri);
-    if (!head)
+    if (!head || !head->route_list)
     {
         return NULL;
     }
-    const bgp_route_node_t *result = NULL;
-    g_hash_table_foreach(head->route_hash, find_best_cb, &result);
-    return result;
+    /* 最优路径须同时满足：位于首位 且 具有 BGP_ROUTE_FLAG_BEST 标记 */
+    const bgp_route_node_t *first = (const bgp_route_node_t *)head->route_list->data;
+    return BIT_TEST(first->flags, BGP_ROUTE_FLAG_BEST) ? first : NULL;
 }
 
 /** foreach_best 遍历时的上下文 */
@@ -448,18 +458,21 @@ typedef struct
     gpointer user_data;
 } foreach_best_ctx_t;
 
-/** g_tree_foreach 回调：对每个 rthead 查找 is_best 路径并调用外部回调 */
+/** g_tree_foreach 回调：对每个 rthead 取首元素（最优路径）调用外部回调 */
 static gboolean foreach_best_tree_cb(gpointer key, gpointer value, gpointer user_data)
 {
     (void)key;
     foreach_best_ctx_t *ctx = user_data;
     const bgp_rthead_t *head = (const bgp_rthead_t *)value;
 
-    const bgp_route_node_t *best = NULL;
-    g_hash_table_foreach(head->route_hash, find_best_cb, &best);
-    if (best)
+    if (head->route_list)
     {
-        ctx->cb(head, best, ctx->user_data);
+        const bgp_route_node_t *first = (const bgp_route_node_t *)head->route_list->data;
+        /* 同 bgp_rib_find_best：首位 且 有 BEST 标记才触发回调 */
+        if (BIT_TEST(first->flags, BGP_ROUTE_FLAG_BEST))
+        {
+            ctx->cb(head, first, ctx->user_data);
+        }
     }
     return FALSE; /* 继续遍历 */
 }

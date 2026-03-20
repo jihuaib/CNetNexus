@@ -120,6 +120,7 @@ void bgp_session_reset_negotiated(bgp_session_t *sess)
     sess->remote_id = 0;
     sess->remote_caps = 0;
     sess->remote_hold = 0;
+    sess->established_at_usec = 0;
 
     /* 清除本次 OPEN 发出时记录的本地快照 */
     sess->local_router_id = 0;

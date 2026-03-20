@@ -450,7 +450,7 @@
                 </element>
                 <element cfg-id="4" type="parameter">
                     <name>&lt;masklen&gt;</name>
-                    <type>integer(0-128)</type>
+                    <type>uint(0-128)</type>
                     <description>Prefix length (0-128)</description>
                 </element>
             </elements>

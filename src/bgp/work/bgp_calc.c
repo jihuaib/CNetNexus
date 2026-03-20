@@ -98,23 +98,6 @@ static bool route_is_better(const bgp_route_node_t *candidate, const bgp_route_n
     return candidate->updated_at_usec > current->updated_at_usec;
 }
 
-/** g_hash_table_foreach 回调：在 route_hash 中选出最优路径 */
-typedef struct
-{
-    const bgp_route_node_t *best;
-} best_select_ctx_t;
-
-static void select_best_cb(gpointer key, gpointer value, gpointer user_data)
-{
-    (void)key;
-    best_select_ctx_t *ctx = user_data;
-    const bgp_route_node_t *route = value;
-    if (route_is_better(route, ctx->best))
-    {
-        ctx->best = route;
-    }
-}
-
 // ============================================================================
 // 路由优选入口（占位）
 // ============================================================================
@@ -148,8 +131,8 @@ void bgp_calc_run_one(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
     /* 通过 NLRI 内容在 RIB 中定位前缀头（与指针地址无关） */
     const bgp_rthead_t *head = bgp_rib_lookup_head(inst->rib, nlri);
 
-    /* 无路由（rthead 不存在或路径哈希为空）：同步发送 WITHDRAW */
-    if (!head || g_hash_table_size(head->route_hash) == 0)
+    /* 无路由（rthead 不存在或路径列表为空）：同步发送 WITHDRAW */
+    if (!head || !head->route_list)
     {
         bgp_work_send_withdraw_to_all(inst, nlri);
         char key[BGP_NLRI_KEY_MAX];
@@ -158,16 +141,23 @@ void bgp_calc_run_one(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
         return;
     }
 
-    /* 在所有来源路径中选出最优 */
-    best_select_ctx_t ctx = {.best = NULL};
-    g_hash_table_foreach(head->route_hash, select_best_cb, &ctx);
-    if (!ctx.best)
+    /* 遍历路径列表，选出最优路径 */
+    bgp_route_node_t *best = NULL;
+    for (GList *l = head->route_list; l; l = l->next)
+    {
+        bgp_route_node_t *route = (bgp_route_node_t *)l->data;
+        if (route_is_better(route, best))
+        {
+            best = route;
+        }
+    }
+    if (!best)
     {
         return; /* 不应发生 */
     }
 
-    /* 在 RIB 路由节点上置 BGP_ROUTE_FLAG_BEST 标记 */
-    bgp_rib_mark_best(inst->rib, &head->nlri, &ctx.best->source);
+    /* 将最优路径移至链表首位 */
+    bgp_rib_mark_best(inst->rib, &head->nlri, best);
 
     /* 将 NLRI 推入发布队列，异步向所有 ESTABLISHED 邻居宣告 */
     if (inst->pub_queue)

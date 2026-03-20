@@ -93,6 +93,8 @@ typedef struct bgp_session
 
     gboolean hold_reset_pending; /**< 收到 KA 或 UPDATE 后需由 bgp_main 重置 hold 定时器 */
 
+    gint64 established_at_usec; /**< 会话最近一次进入 ESTABLISHED 状态的时间戳（g_get_real_time，0 表示未建立） */
+
     bgp_vrf_t *vrf; /**< 所属 VRF（借用引用，不持有所有权） */
 } bgp_session_t;
 

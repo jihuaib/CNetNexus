@@ -24,8 +24,8 @@ typedef struct bgp_instance
     bgp_afi_t afi;         /**< 地址族 */
     bgp_safi_t safi;       /**< 子地址族 */
     GHashTable *peer_hash; /**< net_addr_t* -> bgp_peer_t*（持有所有权，按二进制地址索引） */
-    bgp_rib_t *rib; /**< 该 AFI/SAFI 的内存 RIB（持有所有权，最优路径由 BGP_ROUTE_FLAG_BEST 标记） */
-    bgp_vrf_t *vrf; /**< 所属 VRF（借用引用，不持有所有权） */
+    bgp_rib_t *rib; /**< 该 AFI/SAFI 的内存 RIB（持有所有权，最优路径为每个 rthead 链表首元素） */
+    bgp_vrf_t *vrf;                    /**< 所属 VRF（借用引用，不持有所有权） */
     uint32_t import_protos;            /**< 已导入协议位掩码：bit N 置 1 表示 protocol=N 已导入 */
     bgp_calc_queue_t *calc_queue;      /**< best-path 待处理队列（持有所有权） */
     bgp_pub_queue_t *pub_queue;        /**< 路由发布待处理队列（持有所有权） */

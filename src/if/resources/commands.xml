@@ -91,7 +91,7 @@
                 <element cfg-id="2" type="parameter">
                     <name>&lt;prefix-len&gt;</name> <!-- 4 -->
                     <description>Prefix length (0-32)</description>
-                    <type>integer(0-32)</type>
+                    <type>uint(0-32)</type>
                 </element>
                 <element cfg-id="3" type="keyword">
                     <name>shutdown</name> <!-- 5 -->

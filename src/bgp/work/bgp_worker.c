@@ -188,9 +188,9 @@ static void bgp_worker_cmd_drain_queue(void)
 // ============================================================================
 
 /**
- * @brief 重置 VRF 内所有有活跃连接的 session（router-id / timer 变更时使用）
+ * @brief 重置 VRF 内所有有活跃连接的 session（router-id / timer 变更后调用）
  */
-static void server_vrf_reset_all_sessions(bgp_vrf_t *vrf)
+void bgp_server_reset_all_sessions(bgp_vrf_t *vrf)
 {
     if (!vrf || !vrf->sess_hash)
     {
@@ -214,7 +214,7 @@ static void server_vrf_reset_all_sessions(bgp_vrf_t *vrf)
  *
  * 用于处理 connect-retry 参数动态修改：已存在的 retry timer 需要立即生效新间隔。
  */
-static void server_vrf_rearm_retry_timers(bgp_vrf_t *vrf)
+void bgp_server_rearm_retry_timers(bgp_vrf_t *vrf)
 {
     if (!vrf || !vrf->sess_hash || !g_bgp_local)
     {
@@ -242,7 +242,7 @@ static void server_vrf_rearm_retry_timers(bgp_vrf_t *vrf)
 /**
  * @brief 在 server 线程中执行结构化配置应用命令
  *
- * 负责参数校验、同配置短路和调用 bgp_cfg_apply_*。将结果写入 apply->rc 和相关输出字段。
+ * 根据 group_id 分发到 bgp_cfg_apply_* 对应函数，由各函数完成校验、短路和内存操作。
  */
 static void bgp_worker_dispatch_apply_cmd(bgp_apply_cmd_t *apply)
 {
@@ -253,348 +253,35 @@ static void bgp_worker_dispatch_apply_cmd(bgp_apply_cmd_t *apply)
     apply->rc = BGP_APPLY_RC_FAIL;
     apply->errmsg[0] = '\0';
 
-    const gboolean is_no = apply->isNo ? TRUE : FALSE;
-
-    bgp_vrf_t *vrf = NULL;
-    bgp_protocol_t *proto = g_bgp_local ? g_bgp_local->protocol : NULL;
-
-    /* 需要 VRF 的命令类型，提前查找 */
-    if (apply->group_id != BGP_CLI_GROUP_ID_PROTOCOL && proto)
-    {
-        vrf = bgp_protocol_get_vrf(proto, apply->vrf_id);
-    }
-
     switch (apply->group_id)
     {
         case BGP_CLI_GROUP_ID_PROTOCOL:
-        {
-            if (is_no)
-            {
-                if (!proto)
-                {
-                    apply->rc = BGP_APPLY_RC_NOOP;
-                    return;
-                }
-            }
-            else
-            {
-                if (proto)
-                {
-                    if (proto->as_number == apply->u.protocol.as_number)
-                    {
-                        apply->rc = BGP_APPLY_RC_NOOP;
-                        return;
-                    }
-                    snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: AS number mismatch.");
-                    return;
-                }
-                if (apply->u.protocol.as_number == 0)
-                {
-                    snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: Missing AS number.");
-                    return;
-                }
-            }
-            uint32_t ret = bgp_cfg_apply_protocol(is_no, apply->u.protocol.as_number);
-            if (ret != ERRCODE_SUCCESS)
-            {
-                snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: Failed to apply protocol configuration.");
-                return;
-            }
-            apply->rc = BGP_APPLY_RC_OK;
+            bgp_cfg_apply_protocol(apply);
             break;
-        }
-
         case BGP_CLI_GROUP_ID_NEIGHBOR:
-        {
-            if (!proto)
-            {
-                snprintf(apply->errmsg, sizeof(apply->errmsg),
-                         "BGP Error: BGP not configured. Run 'bgp <as-number>' first.");
-                return;
-            }
-            if (!vrf)
-            {
-                snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VRF not found.");
-                return;
-            }
-            bgp_session_t *existing = bgp_vrf_find_session(vrf, &apply->u.neighbor.addr);
-            if (is_no)
-            {
-                if (!existing)
-                {
-                    apply->rc = BGP_APPLY_RC_NOOP;
-                    return;
-                }
-            }
-            else
-            {
-                if (existing && existing->remote_as == apply->u.neighbor.remote_as)
-                {
-                    apply->rc = BGP_APPLY_RC_NOOP;
-                    return;
-                }
-            }
-            uint32_t ret = bgp_cfg_apply_neighbor(is_no, vrf, &apply->u.neighbor.addr, apply->u.neighbor.remote_as);
-            if (ret != ERRCODE_SUCCESS)
-            {
-                snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: Failed to apply neighbor configuration.");
-                return;
-            }
-            apply->rc = BGP_APPLY_RC_OK;
+            bgp_cfg_apply_neighbor(apply);
             break;
-        }
-
         case BGP_CLI_GROUP_ID_ADDR_FAMILY:
-        {
-            if (!proto)
-            {
-                snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: BGP not configured.");
-                return;
-            }
-            if (!vrf)
-            {
-                snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VRF not found.");
-                return;
-            }
-            bgp_instance_t *inst =
-                g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(apply->u.instance.afi, apply->u.instance.safi));
-            if (is_no && !inst)
-            {
-                apply->rc = BGP_APPLY_RC_NOOP;
-                return;
-            }
-            if (!is_no && inst)
-            {
-                apply->rc = BGP_APPLY_RC_NOOP;
-                return;
-            }
-            uint32_t ret = bgp_cfg_apply_instance(is_no, vrf, apply->u.instance.afi, apply->u.instance.safi);
-            if (ret != ERRCODE_SUCCESS)
-            {
-                snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: Failed to apply instance configuration.");
-                return;
-            }
-            apply->rc = BGP_APPLY_RC_OK;
+            bgp_cfg_apply_instance(apply);
             break;
-        }
-
         case BGP_CLI_GROUP_ID_AF_NEIGHBOR:
-        {
-            if (!proto)
-            {
-                snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: BGP not configured.");
-                return;
-            }
-            if (!vrf)
-            {
-                snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VRF not found.");
-                return;
-            }
-            bgp_session_t *sess = bgp_vrf_find_session(vrf, &apply->u.af_neighbor.addr);
-            gpointer inst_key = bgp_inst_hash_key(apply->u.af_neighbor.afi, apply->u.af_neighbor.safi);
-            bgp_instance_t *inst_before = vrf ? g_hash_table_lookup(vrf->inst_hash, inst_key) : NULL;
-            gboolean had_af_before = (inst_before && inst_before->peer_hash &&
-                                      g_hash_table_lookup(inst_before->peer_hash, &apply->u.af_neighbor.addr));
-
-            /* 仅当“变更前”已有连接时，才考虑变更后重协商。 */
-            gboolean had_conn_before = (sess && (sess->pri_conn || sess->sec_conn));
-            if (!is_no && !sess)
-            {
-                snprintf(apply->errmsg, sizeof(apply->errmsg),
-                         "BGP Error: Neighbor session not configured. Run 'neighbor <ip> as <as>' first.");
-                return;
-            }
-            uint32_t ret = bgp_cfg_apply_af_neighbor(is_no, vrf, apply->u.af_neighbor.afi, apply->u.af_neighbor.safi,
-                                                     &apply->u.af_neighbor.addr);
-            if (ret != ERRCODE_SUCCESS)
-            {
-                snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: Failed to apply AF neighbor configuration.");
-                return;
-            }
-            bgp_instance_t *inst_after = vrf ? g_hash_table_lookup(vrf->inst_hash, inst_key) : NULL;
-            gboolean has_af_after = (inst_after && inst_after->peer_hash &&
-                                     g_hash_table_lookup(inst_after->peer_hash, &apply->u.af_neighbor.addr));
-            gboolean af_changed = (had_af_before != has_af_after);
-
-            /* 仅在 AF 成员关系实际变化时触发重协商，避免重复 enable 导致无意义 reset。 */
-            if (had_conn_before && af_changed && sess && (sess->pri_conn || sess->sec_conn))
-            {
-                bgp_neighbor_down(sess, g_bgp_local->epoll_fd);
-            }
-            apply->rc = BGP_APPLY_RC_OK;
+            bgp_cfg_apply_af_neighbor(apply);
             break;
-        }
-
         case BGP_CLI_GROUP_ID_ROUTER_ID:
-        {
-            if (!proto)
-            {
-                snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: BGP not configured.");
-                return;
-            }
-            if (!vrf)
-            {
-                snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VRF not found.");
-                return;
-            }
-            /* 同配置短路 */
-            if (is_no && vrf->router_id == 0)
-            {
-                apply->rc = BGP_APPLY_RC_NOOP;
-                return;
-            }
-            if (!is_no && apply->u.router_id.id[0] != '\0')
-            {
-                struct in_addr cmp;
-                if (inet_pton(AF_INET, apply->u.router_id.id, &cmp) == 1 && ntohl(cmp.s_addr) == vrf->router_id)
-                {
-                    apply->rc = BGP_APPLY_RC_NOOP;
-                    return;
-                }
-            }
-            uint32_t ret = bgp_cfg_apply_router_id(is_no, vrf, apply->u.router_id.id);
-            if (ret != ERRCODE_SUCCESS)
-            {
-                snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: Failed to apply router-id configuration.");
-                return;
-            }
-            server_vrf_reset_all_sessions(vrf);
-            apply->rc = BGP_APPLY_RC_OK;
+            bgp_cfg_apply_router_id(apply);
             break;
-        }
-
         case BGP_CLI_GROUP_ID_TIMERS:
-        {
-            if (!proto)
-            {
-                snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: BGP not configured.");
-                return;
-            }
-            if (!vrf)
-            {
-                snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VRF not found.");
-                return;
-            }
-            /* 同配置短路 */
-            if (is_no && vrf->keepalive == BGP_TIMER_DEFAULT_KEEPALIVE && vrf->hold_time == BGP_TIMER_DEFAULT_HOLD)
-            {
-                apply->rc = BGP_APPLY_RC_NOOP;
-                return;
-            }
-            if (!is_no && apply->u.timers.keepalive == vrf->keepalive && apply->u.timers.hold_time == vrf->hold_time)
-            {
-                apply->rc = BGP_APPLY_RC_NOOP;
-                return;
-            }
-            uint32_t ret = bgp_cfg_apply_timers(is_no, vrf, apply->u.timers.keepalive, apply->u.timers.hold_time);
-            if (ret != ERRCODE_SUCCESS)
-            {
-                snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: Failed to apply timer configuration.");
-                return;
-            }
-            server_vrf_reset_all_sessions(vrf);
-            apply->rc = BGP_APPLY_RC_OK;
+            bgp_cfg_apply_timers(apply);
             break;
-        }
-
         case BGP_CLI_GROUP_ID_CONNECT_RETRY:
-        {
-            if (!proto)
-            {
-                snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: BGP not configured.");
-                return;
-            }
-            if (!vrf)
-            {
-                snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VRF not found.");
-                return;
-            }
-            /* 同配置短路 */
-            if (is_no && vrf->connect_retry == BGP_TIMER_DEFAULT_CONNECT_RETRY)
-            {
-                apply->rc = BGP_APPLY_RC_NOOP;
-                return;
-            }
-            if (!is_no && apply->u.connect_retry.interval == vrf->connect_retry)
-            {
-                apply->rc = BGP_APPLY_RC_NOOP;
-                return;
-            }
-            uint32_t ret = bgp_cfg_apply_connect_retry(is_no, vrf, apply->u.connect_retry.interval);
-            if (ret != ERRCODE_SUCCESS)
-            {
-                snprintf(apply->errmsg, sizeof(apply->errmsg),
-                         "BGP Error: Failed to apply connect-retry configuration.");
-                return;
-            }
-            server_vrf_rearm_retry_timers(vrf);
-            apply->rc = BGP_APPLY_RC_OK;
+            bgp_cfg_apply_connect_retry(apply);
             break;
-        }
-
         case BGP_CLI_GROUP_ID_OPEN_CAP:
-        {
-            if (!proto)
-            {
-                snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: BGP not configured.");
-                return;
-            }
-            if (!vrf)
-            {
-                snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VRF not found.");
-                return;
-            }
-            bgp_session_t *sess = bgp_vrf_find_session(vrf, &apply->u.open_cap.addr);
-            if (!sess)
-            {
-                snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: Neighbor not found.");
-                return;
-            }
-            uint32_t ret = bgp_cfg_apply_open_capability(is_no, sess, apply->u.open_cap.cap_bit);
-            if (ret != ERRCODE_SUCCESS)
-            {
-                snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: Failed to apply capability configuration.");
-                return;
-            }
-            apply->out.sess_flags = sess->flags;
-            bgp_neighbor_down(sess, g_bgp_local->epoll_fd);
-            apply->rc = BGP_APPLY_RC_OK;
+            bgp_cfg_apply_open_cap(apply);
             break;
-        }
-
         case BGP_CLI_GROUP_ID_IMPORT_ROUTE:
-        {
-            if (!proto)
-            {
-                snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: BGP not configured.");
-                return;
-            }
-            if (!vrf)
-            {
-                snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VRF not found.");
-                return;
-            }
-            bgp_instance_t *inst =
-                bgp_vrf_get_or_create_instance(vrf, apply->u.import_route.afi, apply->u.import_route.safi);
-            if (!inst)
-            {
-                snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: Address family instance creation failed.");
-                return;
-            }
-            uint32_t proto_mask = 1u << apply->u.import_route.import_proto;
-            if (is_no)
-            {
-                inst->import_protos &= ~proto_mask;
-            }
-            else
-            {
-                inst->import_protos |= proto_mask;
-            }
-            apply->out.import_protos = inst->import_protos;
-            apply->rc = BGP_APPLY_RC_OK;
+            bgp_cfg_apply_import_route(apply);
             break;
-        }
-
         default:
             snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: Unknown apply group_id %u.", apply->group_id);
             break;
@@ -685,7 +372,7 @@ static int bgp_import_route_entry(const route_msg_entry_t *entry)
         nexthop.has_link_local = false;
         nexthop.global = entry->nexthop_addr;
 
-        int rc = bgp_rib_reach_one(inst->rib, &nlri, &src, &attr, &nexthop);
+        int rc = bgp_rib_reach_one(inst->rib, &nlri, &src, (uint32_t)entry->protocol, &attr, &nexthop);
         /* 与对端 UPDATE 处理保持一致：新增/更新都触发 best-path 与发布流程 */
         if (rc >= 0 && inst->calc_queue)
         {
@@ -1353,6 +1040,9 @@ static void bgp_handle_data(bgp_conn_t *conn)
 
     if (old_state != BGP_CONN_STATE_ESTABLISHED && conn->state == BGP_CONN_STATE_ESTABLISHED)
     {
+        /* 记录会话建立时间 */
+        sess->established_at_usec = g_get_real_time();
+
         bgp_protocol_t *proto = g_bgp_local->protocol;
         bgp_vrf_t *vrf0 = proto ? bgp_protocol_get_vrf(proto, BGP_VRF_PUBLIC_ID) : NULL;
         uint16_t ka_sec = vrf0 ? vrf0->keepalive : BGP_TIMER_DEFAULT_KEEPALIVE;

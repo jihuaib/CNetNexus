@@ -37,7 +37,7 @@ typedef struct
 {
     bgp_instance_t *inst;
     const bgp_nlri_entry_t *nlri; /**< 来自 rthead 的 NLRI（借用） */
-    const bgp_route_node_t *best; /**< 带 BGP_ROUTE_FLAG_BEST 标记的路径（借用） */
+    const bgp_route_node_t *best; /**< 当前最优路径（route_list 首元素，借用） */
 } announce_send_ctx_t;
 
 /** g_hash_table_foreach 回调：向各 ESTABLISHED 对端发送 UPDATE（ANNOUNCE） */
@@ -47,8 +47,9 @@ static void foreach_announce_send(gpointer key, gpointer value, gpointer user_da
     const net_addr_t *addr = key;
     announce_send_ctx_t *ctx = user_data;
 
-    /* Split-horizon: 不向“该最优路径的来源邻居”回灌同一路由，避免双节点反射风暴。 */
-    if (ctx->best && net_addr_equal(&ctx->best->source, addr))
+    /* Split-horizon: 不向”该最优路径的来源邻居”回灌同一路由，避免双节点反射风暴。
+     * import 路由（BGP_ROUTE_FLAG_IMPORT）无来源邻居，不触发 split-horizon。 */
+    if (ctx->best && !BIT_TEST(ctx->best->flags, BGP_ROUTE_FLAG_IMPORT) && net_addr_equal(&ctx->best->source, addr))
     {
         return;
     }
@@ -198,7 +199,7 @@ int bgp_pub_queue_process(bgp_pub_queue_t *q, bgp_instance_t *inst, int batch_si
     {
         q->count--;
 
-        /* 通过 NLRI 在 RIB 中查找带 BGP_ROUTE_FLAG_BEST 标记的路径 */
+        /* 通过 NLRI 在 RIB 中查找最优路径（route_list 首元素） */
         const bgp_rthead_t *head = bgp_rib_lookup_head(inst->rib, nlri);
         const bgp_route_node_t *best = head ? bgp_rib_find_best(inst->rib, nlri) : NULL;
         if (head && best)

@@ -234,13 +234,9 @@ static gboolean bgp_show_route_head_cb(gpointer key, gpointer value, gpointer us
     bgp_nlri_to_str(&head->nlri, prefix_str, sizeof(prefix_str));
     gboolean first = TRUE;
 
-    GHashTableIter iter;
-    gpointer rkey, rval;
-    g_hash_table_iter_init(&iter, head->route_hash);
-    while (g_hash_table_iter_next(&iter, &rkey, &rval))
+    for (const GList *l = head->route_list; l; l = l->next)
     {
-        (void)rkey;
-        bgp_route_node_t *route = (bgp_route_node_t *)rval;
+        bgp_route_node_t *route = (bgp_route_node_t *)l->data;
         if (!route)
         {
             continue;
@@ -250,9 +246,11 @@ static gboolean bgp_show_route_head_cb(gpointer key, gpointer value, gpointer us
         bgp_nexthop_to_str(&route->nexthop, nh, sizeof(nh));
         bgp_route_fmt_fields(route, lp, sizeof(lp), med, sizeof(med), as_path, sizeof(as_path));
 
-        g_string_append_printf(ctx->buf, "%-*s %-*s %-*s %-*s %-*s %s\r\n", BGP_RT_COL_NET, first ? prefix_str : "",
-                               BGP_RT_COL_NH, nh, BGP_RT_COL_LP, lp, BGP_RT_COL_MED, med, BGP_RT_COL_ORIG,
-                               bgp_origin_str(route->attr.origin), as_path);
+        /* 有 BEST 标记的路径打 '>' 标记 */
+        g_string_append_printf(ctx->buf, "%c%-*s %-*s %-*s %-*s %-*s %s\r\n",
+                               BIT_TEST(route->flags, BGP_ROUTE_FLAG_BEST) ? '>' : ' ', BGP_RT_COL_NET - 1,
+                               first ? prefix_str : "", BGP_RT_COL_NH, nh, BGP_RT_COL_LP, lp, BGP_RT_COL_MED, med,
+                               BGP_RT_COL_ORIG, bgp_origin_str(route->attr.origin), as_path);
 
         if (first)
         {
@@ -270,28 +268,35 @@ static gboolean bgp_show_route_head_cb(gpointer key, gpointer value, gpointer us
  */
 static void bgp_show_route_detail(GString *buf, const bgp_rthead_t *head)
 {
-    uint32_t path_count = g_hash_table_size(head->route_hash);
+    uint32_t path_count = (uint32_t)g_list_length(head->route_list);
     g_string_append_printf(buf, "  Paths: %u\r\n\r\n", path_count);
 
-    GHashTableIter iter;
-    gpointer rkey, rval;
-    g_hash_table_iter_init(&iter, (GHashTable *)head->route_hash);
-    while (g_hash_table_iter_next(&iter, &rkey, &rval))
+    for (const GList *l = head->route_list; l; l = l->next)
     {
-        (void)rkey;
-        const bgp_route_node_t *route = (const bgp_route_node_t *)rval;
+        const bgp_route_node_t *route = (const bgp_route_node_t *)l->data;
         if (!route)
         {
             continue;
         }
 
-        char peer[64], nh[64], lp[16], med[16], as_path[256], ts[32];
-        net_addr_to_str(&route->source, peer, sizeof(peer));
+        char nh[64], lp[16], med[16], as_path[256], ts_added[32], ts_updated[32];
         bgp_nexthop_to_str(&route->nexthop, nh, sizeof(nh));
         bgp_route_fmt_fields(route, lp, sizeof(lp), med, sizeof(med), as_path, sizeof(as_path));
-        bgp_fmt_time_usec(route->updated_at_usec, ts, sizeof(ts));
+        bgp_fmt_time_usec(route->added_at_usec, ts_added, sizeof(ts_added));
+        bgp_fmt_time_usec(route->updated_at_usec, ts_updated, sizeof(ts_updated));
 
-        g_string_append_printf(buf, "  Peer       : %s\r\n", peer);
+        /* '>' 标记最优路径（首元素且有 BEST 标记） */
+        g_string_append_printf(buf, "%c ", BIT_TEST(route->flags, BGP_ROUTE_FLAG_BEST) ? '>' : ' ');
+        if (!BIT_TEST(route->flags, BGP_ROUTE_FLAG_IMPORT))
+        {
+            char peer_str[64];
+            net_addr_to_str(&route->source, peer_str, sizeof(peer_str));
+            g_string_append_printf(buf, "From Peer  : %s\r\n", peer_str);
+        }
+        else
+        {
+            g_string_append_printf(buf, "Imported\r\n");
+        }
         g_string_append_printf(buf, "    NextHop  : %s\r\n", nh);
         g_string_append_printf(buf, "    LocPref  : %s\r\n", lp);
         g_string_append_printf(buf, "    MED      : %s\r\n", med);
@@ -320,7 +325,8 @@ static void bgp_show_route_detail(GString *buf, const bgp_rthead_t *head)
             net_addr_to_str(&route->attr.originator_id, oid, sizeof(oid));
             g_string_append_printf(buf, "    Originator: %s\r\n", oid);
         }
-        g_string_append_printf(buf, "    Updated  : %s\r\n\r\n", ts);
+        g_string_append_printf(buf, "    Added    : %s\r\n", ts_added);
+        g_string_append_printf(buf, "    Updated  : %s\r\n\r\n", ts_updated);
     }
 }
 
@@ -644,6 +650,10 @@ static int handle_bgp_show_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
     }
     g_string_append_printf(resp_buf, "  %-24s: %s\r\n", "Remote Router-ID", _sess_rid_str);
     g_string_append_printf(resp_buf, "  %-24s: %s\r\n", "Session State", sess_state_str(sess));
+
+    char _est_ts[32];
+    bgp_fmt_time_usec(sess->established_at_usec, _est_ts, sizeof(_est_ts));
+    g_string_append_printf(resp_buf, "  %-24s: %s\r\n", "Established At", _est_ts);
 
     g_string_append(resp_buf, "\r\n  Capabilities:\r\n");
     g_string_append_printf(resp_buf, "  %-16s  %-10s  %-10s  %-10s\r\n", "Feature", "Local", "Remote", "Negotiated");

@@ -300,7 +300,7 @@ void bgp_vrf_apply_update(bgp_vrf_t *vrf, const net_addr_t *src, const bgp_updat
             continue;
         }
 
-        int rc = bgp_rib_reach_one(inst->rib, e, src, &upd->attr, &upd->nexthop);
+        int rc = bgp_rib_reach_one(inst->rib, e, src, 0, &upd->attr, &upd->nexthop);
         /* reach 成功（新增或更新）均需重新优选 */
         if (rc >= 0 && inst->calc_queue)
         {
