@@ -128,11 +128,7 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             }
             case 2: /* prefix_len 参数（整数） */
             {
-                const char *text = cli_tlv_entry_get_text(&entry);
-                if (text)
-                {
-                    prefix.prefix_len = (uint8_t)atoi(text);
-                }
+                prefix.prefix_len = (uint8_t)cli_tlv_entry_get_int(&entry);
                 break;
             }
             case 3: /* shutdown 关键字 */
