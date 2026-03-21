@@ -73,6 +73,12 @@
 #define ROUTE_MSG_TYPE_UPDATE DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ROUTE, 0x0004)
 /** 路由注入请求（其他模块 -> ROUTE，payload=route_msg_entry_t） */
 #define ROUTE_MSG_TYPE_INJECT DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ROUTE, 0x0010)
+/** nexthop 迭代注册（其他模块 -> ROUTE，payload=route_nh_iter_req_t） */
+#define ROUTE_MSG_TYPE_NH_REGISTER DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ROUTE, 0x0011)
+/** nexthop 迭代取消注册（其他模块 -> ROUTE，payload=route_nh_iter_req_t） */
+#define ROUTE_MSG_TYPE_NH_UNREGISTER DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ROUTE, 0x0012)
+/** nexthop 迭代状态通知（ROUTE -> owner 模块，payload=route_nh_iter_notify_t） */
+#define ROUTE_MSG_TYPE_NH_NOTIFY DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ROUTE, 0x0013)
 /** 通用应答 */
 #define ROUTE_MSG_TYPE_ACK DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ROUTE, 0x00FF)
 
@@ -86,6 +92,9 @@
 // ============================================================================
 // IPC 载荷结构
 // ============================================================================
+
+/** 注入条目标记：该路径需先完成 nexthop 递归迭代后再回推 owner 模块 */
+#define ROUTE_ENTRY_FLAG_REQUIRE_NH_ITER (1u << 0)
 
 #include "net_addr.h"
 
@@ -112,7 +121,8 @@ typedef struct route_msg_entry
     int32_t metric;          /**< 度量值 */
     int32_t preference;      /**< 管理距离（偏好值） */
     uint8_t is_withdraw;     /**< 1=撤销路由, 0=新增/更新路由 */
-    uint8_t _pad[3];         /**< 对齐填充 */
+    uint8_t flags;           /**< 路径标志（ROUTE_ENTRY_FLAG_*） */
+    uint8_t _pad[2];         /**< 对齐填充 */
     net_addr_t prefix_addr;  /**< 前缀地址（二进制） */
     net_addr_t nexthop_addr; /**< 下一跳地址（二进制） */
     net_addr_t source_addr;  /**< 路径来源标识（二进制 IP） */
@@ -135,6 +145,30 @@ typedef struct route_msg_ack
 {
     int32_t result; /**< 错误码（ERRCODE_SUCCESS = 0 表示成功） */
 } route_msg_ack_t;
+
+/**
+ * @brief nexthop 迭代注册/取消注册请求
+ */
+typedef struct route_nh_iter_req
+{
+    uint32_t vrf_id;         /**< VRF ID */
+    uint16_t afi;            /**< 地址族 */
+    uint8_t safi;            /**< 子地址族（当前仅支持单播） */
+    uint8_t _pad0;           /**< 对齐填充 */
+    net_addr_t nexthop_addr; /**< 需迭代的 nexthop（二进制） */
+} route_nh_iter_req_t;
+
+/**
+ * @brief nexthop 迭代状态通知
+ */
+typedef struct route_nh_iter_notify
+{
+    uint32_t vrf_id;         /**< VRF ID */
+    uint16_t afi;            /**< 地址族 */
+    uint8_t safi;            /**< 子地址族 */
+    uint8_t resolved;        /**< 1=可达，0=不可达 */
+    net_addr_t nexthop_addr; /**< nexthop（二进制） */
+} route_nh_iter_notify_t;
 
 // ============================================================================
 // ROUTE 注入 API（供其他模块调用）
@@ -167,6 +201,11 @@ int route_rpc_add(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const n
                   int32_t metric, int32_t preference);
 
 /**
+ * @brief 通过 IPC 向 ROUTE 模块注册“需先做 nexthop 迭代”的候选路径
+ */
+int route_rpc_nh_register(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop);
+
+/**
  * @brief 通过 IPC 向 ROUTE 模块撤销一条路径
  * @param ctx         调用方 IPC 上下文
  * @param vrf_id      VRF ID
@@ -179,5 +218,10 @@ int route_rpc_add(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const n
  */
 int route_rpc_del(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr,
                   uint8_t prefix_len, uint32_t protocol, const net_addr_t *source);
+
+/**
+ * @brief 通过 IPC 撤销一条“需迭代”的候选路径
+ */
+int route_rpc_nh_unregister(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop);
 
 #endif /* ROUTE_H */

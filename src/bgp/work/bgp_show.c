@@ -246,9 +246,10 @@ static gboolean bgp_show_route_head_cb(gpointer key, gpointer value, gpointer us
         bgp_nexthop_to_str(&route->nexthop, nh, sizeof(nh));
         bgp_route_fmt_fields(route, lp, sizeof(lp), med, sizeof(med), as_path, sizeof(as_path));
 
-        /* 有 BEST 标记的路径打 '>' 标记 */
-        g_string_append_printf(ctx->buf, "%c%-*s %-*s %-*s %-*s %-*s %s\r\n",
-                               BIT_TEST(route->flags, BGP_ROUTE_FLAG_BEST) ? '>' : ' ', BGP_RT_COL_NET - 1,
+        /* 路由标记：'>'=BEST，'v'=VALID */
+        g_string_append_printf(ctx->buf, "%c%c%-*s %-*s %-*s %-*s %-*s %s\r\n",
+                               BIT_TEST(route->flags, BGP_ROUTE_FLAG_BEST) ? '>' : ' ',
+                               BIT_TEST(route->flags, BGP_ROUTE_FLAG_VALID) ? 'v' : ' ', BGP_RT_COL_NET - 2,
                                first ? prefix_str : "", BGP_RT_COL_NH, nh, BGP_RT_COL_LP, lp, BGP_RT_COL_MED, med,
                                BGP_RT_COL_ORIG, bgp_origin_str(route->attr.origin), as_path);
 
@@ -285,8 +286,9 @@ static void bgp_show_route_detail(GString *buf, const bgp_rthead_t *head)
         bgp_fmt_time_usec(route->added_at_usec, ts_added, sizeof(ts_added));
         bgp_fmt_time_usec(route->updated_at_usec, ts_updated, sizeof(ts_updated));
 
-        /* '>' 标记最优路径（首元素且有 BEST 标记） */
-        g_string_append_printf(buf, "%c ", BIT_TEST(route->flags, BGP_ROUTE_FLAG_BEST) ? '>' : ' ');
+        /* 路由标记：'>'=BEST，'v'=VALID */
+        g_string_append_printf(buf, "%c%c ", BIT_TEST(route->flags, BGP_ROUTE_FLAG_BEST) ? '>' : ' ',
+                               BIT_TEST(route->flags, BGP_ROUTE_FLAG_VALID) ? 'v' : ' ');
         if (!BIT_TEST(route->flags, BGP_ROUTE_FLAG_IMPORT))
         {
             char peer_str[64];
@@ -301,6 +303,8 @@ static void bgp_show_route_detail(GString *buf, const bgp_rthead_t *head)
         g_string_append_printf(buf, "    LocPref  : %s\r\n", lp);
         g_string_append_printf(buf, "    MED      : %s\r\n", med);
         g_string_append_printf(buf, "    Origin   : %s\r\n", bgp_origin_str(route->attr.origin));
+        g_string_append_printf(buf, "    Valid    : %s\r\n",
+                               BIT_TEST(route->flags, BGP_ROUTE_FLAG_VALID) ? "Yes" : "No");
         g_string_append_printf(buf, "    AS-Path  : %s\r\n", as_path);
 
         if (route->attr.communities[0] != '\0')
@@ -462,6 +466,7 @@ static int handle_bgp_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parse
 
     g_string_append_printf(resp_buf, "  Networks: %-6u  Paths: %u\r\n\r\n", bgp_rib_head_count(inst->rib),
                            bgp_rib_route_count(inst->rib));
+    g_string_append(resp_buf, "  Markers : '>'=BEST, 'v'=VALID\r\n\r\n");
 
     g_string_append_printf(resp_buf, "%-*s %-*s %-*s %-*s %-*s %s\r\n", BGP_RT_COL_NET, "Network", BGP_RT_COL_NH,
                            "NextHop", BGP_RT_COL_LP, "LocPref", BGP_RT_COL_MED, "MED", BGP_RT_COL_ORIG, "Origin",

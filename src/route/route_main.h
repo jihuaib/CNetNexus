@@ -73,4 +73,9 @@ int route_add_and_notify(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, 
                          uint8_t prefix_len, uint32_t protocol, const net_addr_t *source_addr,
                          const net_addr_t *nexthop_addr, int32_t metric, int32_t preference);
 
+/**
+ * @brief 全量重算“已注册 nexthop watch”的可达性，并按状态变化回推
+ */
+void route_recompute_iter_paths(dev_ipc_context_t *ctx);
+
 #endif /* ROUTE_MAIN_H */

@@ -31,6 +31,10 @@ static void build_entry(route_msg_entry_t *entry, const route_head_t *head, cons
     entry->metric = path->metric;
     entry->preference = path->preference;
     entry->is_withdraw = (uint8_t)is_withdraw;
+    if (path->iter_required)
+    {
+        entry->flags |= ROUTE_ENTRY_FLAG_REQUIRE_NH_ITER;
+    }
     entry->prefix_addr = head->key.addr;
     entry->nexthop_addr = path->nexthop;
     entry->source_addr = path->key.source;
@@ -59,6 +63,36 @@ static int subscriber_matches(const route_subscriber_t *sub, const route_head_t 
 // 公共 API
 // ============================================================================
 
+void route_pub_notify_module(dev_ipc_context_t *ctx, uint32_t dst_module_id, const route_head_t *head,
+                             const route_path_t *path, int is_withdraw)
+{
+    if (!ctx || !head || !path || dst_module_id == 0)
+    {
+        return;
+    }
+
+    route_msg_entry_t *payload = (route_msg_entry_t *)g_malloc(sizeof(route_msg_entry_t));
+    if (!payload)
+    {
+        return;
+    }
+    build_entry(payload, head, path, is_withdraw);
+
+    dev_ipc_message_t *msg = dev_ipc_message_create(ROUTE_MSG_TYPE_UPDATE, DEV_MODULE_ID_ROUTE, dst_module_id, 0,
+                                                    payload, sizeof(route_msg_entry_t), g_free);
+    if (!msg)
+    {
+        g_free(payload);
+        return;
+    }
+
+    if (dev_ipc_send(ctx, dst_module_id, msg) != 0)
+    {
+        LOG_WARN("Failed to send route update to module 0x%08X", dst_module_id);
+    }
+    dev_ipc_message_free(msg);
+}
+
 void route_pub_notify(dev_ipc_context_t *ctx, GList *subscribers, const route_head_t *head, const route_path_t *path,
                       int is_withdraw)
 {
@@ -66,13 +100,6 @@ void route_pub_notify(dev_ipc_context_t *ctx, GList *subscribers, const route_he
     {
         return;
     }
-
-    route_msg_entry_t *entry = (route_msg_entry_t *)g_malloc(sizeof(route_msg_entry_t));
-    if (!entry)
-    {
-        return;
-    }
-    build_entry(entry, head, path, is_withdraw);
 
     for (GList *l = subscribers; l; l = l->next)
     {
@@ -82,28 +109,8 @@ void route_pub_notify(dev_ipc_context_t *ctx, GList *subscribers, const route_he
             continue;
         }
 
-        route_msg_entry_t *payload = (route_msg_entry_t *)g_memdup2(entry, sizeof(route_msg_entry_t));
-        if (!payload)
-        {
-            continue;
-        }
-
-        dev_ipc_message_t *msg = dev_ipc_message_create(ROUTE_MSG_TYPE_UPDATE, DEV_MODULE_ID_ROUTE, sub->module_id, 0,
-                                                        payload, sizeof(route_msg_entry_t), g_free);
-        if (!msg)
-        {
-            g_free(payload);
-            continue;
-        }
-
-        if (dev_ipc_send(ctx, sub->module_id, msg) != 0)
-        {
-            LOG_WARN("Failed to send route update to module 0x%08X", sub->module_id);
-        }
-        dev_ipc_message_free(msg);
+        route_pub_notify_module(ctx, sub->module_id, head, path, is_withdraw);
     }
-
-    g_free(entry);
 }
 
 // ============================================================================
@@ -120,6 +127,12 @@ typedef struct
 static void collect_path(const route_head_t *head, const route_path_t *path, void *userdata)
 {
     dump_ctx_t *ctx = (dump_ctx_t *)userdata;
+
+    /* 迭代型路径走 owner 回推通道，不进入公共订阅快照 */
+    if (path->iter_required)
+    {
+        return;
+    }
 
     if (ctx->count >= ctx->capacity)
     {

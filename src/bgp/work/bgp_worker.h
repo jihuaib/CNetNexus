@@ -9,9 +9,20 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "bgp.h"
 #include "bgp_instance.h"
 #include "dev.h"
 #include "net_addr.h"
+
+typedef struct bgp_session bgp_session_t;
+
+typedef struct bgp_peer_update_ingest_stats
+{
+    uint32_t reach_injected;
+    uint32_t reach_failed;
+    uint32_t unreach_injected;
+    uint32_t unreach_failed;
+} bgp_peer_update_ingest_stats_t;
 
 // ============================================================================
 // 跨线程配置应用命令（work 线程填写输入，server 线程填写输出）
@@ -158,6 +169,17 @@ int bgp_worker_post_show_cli(dev_ipc_message_t *msg);
  * @return 0 成功，-1 失败
  */
 int bgp_worker_post_route_message(dev_ipc_message_t *msg);
+
+/**
+ * @brief 将对端 UPDATE 写入 BGP relay（维护 nexthop<->route 关系，并向 ROUTE 注册 nexthop 门禁）
+ */
+void bgp_worker_ingest_peer_update(bgp_session_t *session, const bgp_update_result_t *upd,
+                                   bgp_peer_update_ingest_stats_t *stats);
+
+/**
+ * @brief 清理指定 source 的 relay 路由（peer down / 邻居删除时调用）
+ */
+void bgp_worker_flush_peer_routes(uint32_t vrf_id, const net_addr_t *source);
 
 /**
  * @brief 启动/停止 BGP 179 监听（仅 worker 线程调用）

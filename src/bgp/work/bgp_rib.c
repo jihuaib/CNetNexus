@@ -156,7 +156,7 @@ int bgp_rib_reach_one(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_ad
         rib->route_count++;
     }
 
-    /* 按 import_proto 置/清 IMPORT 标记；路径变更后清除 BEST（等待 calc 重新评选） */
+    /* 按 import_proto 置/清 IMPORT 标记；reach 默认置为 valid，路径变更后清除 BEST（等待 calc 重新评选） */
     if (import_proto != 0)
     {
         BIT_SET(route->flags, BGP_ROUTE_FLAG_IMPORT);
@@ -165,6 +165,7 @@ int bgp_rib_reach_one(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_ad
     {
         BIT_CLR(route->flags, BGP_ROUTE_FLAG_IMPORT);
     }
+    BIT_SET(route->flags, BGP_ROUTE_FLAG_VALID);
     BIT_CLR(route->flags, BGP_ROUTE_FLAG_BEST);
 
     if (attr)
@@ -217,6 +218,44 @@ int bgp_rib_unreach_one(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_
     }
 
     return 1;
+}
+
+int bgp_rib_set_route_valid(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_addr_t *source, gboolean valid)
+{
+    if (!rib || !nlri || !source || source->family == 0)
+    {
+        return -1;
+    }
+
+    bgp_rthead_t *head = g_tree_lookup(rib->head_tree, nlri);
+    if (!head)
+    {
+        return 0;
+    }
+
+    bgp_route_node_t *route = route_list_find(head->route_list, source);
+    if (!route)
+    {
+        return 0;
+    }
+
+    gboolean old_valid = BIT_TEST(route->flags, BGP_ROUTE_FLAG_VALID);
+    if (valid)
+    {
+        BIT_SET(route->flags, BGP_ROUTE_FLAG_VALID);
+    }
+    else
+    {
+        BIT_CLR(route->flags, BGP_ROUTE_FLAG_VALID);
+    }
+
+    if (old_valid != valid)
+    {
+        BIT_CLR(route->flags, BGP_ROUTE_FLAG_BEST);
+        route->updated_at_usec = g_get_real_time();
+        return 1;
+    }
+    return 0;
 }
 
 /* ============================================================================
@@ -429,6 +468,11 @@ void bgp_rib_mark_best(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, bgp_route_n
         BIT_CLR(((bgp_route_node_t *)l->data)->flags, BGP_ROUTE_FLAG_BEST);
     }
 
+    if (!BIT_TEST(best_route->flags, BGP_ROUTE_FLAG_VALID))
+    {
+        return;
+    }
+
     /* 置目标路径 BEST 标记，并移至链表首位 */
     BIT_SET(best_route->flags, BGP_ROUTE_FLAG_BEST);
     head->route_list = g_list_remove(head->route_list, best_route);
@@ -446,9 +490,9 @@ const bgp_route_node_t *bgp_rib_find_best(const bgp_rib_t *rib, const bgp_nlri_e
     {
         return NULL;
     }
-    /* 最优路径须同时满足：位于首位 且 具有 BGP_ROUTE_FLAG_BEST 标记 */
+    /* 最优路径须同时满足：位于首位 且 具有 BEST+VALID 标记 */
     const bgp_route_node_t *first = (const bgp_route_node_t *)head->route_list->data;
-    return BIT_TEST(first->flags, BGP_ROUTE_FLAG_BEST) ? first : NULL;
+    return (BIT_TEST(first->flags, BGP_ROUTE_FLAG_BEST) && BIT_TEST(first->flags, BGP_ROUTE_FLAG_VALID)) ? first : NULL;
 }
 
 /** foreach_best 遍历时的上下文 */
@@ -468,8 +512,8 @@ static gboolean foreach_best_tree_cb(gpointer key, gpointer value, gpointer user
     if (head->route_list)
     {
         const bgp_route_node_t *first = (const bgp_route_node_t *)head->route_list->data;
-        /* 同 bgp_rib_find_best：首位 且 有 BEST 标记才触发回调 */
-        if (BIT_TEST(first->flags, BGP_ROUTE_FLAG_BEST))
+        /* 同 bgp_rib_find_best：首位 且 同时有 BEST+VALID 标记才触发回调 */
+        if (BIT_TEST(first->flags, BGP_ROUTE_FLAG_BEST) && BIT_TEST(first->flags, BGP_ROUTE_FLAG_VALID))
         {
             ctx->cb(head, first, ctx->user_data);
         }

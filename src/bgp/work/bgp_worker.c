@@ -22,6 +22,7 @@
 #include "bgp_main.h"
 #include "bgp_pkt.h"
 #include "bgp_protocol.h"
+#include "bgp_relay.h"
 #include "bgp_rib.h"
 #include "bgp_session.h"
 #include "bgp_vrf.h"
@@ -53,7 +54,7 @@ typedef enum bgp_worker_cmd_type
     BGP_WORKER_CMD_TYPE_SHOW_CLI = 1, /**< show CLI 命令派发（CLI_MSG_TYPE/CLI_MSG_TYPE_CONTINUE） */
     BGP_WORKER_CMD_TYPE_SHUTDOWN = 2,
     BGP_WORKER_CMD_TYPE_APPLY = 3,     /**< 跨线程配置应用命令 */
-    BGP_WORKER_CMD_TYPE_ROUTE_MSG = 4, /**< ROUTE_MSG_TYPE_UPDATE/REPORT */
+    BGP_WORKER_CMD_TYPE_ROUTE_MSG = 4, /**< ROUTE_MSG_TYPE_UPDATE/REPORT/NH_NOTIFY */
 } bgp_worker_cmd_type_t;
 
 typedef struct bgp_server_cmd
@@ -289,6 +290,17 @@ static void bgp_worker_dispatch_apply_cmd(bgp_apply_cmd_t *apply)
     }
 }
 
+void bgp_worker_ingest_peer_update(bgp_session_t *session, const bgp_update_result_t *upd,
+                                   bgp_peer_update_ingest_stats_t *stats)
+{
+    bgp_relay_ingest_peer_update(session, upd, stats);
+}
+
+void bgp_worker_flush_peer_routes(uint32_t vrf_id, const net_addr_t *source)
+{
+    bgp_relay_flush_peer_routes(vrf_id, source);
+}
+
 /**
  * @brief 将一条 ROUTE 路由条目导入（或撤销）到 BGP RIB
  * @return 1=已处理，0=被过滤/忽略
@@ -326,11 +338,21 @@ static int bgp_import_route_entry(const route_msg_entry_t *entry)
         return 0;
     }
 
-    bgp_instance_t *inst = (bgp_instance_t *)g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(afi, safi));
-
-    if (!inst || !(inst->import_protos & (1u << entry->protocol)))
+    if ((entry->flags & ROUTE_ENTRY_FLAG_REQUIRE_NH_ITER) != 0)
     {
-        /* 该 AF 未配置 import-route 对应协议，丢弃 */
+        /* 旧版“按路由注册迭代”回推条目，当前 nexthop-only relay 模型不再消费 */
+        return 0;
+    }
+
+    bgp_instance_t *inst = (bgp_instance_t *)g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(afi, safi));
+    if (!inst)
+    {
+        return 0;
+    }
+
+    if (!(inst->import_protos & (1u << entry->protocol)))
+    {
+        /* import-route 路径遵循 import-route 协议开关 */
         return 0;
     }
 
@@ -361,7 +383,7 @@ static int bgp_import_route_entry(const route_msg_entry_t *entry)
     }
     else
     {
-        /* 构建合成 BGP 属性（ORIGIN=INCOMPLETE，AS_PATH 为空） */
+        /* import-route 路径：构建合成 BGP 属性（ORIGIN=INCOMPLETE，AS_PATH 为空） */
         bgp_attr_t attr;
         memset(&attr, 0, sizeof(attr));
         attr.origin = BGP_ORIGIN_INCOMPLETE;
@@ -374,7 +396,6 @@ static int bgp_import_route_entry(const route_msg_entry_t *entry)
         nexthop.global = entry->nexthop_addr;
 
         int rc = bgp_rib_reach_one(inst->rib, &nlri, &src, (uint32_t)entry->protocol, &attr, &nexthop);
-        /* 与对端 UPDATE 处理保持一致：新增/更新都触发 best-path 与发布流程 */
         if (rc >= 0 && inst->calc_queue)
         {
             bgp_calc_queue_push(inst->calc_queue, &nlri);
@@ -553,6 +574,21 @@ static void bgp_worker_dispatch_route_msg(dev_ipc_message_t *msg)
         {
             uint32_t imported = bgp_handle_route_report(msg);
             LOG_INFO("BGP: ROUTE_REPORT entries imported=%u", imported);
+            break;
+        }
+
+        case ROUTE_MSG_TYPE_NH_NOTIFY:
+        {
+            if (!msg->payload || msg->payload_len < sizeof(route_nh_iter_notify_t))
+            {
+                LOG_WARN("BGP: ROUTE_NH_NOTIFY payload too short: %u", msg->payload_len);
+                break;
+            }
+            uint32_t touched = bgp_relay_handle_nh_notify((const route_nh_iter_notify_t *)msg->payload);
+            if (touched > 0)
+            {
+                LOG_DEBUG("BGP: ROUTE_NH_NOTIFY touched=%u", touched);
+            }
             break;
         }
 
@@ -1120,6 +1156,7 @@ void bgp_server_stop_session_conns(bgp_session_t *session)
     bgp_session_cancel_hold(session, g_bgp_local->epoll_fd);
     bgp_conn_close(&session->pri_conn);
     bgp_conn_close(&session->sec_conn);
+    bgp_worker_flush_peer_routes(session->vrf ? session->vrf->vrf_id : BGP_VRF_PUBLIC_ID, &session->neighbor_addr);
     (void)bgp_vrf_purge_session_routes(session->vrf, &session->neighbor_addr);
     bgp_session_reset_negotiated(session);
     session->fsm_state = BGP_FSM_STATE_IDLE;
@@ -1166,6 +1203,8 @@ static void bgp_worker_runtime_cleanup(void)
         bgp_protocol_destroy(g_bgp_local->protocol);
         g_bgp_local->protocol = NULL;
     }
+
+    bgp_relay_cleanup();
 }
 
 static int bgp_worker_channel_init(void)
@@ -1260,6 +1299,8 @@ int bgp_worker_prepare(void)
         bgp_worker_channel_cleanup();
         return ERRCODE_FAIL;
     }
+
+    bgp_relay_init();
 
     return ERRCODE_SUCCESS;
 }

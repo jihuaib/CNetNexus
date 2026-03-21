@@ -13,6 +13,14 @@
 #include "net_addr.h"
 
 // ============================================================================
+// nexthop 递归状态
+// ============================================================================
+
+#define ROUTE_NH_STATE_UNKNOWN 0u
+#define ROUTE_NH_STATE_RESOLVED 1u
+#define ROUTE_NH_STATE_UNRESOLVED 2u
+
+// ============================================================================
 // 复合键类型定义
 // ============================================================================
 
@@ -49,11 +57,17 @@ typedef struct route_path_key
  */
 typedef struct route_path
 {
-    route_path_key_t key;   /**< 内嵌键（GHashTable 键指向 &path->key） */
-    net_addr_t nexthop;     /**< 下一跳地址（二进制） */
-    int32_t metric;         /**< 度量值 */
-    int32_t preference;     /**< 管理距离 */
-    gint64 updated_at_usec; /**< 最近更新时间（g_get_real_time） */
+    route_path_key_t key;  /**< 内嵌键（GHashTable 键指向 &path->key） */
+    net_addr_t nexthop;    /**< 下一跳地址（二进制） */
+    int32_t metric;        /**< 度量值 */
+    int32_t preference;    /**< 管理距离 */
+    uint8_t nh_state;      /**< nexthop 递归状态（ROUTE_NH_STATE_*，仅对 iter_required 路径有效） */
+    uint8_t iter_required; /**< 1=该路径需先完成 nexthop 递归后再回推 */
+    uint8_t iter_exported; /**< iter_required 路径是否已回推为可达 */
+    uint8_t iter_dirty;    /**< iter_required 路径更新后置位，用于触发重新回推 */
+    uint8_t _pad;          /**< 填充对齐 */
+    uint32_t iter_owner_module_id; /**< 注册该迭代路径的 owner module id */
+    gint64 updated_at_usec;        /**< 最近更新时间（g_get_real_time） */
 } route_path_t;
 
 /**

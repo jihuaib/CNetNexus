@@ -1,5 +1,6 @@
 set(ROUTE_SOURCES
     route_main.c
+    route_relay.c
     route_cli.c
     route_rib.c
     route_pub.c

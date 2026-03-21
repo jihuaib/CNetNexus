@@ -21,13 +21,16 @@ typedef struct bgp_instance bgp_instance_t;
 #define BGP_ROUTE_FLAG_BEST (1U << 0)
 /** 路由标记位：本地导入路由（非 BGP 邻居学习，由 import-route 引入） */
 #define BGP_ROUTE_FLAG_IMPORT (1U << 1)
+/** 路由标记位：nexthop 迭代有效（valid） */
+#define BGP_ROUTE_FLAG_VALID (1U << 2)
 
 /**
  * @brief 单条路径（同一 rthead 下可挂多条，按 source 来源地址区分）
  *
  * peer 路由：BGP_ROUTE_FLAG_IMPORT 未置位，source 为邻居 IP。
  * import 路由：BGP_ROUTE_FLAG_IMPORT 置位，source 为来源标识地址。
- * 最优路径：BGP_ROUTE_FLAG_BEST 置位 且 为链表首元素（两者须同时满足）。
+ * 有效路径：BGP_ROUTE_FLAG_VALID 置位。
+ * 最优路径：BGP_ROUTE_FLAG_BEST + BGP_ROUTE_FLAG_VALID 均置位，且为链表首元素。
  */
 typedef struct bgp_route_node
 {
@@ -106,6 +109,16 @@ int bgp_rib_reach_one(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_ad
 int bgp_rib_unreach_one(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_addr_t *source);
 
 /**
+ * @brief 设置一条路径的 valid 状态
+ * @param rib    目标 RIB
+ * @param nlri   NLRI 条目
+ * @param source 路径来源
+ * @param valid  TRUE=有效，FALSE=无效
+ * @return 1=状态有变化, 0=状态未变化/未命中, -1=失败
+ */
+int bgp_rib_set_route_valid(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_addr_t *source, gboolean valid);
+
+/**
  * @brief 将解析后的 UPDATE 应用于 RIB
  */
 void bgp_rib_apply_update(bgp_rib_t *rib, const net_addr_t *source, const bgp_update_result_t *upd,
@@ -164,7 +177,7 @@ void bgp_rib_mark_best(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, bgp_route_n
 /**
  * @brief 查找当前最优路径（只读）
  *
- * 最优路径须同时满足：位于 route_list 首位 且 具有 BGP_ROUTE_FLAG_BEST 标记。
+ * 最优路径须同时满足：位于 route_list 首位，且具有 BGP_ROUTE_FLAG_BEST + BGP_ROUTE_FLAG_VALID 标记。
  *
  * @param rib  目标 RIB
  * @param nlri NLRI 匹配键

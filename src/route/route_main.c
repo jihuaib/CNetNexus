@@ -19,6 +19,7 @@
 #include "route.h"
 #include "route_cli.h"
 #include "route_pub.h"
+#include "route_relay.h"
 
 route_local_t *g_route_local = NULL;
 
@@ -113,17 +114,6 @@ int route_add_and_notify(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, 
         return ret;
     }
 
-    if (!g_route_local->subscribers)
-    {
-        return ret;
-    }
-
-    dev_ipc_context_t *pub_ctx = ctx ? ctx : g_route_local->dev_ipc_ctx;
-    if (!pub_ctx)
-    {
-        return ret;
-    }
-
     const route_head_t *head = route_rib_lookup_head(g_route_local->rib, vrf_id, afi, prefix_addr, prefix_len);
     if (!head)
     {
@@ -132,6 +122,25 @@ int route_add_and_notify(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, 
 
     const route_path_t *path = route_rib_lookup_path(head, protocol, source_addr);
     if (!path)
+    {
+        return ret;
+    }
+
+    /* 普通路径默认不走“迭代回推”通道 */
+    route_path_t *mut = (route_path_t *)path;
+    mut->iter_required = 0u;
+    mut->iter_exported = 0u;
+    mut->iter_dirty = 0u;
+    mut->iter_owner_module_id = 0u;
+    mut->nh_state = ROUTE_NH_STATE_UNKNOWN;
+
+    if (!g_route_local->subscribers)
+    {
+        return ret;
+    }
+
+    dev_ipc_context_t *pub_ctx = ctx ? ctx : g_route_local->dev_ipc_ctx;
+    if (!pub_ctx)
     {
         return ret;
     }
@@ -195,6 +204,9 @@ static void route_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     /* 从 DB 恢复 batch 路由到内存 RIB */
     route_batch_restore_from_db(ctx);
 
+    /* 静态/直连等变化可能影响“迭代路径”可达性，恢复结束后做一次全量重算 */
+    route_recompute_iter_paths(ctx);
+
     LOG_INFO("Route database tables ready");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
@@ -211,6 +223,8 @@ static void route_on_shutdown(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     {
         g_route_local->running = 0;
         g_route_local->dev_ipc_ctx = NULL;
+
+        route_relay_cleanup();
 
         route_cli_cleanup_state();
 
@@ -356,6 +370,7 @@ static void route_on_path_del(const route_head_t *head, const route_path_t *path
     {
         return;
     }
+
     route_pub_notify(notify->ctx, notify->subscribers, head, path, 1);
 }
 
@@ -377,12 +392,14 @@ static void handle_inject(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
                                 entry->protocol, &entry->source_addr, route_on_path_del, &notify);
         LOG_DEBUG("ROUTE_INJECT withdraw: vrf=%u afi=%u pfxlen=%u proto=%u ret=%d", entry->vrf_id, entry->afi,
                   entry->prefix_len, entry->protocol, ret);
+        route_recompute_iter_paths(ctx);
     }
     else
     {
         (void)route_add_and_notify(ctx, entry->vrf_id, entry->afi, &entry->prefix_addr, entry->prefix_len,
                                    entry->protocol, &entry->source_addr, &entry->nexthop_addr, entry->metric,
                                    entry->preference);
+        route_recompute_iter_paths(ctx);
     }
 
     dev_ipc_message_free(msg);
@@ -442,6 +459,12 @@ void route_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
         case ROUTE_MSG_TYPE_INJECT:
             handle_inject(ctx, msg);
+            return;
+        case ROUTE_MSG_TYPE_NH_REGISTER:
+            route_relay_handle_nh_register(ctx, msg);
+            return;
+        case ROUTE_MSG_TYPE_NH_UNREGISTER:
+            route_relay_handle_nh_unregister(ctx, msg);
             return;
 
         default:

@@ -35,6 +35,12 @@ void route_pub_notify(dev_ipc_context_t *ctx, GList *subscribers, const route_he
                       int is_withdraw);
 
 /**
+ * @brief 向指定模块发送单条增量路由更新（用于迭代 owner 回推）
+ */
+void route_pub_notify_module(dev_ipc_context_t *ctx, uint32_t dst_module_id, const route_head_t *head,
+                             const route_path_t *path, int is_withdraw);
+
+/**
  * @brief 将 RIB 快照发送给指定模块（作为 SUBSCRIBE 请求的响应）
  * @param ctx         IPC 上下文
  * @param rib         路由 RIB

@@ -355,6 +355,7 @@ static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         send_resp(msg, "Static route added\r\n");
     }
 
+    route_recompute_iter_paths(g_route_local->dev_ipc_ctx);
     return ERRCODE_SUCCESS;
 }
 
@@ -794,6 +795,7 @@ static int handle_route_batch(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         char buf[128];
         snprintf(buf, sizeof(buf), "Cleared %d batch route(s) for '%s'\r\n", total, name);
         send_resp(msg, buf);
+        route_recompute_iter_paths(g_route_local->dev_ipc_ctx);
         return ERRCODE_SUCCESS;
     }
 
@@ -876,6 +878,7 @@ static int handle_route_batch(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     char buf[128];
     snprintf(buf, sizeof(buf), "Added %d batch %s route(s) for '%s'\r\n", added, is_ipv4 ? "IPv4" : "IPv6", name);
     send_resp(msg, buf);
+    route_recompute_iter_paths(g_route_local->dev_ipc_ctx);
     return ERRCODE_SUCCESS;
 }
 
@@ -912,6 +915,7 @@ void route_batch_restore_from_db(dev_ipc_context_t *ctx)
     }
 
     LOG_INFO("Restored %u batch route group(s) from DB", restored);
+    route_recompute_iter_paths(ctx);
     db_result_free(result);
 }
 

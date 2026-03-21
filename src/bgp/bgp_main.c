@@ -166,6 +166,7 @@ void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         }
         case ROUTE_MSG_TYPE_UPDATE:
         case ROUTE_MSG_TYPE_REPORT:
+        case ROUTE_MSG_TYPE_NH_NOTIFY:
         {
             if (bgp_worker_post_route_message(msg) != 0)
             {

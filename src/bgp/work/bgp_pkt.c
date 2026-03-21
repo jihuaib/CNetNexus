@@ -20,6 +20,7 @@
 #include "bgp_rib.h"
 #include "bgp_session.h"
 #include "bgp_vrf.h"
+#include "bgp_worker.h"
 #include "log.h"
 
 /** BGP 报文 Marker：16 字节全 0xFF */
@@ -842,14 +843,14 @@ int bgp_pkt_on_data(bgp_conn_t *conn)
                 uint32_t parse_flags = BGP_PARSE_FLAG_AS4;
                 if (bgp_update_parse(body, body_len, parse_flags, &upd) == 0 && upd)
                 {
-                    bgp_rib_update_stats_t rib_stats = {0};
-                    bgp_vrf_apply_update(sess->vrf, &sess->neighbor_addr, upd, &rib_stats);
+                    bgp_peer_update_ingest_stats_t ingest_stats = {0};
+                    bgp_worker_ingest_peer_update(sess, upd, &ingest_stats);
 
-                    LOG_INFO(
-                        "BGP: %s UPDATE: afi=%u safi=%u +%u -%u | RIB new=%u upd=%u wd=%u miss=%u heads=%u routes=%u",
-                        _ip, upd->afi, upd->safi, upd->reach_len, upd->unreach_len, rib_stats.reach_new,
-                        rib_stats.reach_update, rib_stats.unreach_removed, rib_stats.unreach_miss,
-                        bgp_vrf_rib_head_count(sess->vrf), bgp_vrf_rib_route_count(sess->vrf));
+                    LOG_INFO("BGP: %s UPDATE: afi=%u safi=%u +%u -%u | route-iter reach(ok=%u fail=%u) "
+                             "unreach(ok=%u fail=%u) heads=%u routes=%u",
+                             _ip, upd->afi, upd->safi, upd->reach_len, upd->unreach_len, ingest_stats.reach_injected,
+                             ingest_stats.reach_failed, ingest_stats.unreach_injected, ingest_stats.unreach_failed,
+                             bgp_vrf_rib_head_count(sess->vrf), bgp_vrf_rib_route_count(sess->vrf));
                     bgp_update_result_free(upd);
                 }
                 else

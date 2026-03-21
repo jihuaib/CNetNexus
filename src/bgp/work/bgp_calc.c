@@ -57,11 +57,11 @@ static uint32_t as_path_hop_count(const char *path)
  */
 static bool route_is_better(const bgp_route_node_t *candidate, const bgp_route_node_t *current)
 {
-    if (!candidate)
+    if (!candidate || !BIT_TEST(candidate->flags, BGP_ROUTE_FLAG_VALID))
     {
         return false;
     }
-    if (!current)
+    if (!current || !BIT_TEST(current->flags, BGP_ROUTE_FLAG_VALID))
     {
         return true;
     }
@@ -153,7 +153,21 @@ void bgp_calc_run_one(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
     }
     if (!best)
     {
-        return; /* 不应发生 */
+        /* 全部为 invalid 路径：撤销该 NLRI 对外可达性 */
+        for (GList *l = ((bgp_rthead_t *)head)->route_list; l; l = l->next)
+        {
+            bgp_route_node_t *route = (bgp_route_node_t *)l->data;
+            if (route)
+            {
+                BIT_CLR(route->flags, BGP_ROUTE_FLAG_BEST);
+            }
+        }
+        bgp_work_send_withdraw_to_all(inst, nlri);
+        char key[BGP_NLRI_KEY_MAX];
+        bgp_nlri_to_str(nlri, key, sizeof(key));
+        LOG_DEBUG("BGP: calc_run_one WITHDRAW(all-invalid) key=%s afi=%u safi=%u", key, (unsigned)inst->afi,
+                  (unsigned)inst->safi);
+        return;
     }
 
     /* 将最优路径移至链表首位 */

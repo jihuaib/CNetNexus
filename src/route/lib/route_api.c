@@ -55,11 +55,55 @@ int route_rpc_add(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const n
     entry.metric = metric;
     entry.preference = preference;
     entry.is_withdraw = 0;
+    entry.flags = 0;
     entry.prefix_addr = *prefix_addr;
     entry.source_addr = *source;
     entry.nexthop_addr = *nexthop;
 
     return route_rpc_inject(ctx, &entry);
+}
+
+static int route_rpc_nh_iter_send(dev_ipc_context_t *ctx, uint32_t msg_type, const route_nh_iter_req_t *req)
+{
+    if (!ctx || !req)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    route_nh_iter_req_t *payload = (route_nh_iter_req_t *)g_memdup2(req, sizeof(route_nh_iter_req_t));
+    if (!payload)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    dev_ipc_message_t *msg = dev_ipc_message_create(msg_type, dev_ipc_get_module_id(ctx), DEV_MODULE_ID_ROUTE, 0,
+                                                    payload, sizeof(route_nh_iter_req_t), g_free);
+    if (!msg)
+    {
+        g_free(payload);
+        return ERRCODE_FAIL;
+    }
+
+    int ret = dev_ipc_send(ctx, DEV_MODULE_ID_ROUTE, msg);
+    dev_ipc_message_free(msg);
+    return (ret == 0) ? ERRCODE_SUCCESS : ERRCODE_FAIL;
+}
+
+int route_rpc_nh_register(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop)
+{
+    if (!nexthop)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    route_nh_iter_req_t req;
+    memset(&req, 0, sizeof(req));
+    req.vrf_id = vrf_id;
+    req.afi = afi;
+    req.safi = ROUTE_SAFI_UNICAST;
+    req.nexthop_addr = *nexthop;
+
+    return route_rpc_nh_iter_send(ctx, ROUTE_MSG_TYPE_NH_REGISTER, &req);
 }
 
 int route_rpc_del(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr,
@@ -80,9 +124,27 @@ int route_rpc_del(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const n
     entry.metric = 0;
     entry.preference = 0;
     entry.is_withdraw = 1;
+    entry.flags = 0;
     entry.prefix_addr = *prefix_addr;
     entry.source_addr = *source;
     entry.nexthop_addr.family = source->family;
 
     return route_rpc_inject(ctx, &entry);
+}
+
+int route_rpc_nh_unregister(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop)
+{
+    if (!nexthop)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    route_nh_iter_req_t req;
+    memset(&req, 0, sizeof(req));
+    req.vrf_id = vrf_id;
+    req.afi = afi;
+    req.safi = ROUTE_SAFI_UNICAST;
+    req.nexthop_addr = *nexthop;
+
+    return route_rpc_nh_iter_send(ctx, ROUTE_MSG_TYPE_NH_UNREGISTER, &req);
 }

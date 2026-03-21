@@ -18,6 +18,7 @@
 #include "bgp_fsm.h"
 #include "bgp_pkt.h"
 #include "bgp_vrf.h"
+#include "bgp_worker.h"
 #include "log.h"
 
 bgp_session_t *bgp_session_create(const net_addr_t *addr, uint32_t remote_as, bgp_vrf_t *vrf)
@@ -198,6 +199,7 @@ void bgp_neighbor_down(bgp_session_t *sess, int epoll_fd)
     /* 步骤 3：关闭所有 TCP 连接，清除该邻居的 RIB 路由 */
     session_conn_close(&sess->pri_conn, epoll_fd);
     session_conn_close(&sess->sec_conn, epoll_fd);
+    bgp_worker_flush_peer_routes(sess->vrf ? sess->vrf->vrf_id : BGP_VRF_PUBLIC_ID, &sess->neighbor_addr);
     (void)bgp_vrf_purge_session_routes(sess->vrf, &sess->neighbor_addr);
 
     /* 步骤 4：重置 OPEN 协商产生的所有参数，确保重连时完整重新协商 */
