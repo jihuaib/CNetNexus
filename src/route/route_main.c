@@ -20,6 +20,7 @@
 #include "route_cli.h"
 #include "route_pub.h"
 #include "route_relay.h"
+#include "route_static.h"
 
 route_local_t *g_route_local = NULL;
 
@@ -171,7 +172,7 @@ static void route_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         LOG_WARN("Route table creation failed: route_batch");
     }
 
-    /* 从 DB 恢复静态路由到内存 RIB */
+    /* 从 DB 恢复静态路由到候选表（迭代可达时自动写入 RIB） */
     db_result_t *result = NULL;
     ret = db_rpc_query(ctx, "route_static", NULL, 0, NULL, &result);
     if (ret == ERRCODE_SUCCESS && result)
@@ -187,17 +188,16 @@ static void route_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             const char *prefix = db_row_get_text(row, "prefix", "");
             const char *nexthop = db_row_get_text(row, "nexthop", "");
 
-            /* DB 边界：字符串→二进制，再写入内存 RIB */
+            /* DB 边界：字符串→二进制，写入候选静态路由表（nexthop 可达时自动写 RIB） */
             net_addr_t prefix_addr, nexthop_addr;
             if (net_addr_from_str(prefix, &prefix_addr) != 0 || net_addr_from_str(nexthop, &nexthop_addr) != 0)
             {
                 LOG_WARN("Route DB restore: invalid address prefix='%s' nexthop='%s'", prefix, nexthop);
                 continue;
             }
-            (void)route_add_and_notify(ctx, vrf_id, afi, &prefix_addr, prefix_len, ROUTE_PROTOCOL_STATIC, &nexthop_addr,
-                                       &nexthop_addr, metric, preference);
+            route_static_add(vrf_id, afi, &prefix_addr, prefix_len, &nexthop_addr, metric, preference);
         }
-        LOG_INFO("Restored %u static routes from DB to RIB", result->num_rows);
+        LOG_INFO("Restored %u static routes from DB to candidate table", result->num_rows);
         db_result_free(result);
     }
 
@@ -223,6 +223,8 @@ static void route_on_shutdown(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     {
         g_route_local->running = 0;
         g_route_local->dev_ipc_ctx = NULL;
+
+        route_static_cleanup();
 
         route_relay_cleanup();
 
@@ -506,6 +508,8 @@ int route_module_init(void)
         LOG_ERROR("Failed to create RIB");
         return -1;
     }
+
+    route_static_init();
 
     return 0;
 }

@@ -11,6 +11,7 @@
 #include "net_addr.h"
 #include "route.h"
 #include "route_main.h"
+#include "route_static.h"
 
 #define ROUTE_ITER_NH_MAX_DEPTH 8u
 
@@ -336,6 +337,12 @@ static void route_relay_notify_state(dev_ipc_context_t *ctx, const route_nh_watc
         return;
     }
 
+    /* 自模块注册的 nexthop（静态路由）：由 route_static_recompute 在进程内直接处理，无需发 IPC */
+    if (watch->key.owner_module_id == DEV_MODULE_ID_ROUTE)
+    {
+        return;
+    }
+
     dev_ipc_context_t *send_ctx = ctx ? ctx : (g_route_local ? g_route_local->dev_ipc_ctx : NULL);
     if (!send_ctx)
     {
@@ -561,6 +568,9 @@ void route_recompute_iter_paths(dev_ipc_context_t *ctx)
         LOG_DEBUG("Route nh-watch recompute: total=%u resolved=%u up=%u down=%u", rctx.total, rctx.resolved,
                   rctx.announced, rctx.withdrawn);
     }
+
+    /* 同步重算候选静态路由的可达性（路由变化可能影响静态路由 nexthop 迭代结果） */
+    route_static_recompute(rctx.ctx);
 }
 
 void route_relay_cleanup(void)
@@ -571,6 +581,70 @@ void route_relay_cleanup(void)
     }
     g_hash_table_destroy(g_route_nh_watch_table);
     g_route_nh_watch_table = NULL;
+}
+
+int route_relay_nh_is_resolved(uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop_addr)
+{
+    return route_nh_is_resolved(g_route_local ? g_route_local->rib : NULL, vrf_id, afi, nexthop_addr);
+}
+
+int route_relay_register_direct(uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop_addr, uint32_t owner_module_id)
+{
+    if (!nexthop_addr)
+    {
+        return 0;
+    }
+
+    route_nh_watch_table_ensure();
+    if (!g_route_nh_watch_table)
+    {
+        return 0;
+    }
+
+    route_nh_watch_key_t key;
+    memset(&key, 0, sizeof(key));
+    key.owner_module_id = owner_module_id;
+    key.vrf_id = vrf_id;
+    key.afi = afi;
+    key.safi = ROUTE_SAFI_UNICAST;
+    key.nexthop_addr = *nexthop_addr;
+
+    route_nh_watch_t *watch = (route_nh_watch_t *)g_hash_table_lookup(g_route_nh_watch_table, &key);
+    if (!watch)
+    {
+        watch = (route_nh_watch_t *)g_malloc0(sizeof(*watch));
+        if (!watch)
+        {
+            return 0;
+        }
+        watch->key = key;
+        g_hash_table_insert(g_route_nh_watch_table, &watch->key, watch);
+    }
+
+    watch->resolved =
+        route_nh_is_resolved(g_route_local ? g_route_local->rib : NULL, vrf_id, afi, nexthop_addr) ? 1u : 0u;
+    watch->updated_at_usec = g_get_real_time();
+
+    return (int)watch->resolved;
+}
+
+void route_relay_unregister_direct(uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop_addr,
+                                   uint32_t owner_module_id)
+{
+    if (!g_route_nh_watch_table || !nexthop_addr)
+    {
+        return;
+    }
+
+    route_nh_watch_key_t key;
+    memset(&key, 0, sizeof(key));
+    key.owner_module_id = owner_module_id;
+    key.vrf_id = vrf_id;
+    key.afi = afi;
+    key.safi = ROUTE_SAFI_UNICAST;
+    key.nexthop_addr = *nexthop_addr;
+
+    g_hash_table_remove(g_route_nh_watch_table, &key);
 }
 
 // ============================================================================
@@ -623,8 +697,8 @@ void route_relay_show(GString *buf, uint32_t module_filter, int has_filter)
     }
 
     g_string_append_printf(buf,
-                           "\r\n%-12s  %4s  %-4s  %-7s  %-20s  %s\r\n"
-                           "------------  ----  ----  -------  --------------------  --------\r\n",
+                           "\r\n%-10s  %4s  %-4s  %-7s  %-20s  %s\r\n"
+                           "----------  ----  ----  -------  --------------------  --------\r\n",
                            "Module", "VRF", "AFI", "SAFI", "Nexthop", "Resolved");
 
     if (!g_route_nh_watch_table || g_hash_table_size(g_route_nh_watch_table) == 0)

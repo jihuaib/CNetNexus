@@ -22,6 +22,7 @@
 #include "route_pub.h"
 #include "route_relay.h"
 #include "route_rib.h"
+#include "route_static.h"
 
 // ============================================================================
 // 辅助函数
@@ -245,8 +246,6 @@ static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         return ERRCODE_FAIL;
     }
 
-    del_notify_ctx_t notify_ctx = {g_route_local->dev_ipc_ctx, g_route_local->subscribers};
-
     if (is_no)
     {
         if (has_nexthop)
@@ -258,9 +257,8 @@ static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                 return ERRCODE_FAIL;
             }
 
-            /* 删除指定来源（nexthop）的路径 */
-            int ret = route_rib_del(g_route_local->rib, ROUTE_VRF_DEFAULT, afi, &prefix_addr, prefix_len,
-                                    ROUTE_PROTOCOL_STATIC, &nexthop_addr, on_path_del, &notify_ctx);
+            /* 从候选表删除（同步撤销 RIB + 通知订阅者） */
+            int ret = route_static_del(ROUTE_VRF_DEFAULT, afi, &prefix_addr, prefix_len, &nexthop_addr);
 
             /* 同步删除 DB（DB 边界仍用字符串） */
             db_condition_t conds[5];
@@ -283,9 +281,8 @@ static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         }
         else
         {
-            /* 删除该前缀下所有静态路径 */
-            int ret = route_rib_del_proto_for_prefix(g_route_local->rib, ROUTE_VRF_DEFAULT, afi, &prefix_addr,
-                                                     prefix_len, ROUTE_PROTOCOL_STATIC, on_path_del, &notify_ctx);
+            /* 删除该前缀下所有候选静态路由（同步撤销 RIB + 通知订阅者） */
+            int ret = route_static_del_prefix(ROUTE_VRF_DEFAULT, afi, &prefix_addr, prefix_len);
 
             db_condition_t conds[4];
             uint32_t nc = 0;
@@ -323,9 +320,8 @@ static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         int32_t pref = ROUTE_ADMIN_DIST_STATIC;
         int32_t m = has_metric ? (int32_t)metric : 0;
 
-        /* 更新 RIB + 通知订阅者（统一入口） */
-        (void)route_add_and_notify(g_route_local->dev_ipc_ctx, ROUTE_VRF_DEFAULT, afi, &prefix_addr, prefix_len,
-                                   ROUTE_PROTOCOL_STATIC, &nexthop_addr, &nexthop_addr, m, pref);
+        /* 写入候选表（nexthop 可达时自动写 RIB + 通知订阅者） */
+        route_static_add(ROUTE_VRF_DEFAULT, afi, &prefix_addr, prefix_len, &nexthop_addr, m, pref);
 
         /* 写入 DB（upsert：存在则更新；DB 边界仍用字符串） */
         db_record_t *rec = db_record_new();
@@ -931,6 +927,7 @@ static int handle_show_relay(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
     uint32_t module_filter = 0;
     int has_filter = 0;
+    int show_static = 0;
 
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
@@ -948,6 +945,10 @@ static int handle_show_relay(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                 module_filter = DEV_MODULE_ID_BGP;
                 has_filter = 1;
                 break;
+            case 2:
+                /* static 关键字：显示候选静态路由的 nexthop 迭代状态 */
+                show_static = 1;
+                break;
             default:
                 break;
         }
@@ -961,7 +962,38 @@ static int handle_show_relay(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         return ERRCODE_FAIL;
     }
 
-    route_relay_show(buf, module_filter, has_filter);
+    if (show_static)
+    {
+        route_static_show_relay(buf);
+    }
+    else
+    {
+        route_relay_show(buf, module_filter, has_filter);
+    }
+    return route_send_chunked_response(msg, buf);
+}
+
+// ============================================================================
+// Group 5: show route static 命令（候选静态路由表）
+// ============================================================================
+
+static int handle_show_static(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    /* 无参数，消费掉所有 TLV 条目 */
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        cli_tlv_entry_free(&entry);
+    }
+
+    GString *buf = g_string_new("");
+    if (!buf)
+    {
+        send_resp(msg, "Error: Out of memory\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    route_static_show(buf);
     return route_send_chunked_response(msg, buf);
 }
 
@@ -1123,6 +1155,9 @@ int route_cli_handle_message(dev_ipc_message_t *msg)
             break;
         case ROUTE_CLI_GROUP_ID_RELAY_SHOW:
             result = handle_show_relay(msg, &parser);
+            break;
+        case ROUTE_CLI_GROUP_ID_STATIC_SHOW:
+            result = handle_show_static(msg, &parser);
             break;
         default:
             LOG_WARN("Unknown group_id: %u", parser.group_id);

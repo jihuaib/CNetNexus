@@ -297,8 +297,37 @@
         </group>
 
         <!-- ================================================================
+             Group 5: show route static 命令（候选静态路由表）
+             无 cfg-id 参数，仅固定关键字
+             ================================================================ -->
+        <group group-id="5">
+            <elements>
+                <element type="keyword">
+                    <name>show</name>
+                    <description>Display system information</description>
+                </element>
+                <element type="keyword">
+                    <name>route</name>
+                    <description>Route module</description>
+                </element>
+                <element type="keyword">
+                    <name>static</name>
+                    <description>Static route candidate table</description>
+                </element>
+            </elements>
+
+            <commands>
+                <!-- show route static -->
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>global</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- ================================================================
              Group 4: show route relay 命令
-             cfg-id: 1=bgp（按 BGP 模块过滤）
+             cfg-id: 1=bgp（按 BGP 模块过滤），2=static（按静态路由过滤）
              ================================================================ -->
         <group group-id="4">
             <elements>
@@ -318,6 +347,10 @@
                     <name>bgp</name>
                     <description>Filter by BGP module</description>
                 </element>
+                <element cfg-id="2" type="keyword">
+                    <name>static</name>
+                    <description>Show static route nexthop relay status (candidate table)</description>
+                </element>
             </elements>
 
             <commands>
@@ -329,6 +362,11 @@
                 <!-- show route relay bgp -->
                 <command>
                     <expression>1 2 3 4</expression>
+                    <views>global</views>
+                </command>
+                <!-- show route relay static -->
+                <command>
+                    <expression>1 2 3 5</expression>
                     <views>global</views>
                 </command>
             </commands>
