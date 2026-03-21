@@ -103,7 +103,8 @@ RUN find /build/src -type d -name resources | while read d; do \
         cp "$d"/* /opt/netnexus/resources/"$mod"/; \
     done && rm -rf /build
 
-RUN chmod +x /opt/netnexus/bin/* /opt/netnexus/scripts/*.sh
+RUN chmod +x /opt/netnexus/bin/* /opt/netnexus/scripts/*.sh && \
+    echo "${VERSION}" > /opt/netnexus/VERSION
 
 ENV LD_LIBRARY_PATH=/opt/netnexus/lib
 ENV NN_WORK_DIR=/opt/netnexus

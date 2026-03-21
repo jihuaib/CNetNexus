@@ -149,6 +149,31 @@
             </commands>
         </group>
 
+        <!-- terminal length 0 -->
+        <group group-id="9">
+            <elements>
+                <element type="keyword">
+                    <name>terminal</name>
+                    <description>Terminal session options</description>
+                </element>
+                <element type="keyword">
+                    <name>length</name>
+                    <description>Set terminal output length</description>
+                </element>
+                <element type="keyword">
+                    <name>0</name>
+                    <description>Disable paging for current session</description>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>global</views>
+                </command>
+            </commands>
+        </group>
+
         <!-- bash -->
         <group group-id="7">
             <elements>

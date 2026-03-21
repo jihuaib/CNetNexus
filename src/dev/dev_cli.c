@@ -97,13 +97,6 @@ static int file_read_first_line(const char *path, char *out, size_t out_size)
 
 static int resolve_version_file(char *path, size_t path_size)
 {
-    const char *env_version_file = getenv("NETNEXUS_VERSION_FILE");
-    if (env_version_file && env_version_file[0] != '\0')
-    {
-        strlcpy(path, env_version_file, path_size);
-        return ERRCODE_SUCCESS;
-    }
-
     char *p = NULL;
 
     /* 生产环境 1: 环境变量 NN_WORK_DIR */

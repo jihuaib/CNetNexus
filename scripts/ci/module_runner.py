@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import difflib
 import html
 import importlib.util
 import io
@@ -29,11 +30,14 @@ if str(CI_DIR) not in sys.path:
     sys.path.insert(0, str(CI_DIR))
 
 from module_api import load_global_top  # noqa: E402
-from top_runner import TopologyRuntime, load_topology, sanitize_name  # noqa: E402
+from top_runner import PAGER_DISABLE_CMD, TopologyRuntime, load_topology, sanitize_name  # noqa: E402
 
 
 MAX_HTML_OUTPUT_CHARS = 200000
 TOP_CANDIDATES = ("top.yaml", "top.yml", "top.json")
+SHOW_CURRENT_CONFIG_CMD = "show current-configuration"
+PROMPT_LINE_RE = re.compile(r"^\s*<NetNexus[^>]*>.*$")
+MAX_CONFIG_DIFF_LINES = 300
 STEP_MARKER_RE = re.compile(r"^(?:\[[^\]]+\]\s*)?\s*=+\s*STEP:\s*(.*?)\s*=+\s*$")
 FAIL_STEP_HINTS = (
     "===== CHECK FAIL:",
@@ -211,6 +215,86 @@ def ensure_device_modules_ready(rt: TopologyRuntime, top: dict[str, Any]) -> Non
         print(f"[{dev}] modules READY/up OK ({len(rows)} modules)")
 
 
+def ensure_cli_pager_disabled(rt: TopologyRuntime, top: dict[str, Any]) -> None:
+    devices = top.get("devices", {})
+    if not isinstance(devices, dict) or not devices:
+        raise RuntimeError("top.devices must be a non-empty mapping for pager precheck")
+
+    print("===== STEP: Disable CLI pager =====")
+    rt.disable_pager_for_all_sessions()
+    for dev in sorted(devices.keys()):
+        print(f"[{dev}] pager disabled via '{PAGER_DISABLE_CMD}'")
+
+
+def normalize_show_current_config(raw: str) -> str:
+    lines: list[str] = []
+    for raw_line in raw.replace("\r", "").splitlines():
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        if stripped == "--More--":
+            continue
+        if stripped == SHOW_CURRENT_CONFIG_CMD:
+            continue
+        if PROMPT_LINE_RE.match(stripped):
+            continue
+        lines.append(raw_line.rstrip())
+    return "\n".join(lines).strip()
+
+
+def collect_show_current_config(rt: TopologyRuntime, top: dict[str, Any], *, stage: str) -> dict[str, str]:
+    devices = top.get("devices", {})
+    if not isinstance(devices, dict) or not devices:
+        raise RuntimeError(f"top.devices must be a non-empty mapping for '{stage}' config snapshot")
+
+    print(f"===== STEP: Snapshot running config ({stage}) =====")
+    timeout = max(30, rt.cmd_timeout * 3)
+    snapshots: dict[str, str] = {}
+    for dev in sorted(devices.keys()):
+        out = rt.exec_cmd(dev, SHOW_CURRENT_CONFIG_CMD, strict=False, timeout=timeout)
+        normalized = normalize_show_current_config(out)
+        snapshots[dev] = normalized
+        print(f"[{dev}] collected '{SHOW_CURRENT_CONFIG_CMD}' ({len(normalized.splitlines())} lines)")
+    return snapshots
+
+
+def diff_show_current_config(before: dict[str, str], after: dict[str, str]) -> dict[str, str]:
+    drifts: dict[str, str] = {}
+    for dev in sorted(set(before.keys()) | set(after.keys())):
+        old = before.get(dev, "")
+        new = after.get(dev, "")
+        if old == new:
+            continue
+
+        diff_lines = list(
+            difflib.unified_diff(
+                old.splitlines(),
+                new.splitlines(),
+                fromfile=f"{dev}:before",
+                tofile=f"{dev}:after",
+                lineterm="",
+            )
+        )
+        if len(diff_lines) > MAX_CONFIG_DIFF_LINES:
+            omitted = len(diff_lines) - MAX_CONFIG_DIFF_LINES
+            diff_lines = diff_lines[:MAX_CONFIG_DIFF_LINES] + [f"... ({omitted} more diff lines omitted)"]
+        drifts[dev] = "\n".join(diff_lines) if diff_lines else "(configuration changed)"
+    return drifts
+
+
+def report_config_drift(drifts: dict[str, str]) -> None:
+    if not drifts:
+        print("===== STEP: Verify config cleanup =====")
+        print("No configuration drift detected after check script.")
+        return
+
+    print("===== WARNING: Config cleanup check =====", file=sys.stderr)
+    print("Detected config drift after script; 疑似未清理本次脚本配置。", file=sys.stderr)
+    for dev in sorted(drifts.keys()):
+        print(f"----- {dev} config diff -----", file=sys.stderr)
+        print(drifts[dev], file=sys.stderr)
+
+
 def run_check(script: Path, rt: TopologyRuntime, top: dict[str, Any]) -> CheckResult:
     command = ["run(rt, top)"]
     started = time.time()
@@ -227,8 +311,24 @@ def run_check(script: Path, rt: TopologyRuntime, top: dict[str, Any]) -> CheckRe
         with contextlib.redirect_stdout(tee_out), contextlib.redirect_stderr(tee_err):
             print(f"===== RUN CHECK: {script} =====")
             load_global_top(top)
+            ensure_cli_pager_disabled(rt, top)
             ensure_device_modules_ready(rt, top)
-            run_fn(rt, top)
+
+            before_cfg = collect_show_current_config(rt, top, stage="before")
+            run_failed = False
+            try:
+                run_fn(rt, top)
+            except Exception:
+                run_failed = True
+                raise
+            finally:
+                try:
+                    after_cfg = collect_show_current_config(rt, top, stage="after")
+                    report_config_drift(diff_show_current_config(before_cfg, after_cfg))
+                except Exception as cfg_exc:
+                    print(f"WARNING: failed to run config cleanup check: {cfg_exc}", file=sys.stderr)
+                    if not run_failed:
+                        raise
             print(f"===== CHECK PASS: {script} =====")
     except Exception:
         rc = 1
@@ -446,7 +546,7 @@ def render_step_blocks(steps: list[tuple[str, str]], open_all: bool) -> str:
 
 
 def write_check_html(path: Path, result: CheckResult, *, index: int) -> None:
-    cls = "pass" if result.returncode == 0 else "fail"
+    badge_cls = "status-badge-pass" if result.returncode == 0 else "status-badge-fail"
     case_name = html.escape(str(result.case_dir))
     script_name = html.escape(str(result.script))
     command = html.escape(" ".join(shlex.quote(part) for part in result.command))
@@ -466,39 +566,150 @@ def write_check_html(path: Path, result: CheckResult, *, index: int) -> None:
   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
   <title>CI Check Detail #{index}</title>
   <style>
-    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 20px; color: #111; }}
-    h1 {{ margin: 0.4em 0; }}
-    .pass {{ color: #087443; font-weight: 700; }}
-    .fail {{ color: #b42318; font-weight: 700; }}
-    .meta {{ color: #444; }}
-    pre {{ background: #0b1020; color: #f4f7ff; padding: 12px; overflow: auto; border-radius: 6px; }}
-    .trunc {{ color: #7a3e00; font-weight: 600; }}
-    code {{ background: #f0f2f5; padding: 1px 4px; border-radius: 4px; }}
-    details {{ margin: 8px 0; }}
-    details > summary {{ cursor: pointer; font-weight: 600; }}
+    :root {{
+      --bg0: #f2f6ff;
+      --bg1: #eaf5f2;
+      --panel: #ffffff;
+      --line: #d7e2ea;
+      --text: #0f172a;
+      --muted: #4b5563;
+      --ok: #12754b;
+      --ok-bg: #e9f8f0;
+      --bad: #b42318;
+      --bad-bg: #fdeceb;
+      --mono-bg: #0f172a;
+      --mono-fg: #e2e8f0;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+      color: var(--text);
+      background: radial-gradient(1400px 700px at 0% 0%, var(--bg0), var(--bg1));
+      padding: 18px;
+    }}
+    .wrap {{ max-width: 1100px; margin: 0 auto; }}
+    .top-link {{ margin-bottom: 10px; }}
+    .top-link a {{
+      color: #0f3d91;
+      text-decoration: none;
+      font-weight: 600;
+      border-bottom: 1px dashed #7ea5e0;
+    }}
+    .card {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: 0 8px 28px rgba(15, 23, 42, 0.08);
+      padding: 16px 18px;
+      margin-bottom: 14px;
+    }}
+    .title-row {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }}
+    h1 {{ margin: 0; font-size: 24px; line-height: 1.3; }}
+    .meta-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 8px 14px;
+      margin-top: 12px;
+      font-size: 14px;
+    }}
+    .meta-item {{ color: var(--muted); }}
+    .meta-item b {{ color: var(--text); }}
+    .trunc {{
+      color: #8a4b00;
+      background: #fff3df;
+      border: 1px solid #f7d8a6;
+      padding: 10px 12px;
+      border-radius: 10px;
+      font-weight: 600;
+    }}
+    .status-badge-pass, .status-badge-fail {{
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+    }}
+    .status-badge-pass {{ color: var(--ok); background: var(--ok-bg); border: 1px solid #a7dec3; }}
+    .status-badge-fail {{ color: var(--bad); background: var(--bad-bg); border: 1px solid #f2b3af; }}
+    code {{
+      background: #eef3fb;
+      border: 1px solid #d6e1f0;
+      padding: 2px 6px;
+      border-radius: 6px;
+      font-size: 12px;
+      word-break: break-all;
+    }}
+    details {{
+      margin: 10px 0;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+      overflow: hidden;
+    }}
+    details > summary {{
+      cursor: pointer;
+      font-weight: 700;
+      padding: 10px 12px;
+      background: #f7fbff;
+    }}
     .script-output > summary {{ font-size: 15px; }}
-    .step {{ margin-left: 8px; padding-left: 8px; border-left: 3px solid #cfd4dc; }}
-    .step-pass {{ border-left-color: #087443; }}
-    .step-fail {{ border-left-color: #b42318; }}
-    .step-summary-pass {{ color: #087443; }}
-    .step-summary-fail {{ color: #b42318; }}
+    .step {{
+      margin: 10px;
+      border-left: 4px solid #cdd9e6;
+      border-radius: 8px;
+    }}
+    .step-pass {{ border-left-color: var(--ok); }}
+    .step-fail {{ border-left-color: var(--bad); }}
+    .step-summary-pass {{ color: var(--ok); }}
+    .step-summary-fail {{ color: var(--bad); }}
+    pre {{
+      margin: 0;
+      padding: 12px;
+      background: var(--mono-bg);
+      color: var(--mono-fg);
+      overflow: auto;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      font-size: 12px;
+      line-height: 1.5;
+    }}
+    @media (max-width: 680px) {{
+      body {{ padding: 10px; }}
+      .card {{ padding: 12px; border-radius: 12px; }}
+      h1 {{ font-size: 19px; }}
+    }}
   </style>
 </head>
 <body>
-  <p><a href=\"../report.html\">Back to Summary</a></p>
-  <h1>#{index} {script_name} - <span class=\"{cls}\">{result.status}</span></h1>
-  <p class=\"meta\">
-    <b>Case:</b> <code>{case_name}</code><br>
-    <b>Command:</b> <code>{command}</code><br>
-    <b>Start (UTC):</b> {html.escape(format_timestamp(result.started_at))}<br>
-    <b>End (UTC):</b> {html.escape(format_timestamp(result.ended_at))}<br>
-    <b>Duration:</b> {result.duration_sec:.2f}s
-  </p>
-  {trunc_note}
-  <details class='script-output' open>
-    <summary>Execution Output ({len(steps)} steps)</summary>
-    {step_blocks}
-  </details>
+  <div class=\"wrap\">
+    <p class=\"top-link\"><a href=\"../report.html\">Back to Summary</a></p>
+    <section class=\"card\">
+      <div class=\"title-row\">
+        <h1>#{index} {script_name}</h1>
+        <span class=\"{badge_cls}\">{result.status}</span>
+      </div>
+      <div class=\"meta-grid\">
+        <div class=\"meta-item\"><b>Case:</b> <code>{case_name}</code></div>
+        <div class=\"meta-item\"><b>Command:</b> <code>{command}</code></div>
+        <div class=\"meta-item\"><b>Start (UTC):</b> {html.escape(format_timestamp(result.started_at))}</div>
+        <div class=\"meta-item\"><b>End (UTC):</b> {html.escape(format_timestamp(result.ended_at))}</div>
+        <div class=\"meta-item\"><b>Duration:</b> {result.duration_sec:.2f}s</div>
+      </div>
+    </section>
+    {trunc_note}
+    <section class=\"card\">
+      <details class='script-output' open>
+        <summary>Execution Output ({len(steps)} steps)</summary>
+        {step_blocks}
+      </details>
+    </section>
+  </div>
 </body>
 </html>
 """
@@ -540,6 +751,8 @@ def write_html_report(
     passed = sum(1 for r in results if r.returncode == 0)
     failed = sum(1 for r in results if r.returncode != 0)
     total = len(results)
+    duration_total = ended_at - started_at
+    pass_rate = (passed / total * 100.0) if total > 0 else 0.0
 
     rows: list[str] = []
     for idx, (result, check_html_relpath) in enumerate(zip(results, check_html_relpaths), start=1):
@@ -548,17 +761,18 @@ def write_html_report(
         script_name = html.escape(str(result.script))
         link = html.escape(check_html_relpath)
         script_link = f"<a href=\"{link}\">{script_name}</a>"
+        status_badge = f"<span class='status-badge status-{cls}'>{result.status}</span>"
 
         rows.append(
             "".join(
                 [
                     "<tr>",
-                    f"<td>{idx}</td>",
+                    f"<td class='mono'>{idx}</td>",
                     f"<td>{case_name}</td>",
-                    f"<td>{script_link}</td>",
-                    f"<td class='{cls}'>{result.status}</td>",
-                    f"<td>{result.returncode}</td>",
-                    f"<td>{result.duration_sec:.2f}</td>",
+                    f"<td class='script'>{script_link}</td>",
+                    f"<td>{status_badge}</td>",
+                    f"<td class='mono'>{result.returncode}</td>",
+                    f"<td class='mono'>{result.duration_sec:.2f}</td>",
                     "</tr>",
                 ]
             )
@@ -571,39 +785,142 @@ def write_html_report(
   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
   <title>CI Module Report</title>
   <style>
-    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 20px; color: #111; }}
-    h1, h2 {{ margin: 0.4em 0; }}
-    table {{ border-collapse: collapse; width: 100%; margin: 16px 0; }}
-    th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
-    th {{ background: #f4f4f4; }}
-    .pass {{ color: #087443; font-weight: 700; }}
-    .fail {{ color: #b42318; font-weight: 700; }}
-    .meta {{ color: #444; }}
-    code {{ background: #f0f2f5; padding: 1px 4px; border-radius: 4px; }}
+    :root {{
+      --bg0: #f1f5ff;
+      --bg1: #ecf7f2;
+      --panel: #ffffff;
+      --line: #d8e1ea;
+      --text: #0f172a;
+      --muted: #4b5563;
+      --ok: #12754b;
+      --ok-bg: #e9f8f0;
+      --bad: #b42318;
+      --bad-bg: #fdeceb;
+      --shadow: 0 8px 26px rgba(15, 23, 42, 0.08);
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+      color: var(--text);
+      background: radial-gradient(1400px 700px at 0% 0%, var(--bg0), var(--bg1));
+      padding: 18px;
+    }}
+    .wrap {{ max-width: 1200px; margin: 0 auto; }}
+    .hero {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+      padding: 18px;
+      margin-bottom: 14px;
+    }}
+    h1 {{ margin: 0 0 8px 0; font-size: 26px; }}
+    .sub {{ color: var(--muted); font-size: 14px; line-height: 1.6; }}
+    .stats {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 10px;
+      margin-top: 12px;
+    }}
+    .stat {{
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fbfdff;
+      padding: 10px 12px;
+    }}
+    .stat .label {{ color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }}
+    .stat .value {{ font-size: 22px; font-weight: 700; margin-top: 2px; }}
+    .pass-val {{ color: var(--ok); }}
+    .fail-val {{ color: var(--bad); }}
+    .table-card {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }}
+    .table-scroll {{ overflow-x: auto; }}
+    table {{ border-collapse: collapse; width: 100%; min-width: 720px; }}
+    thead th {{
+      text-align: left;
+      padding: 12px;
+      background: #f6faff;
+      border-bottom: 1px solid var(--line);
+      font-size: 13px;
+      color: #244268;
+    }}
+    tbody td {{
+      padding: 11px 12px;
+      border-bottom: 1px solid #edf2f7;
+      vertical-align: top;
+      font-size: 14px;
+    }}
+    tbody tr:nth-child(even) {{ background: #fbfdff; }}
+    tbody tr:hover {{ background: #f4f9ff; }}
+    .mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }}
+    .script a {{
+      color: #0f3d91;
+      text-decoration: none;
+      border-bottom: 1px dashed #9ab7e8;
+      font-weight: 600;
+    }}
+    .script a:hover {{ color: #0b2e6e; }}
+    .status-badge {{
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+    }}
+    .status-pass {{ color: var(--ok); background: var(--ok-bg); border: 1px solid #a7dec3; }}
+    .status-fail {{ color: var(--bad); background: var(--bad-bg); border: 1px solid #f2b3af; }}
+    code {{
+      background: #eef3fb;
+      border: 1px solid #d6e1f0;
+      padding: 1px 6px;
+      border-radius: 6px;
+      font-size: 12px;
+    }}
+    @media (max-width: 760px) {{
+      body {{ padding: 10px; }}
+      .hero, .table-card {{ border-radius: 12px; }}
+      h1 {{ font-size: 22px; }}
+    }}
   </style>
 </head>
 <body>
-  <h1>CI Module Execution Report</h1>
-  <p class=\"meta\">
-    Started: {html.escape(format_timestamp(started_at))} UTC<br>
-    Ended: {html.escape(format_timestamp(ended_at))} UTC<br>
-    Duration: {ended_at - started_at:.2f}s
-  </p>
-  <p>
-    Total: <b>{total}</b> |
-    Passed: <b class=\"pass\">{passed}</b> |
-    Failed: <b class=\"fail\">{failed}</b>
-  </p>
-  <p class=\"meta\">Per-script HTML files are under <code>checks/</code>.</p>
+  <div class=\"wrap\">
+    <section class=\"hero\">
+      <h1>CI Module Execution Report</h1>
+      <p class=\"sub\">
+        Started: {html.escape(format_timestamp(started_at))} UTC<br>
+        Ended: {html.escape(format_timestamp(ended_at))} UTC<br>
+        Artifacts: <code>checks/</code> detail pages + <code>logs/</code> raw logs
+      </p>
+      <div class=\"stats\">
+        <div class=\"stat\"><div class=\"label\">Total</div><div class=\"value\">{total}</div></div>
+        <div class=\"stat\"><div class=\"label\">Passed</div><div class=\"value pass-val\">{passed}</div></div>
+        <div class=\"stat\"><div class=\"label\">Failed</div><div class=\"value fail-val\">{failed}</div></div>
+        <div class=\"stat\"><div class=\"label\">Pass Rate</div><div class=\"value\">{pass_rate:.1f}%</div></div>
+        <div class=\"stat\"><div class=\"label\">Duration</div><div class=\"value\">{duration_total:.2f}s</div></div>
+      </div>
+    </section>
 
-  <table>
-    <thead>
-      <tr><th>#</th><th>Case</th><th>Script Detail</th><th>Status</th><th>RC</th><th>Duration(s)</th></tr>
-    </thead>
-    <tbody>
-      {''.join(rows)}
-    </tbody>
-  </table>
+    <section class=\"table-card\">
+      <div class=\"table-scroll\">
+        <table>
+          <thead>
+            <tr><th>#</th><th>Case</th><th>Script Detail</th><th>Status</th><th>RC</th><th>Duration(s)</th></tr>
+          </thead>
+          <tbody>
+            {''.join(rows)}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
 </body>
 </html>
 """

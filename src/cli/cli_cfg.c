@@ -706,6 +706,21 @@ static void handle_show_context(cli_session_t *session)
 }
 
 /**
+ * @brief terminal length 0 (group_id=9)：关闭当前会话分页输出
+ */
+static void handle_terminal_length_zero(cli_session_t *session)
+{
+    if (!session)
+    {
+        return;
+    }
+
+    session->pager_lines_per_page = 0;
+    cli_pager_stop(session);
+    cli_send_message(session, "CLI pager disabled for this session.\r\n");
+}
+
+/**
  * @brief end (group_id=6)
  */
 static void handle_op_end(cli_session_t *session)
@@ -774,6 +789,9 @@ int cli_handle(dev_ipc_message_t *msg, cli_session_t *session)
             break;
         case CLI_GROUP_ID_SHOW_CONTEXT:
             handle_show_context(session);
+            break;
+        case CLI_GROUP_ID_TERMINAL_LENGTH_ZERO:
+            handle_terminal_length_zero(session);
             break;
         default:
             LOG_WARN("Unknown group_id: %u", parser.group_id);

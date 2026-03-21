@@ -37,6 +37,7 @@ except ImportError:
 
 PROMPT_RE = re.compile(br"<NetNexus[^>]*>")
 IF_RE = re.compile(r"^GE-(\d+)$")
+PAGER_DISABLE_CMD = "terminal length 0"
 
 
 def run_cmd(cmd: list[str], check: bool = True) -> str:
@@ -106,12 +107,17 @@ class NetNexusCli:
             try:
                 self.tn = telnetlib.Telnet(self.host, self.port, timeout=5)
                 self._read_until_prompt(timeout=6)
+                self.disable_pager(timeout=min(self.cmd_timeout, 6))
                 return
             except Exception as exc:
                 last_err = exc
                 self.close()
                 time.sleep(1)
         raise RuntimeError(f"{self.name}: failed to connect CLI within {timeout}s: {last_err}")
+
+    def disable_pager(self, timeout: int | None = None) -> None:
+        eff_timeout = timeout if timeout is not None else min(self.cmd_timeout, 8)
+        self.cmd(PAGER_DISABLE_CMD, timeout=eff_timeout, strict=True)
 
     def close(self) -> None:
         if self.tn:
@@ -587,6 +593,13 @@ class TopologyRuntime:
         if cli is None:
             raise ValueError(f"unknown or disconnected device '{device}'")
         return cli.cmd(command, timeout=timeout, strict=strict)
+
+    def disable_pager_for_all_sessions(self) -> None:
+        for dev in sorted(self.devices.keys()):
+            cli = self.cli_map.get(dev)
+            if cli is None:
+                raise RuntimeError(f"device '{dev}' has no active CLI session")
+            cli.disable_pager(timeout=min(self.cmd_timeout, 8))
 
     def on(self, device: str) -> DeviceExec:
         if device not in self.devices:

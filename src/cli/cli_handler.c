@@ -245,8 +245,15 @@ void cli_pager_output(cli_session_t *session, const char *message)
         return;
     }
 
+    /* session pager disabled */
+    if (session->pager_lines_per_page == 0)
+    {
+        cli_send_message(session, message);
+        return;
+    }
+
     uint32_t lines = pager_count_lines(message);
-    uint32_t page_size = session->pager_lines_per_page > 0 ? session->pager_lines_per_page : CLI_PAGER_DEFAULT_LINES;
+    uint32_t page_size = session->pager_lines_per_page;
 
     // If output fits on one screen, send directly
     if (lines <= page_size)

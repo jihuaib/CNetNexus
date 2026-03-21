@@ -54,7 +54,7 @@ typedef struct
     char *pager_buffer;            // Dynamically allocated output buffer
     uint32_t pager_offset;         // Current position in buffer
     uint32_t pager_total_len;      // Total buffer length
-    uint32_t pager_lines_per_page; // Lines per screen (default 24)
+    uint32_t pager_lines_per_page; // Lines per screen (default 24, 0 means disabled for this session)
     uint32_t pager_active;         // 1 if pager is active
 
     // Bash 模式标志：1 表示当前在后台 bash shell 中，主循环不发送提示符
