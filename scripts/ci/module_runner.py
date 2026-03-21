@@ -169,6 +169,39 @@ def discover_case_scripts(case_dir: Path) -> list[Path]:
     )
 
 
+def resolve_script_selector(selector: str, modules_dir: Path) -> Path:
+    raw = Path(selector)
+    candidates: list[Path] = []
+
+    if raw.is_absolute():
+        candidates.append(raw)
+    else:
+        candidates.append((modules_dir / raw).resolve())
+        candidates.append((Path.cwd() / raw).resolve())
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.resolve()
+
+    if (not raw.is_absolute()) and len(raw.parts) == 1:
+        names = [raw.name]
+        if raw.suffix != ".py":
+            names.append(f"{raw.name}.py")
+
+        matches: list[Path] = []
+        for name in names:
+            matches.extend(p.resolve() for p in modules_dir.rglob(name) if p.is_file())
+
+        uniq = sorted(set(matches))
+        if len(uniq) == 1:
+            return uniq[0]
+        if len(uniq) > 1:
+            joined = ", ".join(str(p) for p in uniq)
+            raise RuntimeError(f"ambiguous selector '{selector}', matched: {joined}")
+
+    raise RuntimeError(f"script not found: {selector}")
+
+
 def load_run_callable(script: Path):
     mod_name = "ci_case_" + sanitize_name(str(script.relative_to(CI_DIR))).replace("-", "_").replace(".", "_")
     spec = importlib.util.spec_from_file_location(mod_name, script)
@@ -374,18 +407,9 @@ def run_case(
     connect_timeout: int,
     verbose: bool,
     keep: bool,
+    scripts_override: list[Path] | None = None,
 ) -> list[CheckResult]:
-    top_file = find_top_file(case_dir)
-    if top_file is None:
-        return [
-            synth_failed_result(
-                case_dir,
-                case_dir / "<case>",
-                f"case has no top file ({', '.join(TOP_CANDIDATES)}): {case_dir}",
-            )
-        ]
-
-    scripts = discover_case_scripts(case_dir)
+    scripts = sorted(scripts_override) if scripts_override is not None else discover_case_scripts(case_dir)
     if not scripts:
         return [
             synth_failed_result(
@@ -394,6 +418,11 @@ def run_case(
                 f"no check scripts found in case directory: {case_dir}",
             )
         ]
+
+    top_file = find_top_file(case_dir)
+    if top_file is None:
+        err = f"case has no top file ({', '.join(TOP_CANDIDATES)}): {case_dir}"
+        return [synth_failed_result(case_dir, script, err) for script in scripts]
 
     top = load_topology(top_file)
     image = image_arg or str(top.get("image", "")).strip()
@@ -962,7 +991,7 @@ def make_artifact_base_name(index: int, result: CheckResult, modules_dir: Path) 
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run all CI cases and generate HTML report")
+    parser = argparse.ArgumentParser(description="Run CI module checks and generate HTML report")
     parser.add_argument("--modules-dir", default="scripts/ci/modules", help="module case root directory")
     parser.add_argument("--image", required=False, help="docker image tag (fallback to top.image when omitted)")
     parser.add_argument("--report-dir", default="scripts/ci/reports", help="output directory for reports")
@@ -970,6 +999,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cmd-timeout", type=int, default=30, help="CLI command timeout seconds")
     parser.add_argument("--connect-timeout", type=int, default=60, help="CLI initial connect timeout seconds")
     parser.add_argument("--verbose-modules", action="store_true", help="enable verbose runtime CLI logs")
+    parser.add_argument(
+        "--script",
+        action="append",
+        default=[],
+        help=(
+            "run only selected check script (can repeat); supports absolute path, "
+            "path relative to --modules-dir, or unique basename"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -980,7 +1018,23 @@ def main() -> int:
     report_html, summary_json, logs_dir, checks_dir = ensure_report_dir(report_dir)
 
     run_started = time.time()
-    case_dirs = discover_case_dirs(modules_dir)
+    selected_by_case: dict[Path, list[Path]] = {}
+    if args.script:
+        for raw_selector in args.script:
+            try:
+                script = resolve_script_selector(raw_selector, modules_dir)
+            except Exception as exc:
+                print(f"invalid --script '{raw_selector}': {exc}", file=sys.stderr)
+                return 1
+            case = script.parent.resolve()
+            selected_by_case.setdefault(case, []).append(script)
+
+        for case, scripts in selected_by_case.items():
+            selected_by_case[case] = sorted(set(scripts))
+        case_dirs = sorted(selected_by_case.keys())
+    else:
+        case_dirs = discover_case_dirs(modules_dir)
+
     results: list[CheckResult] = []
 
     if not case_dirs:
@@ -999,6 +1053,7 @@ def main() -> int:
             connect_timeout=args.connect_timeout,
             verbose=args.verbose_modules,
             keep=args.keep,
+            scripts_override=selected_by_case.get(case_dir),
         )
         results.extend(case_results)
 

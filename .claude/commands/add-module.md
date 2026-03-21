@@ -6,7 +6,7 @@
 
 `/add-module <模块名> <端口号>`
 
-例如：`/add-module mpls 4007`
+例如：`/add-module mpls 4010`
 
 ---
 
@@ -25,21 +25,24 @@
 确定新模块的：
 - `MODULE_ID`：在现有最大 ID 基础上 +1
 - `PORT`：用户指定的端口号
-- `CATEGORY`：IPC 消息大类（通常与模块序号对应，如第 7 个模块 → `0x0007`）
+- `CATEGORY`：IPC 消息大类（通常与模块序号对应，如第 9 个模块 → `0x0009`）
 
 ---
 
 ### 第二步：创建目录结构
 
+每个模块是**独立可执行进程**（不是 .so 动态库），由 DEV 在启动时 fork/exec。
+
 ```
 src/{module}/
-├── {module}_main.c       # 模块主文件（constructor + 三阶段初始化）
+├── {module}_proc.c       # 独立进程入口（main 函数）
+├── {module}_main.c       # 模块主文件（三阶段初始化 + IPC 分发）
 ├── {module}_main.h       # 模块全局状态声明
 ├── {module}_cli.c        # CLI 命令处理
-├── {module}_cli.h        # CLI 处理函数声明
+├── {module}_cli.h        # CLI 处理函数声明 + group-id 常量
 ├── CMakeLists.txt        # 模块构建配置
 └── resources/
-    ├── module.conf       # 模块配置（ID、端口、.so 名）
+    ├── module.conf       # 模块配置（ID、端口、可执行文件名）
     └── commands.xml      # CLI 命令定义
 ```
 
@@ -59,14 +62,19 @@ src/{module}/
 #ifndef {MODULE}_MAIN_H
 #define {MODULE}_MAIN_H
 
-#include "nn_dev.h"
+#include <glib.h>
+
+#include "cli.h"
+#include "dev.h"
 
 /**
  * @brief {MODULE} 模块本地状态
  */
-typedef struct
+typedef struct {module}_local
 {
     dev_ipc_context_t *dev_ipc_ctx; /**< IPC 上下文 */
+    cli_chunk_stream_t show_stream; /**< CLI show 命令分片输出状态 */
+    volatile int running;           /**< 运行标志 */
     /* 在此添加模块特有字段 */
 } {module}_local_t;
 
@@ -76,9 +84,57 @@ extern {module}_local_t *g_{module}_local;
 /**
  * @brief IPC 消息处理主回调
  */
-void {module}_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
+void {module}_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
+
+/**
+ * @brief 模块初始化（由 {module}_proc.c main() 显式调用）
+ * @return 0 成功，-1 失败
+ */
+int {module}_module_init(void);
 
 #endif /* {MODULE}_MAIN_H */
+```
+
+#### `src/{module}/{module}_proc.c`
+
+```c
+/**
+ * @file   {module}_proc.c
+ * @brief  {MODULE} 独立进程入口
+ * @author 作者
+ * @date   创建日期
+ */
+#include <signal.h>
+#include <sys/prctl.h>
+
+#include "{module}_main.h"
+
+int main(void)
+{
+    /* 父进程（DEV）意外退出时自动终止本进程 */
+    prctl(PR_SET_PDEATHSIG, SIGTERM);
+
+    /* 忽略 SIGPIPE（TCP 写入已关闭连接时不崩溃） */
+    signal(SIGPIPE, SIG_IGN);
+
+    /* 显式初始化模块（IPC 连接、本地状态） */
+    if ({module}_module_init() != 0)
+    {
+        return 1;
+    }
+
+    /* 阻塞 SIGTERM/SIGINT，通过 sigwait 捕获关闭信号 */
+    sigset_t mask;
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGTERM);
+    sigaddset(&mask, SIGINT);
+    sigprocmask(SIG_BLOCK, &mask, NULL);
+
+    int sig = 0;
+    sigwait(&mask, &sig);
+
+    return 0;
+}
 ```
 
 #### `src/{module}/{module}_main.c`
@@ -92,10 +148,14 @@ void {module}_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
  */
 #include "{module}_main.h"
 #include "{module}_cli.h"
-#include "nn_dev.h"
-#include "nn_errcode.h"
-#include <string.h>
+
 #include <stdlib.h>
+#include <string.h>
+
+#include "cli.h"
+#include "dev.h"
+#include "errcode.h"
+#include "log.h"
 
 /* 全局状态 */
 {module}_local_t *g_{module}_local = NULL;
@@ -103,21 +163,20 @@ void {module}_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
 /* ─────────────────── 内部辅助 ─────────────────── */
 
 /**
- * @brief 发送阶段响应给 DEV
+ * @brief 发送阶段响应给 DEV，并释放原始消息
  */
-static void send_phase_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, int errcode)
+static void send_phase_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    uint32_t code = (uint32_t)errcode;
     dev_ipc_message_t *resp = dev_ipc_message_create(
-        msg->msg_type,
+        DEV_IPC_MSG_TYPE_DEV_MODULE_RESP,
         DEV_MODULE_ID_{MODULE},
         msg->src_module_id,
         msg->request_id,
-        g_memdup2(&code, sizeof(code)),
-        sizeof(code),
-        g_free
+        NULL, 0, NULL
     );
     dev_ipc_send_response(ctx, resp);
+    dev_ipc_message_free(resp);
+    dev_ipc_message_free(msg);
 }
 
 /* ─────────────────── 三阶段初始化 ─────────────────── */
@@ -130,23 +189,29 @@ static void {module}_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     LOG_INFO("Phase 1: MODULE_START");
 
     /* 连接到所需模块（按需修改） */
-    dev_ipc_connect(ctx, DEV_MODULE_ID_CFG, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CFG);
-    dev_ipc_connect(ctx, DEV_MODULE_ID_DB,  DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_DB);
+    if (dev_ipc_connect(ctx, DEV_MODULE_ID_CLI, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CLI) != 0)
+    {
+        LOG_ERROR("Failed to connect to CLI module");
+    }
+    if (dev_ipc_connect(ctx, DEV_MODULE_ID_DB, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_DB) != 0)
+    {
+        LOG_ERROR("Failed to connect to DB module");
+    }
 
-    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
+    send_phase_response(ctx, msg);
 }
 
 /**
- * @brief Phase 2：MODULE_CONNECT - 预留（数据库恢复等）
+ * @brief Phase 2：MODULE_CONNECT - 预留
  */
 static void {module}_on_connect(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    LOG_INFO("Phase 2: MODULE_CONNECT (预留)");
-    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
+    LOG_INFO("Phase 2: MODULE_CONNECT (reserved)");
+    send_phase_response(ctx, msg);
 }
 
 /**
- * @brief Phase 3：MODULE_READY - 初始化数据库表、启动工作线程
+ * @brief Phase 3：MODULE_READY - 初始化数据库表、恢复状态
  */
 static void {module}_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
@@ -155,9 +220,11 @@ static void {module}_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     /* TODO: 初始化数据库表 */
     /* int ret = db_rpc_create_table_from_def(ctx, &{MODULE}_XXX_TABLE); */
 
-    /* TODO: 启动模块工作线程（如需要） */
+    /* TODO: 从 DB 恢复内存状态 */
+    /* {module}_db_restore(ctx); */
 
-    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
+    LOG_INFO("{MODULE} module ready");
+    send_phase_response(ctx, msg);
 }
 
 /**
@@ -165,24 +232,37 @@ static void {module}_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
  */
 static void {module}_on_shutdown(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    LOG_INFO("{MODULE} 模块清理");
+    LOG_INFO("{MODULE} module shutting down");
 
-    /* TODO: 停止工作线程 */
-    /* TODO: 释放模块特有资源 */
+    if (g_{module}_local)
+    {
+        g_{module}_local->running = 0;
 
-    g_{module}_local->dev_ipc_ctx = NULL;
-    g_free(g_{module}_local);
-    g_{module}_local = NULL;
+        /* TODO: 释放模块特有资源 */
 
-    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
+        {module}_cli_cleanup_state();
+
+        g_{module}_local->dev_ipc_ctx = NULL;
+        free(g_{module}_local);
+        g_{module}_local = NULL;
+    }
+
+    LOG_INFO("{MODULE} module cleanup complete");
+    send_phase_response(ctx, msg);
 }
 
 /* ─────────────────── IPC 消息路由 ─────────────────── */
 
-void {module}_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+void {module}_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
+    if (!msg)
+    {
+        return;
+    }
+
     switch (msg->msg_type)
     {
+        /* ---- DEV 生命周期消息 ---- */
         case DEV_IPC_MSG_TYPE_DEV_MODULE_START:
             {module}_on_start(ctx, msg);
             return;
@@ -195,12 +275,18 @@ void {module}_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         case DEV_IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN:
             {module}_on_shutdown(ctx, msg);
             return;
-        case CFG_MSG_TYPE_CLI:
+
+        /* ---- CLI 消息 ---- */
+        case CLI_MSG_TYPE:
             {module}_cli_handle_message(msg);
-            break;
-        case CFG_MSG_TYPE_CLI_CONTINUE:
+            return;
+        case CLI_MSG_TYPE_CONTINUE:
             {module}_cli_handle_continue(msg);
-            break;
+            return;
+        case CLI_MSG_TYPE_SHOW_CONFIG:
+            {module}_cli_handle_show_config(msg);
+            return;
+
         default:
             LOG_WARN("未知消息类型: 0x%08X", msg->msg_type);
             break;
@@ -209,30 +295,36 @@ void {module}_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     dev_ipc_message_free(msg);
 }
 
-/* ─────────────────── .so 构造器 ─────────────────── */
+/* ─────────────────── 模块初始化 ─────────────────── */
 
-/**
- * @brief .so 构造器：dlopen 时自动执行，初始化 IPC 和本地状态
- */
-__attribute__((constructor)) static void {module}_so_init(void)
+int {module}_module_init(void)
 {
-    LOG_INFO("{MODULE} .so 加载，自初始化");
+    LOG_INFO("{MODULE} module initialization");
 
     dev_ipc_context_t *ctx = dev_ipc_init(
         DEV_MODULE_ID_{MODULE},
         "{module}",
         DEV_MODULE_PORT_{MODULE},
-        {module}_msg_handler
+        {module}_ipc_msg_handler
     );
 
     if (!ctx)
     {
         LOG_ERROR("{MODULE}: IPC 初始化失败");
-        return;
+        return -1;
     }
 
-    g_{module}_local = g_malloc0(sizeof({module}_local_t));
+    g_{module}_local = ({module}_local_t *)g_malloc0(sizeof({module}_local_t));
+    if (!g_{module}_local)
+    {
+        LOG_ERROR("{MODULE}: 分配本地状态失败");
+        return -1;
+    }
+
     g_{module}_local->dev_ipc_ctx = ctx;
+    g_{module}_local->running = 1;
+
+    return 0;
 }
 ```
 
@@ -248,7 +340,10 @@ __attribute__((constructor)) static void {module}_so_init(void)
 #ifndef {MODULE}_CLI_H
 #define {MODULE}_CLI_H
 
-#include "nn_dev.h"
+#include "dev.h"
+
+/** CLI group-id 定义（与 commands.xml 中 group-id 一致） */
+#define {MODULE}_CLI_GROUP_ID_SHOW 1 /**< show {module} 命令 */
 
 /**
  * @brief 处理 CLI 命令消息
@@ -256,9 +351,19 @@ __attribute__((constructor)) static void {module}_so_init(void)
 int {module}_cli_handle_message(dev_ipc_message_t *msg);
 
 /**
- * @brief 处理分块输出的继续请求
+ * @brief 处理分片输出继续请求
  */
 int {module}_cli_handle_continue(dev_ipc_message_t *msg);
+
+/**
+ * @brief 处理 show current-configuration 请求
+ */
+int {module}_cli_handle_show_config(dev_ipc_message_t *msg);
+
+/**
+ * @brief 清理 CLI 内部状态（如分片输出缓存）
+ */
+void {module}_cli_cleanup_state(void);
 
 #endif /* {MODULE}_CLI_H */
 ```
@@ -274,85 +379,142 @@ int {module}_cli_handle_continue(dev_ipc_message_t *msg);
  */
 #include "{module}_cli.h"
 #include "{module}_main.h"
-#include "nn_dev.h"
-#include "nn_errcode.h"
-#include <string.h>
-#include <stdio.h>
 
-/* CLI 命令组 ID */
-#define {MODULE}_CLI_GROUP_ID_SHOW    1
-/* 在此添加更多 group ID */
+#include <stdio.h>
+#include <string.h>
+
+#include "cli.h"
+#include "dev.h"
+#include "errcode.h"
+#include "log.h"
 
 /* ─────────────────── 内部辅助 ─────────────────── */
 
 /**
  * @brief 发送 CLI 文本响应
  */
-static void {module}_send_cli_response(dev_ipc_message_t *msg, const char *text)
+static void send_resp(dev_ipc_message_t *msg, const char *text)
 {
-    size_t len = text ? strlen(text) + 1 : 1;
-    char *payload = g_strdup(text ? text : "");
+    const char *safe = text ? text : "";
+    char *payload = g_strdup(safe);
     dev_ipc_message_t *resp = dev_ipc_message_create(
-        CFG_MSG_TYPE_CLI_RESP,
+        CLI_MSG_TYPE_RESP,
         DEV_MODULE_ID_{MODULE},
         msg->src_module_id,
         msg->request_id,
         payload,
-        len,
+        strlen(payload) + 1,
         g_free
     );
-    dev_ipc_send_response(g_{module}_local->dev_ipc_ctx, resp);
+    if (resp)
+    {
+        dev_ipc_send_response(g_{module}_local->dev_ipc_ctx, resp);
+        dev_ipc_message_free(resp);
+    }
 }
 
-/* ─────────────────── 命令处理函数 ─────────────────── */
-
 /**
- * @brief 处理 "show {module}" 命令（group-id=1）
+ * @brief 启动分片输出
  */
+static int send_chunked(dev_ipc_message_t *msg, GString *text)
+{
+    return cli_chunk_stream_start(
+        &g_{module}_local->show_stream,
+        g_{module}_local->dev_ipc_ctx,
+        DEV_MODULE_ID_{MODULE},
+        msg,
+        text
+    );
+}
+
+/* ─────────────────── Group 1: show {module} ─────────────────── */
+
 static int handle_show_{module}(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
-    /* 跳过所有 TLV（show 命令通常不需要参数） */
+    /* 跳过所有 TLV 条目（含上下文条目） */
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
     {
         cli_tlv_entry_free(&entry);
     }
 
-    /* TODO: 构造输出内容 */
-    GString *output = g_string_new("");
-    g_string_append_printf(output, "{MODULE} 模块状态: 运行中\r\n");
-
-    {module}_send_cli_response(msg, output->str);
-    g_string_free(output, TRUE);
-    return ERRCODE_SUCCESS;
-}
-
-/* ─────────────────── 消息 dispatch ─────────────────── */
-
-int {module}_cli_handle_message(dev_ipc_message_t *msg)
-{
-    cli_tlv_parser_t parser;
-    if (cli_tlv_init(&parser, msg->payload, msg->payload_len) != 0)
+    GString *buf = g_string_new("");
+    if (!buf)
     {
-        {module}_send_cli_response(msg, "Error: 解析命令失败\r\n");
+        send_resp(msg, "Error: Out of memory\r\n");
         return ERRCODE_FAIL;
     }
 
+    /* TODO: 构造输出内容 */
+    g_string_append_printf(buf, "\r\n{MODULE} 模块状态: 运行中\r\n\r\n");
+
+    return send_chunked(msg, buf);
+}
+
+/* ─────────────────── 主入口 ─────────────────── */
+
+int {module}_cli_handle_message(dev_ipc_message_t *msg)
+{
+    if (!msg || !msg->payload)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    cli_chunk_stream_reset(&g_{module}_local->show_stream);
+
+    cli_tlv_parser_t parser;
+    if (cli_tlv_init(&parser, (const uint8_t *)msg->payload, msg->payload_len) != 0)
+    {
+        LOG_ERROR("{MODULE} CLI payload 解析失败");
+        send_resp(msg, "Error: Command payload parsing failed\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    LOG_DEBUG("{MODULE} CLI TLV (group_id=%u)", parser.group_id);
+
+    int result;
     switch (parser.group_id)
     {
         case {MODULE}_CLI_GROUP_ID_SHOW:
-            return handle_show_{module}(msg, &parser);
+            result = handle_show_{module}(msg, &parser);
+            break;
         default:
-            {module}_send_cli_response(msg, "Error: 未知命令\r\n");
-            return ERRCODE_FAIL;
+            LOG_WARN("{MODULE} 未知 group_id: %u", parser.group_id);
+            send_resp(msg, "Error: Unknown command group\r\n");
+            result = ERRCODE_FAIL;
+            break;
     }
+
+    cli_tlv_cleanup(&parser);
+    return result;
 }
 
 int {module}_cli_handle_continue(dev_ipc_message_t *msg)
 {
-    /* TODO: 处理分页输出（如需要） */
-    dev_ipc_message_free(msg);
-    return ERRCODE_SUCCESS;
+    return cli_chunk_stream_continue(
+        &g_{module}_local->show_stream,
+        g_{module}_local->dev_ipc_ctx,
+        DEV_MODULE_ID_{MODULE},
+        msg
+    );
+}
+
+int {module}_cli_handle_show_config(dev_ipc_message_t *msg)
+{
+    GString *out = g_string_new("");
+    if (!out)
+    {
+        return send_chunked(msg, NULL);
+    }
+
+    /* TODO: 从 DB 读取配置并生成可重放的 CLI 命令文本 */
+
+    return send_chunked(msg, out);
+}
+
+void {module}_cli_cleanup_state(void)
+{
+    cli_chunk_stream_reset(&g_{module}_local->show_stream);
 }
 ```
 
@@ -362,22 +524,25 @@ int {module}_cli_handle_continue(dev_ipc_message_t *msg)
 set({MODULE}_SOURCES
     {module}_main.c
     {module}_cli.c
+    # 按需添加更多源文件
 )
 
-add_library({module} SHARED ${{{MODULE}_SOURCES}})
+add_executable(netnexus-{module} {module}_proc.c ${{{MODULE}_SOURCES}})
 
-target_include_directories({module} PRIVATE .)
+target_include_directories(netnexus-{module} PRIVATE .)
 
-target_link_libraries({module} PRIVATE
+target_link_libraries(netnexus-{module} PRIVATE
     dev_api
-    ${GLIB_LIBRARIES}
+    cli_api
+    db_api
 )
 
-set_target_properties({module} PROPERTIES
-    VERSION 1.0.0
-    SOVERSION 1
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+set_target_properties(netnexus-{module} PROPERTIES
+    BUILD_RPATH "${CMAKE_BINARY_DIR}/lib"
+    INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib"
 )
+
+install(TARGETS netnexus-{module} RUNTIME DESTINATION bin)
 ```
 
 #### `src/{module}/resources/module.conf`
@@ -385,16 +550,24 @@ set_target_properties({module} PROPERTIES
 ```
 module-id=N
 name={module}
-so=lib{module}.so
+exe=netnexus-{module}
 port={PORT}
 ```
 
+> `module-id` 的数字值必须与 `include/dev.h` 中 `DEV_MODULE_ID_{MODULE}` 一致。
+
 #### `src/{module}/resources/commands.xml`
+
+视图名称使用字符串（`global`、`user`、`config`），与 `include/cli.h` 中 `CLI_VIEW_*` 常量对应。
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <configuration module-id="N">
     <command_groups>
+
+        <!-- ================================================================
+             Group 1: show {module} 命令
+             ================================================================ -->
         <group group-id="1">
             <elements>
                 <element type="keyword">
@@ -407,39 +580,58 @@ port={PORT}
                 </element>
             </elements>
             <commands>
+                <!-- show {module} -->
                 <command>
                     <expression>1 2</expression>
-                    <views>2,3</views>
+                    <views>global</views>
                 </command>
             </commands>
         </group>
+
     </command_groups>
 </configuration>
 ```
+
+**视图名称速查（`include/cli.h`）：**
+
+| 常量 | XML 字符串 | 说明 |
+|------|-----------|------|
+| `CLI_VIEW_GLOBAL` | `global` | 全局视图（所有视图均可用） |
+| `CLI_VIEW_USER` | `user` | 用户视图 |
+| `CLI_VIEW_CONFIG` | `config` | 配置视图 |
+| `CLI_VIEW_BGP` | `bgp` | BGP 配置视图 |
+| `CLI_VIEW_IF` | `if` | 接口配置视图 |
+| `CLI_VIEW_ROUTE` | `route` | 路由视图 |
+
+多视图可用：`<views>user,config</views>`
 
 ---
 
 ### 第四步：注册到 `include/dev.h`
 
-在 `include/dev.h` 中添加新模块的 ID、端口和消息类型：
+在 `include/dev.h` 中追加新模块的 ID、端口和消息类别：
 
 ```c
-/* 模块 ID（在现有定义后追加） */
+/** {MODULE} 模块 */
 #define DEV_MODULE_ID_{MODULE}    0x0000000N
 
-/* 模块端口（在现有定义后追加） */
+/** {MODULE} 模块 IPC 监听端口 */
 #define DEV_MODULE_PORT_{MODULE}  {PORT}
 
-/* {MODULE} 模块消息类型（大类 = 0x000N） */
-#define {MODULE}_MSG_TYPE_REQ     DEV_IPC_MSG_TYPE(0x000N, 0x0001)
-#define {MODULE}_MSG_TYPE_RESP    DEV_IPC_MSG_TYPE(0x000N, 0x00FF)
+/** {MODULE} 模块消息大类 */
+#define DEV_IPC_CATEGORY_{MODULE} 0x000N
+```
+
+如需定义模块间通信消息类型，在 `include/{module}.h`（新建）中定义：
+
+```c
+#define {MODULE}_MSG_TYPE_REQ   DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_{MODULE}, 0x0001)
+#define {MODULE}_MSG_TYPE_RESP  DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_{MODULE}, 0x00FF)
 ```
 
 ---
 
 ### 第五步：注册到 `src/CMakeLists.txt`
-
-在 `src/CMakeLists.txt` 的 `add_subdirectory` 列表中追加：
 
 ```cmake
 add_subdirectory({module})
@@ -447,19 +639,13 @@ add_subdirectory({module})
 
 ---
 
-### 第六步：添加到 DEV 的 CLI 路由（如需要）
-
-如果 CFG 需要把 CLI 命令路由到新模块，在 `src/cfg/cli_dispatch.c`（或类似文件）中确认路由表包含新模块 ID。通常这是基于 XML 中 `module-id` 自动路由的，无需手动修改。
-
----
-
-### 第七步：构建验证
+### 第六步：构建验证
 
 ```bash
 ./scripts/dev/build.sh
 
-# 确认 .so 已生成
-ls build/lib/lib{module}.so
+# 确认可执行文件已生成
+ls build/bin/netnexus-{module}
 
 # 运行并验证模块加载日志
 ./scripts/dev/start.sh 2>&1 | grep -i "{module}"
@@ -479,10 +665,12 @@ telnet localhost 3788
 - [ ] `DEV_MODULE_PORT_{MODULE}` 在 `include/dev.h` 中定义（无冲突）
 - [ ] `resources/module.conf` 的 `module-id` 与 `dev.h` 中的值一致
 - [ ] `resources/module.conf` 的 `port` 与 `dev.h` 中的值一致
-- [ ] `CMakeLists.txt` 使用 `SHARED` 库（动态加载需要）
+- [ ] `resources/module.conf` 使用 `exe=netnexus-{module}`（不是 `so=`）
+- [ ] `CMakeLists.txt` 使用 `add_executable(netnexus-{module} ...)`
+- [ ] `{module}_proc.c` 有 `main()` 函数，调用 `{module}_module_init()`
+- [ ] `{module}_module_init()` 调用 `dev_ipc_init()` 并分配 `g_{module}_local`
+- [ ] `{module}_ipc_msg_handler` switch 包含四个生命周期消息类型
+- [ ] `{module}_ipc_msg_handler` switch 包含 `CLI_MSG_TYPE`、`CLI_MSG_TYPE_CONTINUE`、`CLI_MSG_TYPE_SHOW_CONFIG`
 - [ ] `add_subdirectory({module})` 已加入 `src/CMakeLists.txt`
-- [ ] `.so constructor` 中调用了 `dev_ipc_init()`
-- [ ] 三阶段 handler（`on_start`/`on_connect`/`on_ready`/`on_shutdown`）均已实现
-- [ ] `{module}_msg_handler` 中的 switch 包含四个阶段消息类型
 - [ ] 构建成功，无编译错误
 - [ ] `show {module}` 命令在 telnet 中可用

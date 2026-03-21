@@ -572,3 +572,81 @@ void route_relay_cleanup(void)
     g_hash_table_destroy(g_route_nh_watch_table);
     g_route_nh_watch_table = NULL;
 }
+
+// ============================================================================
+// show route relay
+// ============================================================================
+
+typedef struct
+{
+    GString *buf;
+    uint32_t module_filter;
+    int has_filter;
+    uint32_t count;
+} relay_show_ctx_t;
+
+static void relay_show_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    route_nh_watch_t *watch = (route_nh_watch_t *)value;
+    relay_show_ctx_t *ctx = (relay_show_ctx_t *)user_data;
+    if (!watch || !ctx)
+    {
+        return;
+    }
+
+    /* 按模块过滤 */
+    if (ctx->has_filter && watch->key.owner_module_id != ctx->module_filter)
+    {
+        return;
+    }
+
+    char nh_str[64];
+    net_addr_to_str(&watch->key.nexthop_addr, nh_str, sizeof(nh_str));
+
+    const char *afi_str = (watch->key.afi == ROUTE_AFI_IPV4)   ? "ipv4"
+                          : (watch->key.afi == ROUTE_AFI_IPV6) ? "ipv6"
+                                                               : "?";
+    const char *safi_str = (watch->key.safi == ROUTE_SAFI_UNICAST) ? "unicast" : "?";
+    const char *resolved_str = watch->resolved ? "yes" : "no";
+
+    g_string_append_printf(ctx->buf, "0x%08X  %4u  %-4s  %-7s  %-20s  %s\r\n", watch->key.owner_module_id,
+                           watch->key.vrf_id, afi_str, safi_str, nh_str, resolved_str);
+    ctx->count++;
+}
+
+void route_relay_show(GString *buf, uint32_t module_filter, int has_filter)
+{
+    if (!buf)
+    {
+        return;
+    }
+
+    g_string_append_printf(buf,
+                           "\r\n%-12s  %4s  %-4s  %-7s  %-20s  %s\r\n"
+                           "------------  ----  ----  -------  --------------------  --------\r\n",
+                           "Module", "VRF", "AFI", "SAFI", "Nexthop", "Resolved");
+
+    if (!g_route_nh_watch_table || g_hash_table_size(g_route_nh_watch_table) == 0)
+    {
+        g_string_append(buf, "  (no entries)\r\n");
+        g_string_append(buf, "\r\nTotal 0 entry\r\n");
+        return;
+    }
+
+    relay_show_ctx_t ctx = {
+        .buf = buf,
+        .module_filter = module_filter,
+        .has_filter = has_filter,
+        .count = 0,
+    };
+
+    g_hash_table_foreach(g_route_nh_watch_table, relay_show_cb, &ctx);
+
+    if (ctx.count == 0)
+    {
+        g_string_append(buf, "  (no entries)\r\n");
+    }
+
+    g_string_append_printf(buf, "\r\nTotal %u entry\r\n", ctx.count);
+}

@@ -20,6 +20,7 @@
 #include "route.h"
 #include "route_main.h"
 #include "route_pub.h"
+#include "route_relay.h"
 #include "route_rib.h"
 
 // ============================================================================
@@ -920,6 +921,51 @@ void route_batch_restore_from_db(dev_ipc_context_t *ctx)
 }
 
 // ============================================================================
+// Group 4: show route relay 命令
+//
+// cfg-id 映射：
+//   1=bgp（按 BGP 模块过滤）
+// ============================================================================
+
+static int handle_show_relay(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    uint32_t module_filter = 0;
+    int has_filter = 0;
+
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (CLI_TLV_IS_CTX(&entry))
+        {
+            cli_tlv_entry_free(&entry);
+            continue;
+        }
+
+        switch (entry.cfg_id)
+        {
+            case 1:
+                /* bgp 关键字 */
+                module_filter = DEV_MODULE_ID_BGP;
+                has_filter = 1;
+                break;
+            default:
+                break;
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    GString *buf = g_string_new("");
+    if (!buf)
+    {
+        send_resp(msg, "Error: Out of memory\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    route_relay_show(buf, module_filter, has_filter);
+    return route_send_chunked_response(msg, buf);
+}
+
+// ============================================================================
 // 主入口
 // ============================================================================
 
@@ -1074,6 +1120,9 @@ int route_cli_handle_message(dev_ipc_message_t *msg)
             break;
         case ROUTE_CLI_GROUP_ID_BATCH:
             result = handle_route_batch(msg, &parser);
+            break;
+        case ROUTE_CLI_GROUP_ID_RELAY_SHOW:
+            result = handle_show_relay(msg, &parser);
             break;
         default:
             LOG_WARN("Unknown group_id: %u", parser.group_id);

@@ -27,26 +27,31 @@
 读取以下文件，确认现有消息类型，避免冲突：
 
 ```
-include/dev.h          — DEV_IPC_MSG_TYPE_* 和大类定义
-src/{receiver}/{receiver}_main.c  — 接收方的 msg_handler switch
+include/dev.h                              — DEV_IPC_MSG_TYPE_* 和大类定义
+include/{receiver}.h（如有）               — 接收方已有消息类型
+src/{receiver}/{receiver}_main.c           — 接收方的 ipc_msg_handler switch
 ```
 
 ---
 
-## 第三步：在 `include/dev.h` 添加消息类型
+## 第三步：在 `include/{receiver}.h` 添加消息类型
 
 消息类型编码规则：`msg_type = (大类 << 16) | 子类`
 
 ```c
-/* {RECEIVER} 模块消息（大类 = 0x000X，X 为接收方模块序号） */
-/* 在现有 {RECEIVER} 模块消息定义块中追加 */
-#define {RECEIVER}_MSG_TYPE_{FEATURE}_REQ   DEV_IPC_MSG_TYPE(0x000X, 0x0001)
-#define {RECEIVER}_MSG_TYPE_{FEATURE}_RESP  DEV_IPC_MSG_TYPE(0x000X, 0x00FF)
-/* 单向通知（无需 RESP）：*/
-#define {RECEIVER}_MSG_TYPE_{FEATURE}_NOTIFY DEV_IPC_MSG_TYPE(0x000X, 0x0001)
+/* {RECEIVER} 模块消息（大类 = DEV_IPC_CATEGORY_{RECEIVER}） */
+/* 在现有 {RECEIVER} 模块消息定义块中追加，子类从 0x0001 开始递增 */
+
+/* RPC 模式（请求-响应对） */
+#define {RECEIVER}_MSG_TYPE_{FEATURE}_REQ  DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_{RECEIVER}, 0x0001)
+#define {RECEIVER}_MSG_TYPE_{FEATURE}_RESP DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_{RECEIVER}, 0x0002)
+
+/* 单向通知（无需 RESP） */
+#define {RECEIVER}_MSG_TYPE_{FEATURE}_NOTIFY DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_{RECEIVER}, 0x0001)
 ```
 
 **注意：** 大类和子类的值必须唯一，不能与同一接收方现有消息冲突。
+如果 `include/{receiver}.h` 不存在，也可以在 `include/dev.h` 中追加（放在对应模块的注释块下）。
 
 ---
 
@@ -58,49 +63,53 @@ src/{receiver}/{receiver}_main.c  — 接收方的 msg_handler switch
 
 ```c
 /**
- * @brief 处理来自 {sender} 的 {feature} 请求
+ * @brief 处理来自 {sender} 的 {feature} RPC 请求
  */
 static void handle_{feature}_req(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    /* 1. 解析请求 payload */
+    /* 1. 校验 payload */
     if (!msg->payload || msg->payload_len < sizeof(uint32_t))
     {
-        LOG_ERROR("{feature}: payload 无效");
-        /* 发送错误响应 */
-        uint32_t err = (uint32_t)ERRCODE_FAIL;
+        LOG_ERROR("{RECEIVER} {feature}: payload 无效");
+        /* 发送错误响应（NULL payload 表示失败） */
         dev_ipc_message_t *resp = dev_ipc_message_create(
             {RECEIVER}_MSG_TYPE_{FEATURE}_RESP,
             DEV_MODULE_ID_{RECEIVER},
             msg->src_module_id,
             msg->request_id,
-            g_memdup2(&err, sizeof(err)),
-            sizeof(err),
-            g_free
+            NULL, 0, NULL
         );
         dev_ipc_send_response(ctx, resp);
+        dev_ipc_message_free(resp);
+        dev_ipc_message_free(msg);
         return;
     }
 
-    /* 示例：payload 为 uint32_t 参数 */
+    /* 2. 解析请求 payload */
     uint32_t param;
     memcpy(&param, msg->payload, sizeof(uint32_t));
-    LOG_DEBUG("{feature}: 收到请求, param=%u", param);
+    LOG_DEBUG("{RECEIVER} {feature}: 收到请求, param=%u", param);
 
-    /* 2. 执行业务逻辑 */
+    /* 3. 执行业务逻辑 */
     /* TODO: 实际处理代码 */
-    uint32_t result = param * 2;  /* 示例 */
+    uint32_t result = param;  /* 示例 */
 
-    /* 3. 发送响应 */
+    /* 4. 发送响应 */
+    uint32_t *resp_payload = (uint32_t *)g_malloc(sizeof(uint32_t));
+    *resp_payload = result;
+
     dev_ipc_message_t *resp = dev_ipc_message_create(
         {RECEIVER}_MSG_TYPE_{FEATURE}_RESP,
         DEV_MODULE_ID_{RECEIVER},
         msg->src_module_id,
         msg->request_id,
-        g_memdup2(&result, sizeof(result)),
-        sizeof(result),
+        resp_payload,
+        sizeof(uint32_t),
         g_free
     );
     dev_ipc_send_response(ctx, resp);
+    dev_ipc_message_free(resp);
+    dev_ipc_message_free(msg);
 }
 ```
 
@@ -112,40 +121,47 @@ static void handle_{feature}_req(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
  */
 static void handle_{feature}_notify(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
+    (void)ctx;
     if (!msg->payload || msg->payload_len == 0)
     {
-        LOG_WARN("{feature} 通知: payload 为空");
+        LOG_WARN("{RECEIVER} {feature} 通知: payload 为空");
+        dev_ipc_message_free(msg);
         return;
     }
 
-    /* 解析通知内容 */
-    /* TODO: 按实际 payload 格式解析 */
-    LOG_INFO("{feature} 通知已收到，长度=%u", msg->payload_len);
+    /* TODO: 按实际 payload 格式解析并处理 */
+    LOG_INFO("{RECEIVER} {feature} 通知已收到，长度=%u", msg->payload_len);
 
-    /* 执行响应逻辑 */
-    /* TODO: 实际处理代码 */
+    dev_ipc_message_free(msg);
 }
 ```
 
-**在接收方的 `msg_handler` switch 中注册：**
+**在接收方的 `{receiver}_ipc_msg_handler` switch 中注册：**
 
 ```c
-void {receiver}_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+void {receiver}_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
+    if (!msg)
+    {
+        return;
+    }
+
     switch (msg->msg_type)
     {
-        /* 原有 case ... */
+        /* ---- 已有 case ---- */
 
-        case {RECEIVER}_MSG_TYPE_{FEATURE}_REQ:      /* RPC 模式 */
+        /* RPC 模式：handler 内部负责释放 msg */
+        case {RECEIVER}_MSG_TYPE_{FEATURE}_REQ:
             handle_{feature}_req(ctx, msg);
-            return;                                   /* 注意：handler 负责释放 msg */
+            return;
 
-        case {RECEIVER}_MSG_TYPE_{FEATURE}_NOTIFY:   /* 通知模式 */
+        /* 通知模式：handler 内部负责释放 msg */
+        case {RECEIVER}_MSG_TYPE_{FEATURE}_NOTIFY:
             handle_{feature}_notify(ctx, msg);
-            break;                                    /* 让外层统一 free */
+            return;
 
         default:
-            LOG_WARN("未知消息类型: 0x%08X", msg->msg_type);
+            LOG_WARN("{RECEIVER} 未知消息类型: 0x%08X", msg->msg_type);
             break;
     }
 
@@ -154,65 +170,64 @@ void {receiver}_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 ```
 
 **注意：**
-- RPC handler 内部调用 `dev_ipc_send_response()` 后 **不** 调用 `dev_ipc_message_free(msg)`（send_response 内部会处理）
-- 通知 handler 使用 `break`，由外层 `dev_ipc_message_free(msg)` 释放
+- 所有 case 处理完后，handler 内部负责调用 `dev_ipc_message_free(msg)`，使用 `return` 而非 `break`
+- RPC handler 发送响应后：先 `dev_ipc_message_free(resp)`，再 `dev_ipc_message_free(msg)`
+- 通知 handler 处理完成后：调用 `dev_ipc_message_free(msg)`
 
 ---
 
 ## 第五步：在发送方添加调用函数
 
-创建一个封装好的 API 函数，放在 `src/{sender}/{sender}_xxx.c` 中：
-
 ### 模式 A：同步 RPC 调用
 
 ```c
 /**
- * @brief 向 {receiver} 发起 {feature} RPC 请求
+ * @brief 向 {receiver} 发起 {feature} RPC 请求（同步等待响应）
  * @param ctx   本模块的 IPC 上下文
  * @param param 请求参数
- * @param result 输出：响应结果
+ * @param out_result 输出：响应结果（可为 NULL 时只关心成功/失败）
  * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL
  */
-int {sender}_{feature}_rpc(dev_ipc_context_t *ctx, uint32_t param, uint32_t *result)
+int {sender}_{feature}_rpc(dev_ipc_context_t *ctx, uint32_t param, uint32_t *out_result)
 {
-    if (!ctx || !result)
+    if (!ctx)
+    {
         return ERRCODE_FAIL;
+    }
 
     /* 1. 打包请求 payload */
-    uint32_t payload = param;
+    uint32_t *payload = (uint32_t *)g_malloc(sizeof(uint32_t));
+    *payload = param;
 
-    /* 2. 创建请求消息 */
+    /* 2. 创建请求消息（request_id 传 0，由 dev_ipc_query 自动分配） */
     dev_ipc_message_t *req = dev_ipc_message_create(
         {RECEIVER}_MSG_TYPE_{FEATURE}_REQ,
         DEV_MODULE_ID_{SENDER},
         DEV_MODULE_ID_{RECEIVER},
-        0,                          /* request_id 由 query 自动分配 */
-        g_memdup2(&payload, sizeof(payload)),
-        sizeof(payload),
+        0,
+        payload,
+        sizeof(uint32_t),
         g_free
     );
     if (!req)
+    {
         return ERRCODE_FAIL;
+    }
 
-    /* 3. 同步 RPC（阻塞，默认 5000ms 超时） */
-    dev_ipc_message_t *resp = dev_ipc_query(
-        ctx,
-        DEV_MODULE_ID_{RECEIVER},
-        req,
-        0                           /* 0 = 使用默认超时 5000ms */
-    );
+    /* 3. 同步 RPC（0 = 使用默认超时 DEV_IPC_QUERY_TIMEOUT_DEFAULT） */
+    dev_ipc_message_t *resp = dev_ipc_query(ctx, DEV_MODULE_ID_{RECEIVER}, req, 0);
     dev_ipc_message_free(req);
 
     if (!resp)
     {
-        LOG_ERROR("{feature} RPC 超时或失败");
+        LOG_ERROR("{SENDER} {feature} RPC 超时或失败");
         return ERRCODE_FAIL;
     }
 
     /* 4. 解析响应 */
-    if (resp->payload && resp->payload_len >= sizeof(uint32_t))
+    if (out_result && resp->payload && resp->payload_len >= sizeof(uint32_t))
     {
-        memcpy(result, resp->payload, sizeof(uint32_t));
+        memcpy(out_result, resp->payload, sizeof(uint32_t));
     }
 
     dev_ipc_message_free(resp);
@@ -225,16 +240,18 @@ int {sender}_{feature}_rpc(dev_ipc_context_t *ctx, uint32_t param, uint32_t *res
 ```c
 /**
  * @brief 向 {receiver} 发送 {feature} 通知（不等待响应）
- * @param ctx   本模块的 IPC 上下文
- * @param data  通知数据
- * @param len   数据长度
+ * @param ctx  本模块的 IPC 上下文
+ * @param data 通知 payload 数据
+ * @param len  数据长度（0 表示无 payload）
  */
 void {sender}_{feature}_notify(dev_ipc_context_t *ctx, const void *data, size_t len)
 {
     if (!ctx)
+    {
         return;
+    }
 
-    void *payload = len > 0 ? g_memdup2(data, len) : NULL;
+    void *payload = (data && len > 0) ? g_memdup2(data, len) : NULL;
 
     dev_ipc_message_t *msg = dev_ipc_message_create(
         {RECEIVER}_MSG_TYPE_{FEATURE}_NOTIFY,
@@ -246,10 +263,14 @@ void {sender}_{feature}_notify(dev_ipc_context_t *ctx, const void *data, size_t 
         payload ? g_free : NULL
     );
     if (!msg)
+    {
         return;
+    }
 
-    dev_ipc_send(ctx, DEV_MODULE_ID_{RECEIVER}, msg);
-    /* 注意：dev_ipc_send 内部不释放 msg，需要调用方释放 */
+    if (dev_ipc_send(ctx, DEV_MODULE_ID_{RECEIVER}, msg) != 0)
+    {
+        LOG_WARN("{SENDER} {feature} 通知发送失败");
+    }
     dev_ipc_message_free(msg);
 }
 ```
@@ -264,9 +285,12 @@ void {sender}_{feature}_notify(dev_ipc_context_t *ctx, const void *data, size_t 
 static void {sender}_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     /* 确认以下连接已存在（如没有则添加） */
-    dev_ipc_connect(ctx, DEV_MODULE_ID_{RECEIVER}, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_{RECEIVER});
+    if (dev_ipc_connect(ctx, DEV_MODULE_ID_{RECEIVER}, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_{RECEIVER}) != 0)
+    {
+        LOG_ERROR("{SENDER} 连接 {RECEIVER} 失败");
+    }
 
-    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
+    send_phase_response(ctx, msg);
 }
 ```
 
@@ -274,20 +298,21 @@ static void {sender}_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
 ## 第七步：声明到头文件（可选）
 
-如果调用函数需要跨文件使用，在 `src/{sender}/{sender}_xxx.h` 中声明：
+如果调用函数需要跨文件使用，在 `src/{sender}/{sender}_{feature}.h` 中声明：
 
 ```c
 /**
  * @brief 向 {receiver} 发起 {feature} RPC 请求
- * @param ctx   IPC 上下文
- * @param param 请求参数
- * @param result 输出结果
+ * @param ctx        IPC 上下文
+ * @param param      请求参数
+ * @param out_result 输出结果（可为 NULL）
  * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL
  */
-int {sender}_{feature}_rpc(dev_ipc_context_t *ctx, uint32_t param, uint32_t *result);
+int {sender}_{feature}_rpc(dev_ipc_context_t *ctx, uint32_t param, uint32_t *out_result);
 ```
 
-**注意：** 跨模块调用必须通过 IPC，不能直接 `#include` 对方模块的头文件。
+**注意：** 跨模块调用必须通过 IPC，不能直接 `#include` 对方模块的头文件（违反模块隔离规则）。
+只有 `include/` 目录下的公共头文件（如 `dev.h`、`cli.h`、`route.h`）才可以跨模块 include。
 
 ---
 
@@ -296,29 +321,27 @@ int {sender}_{feature}_rpc(dev_ipc_context_t *ctx, uint32_t param, uint32_t *res
 ```bash
 ./scripts/dev/build.sh
 
-# 运行并测试
 ./scripts/dev/start.sh
 
-# 观察日志中的 IPC 消息
-# 在合适时机触发调用，确认：
-# 1. 发送方日志：显示发送请求
-# 2. 接收方日志：显示收到请求并处理
-# 3. 发送方日志（RPC 模式）：显示收到响应
+# 触发调用，观察日志：
+# 1. 发送方：显示发送请求
+# 2. 接收方：显示收到请求并处理
+# 3. 发送方（RPC 模式）：显示收到响应
 ```
 
 ---
 
 ## 常见错误
 
-**错误：`dev_ipc_query` 超时**
-- 检查接收方 `msg_handler` 的 switch 中是否有对应 case
-- 检查接收方是否正确调用了 `dev_ipc_send_response()`（而非 `dev_ipc_send()`）
-- 确认 `request_id` 未被修改（resp 的 request_id 必须与 req 一致）
+**`dev_ipc_query` 超时**
+- 检查接收方 `{receiver}_ipc_msg_handler` 的 switch 中是否有对应 case
+- 检查接收方是否调用了 `dev_ipc_send_response()`（而非 `dev_ipc_send()`）
+- 确认 `request_id` 未被修改（resp 的 `request_id` 必须与 req 一致）
 
-**错误：接收方收不到消息**
-- 确认发送方 Phase 1 中已调用 `dev_ipc_connect()` 连接到接收方
-- 确认 `DEV_MODULE_PORT_{RECEIVER}` 与接收方 `module.conf` 的 port 一致
+**接收方收不到消息**
+- 确认发送方 Phase 1（`{sender}_on_start`）中已调用 `dev_ipc_connect()` 连接到接收方
+- 确认 `DEV_MODULE_PORT_{RECEIVER}` 与接收方 `resources/module.conf` 的 `port` 一致
 
-**错误：消息类型冲突**
-- 检查 `include/dev.h` 中同一大类下是否有重复子类值
-- 大类编号（0x000X）应与模块在系统中的序号对应，子类从 0x0001 开始递增
+**消息类型冲突**
+- 检查 `include/{receiver}.h`（或 `include/dev.h`）中同一大类下是否有重复子类值
+- 大类编号（`DEV_IPC_CATEGORY_{RECEIVER}`）与模块在系统中的序号对应，子类从 0x0001 开始递增

@@ -296,5 +296,43 @@
             </commands>
         </group>
 
+        <!-- ================================================================
+             Group 4: show route relay 命令
+             cfg-id: 1=bgp（按 BGP 模块过滤）
+             ================================================================ -->
+        <group group-id="4">
+            <elements>
+                <element type="keyword">
+                    <name>show</name>
+                    <description>Display system information</description>
+                </element>
+                <element type="keyword">
+                    <name>route</name>
+                    <description>Route module</description>
+                </element>
+                <element type="keyword">
+                    <name>relay</name>
+                    <description>Nexthop iteration relay watch table</description>
+                </element>
+                <element cfg-id="1" type="keyword">
+                    <name>bgp</name>
+                    <description>Filter by BGP module</description>
+                </element>
+            </elements>
+
+            <commands>
+                <!-- show route relay -->
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>global</views>
+                </command>
+                <!-- show route relay bgp -->
+                <command>
+                    <expression>1 2 3 4</expression>
+                    <views>global</views>
+                </command>
+            </commands>
+        </group>
+
     </command_groups>
 </configuration>

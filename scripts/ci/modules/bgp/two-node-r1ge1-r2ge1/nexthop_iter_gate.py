@@ -68,6 +68,39 @@ def _wait_route_state(
     )
 
 
+def _wait_relay_state(
+    rt: TopologyRuntime,
+    *,
+    device: str,
+    nexthop: str,
+    expect_resolved: bool,
+    timeout: int,
+    interval: int = 2,
+) -> None:
+    command = "show route relay bgp"
+    expect_str = "yes" if expect_resolved else "no"
+    deadline = time.time() + timeout
+    last_out = ""
+    while time.time() < deadline:
+        out = cmd(rt, device, command, strict=False)
+        last_out = out
+        line = _find_prefix_line(out, nexthop)
+        if line is None:
+            time.sleep(interval)
+            continue
+        got = line.strip().split()[-1].lower()
+        if got == expect_str:
+            return
+        time.sleep(interval)
+
+    raise RuntimeError(
+        f"{device} relay '{nexthop}' state mismatch after {timeout}s\n"
+        f"expect resolved={expect_str}\n"
+        f"command: {command}\n"
+        f"last output:\n{last_out}"
+    )
+
+
 def _cleanup_case_config(rt: TopologyRuntime, *, r1_peer_ip: str) -> None:
     step("Cleanup BGP/static config")
     run_cmds(
@@ -192,6 +225,14 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             timeout=12,
             interval=2,
         )
+        _wait_relay_state(
+            rt,
+            device="r1",
+            nexthop=NH_UNRESOLVED,
+            expect_resolved=False,
+            timeout=12,
+            interval=2,
+        )
 
         step("Add underlay resolving route on r1")
         run_cmds(
@@ -216,6 +257,14 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             timeout=30,
             interval=2,
         )
+        _wait_relay_state(
+            rt,
+            device="r1",
+            nexthop=NH_UNRESOLVED,
+            expect_resolved=True,
+            timeout=30,
+            interval=2,
+        )
 
         step("Remove underlay resolving route on r1")
         run_cmds(
@@ -237,6 +286,14 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             token=PFX,
             expect_valid=False,
             expect_best=False,
+            timeout=30,
+            interval=2,
+        )
+        _wait_relay_state(
+            rt,
+            device="r1",
+            nexthop=NH_UNRESOLVED,
+            expect_resolved=False,
             timeout=30,
             interval=2,
         )
