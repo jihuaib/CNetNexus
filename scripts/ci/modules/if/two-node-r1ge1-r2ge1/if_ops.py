@@ -228,4 +228,47 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         timeout=10,
     )
 
+    step("Restore baseline interface config on r1 GE-1")
+    run_cmds(
+        rt=rt,
+        device="r1",
+        strict=False,
+        commands=[
+            "config",
+            f"if {if_name}",
+            f"ip address {cfg_ip} {cfg_prefix}",
+            "no shutdown",
+            "exit",
+            "end",
+        ],
+    )
+    wait_checks(
+        rt,
+        [
+            {
+                "device": "r1",
+                "command": show_cmd,
+                "contains": [
+                    f"Interface {if_name} Detail:",
+                    "State      : UP",
+                    f"IP Address : {cfg_ip}/{cfg_prefix}",
+                ],
+                "label": "r1 GE-1 baseline restored",
+            },
+            {
+                "device": "r1",
+                "command": net_show,
+                "contains": [net_pfx, "Total 1 path(s)"],
+                "label": "r1 network route restored",
+            },
+            {
+                "device": "r1",
+                "command": host_show,
+                "contains": [host_pfx, "Total 1 path(s)"],
+                "label": "r1 host route restored",
+            },
+        ],
+        timeout=10,
+    )
+
     print("IF operation check passed.")

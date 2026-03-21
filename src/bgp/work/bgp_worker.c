@@ -17,6 +17,7 @@
 #include "bgp_cfg_apply.h"
 #include "bgp_cli.h"
 #include "bgp_conn.h"
+#include "bgp_fsm.h"
 #include "bgp_instance.h"
 #include "bgp_main.h"
 #include "bgp_pkt.h"
@@ -737,9 +738,6 @@ static void bgp_session_promote_sec(bgp_session_t *sess)
     sess->sec_conn = NULL;
 }
 
-/* 前向声明：connect-retry 调度辅助（定义在 bgp_handle_retry_timer 之前） */
-static void bgp_arm_retry(bgp_session_t *sess);
-
 // ============================================================================
 // BGP server 线程 — 事件处理函数
 // ============================================================================
@@ -859,9 +857,8 @@ static void bgp_handle_passive_accept(void)
         sess->pri_conn = conn;
     }
 
-    GList *af_peers = bgp_vrf_get_session_peers(vrf0, &from_addr);
-    bgp_pkt_send_open(conn, proto->as_number, vrf0->router_id, af_peers);
-    g_list_free(af_peers);
+    /* 触发 FSM 事件：发送 OPEN 并迁移状态 */
+    bgp_fsm_event(sess, conn, BGP_EVT_TCP_CONNECTION_CONFIRMED, g_bgp_local->epoll_fd);
 }
 
 /**
@@ -870,7 +867,6 @@ static void bgp_handle_passive_accept(void)
 static void bgp_handle_active_connect(bgp_conn_t *conn)
 {
     bgp_session_t *sess = conn->session;
-    bgp_protocol_t *proto = g_bgp_local->protocol;
 
     int err = 0;
     socklen_t len = sizeof(err);
@@ -882,15 +878,7 @@ static void bgp_handle_active_connect(bgp_conn_t *conn)
     if (err != 0)
     {
         LOG_WARN("BGP: Active connection to %s failed: %s (fd=%d)", addr_str, strerror(err), conn->fd);
-        bgp_conn_close(&sess->pri_conn);
-        if (sess->sec_conn)
-        {
-            bgp_session_promote_sec(sess);
-        }
-        else
-        {
-            bgp_arm_retry(sess);
-        }
+        bgp_fsm_event(sess, conn, BGP_EVT_TCP_CONNECTION_FAILS, g_bgp_local->epoll_fd);
         return;
     }
 
@@ -903,73 +891,15 @@ static void bgp_handle_active_connect(bgp_conn_t *conn)
     {
         LOG_INFO("BGP: Active TCP connection to %s established (fd=%d)", addr_str, conn->fd);
     }
+
+    /* 将 epoll 改为 EPOLLIN（接收 BGP 报文），清除连接中标志 */
     conn->is_connecting = FALSE;
     struct epoll_event ev;
     ev.events = EPOLLIN;
     ev.data.ptr = conn;
     epoll_ctl(g_bgp_local->epoll_fd, EPOLL_CTL_MOD, conn->fd, &ev);
 
-    if (proto)
-    {
-        bgp_vrf_t *vrf0 = bgp_protocol_get_vrf(proto, BGP_VRF_PUBLIC_ID);
-        GList *af_peers = vrf0 ? bgp_vrf_get_session_peers(vrf0, &sess->neighbor_addr) : NULL;
-        bgp_pkt_send_open(conn, proto->as_number, vrf0 ? vrf0->router_id : 0, af_peers);
-        g_list_free(af_peers);
-    }
-}
-
-/** bgp_rib_foreach_best 回调上下文：补发时使用 */
-typedef struct
-{
-    bgp_conn_t *conn;
-    uint32_t sent;
-} reannounce_ctx_t;
-
-/** bgp_rib_foreach_best 回调：向指定连接发送单条 best-route UPDATE */
-static void reannounce_best_cb(const bgp_rthead_t *head, const bgp_route_node_t *route, gpointer user_data)
-{
-    reannounce_ctx_t *ctx = user_data;
-    bgp_pkt_send_update(ctx->conn, &head->nlri, &route->attr, &route->nexthop);
-    ctx->sent++;
-}
-
-/**
- * @brief 邻居会话建连后，向该连接补发当前 AF best-route 快照
- */
-static void bgp_reannounce_best_to_conn(bgp_session_t *sess, bgp_conn_t *conn)
-{
-    if (!sess || !conn || conn->fd < 0 || !sess->vrf)
-    {
-        return;
-    }
-
-    reannounce_ctx_t ctx = {.conn = conn, .sent = 0};
-    GHashTableIter iter;
-    gpointer key, val;
-    g_hash_table_iter_init(&iter, sess->vrf->inst_hash);
-    while (g_hash_table_iter_next(&iter, &key, &val))
-    {
-        (void)key;
-        bgp_instance_t *inst = (bgp_instance_t *)val;
-        if (!inst || !inst->rib || !inst->peer_hash)
-        {
-            continue;
-        }
-
-        if (!g_hash_table_lookup(inst->peer_hash, &sess->neighbor_addr))
-        {
-            continue;
-        }
-
-        bgp_rib_foreach_best(inst->rib, reannounce_best_cb, &ctx);
-    }
-
-    if (ctx.sent > 0)
-    {
-        char nbr[64];
-        net_addr_to_str(&sess->neighbor_addr, nbr, sizeof(nbr));
-        LOG_INFO("BGP: Re-announced %u best route(s) to %s on session establish", ctx.sent, nbr);
-    }
+    bgp_fsm_event(sess, conn, BGP_EVT_TCP_CR_ACKED, g_bgp_local->epoll_fd);
 }
 
 /**
@@ -978,28 +908,22 @@ static void bgp_reannounce_best_to_conn(bgp_session_t *sess, bgp_conn_t *conn)
 static void bgp_handle_data(bgp_conn_t *conn)
 {
     bgp_session_t *sess = conn->session;
-    bgp_conn_t **slot = (sess->pri_conn == conn) ? &sess->pri_conn : &sess->sec_conn;
-    gboolean was_active = conn->is_active;
-    bgp_conn_state_t old_state = conn->state;
+    bgp_conn_state_t old_conn_state = conn->state;
+    int epoll_fd = g_bgp_local->epoll_fd;
 
     int ret = bgp_pkt_on_data(conn);
 
     if (ret == BGP_PKT_ON_DATA_COLLISION_CLOSE_ME)
     {
-        char addr_str[64];
-        net_addr_to_str(&conn->peer_addr, addr_str, sizeof(addr_str));
-        LOG_INFO("BGP: §6.8 collision: closing %s connection (fd=%d) with %s", conn->is_active ? "active" : "passive",
-                 conn->fd, addr_str);
-        bgp_conn_close(slot);
-        if (!sess->pri_conn && sess->sec_conn)
-        {
-            bgp_session_promote_sec(sess);
-        }
+        /* §6.8 碰撞检测：当前连接为败方，通知 FSM 关闭 */
+        bgp_fsm_event(sess, conn, BGP_EVT_OPEN_COLLISION_DUMP, epoll_fd);
         return;
     }
 
     if (ret == BGP_PKT_ON_DATA_COLLISION_CLOSE_OTHER)
     {
+        /* §6.8 碰撞检测：当前连接为胜方，直接关闭另一条连接 */
+        bgp_conn_t **slot = (sess->pri_conn == conn) ? &sess->pri_conn : &sess->sec_conn;
         bgp_conn_t **other_slot = (slot == &sess->pri_conn) ? &sess->sec_conn : &sess->pri_conn;
         if (*other_slot)
         {
@@ -1013,64 +937,32 @@ static void bgp_handle_data(bgp_conn_t *conn)
         {
             bgp_session_promote_sec(sess);
         }
+        /* 胜方继续：由下方状态变化检测触发 BGP_OPEN 事件 */
+    }
+    else if (ret < 0)
+    {
+        /* TCP 断开或协议错误：通知 FSM 关闭连接并调度重连 */
+        bgp_fsm_event(sess, conn, BGP_EVT_TCP_CONNECTION_FAILS, epoll_fd);
         return;
     }
 
-    if (ret < 0)
+    /* 根据 conn->state 变化触发对应 FSM 事件 */
+    if (old_conn_state == BGP_CONN_STATE_OPEN_SENT && conn->state == BGP_CONN_STATE_OPEN_CONFIRM)
     {
-        bgp_session_cancel_keepalive(sess, g_bgp_local->epoll_fd);
-        bgp_session_cancel_hold(sess, g_bgp_local->epoll_fd);
-
-        char addr_str[64];
-        net_addr_to_str(&conn->peer_addr, addr_str, sizeof(addr_str));
-        LOG_INFO("BGP: Connection with %s closed (fd=%d)", addr_str, conn->fd);
-        bgp_conn_close(slot);
-
-        if (!sess->pri_conn && !sess->sec_conn)
-        {
-            (void)bgp_vrf_purge_session_routes(sess->vrf, &sess->neighbor_addr);
-        }
-
-        if (was_active && !sess->pri_conn)
-        {
-            bgp_arm_retry(sess);
-        }
-        return;
+        /* bgp_pkt_on_data 已发 KEEPALIVE 并将 conn->state 置 OPEN_CONFIRM */
+        bgp_fsm_event(sess, conn, BGP_EVT_BGP_OPEN, epoll_fd);
     }
-
-    if (old_state != BGP_CONN_STATE_ESTABLISHED && conn->state == BGP_CONN_STATE_ESTABLISHED)
+    else if (old_conn_state == BGP_CONN_STATE_OPEN_CONFIRM && conn->state == BGP_CONN_STATE_ESTABLISHED)
     {
-        /* 记录会话建立时间 */
-        sess->established_at_usec = g_get_real_time();
-
-        bgp_protocol_t *proto = g_bgp_local->protocol;
-        bgp_vrf_t *vrf0 = proto ? bgp_protocol_get_vrf(proto, BGP_VRF_PUBLIC_ID) : NULL;
-        uint16_t ka_sec = vrf0 ? vrf0->keepalive : BGP_TIMER_DEFAULT_KEEPALIVE;
-        bgp_session_arm_keepalive(sess, g_bgp_local->epoll_fd, ka_sec);
-        if (sess->negotiated_hold > 0)
-        {
-            bgp_session_arm_hold(sess, g_bgp_local->epoll_fd, sess->negotiated_hold);
-        }
-
-        bgp_reannounce_best_to_conn(sess, conn);
+        /* bgp_pkt_on_data 已将 conn->state 置 ESTABLISHED */
+        bgp_fsm_event(sess, conn, BGP_EVT_KEEPALIVE_MSG, epoll_fd);
     }
-
-    if (sess->hold_reset_pending)
+    else if (conn->state == BGP_CONN_STATE_ESTABLISHED && sess->hold_reset_pending)
     {
+        /* KEEPALIVE/UPDATE in Established：直接重置 hold 定时器（FSM 表中为 NULL 条目） */
         sess->hold_reset_pending = FALSE;
         bgp_session_reset_hold(sess);
     }
-}
-
-// ============================================================================
-// connect-retry 定时器调度辅助
-// ============================================================================
-
-static void bgp_arm_retry(bgp_session_t *sess)
-{
-    bgp_vrf_t *vrf0 = bgp_protocol_get_vrf(g_bgp_local->protocol, BGP_VRF_PUBLIC_ID);
-    uint16_t retry_sec = vrf0 ? vrf0->connect_retry : BGP_TIMER_DEFAULT_CONNECT_RETRY;
-    bgp_session_arm_retry(sess, g_bgp_local->epoll_fd, retry_sec);
 }
 
 static void bgp_handle_ka_timer(bgp_session_t *sess)
@@ -1080,24 +972,7 @@ static void bgp_handle_ka_timer(bgp_session_t *sess)
     {
         LOG_PERROR("BGP: Failed to read ka timerfd");
     }
-
-    bgp_conn_t *conn = sess->pri_conn;
-    if (!conn || conn->fd < 0 || conn->state != BGP_CONN_STATE_ESTABLISHED)
-    {
-        return;
-    }
-
-    if (bgp_pkt_send_keepalive(conn) < 0)
-    {
-        char addr_str[64];
-        net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
-        LOG_WARN("BGP: Failed to send KEEPALIVE to %s, closing connection", addr_str);
-        bgp_session_cancel_keepalive(sess, g_bgp_local->epoll_fd);
-        bgp_session_cancel_hold(sess, g_bgp_local->epoll_fd);
-        bgp_conn_close(&sess->pri_conn);
-        (void)bgp_vrf_purge_session_routes(sess->vrf, &sess->neighbor_addr);
-        bgp_arm_retry(sess);
-    }
+    bgp_fsm_event(sess, sess->pri_conn, BGP_EVT_KEEPALIVE_TIMER_EXPIRED, g_bgp_local->epoll_fd);
 }
 
 static void bgp_handle_hold_timer(bgp_session_t *sess)
@@ -1107,17 +982,7 @@ static void bgp_handle_hold_timer(bgp_session_t *sess)
     {
         LOG_PERROR("BGP: Failed to read hold timerfd");
     }
-
-    char addr_str[64];
-    net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
-    LOG_WARN("BGP: neighbor %s hold time expired, closing session", addr_str);
-
-    bgp_session_cancel_keepalive(sess, g_bgp_local->epoll_fd);
-    bgp_session_cancel_hold(sess, g_bgp_local->epoll_fd);
-    bgp_conn_close(&sess->pri_conn);
-    bgp_conn_close(&sess->sec_conn);
-    (void)bgp_vrf_purge_session_routes(sess->vrf, &sess->neighbor_addr);
-    bgp_arm_retry(sess);
+    bgp_fsm_event(sess, sess->pri_conn, BGP_EVT_HOLD_TIMER_EXPIRED, g_bgp_local->epoll_fd);
 }
 
 static void bgp_handle_retry_timer(bgp_session_t *sess)
@@ -1128,24 +993,16 @@ static void bgp_handle_retry_timer(bgp_session_t *sess)
         LOG_PERROR("BGP: Failed to read timerfd");
     }
 
-    bgp_session_cancel_retry(sess, g_bgp_local->epoll_fd);
-
-    if (sess->pri_conn)
-    {
-        return;
-    }
-
+    /* 守卫：若邻居 AF 已删除，取消定时器并退出 */
     bgp_protocol_t *proto = g_bgp_local->protocol;
     bgp_vrf_t *vrf0 = proto ? bgp_protocol_get_vrf(proto, BGP_VRF_PUBLIC_ID) : NULL;
     if (!vrf0 || !bgp_vrf_neighbor_has_any_af(vrf0, &sess->neighbor_addr))
     {
+        bgp_session_cancel_retry(sess, g_bgp_local->epoll_fd);
         return;
     }
 
-    char addr_str[64];
-    net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
-    LOG_INFO("BGP: connect-retry expired, reconnecting neighbor %s", addr_str);
-    bgp_server_start_active_conn(sess);
+    bgp_fsm_event(sess, NULL, BGP_EVT_CONNECT_RETRY_EXPIRED, g_bgp_local->epoll_fd);
 }
 
 // ============================================================================
@@ -1249,26 +1106,7 @@ void bgp_server_start_active_conn(bgp_session_t *session)
     {
         return;
     }
-
-    if (session->pri_conn)
-    {
-        return;
-    }
-
-    bgp_conn_t *conn = bgp_conn_create(session);
-    int fd = bgp_conn_start_active(conn, &session->neighbor_addr, g_bgp_local->epoll_fd);
-    if (fd < 0)
-    {
-        char addr_str[64];
-        net_addr_to_str(&session->neighbor_addr, addr_str, sizeof(addr_str));
-        LOG_WARN("BGP: Failed to initiate active connection for neighbor %s, scheduling connect-retry", addr_str);
-        bgp_conn_destroy(conn);
-        bgp_arm_retry(session);
-        return;
-    }
-
-    session->pri_conn = conn;
-    (void)fd;
+    bgp_fsm_event(session, NULL, BGP_EVT_AUTO_START, g_bgp_local->epoll_fd);
 }
 
 void bgp_server_stop_session_conns(bgp_session_t *session)
@@ -1283,6 +1121,8 @@ void bgp_server_stop_session_conns(bgp_session_t *session)
     bgp_conn_close(&session->pri_conn);
     bgp_conn_close(&session->sec_conn);
     (void)bgp_vrf_purge_session_routes(session->vrf, &session->neighbor_addr);
+    bgp_session_reset_negotiated(session);
+    session->fsm_state = BGP_FSM_STATE_IDLE;
 }
 
 static void bgp_worker_runtime_cleanup(void)

@@ -153,6 +153,10 @@
         <group group-id="9">
             <elements>
                 <element type="keyword">
+                    <name>no</name>
+                    <description>Restore default behavior</description>
+                </element>
+                <element type="keyword">
                     <name>terminal</name>
                     <description>Terminal session options</description>
                 </element>
@@ -168,8 +172,12 @@
 
             <commands>
                 <command>
-                    <expression>1 2 3</expression>
-                    <views>global</views>
+                    <expression>2 3 4</expression>
+                    <views>user</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4</expression>
+                    <views>user</views>
                 </command>
             </commands>
         </group>

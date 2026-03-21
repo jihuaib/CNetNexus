@@ -15,6 +15,7 @@
 
 #include "bgp.h"
 #include "bgp_conn.h"
+#include "bgp_fsm.h"
 #include "bgp_pkt.h"
 #include "bgp_vrf.h"
 #include "log.h"
@@ -33,6 +34,9 @@ bgp_session_t *bgp_session_create(const net_addr_t *addr, uint32_t remote_as, bg
     sess->sec_conn = NULL;
     /* remote_id / local_router_id 初始值为 0（g_malloc0 已置零） */
     sess->negotiated_afs = NULL;
+
+    /* FSM 初始状态 */
+    sess->fsm_state = BGP_FSM_STATE_IDLE;
 
     /* 初始化三类 timerfd */
     sess->retry_timerfd = -1;

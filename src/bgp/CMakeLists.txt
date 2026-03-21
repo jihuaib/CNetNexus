@@ -11,6 +11,7 @@ set(BGP_SOURCES
     work/bgp_pkt_build_ipv4uc.c
     work/bgp_pkt_build_ipv6uc.c
     work/bgp_calc.c
+    work/bgp_fsm.c
     work/bgp_session.c
     work/bgp_instance.c
     work/bgp_vrf.c

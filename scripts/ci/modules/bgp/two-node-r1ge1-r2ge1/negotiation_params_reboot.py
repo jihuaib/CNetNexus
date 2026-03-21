@@ -273,4 +273,18 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         timeout=60,
     )
 
+    step("Cleanup BGP config")
+    run_cmds(
+        rt=rt,
+        device="r1",
+        strict=False,
+        commands=["config", "no bgp", "end"],
+    )
+    run_cmds(
+        rt=rt,
+        device="r2",
+        strict=False,
+        commands=["config", "no bgp", "end"],
+    )
+
     print("BGP negotiation parameter check passed.")

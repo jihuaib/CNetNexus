@@ -46,6 +46,11 @@ FAIL_STEP_HINTS = (
     "ERROR:",
     "missing:",
 )
+WARN_STEP_HINTS = (
+    "WARNING:",
+    "疑似未清理本次脚本配置",
+    "config drift",
+)
 TIMESTAMP_FMT = "%Y-%m-%dT%H:%M:%S.%fZ"
 MODULE_ROW_RE = re.compile(
     r"^\s*(?P<id>\d+)\s+(?P<name>[A-Za-z0-9_-]+)\s+(?P<phase>[A-Za-z0-9_-]+)\s+(?P<port>\d+)\s+(?P<ipc>[A-Za-z0-9_-]+)\s*$"
@@ -283,16 +288,15 @@ def diff_show_current_config(before: dict[str, str], after: dict[str, str]) -> d
 
 
 def report_config_drift(drifts: dict[str, str]) -> None:
+    print("===== STEP: Verify config cleanup =====")
     if not drifts:
-        print("===== STEP: Verify config cleanup =====")
         print("No configuration drift detected after check script.")
         return
 
-    print("===== WARNING: Config cleanup check =====", file=sys.stderr)
-    print("Detected config drift after script; 疑似未清理本次脚本配置。", file=sys.stderr)
+    print("WARNING: Detected config drift after script; 疑似未清理本次脚本配置。")
     for dev in sorted(drifts.keys()):
-        print(f"----- {dev} config diff -----", file=sys.stderr)
-        print(drifts[dev], file=sys.stderr)
+        print(f"WARNING: ----- {dev} config diff -----")
+        print(drifts[dev])
 
 
 def run_check(script: Path, rt: TopologyRuntime, top: dict[str, Any]) -> CheckResult:
@@ -326,7 +330,7 @@ def run_check(script: Path, rt: TopologyRuntime, top: dict[str, Any]) -> CheckRe
                     after_cfg = collect_show_current_config(rt, top, stage="after")
                     report_config_drift(diff_show_current_config(before_cfg, after_cfg))
                 except Exception as cfg_exc:
-                    print(f"WARNING: failed to run config cleanup check: {cfg_exc}", file=sys.stderr)
+                    print(f"WARNING: failed to run config cleanup check: {cfg_exc}")
                     if not run_failed:
                         raise
             print(f"===== CHECK PASS: {script} =====")
@@ -528,8 +532,15 @@ def render_step_blocks(steps: list[tuple[str, str]], open_all: bool) -> str:
     for i, (title, content) in enumerate(steps, start=1):
         open_attr = " open" if open_all or i == 1 else ""
         step_text = f"{title}\n{content}"
-        status = "fail" if any(token in step_text for token in FAIL_STEP_HINTS) else "pass"
-        summary_cls = "step-summary-fail" if status == "fail" else "step-summary-pass"
+        if any(token in step_text for token in FAIL_STEP_HINTS):
+            status = "fail"
+            summary_cls = "step-summary-fail"
+        elif any(token in step_text for token in WARN_STEP_HINTS):
+            status = "warn"
+            summary_cls = "step-summary-warn"
+        else:
+            status = "pass"
+            summary_cls = "step-summary-pass"
         safe_title = html.escape(title)
         safe_content = html.escape(content.rstrip("\n")) or "(no output)"
         blocks.append(
@@ -575,6 +586,8 @@ def write_check_html(path: Path, result: CheckResult, *, index: int) -> None:
       --muted: #4b5563;
       --ok: #12754b;
       --ok-bg: #e9f8f0;
+      --warn: #a16207;
+      --warn-bg: #fff8e6;
       --bad: #b42318;
       --bad-bg: #fdeceb;
       --mono-bg: #0f172a;
@@ -666,8 +679,10 @@ def write_check_html(path: Path, result: CheckResult, *, index: int) -> None:
       border-radius: 8px;
     }}
     .step-pass {{ border-left-color: var(--ok); }}
+    .step-warn {{ border-left-color: var(--warn); }}
     .step-fail {{ border-left-color: var(--bad); }}
     .step-summary-pass {{ color: var(--ok); }}
+    .step-summary-warn {{ color: var(--warn); }}
     .step-summary-fail {{ color: var(--bad); }}
     pre {{
       margin: 0;

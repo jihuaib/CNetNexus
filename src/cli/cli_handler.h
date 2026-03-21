@@ -22,6 +22,7 @@ typedef enum
 } cli_input_state_t;
 
 #define CLI_PROMPT_STACK_DEPTH 8
+#define CLI_PAGER_DEFAULT_LINES 24
 
 // Client session structure
 typedef struct

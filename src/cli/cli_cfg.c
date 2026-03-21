@@ -706,12 +706,19 @@ static void handle_show_context(cli_session_t *session)
 }
 
 /**
- * @brief terminal length 0 (group_id=9)：关闭当前会话分页输出
+ * @brief terminal length 0 / no terminal length 0 (group_id=9)：切换当前会话分页输出
  */
-static void handle_terminal_length_zero(cli_session_t *session)
+static void handle_terminal_length_zero(cli_session_t *session, uint8_t flags)
 {
     if (!session)
     {
+        return;
+    }
+
+    if (flags & CLI_PAYLOAD_FLAG_NO_CMD)
+    {
+        session->pager_lines_per_page = CLI_PAGER_DEFAULT_LINES;
+        cli_send_message(session, "CLI pager restored to default for this session.\r\n");
         return;
     }
 
@@ -791,7 +798,7 @@ int cli_handle(dev_ipc_message_t *msg, cli_session_t *session)
             handle_show_context(session);
             break;
         case CLI_GROUP_ID_TERMINAL_LENGTH_ZERO:
-            handle_terminal_length_zero(session);
+            handle_terminal_length_zero(session, parser.flags);
             break;
         default:
             LOG_WARN("Unknown group_id: %u", parser.group_id);

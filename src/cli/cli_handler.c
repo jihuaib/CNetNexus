@@ -176,7 +176,6 @@ void send_prompt(cli_session_t *session)
 // Pager (--More--) implementation
 // ============================================================================
 
-#define CLI_PAGER_DEFAULT_LINES 24
 #define CLI_PAGER_PROMPT "--More--"
 
 // Count the number of lines in a string (count \n occurrences)

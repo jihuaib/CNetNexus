@@ -11,6 +11,7 @@
 #include <stdint.h>
 
 #include "bgp_conn.h"
+#include "bgp_fsm.h"
 #include "bit.h"
 #include "net_addr.h"
 
@@ -95,7 +96,8 @@ typedef struct bgp_session
 
     gint64 established_at_usec; /**< 会话最近一次进入 ESTABLISHED 状态的时间戳（g_get_real_time，0 表示未建立） */
 
-    bgp_vrf_t *vrf; /**< 所属 VRF（借用引用，不持有所有权） */
+    bgp_vrf_t *vrf;            /**< 所属 VRF（借用引用，不持有所有权） */
+    bgp_fsm_state_t fsm_state; /**< RFC 4271 §8 FSM 当前状态 */
 } bgp_session_t;
 
 /**

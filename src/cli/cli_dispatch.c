@@ -21,6 +21,9 @@
 #include "errcode.h"
 #include "log.h"
 
+/* 与 src/dev/dev_cli.h 中 DEV_CLI_GROUP_ID_PING 保持一致。 */
+#define DEV_CLI_GROUP_ID_PING_COMPAT 5
+
 /* ========================================================================= */
 /* TLV 载荷写入辅助函数                                                       */
 /* ========================================================================= */
@@ -448,6 +451,8 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
     LOG_DEBUG("Sending query to module 0x%08X...", result->module_id);
 
     GString *full_output = g_string_new("");
+    gboolean stream_live_output =
+        (result->module_id == DEV_MODULE_ID_DEV && result->group_id == DEV_CLI_GROUP_ID_PING_COMPAT);
     int done = 0;
 
     while (!done)
@@ -473,7 +478,14 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
             /* 最终响应块 */
             if (response->payload)
             {
-                g_string_append(full_output, response->payload);
+                if (stream_live_output)
+                {
+                    cli_send_message(session, response->payload);
+                }
+                else
+                {
+                    g_string_append(full_output, response->payload);
+                }
             }
 
             /* 自动视图切换：响应为空 + 命令有目标视图名（context-out 可选） */
@@ -512,7 +524,14 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
             /* 部分响应 - 追加并请求更多 */
             if (response->payload)
             {
-                g_string_append(full_output, response->payload);
+                if (stream_live_output)
+                {
+                    cli_send_message(session, response->payload);
+                }
+                else
+                {
+                    g_string_append(full_output, response->payload);
+                }
             }
             dev_ipc_message_free(response);
 
@@ -531,7 +550,7 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
     }
 
     /* 输出结果 */
-    if (full_output->len > 0)
+    if (!stream_live_output && full_output->len > 0)
     {
         cli_pager_output(session, full_output->str);
     }

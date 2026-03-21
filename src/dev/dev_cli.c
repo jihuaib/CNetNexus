@@ -23,6 +23,8 @@
 #include "path_utils.h"
 
 static gint g_reboot_in_progress = 0;
+static FILE *g_ping_stream_fp = NULL;
+static int g_ping_stream_prefixed = 0;
 
 // ============================================================================
 // 内部辅助函数：show 命令
@@ -175,16 +177,61 @@ static gboolean show_module_callback(gpointer key, gpointer value, gpointer data
 // 发送 CLI 响应辅助
 // ============================================================================
 
-static void dev_send_cli_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, const char *text)
+static void dev_send_cli_response_with_type(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, uint32_t msg_type,
+                                            const char *text)
 {
     char *resp_data = g_strdup(text);
-    dev_ipc_message_t *resp_msg = dev_ipc_message_create(CLI_MSG_TYPE_RESP, DEV_MODULE_ID_DEV, msg->src_module_id,
+    dev_ipc_message_t *resp_msg = dev_ipc_message_create(msg_type, DEV_MODULE_ID_DEV, msg->src_module_id,
                                                          msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
     if (resp_msg)
     {
         dev_ipc_send_response(ctx, resp_msg);
         dev_ipc_message_free(resp_msg);
     }
+}
+
+static void dev_send_cli_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, const char *text)
+{
+    dev_send_cli_response_with_type(ctx, msg, CLI_MSG_TYPE_RESP, text);
+}
+
+static int ping_stream_send_next(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+{
+    if (!g_ping_stream_fp)
+    {
+        dev_send_cli_response(ctx, msg, "");
+        return ERRCODE_SUCCESS;
+    }
+
+    char line[256];
+    if (!fgets(line, sizeof(line), g_ping_stream_fp))
+    {
+        pclose(g_ping_stream_fp);
+        g_ping_stream_fp = NULL;
+        g_ping_stream_prefixed = 0;
+        dev_send_cli_response_with_type(ctx, msg, CLI_MSG_TYPE_RESP, "");
+        return ERRCODE_SUCCESS;
+    }
+
+    size_t len = strlen(line);
+    if (len > 0 && line[len - 1] == '\n')
+    {
+        line[--len] = '\0';
+    }
+
+    char out[320];
+    if (!g_ping_stream_prefixed)
+    {
+        g_ping_stream_prefixed = 1;
+        snprintf(out, sizeof(out), "\r\n%s\r\n", line);
+    }
+    else
+    {
+        snprintf(out, sizeof(out), "%s\r\n", line);
+    }
+
+    dev_send_cli_response_with_type(ctx, msg, CLI_MSG_TYPE_RESP_MORE, out);
+    return ERRCODE_SUCCESS;
 }
 
 // ============================================================================
@@ -577,39 +624,29 @@ static int handle_ping(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_p
         return ERRCODE_FAIL;
     }
 
-    /* 构造 ping 命令并执行 */
-    char cmd[128];
-    snprintf(cmd, sizeof(cmd), "ping -c 4 -W 2 %s 2>&1", ip);
+    if (g_ping_stream_fp)
+    {
+        pclose(g_ping_stream_fp);
+        g_ping_stream_fp = NULL;
+        g_ping_stream_prefixed = 0;
+    }
 
-    FILE *fp = popen(cmd, "r");
-    if (!fp)
+    /* 构造 ping 命令并执行（优先 stdbuf 行缓冲，不可用则回退原生 ping） */
+    char cmd[320];
+    snprintf(cmd, sizeof(cmd),
+             "sh -c 'if command -v stdbuf >/dev/null 2>&1; then exec stdbuf -oL ping -c 4 -W 2 %s; "
+             "else exec ping -c 4 -W 2 %s; fi' 2>&1",
+             ip, ip);
+
+    g_ping_stream_fp = popen(cmd, "r");
+    if (!g_ping_stream_fp)
     {
         dev_send_cli_response(ctx, msg, "Error: failed to execute ping command\r\n");
         return ERRCODE_FAIL;
     }
+    g_ping_stream_prefixed = 0;
 
-    char result[CLI_MAX_RESP_LEN];
-    size_t off = 0;
-    result[0] = '\0';
-
-    /* 首行空行 */
-    off += (size_t)snprintf(result + off, sizeof(result) - off, "\r\n");
-
-    char line[256];
-    while (fgets(line, sizeof(line), fp) != NULL && off < sizeof(result) - 4)
-    {
-        /* 去掉行尾 \n，统一替换为 \r\n */
-        size_t len = strlen(line);
-        if (len > 0 && line[len - 1] == '\n')
-        {
-            line[--len] = '\0';
-        }
-        off += (size_t)snprintf(result + off, sizeof(result) - off, "%s\r\n", line);
-    }
-    pclose(fp);
-
-    dev_send_cli_response(ctx, msg, result);
-    return ERRCODE_SUCCESS;
+    return ping_stream_send_next(ctx, msg);
 }
 
 // ============================================================================
@@ -662,11 +699,21 @@ int dev_cli_handle_show_config(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
 int dev_cli_handle_continue(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
+    if (g_ping_stream_fp)
+    {
+        return ping_stream_send_next(ctx, msg);
+    }
     return cli_chunk_stream_continue(&g_dev_local->show_stream, ctx, DEV_MODULE_ID_DEV, msg);
 }
 
 void dev_cli_cleanup_state(void)
 {
+    if (g_ping_stream_fp)
+    {
+        pclose(g_ping_stream_fp);
+        g_ping_stream_fp = NULL;
+        g_ping_stream_prefixed = 0;
+    }
     cli_chunk_stream_reset(&g_dev_local->show_stream);
 }
 

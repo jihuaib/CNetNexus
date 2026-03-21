@@ -102,4 +102,18 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
     step("Wait dual-link BGP sessions after reboot")
     wait_checks(rt, session_checks, timeout=30)
 
+    step("Cleanup BGP config")
+    run_cmds(
+        rt=rt,
+        device="a",
+        strict=False,
+        commands=["config", "no bgp", "end"],
+    )
+    run_cmds(
+        rt=rt,
+        device="b",
+        strict=False,
+        commands=["config", "no bgp", "end"],
+    )
+
     print("BGP dual-peer reboot check passed.")

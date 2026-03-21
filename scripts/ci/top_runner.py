@@ -117,6 +117,8 @@ class NetNexusCli:
 
     def disable_pager(self, timeout: int | None = None) -> None:
         eff_timeout = timeout if timeout is not None else min(self.cmd_timeout, 8)
+        # terminal-length command is user-view scoped; ensure we are not left in sub-views.
+        self.cmd("end", timeout=eff_timeout, strict=False)
         self.cmd(PAGER_DISABLE_CMD, timeout=eff_timeout, strict=True)
 
     def close(self) -> None:
