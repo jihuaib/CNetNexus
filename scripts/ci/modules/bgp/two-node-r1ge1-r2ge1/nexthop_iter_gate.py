@@ -101,7 +101,7 @@ def _wait_relay_state(
     )
 
 
-def _cleanup_case_config(rt: TopologyRuntime, *, r1_peer_ip: str) -> None:
+def _cleanup_case_config(rt: TopologyRuntime, *, r1_peer_ip: str, r2_peer_ip: str) -> None:
     step("Cleanup BGP/static config")
     run_cmds(
         rt=rt,
@@ -121,6 +121,7 @@ def _cleanup_case_config(rt: TopologyRuntime, *, r1_peer_ip: str) -> None:
         commands=[
             "config",
             f"no route ipv4 {PFX_ADDR} {PFX_MASK} {NH_UNRESOLVED}",
+            f"no route ipv4 {NH_UNRESOLVED} {NH_MASK} {r2_peer_ip}",
             "no bgp",
             "end",
         ],
@@ -188,7 +189,19 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             timeout=30,
         )
 
-        step("Inject route on r2 with initially unreachable BGP nexthop")
+        step("Add resolver route on r2 for static import")
+        run_cmds(
+            rt=rt,
+            device="r2",
+            strict=False,
+            commands=[
+                "config",
+                f"route ipv4 {NH_UNRESOLVED} {NH_MASK} {r2_peer_ip}",
+                "end",
+            ],
+        )
+
+        step("Inject route on r2 with unresolved nexthop for r1")
         run_cmds(
             rt=rt,
             device="r2",
@@ -300,4 +313,4 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
 
         print("BGP nexthop iteration gate check passed.")
     finally:
-        _cleanup_case_config(rt, r1_peer_ip=r1_peer_ip)
+        _cleanup_case_config(rt, r1_peer_ip=r1_peer_ip, r2_peer_ip=r2_peer_ip)

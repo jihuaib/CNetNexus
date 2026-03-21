@@ -355,8 +355,13 @@ def run_check(script: Path, rt: TopologyRuntime, top: dict[str, Any]) -> CheckRe
             run_failed = False
             try:
                 run_fn(rt, top)
-            except Exception:
+            except Exception as run_exc:
                 run_failed = True
+                print(
+                    "ERROR: check script raised; runner will continue post-check cleanup/diff before final FAIL: "
+                    f"{type(run_exc).__name__}: {run_exc}",
+                    file=sys.stderr,
+                )
                 raise
             finally:
                 try:
