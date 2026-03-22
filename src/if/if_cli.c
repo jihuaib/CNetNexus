@@ -455,6 +455,61 @@ void if_cli_cleanup_state(void)
     cli_chunk_stream_reset(&g_if_local->show_stream);
 }
 
+static gint compare_if_entry_name(gconstpointer a, gconstpointer b)
+{
+    const if_map_entry_t *ea = (const if_map_entry_t *)a;
+    const if_map_entry_t *eb = (const if_map_entry_t *)b;
+    return g_ascii_strcasecmp(ea->logical_name, eb->logical_name);
+}
+
+void if_cli_handle_query_candidates(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+{
+    uint32_t query_id = 0;
+    if (msg->payload && msg->payload_len >= sizeof(uint32_t))
+    {
+        uint32_t net_id = 0;
+        memcpy(&net_id, msg->payload, sizeof(uint32_t));
+        query_id = g_ntohl(net_id);
+    }
+
+    GByteArray *buf = g_byte_array_new();
+    if (query_id == 1 && g_if_local && g_if_local->interface_map.all_entries)
+    {
+        GList *entries = g_hash_table_get_values(g_if_local->interface_map.all_entries);
+        entries = g_list_sort(entries, compare_if_entry_name);
+
+        for (GList *node = entries; node; node = node->next)
+        {
+            const if_map_entry_t *e = (const if_map_entry_t *)node->data;
+            if (!e || strcmp(e->logical_name, "null0") == 0)
+            {
+                continue;
+            }
+            g_byte_array_append(buf, (const guint8 *)e->logical_name, (guint)strlen(e->logical_name) + 1);
+        }
+        g_list_free(entries);
+    }
+
+    guint8 nul = '\0';
+    g_byte_array_append(buf, &nul, 1);
+
+    guint payload_len = buf->len;
+    uint8_t *payload = g_byte_array_free(buf, FALSE);
+
+    dev_ipc_message_t *resp = dev_ipc_message_create(CLI_MSG_TYPE_QUERY_CANDIDATES_RESP, DEV_MODULE_ID_IF,
+                                                     msg->src_module_id, msg->request_id, payload, payload_len, g_free);
+    if (resp)
+    {
+        dev_ipc_send_response(ctx, resp);
+        dev_ipc_message_free(resp);
+    }
+    else
+    {
+        g_free(payload);
+    }
+    dev_ipc_message_free(msg);
+}
+
 int if_cli_handle_message(dev_ipc_message_t *msg)
 {
     if (!msg || !msg->payload)

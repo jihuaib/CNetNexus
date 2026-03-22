@@ -55,9 +55,6 @@ if_type_t if_detect_type(const char *ifname);
 // Get interface type as string
 const char *if_type_to_string(if_type_t type);
 
-// List all available interfaces
-int if_list(if_info_t **interfaces, int *count);
-
 // Get detailed interface information
 int if_get_info(const char *ifname, if_info_t *info);
 
@@ -84,8 +81,5 @@ int if_blackhole_route_add(sa_family_t family, const void *prefix_bin, uint8_t p
 
 // 撤销 Linux 黑洞路由
 int if_blackhole_route_del(sa_family_t family, const void *prefix_bin, uint8_t prefix_len);
-
-// Global interface context
-extern char g_current_interface[IFNAMSIZ];
 
 #endif // IF_H

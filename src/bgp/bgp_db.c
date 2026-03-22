@@ -40,6 +40,8 @@ static const db_column_def_t BGP_SESSION_COLS[] = {
     {"remote_as", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
     {"vrf_id", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},
     {"open_caps", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "3"}, /* 默认值 3 = AS4(bit0) + Route-Refresh(bit1) */
+    {"source_interface", DB_TYPE_TEXT, DB_COL_NONE, NULL},
+    {"ebgp_multihop", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},
 };
 
 /* bgp_session 表定义 */
@@ -164,6 +166,8 @@ static void restore_sessions(dev_ipc_context_t *ctx)
         uint32_t as_val = (uint32_t)db_row_get_int(row, "remote_as", 0);
         uint32_t vrf_id = (uint32_t)db_row_get_int(row, "vrf_id", BGP_VRF_PUBLIC_ID);
         uint32_t open_caps = (uint32_t)db_row_get_int(row, "open_caps", (int64_t)BGP_SESS_CAP_DEFAULT);
+        const char *source_if = db_row_get_text(row, "source_interface", "");
+        uint32_t ebgp_multihop = (uint32_t)db_row_get_int(row, "ebgp_multihop", 0);
 
         if (!ip_val)
         {
@@ -207,6 +211,40 @@ static void restore_sessions(dev_ipc_context_t *ctx)
             cap_apply.u.open_cap.addr = nb_addr;
             cap_apply.u.open_cap.cap_bit = cap_bits[c];
             (void)bgp_worker_dispatch_apply(&cap_apply);
+        }
+
+        if (source_if && source_if[0] != '\0')
+        {
+            bgp_apply_cmd_t src_if_apply;
+            memset(&src_if_apply, 0, sizeof(src_if_apply));
+            src_if_apply.group_id = BGP_CLI_GROUP_ID_SOURCE_IF;
+            src_if_apply.isNo = false;
+            src_if_apply.vrf_id = vrf_id;
+            src_if_apply.u.source_if.addr = nb_addr;
+            snprintf(src_if_apply.u.source_if.if_name, sizeof(src_if_apply.u.source_if.if_name), "%s", source_if);
+            if (bgp_worker_dispatch_apply(&src_if_apply) != 0 || src_if_apply.rc != BGP_APPLY_RC_OK)
+            {
+                LOG_WARN("BGP restore: neighbor %s source-interface %s apply failed", ip_val, source_if);
+            }
+        }
+
+        if (ebgp_multihop > 255)
+        {
+            LOG_WARN("BGP restore: neighbor %s ebgp-multihop %u out of range, skipping", ip_val, ebgp_multihop);
+        }
+        else if (ebgp_multihop > 0)
+        {
+            bgp_apply_cmd_t mh_apply;
+            memset(&mh_apply, 0, sizeof(mh_apply));
+            mh_apply.group_id = BGP_CLI_GROUP_ID_EBGP_MULTIHOP;
+            mh_apply.isNo = false;
+            mh_apply.vrf_id = vrf_id;
+            mh_apply.u.ebgp_multihop.addr = nb_addr;
+            mh_apply.u.ebgp_multihop.ttl = (uint8_t)(ebgp_multihop & 0xFFu);
+            if (bgp_worker_dispatch_apply(&mh_apply) != 0 || mh_apply.rc != BGP_APPLY_RC_OK)
+            {
+                LOG_WARN("BGP restore: neighbor %s ebgp-multihop %u apply failed", ip_val, ebgp_multihop);
+            }
         }
     }
 
@@ -1040,6 +1078,131 @@ int bgp_db_set_session_caps(dev_ipc_context_t *ctx, uint32_t vrf_id, const char 
     }
 
     LOG_INFO("BGP session neighbor=%s open_caps=0x%02X written", neighbor_ip, open_caps);
+    return 0;
+}
+
+int bgp_db_set_session_source_if(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *neighbor_ip, const char *if_name)
+{
+    if (!ctx || !neighbor_ip || !if_name)
+    {
+        return -1;
+    }
+
+    db_condition_t key_conditions[] = {
+        {.field_name = "neighbor_ip", .op = DB_CMP_EQ, .value = db_value_text(neighbor_ip)},
+        {.field_name = "vrf_id", .op = DB_CMP_EQ, .value = db_value_int((int64_t)vrf_id)},
+    };
+    db_filter_t key_filter = {.conditions = key_conditions, .num_conditions = G_N_ELEMENTS(key_conditions)};
+
+    db_record_t *rec = db_record_new();
+    db_record_set_text(rec, "source_interface", if_name);
+
+    int rows = db_rpc_update_record(ctx, BGP_TABLE_SESSION, rec, &key_filter);
+    db_record_free(rec);
+    db_value_free(&key_conditions[0].value);
+    db_value_free(&key_conditions[1].value);
+
+    if (rows <= 0)
+    {
+        LOG_ERROR("BGP failed to write session source-interface vrf_id=%u neighbor=%s if=%s", vrf_id, neighbor_ip,
+                  if_name);
+        return -1;
+    }
+
+    LOG_INFO("BGP session source-interface vrf_id=%u neighbor=%s if=%s written", vrf_id, neighbor_ip, if_name);
+    return 0;
+}
+
+int bgp_db_del_session_source_if(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *neighbor_ip)
+{
+    if (!ctx || !neighbor_ip)
+    {
+        return -1;
+    }
+
+    db_condition_t key_conditions[] = {
+        {.field_name = "neighbor_ip", .op = DB_CMP_EQ, .value = db_value_text(neighbor_ip)},
+        {.field_name = "vrf_id", .op = DB_CMP_EQ, .value = db_value_int((int64_t)vrf_id)},
+    };
+    db_filter_t key_filter = {.conditions = key_conditions, .num_conditions = G_N_ELEMENTS(key_conditions)};
+
+    db_record_t *rec = db_record_new();
+    db_record_set_text(rec, "source_interface", "");
+
+    int rows = db_rpc_update_record(ctx, BGP_TABLE_SESSION, rec, &key_filter);
+    db_record_free(rec);
+    db_value_free(&key_conditions[0].value);
+    db_value_free(&key_conditions[1].value);
+
+    if (rows <= 0)
+    {
+        LOG_ERROR("BGP failed to clear session source-interface vrf_id=%u neighbor=%s", vrf_id, neighbor_ip);
+        return -1;
+    }
+
+    LOG_INFO("BGP session source-interface vrf_id=%u neighbor=%s cleared", vrf_id, neighbor_ip);
+    return 0;
+}
+
+int bgp_db_set_session_ebgp_multihop(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *neighbor_ip, uint8_t ttl)
+{
+    if (!ctx || !neighbor_ip || ttl == 0)
+    {
+        return -1;
+    }
+
+    db_condition_t key_conditions[] = {
+        {.field_name = "neighbor_ip", .op = DB_CMP_EQ, .value = db_value_text(neighbor_ip)},
+        {.field_name = "vrf_id", .op = DB_CMP_EQ, .value = db_value_int((int64_t)vrf_id)},
+    };
+    db_filter_t key_filter = {.conditions = key_conditions, .num_conditions = G_N_ELEMENTS(key_conditions)};
+
+    db_record_t *rec = db_record_new();
+    db_record_set_int(rec, "ebgp_multihop", (int64_t)ttl);
+
+    int rows = db_rpc_update_record(ctx, BGP_TABLE_SESSION, rec, &key_filter);
+    db_record_free(rec);
+    db_value_free(&key_conditions[0].value);
+    db_value_free(&key_conditions[1].value);
+
+    if (rows <= 0)
+    {
+        LOG_ERROR("BGP failed to write session ebgp-multihop vrf_id=%u neighbor=%s ttl=%u", vrf_id, neighbor_ip, ttl);
+        return -1;
+    }
+
+    LOG_INFO("BGP session ebgp-multihop vrf_id=%u neighbor=%s ttl=%u written", vrf_id, neighbor_ip, ttl);
+    return 0;
+}
+
+int bgp_db_del_session_ebgp_multihop(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *neighbor_ip)
+{
+    if (!ctx || !neighbor_ip)
+    {
+        return -1;
+    }
+
+    db_condition_t key_conditions[] = {
+        {.field_name = "neighbor_ip", .op = DB_CMP_EQ, .value = db_value_text(neighbor_ip)},
+        {.field_name = "vrf_id", .op = DB_CMP_EQ, .value = db_value_int((int64_t)vrf_id)},
+    };
+    db_filter_t key_filter = {.conditions = key_conditions, .num_conditions = G_N_ELEMENTS(key_conditions)};
+
+    db_record_t *rec = db_record_new();
+    db_record_set_int(rec, "ebgp_multihop", 0);
+
+    int rows = db_rpc_update_record(ctx, BGP_TABLE_SESSION, rec, &key_filter);
+    db_record_free(rec);
+    db_value_free(&key_conditions[0].value);
+    db_value_free(&key_conditions[1].value);
+
+    if (rows <= 0)
+    {
+        LOG_ERROR("BGP failed to clear session ebgp-multihop vrf_id=%u neighbor=%s", vrf_id, neighbor_ip);
+        return -1;
+    }
+
+    LOG_INFO("BGP session ebgp-multihop vrf_id=%u neighbor=%s cleared", vrf_id, neighbor_ip);
     return 0;
 }
 

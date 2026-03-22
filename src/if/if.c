@@ -23,9 +23,6 @@
 #include "if_map.h"
 #include "log.h"
 
-// Current interface context (for interface mode)
-char g_current_interface[IFNAMSIZ] = {0};
-
 // Detect interface type by reading /sys/class/net/<ifname>/type
 if_type_t if_detect_type(const char *ifname)
 {
@@ -103,57 +100,6 @@ const char *if_type_to_string(if_type_t type)
         default:
             return "Unknown";
     }
-}
-
-// List all available interfaces
-int if_list(if_info_t **interfaces, int *count)
-{
-    struct ifaddrs *ifaddr, *ifa;
-    int n = 0;
-
-    if (getifaddrs(&ifaddr) == -1)
-    {
-        return ERRCODE_FAIL;
-    }
-
-    // Count interfaces
-    for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next)
-    {
-        if (ifa->ifa_addr == NULL)
-        {
-            continue;
-        }
-        if (ifa->ifa_addr->sa_family == AF_PACKET)
-        {
-            n++;
-        }
-    }
-
-    *interfaces = g_malloc0(sizeof(if_info_t) * n);
-    if (*interfaces == NULL)
-    {
-        freeifaddrs(ifaddr);
-        return ERRCODE_FAIL;
-    }
-
-    // Fill interface information
-    int idx = 0;
-    for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next)
-    {
-        if (ifa->ifa_addr == NULL)
-        {
-            continue;
-        }
-        if (ifa->ifa_addr->sa_family == AF_PACKET)
-        {
-            if_get_info(ifa->ifa_name, &(*interfaces)[idx]);
-            idx++;
-        }
-    }
-
-    *count = n;
-    freeifaddrs(ifaddr);
-    return ERRCODE_SUCCESS;
 }
 
 // Get detailed interface information

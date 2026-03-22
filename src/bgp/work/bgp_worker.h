@@ -12,6 +12,7 @@
 #include "bgp.h"
 #include "bgp_instance.h"
 #include "dev.h"
+#include "if_event.h"
 #include "net_addr.h"
 
 typedef struct bgp_session bgp_session_t;
@@ -114,6 +115,21 @@ typedef struct bgp_apply_cmd
             bgp_safi_t safi;       /**< 子地址族 */
             uint32_t import_proto; /**< 协议索引（ROUTE_PROTOCOL_*） */
         } import_route;
+
+        /** BGP_CLI_GROUP_ID_SOURCE_IF */
+        struct
+        {
+            net_addr_t addr;                   /**< 邻居 IP 地址 */
+            char if_name[IF_LOGICAL_NAME_MAX]; /**< source-interface 逻辑接口名 */
+            net_addr_t source_addr;            /**< 解析出的源地址（server 线程回填） */
+        } source_if;
+
+        /** BGP_CLI_GROUP_ID_EBGP_MULTIHOP */
+        struct
+        {
+            net_addr_t addr; /**< 邻居 IP 地址 */
+            uint8_t ttl;     /**< eBGP multihop TTL（1-255，0 表示未配置） */
+        } ebgp_multihop;
     } u;
 
     /* ---- 输出字段（server 线程填写，work 线程在 dispatch 返回后读取） ---- */

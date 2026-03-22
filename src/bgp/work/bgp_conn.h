@@ -33,6 +33,8 @@ struct bgp_session;
  * session 反向指针在 bgp_session_create / bgp_handle_passive_accept 中赋值。
  * recv_buf/recv_len 为每连接独立接收缓冲区，支持碰撞检测期间两条连接并存。
  * state 为本条连接的 BGP 握手状态（每连接独立，碰撞检测期间 pri/sec 可处于不同状态）。
+ * local_addr/has_local_addr 用于主动建连时绑定源地址（neighbor source-interface）。
+ * has_ttl/ttl 用于主动建连时设置 IP TTL/Hop-Limit（neighbor ebgp-multihop）。
  */
 typedef struct bgp_conn
 {
@@ -41,7 +43,11 @@ typedef struct bgp_conn
     net_addr_t peer_addr;                /**< 对端 IP 地址 */
     gboolean is_active;                  /**< TRUE=本方发起的主动连接；FALSE=被动接入 */
     gboolean is_connecting;              /**< TRUE=TCP 握手中；FALSE=已建立或无连接 */
+    gboolean has_local_addr;             /**< TRUE=主动建连前需 bind(local_addr) */
+    gboolean has_ttl;                    /**< TRUE=主动建连前需 setsockopt TTL/Hop-Limit */
     bgp_conn_state_t state;              /**< BGP 握手状态机（属于连接，不属于会话） */
+    net_addr_t local_addr;               /**< 主动建连绑定源地址（has_local_addr=TRUE 时有效） */
+    uint8_t ttl;                         /**< 出向 TTL/Hop-Limit（has_ttl=TRUE 时有效） */
     uint8_t recv_buf[BGP_RECV_BUF_SIZE]; /**< 每连接独立 TCP 接收缓冲区 */
     uint32_t recv_len;                   /**< 缓冲区中已有数据长度 */
 } bgp_conn_t;

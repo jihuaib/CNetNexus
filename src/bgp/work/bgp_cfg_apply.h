@@ -56,4 +56,14 @@ void bgp_cfg_apply_open_cap(bgp_apply_cmd_t *apply);
  */
 void bgp_cfg_apply_import_route(bgp_apply_cmd_t *apply);
 
+/**
+ * @brief 应用 neighbor source-interface/no neighbor source-interface 到内存
+ */
+void bgp_cfg_apply_source_if(bgp_apply_cmd_t *apply);
+
+/**
+ * @brief 应用 neighbor ebgp-multihop/no neighbor ebgp-multihop 到内存
+ */
+void bgp_cfg_apply_ebgp_multihop(bgp_apply_cmd_t *apply);
+
 #endif /* BGP_CFG_APPLY_H */

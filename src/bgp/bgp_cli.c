@@ -142,7 +142,7 @@ static int handle_bgp_protocol(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             cli_tlv_entry_free(&entry);
             continue;
         }
-        if (entry.cfg_id == 2)
+        if (entry.cfg_id == 1)
         {
             apply.u.protocol.as_number = (uint32_t)cli_tlv_entry_get_int(&entry);
         }
@@ -220,7 +220,7 @@ static int handle_bgp_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         }
         switch (entry.cfg_id)
         {
-            case 2:
+            case 1:
             {
                 const char *s = cli_tlv_entry_get_text(&entry);
                 if (s)
@@ -229,7 +229,7 @@ static int handle_bgp_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                 }
                 break;
             }
-            case 3:
+            case 2:
                 apply.u.neighbor.remote_as = (uint32_t)cli_tlv_entry_get_int(&entry);
                 has_remote_as = 1;
                 break;
@@ -400,7 +400,7 @@ static int handle_bgp_af_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
             cli_tlv_entry_free(&entry);
             continue;
         }
-        if (entry.cfg_id == 2)
+        if (entry.cfg_id == 1)
         {
             const char *s = cli_tlv_entry_get_text(&entry);
             if (s)
@@ -838,10 +838,7 @@ static int handle_bgp_import_route(dev_ipc_message_t *msg, cli_tlv_parser_t *par
         }
         switch (entry.cfg_id)
         {
-            case 1: /* no 关键字 */
-                apply.isNo = TRUE;
-                break;
-            case 2: /* static 关键字 */
+            case 1: /* static 关键字 */
                 has_static = 1;
                 break;
             default:
@@ -905,6 +902,217 @@ static int handle_bgp_import_route(dev_ipc_message_t *msg, cli_tlv_parser_t *par
     return ERRCODE_SUCCESS;
 }
 
+/**
+ * @brief 处理 neighbor <ip> source-interface <if-name> / no neighbor <ip> source-interface
+ *
+ * group_id=12, cfg_id: 1=ip-address, 2=if-name
+ */
+static int handle_bgp_source_interface(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    bgp_apply_cmd_t apply;
+    memset(&apply, 0, sizeof(apply));
+    apply.group_id = BGP_CLI_GROUP_ID_SOURCE_IF;
+    apply.isNo = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
+    bgp_cli_ctx_t ctx = bgp_cli_ctx_default();
+    char ip_buf[64] = {0};
+
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (CLI_TLV_IS_CTX(&entry))
+        {
+            bgp_cli_ctx_parse(&ctx, &entry);
+            cli_tlv_entry_free(&entry);
+            continue;
+        }
+
+        switch (entry.cfg_id)
+        {
+            case 1:
+            {
+                const char *s = cli_tlv_entry_get_text(&entry);
+                if (s)
+                {
+                    snprintf(ip_buf, sizeof(ip_buf), "%s", s);
+                }
+                break;
+            }
+            case 2:
+            {
+                const char *s = cli_tlv_entry_get_text(&entry);
+                if (s)
+                {
+                    snprintf(apply.u.source_if.if_name, sizeof(apply.u.source_if.if_name), "%s", s);
+                }
+                break;
+            }
+            default:
+                break;
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    if (ip_buf[0] == '\0')
+    {
+        bgp_send_cli_response(msg, "BGP Error: Missing neighbor IP address.\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (net_addr_from_str(ip_buf, &apply.u.source_if.addr) != 0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Invalid IP address.\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (!apply.isNo && apply.u.source_if.if_name[0] == '\0')
+    {
+        bgp_send_cli_response(msg, "BGP Error: Missing source interface name.\r\n");
+        return ERRCODE_FAIL;
+    }
+    apply.vrf_id = ctx.vrf_id;
+
+    if (bgp_worker_dispatch_apply(&apply) != 0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Server unavailable.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    if (apply.rc == BGP_APPLY_RC_NOOP)
+    {
+        bgp_send_cli_response(msg, "");
+        return ERRCODE_SUCCESS;
+    }
+    if (apply.rc != BGP_APPLY_RC_OK)
+    {
+        char buf[280];
+        snprintf(buf, sizeof(buf), "%s\r\n", apply.errmsg);
+        bgp_send_cli_response(msg, buf);
+        return ERRCODE_FAIL;
+    }
+
+    if (apply.isNo)
+    {
+        if (bgp_db_del_session_source_if(g_bgp_local->dev_ipc_ctx, ctx.vrf_id, ip_buf) != 0)
+        {
+            bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
+            return ERRCODE_FAIL;
+        }
+    }
+    else
+    {
+        if (bgp_db_set_session_source_if(g_bgp_local->dev_ipc_ctx, ctx.vrf_id, ip_buf, apply.u.source_if.if_name) != 0)
+        {
+            bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
+            return ERRCODE_FAIL;
+        }
+    }
+
+    bgp_send_cli_response(msg, "");
+    return ERRCODE_SUCCESS;
+}
+
+/**
+ * @brief 处理 neighbor <ip> ebgp-multihop <ttl> / no neighbor <ip> ebgp-multihop
+ *
+ * group_id=13, cfg_id: 1=ip-address, 2=ttl
+ */
+static int handle_bgp_ebgp_multihop(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    bgp_apply_cmd_t apply;
+    memset(&apply, 0, sizeof(apply));
+    apply.group_id = BGP_CLI_GROUP_ID_EBGP_MULTIHOP;
+    apply.isNo = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
+    bgp_cli_ctx_t ctx = bgp_cli_ctx_default();
+    char ip_buf[64] = {0};
+    uint32_t ttl = 0;
+
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (CLI_TLV_IS_CTX(&entry))
+        {
+            bgp_cli_ctx_parse(&ctx, &entry);
+            cli_tlv_entry_free(&entry);
+            continue;
+        }
+
+        switch (entry.cfg_id)
+        {
+            case 1:
+            {
+                const char *s = cli_tlv_entry_get_text(&entry);
+                if (s)
+                {
+                    snprintf(ip_buf, sizeof(ip_buf), "%s", s);
+                }
+                break;
+            }
+            case 2:
+                ttl = (uint32_t)cli_tlv_entry_get_int(&entry);
+                break;
+            default:
+                break;
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    if (ip_buf[0] == '\0')
+    {
+        bgp_send_cli_response(msg, "BGP Error: Missing neighbor IP address.\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (net_addr_from_str(ip_buf, &apply.u.ebgp_multihop.addr) != 0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Invalid IP address.\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (!apply.isNo && (ttl == 0 || ttl > 255))
+    {
+        bgp_send_cli_response(msg, "BGP Error: Invalid ebgp-multihop TTL (1-255).\r\n");
+        return ERRCODE_FAIL;
+    }
+    apply.vrf_id = ctx.vrf_id;
+    apply.u.ebgp_multihop.ttl = (uint8_t)ttl;
+
+    if (bgp_worker_dispatch_apply(&apply) != 0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Server unavailable.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    if (apply.rc == BGP_APPLY_RC_NOOP)
+    {
+        bgp_send_cli_response(msg, "");
+        return ERRCODE_SUCCESS;
+    }
+    if (apply.rc != BGP_APPLY_RC_OK)
+    {
+        char buf[280];
+        snprintf(buf, sizeof(buf), "%s\r\n", apply.errmsg);
+        bgp_send_cli_response(msg, buf);
+        return ERRCODE_FAIL;
+    }
+
+    if (apply.isNo)
+    {
+        if (bgp_db_del_session_ebgp_multihop(g_bgp_local->dev_ipc_ctx, ctx.vrf_id, ip_buf) != 0)
+        {
+            bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
+            return ERRCODE_FAIL;
+        }
+    }
+    else
+    {
+        if (bgp_db_set_session_ebgp_multihop(g_bgp_local->dev_ipc_ctx, ctx.vrf_id, ip_buf, apply.u.ebgp_multihop.ttl) !=
+            0)
+        {
+            bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
+            return ERRCODE_FAIL;
+        }
+    }
+
+    bgp_send_cli_response(msg, "");
+    return ERRCODE_SUCCESS;
+}
+
 int bgp_cli_handle_continue(dev_ipc_message_t *msg)
 {
     return cli_chunk_stream_continue(&g_bgp_local->show_stream, g_bgp_local->dev_ipc_ctx, DEV_MODULE_ID_BGP, msg);
@@ -916,7 +1124,7 @@ void bgp_cli_cleanup_state(void)
 }
 
 /**
- * @brief 处理配置类 CLI 命令（group 1-8, 11），在 IPC worker 线程调用
+ * @brief 处理配置类 CLI 命令（group 1-8, 11-13），在 IPC worker 线程调用
  *
  * 配置命令通过 bgp_worker_dispatch_apply() 将状态变更派发到 BGP worker 线程，
  * 然后在 IPC worker 线程完成 DB 写入并发送响应。
@@ -967,6 +1175,12 @@ int bgp_cli_handle_config_msg(dev_ipc_message_t *msg)
             break;
         case BGP_CLI_GROUP_ID_IMPORT_ROUTE:
             result = handle_bgp_import_route(msg, &parser);
+            break;
+        case BGP_CLI_GROUP_ID_SOURCE_IF:
+            result = handle_bgp_source_interface(msg, &parser);
+            break;
+        case BGP_CLI_GROUP_ID_EBGP_MULTIHOP:
+            result = handle_bgp_ebgp_multihop(msg, &parser);
             break;
         default:
             LOG_WARN("BGP: 未知配置命令 group_id=%u", parser.group_id);

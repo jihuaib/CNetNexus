@@ -95,6 +95,44 @@ int bgp_db_del_session(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *neig
  */
 int bgp_db_set_session_caps(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *neighbor_ip, uint32_t open_caps);
 
+/**
+ * @brief 设置 session 的 source-interface
+ * @param ctx         BGP 模块 IPC 上下文
+ * @param vrf_id      VRF ID
+ * @param neighbor_ip 邻居 IP 地址
+ * @param if_name     source-interface 逻辑接口名
+ * @return 0 成功，-1 失败
+ */
+int bgp_db_set_session_source_if(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *neighbor_ip, const char *if_name);
+
+/**
+ * @brief 清除 session 的 source-interface（置空字符串）
+ * @param ctx         BGP 模块 IPC 上下文
+ * @param vrf_id      VRF ID
+ * @param neighbor_ip 邻居 IP 地址
+ * @return 0 成功，-1 失败
+ */
+int bgp_db_del_session_source_if(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *neighbor_ip);
+
+/**
+ * @brief 设置 session 的 ebgp-multihop TTL
+ * @param ctx         BGP 模块 IPC 上下文
+ * @param vrf_id      VRF ID
+ * @param neighbor_ip 邻居 IP 地址
+ * @param ttl         TTL（1-255）
+ * @return 0 成功，-1 失败
+ */
+int bgp_db_set_session_ebgp_multihop(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *neighbor_ip, uint8_t ttl);
+
+/**
+ * @brief 清除 session 的 ebgp-multihop（置 0）
+ * @param ctx         BGP 模块 IPC 上下文
+ * @param vrf_id      VRF ID
+ * @param neighbor_ip 邻居 IP 地址
+ * @return 0 成功，-1 失败
+ */
+int bgp_db_del_session_ebgp_multihop(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *neighbor_ip);
+
 // ============================================================================
 // BGP Neighbor 操作（地址族视图 neighbor enable 命令）
 // ============================================================================

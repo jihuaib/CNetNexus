@@ -440,6 +440,10 @@ void if_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             if_cli_handle_continue(msg);
             break;
 
+        case CLI_MSG_TYPE_QUERY_CANDIDATES:
+            if_cli_handle_query_candidates(ctx, msg);
+            return;
+
         case CLI_MSG_TYPE_SHOW_CONFIG:
             LOG_DEBUG("Received show current-configuration request");
             if_bdr_show_config(msg);

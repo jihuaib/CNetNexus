@@ -20,6 +20,8 @@
 #include "bgp_session.h"
 #include "bgp_vrf.h"
 #include "bgp_worker.h"
+#include "db.h"
+#include "errcode.h"
 
 /* ============================================================================
  * bgp / no bgp
@@ -516,5 +518,240 @@ void bgp_cfg_apply_import_route(bgp_apply_cmd_t *apply)
         inst->import_protos |= proto_mask;
     }
     apply->out.import_protos = inst->import_protos;
+    apply->rc = BGP_APPLY_RC_OK;
+}
+
+/* ============================================================================
+ * neighbor source-interface / no neighbor source-interface
+ * ========================================================================== */
+
+static int bgp_cfg_resolve_source_if_addr(const char *if_name, sa_family_t peer_family, net_addr_t *out_addr,
+                                          char *errmsg, size_t errmsg_len)
+{
+    if (!if_name || if_name[0] == '\0' || !out_addr)
+    {
+        if (errmsg && errmsg_len > 0)
+        {
+            snprintf(errmsg, errmsg_len, "BGP Error: Missing source interface name.");
+        }
+        return -1;
+    }
+    if (!g_bgp_local || !g_bgp_local->dev_ipc_ctx)
+    {
+        if (errmsg && errmsg_len > 0)
+        {
+            snprintf(errmsg, errmsg_len, "BGP Error: Database not ready.");
+        }
+        return -1;
+    }
+
+    db_condition_t cond = {
+        .field_name = "name",
+        .op = DB_CMP_EQ,
+        .value = db_value_text(if_name),
+    };
+    db_filter_t filter = {.conditions = &cond, .num_conditions = 1};
+
+    db_result_t *result = NULL;
+    int qret = db_rpc_query(g_bgp_local->dev_ipc_ctx, "if_interface", NULL, 0, &filter, &result);
+    db_value_free(&cond.value);
+
+    if (qret != ERRCODE_SUCCESS || !result)
+    {
+        if (errmsg && errmsg_len > 0)
+        {
+            snprintf(errmsg, errmsg_len, "BGP Error: Failed to query interface '%s'.", if_name);
+        }
+        db_result_free(result);
+        return -1;
+    }
+
+    if (result->num_rows == 0)
+    {
+        if (errmsg && errmsg_len > 0)
+        {
+            snprintf(errmsg, errmsg_len, "BGP Error: Interface '%s' not found.", if_name);
+        }
+        db_result_free(result);
+        return -1;
+    }
+
+    const db_row_t *row = result->rows[0];
+    const char *ip_str = db_row_get_text(row, "ip_address", NULL);
+    if (!ip_str || ip_str[0] == '\0')
+    {
+        if (errmsg && errmsg_len > 0)
+        {
+            snprintf(errmsg, errmsg_len, "BGP Error: Interface '%s' has no IP address.", if_name);
+        }
+        db_result_free(result);
+        return -1;
+    }
+
+    net_addr_t addr;
+    if (net_addr_from_str(ip_str, &addr) != 0)
+    {
+        if (errmsg && errmsg_len > 0)
+        {
+            snprintf(errmsg, errmsg_len, "BGP Error: Interface '%s' has invalid IP '%s'.", if_name, ip_str);
+        }
+        db_result_free(result);
+        return -1;
+    }
+
+    if (peer_family != 0 && addr.family != peer_family)
+    {
+        if (errmsg && errmsg_len > 0)
+        {
+            snprintf(errmsg, errmsg_len, "BGP Error: Interface '%s' address family mismatch with neighbor.", if_name);
+        }
+        db_result_free(result);
+        return -1;
+    }
+
+    *out_addr = addr;
+    db_result_free(result);
+    return 0;
+}
+
+void bgp_cfg_apply_source_if(bgp_apply_cmd_t *apply)
+{
+    const gboolean is_no = apply->isNo ? TRUE : FALSE;
+    bgp_protocol_t *proto = g_bgp_local ? g_bgp_local->protocol : NULL;
+
+    if (!proto)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: BGP not configured.");
+        return;
+    }
+    bgp_vrf_t *vrf = bgp_protocol_get_vrf(proto, apply->vrf_id);
+    if (!vrf)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VRF not found.");
+        return;
+    }
+
+    bgp_session_t *sess = bgp_vrf_find_session(vrf, &apply->u.source_if.addr);
+    if (!sess)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg),
+                 "BGP Error: Neighbor session not configured. Run 'neighbor <ip> as <as>' first.");
+        return;
+    }
+
+    if (is_no)
+    {
+        if (sess->source_if_name[0] == '\0' && sess->source_addr.family == 0)
+        {
+            apply->rc = BGP_APPLY_RC_NOOP;
+            return;
+        }
+
+        sess->source_if_name[0] = '\0';
+        memset(&sess->source_addr, 0, sizeof(sess->source_addr));
+
+        if (sess->pri_conn || sess->sec_conn)
+        {
+            bgp_neighbor_down(sess, g_bgp_local->epoll_fd);
+        }
+        apply->rc = BGP_APPLY_RC_OK;
+        return;
+    }
+
+    if (apply->u.source_if.if_name[0] == '\0')
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: Missing source interface name.");
+        return;
+    }
+
+    net_addr_t resolved_addr;
+    memset(&resolved_addr, 0, sizeof(resolved_addr));
+    if (bgp_cfg_resolve_source_if_addr(apply->u.source_if.if_name, sess->neighbor_addr.family, &resolved_addr,
+                                       apply->errmsg, sizeof(apply->errmsg)) != 0)
+    {
+        return;
+    }
+
+    apply->u.source_if.source_addr = resolved_addr;
+    if (strcmp(sess->source_if_name, apply->u.source_if.if_name) == 0 &&
+        net_addr_cmp(&sess->source_addr, &resolved_addr) == 0)
+    {
+        apply->rc = BGP_APPLY_RC_NOOP;
+        return;
+    }
+
+    snprintf(sess->source_if_name, sizeof(sess->source_if_name), "%s", apply->u.source_if.if_name);
+    sess->source_addr = resolved_addr;
+
+    if (sess->pri_conn || sess->sec_conn)
+    {
+        bgp_neighbor_down(sess, g_bgp_local->epoll_fd);
+    }
+    apply->rc = BGP_APPLY_RC_OK;
+}
+
+/* ============================================================================
+ * neighbor ebgp-multihop / no neighbor ebgp-multihop
+ * ========================================================================== */
+
+void bgp_cfg_apply_ebgp_multihop(bgp_apply_cmd_t *apply)
+{
+    const gboolean is_no = apply->isNo ? TRUE : FALSE;
+    bgp_protocol_t *proto = g_bgp_local ? g_bgp_local->protocol : NULL;
+
+    if (!proto)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: BGP not configured.");
+        return;
+    }
+    bgp_vrf_t *vrf = bgp_protocol_get_vrf(proto, apply->vrf_id);
+    if (!vrf)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VRF not found.");
+        return;
+    }
+
+    bgp_session_t *sess = bgp_vrf_find_session(vrf, &apply->u.ebgp_multihop.addr);
+    if (!sess)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg),
+                 "BGP Error: Neighbor session not configured. Run 'neighbor <ip> as <as>' first.");
+        return;
+    }
+
+    if (is_no)
+    {
+        if (sess->ebgp_multihop_ttl == 0)
+        {
+            apply->rc = BGP_APPLY_RC_NOOP;
+            return;
+        }
+
+        sess->ebgp_multihop_ttl = 0;
+        if (sess->pri_conn || sess->sec_conn)
+        {
+            bgp_neighbor_down(sess, g_bgp_local->epoll_fd);
+        }
+        apply->rc = BGP_APPLY_RC_OK;
+        return;
+    }
+
+    if (apply->u.ebgp_multihop.ttl == 0)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: Invalid ebgp-multihop TTL.");
+        return;
+    }
+
+    if (sess->ebgp_multihop_ttl == apply->u.ebgp_multihop.ttl)
+    {
+        apply->rc = BGP_APPLY_RC_NOOP;
+        return;
+    }
+
+    sess->ebgp_multihop_ttl = apply->u.ebgp_multihop.ttl;
+    if (sess->pri_conn || sess->sec_conn)
+    {
+        bgp_neighbor_down(sess, g_bgp_local->epoll_fd);
+    }
     apply->rc = BGP_APPLY_RC_OK;
 }

@@ -131,10 +131,20 @@ static void bdr_append_sessions(dev_ipc_context_t *ctx, GString *out)
         db_row_t *row = result->rows[i];
         const char *ip = db_row_get_text(row, "neighbor_ip", NULL);
         int64_t remote_as = db_row_get_int(row, "remote_as", 0);
+        const char *source_if = db_row_get_text(row, "source_interface", "");
+        int64_t ebgp_multihop = db_row_get_int(row, "ebgp_multihop", 0);
 
         if (ip)
         {
             g_string_append_printf(out, " neighbor %s as %ld\r\n", ip, remote_as);
+            if (source_if && source_if[0] != '\0')
+            {
+                g_string_append_printf(out, " neighbor %s source-interface %s\r\n", ip, source_if);
+            }
+            if (ebgp_multihop > 0)
+            {
+                g_string_append_printf(out, " neighbor %s ebgp-multihop %ld\r\n", ip, ebgp_multihop);
+            }
         }
     }
 

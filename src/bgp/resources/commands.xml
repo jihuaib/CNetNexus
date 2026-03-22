@@ -26,7 +26,7 @@
                     <name>bgp</name>
                     <description>BGP protocol</description>
                 </element>
-                <element cfg-id="2" type="parameter">
+                <element cfg-id="1" type="parameter">
                     <name>&lt;as-number&gt;</name>
                     <type>uint(1-4294967295)</type>
                     <description>BGP as-number</description>
@@ -57,7 +57,7 @@
                     <name>neighbor</name>
                     <description>BGP neighbor configuration</description>
                 </element>
-                <element cfg-id="2" type="parameter">
+                <element cfg-id="1" type="parameter">
                     <name>&lt;ip-address&gt;</name>
                     <type>ip</type>
                     <description>Neighbor IP address</description>
@@ -66,7 +66,7 @@
                     <name>as</name>
                     <description>Remote AS number</description>
                 </element>
-                <element cfg-id="3" type="parameter">
+                <element cfg-id="2" type="parameter">
                     <name>&lt;as-number&gt;</name>
                     <type>uint(1-4294967295)</type>
                     <description>Remote AS number</description>
@@ -147,12 +147,12 @@
                     <name>neighbor</name>
                     <description>BGP neighbor</description>
                 </element>
-                <element cfg-id="2" type="parameter">
+                <element cfg-id="1" type="parameter">
                     <name>&lt;ip-address&gt;</name>
                     <type>ip</type>
                     <description>Neighbor IP address</description>
                 </element>
-                <element cfg-id="3" type="keyword">
+                <element cfg-id="2" type="keyword">
                     <name>enable</name>
                     <description>Enable neighbor for this address family</description>
                 </element>
@@ -213,7 +213,7 @@
                     <name>timer</name>
                     <description>BGP timer configuration</description>
                 </element>
-                <element cfg-id="0" type="keyword">
+                <element type="keyword">
                     <name>connect-retry</name>
                     <description>Connect-retry timer</description>
                 </element>
@@ -326,6 +326,86 @@
                 </command>
             </commands>
         </group>
+        <!-- neighbor <ip> source-interface <if-name> / no neighbor <ip> source-interface -->
+        <group group-id="12">
+            <elements>
+                <element type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+                <element type="keyword">
+                    <name>neighbor</name>
+                    <description>BGP neighbor configuration</description>
+                </element>
+                <element cfg-id="1" type="parameter">
+                    <name>&lt;ip-address&gt;</name>
+                    <type>ip</type>
+                    <description>Neighbor IP address</description>
+                </element>
+                <element type="keyword">
+                    <name>source-interface</name>
+                    <description>Bind outbound source address from interface</description>
+                </element>
+                <element cfg-id="2" type="parameter">
+                    <name>&lt;if-name&gt;</name>
+                    <type>dynamic(4:1,string(1-31))</type>
+                    <description>Source interface name (dynamic candidates from IF module)</description>
+                </element>
+            </elements>
+
+            <commands>
+                <!-- neighbor <ip> source-interface <if-name> -->
+                <command>
+                    <expression>2 3 4 5</expression>
+                    <views>bgp</views>
+                </command>
+                <!-- no neighbor <ip> source-interface -->
+                <command>
+                    <expression>1 2 3 4</expression>
+                    <views>bgp</views>
+                </command>
+            </commands>
+        </group>
+        <!-- neighbor <ip> ebgp-multihop <ttl> / no neighbor <ip> ebgp-multihop -->
+        <group group-id="13">
+            <elements>
+                <element type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+                <element type="keyword">
+                    <name>neighbor</name>
+                    <description>BGP neighbor configuration</description>
+                </element>
+                <element cfg-id="1" type="parameter">
+                    <name>&lt;ip-address&gt;</name>
+                    <type>ip</type>
+                    <description>Neighbor IP address</description>
+                </element>
+                <element type="keyword">
+                    <name>ebgp-multihop</name>
+                    <description>Allow eBGP neighbor not directly connected</description>
+                </element>
+                <element cfg-id="2" type="parameter">
+                    <name>&lt;ttl&gt;</name>
+                    <type>uint(1-255)</type>
+                    <description>TTL hops for eBGP multihop</description>
+                </element>
+            </elements>
+
+            <commands>
+                <!-- neighbor <ip> ebgp-multihop <ttl> -->
+                <command>
+                    <expression>2 3 4 5</expression>
+                    <views>bgp</views>
+                </command>
+                <!-- no neighbor <ip> ebgp-multihop -->
+                <command>
+                    <expression>1 2 3 4</expression>
+                    <views>bgp</views>
+                </command>
+            </commands>
+        </group>
         <!-- show bgp neighbor af ipv4-unicast|ipv6-unicast [<ip-address>] -->
         <group group-id="9">
             <elements>
@@ -385,10 +465,10 @@
         </group>
 
         <!-- import-route static / no import-route static（地址族视图） -->
-        <!-- cfg-id: 1=no, 2=static -->
+        <!-- cfg-id: 1=static -->
         <group group-id="11">
             <elements>
-                <element cfg-id="1" type="keyword">
+                <element type="keyword">
                     <name>no</name>
                     <description>Delete</description>
                 </element>
@@ -396,7 +476,7 @@
                     <name>import-route</name>
                     <description>Import external routes</description>
                 </element>
-                <element cfg-id="2" type="keyword">
+                <element cfg-id="1" type="keyword">
                     <name>static</name>
                     <description>Import static routes</description>
                 </element>

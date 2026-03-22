@@ -11,6 +11,7 @@
  */
 #include "bgp_fsm.h"
 
+#include <string.h>
 #include <sys/epoll.h>
 #include <unistd.h>
 
@@ -23,6 +24,8 @@
 #include "bgp_rib.h"
 #include "bgp_session.h"
 #include "bgp_vrf.h"
+#include "db.h"
+#include "errcode.h"
 #include "log.h"
 #include "net_addr.h"
 
@@ -132,6 +135,103 @@ static void fsm_arm_retry(bgp_session_t *sess, int epoll_fd)
     uint16_t sec =
         (sess->vrf && sess->vrf->connect_retry > 0) ? sess->vrf->connect_retry : BGP_TIMER_DEFAULT_CONNECT_RETRY;
     bgp_session_arm_retry(sess, epoll_fd, sec);
+}
+
+static int fsm_prefix_contains_addr(const net_addr_t *prefix_addr, uint8_t prefix_len, const net_addr_t *addr)
+{
+    if (!prefix_addr || !addr || prefix_addr->family != addr->family)
+    {
+        return 0;
+    }
+
+    const uint8_t *pfx = NULL;
+    const uint8_t *ip = NULL;
+    uint8_t max_len = 0;
+
+    if (addr->family == AF_INET)
+    {
+        pfx = (const uint8_t *)&prefix_addr->u.v4;
+        ip = (const uint8_t *)&addr->u.v4;
+        max_len = 32u;
+    }
+    else if (addr->family == AF_INET6)
+    {
+        pfx = (const uint8_t *)&prefix_addr->u.v6;
+        ip = (const uint8_t *)&addr->u.v6;
+        max_len = 128u;
+    }
+    else
+    {
+        return 0;
+    }
+
+    if (prefix_len == 0 || prefix_len > max_len)
+    {
+        return 0;
+    }
+
+    uint8_t full_bytes = (uint8_t)(prefix_len / 8u);
+    uint8_t rem_bits = (uint8_t)(prefix_len % 8u);
+    if (full_bytes > 0 && memcmp(pfx, ip, full_bytes) != 0)
+    {
+        return 0;
+    }
+    if (rem_bits > 0)
+    {
+        uint8_t mask = (uint8_t)(0xFFu << (8u - rem_bits));
+        if ((pfx[full_bytes] & mask) != (ip[full_bytes] & mask))
+        {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static gboolean fsm_neighbor_is_directly_connected(const net_addr_t *neighbor_addr)
+{
+    if (!neighbor_addr || neighbor_addr->family == 0 || !g_bgp_local || !g_bgp_local->dev_ipc_ctx)
+    {
+        return FALSE;
+    }
+
+    db_result_t *result = NULL;
+    if (db_rpc_query(g_bgp_local->dev_ipc_ctx, "if_interface", NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
+    {
+        db_result_free(result);
+        return FALSE;
+    }
+
+    gboolean direct = FALSE;
+    for (uint32_t i = 0; i < result->num_rows; i++)
+    {
+        const db_row_t *row = result->rows[i];
+        const char *ip_str = db_row_get_text(row, "ip_address", NULL);
+        int64_t prefix_len = db_row_get_int(row, "prefix_len", 0);
+        int64_t shutdown = db_row_get_int(row, "shutdown", 0);
+        if (!ip_str || ip_str[0] == '\0' || shutdown != 0)
+        {
+            continue;
+        }
+
+        net_addr_t local_addr;
+        if (net_addr_from_str(ip_str, &local_addr) != 0 || local_addr.family != neighbor_addr->family)
+        {
+            continue;
+        }
+        if (prefix_len <= 0 || prefix_len > ((neighbor_addr->family == AF_INET) ? 32 : 128))
+        {
+            continue;
+        }
+
+        if (fsm_prefix_contains_addr(&local_addr, (uint8_t)prefix_len, neighbor_addr))
+        {
+            direct = TRUE;
+            break;
+        }
+    }
+
+    db_result_free(result);
+    return direct;
 }
 
 /** 向对端发送 BGP OPEN 报文（从 g_bgp_local 读取协议参数） */
@@ -331,6 +431,40 @@ static void act_start_active(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd
         return; /* 已有连接，幂等 */
     }
     bgp_conn_t *new_conn = bgp_conn_create(sess);
+
+    bgp_protocol_t *proto = g_bgp_local ? g_bgp_local->protocol : NULL;
+    gboolean is_ebgp = (proto && proto->as_number != 0 && sess->remote_as != proto->as_number) ? TRUE : FALSE;
+    if (is_ebgp)
+    {
+        if (sess->ebgp_multihop_ttl > 0)
+        {
+            new_conn->has_ttl = TRUE;
+            new_conn->ttl = sess->ebgp_multihop_ttl;
+        }
+        else if (fsm_neighbor_is_directly_connected(&sess->neighbor_addr))
+        {
+            new_conn->has_ttl = TRUE;
+            new_conn->ttl = 1;
+        }
+        else
+        {
+            char nbr[64];
+            net_addr_to_str(&sess->neighbor_addr, nbr, sizeof(nbr));
+            LOG_WARN(
+                "BGP FSM: neighbor=%s eBGP peer is not directly connected; configure 'neighbor %s ebgp-multihop <ttl>'",
+                nbr, nbr);
+            bgp_conn_destroy(new_conn);
+            fsm_arm_retry(sess, epoll_fd);
+            sess->fsm_state = BGP_FSM_STATE_ACTIVE;
+            return;
+        }
+    }
+
+    if (sess->source_addr.family != 0)
+    {
+        new_conn->has_local_addr = TRUE;
+        new_conn->local_addr = sess->source_addr;
+    }
     if (bgp_conn_start_active(new_conn, &sess->neighbor_addr, epoll_fd) < 0)
     {
         char addr_str[64];

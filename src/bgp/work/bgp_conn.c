@@ -32,6 +32,7 @@ static void bgp_conn_init(bgp_conn_t *conn)
     conn->fd = -1;
     conn->is_active = FALSE;
     conn->is_connecting = FALSE;
+    conn->has_ttl = FALSE;
     conn->state = BGP_CONN_STATE_OPEN_SENT;
 }
 
@@ -72,6 +73,58 @@ void bgp_conn_destroy(bgp_conn_t *conn)
 // 主动连接
 // ============================================================================
 
+static int bgp_bind_local_addr(int sock, const net_addr_t *local_addr)
+{
+    if (!local_addr || local_addr->family == 0)
+    {
+        return 0;
+    }
+
+    if (local_addr->family == AF_INET)
+    {
+        struct sockaddr_in local_sa;
+        memset(&local_sa, 0, sizeof(local_sa));
+        local_sa.sin_family = AF_INET;
+        local_sa.sin_port = htons(0);
+        memcpy(&local_sa.sin_addr, &local_addr->u.v4, sizeof(local_addr->u.v4));
+        return bind(sock, (struct sockaddr *)&local_sa, sizeof(local_sa));
+    }
+
+    if (local_addr->family == AF_INET6)
+    {
+        struct sockaddr_in6 local_sa6;
+        memset(&local_sa6, 0, sizeof(local_sa6));
+        local_sa6.sin6_family = AF_INET6;
+        local_sa6.sin6_port = htons(0);
+        memcpy(&local_sa6.sin6_addr, &local_addr->u.v6, sizeof(local_addr->u.v6));
+        return bind(sock, (struct sockaddr *)&local_sa6, sizeof(local_sa6));
+    }
+
+    errno = EAFNOSUPPORT;
+    return -1;
+}
+
+static int bgp_set_socket_ttl(int sock, sa_family_t family, uint8_t ttl)
+{
+    if (ttl == 0)
+    {
+        return 0;
+    }
+
+    int ttl_opt = (int)ttl;
+    if (family == AF_INET)
+    {
+        return setsockopt(sock, IPPROTO_IP, IP_TTL, &ttl_opt, sizeof(ttl_opt));
+    }
+    if (family == AF_INET6)
+    {
+        return setsockopt(sock, IPPROTO_IPV6, IPV6_UNICAST_HOPS, &ttl_opt, sizeof(ttl_opt));
+    }
+
+    errno = EAFNOSUPPORT;
+    return -1;
+}
+
 int bgp_conn_start_active(bgp_conn_t *conn, const net_addr_t *peer_addr, int epoll_fd)
 {
     if (!conn || !peer_addr || conn->fd >= 0)
@@ -84,6 +137,41 @@ int bgp_conn_start_active(bgp_conn_t *conn, const net_addr_t *peer_addr, int epo
     {
         LOG_PERROR("BGP: Failed to create active connection socket");
         return -1;
+    }
+
+    if (conn->has_ttl)
+    {
+        if (bgp_set_socket_ttl(sock, peer_addr->family, conn->ttl) < 0)
+        {
+            char addr_str[64];
+            net_addr_to_str(peer_addr, addr_str, sizeof(addr_str));
+            LOG_PERROR("BGP: set socket TTL=%u for %s failed", conn->ttl, addr_str);
+            close(sock);
+            return -1;
+        }
+    }
+
+    if (conn->has_local_addr)
+    {
+        if (conn->local_addr.family != peer_addr->family)
+        {
+            char peer_str[64];
+            char local_str[64];
+            net_addr_to_str(peer_addr, peer_str, sizeof(peer_str));
+            net_addr_to_str(&conn->local_addr, local_str, sizeof(local_str));
+            LOG_WARN("BGP: local source-address family mismatch (local=%s peer=%s)", local_str, peer_str);
+            close(sock);
+            return -1;
+        }
+
+        if (bgp_bind_local_addr(sock, &conn->local_addr) < 0)
+        {
+            char local_str[64];
+            net_addr_to_str(&conn->local_addr, local_str, sizeof(local_str));
+            LOG_PERROR("BGP: bind source address %s failed", local_str);
+            close(sock);
+            return -1;
+        }
     }
 
     int ret;
