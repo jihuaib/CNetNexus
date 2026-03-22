@@ -1,0 +1,581 @@
+/**
+ * @file   route_os.c
+ * @brief  通过 Netlink RTM_NEWROUTE/DELROUTE 向 Linux 内核下发/撤销路由
+ * @author jhb
+ * @date   2026/03/22
+ */
+#include "route_os.h"
+
+#include <arpa/inet.h>
+#include <asm/types.h>
+#include <errno.h>
+#include <glib.h>
+#include <linux/netlink.h>
+#include <linux/rtnetlink.h>
+#include <net/if.h>
+#include <netinet/in.h>
+#include <stdint.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#include "log.h"
+#include "net_addr.h"
+#include "route.h"
+
+/* Netlink 请求/响应缓冲区大小 */
+#define ROUTE_OS_NL_BUFSIZE 4096
+
+/* ============================================================================
+ * 内部辅助：添加 Netlink 属性
+ * ============================================================================ */
+
+static void nl_add_attr(struct nlmsghdr *nlh, size_t maxlen, int type, const void *data, int datalen)
+{
+    int len = RTA_LENGTH(datalen);
+    if (NLMSG_ALIGN(nlh->nlmsg_len) + (size_t)RTA_ALIGN(len) > maxlen)
+    {
+        LOG_WARN("route_os: Netlink 属性超出缓冲区，跳过 type=%d", type);
+        return;
+    }
+    struct rtattr *rta = (struct rtattr *)((char *)nlh + NLMSG_ALIGN(nlh->nlmsg_len));
+    rta->rta_type = (unsigned short)type;
+    rta->rta_len = (unsigned short)len;
+    memcpy(RTA_DATA(rta), data, (size_t)datalen);
+    nlh->nlmsg_len = (unsigned int)(NLMSG_ALIGN(nlh->nlmsg_len) + (size_t)RTA_ALIGN(len));
+}
+
+/* ============================================================================
+ * 内部辅助：Netlink 报文发送与 ACK 接收
+ * ============================================================================ */
+
+static int nl_exchange(struct nlmsghdr *nlh, int cmd)
+{
+    int fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE);
+    if (fd < 0)
+    {
+        LOG_ERROR("route_os: socket() 失败: %s", strerror(errno));
+        return -1;
+    }
+
+    struct sockaddr_nl nladdr;
+    memset(&nladdr, 0, sizeof(nladdr));
+    nladdr.nl_family = AF_NETLINK;
+
+    if (sendto(fd, nlh, nlh->nlmsg_len, 0, (struct sockaddr *)&nladdr, sizeof(nladdr)) < 0)
+    {
+        LOG_ERROR("route_os: sendto() 失败: %s", strerror(errno));
+        close(fd);
+        return -1;
+    }
+
+    char ack_buf[ROUTE_OS_NL_BUFSIZE];
+    ssize_t n = recv(fd, ack_buf, sizeof(ack_buf), 0);
+    close(fd);
+
+    if (n < 0)
+    {
+        LOG_ERROR("route_os: recv() 失败: %s", strerror(errno));
+        return -1;
+    }
+
+    struct nlmsghdr *ack = (struct nlmsghdr *)(void *)ack_buf;
+    if (ack->nlmsg_type == NLMSG_ERROR)
+    {
+        const struct nlmsgerr *err = (const struct nlmsgerr *)NLMSG_DATA(ack);
+        /* ESRCH on delete = 路由不存在，正常忽略 */
+        if (err->error != 0 && !(cmd == RTM_DELROUTE && err->error == -ESRCH))
+        {
+            LOG_WARN("route_os: Netlink 返回错误 %d: %s", -err->error, strerror(-err->error));
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+/* ============================================================================
+ * 核心发送函数：RT_TABLE_MAIN
+ * ============================================================================ */
+
+static int route_os_send(int cmd, const route_msg_entry_t *entry)
+{
+    if (!entry)
+    {
+        return -1;
+    }
+
+    char buf[ROUTE_OS_NL_BUFSIZE];
+    memset(buf, 0, sizeof(buf));
+    struct nlmsghdr *nlh = (struct nlmsghdr *)(void *)buf;
+    struct rtmsg *rtm = (struct rtmsg *)NLMSG_DATA(nlh);
+
+    nlh->nlmsg_len = NLMSG_LENGTH(sizeof(struct rtmsg));
+    nlh->nlmsg_type = (unsigned short)cmd;
+    nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+    if (cmd == RTM_NEWROUTE)
+    {
+        nlh->nlmsg_flags |= NLM_F_CREATE | NLM_F_REPLACE;
+    }
+    nlh->nlmsg_seq = 1;
+
+    /* 填充 rtmsg 基本字段 */
+    rtm->rtm_family = (unsigned char)entry->prefix_addr.family;
+    rtm->rtm_dst_len = entry->prefix_len;
+    rtm->rtm_src_len = 0;
+    rtm->rtm_tos = 0;
+    rtm->rtm_table = RT_TABLE_MAIN;
+    switch (entry->protocol)
+    {
+        case ROUTE_PROTOCOL_CONNECTED:
+            rtm->rtm_protocol = RTPROT_KERNEL;
+            break;
+        case ROUTE_PROTOCOL_BGP:
+            rtm->rtm_protocol = RTPROT_BGP;
+            break;
+        case ROUTE_PROTOCOL_OSPF:
+            rtm->rtm_protocol = RTPROT_OSPF;
+            break;
+        default:
+            rtm->rtm_protocol = RTPROT_STATIC;
+            break;
+    }
+    rtm->rtm_flags = 0;
+
+    /* 路由类型与 scope */
+    if (entry->protocol == ROUTE_PROTOCOL_BLACKHOLE)
+    {
+        rtm->rtm_type = RTN_BLACKHOLE;
+        rtm->rtm_scope = RT_SCOPE_UNIVERSE;
+    }
+    else if (entry->protocol == ROUTE_PROTOCOL_CONNECTED && entry->out_ifindex != 0)
+    {
+        rtm->rtm_type = RTN_UNICAST;
+        rtm->rtm_scope = RT_SCOPE_LINK;
+    }
+    else
+    {
+        rtm->rtm_type = RTN_UNICAST;
+        rtm->rtm_scope = RT_SCOPE_UNIVERSE;
+    }
+
+    /* RTA_DST：目标前缀 */
+    if (entry->prefix_addr.family == AF_INET)
+    {
+        nl_add_attr(nlh, sizeof(buf), RTA_DST, &entry->prefix_addr.u.v4.s_addr, 4);
+    }
+    else if (entry->prefix_addr.family == AF_INET6)
+    {
+        nl_add_attr(nlh, sizeof(buf), RTA_DST, entry->prefix_addr.u.v6.s6_addr, 16);
+    }
+    else
+    {
+        return -1;
+    }
+
+    /* RTA_OIF：出接口（直连路由） */
+    if (entry->out_ifindex != 0 && entry->protocol != ROUTE_PROTOCOL_BLACKHOLE)
+    {
+        nl_add_attr(nlh, sizeof(buf), RTA_OIF, &entry->out_ifindex, (int)sizeof(uint32_t));
+    }
+
+    /*
+     * RTA_PREFSRC：直连路由的优选源地址。
+     * IF 不直接给 OS 网卡配置地址时，需要由 route 指定 source，避免内核从管理网段地址发包。
+     */
+    if (entry->protocol == ROUTE_PROTOCOL_CONNECTED && entry->source_addr.family == entry->prefix_addr.family)
+    {
+        if (entry->source_addr.family == AF_INET)
+        {
+            uint32_t zero = 0;
+            if (memcmp(&entry->source_addr.u.v4.s_addr, &zero, sizeof(zero)) != 0)
+            {
+                nl_add_attr(nlh, sizeof(buf), RTA_PREFSRC, &entry->source_addr.u.v4.s_addr, 4);
+            }
+        }
+        else if (entry->source_addr.family == AF_INET6)
+        {
+            uint8_t zero6[16] = {0};
+            if (memcmp(entry->source_addr.u.v6.s6_addr, zero6, sizeof(zero6)) != 0)
+            {
+                nl_add_attr(nlh, sizeof(buf), RTA_PREFSRC, entry->source_addr.u.v6.s6_addr, 16);
+            }
+        }
+    }
+
+    /* RTA_GATEWAY：网关（非直连、非黑洞路由且 nexthop 非零） */
+    if (entry->protocol != ROUTE_PROTOCOL_CONNECTED && entry->protocol != ROUTE_PROTOCOL_BLACKHOLE)
+    {
+        if (entry->nexthop_addr.family == AF_INET)
+        {
+            uint32_t zero = 0;
+            if (memcmp(&entry->nexthop_addr.u.v4.s_addr, &zero, 4) != 0)
+            {
+                nl_add_attr(nlh, sizeof(buf), RTA_GATEWAY, &entry->nexthop_addr.u.v4.s_addr, 4);
+            }
+        }
+        else if (entry->nexthop_addr.family == AF_INET6)
+        {
+            uint8_t zero[16] = {0};
+            if (memcmp(entry->nexthop_addr.u.v6.s6_addr, zero, 16) != 0)
+            {
+                nl_add_attr(nlh, sizeof(buf), RTA_GATEWAY, entry->nexthop_addr.u.v6.s6_addr, 16);
+            }
+        }
+    }
+
+    return nl_exchange(nlh, cmd);
+}
+
+/* ============================================================================
+ * 本地路由发送函数：RT_TABLE_LOCAL（RTN_LOCAL，使内核将 IP 视为本机地址）
+ * ============================================================================ */
+
+static int route_os_send_local(int cmd, const route_msg_entry_t *entry)
+{
+    if (!entry)
+    {
+        return -1;
+    }
+
+    char buf[ROUTE_OS_NL_BUFSIZE];
+    memset(buf, 0, sizeof(buf));
+    struct nlmsghdr *nlh = (struct nlmsghdr *)(void *)buf;
+    struct rtmsg *rtm = (struct rtmsg *)NLMSG_DATA(nlh);
+
+    nlh->nlmsg_len = NLMSG_LENGTH(sizeof(struct rtmsg));
+    nlh->nlmsg_type = (unsigned short)cmd;
+    nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+    if (cmd == RTM_NEWROUTE)
+    {
+        nlh->nlmsg_flags |= NLM_F_CREATE | NLM_F_REPLACE;
+    }
+    nlh->nlmsg_seq = 2;
+
+    rtm->rtm_family = (unsigned char)entry->prefix_addr.family;
+    rtm->rtm_dst_len = entry->prefix_len;
+    rtm->rtm_src_len = 0;
+    rtm->rtm_tos = 0;
+    rtm->rtm_table = RT_TABLE_LOCAL;
+    rtm->rtm_protocol = RTPROT_KERNEL;
+    rtm->rtm_type = RTN_LOCAL;
+    rtm->rtm_scope = RT_SCOPE_HOST;
+    rtm->rtm_flags = 0;
+
+    /* RTA_DST */
+    if (entry->prefix_addr.family == AF_INET)
+    {
+        nl_add_attr(nlh, sizeof(buf), RTA_DST, &entry->prefix_addr.u.v4.s_addr, 4);
+    }
+    else if (entry->prefix_addr.family == AF_INET6)
+    {
+        nl_add_attr(nlh, sizeof(buf), RTA_DST, entry->prefix_addr.u.v6.s6_addr, 16);
+    }
+    else
+    {
+        return -1;
+    }
+
+    /* RTA_OIF */
+    if (entry->out_ifindex != 0)
+    {
+        nl_add_attr(nlh, sizeof(buf), RTA_OIF, &entry->out_ifindex, (int)sizeof(uint32_t));
+    }
+
+    return nl_exchange(nlh, cmd);
+}
+
+/* ============================================================================
+ * 公共 API
+ * ============================================================================ */
+
+/*
+ * 为直连路由在 RT_TABLE_LOCAL 安装/撤销 RTN_LOCAL 条目：
+ *   - loop /32 (或 IPv6 /128)：prefix_addr 即接口 IP，直接使用 entry 本身
+ *   - ETH /24 等：prefix_addr 是网段，接口 IP 在 source_addr，需构造 /32 local_entry
+ */
+static void sync_local_route(int cmd, const route_msg_entry_t *entry)
+{
+    if (entry->protocol != ROUTE_PROTOCOL_CONNECTED || entry->out_ifindex == 0)
+    {
+        return;
+    }
+
+    uint8_t host_len = (entry->prefix_addr.family == AF_INET) ? 32U : 128U;
+
+    if (entry->prefix_len == host_len)
+    {
+        /* loop 接口：entry 自身就是主机路由 */
+        (void)route_os_send_local(cmd, entry);
+    }
+    else if (entry->source_addr.family != 0)
+    {
+        /* ETH 接口：用 source_addr（接口 IP）构造 /32 主机路由写入 LOCAL 表 */
+        route_msg_entry_t local_entry = *entry;
+        local_entry.prefix_addr = entry->source_addr;
+        local_entry.prefix_len = host_len;
+        (void)route_os_send_local(cmd, &local_entry);
+    }
+}
+
+int route_os_install(const route_msg_entry_t *entry)
+{
+    uint8_t host_len = (entry->prefix_addr.family == AF_INET) ? 32U : 128U;
+
+    /* loop 口 /32(/128) connected 路由：只写 LOCAL 表，不写 MAIN（BGP 从 RIB 发布，不依赖 MAIN） */
+    if (entry->protocol == ROUTE_PROTOCOL_CONNECTED && entry->prefix_len == host_len)
+    {
+        sync_local_route(RTM_NEWROUTE, entry);
+        return 0;
+    }
+
+    /*
+     * 对普通 connected 路由，先写 LOCAL（接口 IP /32）再写 MAIN。
+     * 这样 MAIN 表中的 RTA_PREFSRC（source_addr）才能被内核接受。
+     */
+    if (entry->protocol == ROUTE_PROTOCOL_CONNECTED && entry->out_ifindex != 0)
+    {
+        sync_local_route(RTM_NEWROUTE, entry);
+        return route_os_send(RTM_NEWROUTE, entry);
+    }
+
+    int ret = route_os_send(RTM_NEWROUTE, entry);
+    sync_local_route(RTM_NEWROUTE, entry);
+    return ret;
+}
+
+int route_os_withdraw(const route_msg_entry_t *entry)
+{
+    uint8_t host_len = (entry->prefix_addr.family == AF_INET) ? 32U : 128U;
+
+    /* loop 口 /32(/128) connected 路由：只从 LOCAL 表撤销 */
+    if (entry->protocol == ROUTE_PROTOCOL_CONNECTED && entry->prefix_len == host_len)
+    {
+        sync_local_route(RTM_DELROUTE, entry);
+        return 0;
+    }
+
+    int ret = route_os_send(RTM_DELROUTE, entry);
+    sync_local_route(RTM_DELROUTE, entry);
+    return ret;
+}
+
+/* ============================================================================
+ * 内核路由表查询（RTM_GETROUTE dump）
+ * ============================================================================ */
+
+/* 接收缓冲区：64KB 足以容纳数百条路由的 dump 响应 */
+#define ROUTE_OS_DUMP_BUFSIZE 65536
+
+static const char *os_table_str(uint8_t table)
+{
+    switch (table)
+    {
+        case RT_TABLE_MAIN:
+            return "main";
+        case RT_TABLE_LOCAL:
+            return "local";
+        case RT_TABLE_DEFAULT:
+            return "default";
+        default:
+            return "other";
+    }
+}
+
+static const char *os_type_str(uint8_t type)
+{
+    switch (type)
+    {
+        case RTN_UNICAST:
+            return "unicast";
+        case RTN_LOCAL:
+            return "local";
+        case RTN_BLACKHOLE:
+            return "blackhole";
+        case RTN_UNREACHABLE:
+            return "unreachable";
+        case RTN_PROHIBIT:
+            return "prohibit";
+        default:
+            return "other";
+    }
+}
+
+static const char *os_proto_str(uint8_t proto)
+{
+    switch (proto)
+    {
+        case RTPROT_KERNEL:
+            return "kernel";
+        case RTPROT_STATIC:
+            return "static";
+        case RTPROT_BGP:
+            return "bgp";
+        case RTPROT_OSPF:
+            return "ospf";
+        case RTPROT_ISIS:
+            return "isis";
+        case RTPROT_ZEBRA:
+            return "zebra";
+        case RTPROT_BOOT:
+            return "boot";
+        case RTPROT_REDIRECT:
+            return "redirect";
+        default:
+            return "other";
+    }
+}
+
+static void os_parse_route(struct nlmsghdr *nlh, GString *buf)
+{
+    struct rtmsg *rtm = (struct rtmsg *)NLMSG_DATA(nlh);
+
+    /* 默认值 */
+    char dst_str[64];
+    char gw_str[64] = "-";
+    char oif_name[IF_NAMESIZE] = "-";
+    uint32_t priority = 0;
+
+    /* 默认目标：全零地址 */
+    if (rtm->rtm_family == AF_INET)
+    {
+        inet_ntop(AF_INET, "\0\0\0\0", dst_str, sizeof(dst_str));
+    }
+    else
+    {
+        inet_ntop(AF_INET6, "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", dst_str, sizeof(dst_str));
+    }
+
+    /* 遍历 RTA 属性 */
+    struct rtattr *rta = RTM_RTA(rtm);
+    int rta_len = (int)RTM_PAYLOAD(nlh);
+    for (; RTA_OK(rta, rta_len); rta = RTA_NEXT(rta, rta_len))
+    {
+        switch (rta->rta_type)
+        {
+            case RTA_DST:
+                inet_ntop(rtm->rtm_family, RTA_DATA(rta), dst_str, sizeof(dst_str));
+                break;
+            case RTA_GATEWAY:
+                inet_ntop(rtm->rtm_family, RTA_DATA(rta), gw_str, sizeof(gw_str));
+                break;
+            case RTA_OIF:
+            {
+                uint32_t idx;
+                memcpy(&idx, RTA_DATA(rta), sizeof(idx));
+                if (!if_indextoname(idx, oif_name))
+                {
+                    snprintf(oif_name, sizeof(oif_name), "if%u", idx);
+                }
+                break;
+            }
+            case RTA_PRIORITY:
+                memcpy(&priority, RTA_DATA(rta), sizeof(priority));
+                break;
+            default:
+                break;
+        }
+    }
+
+    char prefix_str[80];
+    snprintf(prefix_str, sizeof(prefix_str), "%s/%u", dst_str, rtm->rtm_dst_len);
+
+    g_string_append_printf(buf, "%-7s %-10s %-26s %-20s %-14s %-8s %u\r\n", os_table_str(rtm->rtm_table),
+                           os_type_str(rtm->rtm_type), prefix_str, gw_str, oif_name, os_proto_str(rtm->rtm_protocol),
+                           priority);
+}
+
+int route_os_show(GString *buf, sa_family_t family)
+{
+    if (!buf)
+    {
+        return -1;
+    }
+
+    int fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE);
+    if (fd < 0)
+    {
+        LOG_ERROR("route_os: socket() 失败: %s", strerror(errno));
+        return -1;
+    }
+
+    /* 构造 RTM_GETROUTE dump 请求 */
+    struct
+    {
+        struct nlmsghdr nlh;
+        struct rtmsg rtm;
+    } req;
+    memset(&req, 0, sizeof(req));
+    req.nlh.nlmsg_len = NLMSG_LENGTH(sizeof(struct rtmsg));
+    req.nlh.nlmsg_type = RTM_GETROUTE;
+    req.nlh.nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
+    req.nlh.nlmsg_seq = 3;
+    req.rtm.rtm_family = (unsigned char)family;
+
+    struct sockaddr_nl nladdr;
+    memset(&nladdr, 0, sizeof(nladdr));
+    nladdr.nl_family = AF_NETLINK;
+
+    if (sendto(fd, &req, req.nlh.nlmsg_len, 0, (struct sockaddr *)&nladdr, sizeof(nladdr)) < 0)
+    {
+        LOG_ERROR("route_os: sendto() 失败: %s", strerror(errno));
+        close(fd);
+        return -1;
+    }
+
+    g_string_append_printf(buf,
+                           "\r\n%-7s %-10s %-26s %-20s %-14s %-8s %s\r\n"
+                           "------- ---------- -------------------------- "
+                           "-------------------- -------------- -------- ------\r\n",
+                           "Table", "Type", "Prefix", "Gateway", "Interface", "Proto", "Metric");
+
+    /* 接收 dump 响应（可能跨多个 recv 报文） */
+    char *recv_buf = (char *)g_malloc(ROUTE_OS_DUMP_BUFSIZE);
+    if (!recv_buf)
+    {
+        close(fd);
+        return -1;
+    }
+
+    uint32_t count = 0;
+    gboolean done = FALSE;
+    while (!done)
+    {
+        int n = (int)recv(fd, recv_buf, ROUTE_OS_DUMP_BUFSIZE, 0);
+        if (n < 0)
+        {
+            LOG_ERROR("route_os: recv() 失败: %s", strerror(errno));
+            break;
+        }
+
+        struct nlmsghdr *nlh = (struct nlmsghdr *)(void *)recv_buf;
+        for (; NLMSG_OK(nlh, (unsigned int)n); nlh = NLMSG_NEXT(nlh, n))
+        {
+            if (nlh->nlmsg_type == NLMSG_DONE)
+            {
+                done = TRUE;
+                break;
+            }
+            if (nlh->nlmsg_type == NLMSG_ERROR)
+            {
+                const struct nlmsgerr *err = (const struct nlmsgerr *)NLMSG_DATA(nlh);
+                if (err->error != 0)
+                {
+                    LOG_WARN("route_os: dump 错误 %d: %s", -err->error, strerror(-err->error));
+                }
+                done = TRUE;
+                break;
+            }
+            if (nlh->nlmsg_type == RTM_NEWROUTE)
+            {
+                os_parse_route(nlh, buf);
+                count++;
+            }
+        }
+    }
+
+    g_free(recv_buf);
+    close(fd);
+    g_string_append_printf(buf, "\r\nTotal %u route(s)\r\n", count);
+    return 0;
+}

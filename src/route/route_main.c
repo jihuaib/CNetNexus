@@ -18,6 +18,7 @@
 #include "net_addr.h"
 #include "route.h"
 #include "route_cli.h"
+#include "route_os.h"
 #include "route_pub.h"
 #include "route_relay.h"
 #include "route_static.h"
@@ -85,7 +86,12 @@ static void route_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         LOG_ERROR("Failed to connect to CLI module");
     }
 
-    LOG_INFO("Connected to DB, CLI");
+    if (dev_ipc_connect(ctx, DEV_MODULE_ID_IF, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_IF) != 0)
+    {
+        LOG_WARN("Failed to connect to IF module (interface names will show as ifindex)");
+    }
+
+    LOG_INFO("Connected to DB, CLI, IF");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
@@ -101,7 +107,7 @@ static void route_on_connect(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
 int route_add_and_notify(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr,
                          uint8_t prefix_len, uint32_t protocol, const net_addr_t *source_addr,
-                         const net_addr_t *nexthop_addr, int32_t metric, int32_t preference)
+                         const net_addr_t *nexthop_addr, int32_t metric, int32_t preference, uint32_t out_ifindex)
 {
     if (!g_route_local || !g_route_local->rib || !prefix_addr || !source_addr || !nexthop_addr)
     {
@@ -109,7 +115,7 @@ int route_add_and_notify(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, 
     }
 
     int ret = route_rib_add(g_route_local->rib, vrf_id, afi, prefix_addr, prefix_len, protocol, source_addr,
-                            nexthop_addr, metric, preference);
+                            nexthop_addr, metric, preference, out_ifindex);
     if (ret < 0)
     {
         return ret;
@@ -390,6 +396,8 @@ static void handle_inject(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
     if (entry->is_withdraw)
     {
+        /* 先撤销 OS 内核路由，再从 RIB 移除 */
+        route_os_withdraw(entry);
         int ret = route_rib_del(g_route_local->rib, entry->vrf_id, entry->afi, &entry->prefix_addr, entry->prefix_len,
                                 entry->protocol, &entry->source_addr, route_on_path_del, &notify);
         LOG_DEBUG("ROUTE_INJECT withdraw: vrf=%u afi=%u pfxlen=%u proto=%u ret=%d", entry->vrf_id, entry->afi,
@@ -398,9 +406,11 @@ static void handle_inject(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     }
     else
     {
+        /* 先写入 RIB，再下发 OS 内核路由 */
         (void)route_add_and_notify(ctx, entry->vrf_id, entry->afi, &entry->prefix_addr, entry->prefix_len,
                                    entry->protocol, &entry->source_addr, &entry->nexthop_addr, entry->metric,
-                                   entry->preference);
+                                   entry->preference, entry->out_ifindex);
+        route_os_install(entry);
         route_recompute_iter_paths(ctx);
     }
 

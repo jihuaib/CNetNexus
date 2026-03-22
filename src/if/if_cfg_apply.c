@@ -7,8 +7,10 @@
 #include "if_cfg_apply.h"
 
 #include <arpa/inet.h>
+#include <net/if.h>
 #include <string.h>
 
+#include "db.h"
 #include "errcode.h"
 #include "if.h"
 #include "if_event.h"
@@ -110,30 +112,34 @@ static void if_make_zero_addr(sa_family_t family, net_addr_t *out)
     out->family = family;
 }
 
-static void if_sync_connected_host_routes(const net_prefix_t *prefix, gboolean is_withdraw)
+static void if_sync_connected_host_routes(const net_prefix_t *prefix, const char *physical_name, gboolean is_withdraw)
 {
-    if (!prefix || !net_prefix_is_set(prefix))
+    if (!prefix || !net_prefix_is_set(prefix) || !physical_name)
     {
         return;
     }
 
     uint16_t afi = 0;
-    uint8_t host_prefix_len = 0;
     if (prefix->addr.family == AF_INET)
     {
         afi = ROUTE_AFI_IPV4;
-        host_prefix_len = 32;
     }
     else if (prefix->addr.family == AF_INET6)
     {
         afi = ROUTE_AFI_IPV6;
-        host_prefix_len = 128;
     }
     else
     {
         return;
     }
 
+    dev_ipc_context_t *ctx = g_if_local ? g_if_local->dev_ipc_ctx : NULL;
+    if (!ctx)
+    {
+        return;
+    }
+
+    /* 普通接口：注入/撤销直连路由 */
     net_addr_t network_addr;
     if (if_prefix_to_network(prefix, &network_addr) != 0)
     {
@@ -142,37 +148,20 @@ static void if_sync_connected_host_routes(const net_prefix_t *prefix, gboolean i
 
     net_addr_t zero_nh;
     if_make_zero_addr(prefix->addr.family, &zero_nh);
-    dev_ipc_context_t *ctx = g_if_local ? g_if_local->dev_ipc_ctx : NULL;
-    if (!ctx)
-    {
-        return;
-    }
+
+    /* 出接口索引（0 表示接口不存在，OS 路由不下发 OIF） */
+    uint32_t out_ifindex = (uint32_t)if_nametoindex(physical_name);
 
     /* 直连网络路由 */
     if (is_withdraw)
     {
         (void)route_rpc_del(ctx, ROUTE_VRF_DEFAULT, afi, &network_addr, prefix->prefix_len, ROUTE_PROTOCOL_CONNECTED,
-                            &prefix->addr);
+                            &prefix->addr, out_ifindex);
     }
     else
     {
         (void)route_rpc_add(ctx, ROUTE_VRF_DEFAULT, afi, &network_addr, prefix->prefix_len, ROUTE_PROTOCOL_CONNECTED,
-                            &prefix->addr, &zero_nh, 0, ROUTE_ADMIN_DIST_CONNECTED);
-    }
-
-    /* 本机主机路由 */
-    if (!(host_prefix_len == prefix->prefix_len && net_addr_equal(&network_addr, &prefix->addr)))
-    {
-        if (is_withdraw)
-        {
-            (void)route_rpc_del(ctx, ROUTE_VRF_DEFAULT, afi, &prefix->addr, host_prefix_len, ROUTE_PROTOCOL_CONNECTED,
-                                &prefix->addr);
-        }
-        else
-        {
-            (void)route_rpc_add(ctx, ROUTE_VRF_DEFAULT, afi, &prefix->addr, host_prefix_len, ROUTE_PROTOCOL_CONNECTED,
-                                &prefix->addr, &zero_nh, 0, ROUTE_ADMIN_DIST_CONNECTED);
-        }
+                            &prefix->addr, &zero_nh, 0, ROUTE_ADMIN_DIST_CONNECTED, out_ifindex);
     }
 }
 
@@ -184,15 +173,115 @@ if_map_entry_t *if_cfg_find_entry(const char *logical_name)
     }
 
     if_map_t *map = &g_if_local->interface_map;
-    for (int i = 0; i < map->count; i++)
+
+    if (!map->all_entries)
     {
-        if (strcmp(map->entries[i].logical_name, logical_name) == 0)
-        {
-            return &map->entries[i];
-        }
+        return NULL;
     }
 
-    return NULL;
+    return (if_map_entry_t *)g_hash_table_lookup(map->all_entries, logical_name);
+}
+
+int if_cfg_loop_ensure(uint32_t loop_id)
+{
+    char name[32];
+    snprintf(name, sizeof(name), "loop%u", loop_id);
+
+    if (!g_if_local || !g_if_local->interface_map.all_entries)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    /* 已存在则直接返回 */
+    if (g_hash_table_lookup(g_if_local->interface_map.all_entries, name))
+    {
+        return ERRCODE_SUCCESS;
+    }
+
+    /* 创建 OS dummy 接口（若不存在） */
+    if (!if_exists(name))
+    {
+        if (if_create_dummy(name) != ERRCODE_SUCCESS)
+        {
+            LOG_ERROR("IF: 创建 dummy 接口 %s 失败", name);
+            return ERRCODE_FAIL;
+        }
+        if_set_state(name, 1);
+    }
+
+    /* 创建内存条目并插入哈希表（key 和 value 均 g_malloc0，由哈希表负责 g_free） */
+    if_map_entry_t *entry = (if_map_entry_t *)g_malloc0(sizeof(if_map_entry_t));
+    snprintf(entry->logical_name, sizeof(entry->logical_name), "loop%u", loop_id);
+    snprintf(entry->physical_name, sizeof(entry->physical_name), "loop%u", loop_id);
+    entry->shutdown = 0;
+
+    g_hash_table_insert(g_if_local->interface_map.all_entries, g_strdup(name), entry);
+    LOG_INFO("IF: loop 接口 %s 已创建（内存条目）", name);
+    return ERRCODE_SUCCESS;
+}
+
+int if_cfg_loop_create(uint32_t loop_id)
+{
+    char name[32];
+    snprintf(name, sizeof(name), "loop%u", loop_id);
+
+    /* 已存在则视为成功（幂等） */
+    if (if_cfg_find_entry(name))
+    {
+        LOG_DEBUG("IF: loop 接口 %s 已存在", name);
+        return ERRCODE_SUCCESS;
+    }
+
+    if (if_cfg_loop_ensure(loop_id) != ERRCODE_SUCCESS)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    /* 写入 DB */
+    db_record_t *rec = db_record_new();
+    db_record_set_text(rec, "name", name);
+    db_record_set_text(rec, "ip_address", "");
+    db_record_set_int(rec, "prefix_len", 0);
+    db_record_set_int(rec, "shutdown", 0);
+    db_rpc_insert_record(g_if_local->dev_ipc_ctx, "if_interface", rec);
+    db_record_free(rec);
+
+    LOG_INFO("IF: loop 接口 %s 已创建（内存 + DB）", name);
+    return ERRCODE_SUCCESS;
+}
+
+int if_cfg_loop_delete(uint32_t loop_id)
+{
+    char name[32];
+    snprintf(name, sizeof(name), "loop%u", loop_id);
+
+    if_map_entry_t *entry = if_cfg_find_entry(name);
+    if (!entry)
+    {
+        LOG_WARN("IF: loop 接口 %s 不存在，忽略删除", name);
+        return ERRCODE_FAIL;
+    }
+
+    /* 撤销 IP（若已配置） */
+    if (net_prefix_is_set(&entry->prefix))
+    {
+        if_cfg_apply_ip(TRUE, name, NULL);
+    }
+
+    /* 删除 OS 接口 */
+    if_delete_interface(name);
+
+    /* 从哈希表中移除（会触发 g_free 释放 key 和 value） */
+    g_hash_table_remove(g_if_local->interface_map.all_entries, name);
+
+    /* 从 DB 中删除 */
+    db_condition_t cond = {.field_name = "name", .op = DB_CMP_EQ, .value = db_value_text(name)};
+    db_filter_t filter = {.conditions = &cond, .num_conditions = 1};
+    db_rpc_delete(g_if_local->dev_ipc_ctx, "if_interface", &filter);
+    db_value_free(&cond.value);
+
+    LOG_INFO("IF: loop 接口 %s 已删除", name);
+    return ERRCODE_SUCCESS;
 }
 
 int if_cfg_apply_ip(gboolean is_no, const char *logical_name, const net_prefix_t *prefix)
@@ -216,10 +305,9 @@ int if_cfg_apply_ip(gboolean is_no, const char *logical_name, const net_prefix_t
     {
         if (had_old)
         {
-            if_sync_connected_host_routes(&old_prefix, TRUE);
+            if_sync_connected_host_routes(&old_prefix, entry->physical_name, TRUE);
         }
         memset(&entry->prefix, 0, sizeof(entry->prefix));
-        if_set_ip(entry->physical_name, "0.0.0.0", "0.0.0.0");
         LOG_INFO("IF: %s IP cleared", logical_name);
         return ERRCODE_SUCCESS;
     }
@@ -228,34 +316,19 @@ int if_cfg_apply_ip(gboolean is_no, const char *logical_name, const net_prefix_t
     {
         return ERRCODE_FAIL;
     }
-    if (prefix->addr.family != AF_INET || prefix->prefix_len > 32)
-    {
-        LOG_ERROR("IF: Only IPv4 address is supported currently");
-        return ERRCODE_FAIL;
-    }
 
-    /* 转字符串用于 ioctl */
     char ip_str[64];
     net_addr_to_str(&prefix->addr, ip_str, sizeof(ip_str));
 
-    char mask_str[16];
-    net_prefix_len_to_mask_str(prefix->prefix_len, mask_str);
-
-    if (if_set_ip(entry->physical_name, ip_str, mask_str) != ERRCODE_SUCCESS)
-    {
-        LOG_ERROR("IF: Failed to configure physical interface %s IP", entry->physical_name);
-        return ERRCODE_FAIL;
-    }
-
     if (had_old && !if_prefix_equal(&old_prefix, prefix))
     {
-        if_sync_connected_host_routes(&old_prefix, TRUE);
+        if_sync_connected_host_routes(&old_prefix, entry->physical_name, TRUE);
     }
 
     entry->prefix = *prefix;
     if (!entry->shutdown)
     {
-        if_sync_connected_host_routes(&entry->prefix, FALSE);
+        if_sync_connected_host_routes(&entry->prefix, entry->physical_name, FALSE);
     }
 
     LOG_INFO("IF: %s IP=%s/%u configured", logical_name, ip_str, prefix->prefix_len);
@@ -299,7 +372,7 @@ int if_cfg_apply_shutdown(gboolean is_no, const char *logical_name)
 
         if (net_prefix_is_set(&entry->prefix))
         {
-            if_sync_connected_host_routes(&entry->prefix, up ? FALSE : TRUE);
+            if_sync_connected_host_routes(&entry->prefix, entry->physical_name, up ? FALSE : TRUE);
         }
     }
 

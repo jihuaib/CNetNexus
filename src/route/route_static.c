@@ -13,6 +13,7 @@
 #include "net_addr.h"
 #include "route.h"
 #include "route_main.h"
+#include "route_os.h"
 #include "route_pub.h"
 #include "route_relay.h"
 #include "route_rib.h"
@@ -62,6 +63,24 @@ typedef struct
     dev_ipc_context_t *ctx;
 } static_del_ctx_t;
 
+/**
+ * @brief 用 RIB head/path 填充 OS 下发条目
+ */
+static void static_fill_os_entry(route_msg_entry_t *e, const route_head_t *head, const route_path_t *path)
+{
+    memset(e, 0, sizeof(*e));
+    e->vrf_id = head->key.vrf_id;
+    e->afi = head->key.afi;
+    e->prefix_len = head->key.prefix_len;
+    e->prefix_addr = head->key.addr;
+    e->nexthop_addr = path->nexthop;
+    e->source_addr = path->key.source;
+    e->protocol = path->key.protocol;
+    e->metric = path->metric;
+    e->preference = path->preference;
+    e->out_ifindex = path->out_ifindex;
+}
+
 static void on_static_rib_del(const route_head_t *head, const route_path_t *path, void *userdata)
 {
     const static_del_ctx_t *dctx = (const static_del_ctx_t *)userdata;
@@ -70,6 +89,14 @@ static void on_static_rib_del(const route_head_t *head, const route_path_t *path
         return;
     }
     route_pub_notify(dctx->ctx, g_route_local->subscribers, head, path, 1);
+
+    /* 从 OS 内核撤销 */
+    if (head && path)
+    {
+        route_msg_entry_t oe;
+        static_fill_os_entry(&oe, head, path);
+        route_os_withdraw(&oe);
+    }
 }
 
 // ============================================================================
@@ -102,6 +129,8 @@ void route_static_cleanup(void)
 typedef struct
 {
     GString *buf;
+    uint16_t afi_filter;
+    int has_afi_filter;
     uint32_t count;
 } static_show_ctx_t;
 
@@ -111,6 +140,12 @@ static void static_show_cb(gpointer key_ptr, gpointer value_ptr, gpointer user_d
     const route_static_entry_t *entry = (const route_static_entry_t *)value_ptr;
     static_show_ctx_t *ctx = (static_show_ctx_t *)user_data;
     if (!entry || !ctx)
+    {
+        return;
+    }
+
+    /* 按 AFI 过滤 */
+    if (ctx->has_afi_filter && entry->key.afi != ctx->afi_filter)
     {
         return;
     }
@@ -132,7 +167,7 @@ static void static_show_cb(gpointer key_ptr, gpointer value_ptr, gpointer user_d
     ctx->count++;
 }
 
-void route_static_show(GString *buf)
+void route_static_show(GString *buf, uint16_t afi_filter, int has_afi_filter)
 {
     if (!buf)
     {
@@ -151,7 +186,7 @@ void route_static_show(GString *buf)
         return;
     }
 
-    static_show_ctx_t ctx = {.buf = buf, .count = 0};
+    static_show_ctx_t ctx = {.buf = buf, .afi_filter = afi_filter, .has_afi_filter = has_afi_filter, .count = 0};
     g_hash_table_foreach(g_static_table, static_show_cb, &ctx);
 
     g_string_append_printf(buf, "\r\nTotal %u static route(s) in candidate table\r\n", ctx.count);
@@ -204,11 +239,26 @@ int route_static_add(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_add
     if (resolved)
     {
         /* nexthop 可达：写入或更新 RIB */
+        uint32_t oif = route_relay_nh_get_ifindex(vrf_id, afi, nexthop_addr);
         int ret = route_add_and_notify(g_route_local->dev_ipc_ctx, vrf_id, afi, prefix_addr, prefix_len,
-                                       ROUTE_PROTOCOL_STATIC, nexthop_addr, nexthop_addr, metric, preference);
+                                       ROUTE_PROTOCOL_STATIC, nexthop_addr, nexthop_addr, metric, preference, oif);
         if (ret >= 0)
         {
             entry->in_rib = 1u;
+            /* 下发到 OS 内核 */
+            route_msg_entry_t oe;
+            memset(&oe, 0, sizeof(oe));
+            oe.vrf_id = vrf_id;
+            oe.afi = afi;
+            oe.prefix_len = prefix_len;
+            oe.prefix_addr = *prefix_addr;
+            oe.nexthop_addr = *nexthop_addr;
+            oe.source_addr = *nexthop_addr;
+            oe.protocol = ROUTE_PROTOCOL_STATIC;
+            oe.metric = metric;
+            oe.preference = preference;
+            oe.out_ifindex = oif;
+            route_os_install(&oe);
             LOG_DEBUG("Static route written to RIB: vrf=%u afi=%u pfxlen=%u (nexthop resolved)", vrf_id, afi,
                       prefix_len);
         }
@@ -437,12 +487,27 @@ static void static_recompute_cb(gpointer key_ptr, gpointer value_ptr, gpointer u
     if (resolved && !entry->in_rib)
     {
         /* nexthop 新可达：写入 RIB */
+        uint32_t oif = route_relay_nh_get_ifindex(entry->key.vrf_id, entry->key.afi, &entry->key.nexthop_addr);
         int ret = route_add_and_notify(rctx->ctx, entry->key.vrf_id, entry->key.afi, &entry->key.prefix_addr,
                                        entry->key.prefix_len, ROUTE_PROTOCOL_STATIC, &entry->key.nexthop_addr,
-                                       &entry->key.nexthop_addr, entry->metric, entry->preference);
+                                       &entry->key.nexthop_addr, entry->metric, entry->preference, oif);
         if (ret >= 0)
         {
-            entry->in_rib = 1u;
+            entry->in_rib = 1U;
+            /* 下发到 OS 内核 */
+            route_msg_entry_t oe;
+            memset(&oe, 0, sizeof(oe));
+            oe.vrf_id = entry->key.vrf_id;
+            oe.afi = entry->key.afi;
+            oe.prefix_len = entry->key.prefix_len;
+            oe.prefix_addr = entry->key.prefix_addr;
+            oe.nexthop_addr = entry->key.nexthop_addr;
+            oe.source_addr = entry->key.nexthop_addr;
+            oe.protocol = ROUTE_PROTOCOL_STATIC;
+            oe.metric = entry->metric;
+            oe.preference = entry->preference;
+            oe.out_ifindex = oif;
+            route_os_install(&oe);
             rctx->added++;
         }
     }
@@ -483,11 +548,11 @@ void route_static_recompute(dev_ipc_context_t *ctx)
 // show route relay static（直接委托通用 relay show，按 owner_module_id 过滤）
 // ============================================================================
 
-void route_static_show_relay(GString *buf)
+void route_static_show_relay(GString *buf, uint16_t afi_filter, int has_afi_filter)
 {
     if (!buf)
     {
         return;
     }
-    route_relay_show(buf, DEV_MODULE_ID_ROUTE, 1);
+    route_relay_show(buf, DEV_MODULE_ID_ROUTE, 1, afi_filter, has_afi_filter);
 }

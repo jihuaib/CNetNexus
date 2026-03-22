@@ -107,8 +107,12 @@
 
         <!-- ================================================================
              Group 2: show route 命令
-             cfg-id: 1=ipv4, 2=ipv6, 3=all, 4=dest_filter,
-                     5=proto:static, 6=proto:bgp, 7=proto:ospf, 8=summary
+             元素位置：1=show, 2=route, 3=ipv4, 4=ipv6, 5=<destination>,
+                       6=proto, 7=static, 8=bgp, 9=ospf, 10=summary,
+                       11=connected, 12=os
+             cfg-id: 1=ipv4, 2=ipv6, 4=dest_filter,
+                     5=proto:static, 6=proto:bgp, 7=proto:ospf, 8=summary,
+                     9=proto:connected, 10=os
              ================================================================ -->
         <group group-id="2">
             <elements>
@@ -127,10 +131,6 @@
                 <element cfg-id="2" type="keyword">
                     <name>ipv6</name>
                     <description>IPv6 routes</description>
-                </element>
-                <element cfg-id="3" type="keyword">
-                    <name>all</name>
-                    <description>All routes (IPv4 + IPv6)</description>
                 </element>
                 <element cfg-id="4" type="parameter">
                     <name>&lt;destination&gt;</name>
@@ -157,6 +157,14 @@
                     <name>summary</name>
                     <description>Route summary statistics</description>
                 </element>
+                <element cfg-id="9" type="keyword">
+                    <name>connected</name>
+                    <description>Directly connected routes</description>
+                </element>
+                <element cfg-id="10" type="keyword">
+                    <name>os</name>
+                    <description>Linux kernel routing table (all tables)</description>
+                </element>
             </elements>
 
             <commands>
@@ -165,44 +173,79 @@
                     <expression>1 2 3</expression>
                     <views>global</views>
                 </command>
-                <!-- show route ipv4 <destination> -->
-                <command>
-                    <expression>1 2 3 6</expression>
-                    <views>global</views>
-                </command>
                 <!-- show route ipv6 -->
                 <command>
                     <expression>1 2 4</expression>
                     <views>global</views>
                 </command>
+                <!-- show route ipv4 <destination> -->
+                <command>
+                    <expression>1 2 3 5</expression>
+                    <views>global</views>
+                </command>
                 <!-- show route ipv6 <destination> -->
                 <command>
-                    <expression>1 2 4 6</expression>
+                    <expression>1 2 4 5</expression>
                     <views>global</views>
                 </command>
-                <!-- show route all -->
+                <!-- show route ipv4 proto static -->
                 <command>
-                    <expression>1 2 5</expression>
+                    <expression>1 2 3 6 7</expression>
                     <views>global</views>
                 </command>
-                <!-- show route proto static -->
+                <!-- show route ipv6 proto static -->
                 <command>
-                    <expression>1 2 7 8</expression>
+                    <expression>1 2 4 6 7</expression>
                     <views>global</views>
                 </command>
-                <!-- show route proto bgp -->
+                <!-- show route ipv4 proto bgp -->
                 <command>
-                    <expression>1 2 7 9</expression>
+                    <expression>1 2 3 6 8</expression>
                     <views>global</views>
                 </command>
-                <!-- show route proto ospf -->
+                <!-- show route ipv6 proto bgp -->
                 <command>
-                    <expression>1 2 7 10</expression>
+                    <expression>1 2 4 6 8</expression>
                     <views>global</views>
                 </command>
-                <!-- show route summary -->
+                <!-- show route ipv4 proto ospf -->
                 <command>
-                    <expression>1 2 11</expression>
+                    <expression>1 2 3 6 9</expression>
+                    <views>global</views>
+                </command>
+                <!-- show route ipv6 proto ospf -->
+                <command>
+                    <expression>1 2 4 6 9</expression>
+                    <views>global</views>
+                </command>
+                <!-- show route ipv4 proto connected -->
+                <command>
+                    <expression>1 2 3 6 11</expression>
+                    <views>global</views>
+                </command>
+                <!-- show route ipv6 proto connected -->
+                <command>
+                    <expression>1 2 4 6 11</expression>
+                    <views>global</views>
+                </command>
+                <!-- show route ipv4 summary -->
+                <command>
+                    <expression>1 2 3 10</expression>
+                    <views>global</views>
+                </command>
+                <!-- show route ipv6 summary -->
+                <command>
+                    <expression>1 2 4 10</expression>
+                    <views>global</views>
+                </command>
+                <!-- show route ipv4 os -->
+                <command>
+                    <expression>1 2 3 12</expression>
+                    <views>global</views>
+                </command>
+                <!-- show route ipv6 os -->
+                <command>
+                    <expression>1 2 4 12</expression>
                     <views>global</views>
                 </command>
             </commands>
@@ -297,8 +340,8 @@
         </group>
 
         <!-- ================================================================
-             Group 5: show route static 命令（候选静态路由表）
-             无 cfg-id 参数，仅固定关键字
+             Group 5: show route ipv4/ipv6 static 命令（候选静态路由表）
+             cfg-id: 1=ipv4, 2=ipv6
              ================================================================ -->
         <group group-id="5">
             <elements>
@@ -310,6 +353,14 @@
                     <name>route</name>
                     <description>Route module</description>
                 </element>
+                <element cfg-id="1" type="keyword">
+                    <name>ipv4</name>
+                    <description>IPv4 static candidate table</description>
+                </element>
+                <element cfg-id="2" type="keyword">
+                    <name>ipv6</name>
+                    <description>IPv6 static candidate table</description>
+                </element>
                 <element type="keyword">
                     <name>static</name>
                     <description>Static route candidate table</description>
@@ -317,17 +368,22 @@
             </elements>
 
             <commands>
-                <!-- show route static -->
+                <!-- show route ipv4 static -->
                 <command>
-                    <expression>1 2 3</expression>
+                    <expression>1 2 3 5</expression>
+                    <views>global</views>
+                </command>
+                <!-- show route ipv6 static -->
+                <command>
+                    <expression>1 2 4 5</expression>
                     <views>global</views>
                 </command>
             </commands>
         </group>
 
         <!-- ================================================================
-             Group 4: show route relay 命令
-             cfg-id: 1=bgp（按 BGP 模块过滤），2=static（按静态路由过滤）
+             Group 4: show route ipv4/ipv6 relay 命令
+             cfg-id: 1=ipv4, 2=ipv6, 3=bgp（按 BGP 模块过滤），4=static（按静态路由过滤）
              ================================================================ -->
         <group group-id="4">
             <elements>
@@ -339,34 +395,57 @@
                     <name>route</name>
                     <description>Route module</description>
                 </element>
+                <element cfg-id="1" type="keyword">
+                    <name>ipv4</name>
+                    <description>IPv4 relay watch table</description>
+                </element>
+                <element cfg-id="2" type="keyword">
+                    <name>ipv6</name>
+                    <description>IPv6 relay watch table</description>
+                </element>
                 <element type="keyword">
                     <name>relay</name>
                     <description>Nexthop iteration relay watch table</description>
                 </element>
-                <element cfg-id="1" type="keyword">
+                <element cfg-id="3" type="keyword">
                     <name>bgp</name>
                     <description>Filter by BGP module</description>
                 </element>
-                <element cfg-id="2" type="keyword">
+                <element cfg-id="4" type="keyword">
                     <name>static</name>
                     <description>Show static route nexthop relay status (candidate table)</description>
                 </element>
             </elements>
 
             <commands>
-                <!-- show route relay -->
-                <command>
-                    <expression>1 2 3</expression>
-                    <views>global</views>
-                </command>
-                <!-- show route relay bgp -->
-                <command>
-                    <expression>1 2 3 4</expression>
-                    <views>global</views>
-                </command>
-                <!-- show route relay static -->
+                <!-- show route ipv4 relay -->
                 <command>
                     <expression>1 2 3 5</expression>
+                    <views>global</views>
+                </command>
+                <!-- show route ipv6 relay -->
+                <command>
+                    <expression>1 2 4 5</expression>
+                    <views>global</views>
+                </command>
+                <!-- show route ipv4 relay bgp -->
+                <command>
+                    <expression>1 2 3 5 6</expression>
+                    <views>global</views>
+                </command>
+                <!-- show route ipv6 relay bgp -->
+                <command>
+                    <expression>1 2 4 5 6</expression>
+                    <views>global</views>
+                </command>
+                <!-- show route ipv4 relay static -->
+                <command>
+                    <expression>1 2 3 5 7</expression>
+                    <views>global</views>
+                </command>
+                <!-- show route ipv6 relay static -->
+                <command>
+                    <expression>1 2 4 5 7</expression>
                     <views>global</views>
                 </command>
             </commands>

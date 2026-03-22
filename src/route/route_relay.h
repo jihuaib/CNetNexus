@@ -30,8 +30,10 @@ void route_relay_handle_nh_unregister(dev_ipc_context_t *ctx, dev_ipc_message_t 
  * @param buf          输出 GString 缓冲区
  * @param module_filter 按 owner_module_id 过滤（0 表示不过滤）
  * @param has_filter   非零表示启用 module_filter 过滤
+ * @param afi_filter   地址族过滤（ROUTE_AFI_IPV4/IPV6）
+ * @param has_afi_filter 非零表示启用 afi_filter 过滤
  */
-void route_relay_show(GString *buf, uint32_t module_filter, int has_filter);
+void route_relay_show(GString *buf, uint32_t module_filter, int has_filter, uint16_t afi_filter, int has_afi_filter);
 
 /**
  * @brief 清理 relay 内部状态
@@ -74,5 +76,18 @@ void route_relay_unregister_direct(uint32_t vrf_id, uint16_t afi, const net_addr
  * @return 1=可达，0=不可达
  */
 int route_relay_nh_is_resolved(uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop_addr);
+
+/**
+ * @brief 沿 nexthop 迭代链查找最终出接口索引
+ *
+ * 与 route_relay_nh_is_resolved 逻辑相同，但返回链末端直连路径的 out_ifindex。
+ * 用于在静态路由写入 RIB 时填充出接口信息。
+ *
+ * @param vrf_id       VRF ID
+ * @param afi          地址族
+ * @param nexthop_addr 下一跳地址（二进制）
+ * @return 出接口索引（0 表示未找到或不可达）
+ */
+uint32_t route_relay_nh_get_ifindex(uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop_addr);
 
 #endif /* ROUTE_RELAY_H */

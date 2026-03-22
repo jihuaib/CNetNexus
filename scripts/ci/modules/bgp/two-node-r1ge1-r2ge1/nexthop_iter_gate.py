@@ -77,7 +77,7 @@ def _wait_relay_state(
     timeout: int,
     interval: int = 2,
 ) -> None:
-    command = "show route relay bgp"
+    command = "show route ipv4 relay bgp"
     expect_str = "yes" if expect_resolved else "no"
     deadline = time.time() + timeout
     last_out = ""

@@ -106,9 +106,11 @@ void route_static_recompute(dev_ipc_context_t *ctx);
  *
  * 每条记录显示：前缀、nexthop、metric、preference、nh_resolved（迭代是否可达）、in_rib（是否已写入 RIB）。
  *
- * @param buf 输出 GString 缓冲区（不可为 NULL）
+ * @param buf            输出 GString 缓冲区（不可为 NULL）
+ * @param afi_filter     地址族过滤（ROUTE_AFI_IPV4/IPV6）
+ * @param has_afi_filter 非零表示启用 afi_filter 过滤
  */
-void route_static_show(GString *buf);
+void route_static_show(GString *buf, uint16_t afi_filter, int has_afi_filter);
 
 /**
  * @brief 以 relay 风格输出候选静态路由的 nexthop 迭代状态（按 nexthop 聚合）
@@ -116,9 +118,11 @@ void route_static_show(GString *buf);
  * 每行代表一个唯一的 nexthop，显示 VRF、AFI、nexthop 地址、依赖该 nexthop 的路由数量及可达性。
  * 供 show route relay static 命令调用。
  *
- * @param buf 输出 GString 缓冲区（不可为 NULL）
+ * @param buf            输出 GString 缓冲区（不可为 NULL）
+ * @param afi_filter     地址族过滤（ROUTE_AFI_IPV4/IPV6）
+ * @param has_afi_filter 非零表示启用 afi_filter 过滤
  */
-void route_static_show_relay(GString *buf);
+void route_static_show_relay(GString *buf, uint16_t afi_filter, int has_afi_filter);
 
 /**
  * @brief 清理候选静态路由表（shutdown 时调用）

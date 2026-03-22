@@ -61,9 +61,6 @@ int if_list(if_info_t **interfaces, int *count);
 // Get detailed interface information
 int if_get_info(const char *ifname, if_info_t *info);
 
-// Set IP address (works for any interface type)
-int if_set_ip(const char *ifname, const char *ip, const char *netmask);
-
 // Set interface state (up/down)
 int if_set_state(const char *ifname, int up);
 
@@ -75,6 +72,18 @@ int if_exists(const char *ifname);
 
 // Ensure interface exists (create if not)
 int if_ensure_exists(const char *ifname);
+
+// 创建 dummy 接口（用于 loop 接口模拟）
+int if_create_dummy(const char *ifname);
+
+// 删除接口（通过 Netlink RTM_DELLINK）
+int if_delete_interface(const char *ifname);
+
+// 通过 Netlink 下发 Linux 黑洞路由（RTN_BLACKHOLE）
+int if_blackhole_route_add(sa_family_t family, const void *prefix_bin, uint8_t prefix_len);
+
+// 撤销 Linux 黑洞路由
+int if_blackhole_route_del(sa_family_t family, const void *prefix_bin, uint8_t prefix_len);
 
 // Global interface context
 extern char g_current_interface[IFNAMSIZ];

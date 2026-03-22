@@ -44,6 +44,8 @@
 #define IF_MSG_TYPE_EVENT DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_IF, 0x0003)
 /** IF 通用 ACK */
 #define IF_MSG_TYPE_ACK DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_IF, 0x00FF)
+/** 查询接口映射表（ifindex→逻辑名），用于 route 模块 show 时显示逻辑接口名 */
+#define IF_MSG_TYPE_GET_INTF_MAP DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_IF, 0x0004)
 
 // ============================================================================
 // 常量
@@ -86,5 +88,48 @@ typedef struct if_msg_ack
 {
     int32_t result; /**< ERRCODE_SUCCESS=0 表示成功 */
 } if_msg_ack_t;
+
+/**
+ * @brief 接口映射表单条目（ifindex → 逻辑名）
+ */
+typedef struct if_intf_map_item
+{
+    uint32_t ifindex;                       /**< Linux 接口索引（0 表示虚拟/未知） */
+    char logical_name[IF_LOGICAL_NAME_MAX]; /**< 逻辑接口名（如 GE-1、loop1） */
+} if_intf_map_item_t;
+
+/**
+ * @brief IF_MSG_TYPE_GET_INTF_MAP 响应载荷
+ *
+ * 载荷布局：固定头部 + items[] 变长数组
+ * 总长度 = sizeof(if_intf_map_resp_t) + (count - 1) * sizeof(if_intf_map_item_t)
+ */
+typedef struct if_intf_map_resp
+{
+    int32_t result;              /**< ERRCODE_SUCCESS=0 表示成功 */
+    uint32_t count;              /**< items 数组元素数量 */
+    if_intf_map_item_t items[1]; /**< 变长条目数组（实际长度由 count 决定） */
+} if_intf_map_resp_t;
+
+// ============================================================================
+// IF RPC API（供其他模块调用，需链接 if_api 库）
+// ============================================================================
+
+/**
+ * @brief 从 IF 模块查询全量接口映射表（ifindex → 逻辑名）
+ *
+ * @param ctx 调用方的 IPC 上下文（已连接到 IF 模块）
+ * @return 成功返回堆分配的 if_intf_map_resp_t（调用方需 free()）；失败返回 NULL
+ */
+if_intf_map_resp_t *if_rpc_get_intf_map(dev_ipc_context_t *ctx);
+
+/**
+ * @brief 在 if_intf_map_resp_t 中按 ifindex 查找逻辑名
+ *
+ * @param resp   if_rpc_get_intf_map() 的返回值（可为 NULL）
+ * @param ifindex 目标接口索引
+ * @return 匹配的逻辑名字符串（resp 内部指针，生命周期同 resp）；未找到时返回 NULL
+ */
+const char *if_intf_map_lookup(const if_intf_map_resp_t *resp, uint32_t ifindex);
 
 #endif /* IF_EVENT_H */

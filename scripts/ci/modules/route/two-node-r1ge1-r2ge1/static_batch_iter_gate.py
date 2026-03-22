@@ -16,7 +16,7 @@ import re
 import time
 from typing import Optional
 
-from module_api import cmd, g_top, require_devices, run_cmds, step, wait_checks  # noqa: E402
+from module_api import cmd, g_top, require_devices, run_cmds, step  # noqa: E402
 from top_runner import TopologyRuntime  # noqa: E402
 
 
@@ -77,7 +77,13 @@ def _parse_relay_total(output: str) -> Optional[int]:
     if not match:
         return None
     return int(match.group(1))
-    return None
+
+
+def _parse_route_path_total(output: str) -> Optional[int]:
+    match = re.search(r"Total\s+(\d+)\s+path\(s\)", output)
+    if not match:
+        return None
+    return int(match.group(1))
 
 
 def _wait_route_presence(
@@ -88,23 +94,40 @@ def _wait_route_presence(
     expect_present: bool,
     timeout: int,
 ) -> None:
-    checks: list[dict[str, object]] = []
-    for addr, pfx in routes:
-        if expect_present:
-            contains = [pfx, "Total 1 path(s)"]
-            label = f"{device} route visible {pfx}"
-        else:
-            contains = ["(no routes)", "Total 0 path(s)"]
-            label = f"{device} route hidden {pfx}"
-        checks.append(
-            {
-                "device": device,
-                "command": f"show route ipv4 {addr}",
-                "contains": contains,
-                "label": label,
-            }
-        )
-    wait_checks(rt, checks, timeout=timeout, interval=2)
+    deadline = time.time() + timeout
+    interval = 2
+    last_missing: list[str] = []
+    last_out: dict[str, str] = {}
+
+    while time.time() < deadline:
+        pending = 0
+        missing: list[str] = []
+
+        for addr, pfx in routes:
+            out = cmd(rt, device, f"show route ipv4 {addr}", strict=False)
+            last_out[pfx] = out
+            path_total = _parse_route_path_total(out)
+
+            if expect_present:
+                ok = "(no matching routes)" not in out and path_total is not None and path_total > 0
+                if not ok:
+                    pending += 1
+                    missing.append(f"{device} route visible {pfx} invalid path view")
+            else:
+                ok = "(no matching routes)" in out
+                if not ok:
+                    pending += 1
+                    missing.append(f"{device} route hidden {pfx} unexpected output")
+
+        if pending == 0:
+            return
+
+        last_missing = missing
+        time.sleep(interval)
+
+    detail = "\n".join(last_missing)
+    output_dump = "\n\n".join([f"[{pfx}]\n{out}" for pfx, out in last_out.items()])
+    raise RuntimeError(f"route presence checks not satisfied within {timeout}s\n{detail}\n\nlast outputs:\n{output_dump}")
 
 
 def _wait_static_state(
@@ -125,7 +148,7 @@ def _wait_static_state(
     last_out = ""
 
     while time.time() < deadline:
-        out = cmd(rt, device, "show route static", strict=False)
+        out = cmd(rt, device, "show route ipv4 static", strict=False)
         last_out = out
 
         total = _parse_static_total(out)
@@ -153,7 +176,7 @@ def _wait_static_state(
     raise RuntimeError(
         f"{device} static candidate state mismatch after {timeout}s\n"
         f"expect total={expect_total} resolved={expect_resolved_str} in_rib={expect_in_rib_str}\n"
-        f"command: show route static\n"
+        f"command: show route ipv4 static\n"
         f"last output:\n{last_out}"
     )
 
@@ -173,7 +196,7 @@ def _wait_relay_state(
     last_out = ""
 
     while time.time() < deadline:
-        out = cmd(rt, device, "show route relay static", strict=False)
+        out = cmd(rt, device, "show route ipv4 relay static", strict=False)
         last_out = out
         row_resolved = _parse_relay_row(out, nexthop)
         total = _parse_relay_total(out)
@@ -187,7 +210,7 @@ def _wait_relay_state(
     raise RuntimeError(
         f"{device} static relay state mismatch after {timeout}s\n"
         f"expect total_entries={expect_total_entries} resolved={expect_resolved_str}\n"
-        f"command: show route relay static\n"
+        f"command: show route ipv4 relay static\n"
         f"last output:\n{last_out}"
     )
 

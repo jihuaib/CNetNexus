@@ -23,6 +23,8 @@
 #define ROUTE_PROTOCOL_BGP 2u
 /** OSPF 路由协议 */
 #define ROUTE_PROTOCOL_OSPF 3u
+/** 黑洞路由（null0 接口，静默丢弃） */
+#define ROUTE_PROTOCOL_BLACKHOLE 4u
 /** 通配符：匹配所有协议（用于订阅/查询过滤） */
 #define ROUTE_PROTOCOL_MAX 0xFFFFFFFFu
 
@@ -123,6 +125,7 @@ typedef struct route_msg_entry
     uint8_t is_withdraw;     /**< 1=撤销路由, 0=新增/更新路由 */
     uint8_t flags;           /**< 路径标志（ROUTE_ENTRY_FLAG_*） */
     uint8_t _pad[2];         /**< 对齐填充 */
+    uint32_t out_ifindex;    /**< 出接口索引（直连路由使用，0=不指定） */
     net_addr_t prefix_addr;  /**< 前缀地址（二进制） */
     net_addr_t nexthop_addr; /**< 下一跳地址（二进制） */
     net_addr_t source_addr;  /**< 路径来源标识（二进制 IP） */
@@ -194,11 +197,12 @@ int route_rpc_inject(dev_ipc_context_t *ctx, const route_msg_entry_t *entry);
  * @param nexthop    下一跳地址
  * @param metric     度量值
  * @param preference 管理距离
+ * @param out_ifindex 出接口索引（直连路由填接口 ifindex，其他填 0）
  * @return 成功返回 ERRCODE_SUCCESS，失败返回 ERRCODE_FAIL
  */
 int route_rpc_add(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr,
                   uint8_t prefix_len, uint32_t protocol, const net_addr_t *source, const net_addr_t *nexthop,
-                  int32_t metric, int32_t preference);
+                  int32_t metric, int32_t preference, uint32_t out_ifindex);
 
 /**
  * @brief 通过 IPC 向 ROUTE 模块注册“需先做 nexthop 迭代”的候选路径
@@ -214,10 +218,11 @@ int route_rpc_nh_register(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi,
  * @param prefix_len  前缀长度
  * @param protocol    路由协议（ROUTE_PROTOCOL_*）
  * @param source      路径来源标识（用于唯一键）
+ * @param out_ifindex 出接口索引（直连路由撤销需透传，其他可填 0）
  * @return 成功返回 ERRCODE_SUCCESS，失败返回 ERRCODE_FAIL
  */
 int route_rpc_del(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr,
-                  uint8_t prefix_len, uint32_t protocol, const net_addr_t *source);
+                  uint8_t prefix_len, uint32_t protocol, const net_addr_t *source, uint32_t out_ifindex);
 
 /**
  * @brief 通过 IPC 撤销一条“需迭代”的候选路径

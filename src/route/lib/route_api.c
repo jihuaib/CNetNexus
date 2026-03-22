@@ -38,7 +38,7 @@ int route_rpc_inject(dev_ipc_context_t *ctx, const route_msg_entry_t *entry)
 
 int route_rpc_add(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr,
                   uint8_t prefix_len, uint32_t protocol, const net_addr_t *source, const net_addr_t *nexthop,
-                  int32_t metric, int32_t preference)
+                  int32_t metric, int32_t preference, uint32_t out_ifindex)
 {
     if (!prefix_addr || !source || !nexthop)
     {
@@ -56,6 +56,7 @@ int route_rpc_add(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const n
     entry.preference = preference;
     entry.is_withdraw = 0;
     entry.flags = 0;
+    entry.out_ifindex = out_ifindex;
     entry.prefix_addr = *prefix_addr;
     entry.source_addr = *source;
     entry.nexthop_addr = *nexthop;
@@ -107,7 +108,7 @@ int route_rpc_nh_register(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi,
 }
 
 int route_rpc_del(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr,
-                  uint8_t prefix_len, uint32_t protocol, const net_addr_t *source)
+                  uint8_t prefix_len, uint32_t protocol, const net_addr_t *source, uint32_t out_ifindex)
 {
     if (!prefix_addr || !source)
     {
@@ -125,6 +126,7 @@ int route_rpc_del(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const n
     entry.preference = 0;
     entry.is_withdraw = 1;
     entry.flags = 0;
+    entry.out_ifindex = out_ifindex;
     entry.prefix_addr = *prefix_addr;
     entry.source_addr = *source;
     entry.nexthop_addr.family = source->family;

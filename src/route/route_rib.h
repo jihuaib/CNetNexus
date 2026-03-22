@@ -67,6 +67,7 @@ typedef struct route_path
     uint8_t iter_dirty;    /**< iter_required 路径更新后置位，用于触发重新回推 */
     uint8_t _pad;          /**< 填充对齐 */
     uint32_t iter_owner_module_id; /**< 注册该迭代路径的 owner module id */
+    uint32_t out_ifindex;          /**< 出接口索引（直连路由由 IF 模块填充，其他协议为 0） */
     gint64 updated_at_usec;        /**< 最近更新时间（g_get_real_time） */
 } route_path_t;
 
@@ -133,7 +134,7 @@ void route_rib_destroy(route_rib_t *rib);
  */
 int route_rib_add(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr, uint8_t prefix_len,
                   uint32_t protocol, const net_addr_t *source, const net_addr_t *nexthop, int32_t metric,
-                  int32_t preference);
+                  int32_t preference, uint32_t out_ifindex);
 
 /**
  * @brief 从 RIB 删除一条路径（可选回调，在删除前触发）

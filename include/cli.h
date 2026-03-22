@@ -50,6 +50,8 @@
 #define CLI_VIEW_BGP "bgp"
 /** 接口视图 */
 #define CLI_VIEW_IF "if"
+/** loop 接口视图 */
+#define CLI_VIEW_IF_LOOP "if-loop"
 /** 路由视图 */
 #define CLI_VIEW_ROUTE "route"
 /** BGP 地址族 IPv4 单播视图 */
@@ -74,6 +76,8 @@
 #define CLI_CTX_ID_IF_IDX 4
 /** VRF 名称上下文 */
 #define CLI_CTX_ID_VRF_NAME 5
+/** loop 接口编号 ctx 变量：值 1-2024 对应 loop1-loop2024 */
+#define CLI_CTX_ID_IF_LOOP_IDX 6
 
 /** 视图名称最大长度 */
 #define CLI_CLI_MAX_VIEW_LEN 20

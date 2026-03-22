@@ -35,4 +35,25 @@ int if_cfg_apply_ip(gboolean is_no, const char *logical_name, const net_prefix_t
  */
 int if_cfg_apply_shutdown(gboolean is_no, const char *logical_name);
 
+/**
+ * @brief 确保 loop 接口内存条目和 OS dummy 接口存在（不操作 DB，供 DB 恢复使用）
+ * @param loop_id loop 接口编号（1-1024）
+ * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL
+ */
+int if_cfg_loop_ensure(uint32_t loop_id);
+
+/**
+ * @brief 创建 loop 接口：内存条目 + OS dummy 接口 + DB 写入（CLI 命令专用）
+ * @param loop_id loop 接口编号（1-1024）
+ * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL
+ */
+int if_cfg_loop_create(uint32_t loop_id);
+
+/**
+ * @brief 删除 loop 接口：清理 IP + OS 接口 + 内存条目 + DB 删除（CLI no 命令专用）
+ * @param loop_id loop 接口编号（1-1024）
+ * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL
+ */
+int if_cfg_loop_delete(uint32_t loop_id);
+
 #endif /* IF_CFG_APPLY_H */

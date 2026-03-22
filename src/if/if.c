@@ -231,55 +231,6 @@ int if_exists(const char *ifname)
     return exists;
 }
 
-// Set IP address (works for any interface type)
-int if_set_ip(const char *ifname, const char *ip, const char *netmask)
-{
-    int sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock < 0)
-    {
-        return ERRCODE_FAIL;
-    }
-
-    struct ifreq ifr;
-    struct sockaddr_in *addr = (struct sockaddr_in *)&ifr.ifr_addr;
-
-    memset(&ifr, 0, sizeof(ifr));
-    strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
-
-    // Set IP address
-    addr->sin_family = AF_INET;
-    if (inet_pton(AF_INET, ip, &addr->sin_addr) != 1)
-    {
-        close(sock);
-        return ERRCODE_FAIL;
-    }
-
-    if (ioctl(sock, SIOCSIFADDR, &ifr) < 0)
-    {
-        LOG_ERROR("Failed to set interface %s IP address: %s (errno=%d)", ifname, strerror(errno), errno);
-        close(sock);
-        return ERRCODE_FAIL;
-    }
-
-    // Set netmask
-    if (inet_pton(AF_INET, netmask, &addr->sin_addr) != 1)
-    {
-        LOG_ERROR("Invalid subnet mask: %s", netmask);
-        close(sock);
-        return ERRCODE_FAIL;
-    }
-
-    if (ioctl(sock, SIOCSIFNETMASK, &ifr) < 0)
-    {
-        LOG_ERROR("Failed to set interface %s subnet mask: %s (errno=%d)", ifname, strerror(errno), errno);
-        close(sock);
-        return ERRCODE_FAIL;
-    }
-
-    close(sock);
-    return ERRCODE_SUCCESS;
-}
-
 // Set interface state (up/down) - works for any type
 int if_set_state(const char *ifname, int up)
 {
@@ -451,6 +402,141 @@ static int if_create_veth_netlink(const char *ifname, const char *peer_name)
     }
 
     close(sock);
+    return ERRCODE_SUCCESS;
+}
+
+/* 使用 Netlink 创建 dummy 接口 */
+int if_create_dummy(const char *ifname)
+{
+    if (!ifname)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    int sock = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
+    if (sock < 0)
+    {
+        LOG_PERROR("socket(AF_NETLINK)");
+        return ERRCODE_FAIL;
+    }
+
+    struct
+    {
+        struct nlmsghdr n;
+        struct ifinfomsg i;
+        char buf[256];
+    } req;
+
+    memset(&req, 0, sizeof(req));
+    req.n.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+    req.n.nlmsg_flags = NLM_F_REQUEST | NLM_F_CREATE | NLM_F_EXCL | NLM_F_ACK;
+    req.n.nlmsg_type = RTM_NEWLINK;
+    req.i.ifi_family = AF_UNSPEC;
+
+    if_add_attr(&req.n, sizeof(req), IFLA_IFNAME, ifname, strlen(ifname) + 1);
+
+    /* IFLA_LINKINFO → IFLA_INFO_KIND = "dummy" */
+    struct rtattr *linkinfo = (struct rtattr *)(((char *)&req.n) + NLMSG_ALIGN(req.n.nlmsg_len));
+    if_add_attr(&req.n, sizeof(req), IFLA_LINKINFO, NULL, 0);
+    if_add_attr(&req.n, sizeof(req), IFLA_INFO_KIND, "dummy", 6);
+    linkinfo->rta_len = (uint16_t)((char *)(((char *)&req.n) + NLMSG_ALIGN(req.n.nlmsg_len)) - (char *)linkinfo);
+
+    if (send(sock, &req, req.n.nlmsg_len, 0) < 0)
+    {
+        LOG_PERROR("Netlink send (create dummy)");
+        close(sock);
+        return ERRCODE_FAIL;
+    }
+
+    char ans[4096];
+    int len = recv(sock, ans, sizeof(ans), 0);
+    close(sock);
+
+    if (len < 0)
+    {
+        LOG_PERROR("Netlink recv (create dummy)");
+        return ERRCODE_FAIL;
+    }
+
+    struct nlmsghdr *nlh = (struct nlmsghdr *)ans;
+    if (nlh->nlmsg_type == NLMSG_ERROR)
+    {
+        struct nlmsgerr *err = (struct nlmsgerr *)NLMSG_DATA(nlh);
+        if (err->error < 0 && err->error != -EEXIST)
+        {
+            LOG_ERROR("Netlink error creating dummy %s: %s", ifname, strerror(-err->error));
+            return ERRCODE_FAIL;
+        }
+    }
+
+    LOG_INFO("Created dummy interface %s", ifname);
+    return ERRCODE_SUCCESS;
+}
+
+/* 使用 Netlink RTM_DELLINK 删除接口 */
+int if_delete_interface(const char *ifname)
+{
+    if (!ifname)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    unsigned int ifidx = if_nametoindex(ifname);
+    if (ifidx == 0)
+    {
+        LOG_WARN("IF: interface %s not found for deletion", ifname);
+        return ERRCODE_SUCCESS;
+    }
+
+    int sock = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
+    if (sock < 0)
+    {
+        LOG_PERROR("socket(AF_NETLINK)");
+        return ERRCODE_FAIL;
+    }
+
+    struct
+    {
+        struct nlmsghdr n;
+        struct ifinfomsg i;
+    } req;
+
+    memset(&req, 0, sizeof(req));
+    req.n.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+    req.n.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+    req.n.nlmsg_type = RTM_DELLINK;
+    req.i.ifi_family = AF_UNSPEC;
+    req.i.ifi_index = (int)ifidx;
+
+    if (send(sock, &req, req.n.nlmsg_len, 0) < 0)
+    {
+        LOG_PERROR("Netlink send (delete iface)");
+        close(sock);
+        return ERRCODE_FAIL;
+    }
+
+    char ans[4096];
+    int len = recv(sock, ans, sizeof(ans), 0);
+    close(sock);
+
+    if (len < 0)
+    {
+        LOG_PERROR("Netlink recv (delete iface)");
+        return ERRCODE_FAIL;
+    }
+
+    struct nlmsghdr *nlh = (struct nlmsghdr *)ans;
+    if (nlh->nlmsg_type == NLMSG_ERROR)
+    {
+        struct nlmsgerr *err = (struct nlmsgerr *)NLMSG_DATA(nlh);
+        if (err->error < 0)
+        {
+            LOG_ERROR("Netlink error deleting %s: %s", ifname, strerror(-err->error));
+            return ERRCODE_FAIL;
+        }
+    }
+
+    LOG_INFO("Deleted interface %s", ifname);
     return ERRCODE_SUCCESS;
 }
 

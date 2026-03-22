@@ -2,8 +2,12 @@
 <configuration module-id="4">
     <views>
         <view view-name="if">
-            <!-- {ctx:5} 由框架替换为 CLI_CTX_ID_IF_IDX 值（1=GE-1, 2=GE-2, 3=GE-3, 4=GE-4） -->
+            <!-- {ctx:4} 由框架替换为 CLI_CTX_ID_IF_IDX 值（1=GE-1, 2=GE-2, 3=GE-3, 4=GE-4） -->
             <template>&lt;NetNexus(config-if-GE-{ctx:4})&gt;</template>
+        </view>
+        <view view-name="if-loop">
+            <!-- {ctx:6} 由框架替换为 CLI_CTX_ID_IF_LOOP_IDX 值（loop 接口编号） -->
+            <template>&lt;NetNexus(config-if-loop{ctx:6})&gt;</template>
         </view>
     </views>
 
@@ -33,7 +37,7 @@
                 </element>
             </elements>
             <commands>
-                <!-- if GE-1: ctx-id=5(CLI_CTX_ID_IF_IDX)=1 -->
+                <!-- if GE-1: ctx-id=4(CLI_CTX_ID_IF_IDX)=1 -->
                 <command>
                     <expression>1 2</expression>
                     <views>config</views>
@@ -103,22 +107,21 @@
                 </element>
             </elements>
             <commands>
-                <!-- ip address <ip> <prefix-len> -->
+                <!-- ip address <ip> <prefix-len>：GE 和 loop 视图均可用 -->
                 <command>
                     <expression>1 2 3 4</expression>
-                    <views>if</views>
+                    <views>if,if-loop</views>
                 </command>
-                <!-- no ip address <ip> <prefix-len> -->
+                <!-- no ip address <ip> <prefix-len>：GE 和 loop 视图均可用 -->
                 <command>
                     <expression>6 1 2 3 4</expression>
-                    <views>if</views>
+                    <views>if,if-loop</views>
                 </command>
-                <!-- shutdown -->
+                <!-- shutdown / no shutdown：仅 GE 视图（loop 不支持） -->
                 <command>
                     <expression>5</expression>
                     <views>if</views>
                 </command>
-                <!-- no shutdown -->
                 <command>
                     <expression>6 5</expression>
                     <views>if</views>
@@ -153,6 +156,15 @@
                     <name>GE-4</name> <!-- 6 -->
                     <description>Interface name</description>
                 </element>
+                <element type="keyword">
+                    <name>loop</name> <!-- 7 -->
+                    <description>Loopback interface</description>
+                </element>
+                <element cfg-id="5" type="parameter">
+                    <name>&lt;loop-id&gt;</name> <!-- 8 -->
+                    <description>Loopback interface number (1-1024)</description>
+                    <type>uint(1-1024)</type>
+                </element>
             </elements>
             <commands>
                 <!-- show if -->
@@ -160,12 +172,57 @@
                     <expression>1 2</expression>
                     <views>global</views>
                 </command>
-                <!-- show if <name> -->
+                <!-- show if <GE-x> -->
                 <command>
                     <expression>1 2 { 3 | 4 | 5 | 6 }</expression>
                     <views>global</views>
                 </command>
+                <!-- show if loop <N> -->
+                <command>
+                    <expression>1 2 7 8</expression>
+                    <views>global</views>
+                </command>
             </commands>
         </group>
+
+        <!-- Loop Interface Entry / Delete Commands -->
+        <group group-id="4">
+            <elements>
+                <element type="keyword">
+                    <name>if</name> <!-- 1 -->
+                    <description>接口配置</description>
+                </element>
+                <element type="keyword">
+                    <name>loop</name> <!-- 2 -->
+                    <description>Loopback 接口</description>
+                </element>
+                <element cfg-id="1" type="parameter">
+                    <name>&lt;loop-id&gt;</name> <!-- 3 -->
+                    <description>Loopback 接口编号（1-1024）</description>
+                    <type>uint(1-1024)</type>
+                </element>
+                <element type="keyword">
+                    <name>no</name> <!-- 4 -->
+                    <description>删除命令</description>
+                </element>
+            </elements>
+            <commands>
+                <!-- if loop <N>：进入 if-loop 视图，ctx-id=6 取自参数 cfg-id=1 -->
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>config</views>
+                    <to-view>if-loop</to-view>
+                    <context-out>
+                        <entry ctx-id="6" from-param="1"/>
+                    </context-out>
+                </command>
+                <!-- no if loop <N>：删除 loop 接口，留在 config 视图 -->
+                <command>
+                    <expression>4 1 2 3</expression>
+                    <views>config</views>
+                </command>
+            </commands>
+        </group>
+
     </command_groups>
 </configuration>

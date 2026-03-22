@@ -30,34 +30,49 @@ if_local_t *g_if_local = NULL;
 /**
  * @brief 启动时将映射表中的接口写入数据库
  */
+static void if_init_db_foreach(gpointer key, gpointer val, gpointer user_data)
+{
+    (void)key;
+    (void)user_data;
+    if_map_entry_t *e = (if_map_entry_t *)val;
+    const char *logical_name = e->logical_name;
+
+    /* loop 和 null0 接口不写入 DB（由 loop_create 或虚拟，不持久化） */
+    if (strncmp(logical_name, "loop", 4) == 0 || strcmp(logical_name, "null0") == 0)
+    {
+        return;
+    }
+
+    db_condition_t cond = {.field_name = "name", .op = DB_CMP_EQ, .value = db_value_text(logical_name)};
+    db_filter_t filter = {.conditions = &cond, .num_conditions = 1};
+    gboolean exists = FALSE;
+    int ret = db_rpc_exists(g_if_local->dev_ipc_ctx, "if_interface", &filter, &exists);
+    db_value_free(&cond.value);
+
+    if (ret == ERRCODE_SUCCESS && !exists)
+    {
+        db_record_t *rec = db_record_new();
+        db_record_set_text(rec, "name", logical_name);
+        db_record_set_text(rec, "ip_address", "");
+        db_record_set_int(rec, "prefix_len", 0);
+        db_record_set_int(rec, "shutdown", 0);
+        db_rpc_insert_record(g_if_local->dev_ipc_ctx, "if_interface", rec);
+        db_record_free(rec);
+        LOG_INFO("Interface %s written to database", logical_name);
+    }
+    else if (ret == ERRCODE_SUCCESS && exists)
+    {
+        LOG_DEBUG("Interface %s already in database, keeping existing config", logical_name);
+    }
+}
+
 static void if_init_db(void)
 {
-    for (int i = 0; i < g_if_local->interface_map.count; i++)
+    if (!g_if_local->interface_map.all_entries)
     {
-        const char *logical_name = g_if_local->interface_map.entries[i].logical_name;
-
-        db_condition_t cond = {.field_name = "name", .op = DB_CMP_EQ, .value = db_value_text(logical_name)};
-        db_filter_t filter = {.conditions = &cond, .num_conditions = 1};
-        gboolean exists = FALSE;
-        int ret = db_rpc_exists(g_if_local->dev_ipc_ctx, "if_interface", &filter, &exists);
-        db_value_free(&cond.value);
-
-        if (ret == ERRCODE_SUCCESS && !exists)
-        {
-            db_record_t *rec = db_record_new();
-            db_record_set_text(rec, "name", logical_name);
-            db_record_set_text(rec, "ip_address", "");
-            db_record_set_int(rec, "prefix_len", 0);
-            db_record_set_int(rec, "shutdown", 0);
-            db_rpc_insert_record(g_if_local->dev_ipc_ctx, "if_interface", rec);
-            db_record_free(rec);
-            LOG_INFO("Interface %s written to database", logical_name);
-        }
-        else if (ret == ERRCODE_SUCCESS && exists)
-        {
-            LOG_DEBUG("Interface %s already in database, keeping existing config", logical_name);
-        }
+        return;
     }
+    g_hash_table_foreach(g_if_local->interface_map.all_entries, if_init_db_foreach, NULL);
 }
 
 /**
@@ -85,6 +100,16 @@ static void if_db_restore(dev_ipc_context_t *ctx)
         if (!name)
         {
             continue;
+        }
+
+        /* loop 接口：先确保内存条目和 OS 接口存在 */
+        if (strncmp(name, "loop", 4) == 0 && name[4] >= '1' && name[4] <= '9')
+        {
+            uint32_t loop_id = (uint32_t)atoi(name + 4);
+            if (loop_id >= 1 && loop_id <= 1024)
+            {
+                if_cfg_loop_ensure(loop_id);
+            }
         }
 
         /* 恢复 IP（非空时） */
@@ -198,6 +223,51 @@ static void handle_if_subscribe(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
              req->event_mask);
 
     send_if_ack(ctx, msg, ERRCODE_SUCCESS);
+}
+
+/* 收集 all_entries 条目到 GArray */
+static void collect_intf_map_foreach(gpointer key, gpointer val, gpointer user_data)
+{
+    (void)key;
+    if_map_entry_t *e = (if_map_entry_t *)val;
+    GArray *arr = (GArray *)user_data;
+
+    if (e->ifindex == 0)
+    {
+        return; /* 跳过无 OS 接口的虚拟条目（null0 等） */
+    }
+
+    if_intf_map_item_t item;
+    item.ifindex = e->ifindex;
+    snprintf(item.logical_name, sizeof(item.logical_name), "%s", e->logical_name);
+    g_array_append_val(arr, item);
+}
+
+static void handle_if_get_intf_map(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+{
+    GArray *arr = g_array_new(FALSE, FALSE, sizeof(if_intf_map_item_t));
+
+    if (g_if_local && g_if_local->interface_map.all_entries)
+    {
+        g_hash_table_foreach(g_if_local->interface_map.all_entries, collect_intf_map_foreach, arr);
+    }
+
+    uint32_t count = arr->len;
+    size_t payload_size = sizeof(if_intf_map_resp_t) + (count > 0 ? (count - 1) * sizeof(if_intf_map_item_t) : 0);
+    if_intf_map_resp_t *resp_payload = (if_intf_map_resp_t *)g_malloc0(payload_size);
+    resp_payload->result = ERRCODE_SUCCESS;
+    resp_payload->count = count;
+    if (count > 0)
+    {
+        memcpy(resp_payload->items, arr->data, count * sizeof(if_intf_map_item_t));
+    }
+    g_array_free(arr, TRUE);
+
+    dev_ipc_message_t *resp = dev_ipc_message_create(IF_MSG_TYPE_GET_INTF_MAP, DEV_MODULE_ID_IF, msg->src_module_id,
+                                                     msg->request_id, resp_payload, (uint32_t)payload_size, g_free);
+    dev_ipc_send_response(ctx, resp);
+    dev_ipc_message_free(resp);
+    dev_ipc_message_free(msg);
 }
 
 static void handle_if_unsubscribe(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
@@ -323,6 +393,13 @@ static void if_on_shutdown(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     g_list_free_full(g_if_local->subscribers, g_free);
     g_if_local->subscribers = NULL;
 
+    /* 释放接口哈希表 */
+    if (g_if_local->interface_map.all_entries)
+    {
+        g_hash_table_destroy(g_if_local->interface_map.all_entries);
+        g_if_local->interface_map.all_entries = NULL;
+    }
+
     g_free(g_if_local);
     g_if_local = NULL;
 
@@ -374,6 +451,10 @@ void if_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
         case IF_MSG_TYPE_UNSUBSCRIBE:
             handle_if_unsubscribe(ctx, msg);
+            return;
+
+        case IF_MSG_TYPE_GET_INTF_MAP:
+            handle_if_get_intf_map(ctx, msg);
             return;
         default:
             LOG_WARN("Received unknown message type: 0x%08X", msg->msg_type);

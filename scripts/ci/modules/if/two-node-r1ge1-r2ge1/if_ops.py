@@ -15,9 +15,49 @@ After each operation, verify interface + connected routes match expectation.
 from __future__ import annotations
 
 import ipaddress
+import time
 
-from module_api import g_top, reboot_device, require_devices, run_cmds, step, wait_checks  # noqa: E402
+from module_api import cmd, g_top, reboot_device, require_devices, run_cmds, step, wait_checks  # noqa: E402
 from top_runner import TopologyRuntime  # noqa: E402
+
+
+def _wait_route_state(
+    rt: TopologyRuntime,
+    *,
+    device: str,
+    command: str,
+    route_key: str,
+    expect_present: bool,
+    expect_if: str | None = None,
+    timeout: int = 10,
+    interval: int = 2,
+) -> None:
+    deadline = time.time() + timeout
+    last_out = ""
+    while time.time() < deadline:
+        out = cmd(rt, device, command, strict=False)
+        last_out = out
+
+        has_entry = f"Routing entry for {route_key}" in out
+        has_connected = "Path [1]: connected" in out
+        is_absent = "(no routes)" in out or "(no matching routes)" in out
+
+        if expect_present:
+            has_if = expect_if is None or f"Interface : {expect_if}" in out
+            if has_entry and has_connected and has_if and "Total 1 path(s)" in out and not is_absent:
+                return
+        else:
+            if has_entry and is_absent and not has_connected:
+                return
+
+        time.sleep(interval)
+
+    state = "present" if expect_present else "absent"
+    raise RuntimeError(
+        f"{device} route state mismatch for '{route_key}' after {timeout}s (expect {state})\n"
+        f"command: {command}\n"
+        f"last output:\n{last_out}"
+    )
 
 
 def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
@@ -29,8 +69,6 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
     net = str(ipaddress.ip_interface(f"{cfg_ip}/{cfg_prefix}").network.network_address)
     net_show = f"show route ipv4 {net}"
     host_show = f"show route ipv4 {cfg_ip}"
-    net_pfx = f"{net}/{cfg_prefix}"
-    host_pfx = f"{cfg_ip}/32"
     show_cmd = f"show if {if_name}"
 
     step("Configure IP address on r1 GE-1")
@@ -58,19 +96,24 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 ],
                 "label": "r1 GE-1 configured ip",
             },
-            {
-                "device": "r1",
-                "command": net_show,
-                "contains": [net_pfx, "Total 1 path(s)"],
-                "label": "r1 connected network route",
-            },
-            {
-                "device": "r1",
-                "command": host_show,
-                "contains": [host_pfx, "Total 1 path(s)"],
-                "label": "r1 connected host route",
-            },
         ],
+        timeout=10,
+    )
+    _wait_route_state(
+        rt,
+        device="r1",
+        command=net_show,
+        route_key=net,
+        expect_present=True,
+        expect_if=if_name,
+        timeout=10,
+    )
+    _wait_route_state(
+        rt,
+        device="r1",
+        command=host_show,
+        route_key=cfg_ip,
+        expect_present=False,
         timeout=10,
     )
 
@@ -99,19 +142,23 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 ],
                 "label": "r1 GE-1 shutdown",
             },
-            {
-                "device": "r1",
-                "command": net_show,
-                "contains": ["(no routes)", "Total 0 path(s)"],
-                "label": "r1 network route withdrawn on shutdown",
-            },
-            {
-                "device": "r1",
-                "command": host_show,
-                "contains": ["(no routes)", "Total 0 path(s)"],
-                "label": "r1 host route withdrawn on shutdown",
-            },
         ],
+        timeout=10,
+    )
+    _wait_route_state(
+        rt,
+        device="r1",
+        command=net_show,
+        route_key=net,
+        expect_present=False,
+        timeout=10,
+    )
+    _wait_route_state(
+        rt,
+        device="r1",
+        command=host_show,
+        route_key=cfg_ip,
+        expect_present=False,
         timeout=10,
     )
 
@@ -140,19 +187,24 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 ],
                 "label": "r1 GE-1 no shutdown",
             },
-            {
-                "device": "r1",
-                "command": net_show,
-                "contains": [net_pfx, "Total 1 path(s)"],
-                "label": "r1 network route restored on no shutdown",
-            },
-            {
-                "device": "r1",
-                "command": host_show,
-                "contains": [host_pfx, "Total 1 path(s)"],
-                "label": "r1 host route restored on no shutdown",
-            },
         ],
+        timeout=10,
+    )
+    _wait_route_state(
+        rt,
+        device="r1",
+        command=net_show,
+        route_key=net,
+        expect_present=True,
+        expect_if=if_name,
+        timeout=10,
+    )
+    _wait_route_state(
+        rt,
+        device="r1",
+        command=host_show,
+        route_key=cfg_ip,
+        expect_present=False,
         timeout=10,
     )
 
@@ -171,20 +223,25 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 ],
                 "label": "r1 GE-1 restored after reboot",
             },
-            {
-                "device": "r1",
-                "command": net_show,
-                "contains": [net_pfx, "Total 1 path(s)"],
-                "label": "r1 network route restored after reboot",
-            },
-            {
-                "device": "r1",
-                "command": host_show,
-                "contains": [host_pfx, "Total 1 path(s)"],
-                "label": "r1 host route restored after reboot",
-            },
         ],
         timeout=30,
+    )
+    _wait_route_state(
+        rt,
+        device="r1",
+        command=net_show,
+        route_key=net,
+        expect_present=True,
+        expect_if=if_name,
+        timeout=10,
+    )
+    _wait_route_state(
+        rt,
+        device="r1",
+        command=host_show,
+        route_key=cfg_ip,
+        expect_present=False,
+        timeout=10,
     )
 
     step("Delete IP address on r1 GE-1")
@@ -212,19 +269,23 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 ],
                 "label": "r1 GE-1 ip removed",
             },
-            {
-                "device": "r1",
-                "command": net_show,
-                "contains": ["(no routes)", "Total 0 path(s)"],
-                "label": "r1 network route withdrawn on no ip",
-            },
-            {
-                "device": "r1",
-                "command": host_show,
-                "contains": ["(no routes)", "Total 0 path(s)"],
-                "label": "r1 host route withdrawn on no ip",
-            },
         ],
+        timeout=10,
+    )
+    _wait_route_state(
+        rt,
+        device="r1",
+        command=net_show,
+        route_key=net,
+        expect_present=False,
+        timeout=10,
+    )
+    _wait_route_state(
+        rt,
+        device="r1",
+        command=host_show,
+        route_key=cfg_ip,
+        expect_present=False,
         timeout=10,
     )
 
@@ -255,19 +316,24 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 ],
                 "label": "r1 GE-1 baseline restored",
             },
-            {
-                "device": "r1",
-                "command": net_show,
-                "contains": [net_pfx, "Total 1 path(s)"],
-                "label": "r1 network route restored",
-            },
-            {
-                "device": "r1",
-                "command": host_show,
-                "contains": [host_pfx, "Total 1 path(s)"],
-                "label": "r1 host route restored",
-            },
         ],
+        timeout=10,
+    )
+    _wait_route_state(
+        rt,
+        device="r1",
+        command=net_show,
+        route_key=net,
+        expect_present=True,
+        expect_if=if_name,
+        timeout=10,
+    )
+    _wait_route_state(
+        rt,
+        device="r1",
+        command=host_show,
+        route_key=cfg_ip,
+        expect_present=False,
         timeout=10,
     )
 

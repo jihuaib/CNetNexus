@@ -7,12 +7,12 @@
 #ifndef IF_MAP_H
 #define IF_MAP_H
 
+#include <glib.h>
 #include <net/if.h>
 #include <stdint.h>
 
 #include "net_addr.h"
 
-#define MAX_INTERFACES 16
 #define LOGICAL_NAME_LEN 32
 
 /** 接口映射条目（同时作为接口内存态配置） */
@@ -20,16 +20,16 @@ typedef struct
 {
     char logical_name[LOGICAL_NAME_LEN]; /**< 逻辑名，如 "GE-1" */
     char physical_name[IFNAMSIZ];        /**< 物理名，如 "eth0" */
+    uint32_t ifindex;                    /**< Linux 接口索引（0 表示虚拟/未知） */
     uint32_t auto_mapped;                /**< 是否自动映射 */
     net_prefix_t prefix;                 /**< 已配置的 IP/前缀；addr.family=0 表示未配置 */
     int shutdown;                        /**< 1=shutdown（down），0=no shutdown（up） */
 } if_map_entry_t;
 
-// Interface mapping table
+/** 接口映射表（所有接口类型统一存放，key=逻辑名，value=if_map_entry_t*） */
 typedef struct
 {
-    if_map_entry_t entries[MAX_INTERFACES];
-    int count;
+    GHashTable *all_entries; /**< 全部接口条目（GE、loop、null0）：key=g_strdup(logical_name) */
 } if_map_t;
 
 // Initialize interface mapping (auto-detect or load from config)

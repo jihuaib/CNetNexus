@@ -22,6 +22,10 @@
 #include "log.h"
 #include "net_addr.h"
 
+/** loop 接口编号范围 */
+#define IF_LOOP_ID_MIN 1U
+#define IF_LOOP_ID_MAX 1024U
+
 // ============================================================================
 // 发送响应辅助
 // ============================================================================
@@ -101,6 +105,7 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     gboolean has_ip = FALSE;
     gboolean has_shutdown = FALSE;
     uint32_t if_idx = 0;
+    uint32_t loop_id = 0;
 
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
@@ -110,6 +115,10 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             if (entry.cfg_id == CLI_CTX_ID_IF_IDX)
             {
                 if_idx = cli_tlv_entry_get_ctx_uint32(&entry);
+            }
+            else if (entry.cfg_id == CLI_CTX_ID_IF_LOOP_IDX)
+            {
+                loop_id = cli_tlv_entry_get_ctx_uint32(&entry);
             }
             cli_tlv_entry_free(&entry);
             continue;
@@ -140,11 +149,29 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         cli_tlv_entry_free(&entry);
     }
 
-    /* 从上下文索引解析接口名 */
-    const char *ifname = if_cfgid_to_name(if_idx);
+    /* 从上下文解析接口名：loop 接口优先，否则用 GE 索引 */
+    char loop_name_buf[32];
+    const char *ifname = NULL;
+    if (loop_id >= IF_LOOP_ID_MIN && loop_id <= IF_LOOP_ID_MAX)
+    {
+        snprintf(loop_name_buf, sizeof(loop_name_buf), "loop%u", loop_id);
+        ifname = loop_name_buf;
+    }
+    else
+    {
+        ifname = if_cfgid_to_name(if_idx);
+    }
+
     if (!ifname)
     {
         send_resp(msg, "Error: No interface selected\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    /* loop 接口不支持 shutdown */
+    if (loop_id > 0 && has_shutdown)
+    {
+        send_resp(msg, "Error: loop 接口不支持 shutdown\r\n");
         return ERRCODE_FAIL;
     }
 
@@ -206,17 +233,74 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     return ERRCODE_SUCCESS;
 }
 
+/* 将单个接口条目追加到 show 输出 */
+static void show_append_entry(GString *resp_buf, const if_map_entry_t *e)
+{
+    const char *state_str = e->shutdown ? "DOWN" : "UP";
+    char ip_str[70] = "-";
+    if (net_prefix_is_set(&e->prefix))
+    {
+        net_prefix_to_str(&e->prefix, ip_str, sizeof(ip_str));
+    }
+    g_string_append_printf(resp_buf, "%-14s %-6s %-20s\r\n", e->logical_name, state_str, ip_str);
+}
+
+/* 哈希表遍历回调：追加 loop 接口行 */
+static void show_loop_foreach_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    show_append_entry((GString *)user_data, (const if_map_entry_t *)value);
+}
+
+/* 显示单个接口详情 */
+static void show_single_entry(GString *resp_buf, const char *ifname, const if_map_entry_t *e)
+{
+    if_info_t info;
+    gboolean has_info = (if_get_info(e->physical_name, &info) == ERRCODE_SUCCESS);
+
+    char ip_str[70] = "-";
+    if (net_prefix_is_set(&e->prefix))
+    {
+        net_prefix_to_str(&e->prefix, ip_str, sizeof(ip_str));
+    }
+
+    char mac_str[32] = "-";
+    const char *type_str = "-";
+    int mtu = 0;
+    if (has_info)
+    {
+        snprintf(mac_str, sizeof(mac_str), "%02x:%02x:%02x:%02x:%02x:%02x", info.mac[0], info.mac[1], info.mac[2],
+                 info.mac[3], info.mac[4], info.mac[5]);
+        type_str = if_type_to_string(info.type);
+        mtu = info.mtu;
+    }
+
+    const char *state_str = e->shutdown ? "DOWN" : "UP";
+
+    g_string_append_printf(resp_buf,
+                           "\r\nInterface %s Detail:\r\n"
+                           "============================\r\n"
+                           "  Name       : %s\r\n"
+                           "  Type       : %s\r\n"
+                           "  State      : %s\r\n"
+                           "  IP Address : %s\r\n"
+                           "  MAC        : %s\r\n"
+                           "  MTU        : %d\r\n\r\n",
+                           ifname, ifname, type_str, state_str, ip_str, mac_str, mtu);
+}
+
 /**
  * @brief 处理 show interface 命令
  *
- * group_id=3, cfg_id: 1=GE-1, 2=GE-2, 3=GE-3, 4=GE-4
+ * group_id=3, cfg_id: 1=GE-1, 2=GE-2, 3=GE-3, 4=GE-4, 5=loop-id
  * 直接构建格式化文本返回
  */
 static int handle_if_show(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
-    const char *ifname = NULL;
+    const char *ge_ifname = NULL;
+    uint32_t loop_id = 0;
 
-    /* 解析可选接口名 */
+    /* 解析可选接口名/编号 */
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
     {
@@ -228,7 +312,11 @@ static int handle_if_show(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 
         if (entry.cfg_id >= 1 && entry.cfg_id <= 4)
         {
-            ifname = if_cfgid_to_name(entry.cfg_id);
+            ge_ifname = if_cfgid_to_name(entry.cfg_id);
+        }
+        else if (entry.cfg_id == 5)
+        {
+            loop_id = (uint32_t)cli_tlv_entry_get_int(&entry);
         }
         cli_tlv_entry_free(&entry);
     }
@@ -240,79 +328,117 @@ static int handle_if_show(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         return ERRCODE_FAIL;
     }
 
-    if (ifname)
+    if (ge_ifname)
     {
-        /* show if <name> - 显示单个接口详情 */
-        if_map_entry_t *entry = if_cfg_find_entry(ifname);
-        if (!entry)
+        /* show if <GE-x> */
+        if_map_entry_t *e = if_cfg_find_entry(ge_ifname);
+        if (!e)
         {
-            g_string_append_printf(resp_buf, "Error: Interface %s not found\r\n", ifname);
+            g_string_append_printf(resp_buf, "Error: Interface %s not found\r\n", ge_ifname);
             send_resp(msg, resp_buf->str);
             g_string_free(resp_buf, TRUE);
             return ERRCODE_FAIL;
         }
-
-        /* MAC / MTU / 类型 从 OS 取 */
-        if_info_t info;
-        gboolean has_info = (if_get_info(entry->physical_name, &info) == ERRCODE_SUCCESS);
-
-        char ip_str[70] = "-";
-        if (net_prefix_is_set(&entry->prefix))
+        show_single_entry(resp_buf, ge_ifname, e);
+    }
+    else if (loop_id >= IF_LOOP_ID_MIN && loop_id <= IF_LOOP_ID_MAX)
+    {
+        /* show if loop <N> */
+        char loop_name[32];
+        snprintf(loop_name, sizeof(loop_name), "loop%u", loop_id);
+        if_map_entry_t *e = if_cfg_find_entry(loop_name);
+        if (!e)
         {
-            net_prefix_to_str(&entry->prefix, ip_str, sizeof(ip_str));
+            g_string_append_printf(resp_buf, "Error: Interface %s not found\r\n", loop_name);
+            send_resp(msg, resp_buf->str);
+            g_string_free(resp_buf, TRUE);
+            return ERRCODE_FAIL;
         }
-
-        char mac_str[32] = "-";
-        const char *type_str = "-";
-        int mtu = 0;
-        if (has_info)
-        {
-            snprintf(mac_str, sizeof(mac_str), "%02x:%02x:%02x:%02x:%02x:%02x", info.mac[0], info.mac[1], info.mac[2],
-                     info.mac[3], info.mac[4], info.mac[5]);
-            type_str = if_type_to_string(info.type);
-            mtu = info.mtu;
-        }
-
-        const char *state_str = entry->shutdown ? "DOWN" : "UP";
-
-        g_string_append_printf(resp_buf,
-                               "\r\nInterface %s Detail:\r\n"
-                               "============================\r\n"
-                               "  Name       : %s\r\n"
-                               "  Type       : %s\r\n"
-                               "  State      : %s\r\n"
-                               "  IP Address : %s\r\n"
-                               "  MAC        : %s\r\n"
-                               "  MTU        : %d\r\n\r\n",
-                               ifname, ifname, type_str, state_str, ip_str, mac_str, mtu);
+        show_single_entry(resp_buf, loop_name, e);
     }
     else
     {
-        /* 显示所有接口 */
+        /* show if - 显示所有接口（GE + loop） */
         g_string_append_printf(resp_buf,
                                "\r\nInterface Status:\r\n"
-                               "%-12s %-6s %-20s\r\n"
-                               "------------ ------ --------------------\r\n",
+                               "%-14s %-6s %-20s\r\n"
+                               "-------------- ------ --------------------\r\n",
                                "Name", "State", "IP Address");
 
         if_map_t *map = &g_if_local->interface_map;
-        for (int i = 0; i < map->count; i++)
+        if (map->all_entries)
         {
-            if_map_entry_t *e = &map->entries[i];
-            const char *state_str = e->shutdown ? "DOWN" : "UP";
-
-            char ip_str[70] = "-";
-            if (net_prefix_is_set(&e->prefix))
-            {
-                net_prefix_to_str(&e->prefix, ip_str, sizeof(ip_str));
-            }
-
-            g_string_append_printf(resp_buf, "%-12s %-6s %-20s\r\n", e->logical_name, state_str, ip_str);
+            g_hash_table_foreach(map->all_entries, show_loop_foreach_cb, resp_buf);
         }
+
         g_string_append(resp_buf, "\r\n");
     }
 
     return if_cli_send_chunked_response(msg, resp_buf);
+}
+
+/**
+ * @brief 处理 loop 接口进入/删除命令（if loop <N> / no if loop <N>）
+ *
+ * group_id=4, cfg_id=1=loop-id 参数
+ * is_no=FALSE → 创建并进入 if-loop 视图（框架自动切换）
+ * is_no=TRUE  → 删除 loop 接口
+ */
+static int handle_if_loop_entry(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    gboolean is_no = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
+    uint32_t loop_id = 0;
+
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (CLI_TLV_IS_CTX(&entry))
+        {
+            cli_tlv_entry_free(&entry);
+            continue;
+        }
+        if (entry.cfg_id == 1)
+        {
+            loop_id = (uint32_t)cli_tlv_entry_get_int(&entry);
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    if (loop_id < IF_LOOP_ID_MIN || loop_id > IF_LOOP_ID_MAX)
+    {
+        send_resp(msg, "Error: loop 接口编号超出范围（1-1024）\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    if (is_no)
+    {
+        /* no if loop <N>：删除 loop 接口 */
+        if (if_cfg_loop_delete(loop_id) != ERRCODE_SUCCESS)
+        {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "Error: loop%u 不存在或删除失败\r\n", loop_id);
+            send_resp(msg, buf);
+            return ERRCODE_FAIL;
+        }
+        char buf[64];
+        snprintf(buf, sizeof(buf), "loop%u 已删除\r\n", loop_id);
+        send_resp(msg, buf);
+    }
+    else
+    {
+        /* if loop <N>：确保接口存在（DB 已由框架视图切换前由 if_cfg_loop_create 处理） */
+        if (if_cfg_loop_create(loop_id) != ERRCODE_SUCCESS)
+        {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "Error: 创建 loop%u 失败\r\n", loop_id);
+            send_resp(msg, buf);
+            return ERRCODE_FAIL;
+        }
+        /* 返回空 OK，框架根据 XML to-view 自动切换视图 */
+        send_resp(msg, "");
+    }
+
+    return ERRCODE_SUCCESS;
 }
 
 // ============================================================================
@@ -359,6 +485,9 @@ int if_cli_handle_message(dev_ipc_message_t *msg)
             break;
         case IF_CLI_GROUP_ID_SHOW:
             result = handle_if_show(msg, &parser);
+            break;
+        case IF_CLI_GROUP_ID_LOOP_ENTRY:
+            result = handle_if_loop_entry(msg, &parser);
             break;
         default:
             LOG_WARN("Unknown group_id: %u", parser.group_id);

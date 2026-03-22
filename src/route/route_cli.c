@@ -8,17 +8,21 @@
 
 #include <arpa/inet.h>
 #include <glib.h>
+#include <net/if.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "cli.h"
 #include "db.h"
 #include "dev.h"
 #include "errcode.h"
+#include "if_event.h"
 #include "log.h"
 #include "net_addr.h"
 #include "route.h"
 #include "route_main.h"
+#include "route_os.h"
 #include "route_pub.h"
 #include "route_relay.h"
 #include "route_rib.h"
@@ -92,25 +96,6 @@ static int prefix_len_to_mask_str(uint8_t prefix_len, char *mask, size_t mask_le
     uint32_t value = (prefix_len == 0) ? 0 : (0xFFFFFFFFu << (32 - prefix_len));
     struct in_addr addr = {.s_addr = htonl(value)};
     return (inet_ntop(AF_INET, &addr, mask, (socklen_t)mask_len) != NULL) ? 0 : -1;
-}
-
-// ============================================================================
-// 删除通知上下文
-// ============================================================================
-
-typedef struct
-{
-    dev_ipc_context_t *ctx;
-    GList *subscribers;
-} del_notify_ctx_t;
-
-/**
- * @brief route_rib_del 回调：在删除路径前向subscribe者发送撤销通知
- */
-static void on_path_del(const route_head_t *head, const route_path_t *path, void *userdata)
-{
-    del_notify_ctx_t *ctx = (del_notify_ctx_t *)userdata;
-    route_pub_notify(ctx->ctx, ctx->subscribers, head, path, 1);
 }
 
 // ============================================================================
@@ -360,17 +345,62 @@ static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 // Group 2: show route 命令
 //
 // cfg-id 映射：
-//   1=ipv4, 2=ipv6, 3=all, 4=dest_filter,
-//   5=proto:static, 6=proto:bgp, 7=proto:ospf, 8=summary
+//   1=ipv4, 2=ipv6, 4=dest_filter,
+//   5=proto:static, 6=proto:bgp, 7=proto:ospf, 8=summary,
+//   9=proto:connected, 10=os
 // ============================================================================
 
 typedef struct
 {
     GString *buf;
     uint32_t count;
-    gboolean has_dest_filter;
-    net_addr_t dest_filter; /**< 目标前缀过滤地址（二进制） */
+    int show_ipv4;                      /**< 是否显示 IPv4 路由 */
+    int show_ipv6;                      /**< 是否显示 IPv6 路由 */
+    const if_intf_map_resp_t *intf_map; /**< IF 模块接口映射（用于逻辑名显示，可为 NULL） */
 } show_ctx_t;
+
+typedef struct
+{
+    uint32_t connected; /**< 直连路由条数 */
+    uint32_t static_;   /**< 静态路由条数 */
+    uint32_t bgp;       /**< BGP 路由条数 */
+    uint32_t ospf;      /**< OSPF 路由条数 */
+    uint32_t other;     /**< 其他协议路由条数 */
+    int show_ipv4;
+    int show_ipv6;
+} summary_ctx_t;
+
+static void summary_path_cb(const route_head_t *head, const route_path_t *path, void *userdata)
+{
+    summary_ctx_t *ctx = (summary_ctx_t *)userdata;
+    sa_family_t family = head->key.addr.family;
+    if (!ctx->show_ipv4 && family == AF_INET)
+    {
+        return;
+    }
+    if (!ctx->show_ipv6 && family == AF_INET6)
+    {
+        return;
+    }
+    switch (path->key.protocol)
+    {
+        case ROUTE_PROTOCOL_CONNECTED:
+            ctx->connected++;
+            break;
+        case ROUTE_PROTOCOL_STATIC:
+            ctx->static_++;
+            break;
+        case ROUTE_PROTOCOL_BGP:
+            ctx->bgp++;
+            break;
+        case ROUTE_PROTOCOL_OSPF:
+            ctx->ospf++;
+            break;
+        default:
+            ctx->other++;
+            break;
+    }
+}
 
 static const char *proto_name(uint32_t protocol)
 {
@@ -389,6 +419,57 @@ static const char *proto_name(uint32_t protocol)
     }
 }
 
+static const char *proto_name_long(uint32_t protocol)
+{
+    switch (protocol)
+    {
+        case ROUTE_PROTOCOL_CONNECTED:
+            return "connected";
+        case ROUTE_PROTOCOL_STATIC:
+            return "static";
+        case ROUTE_PROTOCOL_BGP:
+            return "bgp";
+        case ROUTE_PROTOCOL_OSPF:
+            return "ospf";
+        default:
+            return "unknown";
+    }
+}
+
+static const char *nh_state_str(uint8_t state)
+{
+    switch (state)
+    {
+        case ROUTE_NH_STATE_RESOLVED:
+            return "resolved";
+        case ROUTE_NH_STATE_UNRESOLVED:
+            return "unresolved";
+        default:
+            return "unknown";
+    }
+}
+
+/* 将接口索引转换为逻辑名字符串，写入 buf（长度至少 IF_NAMESIZE）
+ * 优先使用 intf_map 中的逻辑名；不可用时回退到 OS 物理名 */
+static void ifindex_to_name(uint32_t ifindex, const if_intf_map_resp_t *intf_map, char *buf)
+{
+    if (ifindex == 0)
+    {
+        g_strlcpy(buf, "-", IF_NAMESIZE);
+        return;
+    }
+    const char *logical = if_intf_map_lookup(intf_map, ifindex);
+    if (logical)
+    {
+        g_strlcpy(buf, logical, IF_NAMESIZE);
+        return;
+    }
+    if (if_indextoname(ifindex, buf) == NULL)
+    {
+        g_strlcpy(buf, "-", IF_NAMESIZE);
+    }
+}
+
 static void show_path_cb(const route_head_t *head, const route_path_t *path, void *userdata)
 {
     show_ctx_t *ctx = (show_ctx_t *)userdata;
@@ -397,20 +478,83 @@ static void show_path_cb(const route_head_t *head, const route_path_t *path, voi
         return;
     }
 
-    /* 目标前缀过滤（二进制比较） */
-    if (ctx->has_dest_filter && !net_addr_equal(&head->key.addr, &ctx->dest_filter))
+    /* AFI 过滤 */
+    sa_family_t family = head->key.addr.family;
+    if (!ctx->show_ipv4 && family == AF_INET)
+    {
+        return;
+    }
+    if (!ctx->show_ipv6 && family == AF_INET6)
     {
         return;
     }
 
-    char addr_str[64], nh_str[64], prefix_str[80];
+    char addr_str[64], nh_str[64], prefix_str[80], oif_str[IF_NAMESIZE];
     net_addr_to_str(&head->key.addr, addr_str, sizeof(addr_str));
     net_addr_to_str(&path->nexthop, nh_str, sizeof(nh_str));
     snprintf(prefix_str, sizeof(prefix_str), "%s/%u", addr_str, head->key.prefix_len);
+    ifindex_to_name(path->out_ifindex, ctx->intf_map, oif_str);
 
-    g_string_append_printf(ctx->buf, "%-2s %-22s %-20s %4d %4d\r\n", proto_name(path->key.protocol), prefix_str, nh_str,
-                           path->metric, path->preference);
+    g_string_append_printf(ctx->buf, "%-2s %-24s %-20s %-14s %4d %4d\r\n", proto_name(path->key.protocol), prefix_str,
+                           nh_str, oif_str, path->metric, path->preference);
     ctx->count++;
+}
+
+/* 详情视图回调：每条路径显示完整块 */
+typedef struct
+{
+    GString *buf;
+    uint32_t count;
+    int show_ipv4;
+    int show_ipv6;
+    net_addr_t dest_filter;
+    const if_intf_map_resp_t *intf_map; /**< IF 模块接口映射（用于逻辑名显示，可为 NULL） */
+} detail_ctx_t;
+
+static void detail_path_cb(const route_head_t *head, const route_path_t *path, void *userdata)
+{
+    detail_ctx_t *ctx = (detail_ctx_t *)userdata;
+
+    sa_family_t family = head->key.addr.family;
+    if (!ctx->show_ipv4 && family == AF_INET)
+    {
+        return;
+    }
+    if (!ctx->show_ipv6 && family == AF_INET6)
+    {
+        return;
+    }
+    if (!net_addr_equal(&head->key.addr, &ctx->dest_filter))
+    {
+        return;
+    }
+
+    char addr_str[64], nh_str[64], oif_str[IF_NAMESIZE];
+    net_addr_to_str(&head->key.addr, addr_str, sizeof(addr_str));
+    net_addr_to_str(&path->nexthop, nh_str, sizeof(nh_str));
+    ifindex_to_name(path->out_ifindex, ctx->intf_map, oif_str);
+
+    /* 格式化更新时间 */
+    time_t sec = (time_t)(path->updated_at_usec / G_USEC_PER_SEC);
+    struct tm tm_buf;
+    char time_str[32] = "-";
+    struct tm *tm = localtime_r(&sec, &tm_buf);
+    if (tm)
+    {
+        strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm);
+    }
+
+    ctx->count++;
+    g_string_append_printf(ctx->buf,
+                           "  Path [%u]: %s\r\n"
+                           "    Nexthop   : %s\r\n"
+                           "    Interface : %s\r\n"
+                           "    Metric    : %d\r\n"
+                           "    Preference: %d\r\n"
+                           "    NH State  : %s\r\n"
+                           "    Updated   : %s\r\n",
+                           ctx->count, proto_name_long(path->key.protocol), nh_str, oif_str, path->metric,
+                           path->preference, nh_state_str(path->nh_state), time_str);
 }
 
 static int handle_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
@@ -418,6 +562,7 @@ static int handle_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     int show_ipv4 = 0, show_ipv6 = 0;
     uint32_t proto_filter = ROUTE_PROTOCOL_MAX;
     int show_summary = 0;
+    int show_os = 0;
     net_addr_t dest_filter_addr;
     gboolean has_dest_filter = FALSE;
 
@@ -436,10 +581,6 @@ static int handle_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                 show_ipv4 = 1;
                 break;
             case 2:
-                show_ipv6 = 1;
-                break;
-            case 3:
-                show_ipv4 = 1;
                 show_ipv6 = 1;
                 break;
             case 4:
@@ -463,6 +604,12 @@ static int handle_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             case 8:
                 show_summary = 1;
                 break;
+            case 9:
+                proto_filter = ROUTE_PROTOCOL_CONNECTED;
+                break;
+            case 10:
+                show_os = 1;
+                break;
             default:
                 break;
         }
@@ -475,16 +622,83 @@ static int handle_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         show_ipv6 = 1;
     }
 
+    if (show_os)
+    {
+        GString *buf = g_string_new("");
+        if (!buf)
+        {
+            send_resp(msg, "Error: Out of memory\r\n");
+            return ERRCODE_FAIL;
+        }
+        sa_family_t family = show_ipv6 ? AF_INET6 : AF_INET;
+        if (route_os_show(buf, family) != 0)
+        {
+            g_string_free(buf, TRUE);
+            send_resp(msg, "Error: 读取内核路由表失败\r\n");
+            return ERRCODE_FAIL;
+        }
+        return route_send_chunked_response(msg, buf);
+    }
+
     if (show_summary)
     {
-        char buf[256];
+        summary_ctx_t sctx;
+        memset(&sctx, 0, sizeof(sctx));
+        sctx.show_ipv4 = show_ipv4;
+        sctx.show_ipv6 = show_ipv6;
+        route_rib_walk(g_route_local->rib, ROUTE_PROTOCOL_MAX, ROUTE_VRF_DEFAULT, summary_path_cb, &sctx);
+        uint32_t total = sctx.connected + sctx.static_ + sctx.bgp + sctx.ospf + sctx.other;
+        char buf[512];
         snprintf(buf, sizeof(buf),
                  "\r\nRoute Summary:\r\n"
-                 "  Prefixes: %u\r\n"
-                 "  Paths: %u\r\n\r\n",
-                 route_rib_head_count(g_route_local->rib), route_rib_path_count(g_route_local->rib));
+                 "  %-12s %u\r\n"
+                 "  %-12s %u\r\n"
+                 "  %-12s %u\r\n"
+                 "  %-12s %u\r\n"
+                 "  %-12s %u\r\n"
+                 "  %-12s %u\r\n\r\n",
+                 "Connected:", sctx.connected, "Static:", sctx.static_, "BGP:", sctx.bgp, "OSPF:", sctx.ospf,
+                 "Other:", sctx.other, "Total:", total);
         send_resp(msg, buf);
         return ERRCODE_SUCCESS;
+    }
+
+    /* 向 IF 模块查询接口映射表，用于在 show 时显示逻辑接口名 */
+    if_intf_map_resp_t *intf_map = if_rpc_get_intf_map(g_route_local->dev_ipc_ctx);
+
+    /* 指定目标地址时显示详情，否则显示汇总表格 */
+    if (has_dest_filter)
+    {
+        detail_ctx_t dctx;
+        memset(&dctx, 0, sizeof(dctx));
+        dctx.buf = g_string_new("");
+        if (!dctx.buf)
+        {
+            g_free(intf_map);
+            send_resp(msg, "Error: Out of memory\r\n");
+            return ERRCODE_FAIL;
+        }
+        dctx.show_ipv4 = show_ipv4;
+        dctx.show_ipv6 = show_ipv6;
+        dctx.dest_filter = dest_filter_addr;
+        dctx.intf_map = intf_map;
+
+        char filter_str[64];
+        net_addr_to_str(&dest_filter_addr, filter_str, sizeof(filter_str));
+        g_string_append_printf(dctx.buf, "\r\nRouting entry for %s\r\n", filter_str);
+
+        route_rib_walk(g_route_local->rib, proto_filter, ROUTE_VRF_DEFAULT, detail_path_cb, &dctx);
+
+        if (dctx.count == 0)
+        {
+            g_string_append(dctx.buf, "  (no matching routes)\r\n");
+        }
+        else
+        {
+            g_string_append_printf(dctx.buf, "\r\nTotal %u path(s)\r\n", dctx.count);
+        }
+        g_free(intf_map);
+        return route_send_chunked_response(msg, dctx.buf);
     }
 
     show_ctx_t ctx;
@@ -492,30 +706,20 @@ static int handle_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     ctx.buf = g_string_new("");
     if (!ctx.buf)
     {
+        g_free(intf_map);
         send_resp(msg, "Error: Out of memory\r\n");
         return ERRCODE_FAIL;
     }
-    ctx.has_dest_filter = has_dest_filter;
-    if (has_dest_filter)
-    {
-        ctx.dest_filter = dest_filter_addr;
-    }
+    ctx.show_ipv4 = show_ipv4;
+    ctx.show_ipv6 = show_ipv6;
+    ctx.intf_map = intf_map;
 
     g_string_append_printf(ctx.buf,
-                           "\r\n%-2s %-22s %-20s %4s %4s\r\n"
-                           "-- ---------------------- -------------------- ---- ----\r\n",
-                           "P", "Prefix", "Nexthop", "Met", "Pref");
+                           "\r\n%-2s %-24s %-20s %-14s %4s %4s\r\n"
+                           "-- ------------------------ -------------------- -------------- ---- ----\r\n",
+                           "P", "Prefix", "Nexthop", "Interface", "Met", "Pref");
 
-    if (show_ipv4)
-    {
-        route_rib_walk(g_route_local->rib, proto_filter, ROUTE_VRF_DEFAULT, show_path_cb, &ctx);
-    }
-
-    if (show_ipv6 && !show_ipv4)
-    {
-        /* 单独 IPv6 遍历：通过检查 afi 过滤（walk 没有 afi 过滤参数，依赖 cb 内部过滤） */
-        route_rib_walk(g_route_local->rib, proto_filter, ROUTE_VRF_DEFAULT, show_path_cb, &ctx);
-    }
+    route_rib_walk(g_route_local->rib, proto_filter, ROUTE_VRF_DEFAULT, show_path_cb, &ctx);
 
     if (ctx.count == 0)
     {
@@ -523,6 +727,7 @@ static int handle_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     }
 
     g_string_append_printf(ctx.buf, "\r\nTotal %u path(s)\r\n", ctx.count);
+    g_free(intf_map);
     return route_send_chunked_response(msg, ctx.buf);
 }
 
@@ -567,6 +772,7 @@ static void ipv6_next_prefix(uint8_t *addr16, uint8_t prefix_len)
 static int batch_do_add(const char *name, uint16_t afi, const char *start_addr, uint8_t prefix_len, int64_t count,
                         const char *nexthop, gboolean do_notify)
 {
+    (void)do_notify; /* 统一走 route_static_add，由候选表负责迭代/RIB/OS 全流程 */
     int added = 0;
 
     /* 将下一跳字符串转为二进制（DB 边界进入内存之后不再用字符串） */
@@ -596,17 +802,9 @@ static int batch_do_add(const char *name, uint16_t afi, const char *start_addr, 
             prefix_addr.family = AF_INET;
             prefix_addr.u.v4 = cur;
 
-            if (do_notify)
-            {
-                (void)route_add_and_notify(g_route_local->dev_ipc_ctx, ROUTE_VRF_DEFAULT, ROUTE_AFI_IPV4, &prefix_addr,
-                                           prefix_len, ROUTE_PROTOCOL_STATIC, &nexthop_addr, &nexthop_addr, 0,
-                                           ROUTE_ADMIN_DIST_STATIC);
-            }
-            else
-            {
-                route_rib_add(g_route_local->rib, ROUTE_VRF_DEFAULT, ROUTE_AFI_IPV4, &prefix_addr, prefix_len,
-                              ROUTE_PROTOCOL_STATIC, &nexthop_addr, &nexthop_addr, 0, ROUTE_ADMIN_DIST_STATIC);
-            }
+            /* 走静态候选表：nexthop 迭代、RIB 写入、OS 下发均在其内部完成 */
+            route_static_add(ROUTE_VRF_DEFAULT, ROUTE_AFI_IPV4, &prefix_addr, prefix_len, &nexthop_addr, 0,
+                             ROUTE_ADMIN_DIST_STATIC);
 
             route_batch_entry_t *be = (route_batch_entry_t *)g_malloc0(sizeof(route_batch_entry_t));
             g_strlcpy(be->name, name, sizeof(be->name));
@@ -638,17 +836,9 @@ static int batch_do_add(const char *name, uint16_t afi, const char *start_addr, 
             prefix_addr.family = AF_INET6;
             prefix_addr.u.v6 = cur;
 
-            if (do_notify)
-            {
-                (void)route_add_and_notify(g_route_local->dev_ipc_ctx, ROUTE_VRF_DEFAULT, ROUTE_AFI_IPV6, &prefix_addr,
-                                           prefix_len, ROUTE_PROTOCOL_STATIC, &nexthop_addr, &nexthop_addr, 0,
-                                           ROUTE_ADMIN_DIST_STATIC);
-            }
-            else
-            {
-                route_rib_add(g_route_local->rib, ROUTE_VRF_DEFAULT, ROUTE_AFI_IPV6, &prefix_addr, prefix_len,
-                              ROUTE_PROTOCOL_STATIC, &nexthop_addr, &nexthop_addr, 0, ROUTE_ADMIN_DIST_STATIC);
-            }
+            /* 走静态候选表：nexthop 迭代、RIB 写入、OS 下发均在其内部完成 */
+            route_static_add(ROUTE_VRF_DEFAULT, ROUTE_AFI_IPV6, &prefix_addr, prefix_len, &nexthop_addr, 0,
+                             ROUTE_ADMIN_DIST_STATIC);
 
             route_batch_entry_t *be = (route_batch_entry_t *)g_malloc0(sizeof(route_batch_entry_t));
             g_strlcpy(be->name, name, sizeof(be->name));
@@ -761,7 +951,6 @@ static int handle_route_batch(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     /* no route batch <name>：按 name 删除该 batch 的所有路由 */
     if (is_no)
     {
-        del_notify_ctx_t notify_ctx = {g_route_local->dev_ipc_ctx, g_route_local->subscribers};
         int total = 0;
 
         GList *l = g_route_local->batch_entries;
@@ -771,8 +960,8 @@ static int handle_route_batch(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             GList *next = l->next;
             if (strcmp(be->name, name) == 0)
             {
-                int ret = route_rib_del(g_route_local->rib, be->vrf_id, be->afi, &be->prefix_addr, be->prefix_len,
-                                        ROUTE_PROTOCOL_STATIC, &be->nexthop_addr, on_path_del, &notify_ctx);
+                /* 经静态候选表删除：自动处理 RIB 撤销、订阅者通知和 OS 撤销 */
+                int ret = route_static_del(be->vrf_id, be->afi, &be->prefix_addr, be->prefix_len, &be->nexthop_addr);
                 if (ret > 0)
                 {
                     total++;
@@ -833,7 +1022,6 @@ static int handle_route_batch(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     }
 
     /* 若同名 batch 已存在，先清除其旧路由（DB 后续 upsert 覆盖） */
-    del_notify_ctx_t notify_ctx = {g_route_local->dev_ipc_ctx, g_route_local->subscribers};
     GList *l = g_route_local->batch_entries;
     while (l)
     {
@@ -841,8 +1029,7 @@ static int handle_route_batch(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         GList *next = l->next;
         if (strcmp(be->name, name) == 0)
         {
-            route_rib_del(g_route_local->rib, be->vrf_id, be->afi, &be->prefix_addr, be->prefix_len,
-                          ROUTE_PROTOCOL_STATIC, &be->nexthop_addr, on_path_del, &notify_ctx);
+            route_static_del(be->vrf_id, be->afi, &be->prefix_addr, be->prefix_len, &be->nexthop_addr);
             g_route_local->batch_entries = g_list_delete_link(g_route_local->batch_entries, l);
             g_free(be);
         }
@@ -928,6 +1115,8 @@ static int handle_show_relay(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     uint32_t module_filter = 0;
     int has_filter = 0;
     int show_static = 0;
+    uint16_t afi_filter = 0;
+    int has_afi_filter = 0;
 
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
@@ -941,11 +1130,21 @@ static int handle_show_relay(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         switch (entry.cfg_id)
         {
             case 1:
+                /* ipv4 关键字 */
+                afi_filter = ROUTE_AFI_IPV4;
+                has_afi_filter = 1;
+                break;
+            case 2:
+                /* ipv6 关键字 */
+                afi_filter = ROUTE_AFI_IPV6;
+                has_afi_filter = 1;
+                break;
+            case 3:
                 /* bgp 关键字 */
                 module_filter = DEV_MODULE_ID_BGP;
                 has_filter = 1;
                 break;
-            case 2:
+            case 4:
                 /* static 关键字：显示候选静态路由的 nexthop 迭代状态 */
                 show_static = 1;
                 break;
@@ -964,11 +1163,11 @@ static int handle_show_relay(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 
     if (show_static)
     {
-        route_static_show_relay(buf);
+        route_static_show_relay(buf, afi_filter, has_afi_filter);
     }
     else
     {
-        route_relay_show(buf, module_filter, has_filter);
+        route_relay_show(buf, module_filter, has_filter, afi_filter, has_afi_filter);
     }
     return route_send_chunked_response(msg, buf);
 }
@@ -979,10 +1178,28 @@ static int handle_show_relay(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 
 static int handle_show_static(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
-    /* 无参数，消费掉所有 TLV 条目 */
+    uint16_t afi_filter = 0;
+    int has_afi_filter = 0;
+
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
     {
+        if (!CLI_TLV_IS_CTX(&entry))
+        {
+            switch (entry.cfg_id)
+            {
+                case 1:
+                    afi_filter = ROUTE_AFI_IPV4;
+                    has_afi_filter = 1;
+                    break;
+                case 2:
+                    afi_filter = ROUTE_AFI_IPV6;
+                    has_afi_filter = 1;
+                    break;
+                default:
+                    break;
+            }
+        }
         cli_tlv_entry_free(&entry);
     }
 
@@ -993,7 +1210,7 @@ static int handle_show_static(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         return ERRCODE_FAIL;
     }
 
-    route_static_show(buf);
+    route_static_show(buf, afi_filter, has_afi_filter);
     return route_send_chunked_response(msg, buf);
 }
 

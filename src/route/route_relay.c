@@ -330,6 +330,55 @@ static int route_nh_is_resolved(route_rib_t *rib, uint32_t vrf_id, uint16_t afi,
     return 0;
 }
 
+/* 公开接口：沿 nexthop 迭代链查找最终直连路径的出接口索引 */
+uint32_t route_relay_nh_get_ifindex(uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop_addr)
+{
+    if (!g_route_local || !g_route_local->rib || !nexthop_addr)
+    {
+        return 0;
+    }
+
+    route_rib_t *rib = g_route_local->rib;
+    net_addr_t cursor = *nexthop_addr;
+    net_addr_t visited[ROUTE_ITER_NH_MAX_DEPTH];
+    uint32_t visited_count = 0;
+
+    for (uint32_t depth = 0; depth < ROUTE_ITER_NH_MAX_DEPTH; ++depth)
+    {
+        for (uint32_t i = 0; i < visited_count; ++i)
+        {
+            if (net_addr_equal(&visited[i], &cursor))
+            {
+                return 0;
+            }
+        }
+        visited[visited_count++] = cursor;
+
+        route_path_t *resolver = route_lookup_best_cover(rib, vrf_id, afi, &cursor);
+        if (!resolver)
+        {
+            return 0;
+        }
+
+        /* 找到有出接口的路径（直连路由或已解析路径） */
+        if (resolver->out_ifindex != 0)
+        {
+            return resolver->out_ifindex;
+        }
+
+        /* 已是直连路由但 out_ifindex 为 0（理论上不会发生）或链路断头 */
+        if (resolver->key.protocol == ROUTE_PROTOCOL_CONNECTED || resolver->nexthop.family == 0 ||
+            resolver->nexthop.family != cursor.family)
+        {
+            return 0;
+        }
+
+        cursor = resolver->nexthop;
+    }
+
+    return 0;
+}
+
 static void route_relay_notify_state(dev_ipc_context_t *ctx, const route_nh_watch_t *watch)
 {
     if (!watch)
@@ -656,6 +705,8 @@ typedef struct
     GString *buf;
     uint32_t module_filter;
     int has_filter;
+    uint16_t afi_filter;
+    int has_afi_filter;
     uint32_t count;
 } relay_show_ctx_t;
 
@@ -675,6 +726,12 @@ static void relay_show_cb(gpointer key, gpointer value, gpointer user_data)
         return;
     }
 
+    /* 按 AFI 过滤 */
+    if (ctx->has_afi_filter && watch->key.afi != ctx->afi_filter)
+    {
+        return;
+    }
+
     char nh_str[64];
     net_addr_to_str(&watch->key.nexthop_addr, nh_str, sizeof(nh_str));
 
@@ -689,7 +746,7 @@ static void relay_show_cb(gpointer key, gpointer value, gpointer user_data)
     ctx->count++;
 }
 
-void route_relay_show(GString *buf, uint32_t module_filter, int has_filter)
+void route_relay_show(GString *buf, uint32_t module_filter, int has_filter, uint16_t afi_filter, int has_afi_filter)
 {
     if (!buf)
     {
@@ -712,6 +769,8 @@ void route_relay_show(GString *buf, uint32_t module_filter, int has_filter)
         .buf = buf,
         .module_filter = module_filter,
         .has_filter = has_filter,
+        .afi_filter = afi_filter,
+        .has_afi_filter = has_afi_filter,
         .count = 0,
     };
 

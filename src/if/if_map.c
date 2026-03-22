@@ -1,6 +1,6 @@
 /**
  * @file   if_map.c
- * @brief  接口映射实现，逻辑接口名到物理接口名的映射
+ * @brief  接口映射实现（逻辑名→物理名，统一使用 GHashTable 管理所有接口类型）
  * @author jhb
  * @date   2026/01/22
  */
@@ -37,7 +37,33 @@ static void if_map_copy_str(char *dst, size_t dst_size, const char *src)
     dst[len] = '\0';
 }
 
-// Load mappings from config file
+/**
+ * @brief 向 all_entries 哈希表插入一条接口条目（自动分配内存，接管所有权）
+ */
+static void if_map_insert(const char *logical, const char *physical, uint32_t auto_mapped)
+{
+    if (!g_interface_map.all_entries || !logical || !physical)
+    {
+        return;
+    }
+
+    /* 若已存在则更新物理名 */
+    if_map_entry_t *existing = (if_map_entry_t *)g_hash_table_lookup(g_interface_map.all_entries, logical);
+    if (existing)
+    {
+        if_map_copy_str(existing->physical_name, sizeof(existing->physical_name), physical);
+        return;
+    }
+
+    if_map_entry_t *entry = (if_map_entry_t *)g_malloc0(sizeof(if_map_entry_t));
+    if_map_copy_str(entry->logical_name, sizeof(entry->logical_name), logical);
+    if_map_copy_str(entry->physical_name, sizeof(entry->physical_name), physical);
+    entry->auto_mapped = auto_mapped;
+    entry->ifindex = (uint32_t)if_nametoindex(physical);
+    g_hash_table_insert(g_interface_map.all_entries, g_strdup(logical), entry);
+}
+
+/* 从配置文件加载 GE 口映射 */
 static int load_config_file(const char *config_file)
 {
     FILE *fp = fopen(config_file, "r");
@@ -47,29 +73,18 @@ static int load_config_file(const char *config_file)
     }
 
     char line[256];
-    g_interface_map.count = 0;
-
-    while (fgets(line, sizeof(line), fp) && g_interface_map.count < MAX_INTERFACES)
+    while (fgets(line, sizeof(line), fp))
     {
-        // Skip comments and empty lines
         if (line[0] == '#' || line[0] == '\n' || line[0] == '\r')
         {
             continue;
         }
 
-        // Parse: logical_name = physical_name
         char logical[LOGICAL_NAME_LEN];
         char physical[IFNAMSIZ];
-
         if (sscanf(line, " %31s = %15s", logical, physical) == 2)
         {
-            // Add mapping
-            if_map_copy_str(g_interface_map.entries[g_interface_map.count].logical_name,
-                            sizeof(g_interface_map.entries[g_interface_map.count].logical_name), logical);
-            if_map_copy_str(g_interface_map.entries[g_interface_map.count].physical_name,
-                            sizeof(g_interface_map.entries[g_interface_map.count].physical_name), physical);
-            g_interface_map.entries[g_interface_map.count].auto_mapped = 0;
-            g_interface_map.count++;
+            if_map_insert(logical, physical, 0);
         }
     }
 
@@ -77,7 +92,7 @@ static int load_config_file(const char *config_file)
     return ERRCODE_SUCCESS;
 }
 
-// Initialize interface mapping
+/* 初始化接口映射 */
 int if_map_init(const char *config_file)
 {
     if (config_file == NULL)
@@ -86,87 +101,88 @@ int if_map_init(const char *config_file)
         return ERRCODE_FAIL;
     }
 
-    // Load from config file
+    /* 初始化统一哈希表（key 和 value 均由表负责释放） */
+    if (!g_interface_map.all_entries)
+    {
+        g_interface_map.all_entries = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+    }
+
+    /* 加载配置文件中的 GE 口映射 */
+    int count_before = (int)g_hash_table_size(g_interface_map.all_entries);
     if (load_config_file(config_file) == ERRCODE_SUCCESS)
     {
-        LOG_INFO("Loaded %d interface mapping(s) from %s", g_interface_map.count, config_file);
+        int loaded = (int)g_hash_table_size(g_interface_map.all_entries) - count_before;
+        LOG_INFO("Loaded %d interface mapping(s) from %s", loaded, config_file);
 
-        // Print mappings and ensure interfaces exist
-        for (int i = 0; i < g_interface_map.count; i++)
+        /* 确保物理接口存在 */
+        GHashTableIter iter;
+        gpointer key_ptr, val_ptr;
+        g_hash_table_iter_init(&iter, g_interface_map.all_entries);
+        while (g_hash_table_iter_next(&iter, &key_ptr, &val_ptr))
         {
-            LOG_INFO("  %s -> %s", g_interface_map.entries[i].logical_name, g_interface_map.entries[i].physical_name);
-
-            // Ensure the physical interface exists (create if virtual)
-            if_ensure_exists(g_interface_map.entries[i].physical_name);
-        }
-
-        return ERRCODE_SUCCESS;
-    }
-
-    LOG_WARN("Failed to load config file %s", config_file);
-    return ERRCODE_FAIL;
-}
-
-// Get physical interface name from logical name
-const char *if_map_get_physical(const char *logical_name)
-{
-    for (int i = 0; i < g_interface_map.count; i++)
-    {
-        if (strcmp(g_interface_map.entries[i].logical_name, logical_name) == 0)
-        {
-            return g_interface_map.entries[i].physical_name;
+            if_map_entry_t *e = (if_map_entry_t *)val_ptr;
+            LOG_INFO("  %s -> %s", e->logical_name, e->physical_name);
+            if_ensure_exists(e->physical_name);
+            /* 刷新 ifindex（接口刚被创建，之前可能为 0） */
+            e->ifindex = (uint32_t)if_nametoindex(e->physical_name);
         }
     }
-
-    // If not found, assume it's already a physical name
-    return logical_name;
-}
-
-// Get logical interface name from physical name
-const char *if_map_get_logical(const char *physical_name)
-{
-    for (int i = 0; i < g_interface_map.count; i++)
+    else
     {
-        if (strcmp(g_interface_map.entries[i].physical_name, physical_name) == 0)
-        {
-            return g_interface_map.entries[i].logical_name;
-        }
+        LOG_WARN("Failed to load config file %s", config_file);
     }
 
-    return physical_name;
-}
-
-// Add manual mapping
-int if_map_add(const char *logical_name, const char *physical_name)
-{
-    if (g_interface_map.count >= MAX_INTERFACES)
-    {
-        return ERRCODE_FAIL;
-    }
-
-    // Check if logical name already exists
-    for (int i = 0; i < g_interface_map.count; i++)
-    {
-        if (strcmp(g_interface_map.entries[i].logical_name, logical_name) == 0)
-        {
-            // Update existing mapping
-            if_map_copy_str(g_interface_map.entries[i].physical_name, sizeof(g_interface_map.entries[i].physical_name),
-                            physical_name);
-            return ERRCODE_SUCCESS;
-        }
-    }
-
-    // Add new mapping
-    if_map_copy_str(g_interface_map.entries[g_interface_map.count].logical_name,
-                    sizeof(g_interface_map.entries[g_interface_map.count].logical_name), logical_name);
-    if_map_copy_str(g_interface_map.entries[g_interface_map.count].physical_name,
-                    sizeof(g_interface_map.entries[g_interface_map.count].physical_name), physical_name);
-    g_interface_map.count++;
+    /* null0 黑洞接口（固定单例，无 OS 接口） */
+    if_map_insert("null0", "null0", 0);
+    LOG_INFO("  null0 -> null0 (blackhole, virtual)");
 
     return ERRCODE_SUCCESS;
 }
 
-// Save mappings to config file
+/* 按逻辑名查物理名 */
+const char *if_map_get_physical(const char *logical_name)
+{
+    if (!logical_name || !g_interface_map.all_entries)
+    {
+        return logical_name;
+    }
+    if_map_entry_t *e = (if_map_entry_t *)g_hash_table_lookup(g_interface_map.all_entries, logical_name);
+    return e ? e->physical_name : logical_name;
+}
+
+/* 按物理名查逻辑名（线性扫描，接口数量少，性能可接受） */
+const char *if_map_get_logical(const char *physical_name)
+{
+    if (!physical_name || !g_interface_map.all_entries)
+    {
+        return physical_name;
+    }
+    GHashTableIter iter;
+    gpointer key_ptr, val_ptr;
+    g_hash_table_iter_init(&iter, g_interface_map.all_entries);
+    while (g_hash_table_iter_next(&iter, &key_ptr, &val_ptr))
+    {
+        if_map_entry_t *e = (if_map_entry_t *)val_ptr;
+        if (strcmp(e->physical_name, physical_name) == 0)
+        {
+            return e->logical_name;
+        }
+    }
+    return physical_name;
+}
+
+/* 手动添加映射 */
+int if_map_add(const char *logical_name, const char *physical_name)
+{
+    if (!logical_name || !physical_name || !g_interface_map.all_entries)
+    {
+        return ERRCODE_FAIL;
+    }
+    if_map_insert(logical_name, physical_name, 0);
+    return ERRCODE_SUCCESS;
+}
+
+/* 保存映射到配置文件（仅保存非 loop/null0 的静态条目） */
 int if_map_save(const char *config_file)
 {
     FILE *fp = fopen(config_file, "w");
@@ -176,12 +192,23 @@ int if_map_save(const char *config_file)
     }
 
     fprintf(fp, "# NetNexus Interface Mapping Configuration\n");
-    fprintf(fp, "# Format: logical_name = physical_name\n");
-    fprintf(fp, "# Use 'auto' for automatic detection\n\n");
+    fprintf(fp, "# Format: logical_name = physical_name\n\n");
 
-    for (int i = 0; i < g_interface_map.count; i++)
+    if (g_interface_map.all_entries)
     {
-        fprintf(fp, "%s = %s\n", g_interface_map.entries[i].logical_name, g_interface_map.entries[i].physical_name);
+        GHashTableIter iter;
+        gpointer key_ptr, val_ptr;
+        g_hash_table_iter_init(&iter, g_interface_map.all_entries);
+        while (g_hash_table_iter_next(&iter, &key_ptr, &val_ptr))
+        {
+            if_map_entry_t *e = (if_map_entry_t *)val_ptr;
+            /* 跳过 loop 接口和 null0（动态分配，不保存到静态配置） */
+            if (strncmp(e->logical_name, "loop", 4) == 0 || strcmp(e->logical_name, "null0") == 0)
+            {
+                continue;
+            }
+            fprintf(fp, "%s = %s\n", e->logical_name, e->physical_name);
+        }
     }
 
     fclose(fp);

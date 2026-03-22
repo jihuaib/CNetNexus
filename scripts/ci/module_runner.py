@@ -55,6 +55,8 @@ TIMESTAMP_FMT = "%Y-%m-%dT%H:%M:%S.%fZ"
 MODULE_ROW_RE = re.compile(
     r"^\s*(?P<id>\d+)\s+(?P<name>[A-Za-z0-9_-]+)\s+(?P<phase>[A-Za-z0-9_-]+)\s+(?P<port>\d+)\s+(?P<ipc>[A-Za-z0-9_-]+)\s*$"
 )
+MODULE_HEALTH_WAIT_TIMEOUT_SEC = 30
+MODULE_HEALTH_WAIT_INTERVAL_SEC = 2
 
 
 @dataclass
@@ -224,33 +226,50 @@ def ensure_device_modules_ready(rt: TopologyRuntime, top: dict[str, Any]) -> Non
 
     print("===== STEP: Precheck device modules =====")
     for dev in sorted(devices.keys()):
-        out = rt.exec_cmd(dev, "show dev modules", strict=False)
-        rows: list[dict[str, str]] = []
-        for line in out.splitlines():
-            m = MODULE_ROW_RE.match(line)
-            if m:
-                rows.append(
-                    {
-                        "name": m.group("name"),
-                        "phase": m.group("phase"),
-                        "ipc": m.group("ipc"),
-                    }
-                )
+        deadline = time.time() + MODULE_HEALTH_WAIT_TIMEOUT_SEC
+        last_out = ""
+        last_bad: list[str] = []
+        last_parse_ok = False
 
-        if not rows:
-            raise RuntimeError(f"{dev}: failed to parse module table from 'show dev modules'\n{out}")
+        while time.time() < deadline:
+            out = rt.exec_cmd(dev, "show dev modules", strict=False)
+            last_out = out
 
-        bad = [
-            f"{r['name']}(phase={r['phase']},ipc={r['ipc']})"
-            for r in rows
-            if r["phase"].upper() != "READY" or r["ipc"].lower() != "up"
-        ]
-        if bad:
+            rows: list[dict[str, str]] = []
+            for line in out.splitlines():
+                m = MODULE_ROW_RE.match(line)
+                if m:
+                    rows.append(
+                        {
+                            "name": m.group("name"),
+                            "phase": m.group("phase"),
+                            "ipc": m.group("ipc"),
+                        }
+                    )
+
+            if not rows:
+                last_parse_ok = False
+                time.sleep(MODULE_HEALTH_WAIT_INTERVAL_SEC)
+                continue
+
+            last_parse_ok = True
+            bad = [
+                f"{r['name']}(phase={r['phase']},ipc={r['ipc']})"
+                for r in rows
+                if r["phase"].upper() != "READY" or r["ipc"].lower() != "up"
+            ]
+            if not bad:
+                print(f"[{dev}] modules READY/up OK ({len(rows)} modules)")
+                break
+
+            last_bad = bad
+            time.sleep(MODULE_HEALTH_WAIT_INTERVAL_SEC)
+        else:
+            if not last_parse_ok:
+                raise RuntimeError(f"{dev}: failed to parse module table from 'show dev modules'\n{last_out}")
             raise RuntimeError(
-                f"{dev}: modules not healthy (require Phase=READY and IPC=up): {', '.join(bad)}\n{out}"
+                f"{dev}: modules not healthy (require Phase=READY and IPC=up): {', '.join(last_bad)}\n{last_out}"
             )
-
-        print(f"[{dev}] modules READY/up OK ({len(rows)} modules)")
 
 
 def ensure_cli_pager_disabled(rt: TopologyRuntime, top: dict[str, Any]) -> None:

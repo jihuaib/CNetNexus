@@ -164,7 +164,7 @@ void route_rib_destroy(route_rib_t *rib)
 
 int route_rib_add(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr, uint8_t prefix_len,
                   uint32_t protocol, const net_addr_t *source, const net_addr_t *nexthop, int32_t metric,
-                  int32_t preference)
+                  int32_t preference, uint32_t out_ifindex)
 {
     if (!rib || !prefix_addr || !source || !nexthop)
     {
@@ -199,6 +199,7 @@ int route_rib_add(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, const net_add
     path->nexthop = *nexthop;
     path->metric = metric;
     path->preference = preference;
+    path->out_ifindex = out_ifindex;
     path->updated_at_usec = g_get_real_time();
 
     return is_new ? 1 : 0;

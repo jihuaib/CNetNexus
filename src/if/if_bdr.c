@@ -37,8 +37,18 @@ static void bdr_append_interface(GString *out, const char *name, const char *ip_
     gboolean has_ip = (ip_str && ip_str[0] != '\0');
     gboolean is_shutdown = (shutdown != 0);
 
+    /* loop 接口使用 "if loop <N>" 格式，GE/null0 接口使用 "if <name>" 格式 */
+    gboolean is_loop = (strncmp(name, "loop", 4) == 0 && name[4] >= '1' && name[4] <= '9');
+
     g_string_append(out, "!\r\n");
-    g_string_append_printf(out, "if %s\r\n", name);
+    if (is_loop)
+    {
+        g_string_append_printf(out, "if loop %s\r\n", name + 4);
+    }
+    else
+    {
+        g_string_append_printf(out, "if %s\r\n", name);
+    }
 
     if (has_ip)
     {
