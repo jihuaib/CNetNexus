@@ -836,8 +836,9 @@ static void send_phase_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, 
 // Phase 1: MODULE_START - Establishing IPC connections到 CFG
 // ============================================================================
 
-static void sbmp_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static void sbmp_on_start(dev_ipc_message_t *msg)
 {
+    dev_ipc_context_t *ctx = sbmp_local_ipc_ctx();
     LOG_INFO("SBMP Phase 1: MODULE_START - Establishing IPC connections");
     dev_ipc_connect(ctx, DEV_MODULE_ID_CLI, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CLI);
     dev_ipc_connect(ctx, DEV_MODULE_ID_DB, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_DB);
@@ -849,8 +850,9 @@ static void sbmp_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 // Phase 2: MODULE_CONNECT — 预留
 // ============================================================================
 
-static void sbmp_on_connect(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static void sbmp_on_connect(dev_ipc_message_t *msg)
 {
+    dev_ipc_context_t *ctx = sbmp_local_ipc_ctx();
     LOG_INFO("SBMP Phase 2: MODULE_CONNECT (reserved)");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
@@ -859,18 +861,19 @@ static void sbmp_on_connect(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 // Phase 3: MODULE_READY — 建表 + DB 恢复
 // ============================================================================
 
-static void sbmp_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static void sbmp_on_ready(dev_ipc_message_t *msg)
 {
+    dev_ipc_context_t *ctx = sbmp_local_ipc_ctx();
     LOG_INFO("SBMP Phase 3: MODULE_READY - Initializing database tables and restoring state");
 
-    if (sbmp_db_init(ctx) != 0)
+    if (sbmp_db_init() != 0)
     {
         LOG_ERROR("SBMP: Database table initialization failed");
         send_phase_response(ctx, msg, ERRCODE_FAIL);
         return;
     }
 
-    if (sbmp_db_restore(ctx) != ERRCODE_SUCCESS)
+    if (sbmp_db_restore() != ERRCODE_SUCCESS)
     {
         LOG_ERROR("SBMP: Failed to restore state from database");
         send_phase_response(ctx, msg, ERRCODE_FAIL);
@@ -884,8 +887,9 @@ static void sbmp_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 // Shutdown
 // ============================================================================
 
-static void sbmp_on_shutdown(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static void sbmp_on_shutdown(dev_ipc_message_t *msg)
 {
+    dev_ipc_context_t *ctx = sbmp_local_ipc_ctx();
     LOG_INFO("SBMP: Cleaning up module state");
 
     sbmp_cli_cleanup_state();
@@ -931,19 +935,20 @@ static void sbmp_on_shutdown(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
 void sbmp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
+    (void)ctx;
     switch (msg->msg_type)
     {
         case DEV_IPC_MSG_TYPE_DEV_MODULE_START:
-            sbmp_on_start(ctx, msg);
+            sbmp_on_start(msg);
             return;
         case DEV_IPC_MSG_TYPE_DEV_MODULE_CONNECT:
-            sbmp_on_connect(ctx, msg);
+            sbmp_on_connect(msg);
             return;
         case DEV_IPC_MSG_TYPE_DEV_MODULE_READY:
-            sbmp_on_ready(ctx, msg);
+            sbmp_on_ready(msg);
             return;
         case DEV_IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN:
-            sbmp_on_shutdown(ctx, msg);
+            sbmp_on_shutdown(msg);
             return;
         case CLI_MSG_TYPE:
             LOG_DEBUG("SBMP: Received CLI command message");

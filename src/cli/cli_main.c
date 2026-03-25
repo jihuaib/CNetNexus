@@ -336,8 +336,9 @@ void cli_init_local(dev_ipc_context_t *ctx)
 // Phase 1: MODULE_START — CFG 不需要连接其他模块，直接回复 OK
 // ============================================================================
 
-static void cli_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static void cli_on_start(dev_ipc_message_t *msg)
 {
+    dev_ipc_context_t *ctx = cli_local_ipc_ctx();
     LOG_INFO("Phase 1: MODULE_START (no external connections needed)");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
@@ -346,8 +347,9 @@ static void cli_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 // Phase 2: MODULE_CONNECT — 预留（直接回复 OK）
 // ============================================================================
 
-static void cli_on_connect(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static void cli_on_connect(dev_ipc_message_t *msg)
 {
+    dev_ipc_context_t *ctx = cli_local_ipc_ctx();
     LOG_INFO("Phase 2: MODULE_CONNECT (reserved)");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
@@ -356,8 +358,9 @@ static void cli_on_connect(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 // Phase 3: MODULE_READY — 加载所有 XML
 // ============================================================================
 
-static void cli_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static void cli_on_ready(dev_ipc_message_t *msg)
 {
+    dev_ipc_context_t *ctx = cli_local_ipc_ctx();
     LOG_INFO("Phase 3: MODULE_READY - Starting Telnet server");
 
     /* 创建 epoll */
@@ -391,6 +394,7 @@ static void cli_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     }
 
     /* 启动 Telnet server 线程 */
+    g_cli_local->running = 1;
     if (pthread_create(&g_cli_local->worker_thread, NULL, cli_server_thread, NULL) != 0)
     {
         LOG_PERROR("Failed to create server thread");
@@ -398,7 +402,6 @@ static void cli_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         send_phase_response(ctx, msg, ERRCODE_FAIL);
         return;
     }
-    g_cli_local->running = 1;
 
     LOG_INFO("Telnet server listening on port %d", CLI_PORT);
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
@@ -408,8 +411,9 @@ static void cli_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 // Shutdown - 清理本地状态
 // ============================================================================
 
-static void cli_on_shutdown(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static void cli_on_shutdown(dev_ipc_message_t *msg)
 {
+    dev_ipc_context_t *ctx = cli_local_ipc_ctx();
     LOG_INFO("Shutting down server...");
     g_cli_local->running = 0;
 
@@ -454,20 +458,21 @@ static void cli_on_shutdown(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
 void cli_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
+    (void)ctx;
     switch (msg->msg_type)
     {
         /* ---- DEV 生命周期消息 ---- */
         case DEV_IPC_MSG_TYPE_DEV_MODULE_START:
-            cli_on_start(ctx, msg);
+            cli_on_start(msg);
             return;
         case DEV_IPC_MSG_TYPE_DEV_MODULE_CONNECT:
-            cli_on_connect(ctx, msg);
+            cli_on_connect(msg);
             return;
         case DEV_IPC_MSG_TYPE_DEV_MODULE_READY:
-            cli_on_ready(ctx, msg);
+            cli_on_ready(msg);
             return;
         case DEV_IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN:
-            cli_on_shutdown(ctx, msg);
+            cli_on_shutdown(msg);
             return;
 
         default:

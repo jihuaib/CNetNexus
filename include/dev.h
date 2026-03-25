@@ -70,9 +70,6 @@
 // ============================================================================
 
 typedef struct dev_ipc_context dev_ipc_context_t;
-typedef struct dev_ipc_context dev_ipc_context_t;
-
-typedef struct dev_ipc_message dev_ipc_message_t;
 typedef struct dev_ipc_message dev_ipc_message_t;
 
 /**

@@ -27,7 +27,7 @@ static void db_send_cli_response(dev_ipc_message_t *msg, const char *text)
                                                      msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
     if (resp)
     {
-        dev_ipc_send_response(g_db_local->dev_ipc_ctx, resp);
+        dev_ipc_send_response(db_local_ipc_ctx(), resp);
         dev_ipc_message_free(resp);
     }
 }
@@ -79,7 +79,7 @@ static int handle_db_show_table_list(dev_ipc_message_t *msg)
     sqlite3_finalize(stmt);
     g_mutex_unlock(&conn->db_mutex);
 
-    return cli_chunk_stream_start(&g_db_local->show_stream, g_db_local->dev_ipc_ctx, DEV_MODULE_ID_DB, msg, resp_out);
+    return cli_chunk_stream_start(&g_db_local->show_stream, db_local_ipc_ctx(), DEV_MODULE_ID_DB, msg, resp_out);
 }
 
 // ============================================================================
@@ -144,7 +144,7 @@ static int handle_db_show_table_field(dev_ipc_message_t *msg, const char *table_
         g_string_printf(resp_out, "Error: Table '%s' not found.\r\n", table_name);
     }
 
-    return cli_chunk_stream_start(&g_db_local->show_stream, g_db_local->dev_ipc_ctx, DEV_MODULE_ID_DB, msg, resp_out);
+    return cli_chunk_stream_start(&g_db_local->show_stream, db_local_ipc_ctx(), DEV_MODULE_ID_DB, msg, resp_out);
 }
 
 // ============================================================================
@@ -241,7 +241,7 @@ static int handle_db_show_table_data(dev_ipc_message_t *msg, const char *table_n
         g_string_append_printf(resp_out, "  %u row(s)\r\n", row_count);
     }
 
-    return cli_chunk_stream_start(&g_db_local->show_stream, g_db_local->dev_ipc_ctx, DEV_MODULE_ID_DB, msg, resp_out);
+    return cli_chunk_stream_start(&g_db_local->show_stream, db_local_ipc_ctx(), DEV_MODULE_ID_DB, msg, resp_out);
 }
 
 // ============================================================================
@@ -331,7 +331,7 @@ static int handle_db_show_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 // 动态候选值查询：返回所有用户表名
 // ============================================================================
 
-void db_cli_handle_query_candidates(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+void db_cli_handle_query_candidates(dev_ipc_message_t *msg)
 {
     db_connection_t *conn = g_db_local->main_conn;
 
@@ -372,7 +372,7 @@ void db_cli_handle_query_candidates(dev_ipc_context_t *ctx, dev_ipc_message_t *m
                                                      msg->src_module_id, msg->request_id, payload, payload_len, g_free);
     if (resp)
     {
-        dev_ipc_send_response(ctx, resp);
+        dev_ipc_send_response(db_local_ipc_ctx(), resp);
         dev_ipc_message_free(resp);
     }
 
@@ -385,12 +385,12 @@ void db_cli_handle_query_candidates(dev_ipc_context_t *ctx, dev_ipc_message_t *m
 
 int db_cli_handle_show_config(dev_ipc_message_t *msg)
 {
-    return cli_chunk_stream_start(&g_db_local->show_stream, g_db_local->dev_ipc_ctx, DEV_MODULE_ID_DB, msg, NULL);
+    return cli_chunk_stream_start(&g_db_local->show_stream, db_local_ipc_ctx(), DEV_MODULE_ID_DB, msg, NULL);
 }
 
 int db_cli_handle_continue(dev_ipc_message_t *msg)
 {
-    return cli_chunk_stream_continue(&g_db_local->show_stream, g_db_local->dev_ipc_ctx, DEV_MODULE_ID_DB, msg);
+    return cli_chunk_stream_continue(&g_db_local->show_stream, db_local_ipc_ctx(), DEV_MODULE_ID_DB, msg);
 }
 
 void db_cli_cleanup_state(void)

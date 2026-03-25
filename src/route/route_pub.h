@@ -11,6 +11,7 @@
 #include <stdint.h>
 
 #include "dev.h"
+#include "route.h"
 #include "route_rib.h"
 
 /**
@@ -25,31 +26,38 @@ typedef struct route_subscriber
 
 /**
  * @brief 向所有匹配的订阅者发送增量路由更新（异步 fire-and-forget）
- * @param ctx         IPC 上下文
  * @param subscribers 订阅者列表 GList<route_subscriber_t*>
  * @param head        前缀头
  * @param path        路径
  * @param is_withdraw 1=撤销路由, 0=新增/更新路由
  */
-void route_pub_notify(dev_ipc_context_t *ctx, GList *subscribers, const route_head_t *head, const route_path_t *path,
-                      int is_withdraw);
+void route_pub_notify(GList *subscribers, const route_head_t *head, const route_path_t *path, int is_withdraw);
+
+/**
+ * @brief 直接使用 route_msg_entry_t 向所有匹配订阅者发送通知
+ *
+ * 用于 route_calc 等不持有 RIB head/path 指针、但已知完整条目的场景。
+ * 订阅者过滤规则与 route_pub_notify 一致（按 protocol 和 vrf_id 匹配）。
+ *
+ * @param subscribers 订阅者列表 GList<route_subscriber_t*>
+ * @param entry       路由条目（is_withdraw 字段已填充）
+ */
+void route_pub_notify_entry(GList *subscribers, const route_msg_entry_t *entry);
 
 /**
  * @brief 向指定模块发送单条增量路由更新（用于迭代 owner 回推）
  */
-void route_pub_notify_module(dev_ipc_context_t *ctx, uint32_t dst_module_id, const route_head_t *head,
-                             const route_path_t *path, int is_withdraw);
+void route_pub_notify_module(uint32_t dst_module_id, const route_head_t *head, const route_path_t *path,
+                             int is_withdraw);
 
 /**
  * @brief 将 RIB 快照发送给指定模块（作为 SUBSCRIBE 请求的响应）
- * @param ctx         IPC 上下文
  * @param rib         路由 RIB
  * @param dst_module_id 目标模块 ID
  * @param protocol    过滤协议（ROUTE_PROTOCOL_MAX = 全部）
  * @param vrf_id      过滤 VRF ID（ROUTE_VRF_ALL = 全部）
  * @param request_id  原始请求 ID（用于响应配对）
  */
-void route_pub_dump(dev_ipc_context_t *ctx, route_rib_t *rib, uint32_t dst_module_id, uint32_t protocol,
-                    uint32_t vrf_id, uint32_t request_id);
+void route_pub_dump(route_rib_t *rib, uint32_t dst_module_id, uint32_t protocol, uint32_t vrf_id, uint32_t request_id);
 
 #endif /* ROUTE_PUB_H */

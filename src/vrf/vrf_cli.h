@@ -36,9 +36,8 @@ void vrf_cli_cleanup_state(void);
  *   cfg_id=3 → 返回所有 VRF 名称
  *   cfg_id=4 → 返回可删除的 VRF 名称（排除公网 VRF）
  *
- * @param ctx IPC 上下文
  * @param msg 原始 IPC 消息（函数负责释放）
  */
-void vrf_cli_handle_query_candidates(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
+void vrf_cli_handle_query_candidates(dev_ipc_message_t *msg);
 
 #endif /* VRF_CLI_H */

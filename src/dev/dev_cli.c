@@ -662,8 +662,9 @@ static gboolean collect_module_name_cb(gpointer key, gpointer value, gpointer da
     return FALSE;
 }
 
-void dev_cli_handle_query_candidates(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+void dev_cli_handle_query_candidates(dev_ipc_message_t *msg)
 {
+    dev_ipc_context_t *ctx = dev_get_ipc_ctx();
     GByteArray *buf = g_byte_array_new();
     dev_module_foreach(collect_module_name_cb, buf);
 
@@ -692,13 +693,15 @@ void dev_cli_handle_query_candidates(dev_ipc_context_t *ctx, dev_ipc_message_t *
 // 主入口
 // ============================================================================
 
-int dev_cli_handle_show_config(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+int dev_cli_handle_show_config(dev_ipc_message_t *msg)
 {
+    dev_ipc_context_t *ctx = dev_get_ipc_ctx();
     return cli_chunk_stream_start(&g_dev_local->show_stream, ctx, DEV_MODULE_ID_DEV, msg, NULL);
 }
 
-int dev_cli_handle_continue(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+int dev_cli_handle_continue(dev_ipc_message_t *msg)
 {
+    dev_ipc_context_t *ctx = dev_get_ipc_ctx();
     if (g_ping_stream_fp)
     {
         return ping_stream_send_next(ctx, msg);
@@ -717,8 +720,9 @@ void dev_cli_cleanup_state(void)
     cli_chunk_stream_reset(&g_dev_local->show_stream);
 }
 
-int dev_cli_handle_message(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+int dev_cli_handle_message(dev_ipc_message_t *msg)
 {
+    dev_ipc_context_t *ctx = dev_get_ipc_ctx();
     if (!msg || !msg->payload)
     {
         return ERRCODE_FAIL;

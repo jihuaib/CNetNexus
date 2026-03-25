@@ -26,8 +26,9 @@ dev_local_t *g_dev_local = NULL;
 // ============================================================================
 
 /** 处理模块名称查询请求 */
-static void handle_dev_get_module_name(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static void handle_dev_get_module_name(dev_ipc_message_t *msg)
 {
+    dev_ipc_context_t *ctx = dev_get_ipc_ctx();
     char name[DEV_MODULE_NAME_MAX_LEN] = "";
 
     if (msg->payload && msg->payload_len >= sizeof(uint32_t))
@@ -48,29 +49,30 @@ static void handle_dev_get_module_name(dev_ipc_context_t *ctx, dev_ipc_message_t
 
 void dev_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
+    (void)ctx;
     switch (msg->msg_type)
     {
         case DEV_IPC_MSG_TYPE_DEV_GET_MODULE_NAME:
-            handle_dev_get_module_name(ctx, msg);
+            handle_dev_get_module_name(msg);
             break;
 
         case CLI_MSG_TYPE_QUERY_CANDIDATES:
-            dev_cli_handle_query_candidates(ctx, msg);
+            dev_cli_handle_query_candidates(msg);
             return; /* msg 由 handler 内部释放 */
 
         case CLI_MSG_TYPE:
             LOG_DEBUG("Received CLI command message");
-            dev_cli_handle_message(ctx, msg);
+            dev_cli_handle_message(msg);
             break;
 
         case CLI_MSG_TYPE_CONTINUE:
             LOG_DEBUG("Received CLI continue request");
-            dev_cli_handle_continue(ctx, msg);
+            dev_cli_handle_continue(msg);
             break;
 
         case CLI_MSG_TYPE_SHOW_CONFIG:
             LOG_DEBUG("Received show current-configuration request");
-            dev_cli_handle_show_config(ctx, msg);
+            dev_cli_handle_show_config(msg);
             break;
 
         default:

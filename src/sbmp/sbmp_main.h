@@ -127,6 +127,14 @@ typedef struct sbmp_local
 extern sbmp_local_t *g_sbmp_local;
 
 /**
+ * @brief 获取 SBMP 模块本地 IPC 上下文（架构保证非空）
+ */
+static inline dev_ipc_context_t *sbmp_local_ipc_ctx(void)
+{
+    return g_sbmp_local->dev_ipc_ctx;
+}
+
+/**
  * @brief IPC 消息处理回调
  */
 void sbmp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);

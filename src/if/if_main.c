@@ -46,7 +46,7 @@ static void if_init_db_foreach(gpointer key, gpointer val, gpointer user_data)
     db_condition_t cond = {.field_name = "name", .op = DB_CMP_EQ, .value = db_value_text(logical_name)};
     db_filter_t filter = {.conditions = &cond, .num_conditions = 1};
     gboolean exists = FALSE;
-    int ret = db_rpc_exists(g_if_local->dev_ipc_ctx, "if_interface", &filter, &exists);
+    int ret = db_rpc_exists(if_local_ipc_ctx(), "if_interface", &filter, &exists);
     db_value_free(&cond.value);
 
     if (ret == ERRCODE_SUCCESS && !exists)
@@ -56,7 +56,7 @@ static void if_init_db_foreach(gpointer key, gpointer val, gpointer user_data)
         db_record_set_text(rec, "ip_address", "");
         db_record_set_int(rec, "prefix_len", 0);
         db_record_set_int(rec, "shutdown", 0);
-        db_rpc_insert_record(g_if_local->dev_ipc_ctx, "if_interface", rec);
+        db_rpc_insert_record(if_local_ipc_ctx(), "if_interface", rec);
         db_record_free(rec);
         LOG_INFO("Interface %s written to database", logical_name);
     }
@@ -80,8 +80,9 @@ static void if_init_db(void)
  *
  * 复用 if_cfg_apply_* 流程，与 CLI 配置路径完全一致。
  */
-static void if_db_restore(dev_ipc_context_t *ctx)
+static void if_db_restore(void)
 {
+    dev_ipc_context_t *ctx = if_local_ipc_ctx();
     db_result_t *result = NULL;
     if (db_rpc_query(ctx, "if_interface", NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
     {
@@ -148,8 +149,9 @@ static void send_phase_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, 
     (void)result;
 }
 
-static void send_if_ack(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, int32_t result)
+static void send_if_ack(dev_ipc_message_t *msg, int32_t result)
 {
+    dev_ipc_context_t *ctx = if_local_ipc_ctx();
     if (!ctx || !msg)
     {
         return;
@@ -177,12 +179,12 @@ static void send_if_ack(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, int32_t 
     dev_ipc_message_free(msg);
 }
 
-static void handle_if_subscribe(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static void handle_if_subscribe(dev_ipc_message_t *msg)
 {
     if (!msg->payload || msg->payload_len < sizeof(if_subscribe_req_t))
     {
         LOG_WARN("IF: subscribe payload invalid, len=%u", msg->payload_len);
-        send_if_ack(ctx, msg, ERRCODE_FAIL);
+        send_if_ack(msg, ERRCODE_FAIL);
         return;
     }
 
@@ -191,7 +193,7 @@ static void handle_if_subscribe(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     {
         LOG_WARN("IF: subscribe request invalid: type_mask=0x%08X event_mask=0x%08X", req->if_type_mask,
                  req->event_mask);
-        send_if_ack(ctx, msg, ERRCODE_FAIL);
+        send_if_ack(msg, ERRCODE_FAIL);
         return;
     }
 
@@ -203,7 +205,7 @@ static void handle_if_subscribe(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         {
             LOG_DEBUG("IF: duplicate subscribe ignored: module=0x%08X type=0x%08X event=0x%08X", msg->src_module_id,
                       req->if_type_mask, req->event_mask);
-            send_if_ack(ctx, msg, ERRCODE_SUCCESS);
+            send_if_ack(msg, ERRCODE_SUCCESS);
             return;
         }
     }
@@ -211,7 +213,7 @@ static void handle_if_subscribe(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     if_subscriber_t *sub = (if_subscriber_t *)g_malloc0(sizeof(if_subscriber_t));
     if (!sub)
     {
-        send_if_ack(ctx, msg, ERRCODE_FAIL);
+        send_if_ack(msg, ERRCODE_FAIL);
         return;
     }
     sub->module_id = msg->src_module_id;
@@ -222,7 +224,7 @@ static void handle_if_subscribe(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     LOG_INFO("IF: module 0x%08X subscribed: type=0x%08X event=0x%08X", msg->src_module_id, req->if_type_mask,
              req->event_mask);
 
-    send_if_ack(ctx, msg, ERRCODE_SUCCESS);
+    send_if_ack(msg, ERRCODE_SUCCESS);
 }
 
 /* 收集 all_entries 条目到 GArray */
@@ -243,8 +245,9 @@ static void collect_intf_map_foreach(gpointer key, gpointer val, gpointer user_d
     g_array_append_val(arr, item);
 }
 
-static void handle_if_get_intf_map(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static void handle_if_get_intf_map(dev_ipc_message_t *msg)
 {
+    dev_ipc_context_t *ctx = if_local_ipc_ctx();
     GArray *arr = g_array_new(FALSE, FALSE, sizeof(if_intf_map_item_t));
 
     if (g_if_local && g_if_local->interface_map.all_entries)
@@ -270,12 +273,12 @@ static void handle_if_get_intf_map(dev_ipc_context_t *ctx, dev_ipc_message_t *ms
     dev_ipc_message_free(msg);
 }
 
-static void handle_if_unsubscribe(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static void handle_if_unsubscribe(dev_ipc_message_t *msg)
 {
     if (!msg->payload || msg->payload_len < sizeof(if_subscribe_req_t))
     {
         LOG_WARN("IF: unsubscribe payload invalid, len=%u", msg->payload_len);
-        send_if_ack(ctx, msg, ERRCODE_FAIL);
+        send_if_ack(msg, ERRCODE_FAIL);
         return;
     }
 
@@ -307,15 +310,16 @@ static void handle_if_unsubscribe(dev_ipc_context_t *ctx, dev_ipc_message_t *msg
     LOG_INFO("IF: module 0x%08X unsubscribed, removed=%d (type=0x%08X event=0x%08X)", msg->src_module_id, removed,
              type_mask, event_mask);
 
-    send_if_ack(ctx, msg, ERRCODE_SUCCESS);
+    send_if_ack(msg, ERRCODE_SUCCESS);
 }
 
 // ============================================================================
 // Phase 1: MODULE_START - Establishing IPC connections到 CFG
 // ============================================================================
 
-static void if_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static void if_on_start(dev_ipc_message_t *msg)
 {
+    dev_ipc_context_t *ctx = if_local_ipc_ctx();
     LOG_INFO("Phase 1: MODULE_START - Establishing IPC connections");
 
     dev_ipc_connect(ctx, DEV_MODULE_ID_CLI, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CLI);
@@ -330,8 +334,9 @@ static void if_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 // Phase 2: MODULE_CONNECT — 预留（直接回复 OK）
 // ============================================================================
 
-static void if_on_connect(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static void if_on_connect(dev_ipc_message_t *msg)
 {
+    dev_ipc_context_t *ctx = if_local_ipc_ctx();
     LOG_INFO("Phase 2: MODULE_CONNECT (reserved)");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
@@ -354,8 +359,9 @@ static const db_table_def_t IF_INTERFACE_TABLE = {
     .num_cols = G_N_ELEMENTS(IF_INTERFACE_COLS),
 };
 
-static void if_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static void if_on_ready(dev_ipc_message_t *msg)
 {
+    dev_ipc_context_t *ctx = if_local_ipc_ctx();
     LOG_INFO("Phase 3: MODULE_READY - Initializing IF database");
 
     /* 建表（IF NOT EXISTS，幂等操作） */
@@ -371,7 +377,7 @@ static void if_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     if_init_db();
 
     /* 从数据库恢复配置到内存态 */
-    if_db_restore(ctx);
+    if_db_restore();
 
     LOG_INFO("IF module ready");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
@@ -381,8 +387,9 @@ static void if_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 // Shutdown
 // ============================================================================
 
-static void if_on_shutdown(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static void if_on_shutdown(dev_ipc_message_t *msg)
 {
+    dev_ipc_context_t *ctx = if_local_ipc_ctx();
     LOG_INFO("Shutting down if module...");
 
     if_cli_cleanup_state();
@@ -413,20 +420,21 @@ static void if_on_shutdown(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
 void if_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
+    (void)ctx;
     switch (msg->msg_type)
     {
         /* ---- DEV 生命周期消息 ---- */
         case DEV_IPC_MSG_TYPE_DEV_MODULE_START:
-            if_on_start(ctx, msg);
+            if_on_start(msg);
             return;
         case DEV_IPC_MSG_TYPE_DEV_MODULE_CONNECT:
-            if_on_connect(ctx, msg);
+            if_on_connect(msg);
             return;
         case DEV_IPC_MSG_TYPE_DEV_MODULE_READY:
-            if_on_ready(ctx, msg);
+            if_on_ready(msg);
             return;
         case DEV_IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN:
-            if_on_shutdown(ctx, msg);
+            if_on_shutdown(msg);
             return;
 
         /* ---- CLI 消息 ---- */
@@ -441,7 +449,7 @@ void if_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             break;
 
         case CLI_MSG_TYPE_QUERY_CANDIDATES:
-            if_cli_handle_query_candidates(ctx, msg);
+            if_cli_handle_query_candidates(msg);
             return;
 
         case CLI_MSG_TYPE_SHOW_CONFIG:
@@ -450,15 +458,15 @@ void if_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             return;
 
         case IF_MSG_TYPE_SUBSCRIBE:
-            handle_if_subscribe(ctx, msg);
+            handle_if_subscribe(msg);
             return;
 
         case IF_MSG_TYPE_UNSUBSCRIBE:
-            handle_if_unsubscribe(ctx, msg);
+            handle_if_unsubscribe(msg);
             return;
 
         case IF_MSG_TYPE_GET_INTF_MAP:
-            handle_if_get_intf_map(ctx, msg);
+            handle_if_get_intf_map(msg);
             return;
         default:
             LOG_WARN("Received unknown message type: 0x%08X", msg->msg_type);

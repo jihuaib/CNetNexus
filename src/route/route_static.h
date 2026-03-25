@@ -97,9 +97,8 @@ int route_static_del_prefix(uint32_t vrf_id, uint16_t afi, const net_addr_t *pre
  * 由 route_recompute_iter_paths 在重算 nh_watch_table 之后调用，确保静态路由跟随
  * CONNECTED/BGP 等路由变化而自动上线或撤销。
  *
- * @param ctx IPC 上下文（NULL 时使用 g_route_local->dev_ipc_ctx）
  */
-void route_static_recompute(dev_ipc_context_t *ctx);
+void route_static_recompute(void);
 
 /**
  * @brief 格式化输出候选静态路由表到缓冲区

@@ -94,8 +94,9 @@ static void send_phase_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, 
 // Phase 1: MODULE_START
 // ============================================================================
 
-static void vrf_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static void vrf_on_start(dev_ipc_message_t *msg)
 {
+    dev_ipc_context_t *ctx = vrf_local_ipc_ctx();
     LOG_INFO("Phase 1: MODULE_START - Establishing IPC connections");
     dev_ipc_connect(ctx, DEV_MODULE_ID_CLI, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CLI);
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
@@ -105,8 +106,9 @@ static void vrf_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 // Phase 2: MODULE_CONNECT
 // ============================================================================
 
-static void vrf_on_connect(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static void vrf_on_connect(dev_ipc_message_t *msg)
 {
+    dev_ipc_context_t *ctx = vrf_local_ipc_ctx();
     LOG_INFO("Phase 2: MODULE_CONNECT (reserved)");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
@@ -115,8 +117,9 @@ static void vrf_on_connect(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 // Phase 3: MODULE_READY - Creating public VRF
 // ============================================================================
 
-static void vrf_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static void vrf_on_ready(dev_ipc_message_t *msg)
 {
+    dev_ipc_context_t *ctx = vrf_local_ipc_ctx();
     LOG_INFO("Phase 3: MODULE_READY - Creating public VRF");
 
     /* 手动插入公网 VRF（ID=0，跳过 next_id 分配） */
@@ -134,8 +137,9 @@ static void vrf_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 // Shutdown
 // ============================================================================
 
-static void vrf_on_shutdown(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static void vrf_on_shutdown(dev_ipc_message_t *msg)
 {
+    dev_ipc_context_t *ctx = vrf_local_ipc_ctx();
     LOG_INFO("VRF module cleanup");
 
     vrf_cli_cleanup_state();
@@ -171,8 +175,9 @@ static void vrf_on_shutdown(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 // VRF RPC 处理：VRF_MSG_TYPE_GET_NAME
 // ============================================================================
 
-static void vrf_handle_get_name(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static void vrf_handle_get_name(dev_ipc_message_t *msg)
 {
+    dev_ipc_context_t *ctx = vrf_local_ipc_ctx();
     const char *name = NULL;
 
     if (msg->payload && msg->payload_len >= sizeof(uint32_t))
@@ -203,25 +208,26 @@ static void vrf_handle_get_name(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
 void vrf_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
+    (void)ctx;
     switch (msg->msg_type)
     {
         case DEV_IPC_MSG_TYPE_DEV_MODULE_START:
-            vrf_on_start(ctx, msg);
+            vrf_on_start(msg);
             return;
         case DEV_IPC_MSG_TYPE_DEV_MODULE_CONNECT:
-            vrf_on_connect(ctx, msg);
+            vrf_on_connect(msg);
             return;
         case DEV_IPC_MSG_TYPE_DEV_MODULE_READY:
-            vrf_on_ready(ctx, msg);
+            vrf_on_ready(msg);
             return;
         case DEV_IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN:
-            vrf_on_shutdown(ctx, msg);
+            vrf_on_shutdown(msg);
             return;
         case VRF_MSG_TYPE_GET_NAME:
-            vrf_handle_get_name(ctx, msg);
+            vrf_handle_get_name(msg);
             return;
         case CLI_MSG_TYPE_QUERY_CANDIDATES:
-            vrf_cli_handle_query_candidates(ctx, msg);
+            vrf_cli_handle_query_candidates(msg);
             return;
         case CLI_MSG_TYPE:
             vrf_cli_handle_message(msg);

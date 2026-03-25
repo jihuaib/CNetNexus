@@ -38,6 +38,14 @@ typedef struct cli_local
 extern cli_local_t *g_cli_local;
 
 /**
+ * @brief 获取 CLI 模块本地 IPC 上下文（架构保证非空）
+ */
+static inline dev_ipc_context_t *cli_local_ipc_ctx(void)
+{
+    return g_cli_local->dev_ipc_ctx;
+}
+
+/**
  * @brief IPC 消息处理回调（供 API 层引用）
  */
 void cli_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);

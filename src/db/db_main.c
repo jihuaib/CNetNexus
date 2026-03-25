@@ -70,8 +70,9 @@ static void send_phase_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, 
 // Phase 1: MODULE_START - Establishing IPC connections到 CFG
 // ============================================================================
 
-static void db_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static void db_on_start(dev_ipc_message_t *msg)
 {
+    dev_ipc_context_t *ctx = db_local_ipc_ctx();
     LOG_INFO("Phase 1: MODULE_START - Establishing IPC connections");
 
     dev_ipc_connect(ctx, DEV_MODULE_ID_CLI, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CLI);
@@ -90,8 +91,9 @@ static void db_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 // Phase 2: MODULE_CONNECT — 预留（直接回复 OK）
 // ============================================================================
 
-static void db_on_connect(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static void db_on_connect(dev_ipc_message_t *msg)
 {
+    dev_ipc_context_t *ctx = db_local_ipc_ctx();
     LOG_INFO("Phase 2: MODULE_CONNECT (reserved)");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
@@ -100,8 +102,9 @@ static void db_on_connect(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 // Phase 3: MODULE_READY — 预留（直接回复 OK）
 // ============================================================================
 
-static void db_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static void db_on_ready(dev_ipc_message_t *msg)
 {
+    dev_ipc_context_t *ctx = db_local_ipc_ctx();
     LOG_INFO("Phase 3: MODULE_READY (reserved)");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
@@ -110,8 +113,9 @@ static void db_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 // Shutdown
 // ============================================================================
 
-static void db_on_shutdown(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static void db_on_shutdown(dev_ipc_message_t *msg)
 {
+    dev_ipc_context_t *ctx = db_local_ipc_ctx();
     LOG_INFO("Cleaning up database module local state");
 
     db_cli_cleanup_state();
@@ -139,20 +143,21 @@ static void db_on_shutdown(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
 void db_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
+    (void)ctx;
     /* DEV 生命周期消息 */
     switch (msg->msg_type)
     {
         case DEV_IPC_MSG_TYPE_DEV_MODULE_START:
-            db_on_start(ctx, msg);
+            db_on_start(msg);
             return;
         case DEV_IPC_MSG_TYPE_DEV_MODULE_CONNECT:
-            db_on_connect(ctx, msg);
+            db_on_connect(msg);
             return;
         case DEV_IPC_MSG_TYPE_DEV_MODULE_READY:
-            db_on_ready(ctx, msg);
+            db_on_ready(msg);
             return;
         case DEV_IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN:
-            db_on_shutdown(ctx, msg);
+            db_on_shutdown(msg);
             return;
         default:
             break;
@@ -162,7 +167,7 @@ void db_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     uint32_t category = DEV_IPC_MSG_CATEGORY(msg->msg_type);
     if (category == DEV_IPC_CATEGORY_DB)
     {
-        db_ipc_msg_handler(ctx, msg);
+        db_ipc_msg_handler(msg);
         return;
     }
 
@@ -186,7 +191,7 @@ void db_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
         case CLI_MSG_TYPE_QUERY_CANDIDATES:
             LOG_DEBUG("Received query candidates request");
-            db_cli_handle_query_candidates(ctx, msg);
+            db_cli_handle_query_candidates(msg);
             return; /* msg 由被调函数释放 */
 
         default:

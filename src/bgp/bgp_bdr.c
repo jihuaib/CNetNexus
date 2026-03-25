@@ -50,8 +50,9 @@ static const char *afi_safi_to_str(int64_t afi, int64_t safi)
  * @brief 追加协议头配置行（bgp <as> / bgp router-id）
  * @return TRUE 表示协议已配置，FALSE 表示无配置
  */
-static gboolean bdr_append_protocol(dev_ipc_context_t *ctx, GString *out)
+static gboolean bdr_append_protocol(GString *out)
 {
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     db_result_t *result = NULL;
     if (db_rpc_query(ctx, BGP_TABLE_PROTOCOL, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result ||
         result->num_rows == 0)
@@ -76,8 +77,9 @@ static gboolean bdr_append_protocol(dev_ipc_context_t *ctx, GString *out)
 /**
  * @brief 追加 VRF 级配置（router-id）
  */
-static void bdr_append_vrf_config(dev_ipc_context_t *ctx, GString *out)
+static void bdr_append_vrf_config(GString *out)
 {
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     db_result_t *result = NULL;
     if (db_rpc_query(ctx, BGP_TABLE_VRF, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result || result->num_rows == 0)
     {
@@ -118,8 +120,9 @@ static void bdr_append_vrf_config(dev_ipc_context_t *ctx, GString *out)
 /**
  * @brief 追加会话配置行（neighbor <ip> as <as>）
  */
-static void bdr_append_sessions(dev_ipc_context_t *ctx, GString *out)
+static void bdr_append_sessions(GString *out)
 {
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     db_result_t *result = NULL;
     if (db_rpc_query(ctx, BGP_TABLE_SESSION, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
     {
@@ -156,8 +159,9 @@ static void bdr_append_sessions(dev_ipc_context_t *ctx, GString *out)
  * @param afi  整数 AFI（与 bgp_neighbor 表存储一致）
  * @param safi 整数 SAFI
  */
-static void bdr_append_af_peers(dev_ipc_context_t *ctx, GString *out, int64_t afi, int64_t safi)
+static void bdr_append_af_peers(GString *out, int64_t afi, int64_t safi)
 {
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     db_condition_t conds[] = {
         {.field_name = "afi", .op = DB_CMP_EQ, .value = db_value_int(afi)},
         {.field_name = "safi", .op = DB_CMP_EQ, .value = db_value_int(safi)},
@@ -193,13 +197,12 @@ static void bdr_append_af_peers(dev_ipc_context_t *ctx, GString *out, int64_t af
  * @param safi          整数 SAFI
  * @param import_protos 已导入协议位掩码
  */
-static void bdr_append_af_block(dev_ipc_context_t *ctx, GString *out, const char *afi_str, int64_t afi, int64_t safi,
-                                int64_t import_protos)
+static void bdr_append_af_block(GString *out, const char *afi_str, int64_t afi, int64_t safi, int64_t import_protos)
 {
     g_string_append_printf(out, " af %s\r\n", afi_str);
 
     /* AF 下各子表 BDR，按需扩展 */
-    bdr_append_af_peers(ctx, out, afi, safi);
+    bdr_append_af_peers(out, afi, safi);
 
     /* 导入路由配置 */
     if (import_protos & (1 << ROUTE_PROTOCOL_STATIC))
@@ -213,8 +216,9 @@ static void bdr_append_af_block(dev_ipc_context_t *ctx, GString *out, const char
 /**
  * @brief 遍历 bgp_instance 表，对每个 AF 实例输出完整配置块
  */
-static void bdr_append_af_instances(dev_ipc_context_t *ctx, GString *out)
+static void bdr_append_af_instances(GString *out)
 {
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     db_result_t *inst_result = NULL;
     if (db_rpc_query(ctx, BGP_TABLE_INSTANCE, NULL, 0, NULL, &inst_result) != ERRCODE_SUCCESS || !inst_result ||
         inst_result->num_rows == 0)
@@ -239,7 +243,7 @@ static void bdr_append_af_instances(dev_ipc_context_t *ctx, GString *out)
             continue;
         }
 
-        bdr_append_af_block(ctx, out, afi_str, afi_int, safi_int, import_protos);
+        bdr_append_af_block(out, afi_str, afi_int, safi_int, import_protos);
     }
 
     db_result_free(inst_result);
@@ -251,7 +255,6 @@ static void bdr_append_af_instances(dev_ipc_context_t *ctx, GString *out)
 
 void bgp_bdr_show_config(dev_ipc_message_t *msg)
 {
-    dev_ipc_context_t *ctx = g_bgp_local->dev_ipc_ctx;
     GString *out = g_string_new("");
     if (!out)
     {
@@ -259,15 +262,15 @@ void bgp_bdr_show_config(dev_ipc_message_t *msg)
         return;
     }
 
-    if (!bdr_append_protocol(ctx, out))
+    if (!bdr_append_protocol(out))
     {
         (void)bgp_cli_send_chunked_response(msg, out);
         return;
     }
 
-    bdr_append_vrf_config(ctx, out);
-    bdr_append_sessions(ctx, out);
-    bdr_append_af_instances(ctx, out);
+    bdr_append_vrf_config(out);
+    bdr_append_sessions(out);
+    bdr_append_af_instances(out);
     g_string_append(out, "!\r\n");
 
     (void)bgp_cli_send_chunked_response(msg, out);

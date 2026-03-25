@@ -40,6 +40,14 @@ typedef struct db_local
 
 extern db_local_t *g_db_local;
 
+/**
+ * @brief 获取 DB 模块本地 IPC 上下文（架构保证非空）
+ */
+static inline dev_ipc_context_t *db_local_ipc_ctx(void)
+{
+    return g_db_local->dev_ipc_ctx;
+}
+
 // ============================================================================
 // Internal Module Functions
 // ============================================================================

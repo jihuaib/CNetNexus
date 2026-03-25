@@ -133,7 +133,7 @@ static void if_sync_connected_host_routes(const net_prefix_t *prefix, const char
         return;
     }
 
-    dev_ipc_context_t *ctx = g_if_local ? g_if_local->dev_ipc_ctx : NULL;
+    dev_ipc_context_t *ctx = g_if_local ? if_local_ipc_ctx() : NULL;
     if (!ctx)
     {
         return;
@@ -243,7 +243,7 @@ int if_cfg_loop_create(uint32_t loop_id)
     db_record_set_text(rec, "ip_address", "");
     db_record_set_int(rec, "prefix_len", 0);
     db_record_set_int(rec, "shutdown", 0);
-    db_rpc_insert_record(g_if_local->dev_ipc_ctx, "if_interface", rec);
+    db_rpc_insert_record(if_local_ipc_ctx(), "if_interface", rec);
     db_record_free(rec);
 
     LOG_INFO("IF: loop 接口 %s 已创建（内存 + DB）", name);
@@ -277,7 +277,7 @@ int if_cfg_loop_delete(uint32_t loop_id)
     /* 从 DB 中删除 */
     db_condition_t cond = {.field_name = "name", .op = DB_CMP_EQ, .value = db_value_text(name)};
     db_filter_t filter = {.conditions = &cond, .num_conditions = 1};
-    db_rpc_delete(g_if_local->dev_ipc_ctx, "if_interface", &filter);
+    db_rpc_delete(if_local_ipc_ctx(), "if_interface", &filter);
     db_value_free(&cond.value);
 
     LOG_INFO("IF: loop 接口 %s 已删除", name);
@@ -367,7 +367,7 @@ int if_cfg_apply_shutdown(gboolean is_no, const char *logical_name)
         uint32_t event = up ? IF_EVENT_UP : IF_EVENT_DOWN;
         if (if_type != 0)
         {
-            if_pub_notify(g_if_local->dev_ipc_ctx, g_if_local->subscribers, entry, if_type, event, (uint8_t)up);
+            if_pub_notify(g_if_local->subscribers, entry, if_type, event, (uint8_t)up);
         }
 
         if (net_prefix_is_set(&entry->prefix))

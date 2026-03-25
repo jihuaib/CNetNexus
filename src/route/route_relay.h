@@ -13,17 +13,17 @@
 /**
  * @brief 全量重算已注册 nexthop 的可达性，并按变化回推 owner 模块
  */
-void route_recompute_iter_paths(dev_ipc_context_t *ctx);
+void route_recompute_iter_paths(void);
 
 /**
  * @brief 处理 nexthop 注册消息（ROUTE_MSG_TYPE_NH_REGISTER）
  */
-void route_relay_handle_nh_register(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
+void route_relay_handle_nh_register(dev_ipc_message_t *msg);
 
 /**
  * @brief 处理 nexthop 取消注册消息（ROUTE_MSG_TYPE_NH_UNREGISTER）
  */
-void route_relay_handle_nh_unregister(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
+void route_relay_handle_nh_unregister(dev_ipc_message_t *msg);
 
 /**
  * @brief 格式化输出 nexthop watch 表到缓冲区

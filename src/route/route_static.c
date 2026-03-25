@@ -12,8 +12,8 @@
 #include "log.h"
 #include "net_addr.h"
 #include "route.h"
+#include "route_calc.h"
 #include "route_main.h"
-#include "route_os.h"
 #include "route_pub.h"
 #include "route_relay.h"
 #include "route_rib.h"
@@ -58,45 +58,18 @@ static gboolean static_key_equal(gconstpointer a, gconstpointer b)
 // 辅助：撤销 RIB 条目时的通知回调
 // ============================================================================
 
-typedef struct
-{
-    dev_ipc_context_t *ctx;
-} static_del_ctx_t;
-
-/**
- * @brief 用 RIB head/path 填充 OS 下发条目
- */
-static void static_fill_os_entry(route_msg_entry_t *e, const route_head_t *head, const route_path_t *path)
-{
-    memset(e, 0, sizeof(*e));
-    e->vrf_id = head->key.vrf_id;
-    e->afi = head->key.afi;
-    e->prefix_len = head->key.prefix_len;
-    e->prefix_addr = head->key.addr;
-    e->nexthop_addr = path->nexthop;
-    e->source_addr = path->key.source;
-    e->protocol = path->key.protocol;
-    e->metric = path->metric;
-    e->preference = path->preference;
-    e->out_ifindex = path->out_ifindex;
-}
-
 static void on_static_rib_del(const route_head_t *head, const route_path_t *path, void *userdata)
 {
-    const static_del_ctx_t *dctx = (const static_del_ctx_t *)userdata;
-    if (!dctx || !g_route_local)
+    (void)userdata;
+    if (!g_route_local)
     {
         return;
     }
-    route_pub_notify(dctx->ctx, g_route_local->subscribers, head, path, 1);
 
-    /* 从 OS 内核撤销 */
-    if (head && path)
-    {
-        route_msg_entry_t oe;
-        static_fill_os_entry(&oe, head, path);
-        route_os_withdraw(&oe);
-    }
+    /* 触发优选重算：路径仍在 RIB 中，calc 跳过此路径选次优并同步 OS */
+    route_calc_on_path_del(head, path);
+
+    route_pub_notify(g_route_local->subscribers, head, path, 1);
 }
 
 // ============================================================================
@@ -240,25 +213,12 @@ int route_static_add(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_add
     {
         /* nexthop 可达：写入或更新 RIB */
         uint32_t oif = route_relay_nh_get_ifindex(vrf_id, afi, nexthop_addr);
-        int ret = route_add_and_notify(g_route_local->dev_ipc_ctx, vrf_id, afi, prefix_addr, prefix_len,
-                                       ROUTE_PROTOCOL_STATIC, nexthop_addr, nexthop_addr, metric, preference, oif);
+        int ret = route_add_and_notify(vrf_id, afi, prefix_addr, prefix_len, ROUTE_PROTOCOL_STATIC, nexthop_addr,
+                                       nexthop_addr, metric, preference, oif);
         if (ret >= 0)
         {
             entry->in_rib = 1u;
-            /* 下发到 OS 内核 */
-            route_msg_entry_t oe;
-            memset(&oe, 0, sizeof(oe));
-            oe.vrf_id = vrf_id;
-            oe.afi = afi;
-            oe.prefix_len = prefix_len;
-            oe.prefix_addr = *prefix_addr;
-            oe.nexthop_addr = *nexthop_addr;
-            oe.source_addr = *nexthop_addr;
-            oe.protocol = ROUTE_PROTOCOL_STATIC;
-            oe.metric = metric;
-            oe.preference = preference;
-            oe.out_ifindex = oif;
-            route_os_install(&oe);
+            /* OS 下发由 route_add_and_notify 内部调用 route_calc_on_path_add 完成 */
             LOG_DEBUG("Static route written to RIB: vrf=%u afi=%u pfxlen=%u (nexthop resolved)", vrf_id, afi,
                       prefix_len);
         }
@@ -268,9 +228,8 @@ int route_static_add(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_add
         if (entry->in_rib)
         {
             /* nexthop 变不可达：从 RIB 撤销 */
-            static_del_ctx_t dctx = {g_route_local->dev_ipc_ctx};
             route_rib_del(g_route_local->rib, vrf_id, afi, prefix_addr, prefix_len, ROUTE_PROTOCOL_STATIC, nexthop_addr,
-                          on_static_rib_del, &dctx);
+                          on_static_rib_del, NULL);
             entry->in_rib = 0u;
             LOG_DEBUG("Static route withdrawn from RIB: vrf=%u afi=%u pfxlen=%u (nexthop unresolved)", vrf_id, afi,
                       prefix_len);
@@ -339,9 +298,8 @@ int route_static_del(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_add
     /* 若已在 RIB 中则先撤销并通知订阅者 */
     if (entry->in_rib)
     {
-        static_del_ctx_t dctx = {g_route_local->dev_ipc_ctx};
         route_rib_del(g_route_local->rib, vrf_id, afi, prefix_addr, prefix_len, ROUTE_PROTOCOL_STATIC, nexthop_addr,
-                      on_static_rib_del, &dctx);
+                      on_static_rib_del, NULL);
     }
 
     /* 从候选表移除；移除后再判断该 nexthop 是否还有其他引用者 */
@@ -366,7 +324,6 @@ typedef struct
     uint8_t prefix_len;
     uint8_t _pad;
     const net_addr_t *prefix_addr;
-    dev_ipc_context_t *ctx;
     GSList *keys_to_remove;   /**< 待从候选表移除的键指针列表（指向 entry->key） */
     GSList *nexthops_removed; /**< 被删除条目的 nexthop 拷贝列表（需在移除后检查是否孤立） */
     int count;
@@ -391,9 +348,8 @@ static void static_collect_for_prefix(gpointer key_ptr, gpointer value_ptr, gpoi
     /* 若已在 RIB 中则先撤销（在 foreach 中修改 rib 是安全的） */
     if (entry->in_rib)
     {
-        static_del_ctx_t dctx = {pctx->ctx};
         route_rib_del(g_route_local->rib, entry->key.vrf_id, entry->key.afi, &entry->key.prefix_addr,
-                      entry->key.prefix_len, ROUTE_PROTOCOL_STATIC, &entry->key.nexthop_addr, on_static_rib_del, &dctx);
+                      entry->key.prefix_len, ROUTE_PROTOCOL_STATIC, &entry->key.nexthop_addr, on_static_rib_del, NULL);
     }
 
     /* 拷贝 nexthop 地址，用于移除后检查是否孤立 */
@@ -422,7 +378,6 @@ int route_static_del_prefix(uint32_t vrf_id, uint16_t afi, const net_addr_t *pre
     pctx.afi = afi;
     pctx.prefix_len = prefix_len;
     pctx.prefix_addr = prefix_addr;
-    pctx.ctx = g_route_local->dev_ipc_ctx;
 
     /* 第一轮：收集匹配条目并撤销 RIB */
     g_hash_table_foreach(g_static_table, static_collect_for_prefix, &pctx);
@@ -455,7 +410,6 @@ int route_static_del_prefix(uint32_t vrf_id, uint16_t afi, const net_addr_t *pre
 
 typedef struct
 {
-    dev_ipc_context_t *ctx;
     uint32_t total;
     uint32_t added;
     uint32_t withdrawn;
@@ -488,41 +442,27 @@ static void static_recompute_cb(gpointer key_ptr, gpointer value_ptr, gpointer u
     {
         /* nexthop 新可达：写入 RIB */
         uint32_t oif = route_relay_nh_get_ifindex(entry->key.vrf_id, entry->key.afi, &entry->key.nexthop_addr);
-        int ret = route_add_and_notify(rctx->ctx, entry->key.vrf_id, entry->key.afi, &entry->key.prefix_addr,
+        int ret = route_add_and_notify(entry->key.vrf_id, entry->key.afi, &entry->key.prefix_addr,
                                        entry->key.prefix_len, ROUTE_PROTOCOL_STATIC, &entry->key.nexthop_addr,
                                        &entry->key.nexthop_addr, entry->metric, entry->preference, oif);
         if (ret >= 0)
         {
             entry->in_rib = 1U;
-            /* 下发到 OS 内核 */
-            route_msg_entry_t oe;
-            memset(&oe, 0, sizeof(oe));
-            oe.vrf_id = entry->key.vrf_id;
-            oe.afi = entry->key.afi;
-            oe.prefix_len = entry->key.prefix_len;
-            oe.prefix_addr = entry->key.prefix_addr;
-            oe.nexthop_addr = entry->key.nexthop_addr;
-            oe.source_addr = entry->key.nexthop_addr;
-            oe.protocol = ROUTE_PROTOCOL_STATIC;
-            oe.metric = entry->metric;
-            oe.preference = entry->preference;
-            oe.out_ifindex = oif;
-            route_os_install(&oe);
+            /* OS 下发由 route_add_and_notify 内部调用 route_calc_on_path_add 完成 */
             rctx->added++;
         }
     }
     else if (!resolved && entry->in_rib)
     {
         /* nexthop 变不可达：从 RIB 撤销 */
-        static_del_ctx_t dctx = {rctx->ctx};
         route_rib_del(g_route_local->rib, entry->key.vrf_id, entry->key.afi, &entry->key.prefix_addr,
-                      entry->key.prefix_len, ROUTE_PROTOCOL_STATIC, &entry->key.nexthop_addr, on_static_rib_del, &dctx);
+                      entry->key.prefix_len, ROUTE_PROTOCOL_STATIC, &entry->key.nexthop_addr, on_static_rib_del, NULL);
         entry->in_rib = 0u;
         rctx->withdrawn++;
     }
 }
 
-void route_static_recompute(dev_ipc_context_t *ctx)
+void route_static_recompute(void)
 {
     if (!g_static_table || g_hash_table_size(g_static_table) == 0)
     {
@@ -530,7 +470,6 @@ void route_static_recompute(dev_ipc_context_t *ctx)
     }
 
     static_recompute_ctx_t rctx = {
-        .ctx = ctx ? ctx : (g_route_local ? g_route_local->dev_ipc_ctx : NULL),
         .total = 0u,
         .added = 0u,
         .withdrawn = 0u,

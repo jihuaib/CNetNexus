@@ -38,6 +38,14 @@ typedef struct
 extern vrf_local_t *g_vrf_local;
 
 /**
+ * @brief 获取 VRF 模块本地 IPC 上下文（架构保证非空）
+ */
+static inline dev_ipc_context_t *vrf_local_ipc_ctx(void)
+{
+    return g_vrf_local->dev_ipc_ctx;
+}
+
+/**
  * @brief IPC 消息处理主回调
  * @param ctx IPC 上下文
  * @param msg 接收到的消息

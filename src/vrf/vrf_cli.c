@@ -34,7 +34,7 @@ static void vrf_send_cli_response(dev_ipc_message_t *msg, const char *text)
                                                      msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
     if (resp)
     {
-        dev_ipc_send_response(g_vrf_local->dev_ipc_ctx, resp);
+        dev_ipc_send_response(vrf_local_ipc_ctx(), resp);
         dev_ipc_message_free(resp);
     }
 }
@@ -200,7 +200,7 @@ static int handle_vrf_show(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         g_list_free(list);
     }
 
-    return cli_chunk_stream_start(&g_vrf_local->show_stream, g_vrf_local->dev_ipc_ctx, DEV_MODULE_ID_VRF, msg, buf);
+    return cli_chunk_stream_start(&g_vrf_local->show_stream, vrf_local_ipc_ctx(), DEV_MODULE_ID_VRF, msg, buf);
 }
 
 int vrf_cli_handle_show_config(dev_ipc_message_t *msg)
@@ -208,8 +208,7 @@ int vrf_cli_handle_show_config(dev_ipc_message_t *msg)
     GString *out = g_string_new("");
     if (!out)
     {
-        return cli_chunk_stream_start(&g_vrf_local->show_stream, g_vrf_local->dev_ipc_ctx, DEV_MODULE_ID_VRF, msg,
-                                      NULL);
+        return cli_chunk_stream_start(&g_vrf_local->show_stream, vrf_local_ipc_ctx(), DEV_MODULE_ID_VRF, msg, NULL);
     }
 
     GList *list = g_hash_table_get_values(g_vrf_local->vrf_by_id);
@@ -233,7 +232,7 @@ int vrf_cli_handle_show_config(dev_ipc_message_t *msg)
     }
 
     g_list_free(list);
-    return cli_chunk_stream_start(&g_vrf_local->show_stream, g_vrf_local->dev_ipc_ctx, DEV_MODULE_ID_VRF, msg, out);
+    return cli_chunk_stream_start(&g_vrf_local->show_stream, vrf_local_ipc_ctx(), DEV_MODULE_ID_VRF, msg, out);
 }
 
 // ============================================================================
@@ -281,7 +280,7 @@ int vrf_cli_handle_message(dev_ipc_message_t *msg)
 
 int vrf_cli_handle_continue(dev_ipc_message_t *msg)
 {
-    return cli_chunk_stream_continue(&g_vrf_local->show_stream, g_vrf_local->dev_ipc_ctx, DEV_MODULE_ID_VRF, msg);
+    return cli_chunk_stream_continue(&g_vrf_local->show_stream, vrf_local_ipc_ctx(), DEV_MODULE_ID_VRF, msg);
 }
 
 void vrf_cli_cleanup_state(void)
@@ -293,7 +292,7 @@ void vrf_cli_cleanup_state(void)
 // 动态候选值查询
 // ============================================================================
 
-void vrf_cli_handle_query_candidates(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+void vrf_cli_handle_query_candidates(dev_ipc_message_t *msg)
 {
     /* 解析 cfg_id（网络字节序） */
     uint32_t cfg_id = 0;
@@ -331,7 +330,7 @@ void vrf_cli_handle_query_candidates(dev_ipc_context_t *ctx, dev_ipc_message_t *
                                                      msg->src_module_id, msg->request_id, payload, payload_len, g_free);
     if (resp)
     {
-        dev_ipc_send_response(ctx, resp);
+        dev_ipc_send_response(vrf_local_ipc_ctx(), resp);
         dev_ipc_message_free(resp);
     }
     else

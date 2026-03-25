@@ -32,10 +32,9 @@ int if_cli_handle_continue(dev_ipc_message_t *msg);
 
 /**
  * @brief 处理动态候选值查询（CLI_MSG_TYPE_QUERY_CANDIDATES）
- * @param ctx IF 模块 IPC 上下文
  * @param msg 查询消息
  */
-void if_cli_handle_query_candidates(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
+void if_cli_handle_query_candidates(dev_ipc_message_t *msg);
 
 /**
  * @brief 清理 IF CLI 分片状态

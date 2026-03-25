@@ -25,14 +25,12 @@ typedef struct if_subscriber
 
 /**
  * @brief 向匹配订阅者发布接口事件
- * @param ctx         IPC 上下文
  * @param subscribers 订阅者列表（GList<if_subscriber_t*>）
  * @param entry       接口条目
  * @param if_type     本次事件接口类型（单值位）
  * @param event       本次事件（单值位）
  * @param admin_up    1=up, 0=down
  */
-void if_pub_notify(dev_ipc_context_t *ctx, GList *subscribers, const if_map_entry_t *entry, uint32_t if_type,
-                   uint32_t event, uint8_t admin_up);
+void if_pub_notify(GList *subscribers, const if_map_entry_t *entry, uint32_t if_type, uint32_t event, uint8_t admin_up);
 
 #endif /* IF_PUB_H */

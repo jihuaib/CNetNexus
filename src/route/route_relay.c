@@ -379,7 +379,7 @@ uint32_t route_relay_nh_get_ifindex(uint32_t vrf_id, uint16_t afi, const net_add
     return 0;
 }
 
-static void route_relay_notify_state(dev_ipc_context_t *ctx, const route_nh_watch_t *watch)
+static void route_relay_notify_state(const route_nh_watch_t *watch)
 {
     if (!watch)
     {
@@ -392,11 +392,7 @@ static void route_relay_notify_state(dev_ipc_context_t *ctx, const route_nh_watc
         return;
     }
 
-    dev_ipc_context_t *send_ctx = ctx ? ctx : (g_route_local ? g_route_local->dev_ipc_ctx : NULL);
-    if (!send_ctx)
-    {
-        return;
-    }
+    dev_ipc_context_t *send_ctx = route_local_ipc_ctx();
 
     route_nh_iter_notify_t *payload = (route_nh_iter_notify_t *)g_malloc0(sizeof(*payload));
     if (!payload)
@@ -448,7 +444,7 @@ static int route_relay_validate_req(const route_nh_iter_req_t *req)
     return 0;
 }
 
-void route_relay_handle_nh_register(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+void route_relay_handle_nh_register(dev_ipc_message_t *msg)
 {
     if (!msg || !msg->payload || msg->payload_len < sizeof(route_nh_iter_req_t))
     {
@@ -508,15 +504,14 @@ void route_relay_handle_nh_register(dev_ipc_context_t *ctx, dev_ipc_message_t *m
 
     if (is_new || old_resolved != watch->resolved)
     {
-        route_relay_notify_state(ctx, watch);
+        route_relay_notify_state(watch);
     }
 
     dev_ipc_message_free(msg);
 }
 
-void route_relay_handle_nh_unregister(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+void route_relay_handle_nh_unregister(dev_ipc_message_t *msg)
 {
-    (void)ctx;
     if (!msg || !msg->payload || msg->payload_len < sizeof(route_nh_iter_req_t))
     {
         if (msg)
@@ -550,7 +545,6 @@ void route_relay_handle_nh_unregister(dev_ipc_context_t *ctx, dev_ipc_message_t 
 
 typedef struct route_iter_recompute_ctx
 {
-    dev_ipc_context_t *ctx;
     uint32_t total;
     uint32_t resolved;
     uint32_t announced;
@@ -589,13 +583,13 @@ static void route_recompute_watch_cb(gpointer key, gpointer value, gpointer user
         {
             ctx->withdrawn++;
         }
-        route_relay_notify_state(ctx->ctx, watch);
+        route_relay_notify_state(watch);
     }
 
     return;
 }
 
-void route_recompute_iter_paths(dev_ipc_context_t *ctx)
+void route_recompute_iter_paths(void)
 {
     if (!g_route_nh_watch_table || g_hash_table_size(g_route_nh_watch_table) == 0)
     {
@@ -603,7 +597,6 @@ void route_recompute_iter_paths(dev_ipc_context_t *ctx)
     }
 
     route_iter_recompute_ctx_t rctx = {
-        .ctx = ctx ? ctx : (g_route_local ? g_route_local->dev_ipc_ctx : NULL),
         .total = 0u,
         .resolved = 0u,
         .announced = 0u,
@@ -619,7 +612,7 @@ void route_recompute_iter_paths(dev_ipc_context_t *ctx)
     }
 
     /* 同步重算候选静态路由的可达性（路由变化可能影响静态路由 nexthop 迭代结果） */
-    route_static_recompute(rctx.ctx);
+    route_static_recompute();
 }
 
 void route_relay_cleanup(void)

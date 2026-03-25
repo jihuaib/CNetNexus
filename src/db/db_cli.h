@@ -51,9 +51,8 @@ void db_cli_cleanup_state(void);
  *
  * 查询 SQLite 中所有用户表名，以 "name1\0name2\0\0" 格式响应。
  *
- * @param ctx IPC 上下文
  * @param msg 原始 IPC 消息（函数负责释放）
  */
-void db_cli_handle_query_candidates(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
+void db_cli_handle_query_candidates(dev_ipc_message_t *msg);
 
 #endif // DB_CLI_H

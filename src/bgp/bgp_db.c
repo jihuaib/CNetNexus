@@ -96,8 +96,8 @@ static const db_table_def_t BGP_VRF_TABLE = {
 };
 
 /* 前向声明（write_defaults 中调用） */
-int bgp_db_set_vrf_timers(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t keepalive, uint16_t hold_time);
-int bgp_db_set_vrf_connect_retry(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t connect_retry);
+int bgp_db_set_vrf_timers(uint32_t vrf_id, uint16_t keepalive, uint16_t hold_time);
+int bgp_db_set_vrf_connect_retry(uint32_t vrf_id, uint16_t connect_retry);
 
 // ============================================================================
 // 启动恢复 - 内部函数（按表拆分）
@@ -107,8 +107,14 @@ int bgp_db_set_vrf_connect_retry(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16
  * @brief 从 bgp_protocol 表恢复协议对象
  * @return 恢复的 bgp_protocol_t 指针，无配置或失败返回 NULL
  */
-static uint32_t restore_protocol(dev_ipc_context_t *ctx)
+static uint32_t restore_protocol(void)
 {
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
+    if (!ctx)
+    {
+        return ERRCODE_FAIL;
+    }
+
     db_result_t *result = NULL;
     if (db_rpc_query(ctx, BGP_TABLE_PROTOCOL, NULL, 0, NULL, &result) != ERRCODE_SUCCESS)
     {
@@ -150,11 +156,16 @@ static uint32_t restore_protocol(dev_ipc_context_t *ctx)
     return ERRCODE_SUCCESS;
 }
 
-static void restore_sessions(dev_ipc_context_t *ctx)
+static void restore_sessions(void)
 {
-    (void)ctx;
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
+    if (!ctx)
+    {
+        return;
+    }
+
     db_result_t *result = NULL;
-    if (db_rpc_query(g_bgp_local->dev_ipc_ctx, BGP_TABLE_SESSION, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
+    if (db_rpc_query(ctx, BGP_TABLE_SESSION, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
     {
         return;
     }
@@ -255,12 +266,16 @@ static void restore_sessions(dev_ipc_context_t *ctx)
  * @brief 从 bgp_neighbor 表恢复地址族邻居到 VRF
  * @param vrf0 目标 VRF（为 NULL 时直接返回）
  */
-static void restore_neighbors(dev_ipc_context_t *ctx)
+static void restore_neighbors(void)
 {
-    (void)ctx;
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
+    if (!ctx)
+    {
+        return;
+    }
+
     db_result_t *result = NULL;
-    if (db_rpc_query(g_bgp_local->dev_ipc_ctx, BGP_TABLE_NEIGHBOR, NULL, 0, NULL, &result) != ERRCODE_SUCCESS ||
-        !result)
+    if (db_rpc_query(ctx, BGP_TABLE_NEIGHBOR, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
     {
         return;
     }
@@ -303,12 +318,16 @@ static void restore_neighbors(dev_ipc_context_t *ctx)
  * @brief 从 bgp_instance 表恢复 AF 实例到各 VRF 的 inst_hash
  * @param proto 已恢复的协议对象（不可为 NULL）
  */
-static void restore_instances(dev_ipc_context_t *ctx)
+static void restore_instances(void)
 {
-    (void)ctx;
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
+    if (!ctx)
+    {
+        return;
+    }
+
     db_result_t *result = NULL;
-    if (db_rpc_query(g_bgp_local->dev_ipc_ctx, BGP_TABLE_INSTANCE, NULL, 0, NULL, &result) != ERRCODE_SUCCESS ||
-        !result)
+    if (db_rpc_query(ctx, BGP_TABLE_INSTANCE, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
     {
         return;
     }
@@ -364,7 +383,7 @@ static void restore_instances(dev_ipc_context_t *ctx)
                                        sizeof(route_subscribe_req_t), g_free);
             if (sub_msg)
             {
-                dev_ipc_send(g_bgp_local->dev_ipc_ctx, DEV_MODULE_ID_ROUTE, sub_msg);
+                dev_ipc_send(ctx, DEV_MODULE_ID_ROUTE, sub_msg);
                 dev_ipc_message_free(sub_msg);
             }
             LOG_INFO("BGP restore: VRF %u afi=%u safi=%u import_protos=0x%08X，已重新订阅路由模块", vrf_id,
@@ -375,11 +394,16 @@ static void restore_instances(dev_ipc_context_t *ctx)
     db_result_free(result);
 }
 
-static void restore_vrf(dev_ipc_context_t *ctx)
+static void restore_vrf(void)
 {
-    (void)ctx;
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
+    if (!ctx)
+    {
+        return;
+    }
+
     db_result_t *result = NULL;
-    if (db_rpc_query(g_bgp_local->dev_ipc_ctx, BGP_TABLE_VRF, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
+    if (db_rpc_query(ctx, BGP_TABLE_VRF, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
     {
         return;
     }
@@ -438,14 +462,15 @@ static void restore_vrf(dev_ipc_context_t *ctx)
 // 启动恢复
 // ============================================================================
 
-uint32_t bgp_db_restore(dev_ipc_context_t *ctx)
+uint32_t bgp_db_restore(void)
 {
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     if (!ctx)
     {
         return ERRCODE_FAIL;
     }
 
-    uint32_t ret = restore_protocol(ctx);
+    uint32_t ret = restore_protocol();
     if (ret != ERRCODE_SUCCESS)
     {
         return ERRCODE_FAIL;
@@ -456,10 +481,10 @@ uint32_t bgp_db_restore(dev_ipc_context_t *ctx)
         return ERRCODE_SUCCESS;
     }
 
-    restore_vrf(ctx);
-    restore_sessions(ctx);
-    restore_instances(ctx);
-    restore_neighbors(ctx);
+    restore_vrf();
+    restore_sessions();
+    restore_instances();
+    restore_neighbors();
 
     return ERRCODE_SUCCESS;
 }
@@ -468,8 +493,9 @@ uint32_t bgp_db_restore(dev_ipc_context_t *ctx)
 // 建表初始化
 // ============================================================================
 
-int bgp_db_init(dev_ipc_context_t *ctx)
+int bgp_db_init(void)
 {
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     if (!ctx)
     {
         return -1;
@@ -500,8 +526,14 @@ int bgp_db_init(dev_ipc_context_t *ctx)
 /**
  * @brief 检查指定表是否为空（查询失败按空表处理，保守写入默认值）
  */
-static gboolean table_is_empty(dev_ipc_context_t *ctx, const char *table_name)
+static gboolean table_is_empty(const char *table_name)
 {
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
+    if (!ctx)
+    {
+        return TRUE;
+    }
+
     db_result_t *result = NULL;
     if (db_rpc_query(ctx, table_name, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
     {
@@ -517,49 +549,50 @@ static gboolean table_is_empty(dev_ipc_context_t *ctx, const char *table_name)
  *
  * 每张表独立判断：为空则写入，非空则跳过，互不影响。
  */
-static void write_defaults(dev_ipc_context_t *ctx)
+static void write_defaults(void)
 {
-    if (table_is_empty(ctx, BGP_TABLE_PROTOCOL))
+    if (table_is_empty(BGP_TABLE_PROTOCOL))
     {
         LOG_INFO("BGP %s table empty, writing default config", BGP_TABLE_PROTOCOL);
-        /* bgp_db_set_as(ctx, DEFAULT_AS); */
+        /* bgp_db_set_as(DEFAULT_AS); */
     }
 
-    if (table_is_empty(ctx, BGP_TABLE_SESSION))
+    if (table_is_empty(BGP_TABLE_SESSION))
     {
         LOG_INFO("BGP %s table empty, writing default config", BGP_TABLE_SESSION);
-        /* bgp_db_set_session(ctx, ...); */
+        /* bgp_db_set_session(...); */
     }
 
-    if (table_is_empty(ctx, BGP_TABLE_NEIGHBOR))
+    if (table_is_empty(BGP_TABLE_NEIGHBOR))
     {
         LOG_INFO("BGP %s table empty, writing default config", BGP_TABLE_NEIGHBOR);
-        /* bgp_db_set_neighbor(ctx, ...); */
+        /* bgp_db_set_neighbor(...); */
     }
 
-    if (table_is_empty(ctx, BGP_TABLE_VRF))
+    if (table_is_empty(BGP_TABLE_VRF))
     {
         LOG_INFO("BGP %s table empty, writing default VRF timers", BGP_TABLE_VRF);
-        bgp_db_set_vrf_timers(ctx, BGP_VRF_PUBLIC_ID, BGP_TIMER_DEFAULT_KEEPALIVE, BGP_TIMER_DEFAULT_HOLD);
-        bgp_db_set_vrf_connect_retry(ctx, BGP_VRF_PUBLIC_ID, BGP_TIMER_DEFAULT_CONNECT_RETRY);
+        bgp_db_set_vrf_timers(BGP_VRF_PUBLIC_ID, BGP_TIMER_DEFAULT_KEEPALIVE, BGP_TIMER_DEFAULT_HOLD);
+        bgp_db_set_vrf_connect_retry(BGP_VRF_PUBLIC_ID, BGP_TIMER_DEFAULT_CONNECT_RETRY);
     }
 }
 
-void bgp_db_ensure_defaults(dev_ipc_context_t *ctx)
+void bgp_db_ensure_defaults(void)
 {
-    if (!ctx)
+    if (!bgp_local_ipc_ctx())
     {
         return;
     }
-    write_defaults(ctx);
+    write_defaults();
 }
 
 // ============================================================================
 // 写入（插入或更新）AS 号
 // ============================================================================
 
-int bgp_db_set_as(dev_ipc_context_t *ctx, uint32_t as_number)
+int bgp_db_set_as(uint32_t as_number)
 {
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     if (!ctx)
     {
         return -1;
@@ -585,8 +618,9 @@ int bgp_db_set_as(dev_ipc_context_t *ctx, uint32_t as_number)
 // 删除 AS 配置
 // ============================================================================
 
-int bgp_db_del_as(dev_ipc_context_t *ctx)
+int bgp_db_del_as(void)
 {
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     if (!ctx)
     {
         return -1;
@@ -607,8 +641,9 @@ int bgp_db_del_as(dev_ipc_context_t *ctx)
 // BGP Session 操作
 // ============================================================================
 
-int bgp_db_set_session(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *neighbor_ip, uint32_t remote_as)
+int bgp_db_set_session(uint32_t vrf_id, const char *neighbor_ip, uint32_t remote_as)
 {
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     if (!ctx || !neighbor_ip)
     {
         return -1;
@@ -640,8 +675,9 @@ int bgp_db_set_session(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *neig
     return 0;
 }
 
-int bgp_db_del_session(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *neighbor_ip)
+int bgp_db_del_session(uint32_t vrf_id, const char *neighbor_ip)
 {
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     if (!ctx)
     {
         return -1;
@@ -691,9 +727,9 @@ int bgp_db_del_session(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *neig
 // BGP Neighbor 操作（地址族）
 // ============================================================================
 
-int bgp_db_set_neighbor(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *neighbor_ip, bgp_afi_t afi,
-                        bgp_safi_t safi)
+int bgp_db_set_neighbor(uint32_t vrf_id, const char *neighbor_ip, bgp_afi_t afi, bgp_safi_t safi)
 {
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     if (!ctx || !neighbor_ip)
     {
         return -1;
@@ -747,9 +783,9 @@ int bgp_db_set_neighbor(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *nei
     return 0;
 }
 
-int bgp_db_del_neighbor(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *neighbor_ip, bgp_afi_t afi,
-                        bgp_safi_t safi)
+int bgp_db_del_neighbor(uint32_t vrf_id, const char *neighbor_ip, bgp_afi_t afi, bgp_safi_t safi)
 {
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     if (!ctx || !neighbor_ip)
     {
         return -1;
@@ -784,8 +820,9 @@ int bgp_db_del_neighbor(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *nei
 // BGP VRF 操作（router-id）
 // ============================================================================
 
-int bgp_db_set_vrf_router_id(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *router_id)
+int bgp_db_set_vrf_router_id(uint32_t vrf_id, const char *router_id)
 {
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     if (!ctx || !router_id)
     {
         return -1;
@@ -816,8 +853,9 @@ int bgp_db_set_vrf_router_id(dev_ipc_context_t *ctx, uint32_t vrf_id, const char
     return 0;
 }
 
-int bgp_db_del_vrf_router_id(dev_ipc_context_t *ctx, uint32_t vrf_id)
+int bgp_db_del_vrf_router_id(uint32_t vrf_id)
 {
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     if (!ctx)
     {
         return -1;
@@ -847,8 +885,9 @@ int bgp_db_del_vrf_router_id(dev_ipc_context_t *ctx, uint32_t vrf_id)
 // BGP VRF 操作（定时器）
 // ============================================================================
 
-int bgp_db_set_vrf_timers(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t keepalive, uint16_t hold_time)
+int bgp_db_set_vrf_timers(uint32_t vrf_id, uint16_t keepalive, uint16_t hold_time)
 {
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     if (!ctx)
     {
         return -1;
@@ -880,18 +919,19 @@ int bgp_db_set_vrf_timers(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t keep
     return 0;
 }
 
-int bgp_db_del_vrf_timers(dev_ipc_context_t *ctx, uint32_t vrf_id)
+int bgp_db_del_vrf_timers(uint32_t vrf_id)
 {
     /* 重置为默认值 */
-    return bgp_db_set_vrf_timers(ctx, vrf_id, BGP_TIMER_DEFAULT_KEEPALIVE, BGP_TIMER_DEFAULT_HOLD);
+    return bgp_db_set_vrf_timers(vrf_id, BGP_TIMER_DEFAULT_KEEPALIVE, BGP_TIMER_DEFAULT_HOLD);
 }
 
 // ============================================================================
 // BGP VRF 操作（connect-retry 定时器）
 // ============================================================================
 
-int bgp_db_set_vrf_connect_retry(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t connect_retry)
+int bgp_db_set_vrf_connect_retry(uint32_t vrf_id, uint16_t connect_retry)
 {
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     if (!ctx)
     {
         return -1;
@@ -922,18 +962,19 @@ int bgp_db_set_vrf_connect_retry(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16
     return 0;
 }
 
-int bgp_db_del_vrf_connect_retry(dev_ipc_context_t *ctx, uint32_t vrf_id)
+int bgp_db_del_vrf_connect_retry(uint32_t vrf_id)
 {
     /* 重置为默认值 */
-    return bgp_db_set_vrf_connect_retry(ctx, vrf_id, BGP_TIMER_DEFAULT_CONNECT_RETRY);
+    return bgp_db_set_vrf_connect_retry(vrf_id, BGP_TIMER_DEFAULT_CONNECT_RETRY);
 }
 
 // ============================================================================
 // BGP 地址族实例操作（bgp_instance 表）
 // ============================================================================
 
-int bgp_db_set_instance(dev_ipc_context_t *ctx, uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi)
+int bgp_db_set_instance(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi)
 {
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     if (!ctx)
     {
         return -1;
@@ -980,8 +1021,9 @@ int bgp_db_set_instance(dev_ipc_context_t *ctx, uint32_t vrf_id, bgp_afi_t afi, 
     return 0;
 }
 
-int bgp_db_del_instance(dev_ipc_context_t *ctx, uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi)
+int bgp_db_del_instance(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi)
 {
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     if (!ctx)
     {
         return -1;
@@ -1010,9 +1052,9 @@ int bgp_db_del_instance(dev_ipc_context_t *ctx, uint32_t vrf_id, bgp_afi_t afi, 
     return rows;
 }
 
-int bgp_db_set_import_protos(dev_ipc_context_t *ctx, uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi,
-                             uint32_t import_protos)
+int bgp_db_set_import_protos(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi, uint32_t import_protos)
 {
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     if (!ctx)
     {
         return -1;
@@ -1048,8 +1090,9 @@ int bgp_db_set_import_protos(dev_ipc_context_t *ctx, uint32_t vrf_id, bgp_afi_t 
     return 0;
 }
 
-int bgp_db_set_session_caps(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *neighbor_ip, uint32_t open_caps)
+int bgp_db_set_session_caps(uint32_t vrf_id, const char *neighbor_ip, uint32_t open_caps)
 {
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     if (!ctx || !neighbor_ip)
     {
         return -1;
@@ -1081,8 +1124,9 @@ int bgp_db_set_session_caps(dev_ipc_context_t *ctx, uint32_t vrf_id, const char 
     return 0;
 }
 
-int bgp_db_set_session_source_if(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *neighbor_ip, const char *if_name)
+int bgp_db_set_session_source_if(uint32_t vrf_id, const char *neighbor_ip, const char *if_name)
 {
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     if (!ctx || !neighbor_ip || !if_name)
     {
         return -1;
@@ -1113,8 +1157,9 @@ int bgp_db_set_session_source_if(dev_ipc_context_t *ctx, uint32_t vrf_id, const 
     return 0;
 }
 
-int bgp_db_del_session_source_if(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *neighbor_ip)
+int bgp_db_del_session_source_if(uint32_t vrf_id, const char *neighbor_ip)
 {
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     if (!ctx || !neighbor_ip)
     {
         return -1;
@@ -1144,8 +1189,9 @@ int bgp_db_del_session_source_if(dev_ipc_context_t *ctx, uint32_t vrf_id, const 
     return 0;
 }
 
-int bgp_db_set_session_ebgp_multihop(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *neighbor_ip, uint8_t ttl)
+int bgp_db_set_session_ebgp_multihop(uint32_t vrf_id, const char *neighbor_ip, uint8_t ttl)
 {
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     if (!ctx || !neighbor_ip || ttl == 0)
     {
         return -1;
@@ -1175,8 +1221,9 @@ int bgp_db_set_session_ebgp_multihop(dev_ipc_context_t *ctx, uint32_t vrf_id, co
     return 0;
 }
 
-int bgp_db_del_session_ebgp_multihop(dev_ipc_context_t *ctx, uint32_t vrf_id, const char *neighbor_ip)
+int bgp_db_del_session_ebgp_multihop(uint32_t vrf_id, const char *neighbor_ip)
 {
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     if (!ctx || !neighbor_ip)
     {
         return -1;
@@ -1206,8 +1253,9 @@ int bgp_db_del_session_ebgp_multihop(dev_ipc_context_t *ctx, uint32_t vrf_id, co
     return 0;
 }
 
-int bgp_db_del_neighbors_by_afi(dev_ipc_context_t *ctx, uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi)
+int bgp_db_del_neighbors_by_afi(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi)
 {
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     if (!ctx)
     {
         return -1;

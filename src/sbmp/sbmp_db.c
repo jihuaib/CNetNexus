@@ -32,8 +32,9 @@ static const db_table_def_t SBMP_SERVER_TABLE = {
 // 公共 API
 // ============================================================================
 
-int sbmp_db_init(dev_ipc_context_t *ctx)
+int sbmp_db_init(void)
 {
+    dev_ipc_context_t *ctx = sbmp_local_ipc_ctx();
     if (db_rpc_create_table_from_def(ctx, &SBMP_SERVER_TABLE) != ERRCODE_SUCCESS)
     {
         LOG_ERROR("SBMP: Failed to create table %s", SBMP_TABLE_SERVER);
@@ -42,8 +43,9 @@ int sbmp_db_init(dev_ipc_context_t *ctx)
     return 0;
 }
 
-int sbmp_db_restore(dev_ipc_context_t *ctx)
+int sbmp_db_restore(void)
 {
+    dev_ipc_context_t *ctx = sbmp_local_ipc_ctx();
     db_result_t *result = NULL;
     if (db_rpc_query(ctx, SBMP_TABLE_SERVER, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
     {
@@ -70,8 +72,9 @@ int sbmp_db_restore(dev_ipc_context_t *ctx)
     return ERRCODE_SUCCESS;
 }
 
-int sbmp_db_set_server_port(dev_ipc_context_t *ctx, uint16_t port)
+int sbmp_db_set_server_port(uint16_t port)
 {
+    dev_ipc_context_t *ctx = sbmp_local_ipc_ctx();
     db_record_t *rec = db_record_new();
     db_record_set_int(rec, "server_port", port);
 
@@ -90,7 +93,8 @@ int sbmp_db_set_server_port(dev_ipc_context_t *ctx, uint16_t port)
     return 0;
 }
 
-int sbmp_db_del_server_port(dev_ipc_context_t *ctx)
+int sbmp_db_del_server_port(void)
 {
+    dev_ipc_context_t *ctx = sbmp_local_ipc_ctx();
     return db_rpc_delete(ctx, SBMP_TABLE_SERVER, NULL);
 }

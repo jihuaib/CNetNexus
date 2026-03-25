@@ -42,6 +42,14 @@ typedef struct bgp_local
 extern bgp_local_t *g_bgp_local;
 
 /**
+ * @brief 获取 BGP 模块本地 IPC 上下文（架构保证非空）
+ */
+static inline dev_ipc_context_t *bgp_local_ipc_ctx(void)
+{
+    return g_bgp_local->dev_ipc_ctx;
+}
+
+/**
  * @brief IPC 消息处理回调（供 API 层引用）
  */
 void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);

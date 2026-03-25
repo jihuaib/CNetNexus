@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "if_event.h"
+#include "if_main.h"
 #include "log.h"
 
 static int subscriber_matches(const if_subscriber_t *sub, uint32_t if_type, uint32_t event)
@@ -31,13 +32,13 @@ static int subscriber_matches(const if_subscriber_t *sub, uint32_t if_type, uint
     return 1;
 }
 
-void if_pub_notify(dev_ipc_context_t *ctx, GList *subscribers, const if_map_entry_t *entry, uint32_t if_type,
-                   uint32_t event, uint8_t admin_up)
+void if_pub_notify(GList *subscribers, const if_map_entry_t *entry, uint32_t if_type, uint32_t event, uint8_t admin_up)
 {
-    if (!ctx || !entry || if_type == 0 || event == 0)
+    if (!entry || if_type == 0 || event == 0)
     {
         return;
     }
+    dev_ipc_context_t *ctx = if_local_ipc_ctx();
 
     if_event_msg_t base;
     memset(&base, 0, sizeof(base));

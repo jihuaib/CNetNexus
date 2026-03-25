@@ -12,6 +12,7 @@
 #include "errcode.h"
 #include "log.h"
 #include "route.h"
+#include "route_main.h"
 
 // ============================================================================
 // 内部辅助
@@ -63,13 +64,14 @@ static int subscriber_matches(const route_subscriber_t *sub, const route_head_t 
 // 公共 API
 // ============================================================================
 
-void route_pub_notify_module(dev_ipc_context_t *ctx, uint32_t dst_module_id, const route_head_t *head,
-                             const route_path_t *path, int is_withdraw)
+void route_pub_notify_module(uint32_t dst_module_id, const route_head_t *head, const route_path_t *path,
+                             int is_withdraw)
 {
-    if (!ctx || !head || !path || dst_module_id == 0)
+    if (!head || !path || dst_module_id == 0)
     {
         return;
     }
+    dev_ipc_context_t *ctx = route_local_ipc_ctx();
 
     route_msg_entry_t *payload = (route_msg_entry_t *)g_malloc(sizeof(route_msg_entry_t));
     if (!payload)
@@ -93,10 +95,9 @@ void route_pub_notify_module(dev_ipc_context_t *ctx, uint32_t dst_module_id, con
     dev_ipc_message_free(msg);
 }
 
-void route_pub_notify(dev_ipc_context_t *ctx, GList *subscribers, const route_head_t *head, const route_path_t *path,
-                      int is_withdraw)
+void route_pub_notify(GList *subscribers, const route_head_t *head, const route_path_t *path, int is_withdraw)
 {
-    if (!ctx || !head || !path)
+    if (!head || !path)
     {
         return;
     }
@@ -109,7 +110,7 @@ void route_pub_notify(dev_ipc_context_t *ctx, GList *subscribers, const route_he
             continue;
         }
 
-        route_pub_notify_module(ctx, sub->module_id, head, path, is_withdraw);
+        route_pub_notify_module(sub->module_id, head, path, is_withdraw);
     }
 }
 
@@ -151,13 +152,13 @@ static void collect_path(const route_head_t *head, const route_path_t *path, voi
     ctx->count++;
 }
 
-void route_pub_dump(dev_ipc_context_t *ctx, route_rib_t *rib, uint32_t dst_module_id, uint32_t protocol,
-                    uint32_t vrf_id, uint32_t request_id)
+void route_pub_dump(route_rib_t *rib, uint32_t dst_module_id, uint32_t protocol, uint32_t vrf_id, uint32_t request_id)
 {
-    if (!ctx || !rib)
+    if (!rib)
     {
         return;
     }
+    dev_ipc_context_t *ctx = route_local_ipc_ctx();
 
     /* 收集所有匹配路径 */
     dump_ctx_t dctx = {NULL, 0, 0};
@@ -196,4 +197,50 @@ void route_pub_dump(dev_ipc_context_t *ctx, route_rib_t *rib, uint32_t dst_modul
     dev_ipc_message_free(msg);
 
     LOG_INFO("Full route report: %u routes -> module 0x%08X", dctx.count, dst_module_id);
+}
+
+void route_pub_notify_entry(GList *subscribers, const route_msg_entry_t *entry)
+{
+    if (!entry)
+    {
+        return;
+    }
+    dev_ipc_context_t *ctx = route_local_ipc_ctx();
+
+    for (GList *l = subscribers; l; l = l->next)
+    {
+        const route_subscriber_t *sub = (const route_subscriber_t *)l->data;
+
+        /* 协议过滤 */
+        if (sub->protocol != ROUTE_PROTOCOL_MAX && sub->protocol != entry->protocol)
+        {
+            continue;
+        }
+        /* VRF 过滤 */
+        if (sub->vrf_id != ROUTE_VRF_ALL && sub->vrf_id != entry->vrf_id)
+        {
+            continue;
+        }
+
+        route_msg_entry_t *payload = (route_msg_entry_t *)g_malloc(sizeof(route_msg_entry_t));
+        if (!payload)
+        {
+            continue;
+        }
+        *payload = *entry;
+
+        dev_ipc_message_t *msg = dev_ipc_message_create(ROUTE_MSG_TYPE_UPDATE, DEV_MODULE_ID_ROUTE, sub->module_id, 0,
+                                                        payload, sizeof(route_msg_entry_t), g_free);
+        if (!msg)
+        {
+            g_free(payload);
+            continue;
+        }
+
+        if (dev_ipc_send(ctx, sub->module_id, msg) != 0)
+        {
+            LOG_WARN("Failed to send route update to module 0x%08X", sub->module_id);
+        }
+        dev_ipc_message_free(msg);
+    }
 }

@@ -36,8 +36,9 @@ static void send_phase_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, 
     (void)result;
 }
 
-static void bgp_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static void bgp_on_start(dev_ipc_message_t *msg)
 {
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     LOG_INFO("Phase 1: MODULE_START - Establishing IPC connections");
     dev_ipc_connect(ctx, DEV_MODULE_ID_CLI, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CLI);
     dev_ipc_connect(ctx, DEV_MODULE_ID_DB, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_DB);
@@ -46,17 +47,19 @@ static void bgp_on_start(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
-static void bgp_on_connect(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static void bgp_on_connect(dev_ipc_message_t *msg)
 {
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     LOG_INFO("Phase 2: MODULE_CONNECT (reserved)");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
-static void bgp_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static void bgp_on_ready(dev_ipc_message_t *msg)
 {
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     LOG_INFO("Phase 3: MODULE_READY - Initializing database tables and restoring BGP state");
 
-    if (bgp_db_init(ctx) != 0)
+    if (bgp_db_init() != 0)
     {
         LOG_ERROR("BGP: Database table initialization failed");
         send_phase_response(ctx, msg, ERRCODE_FAIL);
@@ -78,7 +81,7 @@ static void bgp_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     }
 
     /* 仅恢复：表不存在（BGP 未曾配置）时静默返回 NULL，不建表也不写默认值 */
-    uint32_t ret = bgp_db_restore(ctx);
+    uint32_t ret = bgp_db_restore();
     if (ret != ERRCODE_SUCCESS)
     {
         LOG_ERROR("BGP: Failed to restore state from database");
@@ -91,8 +94,9 @@ static void bgp_on_ready(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
-static void bgp_on_shutdown(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static void bgp_on_shutdown(dev_ipc_message_t *msg)
 {
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     LOG_INFO("BGP module cleanup");
 
     if (g_bgp_local)
@@ -110,6 +114,7 @@ static void bgp_on_shutdown(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
 void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
+    (void)ctx;
     if (!msg)
     {
         return;
@@ -118,19 +123,19 @@ void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     switch (msg->msg_type)
     {
         case DEV_IPC_MSG_TYPE_DEV_MODULE_START:
-            bgp_on_start(ctx, msg);
+            bgp_on_start(msg);
             return;
 
         case DEV_IPC_MSG_TYPE_DEV_MODULE_CONNECT:
-            bgp_on_connect(ctx, msg);
+            bgp_on_connect(msg);
             return;
 
         case DEV_IPC_MSG_TYPE_DEV_MODULE_READY:
-            bgp_on_ready(ctx, msg);
+            bgp_on_ready(msg);
             return;
 
         case DEV_IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN:
-            bgp_on_shutdown(ctx, msg);
+            bgp_on_shutdown(msg);
             return;
         case CLI_MSG_TYPE:
         {

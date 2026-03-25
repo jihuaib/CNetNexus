@@ -37,14 +37,14 @@ static void send_resp(dev_ipc_message_t *msg, const char *text)
                                                      msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
     if (resp)
     {
-        dev_ipc_send_response(g_if_local->dev_ipc_ctx, resp);
+        dev_ipc_send_response(if_local_ipc_ctx(), resp);
         dev_ipc_message_free(resp);
     }
 }
 
 int if_cli_send_chunked_response(dev_ipc_message_t *msg, GString *full_text)
 {
-    return cli_chunk_stream_start(&g_if_local->show_stream, g_if_local->dev_ipc_ctx, DEV_MODULE_ID_IF, msg, full_text);
+    return cli_chunk_stream_start(&g_if_local->show_stream, if_local_ipc_ctx(), DEV_MODULE_ID_IF, msg, full_text);
 }
 
 // ============================================================================
@@ -197,7 +197,7 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         db_record_t *rec = db_record_new();
         db_record_set_text(rec, "ip_address", ip_str);
         db_record_set_int(rec, "prefix_len", is_no ? 0 : (int64_t)prefix.prefix_len);
-        db_rpc_update_record(g_if_local->dev_ipc_ctx, "if_interface", rec, &filter);
+        db_rpc_update_record(if_local_ipc_ctx(), "if_interface", rec, &filter);
         db_record_free(rec);
         db_value_free(&cond.value);
 
@@ -221,7 +221,7 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         db_filter_t filter = {.conditions = &cond, .num_conditions = 1};
         db_record_t *rec = db_record_new();
         db_record_set_int(rec, "shutdown", is_no ? 0 : 1);
-        db_rpc_update_record(g_if_local->dev_ipc_ctx, "if_interface", rec, &filter);
+        db_rpc_update_record(if_local_ipc_ctx(), "if_interface", rec, &filter);
         db_record_free(rec);
         db_value_free(&cond.value);
 
@@ -447,7 +447,7 @@ static int handle_if_loop_entry(dev_ipc_message_t *msg, cli_tlv_parser_t *parser
 
 int if_cli_handle_continue(dev_ipc_message_t *msg)
 {
-    return cli_chunk_stream_continue(&g_if_local->show_stream, g_if_local->dev_ipc_ctx, DEV_MODULE_ID_IF, msg);
+    return cli_chunk_stream_continue(&g_if_local->show_stream, if_local_ipc_ctx(), DEV_MODULE_ID_IF, msg);
 }
 
 void if_cli_cleanup_state(void)
@@ -462,7 +462,7 @@ static gint compare_if_entry_name(gconstpointer a, gconstpointer b)
     return g_ascii_strcasecmp(ea->logical_name, eb->logical_name);
 }
 
-void if_cli_handle_query_candidates(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+void if_cli_handle_query_candidates(dev_ipc_message_t *msg)
 {
     uint32_t query_id = 0;
     if (msg->payload && msg->payload_len >= sizeof(uint32_t))
@@ -500,7 +500,7 @@ void if_cli_handle_query_candidates(dev_ipc_context_t *ctx, dev_ipc_message_t *m
                                                      msg->src_module_id, msg->request_id, payload, payload_len, g_free);
     if (resp)
     {
-        dev_ipc_send_response(ctx, resp);
+        dev_ipc_send_response(if_local_ipc_ctx(), resp);
         dev_ipc_message_free(resp);
     }
     else

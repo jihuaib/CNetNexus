@@ -24,6 +24,14 @@ typedef struct
 extern if_local_t *g_if_local;
 
 /**
+ * @brief 获取 IF 模块本地 IPC 上下文（架构保证非空）
+ */
+static inline dev_ipc_context_t *if_local_ipc_ctx(void)
+{
+    return g_if_local->dev_ipc_ctx;
+}
+
+/**
  * @brief IPC 消息处理回调（供 API 层引用）
  */
 void if_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);

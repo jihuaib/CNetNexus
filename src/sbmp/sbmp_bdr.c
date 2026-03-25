@@ -22,7 +22,7 @@
 
 void sbmp_bdr_show_config(dev_ipc_message_t *msg)
 {
-    dev_ipc_context_t *ctx = g_sbmp_local->dev_ipc_ctx;
+    dev_ipc_context_t *ctx = sbmp_local_ipc_ctx();
     GString *out = g_string_new("");
     if (!out)
     {

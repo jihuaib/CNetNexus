@@ -26,9 +26,9 @@
 /**
  * @brief 发送 DB RPC 响应
  */
-static void send_db_response(dev_ipc_context_t *ctx, dev_ipc_message_t *req_msg, int32_t retval,
-                             const db_result_t *result)
+static void send_db_response(dev_ipc_message_t *req_msg, int32_t retval, const db_result_t *result)
 {
+    dev_ipc_context_t *ctx = db_local_ipc_ctx();
     void *resp_data = NULL;
     uint32_t resp_len = 0;
 
@@ -52,7 +52,7 @@ static void send_db_response(dev_ipc_context_t *ctx, dev_ipc_message_t *req_msg,
  *
  * payload: db_name + sql 字符串，服务端直接执行，返回影响行数。
  */
-static void handle_db_exec_sql(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static void handle_db_exec_sql(dev_ipc_message_t *msg)
 {
     char *db_name = NULL;
     char *sql = NULL;
@@ -60,12 +60,12 @@ static void handle_db_exec_sql(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     if (db_deserialize_request_sql(msg->payload, msg->payload_len, &db_name, &sql) < 0)
     {
         LOG_ERROR("Failed to deserialize EXEC_SQL request");
-        send_db_response(ctx, msg, ERRCODE_FAIL, NULL);
+        send_db_response(msg, ERRCODE_FAIL, NULL);
         return;
     }
 
     int rows = db_exec_sql(db_name, sql);
-    send_db_response(ctx, msg, rows, NULL);
+    send_db_response(msg, rows, NULL);
 
     g_free(db_name);
     g_free(sql);
@@ -76,7 +76,7 @@ static void handle_db_exec_sql(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
  *
  * payload: db_name + sql 字符串，服务端直接执行并返回结果集。
  */
-static void handle_db_query_sql(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+static void handle_db_query_sql(dev_ipc_message_t *msg)
 {
     char *db_name = NULL;
     char *sql = NULL;
@@ -84,13 +84,13 @@ static void handle_db_query_sql(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     if (db_deserialize_request_sql(msg->payload, msg->payload_len, &db_name, &sql) < 0)
     {
         LOG_ERROR("Failed to deserialize QUERY_SQL request");
-        send_db_response(ctx, msg, ERRCODE_FAIL, NULL);
+        send_db_response(msg, ERRCODE_FAIL, NULL);
         return;
     }
 
     db_result_t *result = NULL;
     int ret = db_query_sql(db_name, sql, &result);
-    send_db_response(ctx, msg, ret, result);
+    send_db_response(msg, ret, result);
 
     if (result)
     {
@@ -100,9 +100,9 @@ static void handle_db_query_sql(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     g_free(sql);
 }
 
-void db_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+void db_ipc_msg_handler(dev_ipc_message_t *msg)
 {
-    if (!ctx || !msg)
+    if (!msg)
     {
         return;
     }
@@ -110,10 +110,10 @@ void db_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     switch (msg->msg_type)
     {
         case DEV_IPC_MSG_TYPE_DB_EXEC_SQL:
-            handle_db_exec_sql(ctx, msg);
+            handle_db_exec_sql(msg);
             break;
         case DEV_IPC_MSG_TYPE_DB_QUERY_SQL:
-            handle_db_query_sql(ctx, msg);
+            handle_db_query_sql(msg);
             break;
         default:
             LOG_WARN("Unknown IPC message type: 0x%08X", msg->msg_type);

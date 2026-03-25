@@ -6,6 +6,7 @@ set(ROUTE_SOURCES
     route_pub.c
     route_static.c
     route_os.c
+    route_calc.c
 )
 
 add_executable(netnexus-route route_proc.c ${ROUTE_SOURCES})

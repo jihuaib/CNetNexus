@@ -35,10 +35,10 @@ typedef struct dev_cli_resp_out
     uint32_t batch_offset; /**< 续传偏移量 */
 } dev_cli_resp_out_t;
 
-int dev_cli_handle_message(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
-int dev_cli_handle_continue(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
-int dev_cli_handle_show_config(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
+int dev_cli_handle_message(dev_ipc_message_t *msg);
+int dev_cli_handle_continue(dev_ipc_message_t *msg);
+int dev_cli_handle_show_config(dev_ipc_message_t *msg);
 void dev_cli_cleanup_state(void);
-void dev_cli_handle_query_candidates(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
+void dev_cli_handle_query_candidates(dev_ipc_message_t *msg);
 
 #endif // DEV_CLI_H

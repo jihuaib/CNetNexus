@@ -30,15 +30,14 @@ static void sbmp_send_cli_response(dev_ipc_message_t *msg, const char *text)
                                                      msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
     if (resp)
     {
-        dev_ipc_send_response(g_sbmp_local->dev_ipc_ctx, resp);
+        dev_ipc_send_response(sbmp_local_ipc_ctx(), resp);
         dev_ipc_message_free(resp);
     }
 }
 
 int sbmp_cli_send_chunked_response(dev_ipc_message_t *msg, GString *full_text)
 {
-    return cli_chunk_stream_start(&g_sbmp_local->show_stream, g_sbmp_local->dev_ipc_ctx, DEV_MODULE_ID_SBMP, msg,
-                                  full_text);
+    return cli_chunk_stream_start(&g_sbmp_local->show_stream, sbmp_local_ipc_ctx(), DEV_MODULE_ID_SBMP, msg, full_text);
 }
 
 // ============================================================================
@@ -182,7 +181,7 @@ static int handle_bmp_server(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     }
 
     sbmp_listen_stop();
-    sbmp_db_del_server_port(g_sbmp_local->dev_ipc_ctx);
+    sbmp_db_del_server_port();
     g_sbmp_local->server_port = 0;
 
     sbmp_send_cli_response(msg, "");
@@ -222,7 +221,7 @@ static int handle_server_port(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             return ERRCODE_SUCCESS;
         }
         sbmp_listen_stop();
-        sbmp_db_del_server_port(g_sbmp_local->dev_ipc_ctx);
+        sbmp_db_del_server_port();
         g_sbmp_local->server_port = 0;
         sbmp_send_cli_response(msg, "");
         return ERRCODE_SUCCESS;
@@ -252,7 +251,7 @@ static int handle_server_port(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         return ERRCODE_FAIL;
     }
 
-    if (sbmp_db_set_server_port(g_sbmp_local->dev_ipc_ctx, (uint16_t)port) != 0)
+    if (sbmp_db_set_server_port((uint16_t)port) != 0)
     {
         sbmp_send_cli_response(msg, "SBMP Error: Database write failed.\r\n");
         return ERRCODE_FAIL;
@@ -886,7 +885,7 @@ int sbmp_cli_handle_message(dev_ipc_message_t *msg)
 
 int sbmp_cli_handle_continue(dev_ipc_message_t *msg)
 {
-    return cli_chunk_stream_continue(&g_sbmp_local->show_stream, g_sbmp_local->dev_ipc_ctx, DEV_MODULE_ID_SBMP, msg);
+    return cli_chunk_stream_continue(&g_sbmp_local->show_stream, sbmp_local_ipc_ctx(), DEV_MODULE_ID_SBMP, msg);
 }
 
 void sbmp_cli_cleanup_state(void)

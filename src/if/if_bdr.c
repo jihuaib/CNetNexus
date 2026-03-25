@@ -69,7 +69,7 @@ static void bdr_append_interface(GString *out, const char *name, const char *ip_
 
 void if_bdr_show_config(dev_ipc_message_t *msg)
 {
-    dev_ipc_context_t *ctx = g_if_local->dev_ipc_ctx;
+    dev_ipc_context_t *ctx = if_local_ipc_ctx();
     GString *out = g_string_new("");
     if (!out)
     {
