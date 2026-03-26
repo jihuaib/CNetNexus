@@ -45,6 +45,26 @@ static void nl_add_attr(struct nlmsghdr *nlh, size_t maxlen, int type, const voi
     nlh->nlmsg_len = (unsigned int)(NLMSG_ALIGN(nlh->nlmsg_len) + (size_t)RTA_ALIGN(len));
 }
 
+static int net_addr_is_zero(const net_addr_t *addr)
+{
+    if (!addr)
+    {
+        return 1;
+    }
+
+    if (addr->family == AF_INET)
+    {
+        uint32_t zero = 0;
+        return memcmp(&addr->u.v4.s_addr, &zero, sizeof(zero)) == 0;
+    }
+    if (addr->family == AF_INET6)
+    {
+        uint8_t zero6[16] = {0};
+        return memcmp(addr->u.v6.s6_addr, zero6, sizeof(zero6)) == 0;
+    }
+    return 1;
+}
+
 /* ============================================================================
  * 内部辅助：Netlink 报文发送与 ACK 接收
  * ============================================================================ */
@@ -104,6 +124,11 @@ static int route_os_send(int cmd, const route_msg_entry_t *entry)
     {
         return -1;
     }
+
+    int is_non_connected = (entry->protocol != ROUTE_PROTOCOL_CONNECTED && entry->protocol != ROUTE_PROTOCOL_BLACKHOLE);
+    int omit_nh_attrs = (cmd == RTM_DELROUTE && is_non_connected);
+    net_addr_t effective_gateway = entry->nexthop_addr;
+    uint32_t effective_oif = entry->out_ifindex;
 
     char buf[ROUTE_OS_NL_BUFSIZE];
     memset(buf, 0, sizeof(buf));
@@ -174,9 +199,9 @@ static int route_os_send(int cmd, const route_msg_entry_t *entry)
     }
 
     /* RTA_OIF：出接口（直连路由） */
-    if (entry->out_ifindex != 0 && entry->protocol != ROUTE_PROTOCOL_BLACKHOLE)
+    if (!omit_nh_attrs && effective_oif != 0 && entry->protocol != ROUTE_PROTOCOL_BLACKHOLE)
     {
-        nl_add_attr(nlh, sizeof(buf), RTA_OIF, &entry->out_ifindex, (int)sizeof(uint32_t));
+        nl_add_attr(nlh, sizeof(buf), RTA_OIF, &effective_oif, (int)sizeof(uint32_t));
     }
 
     /*
@@ -204,23 +229,19 @@ static int route_os_send(int cmd, const route_msg_entry_t *entry)
     }
 
     /* RTA_GATEWAY：网关（非直连、非黑洞路由且 nexthop 非零） */
-    if (entry->protocol != ROUTE_PROTOCOL_CONNECTED && entry->protocol != ROUTE_PROTOCOL_BLACKHOLE)
+    if (!omit_nh_attrs && is_non_connected && !net_addr_is_zero(&effective_gateway))
     {
-        if (entry->nexthop_addr.family == AF_INET)
+        if (effective_gateway.family == AF_INET)
         {
-            uint32_t zero = 0;
-            if (memcmp(&entry->nexthop_addr.u.v4.s_addr, &zero, 4) != 0)
-            {
-                nl_add_attr(nlh, sizeof(buf), RTA_GATEWAY, &entry->nexthop_addr.u.v4.s_addr, 4);
-            }
+            nl_add_attr(nlh, sizeof(buf), RTA_GATEWAY, &effective_gateway.u.v4.s_addr, 4);
         }
-        else if (entry->nexthop_addr.family == AF_INET6)
+        else if (effective_gateway.family == AF_INET6)
         {
-            uint8_t zero[16] = {0};
-            if (memcmp(entry->nexthop_addr.u.v6.s6_addr, zero, 16) != 0)
-            {
-                nl_add_attr(nlh, sizeof(buf), RTA_GATEWAY, entry->nexthop_addr.u.v6.s6_addr, 16);
-            }
+            nl_add_attr(nlh, sizeof(buf), RTA_GATEWAY, effective_gateway.u.v6.s6_addr, 16);
+        }
+        else
+        {
+            return -1;
         }
     }
 
@@ -290,9 +311,8 @@ static int route_os_send_local(int cmd, const route_msg_entry_t *entry)
  * ============================================================================ */
 
 /*
- * 为直连路由在 RT_TABLE_LOCAL 安装/撤销 RTN_LOCAL 条目：
- *   - loop /32 (或 IPv6 /128)：prefix_addr 即接口 IP，直接使用 entry 本身
- *   - ETH /24 等：prefix_addr 是网段，接口 IP 在 source_addr，需构造 /32 local_entry
+ * 仅为主机前缀 connected 路由（/32 或 /128）在 RT_TABLE_LOCAL 安装/撤销 RTN_LOCAL。
+ * 非主机前缀的 local 路由由 IF 模块显式下发对应 host 路由，不在此处隐式派生。
  */
 static void sync_local_route(int cmd, const route_msg_entry_t *entry)
 {
@@ -305,16 +325,7 @@ static void sync_local_route(int cmd, const route_msg_entry_t *entry)
 
     if (entry->prefix_len == host_len)
     {
-        /* loop 接口：entry 自身就是主机路由 */
         (void)route_os_send_local(cmd, entry);
-    }
-    else if (entry->source_addr.family != 0)
-    {
-        /* ETH 接口：用 source_addr（接口 IP）构造 /32 主机路由写入 LOCAL 表 */
-        route_msg_entry_t local_entry = *entry;
-        local_entry.prefix_addr = entry->source_addr;
-        local_entry.prefix_len = host_len;
-        (void)route_os_send_local(cmd, &local_entry);
     }
 }
 
@@ -329,19 +340,7 @@ int route_os_install(const route_msg_entry_t *entry)
         return 0;
     }
 
-    /*
-     * 对普通 connected 路由，先写 LOCAL（接口 IP /32）再写 MAIN。
-     * 这样 MAIN 表中的 RTA_PREFSRC（source_addr）才能被内核接受。
-     */
-    if (entry->protocol == ROUTE_PROTOCOL_CONNECTED && entry->out_ifindex != 0)
-    {
-        sync_local_route(RTM_NEWROUTE, entry);
-        return route_os_send(RTM_NEWROUTE, entry);
-    }
-
-    int ret = route_os_send(RTM_NEWROUTE, entry);
-    sync_local_route(RTM_NEWROUTE, entry);
-    return ret;
+    return route_os_send(RTM_NEWROUTE, entry);
 }
 
 int route_os_withdraw(const route_msg_entry_t *entry)
@@ -355,9 +354,7 @@ int route_os_withdraw(const route_msg_entry_t *entry)
         return 0;
     }
 
-    int ret = route_os_send(RTM_DELROUTE, entry);
-    sync_local_route(RTM_DELROUTE, entry);
-    return ret;
+    return route_os_send(RTM_DELROUTE, entry);
 }
 
 /* ============================================================================

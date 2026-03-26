@@ -197,6 +197,7 @@ int route_rib_add(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, const net_add
     }
 
     path->nexthop = *nexthop;
+    path->os_nexthop = *nexthop;
     path->metric = metric;
     path->preference = preference;
     path->out_ifindex = out_ifindex;

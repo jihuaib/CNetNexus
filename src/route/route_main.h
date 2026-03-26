@@ -72,13 +72,14 @@ int route_module_init(void);
  * @param protocol    协议来源
  * @param source_addr 路径来源地址
  * @param nexthop_addr 下一跳地址
+ * @param os_nexthop_addr 下发 OS 的下一跳地址（NULL 时默认使用 nexthop_addr）
  * @param metric      度量
  * @param preference  管理距离/优先级
  * @return <0 失败；0 表示更新已有路径；>0 表示新增路径（通知失败不会回滚）
  */
 int route_add_and_notify(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr, uint8_t prefix_len,
                          uint32_t protocol, const net_addr_t *source_addr, const net_addr_t *nexthop_addr,
-                         int32_t metric, int32_t preference, uint32_t out_ifindex);
+                         const net_addr_t *os_nexthop_addr, int32_t metric, int32_t preference, uint32_t out_ifindex);
 
 /**
  * @brief 全量重算“已注册 nexthop watch”的可达性，并按状态变化回推

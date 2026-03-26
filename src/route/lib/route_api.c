@@ -10,7 +10,7 @@
 #include "errcode.h"
 #include "route.h"
 
-int route_rpc_inject(dev_ipc_context_t *ctx, const route_msg_entry_t *entry)
+int route_rpc_add(dev_ipc_context_t *ctx, const route_msg_entry_t *entry)
 {
     if (!ctx || !entry)
     {
@@ -34,34 +34,6 @@ int route_rpc_inject(dev_ipc_context_t *ctx, const route_msg_entry_t *entry)
     int ret = dev_ipc_send(ctx, DEV_MODULE_ID_ROUTE, msg);
     dev_ipc_message_free(msg);
     return (ret == 0) ? ERRCODE_SUCCESS : ERRCODE_FAIL;
-}
-
-int route_rpc_add(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr,
-                  uint8_t prefix_len, uint32_t protocol, const net_addr_t *source, const net_addr_t *nexthop,
-                  int32_t metric, int32_t preference, uint32_t out_ifindex)
-{
-    if (!prefix_addr || !source || !nexthop)
-    {
-        return ERRCODE_FAIL;
-    }
-
-    route_msg_entry_t entry;
-    memset(&entry, 0, sizeof(entry));
-    entry.vrf_id = vrf_id;
-    entry.afi = afi;
-    entry.safi = ROUTE_SAFI_UNICAST;
-    entry.prefix_len = prefix_len;
-    entry.protocol = protocol;
-    entry.metric = metric;
-    entry.preference = preference;
-    entry.is_withdraw = 0;
-    entry.flags = 0;
-    entry.out_ifindex = out_ifindex;
-    entry.prefix_addr = *prefix_addr;
-    entry.source_addr = *source;
-    entry.nexthop_addr = *nexthop;
-
-    return route_rpc_inject(ctx, &entry);
 }
 
 static int route_rpc_nh_iter_send(dev_ipc_context_t *ctx, uint32_t msg_type, const route_nh_iter_req_t *req)
@@ -107,31 +79,20 @@ int route_rpc_nh_register(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi,
     return route_rpc_nh_iter_send(ctx, ROUTE_MSG_TYPE_NH_REGISTER, &req);
 }
 
-int route_rpc_del(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr,
-                  uint8_t prefix_len, uint32_t protocol, const net_addr_t *source, uint32_t out_ifindex)
+int route_rpc_del(dev_ipc_context_t *ctx, const route_msg_entry_t *entry)
 {
-    if (!prefix_addr || !source)
+    if (!entry)
     {
         return ERRCODE_FAIL;
     }
 
-    route_msg_entry_t entry;
-    memset(&entry, 0, sizeof(entry));
-    entry.vrf_id = vrf_id;
-    entry.afi = afi;
-    entry.safi = ROUTE_SAFI_UNICAST;
-    entry.prefix_len = prefix_len;
-    entry.protocol = protocol;
-    entry.metric = 0;
-    entry.preference = 0;
-    entry.is_withdraw = 1;
-    entry.flags = 0;
-    entry.out_ifindex = out_ifindex;
-    entry.prefix_addr = *prefix_addr;
-    entry.source_addr = *source;
-    entry.nexthop_addr.family = source->family;
+    route_msg_entry_t withdraw_entry = *entry;
+    withdraw_entry.metric = 0;
+    withdraw_entry.preference = 0;
+    withdraw_entry.is_withdraw = 1;
+    withdraw_entry.nexthop_addr.family = withdraw_entry.source_addr.family;
 
-    return route_rpc_inject(ctx, &entry);
+    return route_rpc_add(ctx, &withdraw_entry);
 }
 
 int route_rpc_nh_unregister(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop)

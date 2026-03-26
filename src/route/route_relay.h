@@ -90,4 +90,20 @@ int route_relay_nh_is_resolved(uint32_t vrf_id, uint16_t afi, const net_addr_t *
  */
 uint32_t route_relay_nh_get_ifindex(uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop_addr);
 
+/**
+ * @brief 递归解析下一跳，返回可直接写入内核路由的网关地址与出接口
+ *
+ * 解析逻辑沿 RIB 的最优覆盖路径迭代，直到命中直连路径（CONNECTED）。
+ * 返回的 gateway_out 为“最终直连网段上的下一跳地址”，可用于 RTA_GATEWAY。
+ *
+ * @param vrf_id          VRF ID
+ * @param afi             地址族
+ * @param nexthop_addr    原始下一跳地址（二进制）
+ * @param gateway_out     解析后的可直连网关地址（输出，不能为空）
+ * @param out_ifindex_out 解析出的出接口索引（输出，可为 NULL）
+ * @return 1=解析成功，0=解析失败
+ */
+int route_relay_nh_resolve_gateway(uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop_addr,
+                                   net_addr_t *gateway_out, uint32_t *out_ifindex_out);
+
 #endif /* ROUTE_RELAY_H */

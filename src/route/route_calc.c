@@ -82,7 +82,7 @@ static void build_entry(route_msg_entry_t *e, const route_head_t *head, const ro
     e->metric = path->metric;
     e->preference = path->preference;
     e->out_ifindex = path->out_ifindex;
-    e->nexthop_addr = path->nexthop;
+    e->nexthop_addr = path->os_nexthop;
     e->source_addr = path->key.source;
     e->is_withdraw = 0;
     e->flags = 0;
@@ -167,14 +167,18 @@ static void update_prefix(const route_head_t *head, const route_path_key_t *skip
             LOG_INFO("[route_calc] %s/%u vrf=%u 无可用路径，撤销 OS 及通知: proto=%u", addr_str,
                      (unsigned)head->key.prefix_len, head->key.vrf_id, cur->path_key.protocol);
 
-            /* 先通知订阅者撤销，再撤销 OS */
+            if (route_os_withdraw(&cur->entry) != 0)
+            {
+                LOG_WARN("[route_calc] OS 撤销失败，保留当前最优状态: %s/%u vrf=%u proto=%u", addr_str,
+                         (unsigned)head->key.prefix_len, head->key.vrf_id, cur->path_key.protocol);
+                return;
+            }
             if (subscribers)
             {
                 route_msg_entry_t wd = cur->entry;
                 wd.is_withdraw = 1;
                 route_pub_notify_entry(subscribers, &wd);
             }
-            route_os_withdraw(&cur->entry);
             g_hash_table_remove(g_calc_table, &head->key);
         }
         return;
@@ -198,7 +202,12 @@ static void update_prefix(const route_head_t *head, const route_path_key_t *skip
         LOG_DEBUG("[route_calc] 最优路径属性更新: %s/%u vrf=%u proto=%u", addr_str, (unsigned)head->key.prefix_len,
                   head->key.vrf_id, new_best->key.protocol);
 
-        route_os_install(&new_entry);
+        if (route_os_install(&new_entry) != 0)
+        {
+            LOG_WARN("[route_calc] OS 更新失败，保持旧最优: %s/%u vrf=%u proto=%u", addr_str,
+                     (unsigned)head->key.prefix_len, head->key.vrf_id, new_best->key.protocol);
+            return;
+        }
         /* 属性更新：发送 add（upsert 语义，订阅者按 prefix+protocol+source 幂等处理） */
         if (subscribers)
         {
@@ -216,15 +225,6 @@ static void update_prefix(const route_head_t *head, const route_path_key_t *skip
         LOG_INFO("[route_calc] 最优路径切换: %s/%u vrf=%u proto=%u(pref=%d) -> proto=%u(pref=%d)", addr_str,
                  (unsigned)head->key.prefix_len, head->key.vrf_id, cur->path_key.protocol, cur->entry.preference,
                  new_best->key.protocol, new_best->preference);
-
-        /* 先通知订阅者撤销旧路由，再撤销 OS */
-        if (subscribers)
-        {
-            route_msg_entry_t wd = cur->entry;
-            wd.is_withdraw = 1;
-            route_pub_notify_entry(subscribers, &wd);
-        }
-        route_os_withdraw(&cur->entry);
     }
 
     route_msg_entry_t new_entry;
@@ -238,8 +238,22 @@ static void update_prefix(const route_head_t *head, const route_path_key_t *skip
                  new_best->metric);
     }
 
-    route_os_install(&new_entry);
-    /* 通知订阅者新最优路由上线 */
+    if (route_os_install(&new_entry) != 0)
+    {
+        char addr_str[64];
+        net_addr_to_str(&head->key.addr, addr_str, sizeof(addr_str));
+        LOG_WARN("[route_calc] OS 安装失败，保持当前最优不变: %s/%u vrf=%u proto=%u", addr_str,
+                 (unsigned)head->key.prefix_len, head->key.vrf_id, new_best->key.protocol);
+        return;
+    }
+
+    /* 安装成功后再发通知，避免通知与 OS 状态不一致 */
+    if (cur && subscribers)
+    {
+        route_msg_entry_t wd = cur->entry;
+        wd.is_withdraw = 1;
+        route_pub_notify_entry(subscribers, &wd);
+    }
     if (subscribers)
     {
         route_pub_notify_entry(subscribers, &new_entry);

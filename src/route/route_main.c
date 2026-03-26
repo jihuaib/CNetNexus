@@ -109,7 +109,7 @@ static void route_on_connect(dev_ipc_message_t *msg)
 
 int route_add_and_notify(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr, uint8_t prefix_len,
                          uint32_t protocol, const net_addr_t *source_addr, const net_addr_t *nexthop_addr,
-                         int32_t metric, int32_t preference, uint32_t out_ifindex)
+                         const net_addr_t *os_nexthop_addr, int32_t metric, int32_t preference, uint32_t out_ifindex)
 {
     if (!g_route_local || !g_route_local->rib || !prefix_addr || !source_addr || !nexthop_addr)
     {
@@ -142,13 +142,12 @@ int route_add_and_notify(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix
     mut->iter_dirty = 0u;
     mut->iter_owner_module_id = 0u;
     mut->nh_state = ROUTE_NH_STATE_UNKNOWN;
+    mut->os_nexthop = os_nexthop_addr ? *os_nexthop_addr : *nexthop_addr;
 
-    if (!g_route_local->subscribers)
-    {
-        return ret;
-    }
-
-    /* 触发优选计算：按管理距离选最优路径，同步 OS 并通知订阅者 */
+    /*
+     * 始终触发优选计算与 OS 同步。
+     * route_calc 内部会自行判断是否存在订阅者并决定是否发送通知。
+     */
     route_calc_on_path_add(head);
 
     return ret;
@@ -397,8 +396,8 @@ static void handle_inject(dev_ipc_message_t *msg)
     {
         /* 写入 RIB，route_add_and_notify 末尾触发 route_calc 优选并下发 OS */
         (void)route_add_and_notify(entry->vrf_id, entry->afi, &entry->prefix_addr, entry->prefix_len, entry->protocol,
-                                   &entry->source_addr, &entry->nexthop_addr, entry->metric, entry->preference,
-                                   entry->out_ifindex);
+                                   &entry->source_addr, &entry->nexthop_addr, &entry->nexthop_addr, entry->metric,
+                                   entry->preference, entry->out_ifindex);
         route_recompute_iter_paths();
     }
 

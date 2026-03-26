@@ -379,6 +379,57 @@ uint32_t route_relay_nh_get_ifindex(uint32_t vrf_id, uint16_t afi, const net_add
     return 0;
 }
 
+int route_relay_nh_resolve_gateway(uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop_addr,
+                                   net_addr_t *gateway_out, uint32_t *out_ifindex_out)
+{
+    if (!g_route_local || !g_route_local->rib || !nexthop_addr || !gateway_out)
+    {
+        return 0;
+    }
+
+    route_rib_t *rib = g_route_local->rib;
+    net_addr_t cursor = *nexthop_addr;
+    net_addr_t visited[ROUTE_ITER_NH_MAX_DEPTH];
+    uint32_t visited_count = 0;
+
+    for (uint32_t depth = 0; depth < ROUTE_ITER_NH_MAX_DEPTH; ++depth)
+    {
+        for (uint32_t i = 0; i < visited_count; ++i)
+        {
+            if (net_addr_equal(&visited[i], &cursor))
+            {
+                return 0;
+            }
+        }
+        visited[visited_count++] = cursor;
+
+        route_path_t *resolver = route_lookup_best_cover(rib, vrf_id, afi, &cursor);
+        if (!resolver)
+        {
+            return 0;
+        }
+
+        if (resolver->key.protocol == ROUTE_PROTOCOL_CONNECTED)
+        {
+            *gateway_out = cursor;
+            if (out_ifindex_out)
+            {
+                *out_ifindex_out = resolver->out_ifindex;
+            }
+            return (resolver->out_ifindex != 0) ? 1 : 0;
+        }
+
+        if (resolver->nexthop.family == 0 || resolver->nexthop.family != cursor.family)
+        {
+            return 0;
+        }
+
+        cursor = resolver->nexthop;
+    }
+
+    return 0;
+}
+
 static void route_relay_notify_state(const route_nh_watch_t *watch)
 {
     if (!watch)

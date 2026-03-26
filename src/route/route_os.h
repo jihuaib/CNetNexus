@@ -19,6 +19,9 @@
  *   - ROUTE_PROTOCOL_BLACKHOLE → RTN_BLACKHOLE
  *   - ROUTE_PROTOCOL_CONNECTED (out_ifindex != 0) → RTN_UNICAST + RTA_OIF
  *   - 其他（静态/BGP 等，nexthop 非零）→ RTN_UNICAST + RTA_GATEWAY
+ * 备注：
+ *   - CONNECTED 的主机前缀（IPv4 /32、IPv6 /128）仅写 RT_TABLE_LOCAL（RTN_LOCAL）
+ *   - 非主机前缀 connected 路由写 RT_TABLE_MAIN
  *
  * @param entry 路由条目（包含 prefix_addr、prefix_len、protocol、out_ifindex、nexthop_addr）
  * @return 成功返回 0，失败返回 -1

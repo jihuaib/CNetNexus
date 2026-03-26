@@ -207,14 +207,19 @@ int route_static_add(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_add
 
     /* 向通用 relay watch 表注册 nexthop，同时获取当前可达性 */
     int resolved = route_relay_register_direct(vrf_id, afi, nexthop_addr, DEV_MODULE_ID_ROUTE);
+    net_addr_t os_nexthop = *nexthop_addr;
+    uint32_t oif = 0;
+    if (resolved)
+    {
+        resolved = route_relay_nh_resolve_gateway(vrf_id, afi, nexthop_addr, &os_nexthop, &oif);
+    }
     entry->nh_resolved = resolved ? 1u : 0u;
 
     if (resolved)
     {
         /* nexthop 可达：写入或更新 RIB */
-        uint32_t oif = route_relay_nh_get_ifindex(vrf_id, afi, nexthop_addr);
         int ret = route_add_and_notify(vrf_id, afi, prefix_addr, prefix_len, ROUTE_PROTOCOL_STATIC, nexthop_addr,
-                                       nexthop_addr, metric, preference, oif);
+                                       nexthop_addr, &os_nexthop, metric, preference, oif);
         if (ret >= 0)
         {
             entry->in_rib = 1u;
@@ -415,6 +420,31 @@ typedef struct
     uint32_t withdrawn;
 } static_recompute_ctx_t;
 
+static int static_path_match_install_state(const route_static_entry_t *entry, const net_addr_t *os_nexthop,
+                                           uint32_t out_ifindex)
+{
+    if (!entry || !os_nexthop || !g_route_local || !g_route_local->rib)
+    {
+        return 0;
+    }
+
+    const route_head_t *head = route_rib_lookup_head(g_route_local->rib, entry->key.vrf_id, entry->key.afi,
+                                                     &entry->key.prefix_addr, entry->key.prefix_len);
+    if (!head)
+    {
+        return 0;
+    }
+
+    const route_path_t *path = route_rib_lookup_path(head, ROUTE_PROTOCOL_STATIC, &entry->key.nexthop_addr);
+    if (!path)
+    {
+        return 0;
+    }
+
+    return net_addr_equal(&path->os_nexthop, os_nexthop) && path->out_ifindex == out_ifindex &&
+           path->metric == entry->metric && path->preference == entry->preference;
+}
+
 static void static_recompute_cb(gpointer key_ptr, gpointer value_ptr, gpointer user_data)
 {
     (void)key_ptr;
@@ -428,31 +458,44 @@ static void static_recompute_cb(gpointer key_ptr, gpointer value_ptr, gpointer u
     rctx->total++;
 
     int resolved = route_relay_nh_is_resolved(entry->key.vrf_id, entry->key.afi, &entry->key.nexthop_addr);
+    net_addr_t os_nexthop = entry->key.nexthop_addr;
+    uint32_t oif = 0;
+    if (resolved)
+    {
+        resolved = route_relay_nh_resolve_gateway(entry->key.vrf_id, entry->key.afi, &entry->key.nexthop_addr,
+                                                  &os_nexthop, &oif);
+    }
     uint8_t new_resolved = resolved ? 1u : 0u;
+    int install_state_same = (resolved && entry->in_rib) ? static_path_match_install_state(entry, &os_nexthop, oif) : 0;
 
-    /* 状态与 RIB 均一致时跳过 */
-    if (new_resolved == entry->nh_resolved && entry->in_rib == new_resolved)
+    /* 状态与安装属性均一致时跳过 */
+    if (new_resolved == entry->nh_resolved && entry->in_rib == new_resolved && (!new_resolved || install_state_same))
     {
         return;
     }
 
     entry->nh_resolved = new_resolved;
 
-    if (resolved && !entry->in_rib)
+    if (resolved)
     {
-        /* nexthop 新可达：写入 RIB */
-        uint32_t oif = route_relay_nh_get_ifindex(entry->key.vrf_id, entry->key.afi, &entry->key.nexthop_addr);
-        int ret = route_add_and_notify(entry->key.vrf_id, entry->key.afi, &entry->key.prefix_addr,
-                                       entry->key.prefix_len, ROUTE_PROTOCOL_STATIC, &entry->key.nexthop_addr,
-                                       &entry->key.nexthop_addr, entry->metric, entry->preference, oif);
-        if (ret >= 0)
+        if (!entry->in_rib || !install_state_same)
         {
-            entry->in_rib = 1U;
-            /* OS 下发由 route_add_and_notify 内部调用 route_calc_on_path_add 完成 */
-            rctx->added++;
+            int ret =
+                route_add_and_notify(entry->key.vrf_id, entry->key.afi, &entry->key.prefix_addr, entry->key.prefix_len,
+                                     ROUTE_PROTOCOL_STATIC, &entry->key.nexthop_addr, &entry->key.nexthop_addr,
+                                     &os_nexthop, entry->metric, entry->preference, oif);
+            if (ret >= 0)
+            {
+                if (!entry->in_rib)
+                {
+                    rctx->added++;
+                }
+                entry->in_rib = 1U;
+                /* OS 下发由 route_add_and_notify 内部调用 route_calc_on_path_add 完成 */
+            }
         }
     }
-    else if (!resolved && entry->in_rib)
+    else if (entry->in_rib)
     {
         /* nexthop 变不可达：从 RIB 撤销 */
         route_rib_del(g_route_local->rib, entry->key.vrf_id, entry->key.afi, &entry->key.prefix_addr,

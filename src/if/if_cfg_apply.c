@@ -112,6 +112,31 @@ static void if_make_zero_addr(sa_family_t family, net_addr_t *out)
     out->family = family;
 }
 
+static void if_fill_connected_route_entry(route_msg_entry_t *entry, uint16_t afi, uint8_t prefix_len,
+                                          const net_addr_t *prefix_addr, const net_addr_t *source_addr,
+                                          const net_addr_t *nexthop_addr, uint32_t out_ifindex)
+{
+    if (!entry || !prefix_addr || !source_addr || !nexthop_addr)
+    {
+        return;
+    }
+
+    memset(entry, 0, sizeof(*entry));
+    entry->vrf_id = ROUTE_VRF_DEFAULT;
+    entry->afi = afi;
+    entry->safi = ROUTE_SAFI_UNICAST;
+    entry->prefix_len = prefix_len;
+    entry->protocol = ROUTE_PROTOCOL_CONNECTED;
+    entry->metric = 0;
+    entry->preference = ROUTE_ADMIN_DIST_CONNECTED;
+    entry->is_withdraw = 0;
+    entry->flags = 0;
+    entry->out_ifindex = out_ifindex;
+    entry->prefix_addr = *prefix_addr;
+    entry->source_addr = *source_addr;
+    entry->nexthop_addr = *nexthop_addr;
+}
+
 static void if_sync_connected_host_routes(const net_prefix_t *prefix, const char *physical_name, gboolean is_withdraw)
 {
     if (!prefix || !net_prefix_is_set(prefix) || !physical_name)
@@ -151,17 +176,42 @@ static void if_sync_connected_host_routes(const net_prefix_t *prefix, const char
 
     /* 出接口索引（0 表示接口不存在，OS 路由不下发 OIF） */
     uint32_t out_ifindex = (uint32_t)if_nametoindex(physical_name);
+    uint8_t host_len = (prefix->addr.family == AF_INET) ? 32u : 128u;
 
-    /* 直连网络路由 */
+    route_msg_entry_t network_entry;
+    if_fill_connected_route_entry(&network_entry, afi, prefix->prefix_len, &network_addr, &prefix->addr, &zero_nh,
+                                  out_ifindex);
+
+    /* 主机前缀（/32 或 /128）下，network 与 host 重合，只下发一条。 */
+    if (prefix->prefix_len == host_len)
+    {
+        if (is_withdraw)
+        {
+            (void)route_rpc_del(ctx, &network_entry);
+        }
+        else
+        {
+            (void)route_rpc_add(ctx, &network_entry);
+        }
+        return;
+    }
+
+    /* 非主机前缀：显式下发 host + network，避免 ROUTE 侧隐式派生 /32(/128) 导致 RIB 与 OS 不一致。 */
+    route_msg_entry_t host_entry = network_entry;
+    host_entry.prefix_addr = prefix->addr;
+    host_entry.prefix_len = host_len;
+
     if (is_withdraw)
     {
-        (void)route_rpc_del(ctx, ROUTE_VRF_DEFAULT, afi, &network_addr, prefix->prefix_len, ROUTE_PROTOCOL_CONNECTED,
-                            &prefix->addr, out_ifindex);
+        /* 先撤网段路由，再撤 host 路由。 */
+        (void)route_rpc_del(ctx, &network_entry);
+        (void)route_rpc_del(ctx, &host_entry);
     }
     else
     {
-        (void)route_rpc_add(ctx, ROUTE_VRF_DEFAULT, afi, &network_addr, prefix->prefix_len, ROUTE_PROTOCOL_CONNECTED,
-                            &prefix->addr, &zero_nh, 0, ROUTE_ADMIN_DIST_CONNECTED, out_ifindex);
+        /* 先下发 host 路由，确保随后 network 路由的 prefsrc 能稳定生效。 */
+        (void)route_rpc_add(ctx, &host_entry);
+        (void)route_rpc_add(ctx, &network_entry);
     }
 }
 

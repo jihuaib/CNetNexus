@@ -59,6 +59,7 @@ typedef struct route_path
 {
     route_path_key_t key;  /**< 内嵌键（GHashTable 键指向 &path->key） */
     net_addr_t nexthop;    /**< 下一跳地址（二进制） */
+    net_addr_t os_nexthop; /**< 下发 OS 的下一跳（默认等于 nexthop） */
     int32_t metric;        /**< 度量值 */
     int32_t preference;    /**< 管理距离 */
     uint8_t nh_state;      /**< nexthop 递归状态（ROUTE_NH_STATE_*，仅对 iter_required 路径有效） */

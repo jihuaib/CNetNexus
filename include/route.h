@@ -178,31 +178,12 @@ typedef struct route_nh_iter_notify
 // ============================================================================
 
 /**
- * @brief 向 ROUTE 模块发送一条路由注入消息（add/update 或 withdraw）
+ * @brief 通过 IPC 向 ROUTE 模块注入一条路径（add/update 或 withdraw）
  * @param ctx   调用方 IPC 上下文（需已连接到 ROUTE 模块）
  * @param entry 路由消息条目
  * @return 成功返回 ERRCODE_SUCCESS，失败返回 ERRCODE_FAIL
  */
-int route_rpc_inject(dev_ipc_context_t *ctx, const route_msg_entry_t *entry);
-
-/**
- * @brief 通过 IPC 向 ROUTE 模块添加/更新一条路径
- * @param ctx        调用方 IPC 上下文
- * @param vrf_id     VRF ID
- * @param afi        地址族（ROUTE_AFI_IPV4/ROUTE_AFI_IPV6）
- * @param prefix_addr 前缀地址（二进制）
- * @param prefix_len 前缀长度
- * @param protocol   路由协议（ROUTE_PROTOCOL_*）
- * @param source     路径来源标识（用于唯一键）
- * @param nexthop    下一跳地址
- * @param metric     度量值
- * @param preference 管理距离
- * @param out_ifindex 出接口索引（直连路由填接口 ifindex，其他填 0）
- * @return 成功返回 ERRCODE_SUCCESS，失败返回 ERRCODE_FAIL
- */
-int route_rpc_add(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr,
-                  uint8_t prefix_len, uint32_t protocol, const net_addr_t *source, const net_addr_t *nexthop,
-                  int32_t metric, int32_t preference, uint32_t out_ifindex);
+int route_rpc_add(dev_ipc_context_t *ctx, const route_msg_entry_t *entry);
 
 /**
  * @brief 通过 IPC 向 ROUTE 模块注册“需先做 nexthop 迭代”的候选路径
@@ -211,18 +192,11 @@ int route_rpc_nh_register(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi,
 
 /**
  * @brief 通过 IPC 向 ROUTE 模块撤销一条路径
- * @param ctx         调用方 IPC 上下文
- * @param vrf_id      VRF ID
- * @param afi         地址族（ROUTE_AFI_IPV4/ROUTE_AFI_IPV6）
- * @param prefix_addr 前缀地址（二进制）
- * @param prefix_len  前缀长度
- * @param protocol    路由协议（ROUTE_PROTOCOL_*）
- * @param source      路径来源标识（用于唯一键）
- * @param out_ifindex 出接口索引（直连路由撤销需透传，其他可填 0）
+ * @param ctx   调用方 IPC 上下文
+ * @param entry 路由消息条目（该 API 会强制按 withdraw 语义发送）
  * @return 成功返回 ERRCODE_SUCCESS，失败返回 ERRCODE_FAIL
  */
-int route_rpc_del(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr,
-                  uint8_t prefix_len, uint32_t protocol, const net_addr_t *source, uint32_t out_ifindex);
+int route_rpc_del(dev_ipc_context_t *ctx, const route_msg_entry_t *entry);
 
 /**
  * @brief 通过 IPC 撤销一条“需迭代”的候选路径
