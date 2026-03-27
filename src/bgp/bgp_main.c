@@ -101,9 +101,8 @@ static void bgp_on_shutdown(dev_ipc_message_t *msg)
 
     if (g_bgp_local)
     {
-        /* 必须先 join server 线程，再清理 show_stream，避免 worker/server 线程并发访问 */
+        /* show 分片状态由 worker 生命周期清理路径统一处理 */
         bgp_worker_shutdown();
-        bgp_cli_cleanup_state();
         g_bgp_local->dev_ipc_ctx = NULL;
         g_free(g_bgp_local);
         g_bgp_local = NULL;
@@ -207,12 +206,6 @@ int bgp_module_init(void)
     }
 
     g_bgp_local->dev_ipc_ctx = ctx;
-    g_bgp_local->epoll_fd = DEV_INVALID_FD;
-    g_bgp_local->listen_fd = -1;
-    g_bgp_local->cmd_eventfd = -1;
-    g_bgp_local->cmd_queue = NULL;
-    g_bgp_local->running = 0;
-    g_bgp_local->worker_thread = 0;
 
     return 0;
 }

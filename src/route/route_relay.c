@@ -29,7 +29,9 @@ typedef struct route_nh_watch
 {
     route_nh_watch_key_t key;
     uint8_t resolved;
-    uint8_t _pad[7];
+    uint8_t _pad[3];
+    uint32_t out_ifindex;  /**< 解析出的出接口索引 */
+    net_addr_t relay_addr; /**< 解析出的 relay 地址 */
     gint64 updated_at_usec;
 } route_nh_watch_t;
 
@@ -161,20 +163,15 @@ static int route_path_rank_cmp(const route_path_t *a, const route_path_t *b)
 
 static route_path_t *route_head_best_resolver_path(route_head_t *head)
 {
-    if (!head || !head->path_hash)
+    if (!head || !head->path_list)
     {
         return NULL;
     }
 
     route_path_t *best = NULL;
-    GHashTableIter iter;
-    gpointer key_ptr = NULL;
-    gpointer val_ptr = NULL;
-    g_hash_table_iter_init(&iter, head->path_hash);
-    while (g_hash_table_iter_next(&iter, &key_ptr, &val_ptr))
+    for (GList *l = head->path_list; l; l = l->next)
     {
-        (void)key_ptr;
-        route_path_t *path = (route_path_t *)val_ptr;
+        route_path_t *path = (route_path_t *)l->data;
         if (!path)
         {
             continue;
@@ -264,7 +261,19 @@ static route_path_t *route_lookup_best_cover(route_rib_t *rib, uint32_t vrf_id, 
     return ctx.best_path;
 }
 
-static int route_nh_is_resolved(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop)
+/**
+ * @brief 一次迭代完成 nexthop 可达性判断 + 网关/出接口解析
+ *
+ * @param rib          RIB
+ * @param vrf_id       VRF ID
+ * @param afi          地址族
+ * @param nexthop      下一跳地址
+ * @param gateway_out  解析出的直连网关（可为 NULL 表示不需要）
+ * @param ifindex_out  解析出的出接口索引（可为 NULL）
+ * @return 1=可达，0=不可达
+ */
+static int route_nh_resolve(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop,
+                            net_addr_t *gateway_out, uint32_t *ifindex_out)
 {
     if (!rib || !nexthop)
     {
@@ -313,6 +322,14 @@ static int route_nh_is_resolved(route_rib_t *rib, uint32_t vrf_id, uint16_t afi,
 
         if (resolver->key.protocol == ROUTE_PROTOCOL_CONNECTED)
         {
+            if (gateway_out)
+            {
+                *gateway_out = cursor;
+            }
+            if (ifindex_out)
+            {
+                *ifindex_out = resolver->out_ifindex;
+            }
             return 1;
         }
         if (resolver->nexthop.family == 0)
@@ -330,106 +347,6 @@ static int route_nh_is_resolved(route_rib_t *rib, uint32_t vrf_id, uint16_t afi,
     return 0;
 }
 
-/* 公开接口：沿 nexthop 迭代链查找最终直连路径的出接口索引 */
-uint32_t route_relay_nh_get_ifindex(uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop_addr)
-{
-    if (!g_route_local || !g_route_local->rib || !nexthop_addr)
-    {
-        return 0;
-    }
-
-    route_rib_t *rib = g_route_local->rib;
-    net_addr_t cursor = *nexthop_addr;
-    net_addr_t visited[ROUTE_ITER_NH_MAX_DEPTH];
-    uint32_t visited_count = 0;
-
-    for (uint32_t depth = 0; depth < ROUTE_ITER_NH_MAX_DEPTH; ++depth)
-    {
-        for (uint32_t i = 0; i < visited_count; ++i)
-        {
-            if (net_addr_equal(&visited[i], &cursor))
-            {
-                return 0;
-            }
-        }
-        visited[visited_count++] = cursor;
-
-        route_path_t *resolver = route_lookup_best_cover(rib, vrf_id, afi, &cursor);
-        if (!resolver)
-        {
-            return 0;
-        }
-
-        /* 找到有出接口的路径（直连路由或已解析路径） */
-        if (resolver->out_ifindex != 0)
-        {
-            return resolver->out_ifindex;
-        }
-
-        /* 已是直连路由但 out_ifindex 为 0（理论上不会发生）或链路断头 */
-        if (resolver->key.protocol == ROUTE_PROTOCOL_CONNECTED || resolver->nexthop.family == 0 ||
-            resolver->nexthop.family != cursor.family)
-        {
-            return 0;
-        }
-
-        cursor = resolver->nexthop;
-    }
-
-    return 0;
-}
-
-int route_relay_nh_resolve_gateway(uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop_addr,
-                                   net_addr_t *gateway_out, uint32_t *out_ifindex_out)
-{
-    if (!g_route_local || !g_route_local->rib || !nexthop_addr || !gateway_out)
-    {
-        return 0;
-    }
-
-    route_rib_t *rib = g_route_local->rib;
-    net_addr_t cursor = *nexthop_addr;
-    net_addr_t visited[ROUTE_ITER_NH_MAX_DEPTH];
-    uint32_t visited_count = 0;
-
-    for (uint32_t depth = 0; depth < ROUTE_ITER_NH_MAX_DEPTH; ++depth)
-    {
-        for (uint32_t i = 0; i < visited_count; ++i)
-        {
-            if (net_addr_equal(&visited[i], &cursor))
-            {
-                return 0;
-            }
-        }
-        visited[visited_count++] = cursor;
-
-        route_path_t *resolver = route_lookup_best_cover(rib, vrf_id, afi, &cursor);
-        if (!resolver)
-        {
-            return 0;
-        }
-
-        if (resolver->key.protocol == ROUTE_PROTOCOL_CONNECTED)
-        {
-            *gateway_out = cursor;
-            if (out_ifindex_out)
-            {
-                *out_ifindex_out = resolver->out_ifindex;
-            }
-            return (resolver->out_ifindex != 0) ? 1 : 0;
-        }
-
-        if (resolver->nexthop.family == 0 || resolver->nexthop.family != cursor.family)
-        {
-            return 0;
-        }
-
-        cursor = resolver->nexthop;
-    }
-
-    return 0;
-}
-
 static void route_relay_notify_state(const route_nh_watch_t *watch)
 {
     if (!watch)
@@ -437,9 +354,11 @@ static void route_relay_notify_state(const route_nh_watch_t *watch)
         return;
     }
 
-    /* 自模块注册的 nexthop（静态路由）：由 route_static_recompute 在进程内直接处理，无需发 IPC */
+    /* 自模块注册的 nexthop（静态路由）：走统一回调流程，不发 IPC */
     if (watch->key.owner_module_id == DEV_MODULE_ID_ROUTE)
     {
+        route_static_on_nh_change(watch->key.vrf_id, watch->key.afi, &watch->key.nexthop_addr, watch->resolved,
+                                  &watch->relay_addr, watch->out_ifindex);
         return;
     }
 
@@ -455,7 +374,8 @@ static void route_relay_notify_state(const route_nh_watch_t *watch)
     payload->afi = watch->key.afi;
     payload->safi = watch->key.safi;
     payload->resolved = watch->resolved ? 1u : 0u;
-    payload->nexthop_addr = watch->key.nexthop_addr;
+    payload->out_ifindex = watch->out_ifindex;
+    payload->relay_addr = watch->key.nexthop_addr;
 
     dev_ipc_message_t *msg =
         dev_ipc_message_create(ROUTE_MSG_TYPE_NH_NOTIFY, DEV_MODULE_ID_ROUTE, watch->key.owner_module_id, 0, payload,
@@ -547,10 +467,14 @@ void route_relay_handle_nh_register(dev_ipc_message_t *msg)
     }
 
     uint8_t old_resolved = watch->resolved;
-    watch->resolved = route_nh_is_resolved(g_route_local ? g_route_local->rib : NULL, watch->key.vrf_id, watch->key.afi,
-                                           &watch->key.nexthop_addr)
-                          ? 1u
-                          : 0u;
+    net_addr_t gw;
+    uint32_t oif = 0;
+    memset(&gw, 0, sizeof(gw));
+    int res = route_nh_resolve(g_route_local ? g_route_local->rib : NULL, watch->key.vrf_id, watch->key.afi,
+                               &watch->key.nexthop_addr, &gw, &oif);
+    watch->resolved = res ? 1u : 0u;
+    watch->relay_addr = gw;
+    watch->out_ifindex = oif;
     watch->updated_at_usec = g_get_real_time();
 
     if (is_new || old_resolved != watch->resolved)
@@ -613,10 +537,14 @@ static void route_recompute_watch_cb(gpointer key, gpointer value, gpointer user
     }
 
     uint8_t old_resolved = watch->resolved;
-    watch->resolved = route_nh_is_resolved(g_route_local ? g_route_local->rib : NULL, watch->key.vrf_id, watch->key.afi,
-                                           &watch->key.nexthop_addr)
-                          ? 1u
-                          : 0u;
+    net_addr_t gw;
+    uint32_t oif = 0;
+    memset(&gw, 0, sizeof(gw));
+    int res = route_nh_resolve(g_route_local ? g_route_local->rib : NULL, watch->key.vrf_id, watch->key.afi,
+                               &watch->key.nexthop_addr, &gw, &oif);
+    watch->resolved = res ? 1u : 0u;
+    watch->relay_addr = gw;
+    watch->out_ifindex = oif;
     watch->updated_at_usec = g_get_real_time();
 
     ctx->total++;
@@ -636,8 +564,6 @@ static void route_recompute_watch_cb(gpointer key, gpointer value, gpointer user
         }
         route_relay_notify_state(watch);
     }
-
-    return;
 }
 
 void route_recompute_iter_paths(void)
@@ -661,9 +587,6 @@ void route_recompute_iter_paths(void)
         LOG_DEBUG("Route nh-watch recompute: total=%u resolved=%u up=%u down=%u", rctx.total, rctx.resolved,
                   rctx.announced, rctx.withdrawn);
     }
-
-    /* 同步重算候选静态路由的可达性（路由变化可能影响静态路由 nexthop 迭代结果） */
-    route_static_recompute();
 }
 
 void route_relay_cleanup(void)
@@ -676,12 +599,8 @@ void route_relay_cleanup(void)
     g_route_nh_watch_table = NULL;
 }
 
-int route_relay_nh_is_resolved(uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop_addr)
-{
-    return route_nh_is_resolved(g_route_local ? g_route_local->rib : NULL, vrf_id, afi, nexthop_addr);
-}
-
-int route_relay_register_direct(uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop_addr, uint32_t owner_module_id)
+int route_relay_register_direct(uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop_addr, uint32_t owner_module_id,
+                                net_addr_t *gateway_out, uint32_t *ifindex_out)
 {
     if (!nexthop_addr)
     {
@@ -714,9 +633,23 @@ int route_relay_register_direct(uint32_t vrf_id, uint16_t afi, const net_addr_t 
         g_hash_table_insert(g_route_nh_watch_table, &watch->key, watch);
     }
 
-    watch->resolved =
-        route_nh_is_resolved(g_route_local ? g_route_local->rib : NULL, vrf_id, afi, nexthop_addr) ? 1u : 0u;
+    net_addr_t gw;
+    uint32_t oif = 0;
+    memset(&gw, 0, sizeof(gw));
+    int res = route_nh_resolve(g_route_local ? g_route_local->rib : NULL, vrf_id, afi, nexthop_addr, &gw, &oif);
+    watch->resolved = res ? 1u : 0u;
+    watch->relay_addr = gw;
+    watch->out_ifindex = oif;
     watch->updated_at_usec = g_get_real_time();
+
+    if (gateway_out)
+    {
+        *gateway_out = gw;
+    }
+    if (ifindex_out)
+    {
+        *ifindex_out = oif;
+    }
 
     return (int)watch->resolved;
 }

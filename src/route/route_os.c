@@ -126,7 +126,6 @@ static int route_os_send(int cmd, const route_msg_entry_t *entry)
     }
 
     int is_non_connected = (entry->protocol != ROUTE_PROTOCOL_CONNECTED && entry->protocol != ROUTE_PROTOCOL_BLACKHOLE);
-    int omit_nh_attrs = (cmd == RTM_DELROUTE && is_non_connected);
     net_addr_t effective_gateway = entry->nexthop_addr;
     uint32_t effective_oif = entry->out_ifindex;
 
@@ -199,7 +198,7 @@ static int route_os_send(int cmd, const route_msg_entry_t *entry)
     }
 
     /* RTA_OIF：出接口（直连路由） */
-    if (!omit_nh_attrs && effective_oif != 0 && entry->protocol != ROUTE_PROTOCOL_BLACKHOLE)
+    if (effective_oif != 0 && entry->protocol != ROUTE_PROTOCOL_BLACKHOLE)
     {
         nl_add_attr(nlh, sizeof(buf), RTA_OIF, &effective_oif, (int)sizeof(uint32_t));
     }
@@ -229,7 +228,7 @@ static int route_os_send(int cmd, const route_msg_entry_t *entry)
     }
 
     /* RTA_GATEWAY：网关（非直连、非黑洞路由且 nexthop 非零） */
-    if (!omit_nh_attrs && is_non_connected && !net_addr_is_zero(&effective_gateway))
+    if (is_non_connected && !net_addr_is_zero(&effective_gateway))
     {
         if (effective_gateway.family == AF_INET)
         {
@@ -243,6 +242,13 @@ static int route_os_send(int cmd, const route_msg_entry_t *entry)
         {
             return -1;
         }
+    }
+
+    /* RTA_PRIORITY：路由 metric（Linux 内核 metric） */
+    if (cmd == RTM_NEWROUTE || cmd == RTM_DELROUTE)
+    {
+        uint32_t priority = (entry->metric > 0) ? (uint32_t)entry->metric : 0u;
+        nl_add_attr(nlh, sizeof(buf), RTA_PRIORITY, &priority, (int)sizeof(priority));
     }
 
     return nl_exchange(nlh, cmd);

@@ -13,10 +13,8 @@ Goal:
 from __future__ import annotations
 
 import re
-import time
-from typing import Optional
 
-from module_api import cmd, g_top, require_devices, run_cmds, step  # noqa: E402
+from module_api import g_top, require_devices, run_cmds, step, wait_check, wait_checks  # noqa: E402
 from top_runner import TopologyRuntime  # noqa: E402
 
 
@@ -36,56 +34,6 @@ def _build_prefixes() -> list[tuple[str, str]]:
     return routes
 
 
-def _parse_static_rows(output: str) -> dict[str, tuple[str, str, str]]:
-    rows: dict[str, tuple[str, str, str]] = {}
-    for line in output.splitlines():
-        parts = line.split()
-        if len(parts) < 7:
-            continue
-        if parts[0].lower() != "ipv4":
-            continue
-        prefix = parts[1]
-        nexthop = parts[2]
-        resolved = parts[-2].lower()
-        in_rib = parts[-1].lower()
-        rows[prefix] = (nexthop, resolved, in_rib)
-    return rows
-
-
-def _parse_static_total(output: str) -> Optional[int]:
-    match = re.search(r"Total\s+(\d+)\s+static route\(s\)", output)
-    if not match:
-        return None
-    return int(match.group(1))
-
-
-def _parse_relay_row(output: str, nexthop: str) -> Optional[str]:
-    for line in output.splitlines():
-        if nexthop not in line:
-            continue
-        parts = line.split()
-        if len(parts) < 6:
-            continue
-        if parts[4] != nexthop:
-            continue
-        return parts[5].lower()
-    return None
-
-
-def _parse_relay_total(output: str) -> Optional[int]:
-    match = re.search(r"Total\s+(\d+)\s+entry", output)
-    if not match:
-        return None
-    return int(match.group(1))
-
-
-def _parse_route_path_total(output: str) -> Optional[int]:
-    match = re.search(r"Total\s+(\d+)\s+path\(s\)", output)
-    if not match:
-        return None
-    return int(match.group(1))
-
-
 def _wait_route_presence(
     rt: TopologyRuntime,
     *,
@@ -94,40 +42,20 @@ def _wait_route_presence(
     expect_present: bool,
     timeout: int,
 ) -> None:
-    deadline = time.time() + timeout
-    interval = 2
-    last_missing: list[str] = []
-    last_out: dict[str, str] = {}
+    checks: list[dict[str, object]] = []
+    for addr, pfx in routes:
+        check: dict[str, object] = {
+            "device": device,
+            "command": f"show route ipv4 {addr}",
+            "label": f"{device} route presence {pfx}",
+        }
+        if expect_present:
+            check["not_contains"] = ["(no matching routes)"]
+        else:
+            check["contains"] = ["(no matching routes)"]
+        checks.append(check)
 
-    while time.time() < deadline:
-        pending = 0
-        missing: list[str] = []
-
-        for addr, pfx in routes:
-            out = cmd(rt, device, f"show route ipv4 {addr}", strict=False)
-            last_out[pfx] = out
-            path_total = _parse_route_path_total(out)
-
-            if expect_present:
-                ok = "(no matching routes)" not in out and path_total is not None and path_total > 0
-                if not ok:
-                    pending += 1
-                    missing.append(f"{device} route visible {pfx} invalid path view")
-            else:
-                ok = "(no matching routes)" in out
-                if not ok:
-                    pending += 1
-                    missing.append(f"{device} route hidden {pfx} unexpected output")
-
-        if pending == 0:
-            return
-
-        last_missing = missing
-        time.sleep(interval)
-
-    detail = "\n".join(last_missing)
-    output_dump = "\n\n".join([f"[{pfx}]\n{out}" for pfx, out in last_out.items()])
-    raise RuntimeError(f"route presence checks not satisfied within {timeout}s\n{detail}\n\nlast outputs:\n{output_dump}")
+    wait_checks(rt, checks, timeout=timeout, interval=2)
 
 
 def _wait_static_state(
@@ -144,40 +72,19 @@ def _wait_static_state(
 ) -> None:
     expect_resolved_str = "yes" if expect_resolved else "no"
     expect_in_rib_str = "yes" if expect_in_rib else "no"
-    deadline = time.time() + timeout
-    last_out = ""
-
-    while time.time() < deadline:
-        out = cmd(rt, device, "show route ipv4 static", strict=False)
-        last_out = out
-
-        total = _parse_static_total(out)
-        rows = _parse_static_rows(out)
-        ok = total == expect_total
-
-        if ok:
-            for _, pfx in routes:
-                row = rows.get(pfx)
-                if not row:
-                    ok = False
-                    break
-                row_nexthop, row_resolved, row_in_rib = row
-                if row_nexthop != nexthop:
-                    ok = False
-                    break
-                if row_resolved != expect_resolved_str or row_in_rib != expect_in_rib_str:
-                    ok = False
-                    break
-
-        if ok:
-            return
-        time.sleep(interval)
-
-    raise RuntimeError(
-        f"{device} static candidate state mismatch after {timeout}s\n"
-        f"expect total={expect_total} resolved={expect_resolved_str} in_rib={expect_in_rib_str}\n"
-        f"command: show route ipv4 static\n"
-        f"last output:\n{last_out}"
+    route_regex = [
+        rf"(?im)^\s*ipv4\s+{re.escape(pfx)}\s+{re.escape(nexthop)}\b.*\b{expect_resolved_str}\s+{expect_in_rib_str}\s*$"
+        for _, pfx in routes
+    ]
+    wait_check(
+        rt,
+        device=device,
+        command="show route ipv4 static",
+        timeout=timeout,
+        interval=interval,
+        contains=[f"Total {expect_total} static route(s)"],
+        regex=route_regex,
+        label=f"{device} static state",
     )
 
 
@@ -192,26 +99,17 @@ def _wait_relay_state(
     interval: int = 2,
 ) -> None:
     expect_resolved_str = "yes" if expect_resolved else "no"
-    deadline = time.time() + timeout
-    last_out = ""
-
-    while time.time() < deadline:
-        out = cmd(rt, device, "show route ipv4 relay static", strict=False)
-        last_out = out
-        row_resolved = _parse_relay_row(out, nexthop)
-        total = _parse_relay_total(out)
-        if row_resolved is None or total is None:
-            time.sleep(interval)
-            continue
-        if row_resolved == expect_resolved_str and total == expect_total_entries:
-            return
-        time.sleep(interval)
-
-    raise RuntimeError(
-        f"{device} static relay state mismatch after {timeout}s\n"
-        f"expect total_entries={expect_total_entries} resolved={expect_resolved_str}\n"
-        f"command: show route ipv4 relay static\n"
-        f"last output:\n{last_out}"
+    wait_check(
+        rt,
+        device=device,
+        command="show route ipv4 relay static",
+        timeout=timeout,
+        interval=interval,
+        regex=[
+            rf"(?im)\bTotal\s+{expect_total_entries}\s+entry\b",
+            rf"(?im)^.*\b{re.escape(nexthop)}\b\s+{expect_resolved_str}\s*$",
+        ],
+        label=f"{device} static relay state",
     )
 
 

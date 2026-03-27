@@ -12,10 +12,8 @@ from __future__ import annotations
 
 import ipaddress
 import re
-import time
-from typing import Optional
 
-from module_api import cmd, g_top, require_devices, run_cmds, step, wait_checks  # noqa: E402
+from module_api import g_top, require_devices, run_cmds, step, wait_check, wait_checks  # noqa: E402
 from top_runner import TopologyRuntime  # noqa: E402
 
 
@@ -27,70 +25,6 @@ LOOP_IF = f"loop{LOOP_ID}"
 LOOP_IP = "198.18.101.1"
 LOOP_PREFIX_LEN = 32
 LOOP_PREFIX = f"{LOOP_IP}/32"
-
-
-def _parse_os_total(output: str) -> Optional[int]:
-    match = re.search(r"Total\s+(\d+)\s+route\(s\)", output)
-    if not match:
-        return None
-    return int(match.group(1))
-
-
-def _parse_os_rows(output: str) -> list[dict[str, str]]:
-    rows: list[dict[str, str]] = []
-    for raw in output.splitlines():
-        line = raw.strip()
-        if not line:
-            continue
-        if line.startswith("Table") or line.startswith("-------") or line.startswith("Total"):
-            continue
-
-        parts = line.split()
-        if len(parts) < 7:
-            continue
-
-        table, route_type, prefix, gateway, interface, proto, metric = parts[:7]
-        if "/" not in prefix:
-            continue
-        if not metric.isdigit():
-            continue
-
-        rows.append(
-            {
-                "table": table.lower(),
-                "type": route_type.lower(),
-                "prefix": prefix,
-                "gateway": gateway,
-                "interface": interface,
-                "proto": proto.lower(),
-                "metric": metric,
-            }
-        )
-    return rows
-
-
-def _has_os_route(
-    rows: list[dict[str, str]],
-    *,
-    prefix: str,
-    table: str,
-    route_type: str,
-    proto: str,
-    gateway: str,
-) -> bool:
-    for row in rows:
-        if row["prefix"] != prefix:
-            continue
-        if row["table"] != table.lower():
-            continue
-        if row["type"] != route_type.lower():
-            continue
-        if row["proto"] != proto.lower():
-            continue
-        if row["gateway"] != gateway:
-            continue
-        return True
-    return False
 
 
 def _wait_os_route(
@@ -106,38 +40,23 @@ def _wait_os_route(
     timeout: int,
     interval: int = 2,
 ) -> None:
-    deadline = time.time() + timeout
-    last_out = ""
-
-    while time.time() < deadline:
-        out = cmd(rt, device, "show route ipv4 os", strict=False)
-        last_out = out
-
-        total = _parse_os_total(out)
-        if total is None:
-            time.sleep(interval)
-            continue
-
-        rows = _parse_os_rows(out)
-        present = _has_os_route(
-            rows,
-            prefix=prefix,
-            table=table,
-            route_type=route_type,
-            proto=proto,
-            gateway=gateway,
-        )
-        if present == expect_present:
-            return
-
-        time.sleep(interval)
-
-    expect = "present" if expect_present else "absent"
-    raise RuntimeError(
-        f"{device} OS route check failed after {timeout}s: expect {expect}\n"
-        f"prefix={prefix} table={table} type={route_type} proto={proto} gateway={gateway}\n"
-        f"command: show route ipv4 os\n"
-        f"last output:\n{last_out}"
+    row_regex = (
+        rf"(?im)^\s*{re.escape(table)}\s+{re.escape(route_type)}\s+"
+        rf"{re.escape(prefix)}\s+{re.escape(gateway)}\s+\S+\s+{re.escape(proto)}\s+\d+\s*$"
+    )
+    wait_check(
+        rt,
+        device=device,
+        command="show route ipv4 os",
+        timeout=timeout,
+        interval=interval,
+        regex=[row_regex] if expect_present else (),
+        not_regex=[row_regex] if not expect_present else (),
+        label=(
+            f"{device} os route {prefix} "
+            f"{'present' if expect_present else 'absent'} "
+            f"(table={table} type={route_type} proto={proto} gw={gateway})"
+        ),
     )
 
 

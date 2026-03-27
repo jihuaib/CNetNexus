@@ -476,7 +476,7 @@ uint32_t bgp_db_restore(void)
         return ERRCODE_FAIL;
     }
 
-    if (!g_bgp_local || !g_bgp_local->protocol)
+    if (!g_bgp_local || !g_bgp_work_local->protocol)
     {
         return ERRCODE_SUCCESS;
     }

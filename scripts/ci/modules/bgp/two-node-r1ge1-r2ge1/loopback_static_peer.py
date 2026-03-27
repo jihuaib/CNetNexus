@@ -12,9 +12,9 @@ Goal:
 
 from __future__ import annotations
 
-import time
+import re
 
-from module_api import cmd, g_top, require_devices, run_cmds, step, wait_checks  # noqa: E402
+from module_api import g_top, hold_check, require_devices, run_cmds, step, wait_checks  # noqa: E402
 from top_runner import TopologyRuntime  # noqa: E402
 
 
@@ -54,20 +54,15 @@ def _cleanup_case_config(rt: TopologyRuntime, *, r1_peer_ip: str, r2_peer_ip: st
 
 
 def _assert_not_established(rt: TopologyRuntime, *, device: str, peer_ip: str, timeout: int, interval: int = 2) -> None:
-    deadline = time.time() + timeout
-    last_out = ""
-    while time.time() < deadline:
-        out = cmd(rt, device, "show bgp neighbor af ipv4-unicast", strict=False)
-        last_out = out
-        for line in out.splitlines():
-            if peer_ip in line and "Established" in line:
-                raise RuntimeError(
-                    f"{device} peer {peer_ip} unexpectedly reached Established before ebgp-multihop.\n"
-                    f"last output:\n{out}"
-                )
-        time.sleep(interval)
-
-    print(f"{device} peer {peer_ip} stayed non-Established for {timeout}s as expected.")
+    hold_check(
+        rt,
+        device=device,
+        command="show bgp neighbor af ipv4-unicast",
+        duration=timeout,
+        interval=interval,
+        not_regex=[rf"(?im)^.*\b{re.escape(peer_ip)}\b.*\bEstablished\b.*$"],
+        label=f"{device} peer {peer_ip} remains non-Established before ebgp-multihop",
+    )
 
 
 def run(rt: TopologyRuntime, top: dict[str, object]) -> None:

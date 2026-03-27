@@ -529,9 +529,10 @@ static void detail_path_cb(const route_head_t *head, const route_path_t *path, v
         return;
     }
 
-    char addr_str[64], nh_str[64], oif_str[IF_NAMESIZE];
+    char addr_str[64], nh_str[64], iter_nh_str[64], oif_str[IF_NAMESIZE];
     net_addr_to_str(&head->key.addr, addr_str, sizeof(addr_str));
     net_addr_to_str(&path->nexthop, nh_str, sizeof(nh_str));
+    net_addr_to_str(&path->os_nexthop, iter_nh_str, sizeof(iter_nh_str));
     ifindex_to_name(path->out_ifindex, ctx->intf_map, oif_str);
 
     /* 格式化更新时间 */
@@ -549,12 +550,16 @@ static void detail_path_cb(const route_head_t *head, const route_path_t *path, v
                            "  Path [%u]: %s\r\n"
                            "    Nexthop   : %s\r\n"
                            "    Interface : %s\r\n"
+                           "    Iter NH   : %s\r\n"
+                           "    Iter OIF  : %s\r\n"
+                           "    Flags     : 0x%08X\r\n"
                            "    Metric    : %d\r\n"
                            "    Preference: %d\r\n"
                            "    NH State  : %s\r\n"
                            "    Updated   : %s\r\n",
-                           ctx->count, proto_name_long(path->key.protocol), nh_str, oif_str, path->metric,
-                           path->preference, nh_state_str(path->nh_state), time_str);
+                           ctx->count, proto_name_long(path->key.protocol), nh_str, oif_str, iter_nh_str, oif_str,
+                           (unsigned int)path->flags, path->metric, path->preference, nh_state_str(path->nh_state),
+                           time_str);
 }
 
 static int handle_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)

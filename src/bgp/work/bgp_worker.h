@@ -6,11 +6,13 @@
 #define BGP_WORKER_H
 
 #include <glib.h>
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
 
 #include "bgp.h"
 #include "bgp_instance.h"
+#include "bgp_protocol.h"
 #include "dev.h"
 #include "if_event.h"
 #include "net_addr.h"
@@ -24,6 +26,27 @@ typedef struct bgp_peer_update_ingest_stats
     uint32_t unreach_injected;
     uint32_t unreach_failed;
 } bgp_peer_update_ingest_stats_t;
+
+/**
+ * @brief BGP worker 本地状态（仅 work 子系统持有生命周期）
+ */
+typedef struct bgp_work_local
+{
+    bgp_protocol_t *protocol; /**< BGP 协议结构（bgp 使能后非 NULL） */
+
+    /* BGP TCP worker */
+    int epoll_fd;            /**< BGP worker epoll fd */
+    int running;             /**< worker 线程运行标志 */
+    pthread_t worker_thread; /**< BGP worker 线程句柄 */
+
+    int listen_fd; /**< 全局 0.0.0.0:179 listen socket fd，-1 表示未监听 */
+
+    /* IPC worker -> BGP worker 命令投递（eventfd + queue） */
+    int cmd_eventfd;        /**< 命令唤醒 eventfd，-1 表示未创建 */
+    GAsyncQueue *cmd_queue; /**< 队列元素：bgp_worker_cmd_t*（定义在 work/bgp_worker.c） */
+} bgp_work_local_t;
+
+extern bgp_work_local_t *g_bgp_work_local;
 
 // ============================================================================
 // 跨线程配置应用命令（work 线程填写输入，server 线程填写输出）
@@ -176,6 +199,21 @@ int bgp_worker_launch(void);
  * @return 0 成功，-1 失败
  */
 int bgp_worker_post_show_cli(dev_ipc_message_t *msg);
+
+/**
+ * @brief 处理 show CLI 消息（在 BGP worker 线程调用）
+ */
+int bgp_work_handle_show_msg(dev_ipc_message_t *msg);
+
+/**
+ * @brief 处理 show CONTINUE 消息（在 BGP worker 线程调用）
+ */
+int bgp_work_handle_continue_msg(dev_ipc_message_t *msg);
+
+/**
+ * @brief 清理 show 分片状态（仅 worker 生命周期清理路径调用）
+ */
+void bgp_work_show_cleanup(void);
 
 /**
  * @brief worker 线程投递 ROUTE 更新消息给 server 线程

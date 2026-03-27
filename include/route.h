@@ -166,11 +166,13 @@ typedef struct route_nh_iter_req
  */
 typedef struct route_nh_iter_notify
 {
-    uint32_t vrf_id;         /**< VRF ID */
-    uint16_t afi;            /**< 地址族 */
-    uint8_t safi;            /**< 子地址族 */
-    uint8_t resolved;        /**< 1=可达，0=不可达 */
-    net_addr_t nexthop_addr; /**< nexthop（二进制） */
+    uint32_t vrf_id;       /**< VRF ID */
+    uint16_t afi;          /**< 地址族 */
+    uint8_t safi;          /**< 子地址族 */
+    uint8_t resolved;      /**< 1=可达，0=不可达 */
+    uint8_t _pad0[3];      /**< 对齐填充 */
+    uint32_t out_ifindex;  /**< 解析出的出接口索引（0=不可达或未知） */
+    net_addr_t relay_addr; /**< relay 地址（二进制） */
 } route_nh_iter_notify_t;
 
 // ============================================================================
@@ -186,9 +188,12 @@ typedef struct route_nh_iter_notify
 int route_rpc_add(dev_ipc_context_t *ctx, const route_msg_entry_t *entry);
 
 /**
- * @brief 通过 IPC 向 ROUTE 模块注册“需先做 nexthop 迭代”的候选路径
+ * @brief 通过 IPC 向 ROUTE 模块注册 nexthop 迭代监听
+ * @param ctx 调用方 IPC 上下文
+ * @param req 迭代请求（vrf_id, afi, safi, nexthop_addr）
+ * @return 成功返回 ERRCODE_SUCCESS，失败返回 ERRCODE_FAIL
  */
-int route_rpc_nh_register(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop);
+int route_rpc_nh_register(dev_ipc_context_t *ctx, const route_nh_iter_req_t *req);
 
 /**
  * @brief 通过 IPC 向 ROUTE 模块撤销一条路径
@@ -199,8 +204,11 @@ int route_rpc_nh_register(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi,
 int route_rpc_del(dev_ipc_context_t *ctx, const route_msg_entry_t *entry);
 
 /**
- * @brief 通过 IPC 撤销一条“需迭代”的候选路径
+ * @brief 通过 IPC 取消 nexthop 迭代监听
+ * @param ctx 调用方 IPC 上下文
+ * @param req 迭代请求（vrf_id, afi, safi, nexthop_addr）
+ * @return 成功返回 ERRCODE_SUCCESS，失败返回 ERRCODE_FAIL
  */
-int route_rpc_nh_unregister(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop);
+int route_rpc_nh_unregister(dev_ipc_context_t *ctx, const route_nh_iter_req_t *req);
 
 #endif /* ROUTE_H */

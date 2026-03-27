@@ -30,7 +30,7 @@
 void bgp_cfg_apply_protocol(bgp_apply_cmd_t *apply)
 {
     const gboolean is_no = apply->isNo ? TRUE : FALSE;
-    bgp_protocol_t *proto = g_bgp_local ? g_bgp_local->protocol : NULL;
+    bgp_protocol_t *proto = g_bgp_work_local->protocol;
 
     if (is_no)
     {
@@ -62,13 +62,13 @@ void bgp_cfg_apply_protocol(bgp_apply_cmd_t *apply)
     if (is_no)
     {
         bgp_listen_stop();
-        bgp_protocol_destroy(g_bgp_local->protocol);
-        g_bgp_local->protocol = NULL;
+        bgp_protocol_destroy(g_bgp_work_local->protocol);
+        g_bgp_work_local->protocol = NULL;
     }
     else
     {
-        g_bgp_local->protocol = bgp_protocol_create(apply->u.protocol.as_number);
-        if (!g_bgp_local->protocol)
+        g_bgp_work_local->protocol = bgp_protocol_create(apply->u.protocol.as_number);
+        if (!g_bgp_work_local->protocol)
         {
             snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: Failed to apply protocol configuration.");
             return;
@@ -85,7 +85,7 @@ void bgp_cfg_apply_protocol(bgp_apply_cmd_t *apply)
 void bgp_cfg_apply_neighbor(bgp_apply_cmd_t *apply)
 {
     const gboolean is_no = apply->isNo ? TRUE : FALSE;
-    bgp_protocol_t *proto = g_bgp_local ? g_bgp_local->protocol : NULL;
+    bgp_protocol_t *proto = g_bgp_work_local->protocol;
 
     if (!proto)
     {
@@ -147,7 +147,7 @@ void bgp_cfg_apply_neighbor(bgp_apply_cmd_t *apply)
 void bgp_cfg_apply_instance(bgp_apply_cmd_t *apply)
 {
     const gboolean is_no = apply->isNo ? TRUE : FALSE;
-    bgp_protocol_t *proto = g_bgp_local ? g_bgp_local->protocol : NULL;
+    bgp_protocol_t *proto = g_bgp_work_local->protocol;
 
     if (!proto)
     {
@@ -222,7 +222,7 @@ void bgp_cfg_apply_instance(bgp_apply_cmd_t *apply)
 void bgp_cfg_apply_af_neighbor(bgp_apply_cmd_t *apply)
 {
     const gboolean is_no = apply->isNo ? TRUE : FALSE;
-    bgp_protocol_t *proto = g_bgp_local ? g_bgp_local->protocol : NULL;
+    bgp_protocol_t *proto = g_bgp_work_local->protocol;
 
     if (!proto)
     {
@@ -287,7 +287,7 @@ void bgp_cfg_apply_af_neighbor(bgp_apply_cmd_t *apply)
 
     if (had_conn_before && af_changed && sess && (sess->pri_conn || sess->sec_conn))
     {
-        bgp_neighbor_down(sess, g_bgp_local->epoll_fd);
+        bgp_neighbor_down(sess, g_bgp_work_local->epoll_fd);
     }
     apply->rc = BGP_APPLY_RC_OK;
 }
@@ -299,7 +299,7 @@ void bgp_cfg_apply_af_neighbor(bgp_apply_cmd_t *apply)
 void bgp_cfg_apply_router_id(bgp_apply_cmd_t *apply)
 {
     const gboolean is_no = apply->isNo ? TRUE : FALSE;
-    bgp_protocol_t *proto = g_bgp_local ? g_bgp_local->protocol : NULL;
+    bgp_protocol_t *proto = g_bgp_work_local->protocol;
 
     if (!proto)
     {
@@ -354,7 +354,7 @@ void bgp_cfg_apply_router_id(bgp_apply_cmd_t *apply)
 void bgp_cfg_apply_timers(bgp_apply_cmd_t *apply)
 {
     const gboolean is_no = apply->isNo ? TRUE : FALSE;
-    bgp_protocol_t *proto = g_bgp_local ? g_bgp_local->protocol : NULL;
+    bgp_protocol_t *proto = g_bgp_work_local->protocol;
 
     if (!proto)
     {
@@ -401,7 +401,7 @@ void bgp_cfg_apply_timers(bgp_apply_cmd_t *apply)
 void bgp_cfg_apply_connect_retry(bgp_apply_cmd_t *apply)
 {
     const gboolean is_no = apply->isNo ? TRUE : FALSE;
-    bgp_protocol_t *proto = g_bgp_local ? g_bgp_local->protocol : NULL;
+    bgp_protocol_t *proto = g_bgp_work_local->protocol;
 
     if (!proto)
     {
@@ -446,7 +446,7 @@ void bgp_cfg_apply_connect_retry(bgp_apply_cmd_t *apply)
 void bgp_cfg_apply_open_cap(bgp_apply_cmd_t *apply)
 {
     const gboolean is_no = apply->isNo ? TRUE : FALSE;
-    bgp_protocol_t *proto = g_bgp_local ? g_bgp_local->protocol : NULL;
+    bgp_protocol_t *proto = g_bgp_work_local->protocol;
 
     if (!proto)
     {
@@ -476,7 +476,7 @@ void bgp_cfg_apply_open_cap(bgp_apply_cmd_t *apply)
         BIT_SET(sess->flags, apply->u.open_cap.cap_bit);
     }
     apply->out.sess_flags = sess->flags;
-    bgp_neighbor_down(sess, g_bgp_local->epoll_fd);
+    bgp_neighbor_down(sess, g_bgp_work_local->epoll_fd);
     apply->rc = BGP_APPLY_RC_OK;
 }
 
@@ -487,7 +487,7 @@ void bgp_cfg_apply_open_cap(bgp_apply_cmd_t *apply)
 void bgp_cfg_apply_import_route(bgp_apply_cmd_t *apply)
 {
     const gboolean is_no = apply->isNo ? TRUE : FALSE;
-    bgp_protocol_t *proto = g_bgp_local ? g_bgp_local->protocol : NULL;
+    bgp_protocol_t *proto = g_bgp_work_local->protocol;
 
     if (!proto)
     {
@@ -533,14 +533,6 @@ static int bgp_cfg_resolve_source_if_addr(const char *if_name, sa_family_t peer_
         if (errmsg && errmsg_len > 0)
         {
             snprintf(errmsg, errmsg_len, "BGP Error: Missing source interface name.");
-        }
-        return -1;
-    }
-    if (!g_bgp_local || !g_bgp_local->dev_ipc_ctx)
-    {
-        if (errmsg && errmsg_len > 0)
-        {
-            snprintf(errmsg, errmsg_len, "BGP Error: Database not ready.");
         }
         return -1;
     }
@@ -617,7 +609,7 @@ static int bgp_cfg_resolve_source_if_addr(const char *if_name, sa_family_t peer_
 void bgp_cfg_apply_source_if(bgp_apply_cmd_t *apply)
 {
     const gboolean is_no = apply->isNo ? TRUE : FALSE;
-    bgp_protocol_t *proto = g_bgp_local ? g_bgp_local->protocol : NULL;
+    bgp_protocol_t *proto = g_bgp_work_local->protocol;
 
     if (!proto)
     {
@@ -652,7 +644,7 @@ void bgp_cfg_apply_source_if(bgp_apply_cmd_t *apply)
 
         if (sess->pri_conn || sess->sec_conn)
         {
-            bgp_neighbor_down(sess, g_bgp_local->epoll_fd);
+            bgp_neighbor_down(sess, g_bgp_work_local->epoll_fd);
         }
         apply->rc = BGP_APPLY_RC_OK;
         return;
@@ -685,7 +677,7 @@ void bgp_cfg_apply_source_if(bgp_apply_cmd_t *apply)
 
     if (sess->pri_conn || sess->sec_conn)
     {
-        bgp_neighbor_down(sess, g_bgp_local->epoll_fd);
+        bgp_neighbor_down(sess, g_bgp_work_local->epoll_fd);
     }
     apply->rc = BGP_APPLY_RC_OK;
 }
@@ -697,7 +689,7 @@ void bgp_cfg_apply_source_if(bgp_apply_cmd_t *apply)
 void bgp_cfg_apply_ebgp_multihop(bgp_apply_cmd_t *apply)
 {
     const gboolean is_no = apply->isNo ? TRUE : FALSE;
-    bgp_protocol_t *proto = g_bgp_local ? g_bgp_local->protocol : NULL;
+    bgp_protocol_t *proto = g_bgp_work_local->protocol;
 
     if (!proto)
     {
@@ -730,7 +722,7 @@ void bgp_cfg_apply_ebgp_multihop(bgp_apply_cmd_t *apply)
         sess->ebgp_multihop_ttl = 0;
         if (sess->pri_conn || sess->sec_conn)
         {
-            bgp_neighbor_down(sess, g_bgp_local->epoll_fd);
+            bgp_neighbor_down(sess, g_bgp_work_local->epoll_fd);
         }
         apply->rc = BGP_APPLY_RC_OK;
         return;
@@ -751,7 +743,7 @@ void bgp_cfg_apply_ebgp_multihop(bgp_apply_cmd_t *apply)
     sess->ebgp_multihop_ttl = apply->u.ebgp_multihop.ttl;
     if (sess->pri_conn || sess->sec_conn)
     {
-        bgp_neighbor_down(sess, g_bgp_local->epoll_fd);
+        bgp_neighbor_down(sess, g_bgp_work_local->epoll_fd);
     }
     apply->rc = BGP_APPLY_RC_OK;
 }

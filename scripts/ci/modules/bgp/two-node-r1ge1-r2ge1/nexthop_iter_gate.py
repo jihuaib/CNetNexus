@@ -11,10 +11,9 @@ Goal:
 
 from __future__ import annotations
 
-import time
-from typing import Optional
+import re
 
-from module_api import cmd, g_top, require_devices, run_cmds, step, wait_checks  # noqa: E402
+from module_api import g_top, require_devices, run_cmds, step, wait_check, wait_checks  # noqa: E402
 from top_runner import TopologyRuntime  # noqa: E402
 
 
@@ -23,13 +22,6 @@ PFX_ADDR = "10.66.66.0"
 PFX_MASK = "255.255.255.0"
 NH_UNRESOLVED = "198.51.100.1"
 NH_MASK = "255.255.255.255"
-
-
-def _find_prefix_line(output: str, token: str) -> Optional[str]:
-    for line in output.splitlines():
-        if token in line:
-            return line
-    return None
 
 
 def _wait_route_state(
@@ -43,28 +35,30 @@ def _wait_route_state(
     timeout: int,
     interval: int = 2,
 ) -> None:
-    deadline = time.time() + timeout
-    last_out = ""
-    while time.time() < deadline:
-        out = cmd(rt, device, command, strict=False)
-        last_out = out
-        line = _find_prefix_line(out, token)
-        if line is None:
-            time.sleep(interval)
-            continue
+    token_line = rf"(?im)^.*\b{re.escape(token)}\b.*$"
+    expect_patterns: list[str] = [token_line]
+    reject_patterns: list[str] = []
 
-        marker = line[:2] if len(line) >= 2 else line
-        best = len(marker) >= 1 and marker[0] == ">"
-        valid = len(marker) >= 2 and marker[1] == "v"
-        if best == expect_best and valid == expect_valid:
-            return
-        time.sleep(interval)
+    best_pattern = rf"(?im)^>.*\b{re.escape(token)}\b"
+    valid_pattern = rf"(?im)^.v.*\b{re.escape(token)}\b"
+    if expect_best:
+        expect_patterns.append(best_pattern)
+    else:
+        reject_patterns.append(best_pattern)
+    if expect_valid:
+        expect_patterns.append(valid_pattern)
+    else:
+        reject_patterns.append(valid_pattern)
 
-    raise RuntimeError(
-        f"{device} route '{token}' state mismatch after {timeout}s\n"
-        f"expect: best={expect_best} valid={expect_valid}\n"
-        f"command: {command}\n"
-        f"last output:\n{last_out}"
+    wait_check(
+        rt,
+        device=device,
+        command=command,
+        timeout=timeout,
+        interval=interval,
+        regex=expect_patterns,
+        not_regex=reject_patterns,
+        label=f"{device} route-state {token} best={expect_best} valid={expect_valid}",
     )
 
 
@@ -79,25 +73,14 @@ def _wait_relay_state(
 ) -> None:
     command = "show route ipv4 relay bgp"
     expect_str = "yes" if expect_resolved else "no"
-    deadline = time.time() + timeout
-    last_out = ""
-    while time.time() < deadline:
-        out = cmd(rt, device, command, strict=False)
-        last_out = out
-        line = _find_prefix_line(out, nexthop)
-        if line is None:
-            time.sleep(interval)
-            continue
-        got = line.strip().split()[-1].lower()
-        if got == expect_str:
-            return
-        time.sleep(interval)
-
-    raise RuntimeError(
-        f"{device} relay '{nexthop}' state mismatch after {timeout}s\n"
-        f"expect resolved={expect_str}\n"
-        f"command: {command}\n"
-        f"last output:\n{last_out}"
+    wait_check(
+        rt,
+        device=device,
+        command=command,
+        timeout=timeout,
+        interval=interval,
+        regex=[rf"(?im)^.*\b{re.escape(nexthop)}\b\s+{expect_str}\s*$"],
+        label=f"{device} relay {nexthop} resolved={expect_str}",
     )
 
 

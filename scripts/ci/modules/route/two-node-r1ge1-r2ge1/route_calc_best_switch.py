@@ -15,7 +15,7 @@ import re
 import time
 from typing import Optional
 
-from module_api import cmd, g_top, require_devices, run_cmds, step, wait_checks  # noqa: E402
+from module_api import cmd, g_top, require_devices, run_cmds, step, wait_check, wait_checks  # noqa: E402
 from top_runner import TopologyRuntime  # noqa: E402
 
 
@@ -24,83 +24,6 @@ TARGET_MASK = "255.255.255.0"
 TARGET_PREFIX = f"{TARGET_PREFIX_ADDR}/24"
 RESOLVER_ADDR = "198.51.100.1"
 RESOLVER_MASK = "255.255.255.255"
-
-PATH_TOTAL_RE = re.compile(r"Total\s+(\d+)\s+path\(s\)")
-OS_TOTAL_RE = re.compile(r"Total\s+(\d+)\s+route\(s\)")
-
-
-def _parse_path_total(output: str) -> Optional[int]:
-    match = PATH_TOTAL_RE.search(output)
-    if not match:
-        return None
-    return int(match.group(1))
-
-
-def _parse_os_total(output: str) -> Optional[int]:
-    match = OS_TOTAL_RE.search(output)
-    if not match:
-        return None
-    return int(match.group(1))
-
-
-def _parse_os_rows(output: str) -> list[dict[str, str]]:
-    rows: list[dict[str, str]] = []
-    for raw in output.splitlines():
-        line = raw.strip()
-        if not line:
-            continue
-        if line.startswith("Table") or line.startswith("-------") or line.startswith("Total"):
-            continue
-
-        parts = line.split()
-        if len(parts) < 7:
-            continue
-
-        table, route_type, prefix, gateway, interface, proto, metric = parts[:7]
-        if "/" not in prefix:
-            continue
-        if not metric.isdigit():
-            continue
-
-        rows.append(
-            {
-                "table": table.lower(),
-                "type": route_type.lower(),
-                "prefix": prefix,
-                "gateway": gateway,
-                "interface": interface,
-                "proto": proto.lower(),
-                "metric": metric,
-            }
-        )
-    return rows
-
-
-def _parse_route_metrics(output: str) -> dict[str, int]:
-    metrics: dict[str, int] = {}
-    current_nh: Optional[str] = None
-
-    for raw in output.splitlines():
-        line = raw.strip()
-        if not line:
-            continue
-
-        if line.startswith("Nexthop"):
-            _, _, value = line.partition(":")
-            current_nh = value.strip()
-            continue
-
-        if line.startswith("Metric"):
-            if not current_nh:
-                continue
-            _, _, value = line.partition(":")
-            value = value.strip()
-            if value.isdigit():
-                metrics[current_nh] = int(value)
-            current_nh = None
-
-    return metrics
-
 
 def _wait_path_total(
     rt: TopologyRuntime,
@@ -111,24 +34,14 @@ def _wait_path_total(
     timeout: int,
     interval: int = 2,
 ) -> None:
-    deadline = time.time() + timeout
-    last_out = ""
-
-    while time.time() < deadline:
-        out = cmd(rt, device, f"show route ipv4 {destination}", strict=False)
-        last_out = out
-
-        total = _parse_path_total(out)
-        if total is not None and total == expect_total:
-            return
-
-        time.sleep(interval)
-
-    raise RuntimeError(
-        f"{device} route path total mismatch after {timeout}s\n"
-        f"expect total={expect_total} destination={destination}\n"
-        f"command: show route ipv4 {destination}\n"
-        f"last output:\n{last_out}"
+    wait_check(
+        rt,
+        device=device,
+        command=f"show route ipv4 {destination}",
+        timeout=timeout,
+        interval=interval,
+        contains=[f"Total {expect_total} path(s)"],
+        label=f"{device} path-total {destination}={expect_total}",
     )
 
 
@@ -142,36 +55,69 @@ def _wait_route_metrics(
     timeout: int,
     interval: int = 2,
 ) -> None:
+    absent_nhs = absent_nhs or []
+    metric_regex = [
+        rf"(?is)Nexthop\s*:\s*{re.escape(nh)}\b.*?Metric\s*:\s*{metric}\b"
+        for nh, metric in expect_metrics.items()
+    ]
+    wait_check(
+        rt,
+        device=device,
+        command=f"show route ipv4 {destination}",
+        timeout=timeout,
+        interval=interval,
+        regex=metric_regex,
+        not_contains=[f"Nexthop : {nh}" for nh in absent_nhs],
+        label=f"{device} route-metrics {destination}",
+    )
+
+
+def _wait_first_path_os_installed_flag(
+    rt: TopologyRuntime,
+    *,
+    device: str,
+    destination: str,
+    timeout: int,
+    interval: int = 2,
+) -> None:
+    def _path1_flag_set(output: str) -> bool:
+        in_path1 = False
+        for raw in output.splitlines():
+            line = raw.rstrip()
+            m_path = re.match(r"^\s*Path\s*\[(\d+)\]\s*:", line)
+            if m_path:
+                if m_path.group(1) == "1":
+                    in_path1 = True
+                    continue
+                if in_path1:
+                    break
+                continue
+
+            if not in_path1:
+                continue
+
+            m_flag = re.match(r"^\s*Flags\s*:\s*(0x[0-9A-Fa-f]+)\s*$", line)
+            if not m_flag:
+                continue
+            try:
+                value = int(m_flag.group(1), 16)
+            except ValueError:
+                return False
+            return (value & 0x1) != 0
+        return False
+
     deadline = time.time() + timeout
     last_out = ""
-    absent_nhs = absent_nhs or []
-
     while time.time() < deadline:
         out = cmd(rt, device, f"show route ipv4 {destination}", strict=False)
         last_out = out
-
-        metrics = _parse_route_metrics(out)
-
-        ok = True
-        for nh, metric in expect_metrics.items():
-            if metrics.get(nh) != metric:
-                ok = False
-                break
-
-        if ok:
-            for nh in absent_nhs:
-                if nh in metrics:
-                    ok = False
-                    break
-
-        if ok:
+        if _path1_flag_set(out):
             return
-
         time.sleep(interval)
 
     raise RuntimeError(
-        f"{device} route metric mismatch after {timeout}s\n"
-        f"expect metrics={expect_metrics} absent={absent_nhs} destination={destination}\n"
+        f"{device} path[1] os-installed flag check timeout after {timeout}s\n"
+        f"expect: Path [1] contains Flags with bit0 set\n"
         f"command: show route ipv4 {destination}\n"
         f"last output:\n{last_out}"
     )
@@ -183,45 +129,27 @@ def _wait_os_main_gateway(
     device: str,
     prefix: str,
     expect_gateway: str,
+    expect_metric: int,
     timeout: int,
     interval: int = 2,
 ) -> None:
-    deadline = time.time() + timeout
-    last_out = ""
-
-    while time.time() < deadline:
-        out = cmd(rt, device, "show route ipv4 os", strict=False)
-        last_out = out
-
-        total = _parse_os_total(out)
-        if total is None:
-            time.sleep(interval)
-            continue
-
-        rows = _parse_os_rows(out)
-        gateway = None
-        for row in rows:
-            if row["table"] != "main":
-                continue
-            if row["type"] != "unicast":
-                continue
-            if row["proto"] != "static":
-                continue
-            if row["prefix"] != prefix:
-                continue
-            gateway = row["gateway"]
-            break
-
-        if gateway == expect_gateway:
-            return
-
-        time.sleep(interval)
-
-    raise RuntimeError(
-        f"{device} OS best route gateway mismatch after {timeout}s\n"
-        f"expect prefix={prefix} table=main type=unicast proto=static gateway={expect_gateway}\n"
-        f"command: show route ipv4 os\n"
-        f"last output:\n{last_out}"
+    row_regex = (
+        rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+{re.escape(expect_gateway)}\s+"
+        rf"\S+\s+static\s+{expect_metric}\s*$"
+    )
+    stale_metric_regex = (
+        rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+{re.escape(expect_gateway)}\s+"
+        rf"\S+\s+static\s+(?!{expect_metric}\b)\d+\s*$"
+    )
+    wait_check(
+        rt,
+        device=device,
+        command="show route ipv4 os",
+        timeout=timeout,
+        interval=interval,
+        regex=[row_regex],
+        not_regex=[stale_metric_regex],
+        label=f"{device} os-best {prefix} via {expect_gateway} metric={expect_metric}",
     )
 
 
@@ -318,7 +246,15 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             },
             timeout=30,
         )
-        _wait_os_main_gateway(rt, device="r1", prefix=TARGET_PREFIX, expect_gateway=primary_nh, timeout=30)
+        _wait_first_path_os_installed_flag(rt, device="r1", destination=TARGET_PREFIX_ADDR, timeout=30)
+        _wait_os_main_gateway(
+            rt,
+            device="r1",
+            prefix=TARGET_PREFIX,
+            expect_gateway=primary_nh,
+            expect_metric=10,
+            timeout=30,
+        )
 
         step("Raise primary metric and verify route metric update")
         run_cmds(
@@ -341,8 +277,16 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             },
             timeout=30,
         )
+        _wait_first_path_os_installed_flag(rt, device="r1", destination=TARGET_PREFIX_ADDR, timeout=30)
         # Secondary path is recursive and resolves to the same direct gateway on this topology.
-        _wait_os_main_gateway(rt, device="r1", prefix=TARGET_PREFIX, expect_gateway=primary_nh, timeout=30)
+        _wait_os_main_gateway(
+            rt,
+            device="r1",
+            prefix=TARGET_PREFIX,
+            expect_gateway=primary_nh,
+            expect_metric=20,
+            timeout=30,
+        )
 
         step("Lower primary metric and verify route metric update")
         run_cmds(
@@ -365,7 +309,15 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             },
             timeout=30,
         )
-        _wait_os_main_gateway(rt, device="r1", prefix=TARGET_PREFIX, expect_gateway=primary_nh, timeout=30)
+        _wait_first_path_os_installed_flag(rt, device="r1", destination=TARGET_PREFIX_ADDR, timeout=30)
+        _wait_os_main_gateway(
+            rt,
+            device="r1",
+            prefix=TARGET_PREFIX,
+            expect_gateway=primary_nh,
+            expect_metric=5,
+            timeout=30,
+        )
 
         step("Withdraw primary and verify secondary takeover")
         run_cmds(
@@ -388,7 +340,15 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             absent_nhs=[primary_nh],
             timeout=30,
         )
-        _wait_os_main_gateway(rt, device="r1", prefix=TARGET_PREFIX, expect_gateway=primary_nh, timeout=30)
+        _wait_first_path_os_installed_flag(rt, device="r1", destination=TARGET_PREFIX_ADDR, timeout=30)
+        _wait_os_main_gateway(
+            rt,
+            device="r1",
+            prefix=TARGET_PREFIX,
+            expect_gateway=primary_nh,
+            expect_metric=20,
+            timeout=30,
+        )
 
         step("Re-add primary and verify preemption")
         run_cmds(
@@ -411,7 +371,15 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             },
             timeout=30,
         )
-        _wait_os_main_gateway(rt, device="r1", prefix=TARGET_PREFIX, expect_gateway=primary_nh, timeout=30)
+        _wait_first_path_os_installed_flag(rt, device="r1", destination=TARGET_PREFIX_ADDR, timeout=30)
+        _wait_os_main_gateway(
+            rt,
+            device="r1",
+            prefix=TARGET_PREFIX,
+            expect_gateway=primary_nh,
+            expect_metric=1,
+            timeout=30,
+        )
 
         print("Route calc best-path switch check passed.")
     finally:

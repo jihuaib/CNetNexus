@@ -21,6 +21,12 @@
 #define ROUTE_NH_STATE_UNRESOLVED 2u
 
 // ============================================================================
+// route_path 标志位
+// ============================================================================
+
+#define ROUTE_PATH_FLAG_OS_INSTALLED (1u << 0)
+
+// ============================================================================
 // 复合键类型定义
 // ============================================================================
 
@@ -38,8 +44,8 @@ typedef struct route_head_key
 } route_head_key_t;
 
 /**
- * @brief 路径复合键（内嵌于 route_path_t，直接作为 GHashTable 键指针）
- *        使用 protocol + net_addr_equal 进行 hash/equal 比较，创建时须 memset 为 0
+ * @brief 路径复合键（内嵌于 route_path_t，用于同前缀下唯一标识一条路径）
+ *        按 protocol + source 比较，创建时须 memset 为 0
  */
 typedef struct route_path_key
 {
@@ -57,7 +63,7 @@ typedef struct route_path_key
  */
 typedef struct route_path
 {
-    route_path_key_t key;  /**< 内嵌键（GHashTable 键指向 &path->key） */
+    route_path_key_t key;  /**< 内嵌键（用于同前缀下查找） */
     net_addr_t nexthop;    /**< 下一跳地址（二进制） */
     net_addr_t os_nexthop; /**< 下发 OS 的下一跳（默认等于 nexthop） */
     int32_t metric;        /**< 度量值 */
@@ -69,6 +75,7 @@ typedef struct route_path
     uint8_t _pad;          /**< 填充对齐 */
     uint32_t iter_owner_module_id; /**< 注册该迭代路径的 owner module id */
     uint32_t out_ifindex;          /**< 出接口索引（直连路由由 IF 模块填充，其他协议为 0） */
+    uint32_t flags;                /**< 路径状态标志（ROUTE_PATH_FLAG_*） */
     gint64 updated_at_usec;        /**< 最近更新时间（g_get_real_time） */
 } route_path_t;
 
@@ -77,8 +84,8 @@ typedef struct route_path
  */
 typedef struct route_head
 {
-    route_head_key_t key;  /**< 内嵌键（GTree 键指向 &head->key） */
-    GHashTable *path_hash; /**< route_path_key_t* -> route_path_t*（key 内嵌于 value） */
+    route_head_key_t key; /**< 内嵌键（GTree 键指向 &head->key） */
+    GList *path_list;     /**< GList<route_path_t*>（顺序可用于展示；calc 会将最优路径置顶） */
 } route_head_t;
 
 /**
@@ -192,6 +199,13 @@ const route_head_t *route_rib_lookup_head(const route_rib_t *rib, uint32_t vrf_i
  * @return 路径指针（不可修改），未找到返回 NULL
  */
 const route_path_t *route_rib_lookup_path(const route_head_t *head, uint32_t protocol, const net_addr_t *source);
+
+/**
+ * @brief 将指定路径提升到前缀链表首位（用于展示最优路径优先）
+ * @param head 前缀头
+ * @param path 目标路径（必须属于该前缀头）
+ */
+void route_rib_promote_path_first(route_head_t *head, route_path_t *path);
 
 /**
  * @brief 遍历 RIB 中的所有路径

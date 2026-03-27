@@ -92,13 +92,21 @@ int route_static_del(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_add
 int route_static_del_prefix(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr, uint8_t prefix_len);
 
 /**
- * @brief 重新计算所有候选静态路由的 nexthop 可达性，按状态变化写入/撤销 RIB
+ * @brief 指定 nexthop 可达性变化时，更新所有关联的候选静态路由
  *
- * 由 route_recompute_iter_paths 在重算 nh_watch_table 之后调用，确保静态路由跟随
- * CONNECTED/BGP 等路由变化而自动上线或撤销。
+ * 由 route_relay 在 watch 表检测到 nexthop 状态变化时统一回调（与协议迭代走同一流程）。
+ * 遍历候选表中 (vrf_id, afi, nexthop_addr) 匹配的条目，按新状态写入/撤销 RIB。
+ * gateway 和 out_ifindex 由 relay 迭代一次性解析完成，无需二次迭代。
  *
+ * @param vrf_id       VRF ID
+ * @param afi          地址族
+ * @param nexthop_addr 状态发生变化的下一跳地址
+ * @param resolved     新的可达性状态（1=可达，0=不可达）
+ * @param gateway      解析出的直连网关地址（仅 resolved=1 时有效）
+ * @param out_ifindex  解析出的出接口索引（仅 resolved=1 时有效）
  */
-void route_static_recompute(void);
+void route_static_on_nh_change(uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop_addr, int resolved,
+                               const net_addr_t *gateway, uint32_t out_ifindex);
 
 /**
  * @brief 格式化输出候选静态路由表到缓冲区

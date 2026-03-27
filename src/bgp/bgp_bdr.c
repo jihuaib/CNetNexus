@@ -258,13 +258,14 @@ void bgp_bdr_show_config(dev_ipc_message_t *msg)
     GString *out = g_string_new("");
     if (!out)
     {
-        (void)bgp_cli_send_chunked_response(msg, NULL);
+        bgp_send_cli_response(msg, "");
         return;
     }
 
     if (!bdr_append_protocol(out))
     {
-        (void)bgp_cli_send_chunked_response(msg, out);
+        bgp_send_cli_response(msg, out->str);
+        g_string_free(out, TRUE);
         return;
     }
 
@@ -273,5 +274,6 @@ void bgp_bdr_show_config(dev_ipc_message_t *msg)
     bdr_append_af_instances(out);
     g_string_append(out, "!\r\n");
 
-    (void)bgp_cli_send_chunked_response(msg, out);
+    bgp_send_cli_response(msg, out->str);
+    g_string_free(out, TRUE);
 }

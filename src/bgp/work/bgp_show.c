@@ -16,10 +16,14 @@
 #include "bgp_rib.h"
 #include "bgp_session.h"
 #include "bgp_vrf.h"
+#include "bgp_worker.h"
 #include "dev.h"
 #include "errcode.h"
 #include "log.h"
 #include "net_addr.h"
+
+/* show 路径专属分片流状态，仅在 BGP worker 线程访问 */
+static cli_chunk_stream_t g_bgp_show_stream;
 
 static void bgp_show_send_cli_response(dev_ipc_message_t *msg, const char *text)
 {
@@ -31,6 +35,21 @@ static void bgp_show_send_cli_response(dev_ipc_message_t *msg, const char *text)
         dev_ipc_send_response(g_bgp_local->dev_ipc_ctx, resp);
         dev_ipc_message_free(resp);
     }
+}
+
+static int bgp_work_send_chunked_response(dev_ipc_message_t *msg, GString *full_text)
+{
+    return cli_chunk_stream_start(&g_bgp_show_stream, bgp_local_ipc_ctx(), DEV_MODULE_ID_BGP, msg, full_text);
+}
+
+int bgp_work_handle_continue_msg(dev_ipc_message_t *msg)
+{
+    return cli_chunk_stream_continue(&g_bgp_show_stream, bgp_local_ipc_ctx(), DEV_MODULE_ID_BGP, msg);
+}
+
+void bgp_work_show_cleanup(void)
+{
+    cli_chunk_stream_reset(&g_bgp_show_stream);
 }
 
 typedef struct bgp_cli_ctx
@@ -397,13 +416,13 @@ static int handle_bgp_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parse
         return ERRCODE_FAIL;
     }
 
-    if (!g_bgp_local->protocol)
+    if (!g_bgp_work_local->protocol)
     {
         bgp_show_send_cli_response(msg, "BGP Error: BGP not configured.\r\n");
         return ERRCODE_FAIL;
     }
 
-    bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_local->protocol, ctx.vrf_id);
+    bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_work_local->protocol, ctx.vrf_id);
     if (!vrf)
     {
         bgp_show_send_cli_response(msg, "BGP Error: VRF not found.\r\n");
@@ -441,18 +460,18 @@ static int handle_bgp_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parse
         if (!inst || !inst->rib)
         {
             g_string_append(resp_buf, "  (no RIB)\r\n");
-            return bgp_cli_send_chunked_response(msg, resp_buf);
+            return bgp_work_send_chunked_response(msg, resp_buf);
         }
 
         const bgp_rthead_t *head = bgp_rib_lookup_head(inst->rib, &nlri);
         if (!head)
         {
             g_string_append_printf(resp_buf, "  Route %s/%u not found.\r\n", ip_str, masklen);
-            return bgp_cli_send_chunked_response(msg, resp_buf);
+            return bgp_work_send_chunked_response(msg, resp_buf);
         }
 
         bgp_show_route_detail(resp_buf, head);
-        return bgp_cli_send_chunked_response(msg, resp_buf);
+        return bgp_work_send_chunked_response(msg, resp_buf);
     }
 
     g_string_append_printf(resp_buf, "\r\nBGP Routes (AF: %s)\r\n", bgp_af_str(ctx.afi, ctx.safi));
@@ -461,7 +480,7 @@ static int handle_bgp_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parse
     if (!inst || !inst->rib || bgp_rib_route_count(inst->rib) == 0)
     {
         g_string_append(resp_buf, "  (no routes)\r\n\r\n");
-        return bgp_cli_send_chunked_response(msg, resp_buf);
+        return bgp_work_send_chunked_response(msg, resp_buf);
     }
 
     g_string_append_printf(resp_buf, "  Networks: %-6u  Paths: %u\r\n\r\n", bgp_rib_head_count(inst->rib),
@@ -485,7 +504,7 @@ static int handle_bgp_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parse
     g_string_append_printf(resp_buf, "\r\nTotal: %u networks, %u paths\r\n\r\n", show_ctx.listed_heads,
                            show_ctx.listed_routes);
 
-    return bgp_cli_send_chunked_response(msg, resp_buf);
+    return bgp_work_send_chunked_response(msg, resp_buf);
 }
 
 /**
@@ -542,13 +561,13 @@ static int handle_bgp_show_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
         return ERRCODE_FAIL;
     }
 
-    if (!g_bgp_local->protocol)
+    if (!g_bgp_work_local->protocol)
     {
         bgp_show_send_cli_response(msg, "BGP Error: BGP not configured.\r\n");
         return ERRCODE_FAIL;
     }
 
-    bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_local->protocol, ctx.vrf_id);
+    bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_work_local->protocol, ctx.vrf_id);
     if (!vrf)
     {
         bgp_show_send_cli_response(msg, "BGP Error: VRF not found.\r\n");
@@ -610,7 +629,7 @@ static int handle_bgp_show_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
         }
 
         g_string_append(resp_buf, "\r\n");
-        return bgp_cli_send_chunked_response(msg, resp_buf);
+        return bgp_work_send_chunked_response(msg, resp_buf);
     }
 
     net_addr_t ip_addr;
@@ -706,15 +725,18 @@ static int handle_bgp_show_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
     g_string_append_printf(resp_buf, "\r\n  %-24s: %s\r\n", af_label, af_enabled ? "Enabled" : "Disabled");
     g_string_append(resp_buf, "\r\n");
 
-    return bgp_cli_send_chunked_response(msg, resp_buf);
+    return bgp_work_send_chunked_response(msg, resp_buf);
 }
 
-int bgp_cli_handle_show_msg(dev_ipc_message_t *msg)
+int bgp_work_handle_show_msg(dev_ipc_message_t *msg)
 {
     if (!msg || !msg->payload)
     {
         return ERRCODE_FAIL;
     }
+
+    /* 新 show 命令到来时清理上次可能残留的分片状态 */
+    cli_chunk_stream_reset(&g_bgp_show_stream);
 
     cli_tlv_parser_t parser;
     if (cli_tlv_init(&parser, (const uint8_t *)msg->payload, msg->payload_len) != 0)

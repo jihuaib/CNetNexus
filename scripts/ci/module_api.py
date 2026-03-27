@@ -227,14 +227,42 @@ def _build_top_view(top: dict[str, Any]) -> _TopNode:
 
 
 g_top = _GlobalTop()
+_last_step_title: str | None = None
+_failed_step_title: str | None = None
 
 
 def load_global_top(top: dict[str, Any]) -> None:
     g_top.load(top)
 
 
+def reset_last_step() -> None:
+    global _last_step_title, _failed_step_title
+    _last_step_title = None
+    _failed_step_title = None
+
+
+def get_last_step() -> str | None:
+    return _last_step_title
+
+
+def mark_step_failed(step_title: str | None = None) -> None:
+    global _failed_step_title
+    if _failed_step_title:
+        return
+    candidate = step_title or _last_step_title
+    if candidate:
+        _failed_step_title = candidate
+
+
+def get_failed_step() -> str | None:
+    return _failed_step_title
+
+
 def step(title: str) -> None:
-    print(f"\n===== STEP: {title} =====", flush=True)
+    global _last_step_title
+    normalized = str(title).strip() or "Step"
+    _last_step_title = normalized
+    print(f"\n===== STEP: {normalized} =====", flush=True)
 
 
 def require_devices(top: dict, required: Iterable[str]) -> None:
@@ -249,6 +277,71 @@ def require_devices(top: dict, required: Iterable[str]) -> None:
         raise ValueError(f"topology missing required devices: {', '.join(missing)}")
 
 
+def count_occurrences(output: str, token: str) -> int:
+    return output.count(token)
+
+
+def _normalize_count_map(raw: object) -> dict[str, int]:
+    if not isinstance(raw, dict):
+        return {}
+
+    out: dict[str, int] = {}
+    for key, value in raw.items():
+        out[str(key)] = int(value)
+    return out
+
+
+def check_output(
+    output: str,
+    *,
+    contains: Iterable[str] = (),
+    not_contains: Iterable[str] = (),
+    regex: Iterable[str] = (),
+    not_regex: Iterable[str] = (),
+    count: dict[str, int] | None = None,
+    count_ge: dict[str, int] | None = None,
+    count_le: dict[str, int] | None = None,
+) -> list[str]:
+    violations: list[str] = []
+
+    for token in contains:
+        t = str(token)
+        if t not in output:
+            violations.append(f"missing '{t}'")
+
+    for token in not_contains:
+        t = str(token)
+        if t in output:
+            violations.append(f"unexpected '{t}'")
+
+    for pattern in regex:
+        p = str(pattern)
+        if re.search(p, output, flags=re.MULTILINE) is None:
+            violations.append(f"regex not matched /{p}/")
+
+    for pattern in not_regex:
+        p = str(pattern)
+        if re.search(p, output, flags=re.MULTILINE) is not None:
+            violations.append(f"regex unexpectedly matched /{p}/")
+
+    for token, expected in (count or {}).items():
+        got = count_occurrences(output, token)
+        if got != expected:
+            violations.append(f"count('{token}') expect={expected} got={got}")
+
+    for token, expected in (count_ge or {}).items():
+        got = count_occurrences(output, token)
+        if got < expected:
+            violations.append(f"count('{token}') expect>={expected} got={got}")
+
+    for token, expected in (count_le or {}).items():
+        got = count_occurrences(output, token)
+        if got > expected:
+            violations.append(f"count('{token}') expect<={expected} got={got}")
+
+    return violations
+
+
 def cmd(
     rt: TopologyRuntime,
     device: str,
@@ -257,7 +350,11 @@ def cmd(
     strict: bool = True,
     timeout: int | None = None,
 ) -> str:
-    return execCmd(rt, device).exec(command, strict=strict, timeout=timeout)
+    try:
+        return execCmd(rt, device).exec(command, strict=strict, timeout=timeout)
+    except Exception:
+        mark_step_failed()
+        raise
 
 
 def run_cmds(
@@ -291,7 +388,13 @@ def wait_checks(
     Each check item:
       - device: str
       - command: str
-      - contains: list[str]  (all substrings must appear)
+      - contains: list[str]       (all substrings must appear)
+      - not_contains: list[str]   (none of substrings should appear)
+      - regex: list[str]          (all regex patterns must match)
+      - not_regex: list[str]      (none of regex patterns should match)
+      - count: dict[str, int]     (exact substring occurrence count)
+      - count_ge: dict[str, int]  (minimum substring occurrence count)
+      - count_le: dict[str, int]  (maximum substring occurrence count)
       - label: str (optional, used in error text)
     """
     if not checks:
@@ -309,15 +412,30 @@ def wait_checks(
             device = str(chk["device"])
             command = str(chk["command"])
             tokens = [str(x) for x in chk.get("contains", [])]
+            not_tokens = [str(x) for x in chk.get("not_contains", [])]
+            regex_patterns = [str(x) for x in chk.get("regex", [])]
+            not_regex_patterns = [str(x) for x in chk.get("not_regex", [])]
+            count = _normalize_count_map(chk.get("count", {}))
+            count_ge = _normalize_count_map(chk.get("count_ge", {}))
+            count_le = _normalize_count_map(chk.get("count_le", {}))
             label = str(chk.get("label", f"{device}: {command}"))
 
             out = cmd(rt, device, command, strict=False)
-            last_out[device] = out
+            last_out[label] = out
 
-            miss = [t for t in tokens if t not in out]
-            if miss:
+            violations = check_output(
+                out,
+                contains=tokens,
+                not_contains=not_tokens,
+                regex=regex_patterns,
+                not_regex=not_regex_patterns,
+                count=count,
+                count_ge=count_ge,
+                count_le=count_le,
+            )
+            if violations:
                 pending += 1
-                missing_detail.append(f"{label} missing: {', '.join(miss)}")
+                missing_detail.append(f"{label}: {'; '.join(violations)}")
 
         if pending == 0:
             return
@@ -326,7 +444,90 @@ def wait_checks(
         time.sleep(interval)
 
     detail = "\n".join(last_missing)
-    output_dump = "\n\n".join([f"[{dev}]\n{out}" for dev, out in last_out.items()])
+    output_dump = "\n\n".join([f"[{label}]\n{out}" for label, out in last_out.items()])
+    mark_step_failed()
     raise RuntimeError(
         f"checks not satisfied within {timeout}s\n{detail}\n\nlast outputs:\n{output_dump}"
     )
+
+
+def wait_check(
+    rt: TopologyRuntime,
+    *,
+    device: str,
+    command: str,
+    timeout: int,
+    interval: int = 2,
+    contains: Iterable[str] = (),
+    not_contains: Iterable[str] = (),
+    regex: Iterable[str] = (),
+    not_regex: Iterable[str] = (),
+    count: dict[str, int] | None = None,
+    count_ge: dict[str, int] | None = None,
+    count_le: dict[str, int] | None = None,
+    label: str | None = None,
+) -> None:
+    check: dict[str, object] = {
+        "device": device,
+        "command": command,
+        "contains": list(contains),
+        "not_contains": list(not_contains),
+        "regex": list(regex),
+        "not_regex": list(not_regex),
+        "count": dict(count or {}),
+        "count_ge": dict(count_ge or {}),
+        "count_le": dict(count_le or {}),
+    }
+    if label:
+        check["label"] = label
+    wait_checks(rt, [check], timeout=timeout, interval=interval)
+
+
+def hold_check(
+    rt: TopologyRuntime,
+    *,
+    device: str,
+    command: str,
+    duration: int,
+    interval: int = 2,
+    contains: Iterable[str] = (),
+    not_contains: Iterable[str] = (),
+    regex: Iterable[str] = (),
+    not_regex: Iterable[str] = (),
+    count: dict[str, int] | None = None,
+    count_ge: dict[str, int] | None = None,
+    count_le: dict[str, int] | None = None,
+    label: str | None = None,
+) -> None:
+    """
+    Assert output constraints keep holding for the full duration window.
+    Any violation during the window fails immediately.
+    """
+    deadline = time.time() + max(duration, 0)
+    target = label or f"{device}: {command}"
+    last_out = ""
+
+    while True:
+        out = cmd(rt, device, command, strict=False)
+        last_out = out
+        violations = check_output(
+            out,
+            contains=contains,
+            not_contains=not_contains,
+            regex=regex,
+            not_regex=not_regex,
+            count=count,
+            count_ge=count_ge,
+            count_le=count_le,
+        )
+        if violations:
+            mark_step_failed()
+            raise RuntimeError(
+                f"{target} violated during hold window {duration}s: {'; '.join(violations)}\n"
+                f"last output:\n{out}"
+            )
+
+        if time.time() >= deadline:
+            return
+
+        time.sleep(interval)

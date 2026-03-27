@@ -8,7 +8,6 @@
 
 #include <string.h>
 
-#include "log.h"
 #include "route.h"
 
 // ============================================================================
@@ -52,26 +51,30 @@ static gint head_key_cmp(gconstpointer a, gconstpointer b, gpointer userdata)
 }
 
 // ============================================================================
-// GHashTable 哈希与相等函数
+// 路径键比较与查找
 // ============================================================================
 
-/**
- * @brief 路径键哈希（protocol XOR source 地址哈希）
- */
-static guint path_key_hash(gconstpointer p)
+static int path_key_same(const route_path_key_t *a, const route_path_key_t *b)
 {
-    const route_path_key_t *k = (const route_path_key_t *)p;
-    return (guint)k->protocol ^ net_addr_hash(&k->source);
+    return a->protocol == b->protocol && net_addr_equal(&a->source, &b->source);
 }
 
-/**
- * @brief 路径键相等（protocol 相等且 source 地址相等）
- */
-static gboolean path_key_equal(gconstpointer a, gconstpointer b)
+static route_path_t *head_lookup_path_mut(route_head_t *head, const route_path_key_t *key)
 {
-    const route_path_key_t *ka = (const route_path_key_t *)a;
-    const route_path_key_t *kb = (const route_path_key_t *)b;
-    return ka->protocol == kb->protocol && net_addr_equal(&ka->source, &kb->source);
+    if (!head || !key)
+    {
+        return NULL;
+    }
+
+    for (GList *l = head->path_list; l; l = l->next)
+    {
+        route_path_t *path = (route_path_t *)l->data;
+        if (path && path_key_same(&path->key, key))
+        {
+            return path;
+        }
+    }
+    return NULL;
 }
 
 // ============================================================================
@@ -79,7 +82,7 @@ static gboolean path_key_equal(gconstpointer a, gconstpointer b)
 // ============================================================================
 
 /**
- * @brief 释放 route_path_t（供 GHashTable value_destroy_func 使用）
+ * @brief 释放 route_path_t
  */
 static void path_free(gpointer data)
 {
@@ -92,9 +95,9 @@ static void path_free(gpointer data)
 static void head_free(gpointer data)
 {
     route_head_t *head = (route_head_t *)data;
-    if (head->path_hash)
+    if (head->path_list)
     {
-        g_hash_table_destroy(head->path_hash);
+        g_list_free_full(head->path_list, path_free);
     }
     g_free(head);
 }
@@ -122,7 +125,7 @@ static route_head_t *get_or_create_head(route_rib_t *rib, uint32_t vrf_id, uint1
     }
 
     head->key = tmp_key;
-    head->path_hash = g_hash_table_new_full(path_key_hash, path_key_equal, NULL, path_free);
+    head->path_list = NULL;
 
     /* key 内嵌于 value，GTree 直接保存 &head->key 指针，无需单独分配 */
     g_tree_insert(rib->head_tree, &head->key, head);
@@ -180,7 +183,7 @@ int route_rib_add(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, const net_add
     route_path_key_t tmp_key;
     make_path_key(&tmp_key, protocol, source);
 
-    route_path_t *path = (route_path_t *)g_hash_table_lookup(head->path_hash, &tmp_key);
+    route_path_t *path = head_lookup_path_mut(head, &tmp_key);
     int is_new = (path == NULL);
 
     if (is_new)
@@ -191,8 +194,7 @@ int route_rib_add(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, const net_add
             return -1;
         }
         path->key = tmp_key;
-        /* key 内嵌于 value，GHashTable 直接保存 &path->key 指针 */
-        g_hash_table_insert(head->path_hash, &path->key, path);
+        head->path_list = g_list_prepend(head->path_list, path);
         rib->path_count++;
     }
 
@@ -226,7 +228,7 @@ int route_rib_del(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, const net_add
     route_path_key_t path_key;
     make_path_key(&path_key, protocol, source);
 
-    route_path_t *path = (route_path_t *)g_hash_table_lookup(head->path_hash, &path_key);
+    route_path_t *path = head_lookup_path_mut(head, &path_key);
     if (!path)
     {
         return 0;
@@ -238,11 +240,17 @@ int route_rib_del(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, const net_add
         cb(head, path, userdata);
     }
 
-    g_hash_table_remove(head->path_hash, &path_key);
+    GList *found = g_list_find(head->path_list, path);
+    if (!found)
+    {
+        return 0;
+    }
+    head->path_list = g_list_delete_link(head->path_list, found);
+    path_free(path);
     rib->path_count--;
 
     /* 前缀头下没有路径时，从树中移除（head 随即被 head_free 释放） */
-    if (g_hash_table_size(head->path_hash) == 0)
+    if (!head->path_list)
     {
         g_tree_remove(rib->head_tree, &head->key);
         rib->head_count--;
@@ -268,39 +276,26 @@ int route_rib_del_proto_for_prefix(route_rib_t *rib, uint32_t vrf_id, uint16_t a
         return 0;
     }
 
-    /* 先收集匹配路径键的副本（避免边遍历边删除） */
-    GArray *keys_to_del = g_array_new(FALSE, FALSE, sizeof(route_path_key_t));
-    GHashTableIter iter;
-    gpointer key_ptr, val_ptr;
-    g_hash_table_iter_init(&iter, head->path_hash);
-    while (g_hash_table_iter_next(&iter, &key_ptr, &val_ptr))
-    {
-        route_path_t *p = (route_path_t *)val_ptr;
-        if (p->key.protocol == protocol)
-        {
-            g_array_append_val(keys_to_del, p->key);
-        }
-    }
-
     int count = 0;
-    for (guint i = 0; i < keys_to_del->len; i++)
+    for (GList *l = head->path_list; l;)
     {
-        route_path_key_t *pk = &g_array_index(keys_to_del, route_path_key_t, i);
-        route_path_t *p = (route_path_t *)g_hash_table_lookup(head->path_hash, pk);
-        if (p)
+        GList *next = l->next;
+        route_path_t *p = (route_path_t *)l->data;
+        if (p && p->key.protocol == protocol)
         {
             if (cb)
             {
                 cb(head, p, userdata);
             }
-            g_hash_table_remove(head->path_hash, pk);
+            head->path_list = g_list_delete_link(head->path_list, l);
+            path_free(p);
             rib->path_count--;
             count++;
         }
+        l = next;
     }
-    g_array_free(keys_to_del, TRUE);
 
-    if (g_hash_table_size(head->path_hash) == 0)
+    if (!head->path_list)
     {
         g_tree_remove(rib->head_tree, &head->key);
         rib->head_count--;
@@ -335,7 +330,24 @@ const route_path_t *route_rib_lookup_path(const route_head_t *head, uint32_t pro
 
     route_path_key_t key;
     make_path_key(&key, protocol, source);
-    return (const route_path_t *)g_hash_table_lookup(head->path_hash, &key);
+    return (const route_path_t *)head_lookup_path_mut((route_head_t *)head, &key);
+}
+
+void route_rib_promote_path_first(route_head_t *head, route_path_t *path)
+{
+    if (!head || !path || !head->path_list || head->path_list->data == path)
+    {
+        return;
+    }
+
+    GList *found = g_list_find(head->path_list, path);
+    if (!found)
+    {
+        return;
+    }
+
+    head->path_list = g_list_delete_link(head->path_list, found);
+    head->path_list = g_list_prepend(head->path_list, path);
 }
 
 // ============================================================================
@@ -362,12 +374,13 @@ static gboolean walk_head(gpointer key, gpointer value, gpointer data)
         return FALSE;
     }
 
-    GHashTableIter iter;
-    gpointer k, v;
-    g_hash_table_iter_init(&iter, head->path_hash);
-    while (g_hash_table_iter_next(&iter, &k, &v))
+    for (GList *l = head->path_list; l; l = l->next)
     {
-        route_path_t *path = (route_path_t *)v;
+        route_path_t *path = (route_path_t *)l->data;
+        if (!path)
+        {
+            continue;
+        }
         /* 协议过滤 */
         if (ctx->proto_filter != ROUTE_PROTOCOL_MAX && path->key.protocol != ctx->proto_filter)
         {

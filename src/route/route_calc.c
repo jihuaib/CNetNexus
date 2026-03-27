@@ -66,6 +66,31 @@ static int path_key_same(const route_path_key_t *a, const route_path_key_t *b)
     return a->protocol == b->protocol && net_addr_equal(&a->source, &b->source);
 }
 
+/* 同步前缀下路径的 OS-installed 标记：仅 installed_key 对应路径置位，其余清零 */
+static void sync_os_installed_flag(route_head_t *head, const route_path_key_t *installed_key)
+{
+    if (!head)
+    {
+        return;
+    }
+    for (GList *l = head->path_list; l; l = l->next)
+    {
+        route_path_t *path = (route_path_t *)l->data;
+        if (!path)
+        {
+            continue;
+        }
+        if (installed_key && path_key_same(&path->key, installed_key))
+        {
+            path->flags |= ROUTE_PATH_FLAG_OS_INSTALLED;
+        }
+        else
+        {
+            path->flags &= ~ROUTE_PATH_FLAG_OS_INSTALLED;
+        }
+    }
+}
+
 // ============================================================================
 // 辅助：从 head + path 构建路由条目（OS 下发 + 订阅通知共用）
 // ============================================================================
@@ -89,49 +114,41 @@ static void build_entry(route_msg_entry_t *e, const route_head_t *head, const ro
 }
 
 // ============================================================================
-// 辅助：在 path_hash 中选最优路径
+// 辅助：在 path_list 中选最优路径
 //   - preference 越小越优先（管理距离）
 //   - preference 相等时 metric 越小越优先
 //   - skip_key != NULL 时跳过该路径（用于路径删除前的重算场景）
 // ============================================================================
 
-typedef struct
-{
-    const route_path_key_t *skip_key; /**< 待跳过的路径键（可为 NULL） */
-    const route_path_t *best;         /**< 当前最优路径 */
-} select_ctx_t;
-
-static void select_iter(gpointer key_ptr, gpointer val_ptr, gpointer user_data)
-{
-    (void)key_ptr;
-    const route_path_t *path = (const route_path_t *)val_ptr;
-    select_ctx_t *sctx = (select_ctx_t *)user_data;
-
-    /* 跳过待删路径 */
-    if (sctx->skip_key && path_key_same(&path->key, sctx->skip_key))
-    {
-        return;
-    }
-
-    if (!sctx->best)
-    {
-        sctx->best = path;
-        return;
-    }
-
-    /* preference 越小越优；相等时 metric 越小越优 */
-    if (path->preference < sctx->best->preference ||
-        (path->preference == sctx->best->preference && path->metric < sctx->best->metric))
-    {
-        sctx->best = path;
-    }
-}
-
 static const route_path_t *select_best_path(const route_head_t *head, const route_path_key_t *skip_key)
 {
-    select_ctx_t sctx = {.skip_key = skip_key, .best = NULL};
-    g_hash_table_foreach(head->path_hash, select_iter, &sctx);
-    return sctx.best;
+    const route_path_t *best = NULL;
+    if (!head)
+    {
+        return NULL;
+    }
+
+    for (GList *l = head->path_list; l; l = l->next)
+    {
+        const route_path_t *path = (const route_path_t *)l->data;
+        if (!path)
+        {
+            continue;
+        }
+
+        /* 跳过待删路径 */
+        if (skip_key && path_key_same(&path->key, skip_key))
+        {
+            continue;
+        }
+
+        if (!best || path->preference < best->preference ||
+            (path->preference == best->preference && path->metric < best->metric))
+        {
+            best = path;
+        }
+    }
+    return best;
 }
 
 // ============================================================================
@@ -181,6 +198,7 @@ static void update_prefix(const route_head_t *head, const route_path_key_t *skip
             }
             g_hash_table_remove(g_calc_table, &head->key);
         }
+        sync_os_installed_flag((route_head_t *)head, NULL);
         return;
     }
 
@@ -194,6 +212,8 @@ static void update_prefix(const route_head_t *head, const route_path_key_t *skip
         if (net_addr_equal(&new_entry.nexthop_addr, &cur->entry.nexthop_addr) &&
             new_entry.metric == cur->entry.metric && new_entry.out_ifindex == cur->entry.out_ifindex)
         {
+            route_rib_promote_path_first((route_head_t *)head, (route_path_t *)new_best);
+            sync_os_installed_flag((route_head_t *)head, &new_best->key);
             return;
         }
 
@@ -208,12 +228,24 @@ static void update_prefix(const route_head_t *head, const route_path_key_t *skip
                      (unsigned)head->key.prefix_len, head->key.vrf_id, new_best->key.protocol);
             return;
         }
+
+        /*
+         * metric/next-hop/oif 变化时，RTM_NEWROUTE+REPLACE 可能保留旧属性路由项。
+         * 新项安装成功后再撤销旧项，避免窗口期路由中断，同时清理残留旧 metric。
+         */
+        if (route_os_withdraw(&cur->entry) != 0)
+        {
+            LOG_WARN("[route_calc] OS 旧路径撤销失败，可能存在残留旧属性路由: %s/%u vrf=%u proto=%u", addr_str,
+                     (unsigned)head->key.prefix_len, head->key.vrf_id, new_best->key.protocol);
+        }
         /* 属性更新：发送 add（upsert 语义，订阅者按 prefix+protocol+source 幂等处理） */
         if (subscribers)
         {
             route_pub_notify_entry(subscribers, &new_entry);
         }
         cur->entry = new_entry;
+        route_rib_promote_path_first((route_head_t *)head, (route_path_t *)new_best);
+        sync_os_installed_flag((route_head_t *)head, &new_best->key);
         return;
     }
 
@@ -247,6 +279,15 @@ static void update_prefix(const route_head_t *head, const route_path_key_t *skip
         return;
     }
 
+    if (cur && route_os_withdraw(&cur->entry) != 0)
+    {
+        char addr_str[64];
+        net_addr_to_str(&head->key.addr, addr_str, sizeof(addr_str));
+        LOG_WARN("[route_calc] OS 旧最优撤销失败，可能存在残留旧属性路由: %s/%u vrf=%u old-proto=%u new-proto=%u",
+                 addr_str, (unsigned)head->key.prefix_len, head->key.vrf_id, cur->path_key.protocol,
+                 new_best->key.protocol);
+    }
+
     /* 安装成功后再发通知，避免通知与 OS 状态不一致 */
     if (cur && subscribers)
     {
@@ -258,6 +299,8 @@ static void update_prefix(const route_head_t *head, const route_path_key_t *skip
     {
         route_pub_notify_entry(subscribers, &new_entry);
     }
+    route_rib_promote_path_first((route_head_t *)head, (route_path_t *)new_best);
+    sync_os_installed_flag((route_head_t *)head, &new_best->key);
 
     if (!cur)
     {

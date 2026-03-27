@@ -205,14 +205,11 @@ int route_static_add(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_add
     entry->metric = metric;
     entry->preference = preference;
 
-    /* 向通用 relay watch 表注册 nexthop，同时获取当前可达性 */
-    int resolved = route_relay_register_direct(vrf_id, afi, nexthop_addr, DEV_MODULE_ID_ROUTE);
-    net_addr_t os_nexthop = *nexthop_addr;
+    /* 向通用 relay watch 表注册 nexthop，一次迭代同时获取可达性 + 网关 + 出接口 */
+    net_addr_t os_nexthop;
     uint32_t oif = 0;
-    if (resolved)
-    {
-        resolved = route_relay_nh_resolve_gateway(vrf_id, afi, nexthop_addr, &os_nexthop, &oif);
-    }
+    memset(&os_nexthop, 0, sizeof(os_nexthop));
+    int resolved = route_relay_register_direct(vrf_id, afi, nexthop_addr, DEV_MODULE_ID_ROUTE, &os_nexthop, &oif);
     entry->nh_resolved = resolved ? 1u : 0u;
 
     if (resolved)
@@ -410,89 +407,51 @@ int route_static_del_prefix(uint32_t vrf_id, uint16_t afi, const net_addr_t *pre
 }
 
 // ============================================================================
-// 全量重算候选静态路由的 nexthop 可达性
+// nexthop 状态变化回调（由 relay 统一触发，与协议迭代同一流程）
 // ============================================================================
 
 typedef struct
 {
-    uint32_t total;
+    uint32_t vrf_id;
+    uint16_t afi;
+    const net_addr_t *nexthop_addr;
+    int resolved;
+    const net_addr_t *gateway; /**< relay 已解析的直连网关 */
+    uint32_t out_ifindex;      /**< relay 已解析的出接口 */
     uint32_t added;
     uint32_t withdrawn;
-} static_recompute_ctx_t;
+} static_nh_change_ctx_t;
 
-static int static_path_match_install_state(const route_static_entry_t *entry, const net_addr_t *os_nexthop,
-                                           uint32_t out_ifindex)
-{
-    if (!entry || !os_nexthop || !g_route_local || !g_route_local->rib)
-    {
-        return 0;
-    }
-
-    const route_head_t *head = route_rib_lookup_head(g_route_local->rib, entry->key.vrf_id, entry->key.afi,
-                                                     &entry->key.prefix_addr, entry->key.prefix_len);
-    if (!head)
-    {
-        return 0;
-    }
-
-    const route_path_t *path = route_rib_lookup_path(head, ROUTE_PROTOCOL_STATIC, &entry->key.nexthop_addr);
-    if (!path)
-    {
-        return 0;
-    }
-
-    return net_addr_equal(&path->os_nexthop, os_nexthop) && path->out_ifindex == out_ifindex &&
-           path->metric == entry->metric && path->preference == entry->preference;
-}
-
-static void static_recompute_cb(gpointer key_ptr, gpointer value_ptr, gpointer user_data)
+static void static_nh_change_cb(gpointer key_ptr, gpointer value_ptr, gpointer user_data)
 {
     (void)key_ptr;
     route_static_entry_t *entry = (route_static_entry_t *)value_ptr;
-    static_recompute_ctx_t *rctx = (static_recompute_ctx_t *)user_data;
-    if (!entry || !rctx || !g_route_local)
+    static_nh_change_ctx_t *ctx = (static_nh_change_ctx_t *)user_data;
+    if (!entry || !ctx || !g_route_local)
     {
         return;
     }
 
-    rctx->total++;
-
-    int resolved = route_relay_nh_is_resolved(entry->key.vrf_id, entry->key.afi, &entry->key.nexthop_addr);
-    net_addr_t os_nexthop = entry->key.nexthop_addr;
-    uint32_t oif = 0;
-    if (resolved)
-    {
-        resolved = route_relay_nh_resolve_gateway(entry->key.vrf_id, entry->key.afi, &entry->key.nexthop_addr,
-                                                  &os_nexthop, &oif);
-    }
-    uint8_t new_resolved = resolved ? 1u : 0u;
-    int install_state_same = (resolved && entry->in_rib) ? static_path_match_install_state(entry, &os_nexthop, oif) : 0;
-
-    /* 状态与安装属性均一致时跳过 */
-    if (new_resolved == entry->nh_resolved && entry->in_rib == new_resolved && (!new_resolved || install_state_same))
+    /* 只处理匹配 (vrf, afi, nexthop) 的条目 */
+    if (entry->key.vrf_id != ctx->vrf_id || entry->key.afi != ctx->afi ||
+        !net_addr_equal(&entry->key.nexthop_addr, ctx->nexthop_addr))
     {
         return;
     }
 
-    entry->nh_resolved = new_resolved;
+    entry->nh_resolved = ctx->resolved ? 1u : 0u;
 
-    if (resolved)
+    if (ctx->resolved)
     {
-        if (!entry->in_rib || !install_state_same)
+        /* nexthop 变可达：直接使用 relay 已解析的网关+出接口写入 RIB */
+        int ret =
+            route_add_and_notify(entry->key.vrf_id, entry->key.afi, &entry->key.prefix_addr, entry->key.prefix_len,
+                                 ROUTE_PROTOCOL_STATIC, &entry->key.nexthop_addr, &entry->key.nexthop_addr,
+                                 ctx->gateway, entry->metric, entry->preference, ctx->out_ifindex);
+        if (ret >= 0 && !entry->in_rib)
         {
-            int ret =
-                route_add_and_notify(entry->key.vrf_id, entry->key.afi, &entry->key.prefix_addr, entry->key.prefix_len,
-                                     ROUTE_PROTOCOL_STATIC, &entry->key.nexthop_addr, &entry->key.nexthop_addr,
-                                     &os_nexthop, entry->metric, entry->preference, oif);
-            if (ret >= 0)
-            {
-                if (!entry->in_rib)
-                {
-                    rctx->added++;
-                }
-                entry->in_rib = 1U;
-                /* OS 下发由 route_add_and_notify 内部调用 route_calc_on_path_add 完成 */
-            }
+            entry->in_rib = 1u;
+            ctx->added++;
         }
     }
     else if (entry->in_rib)
@@ -501,28 +460,35 @@ static void static_recompute_cb(gpointer key_ptr, gpointer value_ptr, gpointer u
         route_rib_del(g_route_local->rib, entry->key.vrf_id, entry->key.afi, &entry->key.prefix_addr,
                       entry->key.prefix_len, ROUTE_PROTOCOL_STATIC, &entry->key.nexthop_addr, on_static_rib_del, NULL);
         entry->in_rib = 0u;
-        rctx->withdrawn++;
+        ctx->withdrawn++;
     }
 }
 
-void route_static_recompute(void)
+void route_static_on_nh_change(uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop_addr, int resolved,
+                               const net_addr_t *gateway, uint32_t out_ifindex)
 {
-    if (!g_static_table || g_hash_table_size(g_static_table) == 0)
+    if (!g_static_table || g_hash_table_size(g_static_table) == 0 || !nexthop_addr)
     {
         return;
     }
 
-    static_recompute_ctx_t rctx = {
-        .total = 0u,
+    static_nh_change_ctx_t ctx = {
+        .vrf_id = vrf_id,
+        .afi = afi,
+        .nexthop_addr = nexthop_addr,
+        .resolved = resolved,
+        .gateway = gateway,
+        .out_ifindex = out_ifindex,
         .added = 0u,
         .withdrawn = 0u,
     };
 
-    g_hash_table_foreach(g_static_table, static_recompute_cb, &rctx);
+    g_hash_table_foreach(g_static_table, static_nh_change_cb, &ctx);
 
-    if (rctx.added > 0 || rctx.withdrawn > 0)
+    if (ctx.added > 0 || ctx.withdrawn > 0)
     {
-        LOG_DEBUG("Static route recompute: total=%u added=%u withdrawn=%u", rctx.total, rctx.added, rctx.withdrawn);
+        LOG_DEBUG("Static nh-change: vrf=%u afi=%u resolved=%d added=%u withdrawn=%u", vrf_id, afi, resolved, ctx.added,
+                  ctx.withdrawn);
     }
 }
 

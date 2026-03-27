@@ -36,28 +36,10 @@
 int bgp_cli_handle_config_msg(dev_ipc_message_t *msg);
 
 /**
- * @brief 处理 show 类 CLI 命令（group 9-10），在 BGP worker 线程调用
- *
- * 需访问 BGP worker 线程独占的运行时状态（show_stream、连接状态等）。
- * @param msg 消息（调用者持有所有权，调用后仍需 free）
- * @return ERRCODE_SUCCESS 成功
- */
-int bgp_cli_handle_show_msg(dev_ipc_message_t *msg);
-
-/**
- * @brief 处理 CLI continue 消息（在 BGP worker 线程调用）
- * @param msg 消息
- * @return ERRCODE_SUCCESS 成功
- */
-int bgp_cli_handle_continue(dev_ipc_message_t *msg);
-void bgp_cli_cleanup_state(void);
-
-/**
- * @brief 通过 BGP CLI 分片流发送文本（供 show 与 show current-configuration 共用）
+ * @brief 发送单包 CLI 响应（CLI_MSG_TYPE_RESP）
  * @param msg 原始请求消息
- * @param full_text 完整文本（函数接管所有权，可为 NULL）
- * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL
+ * @param text 响应文本（NULL 视为空串）
  */
-int bgp_cli_send_chunked_response(dev_ipc_message_t *msg, GString *full_text);
+void bgp_send_cli_response(dev_ipc_message_t *msg, const char *text);
 
 #endif // BGP_CLI_H

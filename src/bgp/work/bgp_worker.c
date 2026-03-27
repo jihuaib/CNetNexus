@@ -43,6 +43,8 @@ static char bgp_listen_tag;
 /** epoll data.ptr sentinel：区分 worker->server 命令事件 */
 static char bgp_cmd_tag;
 
+bgp_work_local_t *g_bgp_work_local = NULL;
+
 static void bgp_worker_runtime_cleanup(void);
 
 // ============================================================================
@@ -135,15 +137,15 @@ static int bgp_worker_cmd_wait(bgp_worker_cmd_t *cmd)
 
 static int bgp_worker_cmd_enqueue(bgp_worker_cmd_t *cmd)
 {
-    if (!cmd || !g_bgp_local || !g_bgp_local->cmd_queue || g_bgp_local->cmd_eventfd < 0)
+    if (!cmd || !g_bgp_work_local->cmd_queue || g_bgp_work_local->cmd_eventfd < 0)
     {
         return -1;
     }
 
-    g_async_queue_push(g_bgp_local->cmd_queue, cmd);
+    g_async_queue_push(g_bgp_work_local->cmd_queue, cmd);
 
     uint64_t one = 1;
-    if (write(g_bgp_local->cmd_eventfd, &one, sizeof(one)) != (ssize_t)sizeof(one))
+    if (write(g_bgp_work_local->cmd_eventfd, &one, sizeof(one)) != (ssize_t)sizeof(one))
     {
         if (errno != EAGAIN && errno != EWOULDBLOCK)
         {
@@ -156,13 +158,13 @@ static int bgp_worker_cmd_enqueue(bgp_worker_cmd_t *cmd)
 
 static void bgp_worker_cmd_drain_queue(void)
 {
-    if (!g_bgp_local || !g_bgp_local->cmd_queue)
+    if (!g_bgp_work_local->cmd_queue)
     {
         return;
     }
 
     bgp_worker_cmd_t *cmd = NULL;
-    while ((cmd = (bgp_worker_cmd_t *)g_async_queue_try_pop(g_bgp_local->cmd_queue)) != NULL)
+    while ((cmd = (bgp_worker_cmd_t *)g_async_queue_try_pop(g_bgp_work_local->cmd_queue)) != NULL)
     {
         if (cmd->msg)
         {
@@ -206,7 +208,7 @@ void bgp_server_reset_all_sessions(bgp_vrf_t *vrf)
         bgp_session_t *sess = (bgp_session_t *)value;
         if (sess && (sess->pri_conn || sess->sec_conn))
         {
-            bgp_neighbor_down(sess, g_bgp_local->epoll_fd);
+            bgp_neighbor_down(sess, g_bgp_work_local->epoll_fd);
         }
     }
 }
@@ -218,7 +220,7 @@ void bgp_server_reset_all_sessions(bgp_vrf_t *vrf)
  */
 void bgp_server_rearm_retry_timers(bgp_vrf_t *vrf)
 {
-    if (!vrf || !vrf->sess_hash || !g_bgp_local)
+    if (!vrf || !vrf->sess_hash)
     {
         return;
     }
@@ -236,8 +238,8 @@ void bgp_server_rearm_retry_timers(bgp_vrf_t *vrf)
         {
             continue;
         }
-        bgp_session_cancel_retry(sess, g_bgp_local->epoll_fd);
-        bgp_session_arm_retry(sess, g_bgp_local->epoll_fd, retry_sec);
+        bgp_session_cancel_retry(sess, g_bgp_work_local->epoll_fd);
+        bgp_session_arm_retry(sess, g_bgp_work_local->epoll_fd, retry_sec);
     }
 }
 
@@ -318,12 +320,12 @@ static int bgp_import_route_entry(const route_msg_entry_t *entry)
         return 0;
     }
 
-    if (!g_bgp_local || !g_bgp_local->protocol)
+    if (!g_bgp_work_local->protocol)
     {
         return 0;
     }
 
-    bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_local->protocol, entry->vrf_id);
+    bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_work_local->protocol, entry->vrf_id);
     if (!vrf)
     {
         return 0;
@@ -544,10 +546,10 @@ static void bgp_worker_dispatch_show_cli_cmd(dev_ipc_message_t *msg)
     switch (msg->msg_type)
     {
         case CLI_MSG_TYPE:
-            (void)bgp_cli_handle_show_msg(msg);
+            (void)bgp_work_handle_show_msg(msg);
             break;
         case CLI_MSG_TYPE_CONTINUE:
-            (void)bgp_cli_handle_continue(msg);
+            (void)bgp_work_handle_continue_msg(msg);
             break;
         default:
             LOG_WARN("BGP: unsupported show CLI message type=0x%08X", msg->msg_type);
@@ -608,13 +610,13 @@ static void bgp_worker_dispatch_route_msg(dev_ipc_message_t *msg)
 
 static gboolean bgp_process_cmd_event(void)
 {
-    if (!g_bgp_local || g_bgp_local->cmd_eventfd < 0 || !g_bgp_local->cmd_queue)
+    if (g_bgp_work_local->cmd_eventfd < 0 || !g_bgp_work_local->cmd_queue)
     {
         return FALSE;
     }
 
     uint64_t v;
-    while (read(g_bgp_local->cmd_eventfd, &v, sizeof(v)) > 0)
+    while (read(g_bgp_work_local->cmd_eventfd, &v, sizeof(v)) > 0)
     {
         /* drain eventfd counter */
     }
@@ -625,7 +627,7 @@ static gboolean bgp_process_cmd_event(void)
 
     gboolean stop = FALSE;
     bgp_worker_cmd_t *cmd = NULL;
-    while ((cmd = (bgp_worker_cmd_t *)g_async_queue_try_pop(g_bgp_local->cmd_queue)) != NULL)
+    while ((cmd = (bgp_worker_cmd_t *)g_async_queue_try_pop(g_bgp_work_local->cmd_queue)) != NULL)
     {
         switch (cmd->type)
         {
@@ -644,7 +646,7 @@ static gboolean bgp_process_cmd_event(void)
                 break;
 
             case BGP_WORKER_CMD_TYPE_SHUTDOWN:
-                g_bgp_local->running = 0;
+                g_bgp_work_local->running = 0;
                 stop = TRUE;
                 break;
 
@@ -676,11 +678,11 @@ static gboolean bgp_process_cmd_event(void)
 
 void bgp_listen_start(void)
 {
-    if (!g_bgp_local || g_bgp_local->epoll_fd < 0)
+    if (g_bgp_work_local->epoll_fd < 0)
     {
         return;
     }
-    if (g_bgp_local->listen_fd >= 0)
+    if (g_bgp_work_local->listen_fd >= 0)
     {
         return; /* 已在监听，幂等 */
     }
@@ -719,29 +721,29 @@ void bgp_listen_start(void)
     struct epoll_event ev;
     ev.events = EPOLLIN;
     ev.data.ptr = &bgp_listen_tag;
-    if (epoll_ctl(g_bgp_local->epoll_fd, EPOLL_CTL_ADD, fd, &ev) < 0)
+    if (epoll_ctl(g_bgp_work_local->epoll_fd, EPOLL_CTL_ADD, fd, &ev) < 0)
     {
         LOG_PERROR("BGP: epoll_ctl ADD listen fd failed");
         close(fd);
         return;
     }
 
-    g_bgp_local->listen_fd = fd;
+    g_bgp_work_local->listen_fd = fd;
     LOG_INFO("BGP: Listening on 0.0.0.0:179 (fd=%d)", fd);
 }
 
 void bgp_listen_stop(void)
 {
-    if (!g_bgp_local || g_bgp_local->listen_fd < 0)
+    if (g_bgp_work_local->listen_fd < 0)
     {
         return;
     }
-    if (g_bgp_local->epoll_fd >= 0)
+    if (g_bgp_work_local->epoll_fd >= 0)
     {
-        epoll_ctl(g_bgp_local->epoll_fd, EPOLL_CTL_DEL, g_bgp_local->listen_fd, NULL);
+        epoll_ctl(g_bgp_work_local->epoll_fd, EPOLL_CTL_DEL, g_bgp_work_local->listen_fd, NULL);
     }
-    close(g_bgp_local->listen_fd);
-    g_bgp_local->listen_fd = -1;
+    close(g_bgp_work_local->listen_fd);
+    g_bgp_work_local->listen_fd = -1;
     LOG_INFO("BGP: Stopped listening on 0.0.0.0:179");
 }
 
@@ -762,7 +764,7 @@ static void bgp_conn_close(bgp_conn_t **slot)
     bgp_conn_t *conn = *slot;
     if (conn->fd >= 0)
     {
-        epoll_ctl(g_bgp_local->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
+        epoll_ctl(g_bgp_work_local->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
     }
     bgp_conn_destroy(conn);
     *slot = NULL;
@@ -789,11 +791,11 @@ static void bgp_session_promote_sec(bgp_session_t *sess)
  */
 static void bgp_handle_passive_accept(void)
 {
-    bgp_protocol_t *proto = g_bgp_local->protocol;
+    bgp_protocol_t *proto = g_bgp_work_local->protocol;
 
     struct sockaddr_storage peer_sa;
     socklen_t addr_len = sizeof(peer_sa);
-    int conn_fd = accept(g_bgp_local->listen_fd, (struct sockaddr *)&peer_sa, &addr_len);
+    int conn_fd = accept(g_bgp_work_local->listen_fd, (struct sockaddr *)&peer_sa, &addr_len);
 
     if (conn_fd < 0)
     {
@@ -873,7 +875,7 @@ static void bgp_handle_passive_accept(void)
     struct epoll_event ev;
     ev.events = EPOLLIN;
     ev.data.ptr = conn;
-    if (epoll_ctl(g_bgp_local->epoll_fd, EPOLL_CTL_ADD, conn_fd, &ev) < 0)
+    if (epoll_ctl(g_bgp_work_local->epoll_fd, EPOLL_CTL_ADD, conn_fd, &ev) < 0)
     {
         LOG_PERROR("BGP: epoll_ctl ADD passive connection failed");
         bgp_conn_destroy(conn);
@@ -900,7 +902,7 @@ static void bgp_handle_passive_accept(void)
     }
 
     /* 触发 FSM 事件：发送 OPEN 并迁移状态 */
-    bgp_fsm_event(sess, conn, BGP_EVT_TCP_CONNECTION_CONFIRMED, g_bgp_local->epoll_fd);
+    bgp_fsm_event(sess, conn, BGP_EVT_TCP_CONNECTION_CONFIRMED, g_bgp_work_local->epoll_fd);
 }
 
 /**
@@ -920,7 +922,7 @@ static void bgp_handle_active_connect(bgp_conn_t *conn)
     if (err != 0)
     {
         LOG_WARN("BGP: Active connection to %s failed: %s (fd=%d)", addr_str, strerror(err), conn->fd);
-        bgp_fsm_event(sess, conn, BGP_EVT_TCP_CONNECTION_FAILS, g_bgp_local->epoll_fd);
+        bgp_fsm_event(sess, conn, BGP_EVT_TCP_CONNECTION_FAILS, g_bgp_work_local->epoll_fd);
         return;
     }
 
@@ -939,9 +941,9 @@ static void bgp_handle_active_connect(bgp_conn_t *conn)
     struct epoll_event ev;
     ev.events = EPOLLIN;
     ev.data.ptr = conn;
-    epoll_ctl(g_bgp_local->epoll_fd, EPOLL_CTL_MOD, conn->fd, &ev);
+    epoll_ctl(g_bgp_work_local->epoll_fd, EPOLL_CTL_MOD, conn->fd, &ev);
 
-    bgp_fsm_event(sess, conn, BGP_EVT_TCP_CR_ACKED, g_bgp_local->epoll_fd);
+    bgp_fsm_event(sess, conn, BGP_EVT_TCP_CR_ACKED, g_bgp_work_local->epoll_fd);
 }
 
 /**
@@ -951,7 +953,7 @@ static void bgp_handle_data(bgp_conn_t *conn)
 {
     bgp_session_t *sess = conn->session;
     bgp_conn_state_t old_conn_state = conn->state;
-    int epoll_fd = g_bgp_local->epoll_fd;
+    int epoll_fd = g_bgp_work_local->epoll_fd;
 
     int ret = bgp_pkt_on_data(conn);
 
@@ -1014,7 +1016,7 @@ static void bgp_handle_ka_timer(bgp_session_t *sess)
     {
         LOG_PERROR("BGP: Failed to read ka timerfd");
     }
-    bgp_fsm_event(sess, sess->pri_conn, BGP_EVT_KEEPALIVE_TIMER_EXPIRED, g_bgp_local->epoll_fd);
+    bgp_fsm_event(sess, sess->pri_conn, BGP_EVT_KEEPALIVE_TIMER_EXPIRED, g_bgp_work_local->epoll_fd);
 }
 
 static void bgp_handle_hold_timer(bgp_session_t *sess)
@@ -1024,7 +1026,7 @@ static void bgp_handle_hold_timer(bgp_session_t *sess)
     {
         LOG_PERROR("BGP: Failed to read hold timerfd");
     }
-    bgp_fsm_event(sess, sess->pri_conn, BGP_EVT_HOLD_TIMER_EXPIRED, g_bgp_local->epoll_fd);
+    bgp_fsm_event(sess, sess->pri_conn, BGP_EVT_HOLD_TIMER_EXPIRED, g_bgp_work_local->epoll_fd);
 }
 
 static void bgp_handle_retry_timer(bgp_session_t *sess)
@@ -1036,15 +1038,15 @@ static void bgp_handle_retry_timer(bgp_session_t *sess)
     }
 
     /* 守卫：若邻居 AF 已删除，取消定时器并退出 */
-    bgp_protocol_t *proto = g_bgp_local->protocol;
+    bgp_protocol_t *proto = g_bgp_work_local->protocol;
     bgp_vrf_t *vrf0 = proto ? bgp_protocol_get_vrf(proto, BGP_VRF_PUBLIC_ID) : NULL;
     if (!vrf0 || !bgp_vrf_neighbor_has_any_af(vrf0, &sess->neighbor_addr))
     {
-        bgp_session_cancel_retry(sess, g_bgp_local->epoll_fd);
+        bgp_session_cancel_retry(sess, g_bgp_work_local->epoll_fd);
         return;
     }
 
-    bgp_fsm_event(sess, NULL, BGP_EVT_CONNECT_RETRY_EXPIRED, g_bgp_local->epoll_fd);
+    bgp_fsm_event(sess, NULL, BGP_EVT_CONNECT_RETRY_EXPIRED, g_bgp_work_local->epoll_fd);
 }
 
 // ============================================================================
@@ -1059,9 +1061,9 @@ static void *bgp_worker_thread(void *arg)
 
     struct epoll_event events[BGP_MAX_EPOLL_EVENTS];
 
-    while (g_bgp_local && g_bgp_local->running)
+    while (g_bgp_work_local->running)
     {
-        int nfds = epoll_wait(g_bgp_local->epoll_fd, events, BGP_MAX_EPOLL_EVENTS, 1000);
+        int nfds = epoll_wait(g_bgp_work_local->epoll_fd, events, BGP_MAX_EPOLL_EVENTS, 1000);
 
         if (nfds < 0)
         {
@@ -1144,22 +1146,22 @@ static void *bgp_worker_thread(void *arg)
 
 void bgp_server_start_active_conn(bgp_session_t *session)
 {
-    if (!session || !g_bgp_local || g_bgp_local->epoll_fd < 0)
+    if (!session || g_bgp_work_local->epoll_fd < 0)
     {
         return;
     }
-    bgp_fsm_event(session, NULL, BGP_EVT_AUTO_START, g_bgp_local->epoll_fd);
+    bgp_fsm_event(session, NULL, BGP_EVT_AUTO_START, g_bgp_work_local->epoll_fd);
 }
 
 void bgp_server_stop_session_conns(bgp_session_t *session)
 {
-    if (!session || !g_bgp_local)
+    if (!session)
     {
         return;
     }
-    bgp_session_cancel_retry(session, g_bgp_local->epoll_fd);
-    bgp_session_cancel_keepalive(session, g_bgp_local->epoll_fd);
-    bgp_session_cancel_hold(session, g_bgp_local->epoll_fd);
+    bgp_session_cancel_retry(session, g_bgp_work_local->epoll_fd);
+    bgp_session_cancel_keepalive(session, g_bgp_work_local->epoll_fd);
+    bgp_session_cancel_hold(session, g_bgp_work_local->epoll_fd);
     bgp_conn_close(&session->pri_conn);
     bgp_conn_close(&session->sec_conn);
     bgp_worker_flush_peer_routes(session->vrf ? session->vrf->vrf_id : BGP_VRF_PUBLIC_ID, &session->neighbor_addr);
@@ -1170,16 +1172,11 @@ void bgp_server_stop_session_conns(bgp_session_t *session)
 
 static void bgp_worker_runtime_cleanup(void)
 {
-    if (!g_bgp_local)
-    {
-        return;
-    }
-
-    if (g_bgp_local->protocol && g_bgp_local->protocol->vrf_hash)
+    if (g_bgp_work_local->protocol && g_bgp_work_local->protocol->vrf_hash)
     {
         GHashTableIter vrf_iter;
         gpointer vrf_key, vrf_val;
-        g_hash_table_iter_init(&vrf_iter, g_bgp_local->protocol->vrf_hash);
+        g_hash_table_iter_init(&vrf_iter, g_bgp_work_local->protocol->vrf_hash);
         while (g_hash_table_iter_next(&vrf_iter, &vrf_key, &vrf_val))
         {
             bgp_vrf_t *vrf = (bgp_vrf_t *)vrf_val;
@@ -1196,18 +1193,19 @@ static void bgp_worker_runtime_cleanup(void)
 
     bgp_listen_stop();
     bgp_worker_cmd_drain_queue();
+    bgp_work_show_cleanup();
 
-    if (g_bgp_local->epoll_fd >= 0)
+    if (g_bgp_work_local->epoll_fd >= 0)
     {
-        close(g_bgp_local->epoll_fd);
-        g_bgp_local->epoll_fd = DEV_INVALID_FD;
+        close(g_bgp_work_local->epoll_fd);
+        g_bgp_work_local->epoll_fd = DEV_INVALID_FD;
         bgp_work_set_epoll_fd(DEV_INVALID_FD);
     }
 
-    if (g_bgp_local->protocol)
+    if (g_bgp_work_local->protocol)
     {
-        bgp_protocol_destroy(g_bgp_local->protocol);
-        g_bgp_local->protocol = NULL;
+        bgp_protocol_destroy(g_bgp_work_local->protocol);
+        g_bgp_work_local->protocol = NULL;
     }
 
     bgp_relay_cleanup();
@@ -1215,25 +1213,20 @@ static void bgp_worker_runtime_cleanup(void)
 
 static int bgp_worker_channel_init(void)
 {
-    if (!g_bgp_local)
+    if (!g_bgp_work_local->cmd_queue)
     {
-        return ERRCODE_FAIL;
-    }
-
-    if (!g_bgp_local->cmd_queue)
-    {
-        g_bgp_local->cmd_queue = g_async_queue_new();
-        if (!g_bgp_local->cmd_queue)
+        g_bgp_work_local->cmd_queue = g_async_queue_new();
+        if (!g_bgp_work_local->cmd_queue)
         {
             LOG_ERROR("BGP: Failed to create command queue");
             return ERRCODE_FAIL;
         }
     }
 
-    if (g_bgp_local->cmd_eventfd < 0)
+    if (g_bgp_work_local->cmd_eventfd < 0)
     {
-        g_bgp_local->cmd_eventfd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
-        if (g_bgp_local->cmd_eventfd < 0)
+        g_bgp_work_local->cmd_eventfd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+        if (g_bgp_work_local->cmd_eventfd < 0)
         {
             LOG_PERROR("BGP: Failed to create cmd eventfd");
             return ERRCODE_FAIL;
@@ -1244,7 +1237,7 @@ static int bgp_worker_channel_init(void)
     memset(&ev, 0, sizeof(ev));
     ev.events = EPOLLIN;
     ev.data.ptr = &bgp_cmd_tag;
-    if (epoll_ctl(g_bgp_local->epoll_fd, EPOLL_CTL_ADD, g_bgp_local->cmd_eventfd, &ev) < 0)
+    if (epoll_ctl(g_bgp_work_local->epoll_fd, EPOLL_CTL_ADD, g_bgp_work_local->cmd_eventfd, &ev) < 0)
     {
         LOG_PERROR("BGP: epoll_ctl ADD cmd eventfd failed");
         return ERRCODE_FAIL;
@@ -1255,36 +1248,39 @@ static int bgp_worker_channel_init(void)
 
 static void bgp_worker_channel_cleanup(void)
 {
-    if (!g_bgp_local)
+    if (g_bgp_work_local->epoll_fd >= 0 && g_bgp_work_local->cmd_eventfd >= 0)
     {
-        return;
+        epoll_ctl(g_bgp_work_local->epoll_fd, EPOLL_CTL_DEL, g_bgp_work_local->cmd_eventfd, NULL);
     }
 
-    if (g_bgp_local->epoll_fd >= 0 && g_bgp_local->cmd_eventfd >= 0)
+    if (g_bgp_work_local->cmd_eventfd >= 0)
     {
-        epoll_ctl(g_bgp_local->epoll_fd, EPOLL_CTL_DEL, g_bgp_local->cmd_eventfd, NULL);
-    }
-
-    if (g_bgp_local->cmd_eventfd >= 0)
-    {
-        close(g_bgp_local->cmd_eventfd);
-        g_bgp_local->cmd_eventfd = -1;
+        close(g_bgp_work_local->cmd_eventfd);
+        g_bgp_work_local->cmd_eventfd = -1;
     }
 
     bgp_worker_cmd_drain_queue();
 
-    if (g_bgp_local->cmd_queue)
+    if (g_bgp_work_local->cmd_queue)
     {
-        g_async_queue_unref(g_bgp_local->cmd_queue);
-        g_bgp_local->cmd_queue = NULL;
+        g_async_queue_unref(g_bgp_work_local->cmd_queue);
+        g_bgp_work_local->cmd_queue = NULL;
     }
 }
 
 int bgp_worker_prepare(void)
 {
-    if (!g_bgp_local)
+    if (!g_bgp_work_local)
     {
-        return ERRCODE_FAIL;
+        g_bgp_work_local = g_malloc0(sizeof(*g_bgp_work_local));
+        if (!g_bgp_work_local)
+        {
+            LOG_ERROR("BGP: Failed to allocate worker local context");
+            return ERRCODE_FAIL;
+        }
+        g_bgp_work_local->epoll_fd = DEV_INVALID_FD;
+        g_bgp_work_local->listen_fd = -1;
+        g_bgp_work_local->cmd_eventfd = -1;
     }
 
     int epoll_fd = epoll_create1(EPOLL_CLOEXEC);
@@ -1294,13 +1290,13 @@ int bgp_worker_prepare(void)
         return ERRCODE_FAIL;
     }
 
-    g_bgp_local->epoll_fd = epoll_fd;
+    g_bgp_work_local->epoll_fd = epoll_fd;
     bgp_work_set_epoll_fd(epoll_fd);
 
     if (bgp_worker_channel_init() != ERRCODE_SUCCESS)
     {
         close(epoll_fd);
-        g_bgp_local->epoll_fd = DEV_INVALID_FD;
+        g_bgp_work_local->epoll_fd = DEV_INVALID_FD;
         bgp_work_set_epoll_fd(DEV_INVALID_FD);
         bgp_worker_channel_cleanup();
         return ERRCODE_FAIL;
@@ -1313,16 +1309,11 @@ int bgp_worker_prepare(void)
 
 int bgp_worker_launch(void)
 {
-    if (!g_bgp_local)
-    {
-        return ERRCODE_FAIL;
-    }
-
-    g_bgp_local->running = 1;
-    if (pthread_create(&g_bgp_local->worker_thread, NULL, bgp_worker_thread, NULL) != 0)
+    g_bgp_work_local->running = 1;
+    if (pthread_create(&g_bgp_work_local->worker_thread, NULL, bgp_worker_thread, NULL) != 0)
     {
         LOG_PERROR("BGP: Failed to create server thread");
-        g_bgp_local->running = 0;
+        g_bgp_work_local->running = 0;
         return ERRCODE_FAIL;
     }
 
@@ -1336,14 +1327,9 @@ int bgp_worker_launch(void)
 
 void bgp_worker_shutdown(void)
 {
-    if (!g_bgp_local)
-    {
-        return;
-    }
-
     bgp_worker_cmd_t *shutdown_cmd = NULL;
 
-    if (g_bgp_local->worker_thread)
+    if (g_bgp_work_local->worker_thread)
     {
         shutdown_cmd = bgp_worker_cmd_create(BGP_WORKER_CMD_TYPE_SHUTDOWN, NULL, TRUE);
         if (shutdown_cmd && bgp_worker_cmd_enqueue(shutdown_cmd) == 0)
@@ -1352,11 +1338,11 @@ void bgp_worker_shutdown(void)
         }
         else
         {
-            g_bgp_local->running = 0;
+            g_bgp_work_local->running = 0;
         }
 
-        pthread_join(g_bgp_local->worker_thread, NULL);
-        g_bgp_local->worker_thread = 0;
+        pthread_join(g_bgp_work_local->worker_thread, NULL);
+        g_bgp_work_local->worker_thread = 0;
     }
     else
     {
@@ -1368,6 +1354,9 @@ void bgp_worker_shutdown(void)
         bgp_worker_cmd_destroy(shutdown_cmd);
     }
 
-    g_bgp_local->running = 0;
+    g_bgp_work_local->running = 0;
     bgp_worker_channel_cleanup();
+
+    g_free(g_bgp_work_local);
+    g_bgp_work_local = NULL;
 }

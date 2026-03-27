@@ -62,21 +62,9 @@ static int route_rpc_nh_iter_send(dev_ipc_context_t *ctx, uint32_t msg_type, con
     return (ret == 0) ? ERRCODE_SUCCESS : ERRCODE_FAIL;
 }
 
-int route_rpc_nh_register(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop)
+int route_rpc_nh_register(dev_ipc_context_t *ctx, const route_nh_iter_req_t *req)
 {
-    if (!nexthop)
-    {
-        return ERRCODE_FAIL;
-    }
-
-    route_nh_iter_req_t req;
-    memset(&req, 0, sizeof(req));
-    req.vrf_id = vrf_id;
-    req.afi = afi;
-    req.safi = ROUTE_SAFI_UNICAST;
-    req.nexthop_addr = *nexthop;
-
-    return route_rpc_nh_iter_send(ctx, ROUTE_MSG_TYPE_NH_REGISTER, &req);
+    return route_rpc_nh_iter_send(ctx, ROUTE_MSG_TYPE_NH_REGISTER, req);
 }
 
 int route_rpc_del(dev_ipc_context_t *ctx, const route_msg_entry_t *entry)
@@ -95,19 +83,7 @@ int route_rpc_del(dev_ipc_context_t *ctx, const route_msg_entry_t *entry)
     return route_rpc_add(ctx, &withdraw_entry);
 }
 
-int route_rpc_nh_unregister(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop)
+int route_rpc_nh_unregister(dev_ipc_context_t *ctx, const route_nh_iter_req_t *req)
 {
-    if (!nexthop)
-    {
-        return ERRCODE_FAIL;
-    }
-
-    route_nh_iter_req_t req;
-    memset(&req, 0, sizeof(req));
-    req.vrf_id = vrf_id;
-    req.afi = afi;
-    req.safi = ROUTE_SAFI_UNICAST;
-    req.nexthop_addr = *nexthop;
-
-    return route_rpc_nh_iter_send(ctx, ROUTE_MSG_TYPE_NH_UNREGISTER, &req);
+    return route_rpc_nh_iter_send(ctx, ROUTE_MSG_TYPE_NH_UNREGISTER, req);
 }

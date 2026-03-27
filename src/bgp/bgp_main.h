@@ -8,11 +8,8 @@
 #define BGP_MAIN_H
 
 #include <glib.h>
-#include <pthread.h>
 
 #include "bgp_conn.h"
-#include "bgp_protocol.h"
-#include "cli.h"
 #include "dev.h"
 
 /**
@@ -24,19 +21,6 @@
 typedef struct bgp_local
 {
     dev_ipc_context_t *dev_ipc_ctx;
-    cli_chunk_stream_t show_stream; /**< CLI show 命令分片输出状态 */
-    bgp_protocol_t *protocol;       /**< BGP 协议结构（bgp 使能后非 NULL） */
-
-    /* BGP TCP worker */
-    int epoll_fd;            /**< BGP worker epoll fd */
-    int running;             /**< worker 线程运行标志 */
-    pthread_t worker_thread; /**< BGP worker 线程句柄 */
-
-    int listen_fd; /**< 全局 0.0.0.0:179 listen socket fd，-1 表示未监听 */
-
-    /* IPC worker -> BGP worker 命令投递（eventfd + queue） */
-    int cmd_eventfd;        /**< 命令唤醒 eventfd，-1 表示未创建 */
-    GAsyncQueue *cmd_queue; /**< 队列元素：bgp_worker_cmd_t*（定义在 work/bgp_worker.c） */
 } bgp_local_t;
 
 extern bgp_local_t *g_bgp_local;

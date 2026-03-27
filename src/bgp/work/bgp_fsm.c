@@ -24,6 +24,7 @@
 #include "bgp_rib.h"
 #include "bgp_session.h"
 #include "bgp_vrf.h"
+#include "bgp_worker.h"
 #include "db.h"
 #include "errcode.h"
 #include "log.h"
@@ -189,7 +190,7 @@ static int fsm_prefix_contains_addr(const net_addr_t *prefix_addr, uint8_t prefi
 
 static gboolean fsm_neighbor_is_directly_connected(const net_addr_t *neighbor_addr)
 {
-    if (!neighbor_addr || neighbor_addr->family == 0 || !g_bgp_local || !g_bgp_local->dev_ipc_ctx)
+    if (!neighbor_addr || neighbor_addr->family == 0)
     {
         return FALSE;
     }
@@ -234,10 +235,10 @@ static gboolean fsm_neighbor_is_directly_connected(const net_addr_t *neighbor_ad
     return direct;
 }
 
-/** 向对端发送 BGP OPEN 报文（从 g_bgp_local 读取协议参数） */
+/** 向对端发送 BGP OPEN 报文 */
 static void fsm_send_open(bgp_session_t *sess, bgp_conn_t *conn)
 {
-    bgp_protocol_t *proto = g_bgp_local ? g_bgp_local->protocol : NULL;
+    bgp_protocol_t *proto = g_bgp_work_local->protocol;
     bgp_vrf_t *vrf0 = proto ? bgp_protocol_get_vrf(proto, BGP_VRF_PUBLIC_ID) : NULL;
     GList *af_peers = vrf0 ? bgp_vrf_get_session_peers(vrf0, &sess->neighbor_addr) : NULL;
     bgp_pkt_send_open(conn, proto ? proto->as_number : 0, vrf0 ? vrf0->router_id : 0, af_peers);
@@ -388,7 +389,7 @@ static void fsm_on_established(bgp_session_t *sess, bgp_conn_t *conn, int epoll_
     sess->established_at_usec = g_get_real_time();
     sess->fsm_state = BGP_FSM_STATE_ESTABLISHED;
 
-    bgp_protocol_t *proto = g_bgp_local ? g_bgp_local->protocol : NULL;
+    bgp_protocol_t *proto = g_bgp_work_local->protocol;
     bgp_vrf_t *vrf0 = proto ? bgp_protocol_get_vrf(proto, BGP_VRF_PUBLIC_ID) : NULL;
     uint16_t ka_sec = vrf0 ? vrf0->keepalive : BGP_TIMER_DEFAULT_KEEPALIVE;
     bgp_session_arm_keepalive(sess, epoll_fd, ka_sec);
@@ -432,7 +433,7 @@ static void act_start_active(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd
     }
     bgp_conn_t *new_conn = bgp_conn_create(sess);
 
-    bgp_protocol_t *proto = g_bgp_local ? g_bgp_local->protocol : NULL;
+    bgp_protocol_t *proto = g_bgp_work_local->protocol;
     gboolean is_ebgp = (proto && proto->as_number != 0 && sess->remote_as != proto->as_number) ? TRUE : FALSE;
     if (is_ebgp)
     {

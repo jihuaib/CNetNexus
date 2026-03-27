@@ -15,9 +15,8 @@ After each operation, verify interface + connected routes match expectation.
 from __future__ import annotations
 
 import ipaddress
-import time
 
-from module_api import cmd, g_top, reboot_device, require_devices, run_cmds, step, wait_checks  # noqa: E402
+from module_api import g_top, reboot_device, require_devices, run_cmds, step, wait_check, wait_checks  # noqa: E402
 from top_runner import TopologyRuntime  # noqa: E402
 
 
@@ -32,31 +31,30 @@ def _wait_route_state(
     timeout: int = 10,
     interval: int = 2,
 ) -> None:
-    deadline = time.time() + timeout
-    last_out = ""
-    while time.time() < deadline:
-        out = cmd(rt, device, command, strict=False)
-        last_out = out
+    contains = [f"Routing entry for {route_key}"]
+    regex: list[str] = []
+    not_contains: list[str] = []
 
-        has_entry = f"Routing entry for {route_key}" in out
-        has_connected = "Path [1]: connected" in out
-        is_absent = "(no routes)" in out or "(no matching routes)" in out
-
-        if expect_present:
-            has_if = expect_if is None or f"Interface : {expect_if}" in out
-            if has_entry and has_connected and has_if and "Total 1 path(s)" in out and not is_absent:
-                return
-        else:
-            if has_entry and is_absent and not has_connected:
-                return
-
-        time.sleep(interval)
+    if expect_present:
+        contains.extend(["Path [1]: connected", "Total 1 path(s)"])
+        not_contains.extend(["(no routes)", "(no matching routes)"])
+        if expect_if is not None:
+            contains.append(f"Interface : {expect_if}")
+    else:
+        not_contains.append("Path [1]: connected")
+        regex.append(r"(?im)\((?:no routes|no matching routes)\)")
 
     state = "present" if expect_present else "absent"
-    raise RuntimeError(
-        f"{device} route state mismatch for '{route_key}' after {timeout}s (expect {state})\n"
-        f"command: {command}\n"
-        f"last output:\n{last_out}"
+    wait_check(
+        rt,
+        device=device,
+        command=command,
+        timeout=timeout,
+        interval=interval,
+        contains=contains,
+        not_contains=not_contains,
+        regex=regex,
+        label=f"{device} route {route_key} {state}",
     )
 
 

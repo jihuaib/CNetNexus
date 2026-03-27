@@ -29,7 +29,7 @@ CI_DIR = Path(__file__).resolve().parent
 if str(CI_DIR) not in sys.path:
     sys.path.insert(0, str(CI_DIR))
 
-from module_api import load_global_top  # noqa: E402
+from module_api import get_failed_step, get_last_step, load_global_top, reset_last_step  # noqa: E402
 from top_runner import PAGER_DISABLE_CMD, TopologyRuntime, load_topology, sanitize_name  # noqa: E402
 
 
@@ -361,6 +361,7 @@ def run_check(script: Path, rt: TopologyRuntime, top: dict[str, Any]) -> CheckRe
     tee_err = Tee(sys.stderr, err_buf)
 
     rc = 0
+    failed_step_title: str | None = None
     try:
         load_global_top(top)
         run_fn = load_run_callable(script)
@@ -372,10 +373,18 @@ def run_check(script: Path, rt: TopologyRuntime, top: dict[str, Any]) -> CheckRe
 
             before_cfg = collect_show_current_config(rt, top, stage="before")
             run_failed = False
+            reset_last_step()
             try:
                 run_fn(rt, top)
             except Exception as run_exc:
                 run_failed = True
+                failed_step_title = get_failed_step() or get_last_step()
+                if failed_step_title:
+                    failed_at = f"module step '{failed_step_title}'"
+                else:
+                    failed_at = "before the first module step marker"
+                print("===== STEP: Failure captured =====")
+                print(f"ERROR: check script raised at {failed_at}")
                 print(
                     "ERROR: check script raised; runner will continue post-check cleanup/diff before final FAIL: "
                     f"{type(run_exc).__name__}: {run_exc}",
@@ -394,6 +403,8 @@ def run_check(script: Path, rt: TopologyRuntime, top: dict[str, Any]) -> CheckRe
     except Exception:
         rc = 1
         with contextlib.redirect_stderr(tee_err):
+            if failed_step_title:
+                print(f"ERROR: failing module step: {failed_step_title}", file=sys.stderr)
             print(f"===== CHECK FAIL: {script} =====", file=sys.stderr)
             traceback.print_exc(file=sys.stderr)
 

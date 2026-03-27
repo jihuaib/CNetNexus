@@ -33,9 +33,10 @@
 // 发送 CLI 响应辅助
 // ============================================================================
 
-static void bgp_send_cli_response(dev_ipc_message_t *msg, const char *text)
+void bgp_send_cli_response(dev_ipc_message_t *msg, const char *text)
 {
-    char *resp_data = g_strdup(text);
+    const char *safe_text = text ? text : "";
+    char *resp_data = g_strdup(safe_text);
     dev_ipc_message_t *resp = dev_ipc_message_create(CLI_MSG_TYPE_RESP, DEV_MODULE_ID_BGP, msg->src_module_id,
                                                      msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
     if (resp)
@@ -43,11 +44,6 @@ static void bgp_send_cli_response(dev_ipc_message_t *msg, const char *text)
         dev_ipc_send_response(bgp_local_ipc_ctx(), resp);
         dev_ipc_message_free(resp);
     }
-}
-
-int bgp_cli_send_chunked_response(dev_ipc_message_t *msg, GString *full_text)
-{
-    return cli_chunk_stream_start(&g_bgp_local->show_stream, bgp_local_ipc_ctx(), DEV_MODULE_ID_BGP, msg, full_text);
 }
 
 // ============================================================================
@@ -1108,16 +1104,6 @@ static int handle_bgp_ebgp_multihop(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
 
     bgp_send_cli_response(msg, "");
     return ERRCODE_SUCCESS;
-}
-
-int bgp_cli_handle_continue(dev_ipc_message_t *msg)
-{
-    return cli_chunk_stream_continue(&g_bgp_local->show_stream, bgp_local_ipc_ctx(), DEV_MODULE_ID_BGP, msg);
-}
-
-void bgp_cli_cleanup_state(void)
-{
-    cli_chunk_stream_reset(&g_bgp_local->show_stream);
 }
 
 /**

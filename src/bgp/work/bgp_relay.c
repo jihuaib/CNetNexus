@@ -206,12 +206,12 @@ static void bgp_relay_make_nh_key(bgp_relay_nh_key_t *key, uint32_t vrf_id, uint
 
 static bgp_instance_t *bgp_relay_lookup_instance(const bgp_relay_route_key_t *key)
 {
-    if (!key || !g_bgp_local || !g_bgp_local->protocol)
+    if (!key || !g_bgp_work_local->protocol)
     {
         return NULL;
     }
 
-    bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_local->protocol, key->vrf_id);
+    bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_work_local->protocol, key->vrf_id);
     if (!vrf)
     {
         return NULL;
@@ -351,6 +351,20 @@ static int bgp_relay_nh_watch_add_route(bgp_relay_nh_watch_t *watch, const bgp_r
     return ERRCODE_SUCCESS;
 }
 
+static void bgp_relay_fill_nh_iter_req(route_nh_iter_req_t *req, const bgp_relay_nh_key_t *key)
+{
+    if (!req || !key)
+    {
+        return;
+    }
+
+    memset(req, 0, sizeof(*req));
+    req->vrf_id = key->vrf_id;
+    req->afi = key->afi;
+    req->safi = key->safi;
+    req->nexthop_addr = key->nexthop_addr;
+}
+
 static void bgp_relay_nh_watch_remove_if_empty(const bgp_relay_nh_watch_t *watch)
 {
     if (!watch || !watch->route_key_set || g_hash_table_size(watch->route_key_set) > 0)
@@ -358,11 +372,10 @@ static void bgp_relay_nh_watch_remove_if_empty(const bgp_relay_nh_watch_t *watch
         return;
     }
 
-    if (g_bgp_local && g_bgp_local->dev_ipc_ctx)
-    {
-        (void)route_rpc_nh_unregister(g_bgp_local->dev_ipc_ctx, watch->key.vrf_id, watch->key.afi,
-                                      &watch->key.nexthop_addr);
-    }
+    route_nh_iter_req_t req;
+    bgp_relay_fill_nh_iter_req(&req, &watch->key);
+    (void)route_rpc_nh_unregister(g_bgp_local->dev_ipc_ctx, &req);
+
     g_hash_table_remove(g_bgp_relay_nh_table, &watch->key);
 }
 
@@ -413,9 +426,10 @@ static bgp_relay_nh_watch_t *bgp_relay_attach_route_to_watch(const bgp_relay_rou
             return NULL;
         }
 
-        if (!g_bgp_local || !g_bgp_local->dev_ipc_ctx ||
-            route_rpc_nh_register(g_bgp_local->dev_ipc_ctx, watch->key.vrf_id, watch->key.afi,
-                                  &watch->key.nexthop_addr) != ERRCODE_SUCCESS)
+        route_nh_iter_req_t req;
+        bgp_relay_fill_nh_iter_req(&req, &watch->key);
+
+        if (route_rpc_nh_register(g_bgp_local->dev_ipc_ctx, &req) != ERRCODE_SUCCESS)
         {
             g_hash_table_destroy(watch->route_key_set);
             g_free(watch);
@@ -683,7 +697,7 @@ uint32_t bgp_relay_handle_nh_notify(const route_nh_iter_notify_t *notify)
 
     bgp_relay_nh_key_t key;
     bgp_relay_make_nh_key(&key, notify->vrf_id, notify->afi, (notify->safi == 0) ? BGP_SAFI_UNICAST : notify->safi,
-                          &notify->nexthop_addr);
+                          &notify->relay_addr);
 
     bgp_relay_nh_watch_t *watch = bgp_relay_nh_watch_lookup(&key);
     if (!watch)
