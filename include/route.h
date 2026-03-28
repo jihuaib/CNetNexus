@@ -95,9 +95,6 @@
 // IPC 载荷结构
 // ============================================================================
 
-/** 注入条目标记：该路径需先完成 nexthop 递归迭代后再回推 owner 模块 */
-#define ROUTE_ENTRY_FLAG_REQUIRE_NH_ITER (1u << 0)
-
 #include "net_addr.h"
 
 /**
@@ -123,7 +120,7 @@ typedef struct route_msg_entry
     int32_t metric;          /**< 度量值 */
     int32_t preference;      /**< 管理距离（偏好值） */
     uint8_t is_withdraw;     /**< 1=撤销路由, 0=新增/更新路由 */
-    uint8_t flags;           /**< 路径标志（ROUTE_ENTRY_FLAG_*） */
+    uint8_t flags;           /**< 保留标志位（当前未使用） */
     uint8_t _pad[2];         /**< 对齐填充 */
     uint32_t out_ifindex;    /**< 出接口索引（直连路由使用，0=不指定） */
     net_addr_t prefix_addr;  /**< 前缀地址（二进制） */

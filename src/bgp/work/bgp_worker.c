@@ -346,12 +346,6 @@ static int bgp_import_route_entry(const route_msg_entry_t *entry)
         return 0;
     }
 
-    if ((entry->flags & ROUTE_ENTRY_FLAG_REQUIRE_NH_ITER) != 0)
-    {
-        /* 旧版“按路由注册迭代”回推条目，当前 nexthop-only relay 模型不再消费 */
-        return 0;
-    }
-
     bgp_instance_t *inst = (bgp_instance_t *)g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(afi, safi));
     if (!inst)
     {

@@ -41,8 +41,28 @@ for i in $(seq 0 $((NUM_INTERFACES - 1))); do
 done
 
 echo ""
-if [ $REMOVED -gt 0 ]; then
-    echo -e "${GREEN}Cleanup complete! Removed ${REMOVED} interface(s).${NC}"
+echo "Removing loop interfaces (loop1..loopN)..."
+echo ""
+
+LOOP_REMOVED=0
+while IFS= read -r LOOP_IFACE; do
+    # Skip empty lines and protect system loopback "lo"
+    if [ -z "${LOOP_IFACE}" ] || [ "${LOOP_IFACE}" = "lo" ]; then
+        continue
+    fi
+
+    if ip link delete "${LOOP_IFACE}" &> /dev/null; then
+        echo -e "${GREEN}✓ Removed ${LOOP_IFACE}${NC}"
+        LOOP_REMOVED=$((LOOP_REMOVED + 1))
+    else
+        echo -e "${YELLOW}⚠ Failed to remove ${LOOP_IFACE}, skipping${NC}"
+    fi
+done < <(ip -o link show | awk -F': ' '{print $2}' | awk '/^loop[1-9][0-9]*$/')
+
+echo ""
+TOTAL_REMOVED=$((REMOVED + LOOP_REMOVED))
+if [ $TOTAL_REMOVED -gt 0 ]; then
+    echo -e "${GREEN}Cleanup complete! Removed ${TOTAL_REMOVED} interface(s) (veth=${REMOVED}, loop=${LOOP_REMOVED}).${NC}"
 else
     echo -e "${YELLOW}No interfaces to remove.${NC}"
 fi

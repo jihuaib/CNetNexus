@@ -50,14 +50,4 @@ void route_pub_notify_entry(GList *subscribers, const route_msg_entry_t *entry);
 void route_pub_notify_module(uint32_t dst_module_id, const route_head_t *head, const route_path_t *path,
                              int is_withdraw);
 
-/**
- * @brief 将 RIB 快照发送给指定模块（作为 SUBSCRIBE 请求的响应）
- * @param rib         路由 RIB
- * @param dst_module_id 目标模块 ID
- * @param protocol    过滤协议（ROUTE_PROTOCOL_MAX = 全部）
- * @param vrf_id      过滤 VRF ID（ROUTE_VRF_ALL = 全部）
- * @param request_id  原始请求 ID（用于响应配对）
- */
-void route_pub_dump(route_rib_t *rib, uint32_t dst_module_id, uint32_t protocol, uint32_t vrf_id, uint32_t request_id);
-
 #endif /* ROUTE_PUB_H */

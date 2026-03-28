@@ -69,6 +69,7 @@ class CheckResult:
     returncode: int
     stdout: str
     stderr: str
+    failed_step: str | None = None
 
     @property
     def duration_sec(self) -> float:
@@ -418,6 +419,7 @@ def run_check(script: Path, rt: TopologyRuntime, top: dict[str, Any]) -> CheckRe
         returncode=rc,
         stdout=out_buf.getvalue(),
         stderr=err_buf.getvalue(),
+        failed_step=failed_step_title,
     )
 
 
@@ -513,7 +515,7 @@ def run_case(
                 if startup_stdout:
                     prefix_parts.append(startup_stdout)
                 if startup_stderr:
-                    prefix_parts.append(f"===== STDERR =====\n{startup_stderr}")
+                    prefix_parts.append(f"===== STEP: Runtime startup stderr =====\n{startup_stderr}")
                 if prefix_parts:
                     result.stdout = "\n\n".join(prefix_parts) + ("\n" if result.stdout else "") + result.stdout
             results.append(result)
@@ -540,6 +542,7 @@ def write_check_log(log_path: Path, result: CheckResult) -> None:
         f"script: {result.script}",
         f"status: {result.status}",
         f"returncode: {result.returncode}",
+        f"failed_step: {result.failed_step or '-'}",
         f"started_at_utc: {format_timestamp(result.started_at)}",
         f"ended_at_utc: {format_timestamp(result.ended_at)}",
         f"duration_sec: {result.duration_sec:.3f}",
@@ -591,12 +594,20 @@ def split_output_steps(text: str) -> list[tuple[str, str]]:
     return steps
 
 
-def render_step_blocks(steps: list[tuple[str, str]], open_all: bool) -> str:
+def render_step_blocks(
+    steps: list[tuple[str, str]],
+    open_all: bool,
+    *,
+    failed_step_title: str | None = None,
+) -> str:
     blocks: list[str] = []
     for i, (title, content) in enumerate(steps, start=1):
         open_attr = " open" if open_all or i == 1 else ""
         step_text = f"{title}\n{content}"
-        if any(token in step_text for token in FAIL_STEP_HINTS):
+        if failed_step_title and title == failed_step_title:
+            status = "fail"
+            summary_cls = "step-summary-fail"
+        elif any(token in step_text for token in FAIL_STEP_HINTS):
             status = "fail"
             summary_cls = "step-summary-fail"
         elif any(token in step_text for token in WARN_STEP_HINTS):
@@ -628,11 +639,11 @@ def write_check_html(path: Path, result: CheckResult, *, index: int) -> None:
 
     combined = result.stdout
     if result.stderr:
-        combined = f"{combined}\n\n===== STDERR =====\n{result.stderr}"
+        combined = f"{combined}\n\n===== STEP: STDERR =====\n{result.stderr}"
     clipped, truncated = truncate_for_html(combined)
     trunc_note = "<p class='trunc'>Output truncated in HTML. See logs/*.log for full content.</p>" if truncated else ""
     steps = split_output_steps(clipped)
-    step_blocks = render_step_blocks(steps, open_all=(result.returncode != 0))
+    step_blocks = render_step_blocks(steps, open_all=(result.returncode != 0), failed_step_title=result.failed_step)
 
     doc = f"""<!DOCTYPE html>
 <html lang=\"en\">
@@ -809,6 +820,7 @@ def write_summary_json(path: Path, results: list[CheckResult], started_at: float
                 "script": str(r.script),
                 "status": r.status,
                 "returncode": r.returncode,
+                "failed_step": r.failed_step,
                 "duration_sec": round(r.duration_sec, 3),
                 "started_at_utc": format_timestamp(r.started_at),
                 "ended_at_utc": format_timestamp(r.ended_at),

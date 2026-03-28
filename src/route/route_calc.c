@@ -107,7 +107,7 @@ static void build_entry(route_msg_entry_t *e, const route_head_t *head, const ro
     e->metric = path->metric;
     e->preference = path->preference;
     e->out_ifindex = path->out_ifindex;
-    e->nexthop_addr = path->os_nexthop;
+    e->nexthop_addr = path->relay_addr;
     e->source_addr = path->key.source;
     e->is_withdraw = 0;
     e->flags = 0;

@@ -63,20 +63,14 @@ typedef struct route_path_key
  */
 typedef struct route_path
 {
-    route_path_key_t key;  /**< 内嵌键（用于同前缀下查找） */
-    net_addr_t nexthop;    /**< 下一跳地址（二进制） */
-    net_addr_t os_nexthop; /**< 下发 OS 的下一跳（默认等于 nexthop） */
-    int32_t metric;        /**< 度量值 */
-    int32_t preference;    /**< 管理距离 */
-    uint8_t nh_state;      /**< nexthop 递归状态（ROUTE_NH_STATE_*，仅对 iter_required 路径有效） */
-    uint8_t iter_required; /**< 1=该路径需先完成 nexthop 递归后再回推 */
-    uint8_t iter_exported; /**< iter_required 路径是否已回推为可达 */
-    uint8_t iter_dirty;    /**< iter_required 路径更新后置位，用于触发重新回推 */
-    uint8_t _pad;          /**< 填充对齐 */
-    uint32_t iter_owner_module_id; /**< 注册该迭代路径的 owner module id */
-    uint32_t out_ifindex;          /**< 出接口索引（直连路由由 IF 模块填充，其他协议为 0） */
-    uint32_t flags;                /**< 路径状态标志（ROUTE_PATH_FLAG_*） */
-    gint64 updated_at_usec;        /**< 最近更新时间（g_get_real_time） */
+    route_path_key_t key;   /**< 内嵌键（用于同前缀下查找） */
+    net_addr_t nexthop;     /**< 下一跳地址（二进制） */
+    net_addr_t relay_addr;  /**< relay 解析地址（默认等于 nexthop） */
+    int32_t metric;         /**< 度量值 */
+    int32_t preference;     /**< 管理距离 */
+    uint32_t out_ifindex;   /**< 出接口索引（直连路由由 IF 模块填充，其他协议为 0） */
+    uint32_t flags;         /**< 路径状态标志（ROUTE_PATH_FLAG_*） */
+    gint64 updated_at_usec; /**< 最近更新时间（g_get_real_time） */
 } route_path_t;
 
 /**

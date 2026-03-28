@@ -109,7 +109,7 @@ static void route_on_connect(dev_ipc_message_t *msg)
 
 int route_add_and_notify(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr, uint8_t prefix_len,
                          uint32_t protocol, const net_addr_t *source_addr, const net_addr_t *nexthop_addr,
-                         const net_addr_t *os_nexthop_addr, int32_t metric, int32_t preference, uint32_t out_ifindex)
+                         const net_addr_t *relay_addr_ptr, int32_t metric, int32_t preference, uint32_t out_ifindex)
 {
     if (!g_route_local || !g_route_local->rib || !prefix_addr || !source_addr || !nexthop_addr)
     {
@@ -135,14 +135,8 @@ int route_add_and_notify(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix
         return ret;
     }
 
-    /* 普通路径默认不走“迭代回推”通道 */
     route_path_t *mut = (route_path_t *)path;
-    mut->iter_required = 0u;
-    mut->iter_exported = 0u;
-    mut->iter_dirty = 0u;
-    mut->iter_owner_module_id = 0u;
-    mut->nh_state = ROUTE_NH_STATE_UNKNOWN;
-    mut->os_nexthop = os_nexthop_addr ? *os_nexthop_addr : *nexthop_addr;
+    mut->relay_addr = relay_addr_ptr ? *relay_addr_ptr : *nexthop_addr;
 
     /*
      * 始终触发优选计算与 OS 同步。

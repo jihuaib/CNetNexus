@@ -206,17 +206,17 @@ int route_static_add(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_add
     entry->preference = preference;
 
     /* 向通用 relay watch 表注册 nexthop，一次迭代同时获取可达性 + 网关 + 出接口 */
-    net_addr_t os_nexthop;
+    net_addr_t relay_addr;
     uint32_t oif = 0;
-    memset(&os_nexthop, 0, sizeof(os_nexthop));
-    int resolved = route_relay_register_direct(vrf_id, afi, nexthop_addr, DEV_MODULE_ID_ROUTE, &os_nexthop, &oif);
+    memset(&relay_addr, 0, sizeof(relay_addr));
+    int resolved = route_relay_register_direct(vrf_id, afi, nexthop_addr, DEV_MODULE_ID_ROUTE, &relay_addr, &oif);
     entry->nh_resolved = resolved ? 1u : 0u;
 
     if (resolved)
     {
         /* nexthop 可达：写入或更新 RIB */
         int ret = route_add_and_notify(vrf_id, afi, prefix_addr, prefix_len, ROUTE_PROTOCOL_STATIC, nexthop_addr,
-                                       nexthop_addr, &os_nexthop, metric, preference, oif);
+                                       nexthop_addr, &relay_addr, metric, preference, oif);
         if (ret >= 0)
         {
             entry->in_rib = 1u;
