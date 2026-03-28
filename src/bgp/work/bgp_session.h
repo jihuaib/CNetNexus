@@ -75,6 +75,8 @@ typedef struct bgp_session
     uint8_t ebgp_multihop_ttl; /**< eBGP multihop TTL（0 表示未配置，默认直连） */
     bgp_conn_t *pri_conn;      /**< 主连接（NULL=无） */
     bgp_conn_t *sec_conn;      /**< 碰撞检测期间的第二条连接（NULL=无） */
+    int pri_last_socket_error; /**< 主连接槽最近一次 socket 错误码（0=无） */
+    int sec_last_socket_error; /**< 次连接槽最近一次 socket 错误码（0=无） */
     uint32_t remote_id;        /**< 对端 BGP Router ID（主机序 32 位，由 OPEN 填入，0 表示未建立） */
     uint32_t local_router_id; /**< 本地 BGP Router ID（主机序 32 位，发送 OPEN 时保存，用于 RFC §6.8 比较） */
     GArray *negotiated_afs; /**< 协商地址族列表（每元素为 guint32，以 afi<<16|safi 打包） */

@@ -33,6 +33,8 @@ bgp_session_t *bgp_session_create(const net_addr_t *addr, uint32_t remote_as, bg
     BIT_SET(sess->flags, BGP_SESS_CAP_DEFAULT);
     sess->pri_conn = NULL;
     sess->sec_conn = NULL;
+    sess->pri_last_socket_error = 0;
+    sess->sec_last_socket_error = 0;
     /* remote_id / local_router_id 初始值为 0（g_malloc0 已置零） */
     sess->negotiated_afs = NULL;
 
@@ -197,6 +199,14 @@ void bgp_neighbor_down(bgp_session_t *sess, int epoll_fd)
     bgp_session_cancel_retry(sess, epoll_fd);
 
     /* 步骤 3：关闭所有 TCP 连接，清除该邻居的 RIB 路由 */
+    if (sess->pri_conn)
+    {
+        sess->pri_last_socket_error = sess->pri_conn->last_socket_error;
+    }
+    if (sess->sec_conn)
+    {
+        sess->sec_last_socket_error = sess->sec_conn->last_socket_error;
+    }
     session_conn_close(&sess->pri_conn, epoll_fd);
     session_conn_close(&sess->sec_conn, epoll_fd);
     bgp_worker_flush_peer_routes(sess->vrf ? sess->vrf->vrf_id : BGP_VRF_PUBLIC_ID, &sess->neighbor_addr);

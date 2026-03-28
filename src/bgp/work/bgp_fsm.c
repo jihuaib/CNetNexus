@@ -280,6 +280,17 @@ static void fsm_close_primary(bgp_session_t *sess, bgp_conn_t *conn, int epoll_f
                               gboolean arm_retry)
 {
     bgp_conn_t **slot = (sess->pri_conn == conn) ? &sess->pri_conn : &sess->sec_conn;
+    if (conn)
+    {
+        if (slot == &sess->pri_conn)
+        {
+            sess->pri_last_socket_error = conn->last_socket_error;
+        }
+        else
+        {
+            sess->sec_last_socket_error = conn->last_socket_error;
+        }
+    }
     fsm_close_conn_slot(slot, epoll_fd);
 
     /* 尝试将 sec_conn 提升为 pri_conn */
@@ -290,6 +301,8 @@ static void fsm_close_primary(bgp_session_t *sess, bgp_conn_t *conn, int epoll_f
         LOG_INFO("BGP FSM: neighbor=%s sec_conn fd=%d promoted to pri_conn", addr_str, sess->sec_conn->fd);
         sess->pri_conn = sess->sec_conn;
         sess->sec_conn = NULL;
+        sess->pri_last_socket_error = sess->pri_conn->last_socket_error;
+        sess->sec_last_socket_error = 0;
         fsm_sync_state_from_conn(sess);
         return;
     }
@@ -315,6 +328,14 @@ static void fsm_close_primary(bgp_session_t *sess, bgp_conn_t *conn, int epoll_f
 /** 关闭全部连接和定时器；arm_retry 时进入 Active，否则 Idle */
 static void fsm_close_all(bgp_session_t *sess, int epoll_fd, gboolean purge_routes, gboolean arm_retry)
 {
+    if (sess->pri_conn)
+    {
+        sess->pri_last_socket_error = sess->pri_conn->last_socket_error;
+    }
+    if (sess->sec_conn)
+    {
+        sess->sec_last_socket_error = sess->sec_conn->last_socket_error;
+    }
     bgp_session_cancel_keepalive(sess, epoll_fd);
     bgp_session_cancel_hold(sess, epoll_fd);
     bgp_session_cancel_retry(sess, epoll_fd);
@@ -477,6 +498,7 @@ static void act_start_active(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd
         return;
     }
     sess->pri_conn = new_conn;
+    sess->pri_last_socket_error = 0;
     sess->fsm_state = BGP_FSM_STATE_CONNECT;
 }
 
@@ -539,7 +561,15 @@ static void act_connect_tcp_fails(bgp_session_t *sess, bgp_conn_t *conn, int epo
 {
     char addr_str[64];
     net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
-    LOG_WARN("BGP FSM: neighbor=%s Connect: TCP failed, reconnecting", addr_str);
+    if (conn && conn->last_socket_error != 0)
+    {
+        LOG_WARN("BGP FSM: neighbor=%s Connect: TCP failed (errno=%d, %s), reconnecting", addr_str,
+                 conn->last_socket_error, strerror(conn->last_socket_error));
+    }
+    else
+    {
+        LOG_WARN("BGP FSM: neighbor=%s Connect: TCP failed, reconnecting", addr_str);
+    }
     bgp_session_cancel_keepalive(sess, epoll_fd);
     bgp_session_cancel_hold(sess, epoll_fd);
     fsm_close_primary(sess, conn, epoll_fd, FALSE, TRUE);

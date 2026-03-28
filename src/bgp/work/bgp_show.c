@@ -128,6 +128,27 @@ static const char *cap_yn(uint32_t caps, uint32_t bit)
     return BIT_TEST(caps, bit) ? "Yes" : "No";
 }
 
+static void bgp_conn_last_error_to_str(const bgp_conn_t *conn, int fallback_error, char *buf, size_t sz)
+{
+    if (!buf || sz == 0)
+    {
+        return;
+    }
+
+    int err = fallback_error;
+    if (conn && conn->last_socket_error != 0)
+    {
+        err = conn->last_socket_error;
+    }
+
+    if (err == 0)
+    {
+        snprintf(buf, sz, "0 (none)");
+        return;
+    }
+    snprintf(buf, sz, "%d (%s)", err, strerror(err));
+}
+
 /** ORIGIN 可读字符串 */
 static const char *bgp_origin_str(bgp_origin_t origin)
 {
@@ -760,6 +781,12 @@ static int handle_bgp_show_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
     }
     g_string_append_printf(resp_buf, "  %-24s: %s\r\n", "Remote Router-ID", _sess_rid_str);
     g_string_append_printf(resp_buf, "  %-24s: %s\r\n", "Session State", sess_state_str(sess));
+    char pri_last_err[128];
+    char sec_last_err[128];
+    bgp_conn_last_error_to_str(sess->pri_conn, sess->pri_last_socket_error, pri_last_err, sizeof(pri_last_err));
+    bgp_conn_last_error_to_str(sess->sec_conn, sess->sec_last_socket_error, sec_last_err, sizeof(sec_last_err));
+    g_string_append_printf(resp_buf, "  %-24s: %s\r\n", "Primary Last Error", pri_last_err);
+    g_string_append_printf(resp_buf, "  %-24s: %s\r\n", "Secondary Last Error", sec_last_err);
 
     char _est_ts[32];
     bgp_fmt_time_usec(sess->established_at_usec, _est_ts, sizeof(_est_ts));

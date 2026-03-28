@@ -24,8 +24,8 @@ typedef struct bgp_rib_update_stats bgp_rib_update_stats_t;
 #define BGP_TIMER_DEFAULT_KEEPALIVE 60
 /** 默认 hold time（秒） */
 #define BGP_TIMER_DEFAULT_HOLD 180
-/** 默认 connect-retry 时间（秒），RFC 4271 建议值 */
-#define BGP_TIMER_DEFAULT_CONNECT_RETRY 120
+/** 默认 connect-retry 时间（秒） */
+#define BGP_TIMER_DEFAULT_CONNECT_RETRY 10
 
 /**
  * @brief BGP VRF 结构（持有该 VRF 下所有会话和地址族实例）
@@ -36,7 +36,7 @@ typedef struct bgp_vrf
     uint32_t router_id;     /**< VRF Router ID（主机序 32 位，0 表示未配置） */
     uint16_t keepalive;     /**< keepalive 定时器（秒），默认 60 */
     uint16_t hold_time;     /**< hold time（秒），默认 180，须大于 keepalive */
-    uint16_t connect_retry; /**< TCP 主动连接失败后重试间隔（秒），默认 120 */
+    uint16_t connect_retry; /**< TCP 主动连接失败后重试间隔（秒），默认 10 */
     GHashTable *sess_hash;  /**< addr_str -> bgp_session_t*（持有所有权） */
     GHashTable *inst_hash;  /**< (afi<<16|safi) -> bgp_instance_t*（持有所有权，g_direct_hash） */
 } bgp_vrf_t;

@@ -34,6 +34,7 @@ static void bgp_conn_init(bgp_conn_t *conn)
     conn->is_connecting = FALSE;
     conn->has_ttl = FALSE;
     conn->state = BGP_CONN_STATE_OPEN_SENT;
+    conn->last_socket_error = 0;
 }
 
 static void bgp_conn_cleanup(bgp_conn_t *conn)

@@ -769,13 +769,24 @@ void bgp_listen_stop(void)
  * @brief 从 epoll 移除、销毁连接对象，并将 session 槽位置 NULL
  * @param slot &sess->pri_conn 或 &sess->sec_conn
  */
-static void bgp_conn_close(bgp_conn_t **slot)
+static void bgp_conn_close(bgp_session_t *sess, bgp_conn_t **slot)
 {
     if (!slot || !*slot)
     {
         return;
     }
     bgp_conn_t *conn = *slot;
+    if (sess)
+    {
+        if (slot == &sess->pri_conn)
+        {
+            sess->pri_last_socket_error = conn->last_socket_error;
+        }
+        else if (slot == &sess->sec_conn)
+        {
+            sess->sec_last_socket_error = conn->last_socket_error;
+        }
+    }
     if (conn->fd >= 0)
     {
         epoll_ctl(g_bgp_work_local->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
@@ -794,6 +805,8 @@ static void bgp_session_promote_sec(bgp_session_t *sess)
     LOG_INFO("BGP: Passive connection fd=%d promoted to pri_conn (neighbor=%s)", sess->sec_conn->fd, addr_str);
     sess->pri_conn = sess->sec_conn;
     sess->sec_conn = NULL;
+    sess->pri_last_socket_error = sess->pri_conn->last_socket_error;
+    sess->sec_last_socket_error = 0;
 }
 
 // ============================================================================
@@ -909,10 +922,12 @@ static void bgp_handle_passive_accept(void)
                      from_ip, conn_fd, sess->pri_conn->fd);
         }
         sess->sec_conn = conn;
+        sess->sec_last_socket_error = 0;
     }
     else
     {
         sess->pri_conn = conn;
+        sess->pri_last_socket_error = 0;
     }
 
     /* 触发 FSM 事件：发送 OPEN 并迁移状态 */
@@ -929,16 +944,19 @@ static void bgp_handle_active_connect(bgp_conn_t *conn)
     int err = 0;
     socklen_t len = sizeof(err);
     getsockopt(conn->fd, SOL_SOCKET, SO_ERROR, &err, &len);
+    conn->last_socket_error = err;
 
     char addr_str[64];
     net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
 
     if (err != 0)
     {
-        LOG_WARN("BGP: Active connection to %s failed: %s (fd=%d)", addr_str, strerror(err), conn->fd);
+        LOG_WARN("BGP: Active connection to %s failed: %s (errno=%d, fd=%d)", addr_str, strerror(err), err, conn->fd);
         bgp_fsm_event(sess, conn, BGP_EVT_TCP_CONNECTION_FAILS, g_bgp_work_local->epoll_fd);
         return;
     }
+
+    conn->last_socket_error = 0;
 
     if (sess->sec_conn)
     {
@@ -989,7 +1007,7 @@ static void bgp_handle_data(bgp_conn_t *conn)
             net_addr_to_str(&(*other_slot)->peer_addr, addr_str, sizeof(addr_str));
             LOG_INFO("BGP: §6.8 collision: closing %s connection (fd=%d) with %s",
                      (*other_slot)->is_active ? "active" : "passive", (*other_slot)->fd, addr_str);
-            bgp_conn_close(other_slot);
+            bgp_conn_close(sess, other_slot);
         }
         if (!sess->pri_conn && sess->sec_conn)
         {
@@ -1176,8 +1194,8 @@ void bgp_server_stop_session_conns(bgp_session_t *session)
     bgp_session_cancel_retry(session, g_bgp_work_local->epoll_fd);
     bgp_session_cancel_keepalive(session, g_bgp_work_local->epoll_fd);
     bgp_session_cancel_hold(session, g_bgp_work_local->epoll_fd);
-    bgp_conn_close(&session->pri_conn);
-    bgp_conn_close(&session->sec_conn);
+    bgp_conn_close(session, &session->pri_conn);
+    bgp_conn_close(session, &session->sec_conn);
     bgp_worker_flush_peer_routes(session->vrf ? session->vrf->vrf_id : BGP_VRF_PUBLIC_ID, &session->neighbor_addr);
     (void)bgp_vrf_purge_session_routes(session->vrf, &session->neighbor_addr);
     bgp_session_reset_negotiated(session);

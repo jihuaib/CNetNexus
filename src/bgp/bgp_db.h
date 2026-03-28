@@ -234,7 +234,7 @@ int bgp_db_del_neighbors_by_afi(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi)
 int bgp_db_set_vrf_connect_retry(uint32_t vrf_id, uint16_t connect_retry);
 
 /**
- * @brief 将 VRF connect-retry 定时器重置为默认值（120 秒）
+ * @brief 将 VRF connect-retry 定时器重置为默认值（10 秒）
  * @param vrf_id VRF ID
  * @return 0 成功，-1 失败
  */

@@ -83,9 +83,9 @@ static const db_table_def_t BGP_INSTANCE_TABLE = {
 
 /* bgp_vrf 表列定义 */
 static const db_column_def_t BGP_VRF_COLS[] = {
-    {"vrf_id", DB_TYPE_INTEGER, DB_COL_PRIMARY_KEY, NULL},      {"router_id", DB_TYPE_TEXT, DB_COL_NOT_NULL, "0.0.0.0"},
-    {"keepalive", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "60"},      {"hold_time", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "180"},
-    {"connect_retry", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "120"},
+    {"vrf_id", DB_TYPE_INTEGER, DB_COL_PRIMARY_KEY, NULL},     {"router_id", DB_TYPE_TEXT, DB_COL_NOT_NULL, "0.0.0.0"},
+    {"keepalive", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "60"},     {"hold_time", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "180"},
+    {"connect_retry", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "10"},
 };
 
 /* bgp_vrf 表定义 */

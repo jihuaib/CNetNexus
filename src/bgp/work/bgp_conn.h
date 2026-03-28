@@ -46,6 +46,7 @@ typedef struct bgp_conn
     gboolean has_local_addr;             /**< TRUE=主动建连前需 bind(local_addr) */
     gboolean has_ttl;                    /**< TRUE=主动建连前需 setsockopt TTL/Hop-Limit */
     bgp_conn_state_t state;              /**< BGP 握手状态机（属于连接，不属于会话） */
+    int last_socket_error;               /**< 最近一次 socket 层错误码（SO_ERROR/errno，0=无错误） */
     net_addr_t local_addr;               /**< 主动建连绑定源地址（has_local_addr=TRUE 时有效） */
     uint8_t ttl;                         /**< 出向 TTL/Hop-Limit（has_ttl=TRUE 时有效） */
     uint8_t recv_buf[BGP_RECV_BUF_SIZE]; /**< 每连接独立 TCP 接收缓冲区 */
