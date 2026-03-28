@@ -86,4 +86,9 @@ int vrf_delete(const char *name);
  */
 int vrf_module_init(void);
 
+/**
+ * @brief VRF 模块清理（由 vrf_proc.c main() 退出前调用）
+ */
+void vrf_module_cleanup(void);
+
 #endif /* VRF_MAIN_H */

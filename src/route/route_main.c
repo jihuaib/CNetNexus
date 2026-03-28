@@ -15,13 +15,11 @@
 #include "dev.h"
 #include "errcode.h"
 #include "log.h"
-#include "net_addr.h"
 #include "route.h"
-#include "route_calc.h"
+#include "route_bdr.h"
 #include "route_cli.h"
-#include "route_pub.h"
-#include "route_relay.h"
-#include "route_static.h"
+#include "route_db.h"
+#include "route_worker.h"
 
 route_local_t *g_route_local = NULL;
 
@@ -63,13 +61,17 @@ static void send_phase_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, 
 {
     dev_ipc_message_t *resp = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_MODULE_RESP, DEV_MODULE_ID_ROUTE,
                                                      msg->src_module_id, msg->request_id, NULL, 0, NULL);
-    dev_ipc_send_response(ctx, resp);
+    if (resp)
+    {
+        dev_ipc_send_response(ctx, resp);
+        dev_ipc_message_free(resp);
+    }
     dev_ipc_message_free(msg);
     (void)result;
 }
 
 // ============================================================================
-// Phase 1: MODULE_START - Establishing IPC connections
+// Phase 1: MODULE_START
 // ============================================================================
 
 static void route_on_start(dev_ipc_message_t *msg)
@@ -92,12 +94,31 @@ static void route_on_start(dev_ipc_message_t *msg)
         LOG_WARN("Failed to connect to IF module (interface names will show as ifindex)");
     }
 
+    /*
+     * 线程化后 ROUTE_MSG_TYPE_INJECT/NH_* 可能在 MODULE_READY 前到达（例如 IF 在其 READY 阶段恢复直连路由）。
+     * worker 必须在 START 阶段就绪，避免早期业务消息因 cmd_queue 未创建被丢弃。
+     */
+    if (route_worker_prepare() < 0)
+    {
+        LOG_ERROR("Route worker prepare failed");
+        send_phase_response(ctx, msg, ERRCODE_FAIL);
+        return;
+    }
+
+    if (route_worker_launch() < 0)
+    {
+        LOG_ERROR("Route worker launch failed");
+        route_worker_shutdown();
+        send_phase_response(ctx, msg, ERRCODE_FAIL);
+        return;
+    }
+
     LOG_INFO("Connected to DB, CLI, IF");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
 // ============================================================================
-// Phase 2: MODULE_CONNECT — 预留
+// Phase 2: MODULE_CONNECT
 // ============================================================================
 
 static void route_on_connect(dev_ipc_message_t *msg)
@@ -107,48 +128,8 @@ static void route_on_connect(dev_ipc_message_t *msg)
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
-int route_add_and_notify(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr, uint8_t prefix_len,
-                         uint32_t protocol, const net_addr_t *source_addr, const net_addr_t *nexthop_addr,
-                         const net_addr_t *relay_addr_ptr, int32_t metric, int32_t preference, uint32_t out_ifindex)
-{
-    if (!g_route_local || !g_route_local->rib || !prefix_addr || !source_addr || !nexthop_addr)
-    {
-        return ERRCODE_FAIL;
-    }
-
-    int ret = route_rib_add(g_route_local->rib, vrf_id, afi, prefix_addr, prefix_len, protocol, source_addr,
-                            nexthop_addr, metric, preference, out_ifindex);
-    if (ret < 0)
-    {
-        return ret;
-    }
-
-    const route_head_t *head = route_rib_lookup_head(g_route_local->rib, vrf_id, afi, prefix_addr, prefix_len);
-    if (!head)
-    {
-        return ret;
-    }
-
-    const route_path_t *path = route_rib_lookup_path(head, protocol, source_addr);
-    if (!path)
-    {
-        return ret;
-    }
-
-    route_path_t *mut = (route_path_t *)path;
-    mut->relay_addr = relay_addr_ptr ? *relay_addr_ptr : *nexthop_addr;
-
-    /*
-     * 始终触发优选计算与 OS 同步。
-     * route_calc 内部会自行判断是否存在订阅者并决定是否发送通知。
-     */
-    route_calc_on_path_add(head);
-
-    return ret;
-}
-
 // ============================================================================
-// Phase 3: MODULE_READY — 初始化 DB 并恢复 RIB
+// Phase 3: MODULE_READY
 // ============================================================================
 
 static void route_on_ready(dev_ipc_message_t *msg)
@@ -170,237 +151,33 @@ static void route_on_ready(dev_ipc_message_t *msg)
         LOG_WARN("Route table creation failed: route_batch");
     }
 
-    /* 从 DB 恢复静态路由到候选表（迭代可达时自动写入 RIB） */
-    db_result_t *result = NULL;
-    ret = db_rpc_query(ctx, "route_static", NULL, 0, NULL, &result);
-    if (ret == ERRCODE_SUCCESS && result)
+    if (route_db_restore() != ERRCODE_SUCCESS)
     {
-        for (uint32_t i = 0; i < result->num_rows; i++)
-        {
-            db_row_t *row = result->rows[i];
-            uint32_t vrf_id = (uint32_t)db_row_get_int(row, "vrf_id", 0);
-            uint16_t afi = (uint16_t)db_row_get_int(row, "afi", ROUTE_AFI_IPV4);
-            uint8_t prefix_len = (uint8_t)db_row_get_int(row, "prefix_len", 0);
-            int32_t metric = (int32_t)db_row_get_int(row, "metric", 0);
-            int32_t preference = (int32_t)db_row_get_int(row, "preference", ROUTE_ADMIN_DIST_STATIC);
-            const char *prefix = db_row_get_text(row, "prefix", "");
-            const char *nexthop = db_row_get_text(row, "nexthop", "");
-
-            /* DB 边界：字符串→二进制，写入候选静态路由表（nexthop 可达时自动写 RIB） */
-            net_addr_t prefix_addr, nexthop_addr;
-            if (net_addr_from_str(prefix, &prefix_addr) != 0 || net_addr_from_str(nexthop, &nexthop_addr) != 0)
-            {
-                LOG_WARN("Route DB restore: invalid address prefix='%s' nexthop='%s'", prefix, nexthop);
-                continue;
-            }
-            route_static_add(vrf_id, afi, &prefix_addr, prefix_len, &nexthop_addr, metric, preference);
-        }
-        LOG_INFO("Restored %u static routes from DB to candidate table", result->num_rows);
-        db_result_free(result);
+        LOG_ERROR("Route DB restore failed");
+        route_worker_shutdown();
+        send_phase_response(ctx, msg, ERRCODE_FAIL);
+        return;
     }
-
-    /* 从 DB 恢复 batch 路由到内存 RIB */
-    route_batch_restore_from_db();
-
-    /* 静态/直连等变化可能影响“迭代路径”可达性，恢复结束后做一次全量重算 */
-    route_recompute_iter_paths();
 
     LOG_INFO("Route database tables ready");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
 // ============================================================================
-// Shutdown
-// ============================================================================
-
-static void route_on_shutdown(dev_ipc_message_t *msg)
-{
-    dev_ipc_context_t *ctx = route_local_ipc_ctx();
-    LOG_INFO("Shutting down Route module...");
-
-    if (g_route_local)
-    {
-        g_route_local->running = 0;
-
-        route_calc_cleanup();
-
-        route_static_cleanup();
-
-        route_relay_cleanup();
-
-        route_cli_cleanup_state();
-
-        if (g_route_local->rib)
-        {
-            route_rib_destroy(g_route_local->rib);
-            g_route_local->rib = NULL;
-        }
-
-        g_list_free_full(g_route_local->subscribers, g_free);
-        g_route_local->subscribers = NULL;
-
-        g_list_free_full(g_route_local->batch_entries, g_free);
-        g_route_local->batch_entries = NULL;
-
-        free(g_route_local);
-        g_route_local = NULL;
-    }
-
-    LOG_INFO("Route module cleanup complete");
-    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
-}
-
-// ============================================================================
-// subscribe/unsubscribe处理
-// ============================================================================
-
-static void handle_subscribe(dev_ipc_message_t *msg)
-{
-    if (!msg->payload || msg->payload_len < sizeof(route_subscribe_req_t))
-    {
-        LOG_WARN("SUBSCRIBE payload length insufficient: %u", msg->payload_len);
-        dev_ipc_message_free(msg);
-        return;
-    }
-
-    const route_subscribe_req_t *req = (const route_subscribe_req_t *)msg->payload;
-    uint32_t protocol = req->protocol;
-    uint32_t vrf_id = req->vrf_id;
-    uint32_t flags = req->flags;
-
-    /* 去重：若已存在相同subscribe则跳过 */
-    for (GList *l = g_route_local->subscribers; l; l = l->next)
-    {
-        route_subscriber_t *sub = (route_subscriber_t *)l->data;
-        if (sub->module_id == msg->src_module_id && sub->protocol == protocol && sub->vrf_id == vrf_id)
-        {
-            LOG_DEBUG("Module 0x%08X duplicate subscription, ignoring", msg->src_module_id);
-            /* 如果请求全量，仍然发送 */
-            if (flags & ROUTE_SUBSCRIBE_FLAG_FULL)
-            {
-                route_calc_pub_dump(msg->src_module_id, protocol, vrf_id, msg->request_id);
-            }
-            else
-            {
-                route_msg_ack_t *ack = (route_msg_ack_t *)g_malloc(sizeof(route_msg_ack_t));
-                ack->result = ERRCODE_SUCCESS;
-                dev_ipc_message_t *resp =
-                    dev_ipc_message_create(ROUTE_MSG_TYPE_ACK, DEV_MODULE_ID_ROUTE, msg->src_module_id, msg->request_id,
-                                           ack, sizeof(route_msg_ack_t), g_free);
-                dev_ipc_send_response(route_local_ipc_ctx(), resp);
-                dev_ipc_message_free(resp);
-            }
-            dev_ipc_message_free(msg);
-            return;
-        }
-    }
-
-    /* 添加subscribe者 */
-    route_subscriber_t *sub = (route_subscriber_t *)g_malloc(sizeof(route_subscriber_t));
-    sub->module_id = msg->src_module_id;
-    sub->protocol = protocol;
-    sub->vrf_id = vrf_id;
-    g_route_local->subscribers = g_list_append(g_route_local->subscribers, sub);
-
-    LOG_INFO("Module 0x%08X subscribed to routes: protocol=%u vrf=%u flags=0x%X", msg->src_module_id, protocol, vrf_id,
-             flags);
-
-    /* 响应：全量上报或 ACK */
-    if (flags & ROUTE_SUBSCRIBE_FLAG_FULL)
-    {
-        route_calc_pub_dump(msg->src_module_id, protocol, vrf_id, msg->request_id);
-    }
-    else
-    {
-        route_msg_ack_t *ack = (route_msg_ack_t *)g_malloc(sizeof(route_msg_ack_t));
-        ack->result = ERRCODE_SUCCESS;
-        dev_ipc_message_t *resp = dev_ipc_message_create(ROUTE_MSG_TYPE_ACK, DEV_MODULE_ID_ROUTE, msg->src_module_id,
-                                                         msg->request_id, ack, sizeof(route_msg_ack_t), g_free);
-        dev_ipc_send_response(route_local_ipc_ctx(), resp);
-        dev_ipc_message_free(resp);
-    }
-
-    dev_ipc_message_free(msg);
-}
-
-static void handle_unsubscribe(dev_ipc_message_t *msg)
-{
-    if (!msg->payload || msg->payload_len < sizeof(route_subscribe_req_t))
-    {
-        dev_ipc_message_free(msg);
-        return;
-    }
-
-    const route_subscribe_req_t *req = (const route_subscribe_req_t *)msg->payload;
-    uint32_t protocol = req->protocol;
-    uint32_t vrf_id = req->vrf_id;
-
-    GList *l = g_route_local->subscribers;
-    while (l)
-    {
-        route_subscriber_t *sub = (route_subscriber_t *)l->data;
-        GList *next = l->next;
-        if (sub->module_id == msg->src_module_id && sub->protocol == protocol && sub->vrf_id == vrf_id)
-        {
-            g_route_local->subscribers = g_list_delete_link(g_route_local->subscribers, l);
-            g_free(sub);
-            LOG_INFO("Module 0x%08X unsubscribed: protocol=%u vrf=%u", msg->src_module_id, protocol, vrf_id);
-            break;
-        }
-        l = next;
-    }
-
-    route_msg_ack_t *ack = (route_msg_ack_t *)g_malloc(sizeof(route_msg_ack_t));
-    ack->result = ERRCODE_SUCCESS;
-    dev_ipc_message_t *resp = dev_ipc_message_create(ROUTE_MSG_TYPE_ACK, DEV_MODULE_ID_ROUTE, msg->src_module_id,
-                                                     msg->request_id, ack, sizeof(route_msg_ack_t), g_free);
-    dev_ipc_send_response(route_local_ipc_ctx(), resp);
-    dev_ipc_message_free(resp);
-    dev_ipc_message_free(msg);
-}
-
-static void route_on_path_del(const route_head_t *head, const route_path_t *path, void *userdata)
-{
-    (void)userdata;
-
-    /* 触发优选重算：路径仍在 RIB 中，calc 跳过此路径选次优，同步 OS 并通知订阅者 */
-    route_calc_on_path_del(head, path);
-}
-
-static void handle_inject(dev_ipc_message_t *msg)
-{
-    if (!msg->payload || msg->payload_len < sizeof(route_msg_entry_t))
-    {
-        LOG_WARN("ROUTE_INJECT payload too short: %u", msg->payload_len);
-        dev_ipc_message_free(msg);
-        return;
-    }
-
-    const route_msg_entry_t *entry = (const route_msg_entry_t *)msg->payload;
-    if (entry->is_withdraw)
-    {
-        /* 先通过 route_calc 重算（在回调中同步 OS），再从 RIB 移除 */
-        int ret = route_rib_del(g_route_local->rib, entry->vrf_id, entry->afi, &entry->prefix_addr, entry->prefix_len,
-                                entry->protocol, &entry->source_addr, route_on_path_del, NULL);
-        LOG_DEBUG("ROUTE_INJECT withdraw: vrf=%u afi=%u pfxlen=%u proto=%u ret=%d", entry->vrf_id, entry->afi,
-                  entry->prefix_len, entry->protocol, ret);
-        route_recompute_iter_paths();
-    }
-    else
-    {
-        /* 写入 RIB，route_add_and_notify 末尾触发 route_calc 优选并下发 OS */
-        (void)route_add_and_notify(entry->vrf_id, entry->afi, &entry->prefix_addr, entry->prefix_len, entry->protocol,
-                                   &entry->source_addr, &entry->nexthop_addr, &entry->nexthop_addr, entry->metric,
-                                   entry->preference, entry->out_ifindex);
-        route_recompute_iter_paths();
-    }
-
-    dev_ipc_message_free(msg);
-}
-
-// ============================================================================
 // IPC 消息处理回调
 // ============================================================================
+
+/**
+ * @brief 读取 CLI 消息 payload 中的 flags 字节
+ */
+static uint8_t route_cli_payload_flags(const dev_ipc_message_t *msg)
+{
+    if (!msg || !msg->payload || msg->payload_len < 1)
+    {
+        return 0;
+    }
+    return ((const uint8_t *)msg->payload)[0];
+}
 
 void route_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
@@ -422,43 +199,84 @@ void route_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         case DEV_IPC_MSG_TYPE_DEV_MODULE_READY:
             route_on_ready(msg);
             return;
-        case DEV_IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN:
-            route_on_shutdown(msg);
-            return;
 
-        /* ---- CLI 消息 ---- */
+        /* ---- CLI 命令 ---- */
         case CLI_MSG_TYPE:
-            LOG_DEBUG("Received CLI command message (%u bytes)", msg->payload_len);
-            route_cli_handle_message(msg);
+        {
+            uint8_t flags = route_cli_payload_flags(msg);
+            if ((flags & CLI_PAYLOAD_FLAG_SHOW_CMD) != 0)
+            {
+                /* show 命令：异步转发 worker 线程处理（访问内存 RIB） */
+                LOG_DEBUG("Received CLI show command, forwarding to worker");
+                if (route_worker_post_show_cli(msg) != 0)
+                {
+                    LOG_WARN("Route: Failed to forward CLI show command to worker thread");
+                    dev_ipc_message_free(msg);
+                }
+            }
+            else
+            {
+                /* 配置命令：在 IPC 线程完成 DB 持久化后同步等待 worker 完成内存应用 */
+                LOG_DEBUG("Received CLI config command (%u bytes)", msg->payload_len);
+                route_cli_handle_config_msg(msg);
+                dev_ipc_message_free(msg);
+            }
             return;
+        }
 
         case CLI_MSG_TYPE_CONTINUE:
+            /* 分片继续请求：转发 worker 线程（show 流状态在 worker） */
             LOG_DEBUG("Received CLI continue request");
-            route_cli_handle_continue(msg);
+            if (route_worker_post_show_cli(msg) != 0)
+            {
+                dev_ipc_message_free(msg);
+            }
             return;
 
         case CLI_MSG_TYPE_SHOW_CONFIG:
+            /* show current-configuration：在 IPC 线程直接处理（BDR 读 DB 并批量输出） */
             LOG_DEBUG("Received show current-configuration request");
-            route_cli_handle_show_config(msg);
+            route_bdr_handle_show_config(msg);
+            dev_ipc_message_free(msg);
             return;
 
-        /* ---- 路由subscribe消息 ---- */
+        /* ---- 路由业务消息 ---- */
         case ROUTE_MSG_TYPE_SUBSCRIBE:
-            handle_subscribe(msg);
+            if (route_worker_post(ROUTE_WORKER_CMD_SUBSCRIBE, msg) != 0)
+            {
+                LOG_WARN("Route: failed to post SUBSCRIBE to worker");
+                dev_ipc_message_free(msg);
+            }
             return;
 
         case ROUTE_MSG_TYPE_UNSUBSCRIBE:
-            handle_unsubscribe(msg);
+            if (route_worker_post(ROUTE_WORKER_CMD_UNSUBSCRIBE, msg) != 0)
+            {
+                LOG_WARN("Route: failed to post UNSUBSCRIBE to worker");
+                dev_ipc_message_free(msg);
+            }
             return;
 
         case ROUTE_MSG_TYPE_INJECT:
-            handle_inject(msg);
+            if (route_worker_post(ROUTE_WORKER_CMD_INJECT, msg) != 0)
+            {
+                LOG_WARN("Route: failed to post INJECT to worker");
+                dev_ipc_message_free(msg);
+            }
             return;
         case ROUTE_MSG_TYPE_NH_REGISTER:
-            route_relay_handle_nh_register(msg);
+            if (route_worker_post(ROUTE_WORKER_CMD_NH_REGISTER, msg) != 0)
+            {
+                LOG_WARN("Route: failed to post NH_REGISTER to worker");
+                dev_ipc_message_free(msg);
+            }
             return;
         case ROUTE_MSG_TYPE_NH_UNREGISTER:
-            route_relay_handle_nh_unregister(msg);
+            if (route_worker_post(ROUTE_WORKER_CMD_NH_UNREGISTER, msg) != 0)
+            {
+                LOG_WARN("Route: failed to post NH_UNREGISTER to worker");
+                dev_ipc_message_free(msg);
+            }
             return;
 
         default:
@@ -492,18 +310,36 @@ int route_module_init(void)
     }
 
     g_route_local->dev_ipc_ctx = ctx;
-    g_route_local->running = 1;
-
-    g_route_local->rib = route_rib_create();
-    if (!g_route_local->rib)
-    {
-        LOG_ERROR("Failed to create RIB");
-        return -1;
-    }
-
-    route_static_init();
-
-    route_calc_init();
 
     return 0;
+}
+
+void route_module_cleanup(void)
+{
+    dev_ipc_context_t *ctx = NULL;
+    if (g_route_local)
+    {
+        ctx = g_route_local->dev_ipc_ctx;
+        g_route_local->dev_ipc_ctx = NULL;
+    }
+
+    /* 再停止 route worker，触发 route_calc_cleanup 撤销 OS 路由。 */
+    route_worker_shutdown();
+
+    /* 先停止 IPC 线程，避免退出过程中继续接收业务消息。 */
+    if (ctx)
+    {
+        dev_ipc_destroy(ctx);
+    }
+
+    if (!g_route_local)
+    {
+        return;
+    }
+
+    if (g_route_local)
+    {
+        g_free(g_route_local);
+        g_route_local = NULL;
+    }
 }

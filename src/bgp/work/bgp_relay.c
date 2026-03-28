@@ -18,16 +18,6 @@
 #include "errcode.h"
 #include "log.h"
 
-typedef struct bgp_relay_route_key
-{
-    uint32_t vrf_id;
-    uint16_t afi;
-    uint8_t safi;
-    uint8_t prefix_len;
-    net_addr_t prefix_addr;
-    net_addr_t source_addr;
-} bgp_relay_route_key_t;
-
 typedef struct bgp_relay_nh_key
 {
     uint32_t vrf_id;
@@ -37,57 +27,18 @@ typedef struct bgp_relay_nh_key
     net_addr_t nexthop_addr;
 } bgp_relay_nh_key_t;
 
-typedef struct bgp_relay_route
-{
-    bgp_relay_route_key_t key;
-    bgp_relay_nh_key_t nh_key;
-    bgp_attr_t attr;
-    bgp_nexthop_t nexthop;
-    uint8_t valid;
-    uint8_t _pad[7];
-    gint64 updated_at_usec;
-} bgp_relay_route_t;
-
 typedef struct bgp_relay_nh_watch
 {
     bgp_relay_nh_key_t key;
     uint8_t resolved;
     uint8_t _pad[7];
+    uint32_t out_ifindex;
+    net_addr_t relay_addr;
     gint64 updated_at_usec;
-    GHashTable *route_key_set; /* bgp_relay_route_key_t* -> bgp_relay_route_key_t* */
+    GList *route_list; /* bgp_route_node_t* 双挂（同时在 rthead->route_list） */
 } bgp_relay_nh_watch_t;
 
-/* key 指向 value 内嵌 key，key_destroy=NULL */
-static GHashTable *g_bgp_relay_route_table = NULL; /* bgp_relay_route_key_t* -> bgp_relay_route_t* */
-static GHashTable *g_bgp_relay_nh_table = NULL;    /* bgp_relay_nh_key_t* -> bgp_relay_nh_watch_t* */
-
-static guint bgp_relay_route_key_hash(gconstpointer p)
-{
-    const bgp_relay_route_key_t *k = (const bgp_relay_route_key_t *)p;
-    if (!k)
-    {
-        return 0;
-    }
-    guint h = (guint)k->vrf_id;
-    h = h * 33u + (guint)k->afi;
-    h = h * 33u + (guint)k->safi;
-    h = h * 33u + (guint)k->prefix_len;
-    h ^= net_addr_hash(&k->prefix_addr);
-    h ^= (net_addr_hash(&k->source_addr) * 131u);
-    return h;
-}
-
-static gboolean bgp_relay_route_key_equal(gconstpointer a, gconstpointer b)
-{
-    const bgp_relay_route_key_t *ka = (const bgp_relay_route_key_t *)a;
-    const bgp_relay_route_key_t *kb = (const bgp_relay_route_key_t *)b;
-    if (!ka || !kb)
-    {
-        return FALSE;
-    }
-    return ka->vrf_id == kb->vrf_id && ka->afi == kb->afi && ka->safi == kb->safi && ka->prefix_len == kb->prefix_len &&
-           net_addr_equal(&ka->prefix_addr, &kb->prefix_addr) && net_addr_equal(&ka->source_addr, &kb->source_addr);
-}
+static GHashTable *g_bgp_relay_nh_table = NULL; /* bgp_relay_nh_key_t* -> bgp_relay_nh_watch_t* */
 
 static guint bgp_relay_nh_key_hash(gconstpointer p)
 {
@@ -122,21 +73,16 @@ static void bgp_relay_nh_watch_destroy(gpointer p)
     {
         return;
     }
-    if (watch->route_key_set)
+    if (watch->route_list)
     {
-        g_hash_table_destroy(watch->route_key_set);
-        watch->route_key_set = NULL;
+        g_list_free(watch->route_list);
+        watch->route_list = NULL;
     }
     g_free(watch);
 }
 
 static void bgp_relay_tables_ensure(void)
 {
-    if (!g_bgp_relay_route_table)
-    {
-        g_bgp_relay_route_table =
-            g_hash_table_new_full(bgp_relay_route_key_hash, bgp_relay_route_key_equal, NULL, g_free);
-    }
     if (!g_bgp_relay_nh_table)
     {
         g_bgp_relay_nh_table =
@@ -182,18 +128,6 @@ static int bgp_nlri_to_route_prefix(const bgp_nlri_entry_t *nlri, uint16_t *afi_
     return 1;
 }
 
-static void bgp_relay_make_route_key(bgp_relay_route_key_t *key, uint32_t vrf_id, uint16_t afi, uint8_t safi,
-                                     uint8_t prefix_len, const net_addr_t *prefix_addr, const net_addr_t *source_addr)
-{
-    memset(key, 0, sizeof(*key));
-    key->vrf_id = vrf_id;
-    key->afi = afi;
-    key->safi = safi;
-    key->prefix_len = prefix_len;
-    key->prefix_addr = *prefix_addr;
-    key->source_addr = *source_addr;
-}
-
 static void bgp_relay_make_nh_key(bgp_relay_nh_key_t *key, uint32_t vrf_id, uint16_t afi, uint8_t safi,
                                   const net_addr_t *nexthop_addr)
 {
@@ -204,118 +138,131 @@ static void bgp_relay_make_nh_key(bgp_relay_nh_key_t *key, uint32_t vrf_id, uint
     key->nexthop_addr = *nexthop_addr;
 }
 
-static bgp_instance_t *bgp_relay_lookup_instance(const bgp_relay_route_key_t *key)
+static bgp_instance_t *bgp_relay_lookup_instance(uint32_t vrf_id, uint16_t afi, uint8_t safi)
 {
-    if (!key || !g_bgp_work_local->protocol)
+    if (!g_bgp_work_local->protocol)
     {
         return NULL;
     }
 
-    bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_work_local->protocol, key->vrf_id);
+    bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_work_local->protocol, vrf_id);
     if (!vrf)
     {
         return NULL;
     }
 
-    bgp_afi_t afi = (bgp_afi_t)key->afi;
-    bgp_safi_t safi = (key->safi == 0) ? BGP_SAFI_UNICAST : (bgp_safi_t)key->safi;
-    return (bgp_instance_t *)g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(afi, safi));
+    bgp_afi_t afi_key = (bgp_afi_t)afi;
+    bgp_safi_t safi_key = (safi == 0) ? BGP_SAFI_UNICAST : (bgp_safi_t)safi;
+    return (bgp_instance_t *)g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(afi_key, safi_key));
 }
 
-static void bgp_relay_build_nlri(const bgp_relay_route_key_t *key, bgp_nlri_entry_t *nlri)
+static int bgp_relay_build_nh_key_from_route(const bgp_route_node_t *route, bgp_relay_nh_key_t *nh_key_out)
 {
-    memset(nlri, 0, sizeof(*nlri));
-    nlri->afi = key->afi;
-    nlri->safi = key->safi;
-    nlri->type = BGP_NLRI_PREFIX;
-    nlri->prefix.prefix.prefix_len = key->prefix_len;
-    nlri->prefix.prefix.addr = key->prefix_addr;
-    nlri->prefix.has_rd = false;
-    nlri->prefix.has_label = false;
+    if (!route || !route->head || !route->head->inst || !route->head->inst->vrf || !nh_key_out ||
+        route->nexthop.global.family == 0)
+    {
+        return 0;
+    }
+
+    bgp_relay_make_nh_key(nh_key_out, route->head->inst->vrf->vrf_id, route->head->nlri.afi, route->head->nlri.safi,
+                          &route->nexthop.global);
+    return 1;
 }
 
-static int bgp_relay_reach_route_to_rib(const bgp_relay_route_t *route)
+static void bgp_relay_trigger_calc(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
 {
+    if (!inst || !inst->calc_queue || !nlri)
+    {
+        return;
+    }
+
+    bgp_calc_queue_push(inst->calc_queue, inst, nlri);
+}
+
+static int bgp_relay_reach_route_to_rib(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri, const net_addr_t *source,
+                                        const bgp_attr_t *attr, const bgp_nexthop_t *nexthop,
+                                        bgp_route_node_t **route_out, gboolean *is_new_out)
+{
+    if (is_new_out)
+    {
+        *is_new_out = FALSE;
+    }
+    if (route_out)
+    {
+        *route_out = NULL;
+    }
+    if (!inst || !inst->rib || !nlri || !source || source->family == 0 || !attr || !nexthop)
+    {
+        return -1;
+    }
+
+    bgp_rthead_t *head = bgp_rib_ensure_head(inst->rib, nlri);
+    if (!head)
+    {
+        return -1;
+    }
+
+    bgp_route_node_t *route = bgp_rthead_lookup_route_mut(head, source);
+    gboolean is_new = FALSE;
     if (!route)
     {
-        return -1;
+        route = bgp_rthead_create_route(inst->rib, head, source);
+        if (!route)
+        {
+            return -1;
+        }
+        is_new = TRUE;
     }
 
-    bgp_instance_t *inst = bgp_relay_lookup_instance(&route->key);
-    if (!inst)
+    if (bgp_rib_route_apply_reach(route, 0, attr, nexthop) != 0)
     {
         return -1;
     }
 
-    bgp_nlri_entry_t nlri;
-    bgp_relay_build_nlri(&route->key, &nlri);
-    net_addr_t src = route->key.source_addr;
-
-    int rc_reach = bgp_rib_reach_one(inst->rib, &nlri, &src, 0, &route->attr, &route->nexthop);
-    if (rc_reach < 0)
+    if (bgp_rib_set_route_valid(inst->rib, nlri, source, FALSE) < 0)
     {
-        return rc_reach;
+        return -1;
     }
 
-    int rc_valid = bgp_rib_set_route_valid(inst->rib, &nlri, &src, route->valid ? TRUE : FALSE);
-    if (rc_valid < 0)
+    if (route_out)
     {
-        return rc_valid;
+        *route_out = route;
     }
-
-    if (inst->calc_queue && (rc_reach > 0 || rc_valid > 0))
+    if (is_new_out)
     {
-        bgp_calc_queue_push(inst->calc_queue, &nlri);
+        *is_new_out = is_new;
     }
-    return (rc_reach > 0 || rc_valid > 0) ? 1 : 0;
+    return is_new ? 1 : 0;
 }
 
-static int bgp_relay_withdraw_route_from_rib(const bgp_relay_route_t *route)
+static int bgp_relay_withdraw_route_from_rib(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri,
+                                             const net_addr_t *source)
 {
-    if (!route)
+    if (!inst || !inst->rib || !nlri || !source || source->family == 0)
     {
         return -1;
     }
 
-    bgp_instance_t *inst = bgp_relay_lookup_instance(&route->key);
-    if (!inst)
-    {
-        return -1;
-    }
-
-    bgp_nlri_entry_t nlri;
-    bgp_relay_build_nlri(&route->key, &nlri);
-    net_addr_t src = route->key.source_addr;
-
-    int rc = bgp_rib_unreach_one(inst->rib, &nlri, &src);
+    int rc = bgp_rib_unreach_one(inst->rib, nlri, source);
     if (rc == 1 && inst->calc_queue)
     {
-        bgp_calc_queue_push(inst->calc_queue, &nlri);
+        bgp_calc_queue_push(inst->calc_queue, inst, nlri);
     }
     return rc;
 }
 
-static int bgp_relay_set_route_valid(const bgp_relay_route_t *route, gboolean valid)
+static int bgp_relay_set_route_valid(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri, const net_addr_t *source,
+                                     gboolean valid)
 {
-    if (!route)
+    if (!inst || !inst->rib || !nlri || !source || source->family == 0)
     {
         return -1;
     }
 
-    bgp_instance_t *inst = bgp_relay_lookup_instance(&route->key);
-    if (!inst)
-    {
-        return -1;
-    }
-
-    bgp_nlri_entry_t nlri;
-    bgp_relay_build_nlri(&route->key, &nlri);
-    net_addr_t src = route->key.source_addr;
-
-    int rc = bgp_rib_set_route_valid(inst->rib, &nlri, &src, valid);
+    int rc = bgp_rib_set_route_valid(inst->rib, nlri, source, valid);
     if (rc > 0 && inst->calc_queue)
     {
-        bgp_calc_queue_push(inst->calc_queue, &nlri);
+        bgp_calc_queue_push(inst->calc_queue, inst, nlri);
     }
     return rc;
 }
@@ -329,25 +276,24 @@ static bgp_relay_nh_watch_t *bgp_relay_nh_watch_lookup(const bgp_relay_nh_key_t 
     return (bgp_relay_nh_watch_t *)g_hash_table_lookup(g_bgp_relay_nh_table, key);
 }
 
-static int bgp_relay_nh_watch_add_route(bgp_relay_nh_watch_t *watch, const bgp_relay_route_key_t *route_key)
+static int bgp_relay_nh_watch_add_route(bgp_relay_nh_watch_t *watch, bgp_route_node_t *route)
 {
-    if (!watch || !watch->route_key_set || !route_key)
+    if (!watch || !route)
     {
         return ERRCODE_FAIL;
     }
 
-    if (g_hash_table_lookup(watch->route_key_set, route_key))
+    if (g_list_find(watch->route_list, route))
     {
         return ERRCODE_SUCCESS;
     }
 
-    bgp_relay_route_key_t *copy = (bgp_relay_route_key_t *)g_malloc(sizeof(*copy));
-    if (!copy)
+    GList *new_list = g_list_append(watch->route_list, route);
+    if (!new_list)
     {
         return ERRCODE_FAIL;
     }
-    *copy = *route_key;
-    g_hash_table_insert(watch->route_key_set, copy, copy);
+    watch->route_list = new_list;
     return ERRCODE_SUCCESS;
 }
 
@@ -367,7 +313,7 @@ static void bgp_relay_fill_nh_iter_req(route_nh_iter_req_t *req, const bgp_relay
 
 static void bgp_relay_nh_watch_remove_if_empty(const bgp_relay_nh_watch_t *watch)
 {
-    if (!watch || !watch->route_key_set || g_hash_table_size(watch->route_key_set) > 0)
+    if (!watch || watch->route_list)
     {
         return;
     }
@@ -379,36 +325,81 @@ static void bgp_relay_nh_watch_remove_if_empty(const bgp_relay_nh_watch_t *watch
     g_hash_table_remove(g_bgp_relay_nh_table, &watch->key);
 }
 
-static void bgp_relay_detach_route_from_watch(const bgp_relay_route_t *route)
-{
-    if (!route || !g_bgp_relay_nh_table)
-    {
-        return;
-    }
-
-    bgp_relay_nh_watch_t *watch = bgp_relay_nh_watch_lookup(&route->nh_key);
-    if (!watch || !watch->route_key_set)
-    {
-        return;
-    }
-
-    g_hash_table_remove(watch->route_key_set, &route->key);
-    bgp_relay_nh_watch_remove_if_empty(watch);
-}
-
-static bgp_relay_nh_watch_t *bgp_relay_attach_route_to_watch(const bgp_relay_route_t *route)
+static void bgp_relay_route_iter_clear(bgp_route_node_t *route)
 {
     if (!route)
     {
+        return;
+    }
+
+    route->iter_watched = 0u;
+    route->iter_resolved = 0u;
+    route->iter_out_ifindex = 0u;
+    route->iter_relay_addr.family = 0;
+}
+
+static void bgp_relay_route_iter_update_from_watch(bgp_route_node_t *route, const bgp_relay_nh_watch_t *watch)
+{
+    if (!route)
+    {
+        return;
+    }
+    if (!watch)
+    {
+        bgp_relay_route_iter_clear(route);
+        return;
+    }
+
+    route->iter_watched = 1u;
+    route->iter_resolved = watch->resolved ? 1u : 0u;
+    route->iter_out_ifindex = watch->out_ifindex;
+    route->iter_relay_addr = watch->relay_addr;
+}
+
+static void bgp_relay_detach_route_from_watch(bgp_route_node_t *route, const bgp_relay_nh_key_t *nh_key,
+                                              gboolean clear_state)
+{
+    if (!route || !nh_key || !g_bgp_relay_nh_table)
+    {
+        if (clear_state)
+        {
+            bgp_relay_route_iter_clear(route);
+        }
+        return;
+    }
+
+    bgp_relay_nh_watch_t *watch = bgp_relay_nh_watch_lookup(nh_key);
+    if (!watch)
+    {
+        if (clear_state)
+        {
+            bgp_relay_route_iter_clear(route);
+        }
+        return;
+    }
+
+    watch->route_list = g_list_remove(watch->route_list, route);
+    bgp_relay_nh_watch_remove_if_empty(watch);
+    if (clear_state)
+    {
+        bgp_relay_route_iter_clear(route);
+    }
+}
+
+static bgp_relay_nh_watch_t *bgp_relay_attach_route_to_watch(bgp_route_node_t *route, const bgp_relay_nh_key_t *nh_key)
+{
+    if (!route || !nh_key)
+    {
         return NULL;
     }
+
     bgp_relay_tables_ensure();
     if (!g_bgp_relay_nh_table)
     {
         return NULL;
     }
 
-    bgp_relay_nh_watch_t *watch = bgp_relay_nh_watch_lookup(&route->nh_key);
+    bgp_relay_nh_watch_t *watch = bgp_relay_nh_watch_lookup(nh_key);
     if (!watch)
     {
         watch = (bgp_relay_nh_watch_t *)g_malloc0(sizeof(*watch));
@@ -416,22 +407,18 @@ static bgp_relay_nh_watch_t *bgp_relay_attach_route_to_watch(const bgp_relay_rou
         {
             return NULL;
         }
-        watch->key = route->nh_key;
+
+        watch->key = *nh_key;
         watch->resolved = 0u;
+        watch->out_ifindex = 0u;
+        watch->relay_addr.family = 0;
         watch->updated_at_usec = g_get_real_time();
-        watch->route_key_set = g_hash_table_new_full(bgp_relay_route_key_hash, bgp_relay_route_key_equal, g_free, NULL);
-        if (!watch->route_key_set)
-        {
-            g_free(watch);
-            return NULL;
-        }
+        watch->route_list = NULL;
 
         route_nh_iter_req_t req;
         bgp_relay_fill_nh_iter_req(&req, &watch->key);
-
         if (route_rpc_nh_register(g_bgp_local->dev_ipc_ctx, &req) != ERRCODE_SUCCESS)
         {
-            g_hash_table_destroy(watch->route_key_set);
             g_free(watch);
             return NULL;
         }
@@ -439,9 +426,9 @@ static bgp_relay_nh_watch_t *bgp_relay_attach_route_to_watch(const bgp_relay_rou
         g_hash_table_insert(g_bgp_relay_nh_table, &watch->key, watch);
     }
 
-    if (bgp_relay_nh_watch_add_route(watch, &route->key) != ERRCODE_SUCCESS)
+    if (bgp_relay_nh_watch_add_route(watch, route) != ERRCODE_SUCCESS)
     {
-        if (watch->route_key_set && g_hash_table_size(watch->route_key_set) == 0)
+        if (!watch->route_list)
         {
             bgp_relay_nh_watch_remove_if_empty(watch);
         }
@@ -449,34 +436,65 @@ static bgp_relay_nh_watch_t *bgp_relay_attach_route_to_watch(const bgp_relay_rou
     }
 
     watch->updated_at_usec = g_get_real_time();
+    bgp_relay_route_iter_update_from_watch(route, watch);
     return watch;
 }
 
-static int bgp_relay_route_remove_by_key(const bgp_relay_route_key_t *key)
+static int bgp_relay_route_remove_from_inst(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri,
+                                            const net_addr_t *source)
 {
-    if (!g_bgp_relay_route_table || !key)
+    if (!inst || !inst->rib || !nlri || !source || source->family == 0)
+    {
+        return -1;
+    }
+
+    const bgp_rthead_t *head_ro = bgp_rib_lookup_head(inst->rib, nlri);
+    if (!head_ro)
     {
         return 0;
     }
 
-    bgp_relay_route_t *route = (bgp_relay_route_t *)g_hash_table_lookup(g_bgp_relay_route_table, key);
+    bgp_route_node_t *route = bgp_rthead_lookup_route_mut((bgp_rthead_t *)head_ro, source);
     if (!route)
     {
         return 0;
     }
 
-    route->valid = 0u;
-    (void)bgp_relay_withdraw_route_from_rib(route);
+    bgp_relay_nh_key_t nh_key;
+    gboolean has_nh_key = bgp_relay_build_nh_key_from_route(route, &nh_key) ? TRUE : FALSE;
+    if (has_nh_key)
+    {
+        bgp_relay_detach_route_from_watch(route, &nh_key, TRUE);
+    }
 
-    bgp_relay_detach_route_from_watch(route);
-    g_hash_table_remove(g_bgp_relay_route_table, key);
-    return 1;
+    return bgp_relay_withdraw_route_from_rib(inst, nlri, source);
 }
 
-static int bgp_relay_route_upsert(const bgp_relay_route_key_t *key, const bgp_attr_t *attr,
-                                  const bgp_nexthop_t *nexthop)
+static int bgp_relay_route_remove(uint32_t vrf_id, const bgp_nlri_entry_t *nlri, const net_addr_t *source)
 {
-    if (!key || !attr || !nexthop)
+    if (!nlri || !source || source->family == 0)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    bgp_instance_t *inst = bgp_relay_lookup_instance(vrf_id, (uint16_t)nlri->afi, (uint8_t)nlri->safi);
+    if (!inst)
+    {
+        return 0;
+    }
+
+    int rc = bgp_relay_route_remove_from_inst(inst, nlri, source);
+    if (rc < 0)
+    {
+        return ERRCODE_FAIL;
+    }
+    return (rc > 0) ? ERRCODE_SUCCESS : 0;
+}
+
+static int bgp_relay_route_upsert(uint32_t vrf_id, const bgp_nlri_entry_t *nlri, const net_addr_t *source,
+                                  const bgp_attr_t *attr, const bgp_nexthop_t *nexthop)
+{
+    if (!nlri || !source || source->family == 0 || !attr || !nexthop)
     {
         return ERRCODE_FAIL;
     }
@@ -485,56 +503,95 @@ static int bgp_relay_route_upsert(const bgp_relay_route_key_t *key, const bgp_at
         return ERRCODE_FAIL;
     }
 
-    bgp_relay_tables_ensure();
-    if (!g_bgp_relay_route_table || !g_bgp_relay_nh_table)
+    bgp_instance_t *inst = bgp_relay_lookup_instance(vrf_id, (uint16_t)nlri->afi, (uint8_t)nlri->safi);
+    if (!inst || !inst->rib)
     {
         return ERRCODE_FAIL;
     }
 
-    bgp_relay_route_t *route = (bgp_relay_route_t *)g_hash_table_lookup(g_bgp_relay_route_table, key);
-    gboolean is_new = FALSE;
-    if (!route)
+    const bgp_rthead_t *head_ro = bgp_rib_lookup_head(inst->rib, nlri);
+    bgp_route_node_t *old_route = NULL;
+    if (head_ro)
     {
-        route = (bgp_relay_route_t *)g_malloc0(sizeof(*route));
-        if (!route)
-        {
-            return ERRCODE_FAIL;
-        }
-        route->key = *key;
-        g_hash_table_insert(g_bgp_relay_route_table, &route->key, route);
-        is_new = TRUE;
+        old_route = bgp_rthead_lookup_route_mut((bgp_rthead_t *)head_ro, source);
+    }
+
+    uint8_t prev_valid = 0u;
+    bgp_relay_nh_key_t old_nh_key;
+    memset(&old_nh_key, 0, sizeof(old_nh_key));
+    gboolean had_old_nh = FALSE;
+    if (old_route)
+    {
+        prev_valid = BIT_TEST(old_route->flags, BGP_ROUTE_FLAG_VALID) ? 1u : 0u;
+        had_old_nh = bgp_relay_build_nh_key_from_route(old_route, &old_nh_key) ? TRUE : FALSE;
+    }
+
+    /* 先写 RIB（置 invalid，等待 nexthop 迭代结果）。 */
+    bgp_route_node_t *route = NULL;
+    if (bgp_relay_reach_route_to_rib(inst, nlri, source, attr, nexthop, &route, NULL) < 0 || !route)
+    {
+        return ERRCODE_FAIL;
     }
 
     bgp_relay_nh_key_t new_nh_key;
-    bgp_relay_make_nh_key(&new_nh_key, key->vrf_id, key->afi, key->safi, &nexthop->global);
-
-    if (!is_new && !bgp_relay_nh_key_equal(&route->nh_key, &new_nh_key))
+    if (!bgp_relay_build_nh_key_from_route(route, &new_nh_key))
     {
-        bgp_relay_detach_route_from_watch(route);
+        if (old_route && had_old_nh)
+        {
+            bgp_relay_detach_route_from_watch(route, &old_nh_key, TRUE);
+        }
+        (void)bgp_relay_withdraw_route_from_rib(inst, nlri, source);
+        return ERRCODE_FAIL;
     }
 
-    route->attr = *attr;
-    route->nexthop = *nexthop;
-    route->nh_key = new_nh_key;
-    route->updated_at_usec = g_get_real_time();
+    gboolean nh_changed = (old_route && (!had_old_nh || !bgp_relay_nh_key_equal(&old_nh_key, &new_nh_key)));
 
-    bgp_relay_nh_watch_t *watch = bgp_relay_attach_route_to_watch(route);
+    bgp_relay_nh_watch_t *watch = bgp_relay_attach_route_to_watch(route, &new_nh_key);
     if (!watch)
     {
-        if (is_new)
+        if (old_route && had_old_nh)
         {
-            g_hash_table_remove(g_bgp_relay_route_table, &route->key);
+            bgp_relay_detach_route_from_watch(route, &old_nh_key, TRUE);
         }
+        (void)bgp_relay_withdraw_route_from_rib(inst, nlri, source);
         return ERRCODE_FAIL;
     }
 
-    route->valid = watch->resolved ? 1u : 0u;
-    if (bgp_relay_reach_route_to_rib(route) < 0)
+    if (nh_changed && had_old_nh)
+    {
+        bgp_relay_detach_route_from_watch(route, &old_nh_key, FALSE);
+    }
+
+    /* watch 的 resolved 决定 valid，再触发优选。 */
+    uint8_t new_valid = watch->resolved ? 1u : 0u;
+    int rc_valid = bgp_relay_set_route_valid(inst, nlri, source, new_valid ? TRUE : FALSE);
+    if (rc_valid < 0)
     {
         return ERRCODE_FAIL;
+    }
+    if (rc_valid == 0 && ((prev_valid != new_valid) || watch->resolved))
+    {
+        bgp_relay_trigger_calc(inst, nlri);
     }
 
     return ERRCODE_SUCCESS;
+}
+
+static void bgp_relay_collect_nlri_cb(const bgp_nlri_entry_t *nlri, gpointer user_data)
+{
+    if (!nlri || !user_data)
+    {
+        return;
+    }
+
+    GPtrArray *arr = (GPtrArray *)user_data;
+    bgp_nlri_entry_t *copy = (bgp_nlri_entry_t *)g_malloc(sizeof(*copy));
+    if (!copy)
+    {
+        return;
+    }
+    *copy = *nlri;
+    g_ptr_array_add(arr, copy);
 }
 
 void bgp_relay_init(void)
@@ -544,11 +601,6 @@ void bgp_relay_init(void)
 
 void bgp_relay_cleanup(void)
 {
-    if (g_bgp_relay_route_table)
-    {
-        g_hash_table_destroy(g_bgp_relay_route_table);
-        g_bgp_relay_route_table = NULL;
-    }
     if (g_bgp_relay_nh_table)
     {
         g_hash_table_destroy(g_bgp_relay_nh_table);
@@ -591,11 +643,7 @@ void bgp_relay_ingest_peer_update(bgp_session_t *session, const bgp_update_resul
             continue;
         }
 
-        bgp_relay_route_key_t key;
-        bgp_relay_make_route_key(&key, vrf_id, (uint16_t)nlri->afi, (uint8_t)nlri->safi, prefix_len, &prefix_addr,
-                                 &session->neighbor_addr);
-
-        if (bgp_relay_route_upsert(&key, &upd->attr, &upd->nexthop) == ERRCODE_SUCCESS)
+        if (bgp_relay_route_upsert(vrf_id, nlri, &session->neighbor_addr, &upd->attr, &upd->nexthop) == ERRCODE_SUCCESS)
         {
             if (stats)
             {
@@ -620,10 +668,7 @@ void bgp_relay_ingest_peer_update(bgp_session_t *session, const bgp_update_resul
             continue;
         }
 
-        bgp_relay_route_key_t key;
-        bgp_relay_make_route_key(&key, vrf_id, (uint16_t)nlri->afi, (uint8_t)nlri->safi, prefix_len, &prefix_addr,
-                                 &session->neighbor_addr);
-        (void)bgp_relay_route_remove_by_key(&key);
+        (void)bgp_relay_route_remove(vrf_id, nlri, &session->neighbor_addr);
 
         if (stats)
         {
@@ -634,59 +679,54 @@ void bgp_relay_ingest_peer_update(bgp_session_t *session, const bgp_update_resul
 
 void bgp_relay_flush_peer_routes(uint32_t vrf_id, const net_addr_t *source)
 {
-    if (!source || !g_bgp_relay_route_table)
+    if (!source || source->family == 0 || !g_bgp_work_local->protocol)
     {
         return;
     }
 
-    GPtrArray *keys = g_ptr_array_new_with_free_func(g_free);
-    if (!keys)
+    bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_work_local->protocol, vrf_id);
+    if (!vrf || !vrf->inst_hash)
     {
         return;
     }
 
-    GHashTableIter iter;
-    gpointer key_ptr = NULL;
-    gpointer val_ptr = NULL;
-    g_hash_table_iter_init(&iter, g_bgp_relay_route_table);
-    while (g_hash_table_iter_next(&iter, &key_ptr, &val_ptr))
+    GHashTableIter inst_iter;
+    gpointer inst_key_ptr = NULL;
+    gpointer inst_val_ptr = NULL;
+    g_hash_table_iter_init(&inst_iter, vrf->inst_hash);
+    while (g_hash_table_iter_next(&inst_iter, &inst_key_ptr, &inst_val_ptr))
     {
-        (void)val_ptr;
-        const bgp_relay_route_key_t *key = (const bgp_relay_route_key_t *)key_ptr;
-        if (!key)
-        {
-            continue;
-        }
-        if (key->vrf_id != vrf_id || !net_addr_equal(&key->source_addr, source))
+        (void)inst_key_ptr;
+        bgp_instance_t *inst = (bgp_instance_t *)inst_val_ptr;
+        if (!inst || !inst->rib)
         {
             continue;
         }
 
-        bgp_relay_route_key_t *copy = (bgp_relay_route_key_t *)g_malloc(sizeof(*copy));
-        if (!copy)
+        GPtrArray *nlri_list = g_ptr_array_new_with_free_func(g_free);
+        if (!nlri_list)
         {
             continue;
         }
-        *copy = *key;
-        g_ptr_array_add(keys, copy);
+
+        bgp_rib_foreach_source(inst->rib, source, bgp_relay_collect_nlri_cb, nlri_list);
+        for (guint i = 0; i < nlri_list->len; ++i)
+        {
+            bgp_nlri_entry_t *nlri = (bgp_nlri_entry_t *)g_ptr_array_index(nlri_list, i);
+            if (!nlri)
+            {
+                continue;
+            }
+            (void)bgp_relay_route_remove_from_inst(inst, nlri, source);
+        }
+
+        g_ptr_array_free(nlri_list, TRUE);
     }
-
-    for (guint i = 0; i < keys->len; ++i)
-    {
-        bgp_relay_route_key_t *key = (bgp_relay_route_key_t *)g_ptr_array_index(keys, i);
-        if (!key)
-        {
-            continue;
-        }
-        (void)bgp_relay_route_remove_by_key(key);
-    }
-
-    g_ptr_array_free(keys, TRUE);
 }
 
 uint32_t bgp_relay_handle_nh_notify(const route_nh_iter_notify_t *notify)
 {
-    if (!notify || !g_bgp_relay_nh_table || !g_bgp_relay_route_table)
+    if (!notify || !g_bgp_relay_nh_table)
     {
         return 0;
     }
@@ -706,41 +746,30 @@ uint32_t bgp_relay_handle_nh_notify(const route_nh_iter_notify_t *notify)
     }
 
     uint8_t new_state = notify->resolved ? 1u : 0u;
-    if (watch->resolved == new_state)
-    {
-        return 0;
-    }
+    gboolean state_changed = (watch->resolved != new_state);
 
     watch->resolved = new_state;
+    watch->out_ifindex = notify->out_ifindex;
+    watch->relay_addr = notify->relay_addr;
     watch->updated_at_usec = g_get_real_time();
 
     uint32_t touched = 0;
-    GHashTableIter iter;
-    gpointer route_key_ptr = NULL;
-    gpointer route_val_ptr = NULL;
-    g_hash_table_iter_init(&iter, watch->route_key_set);
-    while (g_hash_table_iter_next(&iter, &route_key_ptr, &route_val_ptr))
+    for (GList *l = watch->route_list; l; l = l->next)
     {
-        (void)route_val_ptr;
-        const bgp_relay_route_key_t *route_key = (const bgp_relay_route_key_t *)route_key_ptr;
-        bgp_relay_route_t *route = (bgp_relay_route_t *)g_hash_table_lookup(g_bgp_relay_route_table, route_key);
-        if (!route)
+        bgp_route_node_t *route = (bgp_route_node_t *)l->data;
+        if (!route || !route->head || !route->head->inst)
         {
             continue;
         }
 
-        if (watch->resolved)
+        bgp_relay_route_iter_update_from_watch(route, watch);
+        if (!state_changed)
         {
-            route->valid = 1u;
-            if (bgp_relay_set_route_valid(route, TRUE) > 0)
-            {
-                touched++;
-            }
             continue;
         }
 
-        route->valid = 0u;
-        if (bgp_relay_set_route_valid(route, FALSE) > 0)
+        bgp_instance_t *inst = route->head->inst;
+        if (bgp_relay_set_route_valid(inst, &route->head->nlri, &route->source, watch->resolved ? TRUE : FALSE) > 0)
         {
             touched++;
         }

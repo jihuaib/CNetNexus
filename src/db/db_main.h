@@ -95,4 +95,9 @@ void db_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
  */
 int db_module_init(void);
 
+/**
+ * @brief DB 模块清理（由 db_proc.c main() 退出前调用）
+ */
+void db_module_cleanup(void);
+
 #endif // DB_MAIN_H

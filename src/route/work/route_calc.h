@@ -21,6 +21,9 @@ void route_calc_init(void);
 
 /**
  * @brief 清理优选状态（模块关闭时调用）
+ *
+ * 清理时会遍历当前 RIB 中标记为 OS_INSTALLED 的路径并下发 withdraw，
+ * 以避免模块退出后内核残留路由。
  */
 void route_calc_cleanup(void);
 

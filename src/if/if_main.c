@@ -144,7 +144,11 @@ static void send_phase_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, 
 {
     dev_ipc_message_t *resp = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_MODULE_RESP, DEV_MODULE_ID_IF,
                                                      msg->src_module_id, msg->request_id, NULL, 0, NULL);
-    dev_ipc_send_response(ctx, resp);
+    if (resp)
+    {
+        dev_ipc_send_response(ctx, resp);
+        dev_ipc_message_free(resp);
+    }
     dev_ipc_message_free(msg);
     (void)result;
 }
@@ -384,37 +388,6 @@ static void if_on_ready(dev_ipc_message_t *msg)
 }
 
 // ============================================================================
-// Shutdown
-// ============================================================================
-
-static void if_on_shutdown(dev_ipc_message_t *msg)
-{
-    dev_ipc_context_t *ctx = if_local_ipc_ctx();
-    LOG_INFO("Shutting down if module...");
-
-    if_cli_cleanup_state();
-
-    /* dev_ipc_ctx 由 DEV 管理 */
-    g_if_local->dev_ipc_ctx = NULL;
-
-    g_list_free_full(g_if_local->subscribers, g_free);
-    g_if_local->subscribers = NULL;
-
-    /* 释放接口哈希表 */
-    if (g_if_local->interface_map.all_entries)
-    {
-        g_hash_table_destroy(g_if_local->interface_map.all_entries);
-        g_if_local->interface_map.all_entries = NULL;
-    }
-
-    g_free(g_if_local);
-    g_if_local = NULL;
-
-    LOG_INFO("if module cleanup complete");
-    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
-}
-
-// ============================================================================
 // IPC 消息处理回调
 // ============================================================================
 
@@ -432,9 +405,6 @@ void if_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             return;
         case DEV_IPC_MSG_TYPE_DEV_MODULE_READY:
             if_on_ready(msg);
-            return;
-        case DEV_IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN:
-            if_on_shutdown(msg);
             return;
 
         /* ---- CLI 消息 ---- */
@@ -455,7 +425,7 @@ void if_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         case CLI_MSG_TYPE_SHOW_CONFIG:
             LOG_DEBUG("Received show current-configuration request");
             if_bdr_show_config(msg);
-            return;
+            break;
 
         case IF_MSG_TYPE_SUBSCRIBE:
             handle_if_subscribe(msg);
@@ -527,4 +497,38 @@ int if_module_init(void)
     }
     g_free(if_map_path);
     return 0;
+}
+
+void if_module_cleanup(void)
+{
+    if (!g_if_local)
+    {
+        return;
+    }
+
+    dev_ipc_context_t *ctx = g_if_local->dev_ipc_ctx;
+    g_if_local->dev_ipc_ctx = NULL;
+    if (ctx)
+    {
+        dev_ipc_destroy(ctx);
+    }
+
+    if (!g_if_local)
+    {
+        return;
+    }
+
+    if_cli_cleanup_state();
+
+    g_list_free_full(g_if_local->subscribers, g_free);
+    g_if_local->subscribers = NULL;
+
+    if (g_if_local->interface_map.all_entries)
+    {
+        g_hash_table_destroy(g_if_local->interface_map.all_entries);
+        g_if_local->interface_map.all_entries = NULL;
+    }
+
+    g_free(g_if_local);
+    g_if_local = NULL;
 }

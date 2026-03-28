@@ -42,4 +42,9 @@ void if_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
  */
 int if_module_init(void);
 
+/**
+ * @brief IF 模块清理（由 if_proc.c main() 退出前调用）
+ */
+void if_module_cleanup(void);
+
 #endif // IF_MAIN_H

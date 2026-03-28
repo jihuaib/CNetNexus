@@ -724,32 +724,7 @@ void cleanup_all_modules(void)
     GList *modules = NULL;
     g_tree_foreach(g_module_registry, collect_module_callback, &modules);
 
-    /* Step 1: 逆序发送 MODULE_SHUTDOWN RPC */
-    for (GList *l = modules; l != NULL; l = l->next)
-    {
-        dev_module_t *module = (dev_module_t *)l->data;
-
-        if (module->module_id == DEV_MODULE_ID_DEV)
-        {
-            continue;
-        }
-
-        if (module->phase >= DEV_PHASE_LOADED)
-        {
-            LOG_INFO("Sending MODULE_SHUTDOWN -> %s", module->name);
-
-            dev_ipc_message_t *req = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN, DEV_MODULE_ID_DEV,
-                                                            module->module_id, 0, NULL, 0, NULL);
-
-            dev_ipc_message_t *resp = dev_ipc_query(g_dev_local->dev_ipc_ctx, module->module_id, req, 3000);
-            if (resp)
-            {
-                dev_ipc_message_free(resp);
-            }
-        }
-    }
-
-    /* Step 2: 向所有子进程发 SIGTERM，等待优雅退出 */
+    /* Step 1: 向所有子进程发 SIGTERM，等待优雅退出 */
     for (GList *l = modules; l != NULL; l = l->next)
     {
         dev_module_t *module = (dev_module_t *)l->data;
@@ -763,7 +738,7 @@ void cleanup_all_modules(void)
         kill(module->child_pid, SIGTERM);
     }
 
-    /* Step 3: 等待子进程退出（最多 3 秒），超时则 SIGKILL */
+    /* Step 2: 等待子进程退出（最多 3 秒），超时则 SIGKILL */
     for (GList *l = modules; l != NULL; l = l->next)
     {
         dev_module_t *module = (dev_module_t *)l->data;

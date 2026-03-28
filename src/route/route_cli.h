@@ -1,13 +1,12 @@
 /**
  * @file   route_cli.h
- * @brief  Route 模块 CLI 命令处理头文件
+ * @brief  Route 模块 CLI 配置命令处理头文件（在 IPC 线程调用）
  * @author jhb
  * @date   2026/02/01
  */
 #ifndef ROUTE_CLI_H
 #define ROUTE_CLI_H
 
-#include "cli.h"
 #include "dev.h"
 
 /** Route CLI group_id 定义（与 commands.xml 中 group-id 一致） */
@@ -18,34 +17,14 @@
 #define ROUTE_CLI_GROUP_ID_STATIC_SHOW 5 /**< show route static 命令（候选静态路由表） */
 
 /**
- * @brief 处理来自 CFG 模块的 CLI 命令消息
- * @param msg 消息
- * @return ERRCODE_SUCCESS 成功
+ * @brief 处理来自 CFG 模块的 CLI 配置命令消息（在 IPC 线程调用）
+ *
+ * 解析 TLV 载荷，完成 DB 持久化后向 worker 线程发送配置应用命令并等待结果，
+ * 最后通过 IPC 发送 CLI 响应。
+ *
+ * @param msg CLI 命令消息（由调用者保证非 NULL）
+ * @return ERRCODE_SUCCESS 成功，ERRCODE_FAIL 失败
  */
-int route_cli_handle_message(dev_ipc_message_t *msg);
-
-/**
- * @brief 处理 CLI continue 消息
- * @param msg 消息
- * @return ERRCODE_SUCCESS 成功
- */
-int route_cli_handle_continue(dev_ipc_message_t *msg);
-
-/**
- * @brief 处理 show current-configuration 请求
- * @param msg 消息
- * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL
- */
-int route_cli_handle_show_config(dev_ipc_message_t *msg);
-
-/**
- * @brief 清理 Route CLI 内部状态（如分片输出缓存）
- */
-void route_cli_cleanup_state(void);
-
-/**
- * @brief 从 DB route_batch 表恢复所有 batch 路由到内存 RIB（Phase 3 调用，走统一加路由通知入口）
- */
-void route_batch_restore_from_db(void);
+int route_cli_handle_config_msg(dev_ipc_message_t *msg);
 
 #endif /* ROUTE_CLI_H */

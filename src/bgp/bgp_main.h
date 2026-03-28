@@ -44,4 +44,9 @@ void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
  */
 int bgp_module_init(void);
 
+/**
+ * @brief BGP 模块清理（由 bgp_proc.c main() 退出前调用）
+ */
+void bgp_module_cleanup(void);
+
 #endif /* BGP_MAIN_H */

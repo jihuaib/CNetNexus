@@ -377,7 +377,7 @@ static int bgp_import_route_entry(const route_msg_entry_t *entry)
         /* 与对端 UPDATE 处理保持一致：撤销成功后触发一次优选，决定是否发 WITHDRAW */
         if (rc == 1 && inst->calc_queue)
         {
-            bgp_calc_queue_push(inst->calc_queue, &nlri);
+            bgp_calc_queue_push(inst->calc_queue, inst, &nlri);
         }
         char nlri_str[BGP_NLRI_KEY_MAX];
         bgp_nlri_to_str(&nlri, nlri_str, sizeof(nlri_str));
@@ -397,10 +397,30 @@ static int bgp_import_route_entry(const route_msg_entry_t *entry)
         nexthop.has_link_local = false;
         nexthop.global = entry->nexthop_addr;
 
-        int rc = bgp_rib_reach_one(inst->rib, &nlri, &src, (uint32_t)entry->protocol, &attr, &nexthop);
+        bgp_rthead_t *head = bgp_rib_ensure_head(inst->rib, &nlri);
+        if (!head)
+        {
+            return 0;
+        }
+
+        bgp_route_node_t *route = bgp_rthead_lookup_route_mut(head, &src);
+        int rc = 0;
+        if (!route)
+        {
+            route = bgp_rthead_create_route(inst->rib, head, &src);
+            if (!route)
+            {
+                return 0;
+            }
+            rc = 1;
+        }
+        if (bgp_rib_route_apply_reach(route, (uint32_t)entry->protocol, &attr, &nexthop) != 0)
+        {
+            return 0;
+        }
         if (rc >= 0 && inst->calc_queue)
         {
-            bgp_calc_queue_push(inst->calc_queue, &nlri);
+            bgp_calc_queue_push(inst->calc_queue, inst, &nlri);
         }
 
         char nh_str[64], src_str[64];
@@ -1321,6 +1341,15 @@ int bgp_worker_launch(void)
 
 void bgp_worker_shutdown(void)
 {
+    static pthread_mutex_t s_shutdown_mutex = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&s_shutdown_mutex);
+
+    if (!g_bgp_work_local)
+    {
+        pthread_mutex_unlock(&s_shutdown_mutex);
+        return;
+    }
+
     bgp_worker_cmd_t *shutdown_cmd = NULL;
 
     if (g_bgp_work_local->worker_thread)
@@ -1353,4 +1382,6 @@ void bgp_worker_shutdown(void)
 
     g_free(g_bgp_work_local);
     g_bgp_work_local = NULL;
+
+    pthread_mutex_unlock(&s_shutdown_mutex);
 }

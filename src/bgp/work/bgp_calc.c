@@ -98,6 +98,24 @@ static bool route_is_better(const bgp_route_node_t *candidate, const bgp_route_n
     return candidate->updated_at_usec > current->updated_at_usec;
 }
 
+static int head_has_flushed_route(const bgp_rthead_t *head)
+{
+    if (!head)
+    {
+        return 0;
+    }
+
+    for (GList *l = head->route_list; l; l = l->next)
+    {
+        const bgp_route_node_t *route = (const bgp_route_node_t *)l->data;
+        if (route && BIT_TEST(route->flags, BGP_ROUTE_FLAG_FLUSHED))
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 // ============================================================================
 // 路由优选入口（占位）
 // ============================================================================
@@ -129,11 +147,17 @@ void bgp_calc_run_one(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
     }
 
     /* 通过 NLRI 内容在 RIB 中定位前缀头（与指针地址无关） */
-    const bgp_rthead_t *head = bgp_rib_lookup_head(inst->rib, nlri);
+    bgp_rthead_t *head = (bgp_rthead_t *)bgp_rib_lookup_head(inst->rib, nlri);
+    const bgp_route_node_t *old_best = head ? bgp_rib_find_best(inst->rib, nlri) : NULL;
+    int had_flushed = head ? head_has_flushed_route(head) : 0;
 
     /* 无路由（rthead 不存在或路径列表为空）：同步发送 WITHDRAW */
     if (!head || !head->route_list)
     {
+        if (inst->route_flush_queue && (old_best || had_flushed))
+        {
+            bgp_route_flush_queue_push(inst->route_flush_queue, head);
+        }
         bgp_work_send_withdraw_to_all(inst, nlri);
         char key[BGP_NLRI_KEY_MAX];
         bgp_nlri_to_str(nlri, key, sizeof(key));
@@ -162,6 +186,10 @@ void bgp_calc_run_one(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
                 BIT_CLR(route->flags, BGP_ROUTE_FLAG_BEST);
             }
         }
+        if (inst->route_flush_queue && (old_best || had_flushed))
+        {
+            bgp_route_flush_queue_push(inst->route_flush_queue, head);
+        }
         bgp_work_send_withdraw_to_all(inst, nlri);
         char key[BGP_NLRI_KEY_MAX];
         bgp_nlri_to_str(nlri, key, sizeof(key));
@@ -176,7 +204,15 @@ void bgp_calc_run_one(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
     /* 将 NLRI 推入发布队列，异步向所有 ESTABLISHED 邻居宣告 */
     if (inst->pub_queue)
     {
-        bgp_pub_queue_push(inst->pub_queue, &head->nlri);
+        bgp_pub_queue_push(inst->pub_queue, head);
+    }
+
+    const bgp_route_node_t *new_best = bgp_rib_find_best(inst->rib, &head->nlri);
+    int best_switched = (old_best != new_best);
+    int best_need_flush = (new_best && !BIT_TEST(new_best->flags, BGP_ROUTE_FLAG_FLUSHED));
+    if (inst->route_flush_queue && (best_switched || best_need_flush))
+    {
+        bgp_route_flush_queue_push(inst->route_flush_queue, head);
     }
 
     char key[BGP_NLRI_KEY_MAX];

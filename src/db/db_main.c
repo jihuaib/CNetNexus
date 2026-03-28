@@ -61,7 +61,11 @@ static void send_phase_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, 
 {
     dev_ipc_message_t *resp = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_MODULE_RESP, DEV_MODULE_ID_DB,
                                                      msg->src_module_id, msg->request_id, NULL, 0, NULL);
-    dev_ipc_send_response(ctx, resp);
+    if (resp)
+    {
+        dev_ipc_send_response(ctx, resp);
+        dev_ipc_message_free(resp);
+    }
     dev_ipc_message_free(msg);
     (void)result;
 }
@@ -110,34 +114,6 @@ static void db_on_ready(dev_ipc_message_t *msg)
 }
 
 // ============================================================================
-// Shutdown
-// ============================================================================
-
-static void db_on_shutdown(dev_ipc_message_t *msg)
-{
-    dev_ipc_context_t *ctx = db_local_ipc_ctx();
-    LOG_INFO("Cleaning up database module local state");
-
-    db_cli_cleanup_state();
-
-    /* 释放统一数据库连接 */
-    if (g_db_local->main_conn)
-    {
-        db_connection_free(g_db_local->main_conn);
-        g_db_local->main_conn = NULL;
-    }
-
-    /* dev_ipc_ctx 由 DEV 管理 */
-    g_db_local->dev_ipc_ctx = NULL;
-
-    g_free(g_db_local);
-    g_db_local = NULL;
-
-    LOG_INFO("Database module cleaned up");
-    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
-}
-
-// ============================================================================
 // IPC 消息处理回调
 // ============================================================================
 
@@ -155,9 +131,6 @@ void db_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             return;
         case DEV_IPC_MSG_TYPE_DEV_MODULE_READY:
             db_on_ready(msg);
-            return;
-        case DEV_IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN:
-            db_on_shutdown(msg);
             return;
         default:
             break;
@@ -223,4 +196,35 @@ int db_module_init(void)
     g_db_local->main_conn = NULL;
     g_db_local->dev_ipc_ctx = ctx;
     return 0;
+}
+
+void db_module_cleanup(void)
+{
+    if (!g_db_local)
+    {
+        return;
+    }
+
+    dev_ipc_context_t *ctx = g_db_local->dev_ipc_ctx;
+    g_db_local->dev_ipc_ctx = NULL;
+    if (ctx)
+    {
+        dev_ipc_destroy(ctx);
+    }
+
+    if (!g_db_local)
+    {
+        return;
+    }
+
+    db_cli_cleanup_state();
+
+    if (g_db_local->main_conn)
+    {
+        db_connection_free(g_db_local->main_conn);
+        g_db_local->main_conn = NULL;
+    }
+
+    g_free(g_db_local);
+    g_db_local = NULL;
 }

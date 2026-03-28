@@ -45,26 +45,6 @@ static void nl_add_attr(struct nlmsghdr *nlh, size_t maxlen, int type, const voi
     nlh->nlmsg_len = (unsigned int)(NLMSG_ALIGN(nlh->nlmsg_len) + (size_t)RTA_ALIGN(len));
 }
 
-static int net_addr_is_zero(const net_addr_t *addr)
-{
-    if (!addr)
-    {
-        return 1;
-    }
-
-    if (addr->family == AF_INET)
-    {
-        uint32_t zero = 0;
-        return memcmp(&addr->u.v4.s_addr, &zero, sizeof(zero)) == 0;
-    }
-    if (addr->family == AF_INET6)
-    {
-        uint8_t zero6[16] = {0};
-        return memcmp(addr->u.v6.s6_addr, zero6, sizeof(zero6)) == 0;
-    }
-    return 1;
-}
-
 /* ============================================================================
  * 内部辅助：Netlink 报文发送与 ACK 接收
  * ============================================================================ */

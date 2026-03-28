@@ -173,4 +173,9 @@ sbmp_client_t *sbmp_runtime_find_client_locked(const char *client_id);
  */
 int sbmp_module_init(void);
 
+/**
+ * @brief SBMP 模块清理（由 sbmp_proc.c main() 退出前调用）
+ */
+void sbmp_module_cleanup(void);
+
 #endif /* SBMP_MAIN_H */

@@ -33,5 +33,7 @@ int main(void)
     int sig = 0;
     sigwait(&mask, &sig);
 
+    db_module_cleanup();
+
     return 0;
 }

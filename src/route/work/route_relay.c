@@ -12,6 +12,7 @@
 #include "route.h"
 #include "route_main.h"
 #include "route_static.h"
+#include "route_worker.h"
 
 #define ROUTE_ITER_NH_MAX_DEPTH 8u
 
@@ -322,6 +323,23 @@ static int route_nh_resolve(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, con
 
         if (resolver->key.protocol == ROUTE_PROTOCOL_CONNECTED)
         {
+            /*
+             * 仅当已解析出有效出接口时才认为可达。
+             * 否则属于接口路由尚未就绪（例如 IF 侧稍后才补齐 ifindex）的中间态，
+             * 不能放行静态/迭代路由进入 RIB。
+             */
+            if (resolver->out_ifindex == 0)
+            {
+                return 0;
+            }
+            /*
+             * RIB 中存在 connected 路径但尚未成功下发 OS 时，仍视为不可达。
+             * 避免静态/迭代路由抢在依赖直连路由前下发，触发 ENETUNREACH。
+             */
+            if ((resolver->flags & ROUTE_PATH_FLAG_OS_INSTALLED) == 0)
+            {
+                return 0;
+            }
             if (gateway_out)
             {
                 *gateway_out = cursor;
@@ -470,7 +488,7 @@ void route_relay_handle_nh_register(dev_ipc_message_t *msg)
     net_addr_t gw;
     uint32_t oif = 0;
     memset(&gw, 0, sizeof(gw));
-    int res = route_nh_resolve(g_route_local ? g_route_local->rib : NULL, watch->key.vrf_id, watch->key.afi,
+    int res = route_nh_resolve(g_route_work_local ? g_route_work_local->rib : NULL, watch->key.vrf_id, watch->key.afi,
                                &watch->key.nexthop_addr, &gw, &oif);
     watch->resolved = res ? 1u : 0u;
     watch->relay_addr = gw;
@@ -540,7 +558,7 @@ static void route_recompute_watch_cb(gpointer key, gpointer value, gpointer user
     net_addr_t gw;
     uint32_t oif = 0;
     memset(&gw, 0, sizeof(gw));
-    int res = route_nh_resolve(g_route_local ? g_route_local->rib : NULL, watch->key.vrf_id, watch->key.afi,
+    int res = route_nh_resolve(g_route_work_local ? g_route_work_local->rib : NULL, watch->key.vrf_id, watch->key.afi,
                                &watch->key.nexthop_addr, &gw, &oif);
     watch->resolved = res ? 1u : 0u;
     watch->relay_addr = gw;
@@ -636,7 +654,8 @@ int route_relay_register_direct(uint32_t vrf_id, uint16_t afi, const net_addr_t 
     net_addr_t gw;
     uint32_t oif = 0;
     memset(&gw, 0, sizeof(gw));
-    int res = route_nh_resolve(g_route_local ? g_route_local->rib : NULL, vrf_id, afi, nexthop_addr, &gw, &oif);
+    int res =
+        route_nh_resolve(g_route_work_local ? g_route_work_local->rib : NULL, vrf_id, afi, nexthop_addr, &gw, &oif);
     watch->resolved = res ? 1u : 0u;
     watch->relay_addr = gw;
     watch->out_ifindex = oif;

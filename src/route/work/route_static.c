@@ -17,6 +17,7 @@
 #include "route_pub.h"
 #include "route_relay.h"
 #include "route_rib.h"
+#include "route_worker.h"
 
 /* 候选静态路由哈希表：route_static_entry_key_t* -> route_static_entry_t*（key 内嵌于 value） */
 static GHashTable *g_static_table = NULL;
@@ -61,7 +62,7 @@ static gboolean static_key_equal(gconstpointer a, gconstpointer b)
 static void on_static_rib_del(const route_head_t *head, const route_path_t *path, void *userdata)
 {
     (void)userdata;
-    if (!g_route_local)
+    if (!g_route_work_local)
     {
         return;
     }
@@ -69,7 +70,7 @@ static void on_static_rib_del(const route_head_t *head, const route_path_t *path
     /* 触发优选重算：路径仍在 RIB 中，calc 跳过此路径选次优并同步 OS */
     route_calc_on_path_del(head, path);
 
-    route_pub_notify(g_route_local->subscribers, head, path, 1);
+    route_pub_notify(g_route_work_local->subscribers, head, path, 1);
 }
 
 // ============================================================================
@@ -172,7 +173,7 @@ void route_static_show(GString *buf, uint16_t afi_filter, int has_afi_filter)
 int route_static_add(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr, uint8_t prefix_len,
                      const net_addr_t *nexthop_addr, int32_t metric, int32_t preference)
 {
-    if (!prefix_addr || !nexthop_addr || !g_static_table || !g_route_local)
+    if (!prefix_addr || !nexthop_addr || !g_static_table || !g_route_work_local)
     {
         return -1;
     }
@@ -220,7 +221,7 @@ int route_static_add(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_add
         if (ret >= 0)
         {
             entry->in_rib = 1u;
-            /* OS 下发由 route_add_and_notify 内部调用 route_calc_on_path_add 完成 */
+            /* OS 下发由 route_add_and_notify 入 calc_queue 后统一处理。 */
             LOG_DEBUG("Static route written to RIB: vrf=%u afi=%u pfxlen=%u (nexthop resolved)", vrf_id, afi,
                       prefix_len);
         }
@@ -230,8 +231,8 @@ int route_static_add(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_add
         if (entry->in_rib)
         {
             /* nexthop 变不可达：从 RIB 撤销 */
-            route_rib_del(g_route_local->rib, vrf_id, afi, prefix_addr, prefix_len, ROUTE_PROTOCOL_STATIC, nexthop_addr,
-                          on_static_rib_del, NULL);
+            route_rib_del(g_route_work_local->rib, vrf_id, afi, prefix_addr, prefix_len, ROUTE_PROTOCOL_STATIC,
+                          nexthop_addr, on_static_rib_del, NULL);
             entry->in_rib = 0u;
             LOG_DEBUG("Static route withdrawn from RIB: vrf=%u afi=%u pfxlen=%u (nexthop unresolved)", vrf_id, afi,
                       prefix_len);
@@ -278,7 +279,7 @@ static int static_nexthop_has_users(uint32_t vrf_id, uint16_t afi, const net_add
 int route_static_del(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr, uint8_t prefix_len,
                      const net_addr_t *nexthop_addr)
 {
-    if (!prefix_addr || !nexthop_addr || !g_static_table || !g_route_local)
+    if (!prefix_addr || !nexthop_addr || !g_static_table || !g_route_work_local)
     {
         return -1;
     }
@@ -300,8 +301,8 @@ int route_static_del(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_add
     /* 若已在 RIB 中则先撤销并通知订阅者 */
     if (entry->in_rib)
     {
-        route_rib_del(g_route_local->rib, vrf_id, afi, prefix_addr, prefix_len, ROUTE_PROTOCOL_STATIC, nexthop_addr,
-                      on_static_rib_del, NULL);
+        route_rib_del(g_route_work_local->rib, vrf_id, afi, prefix_addr, prefix_len, ROUTE_PROTOCOL_STATIC,
+                      nexthop_addr, on_static_rib_del, NULL);
     }
 
     /* 从候选表移除；移除后再判断该 nexthop 是否还有其他引用者 */
@@ -350,7 +351,7 @@ static void static_collect_for_prefix(gpointer key_ptr, gpointer value_ptr, gpoi
     /* 若已在 RIB 中则先撤销（在 foreach 中修改 rib 是安全的） */
     if (entry->in_rib)
     {
-        route_rib_del(g_route_local->rib, entry->key.vrf_id, entry->key.afi, &entry->key.prefix_addr,
+        route_rib_del(g_route_work_local->rib, entry->key.vrf_id, entry->key.afi, &entry->key.prefix_addr,
                       entry->key.prefix_len, ROUTE_PROTOCOL_STATIC, &entry->key.nexthop_addr, on_static_rib_del, NULL);
     }
 
@@ -369,7 +370,7 @@ static void static_collect_for_prefix(gpointer key_ptr, gpointer value_ptr, gpoi
 
 int route_static_del_prefix(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr, uint8_t prefix_len)
 {
-    if (!prefix_addr || !g_static_table || !g_route_local)
+    if (!prefix_addr || !g_static_table || !g_route_work_local)
     {
         return -1;
     }
@@ -427,7 +428,7 @@ static void static_nh_change_cb(gpointer key_ptr, gpointer value_ptr, gpointer u
     (void)key_ptr;
     route_static_entry_t *entry = (route_static_entry_t *)value_ptr;
     static_nh_change_ctx_t *ctx = (static_nh_change_ctx_t *)user_data;
-    if (!entry || !ctx || !g_route_local)
+    if (!entry || !ctx || !g_route_work_local)
     {
         return;
     }
@@ -457,7 +458,7 @@ static void static_nh_change_cb(gpointer key_ptr, gpointer value_ptr, gpointer u
     else if (entry->in_rib)
     {
         /* nexthop 变不可达：从 RIB 撤销 */
-        route_rib_del(g_route_local->rib, entry->key.vrf_id, entry->key.afi, &entry->key.prefix_addr,
+        route_rib_del(g_route_work_local->rib, entry->key.vrf_id, entry->key.afi, &entry->key.prefix_addr,
                       entry->key.prefix_len, ROUTE_PROTOCOL_STATIC, &entry->key.nexthop_addr, on_static_rib_del, NULL);
         entry->in_rib = 0u;
         ctx->withdrawn++;

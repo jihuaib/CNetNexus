@@ -1,17 +1,23 @@
 set(ROUTE_SOURCES
     route_main.c
-    route_relay.c
     route_cli.c
-    route_rib.c
-    route_pub.c
-    route_static.c
-    route_os.c
-    route_calc.c
+    route_bdr.c
+    route_db.c
+    work/route_rib.c
+    work/route_calc.c
+    work/route_pub.c
+    work/route_relay.c
+    work/route_static.c
+    work/route_os.c
+    work/route_show.c
+    work/route_work.c
+    work/route_worker.c
+    work/route_cfg_apply.c
 )
 
 add_executable(netnexus-route route_proc.c ${ROUTE_SOURCES})
 
-target_include_directories(netnexus-route PRIVATE .)
+target_include_directories(netnexus-route PRIVATE . work)
 
 target_link_libraries(netnexus-route PRIVATE
     dev_api

@@ -28,8 +28,8 @@ extern log_level_t g_log_level;
 extern _Thread_local const char *g_log_tag;
 
 /**
- * @brief 设置当前线程的模块日志标签
- * @param tag 标签字符串（通常为模块名，生命周期须长于线程）
+ * @brief 设置当前线程的模块日志标签（内部拷贝）
+ * @param tag 标签字符串（通常为模块名）
  */
 void log_set_tag(const char *tag);
 

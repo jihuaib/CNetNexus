@@ -35,7 +35,7 @@ int bgp_calc_run(bgp_instance_t *inst);
  *   - rthead 不存在或路径哈希为空：同步发送 WITHDRAW（调用
  *     bgp_work_send_withdraw_to_all）
  *   - 有路由：选出最优路径，通过 bgp_rib_mark_best() 在路由节点上打标记，
- *     推 ANNOUNCE 到 pub_queue
+ *     推 ANNOUNCE 到 pub_queue，并将 NLRI 推入 route_flush_queue 下刷 ROUTE
  *
  * @param inst 目标地址族实例
  * @param nlri NLRI 条目（由 calc_queue 条目提供）

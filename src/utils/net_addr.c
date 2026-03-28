@@ -147,6 +147,76 @@ gboolean net_addr_hash_equal(gconstpointer a, gconstpointer b)
     return net_addr_equal((const net_addr_t *)a, (const net_addr_t *)b);
 }
 
+gboolean net_addr_is_zero(const net_addr_t *addr)
+{
+    if (!addr)
+    {
+        return TRUE;
+    }
+
+    if (addr->family == AF_INET)
+    {
+        uint32_t zero = 0;
+        return memcmp(&addr->u.v4.s_addr, &zero, sizeof(zero)) == 0 ? TRUE : FALSE;
+    }
+    if (addr->family == AF_INET6)
+    {
+        uint8_t zero6[16] = {0};
+        return memcmp(addr->u.v6.s6_addr, zero6, sizeof(zero6)) == 0 ? TRUE : FALSE;
+    }
+    return TRUE;
+}
+
+int net_addr_prefix_normalize(net_addr_t *addr, uint8_t prefix_len)
+{
+    if (!addr)
+    {
+        return -1;
+    }
+
+    if (addr->family == AF_INET)
+    {
+        if (prefix_len > 32)
+        {
+            return -1;
+        }
+        uint32_t ip = ntohl(addr->u.v4.s_addr);
+        uint32_t mask = (prefix_len == 0) ? 0u : (0xFFFFFFFFu << (32u - prefix_len));
+        addr->u.v4.s_addr = htonl(ip & mask);
+        return 0;
+    }
+
+    if (addr->family == AF_INET6)
+    {
+        if (prefix_len > 128)
+        {
+            return -1;
+        }
+        uint8_t bits = prefix_len;
+        for (int i = 0; i < 16; i++)
+        {
+            if (bits >= 8)
+            {
+                bits -= 8;
+                continue;
+            }
+            if (bits == 0)
+            {
+                addr->u.v6.s6_addr[i] = 0;
+            }
+            else
+            {
+                uint8_t mask = (uint8_t)(0xFFu << (8u - bits));
+                addr->u.v6.s6_addr[i] &= mask;
+                bits = 0;
+            }
+        }
+        return 0;
+    }
+
+    return -1;
+}
+
 // ============================================================================
 // net_prefix_t 实现
 // ============================================================================

@@ -17,6 +17,7 @@
 
 /* bgp_instance.h 包含本头文件，用前向声明打破循环 */
 typedef struct bgp_instance bgp_instance_t;
+typedef struct bgp_rthead bgp_rthead_t;
 
 /** 每次定时器触发时每个队列处理的最大条目数 */
 #define BGP_WORK_BATCH_SIZE 64
@@ -32,11 +33,11 @@ typedef struct bgp_instance bgp_instance_t;
  * @brief 优选工作队列
  *
  * FIFO 队列，路由变化时入队，定时器批量出队处理。
- * GQueue 元素为 bgp_nlri_entry_t*（NLRI 值拷贝，队列持有所有权，出队后释放）。
+ * GQueue 元素为 bgp_rthead_t*（入队加引用，出队减引用）。
  */
 typedef struct bgp_calc_queue
 {
-    GQueue *q;      /**< FIFO 队列（元素为 bgp_nlri_entry_t*，值拷贝，队列持有所有权） */
+    GQueue *q;      /**< FIFO 队列（元素为 bgp_rthead_t*） */
     uint32_t count; /**< 当前队列中的条目数 */
 } bgp_calc_queue_t;
 
@@ -50,13 +51,30 @@ typedef struct bgp_calc_queue
  * FIFO 队列，best-path 完成后入队，定时器批量出队向邻居发包。
  * 只处理 ANNOUNCE：处理时通过 NLRI 在 RIB 中查找 is_best 路径信息。
  * WITHDRAW 由 bgp_calc_run_one() 同步调用 bgp_work_send_withdraw_to_all() 发出。
- * GQueue 元素为 bgp_nlri_entry_t*（NLRI 值拷贝，队列持有所有权，出队后释放）。
+ * GQueue 元素为 bgp_rthead_t*（入队加引用，出队减引用）。
  */
 typedef struct bgp_pub_queue
 {
-    GQueue *q;      /**< FIFO 队列（元素为 bgp_nlri_entry_t*，值拷贝，队列持有所有权） */
+    GQueue *q;      /**< FIFO 队列（元素为 bgp_rthead_t*） */
     uint32_t count; /**< 当前队列中的条目数 */
 } bgp_pub_queue_t;
+
+// ============================================================================
+// 路由下刷队列（route_flush_queue）
+// ============================================================================
+
+/**
+ * @brief 向 ROUTE 模块下刷的工作队列
+ *
+ * FIFO 队列，best-path 完成后入队，定时器批量出队下刷到 ROUTE 模块。
+ * 队列元素为 bgp_rthead_t*（入队加引用，出队减引用）。
+ * 路由是否已下刷通过 bgp_route_node_t.flags 的 BGP_ROUTE_FLAG_FLUSHED 维护。
+ */
+typedef struct bgp_route_flush_queue
+{
+    GQueue *q;      /**< FIFO 队列（元素为 bgp_rthead_t*） */
+    uint32_t count; /**< 当前队列中的条目数 */
+} bgp_route_flush_queue_t;
 
 // ============================================================================
 // epoll 哨兵（与 bgp_timer_sentinel_t 内存布局兼容）
@@ -97,22 +115,25 @@ bgp_calc_queue_t *bgp_calc_queue_create(void);
 /**
  * @brief 销毁优选工作队列（释放所有未处理条目）
  * @param q bgp_calc_queue_t 指针（允许为 NULL）
+ * @param inst 所属实例（用于释放 rthead 引用，可为 NULL）
  */
-void bgp_calc_queue_destroy(bgp_calc_queue_t *q);
+void bgp_calc_queue_destroy(bgp_calc_queue_t *q, bgp_instance_t *inst);
 
 /**
  * @brief 将 NLRI 推入优选队列
  * @param q    优选队列
- * @param nlri NLRI 条目（值拷贝）
+ * @param inst 所属实例（用于通过 NLRI 定位/创建 rthead）
+ * @param nlri NLRI 条目（匹配键）
  * @return 0 成功，-1 参数无效
  */
-int bgp_calc_queue_push(bgp_calc_queue_t *q, const bgp_nlri_entry_t *nlri);
+int bgp_calc_queue_push(bgp_calc_queue_t *q, bgp_instance_t *inst, const bgp_nlri_entry_t *nlri);
 
 /**
  * @brief 批量处理优选队列（每次处理至多 batch_size 条）
  *
  * 从 calc_queue 出队 NLRI，调用 bgp_calc_run_one()，
- * 结果（宣告或撤销）由 bgp_calc_run_one 内部推入 inst->pub_queue。
+ * 结果（宣告或撤销）由 bgp_calc_run_one 内部推入 inst->pub_queue 和
+ * inst->route_flush_queue。
  *
  * @param q          优选队列
  * @param inst       目标地址族实例
@@ -132,19 +153,20 @@ bgp_pub_queue_t *bgp_pub_queue_create(void);
 /**
  * @brief 销毁发布工作队列（释放所有未处理条目）
  * @param q bgp_pub_queue_t 指针（允许为 NULL）
+ * @param inst 所属实例（用于释放 rthead 引用，可为 NULL）
  */
-void bgp_pub_queue_destroy(bgp_pub_queue_t *q);
+void bgp_pub_queue_destroy(bgp_pub_queue_t *q, bgp_instance_t *inst);
 
 /**
  * @brief 将 NLRI 推入发布队列（仅 ANNOUNCE）
  *
- * pub_queue 存储 NLRI 值拷贝；处理时通过 NLRI 在 RIB 中查找 is_best 路径信息。
+ * pub_queue 存储 rthead 指针；处理时通过 rthead 查找 is_best 路径信息。
  *
  * @param q    发布队列
- * @param nlri NLRI 条目（值拷贝）
+ * @param head rthead 指针（入队时加引用）
  * @return 0 成功，-1 参数无效
  */
-int bgp_pub_queue_push(bgp_pub_queue_t *q, const bgp_nlri_entry_t *nlri);
+int bgp_pub_queue_push(bgp_pub_queue_t *q, bgp_rthead_t *head);
 
 /**
  * @brief 批量处理发布队列（每次处理至多 batch_size 条）
@@ -158,6 +180,38 @@ int bgp_pub_queue_push(bgp_pub_queue_t *q, const bgp_nlri_entry_t *nlri);
  * @return 实际处理条目数
  */
 int bgp_pub_queue_process(bgp_pub_queue_t *q, bgp_instance_t *inst, int batch_size);
+
+/* ---- ROUTE 下刷队列 ---- */
+
+/**
+ * @brief 创建 ROUTE 下刷工作队列
+ * @return 新建的 bgp_route_flush_queue_t 指针
+ */
+bgp_route_flush_queue_t *bgp_route_flush_queue_create(void);
+
+/**
+ * @brief 销毁 ROUTE 下刷工作队列（释放所有未处理条目）
+ * @param q bgp_route_flush_queue_t 指针（允许为 NULL）
+ * @param inst 所属实例（用于释放 rthead 引用，可为 NULL）
+ */
+void bgp_route_flush_queue_destroy(bgp_route_flush_queue_t *q, bgp_instance_t *inst);
+
+/**
+ * @brief 将 rthead 推入 ROUTE 下刷队列
+ * @param q    下刷队列
+ * @param head rthead 指针（入队时加引用）
+ * @return 0 成功，-1 参数无效
+ */
+int bgp_route_flush_queue_push(bgp_route_flush_queue_t *q, bgp_rthead_t *head);
+
+/**
+ * @brief 批量处理 ROUTE 下刷队列（每次处理至多 batch_size 条）
+ * @param q          下刷队列
+ * @param inst       目标地址族实例
+ * @param batch_size 本次处理上限
+ * @return 实际处理条目数
+ */
+int bgp_route_flush_queue_process(bgp_route_flush_queue_t *q, bgp_instance_t *inst, int batch_size);
 
 /**
  * @brief 向实例下所有 ESTABLISHED 邻居同步发送 WITHDRAW 报文

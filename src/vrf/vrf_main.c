@@ -85,7 +85,11 @@ static void send_phase_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, 
 {
     dev_ipc_message_t *resp = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_MODULE_RESP, DEV_MODULE_ID_VRF,
                                                      msg->src_module_id, msg->request_id, NULL, 0, NULL);
-    dev_ipc_send_response(ctx, resp);
+    if (resp)
+    {
+        dev_ipc_send_response(ctx, resp);
+        dev_ipc_message_free(resp);
+    }
     dev_ipc_message_free(msg);
     (void)result;
 }
@@ -129,44 +133,6 @@ static void vrf_on_ready(dev_ipc_message_t *msg)
     g_hash_table_insert(g_vrf_local->vrf_by_id, GUINT_TO_POINTER(pub->vrf_id), pub);
     g_hash_table_insert(g_vrf_local->vrf_by_name, pub->name, pub);
     LOG_INFO("Public VRF created: id=%u name=%s", pub->vrf_id, pub->name);
-
-    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
-}
-
-// ============================================================================
-// Shutdown
-// ============================================================================
-
-static void vrf_on_shutdown(dev_ipc_message_t *msg)
-{
-    dev_ipc_context_t *ctx = vrf_local_ipc_ctx();
-    LOG_INFO("VRF module cleanup");
-
-    vrf_cli_cleanup_state();
-
-    if (g_vrf_local->vrf_by_id)
-    {
-        /* 释放所有 vrf_entry_t；vrf_by_name 共享相同指针，不重复释放 */
-        GHashTableIter iter;
-        gpointer key, val;
-        g_hash_table_iter_init(&iter, g_vrf_local->vrf_by_id);
-        while (g_hash_table_iter_next(&iter, &key, &val))
-        {
-            g_free(val);
-        }
-        g_hash_table_destroy(g_vrf_local->vrf_by_id);
-        g_vrf_local->vrf_by_id = NULL;
-    }
-
-    if (g_vrf_local->vrf_by_name)
-    {
-        g_hash_table_destroy(g_vrf_local->vrf_by_name);
-        g_vrf_local->vrf_by_name = NULL;
-    }
-
-    g_vrf_local->dev_ipc_ctx = NULL;
-    g_free(g_vrf_local);
-    g_vrf_local = NULL;
 
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
@@ -220,9 +186,6 @@ void vrf_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         case DEV_IPC_MSG_TYPE_DEV_MODULE_READY:
             vrf_on_ready(msg);
             return;
-        case DEV_IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN:
-            vrf_on_shutdown(msg);
-            return;
         case VRF_MSG_TYPE_GET_NAME:
             vrf_handle_get_name(msg);
             return;
@@ -267,4 +230,48 @@ int vrf_module_init(void)
     g_vrf_local->vrf_by_name = g_hash_table_new(g_str_hash, g_str_equal);
     g_vrf_local->next_id = 1; /* 0 保留给公网 VRF */
     return 0;
+}
+
+void vrf_module_cleanup(void)
+{
+    if (!g_vrf_local)
+    {
+        return;
+    }
+
+    dev_ipc_context_t *ctx = g_vrf_local->dev_ipc_ctx;
+    g_vrf_local->dev_ipc_ctx = NULL;
+    if (ctx)
+    {
+        dev_ipc_destroy(ctx);
+    }
+
+    if (!g_vrf_local)
+    {
+        return;
+    }
+
+    vrf_cli_cleanup_state();
+
+    if (g_vrf_local->vrf_by_id)
+    {
+        GHashTableIter iter;
+        gpointer key, val;
+        g_hash_table_iter_init(&iter, g_vrf_local->vrf_by_id);
+        while (g_hash_table_iter_next(&iter, &key, &val))
+        {
+            g_free(val);
+        }
+        g_hash_table_destroy(g_vrf_local->vrf_by_id);
+        g_vrf_local->vrf_by_id = NULL;
+    }
+
+    if (g_vrf_local->vrf_by_name)
+    {
+        g_hash_table_destroy(g_vrf_local->vrf_by_name);
+        g_vrf_local->vrf_by_name = NULL;
+    }
+
+    g_free(g_vrf_local);
+    g_vrf_local = NULL;
 }

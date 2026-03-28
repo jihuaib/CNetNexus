@@ -71,6 +71,21 @@ guint net_addr_hash(gconstpointer key);
  */
 gboolean net_addr_hash_equal(gconstpointer a, gconstpointer b);
 
+/**
+ * @brief 判断地址是否为全零地址
+ * @param addr 地址指针（NULL 视为全零）
+ * @return TRUE 为全零地址，FALSE 非全零地址
+ */
+gboolean net_addr_is_zero(const net_addr_t *addr);
+
+/**
+ * @brief 将地址按前缀长度规范化为网络地址（清零 host bits）
+ * @param addr       输入/输出地址（原地修改）
+ * @param prefix_len 前缀长度（IPv4: 0-32，IPv6: 0-128）
+ * @return 0 成功，-1 参数非法或 family 不支持
+ */
+int net_addr_prefix_normalize(net_addr_t *addr, uint8_t prefix_len);
+
 // ============================================================================
 // IP 前缀（地址 + 前缀长度）
 // ============================================================================

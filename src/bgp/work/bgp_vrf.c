@@ -279,87 +279,21 @@ void bgp_vrf_del_instance(bgp_vrf_t *vrf, bgp_afi_t afi, bgp_safi_t safi)
              vrf->vrf_id);
 }
 
-void bgp_vrf_apply_update(bgp_vrf_t *vrf, const net_addr_t *src, const bgp_update_result_t *upd,
-                          bgp_rib_update_stats_t *stats)
+typedef struct
 {
-    if (stats)
-    {
-        memset(stats, 0, sizeof(*stats));
-    }
-    if (!vrf || !src || !upd)
-    {
-        return;
-    }
-
-    for (uint32_t i = 0; i < upd->reach_len; i++)
-    {
-        const bgp_nlri_entry_t *e = &upd->reach[i];
-        bgp_instance_t *inst = bgp_vrf_get_or_create_instance(vrf, (bgp_afi_t)e->afi, (bgp_safi_t)e->safi);
-        if (!inst || !inst->rib)
-        {
-            continue;
-        }
-
-        int rc = bgp_rib_reach_one(inst->rib, e, src, 0, &upd->attr, &upd->nexthop);
-        /* reach 成功（新增或更新）均需重新优选 */
-        if (rc >= 0 && inst->calc_queue)
-        {
-            bgp_calc_queue_push(inst->calc_queue, e);
-        }
-        if (!stats)
-        {
-            continue;
-        }
-        if (rc == 1)
-        {
-            stats->reach_new++;
-        }
-        else if (rc == 0)
-        {
-            stats->reach_update++;
-        }
-    }
-
-    for (uint32_t i = 0; i < upd->unreach_len; i++)
-    {
-        const bgp_nlri_entry_t *e = &upd->unreach[i];
-        bgp_instance_t *inst =
-            g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key((bgp_afi_t)e->afi, (bgp_safi_t)e->safi));
-        if (!inst || !inst->rib)
-        {
-            if (stats)
-            {
-                stats->unreach_miss++;
-            }
-            continue;
-        }
-
-        int rc = bgp_rib_unreach_one(inst->rib, e, src);
-        /* unreach 成功（路径已删除）需重新优选（判断是否还有其他路径） */
-        if (rc == 1 && inst->calc_queue)
-        {
-            bgp_calc_queue_push(inst->calc_queue, e);
-        }
-        if (!stats)
-        {
-            continue;
-        }
-        if (rc == 1)
-        {
-            stats->unreach_removed++;
-        }
-        else if (rc == 0)
-        {
-            stats->unreach_miss++;
-        }
-    }
-}
+    bgp_instance_t *inst;
+    bgp_calc_queue_t *q;
+} push_calc_ctx_t;
 
 /** bgp_rib_foreach_source 回调：将受影响的 NLRI 推入 calc_queue */
 static void push_nlri_to_calc_cb(const bgp_nlri_entry_t *nlri, gpointer user_data)
 {
-    bgp_calc_queue_t *q = user_data;
-    bgp_calc_queue_push(q, nlri);
+    push_calc_ctx_t *ctx = (push_calc_ctx_t *)user_data;
+    if (!ctx || !ctx->inst || !ctx->q)
+    {
+        return;
+    }
+    bgp_calc_queue_push(ctx->q, ctx->inst, nlri);
 }
 
 uint32_t bgp_vrf_purge_session_routes(bgp_vrf_t *vrf, const net_addr_t *addr)
@@ -387,7 +321,8 @@ uint32_t bgp_vrf_purge_session_routes(bgp_vrf_t *vrf, const net_addr_t *addr)
         /* 先收集该来源的全部 NLRI，推入 calc_queue，再从 RIB 中删除 */
         if (inst->calc_queue)
         {
-            bgp_rib_foreach_source(inst->rib, addr, push_nlri_to_calc_cb, inst->calc_queue);
+            push_calc_ctx_t push_ctx = {.inst = inst, .q = inst->calc_queue};
+            bgp_rib_foreach_source(inst->rib, addr, push_nlri_to_calc_cb, &push_ctx);
         }
 
         uint32_t removed_routes = 0;

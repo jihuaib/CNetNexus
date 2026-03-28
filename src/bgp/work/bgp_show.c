@@ -4,6 +4,7 @@
  */
 #include <arpa/inet.h>
 #include <glib.h>
+#include <net/if.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -171,6 +172,71 @@ static void bgp_nexthop_to_str(const bgp_nexthop_t *nexthop, char *buf, size_t s
     snprintf(buf, sz, "%s", global);
 }
 
+/** 将 BGP route flags 格式化为可读字符串 */
+static void bgp_route_flags_to_str(uint32_t flags, char *buf, size_t sz)
+{
+    if (!buf || sz == 0)
+    {
+        return;
+    }
+
+    buf[0] = '\0';
+    if (BIT_TEST(flags, BGP_ROUTE_FLAG_BEST))
+    {
+        g_strlcat(buf, "BEST|", sz);
+    }
+    if (BIT_TEST(flags, BGP_ROUTE_FLAG_IMPORT))
+    {
+        g_strlcat(buf, "IMPORT|", sz);
+    }
+    if (BIT_TEST(flags, BGP_ROUTE_FLAG_VALID))
+    {
+        g_strlcat(buf, "VALID|", sz);
+    }
+    if (BIT_TEST(flags, BGP_ROUTE_FLAG_FLUSHED))
+    {
+        g_strlcat(buf, "FLUSHED|", sz);
+    }
+    if (BIT_TEST(flags, BGP_ROUTE_FLAG_STALE))
+    {
+        g_strlcat(buf, "STALE|", sz);
+    }
+
+    size_t n = strlen(buf);
+    if (n == 0)
+    {
+        g_strlcpy(buf, "NONE", sz);
+        return;
+    }
+    if (buf[n - 1] == '|')
+    {
+        buf[n - 1] = '\0';
+    }
+}
+
+/** 将出接口索引格式化为 ifname(ifindex) */
+static void bgp_ifindex_to_str(uint32_t ifindex, char *buf, size_t sz)
+{
+    if (!buf || sz == 0)
+    {
+        return;
+    }
+    if (ifindex == 0)
+    {
+        snprintf(buf, sz, "-");
+        return;
+    }
+
+    char ifname[IF_NAMESIZE] = {0};
+    if (if_indextoname(ifindex, ifname))
+    {
+        snprintf(buf, sz, "%s(%u)", ifname, ifindex);
+        return;
+    }
+
+    snprintf(buf, sz, "if%u", ifindex);
+}
+
 /* 路由表固定列宽 */
 #define BGP_RT_COL_NET 24
 #define BGP_RT_COL_NH 20
@@ -289,7 +355,8 @@ static gboolean bgp_show_route_head_cb(gpointer key, gpointer value, gpointer us
 static void bgp_show_route_detail(GString *buf, const bgp_rthead_t *head)
 {
     uint32_t path_count = (uint32_t)g_list_length(head->route_list);
-    g_string_append_printf(buf, "  Paths: %u\r\n\r\n", path_count);
+    g_string_append_printf(buf, "  Head QueueRefCnt: %u\r\n", head->queue_refcnt);
+    g_string_append_printf(buf, "  Paths          : %u\r\n\r\n", path_count);
 
     for (const GList *l = head->route_list; l; l = l->next)
     {
@@ -300,10 +367,25 @@ static void bgp_show_route_detail(GString *buf, const bgp_rthead_t *head)
         }
 
         char nh[64], lp[16], med[16], as_path[256], ts_added[32], ts_updated[32];
+        char iter_nh[64], out_if[64], flags_str[128];
         bgp_nexthop_to_str(&route->nexthop, nh, sizeof(nh));
         bgp_route_fmt_fields(route, lp, sizeof(lp), med, sizeof(med), as_path, sizeof(as_path));
         bgp_fmt_time_usec(route->added_at_usec, ts_added, sizeof(ts_added));
         bgp_fmt_time_usec(route->updated_at_usec, ts_updated, sizeof(ts_updated));
+        bgp_route_flags_to_str(route->flags, flags_str, sizeof(flags_str));
+
+        if (route->iter_watched && route->iter_relay_addr.family != 0)
+        {
+            net_addr_to_str(&route->iter_relay_addr, iter_nh, sizeof(iter_nh));
+        }
+        else
+        {
+            snprintf(iter_nh, sizeof(iter_nh), "-");
+        }
+        bgp_ifindex_to_str((route->iter_watched && route->iter_resolved) ? route->iter_out_ifindex : 0u, out_if,
+                           sizeof(out_if));
+        const char *iter_state_str =
+            route->iter_watched ? (route->iter_resolved ? "Resolved" : "Unresolved") : "Unwatched";
 
         /* 路由标记：'>'=BEST，'v'=VALID */
         g_string_append_printf(buf, "%c%c ", BIT_TEST(route->flags, BGP_ROUTE_FLAG_BEST) ? '>' : ' ',
@@ -324,6 +406,10 @@ static void bgp_show_route_detail(GString *buf, const bgp_rthead_t *head)
         g_string_append_printf(buf, "    Origin   : %s\r\n", bgp_origin_str(route->attr.origin));
         g_string_append_printf(buf, "    Valid    : %s\r\n",
                                BIT_TEST(route->flags, BGP_ROUTE_FLAG_VALID) ? "Yes" : "No");
+        g_string_append_printf(buf, "    IterState: %s\r\n", iter_state_str);
+        g_string_append_printf(buf, "    Iter-NH  : %s\r\n", iter_nh);
+        g_string_append_printf(buf, "    Out-If   : %s\r\n", out_if);
+        g_string_append_printf(buf, "    Flags    : 0x%08X (%s)\r\n", route->flags, flags_str);
         g_string_append_printf(buf, "    AS-Path  : %s\r\n", as_path);
 
         if (route->attr.communities[0] != '\0')

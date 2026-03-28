@@ -31,7 +31,11 @@ static void send_phase_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, 
 {
     dev_ipc_message_t *resp = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_MODULE_RESP, DEV_MODULE_ID_BGP,
                                                      msg->src_module_id, msg->request_id, NULL, 0, NULL);
-    dev_ipc_send_response(ctx, resp);
+    if (resp)
+    {
+        dev_ipc_send_response(ctx, resp);
+        dev_ipc_message_free(resp);
+    }
     dev_ipc_message_free(msg);
     (void)result;
 }
@@ -94,23 +98,6 @@ static void bgp_on_ready(dev_ipc_message_t *msg)
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
-static void bgp_on_shutdown(dev_ipc_message_t *msg)
-{
-    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
-    LOG_INFO("BGP module cleanup");
-
-    if (g_bgp_local)
-    {
-        /* show 分片状态由 worker 生命周期清理路径统一处理 */
-        bgp_worker_shutdown();
-        g_bgp_local->dev_ipc_ctx = NULL;
-        g_free(g_bgp_local);
-        g_bgp_local = NULL;
-    }
-
-    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
-}
-
 void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     (void)ctx;
@@ -131,10 +118,6 @@ void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
         case DEV_IPC_MSG_TYPE_DEV_MODULE_READY:
             bgp_on_ready(msg);
-            return;
-
-        case DEV_IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN:
-            bgp_on_shutdown(msg);
             return;
         case CLI_MSG_TYPE:
         {
@@ -157,7 +140,7 @@ void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         case CLI_MSG_TYPE_SHOW_CONFIG:
         {
             bgp_bdr_show_config(msg);
-            return;
+            break;
         }
         case CLI_MSG_TYPE_CONTINUE:
         {
@@ -182,6 +165,8 @@ void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         default:
             break;
     }
+
+    dev_ipc_message_free(msg);
 }
 
 int bgp_module_init(void)
@@ -208,4 +193,29 @@ int bgp_module_init(void)
     g_bgp_local->dev_ipc_ctx = ctx;
 
     return 0;
+}
+
+void bgp_module_cleanup(void)
+{
+    if (!g_bgp_local)
+    {
+        return;
+    }
+
+    bgp_worker_shutdown();
+
+    dev_ipc_context_t *ctx = g_bgp_local->dev_ipc_ctx;
+    g_bgp_local->dev_ipc_ctx = NULL;
+    if (ctx)
+    {
+        dev_ipc_destroy(ctx);
+    }
+
+    if (!g_bgp_local)
+    {
+        return;
+    }
+
+    g_free(g_bgp_local);
+    g_bgp_local = NULL;
 }

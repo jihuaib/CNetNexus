@@ -16,6 +16,7 @@
 
 /* 前向声明：bgp_instance_t 与 bgp_rib_t 相互引用 */
 typedef struct bgp_instance bgp_instance_t;
+typedef struct bgp_rthead bgp_rthead_t;
 
 /** 路由标记位：当前最优路径（由 bgp_calc 置位，需同时满足位于链表首位） */
 #define BGP_ROUTE_FLAG_BEST (1U << 0)
@@ -23,6 +24,10 @@ typedef struct bgp_instance bgp_instance_t;
 #define BGP_ROUTE_FLAG_IMPORT (1U << 1)
 /** 路由标记位：nexthop 迭代有效（valid） */
 #define BGP_ROUTE_FLAG_VALID (1U << 2)
+/** 路由标记位：已下刷到 ROUTE 模块 */
+#define BGP_ROUTE_FLAG_FLUSHED (1U << 3)
+/** 路由标记位：已逻辑删除，待下刷撤销后物理清理 */
+#define BGP_ROUTE_FLAG_STALE (1U << 4)
 
 /**
  * @brief 单条路径（同一 rthead 下可挂多条，按 source 来源地址区分）
@@ -34,12 +39,18 @@ typedef struct bgp_instance bgp_instance_t;
  */
 typedef struct bgp_route_node
 {
-    net_addr_t source;      /**< 路由来源标识（peer 路由=邻居IP，import 路由=来源地址） */
-    bgp_attr_t attr;        /**< 路径属性 */
-    bgp_nexthop_t nexthop;  /**< 下一跳 */
-    gint64 added_at_usec;   /**< 路由首次加入时间（g_get_real_time，仅新增时写入） */
-    gint64 updated_at_usec; /**< 路由最近更新时间（g_get_real_time，每次 reach 写入） */
-    uint32_t flags;         /**< 路由标记位，见 BGP_ROUTE_FLAG_* */
+    bgp_rthead_t *head;         /**< 所属 rthead（借用引用） */
+    net_addr_t source;          /**< 路由来源标识（peer 路由=邻居IP，import 路由=来源地址） */
+    bgp_attr_t attr;            /**< 路径属性 */
+    bgp_nexthop_t nexthop;      /**< 下一跳 */
+    net_addr_t iter_relay_addr; /**< nexthop 迭代得到的 relay 地址（family=0 表示未知） */
+    gint64 added_at_usec;       /**< 路由首次加入时间（g_get_real_time，仅新增时写入） */
+    gint64 updated_at_usec;     /**< 路由最近更新时间（g_get_real_time，每次 reach 写入） */
+    uint32_t iter_out_ifindex;  /**< nexthop 迭代得到的出接口索引（0 表示未知） */
+    uint8_t iter_watched;       /**< 是否已挂 relay watch（1=是，0=否） */
+    uint8_t iter_resolved;      /**< nexthop 迭代是否可达（1=可达，0=不可达） */
+    uint8_t _pad0[2];           /**< 对齐填充 */
+    uint32_t flags;             /**< 路由标记位，见 BGP_ROUTE_FLAG_* */
 } bgp_route_node_t;
 
 /**
@@ -47,12 +58,13 @@ typedef struct bgp_route_node
  *
  * 树键为 NLRI 二进制内容（RIB 已按 AFI/SAFI 分实例）
  */
-typedef struct bgp_rthead
+struct bgp_rthead
 {
     bgp_nlri_entry_t nlri; /**< NLRI（前缀/EVPN/FlowSpec 等，含 afi/safi/type） */
     bgp_instance_t *inst;  /**< 所属 AF 实例（借用引用，可为 NULL） */
     GList *route_list;     /**< bgp_route_node_t* 双向链表，首元素为当前最优路径 */
-} bgp_rthead_t;
+    uint32_t queue_refcnt; /**< 工作队列引用计数（>0 时禁止删除该 rthead） */
+};
 
 /**
  * @brief BGP 内存 RIB
@@ -87,19 +99,6 @@ bgp_rib_t *bgp_rib_create(void);
 void bgp_rib_destroy(bgp_rib_t *rib);
 
 /**
- * @brief 对单条 NLRI 执行 reach（新增/更新一条来源路径）
- * @param rib          目标 RIB
- * @param nlri         NLRI 条目
- * @param source       路径来源（peer 路由=邻居IP，import 路由=来源地址）
- * @param import_proto 是否为 import 路由（0=peer 路由，非 0=import 路由，置 BGP_ROUTE_FLAG_IMPORT）
- * @param attr         路径属性
- * @param nexthop      下一跳
- * @return 1=新增路径, 0=更新已有路径, -1=失败
- */
-int bgp_rib_reach_one(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_addr_t *source, uint32_t import_proto,
-                      const bgp_attr_t *attr, const bgp_nexthop_t *nexthop);
-
-/**
  * @brief 对单条 NLRI 执行 unreach（删除一条来源路径）
  * @param rib      目标 RIB
  * @param nlri     NLRI 条目
@@ -119,12 +118,6 @@ int bgp_rib_unreach_one(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_
 int bgp_rib_set_route_valid(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_addr_t *source, gboolean valid);
 
 /**
- * @brief 将解析后的 UPDATE 应用于 RIB
- */
-void bgp_rib_apply_update(bgp_rib_t *rib, const net_addr_t *source, const bgp_update_result_t *upd,
-                          bgp_rib_update_stats_t *stats);
-
-/**
  * @brief 删除某来源在整个 RIB 下的所有路径（会清理空 rthead）
  * @param rib            目标 RIB
  * @param source         路径来源（邻居 IP，二进制）
@@ -137,6 +130,53 @@ void bgp_rib_remove_source(bgp_rib_t *rib, const net_addr_t *source, uint32_t *r
  * @brief 通过 NLRI 查找 rthead（只读）
  */
 const bgp_rthead_t *bgp_rib_lookup_head(const bgp_rib_t *rib, const bgp_nlri_entry_t *nlri);
+
+/**
+ * @brief 通过 NLRI 查找或创建 rthead（可写）
+ *
+ * 当 NLRI 尚不存在时会创建空 rthead 并插入 RIB。
+ */
+bgp_rthead_t *bgp_rib_ensure_head(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri);
+
+/**
+ * @brief 在 rthead 下按 source 查找 route（可写）
+ */
+bgp_route_node_t *bgp_rthead_lookup_route_mut(bgp_rthead_t *head, const net_addr_t *source);
+
+/**
+ * @brief 在 rthead 下创建一条新 route（调用前应先确认未存在）
+ *
+ * 成功时自动将节点挂到 head->route_list 尾部，并递增 rib->route_count。
+ */
+bgp_route_node_t *bgp_rthead_create_route(bgp_rib_t *rib, bgp_rthead_t *head, const net_addr_t *source);
+
+/**
+ * @brief 对 route 应用 reach 更新（属性、nexthop、标志与时间戳）
+ *
+ * 不负责创建 rthead/route，仅更新已有 route。
+ */
+int bgp_rib_route_apply_reach(bgp_route_node_t *route, uint32_t import_proto, const bgp_attr_t *attr,
+                              const bgp_nexthop_t *nexthop);
+
+/**
+ * @brief rthead 队列引用计数操作
+ *
+ * 入队时调用 bgp_rib_head_ref，出队处理完后调用 bgp_rib_head_unref。
+ * 仅维护引用计数，不负责删除。
+ */
+void bgp_rib_head_ref(bgp_rthead_t *head);
+void bgp_rib_head_unref(bgp_rthead_t *head);
+
+/**
+ * @brief 触发一个 rthead 的垃圾回收（删除 stale route，必要时删除空 rthead）
+ *
+ * 仅当 queue_refcnt 为 0 时执行物理删除。
+ *
+ * @param rib  目标 RIB
+ * @param head 待回收的 rthead
+ * @return 删除的 stale route 数量
+ */
+uint32_t bgp_rib_gc_head(bgp_rib_t *rib, bgp_rthead_t *head);
 
 /**
  * @brief 遍历 RIB 中含有指定来源路径的所有 rthead，对每个 NLRI 触发回调
@@ -202,5 +242,16 @@ typedef void (*bgp_rib_best_cb)(const bgp_rthead_t *head, const bgp_route_node_t
  * @param user_data 传递给回调的上下文指针
  */
 void bgp_rib_foreach_best(const bgp_rib_t *rib, bgp_rib_best_cb cb, gpointer user_data);
+
+/**
+ * @brief 清理指定 NLRI 下已 stale 且未 flushed 的路由节点
+ *
+ * 典型场景：下刷队列完成撤销后清理 tombstone 路由，必要时连同空 rthead 一并删除。
+ *
+ * @param rib  目标 RIB
+ * @param nlri NLRI 匹配键
+ * @return 清理的路由节点数量
+ */
+uint32_t bgp_rib_cleanup_stale(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri);
 
 #endif /* BGP_RIB_H */

@@ -17,6 +17,7 @@
 #include "route_os.h"
 #include "route_pub.h"
 #include "route_rib.h"
+#include "route_worker.h"
 
 // ============================================================================
 // 辅助：path_key 比较 / 当前已下发路径查找
@@ -72,10 +73,12 @@ static void sync_os_installed_flag(route_head_t *head, const route_path_key_t *i
 }
 
 // ============================================================================
-// 辅助：从 head + path 构建路由条目（OS 下发 + 订阅通知共用）
+// 辅助：从 head + path 构建路由条目
+//   - 协议上报（UPDATE/REPORT）使用原始 nexthop
+//   - OS 下发使用 relay 解析后的 nexthop
 // ============================================================================
 
-static void build_entry(route_msg_entry_t *e, const route_head_t *head, const route_path_t *path)
+static void build_report_entry(route_msg_entry_t *e, const route_head_t *head, const route_path_t *path)
 {
     memset(e, 0, sizeof(*e));
     e->vrf_id = head->key.vrf_id;
@@ -87,10 +90,16 @@ static void build_entry(route_msg_entry_t *e, const route_head_t *head, const ro
     e->metric = path->metric;
     e->preference = path->preference;
     e->out_ifindex = path->out_ifindex;
-    e->nexthop_addr = path->relay_addr;
+    e->nexthop_addr = path->nexthop;
     e->source_addr = path->key.source;
     e->is_withdraw = 0;
     e->flags = 0;
+}
+
+static void build_os_entry(route_msg_entry_t *e, const route_head_t *head, const route_path_t *path)
+{
+    build_report_entry(e, head, path);
+    e->nexthop_addr = path->relay_addr;
 }
 
 // ============================================================================
@@ -148,7 +157,7 @@ static void update_prefix(const route_head_t *head, const route_path_key_t *skip
     }
 
     route_head_t *mut_head = (route_head_t *)head;
-    GList *subscribers = g_route_local ? g_route_local->subscribers : NULL;
+    GList *subscribers = g_route_work_local ? g_route_work_local->subscribers : NULL;
 
     const route_path_t *new_best = select_best_path(head, skip_key);
     route_path_t *cur_installed = find_os_installed_path(mut_head);
@@ -159,14 +168,16 @@ static void update_prefix(const route_head_t *head, const route_path_key_t *skip
         if (cur_installed)
         {
             route_msg_entry_t cur_entry;
+            route_msg_entry_t cur_os_entry;
             char addr_str[64];
 
-            build_entry(&cur_entry, head, cur_installed);
+            build_report_entry(&cur_entry, head, cur_installed);
+            build_os_entry(&cur_os_entry, head, cur_installed);
             net_addr_to_str(&head->key.addr, addr_str, sizeof(addr_str));
             LOG_INFO("[route_calc] %s/%u vrf=%u 无可用路径，撤销 OS 及通知: proto=%u", addr_str,
                      (unsigned)head->key.prefix_len, head->key.vrf_id, cur_installed->key.protocol);
 
-            if (route_os_withdraw(&cur_entry) != 0)
+            if (route_os_withdraw(&cur_os_entry) != 0)
             {
                 LOG_WARN("[route_calc] OS 撤销失败，保留当前最优状态: %s/%u vrf=%u proto=%u", addr_str,
                          (unsigned)head->key.prefix_len, head->key.vrf_id, cur_installed->key.protocol);
@@ -183,7 +194,9 @@ static void update_prefix(const route_head_t *head, const route_path_key_t *skip
     }
 
     route_msg_entry_t new_entry;
-    build_entry(&new_entry, head, new_best);
+    route_msg_entry_t new_os_entry;
+    build_report_entry(&new_entry, head, new_best);
+    build_os_entry(&new_os_entry, head, new_best);
 
     /* 情形 2：当前已安装的就是最优路径（同协议同来源） */
     if (cur_installed && path_key_same(&cur_installed->key, &new_best->key))
@@ -193,7 +206,7 @@ static void update_prefix(const route_head_t *head, const route_path_key_t *skip
         LOG_DEBUG("[route_calc] 最优路径更新: %s/%u vrf=%u proto=%u", addr_str, (unsigned)head->key.prefix_len,
                   head->key.vrf_id, new_best->key.protocol);
 
-        if (route_os_install(&new_entry) != 0)
+        if (route_os_install(&new_os_entry) != 0)
         {
             LOG_WARN("[route_calc] OS 更新失败，保持旧最优: %s/%u vrf=%u proto=%u", addr_str,
                      (unsigned)head->key.prefix_len, head->key.vrf_id, new_best->key.protocol);
@@ -213,14 +226,14 @@ static void update_prefix(const route_head_t *head, const route_path_key_t *skip
     {
         route_msg_entry_t cur_entry;
         char addr_str[64];
-        build_entry(&cur_entry, head, cur_installed);
+        build_report_entry(&cur_entry, head, cur_installed);
 
         net_addr_to_str(&head->key.addr, addr_str, sizeof(addr_str));
         LOG_INFO("[route_calc] 最优路径切换: %s/%u vrf=%u proto=%u(pref=%d) -> proto=%u(pref=%d)", addr_str,
                  (unsigned)head->key.prefix_len, head->key.vrf_id, cur_installed->key.protocol, cur_entry.preference,
                  new_best->key.protocol, new_best->preference);
 
-        if (route_os_install(&new_entry) != 0)
+        if (route_os_install(&new_os_entry) != 0)
         {
             LOG_WARN("[route_calc] OS 安装失败，保持当前最优不变: %s/%u vrf=%u proto=%u", addr_str,
                      (unsigned)head->key.prefix_len, head->key.vrf_id, new_best->key.protocol);
@@ -243,7 +256,7 @@ static void update_prefix(const route_head_t *head, const route_path_key_t *skip
                  (unsigned)head->key.prefix_len, head->key.vrf_id, new_best->key.protocol, new_best->preference,
                  new_best->metric);
 
-        if (route_os_install(&new_entry) != 0)
+        if (route_os_install(&new_os_entry) != 0)
         {
             LOG_WARN("[route_calc] OS 安装失败，保持当前最优不变: %s/%u vrf=%u proto=%u", addr_str,
                      (unsigned)head->key.prefix_len, head->key.vrf_id, new_best->key.protocol);
@@ -269,8 +282,64 @@ void route_calc_init(void)
     LOG_INFO("[route_calc] 优选状态初始化完成（基于 route_path OS 标记）");
 }
 
+typedef struct
+{
+    uint32_t total;
+    uint32_t withdrawn;
+    uint32_t failed;
+} calc_cleanup_ctx_t;
+
+static void cleanup_withdraw_os_cb(const route_head_t *head, const route_path_t *path, void *userdata)
+{
+    calc_cleanup_ctx_t *ctx = (calc_cleanup_ctx_t *)userdata;
+    if (!head || !path || !ctx)
+    {
+        return;
+    }
+
+    if (!(path->flags & ROUTE_PATH_FLAG_OS_INSTALLED))
+    {
+        return;
+    }
+
+    ctx->total++;
+
+    route_msg_entry_t os_entry;
+    char addr_str[64];
+    build_os_entry(&os_entry, head, path);
+    net_addr_to_str(&head->key.addr, addr_str, sizeof(addr_str));
+
+    if (route_os_withdraw(&os_entry) == 0)
+    {
+        ctx->withdrawn++;
+    }
+    else
+    {
+        ctx->failed++;
+        LOG_WARN("[route_calc] 退出清理撤销 OS 路由失败: %s/%u vrf=%u proto=%u", addr_str,
+                 (unsigned)head->key.prefix_len, head->key.vrf_id, path->key.protocol);
+    }
+}
+
 void route_calc_cleanup(void)
 {
+    if (g_route_work_local && g_route_work_local->rib)
+    {
+        calc_cleanup_ctx_t ctx = {
+            .total = 0u,
+            .withdrawn = 0u,
+            .failed = 0u,
+        };
+
+        route_rib_walk(g_route_work_local->rib, ROUTE_PROTOCOL_MAX, ROUTE_VRF_ALL, cleanup_withdraw_os_cb, &ctx);
+
+        if (ctx.total > 0 || ctx.failed > 0)
+        {
+            LOG_INFO("[route_calc] 退出清理完成：installed=%u withdrawn=%u failed=%u", ctx.total, ctx.withdrawn,
+                     ctx.failed);
+        }
+    }
+
     LOG_INFO("[route_calc] 优选状态已清理");
 }
 
@@ -328,14 +397,14 @@ static void dump_collect_best(const route_head_t *head, const route_path_t *path
         dctx->capacity = new_cap;
     }
 
-    build_entry(&dctx->entries[dctx->count], head, path);
+    build_report_entry(&dctx->entries[dctx->count], head, path);
     dctx->entries[dctx->count].is_withdraw = 0;
     dctx->count++;
 }
 
 void route_calc_pub_dump(uint32_t dst_module_id, uint32_t protocol, uint32_t vrf_id, uint32_t request_id)
 {
-    if (!g_route_local || !g_route_local->rib)
+    if (!g_route_work_local || !g_route_work_local->rib)
     {
         return;
     }
@@ -346,7 +415,7 @@ void route_calc_pub_dump(uint32_t dst_module_id, uint32_t protocol, uint32_t vrf
         .count = 0,
         .capacity = 0,
     };
-    route_rib_walk(g_route_local->rib, protocol, vrf_id, dump_collect_best, &dctx);
+    route_rib_walk(g_route_work_local->rib, protocol, vrf_id, dump_collect_best, &dctx);
 
     size_t report_size = sizeof(route_msg_report_t) + dctx.count * sizeof(route_msg_entry_t);
     route_msg_report_t *report = (route_msg_report_t *)g_malloc(report_size);

@@ -47,8 +47,6 @@ FAIL_STEP_HINTS = (
     "===== CHECK FAIL:",
     "Traceback (most recent call last):",
     "RuntimeError:",
-    "ERROR:",
-    "missing:",
 )
 WARN_STEP_HINTS = (
     "WARNING:",
@@ -407,6 +405,7 @@ def run_check(script: Path, rt: TopologyRuntime, top: dict[str, Any]) -> CheckRe
         with contextlib.redirect_stdout(tee_out), contextlib.redirect_stderr(tee_err):
             if failed_step_title and not run_exc_logged:
                 print(f"ERROR: failing module step: {failed_step_title}")
+            print("===== STEP: Final check status =====")
             print(f"===== CHECK FAIL: {script} =====")
             if not run_exc_logged:
                 traceback.print_exc(file=sys.stderr)
@@ -598,8 +597,15 @@ def split_output_steps(text: str) -> list[tuple[str, str]]:
 
 def detect_step_status(title: str, content: str, *, failed_step_title: str | None = None) -> str:
     step_text = f"{title}\n{content}"
-    if failed_step_title and title == failed_step_title:
-        return "fail"
+    if failed_step_title:
+        if title == failed_step_title:
+            return "fail"
+        if any(token in step_text for token in FAIL_STEP_HINTS):
+            return "warn"
+        if any(token in step_text for token in WARN_STEP_HINTS):
+            return "warn"
+        return "pass"
+
     if any(token in step_text for token in FAIL_STEP_HINTS):
         return "fail"
     if any(token in step_text for token in WARN_STEP_HINTS):
@@ -626,29 +632,8 @@ def classify_step_line(line: str) -> str:
 def render_step_content(content: str) -> str:
     if not content.strip():
         return "<div class='log-empty'>(no output)</div>"
-
-    blocks: list[str] = []
-    current_kind = ""
-    current_lines: list[str] = []
-
-    def flush_block() -> None:
-        if not current_lines:
-            return
-        safe = html.escape("".join(current_lines).rstrip("\n")) or "(no output)"
-        blocks.append(f"<pre class='log-chunk log-{current_kind}'>{safe}</pre>")
-
-    for raw in content.splitlines(keepends=True):
-        line_no_newline = raw.rstrip("\n")
-        kind = classify_step_line(line_no_newline)
-        if current_lines and kind != current_kind:
-            flush_block()
-            current_lines = []
-        if not current_lines:
-            current_kind = kind
-        current_lines.append(raw)
-
-    flush_block()
-    return "".join(blocks) if blocks else "<div class='log-empty'>(no output)</div>"
+    safe = html.escape(content.rstrip("\n")) or "(no output)"
+    return f"<pre class='log-chunk log-text'>{safe}</pre>"
 
 
 def build_step_views(
@@ -1031,36 +1016,12 @@ def write_check_html(path: Path, result: CheckResult, *, index: int) -> None:
     .log-chunk:last-child {{
       margin-bottom: 0;
     }}
-    .log-cmd {{
-      border-color: #385f8a;
-      background: #0b2239;
-      color: #d6e9ff;
-    }}
-    .log-echo {{
-      border-color: #2b6a58;
-      background: #0f3323;
-      color: #d2f8e7;
-    }}
-    .log-prompt {{
-      border-color: #7f6d26;
-      background: #3a3210;
-      color: #f9e79f;
-    }}
-    .log-marker {{
-      border-color: #6e57a8;
-      background: #2b1f46;
-      color: #eadbff;
-    }}
-    .log-fail {{
-      border-color: #8f3c3c;
-      background: #3a1618;
-      color: #ffd7d7;
-    }}
-    .log-warn {{
-      border-color: #8a6c2a;
-      background: #3a2e12;
-      color: #ffefbf;
-    }}
+    .log-cmd,
+    .log-echo,
+    .log-prompt,
+    .log-marker,
+    .log-fail,
+    .log-warn,
     .log-text {{
       border-color: #2a3e5b;
       background: #0f172a;

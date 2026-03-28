@@ -159,6 +159,22 @@ void cli_tree_add_child(cli_tree_node_t *parent, cli_tree_node_t *child)
             existing->is_end_node = TRUE;
         }
 
+        /* 合并时 child 节点会被释放；参数类型要么转移给 existing，要么显式释放，
+         * 否则 clone 出来的 type_str 会泄漏。 */
+        if (child->param_type)
+        {
+            if (!existing->param_type)
+            {
+                existing->param_type = child->param_type;
+                child->param_type = NULL;
+            }
+            else
+            {
+                cli_param_type_free(child->param_type);
+                child->param_type = NULL;
+            }
+        }
+
         // Free the new node (but not its children, as they were moved)
         g_free(child->name);
         g_free(child->description);
@@ -372,6 +388,9 @@ cli_tree_node_t *cli_tree_clone(cli_tree_node_t *node)
 
     if (node->cfg_bindings && node->num_cfg_bindings > 0)
     {
+        /* cli_tree_create_node() 已为 clone 分配过默认绑定，这里要先释放再覆盖。 */
+        g_free(clone->cfg_bindings);
+        clone->cfg_bindings = NULL;
         clone->cfg_bindings = g_malloc(node->num_cfg_bindings * sizeof(cli_cfg_binding_t));
         memcpy(clone->cfg_bindings, node->cfg_bindings, node->num_cfg_bindings * sizeof(cli_cfg_binding_t));
         clone->num_cfg_bindings = node->num_cfg_bindings;

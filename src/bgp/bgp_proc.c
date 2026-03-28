@@ -33,5 +33,7 @@ int main(void)
     int sig = 0;
     sigwait(&mask, &sig);
 
+    bgp_module_cleanup();
+
     return 0;
 }

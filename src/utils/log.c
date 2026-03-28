@@ -26,7 +26,8 @@
 /** 全局日志级别，默认 DEBUG */
 log_level_t g_log_level = LOG_LEVEL_DEBUG;
 
-/** 当前线程的模块标签（线程局部，初始为 "unknown"） */
+/** 当前线程的模块标签（线程局部指针，始终指向 g_log_tag_buf） */
+_Thread_local char g_log_tag_buf[32] = "unknown";
 _Thread_local const char *g_log_tag = "unknown";
 
 /* ============================================================
@@ -35,8 +36,8 @@ _Thread_local const char *g_log_tag = "unknown";
 
 typedef struct
 {
-    const char *tag; /**< 模块名（指向静态/堆字符串，生命周期须长于进程） */
-    int fd;          /**< 文件描述符 */
+    char *tag; /**< 模块名（注册表持有副本） */
+    int fd;    /**< 文件描述符 */
 } log_file_entry_t;
 
 static log_file_entry_t g_log_files[LOG_MAX_MODULES];
@@ -93,7 +94,14 @@ int log_register_module(const char *tag, const char *path)
     /* 新增注册 */
     if (g_log_file_count < LOG_MAX_MODULES)
     {
-        g_log_files[g_log_file_count].tag = tag;
+        char *tag_copy = strdup(tag);
+        if (!tag_copy)
+        {
+            close(fd);
+            pthread_rwlock_unlock(&g_log_rwlock);
+            return -1;
+        }
+        g_log_files[g_log_file_count].tag = tag_copy;
         g_log_files[g_log_file_count].fd = fd;
         g_log_file_count++;
     }
@@ -133,7 +141,14 @@ void log_open_file(const char *path)
 
 void log_set_tag(const char *tag)
 {
-    g_log_tag = tag ? tag : "unknown";
+    if (!tag || tag[0] == '\0')
+    {
+        snprintf(g_log_tag_buf, sizeof(g_log_tag_buf), "%s", "unknown");
+        g_log_tag = g_log_tag_buf;
+        return;
+    }
+    snprintf(g_log_tag_buf, sizeof(g_log_tag_buf), "%s", tag);
+    g_log_tag = g_log_tag_buf;
 }
 
 void log_init(log_level_t level)

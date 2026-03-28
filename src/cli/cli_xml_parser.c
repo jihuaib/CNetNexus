@@ -516,6 +516,17 @@ static void register_cmd_trees_to_view(cli_tree_node_t *virtual_root, cli_tree_n
         {
             cli_tree_add_child(target_cmd_tree, tree);
         }
+
+        if (!clone)
+        {
+            /* 不 clone 时，节点所有权已转移到目标视图，避免后续释放 virtual_root 时二次释放。 */
+            virtual_root->children[i] = NULL;
+        }
+    }
+
+    if (!clone)
+    {
+        virtual_root->num_children = 0;
     }
 }
 
@@ -864,7 +875,8 @@ static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree,
                                 }
                                 if (view_tree->global_view)
                                 {
-                                    register_cmd_trees_to_view(virtual_root, view_tree->global_view->cmd_tree, 1);
+                                    /* global 视图只保留一份命令树，不做 clone。 */
+                                    register_cmd_trees_to_view(virtual_root, view_tree->global_view->cmd_tree, 0);
                                 }
                             }
                             else

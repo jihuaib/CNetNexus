@@ -827,7 +827,11 @@ static void send_phase_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, 
 {
     dev_ipc_message_t *resp = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_MODULE_RESP, DEV_MODULE_ID_SBMP,
                                                      msg->src_module_id, msg->request_id, NULL, 0, NULL);
-    dev_ipc_send_response(ctx, resp);
+    if (resp)
+    {
+        dev_ipc_send_response(ctx, resp);
+        dev_ipc_message_free(resp);
+    }
     dev_ipc_message_free(msg);
     (void)result;
 }
@@ -884,52 +888,6 @@ static void sbmp_on_ready(dev_ipc_message_t *msg)
 }
 
 // ============================================================================
-// Shutdown
-// ============================================================================
-
-static void sbmp_on_shutdown(dev_ipc_message_t *msg)
-{
-    dev_ipc_context_t *ctx = sbmp_local_ipc_ctx();
-    LOG_INFO("SBMP: Cleaning up module state");
-
-    sbmp_cli_cleanup_state();
-
-    sbmp_listen_stop();
-
-    g_sbmp_local->running = 0;
-    if (g_sbmp_local->server_thread)
-    {
-        pthread_join(g_sbmp_local->server_thread, NULL);
-        g_sbmp_local->server_thread = 0;
-    }
-
-    if (g_sbmp_local->epoll_fd >= 0)
-    {
-        close(g_sbmp_local->epoll_fd);
-        g_sbmp_local->epoll_fd = -1;
-    }
-
-    if (g_sbmp_local->fd_hash)
-    {
-        g_hash_table_destroy(g_sbmp_local->fd_hash);
-        g_sbmp_local->fd_hash = NULL;
-    }
-    if (g_sbmp_local->client_hash)
-    {
-        g_hash_table_destroy(g_sbmp_local->client_hash);
-        g_sbmp_local->client_hash = NULL;
-    }
-    pthread_mutex_destroy(&g_sbmp_local->runtime_mutex);
-
-    g_sbmp_local->dev_ipc_ctx = NULL;
-    g_free(g_sbmp_local);
-    g_sbmp_local = NULL;
-
-    LOG_INFO("SBMP: Module cleanup complete");
-    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
-}
-
-// ============================================================================
 // IPC 消息处理回调
 // ============================================================================
 
@@ -947,9 +905,6 @@ void sbmp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         case DEV_IPC_MSG_TYPE_DEV_MODULE_READY:
             sbmp_on_ready(msg);
             return;
-        case DEV_IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN:
-            sbmp_on_shutdown(msg);
-            return;
         case CLI_MSG_TYPE:
             LOG_DEBUG("SBMP: Received CLI command message");
             sbmp_cli_handle_message(msg);
@@ -961,7 +916,7 @@ void sbmp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         case CLI_MSG_TYPE_SHOW_CONFIG:
             LOG_DEBUG("SBMP: Received show current-configuration request");
             sbmp_bdr_show_config(msg);
-            return;
+            break;
         default:
             LOG_WARN("SBMP: Unknown message type: 0x%08X", msg->msg_type);
             break;
@@ -1021,4 +976,56 @@ int sbmp_module_init(void)
     }
 
     return 0;
+}
+
+void sbmp_module_cleanup(void)
+{
+    if (!g_sbmp_local)
+    {
+        return;
+    }
+
+    dev_ipc_context_t *ctx = g_sbmp_local->dev_ipc_ctx;
+    g_sbmp_local->dev_ipc_ctx = NULL;
+    if (ctx)
+    {
+        dev_ipc_destroy(ctx);
+    }
+
+    if (!g_sbmp_local)
+    {
+        return;
+    }
+
+    sbmp_cli_cleanup_state();
+
+    sbmp_listen_stop();
+
+    g_sbmp_local->running = 0;
+    if (g_sbmp_local->server_thread)
+    {
+        pthread_join(g_sbmp_local->server_thread, NULL);
+        g_sbmp_local->server_thread = 0;
+    }
+
+    if (g_sbmp_local->epoll_fd >= 0)
+    {
+        close(g_sbmp_local->epoll_fd);
+        g_sbmp_local->epoll_fd = -1;
+    }
+
+    if (g_sbmp_local->fd_hash)
+    {
+        g_hash_table_destroy(g_sbmp_local->fd_hash);
+        g_sbmp_local->fd_hash = NULL;
+    }
+    if (g_sbmp_local->client_hash)
+    {
+        g_hash_table_destroy(g_sbmp_local->client_hash);
+        g_sbmp_local->client_hash = NULL;
+    }
+    pthread_mutex_destroy(&g_sbmp_local->runtime_mutex);
+
+    g_free(g_sbmp_local);
+    g_sbmp_local = NULL;
 }

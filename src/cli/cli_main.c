@@ -185,7 +185,11 @@ static void send_phase_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, 
 {
     dev_ipc_message_t *resp = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_MODULE_RESP, DEV_MODULE_ID_CLI,
                                                      msg->src_module_id, msg->request_id, NULL, 0, NULL);
-    dev_ipc_send_response(ctx, resp);
+    if (resp)
+    {
+        dev_ipc_send_response(ctx, resp);
+        dev_ipc_message_free(resp);
+    }
     dev_ipc_message_free(msg);
     (void)result;
 }
@@ -408,51 +412,6 @@ static void cli_on_ready(dev_ipc_message_t *msg)
 }
 
 // ============================================================================
-// Shutdown - 清理本地状态
-// ============================================================================
-
-static void cli_on_shutdown(dev_ipc_message_t *msg)
-{
-    dev_ipc_context_t *ctx = cli_local_ipc_ctx();
-    LOG_INFO("Shutting down server...");
-    g_cli_local->running = 0;
-
-    cli_cleanup();
-
-    cli_global_history_cleanup(&g_cli_local->global_history);
-    pthread_mutex_destroy(&g_cli_local->history_mutex);
-
-    if (g_cli_local->listen_sock != DEV_INVALID_FD)
-    {
-        close(g_cli_local->listen_sock);
-    }
-
-    if (g_cli_local->epoll_fd != DEV_INVALID_FD)
-    {
-        close(g_cli_local->epoll_fd);
-    }
-
-    if (g_cli_local->worker_thread != 0)
-    {
-        pthread_join(g_cli_local->worker_thread, NULL);
-    }
-
-    if (g_cli_local->sessions != NULL)
-    {
-        g_hash_table_destroy(g_cli_local->sessions);
-    }
-
-    /* 注意: dev_ipc_ctx 由 DEV 管理，此处不销毁 */
-    g_cli_local->dev_ipc_ctx = NULL;
-
-    g_free(g_cli_local);
-    g_cli_local = NULL;
-
-    LOG_INFO("Server shutdown complete");
-    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
-}
-
-// ============================================================================
 // IPC 消息处理回调
 // ============================================================================
 
@@ -470,9 +429,6 @@ void cli_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             return;
         case DEV_IPC_MSG_TYPE_DEV_MODULE_READY:
             cli_on_ready(msg);
-            return;
-        case DEV_IPC_MSG_TYPE_DEV_MODULE_SHUTDOWN:
-            cli_on_shutdown(msg);
             return;
 
         default:
@@ -503,4 +459,53 @@ int cli_module_init(void)
     /* 初始化本地状态（epoll、socket、server thread、view tree） */
     cli_init_local(ctx);
     return 0;
+}
+
+void cli_module_cleanup(void)
+{
+    if (!g_cli_local)
+    {
+        return;
+    }
+
+    dev_ipc_context_t *ctx = g_cli_local->dev_ipc_ctx;
+    g_cli_local->dev_ipc_ctx = NULL;
+    if (ctx)
+    {
+        dev_ipc_destroy(ctx);
+    }
+
+    if (!g_cli_local)
+    {
+        return;
+    }
+
+    g_cli_local->running = 0;
+    cli_cleanup();
+
+    cli_global_history_cleanup(&g_cli_local->global_history);
+    pthread_mutex_destroy(&g_cli_local->history_mutex);
+
+    if (g_cli_local->listen_sock != DEV_INVALID_FD)
+    {
+        close(g_cli_local->listen_sock);
+    }
+
+    if (g_cli_local->epoll_fd != DEV_INVALID_FD)
+    {
+        close(g_cli_local->epoll_fd);
+    }
+
+    if (g_cli_local->worker_thread != 0)
+    {
+        pthread_join(g_cli_local->worker_thread, NULL);
+    }
+
+    if (g_cli_local->sessions != NULL)
+    {
+        g_hash_table_destroy(g_cli_local->sessions);
+    }
+
+    g_free(g_cli_local);
+    g_cli_local = NULL;
 }

@@ -62,4 +62,9 @@ void cli_init_local(dev_ipc_context_t *ctx);
  */
 int cli_module_init(void);
 
+/**
+ * @brief CLI 模块清理（由 cli_proc.c main() 退出前调用）
+ */
+void cli_module_cleanup(void);
+
 #endif // CLI_MAIN_H
