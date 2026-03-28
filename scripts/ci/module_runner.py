@@ -16,6 +16,7 @@ import json
 import os
 import re
 import shlex
+import subprocess
 import sys
 import time
 import traceback
@@ -390,6 +391,7 @@ def run_check(script: Path, rt: TopologyRuntime, top: dict[str, Any]) -> CheckRe
                     failed_at = "before the first module step marker"
                 print(f"ERROR: check script raised at {failed_at}")
                 print("ERROR: runner will continue post-check cleanup/diff before final FAIL.")
+                traceback.print_exc(file=sys.stderr)
                 raise
             finally:
                 try:
@@ -438,6 +440,72 @@ def synth_failed_result(case_dir: Path, script: Path, err: str) -> CheckResult:
     )
 
 
+def export_case_container_logs(rt: TopologyRuntime, case_dir: Path, out_root: Path) -> list[Path]:
+    """
+    Export per-container logs for one case.
+
+    Layout:
+      <out_root>/<case-token>/<container>/docker.log
+      <out_root>/<case-token>/<container>/modules/*.log
+    """
+    if not rt.container_names:
+        return []
+
+    base_modules = (CI_DIR / "modules").resolve()
+    case_abs = case_dir.resolve()
+    try:
+        rel = case_abs.relative_to(base_modules)
+        case_token = sanitize_name(str(rel).replace(os.sep, "-"))
+    except ValueError:
+        case_token = sanitize_name(str(case_abs))
+
+    case_out = out_root / case_token
+    case_out.mkdir(parents=True, exist_ok=True)
+
+    exported: list[Path] = []
+    for container in rt.container_names:
+        container_out = case_out / sanitize_name(container)
+        modules_out = container_out / "modules"
+        container_out.mkdir(parents=True, exist_ok=True)
+        modules_out.mkdir(parents=True, exist_ok=True)
+
+        docker_log_path = container_out / "docker.log"
+        docker_proc = subprocess.run(["docker", "logs", container], text=True, capture_output=True)
+        docker_text = docker_proc.stdout or ""
+        if docker_proc.stderr:
+            if docker_text and not docker_text.endswith("\n"):
+                docker_text += "\n"
+            docker_text += "===== STDERR =====\n"
+            docker_text += docker_proc.stderr
+        if docker_proc.returncode != 0 and not docker_text.strip():
+            docker_text = f"[collector] docker logs failed rc={docker_proc.returncode}\n"
+        docker_log_path.write_text(docker_text, encoding="utf-8")
+        exported.append(docker_log_path)
+
+        # Production-style module logs are written under $NN_WORK_DIR/log/*.log
+        # (CI container sets NN_WORK_DIR=/opt/netnexus).
+        cp_proc = subprocess.run(
+            ["docker", "cp", f"{container}:/opt/netnexus/log/.", str(modules_out)],
+            text=True,
+            capture_output=True,
+        )
+        if cp_proc.returncode != 0:
+            err_path = container_out / "modules-copy.err"
+            err_text = (
+                "[collector] failed to copy /opt/netnexus/log from container\n"
+                f"container={container}\n"
+                f"rc={cp_proc.returncode}\n"
+                f"stdout:\n{cp_proc.stdout or ''}\n"
+                f"stderr:\n{cp_proc.stderr or ''}\n"
+            )
+            err_path.write_text(err_text, encoding="utf-8")
+            exported.append(err_path)
+        else:
+            exported.extend(sorted(modules_out.glob("*.log")))
+
+    return exported
+
+
 def run_case(
     case_dir: Path,
     image_arg: str | None,
@@ -445,6 +513,7 @@ def run_case(
     connect_timeout: int,
     verbose: bool,
     keep: bool,
+    container_logs_dir: Path,
     scripts_override: list[Path] | None = None,
 ) -> list[CheckResult]:
     scripts = sorted(scripts_override) if scripts_override is not None else discover_case_scripts(case_dir)
@@ -531,6 +600,15 @@ def run_case(
         results.extend(synth_failed_result(case_dir, script, err) for script in scripts if script not in executed)
     finally:
         if rt is not None:
+            try:
+                exported = export_case_container_logs(rt, case_dir, container_logs_dir)
+                if exported:
+                    print(
+                        f"Collected container logs for case '{case_dir.name}' -> {container_logs_dir} "
+                        f"({len(exported)} files)"
+                    )
+            except Exception as log_exc:
+                print(f"WARNING: failed to export container logs for case '{case_dir}': {log_exc}", file=sys.stderr)
             rt.close(failed=case_failed)
         print(f"===== END CASE: {case_dir} =====")
 
@@ -1375,7 +1453,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--report-dir", default="scripts/ci/reports", help="output directory for reports")
     parser.add_argument("--keep", action="store_true", help="keep case containers/networks for debugging")
     parser.add_argument("--cmd-timeout", type=int, default=30, help="CLI command timeout seconds")
-    parser.add_argument("--connect-timeout", type=int, default=60, help="CLI initial connect timeout seconds")
+    parser.add_argument("--connect-timeout", type=int, default=90, help="CLI initial connect timeout seconds")
     parser.add_argument("--verbose-modules", action="store_true", help="enable verbose runtime CLI logs")
     parser.add_argument(
         "--script",
@@ -1431,6 +1509,7 @@ def main() -> int:
             connect_timeout=args.connect_timeout,
             verbose=args.verbose_modules,
             keep=args.keep,
+            container_logs_dir=report_dir / "containers",
             scripts_override=selected_by_case.get(case_dir),
         )
         results.extend(case_results)

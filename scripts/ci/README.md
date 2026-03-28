@@ -156,6 +156,8 @@ After run, report files are generated under `--report-dir`:
 - `report.html`: human-readable execution report
 - `summary.json`: structured result summary
 - `logs/*.log`: full stdout/stderr per module
+- `containers/<case>/<container>/docker.log`: container stdout/stderr
+- `containers/<case>/<container>/modules/*.log`: per-module logs copied from `/opt/netnexus/log/*.log`
 
 `report.html` groups output by step markers like `===== STEP: ... =====` and renders each step as a collapsible block. Use `step("...")` from `scripts/ci/module_api.py` in module scripts.
 
@@ -169,7 +171,7 @@ python3 scripts/ci/module_runner.py \
   --report-dir scripts/ci/reports \
   --keep \
   --cmd-timeout 30 \
-  --connect-timeout 60
+  --connect-timeout 90
 ```
 
 ## Cleanup Behavior

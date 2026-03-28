@@ -384,7 +384,7 @@ class TopologyRuntime:
         *,
         keep: bool = False,
         cmd_timeout: int = 20,
-        connect_timeout: int = 60,
+        connect_timeout: int = 90,
         verbose: bool = False,
         publish_cli_base: int | None = None,
         override_if_map: bool = True,
@@ -680,6 +680,7 @@ def main() -> int:
     parser.add_argument("--prefix", default=f"nn-top-{os.getpid()}", help="resource name prefix")
     parser.add_argument("--keep", action="store_true", help="keep containers/networks for debugging")
     parser.add_argument("--cmd-timeout", type=int, default=20, help="CLI command timeout seconds")
+    parser.add_argument("--connect-timeout", type=int, default=90, help="CLI initial connect timeout seconds")
     parser.add_argument("--verbose", action="store_true", help="print command-level debug output")
     args = parser.parse_args()
 
@@ -696,7 +697,7 @@ def main() -> int:
         prefix=args.prefix,
         keep=args.keep,
         cmd_timeout=args.cmd_timeout,
-        connect_timeout=60,
+        connect_timeout=args.connect_timeout,
         verbose=args.verbose,
     )
     failed = False

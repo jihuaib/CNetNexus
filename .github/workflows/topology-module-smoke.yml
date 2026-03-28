@@ -30,7 +30,7 @@ jobs:
             --image "netnexus-ci:${{ github.sha }}" \
             --report-dir "scripts/ci/reports" \
             --cmd-timeout 30 \
-            --connect-timeout 60
+            --connect-timeout 90
 
       - name: Publish CI Summary
         if: always()
@@ -76,7 +76,7 @@ jobs:
 
           lines.append(
               "Download artifact `topology-module-report-<run_id>` for full `report.html`, "
-              "`summary.json`, and `logs/*.log`."
+              "`summary.json`, `logs/*.log`, and `containers/*/*/modules/*.log`."
           )
           lines.append("")
 
