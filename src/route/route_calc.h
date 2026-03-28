@@ -15,12 +15,12 @@
 // ============================================================================
 
 /**
- * @brief 初始化优选表（每前缀最优路径记录）
+ * @brief 初始化优选状态（基于 route_path 的 OS_INSTALLED 标记）
  */
 void route_calc_init(void);
 
 /**
- * @brief 清理优选表，释放所有内存（模块关闭时调用）
+ * @brief 清理优选状态（模块关闭时调用）
  */
 void route_calc_cleanup(void);
 
@@ -32,8 +32,7 @@ void route_calc_cleanup(void);
  * @brief 路径新增或更新后调用，重新优选并同步 OS
  *
  * 遍历前缀头下所有路径，选 preference 最小（相等时 metric 最小）的路径：
- *   - 若优选结果与当前已安装路径相同，且属性未变化，则不操作
- *   - 若属性发生变化（nexthop/metric/ifindex），重下发（RTM_NEWROUTE REPLACE）
+ *   - 若优选结果与当前已安装路径相同，执行一次 install（REPLACE 语义）并发送 add 通知
  *   - 若优选结果切换到其他路径，先 withdraw 旧路由，再 install 新路由
  *
  * @param head 已更新的前缀头（新路径已写入 RIB）
@@ -56,7 +55,7 @@ void route_calc_on_path_del(const route_head_t *head, const route_path_t *del_pa
 /**
  * @brief 向指定模块发送当前所有最优路径快照（用于 SUBSCRIBE+FULL 响应）
  *
- * 遍历优选表中所有前缀的最优路径，按 protocol 和 vrf_id 过滤后打包为
+ * 遍历 RIB 中标记为 OS_INSTALLED 的路径，按 protocol 和 vrf_id 过滤后打包为
  * ROUTE_MSG_TYPE_REPORT 消息发送给目标模块。
  *
  * @param dst_module_id 目标模块 ID

@@ -244,13 +244,6 @@ static int route_os_send(int cmd, const route_msg_entry_t *entry)
         }
     }
 
-    /* RTA_PRIORITY：路由 metric（Linux 内核 metric） */
-    if (cmd == RTM_NEWROUTE || cmd == RTM_DELROUTE)
-    {
-        uint32_t priority = (entry->metric > 0) ? (uint32_t)entry->metric : 0u;
-        nl_add_attr(nlh, sizeof(buf), RTA_PRIORITY, &priority, (int)sizeof(priority));
-    }
-
     return nl_exchange(nlh, cmd);
 }
 

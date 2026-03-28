@@ -39,6 +39,10 @@ SHOW_CURRENT_CONFIG_CMD = "show current-configuration"
 PROMPT_LINE_RE = re.compile(r"^\s*<NetNexus[^>]*>.*$")
 MAX_CONFIG_DIFF_LINES = 300
 STEP_MARKER_RE = re.compile(r"^(?:\[[^\]]+\]\s*)?\s*=+\s*STEP:\s*(.*?)\s*=+\s*$")
+LOG_CMD_LINE_RE = re.compile(r"^(?:\[[^\]]+\]\s*)?\[[^\]]+\]\s+>>>\s+.*$")
+LOG_ECHO_LINE_RE = re.compile(r"^(?:\[[^\]]+\]\s*)?\[[^\]]+\]\s+<<<\s+.*$")
+LOG_PROMPT_LINE_RE = re.compile(r"^(?:\[[^\]]+\]\s*)?<NetNexus[^>]*>\s*$")
+LOG_STEP_LINE_RE = re.compile(r"^(?:\[[^\]]+\]\s*)?=+\s*STEP:.*$")
 FAIL_STEP_HINTS = (
     "===== CHECK FAIL:",
     "Traceback (most recent call last):",
@@ -363,6 +367,7 @@ def run_check(script: Path, rt: TopologyRuntime, top: dict[str, Any]) -> CheckRe
 
     rc = 0
     failed_step_title: str | None = None
+    run_exc_logged = False
     try:
         load_global_top(top)
         run_fn = load_run_callable(script)
@@ -377,20 +382,16 @@ def run_check(script: Path, rt: TopologyRuntime, top: dict[str, Any]) -> CheckRe
             reset_last_step()
             try:
                 run_fn(rt, top)
-            except Exception as run_exc:
+            except Exception:
                 run_failed = True
+                run_exc_logged = True
                 failed_step_title = get_failed_step() or get_last_step()
                 if failed_step_title:
                     failed_at = f"module step '{failed_step_title}'"
                 else:
                     failed_at = "before the first module step marker"
-                print("===== STEP: Failure captured =====")
                 print(f"ERROR: check script raised at {failed_at}")
-                print(
-                    "ERROR: check script raised; runner will continue post-check cleanup/diff before final FAIL: "
-                    f"{type(run_exc).__name__}: {run_exc}",
-                    file=sys.stderr,
-                )
+                print("ERROR: runner will continue post-check cleanup/diff before final FAIL.")
                 raise
             finally:
                 try:
@@ -403,11 +404,12 @@ def run_check(script: Path, rt: TopologyRuntime, top: dict[str, Any]) -> CheckRe
             print(f"===== CHECK PASS: {script} =====")
     except Exception:
         rc = 1
-        with contextlib.redirect_stderr(tee_err):
-            if failed_step_title:
-                print(f"ERROR: failing module step: {failed_step_title}", file=sys.stderr)
-            print(f"===== CHECK FAIL: {script} =====", file=sys.stderr)
-            traceback.print_exc(file=sys.stderr)
+        with contextlib.redirect_stdout(tee_out), contextlib.redirect_stderr(tee_err):
+            if failed_step_title and not run_exc_logged:
+                print(f"ERROR: failing module step: {failed_step_title}")
+            print(f"===== CHECK FAIL: {script} =====")
+            if not run_exc_logged:
+                traceback.print_exc(file=sys.stderr)
 
     ended = time.time()
     return CheckResult(
@@ -594,41 +596,124 @@ def split_output_steps(text: str) -> list[tuple[str, str]]:
     return steps
 
 
-def render_step_blocks(
+def detect_step_status(title: str, content: str, *, failed_step_title: str | None = None) -> str:
+    step_text = f"{title}\n{content}"
+    if failed_step_title and title == failed_step_title:
+        return "fail"
+    if any(token in step_text for token in FAIL_STEP_HINTS):
+        return "fail"
+    if any(token in step_text for token in WARN_STEP_HINTS):
+        return "warn"
+    return "pass"
+
+
+def classify_step_line(line: str) -> str:
+    if LOG_CMD_LINE_RE.match(line):
+        return "cmd"
+    if LOG_ECHO_LINE_RE.match(line):
+        return "echo"
+    if LOG_PROMPT_LINE_RE.match(line):
+        return "prompt"
+    if LOG_STEP_LINE_RE.match(line):
+        return "marker"
+    if any(token in line for token in FAIL_STEP_HINTS):
+        return "fail"
+    if any(token in line for token in WARN_STEP_HINTS):
+        return "warn"
+    return "text"
+
+
+def render_step_content(content: str) -> str:
+    if not content.strip():
+        return "<div class='log-empty'>(no output)</div>"
+
+    blocks: list[str] = []
+    current_kind = ""
+    current_lines: list[str] = []
+
+    def flush_block() -> None:
+        if not current_lines:
+            return
+        safe = html.escape("".join(current_lines).rstrip("\n")) or "(no output)"
+        blocks.append(f"<pre class='log-chunk log-{current_kind}'>{safe}</pre>")
+
+    for raw in content.splitlines(keepends=True):
+        line_no_newline = raw.rstrip("\n")
+        kind = classify_step_line(line_no_newline)
+        if current_lines and kind != current_kind:
+            flush_block()
+            current_lines = []
+        if not current_lines:
+            current_kind = kind
+        current_lines.append(raw)
+
+    flush_block()
+    return "".join(blocks) if blocks else "<div class='log-empty'>(no output)</div>"
+
+
+def build_step_views(
     steps: list[tuple[str, str]],
-    open_all: bool,
     *,
     failed_step_title: str | None = None,
-) -> str:
-    blocks: list[str] = []
+) -> list[dict[str, object]]:
+    views: list[dict[str, object]] = []
     for i, (title, content) in enumerate(steps, start=1):
-        open_attr = " open" if open_all or i == 1 else ""
-        step_text = f"{title}\n{content}"
-        if failed_step_title and title == failed_step_title:
-            status = "fail"
-            summary_cls = "step-summary-fail"
-        elif any(token in step_text for token in FAIL_STEP_HINTS):
-            status = "fail"
-            summary_cls = "step-summary-fail"
-        elif any(token in step_text for token in WARN_STEP_HINTS):
-            status = "warn"
-            summary_cls = "step-summary-warn"
-        else:
-            status = "pass"
-            summary_cls = "step-summary-pass"
-        safe_title = html.escape(title)
-        safe_content = html.escape(content.rstrip("\n")) or "(no output)"
-        blocks.append(
+        status = detect_step_status(title, content, failed_step_title=failed_step_title)
+        views.append(
+            {
+                "index": i,
+                "title": title,
+                "content": content,
+                "status": status,
+            }
+        )
+    return views
+
+
+def render_step_sidebar(step_views: list[dict[str, object]], *, active_index: int) -> str:
+    items: list[str] = []
+    for step in step_views:
+        idx = int(step["index"])
+        status = str(step["status"])
+        status_upper = status.upper()
+        safe_title = html.escape(str(step["title"]))
+        active_cls = " active" if idx == active_index else ""
+        items.append(
             "".join(
                 [
-                    f"<details class='step step-{status}'{open_attr}>",
-                    f"<summary class='{summary_cls}'>Step {i}: {safe_title}</summary>",
-                    f"<pre>{safe_content}</pre>",
-                    "</details>",
+                    f"<button class='step-nav-item step-nav-{status}{active_cls}' data-step='{idx}' type='button'>",
+                    f"<span class='step-nav-num'>#{idx}</span>",
+                    f"<span class='step-nav-title'>{safe_title}</span>",
+                    f"<span class='step-nav-status'>{status_upper}</span>",
+                    "</button>",
                 ]
             )
         )
-    return "".join(blocks)
+    return "".join(items)
+
+
+def render_step_panels(step_views: list[dict[str, object]], *, active_index: int) -> str:
+    panels: list[str] = []
+    for step in step_views:
+        idx = int(step["index"])
+        status = str(step["status"])
+        safe_title = html.escape(str(step["title"]))
+        body_html = render_step_content(str(step["content"]))
+        hidden_attr = "" if idx == active_index else " hidden"
+        panels.append(
+            "".join(
+                [
+                    f"<section class='step-panel step-{status}' data-step-panel='{idx}'{hidden_attr}>",
+                    "<header class='step-panel-header'>",
+                    f"<h3>Step {idx}: {safe_title}</h3>",
+                    f"<span class='step-badge step-badge-{status}'>{status.upper()}</span>",
+                    "</header>",
+                    f"<div class='step-panel-body'>{body_html}</div>",
+                    "</section>",
+                ]
+            )
+        )
+    return "".join(panels)
 
 
 def write_check_html(path: Path, result: CheckResult, *, index: int) -> None:
@@ -643,7 +728,22 @@ def write_check_html(path: Path, result: CheckResult, *, index: int) -> None:
     clipped, truncated = truncate_for_html(combined)
     trunc_note = "<p class='trunc'>Output truncated in HTML. See logs/*.log for full content.</p>" if truncated else ""
     steps = split_output_steps(clipped)
-    step_blocks = render_step_blocks(steps, open_all=(result.returncode != 0), failed_step_title=result.failed_step)
+    step_views = build_step_views(steps, failed_step_title=result.failed_step)
+    active_index = 1
+    if step_views:
+        if result.failed_step:
+            for step in step_views:
+                if str(step["title"]) == result.failed_step:
+                    active_index = int(step["index"])
+                    break
+        elif result.returncode != 0:
+            for step in step_views:
+                if str(step["status"]) == "fail":
+                    active_index = int(step["index"])
+                    break
+
+    sidebar_html = render_step_sidebar(step_views, active_index=active_index)
+    panel_html = render_step_panels(step_views, active_index=active_index)
 
     doc = f"""<!DOCTYPE html>
 <html lang=\"en\">
@@ -665,8 +765,7 @@ def write_check_html(path: Path, result: CheckResult, *, index: int) -> None:
       --warn-bg: #fff8e6;
       --bad: #b42318;
       --bad-bg: #fdeceb;
-      --mono-bg: #0f172a;
-      --mono-fg: #e2e8f0;
+      --ink: #0b1220;
     }}
     * {{ box-sizing: border-box; }}
     body {{
@@ -676,7 +775,7 @@ def write_check_html(path: Path, result: CheckResult, *, index: int) -> None:
       background: radial-gradient(1400px 700px at 0% 0%, var(--bg0), var(--bg1));
       padding: 18px;
     }}
-    .wrap {{ max-width: 1100px; margin: 0 auto; }}
+    .wrap {{ max-width: 1360px; margin: 0 auto; }}
     .top-link {{ margin-bottom: 10px; }}
     .top-link a {{
       color: #0f3d91;
@@ -716,6 +815,7 @@ def write_check_html(path: Path, result: CheckResult, *, index: int) -> None:
       padding: 10px 12px;
       border-radius: 10px;
       font-weight: 600;
+      margin-bottom: 12px;
     }}
     .status-badge-pass, .status-badge-fail {{
       padding: 4px 10px;
@@ -734,45 +834,260 @@ def write_check_html(path: Path, result: CheckResult, *, index: int) -> None:
       font-size: 12px;
       word-break: break-all;
     }}
-    details {{
-      margin: 10px 0;
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #fff;
-      overflow: hidden;
+    .steps-card {{
+      padding: 14px;
     }}
-    details > summary {{
-      cursor: pointer;
+    .steps-toolbar {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+    }}
+    .steps-title {{
       font-weight: 700;
-      padding: 10px 12px;
-      background: #f7fbff;
+      font-size: 15px;
     }}
-    .script-output > summary {{ font-size: 15px; }}
-    .step {{
-      margin: 10px;
-      border-left: 4px solid #cdd9e6;
+    .toolbar-actions {{
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }}
+    .tool-btn {{
+      border: 1px solid #bfd0e2;
+      background: #f6fbff;
+      color: #0f3d91;
       border-radius: 8px;
-    }}
-    .step-pass {{ border-left-color: var(--ok); }}
-    .step-warn {{ border-left-color: var(--warn); }}
-    .step-fail {{ border-left-color: var(--bad); }}
-    .step-summary-pass {{ color: var(--ok); }}
-    .step-summary-warn {{ color: var(--warn); }}
-    .step-summary-fail {{ color: var(--bad); }}
-    pre {{
-      margin: 0;
-      padding: 12px;
-      background: var(--mono-bg);
-      color: var(--mono-fg);
-      overflow: auto;
-      border-top: 1px solid rgba(255, 255, 255, 0.08);
       font-size: 12px;
-      line-height: 1.5;
+      font-weight: 700;
+      padding: 6px 10px;
+      cursor: pointer;
+    }}
+    .tool-btn:hover {{
+      background: #ebf4ff;
+    }}
+    .steps-layout {{
+      display: grid;
+      grid-template-columns: 290px minmax(0, 1fr);
+      gap: 12px;
+      align-items: start;
+    }}
+    .steps-sidebar {{
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #f8fbff;
+      padding: 10px;
+      position: sticky;
+      top: 8px;
+    }}
+    .steps-sidebar h2 {{
+      margin: 0 0 8px 0;
+      font-size: 14px;
+      color: #1f365a;
+    }}
+    .steps-nav {{
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: 68vh;
+      overflow-y: auto;
+    }}
+    .step-nav-item {{
+      width: 100%;
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 8px;
+      align-items: center;
+      text-align: left;
+      border: 1px solid #d4e1ef;
+      background: #fff;
+      border-radius: 9px;
+      padding: 8px 10px;
+      cursor: pointer;
+      color: #1a2b45;
+    }}
+    .step-nav-item:hover {{
+      background: #f2f8ff;
+    }}
+    .step-nav-item.active {{
+      border-color: #2d5fb8;
+      box-shadow: inset 0 0 0 1px #2d5fb8;
+      background: #eef5ff;
+    }}
+    .step-nav-num {{
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12px;
+      color: #244268;
+      font-weight: 700;
+    }}
+    .step-nav-title {{
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 13px;
+      font-weight: 600;
+    }}
+    .step-nav-status {{
+      font-size: 11px;
+      font-weight: 700;
+      border-radius: 999px;
+      padding: 2px 7px;
+      border: 1px solid transparent;
+    }}
+    .step-nav-pass .step-nav-status {{
+      color: var(--ok);
+      background: var(--ok-bg);
+      border-color: #a7dec3;
+    }}
+    .step-nav-warn .step-nav-status {{
+      color: var(--warn);
+      background: var(--warn-bg);
+      border-color: #f7d8a6;
+    }}
+    .step-nav-fail .step-nav-status {{
+      color: var(--bad);
+      background: var(--bad-bg);
+      border-color: #f2b3af;
+    }}
+    .steps-content {{
+      min-width: 0;
+    }}
+    .step-panel {{
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #f7fbff;
+      overflow: hidden;
+      margin-bottom: 10px;
+    }}
+    .step-panel:last-child {{
+      margin-bottom: 0;
+    }}
+    .step-panel-header {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 10px 12px;
+      border-bottom: 1px solid #dce7f2;
+      background: #f2f8ff;
+    }}
+    .step-panel-header h3 {{
+      margin: 0;
+      font-size: 14px;
+      line-height: 1.3;
+      color: #1a2b45;
+      min-width: 0;
+    }}
+    .step-badge {{
+      font-size: 11px;
+      font-weight: 700;
+      border-radius: 999px;
+      padding: 2px 8px;
+      border: 1px solid transparent;
+    }}
+    .step-badge-pass {{
+      color: var(--ok);
+      background: var(--ok-bg);
+      border-color: #a7dec3;
+    }}
+    .step-badge-warn {{
+      color: var(--warn);
+      background: var(--warn-bg);
+      border-color: #f7d8a6;
+    }}
+    .step-badge-fail {{
+      color: var(--bad);
+      background: var(--bad-bg);
+      border-color: #f2b3af;
+    }}
+    .step-panel-body {{
+      padding: 10px;
+      background: #fbfdff;
+    }}
+    .step-panel.collapsed .step-panel-body {{
+      display: none;
+    }}
+    .log-empty {{
+      color: var(--muted);
+      font-size: 13px;
+      padding: 6px 2px;
+    }}
+    .log-chunk {{
+      margin: 0;
+      margin-bottom: 8px;
+      padding: 10px 12px;
+      overflow: auto;
+      border-radius: 8px;
+      border: 1px solid #2a3e5b;
+      background: #0f172a;
+      color: #dbe7ff;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.45;
+      white-space: pre;
+    }}
+    .log-chunk:last-child {{
+      margin-bottom: 0;
+    }}
+    .log-cmd {{
+      border-color: #385f8a;
+      background: #0b2239;
+      color: #d6e9ff;
+    }}
+    .log-echo {{
+      border-color: #2b6a58;
+      background: #0f3323;
+      color: #d2f8e7;
+    }}
+    .log-prompt {{
+      border-color: #7f6d26;
+      background: #3a3210;
+      color: #f9e79f;
+    }}
+    .log-marker {{
+      border-color: #6e57a8;
+      background: #2b1f46;
+      color: #eadbff;
+    }}
+    .log-fail {{
+      border-color: #8f3c3c;
+      background: #3a1618;
+      color: #ffd7d7;
+    }}
+    .log-warn {{
+      border-color: #8a6c2a;
+      background: #3a2e12;
+      color: #ffefbf;
+    }}
+    .log-text {{
+      border-color: #2a3e5b;
+      background: #0f172a;
+      color: #dbe7ff;
+    }}
+    @media (max-width: 980px) {{
+      .steps-layout {{
+        grid-template-columns: 1fr;
+      }}
+      .steps-sidebar {{
+        position: static;
+      }}
+      .steps-nav {{
+        max-height: 240px;
+      }}
     }}
     @media (max-width: 680px) {{
       body {{ padding: 10px; }}
       .card {{ padding: 12px; border-radius: 12px; }}
       h1 {{ font-size: 19px; }}
+      .step-nav-item {{
+        grid-template-columns: auto 1fr;
+      }}
+      .step-nav-status {{
+        grid-column: 1 / span 2;
+        justify-self: start;
+      }}
     }}
   </style>
 </head>
@@ -793,13 +1108,68 @@ def write_check_html(path: Path, result: CheckResult, *, index: int) -> None:
       </div>
     </section>
     {trunc_note}
-    <section class=\"card\">
-      <details class='script-output' open>
-        <summary>Execution Output ({len(steps)} steps)</summary>
-        {step_blocks}
-      </details>
+    <section class=\"card steps-card\">
+      <div class=\"steps-toolbar\">
+        <div class=\"steps-title\">执行输出（共 {len(step_views)} 个步骤）</div>
+        <div class=\"toolbar-actions\">
+          <button id=\"expand-all-btn\" class=\"tool-btn\" type=\"button\">全部展开</button>
+          <button id=\"collapse-all-btn\" class=\"tool-btn\" type=\"button\">全部折叠</button>
+        </div>
+      </div>
+      <div class=\"steps-layout\">
+        <aside class=\"steps-sidebar\">
+          <h2>步骤目录</h2>
+          <div class=\"steps-nav\">
+            {sidebar_html}
+          </div>
+        </aside>
+        <div class=\"steps-content\">
+          {panel_html}
+        </div>
+      </div>
     </section>
   </div>
+  <script>
+    (function () {{
+      var navItems = Array.prototype.slice.call(document.querySelectorAll('.step-nav-item'));
+      var panels = Array.prototype.slice.call(document.querySelectorAll('.step-panel'));
+
+      function activateStep(stepId) {{
+        navItems.forEach(function (btn) {{
+          btn.classList.toggle('active', btn.getAttribute('data-step') === stepId);
+        }});
+        panels.forEach(function (panel) {{
+          panel.hidden = panel.getAttribute('data-step-panel') !== stepId;
+        }});
+      }}
+
+      navItems.forEach(function (btn) {{
+        btn.addEventListener('click', function () {{
+          activateStep(btn.getAttribute('data-step'));
+        }});
+      }});
+
+      var expandBtn = document.getElementById('expand-all-btn');
+      if (expandBtn) {{
+        expandBtn.addEventListener('click', function () {{
+          panels.forEach(function (panel) {{
+            panel.classList.remove('collapsed');
+          }});
+        }});
+      }}
+
+      var collapseBtn = document.getElementById('collapse-all-btn');
+      if (collapseBtn) {{
+        collapseBtn.addEventListener('click', function () {{
+          panels.forEach(function (panel) {{
+            panel.classList.add('collapsed');
+          }});
+        }});
+      }}
+
+      activateStep('{active_index}');
+    }})();
+  </script>
 </body>
 </html>
 """

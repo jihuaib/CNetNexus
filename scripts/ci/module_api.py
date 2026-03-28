@@ -446,6 +446,12 @@ def wait_checks(
     detail = "\n".join(last_missing)
     output_dump = "\n\n".join([f"[{label}]\n{out}" for label, out in last_out.items()])
     mark_step_failed()
+    step_title = _last_step_title or "Step"
+    print(f"ERROR: step '{step_title}' check timeout ({timeout}s)")
+    if detail:
+        print(f"ERROR: unsatisfied checks:\n{detail}")
+    if output_dump:
+        print(f"ERROR: last outputs:\n{output_dump}")
     raise RuntimeError(
         f"checks not satisfied within {timeout}s\n{detail}\n\nlast outputs:\n{output_dump}"
     )

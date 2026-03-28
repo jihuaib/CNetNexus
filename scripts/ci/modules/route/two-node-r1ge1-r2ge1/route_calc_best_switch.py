@@ -5,7 +5,7 @@ Route calc best-path switch check (static metric based).
 Goal:
 - install two static paths for the same prefix (both reachable)
 - verify route path metrics are updated as configured
-- verify OS route stays installable via resolved reachable gateway
+- verify OS route stays installable via resolved reachable gateway (kernel metric remains 0)
 - verify withdraw/re-add keeps route availability consistent
 """
 
@@ -252,7 +252,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             device="r1",
             prefix=TARGET_PREFIX,
             expect_gateway=primary_nh,
-            expect_metric=10,
+            expect_metric=0,
             timeout=30,
         )
 
@@ -284,7 +284,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             device="r1",
             prefix=TARGET_PREFIX,
             expect_gateway=primary_nh,
-            expect_metric=20,
+            expect_metric=0,
             timeout=30,
         )
 
@@ -315,7 +315,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             device="r1",
             prefix=TARGET_PREFIX,
             expect_gateway=primary_nh,
-            expect_metric=5,
+            expect_metric=0,
             timeout=30,
         )
 
@@ -346,7 +346,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             device="r1",
             prefix=TARGET_PREFIX,
             expect_gateway=primary_nh,
-            expect_metric=20,
+            expect_metric=0,
             timeout=30,
         )
 
@@ -377,7 +377,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             device="r1",
             prefix=TARGET_PREFIX,
             expect_gateway=primary_nh,
-            expect_metric=1,
+            expect_metric=0,
             timeout=30,
         )
 
