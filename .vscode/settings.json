@@ -33,5 +33,16 @@
     "terminal.integrated.env.linux": {
         "LD_LIBRARY_PATH": "${workspaceFolder}/build/lib:${env:LD_LIBRARY_PATH}"
     },
-    "remote.autoForwardPortsFallback": 0
+    "remote.autoForwardPortsFallback": 0,
+    "python.testing.unittestEnabled": true,
+    "python.testing.pytestEnabled": false,
+    "python.testing.unittestArgs": [
+        "-v",
+        "-s",
+        "scripts/ci",
+        "-p",
+        "test_*.py"
+    ],
+    "python.testing.autoTestDiscoverOnSaveEnabled": true,
+    "testing.automaticallyOpenTestResults": "openOnTestStart"
 }

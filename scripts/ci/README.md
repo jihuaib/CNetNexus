@@ -63,11 +63,36 @@ python3 -m pip install --upgrade pip
 python3 -m pip install pyyaml
 ```
 
-Build local image:
+## Build CI Image
+
+Recommended local build:
+
+```bash
+./scripts/dev/build-docker-image.sh --docker-image netnexus-ci:localtest
+```
+
+This uses the repo-standard production image build, keeps the usual version tags, and adds
+the CI tag `netnexus-ci:localtest`.
+
+Minimal equivalent command:
 
 ```bash
 docker build --target production -t netnexus-ci:localtest .
 ```
+
+If `docker build` hits package/DNS issues during image build, retry with host networking:
+
+```bash
+docker build --network=host --target production -t netnexus-ci:localtest .
+```
+
+If you need an amd64 CI image from a non-amd64 host:
+
+```bash
+PLATFORM=linux/amd64 ./scripts/dev/build-docker-image.sh --docker-image netnexus-ci:localtest
+```
+
+`scripts/ci/run_all.sh` builds `netnexus-ci:localtest` automatically unless `--no-build` is passed.
 
 ## Run Single Module
 
@@ -86,6 +111,47 @@ Common options:
 - `--cmd-timeout <sec>`: runtime CLI command timeout
 - `--connect-timeout <sec>`: runtime CLI initial connect timeout
 - `--verbose-modules`: enable low-level CLI debug logs (for example `... rx N bytes ...`)
+
+## VSCode Testing Integration
+
+This repo includes a unittest adapter at:
+
+```text
+scripts/ci/test_ci_modules.py
+```
+
+It exposes each `scripts/ci/modules/**/*.py` check script as one VSCode test item.
+Clicking a test in VSCode Testing runs:
+
+```text
+python3 scripts/ci/module_runner.py --script <relative-script> ...
+```
+
+During run, `scripts/ci/test_ci_modules.py` streams `module_runner.py` output to VSCode
+Test Output and prints artifact paths at the beginning of each test.
+
+When `CNETNEXUS_CI_IMAGE` is not set, the VSCode adapter will prefer a local
+`netnexus-ci:localtest` image if that tag exists; otherwise it falls back to the case
+`top.yaml` image.
+
+Default artifact location per test:
+
+```text
+scripts/ci/reports/vscode/<module>__<case>__<script>/
+  report.html
+  summary.json
+  logs/
+  checks/
+```
+
+Optional environment variables for local runs:
+
+- `CNETNEXUS_CI_IMAGE`: override image passed to `module_runner.py`
+- `CNETNEXUS_CI_REPORT_ROOT`: override report output root (default `scripts/ci/reports/vscode`)
+- `CNETNEXUS_CI_CMD_TIMEOUT`: override `--cmd-timeout`
+- `CNETNEXUS_CI_CONNECT_TIMEOUT`: override `--connect-timeout`
+- `CNETNEXUS_CI_KEEP=1`: keep topology resources after each test
+- `CNETNEXUS_CI_VERBOSE=1`: pass `--verbose-modules`
 
 ## Bring Up Topology Only (No Module Scripts)
 

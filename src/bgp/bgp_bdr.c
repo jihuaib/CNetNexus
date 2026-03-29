@@ -8,6 +8,7 @@
 
 #include <string.h>
 
+#include "bgp_bmp_db.h"
 #include "bgp_cli.h"
 #include "bgp_db.h"
 #include "bgp_main.h"
@@ -250,6 +251,107 @@ static void bdr_append_af_instances(GString *out)
 }
 
 // ============================================================================
+// BMP 实例配置输出
+// ============================================================================
+
+/**
+ * @brief 追加单个 BMP 实例的监控邻居配置
+ */
+static void bdr_append_bmp_monitors(GString *out, const char *inst_name)
+{
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
+    db_condition_t cond = {
+        .field_name = "instance_name",
+        .op = DB_CMP_EQ,
+        .value = db_value_text(inst_name),
+    };
+    db_filter_t filter = {.conditions = &cond, .num_conditions = 1};
+    db_result_t *result = NULL;
+
+    if (db_rpc_query(ctx, BGP_TABLE_BMP_MONITOR, NULL, 0, &filter, &result) != ERRCODE_SUCCESS || !result)
+    {
+        db_value_free(&cond.value);
+        return;
+    }
+
+    for (uint32_t i = 0; i < result->num_rows; i++)
+    {
+        const char *ip = db_row_get_text(result->rows[i], "neighbor_ip", NULL);
+        if (ip)
+        {
+            g_string_append_printf(out, "  monitor neighbor %s\r\n", ip);
+        }
+    }
+
+    db_result_free(result);
+    db_value_free(&cond.value);
+}
+
+/**
+ * @brief 遍历 bgp_bmp_instance 表，输出所有 BMP 实例配置块
+ */
+static void bdr_append_bmp_instances(GString *out)
+{
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
+    db_result_t *result = NULL;
+    if (db_rpc_query(ctx, BGP_TABLE_BMP_INSTANCE, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result ||
+        result->num_rows == 0)
+    {
+        if (result)
+        {
+            db_result_free(result);
+        }
+        return;
+    }
+
+    for (uint32_t i = 0; i < result->num_rows; i++)
+    {
+        db_row_t *row = result->rows[i];
+        const char *name = db_row_get_text(row, "instance_name", NULL);
+        if (!name)
+        {
+            continue;
+        }
+
+        const char *collector_ip = db_row_get_text(row, "collector_ip", "");
+        int64_t collector_port = db_row_get_int(row, "collector_port", 0);
+        int64_t stats_interval = db_row_get_int(row, "stats_interval", 0);
+        int64_t reconnect_interval = db_row_get_int(row, "reconnect_interval", 30);
+        int64_t monitor_all = db_row_get_int(row, "monitor_all", 1);
+
+        g_string_append_printf(out, " bmp instance %s\r\n", name);
+
+        if (collector_ip[0] != '\0' && collector_port > 0)
+        {
+            g_string_append_printf(out, "  collector %s port %ld\r\n", collector_ip, collector_port);
+        }
+
+        if (stats_interval > 0)
+        {
+            g_string_append_printf(out, "  stats-report interval %ld\r\n", stats_interval);
+        }
+
+        if (reconnect_interval != 30)
+        {
+            g_string_append_printf(out, "  reconnect interval %ld\r\n", reconnect_interval);
+        }
+
+        if (monitor_all)
+        {
+            g_string_append(out, "  monitor neighbor all\r\n");
+        }
+        else
+        {
+            bdr_append_bmp_monitors(out, name);
+        }
+
+        g_string_append(out, " !\r\n");
+    }
+
+    db_result_free(result);
+}
+
+// ============================================================================
 // 公共 API
 // ============================================================================
 
@@ -266,6 +368,7 @@ void bgp_bdr_show_config(dev_ipc_message_t *msg)
     bdr_append_vrf_config(out);
     bdr_append_sessions(out);
     bdr_append_af_instances(out);
+    bdr_append_bmp_instances(out);
     g_string_append(out, "!\r\n");
 
     bgp_send_cli_response(msg, out->str);

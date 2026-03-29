@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "bgp_bmp_db.h"
 #include "bgp_cli.h"
 #include "bgp_main.h"
 #include "bgp_session.h"
@@ -501,6 +502,7 @@ uint32_t bgp_db_restore(void)
     restore_sessions();
     restore_instances();
     restore_neighbors();
+    bgp_bmp_db_restore();
 
     return ERRCODE_SUCCESS;
 }
@@ -530,6 +532,21 @@ int bgp_db_init(void)
             return -1;
         }
         LOG_INFO("BGP database table %s ready", BGP_TABLES[i]->table_name);
+    }
+
+    /* BMP 上报功能表 */
+    int bmp_count = 0;
+    const void **bmp_tables = bgp_bmp_db_get_tables(&bmp_count);
+    for (int i = 0; i < bmp_count; i++)
+    {
+        const db_table_def_t *tbl = (const db_table_def_t *)bmp_tables[i];
+        int ret = db_rpc_create_table_from_def(ctx, tbl);
+        if (ret != ERRCODE_SUCCESS)
+        {
+            LOG_ERROR("BMP table creation failed: %s", tbl->table_name);
+            return -1;
+        }
+        LOG_INFO("BMP database table %s ready", tbl->table_name);
     }
 
     return 0;

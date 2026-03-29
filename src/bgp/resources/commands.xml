@@ -10,6 +10,9 @@
             <view view-name="bgp-af-ipv6-uni">
                 <template>&lt;NetNexus(config-bgp-af-ipv6-uni)&gt;</template>
             </view>
+            <view view-name="bgp-bmp">
+                <template>&lt;NetNexus(config-bgp-bmp-{ctx:7})&gt;</template>
+            </view>
         </view>
     </views>
 
@@ -554,6 +557,248 @@
                 <!-- show bgp route af ipv6-unicast <ip> <masklen>（路由详情） -->
                 <command>
                     <expression>1 2 3 4 6 7 8</expression>
+                    <views>global</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- ================================================================ -->
+        <!-- BMP 上报功能命令（group 14-19）                                   -->
+        <!-- ================================================================ -->
+
+        <!-- bmp instance <name> / no bmp instance <name> -->
+        <group group-id="14">
+            <elements>
+                <element type="keyword">
+                    <name>no</name>
+                    <description>删除</description>
+                </element>
+                <element type="keyword">
+                    <name>bmp</name>
+                    <description>BMP 上报配置</description>
+                </element>
+                <element type="keyword">
+                    <name>instance</name>
+                    <description>BMP 实例</description>
+                </element>
+                <element cfg-id="1" type="parameter">
+                    <name>&lt;instance-name&gt;</name>
+                    <type>string(1-31)</type>
+                    <description>BMP 实例名称</description>
+                </element>
+            </elements>
+
+            <commands>
+                <!-- bmp instance <name>：进入 BMP 实例视图 -->
+                <command>
+                    <expression>2 3 4</expression>
+                    <views>bgp</views>
+                    <to-view>bgp-bmp</to-view>
+                    <context-out>
+                        <entry ctx-id="7" from-param="1"/>
+                    </context-out>
+                </command>
+                <!-- no bmp instance <name>：删除 BMP 实例 -->
+                <command>
+                    <expression>1 2 3 4</expression>
+                    <views>bgp</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- collector <ip> port <port> / no collector（bgp-bmp 视图） -->
+        <group group-id="15">
+            <elements>
+                <element type="keyword">
+                    <name>no</name>
+                    <description>删除</description>
+                </element>
+                <element type="keyword">
+                    <name>collector</name>
+                    <description>BMP 采集器配置</description>
+                </element>
+                <element cfg-id="1" type="parameter">
+                    <name>&lt;ip-address&gt;</name>
+                    <type>ip</type>
+                    <description>采集器 IP 地址</description>
+                </element>
+                <element type="keyword">
+                    <name>port</name>
+                    <description>采集器端口</description>
+                </element>
+                <element cfg-id="2" type="parameter">
+                    <name>&lt;port&gt;</name>
+                    <type>uint(1-65535)</type>
+                    <description>采集器 TCP 端口</description>
+                </element>
+            </elements>
+
+            <commands>
+                <!-- collector <ip> port <port> -->
+                <command>
+                    <expression>2 3 4 5</expression>
+                    <views>bgp-bmp</views>
+                </command>
+                <!-- no collector -->
+                <command>
+                    <expression>1 2</expression>
+                    <views>bgp-bmp</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- stats-report interval <seconds> / no stats-report interval（bgp-bmp 视图） -->
+        <group group-id="16">
+            <elements>
+                <element type="keyword">
+                    <name>no</name>
+                    <description>删除</description>
+                </element>
+                <element type="keyword">
+                    <name>stats-report</name>
+                    <description>统计报告配置</description>
+                </element>
+                <element type="keyword">
+                    <name>interval</name>
+                    <description>发送间隔</description>
+                </element>
+                <element cfg-id="1" type="parameter">
+                    <name>&lt;seconds&gt;</name>
+                    <type>uint(15-65535)</type>
+                    <description>Stats Report 发送间隔（秒）</description>
+                </element>
+            </elements>
+
+            <commands>
+                <!-- stats-report interval <seconds> -->
+                <command>
+                    <expression>2 3 4</expression>
+                    <views>bgp-bmp</views>
+                </command>
+                <!-- no stats-report interval -->
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>bgp-bmp</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- reconnect interval <seconds> / no reconnect interval（bgp-bmp 视图） -->
+        <group group-id="17">
+            <elements>
+                <element type="keyword">
+                    <name>no</name>
+                    <description>删除</description>
+                </element>
+                <element type="keyword">
+                    <name>reconnect</name>
+                    <description>重连配置</description>
+                </element>
+                <element type="keyword">
+                    <name>interval</name>
+                    <description>重连间隔</description>
+                </element>
+                <element cfg-id="1" type="parameter">
+                    <name>&lt;seconds&gt;</name>
+                    <type>uint(5-3600)</type>
+                    <description>TCP 重连间隔（秒）</description>
+                </element>
+            </elements>
+
+            <commands>
+                <!-- reconnect interval <seconds> -->
+                <command>
+                    <expression>2 3 4</expression>
+                    <views>bgp-bmp</views>
+                </command>
+                <!-- no reconnect interval -->
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>bgp-bmp</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- monitor neighbor all / monitor neighbor <ip> / no monitor neighbor <ip>（bgp-bmp 视图） -->
+        <group group-id="18">
+            <elements>
+                <element type="keyword">
+                    <name>no</name>
+                    <description>删除</description>
+                </element>
+                <element type="keyword">
+                    <name>monitor</name>
+                    <description>监控配置</description>
+                </element>
+                <element type="keyword">
+                    <name>neighbor</name>
+                    <description>监控邻居</description>
+                </element>
+                <element cfg-id="1" type="keyword">
+                    <name>all</name>
+                    <description>监控全部 BGP 邻居</description>
+                </element>
+                <element cfg-id="2" type="parameter">
+                    <name>&lt;ip-address&gt;</name>
+                    <type>ip</type>
+                    <description>指定监控的邻居 IP 地址</description>
+                </element>
+            </elements>
+
+            <commands>
+                <!-- monitor neighbor all -->
+                <command>
+                    <expression>2 3 4</expression>
+                    <views>bgp-bmp</views>
+                </command>
+                <!-- monitor neighbor <ip> -->
+                <command>
+                    <expression>2 3 5</expression>
+                    <views>bgp-bmp</views>
+                </command>
+                <!-- no monitor neighbor <ip> -->
+                <command>
+                    <expression>1 2 3 5</expression>
+                    <views>bgp-bmp</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- show bgp bmp [instance <name>] -->
+        <group group-id="19">
+            <elements>
+                <element type="keyword">
+                    <name>show</name>
+                    <description>显示系统信息</description>
+                </element>
+                <element type="keyword">
+                    <name>bgp</name>
+                    <description>BGP 协议</description>
+                </element>
+                <element type="keyword">
+                    <name>bmp</name>
+                    <description>BMP 上报状态</description>
+                </element>
+                <element type="keyword">
+                    <name>instance</name>
+                    <description>指定 BMP 实例</description>
+                </element>
+                <element cfg-id="1" type="parameter">
+                    <name>&lt;instance-name&gt;</name>
+                    <type>string(1-31)</type>
+                    <description>BMP 实例名称</description>
+                </element>
+            </elements>
+
+            <commands>
+                <!-- show bgp bmp（所有实例摘要） -->
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>global</views>
+                </command>
+                <!-- show bgp bmp instance <name>（指定实例详情） -->
+                <command>
+                    <expression>1 2 3 4 5</expression>
                     <views>global</views>
                 </command>
             </commands>

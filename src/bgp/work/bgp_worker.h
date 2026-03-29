@@ -11,6 +11,7 @@
 #include <stdint.h>
 
 #include "bgp.h"
+#include "bgp_bmp.h"
 #include "bgp_instance.h"
 #include "bgp_protocol.h"
 #include "dev.h"
@@ -40,6 +41,9 @@ typedef struct bgp_work_local
     pthread_t worker_thread; /**< BGP worker 线程句柄 */
 
     int listen_fd; /**< 全局 0.0.0.0:179 listen socket fd，-1 表示未监听 */
+
+    /* BMP 实例哈希表（inst_name -> bgp_bmp_instance_t*） */
+    GHashTable *bmp_instances; /**< BMP 实例运行态，key=实例名字符串 */
 
     /* IPC worker -> BGP worker 命令投递（eventfd + queue） */
     int cmd_eventfd;        /**< 命令唤醒 eventfd，-1 表示未创建 */
@@ -153,6 +157,42 @@ typedef struct bgp_apply_cmd
             net_addr_t addr; /**< 邻居 IP 地址 */
             uint8_t ttl;     /**< eBGP multihop TTL（1-255，0 表示未配置） */
         } ebgp_multihop;
+
+        /** BGP_CLI_GROUP_ID_BMP_INSTANCE */
+        struct
+        {
+            char name[BGP_BMP_INST_NAME_MAX]; /**< BMP 实例名 */
+        } bmp_instance;
+
+        /** BGP_CLI_GROUP_ID_BMP_COLLECTOR */
+        struct
+        {
+            char inst_name[BGP_BMP_INST_NAME_MAX]; /**< BMP 实例名 */
+            net_addr_t addr;                       /**< 采集器 IP 地址 */
+            uint16_t port;                         /**< 采集器端口 */
+        } bmp_collector;
+
+        /** BGP_CLI_GROUP_ID_BMP_STATS_INTERVAL */
+        struct
+        {
+            char inst_name[BGP_BMP_INST_NAME_MAX]; /**< BMP 实例名 */
+            uint16_t interval;                     /**< 间隔（秒） */
+        } bmp_stats;
+
+        /** BGP_CLI_GROUP_ID_BMP_RECONNECT */
+        struct
+        {
+            char inst_name[BGP_BMP_INST_NAME_MAX]; /**< BMP 实例名 */
+            uint16_t interval;                     /**< 间隔（秒） */
+        } bmp_reconnect;
+
+        /** BGP_CLI_GROUP_ID_BMP_MONITOR */
+        struct
+        {
+            char inst_name[BGP_BMP_INST_NAME_MAX]; /**< BMP 实例名 */
+            net_addr_t addr;                       /**< 邻居 IP（is_all=TRUE 时无效） */
+            gboolean is_all;                       /**< TRUE 表示 "monitor neighbor all" */
+        } bmp_monitor;
     } u;
 
     /* ---- 输出字段（server 线程填写，work 线程在 dispatch 返回后读取） ---- */

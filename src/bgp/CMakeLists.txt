@@ -1,6 +1,8 @@
 set(BGP_SOURCES
     bgp_main.c
     bgp_cli.c
+    bgp_bmp_cli.c
+    bgp_bmp_db.c
     bgp_db.c
     bgp_bdr.c
     work/bgp_cfg_apply.c
@@ -21,6 +23,8 @@ set(BGP_SOURCES
     work/bgp_show.c
     work/bgp_worker.c
     work/bgp_work.c
+    work/bgp_bmp.c
+    work/bgp_bmp_cfg_apply.c
 )
 
 add_subdirectory(lib)

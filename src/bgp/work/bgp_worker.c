@@ -7,12 +7,16 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <netinet/in.h>
+#include <stddef.h>
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "bgp_bmp.h"
+#include "bgp_bmp_cfg_apply.h"
+#include "bgp_bmp_cli.h"
 #include "bgp_calc.h"
 #include "bgp_cfg_apply.h"
 #include "bgp_cli.h"
@@ -291,6 +295,21 @@ static void bgp_worker_dispatch_apply_cmd(bgp_apply_cmd_t *apply)
             break;
         case BGP_CLI_GROUP_ID_EBGP_MULTIHOP:
             bgp_cfg_apply_ebgp_multihop(apply);
+            break;
+        case BGP_CLI_GROUP_ID_BMP_INSTANCE:
+            bgp_bmp_cfg_apply_instance(apply);
+            break;
+        case BGP_CLI_GROUP_ID_BMP_COLLECTOR:
+            bgp_bmp_cfg_apply_collector(apply);
+            break;
+        case BGP_CLI_GROUP_ID_BMP_STATS_INTERVAL:
+            bgp_bmp_cfg_apply_stats(apply);
+            break;
+        case BGP_CLI_GROUP_ID_BMP_RECONNECT:
+            bgp_bmp_cfg_apply_reconnect(apply);
+            break;
+        case BGP_CLI_GROUP_ID_BMP_MONITOR:
+            bgp_bmp_cfg_apply_monitor(apply);
             break;
         default:
             snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: Unknown apply group_id %u.", apply->group_id);
@@ -1145,6 +1164,34 @@ static void *bgp_worker_thread(void *arg)
                         bgp_work_process(ws->inst);
                         break;
                     }
+                    case BGP_TIMER_TYPE_BMP_RECONNECT:
+                    {
+                        bgp_bmp_instance_t *bmp =
+                            (bgp_bmp_instance_t *)((char *)sentinel - offsetof(bgp_bmp_instance_t, reconnect_sentinel));
+                        bgp_bmp_handle_reconnect(bmp, g_bgp_work_local->epoll_fd);
+                        break;
+                    }
+                    case BGP_TIMER_TYPE_BMP_STATS:
+                    {
+                        bgp_bmp_instance_t *bmp =
+                            (bgp_bmp_instance_t *)((char *)sentinel - offsetof(bgp_bmp_instance_t, stats_sentinel));
+                        bgp_bmp_handle_stats_timer(bmp);
+                        break;
+                    }
+                    case BGP_TIMER_TYPE_BMP_CONN:
+                    {
+                        bgp_bmp_instance_t *bmp =
+                            (bgp_bmp_instance_t *)((char *)sentinel - offsetof(bgp_bmp_instance_t, conn_sentinel));
+                        if (events[i].events & EPOLLOUT)
+                        {
+                            bgp_bmp_handle_connect_result(bmp, g_bgp_work_local->epoll_fd);
+                        }
+                        else
+                        {
+                            bgp_bmp_handle_read(bmp, g_bgp_work_local->epoll_fd);
+                        }
+                        break;
+                    }
                     default:
                         break;
                 }
@@ -1223,6 +1270,7 @@ static void bgp_worker_runtime_cleanup(void)
         }
     }
 
+    bgp_bmp_cleanup_all(g_bgp_work_local->epoll_fd);
     bgp_listen_stop();
     bgp_worker_cmd_drain_queue();
     bgp_work_show_cleanup();

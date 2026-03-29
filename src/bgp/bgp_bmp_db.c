@@ -8,10 +8,13 @@
 
 #include <string.h>
 
+#include "bgp_bmp_cli.h"
 #include "bgp_main.h"
+#include "bgp_worker.h"
 #include "db.h"
 #include "errcode.h"
 #include "log.h"
+#include "net_addr.h"
 
 // ============================================================================
 // 表定义
@@ -61,7 +64,7 @@ const void **bgp_bmp_db_get_tables(int *count)
 }
 
 // ============================================================================
-// 辅助：更新单列
+// 辅助：按 instance_name 更新单列
 // ============================================================================
 
 /**
@@ -77,11 +80,13 @@ static int update_int_col(const char *instance_name, const char *col_name, int64
     };
     db_filter_t filter = {.conditions = &cond, .num_conditions = 1};
 
-    db_row_data_t upd = {.field_name = col_name, .value = db_value_int(value)};
-    int ret = db_rpc_update(ctx, BGP_TABLE_BMP_INSTANCE, &upd, 1, &filter);
+    db_record_t *rec = db_record_new();
+    db_record_set_int(rec, col_name, value);
+
+    int rows = db_rpc_update_record(ctx, BGP_TABLE_BMP_INSTANCE, rec, &filter);
+    db_record_free(rec);
     db_value_free(&cond.value);
-    db_value_free(&upd.value);
-    return ret >= 0 ? 0 : -1;
+    return rows > 0 ? 0 : -1;
 }
 
 /**
@@ -97,11 +102,13 @@ static int update_text_col(const char *instance_name, const char *col_name, cons
     };
     db_filter_t filter = {.conditions = &cond, .num_conditions = 1};
 
-    db_row_data_t upd = {.field_name = col_name, .value = db_value_text(value)};
-    int ret = db_rpc_update(ctx, BGP_TABLE_BMP_INSTANCE, &upd, 1, &filter);
+    db_record_t *rec = db_record_new();
+    db_record_set_text(rec, col_name, value);
+
+    int rows = db_rpc_update_record(ctx, BGP_TABLE_BMP_INSTANCE, rec, &filter);
+    db_record_free(rec);
     db_value_free(&cond.value);
-    db_value_free(&upd.value);
-    return ret >= 0 ? 0 : -1;
+    return rows > 0 ? 0 : -1;
 }
 
 // ============================================================================
@@ -111,20 +118,24 @@ static int update_text_col(const char *instance_name, const char *col_name, cons
 int bgp_bmp_db_set_instance(const char *instance_name)
 {
     dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
-    db_row_data_t row[] = {
-        {.field_name = "instance_name", .value = db_value_text(instance_name)},
-        {.field_name = "collector_ip", .value = db_value_text("")},
-        {.field_name = "collector_port", .value = db_value_int(0)},
-        {.field_name = "stats_interval", .value = db_value_int(0)},
-        {.field_name = "reconnect_interval", .value = db_value_int(30)},
-        {.field_name = "monitor_all", .value = db_value_int(1)},
-    };
-    int ret = db_rpc_upsert(ctx, BGP_TABLE_BMP_INSTANCE, row, G_N_ELEMENTS(row));
-    for (size_t i = 0; i < G_N_ELEMENTS(row); i++)
+
+    db_record_t *rec = db_record_new();
+    db_record_set_text(rec, "instance_name", instance_name);
+    db_record_set_text(rec, "collector_ip", "");
+    db_record_set_int(rec, "collector_port", 0);
+    db_record_set_int(rec, "stats_interval", 0);
+    db_record_set_int(rec, "reconnect_interval", 30);
+    db_record_set_int(rec, "monitor_all", 1);
+
+    int ret = db_rpc_upsert(ctx, BGP_TABLE_BMP_INSTANCE, rec, NULL);
+    db_record_free(rec);
+
+    if (ret != ERRCODE_SUCCESS)
     {
-        db_value_free(&row[i].value);
+        LOG_ERROR("BMP failed to write instance %s", instance_name);
+        return -1;
     }
-    return ret == ERRCODE_SUCCESS ? 0 : -1;
+    return 0;
 }
 
 int bgp_bmp_db_del_instance(const char *instance_name)
@@ -241,15 +252,13 @@ int bgp_bmp_db_add_monitor_peer(const char *instance_name, const char *neighbor_
     }
 
     /* 插入监控邻居（幂等） */
-    db_row_data_t row[] = {
-        {.field_name = "instance_name", .value = db_value_text(instance_name)},
-        {.field_name = "neighbor_ip", .value = db_value_text(neighbor_ip)},
-    };
-    int ret = db_rpc_upsert(ctx, BGP_TABLE_BMP_MONITOR, row, G_N_ELEMENTS(row));
-    for (size_t i = 0; i < G_N_ELEMENTS(row); i++)
-    {
-        db_value_free(&row[i].value);
-    }
+    db_record_t *rec = db_record_new();
+    db_record_set_text(rec, "instance_name", instance_name);
+    db_record_set_text(rec, "neighbor_ip", neighbor_ip);
+
+    int ret = db_rpc_upsert(ctx, BGP_TABLE_BMP_MONITOR, rec, NULL);
+    db_record_free(rec);
+
     return ret == ERRCODE_SUCCESS ? 0 : -1;
 }
 
@@ -267,4 +276,159 @@ int bgp_bmp_db_del_monitor_peer(const char *instance_name, const char *neighbor_
         db_value_free(&conds[i].value);
     }
     return rows;
+}
+
+// ============================================================================
+// 启动恢复
+// ============================================================================
+
+/**
+ * @brief 恢复单个 BMP 实例的监控邻居配置
+ */
+static void restore_bmp_monitors(const char *inst_name)
+{
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
+    db_condition_t cond = {
+        .field_name = "instance_name",
+        .op = DB_CMP_EQ,
+        .value = db_value_text(inst_name),
+    };
+    db_filter_t filter = {.conditions = &cond, .num_conditions = 1};
+    db_result_t *result = NULL;
+
+    if (db_rpc_query(ctx, BGP_TABLE_BMP_MONITOR, NULL, 0, &filter, &result) != ERRCODE_SUCCESS || !result)
+    {
+        db_value_free(&cond.value);
+        return;
+    }
+
+    for (uint32_t i = 0; i < result->num_rows; i++)
+    {
+        const char *ip = db_row_get_text(result->rows[i], "neighbor_ip", NULL);
+        if (!ip)
+        {
+            continue;
+        }
+
+        bgp_apply_cmd_t apply;
+        memset(&apply, 0, sizeof(apply));
+        apply.group_id = BGP_CLI_GROUP_ID_BMP_MONITOR;
+        apply.isNo = false;
+        apply.u.bmp_monitor.is_all = FALSE;
+        g_strlcpy(apply.u.bmp_monitor.inst_name, inst_name, sizeof(apply.u.bmp_monitor.inst_name));
+        if (net_addr_from_str(ip, &apply.u.bmp_monitor.addr) != 0)
+        {
+            LOG_WARN("BMP restore: invalid monitor peer IP '%s', skipping", ip);
+            continue;
+        }
+
+        if (bgp_worker_dispatch_apply(&apply) != 0 || apply.rc == BGP_APPLY_RC_FAIL)
+        {
+            LOG_WARN("BMP restore: monitor peer %s apply failed for instance '%s'", ip, inst_name);
+        }
+    }
+
+    db_result_free(result);
+    db_value_free(&cond.value);
+}
+
+void bgp_bmp_db_restore(void)
+{
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
+    if (!ctx)
+    {
+        return;
+    }
+
+    db_result_t *result = NULL;
+    if (db_rpc_query(ctx, BGP_TABLE_BMP_INSTANCE, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result ||
+        result->num_rows == 0)
+    {
+        if (result)
+        {
+            db_result_free(result);
+        }
+        return;
+    }
+
+    for (uint32_t i = 0; i < result->num_rows; i++)
+    {
+        db_row_t *row = result->rows[i];
+        const char *name = db_row_get_text(row, "instance_name", NULL);
+        if (!name)
+        {
+            continue;
+        }
+
+        /* 1. 创建实例 */
+        bgp_apply_cmd_t apply;
+        memset(&apply, 0, sizeof(apply));
+        apply.group_id = BGP_CLI_GROUP_ID_BMP_INSTANCE;
+        apply.isNo = false;
+        g_strlcpy(apply.u.bmp_instance.name, name, sizeof(apply.u.bmp_instance.name));
+
+        if (bgp_worker_dispatch_apply(&apply) != 0 || apply.rc == BGP_APPLY_RC_FAIL)
+        {
+            LOG_WARN("BMP restore: instance '%s' creation failed, skipping", name);
+            continue;
+        }
+
+        /* 2. 恢复 collector */
+        const char *collector_ip = db_row_get_text(row, "collector_ip", "");
+        int64_t collector_port = db_row_get_int(row, "collector_port", 0);
+        if (collector_ip[0] != '\0' && collector_port > 0)
+        {
+            bgp_apply_cmd_t col_apply;
+            memset(&col_apply, 0, sizeof(col_apply));
+            col_apply.group_id = BGP_CLI_GROUP_ID_BMP_COLLECTOR;
+            col_apply.isNo = false;
+            g_strlcpy(col_apply.u.bmp_collector.inst_name, name, sizeof(col_apply.u.bmp_collector.inst_name));
+            col_apply.u.bmp_collector.port = (uint16_t)collector_port;
+            if (net_addr_from_str(collector_ip, &col_apply.u.bmp_collector.addr) == 0)
+            {
+                (void)bgp_worker_dispatch_apply(&col_apply);
+            }
+        }
+
+        /* 3. 恢复 stats interval */
+        int64_t stats_interval = db_row_get_int(row, "stats_interval", 0);
+        if (stats_interval > 0)
+        {
+            bgp_apply_cmd_t stats_apply;
+            memset(&stats_apply, 0, sizeof(stats_apply));
+            stats_apply.group_id = BGP_CLI_GROUP_ID_BMP_STATS_INTERVAL;
+            stats_apply.isNo = false;
+            g_strlcpy(stats_apply.u.bmp_stats.inst_name, name, sizeof(stats_apply.u.bmp_stats.inst_name));
+            stats_apply.u.bmp_stats.interval = (uint16_t)stats_interval;
+            (void)bgp_worker_dispatch_apply(&stats_apply);
+        }
+
+        /* 4. 恢复 reconnect interval */
+        int64_t reconnect_interval = db_row_get_int(row, "reconnect_interval", 30);
+        if (reconnect_interval != 30)
+        {
+            bgp_apply_cmd_t recon_apply;
+            memset(&recon_apply, 0, sizeof(recon_apply));
+            recon_apply.group_id = BGP_CLI_GROUP_ID_BMP_RECONNECT;
+            recon_apply.isNo = false;
+            g_strlcpy(recon_apply.u.bmp_reconnect.inst_name, name, sizeof(recon_apply.u.bmp_reconnect.inst_name));
+            recon_apply.u.bmp_reconnect.interval = (uint16_t)reconnect_interval;
+            (void)bgp_worker_dispatch_apply(&recon_apply);
+        }
+
+        /* 5. 恢复 monitor 配置 */
+        int64_t monitor_all = db_row_get_int(row, "monitor_all", 1);
+        if (monitor_all)
+        {
+            /* 默认就是 all，无需额外操作 */
+        }
+        else
+        {
+            restore_bmp_monitors(name);
+        }
+
+        LOG_INFO("BMP instance '%s' restored from database", name);
+    }
+
+    db_result_free(result);
 }

@@ -6,8 +6,12 @@
  */
 #include "bgp_main.h"
 
+#include <arpa/inet.h>
+#include <string.h>
+
 #include "bgp.h"
 #include "bgp_bdr.h"
+#include "bgp_bmp_cli.h"
 #include "bgp_cli.h"
 #include "bgp_db.h"
 #include "bgp_pkt.h"
@@ -25,6 +29,28 @@ static uint8_t bgp_cli_payload_flags(const dev_ipc_message_t *msg)
         return 0;
     }
     return ((const uint8_t *)msg->payload)[0];
+}
+
+/**
+ * @brief 从 CLI 载荷中提取 group_id（偏移 1 处的 uint32 网络序）
+ */
+static uint32_t bgp_cli_payload_group_id(const dev_ipc_message_t *msg)
+{
+    if (!msg || !msg->payload || msg->payload_len < 5)
+    {
+        return 0;
+    }
+    uint32_t gid;
+    memcpy(&gid, (const uint8_t *)msg->payload + 1, 4);
+    return ntohl(gid);
+}
+
+/**
+ * @brief 判断 group_id 是否属于 BMP 配置命令范围
+ */
+static gboolean bgp_is_bmp_group(uint32_t group_id)
+{
+    return group_id >= BGP_CLI_GROUP_ID_BMP_INSTANCE && group_id <= BGP_CLI_GROUP_ID_BMP_MONITOR;
 }
 
 static void send_phase_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, int32_t result)
@@ -132,7 +158,15 @@ void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             }
             else
             {
-                bgp_cli_handle_config_msg(msg);
+                uint32_t gid = bgp_cli_payload_group_id(msg);
+                if (bgp_is_bmp_group(gid))
+                {
+                    bgp_bmp_cli_handle_config_msg(msg);
+                }
+                else
+                {
+                    bgp_cli_handle_config_msg(msg);
+                }
                 dev_ipc_message_free(msg);
             }
             return;
