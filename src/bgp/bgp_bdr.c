@@ -262,13 +262,7 @@ void bgp_bdr_show_config(dev_ipc_message_t *msg)
         return;
     }
 
-    if (!bdr_append_protocol(out))
-    {
-        bgp_send_cli_response(msg, out->str);
-        g_string_free(out, TRUE);
-        return;
-    }
-
+    (void)bdr_append_protocol(out);
     bdr_append_vrf_config(out);
     bdr_append_sessions(out);
     bdr_append_af_instances(out);

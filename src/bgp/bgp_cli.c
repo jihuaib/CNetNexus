@@ -173,7 +173,11 @@ static int handle_bgp_protocol(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     /* 应用成功，写 DB */
     if (apply.isNo)
     {
-        (void)bgp_db_del_as();
+        if (bgp_db_del_as() < 0)
+        {
+            bgp_send_cli_response(msg, "BGP Error: Database cleanup failed.\r\n");
+            return ERRCODE_FAIL;
+        }
     }
     else
     {
@@ -277,6 +281,11 @@ static int handle_bgp_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     if (apply.isNo)
     {
         int rows = bgp_db_del_session(ctx.vrf_id, ip_buf);
+        if (rows < 0)
+        {
+            bgp_send_cli_response(msg, "BGP Error: Database cleanup failed.\r\n");
+            return ERRCODE_FAIL;
+        }
         snprintf(resp_buf, sizeof(resp_buf), "BGP: Neighbor %s deleted (%d row).\r\n", ip_buf, rows > 0 ? rows : 0);
     }
     else
@@ -357,8 +366,11 @@ static int handle_bgp_addr_family(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
     /* 写 DB */
     if (apply.isNo)
     {
-        bgp_db_del_neighbors_by_afi(ctx.vrf_id, ctx.afi, ctx.safi);
-        bgp_db_del_instance(ctx.vrf_id, ctx.afi, ctx.safi);
+        if (bgp_db_del_instance(ctx.vrf_id, ctx.afi, ctx.safi) < 0)
+        {
+            bgp_send_cli_response(msg, "BGP Error: Database cleanup failed.\r\n");
+            return ERRCODE_FAIL;
+        }
     }
     else
     {

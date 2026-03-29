@@ -99,6 +99,22 @@ static const db_table_def_t BGP_VRF_TABLE = {
 int bgp_db_set_vrf_timers(uint32_t vrf_id, uint16_t keepalive, uint16_t hold_time);
 int bgp_db_set_vrf_connect_retry(uint32_t vrf_id, uint16_t connect_retry);
 
+static int bgp_db_delete_table_all(dev_ipc_context_t *ctx, const char *table_name, int *rows_out)
+{
+    int rows = db_rpc_delete(ctx, table_name, NULL);
+    if (rows < 0)
+    {
+        LOG_ERROR("BGP failed to clear table %s", table_name);
+        return -1;
+    }
+    if (rows_out)
+    {
+        *rows_out = rows;
+    }
+    LOG_INFO("BGP table %s cleared, affected rows: %d", table_name, rows);
+    return 0;
+}
+
 // ============================================================================
 // 启动恢复 - 内部函数（按表拆分）
 // ============================================================================
@@ -626,15 +642,25 @@ int bgp_db_del_as(void)
         return -1;
     }
 
-    int rows = db_rpc_delete(ctx, BGP_TABLE_PROTOCOL, NULL);
-    if (rows < 0)
+    int rows_neighbor = 0;
+    int rows_instance = 0;
+    int rows_session = 0;
+    int rows_vrf = 0;
+    int rows_protocol = 0;
+
+    if (bgp_db_delete_table_all(ctx, BGP_TABLE_NEIGHBOR, &rows_neighbor) != 0 ||
+        bgp_db_delete_table_all(ctx, BGP_TABLE_INSTANCE, &rows_instance) != 0 ||
+        bgp_db_delete_table_all(ctx, BGP_TABLE_SESSION, &rows_session) != 0 ||
+        bgp_db_delete_table_all(ctx, BGP_TABLE_VRF, &rows_vrf) != 0 ||
+        bgp_db_delete_table_all(ctx, BGP_TABLE_PROTOCOL, &rows_protocol) != 0)
     {
-        LOG_ERROR("BGP failed to delete AS config");
         return -1;
     }
 
-    LOG_INFO("BGP deleted AS config, affected rows: %d", rows);
-    return rows;
+    int total_rows = rows_neighbor + rows_instance + rows_session + rows_vrf + rows_protocol;
+    LOG_INFO("BGP protocol cleanup complete: protocol=%d session=%d neighbor=%d instance=%d vrf=%d total=%d",
+             rows_protocol, rows_session, rows_neighbor, rows_instance, rows_vrf, total_rows);
+    return total_rows;
 }
 
 // ============================================================================
@@ -683,15 +709,23 @@ int bgp_db_del_session(uint32_t vrf_id, const char *neighbor_ip)
         return -1;
     }
 
-    int rows;
+    int rows = 0;
+    int rows_nb = 0;
 
     if (!neighbor_ip)
     {
-        /* 删除 vrf 内所有 session */
+        /* 删除 vrf 内所有 session，并级联删除该 vrf 下所有 AF neighbor 记录 */
         db_condition_t vrf_cond = {.field_name = "vrf_id", .op = DB_CMP_EQ, .value = db_value_int((int64_t)vrf_id)};
         db_filter_t vrf_filter = {.conditions = &vrf_cond, .num_conditions = 1};
+        rows_nb = db_rpc_delete(ctx, BGP_TABLE_NEIGHBOR, &vrf_filter);
         rows = db_rpc_delete(ctx, BGP_TABLE_SESSION, &vrf_filter);
         db_value_free(&vrf_cond.value);
+
+        if (rows_nb < 0 || rows < 0)
+        {
+            LOG_ERROR("BGP failed to delete session/neighbor by vrf_id=%u", vrf_id);
+            return -1;
+        }
     }
     else
     {
@@ -701,25 +735,29 @@ int bgp_db_del_session(uint32_t vrf_id, const char *neighbor_ip)
         };
         db_filter_t filter = {.conditions = conditions, .num_conditions = G_N_ELEMENTS(conditions)};
 
-        /* 同时清理 neighbor 记录 */
-        db_condition_t nb_cond = {.field_name = "neighbor_ip", .op = DB_CMP_EQ, .value = db_value_text(neighbor_ip)};
-        db_filter_t nb_filter = {.conditions = &nb_cond, .num_conditions = 1};
-        db_rpc_delete(ctx, BGP_TABLE_NEIGHBOR, &nb_filter);
-        db_value_free(&nb_cond.value);
+        /* 同时清理该 vrf 下该 neighbor 的所有 AF neighbor 记录 */
+        db_condition_t nb_conditions[] = {
+            {.field_name = "neighbor_ip", .op = DB_CMP_EQ, .value = db_value_text(neighbor_ip)},
+            {.field_name = "vrf_id", .op = DB_CMP_EQ, .value = db_value_int((int64_t)vrf_id)},
+        };
+        db_filter_t nb_filter = {.conditions = nb_conditions, .num_conditions = G_N_ELEMENTS(nb_conditions)};
+        rows_nb = db_rpc_delete(ctx, BGP_TABLE_NEIGHBOR, &nb_filter);
+        db_value_free(&nb_conditions[0].value);
+        db_value_free(&nb_conditions[1].value);
 
         rows = db_rpc_delete(ctx, BGP_TABLE_SESSION, &filter);
         db_value_free(&conditions[0].value);
         db_value_free(&conditions[1].value);
+
+        if (rows_nb < 0 || rows < 0)
+        {
+            LOG_ERROR("BGP failed to delete session/neighbor vrf_id=%u neighbor=%s", vrf_id, neighbor_ip);
+            return -1;
+        }
     }
 
-    if (rows < 0)
-    {
-        LOG_ERROR("BGP failed to delete session");
-        return -1;
-    }
-
-    LOG_INFO("BGP deleted session (vrf_id=%u neighbor=%s), affected rows: %d", vrf_id, neighbor_ip ? neighbor_ip : "*",
-             rows);
+    LOG_INFO("BGP deleted session/neighbor (vrf_id=%u neighbor=%s), session_rows=%d neighbor_rows=%d", vrf_id,
+             neighbor_ip ? neighbor_ip : "*", rows, rows_nb);
     return rows;
 }
 
@@ -1029,6 +1067,14 @@ int bgp_db_del_instance(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi)
         return -1;
     }
 
+    int rows_neighbor = bgp_db_del_neighbors_by_afi(vrf_id, afi, safi);
+    if (rows_neighbor < 0)
+    {
+        LOG_ERROR("BGP failed to cascade delete neighbors for instance vrf=%u afi=%u safi=%u", vrf_id, (unsigned)afi,
+                  (unsigned)safi);
+        return -1;
+    }
+
     db_condition_t conditions[] = {
         {.field_name = "vrf_id", .op = DB_CMP_EQ, .value = db_value_int((int64_t)vrf_id)},
         {.field_name = "afi", .op = DB_CMP_EQ, .value = db_value_int((int64_t)afi)},
@@ -1047,9 +1093,9 @@ int bgp_db_del_instance(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi)
         return -1;
     }
 
-    LOG_INFO("BGP deleted instance vrf=%u afi=%u safi=%u, affected rows: %d", vrf_id, (unsigned)afi, (unsigned)safi,
-             rows);
-    return rows;
+    LOG_INFO("BGP deleted instance vrf=%u afi=%u safi=%u, instance_rows=%d neighbor_rows=%d", vrf_id, (unsigned)afi,
+             (unsigned)safi, rows, rows_neighbor);
+    return rows + rows_neighbor;
 }
 
 int bgp_db_set_import_protos(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi, uint32_t import_protos)

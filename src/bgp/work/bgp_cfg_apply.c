@@ -119,7 +119,24 @@ void bgp_cfg_apply_neighbor(bgp_apply_cmd_t *apply)
 
     if (is_no)
     {
-        bgp_vrf_af_disable_neighbor(vrf, BGP_AFI_IPV4, BGP_SAFI_UNICAST, &apply->u.neighbor.addr);
+        /* 删除邻居时，级联删除该邻居在所有 AF 下的 peer 绑定 */
+        GHashTableIter iter;
+        gpointer key, val;
+        g_hash_table_iter_init(&iter, vrf->inst_hash);
+        while (g_hash_table_iter_next(&iter, &key, &val))
+        {
+            (void)key;
+            bgp_instance_t *inst = (bgp_instance_t *)val;
+            if (!inst || !inst->peer_hash)
+            {
+                continue;
+            }
+            if (!g_hash_table_lookup(inst->peer_hash, &apply->u.neighbor.addr))
+            {
+                continue;
+            }
+            (void)bgp_vrf_af_disable_neighbor(vrf, inst->afi, inst->safi, &apply->u.neighbor.addr);
+        }
         bgp_server_stop_session_conns(existing);
         bgp_vrf_del_session(vrf, &apply->u.neighbor.addr);
     }

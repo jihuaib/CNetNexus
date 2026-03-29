@@ -52,7 +52,7 @@ void bgp_db_ensure_defaults(void);
 int bgp_db_set_as(uint32_t as_number);
 
 /**
- * @brief 从数据库删除 BGP 配置
+ * @brief 从数据库删除 BGP 协议及关联配置（protocol/session/neighbor/instance/vrf）
  * @return 删除的行数，错误返回 -1
  */
 int bgp_db_del_as(void);
@@ -71,9 +71,9 @@ int bgp_db_del_as(void);
 int bgp_db_set_session(uint32_t vrf_id, const char *neighbor_ip, uint32_t remote_as);
 
 /**
- * @brief 删除 BGP 会话
+ * @brief 删除 BGP 会话，并级联删除对应 neighbor(AF 使能) 记录
  * @param vrf_id      VRF ID（0 为默认公网 VRF）
- * @param neighbor_ip 邻居 IP 地址字符串（为 NULL 则删除该 VRF 内所有 session）
+ * @param neighbor_ip 邻居 IP 地址字符串（为 NULL 则删除该 VRF 内所有 session 和 neighbor）
  * @return 删除的行数，错误返回 -1
  */
 int bgp_db_del_session(uint32_t vrf_id, const char *neighbor_ip);
@@ -194,11 +194,11 @@ int bgp_db_del_vrf_timers(uint32_t vrf_id);
 int bgp_db_set_instance(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi);
 
 /**
- * @brief 删除 AF 实例记录
+ * @brief 删除 AF 实例记录，并级联删除该 AF 下所有 neighbor 使能记录
  * @param vrf_id VRF ID
  * @param afi    地址族
  * @param safi   子地址族
- * @return 删除行数，-1 失败
+ * @return 删除总行数（instance + neighbor），-1 失败
  */
 int bgp_db_del_instance(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi);
 
