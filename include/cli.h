@@ -78,6 +78,8 @@
 #define CLI_CTX_ID_VRF_NAME 5
 /** loop 接口编号 ctx 变量：值 1-2024 对应 loop1-loop2024 */
 #define CLI_CTX_ID_IF_LOOP_IDX 6
+/** BMP 实例名称上下文（字符串） */
+#define CLI_CTX_ID_BMP_INST_NAME 7
 
 /** 视图名称最大长度 */
 #define CLI_CLI_MAX_VIEW_LEN 20

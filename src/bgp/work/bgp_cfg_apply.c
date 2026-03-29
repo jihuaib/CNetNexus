@@ -23,6 +23,84 @@
 #include "db.h"
 #include "errcode.h"
 
+/* 在配置删除路径中，同步抽干 work 队列的最大轮次，避免销毁前遗留待撤销任务。 */
+#define BGP_CFG_DRAIN_MAX_PASSES 1024u
+
+static void bgp_cfg_drain_instance_work(bgp_instance_t *inst)
+{
+    if (!inst)
+    {
+        return;
+    }
+
+    for (uint32_t pass = 0; pass < BGP_CFG_DRAIN_MAX_PASSES; ++pass)
+    {
+        uint32_t calc = (inst->calc_queue) ? inst->calc_queue->count : 0u;
+        uint32_t route_flush = (inst->route_flush_queue) ? inst->route_flush_queue->count : 0u;
+        uint32_t pub = (inst->pub_queue) ? inst->pub_queue->count : 0u;
+        if (calc == 0u && route_flush == 0u && pub == 0u)
+        {
+            return;
+        }
+        bgp_work_process(inst);
+    }
+}
+
+static void bgp_cfg_drain_vrf_work(bgp_vrf_t *vrf)
+{
+    if (!vrf || !vrf->inst_hash)
+    {
+        return;
+    }
+
+    GHashTableIter inst_iter;
+    gpointer inst_key = NULL;
+    gpointer inst_val = NULL;
+    g_hash_table_iter_init(&inst_iter, vrf->inst_hash);
+    while (g_hash_table_iter_next(&inst_iter, &inst_key, &inst_val))
+    {
+        (void)inst_key;
+        bgp_cfg_drain_instance_work((bgp_instance_t *)inst_val);
+    }
+}
+
+static void bgp_cfg_stop_all_sessions_and_drain_work(bgp_protocol_t *proto)
+{
+    if (!proto || !proto->vrf_hash)
+    {
+        return;
+    }
+
+    GHashTableIter vrf_iter;
+    gpointer vrf_key = NULL;
+    gpointer vrf_val = NULL;
+    g_hash_table_iter_init(&vrf_iter, proto->vrf_hash);
+    while (g_hash_table_iter_next(&vrf_iter, &vrf_key, &vrf_val))
+    {
+        (void)vrf_key;
+        bgp_vrf_t *vrf = (bgp_vrf_t *)vrf_val;
+        if (!vrf)
+        {
+            continue;
+        }
+
+        if (vrf->sess_hash)
+        {
+            GHashTableIter sess_iter;
+            gpointer sess_key = NULL;
+            gpointer sess_val = NULL;
+            g_hash_table_iter_init(&sess_iter, vrf->sess_hash);
+            while (g_hash_table_iter_next(&sess_iter, &sess_key, &sess_val))
+            {
+                (void)sess_key;
+                bgp_server_stop_session_conns((bgp_session_t *)sess_val);
+            }
+        }
+
+        bgp_cfg_drain_vrf_work(vrf);
+    }
+}
+
 /* ============================================================================
  * bgp / no bgp
  * ========================================================================== */
@@ -62,6 +140,7 @@ void bgp_cfg_apply_protocol(bgp_apply_cmd_t *apply)
     if (is_no)
     {
         bgp_listen_stop();
+        bgp_cfg_stop_all_sessions_and_drain_work(proto);
         bgp_protocol_destroy(g_bgp_work_local->protocol);
         g_bgp_work_local->protocol = NULL;
     }
@@ -139,6 +218,7 @@ void bgp_cfg_apply_neighbor(bgp_apply_cmd_t *apply)
         }
         bgp_server_stop_session_conns(existing);
         bgp_vrf_del_session(vrf, &apply->u.neighbor.addr);
+        bgp_cfg_drain_vrf_work(vrf);
     }
     else if (existing)
     {
@@ -218,6 +298,7 @@ void bgp_cfg_apply_instance(bgp_apply_cmd_t *apply)
             }
             g_list_free_full(addr_strs, g_free);
         }
+        bgp_cfg_drain_instance_work(inst);
         bgp_vrf_del_instance(vrf, apply->u.instance.afi, apply->u.instance.safi);
     }
     else
@@ -280,6 +361,7 @@ void bgp_cfg_apply_af_neighbor(bgp_apply_cmd_t *apply)
                 bgp_server_stop_session_conns(sess);
             }
         }
+        bgp_cfg_drain_vrf_work(vrf);
     }
     else
     {

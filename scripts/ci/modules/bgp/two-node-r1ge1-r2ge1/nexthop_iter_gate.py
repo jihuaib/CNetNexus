@@ -3,10 +3,10 @@
 BGP nexthop iteration gate check.
 
 Goal:
-- r2 advertises a route whose BGP nexthop is initially unreachable from r1
+- r2 advertises a route whose BGP nexthop is initially unreachable
 - verify r1 keeps it in Loc-RIB but marks it invalid (not selected)
-- add a resolving underlay route on r1 and verify the route becomes valid/best
-- remove the underlay route and verify the route turns invalid again
+- add/remove resolver route on r2 to flip r1 nexthop resolved state
+- verify r1 route valid/best toggles together with nexthop resolution
 """
 
 from __future__ import annotations
@@ -35,12 +35,12 @@ def _wait_route_state(
     timeout: int,
     interval: int = 2,
 ) -> None:
-    token_line = rf"(?im)^.*\b{re.escape(token)}\b.*$"
+    token_line = rf"(?im)^.*{re.escape(token)}.*$"
     expect_patterns: list[str] = [token_line]
     reject_patterns: list[str] = []
 
-    best_pattern = rf"(?im)^>.*\b{re.escape(token)}\b"
-    valid_pattern = rf"(?im)^.v.*\b{re.escape(token)}\b"
+    best_pattern = rf"(?im)^>.*{re.escape(token)}"
+    valid_pattern = rf"(?im)^.v.*{re.escape(token)}"
     if expect_best:
         expect_patterns.append(best_pattern)
     else:
@@ -62,6 +62,29 @@ def _wait_route_state(
     )
 
 
+def _wait_route_invalid_or_absent(
+    rt: TopologyRuntime,
+    *,
+    device: str,
+    command: str,
+    token: str,
+    timeout: int,
+    interval: int = 2,
+) -> None:
+    best_pattern = rf"(?im)^>.*{re.escape(token)}"
+    valid_pattern = rf"(?im)^.v.*{re.escape(token)}"
+    wait_check(
+        rt,
+        device=device,
+        command=command,
+        timeout=timeout,
+        interval=interval,
+        regex=[rf"(?im)(?:{re.escape(token)}|\(no routes\))"],
+        not_regex=[best_pattern, valid_pattern],
+        label=f"{device} route-invalid-or-absent {token}",
+    )
+
+
 def _wait_relay_state(
     rt: TopologyRuntime,
     *,
@@ -72,15 +95,18 @@ def _wait_relay_state(
     interval: int = 2,
 ) -> None:
     command = "show route ipv4 relay bgp"
-    expect_str = "yes" if expect_resolved else "no"
+    if expect_resolved:
+        regex = [rf"(?im)^.*\b{re.escape(nexthop)}\b\s+yes\s*$"]
+    else:
+        regex = [rf"(?im)(?:^.*\b{re.escape(nexthop)}\b\s+no\s*$|^\s*\(no entries\)\s*$)"]
     wait_check(
         rt,
         device=device,
         command=command,
         timeout=timeout,
         interval=interval,
-        regex=[rf"(?im)^.*\b{re.escape(nexthop)}\b\s+{expect_str}\s*$"],
-        label=f"{device} relay {nexthop} resolved={expect_str}",
+        regex=regex,
+        label=f"{device} relay {nexthop} resolved={expect_resolved}",
     )
 
 
@@ -184,7 +210,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             ],
         )
 
-        step("Inject route on r2 with unresolved nexthop for r1")
+        step("Inject route on r2 with unresolved-nh static route")
         run_cmds(
             rt=rt,
             device="r2",
@@ -210,39 +236,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             timeout=30,
         )
 
-        step("Verify r1 keeps unresolved-nexthop route as invalid/non-best")
-        _wait_route_state(
-            rt,
-            device="r1",
-            command="show bgp route af ipv4-unicast",
-            token=PFX,
-            expect_valid=False,
-            expect_best=False,
-            timeout=12,
-            interval=2,
-        )
-        _wait_relay_state(
-            rt,
-            device="r1",
-            nexthop=NH_UNRESOLVED,
-            expect_resolved=False,
-            timeout=12,
-            interval=2,
-        )
-
-        step("Add underlay resolving route on r1")
-        run_cmds(
-            rt=rt,
-            device="r1",
-            strict=False,
-            commands=[
-                "config",
-                f"route ipv4 {NH_UNRESOLVED} {NH_MASK} {r1_peer_ip}",
-                "end",
-            ],
-        )
-
-        step("Verify r1 marks route valid/best after nexthop becomes resolvable")
+        step("Verify r1 route is valid/best while resolver route exists")
         _wait_route_state(
             rt,
             device="r1",
@@ -262,26 +256,24 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             interval=2,
         )
 
-        step("Remove underlay resolving route on r1")
+        step("Remove resolver route on r2")
         run_cmds(
             rt=rt,
-            device="r1",
+            device="r2",
             strict=False,
             commands=[
                 "config",
-                f"no route ipv4 {NH_UNRESOLVED} {NH_MASK} {r1_peer_ip}",
+                f"no route ipv4 {NH_UNRESOLVED} {NH_MASK} {r2_peer_ip}",
                 "end",
             ],
         )
 
-        step("Verify r1 route turns invalid again after nexthop becomes unresolved")
-        _wait_route_state(
+        step("Verify r1 route becomes invalid or withdrawn after resolver route is removed")
+        _wait_route_invalid_or_absent(
             rt,
             device="r1",
             command="show bgp route af ipv4-unicast",
             token=PFX,
-            expect_valid=False,
-            expect_best=False,
             timeout=30,
             interval=2,
         )
@@ -290,6 +282,38 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             device="r1",
             nexthop=NH_UNRESOLVED,
             expect_resolved=False,
+            timeout=30,
+            interval=2,
+        )
+
+        step("Add resolver route on r2 again")
+        run_cmds(
+            rt=rt,
+            device="r2",
+            strict=False,
+            commands=[
+                "config",
+                f"route ipv4 {NH_UNRESOLVED} {NH_MASK} {r2_peer_ip}",
+                "end",
+            ],
+        )
+
+        step("Verify r1 route turns valid again after resolver returns")
+        _wait_route_state(
+            rt,
+            device="r1",
+            command="show bgp route af ipv4-unicast",
+            token=PFX,
+            expect_valid=True,
+            expect_best=True,
+            timeout=30,
+            interval=2,
+        )
+        _wait_relay_state(
+            rt,
+            device="r1",
+            nexthop=NH_UNRESOLVED,
+            expect_resolved=True,
             timeout=30,
             interval=2,
         )

@@ -31,17 +31,18 @@ def _wait_route_state(
     timeout: int = 10,
     interval: int = 2,
 ) -> None:
-    contains = [f"Routing entry for {route_key}"]
+    contains: list[str] = []
     regex: list[str] = []
     not_contains: list[str] = []
 
     if expect_present:
-        contains.extend(["Path [1]: connected", "Total 1 path(s)"])
+        contains.extend([f"Routing entry for {route_key}", "Total 1 path(s)"])
+        regex.append(r"(?im)^\s*Path\s*\[1\]\s*:\s*(?:connected|local)\b")
         not_contains.extend(["(no routes)", "(no matching routes)"])
         if expect_if is not None:
             contains.append(f"Interface : {expect_if}")
     else:
-        not_contains.append("Path [1]: connected")
+        not_contains.extend(["Path [1]: connected", "Path [1]: local"])
         regex.append(r"(?im)\((?:no routes|no matching routes)\)")
 
     state = "present" if expect_present else "absent"
@@ -111,7 +112,8 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         device="r1",
         command=host_show,
         route_key=cfg_ip,
-        expect_present=False,
+        expect_present=True,
+        expect_if=if_name,
         timeout=10,
     )
 
@@ -202,7 +204,8 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         device="r1",
         command=host_show,
         route_key=cfg_ip,
-        expect_present=False,
+        expect_present=True,
+        expect_if=if_name,
         timeout=10,
     )
 
@@ -238,7 +241,8 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         device="r1",
         command=host_show,
         route_key=cfg_ip,
-        expect_present=False,
+        expect_present=True,
+        expect_if=if_name,
         timeout=10,
     )
 
@@ -331,7 +335,8 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         device="r1",
         command=host_show,
         route_key=cfg_ip,
-        expect_present=False,
+        expect_present=True,
+        expect_if=if_name,
         timeout=10,
     )
 
