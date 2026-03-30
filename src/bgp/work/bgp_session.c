@@ -14,10 +14,12 @@
 #include <unistd.h>
 
 #include "bgp.h"
+#include "bgp_bmp.h"
 #include "bgp_conn.h"
 #include "bgp_fsm.h"
 #include "bgp_pkt.h"
 #include "bgp_vrf.h"
+#include "bgp_work.h"
 #include "bgp_worker.h"
 #include "log.h"
 
@@ -37,6 +39,7 @@ bgp_session_t *bgp_session_create(const net_addr_t *addr, uint32_t remote_as, bg
     sess->sec_last_socket_error = 0;
     /* remote_id / local_router_id 初始值为 0（g_malloc0 已置零） */
     sess->negotiated_afs = NULL;
+    sess->pub_queue = bgp_pub_queue_create();
 
     /* FSM 初始状态 */
     sess->fsm_state = BGP_FSM_STATE_IDLE;
@@ -84,6 +87,9 @@ void bgp_session_destroy(bgp_session_t *session)
         g_array_free(session->negotiated_afs, TRUE);
         session->negotiated_afs = NULL;
     }
+
+    bgp_pub_queue_destroy(session->pub_queue);
+    session->pub_queue = NULL;
 
     /* peer_list 只存借用引用，仅释放链表节点 */
     if (session->peer_list)
@@ -146,6 +152,9 @@ void bgp_session_reset_negotiated(bgp_session_t *sess)
     /* 清除 hold 重置挂起标志 */
     sess->hold_reset_pending = FALSE;
 
+    /* 断会话后清空待发布队列；重建后由 Established 快照重新入队。 */
+    bgp_pub_queue_clear(sess->pub_queue);
+
     char addr_str[64];
     net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
     LOG_DEBUG("BGP: neighbor %s negotiated params reset", addr_str);
@@ -186,6 +195,12 @@ void bgp_neighbor_down(bgp_session_t *sess, int epoll_fd)
     net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
     LOG_INFO("BGP: neighbor %s admin down — sending NOTIFICATION and resetting session", addr_str);
 
+    /* BMP Peer Down 通知（在连接关闭前发送，确保 per-peer header 信息完整） */
+    if (sess->fsm_state == BGP_FSM_STATE_ESTABLISHED)
+    {
+        bgp_bmp_notify_peer_down(sess, BGP_BMP_PEER_DOWN_LOCAL_NO_NOTIFY);
+    }
+
     /* 步骤 1：向已完成 TCP 握手的主连接发送 NOTIFICATION Cease/Admin-Reset
      *         TCP 握手中（is_connecting）的连接尚未进入 BGP 协议层，跳过 */
     if (sess->pri_conn && sess->pri_conn->fd >= 0 && !sess->pri_conn->is_connecting)
@@ -215,7 +230,12 @@ void bgp_neighbor_down(bgp_session_t *sess, int epoll_fd)
     /* 步骤 4：重置 OPEN 协商产生的所有参数，确保重连时完整重新协商 */
     bgp_session_reset_negotiated(sess);
 
-    /* 步骤 5：按 VRF 配置的 connect-retry 间隔调度重连定时器
+    /* 步骤 5：会话已被本地 reset 并等待 retry，FSM 必须离开旧状态。
+     * 若保留 Established/OpenSent 等旧状态，后续 ConnectRetryTimer_Expires /
+     * TcpConnectionConfirmed 会走到错误分支，导致本可重建的会话卡死。 */
+    sess->fsm_state = BGP_FSM_STATE_ACTIVE;
+
+    /* 步骤 6：按 VRF 配置的 connect-retry 间隔调度重连定时器
      *         到期后触发 bgp_server_start_active_conn → bgp_pkt_send_open */
     uint16_t retry_sec =
         (sess->vrf && sess->vrf->connect_retry > 0) ? sess->vrf->connect_retry : BGP_TIMER_DEFAULT_CONNECT_RETRY;

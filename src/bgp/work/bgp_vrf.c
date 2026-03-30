@@ -180,6 +180,7 @@ int bgp_vrf_af_disable_neighbor(bgp_vrf_t *vrf, bgp_afi_t afi, bgp_safi_t safi, 
     if (sess)
     {
         sess->peer_list = g_list_remove(sess->peer_list, peer);
+        bgp_pub_queue_drop_instance(sess->pub_queue, afi, safi);
     }
 
     /* 再从 instance.peer_hash 中删除，触发 bgp_peer_destroy */

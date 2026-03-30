@@ -46,10 +46,27 @@
 static char bgp_listen_tag;
 /** epoll data.ptr sentinel：区分 worker->server 命令事件 */
 static char bgp_cmd_tag;
+/** epoll data.ptr sentinel：区分工作事件 */
+static char bgp_work_tag;
 
 bgp_work_local_t *g_bgp_work_local = NULL;
 
 static void bgp_worker_runtime_cleanup(void);
+
+typedef enum bgp_worker_event_type
+{
+    BGP_WORKER_EVENT_CALC = 1,
+    BGP_WORKER_EVENT_ROUTE_FLUSH = 2,
+    BGP_WORKER_EVENT_SESSION_PUB = 3,
+} bgp_worker_event_type_t;
+
+typedef struct bgp_worker_event
+{
+    bgp_worker_event_type_t type;
+    uint32_t vrf_id;
+    bgp_afi_t afi;
+    bgp_safi_t safi;
+} bgp_worker_event_t;
 
 // ============================================================================
 // 命令队列（worker -> server）
@@ -160,6 +177,60 @@ static int bgp_worker_cmd_enqueue(bgp_worker_cmd_t *cmd)
     return 0;
 }
 
+static void bgp_worker_signal_work_event(void)
+{
+    if (!g_bgp_work_local || g_bgp_work_local->work_eventfd < 0)
+    {
+        return;
+    }
+
+    uint64_t one = 1;
+    if (write(g_bgp_work_local->work_eventfd, &one, sizeof(one)) != (ssize_t)sizeof(one))
+    {
+        if (errno != EAGAIN && errno != EWOULDBLOCK)
+        {
+            LOG_PERROR("BGP: work eventfd write failed");
+        }
+    }
+}
+
+static bgp_worker_event_t *bgp_worker_event_create(bgp_worker_event_type_t type, uint32_t vrf_id, bgp_afi_t afi,
+                                                   bgp_safi_t safi)
+{
+    bgp_worker_event_t *evt = g_malloc(sizeof(*evt));
+    if (!evt)
+    {
+        return NULL;
+    }
+
+    evt->type = type;
+    evt->vrf_id = vrf_id;
+    evt->afi = afi;
+    evt->safi = safi;
+    return evt;
+}
+
+static void bgp_worker_event_destroy(bgp_worker_event_t *evt)
+{
+    if (!evt)
+    {
+        return;
+    }
+    g_free(evt);
+}
+
+static int bgp_worker_event_enqueue(bgp_worker_event_t *evt)
+{
+    if (!evt || !g_bgp_work_local || !g_bgp_work_local->work_queue || g_bgp_work_local->work_eventfd < 0)
+    {
+        return -1;
+    }
+
+    g_async_queue_push(g_bgp_work_local->work_queue, evt);
+    bgp_worker_signal_work_event();
+    return 0;
+}
+
 static void bgp_worker_cmd_drain_queue(void)
 {
     if (!g_bgp_work_local->cmd_queue)
@@ -188,6 +259,20 @@ static void bgp_worker_cmd_drain_queue(void)
         {
             bgp_worker_cmd_destroy(cmd);
         }
+    }
+}
+
+static void bgp_worker_work_drain_queue(void)
+{
+    if (!g_bgp_work_local || !g_bgp_work_local->work_queue)
+    {
+        return;
+    }
+
+    bgp_worker_event_t *evt = NULL;
+    while ((evt = (bgp_worker_event_t *)g_async_queue_try_pop(g_bgp_work_local->work_queue)) != NULL)
+    {
+        bgp_worker_event_destroy(evt);
     }
 }
 
@@ -533,6 +618,99 @@ int bgp_worker_dispatch_apply(bgp_apply_cmd_t *apply)
     bgp_worker_cmd_wait(cmd);
     bgp_worker_cmd_destroy(cmd);
     return 0;
+}
+
+int bgp_worker_post_calc_event(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi)
+{
+    bgp_worker_event_t *evt = bgp_worker_event_create(BGP_WORKER_EVENT_CALC, vrf_id, afi, safi);
+    if (!evt)
+    {
+        return -1;
+    }
+    if (bgp_worker_event_enqueue(evt) != 0)
+    {
+        bgp_worker_event_destroy(evt);
+        return -1;
+    }
+    return 0;
+}
+
+int bgp_worker_post_route_flush_event(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi)
+{
+    bgp_worker_event_t *evt = bgp_worker_event_create(BGP_WORKER_EVENT_ROUTE_FLUSH, vrf_id, afi, safi);
+    if (!evt)
+    {
+        return -1;
+    }
+    if (bgp_worker_event_enqueue(evt) != 0)
+    {
+        bgp_worker_event_destroy(evt);
+        return -1;
+    }
+    return 0;
+}
+
+int bgp_worker_post_session_pub_event(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi)
+{
+    bgp_worker_event_t *evt = bgp_worker_event_create(BGP_WORKER_EVENT_SESSION_PUB, vrf_id, afi, safi);
+    if (!evt)
+    {
+        return -1;
+    }
+    if (bgp_worker_event_enqueue(evt) != 0)
+    {
+        bgp_worker_event_destroy(evt);
+        return -1;
+    }
+    return 0;
+}
+
+void bgp_worker_drain_work_events(void)
+{
+    if (!g_bgp_work_local || g_bgp_work_local->work_eventfd < 0 || !g_bgp_work_local->work_queue)
+    {
+        return;
+    }
+
+    uint64_t v;
+    while (read(g_bgp_work_local->work_eventfd, &v, sizeof(v)) > 0)
+    {
+        /* drain eventfd counter */
+    }
+    if (errno != EAGAIN && errno != EWOULDBLOCK)
+    {
+        LOG_PERROR("BGP: work eventfd read failed");
+    }
+
+    int processed = 0;
+    bgp_worker_event_t *evt = NULL;
+    while (processed < BGP_WORK_BATCH_SIZE &&
+           (evt = (bgp_worker_event_t *)g_async_queue_try_pop(g_bgp_work_local->work_queue)) != NULL)
+    {
+        switch (evt->type)
+        {
+            case BGP_WORKER_EVENT_CALC:
+                bgp_work_handle_calc_event(evt->vrf_id, evt->afi, evt->safi);
+                break;
+            case BGP_WORKER_EVENT_ROUTE_FLUSH:
+                bgp_work_handle_route_flush_event(evt->vrf_id, evt->afi, evt->safi);
+                break;
+            case BGP_WORKER_EVENT_SESSION_PUB:
+                bgp_work_handle_session_pub_event(evt->vrf_id, evt->afi, evt->safi);
+                break;
+            default:
+                LOG_WARN("BGP: unknown work event type=%d", (int)evt->type);
+                break;
+        }
+
+        bgp_worker_event_destroy(evt);
+        processed++;
+    }
+
+    if (g_async_queue_length(g_bgp_work_local->work_queue) > 0)
+    {
+        bgp_worker_signal_work_event();
+    }
 }
 
 int bgp_worker_post_show_cli(dev_ipc_message_t *msg)
@@ -1004,6 +1182,8 @@ static void bgp_handle_data(bgp_conn_t *conn)
 {
     bgp_session_t *sess = conn->session;
     bgp_conn_state_t old_conn_state = conn->state;
+    bgp_conn_state_t observed_conn_state;
+    bgp_conn_t *fsm_conn = conn;
     int epoll_fd = g_bgp_work_local->epoll_fd;
 
     int ret = bgp_pkt_on_data(conn);
@@ -1041,18 +1221,32 @@ static void bgp_handle_data(bgp_conn_t *conn)
         return;
     }
 
-    /* 根据 conn->state 变化触发对应 FSM 事件 */
-    if (old_conn_state == BGP_CONN_STATE_OPEN_SENT && conn->state == BGP_CONN_STATE_OPEN_CONFIRM)
+    /*
+     * 碰撞收口后，以当前 session 主连接为准。
+     * bgp_pkt_on_data() 可能在一次 recv 中连续处理 OPEN/KEEPALIVE，
+     * 因此这里要按状态顺序补齐 FSM 事件，而不是只看首尾一次跳变。
+     */
+    if (sess->pri_conn)
     {
-        /* bgp_pkt_on_data 已发 KEEPALIVE 并将 conn->state 置 OPEN_CONFIRM */
-        bgp_fsm_event(sess, conn, BGP_EVT_BGP_OPEN, epoll_fd);
+        fsm_conn = sess->pri_conn;
     }
-    else if (old_conn_state == BGP_CONN_STATE_OPEN_CONFIRM && conn->state == BGP_CONN_STATE_ESTABLISHED)
+    observed_conn_state = fsm_conn->state;
+
+    if (old_conn_state == BGP_CONN_STATE_OPEN_SENT && observed_conn_state >= BGP_CONN_STATE_OPEN_CONFIRM)
     {
-        /* bgp_pkt_on_data 已将 conn->state 置 ESTABLISHED */
-        bgp_fsm_event(sess, conn, BGP_EVT_KEEPALIVE_MSG, epoll_fd);
+        /* bgp_pkt_on_data 已发 KEEPALIVE 并将连接状态推进到 OPEN_CONFIRM 或更后 */
+        bgp_fsm_event(sess, fsm_conn, BGP_EVT_BGP_OPEN, epoll_fd);
+        old_conn_state = BGP_CONN_STATE_OPEN_CONFIRM;
     }
-    else if (conn->state == BGP_CONN_STATE_ESTABLISHED && sess->hold_reset_pending)
+
+    if (old_conn_state == BGP_CONN_STATE_OPEN_CONFIRM && observed_conn_state >= BGP_CONN_STATE_ESTABLISHED)
+    {
+        /* bgp_pkt_on_data 已收到对端 KEEPALIVE 并将连接状态推进到 ESTABLISHED */
+        bgp_fsm_event(sess, fsm_conn, BGP_EVT_KEEPALIVE_MSG, epoll_fd);
+        old_conn_state = BGP_CONN_STATE_ESTABLISHED;
+    }
+
+    if (observed_conn_state == BGP_CONN_STATE_ESTABLISHED && sess->hold_reset_pending)
     {
         /* KEEPALIVE/UPDATE in Established：直接重置 hold 定时器（FSM 表中为 NULL 条目） */
         sess->hold_reset_pending = FALSE;
@@ -1143,6 +1337,11 @@ static void *bgp_worker_thread(void *arg)
                 }
                 continue;
             }
+            if (events[i].data.ptr == (void *)&bgp_work_tag)
+            {
+                bgp_worker_drain_work_events();
+                continue;
+            }
 
             if (raw & 1UL)
             {
@@ -1158,12 +1357,6 @@ static void *bgp_worker_thread(void *arg)
                     case BGP_TIMER_TYPE_HOLD:
                         bgp_handle_hold_timer(sentinel->session);
                         break;
-                    case BGP_TIMER_TYPE_WORK:
-                    {
-                        bgp_work_sentinel_t *ws = (bgp_work_sentinel_t *)sentinel;
-                        bgp_work_process(ws->inst);
-                        break;
-                    }
                     case BGP_TIMER_TYPE_BMP_RECONNECT:
                     {
                         bgp_bmp_instance_t *bmp =
@@ -1279,7 +1472,6 @@ static void bgp_worker_runtime_cleanup(void)
     {
         close(g_bgp_work_local->epoll_fd);
         g_bgp_work_local->epoll_fd = DEV_INVALID_FD;
-        bgp_work_set_epoll_fd(DEV_INVALID_FD);
     }
 
     if (g_bgp_work_local->protocol)
@@ -1302,6 +1494,15 @@ static int bgp_worker_channel_init(void)
             return ERRCODE_FAIL;
         }
     }
+    if (!g_bgp_work_local->work_queue)
+    {
+        g_bgp_work_local->work_queue = g_async_queue_new();
+        if (!g_bgp_work_local->work_queue)
+        {
+            LOG_ERROR("BGP: Failed to create work event queue");
+            return ERRCODE_FAIL;
+        }
+    }
 
     if (g_bgp_work_local->cmd_eventfd < 0)
     {
@@ -1309,6 +1510,15 @@ static int bgp_worker_channel_init(void)
         if (g_bgp_work_local->cmd_eventfd < 0)
         {
             LOG_PERROR("BGP: Failed to create cmd eventfd");
+            return ERRCODE_FAIL;
+        }
+    }
+    if (g_bgp_work_local->work_eventfd < 0)
+    {
+        g_bgp_work_local->work_eventfd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+        if (g_bgp_work_local->work_eventfd < 0)
+        {
+            LOG_PERROR("BGP: Failed to create work eventfd");
             return ERRCODE_FAIL;
         }
     }
@@ -1323,6 +1533,15 @@ static int bgp_worker_channel_init(void)
         return ERRCODE_FAIL;
     }
 
+    memset(&ev, 0, sizeof(ev));
+    ev.events = EPOLLIN;
+    ev.data.ptr = &bgp_work_tag;
+    if (epoll_ctl(g_bgp_work_local->epoll_fd, EPOLL_CTL_ADD, g_bgp_work_local->work_eventfd, &ev) < 0)
+    {
+        LOG_PERROR("BGP: epoll_ctl ADD work eventfd failed");
+        return ERRCODE_FAIL;
+    }
+
     return ERRCODE_SUCCESS;
 }
 
@@ -1332,19 +1551,34 @@ static void bgp_worker_channel_cleanup(void)
     {
         epoll_ctl(g_bgp_work_local->epoll_fd, EPOLL_CTL_DEL, g_bgp_work_local->cmd_eventfd, NULL);
     }
+    if (g_bgp_work_local->epoll_fd >= 0 && g_bgp_work_local->work_eventfd >= 0)
+    {
+        epoll_ctl(g_bgp_work_local->epoll_fd, EPOLL_CTL_DEL, g_bgp_work_local->work_eventfd, NULL);
+    }
 
     if (g_bgp_work_local->cmd_eventfd >= 0)
     {
         close(g_bgp_work_local->cmd_eventfd);
         g_bgp_work_local->cmd_eventfd = -1;
     }
+    if (g_bgp_work_local->work_eventfd >= 0)
+    {
+        close(g_bgp_work_local->work_eventfd);
+        g_bgp_work_local->work_eventfd = -1;
+    }
 
     bgp_worker_cmd_drain_queue();
+    bgp_worker_work_drain_queue();
 
     if (g_bgp_work_local->cmd_queue)
     {
         g_async_queue_unref(g_bgp_work_local->cmd_queue);
         g_bgp_work_local->cmd_queue = NULL;
+    }
+    if (g_bgp_work_local->work_queue)
+    {
+        g_async_queue_unref(g_bgp_work_local->work_queue);
+        g_bgp_work_local->work_queue = NULL;
     }
 }
 
@@ -1361,6 +1595,7 @@ int bgp_worker_prepare(void)
         g_bgp_work_local->epoll_fd = DEV_INVALID_FD;
         g_bgp_work_local->listen_fd = -1;
         g_bgp_work_local->cmd_eventfd = -1;
+        g_bgp_work_local->work_eventfd = -1;
     }
 
     int epoll_fd = epoll_create1(EPOLL_CLOEXEC);
@@ -1371,13 +1606,11 @@ int bgp_worker_prepare(void)
     }
 
     g_bgp_work_local->epoll_fd = epoll_fd;
-    bgp_work_set_epoll_fd(epoll_fd);
 
     if (bgp_worker_channel_init() != ERRCODE_SUCCESS)
     {
         close(epoll_fd);
         g_bgp_work_local->epoll_fd = DEV_INVALID_FD;
-        bgp_work_set_epoll_fd(DEV_INVALID_FD);
         bgp_worker_channel_cleanup();
         return ERRCODE_FAIL;
     }
@@ -1399,11 +1632,6 @@ int bgp_worker_launch(void)
 
     return ERRCODE_SUCCESS;
 }
-
-/* bgp_worker_start_restored_sessions 已移除：
- * bgp_cfg_apply_protocol（restore 时在 server 线程执行）会调用 bgp_listen_start，
- * bgp_cfg_apply_af_neighbor（restore 时在 server 线程执行）会调用 bgp_server_start_active_conn，
- * 因此恢复后的连接启动由 server 线程在 bgp_db_restore 分发的 apply 命令中完成，无需额外函数。 */
 
 void bgp_worker_shutdown(void)
 {

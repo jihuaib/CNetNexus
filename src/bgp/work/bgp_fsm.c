@@ -16,6 +16,7 @@
 #include <unistd.h>
 
 #include "bgp.h"
+#include "bgp_bmp.h"
 #include "bgp_conn.h"
 #include "bgp_instance.h"
 #include "bgp_main.h"
@@ -105,6 +106,46 @@ const char *bgp_fsm_event_str(bgp_fsm_event_t evt)
             return "UpdateMsg(27)";
         case BGP_EVT_UPDATE_MSG_ERR:
             return "UpdateMsgErr(28)";
+        default:
+            return "Unknown";
+    }
+}
+
+static const char *fsm_conn_slot_name(const bgp_session_t *sess, const bgp_conn_t *conn)
+{
+    if (!sess || !conn)
+    {
+        return "none";
+    }
+    if (sess->pri_conn == conn)
+    {
+        return "pri";
+    }
+    if (sess->sec_conn == conn)
+    {
+        return "sec";
+    }
+    return "detached";
+}
+
+static const char *fsm_conn_state_name(const bgp_conn_t *conn)
+{
+    if (!conn || conn->fd < 0)
+    {
+        return "Idle";
+    }
+    if (conn->is_connecting)
+    {
+        return "Connect";
+    }
+    switch (conn->state)
+    {
+        case BGP_CONN_STATE_OPEN_SENT:
+            return "OpenSent";
+        case BGP_CONN_STATE_OPEN_CONFIRM:
+            return "OpenConfirm";
+        case BGP_CONN_STATE_ESTABLISHED:
+            return "Established";
         default:
             return "Unknown";
     }
@@ -279,6 +320,12 @@ static void fsm_sync_state_from_conn(bgp_session_t *sess)
 static void fsm_close_primary(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd, gboolean purge_routes,
                               gboolean arm_retry)
 {
+    /* BMP Peer Down 通知（ESTABLISHED → 连接关闭，且无 sec_conn 可提升时） */
+    if (sess->fsm_state == BGP_FSM_STATE_ESTABLISHED && !sess->sec_conn)
+    {
+        bgp_bmp_notify_peer_down(sess, BGP_BMP_PEER_DOWN_REMOTE_NO_NOTIFY);
+    }
+
     bgp_conn_t **slot = (sess->pri_conn == conn) ? &sess->pri_conn : &sess->sec_conn;
     if (conn)
     {
@@ -328,6 +375,12 @@ static void fsm_close_primary(bgp_session_t *sess, bgp_conn_t *conn, int epoll_f
 /** 关闭全部连接和定时器；arm_retry 时进入 Active，否则 Idle */
 static void fsm_close_all(bgp_session_t *sess, int epoll_fd, gboolean purge_routes, gboolean arm_retry)
 {
+    /* BMP Peer Down 通知（从 ESTABLISHED 离开时） */
+    if (sess->fsm_state == BGP_FSM_STATE_ESTABLISHED)
+    {
+        bgp_bmp_notify_peer_down(sess, BGP_BMP_PEER_DOWN_REMOTE_NO_NOTIFY);
+    }
+
     if (sess->pri_conn)
     {
         sess->pri_last_socket_error = sess->pri_conn->last_socket_error;
@@ -357,51 +410,21 @@ static void fsm_close_all(bgp_session_t *sess, int epoll_fd, gboolean purge_rout
     }
 }
 
-/* bgp_rib_foreach_best 回调上下文（ESTABLISHED 后补发 best route 使用） */
-typedef struct
-{
-    bgp_conn_t *conn;
-    uint32_t sent;
-} fsm_reannounce_ctx_t;
-
-static void fsm_reannounce_cb(const bgp_rthead_t *head, const bgp_route_node_t *route, gpointer user_data)
-{
-    fsm_reannounce_ctx_t *ctx = (fsm_reannounce_ctx_t *)user_data;
-    bgp_pkt_send_update(ctx->conn, &head->nlri, &route->attr, &route->nexthop);
-    ctx->sent++;
-}
-
-/** 进入 ESTABLISHED 后，向 conn 补发当前所有 AF 的 best-route 快照 */
+/** 进入 ESTABLISHED 后，将当前所有 AF 的 best-route 快照挂入 session pub_queue */
 static void fsm_reannounce_best(bgp_session_t *sess, bgp_conn_t *conn)
 {
     if (!sess || !conn || conn->fd < 0 || !sess->vrf)
     {
         return;
     }
-    fsm_reannounce_ctx_t ctx = {.conn = conn, .sent = 0};
-    GHashTableIter iter;
-    gpointer key, val;
-    g_hash_table_iter_init(&iter, sess->vrf->inst_hash);
-    while (g_hash_table_iter_next(&iter, &key, &val))
-    {
-        (void)key;
-        bgp_instance_t *inst = (bgp_instance_t *)val;
-        if (!inst || !inst->rib || !inst->peer_hash)
-        {
-            continue;
-        }
-        if (!g_hash_table_lookup(inst->peer_hash, &sess->neighbor_addr))
-        {
-            continue;
-        }
-        bgp_rib_foreach_best(inst->rib, fsm_reannounce_cb, &ctx);
-    }
-    if (ctx.sent > 0)
-    {
-        char nbr[64];
-        net_addr_to_str(&sess->neighbor_addr, nbr, sizeof(nbr));
-        LOG_INFO("BGP FSM: neighbor=%s re-announced %u best route(s) after Established", nbr, ctx.sent);
-    }
+    char addr_str[64];
+    net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
+    LOG_INFO("BGP FSM: neighbor=%s Established via %s_conn fd=%d, scheduling best-route replay "
+             "(pri fd=%d state=%s, sec fd=%d state=%s, af_peers=%u)",
+             addr_str, fsm_conn_slot_name(sess, conn), conn->fd, sess->pri_conn ? sess->pri_conn->fd : -1,
+             fsm_conn_state_name(sess->pri_conn), sess->sec_conn ? sess->sec_conn->fd : -1,
+             fsm_conn_state_name(sess->sec_conn), (unsigned)g_list_length(sess->peer_list));
+    bgp_work_enqueue_best_for_session(sess);
 }
 
 /** 进入 ESTABLISHED 状态的统一动作：记录时间戳、启动 KA/Hold 定时器、补发路由 */
@@ -419,6 +442,9 @@ static void fsm_on_established(bgp_session_t *sess, bgp_conn_t *conn, int epoll_
         bgp_session_arm_hold(sess, epoll_fd, sess->negotiated_hold);
     }
     fsm_reannounce_best(sess, conn);
+
+    /* BMP Peer Up 通知 */
+    bgp_bmp_notify_peer_up(sess);
 }
 
 // ============================================================================

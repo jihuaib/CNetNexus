@@ -15,6 +15,7 @@
 #include <unistd.h>
 
 #include "bgp.h"
+#include "bgp_bmp.h"
 #include "bgp_instance.h"
 #include "bgp_pkt_build.h"
 #include "bgp_rib.h"
@@ -857,6 +858,9 @@ int bgp_pkt_on_data(bgp_conn_t *conn)
                 {
                     LOG_WARN("BGP: %s UPDATE parse failed", _ip);
                 }
+
+                /* BMP Route Monitoring：将原始 BGP UPDATE PDU 镜像到所有 BMP collector */
+                bgp_bmp_notify_route_monitoring(sess, conn->recv_buf, msg_len);
                 /* UPDATE 也重置 Hold 定时器（RFC 4271 §8.2.2） */
                 sess->hold_reset_pending = TRUE;
                 break;

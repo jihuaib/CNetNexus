@@ -25,6 +25,7 @@ set(BGP_SOURCES
     work/bgp_work.c
     work/bgp_bmp.c
     work/bgp_bmp_cfg_apply.c
+    work/bgp_bmp_pkt.c
 )
 
 add_subdirectory(lib)

@@ -8,9 +8,8 @@
 
 #include <errno.h>
 #include <limits.h>
+#include <pthread.h>
 #include <string.h>
-#include <sys/epoll.h>
-#include <sys/timerfd.h>
 #include <unistd.h>
 
 #include "bgp_calc.h"
@@ -19,52 +18,83 @@
 #include "bgp_pkt.h"
 #include "bgp_rib.h"
 #include "bgp_vrf.h"
+#include "bgp_worker.h"
 #include "errcode.h"
 #include "log.h"
 #include "net_addr.h"
 #include "route.h"
 
-/* ---- 全局 epoll fd（由 bgp_main 在初始化后通过 bgp_work_set_epoll_fd 设置） ---- */
-static int g_work_epoll_fd = -1;
+// ============================================================================
+// 发布队列内部辅助
+// ============================================================================
 
-void bgp_work_set_epoll_fd(int epoll_fd)
+typedef struct bgp_pub_item
 {
-    g_work_epoll_fd = epoll_fd;
+    bgp_nlri_entry_t nlri;
+} bgp_pub_item_t;
+
+static int bgp_work_process_calc_event(bgp_instance_t *inst, gboolean allow_reschedule);
+static int bgp_work_process_route_flush_event(bgp_instance_t *inst, gboolean allow_reschedule);
+static int bgp_work_process_session_pub_event(bgp_instance_t *inst, gboolean allow_reschedule);
+static void bgp_work_schedule_calc(bgp_instance_t *inst);
+static void bgp_work_schedule_route_flush(bgp_instance_t *inst);
+static void bgp_work_schedule_session_pub(bgp_instance_t *inst);
+
+static const char *bgp_work_conn_state_name(const bgp_conn_t *conn)
+{
+    if (!conn || conn->fd < 0)
+    {
+        return "Idle";
+    }
+    if (conn->is_connecting)
+    {
+        return "Connect";
+    }
+    switch (conn->state)
+    {
+        case BGP_CONN_STATE_OPEN_SENT:
+            return "OpenSent";
+        case BGP_CONN_STATE_OPEN_CONFIRM:
+            return "OpenConfirm";
+        case BGP_CONN_STATE_ESTABLISHED:
+            return "Established";
+        default:
+            return "Unknown";
+    }
 }
 
-// ============================================================================
-// 发布队列内部回调
-// ============================================================================
-
-/** 遍历 peer_hash 时的 ANNOUNCE 发送上下文 */
-typedef struct
+static gboolean bgp_session_is_publish_ready(const bgp_session_t *sess)
 {
-    bgp_instance_t *inst;
-    const bgp_nlri_entry_t *nlri; /**< 来自 rthead 的 NLRI（借用） */
-    const bgp_route_node_t *best; /**< 当前最优路径（route_list 首元素，借用） */
-} announce_send_ctx_t;
+    return sess && sess->pri_conn && sess->pri_conn->fd >= 0 && sess->pri_conn->state == BGP_CONN_STATE_ESTABLISHED;
+}
 
-/** g_hash_table_foreach 回调：向各 ESTABLISHED 对端发送 UPDATE（ANNOUNCE） */
-static void foreach_announce_send(gpointer key, gpointer value, gpointer user_data)
+static gboolean bgp_best_can_publish_to_session(const bgp_session_t *sess, const bgp_route_node_t *best)
 {
-    (void)value;
-    const net_addr_t *addr = key;
-    announce_send_ctx_t *ctx = user_data;
-
-    /* Split-horizon: 不向”该最优路径的来源邻居”回灌同一路由，避免双节点反射风暴。
-     * import 路由（BGP_ROUTE_FLAG_IMPORT）无来源邻居，不触发 split-horizon。 */
-    if (ctx->best && !BIT_TEST(ctx->best->flags, BGP_ROUTE_FLAG_IMPORT) && net_addr_equal(&ctx->best->source, addr))
+    if (!sess || !best)
     {
-        return;
+        return FALSE;
     }
 
-    bgp_session_t *sess = bgp_vrf_find_session(ctx->inst->vrf, addr);
-    if (!sess || !sess->pri_conn || sess->pri_conn->fd < 0 || sess->pri_conn->state != BGP_CONN_STATE_ESTABLISHED)
+    /* Split-horizon: 不向“该最优路径的来源邻居”回灌同一路由。
+     * import 路由无来源邻居，不触发 split-horizon。 */
+    if (!BIT_TEST(best->flags, BGP_ROUTE_FLAG_IMPORT) && net_addr_equal(&best->source, &sess->neighbor_addr))
     {
-        return;
+        return FALSE;
     }
 
-    bgp_pkt_send_update(sess->pri_conn, ctx->nlri, &ctx->best->attr, &ctx->best->nexthop);
+    return TRUE;
+}
+
+static gboolean bgp_work_on_worker_thread(void)
+{
+    return g_bgp_work_local && g_bgp_work_local->worker_thread != 0 &&
+           pthread_equal(pthread_self(), g_bgp_work_local->worker_thread);
+}
+
+static void bgp_pub_item_free(gpointer data, gpointer user_data)
+{
+    (void)user_data;
+    g_free(data);
 }
 
 /** 遍历 peer_hash 时的 WITHDRAW 发送上下文 */
@@ -88,6 +118,30 @@ static void foreach_withdraw_send(gpointer key, gpointer value, gpointer user_da
     }
 
     bgp_pkt_send_withdraw(sess->pri_conn, ctx->nlri);
+}
+
+typedef struct
+{
+    bgp_instance_t *inst;
+    const bgp_nlri_entry_t *nlri;
+    uint32_t queued;
+} enqueue_established_ctx_t;
+
+static void foreach_enqueue_established(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)value;
+    const net_addr_t *addr = key;
+    enqueue_established_ctx_t *ctx = (enqueue_established_ctx_t *)user_data;
+    bgp_session_t *sess = bgp_vrf_find_session(ctx->inst->vrf, addr);
+    if (!bgp_session_is_publish_ready(sess) || !sess->pub_queue)
+    {
+        return;
+    }
+
+    if (bgp_pub_queue_push(sess->pub_queue, ctx->nlri) == 0)
+    {
+        ctx->queued++;
+    }
 }
 
 static int route_node_to_route_entry(uint32_t vrf_id, const bgp_nlri_entry_t *nlri, const bgp_route_node_t *route,
@@ -187,6 +241,7 @@ int bgp_calc_queue_push(bgp_calc_queue_t *q, bgp_instance_t *inst, const bgp_nlr
     bgp_rib_head_ref(head);
     g_queue_push_tail(q->q, head);
     q->count++;
+    bgp_work_schedule_calc(inst);
     return 0;
 }
 
@@ -224,65 +279,161 @@ bgp_pub_queue_t *bgp_pub_queue_create(void)
     return q;
 }
 
-void bgp_pub_queue_destroy(bgp_pub_queue_t *q, bgp_instance_t *inst)
+void bgp_pub_queue_destroy(bgp_pub_queue_t *q)
 {
     if (!q)
     {
         return;
     }
-    bgp_rthead_t *head = NULL;
-    while ((head = (bgp_rthead_t *)g_queue_pop_head(q->q)) != NULL)
+    bgp_pub_queue_clear(q);
+    if (q->q)
     {
-        if (inst && inst->rib)
-        {
-            bgp_rib_head_unref(head);
-        }
+        g_queue_free(q->q);
+        q->q = NULL;
     }
-    g_queue_free(q->q);
     g_free(q);
 }
 
-int bgp_pub_queue_push(bgp_pub_queue_t *q, bgp_rthead_t *head)
+void bgp_pub_queue_clear(bgp_pub_queue_t *q)
 {
-    if (!q || !head)
+    if (!q || !q->q)
+    {
+        return;
+    }
+
+    g_queue_foreach(q->q, bgp_pub_item_free, NULL);
+    g_queue_clear(q->q);
+    q->count = 0;
+}
+
+void bgp_pub_queue_drop_instance(bgp_pub_queue_t *q, bgp_afi_t afi, bgp_safi_t safi)
+{
+    if (!q || !q->q)
+    {
+        return;
+    }
+
+    for (GList *l = q->q->head; l;)
+    {
+        GList *next = l->next;
+        bgp_pub_item_t *item = (bgp_pub_item_t *)l->data;
+        if (item && item->nlri.afi == afi && item->nlri.safi == safi)
+        {
+            g_queue_delete_link(q->q, l);
+            bgp_pub_item_free(item, NULL);
+            if (q->count > 0)
+            {
+                q->count--;
+            }
+        }
+        l = next;
+    }
+}
+
+uint32_t bgp_pub_queue_count_for_instance(const bgp_pub_queue_t *q, const bgp_instance_t *inst)
+{
+    if (!q || !q->q || !inst)
+    {
+        return 0u;
+    }
+
+    uint32_t count = 0u;
+    for (GList *l = q->q->head; l; l = l->next)
+    {
+        const bgp_pub_item_t *item = (const bgp_pub_item_t *)l->data;
+        if (item && item->nlri.afi == inst->afi && item->nlri.safi == inst->safi)
+        {
+            count++;
+        }
+    }
+    return count;
+}
+
+int bgp_pub_queue_push(bgp_pub_queue_t *q, const bgp_nlri_entry_t *nlri)
+{
+    if (!q || !q->q || !nlri)
     {
         return -1;
     }
 
-    bgp_rib_head_ref(head);
-    g_queue_push_tail(q->q, head);
+    bgp_pub_item_t *item = g_malloc(sizeof(*item));
+    if (!item)
+    {
+        return -1;
+    }
+
+    memcpy(&item->nlri, nlri, sizeof(*nlri));
+    g_queue_push_tail(q->q, item);
     q->count++;
     return 0;
 }
 
-int bgp_pub_queue_process(bgp_pub_queue_t *q, bgp_instance_t *inst, int batch_size)
+int bgp_pub_queue_process(bgp_pub_queue_t *q, bgp_session_t *sess, bgp_instance_t *inst, int batch_size)
 {
-    if (!q || !inst || batch_size <= 0 || !inst->peer_hash)
+    if (!q || !q->q || !sess || !inst || batch_size <= 0)
     {
         return 0;
     }
-    int processed = 0;
-    bgp_rthead_t *head = NULL;
-    while (processed < batch_size && (head = (bgp_rthead_t *)g_queue_pop_head(q->q)) != NULL)
+
+    if (!bgp_session_is_publish_ready(sess))
     {
-        q->count--;
-
-        const bgp_route_node_t *best = bgp_rib_find_best(inst->rib, &head->nlri);
-        if (head && best)
+        uint32_t pending = bgp_pub_queue_count_for_instance(q, inst);
+        if (pending > 0)
         {
-            /* 找到最优路径，向所有 ESTABLISHED 邻居发送 UPDATE */
-            announce_send_ctx_t ctx = {.inst = inst, .nlri = &head->nlri, .best = best};
-            g_hash_table_foreach(inst->peer_hash, foreach_announce_send, &ctx);
+            char addr_str[64];
+            net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
+            LOG_WARN(
+                "BGP: neighbor=%s afi=%u safi=%u pub_queue stalled: pending=%u but primary is not publish-ready "
+                "(pri fd=%d state=%s active=%d connecting=%d, sec fd=%d state=%s active=%d connecting=%d)",
+                addr_str, (unsigned)inst->afi, (unsigned)inst->safi, pending, sess->pri_conn ? sess->pri_conn->fd : -1,
+                bgp_work_conn_state_name(sess->pri_conn), (sess->pri_conn && sess->pri_conn->is_active) ? 1 : 0,
+                (sess->pri_conn && sess->pri_conn->is_connecting) ? 1 : 0, sess->sec_conn ? sess->sec_conn->fd : -1,
+                bgp_work_conn_state_name(sess->sec_conn), (sess->sec_conn && sess->sec_conn->is_active) ? 1 : 0,
+                (sess->sec_conn && sess->sec_conn->is_connecting) ? 1 : 0);
         }
-        /* 未找到则跳过（路由已被撤销，WITHDRAW 由 bgp_calc_run_one 同步发出） */
-
-        bgp_rib_head_unref(head);
-        processed++;
+        return 0;
     }
+
+    if (!g_hash_table_lookup(inst->peer_hash, &sess->neighbor_addr))
+    {
+        bgp_pub_queue_drop_instance(q, inst->afi, inst->safi);
+        return 0;
+    }
+
+    int processed = 0;
+    for (GList *l = q->q->head; l && processed < batch_size;)
+    {
+        GList *next = l->next;
+        bgp_pub_item_t *item = (bgp_pub_item_t *)l->data;
+        if (!item || item->nlri.afi != inst->afi || item->nlri.safi != inst->safi)
+        {
+            l = next;
+            continue;
+        }
+
+        g_queue_delete_link(q->q, l);
+        if (q->count > 0)
+        {
+            q->count--;
+        }
+
+        const bgp_route_node_t *best = bgp_rib_find_best(inst->rib, &item->nlri);
+        if (best && bgp_best_can_publish_to_session(sess, best))
+        {
+            bgp_pkt_send_update(sess->pri_conn, &item->nlri, &best->attr, &best->nexthop);
+        }
+
+        bgp_pub_item_free(item, NULL);
+        processed++;
+        l = next;
+    }
+
     if (processed > 0)
     {
-        LOG_DEBUG("BGP: pub_queue afi=%u safi=%u 批量处理 %d 条，剩余 %u 条", (unsigned)inst->afi, (unsigned)inst->safi,
-                  processed, q->count);
+        char addr_str[64];
+        net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
+        LOG_DEBUG("BGP: pub_queue neighbor=%s afi=%u safi=%u 批量处理 %d 条，剩余 %u 条", addr_str, (unsigned)inst->afi,
+                  (unsigned)inst->safi, processed, q->count);
     }
     return processed;
 }
@@ -339,6 +490,10 @@ int bgp_route_flush_queue_push(bgp_route_flush_queue_t *q, bgp_rthead_t *head)
     bgp_rib_head_ref(head);
     g_queue_push_tail(q->q, head);
     q->count++;
+    if (head->inst)
+    {
+        bgp_work_schedule_route_flush(head->inst);
+    }
     return 0;
 }
 
@@ -451,112 +606,283 @@ void bgp_work_send_withdraw_to_all(bgp_instance_t *inst, const bgp_nlri_entry_t 
     g_hash_table_foreach(inst->peer_hash, foreach_withdraw_send, &ctx);
 }
 
-// ============================================================================
-// 工作定时器
-// ============================================================================
-
-int bgp_work_timer_start(bgp_instance_t *inst, uint32_t interval_ms)
+typedef struct
 {
-    if (!inst)
-    {
-        return -1;
-    }
-    if (g_work_epoll_fd < 0)
-    {
-        LOG_WARN("BGP: work timer start skipped, epoll fd not ready (afi=%u safi=%u)", (unsigned)inst->afi,
-                 (unsigned)inst->safi);
-        return -1;
-    }
+    bgp_session_t *sess;
+    uint32_t queued;
+} enqueue_best_ctx_t;
 
-    int fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
-    if (fd < 0)
-    {
-        LOG_PERROR("BGP: timerfd_create 失败");
-        return -1;
-    }
-
-    struct itimerspec its;
-    its.it_value.tv_sec = interval_ms / 1000;
-    its.it_value.tv_nsec = (long)(interval_ms % 1000) * 1000000L;
-    its.it_interval = its.it_value; /* 周期触发 */
-
-    if (timerfd_settime(fd, 0, &its, NULL) < 0)
-    {
-        LOG_PERROR("BGP: timerfd_settime 失败");
-        close(fd);
-        return -1;
-    }
-
-    /* 初始化哨兵（_dummy=NULL，type=WORK，inst=inst） */
-    inst->work_sentinel._dummy = NULL;
-    inst->work_sentinel.type = BGP_TIMER_TYPE_WORK;
-    inst->work_sentinel.inst = inst;
-
-    /* 注册到 epoll：data.ptr = (&sentinel | 1)，bit0=1 标记定时器事件 */
-    struct epoll_event ev;
-    ev.events = EPOLLIN;
-    ev.data.ptr = (void *)((uintptr_t)&inst->work_sentinel | 1UL);
-    if (epoll_ctl(g_work_epoll_fd, EPOLL_CTL_ADD, fd, &ev) < 0)
-    {
-        LOG_PERROR("BGP: epoll_ctl ADD work timer 失败");
-        close(fd);
-        return -1;
-    }
-
-    inst->work_timerfd = fd;
-    LOG_DEBUG("BGP: work timer 启动 afi=%u safi=%u interval=%ums fd=%d", (unsigned)inst->afi, (unsigned)inst->safi,
-              interval_ms, fd);
-    return 0;
-}
-
-void bgp_work_timer_stop(bgp_instance_t *inst)
+static void enqueue_best_for_session_cb(const bgp_rthead_t *head, const bgp_route_node_t *route, gpointer user_data)
 {
-    if (!inst || inst->work_timerfd < 0)
-    {
-        return;
-    }
-    if (g_work_epoll_fd >= 0)
-    {
-        epoll_ctl(g_work_epoll_fd, EPOLL_CTL_DEL, inst->work_timerfd, NULL);
-    }
-    close(inst->work_timerfd);
-    inst->work_timerfd = -1;
-    LOG_DEBUG("BGP: work timer 停止 afi=%u safi=%u", (unsigned)inst->afi, (unsigned)inst->safi);
-}
-
-void bgp_work_process(bgp_instance_t *inst)
-{
-    if (!inst)
+    (void)route;
+    enqueue_best_ctx_t *ctx = (enqueue_best_ctx_t *)user_data;
+    if (!ctx || !ctx->sess || !ctx->sess->pub_queue)
     {
         return;
     }
 
-    /* 读取 timerfd 计数（必须，否则 epoll 持续触发） */
-    if (inst->work_timerfd >= 0)
+    if (bgp_pub_queue_push(ctx->sess->pub_queue, &head->nlri) == 0)
     {
-        uint64_t expirations;
-        ssize_t n = read(inst->work_timerfd, &expirations, sizeof(expirations));
-        if (n < 0 && errno != EINTR && errno != EAGAIN)
+        ctx->queued++;
+    }
+}
+
+void bgp_work_enqueue_announce_to_established(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
+{
+    if (!inst || !nlri || !inst->peer_hash)
+    {
+        return;
+    }
+
+    enqueue_established_ctx_t ctx = {.inst = inst, .nlri = nlri, .queued = 0};
+    g_hash_table_foreach(inst->peer_hash, foreach_enqueue_established, &ctx);
+
+    if (ctx.queued > 0)
+    {
+        bgp_work_schedule_session_pub(inst);
+        char nlri_str[BGP_NLRI_KEY_MAX];
+        bgp_nlri_to_str(nlri, nlri_str, sizeof(nlri_str));
+        LOG_DEBUG("BGP: enqueue announce nlri=%s afi=%u safi=%u queued=%u", nlri_str, (unsigned)inst->afi,
+                  (unsigned)inst->safi, ctx.queued);
+    }
+}
+
+void bgp_work_enqueue_best_for_session(bgp_session_t *sess)
+{
+    if (!sess || !sess->pub_queue)
+    {
+        return;
+    }
+
+    enqueue_best_ctx_t ctx = {.sess = sess, .queued = 0};
+    for (GList *l = sess->peer_list; l; l = l->next)
+    {
+        bgp_peer_t *peer = (bgp_peer_t *)l->data;
+        if (!peer || !peer->inst || !peer->inst->rib)
         {
-            LOG_PERROR("BGP: 读取 work timerfd 失败");
+            continue;
+        }
+        bgp_rib_foreach_best(peer->inst->rib, enqueue_best_for_session_cb, &ctx);
+    }
+
+    if (ctx.queued > 0)
+    {
+        for (GList *l = sess->peer_list; l; l = l->next)
+        {
+            bgp_peer_t *peer = (bgp_peer_t *)l->data;
+            if (!peer || !peer->inst)
+            {
+                continue;
+            }
+            if (bgp_pub_queue_count_for_instance(sess->pub_queue, peer->inst) > 0u)
+            {
+                bgp_work_schedule_session_pub(peer->inst);
+            }
+        }
+
+        char addr_str[64];
+        net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
+        LOG_INFO("BGP: neighbor=%s queued %u best route(s) after Established "
+                 "(pri fd=%d state=%s, sec fd=%d state=%s)",
+                 addr_str, ctx.queued, sess->pri_conn ? sess->pri_conn->fd : -1,
+                 bgp_work_conn_state_name(sess->pri_conn), sess->sec_conn ? sess->sec_conn->fd : -1,
+                 bgp_work_conn_state_name(sess->sec_conn));
+    }
+}
+
+static bgp_instance_t *bgp_work_lookup_instance(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi)
+{
+    if (!g_bgp_work_local || !g_bgp_work_local->protocol)
+    {
+        return NULL;
+    }
+
+    bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_work_local->protocol, vrf_id);
+    if (!vrf || !vrf->inst_hash)
+    {
+        return NULL;
+    }
+
+    return (bgp_instance_t *)g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(afi, safi));
+}
+
+static int bgp_work_process_calc_event(bgp_instance_t *inst, gboolean allow_reschedule)
+{
+    if (!inst || !inst->calc_queue)
+    {
+        return 0;
+    }
+
+    int processed = bgp_calc_queue_process(inst->calc_queue, inst, BGP_WORK_BATCH_SIZE);
+    if (allow_reschedule && processed > 0 && inst->calc_queue->count > 0u)
+    {
+        bgp_work_schedule_calc(inst);
+    }
+    return processed;
+}
+
+static int bgp_work_process_route_flush_event(bgp_instance_t *inst, gboolean allow_reschedule)
+{
+    if (!inst || !inst->route_flush_queue)
+    {
+        return 0;
+    }
+
+    int processed = bgp_route_flush_queue_process(inst->route_flush_queue, inst, BGP_WORK_BATCH_SIZE);
+    if (allow_reschedule && processed > 0 && inst->route_flush_queue->count > 0u)
+    {
+        bgp_work_schedule_route_flush(inst);
+    }
+    return processed;
+}
+
+static int bgp_work_process_session_pub_event(bgp_instance_t *inst, gboolean allow_reschedule)
+{
+    if (!inst || !inst->peer_hash)
+    {
+        return 0;
+    }
+
+    int total_processed = 0;
+    gboolean made_progress = FALSE;
+    gboolean need_more = FALSE;
+    GHashTableIter iter;
+    gpointer key = NULL;
+    gpointer val = NULL;
+
+    g_hash_table_iter_init(&iter, inst->peer_hash);
+    while (g_hash_table_iter_next(&iter, &key, &val))
+    {
+        (void)val;
+        bgp_session_t *sess = bgp_vrf_find_session(inst->vrf, (const net_addr_t *)key);
+        if (!sess || !sess->pub_queue)
+        {
+            continue;
+        }
+
+        int processed = bgp_pub_queue_process(sess->pub_queue, sess, inst, BGP_WORK_BATCH_SIZE);
+        if (processed > 0)
+        {
+            made_progress = TRUE;
+            total_processed += processed;
+            if (bgp_pub_queue_count_for_instance(sess->pub_queue, inst) > 0u)
+            {
+                need_more = TRUE;
+            }
         }
     }
 
-    /* 批量处理优选队列：NLRI → best-path 计算 → 入 pub_queue 或同步 WITHDRAW */
-    if (inst->calc_queue)
+    if (allow_reschedule && made_progress && need_more)
     {
-        bgp_calc_queue_process(inst->calc_queue, inst, BGP_WORK_BATCH_SIZE);
+        bgp_work_schedule_session_pub(inst);
     }
 
-    /* 批量处理 route 下刷队列：只下刷 best+valid 路由到 ROUTE 模块 */
-    if (inst->route_flush_queue)
+    return total_processed;
+}
+
+static void bgp_work_schedule_calc(bgp_instance_t *inst)
+{
+    if (!inst)
     {
-        bgp_route_flush_queue_process(inst->route_flush_queue, inst, BGP_WORK_BATCH_SIZE);
+        return;
     }
 
-    /* 批量处理发布队列：通过 NLRI 查 RIB is_best 路径 → 发送 UPDATE 给所有 ESTABLISHED 邻居 */
-    if (inst->pub_queue)
+    uint32_t vrf_id = (inst->vrf) ? inst->vrf->vrf_id : BGP_VRF_PUBLIC_ID;
+    if (bgp_worker_post_calc_event(vrf_id, inst->afi, inst->safi) == 0)
     {
-        bgp_pub_queue_process(inst->pub_queue, inst, BGP_WORK_BATCH_SIZE);
+        return;
+    }
+
+    if (bgp_work_on_worker_thread())
+    {
+        (void)bgp_work_process_calc_event(inst, FALSE);
+        return;
+    }
+
+    LOG_WARN("BGP: failed to enqueue calc work event vrf=%u afi=%u safi=%u", vrf_id, (unsigned)inst->afi,
+             (unsigned)inst->safi);
+}
+
+static void bgp_work_schedule_route_flush(bgp_instance_t *inst)
+{
+    if (!inst)
+    {
+        return;
+    }
+
+    uint32_t vrf_id = (inst->vrf) ? inst->vrf->vrf_id : BGP_VRF_PUBLIC_ID;
+    if (bgp_worker_post_route_flush_event(vrf_id, inst->afi, inst->safi) == 0)
+    {
+        return;
+    }
+
+    if (bgp_work_on_worker_thread())
+    {
+        (void)bgp_work_process_route_flush_event(inst, FALSE);
+        return;
+    }
+
+    LOG_WARN("BGP: failed to enqueue route-flush work event vrf=%u afi=%u safi=%u", vrf_id, (unsigned)inst->afi,
+             (unsigned)inst->safi);
+}
+
+static void bgp_work_schedule_session_pub(bgp_instance_t *inst)
+{
+    if (!inst)
+    {
+        return;
+    }
+
+    uint32_t vrf_id = (inst->vrf) ? inst->vrf->vrf_id : BGP_VRF_PUBLIC_ID;
+    if (bgp_worker_post_session_pub_event(vrf_id, inst->afi, inst->safi) == 0)
+    {
+        return;
+    }
+
+    if (bgp_work_on_worker_thread())
+    {
+        (void)bgp_work_process_session_pub_event(inst, FALSE);
+        return;
+    }
+
+    LOG_WARN("BGP: failed to enqueue session-pub work event vrf=%u afi=%u safi=%u", vrf_id, (unsigned)inst->afi,
+             (unsigned)inst->safi);
+}
+
+void bgp_work_handle_calc_event(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi)
+{
+    bgp_instance_t *inst = bgp_work_lookup_instance(vrf_id, afi, safi);
+    (void)bgp_work_process_calc_event(inst, TRUE);
+}
+
+void bgp_work_handle_route_flush_event(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi)
+{
+    bgp_instance_t *inst = bgp_work_lookup_instance(vrf_id, afi, safi);
+    (void)bgp_work_process_route_flush_event(inst, TRUE);
+}
+
+void bgp_work_handle_session_pub_event(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi)
+{
+    bgp_instance_t *inst = bgp_work_lookup_instance(vrf_id, afi, safi);
+    (void)bgp_work_process_session_pub_event(inst, TRUE);
+}
+
+void bgp_work_process_pending(bgp_instance_t *inst)
+{
+    if (!inst)
+    {
+        return;
+    }
+
+    for (;;)
+    {
+        int processed = 0;
+        processed += bgp_work_process_calc_event(inst, FALSE);
+        processed += bgp_work_process_route_flush_event(inst, FALSE);
+        processed += bgp_work_process_session_pub_event(inst, FALSE);
+        if (processed <= 0)
+        {
+            break;
+        }
     }
 }

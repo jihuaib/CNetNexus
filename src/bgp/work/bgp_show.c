@@ -9,6 +9,8 @@
 #include <string.h>
 #include <time.h>
 
+#include "bgp_bmp.h"
+#include "bgp_bmp_cli.h"
 #include "bgp_cli.h"
 #include "bgp_conn.h"
 #include "bgp_main.h"
@@ -837,6 +839,180 @@ static int handle_bgp_show_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
     snprintf(af_label, sizeof(af_label), "AF %s", bgp_af_str(ctx.afi, ctx.safi));
     g_string_append_printf(resp_buf, "\r\n  %-24s: %s\r\n", af_label, af_enabled ? "Enabled" : "Disabled");
     g_string_append(resp_buf, "\r\n");
+
+    return bgp_work_send_chunked_response(msg, resp_buf);
+}
+
+// ============================================================================
+// show bgp bmp
+// ============================================================================
+
+/** BMP 连接状态可读字符串 */
+static const char *bmp_conn_state_str(bgp_bmp_conn_state_t st)
+{
+    switch (st)
+    {
+        case BGP_BMP_CONN_IDLE:
+            return "Idle";
+        case BGP_BMP_CONN_CONNECTING:
+            return "Connecting";
+        case BGP_BMP_CONN_UP:
+            return "Up";
+        case BGP_BMP_CONN_WAIT:
+            return "Wait-Retry";
+        default:
+            return "Unknown";
+    }
+}
+
+/** 单个 BMP 实例的详细信息（show bgp bmp instance <name>） */
+static void bmp_show_instance_detail(GString *buf, const bgp_bmp_instance_t *inst)
+{
+    char collector_str[64] = "-";
+    if (inst->collector_port > 0)
+    {
+        net_addr_to_str(&inst->collector_addr, collector_str, sizeof(collector_str));
+    }
+
+    g_string_append_printf(buf, "\r\nBMP Instance: %s\r\n", inst->name);
+    g_string_append(buf, "------------------------------------------------------------\r\n");
+
+    /* 配置 */
+    g_string_append(buf, "  Configuration:\r\n");
+    if (inst->collector_port > 0)
+    {
+        g_string_append_printf(buf, "    Collector:          %s port %u\r\n", collector_str, inst->collector_port);
+    }
+    else
+    {
+        g_string_append(buf, "    Collector:          (not configured)\r\n");
+    }
+    g_string_append_printf(buf, "    Stats interval:     %u sec%s\r\n", inst->stats_interval,
+                           inst->stats_interval == 0 ? " (disabled)" : "");
+    g_string_append_printf(buf, "    Reconnect interval: %u sec\r\n", inst->reconnect_interval);
+    if (inst->monitor_all)
+    {
+        g_string_append(buf, "    Monitor:            all neighbors\r\n");
+    }
+    else if (inst->monitor_peers && g_hash_table_size(inst->monitor_peers) > 0)
+    {
+        g_string_append(buf, "    Monitor:            specific neighbors\r\n");
+        GHashTableIter piter;
+        gpointer pkey, pval;
+        g_hash_table_iter_init(&piter, inst->monitor_peers);
+        while (g_hash_table_iter_next(&piter, &pkey, &pval))
+        {
+            g_string_append_printf(buf, "      - %s\r\n", (const char *)pkey);
+        }
+    }
+    else
+    {
+        g_string_append(buf, "    Monitor:            none\r\n");
+    }
+
+    /* 连接状态 */
+    g_string_append(buf, "  Connection:\r\n");
+    g_string_append_printf(buf, "    State:              %s\r\n", bmp_conn_state_str(inst->conn_state));
+
+    if (inst->connected_at_usec > 0)
+    {
+        char time_buf[32];
+        bgp_fmt_time_usec(inst->connected_at_usec, time_buf, sizeof(time_buf));
+        g_string_append_printf(buf, "    Connected since:    %s\r\n", time_buf);
+    }
+
+    /* 统计 */
+    g_string_append(buf, "  Statistics:\r\n");
+    g_string_append_printf(buf, "    Initiation sent:    %u\r\n", inst->initiation_sent);
+    g_string_append_printf(buf, "    Peer Up sent:       %u\r\n", inst->peer_up_sent);
+    g_string_append_printf(buf, "    Peer Down sent:     %u\r\n", inst->peer_down_sent);
+    g_string_append_printf(buf, "    Route Monitor sent: %u\r\n", inst->route_monitor_sent);
+    g_string_append_printf(buf, "    Stats Report sent:  %u\r\n", inst->stats_report_sent);
+}
+
+static int handle_bgp_show_bmp(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    char inst_name[BGP_BMP_INST_NAME_MAX] = {0};
+
+    /* 解析可选的 instance <name> 参数 */
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (CLI_TLV_IS_CTX(&entry))
+        {
+            cli_tlv_entry_free(&entry);
+            continue;
+        }
+        if (entry.cfg_id == 1)
+        {
+            const char *s = cli_tlv_entry_get_text(&entry);
+            if (s)
+            {
+                snprintf(inst_name, sizeof(inst_name), "%s", s);
+            }
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    GHashTable *bmp_ht = g_bgp_work_local->bmp_instances;
+
+    /* 指定实例名 → 显示单实例详情 */
+    if (inst_name[0] != '\0')
+    {
+        if (!bmp_ht)
+        {
+            bgp_show_send_cli_response(msg, "BMP Error: No BMP instances configured.\r\n");
+            return ERRCODE_FAIL;
+        }
+        bgp_bmp_instance_t *inst = g_hash_table_lookup(bmp_ht, inst_name);
+        if (!inst)
+        {
+            bgp_show_send_cli_response(msg, "BMP Error: Instance not found.\r\n");
+            return ERRCODE_FAIL;
+        }
+
+        GString *resp_buf = g_string_new("");
+        bmp_show_instance_detail(resp_buf, inst);
+        return bgp_work_send_chunked_response(msg, resp_buf);
+    }
+
+    /* 无实例名 → 显示所有实例摘要 */
+    GString *resp_buf = g_string_new("");
+    g_string_append(resp_buf, "\r\nBMP Instances\r\n");
+    g_string_append(resp_buf, "============================================================\r\n");
+
+    if (!bmp_ht || g_hash_table_size(bmp_ht) == 0)
+    {
+        g_string_append(resp_buf, "  (no BMP instances configured)\r\n");
+        return bgp_work_send_chunked_response(msg, resp_buf);
+    }
+
+    g_string_append_printf(resp_buf, "  %-20s%-18s%-8s%-14s%s\r\n", "Instance", "Collector", "Port", "State",
+                           "PeerUp/Down");
+    g_string_append_printf(resp_buf, "  %-20s%-18s%-8s%-14s%s\r\n", "-------------------", "-----------------",
+                           "------", "------------", "-----------");
+
+    GHashTableIter iter;
+    gpointer key, val;
+    g_hash_table_iter_init(&iter, bmp_ht);
+    while (g_hash_table_iter_next(&iter, &key, &val))
+    {
+        bgp_bmp_instance_t *inst = (bgp_bmp_instance_t *)val;
+
+        char collector_str[64] = "-";
+        char port_str[8] = "-";
+        if (inst->collector_port > 0)
+        {
+            net_addr_to_str(&inst->collector_addr, collector_str, sizeof(collector_str));
+            snprintf(port_str, sizeof(port_str), "%u", inst->collector_port);
+        }
+
+        char updown[32];
+        snprintf(updown, sizeof(updown), "%u/%u", inst->peer_up_sent, inst->peer_down_sent);
+
+        g_string_append_printf(resp_buf, "  %-20s%-18s%-8s%-14s%s\r\n", inst->name, collector_str, port_str,
+                               bmp_conn_state_str(inst->conn_state), updown);
+    }
 
     return bgp_work_send_chunked_response(msg, resp_buf);
 }

@@ -46,8 +46,10 @@ typedef struct bgp_work_local
     GHashTable *bmp_instances; /**< BMP 实例运行态，key=实例名字符串 */
 
     /* IPC worker -> BGP worker 命令投递（eventfd + queue） */
-    int cmd_eventfd;        /**< 命令唤醒 eventfd，-1 表示未创建 */
-    GAsyncQueue *cmd_queue; /**< 队列元素：bgp_worker_cmd_t*（定义在 work/bgp_worker.c） */
+    int cmd_eventfd;         /**< 命令唤醒 eventfd，-1 表示未创建 */
+    GAsyncQueue *cmd_queue;  /**< 队列元素：bgp_worker_cmd_t*（定义在 work/bgp_worker.c） */
+    int work_eventfd;        /**< 工作事件唤醒 eventfd，-1 表示未创建 */
+    GAsyncQueue *work_queue; /**< 工作事件队列 */
 } bgp_work_local_t;
 
 extern bgp_work_local_t *g_bgp_work_local;
@@ -228,6 +230,26 @@ int bgp_worker_prepare(void);
  * @return ERRCODE_SUCCESS / ERRCODE_FAIL
  */
 int bgp_worker_launch(void);
+
+/**
+ * @brief 向 BGP worker 投递一条 calc 工作事件
+ */
+int bgp_worker_post_calc_event(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi);
+
+/**
+ * @brief 向 BGP worker 投递一条 route-flush 工作事件
+ */
+int bgp_worker_post_route_flush_event(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi);
+
+/**
+ * @brief 向 BGP worker 投递一条 session-pub 工作事件
+ */
+int bgp_worker_post_session_pub_event(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi);
+
+/**
+ * @brief 在 worker 线程内同步抽干所有待处理工作事件
+ */
+void bgp_worker_drain_work_events(void);
 
 /**
  * @brief worker 线程投递 show CLI 消息给 server 线程

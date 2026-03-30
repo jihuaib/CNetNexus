@@ -72,14 +72,13 @@ typedef struct route_work_local
     GList *batch_entries; /**< 批量路由条目 GList<route_batch_entry_t*> */
 
     /* ---- Worker 基础设施 ---- */
-    int epoll_fd;                        /**< worker epoll fd */
-    volatile int running;                /**< worker 线程运行标志 */
-    pthread_t thread;                    /**< worker 线程句柄 */
-    int cmd_eventfd;                     /**< 命令唤醒 eventfd，-1 表示未创建 */
-    GAsyncQueue *cmd_queue;              /**< 命令队列 */
-    route_calc_queue_t *calc_queue;      /**< 优选工作队列 */
-    int work_timerfd;                    /**< 工作定时器 fd，-1 表示未启动 */
-    route_work_sentinel_t work_sentinel; /**< 工作定时器 epoll 哨兵 */
+    int epoll_fd;            /**< worker epoll fd */
+    volatile int running;    /**< worker 线程运行标志 */
+    pthread_t thread;        /**< worker 线程句柄 */
+    int cmd_eventfd;         /**< 命令唤醒 eventfd，-1 表示未创建 */
+    GAsyncQueue *cmd_queue;  /**< 命令队列 */
+    int work_eventfd;        /**< 工作事件唤醒 eventfd，-1 表示未创建 */
+    GAsyncQueue *work_queue; /**< 工作事件队列 */
 } route_work_local_t;
 
 extern route_work_local_t *g_route_work_local;

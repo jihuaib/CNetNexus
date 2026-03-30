@@ -61,8 +61,10 @@ static void process_received_data(dev_ipc_context_t *ctx, dev_ipc_connection_t *
 static void handle_frame(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn, dev_ipc_message_t *header,
                          const uint8_t *payload);
 static void check_heartbeats(dev_ipc_context_t *ctx);
+static void check_pending_connects(dev_ipc_context_t *ctx);
 static void attempt_reconnects(dev_ipc_context_t *ctx);
 static void accept_new_connection(dev_ipc_context_t *ctx);
+static int arm_initiator_connection(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn, int epoll_op);
 
 // ============================================================================
 // 连接查找
@@ -236,6 +238,52 @@ static int send_heartbeat(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn)
     }
 
     return ret;
+}
+
+static int arm_initiator_connection(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn, int epoll_op)
+{
+    if (!ctx || !conn || conn->fd < 0)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    struct epoll_event ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.data.fd = conn->fd;
+
+    if (conn->state == DEV_IPC_COCONNECTING)
+    {
+        ev.events = EPOLLIN | EPOLLOUT;
+        if (epoll_ctl(ctx->epoll_fd, epoll_op, conn->fd, &ev) != 0)
+        {
+            LOG_PERROR("epoll_ctl (arm connect)");
+            return ERRCODE_FAIL;
+        }
+        return ERRCODE_SUCCESS;
+    }
+
+    if (conn->state == DEV_IPC_COHANDSHAKING)
+    {
+        ev.events = EPOLLIN;
+        if (epoll_ctl(ctx->epoll_fd, epoll_op, conn->fd, &ev) != 0)
+        {
+            LOG_PERROR("epoll_ctl (arm handshake)");
+            return ERRCODE_FAIL;
+        }
+
+        int ret = send_handshake(ctx, conn);
+        if (ret != ERRCODE_SUCCESS)
+        {
+            char _buf[16];
+            LOG_WARN("<%s> Failed to send handshake to %s", ctx->name,
+                     fmt_module_id(conn->remote_module_id, _buf, sizeof(_buf)));
+            return ERRCODE_FAIL;
+        }
+
+        return ERRCODE_SUCCESS;
+    }
+
+    return ERRCODE_FAIL;
 }
 
 // ============================================================================
@@ -487,6 +535,42 @@ static void check_heartbeats(dev_ipc_context_t *ctx)
     pthread_mutex_unlock(&ctx->comutex);
 }
 
+static void check_pending_connects(dev_ipc_context_t *ctx)
+{
+    time_t now = time(NULL);
+
+    pthread_mutex_lock(&ctx->comutex);
+    for (int i = 0; i < ctx->num_connections; i++)
+    {
+        dev_ipc_connection_t *conn = ctx->connections[i];
+        if (!conn || !conn->is_initiator)
+        {
+            continue;
+        }
+        if (conn->state != DEV_IPC_COCONNECTING && conn->state != DEV_IPC_COHANDSHAKING)
+        {
+            continue;
+        }
+        if (now - conn->last_heartbeat_recv <= DEV_IPC_CONNECT_TIMEOUT)
+        {
+            continue;
+        }
+
+        {
+            char _buf[16];
+            LOG_WARN("<%s> Connection setup timeout, resetting %s (state=%d)", ctx->name,
+                     fmt_module_id(conn->remote_module_id, _buf, sizeof(_buf)), (int)conn->state);
+        }
+        if (conn->fd >= 0)
+        {
+            epoll_ctl(ctx->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
+        }
+        dev_ipc_connection_close(conn);
+        dev_ipc_connection_backoff_reconnect(conn);
+    }
+    pthread_mutex_unlock(&ctx->comutex);
+}
+
 static void attempt_reconnects(dev_ipc_context_t *ctx)
 {
     time_t now = time(NULL);
@@ -513,11 +597,15 @@ static void attempt_reconnects(dev_ipc_context_t *ctx)
 
         if (dev_ipc_connection_initiate(conn, conn->remote_host, conn->remote_port) == ERRCODE_SUCCESS)
         {
-            /* 添加到 epoll */
-            struct epoll_event ev;
-            ev.events = EPOLLIN | EPOLLOUT;
-            ev.data.fd = conn->fd;
-            epoll_ctl(ctx->epoll_fd, EPOLL_CTL_ADD, conn->fd, &ev);
+            if (arm_initiator_connection(ctx, conn, EPOLL_CTL_ADD) != ERRCODE_SUCCESS)
+            {
+                if (conn->fd >= 0)
+                {
+                    epoll_ctl(ctx->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
+                }
+                dev_ipc_connection_close(conn);
+                dev_ipc_connection_backoff_reconnect(conn);
+            }
         }
         else
         {
@@ -671,15 +759,16 @@ static void *dev_ipc_io_thread(void *arg)
 
                     if (err == 0)
                     {
-                        /* 连接成功，发送握手 */
-                        struct epoll_event ev;
-                        ev.events = EPOLLIN;
-                        ev.data.fd = fd;
-                        epoll_ctl(ctx->epoll_fd, EPOLL_CTL_MOD, fd, &ev);
-
-                        pthread_mutex_lock(&ctx->comutex);
-                        send_handshake(ctx, conn);
-                        pthread_mutex_unlock(&ctx->comutex);
+                        if (conn->state != DEV_IPC_COHANDSHAKING)
+                        {
+                            conn->state = DEV_IPC_COHANDSHAKING;
+                        }
+                        if (arm_initiator_connection(ctx, conn, EPOLL_CTL_MOD) != ERRCODE_SUCCESS)
+                        {
+                            epoll_ctl(ctx->epoll_fd, EPOLL_CTL_DEL, fd, NULL);
+                            dev_ipc_connection_close(conn);
+                            dev_ipc_connection_backoff_reconnect(conn);
+                        }
                     }
                     else
                     {
@@ -733,6 +822,7 @@ static void *dev_ipc_io_thread(void *arg)
 
         /* 定时任务 */
         check_heartbeats(ctx);
+        check_pending_connects(ctx);
         attempt_reconnects(ctx);
     }
 
@@ -1009,10 +1099,15 @@ int dev_ipc_connect(dev_ipc_context_t *ctx, uint32_t target_module_id, const cha
 
     if (init_ok)
     {
-        struct epoll_event ev;
-        ev.events = EPOLLIN | EPOLLOUT;
-        ev.data.fd = conn->fd;
-        epoll_ctl(ctx->epoll_fd, EPOLL_CTL_ADD, conn->fd, &ev);
+        if (arm_initiator_connection(ctx, conn, EPOLL_CTL_ADD) != ERRCODE_SUCCESS)
+        {
+            if (conn->fd >= 0)
+            {
+                epoll_ctl(ctx->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
+            }
+            dev_ipc_connection_close(conn);
+            dev_ipc_connection_backoff_reconnect(conn);
+        }
         return ERRCODE_SUCCESS;
     }
     else

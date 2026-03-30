@@ -167,11 +167,13 @@ typedef dev_ipc_costate_t dev_ipc_costate_t;
 /* Release 模式：正常心跳参数 */
 #    define DEV_IPC_HEARTBEAT_INTERVAL 5
 #    define DEV_IPC_HEARTBEAT_TIMEOUT 15
+#    define DEV_IPC_CONNECT_TIMEOUT 2
 #    define DEV_IPC_QUERY_TIMEOUT_DEFAULT 5000
 #else
 /* Debug 模式：延长心跳和超时，方便 GDB 调试 */
 #    define DEV_IPC_HEARTBEAT_INTERVAL 300
 #    define DEV_IPC_HEARTBEAT_TIMEOUT 600
+#    define DEV_IPC_CONNECT_TIMEOUT 30
 #    define DEV_IPC_QUERY_TIMEOUT_DEFAULT 30000
 #endif
 

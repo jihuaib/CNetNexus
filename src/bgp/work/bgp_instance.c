@@ -25,10 +25,7 @@ bgp_instance_t *bgp_instance_create(bgp_afi_t afi, bgp_safi_t safi, bgp_vrf_t *v
     inst->rib = bgp_rib_create();
     inst->rib->inst = inst; /* 建立 RIB → instance 反向引用 */
     inst->calc_queue = bgp_calc_queue_create();
-    inst->pub_queue = bgp_pub_queue_create();
     inst->route_flush_queue = bgp_route_flush_queue_create();
-    inst->work_timerfd = -1;
-    bgp_work_timer_start(inst, BGP_WORK_TIMER_INTERVAL_MS);
     return inst;
 }
 
@@ -38,11 +35,8 @@ void bgp_instance_destroy(bgp_instance_t *inst)
     {
         return;
     }
-    bgp_work_timer_stop(inst);
     bgp_calc_queue_destroy(inst->calc_queue, inst);
     inst->calc_queue = NULL;
-    bgp_pub_queue_destroy(inst->pub_queue, inst);
-    inst->pub_queue = NULL;
     bgp_route_flush_queue_destroy(inst->route_flush_queue, inst);
     inst->route_flush_queue = NULL;
     if (inst->peer_hash)

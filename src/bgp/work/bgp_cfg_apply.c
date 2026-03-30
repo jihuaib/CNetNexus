@@ -37,12 +37,28 @@ static void bgp_cfg_drain_instance_work(bgp_instance_t *inst)
     {
         uint32_t calc = (inst->calc_queue) ? inst->calc_queue->count : 0u;
         uint32_t route_flush = (inst->route_flush_queue) ? inst->route_flush_queue->count : 0u;
-        uint32_t pub = (inst->pub_queue) ? inst->pub_queue->count : 0u;
+        uint32_t pub = 0u;
+        if (inst->peer_hash)
+        {
+            GHashTableIter iter;
+            gpointer key = NULL;
+            gpointer val = NULL;
+            g_hash_table_iter_init(&iter, inst->peer_hash);
+            while (g_hash_table_iter_next(&iter, &key, &val))
+            {
+                (void)val;
+                bgp_session_t *sess = bgp_vrf_find_session(inst->vrf, (const net_addr_t *)key);
+                if (sess && sess->pub_queue)
+                {
+                    pub += bgp_pub_queue_count_for_instance(sess->pub_queue, inst);
+                }
+            }
+        }
         if (calc == 0u && route_flush == 0u && pub == 0u)
         {
             return;
         }
-        bgp_work_process(inst);
+        bgp_work_process_pending(inst);
     }
 }
 

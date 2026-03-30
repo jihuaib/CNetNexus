@@ -35,6 +35,8 @@ route_work_local_t *g_route_work_local = NULL;
 
 /** cmd eventfd 哨兵标签（地址用于 epoll data.ptr 精确比较） */
 static char g_route_cmd_tag;
+/** work eventfd 哨兵标签（地址用于 epoll data.ptr 精确比较） */
+static char g_route_work_tag;
 
 // ============================================================================
 // 内部命令队列结构（私有）
@@ -54,6 +56,20 @@ typedef struct route_worker_cmd
     int done;                     /**< worker 是否已完成处理 */
     int rc;                       /**< worker 处理结果 */
 } route_worker_cmd_t;
+
+typedef enum route_worker_event_type
+{
+    ROUTE_WORK_EVENT_CALC = 1, /**< 触发一条前缀的优选处理 */
+} route_worker_event_type_t;
+
+typedef struct route_worker_event
+{
+    route_worker_event_type_t type;
+    union
+    {
+        route_head_key_t key;
+    } u;
+} route_worker_event_t;
 
 static route_worker_cmd_t *worker_cmd_create(route_worker_cmd_type_t type, dev_ipc_message_t *msg, int waitable)
 {
@@ -116,13 +132,39 @@ static int worker_cmd_wait(route_worker_cmd_t *cmd)
     return rc;
 }
 
-static int worker_cmd_enqueue(route_worker_cmd_t *cmd)
+static route_worker_event_t *worker_event_create_calc(const route_head_key_t *key)
 {
-    if (!cmd || !g_route_work_local || !g_route_work_local->cmd_queue || g_route_work_local->cmd_eventfd < 0)
+    if (!key)
     {
-        return -1;
+        return NULL;
     }
-    g_async_queue_push(g_route_work_local->cmd_queue, cmd);
+
+    route_worker_event_t *evt = (route_worker_event_t *)g_malloc(sizeof(*evt));
+    if (!evt)
+    {
+        return NULL;
+    }
+
+    evt->type = ROUTE_WORK_EVENT_CALC;
+    evt->u.key = *key;
+    return evt;
+}
+
+static void worker_event_destroy(route_worker_event_t *evt)
+{
+    if (!evt)
+    {
+        return;
+    }
+    g_free(evt);
+}
+
+static void worker_signal_cmd_event(void)
+{
+    if (!g_route_work_local || g_route_work_local->cmd_eventfd < 0)
+    {
+        return;
+    }
 
     uint64_t one = 1;
     if (write(g_route_work_local->cmd_eventfd, &one, sizeof(one)) != (ssize_t)sizeof(one))
@@ -131,6 +173,60 @@ static int worker_cmd_enqueue(route_worker_cmd_t *cmd)
         {
             LOG_PERROR("[route_worker] write cmd_eventfd 失败");
         }
+    }
+}
+
+static void worker_signal_work_event(void)
+{
+    if (!g_route_work_local || g_route_work_local->work_eventfd < 0)
+    {
+        return;
+    }
+
+    uint64_t one = 1;
+    if (write(g_route_work_local->work_eventfd, &one, sizeof(one)) != (ssize_t)sizeof(one))
+    {
+        if (errno != EAGAIN && errno != EWOULDBLOCK)
+        {
+            LOG_PERROR("[route_worker] write work_eventfd 失败");
+        }
+    }
+}
+
+static int worker_cmd_enqueue(route_worker_cmd_t *cmd)
+{
+    if (!cmd || !g_route_work_local || !g_route_work_local->cmd_queue || g_route_work_local->cmd_eventfd < 0)
+    {
+        return -1;
+    }
+    g_async_queue_push(g_route_work_local->cmd_queue, cmd);
+    worker_signal_cmd_event();
+    return 0;
+}
+
+static int worker_event_enqueue(route_worker_event_t *evt)
+{
+    if (!evt || !g_route_work_local || !g_route_work_local->work_queue || g_route_work_local->work_eventfd < 0)
+    {
+        return -1;
+    }
+
+    g_async_queue_push(g_route_work_local->work_queue, evt);
+    worker_signal_work_event();
+    return 0;
+}
+
+static int route_worker_post_calc_event(const route_head_key_t *key)
+{
+    route_worker_event_t *evt = worker_event_create_calc(key);
+    if (!evt)
+    {
+        return -1;
+    }
+    if (worker_event_enqueue(evt) != 0)
+    {
+        worker_event_destroy(evt);
+        return -1;
     }
     return 0;
 }
@@ -190,7 +286,10 @@ static void worker_handle_inject(dev_ipc_message_t *msg)
                     route_path_t *mut = (route_path_t *)path;
                     mut->relay_addr = entry->nexthop_addr;
                 }
-                route_calc_queue_push(g_route_work_local->calc_queue, &head->key);
+                if (route_worker_post_calc_event(&head->key) != 0)
+                {
+                    route_work_handle_calc_event(&head->key);
+                }
             }
         }
         route_recompute_iter_paths();
@@ -430,6 +529,48 @@ static int worker_drain_cmd_queue(void)
     return 0;
 }
 
+static void route_worker_drain_work_queue(route_work_local_t *wl)
+{
+    if (!wl || wl->work_eventfd < 0 || !wl->work_queue)
+    {
+        return;
+    }
+
+    uint64_t v;
+    while (read(wl->work_eventfd, &v, sizeof(v)) > 0)
+    {
+        /* 排干 eventfd 计数 */
+    }
+    if (errno != EAGAIN && errno != EWOULDBLOCK)
+    {
+        LOG_PERROR("[route_worker] work eventfd read 失败");
+    }
+
+    int processed = 0;
+    route_worker_event_t *evt = NULL;
+    while (processed < ROUTE_WORK_BATCH_SIZE &&
+           (evt = (route_worker_event_t *)g_async_queue_try_pop(wl->work_queue)) != NULL)
+    {
+        switch (evt->type)
+        {
+            case ROUTE_WORK_EVENT_CALC:
+                route_work_handle_calc_event(&evt->u.key);
+                break;
+            default:
+                LOG_WARN("[route_worker] 未知工作事件类型: %d", (int)evt->type);
+                break;
+        }
+
+        worker_event_destroy(evt);
+        processed++;
+    }
+
+    if (g_async_queue_length(wl->work_queue) > 0)
+    {
+        worker_signal_work_event();
+    }
+}
+
 // ============================================================================
 // worker 线程主循环
 // ============================================================================
@@ -444,12 +585,6 @@ static void *route_worker_thread_fn(void *arg)
     struct epoll_event events[ROUTE_MAX_EPOLL_EVENTS];
 
     LOG_INFO("[route_worker] worker 线程启动");
-
-    route_work_set_epoll_fd(wl->epoll_fd);
-    if (route_work_timer_start(&wl->work_sentinel, &wl->work_timerfd, ROUTE_WORK_TIMER_INTERVAL_MS) < 0)
-    {
-        LOG_WARN("[route_worker] 工作定时器启动失败，calc_queue 不可用");
-    }
 
     /* 恢复结束后做一次全量 nexthop 重算（在 route worker 线程内执行） */
     route_recompute_iter_paths();
@@ -470,8 +605,6 @@ static void *route_worker_thread_fn(void *arg)
 
         for (int i = 0; i < n; i++)
         {
-            uintptr_t raw = (uintptr_t)events[i].data.ptr;
-
             if (events[i].data.ptr == (void *)&g_route_cmd_tag)
             {
                 if (worker_drain_cmd_queue())
@@ -481,9 +614,9 @@ static void *route_worker_thread_fn(void *arg)
                 continue;
             }
 
-            if (raw & 1UL)
+            if (events[i].data.ptr == (void *)&g_route_work_tag)
             {
-                route_work_process(wl->work_timerfd, wl->calc_queue);
+                route_worker_drain_work_queue(wl);
                 continue;
             }
 
@@ -492,9 +625,6 @@ static void *route_worker_thread_fn(void *arg)
     }
 
 out:
-    route_work_timer_stop(&wl->work_timerfd);
-    route_work_set_epoll_fd(-1);
-
     LOG_INFO("[route_worker] worker 线程退出");
     return NULL;
 }
@@ -516,7 +646,7 @@ int route_worker_prepare(void)
 
         g_route_work_local->epoll_fd = -1;
         g_route_work_local->cmd_eventfd = -1;
-        g_route_work_local->work_timerfd = -1;
+        g_route_work_local->work_eventfd = -1;
 
         g_route_work_local->rib = route_rib_create();
         if (!g_route_work_local->rib)
@@ -531,7 +661,7 @@ int route_worker_prepare(void)
 
     g_route_work_local->epoll_fd = -1;
     g_route_work_local->cmd_eventfd = -1;
-    g_route_work_local->work_timerfd = -1;
+    g_route_work_local->work_eventfd = -1;
     g_route_work_local->running = 1;
 
     g_route_work_local->epoll_fd = epoll_create1(EPOLL_CLOEXEC);
@@ -548,6 +678,13 @@ int route_worker_prepare(void)
         goto fail;
     }
 
+    g_route_work_local->work_eventfd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (g_route_work_local->work_eventfd < 0)
+    {
+        LOG_PERROR("[route_worker] work eventfd 失败");
+        goto fail;
+    }
+
     struct epoll_event ev;
     memset(&ev, 0, sizeof(ev));
     ev.events = EPOLLIN;
@@ -558,6 +695,15 @@ int route_worker_prepare(void)
         goto fail;
     }
 
+    memset(&ev, 0, sizeof(ev));
+    ev.events = EPOLLIN;
+    ev.data.ptr = &g_route_work_tag;
+    if (epoll_ctl(g_route_work_local->epoll_fd, EPOLL_CTL_ADD, g_route_work_local->work_eventfd, &ev) < 0)
+    {
+        LOG_PERROR("[route_worker] epoll_ctl ADD work_eventfd 失败");
+        goto fail;
+    }
+
     g_route_work_local->cmd_queue = g_async_queue_new();
     if (!g_route_work_local->cmd_queue)
     {
@@ -565,10 +711,10 @@ int route_worker_prepare(void)
         goto fail;
     }
 
-    g_route_work_local->calc_queue = route_calc_queue_create();
-    if (!g_route_work_local->calc_queue)
+    g_route_work_local->work_queue = g_async_queue_new();
+    if (!g_route_work_local->work_queue)
     {
-        LOG_ERROR("[route_worker] calc_queue 创建失败");
+        LOG_ERROR("[route_worker] 工作事件队列创建失败");
         goto fail;
     }
 
@@ -667,9 +813,7 @@ void route_worker_shutdown(void)
             cmd->type = ROUTE_WORKER_CMD_SHUTDOWN;
             cmd->msg = NULL;
             g_async_queue_push(g_route_work_local->cmd_queue, cmd);
-
-            uint64_t one = 1;
-            write(g_route_work_local->cmd_eventfd, &one, sizeof(one));
+            worker_signal_cmd_event();
         }
 
         pthread_join(g_route_work_local->thread, NULL);
@@ -699,10 +843,15 @@ void route_worker_shutdown(void)
         g_route_work_local->cmd_queue = NULL;
     }
 
-    if (g_route_work_local->calc_queue)
+    if (g_route_work_local->work_queue)
     {
-        route_calc_queue_destroy(g_route_work_local->calc_queue);
-        g_route_work_local->calc_queue = NULL;
+        route_worker_event_t *evt = NULL;
+        while ((evt = (route_worker_event_t *)g_async_queue_try_pop(g_route_work_local->work_queue)) != NULL)
+        {
+            worker_event_destroy(evt);
+        }
+        g_async_queue_unref(g_route_work_local->work_queue);
+        g_route_work_local->work_queue = NULL;
     }
 
     if (g_route_work_local->epoll_fd >= 0)
@@ -715,6 +864,12 @@ void route_worker_shutdown(void)
     {
         close(g_route_work_local->cmd_eventfd);
         g_route_work_local->cmd_eventfd = -1;
+    }
+
+    if (g_route_work_local->work_eventfd >= 0)
+    {
+        close(g_route_work_local->work_eventfd);
+        g_route_work_local->work_eventfd = -1;
     }
 
     route_relay_cleanup();
@@ -770,10 +925,10 @@ int route_add_and_notify(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix
     route_path_t *mut = (route_path_t *)path;
     mut->relay_addr = relay_addr_ptr ? *relay_addr_ptr : *nexthop_addr;
 
-    if (!g_route_work_local->calc_queue || route_calc_queue_push(g_route_work_local->calc_queue, &head->key) != 0)
+    if (route_worker_post_calc_event(&head->key) != 0)
     {
         /* 异常兜底：队列不可用时仍执行直接重算，避免路径状态卡死。 */
-        route_calc_on_path_add(head);
+        route_work_handle_calc_event(&head->key);
     }
 
     return ret;

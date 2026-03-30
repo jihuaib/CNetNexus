@@ -201,11 +201,8 @@ void bgp_calc_run_one(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
     /* 将最优路径移至链表首位 */
     bgp_rib_mark_best(inst->rib, &head->nlri, best);
 
-    /* 将 NLRI 推入发布队列，异步向所有 ESTABLISHED 邻居宣告 */
-    if (inst->pub_queue)
-    {
-        bgp_pub_queue_push(inst->pub_queue, head);
-    }
+    /* 将 NLRI 挂入各 ESTABLISHED 邻居的 session 发布队列 */
+    bgp_work_enqueue_announce_to_established(inst, &head->nlri);
 
     const bgp_route_node_t *new_best = bgp_rib_find_best(inst->rib, &head->nlri);
     int best_switched = (old_best != new_best);

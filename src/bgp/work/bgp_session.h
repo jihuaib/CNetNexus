@@ -26,6 +26,7 @@
 /* 前向声明，避免循环包含 */
 typedef struct bgp_vrf bgp_vrf_t;
 typedef struct bgp_peer bgp_peer_t;
+typedef struct bgp_pub_queue bgp_pub_queue_t;
 
 /* 前向声明：bgp_timer_sentinel_t 与 bgp_session_t 互相引用 */
 struct bgp_session;
@@ -36,10 +37,9 @@ typedef enum bgp_timer_type
     BGP_TIMER_TYPE_RETRY = 0,         /**< connect-retry 定时器 */
     BGP_TIMER_TYPE_KEEPALIVE = 1,     /**< keepalive 周期定时器 */
     BGP_TIMER_TYPE_HOLD = 2,          /**< hold time 超时定时器 */
-    BGP_TIMER_TYPE_WORK = 3,          /**< 路由工作队列（优选 + 发布）定时器 */
-    BGP_TIMER_TYPE_BMP_RECONNECT = 4, /**< BMP 重连定时器 */
-    BGP_TIMER_TYPE_BMP_STATS = 5,     /**< BMP Stats Report 周期定时器 */
-    BGP_TIMER_TYPE_BMP_CONN = 6,      /**< BMP TCP 连接 fd（复用 sentinel 分发） */
+    BGP_TIMER_TYPE_BMP_RECONNECT = 3, /**< BMP 重连定时器 */
+    BGP_TIMER_TYPE_BMP_STATS = 4,     /**< BMP Stats Report 周期定时器 */
+    BGP_TIMER_TYPE_BMP_CONN = 5,      /**< BMP TCP 连接 fd（复用 sentinel 分发） */
 } bgp_timer_type_t;
 
 /**
@@ -63,6 +63,7 @@ typedef struct bgp_timer_sentinel
  * remote_id / negotiated_afs：由 OPEN 报文协商填入（afs 以 (afi<<16|safi) 打包存储，remote_id 为主机序 uint32_t）
  * local_router_id：发送 OPEN 时使用的本地 BGP Identifier（主机序 uint32_t，用于 §6.8 碰撞检测）
  * peer_list：当前 session 在各 AF 下使能的 bgp_peer_t* 列表（借用引用）
+ * pub_queue：按 session 聚合的待发布队列；仅在邻居 ESTABLISHED 时挂入 ANNOUNCE
  *
  * timerfd 生命周期：
  *   retry_timerfd  — connect 失败后单次触发，成功后取消
@@ -82,8 +83,9 @@ typedef struct bgp_session
     int sec_last_socket_error; /**< 次连接槽最近一次 socket 错误码（0=无） */
     uint32_t remote_id;        /**< 对端 BGP Router ID（主机序 32 位，由 OPEN 填入，0 表示未建立） */
     uint32_t local_router_id; /**< 本地 BGP Router ID（主机序 32 位，发送 OPEN 时保存，用于 RFC §6.8 比较） */
-    GArray *negotiated_afs; /**< 协商地址族列表（每元素为 guint32，以 afi<<16|safi 打包） */
-    GList *peer_list;       /**< 各 AF 下使能的 bgp_peer_t*（借用引用） */
+    GArray *negotiated_afs;     /**< 协商地址族列表（每元素为 guint32，以 afi<<16|safi 打包） */
+    GList *peer_list;           /**< 各 AF 下使能的 bgp_peer_t*（借用引用） */
+    bgp_pub_queue_t *pub_queue; /**< 按 session 聚合的待发布路由队列（持有所有权） */
 
     /* ---- 能力字段 ---- */
     uint32_t flags;           /**< 已配置的本地能力集（BGP_SESS_CAP_*） */
