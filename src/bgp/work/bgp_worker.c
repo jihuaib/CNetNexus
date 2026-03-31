@@ -6,6 +6,7 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <stddef.h>
 #include <string.h>
@@ -966,45 +967,6 @@ void bgp_listen_stop(void)
  * @brief 从 epoll 移除、销毁连接对象，并将 session 槽位置 NULL
  * @param slot &sess->pri_conn 或 &sess->sec_conn
  */
-static void bgp_conn_close(bgp_session_t *sess, bgp_conn_t **slot)
-{
-    if (!slot || !*slot)
-    {
-        return;
-    }
-    bgp_conn_t *conn = *slot;
-    if (sess)
-    {
-        if (slot == &sess->pri_conn)
-        {
-            sess->pri_last_socket_error = conn->last_socket_error;
-        }
-        else if (slot == &sess->sec_conn)
-        {
-            sess->sec_last_socket_error = conn->last_socket_error;
-        }
-    }
-    if (conn->fd >= 0)
-    {
-        epoll_ctl(g_bgp_work_local->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
-    }
-    bgp_conn_destroy(conn);
-    *slot = NULL;
-}
-
-/**
- * @brief 将 sec_conn 提升为 pri_conn（pri_conn 必须已为 NULL）
- */
-static void bgp_session_promote_sec(bgp_session_t *sess)
-{
-    char addr_str[64];
-    net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
-    LOG_INFO("BGP: Passive connection fd=%d promoted to pri_conn (neighbor=%s)", sess->sec_conn->fd, addr_str);
-    sess->pri_conn = sess->sec_conn;
-    sess->sec_conn = NULL;
-    sess->pri_last_socket_error = sess->pri_conn->last_socket_error;
-    sess->sec_last_socket_error = 0;
-}
 
 // ============================================================================
 // BGP server 线程 — 事件处理函数
@@ -1028,6 +990,13 @@ static void bgp_handle_passive_accept(void)
             LOG_PERROR("BGP: accept failed");
         }
         return;
+    }
+
+    /* 被动连接必须设为非阻塞，否则 recv() 会阻塞 worker 线程 */
+    int flags = fcntl(conn_fd, F_GETFL, 0);
+    if (flags >= 0)
+    {
+        fcntl(conn_fd, F_SETFL, flags | O_NONBLOCK);
     }
 
     /* 解析来源地址 */
@@ -1079,7 +1048,7 @@ static void bgp_handle_passive_accept(void)
         return;
     }
 
-    if (sess->pri_conn && !sess->pri_conn->is_connecting && sess->pri_conn->state == BGP_CONN_STATE_ESTABLISHED)
+    if (sess->pri_conn && !sess->pri_conn->is_connecting && sess->fsm_state == BGP_FSM_STATE_ESTABLISHED)
     {
         LOG_INFO("BGP: neighbor %s session established (fd=%d), rejecting new passive connection fd=%d", from_ip,
                  sess->pri_conn->fd, conn_fd);
@@ -1094,7 +1063,6 @@ static void bgp_handle_passive_accept(void)
     conn->is_active = FALSE;
     conn->is_connecting = FALSE;
     memcpy(&conn->peer_addr, &from_addr, sizeof(from_addr));
-    /* conn->state 已由 bgp_conn_create 初始化为 BGP_CONN_STATE_OPEN_SENT */
 
     struct epoll_event ev;
     ev.events = EPOLLIN;
@@ -1173,85 +1141,6 @@ static void bgp_handle_active_connect(bgp_conn_t *conn)
     epoll_ctl(g_bgp_work_local->epoll_fd, EPOLL_CTL_MOD, conn->fd, &ev);
 
     bgp_fsm_event(sess, conn, BGP_EVT_TCP_CR_ACKED, g_bgp_work_local->epoll_fd);
-}
-
-/**
- * @brief 处理已建立连接上的 BGP 数据（EPOLLIN）
- */
-static void bgp_handle_data(bgp_conn_t *conn)
-{
-    bgp_session_t *sess = conn->session;
-    bgp_conn_state_t old_conn_state = conn->state;
-    bgp_conn_state_t observed_conn_state;
-    bgp_conn_t *fsm_conn = conn;
-    int epoll_fd = g_bgp_work_local->epoll_fd;
-
-    int ret = bgp_pkt_on_data(conn);
-
-    if (ret == BGP_PKT_ON_DATA_COLLISION_CLOSE_ME)
-    {
-        /* §6.8 碰撞检测：当前连接为败方，通知 FSM 关闭 */
-        bgp_fsm_event(sess, conn, BGP_EVT_OPEN_COLLISION_DUMP, epoll_fd);
-        return;
-    }
-
-    if (ret == BGP_PKT_ON_DATA_COLLISION_CLOSE_OTHER)
-    {
-        /* §6.8 碰撞检测：当前连接为胜方，直接关闭另一条连接 */
-        bgp_conn_t **slot = (sess->pri_conn == conn) ? &sess->pri_conn : &sess->sec_conn;
-        bgp_conn_t **other_slot = (slot == &sess->pri_conn) ? &sess->sec_conn : &sess->pri_conn;
-        if (*other_slot)
-        {
-            char addr_str[64];
-            net_addr_to_str(&(*other_slot)->peer_addr, addr_str, sizeof(addr_str));
-            LOG_INFO("BGP: §6.8 collision: closing %s connection (fd=%d) with %s",
-                     (*other_slot)->is_active ? "active" : "passive", (*other_slot)->fd, addr_str);
-            bgp_conn_close(sess, other_slot);
-        }
-        if (!sess->pri_conn && sess->sec_conn)
-        {
-            bgp_session_promote_sec(sess);
-        }
-        /* 胜方继续：由下方状态变化检测触发 BGP_OPEN 事件 */
-    }
-    else if (ret < 0)
-    {
-        /* TCP 断开或协议错误：通知 FSM 关闭连接并调度重连 */
-        bgp_fsm_event(sess, conn, BGP_EVT_TCP_CONNECTION_FAILS, epoll_fd);
-        return;
-    }
-
-    /*
-     * 碰撞收口后，以当前 session 主连接为准。
-     * bgp_pkt_on_data() 可能在一次 recv 中连续处理 OPEN/KEEPALIVE，
-     * 因此这里要按状态顺序补齐 FSM 事件，而不是只看首尾一次跳变。
-     */
-    if (sess->pri_conn)
-    {
-        fsm_conn = sess->pri_conn;
-    }
-    observed_conn_state = fsm_conn->state;
-
-    if (old_conn_state == BGP_CONN_STATE_OPEN_SENT && observed_conn_state >= BGP_CONN_STATE_OPEN_CONFIRM)
-    {
-        /* bgp_pkt_on_data 已发 KEEPALIVE 并将连接状态推进到 OPEN_CONFIRM 或更后 */
-        bgp_fsm_event(sess, fsm_conn, BGP_EVT_BGP_OPEN, epoll_fd);
-        old_conn_state = BGP_CONN_STATE_OPEN_CONFIRM;
-    }
-
-    if (old_conn_state == BGP_CONN_STATE_OPEN_CONFIRM && observed_conn_state >= BGP_CONN_STATE_ESTABLISHED)
-    {
-        /* bgp_pkt_on_data 已收到对端 KEEPALIVE 并将连接状态推进到 ESTABLISHED */
-        bgp_fsm_event(sess, fsm_conn, BGP_EVT_KEEPALIVE_MSG, epoll_fd);
-        old_conn_state = BGP_CONN_STATE_ESTABLISHED;
-    }
-
-    if (observed_conn_state == BGP_CONN_STATE_ESTABLISHED && sess->hold_reset_pending)
-    {
-        /* KEEPALIVE/UPDATE in Established：直接重置 hold 定时器（FSM 表中为 NULL 条目） */
-        sess->hold_reset_pending = FALSE;
-        bgp_session_reset_hold(sess);
-    }
 }
 
 static void bgp_handle_ka_timer(bgp_session_t *sess)
@@ -1403,7 +1292,7 @@ static void *bgp_worker_thread(void *arg)
             }
             else
             {
-                bgp_handle_data(conn);
+                bgp_pkt_on_data(conn, g_bgp_work_local->epoll_fd);
             }
         }
     }
@@ -1434,8 +1323,8 @@ void bgp_server_stop_session_conns(bgp_session_t *session)
     bgp_session_cancel_retry(session, g_bgp_work_local->epoll_fd);
     bgp_session_cancel_keepalive(session, g_bgp_work_local->epoll_fd);
     bgp_session_cancel_hold(session, g_bgp_work_local->epoll_fd);
-    bgp_conn_close(session, &session->pri_conn);
-    bgp_conn_close(session, &session->sec_conn);
+    bgp_conn_close(session, &session->pri_conn, g_bgp_work_local->epoll_fd);
+    bgp_conn_close(session, &session->sec_conn, g_bgp_work_local->epoll_fd);
     bgp_worker_flush_peer_routes(session->vrf ? session->vrf->vrf_id : BGP_VRF_PUBLIC_ID, &session->neighbor_addr);
     (void)bgp_vrf_purge_session_routes(session->vrf, &session->neighbor_addr);
     bgp_session_reset_negotiated(session);

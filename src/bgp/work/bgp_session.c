@@ -149,9 +149,6 @@ void bgp_session_reset_negotiated(bgp_session_t *sess)
         g_array_set_size(sess->negotiated_afs, 0);
     }
 
-    /* 清除 hold 重置挂起标志 */
-    sess->hold_reset_pending = FALSE;
-
     /* 断会话后清空待发布队列；重建后由 Established 快照重新入队。 */
     bgp_pub_queue_clear(sess->pub_queue);
 

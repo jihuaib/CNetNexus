@@ -102,22 +102,23 @@ static const char *bgp_af_str(bgp_afi_t afi, bgp_safi_t safi)
 /** 返回 session 当前状态字符串 */
 static const char *sess_state_str(const bgp_session_t *sess)
 {
-    const bgp_conn_t *conn = sess->pri_conn ? sess->pri_conn : sess->sec_conn;
-    if (!conn || conn->fd == -1)
+    if (!sess)
     {
         return "Idle";
     }
-    if (conn->is_connecting)
+    switch (sess->fsm_state)
     {
-        return "Connect";
-    }
-    switch (conn->state)
-    {
-        case BGP_CONN_STATE_OPEN_SENT:
+        case BGP_FSM_STATE_IDLE:
+            return "Idle";
+        case BGP_FSM_STATE_CONNECT:
+            return "Connect";
+        case BGP_FSM_STATE_ACTIVE:
+            return "Active";
+        case BGP_FSM_STATE_OPEN_SENT:
             return "OpenSent";
-        case BGP_CONN_STATE_OPEN_CONFIRM:
+        case BGP_FSM_STATE_OPEN_CONFIRM:
             return "OpenConfirm";
-        case BGP_CONN_STATE_ESTABLISHED:
+        case BGP_FSM_STATE_ESTABLISHED:
             return "Established";
         default:
             return "Unknown";
@@ -1045,6 +1046,9 @@ int bgp_work_handle_show_msg(dev_ipc_message_t *msg)
             break;
         case BGP_CLI_GROUP_ID_SHOW_ROUTE:
             result = handle_bgp_show_route(msg, &parser);
+            break;
+        case BGP_CLI_GROUP_ID_BMP_SHOW:
+            result = handle_bgp_show_bmp(msg, &parser);
             break;
         default:
             LOG_WARN("BGP: 未知 show 命令 group_id=%u", parser.group_id);

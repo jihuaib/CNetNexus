@@ -13,6 +13,7 @@
 /* 包含顺序：bgp_peer.h 定义枚举，必须先于 bgp.h（定义同名宏） */
 #include "bgp.h"
 #include "bgp_conn.h"
+#include "bgp_fsm.h"
 #include "bgp_peer.h"
 
 /** BGP 报文头部长度（marker 16 + length 2 + type 1） */
@@ -88,21 +89,14 @@ int bgp_pkt_send_update(bgp_conn_t *conn, const bgp_nlri_entry_t *nlri, const bg
 int bgp_pkt_send_withdraw(bgp_conn_t *conn, const bgp_nlri_entry_t *nlri);
 
 /**
- * @brief bgp_pkt_on_data 特殊返回值
+ * @brief 接收并处理对端数据，按完整 BGP PDU 驱动 session 级协议状态
  *
- * RFC 4271 §6.8 碰撞检测结果：
- *   COLLISION_CLOSE_ME    - 当前 conn 应关闭（另一条连接保留）
- *   COLLISION_CLOSE_OTHER - 另一条连接应关闭（当前 conn 已进入 OPEN_CONFIRM）
+ * 内部直接派发 FSM 事件和碰撞处理，调用方无需额外处理返回值。
+ *
+ * @param conn     连接处理器
+ * @param epoll_fd BGP server 的 epoll fd
  */
-#define BGP_PKT_ON_DATA_COLLISION_CLOSE_ME (-2)
-#define BGP_PKT_ON_DATA_COLLISION_CLOSE_OTHER (-3)
-
-/**
- * @brief 接收并处理对端数据，驱动握手状态机
- * @param conn 连接处理器
- * @return 0 继续；-1 连接应关闭；BGP_PKT_ON_DATA_COLLISION_CLOSE_ME/OTHER 碰撞检测结果
- */
-int bgp_pkt_on_data(bgp_conn_t *conn);
+void bgp_pkt_on_data(bgp_conn_t *conn, int epoll_fd);
 
 /**
  * @brief 注册所有内置 AF 编码器（幂等，在 bgp_module_init 中调用一次）

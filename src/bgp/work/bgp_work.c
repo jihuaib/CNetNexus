@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #include "bgp_calc.h"
+#include "bgp_fsm.h"
 #include "bgp_instance.h"
 #include "bgp_main.h"
 #include "bgp_pkt.h"
@@ -40,7 +41,7 @@ static void bgp_work_schedule_calc(bgp_instance_t *inst);
 static void bgp_work_schedule_route_flush(bgp_instance_t *inst);
 static void bgp_work_schedule_session_pub(bgp_instance_t *inst);
 
-static const char *bgp_work_conn_state_name(const bgp_conn_t *conn)
+static const char *bgp_work_conn_state_name(const bgp_session_t *sess, const bgp_conn_t *conn)
 {
     if (!conn || conn->fd < 0)
     {
@@ -50,22 +51,18 @@ static const char *bgp_work_conn_state_name(const bgp_conn_t *conn)
     {
         return "Connect";
     }
-    switch (conn->state)
+
+    if (!sess || conn != sess->pri_conn)
     {
-        case BGP_CONN_STATE_OPEN_SENT:
-            return "OpenSent";
-        case BGP_CONN_STATE_OPEN_CONFIRM:
-            return "OpenConfirm";
-        case BGP_CONN_STATE_ESTABLISHED:
-            return "Established";
-        default:
-            return "Unknown";
+        return "Collision";
     }
+
+    return bgp_fsm_state_str(sess->fsm_state);
 }
 
 static gboolean bgp_session_is_publish_ready(const bgp_session_t *sess)
 {
-    return sess && sess->pri_conn && sess->pri_conn->fd >= 0 && sess->pri_conn->state == BGP_CONN_STATE_ESTABLISHED;
+    return sess && sess->pri_conn && sess->pri_conn->fd >= 0 && sess->fsm_state == BGP_FSM_STATE_ESTABLISHED;
 }
 
 static gboolean bgp_best_can_publish_to_session(const bgp_session_t *sess, const bgp_route_node_t *best)
@@ -112,7 +109,7 @@ static void foreach_withdraw_send(gpointer key, gpointer value, gpointer user_da
     withdraw_send_ctx_t *ctx = user_data;
 
     bgp_session_t *sess = bgp_vrf_find_session(ctx->inst->vrf, addr);
-    if (!sess || !sess->pri_conn || sess->pri_conn->fd < 0 || sess->pri_conn->state != BGP_CONN_STATE_ESTABLISHED)
+    if (!sess || !sess->pri_conn || sess->pri_conn->fd < 0 || sess->fsm_state != BGP_FSM_STATE_ESTABLISHED)
     {
         return;
     }
@@ -386,9 +383,9 @@ int bgp_pub_queue_process(bgp_pub_queue_t *q, bgp_session_t *sess, bgp_instance_
                 "BGP: neighbor=%s afi=%u safi=%u pub_queue stalled: pending=%u but primary is not publish-ready "
                 "(pri fd=%d state=%s active=%d connecting=%d, sec fd=%d state=%s active=%d connecting=%d)",
                 addr_str, (unsigned)inst->afi, (unsigned)inst->safi, pending, sess->pri_conn ? sess->pri_conn->fd : -1,
-                bgp_work_conn_state_name(sess->pri_conn), (sess->pri_conn && sess->pri_conn->is_active) ? 1 : 0,
+                bgp_work_conn_state_name(sess, sess->pri_conn), (sess->pri_conn && sess->pri_conn->is_active) ? 1 : 0,
                 (sess->pri_conn && sess->pri_conn->is_connecting) ? 1 : 0, sess->sec_conn ? sess->sec_conn->fd : -1,
-                bgp_work_conn_state_name(sess->sec_conn), (sess->sec_conn && sess->sec_conn->is_active) ? 1 : 0,
+                bgp_work_conn_state_name(sess, sess->sec_conn), (sess->sec_conn && sess->sec_conn->is_active) ? 1 : 0,
                 (sess->sec_conn && sess->sec_conn->is_connecting) ? 1 : 0);
         }
         return 0;
@@ -685,8 +682,8 @@ void bgp_work_enqueue_best_for_session(bgp_session_t *sess)
         LOG_INFO("BGP: neighbor=%s queued %u best route(s) after Established "
                  "(pri fd=%d state=%s, sec fd=%d state=%s)",
                  addr_str, ctx.queued, sess->pri_conn ? sess->pri_conn->fd : -1,
-                 bgp_work_conn_state_name(sess->pri_conn), sess->sec_conn ? sess->sec_conn->fd : -1,
-                 bgp_work_conn_state_name(sess->sec_conn));
+                 bgp_work_conn_state_name(sess, sess->pri_conn), sess->sec_conn ? sess->sec_conn->fd : -1,
+                 bgp_work_conn_state_name(sess, sess->sec_conn));
     }
 }
 

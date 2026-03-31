@@ -128,7 +128,7 @@ static const char *fsm_conn_slot_name(const bgp_session_t *sess, const bgp_conn_
     return "detached";
 }
 
-static const char *fsm_conn_state_name(const bgp_conn_t *conn)
+static const char *fsm_conn_state_name(const bgp_session_t *sess, const bgp_conn_t *conn)
 {
     if (!conn || conn->fd < 0)
     {
@@ -138,17 +138,13 @@ static const char *fsm_conn_state_name(const bgp_conn_t *conn)
     {
         return "Connect";
     }
-    switch (conn->state)
+
+    if (!sess || conn != sess->pri_conn)
     {
-        case BGP_CONN_STATE_OPEN_SENT:
-            return "OpenSent";
-        case BGP_CONN_STATE_OPEN_CONFIRM:
-            return "OpenConfirm";
-        case BGP_CONN_STATE_ESTABLISHED:
-            return "Established";
-        default:
-            return "Unknown";
+        return "Collision";
     }
+
+    return bgp_fsm_state_str(sess->fsm_state);
 }
 
 // ============================================================================
@@ -287,34 +283,9 @@ static void fsm_send_open(bgp_session_t *sess, bgp_conn_t *conn)
 }
 
 /**
- * @brief 按 pri_conn 实际 BGP 握手状态同步 sess->fsm_state
- *
- * 用于碰撞检测结束或 sec_conn 提升后，确保 FSM 状态与连接状态一致。
- */
-static void fsm_sync_state_from_conn(bgp_session_t *sess)
-{
-    if (!sess->pri_conn)
-    {
-        return;
-    }
-    switch (sess->pri_conn->state)
-    {
-        case BGP_CONN_STATE_OPEN_CONFIRM:
-            sess->fsm_state = BGP_FSM_STATE_OPEN_CONFIRM;
-            break;
-        case BGP_CONN_STATE_ESTABLISHED:
-            sess->fsm_state = BGP_FSM_STATE_ESTABLISHED;
-            break;
-        default:
-            sess->fsm_state = BGP_FSM_STATE_OPEN_SENT;
-            break;
-    }
-}
-
-/**
  * @brief 关闭指定连接槽，必要时将 sec_conn 提升为 pri_conn
  *
- * 若提升成功，按新 pri_conn 的握手状态同步 fsm_state 并返回（不做重试判断）。
+ * 若提升成功，将 session 视角切回新 pri_conn：TCP 未完成则 Connect，否则 OpenSent。
  * 若两条连接均已关闭：purge_routes 时清除路由；arm_retry 时进入 Active，否则 Idle。
  */
 static void fsm_close_primary(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd, gboolean purge_routes,
@@ -350,7 +321,7 @@ static void fsm_close_primary(bgp_session_t *sess, bgp_conn_t *conn, int epoll_f
         sess->sec_conn = NULL;
         sess->pri_last_socket_error = sess->pri_conn->last_socket_error;
         sess->sec_last_socket_error = 0;
-        fsm_sync_state_from_conn(sess);
+        sess->fsm_state = sess->pri_conn->is_connecting ? BGP_FSM_STATE_CONNECT : BGP_FSM_STATE_OPEN_SENT;
         return;
     }
 
@@ -422,8 +393,8 @@ static void fsm_reannounce_best(bgp_session_t *sess, bgp_conn_t *conn)
     LOG_INFO("BGP FSM: neighbor=%s Established via %s_conn fd=%d, scheduling best-route replay "
              "(pri fd=%d state=%s, sec fd=%d state=%s, af_peers=%u)",
              addr_str, fsm_conn_slot_name(sess, conn), conn->fd, sess->pri_conn ? sess->pri_conn->fd : -1,
-             fsm_conn_state_name(sess->pri_conn), sess->sec_conn ? sess->sec_conn->fd : -1,
-             fsm_conn_state_name(sess->sec_conn), (unsigned)g_list_length(sess->peer_list));
+             fsm_conn_state_name(sess, sess->pri_conn), sess->sec_conn ? sess->sec_conn->fd : -1,
+             fsm_conn_state_name(sess, sess->sec_conn), (unsigned)g_list_length(sess->peer_list));
     bgp_work_enqueue_best_for_session(sess);
 }
 
@@ -766,7 +737,7 @@ static void act_open_tcp_confirmed(bgp_session_t *sess, bgp_conn_t *conn, int ep
 /**
  * @brief Event 19（BGPOpen）in OpenSent：收到合法 OPEN → OpenConfirm
  *
- * bgp_pkt.c 已发送 KEEPALIVE 并将 conn->state 置为 OPEN_CONFIRM。
+ * bgp_pkt.c 已发送 KEEPALIVE；FSM 只需推进 session 到 OpenConfirm。
  * FSM 只需更新 fsm_state。
  */
 static void act_open_sent_bgp_open(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd)
@@ -781,7 +752,7 @@ static void act_open_sent_bgp_open(bgp_session_t *sess, bgp_conn_t *conn, int ep
 /**
  * @brief Event 26（KeepAliveMsg）in OpenConfirm：收到 KEEPALIVE → Established
  *
- * bgp_pkt.c 已将 conn->state 置为 ESTABLISHED。
+ * bgp_pkt.c 已完成握手 KEEPALIVE 接收；FSM 只需进入 Established。
  * FSM 取消重试定时器，启动 KA/Hold 定时器，补发 best-route。
  */
 static void act_open_confirm_keepalive(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd)

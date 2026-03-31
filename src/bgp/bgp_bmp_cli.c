@@ -99,11 +99,11 @@ static int handle_bmp_instance(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         }
         if (entry.cfg_id == 1 && entry.value && entry.length > 0)
         {
-            uint16_t len = entry.length < sizeof(apply.u.bmp_instance.name) - 1
-                               ? entry.length
-                               : (uint16_t)(sizeof(apply.u.bmp_instance.name) - 1);
-            memcpy(apply.u.bmp_instance.name, entry.value, len);
-            apply.u.bmp_instance.name[len] = '\0';
+            const char *s = cli_tlv_entry_get_text(&entry);
+            if (s)
+            {
+                snprintf(apply.u.bmp_instance.name, sizeof(apply.u.bmp_instance.name), "%s", s);
+            }
         }
     }
 

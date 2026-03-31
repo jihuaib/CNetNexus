@@ -62,7 +62,7 @@ typedef enum bgp_fsm_event
     BGP_EVT_TCP_CONNECTION_FAILS = 17,     /**< Event 17: TCP 连接失败（可调度重试） */
 
     /* ---- BGP 报文事件 Events 19-28 ---- */
-    BGP_EVT_BGP_OPEN = 19, /**< Event 19: 收到合法 OPEN（bgp_pkt.c 已发 KEEPALIVE，conn->state=OPEN_CONFIRM） */
+    BGP_EVT_BGP_OPEN = 19, /**< Event 19: 收到合法 OPEN（bgp_pkt.c 已发 KEEPALIVE，session 进入 OpenConfirm） */
     BGP_EVT_BGP_OPEN_WITH_DELAY = 20, /**< Event 20: DelayOpen 期间收到 OPEN（可选，暂不实现） */
     BGP_EVT_BGP_HEADER_ERR = 21,      /**< Event 21: 报文头部格式非法 */
     BGP_EVT_BGP_OPEN_MSG_ERR = 22,    /**< Event 22: OPEN 报文内容非法 */

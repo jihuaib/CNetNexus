@@ -223,7 +223,8 @@ After run, report files are generated under `--report-dir`:
 - `summary.json`: structured result summary
 - `logs/*.log`: full stdout/stderr per module
 - `containers/<case>/<container>/docker.log`: container stdout/stderr
-- `containers/<case>/<container>/modules/*.log`: per-module logs copied from `/opt/netnexus/log/*.log`
+- `containers/<case>/<container>/scripts/<NN-script>/modules/*.log`: per-script module logs copied after each script run, then `/opt/netnexus/log/*.log` is truncated in-place before the next script
+- `containers/<case>/<container>/modules/*.log`: fallback raw module logs when the case exits before per-script export/reset completes
 
 `report.html` groups output by step markers like `===== STEP: ... =====` and renders each step as a collapsible block. Use `step("...")` from `scripts/ci/module_api.py` in module scripts.
 

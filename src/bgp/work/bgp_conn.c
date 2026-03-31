@@ -13,6 +13,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "bgp_session.h"
 #include "log.h"
 
 /** BGP 协议标准端口 */
@@ -33,7 +34,6 @@ static void bgp_conn_init(bgp_conn_t *conn)
     conn->is_active = FALSE;
     conn->is_connecting = FALSE;
     conn->has_ttl = FALSE;
-    conn->state = BGP_CONN_STATE_OPEN_SENT;
     conn->last_socket_error = 0;
 }
 
@@ -232,4 +232,34 @@ int bgp_conn_start_active(bgp_conn_t *conn, const net_addr_t *peer_addr, int epo
     net_addr_to_str(peer_addr, addr_str, sizeof(addr_str));
     LOG_INFO("BGP: Initiating active connection to %s:%d (fd=%d)", addr_str, BGP_PORT, sock);
     return sock;
+}
+
+// ============================================================================
+// 连接关闭
+// ============================================================================
+
+void bgp_conn_close(struct bgp_session *sess, bgp_conn_t **slot, int epoll_fd)
+{
+    if (!slot || !*slot)
+    {
+        return;
+    }
+    bgp_conn_t *conn = *slot;
+    if (sess)
+    {
+        if (slot == &sess->pri_conn)
+        {
+            sess->pri_last_socket_error = conn->last_socket_error;
+        }
+        else if (slot == &sess->sec_conn)
+        {
+            sess->sec_last_socket_error = conn->last_socket_error;
+        }
+    }
+    if (conn->fd >= 0)
+    {
+        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
+    }
+    bgp_conn_destroy(conn);
+    *slot = NULL;
 }

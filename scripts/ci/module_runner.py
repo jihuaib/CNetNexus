@@ -18,6 +18,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
 from dataclasses import dataclass
@@ -141,6 +142,20 @@ class TimestampedBuffer(io.TextIOBase):
 
 def format_timestamp(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
+
+def make_case_artifact_token(case_dir: Path) -> str:
+    base_modules = (CI_DIR / "modules").resolve()
+    case_abs = case_dir.resolve()
+    try:
+        rel = case_abs.relative_to(base_modules)
+        return sanitize_name(str(rel).replace(os.sep, "-"))
+    except ValueError:
+        return sanitize_name(str(case_abs))
+
+
+def make_script_log_token(index: int, script: Path) -> str:
+    return f"{index:02d}-{sanitize_name(script.stem)}"
 
 
 def find_top_file(case_dir: Path) -> Path | None:
@@ -440,36 +455,15 @@ def synth_failed_result(case_dir: Path, script: Path, err: str) -> CheckResult:
     )
 
 
-def export_case_container_logs(rt: TopologyRuntime, case_dir: Path, out_root: Path) -> list[Path]:
-    """
-    Export per-container logs for one case.
+def collect_container_log_files(
+    container: str,
+    *,
+    include_docker: bool,
+    include_modules: bool,
+) -> dict[str, str]:
+    files: dict[str, str] = {}
 
-    Layout:
-      <out_root>/<case-token>/<container>/docker.log
-      <out_root>/<case-token>/<container>/modules/*.log
-    """
-    if not rt.container_names:
-        return []
-
-    base_modules = (CI_DIR / "modules").resolve()
-    case_abs = case_dir.resolve()
-    try:
-        rel = case_abs.relative_to(base_modules)
-        case_token = sanitize_name(str(rel).replace(os.sep, "-"))
-    except ValueError:
-        case_token = sanitize_name(str(case_abs))
-
-    case_out = out_root / case_token
-    case_out.mkdir(parents=True, exist_ok=True)
-
-    exported: list[Path] = []
-    for container in rt.container_names:
-        container_out = case_out / sanitize_name(container)
-        modules_out = container_out / "modules"
-        container_out.mkdir(parents=True, exist_ok=True)
-        modules_out.mkdir(parents=True, exist_ok=True)
-
-        docker_log_path = container_out / "docker.log"
+    if include_docker:
         docker_proc = subprocess.run(["docker", "logs", container], text=True, capture_output=True)
         docker_text = docker_proc.stdout or ""
         if docker_proc.stderr:
@@ -479,31 +473,116 @@ def export_case_container_logs(rt: TopologyRuntime, case_dir: Path, out_root: Pa
             docker_text += docker_proc.stderr
         if docker_proc.returncode != 0 and not docker_text.strip():
             docker_text = f"[collector] docker logs failed rc={docker_proc.returncode}\n"
-        docker_log_path.write_text(docker_text, encoding="utf-8")
-        exported.append(docker_log_path)
+        files["docker.log"] = docker_text
 
-        # Production-style module logs are written under $NN_WORK_DIR/log/*.log
-        # (CI container sets NN_WORK_DIR=/opt/netnexus).
+    if not include_modules:
+        return files
+
+    with tempfile.TemporaryDirectory(prefix="nn-ci-logs-") as tmpdir:
+        tmp_path = Path(tmpdir)
         cp_proc = subprocess.run(
-            ["docker", "cp", f"{container}:/opt/netnexus/log/.", str(modules_out)],
+            ["docker", "cp", f"{container}:/opt/netnexus/log/.", str(tmp_path)],
             text=True,
             capture_output=True,
         )
         if cp_proc.returncode != 0:
-            err_path = container_out / "modules-copy.err"
-            err_text = (
+            files["modules-copy.err"] = (
                 "[collector] failed to copy /opt/netnexus/log from container\n"
                 f"container={container}\n"
                 f"rc={cp_proc.returncode}\n"
                 f"stdout:\n{cp_proc.stdout or ''}\n"
                 f"stderr:\n{cp_proc.stderr or ''}\n"
             )
-            err_path.write_text(err_text, encoding="utf-8")
-            exported.append(err_path)
-        else:
-            exported.extend(sorted(modules_out.glob("*.log")))
+            return files
+
+        for log_path in sorted(path for path in tmp_path.rglob("*") if path.is_file()):
+            rel_path = log_path.relative_to(tmp_path).as_posix()
+            files[f"modules/{rel_path}"] = log_path.read_text(encoding="utf-8", errors="replace")
+
+    return files
+
+
+def write_container_log_files(
+    container_out: Path,
+    files: dict[str, str],
+    *,
+    script_token: str | None = None,
+    skip_empty: bool = False,
+) -> list[Path]:
+    base_out = container_out if script_token is None else container_out / "scripts" / script_token
+    exported: list[Path] = []
+
+    for rel_path, text in sorted(files.items()):
+        if skip_empty and not text.strip():
+            continue
+        out_path = base_out / Path(rel_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(text, encoding="utf-8")
+        exported.append(out_path)
 
     return exported
+
+
+def export_case_container_logs(
+    rt: TopologyRuntime,
+    case_dir: Path,
+    out_root: Path,
+    *,
+    script_token: str | None = None,
+    include_docker: bool = True,
+    include_modules: bool = True,
+    skip_empty: bool = False,
+) -> list[Path]:
+    """
+    Export per-container logs for one case.
+
+    Layout:
+      <out_root>/<case-token>/<container>/docker.log
+      <out_root>/<case-token>/<container>/modules/*.log
+      <out_root>/<case-token>/<container>/scripts/<script-token>/modules/*.log
+    """
+    if not rt.container_names:
+        return []
+
+    case_out = out_root / make_case_artifact_token(case_dir)
+    case_out.mkdir(parents=True, exist_ok=True)
+
+    exported: list[Path] = []
+    for container in rt.container_names:
+        container_out = case_out / sanitize_name(container)
+        files = collect_container_log_files(
+            container,
+            include_docker=include_docker,
+            include_modules=include_modules,
+        )
+        exported.extend(
+            write_container_log_files(
+                container_out,
+                files,
+                script_token=script_token,
+                skip_empty=skip_empty,
+            )
+        )
+
+    return exported
+
+
+def clear_case_container_module_logs(rt: TopologyRuntime) -> None:
+    if not rt.container_names:
+        return
+
+    clear_cmd = 'for f in /opt/netnexus/log/*.log; do [ -f "$f" ] || continue; : > "$f"; done'
+    for container in rt.container_names:
+        proc = subprocess.run(
+            ["docker", "exec", container, "/bin/bash", "-lc", clear_cmd],
+            text=True,
+            capture_output=True,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(
+                "failed to clear /opt/netnexus/log in container "
+                f"{container}: rc={proc.returncode}, stdout={proc.stdout or ''}, stderr={proc.stderr or ''}"
+            )
 
 
 def run_case(
@@ -543,16 +622,11 @@ def run_case(
             for script in scripts
         ]
 
-    base_modules = (CI_DIR / "modules").resolve()
-    case_abs = case_dir.resolve()
-    try:
-        rel = case_abs.relative_to(base_modules)
-    except ValueError:
-        rel = Path(sanitize_name(str(case_abs)))
-    prefix = sanitize_name(f"nn-case-{rel}-{os.getpid()}")
+    prefix = sanitize_name(f"nn-case-{make_case_artifact_token(case_dir)}-{os.getpid()}")
 
     results: list[CheckResult] = []
     case_failed = False
+    module_logs_cleared = False
     rt: TopologyRuntime | None = None
     startup_stdout = ""
     startup_stderr = ""
@@ -578,9 +652,10 @@ def run_case(
         startup_stdout = startup_out_buf.getvalue()
         startup_stderr = startup_err_buf.getvalue()
 
-        for idx, script in enumerate(scripts):
+        for idx, script in enumerate(scripts, start=1):
+            module_logs_cleared = False
             result = run_check(script, rt, top)
-            if idx == 0:
+            if idx == 1:
                 prefix_parts: list[str] = []
                 if startup_stdout:
                     prefix_parts.append(startup_stdout)
@@ -591,6 +666,29 @@ def run_case(
             results.append(result)
             if result.returncode != 0:
                 case_failed = True
+            try:
+                script_token = make_script_log_token(idx, script)
+                exported = export_case_container_logs(
+                    rt,
+                    case_dir,
+                    container_logs_dir,
+                    script_token=script_token,
+                    include_docker=False,
+                    include_modules=True,
+                    skip_empty=True,
+                )
+                if exported:
+                    print(
+                        f"Collected per-script module logs for '{script.name}' -> {container_logs_dir} "
+                        f"({len(exported)} files)"
+                    )
+                clear_case_container_module_logs(rt)
+                module_logs_cleared = True
+            except Exception as log_exc:
+                print(
+                    f"WARNING: failed to export/reset per-script module logs for '{script}': {log_exc}",
+                    file=sys.stderr,
+                )
 
     except Exception as exc:
         case_failed = True
@@ -601,7 +699,13 @@ def run_case(
     finally:
         if rt is not None:
             try:
-                exported = export_case_container_logs(rt, case_dir, container_logs_dir)
+                exported = export_case_container_logs(
+                    rt,
+                    case_dir,
+                    container_logs_dir,
+                    include_docker=True,
+                    include_modules=not module_logs_cleared,
+                )
                 if exported:
                     print(
                         f"Collected container logs for case '{case_dir.name}' -> {container_logs_dir} "
