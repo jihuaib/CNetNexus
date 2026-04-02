@@ -5,9 +5,18 @@
  * @date   2026/03/10
  */
 #include <signal.h>
+#include <string.h>
 #include <sys/prctl.h>
 
 #include "route_main.h"
+
+static volatile sig_atomic_t g_shutdown = 0;
+
+static void shutdown_handler(int sig)
+{
+    (void)sig;
+    g_shutdown = 1;
+}
 
 int main(void)
 {
@@ -23,15 +32,25 @@ int main(void)
         return 1;
     }
 
-    /* 阻塞 SIGTERM/SIGINT，通过 sigwait 捕获关闭信号 */
-    sigset_t mask;
-    sigemptyset(&mask);
-    sigaddset(&mask, SIGTERM);
-    sigaddset(&mask, SIGINT);
-    sigprocmask(SIG_BLOCK, &mask, NULL);
+    /*
+     * SIGINT/SIGTERM：使用普通信号处理函数（不阻塞）
+     *   - 正常运行：信号 → handler 置标志 → sigsuspend 返回 → 优雅退出
+     *   - GDB 调试：GDB 拦截 SIGINT → handler 不会被调用 → 程序不退出
+     */
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = shutdown_handler;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGINT, &sa, NULL);
 
-    int sig = 0;
-    sigwait(&mask, &sig);
+    /* 等待关闭信号 */
+    sigset_t empty;
+    sigemptyset(&empty);
+    while (!g_shutdown)
+    {
+        sigsuspend(&empty);
+    }
 
     route_module_cleanup();
 

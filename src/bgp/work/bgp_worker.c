@@ -1076,6 +1076,7 @@ static void bgp_handle_passive_accept(void)
 
     if (sess->pri_conn)
     {
+        /* 碰撞场景：pri_conn 已存在，新连接暂挂为 sec_conn，直接发 OPEN（不经 FSM） */
         if (sess->pri_conn->is_connecting)
         {
             LOG_INFO("BGP: neighbor %s passive connection fd=%d (active fd=%d still TCP handshaking, §6.8 pending)",
@@ -1088,15 +1089,22 @@ static void bgp_handle_passive_accept(void)
         }
         sess->sec_conn = conn;
         sess->sec_last_socket_error = 0;
+
+        /* 向 sec_conn 发送 OPEN，碰撞将在收到对端 OPEN 时解决 */
+        bgp_protocol_t *proto = g_bgp_work_local->protocol;
+        bgp_vrf_t *vrf0 = proto ? bgp_protocol_get_vrf(proto, BGP_VRF_PUBLIC_ID) : NULL;
+        GList *af_peers = vrf0 ? bgp_vrf_get_session_peers(vrf0, &sess->neighbor_addr) : NULL;
+        bgp_pkt_send_open(conn, proto ? proto->as_number : 0, vrf0 ? vrf0->router_id : 0, af_peers);
+        g_list_free(af_peers);
+        /* FSM 状态不变（跟踪 pri_conn） */
     }
     else
     {
         sess->pri_conn = conn;
         sess->pri_last_socket_error = 0;
+        /* 触发 FSM 事件：发送 OPEN 并迁移状态 */
+        bgp_fsm_event(sess, BGP_EVT_TCP_CONNECTION_CONFIRMED);
     }
-
-    /* 触发 FSM 事件：发送 OPEN 并迁移状态 */
-    bgp_fsm_event(sess, conn, BGP_EVT_TCP_CONNECTION_CONFIRMED, g_bgp_work_local->epoll_fd);
 }
 
 /**
@@ -1117,7 +1125,7 @@ static void bgp_handle_active_connect(bgp_conn_t *conn)
     if (err != 0)
     {
         LOG_WARN("BGP: Active connection to %s failed: %s (errno=%d, fd=%d)", addr_str, strerror(err), err, conn->fd);
-        bgp_fsm_event(sess, conn, BGP_EVT_TCP_CONNECTION_FAILS, g_bgp_work_local->epoll_fd);
+        bgp_fsm_event(sess, BGP_EVT_TCP_CONNECTION_FAILS);
         return;
     }
 
@@ -1140,7 +1148,7 @@ static void bgp_handle_active_connect(bgp_conn_t *conn)
     ev.data.ptr = conn;
     epoll_ctl(g_bgp_work_local->epoll_fd, EPOLL_CTL_MOD, conn->fd, &ev);
 
-    bgp_fsm_event(sess, conn, BGP_EVT_TCP_CR_ACKED, g_bgp_work_local->epoll_fd);
+    bgp_fsm_event(sess, BGP_EVT_TCP_CR_ACKED);
 }
 
 static void bgp_handle_ka_timer(bgp_session_t *sess)
@@ -1150,7 +1158,7 @@ static void bgp_handle_ka_timer(bgp_session_t *sess)
     {
         LOG_PERROR("BGP: Failed to read ka timerfd");
     }
-    bgp_fsm_event(sess, sess->pri_conn, BGP_EVT_KEEPALIVE_TIMER_EXPIRED, g_bgp_work_local->epoll_fd);
+    bgp_fsm_event(sess, BGP_EVT_KEEPALIVE_TIMER_EXPIRED);
 }
 
 static void bgp_handle_hold_timer(bgp_session_t *sess)
@@ -1160,7 +1168,7 @@ static void bgp_handle_hold_timer(bgp_session_t *sess)
     {
         LOG_PERROR("BGP: Failed to read hold timerfd");
     }
-    bgp_fsm_event(sess, sess->pri_conn, BGP_EVT_HOLD_TIMER_EXPIRED, g_bgp_work_local->epoll_fd);
+    bgp_fsm_event(sess, BGP_EVT_HOLD_TIMER_EXPIRED);
 }
 
 static void bgp_handle_retry_timer(bgp_session_t *sess)
@@ -1180,7 +1188,7 @@ static void bgp_handle_retry_timer(bgp_session_t *sess)
         return;
     }
 
-    bgp_fsm_event(sess, NULL, BGP_EVT_CONNECT_RETRY_EXPIRED, g_bgp_work_local->epoll_fd);
+    bgp_fsm_event(sess, BGP_EVT_CONNECT_RETRY_EXPIRED);
 }
 
 // ============================================================================
@@ -1292,7 +1300,7 @@ static void *bgp_worker_thread(void *arg)
             }
             else
             {
-                bgp_pkt_on_data(conn, g_bgp_work_local->epoll_fd);
+                bgp_pkt_on_data(conn);
             }
         }
     }
@@ -1311,7 +1319,7 @@ void bgp_server_start_active_conn(bgp_session_t *session)
     {
         return;
     }
-    bgp_fsm_event(session, NULL, BGP_EVT_AUTO_START, g_bgp_work_local->epoll_fd);
+    bgp_fsm_event(session, BGP_EVT_AUTO_START);
 }
 
 void bgp_server_stop_session_conns(bgp_session_t *session)

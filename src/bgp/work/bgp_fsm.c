@@ -8,6 +8,8 @@
  *   - 分发表 fsm_table[state][event] 存储每个 (state, event) 对对应的动作函数
  *   - NULL 条目表示该 (state, event) 组合在 RFC 中定义为"忽略"
  *   - bgp_fsm_event() 查表并调用对应动作，并在状态变化时记录日志
+ *   - 动作函数通过 sess->pri_conn 和 g_bgp_work_local->epoll_fd 访问连接和 epoll
+ *   - sec_conn 事件由调用方在调用 FSM 之前自行处理（关闭/提升），FSM 只操作 pri_conn
  */
 #include "bgp_fsm.h"
 
@@ -18,7 +20,6 @@
 #include "bgp.h"
 #include "bgp_bmp.h"
 #include "bgp_conn.h"
-#include "bgp_instance.h"
 #include "bgp_main.h"
 #include "bgp_pkt.h"
 #include "bgp_protocol.h"
@@ -32,10 +33,16 @@
 #include "net_addr.h"
 
 /** 动作函数统一签名 */
-typedef void (*bgp_fsm_action_fn)(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd);
+typedef void (*bgp_fsm_action_fn)(bgp_session_t *sess);
 
 /* 前向声明分发表（定义在文件末尾） */
 static const bgp_fsm_action_fn fsm_table[BGP_FSM_STATE_MAX][BGP_EVT_MAX];
+
+/** 内部辅助：获取 bgp worker 的 epoll fd */
+static inline int fsm_epoll_fd(void)
+{
+    return g_bgp_work_local->epoll_fd;
+}
 
 // ============================================================================
 // 名称查询（用于日志）
@@ -111,68 +118,32 @@ const char *bgp_fsm_event_str(bgp_fsm_event_t evt)
     }
 }
 
-static const char *fsm_conn_slot_name(const bgp_session_t *sess, const bgp_conn_t *conn)
-{
-    if (!sess || !conn)
-    {
-        return "none";
-    }
-    if (sess->pri_conn == conn)
-    {
-        return "pri";
-    }
-    if (sess->sec_conn == conn)
-    {
-        return "sec";
-    }
-    return "detached";
-}
-
-static const char *fsm_conn_state_name(const bgp_session_t *sess, const bgp_conn_t *conn)
-{
-    if (!conn || conn->fd < 0)
-    {
-        return "Idle";
-    }
-    if (conn->is_connecting)
-    {
-        return "Connect";
-    }
-
-    if (!sess || conn != sess->pri_conn)
-    {
-        return "Collision";
-    }
-
-    return bgp_fsm_state_str(sess->fsm_state);
-}
-
 // ============================================================================
 // FSM 内部辅助：低级操作原语
 // ============================================================================
 
 /** 从 epoll 移除 fd，销毁 bgp_conn_t，并将槽位置 NULL */
-static void fsm_close_conn_slot(bgp_conn_t **slot, int epoll_fd)
+static void fsm_close_conn_slot(bgp_conn_t **slot)
 {
     if (!slot || !*slot)
     {
         return;
     }
-    bgp_conn_t *conn = *slot;
-    if (conn->fd >= 0 && epoll_fd >= 0)
+    bgp_conn_t *c = *slot;
+    if (c->fd >= 0 && fsm_epoll_fd() >= 0)
     {
-        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
+        epoll_ctl(fsm_epoll_fd(), EPOLL_CTL_DEL, c->fd, NULL);
     }
-    bgp_conn_destroy(conn);
+    bgp_conn_destroy(c);
     *slot = NULL;
 }
 
 /** 调度 ConnectRetry 定时器（从 VRF 配置读取间隔） */
-static void fsm_arm_retry(bgp_session_t *sess, int epoll_fd)
+static void fsm_arm_retry(bgp_session_t *sess)
 {
     uint16_t sec =
         (sess->vrf && sess->vrf->connect_retry > 0) ? sess->vrf->connect_retry : BGP_TIMER_DEFAULT_CONNECT_RETRY;
-    bgp_session_arm_retry(sess, epoll_fd, sec);
+    bgp_session_arm_retry(sess, fsm_epoll_fd(), sec);
 }
 
 static int fsm_prefix_contains_addr(const net_addr_t *prefix_addr, uint8_t prefix_len, const net_addr_t *addr)
@@ -190,13 +161,13 @@ static int fsm_prefix_contains_addr(const net_addr_t *prefix_addr, uint8_t prefi
     {
         pfx = (const uint8_t *)&prefix_addr->u.v4;
         ip = (const uint8_t *)&addr->u.v4;
-        max_len = 32u;
+        max_len = 32U;
     }
     else if (addr->family == AF_INET6)
     {
         pfx = (const uint8_t *)&prefix_addr->u.v6;
         ip = (const uint8_t *)&addr->u.v6;
-        max_len = 128u;
+        max_len = 128U;
     }
     else
     {
@@ -208,15 +179,15 @@ static int fsm_prefix_contains_addr(const net_addr_t *prefix_addr, uint8_t prefi
         return 0;
     }
 
-    uint8_t full_bytes = (uint8_t)(prefix_len / 8u);
-    uint8_t rem_bits = (uint8_t)(prefix_len % 8u);
+    uint8_t full_bytes = (uint8_t)(prefix_len / 8U);
+    uint8_t rem_bits = (uint8_t)(prefix_len % 8U);
     if (full_bytes > 0 && memcmp(pfx, ip, full_bytes) != 0)
     {
         return 0;
     }
     if (rem_bits > 0)
     {
-        uint8_t mask = (uint8_t)(0xFFu << (8u - rem_bits));
+        uint8_t mask = (uint8_t)(0xFFU << (8U - rem_bits));
         if ((pfx[full_bytes] & mask) != (ip[full_bytes] & mask))
         {
             return 0;
@@ -272,9 +243,14 @@ static gboolean fsm_neighbor_is_directly_connected(const net_addr_t *neighbor_ad
     return direct;
 }
 
-/** 向对端发送 BGP OPEN 报文 */
-static void fsm_send_open(bgp_session_t *sess, bgp_conn_t *conn)
+/** 向对端发送 BGP OPEN 报文（通过 sess->pri_conn） */
+static void fsm_send_open(bgp_session_t *sess)
 {
+    bgp_conn_t *conn = sess->pri_conn;
+    if (!conn)
+    {
+        return;
+    }
     bgp_protocol_t *proto = g_bgp_work_local->protocol;
     bgp_vrf_t *vrf0 = proto ? bgp_protocol_get_vrf(proto, BGP_VRF_PUBLIC_ID) : NULL;
     GList *af_peers = vrf0 ? bgp_vrf_get_session_peers(vrf0, &sess->neighbor_addr) : NULL;
@@ -283,13 +259,12 @@ static void fsm_send_open(bgp_session_t *sess, bgp_conn_t *conn)
 }
 
 /**
- * @brief 关闭指定连接槽，必要时将 sec_conn 提升为 pri_conn
+ * @brief 关闭 pri_conn，必要时将 sec_conn 提升为 pri_conn
  *
  * 若提升成功，将 session 视角切回新 pri_conn：TCP 未完成则 Connect，否则 OpenSent。
  * 若两条连接均已关闭：purge_routes 时清除路由；arm_retry 时进入 Active，否则 Idle。
  */
-static void fsm_close_primary(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd, gboolean purge_routes,
-                              gboolean arm_retry)
+static void fsm_close_primary(bgp_session_t *sess, gboolean purge_routes, gboolean arm_retry)
 {
     /* BMP Peer Down 通知（ESTABLISHED → 连接关闭，且无 sec_conn 可提升时） */
     if (sess->fsm_state == BGP_FSM_STATE_ESTABLISHED && !sess->sec_conn)
@@ -297,22 +272,14 @@ static void fsm_close_primary(bgp_session_t *sess, bgp_conn_t *conn, int epoll_f
         bgp_bmp_notify_peer_down(sess, BGP_BMP_PEER_DOWN_REMOTE_NO_NOTIFY);
     }
 
-    bgp_conn_t **slot = (sess->pri_conn == conn) ? &sess->pri_conn : &sess->sec_conn;
-    if (conn)
+    if (sess->pri_conn)
     {
-        if (slot == &sess->pri_conn)
-        {
-            sess->pri_last_socket_error = conn->last_socket_error;
-        }
-        else
-        {
-            sess->sec_last_socket_error = conn->last_socket_error;
-        }
+        sess->pri_last_socket_error = sess->pri_conn->last_socket_error;
     }
-    fsm_close_conn_slot(slot, epoll_fd);
+    fsm_close_conn_slot(&sess->pri_conn);
 
     /* 尝试将 sec_conn 提升为 pri_conn */
-    if (!sess->pri_conn && sess->sec_conn)
+    if (sess->sec_conn)
     {
         char addr_str[64];
         net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
@@ -334,7 +301,7 @@ static void fsm_close_primary(bgp_session_t *sess, bgp_conn_t *conn, int epoll_f
 
     if (arm_retry)
     {
-        fsm_arm_retry(sess, epoll_fd);
+        fsm_arm_retry(sess);
         sess->fsm_state = BGP_FSM_STATE_ACTIVE;
     }
     else
@@ -344,7 +311,7 @@ static void fsm_close_primary(bgp_session_t *sess, bgp_conn_t *conn, int epoll_f
 }
 
 /** 关闭全部连接和定时器；arm_retry 时进入 Active，否则 Idle */
-static void fsm_close_all(bgp_session_t *sess, int epoll_fd, gboolean purge_routes, gboolean arm_retry)
+static void fsm_close_all(bgp_session_t *sess, gboolean purge_routes, gboolean arm_retry)
 {
     /* BMP Peer Down 通知（从 ESTABLISHED 离开时） */
     if (sess->fsm_state == BGP_FSM_STATE_ESTABLISHED)
@@ -360,11 +327,11 @@ static void fsm_close_all(bgp_session_t *sess, int epoll_fd, gboolean purge_rout
     {
         sess->sec_last_socket_error = sess->sec_conn->last_socket_error;
     }
-    bgp_session_cancel_keepalive(sess, epoll_fd);
-    bgp_session_cancel_hold(sess, epoll_fd);
-    bgp_session_cancel_retry(sess, epoll_fd);
-    fsm_close_conn_slot(&sess->pri_conn, epoll_fd);
-    fsm_close_conn_slot(&sess->sec_conn, epoll_fd);
+    bgp_session_cancel_keepalive(sess, fsm_epoll_fd());
+    bgp_session_cancel_hold(sess, fsm_epoll_fd());
+    bgp_session_cancel_retry(sess, fsm_epoll_fd());
+    fsm_close_conn_slot(&sess->pri_conn);
+    fsm_close_conn_slot(&sess->sec_conn);
     if (purge_routes && sess->vrf)
     {
         (void)bgp_vrf_purge_session_routes(sess->vrf, &sess->neighbor_addr);
@@ -372,7 +339,7 @@ static void fsm_close_all(bgp_session_t *sess, int epoll_fd, gboolean purge_rout
     bgp_session_reset_negotiated(sess);
     if (arm_retry)
     {
-        fsm_arm_retry(sess, epoll_fd);
+        fsm_arm_retry(sess);
         sess->fsm_state = BGP_FSM_STATE_ACTIVE;
     }
     else
@@ -382,24 +349,22 @@ static void fsm_close_all(bgp_session_t *sess, int epoll_fd, gboolean purge_rout
 }
 
 /** 进入 ESTABLISHED 后，将当前所有 AF 的 best-route 快照挂入 session pub_queue */
-static void fsm_reannounce_best(bgp_session_t *sess, bgp_conn_t *conn)
+static void fsm_reannounce_best(bgp_session_t *sess)
 {
-    if (!sess || !conn || conn->fd < 0 || !sess->vrf)
+    bgp_conn_t *conn = sess->pri_conn;
+    if (!conn || conn->fd < 0 || !sess->vrf)
     {
         return;
     }
     char addr_str[64];
     net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
-    LOG_INFO("BGP FSM: neighbor=%s Established via %s_conn fd=%d, scheduling best-route replay "
-             "(pri fd=%d state=%s, sec fd=%d state=%s, af_peers=%u)",
-             addr_str, fsm_conn_slot_name(sess, conn), conn->fd, sess->pri_conn ? sess->pri_conn->fd : -1,
-             fsm_conn_state_name(sess, sess->pri_conn), sess->sec_conn ? sess->sec_conn->fd : -1,
-             fsm_conn_state_name(sess, sess->sec_conn), (unsigned)g_list_length(sess->peer_list));
+    LOG_INFO("BGP FSM: neighbor=%s Established via fd=%d (%s), scheduling best-route replay (af_peers=%u)", addr_str,
+             conn->fd, conn->is_active ? "active" : "passive", (unsigned)g_list_length(sess->peer_list));
     bgp_work_enqueue_best_for_session(sess);
 }
 
 /** 进入 ESTABLISHED 状态的统一动作：记录时间戳、启动 KA/Hold 定时器、补发路由 */
-static void fsm_on_established(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd)
+static void fsm_on_established(bgp_session_t *sess)
 {
     sess->established_at_usec = g_get_real_time();
     sess->fsm_state = BGP_FSM_STATE_ESTABLISHED;
@@ -407,12 +372,12 @@ static void fsm_on_established(bgp_session_t *sess, bgp_conn_t *conn, int epoll_
     bgp_protocol_t *proto = g_bgp_work_local->protocol;
     bgp_vrf_t *vrf0 = proto ? bgp_protocol_get_vrf(proto, BGP_VRF_PUBLIC_ID) : NULL;
     uint16_t ka_sec = vrf0 ? vrf0->keepalive : BGP_TIMER_DEFAULT_KEEPALIVE;
-    bgp_session_arm_keepalive(sess, epoll_fd, ka_sec);
+    bgp_session_arm_keepalive(sess, fsm_epoll_fd(), ka_sec);
     if (sess->negotiated_hold > 0)
     {
-        bgp_session_arm_hold(sess, epoll_fd, sess->negotiated_hold);
+        bgp_session_arm_hold(sess, fsm_epoll_fd(), sess->negotiated_hold);
     }
-    fsm_reannounce_best(sess, conn);
+    fsm_reannounce_best(sess);
 
     /* BMP Peer Up 通知 */
     bgp_bmp_notify_peer_up(sess);
@@ -425,10 +390,8 @@ static void fsm_on_established(bgp_session_t *sess, bgp_conn_t *conn, int epoll_
 /* ---- 通用动作 ---- */
 
 /** 记录警告并忽略（表中 NULL 的补充，用于需要提示的意外事件） */
-static void act_warn_ignore(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd)
+static void act_warn_ignore(bgp_session_t *sess)
 {
-    (void)conn;
-    (void)epoll_fd;
     char addr_str[64];
     net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
     LOG_WARN("BGP FSM: neighbor=%s [%s] received unexpected event, ignored", addr_str,
@@ -442,9 +405,8 @@ static void act_warn_ignore(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd)
  *
  * 成功 → Connect；失败（socket 错误）→ 调度 ConnectRetry → Active。
  */
-static void act_start_active(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd)
+static void act_start_active(bgp_session_t *sess)
 {
-    (void)conn;
     if (sess->pri_conn)
     {
         return; /* 已有连接，幂等 */
@@ -473,7 +435,7 @@ static void act_start_active(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd
                 "BGP FSM: neighbor=%s eBGP peer is not directly connected; configure 'neighbor %s ebgp-multihop <ttl>'",
                 nbr, nbr);
             bgp_conn_destroy(new_conn);
-            fsm_arm_retry(sess, epoll_fd);
+            fsm_arm_retry(sess);
             sess->fsm_state = BGP_FSM_STATE_ACTIVE;
             return;
         }
@@ -484,13 +446,13 @@ static void act_start_active(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd
         new_conn->has_local_addr = TRUE;
         new_conn->local_addr = sess->source_addr;
     }
-    if (bgp_conn_start_active(new_conn, &sess->neighbor_addr, epoll_fd) < 0)
+    if (bgp_conn_start_active(new_conn, &sess->neighbor_addr, fsm_epoll_fd()) < 0)
     {
         char addr_str[64];
         net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
         LOG_WARN("BGP FSM: neighbor=%s failed to initiate TCP, scheduling ConnectRetry", addr_str);
         bgp_conn_destroy(new_conn);
-        fsm_arm_retry(sess, epoll_fd);
+        fsm_arm_retry(sess);
         sess->fsm_state = BGP_FSM_STATE_ACTIVE;
         return;
     }
@@ -504,12 +466,11 @@ static void act_start_active(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd
 /**
  * @brief 被动入站（Idle 状态）：直接发送 OPEN → OpenSent
  *
- * conn 由 bgp_handle_passive_accept 创建并已挂入 sess->pri_conn。
+ * 调用方已将 conn 挂入 sess->pri_conn。
  */
-static void act_idle_tcp_confirmed(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd)
+static void act_idle_tcp_confirmed(bgp_session_t *sess)
 {
-    (void)epoll_fd;
-    fsm_send_open(sess, conn);
+    fsm_send_open(sess);
     sess->fsm_state = BGP_FSM_STATE_OPEN_SENT;
 }
 
@@ -518,10 +479,9 @@ static void act_idle_tcp_confirmed(bgp_session_t *sess, bgp_conn_t *conn, int ep
 /**
  * @brief Event 2/8（Stop）in Connect：取消所有资源，回到 Idle
  */
-static void act_connect_stop(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd)
+static void act_connect_stop(bgp_session_t *sess)
 {
-    (void)conn;
-    fsm_close_all(sess, epoll_fd, TRUE, FALSE);
+    fsm_close_all(sess, TRUE, FALSE);
 }
 
 /**
@@ -529,24 +489,10 @@ static void act_connect_stop(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd
  *
  * epoll 已由 bgp_handle_active_connect 改为 EPOLLIN，conn->is_connecting 已清除。
  */
-static void act_connect_tcp_acked(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd)
+static void act_connect_tcp_acked(bgp_session_t *sess)
 {
-    (void)epoll_fd;
-    fsm_send_open(sess, conn);
+    fsm_send_open(sess);
     sess->fsm_state = BGP_FSM_STATE_OPEN_SENT;
-}
-
-/**
- * @brief Event 15（TcpConnectionConfirmed）in Connect：碰撞检测期间被动入站
- *
- * conn 已由 bgp_handle_passive_accept 挂入 sess->sec_conn。
- * 向被动连接发送 OPEN；fsm_state 保持 Connect（跟踪 pri_conn 的主动握手状态）。
- */
-static void act_connect_tcp_confirmed(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd)
-{
-    (void)epoll_fd;
-    fsm_send_open(sess, conn);
-    /* fsm_state 不变，保持 Connect */
 }
 
 /**
@@ -554,10 +500,11 @@ static void act_connect_tcp_confirmed(bgp_session_t *sess, bgp_conn_t *conn, int
  *
  * 关闭 pri_conn；若有 sec_conn 则提升（FSM 跟随 sec_conn 状态）；否则调度重试 → Active。
  */
-static void act_connect_tcp_fails(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd)
+static void act_connect_tcp_fails(bgp_session_t *sess)
 {
     char addr_str[64];
     net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
+    bgp_conn_t *conn = sess->pri_conn;
     if (conn && conn->last_socket_error != 0)
     {
         LOG_WARN("BGP FSM: neighbor=%s Connect: TCP failed (errno=%d, %s), reconnecting", addr_str,
@@ -567,19 +514,18 @@ static void act_connect_tcp_fails(bgp_session_t *sess, bgp_conn_t *conn, int epo
     {
         LOG_WARN("BGP FSM: neighbor=%s Connect: TCP failed, reconnecting", addr_str);
     }
-    bgp_session_cancel_keepalive(sess, epoll_fd);
-    bgp_session_cancel_hold(sess, epoll_fd);
-    fsm_close_primary(sess, conn, epoll_fd, FALSE, TRUE);
+    bgp_session_cancel_keepalive(sess, fsm_epoll_fd());
+    bgp_session_cancel_hold(sess, fsm_epoll_fd());
+    fsm_close_primary(sess, FALSE, TRUE);
 }
 
 /**
  * @brief Event 9（ConnectRetryTimer_Expires）in Connect：重新发起连接
  */
-static void act_connect_retry_expired(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd)
+static void act_connect_retry_expired(bgp_session_t *sess)
 {
-    (void)conn;
-    bgp_session_cancel_retry(sess, epoll_fd);
-    act_start_active(sess, NULL, epoll_fd);
+    bgp_session_cancel_retry(sess, fsm_epoll_fd());
+    act_start_active(sess);
 }
 
 /* ---- Active 状态动作 ---- */
@@ -587,32 +533,31 @@ static void act_connect_retry_expired(bgp_session_t *sess, bgp_conn_t *conn, int
 /**
  * @brief Event 2/8（Stop）in Active：取消重试定时器 → Idle
  */
-static void act_active_stop(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd)
+static void act_active_stop(bgp_session_t *sess)
 {
-    (void)conn;
-    bgp_session_cancel_retry(sess, epoll_fd);
+    bgp_session_cancel_retry(sess, fsm_epoll_fd());
     sess->fsm_state = BGP_FSM_STATE_IDLE;
 }
 
 /**
  * @brief Event 9（ConnectRetryTimer_Expires）in Active：取消旧定时器，发起新连接
  */
-static void act_active_retry_expired(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd)
+static void act_active_retry_expired(bgp_session_t *sess)
 {
-    (void)conn;
-    bgp_session_cancel_retry(sess, epoll_fd);
-    act_start_active(sess, NULL, epoll_fd);
+    bgp_session_cancel_retry(sess, fsm_epoll_fd());
+    act_start_active(sess);
 }
 
 /**
  * @brief Event 15（TcpConnectionConfirmed）in Active：被动入站
  *
  * 取消重试定时器，向新连接发送 OPEN → OpenSent。
+ * 调用方已将 conn 挂入 sess->pri_conn。
  */
-static void act_active_tcp_confirmed(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd)
+static void act_active_tcp_confirmed(bgp_session_t *sess)
 {
-    bgp_session_cancel_retry(sess, epoll_fd);
-    fsm_send_open(sess, conn);
+    bgp_session_cancel_retry(sess, fsm_epoll_fd());
+    fsm_send_open(sess);
     sess->fsm_state = BGP_FSM_STATE_OPEN_SENT;
 }
 
@@ -621,86 +566,87 @@ static void act_active_tcp_confirmed(bgp_session_t *sess, bgp_conn_t *conn, int 
 /**
  * @brief Event 2/8（Stop）in OpenSent/OpenConfirm：发送 NOTIFICATION Cease → Idle
  */
-static void act_open_stop(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd)
+static void act_open_stop(bgp_session_t *sess)
 {
+    bgp_conn_t *conn = sess->pri_conn;
     if (conn && conn->fd >= 0 && !conn->is_connecting)
     {
         bgp_pkt_send_notification(conn, BGP_ERR_CEASE, BGP_CEASE_ADMIN_RESET);
     }
-    fsm_close_all(sess, epoll_fd, TRUE, FALSE);
+    fsm_close_all(sess, TRUE, FALSE);
 }
 
 /**
  * @brief Event 16/17（TCP 失败）in OpenSent/OpenConfirm：关闭当前连接 → Active
  */
-static void act_open_tcp_fails(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd)
+static void act_open_tcp_fails(bgp_session_t *sess)
 {
     char addr_str[64];
     net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
     LOG_WARN("BGP FSM: neighbor=%s [%s]: TCP lost, reconnecting", addr_str, bgp_fsm_state_str(sess->fsm_state));
-    fsm_close_primary(sess, conn, epoll_fd, TRUE, TRUE);
+    fsm_close_primary(sess, TRUE, TRUE);
 }
 
 /**
  * @brief Event 10（HoldTimer_Expires）in OpenSent/OpenConfirm：NOTIFICATION Hold Timer → Active
  */
-static void act_open_hold_expired(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd)
+static void act_open_hold_expired(bgp_session_t *sess)
 {
     char addr_str[64];
     net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
     LOG_WARN("BGP FSM: neighbor=%s [%s]: HoldTimer expired", addr_str, bgp_fsm_state_str(sess->fsm_state));
+    bgp_conn_t *conn = sess->pri_conn;
     if (conn && conn->fd >= 0)
     {
         bgp_pkt_send_notification(conn, BGP_ERR_HOLD_TIMER, 0);
     }
-    fsm_close_primary(sess, conn, epoll_fd, TRUE, TRUE);
+    fsm_close_primary(sess, TRUE, TRUE);
 }
 
 /**
  * @brief Event 25（NotifMsg）in OpenSent/OpenConfirm：收到 NOTIFICATION → Active
  */
-static void act_open_notif(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd)
+static void act_open_notif(bgp_session_t *sess)
 {
     char addr_str[64];
     net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
     LOG_WARN("BGP FSM: neighbor=%s [%s]: received NOTIFICATION, reconnecting", addr_str,
              bgp_fsm_state_str(sess->fsm_state));
-    fsm_close_primary(sess, conn, epoll_fd, TRUE, TRUE);
+    fsm_close_primary(sess, TRUE, TRUE);
 }
 
 /**
  * @brief Event 24（NotifMsgVerErr）in OpenSent/OpenConfirm：版本错误 NOTIFICATION → Idle（不重试）
  */
-static void act_open_notif_ver_err(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd)
+static void act_open_notif_ver_err(bgp_session_t *sess)
 {
     char addr_str[64];
     net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
     LOG_WARN("BGP FSM: neighbor=%s [%s]: version error NOTIFICATION, closing without retry", addr_str,
              bgp_fsm_state_str(sess->fsm_state));
-    fsm_close_primary(sess, conn, epoll_fd, TRUE, FALSE);
+    fsm_close_primary(sess, TRUE, FALSE);
 }
 
 /**
  * @brief Event 21/22（BGPHeaderErr/BGPOpenMsgErr）in OpenSent/OpenConfirm：报文错误 → Active
  */
-static void act_open_bgp_err(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd)
+static void act_open_bgp_err(bgp_session_t *sess)
 {
     char addr_str[64];
     net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
     LOG_WARN("BGP FSM: neighbor=%s [%s]: BGP message error", addr_str, bgp_fsm_state_str(sess->fsm_state));
-    fsm_close_primary(sess, conn, epoll_fd, TRUE, TRUE);
+    fsm_close_primary(sess, TRUE, TRUE);
 }
 
 /**
- * @brief Event 23（OpenCollisionDump）in OpenSent/OpenConfirm：RFC §6.8 碰撞—关闭本连接
+ * @brief Event 23（OpenCollisionDump）in OpenSent/OpenConfirm：RFC §6.8 碰撞—关闭 pri_conn
  */
-static void act_collision_dump(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd)
+static void act_collision_dump(bgp_session_t *sess)
 {
     char addr_str[64];
     net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
-    LOG_INFO("BGP FSM: neighbor=%s [%s]: §6.8 collision dump this connection", addr_str,
-             bgp_fsm_state_str(sess->fsm_state));
-    fsm_close_primary(sess, conn, epoll_fd, FALSE, TRUE);
+    LOG_INFO("BGP FSM: neighbor=%s [%s]: §6.8 collision dump pri_conn", addr_str, bgp_fsm_state_str(sess->fsm_state));
+    fsm_close_primary(sess, FALSE, TRUE);
 }
 
 /**
@@ -708,28 +654,18 @@ static void act_collision_dump(bgp_session_t *sess, bgp_conn_t *conn, int epoll_
  *
  * 用于 OpenSent/OpenConfirm 中表中未覆盖的事件。
  */
-static void act_open_fsm_error(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd)
+static void act_open_fsm_error(bgp_session_t *sess)
 {
     char addr_str[64];
     net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
     LOG_WARN("BGP FSM: neighbor=%s [%s]: unexpected event, sending FSM-Error NOTIFICATION", addr_str,
              bgp_fsm_state_str(sess->fsm_state));
+    bgp_conn_t *conn = sess->pri_conn;
     if (conn && conn->fd >= 0 && !conn->is_connecting)
     {
         bgp_pkt_send_notification(conn, BGP_ERR_FSM, 0);
     }
-    fsm_close_primary(sess, conn, epoll_fd, TRUE, TRUE);
-}
-
-/**
- * @brief Event 15（TcpConnectionConfirmed）in OpenSent/OpenConfirm：碰撞期间被动入站
- *
- * conn 已挂入 sess->sec_conn，向其发送 OPEN；fsm_state 保持不变（跟踪 pri_conn）。
- */
-static void act_open_tcp_confirmed(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd)
-{
-    (void)epoll_fd;
-    fsm_send_open(sess, conn);
+    fsm_close_primary(sess, TRUE, TRUE);
 }
 
 /* ---- OpenSent 专用动作 ---- */
@@ -738,12 +674,9 @@ static void act_open_tcp_confirmed(bgp_session_t *sess, bgp_conn_t *conn, int ep
  * @brief Event 19（BGPOpen）in OpenSent：收到合法 OPEN → OpenConfirm
  *
  * bgp_pkt.c 已发送 KEEPALIVE；FSM 只需推进 session 到 OpenConfirm。
- * FSM 只需更新 fsm_state。
  */
-static void act_open_sent_bgp_open(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd)
+static void act_open_sent_bgp_open(bgp_session_t *sess)
 {
-    (void)conn;
-    (void)epoll_fd;
     sess->fsm_state = BGP_FSM_STATE_OPEN_CONFIRM;
 }
 
@@ -755,10 +688,10 @@ static void act_open_sent_bgp_open(bgp_session_t *sess, bgp_conn_t *conn, int ep
  * bgp_pkt.c 已完成握手 KEEPALIVE 接收；FSM 只需进入 Established。
  * FSM 取消重试定时器，启动 KA/Hold 定时器，补发 best-route。
  */
-static void act_open_confirm_keepalive(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd)
+static void act_open_confirm_keepalive(bgp_session_t *sess)
 {
-    bgp_session_cancel_retry(sess, epoll_fd);
-    fsm_on_established(sess, conn, epoll_fd);
+    bgp_session_cancel_retry(sess, fsm_epoll_fd());
+    fsm_on_established(sess);
 }
 
 /* ---- Established 状态动作 ---- */
@@ -766,16 +699,17 @@ static void act_open_confirm_keepalive(bgp_session_t *sess, bgp_conn_t *conn, in
 /**
  * @brief Event 2/8（Stop）in Established：发送 NOTIFICATION Cease → Idle（不重连）
  */
-static void act_estab_stop(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd)
+static void act_estab_stop(bgp_session_t *sess)
 {
     char addr_str[64];
     net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
     LOG_INFO("BGP FSM: neighbor=%s Established: admin stop", addr_str);
+    bgp_conn_t *conn = sess->pri_conn;
     if (conn && conn->fd >= 0)
     {
         bgp_pkt_send_notification(conn, BGP_ERR_CEASE, BGP_CEASE_ADMIN_RESET);
     }
-    fsm_close_all(sess, epoll_fd, TRUE, FALSE);
+    fsm_close_all(sess, TRUE, FALSE);
 }
 
 /**
@@ -783,8 +717,9 @@ static void act_estab_stop(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd)
  *
  * 若发送失败，关闭会话并调度重试 → Active。
  */
-static void act_estab_ka_timer(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd)
+static void act_estab_ka_timer(bgp_session_t *sess)
 {
+    bgp_conn_t *conn = sess->pri_conn;
     if (!conn || conn->fd < 0)
     {
         return;
@@ -794,75 +729,77 @@ static void act_estab_ka_timer(bgp_session_t *sess, bgp_conn_t *conn, int epoll_
         char addr_str[64];
         net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
         LOG_WARN("BGP FSM: neighbor=%s Established: KEEPALIVE send failed, closing", addr_str);
-        bgp_session_cancel_keepalive(sess, epoll_fd);
-        bgp_session_cancel_hold(sess, epoll_fd);
-        fsm_close_all(sess, epoll_fd, TRUE, TRUE);
+        bgp_session_cancel_keepalive(sess, fsm_epoll_fd());
+        bgp_session_cancel_hold(sess, fsm_epoll_fd());
+        fsm_close_all(sess, TRUE, TRUE);
     }
 }
 
 /**
  * @brief Event 10（HoldTimer_Expires）in Established：NOTIFICATION Hold Timer → Active
  */
-static void act_estab_hold_expired(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd)
+static void act_estab_hold_expired(bgp_session_t *sess)
 {
     char addr_str[64];
     net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
     LOG_WARN("BGP FSM: neighbor=%s Established: HoldTimer expired", addr_str);
+    bgp_conn_t *conn = sess->pri_conn;
     if (conn && conn->fd >= 0)
     {
         bgp_pkt_send_notification(conn, BGP_ERR_HOLD_TIMER, 0);
     }
-    bgp_session_cancel_keepalive(sess, epoll_fd);
-    bgp_session_cancel_hold(sess, epoll_fd);
-    fsm_close_all(sess, epoll_fd, TRUE, TRUE);
+    bgp_session_cancel_keepalive(sess, fsm_epoll_fd());
+    bgp_session_cancel_hold(sess, fsm_epoll_fd());
+    fsm_close_all(sess, TRUE, TRUE);
 }
 
 /**
  * @brief Event 25（NotifMsg）in Established：收到 NOTIFICATION → Active
  */
-static void act_estab_notif(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd)
+static void act_estab_notif(bgp_session_t *sess)
 {
     char addr_str[64];
     net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
     LOG_WARN("BGP FSM: neighbor=%s Established: received NOTIFICATION, reconnecting", addr_str);
-    (void)conn;
-    bgp_session_cancel_keepalive(sess, epoll_fd);
-    bgp_session_cancel_hold(sess, epoll_fd);
-    fsm_close_all(sess, epoll_fd, TRUE, TRUE);
+    bgp_session_cancel_keepalive(sess, fsm_epoll_fd());
+    bgp_session_cancel_hold(sess, fsm_epoll_fd());
+    fsm_close_all(sess, TRUE, TRUE);
 }
 
 /**
  * @brief Event 28（UpdateMsgErr）in Established：NOTIFICATION UPDATE-Error → Active
  */
-static void act_estab_update_err(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd)
+static void act_estab_update_err(bgp_session_t *sess)
 {
     char addr_str[64];
     net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
     LOG_WARN("BGP FSM: neighbor=%s Established: UPDATE error, sending NOTIFICATION", addr_str);
+    bgp_conn_t *conn = sess->pri_conn;
     if (conn && conn->fd >= 0)
     {
         bgp_pkt_send_notification(conn, BGP_ERR_UPDATE, 0);
     }
-    bgp_session_cancel_keepalive(sess, epoll_fd);
-    bgp_session_cancel_hold(sess, epoll_fd);
-    fsm_close_all(sess, epoll_fd, TRUE, TRUE);
+    bgp_session_cancel_keepalive(sess, fsm_epoll_fd());
+    bgp_session_cancel_hold(sess, fsm_epoll_fd());
+    fsm_close_all(sess, TRUE, TRUE);
 }
 
 /**
  * @brief 未预期事件的默认处理（Established）：发 NOTIFICATION FSM-Error → Active
  */
-static void act_estab_fsm_error(bgp_session_t *sess, bgp_conn_t *conn, int epoll_fd)
+static void act_estab_fsm_error(bgp_session_t *sess)
 {
     char addr_str[64];
     net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
     LOG_WARN("BGP FSM: neighbor=%s Established: unexpected event, sending FSM-Error NOTIFICATION", addr_str);
+    bgp_conn_t *conn = sess->pri_conn;
     if (conn && conn->fd >= 0)
     {
         bgp_pkt_send_notification(conn, BGP_ERR_FSM, 0);
     }
-    bgp_session_cancel_keepalive(sess, epoll_fd);
-    bgp_session_cancel_hold(sess, epoll_fd);
-    fsm_close_all(sess, epoll_fd, TRUE, TRUE);
+    bgp_session_cancel_keepalive(sess, fsm_epoll_fd());
+    bgp_session_cancel_hold(sess, fsm_epoll_fd());
+    fsm_close_all(sess, TRUE, TRUE);
 }
 
 // ============================================================================
@@ -886,13 +823,13 @@ static const bgp_fsm_action_fn fsm_table[BGP_FSM_STATE_MAX][BGP_EVT_MAX] = {
     /* ----- Connect (1) ----- */
     [BGP_FSM_STATE_CONNECT] =
         {
-            [BGP_EVT_MANUAL_STOP] = act_connect_stop,                       /* Event 2 */
-            [BGP_EVT_AUTO_STOP] = act_connect_stop,                         /* Event 8 */
-            [BGP_EVT_CONNECT_RETRY_EXPIRED] = act_connect_retry_expired,    /* Event 9 */
-            [BGP_EVT_TCP_CR_ACKED] = act_connect_tcp_acked,                 /* Event 14 */
-            [BGP_EVT_TCP_CONNECTION_CONFIRMED] = act_connect_tcp_confirmed, /* Event 15 */
-            [BGP_EVT_TCP_CR_FATAL] = act_connect_tcp_fails,                 /* Event 16 */
-            [BGP_EVT_TCP_CONNECTION_FAILS] = act_connect_tcp_fails,         /* Event 17 */
+            [BGP_EVT_MANUAL_STOP] = act_connect_stop,                    /* Event 2 */
+            [BGP_EVT_AUTO_STOP] = act_connect_stop,                      /* Event 8 */
+            [BGP_EVT_CONNECT_RETRY_EXPIRED] = act_connect_retry_expired, /* Event 9 */
+            [BGP_EVT_TCP_CR_ACKED] = act_connect_tcp_acked,              /* Event 14 */
+            [BGP_EVT_TCP_CR_FATAL] = act_connect_tcp_fails,              /* Event 16 */
+            [BGP_EVT_TCP_CONNECTION_FAILS] = act_connect_tcp_fails,      /* Event 17 */
+            /* Event 15 (TcpConnectionConfirmed) 碰撞由调用方处理 sec_conn，不经 FSM */
         },
 
     /* ----- Active (2) ----- */
@@ -907,35 +844,35 @@ static const bgp_fsm_action_fn fsm_table[BGP_FSM_STATE_MAX][BGP_EVT_MAX] = {
     /* ----- OpenSent (3) ----- */
     [BGP_FSM_STATE_OPEN_SENT] =
         {
-            [BGP_EVT_MANUAL_STOP] = act_open_stop,                       /* Event 2 */
-            [BGP_EVT_AUTO_STOP] = act_open_stop,                         /* Event 8 */
-            [BGP_EVT_HOLD_TIMER_EXPIRED] = act_open_hold_expired,        /* Event 10 */
-            [BGP_EVT_TCP_CR_FATAL] = act_open_tcp_fails,                 /* Event 16 */
-            [BGP_EVT_TCP_CONNECTION_FAILS] = act_open_tcp_fails,         /* Event 17 */
-            [BGP_EVT_BGP_OPEN] = act_open_sent_bgp_open,                 /* Event 19 */
-            [BGP_EVT_BGP_HEADER_ERR] = act_open_bgp_err,                 /* Event 21 */
-            [BGP_EVT_BGP_OPEN_MSG_ERR] = act_open_bgp_err,               /* Event 22 */
-            [BGP_EVT_OPEN_COLLISION_DUMP] = act_collision_dump,          /* Event 23 */
-            [BGP_EVT_NOTIF_MSG_VER_ERR] = act_open_notif_ver_err,        /* Event 24 */
-            [BGP_EVT_NOTIF_MSG] = act_open_notif,                        /* Event 25 */
-            [BGP_EVT_TCP_CONNECTION_CONFIRMED] = act_open_tcp_confirmed, /* Event 15 碰撞 */
+            [BGP_EVT_MANUAL_STOP] = act_open_stop,                /* Event 2 */
+            [BGP_EVT_AUTO_STOP] = act_open_stop,                  /* Event 8 */
+            [BGP_EVT_HOLD_TIMER_EXPIRED] = act_open_hold_expired, /* Event 10 */
+            [BGP_EVT_TCP_CR_FATAL] = act_open_tcp_fails,          /* Event 16 */
+            [BGP_EVT_TCP_CONNECTION_FAILS] = act_open_tcp_fails,  /* Event 17 */
+            [BGP_EVT_BGP_OPEN] = act_open_sent_bgp_open,          /* Event 19 */
+            [BGP_EVT_BGP_HEADER_ERR] = act_open_bgp_err,          /* Event 21 */
+            [BGP_EVT_BGP_OPEN_MSG_ERR] = act_open_bgp_err,        /* Event 22 */
+            [BGP_EVT_OPEN_COLLISION_DUMP] = act_collision_dump,   /* Event 23 */
+            [BGP_EVT_NOTIF_MSG_VER_ERR] = act_open_notif_ver_err, /* Event 24 */
+            [BGP_EVT_NOTIF_MSG] = act_open_notif,                 /* Event 25 */
+            /* Event 15 碰撞由调用方处理 sec_conn，不经 FSM */
         },
 
     /* ----- OpenConfirm (4) ----- */
     [BGP_FSM_STATE_OPEN_CONFIRM] =
         {
-            [BGP_EVT_MANUAL_STOP] = act_open_stop,                       /* Event 2 */
-            [BGP_EVT_AUTO_STOP] = act_open_stop,                         /* Event 8 */
-            [BGP_EVT_HOLD_TIMER_EXPIRED] = act_open_hold_expired,        /* Event 10 */
-            [BGP_EVT_TCP_CR_FATAL] = act_open_tcp_fails,                 /* Event 16 */
-            [BGP_EVT_TCP_CONNECTION_FAILS] = act_open_tcp_fails,         /* Event 17 */
-            [BGP_EVT_BGP_HEADER_ERR] = act_open_bgp_err,                 /* Event 21 */
-            [BGP_EVT_BGP_OPEN_MSG_ERR] = act_open_bgp_err,               /* Event 22 */
-            [BGP_EVT_OPEN_COLLISION_DUMP] = act_collision_dump,          /* Event 23 */
-            [BGP_EVT_NOTIF_MSG_VER_ERR] = act_open_notif_ver_err,        /* Event 24 */
-            [BGP_EVT_NOTIF_MSG] = act_open_notif,                        /* Event 25 */
-            [BGP_EVT_KEEPALIVE_MSG] = act_open_confirm_keepalive,        /* Event 26 */
-            [BGP_EVT_TCP_CONNECTION_CONFIRMED] = act_open_tcp_confirmed, /* Event 15 碰撞 */
+            [BGP_EVT_MANUAL_STOP] = act_open_stop,                /* Event 2 */
+            [BGP_EVT_AUTO_STOP] = act_open_stop,                  /* Event 8 */
+            [BGP_EVT_HOLD_TIMER_EXPIRED] = act_open_hold_expired, /* Event 10 */
+            [BGP_EVT_TCP_CR_FATAL] = act_open_tcp_fails,          /* Event 16 */
+            [BGP_EVT_TCP_CONNECTION_FAILS] = act_open_tcp_fails,  /* Event 17 */
+            [BGP_EVT_BGP_HEADER_ERR] = act_open_bgp_err,          /* Event 21 */
+            [BGP_EVT_BGP_OPEN_MSG_ERR] = act_open_bgp_err,        /* Event 22 */
+            [BGP_EVT_OPEN_COLLISION_DUMP] = act_collision_dump,   /* Event 23 */
+            [BGP_EVT_NOTIF_MSG_VER_ERR] = act_open_notif_ver_err, /* Event 24 */
+            [BGP_EVT_NOTIF_MSG] = act_open_notif,                 /* Event 25 */
+            [BGP_EVT_KEEPALIVE_MSG] = act_open_confirm_keepalive, /* Event 26 */
+            /* Event 15 碰撞由调用方处理 sec_conn，不经 FSM */
         },
 
     /* ----- Established (5) ----- */
@@ -955,7 +892,7 @@ static const bgp_fsm_action_fn fsm_table[BGP_FSM_STATE_MAX][BGP_EVT_MAX] = {
 // 统一事件入口
 // ============================================================================
 
-void bgp_fsm_event(bgp_session_t *sess, bgp_conn_t *conn, bgp_fsm_event_t evt, int epoll_fd)
+void bgp_fsm_event(bgp_session_t *sess, bgp_fsm_event_t evt)
 {
     if (!sess)
     {
@@ -980,22 +917,22 @@ void bgp_fsm_event(bgp_session_t *sess, bgp_conn_t *conn, bgp_fsm_event_t evt, i
 
     if (action)
     {
-        action(sess, conn, epoll_fd);
+        action(sess);
     }
     else
     {
         /* 表中 NULL 条目：根据当前状态选择默认处理 */
         if (sess->fsm_state == BGP_FSM_STATE_OPEN_SENT || sess->fsm_state == BGP_FSM_STATE_OPEN_CONFIRM)
         {
-            act_open_fsm_error(sess, conn, epoll_fd);
+            act_open_fsm_error(sess);
         }
         else if (sess->fsm_state == BGP_FSM_STATE_ESTABLISHED)
         {
-            act_estab_fsm_error(sess, conn, epoll_fd);
+            act_estab_fsm_error(sess);
         }
         else
         {
-            act_warn_ignore(sess, conn, epoll_fd);
+            act_warn_ignore(sess);
         }
     }
 

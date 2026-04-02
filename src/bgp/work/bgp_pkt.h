@@ -92,11 +92,11 @@ int bgp_pkt_send_withdraw(bgp_conn_t *conn, const bgp_nlri_entry_t *nlri);
  * @brief 接收并处理对端数据，按完整 BGP PDU 驱动 session 级协议状态
  *
  * 内部直接派发 FSM 事件和碰撞处理，调用方无需额外处理返回值。
+ * 仅 pri_conn 的事件经过 FSM；sec_conn 事件在此函数内直接处理（关闭/提升）。
  *
- * @param conn     连接处理器
- * @param epoll_fd BGP server 的 epoll fd
+ * @param conn 连接处理器
  */
-void bgp_pkt_on_data(bgp_conn_t *conn, int epoll_fd);
+void bgp_pkt_on_data(bgp_conn_t *conn);
 
 /**
  * @brief 注册所有内置 AF 编码器（幂等，在 bgp_module_init 中调用一次）

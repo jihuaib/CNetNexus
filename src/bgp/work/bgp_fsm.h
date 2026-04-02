@@ -11,7 +11,6 @@
 
 /* 前向声明，避免循环包含 */
 struct bgp_session;
-struct bgp_conn;
 
 /**
  * @brief BGP FSM 状态（RFC 4271 §8.2.2）
@@ -83,16 +82,13 @@ typedef enum bgp_fsm_event
  * 所有状态变迁（定时器操作、连接管理、报文发送）均经此函数完成。
  * 调用方无需关心当前状态，FSM 自动选择正确的处理路径。
  *
- * conn 参数使用说明：
- *   - TCP/报文事件（14-28）：传入触发该事件的具体连接（可为 pri_conn 或 sec_conn）
- *   - 管理/定时器事件（1-13）：传入 sess->pri_conn 或 NULL
+ * FSM 内部统一使用 sess->pri_conn 和 g_bgp_work_local->epoll_fd，
+ * sec_conn 的事件由调用方在调用 FSM 之前自行处理（关闭/提升）。
  *
- * @param sess     目标会话（不可为 NULL）
- * @param conn     触发事件的连接对象（管理/定时器事件可为 NULL）
- * @param evt      RFC 4271 事件类型
- * @param epoll_fd BGP worker 的 epoll fd（用于定时器和连接的 epoll 操作）
+ * @param sess 目标会话（不可为 NULL）
+ * @param evt  RFC 4271 事件类型
  */
-void bgp_fsm_event(struct bgp_session *sess, struct bgp_conn *conn, bgp_fsm_event_t evt, int epoll_fd);
+void bgp_fsm_event(struct bgp_session *sess, bgp_fsm_event_t evt);
 
 /**
  * @brief 返回 FSM 状态名称字符串（用于日志）

@@ -91,10 +91,11 @@ static int handle_bmp_instance(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 
     /* 从参数中获取实例名 */
     cli_tlv_entry_t entry;
-    while (cli_tlv_next(parser, &entry) == 0)
+    while (cli_tlv_next(parser, &entry) == 1)
     {
         if (CLI_TLV_IS_CTX(&entry))
         {
+            cli_tlv_entry_free(&entry);
             continue;
         }
         if (entry.cfg_id == 1 && entry.value && entry.length > 0)
@@ -105,6 +106,7 @@ static int handle_bmp_instance(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                 snprintf(apply.u.bmp_instance.name, sizeof(apply.u.bmp_instance.name), "%s", s);
             }
         }
+        cli_tlv_entry_free(&entry);
     }
 
     if (apply.u.bmp_instance.name[0] == '\0')
@@ -160,11 +162,12 @@ static int handle_bmp_collector(dev_ipc_message_t *msg, cli_tlv_parser_t *parser
     uint16_t port = 0;
 
     cli_tlv_entry_t entry;
-    while (cli_tlv_next(parser, &entry) == 0)
+    while (cli_tlv_next(parser, &entry) == 1)
     {
         if (CLI_TLV_IS_CTX(&entry))
         {
             bgp_bmp_cli_ctx_parse(&ctx, &entry);
+            cli_tlv_entry_free(&entry);
             continue;
         }
         if (entry.cfg_id == 1 && entry.value && entry.length > 0)
@@ -177,6 +180,7 @@ static int handle_bmp_collector(dev_ipc_message_t *msg, cli_tlv_parser_t *parser
         {
             port = (uint16_t)cli_tlv_entry_get_int(&entry);
         }
+        cli_tlv_entry_free(&entry);
     }
 
     if (ctx.inst_name[0] == '\0')
@@ -246,17 +250,19 @@ static int handle_bmp_stats_interval(dev_ipc_message_t *msg, cli_tlv_parser_t *p
     bgp_bmp_cli_ctx_t ctx = bgp_bmp_cli_ctx_default();
 
     cli_tlv_entry_t entry;
-    while (cli_tlv_next(parser, &entry) == 0)
+    while (cli_tlv_next(parser, &entry) == 1)
     {
         if (CLI_TLV_IS_CTX(&entry))
         {
             bgp_bmp_cli_ctx_parse(&ctx, &entry);
+            cli_tlv_entry_free(&entry);
             continue;
         }
         if (entry.cfg_id == 1)
         {
             apply.u.bmp_stats.interval = (uint16_t)cli_tlv_entry_get_int(&entry);
         }
+        cli_tlv_entry_free(&entry);
     }
 
     if (ctx.inst_name[0] == '\0')
@@ -306,17 +312,19 @@ static int handle_bmp_reconnect(dev_ipc_message_t *msg, cli_tlv_parser_t *parser
     bgp_bmp_cli_ctx_t ctx = bgp_bmp_cli_ctx_default();
 
     cli_tlv_entry_t entry;
-    while (cli_tlv_next(parser, &entry) == 0)
+    while (cli_tlv_next(parser, &entry) == 1)
     {
         if (CLI_TLV_IS_CTX(&entry))
         {
             bgp_bmp_cli_ctx_parse(&ctx, &entry);
+            cli_tlv_entry_free(&entry);
             continue;
         }
         if (entry.cfg_id == 1)
         {
             apply.u.bmp_reconnect.interval = (uint16_t)cli_tlv_entry_get_int(&entry);
         }
+        cli_tlv_entry_free(&entry);
     }
 
     if (ctx.inst_name[0] == '\0')
@@ -367,11 +375,12 @@ static int handle_bmp_monitor(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     char ip_buf[64] = {0};
 
     cli_tlv_entry_t entry;
-    while (cli_tlv_next(parser, &entry) == 0)
+    while (cli_tlv_next(parser, &entry) == 1)
     {
         if (CLI_TLV_IS_CTX(&entry))
         {
             bgp_bmp_cli_ctx_parse(&ctx, &entry);
+            cli_tlv_entry_free(&entry);
             continue;
         }
         if (entry.cfg_id == 1)
@@ -386,6 +395,7 @@ static int handle_bmp_monitor(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             memcpy(ip_buf, entry.value, len);
             ip_buf[len] = '\0';
         }
+        cli_tlv_entry_free(&entry);
     }
 
     if (ctx.inst_name[0] == '\0')

@@ -758,14 +758,36 @@ static void bgp_pkt_set_primary_conn(bgp_session_t *sess, bgp_conn_t *winner)
     }
 }
 
-void bgp_pkt_on_data(bgp_conn_t *conn, int epoll_fd)
+/**
+ * @brief sec_conn 出错或收到非 OPEN 报文时，直接关闭 sec_conn（不走 FSM）
+ */
+static void pkt_close_sec(bgp_session_t *sess)
+{
+    bgp_conn_close(sess, &sess->sec_conn, g_bgp_work_local->epoll_fd);
+}
+
+/**
+ * @brief 连接出错时的统一处理：sec_conn 直接关闭，pri_conn 走 FSM
+ */
+static void pkt_conn_error(bgp_session_t *sess, bgp_conn_t *conn, bgp_fsm_event_t evt)
+{
+    if (conn == sess->sec_conn)
+    {
+        pkt_close_sec(sess);
+    }
+    else
+    {
+        bgp_fsm_event(sess, evt);
+    }
+}
+
+void bgp_pkt_on_data(bgp_conn_t *conn)
 {
     uint8_t header[BGP_MSG_HEADER_SIZE];
     uint8_t frame[BGP_RECV_BUF_SIZE];
 
     if (!conn || !conn->session)
     {
-        bgp_fsm_event(conn->session, conn, BGP_EVT_TCP_CONNECTION_FAILS, epoll_fd);
         return;
     }
 
@@ -780,7 +802,7 @@ void bgp_pkt_on_data(bgp_conn_t *conn, int epoll_fd)
         if (n == 0)
         {
             LOG_INFO("BGP: peer %s closed connection", _ip);
-            bgp_fsm_event(sess, conn, BGP_EVT_TCP_CONNECTION_FAILS, epoll_fd);
+            pkt_conn_error(sess, conn, BGP_EVT_TCP_CONNECTION_FAILS);
             return;
         }
         if (n < 0)
@@ -790,7 +812,7 @@ void bgp_pkt_on_data(bgp_conn_t *conn, int epoll_fd)
                 return;
             }
             LOG_PERROR("BGP: recv from %s failed", _ip);
-            bgp_fsm_event(sess, conn, BGP_EVT_TCP_CONNECTION_FAILS, epoll_fd);
+            pkt_conn_error(sess, conn, BGP_EVT_TCP_CONNECTION_FAILS);
             return;
         }
         if ((size_t)n < sizeof(header))
@@ -801,7 +823,7 @@ void bgp_pkt_on_data(bgp_conn_t *conn, int epoll_fd)
         if (memcmp(header, BGP_MARKER, 16) != 0)
         {
             LOG_ERROR("BGP: peer %s Marker validation failed, closing connection", _ip);
-            bgp_fsm_event(sess, conn, BGP_EVT_BGP_HEADER_ERR, epoll_fd);
+            pkt_conn_error(sess, conn, BGP_EVT_BGP_HEADER_ERR);
             return;
         }
 
@@ -812,7 +834,7 @@ void bgp_pkt_on_data(bgp_conn_t *conn, int epoll_fd)
         if (msg_len < BGP_MSG_HEADER_SIZE || msg_len > BGP_RECV_BUF_SIZE)
         {
             LOG_ERROR("BGP: peer %s message length %u invalid", _ip, msg_len);
-            bgp_fsm_event(sess, conn, BGP_EVT_BGP_HEADER_ERR, epoll_fd);
+            pkt_conn_error(sess, conn, BGP_EVT_BGP_HEADER_ERR);
             return;
         }
 
@@ -820,7 +842,7 @@ void bgp_pkt_on_data(bgp_conn_t *conn, int epoll_fd)
         if (n == 0)
         {
             LOG_INFO("BGP: peer %s closed connection", _ip);
-            bgp_fsm_event(sess, conn, BGP_EVT_TCP_CONNECTION_FAILS, epoll_fd);
+            pkt_conn_error(sess, conn, BGP_EVT_TCP_CONNECTION_FAILS);
             return;
         }
         if (n < 0)
@@ -830,7 +852,7 @@ void bgp_pkt_on_data(bgp_conn_t *conn, int epoll_fd)
                 return;
             }
             LOG_PERROR("BGP: recv from %s failed", _ip);
-            bgp_fsm_event(sess, conn, BGP_EVT_TCP_CONNECTION_FAILS, epoll_fd);
+            pkt_conn_error(sess, conn, BGP_EVT_TCP_CONNECTION_FAILS);
             return;
         }
         if (n < msg_len)
@@ -842,19 +864,19 @@ void bgp_pkt_on_data(bgp_conn_t *conn, int epoll_fd)
         if (n == 0)
         {
             LOG_INFO("BGP: peer %s closed connection", _ip);
-            bgp_fsm_event(sess, conn, BGP_EVT_TCP_CONNECTION_FAILS, epoll_fd);
+            pkt_conn_error(sess, conn, BGP_EVT_TCP_CONNECTION_FAILS);
             return;
         }
         if (n < 0)
         {
             LOG_PERROR("BGP: recv from %s failed", _ip);
-            bgp_fsm_event(sess, conn, BGP_EVT_TCP_CONNECTION_FAILS, epoll_fd);
+            pkt_conn_error(sess, conn, BGP_EVT_TCP_CONNECTION_FAILS);
             return;
         }
         if (n != msg_len)
         {
             LOG_ERROR("BGP: peer %s short read: expected %u got %zd", _ip, msg_len, n);
-            bgp_fsm_event(sess, conn, BGP_EVT_TCP_CONNECTION_FAILS, epoll_fd);
+            pkt_conn_error(sess, conn, BGP_EVT_TCP_CONNECTION_FAILS);
             return;
         }
 
@@ -868,10 +890,11 @@ void bgp_pkt_on_data(bgp_conn_t *conn, int epoll_fd)
             {
                 if (parse_bgp_open(conn, body, body_len) < 0)
                 {
-                    bgp_fsm_event(sess, conn, BGP_EVT_BGP_OPEN_MSG_ERR, epoll_fd);
+                    pkt_conn_error(sess, conn, BGP_EVT_BGP_OPEN_MSG_ERR);
                     return;
                 }
 
+                /* §6.8 碰撞检测：两条连接同时存在时比较 BGP Router-ID */
                 if (sess->pri_conn && sess->sec_conn)
                 {
                     uint32_t local_id_n = sess->local_router_id;
@@ -891,7 +914,14 @@ void bgp_pkt_on_data(bgp_conn_t *conn, int epoll_fd)
                     if (local_id_n == remote_id_n)
                     {
                         LOG_WARN("BGP: %s §6.8 collision: BGP ID equal, closing current connection", _ip);
-                        bgp_fsm_event(sess, conn, BGP_EVT_OPEN_COLLISION_DUMP, epoll_fd);
+                        if (conn == sess->sec_conn)
+                        {
+                            pkt_close_sec(sess);
+                        }
+                        else
+                        {
+                            bgp_fsm_event(sess, BGP_EVT_OPEN_COLLISION_DUMP);
+                        }
                         return;
                     }
 
@@ -903,45 +933,53 @@ void bgp_pkt_on_data(bgp_conn_t *conn, int epoll_fd)
                     {
                         LOG_INFO("BGP: %s §6.8 collision: closing this %s connection", _ip,
                                  conn->is_active ? "active" : "passive");
-                        bgp_fsm_event(sess, conn, BGP_EVT_OPEN_COLLISION_DUMP, epoll_fd);
+                        if (conn == sess->sec_conn)
+                        {
+                            pkt_close_sec(sess);
+                        }
+                        else
+                        {
+                            bgp_fsm_event(sess, BGP_EVT_OPEN_COLLISION_DUMP);
+                        }
                         return;
                     }
 
+                    /* 当前连接胜出：提升为 pri_conn，关闭败方 */
                     LOG_INFO("BGP: %s §6.8 collision: keeping this %s connection, closing other", _ip,
                              conn->is_active ? "active" : "passive");
                     bgp_pkt_set_primary_conn(sess, conn);
-                    bgp_conn_close(sess, &sess->sec_conn, epoll_fd);
+                    bgp_conn_close(sess, &sess->sec_conn, g_bgp_work_local->epoll_fd);
                 }
                 else
                 {
                     bgp_pkt_set_primary_conn(sess, conn);
                 }
 
-                if (bgp_pkt_send_keepalive(conn) < 0)
+                /* conn 现在一定是 sess->pri_conn */
+                if (bgp_pkt_send_keepalive(sess->pri_conn) < 0)
                 {
-                    bgp_fsm_event(sess, conn, BGP_EVT_TCP_CONNECTION_FAILS, epoll_fd);
+                    bgp_fsm_event(sess, BGP_EVT_TCP_CONNECTION_FAILS);
                     return;
                 }
 
-                bgp_conn_t *fsm_conn = sess->pri_conn ? sess->pri_conn : conn;
-                bgp_fsm_event(sess, fsm_conn, BGP_EVT_BGP_OPEN, epoll_fd);
+                bgp_fsm_event(sess, BGP_EVT_BGP_OPEN);
                 break;
             }
 
             case BGP_MSG_KEEPALIVE:
             {
+                /* sec_conn 收到 KEEPALIVE：不应发生，直接关闭 */
                 if (conn != sess->pri_conn)
                 {
-                    LOG_WARN("BGP: peer %s KEEPALIVE received on secondary connection", _ip);
-                    bgp_fsm_event(sess, conn, BGP_EVT_OPEN_COLLISION_DUMP, epoll_fd);
+                    LOG_WARN("BGP: peer %s KEEPALIVE received on secondary connection, closing it", _ip);
+                    pkt_close_sec(sess);
                     return;
                 }
 
                 if (sess->fsm_state == BGP_FSM_STATE_OPEN_CONFIRM)
                 {
                     LOG_INFO("BGP: Session established with %s (AS%u)", _ip, sess->remote_as);
-                    bgp_conn_t *fsm_conn = sess->pri_conn ? sess->pri_conn : conn;
-                    bgp_fsm_event(sess, fsm_conn, BGP_EVT_KEEPALIVE_MSG, epoll_fd);
+                    bgp_fsm_event(sess, BGP_EVT_KEEPALIVE_MSG);
                 }
                 else if (sess->fsm_state == BGP_FSM_STATE_ESTABLISHED)
                 {
@@ -952,7 +990,7 @@ void bgp_pkt_on_data(bgp_conn_t *conn, int epoll_fd)
                 {
                     LOG_WARN("BGP: peer %s unexpected KEEPALIVE while session in %s", _ip,
                              bgp_fsm_state_str(sess->fsm_state));
-                    bgp_fsm_event(sess, conn, BGP_EVT_KEEPALIVE_MSG, epoll_fd);
+                    bgp_fsm_event(sess, BGP_EVT_KEEPALIVE_MSG);
                     return;
                 }
                 break;
@@ -960,11 +998,12 @@ void bgp_pkt_on_data(bgp_conn_t *conn, int epoll_fd)
 
             case BGP_MSG_UPDATE:
             {
+                /* sec_conn 或非 ESTABLISHED 状态收到 UPDATE：异常 */
                 if (conn != sess->pri_conn || sess->fsm_state != BGP_FSM_STATE_ESTABLISHED)
                 {
                     LOG_WARN("BGP: peer %s unexpected UPDATE while session in %s", _ip,
                              bgp_fsm_state_str(sess->fsm_state));
-                    bgp_fsm_event(sess, conn, BGP_EVT_UPDATE_MSG, epoll_fd);
+                    pkt_conn_error(sess, conn, BGP_EVT_UPDATE_MSG);
                     return;
                 }
 
@@ -985,7 +1024,7 @@ void bgp_pkt_on_data(bgp_conn_t *conn, int epoll_fd)
                 else
                 {
                     LOG_WARN("BGP: %s UPDATE parse failed", _ip);
-                    bgp_fsm_event(sess, conn, BGP_EVT_UPDATE_MSG_ERR, epoll_fd);
+                    bgp_fsm_event(sess, BGP_EVT_UPDATE_MSG_ERR);
                     return;
                 }
 
@@ -1011,13 +1050,13 @@ void bgp_pkt_on_data(bgp_conn_t *conn, int epoll_fd)
                 {
                     LOG_WARN("BGP: Received %s NOTIFICATION message, closing session", _ip);
                 }
-                bgp_fsm_event(sess, conn, close_evt, epoll_fd);
+                pkt_conn_error(sess, conn, close_evt);
                 return;
             }
 
             default:
                 LOG_WARN("BGP: peer %s unknown message type %u, closing connection", _ip, msg_type);
-                bgp_fsm_event(sess, conn, BGP_EVT_BGP_HEADER_ERR, epoll_fd);
+                pkt_conn_error(sess, conn, BGP_EVT_BGP_HEADER_ERR);
                 return;
         }
     }
