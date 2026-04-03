@@ -14,6 +14,7 @@
 #include <unistd.h>
 
 #include "bgp_session.h"
+#include "bgp_worker.h"
 #include "log.h"
 
 /** BGP 协议标准端口 */
@@ -260,6 +261,13 @@ void bgp_conn_close(struct bgp_session *sess, bgp_conn_t **slot, int epoll_fd)
     {
         epoll_ctl(epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
     }
-    bgp_conn_destroy(conn);
+    /*
+     * 不立即 g_free：同批 epoll 事件可能仍持有此 conn 指针。
+     * bgp_conn_cleanup 关闭 fd 并置 fd=-1，epoll 循环的
+     * conn->fd < 0 检查会安全跳过。延迟到 epoll 循环结束后释放。
+     */
+    bgp_conn_cleanup(conn);
+    conn->session = NULL;
+    g_bgp_work_local->deferred_conns = g_slist_prepend(g_bgp_work_local->deferred_conns, conn);
     *slot = NULL;
 }

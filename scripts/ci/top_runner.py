@@ -576,12 +576,18 @@ class TopologyRuntime:
                 new_cli.cmd("show version", strict=False, timeout=min(8, self.cmd_timeout))
 
                 self.cli_map[device] = new_cli
+
+                # 等待所有模块 Phase=READY 且 IPC=up，再返回给调用方
+                from module_runner import wait_device_modules_ready
+                remaining = max(10, int(deadline - time.time()))
+                wait_device_modules_ready(self, device, timeout=remaining)
                 return
             except Exception as exc:
                 last_err = exc
                 try:
                     if new_cli is not None:
                         new_cli.close()
+                        self.cli_map.pop(device, None)
                 except Exception:
                     pass
                 time.sleep(1)

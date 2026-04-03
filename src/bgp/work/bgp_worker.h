@@ -50,6 +50,15 @@ typedef struct bgp_work_local
     GAsyncQueue *cmd_queue;  /**< 队列元素：bgp_worker_cmd_t*（定义在 work/bgp_worker.c） */
     int work_eventfd;        /**< 工作事件唤醒 eventfd，-1 表示未创建 */
     GAsyncQueue *work_queue; /**< 工作事件队列 */
+
+    /**
+     * @brief 延迟释放的 bgp_conn_t 列表
+     *
+     * epoll 事件处理过程中关闭的连接不能立即 g_free（同批 epoll 事件可能仍持有
+     * 该指针），因此先 close(fd) + 设 fd=-1 后加入此列表，epoll 循环每轮结束后
+     * 统一调用 bgp_worker_flush_deferred_conns() 释放。
+     */
+    GSList *deferred_conns;
 } bgp_work_local_t;
 
 extern bgp_work_local_t *g_bgp_work_local;
@@ -321,6 +330,14 @@ void bgp_server_reset_all_sessions(struct bgp_vrf *vrf);
  * @brief 按当前 VRF connect-retry 配置，重排已挂起的 retry 定时器
  */
 void bgp_server_rearm_retry_timers(struct bgp_vrf *vrf);
+
+/**
+ * @brief 释放延迟释放列表中的所有 bgp_conn_t
+ *
+ * 在 epoll 循环每轮 for 循环结束后调用，确保同批事件处理期间
+ * 被关闭的连接指针不会被意外 g_free。
+ */
+void bgp_worker_flush_deferred_conns(void);
 
 /**
  * @brief 停止 runtime server（发送 shutdown、join、释放 server 资源）

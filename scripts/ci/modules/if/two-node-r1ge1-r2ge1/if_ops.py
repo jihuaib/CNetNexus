@@ -59,6 +59,22 @@ def _wait_route_state(
     )
 
 
+def _cleanup(rt: TopologyRuntime, if_name: str, cfg_ip: str, cfg_prefix: int) -> None:
+    run_cmds(
+        rt=rt,
+        device="r1",
+        strict=False,
+        commands=[
+            "config",
+            f"if {if_name}",
+            f"ip address {cfg_ip} {cfg_prefix}",
+            "no shutdown",
+            "exit",
+            "end",
+        ],
+    )
+
+
 def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
     require_devices(top, ("r1", "r2"))
 
@@ -70,6 +86,25 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
     host_show = f"show route ipv4 {cfg_ip}"
     show_cmd = f"show if {if_name}"
 
+    try:
+        _run_inner(rt, if_name, cfg_ip, cfg_prefix, net, net_show, host_show, show_cmd)
+    finally:
+        step("Restore baseline interface config on r1 GE-1")
+        _cleanup(rt, if_name, cfg_ip, cfg_prefix)
+
+    print("IF operation check passed.")
+
+
+def _run_inner(
+    rt: TopologyRuntime,
+    if_name: str,
+    cfg_ip: str,
+    cfg_prefix: int,
+    net: str,
+    net_show: str,
+    host_show: str,
+    show_cmd: str,
+) -> None:
     step("Configure IP address on r1 GE-1")
     run_cmds(
         rt=rt,
@@ -291,7 +326,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         timeout=10,
     )
 
-    step("Restore baseline interface config on r1 GE-1")
+    step("Verify baseline interface config on r1 GE-1")
     run_cmds(
         rt=rt,
         device="r1",
@@ -339,5 +374,3 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         expect_if=if_name,
         timeout=10,
     )
-
-    print("IF operation check passed.")

@@ -12,6 +12,7 @@ usage() {
 Usage: scripts/dev/build-docker-image.sh [options]
 
 Options:
+  --release                    Build release image (default: debug)
   --docker-image <name[:tag]>  Add one extra docker tag for this build.
                                Examples:
                                  --docker-image netnexus-ci:localtest
@@ -29,8 +30,15 @@ EOF
 }
 
 EXTRA_DOCKER_IMAGE=""
+BUILD_TARGET="debug"
+BUILD_TYPE="Debug"
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --release)
+            BUILD_TARGET="production"
+            BUILD_TYPE="Release"
+            shift
+            ;;
         --docker-image)
             if [[ -z "${2:-}" ]]; then
                 echo "Error: --docker-image requires a value" >&2
@@ -111,10 +119,14 @@ fi
 
 # Build with multiple tags
 # --network=host 让构建容器复用宿主机网络，解决容器内 DNS 解析失败的问题
+echo "Build target: ${BUILD_TARGET} (${BUILD_TYPE})"
+echo ""
+
 docker build \
     --network=host \
     "${PLATFORM_FLAG[@]}" \
-    --target production \
+    --target ${BUILD_TARGET} \
+    --build-arg BUILD_TYPE=${BUILD_TYPE} \
     --build-arg VERSION=${VERSION} \
     --build-arg GIT_COMMIT=${GIT_COMMIT} \
     "${BUILD_TAGS[@]}" \

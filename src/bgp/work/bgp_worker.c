@@ -1303,8 +1303,12 @@ static void *bgp_worker_thread(void *arg)
                 bgp_pkt_on_data(conn);
             }
         }
+
+        /* 释放本轮 epoll 事件处理期间关闭的连接 */
+        bgp_worker_flush_deferred_conns();
     }
 
+    bgp_worker_flush_deferred_conns();
     bgp_worker_runtime_cleanup();
     return NULL;
 }
@@ -1337,6 +1341,17 @@ void bgp_server_stop_session_conns(bgp_session_t *session)
     (void)bgp_vrf_purge_session_routes(session->vrf, &session->neighbor_addr);
     bgp_session_reset_negotiated(session);
     session->fsm_state = BGP_FSM_STATE_IDLE;
+}
+
+void bgp_worker_flush_deferred_conns(void)
+{
+    GSList *list = g_bgp_work_local->deferred_conns;
+    g_bgp_work_local->deferred_conns = NULL;
+    for (GSList *n = list; n; n = n->next)
+    {
+        g_free(n->data);
+    }
+    g_slist_free(list);
 }
 
 static void bgp_worker_runtime_cleanup(void)

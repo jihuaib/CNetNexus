@@ -17,6 +17,11 @@ from module_api import g_top, reboot_device, require_devices, run_cmds, step, wa
 from top_runner import TopologyRuntime  # noqa: E402
 
 
+def _cleanup(rt: TopologyRuntime) -> None:
+    for dev in ("a", "b"):
+        run_cmds(rt=rt, device=dev, strict=False, commands=["config", "no bgp", "end"])
+
+
 def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
     """
     Entry called by module_runner.
@@ -28,6 +33,22 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
     b_ge1_peer = str(g_top.b.GE_1.peer_ip)
     b_ge2_peer = str(g_top.b.GE_2.peer_ip)
 
+    try:
+        _run_inner(rt, a_ge1_peer, a_ge2_peer, b_ge1_peer, b_ge2_peer)
+    finally:
+        step("Cleanup BGP config")
+        _cleanup(rt)
+
+    print("BGP dual-peer reboot check passed.")
+
+
+def _run_inner(
+    rt: TopologyRuntime,
+    a_ge1_peer: str,
+    a_ge2_peer: str,
+    b_ge1_peer: str,
+    b_ge2_peer: str,
+) -> None:
     step("Configure BGP base")
     run_cmds(rt=rt, device="a", strict=False, commands=["config", "bgp 65001", "router-id 1.1.1.1", "end"])
     run_cmds(rt=rt, device="b", strict=False, commands=["config", "bgp 65002", "router-id 2.2.2.2", "end"])
@@ -101,19 +122,3 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
 
     step("Wait dual-link BGP sessions after reboot")
     wait_checks(rt, session_checks, timeout=30)
-
-    step("Cleanup BGP config")
-    run_cmds(
-        rt=rt,
-        device="a",
-        strict=False,
-        commands=["config", "no bgp", "end"],
-    )
-    run_cmds(
-        rt=rt,
-        device="b",
-        strict=False,
-        commands=["config", "no bgp", "end"],
-    )
-
-    print("BGP dual-peer reboot check passed.")

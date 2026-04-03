@@ -122,20 +122,14 @@ const char *bgp_fsm_event_str(bgp_fsm_event_t evt)
 // FSM 内部辅助：低级操作原语
 // ============================================================================
 
-/** 从 epoll 移除 fd，销毁 bgp_conn_t，并将槽位置 NULL */
-static void fsm_close_conn_slot(bgp_conn_t **slot)
+/** 从 epoll 移除 fd，延迟释放 bgp_conn_t，并将槽位置 NULL */
+static void fsm_close_conn_slot(bgp_session_t *sess, bgp_conn_t **slot)
 {
     if (!slot || !*slot)
     {
         return;
     }
-    bgp_conn_t *c = *slot;
-    if (c->fd >= 0 && fsm_epoll_fd() >= 0)
-    {
-        epoll_ctl(fsm_epoll_fd(), EPOLL_CTL_DEL, c->fd, NULL);
-    }
-    bgp_conn_destroy(c);
-    *slot = NULL;
+    bgp_conn_close(sess, slot, fsm_epoll_fd());
 }
 
 /** 调度 ConnectRetry 定时器（从 VRF 配置读取间隔） */
@@ -276,7 +270,7 @@ static void fsm_close_primary(bgp_session_t *sess, gboolean purge_routes, gboole
     {
         sess->pri_last_socket_error = sess->pri_conn->last_socket_error;
     }
-    fsm_close_conn_slot(&sess->pri_conn);
+    fsm_close_conn_slot(sess, &sess->pri_conn);
 
     /* 尝试将 sec_conn 提升为 pri_conn */
     if (sess->sec_conn)
@@ -330,8 +324,8 @@ static void fsm_close_all(bgp_session_t *sess, gboolean purge_routes, gboolean a
     bgp_session_cancel_keepalive(sess, fsm_epoll_fd());
     bgp_session_cancel_hold(sess, fsm_epoll_fd());
     bgp_session_cancel_retry(sess, fsm_epoll_fd());
-    fsm_close_conn_slot(&sess->pri_conn);
-    fsm_close_conn_slot(&sess->sec_conn);
+    fsm_close_conn_slot(sess, &sess->pri_conn);
+    fsm_close_conn_slot(sess, &sess->sec_conn);
     if (purge_routes && sess->vrf)
     {
         (void)bgp_vrf_purge_session_routes(sess->vrf, &sess->neighbor_addr);

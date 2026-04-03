@@ -32,11 +32,26 @@ def _session_checks(r1_peer_ip: str, r2_peer_ip: str) -> list[dict[str, object]]
     ]
 
 
+def _cleanup(rt: TopologyRuntime) -> None:
+    for dev in ("r1", "r2"):
+        run_cmds(rt=rt, device=dev, strict=False, commands=["config", "no bgp", "end"])
+
+
 def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
     require_devices(top, ("r1", "r2"))
     r1_peer_ip = str(g_top.r1.GE_1.peer_ip)
     r2_peer_ip = str(g_top.r2.GE_1.peer_ip)
 
+    try:
+        _run_inner(rt, r1_peer_ip, r2_peer_ip)
+    finally:
+        step("Cleanup BGP config")
+        _cleanup(rt)
+
+    print("BGP negotiation parameter check passed.")
+
+
+def _run_inner(rt: TopologyRuntime, r1_peer_ip: str, r2_peer_ip: str) -> None:
     step("Build baseline BGP session (IPv4 only)")
     run_cmds(
         rt=rt,
@@ -273,18 +288,3 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         timeout=60,
     )
 
-    step("Cleanup BGP config")
-    run_cmds(
-        rt=rt,
-        device="r1",
-        strict=False,
-        commands=["config", "no bgp", "end"],
-    )
-    run_cmds(
-        rt=rt,
-        device="r2",
-        strict=False,
-        commands=["config", "no bgp", "end"],
-    )
-
-    print("BGP negotiation parameter check passed.")

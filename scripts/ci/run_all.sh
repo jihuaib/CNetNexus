@@ -11,6 +11,7 @@ Options:
   --report-dir <path>   Report output directory
                         (default: scripts/ci/reports/local-<timestamp>)
   --no-build            Skip docker build step
+  --debug               Build debug image (with gdb/tcpdump, Debug build type)
   --keep                Keep case containers/networks for debugging
   --cmd-timeout <sec>   CLI command timeout for runtime (default: 30)
   --connect-timeout <sec>  CLI initial connect timeout (default: 60)
@@ -20,6 +21,7 @@ Options:
 Examples:
   scripts/ci/run_all.sh
   scripts/ci/run_all.sh --no-build --image netnexus-ci:latest
+  scripts/ci/run_all.sh --debug
   scripts/ci/run_all.sh --keep
 EOF
 }
@@ -30,6 +32,7 @@ cd "${ROOT_DIR}"
 IMAGE="netnexus-ci:localtest"
 REPORT_DIR="scripts/ci/reports/local-$(date -u +%Y%m%d-%H%M%S)"
 BUILD_IMAGE=1
+DEBUG_BUILD=0
 KEEP_CASE=0
 CMD_TIMEOUT=30
 CONNECT_TIMEOUT=60
@@ -47,6 +50,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-build)
       BUILD_IMAGE=0
+      shift
+      ;;
+    --debug)
+      DEBUG_BUILD=1
       shift
       ;;
     --keep)
@@ -82,8 +89,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ "${BUILD_IMAGE}" -eq 1 ]]; then
-  echo ">>> Building image: ${IMAGE}"
-  docker build --target production -t "${IMAGE}" .
+  if [[ "${DEBUG_BUILD}" -eq 1 ]]; then
+    echo ">>> Building debug image: ${IMAGE}"
+    docker build --target debug --build-arg BUILD_TYPE=Debug -t "${IMAGE}" .
+  else
+    echo ">>> Building production image: ${IMAGE}"
+    docker build --target production -t "${IMAGE}" .
+  fi
 fi
 
 echo ">>> Running all CI modules"
