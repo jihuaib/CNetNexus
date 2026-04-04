@@ -70,7 +70,7 @@
             </commands>
         </group>
 
-        <!-- ping <ip-address> -->
+        <!-- ping <ipv4-address> / ping ipv6 <ipv6-address> -->
         <group group-id="5">
             <elements>
                 <element type="keyword">
@@ -78,15 +78,28 @@
                     <description>Ping a remote host</description>
                 </element>
                 <element cfg-id="1" type="parameter">
-                    <name>&lt;ip-address&gt;</name>
+                    <name>&lt;ipv4-address&gt;</name>
                     <description>Target IPv4 address</description>
-                    <type>ip</type>
+                    <type>ipv4</type>
+                </element>
+                <element cfg-id="2" type="keyword">
+                    <name>ipv6</name>
+                    <description>Use IPv6 ping</description>
+                </element>
+                <element cfg-id="3" type="parameter">
+                    <name>&lt;ipv6-address&gt;</name>
+                    <description>Target IPv6 address</description>
+                    <type>ipv6</type>
                 </element>
             </elements>
 
             <commands>
                 <command>
                     <expression>1 2</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 3 4</expression>
                     <views>global</views>
                 </command>
             </commands>

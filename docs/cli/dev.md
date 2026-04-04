@@ -45,10 +45,18 @@ Sets the runtime log level for all modules.
 
 ## 3. Network Commands
 
-### 3.1 `ping <ip-address>`
+### 3.1 `ping <ipv4-address>`
 Sends 4 ICMP echo requests to the specified IPv4 address.
 
-- **Usage**: `ping <ip-address>`
+- **Usage**: `ping <ipv4-address>`
 - **View**: `global` (available in all views)
 - **Parameters**:
-    - `<ip-address>`: Target IPv4 address (`ip`).
+  - `<ipv4-address>`: Target IPv4 address (`ipv4`).
+
+### 3.2 `ping ipv6 <ipv6-address>`
+Sends 4 ICMPv6 echo requests to the specified IPv6 address.
+
+- **Usage**: `ping ipv6 <ipv6-address>`
+- **View**: `global` (available in all views)
+- **Parameters**:
+  - `<ipv6-address>`: Target IPv6 address (`ipv6`).

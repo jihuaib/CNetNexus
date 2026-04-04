@@ -6,7 +6,6 @@
  */
 #include "route_bdr.h"
 
-#include <arpa/inet.h>
 #include <glib.h>
 #include <stdio.h>
 #include <string.h>
@@ -30,22 +29,6 @@ static void route_bdr_send_cli_response(dev_ipc_message_t *msg, const char *text
         dev_ipc_send_response(route_local_ipc_ctx(), resp);
         dev_ipc_message_free(resp);
     }
-}
-
-/**
- * @brief 将 IPv4 前缀长度转换为掩码字符串
- * @return 成功返回 0，失败返回 -1
- */
-static int prefix_len_to_mask_str(uint8_t prefix_len, char *mask, size_t mask_len)
-{
-    if (!mask || mask_len == 0 || prefix_len > 32)
-    {
-        return -1;
-    }
-
-    uint32_t value = (prefix_len == 0) ? 0 : (0xFFFFFFFFu << (32 - prefix_len));
-    struct in_addr addr = {.s_addr = htonl(value)};
-    return (inet_ntop(AF_INET, &addr, mask, (socklen_t)mask_len) != NULL) ? 0 : -1;
 }
 
 int route_bdr_handle_show_config(dev_ipc_message_t *msg)
@@ -86,14 +69,8 @@ int route_bdr_handle_show_config(dev_ipc_message_t *msg)
 
         if (afi == ROUTE_AFI_IPV4)
         {
-            char mask[32];
-            if (prefix_len_to_mask_str((uint8_t)prefix_len, mask, sizeof(mask)) != 0)
-            {
-                continue;
-            }
-
             g_string_append(out, "!\r\n");
-            g_string_append_printf(out, "route ipv4 %s %s %s", prefix, mask, nexthop);
+            g_string_append_printf(out, "route ipv4 %s %ld %s", prefix, prefix_len, nexthop);
         }
         else if (afi == ROUTE_AFI_IPV6)
         {

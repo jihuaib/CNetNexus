@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Route calc best-path switch check (static metric based).
+Route calc best-path switch check (IPv6 static metric based).
 
 Goal:
-- install two static paths for the same prefix (both reachable)
+- install two static IPv6 paths for the same prefix (both reachable)
 - verify route path metrics are updated as configured
 - verify OS route stays installable via resolved reachable gateway (kernel metric remains 0)
 - verify withdraw/re-add keeps route availability consistent
@@ -11,19 +11,26 @@ Goal:
 
 from __future__ import annotations
 
+import ipaddress
 import re
 import time
 from typing import Optional
 
-from module_api import cmd, g_top, require_devices, run_cmds, step, wait_check, wait_checks  # noqa: E402
+from module_api import cmd, require_devices, run_cmds, step, wait_check, wait_checks  # noqa: E402
 from top_runner import TopologyRuntime  # noqa: E402
 
 
-TARGET_PREFIX_ADDR = "203.0.113.0"
-TARGET_MASK = "24"
-TARGET_PREFIX = f"{TARGET_PREFIX_ADDR}/24"
-RESOLVER_ADDR = "198.51.100.1"
-RESOLVER_MASK = "32"
+GE_IF = "GE-1"
+LINK_PREFIX_LEN = 64
+R1_LINK_V6 = "2001:db8:12::1"
+R2_LINK_V6 = "2001:db8:12::2"
+
+TARGET_PREFIX_ADDR = "2001:db8:203:100::"
+TARGET_PREFIX_LEN = 64
+TARGET_PREFIX = f"{TARGET_PREFIX_ADDR}/{TARGET_PREFIX_LEN}"
+RESOLVER_ADDR = "2001:db8:198:51::1"
+RESOLVER_PREFIX_LEN = 128
+
 
 def _wait_path_total(
     rt: TopologyRuntime,
@@ -37,7 +44,7 @@ def _wait_path_total(
     wait_check(
         rt,
         device=device,
-        command=f"show route ipv4 {destination}",
+        command=f"show route ipv6 {destination}",
         timeout=timeout,
         interval=interval,
         contains=[f"Total {expect_total} path(s)"],
@@ -63,7 +70,7 @@ def _wait_route_metrics(
     wait_check(
         rt,
         device=device,
-        command=f"show route ipv4 {destination}",
+        command=f"show route ipv6 {destination}",
         timeout=timeout,
         interval=interval,
         regex=metric_regex,
@@ -109,7 +116,7 @@ def _wait_first_path_os_installed_flag(
     deadline = time.time() + timeout
     last_out = ""
     while time.time() < deadline:
-        out = cmd(rt, device, f"show route ipv4 {destination}", strict=False)
+        out = cmd(rt, device, f"show route ipv6 {destination}", strict=False)
         last_out = out
         if _path1_flag_set(out):
             return
@@ -118,7 +125,7 @@ def _wait_first_path_os_installed_flag(
     raise RuntimeError(
         f"{device} path[1] os-installed flag check timeout after {timeout}s\n"
         f"expect: Path [1] contains Flags with bit0 set\n"
-        f"command: show route ipv4 {destination}\n"
+        f"command: show route ipv6 {destination}\n"
         f"last output:\n{last_out}"
     )
 
@@ -129,27 +136,36 @@ def _wait_os_main_gateway(
     device: str,
     prefix: str,
     expect_gateway: str,
-    expect_metric: int,
+    expect_metric: Optional[int],
     timeout: int,
     interval: int = 2,
 ) -> None:
-    row_regex = (
-        rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+{re.escape(expect_gateway)}\s+"
-        rf"\S+\s+static\s+{expect_metric}\s*$"
-    )
-    stale_metric_regex = (
-        rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+{re.escape(expect_gateway)}\s+"
-        rf"\S+\s+static\s+(?!{expect_metric}\b)\d+\s*$"
-    )
+    if expect_metric is None:
+        row_regex = (
+            rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+{re.escape(expect_gateway)}\s+"
+            rf"\S+\s+static\s+\d+\s*$"
+        )
+        stale_metric_regexes: list[str] = []
+    else:
+        row_regex = (
+            rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+{re.escape(expect_gateway)}\s+"
+            rf"\S+\s+static\s+{expect_metric}\s*$"
+        )
+        stale_metric_regexes = [
+            (
+                rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+{re.escape(expect_gateway)}\s+"
+                rf"\S+\s+static\s+(?!{expect_metric}\b)\d+\s*$"
+            )
+        ]
     wait_check(
         rt,
         device=device,
-        command="show route ipv4 os",
+        command="show route ipv6 os",
         timeout=timeout,
         interval=interval,
         regex=[row_regex],
-        not_regex=[stale_metric_regex],
-        label=f"{device} os-best {prefix} via {expect_gateway} metric={expect_metric}",
+        not_regex=stale_metric_regexes,
+        label=f"{device} os-best {prefix} via {expect_gateway} metric={expect_metric if expect_metric is not None else '*'}",
     )
 
 
@@ -166,9 +182,55 @@ def _cleanup(
         strict=False,
         commands=[
             "config",
-            f"no route ipv4 {TARGET_PREFIX_ADDR} {TARGET_MASK} {primary_nh}",
-            f"no route ipv4 {TARGET_PREFIX_ADDR} {TARGET_MASK} {secondary_nh}",
-            f"no route ipv4 {RESOLVER_ADDR} {RESOLVER_MASK} {primary_nh}",
+            f"no route ipv6 {TARGET_PREFIX_ADDR} {TARGET_PREFIX_LEN} {primary_nh}",
+            f"no route ipv6 {TARGET_PREFIX_ADDR} {TARGET_PREFIX_LEN} {secondary_nh}",
+            f"no route ipv6 {RESOLVER_ADDR} {RESOLVER_PREFIX_LEN} {primary_nh}",
+            f"if {GE_IF}",
+            f"no ipv6 address {R1_LINK_V6} {LINK_PREFIX_LEN}",
+            "no shutdown",
+            "exit",
+            "end",
+        ],
+    )
+    run_cmds(
+        rt=rt,
+        device="r2",
+        strict=False,
+        commands=[
+            "config",
+            f"if {GE_IF}",
+            f"no ipv6 address {R2_LINK_V6} {LINK_PREFIX_LEN}",
+            "no shutdown",
+            "exit",
+            "end",
+        ],
+    )
+
+
+def _setup_underlay(rt: TopologyRuntime) -> None:
+    run_cmds(
+        rt=rt,
+        device="r1",
+        strict=False,
+        commands=[
+            "config",
+            f"if {GE_IF}",
+            f"ipv6 address {R1_LINK_V6} {LINK_PREFIX_LEN}",
+            "no shutdown",
+            "exit",
+            "end",
+        ],
+    )
+    run_cmds(
+        rt=rt,
+        device="r2",
+        strict=False,
+        commands=[
+            "config",
+            f"if {GE_IF}",
+            f"ipv6 address {R2_LINK_V6} {LINK_PREFIX_LEN}",
+            "no shutdown",
+            "exit",
             "end",
         ],
     )
@@ -177,34 +239,28 @@ def _cleanup(
 def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
     require_devices(top, ("r1", "r2"))
 
-    primary_nh = str(g_top.r1.GE_1.peer_ip)
+    primary_nh = R2_LINK_V6
     secondary_nh = RESOLVER_ADDR
+    r1_link_show = f"{ipaddress.ip_address(R1_LINK_V6)}/{LINK_PREFIX_LEN}"
 
     try:
-        step("Cleanup stale static config")
+        step("Cleanup stale static/ipv6 config")
         _cleanup(rt, device="r1", primary_nh=primary_nh, secondary_nh=secondary_nh)
 
-        step("Ensure r1 GE-1 is up")
-        run_cmds(
-            rt=rt,
-            device="r1",
-            strict=False,
-            commands=[
-                "config",
-                "if GE-1",
-                "no shutdown",
-                "exit",
-                "end",
-            ],
-        )
+        step("Configure IPv6 underlay on GE-1")
+        _setup_underlay(rt)
         wait_checks(
             rt,
             [
                 {
                     "device": "r1",
-                    "command": "show if GE-1",
-                    "contains": ["Interface GE-1 Detail:", "State      : UP"],
-                    "label": "r1 GE-1 up before route-calc check",
+                    "command": f"show if {GE_IF}",
+                    "contains": [
+                        f"Interface {GE_IF} Detail:",
+                        "State      : UP",
+                        f"IPv6 Addr  : {r1_link_show}",
+                    ],
+                    "label": "r1 GE-1 ipv6 up before route-calc check",
                 }
             ],
             timeout=20,
@@ -217,7 +273,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             device="r1",
             commands=[
                 "config",
-                f"route ipv4 {RESOLVER_ADDR} {RESOLVER_MASK} {primary_nh}",
+                f"route ipv6 {RESOLVER_ADDR} {RESOLVER_PREFIX_LEN} {primary_nh}",
                 "end",
             ],
         )
@@ -228,8 +284,8 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             device="r1",
             commands=[
                 "config",
-                f"route ipv4 {TARGET_PREFIX_ADDR} {TARGET_MASK} {primary_nh} metric 10",
-                f"route ipv4 {TARGET_PREFIX_ADDR} {TARGET_MASK} {secondary_nh} metric 20",
+                f"route ipv6 {TARGET_PREFIX_ADDR} {TARGET_PREFIX_LEN} {primary_nh} metric 10",
+                f"route ipv6 {TARGET_PREFIX_ADDR} {TARGET_PREFIX_LEN} {secondary_nh} metric 20",
                 "end",
             ],
         )
@@ -252,7 +308,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             device="r1",
             prefix=TARGET_PREFIX,
             expect_gateway=primary_nh,
-            expect_metric=0,
+            expect_metric=None,
             timeout=30,
         )
 
@@ -262,7 +318,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             device="r1",
             commands=[
                 "config",
-                f"route ipv4 {TARGET_PREFIX_ADDR} {TARGET_MASK} {primary_nh} metric 30",
+                f"route ipv6 {TARGET_PREFIX_ADDR} {TARGET_PREFIX_LEN} {primary_nh} metric 30",
                 "end",
             ],
         )
@@ -278,13 +334,12 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             timeout=30,
         )
         _wait_first_path_os_installed_flag(rt, device="r1", destination=TARGET_PREFIX_ADDR, timeout=30)
-        # Secondary path is recursive and resolves to the same direct gateway on this topology.
         _wait_os_main_gateway(
             rt,
             device="r1",
             prefix=TARGET_PREFIX,
             expect_gateway=primary_nh,
-            expect_metric=0,
+            expect_metric=None,
             timeout=30,
         )
 
@@ -294,7 +349,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             device="r1",
             commands=[
                 "config",
-                f"route ipv4 {TARGET_PREFIX_ADDR} {TARGET_MASK} {primary_nh} metric 5",
+                f"route ipv6 {TARGET_PREFIX_ADDR} {TARGET_PREFIX_LEN} {primary_nh} metric 5",
                 "end",
             ],
         )
@@ -315,7 +370,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             device="r1",
             prefix=TARGET_PREFIX,
             expect_gateway=primary_nh,
-            expect_metric=0,
+            expect_metric=None,
             timeout=30,
         )
 
@@ -325,7 +380,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             device="r1",
             commands=[
                 "config",
-                f"no route ipv4 {TARGET_PREFIX_ADDR} {TARGET_MASK} {primary_nh}",
+                f"no route ipv6 {TARGET_PREFIX_ADDR} {TARGET_PREFIX_LEN} {primary_nh}",
                 "end",
             ],
         )
@@ -346,7 +401,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             device="r1",
             prefix=TARGET_PREFIX,
             expect_gateway=primary_nh,
-            expect_metric=0,
+            expect_metric=None,
             timeout=30,
         )
 
@@ -356,7 +411,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             device="r1",
             commands=[
                 "config",
-                f"route ipv4 {TARGET_PREFIX_ADDR} {TARGET_MASK} {primary_nh} metric 1",
+                f"route ipv6 {TARGET_PREFIX_ADDR} {TARGET_PREFIX_LEN} {primary_nh} metric 1",
                 "end",
             ],
         )
@@ -377,11 +432,11 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             device="r1",
             prefix=TARGET_PREFIX,
             expect_gateway=primary_nh,
-            expect_metric=0,
+            expect_metric=None,
             timeout=30,
         )
 
-        print("Route calc best-path switch check passed.")
+        print("Route calc best-path switch check (IPv6) passed.")
     finally:
         step("Cleanup route-calc test config")
         _cleanup(rt, device="r1", primary_nh=primary_nh, secondary_nh=secondary_nh)

@@ -19,7 +19,7 @@ from top_runner import TopologyRuntime  # noqa: E402
 
 
 TARGET_PREFIX_ADDR = "10.40.40.0"
-TARGET_MASK = "255.255.255.0"
+TARGET_MASK = "24"
 TARGET_PREFIX = f"{TARGET_PREFIX_ADDR}/24"
 
 

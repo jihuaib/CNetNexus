@@ -246,6 +246,32 @@ static void on_inject_path_del(const route_head_t *head, const route_path_t *pat
     route_calc_on_path_del(head, path);
 }
 
+static void worker_send_inject_ack(const dev_ipc_message_t *req, int32_t result)
+{
+    if (!req || req->request_id == 0)
+    {
+        return;
+    }
+
+    route_msg_ack_t *ack = (route_msg_ack_t *)g_malloc(sizeof(route_msg_ack_t));
+    if (!ack)
+    {
+        return;
+    }
+    ack->result = result;
+
+    dev_ipc_message_t *resp = dev_ipc_message_create(ROUTE_MSG_TYPE_ACK, DEV_MODULE_ID_ROUTE, req->src_module_id,
+                                                     req->request_id, ack, sizeof(route_msg_ack_t), g_free);
+    if (!resp)
+    {
+        g_free(ack);
+        return;
+    }
+
+    dev_ipc_send_response(route_local_ipc_ctx(), resp);
+    dev_ipc_message_free(resp);
+}
+
 // ============================================================================
 // 命令处理：业务逻辑（在 worker 线程运行）
 // ============================================================================
@@ -255,25 +281,27 @@ static void worker_handle_inject(dev_ipc_message_t *msg)
     if (!msg->payload || msg->payload_len < sizeof(route_msg_entry_t))
     {
         LOG_WARN("[route_worker] INJECT payload 太短: %u", msg->payload_len);
+        worker_send_inject_ack(msg, ERRCODE_FAIL);
         dev_ipc_message_free(msg);
         return;
     }
 
     const route_msg_entry_t *entry = (const route_msg_entry_t *)msg->payload;
+    int ret = -1;
 
     if (entry->is_withdraw)
     {
-        int ret = route_rib_del(g_route_work_local->rib, entry->vrf_id, entry->afi, &entry->prefix_addr,
-                                entry->prefix_len, entry->protocol, &entry->source_addr, on_inject_path_del, NULL);
+        ret = route_rib_del(g_route_work_local->rib, entry->vrf_id, entry->afi, &entry->prefix_addr, entry->prefix_len,
+                            entry->protocol, &entry->source_addr, on_inject_path_del, NULL);
         LOG_DEBUG("[route_worker] INJECT withdraw: vrf=%u afi=%u pfxlen=%u proto=%u ret=%d", entry->vrf_id, entry->afi,
                   entry->prefix_len, entry->protocol, ret);
         route_recompute_iter_paths();
     }
     else
     {
-        int ret = route_rib_add(g_route_work_local->rib, entry->vrf_id, entry->afi, &entry->prefix_addr,
-                                entry->prefix_len, entry->protocol, &entry->source_addr, &entry->nexthop_addr,
-                                entry->metric, entry->preference, entry->out_ifindex);
+        ret = route_rib_add(g_route_work_local->rib, entry->vrf_id, entry->afi, &entry->prefix_addr, entry->prefix_len,
+                            entry->protocol, &entry->source_addr, &entry->nexthop_addr, entry->metric,
+                            entry->preference, entry->out_ifindex);
         if (ret >= 0)
         {
             const route_head_t *head = route_rib_lookup_head(g_route_work_local->rib, entry->vrf_id, entry->afi,
@@ -295,6 +323,7 @@ static void worker_handle_inject(dev_ipc_message_t *msg)
         route_recompute_iter_paths();
     }
 
+    worker_send_inject_ack(msg, (ret >= 0) ? ERRCODE_SUCCESS : ERRCODE_FAIL);
     dev_ipc_message_free(msg);
 }
 

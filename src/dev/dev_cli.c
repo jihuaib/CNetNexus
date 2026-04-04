@@ -20,6 +20,7 @@
 #include "dev_module.h"
 #include "errcode.h"
 #include "log.h"
+#include "net_addr.h"
 #include "path_utils.h"
 
 static gint g_reboot_in_progress = 0;
@@ -588,8 +589,13 @@ static int handle_show_ipc(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_t
 static int handle_ping(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
     char ip[64] = {0};
+    gboolean ping_ipv6 = FALSE;
 
-    /* 解析目标 IP 地址参数（cfg_id=1） */
+    /* 解析目标地址参数
+     * cfg_id=1: ping <ipv4-address>
+     * cfg_id=2: ping ipv6 <ipv6-address> 的 ipv6 关键字
+     * cfg_id=3: ping ipv6 <ipv6-address>
+     */
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
     {
@@ -599,7 +605,11 @@ static int handle_ping(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_p
             continue;
         }
 
-        if (entry.cfg_id == 1)
+        if (entry.cfg_id == 2)
+        {
+            ping_ipv6 = TRUE;
+        }
+        else if (entry.cfg_id == 1 || entry.cfg_id == 3)
         {
             const char *text = cli_tlv_entry_get_text(&entry);
             if (text)
@@ -616,13 +626,27 @@ static int handle_ping(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_p
         return ERRCODE_FAIL;
     }
 
-    /* 验证 IP 地址格式，防止命令注入 */
-    struct in_addr addr;
-    if (inet_pton(AF_INET, ip, &addr) != 1)
+    /* 验证 IP 地址格式并规范化，防止命令注入 */
+    net_addr_t addr;
+    if (net_addr_from_str(ip, &addr) != 0 || (addr.family != AF_INET && addr.family != AF_INET6))
     {
         dev_send_cli_response(ctx, msg, "Error: invalid IP address format\r\n");
         return ERRCODE_FAIL;
     }
+    if (ping_ipv6 && addr.family != AF_INET6)
+    {
+        dev_send_cli_response(ctx, msg, "Error: ping ipv6 requires an IPv6 address\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (!ping_ipv6 && addr.family != AF_INET)
+    {
+        dev_send_cli_response(ctx, msg, "Error: ping requires an IPv4 address; use 'ping ipv6 <addr>' for IPv6\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    char normalized_ip[64];
+    net_addr_to_str(&addr, normalized_ip, sizeof(normalized_ip));
+    const char *family_opt = ping_ipv6 ? "-6" : "-4";
 
     if (g_ping_stream_fp)
     {
@@ -634,9 +658,9 @@ static int handle_ping(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_p
     /* 构造 ping 命令并执行（优先 stdbuf 行缓冲，不可用则回退原生 ping） */
     char cmd[320];
     snprintf(cmd, sizeof(cmd),
-             "sh -c 'if command -v stdbuf >/dev/null 2>&1; then exec stdbuf -oL ping -c 4 -W 2 %s; "
-             "else exec ping -c 4 -W 2 %s; fi' 2>&1",
-             ip, ip);
+             "sh -c 'if command -v stdbuf >/dev/null 2>&1; then exec stdbuf -oL ping %s -c 4 -W 2 %s; "
+             "else exec ping %s -c 4 -W 2 %s; fi' 2>&1",
+             family_opt, normalized_ip, family_opt, normalized_ip);
 
     g_ping_stream_fp = popen(cmd, "r");
     if (!g_ping_stream_fp)

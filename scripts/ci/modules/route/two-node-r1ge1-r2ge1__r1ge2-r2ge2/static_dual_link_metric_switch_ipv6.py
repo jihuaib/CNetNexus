@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Route static best-path switch check on dual links.
+Route static best-path switch check on dual links (IPv6).
 
 Goal:
-- install two static routes for one prefix via GE-1/GE-2 peer gateways
+- install two static routes for one IPv6 prefix via GE-1/GE-2 peer gateways
 - switch best path by metric update
 - verify OS route gateway/interface always matches the selected link
 """
@@ -14,15 +14,19 @@ import ipaddress
 import re
 import time
 
-from module_api import cmd, g_top, require_devices, run_cmds, step, wait_check, wait_checks  # noqa: E402
+from module_api import cmd, require_devices, run_cmds, step, wait_check, wait_checks  # noqa: E402
 from top_runner import TopologyRuntime  # noqa: E402
 
 
-TARGET_PREFIX_ADDR = "203.0.113.0"
-TARGET_MASK = "24"
-TARGET_PREFIX = f"{TARGET_PREFIX_ADDR}/24"
+TARGET_PREFIX_ADDR = "2001:db8:203:113::"
+TARGET_PREFIX_LEN = 64
+TARGET_PREFIX = f"{TARGET_PREFIX_ADDR}/{TARGET_PREFIX_LEN}"
 
-
+GE_LINK_PREFIX_LEN = 64
+GE1_R1_IP = "2001:db8:1201::1"
+GE1_R2_IP = "2001:db8:1201::2"
+GE2_R1_IP = "2001:db8:1202::1"
+GE2_R2_IP = "2001:db8:1202::2"
 def _wait_path_total(
     rt: TopologyRuntime,
     *,
@@ -35,7 +39,7 @@ def _wait_path_total(
     wait_check(
         rt,
         device=device,
-        command=f"show route ipv4 {destination}",
+        command=f"show route ipv6 {destination}",
         timeout=timeout,
         interval=interval,
         contains=[f"Total {expect_total} path(s)"],
@@ -59,7 +63,7 @@ def _wait_route_paths(
     wait_check(
         rt,
         device=device,
-        command=f"show route ipv4 {destination}",
+        command=f"show route ipv6 {destination}",
         timeout=timeout,
         interval=interval,
         regex=path_regex,
@@ -88,7 +92,7 @@ def _wait_connected_os_if(
     deadline = time.time() + timeout
     last_out = ""
     while time.time() < deadline:
-        out = cmd(rt, device, "show route ipv4 os", strict=False)
+        out = cmd(rt, device, "show route ipv6 os", strict=False)
         last_out = out
         os_if = _extract_connected_os_if(out, prefix=prefix)
         if os_if is not None:
@@ -98,7 +102,7 @@ def _wait_connected_os_if(
     raise RuntimeError(
         f"{device} connected OS interface detect timeout after {timeout}s\n"
         f"expect: main unicast {prefix} - <if> kernel\n"
-        f"command: show route ipv4 os\n"
+        f"command: show route ipv6 os\n"
         f"last output:\n{last_out}"
     )
 
@@ -128,7 +132,7 @@ def _wait_os_best(
     wait_check(
         rt,
         device=device,
-        command="show route ipv4 os",
+        command="show route ipv6 os",
         timeout=timeout,
         interval=interval,
         regex=[row_regex],
@@ -144,16 +148,82 @@ def _cleanup(rt: TopologyRuntime, *, device: str, nh_ge1: str, nh_ge2: str) -> N
         strict=False,
         commands=[
             "config",
-            f"no route ipv4 {TARGET_PREFIX_ADDR} {TARGET_MASK} {nh_ge1}",
-            f"no route ipv4 {TARGET_PREFIX_ADDR} {TARGET_MASK} {nh_ge2}",
+            f"no route ipv6 {TARGET_PREFIX_ADDR} {TARGET_PREFIX_LEN} {nh_ge1}",
+            f"no route ipv6 {TARGET_PREFIX_ADDR} {TARGET_PREFIX_LEN} {nh_ge2}",
+            "if GE-1",
+            f"no ipv6 address {GE1_R1_IP} {GE_LINK_PREFIX_LEN}",
+            "no shutdown",
+            "exit",
+            "if GE-2",
+            f"no ipv6 address {GE2_R1_IP} {GE_LINK_PREFIX_LEN}",
+            "no shutdown",
+            "exit",
+            "end",
+        ],
+    )
+    run_cmds(
+        rt=rt,
+        device="r2",
+        strict=False,
+        commands=[
+            "config",
+            "if GE-1",
+            f"no ipv6 address {GE1_R2_IP} {GE_LINK_PREFIX_LEN}",
+            "no shutdown",
+            "exit",
+            "if GE-2",
+            f"no ipv6 address {GE2_R2_IP} {GE_LINK_PREFIX_LEN}",
+            "no shutdown",
+            "exit",
             "end",
         ],
     )
 
 
-def _link_prefix(ip: str, prefix: int) -> str:
-    net_addr = ipaddress.ip_interface(f"{ip}/{prefix}").network.network_address
-    return f"{net_addr}/{prefix}"
+def _setup_links(rt: TopologyRuntime) -> None:
+    run_cmds(
+        rt=rt,
+        device="r1",
+        strict=False,
+        commands=[
+            "config",
+            "if GE-1",
+            f"ipv6 address {GE1_R1_IP} {GE_LINK_PREFIX_LEN}",
+            "no shutdown",
+            "exit",
+            "if GE-2",
+            f"ipv6 address {GE2_R1_IP} {GE_LINK_PREFIX_LEN}",
+            "no shutdown",
+            "exit",
+            "end",
+        ],
+    )
+    run_cmds(
+        rt=rt,
+        device="r2",
+        strict=False,
+        commands=[
+            "config",
+            "if GE-1",
+            f"ipv6 address {GE1_R2_IP} {GE_LINK_PREFIX_LEN}",
+            "no shutdown",
+            "exit",
+            "if GE-2",
+            f"ipv6 address {GE2_R2_IP} {GE_LINK_PREFIX_LEN}",
+            "no shutdown",
+            "exit",
+            "end",
+        ],
+    )
+
+
+def _if_prefix_show(ip: str, prefix: int) -> str:
+    return f"{ipaddress.ip_address(ip)}/{prefix}"
+
+
+def _connected_prefix_show(ip: str, prefix: int) -> str:
+    net = ipaddress.ip_interface(f"{ip}/{prefix}").network.network_address
+    return f"{net}/{prefix}"
 
 
 def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
@@ -161,64 +231,61 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
 
     ge1_name = "GE-1"
     ge2_name = "GE-2"
-    ge1_nh = str(g_top.r1.GE_1.peer_ip)
-    ge2_nh = str(g_top.r1.GE_2.peer_ip)
-    ge1_link_prefix = _link_prefix(str(g_top.r1.GE_1.ip), int(g_top.r1.GE_1.prefix))
-    ge2_link_prefix = _link_prefix(str(g_top.r1.GE_2.ip), int(g_top.r1.GE_2.prefix))
+    ge1_nh = GE1_R2_IP
+    ge2_nh = GE2_R2_IP
+    ge1_show = _if_prefix_show(GE1_R1_IP, GE_LINK_PREFIX_LEN)
+    ge2_show = _if_prefix_show(GE2_R1_IP, GE_LINK_PREFIX_LEN)
+    ge1_connected_prefix = _connected_prefix_show(GE1_R1_IP, GE_LINK_PREFIX_LEN)
+    ge2_connected_prefix = _connected_prefix_show(GE2_R1_IP, GE_LINK_PREFIX_LEN)
 
     try:
-        step("Cleanup stale static config")
+        step("Cleanup stale static/ipv6 config")
         _cleanup(rt, device="r1", nh_ge1=ge1_nh, nh_ge2=ge2_nh)
 
-        step("Ensure dual links are up")
-        run_cmds(
-            rt=rt,
-            device="r1",
-            strict=False,
-            commands=[
-                "config",
-                f"if {ge1_name}",
-                "no shutdown",
-                "exit",
-                f"if {ge2_name}",
-                "no shutdown",
-                "exit",
-                "end",
-            ],
-        )
+        step("Configure IPv6 underlay on GE-1/GE-2")
+        _setup_links(rt)
+
         wait_checks(
             rt,
             [
                 {
                     "device": "r1",
                     "command": f"show if {ge1_name}",
-                    "contains": [f"Interface {ge1_name} Detail:", "State      : UP"],
-                    "label": "r1 GE-1 up",
+                    "contains": [
+                        f"Interface {ge1_name} Detail:",
+                        "State      : UP",
+                        f"IPv6 Addr  : {ge1_show}",
+                    ],
+                    "label": "r1 GE-1 ipv6 up",
                 },
                 {
                     "device": "r1",
                     "command": f"show if {ge2_name}",
-                    "contains": [f"Interface {ge2_name} Detail:", "State      : UP"],
-                    "label": "r1 GE-2 up",
+                    "contains": [
+                        f"Interface {ge2_name} Detail:",
+                        "State      : UP",
+                        f"IPv6 Addr  : {ge2_show}",
+                    ],
+                    "label": "r1 GE-2 ipv6 up",
                 },
             ],
             timeout=20,
             interval=2,
         )
 
-        step("Detect OS interface names for GE-1/GE-2 connected links")
-        ge1_os_if = _wait_connected_os_if(rt, device="r1", prefix=ge1_link_prefix, timeout=20)
-        ge2_os_if = _wait_connected_os_if(rt, device="r1", prefix=ge2_link_prefix, timeout=20)
+        step("Detect OS interface names for GE-1/GE-2 connected IPv6 links")
+        ge1_os_if = _wait_connected_os_if(rt, device="r1", prefix=ge1_connected_prefix, timeout=20)
+        ge2_os_if = _wait_connected_os_if(rt, device="r1", prefix=ge2_connected_prefix, timeout=20)
         print(f"Detected OS interfaces: {ge1_name}->{ge1_os_if}, {ge2_name}->{ge2_os_if}")
 
-        step("Add two static paths for same prefix")
+        step("Add two static IPv6 paths for same prefix")
         run_cmds(
             rt=rt,
             device="r1",
             commands=[
                 "config",
-                f"route ipv4 {TARGET_PREFIX_ADDR} {TARGET_MASK} {ge1_nh} metric 10",
-                f"route ipv4 {TARGET_PREFIX_ADDR} {TARGET_MASK} {ge2_nh} metric 20",
+                f"route ipv6 {TARGET_PREFIX_ADDR} {TARGET_PREFIX_LEN} {ge1_nh} metric 10",
+                f"route ipv6 {TARGET_PREFIX_ADDR} {TARGET_PREFIX_LEN} {ge2_nh} metric 20",
                 "end",
             ],
         )
@@ -251,7 +318,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             device="r1",
             commands=[
                 "config",
-                f"route ipv4 {TARGET_PREFIX_ADDR} {TARGET_MASK} {ge1_nh} metric 30",
+                f"route ipv6 {TARGET_PREFIX_ADDR} {TARGET_PREFIX_LEN} {ge1_nh} metric 30",
                 "end",
             ],
         )
@@ -282,7 +349,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             device="r1",
             commands=[
                 "config",
-                f"route ipv4 {TARGET_PREFIX_ADDR} {TARGET_MASK} {ge1_nh} metric 5",
+                f"route ipv6 {TARGET_PREFIX_ADDR} {TARGET_PREFIX_LEN} {ge1_nh} metric 5",
                 "end",
             ],
         )
@@ -307,7 +374,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             timeout=30,
         )
 
-        print("Route dual-link static metric switch check passed.")
+        print("Route dual-link static metric switch check (IPv6) passed.")
     finally:
-        step("Cleanup dual-link static config")
+        step("Cleanup dual-link static/ipv6 config")
         _cleanup(rt, device="r1", nh_ge1=ge1_nh, nh_ge2=ge2_nh)

@@ -10,6 +10,8 @@
 #include "errcode.h"
 #include "route.h"
 
+#define ROUTE_RPC_DEFAULT_TIMEOUT_MS 3000u
+
 int route_rpc_add(dev_ipc_context_t *ctx, const route_msg_entry_t *entry)
 {
     if (!ctx || !entry)
@@ -34,6 +36,45 @@ int route_rpc_add(dev_ipc_context_t *ctx, const route_msg_entry_t *entry)
     int ret = dev_ipc_send(ctx, DEV_MODULE_ID_ROUTE, msg);
     dev_ipc_message_free(msg);
     return (ret == 0) ? ERRCODE_SUCCESS : ERRCODE_FAIL;
+}
+
+int route_rpc_add_wait(dev_ipc_context_t *ctx, const route_msg_entry_t *entry, uint32_t timeout_ms)
+{
+    if (!ctx || !entry)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    route_msg_entry_t *payload = (route_msg_entry_t *)g_memdup2(entry, sizeof(route_msg_entry_t));
+    if (!payload)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    dev_ipc_message_t *msg = dev_ipc_message_create(ROUTE_MSG_TYPE_INJECT, dev_ipc_get_module_id(ctx),
+                                                    DEV_MODULE_ID_ROUTE, 0, payload, sizeof(route_msg_entry_t), g_free);
+    if (!msg)
+    {
+        g_free(payload);
+        return ERRCODE_FAIL;
+    }
+
+    uint32_t wait_ms = (timeout_ms == 0) ? ROUTE_RPC_DEFAULT_TIMEOUT_MS : timeout_ms;
+    dev_ipc_message_t *resp = dev_ipc_query(ctx, DEV_MODULE_ID_ROUTE, msg, wait_ms);
+    dev_ipc_message_free(msg);
+    if (!resp)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    int result = ERRCODE_FAIL;
+    if (resp->msg_type == ROUTE_MSG_TYPE_ACK && resp->payload && resp->payload_len >= sizeof(route_msg_ack_t))
+    {
+        const route_msg_ack_t *ack = (const route_msg_ack_t *)resp->payload;
+        result = (ack->result == ERRCODE_SUCCESS) ? ERRCODE_SUCCESS : ERRCODE_FAIL;
+    }
+    dev_ipc_message_free(resp);
+    return result;
 }
 
 static int route_rpc_nh_iter_send(dev_ipc_context_t *ctx, uint32_t msg_type, const route_nh_iter_req_t *req)
@@ -81,6 +122,22 @@ int route_rpc_del(dev_ipc_context_t *ctx, const route_msg_entry_t *entry)
     withdraw_entry.nexthop_addr.family = withdraw_entry.source_addr.family;
 
     return route_rpc_add(ctx, &withdraw_entry);
+}
+
+int route_rpc_del_wait(dev_ipc_context_t *ctx, const route_msg_entry_t *entry, uint32_t timeout_ms)
+{
+    if (!entry)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    route_msg_entry_t withdraw_entry = *entry;
+    withdraw_entry.metric = 0;
+    withdraw_entry.preference = 0;
+    withdraw_entry.is_withdraw = 1;
+    withdraw_entry.nexthop_addr.family = withdraw_entry.source_addr.family;
+
+    return route_rpc_add_wait(ctx, &withdraw_entry, timeout_ms);
 }
 
 int route_rpc_nh_unregister(dev_ipc_context_t *ctx, const route_nh_iter_req_t *req)

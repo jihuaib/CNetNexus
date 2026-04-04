@@ -15,26 +15,52 @@
 #include "if_cli.h"
 #include "if_main.h"
 #include "log.h"
+#include "net_addr.h"
 
 // ============================================================================
 // 内部辅助
 // ============================================================================
 
 /**
- * @brief 追加单个接口配置块（if GE-x / ip address / shutdown / !）
+ * @brief 追加单个接口配置块（if GE-x / ip address / ipv6 address / shutdown / !）
  *
  * 仅在接口存在非默认配置时输出（有 IP 或已关闭）。
  *
  * @param out        输出文本
  * @param name       逻辑接口名（如 "GE-1"）
- * @param ip_str     IP 地址字符串（空字符串表示未配置）
- * @param prefix_len 前缀长度
+ * @param ip4_str     IPv4 地址字符串（空字符串表示未配置）
+ * @param prefix4_len IPv4 前缀长度
+ * @param ip6_str     IPv6 地址字符串（空字符串表示未配置）
+ * @param prefix6_len IPv6 前缀长度
  * @param shutdown   1=已关闭，0=正常
  */
-static void bdr_append_interface(GString *out, const char *name, const char *ip_str, int64_t prefix_len,
-                                 int64_t shutdown)
+static gboolean bdr_addr_is_valid(const char *ip_str, int64_t prefix_len, sa_family_t family)
 {
-    gboolean has_ip = (ip_str && ip_str[0] != '\0');
+    if (!ip_str || ip_str[0] == '\0')
+    {
+        return FALSE;
+    }
+
+    if ((family == AF_INET && (prefix_len < 0 || prefix_len > 32)) ||
+        (family == AF_INET6 && (prefix_len < 0 || prefix_len > 128)))
+    {
+        return FALSE;
+    }
+
+    net_addr_t addr;
+    if (net_addr_from_str(ip_str, &addr) != 0 || addr.family != family)
+    {
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+static void bdr_append_interface(GString *out, const char *name, const char *ip4_str, int64_t prefix4_len,
+                                 const char *ip6_str, int64_t prefix6_len, int64_t shutdown)
+{
+    gboolean has_ip4 = bdr_addr_is_valid(ip4_str, prefix4_len, AF_INET);
+    gboolean has_ip6 = bdr_addr_is_valid(ip6_str, prefix6_len, AF_INET6);
     gboolean is_shutdown = (shutdown != 0);
 
     /* loop 接口使用 "if loop <N>" 格式，GE/null0 接口使用 "if <name>" 格式 */
@@ -50,9 +76,13 @@ static void bdr_append_interface(GString *out, const char *name, const char *ip_
         g_string_append_printf(out, "if %s\r\n", name);
     }
 
-    if (has_ip)
+    if (has_ip4)
     {
-        g_string_append_printf(out, " ip address %s %ld\r\n", ip_str, prefix_len);
+        g_string_append_printf(out, " ip address %s %ld\r\n", ip4_str, prefix4_len);
+    }
+    if (has_ip6)
+    {
+        g_string_append_printf(out, " ipv6 address %s %ld\r\n", ip6_str, prefix6_len);
     }
 
     if (is_shutdown)
@@ -88,8 +118,10 @@ void if_bdr_show_config(dev_ipc_message_t *msg)
     {
         db_row_t *row = result->rows[i];
         const char *name = db_row_get_text(row, "name", NULL);
-        const char *ip_str = db_row_get_text(row, "ip_address", NULL);
-        int64_t prefix_len = db_row_get_int(row, "prefix_len", 0);
+        const char *ip4_str = db_row_get_text(row, "ip_address", NULL);
+        int64_t prefix4_len = db_row_get_int(row, "prefix_len", 0);
+        const char *ip6_str = db_row_get_text(row, "ipv6_address", NULL);
+        int64_t prefix6_len = db_row_get_int(row, "ipv6_prefix_len", 0);
         int64_t shutdown = db_row_get_int(row, "shutdown", 0);
 
         if (!name)
@@ -97,7 +129,7 @@ void if_bdr_show_config(dev_ipc_message_t *msg)
             continue;
         }
 
-        bdr_append_interface(out, name, ip_str, prefix_len, shutdown);
+        bdr_append_interface(out, name, ip4_str, prefix4_len, ip6_str, prefix6_len, shutdown);
     }
 
     db_result_free(result);

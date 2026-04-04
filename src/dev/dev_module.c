@@ -25,6 +25,10 @@
 #include "log.h"
 #include "path_utils.h"
 
+/* 模块 IPC 连接等待参数 */
+#define DEV_INIT_IPC_WAIT_TIMEOUT_SEC 60U
+#define DEV_INIT_IPC_WAIT_INTERVAL_USEC 100000U
+
 /* 前向声明 */
 static gboolean collect_module_callback(gpointer key, gpointer value, gpointer data);
 static pid_t dev_spawn_module(const char *exe_name, const char *module_name);
@@ -472,6 +476,158 @@ static gboolean dev_connect_to_module_callback(gpointer key, gpointer value, gpo
     return FALSE;
 }
 
+typedef struct
+{
+    dev_ipc_context_t *ctx;
+    GString *pending_names;
+    uint32_t pending_count;
+} dev_ipc_wait_ctx_t;
+
+typedef struct
+{
+    uint8_t required_phase;
+    GString *pending_names;
+    uint32_t pending_count;
+} dev_phase_wait_ctx_t;
+
+static void append_pending_name(GString *out, const char *name)
+{
+    if (!out || !name)
+    {
+        return;
+    }
+    if (out->len > 0)
+    {
+        g_string_append(out, ", ");
+    }
+    g_string_append(out, name);
+}
+
+/* 收集“已加载但 IPC 未连接”的模块（不含 DEV） */
+static gboolean collect_ipc_pending_cb(gpointer key, gpointer value, gpointer data)
+{
+    (void)key;
+    dev_module_t *module = (dev_module_t *)value;
+    dev_ipc_wait_ctx_t *ctx = (dev_ipc_wait_ctx_t *)data;
+
+    if (!module || !ctx || module->module_id == DEV_MODULE_ID_DEV || module->phase < DEV_PHASE_LOADED)
+    {
+        return FALSE;
+    }
+
+    if (!dev_ipc_is_connected(ctx->ctx, module->module_id))
+    {
+        ctx->pending_count++;
+        append_pending_name(ctx->pending_names, module->name);
+    }
+
+    return FALSE;
+}
+
+/* 收集“阶段低于 required_phase”的模块（不含 DEV） */
+static gboolean collect_phase_pending_cb(gpointer key, gpointer value, gpointer data)
+{
+    (void)key;
+    dev_module_t *module = (dev_module_t *)value;
+    dev_phase_wait_ctx_t *ctx = (dev_phase_wait_ctx_t *)data;
+
+    if (!module || !ctx || module->module_id == DEV_MODULE_ID_DEV || module->phase < DEV_PHASE_LOADED)
+    {
+        return FALSE;
+    }
+
+    if (module->phase < ctx->required_phase)
+    {
+        ctx->pending_count++;
+        append_pending_name(ctx->pending_names, module->name);
+    }
+
+    return FALSE;
+}
+
+/* 启动阶段：等待所有已加载模块 IPC 连接 ready，未完成则失败返回 */
+static int dev_wait_all_ipc_ready(dev_ipc_context_t *dev_ctx, uint32_t timeout_sec)
+{
+    gint64 deadline_usec = g_get_monotonic_time() + (gint64)timeout_sec * G_USEC_PER_SEC;
+    uint32_t round = 0;
+
+    while (g_get_monotonic_time() < deadline_usec)
+    {
+        GString *pending = g_string_new("");
+        if (!pending)
+        {
+            return ERRCODE_FAIL;
+        }
+
+        dev_ipc_wait_ctx_t ctx = {
+            .ctx = dev_ctx,
+            .pending_names = pending,
+            .pending_count = 0,
+        };
+        g_tree_foreach(g_module_registry, collect_ipc_pending_cb, &ctx);
+
+        if (ctx.pending_count == 0)
+        {
+            LOG_INFO("All IPC connections ready");
+            g_string_free(pending, TRUE);
+            return ERRCODE_SUCCESS;
+        }
+
+        if (round % 10 == 0)
+        {
+            LOG_WARN("Waiting for IPC connection: %s", pending->str);
+        }
+
+        g_string_free(pending, TRUE);
+        usleep(DEV_INIT_IPC_WAIT_INTERVAL_USEC);
+        round++;
+    }
+
+    GString *pending = g_string_new("");
+    if (!pending)
+    {
+        return ERRCODE_FAIL;
+    }
+    dev_ipc_wait_ctx_t ctx = {
+        .ctx = dev_ctx,
+        .pending_names = pending,
+        .pending_count = 0,
+    };
+    g_tree_foreach(g_module_registry, collect_ipc_pending_cb, &ctx);
+
+    LOG_ERROR("IPC wait timeout (%u sec), still not connected: %s", timeout_sec,
+              ctx.pending_count ? pending->str : "-");
+    g_string_free(pending, TRUE);
+    return (ctx.pending_count > 0) ? (int)ctx.pending_count : ERRCODE_FAIL;
+}
+
+/* 阶段门控：要求所有模块 phase >= required_phase */
+static int dev_require_all_modules_phase(uint8_t required_phase, const char *phase_name)
+{
+    GString *pending = g_string_new("");
+    if (!pending)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    dev_phase_wait_ctx_t ctx = {
+        .required_phase = required_phase,
+        .pending_names = pending,
+        .pending_count = 0,
+    };
+    g_tree_foreach(g_module_registry, collect_phase_pending_cb, &ctx);
+
+    if (ctx.pending_count > 0)
+    {
+        LOG_ERROR("%s incomplete, pending modules: %s", phase_name, pending->str);
+        g_string_free(pending, TRUE);
+        return (int)ctx.pending_count;
+    }
+
+    g_string_free(pending, TRUE);
+    return ERRCODE_SUCCESS;
+}
+
 // ============================================================================
 // Phase 1: 发送 MODULE_START RPC（无 payload，各模块名称已在 dev_ipc_init 中配置）
 // ============================================================================
@@ -624,71 +780,38 @@ int32_t dev_init_all_modules(void)
     LOG_INFO("DEV connecting to all modules");
     g_tree_foreach(g_module_registry, dev_connect_to_module_callback, g_dev_local->dev_ipc_ctx);
 
-    /* 等待所有 IPC 连接完成握手（最多 5 秒） */
+    /* 阶段门控 0：所有模块 IPC 必须先 ready，再进入 Phase 1 */
     LOG_INFO("Waiting for IPC connections to be ready...");
-    int all_connected = 0;
-    for (int retry = 0; retry < 50; retry++)
+    if (dev_wait_all_ipc_ready(g_dev_local->dev_ipc_ctx, DEV_INIT_IPC_WAIT_TIMEOUT_SEC) != ERRCODE_SUCCESS)
     {
-        all_connected = 1;
-        GList *wait_modules = NULL;
-        g_tree_foreach(g_module_registry, collect_module_callback, &wait_modules);
-
-        for (GList *l = wait_modules; l != NULL; l = l->next)
-        {
-            dev_module_t *m = (dev_module_t *)l->data;
-            if (m->module_id != DEV_MODULE_ID_DEV && m->phase >= DEV_PHASE_LOADED)
-            {
-                if (!dev_ipc_is_connected(g_dev_local->dev_ipc_ctx, m->module_id))
-                {
-                    all_connected = 0;
-                    if (retry % 10 == 9) /* 每 1 秒记录一次等待中的模块 */
-                    {
-                        LOG_WARN("Waiting for IPC connection: %s (id=0x%08X) not ready", m->name, m->module_id);
-                    }
-                }
-            }
-        }
-        g_list_free(wait_modules);
-
-        if (all_connected)
-        {
-            LOG_INFO("All IPC connections ready (took ~%d ms)", retry * 100);
-            break;
-        }
-        usleep(100000); /* 100ms */
-    }
-
-    if (!all_connected)
-    {
-        LOG_WARN("Wait timeout (5 seconds), some module IPC connections not ready, continuing initialization");
-        /* 打印每个模块的最终连接状态 */
-        GList *mods = NULL;
-        g_tree_foreach(g_module_registry, collect_module_callback, &mods);
-        for (GList *l = mods; l != NULL; l = l->next)
-        {
-            dev_module_t *m = (dev_module_t *)l->data;
-            if (m->module_id != DEV_MODULE_ID_DEV)
-            {
-                int connected = dev_ipc_is_connected(g_dev_local->dev_ipc_ctx, m->module_id);
-                LOG_WARN("  Module %s (id=0x%08X): %s", m->name, m->module_id,
-                         connected ? "connected" : "not connected");
-            }
-        }
-        g_list_free(mods);
+        LOG_ERROR("Abort initialization: not all module IPC connections are ready");
+        return ERRCODE_FAIL;
     }
 
     /* Phase 1: 发送 MODULE_START — 模块建立 IPC 连接 */
     LOG_INFO("=== Phase 1: MODULE_START (IPC setup) ===");
     g_tree_foreach(g_module_registry, phase1_start_callback, &failed_count);
+    if (dev_require_all_modules_phase(DEV_PHASE_IPC_READY, "Phase 1") != ERRCODE_SUCCESS)
+    {
+        return ERRCODE_FAIL;
+    }
 
     /* Phase 2: 发送 MODULE_CONNECT — 预留（DB 恢复） */
     LOG_INFO("=== Phase 2: MODULE_CONNECT (reserved) ===");
     g_tree_foreach(g_module_registry, phase2_connect_callback, &failed_count);
+    if (dev_require_all_modules_phase(DEV_PHASE_DB_RECOVERED, "Phase 2") != ERRCODE_SUCCESS)
+    {
+        return ERRCODE_FAIL;
+    }
     LOG_INFO("Phase 2: All modules reserved phase complete");
 
     /* Phase 3: 发送 MODULE_READY — 预留（CFG 加载 XML） */
     LOG_INFO("=== Phase 3: MODULE_READY (reserved) ===");
     g_tree_foreach(g_module_registry, phase3_ready_callback, &failed_count);
+    if (dev_require_all_modules_phase(DEV_PHASE_READY, "Phase 3") != ERRCODE_SUCCESS)
+    {
+        return ERRCODE_FAIL;
+    }
 
     LOG_INFO("=============================================");
     LOG_INFO("Three-phase initialization complete (failed: %d)", failed_count);

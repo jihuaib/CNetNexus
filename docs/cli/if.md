@@ -13,22 +13,33 @@ Enters the interface configuration view for a specific GigabitEthernet interface
 
 ## 2. Interface Configuration Commands (`config-if-GE-*` view)
 
+`ip address` and `ipv6 address` are stored independently, so a single interface can keep both IPv4 and IPv6 at the same time.
+
 ### 2.1 `ip address <ip-address> <prefix-len>`
 Configures an IPv4 address on the current interface.
 
 - **Usage**: `ip address <ip-address> <prefix-len>`
 - **View**: `config-if-GE-*`
 - **Parameters**:
-    - `<ip-address>`: IPv4 address (`ip`).
-    - `<prefix-len>`: Prefix length (`integer`, 0-32).
+  - `<ip-address>`: IPv4 address (`ip`).
+  - `<prefix-len>`: Prefix length (`integer`, 0-32).
 
-### 2.2 `shutdown`
+### 2.2 `ipv6 address <ipv6-address> <prefix-len>`
+Configures an IPv6 address on the current interface.
+
+- **Usage**: `ipv6 address <ipv6-address> <prefix-len>`
+- **View**: `config-if-GE-*`
+- **Parameters**:
+  - `<ipv6-address>`: IPv6 address (`ipv6`).
+  - `<prefix-len>`: Prefix length (`integer`, 0-128).
+
+### 2.3 `shutdown`
 Administratively disables the current interface.
 
 - **Usage**: `shutdown`
 - **View**: `config-if-GE-*`
 
-### 2.3 `no shutdown`
+### 2.4 `no shutdown`
 Administratively enables the current interface.
 
 - **Usage**: `no shutdown`

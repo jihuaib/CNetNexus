@@ -19,9 +19,9 @@ from top_runner import TopologyRuntime  # noqa: E402
 
 PFX = "10.66.66.0/24"
 PFX_ADDR = "10.66.66.0"
-PFX_MASK = "255.255.255.0"
+PFX_MASK = "24"
 NH_UNRESOLVED = "198.51.100.1"
-NH_MASK = "255.255.255.255"
+NH_MASK = "32"
 
 
 def _wait_route_state(

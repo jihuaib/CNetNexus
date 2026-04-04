@@ -684,12 +684,31 @@ static int bgp_cfg_resolve_source_if_addr(const char *if_name, sa_family_t peer_
     }
 
     const db_row_t *row = result->rows[0];
-    const char *ip_str = db_row_get_text(row, "ip_address", NULL);
+    const char *ip_str = NULL;
+    if (peer_family == AF_INET6)
+    {
+        ip_str = db_row_get_text(row, "ipv6_address", NULL);
+    }
+    else
+    {
+        ip_str = db_row_get_text(row, "ip_address", NULL);
+    }
+
+    if ((!ip_str || ip_str[0] == '\0') && peer_family == 0)
+    {
+        /* 未指定对端地址族时，按 IPv4 -> IPv6 回退。 */
+        ip_str = db_row_get_text(row, "ip_address", NULL);
+        if (!ip_str || ip_str[0] == '\0')
+        {
+            ip_str = db_row_get_text(row, "ipv6_address", NULL);
+        }
+    }
+
     if (!ip_str || ip_str[0] == '\0')
     {
         if (errmsg && errmsg_len > 0)
         {
-            snprintf(errmsg, errmsg_len, "BGP Error: Interface '%s' has no IP address.", if_name);
+            snprintf(errmsg, errmsg_len, "BGP Error: Interface '%s' has no usable IP address.", if_name);
         }
         db_result_free(result);
         return -1;

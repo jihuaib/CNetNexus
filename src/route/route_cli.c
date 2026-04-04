@@ -6,7 +6,6 @@
  */
 #include "route_cli.h"
 
-#include <arpa/inet.h>
 #include <glib.h>
 #include <stdio.h>
 #include <string.h>
@@ -38,41 +37,11 @@ static void send_resp(dev_ipc_message_t *msg, const char *text)
     }
 }
 
-/**
- * @brief 将 IPv4 掩码字符串（如 "255.255.255.0"）转换为前缀长度
- * @return 前缀长度 0-32，失败返回 -1
- */
-static int mask_to_prefix_len(const char *mask)
-{
-    struct in_addr addr;
-    if (inet_pton(AF_INET, mask, &addr) != 1)
-    {
-        return -1;
-    }
-    uint32_t m = ntohl(addr.s_addr);
-    if (m == 0)
-    {
-        return 0;
-    }
-    uint32_t inv = ~m;
-    if ((inv & (inv + 1)) != 0)
-    {
-        return -1;
-    }
-    int len = 0;
-    while (m & 0x80000000u)
-    {
-        len++;
-        m <<= 1;
-    }
-    return len;
-}
-
 // ============================================================================
 // Group 1: 路由配置命令
 //
 // cfg-id 映射：
-//   1=no, 2=ipv4, 3=ipv6, 4=prefix(dest), 5=mask(IPv4),
+//   1=no, 2=ipv4, 3=ipv6, 4=prefix(dest), 5=prefix_len(IPv4),
 //   6=prefix_len(IPv6), 7=nexthop, 8=metric value
 // ============================================================================
 
@@ -82,13 +51,13 @@ static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     int is_ipv4 = 0;
     int is_ipv6 = 0;
     char prefix_str[64] = {0};
-    char mask_str[64] = {0};
-    char nexthop_str[64] = {0};
+    int64_t ipv4_prefix_len = 0;
     int64_t ipv6_prefix_len = 0;
+    char nexthop_str[64] = {0};
     int64_t metric = 0;
     int has_prefix = 0;
-    int has_mask = 0;
-    int has_pfxlen = 0;
+    int has_ipv4_pfxlen = 0;
+    int has_ipv6_pfxlen = 0;
     int has_nexthop = 0;
     int has_metric = 0;
 
@@ -123,18 +92,12 @@ static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                 break;
             }
             case 5:
-            {
-                const char *text = cli_tlv_entry_get_text(&entry);
-                if (text)
-                {
-                    g_strlcpy(mask_str, text, sizeof(mask_str));
-                    has_mask = 1;
-                }
+                ipv4_prefix_len = cli_tlv_entry_get_int(&entry);
+                has_ipv4_pfxlen = 1;
                 break;
-            }
             case 6:
                 ipv6_prefix_len = cli_tlv_entry_get_int(&entry);
-                has_pfxlen = 1;
+                has_ipv6_pfxlen = 1;
                 break;
             case 7:
             {
@@ -164,32 +127,39 @@ static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 
     uint16_t afi;
     uint8_t prefix_len;
+    sa_family_t expect_family;
 
     if (is_ipv4)
     {
-        if (!has_mask)
+        if (!has_ipv4_pfxlen)
         {
-            send_resp(msg, "Error: IPv4 route requires subnet mask\r\n");
+            send_resp(msg, "Error: IPv4 route requires prefix length\r\n");
             return ERRCODE_FAIL;
         }
-        int pl = mask_to_prefix_len(mask_str);
-        if (pl < 0)
+        if (ipv4_prefix_len < 1 || ipv4_prefix_len > 32)
         {
-            send_resp(msg, "Error: Invalid subnet mask\r\n");
+            send_resp(msg, "Error: IPv4 prefix length must be 1-32\r\n");
             return ERRCODE_FAIL;
         }
         afi = ROUTE_AFI_IPV4;
-        prefix_len = (uint8_t)pl;
+        prefix_len = (uint8_t)ipv4_prefix_len;
+        expect_family = AF_INET;
     }
     else if (is_ipv6)
     {
-        if (!has_pfxlen)
+        if (!has_ipv6_pfxlen)
         {
             send_resp(msg, "Error: IPv6 route requires prefix length\r\n");
             return ERRCODE_FAIL;
         }
+        if (ipv6_prefix_len < 1 || ipv6_prefix_len > 128)
+        {
+            send_resp(msg, "Error: IPv6 prefix length must be 1-128\r\n");
+            return ERRCODE_FAIL;
+        }
         afi = ROUTE_AFI_IPV6;
         prefix_len = (uint8_t)ipv6_prefix_len;
+        expect_family = AF_INET6;
     }
     else
     {
@@ -201,6 +171,11 @@ static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     if (net_addr_from_str(prefix_str, &prefix_addr) != 0)
     {
         send_resp(msg, "Error: Invalid prefix address\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (prefix_addr.family != expect_family)
+    {
+        send_resp(msg, "Error: Prefix address family does not match route type\r\n");
         return ERRCODE_FAIL;
     }
     if (net_addr_prefix_normalize(&prefix_addr, prefix_len) != 0)
@@ -220,6 +195,11 @@ static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             if (net_addr_from_str(nexthop_str, &nexthop_addr) != 0)
             {
                 send_resp(msg, "Error: Invalid nexthop address\r\n");
+                return ERRCODE_FAIL;
+            }
+            if (nexthop_addr.family != expect_family)
+            {
+                send_resp(msg, "Error: Nexthop address family does not match route type\r\n");
                 return ERRCODE_FAIL;
             }
 
@@ -284,6 +264,11 @@ static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         if (net_addr_from_str(nexthop_str, &nexthop_addr) != 0)
         {
             send_resp(msg, "Error: Invalid nexthop address\r\n");
+            return ERRCODE_FAIL;
+        }
+        if (nexthop_addr.family != expect_family)
+        {
+            send_resp(msg, "Error: Nexthop address family does not match route type\r\n");
             return ERRCODE_FAIL;
         }
 

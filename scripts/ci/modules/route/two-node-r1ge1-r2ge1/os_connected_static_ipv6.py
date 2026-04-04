@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Route OS downlink check (connected + static, IPv4).
+Route OS downlink check (connected + static, IPv6).
 
 Goals:
-- verify connected routes are installed to OS route table
+- verify connected IPv6 routes are installed to OS route table
 - verify connected routes are withdrawn/restored on interface shutdown/no shutdown
-- verify static route is installed/withdrawn in OS route table
+- verify static IPv6 route is installed/withdrawn in OS route table
 """
 
 from __future__ import annotations
@@ -13,18 +13,27 @@ from __future__ import annotations
 import ipaddress
 import re
 
-from module_api import g_top, require_devices, run_cmds, step, wait_check, wait_checks  # noqa: E402
+from module_api import require_devices, run_cmds, step, wait_check, wait_checks  # noqa: E402
 from top_runner import TopologyRuntime  # noqa: E402
 
 
-STATIC_PREFIX_ADDR = "198.18.66.0"
-STATIC_MASK = "24"
-STATIC_PREFIX = "198.18.66.0/24"
+GE_IF = "GE-1"
+GE_PREFIX_LEN = 64
+R1_GE_V6 = "2001:db8:12::1"
+R2_GE_V6 = "2001:db8:12::2"
+
+STATIC_PREFIX_ADDR = "2001:db8:198:18:66::"
+STATIC_PREFIX_LEN = 64
+STATIC_PREFIX = (
+    f"{ipaddress.ip_interface(f'{STATIC_PREFIX_ADDR}/{STATIC_PREFIX_LEN}').network.network_address}/"
+    f"{STATIC_PREFIX_LEN}"
+)
+
 LOOP_ID = 101
 LOOP_IF = f"loop{LOOP_ID}"
-LOOP_IP = "198.18.101.1"
-LOOP_PREFIX_LEN = 32
-LOOP_PREFIX = f"{LOOP_IP}/32"
+LOOP_IP = "2001:db8:101::1"
+LOOP_PREFIX_LEN = 128
+LOOP_PREFIX = f"{LOOP_IP}/{LOOP_PREFIX_LEN}"
 
 
 def _wait_os_route(
@@ -47,7 +56,7 @@ def _wait_os_route(
     wait_check(
         rt,
         device=device,
-        command="show route ipv4 os",
+        command="show route ipv6 os",
         timeout=timeout,
         interval=interval,
         regex=[row_regex] if expect_present else (),
@@ -60,48 +69,102 @@ def _wait_os_route(
     )
 
 
+def _cleanup(rt: TopologyRuntime, *, static_nh: str) -> None:
+    run_cmds(
+        rt=rt,
+        device="r1",
+        strict=False,
+        commands=[
+            "config",
+            f"if {GE_IF}",
+            f"no ipv6 address {R1_GE_V6} {GE_PREFIX_LEN}",
+            "no shutdown",
+            "exit",
+            f"no route ipv6 {STATIC_PREFIX_ADDR} {STATIC_PREFIX_LEN} {static_nh}",
+            f"no if loop {LOOP_ID}",
+            "end",
+        ],
+    )
+    run_cmds(
+        rt=rt,
+        device="r2",
+        strict=False,
+        commands=[
+            "config",
+            f"if {GE_IF}",
+            f"no ipv6 address {R2_GE_V6} {GE_PREFIX_LEN}",
+            "no shutdown",
+            "exit",
+            "end",
+        ],
+    )
+
+
+def _setup_underlay(rt: TopologyRuntime) -> None:
+    run_cmds(
+        rt=rt,
+        device="r1",
+        strict=False,
+        commands=[
+            "config",
+            f"if {GE_IF}",
+            f"ipv6 address {R1_GE_V6} {GE_PREFIX_LEN}",
+            "no shutdown",
+            "exit",
+            "end",
+        ],
+    )
+    run_cmds(
+        rt=rt,
+        device="r2",
+        strict=False,
+        commands=[
+            "config",
+            f"if {GE_IF}",
+            f"ipv6 address {R2_GE_V6} {GE_PREFIX_LEN}",
+            "no shutdown",
+            "exit",
+            "end",
+        ],
+    )
+
+
 def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
     require_devices(top, ("r1", "r2"))
 
-    if_name = "GE-1"
-    if_ip = str(g_top.r1.GE_1.ip)
-    if_prefix = int(g_top.r1.GE_1.prefix)
-    net_addr = str(ipaddress.ip_interface(f"{if_ip}/{if_prefix}").network.network_address)
+    if_v6 = str(ipaddress.ip_address(R1_GE_V6))
+    if_prefix = GE_PREFIX_LEN
+    if_show_prefix = f"{if_v6}/{if_prefix}"
+    net_addr = str(ipaddress.ip_interface(f"{if_v6}/{if_prefix}").network.network_address)
     connected_net_prefix = f"{net_addr}/{if_prefix}"
-    connected_host_prefix = f"{if_ip}/32"
-    static_nh = str(g_top.r1.GE_1.peer_ip)
+    connected_host_prefix = f"{if_v6}/128"
+    static_nh = R2_GE_V6
 
     try:
-        step("Cleanup stale static/loop config and force interface up")
-        run_cmds(
-            rt=rt,
-            device="r1",
-            strict=False,
-            commands=[
-                "config",
-                f"if {if_name}",
-                "no shutdown",
-                "exit",
-                f"no route ipv4 {STATIC_PREFIX_ADDR} {STATIC_MASK} {static_nh}",
-                f"no if loop {LOOP_ID}",
-                "end",
-            ],
-        )
+        step("Cleanup stale static/loop/ipv6 config")
+        _cleanup(rt, static_nh=static_nh)
+
+        step("Configure GE-1 IPv6 underlay and force interface up")
+        _setup_underlay(rt)
         wait_checks(
             rt,
             [
                 {
                     "device": "r1",
-                    "command": f"show if {if_name}",
-                    "contains": [f"Interface {if_name} Detail:", "State      : UP"],
-                    "label": "r1 GE-1 up before OS check",
+                    "command": f"show if {GE_IF}",
+                    "contains": [
+                        f"Interface {GE_IF} Detail:",
+                        "State      : UP",
+                        f"IPv6 Addr  : {if_show_prefix}",
+                    ],
+                    "label": "r1 GE-1 ipv6 up before OS check",
                 }
             ],
             timeout=20,
             interval=2,
         )
 
-        step("Verify connected routes installed in OS")
+        step("Verify connected IPv6 routes installed in OS")
         _wait_os_route(
             rt,
             device="r1",
@@ -125,13 +188,13 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             timeout=30,
         )
 
-        step("Shutdown interface and verify connected routes withdrawn from OS")
+        step("Shutdown interface and verify connected IPv6 routes withdrawn from OS")
         run_cmds(
             rt=rt,
             device="r1",
             commands=[
                 "config",
-                f"if {if_name}",
+                f"if {GE_IF}",
                 "shutdown",
                 "exit",
                 "end",
@@ -142,8 +205,8 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             [
                 {
                     "device": "r1",
-                    "command": f"show if {if_name}",
-                    "contains": [f"Interface {if_name} Detail:", "State      : DOWN"],
+                    "command": f"show if {GE_IF}",
+                    "contains": [f"Interface {GE_IF} Detail:", "State      : DOWN"],
                     "label": "r1 GE-1 shutdown",
                 }
             ],
@@ -173,13 +236,13 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             timeout=30,
         )
 
-        step("No shutdown interface and verify connected routes restored to OS")
+        step("No shutdown interface and verify connected IPv6 routes restored to OS")
         run_cmds(
             rt=rt,
             device="r1",
             commands=[
                 "config",
-                f"if {if_name}",
+                f"if {GE_IF}",
                 "no shutdown",
                 "exit",
                 "end",
@@ -190,8 +253,8 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             [
                 {
                     "device": "r1",
-                    "command": f"show if {if_name}",
-                    "contains": [f"Interface {if_name} Detail:", "State      : UP"],
+                    "command": f"show if {GE_IF}",
+                    "contains": [f"Interface {GE_IF} Detail:", "State      : UP"],
                     "label": "r1 GE-1 no shutdown",
                 }
             ],
@@ -221,14 +284,14 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             timeout=30,
         )
 
-        step("Create loop interface and verify loop connected route in OS")
+        step("Create loop interface and verify loop connected IPv6 route in OS")
         run_cmds(
             rt=rt,
             device="r1",
             commands=[
                 "config",
                 f"if loop {LOOP_ID}",
-                f"ip address {LOOP_IP} {LOOP_PREFIX_LEN}",
+                f"ipv6 address {LOOP_IP} {LOOP_PREFIX_LEN}",
                 "exit",
                 "end",
             ],
@@ -242,7 +305,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                     "contains": [
                         f"Interface {LOOP_IF} Detail:",
                         "State      : UP",
-                        f"IPv4 Addr : {LOOP_PREFIX}",
+                        f"IPv6 Addr  : {LOOP_PREFIX}",
                     ],
                     "label": f"r1 {LOOP_IF} configured",
                 }
@@ -262,14 +325,14 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             timeout=30,
         )
 
-        step("Delete loop IP and verify loop connected route withdrawn from OS")
+        step("Delete loop IPv6 and verify loop connected route withdrawn from OS")
         run_cmds(
             rt=rt,
             device="r1",
             commands=[
                 "config",
                 f"if loop {LOOP_ID}",
-                f"no ip address {LOOP_IP} {LOOP_PREFIX_LEN}",
+                f"no ipv6 address {LOOP_IP} {LOOP_PREFIX_LEN}",
                 "exit",
                 "end",
             ],
@@ -283,9 +346,9 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                     "contains": [
                         f"Interface {LOOP_IF} Detail:",
                         "State      : UP",
-                        f"IPv4 Addr : -",
+                        "IPv6 Addr  : -",
                     ],
-                    "label": f"r1 {LOOP_IF} ip removed",
+                    "label": f"r1 {LOOP_IF} ipv6 removed",
                 }
             ],
             timeout=20,
@@ -328,13 +391,13 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             interval=2,
         )
 
-        step("Add static route and verify OS install")
+        step("Add IPv6 static route and verify OS install")
         run_cmds(
             rt=rt,
             device="r1",
             commands=[
                 "config",
-                f"route ipv4 {STATIC_PREFIX_ADDR} {STATIC_MASK} {static_nh}",
+                f"route ipv6 {STATIC_PREFIX_ADDR} {STATIC_PREFIX_LEN} {static_nh}",
                 "end",
             ],
         )
@@ -350,13 +413,13 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             timeout=30,
         )
 
-        step("Delete static route and verify OS withdrawal")
+        step("Delete IPv6 static route and verify OS withdrawal")
         run_cmds(
             rt=rt,
             device="r1",
             commands=[
                 "config",
-                f"no route ipv4 {STATIC_PREFIX_ADDR} {STATIC_MASK} {static_nh}",
+                f"no route ipv6 {STATIC_PREFIX_ADDR} {STATIC_PREFIX_LEN} {static_nh}",
                 "end",
             ],
         )
@@ -372,20 +435,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             timeout=30,
         )
 
-        print("Route OS connected/static downlink check passed.")
+        print("Route OS connected/static downlink check (IPv6) passed.")
     finally:
         step("Cleanup route OS downlink case config")
-        run_cmds(
-            rt=rt,
-            device="r1",
-            strict=False,
-            commands=[
-                "config",
-                f"if {if_name}",
-                "no shutdown",
-                "exit",
-                f"no route ipv4 {STATIC_PREFIX_ADDR} {STATIC_MASK} {static_nh}",
-                f"no if loop {LOOP_ID}",
-                "end",
-            ],
-        )
+        _cleanup(rt, static_nh=static_nh)

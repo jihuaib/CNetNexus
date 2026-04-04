@@ -22,7 +22,7 @@ R1_LOOP_ID = 201
 R2_LOOP_ID = 202
 R1_LOOP_IP = "172.16.201.1"
 R2_LOOP_IP = "172.16.202.1"
-HOST_MASK = "255.255.255.255"
+HOST_MASK = "32"
 
 
 def _cleanup_case_config(rt: TopologyRuntime, *, r1_peer_ip: str, r2_peer_ip: str) -> None:
@@ -109,7 +109,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                     "contains": [
                         f"Interface loop{R1_LOOP_ID} Detail:",
                         "State      : UP",
-                        f"IP Address : {R1_LOOP_IP}/32",
+                        f"IPv4 Addr : {R1_LOOP_IP}/32",
                     ],
                     "label": "r1 loopback configured",
                 },
@@ -119,7 +119,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                     "contains": [
                         f"Interface loop{R2_LOOP_ID} Detail:",
                         "State      : UP",
-                        f"IP Address : {R2_LOOP_IP}/32",
+                        f"IPv4 Addr : {R2_LOOP_IP}/32",
                     ],
                     "label": "r2 loopback configured",
                 },

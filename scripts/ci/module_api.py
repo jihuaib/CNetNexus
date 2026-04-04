@@ -281,6 +281,18 @@ def count_occurrences(output: str, token: str) -> int:
     return output.count(token)
 
 
+def _normalize_ws_text(text: str) -> str:
+    """
+    Normalize horizontal whitespace in each line:
+    - collapse runs of spaces/tabs to one space
+    - trim line edges
+    Newline boundaries are preserved.
+    """
+    if not text:
+        return ""
+    return "\n".join(re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines())
+
+
 def _normalize_count_map(raw: object) -> dict[str, int]:
     if not isinstance(raw, dict):
         return {}
@@ -301,17 +313,21 @@ def check_output(
     count: dict[str, int] | None = None,
     count_ge: dict[str, int] | None = None,
     count_le: dict[str, int] | None = None,
+    normalize_whitespace: bool = True,
 ) -> list[str]:
     violations: list[str] = []
+    plain_output = _normalize_ws_text(output) if normalize_whitespace else output
 
     for token in contains:
         t = str(token)
-        if t not in output:
+        t_match = _normalize_ws_text(t) if normalize_whitespace else t
+        if t_match not in plain_output:
             violations.append(f"missing '{t}'")
 
     for token in not_contains:
         t = str(token)
-        if t in output:
+        t_match = _normalize_ws_text(t) if normalize_whitespace else t
+        if t_match in plain_output:
             violations.append(f"unexpected '{t}'")
 
     for pattern in regex:
@@ -325,17 +341,20 @@ def check_output(
             violations.append(f"regex unexpectedly matched /{p}/")
 
     for token, expected in (count or {}).items():
-        got = count_occurrences(output, token)
+        token_match = _normalize_ws_text(token) if normalize_whitespace else token
+        got = count_occurrences(plain_output, token_match)
         if got != expected:
             violations.append(f"count('{token}') expect={expected} got={got}")
 
     for token, expected in (count_ge or {}).items():
-        got = count_occurrences(output, token)
+        token_match = _normalize_ws_text(token) if normalize_whitespace else token
+        got = count_occurrences(plain_output, token_match)
         if got < expected:
             violations.append(f"count('{token}') expect>={expected} got={got}")
 
     for token, expected in (count_le or {}).items():
-        got = count_occurrences(output, token)
+        token_match = _normalize_ws_text(token) if normalize_whitespace else token
+        got = count_occurrences(plain_output, token_match)
         if got > expected:
             violations.append(f"count('{token}') expect<={expected} got={got}")
 
@@ -395,6 +414,7 @@ def wait_checks(
       - count: dict[str, int]     (exact substring occurrence count)
       - count_ge: dict[str, int]  (minimum substring occurrence count)
       - count_le: dict[str, int]  (maximum substring occurrence count)
+      - normalize_whitespace: bool (default True, contains/not_contains/count ignore space/tab run length)
       - label: str (optional, used in error text)
     """
     if not checks:
@@ -418,6 +438,7 @@ def wait_checks(
             count = _normalize_count_map(chk.get("count", {}))
             count_ge = _normalize_count_map(chk.get("count_ge", {}))
             count_le = _normalize_count_map(chk.get("count_le", {}))
+            normalize_whitespace = bool(chk.get("normalize_whitespace", True))
             label = str(chk.get("label", f"{device}: {command}"))
 
             out = cmd(rt, device, command, strict=False)
@@ -432,6 +453,7 @@ def wait_checks(
                 count=count,
                 count_ge=count_ge,
                 count_le=count_le,
+                normalize_whitespace=normalize_whitespace,
             )
             if violations:
                 pending += 1
@@ -471,6 +493,7 @@ def wait_check(
     count: dict[str, int] | None = None,
     count_ge: dict[str, int] | None = None,
     count_le: dict[str, int] | None = None,
+    normalize_whitespace: bool = True,
     label: str | None = None,
 ) -> None:
     check: dict[str, object] = {
@@ -483,6 +506,7 @@ def wait_check(
         "count": dict(count or {}),
         "count_ge": dict(count_ge or {}),
         "count_le": dict(count_le or {}),
+        "normalize_whitespace": normalize_whitespace,
     }
     if label:
         check["label"] = label
@@ -503,6 +527,7 @@ def hold_check(
     count: dict[str, int] | None = None,
     count_ge: dict[str, int] | None = None,
     count_le: dict[str, int] | None = None,
+    normalize_whitespace: bool = True,
     label: str | None = None,
 ) -> None:
     """
@@ -525,6 +550,7 @@ def hold_check(
             count=count,
             count_ge=count_ge,
             count_le=count_le,
+            normalize_whitespace=normalize_whitespace,
         )
         if violations:
             mark_step_failed()

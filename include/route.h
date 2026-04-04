@@ -185,6 +185,15 @@ typedef struct route_nh_iter_notify
 int route_rpc_add(dev_ipc_context_t *ctx, const route_msg_entry_t *entry);
 
 /**
+ * @brief 同步注入一条路径：等待 ROUTE 模块处理完成并返回 ACK
+ * @param ctx        调用方 IPC 上下文
+ * @param entry      路由消息条目
+ * @param timeout_ms 等待超时（毫秒，0 表示默认）
+ * @return 成功返回 ERRCODE_SUCCESS，失败返回 ERRCODE_FAIL
+ */
+int route_rpc_add_wait(dev_ipc_context_t *ctx, const route_msg_entry_t *entry, uint32_t timeout_ms);
+
+/**
  * @brief 通过 IPC 向 ROUTE 模块注册 nexthop 迭代监听
  * @param ctx 调用方 IPC 上下文
  * @param req 迭代请求（vrf_id, afi, safi, nexthop_addr）
@@ -199,6 +208,15 @@ int route_rpc_nh_register(dev_ipc_context_t *ctx, const route_nh_iter_req_t *req
  * @return 成功返回 ERRCODE_SUCCESS，失败返回 ERRCODE_FAIL
  */
 int route_rpc_del(dev_ipc_context_t *ctx, const route_msg_entry_t *entry);
+
+/**
+ * @brief 同步撤销一条路径：等待 ROUTE 模块处理完成并返回 ACK
+ * @param ctx        调用方 IPC 上下文
+ * @param entry      路由消息条目（该 API 会强制按 withdraw 语义发送）
+ * @param timeout_ms 等待超时（毫秒，0 表示默认）
+ * @return 成功返回 ERRCODE_SUCCESS，失败返回 ERRCODE_FAIL
+ */
+int route_rpc_del_wait(dev_ipc_context_t *ctx, const route_msg_entry_t *entry, uint32_t timeout_ms);
 
 /**
  * @brief 通过 IPC 取消 nexthop 迭代监听

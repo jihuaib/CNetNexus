@@ -208,8 +208,10 @@ static gboolean fsm_neighbor_is_directly_connected(const net_addr_t *neighbor_ad
     for (uint32_t i = 0; i < result->num_rows; i++)
     {
         const db_row_t *row = result->rows[i];
-        const char *ip_str = db_row_get_text(row, "ip_address", NULL);
-        int64_t prefix_len = db_row_get_int(row, "prefix_len", 0);
+        const char *ip_str = (neighbor_addr->family == AF_INET6) ? db_row_get_text(row, "ipv6_address", NULL)
+                                                                 : db_row_get_text(row, "ip_address", NULL);
+        int64_t prefix_len = (neighbor_addr->family == AF_INET6) ? db_row_get_int(row, "ipv6_prefix_len", 0)
+                                                                 : db_row_get_int(row, "prefix_len", 0);
         int64_t shutdown = db_row_get_int(row, "shutdown", 0);
         if (!ip_str || ip_str[0] == '\0' || shutdown != 0)
         {

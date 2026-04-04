@@ -10,7 +10,7 @@
         <!-- ================================================================
              Group 1: 静态路由配置
              cfg-id: 1=no, 2=ipv4, 3=ipv6, 4=prefix(dest),
-                     5=mask(IPv4), 6=prefix_len(IPv6), 7=nexthop, 8=metric_value
+                     5=prefix_len(IPv4), 6=prefix_len(IPv6), 7=nexthop, 8=metric_value
              ================================================================ -->
         <group group-id="1">
             <elements>
@@ -36,14 +36,14 @@
                     <description>Destination network address</description>
                 </element>
                 <element cfg-id="5" type="parameter">
-                    <name>&lt;mask&gt;</name>
-                    <type>string</type>
-                    <description>Subnet mask (IPv4, e.g. 255.255.255.0)</description>
+                    <name>&lt;prefix-length&gt;</name>
+                    <type>uint(1-32)</type>
+                    <description>Prefix length (IPv4, 1-32)</description>
                 </element>
                 <element cfg-id="6" type="parameter">
                     <name>&lt;prefix-length&gt;</name>
-                    <type>uint(0-128)</type>
-                    <description>Prefix length (IPv6, 0-128)</description>
+                    <type>uint(1-128)</type>
+                    <description>Prefix length (IPv6, 1-128)</description>
                 </element>
                 <element cfg-id="7" type="parameter">
                     <name>&lt;nexthop&gt;</name>
@@ -62,22 +62,22 @@
             </elements>
 
             <commands>
-                <!-- route ipv4 <prefix> <mask> <nexthop> -->
+                <!-- route ipv4 <prefix> <prefix-length> <nexthop> -->
                 <command>
                     <expression>2 3 5 6 8</expression>
                     <views>config</views>
                 </command>
-                <!-- route ipv4 <prefix> <mask> <nexthop> metric <value> -->
+                <!-- route ipv4 <prefix> <prefix-length> <nexthop> metric <value> -->
                 <command>
                     <expression>2 3 5 6 8 9 10</expression>
                     <views>config</views>
                 </command>
-                <!-- no route ipv4 <prefix> <mask> -->
+                <!-- no route ipv4 <prefix> <prefix-length> -->
                 <command>
                     <expression>1 2 3 5 6</expression>
                     <views>config</views>
                 </command>
-                <!-- no route ipv4 <prefix> <mask> <nexthop> -->
+                <!-- no route ipv4 <prefix> <prefix-length> <nexthop> -->
                 <command>
                     <expression>1 2 3 5 6 8</expression>
                     <views>config</views>

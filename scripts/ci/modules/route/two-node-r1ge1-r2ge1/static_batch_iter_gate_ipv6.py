@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Route static nexthop iteration gate check with 10 routes.
+Route static nexthop iteration gate check with 10 routes (IPv6).
 
 Goal:
-- add 10 static routes while nexthop is unresolved
+- add 10 IPv6 static routes while nexthop is unresolved
 - unresolved routes must not appear in `show route`
 - `show route static` must always keep all configured routes
 - `show route relay static` must reflect static nexthop resolve state
@@ -12,24 +12,28 @@ Goal:
 
 from __future__ import annotations
 
+import ipaddress
 import re
 
-from module_api import g_top, require_devices, run_cmds, step, wait_check, wait_checks  # noqa: E402
+from module_api import require_devices, run_cmds, step, wait_check, wait_checks  # noqa: E402
 from top_runner import TopologyRuntime  # noqa: E402
 
 
-PREFIX_MASK = "24"
-PREFIX_LEN = 24
+GE_IF = "GE-1"
+LINK_PREFIX_LEN = 64
+R1_LINK_V6 = "2001:db8:12::1"
+R2_LINK_V6 = "2001:db8:12::2"
+
+PREFIX_LEN = 64
 PREFIX_COUNT = 10
-PREFIX_BASE_OCTET = 66
-RESOLVER_MASK = "32"
-UNRESOLVED_NH = "198.51.100.1"
+RESOLVER_LEN = 128
+UNRESOLVED_NH = "2001:db8:198:51::1"
 
 
 def _build_prefixes() -> list[tuple[str, str]]:
     routes: list[tuple[str, str]] = []
     for idx in range(PREFIX_COUNT):
-        addr = f"10.{PREFIX_BASE_OCTET}.{idx}.0"
+        addr = str(ipaddress.ip_network(f"2001:db8:66:{idx}::/{PREFIX_LEN}", strict=False).network_address)
         routes.append((addr, f"{addr}/{PREFIX_LEN}"))
     return routes
 
@@ -46,7 +50,7 @@ def _wait_route_presence(
     for addr, pfx in routes:
         check: dict[str, object] = {
             "device": device,
-            "command": f"show route ipv4 {addr}",
+            "command": f"show route ipv6 {addr}",
             "label": f"{device} route presence {pfx}",
         }
         if expect_present:
@@ -73,13 +77,13 @@ def _wait_static_state(
     expect_resolved_str = "yes" if expect_resolved else "no"
     expect_in_rib_str = "yes" if expect_in_rib else "no"
     route_regex = [
-        rf"(?im)^\s*ipv4\s+{re.escape(pfx)}\s+{re.escape(nexthop)}\b.*\b{expect_resolved_str}\s+{expect_in_rib_str}\s*$"
+        rf"(?im)^\s*ipv6\s+{re.escape(pfx)}\s+{re.escape(nexthop)}\b.*\b{expect_resolved_str}\s+{expect_in_rib_str}\s*$"
         for _, pfx in routes
     ]
     wait_check(
         rt,
         device=device,
-        command="show route ipv4 static",
+        command="show route ipv6 static",
         timeout=timeout,
         interval=interval,
         contains=[f"Total {expect_total} static route(s)"],
@@ -102,7 +106,7 @@ def _wait_relay_state(
     wait_check(
         rt,
         device=device,
-        command="show route ipv4 relay static",
+        command="show route ipv6 relay static",
         timeout=timeout,
         interval=interval,
         regex=[
@@ -123,10 +127,61 @@ def _cleanup_case_config(
 ) -> None:
     commands = ["config"]
     for addr, _ in routes:
-        commands.append(f"no route ipv4 {addr} {PREFIX_MASK} {route_nexthop}")
-    commands.append(f"no route ipv4 {UNRESOLVED_NH} {RESOLVER_MASK} {resolver_nexthop}")
-    commands.append("end")
+        commands.append(f"no route ipv6 {addr} {PREFIX_LEN} {route_nexthop}")
+    commands.append(f"no route ipv6 {UNRESOLVED_NH} {RESOLVER_LEN} {resolver_nexthop}")
+    commands.extend(
+        [
+            f"if {GE_IF}",
+            f"no ipv6 address {R1_LINK_V6} {LINK_PREFIX_LEN}",
+            "no shutdown",
+            "exit",
+            "end",
+        ]
+    )
     run_cmds(rt=rt, device=device, strict=False, commands=commands)
+
+    run_cmds(
+        rt=rt,
+        device="r2",
+        strict=False,
+        commands=[
+            "config",
+            f"if {GE_IF}",
+            f"no ipv6 address {R2_LINK_V6} {LINK_PREFIX_LEN}",
+            "no shutdown",
+            "exit",
+            "end",
+        ],
+    )
+
+
+def _setup_underlay(rt: TopologyRuntime) -> None:
+    run_cmds(
+        rt=rt,
+        device="r1",
+        strict=False,
+        commands=[
+            "config",
+            f"if {GE_IF}",
+            f"ipv6 address {R1_LINK_V6} {LINK_PREFIX_LEN}",
+            "no shutdown",
+            "exit",
+            "end",
+        ],
+    )
+    run_cmds(
+        rt=rt,
+        device="r2",
+        strict=False,
+        commands=[
+            "config",
+            f"if {GE_IF}",
+            f"ipv6 address {R2_LINK_V6} {LINK_PREFIX_LEN}",
+            "no shutdown",
+            "exit",
+            "end",
+        ],
+    )
 
 
 def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
@@ -134,7 +189,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
 
     routes = _build_prefixes()
     route_nexthop = UNRESOLVED_NH
-    resolver_nexthop = str(g_top.r1.GE_1.peer_ip)
+    resolver_nexthop = R2_LINK_V6
 
     try:
         step("Cleanup stale config")
@@ -146,10 +201,13 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             routes=routes,
         )
 
-        step("Add 10 static routes with unresolved nexthop")
+        step("Configure IPv6 underlay on GE-1")
+        _setup_underlay(rt)
+
+        step("Add 10 IPv6 static routes with unresolved nexthop")
         add_cmds = ["config"]
         for addr, _ in routes:
-            add_cmds.append(f"route ipv4 {addr} {PREFIX_MASK} {route_nexthop}")
+            add_cmds.append(f"route ipv6 {addr} {PREFIX_LEN} {route_nexthop}")
         add_cmds.append("end")
         run_cmds(rt=rt, device="r1", strict=False, commands=add_cmds)
 
@@ -183,7 +241,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             strict=False,
             commands=[
                 "config",
-                f"route ipv4 {UNRESOLVED_NH} {RESOLVER_MASK} {resolver_nexthop}",
+                f"route ipv6 {UNRESOLVED_NH} {RESOLVER_LEN} {resolver_nexthop}",
                 "end",
             ],
         )
@@ -218,7 +276,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             strict=False,
             commands=[
                 "config",
-                f"no route ipv4 {UNRESOLVED_NH} {RESOLVER_MASK} {resolver_nexthop}",
+                f"no route ipv6 {UNRESOLVED_NH} {RESOLVER_LEN} {resolver_nexthop}",
                 "end",
             ],
         )
@@ -246,7 +304,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             interval=2,
         )
 
-        print("Route static batch nexthop iteration gate check passed.")
+        print("Route static batch nexthop iteration gate check (IPv6) passed.")
     finally:
         step("Cleanup static batch routes")
         _cleanup_case_config(

@@ -92,9 +92,11 @@ static int handle_if_entry(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 }
 
 /**
- * @brief 处理接口配置命令（ip address / shutdown / no shutdown）
+ * @brief 处理接口配置命令（ip address / ipv6 address / shutdown / no shutdown）
  *
- * group_id=2, cfg_id: 1=ip_address, 2=netmask, 3=shutdown, 4=no
+ * group_id=2, cfg_id:
+ *   1=ip_address(v4), 2=prefix_len(v4), 3=shutdown, 4=no,
+ *   6=ip_address(v6), 7=prefix_len(v6)
  * 上下文 cfg_id 1-4 对应接口名
  */
 static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
@@ -102,8 +104,10 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     gboolean is_no = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
     net_prefix_t prefix;
     memset(&prefix, 0, sizeof(prefix));
-    gboolean has_ip = FALSE;
+    gboolean has_addr = FALSE;
     gboolean has_shutdown = FALSE;
+    gboolean bad_addr_arg = FALSE;
+    sa_family_t addr_family = 0;
     uint32_t if_idx = 0;
     uint32_t loop_id = 0;
 
@@ -126,18 +130,50 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 
         switch (entry.cfg_id)
         {
-            case 1: /* ip_address 参数 */
+            case 1: /* ip address <ipv4> 参数 */
             {
                 const char *text = cli_tlv_entry_get_text(&entry);
-                if (text && net_addr_from_str(text, &prefix.addr) == 0)
+                if (text && net_addr_from_str(text, &prefix.addr) == 0 && prefix.addr.family == AF_INET)
                 {
-                    has_ip = TRUE;
+                    has_addr = TRUE;
+                    addr_family = AF_INET;
+                }
+                else
+                {
+                    bad_addr_arg = TRUE;
                 }
                 break;
             }
-            case 2: /* prefix_len 参数（整数） */
+            case 2: /* ip address <prefix-len> 参数（整数） */
             {
                 prefix.prefix_len = (uint8_t)cli_tlv_entry_get_int(&entry);
+                if (addr_family == 0)
+                {
+                    addr_family = AF_INET;
+                }
+                break;
+            }
+            case 6: /* ipv6 address <ipv6> 参数 */
+            {
+                const char *text = cli_tlv_entry_get_text(&entry);
+                if (text && net_addr_from_str(text, &prefix.addr) == 0 && prefix.addr.family == AF_INET6)
+                {
+                    has_addr = TRUE;
+                    addr_family = AF_INET6;
+                }
+                else
+                {
+                    bad_addr_arg = TRUE;
+                }
+                break;
+            }
+            case 7: /* ipv6 address <prefix-len> 参数（整数） */
+            {
+                prefix.prefix_len = (uint8_t)cli_tlv_entry_get_int(&entry);
+                if (addr_family == 0)
+                {
+                    addr_family = AF_INET6;
+                }
                 break;
             }
             case 3: /* shutdown 关键字 */
@@ -168,6 +204,12 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         return ERRCODE_FAIL;
     }
 
+    if (bad_addr_arg)
+    {
+        send_resp(msg, "Error: Invalid address argument\r\n");
+        return ERRCODE_FAIL;
+    }
+
     /* loop 接口不支持 shutdown */
     if (loop_id > 0 && has_shutdown)
     {
@@ -175,9 +217,9 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         return ERRCODE_FAIL;
     }
 
-    if (has_ip)
+    if (has_addr)
     {
-        /* ip address <ip> <prefix-len> */
+        /* ip address / ipv6 address */
         if (if_cfg_apply_ip(is_no, ifname, &prefix) != ERRCODE_SUCCESS)
         {
             char resp_buf[128];
@@ -188,15 +230,24 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 
         /* 持久化 */
         char ip_str[64] = "";
+        uint8_t stored_prefix_len = 0;
         if (!is_no)
         {
+            if (!net_prefix_is_set(&prefix))
+            {
+                send_resp(msg, "Error: Failed to read configured address\r\n");
+                return ERRCODE_FAIL;
+            }
             net_addr_to_str(&prefix.addr, ip_str, sizeof(ip_str));
+            stored_prefix_len = prefix.prefix_len;
         }
+        const char *ip_col = (addr_family == AF_INET6) ? "ipv6_address" : "ip_address";
+        const char *plen_col = (addr_family == AF_INET6) ? "ipv6_prefix_len" : "prefix_len";
         db_condition_t cond = {.field_name = "name", .op = DB_CMP_EQ, .value = db_value_text(ifname)};
         db_filter_t filter = {.conditions = &cond, .num_conditions = 1};
         db_record_t *rec = db_record_new();
-        db_record_set_text(rec, "ip_address", ip_str);
-        db_record_set_int(rec, "prefix_len", is_no ? 0 : (int64_t)prefix.prefix_len);
+        db_record_set_text(rec, ip_col, ip_str);
+        db_record_set_int(rec, plen_col, is_no ? 0 : (int64_t)stored_prefix_len);
         db_rpc_update_record(if_local_ipc_ctx(), "if_interface", rec, &filter);
         db_record_free(rec);
         db_value_free(&cond.value);
@@ -233,16 +284,59 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     return ERRCODE_SUCCESS;
 }
 
+static void show_format_prefix(const net_prefix_t *pfx, char *buf, size_t sz)
+{
+    if (!pfx || !buf || sz == 0)
+    {
+        return;
+    }
+    if (net_prefix_is_set(pfx))
+    {
+        net_prefix_to_str(pfx, buf, sz);
+    }
+    else
+    {
+        g_strlcpy(buf, "-", sz);
+    }
+}
+
+static void show_format_dual_stack(const if_map_entry_t *e, char *buf, size_t sz)
+{
+    if (!e || !buf || sz == 0)
+    {
+        return;
+    }
+
+    char v4[70];
+    char v6[70];
+    show_format_prefix(&e->prefix_v4, v4, sizeof(v4));
+    show_format_prefix(&e->prefix_v6, v6, sizeof(v6));
+
+    if (strcmp(v4, "-") != 0 && strcmp(v6, "-") != 0)
+    {
+        snprintf(buf, sz, "%s, %s", v4, v6);
+    }
+    else if (strcmp(v4, "-") != 0)
+    {
+        g_strlcpy(buf, v4, sz);
+    }
+    else if (strcmp(v6, "-") != 0)
+    {
+        g_strlcpy(buf, v6, sz);
+    }
+    else
+    {
+        g_strlcpy(buf, "-", sz);
+    }
+}
+
 /* 将单个接口条目追加到 show 输出 */
 static void show_append_entry(GString *resp_buf, const if_map_entry_t *e)
 {
     const char *state_str = e->shutdown ? "DOWN" : "UP";
-    char ip_str[70] = "-";
-    if (net_prefix_is_set(&e->prefix))
-    {
-        net_prefix_to_str(&e->prefix, ip_str, sizeof(ip_str));
-    }
-    g_string_append_printf(resp_buf, "%-14s %-6s %-20s\r\n", e->logical_name, state_str, ip_str);
+    char ip_str[160];
+    show_format_dual_stack(e, ip_str, sizeof(ip_str));
+    g_string_append_printf(resp_buf, "%-14s %-6s %-56s\r\n", e->logical_name, state_str, ip_str);
 }
 
 /* 哈希表遍历回调：追加 loop 接口行 */
@@ -258,11 +352,10 @@ static void show_single_entry(GString *resp_buf, const char *ifname, const if_ma
     if_info_t info;
     gboolean has_info = (if_get_info(e->physical_name, &info) == ERRCODE_SUCCESS);
 
-    char ip_str[70] = "-";
-    if (net_prefix_is_set(&e->prefix))
-    {
-        net_prefix_to_str(&e->prefix, ip_str, sizeof(ip_str));
-    }
+    char ip4_str[70];
+    char ip6_str[70];
+    show_format_prefix(&e->prefix_v4, ip4_str, sizeof(ip4_str));
+    show_format_prefix(&e->prefix_v6, ip6_str, sizeof(ip6_str));
 
     char mac_str[32] = "-";
     const char *type_str = "-";
@@ -283,10 +376,11 @@ static void show_single_entry(GString *resp_buf, const char *ifname, const if_ma
                            "  Name       : %s\r\n"
                            "  Type       : %s\r\n"
                            "  State      : %s\r\n"
-                           "  IP Address : %s\r\n"
+                           "  IPv4 Addr  : %s\r\n"
+                           "  IPv6 Addr  : %s\r\n"
                            "  MAC        : %s\r\n"
                            "  MTU        : %d\r\n\r\n",
-                           ifname, ifname, type_str, state_str, ip_str, mac_str, mtu);
+                           ifname, ifname, type_str, state_str, ip4_str, ip6_str, mac_str, mtu);
 }
 
 /**
@@ -361,8 +455,8 @@ static int handle_if_show(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         /* show if - 显示所有接口（GE + loop） */
         g_string_append_printf(resp_buf,
                                "\r\nInterface Status:\r\n"
-                               "%-14s %-6s %-20s\r\n"
-                               "-------------- ------ --------------------\r\n",
+                               "%-14s %-6s %-56s\r\n"
+                               "-------------- ------ --------------------------------------------------------\r\n",
                                "Name", "State", "IP Address");
 
         if_map_t *map = &g_if_local->interface_map;

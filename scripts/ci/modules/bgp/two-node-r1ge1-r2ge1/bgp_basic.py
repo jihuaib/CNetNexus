@@ -24,7 +24,7 @@ def _cleanup_case_config(rt: TopologyRuntime, r1_local_ip: str) -> None:
         strict=False,
         commands=[
             "config",
-            f"no route ipv4 10.10.10.0 255.255.255.0 {r1_local_ip}",
+            f"no route ipv4 10.10.10.0 24 {r1_local_ip}",
             "no bgp",
             "end",
         ],
@@ -106,7 +106,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         run_cmds(
             rt=rt,
             device="r1",
-            commands=["config", f"route ipv4 10.10.10.0 255.255.255.0 {r1_local_ip}", "end"],
+            commands=["config", f"route ipv4 10.10.10.0 24 {r1_local_ip}", "end"],
         )
 
         route_checks = [

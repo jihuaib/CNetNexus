@@ -22,7 +22,8 @@ typedef struct
     char physical_name[IFNAMSIZ];        /**< 物理名，如 "eth0" */
     uint32_t ifindex;                    /**< Linux 接口索引（0 表示虚拟/未知） */
     uint32_t auto_mapped;                /**< 是否自动映射 */
-    net_prefix_t prefix;                 /**< 已配置的 IP/前缀；addr.family=0 表示未配置 */
+    net_prefix_t prefix_v4;              /**< 已配置 IPv4 前缀；addr.family=0 表示未配置 */
+    net_prefix_t prefix_v6;              /**< 已配置 IPv6 前缀；addr.family=0 表示未配置 */
     int shutdown;                        /**< 1=shutdown（down），0=no shutdown（up） */
 } if_map_entry_t;
 

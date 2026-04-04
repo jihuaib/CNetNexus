@@ -23,7 +23,7 @@ def _cleanup_case_config(rt: TopologyRuntime, r2_local_ip: str) -> None:
         strict=False,
         commands=[
             "config",
-            f"no route ipv4 10.20.20.0 255.255.255.0 {r2_local_ip}",
+            f"no route ipv4 10.20.20.0 24 {r2_local_ip}",
             "no bgp",
             "end",
         ],
@@ -120,7 +120,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             rt=rt,
             device="r2",
             strict=False,
-            commands=["config", f"route ipv4 10.20.20.0 255.255.255.0 {r2_local_ip}", "end"],
+            commands=["config", f"route ipv4 10.20.20.0 24 {r2_local_ip}", "end"],
         )
 
         step("Check imported route on r2 local and r1 peer BGP RIB")

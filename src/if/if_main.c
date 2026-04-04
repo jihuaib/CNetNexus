@@ -55,6 +55,8 @@ static void if_init_db_foreach(gpointer key, gpointer val, gpointer user_data)
         db_record_set_text(rec, "name", logical_name);
         db_record_set_text(rec, "ip_address", "");
         db_record_set_int(rec, "prefix_len", 0);
+        db_record_set_text(rec, "ipv6_address", "");
+        db_record_set_int(rec, "ipv6_prefix_len", 0);
         db_record_set_int(rec, "shutdown", 0);
         db_rpc_insert_record(if_local_ipc_ctx(), "if_interface", rec);
         db_record_free(rec);
@@ -94,8 +96,10 @@ static void if_db_restore(void)
     {
         db_row_t *row = result->rows[i];
         const char *name = db_row_get_text(row, "name", NULL);
-        const char *ip_str = db_row_get_text(row, "ip_address", NULL);
-        int64_t prefix_len = db_row_get_int(row, "prefix_len", 0);
+        const char *ip4_str = db_row_get_text(row, "ip_address", NULL);
+        int64_t prefix4_len = db_row_get_int(row, "prefix_len", 0);
+        const char *ip6_str = db_row_get_text(row, "ipv6_address", NULL);
+        int64_t prefix6_len = db_row_get_int(row, "ipv6_prefix_len", 0);
         int64_t shutdown = db_row_get_int(row, "shutdown", 0);
 
         if (!name)
@@ -113,15 +117,44 @@ static void if_db_restore(void)
             }
         }
 
-        /* 恢复 IP（非空时） */
-        if (ip_str && ip_str[0] != '\0')
+        /* 恢复 IPv4（非空时） */
+        if (ip4_str && ip4_str[0] != '\0')
         {
             net_prefix_t pfx;
             memset(&pfx, 0, sizeof(pfx));
-            if (net_addr_from_str(ip_str, &pfx.addr) == 0)
+            if (net_addr_from_str(ip4_str, &pfx.addr) == 0 && pfx.addr.family == AF_INET)
             {
-                pfx.prefix_len = (uint8_t)prefix_len;
-                if_cfg_apply_ip(FALSE, name, &pfx);
+                pfx.prefix_len = (uint8_t)prefix4_len;
+                if (if_cfg_apply_ip(FALSE, name, &pfx) != ERRCODE_SUCCESS)
+                {
+                    char pfx_buf[70];
+                    net_prefix_to_str(&pfx, pfx_buf, sizeof(pfx_buf));
+                    LOG_WARN("IF: skip invalid restored address %s on %s", pfx_buf, name);
+                }
+            }
+            else
+            {
+                LOG_WARN("IF: skip invalid restored IPv4 address %s on %s", ip4_str, name);
+            }
+        }
+        /* 恢复 IPv6（非空时） */
+        if (ip6_str && ip6_str[0] != '\0')
+        {
+            net_prefix_t pfx;
+            memset(&pfx, 0, sizeof(pfx));
+            if (net_addr_from_str(ip6_str, &pfx.addr) == 0 && pfx.addr.family == AF_INET6)
+            {
+                pfx.prefix_len = (uint8_t)prefix6_len;
+                if (if_cfg_apply_ip(FALSE, name, &pfx) != ERRCODE_SUCCESS)
+                {
+                    char pfx_buf[70];
+                    net_prefix_to_str(&pfx, pfx_buf, sizeof(pfx_buf));
+                    LOG_WARN("IF: skip invalid restored address %s on %s", pfx_buf, name);
+                }
+            }
+            else
+            {
+                LOG_WARN("IF: skip invalid restored IPv6 address %s on %s", ip6_str, name);
             }
         }
 
@@ -351,10 +384,9 @@ static void if_on_connect(dev_ipc_message_t *msg)
 
 /* if_interface 表结构定义 */
 static const db_column_def_t IF_INTERFACE_COLS[] = {
-    {"name", DB_TYPE_TEXT, DB_COL_PRIMARY_KEY, NULL},
-    {"ip_address", DB_TYPE_TEXT, DB_COL_NOT_NULL, "''"},
-    {"prefix_len", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},
-    {"shutdown", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},
+    {"name", DB_TYPE_TEXT, DB_COL_PRIMARY_KEY, NULL},           {"ip_address", DB_TYPE_TEXT, DB_COL_NOT_NULL, "''"},
+    {"prefix_len", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},      {"ipv6_address", DB_TYPE_TEXT, DB_COL_NOT_NULL, "''"},
+    {"ipv6_prefix_len", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"}, {"shutdown", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},
 };
 
 static const db_table_def_t IF_INTERFACE_TABLE = {

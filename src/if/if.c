@@ -261,6 +261,116 @@ static void if_add_attr(struct nlmsghdr *n, int maxlen, int type, const void *da
     n->nlmsg_len = NLMSG_ALIGN(n->nlmsg_len) + RTA_ALIGN(len);
 }
 
+static int if_addr_apply(const char *ifname, const net_prefix_t *prefix, int cmd)
+{
+    if (!ifname || !prefix || !net_prefix_is_set(prefix))
+    {
+        return ERRCODE_FAIL;
+    }
+
+    if (prefix->addr.family != AF_INET && prefix->addr.family != AF_INET6)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    uint8_t max_len = (prefix->addr.family == AF_INET) ? 32u : 128u;
+    if (prefix->prefix_len > max_len)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    unsigned int ifidx = if_nametoindex(ifname);
+    if (ifidx == 0)
+    {
+        LOG_ERROR("IF: interface %s not found for addr apply", ifname);
+        return ERRCODE_FAIL;
+    }
+
+    int sock = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE);
+    if (sock < 0)
+    {
+        LOG_PERROR("socket(AF_NETLINK) for addr apply");
+        return ERRCODE_FAIL;
+    }
+
+    struct
+    {
+        struct nlmsghdr n;
+        struct ifaddrmsg ifa;
+        char buf[256];
+    } req;
+    memset(&req, 0, sizeof(req));
+
+    req.n.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifaddrmsg));
+    req.n.nlmsg_type = (unsigned short)cmd;
+    req.n.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+    if (cmd == RTM_NEWADDR)
+    {
+        req.n.nlmsg_flags |= NLM_F_CREATE | NLM_F_REPLACE;
+    }
+
+    req.ifa.ifa_family = (unsigned char)prefix->addr.family;
+    req.ifa.ifa_prefixlen = prefix->prefix_len;
+    req.ifa.ifa_scope = RT_SCOPE_UNIVERSE;
+    req.ifa.ifa_index = ifidx;
+
+    const void *addr_data = NULL;
+    int addr_len = 0;
+    if (prefix->addr.family == AF_INET)
+    {
+        addr_data = &prefix->addr.u.v4.s_addr;
+        addr_len = 4;
+    }
+    else
+    {
+        addr_data = prefix->addr.u.v6.s6_addr;
+        addr_len = 16;
+    }
+
+    if_add_attr(&req.n, sizeof(req), IFA_LOCAL, addr_data, addr_len);
+    if_add_attr(&req.n, sizeof(req), IFA_ADDRESS, addr_data, addr_len);
+
+    if (send(sock, &req, req.n.nlmsg_len, 0) < 0)
+    {
+        LOG_PERROR("Netlink send (addr apply)");
+        close(sock);
+        return ERRCODE_FAIL;
+    }
+
+    char ans[4096];
+    int len = recv(sock, ans, sizeof(ans), 0);
+    close(sock);
+
+    if (len < 0)
+    {
+        LOG_PERROR("Netlink recv (addr apply)");
+        return ERRCODE_FAIL;
+    }
+
+    struct nlmsghdr *nlh = (struct nlmsghdr *)ans;
+    if (nlh->nlmsg_type == NLMSG_ERROR)
+    {
+        struct nlmsgerr *err = (struct nlmsgerr *)NLMSG_DATA(nlh);
+        if (err->error < 0)
+        {
+            int os_err = -err->error;
+            if ((cmd == RTM_NEWADDR && os_err == EEXIST) ||
+                (cmd == RTM_DELADDR && (os_err == EADDRNOTAVAIL || os_err == ESRCH || os_err == ENOENT)))
+            {
+                return ERRCODE_SUCCESS;
+            }
+
+            char pfx[80];
+            net_prefix_to_str(prefix, pfx, sizeof(pfx));
+            LOG_ERROR("IF: %s address %s on %s failed: %s", (cmd == RTM_NEWADDR) ? "add" : "del", pfx, ifname,
+                      strerror(os_err));
+            return ERRCODE_FAIL;
+        }
+    }
+
+    return ERRCODE_SUCCESS;
+}
+
 // Create veth pair using Netlink
 static int if_create_veth_netlink(const char *ifname, const char *peer_name)
 {
@@ -511,4 +621,14 @@ int if_ensure_exists(const char *ifname)
 
     LOG_INFO("Successfully created %s and its peer", ifname);
     return ERRCODE_SUCCESS;
+}
+
+int if_addr_add_prefix(const char *ifname, const net_prefix_t *prefix)
+{
+    return if_addr_apply(ifname, prefix, RTM_NEWADDR);
+}
+
+int if_addr_del_prefix(const char *ifname, const net_prefix_t *prefix)
+{
+    return if_addr_apply(ifname, prefix, RTM_DELADDR);
 }

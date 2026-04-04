@@ -549,7 +549,18 @@ void route_show_cleanup_state(void)
 
 int route_show_dispatch(dev_ipc_message_t *msg)
 {
-    if (!msg || !msg->payload)
+    if (!msg)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    /* 分片继续请求：不能重置流状态，也不需要解析 payload。 */
+    if (msg->msg_type == CLI_MSG_TYPE_CONTINUE)
+    {
+        return route_show_handle_continue(msg);
+    }
+
+    if (!msg->payload)
     {
         return ERRCODE_FAIL;
     }

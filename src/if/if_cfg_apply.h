@@ -19,7 +19,7 @@
 if_map_entry_t *if_cfg_find_entry(const char *logical_name);
 
 /**
- * @brief 应用 ip address / no ip address 到内存和物理接口
+ * @brief 应用 ip address/ipv6 address 及对应 no 命令到内存和物理接口
  * @param is_no        TRUE=删除 IP，FALSE=配置 IP
  * @param logical_name 逻辑接口名
  * @param prefix       IP/前缀（is_no=TRUE 时忽略）

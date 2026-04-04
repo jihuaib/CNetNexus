@@ -90,7 +90,7 @@
                 <element cfg-id="1" type="parameter">
                     <name>&lt;ip-address&gt;</name> <!-- 3 -->
                     <description>IPv4 address</description>
-                    <type>ip</type>
+                    <type>ipv4</type>
                 </element>
                 <element cfg-id="2" type="parameter">
                     <name>&lt;prefix-len&gt;</name> <!-- 4 -->
@@ -105,6 +105,20 @@
                     <name>no</name> <!-- 6 -->
                     <description>Negate a command</description>
                 </element>
+                <element cfg-id="5" type="keyword">
+                    <name>ipv6</name> <!-- 7 -->
+                    <description>IPv6 configuration</description>
+                </element>
+                <element cfg-id="6" type="parameter">
+                    <name>&lt;ipv6-address&gt;</name> <!-- 8 -->
+                    <description>IPv6 address</description>
+                    <type>ipv6</type>
+                </element>
+                <element cfg-id="7" type="parameter">
+                    <name>&lt;prefix-len&gt;</name> <!-- 9 -->
+                    <description>IPv6 prefix length (0-128)</description>
+                    <type>uint(0-128)</type>
+                </element>
             </elements>
             <commands>
                 <!-- ip address <ip> <prefix-len>：GE 和 loop 视图均可用 -->
@@ -115,6 +129,16 @@
                 <!-- no ip address <ip> <prefix-len>：GE 和 loop 视图均可用 -->
                 <command>
                     <expression>6 1 2 3 4</expression>
+                    <views>if,if-loop</views>
+                </command>
+                <!-- ipv6 address <ipv6> <prefix-len>：GE 和 loop 视图均可用 -->
+                <command>
+                    <expression>7 2 8 9</expression>
+                    <views>if,if-loop</views>
+                </command>
+                <!-- no ipv6 address <ipv6> <prefix-len>：GE 和 loop 视图均可用 -->
+                <command>
+                    <expression>6 7 2 8 9</expression>
                     <views>if,if-loop</views>
                 </command>
                 <!-- shutdown / no shutdown：仅 GE 视图（loop 不支持） -->

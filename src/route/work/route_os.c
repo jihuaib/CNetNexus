@@ -184,26 +184,20 @@ static int route_os_send(int cmd, const route_msg_entry_t *entry)
     }
 
     /*
-     * RTA_PREFSRC：直连路由的优选源地址。
-     * IF 不直接给 OS 网卡配置地址时，需要由 route 指定 source，避免内核从管理网段地址发包。
+     * RTA_PREFSRC：直连路由优选源地址。
+     *
+     * IPv4: 保留，避免内核从管理口地址选源。
+     * IPv6: 不下发该属性。当前模型下 IPv6 地址通过 LOCAL /128 路由表达，
+     *       未在网卡上显式配置 addr；对 connected /64 带 PREFSRC 会被内核
+     *       以 EINVAL 拒绝，导致直连路由安装失败。
      */
-    if (entry->protocol == ROUTE_PROTOCOL_CONNECTED && entry->source_addr.family == entry->prefix_addr.family)
+    if (entry->protocol == ROUTE_PROTOCOL_CONNECTED && entry->source_addr.family == AF_INET &&
+        entry->prefix_addr.family == AF_INET)
     {
-        if (entry->source_addr.family == AF_INET)
+        uint32_t zero = 0;
+        if (memcmp(&entry->source_addr.u.v4.s_addr, &zero, sizeof(zero)) != 0)
         {
-            uint32_t zero = 0;
-            if (memcmp(&entry->source_addr.u.v4.s_addr, &zero, sizeof(zero)) != 0)
-            {
-                nl_add_attr(nlh, sizeof(buf), RTA_PREFSRC, &entry->source_addr.u.v4.s_addr, 4);
-            }
-        }
-        else if (entry->source_addr.family == AF_INET6)
-        {
-            uint8_t zero6[16] = {0};
-            if (memcmp(entry->source_addr.u.v6.s6_addr, zero6, sizeof(zero6)) != 0)
-            {
-                nl_add_attr(nlh, sizeof(buf), RTA_PREFSRC, entry->source_addr.u.v6.s6_addr, 16);
-            }
+            nl_add_attr(nlh, sizeof(buf), RTA_PREFSRC, &entry->source_addr.u.v4.s_addr, 4);
         }
     }
 
@@ -228,94 +222,17 @@ static int route_os_send(int cmd, const route_msg_entry_t *entry)
 }
 
 /* ============================================================================
- * 本地路由发送函数：RT_TABLE_LOCAL（RTN_LOCAL，使内核将 IP 视为本机地址）
- * ============================================================================ */
-
-static int route_os_send_local(int cmd, const route_msg_entry_t *entry)
-{
-    if (!entry)
-    {
-        return -1;
-    }
-
-    char buf[ROUTE_OS_NL_BUFSIZE];
-    memset(buf, 0, sizeof(buf));
-    struct nlmsghdr *nlh = (struct nlmsghdr *)(void *)buf;
-    struct rtmsg *rtm = (struct rtmsg *)NLMSG_DATA(nlh);
-
-    nlh->nlmsg_len = NLMSG_LENGTH(sizeof(struct rtmsg));
-    nlh->nlmsg_type = (unsigned short)cmd;
-    nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
-    if (cmd == RTM_NEWROUTE)
-    {
-        nlh->nlmsg_flags |= NLM_F_CREATE | NLM_F_REPLACE;
-    }
-    nlh->nlmsg_seq = 2;
-
-    rtm->rtm_family = (unsigned char)entry->prefix_addr.family;
-    rtm->rtm_dst_len = entry->prefix_len;
-    rtm->rtm_src_len = 0;
-    rtm->rtm_tos = 0;
-    rtm->rtm_table = RT_TABLE_LOCAL;
-    rtm->rtm_protocol = RTPROT_KERNEL;
-    rtm->rtm_type = RTN_LOCAL;
-    rtm->rtm_scope = RT_SCOPE_HOST;
-    rtm->rtm_flags = 0;
-
-    /* RTA_DST */
-    if (entry->prefix_addr.family == AF_INET)
-    {
-        nl_add_attr(nlh, sizeof(buf), RTA_DST, &entry->prefix_addr.u.v4.s_addr, 4);
-    }
-    else if (entry->prefix_addr.family == AF_INET6)
-    {
-        nl_add_attr(nlh, sizeof(buf), RTA_DST, entry->prefix_addr.u.v6.s6_addr, 16);
-    }
-    else
-    {
-        return -1;
-    }
-
-    /* RTA_OIF */
-    if (entry->out_ifindex != 0)
-    {
-        nl_add_attr(nlh, sizeof(buf), RTA_OIF, &entry->out_ifindex, (int)sizeof(uint32_t));
-    }
-
-    return nl_exchange(nlh, cmd);
-}
-
-/* ============================================================================
  * 公共 API
  * ============================================================================ */
 
-/*
- * 仅为主机前缀 connected 路由（/32 或 /128）在 RT_TABLE_LOCAL 安装/撤销 RTN_LOCAL。
- * 非主机前缀的 local 路由由 IF 模块显式下发对应 host 路由，不在此处隐式派生。
- */
-static void sync_local_route(int cmd, const route_msg_entry_t *entry)
-{
-    if (entry->protocol != ROUTE_PROTOCOL_CONNECTED || entry->out_ifindex == 0)
-    {
-        return;
-    }
-
-    uint8_t host_len = (entry->prefix_addr.family == AF_INET) ? 32U : 128U;
-
-    if (entry->prefix_len == host_len)
-    {
-        (void)route_os_send_local(cmd, entry);
-    }
-}
-
 int route_os_install(const route_msg_entry_t *entry)
 {
-    uint8_t host_len = (entry->prefix_addr.family == AF_INET) ? 32U : 128U;
-
-    /* loop 口 /32(/128) connected 路由：只写 LOCAL 表，不写 MAIN（BGP 从 RIB 发布，不依赖 MAIN） */
-    if (entry->protocol == ROUTE_PROTOCOL_CONNECTED && entry->prefix_len == host_len)
+    /*
+     * CONNECTED 路由由 IF 模块通过 ifaddr 驱动内核自动生成（main/local），
+     * route 模块仅维护内存 RIB，不再显式下发内核 connected 路由。
+     */
+    if (entry && entry->protocol == ROUTE_PROTOCOL_CONNECTED)
     {
-        sync_local_route(RTM_NEWROUTE, entry);
         return 0;
     }
 
@@ -324,12 +241,8 @@ int route_os_install(const route_msg_entry_t *entry)
 
 int route_os_withdraw(const route_msg_entry_t *entry)
 {
-    uint8_t host_len = (entry->prefix_addr.family == AF_INET) ? 32U : 128U;
-
-    /* loop 口 /32(/128) connected 路由：只从 LOCAL 表撤销 */
-    if (entry->protocol == ROUTE_PROTOCOL_CONNECTED && entry->prefix_len == host_len)
+    if (entry && entry->protocol == ROUTE_PROTOCOL_CONNECTED)
     {
-        sync_local_route(RTM_DELROUTE, entry);
         return 0;
     }
 

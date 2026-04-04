@@ -462,7 +462,7 @@ class TopologyRuntime:
         self.cli_map[device] = cli
 
     def start(self, *, configure_interfaces: bool = True) -> None:
-        run_cmd(["docker", "network", "create", self.mgmt_net])
+        run_cmd(["docker", "network", "create", "--ipv6", self.mgmt_net])
 
         # 1) Create paused containers (optionally mount per-device if_map override).
         for dev in self.devices:
@@ -510,7 +510,7 @@ class TopologyRuntime:
         for link in self.top["links"]:
             lname = str(link["name"])
             net_name = f"{self.prefix}-lnk-{sanitize_name(lname)}"
-            run_cmd(["docker", "network", "create", net_name])
+            run_cmd(["docker", "network", "create", "--ipv6", net_name])
             link_to_net[lname] = net_name
             self.link_networks.append(net_name)
 

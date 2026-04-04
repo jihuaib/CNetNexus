@@ -11,6 +11,8 @@
 #include <net/if.h>
 #include <stdint.h>
 
+#include "net_addr.h"
+
 // Interface types
 typedef enum
 {
@@ -75,6 +77,10 @@ int if_create_dummy(const char *ifname);
 
 // 删除接口（通过 Netlink RTM_DELLINK）
 int if_delete_interface(const char *ifname);
+
+// 在网卡上配置/撤销 IP 前缀（RTM_NEWADDR/RTM_DELADDR）
+int if_addr_add_prefix(const char *ifname, const net_prefix_t *prefix);
+int if_addr_del_prefix(const char *ifname, const net_prefix_t *prefix);
 
 // 通过 Netlink 下发 Linux 黑洞路由（RTN_BLACKHOLE）
 int if_blackhole_route_add(sa_family_t family, const void *prefix_bin, uint8_t prefix_len);

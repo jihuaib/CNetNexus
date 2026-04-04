@@ -20,6 +20,8 @@
 #include "net_addr.h"
 #include "route.h"
 
+#define IF_ROUTE_SYNC_TIMEOUT_MS 3000u
+
 // ============================================================================
 // 公共 API
 // ============================================================================
@@ -44,6 +46,40 @@ static gboolean if_prefix_equal(const net_prefix_t *a, const net_prefix_t *b)
         return FALSE;
     }
     return (a->prefix_len == b->prefix_len && net_addr_equal(&a->addr, &b->addr)) ? TRUE : FALSE;
+}
+
+static net_prefix_t *if_entry_prefix_by_family(if_map_entry_t *entry, sa_family_t family)
+{
+    if (!entry)
+    {
+        return NULL;
+    }
+    if (family == AF_INET)
+    {
+        return &entry->prefix_v4;
+    }
+    if (family == AF_INET6)
+    {
+        return &entry->prefix_v6;
+    }
+    return NULL;
+}
+
+static gboolean if_prefix_len_valid(const net_prefix_t *prefix)
+{
+    if (!prefix)
+    {
+        return FALSE;
+    }
+    if (prefix->addr.family == AF_INET)
+    {
+        return (prefix->prefix_len <= 32) ? TRUE : FALSE;
+    }
+    if (prefix->addr.family == AF_INET6)
+    {
+        return (prefix->prefix_len <= 128) ? TRUE : FALSE;
+    }
+    return FALSE;
 }
 
 static int if_prefix_to_network(const net_prefix_t *prefix, net_addr_t *out)
@@ -137,11 +173,11 @@ static void if_fill_connected_route_entry(route_msg_entry_t *entry, uint16_t afi
     entry->nexthop_addr = *nexthop_addr;
 }
 
-static void if_sync_connected_host_routes(const net_prefix_t *prefix, const char *physical_name, gboolean is_withdraw)
+static int if_sync_connected_host_routes(const net_prefix_t *prefix, const char *physical_name, gboolean is_withdraw)
 {
     if (!prefix || !net_prefix_is_set(prefix) || !physical_name)
     {
-        return;
+        return ERRCODE_FAIL;
     }
 
     uint16_t afi = 0;
@@ -155,20 +191,20 @@ static void if_sync_connected_host_routes(const net_prefix_t *prefix, const char
     }
     else
     {
-        return;
+        return ERRCODE_FAIL;
     }
 
     dev_ipc_context_t *ctx = g_if_local ? if_local_ipc_ctx() : NULL;
     if (!ctx)
     {
-        return;
+        return ERRCODE_FAIL;
     }
 
     /* 普通接口：注入/撤销直连路由 */
     net_addr_t network_addr;
     if (if_prefix_to_network(prefix, &network_addr) != 0)
     {
-        return;
+        return ERRCODE_FAIL;
     }
 
     net_addr_t zero_nh;
@@ -187,13 +223,9 @@ static void if_sync_connected_host_routes(const net_prefix_t *prefix, const char
     {
         if (is_withdraw)
         {
-            (void)route_rpc_del(ctx, &network_entry);
+            return route_rpc_del_wait(ctx, &network_entry, IF_ROUTE_SYNC_TIMEOUT_MS);
         }
-        else
-        {
-            (void)route_rpc_add(ctx, &network_entry);
-        }
-        return;
+        return route_rpc_add_wait(ctx, &network_entry, IF_ROUTE_SYNC_TIMEOUT_MS);
     }
 
     /* 非主机前缀：显式下发 host + network，避免 ROUTE 侧隐式派生 /32(/128) 导致 RIB 与 OS 不一致。 */
@@ -204,15 +236,47 @@ static void if_sync_connected_host_routes(const net_prefix_t *prefix, const char
     if (is_withdraw)
     {
         /* 先撤网段路由，再撤 host 路由。 */
-        (void)route_rpc_del(ctx, &network_entry);
-        (void)route_rpc_del(ctx, &host_entry);
+        if (route_rpc_del_wait(ctx, &network_entry, IF_ROUTE_SYNC_TIMEOUT_MS) != ERRCODE_SUCCESS)
+        {
+            return ERRCODE_FAIL;
+        }
+        if (route_rpc_del_wait(ctx, &host_entry, IF_ROUTE_SYNC_TIMEOUT_MS) != ERRCODE_SUCCESS)
+        {
+            (void)route_rpc_add_wait(ctx, &network_entry, IF_ROUTE_SYNC_TIMEOUT_MS);
+            return ERRCODE_FAIL;
+        }
+        return ERRCODE_SUCCESS;
     }
-    else
+
+    /* 先下发 host 路由，再下发 network 路由。 */
+    if (route_rpc_add_wait(ctx, &host_entry, IF_ROUTE_SYNC_TIMEOUT_MS) != ERRCODE_SUCCESS)
     {
-        /* 先下发 host 路由，确保随后 network 路由的 prefsrc 能稳定生效。 */
-        (void)route_rpc_add(ctx, &host_entry);
-        (void)route_rpc_add(ctx, &network_entry);
+        return ERRCODE_FAIL;
     }
+    if (route_rpc_add_wait(ctx, &network_entry, IF_ROUTE_SYNC_TIMEOUT_MS) != ERRCODE_SUCCESS)
+    {
+        (void)route_rpc_del_wait(ctx, &host_entry, IF_ROUTE_SYNC_TIMEOUT_MS);
+        return ERRCODE_FAIL;
+    }
+    return ERRCODE_SUCCESS;
+}
+
+static int if_sync_connected_prefix(const net_prefix_t *prefix, const char *physical_name, gboolean is_withdraw)
+{
+    if (if_sync_connected_host_routes(prefix, physical_name, is_withdraw) != ERRCODE_SUCCESS)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    int ret = is_withdraw ? if_addr_del_prefix(physical_name, prefix) : if_addr_add_prefix(physical_name, prefix);
+    if (ret != ERRCODE_SUCCESS)
+    {
+        /* 地址下发失败时回滚 route 内存态，避免 RIB 与 OS 失配。 */
+        (void)if_sync_connected_host_routes(prefix, physical_name, is_withdraw ? FALSE : TRUE);
+        return ERRCODE_FAIL;
+    }
+
+    return ERRCODE_SUCCESS;
 }
 
 if_map_entry_t *if_cfg_find_entry(const char *logical_name)
@@ -292,6 +356,8 @@ int if_cfg_loop_create(uint32_t loop_id)
     db_record_set_text(rec, "name", name);
     db_record_set_text(rec, "ip_address", "");
     db_record_set_int(rec, "prefix_len", 0);
+    db_record_set_text(rec, "ipv6_address", "");
+    db_record_set_int(rec, "ipv6_prefix_len", 0);
     db_record_set_int(rec, "shutdown", 0);
     db_rpc_insert_record(if_local_ipc_ctx(), "if_interface", rec);
     db_record_free(rec);
@@ -312,10 +378,16 @@ int if_cfg_loop_delete(uint32_t loop_id)
         return ERRCODE_FAIL;
     }
 
-    /* 撤销 IP（若已配置） */
-    if (net_prefix_is_set(&entry->prefix))
+    /* 撤销 IPv4/IPv6（若已配置） */
+    if (net_prefix_is_set(&entry->prefix_v4))
     {
-        if_cfg_apply_ip(TRUE, name, NULL);
+        net_prefix_t pfx = entry->prefix_v4;
+        if_cfg_apply_ip(TRUE, name, &pfx);
+    }
+    if (net_prefix_is_set(&entry->prefix_v6))
+    {
+        net_prefix_t pfx = entry->prefix_v6;
+        if_cfg_apply_ip(TRUE, name, &pfx);
     }
 
     /* 删除 OS 接口 */
@@ -348,40 +420,104 @@ int if_cfg_apply_ip(gboolean is_no, const char *logical_name, const net_prefix_t
         return ERRCODE_FAIL;
     }
 
-    net_prefix_t old_prefix = entry->prefix;
-    gboolean had_old = net_prefix_is_set(&old_prefix);
+    sa_family_t family = 0;
+    if (prefix && net_prefix_is_set(prefix))
+    {
+        family = prefix->addr.family;
+    }
 
     if (is_no)
     {
-        if (had_old)
+        if (family == 0)
         {
-            if_sync_connected_host_routes(&old_prefix, entry->physical_name, TRUE);
+            if (net_prefix_is_set(&entry->prefix_v4))
+            {
+                if (!entry->shutdown &&
+                    if_sync_connected_prefix(&entry->prefix_v4, entry->physical_name, TRUE) != ERRCODE_SUCCESS)
+                {
+                    return ERRCODE_FAIL;
+                }
+                memset(&entry->prefix_v4, 0, sizeof(entry->prefix_v4));
+            }
+            if (net_prefix_is_set(&entry->prefix_v6))
+            {
+                if (!entry->shutdown &&
+                    if_sync_connected_prefix(&entry->prefix_v6, entry->physical_name, TRUE) != ERRCODE_SUCCESS)
+                {
+                    return ERRCODE_FAIL;
+                }
+                memset(&entry->prefix_v6, 0, sizeof(entry->prefix_v6));
+            }
+            LOG_INFO("IF: %s all IP addresses cleared", logical_name);
+            return ERRCODE_SUCCESS;
         }
-        memset(&entry->prefix, 0, sizeof(entry->prefix));
-        LOG_INFO("IF: %s IP cleared", logical_name);
+
+        net_prefix_t *dst = if_entry_prefix_by_family(entry, family);
+        if (!dst)
+        {
+            LOG_ERROR("IF: invalid address family for %s", logical_name);
+            return ERRCODE_FAIL;
+        }
+        if (net_prefix_is_set(dst))
+        {
+            if (!entry->shutdown && if_sync_connected_prefix(dst, entry->physical_name, TRUE) != ERRCODE_SUCCESS)
+            {
+                return ERRCODE_FAIL;
+            }
+            memset(dst, 0, sizeof(*dst));
+        }
+
+        LOG_INFO("IF: %s %s address cleared", logical_name, (family == AF_INET6) ? "IPv6" : "IPv4");
         return ERRCODE_SUCCESS;
     }
 
-    if (!prefix || !net_prefix_is_set(prefix))
+    if (!prefix || !net_prefix_is_set(prefix) || !if_prefix_len_valid(prefix))
     {
+        LOG_ERROR("IF: invalid prefix for %s", logical_name);
         return ERRCODE_FAIL;
     }
 
     char ip_str[64];
     net_addr_to_str(&prefix->addr, ip_str, sizeof(ip_str));
 
+    net_prefix_t *dst = if_entry_prefix_by_family(entry, prefix->addr.family);
+    if (!dst)
+    {
+        LOG_ERROR("IF: invalid address family for %s", logical_name);
+        return ERRCODE_FAIL;
+    }
+
+    net_prefix_t old_prefix = *dst;
+    gboolean had_old = net_prefix_is_set(&old_prefix);
+
     if (had_old && !if_prefix_equal(&old_prefix, prefix))
     {
-        if_sync_connected_host_routes(&old_prefix, entry->physical_name, TRUE);
+        if (!entry->shutdown && if_sync_connected_prefix(&old_prefix, entry->physical_name, TRUE) != ERRCODE_SUCCESS)
+        {
+            return ERRCODE_FAIL;
+        }
     }
 
-    entry->prefix = *prefix;
+    *dst = *prefix;
     if (!entry->shutdown)
     {
-        if_sync_connected_host_routes(&entry->prefix, entry->physical_name, FALSE);
+        if (if_sync_connected_prefix(dst, entry->physical_name, FALSE) != ERRCODE_SUCCESS)
+        {
+            if (had_old && !if_prefix_equal(&old_prefix, prefix))
+            {
+                (void)if_sync_connected_prefix(&old_prefix, entry->physical_name, FALSE);
+                *dst = old_prefix;
+            }
+            else if (!had_old)
+            {
+                memset(dst, 0, sizeof(*dst));
+            }
+            return ERRCODE_FAIL;
+        }
     }
 
-    LOG_INFO("IF: %s IP=%s/%u configured", logical_name, ip_str, prefix->prefix_len);
+    LOG_INFO("IF: %s %s=%s/%u configured", logical_name, (prefix->addr.family == AF_INET6) ? "IPv6" : "IPv4", ip_str,
+             prefix->prefix_len);
     return ERRCODE_SUCCESS;
 }
 
@@ -413,17 +549,48 @@ int if_cfg_apply_shutdown(gboolean is_no, const char *logical_name)
 
     if (old_shutdown != entry->shutdown)
     {
+        gboolean synced_v4 = FALSE;
+        gboolean synced_v6 = FALSE;
+
+        if (net_prefix_is_set(&entry->prefix_v4))
+        {
+            if (if_sync_connected_prefix(&entry->prefix_v4, entry->physical_name, up ? FALSE : TRUE) != ERRCODE_SUCCESS)
+            {
+                goto sync_rollback;
+            }
+            synced_v4 = TRUE;
+        }
+        if (net_prefix_is_set(&entry->prefix_v6))
+        {
+            if (if_sync_connected_prefix(&entry->prefix_v6, entry->physical_name, up ? FALSE : TRUE) != ERRCODE_SUCCESS)
+            {
+                goto sync_rollback;
+            }
+            synced_v6 = TRUE;
+        }
+
         uint32_t if_type = if_cfg_type_to_mask(if_detect_type(entry->physical_name));
         uint32_t event = up ? IF_EVENT_UP : IF_EVENT_DOWN;
         if (if_type != 0)
         {
             if_pub_notify(g_if_local->subscribers, entry, if_type, event, (uint8_t)up);
         }
+        goto sync_done;
 
-        if (net_prefix_is_set(&entry->prefix))
+    sync_rollback:
+        if (synced_v6)
         {
-            if_sync_connected_host_routes(&entry->prefix, entry->physical_name, up ? FALSE : TRUE);
+            (void)if_sync_connected_prefix(&entry->prefix_v6, entry->physical_name, up ? TRUE : FALSE);
         }
+        if (synced_v4)
+        {
+            (void)if_sync_connected_prefix(&entry->prefix_v4, entry->physical_name, up ? TRUE : FALSE);
+        }
+        (void)if_set_state(entry->physical_name, old_shutdown ? 0 : 1);
+        entry->shutdown = old_shutdown;
+        return ERRCODE_FAIL;
+
+    sync_done:;
     }
 
     LOG_INFO("IF: %s %s", logical_name, up ? "no shutdown" : "shutdown");
