@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-BGP vs static preference switch check.
+BGP vs static preference switch IPv6 check.
 
 Goal:
 - r2 advertises a prefix to r1 via BGP (imported from r2 static route)
@@ -18,16 +18,16 @@ from module_api import g_top, require_devices, run_cmds, step, wait_check, wait_
 from top_runner import TopologyRuntime  # noqa: E402
 
 
-TARGET_PREFIX_ADDR = "10.40.40.0"
-TARGET_MASK = "24"
-TARGET_PREFIX = f"{TARGET_PREFIX_ADDR}/24"
+TARGET_PREFIX_ADDR = "2001:db8:4040::"
+TARGET_MASK = "64"
+TARGET_PREFIX = f"{TARGET_PREFIX_ADDR}/{TARGET_MASK}"
 
 
 def _wait_route_best_static_backup_bgp(rt: TopologyRuntime, *, device: str, destination: str, timeout: int) -> None:
     wait_check(
         rt,
         device=device,
-        command=f"show route ipv4 {destination}",
+        command=f"show route ipv6 {destination}",
         timeout=timeout,
         interval=2,
         contains=["Routing entry for", "Total 2 path(s)"],
@@ -44,7 +44,7 @@ def _wait_route_best_bgp_only(rt: TopologyRuntime, *, device: str, destination: 
     wait_check(
         rt,
         device=device,
-        command=f"show route ipv4 {destination}",
+        command=f"show route ipv6 {destination}",
         timeout=timeout,
         interval=2,
         contains=["Routing entry for", "Total 1 path(s)"],
@@ -74,7 +74,7 @@ def _wait_os_best_proto(
     wait_check(
         rt,
         device=device,
-        command="show route ipv4 os",
+        command="show route ipv6 os",
         timeout=timeout,
         interval=2,
         regex=[best_row_regex],
@@ -83,7 +83,7 @@ def _wait_os_best_proto(
     )
 
 
-def _cleanup_case_config(rt: TopologyRuntime, *, r1_nh: str, r2_nh: str) -> None:
+def _cleanup_case_config(rt: TopologyRuntime, *, r1_nh6: str, r2_nh6: str) -> None:
     step("Cleanup BGP/static config")
     run_cmds(
         rt=rt,
@@ -91,7 +91,7 @@ def _cleanup_case_config(rt: TopologyRuntime, *, r1_nh: str, r2_nh: str) -> None
         strict=False,
         commands=[
             "config",
-            f"no route ipv4 {TARGET_PREFIX_ADDR} {TARGET_MASK} {r1_nh}",
+            f"no route ipv6 {TARGET_PREFIX_ADDR} {TARGET_MASK} {r1_nh6}",
             "no bgp",
             "end",
         ],
@@ -102,7 +102,7 @@ def _cleanup_case_config(rt: TopologyRuntime, *, r1_nh: str, r2_nh: str) -> None
         strict=False,
         commands=[
             "config",
-            f"no route ipv4 {TARGET_PREFIX_ADDR} {TARGET_MASK} {r2_nh}",
+            f"no route ipv6 {TARGET_PREFIX_ADDR} {TARGET_MASK} {r2_nh6}",
             "no bgp",
             "end",
         ],
@@ -112,13 +112,13 @@ def _cleanup_case_config(rt: TopologyRuntime, *, r1_nh: str, r2_nh: str) -> None
 def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
     require_devices(top, ("r1", "r2"))
 
-    r1_peer_ip = str(g_top.r1.GE_1.peer_ip)
-    r2_peer_ip = str(g_top.r2.GE_1.peer_ip)
-    r2_route_nh = str(g_top.r2.GE_1.peer_ip)
+    r1_peer_ip6 = str(g_top.r1.GE_1.peer_ip6)
+    r2_peer_ip6 = str(g_top.r2.GE_1.peer_ip6)
+    r2_route_nh6 = str(g_top.r2.GE_1.peer_ip6)
 
     try:
         step("Cleanup stale config")
-        _cleanup_case_config(rt, r1_nh=r1_peer_ip, r2_nh=r2_route_nh)
+        _cleanup_case_config(rt, r1_nh6=r1_peer_ip6, r2_nh6=r2_route_nh6)
 
         step("Configure BGP base")
         run_cmds(rt=rt, device="r1", strict=False, commands=["config", "bgp 65001", "router-id 1.1.1.1", "end"])
@@ -132,9 +132,9 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             commands=[
                 "config",
                 "bgp 65001",
-                f"neighbor {r1_peer_ip} as 65002",
-                "af ipv4-unicast",
-                f"neighbor {r1_peer_ip} enable",
+                f"neighbor {r1_peer_ip6} as 65002",
+                "af ipv6-unicast",
+                f"neighbor {r1_peer_ip6} enable",
                 "exit",
                 "end",
             ],
@@ -146,9 +146,9 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             commands=[
                 "config",
                 "bgp 65002",
-                f"neighbor {r2_peer_ip} as 65001",
-                "af ipv4-unicast",
-                f"neighbor {r2_peer_ip} enable",
+                f"neighbor {r2_peer_ip6} as 65001",
+                "af ipv6-unicast",
+                f"neighbor {r2_peer_ip6} enable",
                 "import-route static",
                 "exit",
                 "end",
@@ -161,15 +161,15 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             [
                 {
                     "device": "r1",
-                    "command": "show bgp neighbor af ipv4-unicast",
-                    "contains": [r1_peer_ip, "Established"],
-                    "label": "r1->r2 ipv4-unicast",
+                    "command": "show bgp neighbor af ipv6-unicast",
+                    "contains": [r1_peer_ip6, "Established"],
+                    "label": "r1->r2 ipv6-unicast",
                 },
                 {
                     "device": "r2",
-                    "command": "show bgp neighbor af ipv4-unicast",
-                    "contains": [r2_peer_ip, "Established"],
-                    "label": "r2->r1 ipv4-unicast",
+                    "command": "show bgp neighbor af ipv6-unicast",
+                    "contains": [r2_peer_ip6, "Established"],
+                    "label": "r2->r1 ipv6-unicast",
                 },
             ],
             timeout=30,
@@ -182,7 +182,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             strict=False,
             commands=[
                 "config",
-                f"route ipv4 {TARGET_PREFIX_ADDR} {TARGET_MASK} {r2_route_nh}",
+                f"route ipv6 {TARGET_PREFIX_ADDR} {TARGET_MASK} {r2_route_nh6}",
                 "end",
             ],
         )
@@ -191,7 +191,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             [
                 {
                     "device": "r1",
-                    "command": "show bgp route af ipv4-unicast",
+                    "command": "show bgp route af ipv6-unicast",
                     "contains": [TARGET_PREFIX],
                     "label": "r1 learned BGP route",
                 }
@@ -206,14 +206,14 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             strict=False,
             commands=[
                 "config",
-                f"route ipv4 {TARGET_PREFIX_ADDR} {TARGET_MASK} {r1_peer_ip}",
+                f"route ipv6 {TARGET_PREFIX_ADDR} {TARGET_MASK} {r1_peer_ip6}",
                 "end",
             ],
         )
 
         step("Verify route and OS both prefer static over BGP")
         _wait_route_best_static_backup_bgp(rt, device="r1", destination=TARGET_PREFIX_ADDR, timeout=30)
-        _wait_os_best_proto(rt, device="r1", prefix=TARGET_PREFIX, gateway=r1_peer_ip, proto="static", timeout=30)
+        _wait_os_best_proto(rt, device="r1", prefix=TARGET_PREFIX, gateway=r1_peer_ip6, proto="static", timeout=30)
 
         step("Delete r1 static route")
         run_cmds(
@@ -222,15 +222,15 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             strict=False,
             commands=[
                 "config",
-                f"no route ipv4 {TARGET_PREFIX_ADDR} {TARGET_MASK} {r1_peer_ip}",
+                f"no route ipv6 {TARGET_PREFIX_ADDR} {TARGET_MASK} {r1_peer_ip6}",
                 "end",
             ],
         )
 
         step("Verify route and OS switch to BGP after static removal")
         _wait_route_best_bgp_only(rt, device="r1", destination=TARGET_PREFIX_ADDR, timeout=30)
-        _wait_os_best_proto(rt, device="r1", prefix=TARGET_PREFIX, gateway=r1_peer_ip, proto="bgp", timeout=30)
+        _wait_os_best_proto(rt, device="r1", prefix=TARGET_PREFIX, gateway=r1_peer_ip6, proto="bgp", timeout=30)
 
-        print("BGP static-vs-bgp preference fallback check passed.")
+        print("BGP static-vs-bgp preference fallback IPv6 check passed.")
     finally:
-        _cleanup_case_config(rt, r1_nh=r1_peer_ip, r2_nh=r2_route_nh)
+        _cleanup_case_config(rt, r1_nh6=r1_peer_ip6, r2_nh6=r2_route_nh6)

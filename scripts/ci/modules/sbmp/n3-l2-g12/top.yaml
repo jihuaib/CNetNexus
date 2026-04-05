@@ -2,17 +2,25 @@ version: 1
 image: netnexus-ci:latest
 
 devices:
+  s1: {}
   r1: {}
   r2: {}
 
 links:
-  - name: r1-r2
+  - name: s1-ge1-r1-ge2
+    endpoints:
+      - device: s1
+        if: GE-1
+        cidr: 10.13.0.1/30
+      - device: r1
+        if: GE-2
+        cidr: 10.13.0.2/30
+
+  - name: r1-ge1-r2-ge1
     endpoints:
       - device: r1
         if: GE-1
         cidr: 10.12.0.1/30
-        cidr6: 2001:db8:12::1/64
       - device: r2
         if: GE-1
         cidr: 10.12.0.2/30
-        cidr6: 2001:db8:12::2/64

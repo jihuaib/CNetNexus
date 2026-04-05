@@ -52,7 +52,7 @@ void bgp_db_ensure_defaults(void);
 int bgp_db_set_as(uint32_t as_number);
 
 /**
- * @brief 从数据库删除 BGP 协议及关联配置（protocol/session/neighbor/instance/vrf）
+ * @brief 从数据库删除 BGP 协议及关联配置（protocol/session/neighbor/instance/vrf/bmp_instance/bmp_monitor）
  * @return 删除的行数，错误返回 -1
  */
 int bgp_db_del_as(void);

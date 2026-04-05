@@ -37,10 +37,11 @@ static char bmp_cmd_tag;
 /** BMP 线程命令类型 */
 typedef enum bgp_bmp_cmd_type
 {
-    BMP_CMD_APPLY = 1,    /**< 同步配置应用 */
-    BMP_CMD_SHUTDOWN = 2, /**< 停止线程 */
-    BMP_CMD_EVENT = 3,    /**< 异步 BGP 事件通知 */
-    BMP_CMD_SHOW = 4,     /**< show 命令 */
+    BMP_CMD_APPLY = 1,     /**< 同步配置应用 */
+    BMP_CMD_SHUTDOWN = 2,  /**< 停止线程 */
+    BMP_CMD_EVENT = 3,     /**< 异步 BGP 事件通知 */
+    BMP_CMD_SHOW = 4,      /**< show 命令 */
+    BMP_CMD_CLEAR_ALL = 5, /**< 同步清空所有 BMP 实例 */
 } bgp_bmp_cmd_type_t;
 
 /** BMP 事件类型 */
@@ -339,6 +340,25 @@ int bgp_bmp_dispatch_apply(bgp_apply_cmd_t *apply)
     int rc = bmp_cmd_wait(cmd);
     bmp_cmd_destroy(cmd);
     return rc;
+}
+
+int bgp_bmp_dispatch_clear_all(void)
+{
+    bgp_bmp_cmd_t *cmd = bmp_cmd_create(BMP_CMD_CLEAR_ALL, TRUE);
+    if (!cmd)
+    {
+        return -1;
+    }
+
+    if (bmp_cmd_enqueue(cmd) != 0)
+    {
+        bmp_cmd_destroy(cmd);
+        return -1;
+    }
+
+    int rc = bmp_cmd_wait(cmd);
+    bmp_cmd_destroy(cmd);
+    return (rc == ERRCODE_SUCCESS) ? 0 : -1;
 }
 
 // ============================================================================
@@ -873,6 +893,23 @@ static gboolean bmp_process_cmd_event(void)
             case BMP_CMD_SHOW:
                 bmp_handle_show_msg(cmd->msg);
                 cmd->msg = NULL; /* 所有权已转移 */
+                break;
+
+            case BMP_CMD_CLEAR_ALL:
+                if (g_bgp_bmp_local->bmp_instances)
+                {
+                    GHashTableIter iter;
+                    gpointer key = NULL;
+                    gpointer val = NULL;
+                    g_hash_table_iter_init(&iter, g_bgp_bmp_local->bmp_instances);
+                    while (g_hash_table_iter_next(&iter, &key, &val))
+                    {
+                        (void)key;
+                        bgp_bmp_instance_t *inst = (bgp_bmp_instance_t *)val;
+                        bgp_bmp_instance_destroy(inst, g_bgp_bmp_local->epoll_fd);
+                    }
+                    g_hash_table_remove_all(g_bgp_bmp_local->bmp_instances);
+                }
                 break;
 
             default:

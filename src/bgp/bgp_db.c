@@ -664,19 +664,26 @@ int bgp_db_del_as(void)
     int rows_session = 0;
     int rows_vrf = 0;
     int rows_protocol = 0;
+    int rows_bmp_instance = 0;
+    int rows_bmp_monitor = 0;
 
     if (bgp_db_delete_table_all(ctx, BGP_TABLE_NEIGHBOR, &rows_neighbor) != 0 ||
         bgp_db_delete_table_all(ctx, BGP_TABLE_INSTANCE, &rows_instance) != 0 ||
         bgp_db_delete_table_all(ctx, BGP_TABLE_SESSION, &rows_session) != 0 ||
         bgp_db_delete_table_all(ctx, BGP_TABLE_VRF, &rows_vrf) != 0 ||
+        bgp_db_delete_table_all(ctx, BGP_TABLE_BMP_MONITOR, &rows_bmp_monitor) != 0 ||
+        bgp_db_delete_table_all(ctx, BGP_TABLE_BMP_INSTANCE, &rows_bmp_instance) != 0 ||
         bgp_db_delete_table_all(ctx, BGP_TABLE_PROTOCOL, &rows_protocol) != 0)
     {
         return -1;
     }
 
-    int total_rows = rows_neighbor + rows_instance + rows_session + rows_vrf + rows_protocol;
-    LOG_INFO("BGP protocol cleanup complete: protocol=%d session=%d neighbor=%d instance=%d vrf=%d total=%d",
-             rows_protocol, rows_session, rows_neighbor, rows_instance, rows_vrf, total_rows);
+    int total_rows =
+        rows_neighbor + rows_instance + rows_session + rows_vrf + rows_protocol + rows_bmp_instance + rows_bmp_monitor;
+    LOG_INFO("BGP protocol cleanup complete: protocol=%d session=%d neighbor=%d instance=%d vrf=%d bmp_instance=%d "
+             "bmp_monitor=%d total=%d",
+             rows_protocol, rows_session, rows_neighbor, rows_instance, rows_vrf, rows_bmp_instance, rows_bmp_monitor,
+             total_rows);
     return total_rows;
 }
 

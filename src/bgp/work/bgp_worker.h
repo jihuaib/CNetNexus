@@ -40,7 +40,8 @@ typedef struct bgp_work_local
     int running;             /**< worker 线程运行标志 */
     pthread_t worker_thread; /**< BGP worker 线程句柄 */
 
-    int listen_fd; /**< 全局 0.0.0.0:179 listen socket fd，-1 表示未监听 */
+    int listen_fd;    /**< IPv4 0.0.0.0:179 listen socket fd，-1 表示未监听 */
+    int listen_fd_v6; /**< IPv6 [::]:179 listen socket fd，-1 表示未监听 */
 
     /* IPC worker -> BGP worker 命令投递（eventfd + queue） */
     int cmd_eventfd;         /**< 命令唤醒 eventfd，-1 表示未创建 */

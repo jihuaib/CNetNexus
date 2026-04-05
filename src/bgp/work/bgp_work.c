@@ -82,6 +82,38 @@ static gboolean bgp_best_can_publish_to_session(const bgp_session_t *sess, const
     return TRUE;
 }
 
+static void bgp_prepare_update_nexthop(const bgp_session_t *sess, const bgp_route_node_t *best,
+                                       bgp_nexthop_t *send_nexthop)
+{
+    if (!best || !send_nexthop)
+    {
+        return;
+    }
+
+    memcpy(send_nexthop, &best->nexthop, sizeof(*send_nexthop));
+
+    if (!BIT_TEST(best->flags, BGP_ROUTE_FLAG_IMPORT) || !sess || !sess->pri_conn)
+    {
+        return;
+    }
+
+    net_addr_t local_addr;
+    if (bgp_conn_get_local_addr(sess->pri_conn, &local_addr) != 0 || local_addr.family == 0 ||
+        net_addr_is_zero(&local_addr))
+    {
+        return;
+    }
+
+    if (send_nexthop->global.family != 0 && local_addr.family != send_nexthop->global.family)
+    {
+        return;
+    }
+
+    send_nexthop->global = local_addr;
+    send_nexthop->has_link_local = false;
+    memset(&send_nexthop->link_local, 0, sizeof(send_nexthop->link_local));
+}
+
 static gboolean bgp_work_on_worker_thread(void)
 {
     return g_bgp_work_local && g_bgp_work_local->worker_thread != 0 &&
@@ -417,7 +449,9 @@ int bgp_pub_queue_process(bgp_pub_queue_t *q, bgp_session_t *sess, bgp_instance_
         const bgp_route_node_t *best = bgp_rib_find_best(inst->rib, &item->nlri);
         if (best && bgp_best_can_publish_to_session(sess, best))
         {
-            bgp_pkt_send_update(sess->pri_conn, &item->nlri, &best->attr, &best->nexthop);
+            bgp_nexthop_t send_nexthop;
+            bgp_prepare_update_nexthop(sess, best, &send_nexthop);
+            bgp_pkt_send_update(sess->pri_conn, &item->nlri, &best->attr, &send_nexthop);
         }
 
         bgp_pub_item_free(item, NULL);

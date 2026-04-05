@@ -155,6 +155,11 @@ void bgp_cfg_apply_protocol(bgp_apply_cmd_t *apply)
 
     if (is_no)
     {
+        if (bgp_bmp_dispatch_clear_all() != 0)
+        {
+            snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: Failed to clear BMP instances.");
+            return;
+        }
         bgp_listen_stop();
         bgp_cfg_stop_all_sessions_and_drain_work(proto);
         bgp_protocol_destroy(g_bgp_work_local->protocol);

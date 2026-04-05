@@ -109,6 +109,14 @@ void bgp_bmp_thread_shutdown(void);
  */
 int bgp_bmp_dispatch_apply(bgp_apply_cmd_t *apply);
 
+/**
+ * @brief 向 BMP 线程同步派发“清空所有 BMP 实例”命令
+ *
+ * 用于 `no bgp` 级联清理，确保 BMP 运行态实例被销毁。
+ * @return 0 成功，-1 失败
+ */
+int bgp_bmp_dispatch_clear_all(void);
+
 // ============================================================================
 // BGP 事件通知 API（BGP worker 线程调用，异步）
 // ============================================================================

@@ -41,8 +41,10 @@
 /** BGP 协议标准端口 */
 #define BGP_LISTEN_PORT 179
 
-/** epoll data.ptr sentinel：区分 listen fd 事件与连接 fd 事件 */
-static char bgp_listen_tag;
+/** epoll data.ptr sentinel：区分 IPv4 listen fd 事件与连接 fd 事件 */
+static char bgp_listen_tag_v4;
+/** epoll data.ptr sentinel：区分 IPv6 listen fd 事件与连接 fd 事件 */
+static char bgp_listen_tag_v6;
 /** epoll data.ptr sentinel：区分 worker->server 命令事件 */
 static char bgp_cmd_tag;
 /** epoll data.ptr sentinel：区分工作事件 */
@@ -877,69 +879,138 @@ void bgp_listen_start(void)
     {
         return;
     }
-    if (g_bgp_work_local->listen_fd >= 0)
+    if (g_bgp_work_local->listen_fd >= 0 || g_bgp_work_local->listen_fd_v6 >= 0)
     {
         return; /* 已在监听，幂等 */
     }
 
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0)
+    int fd4 = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd4 >= 0)
     {
-        LOG_PERROR("BGP: Failed to create listen socket");
-        return;
+        int opt = 1;
+        (void)setsockopt(fd4, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+        (void)setsockopt(fd4, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
+
+        struct sockaddr_in addr4;
+        memset(&addr4, 0, sizeof(addr4));
+        addr4.sin_family = AF_INET;
+        addr4.sin_addr.s_addr = INADDR_ANY;
+        addr4.sin_port = htons(BGP_LISTEN_PORT);
+
+        if (bind(fd4, (struct sockaddr *)&addr4, sizeof(addr4)) < 0)
+        {
+            LOG_PERROR("BGP: bind 0.0.0.0:179 failed");
+            close(fd4);
+            fd4 = -1;
+        }
+        else if (listen(fd4, 32) < 0)
+        {
+            LOG_PERROR("BGP: listen IPv4 failed");
+            close(fd4);
+            fd4 = -1;
+        }
+        else
+        {
+            struct epoll_event ev4;
+            memset(&ev4, 0, sizeof(ev4));
+            ev4.events = EPOLLIN;
+            ev4.data.ptr = &bgp_listen_tag_v4;
+            if (epoll_ctl(g_bgp_work_local->epoll_fd, EPOLL_CTL_ADD, fd4, &ev4) < 0)
+            {
+                LOG_PERROR("BGP: epoll_ctl ADD IPv4 listen fd failed");
+                close(fd4);
+                fd4 = -1;
+            }
+        }
     }
 
-    int opt = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-    setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
-
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons(BGP_LISTEN_PORT);
-
-    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0)
+    int fd6 = socket(AF_INET6, SOCK_STREAM, 0);
+    if (fd6 >= 0)
     {
-        LOG_PERROR("BGP: bind 0.0.0.0:179 failed");
-        close(fd);
-        return;
+        int opt = 1;
+        int v6_only = 1;
+        (void)setsockopt(fd6, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+        (void)setsockopt(fd6, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
+        (void)setsockopt(fd6, IPPROTO_IPV6, IPV6_V6ONLY, &v6_only, sizeof(v6_only));
+
+        struct sockaddr_in6 addr6;
+        memset(&addr6, 0, sizeof(addr6));
+        addr6.sin6_family = AF_INET6;
+        addr6.sin6_addr = in6addr_any;
+        addr6.sin6_port = htons(BGP_LISTEN_PORT);
+
+        if (bind(fd6, (struct sockaddr *)&addr6, sizeof(addr6)) < 0)
+        {
+            LOG_PERROR("BGP: bind [::]:179 failed");
+            close(fd6);
+            fd6 = -1;
+        }
+        else if (listen(fd6, 32) < 0)
+        {
+            LOG_PERROR("BGP: listen IPv6 failed");
+            close(fd6);
+            fd6 = -1;
+        }
+        else
+        {
+            struct epoll_event ev6;
+            memset(&ev6, 0, sizeof(ev6));
+            ev6.events = EPOLLIN;
+            ev6.data.ptr = &bgp_listen_tag_v6;
+            if (epoll_ctl(g_bgp_work_local->epoll_fd, EPOLL_CTL_ADD, fd6, &ev6) < 0)
+            {
+                LOG_PERROR("BGP: epoll_ctl ADD IPv6 listen fd failed");
+                close(fd6);
+                fd6 = -1;
+            }
+        }
     }
 
-    if (listen(fd, 32) < 0)
-    {
-        LOG_PERROR("BGP: listen failed");
-        close(fd);
-        return;
-    }
+    g_bgp_work_local->listen_fd = fd4;
+    g_bgp_work_local->listen_fd_v6 = fd6;
 
-    struct epoll_event ev;
-    ev.events = EPOLLIN;
-    ev.data.ptr = &bgp_listen_tag;
-    if (epoll_ctl(g_bgp_work_local->epoll_fd, EPOLL_CTL_ADD, fd, &ev) < 0)
+    if (fd4 >= 0)
     {
-        LOG_PERROR("BGP: epoll_ctl ADD listen fd failed");
-        close(fd);
-        return;
+        LOG_INFO("BGP: Listening on 0.0.0.0:179 (fd=%d)", fd4);
     }
-
-    g_bgp_work_local->listen_fd = fd;
-    LOG_INFO("BGP: Listening on 0.0.0.0:179 (fd=%d)", fd);
+    if (fd6 >= 0)
+    {
+        LOG_INFO("BGP: Listening on [::]:179 (fd=%d)", fd6);
+    }
+    if (fd4 < 0 && fd6 < 0)
+    {
+        LOG_ERROR("BGP: Failed to start listen sockets on both IPv4 and IPv6");
+    }
 }
 
 void bgp_listen_stop(void)
 {
-    if (g_bgp_work_local->listen_fd < 0)
+    if (g_bgp_work_local->listen_fd < 0 && g_bgp_work_local->listen_fd_v6 < 0)
     {
         return;
     }
-    if (g_bgp_work_local->epoll_fd >= 0)
+
+    if (g_bgp_work_local->listen_fd >= 0)
     {
-        epoll_ctl(g_bgp_work_local->epoll_fd, EPOLL_CTL_DEL, g_bgp_work_local->listen_fd, NULL);
+        if (g_bgp_work_local->epoll_fd >= 0)
+        {
+            epoll_ctl(g_bgp_work_local->epoll_fd, EPOLL_CTL_DEL, g_bgp_work_local->listen_fd, NULL);
+        }
+        close(g_bgp_work_local->listen_fd);
+        g_bgp_work_local->listen_fd = -1;
     }
-    close(g_bgp_work_local->listen_fd);
-    g_bgp_work_local->listen_fd = -1;
-    LOG_INFO("BGP: Stopped listening on 0.0.0.0:179");
+
+    if (g_bgp_work_local->listen_fd_v6 >= 0)
+    {
+        if (g_bgp_work_local->epoll_fd >= 0)
+        {
+            epoll_ctl(g_bgp_work_local->epoll_fd, EPOLL_CTL_DEL, g_bgp_work_local->listen_fd_v6, NULL);
+        }
+        close(g_bgp_work_local->listen_fd_v6);
+        g_bgp_work_local->listen_fd_v6 = -1;
+    }
+
+    LOG_INFO("BGP: Stopped listening on 0.0.0.0:179 and [::]:179");
 }
 
 // ============================================================================
@@ -956,15 +1027,15 @@ void bgp_listen_stop(void)
 // ============================================================================
 
 /**
- * @brief 处理全局 listener 上的被动入站连接
+ * @brief 处理指定 listener 上的被动入站连接
  */
-static void bgp_handle_passive_accept(void)
+static void bgp_handle_passive_accept(int listen_fd)
 {
     bgp_protocol_t *proto = g_bgp_work_local->protocol;
 
     struct sockaddr_storage peer_sa;
     socklen_t addr_len = sizeof(peer_sa);
-    int conn_fd = accept(g_bgp_work_local->listen_fd, (struct sockaddr *)&peer_sa, &addr_len);
+    int conn_fd = accept(listen_fd, (struct sockaddr *)&peer_sa, &addr_len);
 
     if (conn_fd < 0)
     {
@@ -1204,9 +1275,14 @@ static void *bgp_worker_thread(void *arg)
         {
             uintptr_t raw = (uintptr_t)events[i].data.ptr;
 
-            if (events[i].data.ptr == (void *)&bgp_listen_tag)
+            if (events[i].data.ptr == (void *)&bgp_listen_tag_v4)
             {
-                bgp_handle_passive_accept();
+                bgp_handle_passive_accept(g_bgp_work_local->listen_fd);
+                continue;
+            }
+            if (events[i].data.ptr == (void *)&bgp_listen_tag_v6)
+            {
+                bgp_handle_passive_accept(g_bgp_work_local->listen_fd_v6);
                 continue;
             }
             if (events[i].data.ptr == (void *)&bgp_cmd_tag)
@@ -1460,6 +1536,7 @@ int bgp_worker_prepare(void)
         }
         g_bgp_work_local->epoll_fd = DEV_INVALID_FD;
         g_bgp_work_local->listen_fd = -1;
+        g_bgp_work_local->listen_fd_v6 = -1;
         g_bgp_work_local->cmd_eventfd = -1;
         g_bgp_work_local->work_eventfd = -1;
     }

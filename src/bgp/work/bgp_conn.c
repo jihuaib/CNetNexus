@@ -235,6 +235,52 @@ int bgp_conn_start_active(bgp_conn_t *conn, const net_addr_t *peer_addr, int epo
     return sock;
 }
 
+int bgp_conn_get_local_addr(const bgp_conn_t *conn, net_addr_t *out_addr)
+{
+    if (!conn || conn->fd < 0 || !out_addr)
+    {
+        return -1;
+    }
+
+    memset(out_addr, 0, sizeof(*out_addr));
+
+    struct sockaddr_storage local_sa;
+    socklen_t local_len = sizeof(local_sa);
+    memset(&local_sa, 0, sizeof(local_sa));
+
+    if (getsockname(conn->fd, (struct sockaddr *)&local_sa, &local_len) < 0)
+    {
+        /*
+         * 回退到显式 source-interface 地址（仅主动建连场景可用）。
+         * 对被动建连必须依赖 getsockname() 获取本地端点地址。
+         */
+        if (conn->has_local_addr && conn->local_addr.family != 0)
+        {
+            *out_addr = conn->local_addr;
+            return 0;
+        }
+        return -1;
+    }
+
+    if (local_sa.ss_family == AF_INET)
+    {
+        const struct sockaddr_in *sa4 = (const struct sockaddr_in *)&local_sa;
+        out_addr->family = AF_INET;
+        memcpy(&out_addr->u.v4, &sa4->sin_addr, sizeof(sa4->sin_addr));
+        return 0;
+    }
+
+    if (local_sa.ss_family == AF_INET6)
+    {
+        const struct sockaddr_in6 *sa6 = (const struct sockaddr_in6 *)&local_sa;
+        out_addr->family = AF_INET6;
+        memcpy(&out_addr->u.v6, &sa6->sin6_addr, sizeof(sa6->sin6_addr));
+        return 0;
+    }
+
+    return -1;
+}
+
 // ============================================================================
 // 连接关闭
 // ============================================================================

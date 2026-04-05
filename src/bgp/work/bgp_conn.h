@@ -64,6 +64,14 @@ void bgp_conn_destroy(bgp_conn_t *conn);
 int bgp_conn_start_active(bgp_conn_t *conn, const net_addr_t *peer_addr, int epoll_fd);
 
 /**
+ * @brief 获取连接当前本地端点地址（基于 getsockname）
+ * @param conn      连接结构（fd 必须有效）
+ * @param out_addr  输出本地地址
+ * @return 0 成功，-1 失败
+ */
+int bgp_conn_get_local_addr(const bgp_conn_t *conn, net_addr_t *out_addr);
+
+/**
  * @brief 关闭 session 上指定 slot 的连接（epoll 移除 + 销毁 + 记录 socket error）
  * @param sess     所属会话
  * @param slot     &sess->pri_conn 或 &sess->sec_conn

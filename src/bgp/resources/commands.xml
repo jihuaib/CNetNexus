@@ -49,7 +49,7 @@
             </commands>
         </group>
 
-        <!-- neighbor <ip> as <as-num> / no neighbor <ip> -->
+        <!-- neighbor <ipv4|ipv6> as <as-num> / no neighbor <ipv4|ipv6> -->
         <group group-id="2">
             <elements>
                 <element type="keyword">
@@ -61,15 +61,20 @@
                     <description>BGP neighbor configuration</description>
                 </element>
                 <element cfg-id="1" type="parameter">
-                    <name>&lt;ip-address&gt;</name>
-                    <type>ip</type>
-                    <description>Neighbor IP address</description>
+                    <name>&lt;ipv4-address&gt;</name>
+                    <type>ipv4</type>
+                    <description>Neighbor IPv4 address</description>
+                </element>
+                <element cfg-id="2" type="parameter">
+                    <name>&lt;ipv6-address&gt;</name>
+                    <type>ipv6</type>
+                    <description>Neighbor IPv6 address</description>
                 </element>
                 <element type="keyword">
                     <name>as</name>
                     <description>Remote AS number</description>
                 </element>
-                <element cfg-id="2" type="parameter">
+                <element cfg-id="3" type="parameter">
                     <name>&lt;as-number&gt;</name>
                     <type>uint(1-4294967295)</type>
                     <description>Remote AS number</description>
@@ -77,14 +82,14 @@
             </elements>
 
             <commands>
-                <!-- neighbor <ip> as <as-num> -->
+                <!-- neighbor <ipv4|ipv6> as <as-num> -->
                 <command>
-                    <expression>2 3 4 5</expression>
+                    <expression>2 {3 | 4} 5 6</expression>
                     <views>bgp</views>
                 </command>
-                <!-- no neighbor <ip> -->
+                <!-- no neighbor <ipv4|ipv6> -->
                 <command>
-                    <expression>1 2 3</expression>
+                    <expression>1 2 {3 | 4}</expression>
                     <views>bgp</views>
                 </command>
             </commands>
@@ -139,7 +144,7 @@
             </commands>
         </group>
 
-        <!-- neighbor <ip> enable / no neighbor <ip> (in address-family view) -->
+        <!-- neighbor <ipv4|ipv6> enable / no neighbor <ipv4|ipv6> (in address-family view) -->
         <group group-id="4">
             <elements>
                 <element type="keyword">
@@ -151,25 +156,30 @@
                     <description>BGP neighbor</description>
                 </element>
                 <element cfg-id="1" type="parameter">
-                    <name>&lt;ip-address&gt;</name>
-                    <type>ip</type>
-                    <description>Neighbor IP address</description>
+                    <name>&lt;ipv4-address&gt;</name>
+                    <type>ipv4</type>
+                    <description>Neighbor IPv4 address</description>
                 </element>
-                <element cfg-id="2" type="keyword">
+                <element cfg-id="2" type="parameter">
+                    <name>&lt;ipv6-address&gt;</name>
+                    <type>ipv6</type>
+                    <description>Neighbor IPv6 address</description>
+                </element>
+                <element cfg-id="3" type="keyword">
                     <name>enable</name>
                     <description>Enable neighbor for this address family</description>
                 </element>
             </elements>
 
             <commands>
-                <!-- neighbor <ip> enable -->
+                <!-- neighbor <ipv4|ipv6> enable -->
                 <command>
-                    <expression>2 3 4</expression>
+                    <expression>2 {3 | 4} 5</expression>
                     <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni</views>
                 </command>
-                <!-- no neighbor <ip> -->
+                <!-- no neighbor <ipv4|ipv6> -->
                 <command>
-                    <expression>1 2 3</expression>
+                    <expression>1 2 {3 | 4}</expression>
                     <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni</views>
                 </command>
             </commands>
@@ -276,7 +286,7 @@
                 </command>
             </commands>
         </group>
-        <!-- neighbor <ip> open-capability as4|route-refresh / no neighbor <ip> open-capability ... -->
+        <!-- neighbor <ipv4|ipv6> open-capability as4|route-refresh / no neighbor <ipv4|ipv6> open-capability ... -->
         <group group-id="8">
             <elements>
                 <element type="keyword">
@@ -288,48 +298,43 @@
                     <description>BGP neighbor configuration</description>
                 </element>
                 <element cfg-id="1" type="parameter">
-                    <name>&lt;ip-address&gt;</name>
-                    <type>ip</type>
-                    <description>Neighbor IP address</description>
+                    <name>&lt;ipv4-address&gt;</name>
+                    <type>ipv4</type>
+                    <description>Neighbor IPv4 address</description>
+                </element>
+                <element cfg-id="2" type="parameter">
+                    <name>&lt;ipv6-address&gt;</name>
+                    <type>ipv6</type>
+                    <description>Neighbor IPv6 address</description>
                 </element>
                 <element type="keyword">
                     <name>open-capability</name>
                     <description>BGP OPEN capability negotiation</description>
                 </element>
-                <element cfg-id="2" type="keyword">
+                <element cfg-id="3" type="keyword">
                     <name>as4</name>
                     <description>4-byte AS number capability (RFC 6793)</description>
                 </element>
-                <element cfg-id="3" type="keyword">
+                <element cfg-id="4" type="keyword">
                     <name>route-refresh</name>
                     <description>Route Refresh capability (RFC 2918)</description>
                 </element>
             </elements>
 
             <commands>
-                <!-- neighbor <ip> open-capability as4 -->
+                <!-- neighbor <ipv4|ipv6> open-capability as4|route-refresh -->
                 <command>
-                    <expression>2 3 4 5</expression>
+                    <expression>2 {3 | 4} 5 {6 | 7}</expression>
                     <views>bgp</views>
                 </command>
-                <!-- neighbor <ip> open-capability route-refresh -->
+                <!-- no neighbor <ipv4|ipv6> open-capability as4|route-refresh -->
                 <command>
-                    <expression>2 3 4 6</expression>
-                    <views>bgp</views>
-                </command>
-                <!-- no neighbor <ip> open-capability as4 -->
-                <command>
-                    <expression>1 2 3 4 5</expression>
-                    <views>bgp</views>
-                </command>
-                <!-- no neighbor <ip> open-capability route-refresh -->
-                <command>
-                    <expression>1 2 3 4 6</expression>
+                    <expression>1 2 {3 | 4} 5 {6 | 7}</expression>
                     <views>bgp</views>
                 </command>
             </commands>
         </group>
-        <!-- neighbor <ip> source-interface <if-name> / no neighbor <ip> source-interface -->
+        <!-- neighbor <ipv4|ipv6> source-interface <if-name> / no neighbor <ipv4|ipv6> source-interface -->
         <group group-id="12">
             <elements>
                 <element type="keyword">
@@ -341,15 +346,20 @@
                     <description>BGP neighbor configuration</description>
                 </element>
                 <element cfg-id="1" type="parameter">
-                    <name>&lt;ip-address&gt;</name>
-                    <type>ip</type>
-                    <description>Neighbor IP address</description>
+                    <name>&lt;ipv4-address&gt;</name>
+                    <type>ipv4</type>
+                    <description>Neighbor IPv4 address</description>
+                </element>
+                <element cfg-id="2" type="parameter">
+                    <name>&lt;ipv6-address&gt;</name>
+                    <type>ipv6</type>
+                    <description>Neighbor IPv6 address</description>
                 </element>
                 <element type="keyword">
                     <name>source-interface</name>
                     <description>Bind outbound source address from interface</description>
                 </element>
-                <element cfg-id="2" type="parameter">
+                <element cfg-id="3" type="parameter">
                     <name>&lt;if-name&gt;</name>
                     <type>dynamic(4:1,string(1-31))</type>
                     <description>Source interface name (dynamic candidates from IF module)</description>
@@ -357,19 +367,19 @@
             </elements>
 
             <commands>
-                <!-- neighbor <ip> source-interface <if-name> -->
+                <!-- neighbor <ipv4|ipv6> source-interface <if-name> -->
                 <command>
-                    <expression>2 3 4 5</expression>
+                    <expression>2 {3 | 4} 5 6</expression>
                     <views>bgp</views>
                 </command>
-                <!-- no neighbor <ip> source-interface -->
+                <!-- no neighbor <ipv4|ipv6> source-interface -->
                 <command>
-                    <expression>1 2 3 4</expression>
+                    <expression>1 2 {3 | 4} 5</expression>
                     <views>bgp</views>
                 </command>
             </commands>
         </group>
-        <!-- neighbor <ip> ebgp-multihop <ttl> / no neighbor <ip> ebgp-multihop -->
+        <!-- neighbor <ipv4|ipv6> ebgp-multihop <ttl> / no neighbor <ipv4|ipv6> ebgp-multihop -->
         <group group-id="13">
             <elements>
                 <element type="keyword">
@@ -381,15 +391,20 @@
                     <description>BGP neighbor configuration</description>
                 </element>
                 <element cfg-id="1" type="parameter">
-                    <name>&lt;ip-address&gt;</name>
-                    <type>ip</type>
-                    <description>Neighbor IP address</description>
+                    <name>&lt;ipv4-address&gt;</name>
+                    <type>ipv4</type>
+                    <description>Neighbor IPv4 address</description>
+                </element>
+                <element cfg-id="2" type="parameter">
+                    <name>&lt;ipv6-address&gt;</name>
+                    <type>ipv6</type>
+                    <description>Neighbor IPv6 address</description>
                 </element>
                 <element type="keyword">
                     <name>ebgp-multihop</name>
                     <description>Allow eBGP neighbor not directly connected</description>
                 </element>
-                <element cfg-id="2" type="parameter">
+                <element cfg-id="3" type="parameter">
                     <name>&lt;ttl&gt;</name>
                     <type>uint(1-255)</type>
                     <description>TTL hops for eBGP multihop</description>
@@ -397,14 +412,14 @@
             </elements>
 
             <commands>
-                <!-- neighbor <ip> ebgp-multihop <ttl> -->
+                <!-- neighbor <ipv4|ipv6> ebgp-multihop <ttl> -->
                 <command>
-                    <expression>2 3 4 5</expression>
+                    <expression>2 {3 | 4} 5 6</expression>
                     <views>bgp</views>
                 </command>
-                <!-- no neighbor <ip> ebgp-multihop -->
+                <!-- no neighbor <ipv4|ipv6> ebgp-multihop -->
                 <command>
-                    <expression>1 2 3 4</expression>
+                    <expression>1 2 {3 | 4} 5</expression>
                     <views>bgp</views>
                 </command>
             </commands>

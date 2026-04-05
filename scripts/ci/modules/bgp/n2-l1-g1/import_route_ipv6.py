@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-BGP import-route check script.
+BGP import-route IPv6 check script.
 
 Goal:
 - enable `import-route static` on r2
@@ -15,7 +15,12 @@ from module_api import g_top, require_devices, run_cmds, step, wait_checks  # no
 from top_runner import TopologyRuntime  # noqa: E402
 
 
-def _cleanup_case_config(rt: TopologyRuntime, r2_route_nh: str) -> None:
+TEST_PREFIX_ADDR = "2001:db8:2020::"
+TEST_PREFIX_LEN = "64"
+TEST_PREFIX = f"{TEST_PREFIX_ADDR}/{TEST_PREFIX_LEN}"
+
+
+def _cleanup_case_config(rt: TopologyRuntime, r2_route_nh6: str) -> None:
     step("Cleanup BGP/static config")
     run_cmds(
         rt=rt,
@@ -23,7 +28,7 @@ def _cleanup_case_config(rt: TopologyRuntime, r2_route_nh: str) -> None:
         strict=False,
         commands=[
             "config",
-            f"no route ipv4 10.20.20.0 24 {r2_route_nh}",
+            f"no route ipv6 {TEST_PREFIX_ADDR} {TEST_PREFIX_LEN} {r2_route_nh6}",
             "no bgp",
             "end",
         ],
@@ -45,9 +50,9 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
     Entry called by module_runner.
     """
     require_devices(top, ("r1", "r2"))
-    r1_peer_ip = str(g_top.r1.GE_1.peer_ip)
-    r2_peer_ip = str(g_top.r2.GE_1.peer_ip)
-    r2_route_nh = str(g_top.r2.GE_1.peer_ip)
+    r1_peer_ip6 = str(g_top.r1.GE_1.peer_ip6)
+    r2_peer_ip6 = str(g_top.r2.GE_1.peer_ip6)
+    r2_route_nh6 = str(g_top.r2.GE_1.peer_ip6)
 
     try:
         step("Ensure BGP base config")
@@ -72,9 +77,9 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             commands=[
                 "config",
                 "bgp 65001",
-                f"neighbor {r1_peer_ip} as 65002",
-                "af ipv4-unicast",
-                f"neighbor {r1_peer_ip} enable",
+                f"neighbor {r1_peer_ip6} as 65002",
+                "af ipv6-unicast",
+                f"neighbor {r1_peer_ip6} enable",
                 "exit",
                 "end",
             ],
@@ -86,9 +91,9 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             commands=[
                 "config",
                 "bgp 65002",
-                f"neighbor {r2_peer_ip} as 65001",
-                "af ipv4-unicast",
-                f"neighbor {r2_peer_ip} enable",
+                f"neighbor {r2_peer_ip6} as 65001",
+                "af ipv6-unicast",
+                f"neighbor {r2_peer_ip6} enable",
                 "import-route static",
                 "exit",
                 "end",
@@ -101,15 +106,15 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             [
                 {
                     "device": "r1",
-                    "command": "show bgp neighbor af ipv4-unicast",
-                    "contains": [r1_peer_ip, "Established"],
-                    "label": "r1->r2 ipv4-unicast",
+                    "command": "show bgp neighbor af ipv6-unicast",
+                    "contains": [r1_peer_ip6, "Established"],
+                    "label": "r1->r2 ipv6-unicast",
                 },
                 {
                     "device": "r2",
-                    "command": "show bgp neighbor af ipv4-unicast",
-                    "contains": [r2_peer_ip, "Established"],
-                    "label": "r2->r1 ipv4-unicast",
+                    "command": "show bgp neighbor af ipv6-unicast",
+                    "contains": [r2_peer_ip6, "Established"],
+                    "label": "r2->r1 ipv6-unicast",
                 },
             ],
             timeout=30,
@@ -120,7 +125,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             rt=rt,
             device="r2",
             strict=False,
-            commands=["config", f"route ipv4 10.20.20.0 24 {r2_route_nh}", "end"],
+            commands=["config", f"route ipv6 {TEST_PREFIX_ADDR} {TEST_PREFIX_LEN} {r2_route_nh6}", "end"],
         )
 
         step("Check imported route on r2 local and r1 peer BGP RIB")
@@ -129,20 +134,20 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             [
                 {
                     "device": "r2",
-                    "command": "show bgp route af ipv4-unicast",
-                    "contains": ["10.20.20.0/24"],
+                    "command": "show bgp route af ipv6-unicast",
+                    "contains": [TEST_PREFIX],
                     "label": "r2 local imported static route",
                 },
                 {
                     "device": "r1",
-                    "command": "show bgp route af ipv4-unicast",
-                    "contains": ["10.20.20.0/24"],
+                    "command": "show bgp route af ipv6-unicast",
+                    "contains": [TEST_PREFIX],
                     "label": "r1 learned route from r2",
                 },
             ],
             timeout=30,
         )
 
-        print("BGP import-route check passed.")
+        print("BGP import-route IPv6 check passed.")
     finally:
-        _cleanup_case_config(rt, r2_route_nh)
+        _cleanup_case_config(rt, r2_route_nh6)

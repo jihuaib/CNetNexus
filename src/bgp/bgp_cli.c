@@ -196,7 +196,7 @@ static int handle_bgp_protocol(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 /**
  * @brief 处理 neighbor <ip> as <as-num> / no neighbor <ip> 命令
  *
- * group_id=3, cfg_id: 2=ip-address, 3=as-number
+ * group_id=2, cfg_id: 1=ipv4-address, 2=ipv6-address, 3=as-number
  */
 static int handle_bgp_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
@@ -220,6 +220,7 @@ static int handle_bgp_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         switch (entry.cfg_id)
         {
             case 1:
+            case 2:
             {
                 const char *s = cli_tlv_entry_get_text(&entry);
                 if (s)
@@ -228,7 +229,7 @@ static int handle_bgp_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                 }
                 break;
             }
-            case 2:
+            case 3:
                 apply.u.neighbor.remote_as = (uint32_t)cli_tlv_entry_get_int(&entry);
                 has_remote_as = 1;
                 break;
@@ -387,7 +388,7 @@ static int handle_bgp_addr_family(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
 /**
  * @brief 处理 neighbor <ip> enable / no neighbor <ip> 命令（地址族视图）
  *
- * group_id=5, cfg_id: 2=ip-address, 3=enable (keyword)
+ * group_id=4, cfg_id: 1=ipv4-address, 2=ipv6-address, 3=enable (keyword)
  */
 static int handle_bgp_af_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
@@ -407,7 +408,7 @@ static int handle_bgp_af_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
             cli_tlv_entry_free(&entry);
             continue;
         }
-        if (entry.cfg_id == 1)
+        if (entry.cfg_id == 1 || entry.cfg_id == 2)
         {
             const char *s = cli_tlv_entry_get_text(&entry);
             if (s)
@@ -723,7 +724,7 @@ static int handle_bgp_connect_retry(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
 /**
  * @brief 处理 neighbor <ip> open-capability as4|route-refresh 命令
  *
- * group_id=8, cfg_id: 1=ip-address, 2=as4 (keyword), 3=route-refresh (keyword)
+ * group_id=8, cfg_id: 1=ipv4-address, 2=ipv6-address, 3=as4 (keyword), 4=route-refresh (keyword)
  * is_no=TRUE 时关闭对应能力，否则开启。
  */
 static int handle_bgp_open_capability(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
@@ -748,7 +749,8 @@ static int handle_bgp_open_capability(dev_ipc_message_t *msg, cli_tlv_parser_t *
         }
         switch (entry.cfg_id)
         {
-            case 1: /* <ip-address> 参数 */
+            case 1: /* <ipv4-address> 参数 */
+            case 2: /* <ipv6-address> 参数 */
             {
                 const char *s = cli_tlv_entry_get_text(&entry);
                 if (s)
@@ -757,10 +759,10 @@ static int handle_bgp_open_capability(dev_ipc_message_t *msg, cli_tlv_parser_t *
                 }
                 break;
             }
-            case 2: /* as4 关键字 */
+            case 3: /* as4 关键字 */
                 has_as4 = TRUE;
                 break;
-            case 3: /* route-refresh 关键字 */
+            case 4: /* route-refresh 关键字 */
                 has_rr = TRUE;
                 break;
             default:
@@ -911,7 +913,7 @@ static int handle_bgp_import_route(dev_ipc_message_t *msg, cli_tlv_parser_t *par
 /**
  * @brief 处理 neighbor <ip> source-interface <if-name> / no neighbor <ip> source-interface
  *
- * group_id=12, cfg_id: 1=ip-address, 2=if-name
+ * group_id=12, cfg_id: 1=ipv4-address, 2=ipv6-address, 3=if-name
  */
 static int handle_bgp_source_interface(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
@@ -935,6 +937,7 @@ static int handle_bgp_source_interface(dev_ipc_message_t *msg, cli_tlv_parser_t 
         switch (entry.cfg_id)
         {
             case 1:
+            case 2:
             {
                 const char *s = cli_tlv_entry_get_text(&entry);
                 if (s)
@@ -943,7 +946,7 @@ static int handle_bgp_source_interface(dev_ipc_message_t *msg, cli_tlv_parser_t 
                 }
                 break;
             }
-            case 2:
+            case 3:
             {
                 const char *s = cli_tlv_entry_get_text(&entry);
                 if (s)
@@ -1018,7 +1021,7 @@ static int handle_bgp_source_interface(dev_ipc_message_t *msg, cli_tlv_parser_t 
 /**
  * @brief 处理 neighbor <ip> ebgp-multihop <ttl> / no neighbor <ip> ebgp-multihop
  *
- * group_id=13, cfg_id: 1=ip-address, 2=ttl
+ * group_id=13, cfg_id: 1=ipv4-address, 2=ipv6-address, 3=ttl
  */
 static int handle_bgp_ebgp_multihop(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
@@ -1043,6 +1046,7 @@ static int handle_bgp_ebgp_multihop(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
         switch (entry.cfg_id)
         {
             case 1:
+            case 2:
             {
                 const char *s = cli_tlv_entry_get_text(&entry);
                 if (s)
@@ -1051,7 +1055,7 @@ static int handle_bgp_ebgp_multihop(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
                 }
                 break;
             }
-            case 2:
+            case 3:
                 ttl = (uint32_t)cli_tlv_entry_get_int(&entry);
                 break;
             default:
