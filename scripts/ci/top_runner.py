@@ -4,7 +4,7 @@ Topology-driven NetNexus BGP smoke runner.
 
 Example:
   python3 scripts/ci/top_runner.py \
-    --top scripts/ci/modules/bgp/two-node-r1ge1-r2ge1/top.yaml \
+    --top scripts/ci/modules/bgp/n2-l1-g1/top.yaml \
     --image netnexus-ci:latest
 """
 
@@ -68,7 +68,14 @@ def parse_if_index(if_name: str) -> int:
 def parse_cidr(cidr: str) -> tuple[str, int]:
     iface = ipaddress.ip_interface(cidr)
     if iface.version != 4:
-        raise ValueError(f"only IPv4 is supported for now, got '{cidr}'")
+        raise ValueError(f"expected IPv4 CIDR, got '{cidr}'")
+    return str(iface.ip), int(iface.network.prefixlen)
+
+
+def parse_cidr6(cidr: str) -> tuple[str, int]:
+    iface = ipaddress.ip_interface(cidr)
+    if iface.version != 6:
+        raise ValueError(f"expected IPv6 CIDR, got '{cidr}'")
     return str(iface.ip), int(iface.network.prefixlen)
 
 
@@ -79,6 +86,8 @@ class Endpoint:
     if_name: str
     ip: str
     prefix: int
+    ip6: str = ""
+    prefix6: int = 0
 
 
 class NetNexusCli:
@@ -251,6 +260,9 @@ def validate_top(top: dict[str, Any]) -> None:
                 raise ValueError(f"link '{lname}': unknown device '{dev}'")
             parse_if_index(str(if_name))
             parse_cidr(str(cidr))
+            cidr6 = str(ep.get("cidr6", "")).strip()
+            if cidr6:
+                parse_cidr6(cidr6)
             if if_name in used_if[dev]:
                 raise ValueError(f"device '{dev}' interface '{if_name}' used by multiple links")
             used_if[dev].add(str(if_name))
@@ -268,6 +280,11 @@ def build_endpoints(top: dict[str, Any]) -> dict[str, list[Endpoint]]:
         lname = str(link["name"])
         for ep in link["endpoints"]:
             ip, pfx = parse_cidr(str(ep["cidr"]))
+            ip6 = ""
+            pfx6 = 0
+            cidr6 = str(ep.get("cidr6", "")).strip()
+            if cidr6:
+                ip6, pfx6 = parse_cidr6(cidr6)
             per_dev[ep["device"]].append(
                 Endpoint(
                     link_name=lname,
@@ -275,6 +292,8 @@ def build_endpoints(top: dict[str, Any]) -> dict[str, list[Endpoint]]:
                     if_name=str(ep["if"]),
                     ip=ip,
                     prefix=pfx,
+                    ip6=ip6,
+                    prefix6=pfx6,
                 )
             )
     for dev in per_dev:
@@ -650,12 +669,14 @@ def cli_configure_interfaces(cli: NetNexusCli, endpoints: list[Endpoint]) -> Non
     print(f"\n===== STEP: Auto configure interface IPs on {cli.name} =====", flush=True)
     cli.cmd("config")
     for ep in endpoints:
-        print(
-            f"[{cli.name}] apply interface {ep.if_name}: ip address {ep.ip} {ep.prefix}, no shutdown",
-            flush=True,
-        )
+        plan = f"ip address {ep.ip} {ep.prefix}"
+        if ep.ip6:
+            plan = f"{plan}; ipv6 address {ep.ip6} {ep.prefix6}"
+        print(f"[{cli.name}] apply interface {ep.if_name}: {plan}, no shutdown", flush=True)
         cli.cmd(f"if {ep.if_name}")
         cli.cmd(f"ip address {ep.ip} {ep.prefix}")
+        if ep.ip6:
+            cli.cmd(f"ipv6 address {ep.ip6} {ep.prefix6}")
         cli.cmd("no shutdown")
         cli.cmd("exit")
     cli.cmd("end")

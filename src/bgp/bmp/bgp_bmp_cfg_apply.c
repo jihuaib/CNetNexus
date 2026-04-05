@@ -1,6 +1,6 @@
 /**
  * @file   bgp_bmp_cfg_apply.c
- * @brief  BGP BMP 配置应用实现（worker 线程内执行）
+ * @brief  BMP 配置应用实现（BMP 线程内执行）
  * @author jhb
  * @date   2026/03/29
  */
@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "bgp_bmp.h"
+#include "bgp_bmp_thread.h"
 #include "bgp_worker.h"
 #include "log.h"
 #include "net_addr.h"
@@ -18,15 +19,15 @@
 // ============================================================================
 
 /**
- * @brief 查找 BMP 实例（从全局哈希表）
+ * @brief 查找 BMP 实例（从 BMP 线程全局哈希表）
  */
 static bgp_bmp_instance_t *find_bmp_inst(const char *name)
 {
-    if (!g_bgp_work_local->bmp_instances)
+    if (!g_bgp_bmp_local->bmp_instances)
     {
         return NULL;
     }
-    return (bgp_bmp_instance_t *)g_hash_table_lookup(g_bgp_work_local->bmp_instances, name);
+    return (bgp_bmp_instance_t *)g_hash_table_lookup(g_bgp_bmp_local->bmp_instances, name);
 }
 
 /**
@@ -34,9 +35,9 @@ static bgp_bmp_instance_t *find_bmp_inst(const char *name)
  */
 static void ensure_bmp_hash(void)
 {
-    if (!g_bgp_work_local->bmp_instances)
+    if (!g_bgp_bmp_local->bmp_instances)
     {
-        g_bgp_work_local->bmp_instances = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+        g_bgp_bmp_local->bmp_instances = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     }
 }
 
@@ -50,7 +51,6 @@ void bgp_bmp_cfg_apply_instance(bgp_apply_cmd_t *apply)
 
     if (apply->isNo)
     {
-        /* 删除 BMP 实例 */
         bgp_bmp_instance_t *inst = find_bmp_inst(name);
         if (!inst)
         {
@@ -59,14 +59,13 @@ void bgp_bmp_cfg_apply_instance(bgp_apply_cmd_t *apply)
             return;
         }
 
-        bgp_bmp_instance_destroy(inst, g_bgp_work_local->epoll_fd);
-        g_hash_table_remove(g_bgp_work_local->bmp_instances, name);
+        bgp_bmp_instance_destroy(inst, g_bgp_bmp_local->epoll_fd);
+        g_hash_table_remove(g_bgp_bmp_local->bmp_instances, name);
         apply->rc = BGP_APPLY_RC_OK;
         LOG_INFO("BMP instance '%s' destroyed", name);
         return;
     }
 
-    /* 创建 BMP 实例（幂等） */
     bgp_bmp_instance_t *existing = find_bmp_inst(name);
     if (existing)
     {
@@ -83,7 +82,7 @@ void bgp_bmp_cfg_apply_instance(bgp_apply_cmd_t *apply)
         return;
     }
 
-    g_hash_table_insert(g_bgp_work_local->bmp_instances, g_strdup(name), inst);
+    g_hash_table_insert(g_bgp_bmp_local->bmp_instances, g_strdup(name), inst);
     apply->rc = BGP_APPLY_RC_OK;
     LOG_INFO("BMP instance '%s' created", name);
 }
@@ -105,13 +104,12 @@ void bgp_bmp_cfg_apply_collector(bgp_apply_cmd_t *apply)
 
     if (apply->isNo)
     {
-        /* 清除 collector 配置，断开连接 */
         if (inst->collector_port == 0)
         {
             apply->rc = BGP_APPLY_RC_NOOP;
             return;
         }
-        bgp_bmp_disconnect(inst, g_bgp_work_local->epoll_fd);
+        bgp_bmp_disconnect(inst, g_bgp_bmp_local->epoll_fd);
         memset(&inst->collector_addr, 0, sizeof(inst->collector_addr));
         inst->collector_port = 0;
         inst->conn_state = BGP_BMP_CONN_IDLE;
@@ -120,30 +118,26 @@ void bgp_bmp_cfg_apply_collector(bgp_apply_cmd_t *apply)
         return;
     }
 
-    /* 设置 collector 地址和端口 */
     net_addr_t new_addr = apply->u.bmp_collector.addr;
     uint16_t new_port = apply->u.bmp_collector.port;
 
-    /* 检查是否有变化 */
     if (net_addr_equal(&inst->collector_addr, &new_addr) && inst->collector_port == new_port)
     {
         apply->rc = BGP_APPLY_RC_NOOP;
         return;
     }
 
-    /* 如果已有连接，先断开 */
     if (inst->conn_state != BGP_BMP_CONN_IDLE)
     {
-        bgp_bmp_disconnect(inst, g_bgp_work_local->epoll_fd);
+        bgp_bmp_disconnect(inst, g_bgp_bmp_local->epoll_fd);
     }
 
     inst->collector_addr = new_addr;
     inst->collector_port = new_port;
 
-    /* 有地址和端口后立即发起连接 */
     if (new_port > 0)
     {
-        bgp_bmp_connect(inst, g_bgp_work_local->epoll_fd);
+        bgp_bmp_connect(inst, g_bgp_bmp_local->epoll_fd);
     }
 
     apply->rc = BGP_APPLY_RC_OK;
@@ -173,7 +167,6 @@ void bgp_bmp_cfg_apply_stats(bgp_apply_cmd_t *apply)
     }
 
     inst->stats_interval = new_interval;
-    /* TODO Phase 7: 重新调度 stats 定时器 */
 
     apply->rc = BGP_APPLY_RC_OK;
     LOG_INFO("BMP instance '%s' stats interval set to %u", inst_name, new_interval);
@@ -223,7 +216,6 @@ void bgp_bmp_cfg_apply_monitor(bgp_apply_cmd_t *apply)
 
     if (apply->u.bmp_monitor.is_all && !apply->isNo)
     {
-        /* monitor neighbor all */
         if (inst->monitor_all)
         {
             apply->rc = BGP_APPLY_RC_NOOP;
@@ -239,13 +231,11 @@ void bgp_bmp_cfg_apply_monitor(bgp_apply_cmd_t *apply)
         return;
     }
 
-    /* monitor neighbor <ip> / no monitor neighbor <ip> */
     char ip_str[64];
     net_addr_to_str(&apply->u.bmp_monitor.addr, ip_str, sizeof(ip_str));
 
     if (apply->isNo)
     {
-        /* no monitor neighbor <ip> */
         if (!inst->monitor_peers || !g_hash_table_remove(inst->monitor_peers, ip_str))
         {
             snprintf(apply->errmsg, sizeof(apply->errmsg), "BMP: Monitor peer '%s' not found.", ip_str);
@@ -257,7 +247,6 @@ void bgp_bmp_cfg_apply_monitor(bgp_apply_cmd_t *apply)
         return;
     }
 
-    /* monitor neighbor <ip>：切换到非 all 模式 */
     inst->monitor_all = FALSE;
     if (!inst->monitor_peers)
     {

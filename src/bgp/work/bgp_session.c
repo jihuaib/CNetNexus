@@ -14,7 +14,7 @@
 #include <unistd.h>
 
 #include "bgp.h"
-#include "bgp_bmp.h"
+#include "bgp_bmp_thread.h"
 #include "bgp_conn.h"
 #include "bgp_fsm.h"
 #include "bgp_pkt.h"
@@ -195,7 +195,7 @@ void bgp_neighbor_down(bgp_session_t *sess, int epoll_fd)
     /* BMP Peer Down 通知（在连接关闭前发送，确保 per-peer header 信息完整） */
     if (sess->fsm_state == BGP_FSM_STATE_ESTABLISHED)
     {
-        bgp_bmp_notify_peer_down(sess, BGP_BMP_PEER_DOWN_LOCAL_NO_NOTIFY);
+        bgp_bmp_thread_notify_peer_down(sess, BGP_BMP_PEER_DOWN_LOCAL_NO_NOTIFY);
     }
 
     /* 步骤 1：向已完成 TCP 握手的主连接发送 NOTIFICATION Cease/Admin-Reset

@@ -15,9 +15,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include "bgp_bmp.h"
-#include "bgp_bmp_cfg_apply.h"
-#include "bgp_bmp_cli.h"
+#include "bgp_bmp_thread.h"
 #include "bgp_calc.h"
 #include "bgp_cfg_apply.h"
 #include "bgp_cli.h"
@@ -381,21 +379,6 @@ static void bgp_worker_dispatch_apply_cmd(bgp_apply_cmd_t *apply)
             break;
         case BGP_CLI_GROUP_ID_EBGP_MULTIHOP:
             bgp_cfg_apply_ebgp_multihop(apply);
-            break;
-        case BGP_CLI_GROUP_ID_BMP_INSTANCE:
-            bgp_bmp_cfg_apply_instance(apply);
-            break;
-        case BGP_CLI_GROUP_ID_BMP_COLLECTOR:
-            bgp_bmp_cfg_apply_collector(apply);
-            break;
-        case BGP_CLI_GROUP_ID_BMP_STATS_INTERVAL:
-            bgp_bmp_cfg_apply_stats(apply);
-            break;
-        case BGP_CLI_GROUP_ID_BMP_RECONNECT:
-            bgp_bmp_cfg_apply_reconnect(apply);
-            break;
-        case BGP_CLI_GROUP_ID_BMP_MONITOR:
-            bgp_bmp_cfg_apply_monitor(apply);
             break;
         default:
             snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: Unknown apply group_id %u.", apply->group_id);
@@ -1254,34 +1237,6 @@ static void *bgp_worker_thread(void *arg)
                     case BGP_TIMER_TYPE_HOLD:
                         bgp_handle_hold_timer(sentinel->session);
                         break;
-                    case BGP_TIMER_TYPE_BMP_RECONNECT:
-                    {
-                        bgp_bmp_instance_t *bmp =
-                            (bgp_bmp_instance_t *)((char *)sentinel - offsetof(bgp_bmp_instance_t, reconnect_sentinel));
-                        bgp_bmp_handle_reconnect(bmp, g_bgp_work_local->epoll_fd);
-                        break;
-                    }
-                    case BGP_TIMER_TYPE_BMP_STATS:
-                    {
-                        bgp_bmp_instance_t *bmp =
-                            (bgp_bmp_instance_t *)((char *)sentinel - offsetof(bgp_bmp_instance_t, stats_sentinel));
-                        bgp_bmp_handle_stats_timer(bmp);
-                        break;
-                    }
-                    case BGP_TIMER_TYPE_BMP_CONN:
-                    {
-                        bgp_bmp_instance_t *bmp =
-                            (bgp_bmp_instance_t *)((char *)sentinel - offsetof(bgp_bmp_instance_t, conn_sentinel));
-                        if (events[i].events & EPOLLOUT)
-                        {
-                            bgp_bmp_handle_connect_result(bmp, g_bgp_work_local->epoll_fd);
-                        }
-                        else
-                        {
-                            bgp_bmp_handle_read(bmp, g_bgp_work_local->epoll_fd);
-                        }
-                        break;
-                    }
                     default:
                         break;
                 }
@@ -1375,7 +1330,6 @@ static void bgp_worker_runtime_cleanup(void)
         }
     }
 
-    bgp_bmp_cleanup_all(g_bgp_work_local->epoll_fd);
     bgp_listen_stop();
     bgp_worker_cmd_drain_queue();
     bgp_work_show_cleanup();
@@ -1543,6 +1497,50 @@ int bgp_worker_launch(void)
     }
 
     return ERRCODE_SUCCESS;
+}
+
+void bgp_worker_handle_bmp_initial_peers(const char *inst_name)
+{
+    if (!inst_name || !g_bgp_work_local || !g_bgp_work_local->protocol)
+    {
+        return;
+    }
+
+    GHashTable *vrf_hash = g_bgp_work_local->protocol->vrf_hash;
+    if (!vrf_hash)
+    {
+        return;
+    }
+
+    GHashTableIter vrf_iter;
+    gpointer vrf_key, vrf_val;
+    g_hash_table_iter_init(&vrf_iter, vrf_hash);
+
+    while (g_hash_table_iter_next(&vrf_iter, &vrf_key, &vrf_val))
+    {
+        bgp_vrf_t *vrf = (bgp_vrf_t *)vrf_val;
+        if (!vrf || !vrf->sess_hash)
+        {
+            continue;
+        }
+
+        GHashTableIter sess_iter;
+        gpointer sess_key, sess_val;
+        g_hash_table_iter_init(&sess_iter, vrf->sess_hash);
+
+        while (g_hash_table_iter_next(&sess_iter, &sess_key, &sess_val))
+        {
+            bgp_session_t *sess = (bgp_session_t *)sess_val;
+            if (!sess || sess->fsm_state != BGP_FSM_STATE_ESTABLISHED)
+            {
+                continue;
+            }
+
+            bgp_bmp_peer_info_t info;
+            bgp_bmp_fill_peer_info(sess, &info);
+            bgp_bmp_post_initial_peer_up(&info, inst_name);
+        }
+    }
 }
 
 void bgp_worker_shutdown(void)

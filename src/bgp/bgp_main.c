@@ -12,6 +12,7 @@
 #include "bgp.h"
 #include "bgp_bdr.h"
 #include "bgp_bmp_cli.h"
+#include "bgp_bmp_thread.h"
 #include "bgp_cli.h"
 #include "bgp_db.h"
 #include "bgp_pkt.h"
@@ -110,6 +111,21 @@ static void bgp_on_ready(dev_ipc_message_t *msg)
         return;
     }
 
+    /* BMP 线程初始化并启动 */
+    if (bgp_bmp_thread_prepare() != ERRCODE_SUCCESS)
+    {
+        bgp_worker_shutdown();
+        send_phase_response(ctx, msg, ERRCODE_FAIL);
+        return;
+    }
+    if (bgp_bmp_thread_launch() != ERRCODE_SUCCESS)
+    {
+        bgp_bmp_thread_shutdown();
+        bgp_worker_shutdown();
+        send_phase_response(ctx, msg, ERRCODE_FAIL);
+        return;
+    }
+
     /* 仅恢复：表不存在（BGP 未曾配置）时静默返回 NULL，不建表也不写默认值 */
     uint32_t ret = bgp_db_restore();
     if (ret != ERRCODE_SUCCESS)
@@ -150,7 +166,16 @@ void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             uint8_t flags = bgp_cli_payload_flags(msg);
             if ((flags & CLI_PAYLOAD_FLAG_SHOW_CMD) != 0)
             {
-                if (bgp_worker_post_show_cli(msg) != 0)
+                uint32_t gid = bgp_cli_payload_group_id(msg);
+                if (gid == BGP_CLI_GROUP_ID_BMP_SHOW)
+                {
+                    if (bgp_bmp_thread_post_show(msg) != 0)
+                    {
+                        LOG_WARN("BGP: Failed to forward BMP show command to BMP thread");
+                        dev_ipc_message_free(msg);
+                    }
+                }
+                else if (bgp_worker_post_show_cli(msg) != 0)
                 {
                     LOG_WARN("BGP: Failed to forward CLI show command to worker thread");
                     dev_ipc_message_free(msg);
@@ -236,6 +261,7 @@ void bgp_module_cleanup(void)
         return;
     }
 
+    bgp_bmp_thread_shutdown();
     bgp_worker_shutdown();
 
     dev_ipc_context_t *ctx = g_bgp_local->dev_ipc_ctx;

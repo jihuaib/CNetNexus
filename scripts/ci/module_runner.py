@@ -1354,12 +1354,40 @@ def write_summary_json(path: Path, results: list[CheckResult], started_at: float
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=True), encoding="utf-8")
 
 
+def split_case_for_report(case_dir: Path, modules_dir: Path | None) -> tuple[str, str]:
+    case_abs = case_dir.resolve()
+    candidate_roots: list[Path] = []
+
+    default_modules_dir = (CI_DIR / "modules").resolve()
+    candidate_roots.append(default_modules_dir)
+    if modules_dir is not None:
+        mod_abs = modules_dir.resolve()
+        if mod_abs not in candidate_roots:
+            candidate_roots.append(mod_abs)
+
+    for root in candidate_roots:
+        try:
+            rel_case = case_abs.relative_to(root)
+        except ValueError:
+            continue
+        parts = rel_case.parts
+        if not parts:
+            return "(root)", "(default)"
+        if len(parts) == 1:
+            return parts[0], "(default)"
+        return parts[0], "/".join(parts[1:])
+
+    parent_name = case_abs.parent.name if case_abs.parent.name else "(external)"
+    return parent_name, case_abs.name
+
+
 def write_html_report(
     path: Path,
     results: list[CheckResult],
     started_at: float,
     ended_at: float,
     check_html_relpaths: list[str],
+    modules_dir: Path | None = None,
 ) -> None:
     passed = sum(1 for r in results if r.returncode == 0)
     failed = sum(1 for r in results if r.returncode != 0)
@@ -1367,28 +1395,99 @@ def write_html_report(
     duration_total = ended_at - started_at
     pass_rate = (passed / total * 100.0) if total > 0 else 0.0
 
-    rows: list[str] = []
-    for idx, (result, check_html_relpath) in enumerate(zip(results, check_html_relpaths), start=1):
-        cls = "pass" if result.returncode == 0 else "fail"
-        case_name = html.escape(str(result.case_dir))
-        script_name = html.escape(str(result.script))
-        link = html.escape(check_html_relpath)
-        script_link = f"<a href=\"{link}\">{script_name}</a>"
-        status_badge = f"<span class='status-badge status-{cls}'>{result.status}</span>"
+    grouped: dict[str, dict[str, list[tuple[int, CheckResult, str]]]] = {}
+    for idx, result in enumerate(results, start=1):
+        check_link = check_html_relpaths[idx - 1] if idx - 1 < len(check_html_relpaths) else ""
+        module_name, testbed_name = split_case_for_report(result.case_dir, modules_dir)
+        grouped.setdefault(module_name, {}).setdefault(testbed_name, []).append((idx, result, check_link))
 
-        rows.append(
-            "".join(
-                [
-                    "<tr>",
-                    f"<td class='mono'>{idx}</td>",
-                    f"<td>{case_name}</td>",
-                    f"<td class='script'>{script_link}</td>",
-                    f"<td>{status_badge}</td>",
-                    f"<td class='mono'>{result.returncode}</td>",
-                    f"<td class='mono'>{result.duration_sec:.2f}</td>",
-                    "</tr>",
-                ]
+    module_blocks: list[str] = []
+    for module_index, (module_name, testbeds) in enumerate(grouped.items()):
+        module_rows = [row for testbed_rows in testbeds.values() for row in testbed_rows]
+        module_passed = sum(1 for _, item, _ in module_rows if item.returncode == 0)
+        module_failed = len(module_rows) - module_passed
+
+        testbed_blocks: list[str] = []
+        for testbed_name, rows in testbeds.items():
+            tb_passed = sum(1 for _, item, _ in rows if item.returncode == 0)
+            tb_failed = len(rows) - tb_passed
+
+            table_rows: list[str] = []
+            for row_index, result, check_link in rows:
+                cls = "pass" if result.returncode == 0 else "fail"
+                status_badge = f"<span class='status-badge status-{cls}'>{result.status}</span>"
+
+                try:
+                    rel_script = result.script.resolve().relative_to(result.case_dir.resolve())
+                    script_label = str(rel_script)
+                except ValueError:
+                    script_label = result.script.name
+
+                script_name = html.escape(script_label)
+                if check_link:
+                    link = html.escape(check_link)
+                    script_view = f"<a href=\"{link}\">{script_name}</a>"
+                else:
+                    script_view = script_name
+
+                table_rows.append(
+                    "".join(
+                        [
+                            "<tr>",
+                            f"<td class='mono'>{row_index}</td>",
+                            f"<td class='script'>{script_view}</td>",
+                            f"<td>{status_badge}</td>",
+                            f"<td class='mono'>{result.returncode}</td>",
+                            f"<td class='mono'>{result.duration_sec:.2f}</td>",
+                            "</tr>",
+                        ]
+                    )
+                )
+
+            testbed_open = " open" if tb_failed > 0 else ""
+            testbed_blocks.append(
+                f"""
+          <details class=\"group-node testbed-group\"{testbed_open}>
+            <summary>
+              <div class=\"summary-title\">测试床: {html.escape(testbed_name)}</div>
+              <div class=\"summary-meta\">
+                <span class=\"chip\">脚本 {len(rows)}</span>
+                <span class=\"chip pass-chip\">通过 {tb_passed}</span>
+                <span class=\"chip fail-chip\">失败 {tb_failed}</span>
+              </div>
+            </summary>
+            <div class=\"table-scroll\">
+              <table>
+                <thead>
+                  <tr><th>#</th><th>Script Detail</th><th>Status</th><th>RC</th><th>Duration(s)</th></tr>
+                </thead>
+                <tbody>
+                  {''.join(table_rows)}
+                </tbody>
+              </table>
+            </div>
+          </details>
+                """.rstrip()
             )
+
+        module_open = " open" if (module_index == 0 or module_failed > 0) else ""
+        module_blocks.append(
+            f"""
+      <details class=\"group-node module-group\"{module_open}>
+        <summary>
+          <div class=\"summary-title\">模块: {html.escape(module_name)}</div>
+          <div class=\"summary-meta\">
+            <span class=\"chip\">测试床 {len(testbeds)}</span>
+            <span class=\"chip\">脚本 {len(module_rows)}</span>
+            <span class=\"chip pass-chip\">通过 {module_passed}</span>
+            <span class=\"chip fail-chip\">失败 {module_failed}</span>
+          </div>
+        </summary>
+        <div class=\"module-body\">
+          {''.join(testbed_blocks)}
+        </div>
+      </details>
+            """.rstrip()
         )
 
     doc = f"""<!DOCTYPE html>
@@ -1446,15 +1545,59 @@ def write_html_report(
     .stat .value {{ font-size: 22px; font-weight: 700; margin-top: 2px; }}
     .pass-val {{ color: var(--ok); }}
     .fail-val {{ color: var(--bad); }}
-    .table-card {{
+    .toolbar {{ margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }}
+    .tool-btn {{
+      border: 1px solid var(--line);
+      background: #fbfdff;
+      color: #0f3d91;
+      font-weight: 600;
+      border-radius: 8px;
+      padding: 6px 10px;
+      cursor: pointer;
+    }}
+    .tool-btn:hover {{ background: #f0f6ff; }}
+    .groups {{ display: grid; gap: 10px; }}
+    .module-group {{
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 14px;
       box-shadow: var(--shadow);
       overflow: hidden;
     }}
+    .module-body {{ padding: 10px; display: grid; gap: 8px; }}
+    .testbed-group {{
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      background: #fcfeff;
+      overflow: hidden;
+    }}
+    details > summary {{
+      list-style: none;
+      cursor: pointer;
+      padding: 11px 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      background: #f6faff;
+      border-bottom: 1px solid #e2e8f0;
+    }}
+    details > summary::-webkit-details-marker {{ display: none; }}
+    details[open] > summary {{ background: #f1f7ff; }}
+    .summary-title {{ font-weight: 700; color: #1f3b63; }}
+    .summary-meta {{ display: flex; gap: 6px; flex-wrap: wrap; }}
+    .chip {{
+      border: 1px solid #dbe5f2;
+      background: #ffffff;
+      color: #334155;
+      border-radius: 999px;
+      font-size: 12px;
+      padding: 2px 8px;
+    }}
+    .pass-chip {{ color: var(--ok); border-color: #a7dec3; background: var(--ok-bg); }}
+    .fail-chip {{ color: var(--bad); border-color: #f2b3af; background: var(--bad-bg); }}
     .table-scroll {{ overflow-x: auto; }}
-    table {{ border-collapse: collapse; width: 100%; min-width: 720px; }}
+    table {{ border-collapse: collapse; width: 100%; min-width: 640px; }}
     thead th {{
       text-align: left;
       padding: 12px;
@@ -1496,10 +1639,18 @@ def write_html_report(
       border-radius: 6px;
       font-size: 12px;
     }}
+    .empty {{
+      background: var(--panel);
+      border: 1px dashed var(--line);
+      border-radius: 12px;
+      padding: 16px;
+      color: var(--muted);
+    }}
     @media (max-width: 760px) {{
       body {{ padding: 10px; }}
-      .hero, .table-card {{ border-radius: 12px; }}
+      .hero, .module-group {{ border-radius: 12px; }}
       h1 {{ font-size: 22px; }}
+      details > summary {{ flex-direction: column; align-items: flex-start; }}
     }}
   </style>
 </head>
@@ -1519,21 +1670,40 @@ def write_html_report(
         <div class=\"stat\"><div class=\"label\">Pass Rate</div><div class=\"value\">{pass_rate:.1f}%</div></div>
         <div class=\"stat\"><div class=\"label\">Duration</div><div class=\"value\">{duration_total:.2f}s</div></div>
       </div>
-    </section>
-
-    <section class=\"table-card\">
-      <div class=\"table-scroll\">
-        <table>
-          <thead>
-            <tr><th>#</th><th>Case</th><th>Script Detail</th><th>Status</th><th>RC</th><th>Duration(s)</th></tr>
-          </thead>
-          <tbody>
-            {''.join(rows)}
-          </tbody>
-        </table>
+      <div class=\"toolbar\">
+        <button id=\"expand-all-btn\" class=\"tool-btn\" type=\"button\">全部展开</button>
+        <button id=\"collapse-all-btn\" class=\"tool-btn\" type=\"button\">全部折叠</button>
       </div>
     </section>
+
+    <section class=\"groups\">
+      {''.join(module_blocks) if module_blocks else '<div class="empty">No checks executed.</div>'}
+    </section>
   </div>
+  <script>
+    (function () {{
+      var nodes = Array.prototype.slice.call(document.querySelectorAll('details.group-node'));
+      function setOpen(openState) {{
+        nodes.forEach(function (node) {{
+          node.open = openState;
+        }});
+      }}
+
+      var expandBtn = document.getElementById('expand-all-btn');
+      if (expandBtn) {{
+        expandBtn.addEventListener('click', function () {{
+          setOpen(true);
+        }});
+      }}
+
+      var collapseBtn = document.getElementById('collapse-all-btn');
+      if (collapseBtn) {{
+        collapseBtn.addEventListener('click', function () {{
+          setOpen(false);
+        }});
+      }}
+    }})();
+  </script>
 </body>
 </html>
 """
@@ -1609,7 +1779,7 @@ def main() -> int:
     if not case_dirs:
         run_ended = time.time()
         write_summary_json(summary_json, results, run_started, run_ended)
-        write_html_report(report_html, results, run_started, run_ended, check_html_relpaths=[])
+        write_html_report(report_html, results, run_started, run_ended, check_html_relpaths=[], modules_dir=modules_dir)
         print(f"No CI cases found under {modules_dir}")
         print(f"Report: {report_html}")
         return 1
@@ -1644,6 +1814,7 @@ def main() -> int:
         run_started,
         run_ended,
         check_html_relpaths=check_html_relpaths,
+        modules_dir=modules_dir,
     )
 
     failed = sum(1 for r in results if r.returncode != 0)

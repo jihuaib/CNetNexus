@@ -30,7 +30,7 @@ if_local_t *g_if_local = NULL;
 /**
  * @brief 启动时将映射表中的接口写入数据库
  */
-static void if_init_db_foreach(gpointer key, gpointer val, gpointer user_data)
+static gboolean if_init_db_foreach(gpointer key, gpointer val, gpointer user_data)
 {
     (void)key;
     (void)user_data;
@@ -40,7 +40,7 @@ static void if_init_db_foreach(gpointer key, gpointer val, gpointer user_data)
     /* loop 和 null0 接口不写入 DB（由 loop_create 或虚拟，不持久化） */
     if (strncmp(logical_name, "loop", 4) == 0 || strcmp(logical_name, "null0") == 0)
     {
-        return;
+        return FALSE;
     }
 
     db_condition_t cond = {.field_name = "name", .op = DB_CMP_EQ, .value = db_value_text(logical_name)};
@@ -66,6 +66,7 @@ static void if_init_db_foreach(gpointer key, gpointer val, gpointer user_data)
     {
         LOG_DEBUG("Interface %s already in database, keeping existing config", logical_name);
     }
+    return FALSE;
 }
 
 static void if_init_db(void)
@@ -74,7 +75,7 @@ static void if_init_db(void)
     {
         return;
     }
-    g_hash_table_foreach(g_if_local->interface_map.all_entries, if_init_db_foreach, NULL);
+    g_tree_foreach(g_if_local->interface_map.all_entries, if_init_db_foreach, NULL);
 }
 
 /**
@@ -265,7 +266,7 @@ static void handle_if_subscribe(dev_ipc_message_t *msg)
 }
 
 /* 收集 all_entries 条目到 GArray */
-static void collect_intf_map_foreach(gpointer key, gpointer val, gpointer user_data)
+static gboolean collect_intf_map_foreach(gpointer key, gpointer val, gpointer user_data)
 {
     (void)key;
     if_map_entry_t *e = (if_map_entry_t *)val;
@@ -273,13 +274,14 @@ static void collect_intf_map_foreach(gpointer key, gpointer val, gpointer user_d
 
     if (e->ifindex == 0)
     {
-        return; /* 跳过无 OS 接口的虚拟条目（null0 等） */
+        return FALSE; /* 跳过无 OS 接口的虚拟条目（null0 等） */
     }
 
     if_intf_map_item_t item;
     item.ifindex = e->ifindex;
     snprintf(item.logical_name, sizeof(item.logical_name), "%s", e->logical_name);
     g_array_append_val(arr, item);
+    return FALSE;
 }
 
 static void handle_if_get_intf_map(dev_ipc_message_t *msg)
@@ -289,7 +291,7 @@ static void handle_if_get_intf_map(dev_ipc_message_t *msg)
 
     if (g_if_local && g_if_local->interface_map.all_entries)
     {
-        g_hash_table_foreach(g_if_local->interface_map.all_entries, collect_intf_map_foreach, arr);
+        g_tree_foreach(g_if_local->interface_map.all_entries, collect_intf_map_foreach, arr);
     }
 
     uint32_t count = arr->len;
@@ -557,7 +559,7 @@ void if_module_cleanup(void)
 
     if (g_if_local->interface_map.all_entries)
     {
-        g_hash_table_destroy(g_if_local->interface_map.all_entries);
+        g_tree_destroy(g_if_local->interface_map.all_entries);
         g_if_local->interface_map.all_entries = NULL;
     }
 

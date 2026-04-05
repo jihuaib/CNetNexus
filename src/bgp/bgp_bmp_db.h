@@ -108,7 +108,7 @@ int bgp_bmp_db_del_monitor_peer(const char *instance_name, const char *neighbor_
  * @brief 从 DB 恢复所有 BMP 实例到运行态
  *
  * 读取 bgp_bmp_instance 和 bgp_bmp_monitor 表，
- * 通过 bgp_worker_dispatch_apply() 逐一恢复到内存。
+ * 通过 bgp_bmp_dispatch_apply() 逐一恢复到内存。
  */
 void bgp_bmp_db_restore(void);
 

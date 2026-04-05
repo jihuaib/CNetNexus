@@ -1,6 +1,6 @@
 /**
  * @file   if_map.c
- * @brief  接口映射实现（逻辑名→物理名，统一使用 GHashTable 管理所有接口类型）
+ * @brief  接口映射实现（逻辑名→物理名，统一使用 GTree 有序管理所有接口类型）
  * @author jhb
  * @date   2026/01/22
  */
@@ -20,6 +20,63 @@
 /* 使用 g_if_local->interface_map，不再维护独立全局变量 */
 #define g_interface_map (g_if_local->interface_map)
 
+/* 接口名类型优先级：null0(0) → loop(1) → GE(2) → 其他(3) */
+static int if_name_type_order(const char *name)
+{
+    if (strncmp(name, "null", 4) == 0)
+    {
+        return 0;
+    }
+    if (strncmp(name, "loop", 4) == 0)
+    {
+        return 1;
+    }
+    if (strncmp(name, "GE-", 3) == 0)
+    {
+        return 2;
+    }
+    return 3;
+}
+
+/* 从接口名末尾提取数字 */
+static int if_name_extract_number(const char *name)
+{
+    const char *p = name + strlen(name);
+    while (p > name && g_ascii_isdigit(*(p - 1)))
+    {
+        p--;
+    }
+    return (*p != '\0') ? atoi(p) : 0;
+}
+
+/**
+ * @brief GTree 键比较函数
+ *
+ * 排序规则：null0 → loopN（按编号升序）→ GE-N（按编号升序）→ 其他（字典序）
+ */
+static gint if_map_key_compare(gconstpointer a, gconstpointer b, gpointer user_data)
+{
+    (void)user_data;
+    const char *na = (const char *)a;
+    const char *nb = (const char *)b;
+
+    int order_a = if_name_type_order(na);
+    int order_b = if_name_type_order(nb);
+    if (order_a != order_b)
+    {
+        return order_a - order_b;
+    }
+
+    int num_a = if_name_extract_number(na);
+    int num_b = if_name_extract_number(nb);
+    if (num_a != num_b)
+    {
+        return num_a - num_b;
+    }
+
+    return strcmp(na, nb);
+}
+
 static void if_map_copy_str(char *dst, size_t dst_size, const char *src)
 {
     if (!dst || dst_size == 0)
@@ -38,7 +95,7 @@ static void if_map_copy_str(char *dst, size_t dst_size, const char *src)
 }
 
 /**
- * @brief 向 all_entries 哈希表插入一条接口条目（自动分配内存，接管所有权）
+ * @brief 向 all_entries 有序树插入一条接口条目（自动分配内存，接管所有权）
  */
 static void if_map_insert(const char *logical, const char *physical, uint32_t auto_mapped)
 {
@@ -48,7 +105,7 @@ static void if_map_insert(const char *logical, const char *physical, uint32_t au
     }
 
     /* 若已存在则更新物理名 */
-    if_map_entry_t *existing = (if_map_entry_t *)g_hash_table_lookup(g_interface_map.all_entries, logical);
+    if_map_entry_t *existing = (if_map_entry_t *)g_tree_lookup(g_interface_map.all_entries, logical);
     if (existing)
     {
         if_map_copy_str(existing->physical_name, sizeof(existing->physical_name), physical);
@@ -60,7 +117,7 @@ static void if_map_insert(const char *logical, const char *physical, uint32_t au
     if_map_copy_str(entry->physical_name, sizeof(entry->physical_name), physical);
     entry->auto_mapped = auto_mapped;
     entry->ifindex = (uint32_t)if_nametoindex(physical);
-    g_hash_table_insert(g_interface_map.all_entries, g_strdup(logical), entry);
+    g_tree_insert(g_interface_map.all_entries, g_strdup(logical), entry);
 }
 
 /* 从配置文件加载 GE 口映射 */
@@ -92,6 +149,18 @@ static int load_config_file(const char *config_file)
     return ERRCODE_SUCCESS;
 }
 
+/* GTree 遍历回调：确保物理接口存在并刷新 ifindex */
+static gboolean if_map_init_ensure_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    (void)user_data;
+    if_map_entry_t *e = (if_map_entry_t *)value;
+    LOG_INFO("  %s -> %s", e->logical_name, e->physical_name);
+    if_ensure_exists(e->physical_name);
+    e->ifindex = (uint32_t)if_nametoindex(e->physical_name);
+    return FALSE;
+}
+
 /* 初始化接口映射 */
 int if_map_init(const char *config_file)
 {
@@ -101,31 +170,21 @@ int if_map_init(const char *config_file)
         return ERRCODE_FAIL;
     }
 
-    /* 初始化统一哈希表（key 和 value 均由表负责释放） */
+    /* 初始化有序树（key 和 value 均由树负责释放） */
     if (!g_interface_map.all_entries)
     {
-        g_interface_map.all_entries = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+        g_interface_map.all_entries = g_tree_new_full(if_map_key_compare, NULL, g_free, g_free);
     }
 
     /* 加载配置文件中的 GE 口映射 */
-    int count_before = (int)g_hash_table_size(g_interface_map.all_entries);
+    int count_before = (int)g_tree_nnodes(g_interface_map.all_entries);
     if (load_config_file(config_file) == ERRCODE_SUCCESS)
     {
-        int loaded = (int)g_hash_table_size(g_interface_map.all_entries) - count_before;
+        int loaded = (int)g_tree_nnodes(g_interface_map.all_entries) - count_before;
         LOG_INFO("Loaded %d interface mapping(s) from %s", loaded, config_file);
 
         /* 确保物理接口存在 */
-        GHashTableIter iter;
-        gpointer key_ptr, val_ptr;
-        g_hash_table_iter_init(&iter, g_interface_map.all_entries);
-        while (g_hash_table_iter_next(&iter, &key_ptr, &val_ptr))
-        {
-            if_map_entry_t *e = (if_map_entry_t *)val_ptr;
-            LOG_INFO("  %s -> %s", e->logical_name, e->physical_name);
-            if_ensure_exists(e->physical_name);
-            /* 刷新 ifindex（接口刚被创建，之前可能为 0） */
-            e->ifindex = (uint32_t)if_nametoindex(e->physical_name);
-        }
+        g_tree_foreach(g_interface_map.all_entries, if_map_init_ensure_cb, NULL);
     }
     else
     {
@@ -146,8 +205,29 @@ const char *if_map_get_physical(const char *logical_name)
     {
         return logical_name;
     }
-    if_map_entry_t *e = (if_map_entry_t *)g_hash_table_lookup(g_interface_map.all_entries, logical_name);
+    if_map_entry_t *e = (if_map_entry_t *)g_tree_lookup(g_interface_map.all_entries, logical_name);
     return e ? e->physical_name : logical_name;
+}
+
+/* 按物理名查逻辑名的遍历上下文 */
+typedef struct
+{
+    const char *physical_name;
+    const char *result;
+} if_map_find_by_physical_t;
+
+/* GTree 遍历回调：按物理名查找 */
+static gboolean if_map_find_physical_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    if_map_entry_t *e = (if_map_entry_t *)value;
+    if_map_find_by_physical_t *ctx = (if_map_find_by_physical_t *)user_data;
+    if (strcmp(e->physical_name, ctx->physical_name) == 0)
+    {
+        ctx->result = e->logical_name;
+        return TRUE; /* 找到，停止遍历 */
+    }
+    return FALSE;
 }
 
 /* 按物理名查逻辑名（线性扫描，接口数量少，性能可接受） */
@@ -157,18 +237,29 @@ const char *if_map_get_logical(const char *physical_name)
     {
         return physical_name;
     }
-    GHashTableIter iter;
-    gpointer key_ptr, val_ptr;
-    g_hash_table_iter_init(&iter, g_interface_map.all_entries);
-    while (g_hash_table_iter_next(&iter, &key_ptr, &val_ptr))
+    if_map_find_by_physical_t ctx = {.physical_name = physical_name, .result = NULL};
+    g_tree_foreach(g_interface_map.all_entries, if_map_find_physical_cb, &ctx);
+    return ctx.result ? ctx.result : physical_name;
+}
+
+/* GTree 遍历回调：保存静态映射（跳过 loop/null0 和自动映射条目） */
+static gboolean if_map_save_foreach_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    if_map_entry_t *e = (if_map_entry_t *)value;
+    FILE *fp = (FILE *)user_data;
+    if (!e || !fp)
     {
-        if_map_entry_t *e = (if_map_entry_t *)val_ptr;
-        if (strcmp(e->physical_name, physical_name) == 0)
-        {
-            return e->logical_name;
-        }
+        return FALSE;
     }
-    return physical_name;
+
+    if (strncmp(e->logical_name, "loop", 4) == 0 || strcmp(e->logical_name, "null0") == 0 || e->auto_mapped)
+    {
+        return FALSE;
+    }
+
+    fprintf(fp, "%s = %s\n", e->logical_name, e->physical_name);
+    return FALSE;
 }
 
 /* 手动添加映射 */
@@ -196,19 +287,7 @@ int if_map_save(const char *config_file)
 
     if (g_interface_map.all_entries)
     {
-        GHashTableIter iter;
-        gpointer key_ptr, val_ptr;
-        g_hash_table_iter_init(&iter, g_interface_map.all_entries);
-        while (g_hash_table_iter_next(&iter, &key_ptr, &val_ptr))
-        {
-            if_map_entry_t *e = (if_map_entry_t *)val_ptr;
-            /* 跳过 loop 接口和 null0（动态分配，不保存到静态配置） */
-            if (strncmp(e->logical_name, "loop", 4) == 0 || strcmp(e->logical_name, "null0") == 0)
-            {
-                continue;
-            }
-            fprintf(fp, "%s = %s\n", e->logical_name, e->physical_name);
-        }
+        g_tree_foreach(g_interface_map.all_entries, if_map_save_foreach_cb, fp);
     }
 
     fclose(fp);

@@ -26,6 +26,15 @@ typedef struct bgp_bmp_instance bgp_bmp_instance_t;
 #define BGP_BMP_INST_NAME_MAX 32
 
 // ============================================================================
+// BMP Peer Down 原因码（RFC 7854，供 BGP worker 线程调用 notify 时使用）
+// ============================================================================
+
+#define BGP_BMP_PEER_DOWN_LOCAL_NOTIFY 1     /**< 本地发送 NOTIFICATION */
+#define BGP_BMP_PEER_DOWN_LOCAL_NO_NOTIFY 2  /**< 本地关闭，未发送 NOTIFICATION */
+#define BGP_BMP_PEER_DOWN_REMOTE_NOTIFY 3    /**< 远端发送 NOTIFICATION */
+#define BGP_BMP_PEER_DOWN_REMOTE_NO_NOTIFY 4 /**< 远端关闭，未收到 NOTIFICATION */
+
+// ============================================================================
 // BGP Session 快照（跨线程安全，纯值类型，无指针）
 // ============================================================================
 
@@ -158,5 +167,13 @@ void bgp_bmp_request_initial_peers(const char *inst_name);
  * @param info 输出快照
  */
 void bgp_bmp_fill_peer_info(bgp_session_t *sess, bgp_bmp_peer_info_t *info);
+
+/**
+ * @brief 向 BMP 线程投递一条 Initial Peer Up 事件（BGP worker 线程调用）
+ *
+ * @param peer      邻居快照
+ * @param inst_name 目标 BMP 实例名
+ */
+void bgp_bmp_post_initial_peer_up(const bgp_bmp_peer_info_t *peer, const char *inst_name);
 
 #endif /* BGP_BMP_THREAD_H */

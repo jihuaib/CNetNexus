@@ -293,7 +293,7 @@ if_map_entry_t *if_cfg_find_entry(const char *logical_name)
         return NULL;
     }
 
-    return (if_map_entry_t *)g_hash_table_lookup(map->all_entries, logical_name);
+    return (if_map_entry_t *)g_tree_lookup(map->all_entries, logical_name);
 }
 
 int if_cfg_loop_ensure(uint32_t loop_id)
@@ -307,7 +307,7 @@ int if_cfg_loop_ensure(uint32_t loop_id)
     }
 
     /* 已存在则直接返回 */
-    if (g_hash_table_lookup(g_if_local->interface_map.all_entries, name))
+    if (g_tree_lookup(g_if_local->interface_map.all_entries, name))
     {
         return ERRCODE_SUCCESS;
     }
@@ -323,13 +323,13 @@ int if_cfg_loop_ensure(uint32_t loop_id)
         if_set_state(name, 1);
     }
 
-    /* 创建内存条目并插入哈希表（key 和 value 均 g_malloc0，由哈希表负责 g_free） */
+    /* 创建内存条目并插入有序树（key/value 均由树析构时释放） */
     if_map_entry_t *entry = (if_map_entry_t *)g_malloc0(sizeof(if_map_entry_t));
     snprintf(entry->logical_name, sizeof(entry->logical_name), "loop%u", loop_id);
     snprintf(entry->physical_name, sizeof(entry->physical_name), "loop%u", loop_id);
     entry->shutdown = 0;
 
-    g_hash_table_insert(g_if_local->interface_map.all_entries, g_strdup(name), entry);
+    g_tree_insert(g_if_local->interface_map.all_entries, g_strdup(name), entry);
     LOG_INFO("IF: loop 接口 %s 已创建（内存条目）", name);
     return ERRCODE_SUCCESS;
 }
@@ -393,8 +393,8 @@ int if_cfg_loop_delete(uint32_t loop_id)
     /* 删除 OS 接口 */
     if_delete_interface(name);
 
-    /* 从哈希表中移除（会触发 g_free 释放 key 和 value） */
-    g_hash_table_remove(g_if_local->interface_map.all_entries, name);
+    /* 从有序树中移除（会触发 g_free 释放 key 和 value） */
+    g_tree_remove(g_if_local->interface_map.all_entries, name);
 
     /* 从 DB 中删除 */
     db_condition_t cond = {.field_name = "name", .op = DB_CMP_EQ, .value = db_value_text(name)};

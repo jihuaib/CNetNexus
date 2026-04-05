@@ -14,19 +14,13 @@ import ipaddress
 import re
 import time
 
-from module_api import cmd, require_devices, run_cmds, step, wait_check, wait_checks  # noqa: E402
+from module_api import cmd, g_top, require_devices, run_cmds, step, wait_check, wait_checks  # noqa: E402
 from top_runner import TopologyRuntime  # noqa: E402
 
 
 TARGET_PREFIX_ADDR = "2001:db8:203:113::"
 TARGET_PREFIX_LEN = 64
 TARGET_PREFIX = f"{TARGET_PREFIX_ADDR}/{TARGET_PREFIX_LEN}"
-
-GE_LINK_PREFIX_LEN = 64
-GE1_R1_IP = "2001:db8:1201::1"
-GE1_R2_IP = "2001:db8:1201::2"
-GE2_R1_IP = "2001:db8:1202::1"
-GE2_R2_IP = "2001:db8:1202::2"
 def _wait_path_total(
     rt: TopologyRuntime,
     *,
@@ -151,11 +145,9 @@ def _cleanup(rt: TopologyRuntime, *, device: str, nh_ge1: str, nh_ge2: str) -> N
             f"no route ipv6 {TARGET_PREFIX_ADDR} {TARGET_PREFIX_LEN} {nh_ge1}",
             f"no route ipv6 {TARGET_PREFIX_ADDR} {TARGET_PREFIX_LEN} {nh_ge2}",
             "if GE-1",
-            f"no ipv6 address {GE1_R1_IP} {GE_LINK_PREFIX_LEN}",
             "no shutdown",
             "exit",
             "if GE-2",
-            f"no ipv6 address {GE2_R1_IP} {GE_LINK_PREFIX_LEN}",
             "no shutdown",
             "exit",
             "end",
@@ -168,48 +160,9 @@ def _cleanup(rt: TopologyRuntime, *, device: str, nh_ge1: str, nh_ge2: str) -> N
         commands=[
             "config",
             "if GE-1",
-            f"no ipv6 address {GE1_R2_IP} {GE_LINK_PREFIX_LEN}",
             "no shutdown",
             "exit",
             "if GE-2",
-            f"no ipv6 address {GE2_R2_IP} {GE_LINK_PREFIX_LEN}",
-            "no shutdown",
-            "exit",
-            "end",
-        ],
-    )
-
-
-def _setup_links(rt: TopologyRuntime) -> None:
-    run_cmds(
-        rt=rt,
-        device="r1",
-        strict=False,
-        commands=[
-            "config",
-            "if GE-1",
-            f"ipv6 address {GE1_R1_IP} {GE_LINK_PREFIX_LEN}",
-            "no shutdown",
-            "exit",
-            "if GE-2",
-            f"ipv6 address {GE2_R1_IP} {GE_LINK_PREFIX_LEN}",
-            "no shutdown",
-            "exit",
-            "end",
-        ],
-    )
-    run_cmds(
-        rt=rt,
-        device="r2",
-        strict=False,
-        commands=[
-            "config",
-            "if GE-1",
-            f"ipv6 address {GE1_R2_IP} {GE_LINK_PREFIX_LEN}",
-            "no shutdown",
-            "exit",
-            "if GE-2",
-            f"ipv6 address {GE2_R2_IP} {GE_LINK_PREFIX_LEN}",
             "no shutdown",
             "exit",
             "end",
@@ -231,19 +184,22 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
 
     ge1_name = "GE-1"
     ge2_name = "GE-2"
-    ge1_nh = GE1_R2_IP
-    ge2_nh = GE2_R2_IP
-    ge1_show = _if_prefix_show(GE1_R1_IP, GE_LINK_PREFIX_LEN)
-    ge2_show = _if_prefix_show(GE2_R1_IP, GE_LINK_PREFIX_LEN)
-    ge1_connected_prefix = _connected_prefix_show(GE1_R1_IP, GE_LINK_PREFIX_LEN)
-    ge2_connected_prefix = _connected_prefix_show(GE2_R1_IP, GE_LINK_PREFIX_LEN)
+    ge1_nh = str(g_top.r1.GE_1.peer_ip6)
+    ge2_nh = str(g_top.r1.GE_2.peer_ip6)
+    ge1_ip = str(g_top.r1.GE_1.ip6)
+    ge1_prefix = int(g_top.r1.GE_1.prefix6)
+    ge2_ip = str(g_top.r1.GE_2.ip6)
+    ge2_prefix = int(g_top.r1.GE_2.prefix6)
+    ge1_show = _if_prefix_show(ge1_ip, ge1_prefix)
+    ge2_show = _if_prefix_show(ge2_ip, ge2_prefix)
+    ge1_connected_prefix = _connected_prefix_show(ge1_ip, ge1_prefix)
+    ge2_connected_prefix = _connected_prefix_show(ge2_ip, ge2_prefix)
 
     try:
         step("Cleanup stale static/ipv6 config")
         _cleanup(rt, device="r1", nh_ge1=ge1_nh, nh_ge2=ge2_nh)
 
-        step("Configure IPv6 underlay on GE-1/GE-2")
-        _setup_links(rt)
+        step("Verify IPv6 underlay from top on GE-1/GE-2")
 
         wait_checks(
             rt,

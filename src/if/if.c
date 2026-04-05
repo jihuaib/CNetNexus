@@ -241,6 +241,7 @@ int if_set_mtu(const char *ifname, int mtu)
     close(sock);
     return ERRCODE_SUCCESS;
 }
+#include <linux/if_addr.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 
@@ -329,6 +330,12 @@ static int if_addr_apply(const char *ifname, const net_prefix_t *prefix, int cmd
 
     if_add_attr(&req.n, sizeof(req), IFA_LOCAL, addr_data, addr_len);
     if_add_attr(&req.n, sizeof(req), IFA_ADDRESS, addr_data, addr_len);
+    if (cmd == RTM_NEWADDR && prefix->addr.family == AF_INET6 && prefix->prefix_len == 128u)
+    {
+        /* For IPv6 host addresses, suppress kernel auto-install of main /128 prefix route. */
+        uint32_t ifa_flags = IFA_F_NOPREFIXROUTE;
+        if_add_attr(&req.n, sizeof(req), IFA_FLAGS, &ifa_flags, (int)sizeof(ifa_flags));
+    }
 
     if (send(sock, &req, req.n.nlmsg_len, 0) < 0)
     {

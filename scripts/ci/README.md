@@ -12,28 +12,27 @@ scripts/ci/modules/<module>/<top_case>/
   top.yaml
 ```
 
-`<top_case>` should include node scale and link signature, so wiring is obvious from the
-directory name.
+`<top_case>` should use a short, sortable code, with wiring details kept in `top.yaml`.
 
 Suggested style:
 
 ```text
-<node-scale>-<link-signature>
+<nodes>-<links>-<ifset>[-tag]
 ```
 
 Examples:
 
 ```text
-two-node-r1ge1-r2ge1
-two-node-r1ge1-r2ge1__r1ge2-r2ge2
-three-node-r1ge1-r2ge1__r2ge2-r3ge1
+n2-l1-g1
+n2-l2-g12
+n3-l2-g12-ecmp
 ```
 
 Example:
 
 ```text
-scripts/ci/modules/bgp/two-node-r1ge1-r2ge1/bgp_basic.py
-scripts/ci/modules/bgp/two-node-r1ge1-r2ge1/top.yaml
+scripts/ci/modules/bgp/n2-l1-g1/bgp_basic.py
+scripts/ci/modules/bgp/n2-l1-g1/top.yaml
 ```
 
 No global `scripts/ci/topologies` is used.
@@ -101,7 +100,7 @@ Example:
 ```bash
 python3 scripts/ci/module_runner.py \
   --image netnexus-ci:localtest \
-  --modules-dir scripts/ci/modules/bgp/two-node-r1ge1-r2ge1 \
+  --modules-dir scripts/ci/modules/bgp/n2-l1-g1 \
   --report-dir scripts/ci/reports/single-case
 ```
 
@@ -159,7 +158,7 @@ Use this when you only want local docker topology + interface IP config from `to
 
 ```bash
 scripts/dev/top-up.sh \
-  --top scripts/ci/modules/if/two-node-r1ge1-r2ge1/top.yaml \
+  --top scripts/ci/modules/if/n2-l1-g1/top.yaml \
   --image netnexus-ci:localtest
 ```
 

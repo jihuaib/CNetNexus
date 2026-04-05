@@ -34,12 +34,9 @@ struct bgp_session;
 /** timerfd 定时器类型 */
 typedef enum bgp_timer_type
 {
-    BGP_TIMER_TYPE_RETRY = 0,         /**< connect-retry 定时器 */
-    BGP_TIMER_TYPE_KEEPALIVE = 1,     /**< keepalive 周期定时器 */
-    BGP_TIMER_TYPE_HOLD = 2,          /**< hold time 超时定时器 */
-    BGP_TIMER_TYPE_BMP_RECONNECT = 3, /**< BMP 重连定时器 */
-    BGP_TIMER_TYPE_BMP_STATS = 4,     /**< BMP Stats Report 周期定时器 */
-    BGP_TIMER_TYPE_BMP_CONN = 5,      /**< BMP TCP 连接 fd（复用 sentinel 分发） */
+    BGP_TIMER_TYPE_RETRY = 0,     /**< connect-retry 定时器 */
+    BGP_TIMER_TYPE_KEEPALIVE = 1, /**< keepalive 周期定时器 */
+    BGP_TIMER_TYPE_HOLD = 2,      /**< hold time 超时定时器 */
 } bgp_timer_type_t;
 
 /**

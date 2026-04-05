@@ -15,7 +15,7 @@
 #include <unistd.h>
 
 #include "bgp.h"
-#include "bgp_bmp.h"
+#include "bgp_bmp_thread.h"
 #include "bgp_instance.h"
 #include "bgp_pkt_build.h"
 #include "bgp_rib.h"
@@ -1028,7 +1028,7 @@ void bgp_pkt_on_data(bgp_conn_t *conn)
                     return;
                 }
 
-                bgp_bmp_notify_route_monitoring(sess, frame, msg_len);
+                bgp_bmp_thread_notify_route_monitoring(sess, frame, msg_len);
                 bgp_session_reset_hold(sess);
                 break;
             }

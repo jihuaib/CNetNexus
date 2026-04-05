@@ -16,14 +16,11 @@ import re
 import time
 from typing import Optional
 
-from module_api import cmd, require_devices, run_cmds, step, wait_check, wait_checks  # noqa: E402
+from module_api import cmd, g_top, require_devices, run_cmds, step, wait_check, wait_checks  # noqa: E402
 from top_runner import TopologyRuntime  # noqa: E402
 
 
 GE_IF = "GE-1"
-LINK_PREFIX_LEN = 64
-R1_LINK_V6 = "2001:db8:12::1"
-R2_LINK_V6 = "2001:db8:12::2"
 
 TARGET_PREFIX_ADDR = "2001:db8:203:100::"
 TARGET_PREFIX_LEN = 64
@@ -186,7 +183,6 @@ def _cleanup(
             f"no route ipv6 {TARGET_PREFIX_ADDR} {TARGET_PREFIX_LEN} {secondary_nh}",
             f"no route ipv6 {RESOLVER_ADDR} {RESOLVER_PREFIX_LEN} {primary_nh}",
             f"if {GE_IF}",
-            f"no ipv6 address {R1_LINK_V6} {LINK_PREFIX_LEN}",
             "no shutdown",
             "exit",
             "end",
@@ -199,36 +195,6 @@ def _cleanup(
         commands=[
             "config",
             f"if {GE_IF}",
-            f"no ipv6 address {R2_LINK_V6} {LINK_PREFIX_LEN}",
-            "no shutdown",
-            "exit",
-            "end",
-        ],
-    )
-
-
-def _setup_underlay(rt: TopologyRuntime) -> None:
-    run_cmds(
-        rt=rt,
-        device="r1",
-        strict=False,
-        commands=[
-            "config",
-            f"if {GE_IF}",
-            f"ipv6 address {R1_LINK_V6} {LINK_PREFIX_LEN}",
-            "no shutdown",
-            "exit",
-            "end",
-        ],
-    )
-    run_cmds(
-        rt=rt,
-        device="r2",
-        strict=False,
-        commands=[
-            "config",
-            f"if {GE_IF}",
-            f"ipv6 address {R2_LINK_V6} {LINK_PREFIX_LEN}",
             "no shutdown",
             "exit",
             "end",
@@ -239,16 +205,15 @@ def _setup_underlay(rt: TopologyRuntime) -> None:
 def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
     require_devices(top, ("r1", "r2"))
 
-    primary_nh = R2_LINK_V6
+    primary_nh = str(g_top.r1.GE_1.peer_ip6)
     secondary_nh = RESOLVER_ADDR
-    r1_link_show = f"{ipaddress.ip_address(R1_LINK_V6)}/{LINK_PREFIX_LEN}"
+    r1_link_show = f"{ipaddress.ip_address(str(g_top.r1.GE_1.ip6))}/{int(g_top.r1.GE_1.prefix6)}"
 
     try:
         step("Cleanup stale static/ipv6 config")
         _cleanup(rt, device="r1", primary_nh=primary_nh, secondary_nh=secondary_nh)
 
-        step("Configure IPv6 underlay on GE-1")
-        _setup_underlay(rt)
+        step("Verify IPv6 underlay from top on GE-1")
         wait_checks(
             rt,
             [

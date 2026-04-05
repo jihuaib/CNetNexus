@@ -339,11 +339,12 @@ static void show_append_entry(GString *resp_buf, const if_map_entry_t *e)
     g_string_append_printf(resp_buf, "%-14s %-6s %-56s\r\n", e->logical_name, state_str, ip_str);
 }
 
-/* 哈希表遍历回调：追加 loop 接口行 */
-static void show_loop_foreach_cb(gpointer key, gpointer value, gpointer user_data)
+/* GTree 遍历回调：追加接口行 */
+static gboolean show_foreach_cb(gpointer key, gpointer value, gpointer user_data)
 {
     (void)key;
     show_append_entry((GString *)user_data, (const if_map_entry_t *)value);
+    return FALSE;
 }
 
 /* 显示单个接口详情 */
@@ -462,7 +463,7 @@ static int handle_if_show(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         if_map_t *map = &g_if_local->interface_map;
         if (map->all_entries)
         {
-            g_hash_table_foreach(map->all_entries, show_loop_foreach_cb, resp_buf);
+            g_tree_foreach(map->all_entries, show_foreach_cb, resp_buf);
         }
 
         g_string_append(resp_buf, "\r\n");
@@ -556,6 +557,18 @@ static gint compare_if_entry_name(gconstpointer a, gconstpointer b)
     return g_ascii_strcasecmp(ea->logical_name, eb->logical_name);
 }
 
+static gboolean collect_candidate_entry_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    GList **entries = (GList **)user_data;
+    if (!entries)
+    {
+        return FALSE;
+    }
+    *entries = g_list_prepend(*entries, value);
+    return FALSE;
+}
+
 void if_cli_handle_query_candidates(dev_ipc_message_t *msg)
 {
     uint32_t query_id = 0;
@@ -569,7 +582,8 @@ void if_cli_handle_query_candidates(dev_ipc_message_t *msg)
     GByteArray *buf = g_byte_array_new();
     if (query_id == 1 && g_if_local && g_if_local->interface_map.all_entries)
     {
-        GList *entries = g_hash_table_get_values(g_if_local->interface_map.all_entries);
+        GList *entries = NULL;
+        g_tree_foreach(g_if_local->interface_map.all_entries, collect_candidate_entry_cb, &entries);
         entries = g_list_sort(entries, compare_if_entry_name);
 
         for (GList *node = entries; node; node = node->next)

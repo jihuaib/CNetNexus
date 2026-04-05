@@ -23,16 +23,17 @@ set(BGP_SOURCES
     work/bgp_show.c
     work/bgp_worker.c
     work/bgp_work.c
-    work/bgp_bmp.c
-    work/bgp_bmp_cfg_apply.c
-    work/bgp_bmp_pkt.c
+    bmp/bgp_bmp.c
+    bmp/bgp_bmp_cfg_apply.c
+    bmp/bgp_bmp_pkt.c
+    bmp/bgp_bmp_thread.c
 )
 
 add_subdirectory(lib)
 
 add_executable(netnexus-bgp bgp_proc.c ${BGP_SOURCES})
 
-target_include_directories(netnexus-bgp PRIVATE . work)
+target_include_directories(netnexus-bgp PRIVATE . work bmp)
 
 target_link_libraries(netnexus-bgp PRIVATE
     dev_api

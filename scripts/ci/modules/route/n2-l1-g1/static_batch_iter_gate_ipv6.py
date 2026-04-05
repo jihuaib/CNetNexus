@@ -15,14 +15,11 @@ from __future__ import annotations
 import ipaddress
 import re
 
-from module_api import require_devices, run_cmds, step, wait_check, wait_checks  # noqa: E402
+from module_api import g_top, require_devices, run_cmds, step, wait_check, wait_checks  # noqa: E402
 from top_runner import TopologyRuntime  # noqa: E402
 
 
 GE_IF = "GE-1"
-LINK_PREFIX_LEN = 64
-R1_LINK_V6 = "2001:db8:12::1"
-R2_LINK_V6 = "2001:db8:12::2"
 
 PREFIX_LEN = 64
 PREFIX_COUNT = 10
@@ -132,7 +129,6 @@ def _cleanup_case_config(
     commands.extend(
         [
             f"if {GE_IF}",
-            f"no ipv6 address {R1_LINK_V6} {LINK_PREFIX_LEN}",
             "no shutdown",
             "exit",
             "end",
@@ -140,56 +136,13 @@ def _cleanup_case_config(
     )
     run_cmds(rt=rt, device=device, strict=False, commands=commands)
 
-    run_cmds(
-        rt=rt,
-        device="r2",
-        strict=False,
-        commands=[
-            "config",
-            f"if {GE_IF}",
-            f"no ipv6 address {R2_LINK_V6} {LINK_PREFIX_LEN}",
-            "no shutdown",
-            "exit",
-            "end",
-        ],
-    )
-
-
-def _setup_underlay(rt: TopologyRuntime) -> None:
-    run_cmds(
-        rt=rt,
-        device="r1",
-        strict=False,
-        commands=[
-            "config",
-            f"if {GE_IF}",
-            f"ipv6 address {R1_LINK_V6} {LINK_PREFIX_LEN}",
-            "no shutdown",
-            "exit",
-            "end",
-        ],
-    )
-    run_cmds(
-        rt=rt,
-        device="r2",
-        strict=False,
-        commands=[
-            "config",
-            f"if {GE_IF}",
-            f"ipv6 address {R2_LINK_V6} {LINK_PREFIX_LEN}",
-            "no shutdown",
-            "exit",
-            "end",
-        ],
-    )
-
 
 def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
     require_devices(top, ("r1", "r2"))
 
     routes = _build_prefixes()
     route_nexthop = UNRESOLVED_NH
-    resolver_nexthop = R2_LINK_V6
+    resolver_nexthop = str(g_top.r1.GE_1.peer_ip6)
 
     try:
         step("Cleanup stale config")
@@ -201,8 +154,24 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             routes=routes,
         )
 
-        step("Configure IPv6 underlay on GE-1")
-        _setup_underlay(rt)
+        step("Verify IPv6 underlay from top on GE-1")
+        wait_checks(
+            rt,
+            [
+                {
+                    "device": "r1",
+                    "command": f"show if {GE_IF}",
+                    "contains": [
+                        f"Interface {GE_IF} Detail:",
+                        "State      : UP",
+                        f"IPv6 Addr  : {ipaddress.ip_address(str(g_top.r1.GE_1.ip6))}/{int(g_top.r1.GE_1.prefix6)}",
+                    ],
+                    "label": "r1 GE-1 ipv6 up from top",
+                }
+            ],
+            timeout=20,
+            interval=2,
+        )
 
         step("Add 10 IPv6 static routes with unresolved nexthop")
         add_cmds = ["config"]

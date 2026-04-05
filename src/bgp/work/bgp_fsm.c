@@ -18,7 +18,7 @@
 #include <unistd.h>
 
 #include "bgp.h"
-#include "bgp_bmp.h"
+#include "bgp_bmp_thread.h"
 #include "bgp_conn.h"
 #include "bgp_main.h"
 #include "bgp_pkt.h"
@@ -265,7 +265,7 @@ static void fsm_close_primary(bgp_session_t *sess, gboolean purge_routes, gboole
     /* BMP Peer Down 通知（ESTABLISHED → 连接关闭，且无 sec_conn 可提升时） */
     if (sess->fsm_state == BGP_FSM_STATE_ESTABLISHED && !sess->sec_conn)
     {
-        bgp_bmp_notify_peer_down(sess, BGP_BMP_PEER_DOWN_REMOTE_NO_NOTIFY);
+        bgp_bmp_thread_notify_peer_down(sess, BGP_BMP_PEER_DOWN_REMOTE_NO_NOTIFY);
     }
 
     if (sess->pri_conn)
@@ -312,7 +312,7 @@ static void fsm_close_all(bgp_session_t *sess, gboolean purge_routes, gboolean a
     /* BMP Peer Down 通知（从 ESTABLISHED 离开时） */
     if (sess->fsm_state == BGP_FSM_STATE_ESTABLISHED)
     {
-        bgp_bmp_notify_peer_down(sess, BGP_BMP_PEER_DOWN_REMOTE_NO_NOTIFY);
+        bgp_bmp_thread_notify_peer_down(sess, BGP_BMP_PEER_DOWN_REMOTE_NO_NOTIFY);
     }
 
     if (sess->pri_conn)
@@ -376,7 +376,7 @@ static void fsm_on_established(bgp_session_t *sess)
     fsm_reannounce_best(sess);
 
     /* BMP Peer Up 通知 */
-    bgp_bmp_notify_peer_up(sess);
+    bgp_bmp_thread_notify_peer_up(sess);
 }
 
 // ============================================================================

@@ -1,6 +1,6 @@
 /**
  * @file   bgp_bmp_cfg_apply.h
- * @brief  BGP BMP 配置应用接口（worker 线程内执行）
+ * @brief  BMP 配置应用接口（BMP 线程内执行）
  * @author jhb
  * @date   2026/03/29
  */

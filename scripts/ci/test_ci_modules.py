@@ -20,8 +20,10 @@ def _resolve_repo_root() -> Path:
 REPO_ROOT = _resolve_repo_root()
 MODULES_DIR = REPO_ROOT / "scripts" / "ci" / "modules"
 MODULE_RUNNER = REPO_ROOT / "scripts" / "ci" / "module_runner.py"
+BUILD_IMAGE_SCRIPT = REPO_ROOT / "scripts" / "dev" / "build-docker-image.sh"
 REPORT_ROOT_DEFAULT = REPO_ROOT / "scripts" / "ci" / "reports" / "vscode"
 TRUTHY = {"1", "true", "yes", "on"}
+DEFAULT_LOCAL_CI_IMAGE = "netnexus-ci:localtest"
 
 
 def _discover_module_scripts() -> list[str]:
@@ -59,7 +61,7 @@ def _tail(text: str, limit: int = 3000) -> str:
 
 @lru_cache(maxsize=1)
 def _default_local_ci_image() -> str | None:
-    image = "netnexus-ci:localtest"
+    image = DEFAULT_LOCAL_CI_IMAGE
     try:
         result = subprocess.run(
             ["docker", "image", "inspect", image],
@@ -76,12 +78,65 @@ def _default_local_ci_image() -> str | None:
     return None
 
 
+@lru_cache(maxsize=1)
+def _ensure_local_ci_image() -> str | None:
+    auto_build = os.environ.get("CNETNEXUS_CI_AUTO_BUILD", "1").strip().lower()
+    if auto_build in TRUTHY:
+        if not BUILD_IMAGE_SCRIPT.is_file():
+            raise RuntimeError(f"build script not found: {BUILD_IMAGE_SCRIPT}")
+
+        build_cmd = [str(BUILD_IMAGE_SCRIPT), "--docker-image", DEFAULT_LOCAL_CI_IMAGE]
+        if _env_flag("CNETNEXUS_CI_BUILD_RELEASE"):
+            build_cmd.insert(1, "--release")
+
+        print(f"[ci-test] building local image before tests: {DEFAULT_LOCAL_CI_IMAGE}", flush=True)
+        print(f"[ci-test] build command: {' '.join(build_cmd)}", flush=True)
+        proc = subprocess.Popen(
+            build_cmd,
+            cwd=REPO_ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            bufsize=1,
+        )
+        assert proc.stdout is not None
+        try:
+            for line in proc.stdout:
+                print(line, end="", flush=True)
+        finally:
+            proc.stdout.close()
+
+        if proc.wait() != 0:
+            raise RuntimeError("failed to build local CI image")
+    else:
+        print("[ci-test] auto build disabled, skip image build", flush=True)
+
+    image = _default_local_ci_image()
+    if image:
+        return image
+    raise RuntimeError(f"CI image not found: {DEFAULT_LOCAL_CI_IMAGE}")
+
+
 class CiModuleScriptsTest(unittest.TestCase):
     maxDiff = None
 
     @classmethod
     def setUpClass(cls) -> None:
         cls._discovered_scripts = _discover_module_scripts()
+        cls._resolved_image = os.environ.get("CNETNEXUS_CI_IMAGE")
+        if cls._resolved_image:
+            print(f"[ci-test] using explicit image from env: {cls._resolved_image}", flush=True)
+            return
+
+        try:
+            cls._resolved_image = _ensure_local_ci_image()
+        except RuntimeError as exc:
+            raise RuntimeError(f"CI image prepare failed: {exc}") from exc
+
+        if cls._resolved_image:
+            print(f"[ci-test] using local image: {cls._resolved_image}", flush=True)
+        else:
+            print("[ci-test] image not set, fallback to top.yaml image", flush=True)
 
     def test__discovery_finds_ci_scripts(self) -> None:
         self.assertTrue(
@@ -110,7 +165,7 @@ class CiModuleScriptsTest(unittest.TestCase):
             str(report_dir),
         ]
 
-        image = os.environ.get("CNETNEXUS_CI_IMAGE") or _default_local_ci_image()
+        image = getattr(self.__class__, "_resolved_image", None)
         if image:
             cmd.extend(["--image", image])
 

@@ -27,10 +27,10 @@ typedef struct
     int shutdown;                        /**< 1=shutdown（down），0=no shutdown（up） */
 } if_map_entry_t;
 
-/** 接口映射表（所有接口类型统一存放，key=逻辑名，value=if_map_entry_t*） */
+/** 接口映射表（所有接口类型统一存放，key=逻辑名，value=if_map_entry_t*，按接口名有序） */
 typedef struct
 {
-    GHashTable *all_entries; /**< 全部接口条目（GE、loop、null0）：key=g_strdup(logical_name) */
+    GTree *all_entries; /**< 全部接口条目（GE、loop、null0）：key=g_strdup(logical_name)，有序红黑树 */
 } if_map_t;
 
 // Initialize interface mapping (auto-detect or load from config)

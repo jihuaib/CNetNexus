@@ -128,6 +128,8 @@ def _build_top_view(top: dict[str, Any]) -> _TopNode:
                 peer_if_name = str(peer.get("if", ""))
                 local_cidr = str(local.get("cidr", ""))
                 peer_cidr = str(peer.get("cidr", ""))
+                local_cidr6 = str(local.get("cidr6", ""))
+                peer_cidr6 = str(peer.get("cidr6", ""))
 
                 try:
                     local_iface = ipaddress.ip_interface(local_cidr)
@@ -141,6 +143,22 @@ def _build_top_view(top: dict[str, Any]) -> _TopNode:
                 except Exception:
                     continue
 
+                local_ip6 = ""
+                prefix6 = 0
+                peer_ip6 = ""
+                if local_cidr6 and peer_cidr6:
+                    try:
+                        local_iface6 = ipaddress.ip_interface(local_cidr6)
+                        peer_iface6 = ipaddress.ip_interface(peer_cidr6)
+                        if local_iface6.version == 6 and peer_iface6.version == 6:
+                            local_ip6 = str(local_iface6.ip)
+                            prefix6 = int(local_iface6.network.prefixlen)
+                            peer_ip6 = str(peer_iface6.ip)
+                    except Exception:
+                        local_ip6 = ""
+                        prefix6 = 0
+                        peer_ip6 = ""
+
                 device_eps[local_dev].append(
                     {
                         "link_name": link_name,
@@ -150,9 +168,13 @@ def _build_top_view(top: dict[str, Any]) -> _TopNode:
                         "mask": mask,
                         "prefix": prefix,
                         "cidr": local_cidr,
+                        "ip6": local_ip6,
+                        "prefix6": prefix6,
+                        "cidr6": local_cidr6,
                         "peer": str(peer.get("device", "")),
                         "peer_if": peer_if_name,
                         "peer_ip": peer_ip,
+                        "peer_ip6": peer_ip6,
                     }
                 )
 
@@ -176,9 +198,13 @@ def _build_top_view(top: dict[str, Any]) -> _TopNode:
                     "mask": str(first.get("mask", "")),
                     "prefix": int(first.get("prefix", 0)),
                     "cidr": str(first.get("cidr", "")),
+                    "ip6": str(first.get("ip6", "")),
+                    "prefix6": int(first.get("prefix6", 0)),
+                    "cidr6": str(first.get("cidr6", "")),
                     "peer": str(first.get("peer", "")),
                     "peer_if": str(first.get("peer_if", "")),
                     "peer_ip": str(first.get("peer_ip", "")),
+                    "peer_ip6": str(first.get("peer_ip6", "")),
                     "link_name": str(first.get("link_name", "")),
                 }
             )
@@ -190,9 +216,13 @@ def _build_top_view(top: dict[str, Any]) -> _TopNode:
                     "mask": "",
                     "prefix": 0,
                     "cidr": "",
+                    "ip6": "",
+                    "prefix6": 0,
+                    "cidr6": "",
                     "peer": "",
                     "peer_if": "",
                     "peer_ip": "",
+                    "peer_ip6": "",
                     "link_name": "",
                 }
             )
@@ -215,6 +245,9 @@ def _build_top_view(top: dict[str, Any]) -> _TopNode:
         root.set("mask", str(first_dev.mask))
         root.set("prefix", int(first_dev.prefix))
         root.set("cidr", str(first_dev.cidr))
+        root.set("ip6", str(first_dev.ip6))
+        root.set("prefix6", int(first_dev.prefix6))
+        root.set("cidr6", str(first_dev.cidr6))
     else:
         root.set("device_name", "")
         root.set("if_name", "")
@@ -222,6 +255,9 @@ def _build_top_view(top: dict[str, Any]) -> _TopNode:
         root.set("mask", "")
         root.set("prefix", 0)
         root.set("cidr", "")
+        root.set("ip6", "")
+        root.set("prefix6", 0)
+        root.set("cidr6", "")
 
     return root
 

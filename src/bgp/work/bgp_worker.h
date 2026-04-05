@@ -11,7 +11,7 @@
 #include <stdint.h>
 
 #include "bgp.h"
-#include "bgp_bmp.h"
+#include "bgp_bmp_thread.h"
 #include "bgp_instance.h"
 #include "bgp_protocol.h"
 #include "dev.h"
@@ -41,9 +41,6 @@ typedef struct bgp_work_local
     pthread_t worker_thread; /**< BGP worker 线程句柄 */
 
     int listen_fd; /**< 全局 0.0.0.0:179 listen socket fd，-1 表示未监听 */
-
-    /* BMP 实例哈希表（inst_name -> bgp_bmp_instance_t*） */
-    GHashTable *bmp_instances; /**< BMP 实例运行态，key=实例名字符串 */
 
     /* IPC worker -> BGP worker 命令投递（eventfd + queue） */
     int cmd_eventfd;         /**< 命令唤醒 eventfd，-1 表示未创建 */
@@ -338,6 +335,16 @@ void bgp_server_rearm_retry_timers(struct bgp_vrf *vrf);
  * 被关闭的连接指针不会被意外 g_free。
  */
 void bgp_worker_flush_deferred_conns(void);
+
+/**
+ * @brief 处理 BMP 初始 peer 收集请求
+ *
+ * 由 BMP 线程调用，在 BGP worker 线程中遍历所有 ESTABLISHED 邻居，
+ * 生成 peer_info 快照并异步投递到 BMP 线程。
+ *
+ * @param inst_name 目标 BMP 实例名
+ */
+void bgp_worker_handle_bmp_initial_peers(const char *inst_name);
 
 /**
  * @brief 停止 runtime server（发送 shutdown、join、释放 server 资源）

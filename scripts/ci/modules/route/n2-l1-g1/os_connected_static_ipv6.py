@@ -13,14 +13,11 @@ from __future__ import annotations
 import ipaddress
 import re
 
-from module_api import require_devices, run_cmds, step, wait_check, wait_checks  # noqa: E402
+from module_api import g_top, require_devices, run_cmds, step, wait_check, wait_checks  # noqa: E402
 from top_runner import TopologyRuntime  # noqa: E402
 
 
 GE_IF = "GE-1"
-GE_PREFIX_LEN = 64
-R1_GE_V6 = "2001:db8:12::1"
-R2_GE_V6 = "2001:db8:12::2"
 
 STATIC_PREFIX_ADDR = "2001:db8:198:18:66::"
 STATIC_PREFIX_LEN = 64
@@ -77,7 +74,6 @@ def _cleanup(rt: TopologyRuntime, *, static_nh: str) -> None:
         commands=[
             "config",
             f"if {GE_IF}",
-            f"no ipv6 address {R1_GE_V6} {GE_PREFIX_LEN}",
             "no shutdown",
             "exit",
             f"no route ipv6 {STATIC_PREFIX_ADDR} {STATIC_PREFIX_LEN} {static_nh}",
@@ -92,36 +88,6 @@ def _cleanup(rt: TopologyRuntime, *, static_nh: str) -> None:
         commands=[
             "config",
             f"if {GE_IF}",
-            f"no ipv6 address {R2_GE_V6} {GE_PREFIX_LEN}",
-            "no shutdown",
-            "exit",
-            "end",
-        ],
-    )
-
-
-def _setup_underlay(rt: TopologyRuntime) -> None:
-    run_cmds(
-        rt=rt,
-        device="r1",
-        strict=False,
-        commands=[
-            "config",
-            f"if {GE_IF}",
-            f"ipv6 address {R1_GE_V6} {GE_PREFIX_LEN}",
-            "no shutdown",
-            "exit",
-            "end",
-        ],
-    )
-    run_cmds(
-        rt=rt,
-        device="r2",
-        strict=False,
-        commands=[
-            "config",
-            f"if {GE_IF}",
-            f"ipv6 address {R2_GE_V6} {GE_PREFIX_LEN}",
             "no shutdown",
             "exit",
             "end",
@@ -132,20 +98,19 @@ def _setup_underlay(rt: TopologyRuntime) -> None:
 def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
     require_devices(top, ("r1", "r2"))
 
-    if_v6 = str(ipaddress.ip_address(R1_GE_V6))
-    if_prefix = GE_PREFIX_LEN
+    if_v6 = str(ipaddress.ip_address(str(g_top.r1.GE_1.ip6)))
+    if_prefix = int(g_top.r1.GE_1.prefix6)
     if_show_prefix = f"{if_v6}/{if_prefix}"
     net_addr = str(ipaddress.ip_interface(f"{if_v6}/{if_prefix}").network.network_address)
     connected_net_prefix = f"{net_addr}/{if_prefix}"
     connected_host_prefix = f"{if_v6}/128"
-    static_nh = R2_GE_V6
+    static_nh = str(g_top.r1.GE_1.peer_ip6)
 
     try:
         step("Cleanup stale static/loop/ipv6 config")
         _cleanup(rt, static_nh=static_nh)
 
-        step("Configure GE-1 IPv6 underlay and force interface up")
-        _setup_underlay(rt)
+        step("Verify GE-1 IPv6 underlay from top")
         wait_checks(
             rt,
             [

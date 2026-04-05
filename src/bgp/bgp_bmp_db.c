@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "bgp_bmp_cli.h"
+#include "bgp_bmp_thread.h"
 #include "bgp_main.h"
 #include "bgp_worker.h"
 #include "db.h"
@@ -322,7 +323,7 @@ static void restore_bmp_monitors(const char *inst_name)
             continue;
         }
 
-        if (bgp_worker_dispatch_apply(&apply) != 0 || apply.rc == BGP_APPLY_RC_FAIL)
+        if (bgp_bmp_dispatch_apply(&apply) != 0 || apply.rc == BGP_APPLY_RC_FAIL)
         {
             LOG_WARN("BMP restore: monitor peer %s apply failed for instance '%s'", ip, inst_name);
         }
@@ -367,7 +368,7 @@ void bgp_bmp_db_restore(void)
         apply.isNo = false;
         g_strlcpy(apply.u.bmp_instance.name, name, sizeof(apply.u.bmp_instance.name));
 
-        if (bgp_worker_dispatch_apply(&apply) != 0 || apply.rc == BGP_APPLY_RC_FAIL)
+        if (bgp_bmp_dispatch_apply(&apply) != 0 || apply.rc == BGP_APPLY_RC_FAIL)
         {
             LOG_WARN("BMP restore: instance '%s' creation failed, skipping", name);
             continue;
@@ -386,7 +387,7 @@ void bgp_bmp_db_restore(void)
             col_apply.u.bmp_collector.port = (uint16_t)collector_port;
             if (net_addr_from_str(collector_ip, &col_apply.u.bmp_collector.addr) == 0)
             {
-                (void)bgp_worker_dispatch_apply(&col_apply);
+                (void)bgp_bmp_dispatch_apply(&col_apply);
             }
         }
 
@@ -400,7 +401,7 @@ void bgp_bmp_db_restore(void)
             stats_apply.isNo = false;
             g_strlcpy(stats_apply.u.bmp_stats.inst_name, name, sizeof(stats_apply.u.bmp_stats.inst_name));
             stats_apply.u.bmp_stats.interval = (uint16_t)stats_interval;
-            (void)bgp_worker_dispatch_apply(&stats_apply);
+            (void)bgp_bmp_dispatch_apply(&stats_apply);
         }
 
         /* 4. 恢复 reconnect interval */
@@ -413,7 +414,7 @@ void bgp_bmp_db_restore(void)
             recon_apply.isNo = false;
             g_strlcpy(recon_apply.u.bmp_reconnect.inst_name, name, sizeof(recon_apply.u.bmp_reconnect.inst_name));
             recon_apply.u.bmp_reconnect.interval = (uint16_t)reconnect_interval;
-            (void)bgp_worker_dispatch_apply(&recon_apply);
+            (void)bgp_bmp_dispatch_apply(&recon_apply);
         }
 
         /* 5. 恢复 monitor 配置 */

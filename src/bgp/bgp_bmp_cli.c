@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "bgp_bmp_db.h"
+#include "bgp_bmp_thread.h"
 #include "bgp_cli.h"
 #include "bgp_worker.h"
 #include "cli.h"
@@ -116,7 +117,7 @@ static int handle_bmp_instance(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     }
 
     /* 派发到 worker 线程 */
-    if (bgp_worker_dispatch_apply(&apply) != 0)
+    if (bgp_bmp_dispatch_apply(&apply) != 0)
     {
         bgp_send_cli_response(msg, "BMP Error: Server unavailable.\r\n");
         return ERRCODE_FAIL;
@@ -206,7 +207,7 @@ static int handle_bmp_collector(dev_ipc_message_t *msg, cli_tlv_parser_t *parser
         }
     }
 
-    if (bgp_worker_dispatch_apply(&apply) != 0)
+    if (bgp_bmp_dispatch_apply(&apply) != 0)
     {
         bgp_send_cli_response(msg, "BMP Error: Server unavailable.\r\n");
         return ERRCODE_FAIL;
@@ -273,7 +274,7 @@ static int handle_bmp_stats_interval(dev_ipc_message_t *msg, cli_tlv_parser_t *p
 
     g_strlcpy(apply.u.bmp_stats.inst_name, ctx.inst_name, sizeof(apply.u.bmp_stats.inst_name));
 
-    if (bgp_worker_dispatch_apply(&apply) != 0)
+    if (bgp_bmp_dispatch_apply(&apply) != 0)
     {
         bgp_send_cli_response(msg, "BMP Error: Server unavailable.\r\n");
         return ERRCODE_FAIL;
@@ -335,7 +336,7 @@ static int handle_bmp_reconnect(dev_ipc_message_t *msg, cli_tlv_parser_t *parser
 
     g_strlcpy(apply.u.bmp_reconnect.inst_name, ctx.inst_name, sizeof(apply.u.bmp_reconnect.inst_name));
 
-    if (bgp_worker_dispatch_apply(&apply) != 0)
+    if (bgp_bmp_dispatch_apply(&apply) != 0)
     {
         bgp_send_cli_response(msg, "BMP Error: Server unavailable.\r\n");
         return ERRCODE_FAIL;
@@ -420,7 +421,7 @@ static int handle_bmp_monitor(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         }
     }
 
-    if (bgp_worker_dispatch_apply(&apply) != 0)
+    if (bgp_bmp_dispatch_apply(&apply) != 0)
     {
         bgp_send_cli_response(msg, "BMP Error: Server unavailable.\r\n");
         return ERRCODE_FAIL;
