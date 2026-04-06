@@ -42,20 +42,38 @@ int bgp_pkt_send_open(bgp_conn_t *conn, uint32_t local_as, uint32_t router_id, G
     uint32_t cap_flags = (conn->session) ? conn->session->flags : BGP_SESS_CAP_DEFAULT;
     gboolean send_rr = BIT_TEST(cap_flags, BGP_SESS_CAP_ROUTE_REFRESH);
     gboolean send_as4 = BIT_TEST(cap_flags, BGP_SESS_CAP_AS4);
+    gboolean send_ext_nh = BIT_TEST(cap_flags, BGP_SESS_CAP_EXT_NEXTHOP);
+
+    /* 统计需要发送 Extended Next Hop 的 IPv4 AF 数量（仅 IPv4 AF 需要声明 IPv6 nexthop） */
+    guint ext_nh_count = 0;
+    if (send_ext_nh && af_peers)
+    {
+        for (GList *l = af_peers; l != NULL; l = l->next)
+        {
+            bgp_peer_t *ap = (bgp_peer_t *)l->data;
+            if (ap->inst->afi == BGP_AFI_IPV4)
+            {
+                ext_nh_count++;
+            }
+        }
+    }
 
     /* 计算 Optional Parameters 长度：
-     *   每个 AF  = type(1)+len(1)+cap_code(1)+cap_len(1)+AFI(2)+rsv(1)+SAFI(1) = 8 B
-     *   Route Refresh = type(1)+len(1)+cap_code(1)+cap_len(1)                   = 4 B
-     *   AS4     = type(1)+len(1)+cap_code(1)+cap_len(1)+AS(4)                   = 8 B
+     *   每个 AF      = type(1)+len(1)+cap_code(1)+cap_len(1)+AFI(2)+rsv(1)+SAFI(1)          = 8 B
+     *   Route Refresh= type(1)+len(1)+cap_code(1)+cap_len(1)                                 = 4 B
+     *   AS4          = type(1)+len(1)+cap_code(1)+cap_len(1)+AS(4)                            = 8 B
+     *   Ext NH       = type(1)+len(1)+cap_code(1)+cap_len(1)+N*(NLRI_AFI(2)+SAFI(2)+NH_AFI(2))
+     *                = 4 + N*6
      */
     guint n_afs = af_peers ? g_list_length(af_peers) : 0;
-    uint8_t extra_len = (uint8_t)((send_rr ? 4U : 0U) + (send_as4 ? 8U : 0U));
+    uint8_t ext_nh_opt_len = (ext_nh_count > 0) ? (uint8_t)(4U + ext_nh_count * 6U) : 0;
+    uint8_t extra_len = (uint8_t)((send_rr ? 4U : 0U) + (send_as4 ? 8U : 0U) + ext_nh_opt_len);
     uint8_t opt_len = (uint8_t)(8U * n_afs + extra_len);
 
     /* BGP OPEN: header(19) + version(1) + my-as(2) + hold-time(2) + bgp-id(4) + opt-len(1) + opt(n) */
     uint16_t total_len = (uint16_t)(29 + opt_len);
-    /* 最多 16 个 AF(128 B) + Route Refresh(4 B) + AS4(8 B) = 140 B extra */
-    uint8_t msg[29 + 8 * 16 + 12];
+    /* 最多 16 个 AF(128 B) + Route Refresh(4 B) + AS4(8 B) + Ext NH(4+16*6=100 B) = 240 B extra */
+    uint8_t msg[29 + 8 * 16 + 12 + 4 + 16 * 6];
 
     memcpy(msg, BGP_MARKER, 16);
 
@@ -123,9 +141,36 @@ int bgp_pkt_send_open(bgp_conn_t *conn, uint32_t local_as, uint32_t router_id, G
         opt_ptr += 8;
     }
 
-    if (n_afs > 0 || send_rr || send_as4)
+    /* 填充 Extended Next Hop 能力（RFC 8950）：仅对 IPv4 AF 声明可使用 IPv6 nexthop */
+    if (ext_nh_count > 0)
     {
-        LOG_INFO("BGP: OPEN capabilities: AF=%u%s%s", n_afs, send_rr ? " RR" : "", send_as4 ? " AS4" : "");
+        uint8_t nh_val_len = (uint8_t)(ext_nh_count * 6U);
+        opt_ptr[0] = 2;                         /* type=Capability */
+        opt_ptr[1] = (uint8_t)(2 + nh_val_len); /* len=code(1)+cap_len(1)+value */
+        opt_ptr[2] = BGP_CAP_EXT_NEXTHOP;       /* code=5 */
+        opt_ptr[3] = nh_val_len;                /* cap-len */
+        opt_ptr += 4;
+        for (GList *l = af_peers; l != NULL; l = l->next)
+        {
+            bgp_peer_t *ap = (bgp_peer_t *)l->data;
+            if (ap->inst->afi != BGP_AFI_IPV4)
+            {
+                continue;
+            }
+            uint16_t nlri_afi_be = htons((uint16_t)ap->inst->afi);
+            uint16_t nlri_safi_be = htons((uint16_t)ap->inst->safi);
+            uint16_t nh_afi_be = htons(BGP_AFI_IPV6);
+            memcpy(opt_ptr, &nlri_afi_be, 2);
+            memcpy(opt_ptr + 2, &nlri_safi_be, 2);
+            memcpy(opt_ptr + 4, &nh_afi_be, 2);
+            opt_ptr += 6;
+        }
+    }
+
+    if (n_afs > 0 || send_rr || send_as4 || ext_nh_count > 0)
+    {
+        LOG_INFO("BGP: OPEN capabilities: AF=%u%s%s%s", n_afs, send_rr ? " RR" : "", send_as4 ? " AS4" : "",
+                 ext_nh_count > 0 ? " EXT-NH" : "");
     }
 
     ssize_t n = send(conn->fd, msg, total_len, MSG_NOSIGNAL);
@@ -503,8 +548,8 @@ int bgp_pkt_send_update(bgp_conn_t *conn, const bgp_nlri_entry_t *nlri, const bg
     uint16_t pa_total_be = htons((uint16_t)(pos - pa_body_start));
     memcpy(msg + pa_len_pos, &pa_total_be, 2);
 
-    /* NLRI 字段（由 AF 编码器决定：IPv4 填前缀，IPv6 返回 0） */
-    n = enc->encode_reach_nlri(msg + pos, (int)sizeof(msg) - pos, nlri);
+    /* NLRI 字段（由 AF 编码器决定：IPv4 填前缀，IPv6/双栈 返回 0） */
+    n = enc->encode_reach_nlri(msg + pos, (int)sizeof(msg) - pos, nlri, nexthop);
     if (n < 0)
     {
         LOG_ERROR("BGP: send_update: NLRI 编码缓冲区溢出，peer=%s", _ip);
@@ -560,7 +605,7 @@ int bgp_pkt_send_withdraw(bgp_conn_t *conn, const bgp_nlri_entry_t *nlri)
     pos += 2;
     int wd_body_start = pos;
 
-    n = enc->encode_unreach_wd(msg + pos, (int)sizeof(msg) - pos, nlri);
+    n = enc->encode_unreach_wd(msg + pos, (int)sizeof(msg) - pos, nlri, conn);
     if (n < 0)
     {
         LOG_ERROR("BGP: send_withdraw: Withdrawn Routes 编码缓冲区溢出，peer=%s", _ip);
@@ -576,7 +621,7 @@ int bgp_pkt_send_withdraw(bgp_conn_t *conn, const bgp_nlri_entry_t *nlri)
     pos += 2;
     int pa_body_start = pos;
 
-    n = enc->encode_unreach_pa(msg + pos, (int)sizeof(msg) - pos, nlri);
+    n = enc->encode_unreach_pa(msg + pos, (int)sizeof(msg) - pos, nlri, conn);
     if (n < 0)
     {
         LOG_ERROR("BGP: send_withdraw: 撤销 PA 编码缓冲区溢出，peer=%s", _ip);
@@ -653,6 +698,10 @@ static int parse_bgp_open(bgp_conn_t *conn, const uint8_t *body, uint16_t body_l
     if (msg.cap_as4)
     {
         BIT_SET(remote_caps, BGP_SESS_CAP_AS4);
+    }
+    if (msg.cap_ext_nexthop)
+    {
+        BIT_SET(remote_caps, BGP_SESS_CAP_EXT_NEXTHOP);
     }
     conn->session->remote_caps = remote_caps;
     conn->session->negotiated_caps = conn->session->local_caps & remote_caps;
@@ -1009,6 +1058,10 @@ void bgp_pkt_on_data(bgp_conn_t *conn)
 
                 bgp_update_result_t *upd = NULL;
                 uint32_t parse_flags = BGP_PARSE_FLAG_AS4;
+                if (BIT_TEST(sess->negotiated_caps, BGP_SESS_CAP_EXT_NEXTHOP))
+                {
+                    parse_flags |= BGP_PARSE_FLAG_EXT_NEXTHOP;
+                }
                 if (bgp_update_parse(body, body_len, parse_flags, &upd) == 0 && upd)
                 {
                     bgp_peer_update_ingest_stats_t ingest_stats = {0};

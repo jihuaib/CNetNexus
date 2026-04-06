@@ -45,6 +45,53 @@ static void nl_add_attr(struct nlmsghdr *nlh, size_t maxlen, int type, const voi
     nlh->nlmsg_len = (unsigned int)(NLMSG_ALIGN(nlh->nlmsg_len) + (size_t)RTA_ALIGN(len));
 }
 
+static int nl_add_gateway_or_via(struct nlmsghdr *nlh, size_t maxlen, sa_family_t dst_family, const net_addr_t *gateway)
+{
+    if (!nlh || !gateway)
+    {
+        return -1;
+    }
+
+    if (gateway->family != AF_INET && gateway->family != AF_INET6)
+    {
+        return -1;
+    }
+
+    if (gateway->family == dst_family)
+    {
+        if (gateway->family == AF_INET)
+        {
+            nl_add_attr(nlh, maxlen, RTA_GATEWAY, &gateway->u.v4.s_addr, 4);
+        }
+        else
+        {
+            nl_add_attr(nlh, maxlen, RTA_GATEWAY, gateway->u.v6.s6_addr, 16);
+        }
+        return 0;
+    }
+
+    /* 跨族网关使用 RTA_VIA（RFC 8950 场景：IPv4 前缀 + IPv6 下一跳）。 */
+    uint8_t via_buf[sizeof(struct rtvia) + 16];
+    memset(via_buf, 0, sizeof(via_buf));
+    struct rtvia *via = (struct rtvia *)(void *)via_buf;
+    via->rtvia_family = (unsigned short)gateway->family;
+
+    int addr_len = 0;
+    if (gateway->family == AF_INET)
+    {
+        memcpy(via_buf + sizeof(struct rtvia), &gateway->u.v4.s_addr, 4);
+        addr_len = 4;
+    }
+    else
+    {
+        memcpy(via_buf + sizeof(struct rtvia), gateway->u.v6.s6_addr, 16);
+        addr_len = 16;
+    }
+
+    nl_add_attr(nlh, maxlen, RTA_VIA, via_buf, (int)sizeof(struct rtvia) + addr_len);
+    return 0;
+}
+
 /* ============================================================================
  * 内部辅助：Netlink 报文发送与 ACK 接收
  * ============================================================================ */
@@ -106,8 +153,16 @@ static int route_os_send(int cmd, const route_msg_entry_t *entry)
     }
 
     int is_non_connected = (entry->protocol != ROUTE_PROTOCOL_CONNECTED && entry->protocol != ROUTE_PROTOCOL_BLACKHOLE);
+    /*
+     * OS 网关统一使用原始下一跳（对端可达地址）。
+     * iter_nexthop_addr 仅用于 route 展示/调试，不参与内核网关下发。
+     */
     net_addr_t effective_gateway = entry->nexthop_addr;
     uint32_t effective_oif = entry->out_ifindex;
+    if (entry->iter_out_ifindex != 0)
+    {
+        effective_oif = entry->iter_out_ifindex;
+    }
 
     char buf[ROUTE_OS_NL_BUFSIZE];
     memset(buf, 0, sizeof(buf));
@@ -204,15 +259,7 @@ static int route_os_send(int cmd, const route_msg_entry_t *entry)
     /* RTA_GATEWAY：网关（非直连、非黑洞路由且 nexthop 非零） */
     if (is_non_connected && !net_addr_is_zero(&effective_gateway))
     {
-        if (effective_gateway.family == AF_INET)
-        {
-            nl_add_attr(nlh, sizeof(buf), RTA_GATEWAY, &effective_gateway.u.v4.s_addr, 4);
-        }
-        else if (effective_gateway.family == AF_INET6)
-        {
-            nl_add_attr(nlh, sizeof(buf), RTA_GATEWAY, effective_gateway.u.v6.s6_addr, 16);
-        }
-        else
+        if (nl_add_gateway_or_via(nlh, sizeof(buf), entry->prefix_addr.family, &effective_gateway) != 0)
         {
             return -1;
         }
@@ -348,6 +395,21 @@ static void os_parse_route(struct nlmsghdr *nlh, GString *buf)
             case RTA_GATEWAY:
                 inet_ntop(rtm->rtm_family, RTA_DATA(rta), gw_str, sizeof(gw_str));
                 break;
+            case RTA_VIA:
+            {
+                const struct rtvia *via = (const struct rtvia *)RTA_DATA(rta);
+                int via_payload_len = RTA_PAYLOAD(rta) - (int)sizeof(struct rtvia);
+                const uint8_t *via_addr = (const uint8_t *)RTA_DATA(rta) + sizeof(struct rtvia);
+                if (via_payload_len >= 4 && via->rtvia_family == AF_INET)
+                {
+                    inet_ntop(AF_INET, via_addr, gw_str, sizeof(gw_str));
+                }
+                else if (via_payload_len >= 16 && via->rtvia_family == AF_INET6)
+                {
+                    inet_ntop(AF_INET6, via_addr, gw_str, sizeof(gw_str));
+                }
+                break;
+            }
             case RTA_OIF:
             {
                 uint32_t idx;

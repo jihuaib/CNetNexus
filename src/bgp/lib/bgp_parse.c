@@ -157,8 +157,16 @@ int bgp_update_parse(const uint8_t *body, uint32_t body_len, uint32_t flags, bgp
         r->afi = mp_reach.afi;
         r->safi = mp_reach.safi;
 
+        /* RFC 8950：IPv4 unicast 的 MP_REACH 中 nexthop 为 IPv6（16/32B）时，
+         * 必须已协商 Extended Next Hop，否则丢弃整段 MP_REACH */
+        gboolean ext_nh_reject = FALSE;
+        if (mp_reach.afi == BGP_AFI_IPV4 && mp_reach.nh_len > 4 && !(flags & BGP_PARSE_FLAG_EXT_NEXTHOP))
+        {
+            ext_nh_reject = TRUE;
+        }
+
         const bgp_af_parser_t *p = bgp_af_parser_find(mp_reach.afi, mp_reach.safi);
-        if (p)
+        if (p && !ext_nh_reject)
         {
             /* 解析 MP nexthop（覆盖 NEXT_HOP 属性，更精确） */
             if (p->parse_nexthop && mp_reach.nh_len > 0)

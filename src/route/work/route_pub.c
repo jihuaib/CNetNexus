@@ -32,8 +32,11 @@ static void build_entry(route_msg_entry_t *entry, const route_head_t *head, cons
     entry->metric = path->metric;
     entry->preference = path->preference;
     entry->is_withdraw = (uint8_t)is_withdraw;
+    entry->out_ifindex = path->out_ifindex;
+    entry->iter_out_ifindex = path->iter_out_ifindex;
     entry->prefix_addr = head->key.addr;
     entry->nexthop_addr = path->nexthop;
+    entry->iter_nexthop_addr = path->relay_addr;
     entry->source_addr = path->key.source;
 }
 

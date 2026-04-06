@@ -149,6 +149,12 @@ int bgp_vrf_af_enable_neighbor(bgp_vrf_t *vrf, bgp_afi_t afi, bgp_safi_t safi, c
     /* 同时将借用引用加入 session->peer_list，便于通过 session 快速查询 */
     sess->peer_list = g_list_append(sess->peer_list, peer);
 
+    /* IPv6 邻居在 IPv4 AF 下使能时，自动开启 Extended Next Hop 能力（RFC 8950） */
+    if (addr->family == AF_INET6 && afi == BGP_AFI_IPV4)
+    {
+        BIT_SET(sess->flags, BGP_SESS_CAP_EXT_NEXTHOP);
+    }
+
     char addr_str[64];
     net_addr_to_str(addr, addr_str, sizeof(addr_str));
     LOG_INFO("BGP: Neighbor %s enabled in instance afi=%u safi=%u (VRF %u)", addr_str, (unsigned)afi, (unsigned)safi,
@@ -185,6 +191,26 @@ int bgp_vrf_af_disable_neighbor(bgp_vrf_t *vrf, bgp_afi_t afi, bgp_safi_t safi, 
 
     /* 再从 instance.peer_hash 中删除，触发 bgp_peer_destroy */
     g_hash_table_remove(inst->peer_hash, addr);
+
+    /* IPv6 邻居从 IPv4 AF 下停用后，检查是否还有其他 IPv4 AF 引用此邻居；
+     * 若没有则清除 Extended Next Hop 能力标志 */
+    if (sess && addr->family == AF_INET6 && afi == BGP_AFI_IPV4)
+    {
+        gboolean still_has_ipv4_af = FALSE;
+        for (GList *l = sess->peer_list; l; l = l->next)
+        {
+            bgp_peer_t *p = (bgp_peer_t *)l->data;
+            if (p && p->inst && p->inst->afi == BGP_AFI_IPV4)
+            {
+                still_has_ipv4_af = TRUE;
+                break;
+            }
+        }
+        if (!still_has_ipv4_af)
+        {
+            BIT_CLR(sess->flags, BGP_SESS_CAP_EXT_NEXTHOP);
+        }
+    }
 
     char addr_str[64];
     net_addr_to_str(addr, addr_str, sizeof(addr_str));

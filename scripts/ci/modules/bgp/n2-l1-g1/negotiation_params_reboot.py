@@ -11,6 +11,8 @@ Goal:
 
 from __future__ import annotations
 
+import re
+
 from module_api import g_top, reboot_device, require_devices, run_cmds, step, wait_checks  # noqa: E402
 from top_runner import TopologyRuntime  # noqa: E402
 
@@ -20,13 +22,15 @@ def _session_checks(r1_peer_ip: str, r2_peer_ip: str) -> list[dict[str, object]]
         {
             "device": "r1",
             "command": "show bgp neighbor af ipv4-unicast",
-            "contains": [r1_peer_ip, "Established"],
+            "contains": [r1_peer_ip],
+                "regex": [rf"(?im)^\s*{re.escape(r1_peer_ip)}\s+\S+\s+\S+\s+Established\s*$"],
             "label": "r1->r2 ipv4-unicast established",
         },
         {
             "device": "r2",
             "command": "show bgp neighbor af ipv4-unicast",
-            "contains": [r2_peer_ip, "Established"],
+            "contains": [r2_peer_ip],
+                "regex": [rf"(?im)^\s*{re.escape(r2_peer_ip)}\s+\S+\s+\S+\s+Established\s*$"],
             "label": "r2->r1 ipv4-unicast established",
         },
     ]

@@ -238,13 +238,15 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 {
                     "device": "r1",
                     "command": "show bgp neighbor af ipv6-unicast",
-                    "contains": [R2_LOOP_IP, "Established"],
+                    "contains": [R2_LOOP_IP],
+                "regex": [rf"(?im)^\s*{re.escape(R2_LOOP_IP)}\s+\S+\s+\S+\s+Established\s*$"],
                     "label": "r1->r2 loopback peer",
                 },
                 {
                     "device": "r2",
                     "command": "show bgp neighbor af ipv6-unicast",
-                    "contains": [R1_LOOP_IP, "Established"],
+                    "contains": [R1_LOOP_IP],
+                "regex": [rf"(?im)^\s*{re.escape(R1_LOOP_IP)}\s+\S+\s+\S+\s+Established\s*$"],
                     "label": "r2->r1 loopback peer",
                 },
             ],

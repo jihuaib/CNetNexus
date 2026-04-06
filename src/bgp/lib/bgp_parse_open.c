@@ -81,6 +81,22 @@ static void parse_capability(bgp_open_msg_t *msg, uint8_t cap_code, const uint8_
             msg->cap_route_refresh = true;
             break;
 
+        case BGP_CAP_EXT_NEXTHOP:
+        {
+            /* 每条 6B：NLRI-AFI(2B) + NLRI-SAFI(2B) + NH-AFI(2B)（RFC 8950） */
+            msg->cap_ext_nexthop = true;
+            uint8_t pos = 0;
+            while (pos + 6 <= cap_len && msg->ext_nh_count < BGP_OPEN_MAX_EXT_NH)
+            {
+                bgp_ext_nh_entry_t *e = &msg->ext_nh[msg->ext_nh_count++];
+                e->nlri_afi = ((uint16_t)cap_val[pos] << 8) | cap_val[pos + 1];
+                e->nlri_safi = ((uint16_t)cap_val[pos + 2] << 8) | cap_val[pos + 3];
+                e->nh_afi = ((uint16_t)cap_val[pos + 4] << 8) | cap_val[pos + 5];
+                pos += 6;
+            }
+            break;
+        }
+
         case BGP_CAP_EXT_MESSAGE:
             msg->cap_ext_message = true;
             break;

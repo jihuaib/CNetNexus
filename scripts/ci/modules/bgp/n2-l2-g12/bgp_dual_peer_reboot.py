@@ -13,6 +13,8 @@ Checks:
 
 from __future__ import annotations
 
+import re
+
 from module_api import g_top, reboot_device, require_devices, run_cmds, step, wait_checks  # noqa: E402
 from top_runner import TopologyRuntime  # noqa: E402
 
@@ -91,25 +93,29 @@ def _run_inner(
         {
             "device": "a",
             "command": "show bgp neighbor af ipv4-unicast",
-            "contains": [a_ge1_peer, "Established"],
+            "contains": [a_ge1_peer],
+                "regex": [rf"(?im)^\s*{re.escape(a_ge1_peer)}\s+\S+\s+\S+\s+Established\s*$"],
             "label": "a(GE-1)->b ipv4-unicast",
         },
         {
             "device": "a",
             "command": "show bgp neighbor af ipv4-unicast",
-            "contains": [a_ge2_peer, "Established"],
+            "contains": [a_ge2_peer],
+                "regex": [rf"(?im)^\s*{re.escape(a_ge2_peer)}\s+\S+\s+\S+\s+Established\s*$"],
             "label": "a(GE-2)->b ipv4-unicast",
         },
         {
             "device": "b",
             "command": "show bgp neighbor af ipv4-unicast",
-            "contains": [b_ge1_peer, "Established"],
+            "contains": [b_ge1_peer],
+                "regex": [rf"(?im)^\s*{re.escape(b_ge1_peer)}\s+\S+\s+\S+\s+Established\s*$"],
             "label": "b(GE-1)->a ipv4-unicast",
         },
         {
             "device": "b",
             "command": "show bgp neighbor af ipv4-unicast",
-            "contains": [b_ge2_peer, "Established"],
+            "contains": [b_ge2_peer],
+                "regex": [rf"(?im)^\s*{re.escape(b_ge2_peer)}\s+\S+\s+\S+\s+Established\s*$"],
             "label": "b(GE-2)->a ipv4-unicast",
         },
     ]

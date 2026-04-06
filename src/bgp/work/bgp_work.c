@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <pthread.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -65,6 +66,71 @@ static gboolean bgp_session_is_publish_ready(const bgp_session_t *sess)
     return sess && sess->pri_conn && sess->pri_conn->fd >= 0 && sess->fsm_state == BGP_FSM_STATE_ESTABLISHED;
 }
 
+static uint32_t bgp_work_local_as_number(void)
+{
+    if (!g_bgp_work_local || !g_bgp_work_local->protocol)
+    {
+        return 0u;
+    }
+    return g_bgp_work_local->protocol->as_number;
+}
+
+static gboolean bgp_as_path_contains_as(const char *as_path, uint32_t asn)
+{
+    if (!as_path || as_path[0] == '\0' || asn == 0u)
+    {
+        return FALSE;
+    }
+
+    const char *p = as_path;
+    while (*p != '\0')
+    {
+        while (*p == ' ' || *p == '\t' || *p == '{' || *p == '}' || *p == ',')
+        {
+            p++;
+        }
+        if (*p == '\0')
+        {
+            break;
+        }
+
+        char *end = NULL;
+        unsigned long v = strtoul(p, &end, 10);
+        if (end == p)
+        {
+            p++;
+            continue;
+        }
+        if ((uint32_t)v == asn)
+        {
+            return TRUE;
+        }
+        p = end;
+    }
+
+    return FALSE;
+}
+
+static gboolean bgp_session_is_ibgp(const bgp_session_t *sess, uint32_t local_as)
+{
+    return sess && local_as != 0u && sess->remote_as == local_as;
+}
+
+static gboolean bgp_session_is_ebgp(const bgp_session_t *sess, uint32_t local_as)
+{
+    return sess && local_as != 0u && sess->remote_as != 0u && sess->remote_as != local_as;
+}
+
+static const bgp_session_t *bgp_best_source_session(const bgp_route_node_t *best)
+{
+    if (!best || BIT_TEST(best->flags, BGP_ROUTE_FLAG_IMPORT) || !best->head || !best->head->inst ||
+        !best->head->inst->vrf)
+    {
+        return NULL;
+    }
+    return bgp_vrf_find_session(best->head->inst->vrf, &best->source);
+}
+
 static gboolean bgp_best_can_publish_to_session(const bgp_session_t *sess, const bgp_route_node_t *best)
 {
     if (!sess || !best)
@@ -76,6 +142,59 @@ static gboolean bgp_best_can_publish_to_session(const bgp_session_t *sess, const
      * import 路由无来源邻居，不触发 split-horizon。 */
     if (!BIT_TEST(best->flags, BGP_ROUTE_FLAG_IMPORT) && net_addr_equal(&best->source, &sess->neighbor_addr))
     {
+        return FALSE;
+    }
+
+    /* AS_PATH 防环：若目标邻居 AS 已在路径中，禁止发布。 */
+    if (sess->remote_as != 0u && bgp_as_path_contains_as(best->attr.as_path, sess->remote_as))
+    {
+        return FALSE;
+    }
+
+    /* iBGP split-horizon：iBGP 学到的路由不再发给 iBGP 邻居。 */
+    uint32_t local_as = bgp_work_local_as_number();
+    if (bgp_session_is_ibgp(sess, local_as) && !BIT_TEST(best->flags, BGP_ROUTE_FLAG_IMPORT))
+    {
+        const bgp_session_t *src_sess = bgp_best_source_session(best);
+        if (bgp_session_is_ibgp(src_sess, local_as))
+        {
+            return FALSE;
+        }
+    }
+
+    return TRUE;
+}
+
+static gboolean bgp_prepare_update_attr(const bgp_session_t *sess, const bgp_route_node_t *best, bgp_attr_t *send_attr)
+{
+    if (!best || !send_attr)
+    {
+        return FALSE;
+    }
+
+    memcpy(send_attr, &best->attr, sizeof(*send_attr));
+
+    uint32_t local_as = bgp_work_local_as_number();
+    if (!bgp_session_is_ebgp(sess, local_as))
+    {
+        return TRUE;
+    }
+
+    int n = 0;
+    if (best->attr.as_path[0] != '\0')
+    {
+        n = g_snprintf(send_attr->as_path, sizeof(send_attr->as_path), "%u %s", local_as, best->attr.as_path);
+    }
+    else
+    {
+        n = g_snprintf(send_attr->as_path, sizeof(send_attr->as_path), "%u", local_as);
+    }
+
+    if (n < 0 || (size_t)n >= sizeof(send_attr->as_path))
+    {
+        char peer[64];
+        net_addr_to_str(&sess->neighbor_addr, peer, sizeof(peer));
+        LOG_WARN("BGP: skip UPDATE to %s: AS_PATH prepend overflow(local_as=%u)", peer, local_as);
         return FALSE;
     }
 
@@ -104,14 +223,32 @@ static void bgp_prepare_update_nexthop(const bgp_session_t *sess, const bgp_rout
         return;
     }
 
-    if (send_nexthop->global.family != 0 && local_addr.family != send_nexthop->global.family)
+    /* 同族 nexthop 替换（传统场景） */
+    if (local_addr.family == send_nexthop->global.family || send_nexthop->global.family == 0)
     {
+        send_nexthop->global = local_addr;
+        send_nexthop->has_link_local = false;
+        memset(&send_nexthop->link_local, 0, sizeof(send_nexthop->link_local));
         return;
     }
 
-    send_nexthop->global = local_addr;
-    send_nexthop->has_link_local = false;
-    memset(&send_nexthop->link_local, 0, sizeof(send_nexthop->link_local));
+    /* 双栈场景：IPv6 路由通过 IPv4 peer 发送时，使用本地 IPv4 地址作为 nexthop。 */
+    if (local_addr.family == AF_INET && send_nexthop->global.family == AF_INET6)
+    {
+        send_nexthop->global = local_addr;
+        send_nexthop->has_link_local = false;
+        memset(&send_nexthop->link_local, 0, sizeof(send_nexthop->link_local));
+        return;
+    }
+
+    /* RFC 8950：IPv4 路由通过 IPv6 peer 发送时，使用本地 IPv6 地址作为 nexthop。 */
+    if (local_addr.family == AF_INET6 && send_nexthop->global.family == AF_INET &&
+        BIT_TEST(sess->negotiated_caps, BGP_SESS_CAP_EXT_NEXTHOP))
+    {
+        send_nexthop->global = local_addr;
+        send_nexthop->has_link_local = false;
+        memset(&send_nexthop->link_local, 0, sizeof(send_nexthop->link_local));
+    }
 }
 
 static gboolean bgp_work_on_worker_thread(void)
@@ -197,9 +334,22 @@ static int route_node_to_route_entry(uint32_t vrf_id, const bgp_nlri_entry_t *nl
         return 0;
     }
 
-    if (route->source.family != prefix->family || route->nexthop.global.family != prefix->family)
+    /* 允许跨族 nexthop/source（双栈场景：IPv4 前缀 + IPv6 nexthop/source, RFC 8950） */
+    if (route->nexthop.global.family != AF_INET && route->nexthop.global.family != AF_INET6)
     {
         return 0;
+    }
+
+    net_addr_t iter_nh;
+    memset(&iter_nh, 0, sizeof(iter_nh));
+    uint32_t iter_oif = 0u;
+    if (route->iter_watched && route->iter_resolved)
+    {
+        if (route->iter_relay_addr.family == AF_INET || route->iter_relay_addr.family == AF_INET6)
+        {
+            iter_nh = route->iter_relay_addr;
+        }
+        iter_oif = route->iter_out_ifindex;
     }
 
     int32_t metric = 0;
@@ -219,8 +369,10 @@ static int route_node_to_route_entry(uint32_t vrf_id, const bgp_nlri_entry_t *nl
     entry_out->is_withdraw = 0u;
     entry_out->flags = 0u;
     entry_out->out_ifindex = 0u;
+    entry_out->iter_out_ifindex = iter_oif;
     entry_out->prefix_addr = *prefix;
     entry_out->nexthop_addr = route->nexthop.global;
+    entry_out->iter_nexthop_addr = iter_nh;
     entry_out->source_addr = route->source;
     return 1;
 }
@@ -449,9 +601,17 @@ int bgp_pub_queue_process(bgp_pub_queue_t *q, bgp_session_t *sess, bgp_instance_
         const bgp_route_node_t *best = bgp_rib_find_best(inst->rib, &item->nlri);
         if (best && bgp_best_can_publish_to_session(sess, best))
         {
+            bgp_attr_t send_attr;
+            if (!bgp_prepare_update_attr(sess, best, &send_attr))
+            {
+                bgp_pub_item_free(item, NULL);
+                processed++;
+                l = next;
+                continue;
+            }
             bgp_nexthop_t send_nexthop;
             bgp_prepare_update_nexthop(sess, best, &send_nexthop);
-            bgp_pkt_send_update(sess->pri_conn, &item->nlri, &best->attr, &send_nexthop);
+            bgp_pkt_send_update(sess->pri_conn, &item->nlri, &send_attr, &send_nexthop);
         }
 
         bgp_pub_item_free(item, NULL);

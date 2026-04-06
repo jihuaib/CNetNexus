@@ -203,6 +203,7 @@ int route_rib_add(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, const net_add
     path->metric = metric;
     path->preference = preference;
     path->out_ifindex = out_ifindex;
+    path->iter_out_ifindex = out_ifindex;
     path->updated_at_usec = g_get_real_time();
 
     return is_new ? 1 : 0;

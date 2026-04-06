@@ -11,6 +11,9 @@
 
 #include "bgp.h"
 
+/* 前向声明：回调函数参数使用指针，无需完整定义 */
+typedef struct bgp_conn bgp_conn_t;
+
 // ============================================================================
 // 路径属性公共常量
 // ============================================================================
@@ -59,19 +62,21 @@ typedef struct bgp_pkt_af_enc
      * @brief 编码宣告报文的 NLRI 字段内容
      *        IPv4: 前缀（prefix_len + 有效字节）；IPv6: 返回 0（已在 MP_REACH 中携带）
      */
-    int (*encode_reach_nlri)(uint8_t *buf, int buf_size, const bgp_nlri_entry_t *nlri);
+    int (*encode_reach_nlri)(uint8_t *buf, int buf_size, const bgp_nlri_entry_t *nlri, const bgp_nexthop_t *nexthop);
 
     /**
      * @brief 编码撤销报文的 Withdrawn Routes 字段内容
-     *        IPv4: 前缀；IPv6: 返回 0（前缀通过 MP_UNREACH_NLRI 携带）
+     *        IPv4（IPv4 peer）: 前缀；IPv4（IPv6 peer）: 返回 0（RFC 8950）
+     *        IPv6: 返回 0（前缀通过 MP_UNREACH_NLRI 携带）
      */
-    int (*encode_unreach_wd)(uint8_t *buf, int buf_size, const bgp_nlri_entry_t *nlri);
+    int (*encode_unreach_wd)(uint8_t *buf, int buf_size, const bgp_nlri_entry_t *nlri, const bgp_conn_t *conn);
 
     /**
      * @brief 编码撤销报文的 AF 相关路径属性
-     *        IPv6: MP_UNREACH_NLRI；IPv4: 返回 0
+     *        IPv4（IPv6 peer）: MP_UNREACH_NLRI（RFC 8950）；IPv4（IPv4 peer）: 返回 0
+     *        IPv6: MP_UNREACH_NLRI
      */
-    int (*encode_unreach_pa)(uint8_t *buf, int buf_size, const bgp_nlri_entry_t *nlri);
+    int (*encode_unreach_pa)(uint8_t *buf, int buf_size, const bgp_nlri_entry_t *nlri, const bgp_conn_t *conn);
 } bgp_pkt_af_enc_t;
 
 // ============================================================================

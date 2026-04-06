@@ -168,9 +168,11 @@ static void if_fill_connected_route_entry(route_msg_entry_t *entry, uint16_t afi
     entry->is_withdraw = 0;
     entry->flags = 0;
     entry->out_ifindex = out_ifindex;
+    entry->iter_out_ifindex = out_ifindex;
     entry->prefix_addr = *prefix_addr;
     entry->source_addr = *source_addr;
     entry->nexthop_addr = *nexthop_addr;
+    entry->iter_nexthop_addr = *nexthop_addr;
 }
 
 static int if_sync_connected_host_routes(const net_prefix_t *prefix, const char *physical_name, gboolean is_withdraw)

@@ -228,11 +228,12 @@ static void detail_path_cb(const route_head_t *head, const route_path_t *path, v
         return;
     }
 
-    char addr_str[64], nh_str[64], iter_nh_str[64], oif_str[IF_NAMESIZE];
+    char addr_str[64], nh_str[64], iter_nh_str[64], oif_str[IF_NAMESIZE], iter_oif_str[IF_NAMESIZE];
     net_addr_to_str(&head->key.addr, addr_str, sizeof(addr_str));
     net_addr_to_str(&path->nexthop, nh_str, sizeof(nh_str));
     net_addr_to_str(&path->relay_addr, iter_nh_str, sizeof(iter_nh_str));
     ifindex_to_name(path->out_ifindex, ctx->intf_map, oif_str);
+    ifindex_to_name(path->iter_out_ifindex, ctx->intf_map, iter_oif_str);
 
     /* 格式化更新时间 */
     time_t sec = (time_t)(path->updated_at_usec / G_USEC_PER_SEC);
@@ -255,7 +256,7 @@ static void detail_path_cb(const route_head_t *head, const route_path_t *path, v
                            "    Metric    : %d\r\n"
                            "    Preference: %d\r\n"
                            "    Updated   : %s\r\n",
-                           ctx->count, proto_name_long(path->key.protocol), nh_str, oif_str, iter_nh_str, oif_str,
+                           ctx->count, proto_name_long(path->key.protocol), nh_str, oif_str, iter_nh_str, iter_oif_str,
                            (unsigned int)path->flags, path->metric, path->preference, time_str);
 }
 

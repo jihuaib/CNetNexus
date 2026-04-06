@@ -756,9 +756,6 @@ static int handle_bgp_show_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
         return ERRCODE_FAIL;
     }
 
-    bgp_instance_t *inst = g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(ctx.afi, ctx.safi));
-    gboolean af_enabled = (inst && g_hash_table_lookup(inst->peer_hash, &ip_addr));
-
     GString *resp_buf = g_string_new("");
     if (!resp_buf)
     {
@@ -788,6 +785,10 @@ static int handle_bgp_show_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
     bgp_conn_last_error_to_str(sess->sec_conn, sess->sec_last_socket_error, sec_last_err, sizeof(sec_last_err));
     g_string_append_printf(resp_buf, "  %-24s: %s\r\n", "Primary Last Error", pri_last_err);
     g_string_append_printf(resp_buf, "  %-24s: %s\r\n", "Secondary Last Error", sec_last_err);
+    g_string_append_printf(resp_buf, "  %-24s: %d\r\n", "Primary Connection FD",
+                           (sess->pri_conn) ? sess->pri_conn->fd : -1);
+    g_string_append_printf(resp_buf, "  %-24s: %d\r\n", "Secondary Connection FD",
+                           (sess->sec_conn) ? sess->sec_conn->fd : -1);
 
     char _est_ts[32];
     bgp_fmt_time_usec(sess->established_at_usec, _est_ts, sizeof(_est_ts));
@@ -804,6 +805,9 @@ static int handle_bgp_show_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
                            cap_yn(sess->flags, BGP_SESS_CAP_ROUTE_REFRESH),
                            cap_yn(sess->remote_caps, BGP_SESS_CAP_ROUTE_REFRESH),
                            cap_yn(sess->negotiated_caps, BGP_SESS_CAP_ROUTE_REFRESH));
+    g_string_append_printf(
+        resp_buf, "  %-16s  %-10s  %-10s  %-10s\r\n", "Extended-Nexthop", cap_yn(sess->flags, BGP_SESS_CAP_EXT_NEXTHOP),
+        cap_yn(sess->remote_caps, BGP_SESS_CAP_EXT_NEXTHOP), cap_yn(sess->negotiated_caps, BGP_SESS_CAP_EXT_NEXTHOP));
 
     g_string_append(resp_buf, "\r\n  Hold Time:\r\n");
     uint16_t local_hold = (sess->vrf && sess->vrf->hold_time > 0) ? sess->vrf->hold_time : BGP_HOLD_TIME;
@@ -818,25 +822,31 @@ static int handle_bgp_show_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
     }
     g_string_append_printf(resp_buf, "  %-24s: %u s\r\n", "Negotiated", sess->negotiated_hold);
 
-    g_string_append(resp_buf, "\r\n  Negotiated Address Families:\r\n");
+    GString *af_list = g_string_new("");
+    if (!af_list)
+    {
+        g_string_free(resp_buf, TRUE);
+        bgp_show_send_cli_response(msg, "BGP Error: Out of memory.\r\n");
+        return ERRCODE_FAIL;
+    }
     if (sess->negotiated_afs && sess->negotiated_afs->len > 0)
     {
         for (guint _af_i = 0; _af_i < sess->negotiated_afs->len; _af_i++)
         {
             guint32 packed = g_array_index(sess->negotiated_afs, guint32, _af_i);
-            uint16_t _afi = (uint16_t)(packed >> 16);
-            uint8_t _safi = (uint8_t)(packed & 0xFF);
-            g_string_append_printf(resp_buf, "    afi=%u safi=%u\r\n", _afi, _safi);
+            bgp_afi_t _afi = (bgp_afi_t)(uint16_t)(packed >> 16);
+            bgp_safi_t _safi = (bgp_safi_t)(uint8_t)(packed & 0xFF);
+            g_string_append_printf(af_list, "    afi=%u safi=%u (%s)\r\n", (unsigned)_afi, (unsigned)_safi,
+                                   bgp_af_str(_afi, _safi));
         }
     }
     else
     {
-        g_string_append(resp_buf, "    (none)\r\n");
+        g_string_append(af_list, "    none\r\n");
     }
 
-    char af_label[64];
-    snprintf(af_label, sizeof(af_label), "AF %s", bgp_af_str(ctx.afi, ctx.safi));
-    g_string_append_printf(resp_buf, "\r\n  %-24s: %s\r\n", af_label, af_enabled ? "Enabled" : "Disabled");
+    g_string_append_printf(resp_buf, "\r\n  %-24s: \r\n%s", "Negotiated Address Families", af_list->str);
+    g_string_free(af_list, TRUE);
     g_string_append(resp_buf, "\r\n");
 
     return bgp_work_send_chunked_response(msg, resp_buf);

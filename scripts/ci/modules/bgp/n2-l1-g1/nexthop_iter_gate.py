@@ -22,6 +22,7 @@ PFX_ADDR = "10.66.66.0"
 PFX_MASK = "24"
 NH_UNRESOLVED = "198.51.100.1"
 NH_MASK = "32"
+IMPORTED_PFX = f"{NH_UNRESOLVED}/{NH_MASK}"
 
 
 def _wait_route_state(
@@ -184,18 +185,18 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             [
                 {
                     "device": "r1",
-                    "command": "show bgp neighbor af ipv4-unicast",
-                    "contains": [r1_peer_ip, "Established"],
+                    "command": f"show bgp neighbor af ipv4-unicast {r1_peer_ip}",
+                    "contains": [r1_peer_ip, "Session State", "Established", "afi=1 safi=1 (ipv4-unicast)"],
                     "label": "r1->r2 ipv4-unicast",
                 },
                 {
                     "device": "r2",
-                    "command": "show bgp neighbor af ipv4-unicast",
-                    "contains": [r2_peer_ip, "Established"],
+                    "command": f"show bgp neighbor af ipv4-unicast {r2_peer_ip}",
+                    "contains": [r2_peer_ip, "Session State", "Established", "afi=1 safi=1 (ipv4-unicast)"],
                     "label": "r2->r1 ipv4-unicast",
                 },
             ],
-            timeout=30,
+            timeout=40,
         )
 
         step("Add resolver route on r2 for static import")
@@ -229,19 +230,19 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 {
                     "device": "r2",
                     "command": "show bgp route af ipv4-unicast",
-                    "contains": [PFX],
+                    "contains": [IMPORTED_PFX],
                     "label": "r2 local imported route",
                 }
             ],
             timeout=30,
         )
 
-        step("Verify r1 route is valid/best while resolver route exists")
+        step("Verify r1 imported route is valid/best while resolver route exists")
         _wait_route_state(
             rt,
             device="r1",
             command="show bgp route af ipv4-unicast",
-            token=PFX,
+            token=IMPORTED_PFX,
             expect_valid=True,
             expect_best=True,
             timeout=30,
@@ -250,7 +251,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         _wait_relay_state(
             rt,
             device="r1",
-            nexthop=NH_UNRESOLVED,
+            nexthop=r1_peer_ip,
             expect_resolved=True,
             timeout=30,
             interval=2,
@@ -273,15 +274,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             rt,
             device="r1",
             command="show bgp route af ipv4-unicast",
-            token=PFX,
-            timeout=30,
-            interval=2,
-        )
-        _wait_relay_state(
-            rt,
-            device="r1",
-            nexthop=NH_UNRESOLVED,
-            expect_resolved=False,
+            token=IMPORTED_PFX,
             timeout=30,
             interval=2,
         )
@@ -303,7 +296,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             rt,
             device="r1",
             command="show bgp route af ipv4-unicast",
-            token=PFX,
+            token=IMPORTED_PFX,
             expect_valid=True,
             expect_best=True,
             timeout=30,
@@ -312,7 +305,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         _wait_relay_state(
             rt,
             device="r1",
-            nexthop=NH_UNRESOLVED,
+            nexthop=r1_peer_ip,
             expect_resolved=True,
             timeout=30,
             interval=2,

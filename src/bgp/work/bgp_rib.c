@@ -328,6 +328,12 @@ static gboolean purge_source_cb(gpointer key, gpointer value, gpointer user_data
     bgp_route_node_t *route = route_list_find(head->route_list, ctx->source);
     if (route)
     {
+        /* 会话来源清理只处理 peer 路由；本地 import-route 即使 source 相同也不能被清掉。 */
+        if (BIT_TEST(route->flags, BGP_ROUTE_FLAG_IMPORT))
+        {
+            return FALSE;
+        }
+
         if (BIT_TEST(route->flags, BGP_ROUTE_FLAG_STALE))
         {
             return FALSE;
@@ -485,7 +491,8 @@ static gboolean foreach_source_tree_cb(gpointer key, gpointer value, gpointer us
     (void)key;
     foreach_source_ctx_t *ctx = user_data;
     bgp_rthead_t *head = value;
-    if (route_list_find(head->route_list, ctx->source))
+    const bgp_route_node_t *route = route_list_find(head->route_list, ctx->source);
+    if (route && !BIT_TEST(route->flags, BGP_ROUTE_FLAG_IMPORT))
     {
         ctx->cb(&head->nlri, ctx->user_data);
     }

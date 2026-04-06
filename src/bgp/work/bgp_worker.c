@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
@@ -53,6 +54,42 @@ static char bgp_work_tag;
 bgp_work_local_t *g_bgp_work_local = NULL;
 
 static void bgp_worker_runtime_cleanup(void);
+
+static gboolean bgp_worker_as_path_contains_as(const char *as_path, uint32_t asn)
+{
+    if (!as_path || as_path[0] == '\0' || asn == 0u)
+    {
+        return FALSE;
+    }
+
+    const char *p = as_path;
+    while (*p != '\0')
+    {
+        while (*p == ' ' || *p == '\t' || *p == '{' || *p == '}' || *p == ',')
+        {
+            p++;
+        }
+        if (*p == '\0')
+        {
+            break;
+        }
+
+        char *end = NULL;
+        unsigned long v = strtoul(p, &end, 10);
+        if (end == p)
+        {
+            p++;
+            continue;
+        }
+        if ((uint32_t)v == asn)
+        {
+            return TRUE;
+        }
+        p = end;
+    }
+
+    return FALSE;
+}
 
 typedef enum bgp_worker_event_type
 {
@@ -391,6 +428,44 @@ static void bgp_worker_dispatch_apply_cmd(bgp_apply_cmd_t *apply)
 void bgp_worker_ingest_peer_update(bgp_session_t *session, const bgp_update_result_t *upd,
                                    bgp_peer_update_ingest_stats_t *stats)
 {
+    if (stats)
+    {
+        memset(stats, 0, sizeof(*stats));
+    }
+    if (!session || !upd)
+    {
+        return;
+    }
+
+    uint32_t local_as = 0u;
+    if (g_bgp_work_local && g_bgp_work_local->protocol)
+    {
+        local_as = g_bgp_work_local->protocol->as_number;
+    }
+
+    /* 收到带本地 AS 的 reach 路由时丢弃（AS loop），但保留同报文内 withdraw 处理。 */
+    if (local_as != 0u && upd->reach_len > 0 && bgp_worker_as_path_contains_as(upd->attr.as_path, local_as))
+    {
+        char peer[64];
+        net_addr_to_str(&session->neighbor_addr, peer, sizeof(peer));
+        LOG_WARN("BGP: drop UPDATE reach from %s: AS_PATH contains local AS %u (path=%s)", peer, local_as,
+                 (upd->attr.as_path[0] != '\0') ? upd->attr.as_path : "-");
+
+        bgp_update_result_t filtered = *upd;
+        filtered.reach = NULL;
+        filtered.reach_len = 0;
+
+        bgp_peer_update_ingest_stats_t relay_stats = {0};
+        bgp_relay_ingest_peer_update(session, &filtered, &relay_stats);
+        relay_stats.reach_failed += upd->reach_len;
+
+        if (stats)
+        {
+            *stats = relay_stats;
+        }
+        return;
+    }
+
     bgp_relay_ingest_peer_update(session, upd, stats);
 }
 

@@ -162,13 +162,15 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 {
                     "device": "r1",
                     "command": "show bgp neighbor af ipv6-unicast",
-                    "contains": [r1_peer_ip6, "Established"],
+                    "contains": [r1_peer_ip6],
+                "regex": [rf"(?im)^\s*{re.escape(r1_peer_ip6)}\s+\S+\s+\S+\s+Established\s*$"],
                     "label": "r1->r2 ipv6-unicast",
                 },
                 {
                     "device": "r2",
                     "command": "show bgp neighbor af ipv6-unicast",
-                    "contains": [r2_peer_ip6, "Established"],
+                    "contains": [r2_peer_ip6],
+                "regex": [rf"(?im)^\s*{re.escape(r2_peer_ip6)}\s+\S+\s+\S+\s+Established\s*$"],
                     "label": "r2->r1 ipv6-unicast",
                 },
             ],

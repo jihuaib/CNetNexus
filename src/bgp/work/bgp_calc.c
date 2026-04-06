@@ -7,6 +7,7 @@
 #include "bgp_calc.h"
 
 #include <stdbool.h>
+#include <sys/socket.h>
 
 #include "bgp_rib.h"
 #include "bgp_work.h"
@@ -53,7 +54,8 @@ static uint32_t as_path_hop_count(const char *path)
  *   2. AS_PATH 长度更短
  *   3. ORIGIN 更低（IGP=0 < EGP=1 < INCOMPLETE=2）
  *   4. MED 更低（仅两者均携带时比较）
- *   5. 更晚更新的路径（updated_at_usec 更大）
+ *   5. 前缀同族 nexthop 优先（IPv4 前缀优先 IPv4 nexthop，IPv6 前缀优先 IPv6 nexthop）
+ *   6. 更晚更新的路径（updated_at_usec 更大）
  */
 static bool route_is_better(const bgp_route_node_t *candidate, const bgp_route_node_t *current)
 {
@@ -94,7 +96,27 @@ static bool route_is_better(const bgp_route_node_t *candidate, const bgp_route_n
         return candidate->attr.med < current->attr.med;
     }
 
-    /* 5. 最近更新时间（越晚越优） */
+    /* 5. 前缀同族 nexthop 优先（用于双栈扩展下一跳场景的稳定优选）。 */
+    sa_family_t prefix_family = 0;
+    if (candidate->head && candidate->head->nlri.type == BGP_NLRI_PREFIX)
+    {
+        prefix_family = candidate->head->nlri.prefix.prefix.addr.family;
+    }
+    else if (current->head && current->head->nlri.type == BGP_NLRI_PREFIX)
+    {
+        prefix_family = current->head->nlri.prefix.prefix.addr.family;
+    }
+    if (prefix_family == AF_INET || prefix_family == AF_INET6)
+    {
+        bool ca_same_family = (candidate->nexthop.global.family == prefix_family);
+        bool cu_same_family = (current->nexthop.global.family == prefix_family);
+        if (ca_same_family != cu_same_family)
+        {
+            return ca_same_family;
+        }
+    }
+
+    /* 6. 最近更新时间（越晚越优） */
     return candidate->updated_at_usec > current->updated_at_usec;
 }
 

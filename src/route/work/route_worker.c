@@ -312,7 +312,16 @@ static void worker_handle_inject(dev_ipc_message_t *msg)
                 if (path)
                 {
                     route_path_t *mut = (route_path_t *)path;
-                    mut->relay_addr = entry->nexthop_addr;
+                    if (entry->iter_nexthop_addr.family == AF_INET || entry->iter_nexthop_addr.family == AF_INET6)
+                    {
+                        mut->relay_addr = entry->iter_nexthop_addr;
+                    }
+                    else
+                    {
+                        mut->relay_addr = entry->nexthop_addr;
+                    }
+                    mut->iter_out_ifindex =
+                        (entry->iter_out_ifindex != 0u) ? entry->iter_out_ifindex : entry->out_ifindex;
                 }
                 if (route_worker_post_calc_event(&head->key) != 0)
                 {
@@ -953,6 +962,7 @@ int route_add_and_notify(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix
 
     route_path_t *mut = (route_path_t *)path;
     mut->relay_addr = relay_addr_ptr ? *relay_addr_ptr : *nexthop_addr;
+    mut->iter_out_ifindex = out_ifindex;
 
     if (route_worker_post_calc_event(&head->key) != 0)
     {

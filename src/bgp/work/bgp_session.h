@@ -19,8 +19,9 @@
 /** OPEN 能力协商标记位（存储于 bgp_session_t.flags） */
 #define BGP_SESS_CAP_AS4 (1U << 0)           /**< 支持 4 字节 AS 号（RFC 6793） */
 #define BGP_SESS_CAP_ROUTE_REFRESH (1U << 1) /**< 支持 Route Refresh（RFC 2918） */
+#define BGP_SESS_CAP_EXT_NEXTHOP (1U << 2)   /**< 扩展下一跳编码（RFC 8950） */
 
-/** 默认 OPEN 能力值（AS4 + Route Refresh 均使能） */
+/** 默认 OPEN 能力值（AS4 + Route Refresh 使能；EXT_NEXTHOP 由 AF enable 时按需设置） */
 #define BGP_SESS_CAP_DEFAULT (BGP_SESS_CAP_AS4 | BGP_SESS_CAP_ROUTE_REFRESH)
 
 /* 前向声明，避免循环包含 */

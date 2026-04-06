@@ -162,13 +162,15 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 {
                     "device": "r1",
                     "command": "show bgp neighbor af ipv4-unicast",
-                    "contains": [r1_peer_ip, "Established"],
+                    "contains": [r1_peer_ip],
+                "regex": [rf"(?im)^\s*{re.escape(r1_peer_ip)}\s+\S+\s+\S+\s+Established\s*$"],
                     "label": "r1->r2 ipv4-unicast",
                 },
                 {
                     "device": "r2",
                     "command": "show bgp neighbor af ipv4-unicast",
-                    "contains": [r2_peer_ip, "Established"],
+                    "contains": [r2_peer_ip],
+                "regex": [rf"(?im)^\s*{re.escape(r2_peer_ip)}\s+\S+\s+\S+\s+Established\s*$"],
                     "label": "r2->r1 ipv4-unicast",
                 },
             ],

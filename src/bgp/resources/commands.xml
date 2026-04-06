@@ -144,7 +144,7 @@
             </commands>
         </group>
 
-        <!-- neighbor <ipv4|ipv6> enable / no neighbor <ipv4|ipv6> (in address-family view) -->
+        <!-- neighbor <ipv4|ipv6> enable / no neighbor <ipv4|ipv6> enable (in address-family view) -->
         <group group-id="4">
             <elements>
                 <element type="keyword">
@@ -177,9 +177,9 @@
                     <expression>2 {3 | 4} 5</expression>
                     <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni</views>
                 </command>
-                <!-- no neighbor <ipv4|ipv6> -->
+                <!-- no neighbor <ipv4|ipv6> enable -->
                 <command>
-                    <expression>1 2 {3 | 4}</expression>
+                    <expression>1 2 {3 | 4} 5</expression>
                     <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni</views>
                 </command>
             </commands>

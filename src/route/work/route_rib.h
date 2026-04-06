@@ -63,14 +63,15 @@ typedef struct route_path_key
  */
 typedef struct route_path
 {
-    route_path_key_t key;   /**< 内嵌键（用于同前缀下查找） */
-    net_addr_t nexthop;     /**< 下一跳地址（二进制） */
-    net_addr_t relay_addr;  /**< relay 解析地址（默认等于 nexthop） */
-    int32_t metric;         /**< 度量值 */
-    int32_t preference;     /**< 管理距离 */
-    uint32_t out_ifindex;   /**< 出接口索引（直连路由由 IF 模块填充，其他协议为 0） */
-    uint32_t flags;         /**< 路径状态标志（ROUTE_PATH_FLAG_*） */
-    gint64 updated_at_usec; /**< 最近更新时间（g_get_real_time） */
+    route_path_key_t key;      /**< 内嵌键（用于同前缀下查找） */
+    net_addr_t nexthop;        /**< 下一跳地址（二进制） */
+    net_addr_t relay_addr;     /**< relay 解析地址（默认等于 nexthop） */
+    int32_t metric;            /**< 度量值 */
+    int32_t preference;        /**< 管理距离 */
+    uint32_t out_ifindex;      /**< 原始出接口索引（由发布方携带） */
+    uint32_t iter_out_ifindex; /**< relay 解析后的出接口索引（0 表示未知） */
+    uint32_t flags;            /**< 路径状态标志（ROUTE_PATH_FLAG_*） */
+    gint64 updated_at_usec;    /**< 最近更新时间（g_get_real_time） */
 } route_path_t;
 
 /**

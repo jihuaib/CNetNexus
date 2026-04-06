@@ -7,6 +7,7 @@
 #include <arpa/inet.h>
 #include <string.h>
 
+#include "bgp_conn.h"
 #include "bgp_pkt_build.h"
 
 // ============================================================================
@@ -16,15 +17,34 @@
 /**
  * @brief 编码 MP_REACH_NLRI 路径属性（RFC 4760）
  *
- * 格式：AFI(2) + SAFI(1) + NHLen(1) + NH(16 or 32) + SNPA(1) + 前缀(1+n)
- * nexthop 优先使用 global（16 字节）；有 link-local 时追加 16 字节（共 32 字节）
+ * 格式：AFI(2) + SAFI(1) + NHLen(1) + NH(4 or 16 or 32) + SNPA(1) + 前缀(1+n)
+ * nexthop 支持 IPv4(4B) 或 IPv6(16/32B)。
  */
 static int encode_mp_reach(uint8_t *buf, int buf_size, const bgp_nlri_entry_t *nlri, const bgp_nexthop_t *nexthop)
 {
+    if (!nlri || !nexthop || nexthop->global.family == 0)
+    {
+        return -1;
+    }
+
     const net_prefix_t *pfx = &nlri->prefix.prefix;
     uint8_t plen = pfx->prefix_len;
     int pfx_bytes = 1 + (plen + 7) / 8;
-    uint8_t nh_len = nexthop->has_link_local ? 32 : 16;
+
+    uint8_t nh_len = 0;
+    if (nexthop->global.family == AF_INET)
+    {
+        nh_len = 4;
+    }
+    else if (nexthop->global.family == AF_INET6)
+    {
+        nh_len = nexthop->has_link_local ? 32 : 16;
+    }
+    else
+    {
+        return -1;
+    }
+
     /* 属性值长度：AFI(2)+SAFI(1)+NHLen(1)+NH(nh_len)+SNPA(1)+NLRI(pfx_bytes) */
     int value_len = 2 + 1 + 1 + (int)nh_len + 1 + pfx_bytes;
     int attr_total = 3 + value_len;
@@ -41,13 +61,23 @@ static int encode_mp_reach(uint8_t *buf, int buf_size, const bgp_nlri_entry_t *n
     pos += 2;
     buf[pos++] = nlri->safi;
     buf[pos++] = nh_len;
-    memcpy(buf + pos, &nexthop->global.u.v6, 16);
-    pos += 16;
-    if (nexthop->has_link_local)
+
+    if (nexthop->global.family == AF_INET)
     {
-        memcpy(buf + pos, &nexthop->link_local.u.v6, 16);
-        pos += 16;
+        memcpy(buf + pos, &nexthop->global.u.v4.s_addr, 4);
+        pos += 4;
     }
+    else
+    {
+        memcpy(buf + pos, &nexthop->global.u.v6, 16);
+        pos += 16;
+        if (nexthop->has_link_local)
+        {
+            memcpy(buf + pos, &nexthop->link_local.u.v6, 16);
+            pos += 16;
+        }
+    }
+
     buf[pos++] = 0; /* SNPA count = 0 */
     buf[pos++] = plen;
     int nbytes = (plen + 7) / 8;
@@ -100,30 +130,34 @@ static int ipv6uc_encode_reach_pa(uint8_t *buf, int buf_size, const bgp_nlri_ent
 /**
  * @brief 宣告 NLRI：前缀已在 MP_REACH_NLRI 中携带，此字段为空
  */
-static int ipv6uc_encode_reach_nlri(uint8_t *buf, int buf_size, const bgp_nlri_entry_t *nlri)
+static int ipv6uc_encode_reach_nlri(uint8_t *buf, int buf_size, const bgp_nlri_entry_t *nlri,
+                                    const bgp_nexthop_t *nexthop)
 {
     (void)buf;
     (void)buf_size;
     (void)nlri;
+    (void)nexthop;
     return 0;
 }
 
 /**
  * @brief 撤销 Withdrawn Routes：IPv6 不使用此字段
  */
-static int ipv6uc_encode_unreach_wd(uint8_t *buf, int buf_size, const bgp_nlri_entry_t *nlri)
+static int ipv6uc_encode_unreach_wd(uint8_t *buf, int buf_size, const bgp_nlri_entry_t *nlri, const bgp_conn_t *conn)
 {
     (void)buf;
     (void)buf_size;
     (void)nlri;
+    (void)conn;
     return 0;
 }
 
 /**
  * @brief 撤销 PA：MP_UNREACH_NLRI
  */
-static int ipv6uc_encode_unreach_pa(uint8_t *buf, int buf_size, const bgp_nlri_entry_t *nlri)
+static int ipv6uc_encode_unreach_pa(uint8_t *buf, int buf_size, const bgp_nlri_entry_t *nlri, const bgp_conn_t *conn)
 {
+    (void)conn;
     return encode_mp_unreach(buf, buf_size, nlri);
 }
 

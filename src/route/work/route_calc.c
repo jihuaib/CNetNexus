@@ -90,7 +90,9 @@ static void build_report_entry(route_msg_entry_t *e, const route_head_t *head, c
     e->metric = path->metric;
     e->preference = path->preference;
     e->out_ifindex = path->out_ifindex;
+    e->iter_out_ifindex = path->iter_out_ifindex;
     e->nexthop_addr = path->nexthop;
+    e->iter_nexthop_addr = path->relay_addr;
     e->source_addr = path->key.source;
     e->is_withdraw = 0;
     e->flags = 0;
@@ -99,7 +101,14 @@ static void build_report_entry(route_msg_entry_t *e, const route_head_t *head, c
 static void build_os_entry(route_msg_entry_t *e, const route_head_t *head, const route_path_t *path)
 {
     build_report_entry(e, head, path);
-    e->nexthop_addr = path->relay_addr;
+    if (e->iter_nexthop_addr.family == 0)
+    {
+        e->iter_nexthop_addr = e->nexthop_addr;
+    }
+    if (e->iter_out_ifindex == 0)
+    {
+        e->iter_out_ifindex = e->out_ifindex;
+    }
 }
 
 // ============================================================================

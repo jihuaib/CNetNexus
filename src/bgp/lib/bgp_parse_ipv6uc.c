@@ -85,13 +85,28 @@ static int parse_prefixes(const uint8_t *data, uint16_t len, bgp_nlri_entry_t **
 
 /* ============================================================================
  * nexthop 解析
- * 16 字节 = 仅全局地址
- * 32 字节 = 全局地址（16B）+ link-local 地址（16B）
+ * 4 字节  = IPv4 地址
+ * 16 字节 = 仅 IPv6 全局地址
+ * 32 字节 = IPv6 全局地址（16B）+ link-local 地址（16B）
  * ========================================================================== */
 
 static int parse_nexthop(const uint8_t *nh_data, uint8_t nh_len, bgp_nexthop_t *nexthop)
 {
-    if (nh_len < 16)
+    if (!nh_data || !nexthop)
+    {
+        return -1;
+    }
+
+    memset(nexthop, 0, sizeof(*nexthop));
+
+    if (nh_len == 4)
+    {
+        nexthop->global.family = AF_INET;
+        memcpy(&nexthop->global.u.v4.s_addr, nh_data, 4);
+        return 0;
+    }
+
+    if (nh_len != 16 && nh_len != 32)
     {
         return -1;
     }
@@ -99,7 +114,7 @@ static int parse_nexthop(const uint8_t *nh_data, uint8_t nh_len, bgp_nexthop_t *
     nexthop->global.family = AF_INET6;
     memcpy(nexthop->global.u.v6.s6_addr, nh_data, 16);
 
-    if (nh_len >= 32)
+    if (nh_len == 32)
     {
         nexthop->link_local.family = AF_INET6;
         memcpy(nexthop->link_local.u.v6.s6_addr, nh_data + 16, 16);

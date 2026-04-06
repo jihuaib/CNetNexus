@@ -48,6 +48,7 @@ typedef struct bgp_pdu_info
 /** @brief BGP 能力码（RFC 5492） */
 #define BGP_CAP_MP_EXTENSIONS 1     /**< 多协议扩展（RFC 4760） */
 #define BGP_CAP_ROUTE_REFRESH 2     /**< Route Refresh（RFC 2918） */
+#define BGP_CAP_EXT_NEXTHOP 5       /**< 扩展下一跳编码（RFC 8950） */
 #define BGP_CAP_EXT_MESSAGE 6       /**< 扩展消息（RFC 8654） */
 #define BGP_CAP_BGP_ROLE 9          /**< BGP Role（RFC 9234） */
 #define BGP_CAP_GRACEFUL_RESTART 64 /**< Graceful Restart（RFC 4724） */
@@ -59,6 +60,19 @@ typedef struct bgp_pdu_info
 /** ADD-PATH 每条记录的 send/receive 标志位 */
 #define BGP_ADDPATH_RECEIVE (1U << 0) /**< 本端可接收对端的多路径 */
 #define BGP_ADDPATH_SEND (1U << 1)    /**< 本端可向对端发送多路径 */
+
+/** OPEN 中最多携带的 Extended Next Hop 条数 */
+#define BGP_OPEN_MAX_EXT_NH 16
+
+/**
+ * @brief Extended Next Hop 能力条目（RFC 8950）
+ */
+typedef struct bgp_ext_nh_entry
+{
+    uint16_t nlri_afi;  /**< NLRI 地址族（如 IPv4=1） */
+    uint16_t nlri_safi; /**< NLRI 子地址族（如 unicast=1） */
+    uint16_t nh_afi;    /**< Nexthop 地址族（如 IPv6=2） */
+} bgp_ext_nh_entry_t;
 
 /** OPEN 中最多携带的 MP 能力条数 */
 #define BGP_OPEN_MAX_MP_CAPS 32
@@ -120,6 +134,11 @@ typedef struct bgp_open_msg
     uint16_t mp_afs[BGP_OPEN_MAX_MP_CAPS];  /**< AFI 数组（与 mp_safis 一一对应） */
     uint8_t mp_safis[BGP_OPEN_MAX_MP_CAPS]; /**< SAFI 数组 */
     uint8_t mp_count;                       /**< MP 能力条数 */
+
+    /* ---- Extended Next Hop (RFC 8950) ---- */
+    bool cap_ext_nexthop;
+    bgp_ext_nh_entry_t ext_nh[BGP_OPEN_MAX_EXT_NH];
+    uint8_t ext_nh_count;
 
     /* ---- Graceful Restart ---- */
     bool cap_graceful_restart;
@@ -451,6 +470,9 @@ typedef struct bgp_update_result
 
 /** 使用 4 字节 AS 号（RFC 6793），默认开启 */
 #define BGP_PARSE_FLAG_AS4 (1u << 0)
+
+/** 已协商 Extended Next Hop（RFC 8950），允许 IPv4 NLRI 携带 IPv6 nexthop */
+#define BGP_PARSE_FLAG_EXT_NEXTHOP (1u << 1)
 
 /* ============================================================================
  * AFI/SAFI 处理器注册接口

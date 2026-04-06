@@ -118,7 +118,7 @@ int bgp_rib_unreach_one(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_
 int bgp_rib_set_route_valid(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_addr_t *source, gboolean valid);
 
 /**
- * @brief 删除某来源在整个 RIB 下的所有路径（会清理空 rthead）
+ * @brief 删除某来源在整个 RIB 下的 peer 路由（会清理空 rthead）
  * @param rib            目标 RIB
  * @param source         路径来源（邻居 IP，二进制）
  * @param removed_routes 输出：删除路径数（可为 NULL）
@@ -179,9 +179,10 @@ void bgp_rib_head_unref(bgp_rthead_t *head);
 uint32_t bgp_rib_gc_head(bgp_rib_t *rib, bgp_rthead_t *head);
 
 /**
- * @brief 遍历 RIB 中含有指定来源路径的所有 rthead，对每个 NLRI 触发回调
+ * @brief 遍历 RIB 中含有指定来源 peer 路径的所有 rthead，对每个 NLRI 触发回调
  *
  * 用于会话清理前收集受影响 NLRI，推送到 calc_queue 触发重新优选。
+ * 本地 import-route（BGP_ROUTE_FLAG_IMPORT）会被忽略。
  *
  * @param rib       目标 RIB
  * @param source    路径来源（邻居 IP）

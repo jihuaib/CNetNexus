@@ -112,20 +112,22 @@ typedef struct route_subscribe_req
  */
 typedef struct route_msg_entry
 {
-    uint32_t vrf_id;         /**< VRF ID */
-    uint16_t afi;            /**< 地址族 */
-    uint8_t safi;            /**< 子地址族 */
-    uint8_t prefix_len;      /**< 前缀长度 */
-    uint32_t protocol;       /**< 路由协议 */
-    int32_t metric;          /**< 度量值 */
-    int32_t preference;      /**< 管理距离（偏好值） */
-    uint8_t is_withdraw;     /**< 1=撤销路由, 0=新增/更新路由 */
-    uint8_t flags;           /**< 保留标志位（当前未使用） */
-    uint8_t _pad[2];         /**< 对齐填充 */
-    uint32_t out_ifindex;    /**< 出接口索引（直连路由使用，0=不指定） */
-    net_addr_t prefix_addr;  /**< 前缀地址（二进制） */
-    net_addr_t nexthop_addr; /**< 下一跳地址（二进制） */
-    net_addr_t source_addr;  /**< 路径来源标识（二进制 IP） */
+    uint32_t vrf_id;              /**< VRF ID */
+    uint16_t afi;                 /**< 地址族 */
+    uint8_t safi;                 /**< 子地址族 */
+    uint8_t prefix_len;           /**< 前缀长度 */
+    uint32_t protocol;            /**< 路由协议 */
+    int32_t metric;               /**< 度量值 */
+    int32_t preference;           /**< 管理距离（偏好值） */
+    uint8_t is_withdraw;          /**< 1=撤销路由, 0=新增/更新路由 */
+    uint8_t flags;                /**< 保留标志位（当前未使用） */
+    uint8_t _pad[2];              /**< 对齐填充 */
+    uint32_t out_ifindex;         /**< 原始出接口索引（由发布方携带，0=不指定） */
+    uint32_t iter_out_ifindex;    /**< 迭代解析后的出接口索引（0=未知） */
+    net_addr_t prefix_addr;       /**< 前缀地址（二进制） */
+    net_addr_t nexthop_addr;      /**< 原始下一跳地址（二进制） */
+    net_addr_t iter_nexthop_addr; /**< 迭代解析后的下一跳地址（二进制，family=0 表示未知） */
+    net_addr_t source_addr;       /**< 路径来源标识（二进制 IP） */
 } route_msg_entry_t;
 
 /**
@@ -163,13 +165,14 @@ typedef struct route_nh_iter_req
  */
 typedef struct route_nh_iter_notify
 {
-    uint32_t vrf_id;       /**< VRF ID */
-    uint16_t afi;          /**< 地址族 */
-    uint8_t safi;          /**< 子地址族 */
-    uint8_t resolved;      /**< 1=可达，0=不可达 */
-    uint8_t _pad0[3];      /**< 对齐填充 */
-    uint32_t out_ifindex;  /**< 解析出的出接口索引（0=不可达或未知） */
-    net_addr_t relay_addr; /**< relay 地址（二进制） */
+    uint32_t vrf_id;         /**< VRF ID */
+    uint16_t afi;            /**< 地址族 */
+    uint8_t safi;            /**< 子地址族 */
+    uint8_t resolved;        /**< 1=可达，0=不可达 */
+    uint8_t _pad0[3];        /**< 对齐填充 */
+    uint32_t out_ifindex;    /**< 解析出的出接口索引（0=不可达或未知） */
+    net_addr_t nexthop_addr; /**< 原始 nexthop（二进制，作为 watch key） */
+    net_addr_t relay_addr;   /**< 迭代后的 relay 地址（二进制） */
 } route_nh_iter_notify_t;
 
 // ============================================================================

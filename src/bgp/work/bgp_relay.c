@@ -577,6 +577,36 @@ static int bgp_relay_route_upsert(uint32_t vrf_id, const bgp_nlri_entry_t *nlri,
     return ERRCODE_SUCCESS;
 }
 
+static gboolean bgp_relay_nexthop_family_compatible(const bgp_session_t *session, const net_addr_t *prefix_addr,
+                                                    const bgp_nexthop_t *nexthop)
+{
+    if (!session || !prefix_addr || !nexthop)
+    {
+        return FALSE;
+    }
+
+    /* 常规场景：前缀与 nexthop 同族。 */
+    if (nexthop->global.family == prefix_addr->family)
+    {
+        return TRUE;
+    }
+
+    /* RFC 8950：仅在协商了 Extended Nexthop 时，允许 IPv4 前缀使用 IPv6 nexthop。 */
+    if (prefix_addr->family == AF_INET && nexthop->global.family == AF_INET6 &&
+        BIT_TEST(session->negotiated_caps, BGP_SESS_CAP_EXT_NEXTHOP))
+    {
+        return TRUE;
+    }
+
+    /* 双栈场景：允许 IPv6 前缀使用 IPv4 nexthop。 */
+    if (prefix_addr->family == AF_INET6 && nexthop->global.family == AF_INET)
+    {
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
 static void bgp_relay_collect_nlri_cb(const bgp_nlri_entry_t *nlri, gpointer user_data)
 {
     if (!nlri || !user_data)
@@ -634,7 +664,7 @@ void bgp_relay_ingest_peer_update(bgp_session_t *session, const bgp_update_resul
             continue;
         }
 
-        if (upd->nexthop.global.family != prefix_addr.family)
+        if (!bgp_relay_nexthop_family_compatible(session, &prefix_addr, &upd->nexthop))
         {
             if (stats)
             {
@@ -735,9 +765,17 @@ uint32_t bgp_relay_handle_nh_notify(const route_nh_iter_notify_t *notify)
         return 0;
     }
 
+    const net_addr_t *key_nh = (notify->nexthop_addr.family == AF_INET || notify->nexthop_addr.family == AF_INET6)
+                                   ? &notify->nexthop_addr
+                                   : &notify->relay_addr;
+    if (key_nh->family != AF_INET && key_nh->family != AF_INET6)
+    {
+        return 0;
+    }
+
     bgp_relay_nh_key_t key;
     bgp_relay_make_nh_key(&key, notify->vrf_id, notify->afi, (notify->safi == 0) ? BGP_SAFI_UNICAST : notify->safi,
-                          &notify->relay_addr);
+                          key_nh);
 
     bgp_relay_nh_watch_t *watch = bgp_relay_nh_watch_lookup(&key);
     if (!watch)

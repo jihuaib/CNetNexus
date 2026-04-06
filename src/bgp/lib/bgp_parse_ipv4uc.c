@@ -84,19 +84,41 @@ static int parse_prefixes(const uint8_t *data, uint16_t len, bgp_nlri_entry_t **
 }
 
 /* ============================================================================
- * nexthop 解析（来自 MP_REACH，IPv4 unicast 为 4 字节）
+ * nexthop 解析（来自 MP_REACH）
+ *   4B  = IPv4 nexthop（传统）
+ *   16B = IPv6 global nexthop（RFC 8950 Extended Next Hop）
+ *   32B = IPv6 global + link-local nexthop（RFC 8950）
  * ========================================================================== */
 
 static int parse_nexthop(const uint8_t *nh_data, uint8_t nh_len, bgp_nexthop_t *nexthop)
 {
-    if (nh_len < 4)
+    if (nh_len == 4)
     {
-        return -1;
+        nexthop->global.family = AF_INET;
+        memcpy(&nexthop->global.u.v4, nh_data, 4);
+        nexthop->has_link_local = false;
+        return 0;
     }
 
-    nexthop->global.family = AF_INET;
-    memcpy(&nexthop->global.u.v4, nh_data, 4);
-    return 0;
+    if (nh_len == 16)
+    {
+        nexthop->global.family = AF_INET6;
+        memcpy(&nexthop->global.u.v6, nh_data, 16);
+        nexthop->has_link_local = false;
+        return 0;
+    }
+
+    if (nh_len == 32)
+    {
+        nexthop->global.family = AF_INET6;
+        memcpy(&nexthop->global.u.v6, nh_data, 16);
+        nexthop->has_link_local = true;
+        nexthop->link_local.family = AF_INET6;
+        memcpy(&nexthop->link_local.u.v6, nh_data + 16, 16);
+        return 0;
+    }
+
+    return -1;
 }
 
 /* ============================================================================

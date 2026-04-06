@@ -281,21 +281,23 @@ static int route_nh_resolve(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, con
         return 0;
     }
 
-    sa_family_t expected_family = 0;
-    if (afi == ROUTE_AFI_IPV4)
-    {
-        expected_family = AF_INET;
-    }
-    else if (afi == ROUTE_AFI_IPV6)
-    {
-        expected_family = AF_INET6;
-    }
-    else
+    if (afi != ROUTE_AFI_IPV4 && afi != ROUTE_AFI_IPV6)
     {
         return 0;
     }
 
-    if (nexthop->family != expected_family)
+    /* nexthop 迭代按 nexthop 自身地址族查找覆盖路由：
+     * 允许跨族场景（如 IPv4 前缀使用 IPv6 nexthop）。 */
+    uint16_t resolve_afi = 0;
+    if (nexthop->family == AF_INET)
+    {
+        resolve_afi = ROUTE_AFI_IPV4;
+    }
+    else if (nexthop->family == AF_INET6)
+    {
+        resolve_afi = ROUTE_AFI_IPV6;
+    }
+    else
     {
         return 0;
     }
@@ -315,7 +317,7 @@ static int route_nh_resolve(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, con
         }
         visited[visited_count++] = cursor;
 
-        route_path_t *resolver = route_lookup_best_cover(rib, vrf_id, afi, &cursor);
+        route_path_t *resolver = route_lookup_best_cover(rib, vrf_id, resolve_afi, &cursor);
         if (!resolver)
         {
             return 0;
@@ -342,7 +344,14 @@ static int route_nh_resolve(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, con
             }
             if (gateway_out)
             {
-                *gateway_out = cursor;
+                if (resolver->key.source.family == AF_INET || resolver->key.source.family == AF_INET6)
+                {
+                    *gateway_out = resolver->key.source;
+                }
+                else
+                {
+                    *gateway_out = cursor;
+                }
             }
             if (ifindex_out)
             {
@@ -354,12 +363,13 @@ static int route_nh_resolve(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, con
         {
             return 1;
         }
-        if (resolver->nexthop.family != cursor.family)
+        if (resolver->nexthop.family != AF_INET && resolver->nexthop.family != AF_INET6)
         {
             return 0;
         }
 
         cursor = resolver->nexthop;
+        resolve_afi = (cursor.family == AF_INET) ? ROUTE_AFI_IPV4 : ROUTE_AFI_IPV6;
     }
 
     return 0;
@@ -393,7 +403,8 @@ static void route_relay_notify_state(const route_nh_watch_t *watch)
     payload->safi = watch->key.safi;
     payload->resolved = watch->resolved ? 1u : 0u;
     payload->out_ifindex = watch->out_ifindex;
-    payload->relay_addr = watch->key.nexthop_addr;
+    payload->nexthop_addr = watch->key.nexthop_addr;
+    payload->relay_addr = watch->relay_addr;
 
     dev_ipc_message_t *msg =
         dev_ipc_message_create(ROUTE_MSG_TYPE_NH_NOTIFY, DEV_MODULE_ID_ROUTE, watch->key.owner_module_id, 0, payload,
@@ -422,15 +433,12 @@ static int route_relay_validate_req(const route_nh_iter_req_t *req)
     {
         return 0;
     }
-    if (req->afi == ROUTE_AFI_IPV4)
+    if (req->afi != ROUTE_AFI_IPV4 && req->afi != ROUTE_AFI_IPV6)
     {
-        return req->nexthop_addr.family == AF_INET;
+        return 0;
     }
-    if (req->afi == ROUTE_AFI_IPV6)
-    {
-        return req->nexthop_addr.family == AF_INET6;
-    }
-    return 0;
+    /* 允许 v4/v6 任意 nexthop 家族，具体可达性由 route_nh_resolve 判定。 */
+    return req->nexthop_addr.family == AF_INET || req->nexthop_addr.family == AF_INET6;
 }
 
 void route_relay_handle_nh_register(dev_ipc_message_t *msg)
