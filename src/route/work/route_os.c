@@ -154,10 +154,16 @@ static int route_os_send(int cmd, const route_msg_entry_t *entry)
 
     int is_non_connected = (entry->protocol != ROUTE_PROTOCOL_CONNECTED && entry->protocol != ROUTE_PROTOCOL_BLACKHOLE);
     /*
-     * OS 网关统一使用原始下一跳（对端可达地址）。
-     * iter_nexthop_addr 仅用于 route 展示/调试，不参与内核网关下发。
+     * OS 网关优先使用迭代解析后的直连网关（iter_nexthop_addr）。
+     * 对于递归路由（如 nexthop 198.51.100.1 经 resolver 解析为 10.12.0.2），
+     * 内核无法直接使用原始递归 nexthop 作为网关（ENETUNREACH），
+     * 必须下发解析后的直连地址。
      */
     net_addr_t effective_gateway = entry->nexthop_addr;
+    if (entry->iter_nexthop_addr.family == AF_INET || entry->iter_nexthop_addr.family == AF_INET6)
+    {
+        effective_gateway = entry->iter_nexthop_addr;
+    }
     uint32_t effective_oif = entry->out_ifindex;
     if (entry->iter_out_ifindex != 0)
     {

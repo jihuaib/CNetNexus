@@ -344,14 +344,12 @@ static int route_nh_resolve(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, con
             }
             if (gateway_out)
             {
-                if (resolver->key.source.family == AF_INET || resolver->key.source.family == AF_INET6)
-                {
-                    *gateway_out = resolver->key.source;
-                }
-                else
-                {
-                    *gateway_out = cursor;
-                }
+                /*
+                 * 直连解析的网关地址 = 当前迭代光标（即被解析的 nexthop 地址）。
+                 * 不能使用 resolver->key.source，那是直连路由本端地址（如 10.12.0.1），
+                 * 而非对端可达网关（如 10.12.0.2）。
+                 */
+                *gateway_out = cursor;
             }
             if (ifindex_out)
             {

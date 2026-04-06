@@ -340,8 +340,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 "config",
                 "bgp 65002",
                 "af ipv4-unicast",
-                f"no neighbor {r2_peer_ip}",
-                "exit",
+                f"no neighbor {r2_peer_ip} enable",
                 "end",
             ],
         )

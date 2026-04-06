@@ -547,7 +547,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             rt,
             device="r1",
             destination=IPV4_PREFIX_ADDR,
-            iter_nh=r2_peer_v4,
+            iter_nh=r1_peer_v4,
             iter_oif="GE-1",
             timeout=40,
         )
@@ -597,7 +597,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             rt,
             device="r1",
             destination=IPV4_PREFIX_ADDR,
-            iter_nh=r2_peer_v6,
+            iter_nh=r1_peer_v6,
             iter_oif="GE-1",
             timeout=40,
         )
@@ -645,7 +645,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             rt,
             device="r1",
             destination=IPV4_PREFIX_ADDR,
-            iter_nh=r2_peer_v4,
+            iter_nh=r1_peer_v4,
             iter_oif="GE-1",
             timeout=40,
         )
@@ -687,7 +687,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             rt,
             device="r1",
             destination=IPV4_PREFIX_ADDR,
-            iter_nh=r2_peer_v4,
+            iter_nh=r1_peer_v4,
             iter_oif="GE-1",
             timeout=40,
         )
