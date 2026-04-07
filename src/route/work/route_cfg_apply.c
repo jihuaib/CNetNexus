@@ -83,7 +83,7 @@ static int batch_do_add(const char *name, uint16_t afi, const char *start_addr, 
             prefix_addr.u.v4 = cur;
 
             route_static_add(ROUTE_VRF_DEFAULT, ROUTE_AFI_IPV4, &prefix_addr, prefix_len, &nexthop_addr, 0,
-                             ROUTE_ADMIN_DIST_STATIC);
+                             ROUTE_ADMIN_DIST_STATIC, "");
 
             route_batch_entry_t *be = (route_batch_entry_t *)g_malloc0(sizeof(route_batch_entry_t));
             g_strlcpy(be->name, name, sizeof(be->name));
@@ -116,7 +116,7 @@ static int batch_do_add(const char *name, uint16_t afi, const char *start_addr, 
             prefix_addr.u.v6 = cur;
 
             route_static_add(ROUTE_VRF_DEFAULT, ROUTE_AFI_IPV6, &prefix_addr, prefix_len, &nexthop_addr, 0,
-                             ROUTE_ADMIN_DIST_STATIC);
+                             ROUTE_ADMIN_DIST_STATIC, "");
 
             route_batch_entry_t *be = (route_batch_entry_t *)g_malloc0(sizeof(route_batch_entry_t));
             g_strlcpy(be->name, name, sizeof(be->name));
@@ -150,10 +150,10 @@ void route_cfg_apply_static(route_apply_cmd_t *apply)
     {
         case ROUTE_APPLY_STATIC_ADD:
         {
-            int ret =
-                route_static_add(apply->u.static_add.vrf_id, apply->u.static_add.afi, &apply->u.static_add.prefix_addr,
-                                 apply->u.static_add.prefix_len, &apply->u.static_add.nexthop_addr,
-                                 apply->u.static_add.metric, apply->u.static_add.preference);
+            int ret = route_static_add(apply->u.static_add.vrf_id, apply->u.static_add.afi,
+                                       &apply->u.static_add.prefix_addr, apply->u.static_add.prefix_len,
+                                       &apply->u.static_add.nexthop_addr, apply->u.static_add.metric,
+                                       apply->u.static_add.preference, apply->u.static_add.out_ifname);
             route_recompute_iter_paths();
             apply->rc = (ret >= 0) ? 1 : -1;
             break;
@@ -161,9 +161,9 @@ void route_cfg_apply_static(route_apply_cmd_t *apply)
 
         case ROUTE_APPLY_STATIC_DEL:
         {
-            int ret =
-                route_static_del(apply->u.static_del.vrf_id, apply->u.static_del.afi, &apply->u.static_del.prefix_addr,
-                                 apply->u.static_del.prefix_len, &apply->u.static_del.nexthop_addr);
+            int ret = route_static_del(apply->u.static_del.vrf_id, apply->u.static_del.afi,
+                                       &apply->u.static_del.prefix_addr, apply->u.static_del.prefix_len,
+                                       &apply->u.static_del.nexthop_addr, apply->u.static_del.out_ifname);
             route_recompute_iter_paths();
             apply->rc = (ret > 0) ? ret : 0;
             break;
@@ -216,7 +216,7 @@ void route_cfg_apply_batch(route_apply_cmd_t *apply)
                 GList *next = l->next;
                 if (strcmp(be->name, name) == 0)
                 {
-                    route_static_del(be->vrf_id, be->afi, &be->prefix_addr, be->prefix_len, &be->nexthop_addr);
+                    route_static_del(be->vrf_id, be->afi, &be->prefix_addr, be->prefix_len, &be->nexthop_addr, "");
                     g_route_work_local->batch_entries = g_list_delete_link(g_route_work_local->batch_entries, l);
                     g_free(be);
                 }
@@ -242,7 +242,7 @@ void route_cfg_apply_batch(route_apply_cmd_t *apply)
                 if (strcmp(be->name, name) == 0)
                 {
                     int ret =
-                        route_static_del(be->vrf_id, be->afi, &be->prefix_addr, be->prefix_len, &be->nexthop_addr);
+                        route_static_del(be->vrf_id, be->afi, &be->prefix_addr, be->prefix_len, &be->nexthop_addr, "");
                     if (ret > 0)
                     {
                         total++;

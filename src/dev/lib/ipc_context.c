@@ -987,6 +987,15 @@ void dev_ipc_destroy(dev_ipc_context_t *ctx)
     }
     if (ctx->msg_queue)
     {
+        /* 排空残留的应用消息（IO 线程退出前最后一批推入的消息可能未被 worker 处理） */
+        dev_ipc_message_t *residual;
+        while ((residual = g_async_queue_try_pop(ctx->msg_queue)) != NULL)
+        {
+            if (residual != &g_worker_exit_sentinel)
+            {
+                dev_ipc_message_free(residual);
+            }
+        }
         g_async_queue_unref(ctx->msg_queue);
         ctx->msg_queue = NULL;
     }

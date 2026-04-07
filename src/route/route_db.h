@@ -19,25 +19,28 @@
  * @param afi         地址族
  * @param prefix_str  前缀地址字符串
  * @param prefix_len  前缀长度
- * @param nexthop_str 下一跳地址字符串
+ * @param nexthop_str 下一跳地址字符串（interface-only 时传空字符串）
  * @param metric      度量值
  * @param preference  管理距离
+ * @param ifname      出接口逻辑名（不约束时传空字符串）
  */
 void route_db_upsert_static(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const char *prefix_str,
-                            uint8_t prefix_len, const char *nexthop_str, int32_t metric, int32_t preference);
+                            uint8_t prefix_len, const char *nexthop_str, int32_t metric, int32_t preference,
+                            const char *ifname);
 
 /**
- * @brief 删除一条静态路由记录（精确匹配 nexthop）
+ * @brief 删除一条静态路由记录（精确匹配 nexthop + ifname）
  *
  * @param ctx         IPC 上下文
  * @param vrf_id      VRF ID
  * @param afi         地址族
  * @param prefix_str  前缀地址字符串
  * @param prefix_len  前缀长度
- * @param nexthop_str 下一跳地址字符串
+ * @param nexthop_str 下一跳地址字符串（interface-only 时传空字符串）
+ * @param ifname      出接口逻辑名（不约束时传空字符串）
  */
 void route_db_delete_static(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const char *prefix_str,
-                            uint8_t prefix_len, const char *nexthop_str);
+                            uint8_t prefix_len, const char *nexthop_str, const char *ifname);
 
 /**
  * @brief 删除某前缀下所有静态路由记录

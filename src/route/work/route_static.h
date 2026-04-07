@@ -11,24 +11,30 @@
 #include <stdint.h>
 
 #include "dev.h"
+#include "if_event.h"
 #include "net_addr.h"
 
 /**
- * @brief 候选静态路由条目键（prefix + nexthop 唯一标识一条静态路由）
- *        静态路由的 path source == nexthop，因此 nexthop 也是区分多条等价路由的 key
+ * @brief 候选静态路由条目键（prefix + nexthop + out_ifname 唯一标识一条静态路由）
+ *
+ * 三种模式：
+ * - 纯 nexthop：nexthop_addr 有值，out_ifname 空
+ * - nexthop + interface：nexthop_addr 有值，out_ifname 有值
+ * - interface-only：nexthop_addr 全零，out_ifname 有值
  */
 typedef struct route_static_entry_key
 {
-    uint32_t vrf_id;         /**< VRF ID */
-    uint16_t afi;            /**< 地址族（ROUTE_AFI_IPV4 / ROUTE_AFI_IPV6） */
-    uint8_t prefix_len;      /**< 前缀长度 */
-    uint8_t _pad;            /**< 填充对齐 */
-    net_addr_t prefix_addr;  /**< 前缀地址（二进制） */
-    net_addr_t nexthop_addr; /**< 下一跳地址（二进制，同时作为 RIB source） */
+    uint32_t vrf_id;                      /**< VRF ID */
+    uint16_t afi;                         /**< 地址族（ROUTE_AFI_IPV4 / ROUTE_AFI_IPV6） */
+    uint8_t prefix_len;                   /**< 前缀长度 */
+    uint8_t _pad;                         /**< 填充对齐 */
+    net_addr_t prefix_addr;               /**< 前缀地址（二进制） */
+    net_addr_t nexthop_addr;              /**< 下一跳地址（二进制，全零表示 interface-only） */
+    char out_ifname[IF_LOGICAL_NAME_MAX]; /**< 出接口逻辑名（空字符串=不约束） */
 } route_static_entry_key_t;
 
 /**
- * @brief 候选静态路由条目（存于候选表，等待 nexthop 可达后写入 RIB）
+ * @brief 候选静态路由条目（存于候选表，等待可达后写入 RIB）
  */
 typedef struct route_static_entry
 {
@@ -37,7 +43,9 @@ typedef struct route_static_entry
     int32_t preference;           /**< 管理距离 */
     uint8_t nh_resolved;          /**< nexthop 当前是否可达（1=可达，0=不可达） */
     uint8_t in_rib;               /**< 是否已写入 RIB（1=已写入，0=未写入） */
-    uint8_t _pad[6];              /**< 填充对齐 */
+    uint8_t has_nexthop;          /**< 1=有 nexthop IP，0=interface-only */
+    uint8_t _pad[5];              /**< 填充对齐 */
+    uint32_t cfg_ifindex;         /**< 配置时/刷新时解析的接口 ifindex */
 } route_static_entry_t;
 
 /**
@@ -48,23 +56,24 @@ void route_static_init(void);
 /**
  * @brief 添加或更新一条候选静态路由
  *
- * 立即检查 nexthop 可达性：若可达则写入 RIB 并通知订阅者；否则仅存入候选表等待迭代。
- * 若条目已存在（prefix+nexthop 相同），则更新 metric/preference 并重新检查可达性。
+ * 立即检查可达性：若可达则写入 RIB 并通知订阅者；否则仅存入候选表等待迭代。
+ * 若条目已存在（prefix+nexthop+ifname 相同），则更新 metric/preference 并重新检查可达性。
  *
  * @param vrf_id       VRF ID
  * @param afi          地址族
  * @param prefix_addr  前缀地址（二进制）
  * @param prefix_len   前缀长度
- * @param nexthop_addr 下一跳地址（二进制）
+ * @param nexthop_addr 下一跳地址（二进制，interface-only 时传全零地址）
  * @param metric       度量值
  * @param preference   管理距离
+ * @param out_ifname   出接口逻辑名（空字符串或 NULL 表示不约束）
  * @return 0 成功，-1 失败（参数非法或内存不足）
  */
 int route_static_add(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr, uint8_t prefix_len,
-                     const net_addr_t *nexthop_addr, int32_t metric, int32_t preference);
+                     const net_addr_t *nexthop_addr, int32_t metric, int32_t preference, const char *out_ifname);
 
 /**
- * @brief 删除指定的候选静态路由（prefix + nexthop 精确匹配）
+ * @brief 删除指定的候选静态路由（prefix + nexthop + ifname 精确匹配）
  *
  * 若该路由已在 RIB 中，则同步撤销并通知订阅者。
  *
@@ -72,11 +81,12 @@ int route_static_add(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_add
  * @param afi          地址族
  * @param prefix_addr  前缀地址（二进制）
  * @param prefix_len   前缀长度
- * @param nexthop_addr 下一跳地址（二进制）
+ * @param nexthop_addr 下一跳地址（二进制，interface-only 时传全零地址）
+ * @param out_ifname   出接口逻辑名（空字符串或 NULL 表示不约束）
  * @return 1=删除成功，0=未命中，-1=参数非法
  */
 int route_static_del(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr, uint8_t prefix_len,
-                     const net_addr_t *nexthop_addr);
+                     const net_addr_t *nexthop_addr, const char *out_ifname);
 
 /**
  * @brief 删除某前缀下所有候选静态路由
@@ -107,6 +117,14 @@ int route_static_del_prefix(uint32_t vrf_id, uint16_t afi, const net_addr_t *pre
  */
 void route_static_on_nh_change(uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop_addr, int resolved,
                                const net_addr_t *gateway, uint32_t out_ifindex);
+
+/**
+ * @brief 接口状态变化时，重检查所有 interface-only 静态路由的可达性
+ *
+ * 遍历候选表中 has_nexthop=0 的条目（Null0 除外），基于 RIB 中 CONNECTED 路由判断接口可达性。
+ * 可达则写入 RIB，不可达则从 RIB 撤销。
+ */
+void route_static_on_if_change(void);
 
 /**
  * @brief 格式化输出候选静态路由表到缓冲区

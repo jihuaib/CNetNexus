@@ -14,6 +14,7 @@
 #include "db.h"
 #include "dev.h"
 #include "errcode.h"
+#include "if_event.h"
 #include "log.h"
 #include "route.h"
 #include "route_bdr.h"
@@ -28,7 +29,7 @@ static const db_column_def_t ROUTE_STATIC_COLS[] = {
     {"vrf_id", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},     {"afi", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"},
     {"prefix", DB_TYPE_TEXT, DB_COL_NOT_NULL, NULL},       {"prefix_len", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
     {"nexthop", DB_TYPE_TEXT, DB_COL_NOT_NULL, NULL},      {"metric", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},
-    {"preference", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"},
+    {"preference", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"}, {"ifname", DB_TYPE_TEXT, 0, ""},
 };
 
 static const db_table_def_t ROUTE_STATIC_TABLE = {
@@ -157,6 +158,28 @@ static void route_on_ready(dev_ipc_message_t *msg)
         route_worker_shutdown();
         send_phase_response(ctx, msg, ERRCODE_FAIL);
         return;
+    }
+
+    /* 订阅 IF 事件（UP/DOWN/ADDR_ADD/ADDR_DEL），用于 interface-only 静态路由感知接口状态 */
+    {
+        if_subscribe_req_t *sub_req = (if_subscribe_req_t *)g_malloc0(sizeof(if_subscribe_req_t));
+        sub_req->if_type_mask = IF_INTF_TYPE_ALL;
+        sub_req->event_mask = IF_EVENT_ALL;
+        sub_req->flags = 0;
+        dev_ipc_message_t *sub_msg =
+            dev_ipc_message_create(IF_MSG_TYPE_SUBSCRIBE, DEV_MODULE_ID_ROUTE, DEV_MODULE_ID_IF, 0, sub_req,
+                                   sizeof(if_subscribe_req_t), g_free);
+        if (sub_msg)
+        {
+            dev_ipc_send_response(ctx, sub_msg);
+            dev_ipc_message_free(sub_msg);
+            LOG_INFO("Subscribed to IF events (ALL types, ALL events)");
+        }
+        else
+        {
+            g_free(sub_req);
+            LOG_WARN("Failed to subscribe to IF events");
+        }
     }
 
     LOG_INFO("Route database tables ready");
@@ -298,6 +321,19 @@ void route_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
                 dev_ipc_message_free(msg);
             }
             return;
+
+        /* ---- IF 事件通知 ---- */
+        case IF_MSG_TYPE_EVENT:
+            if (route_worker_post(ROUTE_WORKER_CMD_IF_EVENT, msg) != 0)
+            {
+                LOG_WARN("Route: failed to post IF_EVENT to worker");
+                dev_ipc_message_free(msg);
+            }
+            return;
+
+        case IF_MSG_TYPE_ACK:
+            /* IF 订阅应答，静默丢弃 */
+            break;
 
         default:
             LOG_WARN("Received unknown message type: 0x%08X", msg->msg_type);

@@ -430,25 +430,40 @@ int if_cfg_apply_ip(gboolean is_no, const char *logical_name, const net_prefix_t
 
     if (is_no)
     {
+        uint32_t del_if_type = if_cfg_type_to_mask(if_detect_type(entry->physical_name));
+        uint32_t del_ifindex = (uint32_t)if_nametoindex(entry->physical_name);
+
         if (family == 0)
         {
             if (net_prefix_is_set(&entry->prefix_v4))
             {
+                net_prefix_t old_v4 = entry->prefix_v4;
                 if (!entry->shutdown &&
                     if_sync_connected_prefix(&entry->prefix_v4, entry->physical_name, TRUE) != ERRCODE_SUCCESS)
                 {
                     return ERRCODE_FAIL;
                 }
                 memset(&entry->prefix_v4, 0, sizeof(entry->prefix_v4));
+                if (del_if_type != 0)
+                {
+                    if_pub_notify_addr(g_if_local->subscribers, entry, del_if_type, IF_EVENT_ADDR_DEL, &old_v4,
+                                       del_ifindex);
+                }
             }
             if (net_prefix_is_set(&entry->prefix_v6))
             {
+                net_prefix_t old_v6 = entry->prefix_v6;
                 if (!entry->shutdown &&
                     if_sync_connected_prefix(&entry->prefix_v6, entry->physical_name, TRUE) != ERRCODE_SUCCESS)
                 {
                     return ERRCODE_FAIL;
                 }
                 memset(&entry->prefix_v6, 0, sizeof(entry->prefix_v6));
+                if (del_if_type != 0)
+                {
+                    if_pub_notify_addr(g_if_local->subscribers, entry, del_if_type, IF_EVENT_ADDR_DEL, &old_v6,
+                                       del_ifindex);
+                }
             }
             LOG_INFO("IF: %s all IP addresses cleared", logical_name);
             return ERRCODE_SUCCESS;
@@ -462,11 +477,17 @@ int if_cfg_apply_ip(gboolean is_no, const char *logical_name, const net_prefix_t
         }
         if (net_prefix_is_set(dst))
         {
+            net_prefix_t old_pfx = *dst;
             if (!entry->shutdown && if_sync_connected_prefix(dst, entry->physical_name, TRUE) != ERRCODE_SUCCESS)
             {
                 return ERRCODE_FAIL;
             }
             memset(dst, 0, sizeof(*dst));
+            if (del_if_type != 0)
+            {
+                if_pub_notify_addr(g_if_local->subscribers, entry, del_if_type, IF_EVENT_ADDR_DEL, &old_pfx,
+                                   del_ifindex);
+            }
         }
 
         LOG_INFO("IF: %s %s address cleared", logical_name, (family == AF_INET6) ? "IPv6" : "IPv4");
@@ -516,6 +537,19 @@ int if_cfg_apply_ip(gboolean is_no, const char *logical_name, const net_prefix_t
             }
             return ERRCODE_FAIL;
         }
+    }
+
+    /* 发布地址变更事件 */
+    uint32_t add_if_type = if_cfg_type_to_mask(if_detect_type(entry->physical_name));
+    if (add_if_type != 0)
+    {
+        uint32_t add_ifindex = (uint32_t)if_nametoindex(entry->physical_name);
+        if (had_old && !if_prefix_equal(&old_prefix, prefix))
+        {
+            if_pub_notify_addr(g_if_local->subscribers, entry, add_if_type, IF_EVENT_ADDR_DEL, &old_prefix,
+                               add_ifindex);
+        }
+        if_pub_notify_addr(g_if_local->subscribers, entry, add_if_type, IF_EVENT_ADDR_ADD, prefix, add_ifindex);
     }
 
     LOG_INFO("IF: %s %s=%s/%u configured", logical_name, (prefix->addr.family == AF_INET6) ? "IPv6" : "IPv4", ip_str,

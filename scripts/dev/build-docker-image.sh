@@ -13,6 +13,8 @@ Usage: scripts/dev/build-docker-image.sh [options]
 
 Options:
   --release                    Build release image (default: debug)
+  --asan                       Enable AddressSanitizer build (debug target only)
+  --no-cache                   Force a full rebuild (skip Docker layer cache)
   --docker-image <name[:tag]>  Add one extra docker tag for this build.
                                Examples:
                                  --docker-image netnexus-ci:localtest
@@ -32,11 +34,24 @@ EOF
 EXTRA_DOCKER_IMAGE=""
 BUILD_TARGET="debug"
 BUILD_TYPE="Debug"
+ENABLE_ASAN="OFF"
+NO_CACHE=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --release)
             BUILD_TARGET="production"
             BUILD_TYPE="Release"
+            shift
+            ;;
+        --asan)
+            ENABLE_ASAN="ON"
+            # Force --no-cache when ASAN changes, because BuildKit may reuse
+            # cached builder output from a non-ASAN build.
+            NO_CACHE="--no-cache"
+            shift
+            ;;
+        --no-cache)
+            NO_CACHE="--no-cache"
             shift
             ;;
         --docker-image)
@@ -59,6 +74,11 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [[ "${ENABLE_ASAN}" == "ON" && "${BUILD_TARGET}" == "production" ]]; then
+    echo "Error: --asan is only supported for debug build target" >&2
+    exit 1
+fi
 
 if [[ -n "${EXTRA_DOCKER_IMAGE}" && "${EXTRA_DOCKER_IMAGE}" != *:* ]]; then
     EXTRA_DOCKER_IMAGE="${EXTRA_DOCKER_IMAGE}:latest"
@@ -120,13 +140,19 @@ fi
 # Build with multiple tags
 # --network=host 让构建容器复用宿主机网络，解决容器内 DNS 解析失败的问题
 echo "Build target: ${BUILD_TARGET} (${BUILD_TYPE})"
+echo "ASAN: ${ENABLE_ASAN}"
+if [ -n "${NO_CACHE}" ]; then
+    echo "Cache: disabled (--no-cache)"
+fi
 echo ""
 
 docker build \
     --network=host \
+    ${NO_CACHE} \
     "${PLATFORM_FLAG[@]}" \
     --target ${BUILD_TARGET} \
     --build-arg BUILD_TYPE=${BUILD_TYPE} \
+    --build-arg ENABLE_ASAN=${ENABLE_ASAN} \
     --build-arg VERSION=${VERSION} \
     --build-arg GIT_COMMIT=${GIT_COMMIT} \
     "${BUILD_TAGS[@]}" \

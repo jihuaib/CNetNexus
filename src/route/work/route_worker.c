@@ -516,6 +516,17 @@ static int worker_dispatch_cmd(route_worker_cmd_t *cmd)
             return 0;
         }
 
+        case ROUTE_WORKER_CMD_IF_EVENT:
+            /* IF 事件（UP/DOWN/ADDR_ADD/ADDR_DEL）：触发 interface-only 静态路由重检查 */
+            LOG_DEBUG("[route_worker] 收到 IF 事件，触发 interface-only 静态路由重检查");
+            route_static_on_if_change();
+            if (cmd->msg)
+            {
+                dev_ipc_message_free(cmd->msg);
+                cmd->msg = NULL;
+            }
+            break;
+
         case ROUTE_WORKER_CMD_SHUTDOWN:
             if (cmd->msg)
             {
@@ -660,6 +671,9 @@ static void *route_worker_thread_fn(void *arg)
 
             LOG_WARN("[route_worker] 未知 epoll 事件 ptr=%p", events[i].data.ptr);
         }
+
+        /* 定时处理 route_calc 延迟任务（例如 OS install 失败后的重试）。 */
+        route_calc_on_periodic();
     }
 
 out:

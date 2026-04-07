@@ -56,6 +56,13 @@ void route_calc_on_path_add(const route_head_t *head);
 void route_calc_on_path_del(const route_head_t *head, const route_path_t *del_path);
 
 /**
+ * @brief 周期处理（由 worker 主循环调用）
+ *
+ * 用于处理 OS install 失败后的延迟重试队列。
+ */
+void route_calc_on_periodic(void);
+
+/**
  * @brief 向指定模块发送当前所有最优路径快照（用于 SUBSCRIBE+FULL 响应）
  *
  * 遍历 RIB 中标记为 OS_INSTALLED 的路径，按 protocol 和 vrf_id 过滤后打包为

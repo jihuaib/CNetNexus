@@ -19,8 +19,11 @@
 #include "route_worker.h"
 
 void route_db_upsert_static(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const char *prefix_str,
-                            uint8_t prefix_len, const char *nexthop_str, int32_t metric, int32_t preference)
+                            uint8_t prefix_len, const char *nexthop_str, int32_t metric, int32_t preference,
+                            const char *ifname)
 {
+    const char *safe_ifname = ifname ? ifname : "";
+
     db_record_t *rec = db_record_new();
     db_record_set_int(rec, "vrf_id", vrf_id);
     db_record_set_int(rec, "afi", afi);
@@ -29,14 +32,16 @@ void route_db_upsert_static(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t af
     db_record_set_text(rec, "nexthop", nexthop_str);
     db_record_set_int(rec, "metric", metric);
     db_record_set_int(rec, "preference", preference);
+    db_record_set_text(rec, "ifname", safe_ifname);
 
-    db_condition_t conds[5];
+    db_condition_t conds[6];
     uint32_t nc = 0;
     conds[nc++] = (db_condition_t){"vrf_id", DB_CMP_EQ, db_value_int(vrf_id)};
     conds[nc++] = (db_condition_t){"afi", DB_CMP_EQ, db_value_int(afi)};
     conds[nc++] = (db_condition_t){"prefix", DB_CMP_EQ, db_value_text(prefix_str)};
     conds[nc++] = (db_condition_t){"prefix_len", DB_CMP_EQ, db_value_int(prefix_len)};
     conds[nc++] = (db_condition_t){"nexthop", DB_CMP_EQ, db_value_text(nexthop_str)};
+    conds[nc++] = (db_condition_t){"ifname", DB_CMP_EQ, db_value_text(safe_ifname)};
     db_filter_t filter = {conds, nc};
 
     db_rpc_upsert(ctx, "route_static", rec, &filter);
@@ -48,15 +53,18 @@ void route_db_upsert_static(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t af
 }
 
 void route_db_delete_static(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const char *prefix_str,
-                            uint8_t prefix_len, const char *nexthop_str)
+                            uint8_t prefix_len, const char *nexthop_str, const char *ifname)
 {
-    db_condition_t conds[5];
+    const char *safe_ifname = ifname ? ifname : "";
+
+    db_condition_t conds[6];
     uint32_t nc = 0;
     conds[nc++] = (db_condition_t){"vrf_id", DB_CMP_EQ, db_value_int(vrf_id)};
     conds[nc++] = (db_condition_t){"afi", DB_CMP_EQ, db_value_int(afi)};
     conds[nc++] = (db_condition_t){"prefix", DB_CMP_EQ, db_value_text(prefix_str)};
     conds[nc++] = (db_condition_t){"prefix_len", DB_CMP_EQ, db_value_int(prefix_len)};
     conds[nc++] = (db_condition_t){"nexthop", DB_CMP_EQ, db_value_text(nexthop_str)};
+    conds[nc++] = (db_condition_t){"ifname", DB_CMP_EQ, db_value_text(safe_ifname)};
     db_filter_t filter = {conds, nc};
 
     db_rpc_delete(ctx, "route_static", &filter);
@@ -144,18 +152,32 @@ static int route_restore_static_from_db(dev_ipc_context_t *ctx)
         int32_t preference = (int32_t)db_row_get_int(row, "preference", ROUTE_ADMIN_DIST_STATIC);
         const char *prefix = db_row_get_text(row, "prefix", NULL);
         const char *nexthop = db_row_get_text(row, "nexthop", NULL);
+        const char *ifname = db_row_get_text(row, "ifname", "");
 
-        if (!prefix || !nexthop)
+        if (!prefix)
         {
             continue;
         }
 
+        /* nexthop 可以为空（interface-only 路由） */
+        int has_nh = (nexthop && nexthop[0] != '\0');
+
         net_addr_t prefix_addr;
         net_addr_t nexthop_addr;
-        if (net_addr_from_str(prefix, &prefix_addr) != 0 || net_addr_from_str(nexthop, &nexthop_addr) != 0)
+        memset(&nexthop_addr, 0, sizeof(nexthop_addr));
+        if (net_addr_from_str(prefix, &prefix_addr) != 0)
         {
-            LOG_WARN("Route restore: invalid static row prefix='%s' nexthop='%s', skipped", prefix, nexthop);
+            LOG_WARN("Route restore: invalid static row prefix='%s', skipped", prefix);
             continue;
+        }
+        if (has_nh && net_addr_from_str(nexthop, &nexthop_addr) != 0)
+        {
+            LOG_WARN("Route restore: invalid static row nexthop='%s', skipped", nexthop);
+            continue;
+        }
+        if (!has_nh)
+        {
+            nexthop_addr.family = prefix_addr.family;
         }
         if (net_addr_prefix_normalize(&prefix_addr, prefix_len) != 0)
         {
@@ -168,8 +190,9 @@ static int route_restore_static_from_db(dev_ipc_context_t *ctx)
         if (strcmp(prefix, normalized_prefix) != 0)
         {
             /* 启动恢复时顺带迁移历史非规范前缀，避免后续删除匹配不到旧记录 */
-            route_db_upsert_static(ctx, vrf_id, afi, normalized_prefix, prefix_len, nexthop, metric, preference);
-            route_db_delete_static(ctx, vrf_id, afi, prefix, prefix_len, nexthop);
+            route_db_upsert_static(ctx, vrf_id, afi, normalized_prefix, prefix_len, has_nh ? nexthop : "", metric,
+                                   preference, ifname);
+            route_db_delete_static(ctx, vrf_id, afi, prefix, prefix_len, has_nh ? nexthop : "", ifname);
             LOG_INFO("Route restore: normalized static prefix %s/%u -> %s/%u", prefix, prefix_len, normalized_prefix,
                      prefix_len);
         }
@@ -184,6 +207,10 @@ static int route_restore_static_from_db(dev_ipc_context_t *ctx)
         apply.u.static_add.nexthop_addr = nexthop_addr;
         apply.u.static_add.metric = metric;
         apply.u.static_add.preference = preference;
+        if (ifname)
+        {
+            g_strlcpy(apply.u.static_add.out_ifname, ifname, sizeof(apply.u.static_add.out_ifname));
+        }
 
         if (route_worker_dispatch_apply(&apply) != 0 || apply.rc < 0)
         {

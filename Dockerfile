@@ -34,13 +34,14 @@ RUN apt-get update && \
 FROM base-dev AS builder
 
 ARG BUILD_TYPE=Release
+ARG ENABLE_ASAN=OFF
 ARG VERSION=dev
 ARG GIT_COMMIT=unknown
 
 COPY . /build
 WORKDIR /build
 
-RUN cmake -B build -DCMAKE_BUILD_TYPE=${BUILD_TYPE} && \
+RUN cmake -B build -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DENABLE_ASAN=${ENABLE_ASAN} && \
     cmake --build build --config ${BUILD_TYPE}
 
 # ============================================================
@@ -66,6 +67,7 @@ CMD ["/bin/bash"]
 # ============================================================
 FROM ubuntu:24.04 AS deployable-base
 
+ARG ENABLE_ASAN=OFF
 ARG VERSION=dev
 ARG GIT_COMMIT=unknown
 
@@ -86,6 +88,7 @@ RUN apt-get update && \
     iputils-ping \
     net-tools \
     telnet \
+    && if [ "${ENABLE_ASAN}" = "ON" ]; then apt-get install -y --no-install-recommends libasan8; fi \
     && rm -rf /var/lib/apt/lists/*
 
 # 从 builder 阶段直接复制构建产物并安装

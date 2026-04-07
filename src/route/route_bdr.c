@@ -61,25 +61,43 @@ int route_bdr_handle_show_config(dev_ipc_message_t *msg)
         int64_t prefix_len = db_row_get_int(row, "prefix_len", 0);
         const char *nexthop = db_row_get_text(row, "nexthop", NULL);
         int64_t metric = db_row_get_int(row, "metric", 0);
+        const char *ifname = db_row_get_text(row, "ifname", "");
 
-        if (!prefix || !nexthop)
+        if (!prefix)
         {
             continue;
         }
 
-        if (afi == ROUTE_AFI_IPV4)
+        int has_nh = (nexthop && nexthop[0] != '\0');
+        int has_if = (ifname && ifname[0] != '\0');
+
+        if (!has_nh && !has_if)
         {
-            g_string_append(out, "!\r\n");
-            g_string_append_printf(out, "route ipv4 %s %ld %s", prefix, prefix_len, nexthop);
+            continue;
         }
-        else if (afi == ROUTE_AFI_IPV6)
+
+        const char *afi_str = (afi == ROUTE_AFI_IPV6) ? "ipv6" : "ipv4";
+        if (afi != ROUTE_AFI_IPV4 && afi != ROUTE_AFI_IPV6)
         {
-            g_string_append(out, "!\r\n");
-            g_string_append_printf(out, "route ipv6 %s %ld %s", prefix, prefix_len, nexthop);
+            continue;
+        }
+
+        g_string_append(out, "!\r\n");
+        if (has_nh && has_if)
+        {
+            /* nexthop + interface */
+            g_string_append_printf(out, "route %s %s %ld %s interface %s", afi_str, prefix, prefix_len, nexthop,
+                                   ifname);
+        }
+        else if (has_if)
+        {
+            /* interface-only */
+            g_string_append_printf(out, "route %s %s %ld interface %s", afi_str, prefix, prefix_len, ifname);
         }
         else
         {
-            continue;
+            /* 纯 nexthop */
+            g_string_append_printf(out, "route %s %s %ld %s", afi_str, prefix, prefix_len, nexthop);
         }
 
         if (metric != 0)

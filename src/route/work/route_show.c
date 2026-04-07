@@ -126,6 +126,8 @@ static const char *proto_name(uint32_t protocol)
             return "B";
         case ROUTE_PROTOCOL_OSPF:
             return "O";
+        case ROUTE_PROTOCOL_BLACKHOLE:
+            return "S";
         default:
             return "?";
     }
@@ -143,6 +145,8 @@ static const char *proto_name_long(uint32_t protocol)
             return "bgp";
         case ROUTE_PROTOCOL_OSPF:
             return "ospf";
+        case ROUTE_PROTOCOL_BLACKHOLE:
+            return "static(blackhole)";
         default:
             return "unknown";
     }
@@ -192,7 +196,14 @@ static void show_path_cb(const route_head_t *head, const route_path_t *path, voi
     net_addr_to_str(&head->key.addr, addr_str, sizeof(addr_str));
     net_addr_to_str(&path->nexthop, nh_str, sizeof(nh_str));
     snprintf(prefix_str, sizeof(prefix_str), "%s/%u", addr_str, head->key.prefix_len);
-    ifindex_to_name(path->out_ifindex, ctx->intf_map, oif_str);
+    if (path->key.protocol == ROUTE_PROTOCOL_BLACKHOLE)
+    {
+        g_strlcpy(oif_str, "Null0", IF_NAMESIZE);
+    }
+    else
+    {
+        ifindex_to_name(path->out_ifindex, ctx->intf_map, oif_str);
+    }
 
     g_string_append_printf(ctx->buf, "%-2s %-24s %-20s %-14s %4d %4d\r\n", proto_name(path->key.protocol), prefix_str,
                            nh_str, oif_str, path->metric, path->preference);
@@ -232,8 +243,16 @@ static void detail_path_cb(const route_head_t *head, const route_path_t *path, v
     net_addr_to_str(&head->key.addr, addr_str, sizeof(addr_str));
     net_addr_to_str(&path->nexthop, nh_str, sizeof(nh_str));
     net_addr_to_str(&path->relay_addr, iter_nh_str, sizeof(iter_nh_str));
-    ifindex_to_name(path->out_ifindex, ctx->intf_map, oif_str);
-    ifindex_to_name(path->iter_out_ifindex, ctx->intf_map, iter_oif_str);
+    if (path->key.protocol == ROUTE_PROTOCOL_BLACKHOLE)
+    {
+        g_strlcpy(oif_str, "Null0", IF_NAMESIZE);
+        g_strlcpy(iter_oif_str, "Null0", IF_NAMESIZE);
+    }
+    else
+    {
+        ifindex_to_name(path->out_ifindex, ctx->intf_map, oif_str);
+        ifindex_to_name(path->iter_out_ifindex, ctx->intf_map, iter_oif_str);
+    }
 
     /* 格式化更新时间 */
     time_t sec = (time_t)(path->updated_at_usec / G_USEC_PER_SEC);

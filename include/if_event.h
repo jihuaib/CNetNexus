@@ -11,6 +11,7 @@
 #include <stdint.h>
 
 #include "dev.h"
+#include "net_addr.h"
 
 // ============================================================================
 // 接口类型位图
@@ -29,6 +30,10 @@
 #define IF_EVENT_UP (1u << 0)
 /** 接口 DOWN 事件 */
 #define IF_EVENT_DOWN (1u << 1)
+/** 接口地址新增事件 */
+#define IF_EVENT_ADDR_ADD (1u << 2)
+/** 接口地址删除事件 */
+#define IF_EVENT_ADDR_DEL (1u << 3)
 /** 通配：匹配所有事件 */
 #define IF_EVENT_ALL 0xFFFFFFFFu
 
@@ -80,6 +85,22 @@ typedef struct if_event_msg
     char logical_name[IF_LOGICAL_NAME_MAX]; /**< 逻辑接口名（如 GE-1） */
     char physical_name[IFNAMSIZ];           /**< 物理接口名（如 eth0） */
 } if_event_msg_t;
+
+/**
+ * @brief IF 地址变更事件消息载荷（IF_EVENT_ADDR_ADD / IF_EVENT_ADDR_DEL 专用）
+ */
+typedef struct if_addr_event_msg
+{
+    uint32_t if_type;                       /**< 接口类型（单值，对应 IF_INTF_TYPE_* 某一位） */
+    uint32_t event;                         /**< 事件类型（IF_EVENT_ADDR_ADD 或 IF_EVENT_ADDR_DEL） */
+    char logical_name[IF_LOGICAL_NAME_MAX]; /**< 逻辑接口名（如 GE-1） */
+    char physical_name[IFNAMSIZ];           /**< 物理接口名（如 eth0） */
+    uint16_t afi;                           /**< 地址族（ROUTE_AFI_IPV4 / ROUTE_AFI_IPV6） */
+    uint8_t prefix_len;                     /**< 前缀长度 */
+    uint8_t _pad;                           /**< 对齐填充 */
+    net_addr_t addr;                        /**< 接口地址 */
+    uint32_t ifindex;                       /**< 接口索引 */
+} if_addr_event_msg_t;
 
 /**
  * @brief IF 通用 ACK 载荷

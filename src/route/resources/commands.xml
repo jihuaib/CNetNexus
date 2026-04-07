@@ -59,6 +59,15 @@
                     <type>uint(0-255)</type>
                     <description>Route metric value (0-255)</description>
                 </element>
+                <element cfg-id="9" type="keyword">
+                    <name>interface</name>
+                    <description>Specify output interface</description>
+                </element>
+                <element cfg-id="10" type="parameter">
+                    <name>&lt;ifname&gt;</name>
+                    <type>dynamic(4:1,string(1-31))</type>
+                    <description>Output interface name</description>
+                </element>
             </elements>
 
             <commands>
@@ -100,6 +109,74 @@
                 <!-- no route ipv6 <prefix> <prefix-length> <nexthop> -->
                 <command>
                     <expression>1 2 4 5 7 8</expression>
+                    <views>config</views>
+                </command>
+
+                <!-- ===== nexthop + interface（IPv4）===== -->
+                <!-- route ipv4 <prefix> <pfxlen> <nexthop> interface <ifname> -->
+                <command>
+                    <expression>2 3 5 6 8 11 12</expression>
+                    <views>config</views>
+                </command>
+                <!-- route ipv4 <prefix> <pfxlen> <nexthop> interface <ifname> metric <value> -->
+                <command>
+                    <expression>2 3 5 6 8 11 12 9 10</expression>
+                    <views>config</views>
+                </command>
+                <!-- no route ipv4 <prefix> <pfxlen> <nexthop> interface <ifname> -->
+                <command>
+                    <expression>1 2 3 5 6 8 11 12</expression>
+                    <views>config</views>
+                </command>
+
+                <!-- ===== interface-only（IPv4）===== -->
+                <!-- route ipv4 <prefix> <pfxlen> interface <ifname> -->
+                <command>
+                    <expression>2 3 5 6 11 12</expression>
+                    <views>config</views>
+                </command>
+                <!-- route ipv4 <prefix> <pfxlen> interface <ifname> metric <value> -->
+                <command>
+                    <expression>2 3 5 6 11 12 9 10</expression>
+                    <views>config</views>
+                </command>
+                <!-- no route ipv4 <prefix> <pfxlen> interface <ifname> -->
+                <command>
+                    <expression>1 2 3 5 6 11 12</expression>
+                    <views>config</views>
+                </command>
+
+                <!-- ===== nexthop + interface（IPv6）===== -->
+                <!-- route ipv6 <prefix> <pfxlen> <nexthop> interface <ifname> -->
+                <command>
+                    <expression>2 4 5 7 8 11 12</expression>
+                    <views>config</views>
+                </command>
+                <!-- route ipv6 <prefix> <pfxlen> <nexthop> interface <ifname> metric <value> -->
+                <command>
+                    <expression>2 4 5 7 8 11 12 9 10</expression>
+                    <views>config</views>
+                </command>
+                <!-- no route ipv6 <prefix> <pfxlen> <nexthop> interface <ifname> -->
+                <command>
+                    <expression>1 2 4 5 7 8 11 12</expression>
+                    <views>config</views>
+                </command>
+
+                <!-- ===== interface-only（IPv6）===== -->
+                <!-- route ipv6 <prefix> <pfxlen> interface <ifname> -->
+                <command>
+                    <expression>2 4 5 7 11 12</expression>
+                    <views>config</views>
+                </command>
+                <!-- route ipv6 <prefix> <pfxlen> interface <ifname> metric <value> -->
+                <command>
+                    <expression>2 4 5 7 11 12 9 10</expression>
+                    <views>config</views>
+                </command>
+                <!-- no route ipv6 <prefix> <pfxlen> interface <ifname> -->
+                <command>
+                    <expression>1 2 4 5 7 11 12</expression>
                     <views>config</views>
                 </command>
             </commands>

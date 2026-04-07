@@ -9,6 +9,7 @@
 
 #include <stdint.h>
 
+#include "if_event.h"
 #include "net_addr.h"
 
 // ============================================================================
@@ -42,23 +43,25 @@ typedef struct route_apply_cmd
         /** ROUTE_APPLY_STATIC_ADD */
         struct
         {
-            uint32_t vrf_id;         /**< VRF ID */
-            uint16_t afi;            /**< 地址族 */
-            uint8_t prefix_len;      /**< 前缀长度 */
-            net_addr_t prefix_addr;  /**< 前缀地址（二进制） */
-            net_addr_t nexthop_addr; /**< 下一跳地址（二进制） */
-            int32_t metric;          /**< 度量值 */
-            int32_t preference;      /**< 管理距离 */
+            uint32_t vrf_id;                      /**< VRF ID */
+            uint16_t afi;                         /**< 地址族 */
+            uint8_t prefix_len;                   /**< 前缀长度 */
+            net_addr_t prefix_addr;               /**< 前缀地址（二进制） */
+            net_addr_t nexthop_addr;              /**< 下一跳地址（二进制，interface-only 时全零） */
+            int32_t metric;                       /**< 度量值 */
+            int32_t preference;                   /**< 管理距离 */
+            char out_ifname[IF_LOGICAL_NAME_MAX]; /**< 出接口逻辑名（空字符串=不约束） */
         } static_add;
 
         /** ROUTE_APPLY_STATIC_DEL */
         struct
         {
-            uint32_t vrf_id;         /**< VRF ID */
-            uint16_t afi;            /**< 地址族 */
-            uint8_t prefix_len;      /**< 前缀长度 */
-            net_addr_t prefix_addr;  /**< 前缀地址（二进制） */
-            net_addr_t nexthop_addr; /**< 下一跳地址（二进制） */
+            uint32_t vrf_id;                      /**< VRF ID */
+            uint16_t afi;                         /**< 地址族 */
+            uint8_t prefix_len;                   /**< 前缀长度 */
+            net_addr_t prefix_addr;               /**< 前缀地址（二进制） */
+            net_addr_t nexthop_addr;              /**< 下一跳地址（二进制，interface-only 时全零） */
+            char out_ifname[IF_LOGICAL_NAME_MAX]; /**< 出接口逻辑名（空字符串=不约束） */
         } static_del;
 
         /** ROUTE_APPLY_STATIC_DEL_PREFIX */

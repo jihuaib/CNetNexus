@@ -16,6 +16,7 @@
 #include "db.h"
 #include "dev.h"
 #include "errcode.h"
+#include "if.h"
 #include "if_bdr.h"
 #include "if_cfg_apply.h"
 #include "if_cli.h"
@@ -24,6 +25,7 @@
 #include "log.h"
 #include "net_addr.h"
 #include "path_utils.h"
+#include "route.h"
 
 if_local_t *g_if_local = NULL;
 
@@ -217,6 +219,136 @@ static void send_if_ack(dev_ipc_message_t *msg, int32_t result)
     dev_ipc_message_free(msg);
 }
 
+/**
+ * @brief GTree foreach 上下文：向新订阅者重放接口初始状态
+ */
+typedef struct if_replay_ctx
+{
+    uint32_t module_id;    /**< 订阅者模块 ID */
+    uint32_t if_type_mask; /**< 订阅接口类型位图 */
+    uint32_t event_mask;   /**< 订阅事件位图 */
+} if_replay_ctx_t;
+
+/**
+ * @brief 向新订阅者发送单条 IF 事件消息
+ */
+static void if_replay_send(uint32_t module_id, uint32_t msg_type, void *payload, uint32_t payload_len)
+{
+    dev_ipc_context_t *ctx = if_local_ipc_ctx();
+    void *dup = g_memdup2(payload, payload_len);
+    if (!dup)
+    {
+        return;
+    }
+    dev_ipc_message_t *msg = dev_ipc_message_create(msg_type, DEV_MODULE_ID_IF, module_id, 0, dup, payload_len, g_free);
+    if (!msg)
+    {
+        g_free(dup);
+        return;
+    }
+    if (dev_ipc_send(ctx, module_id, msg) != 0)
+    {
+        LOG_WARN("IF: Failed to send replay event to module 0x%08X", module_id);
+    }
+    dev_ipc_message_free(msg);
+}
+
+/**
+ * @brief GTree foreach 回调：遍历每个接口条目，向新订阅者发送初始状态事件
+ */
+static gboolean if_replay_initial_state_foreach(gpointer key, gpointer val, gpointer user_data)
+{
+    (void)key;
+    if_map_entry_t *e = (if_map_entry_t *)val;
+    if_replay_ctx_t *rctx = (if_replay_ctx_t *)user_data;
+
+    /* 检测接口类型并生成类型位图 */
+    if_type_t raw_type = if_detect_type(e->physical_name);
+    uint32_t if_type = 0;
+    if (raw_type == IF_TYPE_ETHERNET || raw_type == IF_TYPE_VETH)
+    {
+        if_type = IF_INTF_TYPE_ETH;
+    }
+    if (if_type == 0 || (rctx->if_type_mask & if_type) == 0)
+    {
+        return FALSE; /* 不匹配订阅的接口类型 */
+    }
+
+    /* 发送 UP/DOWN 事件 */
+    if ((rctx->event_mask & (IF_EVENT_UP | IF_EVENT_DOWN)) != 0)
+    {
+        uint32_t event = e->shutdown ? IF_EVENT_DOWN : IF_EVENT_UP;
+        if ((rctx->event_mask & event) != 0)
+        {
+            if_event_msg_t evt;
+            memset(&evt, 0, sizeof(evt));
+            evt.if_type = if_type;
+            evt.event = event;
+            evt.admin_up = e->shutdown ? 0 : 1;
+            g_strlcpy(evt.logical_name, e->logical_name, sizeof(evt.logical_name));
+            g_strlcpy(evt.physical_name, e->physical_name, sizeof(evt.physical_name));
+            if_replay_send(rctx->module_id, IF_MSG_TYPE_EVENT, &evt, sizeof(evt));
+        }
+    }
+
+    /* 发送 IPv4 地址事件 */
+    if ((rctx->event_mask & IF_EVENT_ADDR_ADD) != 0 && net_prefix_is_set(&e->prefix_v4))
+    {
+        if_addr_event_msg_t addr_evt;
+        memset(&addr_evt, 0, sizeof(addr_evt));
+        addr_evt.if_type = if_type;
+        addr_evt.event = IF_EVENT_ADDR_ADD;
+        g_strlcpy(addr_evt.logical_name, e->logical_name, sizeof(addr_evt.logical_name));
+        g_strlcpy(addr_evt.physical_name, e->physical_name, sizeof(addr_evt.physical_name));
+        addr_evt.afi = ROUTE_AFI_IPV4;
+        addr_evt.prefix_len = e->prefix_v4.prefix_len;
+        addr_evt.addr = e->prefix_v4.addr;
+        addr_evt.ifindex = e->ifindex;
+        if_replay_send(rctx->module_id, IF_MSG_TYPE_EVENT, &addr_evt, sizeof(addr_evt));
+    }
+
+    /* 发送 IPv6 地址事件 */
+    if ((rctx->event_mask & IF_EVENT_ADDR_ADD) != 0 && net_prefix_is_set(&e->prefix_v6))
+    {
+        if_addr_event_msg_t addr_evt;
+        memset(&addr_evt, 0, sizeof(addr_evt));
+        addr_evt.if_type = if_type;
+        addr_evt.event = IF_EVENT_ADDR_ADD;
+        g_strlcpy(addr_evt.logical_name, e->logical_name, sizeof(addr_evt.logical_name));
+        g_strlcpy(addr_evt.physical_name, e->physical_name, sizeof(addr_evt.physical_name));
+        addr_evt.afi = ROUTE_AFI_IPV6;
+        addr_evt.prefix_len = e->prefix_v6.prefix_len;
+        addr_evt.addr = e->prefix_v6.addr;
+        addr_evt.ifindex = e->ifindex;
+        if_replay_send(rctx->module_id, IF_MSG_TYPE_EVENT, &addr_evt, sizeof(addr_evt));
+    }
+
+    return FALSE;
+}
+
+/**
+ * @brief 向新订阅者重放当前所有接口的初始状态
+ *
+ * 遍历接口映射表，为每个接口发送 UP/DOWN 和 ADDR_ADD 事件，
+ * 使订阅者无需跨模块查询 DB 即可获取当前接口状态。
+ */
+static void if_replay_initial_state(uint32_t module_id, uint32_t if_type_mask, uint32_t event_mask)
+{
+    if (!g_if_local || !g_if_local->interface_map.all_entries)
+    {
+        return;
+    }
+
+    if_replay_ctx_t rctx = {
+        .module_id = module_id,
+        .if_type_mask = if_type_mask,
+        .event_mask = event_mask,
+    };
+
+    g_tree_foreach(g_if_local->interface_map.all_entries, if_replay_initial_state_foreach, &rctx);
+    LOG_INFO("IF: replayed initial state to module 0x%08X", module_id);
+}
+
 static void handle_if_subscribe(dev_ipc_message_t *msg)
 {
     if (!msg->payload || msg->payload_len < sizeof(if_subscribe_req_t))
@@ -261,6 +393,9 @@ static void handle_if_subscribe(dev_ipc_message_t *msg)
 
     LOG_INFO("IF: module 0x%08X subscribed: type=0x%08X event=0x%08X", msg->src_module_id, req->if_type_mask,
              req->event_mask);
+
+    /* 向新订阅者重放当前所有接口的初始状态 */
+    if_replay_initial_state(msg->src_module_id, req->if_type_mask, req->event_mask);
 
     send_if_ack(msg, ERRCODE_SUCCESS);
 }

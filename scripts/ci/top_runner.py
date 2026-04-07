@@ -467,9 +467,12 @@ class TopologyRuntime:
                 "/bin/bash",
                 "-lc",
                 (
-                    "mkdir -p /opt/netnexus/log /opt/netnexus/data && "
+                    "mkdir -p /opt/netnexus/log /opt/netnexus/log/asan /opt/netnexus/data && "
                     "export NN_WORK_DIR=/opt/netnexus && "
                     "export LD_LIBRARY_PATH=/opt/netnexus/lib:${LD_LIBRARY_PATH} && "
+                    "export ASAN_OPTIONS="
+                    "\"${ASAN_OPTIONS:-detect_leaks=1:halt_on_error=0:abort_on_error=0:"
+                    "log_path=/opt/netnexus/log/asan/asan}\" && "
                     "exec /opt/netnexus/bin/netnexus > /tmp/netnexus.log 2>&1"
                 ),
             ]

@@ -13,6 +13,7 @@
 #include "cli.h"
 #include "dev.h"
 #include "errcode.h"
+#include "if_event.h"
 #include "log.h"
 #include "net_addr.h"
 #include "route.h"
@@ -42,7 +43,8 @@ static void send_resp(dev_ipc_message_t *msg, const char *text)
 //
 // cfg-id 映射：
 //   1=no, 2=ipv4, 3=ipv6, 4=prefix(dest), 5=prefix_len(IPv4),
-//   6=prefix_len(IPv6), 7=nexthop, 8=metric value
+//   6=prefix_len(IPv6), 7=nexthop, 8=metric value,
+//   9=interface(keyword), 10=ifname(parameter)
 // ============================================================================
 
 static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
@@ -54,12 +56,14 @@ static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     int64_t ipv4_prefix_len = 0;
     int64_t ipv6_prefix_len = 0;
     char nexthop_str[64] = {0};
+    char ifname_str[IF_LOGICAL_NAME_MAX] = {0};
     int64_t metric = 0;
     int has_prefix = 0;
     int has_ipv4_pfxlen = 0;
     int has_ipv6_pfxlen = 0;
     int has_nexthop = 0;
     int has_metric = 0;
+    int has_interface = 0;
 
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
@@ -113,6 +117,19 @@ static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                 metric = cli_tlv_entry_get_int(&entry);
                 has_metric = 1;
                 break;
+            case 9:
+                /* interface 关键字 */
+                has_interface = 1;
+                break;
+            case 10:
+            {
+                const char *text = cli_tlv_entry_get_text(&entry);
+                if (text)
+                {
+                    g_strlcpy(ifname_str, text, sizeof(ifname_str));
+                }
+                break;
+            }
             default:
                 break;
         }
@@ -189,27 +206,37 @@ static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 
     if (is_no)
     {
-        if (has_nexthop)
+        if (has_nexthop || has_interface)
         {
+            /* 精确删除：按 nexthop + ifname 匹配 */
             net_addr_t nexthop_addr;
-            if (net_addr_from_str(nexthop_str, &nexthop_addr) != 0)
+            memset(&nexthop_addr, 0, sizeof(nexthop_addr));
+            if (has_nexthop)
             {
-                send_resp(msg, "Error: Invalid nexthop address\r\n");
-                return ERRCODE_FAIL;
+                if (net_addr_from_str(nexthop_str, &nexthop_addr) != 0)
+                {
+                    send_resp(msg, "Error: Invalid nexthop address\r\n");
+                    return ERRCODE_FAIL;
+                }
+                if (nexthop_addr.family != expect_family)
+                {
+                    send_resp(msg, "Error: Nexthop address family does not match route type\r\n");
+                    return ERRCODE_FAIL;
+                }
             }
-            if (nexthop_addr.family != expect_family)
+            else
             {
-                send_resp(msg, "Error: Nexthop address family does not match route type\r\n");
-                return ERRCODE_FAIL;
+                /* interface-only：nexthop 全零 */
+                nexthop_addr.family = expect_family;
             }
 
             /* 先删除 DB 记录 */
             route_db_delete_static(g_route_local->dev_ipc_ctx, ROUTE_VRF_DEFAULT, afi, normalized_prefix_str,
-                                   prefix_len, nexthop_str);
+                                   prefix_len, has_nexthop ? nexthop_str : "", ifname_str);
             if (prefix_text_changed)
             {
                 route_db_delete_static(g_route_local->dev_ipc_ctx, ROUTE_VRF_DEFAULT, afi, prefix_str, prefix_len,
-                                       nexthop_str);
+                                       has_nexthop ? nexthop_str : "", ifname_str);
             }
 
             /* 向 worker 派发内存删除操作 */
@@ -221,6 +248,7 @@ static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             apply.u.static_del.prefix_len = prefix_len;
             apply.u.static_del.prefix_addr = prefix_addr;
             apply.u.static_del.nexthop_addr = nexthop_addr;
+            g_strlcpy(apply.u.static_del.out_ifname, ifname_str, sizeof(apply.u.static_del.out_ifname));
             route_worker_dispatch_apply(&apply);
 
             char buf[128];
@@ -254,22 +282,36 @@ static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     }
     else
     {
-        if (!has_nexthop)
+        if (!has_nexthop && !has_interface)
         {
-            send_resp(msg, "Error: Missing next-hop address\r\n");
+            send_resp(msg, "Error: Missing next-hop address or interface\r\n");
+            return ERRCODE_FAIL;
+        }
+        if (has_interface && ifname_str[0] == '\0')
+        {
+            send_resp(msg, "Error: Missing interface name\r\n");
             return ERRCODE_FAIL;
         }
 
         net_addr_t nexthop_addr;
-        if (net_addr_from_str(nexthop_str, &nexthop_addr) != 0)
+        memset(&nexthop_addr, 0, sizeof(nexthop_addr));
+        if (has_nexthop)
         {
-            send_resp(msg, "Error: Invalid nexthop address\r\n");
-            return ERRCODE_FAIL;
+            if (net_addr_from_str(nexthop_str, &nexthop_addr) != 0)
+            {
+                send_resp(msg, "Error: Invalid nexthop address\r\n");
+                return ERRCODE_FAIL;
+            }
+            if (nexthop_addr.family != expect_family)
+            {
+                send_resp(msg, "Error: Nexthop address family does not match route type\r\n");
+                return ERRCODE_FAIL;
+            }
         }
-        if (nexthop_addr.family != expect_family)
+        else
         {
-            send_resp(msg, "Error: Nexthop address family does not match route type\r\n");
-            return ERRCODE_FAIL;
+            /* interface-only：nexthop 全零 */
+            nexthop_addr.family = expect_family;
         }
 
         int32_t pref = ROUTE_ADMIN_DIST_STATIC;
@@ -277,11 +319,11 @@ static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 
         /* 先写入 DB */
         route_db_upsert_static(g_route_local->dev_ipc_ctx, ROUTE_VRF_DEFAULT, afi, normalized_prefix_str, prefix_len,
-                               nexthop_str, m, pref);
+                               has_nexthop ? nexthop_str : "", m, pref, ifname_str);
         if (prefix_text_changed)
         {
             route_db_delete_static(g_route_local->dev_ipc_ctx, ROUTE_VRF_DEFAULT, afi, prefix_str, prefix_len,
-                                   nexthop_str);
+                                   has_nexthop ? nexthop_str : "", ifname_str);
         }
 
         /* 向 worker 派发内存添加操作 */
@@ -295,6 +337,7 @@ static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         apply.u.static_add.nexthop_addr = nexthop_addr;
         apply.u.static_add.metric = m;
         apply.u.static_add.preference = pref;
+        g_strlcpy(apply.u.static_add.out_ifname, ifname_str, sizeof(apply.u.static_add.out_ifname));
         route_worker_dispatch_apply(&apply);
 
         send_resp(msg, "Static route added\r\n");

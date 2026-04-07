@@ -34,6 +34,7 @@ typedef enum route_worker_cmd_type
     ROUTE_WORKER_CMD_CLI_SHOW = 6,      /**< show 命令（CLI_MSG_TYPE with SHOW_CMD flag / CLI_MSG_TYPE_CONTINUE） */
     ROUTE_WORKER_CMD_APPLY = 7,         /**< 配置应用命令（waitable，IPC 线程同步等待结果） */
     ROUTE_WORKER_CMD_SHUTDOWN = 8,      /**< 停止 worker 线程循环 */
+    ROUTE_WORKER_CMD_IF_EVENT = 9,      /**< IF 接口事件（UP/DOWN/ADDR_ADD/ADDR_DEL） */
 } route_worker_cmd_type_t;
 
 // ============================================================================

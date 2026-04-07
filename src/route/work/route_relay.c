@@ -592,25 +592,26 @@ static void route_recompute_watch_cb(gpointer key, gpointer value, gpointer user
 
 void route_recompute_iter_paths(void)
 {
-    if (!g_route_nh_watch_table || g_hash_table_size(g_route_nh_watch_table) == 0)
+    if (g_route_nh_watch_table && g_hash_table_size(g_route_nh_watch_table) > 0)
     {
-        return;
+        route_iter_recompute_ctx_t rctx = {
+            .total = 0u,
+            .resolved = 0u,
+            .announced = 0u,
+            .withdrawn = 0u,
+        };
+
+        g_hash_table_foreach(g_route_nh_watch_table, route_recompute_watch_cb, &rctx);
+
+        if (rctx.total > 0 || rctx.announced > 0 || rctx.withdrawn > 0)
+        {
+            LOG_DEBUG("Route nh-watch recompute: total=%u resolved=%u up=%u down=%u", rctx.total, rctx.resolved,
+                      rctx.announced, rctx.withdrawn);
+        }
     }
 
-    route_iter_recompute_ctx_t rctx = {
-        .total = 0u,
-        .resolved = 0u,
-        .announced = 0u,
-        .withdrawn = 0u,
-    };
-
-    g_hash_table_foreach(g_route_nh_watch_table, route_recompute_watch_cb, &rctx);
-
-    if (rctx.total > 0 || rctx.announced > 0 || rctx.withdrawn > 0)
-    {
-        LOG_DEBUG("Route nh-watch recompute: total=%u resolved=%u up=%u down=%u", rctx.total, rctx.resolved,
-                  rctx.announced, rctx.withdrawn);
-    }
+    /* 重检查 interface-only 静态路由（基于 connected 路由状态判断接口可达性） */
+    route_static_on_if_change();
 }
 
 void route_relay_cleanup(void)

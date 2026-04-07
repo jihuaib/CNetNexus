@@ -218,6 +218,13 @@ static int route_os_send(int cmd, const route_msg_entry_t *entry)
         rtm->rtm_type = RTN_UNICAST;
         rtm->rtm_scope = RT_SCOPE_LINK;
     }
+    else if (entry->protocol == ROUTE_PROTOCOL_STATIC && net_addr_is_zero(&entry->nexthop_addr) &&
+             entry->out_ifindex != 0)
+    {
+        /* interface-only 静态路由：无下一跳，仅指定出接口，scope=LINK */
+        rtm->rtm_type = RTN_UNICAST;
+        rtm->rtm_scope = RT_SCOPE_LINK;
+    }
     else
     {
         rtm->rtm_type = RTN_UNICAST;

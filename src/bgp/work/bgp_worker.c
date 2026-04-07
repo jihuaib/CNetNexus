@@ -22,6 +22,7 @@
 #include "bgp_cli.h"
 #include "bgp_conn.h"
 #include "bgp_fsm.h"
+#include "bgp_if_cache.h"
 #include "bgp_instance.h"
 #include "bgp_main.h"
 #include "bgp_pkt.h"
@@ -1480,6 +1481,10 @@ static void bgp_worker_runtime_cleanup(void)
             }
         }
     }
+
+    /* bgp_server_stop_session_conns → bgp_conn_close 会追加到 deferred_conns，
+     * 需要在此处 flush，否则这些连接对象会泄漏。 */
+    bgp_worker_flush_deferred_conns();
 
     bgp_listen_stop();
     bgp_worker_cmd_drain_queue();

@@ -580,7 +580,9 @@ def clear_case_container_module_logs(rt: TopologyRuntime) -> None:
     if not rt.container_names:
         return
 
-    clear_cmd = 'for f in /opt/netnexus/log/*.log; do [ -f "$f" ] || continue; : > "$f"; done'
+    # Truncate all files recursively (including ASAN reports under /opt/netnexus/log/asan)
+    # so next check script gets a clean per-script log window.
+    clear_cmd = "if [ -d /opt/netnexus/log ]; then find /opt/netnexus/log -type f -exec truncate -s 0 {} +; fi"
     for container in rt.container_names:
         proc = subprocess.run(
             ["docker", "exec", container, "/bin/bash", "-lc", clear_cmd],
@@ -691,6 +693,18 @@ def run_case(
                         f"Collected per-script module logs for '{script.name}' -> {container_logs_dir} "
                         f"({len(exported)} files)"
                     )
+                    asan_reports = [
+                        p
+                        for p in exported
+                        if "/modules/asan/" in p.as_posix()
+                        and p.name != ""
+                        and p.stat().st_size > 0
+                    ]
+                    if asan_reports:
+                        print(
+                            f"Collected per-script ASAN reports for '{script.name}' -> {container_logs_dir} "
+                            f"({len(asan_reports)} files)"
+                        )
                 clear_case_container_module_logs(rt)
                 module_logs_cleared = True
             except Exception as log_exc:

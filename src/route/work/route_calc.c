@@ -19,9 +19,120 @@
 #include "route_rib.h"
 #include "route_worker.h"
 
+#define ROUTE_CALC_OS_RETRY_BASE_MSEC 200u
+#define ROUTE_CALC_OS_RETRY_MAX_MSEC 2000u
+
+typedef struct calc_retry_state
+{
+    gint64 due_usec;
+    uint32_t delay_msec;
+    uint32_t attempts;
+} calc_retry_state_t;
+
+static GHashTable *g_calc_os_retry_table = NULL;
+
 // ============================================================================
 // 辅助：path_key 比较 / 当前已下发路径查找
 // ============================================================================
+
+static void fill_head_key(route_head_key_t *dst, const route_head_t *head)
+{
+    memset(dst, 0, sizeof(*dst));
+    dst->vrf_id = head->key.vrf_id;
+    dst->afi = head->key.afi;
+    dst->prefix_len = head->key.prefix_len;
+    dst->addr = head->key.addr;
+}
+
+static guint calc_retry_key_hash(gconstpointer key)
+{
+    const route_head_key_t *k = (const route_head_key_t *)key;
+    guint h = 0u;
+    h ^= k->vrf_id * 2654435761u;
+    h ^= ((guint)k->afi << 16) ^ (guint)k->prefix_len;
+    h ^= net_addr_hash(&k->addr) * 31u;
+    return h;
+}
+
+static gboolean calc_retry_key_equal(gconstpointer a, gconstpointer b)
+{
+    const route_head_key_t *ka = (const route_head_key_t *)a;
+    const route_head_key_t *kb = (const route_head_key_t *)b;
+    return ka->vrf_id == kb->vrf_id && ka->afi == kb->afi && ka->prefix_len == kb->prefix_len &&
+           net_addr_equal(&ka->addr, &kb->addr);
+}
+
+static void calc_retry_table_ensure(void)
+{
+    if (!g_calc_os_retry_table)
+    {
+        g_calc_os_retry_table =
+            g_hash_table_new_full(calc_retry_key_hash, calc_retry_key_equal, g_free, (GDestroyNotify)g_free);
+    }
+}
+
+static void clear_os_install_retry(const route_head_t *head)
+{
+    if (!head || !g_calc_os_retry_table)
+    {
+        return;
+    }
+
+    route_head_key_t key;
+    fill_head_key(&key, head);
+    g_hash_table_remove(g_calc_os_retry_table, &key);
+}
+
+static void schedule_os_install_retry(const route_head_t *head)
+{
+    if (!head)
+    {
+        return;
+    }
+
+    calc_retry_table_ensure();
+    if (!g_calc_os_retry_table)
+    {
+        return;
+    }
+
+    route_head_key_t key;
+    fill_head_key(&key, head);
+    calc_retry_state_t *state = (calc_retry_state_t *)g_hash_table_lookup(g_calc_os_retry_table, &key);
+    gint64 now = g_get_real_time();
+
+    if (state)
+    {
+        uint32_t next = state->delay_msec ? state->delay_msec : ROUTE_CALC_OS_RETRY_BASE_MSEC;
+        if (next < ROUTE_CALC_OS_RETRY_MAX_MSEC)
+        {
+            next <<= 1;
+            if (next > ROUTE_CALC_OS_RETRY_MAX_MSEC)
+            {
+                next = ROUTE_CALC_OS_RETRY_MAX_MSEC;
+            }
+        }
+        state->delay_msec = next;
+        state->attempts++;
+        state->due_usec = now + (gint64)next * 1000;
+        return;
+    }
+
+    route_head_key_t *stored_key = (route_head_key_t *)g_malloc(sizeof(*stored_key));
+    calc_retry_state_t *new_state = (calc_retry_state_t *)g_malloc0(sizeof(*new_state));
+    if (!stored_key || !new_state)
+    {
+        g_free(stored_key);
+        g_free(new_state);
+        return;
+    }
+
+    *stored_key = key;
+    new_state->delay_msec = ROUTE_CALC_OS_RETRY_BASE_MSEC;
+    new_state->attempts = 1u;
+    new_state->due_usec = now + (gint64)new_state->delay_msec * 1000;
+    g_hash_table_insert(g_calc_os_retry_table, stored_key, new_state);
+}
 
 static int path_key_same(const route_path_key_t *a, const route_path_key_t *b)
 {
@@ -174,6 +285,7 @@ static void update_prefix(const route_head_t *head, const route_path_key_t *skip
     /* 情形 1：前缀下已无可用路径 */
     if (!new_best)
     {
+        clear_os_install_retry(mut_head);
         if (cur_installed)
         {
             route_msg_entry_t cur_entry;
@@ -219,6 +331,7 @@ static void update_prefix(const route_head_t *head, const route_path_key_t *skip
         {
             LOG_WARN("[route_calc] OS 更新失败，保持旧最优: %s/%u vrf=%u proto=%u", addr_str,
                      (unsigned)head->key.prefix_len, head->key.vrf_id, new_best->key.protocol);
+            schedule_os_install_retry(mut_head);
             return;
         }
         if (subscribers)
@@ -227,6 +340,7 @@ static void update_prefix(const route_head_t *head, const route_path_key_t *skip
         }
         route_rib_promote_path_first(mut_head, (route_path_t *)new_best);
         sync_os_installed_flag(mut_head, &new_best->key);
+        clear_os_install_retry(mut_head);
         return;
     }
 
@@ -246,6 +360,7 @@ static void update_prefix(const route_head_t *head, const route_path_key_t *skip
         {
             LOG_WARN("[route_calc] OS 安装失败，保持当前最优不变: %s/%u vrf=%u proto=%u", addr_str,
                      (unsigned)head->key.prefix_len, head->key.vrf_id, new_best->key.protocol);
+            schedule_os_install_retry(mut_head);
             return;
         }
         /* 不再显式撤销旧最优：当前下发不携带 RTA_PRIORITY，REPLACE 语义由内核覆盖同前缀主项。 */
@@ -269,6 +384,7 @@ static void update_prefix(const route_head_t *head, const route_path_key_t *skip
         {
             LOG_WARN("[route_calc] OS 安装失败，保持当前最优不变: %s/%u vrf=%u proto=%u", addr_str,
                      (unsigned)head->key.prefix_len, head->key.vrf_id, new_best->key.protocol);
+            schedule_os_install_retry(mut_head);
             return;
         }
 
@@ -280,6 +396,7 @@ static void update_prefix(const route_head_t *head, const route_path_key_t *skip
 
     route_rib_promote_path_first(mut_head, (route_path_t *)new_best);
     sync_os_installed_flag(mut_head, &new_best->key);
+    clear_os_install_retry(mut_head);
 }
 
 // ============================================================================
@@ -288,6 +405,11 @@ static void update_prefix(const route_head_t *head, const route_path_key_t *skip
 
 void route_calc_init(void)
 {
+    if (g_calc_os_retry_table)
+    {
+        g_hash_table_destroy(g_calc_os_retry_table);
+        g_calc_os_retry_table = NULL;
+    }
     LOG_INFO("[route_calc] 优选状态初始化完成（基于 route_path OS 标记）");
 }
 
@@ -349,6 +471,12 @@ void route_calc_cleanup(void)
         }
     }
 
+    if (g_calc_os_retry_table)
+    {
+        g_hash_table_destroy(g_calc_os_retry_table);
+        g_calc_os_retry_table = NULL;
+    }
+
     LOG_INFO("[route_calc] 优选状态已清理");
 }
 
@@ -368,6 +496,67 @@ void route_calc_on_path_del(const route_head_t *head, const route_path_t *del_pa
         return;
     }
     update_prefix(head, &del_path->key);
+}
+
+void route_calc_on_periodic(void)
+{
+    if (!g_calc_os_retry_table || g_hash_table_size(g_calc_os_retry_table) == 0 || !g_route_work_local ||
+        !g_route_work_local->rib)
+    {
+        return;
+    }
+
+    const gint64 now = g_get_real_time();
+    GHashTableIter iter;
+    gpointer key_ptr = NULL;
+    gpointer value_ptr = NULL;
+    GList *due_keys = NULL;
+
+    g_hash_table_iter_init(&iter, g_calc_os_retry_table);
+    while (g_hash_table_iter_next(&iter, &key_ptr, &value_ptr))
+    {
+        const route_head_key_t *key = (const route_head_key_t *)key_ptr;
+        const calc_retry_state_t *state = (const calc_retry_state_t *)value_ptr;
+        if (!key || !state || state->due_usec > now)
+        {
+            continue;
+        }
+
+        route_head_key_t *copy = (route_head_key_t *)g_malloc(sizeof(*copy));
+        if (!copy)
+        {
+            continue;
+        }
+        *copy = *key;
+        due_keys = g_list_prepend(due_keys, copy);
+    }
+
+    for (GList *l = due_keys; l; l = l->next)
+    {
+        route_head_key_t *key = (route_head_key_t *)l->data;
+        if (!key)
+        {
+            continue;
+        }
+
+        calc_retry_state_t *state = (calc_retry_state_t *)g_hash_table_lookup(g_calc_os_retry_table, key);
+        if (!state || state->due_usec > now)
+        {
+            continue;
+        }
+
+        const route_head_t *head =
+            route_rib_lookup_head(g_route_work_local->rib, key->vrf_id, key->afi, &key->addr, key->prefix_len);
+        if (!head)
+        {
+            g_hash_table_remove(g_calc_os_retry_table, key);
+            continue;
+        }
+
+        update_prefix(head, NULL);
+    }
+
+    g_list_free_full(due_keys, g_free);
 }
 
 // ============================================================================

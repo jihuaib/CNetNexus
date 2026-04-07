@@ -18,6 +18,7 @@
 #include "bgp_pkt.h"
 #include "bgp_worker.h"
 #include "errcode.h"
+#include "if_event.h"
 #include "log.h"
 #include "route.h"
 
@@ -74,7 +75,8 @@ static void bgp_on_start(dev_ipc_message_t *msg)
     dev_ipc_connect(ctx, DEV_MODULE_ID_CLI, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CLI);
     dev_ipc_connect(ctx, DEV_MODULE_ID_DB, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_DB);
     dev_ipc_connect(ctx, DEV_MODULE_ID_ROUTE, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_ROUTE);
-    LOG_INFO("Connected to CFG, DB and ROUTE");
+    dev_ipc_connect(ctx, DEV_MODULE_ID_IF, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_IF);
+    LOG_INFO("Connected to CFG, DB, ROUTE and IF");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
@@ -124,6 +126,27 @@ static void bgp_on_ready(dev_ipc_message_t *msg)
         bgp_worker_shutdown();
         send_phase_response(ctx, msg, ERRCODE_FAIL);
         return;
+    }
+
+    /* 订阅 IF 接口事件（UP/DOWN/ADDR_ADD/ADDR_DEL），用于维护本地接口缓存 */
+    {
+        if_subscribe_req_t *sub_req = (if_subscribe_req_t *)g_malloc0(sizeof(if_subscribe_req_t));
+        sub_req->if_type_mask = IF_INTF_TYPE_ALL;
+        sub_req->event_mask = IF_EVENT_ALL;
+        sub_req->flags = 0;
+        dev_ipc_message_t *sub_msg = dev_ipc_message_create(IF_MSG_TYPE_SUBSCRIBE, DEV_MODULE_ID_BGP, DEV_MODULE_ID_IF,
+                                                            0, sub_req, sizeof(if_subscribe_req_t), g_free);
+        if (sub_msg)
+        {
+            dev_ipc_send_response(ctx, sub_msg);
+            dev_ipc_message_free(sub_msg);
+            LOG_INFO("BGP: Subscribed to IF events (ALL types, ALL events)");
+        }
+        else
+        {
+            g_free(sub_req);
+            LOG_WARN("BGP: Failed to subscribe to IF events");
+        }
     }
 
     /* 仅恢复：表不存在（BGP 未曾配置）时静默返回 NULL，不建表也不写默认值 */
@@ -221,6 +244,22 @@ void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             }
             return;
         }
+
+        /* ---- IF 事件通知 ---- */
+        case IF_MSG_TYPE_EVENT:
+        {
+            // if (bgp_worker_post_if_event(msg) != 0)
+            // {
+            //     LOG_WARN("BGP: Failed to forward IF event to worker thread");
+            //     dev_ipc_message_free(msg);
+            // }
+            dev_ipc_message_free(msg);
+            return;
+        }
+        case IF_MSG_TYPE_ACK:
+            /* IF 订阅应答，静默丢弃 */
+            break;
+
         default:
             break;
     }

@@ -15,6 +15,12 @@ export LD_LIBRARY_PATH="${INSTALL_DIR}/lib:${LD_LIBRARY_PATH}"
 mkdir -p "${INSTALL_DIR}/data" 2>/dev/null
 mkdir -p "${INSTALL_DIR}/log" 2>/dev/null
 
+# 检测 ASAN 构建：如果二进制链接了 libasan，自动配置 ASAN 运行时选项
+if ldd "${INSTALL_DIR}/bin/netnexus" 2>/dev/null | grep -q libasan; then
+    export ASAN_OPTIONS="detect_leaks=1:log_path=${INSTALL_DIR}/log/asan:abort_on_error=0:halt_on_error=0"
+    echo "[ASAN] AddressSanitizer enabled, logs: ${INSTALL_DIR}/log/asan.*"
+fi
+
 "${INSTALL_DIR}/bin/netnexus" &
 NETNEXUS_PID=$!
 

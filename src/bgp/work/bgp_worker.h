@@ -294,6 +294,15 @@ void bgp_work_show_cleanup(void);
 int bgp_worker_post_route_message(dev_ipc_message_t *msg);
 
 /**
+ * @brief 向 BGP worker 投递 IF 接口事件消息
+ *
+ * 由 IPC 线程收到 IF_MSG_TYPE_EVENT 后调用，转发到 worker 线程更新本地接口缓存。
+ *
+ * @return 0 成功，-1 失败
+ */
+int bgp_worker_post_if_event(dev_ipc_message_t *msg);
+
+/**
  * @brief 将对端 UPDATE 写入 BGP relay（维护 nexthop<->route 关系，并向 ROUTE 注册 nexthop 门禁）
  */
 void bgp_worker_ingest_peer_update(bgp_session_t *session, const bgp_update_result_t *upd,
