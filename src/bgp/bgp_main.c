@@ -248,12 +248,11 @@ void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         /* ---- IF 事件通知 ---- */
         case IF_MSG_TYPE_EVENT:
         {
-            // if (bgp_worker_post_if_event(msg) != 0)
-            // {
-            //     LOG_WARN("BGP: Failed to forward IF event to worker thread");
-            //     dev_ipc_message_free(msg);
-            // }
-            dev_ipc_message_free(msg);
+            if (bgp_worker_post_if_event(msg) != 0)
+            {
+                LOG_WARN("BGP: Failed to forward IF event to worker thread");
+                dev_ipc_message_free(msg);
+            }
             return;
         }
         case IF_MSG_TYPE_ACK:

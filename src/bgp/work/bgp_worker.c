@@ -117,6 +117,7 @@ typedef enum bgp_worker_cmd_type
     BGP_WORKER_CMD_TYPE_SHUTDOWN = 2,
     BGP_WORKER_CMD_TYPE_APPLY = 3,     /**< 跨线程配置应用命令 */
     BGP_WORKER_CMD_TYPE_ROUTE_MSG = 4, /**< ROUTE_MSG_TYPE_UPDATE/REPORT/NH_NOTIFY */
+    BGP_WORKER_CMD_TYPE_IF_EVENT = 5,  /**< IF 接口事件（IF_MSG_TYPE_EVENT） */
 } bgp_worker_cmd_type_t;
 
 typedef struct bgp_server_cmd
@@ -809,6 +810,23 @@ int bgp_worker_post_route_message(dev_ipc_message_t *msg)
     return 0;
 }
 
+int bgp_worker_post_if_event(dev_ipc_message_t *msg)
+{
+    bgp_worker_cmd_t *cmd = bgp_worker_cmd_create(BGP_WORKER_CMD_TYPE_IF_EVENT, msg, FALSE);
+    if (!cmd)
+    {
+        return -1;
+    }
+
+    if (bgp_worker_cmd_enqueue(cmd) != 0)
+    {
+        bgp_worker_cmd_destroy(cmd);
+        return -1;
+    }
+
+    return 0;
+}
+
 static void bgp_worker_dispatch_show_cli_cmd(dev_ipc_message_t *msg)
 {
     if (!msg)
@@ -916,6 +934,15 @@ static gboolean bgp_process_cmd_event(void)
 
             case BGP_WORKER_CMD_TYPE_APPLY:
                 bgp_worker_dispatch_apply_cmd(cmd->apply);
+                break;
+
+            case BGP_WORKER_CMD_TYPE_IF_EVENT:
+                bgp_if_cache_on_event(cmd->msg);
+                if (cmd->msg)
+                {
+                    dev_ipc_message_free(cmd->msg);
+                    cmd->msg = NULL;
+                }
                 break;
 
             case BGP_WORKER_CMD_TYPE_SHUTDOWN:
@@ -1503,6 +1530,7 @@ static void bgp_worker_runtime_cleanup(void)
     }
 
     bgp_relay_cleanup();
+    bgp_if_cache_cleanup();
 }
 
 static int bgp_worker_channel_init(void)
@@ -1620,6 +1648,8 @@ int bgp_worker_prepare(void)
         g_bgp_work_local->cmd_eventfd = -1;
         g_bgp_work_local->work_eventfd = -1;
     }
+
+    bgp_if_cache_init();
 
     int epoll_fd = epoll_create1(EPOLL_CLOEXEC);
     if (epoll_fd < 0)

@@ -66,6 +66,22 @@ bgp_session_t *bgp_session_create(const net_addr_t *addr, uint32_t remote_as, bg
     return sess;
 }
 
+void bgp_session_update_type(bgp_session_t *sess, uint32_t local_as)
+{
+    if (!sess || local_as == 0u || sess->remote_as == 0u)
+    {
+        sess->sess_type = BGP_SESS_TYPE_UNKNOWN;
+    }
+    else if (sess->remote_as == local_as)
+    {
+        sess->sess_type = BGP_SESS_TYPE_IBGP;
+    }
+    else
+    {
+        sess->sess_type = BGP_SESS_TYPE_EBGP;
+    }
+}
+
 void bgp_session_destroy(bgp_session_t *session)
 {
     if (!session)

@@ -20,14 +20,13 @@
 #include "bgp.h"
 #include "bgp_bmp_thread.h"
 #include "bgp_conn.h"
-#include "bgp_main.h"
+#include "bgp_if_cache.h"
 #include "bgp_pkt.h"
 #include "bgp_protocol.h"
 #include "bgp_rib.h"
 #include "bgp_session.h"
 #include "bgp_vrf.h"
 #include "bgp_worker.h"
-#include "db.h"
 #include "errcode.h"
 #include "log.h"
 #include "net_addr.h"
@@ -140,103 +139,9 @@ static void fsm_arm_retry(bgp_session_t *sess)
     bgp_session_arm_retry(sess, fsm_epoll_fd(), sec);
 }
 
-static int fsm_prefix_contains_addr(const net_addr_t *prefix_addr, uint8_t prefix_len, const net_addr_t *addr)
-{
-    if (!prefix_addr || !addr || prefix_addr->family != addr->family)
-    {
-        return 0;
-    }
-
-    const uint8_t *pfx = NULL;
-    const uint8_t *ip = NULL;
-    uint8_t max_len = 0;
-
-    if (addr->family == AF_INET)
-    {
-        pfx = (const uint8_t *)&prefix_addr->u.v4;
-        ip = (const uint8_t *)&addr->u.v4;
-        max_len = 32U;
-    }
-    else if (addr->family == AF_INET6)
-    {
-        pfx = (const uint8_t *)&prefix_addr->u.v6;
-        ip = (const uint8_t *)&addr->u.v6;
-        max_len = 128U;
-    }
-    else
-    {
-        return 0;
-    }
-
-    if (prefix_len == 0 || prefix_len > max_len)
-    {
-        return 0;
-    }
-
-    uint8_t full_bytes = (uint8_t)(prefix_len / 8U);
-    uint8_t rem_bits = (uint8_t)(prefix_len % 8U);
-    if (full_bytes > 0 && memcmp(pfx, ip, full_bytes) != 0)
-    {
-        return 0;
-    }
-    if (rem_bits > 0)
-    {
-        uint8_t mask = (uint8_t)(0xFFU << (8U - rem_bits));
-        if ((pfx[full_bytes] & mask) != (ip[full_bytes] & mask))
-        {
-            return 0;
-        }
-    }
-    return 1;
-}
-
 static gboolean fsm_neighbor_is_directly_connected(const net_addr_t *neighbor_addr)
 {
-    if (!neighbor_addr || neighbor_addr->family == 0)
-    {
-        return FALSE;
-    }
-
-    db_result_t *result = NULL;
-    if (db_rpc_query(g_bgp_local->dev_ipc_ctx, "if_interface", NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
-    {
-        db_result_free(result);
-        return FALSE;
-    }
-
-    gboolean direct = FALSE;
-    for (uint32_t i = 0; i < result->num_rows; i++)
-    {
-        const db_row_t *row = result->rows[i];
-        const char *ip_str = (neighbor_addr->family == AF_INET6) ? db_row_get_text(row, "ipv6_address", NULL)
-                                                                 : db_row_get_text(row, "ip_address", NULL);
-        int64_t prefix_len = (neighbor_addr->family == AF_INET6) ? db_row_get_int(row, "ipv6_prefix_len", 0)
-                                                                 : db_row_get_int(row, "prefix_len", 0);
-        int64_t shutdown = db_row_get_int(row, "shutdown", 0);
-        if (!ip_str || ip_str[0] == '\0' || shutdown != 0)
-        {
-            continue;
-        }
-
-        net_addr_t local_addr;
-        if (net_addr_from_str(ip_str, &local_addr) != 0 || local_addr.family != neighbor_addr->family)
-        {
-            continue;
-        }
-        if (prefix_len <= 0 || prefix_len > ((neighbor_addr->family == AF_INET) ? 32 : 128))
-        {
-            continue;
-        }
-
-        if (fsm_prefix_contains_addr(&local_addr, (uint8_t)prefix_len, neighbor_addr))
-        {
-            direct = TRUE;
-            break;
-        }
-    }
-
-    db_result_free(result);
-    return direct;
+    return bgp_if_cache_is_directly_connected(neighbor_addr);
 }
 
 /** 向对端发送 BGP OPEN 报文（通过 sess->pri_conn） */

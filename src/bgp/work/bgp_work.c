@@ -111,16 +111,6 @@ static gboolean bgp_as_path_contains_as(const char *as_path, uint32_t asn)
     return FALSE;
 }
 
-static gboolean bgp_session_is_ibgp(const bgp_session_t *sess, uint32_t local_as)
-{
-    return sess && local_as != 0u && sess->remote_as == local_as;
-}
-
-static gboolean bgp_session_is_ebgp(const bgp_session_t *sess, uint32_t local_as)
-{
-    return sess && local_as != 0u && sess->remote_as != 0u && sess->remote_as != local_as;
-}
-
 static const bgp_session_t *bgp_best_source_session(const bgp_route_node_t *best)
 {
     if (!best || BIT_TEST(best->flags, BGP_ROUTE_FLAG_IMPORT) || !best->head || !best->head->inst ||
@@ -152,11 +142,10 @@ static gboolean bgp_best_can_publish_to_session(const bgp_session_t *sess, const
     }
 
     /* iBGP split-horizon：iBGP 学到的路由不再发给 iBGP 邻居。 */
-    uint32_t local_as = bgp_work_local_as_number();
-    if (bgp_session_is_ibgp(sess, local_as) && !BIT_TEST(best->flags, BGP_ROUTE_FLAG_IMPORT))
+    if (sess->sess_type == BGP_SESS_TYPE_IBGP && !BIT_TEST(best->flags, BGP_ROUTE_FLAG_IMPORT))
     {
         const bgp_session_t *src_sess = bgp_best_source_session(best);
-        if (bgp_session_is_ibgp(src_sess, local_as))
+        if (src_sess && src_sess->sess_type == BGP_SESS_TYPE_IBGP)
         {
             return FALSE;
         }
@@ -174,11 +163,11 @@ static gboolean bgp_prepare_update_attr(const bgp_session_t *sess, const bgp_rou
 
     memcpy(send_attr, &best->attr, sizeof(*send_attr));
 
-    uint32_t local_as = bgp_work_local_as_number();
-    if (!bgp_session_is_ebgp(sess, local_as))
+    if (sess->sess_type != BGP_SESS_TYPE_EBGP)
     {
         return TRUE;
     }
+    uint32_t local_as = bgp_work_local_as_number();
 
     int n = 0;
     if (best->attr.as_path[0] != '\0')

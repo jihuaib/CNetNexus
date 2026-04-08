@@ -6,6 +6,7 @@ set(BGP_SOURCES
     bgp_db.c
     bgp_bdr.c
     work/bgp_cfg_apply.c
+    work/bgp_if_cache.c
     work/bgp_peer.c
     work/bgp_conn.c
     work/bgp_pkt.c

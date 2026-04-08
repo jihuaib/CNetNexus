@@ -14,13 +14,13 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "bgp_if_cache.h"
 #include "bgp_instance.h"
 #include "bgp_main.h"
 #include "bgp_protocol.h"
 #include "bgp_session.h"
 #include "bgp_vrf.h"
 #include "bgp_worker.h"
-#include "db.h"
 #include "errcode.h"
 
 /* 在配置删除路径中，同步抽干 work 队列的最大轮次，避免销毁前遗留待撤销任务。 */
@@ -244,6 +244,7 @@ void bgp_cfg_apply_neighbor(bgp_apply_cmd_t *apply)
     else if (existing)
     {
         existing->remote_as = apply->u.neighbor.remote_as;
+        bgp_session_update_type(existing, proto->as_number);
     }
     else
     {
@@ -253,6 +254,7 @@ void bgp_cfg_apply_neighbor(bgp_apply_cmd_t *apply)
             snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: Failed to apply neighbor configuration.");
             return;
         }
+        bgp_session_update_type(sess, proto->as_number);
         bgp_vrf_add_session(vrf, sess);
     }
     apply->rc = BGP_APPLY_RC_OK;
@@ -648,101 +650,7 @@ void bgp_cfg_apply_import_route(bgp_apply_cmd_t *apply)
 static int bgp_cfg_resolve_source_if_addr(const char *if_name, sa_family_t peer_family, net_addr_t *out_addr,
                                           char *errmsg, size_t errmsg_len)
 {
-    if (!if_name || if_name[0] == '\0' || !out_addr)
-    {
-        if (errmsg && errmsg_len > 0)
-        {
-            snprintf(errmsg, errmsg_len, "BGP Error: Missing source interface name.");
-        }
-        return -1;
-    }
-
-    db_condition_t cond = {
-        .field_name = "name",
-        .op = DB_CMP_EQ,
-        .value = db_value_text(if_name),
-    };
-    db_filter_t filter = {.conditions = &cond, .num_conditions = 1};
-
-    db_result_t *result = NULL;
-    int qret = db_rpc_query(g_bgp_local->dev_ipc_ctx, "if_interface", NULL, 0, &filter, &result);
-    db_value_free(&cond.value);
-
-    if (qret != ERRCODE_SUCCESS || !result)
-    {
-        if (errmsg && errmsg_len > 0)
-        {
-            snprintf(errmsg, errmsg_len, "BGP Error: Failed to query interface '%s'.", if_name);
-        }
-        db_result_free(result);
-        return -1;
-    }
-
-    if (result->num_rows == 0)
-    {
-        if (errmsg && errmsg_len > 0)
-        {
-            snprintf(errmsg, errmsg_len, "BGP Error: Interface '%s' not found.", if_name);
-        }
-        db_result_free(result);
-        return -1;
-    }
-
-    const db_row_t *row = result->rows[0];
-    const char *ip_str = NULL;
-    if (peer_family == AF_INET6)
-    {
-        ip_str = db_row_get_text(row, "ipv6_address", NULL);
-    }
-    else
-    {
-        ip_str = db_row_get_text(row, "ip_address", NULL);
-    }
-
-    if ((!ip_str || ip_str[0] == '\0') && peer_family == 0)
-    {
-        /* 未指定对端地址族时，按 IPv4 -> IPv6 回退。 */
-        ip_str = db_row_get_text(row, "ip_address", NULL);
-        if (!ip_str || ip_str[0] == '\0')
-        {
-            ip_str = db_row_get_text(row, "ipv6_address", NULL);
-        }
-    }
-
-    if (!ip_str || ip_str[0] == '\0')
-    {
-        if (errmsg && errmsg_len > 0)
-        {
-            snprintf(errmsg, errmsg_len, "BGP Error: Interface '%s' has no usable IP address.", if_name);
-        }
-        db_result_free(result);
-        return -1;
-    }
-
-    net_addr_t addr;
-    if (net_addr_from_str(ip_str, &addr) != 0)
-    {
-        if (errmsg && errmsg_len > 0)
-        {
-            snprintf(errmsg, errmsg_len, "BGP Error: Interface '%s' has invalid IP '%s'.", if_name, ip_str);
-        }
-        db_result_free(result);
-        return -1;
-    }
-
-    if (peer_family != 0 && addr.family != peer_family)
-    {
-        if (errmsg && errmsg_len > 0)
-        {
-            snprintf(errmsg, errmsg_len, "BGP Error: Interface '%s' address family mismatch with neighbor.", if_name);
-        }
-        db_result_free(result);
-        return -1;
-    }
-
-    *out_addr = addr;
-    db_result_free(result);
-    return 0;
+    return bgp_if_cache_resolve_source_addr(if_name, peer_family, out_addr, errmsg, errmsg_len);
 }
 
 void bgp_cfg_apply_source_if(bgp_apply_cmd_t *apply)

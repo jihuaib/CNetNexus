@@ -24,6 +24,14 @@
 /** 默认 OPEN 能力值（AS4 + Route Refresh 使能；EXT_NEXTHOP 由 AF enable 时按需设置） */
 #define BGP_SESS_CAP_DEFAULT (BGP_SESS_CAP_AS4 | BGP_SESS_CAP_ROUTE_REFRESH)
 
+/** BGP 会话类型（iBGP / eBGP），在会话创建或 remote-as 变更时确定 */
+typedef enum bgp_sess_type
+{
+    BGP_SESS_TYPE_UNKNOWN = 0, /**< AS 未配置，类型未定 */
+    BGP_SESS_TYPE_IBGP = 1,    /**< iBGP 会话（remote_as == local_as） */
+    BGP_SESS_TYPE_EBGP = 2,    /**< eBGP 会话（remote_as != local_as） */
+} bgp_sess_type_t;
+
 /* 前向声明，避免循环包含 */
 typedef struct bgp_vrf bgp_vrf_t;
 typedef struct bgp_peer bgp_peer_t;
@@ -70,8 +78,9 @@ typedef struct bgp_timer_sentinel
  */
 typedef struct bgp_session
 {
-    net_addr_t neighbor_addr;                 /**< 邻居 IP 地址（sess_hash 的键） */
-    uint32_t remote_as;                       /**< 远端 AS 号（配置值） */
+    net_addr_t neighbor_addr;  /**< 邻居 IP 地址（sess_hash 的键） */
+    uint32_t remote_as;        /**< 远端 AS 号（配置值） */
+    bgp_sess_type_t sess_type; /**< 会话类型（iBGP/eBGP），由 remote_as 与 local_as 比较确定 */
     char source_if_name[IF_LOGICAL_NAME_MAX]; /**< 出向建连 source-interface（空串表示未配置） */
     net_addr_t source_addr;    /**< source-interface 当前解析出的源地址（family=0 表示未配置） */
     uint8_t ebgp_multihop_ttl; /**< eBGP multihop TTL（0 表示未配置，默认直连） */
@@ -116,6 +125,13 @@ bgp_session_t *bgp_session_create(const net_addr_t *addr, uint32_t remote_as, bg
  * @brief 销毁 BGP 会话结构
  */
 void bgp_session_destroy(bgp_session_t *session);
+
+/**
+ * @brief 根据 local_as 更新会话类型（iBGP/eBGP）
+ * @param sess     目标会话
+ * @param local_as 本地 AS 号
+ */
+void bgp_session_update_type(bgp_session_t *sess, uint32_t local_as);
 
 /**
  * @brief 重置会话的所有协商参数
