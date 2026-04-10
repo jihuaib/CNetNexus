@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "bgp.h"
+#include "bgp_attr_intern.h"
 #include "bgp_bdr.h"
 #include "bgp_bmp_cli.h"
 #include "bgp_bmp_thread.h"
@@ -272,6 +273,7 @@ int bgp_module_init(void)
 
     bgp_parse_init();
     bgp_pkt_build_init();
+    bgp_attr_intern_init();
 
     dev_ipc_context_t *ctx = dev_ipc_init(DEV_MODULE_ID_BGP, "bgp", DEV_MODULE_PORT_BGP, bgp_msg_handler);
     if (!ctx)

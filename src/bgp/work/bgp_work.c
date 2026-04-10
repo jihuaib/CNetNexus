@@ -136,7 +136,7 @@ static gboolean bgp_best_can_publish_to_session(const bgp_session_t *sess, const
     }
 
     /* AS_PATH 防环：若目标邻居 AS 已在路径中，禁止发布。 */
-    if (sess->remote_as != 0u && bgp_as_path_contains_as(best->attr.as_path, sess->remote_as))
+    if (sess->remote_as != 0u && bgp_as_path_contains_as(BGP_ROUTE_ATTR(best)->as_path, sess->remote_as))
     {
         return FALSE;
     }
@@ -170,9 +170,10 @@ static gboolean bgp_prepare_update_attr(const bgp_session_t *sess, const bgp_rou
     uint32_t local_as = bgp_work_local_as_number();
 
     int n = 0;
-    if (best->attr.as_path[0] != '\0')
+    if (BGP_ROUTE_ATTR(best)->as_path[0] != '\0')
     {
-        n = g_snprintf(send_attr->as_path, sizeof(send_attr->as_path), "%u %s", local_as, best->attr.as_path);
+        n = g_snprintf(send_attr->as_path, sizeof(send_attr->as_path), "%u %s", local_as,
+                       BGP_ROUTE_ATTR(best)->as_path);
     }
     else
     {
@@ -342,9 +343,9 @@ static int route_node_to_route_entry(uint32_t vrf_id, const bgp_nlri_entry_t *nl
     }
 
     int32_t metric = 0;
-    if (route->attr.has_med)
+    if (BGP_ROUTE_ATTR(route)->has_med)
     {
-        metric = (route->attr.med > (uint32_t)INT32_MAX) ? INT32_MAX : (int32_t)route->attr.med;
+        metric = (BGP_ROUTE_ATTR(route)->med > (uint32_t)INT32_MAX) ? INT32_MAX : (int32_t)BGP_ROUTE_ATTR(route)->med;
     }
 
     memset(entry_out, 0, sizeof(*entry_out));

@@ -9,6 +9,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "bgp_attr_intern.h"
 #include "bgp_cli.h"
 #include "bgp_conn.h"
 #include "bgp_main.h"
@@ -301,25 +302,25 @@ typedef struct bgp_show_route_ctx
 static void bgp_route_fmt_fields(const bgp_route_node_t *route, char *lp, size_t lp_sz, char *med, size_t med_sz,
                                  char *as_path, size_t as_sz)
 {
-    if (route->attr.has_local_pref)
+    if (BGP_ROUTE_ATTR(route)->has_local_pref)
     {
-        snprintf(lp, lp_sz, "%u", route->attr.local_pref);
+        snprintf(lp, lp_sz, "%u", BGP_ROUTE_ATTR(route)->local_pref);
     }
     else
     {
         snprintf(lp, lp_sz, "-");
     }
-    if (route->attr.has_med)
+    if (BGP_ROUTE_ATTR(route)->has_med)
     {
-        snprintf(med, med_sz, "%u", route->attr.med);
+        snprintf(med, med_sz, "%u", BGP_ROUTE_ATTR(route)->med);
     }
     else
     {
         snprintf(med, med_sz, "-");
     }
-    if (route->attr.as_path[0] != '\0')
+    if (BGP_ROUTE_ATTR(route)->as_path[0] != '\0')
     {
-        snprintf(as_path, as_sz, "%.*s", (int)(as_sz - 1), route->attr.as_path);
+        snprintf(as_path, as_sz, "%.*s", (int)(as_sz - 1), BGP_ROUTE_ATTR(route)->as_path);
     }
     else
     {
@@ -358,7 +359,7 @@ static gboolean bgp_show_route_head_cb(gpointer key, gpointer value, gpointer us
                                BIT_TEST(route->flags, BGP_ROUTE_FLAG_BEST) ? '>' : ' ',
                                BIT_TEST(route->flags, BGP_ROUTE_FLAG_VALID) ? 'v' : ' ', BGP_RT_COL_NET - 2,
                                first ? prefix_str : "", BGP_RT_COL_NH, nh, BGP_RT_COL_LP, lp, BGP_RT_COL_MED, med,
-                               BGP_RT_COL_ORIG, bgp_origin_str(route->attr.origin), as_path);
+                               BGP_RT_COL_ORIG, bgp_origin_str(BGP_ROUTE_ATTR(route)->origin), as_path);
 
         if (first)
         {
@@ -422,10 +423,12 @@ static void bgp_show_route_detail(GString *buf, const bgp_rthead_t *head)
         {
             g_string_append_printf(buf, "Imported\r\n");
         }
+        g_string_append_printf(buf, "    Attr-ID  : %u (refcnt=%u)\r\n", route->attr ? route->attr->attr_id : 0,
+                               route->attr ? route->attr->refcnt : 0);
         g_string_append_printf(buf, "    NextHop  : %s\r\n", nh);
         g_string_append_printf(buf, "    LocPref  : %s\r\n", lp);
         g_string_append_printf(buf, "    MED      : %s\r\n", med);
-        g_string_append_printf(buf, "    Origin   : %s\r\n", bgp_origin_str(route->attr.origin));
+        g_string_append_printf(buf, "    Origin   : %s\r\n", bgp_origin_str(BGP_ROUTE_ATTR(route)->origin));
         g_string_append_printf(buf, "    Valid    : %s\r\n",
                                BIT_TEST(route->flags, BGP_ROUTE_FLAG_VALID) ? "Yes" : "No");
         g_string_append_printf(buf, "    IterState: %s\r\n", iter_state_str);
@@ -434,26 +437,26 @@ static void bgp_show_route_detail(GString *buf, const bgp_rthead_t *head)
         g_string_append_printf(buf, "    Flags    : 0x%08X (%s)\r\n", route->flags, flags_str);
         g_string_append_printf(buf, "    AS-Path  : %s\r\n", as_path);
 
-        if (route->attr.communities[0] != '\0')
+        if (BGP_ROUTE_ATTR(route)->communities[0] != '\0')
         {
-            g_string_append_printf(buf, "    Community: %s\r\n", route->attr.communities);
+            g_string_append_printf(buf, "    Community: %s\r\n", BGP_ROUTE_ATTR(route)->communities);
         }
-        if (route->attr.ext_communities[0] != '\0')
+        if (BGP_ROUTE_ATTR(route)->ext_communities[0] != '\0')
         {
-            g_string_append_printf(buf, "    Ext-Comm : %s\r\n", route->attr.ext_communities);
+            g_string_append_printf(buf, "    Ext-Comm : %s\r\n", BGP_ROUTE_ATTR(route)->ext_communities);
         }
-        if (route->attr.large_communities[0] != '\0')
+        if (BGP_ROUTE_ATTR(route)->large_communities[0] != '\0')
         {
-            g_string_append_printf(buf, "    Lrg-Comm : %s\r\n", route->attr.large_communities);
+            g_string_append_printf(buf, "    Lrg-Comm : %s\r\n", BGP_ROUTE_ATTR(route)->large_communities);
         }
-        if (route->attr.aggregator[0] != '\0')
+        if (BGP_ROUTE_ATTR(route)->aggregator[0] != '\0')
         {
-            g_string_append_printf(buf, "    Aggregator: %s\r\n", route->attr.aggregator);
+            g_string_append_printf(buf, "    Aggregator: %s\r\n", BGP_ROUTE_ATTR(route)->aggregator);
         }
-        if (route->attr.has_originator_id)
+        if (BGP_ROUTE_ATTR(route)->has_originator_id)
         {
             char oid[64];
-            net_addr_to_str(&route->attr.originator_id, oid, sizeof(oid));
+            net_addr_to_str(&BGP_ROUTE_ATTR(route)->originator_id, oid, sizeof(oid));
             g_string_append_printf(buf, "    Originator: %s\r\n", oid);
         }
         g_string_append_printf(buf, "    Added    : %s\r\n", ts_added);
@@ -852,6 +855,105 @@ static int handle_bgp_show_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
     return bgp_work_send_chunked_response(msg, resp_buf);
 }
 
+/**
+ * @brief 格式化单条属性详情到 GString
+ */
+static void bgp_show_attr_detail(GString *buf, const bgp_attr_ref_t *ref)
+{
+    const bgp_attr_t *a = &ref->attr;
+    g_string_append_printf(buf, "  Attr-ID    : %u\r\n", ref->attr_id);
+    g_string_append_printf(buf, "  RefCount   : %u\r\n", ref->refcnt);
+    g_string_append_printf(buf, "  Hash       : 0x%08X\r\n", ref->hash);
+    g_string_append_printf(buf, "  Origin     : %s\r\n", bgp_origin_str(a->origin));
+    g_string_append_printf(buf, "  AS-Path    : %s\r\n", a->as_path[0] ? a->as_path : "-");
+    g_string_append_printf(buf, "  LocPref    : %s", a->has_local_pref ? "" : "-");
+    if (a->has_local_pref)
+    {
+        g_string_append_printf(buf, "%u", a->local_pref);
+    }
+    g_string_append(buf, "\r\n");
+    g_string_append_printf(buf, "  MED        : %s", a->has_med ? "" : "-");
+    if (a->has_med)
+    {
+        g_string_append_printf(buf, "%u", a->med);
+    }
+    g_string_append(buf, "\r\n");
+    g_string_append_printf(buf, "  AtomicAggr : %s\r\n", a->atomic_aggregate ? "Yes" : "No");
+    if (a->aggregator[0] != '\0')
+    {
+        g_string_append_printf(buf, "  Aggregator : %s\r\n", a->aggregator);
+    }
+    if (a->communities[0] != '\0')
+    {
+        g_string_append_printf(buf, "  Community  : %s\r\n", a->communities);
+    }
+    if (a->ext_communities[0] != '\0')
+    {
+        g_string_append_printf(buf, "  Ext-Comm   : %s\r\n", a->ext_communities);
+    }
+    if (a->large_communities[0] != '\0')
+    {
+        g_string_append_printf(buf, "  Lrg-Comm   : %s\r\n", a->large_communities);
+    }
+    if (a->has_originator_id)
+    {
+        char oid[64];
+        net_addr_to_str(&a->originator_id, oid, sizeof(oid));
+        g_string_append_printf(buf, "  Originator : %s\r\n", oid);
+    }
+}
+
+/**
+ * @brief 处理 show bgp attr [<attr-id>] 命令
+ *
+ * group_id=20, cfg_id: 1=attr-id
+ * 不带 attr-id 时显示 intern 表摘要，带时显示指定属性详情。
+ */
+static int handle_bgp_show_attr(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    uint32_t attr_id = 0;
+    gboolean has_id = FALSE;
+
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (CLI_TLV_IS_CTX(&entry))
+        {
+            cli_tlv_entry_free(&entry);
+            continue;
+        }
+        if (entry.cfg_id == 1)
+        {
+            attr_id = (uint32_t)cli_tlv_entry_get_int(&entry);
+            has_id = TRUE;
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    GString *buf = g_string_sized_new(512);
+
+    if (!has_id)
+    {
+        /* 摘要模式：显示 intern 表统计 */
+        g_string_append_printf(buf, "\r\nBGP Attribute Intern Table\r\n");
+        g_string_append_printf(buf, "  Unique attributes: %u\r\n\r\n", bgp_attr_intern_count());
+        return bgp_work_send_chunked_response(msg, buf);
+    }
+
+    /* 详情模式：按 ID 查找并输出 */
+    const bgp_attr_ref_t *ref = bgp_attr_find_by_id(attr_id);
+    if (!ref)
+    {
+        g_string_append_printf(buf, "\r\nBGP Error: Attribute ID %u not found.\r\n\r\n", attr_id);
+        return bgp_work_send_chunked_response(msg, buf);
+    }
+
+    g_string_append_printf(buf, "\r\nBGP Attribute Detail\r\n");
+    bgp_show_attr_detail(buf, ref);
+    g_string_append(buf, "\r\n");
+    return bgp_work_send_chunked_response(msg, buf);
+}
+
 int bgp_work_handle_show_msg(dev_ipc_message_t *msg)
 {
     if (!msg || !msg->payload)
@@ -880,6 +982,9 @@ int bgp_work_handle_show_msg(dev_ipc_message_t *msg)
             break;
         case BGP_CLI_GROUP_ID_SHOW_ROUTE:
             result = handle_bgp_show_route(msg, &parser);
+            break;
+        case BGP_CLI_GROUP_ID_SHOW_ATTR:
+            result = handle_bgp_show_attr(msg, &parser);
             break;
         default:
             LOG_WARN("BGP: 未知 show 命令 group_id=%u", parser.group_id);

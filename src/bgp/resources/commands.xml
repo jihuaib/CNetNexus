@@ -577,12 +577,48 @@
             </commands>
         </group>
 
+        <!-- show bgp attr [<attr-id>] -->
+        <group group-id="14">
+            <elements>
+                <element type="keyword">
+                    <name>show</name>
+                    <description>Display system information</description>
+                </element>
+                <element type="keyword">
+                    <name>bgp</name>
+                    <description>BGP protocol</description>
+                </element>
+                <element type="keyword">
+                    <name>attr</name>
+                    <description>BGP path attribute intern table</description>
+                </element>
+                <element cfg-id="1" type="parameter">
+                    <name>&lt;attr-id&gt;</name>
+                    <type>uint(1-4294967295)</type>
+                    <description>Attribute ID to query</description>
+                </element>
+            </elements>
+
+            <commands>
+                <!-- show bgp attr（显示 intern 表摘要） -->
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>global</views>
+                </command>
+                <!-- show bgp attr <attr-id>（显示指定属性详情） -->
+                <command>
+                    <expression>1 2 3 4</expression>
+                    <views>global</views>
+                </command>
+            </commands>
+        </group>
+
         <!-- ================================================================ -->
         <!-- BMP 上报功能命令（group 14-19）                                   -->
         <!-- ================================================================ -->
 
         <!-- bmp instance <name> / no bmp instance <name> -->
-        <group group-id="14">
+        <group group-id="100">
             <elements>
                 <element type="keyword">
                     <name>no</name>
@@ -622,7 +658,7 @@
         </group>
 
         <!-- collector <ip> port <port> / no collector（bgp-bmp 视图） -->
-        <group group-id="15">
+        <group group-id="101">
             <elements>
                 <element type="keyword">
                     <name>no</name>
@@ -663,7 +699,7 @@
         </group>
 
         <!-- stats-report interval <seconds> / no stats-report interval（bgp-bmp 视图） -->
-        <group group-id="16">
+        <group group-id="102">
             <elements>
                 <element type="keyword">
                     <name>no</name>
@@ -699,7 +735,7 @@
         </group>
 
         <!-- reconnect interval <seconds> / no reconnect interval（bgp-bmp 视图） -->
-        <group group-id="17">
+        <group group-id="103">
             <elements>
                 <element type="keyword">
                     <name>no</name>
@@ -735,7 +771,7 @@
         </group>
 
         <!-- monitor neighbor all / monitor neighbor <ip> / no monitor neighbor <ip>（bgp-bmp 视图） -->
-        <group group-id="18">
+        <group group-id="104">
             <elements>
                 <element type="keyword">
                     <name>no</name>
@@ -780,7 +816,7 @@
         </group>
 
         <!-- show bgp bmp [instance <name>] -->
-        <group group-id="19">
+        <group group-id="105">
             <elements>
                 <element type="keyword">
                     <name>show</name>

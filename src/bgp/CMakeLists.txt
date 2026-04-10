@@ -20,6 +20,7 @@ set(BGP_SOURCES
     work/bgp_vrf.c
     work/bgp_protocol.c
     work/bgp_relay.c
+    work/bgp_attr_intern.c
     work/bgp_rib.c
     work/bgp_show.c
     work/bgp_worker.c

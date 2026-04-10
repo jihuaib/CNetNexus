@@ -24,6 +24,7 @@
 #define BGP_CLI_GROUP_ID_IMPORT_ROUTE 11  /**< import-route 协议导入命令 */
 #define BGP_CLI_GROUP_ID_SOURCE_IF 12     /**< neighbor source-interface 配置命令 */
 #define BGP_CLI_GROUP_ID_EBGP_MULTIHOP 13 /**< neighbor ebgp-multihop 配置命令 */
+#define BGP_CLI_GROUP_ID_SHOW_ATTR 14     /**< show bgp attr 属性详情命令 */
 
 /**
  * @brief 处理配置类 CLI 命令（group 1-8, 11-13），在 IPC worker 线程调用

@@ -69,31 +69,32 @@ static bool route_is_better(const bgp_route_node_t *candidate, const bgp_route_n
     }
 
     /* 1. LOCAL_PREF（越高越优，未携带时默认 100） */
-    uint32_t ca_lp = candidate->attr.has_local_pref ? candidate->attr.local_pref : 100;
-    uint32_t cu_lp = current->attr.has_local_pref ? current->attr.local_pref : 100;
+    uint32_t ca_lp = BGP_ROUTE_ATTR(candidate)->has_local_pref ? BGP_ROUTE_ATTR(candidate)->local_pref : 100;
+    uint32_t cu_lp = BGP_ROUTE_ATTR(current)->has_local_pref ? BGP_ROUTE_ATTR(current)->local_pref : 100;
     if (ca_lp != cu_lp)
     {
         return ca_lp > cu_lp;
     }
 
     /* 2. AS_PATH 长度（越短越优） */
-    uint32_t ca_al = as_path_hop_count(candidate->attr.as_path);
-    uint32_t cu_al = as_path_hop_count(current->attr.as_path);
+    uint32_t ca_al = as_path_hop_count(BGP_ROUTE_ATTR(candidate)->as_path);
+    uint32_t cu_al = as_path_hop_count(BGP_ROUTE_ATTR(current)->as_path);
     if (ca_al != cu_al)
     {
         return ca_al < cu_al;
     }
 
     /* 3. ORIGIN（越小越优：IGP < EGP < INCOMPLETE） */
-    if (candidate->attr.origin != current->attr.origin)
+    if (BGP_ROUTE_ATTR(candidate)->origin != BGP_ROUTE_ATTR(current)->origin)
     {
-        return candidate->attr.origin < current->attr.origin;
+        return BGP_ROUTE_ATTR(candidate)->origin < BGP_ROUTE_ATTR(current)->origin;
     }
 
     /* 4. MED（仅两者均携带时比较，越小越优） */
-    if (candidate->attr.has_med && current->attr.has_med && candidate->attr.med != current->attr.med)
+    if (BGP_ROUTE_ATTR(candidate)->has_med && BGP_ROUTE_ATTR(current)->has_med &&
+        BGP_ROUTE_ATTR(candidate)->med != BGP_ROUTE_ATTR(current)->med)
     {
-        return candidate->attr.med < current->attr.med;
+        return BGP_ROUTE_ATTR(candidate)->med < BGP_ROUTE_ATTR(current)->med;
     }
 
     /* 5. 前缀同族 nexthop 优先（用于双栈扩展下一跳场景的稳定优选）。 */

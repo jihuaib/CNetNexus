@@ -8,6 +8,7 @@
 
 #include <string.h>
 
+#include "bgp_attr_intern.h"
 #include "net_addr.h"
 
 /**
@@ -39,14 +40,26 @@ static bgp_rthead_t *rthead_create(const bgp_nlri_entry_t *nlri, bgp_rib_t *rib)
     return head;
 }
 
+/** 释放路径节点前先 release 共享属性 */
+static void route_node_free(gpointer data)
+{
+    bgp_route_node_t *route = (bgp_route_node_t *)data;
+    if (route)
+    {
+        bgp_attr_release(route->attr);
+        route->attr = NULL;
+    }
+    g_free(route);
+}
+
 static void rthead_destroy(bgp_rthead_t *head)
 {
     if (!head)
     {
         return;
     }
-    /* 释放所有路径节点 */
-    g_list_free_full(head->route_list, g_free);
+    /* 释放所有路径节点（含属性引用） */
+    g_list_free_full(head->route_list, route_node_free);
     head->route_list = NULL;
     g_free(head);
 }
@@ -174,7 +187,9 @@ int bgp_rib_route_apply_reach(bgp_route_node_t *route, uint32_t import_proto, co
 
     if (attr)
     {
-        memcpy(&route->attr, attr, sizeof(*attr));
+        bgp_attr_ref_t *new_ref = bgp_attr_intern(attr);
+        bgp_attr_release(route->attr);
+        route->attr = new_ref;
     }
     if (nexthop)
     {
@@ -257,7 +272,7 @@ int bgp_rib_unreach_one(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_
     else
     {
         head->route_list = g_list_remove(head->route_list, route);
-        g_free(route);
+        route_node_free(route);
 
         if (rib->route_count > 0)
         {
@@ -351,7 +366,7 @@ static gboolean purge_source_cb(gpointer key, gpointer value, gpointer user_data
         else
         {
             head->route_list = g_list_remove(head->route_list, route);
-            g_free(route);
+            route_node_free(route);
             ctx->removed_phys_routes++;
             if (!head->route_list)
             {
@@ -449,7 +464,7 @@ uint32_t bgp_rib_gc_head(bgp_rib_t *rib, bgp_rthead_t *head)
         if (route && BIT_TEST(route->flags, BGP_ROUTE_FLAG_STALE) && !BIT_TEST(route->flags, BGP_ROUTE_FLAG_FLUSHED))
         {
             head->route_list = g_list_delete_link(head->route_list, node);
-            g_free(route);
+            route_node_free(route);
             cleaned++;
         }
         node = next;

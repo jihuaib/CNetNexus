@@ -11,6 +11,7 @@
 #include <stdint.h>
 
 #include "bgp.h"
+#include "bgp_attr_intern.h"
 #include "bit.h"
 #include "net_addr.h"
 
@@ -41,7 +42,7 @@ typedef struct bgp_route_node
 {
     bgp_rthead_t *head;         /**< 所属 rthead（借用引用） */
     net_addr_t source;          /**< 路由来源标识（peer 路由=邻居IP，import 路由=来源地址） */
-    bgp_attr_t attr;            /**< 路径属性 */
+    bgp_attr_ref_t *attr;       /**< 路径属性（共享引用，intern 后不可变） */
     bgp_nexthop_t nexthop;      /**< 下一跳 */
     net_addr_t iter_relay_addr; /**< nexthop 迭代得到的 relay 地址（family=0 表示未知） */
     gint64 added_at_usec;       /**< 路由首次加入时间（g_get_real_time，仅新增时写入） */

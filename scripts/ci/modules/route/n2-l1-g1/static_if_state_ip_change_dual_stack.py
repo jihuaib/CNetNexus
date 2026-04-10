@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-Route static interface-bind behavior check (dual-stack).
+Route static interface-bind behavior check (dual-stack + single-stack).
 
 Coverage:
 - static route with `nexthop + interface` (IPv4/IPv6)
 - interface shutdown / no shutdown impact on static route install state
 - interface address renumber impact on static route resolve/install state
 - OS route table (`show route ... os`) consistency
+- single-stack interface: IPv4-only / IPv6-only static route lifecycle
 """
 
 from __future__ import annotations
@@ -635,6 +636,492 @@ def _run_ipv6(
     _wait_os_route(rt, afi="ipv6", prefix=TARGET6_PREFIX, gateway=NEW_R2_V6, expect_present=True)
 
 
+def _run_ipv4_single_stack(
+    rt: TopologyRuntime,
+    *,
+    r1_v4_ip: str,
+    r1_v4_len: int,
+    r2_v4_ip: str,
+    r2_v4_len: int,
+    r1_v6_ip: str,
+    r1_v6_len: int,
+    r2_v6_ip: str,
+    r2_v6_len: int,
+) -> None:
+    """IPv4 static route lifecycle when interface has only IPv4 (no IPv6)."""
+    step("IPv4 single-stack: strip IPv6 addresses and verify baseline")
+    run_cmds(
+        rt=rt,
+        device="r1",
+        strict=False,
+        commands=[
+            "config",
+            f"if {GE_IF}",
+            "no shutdown",
+            f"no ipv6 address {r1_v6_ip} {r1_v6_len}",
+            f"no ipv6 address {NEW_R1_V6} {NEW_V6_LEN}",
+            "exit",
+            "end",
+        ],
+    )
+    run_cmds(
+        rt=rt,
+        device="r2",
+        strict=False,
+        commands=[
+            "config",
+            f"if {GE_IF}",
+            "no shutdown",
+            f"no ipv6 address {r2_v6_ip} {r2_v6_len}",
+            f"no ipv6 address {NEW_R2_V6} {NEW_V6_LEN}",
+            "exit",
+            "end",
+        ],
+    )
+    wait_checks(
+        rt,
+        [
+            {
+                "device": "r1",
+                "command": f"show if {GE_IF}",
+                "contains": [
+                    f"Interface {GE_IF} Detail:",
+                    "State      : UP",
+                    f"IPv4 Addr  : {r1_v4_ip}/{r1_v4_len}",
+                ],
+                "not_contains": [f"IPv6 Addr  : {r1_v6_ip}/{r1_v6_len}"],
+                "label": "r1 GE-1 ipv4-only baseline",
+            },
+            {
+                "device": "r2",
+                "command": f"show if {GE_IF}",
+                "contains": [
+                    f"Interface {GE_IF} Detail:",
+                    "State      : UP",
+                    f"IPv4 Addr  : {r2_v4_ip}/{r2_v4_len}",
+                ],
+                "not_contains": [f"IPv6 Addr  : {r2_v6_ip}/{r2_v6_len}"],
+                "label": "r2 GE-1 ipv4-only baseline",
+            },
+        ],
+        timeout=20,
+        interval=2,
+    )
+
+    step("IPv4 single-stack: add static route with nexthop + interface and verify install")
+    run_cmds(
+        rt=rt,
+        device="r1",
+        commands=[
+            "config",
+            f"route ipv4 {TARGET4_ADDR} {TARGET4_LEN} {r2_v4_ip} interface {GE_IF}",
+            "end",
+        ],
+    )
+    _wait_static_candidate(
+        rt,
+        afi="ipv4",
+        prefix=TARGET4_PREFIX,
+        nexthop=r2_v4_ip,
+        expect_resolved=True,
+        expect_in_rib=True,
+    )
+    _wait_rib_static(rt, afi="ipv4", destination=TARGET4_ADDR, nexthop=r2_v4_ip, expect_present=True)
+    _wait_os_route(rt, afi="ipv4", prefix=TARGET4_PREFIX, gateway=r2_v4_ip, expect_present=True)
+
+    step("IPv4 single-stack: shutdown interface and verify static route withdraw")
+    run_cmds(
+        rt=rt,
+        device="r1",
+        commands=[
+            "config",
+            f"if {GE_IF}",
+            "shutdown",
+            "exit",
+            "end",
+        ],
+    )
+    wait_check(
+        rt,
+        device="r1",
+        command=f"show if {GE_IF}",
+        timeout=20,
+        interval=2,
+        contains=[f"Interface {GE_IF} Detail:", "State      : DOWN"],
+        label="r1 GE-1 down (ipv4 single-stack)",
+    )
+    _wait_static_candidate(
+        rt,
+        afi="ipv4",
+        prefix=TARGET4_PREFIX,
+        nexthop=r2_v4_ip,
+        expect_resolved=False,
+        expect_in_rib=False,
+    )
+    _wait_rib_static(rt, afi="ipv4", destination=TARGET4_ADDR, nexthop=r2_v4_ip, expect_present=False)
+    _wait_os_route(rt, afi="ipv4", prefix=TARGET4_PREFIX, gateway=r2_v4_ip, expect_present=False)
+
+    step("IPv4 single-stack: no shutdown interface and verify static route restore")
+    run_cmds(
+        rt=rt,
+        device="r1",
+        commands=[
+            "config",
+            f"if {GE_IF}",
+            "no shutdown",
+            "exit",
+            "end",
+        ],
+    )
+    wait_check(
+        rt,
+        device="r1",
+        command=f"show if {GE_IF}",
+        timeout=20,
+        interval=2,
+        contains=[f"Interface {GE_IF} Detail:", "State      : UP", f"IPv4 Addr  : {r1_v4_ip}/{r1_v4_len}"],
+        label="r1 GE-1 up after no shutdown (ipv4 single-stack)",
+    )
+    _wait_static_candidate(
+        rt,
+        afi="ipv4",
+        prefix=TARGET4_PREFIX,
+        nexthop=r2_v4_ip,
+        expect_resolved=True,
+        expect_in_rib=True,
+    )
+    _wait_rib_static(rt, afi="ipv4", destination=TARGET4_ADDR, nexthop=r2_v4_ip, expect_present=True)
+    _wait_os_route(rt, afi="ipv4", prefix=TARGET4_PREFIX, gateway=r2_v4_ip, expect_present=True)
+
+    step("IPv4 single-stack: renumber GE-1, verify old nexthop route invalidated")
+    run_cmds(
+        rt=rt,
+        device="r1",
+        commands=[
+            "config",
+            f"if {GE_IF}",
+            f"no ip address {r1_v4_ip} {r1_v4_len}",
+            f"ip address {NEW_R1_V4} {NEW_V4_LEN}",
+            "exit",
+            "end",
+        ],
+    )
+    run_cmds(
+        rt=rt,
+        device="r2",
+        commands=[
+            "config",
+            f"if {GE_IF}",
+            f"no ip address {r2_v4_ip} {r2_v4_len}",
+            f"ip address {NEW_R2_V4} {NEW_V4_LEN}",
+            "exit",
+            "end",
+        ],
+    )
+    wait_checks(
+        rt,
+        [
+            {
+                "device": "r1",
+                "command": f"show if {GE_IF}",
+                "contains": [
+                    f"Interface {GE_IF} Detail:",
+                    "State      : UP",
+                    f"IPv4 Addr  : {NEW_R1_V4}/{NEW_V4_LEN}",
+                ],
+                "label": "r1 GE-1 renumbered (ipv4 single-stack)",
+            },
+            {
+                "device": "r2",
+                "command": f"show if {GE_IF}",
+                "contains": [
+                    f"Interface {GE_IF} Detail:",
+                    "State      : UP",
+                    f"IPv4 Addr  : {NEW_R2_V4}/{NEW_V4_LEN}",
+                ],
+                "label": "r2 GE-1 renumbered (ipv4 single-stack)",
+            },
+        ],
+        timeout=20,
+        interval=2,
+    )
+    _wait_static_candidate(
+        rt,
+        afi="ipv4",
+        prefix=TARGET4_PREFIX,
+        nexthop=r2_v4_ip,
+        expect_resolved=False,
+        expect_in_rib=False,
+    )
+    _wait_rib_static(rt, afi="ipv4", destination=TARGET4_ADDR, nexthop=r2_v4_ip, expect_present=False)
+    _wait_os_route(rt, afi="ipv4", prefix=TARGET4_PREFIX, gateway=r2_v4_ip, expect_present=False)
+
+    step("IPv4 single-stack: update static route nexthop and verify recovery")
+    run_cmds(
+        rt=rt,
+        device="r1",
+        commands=[
+            "config",
+            f"no route ipv4 {TARGET4_ADDR} {TARGET4_LEN} {r2_v4_ip} interface {GE_IF}",
+            f"route ipv4 {TARGET4_ADDR} {TARGET4_LEN} {NEW_R2_V4} interface {GE_IF}",
+            "end",
+        ],
+    )
+    _wait_static_candidate(
+        rt,
+        afi="ipv4",
+        prefix=TARGET4_PREFIX,
+        nexthop=NEW_R2_V4,
+        expect_resolved=True,
+        expect_in_rib=True,
+    )
+    _wait_rib_static(rt, afi="ipv4", destination=TARGET4_ADDR, nexthop=NEW_R2_V4, expect_present=True)
+    _wait_os_route(rt, afi="ipv4", prefix=TARGET4_PREFIX, gateway=NEW_R2_V4, expect_present=True)
+
+
+def _run_ipv6_single_stack(
+    rt: TopologyRuntime,
+    *,
+    r1_v4_ip: str,
+    r1_v4_len: int,
+    r2_v4_ip: str,
+    r2_v4_len: int,
+    r1_v6_ip: str,
+    r1_v6_len: int,
+    r2_v6_ip: str,
+    r2_v6_len: int,
+) -> None:
+    """IPv6 static route lifecycle when interface has only IPv6 (no IPv4)."""
+    step("IPv6 single-stack: strip IPv4 addresses and verify baseline")
+    run_cmds(
+        rt=rt,
+        device="r1",
+        strict=False,
+        commands=[
+            "config",
+            f"if {GE_IF}",
+            "no shutdown",
+            f"no ip address {r1_v4_ip} {r1_v4_len}",
+            f"no ip address {NEW_R1_V4} {NEW_V4_LEN}",
+            "exit",
+            "end",
+        ],
+    )
+    run_cmds(
+        rt=rt,
+        device="r2",
+        strict=False,
+        commands=[
+            "config",
+            f"if {GE_IF}",
+            "no shutdown",
+            f"no ip address {r2_v4_ip} {r2_v4_len}",
+            f"no ip address {NEW_R2_V4} {NEW_V4_LEN}",
+            "exit",
+            "end",
+        ],
+    )
+    wait_checks(
+        rt,
+        [
+            {
+                "device": "r1",
+                "command": f"show if {GE_IF}",
+                "contains": [
+                    f"Interface {GE_IF} Detail:",
+                    "State      : UP",
+                    f"IPv6 Addr  : {r1_v6_ip}/{r1_v6_len}",
+                ],
+                "not_contains": [f"IPv4 Addr  : {r1_v4_ip}/{r1_v4_len}"],
+                "label": "r1 GE-1 ipv6-only baseline",
+            },
+            {
+                "device": "r2",
+                "command": f"show if {GE_IF}",
+                "contains": [
+                    f"Interface {GE_IF} Detail:",
+                    "State      : UP",
+                    f"IPv6 Addr  : {r2_v6_ip}/{r2_v6_len}",
+                ],
+                "not_contains": [f"IPv4 Addr  : {r2_v4_ip}/{r2_v4_len}"],
+                "label": "r2 GE-1 ipv6-only baseline",
+            },
+        ],
+        timeout=20,
+        interval=2,
+    )
+
+    step("IPv6 single-stack: add static route with nexthop + interface and verify install")
+    run_cmds(
+        rt=rt,
+        device="r1",
+        commands=[
+            "config",
+            f"route ipv6 {TARGET6_ADDR} {TARGET6_LEN} {r2_v6_ip} interface {GE_IF}",
+            "end",
+        ],
+    )
+    _wait_static_candidate(
+        rt,
+        afi="ipv6",
+        prefix=TARGET6_PREFIX,
+        nexthop=r2_v6_ip,
+        expect_resolved=True,
+        expect_in_rib=True,
+    )
+    _wait_rib_static(rt, afi="ipv6", destination=TARGET6_NET_ADDR, nexthop=r2_v6_ip, expect_present=True)
+    _wait_os_route(rt, afi="ipv6", prefix=TARGET6_PREFIX, gateway=r2_v6_ip, expect_present=True)
+
+    step("IPv6 single-stack: shutdown interface and verify static route withdraw")
+    run_cmds(
+        rt=rt,
+        device="r1",
+        commands=[
+            "config",
+            f"if {GE_IF}",
+            "shutdown",
+            "exit",
+            "end",
+        ],
+    )
+    wait_check(
+        rt,
+        device="r1",
+        command=f"show if {GE_IF}",
+        timeout=20,
+        interval=2,
+        contains=[f"Interface {GE_IF} Detail:", "State      : DOWN"],
+        label="r1 GE-1 down (ipv6 single-stack)",
+    )
+    _wait_static_candidate(
+        rt,
+        afi="ipv6",
+        prefix=TARGET6_PREFIX,
+        nexthop=r2_v6_ip,
+        expect_resolved=False,
+        expect_in_rib=False,
+    )
+    _wait_rib_static(rt, afi="ipv6", destination=TARGET6_NET_ADDR, nexthop=r2_v6_ip, expect_present=False)
+    _wait_os_route(rt, afi="ipv6", prefix=TARGET6_PREFIX, gateway=r2_v6_ip, expect_present=False)
+
+    step("IPv6 single-stack: no shutdown interface and verify static route restore")
+    run_cmds(
+        rt=rt,
+        device="r1",
+        commands=[
+            "config",
+            f"if {GE_IF}",
+            "no shutdown",
+            "exit",
+            "end",
+        ],
+    )
+    wait_check(
+        rt,
+        device="r1",
+        command=f"show if {GE_IF}",
+        timeout=20,
+        interval=2,
+        contains=[f"Interface {GE_IF} Detail:", "State      : UP", f"IPv6 Addr  : {r1_v6_ip}/{r1_v6_len}"],
+        label="r1 GE-1 up after no shutdown (ipv6 single-stack)",
+    )
+    _wait_static_candidate(
+        rt,
+        afi="ipv6",
+        prefix=TARGET6_PREFIX,
+        nexthop=r2_v6_ip,
+        expect_resolved=True,
+        expect_in_rib=True,
+    )
+    _wait_rib_static(rt, afi="ipv6", destination=TARGET6_NET_ADDR, nexthop=r2_v6_ip, expect_present=True)
+    _wait_os_route(rt, afi="ipv6", prefix=TARGET6_PREFIX, gateway=r2_v6_ip, expect_present=True)
+
+    step("IPv6 single-stack: renumber GE-1, verify old nexthop route invalidated")
+    run_cmds(
+        rt=rt,
+        device="r1",
+        commands=[
+            "config",
+            f"if {GE_IF}",
+            f"no ipv6 address {r1_v6_ip} {r1_v6_len}",
+            f"ipv6 address {NEW_R1_V6} {NEW_V6_LEN}",
+            "exit",
+            "end",
+        ],
+    )
+    run_cmds(
+        rt=rt,
+        device="r2",
+        commands=[
+            "config",
+            f"if {GE_IF}",
+            f"no ipv6 address {r2_v6_ip} {r2_v6_len}",
+            f"ipv6 address {NEW_R2_V6} {NEW_V6_LEN}",
+            "exit",
+            "end",
+        ],
+    )
+    wait_checks(
+        rt,
+        [
+            {
+                "device": "r1",
+                "command": f"show if {GE_IF}",
+                "contains": [
+                    f"Interface {GE_IF} Detail:",
+                    "State      : UP",
+                    f"IPv6 Addr  : {NEW_R1_V6}/{NEW_V6_LEN}",
+                ],
+                "label": "r1 GE-1 renumbered (ipv6 single-stack)",
+            },
+            {
+                "device": "r2",
+                "command": f"show if {GE_IF}",
+                "contains": [
+                    f"Interface {GE_IF} Detail:",
+                    "State      : UP",
+                    f"IPv6 Addr  : {NEW_R2_V6}/{NEW_V6_LEN}",
+                ],
+                "label": "r2 GE-1 renumbered (ipv6 single-stack)",
+            },
+        ],
+        timeout=20,
+        interval=2,
+    )
+    _wait_static_candidate(
+        rt,
+        afi="ipv6",
+        prefix=TARGET6_PREFIX,
+        nexthop=r2_v6_ip,
+        expect_resolved=False,
+        expect_in_rib=False,
+    )
+    _wait_rib_static(rt, afi="ipv6", destination=TARGET6_NET_ADDR, nexthop=r2_v6_ip, expect_present=False)
+    _wait_os_route(rt, afi="ipv6", prefix=TARGET6_PREFIX, gateway=r2_v6_ip, expect_present=False)
+
+    step("IPv6 single-stack: update static route nexthop and verify recovery")
+    run_cmds(
+        rt=rt,
+        device="r1",
+        commands=[
+            "config",
+            f"no route ipv6 {TARGET6_ADDR} {TARGET6_LEN} {r2_v6_ip} interface {GE_IF}",
+            f"route ipv6 {TARGET6_ADDR} {TARGET6_LEN} {NEW_R2_V6} interface {GE_IF}",
+            "end",
+        ],
+    )
+    _wait_static_candidate(
+        rt,
+        afi="ipv6",
+        prefix=TARGET6_PREFIX,
+        nexthop=NEW_R2_V6,
+        expect_resolved=True,
+        expect_in_rib=True,
+    )
+    _wait_rib_static(rt, afi="ipv6", destination=TARGET6_NET_ADDR, nexthop=NEW_R2_V6, expect_present=True)
+    _wait_os_route(rt, afi="ipv6", prefix=TARGET6_PREFIX, gateway=NEW_R2_V6, expect_present=True)
+
+
 def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
     require_devices(top, ("r1", "r2"))
 
@@ -680,7 +1167,63 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             r2_base_len=r2_base_v6_len,
         )
 
-        print("Route static interface dual-stack state/ip-change check passed.")
+        step("Restore baseline before single-stack tests")
+        _restore_ipv4(
+            rt,
+            r1_base_ip=r1_base_v4,
+            r1_base_len=r1_base_v4_len,
+            r2_base_ip=r2_base_v4,
+            r2_base_len=r2_base_v4_len,
+        )
+        _restore_ipv6(
+            rt,
+            r1_base_ip=r1_base_v6,
+            r1_base_len=r1_base_v6_len,
+            r2_base_ip=r2_base_v6,
+            r2_base_len=r2_base_v6_len,
+        )
+
+        _run_ipv4_single_stack(
+            rt,
+            r1_v4_ip=r1_base_v4,
+            r1_v4_len=r1_base_v4_len,
+            r2_v4_ip=r2_base_v4,
+            r2_v4_len=r2_base_v4_len,
+            r1_v6_ip=r1_base_v6,
+            r1_v6_len=r1_base_v6_len,
+            r2_v6_ip=r2_base_v6,
+            r2_v6_len=r2_base_v6_len,
+        )
+
+        step("Restore baseline between single-stack tests")
+        _restore_ipv4(
+            rt,
+            r1_base_ip=r1_base_v4,
+            r1_base_len=r1_base_v4_len,
+            r2_base_ip=r2_base_v4,
+            r2_base_len=r2_base_v4_len,
+        )
+        _restore_ipv6(
+            rt,
+            r1_base_ip=r1_base_v6,
+            r1_base_len=r1_base_v6_len,
+            r2_base_ip=r2_base_v6,
+            r2_base_len=r2_base_v6_len,
+        )
+
+        _run_ipv6_single_stack(
+            rt,
+            r1_v4_ip=r1_base_v4,
+            r1_v4_len=r1_base_v4_len,
+            r2_v4_ip=r2_base_v4,
+            r2_v4_len=r2_base_v4_len,
+            r1_v6_ip=r1_base_v6,
+            r1_v6_len=r1_base_v6_len,
+            r2_v6_ip=r2_base_v6,
+            r2_v6_len=r2_base_v6_len,
+        )
+
+        print("Route static interface dual-stack + single-stack state/ip-change check passed.")
     finally:
         step("Cleanup dual-stack static route interface case")
         _restore_ipv4(
