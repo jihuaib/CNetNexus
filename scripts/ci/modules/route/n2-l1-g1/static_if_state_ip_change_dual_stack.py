@@ -4,10 +4,12 @@ Route static interface-bind behavior check (dual-stack + single-stack).
 
 Coverage:
 - static route with `nexthop + interface` (IPv4/IPv6)
+- static route with `interface` only (no nexthop, IPv4/IPv6)
 - interface shutdown / no shutdown impact on static route install state
 - interface address renumber impact on static route resolve/install state
 - OS route table (`show route ... os`) consistency
 - single-stack interface: IPv4-only / IPv6-only static route lifecycle
+- duplicate route validation: same route configured twice stays as 1 entry
 """
 
 from __future__ import annotations
@@ -29,6 +31,15 @@ TARGET6_ADDR = "2001:db8:198:18:66::"
 TARGET6_LEN = 64
 TARGET6_NET_ADDR = str(ipaddress.ip_network(f"{TARGET6_ADDR}/{TARGET6_LEN}", strict=False).network_address)
 TARGET6_PREFIX = f"{TARGET6_NET_ADDR}/{TARGET6_LEN}"
+
+TARGET4_IF_ADDR = "198.18.77.0"
+TARGET4_IF_LEN = 24
+TARGET4_IF_PREFIX = f"{TARGET4_IF_ADDR}/{TARGET4_IF_LEN}"
+
+TARGET6_IF_ADDR = "2001:db8:198:18:77::"
+TARGET6_IF_LEN = 64
+TARGET6_IF_NET_ADDR = str(ipaddress.ip_network(f"{TARGET6_IF_ADDR}/{TARGET6_IF_LEN}", strict=False).network_address)
+TARGET6_IF_PREFIX = f"{TARGET6_IF_NET_ADDR}/{TARGET6_IF_LEN}"
 
 NEW_R1_V4 = "10.12.99.1"
 NEW_R2_V4 = "10.12.99.2"
@@ -60,7 +71,7 @@ def _wait_rib_static(
             not_contains=["(no routes)", "(no matching routes)"],
             regex=[
                 r"(?im)^\s*Path\s*\[1\]\s*:\s*static\b",
-                rf"(?im)^\s*Nexthop\s*:\s*{re.escape(nexthop)}\b",
+                rf"(?im)^\s*Nexthop\s*:\s*{re.escape(nexthop)}\s*$",
             ],
             label=f"r1 {afi} route {destination} via {nexthop} present",
         )
@@ -85,6 +96,7 @@ def _wait_static_candidate(
     nexthop: str,
     expect_resolved: bool,
     expect_in_rib: bool,
+    total_count: int = 1,
     timeout: int = 30,
     interval: int = 2,
 ) -> None:
@@ -103,7 +115,7 @@ def _wait_static_candidate(
         command=f"show route {afi} static",
         timeout=timeout,
         interval=interval,
-        contains=["Total 1 static route(s)"],
+        contains=[f"Total {total_count} static route(s)"],
         regex=[row_regex],
         label=f"r1 {afi} static candidate {prefix} resolved={resolved} inrib={in_rib}",
     )
@@ -1122,6 +1134,329 @@ def _run_ipv6_single_stack(
     _wait_os_route(rt, afi="ipv6", prefix=TARGET6_PREFIX, gateway=NEW_R2_V6, expect_present=True)
 
 
+def _restore_if_only(rt: TopologyRuntime) -> None:
+    """Clean up interface-only static routes."""
+    run_cmds(
+        rt=rt,
+        device="r1",
+        strict=False,
+        commands=[
+            "config",
+            f"no route ipv4 {TARGET4_IF_ADDR} {TARGET4_IF_LEN} interface {GE_IF}",
+            f"no route ipv6 {TARGET6_IF_ADDR} {TARGET6_IF_LEN} interface {GE_IF}",
+            "end",
+        ],
+    )
+
+
+def _run_ipv4_if_only(
+    rt: TopologyRuntime,
+    *,
+    r1_base_ip: str,
+    r1_base_len: int,
+) -> None:
+    """IPv4 static route with interface only (no nexthop)."""
+    step("IPv4 if-only: add static route with interface only and verify install")
+    run_cmds(
+        rt=rt,
+        device="r1",
+        commands=[
+            "config",
+            f"route ipv4 {TARGET4_IF_ADDR} {TARGET4_IF_LEN} interface {GE_IF}",
+            "end",
+        ],
+    )
+    _wait_static_candidate(
+        rt,
+        afi="ipv4",
+        prefix=TARGET4_IF_PREFIX,
+        nexthop="0.0.0.0",
+        expect_resolved=True,
+        expect_in_rib=True,
+    )
+    _wait_rib_static(rt, afi="ipv4", destination=TARGET4_IF_ADDR, nexthop="0.0.0.0", expect_present=True)
+    _wait_os_route(rt, afi="ipv4", prefix=TARGET4_IF_PREFIX, gateway="-", expect_present=True)
+
+    step("IPv4 if-only: shutdown interface and verify static route withdraw")
+    run_cmds(
+        rt=rt,
+        device="r1",
+        commands=[
+            "config",
+            f"if {GE_IF}",
+            "shutdown",
+            "exit",
+            "end",
+        ],
+    )
+    wait_check(
+        rt,
+        device="r1",
+        command=f"show if {GE_IF}",
+        timeout=20,
+        interval=2,
+        contains=[f"Interface {GE_IF} Detail:", "State      : DOWN"],
+        label="r1 GE-1 down (ipv4 if-only)",
+    )
+    _wait_static_candidate(
+        rt,
+        afi="ipv4",
+        prefix=TARGET4_IF_PREFIX,
+        nexthop="0.0.0.0",
+        expect_resolved=False,
+        expect_in_rib=False,
+    )
+    _wait_rib_static(rt, afi="ipv4", destination=TARGET4_IF_ADDR, nexthop="0.0.0.0", expect_present=False)
+    _wait_os_route(rt, afi="ipv4", prefix=TARGET4_IF_PREFIX, gateway="-", expect_present=False)
+
+    step("IPv4 if-only: no shutdown interface and verify static route restore")
+    run_cmds(
+        rt=rt,
+        device="r1",
+        commands=[
+            "config",
+            f"if {GE_IF}",
+            "no shutdown",
+            "exit",
+            "end",
+        ],
+    )
+    wait_check(
+        rt,
+        device="r1",
+        command=f"show if {GE_IF}",
+        timeout=20,
+        interval=2,
+        contains=[f"Interface {GE_IF} Detail:", "State      : UP", f"IPv4 Addr  : {r1_base_ip}/{r1_base_len}"],
+        label="r1 GE-1 up after no shutdown (ipv4 if-only)",
+    )
+    _wait_static_candidate(
+        rt,
+        afi="ipv4",
+        prefix=TARGET4_IF_PREFIX,
+        nexthop="0.0.0.0",
+        expect_resolved=True,
+        expect_in_rib=True,
+    )
+    _wait_rib_static(rt, afi="ipv4", destination=TARGET4_IF_ADDR, nexthop="0.0.0.0", expect_present=True)
+    _wait_os_route(rt, afi="ipv4", prefix=TARGET4_IF_PREFIX, gateway="-", expect_present=True)
+
+
+def _run_ipv6_if_only(
+    rt: TopologyRuntime,
+    *,
+    r1_base_ip: str,
+    r1_base_len: int,
+) -> None:
+    """IPv6 static route with interface only (no nexthop)."""
+    step("IPv6 if-only: add static route with interface only and verify install")
+    run_cmds(
+        rt=rt,
+        device="r1",
+        commands=[
+            "config",
+            f"route ipv6 {TARGET6_IF_ADDR} {TARGET6_IF_LEN} interface {GE_IF}",
+            "end",
+        ],
+    )
+    _wait_static_candidate(
+        rt,
+        afi="ipv6",
+        prefix=TARGET6_IF_PREFIX,
+        nexthop="::",
+        expect_resolved=True,
+        expect_in_rib=True,
+    )
+    _wait_rib_static(rt, afi="ipv6", destination=TARGET6_IF_NET_ADDR, nexthop="::", expect_present=True)
+    _wait_os_route(rt, afi="ipv6", prefix=TARGET6_IF_PREFIX, gateway="-", expect_present=True)
+
+    step("IPv6 if-only: shutdown interface and verify static route withdraw")
+    run_cmds(
+        rt=rt,
+        device="r1",
+        commands=[
+            "config",
+            f"if {GE_IF}",
+            "shutdown",
+            "exit",
+            "end",
+        ],
+    )
+    wait_check(
+        rt,
+        device="r1",
+        command=f"show if {GE_IF}",
+        timeout=20,
+        interval=2,
+        contains=[f"Interface {GE_IF} Detail:", "State      : DOWN"],
+        label="r1 GE-1 down (ipv6 if-only)",
+    )
+    _wait_static_candidate(
+        rt,
+        afi="ipv6",
+        prefix=TARGET6_IF_PREFIX,
+        nexthop="::",
+        expect_resolved=False,
+        expect_in_rib=False,
+    )
+    _wait_rib_static(rt, afi="ipv6", destination=TARGET6_IF_NET_ADDR, nexthop="::", expect_present=False)
+    _wait_os_route(rt, afi="ipv6", prefix=TARGET6_IF_PREFIX, gateway="-", expect_present=False)
+
+    step("IPv6 if-only: no shutdown interface and verify static route restore")
+    run_cmds(
+        rt=rt,
+        device="r1",
+        commands=[
+            "config",
+            f"if {GE_IF}",
+            "no shutdown",
+            "exit",
+            "end",
+        ],
+    )
+    wait_check(
+        rt,
+        device="r1",
+        command=f"show if {GE_IF}",
+        timeout=20,
+        interval=2,
+        contains=[f"Interface {GE_IF} Detail:", "State      : UP", f"IPv6 Addr  : {r1_base_ip}/{r1_base_len}"],
+        label="r1 GE-1 up after no shutdown (ipv6 if-only)",
+    )
+    _wait_static_candidate(
+        rt,
+        afi="ipv6",
+        prefix=TARGET6_IF_PREFIX,
+        nexthop="::",
+        expect_resolved=True,
+        expect_in_rib=True,
+    )
+    _wait_rib_static(rt, afi="ipv6", destination=TARGET6_IF_NET_ADDR, nexthop="::", expect_present=True)
+    _wait_os_route(rt, afi="ipv6", prefix=TARGET6_IF_PREFIX, gateway="-", expect_present=True)
+
+
+def _run_duplicate_check(
+    rt: TopologyRuntime,
+    *,
+    r2_base_ip: str,
+) -> None:
+    """Verify adding the same static route twice does not create duplicates."""
+    step("Duplicate: add nexthop+interface route and verify 1 entry")
+    run_cmds(
+        rt=rt,
+        device="r1",
+        commands=[
+            "config",
+            f"route ipv4 {TARGET4_ADDR} {TARGET4_LEN} {r2_base_ip} interface {GE_IF}",
+            "end",
+        ],
+    )
+    _wait_static_candidate(
+        rt,
+        afi="ipv4",
+        prefix=TARGET4_PREFIX,
+        nexthop=r2_base_ip,
+        expect_resolved=True,
+        expect_in_rib=True,
+        total_count=1,
+    )
+
+    step("Duplicate: add same route again and verify still 1 entry (no duplicate)")
+    run_cmds(
+        rt=rt,
+        device="r1",
+        commands=[
+            "config",
+            f"route ipv4 {TARGET4_ADDR} {TARGET4_LEN} {r2_base_ip} interface {GE_IF}",
+            "end",
+        ],
+    )
+    _wait_static_candidate(
+        rt,
+        afi="ipv4",
+        prefix=TARGET4_PREFIX,
+        nexthop=r2_base_ip,
+        expect_resolved=True,
+        expect_in_rib=True,
+        total_count=1,
+    )
+    _wait_rib_static(rt, afi="ipv4", destination=TARGET4_ADDR, nexthop=r2_base_ip, expect_present=True)
+
+    step("Duplicate: delete route and verify removal")
+    run_cmds(
+        rt=rt,
+        device="r1",
+        commands=[
+            "config",
+            f"no route ipv4 {TARGET4_ADDR} {TARGET4_LEN} {r2_base_ip} interface {GE_IF}",
+            "end",
+        ],
+    )
+    _wait_rib_static(rt, afi="ipv4", destination=TARGET4_ADDR, nexthop=r2_base_ip, expect_present=False)
+
+    step("Duplicate: re-add route and verify install again")
+    run_cmds(
+        rt=rt,
+        device="r1",
+        commands=[
+            "config",
+            f"route ipv4 {TARGET4_ADDR} {TARGET4_LEN} {r2_base_ip} interface {GE_IF}",
+            "end",
+        ],
+    )
+    _wait_static_candidate(
+        rt,
+        afi="ipv4",
+        prefix=TARGET4_PREFIX,
+        nexthop=r2_base_ip,
+        expect_resolved=True,
+        expect_in_rib=True,
+        total_count=1,
+    )
+    _wait_rib_static(rt, afi="ipv4", destination=TARGET4_ADDR, nexthop=r2_base_ip, expect_present=True)
+
+    step("Duplicate: add interface-only route and verify 1 entry")
+    run_cmds(
+        rt=rt,
+        device="r1",
+        commands=[
+            "config",
+            f"no route ipv4 {TARGET4_ADDR} {TARGET4_LEN} {r2_base_ip} interface {GE_IF}",
+            f"route ipv4 {TARGET4_IF_ADDR} {TARGET4_IF_LEN} interface {GE_IF}",
+            "end",
+        ],
+    )
+    _wait_static_candidate(
+        rt,
+        afi="ipv4",
+        prefix=TARGET4_IF_PREFIX,
+        nexthop="0.0.0.0",
+        expect_resolved=True,
+        expect_in_rib=True,
+        total_count=1,
+    )
+
+    step("Duplicate: add same interface-only route again and verify still 1 entry")
+    run_cmds(
+        rt=rt,
+        device="r1",
+        commands=[
+            "config",
+            f"route ipv4 {TARGET4_IF_ADDR} {TARGET4_IF_LEN} interface {GE_IF}",
+            "end",
+        ],
+    )
+    _wait_static_candidate(
+        rt,
+        afi="ipv4",
+        prefix=TARGET4_IF_PREFIX,
+        nexthop="0.0.0.0",
+        expect_resolved=True,
+        expect_in_rib=True,
+        total_count=1,
+    )
+
+
 def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
     require_devices(top, ("r1", "r2"))
 
@@ -1223,9 +1558,60 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             r2_v6_len=r2_base_v6_len,
         )
 
-        print("Route static interface dual-stack + single-stack state/ip-change check passed.")
+        step("Restore baseline before interface-only tests")
+        _restore_ipv4(
+            rt,
+            r1_base_ip=r1_base_v4,
+            r1_base_len=r1_base_v4_len,
+            r2_base_ip=r2_base_v4,
+            r2_base_len=r2_base_v4_len,
+        )
+        _restore_ipv6(
+            rt,
+            r1_base_ip=r1_base_v6,
+            r1_base_len=r1_base_v6_len,
+            r2_base_ip=r2_base_v6,
+            r2_base_len=r2_base_v6_len,
+        )
+        _restore_if_only(rt)
+
+        _run_ipv4_if_only(
+            rt,
+            r1_base_ip=r1_base_v4,
+            r1_base_len=r1_base_v4_len,
+        )
+
+        _restore_if_only(rt)
+
+        _run_ipv6_if_only(
+            rt,
+            r1_base_ip=r1_base_v6,
+            r1_base_len=r1_base_v6_len,
+        )
+
+        step("Restore baseline before duplicate check")
+        _restore_if_only(rt)
+        _restore_ipv4(
+            rt,
+            r1_base_ip=r1_base_v4,
+            r1_base_len=r1_base_v4_len,
+            r2_base_ip=r2_base_v4,
+            r2_base_len=r2_base_v4_len,
+        )
+        _restore_ipv6(
+            rt,
+            r1_base_ip=r1_base_v6,
+            r1_base_len=r1_base_v6_len,
+            r2_base_ip=r2_base_v6,
+            r2_base_len=r2_base_v6_len,
+        )
+
+        _run_duplicate_check(rt, r2_base_ip=r2_base_v4)
+
+        print("Route static interface dual-stack + single-stack + if-only + duplicate check passed.")
     finally:
         step("Cleanup dual-stack static route interface case")
+        _restore_if_only(rt)
         _restore_ipv4(
             rt,
             r1_base_ip=r1_base_v4,

@@ -14,6 +14,7 @@
 
 #include "cli.h"
 #include "errcode.h"
+#include "if_api.h"
 #include "log.h"
 #include "net_addr.h"
 #include "route.h"
@@ -519,6 +520,7 @@ static int worker_dispatch_cmd(route_worker_cmd_t *cmd)
         case ROUTE_WORKER_CMD_IF_EVENT:
             /* IF 事件（UP/DOWN/ADDR_ADD/ADDR_DEL）：触发 interface-only 静态路由重检查 */
             LOG_DEBUG("[route_worker] 收到 IF 事件，触发 interface-only 静态路由重检查");
+            if_api_cache_on_event(cmd->msg);
             route_static_on_if_change();
             if (cmd->msg)
             {
@@ -708,6 +710,7 @@ int route_worker_prepare(void)
         }
 
         route_static_init();
+        if_api_cache_init();
         route_calc_init();
     }
 
@@ -926,6 +929,7 @@ void route_worker_shutdown(void)
 
     route_relay_cleanup();
     route_show_cleanup_state();
+    if_api_cache_cleanup();
     route_static_cleanup();
     route_calc_cleanup();
 

@@ -38,6 +38,7 @@ from top_runner import PAGER_DISABLE_CMD, TopologyRuntime, load_topology, saniti
 MAX_HTML_OUTPUT_CHARS = 200000
 TOP_CANDIDATES = ("top.yaml", "top.yml", "top.json")
 SHOW_CURRENT_CONFIG_CMD = "show current-configuration"
+SHOW_VERSION_CMD = "show version"
 PROMPT_LINE_RE = re.compile(r"^\s*<NetNexus[^>]*>.*$")
 MAX_CONFIG_DIFF_LINES = 300
 STEP_MARKER_RE = re.compile(r"^(?:\[[^\]]+\]\s*)?\s*=+\s*STEP:\s*(.*?)\s*=+\s*$")
@@ -312,6 +313,39 @@ def ensure_cli_pager_disabled(rt: TopologyRuntime, top: dict[str, Any]) -> None:
         print(f"[{dev}] pager disabled via '{PAGER_DISABLE_CMD}'")
 
 
+def normalize_cli_command_output(raw: str, command: str) -> str:
+    lines: list[str] = []
+    cmd = command.strip()
+    for raw_line in raw.replace("\r", "").splitlines():
+        stripped = raw_line.strip()
+        if stripped == cmd:
+            continue
+        if PROMPT_LINE_RE.match(stripped):
+            continue
+        lines.append(raw_line.rstrip())
+    return "\n".join(lines).strip()
+
+
+def print_device_versions(rt: TopologyRuntime, top: dict[str, Any]) -> None:
+    devices = top.get("devices", {})
+    if not isinstance(devices, dict) or not devices:
+        print("WARNING: skip version probe because top.devices is empty")
+        return
+
+    print("===== STEP: Print device versions =====")
+    timeout = max(20, rt.cmd_timeout * 2)
+    for dev in sorted(devices.keys()):
+        try:
+            out = rt.exec_cmd(dev, SHOW_VERSION_CMD, strict=False, timeout=timeout)
+        except Exception as exc:
+            print(f"WARNING: [{dev}] '{SHOW_VERSION_CMD}' failed: {exc}")
+            continue
+
+        normalized = normalize_cli_command_output(out, SHOW_VERSION_CMD)
+        print(f"[{dev}] {SHOW_VERSION_CMD}:")
+        print(normalized if normalized else "(empty output)")
+
+
 def normalize_show_current_config(raw: str) -> str:
     lines: list[str] = []
     for raw_line in raw.replace("\r", "").splitlines():
@@ -399,6 +433,7 @@ def run_check(script: Path, rt: TopologyRuntime, top: dict[str, Any]) -> CheckRe
             print(f"===== RUN CHECK: {script} =====")
             load_global_top(top)
             ensure_device_modules_ready(rt, top)
+            print_device_versions(rt, top)
 
             before_cfg = collect_show_current_config(rt, top, stage="before")
             run_failed = False

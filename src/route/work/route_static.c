@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "if_api.h"
 #include "if_event.h"
 #include "log.h"
 #include "net_addr.h"
@@ -186,22 +187,7 @@ static uint32_t resolve_ifindex(const char *ifname)
     {
         return 0;
     }
-    if_intf_map_resp_t *map = if_rpc_get_intf_map(route_local_ipc_ctx());
-    if (!map)
-    {
-        return 0;
-    }
-    uint32_t ifindex = 0;
-    for (uint32_t i = 0; i < map->count; i++)
-    {
-        if (strcmp(map->items[i].logical_name, ifname) == 0)
-        {
-            ifindex = map->items[i].ifindex;
-            break;
-        }
-    }
-    g_free(map);
-    return ifindex;
+    return if_api_cache_get_ifindex(ifname);
 }
 
 // ============================================================================
@@ -734,9 +720,16 @@ static void static_if_change_cb(gpointer key_ptr, gpointer value_ptr, gpointer u
         return;
     }
 
-    /* 解析逻辑名 → ifindex */
-    uint32_t ifindex = resolve_ifindex(entry->key.out_ifname);
-    entry->cfg_ifindex = ifindex;
+    /*
+     * IF 事件回调路径避免同步 RPC：优先使用事件驱动缓存，
+     * 若缓存暂未命中则回退到条目已有 ifindex。
+     */
+    uint32_t cached_ifindex = if_api_cache_get_ifindex(entry->key.out_ifname);
+    uint32_t ifindex = (cached_ifindex != 0u) ? cached_ifindex : entry->cfg_ifindex;
+    if (cached_ifindex != 0u)
+    {
+        entry->cfg_ifindex = cached_ifindex;
+    }
 
     /* 检查 RIB 中是否有该接口的活跃 CONNECTED 路由 */
     int reachable = (ifindex != 0) && rib_has_active_connected(entry->key.vrf_id, entry->key.afi, ifindex);
@@ -763,8 +756,9 @@ static void static_if_change_cb(gpointer key_ptr, gpointer value_ptr, gpointer u
     else if (!reachable && entry->in_rib)
     {
         /* 接口不可用 → 从 RIB 撤销 */
+        uint32_t withdraw_ifindex = (ifindex != 0u) ? ifindex : entry->cfg_ifindex;
         net_addr_t source_addr;
-        encode_ifindex_as_addr(entry->cfg_ifindex, &source_addr);
+        encode_ifindex_as_addr(withdraw_ifindex, &source_addr);
         route_rib_del(g_route_work_local->rib, entry->key.vrf_id, entry->key.afi, &entry->key.prefix_addr,
                       entry->key.prefix_len, ROUTE_PROTOCOL_STATIC, &source_addr, on_static_rib_del, NULL);
         entry->in_rib = 0u;

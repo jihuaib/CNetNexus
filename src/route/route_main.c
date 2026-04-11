@@ -14,6 +14,7 @@
 #include "db.h"
 #include "dev.h"
 #include "errcode.h"
+#include "if_api.h"
 #include "if_event.h"
 #include "log.h"
 #include "route.h"
@@ -160,26 +161,14 @@ static void route_on_ready(dev_ipc_message_t *msg)
         return;
     }
 
-    /* 订阅 IF 事件（UP/DOWN/ADDR_ADD/ADDR_DEL），用于 interface-only 静态路由感知接口状态 */
+    /* 通过 if_api 订阅 IF 全量事件，用于维护统一接口缓存 */
+    if (if_api_subscribe_all(ctx) == ERRCODE_SUCCESS)
     {
-        if_subscribe_req_t *sub_req = (if_subscribe_req_t *)g_malloc0(sizeof(if_subscribe_req_t));
-        sub_req->if_type_mask = IF_INTF_TYPE_ALL;
-        sub_req->event_mask = IF_EVENT_ALL;
-        sub_req->flags = 0;
-        dev_ipc_message_t *sub_msg =
-            dev_ipc_message_create(IF_MSG_TYPE_SUBSCRIBE, DEV_MODULE_ID_ROUTE, DEV_MODULE_ID_IF, 0, sub_req,
-                                   sizeof(if_subscribe_req_t), g_free);
-        if (sub_msg)
-        {
-            dev_ipc_send_response(ctx, sub_msg);
-            dev_ipc_message_free(sub_msg);
-            LOG_INFO("Subscribed to IF events (ALL types, ALL events)");
-        }
-        else
-        {
-            g_free(sub_req);
-            LOG_WARN("Failed to subscribe to IF events");
-        }
+        LOG_INFO("Subscribed to IF events via if_api (ALL types, ALL events)");
+    }
+    else
+    {
+        LOG_WARN("Failed to subscribe to IF events via if_api");
     }
 
     LOG_INFO("Route database tables ready");

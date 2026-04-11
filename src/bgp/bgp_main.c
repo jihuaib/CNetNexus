@@ -19,6 +19,7 @@
 #include "bgp_pkt.h"
 #include "bgp_worker.h"
 #include "errcode.h"
+#include "if_api.h"
 #include "if_event.h"
 #include "log.h"
 #include "route.h"
@@ -129,25 +130,14 @@ static void bgp_on_ready(dev_ipc_message_t *msg)
         return;
     }
 
-    /* 订阅 IF 接口事件（UP/DOWN/ADDR_ADD/ADDR_DEL），用于维护本地接口缓存 */
+    /* 通过 if_api 订阅 IF 全量事件，用于维护统一接口缓存 */
+    if (if_api_subscribe_all(ctx) == ERRCODE_SUCCESS)
     {
-        if_subscribe_req_t *sub_req = (if_subscribe_req_t *)g_malloc0(sizeof(if_subscribe_req_t));
-        sub_req->if_type_mask = IF_INTF_TYPE_ALL;
-        sub_req->event_mask = IF_EVENT_ALL;
-        sub_req->flags = 0;
-        dev_ipc_message_t *sub_msg = dev_ipc_message_create(IF_MSG_TYPE_SUBSCRIBE, DEV_MODULE_ID_BGP, DEV_MODULE_ID_IF,
-                                                            0, sub_req, sizeof(if_subscribe_req_t), g_free);
-        if (sub_msg)
-        {
-            dev_ipc_send_response(ctx, sub_msg);
-            dev_ipc_message_free(sub_msg);
-            LOG_INFO("BGP: Subscribed to IF events (ALL types, ALL events)");
-        }
-        else
-        {
-            g_free(sub_req);
-            LOG_WARN("BGP: Failed to subscribe to IF events");
-        }
+        LOG_INFO("BGP: Subscribed to IF events via if_api (ALL types, ALL events)");
+    }
+    else
+    {
+        LOG_WARN("BGP: Failed to subscribe to IF events via if_api");
     }
 
     /* 仅恢复：表不存在（BGP 未曾配置）时静默返回 NULL，不建表也不写默认值 */

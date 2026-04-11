@@ -132,25 +132,4 @@ typedef struct if_intf_map_resp
     if_intf_map_item_t items[1]; /**< 变长条目数组（实际长度由 count 决定） */
 } if_intf_map_resp_t;
 
-// ============================================================================
-// IF RPC API（供其他模块调用，需链接 if_api 库）
-// ============================================================================
-
-/**
- * @brief 从 IF 模块查询全量接口映射表（ifindex → 逻辑名）
- *
- * @param ctx 调用方的 IPC 上下文（已连接到 IF 模块）
- * @return 成功返回堆分配的 if_intf_map_resp_t（调用方需 free()）；失败返回 NULL
- */
-if_intf_map_resp_t *if_rpc_get_intf_map(dev_ipc_context_t *ctx);
-
-/**
- * @brief 在 if_intf_map_resp_t 中按 ifindex 查找逻辑名
- *
- * @param resp   if_rpc_get_intf_map() 的返回值（可为 NULL）
- * @param ifindex 目标接口索引
- * @return 匹配的逻辑名字符串（resp 内部指针，生命周期同 resp）；未找到时返回 NULL
- */
-const char *if_intf_map_lookup(const if_intf_map_resp_t *resp, uint32_t ifindex);
-
 #endif /* IF_EVENT_H */

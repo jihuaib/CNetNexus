@@ -41,6 +41,7 @@ target_link_libraries(netnexus-bgp PRIVATE
     dev_api
     cli_api
     db_api
+    if_api
     route_api
     utils
     bgp_api

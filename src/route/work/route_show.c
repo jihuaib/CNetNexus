@@ -16,7 +16,7 @@
 #include "cli.h"
 #include "dev.h"
 #include "errcode.h"
-#include "if_event.h"
+#include "if_api.h"
 #include "log.h"
 #include "net_addr.h"
 #include "route.h"
@@ -66,9 +66,8 @@ typedef struct
 {
     GString *buf;
     uint32_t count;
-    int show_ipv4;                      /**< 是否显示 IPv4 路由 */
-    int show_ipv6;                      /**< 是否显示 IPv6 路由 */
-    const if_intf_map_resp_t *intf_map; /**< IF 模块接口映射（用于逻辑名显示，可为 NULL） */
+    int show_ipv4; /**< 是否显示 IPv4 路由 */
+    int show_ipv6; /**< 是否显示 IPv6 路由 */
 } show_ctx_t;
 
 typedef struct
@@ -153,15 +152,15 @@ static const char *proto_name_long(uint32_t protocol)
 }
 
 /* 将接口索引转换为逻辑名字符串，写入 buf（长度至少 IF_NAMESIZE）
- * 优先使用 intf_map 中的逻辑名；不可用时回退到 OS 物理名 */
-static void ifindex_to_name(uint32_t ifindex, const if_intf_map_resp_t *intf_map, char *buf)
+ * 优先使用 Route 本地缓存中的逻辑名；不可用时回退到 OS 物理名。 */
+static void ifindex_to_name(uint32_t ifindex, char *buf)
 {
     if (ifindex == 0)
     {
         g_strlcpy(buf, "-", IF_NAMESIZE);
         return;
     }
-    const char *logical = if_intf_map_lookup(intf_map, ifindex);
+    const char *logical = if_api_cache_get_logical_name(ifindex);
     if (logical)
     {
         g_strlcpy(buf, logical, IF_NAMESIZE);
@@ -202,7 +201,7 @@ static void show_path_cb(const route_head_t *head, const route_path_t *path, voi
     }
     else
     {
-        ifindex_to_name(path->out_ifindex, ctx->intf_map, oif_str);
+        ifindex_to_name(path->out_ifindex, oif_str);
     }
 
     g_string_append_printf(ctx->buf, "%-2s %-24s %-20s %-14s %4d %4d\r\n", proto_name(path->key.protocol), prefix_str,
@@ -218,7 +217,6 @@ typedef struct
     int show_ipv4;
     int show_ipv6;
     net_addr_t dest_filter;
-    const if_intf_map_resp_t *intf_map; /**< IF 模块接口映射（用于逻辑名显示，可为 NULL） */
 } detail_ctx_t;
 
 static void detail_path_cb(const route_head_t *head, const route_path_t *path, void *userdata)
@@ -250,8 +248,8 @@ static void detail_path_cb(const route_head_t *head, const route_path_t *path, v
     }
     else
     {
-        ifindex_to_name(path->out_ifindex, ctx->intf_map, oif_str);
-        ifindex_to_name(path->iter_out_ifindex, ctx->intf_map, iter_oif_str);
+        ifindex_to_name(path->out_ifindex, oif_str);
+        ifindex_to_name(path->iter_out_ifindex, iter_oif_str);
     }
 
     /* 格式化更新时间 */
@@ -389,9 +387,6 @@ int route_show_handle_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         return ERRCODE_SUCCESS;
     }
 
-    /* 向 IF 模块查询接口映射表，用于在 show 时显示逻辑接口名 */
-    if_intf_map_resp_t *intf_map = if_rpc_get_intf_map(route_local_ipc_ctx());
-
     /* 指定目标地址时显示详情，否则显示汇总表格 */
     if (has_dest_filter)
     {
@@ -400,14 +395,12 @@ int route_show_handle_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         dctx.buf = g_string_new("");
         if (!dctx.buf)
         {
-            g_free(intf_map);
             send_resp(msg, "Error: Out of memory\r\n");
             return ERRCODE_FAIL;
         }
         dctx.show_ipv4 = show_ipv4;
         dctx.show_ipv6 = show_ipv6;
         dctx.dest_filter = dest_filter_addr;
-        dctx.intf_map = intf_map;
 
         char filter_str[64];
         net_addr_to_str(&dest_filter_addr, filter_str, sizeof(filter_str));
@@ -423,7 +416,6 @@ int route_show_handle_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         {
             g_string_append_printf(dctx.buf, "\r\nTotal %u path(s)\r\n", dctx.count);
         }
-        g_free(intf_map);
         return route_show_send_chunked(msg, dctx.buf);
     }
 
@@ -432,13 +424,11 @@ int route_show_handle_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     ctx.buf = g_string_new("");
     if (!ctx.buf)
     {
-        g_free(intf_map);
         send_resp(msg, "Error: Out of memory\r\n");
         return ERRCODE_FAIL;
     }
     ctx.show_ipv4 = show_ipv4;
     ctx.show_ipv6 = show_ipv6;
-    ctx.intf_map = intf_map;
 
     g_string_append_printf(ctx.buf,
                            "\r\n%-2s %-24s %-20s %-14s %4s %4s\r\n"
@@ -453,7 +443,6 @@ int route_show_handle_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     }
 
     g_string_append_printf(ctx.buf, "\r\nTotal %u path(s)\r\n", ctx.count);
-    g_free(intf_map);
     return route_show_send_chunked(msg, ctx.buf);
 }
 

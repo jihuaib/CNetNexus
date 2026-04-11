@@ -16,40 +16,6 @@
 #include "net_addr.h"
 
 /**
- * @brief 本地缓存的接口条目
- */
-typedef struct bgp_if_cache_entry
-{
-    char logical_name[IF_LOGICAL_NAME_MAX]; /**< 逻辑接口名（如 GE-1） */
-    uint8_t admin_up;                       /**< 1=up, 0=down */
-    uint8_t _pad[3];                        /**< 对齐填充 */
-    net_addr_t ipv4_addr;                   /**< IPv4 地址（family=0 表示未配置） */
-    uint8_t ipv4_prefix_len;                /**< IPv4 前缀长度 */
-    net_addr_t ipv6_addr;                   /**< IPv6 地址（family=0 表示未配置） */
-    uint8_t ipv6_prefix_len;                /**< IPv6 前缀长度 */
-} bgp_if_cache_entry_t;
-
-/**
- * @brief 初始化 BGP 本地接口缓存（worker 线程调用）
- */
-void bgp_if_cache_init(void);
-
-/**
- * @brief 清理 BGP 本地接口缓存（shutdown 时调用）
- */
-void bgp_if_cache_cleanup(void);
-
-/**
- * @brief 处理 IF 事件消息，更新本地接口缓存
- *
- * 根据 payload 大小自动区分 if_event_msg_t（UP/DOWN）和 if_addr_event_msg_t（ADDR_ADD/DEL）。
- * 仅在 worker 线程中调用。
- *
- * @param msg IF 事件 IPC 消息
- */
-void bgp_if_cache_on_event(dev_ipc_message_t *msg);
-
-/**
  * @brief 判断邻居地址是否直连（替代原 db_rpc_query("if_interface") 全表扫描）
  *
  * 遍历本地缓存中所有非 shutdown 接口，检查邻居地址是否在某接口子网内。

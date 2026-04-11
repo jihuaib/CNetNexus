@@ -22,7 +22,6 @@
 #include "bgp_cli.h"
 #include "bgp_conn.h"
 #include "bgp_fsm.h"
-#include "bgp_if_cache.h"
 #include "bgp_instance.h"
 #include "bgp_main.h"
 #include "bgp_pkt.h"
@@ -33,6 +32,7 @@
 #include "bgp_vrf.h"
 #include "bgp_work.h"
 #include "errcode.h"
+#include "if_api.h"
 #include "log.h"
 #include "net_addr.h"
 #include "route.h"
@@ -937,7 +937,7 @@ static gboolean bgp_process_cmd_event(void)
                 break;
 
             case BGP_WORKER_CMD_TYPE_IF_EVENT:
-                bgp_if_cache_on_event(cmd->msg);
+                if_api_cache_on_event(cmd->msg);
                 if (cmd->msg)
                 {
                     dev_ipc_message_free(cmd->msg);
@@ -1530,7 +1530,7 @@ static void bgp_worker_runtime_cleanup(void)
     }
 
     bgp_relay_cleanup();
-    bgp_if_cache_cleanup();
+    if_api_cache_cleanup();
 }
 
 static int bgp_worker_channel_init(void)
@@ -1649,7 +1649,7 @@ int bgp_worker_prepare(void)
         g_bgp_work_local->work_eventfd = -1;
     }
 
-    bgp_if_cache_init();
+    if_api_cache_init();
 
     int epoll_fd = epoll_create1(EPOLL_CLOEXEC);
     if (epoll_fd < 0)

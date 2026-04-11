@@ -161,7 +161,7 @@ static gboolean bgp_prepare_update_attr(const bgp_session_t *sess, const bgp_rou
         return FALSE;
     }
 
-    memcpy(send_attr, &best->attr, sizeof(*send_attr));
+    memcpy(send_attr, BGP_ROUTE_ATTR(best), sizeof(*send_attr));
 
     if (sess->sess_type != BGP_SESS_TYPE_EBGP)
     {
