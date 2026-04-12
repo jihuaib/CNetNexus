@@ -201,6 +201,9 @@ static int route_os_send(int cmd, const route_msg_entry_t *entry)
         case ROUTE_PROTOCOL_OSPF:
             rtm->rtm_protocol = RTPROT_OSPF;
             break;
+        case ROUTE_PROTOCOL_ISIS:
+            rtm->rtm_protocol = RTPROT_ISIS;
+            break;
         default:
             rtm->rtm_protocol = RTPROT_STATIC;
             break;

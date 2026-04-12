@@ -9,6 +9,7 @@
 #include <arpa/inet.h>
 #include <net/if.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "db.h"
 #include "errcode.h"
@@ -21,6 +22,8 @@
 #include "route.h"
 
 #define IF_ROUTE_SYNC_TIMEOUT_MS 3000u
+#define IF_LOOP_IFINDEX_RETRY_COUNT 20u
+#define IF_LOOP_IFINDEX_RETRY_USEC 50000u
 
 // ============================================================================
 // 公共 API
@@ -37,6 +40,41 @@ static uint32_t if_cfg_type_to_mask(if_type_t type)
         default:
             return 0;
     }
+}
+
+static uint32_t if_cfg_wait_ifindex(const char *ifname)
+{
+    if (!ifname || ifname[0] == '\0')
+    {
+        return 0u;
+    }
+
+    for (uint32_t i = 0u; i < IF_LOOP_IFINDEX_RETRY_COUNT; ++i)
+    {
+        uint32_t ifindex = (uint32_t)if_nametoindex(ifname);
+        if (ifindex != 0u)
+        {
+            return ifindex;
+        }
+        (void)usleep(IF_LOOP_IFINDEX_RETRY_USEC);
+    }
+    return 0u;
+}
+
+static uint32_t if_cfg_resolve_entry_ifindex(if_map_entry_t *entry)
+{
+    if (!entry || entry->physical_name[0] == '\0')
+    {
+        return 0u;
+    }
+
+    uint32_t ifindex = if_cfg_wait_ifindex(entry->physical_name);
+    if (ifindex != 0u)
+    {
+        entry->ifindex = ifindex;
+        return ifindex;
+    }
+    return entry->ifindex;
 }
 
 static gboolean if_prefix_equal(const net_prefix_t *a, const net_prefix_t *b)
@@ -212,8 +250,13 @@ static int if_sync_connected_host_routes(const net_prefix_t *prefix, const char 
     net_addr_t zero_nh;
     if_make_zero_addr(prefix->addr.family, &zero_nh);
 
-    /* 出接口索引（0 表示接口不存在，OS 路由不下发 OIF） */
-    uint32_t out_ifindex = (uint32_t)if_nametoindex(physical_name);
+    /* 出接口索引必须有效，避免将 ifindex=0 下发到路由模块。 */
+    uint32_t out_ifindex = if_cfg_wait_ifindex(physical_name);
+    if (out_ifindex == 0u)
+    {
+        LOG_ERROR("IF: interface %s ifindex invalid(0), skip connected route sync", physical_name);
+        return ERRCODE_FAIL;
+    }
     uint8_t host_len = (prefix->addr.family == AF_INET) ? 32u : 128u;
 
     route_msg_entry_t network_entry;
@@ -308,13 +351,27 @@ int if_cfg_loop_ensure(uint32_t loop_id)
         return ERRCODE_FAIL;
     }
 
-    /* 已存在则直接返回 */
-    if (g_tree_lookup(g_if_local->interface_map.all_entries, name))
+    if_map_entry_t *exist = (if_map_entry_t *)g_tree_lookup(g_if_local->interface_map.all_entries, name);
+    if (exist)
     {
+        if (exist->ifindex == 0u)
+        {
+            uint32_t ifindex = if_cfg_wait_ifindex(exist->physical_name);
+            if (ifindex != 0u)
+            {
+                exist->ifindex = ifindex;
+            }
+            else
+            {
+                LOG_ERROR("IF: loop 接口 %s 已存在但 ifindex 无效(0)", name);
+                return ERRCODE_FAIL;
+            }
+        }
         return ERRCODE_SUCCESS;
     }
 
     /* 创建 OS dummy 接口（若不存在） */
+    int created_dummy = 0;
     if (!if_exists(name))
     {
         if (if_create_dummy(name) != ERRCODE_SUCCESS)
@@ -322,17 +379,36 @@ int if_cfg_loop_ensure(uint32_t loop_id)
             LOG_ERROR("IF: 创建 dummy 接口 %s 失败", name);
             return ERRCODE_FAIL;
         }
+        created_dummy = 1;
         if_set_state(name, 1);
+    }
+
+    uint32_t ifindex = if_cfg_wait_ifindex(name);
+    if (ifindex == 0u)
+    {
+        LOG_ERROR("IF: loop 接口 %s ifindex 获取失败(0)", name);
+        if (created_dummy)
+        {
+            (void)if_delete_interface(name);
+        }
+        return ERRCODE_FAIL;
     }
 
     /* 创建内存条目并插入有序树（key/value 均由树析构时释放） */
     if_map_entry_t *entry = (if_map_entry_t *)g_malloc0(sizeof(if_map_entry_t));
     snprintf(entry->logical_name, sizeof(entry->logical_name), "loop%u", loop_id);
     snprintf(entry->physical_name, sizeof(entry->physical_name), "loop%u", loop_id);
+    entry->ifindex = ifindex;
     entry->shutdown = 0;
 
     g_tree_insert(g_if_local->interface_map.all_entries, g_strdup(name), entry);
-    LOG_INFO("IF: loop 接口 %s 已创建（内存条目）", name);
+    LOG_INFO("IF: loop 接口 %s 已创建（内存条目 ifindex=%u）", name, ifindex);
+
+    uint32_t if_type = if_cfg_type_to_mask(if_detect_type(entry->physical_name));
+    if (if_type != 0u)
+    {
+        if_pub_notify(g_if_local->subscribers, entry, if_type, IF_EVENT_UP, 1u);
+    }
     return ERRCODE_SUCCESS;
 }
 
@@ -392,6 +468,12 @@ int if_cfg_loop_delete(uint32_t loop_id)
         if_cfg_apply_ip(TRUE, name, &pfx);
     }
 
+    uint32_t if_type = if_cfg_type_to_mask(if_detect_type(entry->physical_name));
+    if (if_type != 0u)
+    {
+        if_pub_notify(g_if_local->subscribers, entry, if_type, IF_EVENT_DOWN, 0u);
+    }
+
     /* 删除 OS 接口 */
     if_delete_interface(name);
 
@@ -431,7 +513,16 @@ int if_cfg_apply_ip(gboolean is_no, const char *logical_name, const net_prefix_t
     if (is_no)
     {
         uint32_t del_if_type = if_cfg_type_to_mask(if_detect_type(entry->physical_name));
-        uint32_t del_ifindex = (uint32_t)if_nametoindex(entry->physical_name);
+        uint32_t del_ifindex = 0u;
+        if (del_if_type != 0u)
+        {
+            del_ifindex = if_cfg_resolve_entry_ifindex(entry);
+            if (del_ifindex == 0u && strcmp(entry->logical_name, "null0") != 0)
+            {
+                LOG_ERROR("IF: %s ifindex invalid(0), skip address delete event", logical_name);
+                return ERRCODE_FAIL;
+            }
+        }
 
         if (family == 0)
         {
@@ -543,7 +634,12 @@ int if_cfg_apply_ip(gboolean is_no, const char *logical_name, const net_prefix_t
     uint32_t add_if_type = if_cfg_type_to_mask(if_detect_type(entry->physical_name));
     if (add_if_type != 0)
     {
-        uint32_t add_ifindex = (uint32_t)if_nametoindex(entry->physical_name);
+        uint32_t add_ifindex = if_cfg_resolve_entry_ifindex(entry);
+        if (add_ifindex == 0u && strcmp(entry->logical_name, "null0") != 0)
+        {
+            LOG_ERROR("IF: %s ifindex invalid(0), skip address add event", logical_name);
+            return ERRCODE_FAIL;
+        }
         if (had_old && !if_prefix_equal(&old_prefix, prefix))
         {
             if_pub_notify_addr(g_if_local->subscribers, entry, add_if_type, IF_EVENT_ADDR_DEL, &old_prefix,

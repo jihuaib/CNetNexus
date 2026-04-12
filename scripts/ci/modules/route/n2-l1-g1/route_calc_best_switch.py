@@ -37,7 +37,7 @@ def _wait_path_total(
     wait_check(
         rt,
         device=device,
-        command=f"show route ipv4 {destination}",
+        command=f"show route ipv4 {destination} {TARGET_MASK}",
         timeout=timeout,
         interval=interval,
         contains=[f"Total {expect_total} path(s)"],
@@ -63,7 +63,7 @@ def _wait_route_metrics(
     wait_check(
         rt,
         device=device,
-        command=f"show route ipv4 {destination}",
+        command=f"show route ipv4 {destination} {TARGET_MASK}",
         timeout=timeout,
         interval=interval,
         regex=metric_regex,
@@ -109,7 +109,7 @@ def _wait_first_path_os_installed_flag(
     deadline = time.time() + timeout
     last_out = ""
     while time.time() < deadline:
-        out = cmd(rt, device, f"show route ipv4 {destination}", strict=False)
+        out = cmd(rt, device, f"show route ipv4 {destination} {TARGET_MASK}", strict=False)
         last_out = out
         if _path1_flag_set(out):
             return
@@ -118,7 +118,7 @@ def _wait_first_path_os_installed_flag(
     raise RuntimeError(
         f"{device} path[1] os-installed flag check timeout after {timeout}s\n"
         f"expect: Path [1] contains Flags with bit0 set\n"
-        f"command: show route ipv4 {destination}\n"
+        f"command: show route ipv4 {destination} {TARGET_MASK}\n"
         f"last output:\n{last_out}"
     )
 

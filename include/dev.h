@@ -34,6 +34,8 @@
 #define DEV_MODULE_ID_VRF 0x00000007
 /** SBMP（BMP Server）模块 */
 #define DEV_MODULE_ID_SBMP 0x00000008
+/** ISIS 模块 */
+#define DEV_MODULE_ID_ISIS 0x00000009
 
 /** 无效文件描述符 */
 #define DEV_INVALID_FD (-1)
@@ -64,6 +66,8 @@
 #define DEV_MODULE_PORT_VRF 4007
 /** SBMP 模块 IPC 监听端口 */
 #define DEV_MODULE_PORT_SBMP 4008
+/** ISIS 模块 IPC 监听端口 */
+#define DEV_MODULE_PORT_ISIS 4009
 
 // ============================================================================
 // IPC 前向声明
@@ -113,6 +117,8 @@ typedef dev_ipc_msg_handler_fn dev_ipc_msg_handler_fn;
 #define DEV_IPC_CATEGORY_VRF 0x0007
 /** SBMP 模块消息大类 */
 #define DEV_IPC_CATEGORY_SBMP 0x0008
+/** ISIS 模块消息大类 */
+#define DEV_IPC_CATEGORY_ISIS 0x0009
 
 // ============================================================================
 // DEV IPC 消息结构

@@ -20,6 +20,7 @@ add_subdirectory(if)
 add_subdirectory(bgp)
 add_subdirectory(vrf)
 add_subdirectory(sbmp)
+add_subdirectory(isis)
 
 # =========================
 # DEV 主进程（supervisor）

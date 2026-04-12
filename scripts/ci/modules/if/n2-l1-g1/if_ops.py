@@ -82,8 +82,8 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
     cfg_ip = str(g_top.r1.GE_1.ip)
     cfg_prefix = int(g_top.r1.GE_1.prefix)
     net = str(ipaddress.ip_interface(f"{cfg_ip}/{cfg_prefix}").network.network_address)
-    net_show = f"show route ipv4 {net}"
-    host_show = f"show route ipv4 {cfg_ip}"
+    net_show = f"show route ipv4 {net} {cfg_prefix}"
+    host_show = f"show route ipv4 {cfg_ip} 32"
     show_cmd = f"show if {if_name}"
 
     try:

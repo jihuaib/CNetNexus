@@ -59,7 +59,8 @@ int route_show_send_chunked(dev_ipc_message_t *msg, GString *full_text)
 // cfg-id 映射：
 //   1=ipv4, 2=ipv6, 4=dest_filter,
 //   5=proto:static, 6=proto:bgp, 7=proto:ospf, 8=summary,
-//   9=proto:connected, 10=os
+//   9=proto:connected, 10=os, 11=proto:isis,
+//   12=prefix_len_v4, 13=prefix_len_v6
 // ============================================================================
 
 typedef struct
@@ -76,6 +77,7 @@ typedef struct
     uint32_t static_;   /**< 静态路由条数 */
     uint32_t bgp;       /**< BGP 路由条数 */
     uint32_t ospf;      /**< OSPF 路由条数 */
+    uint32_t isis;      /**< ISIS 路由条数 */
     uint32_t other;     /**< 其他协议路由条数 */
     int show_ipv4;
     int show_ipv6;
@@ -107,6 +109,9 @@ static void summary_path_cb(const route_head_t *head, const route_path_t *path, 
         case ROUTE_PROTOCOL_OSPF:
             ctx->ospf++;
             break;
+        case ROUTE_PROTOCOL_ISIS:
+            ctx->isis++;
+            break;
         default:
             ctx->other++;
             break;
@@ -125,6 +130,8 @@ static const char *proto_name(uint32_t protocol)
             return "B";
         case ROUTE_PROTOCOL_OSPF:
             return "O";
+        case ROUTE_PROTOCOL_ISIS:
+            return "I";
         case ROUTE_PROTOCOL_BLACKHOLE:
             return "S";
         default:
@@ -144,6 +151,8 @@ static const char *proto_name_long(uint32_t protocol)
             return "bgp";
         case ROUTE_PROTOCOL_OSPF:
             return "ospf";
+        case ROUTE_PROTOCOL_ISIS:
+            return "isis";
         case ROUTE_PROTOCOL_BLACKHOLE:
             return "static(blackhole)";
         default:
@@ -217,6 +226,7 @@ typedef struct
     int show_ipv4;
     int show_ipv6;
     net_addr_t dest_filter;
+    uint8_t dest_prefix_len;
 } detail_ctx_t;
 
 static void detail_path_cb(const route_head_t *head, const route_path_t *path, void *userdata)
@@ -233,6 +243,10 @@ static void detail_path_cb(const route_head_t *head, const route_path_t *path, v
         return;
     }
     if (!net_addr_equal(&head->key.addr, &ctx->dest_filter))
+    {
+        return;
+    }
+    if (head->key.prefix_len != ctx->dest_prefix_len)
     {
         return;
     }
@@ -289,6 +303,8 @@ int route_show_handle_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     int show_os = 0;
     net_addr_t dest_filter_addr;
     gboolean has_dest_filter = FALSE;
+    int64_t dest_filter_pfxlen = -1;
+    gboolean has_dest_filter_pfxlen = FALSE;
 
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
@@ -334,10 +350,49 @@ int route_show_handle_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             case 10:
                 show_os = 1;
                 break;
+            case 11:
+                proto_filter = ROUTE_PROTOCOL_ISIS;
+                break;
+            case 12:
+            case 13:
+                dest_filter_pfxlen = cli_tlv_entry_get_int(&entry);
+                has_dest_filter_pfxlen = TRUE;
+                break;
             default:
                 break;
         }
         cli_tlv_entry_free(&entry);
+    }
+
+    if (has_dest_filter != has_dest_filter_pfxlen)
+    {
+        send_resp(msg, "Error: destination query must include prefix-length\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (has_dest_filter)
+    {
+        if (show_ipv4 && !show_ipv6)
+        {
+            if (dest_filter_addr.family != AF_INET || dest_filter_pfxlen < 0 || dest_filter_pfxlen > 32)
+            {
+                send_resp(msg, "Error: invalid IPv4 destination/prefix-length\r\n");
+                return ERRCODE_FAIL;
+            }
+        }
+        else if (show_ipv6 && !show_ipv4)
+        {
+            if (dest_filter_addr.family != AF_INET6 || dest_filter_pfxlen < 0 || dest_filter_pfxlen > 128)
+            {
+                send_resp(msg, "Error: invalid IPv6 destination/prefix-length\r\n");
+                return ERRCODE_FAIL;
+            }
+        }
+        else if (dest_filter_pfxlen < 0 || (dest_filter_addr.family == AF_INET && dest_filter_pfxlen > 32) ||
+                 (dest_filter_addr.family == AF_INET6 && dest_filter_pfxlen > 128))
+        {
+            send_resp(msg, "Error: invalid destination/prefix-length\r\n");
+            return ERRCODE_FAIL;
+        }
     }
 
     if (!show_ipv4 && !show_ipv6 && !show_summary)
@@ -371,7 +426,7 @@ int route_show_handle_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         sctx.show_ipv4 = show_ipv4;
         sctx.show_ipv6 = show_ipv6;
         route_rib_walk(g_route_work_local->rib, ROUTE_PROTOCOL_MAX, ROUTE_VRF_DEFAULT, summary_path_cb, &sctx);
-        uint32_t total = sctx.connected + sctx.static_ + sctx.bgp + sctx.ospf + sctx.other;
+        uint32_t total = sctx.connected + sctx.static_ + sctx.bgp + sctx.ospf + sctx.isis + sctx.other;
         char buf[512];
         snprintf(buf, sizeof(buf),
                  "\r\nRoute Summary:\r\n"
@@ -380,9 +435,10 @@ int route_show_handle_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                  "  %-12s %u\r\n"
                  "  %-12s %u\r\n"
                  "  %-12s %u\r\n"
+                 "  %-12s %u\r\n"
                  "  %-12s %u\r\n\r\n",
                  "Connected:", sctx.connected, "Static:", sctx.static_, "BGP:", sctx.bgp, "OSPF:", sctx.ospf,
-                 "Other:", sctx.other, "Total:", total);
+                 "ISIS:", sctx.isis, "Other:", sctx.other, "Total:", total);
         send_resp(msg, buf);
         return ERRCODE_SUCCESS;
     }
@@ -401,10 +457,11 @@ int route_show_handle_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         dctx.show_ipv4 = show_ipv4;
         dctx.show_ipv6 = show_ipv6;
         dctx.dest_filter = dest_filter_addr;
+        dctx.dest_prefix_len = (uint8_t)dest_filter_pfxlen;
 
         char filter_str[64];
         net_addr_to_str(&dest_filter_addr, filter_str, sizeof(filter_str));
-        g_string_append_printf(dctx.buf, "\r\nRouting entry for %s\r\n", filter_str);
+        g_string_append_printf(dctx.buf, "\r\nRouting entry for %s/%u\r\n", filter_str, dctx.dest_prefix_len);
 
         route_rib_walk(g_route_work_local->rib, proto_filter, ROUTE_VRF_DEFAULT, detail_path_cb, &dctx);
 

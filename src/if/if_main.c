@@ -8,6 +8,7 @@
 
 #include <glib.h>
 #include <limits.h>
+#include <net/if.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -274,6 +275,21 @@ static gboolean if_replay_initial_state_foreach(gpointer key, gpointer val, gpoi
         return FALSE; /* 不匹配订阅的接口类型 */
     }
 
+    uint32_t replay_ifindex = e->ifindex;
+    if (replay_ifindex == 0u && strcmp(e->logical_name, "null0") != 0)
+    {
+        replay_ifindex = (uint32_t)if_nametoindex(e->physical_name);
+        if (replay_ifindex != 0u)
+        {
+            e->ifindex = replay_ifindex;
+        }
+    }
+    if (replay_ifindex == 0u && strcmp(e->logical_name, "null0") != 0 &&
+        (net_prefix_is_set(&e->prefix_v4) || net_prefix_is_set(&e->prefix_v6)))
+    {
+        LOG_WARN("IF: skip replay addr event for %s, ifindex invalid(0)", e->logical_name);
+    }
+
     /* 发送 UP/DOWN 事件 */
     if ((rctx->event_mask & (IF_EVENT_UP | IF_EVENT_DOWN)) != 0)
     {
@@ -292,7 +308,7 @@ static gboolean if_replay_initial_state_foreach(gpointer key, gpointer val, gpoi
     }
 
     /* 发送 IPv4 地址事件 */
-    if ((rctx->event_mask & IF_EVENT_ADDR_ADD) != 0 && net_prefix_is_set(&e->prefix_v4))
+    if ((rctx->event_mask & IF_EVENT_ADDR_ADD) != 0 && replay_ifindex != 0u && net_prefix_is_set(&e->prefix_v4))
     {
         if_addr_event_msg_t addr_evt;
         memset(&addr_evt, 0, sizeof(addr_evt));
@@ -303,12 +319,12 @@ static gboolean if_replay_initial_state_foreach(gpointer key, gpointer val, gpoi
         addr_evt.afi = ROUTE_AFI_IPV4;
         addr_evt.prefix_len = e->prefix_v4.prefix_len;
         addr_evt.addr = e->prefix_v4.addr;
-        addr_evt.ifindex = e->ifindex;
+        addr_evt.ifindex = replay_ifindex;
         if_replay_send(rctx->module_id, IF_MSG_TYPE_EVENT, &addr_evt, sizeof(addr_evt));
     }
 
     /* 发送 IPv6 地址事件 */
-    if ((rctx->event_mask & IF_EVENT_ADDR_ADD) != 0 && net_prefix_is_set(&e->prefix_v6))
+    if ((rctx->event_mask & IF_EVENT_ADDR_ADD) != 0 && replay_ifindex != 0u && net_prefix_is_set(&e->prefix_v6))
     {
         if_addr_event_msg_t addr_evt;
         memset(&addr_evt, 0, sizeof(addr_evt));
@@ -319,7 +335,7 @@ static gboolean if_replay_initial_state_foreach(gpointer key, gpointer val, gpoi
         addr_evt.afi = ROUTE_AFI_IPV6;
         addr_evt.prefix_len = e->prefix_v6.prefix_len;
         addr_evt.addr = e->prefix_v6.addr;
-        addr_evt.ifindex = e->ifindex;
+        addr_evt.ifindex = replay_ifindex;
         if_replay_send(rctx->module_id, IF_MSG_TYPE_EVENT, &addr_evt, sizeof(addr_evt));
     }
 

@@ -9,6 +9,7 @@
 #include <glib.h>
 
 #include "bgp_rib.h"
+#include "bgp_update_group.h"
 #include "bgp_work.h"
 #include "log.h"
 #include "net_addr.h"
@@ -39,6 +40,15 @@ void bgp_instance_destroy(bgp_instance_t *inst)
     inst->calc_queue = NULL;
     bgp_route_flush_queue_destroy(inst->route_flush_queue, inst);
     inst->route_flush_queue = NULL;
+    if (inst->update_groups)
+    {
+        for (GList *l = inst->update_groups; l; l = l->next)
+        {
+            bgp_update_group_destroy((bgp_update_group_t *)l->data);
+        }
+        g_list_free(inst->update_groups);
+        inst->update_groups = NULL;
+    }
     if (inst->peer_hash)
     {
         g_hash_table_destroy(inst->peer_hash);

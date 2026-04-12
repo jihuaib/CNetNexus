@@ -22,6 +22,8 @@ set(BGP_SOURCES
     work/bgp_relay.c
     work/bgp_attr_intern.c
     work/bgp_rib.c
+    work/bgp_update_group.c
+    work/bgp_adj_rib_out.c
     work/bgp_show.c
     work/bgp_worker.c
     work/bgp_work.c

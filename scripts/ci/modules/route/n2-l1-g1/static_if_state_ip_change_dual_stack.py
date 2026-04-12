@@ -54,7 +54,7 @@ def _wait_rib_static(
     rt: TopologyRuntime,
     *,
     afi: str,
-    destination: str,
+    prefix: str,
     nexthop: str,
     expect_present: bool,
     timeout: int = 30,
@@ -64,27 +64,27 @@ def _wait_rib_static(
         wait_check(
             rt,
             device="r1",
-            command=f"show route {afi} {destination}",
+            command=f"show route {afi} {prefix.replace('/', ' ')}",
             timeout=timeout,
             interval=interval,
-            contains=[f"Routing entry for {destination}", "Total 1 path(s)"],
+            contains=[f"Routing entry for {prefix}", "Total 1 path(s)"],
             not_contains=["(no routes)", "(no matching routes)"],
             regex=[
                 r"(?im)^\s*Path\s*\[1\]\s*:\s*static\b",
                 rf"(?im)^\s*Nexthop\s*:\s*{re.escape(nexthop)}\s*$",
             ],
-            label=f"r1 {afi} route {destination} via {nexthop} present",
+            label=f"r1 {afi} route {prefix} via {nexthop} present",
         )
         return
 
     wait_check(
         rt,
         device="r1",
-        command=f"show route {afi} {destination}",
+        command=f"show route {afi} {prefix.replace('/', ' ')}",
         timeout=timeout,
         interval=interval,
         regex=[r"(?im)\((?:no routes|no matching routes)\)"],
-        label=f"r1 {afi} route {destination} absent",
+        label=f"r1 {afi} route {prefix} absent",
     )
 
 
@@ -286,7 +286,7 @@ def _run_ipv4(
         expect_resolved=True,
         expect_in_rib=True,
     )
-    _wait_rib_static(rt, afi="ipv4", destination=TARGET4_ADDR, nexthop=r2_base_ip, expect_present=True)
+    _wait_rib_static(rt, afi="ipv4", prefix=TARGET4_PREFIX, nexthop=r2_base_ip, expect_present=True)
     _wait_os_route(rt, afi="ipv4", prefix=TARGET4_PREFIX, gateway=r2_base_ip, expect_present=True)
 
     step("IPv4: shutdown interface and verify static route withdraw")
@@ -318,7 +318,7 @@ def _run_ipv4(
         expect_resolved=False,
         expect_in_rib=False,
     )
-    _wait_rib_static(rt, afi="ipv4", destination=TARGET4_ADDR, nexthop=r2_base_ip, expect_present=False)
+    _wait_rib_static(rt, afi="ipv4", prefix=TARGET4_PREFIX, nexthop=r2_base_ip, expect_present=False)
     _wait_os_route(rt, afi="ipv4", prefix=TARGET4_PREFIX, gateway=r2_base_ip, expect_present=False)
 
     step("IPv4: no shutdown interface and verify static route restore")
@@ -350,7 +350,7 @@ def _run_ipv4(
         expect_resolved=True,
         expect_in_rib=True,
     )
-    _wait_rib_static(rt, afi="ipv4", destination=TARGET4_ADDR, nexthop=r2_base_ip, expect_present=True)
+    _wait_rib_static(rt, afi="ipv4", prefix=TARGET4_PREFIX, nexthop=r2_base_ip, expect_present=True)
     _wait_os_route(rt, afi="ipv4", prefix=TARGET4_PREFIX, gateway=r2_base_ip, expect_present=True)
 
     step("IPv4: renumber GE-1 on r1/r2, verify old nexthop route invalidated")
@@ -413,7 +413,7 @@ def _run_ipv4(
         expect_resolved=False,
         expect_in_rib=False,
     )
-    _wait_rib_static(rt, afi="ipv4", destination=TARGET4_ADDR, nexthop=r2_base_ip, expect_present=False)
+    _wait_rib_static(rt, afi="ipv4", prefix=TARGET4_PREFIX, nexthop=r2_base_ip, expect_present=False)
     _wait_os_route(rt, afi="ipv4", prefix=TARGET4_PREFIX, gateway=r2_base_ip, expect_present=False)
 
     step("IPv4: update static route nexthop to new peer address and verify recovery")
@@ -435,7 +435,7 @@ def _run_ipv4(
         expect_resolved=True,
         expect_in_rib=True,
     )
-    _wait_rib_static(rt, afi="ipv4", destination=TARGET4_ADDR, nexthop=NEW_R2_V4, expect_present=True)
+    _wait_rib_static(rt, afi="ipv4", prefix=TARGET4_PREFIX, nexthop=NEW_R2_V4, expect_present=True)
     _wait_os_route(rt, afi="ipv4", prefix=TARGET4_PREFIX, gateway=NEW_R2_V4, expect_present=True)
 
 
@@ -495,7 +495,7 @@ def _run_ipv6(
         expect_resolved=True,
         expect_in_rib=True,
     )
-    _wait_rib_static(rt, afi="ipv6", destination=TARGET6_NET_ADDR, nexthop=r2_base_ip, expect_present=True)
+    _wait_rib_static(rt, afi="ipv6", prefix=TARGET6_PREFIX, nexthop=r2_base_ip, expect_present=True)
     _wait_os_route(rt, afi="ipv6", prefix=TARGET6_PREFIX, gateway=r2_base_ip, expect_present=True)
 
     step("IPv6: shutdown interface and verify static route withdraw")
@@ -527,7 +527,7 @@ def _run_ipv6(
         expect_resolved=False,
         expect_in_rib=False,
     )
-    _wait_rib_static(rt, afi="ipv6", destination=TARGET6_NET_ADDR, nexthop=r2_base_ip, expect_present=False)
+    _wait_rib_static(rt, afi="ipv6", prefix=TARGET6_PREFIX, nexthop=r2_base_ip, expect_present=False)
     _wait_os_route(rt, afi="ipv6", prefix=TARGET6_PREFIX, gateway=r2_base_ip, expect_present=False)
 
     step("IPv6: no shutdown interface and verify static route restore")
@@ -559,7 +559,7 @@ def _run_ipv6(
         expect_resolved=True,
         expect_in_rib=True,
     )
-    _wait_rib_static(rt, afi="ipv6", destination=TARGET6_NET_ADDR, nexthop=r2_base_ip, expect_present=True)
+    _wait_rib_static(rt, afi="ipv6", prefix=TARGET6_PREFIX, nexthop=r2_base_ip, expect_present=True)
     _wait_os_route(rt, afi="ipv6", prefix=TARGET6_PREFIX, gateway=r2_base_ip, expect_present=True)
 
     step("IPv6: renumber GE-1 on r1/r2, verify old nexthop route invalidated")
@@ -622,7 +622,7 @@ def _run_ipv6(
         expect_resolved=False,
         expect_in_rib=False,
     )
-    _wait_rib_static(rt, afi="ipv6", destination=TARGET6_NET_ADDR, nexthop=r2_base_ip, expect_present=False)
+    _wait_rib_static(rt, afi="ipv6", prefix=TARGET6_PREFIX, nexthop=r2_base_ip, expect_present=False)
     _wait_os_route(rt, afi="ipv6", prefix=TARGET6_PREFIX, gateway=r2_base_ip, expect_present=False)
 
     step("IPv6: update static route nexthop to new peer address and verify recovery")
@@ -644,7 +644,7 @@ def _run_ipv6(
         expect_resolved=True,
         expect_in_rib=True,
     )
-    _wait_rib_static(rt, afi="ipv6", destination=TARGET6_NET_ADDR, nexthop=NEW_R2_V6, expect_present=True)
+    _wait_rib_static(rt, afi="ipv6", prefix=TARGET6_PREFIX, nexthop=NEW_R2_V6, expect_present=True)
     _wait_os_route(rt, afi="ipv6", prefix=TARGET6_PREFIX, gateway=NEW_R2_V6, expect_present=True)
 
 
@@ -738,7 +738,7 @@ def _run_ipv4_single_stack(
         expect_resolved=True,
         expect_in_rib=True,
     )
-    _wait_rib_static(rt, afi="ipv4", destination=TARGET4_ADDR, nexthop=r2_v4_ip, expect_present=True)
+    _wait_rib_static(rt, afi="ipv4", prefix=TARGET4_PREFIX, nexthop=r2_v4_ip, expect_present=True)
     _wait_os_route(rt, afi="ipv4", prefix=TARGET4_PREFIX, gateway=r2_v4_ip, expect_present=True)
 
     step("IPv4 single-stack: shutdown interface and verify static route withdraw")
@@ -770,7 +770,7 @@ def _run_ipv4_single_stack(
         expect_resolved=False,
         expect_in_rib=False,
     )
-    _wait_rib_static(rt, afi="ipv4", destination=TARGET4_ADDR, nexthop=r2_v4_ip, expect_present=False)
+    _wait_rib_static(rt, afi="ipv4", prefix=TARGET4_PREFIX, nexthop=r2_v4_ip, expect_present=False)
     _wait_os_route(rt, afi="ipv4", prefix=TARGET4_PREFIX, gateway=r2_v4_ip, expect_present=False)
 
     step("IPv4 single-stack: no shutdown interface and verify static route restore")
@@ -802,7 +802,7 @@ def _run_ipv4_single_stack(
         expect_resolved=True,
         expect_in_rib=True,
     )
-    _wait_rib_static(rt, afi="ipv4", destination=TARGET4_ADDR, nexthop=r2_v4_ip, expect_present=True)
+    _wait_rib_static(rt, afi="ipv4", prefix=TARGET4_PREFIX, nexthop=r2_v4_ip, expect_present=True)
     _wait_os_route(rt, afi="ipv4", prefix=TARGET4_PREFIX, gateway=r2_v4_ip, expect_present=True)
 
     step("IPv4 single-stack: renumber GE-1, verify old nexthop route invalidated")
@@ -865,7 +865,7 @@ def _run_ipv4_single_stack(
         expect_resolved=False,
         expect_in_rib=False,
     )
-    _wait_rib_static(rt, afi="ipv4", destination=TARGET4_ADDR, nexthop=r2_v4_ip, expect_present=False)
+    _wait_rib_static(rt, afi="ipv4", prefix=TARGET4_PREFIX, nexthop=r2_v4_ip, expect_present=False)
     _wait_os_route(rt, afi="ipv4", prefix=TARGET4_PREFIX, gateway=r2_v4_ip, expect_present=False)
 
     step("IPv4 single-stack: update static route nexthop and verify recovery")
@@ -887,7 +887,7 @@ def _run_ipv4_single_stack(
         expect_resolved=True,
         expect_in_rib=True,
     )
-    _wait_rib_static(rt, afi="ipv4", destination=TARGET4_ADDR, nexthop=NEW_R2_V4, expect_present=True)
+    _wait_rib_static(rt, afi="ipv4", prefix=TARGET4_PREFIX, nexthop=NEW_R2_V4, expect_present=True)
     _wait_os_route(rt, afi="ipv4", prefix=TARGET4_PREFIX, gateway=NEW_R2_V4, expect_present=True)
 
 
@@ -981,7 +981,7 @@ def _run_ipv6_single_stack(
         expect_resolved=True,
         expect_in_rib=True,
     )
-    _wait_rib_static(rt, afi="ipv6", destination=TARGET6_NET_ADDR, nexthop=r2_v6_ip, expect_present=True)
+    _wait_rib_static(rt, afi="ipv6", prefix=TARGET6_PREFIX, nexthop=r2_v6_ip, expect_present=True)
     _wait_os_route(rt, afi="ipv6", prefix=TARGET6_PREFIX, gateway=r2_v6_ip, expect_present=True)
 
     step("IPv6 single-stack: shutdown interface and verify static route withdraw")
@@ -1013,7 +1013,7 @@ def _run_ipv6_single_stack(
         expect_resolved=False,
         expect_in_rib=False,
     )
-    _wait_rib_static(rt, afi="ipv6", destination=TARGET6_NET_ADDR, nexthop=r2_v6_ip, expect_present=False)
+    _wait_rib_static(rt, afi="ipv6", prefix=TARGET6_PREFIX, nexthop=r2_v6_ip, expect_present=False)
     _wait_os_route(rt, afi="ipv6", prefix=TARGET6_PREFIX, gateway=r2_v6_ip, expect_present=False)
 
     step("IPv6 single-stack: no shutdown interface and verify static route restore")
@@ -1045,7 +1045,7 @@ def _run_ipv6_single_stack(
         expect_resolved=True,
         expect_in_rib=True,
     )
-    _wait_rib_static(rt, afi="ipv6", destination=TARGET6_NET_ADDR, nexthop=r2_v6_ip, expect_present=True)
+    _wait_rib_static(rt, afi="ipv6", prefix=TARGET6_PREFIX, nexthop=r2_v6_ip, expect_present=True)
     _wait_os_route(rt, afi="ipv6", prefix=TARGET6_PREFIX, gateway=r2_v6_ip, expect_present=True)
 
     step("IPv6 single-stack: renumber GE-1, verify old nexthop route invalidated")
@@ -1108,7 +1108,7 @@ def _run_ipv6_single_stack(
         expect_resolved=False,
         expect_in_rib=False,
     )
-    _wait_rib_static(rt, afi="ipv6", destination=TARGET6_NET_ADDR, nexthop=r2_v6_ip, expect_present=False)
+    _wait_rib_static(rt, afi="ipv6", prefix=TARGET6_PREFIX, nexthop=r2_v6_ip, expect_present=False)
     _wait_os_route(rt, afi="ipv6", prefix=TARGET6_PREFIX, gateway=r2_v6_ip, expect_present=False)
 
     step("IPv6 single-stack: update static route nexthop and verify recovery")
@@ -1130,7 +1130,7 @@ def _run_ipv6_single_stack(
         expect_resolved=True,
         expect_in_rib=True,
     )
-    _wait_rib_static(rt, afi="ipv6", destination=TARGET6_NET_ADDR, nexthop=NEW_R2_V6, expect_present=True)
+    _wait_rib_static(rt, afi="ipv6", prefix=TARGET6_PREFIX, nexthop=NEW_R2_V6, expect_present=True)
     _wait_os_route(rt, afi="ipv6", prefix=TARGET6_PREFIX, gateway=NEW_R2_V6, expect_present=True)
 
 
@@ -1174,7 +1174,7 @@ def _run_ipv4_if_only(
         expect_resolved=True,
         expect_in_rib=True,
     )
-    _wait_rib_static(rt, afi="ipv4", destination=TARGET4_IF_ADDR, nexthop="0.0.0.0", expect_present=True)
+    _wait_rib_static(rt, afi="ipv4", prefix=TARGET4_IF_PREFIX, nexthop="0.0.0.0", expect_present=True)
     _wait_os_route(rt, afi="ipv4", prefix=TARGET4_IF_PREFIX, gateway="-", expect_present=True)
 
     step("IPv4 if-only: shutdown interface and verify static route withdraw")
@@ -1206,7 +1206,7 @@ def _run_ipv4_if_only(
         expect_resolved=False,
         expect_in_rib=False,
     )
-    _wait_rib_static(rt, afi="ipv4", destination=TARGET4_IF_ADDR, nexthop="0.0.0.0", expect_present=False)
+    _wait_rib_static(rt, afi="ipv4", prefix=TARGET4_IF_PREFIX, nexthop="0.0.0.0", expect_present=False)
     _wait_os_route(rt, afi="ipv4", prefix=TARGET4_IF_PREFIX, gateway="-", expect_present=False)
 
     step("IPv4 if-only: no shutdown interface and verify static route restore")
@@ -1238,7 +1238,7 @@ def _run_ipv4_if_only(
         expect_resolved=True,
         expect_in_rib=True,
     )
-    _wait_rib_static(rt, afi="ipv4", destination=TARGET4_IF_ADDR, nexthop="0.0.0.0", expect_present=True)
+    _wait_rib_static(rt, afi="ipv4", prefix=TARGET4_IF_PREFIX, nexthop="0.0.0.0", expect_present=True)
     _wait_os_route(rt, afi="ipv4", prefix=TARGET4_IF_PREFIX, gateway="-", expect_present=True)
 
 
@@ -1267,7 +1267,7 @@ def _run_ipv6_if_only(
         expect_resolved=True,
         expect_in_rib=True,
     )
-    _wait_rib_static(rt, afi="ipv6", destination=TARGET6_IF_NET_ADDR, nexthop="::", expect_present=True)
+    _wait_rib_static(rt, afi="ipv6", prefix=TARGET6_IF_PREFIX, nexthop="::", expect_present=True)
     _wait_os_route(rt, afi="ipv6", prefix=TARGET6_IF_PREFIX, gateway="-", expect_present=True)
 
     step("IPv6 if-only: shutdown interface and verify static route withdraw")
@@ -1299,7 +1299,7 @@ def _run_ipv6_if_only(
         expect_resolved=False,
         expect_in_rib=False,
     )
-    _wait_rib_static(rt, afi="ipv6", destination=TARGET6_IF_NET_ADDR, nexthop="::", expect_present=False)
+    _wait_rib_static(rt, afi="ipv6", prefix=TARGET6_IF_PREFIX, nexthop="::", expect_present=False)
     _wait_os_route(rt, afi="ipv6", prefix=TARGET6_IF_PREFIX, gateway="-", expect_present=False)
 
     step("IPv6 if-only: no shutdown interface and verify static route restore")
@@ -1331,7 +1331,7 @@ def _run_ipv6_if_only(
         expect_resolved=True,
         expect_in_rib=True,
     )
-    _wait_rib_static(rt, afi="ipv6", destination=TARGET6_IF_NET_ADDR, nexthop="::", expect_present=True)
+    _wait_rib_static(rt, afi="ipv6", prefix=TARGET6_IF_PREFIX, nexthop="::", expect_present=True)
     _wait_os_route(rt, afi="ipv6", prefix=TARGET6_IF_PREFIX, gateway="-", expect_present=True)
 
 
@@ -1380,7 +1380,7 @@ def _run_duplicate_check(
         expect_in_rib=True,
         total_count=1,
     )
-    _wait_rib_static(rt, afi="ipv4", destination=TARGET4_ADDR, nexthop=r2_base_ip, expect_present=True)
+    _wait_rib_static(rt, afi="ipv4", prefix=TARGET4_PREFIX, nexthop=r2_base_ip, expect_present=True)
 
     step("Duplicate: delete route and verify removal")
     run_cmds(
@@ -1392,7 +1392,7 @@ def _run_duplicate_check(
             "end",
         ],
     )
-    _wait_rib_static(rt, afi="ipv4", destination=TARGET4_ADDR, nexthop=r2_base_ip, expect_present=False)
+    _wait_rib_static(rt, afi="ipv4", prefix=TARGET4_PREFIX, nexthop=r2_base_ip, expect_present=False)
 
     step("Duplicate: re-add route and verify install again")
     run_cmds(
@@ -1413,7 +1413,7 @@ def _run_duplicate_check(
         expect_in_rib=True,
         total_count=1,
     )
-    _wait_rib_static(rt, afi="ipv4", destination=TARGET4_ADDR, nexthop=r2_base_ip, expect_present=True)
+    _wait_rib_static(rt, afi="ipv4", prefix=TARGET4_PREFIX, nexthop=r2_base_ip, expect_present=True)
 
     step("Duplicate: add interface-only route and verify 1 entry")
     run_cmds(

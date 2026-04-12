@@ -186,10 +186,12 @@
              Group 2: show route 命令
              元素位置：1=show, 2=route, 3=ipv4, 4=ipv6, 5=<destination>,
                        6=proto, 7=static, 8=bgp, 9=ospf, 10=summary,
-                       11=connected, 12=os
+                       11=connected, 12=os, 13=isis,
+                       14=<prefix-length-v4>, 15=<prefix-length-v6>
              cfg-id: 1=ipv4, 2=ipv6, 4=dest_filter,
                      5=proto:static, 6=proto:bgp, 7=proto:ospf, 8=summary,
-                     9=proto:connected, 10=os
+                     9=proto:connected, 10=os, 11=proto:isis,
+                     12=dest_prefix_len_v4, 13=dest_prefix_len_v6
              ================================================================ -->
         <group group-id="2">
             <elements>
@@ -242,6 +244,20 @@
                     <name>os</name>
                     <description>Linux kernel routing table (all tables)</description>
                 </element>
+                <element cfg-id="11" type="keyword">
+                    <name>isis</name>
+                    <description>ISIS routes</description>
+                </element>
+                <element cfg-id="12" type="parameter">
+                    <name>&lt;prefix-length&gt;</name>
+                    <type>uint(0-32)</type>
+                    <description>IPv4 destination prefix length (0-32)</description>
+                </element>
+                <element cfg-id="13" type="parameter">
+                    <name>&lt;prefix-length&gt;</name>
+                    <type>uint(0-128)</type>
+                    <description>IPv6 destination prefix length (0-128)</description>
+                </element>
             </elements>
 
             <commands>
@@ -255,14 +271,14 @@
                     <expression>1 2 4</expression>
                     <views>global</views>
                 </command>
-                <!-- show route ipv4 <destination> -->
+                <!-- show route ipv4 <destination> <prefix-length> -->
                 <command>
-                    <expression>1 2 3 5</expression>
+                    <expression>1 2 3 5 14</expression>
                     <views>global</views>
                 </command>
-                <!-- show route ipv6 <destination> -->
+                <!-- show route ipv6 <destination> <prefix-length> -->
                 <command>
-                    <expression>1 2 4 5</expression>
+                    <expression>1 2 4 5 15</expression>
                     <views>global</views>
                 </command>
                 <!-- show route ipv4 proto static -->
@@ -303,6 +319,16 @@
                 <!-- show route ipv6 proto connected -->
                 <command>
                     <expression>1 2 4 6 11</expression>
+                    <views>global</views>
+                </command>
+                <!-- show route ipv4 proto isis -->
+                <command>
+                    <expression>1 2 3 6 13</expression>
+                    <views>global</views>
+                </command>
+                <!-- show route ipv6 proto isis -->
+                <command>
+                    <expression>1 2 4 6 13</expression>
                     <views>global</views>
                 </command>
                 <!-- show route ipv4 summary -->

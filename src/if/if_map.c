@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "errcode.h"
 #include "if.h"
@@ -19,6 +20,8 @@
 
 /* 使用 g_if_local->interface_map，不再维护独立全局变量 */
 #define g_interface_map (g_if_local->interface_map)
+#define IF_MAP_IFINDEX_RETRY_COUNT 20u
+#define IF_MAP_IFINDEX_RETRY_USEC 50000u
 
 /* 接口名类型优先级：null0(0) → loop(1) → GE(2) → 其他(3) */
 static int if_name_type_order(const char *name)
@@ -94,14 +97,50 @@ static void if_map_copy_str(char *dst, size_t dst_size, const char *src)
     dst[len] = '\0';
 }
 
+static gboolean if_map_is_virtual_entry(const char *logical_name)
+{
+    return (logical_name && strcmp(logical_name, "null0") == 0) ? TRUE : FALSE;
+}
+
+static uint32_t if_map_wait_ifindex(const char *ifname)
+{
+    if (!ifname || ifname[0] == '\0')
+    {
+        return 0u;
+    }
+
+    for (uint32_t i = 0u; i < IF_MAP_IFINDEX_RETRY_COUNT; ++i)
+    {
+        uint32_t ifindex = (uint32_t)if_nametoindex(ifname);
+        if (ifindex != 0u)
+        {
+            return ifindex;
+        }
+        (void)usleep(IF_MAP_IFINDEX_RETRY_USEC);
+    }
+    return 0u;
+}
+
 /**
  * @brief 向 all_entries 有序树插入一条接口条目（自动分配内存，接管所有权）
  */
-static void if_map_insert(const char *logical, const char *physical, uint32_t auto_mapped)
+static int if_map_insert(const char *logical, const char *physical, uint32_t auto_mapped)
 {
     if (!g_interface_map.all_entries || !logical || !physical)
     {
-        return;
+        return ERRCODE_FAIL;
+    }
+
+    uint32_t ifindex = 0u;
+    if (!if_map_is_virtual_entry(logical))
+    {
+        (void)if_ensure_exists(physical);
+        ifindex = if_map_wait_ifindex(physical);
+        if (ifindex == 0u)
+        {
+            LOG_ERROR("IF: interface %s(%s) ifindex invalid(0), skip mapping", logical, physical);
+            return ERRCODE_FAIL;
+        }
     }
 
     /* 若已存在则更新物理名 */
@@ -109,15 +148,17 @@ static void if_map_insert(const char *logical, const char *physical, uint32_t au
     if (existing)
     {
         if_map_copy_str(existing->physical_name, sizeof(existing->physical_name), physical);
-        return;
+        existing->ifindex = ifindex;
+        return ERRCODE_SUCCESS;
     }
 
     if_map_entry_t *entry = (if_map_entry_t *)g_malloc0(sizeof(if_map_entry_t));
     if_map_copy_str(entry->logical_name, sizeof(entry->logical_name), logical);
     if_map_copy_str(entry->physical_name, sizeof(entry->physical_name), physical);
     entry->auto_mapped = auto_mapped;
-    entry->ifindex = (uint32_t)if_nametoindex(physical);
+    entry->ifindex = ifindex;
     g_tree_insert(g_interface_map.all_entries, g_strdup(logical), entry);
+    return ERRCODE_SUCCESS;
 }
 
 /* 从配置文件加载 GE 口映射 */
@@ -141,7 +182,10 @@ static int load_config_file(const char *config_file)
         char physical[IFNAMSIZ];
         if (sscanf(line, " %31s = %15s", logical, physical) == 2)
         {
-            if_map_insert(logical, physical, 0);
+            if (if_map_insert(logical, physical, 0) != ERRCODE_SUCCESS)
+            {
+                LOG_WARN("IF: skip invalid mapping %s=%s from %s", logical, physical, config_file);
+            }
         }
     }
 
@@ -156,8 +200,19 @@ static gboolean if_map_init_ensure_cb(gpointer key, gpointer value, gpointer use
     (void)user_data;
     if_map_entry_t *e = (if_map_entry_t *)value;
     LOG_INFO("  %s -> %s", e->logical_name, e->physical_name);
-    if_ensure_exists(e->physical_name);
-    e->ifindex = (uint32_t)if_nametoindex(e->physical_name);
+    if (!if_map_is_virtual_entry(e->logical_name))
+    {
+        (void)if_ensure_exists(e->physical_name);
+        uint32_t ifindex = if_map_wait_ifindex(e->physical_name);
+        if (ifindex != 0u)
+        {
+            e->ifindex = ifindex;
+        }
+        else
+        {
+            LOG_ERROR("IF: interface %s(%s) ifindex invalid(0) after ensure", e->logical_name, e->physical_name);
+        }
+    }
     return FALSE;
 }
 
@@ -192,7 +247,7 @@ int if_map_init(const char *config_file)
     }
 
     /* null0 黑洞接口（固定单例，无 OS 接口） */
-    if_map_insert("null0", "null0", 0);
+    (void)if_map_insert("null0", "null0", 0);
     LOG_INFO("  null0 -> null0 (blackhole, virtual)");
 
     return ERRCODE_SUCCESS;
@@ -269,8 +324,7 @@ int if_map_add(const char *logical_name, const char *physical_name)
     {
         return ERRCODE_FAIL;
     }
-    if_map_insert(logical_name, physical_name, 0);
-    return ERRCODE_SUCCESS;
+    return if_map_insert(logical_name, physical_name, 0);
 }
 
 /* 保存映射到配置文件（仅保存非 loop/null0 的静态条目） */

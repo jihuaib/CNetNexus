@@ -36,6 +36,7 @@ typedef enum bgp_sess_type
 typedef struct bgp_vrf bgp_vrf_t;
 typedef struct bgp_peer bgp_peer_t;
 typedef struct bgp_pub_queue bgp_pub_queue_t;
+typedef struct bgp_nh_subgroup bgp_nh_subgroup_t;
 
 /* 前向声明：bgp_timer_sentinel_t 与 bgp_session_t 互相引用 */
 struct bgp_session;
@@ -90,9 +91,10 @@ typedef struct bgp_session
     int sec_last_socket_error; /**< 次连接槽最近一次 socket 错误码（0=无） */
     uint32_t remote_id;        /**< 对端 BGP Router ID（主机序 32 位，由 OPEN 填入，0 表示未建立） */
     uint32_t local_router_id; /**< 本地 BGP Router ID（主机序 32 位，发送 OPEN 时保存，用于 RFC §6.8 比较） */
-    GArray *negotiated_afs;     /**< 协商地址族列表（每元素为 guint32，以 afi<<16|safi 打包） */
-    GList *peer_list;           /**< 各 AF 下使能的 bgp_peer_t*（借用引用） */
-    bgp_pub_queue_t *pub_queue; /**< 按 session 聚合的待发布路由队列（持有所有权） */
+    GArray *negotiated_afs;      /**< 协商地址族列表（每元素为 guint32，以 afi<<16|safi 打包） */
+    GList *peer_list;            /**< 各 AF 下使能的 bgp_peer_t*（借用引用） */
+    bgp_pub_queue_t *pub_queue;  /**< 按 session 聚合的待发布路由队列（持有所有权） */
+    bgp_nh_subgroup_t *subgroup; /**< 当前所属 NH 子组（借用引用，未加入时为 NULL） */
 
     /* ---- 能力字段 ---- */
     uint32_t flags;           /**< 已配置的本地能力集（BGP_SESS_CAP_*） */

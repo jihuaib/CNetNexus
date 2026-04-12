@@ -80,6 +80,8 @@
 #define CLI_CTX_ID_IF_LOOP_IDX 6
 /** BMP 实例名称上下文（字符串） */
 #define CLI_CTX_ID_BMP_INST_NAME 7
+/** ISIS 实例标签上下文（整数） */
+#define CLI_CTX_ID_ISIS_TAG 8
 
 /** 视图名称最大长度 */
 #define CLI_CLI_MAX_VIEW_LEN 20

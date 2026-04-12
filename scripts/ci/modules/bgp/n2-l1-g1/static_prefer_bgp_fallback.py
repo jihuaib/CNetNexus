@@ -27,7 +27,7 @@ def _wait_route_best_static_backup_bgp(rt: TopologyRuntime, *, device: str, dest
     wait_check(
         rt,
         device=device,
-        command=f"show route ipv4 {destination}",
+        command=f"show route ipv4 {destination} {TARGET_MASK}",
         timeout=timeout,
         interval=2,
         contains=["Routing entry for", "Total 2 path(s)"],
@@ -44,7 +44,7 @@ def _wait_route_best_bgp_only(rt: TopologyRuntime, *, device: str, destination: 
     wait_check(
         rt,
         device=device,
-        command=f"show route ipv4 {destination}",
+        command=f"show route ipv4 {destination} {TARGET_MASK}",
         timeout=timeout,
         interval=2,
         contains=["Routing entry for", "Total 1 path(s)"],

@@ -87,8 +87,8 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
     cfg_v6_prefix = CFG_V6_PREFIX
     net_v6 = str(ipaddress.ip_interface(f"{cfg_v6}/{cfg_v6_prefix}").network.network_address)
 
-    net_show = f"show route ipv6 {net_v6}"
-    host_show = f"show route ipv6 {cfg_v6}"
+    net_show = f"show route ipv6 {net_v6} {cfg_v6_prefix}"
+    host_show = f"show route ipv6 {cfg_v6} 128"
     show_cmd = f"show if {if_name}"
 
     try:

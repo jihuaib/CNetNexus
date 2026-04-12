@@ -46,7 +46,7 @@ def _wait_route_presence(
     for addr, pfx in routes:
         check: dict[str, object] = {
             "device": device,
-            "command": f"show route ipv4 {addr}",
+            "command": f"show route ipv4 {addr} {PREFIX_LEN}",
             "label": f"{device} route presence {pfx}",
         }
         if expect_present:

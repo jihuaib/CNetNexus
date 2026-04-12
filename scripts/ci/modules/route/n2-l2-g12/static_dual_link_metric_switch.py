@@ -35,7 +35,7 @@ def _wait_path_total(
     wait_check(
         rt,
         device=device,
-        command=f"show route ipv4 {destination}",
+        command=f"show route ipv4 {destination} {TARGET_MASK}",
         timeout=timeout,
         interval=interval,
         contains=[f"Total {expect_total} path(s)"],
@@ -59,7 +59,7 @@ def _wait_route_paths(
     wait_check(
         rt,
         device=device,
-        command=f"show route ipv4 {destination}",
+        command=f"show route ipv4 {destination} {TARGET_MASK}",
         timeout=timeout,
         interval=interval,
         regex=path_regex,

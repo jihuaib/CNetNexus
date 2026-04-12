@@ -29,6 +29,7 @@ typedef struct bgp_instance
     uint32_t import_protos;       /**< 已导入协议位掩码：bit N 置 1 表示 protocol=N 已导入 */
     bgp_calc_queue_t *calc_queue; /**< best-path 待处理队列（持有所有权） */
     bgp_route_flush_queue_t *route_flush_queue; /**< ROUTE 下刷待处理队列（持有所有权） */
+    GList *update_groups; /**< bgp_update_group_t*（持有所有权），按出向策略分组的发布单元 */
 } bgp_instance_t;
 
 /**

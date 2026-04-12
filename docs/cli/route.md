@@ -69,3 +69,25 @@ Displays both IPv4 and IPv6 routing tables.
 
 - **Usage**: `show route all`
 - **View**: `global` (available in all views)
+
+### 2.4 `show route ipv4 proto isis`
+Filters IPv4 routes by ISIS protocol.
+
+- **Usage**: `show route ipv4 proto isis`
+- **View**: `global` (available in all views)
+
+### 2.5 `show route ipv6 proto isis`
+Filters IPv6 routes by ISIS protocol.
+
+- **Usage**: `show route ipv6 proto isis`
+- **View**: `global` (available in all views)
+
+## 3. Protocol Filter Keywords
+
+For `show route ipv4|ipv6 proto ...`, current protocol keywords include:
+
+- `connected`
+- `static`
+- `bgp`
+- `ospf`
+- `isis`

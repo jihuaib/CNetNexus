@@ -158,7 +158,7 @@ def _wait_route_best_ipv4_backup_ipv6(
     wait_check(
         rt,
         device=device,
-        command=f"show route ipv4 {destination}",
+        command=f"show route ipv4 {destination} {IPV4_MASK}",
         timeout=timeout,
         interval=2,
         contains=["Routing entry for"],
@@ -180,7 +180,7 @@ def _wait_route_best_ipv4_bgp_nexthop(
     wait_check(
         rt,
         device=device,
-        command=f"show route ipv4 {destination}",
+        command=f"show route ipv4 {destination} {IPV4_MASK}",
         timeout=timeout,
         interval=2,
         contains=["Routing entry for"],
@@ -201,7 +201,7 @@ def _wait_route_iter_ipv4(
     wait_check(
         rt,
         device=device,
-        command=f"show route ipv4 {destination}",
+        command=f"show route ipv4 {destination} {IPV4_MASK}",
         timeout=timeout,
         interval=2,
         contains=["Routing entry for"],
@@ -309,7 +309,7 @@ def _wait_route_best_ipv6_bgp(
     wait_check(
         rt,
         device=device,
-        command=f"show route ipv6 {destination}",
+        command=f"show route ipv6 {destination} {IPV6_MASK}",
         timeout=timeout,
         interval=2,
         contains=["Routing entry for"],
