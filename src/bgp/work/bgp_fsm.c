@@ -249,7 +249,7 @@ static void fsm_close_all(bgp_session_t *sess, gboolean purge_routes, gboolean a
     }
 }
 
-/** 进入 ESTABLISHED 后，将当前所有 AF 的 best-route 快照挂入 session pub_queue */
+/** 进入 ESTABLISHED 后，触发该 session 加入各 AF subgroup 并补发 best-route */
 static void fsm_reannounce_best(bgp_session_t *sess)
 {
     bgp_conn_t *conn = sess->pri_conn;
@@ -261,7 +261,7 @@ static void fsm_reannounce_best(bgp_session_t *sess)
     net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
     LOG_INFO("BGP FSM: neighbor=%s Established via fd=%d (%s), scheduling best-route replay (af_peers=%u)", addr_str,
              conn->fd, conn->is_active ? "active" : "passive", (unsigned)g_list_length(sess->peer_list));
-    bgp_work_enqueue_best_for_session(sess);
+    bgp_work_subgroup_catchup_session(sess);
 }
 
 /** 进入 ESTABLISHED 状态的统一动作：记录时间戳、启动 KA/Hold 定时器、补发路由 */

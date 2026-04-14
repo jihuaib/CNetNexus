@@ -215,12 +215,13 @@ typedef enum bgp_afi
 /** 子地址族标识符 */
 typedef enum bgp_safi
 {
-    BGP_SAFI_UNICAST = 1,       /**< 单播 */
-    BGP_SAFI_LABELED = 4,       /**< MPLS 标签单播 */
-    BGP_SAFI_EVPN = 70,         /**< EVPN（L2VPN） */
-    BGP_SAFI_VPN_UNICAST = 128, /**< VPN 单播（MPLS L3VPN） */
-    BGP_SAFI_FLOWSPEC = 133,    /**< FlowSpec */
-    BGP_SAFI_VPN_FLOWSPEC = 134 /**< VPN FlowSpec */
+    BGP_SAFI_UNICAST = 1,        /**< 单播 */
+    BGP_SAFI_LABELED = 4,        /**< MPLS 标签单播 */
+    BGP_SAFI_EVPN = 70,          /**< EVPN（L2VPN） */
+    BGP_SAFI_VPN_UNICAST = 128,  /**< VPN 单播（MPLS L3VPN） */
+    BGP_SAFI_FLOWSPEC = 133,     /**< FlowSpec */
+    BGP_SAFI_VPN_FLOWSPEC = 134, /**< VPN FlowSpec */
+    BGP_SAFI_QP = 253            /**< QP */
 } bgp_safi_t;
 
 /* ============================================================================

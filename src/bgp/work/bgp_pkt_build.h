@@ -77,6 +77,46 @@ typedef struct bgp_pkt_af_enc
      *        IPv6: MP_UNREACH_NLRI
      */
     int (*encode_unreach_pa)(uint8_t *buf, int buf_size, const bgp_nlri_entry_t *nlri, const bgp_conn_t *conn);
+
+    /**
+     * @brief 打包版：编码宣告路径属性（多 NLRI 共享属性）
+     *
+     * IPv4 + IPv4 nh：写入传统 NEXT_HOP 属性（7 字节），*out_packed = nlri_count
+     * IPv4 + IPv6 nh（RFC 8950）：写入 MP_REACH_NLRI（AFI+SAFI+NHLen+NH+SNPA + 逐条 IPv4 前缀），
+     *                              *out_packed = 实际嵌入的 NLRI 数
+     * IPv6：写入 MP_REACH_NLRI（含 nh + 逐条 IPv6 前缀），*out_packed = 实际嵌入数
+     *
+     * @return 写入字节数，-1=连属性头部都放不下（需空缓冲重试）
+     */
+    int (*encode_reach_pa_packed)(uint8_t *buf, int buf_size, const bgp_nlri_entry_t *const *nlri_list, int nlri_count,
+                                  const bgp_nexthop_t *nexthop, int *out_packed);
+
+    /**
+     * @brief 打包版：编码宣告 NLRI 段
+     *
+     * IPv4 + IPv4 nh：连续打包多条前缀，*out_packed = 实际打包数
+     * IPv4 + IPv6 nh / IPv6：返回 0，*out_packed = nlri_count（NLRI 已在 MP_REACH 中）
+     */
+    int (*encode_reach_nlri_packed)(uint8_t *buf, int buf_size, const bgp_nlri_entry_t *const *nlri_list,
+                                    int nlri_count, const bgp_nexthop_t *nexthop, int *out_packed);
+
+    /**
+     * @brief 打包版：编码撤销 Withdrawn Routes 段
+     *
+     * IPv4（IPv4 peer）：连续打包前缀，*out_packed = 实际打包数
+     * IPv4（IPv6 peer）/ IPv6：返回 0，*out_packed = nlri_count
+     */
+    int (*encode_unreach_wd_packed)(uint8_t *buf, int buf_size, const bgp_nlri_entry_t *const *nlri_list,
+                                    int nlri_count, const bgp_conn_t *conn, int *out_packed);
+
+    /**
+     * @brief 打包版：编码撤销 AF 路径属性
+     *
+     * IPv4（IPv6 peer）/ IPv6：MP_UNREACH_NLRI（AFI+SAFI + 逐条前缀），*out_packed = 嵌入数
+     * IPv4（IPv4 peer）：返回 0，*out_packed = nlri_count
+     */
+    int (*encode_unreach_pa_packed)(uint8_t *buf, int buf_size, const bgp_nlri_entry_t *const *nlri_list,
+                                    int nlri_count, const bgp_conn_t *conn, int *out_packed);
 } bgp_pkt_af_enc_t;
 
 // ============================================================================

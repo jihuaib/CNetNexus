@@ -29,6 +29,7 @@
 #include "bgp_relay.h"
 #include "bgp_rib.h"
 #include "bgp_session.h"
+#include "bgp_update_group.h"
 #include "bgp_vrf.h"
 #include "bgp_work.h"
 #include "errcode.h"
@@ -1469,6 +1470,17 @@ void bgp_server_stop_session_conns(bgp_session_t *session)
     bgp_session_cancel_retry(session, g_bgp_work_local->epoll_fd);
     bgp_session_cancel_keepalive(session, g_bgp_work_local->epoll_fd);
     bgp_session_cancel_hold(session, g_bgp_work_local->epoll_fd);
+
+    /* 清理该 session 在各 AF peer 的 subgroup 归属 */
+    for (GList *l = session->peer_list; l; l = l->next)
+    {
+        bgp_peer_t *peer = (bgp_peer_t *)l->data;
+        if (peer && peer->subgroups)
+        {
+            bgp_subgroup_peer_leave(peer, session);
+        }
+    }
+
     bgp_conn_close(session, &session->pri_conn, g_bgp_work_local->epoll_fd);
     bgp_conn_close(session, &session->sec_conn, g_bgp_work_local->epoll_fd);
     bgp_worker_flush_peer_routes(session->vrf ? session->vrf->vrf_id : BGP_VRF_PUBLIC_ID, &session->neighbor_addr);

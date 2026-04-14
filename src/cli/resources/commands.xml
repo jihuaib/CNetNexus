@@ -5,15 +5,15 @@
         <!-- show cli command-info -->
         <group group-id="1">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>show</name>
                     <description>Display system information</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>cli</name>
                     <description>CLI information</description>
                 </element>
-                <element type="keyword">
+                <element id="3" type="keyword">
                     <name>command-info</name>
                     <description>Command info</description>
                 </element>
@@ -30,15 +30,15 @@
         <!-- show cli history -->
         <group group-id="2">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>show</name>
                     <description>Display system information</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>cli</name>
                     <description>CLI information</description>
                 </element>
-                <element type="keyword">
+                <element id="3" type="keyword">
                     <name>history</name>
                     <description>Command history</description>
                 </element>
@@ -55,11 +55,11 @@
         <!-- show current-configuration -->
         <group group-id="3">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>show</name>
                     <description>Display system information</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>current-configuration</name>
                     <description>Display current configuration</description>
                 </element>
@@ -76,7 +76,7 @@
         <!-- exit -->
         <group group-id="4">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>exit</name>
                     <description>Exit current mode</description>
                 </element>
@@ -93,7 +93,7 @@
         <!-- config -->
         <group group-id="5">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>config</name>
                     <description>Enter configuration mode</description>
                 </element>
@@ -110,7 +110,7 @@
         <!-- end -->
         <group group-id="6">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>end</name>
                     <description>Return to user view</description>
                 </element>
@@ -127,15 +127,15 @@
         <!-- show cli context -->
         <group group-id="8">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>show</name>
                     <description>Display system information</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>cli</name>
                     <description>CLI information</description>
                 </element>
-                <element type="keyword">
+                <element id="3" type="keyword">
                     <name>context</name>
                     <description>Current view context variables</description>
                 </element>
@@ -152,19 +152,19 @@
         <!-- terminal length 0 -->
         <group group-id="9">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>no</name>
                     <description>Restore default behavior</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>terminal</name>
                     <description>Terminal session options</description>
                 </element>
-                <element type="keyword">
+                <element id="3" type="keyword">
                     <name>length</name>
                     <description>Set terminal output length</description>
                 </element>
-                <element type="keyword">
+                <element id="4" type="keyword">
                     <name>0</name>
                     <description>Disable paging for current session</description>
                 </element>
@@ -185,7 +185,7 @@
         <!-- bash -->
         <group group-id="7">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>bash</name>
                     <description>Enter bash shell</description>
                 </element>

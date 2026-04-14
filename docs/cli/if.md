@@ -54,7 +54,7 @@ Displays a summary table of all interfaces with name, state, and IP address.
 - **View**: `global` (available in all views)
 
 ### 3.2 `show if { GE-1 | GE-2 | GE-3 | GE-4 }`
-Displays detailed information for a specific interface, including name, type, state, IP address, MAC address, and MTU.
+Displays detailed information for a specific interface, including name, ifindex, type, state, IP address, MAC address, and MTU.
 
 - **Usage**: `show if GE-1` / `show if GE-2` / `show if GE-3` / `show if GE-4`
 - **View**: `global` (available in all views)

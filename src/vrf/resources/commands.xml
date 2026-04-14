@@ -14,16 +14,16 @@
         <!-- group 1: vrf <vrf-name>（配置视图，创建 VRF） / no vrf <vrf-name> -->
         <group group-id="1">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>vrf</name>
                     <description>Configure VRF instance</description>
                 </element>
-                <element cfg-id="1" type="parameter">
+                <element id="2" cfg-id="1" type="parameter">
                     <name>&lt;vrf-name&gt;</name>
                     <type>dynamic(string(1-63))</type>
                     <description>VRF name</description>
                 </element>
-                <element type="keyword">
+                <element id="3" type="keyword">
                     <name>no</name>
                     <description>Delete</description>
                 </element>
@@ -51,15 +51,15 @@
         <!-- <vrf-name> 使用 dynamic 类型，Tab/? 时 RPC 查询已有 VRF 列表 -->
         <group group-id="2">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>show</name>
                     <description>Display system information</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>vrf</name>
                     <description>VRF table</description>
                 </element>
-                <element cfg-id="3" type="parameter">
+                <element id="3" cfg-id="3" type="parameter">
                     <name>&lt;vrf-name&gt;</name>
                     <type>dynamic(string(1-63))</type>
                     <description>VRF name</description>

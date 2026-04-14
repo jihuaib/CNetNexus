@@ -101,6 +101,32 @@ def _wait_route_in_rib(
     )
 
 
+def _wait_isis_route_detail(
+    rt: TopologyRuntime,
+    *,
+    device: str,
+    afi: str,
+    destination: str,
+    mask: int,
+    prefix: str,
+    timeout: int = 90,
+) -> None:
+    wait_check(
+        rt,
+        device=device,
+        command=f"show isis {afi} route {TAG} {destination} {mask}",
+        timeout=timeout,
+        interval=2,
+        contains=[
+            f"ISIS {afi} Routes Detail (tag {TAG}, {prefix})",
+            f"Prefix       : {prefix}",
+        ],
+        not_contains=["(no matching routes)", "(instance not found)"],
+        regex=[r"(?im)^\s*Route\s+\d+\s*$"],
+        label=f"{device} show isis {afi} route detail {prefix}",
+    )
+
+
 def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
     require_devices(top, ("r1", "r2"))
 
@@ -278,7 +304,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             ],
         )
 
-        step("Wait ISIS neighbor negotiation (IPv4/IPv6)")
+        step("Wait ISIS neighbor negotiation (interface-based)")
         wait_checks(
             rt,
             [
@@ -296,19 +322,70 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                     "regex": [rf"(?im)^\s*{TAG}\s+{re.escape(GE_IF)}\s+L[12]\s+\S+\s+Up\s+"],
                     "label": "r2 ISIS neighbor up",
                 },
+            ],
+            timeout=80,
+            interval=2,
+        )
+
+        step("Check ISIS LSDB entries (IPv4/IPv6 views)")
+        wait_checks(
+            rt,
+            [
                 {
                     "device": "r1",
-                    "command": f"show isis ipv6 neighbor {TAG}",
-                    "contains": [r1_peer_ip6],
-                    "regex": [rf"(?im)^\s*{TAG}\s+{re.escape(GE_IF)}\s+L[12]\s+\S+\s+Up\s+"],
-                    "label": "r1 ISIS ipv6 neighbor up",
+                    "command": f"show isis ipv4 lsdb {TAG}",
+                    "contains": ["ISIS LSDB", GE_IF],
+                    "not_contains": ["(no entries)"],
+                    "regex": [
+                        r"(?im)^\s*LSP Entry\s+\d+\s*$",
+                        rf"(?im)^\s*Tag\s*:\s*{TAG}\s*$",
+                        rf"(?im)^\s*Rx-If\s*:\s*{re.escape(GE_IF)}\s*$",
+                        r"(?im)^\s*TLV\[\d+\]\s*:\s*type=22\b",
+                        r"(?im)^\s*TLV\[\d+\]\s*:\s*type=135\b",
+                    ],
+                    "label": "r1 ipv4 lsdb has remote lsp",
+                },
+                {
+                    "device": "r1",
+                    "command": f"show isis ipv6 lsdb {TAG}",
+                    "contains": ["ISIS LSDB", GE_IF],
+                    "not_contains": ["(no entries)"],
+                    "regex": [
+                        r"(?im)^\s*LSP Entry\s+\d+\s*$",
+                        rf"(?im)^\s*Tag\s*:\s*{TAG}\s*$",
+                        rf"(?im)^\s*Rx-If\s*:\s*{re.escape(GE_IF)}\s*$",
+                        r"(?im)^\s*TLV\[\d+\]\s*:\s*type=22\b",
+                        r"(?im)^\s*TLV\[\d+\]\s*:\s*type=236\b",
+                    ],
+                    "label": "r1 ipv6 lsdb has remote lsp",
                 },
                 {
                     "device": "r2",
-                    "command": f"show isis ipv6 neighbor {TAG}",
-                    "contains": [r2_peer_ip6],
-                    "regex": [rf"(?im)^\s*{TAG}\s+{re.escape(GE_IF)}\s+L[12]\s+\S+\s+Up\s+"],
-                    "label": "r2 ISIS ipv6 neighbor up",
+                    "command": f"show isis ipv4 lsdb {TAG}",
+                    "contains": ["ISIS LSDB", GE_IF],
+                    "not_contains": ["(no entries)"],
+                    "regex": [
+                        r"(?im)^\s*LSP Entry\s+\d+\s*$",
+                        rf"(?im)^\s*Tag\s*:\s*{TAG}\s*$",
+                        rf"(?im)^\s*Rx-If\s*:\s*{re.escape(GE_IF)}\s*$",
+                        r"(?im)^\s*TLV\[\d+\]\s*:\s*type=22\b",
+                        r"(?im)^\s*TLV\[\d+\]\s*:\s*type=135\b",
+                    ],
+                    "label": "r2 ipv4 lsdb has remote lsp",
+                },
+                {
+                    "device": "r2",
+                    "command": f"show isis ipv6 lsdb {TAG}",
+                    "contains": ["ISIS LSDB", GE_IF],
+                    "not_contains": ["(no entries)"],
+                    "regex": [
+                        r"(?im)^\s*LSP Entry\s+\d+\s*$",
+                        rf"(?im)^\s*Tag\s*:\s*{TAG}\s*$",
+                        rf"(?im)^\s*Rx-If\s*:\s*{re.escape(GE_IF)}\s*$",
+                        r"(?im)^\s*TLV\[\d+\]\s*:\s*type=22\b",
+                        r"(?im)^\s*TLV\[\d+\]\s*:\s*type=236\b",
+                    ],
+                    "label": "r2 ipv6 lsdb has remote lsp",
                 },
             ],
             timeout=80,
@@ -320,6 +397,75 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         _wait_route_in_rib(rt, device="r1", afi="ipv6", destination=R2_LOOP_V6, prefix=R2_LOOP_V6_PREFIX)
         _wait_route_in_rib(rt, device="r2", afi="ipv4", destination=R1_LOOP_V4, prefix=R1_LOOP_V4_PREFIX)
         _wait_route_in_rib(rt, device="r2", afi="ipv6", destination=R1_LOOP_V6, prefix=R1_LOOP_V6_PREFIX)
+
+        step("Verify ISIS route show list/detail")
+        wait_checks(
+            rt,
+            [
+                {
+                    "device": "r1",
+                    "command": f"show isis ipv4 route {TAG}",
+                    "contains": [f"ISIS ipv4 Routes (tag {TAG})", R2_LOOP_V4_PREFIX],
+                    "not_contains": ["(no routes)", "(instance not found)"],
+                    "label": "r1 show isis ipv4 route list",
+                },
+                {
+                    "device": "r2",
+                    "command": f"show isis ipv4 route {TAG}",
+                    "contains": [f"ISIS ipv4 Routes (tag {TAG})", R1_LOOP_V4_PREFIX],
+                    "not_contains": ["(no routes)", "(instance not found)"],
+                    "label": "r2 show isis ipv4 route list",
+                },
+                {
+                    "device": "r1",
+                    "command": f"show isis ipv6 route {TAG}",
+                    "contains": [f"ISIS ipv6 Routes (tag {TAG})", R2_LOOP_V6_PREFIX],
+                    "not_contains": ["(no routes)", "(instance not found)"],
+                    "label": "r1 show isis ipv6 route list",
+                },
+                {
+                    "device": "r2",
+                    "command": f"show isis ipv6 route {TAG}",
+                    "contains": [f"ISIS ipv6 Routes (tag {TAG})", R1_LOOP_V6_PREFIX],
+                    "not_contains": ["(no routes)", "(instance not found)"],
+                    "label": "r2 show isis ipv6 route list",
+                },
+            ],
+            timeout=80,
+            interval=2,
+        )
+        _wait_isis_route_detail(
+            rt,
+            device="r1",
+            afi="ipv4",
+            destination=R2_LOOP_V4,
+            mask=R2_LOOP_V4_LEN,
+            prefix=R2_LOOP_V4_PREFIX,
+        )
+        _wait_isis_route_detail(
+            rt,
+            device="r1",
+            afi="ipv6",
+            destination=R2_LOOP_V6,
+            mask=R2_LOOP_V6_LEN,
+            prefix=R2_LOOP_V6_PREFIX,
+        )
+        _wait_isis_route_detail(
+            rt,
+            device="r2",
+            afi="ipv4",
+            destination=R1_LOOP_V4,
+            mask=R1_LOOP_V4_LEN,
+            prefix=R1_LOOP_V4_PREFIX,
+        )
+        _wait_isis_route_detail(
+            rt,
+            device="r2",
+            afi="ipv6",
+            destination=R1_LOOP_V6,
+            mask=R1_LOOP_V6_LEN,
+            prefix=R1_LOOP_V6_PREFIX,
+        )
 
         step("Verify ISIS routes appear in protocol views")
         wait_checks(

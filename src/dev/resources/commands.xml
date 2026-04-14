@@ -5,11 +5,11 @@
         <!-- show version -->
         <group group-id="1">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>show</name>
                     <description>Display system information</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>version</name>
                     <description>Version information</description>
                 </element>
@@ -26,15 +26,15 @@
         <!-- show dev modules -->
         <group group-id="3">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>show</name>
                     <description>Display system information</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>dev</name>
                     <description>Device and module management</description>
                 </element>
-                <element type="keyword">
+                <element id="3" type="keyword">
                     <name>modules</name>
                     <description>Show registered modules</description>
                 </element>
@@ -51,11 +51,11 @@
         <!-- sysname (placeholder) -->
         <group group-id="2">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>sysname</name>
                     <description>Set system hostname</description>
                 </element>
-                <element cfg-id="1" type="parameter">
+                <element id="2" cfg-id="1" type="parameter">
                     <name>&lt;hostname&gt;</name>
                     <description>System hostname</description>
                     <type>string(1-63)</type>
@@ -73,20 +73,20 @@
         <!-- ping <ipv4-address> / ping ipv6 <ipv6-address> -->
         <group group-id="5">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>ping</name>
                     <description>Ping a remote host</description>
                 </element>
-                <element cfg-id="1" type="parameter">
+                <element id="2" cfg-id="1" type="parameter">
                     <name>&lt;ipv4-address&gt;</name>
                     <description>Target IPv4 address</description>
                     <type>ipv4</type>
                 </element>
-                <element cfg-id="2" type="keyword">
+                <element id="3" cfg-id="2" type="keyword">
                     <name>ipv6</name>
                     <description>Use IPv6 ping</description>
                 </element>
-                <element cfg-id="3" type="parameter">
+                <element id="4" cfg-id="3" type="parameter">
                     <name>&lt;ipv6-address&gt;</name>
                     <description>Target IPv6 address</description>
                     <type>ipv6</type>
@@ -108,19 +108,19 @@
         <!-- show dev ipc <module-name> -->
         <group group-id="6">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>show</name>
                     <description>Display system information</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>dev</name>
                     <description>Device and module management</description>
                 </element>
-                <element type="keyword">
+                <element id="3" type="keyword">
                     <name>ipc</name>
                     <description>IPC connection information</description>
                 </element>
-                <element cfg-id="1" type="parameter">
+                <element id="4" cfg-id="1" type="parameter">
                     <name>&lt;module-name&gt;</name>
                     <description>Module name</description>
                     <type>dynamic(string(1-12))</type>
@@ -138,15 +138,15 @@
         <!-- dev log-level <level> -->
         <group group-id="4">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>dev</name>
                     <description>Device and module management</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>log-level</name>
                     <description>Set runtime log level</description>
                 </element>
-                <element cfg-id="1" type="parameter">
+                <element id="3" cfg-id="1" type="parameter">
                     <name>&lt;level&gt;</name>
                     <description>debug/info/warn/error</description>
                     <type>string(4-5)</type>
@@ -164,7 +164,7 @@
         <!-- reboot -->
         <group group-id="7">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>reboot</name>
                     <description>Reboot NetNexus software stack</description>
                 </element>

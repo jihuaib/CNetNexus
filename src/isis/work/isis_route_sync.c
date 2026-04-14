@@ -13,6 +13,7 @@
 #include "if_event.h"
 #include "isis.h"
 #include "isis_main.h"
+#include "isis_route.h"
 #include "route.h"
 
 #define ISIS_ROUTE_SYNC_TIMEOUT_MS 3000u
@@ -106,7 +107,7 @@ int isis_route_sync_publish_del(const isis_route_state_t *state)
     return route_rpc_del_wait(isis_local_ipc_ctx(), &entry, ISIS_ROUTE_SYNC_TIMEOUT_MS);
 }
 
-static int isis_route_state_same(const isis_route_state_t *a, const isis_route_state_t *b)
+static int isis_route_sync_state_same(const isis_route_state_t *a, const isis_route_state_t *b)
 {
     if (!a || !b)
     {
@@ -219,7 +220,7 @@ static void isis_reconcile_instance_if_afi(isis_instance_cfg_t *inst, const isis
         return;
     }
 
-    if (current && isis_route_state_same(current, &desired))
+    if (current && isis_route_sync_state_same(current, &desired))
     {
         return;
     }
@@ -326,19 +327,20 @@ void isis_route_sync_withdraw_all_instance_routes(isis_instance_cfg_t *inst)
         }
     }
 
-    if (inst->learned_routes)
+    if (inst->learned_route_heads)
     {
         GHashTableIter iter;
         gpointer key = NULL;
         gpointer value = NULL;
-        g_hash_table_iter_init(&iter, inst->learned_routes);
+        g_hash_table_iter_init(&iter, inst->learned_route_heads);
         while (g_hash_table_iter_next(&iter, &key, &value))
         {
             (void)key;
-            isis_route_state_t *state = (isis_route_state_t *)value;
-            if (state)
+            const isis_route_head_t *head = (const isis_route_head_t *)value;
+            const isis_route_path_t *best = isis_route_head_best_path(head);
+            if (best)
             {
-                (void)isis_route_sync_publish_del(state);
+                (void)isis_route_sync_publish_del(&best->state);
             }
             g_hash_table_iter_remove(&iter);
         }

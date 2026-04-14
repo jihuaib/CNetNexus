@@ -22,6 +22,7 @@
 #include "if_api.h"
 #include "isis.h"
 #include "isis_lsp.h"
+#include "isis_route.h"
 #include "isis_route_sync.h"
 #include "isis_spf.h"
 #include "log.h"
@@ -30,6 +31,7 @@
 #define ISIS_NEIGHBOR_PKT_MAX 2048u
 #define ISIS_NEIGHBOR_KEY_MAX (IF_LOGICAL_NAME_MAX + 32u)
 #define ISIS_LEARNED_ROUTE_KEY_MAX (ISIS_NEIGHBOR_KEY_MAX + 24u)
+#define ISIS_ROUTE_PATH_KEY_MAX (ISIS_LEARNED_ROUTE_KEY_MAX + 160u)
 #define ISIS_DEFAULT_HOLD_TIME_SEC 30u
 #define ISIS_HELLO_TICK_SEC 1u
 #define ISIS_NEIGHBOR_ROUTE_COST 10u
@@ -188,20 +190,6 @@ static void isis_zero_addr(sa_family_t family, net_addr_t *out)
     }
     memset(out, 0, sizeof(*out));
     out->family = family;
-}
-
-static int isis_route_state_same(const isis_route_state_t *a, const isis_route_state_t *b)
-{
-    if (!a || !b)
-    {
-        return 0;
-    }
-
-    return (a->afi == b->afi && a->prefix_len == b->prefix_len && a->out_ifindex == b->out_ifindex &&
-            a->metric == b->metric && net_addr_equal(&a->prefix_addr, &b->prefix_addr) &&
-            net_addr_equal(&a->source_addr, &b->source_addr) && net_addr_equal(&a->nexthop_addr, &b->nexthop_addr))
-               ? 1
-               : 0;
 }
 
 static int isis_hex_to_nibble(int c)
@@ -612,7 +600,7 @@ static void isis_send_hello_instance(isis_instance_cfg_t *inst, uint64_t now_mse
 
 static void isis_neighbor_withdraw_learned_afi(isis_instance_cfg_t *inst, const isis_neighbor_t *nbr, uint16_t afi)
 {
-    if (!inst || !inst->learned_routes || !nbr)
+    if (!inst || !inst->learned_route_heads || !nbr)
     {
         return;
     }
@@ -620,14 +608,13 @@ static void isis_neighbor_withdraw_learned_afi(isis_instance_cfg_t *inst, const 
     char key_buf[ISIS_LEARNED_ROUTE_KEY_MAX];
     isis_learned_route_key_format(key_buf, sizeof(key_buf), nbr->ifname, nbr->level, nbr->system_id, afi);
 
-    isis_route_state_t *state = (isis_route_state_t *)g_hash_table_lookup(inst->learned_routes, key_buf);
-    if (!state)
+    const isis_route_head_t *head = (const isis_route_head_t *)g_hash_table_lookup(inst->learned_route_heads, key_buf);
+    const isis_route_path_t *best = isis_route_head_best_path(head);
+    if (best)
     {
-        return;
+        (void)isis_route_sync_publish_del(&best->state);
     }
-
-    (void)isis_route_sync_publish_del(state);
-    (void)g_hash_table_remove(inst->learned_routes, key_buf);
+    (void)g_hash_table_remove(inst->learned_route_heads, key_buf);
 }
 
 static void isis_neighbor_withdraw_learned_all(isis_instance_cfg_t *inst, const isis_neighbor_t *nbr)
@@ -640,14 +627,17 @@ static void isis_neighbor_reconcile_learned_afi(isis_instance_cfg_t *inst, const
                                                 const isis_if_cfg_t *if_cfg, const if_api_cache_entry_t *if_entry,
                                                 uint16_t afi)
 {
-    if (!inst || !nbr || !inst->learned_routes)
+    if (!inst || !nbr || !inst->learned_route_heads)
     {
         return;
     }
 
     char key_buf[ISIS_LEARNED_ROUTE_KEY_MAX];
     isis_learned_route_key_format(key_buf, sizeof(key_buf), nbr->ifname, nbr->level, nbr->system_id, afi);
-    isis_route_state_t *current = (isis_route_state_t *)g_hash_table_lookup(inst->learned_routes, key_buf);
+    const isis_route_head_t *current_head =
+        (const isis_route_head_t *)g_hash_table_lookup(inst->learned_route_heads, key_buf);
+    const isis_route_path_t *current_best = isis_route_head_best_path(current_head);
+    const isis_route_state_t *current = current_best ? &current_best->state : NULL;
 
     int af_enabled = (afi == ROUTE_AFI_IPV4) ? (inst->af_ipv4 != 0u) : (inst->af_ipv6 != 0u);
     const isis_if_af_cfg_t *af_cfg = isis_neighbor_if_af_cfg(inst, if_cfg, afi);
@@ -707,7 +697,7 @@ static void isis_neighbor_reconcile_learned_afi(isis_instance_cfg_t *inst, const
         if (current)
         {
             (void)isis_route_sync_publish_del(current);
-            (void)g_hash_table_remove(inst->learned_routes, key_buf);
+            (void)g_hash_table_remove(inst->learned_route_heads, key_buf);
         }
         return;
     }
@@ -720,22 +710,17 @@ static void isis_neighbor_reconcile_learned_afi(isis_instance_cfg_t *inst, const
     if (current)
     {
         (void)isis_route_sync_publish_del(current);
-        (void)g_hash_table_remove(inst->learned_routes, key_buf);
+        (void)g_hash_table_remove(inst->learned_route_heads, key_buf);
     }
 
-    isis_route_state_t *next = g_malloc0(sizeof(*next));
-    if (!next)
+    if (isis_route_sync_publish_add(&desired) != ERRCODE_SUCCESS)
     {
         return;
     }
-    *next = desired;
 
-    if (isis_route_sync_publish_add(next) != ERRCODE_SUCCESS)
-    {
-        g_free(next);
-        return;
-    }
-    g_hash_table_replace(inst->learned_routes, g_strdup(key_buf), next);
+    char path_key[ISIS_ROUTE_PATH_KEY_MAX];
+    isis_route_path_key_format(path_key, sizeof(path_key), key_buf, &desired);
+    isis_route_head_table_add_path(inst->learned_route_heads, key_buf, path_key, &desired);
 }
 
 static void isis_neighbor_reconcile_learned(isis_instance_cfg_t *inst, const isis_neighbor_t *nbr)

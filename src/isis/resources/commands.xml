@@ -10,15 +10,15 @@
         <!-- Group 1: isis <tag> / no isis [<tag>] -->
         <group group-id="1">
             <elements>
-                <element cfg-id="1" type="keyword">
+                <element id="1" cfg-id="1" type="keyword">
                     <name>no</name>
                     <description>Delete</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>isis</name>
                     <description>ISIS protocol</description>
                 </element>
-                <element cfg-id="2" type="parameter">
+                <element id="3" cfg-id="2" type="parameter">
                     <name>&lt;tag&gt;</name>
                     <type>uint(1-4294967295)</type>
                     <description>ISIS instance tag</description>
@@ -48,11 +48,11 @@
         <!-- Group 2: net <system-id> -->
         <group group-id="2">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>net</name>
                     <description>Set NET/System-ID string</description>
                 </element>
-                <element cfg-id="1" type="parameter">
+                <element id="2" cfg-id="1" type="parameter">
                     <name>&lt;net&gt;</name>
                     <type>string(1-63)</type>
                     <description>NET/System-ID</description>
@@ -70,19 +70,19 @@
         <!-- Group 3: is-type -->
         <group group-id="3">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>is-type</name>
                     <description>Set ISIS level type</description>
                 </element>
-                <element cfg-id="1" type="keyword">
+                <element id="2" cfg-id="1" type="keyword">
                     <name>level-1</name>
                     <description>Level-1 only</description>
                 </element>
-                <element cfg-id="2" type="keyword">
+                <element id="3" cfg-id="2" type="keyword">
                     <name>level-2</name>
                     <description>Level-2 only</description>
                 </element>
-                <element cfg-id="3" type="keyword">
+                <element id="4" cfg-id="3" type="keyword">
                     <name>level-1-2</name>
                     <description>Level-1-2</description>
                 </element>
@@ -107,19 +107,19 @@
         <!-- Group 4: [no] af ipv4|ipv6 -->
         <group group-id="4">
             <elements>
-                <element cfg-id="1" type="keyword">
+                <element id="1" cfg-id="1" type="keyword">
                     <name>no</name>
                     <description>Delete</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>af</name>
                     <description>Address family</description>
                 </element>
-                <element cfg-id="2" type="keyword">
+                <element id="3" cfg-id="2" type="keyword">
                     <name>ipv4</name>
                     <description>IPv4 family</description>
                 </element>
-                <element cfg-id="3" type="keyword">
+                <element id="4" cfg-id="3" type="keyword">
                     <name>ipv6</name>
                     <description>IPv6 family</description>
                 </element>
@@ -148,55 +148,55 @@
         <!-- Group 5: interface-view ISIS commands (ipv4/ipv6 + tag) -->
         <group group-id="5">
             <elements>
-                <element cfg-id="1" type="keyword">
+                <element id="1" cfg-id="1" type="keyword">
                     <name>no</name>
                     <description>Delete</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>isis</name>
                     <description>ISIS protocol</description>
                 </element>
-                <element cfg-id="2" type="keyword">
+                <element id="3" cfg-id="2" type="keyword">
                     <name>ipv6</name>
                     <description>IPv6 ISIS interface commands</description>
                 </element>
-                <element cfg-id="3" type="keyword">
+                <element id="4" cfg-id="3" type="keyword">
                     <name>enable</name>
                     <description>Enable ISIS on current interface</description>
                 </element>
-                <element cfg-id="4" type="keyword">
+                <element id="5" cfg-id="4" type="keyword">
                     <name>metric</name>
                     <description>Set ISIS metric on current interface</description>
                 </element>
-                <element cfg-id="5" type="parameter">
+                <element id="6" cfg-id="5" type="parameter">
                     <name>&lt;tag&gt;</name>
                     <type>uint(1-4294967295)</type>
                     <description>ISIS instance tag</description>
                 </element>
-                <element cfg-id="6" type="parameter">
+                <element id="7" cfg-id="6" type="parameter">
                     <name>&lt;metric&gt;</name>
                     <type>uint(1-16777215)</type>
                     <description>Wide metric</description>
                 </element>
-                <element cfg-id="7" type="keyword">
+                <element id="8" cfg-id="7" type="keyword">
                     <name>hello-interval</name>
                     <description>Set ISIS hello interval</description>
                 </element>
-                <element cfg-id="8" type="parameter">
+                <element id="9" cfg-id="8" type="parameter">
                     <name>&lt;hello-interval&gt;</name>
                     <type>uint(1-65535)</type>
                     <description>Hello interval in seconds</description>
                 </element>
-                <element cfg-id="9" type="keyword">
+                <element id="10" cfg-id="9" type="keyword">
                     <name>hold-multiplier</name>
                     <description>Set ISIS hold multiplier</description>
                 </element>
-                <element cfg-id="10" type="parameter">
+                <element id="11" cfg-id="10" type="parameter">
                     <name>&lt;hold-multiplier&gt;</name>
                     <type>uint(1-100)</type>
                     <description>Hold multiplier</description>
                 </element>
-                <element cfg-id="11" type="keyword">
+                <element id="12" cfg-id="11" type="keyword">
                     <name>passive</name>
                     <description>Set ISIS passive mode on current interface</description>
                 </element>
@@ -295,30 +295,30 @@
             </commands>
         </group>
 
-        <!-- Group 6: show isis [ipv4|ipv6] summary [<tag>] -->
+        <!-- Group 6: show isis [ipv4|ipv6] summary <tag> -->
         <group group-id="6">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>show</name>
                     <description>Display system information</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>isis</name>
                     <description>ISIS information</description>
                 </element>
-                <element cfg-id="1" type="keyword">
+                <element id="3" cfg-id="1" type="keyword">
                     <name>ipv4</name>
                     <description>IPv4 view</description>
                 </element>
-                <element cfg-id="2" type="keyword">
+                <element id="4" cfg-id="2" type="keyword">
                     <name>ipv6</name>
                     <description>IPv6 view</description>
                 </element>
-                <element type="keyword">
+                <element id="5" type="keyword">
                     <name>summary</name>
                     <description>ISIS summary</description>
                 </element>
-                <element cfg-id="3" type="parameter">
+                <element id="6" cfg-id="3" type="parameter">
                     <name>&lt;tag&gt;</name>
                     <type>uint(1-4294967295)</type>
                     <description>ISIS instance tag filter</description>
@@ -326,24 +326,20 @@
             </elements>
 
             <commands>
-                <command><expression>1 2 5</expression><views>global</views></command>
-                <command><expression>1 2 3 5</expression><views>global</views></command>
-                <command><expression>1 2 4 5</expression><views>global</views></command>
-                <command><expression>1 2 5 6</expression><views>global</views></command>
                 <command><expression>1 2 3 5 6</expression><views>global</views></command>
                 <command><expression>1 2 4 5 6</expression><views>global</views></command>
             </commands>
         </group>
 
-        <!-- Group 7: show isis [ipv4|ipv6] interface [<tag>] -->
+        <!-- Group 7: show isis [ipv4|ipv6] interface <tag> -->
         <group group-id="7">
             <elements>
-                <element type="keyword"><name>show</name><description>Display system information</description></element>
-                <element type="keyword"><name>isis</name><description>ISIS information</description></element>
-                <element cfg-id="1" type="keyword"><name>ipv4</name><description>IPv4 view</description></element>
-                <element cfg-id="2" type="keyword"><name>ipv6</name><description>IPv6 view</description></element>
-                <element type="keyword"><name>interface</name><description>ISIS interface status</description></element>
-                <element cfg-id="3" type="parameter">
+                <element id="1" type="keyword"><name>show</name><description>Display system information</description></element>
+                <element id="2" type="keyword"><name>isis</name><description>ISIS information</description></element>
+                <element id="3" cfg-id="1" type="keyword"><name>ipv4</name><description>IPv4 view</description></element>
+                <element id="4" cfg-id="2" type="keyword"><name>ipv6</name><description>IPv6 view</description></element>
+                <element id="5" type="keyword"><name>interface</name><description>ISIS interface status</description></element>
+                <element id="6" cfg-id="3" type="parameter">
                     <name>&lt;tag&gt;</name>
                     <type>uint(1-4294967295)</type>
                     <description>ISIS instance tag filter</description>
@@ -351,24 +347,43 @@
             </elements>
 
             <commands>
-                <command><expression>1 2 5</expression><views>global</views></command>
-                <command><expression>1 2 3 5</expression><views>global</views></command>
-                <command><expression>1 2 4 5</expression><views>global</views></command>
-                <command><expression>1 2 5 6</expression><views>global</views></command>
                 <command><expression>1 2 3 5 6</expression><views>global</views></command>
                 <command><expression>1 2 4 5 6</expression><views>global</views></command>
             </commands>
         </group>
 
-        <!-- Group 8: show isis [ipv4|ipv6] neighbor [<tag>] -->
+        <!-- Group 8: show isis neighbor <tag> -->
         <group group-id="8">
             <elements>
-                <element type="keyword"><name>show</name><description>Display system information</description></element>
-                <element type="keyword"><name>isis</name><description>ISIS information</description></element>
-                <element cfg-id="1" type="keyword"><name>ipv4</name><description>IPv4 view</description></element>
-                <element cfg-id="2" type="keyword"><name>ipv6</name><description>IPv6 view</description></element>
-                <element type="keyword"><name>neighbor</name><description>ISIS neighbors</description></element>
-                <element cfg-id="3" type="parameter">
+                <element id="1" type="keyword"><name>show</name><description>Display system information</description></element>
+                <element id="2" type="keyword"><name>isis</name><description>ISIS information</description></element>
+                <element id="3" type="keyword"><name>neighbor</name><description>ISIS neighbors</description></element>
+                <element id="4" cfg-id="3" type="parameter">
+                    <name>&lt;tag&gt;</name>
+                    <type>uint(1-4294967295)</type>
+                    <description>ISIS instance tag filter</description>
+                </element>
+                <element id="5" cfg-id="4" type="keyword">
+                    <name>verbose</name>
+                    <description>Show neighbor negotiation details</description>
+                </element>
+            </elements>
+
+            <commands>
+                <command><expression>1 2 3 4</expression><views>global</views></command>
+                <command><expression>1 2 3 4 5</expression><views>global</views></command>
+            </commands>
+        </group>
+
+        <!-- Group 9: show isis [ipv4|ipv6] lsdb <tag> -->
+        <group group-id="9">
+            <elements>
+                <element id="1" type="keyword"><name>show</name><description>Display system information</description></element>
+                <element id="2" type="keyword"><name>isis</name><description>ISIS information</description></element>
+                <element id="3" cfg-id="1" type="keyword"><name>ipv4</name><description>IPv4 view</description></element>
+                <element id="4" cfg-id="2" type="keyword"><name>ipv6</name><description>IPv6 view</description></element>
+                <element id="5" type="keyword"><name>lsdb</name><description>ISIS LSP database</description></element>
+                <element id="6" cfg-id="3" type="parameter">
                     <name>&lt;tag&gt;</name>
                     <type>uint(1-4294967295)</type>
                     <description>ISIS instance tag filter</description>
@@ -376,37 +391,51 @@
             </elements>
 
             <commands>
-                <command><expression>1 2 5</expression><views>global</views></command>
-                <command><expression>1 2 3 5</expression><views>global</views></command>
-                <command><expression>1 2 4 5</expression><views>global</views></command>
-                <command><expression>1 2 5 6</expression><views>global</views></command>
                 <command><expression>1 2 3 5 6</expression><views>global</views></command>
                 <command><expression>1 2 4 5 6</expression><views>global</views></command>
             </commands>
         </group>
 
-        <!-- Group 9: show isis [ipv4|ipv6] lsdb [<tag>] -->
-        <group group-id="9">
+        <!-- Group 10: show isis ipv4|ipv6 route <tag> [<destination> <mask>] -->
+        <group group-id="10">
             <elements>
-                <element type="keyword"><name>show</name><description>Display system information</description></element>
-                <element type="keyword"><name>isis</name><description>ISIS information</description></element>
-                <element cfg-id="1" type="keyword"><name>ipv4</name><description>IPv4 view</description></element>
-                <element cfg-id="2" type="keyword"><name>ipv6</name><description>IPv6 view</description></element>
-                <element type="keyword"><name>lsdb</name><description>ISIS LSP database</description></element>
-                <element cfg-id="3" type="parameter">
+                <element id="1" type="keyword"><name>show</name><description>Display system information</description></element>
+                <element id="2" type="keyword"><name>isis</name><description>ISIS information</description></element>
+                <element id="3" cfg-id="1" type="keyword"><name>ipv4</name><description>IPv4 view</description></element>
+                <element id="4" cfg-id="2" type="keyword"><name>ipv6</name><description>IPv6 view</description></element>
+                <element id="5" type="keyword"><name>route</name><description>ISIS learned routes</description></element>
+                <element id="6" cfg-id="3" type="parameter">
                     <name>&lt;tag&gt;</name>
                     <type>uint(1-4294967295)</type>
-                    <description>ISIS instance tag filter</description>
+                    <description>ISIS instance tag</description>
+                </element>
+                <element id="7" cfg-id="4" type="parameter">
+                    <name>&lt;destination&gt;</name>
+                    <type>ipv4</type>
+                    <description>IPv4 destination prefix</description>
+                </element>
+                <element id="8" cfg-id="5" type="parameter">
+                    <name>&lt;mask&gt;</name>
+                    <type>uint(0-32)</type>
+                    <description>IPv4 prefix length</description>
+                </element>
+                <element id="9" cfg-id="6" type="parameter">
+                    <name>&lt;destination6&gt;</name>
+                    <type>ipv6</type>
+                    <description>IPv6 destination prefix</description>
+                </element>
+                <element id="10" cfg-id="7" type="parameter">
+                    <name>&lt;mask6&gt;</name>
+                    <type>uint(0-128)</type>
+                    <description>IPv6 prefix length</description>
                 </element>
             </elements>
 
             <commands>
-                <command><expression>1 2 5</expression><views>global</views></command>
-                <command><expression>1 2 3 5</expression><views>global</views></command>
-                <command><expression>1 2 4 5</expression><views>global</views></command>
-                <command><expression>1 2 5 6</expression><views>global</views></command>
                 <command><expression>1 2 3 5 6</expression><views>global</views></command>
                 <command><expression>1 2 4 5 6</expression><views>global</views></command>
+                <command><expression>1 2 3 5 6 7 8</expression><views>global</views></command>
+                <command><expression>1 2 4 5 6 9 10</expression><views>global</views></command>
             </commands>
         </group>
     </command_groups>

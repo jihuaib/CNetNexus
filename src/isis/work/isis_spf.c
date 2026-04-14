@@ -10,6 +10,7 @@
 
 #include "errcode.h"
 #include "isis.h"
+#include "isis_route.h"
 #include "isis_route_sync.h"
 #include "route.h"
 
@@ -36,17 +37,14 @@ typedef struct isis_spf_node
     uint8_t visited;
 } isis_spf_node_t;
 
-typedef struct isis_spf_nexthop
+typedef struct isis_spf_local_hop
 {
-    const isis_neighbor_t *nbr;
-    const isis_if_cfg_t *if_cfg;
-    const if_api_cache_entry_t *if_entry;
-} isis_spf_nexthop_t;
-
-static void isis_route_state_free(gpointer data)
-{
-    g_free(data);
-}
+    uint8_t system_id[6];
+    uint32_t local_metric;
+    uint32_t out_ifindex;
+    net_addr_t source_addr;
+    net_addr_t nexthop_addr;
+} isis_spf_local_hop_t;
 
 static void isis_spf_edge_free(gpointer data)
 {
@@ -192,42 +190,6 @@ static void isis_spf_route_key_format(char *buf, size_t sz, uint8_t level, const
     isis_spf_origin_prefix(key_prefix, sizeof(key_prefix), level, origin_sysid);
     net_addr_to_str(prefix_addr, addr_buf, sizeof(addr_buf));
     g_snprintf(buf, sz, "%s%u|%s/%u", key_prefix, (unsigned)afi, addr_buf, (unsigned)prefix_len);
-}
-
-static int isis_route_state_same(const isis_route_state_t *a, const isis_route_state_t *b)
-{
-    if (!a || !b)
-    {
-        return 0;
-    }
-
-    return (a->afi == b->afi && a->prefix_len == b->prefix_len && a->out_ifindex == b->out_ifindex &&
-            a->metric == b->metric && net_addr_equal(&a->prefix_addr, &b->prefix_addr) &&
-            net_addr_equal(&a->source_addr, &b->source_addr) && net_addr_equal(&a->nexthop_addr, &b->nexthop_addr))
-               ? 1
-               : 0;
-}
-
-static void isis_spf_desired_upsert(GHashTable *desired, const char *key, const isis_route_state_t *candidate)
-{
-    if (!desired || !key || key[0] == '\0' || !candidate)
-    {
-        return;
-    }
-
-    isis_route_state_t *cur = (isis_route_state_t *)g_hash_table_lookup(desired, key);
-    if (cur && cur->metric <= candidate->metric)
-    {
-        return;
-    }
-
-    isis_route_state_t *next = g_malloc0(sizeof(*next));
-    if (!next)
-    {
-        return;
-    }
-    *next = *candidate;
-    g_hash_table_replace(desired, g_strdup(key), next);
 }
 
 static isis_spf_node_t *isis_spf_graph_get_node(GHashTable *nodes, const uint8_t sysid[6], int create_if_missing)
@@ -605,15 +567,34 @@ static void isis_spf_run_dijkstra(GHashTable *nodes, const uint8_t local_sysid[6
     }
 }
 
-static int isis_spf_find_nexthop(const isis_instance_cfg_t *inst, uint8_t level, const uint8_t first_hop_sysid[6],
-                                 isis_spf_nexthop_t *out)
+static void isis_spf_local_hop_free(gpointer data)
 {
-    if (!inst || !inst->neighbors || !inst->if_cfgs || !first_hop_sysid || !out)
+    g_free(data);
+}
+
+static int isis_spf_get_distance(GHashTable *nodes, const uint8_t target_sysid[6], uint64_t *dist_out)
+{
+    if (!nodes || !target_sysid || !dist_out)
     {
         return 0;
     }
 
-    memset(out, 0, sizeof(*out));
+    isis_spf_node_t *node = isis_spf_graph_get_node(nodes, target_sysid, 0);
+    if (!node || node->dist == ISIS_SPF_INF_DIST)
+    {
+        return 0;
+    }
+
+    *dist_out = node->dist;
+    return 1;
+}
+
+static void isis_spf_collect_local_hops(const isis_instance_cfg_t *inst, uint8_t level, uint16_t afi, GPtrArray *hops)
+{
+    if (!inst || !inst->neighbors || !inst->if_cfgs || !hops)
+    {
+        return;
+    }
 
     GHashTableIter iter;
     gpointer key = NULL;
@@ -623,15 +604,14 @@ static int isis_spf_find_nexthop(const isis_instance_cfg_t *inst, uint8_t level,
     {
         (void)key;
         const isis_neighbor_t *nbr = (const isis_neighbor_t *)value;
-        if (!nbr || nbr->level != level || memcmp(nbr->system_id, first_hop_sysid, 6u) != 0 ||
-            nbr->state == ISIS_ADJ_STATE_DOWN)
+        if (!nbr || nbr->level != level || nbr->state == ISIS_ADJ_STATE_DOWN)
         {
             continue;
         }
 
         const isis_if_cfg_t *if_cfg = (const isis_if_cfg_t *)g_hash_table_lookup(inst->if_cfgs, nbr->ifname);
-        const isis_if_af_cfg_t *cur_af_cfg = isis_spf_pick_active_af_cfg(inst, if_cfg);
-        if (!cur_af_cfg)
+        const isis_if_af_cfg_t *af_cfg = isis_spf_if_af_cfg(inst, if_cfg, afi);
+        if (!af_cfg || af_cfg->passive)
         {
             continue;
         }
@@ -642,47 +622,63 @@ static int isis_spf_find_nexthop(const isis_instance_cfg_t *inst, uint8_t level,
             continue;
         }
 
-        if (!out->nbr)
+        isis_spf_local_hop_t *hop = g_malloc0(sizeof(*hop));
+        if (!hop)
         {
-            out->nbr = nbr;
-            out->if_cfg = if_cfg;
-            out->if_entry = if_entry;
             continue;
         }
 
-        int cur_up = (nbr->state == ISIS_ADJ_STATE_UP) ? 1 : 0;
-        int best_up = (out->nbr->state == ISIS_ADJ_STATE_UP) ? 1 : 0;
-        if (cur_up != best_up)
+        memcpy(hop->system_id, nbr->system_id, sizeof(hop->system_id));
+        hop->local_metric = (af_cfg->metric == 0u) ? ISIS_DEFAULT_IF_METRIC : af_cfg->metric;
+        if (hop->local_metric > 0x00FFFFFFu)
         {
-            if (cur_up)
+            hop->local_metric = 0x00FFFFFFu;
+        }
+        hop->out_ifindex = if_entry->ifindex;
+
+        if (afi == ROUTE_AFI_IPV4)
+        {
+            if (nbr->ipv4_addr.family != AF_INET || net_addr_is_zero(&nbr->ipv4_addr))
             {
-                out->nbr = nbr;
-                out->if_cfg = if_cfg;
-                out->if_entry = if_entry;
+                g_free(hop);
+                continue;
             }
+            hop->nexthop_addr = nbr->ipv4_addr;
+            hop->source_addr = (if_entry->ipv4_addr.family == AF_INET) ? if_entry->ipv4_addr : (net_addr_t){0};
+            if (hop->source_addr.family != AF_INET)
+            {
+                isis_zero_addr(AF_INET, &hop->source_addr);
+            }
+        }
+        else if (afi == ROUTE_AFI_IPV6)
+        {
+            if (nbr->ipv6_addr.family != AF_INET6 || net_addr_is_zero(&nbr->ipv6_addr))
+            {
+                g_free(hop);
+                continue;
+            }
+            hop->nexthop_addr = nbr->ipv6_addr;
+            hop->source_addr = (if_entry->ipv6_addr.family == AF_INET6) ? if_entry->ipv6_addr : (net_addr_t){0};
+            if (hop->source_addr.family != AF_INET6)
+            {
+                isis_zero_addr(AF_INET6, &hop->source_addr);
+            }
+        }
+        else
+        {
+            g_free(hop);
             continue;
         }
 
-        const isis_if_af_cfg_t *best_af_cfg = isis_spf_pick_active_af_cfg(inst, out->if_cfg);
-        uint32_t cur_metric = (cur_af_cfg->metric == 0u) ? ISIS_DEFAULT_IF_METRIC : cur_af_cfg->metric;
-        uint32_t best_metric =
-            (!best_af_cfg || best_af_cfg->metric == 0u) ? ISIS_DEFAULT_IF_METRIC : best_af_cfg->metric;
-        if (cur_metric < best_metric || (cur_metric == best_metric && nbr->last_seen_msec > out->nbr->last_seen_msec))
-        {
-            out->nbr = nbr;
-            out->if_cfg = if_cfg;
-            out->if_entry = if_entry;
-        }
+        g_ptr_array_add(hops, hop);
     }
-
-    return (out->nbr && out->if_entry) ? 1 : 0;
 }
 
 static void isis_spf_parse_prefix_entries(const uint8_t *val, size_t val_len, uint16_t afi, uint8_t level,
                                           const uint8_t origin_sysid[6], uint64_t path_metric,
-                                          const isis_spf_nexthop_t *nh, GHashTable *desired)
+                                          const isis_spf_local_hop_t *hop, GHashTable *desired)
 {
-    if (!val || val_len == 0u || !origin_sysid || !nh || !nh->nbr || !nh->if_entry || !desired)
+    if (!val || val_len == 0u || !origin_sysid || !hop || hop->out_ifindex == 0u || !desired)
     {
         return;
     }
@@ -707,7 +703,7 @@ static void isis_spf_parse_prefix_entries(const uint8_t *val, size_t val_len, ui
         memset(&route, 0, sizeof(route));
         route.afi = afi;
         route.prefix_len = prefix_len;
-        route.out_ifindex = nh->if_entry->ifindex;
+        route.out_ifindex = hop->out_ifindex;
 
         uint64_t total_metric = path_metric + (uint64_t)remote_metric;
         route.metric = (total_metric > 0xFFFFFFFFu) ? 0xFFFFFFFFu : (uint32_t)total_metric;
@@ -725,18 +721,18 @@ static void isis_spf_parse_prefix_entries(const uint8_t *val, size_t val_len, ui
                 continue;
             }
 
-            route.source_addr = (nh->if_entry->ipv4_addr.family == AF_INET) ? nh->if_entry->ipv4_addr : (net_addr_t){0};
+            route.source_addr = hop->source_addr;
             if (route.source_addr.family != AF_INET)
             {
                 isis_zero_addr(AF_INET, &route.source_addr);
             }
 
-            if (nh->nbr->ipv4_addr.family != AF_INET || net_addr_is_zero(&nh->nbr->ipv4_addr))
+            if (hop->nexthop_addr.family != AF_INET || net_addr_is_zero(&hop->nexthop_addr))
             {
                 pos += pfx_bytes;
                 continue;
             }
-            route.nexthop_addr = nh->nbr->ipv4_addr;
+            route.nexthop_addr = hop->nexthop_addr;
 
             if (route.prefix_len == 32u && net_addr_equal(&route.prefix_addr, &route.nexthop_addr))
             {
@@ -757,19 +753,18 @@ static void isis_spf_parse_prefix_entries(const uint8_t *val, size_t val_len, ui
                 continue;
             }
 
-            route.source_addr =
-                (nh->if_entry->ipv6_addr.family == AF_INET6) ? nh->if_entry->ipv6_addr : (net_addr_t){0};
+            route.source_addr = hop->source_addr;
             if (route.source_addr.family != AF_INET6)
             {
                 isis_zero_addr(AF_INET6, &route.source_addr);
             }
 
-            if (nh->nbr->ipv6_addr.family != AF_INET6 || net_addr_is_zero(&nh->nbr->ipv6_addr))
+            if (hop->nexthop_addr.family != AF_INET6 || net_addr_is_zero(&hop->nexthop_addr))
             {
                 pos += pfx_bytes;
                 continue;
             }
-            route.nexthop_addr = nh->nbr->ipv6_addr;
+            route.nexthop_addr = hop->nexthop_addr;
 
             if (route.prefix_len == 128u && net_addr_equal(&route.prefix_addr, &route.nexthop_addr))
             {
@@ -779,9 +774,11 @@ static void isis_spf_parse_prefix_entries(const uint8_t *val, size_t val_len, ui
         }
 
         char route_key[ISIS_LSP_ROUTE_KEY_MAX] = {0};
+        char path_key[ISIS_LSP_ROUTE_KEY_MAX + 160u] = {0};
         isis_spf_route_key_format(route_key, sizeof(route_key), level, origin_sysid, route.afi, &route.prefix_addr,
                                   route.prefix_len);
-        isis_spf_desired_upsert(desired, route_key, &route);
+        isis_route_path_key_format(path_key, sizeof(path_key), route_key, &route);
+        isis_route_head_table_add_path(desired, route_key, path_key, &route);
 
         pos += pfx_bytes;
     }
@@ -795,141 +792,109 @@ static void isis_spf_collect_prefixes_from_lsdb(isis_instance_cfg_t *inst, uint8
         return;
     }
 
-    GHashTableIter iter;
-    gpointer key = NULL;
-    gpointer value = NULL;
-    g_hash_table_iter_init(&iter, inst->lsdb_entries);
-    while (g_hash_table_iter_next(&iter, &key, &value))
+    for (uint16_t afi = ROUTE_AFI_IPV4; afi <= ROUTE_AFI_IPV6; ++afi)
     {
-        (void)key;
-        const isis_lsdb_entry_t *entry = (const isis_lsdb_entry_t *)value;
-        if (!entry || entry->level != level || !entry->tlvs || entry->tlvs->len == 0u)
+        if ((afi == ROUTE_AFI_IPV4 && !inst->af_ipv4) || (afi == ROUTE_AFI_IPV6 && !inst->af_ipv6))
         {
             continue;
         }
 
-        isis_spf_node_t *origin = isis_spf_graph_get_node(nodes, entry->system_id, 0);
-        if (!origin || origin->dist == ISIS_SPF_INF_DIST || !origin->has_first_hop)
+        GPtrArray *hops = g_ptr_array_new_with_free_func(isis_spf_local_hop_free);
+        if (!hops)
         {
             continue;
         }
 
-        isis_spf_nexthop_t nh;
-        if (!isis_spf_find_nexthop(inst, level, origin->first_hop, &nh))
+        isis_spf_collect_local_hops(inst, level, afi, hops);
+        if (hops->len == 0u)
         {
+            g_ptr_array_free(hops, TRUE);
             continue;
         }
 
-        const uint8_t *tlvs = entry->tlvs->data;
-        size_t tlv_len = entry->tlvs->len;
-        size_t pos = 0u;
-        while (pos + 2u <= tlv_len)
+        for (guint i = 0u; i < hops->len; ++i)
         {
-            uint8_t tlv_type = tlvs[pos];
-            uint8_t len = tlvs[pos + 1u];
-            pos += 2u;
-            if (pos + len > tlv_len)
+            const isis_spf_local_hop_t *hop = (const isis_spf_local_hop_t *)g_ptr_array_index(hops, i);
+            if (!hop)
             {
-                break;
+                continue;
             }
 
-            if (tlv_type == ISIS_TLV_EXT_IP_REACH)
-            {
-                isis_spf_parse_prefix_entries(&tlvs[pos], len, ROUTE_AFI_IPV4, level, entry->system_id, origin->dist,
-                                              &nh, desired);
-            }
-            else if (tlv_type == ISIS_TLV_IPV6_REACH)
-            {
-                isis_spf_parse_prefix_entries(&tlvs[pos], len, ROUTE_AFI_IPV6, level, entry->system_id, origin->dist,
-                                              &nh, desired);
-            }
+            isis_spf_run_dijkstra(nodes, hop->system_id);
 
-            pos += len;
+            GHashTableIter iter;
+            gpointer key = NULL;
+            gpointer value = NULL;
+            g_hash_table_iter_init(&iter, inst->lsdb_entries);
+            while (g_hash_table_iter_next(&iter, &key, &value))
+            {
+                (void)key;
+                const isis_lsdb_entry_t *entry = (const isis_lsdb_entry_t *)value;
+                if (!entry || entry->level != level || !entry->tlvs || entry->tlvs->len == 0u)
+                {
+                    continue;
+                }
+
+                uint64_t dist = 0u;
+                if (memcmp(entry->system_id, hop->system_id, 6u) != 0 &&
+                    !isis_spf_get_distance(nodes, entry->system_id, &dist))
+                {
+                    continue;
+                }
+
+                uint64_t path_metric =
+                    (dist > (ISIS_SPF_INF_DIST - hop->local_metric)) ? ISIS_SPF_INF_DIST : (dist + hop->local_metric);
+
+                const uint8_t *tlvs = entry->tlvs->data;
+                size_t tlv_len = entry->tlvs->len;
+                size_t pos = 0u;
+                while (pos + 2u <= tlv_len)
+                {
+                    uint8_t tlv_type = tlvs[pos];
+                    uint8_t len = tlvs[pos + 1u];
+                    pos += 2u;
+                    if (pos + len > tlv_len)
+                    {
+                        break;
+                    }
+
+                    if (afi == ROUTE_AFI_IPV4 && tlv_type == ISIS_TLV_EXT_IP_REACH)
+                    {
+                        isis_spf_parse_prefix_entries(&tlvs[pos], len, ROUTE_AFI_IPV4, level, entry->system_id,
+                                                      path_metric, hop, desired);
+                    }
+                    else if (afi == ROUTE_AFI_IPV6 && tlv_type == ISIS_TLV_IPV6_REACH)
+                    {
+                        isis_spf_parse_prefix_entries(&tlvs[pos], len, ROUTE_AFI_IPV6, level, entry->system_id,
+                                                      path_metric, hop, desired);
+                    }
+
+                    pos += len;
+                }
+            }
         }
+
+        g_ptr_array_free(hops, TRUE);
     }
 }
 
 static void isis_spf_reconcile_lsp_routes(isis_instance_cfg_t *inst, GHashTable *desired)
 {
-    if (!inst || !inst->learned_routes)
+    if (!inst || !inst->learned_route_heads)
     {
         return;
     }
-
-    GHashTableIter iter;
-    gpointer key = NULL;
-    gpointer value = NULL;
-
-    g_hash_table_iter_init(&iter, inst->learned_routes);
-    while (g_hash_table_iter_next(&iter, &key, &value))
-    {
-        const char *route_key = (const char *)key;
-        isis_route_state_t *cur = (isis_route_state_t *)value;
-        if (!route_key || !cur || !g_str_has_prefix(route_key, "lsp|"))
-        {
-            continue;
-        }
-
-        isis_route_state_t *want = desired ? (isis_route_state_t *)g_hash_table_lookup(desired, route_key) : NULL;
-        if (!want || !isis_route_state_same(cur, want))
-        {
-            (void)isis_route_sync_publish_del(cur);
-            g_hash_table_iter_remove(&iter);
-        }
-    }
-
-    if (!desired)
-    {
-        return;
-    }
-
-    g_hash_table_iter_init(&iter, desired);
-    while (g_hash_table_iter_next(&iter, &key, &value))
-    {
-        const char *route_key = (const char *)key;
-        const isis_route_state_t *want = (const isis_route_state_t *)value;
-        if (!route_key || !want)
-        {
-            continue;
-        }
-
-        isis_route_state_t *cur = (isis_route_state_t *)g_hash_table_lookup(inst->learned_routes, route_key);
-        if (cur && isis_route_state_same(cur, want))
-        {
-            continue;
-        }
-
-        if (cur)
-        {
-            (void)isis_route_sync_publish_del(cur);
-            (void)g_hash_table_remove(inst->learned_routes, route_key);
-        }
-
-        isis_route_state_t *next = g_malloc0(sizeof(*next));
-        if (!next)
-        {
-            continue;
-        }
-        *next = *want;
-
-        if (isis_route_sync_publish_add(next) != ERRCODE_SUCCESS)
-        {
-            g_free(next);
-            continue;
-        }
-
-        g_hash_table_replace(inst->learned_routes, g_strdup(route_key), next);
-    }
+    (void)isis_route_reconcile_spf(inst, desired);
 }
 
 static void isis_spf_recompute_instance(isis_instance_cfg_t *inst)
 {
-    if (!inst || !inst->learned_routes)
+    if (!inst || !inst->learned_route_heads)
     {
         return;
     }
 
-    GHashTable *desired = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, isis_route_state_free);
+    GHashTable *desired = isis_route_head_table_new();
     if (!desired)
     {
         return;
@@ -976,26 +941,6 @@ static void isis_spf_recompute_instance(isis_instance_cfg_t *inst)
         g_hash_table_destroy(nodes);
     }
 
-    if (!inst->af_ipv4 || !inst->af_ipv6)
-    {
-        GHashTableIter iter;
-        gpointer key = NULL;
-        gpointer value = NULL;
-        g_hash_table_iter_init(&iter, desired);
-        while (g_hash_table_iter_next(&iter, &key, &value))
-        {
-            isis_route_state_t *state = (isis_route_state_t *)value;
-            if (!state)
-            {
-                continue;
-            }
-            if ((state->afi == ROUTE_AFI_IPV4 && !inst->af_ipv4) || (state->afi == ROUTE_AFI_IPV6 && !inst->af_ipv6))
-            {
-                g_hash_table_iter_remove(&iter);
-            }
-        }
-    }
-
     isis_spf_reconcile_lsp_routes(inst, desired);
     g_hash_table_destroy(desired);
 }
@@ -1031,7 +976,7 @@ void isis_spf_withdraw_neighbor_routes(isis_instance_cfg_t *inst, const isis_nei
 
 void isis_spf_withdraw_origin_routes(isis_instance_cfg_t *inst, uint8_t level, const uint8_t origin_sysid[6])
 {
-    if (!inst || !inst->learned_routes || !origin_sysid)
+    if (!inst || !inst->learned_route_heads || !origin_sysid)
     {
         return;
     }
@@ -1042,17 +987,21 @@ void isis_spf_withdraw_origin_routes(isis_instance_cfg_t *inst, uint8_t level, c
     GHashTableIter iter;
     gpointer key = NULL;
     gpointer value = NULL;
-    g_hash_table_iter_init(&iter, inst->learned_routes);
+    g_hash_table_iter_init(&iter, inst->learned_route_heads);
     while (g_hash_table_iter_next(&iter, &key, &value))
     {
         const char *route_key = (const char *)key;
-        isis_route_state_t *state = (isis_route_state_t *)value;
-        if (!route_key || !state || !g_str_has_prefix(route_key, key_prefix))
+        const isis_route_head_t *head = (const isis_route_head_t *)value;
+        if (!route_key || !g_str_has_prefix(route_key, key_prefix))
         {
             continue;
         }
 
-        (void)isis_route_sync_publish_del(state);
+        const isis_route_path_t *best = isis_route_head_best_path(head);
+        if (best)
+        {
+            (void)isis_route_sync_publish_del(&best->state);
+        }
         g_hash_table_iter_remove(&iter);
     }
 }

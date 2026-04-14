@@ -18,6 +18,7 @@
 #define ISIS_CLI_GROUP_ID_SHOW_IF 7
 #define ISIS_CLI_GROUP_ID_SHOW_NEIGHBOR 8
 #define ISIS_CLI_GROUP_ID_SHOW_LSDB 9
+#define ISIS_CLI_GROUP_ID_SHOW_ROUTE 10
 
 int isis_cli_handle_config_msg(dev_ipc_message_t *msg);
 

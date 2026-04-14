@@ -19,6 +19,7 @@
 #include "bgp_main.h"
 #include "bgp_protocol.h"
 #include "bgp_session.h"
+#include "bgp_update_group.h"
 #include "bgp_vrf.h"
 #include "bgp_worker.h"
 #include "errcode.h"
@@ -38,19 +39,27 @@ static void bgp_cfg_drain_instance_work(bgp_instance_t *inst)
         uint32_t calc = (inst->calc_queue) ? inst->calc_queue->count : 0u;
         uint32_t route_flush = (inst->route_flush_queue) ? inst->route_flush_queue->count : 0u;
         uint32_t pub = 0u;
-        if (inst->peer_hash)
+        for (GList *ul = inst->update_groups; ul; ul = ul->next)
         {
-            GHashTableIter iter;
-            gpointer key = NULL;
-            gpointer val = NULL;
-            g_hash_table_iter_init(&iter, inst->peer_hash);
-            while (g_hash_table_iter_next(&iter, &key, &val))
+            bgp_update_group_t *ug = (bgp_update_group_t *)ul->data;
+            if (!ug)
             {
-                (void)val;
-                bgp_session_t *sess = bgp_vrf_find_session(inst->vrf, (const net_addr_t *)key);
-                if (sess && sess->pub_queue)
+                continue;
+            }
+            for (GList *sl = ug->subgroups; sl; sl = sl->next)
+            {
+                bgp_nh_subgroup_t *sg = (bgp_nh_subgroup_t *)sl->data;
+                if (!sg)
                 {
-                    pub += bgp_pub_queue_count_for_instance(sess->pub_queue, inst);
+                    continue;
+                }
+                if (sg->announce_queue)
+                {
+                    pub += (uint32_t)g_queue_get_length(sg->announce_queue);
+                }
+                if (sg->withdraw_queue)
+                {
+                    pub += (uint32_t)g_queue_get_length(sg->withdraw_queue);
                 }
             }
         }

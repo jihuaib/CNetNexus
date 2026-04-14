@@ -17,6 +17,7 @@
 #include "bgp_protocol.h"
 #include "bgp_rib.h"
 #include "bgp_session.h"
+#include "bgp_update_group.h"
 #include "bgp_vrf.h"
 #include "bgp_worker.h"
 #include "dev.h"
@@ -128,6 +129,52 @@ static const char *sess_state_str(const bgp_session_t *sess)
 static const char *cap_yn(uint32_t caps, uint32_t bit)
 {
     return BIT_TEST(caps, bit) ? "Yes" : "No";
+}
+
+static const char *bgp_sess_type_str(bgp_sess_type_t t)
+{
+    switch (t)
+    {
+        case BGP_SESS_TYPE_IBGP:
+            return "iBGP";
+        case BGP_SESS_TYPE_EBGP:
+            return "eBGP";
+        default:
+            return "Unknown";
+    }
+}
+
+static const char *bgp_nh_rule_str(bgp_nh_rule_t r)
+{
+    switch (r)
+    {
+        case BGP_NH_RULE_LOCAL:
+            return "local";
+        case BGP_NH_RULE_PASS:
+            return "pass";
+        case BGP_NH_RULE_CONFIG:
+            return "config";
+        default:
+            return "unknown";
+    }
+}
+
+static void bgp_router_id_to_str(uint32_t rid_host_order, char *buf, size_t sz)
+{
+    if (!buf || sz == 0)
+    {
+        return;
+    }
+
+    if (rid_host_order == 0)
+    {
+        snprintf(buf, sz, "0.0.0.0");
+        return;
+    }
+
+    struct in_addr tmp;
+    tmp.s_addr = htonl(rid_host_order);
+    inet_ntop(AF_INET, &tmp, buf, (socklen_t)sz);
 }
 
 static void bgp_conn_last_error_to_str(const bgp_conn_t *conn, int fallback_error, char *buf, size_t sz)
@@ -855,6 +902,278 @@ static int handle_bgp_show_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
     return bgp_work_send_chunked_response(msg, resp_buf);
 }
 
+typedef struct bgp_show_ug_stats
+{
+    uint32_t subgroup_count;
+    uint32_t peer_count;
+    uint32_t aro_count;
+    uint32_t pending_ann;
+    uint32_t pending_wd;
+    uint32_t total_ann;
+    uint32_t total_wd;
+} bgp_show_ug_stats_t;
+
+static void bgp_show_ug_collect_stats(const bgp_update_group_t *ug, bgp_show_ug_stats_t *st)
+{
+    if (!st)
+    {
+        return;
+    }
+    memset(st, 0, sizeof(*st));
+    if (!ug)
+    {
+        return;
+    }
+
+    for (const GList *sl = ug->subgroups; sl; sl = sl->next)
+    {
+        const bgp_nh_subgroup_t *sg = (const bgp_nh_subgroup_t *)sl->data;
+        if (!sg)
+        {
+            continue;
+        }
+
+        st->subgroup_count++;
+        st->peer_count += sg->peer_count;
+        st->aro_count += bgp_adj_rib_out_count(sg->adj_rib_out);
+        st->pending_ann += sg->announce_queue ? (uint32_t)g_queue_get_length(sg->announce_queue) : 0u;
+        st->pending_wd += sg->withdraw_queue ? (uint32_t)g_queue_get_length(sg->withdraw_queue) : 0u;
+        st->total_ann += sg->announce_count;
+        st->total_wd += sg->withdraw_count;
+    }
+}
+
+static void bgp_show_ug_append_neighbors(GString *buf, const bgp_nh_subgroup_t *sg)
+{
+    g_string_append_printf(buf, "      %-39s %-10s %-12s %s\r\n", "Neighbor", "Remote-AS", "State", "Router-ID");
+    g_string_append_printf(buf, "      %-39s %-10s %-12s %s\r\n", "---------------------------------------",
+                           "----------", "------------", "---------------");
+
+    for (const GList *l = sg->peer_list; l; l = l->next)
+    {
+        const bgp_peer_t *peer = (const bgp_peer_t *)l->data;
+        if (!peer || !peer->vrf)
+        {
+            continue;
+        }
+        const bgp_session_t *sess = bgp_vrf_find_session(peer->vrf, &peer->addr);
+        if (!sess)
+        {
+            continue;
+        }
+
+        char nbr_ip[64];
+        char rid[32];
+        net_addr_to_str(&sess->neighbor_addr, nbr_ip, sizeof(nbr_ip));
+        bgp_router_id_to_str(sess->remote_id, rid, sizeof(rid));
+
+        g_string_append_printf(buf, "      %-39s %-10u %-12s %s\r\n", nbr_ip, sess->remote_as, sess_state_str(sess),
+                               rid);
+    }
+}
+
+static void bgp_show_ug_append_detail(GString *buf, const bgp_update_group_t *ug)
+{
+    bgp_show_ug_stats_t st;
+    bgp_show_ug_collect_stats(ug, &st);
+
+    g_string_append_printf(buf, "  Session-Type : %s\r\n", bgp_sess_type_str(ug->key.sess_type));
+    g_string_append_printf(buf, "  Policy-Hash  : 0x%08X\r\n", ug->key.policy_hash);
+    g_string_append_printf(buf, "  Peer-Family  : %u\r\n", (unsigned)ug->key.peer_family);
+    g_string_append_printf(buf, "  Subgroups    : %u\r\n", st.subgroup_count);
+    g_string_append_printf(buf, "  Neighbors    : %u\r\n", st.peer_count);
+    g_string_append_printf(buf, "  Adj-RIB-Out  : %u\r\n", st.aro_count);
+    g_string_append_printf(buf, "  Pending      : announce=%u withdraw=%u\r\n", st.pending_ann, st.pending_wd);
+    g_string_append_printf(buf, "  Counters     : announce=%u withdraw=%u\r\n", st.total_ann, st.total_wd);
+    g_string_append(buf, "\r\n");
+
+    uint32_t sg_index = 0;
+    for (const GList *sl = ug->subgroups; sl; sl = sl->next)
+    {
+        const bgp_nh_subgroup_t *sg = (const bgp_nh_subgroup_t *)sl->data;
+        if (!sg)
+        {
+            continue;
+        }
+        sg_index++;
+
+        char local_addr[64];
+        if (sg->key.effective_local_addr.family != 0)
+        {
+            net_addr_to_str(&sg->key.effective_local_addr, local_addr, sizeof(local_addr));
+        }
+        else
+        {
+            snprintf(local_addr, sizeof(local_addr), "-");
+        }
+
+        g_string_append_printf(buf, "  Subgroup #%u\r\n", sg_index);
+        g_string_append_printf(buf, "    NH Rule       : %s\r\n", bgp_nh_rule_str(sg->key.rule));
+        g_string_append_printf(buf, "    Local Address : %s\r\n", local_addr);
+        g_string_append_printf(buf, "    Peers         : %u\r\n", sg->peer_count);
+        g_string_append_printf(buf, "    Adj-RIB-Out   : %u\r\n", bgp_adj_rib_out_count(sg->adj_rib_out));
+        g_string_append_printf(buf, "    Pending Queue : announce=%u withdraw=%u\r\n",
+                               sg->announce_queue ? (uint32_t)g_queue_get_length(sg->announce_queue) : 0u,
+                               sg->withdraw_queue ? (uint32_t)g_queue_get_length(sg->withdraw_queue) : 0u);
+        g_string_append_printf(buf, "    Counters      : announce=%u withdraw=%u\r\n", sg->announce_count,
+                               sg->withdraw_count);
+
+        if (!sg->peer_list)
+        {
+            g_string_append(buf, "    Neighbors     : (none)\r\n\r\n");
+            continue;
+        }
+        g_string_append(buf, "    Neighbors:\r\n");
+        bgp_show_ug_append_neighbors(buf, sg);
+        g_string_append(buf, "\r\n");
+    }
+}
+
+/**
+ * @brief 处理 show bgp update-group af ipv4-unicast|ipv6-unicast [<group-id>] 命令
+ *
+ * group_id=15, cfg_id: 1=ipv4-unicast, 2=ipv6-unicast, 3=group-id
+ */
+static int handle_bgp_show_update_group(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    bgp_cli_ctx_t ctx = bgp_cli_ctx_default();
+    gboolean has_af = FALSE;
+    gboolean has_group_id = FALSE;
+    uint32_t group_id = 0;
+
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (CLI_TLV_IS_CTX(&entry))
+        {
+            bgp_cli_ctx_parse(&ctx, &entry);
+            cli_tlv_entry_free(&entry);
+            continue;
+        }
+
+        switch (entry.cfg_id)
+        {
+            case 1:
+                ctx.afi = BGP_AFI_IPV4;
+                ctx.safi = BGP_SAFI_UNICAST;
+                has_af = TRUE;
+                break;
+            case 2:
+                ctx.afi = BGP_AFI_IPV6;
+                ctx.safi = BGP_SAFI_UNICAST;
+                has_af = TRUE;
+                break;
+            case 3:
+                group_id = (uint32_t)cli_tlv_entry_get_int(&entry);
+                has_group_id = TRUE;
+                break;
+            default:
+                break;
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    if (!has_af)
+    {
+        bgp_show_send_cli_response(
+            msg, "BGP Error: Missing address-family. Use 'af ipv4-unicast' or 'af ipv6-unicast'.\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (!g_bgp_work_local->protocol)
+    {
+        bgp_show_send_cli_response(msg, "BGP Error: BGP not configured.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_work_local->protocol, ctx.vrf_id);
+    if (!vrf)
+    {
+        bgp_show_send_cli_response(msg, "BGP Error: VRF not found.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    bgp_instance_t *inst = g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(ctx.afi, ctx.safi));
+    GString *buf = g_string_sized_new(1024);
+    if (!buf)
+    {
+        bgp_show_send_cli_response(msg, "BGP Error: Out of memory.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    if (has_group_id)
+    {
+        g_string_append_printf(buf, "\r\nBGP Update-Group Detail (AF: %s, Group-ID: %u)\r\n",
+                               bgp_af_str(ctx.afi, ctx.safi), group_id);
+        g_string_append(buf, "============================================================\r\n");
+
+        const bgp_update_group_t *found = NULL;
+        if (inst)
+        {
+            for (const GList *ul = inst->update_groups; ul; ul = ul->next)
+            {
+                const bgp_update_group_t *ug = (const bgp_update_group_t *)ul->data;
+                if (ug && ug->group_id == group_id)
+                {
+                    found = ug;
+                    break;
+                }
+            }
+        }
+
+        if (!found)
+        {
+            g_string_append_printf(buf, "  Update-group %u not found.\r\n\r\n", group_id);
+            return bgp_work_send_chunked_response(msg, buf);
+        }
+
+        bgp_show_ug_append_detail(buf, found);
+        return bgp_work_send_chunked_response(msg, buf);
+    }
+
+    g_string_append_printf(buf, "\r\nBGP Update-Groups (AF: %s)\r\n", bgp_af_str(ctx.afi, ctx.safi));
+    g_string_append(buf, "============================================================\r\n");
+
+    if (!inst || !inst->update_groups)
+    {
+        g_string_append(buf, "  (no update-groups)\r\n\r\n");
+        return bgp_work_send_chunked_response(msg, buf);
+    }
+
+    g_string_append_printf(buf, "  %-8s %-10s %-10s %-10s %-10s %-10s %-12s %s\r\n", "Group-ID", "SessType",
+                           "Subgroups", "Neighbors", "AdjRibOut", "Pend-A", "Pend-W", "Policy-Hash");
+    g_string_append_printf(buf, "  %-8s %-10s %-10s %-10s %-10s %-10s %-12s %s\r\n", "--------", "--------",
+                           "----------", "----------", "----------", "----------", "------------", "-----------");
+
+    uint32_t listed_groups = 0;
+    uint32_t total_subgroups = 0;
+    uint32_t total_neighbors = 0;
+    uint32_t total_adj_rib_out = 0;
+
+    for (const GList *ul = inst->update_groups; ul; ul = ul->next)
+    {
+        const bgp_update_group_t *ug = (const bgp_update_group_t *)ul->data;
+        if (!ug)
+        {
+            continue;
+        }
+        bgp_show_ug_stats_t st;
+        bgp_show_ug_collect_stats(ug, &st);
+
+        g_string_append_printf(buf, "  %-8u %-10s %-10u %-10u %-10u %-10u %-12u 0x%08X\r\n", ug->group_id,
+                               bgp_sess_type_str(ug->key.sess_type), st.subgroup_count, st.peer_count, st.aro_count,
+                               st.pending_ann, st.pending_wd, ug->key.policy_hash);
+
+        listed_groups++;
+        total_subgroups += st.subgroup_count;
+        total_neighbors += st.peer_count;
+        total_adj_rib_out += st.aro_count;
+    }
+
+    g_string_append_printf(buf, "\r\nTotal: %u groups, %u subgroups, %u neighbors, %u adj-rib-out entries\r\n\r\n",
+                           listed_groups, total_subgroups, total_neighbors, total_adj_rib_out);
+    return bgp_work_send_chunked_response(msg, buf);
+}
+
 /**
  * @brief 格式化单条属性详情到 GString
  */
@@ -985,6 +1304,9 @@ int bgp_work_handle_show_msg(dev_ipc_message_t *msg)
             break;
         case BGP_CLI_GROUP_ID_SHOW_ATTR:
             result = handle_bgp_show_attr(msg, &parser);
+            break;
+        case BGP_CLI_GROUP_ID_SHOW_UG:
+            result = handle_bgp_show_update_group(msg, &parser);
             break;
         default:
             LOG_WARN("BGP: 未知 show 命令 group_id=%u", parser.group_id);

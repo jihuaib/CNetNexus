@@ -16,6 +16,7 @@
 #include "if_api.h"
 #include "isis.h"
 #include "isis_neighbor.h"
+#include "isis_route.h"
 #include "isis_route_sync.h"
 #include "isis_show.h"
 #include "log.h"
@@ -96,10 +97,10 @@ static void isis_instance_cfg_free(gpointer data)
         g_hash_table_destroy(inst->route_states);
         inst->route_states = NULL;
     }
-    if (inst->learned_routes)
+    if (inst->learned_route_heads)
     {
-        g_hash_table_destroy(inst->learned_routes);
-        inst->learned_routes = NULL;
+        g_hash_table_destroy(inst->learned_route_heads);
+        inst->learned_route_heads = NULL;
     }
     if (inst->neighbors)
     {
@@ -141,8 +142,8 @@ static isis_instance_cfg_t *isis_instance_create(uint32_t tag)
         g_free(inst);
         return NULL;
     }
-    inst->learned_routes = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, isis_route_state_free);
-    if (!inst->learned_routes)
+    inst->learned_route_heads = isis_route_head_table_new();
+    if (!inst->learned_route_heads)
     {
         g_hash_table_destroy(inst->route_states);
         inst->route_states = NULL;
@@ -154,8 +155,8 @@ static isis_instance_cfg_t *isis_instance_create(uint32_t tag)
     inst->neighbors = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, isis_neighbor_free);
     if (!inst->neighbors)
     {
-        g_hash_table_destroy(inst->learned_routes);
-        inst->learned_routes = NULL;
+        g_hash_table_destroy(inst->learned_route_heads);
+        inst->learned_route_heads = NULL;
         g_hash_table_destroy(inst->route_states);
         inst->route_states = NULL;
         g_hash_table_destroy(inst->if_cfgs);
@@ -169,8 +170,8 @@ static isis_instance_cfg_t *isis_instance_create(uint32_t tag)
     {
         g_hash_table_destroy(inst->neighbors);
         inst->neighbors = NULL;
-        g_hash_table_destroy(inst->learned_routes);
-        inst->learned_routes = NULL;
+        g_hash_table_destroy(inst->learned_route_heads);
+        inst->learned_route_heads = NULL;
         g_hash_table_destroy(inst->route_states);
         inst->route_states = NULL;
         g_hash_table_destroy(inst->if_cfgs);

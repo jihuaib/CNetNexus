@@ -10,6 +10,12 @@
             <view view-name="bgp-af-ipv6-uni">
                 <template>&lt;NetNexus(config-bgp-af-ipv6-uni)&gt;</template>
             </view>
+            <view view-name="bgp-af-ipv4-qp">
+                <template>&lt;NetNexus(config-bgp-af-ipv4-qp)&gt;</template>
+            </view>
+            <view view-name="bgp-af-ipv6-qp">
+                <template>&lt;NetNexus(config-bgp-af-ipv6-qp)&gt;</template>
+            </view>
             <view view-name="bgp-bmp">
                 <template>&lt;NetNexus(config-bgp-bmp-{ctx:7})&gt;</template>
             </view>
@@ -21,15 +27,15 @@
         <!-- BGP 协议配置命令（bgp <as-number> / no bgp [as-number]） -->
         <group group-id="1">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>no</name>
                     <description>Delete</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>bgp</name>
                     <description>BGP protocol</description>
                 </element>
-                <element cfg-id="1" type="parameter">
+                <element id="3" cfg-id="1" type="parameter">
                     <name>&lt;as-number&gt;</name>
                     <type>uint(1-4294967295)</type>
                     <description>BGP as-number</description>
@@ -52,29 +58,29 @@
         <!-- neighbor <ipv4|ipv6> as <as-num> / no neighbor <ipv4|ipv6> -->
         <group group-id="2">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>no</name>
                     <description>Delete</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>neighbor</name>
                     <description>BGP neighbor configuration</description>
                 </element>
-                <element cfg-id="1" type="parameter">
+                <element id="3" cfg-id="1" type="parameter">
                     <name>&lt;ipv4-address&gt;</name>
                     <type>ipv4</type>
                     <description>Neighbor IPv4 address</description>
                 </element>
-                <element cfg-id="2" type="parameter">
+                <element id="4" cfg-id="2" type="parameter">
                     <name>&lt;ipv6-address&gt;</name>
                     <type>ipv6</type>
                     <description>Neighbor IPv6 address</description>
                 </element>
-                <element type="keyword">
+                <element id="5" type="keyword">
                     <name>as</name>
                     <description>Remote AS number</description>
                 </element>
-                <element cfg-id="3" type="parameter">
+                <element id="6" cfg-id="3" type="parameter">
                     <name>&lt;as-number&gt;</name>
                     <type>uint(1-4294967295)</type>
                     <description>Remote AS number</description>
@@ -98,22 +104,30 @@
         <!-- af ipv4-unicast / no af ipv4-unicast -->
         <group group-id="3">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>no</name>
                     <description>Delete</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>af</name>
                     <description>Enter address family configuration</description>
                 </element>
-                <element cfg-id="1" type="keyword">
+                <element id="3" cfg-id="1" type="keyword">
                     <name>ipv4-unicast</name>
                     <description>IPv4 unicast address family</description>
                 </element>
-                 <element cfg-id="2" type="keyword">
+                 <element id="4" cfg-id="2" type="keyword">
                     <name>ipv6-unicast</name>
                     <description>IPv6 unicast address family</description>
-                </element>           
+                </element>
+                <element id="5" cfg-id="3" type="keyword">
+                    <name>ipv4-qp</name>
+                    <description>IPv4 QP address family</description>
+                </element>
+                <element id="6" cfg-id="4" type="keyword">
+                    <name>ipv6-qp</name>
+                    <description>IPv6 QP address family</description>
+                </element>
             </elements>
 
             <commands>
@@ -136,9 +150,27 @@
                         <entry ctx-id="3" value="1"/>
                     </context-out>
                 </command>
-                <!-- no af ipv4-unicast -->
                 <command>
-                    <expression>1  2  { 3 | 4 }</expression>
+                    <expression>2 5</expression>
+                    <views>bgp</views>
+                    <to-view>bgp-af-ipv4-qp</to-view>
+                    <context-out>
+                        <entry ctx-id="2" value="1"/>
+                        <entry ctx-id="3" value="253"/>
+                    </context-out>
+                </command>
+                <command>
+                    <expression>2 6</expression>
+                    <views>bgp</views>
+                    <to-view>bgp-af-ipv6-qp</to-view>
+                    <context-out>
+                        <entry ctx-id="2" value="2"/>
+                        <entry ctx-id="3" value="253"/>
+                    </context-out>
+                </command>
+                <!-- no af {ipv4-unicast | ipv6-unicast | ipv4-qp | ipv6-qp} -->
+                <command>
+                    <expression>1  2  { 3 | 4 | 5 | 6 }</expression>
                     <views>bgp</views>
                 </command>
             </commands>
@@ -147,25 +179,25 @@
         <!-- neighbor <ipv4|ipv6> enable / no neighbor <ipv4|ipv6> enable (in address-family view) -->
         <group group-id="4">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>no</name>
                     <description>Delete</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>neighbor</name>
                     <description>BGP neighbor</description>
                 </element>
-                <element cfg-id="1" type="parameter">
+                <element id="3" cfg-id="1" type="parameter">
                     <name>&lt;ipv4-address&gt;</name>
                     <type>ipv4</type>
                     <description>Neighbor IPv4 address</description>
                 </element>
-                <element cfg-id="2" type="parameter">
+                <element id="4" cfg-id="2" type="parameter">
                     <name>&lt;ipv6-address&gt;</name>
                     <type>ipv6</type>
                     <description>Neighbor IPv6 address</description>
                 </element>
-                <element cfg-id="3" type="keyword">
+                <element id="5" cfg-id="3" type="keyword">
                     <name>enable</name>
                     <description>Enable neighbor for this address family</description>
                 </element>
@@ -175,27 +207,27 @@
                 <!-- neighbor <ipv4|ipv6> enable -->
                 <command>
                     <expression>2 {3 | 4} 5</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-qp,bgp-af-ipv6-qp</views>
                 </command>
                 <!-- no neighbor <ipv4|ipv6> enable -->
                 <command>
                     <expression>1 2 {3 | 4} 5</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-qp,bgp-af-ipv6-qp</views>
                 </command>
             </commands>
         </group>
         <!-- router-id <ip-address> / no router-id (在 BGP 视图下) -->
         <group group-id="5">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>no</name>
                     <description>Delete</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>router-id</name>
                     <description>BGP Router ID</description>
                 </element>
-                <element cfg-id="1" type="parameter">
+                <element id="3" cfg-id="1" type="parameter">
                     <name>&lt;ip-address&gt;</name>
                     <type>ip</type>
                     <description>Router ID (IPv4 address)</description>
@@ -218,19 +250,19 @@
         <!-- timer connect-retry <seconds> / no timer connect-retry (BGP 视图) -->
         <group group-id="6">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>no</name>
                     <description>Delete</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>timer</name>
                     <description>BGP timer configuration</description>
                 </element>
-                <element type="keyword">
+                <element id="3" type="keyword">
                     <name>connect-retry</name>
                     <description>Connect-retry timer</description>
                 </element>
-                <element cfg-id="1" type="parameter">
+                <element id="4" cfg-id="1" type="parameter">
                     <name>&lt;seconds&gt;</name>
                     <type>uint(1-65535)</type>
                     <description>Reconnect interval in seconds after active connection failure</description>
@@ -254,24 +286,24 @@
         <!-- timer keepalive <keepalive-time> hold <hold-time> / no timer keepalive (BGP 视图) -->
         <group group-id="7">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>timer</name>
                     <description>BGP timer configuration</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>keepalive</name>
                     <description>Keepalive interval</description>
                 </element>
-                <element cfg-id="1" type="parameter">
+                <element id="3" cfg-id="1" type="parameter">
                     <name>&lt;keepalive-time&gt;</name>
                     <type>uint(1-65535)</type>
                     <description>Keepalive time in seconds</description>
                 </element>
-                <element type="keyword">
+                <element id="4" type="keyword">
                     <name>hold</name>
                     <description>Hold time</description>
                 </element>
-                <element cfg-id="2" type="parameter">
+                <element id="5" cfg-id="2" type="parameter">
                     <name>&lt;hold-time&gt;</name>
                     <type>uint(1-65535)</type>
                     <description>Hold time in seconds (must be greater than keepalive)</description>
@@ -289,33 +321,33 @@
         <!-- neighbor <ipv4|ipv6> open-capability as4|route-refresh / no neighbor <ipv4|ipv6> open-capability ... -->
         <group group-id="8">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>no</name>
                     <description>Delete</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>neighbor</name>
                     <description>BGP neighbor configuration</description>
                 </element>
-                <element cfg-id="1" type="parameter">
+                <element id="3" cfg-id="1" type="parameter">
                     <name>&lt;ipv4-address&gt;</name>
                     <type>ipv4</type>
                     <description>Neighbor IPv4 address</description>
                 </element>
-                <element cfg-id="2" type="parameter">
+                <element id="4" cfg-id="2" type="parameter">
                     <name>&lt;ipv6-address&gt;</name>
                     <type>ipv6</type>
                     <description>Neighbor IPv6 address</description>
                 </element>
-                <element type="keyword">
+                <element id="5" type="keyword">
                     <name>open-capability</name>
                     <description>BGP OPEN capability negotiation</description>
                 </element>
-                <element cfg-id="3" type="keyword">
+                <element id="6" cfg-id="3" type="keyword">
                     <name>as4</name>
                     <description>4-byte AS number capability (RFC 6793)</description>
                 </element>
-                <element cfg-id="4" type="keyword">
+                <element id="7" cfg-id="4" type="keyword">
                     <name>route-refresh</name>
                     <description>Route Refresh capability (RFC 2918)</description>
                 </element>
@@ -337,29 +369,29 @@
         <!-- neighbor <ipv4|ipv6> source-interface <if-name> / no neighbor <ipv4|ipv6> source-interface -->
         <group group-id="12">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>no</name>
                     <description>Delete</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>neighbor</name>
                     <description>BGP neighbor configuration</description>
                 </element>
-                <element cfg-id="1" type="parameter">
+                <element id="3" cfg-id="1" type="parameter">
                     <name>&lt;ipv4-address&gt;</name>
                     <type>ipv4</type>
                     <description>Neighbor IPv4 address</description>
                 </element>
-                <element cfg-id="2" type="parameter">
+                <element id="4" cfg-id="2" type="parameter">
                     <name>&lt;ipv6-address&gt;</name>
                     <type>ipv6</type>
                     <description>Neighbor IPv6 address</description>
                 </element>
-                <element type="keyword">
+                <element id="5" type="keyword">
                     <name>source-interface</name>
                     <description>Bind outbound source address from interface</description>
                 </element>
-                <element cfg-id="3" type="parameter">
+                <element id="6" cfg-id="3" type="parameter">
                     <name>&lt;if-name&gt;</name>
                     <type>dynamic(4:1,string(1-31))</type>
                     <description>Source interface name (dynamic candidates from IF module)</description>
@@ -382,29 +414,29 @@
         <!-- neighbor <ipv4|ipv6> ebgp-multihop <ttl> / no neighbor <ipv4|ipv6> ebgp-multihop -->
         <group group-id="13">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>no</name>
                     <description>Delete</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>neighbor</name>
                     <description>BGP neighbor configuration</description>
                 </element>
-                <element cfg-id="1" type="parameter">
+                <element id="3" cfg-id="1" type="parameter">
                     <name>&lt;ipv4-address&gt;</name>
                     <type>ipv4</type>
                     <description>Neighbor IPv4 address</description>
                 </element>
-                <element cfg-id="2" type="parameter">
+                <element id="4" cfg-id="2" type="parameter">
                     <name>&lt;ipv6-address&gt;</name>
                     <type>ipv6</type>
                     <description>Neighbor IPv6 address</description>
                 </element>
-                <element type="keyword">
+                <element id="5" type="keyword">
                     <name>ebgp-multihop</name>
                     <description>Allow eBGP neighbor not directly connected</description>
                 </element>
-                <element cfg-id="3" type="parameter">
+                <element id="6" cfg-id="3" type="parameter">
                     <name>&lt;ttl&gt;</name>
                     <type>uint(1-255)</type>
                     <description>TTL hops for eBGP multihop</description>
@@ -427,56 +459,64 @@
         <!-- show bgp neighbor af ipv4-unicast|ipv6-unicast [<ip-address>] -->
         <group group-id="9">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>show</name>
                     <description>Display system information</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>bgp</name>
                     <description>BGP protocol</description>
                 </element>
-                <element type="keyword">
+                <element id="3" type="keyword">
                     <name>neighbor</name>
                     <description>BGP neighbor</description>
                 </element>
-                <element type="keyword">
+                <element id="4" type="keyword">
                     <name>af</name>
                     <description>Address-family selector</description>
                 </element>
-                <element cfg-id="1" type="keyword">
+                <element id="5" cfg-id="1" type="keyword">
                     <name>ipv4-unicast</name>
                     <description>IPv4 unicast address family</description>
                 </element>
-                <element cfg-id="2" type="keyword">
+                <element id="6" cfg-id="2" type="keyword">
                     <name>ipv6-unicast</name>
                     <description>IPv6 unicast address family</description>
                 </element>
-                <element cfg-id="3" type="parameter">
+                <element id="7" cfg-id="3" type="parameter">
                     <name>&lt;ip-address&gt;</name>
                     <type>ip</type>
                     <description>Neighbor IP address</description>
                 </element>
+                <element id="8" cfg-id="4" type="keyword">
+                    <name>ipv4-qp</name>
+                    <description>IPv4 qp address family</description>
+                </element>`
+                <element id="9" cfg-id="5" type="keyword">
+                    <name>ipv6-qp</name>
+                    <description>IPv6 qp address family</description>
+                </element>
             </elements>
 
             <commands>
-                <!-- show bgp neighbor af ipv4-unicast（显示所有邻居摘要） -->
+                <!-- show bgp neighbor af ipv4-unicast [<ip-address>] -->
                 <command>
-                    <expression>1 2 3 4 5</expression>
+                    <expression>1 2 3 4 5 [7]</expression>
                     <views>global</views>
                 </command>
-                <!-- show bgp neighbor af ipv6-unicast（显示所有邻居摘要） -->
+                <!-- show bgp neighbor af ipv6-unicast [<ip-address>] -->
                 <command>
-                    <expression>1 2 3 4 6</expression>
+                    <expression>1 2 3 4 6 [7]</expression>
                     <views>global</views>
                 </command>
-                <!-- show bgp neighbor af ipv4-unicast <ip>（显示指定邻居详情） -->
+                <!-- show bgp neighbor af ipv4-qp [<ip-address>] -->
                 <command>
-                    <expression>1 2 3 4 5 7</expression>
+                    <expression>1 2 3 4 8 [7]</expression>
                     <views>global</views>
                 </command>
-                <!-- show bgp neighbor af ipv6-unicast <ip>（显示指定邻居详情） -->
+                <!-- show bgp neighbor af ipv6-qp [<ip-address>] -->
                 <command>
-                    <expression>1 2 3 4 6 7</expression>
+                    <expression>1 2 3 4 9 [7]</expression>
                     <views>global</views>
                 </command>
             </commands>
@@ -486,15 +526,15 @@
         <!-- cfg-id: 1=static -->
         <group group-id="11">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>no</name>
                     <description>Delete</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>import-route</name>
                     <description>Import external routes</description>
                 </element>
-                <element cfg-id="1" type="keyword">
+                <element id="3" cfg-id="1" type="keyword">
                     <name>static</name>
                     <description>Import static routes</description>
                 </element>
@@ -517,61 +557,69 @@
         <!-- show bgp route af ipv4-unicast|ipv6-unicast [<ip> <masklen>] -->
         <group group-id="10">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>show</name>
                     <description>Display system information</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>bgp</name>
                     <description>BGP protocol</description>
                 </element>
-                <element type="keyword">
+                <element id="3" type="keyword">
                     <name>route</name>
                     <description>BGP routes</description>
                 </element>
-                <element type="keyword">
+                <element id="4" type="keyword">
                     <name>af</name>
                     <description>Address-family selector</description>
                 </element>
-                <element cfg-id="1" type="keyword">
+                <element id="5" cfg-id="1" type="keyword">
                     <name>ipv4-unicast</name>
                     <description>Show IPv4 unicast routes</description>
                 </element>
-                <element cfg-id="2" type="keyword">
+                <element id="6" cfg-id="2" type="keyword">
                     <name>ipv6-unicast</name>
                     <description>Show IPv6 unicast routes</description>
                 </element>
-                <element cfg-id="3" type="parameter">
+                <element id="7" cfg-id="3" type="parameter">
                     <name>&lt;ip-address&gt;</name>
                     <type>ip</type>
                     <description>Network address to query</description>
                 </element>
-                <element cfg-id="4" type="parameter">
+                <element id="8" cfg-id="4" type="parameter">
                     <name>&lt;masklen&gt;</name>
                     <type>uint(0-128)</type>
                     <description>Prefix length (0-128)</description>
                 </element>
+                <element id="9" cfg-id="5" type="keyword">
+                    <name>ipv4-qp</name>
+                    <description>Show IPv4 qp routes</description>
+                </element>
+                <element id="10" cfg-id="6" type="keyword">
+                    <name>ipv6-qp</name>
+                    <description>Show IPv6 qp routes</description>
+                </element>
             </elements>
 
             <commands>
-                <!-- show bgp route af ipv4-unicast（路由表） -->
+                <!-- show bgp route af ipv4-unicast [<ip-address> <masklen>] -->
                 <command>
-                    <expression>1 2 3 4 5</expression>
+                    <expression>1 2 3 4 5 [7 8]</expression>
                     <views>global</views>
                 </command>
-                <!-- show bgp route af ipv6-unicast（路由表） -->
+                <!-- show bgp route af ipv6-unicast [<ip-address> <masklen>] -->
                 <command>
-                    <expression>1 2 3 4 6</expression>
+                    <expression>1 2 3 4 6 [7 8]</expression>
                     <views>global</views>
                 </command>
-                <!-- show bgp route af ipv4-unicast <ip> <masklen>（路由详情） -->
+                <!-- show bgp route af ipv4-qp [<ip-address> <masklen>] -->
                 <command>
-                    <expression>1 2 3 4 5 7 8</expression>
+                    <expression>1 2 3 4 9 [7 8]</expression>
                     <views>global</views>
                 </command>
-                <!-- show bgp route af ipv6-unicast <ip> <masklen>（路由详情） -->
+                <!-- show bgp route af ipv6-qp [<ip-address> <masklen>] -->
                 <command>
-                    <expression>1 2 3 4 6 7 8</expression>
+                    <expression>1 2 3 4 10 [7 8]</expression>
                     <views>global</views>
                 </command>
             </commands>
@@ -580,19 +628,19 @@
         <!-- show bgp attr [<attr-id>] -->
         <group group-id="14">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>show</name>
                     <description>Display system information</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>bgp</name>
                     <description>BGP protocol</description>
                 </element>
-                <element type="keyword">
+                <element id="3" type="keyword">
                     <name>attr</name>
                     <description>BGP path attribute intern table</description>
                 </element>
-                <element cfg-id="1" type="parameter">
+                <element id="4" cfg-id="1" type="parameter">
                     <name>&lt;attr-id&gt;</name>
                     <type>uint(1-4294967295)</type>
                     <description>Attribute ID to query</description>
@@ -613,6 +661,72 @@
             </commands>
         </group>
 
+        <!-- show bgp update-group af ipv4-unicast|ipv6-unicast [<group-id>] -->
+        <group group-id="15">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>show</name>
+                    <description>Display system information</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>bgp</name>
+                    <description>BGP protocol</description>
+                </element>
+                <element id="3" type="keyword">
+                    <name>update-group</name>
+                    <description>BGP update-group (packed advertisement unit)</description>
+                </element>
+                <element id="4" type="keyword">
+                    <name>af</name>
+                    <description>Address-family selector</description>
+                </element>
+                <element id="5" cfg-id="1" type="keyword">
+                    <name>ipv4-unicast</name>
+                    <description>IPv4 unicast address family</description>
+                </element>
+                <element id="6" cfg-id="2" type="keyword">
+                    <name>ipv6-unicast</name>
+                    <description>IPv6 unicast address family</description>
+                </element>
+                <element id="7" cfg-id="3" type="parameter">
+                    <name>&lt;group-id&gt;</name>
+                    <type>uint(1-4294967295)</type>
+                    <description>Update group ID to query</description>
+                </element>
+                <element id="8" cfg-id="1" type="keyword">
+                    <name>ipv4-qp</name>
+                    <description>IPv4 qp address family</description>
+                </element>
+                <element id="9" cfg-id="2" type="keyword">
+                    <name>ipv6-qp</name>
+                    <description>IPv6 qp address family</description>
+                </element>
+            </elements>
+
+            <commands>
+                <!-- show bgp update-group af ipv4-unicast [<group-id>] -->
+                <command>
+                    <expression>1 2 3 4 5 [7]</expression>
+                    <views>global</views>
+                </command>
+                <!-- show bgp update-group af ipv6-unicast [<group-id>] -->
+                <command>
+                    <expression>1 2 3 4 6 [7]</expression>
+                    <views>global</views>
+                </command>
+                <!-- show bgp update-group af ipv4-qp [<group-id>] -->
+                <command>
+                    <expression>1 2 3 4 8 [7]</expression>
+                    <views>global</views>
+                </command>
+                <!-- show bgp update-group af ipv6-qp [<group-id>]s -->
+                <command>
+                    <expression>1 2 3 4 9 [7]</expression>
+                    <views>global</views>
+                </command>
+            </commands>
+        </group>
+
         <!-- ================================================================ -->
         <!-- BMP 上报功能命令（group 14-19）                                   -->
         <!-- ================================================================ -->
@@ -620,19 +734,19 @@
         <!-- bmp instance <name> / no bmp instance <name> -->
         <group group-id="100">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>no</name>
                     <description>删除</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>bmp</name>
                     <description>BMP 上报配置</description>
                 </element>
-                <element type="keyword">
+                <element id="3" type="keyword">
                     <name>instance</name>
                     <description>BMP 实例</description>
                 </element>
-                <element cfg-id="1" type="parameter">
+                <element id="4" cfg-id="1" type="parameter">
                     <name>&lt;instance-name&gt;</name>
                     <type>string(1-31)</type>
                     <description>BMP 实例名称</description>
@@ -660,24 +774,24 @@
         <!-- collector <ip> port <port> / no collector（bgp-bmp 视图） -->
         <group group-id="101">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>no</name>
                     <description>删除</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>collector</name>
                     <description>BMP 采集器配置</description>
                 </element>
-                <element cfg-id="1" type="parameter">
+                <element id="3" cfg-id="1" type="parameter">
                     <name>&lt;ip-address&gt;</name>
                     <type>ip</type>
                     <description>采集器 IP 地址</description>
                 </element>
-                <element type="keyword">
+                <element id="4" type="keyword">
                     <name>port</name>
                     <description>采集器端口</description>
                 </element>
-                <element cfg-id="2" type="parameter">
+                <element id="5" cfg-id="2" type="parameter">
                     <name>&lt;port&gt;</name>
                     <type>uint(1-65535)</type>
                     <description>采集器 TCP 端口</description>
@@ -701,19 +815,19 @@
         <!-- stats-report interval <seconds> / no stats-report interval（bgp-bmp 视图） -->
         <group group-id="102">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>no</name>
                     <description>删除</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>stats-report</name>
                     <description>统计报告配置</description>
                 </element>
-                <element type="keyword">
+                <element id="3" type="keyword">
                     <name>interval</name>
                     <description>发送间隔</description>
                 </element>
-                <element cfg-id="1" type="parameter">
+                <element id="4" cfg-id="1" type="parameter">
                     <name>&lt;seconds&gt;</name>
                     <type>uint(15-65535)</type>
                     <description>Stats Report 发送间隔（秒）</description>
@@ -737,19 +851,19 @@
         <!-- reconnect interval <seconds> / no reconnect interval（bgp-bmp 视图） -->
         <group group-id="103">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>no</name>
                     <description>删除</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>reconnect</name>
                     <description>重连配置</description>
                 </element>
-                <element type="keyword">
+                <element id="3" type="keyword">
                     <name>interval</name>
                     <description>重连间隔</description>
                 </element>
-                <element cfg-id="1" type="parameter">
+                <element id="4" cfg-id="1" type="parameter">
                     <name>&lt;seconds&gt;</name>
                     <type>uint(5-3600)</type>
                     <description>TCP 重连间隔（秒）</description>
@@ -773,23 +887,23 @@
         <!-- monitor neighbor all / monitor neighbor <ip> / no monitor neighbor <ip>（bgp-bmp 视图） -->
         <group group-id="104">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>no</name>
                     <description>删除</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>monitor</name>
                     <description>监控配置</description>
                 </element>
-                <element type="keyword">
+                <element id="3" type="keyword">
                     <name>neighbor</name>
                     <description>监控邻居</description>
                 </element>
-                <element cfg-id="1" type="keyword">
+                <element id="4" cfg-id="1" type="keyword">
                     <name>all</name>
                     <description>监控全部 BGP 邻居</description>
                 </element>
-                <element cfg-id="2" type="parameter">
+                <element id="5" cfg-id="2" type="parameter">
                     <name>&lt;ip-address&gt;</name>
                     <type>ip</type>
                     <description>指定监控的邻居 IP 地址</description>
@@ -818,23 +932,23 @@
         <!-- show bgp bmp [instance <name>] -->
         <group group-id="105">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>show</name>
                     <description>显示系统信息</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>bgp</name>
                     <description>BGP 协议</description>
                 </element>
-                <element type="keyword">
+                <element id="3" type="keyword">
                     <name>bmp</name>
                     <description>BMP 上报状态</description>
                 </element>
-                <element type="keyword">
+                <element id="4" type="keyword">
                     <name>instance</name>
                     <description>指定 BMP 实例</description>
                 </element>
-                <element cfg-id="1" type="parameter">
+                <element id="5" cfg-id="1" type="parameter">
                     <name>&lt;instance-name&gt;</name>
                     <type>string(1-31)</type>
                     <description>BMP 实例名称</description>

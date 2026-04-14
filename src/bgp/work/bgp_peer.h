@@ -15,6 +15,7 @@
 /* 前向声明，避免循环包含 */
 typedef struct bgp_vrf bgp_vrf_t;
 typedef struct bgp_instance bgp_instance_t;
+typedef struct bgp_nh_subgroup bgp_nh_subgroup_t;
 
 /** BGP per-AF peer：在某地址族下使能的邻居实例 */
 typedef struct bgp_peer
@@ -23,6 +24,7 @@ typedef struct bgp_peer
     bool established;     /**< 已通过 OPEN 协商激活 */
     bgp_vrf_t *vrf;       /**< 所属 VRF（借用引用，不持有所有权） */
     bgp_instance_t *inst; /**< 所属 AF 实例（借用引用，不持有所有权） */
+    GList *subgroups;     /**< bgp_nh_subgroup_t* 借用引用列表（可同时归属多个子组） */
 } bgp_peer_t;
 
 /**

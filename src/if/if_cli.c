@@ -375,13 +375,14 @@ static void show_single_entry(GString *resp_buf, const char *ifname, const if_ma
                            "\r\nInterface %s Detail:\r\n"
                            "============================\r\n"
                            "  Name       : %s\r\n"
+                           "  Ifindex    : %u\r\n"
                            "  Type       : %s\r\n"
                            "  State      : %s\r\n"
                            "  IPv4 Addr  : %s\r\n"
                            "  IPv6 Addr  : %s\r\n"
                            "  MAC        : %s\r\n"
                            "  MTU        : %d\r\n\r\n",
-                           ifname, ifname, type_str, state_str, ip4_str, ip6_str, mac_str, mtu);
+                           ifname, ifname, e->ifindex, type_str, state_str, ip4_str, ip6_str, mac_str, mtu);
 }
 
 /**

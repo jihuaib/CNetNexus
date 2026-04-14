@@ -181,7 +181,7 @@ void bgp_calc_run_one(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
         {
             bgp_route_flush_queue_push(inst->route_flush_queue, head);
         }
-        bgp_work_send_withdraw_to_all(inst, nlri);
+        bgp_work_enqueue_withdraw_to_subgroups(inst, nlri);
         char key[BGP_NLRI_KEY_MAX];
         bgp_nlri_to_str(nlri, key, sizeof(key));
         LOG_DEBUG("BGP: calc_run_one WITHDRAW key=%s afi=%u safi=%u", key, (unsigned)inst->afi, (unsigned)inst->safi);
@@ -213,7 +213,7 @@ void bgp_calc_run_one(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
         {
             bgp_route_flush_queue_push(inst->route_flush_queue, head);
         }
-        bgp_work_send_withdraw_to_all(inst, nlri);
+        bgp_work_enqueue_withdraw_to_subgroups(inst, nlri);
         char key[BGP_NLRI_KEY_MAX];
         bgp_nlri_to_str(nlri, key, sizeof(key));
         LOG_DEBUG("BGP: calc_run_one WITHDRAW(all-invalid) key=%s afi=%u safi=%u", key, (unsigned)inst->afi,
@@ -225,7 +225,7 @@ void bgp_calc_run_one(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
     bgp_rib_mark_best(inst->rib, &head->nlri, best);
 
     /* 将 NLRI 挂入各 ESTABLISHED 邻居的 session 发布队列 */
-    bgp_work_enqueue_announce_to_established(inst, &head->nlri);
+    bgp_work_enqueue_announce_to_subgroups(inst, &head->nlri);
 
     const bgp_route_node_t *new_best = bgp_rib_find_best(inst->rib, &head->nlri);
     int best_switched = (old_best != new_best);

@@ -882,7 +882,7 @@ static void isis_lsp_apply_instance_cb(gpointer key, gpointer value, gpointer us
     (void)key;
     isis_instance_cfg_t *inst = (isis_instance_cfg_t *)value;
     isis_lsp_rx_ctx_t *ctx = (isis_lsp_rx_ctx_t *)user_data;
-    if (!inst || !ctx || !ctx->ifname || !ctx->if_entry || !inst->if_cfgs || !inst->learned_routes)
+    if (!inst || !ctx || !ctx->ifname || !ctx->if_entry || !inst->if_cfgs || !inst->learned_route_heads)
     {
         return;
     }

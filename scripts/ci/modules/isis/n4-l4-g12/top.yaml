@@ -1,0 +1,53 @@
+version: 1
+image: netnexus-ci:latest
+
+devices:
+  r1: {}
+  r2: {}
+  r3: {}
+  r4: {}
+
+links:
+  - name: r1-ge1-r2-ge1
+    endpoints:
+      - device: r1
+        if: GE-1
+        cidr: 10.12.0.1/30
+        cidr6: 2001:db8:12::1/64
+      - device: r2
+        if: GE-1
+        cidr: 10.12.0.2/30
+        cidr6: 2001:db8:12::2/64
+
+  - name: r1-ge2-r3-ge1
+    endpoints:
+      - device: r1
+        if: GE-2
+        cidr: 10.13.0.1/30
+        cidr6: 2001:db8:13::1/64
+      - device: r3
+        if: GE-1
+        cidr: 10.13.0.2/30
+        cidr6: 2001:db8:13::2/64
+
+  - name: r2-ge2-r4-ge1
+    endpoints:
+      - device: r2
+        if: GE-2
+        cidr: 10.24.0.1/30
+        cidr6: 2001:db8:24::1/64
+      - device: r4
+        if: GE-1
+        cidr: 10.24.0.2/30
+        cidr6: 2001:db8:24::2/64
+
+  - name: r3-ge2-r4-ge2
+    endpoints:
+      - device: r3
+        if: GE-2
+        cidr: 10.34.0.1/30
+        cidr6: 2001:db8:34::1/64
+      - device: r4
+        if: GE-2
+        cidr: 10.34.0.2/30
+        cidr6: 2001:db8:34::2/64

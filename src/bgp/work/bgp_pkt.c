@@ -653,6 +653,224 @@ int bgp_pkt_send_withdraw(bgp_conn_t *conn, const bgp_nlri_entry_t *nlri)
 }
 
 // ============================================================================
+// Packed UPDATE / WITHDRAW 构建（多 NLRI 共享属性）
+// ============================================================================
+
+int bgp_pkt_build_packed_update(uint8_t *buf, int buf_size, const bgp_nlri_entry_t *const *nlri_list, int nlri_count,
+                                const bgp_attr_t *attr, const bgp_nexthop_t *nexthop, uint16_t afi, uint8_t safi,
+                                int *out_packed_count)
+{
+    if (out_packed_count)
+    {
+        *out_packed_count = 0;
+    }
+    if (!buf || buf_size < BGP_MSG_HEADER_SIZE || !nlri_list || nlri_count <= 0 || !attr || !nexthop)
+    {
+        return -1;
+    }
+
+    const bgp_pkt_af_enc_t *enc = bgp_pkt_af_enc_find(afi, safi);
+    if (!enc || !enc->encode_reach_pa_packed || !enc->encode_reach_nlri_packed)
+    {
+        return -1;
+    }
+
+    int pos = BGP_MSG_HEADER_SIZE;
+
+    /* Withdrawn Routes Length = 0 */
+    if (pos + 2 > buf_size)
+    {
+        return -1;
+    }
+    buf[pos++] = 0;
+    buf[pos++] = 0;
+
+    /* Total Path Attribute Length（稍后回填） */
+    if (pos + 2 > buf_size)
+    {
+        return -1;
+    }
+    int pa_len_pos = pos;
+    pos += 2;
+    int pa_body_start = pos;
+
+    int n = encode_origin(buf + pos, buf_size - pos, attr->origin);
+    if (n < 0)
+    {
+        return -1;
+    }
+    pos += n;
+
+    n = encode_as_path(buf + pos, buf_size - pos, attr->as_path);
+    if (n < 0)
+    {
+        return -1;
+    }
+    pos += n;
+
+    /* AF 相关 PA（Packed） */
+    int pa_packed = 0;
+    n = enc->encode_reach_pa_packed(buf + pos, buf_size - pos, nlri_list, nlri_count, nexthop, &pa_packed);
+    if (n < 0 || pa_packed <= 0)
+    {
+        return -1;
+    }
+    pos += n;
+
+    if (attr->has_local_pref)
+    {
+        n = encode_local_pref(buf + pos, buf_size - pos, attr->local_pref);
+        if (n < 0)
+        {
+            return -1;
+        }
+        pos += n;
+    }
+
+    if (attr->has_med)
+    {
+        n = encode_med(buf + pos, buf_size - pos, attr->med);
+        if (n < 0)
+        {
+            return -1;
+        }
+        pos += n;
+    }
+
+    n = encode_community(buf + pos, buf_size - pos, attr->communities);
+    if (n < 0)
+    {
+        return -1;
+    }
+    pos += n;
+
+    uint16_t pa_total_be = htons((uint16_t)(pos - pa_body_start));
+    memcpy(buf + pa_len_pos, &pa_total_be, 2);
+
+    /* NLRI 段（IPv4-trad 时打包前缀；MP_REACH 时返回 0） */
+    int nlri_packed = 0;
+    n = enc->encode_reach_nlri_packed(buf + pos, buf_size - pos, nlri_list, pa_packed, nexthop, &nlri_packed);
+    if (n < 0)
+    {
+        return -1;
+    }
+    pos += n;
+
+    int packed = (pa_packed < nlri_packed) ? pa_packed : nlri_packed;
+    if (packed <= 0)
+    {
+        return -1;
+    }
+
+    /* BGP header */
+    uint16_t total_len = (uint16_t)pos;
+    memcpy(buf, BGP_MARKER, 16);
+    uint16_t len_be = htons(total_len);
+    memcpy(buf + 16, &len_be, 2);
+    buf[18] = (uint8_t)BGP_MSG_UPDATE;
+
+    if (out_packed_count)
+    {
+        *out_packed_count = packed;
+    }
+    return (int)total_len;
+}
+
+int bgp_pkt_build_packed_withdraw(uint8_t *buf, int buf_size, const bgp_nlri_entry_t *const *nlri_list, int nlri_count,
+                                  const bgp_conn_t *conn, uint16_t afi, uint8_t safi, int *out_packed_count)
+{
+    if (out_packed_count)
+    {
+        *out_packed_count = 0;
+    }
+    if (!buf || buf_size < BGP_MSG_HEADER_SIZE || !nlri_list || nlri_count <= 0 || !conn)
+    {
+        return -1;
+    }
+
+    const bgp_pkt_af_enc_t *enc = bgp_pkt_af_enc_find(afi, safi);
+    if (!enc || !enc->encode_unreach_wd_packed || !enc->encode_unreach_pa_packed)
+    {
+        return -1;
+    }
+
+    int pos = BGP_MSG_HEADER_SIZE;
+
+    /* Withdrawn Routes 段 */
+    if (pos + 2 > buf_size)
+    {
+        return -1;
+    }
+    int wd_len_pos = pos;
+    pos += 2;
+    int wd_body_start = pos;
+
+    int wd_packed = 0;
+    int n = enc->encode_unreach_wd_packed(buf + pos, buf_size - pos, nlri_list, nlri_count, conn, &wd_packed);
+    if (n < 0)
+    {
+        return -1;
+    }
+    pos += n;
+
+    uint16_t wd_len_be = htons((uint16_t)(pos - wd_body_start));
+    memcpy(buf + wd_len_pos, &wd_len_be, 2);
+
+    /* PA 段（MP_UNREACH） */
+    if (pos + 2 > buf_size)
+    {
+        return -1;
+    }
+    int pa_len_pos = pos;
+    pos += 2;
+    int pa_body_start = pos;
+
+    int pa_packed = 0;
+    /* MP_UNREACH 场景只需打包 wd_packed 之内的条目（wd 段为空时打包完整列表） */
+    int pa_input_count = (n == 0) ? nlri_count : wd_packed;
+    n = enc->encode_unreach_pa_packed(buf + pos, buf_size - pos, nlri_list, pa_input_count, conn, &pa_packed);
+    if (n < 0)
+    {
+        return -1;
+    }
+    pos += n;
+
+    uint16_t pa_total_be = htons((uint16_t)(pos - pa_body_start));
+    memcpy(buf + pa_len_pos, &pa_total_be, 2);
+
+    /* wd 和 pa 段只有一个会实际写入前缀：取非零值作为 packed 数 */
+    int packed = 0;
+    if (wd_packed > 0 && pa_packed > 0)
+    {
+        packed = (wd_packed < pa_packed) ? wd_packed : pa_packed;
+    }
+    else if (wd_packed > 0)
+    {
+        packed = wd_packed;
+    }
+    else
+    {
+        packed = pa_packed;
+    }
+    if (packed <= 0)
+    {
+        return -1;
+    }
+
+    uint16_t total_len = (uint16_t)pos;
+    memcpy(buf, BGP_MARKER, 16);
+    uint16_t len_be = htons(total_len);
+    memcpy(buf + 16, &len_be, 2);
+    buf[18] = (uint8_t)BGP_MSG_UPDATE;
+
+    if (out_packed_count)
+    {
+        *out_packed_count = packed;
+    }
+    return (int)total_len;
+}
+
+// ============================================================================
 // 数据接收与状态机
 // ============================================================================
 

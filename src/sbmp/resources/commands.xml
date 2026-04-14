@@ -12,11 +12,11 @@
         <!-- Group 1: bmp-server / no bmp-server (config 视图) -->
         <group group-id="1">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>no</name>
                     <description>Delete</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>bmp-server</name>
                     <description>BMP server configuration</description>
                 </element>
@@ -38,19 +38,19 @@
         <!-- Group 2: server port <port> / no server port (sbmp 视图) -->
         <group group-id="2">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>no</name>
                     <description>Delete</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>server</name>
                     <description>BMP server settings</description>
                 </element>
-                <element type="keyword">
+                <element id="3" type="keyword">
                     <name>port</name>
                     <description>Listening port</description>
                 </element>
-                <element cfg-id="2" type="parameter">
+                <element id="4" cfg-id="2" type="parameter">
                     <name>&lt;port-number&gt;</name>
                     <type>uint(1-65535)</type>
                     <description>BMP server listening port number</description>
@@ -72,11 +72,11 @@
         <!-- Group 3: show bmp-server -->
         <group group-id="3">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>show</name>
                     <description>Display information</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>bmp-server</name>
                     <description>BMP server status</description>
                 </element>
@@ -93,19 +93,19 @@
         <!-- Group 4: show bmp-server client [<client-id>] -->
         <group group-id="4">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>show</name>
                     <description>Display information</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>bmp-server</name>
                     <description>BMP server status</description>
                 </element>
-                <element cfg-id="1" type="keyword">
+                <element id="3" cfg-id="1" type="keyword">
                     <name>client</name>
                     <description>BMP clients</description>
                 </element>
-                <element cfg-id="2" type="parameter">
+                <element id="4" cfg-id="2" type="parameter">
                     <name>&lt;client-id&gt;</name>
                     <type>string</type>
                     <description>BMP client ID (source IP)</description>
@@ -127,32 +127,32 @@
         <!-- Group 5: show bmp-server peer [client <id>] [peer <ip>] -->
         <group group-id="5">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>show</name>
                     <description>Display information</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>bmp-server</name>
                     <description>BMP server status</description>
                 </element>
-                <element type="keyword">
+                <element id="3" type="keyword">
                     <name>peer</name>
                     <description>BMP peers</description>
                 </element>
-                <element cfg-id="1" type="keyword">
+                <element id="4" cfg-id="1" type="keyword">
                     <name>client</name>
                     <description>Filter by BMP client</description>
                 </element>
-                <element cfg-id="2" type="parameter">
+                <element id="5" cfg-id="2" type="parameter">
                     <name>&lt;client-id&gt;</name>
                     <type>string</type>
                     <description>BMP client ID (source IP)</description>
                 </element>
-                <element cfg-id="3" type="keyword">
+                <element id="6" cfg-id="3" type="keyword">
                     <name>peer</name>
                     <description>Filter by peer IP</description>
                 </element>
-                <element cfg-id="4" type="parameter">
+                <element id="7" cfg-id="4" type="parameter">
                     <name>&lt;peer-ip&gt;</name>
                     <type>string</type>
                     <description>Peer ID (IP or loc-rib key)</description>
@@ -182,61 +182,61 @@
         <!-- Group 6: show bmp-server route af ... [client <id>] [peer <ip>] [policy pre|post] -->
         <group group-id="6">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>show</name>
                     <description>Display information</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>bmp-server</name>
                     <description>BMP server status</description>
                 </element>
-                <element type="keyword">
+                <element id="3" type="keyword">
                     <name>route</name>
                     <description>BMP mirrored routes</description>
                 </element>
-                <element type="keyword">
+                <element id="4" type="keyword">
                     <name>af</name>
                     <description>Address-family selector</description>
                 </element>
-                <element cfg-id="1" type="keyword">
+                <element id="5" cfg-id="1" type="keyword">
                     <name>ipv4-unicast</name>
                     <description>IPv4 unicast routes</description>
                 </element>
-                <element cfg-id="2" type="keyword">
+                <element id="6" cfg-id="2" type="keyword">
                     <name>ipv6-unicast</name>
                     <description>IPv6 unicast routes</description>
                 </element>
-                <element type="keyword">
+                <element id="7" type="keyword">
                     <name>client</name>
                     <description>Filter by BMP client</description>
                 </element>
-                <element cfg-id="3" type="parameter">
+                <element id="8" cfg-id="3" type="parameter">
                     <name>&lt;client-id&gt;</name>
                     <type>string</type>
                     <description>BMP client ID (source IP)</description>
                 </element>
-                <element type="keyword">
+                <element id="9" type="keyword">
                     <name>peer</name>
                     <description>Filter by peer IP</description>
                 </element>
-                <element cfg-id="4" type="parameter">
+                <element id="10" cfg-id="4" type="parameter">
                     <name>&lt;peer-ip&gt;</name>
                     <type>string</type>
                     <description>Peer ID (IP or loc-rib key)</description>
                 </element>
-                <element type="keyword">
+                <element id="11" type="keyword">
                     <name>policy</name>
                     <description>Route policy view</description>
                 </element>
-                <element cfg-id="5" type="keyword">
+                <element id="12" cfg-id="5" type="keyword">
                     <name>pre</name>
                     <description>Pre-policy (Adj-RIB-In)</description>
                 </element>
-                <element cfg-id="6" type="keyword">
+                <element id="13" cfg-id="6" type="keyword">
                     <name>post</name>
                     <description>Post-policy routes</description>
                 </element>
-                <element cfg-id="7" type="keyword">
+                <element id="14" cfg-id="7" type="keyword">
                     <name>loc-rib</name>
                     <description>Loc-RIB routes</description>
                 </element>

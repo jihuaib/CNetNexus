@@ -161,6 +161,201 @@ static int ipv6uc_encode_unreach_pa(uint8_t *buf, int buf_size, const bgp_nlri_e
     return encode_mp_unreach(buf, buf_size, nlri);
 }
 
+// ============================================================================
+// Packed 版本（Phase 3）
+// ============================================================================
+
+/**
+ * @brief Packed 宣告 PA：MP_REACH_NLRI 嵌入多条 IPv6 前缀
+ */
+static int ipv6uc_encode_reach_pa_packed(uint8_t *buf, int buf_size, const bgp_nlri_entry_t *const *nlri_list,
+                                         int nlri_count, const bgp_nexthop_t *nexthop, int *out_packed)
+{
+    if (out_packed)
+    {
+        *out_packed = 0;
+    }
+    if (!nexthop || nexthop->global.family == 0)
+    {
+        return -1;
+    }
+
+    uint8_t nh_len = 0;
+    if (nexthop->global.family == AF_INET)
+    {
+        nh_len = 4;
+    }
+    else if (nexthop->global.family == AF_INET6)
+    {
+        nh_len = nexthop->has_link_local ? 32 : 16;
+    }
+    else
+    {
+        return -1;
+    }
+
+    int header_len = 3 + 2 + 1 + 1 + (int)nh_len + 1;
+    if (buf_size < header_len)
+    {
+        return -1;
+    }
+
+    int pos = 3;
+    uint16_t afi_be = htons(BGP_AFI_IPV6);
+    memcpy(buf + pos, &afi_be, 2);
+    pos += 2;
+    buf[pos++] = BGP_SAFI_UNICAST;
+    buf[pos++] = nh_len;
+    if (nexthop->global.family == AF_INET)
+    {
+        memcpy(buf + pos, &nexthop->global.u.v4.s_addr, 4);
+        pos += 4;
+    }
+    else
+    {
+        memcpy(buf + pos, &nexthop->global.u.v6, 16);
+        pos += 16;
+        if (nexthop->has_link_local)
+        {
+            memcpy(buf + pos, &nexthop->link_local.u.v6, 16);
+            pos += 16;
+        }
+    }
+    buf[pos++] = 0; /* SNPA count */
+
+    int packed = 0;
+    for (int i = 0; i < nlri_count; i++)
+    {
+        const bgp_nlri_entry_t *nlri = nlri_list[i];
+        if (!nlri || nlri->type != BGP_NLRI_PREFIX)
+        {
+            continue;
+        }
+        uint8_t plen = nlri->prefix.prefix.prefix_len;
+        int pfx_len = 1 + (plen + 7) / 8;
+        if ((pos - 3) + pfx_len > 255)
+        {
+            break;
+        }
+        int n = bgp_pkt_encode_prefix(buf + pos, buf_size - pos, &nlri->prefix.prefix);
+        if (n < 0)
+        {
+            break;
+        }
+        pos += n;
+        packed++;
+    }
+    if (packed == 0)
+    {
+        return -1;
+    }
+
+    int value_len = pos - 3;
+    buf[0] = BGP_PA_FLAG_OPTIONAL;
+    buf[1] = BGP_PA_TYPE_MP_REACH;
+    buf[2] = (uint8_t)value_len;
+    if (out_packed)
+    {
+        *out_packed = packed;
+    }
+    return pos;
+}
+
+/**
+ * @brief Packed NLRI：IPv6 UC 的 NLRI 已嵌入 MP_REACH，NLRI 段为空
+ */
+static int ipv6uc_encode_reach_nlri_packed(uint8_t *buf, int buf_size, const bgp_nlri_entry_t *const *nlri_list,
+                                           int nlri_count, const bgp_nexthop_t *nexthop, int *out_packed)
+{
+    (void)buf;
+    (void)buf_size;
+    (void)nlri_list;
+    (void)nexthop;
+    if (out_packed)
+    {
+        *out_packed = nlri_count;
+    }
+    return 0;
+}
+
+/**
+ * @brief Packed 撤销 Withdrawn：IPv6 UC 不使用 Withdrawn 段
+ */
+static int ipv6uc_encode_unreach_wd_packed(uint8_t *buf, int buf_size, const bgp_nlri_entry_t *const *nlri_list,
+                                           int nlri_count, const bgp_conn_t *conn, int *out_packed)
+{
+    (void)buf;
+    (void)buf_size;
+    (void)nlri_list;
+    (void)conn;
+    if (out_packed)
+    {
+        *out_packed = nlri_count;
+    }
+    return 0;
+}
+
+/**
+ * @brief Packed 撤销 PA：MP_UNREACH_NLRI 嵌入多条 IPv6 前缀
+ */
+static int ipv6uc_encode_unreach_pa_packed(uint8_t *buf, int buf_size, const bgp_nlri_entry_t *const *nlri_list,
+                                           int nlri_count, const bgp_conn_t *conn, int *out_packed)
+{
+    (void)conn;
+    if (out_packed)
+    {
+        *out_packed = 0;
+    }
+
+    int header_len = 3 + 2 + 1;
+    if (buf_size < header_len)
+    {
+        return -1;
+    }
+    int pos = 3;
+    uint16_t afi_be = htons(BGP_AFI_IPV6);
+    memcpy(buf + pos, &afi_be, 2);
+    pos += 2;
+    buf[pos++] = BGP_SAFI_UNICAST;
+
+    int packed = 0;
+    for (int i = 0; i < nlri_count; i++)
+    {
+        const bgp_nlri_entry_t *nlri = nlri_list[i];
+        if (!nlri || nlri->type != BGP_NLRI_PREFIX)
+        {
+            continue;
+        }
+        uint8_t plen = nlri->prefix.prefix.prefix_len;
+        int pfx_len = 1 + (plen + 7) / 8;
+        if ((pos - 3) + pfx_len > 255)
+        {
+            break;
+        }
+        int n = bgp_pkt_encode_prefix(buf + pos, buf_size - pos, &nlri->prefix.prefix);
+        if (n < 0)
+        {
+            break;
+        }
+        pos += n;
+        packed++;
+    }
+    if (packed == 0)
+    {
+        return -1;
+    }
+
+    int value_len = pos - 3;
+    buf[0] = BGP_PA_FLAG_OPTIONAL;
+    buf[1] = BGP_PA_TYPE_MP_UNREACH;
+    buf[2] = (uint8_t)value_len;
+    if (out_packed)
+    {
+        *out_packed = packed;
+    }
+    return pos;
+}
+
 /** IPv6 单播编码器描述符 */
 static const bgp_pkt_af_enc_t g_ipv6uc_enc = {
     .afi = BGP_AFI_IPV6,
@@ -169,6 +364,10 @@ static const bgp_pkt_af_enc_t g_ipv6uc_enc = {
     .encode_reach_nlri = ipv6uc_encode_reach_nlri,
     .encode_unreach_wd = ipv6uc_encode_unreach_wd,
     .encode_unreach_pa = ipv6uc_encode_unreach_pa,
+    .encode_reach_pa_packed = ipv6uc_encode_reach_pa_packed,
+    .encode_reach_nlri_packed = ipv6uc_encode_reach_nlri_packed,
+    .encode_unreach_wd_packed = ipv6uc_encode_unreach_wd_packed,
+    .encode_unreach_pa_packed = ipv6uc_encode_unreach_pa_packed,
 };
 
 void bgp_pkt_build_ipv6uc_register(void)

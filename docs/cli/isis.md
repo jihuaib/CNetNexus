@@ -79,14 +79,21 @@ ISIS interface commands are split by IP type and instance tag.
 
 ## 4. Show Commands (`global`)
 
-### 4.1 `show isis [ipv4|ipv6] summary [<tag>]`
+### 4.1 `show isis [ipv4|ipv6] summary <tag>`
 Displays ISIS instance summary.
 
-### 4.2 `show isis [ipv4|ipv6] interface [<tag>]`
+### 4.2 `show isis [ipv4|ipv6] interface <tag>`
 Displays ISIS interface status per instance.
 
-### 4.3 `show isis [ipv4|ipv6] neighbor [<tag>]`
-Displays learned ISIS LAN neighbors.
+### 4.3 `show isis neighbor <tag> [verbose]`
+Displays learned ISIS LAN neighbors for the specified instance tag.
+
+- Neighbor negotiation is interface-based (not per AF), so IPv4/IPv6 variants are not provided for this command.
+- `verbose` shows full per-neighbor negotiation details, including:
+  - instance/interface status
+  - per-AF local enable/passive state
+  - remote AF advertisement
+  - per-AF negotiated result (`yes`/`no`)
 
 - Fields:
   - `Tag`: ISIS instance tag
@@ -99,7 +106,7 @@ Displays learned ISIS LAN neighbors.
   - `IPv4`: Neighbor IPv4 interface address (if advertised)
   - `IPv6`: Neighbor IPv6 interface address (if advertised)
 
-### 4.4 `show isis [ipv4|ipv6] lsdb [<tag>]`
+### 4.4 `show isis [ipv4|ipv6] lsdb <tag>`
 Displays ISIS LSDB entries learned from received LSPs.
 
 - Fields:
@@ -113,6 +120,20 @@ Displays ISIS LSDB entries learned from received LSPs.
   - `IPv4`: Count of IPv4 reachability entries
   - `IPv6`: Count of IPv6 reachability entries
   - `LastRx`: Seconds since latest LSP received
+
+### 4.5 `show isis [ipv4|ipv6] route <tag>`
+Displays all ISIS route states for the specified instance tag, including:
+- local interface-originated ISIS routes
+- neighbor host routes
+- SPF/LSP learned routes
+
+### 4.6 `show isis [ipv4|ipv6] route <tag> <destination> <mask>`
+Displays detailed information for routes matching the given destination prefix in the specified instance.
+
+- IPv4 detail form:
+  - `show isis ipv4 route <tag> <destination> <mask>` (`mask`: `0-32`)
+- IPv6 detail form:
+  - `show isis ipv6 route <tag> <destination6> <mask6>` (`mask6`: `0-128`)
 
 ## 5. Route Learning Behavior (Current Stage)
 
@@ -142,9 +163,15 @@ Displays ISIS LSDB entries learned from received LSPs.
 - For ISIS-enabled interfaces (for example `isis enable <tag>` / `isis ipv6 enable <tag>`), LAN IIH is sent periodically (default hello 10s, hold-multiplier 3).
 - ISIS LSP (L1/L2) is sent periodically on active non-passive ISIS interfaces.
 - Received LAN IIH updates in-memory neighbor table per instance/interface/level.
-- Received LSP updates are written into in-memory LSDB (`show isis [ipv4|ipv6] lsdb [<tag>]`) and used for SPF route learning.
+- Received LSP updates are written into in-memory LSDB (`show isis [ipv4|ipv6] lsdb <tag>`) and used for SPF route learning.
 - Newer LSPs are flooded to other active non-passive ISIS interfaces (except ingress interface).
 - SPF builds topology from LSDB adjacency TLVs and computes first-hop nexthop for route installation.
 - Neighbor entries age out by hold timer or are removed on interface disable/down.
 - AF-specific passive (`isis passive <tag>` / `isis ipv6 passive <tag>`) controls participation per family.
 - If at least one AF on an interface remains enabled and non-passive, IIH/LSP transmission still stays active on that interface.
+
+## 7. Deep Dive: Single-LSDB Entry vs Multipath Result
+
+For a detailed explanation of why ISIS can still produce non-best (backup) paths even when LSDB keeps one latest LSP per `(level, system-id)`, see:
+
+- [`docs/dev/isis-spf-multipath.md`](../dev/isis-spf-multipath.md)

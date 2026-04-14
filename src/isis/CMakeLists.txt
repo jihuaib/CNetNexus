@@ -4,6 +4,7 @@ set(ISIS_SOURCES
     isis_db.c
     isis_bdr.c
     work/isis_worker.c
+    work/isis_route.c
     work/isis_route_sync.c
     work/isis_show.c
     work/isis_neighbor.c

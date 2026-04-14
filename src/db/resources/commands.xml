@@ -5,27 +5,27 @@
         <!-- DB Show Commands -->
         <group group-id="1">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>show</name> <!-- 1 -->
                     <description>Display system information</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>db</name> <!-- 2 -->
                     <description>Database information</description>
                 </element>
-                <element cfg-id="1" type="keyword">
+                <element id="3" cfg-id="1" type="keyword">
                     <name>table-list</name> <!-- 3 -->
                     <description>Show all tables in the database</description>
                 </element>
-                <element cfg-id="2" type="keyword">
+                <element id="4" cfg-id="2" type="keyword">
                     <name>table-field</name> <!-- 4 -->
                     <description>Show fields of a table</description>
                 </element>
-                <element cfg-id="3" type="keyword">
+                <element id="5" cfg-id="3" type="keyword">
                     <name>table-data</name> <!-- 5 -->
                     <description>Show data in a table</description>
                 </element>
-                <element cfg-id="4" type="parameter">
+                <element id="6" cfg-id="4" type="parameter">
                     <name>&lt;table-name&gt;</name> <!-- 6 -->
                     <description>Table name</description>
                     <!-- dynamic：Tab/? 时 RPC 查询 DB 模块返回当前所有已创建的表名 -->

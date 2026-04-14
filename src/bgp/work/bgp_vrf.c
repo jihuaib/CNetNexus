@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "bgp_rib.h"
+#include "bgp_update_group.h"
 #include "log.h"
 #include "net_addr.h"
 
@@ -183,10 +184,13 @@ int bgp_vrf_af_disable_neighbor(bgp_vrf_t *vrf, bgp_afi_t afi, bgp_safi_t safi, 
 
     /* 先从 session->peer_list 移除借用引用（不销毁 peer） */
     bgp_session_t *sess = bgp_vrf_find_session(vrf, addr);
+    if (peer->subgroups)
+    {
+        bgp_subgroup_peer_leave(peer, sess);
+    }
     if (sess)
     {
         sess->peer_list = g_list_remove(sess->peer_list, peer);
-        bgp_pub_queue_drop_instance(sess->pub_queue, afi, safi);
     }
 
     /* 再从 instance.peer_hash 中删除，触发 bgp_peer_destroy */
@@ -293,10 +297,15 @@ void bgp_vrf_del_instance(bgp_vrf_t *vrf, bgp_afi_t afi, bgp_safi_t safi)
     g_hash_table_iter_init(&iter, inst->peer_hash);
     while (g_hash_table_iter_next(&iter, &key, &val))
     {
+        bgp_peer_t *peer = (bgp_peer_t *)val;
         bgp_session_t *sess = bgp_vrf_find_session(vrf, (const net_addr_t *)key);
+        if (peer && peer->subgroups)
+        {
+            bgp_subgroup_peer_leave(peer, sess);
+        }
         if (sess)
         {
-            sess->peer_list = g_list_remove(sess->peer_list, (bgp_peer_t *)val);
+            sess->peer_list = g_list_remove(sess->peer_list, peer);
         }
     }
 

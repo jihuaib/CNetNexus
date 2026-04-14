@@ -15,23 +15,23 @@
         <!-- Interface Entry Command -->
         <group group-id="1">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>if</name> <!-- 1 -->
                     <description>Enter interface configuration mode</description>
                 </element>
-                <element cfg-id="1" type="keyword">
+                <element id="2" cfg-id="1" type="keyword">
                     <name>GE-1</name> <!-- 2 -->
                     <description>Interface name</description>
                 </element>
-                <element cfg-id="2" type="keyword">
+                <element id="3" cfg-id="2" type="keyword">
                     <name>GE-2</name> <!-- 3 -->
                     <description>Interface name</description>
                 </element>
-                <element cfg-id="3" type="keyword">
+                <element id="4" cfg-id="3" type="keyword">
                     <name>GE-3</name> <!-- 4 -->
                     <description>Interface name</description>
                 </element>
-                <element cfg-id="4" type="keyword">
+                <element id="5" cfg-id="4" type="keyword">
                     <name>GE-4</name> <!-- 5 -->
                     <description>Interface name</description>
                 </element>
@@ -79,42 +79,42 @@
         <!-- Interface Configuration Commands -->
         <group group-id="2">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>ip</name> <!-- 1 -->
                     <description>IP configuration</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>address</name> <!-- 2 -->
                     <description>Configure IP address</description>
                 </element>
-                <element cfg-id="1" type="parameter">
+                <element id="3" cfg-id="1" type="parameter">
                     <name>&lt;ip-address&gt;</name> <!-- 3 -->
                     <description>IPv4 address</description>
                     <type>ipv4</type>
                 </element>
-                <element cfg-id="2" type="parameter">
+                <element id="4" cfg-id="2" type="parameter">
                     <name>&lt;prefix-len&gt;</name> <!-- 4 -->
                     <description>Prefix length (0-32)</description>
                     <type>uint(0-32)</type>
                 </element>
-                <element cfg-id="3" type="keyword">
+                <element id="5" cfg-id="3" type="keyword">
                     <name>shutdown</name> <!-- 5 -->
                     <description>Disable the interface</description>
                 </element>
-                <element cfg-id="4" type="keyword">
+                <element id="6" cfg-id="4" type="keyword">
                     <name>no</name> <!-- 6 -->
                     <description>Negate a command</description>
                 </element>
-                <element cfg-id="5" type="keyword">
+                <element id="7" cfg-id="5" type="keyword">
                     <name>ipv6</name> <!-- 7 -->
                     <description>IPv6 configuration</description>
                 </element>
-                <element cfg-id="6" type="parameter">
+                <element id="8" cfg-id="6" type="parameter">
                     <name>&lt;ipv6-address&gt;</name> <!-- 8 -->
                     <description>IPv6 address</description>
                     <type>ipv6</type>
                 </element>
-                <element cfg-id="7" type="parameter">
+                <element id="9" cfg-id="7" type="parameter">
                     <name>&lt;prefix-len&gt;</name> <!-- 9 -->
                     <description>IPv6 prefix length (0-128)</description>
                     <type>uint(0-128)</type>
@@ -156,35 +156,35 @@
         <!-- Show Commands -->
         <group group-id="3">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>show</name> <!-- 1 -->
                     <description>Display system information</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>if</name> <!-- 2 -->
                     <description>Interface information</description>
                 </element>
-                <element cfg-id="1" type="keyword">
+                <element id="3" cfg-id="1" type="keyword">
                     <name>GE-1</name> <!-- 3 -->
                     <description>Interface name</description>
                 </element>
-                <element cfg-id="2" type="keyword">
+                <element id="4" cfg-id="2" type="keyword">
                     <name>GE-2</name> <!-- 4 -->
                     <description>Interface name</description>
                 </element>
-                <element cfg-id="3" type="keyword">
+                <element id="5" cfg-id="3" type="keyword">
                     <name>GE-3</name> <!-- 5 -->
                     <description>Interface name</description>
                 </element>
-                <element cfg-id="4" type="keyword">
+                <element id="6" cfg-id="4" type="keyword">
                     <name>GE-4</name> <!-- 6 -->
                     <description>Interface name</description>
                 </element>
-                <element type="keyword">
+                <element id="7" type="keyword">
                     <name>loop</name> <!-- 7 -->
                     <description>Loopback interface</description>
                 </element>
-                <element cfg-id="5" type="parameter">
+                <element id="8" cfg-id="5" type="parameter">
                     <name>&lt;loop-id&gt;</name> <!-- 8 -->
                     <description>Loopback interface number (1-1024)</description>
                     <type>uint(1-1024)</type>
@@ -212,20 +212,20 @@
         <!-- Loop Interface Entry / Delete Commands -->
         <group group-id="4">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>if</name> <!-- 1 -->
                     <description>接口配置</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>loop</name> <!-- 2 -->
                     <description>Loopback 接口</description>
                 </element>
-                <element cfg-id="1" type="parameter">
+                <element id="3" cfg-id="1" type="parameter">
                     <name>&lt;loop-id&gt;</name> <!-- 3 -->
                     <description>Loopback 接口编号（1-1024）</description>
                     <type>uint(1-1024)</type>
                 </element>
-                <element type="keyword">
+                <element id="4" type="keyword">
                     <name>no</name> <!-- 4 -->
                     <description>删除命令</description>
                 </element>

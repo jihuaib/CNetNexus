@@ -89,6 +89,51 @@ int bgp_pkt_send_update(bgp_conn_t *conn, const bgp_nlri_entry_t *nlri, const bg
 int bgp_pkt_send_withdraw(bgp_conn_t *conn, const bgp_nlri_entry_t *nlri);
 
 /**
+ * @brief 构建打包 UPDATE 报文（多条共享属性的 NLRI）
+ *
+ * 将多条共享同一 (attr, nexthop) 的 NLRI 打包进一个 UPDATE 报文，
+ * 同一子组内所有 session 可共享此报文发送。
+ *
+ * - IPv4+IPv4 nh：单个 NEXT_HOP 属性 + 多条 NLRI（传统编码）
+ * - IPv4+IPv6 nh / IPv6：MP_REACH_NLRI 内嵌多条前缀（RFC 4760/8950）
+ *
+ * 缓冲区不足时仅打包前 *out_packed_count 条 NLRI；调用方需循环处理剩余。
+ *
+ * @param buf              输出缓冲区
+ * @param buf_size         缓冲区大小（建议 BGP_UPDATE_BUF_SIZE=4096）
+ * @param nlri_list        NLRI 指针数组
+ * @param nlri_count       数组长度
+ * @param attr             共享路径属性
+ * @param nexthop          共享 nexthop
+ * @param afi              地址族
+ * @param safi             子地址族
+ * @param out_packed_count 实际打包的 NLRI 数
+ * @return 报文总字节数，-1=失败（连单条都放不下）
+ */
+int bgp_pkt_build_packed_update(uint8_t *buf, int buf_size, const bgp_nlri_entry_t *const *nlri_list, int nlri_count,
+                                const bgp_attr_t *attr, const bgp_nexthop_t *nexthop, uint16_t afi, uint8_t safi,
+                                int *out_packed_count);
+
+/**
+ * @brief 构建打包 WITHDRAW 报文（多条 NLRI）
+ *
+ * - IPv4 peer（无 EXT_NEXTHOP）：Withdrawn Routes 段内嵌多条 IPv4 前缀
+ * - IPv6 peer：MP_UNREACH_NLRI 内嵌多条前缀
+ *
+ * @param buf              输出缓冲区
+ * @param buf_size         缓冲区大小
+ * @param nlri_list        NLRI 指针数组
+ * @param nlri_count       数组长度
+ * @param conn             目标连接（用于判断 RFC 8950 场景）
+ * @param afi              地址族
+ * @param safi             子地址族
+ * @param out_packed_count 实际打包的 NLRI 数
+ * @return 报文总字节数，-1=失败
+ */
+int bgp_pkt_build_packed_withdraw(uint8_t *buf, int buf_size, const bgp_nlri_entry_t *const *nlri_list, int nlri_count,
+                                  const bgp_conn_t *conn, uint16_t afi, uint8_t safi, int *out_packed_count);
+
+/**
  * @brief 接收并处理对端数据，按完整 BGP PDU 驱动 session 级协议状态
  *
  * 内部直接派发 FSM 事件和碰撞处理，调用方无需额外处理返回值。

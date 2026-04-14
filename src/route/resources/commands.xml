@@ -14,56 +14,56 @@
              ================================================================ -->
         <group group-id="1">
             <elements>
-                <element cfg-id="1" type="keyword">
+                <element id="1" cfg-id="1" type="keyword">
                     <name>no</name>
                     <description>Delete route</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>route</name>
                     <description>Static route configuration</description>
                 </element>
-                <element cfg-id="2" type="keyword">
+                <element id="3" cfg-id="2" type="keyword">
                     <name>ipv4</name>
                     <description>IPv4 route</description>
                 </element>
-                <element cfg-id="3" type="keyword">
+                <element id="4" cfg-id="3" type="keyword">
                     <name>ipv6</name>
                     <description>IPv6 route</description>
                 </element>
-                <element cfg-id="4" type="parameter">
+                <element id="5" cfg-id="4" type="parameter">
                     <name>&lt;prefix&gt;</name>
                     <type>string</type>
                     <description>Destination network address</description>
                 </element>
-                <element cfg-id="5" type="parameter">
+                <element id="6" cfg-id="5" type="parameter">
                     <name>&lt;prefix-length&gt;</name>
                     <type>uint(1-32)</type>
                     <description>Prefix length (IPv4, 1-32)</description>
                 </element>
-                <element cfg-id="6" type="parameter">
+                <element id="7" cfg-id="6" type="parameter">
                     <name>&lt;prefix-length&gt;</name>
                     <type>uint(1-128)</type>
                     <description>Prefix length (IPv6, 1-128)</description>
                 </element>
-                <element cfg-id="7" type="parameter">
+                <element id="8" cfg-id="7" type="parameter">
                     <name>&lt;nexthop&gt;</name>
                     <type>string</type>
                     <description>Next-hop address</description>
                 </element>
-                <element type="keyword">
+                <element id="9" type="keyword">
                     <name>metric</name>
                     <description>Set metric value</description>
                 </element>
-                <element cfg-id="8" type="parameter">
+                <element id="10" cfg-id="8" type="parameter">
                     <name>&lt;metric-value&gt;</name>
                     <type>uint(0-255)</type>
                     <description>Route metric value (0-255)</description>
                 </element>
-                <element cfg-id="9" type="keyword">
+                <element id="11" cfg-id="9" type="keyword">
                     <name>interface</name>
                     <description>Specify output interface</description>
                 </element>
-                <element cfg-id="10" type="parameter">
+                <element id="12" cfg-id="10" type="parameter">
                     <name>&lt;ifname&gt;</name>
                     <type>dynamic(4:1,string(1-31))</type>
                     <description>Output interface name</description>
@@ -195,65 +195,65 @@
              ================================================================ -->
         <group group-id="2">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>show</name>
                     <description>Display system information</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>route</name>
                     <description>Routing table</description>
                 </element>
-                <element cfg-id="1" type="keyword">
+                <element id="3" cfg-id="1" type="keyword">
                     <name>ipv4</name>
                     <description>IPv4 routes</description>
                 </element>
-                <element cfg-id="2" type="keyword">
+                <element id="4" cfg-id="2" type="keyword">
                     <name>ipv6</name>
                     <description>IPv6 routes</description>
                 </element>
-                <element cfg-id="4" type="parameter">
+                <element id="5" cfg-id="4" type="parameter">
                     <name>&lt;destination&gt;</name>
                     <type>string</type>
                     <description>Filter by destination address</description>
                 </element>
-                <element type="keyword">
+                <element id="6" type="keyword">
                     <name>proto</name>
                     <description>Filter by protocol type</description>
                 </element>
-                <element cfg-id="5" type="keyword">
+                <element id="7" cfg-id="5" type="keyword">
                     <name>static</name>
                     <description>Static routes</description>
                 </element>
-                <element cfg-id="6" type="keyword">
+                <element id="8" cfg-id="6" type="keyword">
                     <name>bgp</name>
                     <description>BGP routes</description>
                 </element>
-                <element cfg-id="7" type="keyword">
+                <element id="9" cfg-id="7" type="keyword">
                     <name>ospf</name>
                     <description>OSPF routes</description>
                 </element>
-                <element cfg-id="8" type="keyword">
+                <element id="10" cfg-id="8" type="keyword">
                     <name>summary</name>
                     <description>Route summary statistics</description>
                 </element>
-                <element cfg-id="9" type="keyword">
+                <element id="11" cfg-id="9" type="keyword">
                     <name>connected</name>
                     <description>Directly connected routes</description>
                 </element>
-                <element cfg-id="10" type="keyword">
+                <element id="12" cfg-id="10" type="keyword">
                     <name>os</name>
                     <description>Linux kernel routing table (all tables)</description>
                 </element>
-                <element cfg-id="11" type="keyword">
+                <element id="13" cfg-id="11" type="keyword">
                     <name>isis</name>
                     <description>ISIS routes</description>
                 </element>
-                <element cfg-id="12" type="parameter">
+                <element id="14" cfg-id="12" type="parameter">
                     <name>&lt;prefix-length&gt;</name>
                     <type>uint(0-32)</type>
                     <description>IPv4 destination prefix length (0-32)</description>
                 </element>
-                <element cfg-id="13" type="parameter">
+                <element id="15" cfg-id="13" type="parameter">
                     <name>&lt;prefix-length&gt;</name>
                     <type>uint(0-128)</type>
                     <description>IPv6 destination prefix length (0-128)</description>
@@ -363,60 +363,60 @@
              ================================================================ -->
         <group group-id="3">
             <elements>
-                <element cfg-id="1" type="keyword">
+                <element id="1" cfg-id="1" type="keyword">
                     <name>no</name>
                     <description>Delete</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>route</name>
                     <description>Route</description>
                 </element>
-                <element cfg-id="2" type="keyword">
+                <element id="3" cfg-id="2" type="keyword">
                     <name>batch</name>
                     <description>Batch route operation</description>
                 </element>
-                <element cfg-id="10" type="parameter">
+                <element id="4" cfg-id="10" type="parameter">
                     <name>&lt;name&gt;</name>
                     <type>string(1-63)</type>
                     <description>Batch name (used as key)</description>
                 </element>
-                <element cfg-id="3" type="keyword">
+                <element id="5" cfg-id="3" type="keyword">
                     <name>ipv4</name>
                     <description>IPv4 batch route</description>
                 </element>
-                <element cfg-id="4" type="keyword">
+                <element id="6" cfg-id="4" type="keyword">
                     <name>ipv6</name>
                     <description>IPv6 batch route</description>
                 </element>
-                <element cfg-id="5" type="parameter">
+                <element id="7" cfg-id="5" type="parameter">
                     <name>&lt;start-address&gt;</name>
                     <type>string</type>
                     <description>Starting network address</description>
                 </element>
-                <element cfg-id="6" type="parameter">
+                <element id="8" cfg-id="6" type="parameter">
                     <name>&lt;prefix-length&gt;</name>
                     <type>uint(0-32)</type>
                     <description>Prefix length (IPv4, 0-32)</description>
                 </element>
-                <element cfg-id="7" type="parameter">
+                <element id="9" cfg-id="7" type="parameter">
                     <name>&lt;prefix-length&gt;</name>
                     <type>uint(0-128)</type>
                     <description>Prefix length (IPv6, 0-128)</description>
                 </element>
-                <element type="keyword">
+                <element id="10" type="keyword">
                     <name>count</name>
                     <description>Route count</description>
                 </element>
-                <element cfg-id="8" type="parameter">
+                <element id="11" cfg-id="8" type="parameter">
                     <name>&lt;count&gt;</name>
                     <type>uint(1-100000)</type>
                     <description>Number of routes to generate</description>
                 </element>
-                <element type="keyword">
+                <element id="12" type="keyword">
                     <name>nexthop</name>
                     <description>Next-hop</description>
                 </element>
-                <element cfg-id="9" type="parameter">
+                <element id="13" cfg-id="9" type="parameter">
                     <name>&lt;nexthop&gt;</name>
                     <type>string</type>
                     <description>Next-hop address</description>
@@ -448,23 +448,23 @@
              ================================================================ -->
         <group group-id="5">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>show</name>
                     <description>Display system information</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>route</name>
                     <description>Route module</description>
                 </element>
-                <element cfg-id="1" type="keyword">
+                <element id="3" cfg-id="1" type="keyword">
                     <name>ipv4</name>
                     <description>IPv4 static candidate table</description>
                 </element>
-                <element cfg-id="2" type="keyword">
+                <element id="4" cfg-id="2" type="keyword">
                     <name>ipv6</name>
                     <description>IPv6 static candidate table</description>
                 </element>
-                <element type="keyword">
+                <element id="5" type="keyword">
                     <name>static</name>
                     <description>Static route candidate table</description>
                 </element>
@@ -490,31 +490,31 @@
              ================================================================ -->
         <group group-id="4">
             <elements>
-                <element type="keyword">
+                <element id="1" type="keyword">
                     <name>show</name>
                     <description>Display system information</description>
                 </element>
-                <element type="keyword">
+                <element id="2" type="keyword">
                     <name>route</name>
                     <description>Route module</description>
                 </element>
-                <element cfg-id="1" type="keyword">
+                <element id="3" cfg-id="1" type="keyword">
                     <name>ipv4</name>
                     <description>IPv4 relay watch table</description>
                 </element>
-                <element cfg-id="2" type="keyword">
+                <element id="4" cfg-id="2" type="keyword">
                     <name>ipv6</name>
                     <description>IPv6 relay watch table</description>
                 </element>
-                <element type="keyword">
+                <element id="5" type="keyword">
                     <name>relay</name>
                     <description>Nexthop iteration relay watch table</description>
                 </element>
-                <element cfg-id="3" type="keyword">
+                <element id="6" cfg-id="3" type="keyword">
                     <name>bgp</name>
                     <description>Filter by BGP module</description>
                 </element>
-                <element cfg-id="4" type="keyword">
+                <element id="7" cfg-id="4" type="keyword">
                     <name>static</name>
                     <description>Show static route nexthop relay status (candidate table)</description>
                 </element>

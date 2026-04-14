@@ -13,7 +13,7 @@
  *   bgp_instance
  *     └── update_groups (GList)
  *           └── subgroups (GList)
- *                 ├── session_list (GList，借用)
+ *                 ├── peer_list (GList，借用)
  *                 ├── adj_rib_out
  *                 └── announce_queue / withdraw_queue
  */
@@ -31,17 +31,31 @@
 typedef struct bgp_instance bgp_instance_t;
 typedef struct bgp_update_group bgp_update_group_t;
 typedef struct bgp_nh_subgroup bgp_nh_subgroup_t;
+typedef struct bgp_peer bgp_peer_t;
+typedef struct bgp_route_node bgp_route_node_t;
 
 /**
- * @brief NH 策略类型
+ * @brief NH 计算规则（子组维度）
+ *
+ * 每条具体路由根据其来源类型（IMPORT / eBGP-learned / iBGP-learned）+ 目标 ug 的
+ * sess_type，被分派到某一个规则对应的子组。同一个 peer 可同时属于多个子组。
  */
-typedef enum bgp_nh_policy
+typedef enum bgp_nh_rule
 {
-    BGP_NH_POLICY_DEFAULT = 0,   /**< 默认：BGP 路由保持原 nh，import 路由用本端地址 */
-    BGP_NH_POLICY_SELF = 1,      /**< 所有路由用本端地址（next-hop-self） */
-    BGP_NH_POLICY_UNCHANGED = 2, /**< 所有路由保持原 nh（next-hop-unchanged） */
-    BGP_NH_POLICY_SET = 3,       /**< 所有路由用指定地址（next-hop set） */
-} bgp_nh_policy_t;
+    BGP_NH_RULE_LOCAL = 0,  /**< 使用本端连接地址（next-hop-self 等价） */
+    BGP_NH_RULE_PASS = 1,   /**< 保留原 nh（next-hop-unchanged 等价） */
+    BGP_NH_RULE_CONFIG = 2, /**< 使用用户配置地址（预留） */
+} bgp_nh_rule_t;
+
+/**
+ * @brief 路由来源分类
+ */
+typedef enum bgp_route_src_class
+{
+    BGP_RSRC_IMPORT = 0,    /**< 本地引入（route-import / 静态注入） */
+    BGP_RSRC_FROM_EBGP = 1, /**< 从 eBGP 邻居学习 */
+    BGP_RSRC_FROM_IBGP = 2, /**< 从 iBGP 邻居学习 */
+} bgp_route_src_class_t;
 
 /**
  * @brief Update Group 键（出向策略级别）
@@ -50,15 +64,18 @@ typedef struct bgp_update_group_key
 {
     bgp_sess_type_t sess_type; /**< iBGP / eBGP（不同类型走不同属性准备逻辑） */
     uint32_t policy_hash;      /**< 出向 route-map 哈希（Phase 4 启用；当前恒为 0） */
+    uint16_t peer_family;      /**< peer 地址族（AF_INET / AF_INET6，用于区分双栈邻居） */
 } bgp_update_group_key_t;
 
 /**
- * @brief NH Subgroup 键（nexthop 策略级别）
+ * @brief NH Subgroup 键（nexthop 计算规则级别）
+ *
+ * effective_local_addr 仅对 BGP_NH_RULE_LOCAL 有意义；其他 rule 下 family=0。
  */
 typedef struct bgp_nh_subgroup_key
 {
-    bgp_nh_policy_t nh_policy;       /**< nexthop 策略 */
-    net_addr_t effective_local_addr; /**< 本端连接地址（ESTABLISHED 时由 bgp_conn_get_local_addr 缓存） */
+    bgp_nh_rule_t rule;              /**< nexthop 计算规则 */
+    net_addr_t effective_local_addr; /**< 本端连接地址（仅 R_LOCAL 使用；否则 family=0） */
 } bgp_nh_subgroup_key_t;
 
 /**
@@ -68,8 +85,8 @@ struct bgp_nh_subgroup
 {
     bgp_nh_subgroup_key_t key;      /**< 子组键 */
     bgp_update_group_t *parent;     /**< 所属 update group（借用引用） */
-    GList *session_list;            /**< bgp_session_t*（借用引用，不持有所有权） */
-    uint32_t session_count;         /**< session_list 长度缓存 */
+    GList *peer_list;               /**< bgp_peer_t*（借用引用，不持有所有权） */
+    uint32_t peer_count;            /**< peer_list 长度缓存 */
     bgp_adj_rib_out_t *adj_rib_out; /**< 出向路由表（持有所有权；Phase 1 暂为 NULL） */
     GQueue *announce_queue;         /**< 待宣告 NLRI 队列（元素为 bgp_nlri_entry_t 堆副本） */
     GQueue *withdraw_queue;         /**< 待撤销 NLRI 队列（元素为 bgp_nlri_entry_t 堆副本） */
@@ -133,29 +150,59 @@ void bgp_update_group_remove_if_empty(bgp_instance_t *inst, bgp_update_group_t *
 bgp_nh_subgroup_t *bgp_nh_subgroup_find_or_create(bgp_update_group_t *ug, const bgp_nh_subgroup_key_t *key);
 
 /**
- * @brief 销毁 subgroup（释放队列、adj_rib_out、session_list）
+ * @brief 销毁 subgroup（释放队列、adj_rib_out、peer_list）
  * @param sg subgroup 指针（允许为 NULL）
  */
 void bgp_nh_subgroup_destroy(bgp_nh_subgroup_t *sg);
 
 /**
- * @brief 若 subgroup 已无 session，将其从 ug->subgroups 中摘除并销毁
+ * @brief 若 subgroup 已无 peer，将其从 ug->subgroups 中摘除并销毁
  */
 void bgp_nh_subgroup_remove_if_empty(bgp_update_group_t *ug, bgp_nh_subgroup_t *sg);
 
 /**
- * @brief session 加入 subgroup（幂等：若已在某 subgroup，先 leave 再 join）
- * @param inst AF 实例
- * @param sess 目标 session
+ * @brief peer 加入其 update_group 下所有适用的子组（幂等）
+ *
+ * 规则：peer 所在的 update_group 根据 sess_type 决定需要哪些 rule 的子组：
+ *   eBGP: { LOCAL }
+ *   iBGP: { LOCAL, PASS }
+ *
+ * @param peer 目标 peer（多子组归属，borrow 指针列表挂在 peer->subgroups）
+ * @param sess 目标 session（用于键计算与日志）
  */
-void bgp_subgroup_session_join(bgp_instance_t *inst, bgp_session_t *sess);
+void bgp_subgroup_peer_join(bgp_peer_t *peer, bgp_session_t *sess);
 
 /**
- * @brief session 离开 subgroup（幂等：sess->subgroup==NULL 时直接返回）
- * @param inst AF 实例
- * @param sess 目标 session
+ * @brief peer 离开其所有子组（幂等：peer->subgroups==NULL 时直接返回）
+ * @param peer 目标 peer
+ * @param sess 目标 session（用于日志，可为 NULL）
  */
-void bgp_subgroup_session_leave(bgp_instance_t *inst, bgp_session_t *sess);
+void bgp_subgroup_peer_leave(bgp_peer_t *peer, bgp_session_t *sess);
+
+/**
+ * @brief 路由来源分类（是否 IMPORT / 学自 eBGP / 学自 iBGP）
+ * @param best 最优路由节点
+ */
+bgp_route_src_class_t bgp_classify_route_src(const bgp_route_node_t *best);
+
+/**
+ * @brief 为 (ug, 路由来源类别) 选择 nh 计算规则
+ *
+ * eBGP 目标：任何来源 → LOCAL
+ * iBGP 目标：IMPORT → LOCAL；FROM_EBGP → PASS；FROM_IBGP → 过滤（split-horizon，返回 -1）
+ *
+ * @param ug_key  目标 ug 键
+ * @param src_class 路由来源分类
+ * @param out_rule 输出的 rule
+ * @return true=可发布；false=过滤（split-horizon 或不适用）
+ */
+bool bgp_select_nh_rule(const bgp_update_group_key_t *ug_key, bgp_route_src_class_t src_class, bgp_nh_rule_t *out_rule);
+
+/**
+ * @brief 在 ug 中查找某 rule 对应的子组（peer 加入后必然存在）
+ * @return subgroup 指针；未找到返回 NULL
+ */
+bgp_nh_subgroup_t *bgp_update_group_find_subgroup_by_rule(const bgp_update_group_t *ug, bgp_nh_rule_t rule);
 
 /**
  * @brief subgroup 遍历回调

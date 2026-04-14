@@ -34,5 +34,12 @@ void bgp_peer_destroy(bgp_peer_t *peer)
     {
         return;
     }
+    /* subgroups 为借用引用列表；调用方应已通过 bgp_subgroup_peer_leave 清空。
+     * 此处只释放链表节点，不销毁子组本身。 */
+    if (peer->subgroups)
+    {
+        g_list_free(peer->subgroups);
+        peer->subgroups = NULL;
+    }
     g_free(peer);
 }

@@ -85,6 +85,8 @@ typedef struct isis_route_state
     uint32_t metric;
 } isis_route_state_t;
 
+typedef struct isis_route_head isis_route_head_t;
+
 typedef enum isis_adj_state
 {
     ISIS_ADJ_STATE_DOWN = 0,
@@ -130,11 +132,12 @@ typedef struct isis_instance_cfg
     uint8_t admin_up;
     uint8_t af_ipv4;
     uint8_t af_ipv6;
-    GHashTable *if_cfgs;        /**< key=ifname(strdup), value=isis_if_cfg_t* */
-    GHashTable *route_states;   /**< key=ifname|afi(strdup), value=isis_route_state_t* */
-    GHashTable *learned_routes; /**< key=learned-route-id(strdup), value=isis_route_state_t* */
-    GHashTable *neighbors;      /**< key=ifname|level|sysid(strdup), value=isis_neighbor_t* */
-    GHashTable *lsdb_entries;   /**< key=level|sysid(strdup), value=isis_lsdb_entry_t* */
+    GHashTable *if_cfgs;             /**< key=ifname(strdup), value=isis_if_cfg_t* */
+    GHashTable *route_states;        /**< key=ifname|afi(strdup), value=isis_route_state_t* */
+    GHashTable *learned_route_heads; /**< key=learned-route-id(strdup),
+                                        value=isis_route_head_t*（多路径，首路径为best且已下发） */
+    GHashTable *neighbors;           /**< key=ifname|level|sysid(strdup), value=isis_neighbor_t* */
+    GHashTable *lsdb_entries;        /**< key=level|sysid(strdup), value=isis_lsdb_entry_t* */
     uint32_t lsp_seq_l1;
     uint32_t lsp_seq_l2;
     uint64_t last_lsp_tx_msec;

@@ -8,12 +8,15 @@
 #define BGP_WORK_H
 
 #include <glib.h>
+#include <stdbool.h>
 #include <stdint.h>
 
 /* 包含顺序：bgp_peer.h 定义 bgp_afi_t/bgp_safi_t 枚举，必须先于 bgp.h（定义同名宏） */
 #include "bgp.h"
 #include "bgp_peer.h"
+#include "bgp_rib.h"
 #include "bgp_session.h"
+#include "bgp_update_group.h"
 
 /* bgp_instance.h 包含本头文件，用前向声明打破循环 */
 typedef struct bgp_instance bgp_instance_t;
@@ -37,24 +40,6 @@ typedef struct bgp_calc_queue
     GQueue *q;      /**< FIFO 队列（元素为 bgp_rthead_t*） */
     uint32_t count; /**< 当前队列中的条目数 */
 } bgp_calc_queue_t;
-
-// ============================================================================
-// 发布队列（pub_queue）
-// ============================================================================
-
-/**
- * @brief 发布工作队列
- *
- * FIFO 队列，best-path 完成后按 session 入队，工作事件批量出队向邻居发包。
- * 只处理 ANNOUNCE：处理时通过 NLRI 在对应 AF 的 RIB 中查找 is_best 路径信息。
- * WITHDRAW 由 bgp_calc_run_one() 同步调用 bgp_work_send_withdraw_to_all() 发出。
- * GQueue 元素为内部 pub-item（持有 NLRI 副本）。
- */
-typedef struct bgp_pub_queue
-{
-    GQueue *q;      /**< FIFO 队列（元素为内部 pub-item） */
-    uint32_t count; /**< 当前队列中的条目数 */
-} bgp_pub_queue_t;
 
 // ============================================================================
 // 路由下刷队列（route_flush_queue）
@@ -114,80 +99,6 @@ int bgp_calc_queue_push(bgp_calc_queue_t *q, bgp_instance_t *inst, const bgp_nlr
  */
 int bgp_calc_queue_process(bgp_calc_queue_t *q, bgp_instance_t *inst, int batch_size);
 
-/* ---- 发布队列 ---- */
-
-/**
- * @brief 创建发布工作队列
- * @return 新建的 bgp_pub_queue_t 指针
- */
-bgp_pub_queue_t *bgp_pub_queue_create(void);
-
-/**
- * @brief 销毁发布工作队列（释放所有未处理条目）
- * @param q bgp_pub_queue_t 指针（允许为 NULL）
- */
-void bgp_pub_queue_destroy(bgp_pub_queue_t *q);
-
-/**
- * @brief 清空发布工作队列
- * @param q bgp_pub_queue_t 指针（允许为 NULL）
- */
-void bgp_pub_queue_clear(bgp_pub_queue_t *q);
-
-/**
- * @brief 从发布队列中删除指定 AF 的所有待发条目
- * @param q    发布队列
- * @param afi  地址族
- * @param safi 子地址族
- */
-void bgp_pub_queue_drop_instance(bgp_pub_queue_t *q, bgp_afi_t afi, bgp_safi_t safi);
-
-/**
- * @brief 统计发布队列中属于指定 AF 的待发条目数
- * @param q    发布队列
- * @param inst 目标地址族实例
- * @return 匹配条目数
- */
-uint32_t bgp_pub_queue_count_for_instance(const bgp_pub_queue_t *q, const bgp_instance_t *inst);
-
-/**
- * @brief 将 NLRI 推入发布队列（仅 ANNOUNCE）
- *
- * pub_queue 存储 NLRI 副本；处理时再按 AF 在 RIB 中查找当前 best 路径。
- *
- * @param q    发布队列
- * @param nlri NLRI 条目
- * @return 0 成功，-1 参数无效
- */
-int bgp_pub_queue_push(bgp_pub_queue_t *q, const bgp_nlri_entry_t *nlri);
-
-/**
- * @brief 批量处理发布队列（每次处理至多 batch_size 条）
- *
- * 从 pub_queue 中筛出属于 inst 的任务，向该 session 发送 UPDATE（ANNOUNCE）。
- * 仅在 session 处于 ESTABLISHED 时处理；否则保留队列，等待重建后再发。
- *
- * @param q          发布队列
- * @param sess       目标邻居会话
- * @param inst       目标地址族实例
- * @param batch_size 本次处理上限
- * @return 实际处理条目数
- */
-int bgp_pub_queue_process(bgp_pub_queue_t *q, bgp_session_t *sess, bgp_instance_t *inst, int batch_size);
-
-/**
- * @brief 将一个 best-route 变更挂入该实例所有 ESTABLISHED 邻居的 session pub_queue
- * @param inst 目标地址族实例
- * @param nlri 待发布 NLRI
- */
-void bgp_work_enqueue_announce_to_established(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri);
-
-/**
- * @brief 邻居进入 ESTABLISHED 后，将其当前所有 best-route 快照挂入 session pub_queue
- * @param sess 目标会话
- */
-void bgp_work_enqueue_best_for_session(bgp_session_t *sess);
-
 /* ---- ROUTE 下刷队列 ---- */
 
 /**
@@ -220,15 +131,81 @@ int bgp_route_flush_queue_push(bgp_route_flush_queue_t *q, bgp_rthead_t *head);
  */
 int bgp_route_flush_queue_process(bgp_route_flush_queue_t *q, bgp_instance_t *inst, int batch_size);
 
+/* ---- Subgroup 级发布通路（新数据通路） ---- */
+
 /**
- * @brief 向实例下所有 ESTABLISHED 邻居同步发送 WITHDRAW 报文
+ * @brief 子组级出向策略评估
  *
- * 由 bgp_calc_run_one() 在无路由时同步调用，不经过 pub_queue。
+ * 整合属性准备与 nexthop 策略：
+ *   1. 复制 best 属性到 out_attr
+ *   2. eBGP 场景下在 AS_PATH 首部 prepend 本地 AS
+ *   3. 按子组 nh_policy / effective_local_addr 生成 out_nh
+ *      - IMPORT 路由：使用 effective_local_addr（同族/双栈/RFC 8950）
+ *      - 非 IMPORT 路由：保留 best->nexthop
+ *   4. iBGP→iBGP 反射检查（整个子组 sess_type 一致）
+ *
+ * Per-session 检查（split-horizon、AS_PATH 防环）延后到发送阶段执行。
+ *
+ * @param sg       子组
+ * @param best     best 路径（非 NULL）
+ * @param nlri     关联 NLRI（仅用于日志）
+ * @param out_attr 输出属性
+ * @param out_nh   输出 nexthop
+ * @return true=应宣告, false=组级策略拒绝
+ */
+bool bgp_subgroup_eval_export(const bgp_nh_subgroup_t *sg, const bgp_route_node_t *best, const bgp_nlri_entry_t *nlri,
+                              bgp_attr_t *out_attr, bgp_nexthop_t *out_nh);
+
+/**
+ * @brief 将一条 best-route 变更挂入该实例所有 subgroup 的 announce_queue
+ *
+ * 对每个 subgroup 执行 eval_export → intern → adj_rib_out_update，
+ * 仅在属性或 nexthop 相对上次宣告发生变化时入队。
  *
  * @param inst 目标地址族实例
- * @param nlri 待撤销的 NLRI（借用引用，仅读取内容）
+ * @param nlri 待宣告 NLRI
  */
-void bgp_work_send_withdraw_to_all(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri);
+void bgp_work_enqueue_announce_to_subgroups(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri);
+
+/**
+ * @brief 将一条 NLRI 撤销挂入该实例所有 subgroup 的 withdraw_queue
+ *
+ * 仅对 adj_rib_out 中已存在条目的 subgroup 入队（避免冗余撤销）。
+ *
+ * @param inst 目标地址族实例
+ * @param nlri 待撤销 NLRI
+ */
+void bgp_work_enqueue_withdraw_to_subgroups(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri);
+
+/**
+ * @brief 邻居进入 ESTABLISHED 后，将其加入各 AF subgroup 并补发路由
+ *
+ * 对 sess->peer_list 中每个 peer：
+ *   1. bgp_subgroup_peer_join(peer, sess)
+ *   2. 若子组 adj_rib_out 为空（通常是新子组），全量遍历 RIB best 触发入队
+ *   3. 若子组 adj_rib_out 已非空（已有其他 session），从 adj_rib_out 重新入队
+ *      announce_queue（对新 session 补发；对老 session 会重复发送但 UPDATE 幂等）
+ *
+ * @param sess 目标 session
+ */
+void bgp_work_subgroup_catchup_session(bgp_session_t *sess);
+
+/**
+ * @brief 批量处理 subgroup 的 announce/withdraw 队列（Phase 2 单条发送）
+ *
+ * 先处理 withdraw_queue，再处理 announce_queue：
+ *   - withdraw：对每条 NLRI，向子组内每个 ESTABLISHED session 发 WITHDRAW
+ *   - announce：从 adj_rib_out 读取 (attr, nh)，对每个 session 逐一做
+ *               split-horizon / AS_PATH 防环检查后发送 UPDATE
+ *
+ * Phase 3 会替换为打包发送。
+ *
+ * @param sg         子组
+ * @param inst       所属 AF 实例
+ * @param batch_size 本次处理上限
+ * @return 实际处理的 NLRI 总数
+ */
+int bgp_subgroup_process_queues(bgp_nh_subgroup_t *sg, bgp_instance_t *inst, int batch_size);
 
 /**
  * @brief 处理一条 BGP calc 工作事件

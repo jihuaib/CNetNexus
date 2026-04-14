@@ -39,7 +39,6 @@ bgp_session_t *bgp_session_create(const net_addr_t *addr, uint32_t remote_as, bg
     sess->sec_last_socket_error = 0;
     /* remote_id / local_router_id 初始值为 0（g_malloc0 已置零） */
     sess->negotiated_afs = NULL;
-    sess->pub_queue = bgp_pub_queue_create();
 
     /* FSM 初始状态 */
     sess->fsm_state = BGP_FSM_STATE_IDLE;
@@ -104,9 +103,6 @@ void bgp_session_destroy(bgp_session_t *session)
         session->negotiated_afs = NULL;
     }
 
-    bgp_pub_queue_destroy(session->pub_queue);
-    session->pub_queue = NULL;
-
     /* peer_list 只存借用引用，仅释放链表节点 */
     if (session->peer_list)
     {
@@ -164,9 +160,6 @@ void bgp_session_reset_negotiated(bgp_session_t *sess)
     {
         g_array_set_size(sess->negotiated_afs, 0);
     }
-
-    /* 断会话后清空待发布队列；重建后由 Established 快照重新入队。 */
-    bgp_pub_queue_clear(sess->pub_queue);
 
     char addr_str[64];
     net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
@@ -237,6 +230,17 @@ void bgp_neighbor_down(bgp_session_t *sess, int epoll_fd)
     }
     session_conn_close(&sess->pri_conn, epoll_fd);
     session_conn_close(&sess->sec_conn, epoll_fd);
+
+    /* 离开所属 subgroup（对每个 AF 实例） */
+    for (GList *l = sess->peer_list; l; l = l->next)
+    {
+        bgp_peer_t *peer = (bgp_peer_t *)l->data;
+        if (peer && peer->inst)
+        {
+            bgp_subgroup_peer_leave(peer, sess);
+        }
+    }
+
     bgp_worker_flush_peer_routes(sess->vrf ? sess->vrf->vrf_id : BGP_VRF_PUBLIC_ID, &sess->neighbor_addr);
     (void)bgp_vrf_purge_session_routes(sess->vrf, &sess->neighbor_addr);
 
