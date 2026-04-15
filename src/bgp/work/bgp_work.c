@@ -754,62 +754,67 @@ void bgp_work_enqueue_announce_to_subgroups(bgp_instance_t *inst, const bgp_nlri
             continue;
         }
 
-        bgp_nh_subgroup_t *sg = bgp_update_group_find_subgroup_by_rule(ug, rule);
-        if (!sg || sg->peer_count == 0U || !sg->adj_rib_out)
-        {
-            continue;
-        }
-
-        /* 本次分派到的目标子组是 sg；其它 rule 的子组若残留该 NLRI 需撤销
-         * （例如一条路由 best 变化后 src_class 改变、从 PASS 迁到 LOCAL）。 */
+        /* 同一 rule 可能对应多个子组（不同 effective_local_addr）。
+         * 对本 ug 下所有子组：rule 匹配则尝试发布，不匹配则撤销残留。 */
         for (GList *sl = ug->subgroups; sl; sl = sl->next)
         {
-            bgp_nh_subgroup_t *other = (bgp_nh_subgroup_t *)sl->data;
-            if (!other || other == sg || !other->adj_rib_out)
+            bgp_nh_subgroup_t *sg = (bgp_nh_subgroup_t *)sl->data;
+            if (!sg || !sg->adj_rib_out)
             {
                 continue;
             }
-            if (bgp_adj_rib_out_remove(other->adj_rib_out, nlri))
+
+            if (sg->key.rule != rule)
+            {
+                /* 非目标 rule 的残留需撤销（例如 best 变化后 src_class 迁移） */
+                if (bgp_adj_rib_out_remove(sg->adj_rib_out, nlri))
+                {
+                    bgp_nlri_entry_t *copy = g_malloc(sizeof(*copy));
+                    memcpy(copy, nlri, sizeof(*copy));
+                    g_queue_push_tail(sg->withdraw_queue, copy);
+                    sg->withdraw_count++;
+                    scheduled++;
+                }
+                continue;
+            }
+
+            if (sg->peer_count == 0U)
+            {
+                continue;
+            }
+
+            bgp_attr_t out_attr;
+            bgp_nexthop_t out_nh;
+            if (!bgp_subgroup_eval_export(sg, best, nlri, &out_attr, &out_nh))
+            {
+                if (bgp_adj_rib_out_remove(sg->adj_rib_out, nlri))
+                {
+                    bgp_nlri_entry_t *copy = g_malloc(sizeof(*copy));
+                    memcpy(copy, nlri, sizeof(*copy));
+                    g_queue_push_tail(sg->withdraw_queue, copy);
+                    sg->withdraw_count++;
+                    scheduled++;
+                }
+                continue;
+            }
+
+            bgp_attr_ref_t *ref = bgp_attr_intern(&out_attr);
+            if (!ref)
+            {
+                continue;
+            }
+
+            bgp_aro_change_t ch = bgp_adj_rib_out_update(sg->adj_rib_out, nlri, ref, &out_nh);
+            bgp_attr_release(ref); /* adj_rib_out 已持有自己的引用 */
+
+            if (ch != BGP_ARO_UNCHANGED)
             {
                 bgp_nlri_entry_t *copy = g_malloc(sizeof(*copy));
                 memcpy(copy, nlri, sizeof(*copy));
-                g_queue_push_tail(other->withdraw_queue, copy);
-                other->withdraw_count++;
+                g_queue_push_tail(sg->announce_queue, copy);
+                sg->announce_count++;
                 scheduled++;
             }
-        }
-
-        bgp_attr_t out_attr;
-        bgp_nexthop_t out_nh;
-        if (!bgp_subgroup_eval_export(sg, best, nlri, &out_attr, &out_nh))
-        {
-            if (bgp_adj_rib_out_remove(sg->adj_rib_out, nlri))
-            {
-                bgp_nlri_entry_t *copy = g_malloc(sizeof(*copy));
-                memcpy(copy, nlri, sizeof(*copy));
-                g_queue_push_tail(sg->withdraw_queue, copy);
-                sg->withdraw_count++;
-                scheduled++;
-            }
-            continue;
-        }
-
-        bgp_attr_ref_t *ref = bgp_attr_intern(&out_attr);
-        if (!ref)
-        {
-            continue;
-        }
-
-        bgp_aro_change_t ch = bgp_adj_rib_out_update(sg->adj_rib_out, nlri, ref, &out_nh);
-        bgp_attr_release(ref); /* adj_rib_out 已持有自己的引用 */
-
-        if (ch != BGP_ARO_UNCHANGED)
-        {
-            bgp_nlri_entry_t *copy = g_malloc(sizeof(*copy));
-            memcpy(copy, nlri, sizeof(*copy));
-            g_queue_push_tail(sg->announce_queue, copy);
-            sg->announce_count++;
-            scheduled++;
         }
     }
 
