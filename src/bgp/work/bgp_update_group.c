@@ -7,14 +7,20 @@
 #include "bgp_update_group.h"
 
 #include <string.h>
+#include <sys/socket.h>
 
 #include "bgp_adj_rib_out.h"
+#include "bgp_attr_intern.h"
 #include "bgp_conn.h"
+#include "bgp_fsm.h"
 #include "bgp_instance.h"
 #include "bgp_peer.h"
+#include "bgp_pkt.h"
 #include "bgp_rib.h"
 #include "bgp_vrf.h"
+#include "bgp_worker.h"
 #include "log.h"
+#include "net_addr.h"
 
 /** 自增 group_id，仅用于日志/调试 */
 static uint32_t g_next_group_id = 1;
@@ -477,4 +483,790 @@ void bgp_instance_foreach_subgroup(bgp_instance_t *inst, bgp_subgroup_cb cb, gpo
             }
         }
     }
+}
+
+// ============================================================================
+// 子组级发布通路：属性评估 / 入队 / 补发 / 调度 / 打包发送
+// ============================================================================
+
+static void bgp_update_group_schedule_pub(bgp_instance_t *inst);
+static int bgp_update_group_process_pub_event(bgp_instance_t *inst, gboolean allow_reschedule);
+
+static gboolean bgp_session_is_publish_ready(const bgp_session_t *sess)
+{
+    return sess && sess->pri_conn && sess->pri_conn->fd >= 0 && sess->fsm_state == BGP_FSM_STATE_ESTABLISHED;
+}
+
+static uint32_t bgp_update_group_local_as(void)
+{
+    if (!g_bgp_work_local || !g_bgp_work_local->protocol)
+    {
+        return 0u;
+    }
+    return g_bgp_work_local->protocol->as_number;
+}
+
+static const bgp_session_t *bgp_best_source_session(const bgp_route_node_t *best)
+{
+    if (!best || BIT_TEST(best->flags, BGP_ROUTE_FLAG_IMPORT) || !best->head || !best->head->inst ||
+        !best->head->inst->vrf)
+    {
+        return NULL;
+    }
+    return bgp_vrf_find_session(best->head->inst->vrf, &best->source);
+}
+
+/**
+ * @brief 按子组 rule + effective_local_addr 计算 out_nh
+ *
+ * R_LOCAL：使用子组缓存的本端连接地址替换 nexthop（eBGP 的 next-hop-self、iBGP
+ *          对 IMPORT 路由的反射均走此路径）；处理双栈/RFC 8950 family 转换。
+ * R_PASS： 保留 best->nexthop 原值。
+ * R_CONFIG：预留未实现，当前回退到 PASS。
+ */
+static void bgp_subgroup_apply_nexthop(const bgp_nh_subgroup_t *sg, const bgp_route_node_t *best, bgp_nexthop_t *out_nh)
+{
+    memcpy(out_nh, &best->nexthop, sizeof(*out_nh));
+
+    if (!sg || sg->key.rule != BGP_NH_RULE_LOCAL)
+    {
+        return; /* PASS / CONFIG：保留原 nh */
+    }
+
+    const net_addr_t *local = &sg->key.effective_local_addr;
+    if (local->family == 0 || net_addr_is_zero(local))
+    {
+        return; /* 本端地址无效：无法替换，保留原 nh */
+    }
+
+    /* 同族 nexthop 替换（传统场景） */
+    if (local->family == out_nh->global.family || out_nh->global.family == 0)
+    {
+        out_nh->global = *local;
+        out_nh->has_link_local = false;
+        memset(&out_nh->link_local, 0, sizeof(out_nh->link_local));
+        return;
+    }
+
+    /* 双栈：IPv6 路由 + IPv4 本端 → 使用本端 IPv4 */
+    if (local->family == AF_INET && out_nh->global.family == AF_INET6)
+    {
+        out_nh->global = *local;
+        out_nh->has_link_local = false;
+        memset(&out_nh->link_local, 0, sizeof(out_nh->link_local));
+        return;
+    }
+
+    /* RFC 8950：IPv4 路由 + IPv6 本端（需 EXT_NEXTHOP 能力）
+     * 子组级无法精确判断每个 session 的能力；保守做法——只要本端是 IPv6 就替换，
+     * 具体 session 若未协商 EXT_NEXTHOP 将由发送阶段检查过滤。 */
+    if (local->family == AF_INET6 && out_nh->global.family == AF_INET)
+    {
+        out_nh->global = *local;
+        out_nh->has_link_local = false;
+        memset(&out_nh->link_local, 0, sizeof(out_nh->link_local));
+    }
+}
+
+bool bgp_subgroup_eval_export(const bgp_nh_subgroup_t *sg, const bgp_route_node_t *best, const bgp_nlri_entry_t *nlri,
+                              bgp_attr_t *out_attr, bgp_nexthop_t *out_nh)
+{
+    (void)nlri;
+    if (!sg || !best || !out_attr || !out_nh)
+    {
+        return false;
+    }
+
+    bgp_sess_type_t stype = sg->parent ? sg->parent->key.sess_type : BGP_SESS_TYPE_UNKNOWN;
+
+    /* iBGP→iBGP 反射检查（子组级，sess_type 统一） */
+    if (stype == BGP_SESS_TYPE_IBGP && !BIT_TEST(best->flags, BGP_ROUTE_FLAG_IMPORT))
+    {
+        const bgp_session_t *src_sess = bgp_best_source_session(best);
+        if (src_sess && src_sess->sess_type == BGP_SESS_TYPE_IBGP)
+        {
+            return false;
+        }
+    }
+
+    /* 属性准备：复制 + eBGP AS_PATH prepend */
+    memcpy(out_attr, BGP_ROUTE_ATTR(best), sizeof(*out_attr));
+
+    if (stype == BGP_SESS_TYPE_EBGP)
+    {
+        uint32_t local_as = bgp_update_group_local_as();
+        int n;
+        if (BGP_ROUTE_ATTR(best)->as_path[0] != '\0')
+        {
+            n = g_snprintf(out_attr->as_path, sizeof(out_attr->as_path), "%u %s", local_as,
+                           BGP_ROUTE_ATTR(best)->as_path);
+        }
+        else
+        {
+            n = g_snprintf(out_attr->as_path, sizeof(out_attr->as_path), "%u", local_as);
+        }
+        if (n < 0 || (size_t)n >= sizeof(out_attr->as_path))
+        {
+            LOG_WARN("BGP: subgroup eval_export AS_PATH prepend overflow ug_id=%u local_as=%u",
+                     sg->parent ? sg->parent->group_id : 0u, local_as);
+            return false;
+        }
+    }
+
+    /* nexthop 策略应用 */
+    bgp_subgroup_apply_nexthop(sg, best, out_nh);
+    return true;
+}
+
+void bgp_update_group_enqueue_announce(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
+{
+    if (!inst || !nlri || !inst->rib)
+    {
+        return;
+    }
+
+    const bgp_route_node_t *best = bgp_rib_find_best(inst->rib, nlri);
+    if (!best)
+    {
+        /* 无 best：走 withdraw 通路 */
+        return;
+    }
+
+    bgp_route_src_class_t src_class = bgp_classify_route_src(best);
+
+    uint32_t scheduled = 0;
+    for (GList *ul = inst->update_groups; ul; ul = ul->next)
+    {
+        bgp_update_group_t *ug = (bgp_update_group_t *)ul->data;
+        if (!ug)
+        {
+            continue;
+        }
+
+        /* 为本 (ug, route) 选择 rule；若拒绝（如 iBGP split-horizon），确保 ug
+         * 内已有的 ARO 条目被撤销。 */
+        bgp_nh_rule_t rule;
+        bool accepted = bgp_select_nh_rule(&ug->key, src_class, &rule);
+        if (!accepted)
+        {
+            /* 对本 ug 下所有子组尝试撤销该 NLRI（若存在于其中） */
+            for (GList *sl = ug->subgroups; sl; sl = sl->next)
+            {
+                bgp_nh_subgroup_t *sg = (bgp_nh_subgroup_t *)sl->data;
+                if (!sg || sg->peer_count == 0U || !sg->adj_rib_out)
+                {
+                    continue;
+                }
+                if (bgp_adj_rib_out_remove(sg->adj_rib_out, nlri))
+                {
+                    bgp_nlri_entry_t *copy = g_malloc(sizeof(*copy));
+                    memcpy(copy, nlri, sizeof(*copy));
+                    g_queue_push_tail(sg->withdraw_queue, copy);
+                    sg->withdraw_count++;
+                    scheduled++;
+                }
+            }
+            continue;
+        }
+
+        /* 同一 rule 可能对应多个子组（不同 effective_local_addr）。
+         * 对本 ug 下所有子组：rule 匹配则尝试发布，不匹配则撤销残留。 */
+        for (GList *sl = ug->subgroups; sl; sl = sl->next)
+        {
+            bgp_nh_subgroup_t *sg = (bgp_nh_subgroup_t *)sl->data;
+            if (!sg || !sg->adj_rib_out)
+            {
+                continue;
+            }
+
+            if (sg->key.rule != rule)
+            {
+                /* 非目标 rule 的残留需撤销（例如 best 变化后 src_class 迁移） */
+                if (bgp_adj_rib_out_remove(sg->adj_rib_out, nlri))
+                {
+                    bgp_nlri_entry_t *copy = g_malloc(sizeof(*copy));
+                    memcpy(copy, nlri, sizeof(*copy));
+                    g_queue_push_tail(sg->withdraw_queue, copy);
+                    sg->withdraw_count++;
+                    scheduled++;
+                }
+                continue;
+            }
+
+            if (sg->peer_count == 0U)
+            {
+                continue;
+            }
+
+            bgp_attr_t out_attr;
+            bgp_nexthop_t out_nh;
+            if (!bgp_subgroup_eval_export(sg, best, nlri, &out_attr, &out_nh))
+            {
+                if (bgp_adj_rib_out_remove(sg->adj_rib_out, nlri))
+                {
+                    bgp_nlri_entry_t *copy = g_malloc(sizeof(*copy));
+                    memcpy(copy, nlri, sizeof(*copy));
+                    g_queue_push_tail(sg->withdraw_queue, copy);
+                    sg->withdraw_count++;
+                    scheduled++;
+                }
+                continue;
+            }
+
+            bgp_attr_ref_t *ref = bgp_attr_intern(&out_attr);
+            if (!ref)
+            {
+                continue;
+            }
+
+            bgp_aro_change_t ch = bgp_adj_rib_out_update(sg->adj_rib_out, nlri, ref, &out_nh);
+            bgp_attr_release(ref); /* adj_rib_out 已持有自己的引用 */
+
+            if (ch != BGP_ARO_UNCHANGED)
+            {
+                bgp_nlri_entry_t *copy = g_malloc(sizeof(*copy));
+                memcpy(copy, nlri, sizeof(*copy));
+                g_queue_push_tail(sg->announce_queue, copy);
+                sg->announce_count++;
+                scheduled++;
+            }
+        }
+    }
+
+    if (scheduled > 0u)
+    {
+        bgp_update_group_schedule_pub(inst);
+        char nlri_str[BGP_NLRI_KEY_MAX];
+        bgp_nlri_to_str(nlri, nlri_str, sizeof(nlri_str));
+        LOG_DEBUG("BGP: enqueue announce to subgroups nlri=%s afi=%u safi=%u scheduled=%u", nlri_str,
+                  (unsigned)inst->afi, (unsigned)inst->safi, scheduled);
+    }
+}
+
+void bgp_update_group_enqueue_withdraw(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
+{
+    if (!inst || !nlri)
+    {
+        return;
+    }
+
+    uint32_t scheduled = 0;
+    for (GList *ul = inst->update_groups; ul; ul = ul->next)
+    {
+        bgp_update_group_t *ug = (bgp_update_group_t *)ul->data;
+        if (!ug)
+        {
+            continue;
+        }
+        for (GList *sl = ug->subgroups; sl; sl = sl->next)
+        {
+            bgp_nh_subgroup_t *sg = (bgp_nh_subgroup_t *)sl->data;
+            if (!sg || sg->peer_count == 0u || !sg->adj_rib_out)
+            {
+                continue;
+            }
+
+            if (bgp_adj_rib_out_remove(sg->adj_rib_out, nlri))
+            {
+                bgp_nlri_entry_t *copy = g_malloc(sizeof(*copy));
+                memcpy(copy, nlri, sizeof(*copy));
+                g_queue_push_tail(sg->withdraw_queue, copy);
+                sg->withdraw_count++;
+                scheduled++;
+            }
+        }
+    }
+
+    if (scheduled > 0u)
+    {
+        bgp_update_group_schedule_pub(inst);
+        char nlri_str[BGP_NLRI_KEY_MAX];
+        bgp_nlri_to_str(nlri, nlri_str, sizeof(nlri_str));
+        LOG_DEBUG("BGP: enqueue withdraw to subgroups nlri=%s afi=%u safi=%u scheduled=%u", nlri_str,
+                  (unsigned)inst->afi, (unsigned)inst->safi, scheduled);
+    }
+}
+
+/** bgp_rib_foreach_best 回调：对每条 best 触发 announce 入队 */
+static void catchup_populate_best_cb(const bgp_rthead_t *head, const bgp_route_node_t *route, gpointer user_data)
+{
+    (void)route;
+    bgp_instance_t *inst = (bgp_instance_t *)user_data;
+    if (!head || !inst)
+    {
+        return;
+    }
+    bgp_update_group_enqueue_announce(inst, &head->nlri);
+}
+
+/** bgp_adj_rib_out_foreach 回调：将 NLRI 重新推入该 subgroup 的 announce_queue（补发） */
+static void catchup_requeue_aro_cb(const bgp_nlri_entry_t *nlri, const bgp_adj_rib_out_entry_t *entry,
+                                   gpointer user_data)
+{
+    (void)entry;
+    bgp_nh_subgroup_t *sg = (bgp_nh_subgroup_t *)user_data;
+    if (!nlri || !sg || !sg->announce_queue)
+    {
+        return;
+    }
+    bgp_nlri_entry_t *copy = g_malloc(sizeof(*copy));
+    memcpy(copy, nlri, sizeof(*copy));
+    g_queue_push_tail(sg->announce_queue, copy);
+    sg->announce_count++;
+}
+
+void bgp_update_group_catchup_session(bgp_session_t *sess)
+{
+    if (!sess)
+    {
+        return;
+    }
+
+    uint32_t total_scheduled = 0;
+    for (GList *l = sess->peer_list; l; l = l->next)
+    {
+        bgp_peer_t *peer = (bgp_peer_t *)l->data;
+        if (!peer || !peer->inst)
+        {
+            continue;
+        }
+        bgp_instance_t *inst = peer->inst;
+
+        /* 加入子组（幂等）；peer 可能归属多个 rule 的子组 */
+        bgp_subgroup_peer_join(peer, sess);
+        if (!peer->subgroups)
+        {
+            continue;
+        }
+
+        /* 统计是否所有子组都是空——是则做一次 full RIB 扫描；否则对非空子组做
+         * ARO 补发。全量 RIB 扫描只需触发一次：enqueue_announce_to_subgroups 内部
+         * 会分派到正确的 rule 子组。 */
+        bool any_empty = false;
+        bool any_populated = false;
+        for (GList *sl = peer->subgroups; sl; sl = sl->next)
+        {
+            bgp_nh_subgroup_t *sg = (bgp_nh_subgroup_t *)sl->data;
+            if (!sg || !sg->adj_rib_out)
+            {
+                continue;
+            }
+            if (bgp_adj_rib_out_count(sg->adj_rib_out) == 0U)
+            {
+                any_empty = true;
+            }
+            else
+            {
+                any_populated = true;
+            }
+        }
+
+        uint32_t before_total = 0;
+        for (GList *sl = peer->subgroups; sl; sl = sl->next)
+        {
+            bgp_nh_subgroup_t *sg = (bgp_nh_subgroup_t *)sl->data;
+            if (sg)
+            {
+                before_total += sg->announce_count;
+            }
+        }
+
+        if (any_empty && inst->rib)
+        {
+            bgp_rib_foreach_best(inst->rib, catchup_populate_best_cb, inst);
+        }
+        if (any_populated)
+        {
+            for (GList *sl = peer->subgroups; sl; sl = sl->next)
+            {
+                bgp_nh_subgroup_t *sg = (bgp_nh_subgroup_t *)sl->data;
+                if (sg && sg->adj_rib_out && bgp_adj_rib_out_count(sg->adj_rib_out) > 0U)
+                {
+                    bgp_adj_rib_out_foreach(sg->adj_rib_out, catchup_requeue_aro_cb, sg);
+                }
+            }
+        }
+
+        uint32_t after_total = 0;
+        for (GList *sl = peer->subgroups; sl; sl = sl->next)
+        {
+            bgp_nh_subgroup_t *sg = (bgp_nh_subgroup_t *)sl->data;
+            if (sg)
+            {
+                after_total += sg->announce_count;
+            }
+        }
+        if (after_total > before_total)
+        {
+            total_scheduled += (after_total - before_total);
+            bgp_update_group_schedule_pub(inst);
+        }
+    }
+
+    if (total_scheduled > 0u)
+    {
+        char addr_str[64];
+        net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
+        LOG_INFO("BGP: neighbor=%s subgroup catchup scheduled %u NLRI(s) across %u peer(s)", addr_str, total_scheduled,
+                 (unsigned)g_list_length(sess->peer_list));
+    }
+}
+
+// ============================================================================
+// Packed 发送辅助
+// ============================================================================
+
+/** 打包发布的单条 NLRI 及 per-session 过滤所需的来源信息 */
+typedef struct announce_item
+{
+    const bgp_nlri_entry_t *nlri; /**< 借用指针（指向 g_queue 出队后堆上 NLRI 副本） */
+    net_addr_t source;            /**< best->source（family=0 表示无来源/is_import） */
+    bool is_import;               /**< best 是否为 IMPORT 路由（IMPORT 不做 split-horizon） */
+} announce_item_t;
+
+/** 按 (attr_ref, nexthop) 聚合的宣告桶 */
+typedef struct announce_bucket
+{
+    bgp_attr_ref_t *attr_ref; /**< 借用（不增减引用） */
+    bgp_nexthop_t nexthop;
+    GPtrArray *items; /**< announce_item_t*（堆副本，调用方释放） */
+} announce_bucket_t;
+
+static announce_bucket_t *announce_bucket_find_or_create(GList **buckets, bgp_attr_ref_t *attr_ref,
+                                                         const bgp_nexthop_t *nh)
+{
+    for (GList *l = *buckets; l; l = l->next)
+    {
+        announce_bucket_t *bk = (announce_bucket_t *)l->data;
+        if (bk->attr_ref == attr_ref && memcmp(&bk->nexthop, nh, sizeof(*nh)) == 0)
+        {
+            return bk;
+        }
+    }
+    announce_bucket_t *bk = g_new0(announce_bucket_t, 1);
+    bk->attr_ref = attr_ref;
+    bk->nexthop = *nh;
+    bk->items = g_ptr_array_new();
+    *buckets = g_list_prepend(*buckets, bk);
+    return bk;
+}
+
+static void announce_bucket_free(announce_bucket_t *bk)
+{
+    if (!bk)
+    {
+        return;
+    }
+    if (bk->items)
+    {
+        for (guint i = 0; i < bk->items->len; i++)
+        {
+            announce_item_t *it = g_ptr_array_index(bk->items, i);
+            g_free(it);
+        }
+        g_ptr_array_free(bk->items, TRUE);
+    }
+    g_free(bk);
+}
+
+/**
+ * @brief 向单个 session 按 4096 字节报文上限循环发送 packed WITHDRAW
+ */
+static void subgroup_send_packed_withdraws(bgp_session_t *sess, uint16_t afi, uint8_t safi,
+                                           const bgp_nlri_entry_t *const *nlri_list, int nlri_count)
+{
+    if (!sess || !sess->pri_conn || nlri_count <= 0)
+    {
+        return;
+    }
+    uint8_t msg[4096];
+    int remaining = nlri_count;
+    const bgp_nlri_entry_t *const *cursor = nlri_list;
+    while (remaining > 0)
+    {
+        int packed = 0;
+        int len =
+            bgp_pkt_build_packed_withdraw(msg, (int)sizeof(msg), cursor, remaining, sess->pri_conn, afi, safi, &packed);
+        if (len <= 0 || packed <= 0)
+        {
+            LOG_WARN("BGP: packed WITHDRAW build failed afi=%u safi=%u remaining=%d", (unsigned)afi, (unsigned)safi,
+                     remaining);
+            break;
+        }
+        ssize_t sent = send(sess->pri_conn->fd, msg, (size_t)len, MSG_NOSIGNAL);
+        if (sent != (ssize_t)len)
+        {
+            LOG_WARN("BGP: packed WITHDRAW send incomplete (sent=%zd want=%d)", sent, len);
+            break;
+        }
+        cursor += packed;
+        remaining -= packed;
+    }
+}
+
+/**
+ * @brief 向单个 session 按 4096 字节报文上限循环发送 packed UPDATE
+ */
+static void subgroup_send_packed_updates(bgp_session_t *sess, uint16_t afi, uint8_t safi,
+                                         const bgp_nlri_entry_t *const *nlri_list, int nlri_count,
+                                         const bgp_attr_t *attr, const bgp_nexthop_t *nh)
+{
+    if (!sess || !sess->pri_conn || nlri_count <= 0 || !attr || !nh)
+    {
+        return;
+    }
+    uint8_t msg[4096];
+    int remaining = nlri_count;
+    const bgp_nlri_entry_t *const *cursor = nlri_list;
+    while (remaining > 0)
+    {
+        int packed = 0;
+        int len = bgp_pkt_build_packed_update(msg, (int)sizeof(msg), cursor, remaining, attr, nh, afi, safi, &packed);
+        if (len <= 0 || packed <= 0)
+        {
+            LOG_WARN("BGP: packed UPDATE build failed afi=%u safi=%u remaining=%d", (unsigned)afi, (unsigned)safi,
+                     remaining);
+            break;
+        }
+        ssize_t sent = send(sess->pri_conn->fd, msg, (size_t)len, MSG_NOSIGNAL);
+        if (sent != (ssize_t)len)
+        {
+            LOG_WARN("BGP: packed UPDATE send incomplete (sent=%zd want=%d)", sent, len);
+            break;
+        }
+        cursor += packed;
+        remaining -= packed;
+    }
+}
+
+int bgp_subgroup_process_queues(bgp_nh_subgroup_t *sg, bgp_instance_t *inst, int batch_size)
+{
+    if (!sg || !inst || batch_size <= 0)
+    {
+        return 0;
+    }
+
+    uint16_t afi = (uint16_t)inst->afi;
+    uint8_t safi = (uint8_t)inst->safi;
+    int processed = 0;
+
+    /* --- Packed WITHDRAW --- */
+    GPtrArray *wd_nlris = g_ptr_array_new();
+    while (processed < batch_size && sg->withdraw_queue && !g_queue_is_empty(sg->withdraw_queue))
+    {
+        bgp_nlri_entry_t *nlri = (bgp_nlri_entry_t *)g_queue_pop_head(sg->withdraw_queue);
+        if (!nlri)
+        {
+            break;
+        }
+        g_ptr_array_add(wd_nlris, nlri);
+        processed++;
+    }
+    if (wd_nlris->len > 0)
+    {
+        for (GList *l = sg->peer_list; l; l = l->next)
+        {
+            bgp_peer_t *peer = (bgp_peer_t *)l->data;
+            if (!peer || !peer->vrf)
+            {
+                continue;
+            }
+            bgp_session_t *sess = bgp_vrf_find_session(peer->vrf, &peer->addr);
+            if (!bgp_session_is_publish_ready(sess))
+            {
+                continue;
+            }
+            subgroup_send_packed_withdraws(sess, afi, safi, (const bgp_nlri_entry_t *const *)wd_nlris->pdata,
+                                           (int)wd_nlris->len);
+        }
+    }
+    for (guint i = 0; i < wd_nlris->len; i++)
+    {
+        g_free(g_ptr_array_index(wd_nlris, i));
+    }
+    g_ptr_array_free(wd_nlris, TRUE);
+
+    /* --- Packed ANNOUNCE：按 (attr_ref, nh) 分桶 --- */
+    GList *buckets = NULL;
+    GPtrArray *ann_nlris = g_ptr_array_new(); /* 记录所有出队 NLRI 堆副本（最终统一释放） */
+    while (processed < batch_size && sg->announce_queue && !g_queue_is_empty(sg->announce_queue))
+    {
+        bgp_nlri_entry_t *nlri = (bgp_nlri_entry_t *)g_queue_pop_head(sg->announce_queue);
+        if (!nlri)
+        {
+            break;
+        }
+        processed++;
+        g_ptr_array_add(ann_nlris, nlri);
+
+        const bgp_adj_rib_out_entry_t *entry = bgp_adj_rib_out_lookup(sg->adj_rib_out, nlri);
+        if (!entry || !entry->attr_ref)
+        {
+            continue;
+        }
+        announce_bucket_t *bk = announce_bucket_find_or_create(&buckets, entry->attr_ref, &entry->nexthop);
+
+        announce_item_t *item = g_new0(announce_item_t, 1);
+        item->nlri = nlri;
+        const bgp_route_node_t *best = inst->rib ? bgp_rib_find_best(inst->rib, nlri) : NULL;
+        if (best)
+        {
+            item->source = best->source;
+            item->is_import = BIT_TEST(best->flags, BGP_ROUTE_FLAG_IMPORT);
+        }
+        else
+        {
+            item->source.family = 0;
+            item->is_import = false;
+        }
+        g_ptr_array_add(bk->items, item);
+    }
+
+    /* 遍历桶并发送 */
+    for (GList *bl = buckets; bl; bl = bl->next)
+    {
+        announce_bucket_t *bk = (announce_bucket_t *)bl->data;
+        if (!bk || !bk->attr_ref || !bk->items || bk->items->len == 0)
+        {
+            continue;
+        }
+        for (GList *sl = sg->peer_list; sl; sl = sl->next)
+        {
+            bgp_peer_t *peer = (bgp_peer_t *)sl->data;
+            if (!peer || !peer->vrf)
+            {
+                continue;
+            }
+            bgp_session_t *sess = bgp_vrf_find_session(peer->vrf, &peer->addr);
+            if (!bgp_session_is_publish_ready(sess))
+            {
+                continue;
+            }
+            /* Per-session AS_PATH 防环（同桶共用 attr） */
+            if (sess->remote_as != 0U && bgp_attr_as_path_contains_as(bk->attr_ref->attr.as_path, sess->remote_as))
+            {
+                continue;
+            }
+            /* 逐条过滤 split-horizon，构建 per-session NLRI 列表 */
+            GPtrArray *filtered = g_ptr_array_new();
+            for (guint i = 0; i < bk->items->len; i++)
+            {
+                announce_item_t *it = g_ptr_array_index(bk->items, i);
+                if (!it->is_import && it->source.family != 0 && net_addr_equal(&it->source, &sess->neighbor_addr))
+                {
+                    continue;
+                }
+                g_ptr_array_add(filtered, (gpointer)it->nlri);
+            }
+            if (filtered->len > 0)
+            {
+                subgroup_send_packed_updates(sess, afi, safi, (const bgp_nlri_entry_t *const *)filtered->pdata,
+                                             (int)filtered->len, &bk->attr_ref->attr, &bk->nexthop);
+            }
+            g_ptr_array_free(filtered, TRUE);
+        }
+        /* 标记 advertised */
+        for (guint i = 0; i < bk->items->len; i++)
+        {
+            announce_item_t *it = g_ptr_array_index(bk->items, i);
+            bgp_adj_rib_out_mark_advertised(sg->adj_rib_out, it->nlri);
+        }
+    }
+
+    /* 清理 */
+    for (GList *bl = buckets; bl; bl = bl->next)
+    {
+        announce_bucket_free((announce_bucket_t *)bl->data);
+    }
+    g_list_free(buckets);
+    for (guint i = 0; i < ann_nlris->len; i++)
+    {
+        g_free(g_ptr_array_index(ann_nlris, i));
+    }
+    g_ptr_array_free(ann_nlris, TRUE);
+
+    return processed;
+}
+
+// ============================================================================
+// 事件派发 / 调度
+// ============================================================================
+
+static int bgp_update_group_process_pub_event(bgp_instance_t *inst, gboolean allow_reschedule)
+{
+    if (!inst)
+    {
+        return 0;
+    }
+
+    int total_processed = 0;
+    gboolean need_more = FALSE;
+
+    for (GList *ul = inst->update_groups; ul; ul = ul->next)
+    {
+        bgp_update_group_t *ug = (bgp_update_group_t *)ul->data;
+        if (!ug)
+        {
+            continue;
+        }
+        for (GList *sl = ug->subgroups; sl; sl = sl->next)
+        {
+            bgp_nh_subgroup_t *sg = (bgp_nh_subgroup_t *)sl->data;
+            if (!sg)
+            {
+                continue;
+            }
+            int processed = bgp_subgroup_process_queues(sg, inst, BGP_WORK_BATCH_SIZE);
+            if (processed > 0)
+            {
+                total_processed += processed;
+            }
+            if ((sg->announce_queue && !g_queue_is_empty(sg->announce_queue)) ||
+                (sg->withdraw_queue && !g_queue_is_empty(sg->withdraw_queue)))
+            {
+                need_more = TRUE;
+            }
+        }
+    }
+
+    if (allow_reschedule && total_processed > 0 && need_more)
+    {
+        bgp_update_group_schedule_pub(inst);
+    }
+
+    return total_processed;
+}
+
+static void bgp_update_group_schedule_pub(bgp_instance_t *inst)
+{
+    if (!inst)
+    {
+        return;
+    }
+
+    uint32_t vrf_id = (inst->vrf) ? inst->vrf->vrf_id : BGP_VRF_PUBLIC_ID;
+    if (bgp_worker_post_session_pub_event(vrf_id, inst->afi, inst->safi) == 0)
+    {
+        return;
+    }
+
+    if (bgp_worker_is_current_thread())
+    {
+        (void)bgp_update_group_process_pub_event(inst, FALSE);
+        return;
+    }
+
+    LOG_WARN("BGP: failed to enqueue session-pub work event vrf=%u afi=%u safi=%u", vrf_id, (unsigned)inst->afi,
+             (unsigned)inst->safi);
+}
+
+void bgp_update_group_handle_pub_event(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi)
+{
+    bgp_instance_t *inst = bgp_worker_lookup_instance(vrf_id, afi, safi);
+    (void)bgp_update_group_process_pub_event(inst, TRUE);
+}
+
+int bgp_update_group_process_pending(bgp_instance_t *inst)
+{
+    return bgp_update_group_process_pub_event(inst, FALSE);
 }

@@ -121,7 +121,7 @@ void route_static_on_nh_change(uint32_t vrf_id, uint16_t afi, const net_addr_t *
 /**
  * @brief 接口状态变化时，重检查所有 interface-only 静态路由的可达性
  *
- * 遍历候选表中 has_nexthop=0 的条目（Null0 除外），基于 RIB 中 CONNECTED 路由判断接口可达性。
+ * 遍历候选表中 has_nexthop=0 的条目（null0 除外），基于 RIB 中 CONNECTED 路由判断接口可达性。
  * 可达则写入 RIB，不可达则从 RIB 撤销。
  */
 void route_static_on_if_change(void);

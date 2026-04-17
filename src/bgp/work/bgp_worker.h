@@ -20,6 +20,9 @@
 
 typedef struct bgp_session bgp_session_t;
 
+/** 每次工作事件处理时每个数据队列处理的最大条目数 */
+#define BGP_WORK_BATCH_SIZE 64
+
 typedef struct bgp_peer_update_ingest_stats
 {
     uint32_t reach_injected;
@@ -54,7 +57,7 @@ typedef struct bgp_work_local
      *
      * epoll 事件处理过程中关闭的连接不能立即 g_free（同批 epoll 事件可能仍持有
      * 该指针），因此先 close(fd) + 设 fd=-1 后加入此列表，epoll 循环每轮结束后
-     * 统一调用 bgp_worker_flush_deferred_conns() 释放。
+     * 统一调用 bgp_conn_flush_deferred() 释放（定义在 bgp_conn.c）。
      */
     GSList *deferred_conns;
 } bgp_work_local_t;
@@ -259,6 +262,22 @@ int bgp_worker_post_session_pub_event(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t
 void bgp_worker_drain_work_events(void);
 
 /**
+ * @brief 判断当前线程是否为 BGP worker 线程
+ *
+ * 用于各 schedule_* 函数在投递 eventfd 失败时回退到同步处理（worker 线程内调用时）。
+ */
+gboolean bgp_worker_is_current_thread(void);
+
+/**
+ * @brief 在 worker 线程本地 protocol 下按 (vrf_id, afi, safi) 查找实例
+ *
+ * 共享给 bgp_calc / bgp_route_flush / bgp_update_group 使用。
+ *
+ * @return bgp_instance_t* 或 NULL
+ */
+bgp_instance_t *bgp_worker_lookup_instance(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi);
+
+/**
  * @brief worker 线程投递 show CLI 消息给 server 线程
  *
  * 仅用于 show 命令分发：
@@ -312,39 +331,6 @@ void bgp_worker_ingest_peer_update(bgp_session_t *session, const bgp_update_resu
  * @brief 清理指定 source 的 relay 路由（peer down / 邻居删除时调用）
  */
 void bgp_worker_flush_peer_routes(uint32_t vrf_id, const net_addr_t *source);
-
-/**
- * @brief 启动/停止 BGP 179 监听（仅 worker 线程调用）
- */
-void bgp_listen_start(void);
-void bgp_listen_stop(void);
-
-/**
- * @brief 会话连接控制（仅 worker 线程调用）
- */
-void bgp_server_start_active_conn(bgp_session_t *session);
-void bgp_server_stop_session_conns(bgp_session_t *session);
-
-/* 前向声明，避免引入 bgp_vrf.h */
-struct bgp_vrf;
-
-/**
- * @brief 重置 VRF 内所有有活跃连接的 session（router-id / timer 变更后调用）
- */
-void bgp_server_reset_all_sessions(struct bgp_vrf *vrf);
-
-/**
- * @brief 按当前 VRF connect-retry 配置，重排已挂起的 retry 定时器
- */
-void bgp_server_rearm_retry_timers(struct bgp_vrf *vrf);
-
-/**
- * @brief 释放延迟释放列表中的所有 bgp_conn_t
- *
- * 在 epoll 循环每轮 for 循环结束后调用，确保同批事件处理期间
- * 被关闭的连接指针不会被意外 g_free。
- */
-void bgp_worker_flush_deferred_conns(void);
 
 /**
  * @brief 处理 BMP 初始 peer 收集请求

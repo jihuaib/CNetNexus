@@ -18,6 +18,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "cli_cfg_anchor.h"
 #include "cli_handler.h"
 #include "cli_main.h"
 #include "dev.h"
@@ -261,9 +262,14 @@ static void handle_show_history(cli_session_t *session)
 
 /**
  * @brief 拉取单个模块 show current-configuration 的完整输出（支持 RESP_MORE/CONTINUE）
+ *        output 在调用前会被清空, 函数返回后仅含本模块的完整响应文本。
  */
 static void collect_module_show_config(uint32_t mod_id, GString *output)
 {
+    if (output)
+    {
+        g_string_truncate(output, 0);
+    }
     dev_ipc_message_t *req =
         dev_ipc_message_create(CLI_MSG_TYPE_SHOW_CONFIG, DEV_MODULE_ID_CLI, mod_id, 0, NULL, 0, NULL);
     if (!req)
@@ -394,20 +400,33 @@ static GArray *collect_connected_modules_for_show_config(void)
 /**
  * @brief show current-configuration (group_id=3)
  *
- * 向所有业务模块发送 CLI_MSG_TYPE_SHOW_CONFIG，收集响应并聚合输出。
+ * 向所有业务模块发送 CLI_MSG_TYPE_SHOW_CONFIG，收集响应后交由通用 config-anchor
+ * 聚合器合并: 同一 anchor key 的贡献在最终输出中仅以一个段落呈现,
+ * CLI 本身对 anchor key 的含义完全不感知(例如接口、VRF 等全部走同一机制)。
  * not connected的模块直接跳过，避免超时等待。
  */
 static void handle_show_config(cli_session_t *session)
 {
-    GString *output = g_string_new("");
+    cli_cfg_anchor_aggregator_t *agg = cli_cfg_anchor_agg_new();
+    GString *buf = g_string_new("");
+
     GArray *modules = collect_connected_modules_for_show_config();
     for (guint i = 0; i < modules->len; i++)
     {
         uint32_t mod_id = g_array_index(modules, uint32_t, i);
-        /* 先完整拉取当前模块，再切下一个模块 */
-        collect_module_show_config(mod_id, output);
+        /* 先完整拉取当前模块的响应再喂给聚合器, 再切下一个模块 */
+        collect_module_show_config(mod_id, buf);
+        if (buf->len > 0)
+        {
+            cli_cfg_anchor_agg_feed(agg, buf->str);
+        }
     }
     g_array_free(modules, TRUE);
+    g_string_free(buf, TRUE);
+
+    GString *output = g_string_new("");
+    cli_cfg_anchor_agg_render(agg, output);
+    cli_cfg_anchor_agg_free(agg);
 
     if (output->len > 0)
     {

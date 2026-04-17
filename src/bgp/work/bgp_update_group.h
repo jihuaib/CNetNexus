@@ -21,9 +21,11 @@
 #define BGP_UPDATE_GROUP_H
 
 #include <glib.h>
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "bgp_adj_rib_out.h"
+#include "bgp_rib.h"
 #include "bgp_session.h"
 #include "net_addr.h"
 
@@ -33,6 +35,8 @@ typedef struct bgp_update_group bgp_update_group_t;
 typedef struct bgp_nh_subgroup bgp_nh_subgroup_t;
 typedef struct bgp_peer bgp_peer_t;
 typedef struct bgp_route_node bgp_route_node_t;
+typedef struct bgp_attr bgp_attr_t;
+typedef struct bgp_nexthop bgp_nexthop_t;
 
 /**
  * @brief NH 计算规则（子组维度）
@@ -213,5 +217,61 @@ typedef void (*bgp_subgroup_cb)(bgp_nh_subgroup_t *sg, gpointer user_data);
  * @brief 遍历实例下所有 subgroup
  */
 void bgp_instance_foreach_subgroup(bgp_instance_t *inst, bgp_subgroup_cb cb, gpointer user_data);
+
+// ============================================================================
+// Subgroup 级发布通路（事件 + 发送）
+// ============================================================================
+
+/**
+ * @brief 子组级出向策略评估
+ *
+ * 整合属性准备与 nexthop 策略：
+ *   1. 复制 best 属性到 out_attr
+ *   2. eBGP 场景下在 AS_PATH 首部 prepend 本地 AS
+ *   3. 按子组 nh_policy / effective_local_addr 生成 out_nh
+ *   4. iBGP→iBGP 反射检查（整个子组 sess_type 一致）
+ *
+ * Per-session 检查（split-horizon、AS_PATH 防环）延后到发送阶段执行。
+ *
+ * @return true=应宣告, false=组级策略拒绝
+ */
+bool bgp_subgroup_eval_export(const bgp_nh_subgroup_t *sg, const bgp_route_node_t *best, const bgp_nlri_entry_t *nlri,
+                              bgp_attr_t *out_attr, bgp_nexthop_t *out_nh);
+
+/**
+ * @brief 将一条 best-route 变更挂入该实例所有 subgroup 的 announce_queue
+ */
+void bgp_update_group_enqueue_announce(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri);
+
+/**
+ * @brief 将一条 NLRI 撤销挂入该实例所有 subgroup 的 withdraw_queue
+ */
+void bgp_update_group_enqueue_withdraw(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri);
+
+/**
+ * @brief 邻居进入 ESTABLISHED 后，将其加入各 AF subgroup 并补发路由
+ */
+void bgp_update_group_catchup_session(bgp_session_t *sess);
+
+/**
+ * @brief 批量处理 subgroup 的 announce/withdraw 队列（打包发送）
+ *
+ * 先处理 withdraw_queue，再处理 announce_queue；announce 按 (attr_ref, nh)
+ * 分桶打包发送，per-session 过滤 split-horizon 与 AS_PATH 防环。
+ *
+ * @return 实际处理的 NLRI 总数
+ */
+int bgp_subgroup_process_queues(bgp_nh_subgroup_t *sg, bgp_instance_t *inst, int batch_size);
+
+/**
+ * @brief 处理一条 BGP session-pub 工作事件（worker 线程调用）
+ */
+void bgp_update_group_handle_pub_event(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi);
+
+/**
+ * @brief 在当前线程同步抽干 inst 下所有 subgroup 队列（不允许重新调度事件）
+ * @return 实际处理条目数
+ */
+int bgp_update_group_process_pending(bgp_instance_t *inst);
 
 #endif /* BGP_UPDATE_GROUP_H */

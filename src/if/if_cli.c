@@ -590,7 +590,7 @@ void if_cli_handle_query_candidates(dev_ipc_message_t *msg)
         for (GList *node = entries; node; node = node->next)
         {
             const if_map_entry_t *e = (const if_map_entry_t *)node->data;
-            if (!e || strcmp(e->logical_name, "null0") == 0)
+            if (!e)
             {
                 continue;
             }

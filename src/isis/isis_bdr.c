@@ -6,9 +6,11 @@
  */
 #include "isis_bdr.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "cli.h"
+#include "cli_cfg_anchor.h"
 #include "db.h"
 #include "errcode.h"
 #include "isis.h"
@@ -90,6 +92,11 @@ static void isis_bdr_set_af_cfg_from_row(isis_if_af_cfg_t *af_cfg, db_row_t *if_
     af_cfg->passive = passive_i64 ? 1u : 0u;
 }
 
+/**
+ * @brief 作为"接口" anchor 的贡献者, 向 key "iface/<ifname>" 追加 ISIS 行
+ *        IF 模块声明接口 anchor 的段头段尾, ISIS 不负责包裹; 聚合器会合并
+ *        同一 ifname 的所有贡献。
+ */
 static void append_if_entry(GString *out, uint32_t tag, const isis_if_cfg_t *cfg)
 {
     if (!out || !cfg || cfg->ifname[0] == '\0' || tag == 0u || (!cfg->v4.enabled && !cfg->v6.enabled))
@@ -97,60 +104,59 @@ static void append_if_entry(GString *out, uint32_t tag, const isis_if_cfg_t *cfg
         return;
     }
 
-    g_string_append(out, "!\r\n");
-    if (g_str_has_prefix(cfg->ifname, "loop") && cfg->ifname[4] >= '1' && cfg->ifname[4] <= '9')
-    {
-        g_string_append_printf(out, "if loop %s\r\n", cfg->ifname + 4);
-    }
-    else
-    {
-        g_string_append_printf(out, "if %s\r\n", cfg->ifname);
-    }
+    GString *body = g_string_new("");
 
     if (cfg->v4.enabled)
     {
-        g_string_append_printf(out, " isis enable %u\r\n", tag);
+        g_string_append_printf(body, " isis enable %u\r\n", tag);
     }
     if (cfg->v6.enabled)
     {
-        g_string_append_printf(out, " isis ipv6 enable %u\r\n", tag);
+        g_string_append_printf(body, " isis ipv6 enable %u\r\n", tag);
     }
 
     if (cfg->v4.enabled && cfg->v4.metric != ISIS_DEFAULT_IF_METRIC)
     {
-        g_string_append_printf(out, " isis metric %u %u\r\n", tag, cfg->v4.metric);
+        g_string_append_printf(body, " isis metric %u %u\r\n", tag, cfg->v4.metric);
     }
     if (cfg->v6.enabled && cfg->v6.metric != ISIS_DEFAULT_IF_METRIC)
     {
-        g_string_append_printf(out, " isis ipv6 metric %u %u\r\n", tag, cfg->v6.metric);
+        g_string_append_printf(body, " isis ipv6 metric %u %u\r\n", tag, cfg->v6.metric);
     }
     if (cfg->v4.enabled && cfg->v4.hello_interval != ISIS_DEFAULT_HELLO_INTERVAL)
     {
-        g_string_append_printf(out, " isis hello-interval %u %u\r\n", tag, (unsigned)cfg->v4.hello_interval);
+        g_string_append_printf(body, " isis hello-interval %u %u\r\n", tag, (unsigned)cfg->v4.hello_interval);
     }
     if (cfg->v6.enabled && cfg->v6.hello_interval != ISIS_DEFAULT_HELLO_INTERVAL)
     {
-        g_string_append_printf(out, " isis ipv6 hello-interval %u %u\r\n", tag, (unsigned)cfg->v6.hello_interval);
+        g_string_append_printf(body, " isis ipv6 hello-interval %u %u\r\n", tag, (unsigned)cfg->v6.hello_interval);
     }
 
     if (cfg->v4.enabled && cfg->v4.hold_multiplier != ISIS_DEFAULT_HOLD_MULTIPLIER)
     {
-        g_string_append_printf(out, " isis hold-multiplier %u %u\r\n", tag, (unsigned)cfg->v4.hold_multiplier);
+        g_string_append_printf(body, " isis hold-multiplier %u %u\r\n", tag, (unsigned)cfg->v4.hold_multiplier);
     }
     if (cfg->v6.enabled && cfg->v6.hold_multiplier != ISIS_DEFAULT_HOLD_MULTIPLIER)
     {
-        g_string_append_printf(out, " isis ipv6 hold-multiplier %u %u\r\n", tag, (unsigned)cfg->v6.hold_multiplier);
+        g_string_append_printf(body, " isis ipv6 hold-multiplier %u %u\r\n", tag, (unsigned)cfg->v6.hold_multiplier);
     }
 
     if (cfg->v4.enabled && cfg->v4.passive)
     {
-        g_string_append_printf(out, " isis passive %u\r\n", tag);
+        g_string_append_printf(body, " isis passive %u\r\n", tag);
     }
     if (cfg->v6.enabled && cfg->v6.passive)
     {
-        g_string_append_printf(out, " isis ipv6 passive %u\r\n", tag);
+        g_string_append_printf(body, " isis ipv6 passive %u\r\n", tag);
     }
-    g_string_append(out, "!\r\n");
+
+    if (body->len > 0)
+    {
+        char key[CLI_CFG_ANCHOR_KEY_MAX];
+        snprintf(key, sizeof(key), "iface/%s", cfg->ifname);
+        cli_cfg_anchor_emit_body(out, key, body->str);
+    }
+    g_string_free(body, TRUE);
 }
 
 int isis_bdr_handle_show_config(dev_ipc_message_t *msg)

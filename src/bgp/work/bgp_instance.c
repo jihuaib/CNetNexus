@@ -8,9 +8,10 @@
 
 #include <glib.h>
 
+#include "bgp_calc.h"
 #include "bgp_rib.h"
+#include "bgp_route_flush.h"
 #include "bgp_update_group.h"
-#include "bgp_work.h"
 #include "log.h"
 #include "net_addr.h"
 
@@ -60,4 +61,24 @@ void bgp_instance_destroy(bgp_instance_t *inst)
         inst->rib = NULL;
     }
     g_free(inst);
+}
+
+void bgp_instance_drain_pending(bgp_instance_t *inst)
+{
+    if (!inst)
+    {
+        return;
+    }
+
+    for (;;)
+    {
+        int processed = 0;
+        processed += bgp_calc_process_pending(inst);
+        processed += bgp_route_flush_process_pending(inst);
+        processed += bgp_update_group_process_pending(inst);
+        if (processed <= 0)
+        {
+            break;
+        }
+    }
 }

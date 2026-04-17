@@ -26,7 +26,9 @@ set(BGP_SOURCES
     work/bgp_adj_rib_out.c
     work/bgp_show.c
     work/bgp_worker.c
-    work/bgp_work.c
+    work/bgp_cmd.c
+    work/bgp_import_route.c
+    work/bgp_route_flush.c
     bmp/bgp_bmp.c
     bmp/bgp_bmp_cfg_apply.c
     bmp/bgp_bmp_pkt.c

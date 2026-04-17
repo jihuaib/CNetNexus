@@ -79,4 +79,52 @@ int bgp_conn_get_local_addr(const bgp_conn_t *conn, net_addr_t *out_addr);
  */
 void bgp_conn_close(struct bgp_session *sess, bgp_conn_t **slot, int epoll_fd);
 
+// ============================================================================
+// 监听 / 被动接入 / 主动连接完成 / 延迟释放
+// ============================================================================
+
+/**
+ * @brief epoll data.ptr sentinel：IPv4/IPv6 listen fd 事件标识
+ *
+ * 由 bgp_listen_start 在 epoll_ctl ADD 时写入 data.ptr，
+ * worker 线程主循环通过指针比较识别 listen 事件并调用 bgp_conn_handle_passive_accept。
+ */
+extern char bgp_listen_tag_v4;
+extern char bgp_listen_tag_v6;
+
+/**
+ * @brief 启动 BGP 179 监听（IPv4 0.0.0.0 + IPv6 [::]），并加入 worker epoll
+ *        幂等：已在监听时立即返回
+ */
+void bgp_listen_start(void);
+
+/**
+ * @brief 停止 BGP 179 监听（epoll_ctl DEL + close 两个 listen fd）
+ */
+void bgp_listen_stop(void);
+
+/**
+ * @brief 处理指定 listener 上的被动入站连接
+ *
+ * 由 worker 主循环在 listen fd 事件触发时调用。完成 accept、非阻塞设置、
+ * 地址解析、VRF/neighbor 合法性校验、碰撞处理、bgp_conn_t 分配与 epoll 注册。
+ */
+void bgp_conn_handle_passive_accept(int listen_fd);
+
+/**
+ * @brief 处理主动连接完成事件（EPOLLOUT）
+ *
+ * 由 worker 主循环在 conn->is_connecting 的连接收到 EPOLLOUT 时调用。
+ * 读取 SO_ERROR，成功则切换 epoll 到 EPOLLIN 并发 TCP_CR_ACKED；失败则发 TCP_CONNECTION_FAILS。
+ */
+void bgp_conn_handle_active_connect(bgp_conn_t *conn);
+
+/**
+ * @brief 释放延迟释放列表中的所有 bgp_conn_t
+ *
+ * bgp_conn_close 会将被关闭的 conn 追加到 g_bgp_work_local->deferred_conns，
+ * 以避免同批 epoll 事件仍持有该指针。worker 主循环每轮末尾与清理路径调用本函数统一释放。
+ */
+void bgp_conn_flush_deferred(void);
+
 #endif /* BGP_CONN_H */

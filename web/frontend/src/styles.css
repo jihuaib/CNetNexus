@@ -1,0 +1,16 @@
+* { box-sizing: border-box; }
+
+html, body, #app {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #f5f7fa;
+    color: #2b3142;
+    overflow: hidden;
+}
+
+button {
+    font-family: inherit;
+    cursor: pointer;
+}

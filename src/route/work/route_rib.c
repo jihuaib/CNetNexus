@@ -382,10 +382,17 @@ static gboolean walk_head(gpointer key, gpointer value, gpointer data)
         {
             continue;
         }
-        /* 协议过滤 */
-        if (ctx->proto_filter != ROUTE_PROTOCOL_MAX && path->key.protocol != ctx->proto_filter)
+        /* 协议过滤：ROUTE_PROTOCOL_STATIC 同时匹配 ROUTE_PROTOCOL_BLACKHOLE
+         * （null0 黑洞路由也是通过 `route ipv4 ... null0` 配置的用户静态路由）。 */
+        if (ctx->proto_filter != ROUTE_PROTOCOL_MAX)
         {
-            continue;
+            int proto_match =
+                (path->key.protocol == ctx->proto_filter) ||
+                (ctx->proto_filter == ROUTE_PROTOCOL_STATIC && path->key.protocol == ROUTE_PROTOCOL_BLACKHOLE);
+            if (!proto_match)
+            {
+                continue;
+            }
         }
         ctx->cb(head, path, ctx->userdata);
     }

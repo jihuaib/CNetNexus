@@ -426,6 +426,21 @@ def run_cmds(
     return outputs
 
 
+def cmd_query_help(
+    rt: TopologyRuntime,
+    device: str,
+    partial: str,
+    *,
+    timeout: int | None = None,
+) -> str:
+    """Send ``<partial>?`` to the device CLI and return the help text."""
+    try:
+        return execCmd(rt, device).query_help(partial, timeout=timeout)
+    except Exception:
+        mark_step_failed()
+        raise
+
+
 def reboot_device(rt: TopologyRuntime, device: str, *, timeout: int = 90) -> None:
     rt.reboot_device(device, reconnect_timeout=timeout)
 

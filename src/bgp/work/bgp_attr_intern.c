@@ -1,12 +1,13 @@
 /**
  * @file   bgp_attr_intern.c
- * @brief  BGP 路径属性去重（intern）实现
+ * @brief  BGP 路径属性：intern 存储 + 协议语义 helper 实现
  * @author jhb
  * @date   2026/04/09
  */
 #include "bgp_attr_intern.h"
 
 #include <glib.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "log.h"
@@ -173,4 +174,79 @@ const bgp_attr_ref_t *bgp_attr_find_by_id(uint32_t attr_id)
 uint32_t bgp_attr_intern_count(void)
 {
     return g_attr_table ? g_hash_table_size(g_attr_table) : 0;
+}
+
+/* ============================================================================
+ * 属性语义 helper
+ * ========================================================================== */
+
+gboolean bgp_attr_as_path_contains_as(const char *as_path, uint32_t asn)
+{
+    if (!as_path || as_path[0] == '\0' || asn == 0u)
+    {
+        return FALSE;
+    }
+
+    const char *p = as_path;
+    while (*p != '\0')
+    {
+        while (*p == ' ' || *p == '\t' || *p == '{' || *p == '}' || *p == ',')
+        {
+            p++;
+        }
+        if (*p == '\0')
+        {
+            break;
+        }
+
+        char *end = NULL;
+        unsigned long v = strtoul(p, &end, 10);
+        if (end == p)
+        {
+            p++;
+            continue;
+        }
+        if ((uint32_t)v == asn)
+        {
+            return TRUE;
+        }
+        p = end;
+    }
+
+    return FALSE;
+}
+
+gboolean bgp_attr_is_as_loop(const bgp_attr_t *attr, uint32_t local_as)
+{
+    if (!attr || local_as == 0u)
+    {
+        return FALSE;
+    }
+    return bgp_attr_as_path_contains_as(attr->as_path, local_as);
+}
+
+void bgp_attr_build_imported(bgp_attr_t *attr)
+{
+    if (!attr)
+    {
+        return;
+    }
+    memset(attr, 0, sizeof(*attr));
+    attr->origin = BGP_ORIGIN_INCOMPLETE;
+    attr->local_pref = 100;
+    attr->has_local_pref = true;
+}
+
+void bgp_nexthop_from_addr(bgp_nexthop_t *nh, const net_addr_t *addr)
+{
+    if (!nh)
+    {
+        return;
+    }
+    memset(nh, 0, sizeof(*nh));
+    nh->has_link_local = false;
+    if (addr)
+    {
+        nh->global = *addr;
+    }
 }

@@ -14,10 +14,13 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "bgp_calc.h"
+#include "bgp_conn.h"
 #include "bgp_if_cache.h"
 #include "bgp_instance.h"
 #include "bgp_main.h"
 #include "bgp_protocol.h"
+#include "bgp_route_flush.h"
 #include "bgp_session.h"
 #include "bgp_update_group.h"
 #include "bgp_vrf.h"
@@ -67,7 +70,7 @@ static void bgp_cfg_drain_instance_work(bgp_instance_t *inst)
         {
             return;
         }
-        bgp_work_process_pending(inst);
+        bgp_instance_drain_pending(inst);
     }
 }
 
@@ -118,7 +121,7 @@ static void bgp_cfg_stop_all_sessions_and_drain_work(bgp_protocol_t *proto)
             while (g_hash_table_iter_next(&sess_iter, &sess_key, &sess_val))
             {
                 (void)sess_key;
-                bgp_server_stop_session_conns((bgp_session_t *)sess_val);
+                bgp_session_stop_all((bgp_session_t *)sess_val);
             }
         }
 
@@ -246,7 +249,7 @@ void bgp_cfg_apply_neighbor(bgp_apply_cmd_t *apply)
             }
             (void)bgp_vrf_af_disable_neighbor(vrf, inst->afi, inst->safi, &apply->u.neighbor.addr);
         }
-        bgp_server_stop_session_conns(existing);
+        bgp_session_stop_all(existing);
         bgp_vrf_del_session(vrf, &apply->u.neighbor.addr);
         bgp_cfg_drain_vrf_work(vrf);
     }
@@ -324,7 +327,7 @@ void bgp_cfg_apply_instance(bgp_apply_cmd_t *apply)
                     bgp_session_t *sess = bgp_vrf_find_session(vrf, &addr);
                     if (sess && !bgp_vrf_neighbor_has_any_af(vrf, &addr))
                     {
-                        bgp_server_stop_session_conns(sess);
+                        bgp_session_stop_all(sess);
                     }
                 }
             }
@@ -390,7 +393,7 @@ void bgp_cfg_apply_af_neighbor(bgp_apply_cmd_t *apply)
                                         &apply->u.af_neighbor.addr);
             if (!bgp_vrf_neighbor_has_any_af(vrf, &apply->u.af_neighbor.addr))
             {
-                bgp_server_stop_session_conns(sess);
+                bgp_session_stop_all(sess);
             }
         }
         bgp_cfg_drain_vrf_work(vrf);
@@ -406,7 +409,7 @@ void bgp_cfg_apply_af_neighbor(bgp_apply_cmd_t *apply)
         }
         if (first_af)
         {
-            bgp_server_start_active_conn(sess);
+            bgp_session_start_active(sess);
         }
     }
 
@@ -474,7 +477,7 @@ void bgp_cfg_apply_router_id(bgp_apply_cmd_t *apply)
         }
         vrf->router_id = ntohl(addr.s_addr);
     }
-    bgp_server_reset_all_sessions(vrf);
+    bgp_vrf_reset_all_sessions(vrf);
     apply->rc = BGP_APPLY_RC_OK;
 }
 
@@ -521,7 +524,7 @@ void bgp_cfg_apply_timers(bgp_apply_cmd_t *apply)
         vrf->keepalive = apply->u.timers.keepalive;
         vrf->hold_time = apply->u.timers.hold_time;
     }
-    bgp_server_reset_all_sessions(vrf);
+    bgp_vrf_reset_all_sessions(vrf);
     apply->rc = BGP_APPLY_RC_OK;
 }
 
@@ -566,7 +569,7 @@ void bgp_cfg_apply_connect_retry(bgp_apply_cmd_t *apply)
     {
         vrf->connect_retry = apply->u.connect_retry.interval;
     }
-    bgp_server_rearm_retry_timers(vrf);
+    bgp_vrf_rearm_retry_timers(vrf);
     apply->rc = BGP_APPLY_RC_OK;
 }
 

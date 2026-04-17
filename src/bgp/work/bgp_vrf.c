@@ -9,8 +9,10 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "bgp_calc.h"
 #include "bgp_rib.h"
 #include "bgp_update_group.h"
+#include "bgp_worker.h"
 #include "log.h"
 #include "net_addr.h"
 
@@ -397,6 +399,55 @@ uint32_t bgp_vrf_rib_head_count(const bgp_vrf_t *vrf)
         total += bgp_rib_head_count(inst ? inst->rib : NULL);
     }
     return total;
+}
+
+// ============================================================================
+// 批量 session 控制（router-id / timer 参数变更等 VRF 级联动）
+// ============================================================================
+
+void bgp_vrf_reset_all_sessions(bgp_vrf_t *vrf)
+{
+    if (!vrf || !vrf->sess_hash || !g_bgp_work_local)
+    {
+        return;
+    }
+    GHashTableIter iter;
+    gpointer key, value;
+    g_hash_table_iter_init(&iter, vrf->sess_hash);
+    while (g_hash_table_iter_next(&iter, &key, &value))
+    {
+        (void)key;
+        bgp_session_t *sess = (bgp_session_t *)value;
+        if (sess && (sess->pri_conn || sess->sec_conn))
+        {
+            bgp_neighbor_down(sess, g_bgp_work_local->epoll_fd);
+        }
+    }
+}
+
+void bgp_vrf_rearm_retry_timers(bgp_vrf_t *vrf)
+{
+    if (!vrf || !vrf->sess_hash || !g_bgp_work_local)
+    {
+        return;
+    }
+
+    uint16_t retry_sec = (vrf->connect_retry > 0) ? vrf->connect_retry : BGP_TIMER_DEFAULT_CONNECT_RETRY;
+
+    GHashTableIter iter;
+    gpointer key, value;
+    g_hash_table_iter_init(&iter, vrf->sess_hash);
+    while (g_hash_table_iter_next(&iter, &key, &value))
+    {
+        (void)key;
+        bgp_session_t *sess = (bgp_session_t *)value;
+        if (!sess || sess->retry_timerfd < 0)
+        {
+            continue;
+        }
+        bgp_session_cancel_retry(sess, g_bgp_work_local->epoll_fd);
+        bgp_session_arm_retry(sess, g_bgp_work_local->epoll_fd, retry_sec);
+    }
 }
 
 uint32_t bgp_vrf_rib_route_count(const bgp_vrf_t *vrf)

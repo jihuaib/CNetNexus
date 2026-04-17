@@ -10,11 +10,13 @@
 #include <glib.h>
 #include <stddef.h>
 
+#include "bgp.h"
 #include "bgp_peer.h"
-#include "bgp_work.h"
 
 /* bgp_peer.h 已前向声明 bgp_vrf_t，此处直接使用 */
 typedef struct bgp_rib bgp_rib_t;
+typedef struct bgp_calc_queue bgp_calc_queue_t;
+typedef struct bgp_route_flush_queue bgp_route_flush_queue_t;
 
 /**
  * @brief BGP 地址族实例（持有该 AF 下所有已使能邻居的 bgp_peer_t 所有权）
@@ -57,5 +59,14 @@ bgp_instance_t *bgp_instance_create(bgp_afi_t afi, bgp_safi_t safi, bgp_vrf_t *v
  * @param inst bgp_instance_t 指针（允许为 NULL）
  */
 void bgp_instance_destroy(bgp_instance_t *inst);
+
+/**
+ * @brief 在当前线程内同步抽干实例的所有数据队列
+ *
+ * 循环调用 bgp_calc_process_pending / bgp_route_flush_process_pending /
+ * bgp_update_group_process_pending，直到所有队列都处理完毕。
+ * 用于配置删除/协议关闭路径，确保销毁前完成已排队的数据队列处理。
+ */
+void bgp_instance_drain_pending(bgp_instance_t *inst);
 
 #endif /* BGP_INSTANCE_H */

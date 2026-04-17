@@ -10,7 +10,9 @@
 #include <sys/socket.h>
 
 #include "bgp_rib.h"
-#include "bgp_work.h"
+#include "bgp_route_flush.h"
+#include "bgp_update_group.h"
+#include "bgp_worker.h"
 #include "log.h"
 
 // ============================================================================
@@ -181,7 +183,7 @@ void bgp_calc_run_one(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
         {
             bgp_route_flush_queue_push(inst->route_flush_queue, head);
         }
-        bgp_work_enqueue_withdraw_to_subgroups(inst, nlri);
+        bgp_update_group_enqueue_withdraw(inst, nlri);
         char key[BGP_NLRI_KEY_MAX];
         bgp_nlri_to_str(nlri, key, sizeof(key));
         LOG_DEBUG("BGP: calc_run_one WITHDRAW key=%s afi=%u safi=%u", key, (unsigned)inst->afi, (unsigned)inst->safi);
@@ -213,7 +215,7 @@ void bgp_calc_run_one(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
         {
             bgp_route_flush_queue_push(inst->route_flush_queue, head);
         }
-        bgp_work_enqueue_withdraw_to_subgroups(inst, nlri);
+        bgp_update_group_enqueue_withdraw(inst, nlri);
         char key[BGP_NLRI_KEY_MAX];
         bgp_nlri_to_str(nlri, key, sizeof(key));
         LOG_DEBUG("BGP: calc_run_one WITHDRAW(all-invalid) key=%s afi=%u safi=%u", key, (unsigned)inst->afi,
@@ -225,7 +227,7 @@ void bgp_calc_run_one(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
     bgp_rib_mark_best(inst->rib, &head->nlri, best);
 
     /* 将 NLRI 挂入各 ESTABLISHED 邻居的 session 发布队列 */
-    bgp_work_enqueue_announce_to_subgroups(inst, &head->nlri);
+    bgp_update_group_enqueue_announce(inst, &head->nlri);
 
     const bgp_route_node_t *new_best = bgp_rib_find_best(inst->rib, &head->nlri);
     int best_switched = (old_best != new_best);
@@ -238,4 +240,128 @@ void bgp_calc_run_one(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
     char key[BGP_NLRI_KEY_MAX];
     bgp_nlri_to_str(&head->nlri, key, sizeof(key));
     LOG_DEBUG("BGP: calc_run_one ANNOUNCE key=%s afi=%u safi=%u", key, (unsigned)inst->afi, (unsigned)inst->safi);
+}
+
+// ============================================================================
+// 优选队列（calc_queue）
+// ============================================================================
+
+static void bgp_calc_schedule(bgp_instance_t *inst);
+static int bgp_calc_process_event(bgp_instance_t *inst, gboolean allow_reschedule);
+
+bgp_calc_queue_t *bgp_calc_queue_create(void)
+{
+    bgp_calc_queue_t *q = g_malloc0(sizeof(bgp_calc_queue_t));
+    q->q = g_queue_new();
+    return q;
+}
+
+void bgp_calc_queue_destroy(bgp_calc_queue_t *q, bgp_instance_t *inst)
+{
+    if (!q)
+    {
+        return;
+    }
+    bgp_rthead_t *head = NULL;
+    while ((head = (bgp_rthead_t *)g_queue_pop_head(q->q)) != NULL)
+    {
+        if (inst && inst->rib)
+        {
+            bgp_rib_head_unref(head);
+        }
+    }
+    g_queue_free(q->q);
+    g_free(q);
+}
+
+int bgp_calc_queue_push(bgp_calc_queue_t *q, bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
+{
+    if (!q || !inst || !inst->rib || !nlri)
+    {
+        return -1;
+    }
+
+    bgp_rthead_t *head = bgp_rib_ensure_head(inst->rib, nlri);
+    if (!head)
+    {
+        return -1;
+    }
+
+    bgp_rib_head_ref(head);
+    g_queue_push_tail(q->q, head);
+    q->count++;
+    bgp_calc_schedule(inst);
+    return 0;
+}
+
+int bgp_calc_queue_process(bgp_calc_queue_t *q, bgp_instance_t *inst, int batch_size)
+{
+    if (!q || !inst || batch_size <= 0)
+    {
+        return 0;
+    }
+    int processed = 0;
+    bgp_rthead_t *head = NULL;
+    while (processed < batch_size && (head = (bgp_rthead_t *)g_queue_pop_head(q->q)) != NULL)
+    {
+        q->count--;
+        bgp_calc_run_one(inst, &head->nlri);
+        bgp_rib_head_unref(head);
+        processed++;
+    }
+    if (processed > 0)
+    {
+        LOG_DEBUG("BGP: calc_queue afi=%u safi=%u 批量处理 %d 条，剩余 %u 条", (unsigned)inst->afi,
+                  (unsigned)inst->safi, processed, q->count);
+    }
+    return processed;
+}
+
+static int bgp_calc_process_event(bgp_instance_t *inst, gboolean allow_reschedule)
+{
+    if (!inst || !inst->calc_queue)
+    {
+        return 0;
+    }
+
+    int processed = bgp_calc_queue_process(inst->calc_queue, inst, BGP_WORK_BATCH_SIZE);
+    if (allow_reschedule && processed > 0 && inst->calc_queue->count > 0u)
+    {
+        bgp_calc_schedule(inst);
+    }
+    return processed;
+}
+
+static void bgp_calc_schedule(bgp_instance_t *inst)
+{
+    if (!inst)
+    {
+        return;
+    }
+
+    uint32_t vrf_id = (inst->vrf) ? inst->vrf->vrf_id : BGP_VRF_PUBLIC_ID;
+    if (bgp_worker_post_calc_event(vrf_id, inst->afi, inst->safi) == 0)
+    {
+        return;
+    }
+
+    if (bgp_worker_is_current_thread())
+    {
+        (void)bgp_calc_process_event(inst, FALSE);
+        return;
+    }
+
+    LOG_WARN("BGP: failed to enqueue calc work event vrf=%u afi=%u safi=%u", vrf_id, (unsigned)inst->afi,
+             (unsigned)inst->safi);
+}
+
+void bgp_calc_handle_event(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi)
+{
+    bgp_instance_t *inst = bgp_worker_lookup_instance(vrf_id, afi, safi);
+    (void)bgp_calc_process_event(inst, TRUE);
+}
+
+int bgp_calc_process_pending(bgp_instance_t *inst)
+{
+    return bgp_calc_process_event(inst, FALSE);
 }

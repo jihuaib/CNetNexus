@@ -48,6 +48,25 @@ typedef enum bgp_timer_type
 } bgp_timer_type_t;
 
 /**
+ * @brief BGP 会话收包统计（按协议报文类型分类）
+ *
+ * 记录该 session 生命周期内从对端收到的每种 BGP 协议报文的累计个数，
+ * 计数在报文头部校验通过、完成一帧读取后递增，与 FSM 分发逻辑独立，
+ * 因此解析失败 / 触发 NOTIFICATION 的报文同样会被计入对应分类。
+ * 计数跨 TCP 连接重建保留（不在 reset_negotiated / neighbor_down 中清零），
+ * 仅在 session 销毁时随结构释放。
+ */
+typedef struct bgp_msg_rx_stats
+{
+    uint32_t open;         /**< 收到 OPEN 报文个数 */
+    uint32_t update;       /**< 收到 UPDATE 报文个数 */
+    uint32_t notification; /**< 收到 NOTIFICATION 报文个数 */
+    uint32_t keepalive;    /**< 收到 KEEPALIVE 报文个数 */
+    uint32_t unknown;      /**< 收到未知/非法类型报文个数 */
+    uint32_t total;        /**< 收到 BGP 报文总个数（所有类型之和） */
+} bgp_msg_rx_stats_t;
+
+/**
  * @brief epoll timerfd 反向引用结构（内嵌于 bgp_session_t，通用于三类定时器）
  *
  * 注册 timerfd 到 epoll 时，data.ptr 设为
@@ -109,6 +128,8 @@ typedef struct bgp_session
 
     gint64 established_at_usec; /**< 会话最近一次进入 ESTABLISHED 状态的时间戳（g_get_real_time，0 表示未建立） */
 
+    bgp_msg_rx_stats_t rx_msg_stats; /**< 收到的 BGP 协议报文累计统计（按类型分类） */
+
     bgp_vrf_t *vrf;            /**< 所属 VRF（借用引用，不持有所有权） */
     bgp_fsm_state_t fsm_state; /**< RFC 4271 §8 FSM 当前状态（唯一 BGP 协议态） */
 } bgp_session_t;
@@ -139,6 +160,22 @@ void bgp_session_update_type(bgp_session_t *sess, uint32_t local_as);
  * @param sess 目标会话
  */
 void bgp_session_reset_negotiated(bgp_session_t *sess);
+
+/**
+ * @brief 触发本 session 发起主动 TCP 连接（仅 worker 线程调用）
+ *
+ * 实际由 FSM 的 AUTO_START 事件驱动连接建立；此函数主要用于配置变更后
+ * 启动新会话或从 IDLE 重新建连的入口。
+ */
+void bgp_session_start_active(bgp_session_t *session);
+
+/**
+ * @brief 全面关闭本 session 的所有资源（仅 worker 线程调用）
+ *
+ * 取消三类定时器、从各 AF subgroup 脱队、关闭 pri/sec 连接、清理 RIB 中
+ * 属于该邻居的 relay 路由，最后将 FSM 状态重置为 IDLE。
+ */
+void bgp_session_stop_all(bgp_session_t *session);
 
 /**
  * @brief 主动断邻居：发送 NOTIFICATION、关闭连接、重置协商参数、调度重连
@@ -187,5 +224,16 @@ void bgp_session_reset_hold(bgp_session_t *sess);
  * @brief 取消 hold time 定时器（断开连接时调用）
  */
 void bgp_session_cancel_hold(bgp_session_t *sess, int epoll_fd);
+
+/**
+ * @brief 为 session 的收包统计计数一个 BGP 报文
+ *
+ * 在报文头部校验通过、帧体读取完成后调用，按 msg_type 归类计数；
+ * 未知/非法类型统一落入 unknown 桶。total 始终递增。
+ *
+ * @param sess     目标会话（NULL 时为空操作）
+ * @param msg_type BGP 报文头部中的 Type 字段（bgp_msg_type_t 枚举值）
+ */
+void bgp_session_rx_msg_count(bgp_session_t *sess, uint8_t msg_type);
 
 #endif /* BGP_SESSION_H */

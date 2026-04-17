@@ -143,4 +143,19 @@ uint32_t bgp_vrf_purge_session_routes(bgp_vrf_t *vrf, const net_addr_t *addr);
 uint32_t bgp_vrf_rib_head_count(const bgp_vrf_t *vrf);
 uint32_t bgp_vrf_rib_route_count(const bgp_vrf_t *vrf);
 
+/**
+ * @brief 重置 VRF 内所有有活跃连接的 session（router-id / timer 变更后调用）
+ *
+ * 遍历 vrf->sess_hash，对每个持有 pri_conn 或 sec_conn 的 session 调用
+ * bgp_neighbor_down，让其发送 NOTIFICATION 并按 connect-retry 调度重连。
+ */
+void bgp_vrf_reset_all_sessions(bgp_vrf_t *vrf);
+
+/**
+ * @brief 按当前 VRF connect-retry 配置，重排已挂起的 retry 定时器
+ *
+ * 用于 connect-retry 参数动态修改后，让已存在的 retry timer 立即生效新间隔。
+ */
+void bgp_vrf_rearm_retry_timers(bgp_vrf_t *vrf);
+
 #endif /* BGP_VRF_H */

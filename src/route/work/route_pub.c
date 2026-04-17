@@ -44,10 +44,33 @@ static void build_entry(route_msg_entry_t *entry, const route_head_t *head, cons
 // subscribe者匹配
 // ============================================================================
 
+/**
+ * @brief 协议订阅过滤：STATIC 订阅者同时接收 BLACKHOLE（null0）路径。
+ *
+ * BLACKHOLE 路由由用户通过 `route ipv4 ... null0` 配置，与普通静态路由
+ * 同属用户配置的静态路由范畴，因此被归入 STATIC 订阅/过滤口径。
+ */
+static int proto_filter_matches(uint32_t sub_proto, uint32_t path_proto)
+{
+    if (sub_proto == ROUTE_PROTOCOL_MAX)
+    {
+        return 1;
+    }
+    if (sub_proto == path_proto)
+    {
+        return 1;
+    }
+    if (sub_proto == ROUTE_PROTOCOL_STATIC && path_proto == ROUTE_PROTOCOL_BLACKHOLE)
+    {
+        return 1;
+    }
+    return 0;
+}
+
 static int subscriber_matches(const route_subscriber_t *sub, const route_head_t *head, const route_path_t *path)
 {
     /* 协议过滤 */
-    if (sub->protocol != ROUTE_PROTOCOL_MAX && sub->protocol != path->key.protocol)
+    if (!proto_filter_matches(sub->protocol, path->key.protocol))
     {
         return 0;
     }
@@ -126,7 +149,7 @@ void route_pub_notify_entry(GList *subscribers, const route_msg_entry_t *entry)
         const route_subscriber_t *sub = (const route_subscriber_t *)l->data;
 
         /* 协议过滤 */
-        if (sub->protocol != ROUTE_PROTOCOL_MAX && sub->protocol != entry->protocol)
+        if (!proto_filter_matches(sub->protocol, entry->protocol))
         {
             continue;
         }

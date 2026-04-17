@@ -18,8 +18,8 @@
 #include "bgp_conn.h"
 #include "bgp_fsm.h"
 #include "bgp_pkt.h"
+#include "bgp_update_group.h"
 #include "bgp_vrf.h"
-#include "bgp_work.h"
 #include "bgp_worker.h"
 #include "log.h"
 
@@ -253,7 +253,7 @@ void bgp_neighbor_down(bgp_session_t *sess, int epoll_fd)
     sess->fsm_state = BGP_FSM_STATE_ACTIVE;
 
     /* 步骤 6：按 VRF 配置的 connect-retry 间隔调度重连定时器
-     *         到期后触发 bgp_server_start_active_conn → bgp_pkt_send_open */
+     *         到期后触发 bgp_session_start_active → bgp_pkt_send_open */
     uint16_t retry_sec =
         (sess->vrf && sess->vrf->connect_retry > 0) ? sess->vrf->connect_retry : BGP_TIMER_DEFAULT_CONNECT_RETRY;
     bgp_session_arm_retry(sess, epoll_fd, retry_sec);
@@ -408,4 +408,79 @@ void bgp_session_reset_hold(bgp_session_t *sess)
 void bgp_session_cancel_hold(bgp_session_t *sess, int epoll_fd)
 {
     timer_cancel(&sess->hold_timerfd, epoll_fd);
+}
+
+// ============================================================================
+// 收包统计
+// ============================================================================
+
+void bgp_session_rx_msg_count(bgp_session_t *sess, uint8_t msg_type)
+{
+    if (!sess)
+    {
+        return;
+    }
+
+    sess->rx_msg_stats.total++;
+    switch (msg_type)
+    {
+        case BGP_MSG_OPEN:
+            sess->rx_msg_stats.open++;
+            break;
+        case BGP_MSG_UPDATE:
+            sess->rx_msg_stats.update++;
+            break;
+        case BGP_MSG_NOTIFICATION:
+            sess->rx_msg_stats.notification++;
+            break;
+        case BGP_MSG_KEEPALIVE:
+            sess->rx_msg_stats.keepalive++;
+            break;
+        default:
+            sess->rx_msg_stats.unknown++;
+            break;
+    }
+}
+
+// ============================================================================
+// 连接生命周期启停（仅 worker 线程调用）
+// ============================================================================
+
+void bgp_session_start_active(bgp_session_t *session)
+{
+    if (!session || !g_bgp_work_local || g_bgp_work_local->epoll_fd < 0)
+    {
+        return;
+    }
+    bgp_fsm_event(session, BGP_EVT_AUTO_START);
+}
+
+void bgp_session_stop_all(bgp_session_t *session)
+{
+    if (!session)
+    {
+        return;
+    }
+    int epoll_fd = g_bgp_work_local->epoll_fd;
+
+    bgp_session_cancel_retry(session, epoll_fd);
+    bgp_session_cancel_keepalive(session, epoll_fd);
+    bgp_session_cancel_hold(session, epoll_fd);
+
+    /* 清理该 session 在各 AF peer 的 subgroup 归属 */
+    for (GList *l = session->peer_list; l; l = l->next)
+    {
+        bgp_peer_t *peer = (bgp_peer_t *)l->data;
+        if (peer && peer->subgroups)
+        {
+            bgp_subgroup_peer_leave(peer, session);
+        }
+    }
+
+    bgp_conn_close(session, &session->pri_conn, epoll_fd);
+    bgp_conn_close(session, &session->sec_conn, epoll_fd);
+    bgp_worker_flush_peer_routes(session->vrf ? session->vrf->vrf_id : BGP_VRF_PUBLIC_ID, &session->neighbor_addr);
+    (void)bgp_vrf_purge_session_routes(session->vrf, &session->neighbor_addr);
+    bgp_session_reset_negotiated(session);
+    session->fsm_state = BGP_FSM_STATE_IDLE;
 }

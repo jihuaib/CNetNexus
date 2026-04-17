@@ -1,15 +1,22 @@
 /**
  * @file   bgp_attr_intern.h
- * @brief  BGP 路径属性去重（intern）：共享相同属性，引用计数管理，自增 attr_id
+ * @brief  BGP 路径属性：去重（intern）存储 + 协议语义 helper
  * @author jhb
  * @date   2026/04/09
+ *
+ * 本头文件提供两层能力：
+ *   1. 存储层：bgp_attr_intern/release/find_by_id —— 属性去重、引用计数、attr_id 管理
+ *   2. 语义层：bgp_attr_as_path_contains_as / is_as_loop / build_imported / nexthop_from_addr
+ *             —— 不依赖 runtime 上下文的纯属性操作
  */
 #ifndef BGP_ATTR_INTERN_H
 #define BGP_ATTR_INTERN_H
 
+#include <glib.h>
 #include <stdint.h>
 
 #include "bgp.h"
+#include "net_addr.h"
 
 /**
  * @brief 带引用计数的共享属性
@@ -69,5 +76,41 @@ const bgp_attr_ref_t *bgp_attr_find_by_id(uint32_t attr_id);
 
 /** 当前 intern 表中的唯一属性数量 */
 uint32_t bgp_attr_intern_count(void);
+
+/* ============================================================================
+ * 属性语义 helper（与存储无关，可在任意上下文调用）
+ * ========================================================================== */
+
+/**
+ * @brief 判断 AS-path 字符串中是否包含指定 AS
+ *
+ * AS-path 格式示例："65001 65002 {65010,65011} 65003"，
+ * 空格/制表符/花括号/逗号均作为分隔符处理。
+ *
+ * @param as_path AS-path 字符串（允许 NULL 或空串）
+ * @param asn     目标 AS 号（0 直接返回 FALSE）
+ * @return TRUE 若 asn 出现在 as_path 中
+ */
+gboolean bgp_attr_as_path_contains_as(const char *as_path, uint32_t asn);
+
+/**
+ * @brief 判断属性是否构成 AS-loop（AS_PATH 中包含 local_as）
+ *
+ * 便捷包装，等价于：attr && local_as != 0 && as_path_contains_as(attr->as_path, local_as)
+ */
+gboolean bgp_attr_is_as_loop(const bgp_attr_t *attr, uint32_t local_as);
+
+/**
+ * @brief 构造"外部协议导入到 BGP"的合成属性
+ *
+ * 输出：origin=INCOMPLETE, local_pref=100, has_local_pref=true, 其余字段清零。
+ * 用于 import-route 场景，调用方提供栈上 bgp_attr_t。
+ */
+void bgp_attr_build_imported(bgp_attr_t *attr);
+
+/**
+ * @brief 由一个 net_addr_t 构造仅含 global 的 nexthop（无 link-local）
+ */
+void bgp_nexthop_from_addr(bgp_nexthop_t *nh, const net_addr_t *addr);
 
 #endif /* BGP_ATTR_INTERN_H */

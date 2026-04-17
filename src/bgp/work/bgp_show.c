@@ -897,6 +897,15 @@ static int handle_bgp_show_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
 
     g_string_append_printf(resp_buf, "\r\n  %-24s: \r\n%s", "Negotiated Address Families", af_list->str);
     g_string_free(af_list, TRUE);
+
+    g_string_append(resp_buf, "\r\n  Received Messages:\r\n");
+    g_string_append_printf(resp_buf, "  %-24s: %u\r\n", "OPEN", sess->rx_msg_stats.open);
+    g_string_append_printf(resp_buf, "  %-24s: %u\r\n", "UPDATE", sess->rx_msg_stats.update);
+    g_string_append_printf(resp_buf, "  %-24s: %u\r\n", "NOTIFICATION", sess->rx_msg_stats.notification);
+    g_string_append_printf(resp_buf, "  %-24s: %u\r\n", "KEEPALIVE", sess->rx_msg_stats.keepalive);
+    g_string_append_printf(resp_buf, "  %-24s: %u\r\n", "Unknown", sess->rx_msg_stats.unknown);
+    g_string_append_printf(resp_buf, "  %-24s: %u\r\n", "Total", sess->rx_msg_stats.total);
+
     g_string_append(resp_buf, "\r\n");
 
     return bgp_work_send_chunked_response(msg, resp_buf);

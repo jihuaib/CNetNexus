@@ -1151,6 +1151,9 @@ void bgp_pkt_on_data(bgp_conn_t *conn)
         const uint8_t *body = frame + BGP_MSG_HEADER_SIZE;
         uint16_t body_len = msg_len - BGP_MSG_HEADER_SIZE;
 
+        /* 按报文类型累计本 session 收包统计（含未知类型） */
+        bgp_session_rx_msg_count(sess, msg_type);
+
         switch (msg_type)
         {
             case BGP_MSG_OPEN:

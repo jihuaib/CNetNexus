@@ -51,3 +51,6 @@ __pycache__/
 
 # CI runtime artifacts
 scripts/ci/reports/
+
+# graphify output
+graphify-out/

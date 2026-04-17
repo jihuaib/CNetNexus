@@ -332,9 +332,9 @@ int route_static_add(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_add
     else
     {
         /* interface-only 路由 */
-        if (strcmp(safe_ifname, "Null0") == 0)
+        if (g_ascii_strcasecmp(safe_ifname, "null0") == 0)
         {
-            /* 模式 C：Null0 黑洞路由，配置即生效 */
+            /* 模式 C：null0 黑洞路由，配置即生效 */
             net_addr_t zero_src;
             memset(&zero_src, 0, sizeof(zero_src));
             zero_src.family = (afi == ROUTE_AFI_IPV6) ? AF_INET6 : AF_INET;
@@ -346,7 +346,7 @@ int route_static_add(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_add
             {
                 entry->in_rib = 1u;
                 entry->nh_resolved = 1u;
-                LOG_DEBUG("Null0 blackhole route written to RIB: vrf=%u afi=%u pfxlen=%u", vrf_id, afi, prefix_len);
+                LOG_DEBUG("null0 blackhole route written to RIB: vrf=%u afi=%u pfxlen=%u", vrf_id, afi, prefix_len);
             }
         }
         else
@@ -453,15 +453,16 @@ int route_static_del(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_add
     /* 确定 RIB 中的 source 地址 */
     const net_addr_t *rib_source = nexthop_addr;
     net_addr_t if_source;
-    if (!entry->has_nexthop && strcmp(safe_ifname, "Null0") != 0)
+    int is_null0 = (!entry->has_nexthop && g_ascii_strcasecmp(safe_ifname, "null0") == 0);
+    if (!entry->has_nexthop && !is_null0)
     {
         /* interface-only：source 是 ifindex 编码 */
         encode_ifindex_as_addr(entry->cfg_ifindex, &if_source);
         rib_source = &if_source;
     }
-    else if (!entry->has_nexthop && strcmp(safe_ifname, "Null0") == 0)
+    else if (is_null0)
     {
-        /* Null0 黑洞：source 是全零地址 */
+        /* null0 黑洞：source 是全零地址 */
         net_addr_t zero_src;
         memset(&zero_src, 0, sizeof(zero_src));
         zero_src.family = (afi == ROUTE_AFI_IPV6) ? AF_INET6 : AF_INET;
@@ -472,8 +473,7 @@ int route_static_del(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_add
     /* 若已在 RIB 中则先撤销并通知订阅者 */
     if (entry->in_rib)
     {
-        uint32_t protocol = (!entry->has_nexthop && strcmp(safe_ifname, "Null0") == 0) ? ROUTE_PROTOCOL_BLACKHOLE
-                                                                                       : ROUTE_PROTOCOL_STATIC;
+        uint32_t protocol = is_null0 ? ROUTE_PROTOCOL_BLACKHOLE : ROUTE_PROTOCOL_STATIC;
         route_rib_del(g_route_work_local->rib, vrf_id, afi, prefix_addr, prefix_len, protocol, rib_source,
                       on_static_rib_del, NULL);
     }
@@ -714,8 +714,8 @@ static void static_if_change_cb(gpointer key_ptr, gpointer value_ptr, gpointer u
         return;
     }
 
-    /* Null0 黑洞路由永远有效，跳过 */
-    if (strcmp(entry->key.out_ifname, "Null0") == 0)
+    /* null0 黑洞路由永远有效，跳过 */
+    if (g_ascii_strcasecmp(entry->key.out_ifname, "null0") == 0)
     {
         return;
     }

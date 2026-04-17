@@ -1,0 +1,17 @@
+{
+  "name": "netnexus-topology-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Backend for the NetNexus topology web UI: manages docker containers and bridges browser <-> telnet.",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "ws": "^8.18.0"
+  }
+}

@@ -154,6 +154,32 @@ class NetNexusCli:
             raise RuntimeError(f"{self.name}: command failed: {command}\n{text}")
         return text
 
+    def query_help(self, partial: str, timeout: int | None = None) -> str:
+        """Send ``<partial>?`` (no newline) to trigger CLI help and return captured text.
+
+        After capturing the help output, clears the server's line buffer using
+        backspaces and issues a blank newline to restore a clean prompt so
+        that subsequent :meth:`cmd` calls are not polluted by the residual
+        input.
+        """
+        if not self.tn:
+            raise RuntimeError(f"{self.name}: CLI not connected")
+        eff_timeout = timeout if timeout is not None else self.cmd_timeout
+        if self.log_commands or self.verbose:
+            print(f"[{self.name}] >>> {partial}? (help)")
+        self.tn.write(partial.encode("ascii") + b"?")
+        help_raw = self._read_with_prompt_recovery(command=f"{partial}?", timeout=eff_timeout)
+        help_text = help_raw.replace("\r", "")
+        if self.log_commands or self.verbose:
+            print(f"[{self.name}] <<< {help_text.strip()}")
+        cleanup = (b"\x7f" * len(partial)) + b"\n"
+        self.tn.write(cleanup)
+        try:
+            self._read_until_prompt(timeout=eff_timeout)
+        except Exception:
+            pass
+        return help_text
+
     def _read_with_prompt_recovery(self, command: str, timeout: int) -> str:
         try:
             return self._read_until_prompt(timeout=timeout)
@@ -382,6 +408,12 @@ class DeviceExec:
 
     def __call__(self, command: str, *, timeout: int | None = None, strict: bool = True) -> str:
         return self.exec(command, timeout=timeout, strict=strict)
+
+    def query_help(self, partial: str, *, timeout: int | None = None) -> str:
+        cli = self.runtime.cli_map.get(self.device)
+        if cli is None:
+            raise ValueError(f"unknown or disconnected device '{self.device}'")
+        return cli.query_help(partial, timeout=timeout)
 
 
 class TopologyRuntime:
