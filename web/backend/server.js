@@ -35,7 +35,13 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const PORT = parseInt(process.env.PORT || '5174', 10);
+const config = require('./config');
+const { isValidId, isValidPort, isValidImage, base64DecodedSize } = require('./validation');
+
+config.validateOrExit();
+config.dump();
+
+const PORT = config.PORT;
 const DOCKER = process.env.DOCKER_BIN || 'docker';
 const USE_SUDO = process.env.USE_SUDO === '1';
 
@@ -61,17 +67,100 @@ const NN_START_SH = [
 ].join(' && ');
 
 const app = express();
-app.use(cors());
-// db 恢复时 dbBase64 可能很大（几百 KB ~ 几 MB），把默认 100KB 上限抬高，
-// 否则 Express 会以非 JSON 响应回 413，前端 r.json() 直接抛
-// "The string did not match the expected pattern."
-app.use(express.json({ limit: '64mb' }));
+app.set('trust proxy', true); // nginx 反代场景下取真实客户端 IP 做限流
+
+// CORS：prod 严格白名单，dev 放开
+const corsOptions = config.IS_PROD
+    ? {
+        origin(origin, cb)
+        {
+            // 同源 / 服务端到服务端（无 Origin）直接放行
+            if (!origin) return cb(null, true);
+            if (config.ALLOWED_ORIGINS.length === 0) return cb(null, true);
+            if (config.ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+            return cb(new Error(`CORS: origin ${origin} not allowed`));
+        },
+        credentials: true
+    }
+    : { origin: true, credentials: true };
+app.use(cors(corsOptions));
+
+// body 大小上限，防止超大 dbBase64 / 恶意请求打爆内存
+app.use(express.json({ limit: config.BODY_LIMIT }));
+
+// 基础安全响应头（替代 helmet，省一个依赖）
+app.use((_req, res, next) =>
+{
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    next();
+});
+
+// 鉴权：生产模式 + 设了 NN_AUTH_TOKEN 时校验 X-NN-Token
+function requireAuth(req, res, next)
+{
+    if (!config.IS_PROD || !config.AUTH_TOKEN) return next();
+    const got = req.get('X-NN-Token') || req.query.token;
+    if (got !== config.AUTH_TOKEN)
+    {
+        return res.status(401).json({ error: 'unauthorized' });
+    }
+    next();
+}
+
+// 每 IP 滑动窗口限流（仅对写操作生效）
+const rateBuckets = new Map(); // ip -> [ts, ts, ...]
+function rateLimitMutations(req, res, next)
+{
+    if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    const now = Date.now();
+    const winStart = now - config.RATE_LIMIT_WINDOW_MS;
+    const bucket = (rateBuckets.get(ip) || []).filter(t => t >= winStart);
+    if (bucket.length >= config.RATE_LIMIT_MAX)
+    {
+        console.warn(`[rate-limit] ${ip} exceeded ${config.RATE_LIMIT_MAX}/${config.RATE_LIMIT_WINDOW_MS}ms`);
+        return res.status(429).json({ error: 'rate limit exceeded' });
+    }
+    bucket.push(now);
+    rateBuckets.set(ip, bucket);
+    // 懒回收，每 200 个不同 IP 扫一次
+    if (rateBuckets.size > 200)
+    {
+        for (const [k, v] of rateBuckets)
+        {
+            const kept = v.filter(t => t >= winStart);
+            if (kept.length === 0) rateBuckets.delete(k);
+            else rateBuckets.set(k, kept);
+        }
+    }
+    next();
+}
+
+// 简单访问日志（审计 + 排错）
+app.use((req, _res, next) =>
+{
+    if (req.path.startsWith('/api/'))
+    {
+        const ip = req.ip || req.socket.remoteAddress || '-';
+        console.log(`[http] ${ip} ${req.method} ${req.originalUrl}`);
+    }
+    next();
+});
+
+app.use('/api', rateLimitMutations);
+app.use('/api', requireAuth);
 
 /** 内存实例表，重启服务即丢失 */
 const instances = new Map(); // id -> { id, image, containerName, hostPort, status, createdAt, ifMapFile, linkNets }
 
 /** 内存链路表：每根线对应一个 docker bridge network */
 const links = new Map(); // id -> { id, from, to, fromPort, toPort, networkName, wired }
+
+/** 停机时把容器里 /opt/netnexus/data 整个 tar.base64 存这里，下次 start 再灌回。
+ *  单独存避免挂在 inst 对象上让 GET /api/instances 列表返回巨大 payload。 */
+const stoppedDbs = new Map(); // id -> base64 string
 
 let nextHostPort = 13788;
 
@@ -82,7 +171,7 @@ const GE_PORT_COUNT = 4;
 function dockerArgs(args) { return USE_SUDO ? ['docker', ...args] : args; }
 function dockerBin() { return USE_SUDO ? 'sudo' : DOCKER; }
 
-function runDocker(args, timeoutMs = 60000)
+function runDocker(args, timeoutMs = config.DOCKER_TIMEOUT_MS)
 {
     return new Promise((resolve, reject) =>
     {
@@ -152,9 +241,81 @@ function runDockerStdin(args, inputBuffer, timeoutMs = 120000)
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+/** 同步确保容器里 netnexus 进程被彻底清掉，避免 restart 出现幽灵进程 */
+async function killNetnexusInContainer(containerName)
+{
+    await runDocker([
+        'exec', containerName, '/bin/sh', '-c',
+        'pkill -x netnexus 2>/dev/null; for i in 1 2 3 4 5; do pgrep -x netnexus >/dev/null || exit 0; sleep 0.2; done; pkill -9 -x netnexus 2>/dev/null; sleep 0.2; true'
+    ]).catch(() => { /* 没进程 pkill 会非零，不是错 */ });
+}
+
+/**
+ * 等 netnexus 进程起来 + 3788 端口进入 LISTEN。
+ * 为兼容各类镜像（可能没装 ss/netstat/awk），用多种手段串联：
+ *   1) `pgrep -x netnexus` 先确认进程活着
+ *   2) 再通过 `/proc/net/tcp(6)` 的 grep 判断 0xECC(=3788) 在 0A(=LISTEN)
+ */
+async function waitForNetnexusReady(containerName, maxMs = 5000)
+{
+    const deadline = Date.now() + maxMs;
+    while (Date.now() < deadline)
+    {
+        try
+        {
+            await runDocker(['exec', containerName, 'pgrep', '-x', 'netnexus']);
+            // /proc/net/tcp 每行形如：
+            //   sl local_address rem_address st ...
+            // 列 2 = "<hex-ip>:<hex-port>"（port 4 位大写 hex），列 4 = 2 位 hex state。
+            // 我们要匹配 port 0ECC 且 state 0A。用 grep 的字段约束（端口后跟空格 + remote）：
+            const { stdout } = await runDocker([
+                'exec', containerName, '/bin/sh', '-c',
+                "grep -E ':0ECC [0-9A-F]+:[0-9A-F]+ 0A ' /proc/net/tcp /proc/net/tcp6 2>/dev/null | head -n1"
+            ]);
+            if (stdout.trim().length > 0) return true;
+        }
+        catch (_) { /* 继续重试 */ }
+        await sleep(200);
+    }
+    return false;
+}
+
+/** 读 netnexus 模块日志（`$NN_WORK_DIR/log/*.log`）的尾巴，排错用 */
+async function tailNetnexusLog(containerName, lines = 30)
+{
+    try
+    {
+        const { stdout } = await runDocker([
+            'exec', containerName, '/bin/sh', '-c',
+            `for f in /opt/netnexus/log/main.log /opt/netnexus/log/cfg.log /tmp/netnexus.log; do ` +
+            `if [ -s "$f" ]; then echo "==> $f <=="; tail -n ${lines} "$f"; fi; done`
+        ]);
+        return stdout;
+    }
+    catch (_) { return ''; }
+}
+
 // -------- 工具 --------
 
 function sanitizeId(s) { return String(s).replace(/[^a-zA-Z0-9_.-]/g, '_'); }
+
+/**
+ * 容器级 hardening：cgroups 资源上限 + no-new-privileges。
+ * 只在 config 里配了对应值才注入，方便 dev 环境完全不限制。
+ */
+function containerHardeningArgs()
+{
+    const a = ['--security-opt', 'no-new-privileges:true'];
+    if (config.CONTAINER_MEMORY)
+    {
+        a.push('--memory', config.CONTAINER_MEMORY);
+        a.push('--memory-swap', config.CONTAINER_MEMORY);
+    }
+    if (config.CONTAINER_CPUS)       a.push('--cpus', String(config.CONTAINER_CPUS));
+    if (config.CONTAINER_PIDS > 0)   a.push('--pids-limit', String(config.CONTAINER_PIDS));
+    if (config.CONTAINER_NOFILE > 0) a.push('--ulimit', `nofile=${config.CONTAINER_NOFILE}:${config.CONTAINER_NOFILE}`);
+    return a;
+}
 function linkNetworkName(linkId) { return `nn-link-${sanitizeId(linkId).slice(0, 40)}`; }
 function stubNetworkName(instanceId, geIdx) { return `nn-stub-${sanitizeId(instanceId).slice(0, 32)}-${geIdx}`; }
 
@@ -405,29 +566,97 @@ app.get('/api/instances', (_req, res) =>
  */
 app.post('/api/instances', async (req, res) =>
 {
-    const { id, image, dbBase64 } = req.body || {};
+    const { id, image } = req.body || {};
+    let dbBase64 = (req.body || {}).dbBase64 || null;
     if (!id || !image)
     {
         return res.status(400).json({ error: 'id and image required' });
     }
+    if (!isValidId(id))
+    {
+        return res.status(400).json({ error: 'invalid id', detail: '仅允许字母数字和 ._- ，以字母数字开头，长度 3~64' });
+    }
+    if (!isValidImage(image, config.IMAGE_ALLOWLIST))
+    {
+        return res.status(400).json({ error: 'invalid image', detail: `镜像不在白名单内（允许前缀：${config.IMAGE_ALLOWLIST.join(', ') || '*'}）` });
+    }
+    if (dbBase64)
+    {
+        const decoded = base64DecodedSize(dbBase64);
+        if (decoded > config.MAX_DB_BYTES)
+        {
+            return res.status(413).json({ error: 'dbBase64 too large', detail: `解码后 ${decoded} 字节，上限 ${config.MAX_DB_BYTES}` });
+        }
+    }
+    // 实例数上限（幂等复用已有实例不计入配额）
+    if (!instances.has(id) && instances.size >= config.MAX_INSTANCES)
+    {
+        return res.status(429).json({ error: 'instance quota exceeded', detail: `当前已有 ${instances.size} 个，上限 ${config.MAX_INSTANCES}` });
+    }
 
     const containerName = `nn-topo-${id}`;
+
+    // 复用上次停机时的 hostPort（让前端 terminal URL 保持稳定）
+    let reservedHostPort = null;
 
     // 幂等：如果已经有容器且在跑，直接返回现有实例，不做任何破坏性操作。
     // 这样用户即便误点"启动"也不会丢容器内数据。
     if (instances.has(id))
     {
         const existing = instances.get(id);
-        const stillThere = await dockerContainerRunning(existing.containerName);
-        if (stillThere)
+        const containerRunning = existing.containerName && await dockerContainerRunning(existing.containerName);
+
+        if (containerRunning)
         {
-            return res.json({ instance: existing, reused: true });
+            // 容器还在跑（用户重复点启动、或刚 pkill 没等到 stop 真销毁）
+            try
+            {
+                await killNetnexusInContainer(existing.containerName);
+                await runDocker([
+                    'exec', '-d', existing.containerName, '/bin/bash', '-lc', NN_START_SH
+                ]);
+                const ready = await waitForNetnexusReady(existing.containerName, 5000);
+                if (!ready)
+                {
+                    const tail = await tailNetnexusLog(existing.containerName);
+                    console.warn(`[backend] ${existing.containerName} netnexus not ready in 5s, log tail:\n${tail}`);
+                    return res.status(500).json({ error: 'netnexus did not become ready', detail: tail || 'no log' });
+                }
+                existing.status = 'running';
+                return res.json({ instance: existing, reused: true });
+            }
+            catch (e)
+            {
+                console.warn(`[backend] exec netnexus in ${existing.containerName} failed: ${e.stderr || e.message}`);
+                return res.status(500).json({ error: 'exec netnexus failed', detail: String(e.stderr || e.message) });
+            }
         }
-        // 容器自己挂了（比如 docker 被 kill），清理掉旧登记，允许重建
-        try { await runDocker(['rm', '-f', existing.containerName]); } catch (_) { /* ignore */ }
+
+        // 走到这里：status=stopped，或者容器被外力（docker daemon 重启等）搞没了。
+        // 按当前 links 重建：复用 hostPort + 回灌 stoppedDbs 的 db。
+        reservedHostPort = existing.hostPort || null;
+
+        // 迁移/降级场景：后端 restart 时 registerExistingOnBoot 把旧 container 置为 stopped
+        // 但容器还在，db 没导出到 stoppedDbs —— 这里补救，rm 前先导一次
+        if (!stoppedDbs.has(id) && await dockerContainerExists(containerName))
+        {
+            try
+            {
+                const savedDb = await readDbFromContainer(containerName);
+                if (savedDb) stoppedDbs.set(id, savedDb);
+            }
+            catch (e)
+            {
+                console.warn(`[backend] migrate-export db for ${id} failed: ${e.stderr || e.message}`);
+            }
+        }
+        if (!dbBase64 && stoppedDbs.has(id)) dbBase64 = stoppedDbs.get(id);
+
+        // 保险起见清一下残留的同名容器（/stop 正常路径已 rm 过）
+        await runDocker(['rm', '-f', containerName]).catch(() => {});
         instances.delete(id);
     }
-    // 没登记但宿主机上已有同名容器（比如前端缓存掉了但后端还知道），尝试继承而不是删掉
+    // 没登记但宿主机上已有同名容器（前端缓存掉了但后端还知道），尝试继承而不是删掉
     else if (await dockerContainerExists(containerName))
     {
         if (await dockerContainerRunning(containerName))
@@ -442,7 +671,8 @@ app.post('/api/instances', async (req, res) =>
         });
     }
 
-    const hostPort = nextHostPort++;
+    const hostPort = reservedHostPort || nextHostPort++;
+    if (hostPort >= nextHostPort) nextHostPort = hostPort + 1;
 
     let ifMapFile;
     try
@@ -473,6 +703,7 @@ app.post('/api/instances', async (req, res) =>
             '--cap-add', 'NET_RAW',
             '--cap-add', 'SYS_PTRACE',
             '--security-opt', 'seccomp=unconfined',
+            ...containerHardeningArgs(),
             '-e', 'NN_WORK_DIR=/opt/netnexus',
             '-e', 'LD_LIBRARY_PATH=/opt/netnexus/lib',
             '-v', `${ifMapFile}:${IF_MAP_PATH_IN_CONTAINER}:ro`,
@@ -502,14 +733,16 @@ app.post('/api/instances', async (req, res) =>
 
         // 5) exec 启动 netnexus
         await runDocker(['exec', '-d', containerName, '/bin/bash', '-lc', NN_START_SH]);
+        console.log(`[backend] ${containerName} created, netnexus exec'd; hostPort=${hostPort}`);
 
-        // 标记已接通的 link：两端都在运行
+        // 标记已接通的 link：两端都在跑（status=running）才算真的 wired
         for (const item of netsInOrder)
         {
             if (!item.slot.link) continue;
             const link = item.slot.link;
             const peer = link.from === id ? link.to : link.from;
-            if (instances.has(peer)) { link.wired = true; }
+            const peerInst = instances.get(peer);
+            if (peerInst && peerInst.status === 'running') { link.wired = true; }
         }
 
         const inst = {
@@ -525,8 +758,23 @@ app.post('/api/instances', async (req, res) =>
         };
         instances.set(id, inst);
 
-        // 给 netnexus 一点时间去 listen 3788，再返回
-        await sleep(800);
+        // 等 netnexus 真的 listen 3788 再返回（首次启动要加载全部模块，可能 >1s）。
+        // 探测失败不阻塞成功返回：前端 bridgeTerminal 还有 6s 的 TCP 重试兜底。
+        const t0 = Date.now();
+        const ready = await waitForNetnexusReady(containerName, 10000);
+        const t1 = Date.now();
+        if (ready)
+        {
+            console.log(`[backend] ${containerName} netnexus ready in ${t1 - t0}ms`);
+        }
+        else
+        {
+            const tail = await tailNetnexusLog(containerName);
+            console.warn(`[backend] ${containerName} netnexus NOT ready in ${t1 - t0}ms, returning anyway. log tail:\n${tail}`);
+        }
+
+        // 成功起来了，清掉上次停机保存的 db（已经灌回容器里）
+        stoppedDbs.delete(id);
 
         res.json({ instance: inst });
     }
@@ -550,10 +798,17 @@ app.post('/api/instances', async (req, res) =>
  */
 app.get('/api/instances/:id/db', async (req, res) =>
 {
+    if (!isValidId(req.params.id)) return res.status(400).json({ error: 'invalid id' });
     const inst = instances.get(req.params.id);
     if (!inst)
     {
         return res.status(404).json({ error: 'instance not found' });
+    }
+    // 停机状态：容器已 rm，直接返回 /stop 时保存的快照
+    if (inst.status === 'stopped')
+    {
+        const b64 = stoppedDbs.get(req.params.id) || null;
+        return res.json({ id: req.params.id, dbBase64: b64, size: b64 ? Buffer.from(b64, 'base64').length : 0 });
     }
     try
     {
@@ -605,8 +860,96 @@ async function writeDbIntoContainer(containerName, tarBase64)
     );
 }
 
+/**
+ * "停止" = 导出 db、docker rm -f 销毁容器、回收 stub 网络、link 置 unwired。
+ *
+ * 之所以真销毁：只有 fresh create 才能按当前 links 重新规划 GE-N → ethN 映射。
+ * 如果仅 pkill netnexus、容器保活，用户停机时新加的 link 永远接不进来（新 link
+ * 会产生 eth5+，打破 GE-N 的 1..4 固定布局，ping 不通）。
+ *
+ * docker stop + docker start 不能用的原因：Docker 重新 attach 网络的顺序不保证，
+ * ethN 可能错位。所以走完整的 rm → run 路径，顺序由我们自己控制。
+ *
+ * 代价：停机/启动从秒级 pkill+exec 变成几秒级的 docker rm + run + connect。
+ * inst 内配置通过 readDbFromContainer 保存到 stoppedDbs，下次 start 灌回。
+ */
+app.post('/api/instances/:id/stop', async (req, res) =>
+{
+    if (!isValidId(req.params.id)) return res.status(400).json({ error: 'invalid id' });
+    const inst = instances.get(req.params.id);
+    if (!inst)
+    {
+        return res.status(404).json({ error: 'not found' });
+    }
+    if (inst.status === 'stopped')
+    {
+        return res.json({ ok: true, instance: inst, reused: true });
+    }
+    try
+    {
+        // 1) 导出容器里的 /opt/netnexus/data（含 sqlite db-wal）到内存
+        let savedDb = null;
+        try
+        {
+            savedDb = await readDbFromContainer(inst.containerName);
+        }
+        catch (e)
+        {
+            console.warn(`[backend] stop ${inst.containerName}: export db failed: ${e.stderr || e.message}`);
+        }
+
+        // 2) 先 pkill netnexus，防止 docker rm 时还在写盘
+        await killNetnexusInContainer(inst.containerName).catch(() => {});
+
+        // 3) 真销毁容器
+        await runDocker(['rm', '-f', inst.containerName]).catch(() => {});
+
+        // 4) 回收 stub 网络（这些本来就是该设备私有）
+        for (const n of inst.stubNets || [])
+        {
+            await runDocker(['network', 'rm', n]).catch(() => {});
+        }
+
+        // 5) 标记相关 link unwired；对端也不在跑就顺手把 link 网络回收
+        for (const link of links.values())
+        {
+            if (link.from === inst.id || link.to === inst.id)
+            {
+                link.wired = false;
+                const otherId = link.from === inst.id ? link.to : link.from;
+                const otherInst = instances.get(otherId);
+                if (!otherInst || otherInst.status !== 'running')
+                {
+                    await unwireLink(link);
+                }
+            }
+        }
+
+        // 6) if_map 清掉（下次 start 按当前 links 重写）
+        if (inst.ifMapFile)
+        {
+            try { fs.unlinkSync(inst.ifMapFile); } catch (_) { /* ignore */ }
+        }
+
+        // 7) 保留 inst 记录（id/image/hostPort 给 start 复用），db 单独存
+        if (savedDb) stoppedDbs.set(inst.id, savedDb);
+        else stoppedDbs.delete(inst.id);
+        inst.status = 'stopped';
+        inst.ifMapFile = null;
+        inst.linkNets = [];
+        inst.stubNets = [];
+
+        res.json({ ok: true, instance: inst, dbSaved: !!savedDb });
+    }
+    catch (e)
+    {
+        res.status(500).json({ error: 'stop failed', detail: String(e.stderr || e.message) });
+    }
+});
+
 app.delete('/api/instances/:id', async (req, res) =>
 {
+    if (!isValidId(req.params.id)) return res.status(400).json({ error: 'invalid id' });
     const inst = instances.get(req.params.id);
     if (!inst)
     {
@@ -637,6 +980,7 @@ app.delete('/api/instances/:id', async (req, res) =>
         }
         if (inst.ifMapFile) { try { fs.unlinkSync(inst.ifMapFile); } catch (_) { /* ignore */ } }
         instances.delete(req.params.id);
+        stoppedDbs.delete(req.params.id);
         res.json({ ok: true });
     }
     catch (e)
@@ -659,6 +1003,7 @@ app.post('/api/instances/cleanup', async (_req, res) =>
             removed++;
         }
         instances.clear();
+        stoppedDbs.clear();
         res.json({ ok: true, removed });
     }
     catch (e)
@@ -683,6 +1028,18 @@ app.post('/api/links', async (req, res) =>
     {
         return res.status(400).json({ error: 'id, from, to required' });
     }
+    if (!isValidId(id) || !isValidId(from) || !isValidId(to))
+    {
+        return res.status(400).json({ error: 'invalid id/from/to' });
+    }
+    if (!isValidPort(fromPort || '') || !isValidPort(toPort || ''))
+    {
+        return res.status(400).json({ error: 'invalid port', detail: '端口名需为 GE-N（N=1..99）' });
+    }
+    if (!links.has(id) && links.size >= config.MAX_LINKS)
+    {
+        return res.status(429).json({ error: 'link quota exceeded', detail: `当前已有 ${links.size} 条链路，上限 ${config.MAX_LINKS}` });
+    }
 
     const existing = links.get(id);
     const link = existing || {
@@ -696,7 +1053,9 @@ app.post('/api/links', async (req, res) =>
     };
     if (!existing) links.set(id, link);
 
-    const runningEnds = [instances.get(from), instances.get(to)].filter(Boolean).length;
+    // 只有真在跑的容器才叫 "running end"（停机状态的 inst 记录也在 Map 里但 status=stopped）
+    const runningEnds = [instances.get(from), instances.get(to)]
+        .filter(x => x && x.status === 'running').length;
     const note = runningEnds === 0
         ? `已登记，启动两端设备时会自动接通（${link.networkName}）`
         : `已登记。检测到 ${runningEnds} 端在运行，需要重启对应设备使链路生效`;
@@ -711,6 +1070,7 @@ app.get('/api/links', (_req, res) =>
 
 app.delete('/api/links/:id', async (req, res) =>
 {
+    if (!isValidId(req.params.id)) return res.status(400).json({ error: 'invalid id' });
     const link = links.get(req.params.id);
     if (!link)
     {
@@ -859,7 +1219,12 @@ async function cleanupOrphanNetworksOnBoot()
     if (removed > 0) console.log(`[backend] removed ${removed} orphan nn-* network(s)`);
 }
 
-async function adoptExistingOnBoot()
+/**
+ * 只登记已有容器的状态到 instances 映射，不做 docker start，也不 exec netnexus。
+ * 之所以要登记：用户在前端点击"启动"时，POST /api/instances 会通过 instances.has(id)
+ * 找到这条记录，然后用 docker start 原地复用容器（保留 db 与配置）。
+ */
+async function registerExistingOnBoot()
 {
     let rows;
     try
@@ -871,26 +1236,80 @@ async function adoptExistingOnBoot()
     }
     catch (e)
     {
-        console.warn('[backend] adopt: list containers failed:', e.stderr || e.message);
+        console.warn('[backend] register: list containers failed:', e.stderr || e.message);
         return;
     }
 
     if (!rows || rows.length === 0)
     {
-        console.log('[backend] adopt: no existing nn-topo-* containers');
+        console.log('[backend] register: no existing nn-topo-* containers');
         return;
     }
 
-    console.log(`[backend] adopting ${rows.length} existing container(s)`);
+    console.log(`[backend] registering ${rows.length} existing container(s) (no auto-start)`);
     for (const line of rows)
     {
         const [name, image] = line.split('\t');
         if (!name) continue;
-        const inst = await tryAdoptOne(name, null, image);
-        if (inst)
+        const id = name.replace(/^nn-topo-/, '');
+
+        const containerRunning = await dockerContainerRunning(name);
+        // 后端重启时把容器里残留的 netnexus 全部 kill 掉，统一置为 stopped，
+        // 容器本身保留（避免 docker stop/start 导致网络重连序错位）。
+        if (containerRunning)
         {
-            console.log(`  adopted ${name}  image=${inst.image}  port=${inst.hostPort}  linkNets=${inst.linkNets.length}  stubNets=${inst.stubNets.length}`);
+            await killNetnexusInContainer(name);
         }
+
+        let hostPort = 0;
+        try
+        {
+            const { stdout: po } = await runDocker(['port', name, '3788/tcp']);
+            const m = /:(\d+)\s*$/.exec((po.trim().split('\n')[0] || '').trim());
+            if (m) hostPort = parseInt(m[1], 10);
+        }
+        catch (_) { /* ignore */ }
+
+        let ifMapFile = null;
+        try
+        {
+            const { stdout: ms } = await runDocker(['inspect', '-f', '{{json .Mounts}}', name]);
+            const mounts = JSON.parse(ms || '[]');
+            const m = mounts.find(x => x && x.Destination === IF_MAP_PATH_IN_CONTAINER);
+            if (m) ifMapFile = m.Source;
+        }
+        catch (_) { /* ignore */ }
+
+        const linkNets = [];
+        const stubNets = [];
+        try
+        {
+            const { stdout: ns } = await runDocker(['inspect', '-f', '{{json .NetworkSettings.Networks}}', name]);
+            const obj = JSON.parse(ns || '{}');
+            for (const k of Object.keys(obj))
+            {
+                if (k.startsWith('nn-link-'))      linkNets.push(k);
+                else if (k.startsWith('nn-stub-')) stubNets.push(k);
+            }
+        }
+        catch (_) { /* ignore */ }
+
+        if (hostPort >= nextHostPort) nextHostPort = hostPort + 1;
+
+        const inst = {
+            id,
+            image: image || 'unknown',
+            containerName: name,
+            hostPort,
+            status: 'stopped',
+            createdAt: Date.now(),
+            ifMapFile,
+            linkNets,
+            stubNets,
+            adopted: true
+        };
+        instances.set(id, inst);
+        console.log(`  registered ${name}  image=${inst.image}  status=${inst.status}  port=${inst.hostPort}  linkNets=${linkNets.length}  stubNets=${stubNets.length}`);
     }
 }
 
@@ -904,15 +1323,51 @@ server.on('upgrade', (req, socket, head) =>
     const { pathname, query } = url.parse(req.url, true);
     if (pathname !== '/ws/terminal')
     {
+        console.warn(`[ws] reject upgrade: bad path ${pathname}`);
+        socket.destroy();
+        return;
+    }
+    // Origin 校验（prod 且配置了 ALLOWED_ORIGINS）
+    if (config.IS_PROD && config.ALLOWED_ORIGINS.length > 0)
+    {
+        const origin = req.headers.origin || '';
+        if (origin && !config.ALLOWED_ORIGINS.includes(origin))
+        {
+            console.warn(`[ws] reject upgrade: origin ${origin} not allowed`);
+            socket.destroy();
+            return;
+        }
+    }
+    // Token 校验（browser 的 WebSocket 不能加自定义头，走 ?token=）
+    if (config.IS_PROD && config.AUTH_TOKEN)
+    {
+        if (query.token !== config.AUTH_TOKEN)
+        {
+            console.warn('[ws] reject upgrade: bad token');
+            socket.destroy();
+            return;
+        }
+    }
+    if (!isValidId(query.id || ''))
+    {
+        console.warn(`[ws] reject upgrade: invalid id=${query.id}`);
         socket.destroy();
         return;
     }
     const inst = instances.get(query.id);
     if (!inst)
     {
+        console.warn(`[ws] reject upgrade: no instance for id=${query.id} (known: ${Array.from(instances.keys()).join(',') || '-'})`);
         socket.destroy();
         return;
     }
+    if (inst.status !== 'running')
+    {
+        console.warn(`[ws] reject upgrade: instance ${query.id} status=${inst.status}`);
+        socket.destroy();
+        return;
+    }
+    console.log(`[ws] upgrade id=${query.id} → ${inst.containerName} 127.0.0.1:${inst.hostPort}`);
     wss.handleUpgrade(req, socket, head, (ws) =>
     {
         bridgeTerminal(ws, inst);
@@ -933,6 +1388,7 @@ function bridgeTerminal(ws, inst)
         if (!alive) return;
         tcp = net.createConnection({ host: '127.0.0.1', port: inst.hostPort }, () =>
         {
+            console.log(`[ws] TCP connected ${inst.containerName} 127.0.0.1:${inst.hostPort} (retries=${retries})`);
             try { ws.send(`\r\n*** Connected to ${inst.containerName} (${inst.image}) at 127.0.0.1:${inst.hostPort} ***\r\n`); } catch (_) {}
         });
 
@@ -947,9 +1403,11 @@ function bridgeTerminal(ws, inst)
             if (err.code === 'ECONNREFUSED' && retries < MAX_RETRIES)
             {
                 retries++;
+                console.log(`[ws] TCP ECONNREFUSED ${inst.containerName} 127.0.0.1:${inst.hostPort}, retry ${retries}/${MAX_RETRIES}`);
                 setTimeout(tryConnect, RETRY_INTERVAL_MS);
                 return;
             }
+            console.warn(`[ws] TCP error ${inst.containerName} 127.0.0.1:${inst.hostPort}: ${err.code || ''} ${err.message}`);
             try { ws.send(`\r\n*** TCP error: ${err.message} ***\r\n`); } catch (_) {}
             try { ws.close(); } catch (_) {}
         });
@@ -982,10 +1440,10 @@ function bridgeTerminal(ws, inst)
     tryConnect();
 }
 
-server.listen(PORT, async () =>
+server.listen(PORT, config.BIND_HOST, async () =>
 {
-    console.log(`[backend] listening on http://0.0.0.0:${PORT}`);
+    console.log(`[backend] listening on http://${config.BIND_HOST}:${PORT}  env=${config.ENV}`);
     console.log(`[backend] docker bin = ${dockerBin()} ${USE_SUDO ? '(sudo)' : ''}`);
-    await adoptExistingOnBoot();
+    await registerExistingOnBoot();
     await cleanupOrphanNetworksOnBoot();
 });

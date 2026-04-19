@@ -187,7 +187,7 @@ int bgp_rib_route_apply_reach(bgp_route_node_t *route, uint32_t import_proto, co
 
     if (attr)
     {
-        bgp_attr_ref_t *new_ref = bgp_attr_intern(attr);
+        bgp_attr_ref_t *new_ref = bgp_attr_intern(attr, BGP_ATTR_SRC_LOC_RIB);
         bgp_attr_release(route->attr);
         route->attr = new_ref;
     }

@@ -4,10 +4,34 @@ html, body, #app {
     margin: 0;
     padding: 0;
     height: 100%;
+}
+
+/* 拓扑页：与落地页 body 样式分离，避免首页无法滚动 */
+body.topology-active {
     font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
     background: #f5f7fa;
     color: #2b3142;
     overflow: hidden;
+}
+
+body.topology-active #app {
+    overflow: hidden;
+    height: 100%;
+}
+
+/* 新版浅色主页（与拓扑页同一套灰白底） */
+body.home-active {
+    font-family: -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    background: #f5f7fa;
+    color: #2b3142;
+    overflow-x: hidden;
+    overflow-y: auto;
+}
+
+body.home-active #app {
+    height: auto;
+    min-height: 100%;
+    overflow: visible;
 }
 
 button {

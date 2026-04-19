@@ -62,33 +62,6 @@ int bgp_pkt_send_keepalive(bgp_conn_t *conn);
 int bgp_pkt_send_notification(bgp_conn_t *conn, uint8_t error_code, uint8_t error_subcode);
 
 /**
- * @brief 向对端发送 BGP UPDATE 报文（宣告一条路由）
- *
- * - IPv4 unicast：NEXT_HOP 属性 + NLRI 字段
- * - IPv6 unicast：MP_REACH_NLRI 扩展属性（RFC 4760）
- *
- * @param conn    连接处理器（fd 必须有效）
- * @param nlri    NLRI 条目（当前仅支持 BGP_NLRI_PREFIX）
- * @param attr    路径属性（ORIGIN / AS_PATH / LOCAL_PREF / MED / COMMUNITY）
- * @param nexthop 下一跳
- * @return 0 成功，-1 失败
- */
-int bgp_pkt_send_update(bgp_conn_t *conn, const bgp_nlri_entry_t *nlri, const bgp_attr_t *attr,
-                        const bgp_nexthop_t *nexthop);
-
-/**
- * @brief 向对端发送 BGP UPDATE 报文（撤销一条路由）
- *
- * - IPv4 unicast：Withdrawn Routes 字段
- * - IPv6 unicast：MP_UNREACH_NLRI 扩展属性（RFC 4760）
- *
- * @param conn 连接处理器（fd 必须有效）
- * @param nlri NLRI 条目（当前仅支持 BGP_NLRI_PREFIX）
- * @return 0 成功，-1 失败
- */
-int bgp_pkt_send_withdraw(bgp_conn_t *conn, const bgp_nlri_entry_t *nlri);
-
-/**
  * @brief 构建打包 UPDATE 报文（多条共享属性的 NLRI）
  *
  * 将多条共享同一 (attr, nexthop) 的 NLRI 打包进一个 UPDATE 报文，

@@ -9,12 +9,17 @@ web/
 ├── backend/         # Express + WebSocket，调用 docker，桥接浏览器 <-> telnet
 │   ├── server.js
 │   └── package.json
-├── frontend/        # Vue 3 + Vite，货架 / 画布 / 连线 / xterm 终端
+├── frontend/        # Vue 3 + Vite：官网落地页 + 拓扑编排（`/top`）
 │   ├── src/
-│   │   ├── App.vue
+│   │   ├── App.vue              # 根壳，仅 `<router-view />`
+│   │   ├── router/index.js      # `/` 客户端站；`/netnexus` C 侧说明；`/netnexus/top` 拓扑
+│   │   ├── views/HomeView.vue
+│   │   ├── views/ClassicLandingView.vue   # 路由 `/`，客户端软件介绍（默认）
+│   │   ├── views/TopologyView.vue
+│   │   ├── landing/             # 原 web_temp 官网组件与样式
 │   │   ├── main.js
 │   │   ├── styles.css
-│   │   └── components/
+│   │   └── components/          # 拓扑画布相关
 │   │       ├── DeviceShelf.vue
 │   │       ├── TopologyCanvas.vue
 │   │       └── WebTerminal.vue
@@ -48,7 +53,7 @@ USE_SUDO=1 ./web/start.sh
 
 启动后访问：
 
-- 前端：<http://localhost:5173>
+- 前端：客户端默认 <http://localhost:5173/>；C / NetNexus Web 说明 <http://localhost:5173/netnexus>；拓扑编排 <http://localhost:5173/netnexus/top>（`/top`、`/home` 会重定向到新路径）
 - 后端：<http://localhost:5174>（已通过 Vite 代理，无需直接访问）
 
 ## 操作流程

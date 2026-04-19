@@ -63,12 +63,19 @@ typedef enum bgp_route_src_class
 
 /**
  * @brief Update Group 键（出向策略级别）
+ *
+ * 设计要点：落入同一 UG 的 peer 必须保证"属性准备一致 + AS_PATH 防环结果一致 +
+ * 报文编码一致"，这样后续才能做到"桶级组包一次，按 peer 列表依次发"。
+ * 因此除了 sess_type / policy_hash / peer_family 外，还需把影响发送结果的
+ * remote_as 与 negotiated_caps 一并纳入 key。
  */
 typedef struct bgp_update_group_key
 {
     bgp_sess_type_t sess_type; /**< iBGP / eBGP（不同类型走不同属性准备逻辑） */
     uint32_t policy_hash;      /**< 出向 route-map 哈希（Phase 4 启用；当前恒为 0） */
     uint16_t peer_family;      /**< peer 地址族（AF_INET / AF_INET6，用于区分双栈邻居） */
+    uint32_t remote_as;        /**< 远端 AS 号（AS_PATH 防环检查基准；同 UG 内结果一致） */
+    uint32_t negotiated_caps;  /**< 协商能力集（AS4/EXT_NEXTHOP 等，影响报文编码） */
 } bgp_update_group_key_t;
 
 /**

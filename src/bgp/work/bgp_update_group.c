@@ -31,7 +31,8 @@ static uint32_t g_next_group_id = 1;
 
 static gboolean ug_key_equal(const bgp_update_group_key_t *a, const bgp_update_group_key_t *b)
 {
-    return a->sess_type == b->sess_type && a->policy_hash == b->policy_hash && a->peer_family == b->peer_family;
+    return a->sess_type == b->sess_type && a->policy_hash == b->policy_hash && a->peer_family == b->peer_family &&
+           a->remote_as == b->remote_as && a->negotiated_caps == b->negotiated_caps;
 }
 
 static gboolean sg_key_equal(const bgp_nh_subgroup_key_t *a, const bgp_nh_subgroup_key_t *b)
@@ -40,7 +41,12 @@ static gboolean sg_key_equal(const bgp_nh_subgroup_key_t *a, const bgp_nh_subgro
     {
         return FALSE;
     }
-    /* 只有 R_LOCAL 使用 local_addr，其它 rule 下 family=0 自动相等 */
+    /* 非 R_LOCAL 的子组 key 不含地址维度（effective_local_addr 约定为全零，
+     * 但 net_addr_equal 对 family=0 会返回 FALSE，这里直接判相等） */
+    if (a->rule != BGP_NH_RULE_LOCAL)
+    {
+        return TRUE;
+    }
     return net_addr_equal(&a->effective_local_addr, &b->effective_local_addr);
 }
 
@@ -59,6 +65,8 @@ void bgp_session_compute_ug_key(const bgp_session_t *sess, bgp_update_group_key_
     out->sess_type = sess->sess_type;
     out->policy_hash = 0; /* 预留：Phase 4 引入 route-map 时填入 */
     out->peer_family = (uint16_t)sess->neighbor_addr.family;
+    out->remote_as = sess->remote_as;
+    out->negotiated_caps = sess->negotiated_caps;
 }
 
 void bgp_session_compute_sg_key(const bgp_session_t *sess, bgp_nh_subgroup_key_t *out)
@@ -713,7 +721,7 @@ void bgp_update_group_enqueue_announce(bgp_instance_t *inst, const bgp_nlri_entr
                 continue;
             }
 
-            bgp_attr_ref_t *ref = bgp_attr_intern(&out_attr);
+            bgp_attr_ref_t *ref = bgp_attr_intern(&out_attr, BGP_ATTR_SRC_RIB_OUT);
             if (!ref)
             {
                 continue;
@@ -1039,6 +1047,77 @@ static void subgroup_send_packed_updates(bgp_session_t *sess, uint16_t afi, uint
     }
 }
 
+/**
+ * @brief 组包一次，多播到 peer_list 中所有 publish-ready 的 session
+ *
+ * 同 UG 内 remote_as / negotiated_caps / peer_family 已一致，意味着
+ * (attr, nh) 确定后打包结果也确定，可复用同一份字节流发给多个 peer。
+ * 调用者需保证这批 NLRI 对 peer_list 中任一 peer 都不触发 split-horizon。
+ */
+static void subgroup_pack_and_multicast(GList *peer_list, uint16_t afi, uint8_t safi,
+                                        const bgp_nlri_entry_t *const *nlri_list, int nlri_count,
+                                        const bgp_attr_t *attr, const bgp_nexthop_t *nh)
+{
+    if (!peer_list || nlri_count <= 0 || !attr || !nh)
+    {
+        return;
+    }
+
+    /* 先收集 ready session，避免循环中重复查找 */
+    GPtrArray *sessions = g_ptr_array_new();
+    for (GList *l = peer_list; l; l = l->next)
+    {
+        bgp_peer_t *peer = (bgp_peer_t *)l->data;
+        if (!peer || !peer->vrf)
+        {
+            continue;
+        }
+        bgp_session_t *sess = bgp_vrf_find_session(peer->vrf, &peer->addr);
+        if (!bgp_session_is_publish_ready(sess))
+        {
+            continue;
+        }
+        g_ptr_array_add(sessions, sess);
+    }
+    if (sessions->len == 0)
+    {
+        g_ptr_array_free(sessions, TRUE);
+        return;
+    }
+
+    uint8_t msg[4096];
+    int remaining = nlri_count;
+    const bgp_nlri_entry_t *const *cursor = nlri_list;
+    while (remaining > 0)
+    {
+        int packed = 0;
+        int len = bgp_pkt_build_packed_update(msg, (int)sizeof(msg), cursor, remaining, attr, nh, afi, safi, &packed);
+        if (len <= 0 || packed <= 0)
+        {
+            LOG_WARN("BGP: packed UPDATE build failed afi=%u safi=%u remaining=%d", (unsigned)afi, (unsigned)safi,
+                     remaining);
+            break;
+        }
+        for (guint i = 0; i < sessions->len; i++)
+        {
+            bgp_session_t *sess = (bgp_session_t *)g_ptr_array_index(sessions, i);
+            if (!sess || !sess->pri_conn)
+            {
+                continue;
+            }
+            ssize_t sent = send(sess->pri_conn->fd, msg, (size_t)len, MSG_NOSIGNAL);
+            if (sent != (ssize_t)len)
+            {
+                LOG_WARN("BGP: packed UPDATE multicast send incomplete (sent=%zd want=%d)", sent, len);
+            }
+        }
+        cursor += packed;
+        remaining -= packed;
+    }
+
+    g_ptr_array_free(sessions, TRUE);
+}
+
 int bgp_subgroup_process_queues(bgp_nh_subgroup_t *sg, bgp_instance_t *inst, int batch_size)
 {
     if (!sg || !inst || batch_size <= 0)
@@ -1122,7 +1201,9 @@ int bgp_subgroup_process_queues(bgp_nh_subgroup_t *sg, bgp_instance_t *inst, int
         g_ptr_array_add(bk->items, item);
     }
 
-    /* 遍历桶并发送 */
+    /* 遍历桶并发送：UG 键已保证 remote_as/negotiated_caps 一致，
+     * 因此 AS_PATH 防环在桶级一次判定、无 split-horizon 时组包一次多播 */
+    bgp_update_group_t *ug = sg->parent;
     for (GList *bl = buckets; bl; bl = bl->next)
     {
         announce_bucket_t *bk = (announce_bucket_t *)bl->data;
@@ -1130,42 +1211,89 @@ int bgp_subgroup_process_queues(bgp_nh_subgroup_t *sg, bgp_instance_t *inst, int
         {
             continue;
         }
-        for (GList *sl = sg->peer_list; sl; sl = sl->next)
+
+        /* AS_PATH 防环：同 UG 共用 remote_as，桶级一次判定 */
+        gboolean as_loop = FALSE;
+        if (ug && ug->key.remote_as != 0U &&
+            bgp_attr_as_path_contains_as(bk->attr_ref->attr.as_path, ug->key.remote_as))
         {
-            bgp_peer_t *peer = (bgp_peer_t *)sl->data;
-            if (!peer || !peer->vrf)
-            {
-                continue;
-            }
-            bgp_session_t *sess = bgp_vrf_find_session(peer->vrf, &peer->addr);
-            if (!bgp_session_is_publish_ready(sess))
-            {
-                continue;
-            }
-            /* Per-session AS_PATH 防环（同桶共用 attr） */
-            if (sess->remote_as != 0U && bgp_attr_as_path_contains_as(bk->attr_ref->attr.as_path, sess->remote_as))
-            {
-                continue;
-            }
-            /* 逐条过滤 split-horizon，构建 per-session NLRI 列表 */
-            GPtrArray *filtered = g_ptr_array_new();
-            for (guint i = 0; i < bk->items->len; i++)
+            as_loop = TRUE;
+        }
+
+        if (!as_loop)
+        {
+            /* 判定是否存在 split-horizon：任一 NLRI 来源命中任一 peer 地址 */
+            gboolean need_per_peer = FALSE;
+            for (guint i = 0; i < bk->items->len && !need_per_peer; i++)
             {
                 announce_item_t *it = g_ptr_array_index(bk->items, i);
-                if (!it->is_import && it->source.family != 0 && net_addr_equal(&it->source, &sess->neighbor_addr))
+                if (it->is_import || it->source.family == 0)
                 {
                     continue;
                 }
-                g_ptr_array_add(filtered, (gpointer)it->nlri);
+                for (GList *sl = sg->peer_list; sl; sl = sl->next)
+                {
+                    bgp_peer_t *peer = (bgp_peer_t *)sl->data;
+                    if (peer && net_addr_equal(&it->source, &peer->addr))
+                    {
+                        need_per_peer = TRUE;
+                        break;
+                    }
+                }
             }
-            if (filtered->len > 0)
+
+            if (!need_per_peer)
             {
-                subgroup_send_packed_updates(sess, afi, safi, (const bgp_nlri_entry_t *const *)filtered->pdata,
-                                             (int)filtered->len, &bk->attr_ref->attr, &bk->nexthop);
+                /* 快路径：组包一次，多播到组内所有 peer */
+                GPtrArray *nlris = g_ptr_array_new();
+                for (guint i = 0; i < bk->items->len; i++)
+                {
+                    announce_item_t *it = g_ptr_array_index(bk->items, i);
+                    g_ptr_array_add(nlris, (gpointer)it->nlri);
+                }
+                subgroup_pack_and_multicast(sg->peer_list, afi, safi,
+                                            (const bgp_nlri_entry_t *const *)nlris->pdata, (int)nlris->len,
+                                            &bk->attr_ref->attr, &bk->nexthop);
+                g_ptr_array_free(nlris, TRUE);
             }
-            g_ptr_array_free(filtered, TRUE);
+            else
+            {
+                /* 慢路径：逐 peer 过滤 split-horizon */
+                for (GList *sl = sg->peer_list; sl; sl = sl->next)
+                {
+                    bgp_peer_t *peer = (bgp_peer_t *)sl->data;
+                    if (!peer || !peer->vrf)
+                    {
+                        continue;
+                    }
+                    bgp_session_t *sess = bgp_vrf_find_session(peer->vrf, &peer->addr);
+                    if (!bgp_session_is_publish_ready(sess))
+                    {
+                        continue;
+                    }
+                    GPtrArray *filtered = g_ptr_array_new();
+                    for (guint i = 0; i < bk->items->len; i++)
+                    {
+                        announce_item_t *it = g_ptr_array_index(bk->items, i);
+                        if (!it->is_import && it->source.family != 0 &&
+                            net_addr_equal(&it->source, &sess->neighbor_addr))
+                        {
+                            continue;
+                        }
+                        g_ptr_array_add(filtered, (gpointer)it->nlri);
+                    }
+                    if (filtered->len > 0)
+                    {
+                        subgroup_send_packed_updates(sess, afi, safi,
+                                                     (const bgp_nlri_entry_t *const *)filtered->pdata,
+                                                     (int)filtered->len, &bk->attr_ref->attr, &bk->nexthop);
+                    }
+                    g_ptr_array_free(filtered, TRUE);
+                }
+            }
         }
-        /* 标记 advertised */
+
+        /* 标记 advertised（无论是否因 AS_PATH 环路被跳过，均避免重复入队） */
         for (guint i = 0; i < bk->items->len; i++)
         {
             announce_item_t *it = g_ptr_array_index(bk->items, i);

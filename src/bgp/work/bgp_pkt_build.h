@@ -39,7 +39,6 @@ typedef struct bgp_conn bgp_conn_t;
 /**
  * @brief BGP UPDATE 报文 AF 相关编码器描述符
  *
- * bgp_pkt_send_update / bgp_pkt_send_withdraw 调用已注册的处理器完成
  * AF 差异化编码；公共属性（ORIGIN / AS_PATH / LOCAL_PREF / MED / COMMUNITY）
  * 由 bgp_pkt.c 统一处理，不经由此接口。
  *

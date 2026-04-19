@@ -6,8 +6,9 @@
   "main": "server.js",
   "type": "commonjs",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js"
+    "start": "NN_ENV=production node server.js",
+    "dev": "NN_ENV=development node server.js",
+    "package": "./package.sh"
   },
   "dependencies": {
     "cors": "^2.8.5",

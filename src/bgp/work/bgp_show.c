@@ -981,12 +981,54 @@ static void bgp_show_ug_append_neighbors(GString *buf, const bgp_nh_subgroup_t *
     }
 }
 
+/** 把 negotiated_caps 位图转成可读字符串，如 "as4,rr,ext-nh" / "-" */
+static void bgp_show_ug_caps_str(uint32_t caps, char *out, size_t out_size)
+{
+    if (out_size == 0)
+    {
+        return;
+    }
+    out[0] = '\0';
+    const char *parts[3];
+    int n = 0;
+    if (caps & BGP_SESS_CAP_AS4)
+    {
+        parts[n++] = "as4";
+    }
+    if (caps & BGP_SESS_CAP_ROUTE_REFRESH)
+    {
+        parts[n++] = "rr";
+    }
+    if (caps & BGP_SESS_CAP_EXT_NEXTHOP)
+    {
+        parts[n++] = "ext-nh";
+    }
+    if (n == 0)
+    {
+        g_strlcpy(out, "-", out_size);
+        return;
+    }
+    for (int i = 0; i < n; i++)
+    {
+        if (i > 0)
+        {
+            g_strlcat(out, ",", out_size);
+        }
+        g_strlcat(out, parts[i], out_size);
+    }
+}
+
 static void bgp_show_ug_append_detail(GString *buf, const bgp_update_group_t *ug)
 {
     bgp_show_ug_stats_t st;
     bgp_show_ug_collect_stats(ug, &st);
 
+    char caps_str[48];
+    bgp_show_ug_caps_str(ug->key.negotiated_caps, caps_str, sizeof(caps_str));
+
     g_string_append_printf(buf, "  Session-Type : %s\r\n", bgp_sess_type_str(ug->key.sess_type));
+    g_string_append_printf(buf, "  Remote-AS    : %u\r\n", ug->key.remote_as);
+    g_string_append_printf(buf, "  Negotiated   : 0x%08X (%s)\r\n", ug->key.negotiated_caps, caps_str);
     g_string_append_printf(buf, "  Policy-Hash  : 0x%08X\r\n", ug->key.policy_hash);
     g_string_append_printf(buf, "  Peer-Family  : %u\r\n", (unsigned)ug->key.peer_family);
     g_string_append_printf(buf, "  Subgroups    : %u\r\n", st.subgroup_count);
@@ -1183,13 +1225,63 @@ static int handle_bgp_show_update_group(dev_ipc_message_t *msg, cli_tlv_parser_t
     return bgp_work_send_chunked_response(msg, buf);
 }
 
+/** 把 source_flags 位图转成可读字符串，如 "loc-rib" / "rib-out" / "loc-rib,rib-out" / "-" */
+static void bgp_show_attr_source_str(uint32_t flags, char *buf, size_t buf_size)
+{
+    if (buf_size == 0)
+    {
+        return;
+    }
+    buf[0] = '\0';
+    const char *parts[2];
+    int n = 0;
+    if (flags & BGP_ATTR_SRC_LOC_RIB)
+    {
+        parts[n++] = "loc-rib";
+    }
+    if (flags & BGP_ATTR_SRC_RIB_OUT)
+    {
+        parts[n++] = "rib-out";
+    }
+    if (n == 0)
+    {
+        g_strlcpy(buf, "-", buf_size);
+        return;
+    }
+    for (int i = 0; i < n; i++)
+    {
+        if (i > 0)
+        {
+            g_strlcat(buf, ",", buf_size);
+        }
+        g_strlcat(buf, parts[i], buf_size);
+    }
+}
+
+/** intern 表遍历回调：把单条 attr 追加到摘要表格中 */
+static void bgp_show_attr_summary_cb(const bgp_attr_ref_t *ref, gpointer user_data)
+{
+    GString *b = (GString *)user_data;
+    if (!ref || !b)
+    {
+        return;
+    }
+    char src_str[32];
+    bgp_show_attr_source_str(ref->source_flags, src_str, sizeof(src_str));
+    g_string_append_printf(b, "  %-8u %-6u %-16s %s\r\n", ref->attr_id, ref->refcnt, src_str,
+                           ref->attr.as_path[0] ? ref->attr.as_path : "-");
+}
+
 /**
  * @brief 格式化单条属性详情到 GString
  */
 static void bgp_show_attr_detail(GString *buf, const bgp_attr_ref_t *ref)
 {
     const bgp_attr_t *a = &ref->attr;
+    char src_str[32];
+    bgp_show_attr_source_str(ref->source_flags, src_str, sizeof(src_str));
     g_string_append_printf(buf, "  Attr-ID    : %u\r\n", ref->attr_id);
+    g_string_append_printf(buf, "  Source     : %s\r\n", src_str);
     g_string_append_printf(buf, "  RefCount   : %u\r\n", ref->refcnt);
     g_string_append_printf(buf, "  Hash       : 0x%08X\r\n", ref->hash);
     g_string_append_printf(buf, "  Origin     : %s\r\n", bgp_origin_str(a->origin));
@@ -1262,9 +1354,13 @@ static int handle_bgp_show_attr(dev_ipc_message_t *msg, cli_tlv_parser_t *parser
 
     if (!has_id)
     {
-        /* 摘要模式：显示 intern 表统计 */
+        /* 摘要模式：显示 intern 表统计 + 逐条列表 */
         g_string_append_printf(buf, "\r\nBGP Attribute Intern Table\r\n");
         g_string_append_printf(buf, "  Unique attributes: %u\r\n\r\n", bgp_attr_intern_count());
+        g_string_append(buf, "  Attr-ID  Refs   Source           AS-Path\r\n");
+        g_string_append(buf, "  -------- ------ ---------------- ----------------\r\n");
+        bgp_attr_intern_foreach(bgp_show_attr_summary_cb, buf);
+        g_string_append(buf, "\r\n");
         return bgp_work_send_chunked_response(msg, buf);
     }
 

@@ -96,7 +96,7 @@ void bgp_attr_intern_fini(void)
     g_next_attr_id = 1;
 }
 
-bgp_attr_ref_t *bgp_attr_intern(const bgp_attr_t *attr)
+bgp_attr_ref_t *bgp_attr_intern(const bgp_attr_t *attr, uint32_t source_flag)
 {
     if (!attr || !g_attr_table)
     {
@@ -112,6 +112,7 @@ bgp_attr_ref_t *bgp_attr_intern(const bgp_attr_t *attr)
     if (existing)
     {
         existing->refcnt++;
+        existing->source_flags |= source_flag;
         return existing;
     }
 
@@ -121,6 +122,7 @@ bgp_attr_ref_t *bgp_attr_intern(const bgp_attr_t *attr)
     ref->refcnt = 1;
     ref->hash = probe.hash;
     ref->attr_id = g_next_attr_id++;
+    ref->source_flags = source_flag;
 
     g_hash_table_insert(g_attr_table, ref, ref);
     g_hash_table_insert(g_attr_id_table, GUINT_TO_POINTER(ref->attr_id), ref);
@@ -174,6 +176,21 @@ const bgp_attr_ref_t *bgp_attr_find_by_id(uint32_t attr_id)
 uint32_t bgp_attr_intern_count(void)
 {
     return g_attr_table ? g_hash_table_size(g_attr_table) : 0;
+}
+
+void bgp_attr_intern_foreach(bgp_attr_intern_cb cb, gpointer user_data)
+{
+    if (!cb || !g_attr_table)
+    {
+        return;
+    }
+    GHashTableIter iter;
+    gpointer key;
+    g_hash_table_iter_init(&iter, g_attr_table);
+    while (g_hash_table_iter_next(&iter, &key, NULL))
+    {
+        cb((const bgp_attr_ref_t *)key, user_data);
+    }
 }
 
 /* ============================================================================
