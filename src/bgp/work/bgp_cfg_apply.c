@@ -14,18 +14,21 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "bgp_attr_intern.h"
 #include "bgp_calc.h"
 #include "bgp_conn.h"
 #include "bgp_if_cache.h"
 #include "bgp_instance.h"
 #include "bgp_main.h"
 #include "bgp_protocol.h"
+#include "bgp_rib.h"
 #include "bgp_route_flush.h"
 #include "bgp_session.h"
 #include "bgp_update_group.h"
 #include "bgp_vrf.h"
 #include "bgp_worker.h"
 #include "errcode.h"
+#include "route.h"
 
 /* 在配置删除路径中，同步抽干 work 队列的最大轮次，避免销毁前遗留待撤销任务。 */
 #define BGP_CFG_DRAIN_MAX_PASSES 1024u
@@ -803,6 +806,341 @@ void bgp_cfg_apply_ebgp_multihop(bgp_apply_cmd_t *apply)
     if (sess->pri_conn || sess->sec_conn)
     {
         bgp_neighbor_down(sess, g_bgp_work_local->epoll_fd);
+    }
+    apply->rc = BGP_APPLY_RC_OK;
+}
+
+/* ============================================================================
+ * QP 自产生路由 / route start-dqpn ...
+ * ========================================================================== */
+
+/**
+ * @brief 计算 DQPN 编码所需字节数（1~3 字节）
+ */
+static uint8_t qp_dqpn_bytes(uint32_t dqpn)
+{
+    if (dqpn <= 0xFFU)
+    {
+        return 1u;
+    }
+    if (dqpn <= 0xFFFFU)
+    {
+        return 2u;
+    }
+    return 3u;
+}
+
+/**
+ * @brief 构造一条 QP NLRI
+ */
+static void qp_build_nlri(bgp_nlri_entry_t *nlri, bgp_afi_t afi, uint32_t dqpn, const net_addr_t *ip, uint8_t mask_len)
+{
+    memset(nlri, 0, sizeof(*nlri));
+    nlri->afi = (uint16_t)afi;
+    nlri->safi = BGP_SAFI_QP;
+    nlri->type = BGP_NLRI_QP;
+    nlri->qp.dqpn = dqpn;
+    nlri->qp.dqpn_len = qp_dqpn_bytes(dqpn);
+    nlri->qp.prefix.prefix_len = mask_len;
+    nlri->qp.prefix.addr = *ip;
+}
+
+/**
+ * @brief 判断两个前缀是否相互覆盖（同族 + 较短前缀是较长前缀的祖先）
+ */
+static gboolean qp_prefix_overlap(const net_addr_t *a, uint8_t a_len, const net_addr_t *b, uint8_t b_len)
+{
+    if (a->family != b->family)
+    {
+        return FALSE;
+    }
+    uint8_t common = (a_len < b_len) ? a_len : b_len;
+    const uint8_t *pa = NULL;
+    const uint8_t *pb = NULL;
+    if (a->family == AF_INET)
+    {
+        pa = (const uint8_t *)&a->u.v4.s_addr;
+        pb = (const uint8_t *)&b->u.v4.s_addr;
+    }
+    else
+    {
+        pa = a->u.v6.s6_addr;
+        pb = b->u.v6.s6_addr;
+    }
+    uint8_t full = common / 8u;
+    uint8_t rem = common % 8u;
+    for (uint8_t i = 0; i < full; i++)
+    {
+        if (pa[i] != pb[i])
+        {
+            return FALSE;
+        }
+    }
+    if (rem > 0)
+    {
+        uint8_t mask = (uint8_t)(0xFFu << (8u - rem));
+        if ((pa[full] & mask) != (pb[full] & mask))
+        {
+            return FALSE;
+        }
+    }
+    return TRUE;
+}
+
+static gboolean qp_route_cfg_equal(const bgp_qp_route_cfg_t *a, const bgp_qp_route_cfg_t *b)
+{
+    if (a->start_dqpn != b->start_dqpn || a->count != b->count || a->mask_len != b->mask_len)
+    {
+        return FALSE;
+    }
+    if (net_addr_cmp(&a->ip, &b->ip) != 0 || net_addr_cmp(&a->bid, &b->bid) != 0)
+    {
+        return FALSE;
+    }
+    return TRUE;
+}
+
+/**
+ * @brief 注入（或撤销）一条 qp_routes 配置覆盖的所有 NLRI
+ */
+static int qp_inject_cfg_entries(bgp_instance_t *inst, const bgp_qp_route_cfg_t *cfg, gboolean withdraw)
+{
+    if (!inst || !inst->rib || !cfg)
+    {
+        return -1;
+    }
+
+    bgp_nexthop_t nexthop;
+    memset(&nexthop, 0, sizeof(nexthop));
+    nexthop.global = cfg->bid;
+    nexthop.has_link_local = false;
+
+    bgp_attr_t attr;
+    bgp_attr_build_imported(&attr);
+
+    /* source 使用 BID 作为区分键（每条配置用相同 BID，故同 cfg 内所有 NLRI 共享 source） */
+    net_addr_t src = cfg->bid;
+
+    for (uint32_t i = 0; i < cfg->count; i++)
+    {
+        uint32_t dqpn = cfg->start_dqpn + i;
+        bgp_nlri_entry_t nlri;
+        qp_build_nlri(&nlri, inst->afi, dqpn, &cfg->ip, cfg->mask_len);
+
+        if (withdraw)
+        {
+            int rc = bgp_rib_unreach_one(inst->rib, &nlri, &src);
+            if (rc == 1 && inst->calc_queue)
+            {
+                bgp_calc_queue_push(inst->calc_queue, inst, &nlri);
+            }
+            continue;
+        }
+
+        bgp_rthead_t *head = bgp_rib_ensure_head(inst->rib, &nlri);
+        if (!head)
+        {
+            continue;
+        }
+        bgp_route_node_t *route = bgp_rthead_lookup_route_mut(head, &src);
+        if (!route)
+        {
+            route = bgp_rthead_create_route(inst->rib, head, &src);
+            if (!route)
+            {
+                continue;
+            }
+        }
+        if (bgp_rib_route_apply_reach(route, ROUTE_PROTOCOL_STATIC, &attr, &nexthop) != 0)
+        {
+            continue;
+        }
+        BIT_SET(route->flags, BGP_ROUTE_FLAG_IMPORT);
+        if (inst->calc_queue)
+        {
+            bgp_calc_queue_push(inst->calc_queue, inst, &nlri);
+        }
+    }
+    return 0;
+}
+
+void bgp_cfg_apply_qp_route(bgp_apply_cmd_t *apply)
+{
+    const gboolean is_no = apply->isNo ? TRUE : FALSE;
+    bgp_protocol_t *proto = g_bgp_work_local->protocol;
+
+    if (!proto)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: BGP not configured.");
+        return;
+    }
+    bgp_vrf_t *vrf = bgp_protocol_get_vrf(proto, apply->vrf_id);
+    if (!vrf)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VRF not found.");
+        return;
+    }
+    if (apply->u.qp_route.safi != BGP_SAFI_QP)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: QP address family required.");
+        return;
+    }
+    bgp_instance_t *inst =
+        (bgp_instance_t *)g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(apply->u.qp_route.afi, BGP_SAFI_QP));
+    if (!inst)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: QP address family not enabled.");
+        return;
+    }
+
+    /* 参数校验 */
+    uint8_t max_mask = (apply->u.qp_route.afi == BGP_AFI_IPV4) ? 32u : 128u;
+    if (apply->u.qp_route.mask_len == 0 || apply->u.qp_route.mask_len > max_mask)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: Invalid mask length.");
+        return;
+    }
+    if (apply->u.qp_route.count == 0 ||
+        (uint64_t)apply->u.qp_route.start_dqpn + apply->u.qp_route.count - 1u > 0xFFFFFFU)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: DQPN range out of bounds.");
+        return;
+    }
+    sa_family_t expected = (apply->u.qp_route.afi == BGP_AFI_IPV4) ? AF_INET : AF_INET6;
+    if (apply->u.qp_route.ip.family != expected)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: Prefix family mismatch.");
+        return;
+    }
+    if (apply->u.qp_route.bid.family != AF_INET6)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: BID must be IPv6.");
+        return;
+    }
+
+    bgp_qp_route_cfg_t tmp;
+    memset(&tmp, 0, sizeof(tmp));
+    tmp.start_dqpn = apply->u.qp_route.start_dqpn;
+    tmp.count = apply->u.qp_route.count;
+    tmp.ip = apply->u.qp_route.ip;
+    tmp.mask_len = apply->u.qp_route.mask_len;
+    tmp.bid = apply->u.qp_route.bid;
+
+    if (is_no)
+    {
+        GList *node = NULL;
+        for (GList *l = inst->qp_routes; l; l = l->next)
+        {
+            bgp_qp_route_cfg_t *cfg = (bgp_qp_route_cfg_t *)l->data;
+            if (cfg && qp_route_cfg_equal(cfg, &tmp))
+            {
+                node = l;
+                break;
+            }
+        }
+        if (!node)
+        {
+            apply->rc = BGP_APPLY_RC_NOOP;
+            return;
+        }
+        bgp_qp_route_cfg_t *cfg = (bgp_qp_route_cfg_t *)node->data;
+        (void)qp_inject_cfg_entries(inst, cfg, TRUE);
+        inst->qp_routes = g_list_delete_link(inst->qp_routes, node);
+        g_free(cfg);
+        apply->rc = BGP_APPLY_RC_OK;
+        return;
+    }
+
+    /* 新增：前缀覆盖检查 */
+    for (GList *l = inst->qp_routes; l; l = l->next)
+    {
+        const bgp_qp_route_cfg_t *cfg = (const bgp_qp_route_cfg_t *)l->data;
+        if (!cfg)
+        {
+            continue;
+        }
+        if (qp_route_cfg_equal(cfg, &tmp))
+        {
+            apply->rc = BGP_APPLY_RC_NOOP;
+            return;
+        }
+        if (qp_prefix_overlap(&cfg->ip, cfg->mask_len, &tmp.ip, tmp.mask_len))
+        {
+            snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: Prefix overlaps existing QP route.");
+            return;
+        }
+    }
+
+    bgp_qp_route_cfg_t *stored = g_malloc(sizeof(*stored));
+    *stored = tmp;
+    inst->qp_routes = g_list_append(inst->qp_routes, stored);
+    (void)qp_inject_cfg_entries(inst, stored, FALSE);
+    apply->rc = BGP_APPLY_RC_OK;
+}
+
+/* ============================================================================
+ * route-select enable / no route-select enable
+ * ========================================================================== */
+
+typedef struct
+{
+    bgp_instance_t *inst;
+} qp_rehash_ctx_t;
+
+static gboolean qp_rehash_cb(gpointer key, gpointer value, gpointer data)
+{
+    (void)key;
+    qp_rehash_ctx_t *ctx = (qp_rehash_ctx_t *)data;
+    bgp_rthead_t *head = (bgp_rthead_t *)value;
+    if (ctx && ctx->inst && ctx->inst->calc_queue && head)
+    {
+        bgp_calc_queue_push(ctx->inst->calc_queue, ctx->inst, &head->nlri);
+    }
+    return FALSE;
+}
+
+void bgp_cfg_apply_route_select(bgp_apply_cmd_t *apply)
+{
+    const gboolean is_no = apply->isNo ? TRUE : FALSE;
+    bgp_protocol_t *proto = g_bgp_work_local->protocol;
+
+    if (!proto)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: BGP not configured.");
+        return;
+    }
+    bgp_vrf_t *vrf = bgp_protocol_get_vrf(proto, apply->vrf_id);
+    if (!vrf)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VRF not found.");
+        return;
+    }
+    if (apply->u.route_select.safi != BGP_SAFI_QP)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: QP address family required.");
+        return;
+    }
+    bgp_instance_t *inst = (bgp_instance_t *)g_hash_table_lookup(
+        vrf->inst_hash, bgp_inst_hash_key(apply->u.route_select.afi, BGP_SAFI_QP));
+    if (!inst)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: QP address family not enabled.");
+        return;
+    }
+
+    bool want = !is_no;
+    if (inst->route_select_enabled == want)
+    {
+        apply->rc = BGP_APPLY_RC_NOOP;
+        return;
+    }
+    inst->route_select_enabled = want;
+
+    /* 重新优选所有 rthead：触发 announce（开启时）或 withdraw（关闭时） */
+    if (inst->rib && inst->rib->head_tree)
+    {
+        qp_rehash_ctx_t ctx = {inst};
+        g_tree_foreach(inst->rib->head_tree, qp_rehash_cb, &ctx);
     }
     apply->rc = BGP_APPLY_RC_OK;
 }

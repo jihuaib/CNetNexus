@@ -7,18 +7,17 @@
 #ifndef IF_MAIN_H
 #define IF_MAIN_H
 
-#include <glib.h>
-
-#include "cli.h"
 #include "dev.h"
-#include "if_map.h"
 
+/**
+ * @brief IF 模块 IPC 线程本地上下文（仅保留 IPC 相关，不包含业务数据）
+ *
+ * 业务数据（interface_map / subscribers / show_stream）由 worker 线程独占，
+ * 定义在 work/if_worker.h 的 if_work_local_t 中。
+ */
 typedef struct
 {
     dev_ipc_context_t *dev_ipc_ctx;
-    cli_chunk_stream_t show_stream; /**< CLI show 命令分片输出状态 */
-    if_map_t interface_map;         /**< 接口逻辑名到物理名的映射表 */
-    GList *subscribers;             /**< IF 事件订阅者列表 GList<if_subscriber_t*> */
 } if_local_t;
 
 extern if_local_t *g_if_local;

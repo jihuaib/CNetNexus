@@ -21,6 +21,11 @@ bgp_instance_t *bgp_instance_create(bgp_afi_t afi, bgp_safi_t safi, bgp_vrf_t *v
     inst->afi = afi;
     inst->safi = safi;
     inst->vrf = vrf;
+    /* QP 地址族默认启用"下一跳保持不变"策略：单 UG、全 PASS、忽略 split-horizon */
+    if (safi == BGP_SAFI_QP)
+    {
+        inst->flags |= BGP_INST_FLAG_NH_UNCHANGED;
+    }
     /* key: net_addr_t*（堆分配，g_free 释放），value: bgp_peer_t*（负责销毁） */
     inst->peer_hash =
         g_hash_table_new_full(net_addr_hash, net_addr_hash_equal, g_free, (GDestroyNotify)bgp_peer_destroy);
@@ -59,6 +64,11 @@ void bgp_instance_destroy(bgp_instance_t *inst)
     {
         bgp_rib_destroy(inst->rib);
         inst->rib = NULL;
+    }
+    if (inst->qp_routes)
+    {
+        g_list_free_full(inst->qp_routes, g_free);
+        inst->qp_routes = NULL;
     }
     g_free(inst);
 }

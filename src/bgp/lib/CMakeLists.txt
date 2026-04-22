@@ -7,6 +7,8 @@ set(BGP_API_SOURCES
     bgp_parse_common.c
     bgp_parse_ipv4uc.c
     bgp_parse_ipv6uc.c
+    bgp_parse_ipv4qp.c
+    bgp_parse_ipv6qp.c
     bgp_parse_labeled.c
     bgp_parse_vpn.c
     bgp_parse_evpn.c

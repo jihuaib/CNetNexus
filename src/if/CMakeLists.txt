@@ -1,16 +1,21 @@
 set(IF_SOURCES
-    if.c
-    if_map.c
-    if_pub.c
-    if_cfg_apply.c
+    if_db.c
+    if_link_monitor.c
     if_main.c
     if_cli.c
     if_bdr.c
+    work/if.c
+    work/if_map.c
+    work/if_pub.c
+    work/if_cfg_apply.c
+    work/if_worker.c
+    work/if_show.c
+    work/if_msg.c
 )
 
 add_executable(netnexus-if if_proc.c ${IF_SOURCES})
 
-target_include_directories(netnexus-if PRIVATE .)
+target_include_directories(netnexus-if PRIVATE . work)
 
 target_link_libraries(netnexus-if PRIVATE
     dev_api

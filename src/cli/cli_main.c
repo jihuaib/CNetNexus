@@ -205,19 +205,35 @@ static void send_phase_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, 
  */
 static int cli_scan_and_load_xml(const char *base_dir)
 {
-    DIR *dir = opendir(base_dir);
-    if (!dir)
+    struct dirent **entries = NULL;
+    int count = scandir(base_dir, &entries, NULL, alphasort);
+    if (count < 0)
     {
         return 0;
     }
 
-    int loaded = 0;
-    struct dirent *entry;
-
-    while ((entry = readdir(dir)) != NULL)
+    GPtrArray *xml_paths = g_ptr_array_new_with_free_func(g_free);
+    if (!xml_paths)
     {
+        for (int i = 0; i < count; i++)
+        {
+            free(entries[i]);
+        }
+        free(entries);
+        return 0;
+    }
+
+    for (int i = 0; i < count; i++)
+    {
+        struct dirent *entry = entries[i];
+        if (!entry)
+        {
+            continue;
+        }
+
         if (entry->d_name[0] == '.')
         {
+            free(entry);
             continue;
         }
 
@@ -233,24 +249,43 @@ static int cli_scan_and_load_xml(const char *base_dir)
             if (stat(xml_path, &st) != 0)
             {
                 g_free(xml_path);
+                free(entry);
                 continue;
             }
         }
 
+        g_ptr_array_add(xml_paths, xml_path);
+        free(entry);
+    }
+
+    free(entries);
+
+    /* 两阶段加载，避免模块间 view 依赖受目录扫描顺序影响。 */
+    int loaded = 0;
+    for (guint i = 0; i < xml_paths->len; i++)
+    {
+        const char *xml_path = g_ptr_array_index(xml_paths, i);
         LOG_INFO("Found XML: %s", xml_path);
-        if (cli_xml_load_view_tree(xml_path, &g_cli_local->view_tree) == ERRCODE_SUCCESS)
+        if (cli_xml_load_view_tree_ex(xml_path, &g_cli_local->view_tree, CLI_XML_LOAD_VIEWS) == ERRCODE_SUCCESS)
         {
-            LOG_INFO("Loaded XML successfully: %s", entry->d_name);
             loaded++;
         }
         else
         {
-            LOG_ERROR("Failed to load XML: %s", xml_path);
+            LOG_ERROR("Failed to load XML views: %s", xml_path);
         }
-        g_free(xml_path);
     }
 
-    closedir(dir);
+    for (guint i = 0; i < xml_paths->len; i++)
+    {
+        const char *xml_path = g_ptr_array_index(xml_paths, i);
+        if (cli_xml_load_view_tree_ex(xml_path, &g_cli_local->view_tree, CLI_XML_LOAD_COMMANDS) != ERRCODE_SUCCESS)
+        {
+            LOG_ERROR("Failed to load XML commands: %s", xml_path);
+        }
+    }
+
+    g_ptr_array_free(xml_paths, TRUE);
     return loaded;
 }
 

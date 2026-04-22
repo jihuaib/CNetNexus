@@ -26,14 +26,14 @@
 // 接口事件位图
 // ============================================================================
 
-/** 接口 UP 事件 */
-#define IF_EVENT_UP (1u << 0)
-/** 接口 DOWN 事件 */
-#define IF_EVENT_DOWN (1u << 1)
-/** 接口地址新增事件 */
-#define IF_EVENT_ADDR_ADD (1u << 2)
-/** 接口地址删除事件 */
-#define IF_EVENT_ADDR_DEL (1u << 3)
+/** 物理链路建立事件 */
+#define IF_EVENT_LINK_UP (1u << 0)
+/** 物理链路断开事件 */
+#define IF_EVENT_LINK_DOWN (1u << 1)
+/** 协议层就绪事件（配置了 IP 且链路 UP、未 Shutdown） */
+#define IF_EVENT_PROTO_UP (1u << 2)
+/** 协议层断开事件（IP 删除、或者链路 DOWN、或者被 Shutdown） */
+#define IF_EVENT_PROTO_DOWN (1u << 3)
 /** 通配：匹配所有事件 */
 #define IF_EVENT_ALL 0xFFFFFFFFu
 
@@ -49,8 +49,6 @@
 #define IF_MSG_TYPE_EVENT DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_IF, 0x0003)
 /** IF 通用 ACK */
 #define IF_MSG_TYPE_ACK DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_IF, 0x00FF)
-/** 查询接口映射表（ifindex→逻辑名），用于 route 模块 show 时显示逻辑接口名 */
-#define IF_MSG_TYPE_GET_INTF_MAP DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_IF, 0x0004)
 
 // ============================================================================
 // 常量
@@ -80,19 +78,19 @@ typedef struct if_event_msg
 {
     uint32_t if_type;                       /**< 接口类型（单值，对应 IF_INTF_TYPE_* 某一位） */
     uint32_t event;                         /**< 事件类型（单值，对应 IF_EVENT_* 某一位） */
-    uint8_t admin_up;                       /**< 1=up, 0=down */
+    uint8_t link_up;                        /**< 1=up, 0=down (Physical Link State) */
     uint8_t _pad[3];                        /**< 对齐填充 */
     char logical_name[IF_LOGICAL_NAME_MAX]; /**< 逻辑接口名（如 GE-1） */
     char physical_name[IFNAMSIZ];           /**< 物理接口名（如 eth0） */
 } if_event_msg_t;
 
 /**
- * @brief IF 地址变更事件消息载荷（IF_EVENT_ADDR_ADD / IF_EVENT_ADDR_DEL 专用）
+ * @brief IF 协议就绪事件消息载荷（IF_EVENT_PROTO_UP / IF_EVENT_PROTO_DOWN 专用）
  */
 typedef struct if_addr_event_msg
 {
     uint32_t if_type;                       /**< 接口类型（单值，对应 IF_INTF_TYPE_* 某一位） */
-    uint32_t event;                         /**< 事件类型（IF_EVENT_ADDR_ADD 或 IF_EVENT_ADDR_DEL） */
+    uint32_t event;                         /**< 事件类型（IF_EVENT_PROTO_UP 或 IF_EVENT_PROTO_DOWN） */
     char logical_name[IF_LOGICAL_NAME_MAX]; /**< 逻辑接口名（如 GE-1） */
     char physical_name[IFNAMSIZ];           /**< 物理接口名（如 eth0） */
     uint16_t afi;                           /**< 地址族（ROUTE_AFI_IPV4 / ROUTE_AFI_IPV6） */

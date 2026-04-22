@@ -8,10 +8,13 @@
 #define BGP_INSTANCE_H
 
 #include <glib.h>
+#include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include "bgp.h"
 #include "bgp_peer.h"
+#include "net_addr.h"
 
 /* bgp_peer.h 已前向声明 bgp_vrf_t，此处直接使用 */
 typedef struct bgp_rib bgp_rib_t;
@@ -32,7 +35,25 @@ typedef struct bgp_instance
     bgp_calc_queue_t *calc_queue; /**< best-path 待处理队列（持有所有权） */
     bgp_route_flush_queue_t *route_flush_queue; /**< ROUTE 下刷待处理队列（持有所有权） */
     GList *update_groups; /**< bgp_update_group_t*（持有所有权），按出向策略分组的发布单元 */
+    GList *qp_routes;     /**< bgp_qp_route_cfg_t*（持有所有权），已配置的 QP 自产生路由条目 */
+    bool route_select_enabled; /**< 是否对该地址族启用路由优选/发布（默认 false，仅 QP 地址族使用） */
+    uint32_t flags;            /**< 实例级策略位（见 BGP_INST_FLAG_*） */
 } bgp_instance_t;
+
+/** 实例策略位：所有出向邻居不改下一跳、合入单一 update-group、忽略 iBGP split-horizon */
+#define BGP_INST_FLAG_NH_UNCHANGED (1U << 0)
+
+/**
+ * @brief QP 自产生路由配置条目（每个对应一组 [start_dqpn, start_dqpn+count) 的 NLRI）
+ */
+typedef struct bgp_qp_route_cfg
+{
+    uint32_t start_dqpn; /**< 起始 DQPN */
+    uint32_t count;      /**< NLRI 条数 */
+    net_addr_t ip;       /**< 前缀基地址（family 决定 afi） */
+    uint8_t mask_len;    /**< 前缀长度 */
+    net_addr_t bid;      /**< BID（IPv6 下一跳） */
+} bgp_qp_route_cfg_t;
 
 /**
  * @brief 计算 inst_hash 的键值（将 afi/safi 打包为 gpointer，无需堆分配）

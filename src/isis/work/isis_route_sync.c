@@ -124,7 +124,7 @@ static int isis_route_sync_state_same(const isis_route_state_t *a, const isis_ro
 static int isis_build_desired_route_state(const if_api_cache_entry_t *if_entry, uint16_t afi, uint32_t metric,
                                           isis_route_state_t *out)
 {
-    if (!if_entry || !out || !if_entry->admin_up || if_entry->ifindex == 0u)
+    if (!if_entry || !out || !if_entry->proto_up || if_entry->ifindex == 0u)
     {
         return 0;
     }
@@ -395,7 +395,7 @@ const char *isis_route_sync_if_event_get_logical_name(const dev_ipc_message_t *m
     if (msg->payload_len >= sizeof(if_addr_event_msg_t))
     {
         const if_addr_event_msg_t *addr_evt = (const if_addr_event_msg_t *)msg->payload;
-        if (addr_evt->event == IF_EVENT_ADDR_ADD || addr_evt->event == IF_EVENT_ADDR_DEL)
+        if (addr_evt->event == IF_EVENT_PROTO_UP || addr_evt->event == IF_EVENT_PROTO_DOWN)
         {
             g_strlcpy(ifname_out, addr_evt->logical_name, out_sz);
             return (ifname_out[0] != '\0') ? ifname_out : NULL;
@@ -405,7 +405,7 @@ const char *isis_route_sync_if_event_get_logical_name(const dev_ipc_message_t *m
     if (msg->payload_len >= sizeof(if_event_msg_t))
     {
         const if_event_msg_t *evt = (const if_event_msg_t *)msg->payload;
-        if (evt->event == IF_EVENT_UP || evt->event == IF_EVENT_DOWN)
+        if (evt->event == IF_EVENT_LINK_UP || evt->event == IF_EVENT_LINK_DOWN)
         {
             g_strlcpy(ifname_out, evt->logical_name, out_sz);
             return (ifname_out[0] != '\0') ? ifname_out : NULL;

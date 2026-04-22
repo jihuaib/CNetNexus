@@ -1,6 +1,6 @@
 /**
  * @file   if_cli.h
- * @brief  接口模块 CLI 命令处理头文件
+ * @brief  接口模块 CLI 配置命令处理（IPC 线程入口）
  * @author jhb
  * @date   2026/01/22
  */
@@ -17,36 +17,10 @@
 #define IF_CLI_GROUP_ID_LOOP_ENTRY 4 /**< loop 接口进入/删除命令 */
 
 /**
- * @brief 处理来自 CFG 模块的 CLI 命令消息
- * @param msg 消息
- * @return ERRCODE_SUCCESS 成功
- */
-int if_cli_handle_message(dev_ipc_message_t *msg);
-
-/**
- * @brief 处理 CLI continue 消息
- * @param msg 消息
- * @return ERRCODE_SUCCESS 成功
- */
-int if_cli_handle_continue(dev_ipc_message_t *msg);
-
-/**
- * @brief 处理动态候选值查询（CLI_MSG_TYPE_QUERY_CANDIDATES）
- * @param msg 查询消息
- */
-void if_cli_handle_query_candidates(dev_ipc_message_t *msg);
-
-/**
- * @brief 清理 IF CLI 分片状态
- */
-void if_cli_cleanup_state(void);
-
-/**
- * @brief 通过 IF CLI 分片流发送文本（供 show 与 show current-configuration 共用）
- * @param msg 原始请求消息
- * @param full_text 完整文本（函数接管所有权，可为 NULL）
+ * @brief 处理 CLI 配置命令（IPC 线程执行，内部通过 worker 同步派发 apply）
+ * @param msg CLI 请求消息（内部不释放，由调用方负责）
  * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL
  */
-int if_cli_send_chunked_response(dev_ipc_message_t *msg, GString *full_text);
+int if_cli_handle_config_msg(dev_ipc_message_t *msg);
 
 #endif // IF_CLI_H

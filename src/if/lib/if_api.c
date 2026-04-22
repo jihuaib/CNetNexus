@@ -97,7 +97,7 @@ static void cache_handle_addr_event(const if_addr_event_msg_t *evt)
 
     cache_update_ifindex(entry, evt->physical_name, evt->ifindex);
 
-    if (evt->event == IF_EVENT_ADDR_ADD)
+    if (evt->event == IF_EVENT_PROTO_UP)
     {
         if (evt->afi == ROUTE_AFI_IPV4)
         {
@@ -110,7 +110,7 @@ static void cache_handle_addr_event(const if_addr_event_msg_t *evt)
             entry->ipv6_prefix_len = evt->prefix_len;
         }
     }
-    else if (evt->event == IF_EVENT_ADDR_DEL)
+    else if (evt->event == IF_EVENT_PROTO_DOWN)
     {
         if (evt->afi == ROUTE_AFI_IPV4)
         {
@@ -123,6 +123,9 @@ static void cache_handle_addr_event(const if_addr_event_msg_t *evt)
             entry->ipv6_prefix_len = 0;
         }
     }
+
+    /* 更新协议状态 */
+    entry->proto_up = (evt->event == IF_EVENT_PROTO_UP) ? 1u : 0u;
 }
 
 static void cache_handle_up_down_event(const if_event_msg_t *evt)
@@ -138,7 +141,7 @@ static void cache_handle_up_down_event(const if_event_msg_t *evt)
         return;
     }
 
-    entry->admin_up = evt->admin_up ? 1u : 0u;
+    entry->link_up = evt->link_up ? 1u : 0u;
     cache_update_ifindex(entry, evt->physical_name, 0);
 }
 
@@ -181,7 +184,7 @@ void if_api_cache_on_event(const dev_ipc_message_t *msg)
     if (msg->payload_len >= sizeof(if_addr_event_msg_t))
     {
         const if_addr_event_msg_t *addr_evt = (const if_addr_event_msg_t *)msg->payload;
-        if (addr_evt->event == IF_EVENT_ADDR_ADD || addr_evt->event == IF_EVENT_ADDR_DEL)
+        if (addr_evt->event == IF_EVENT_PROTO_UP || addr_evt->event == IF_EVENT_PROTO_DOWN)
         {
             cache_handle_addr_event(addr_evt);
             return;
@@ -191,7 +194,7 @@ void if_api_cache_on_event(const dev_ipc_message_t *msg)
     if (msg->payload_len >= sizeof(if_event_msg_t))
     {
         const if_event_msg_t *evt = (const if_event_msg_t *)msg->payload;
-        if (evt->event == IF_EVENT_UP || evt->event == IF_EVENT_DOWN)
+        if (evt->event == IF_EVENT_LINK_UP || evt->event == IF_EVENT_LINK_DOWN)
         {
             cache_handle_up_down_event(evt);
         }

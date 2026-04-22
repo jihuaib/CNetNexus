@@ -66,4 +66,14 @@ void bgp_cfg_apply_source_if(bgp_apply_cmd_t *apply);
  */
 void bgp_cfg_apply_ebgp_multihop(bgp_apply_cmd_t *apply);
 
+/**
+ * @brief 应用 QP 自产生路由配置/删除：注入/撤销 NLRI，维护 inst->qp_routes
+ */
+void bgp_cfg_apply_qp_route(bgp_apply_cmd_t *apply);
+
+/**
+ * @brief 应用 QP 地址族 route-select enable 开关
+ */
+void bgp_cfg_apply_route_select(bgp_apply_cmd_t *apply);
+
 #endif /* BGP_CFG_APPLY_H */

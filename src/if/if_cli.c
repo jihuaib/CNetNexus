@@ -1,6 +1,6 @@
 /**
  * @file   if_cli.c
- * @brief  接口模块 CLI 命令处理
+ * @brief  接口模块 CLI 配置命令处理：IPC 线程解析 TLV，worker 线程同步执行 apply
  * @author jhb
  * @date   2026/01/22
  */
@@ -16,11 +16,11 @@
 #include "db.h"
 #include "dev.h"
 #include "errcode.h"
-#include "if.h"
-#include "if_cfg_apply.h"
+#include "if_db.h"
 #include "if_main.h"
 #include "log.h"
 #include "net_addr.h"
+#include "work/if_worker.h"
 
 /** loop 接口编号范围 */
 #define IF_LOOP_ID_MIN 1U
@@ -40,11 +40,6 @@ static void send_resp(dev_ipc_message_t *msg, const char *text)
         dev_ipc_send_response(if_local_ipc_ctx(), resp);
         dev_ipc_message_free(resp);
     }
-}
-
-int if_cli_send_chunked_response(dev_ipc_message_t *msg, GString *full_text)
-{
-    return cli_chunk_stream_start(&g_if_local->show_stream, if_local_ipc_ctx(), DEV_MODULE_ID_IF, msg, full_text);
 }
 
 // ============================================================================
@@ -74,14 +69,9 @@ static const char *if_cfgid_to_name(uint32_t cfg_id)
 
 /**
  * @brief 处理接口进入命令（if GE-x → 视图切换）
- *
- * group_id=1, cfg_id: 1=GE-1, 2=GE-2, 3=GE-3, 4=GE-4
  */
 static int handle_if_entry(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
-    /* 框架根据 XML <context-out ctx-id="5" value="N"/> 自动切换视图并写入上下文，
-     * 视图 template "<NetNexus(config-if-GE-{ctx:5})>" 由框架格式化为 "GE-1/2/3/4"。
-     * 模块只需验证并返回空 OK。 */
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
     {
@@ -93,11 +83,6 @@ static int handle_if_entry(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 
 /**
  * @brief 处理接口配置命令（ip address / ipv6 address / shutdown / no shutdown）
- *
- * group_id=2, cfg_id:
- *   1=ip_address(v4), 2=prefix_len(v4), 3=shutdown, 4=no,
- *   6=ip_address(v6), 7=prefix_len(v6)
- * 上下文 cfg_id 1-4 对应接口名
  */
 static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
@@ -130,7 +115,7 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 
         switch (entry.cfg_id)
         {
-            case 1: /* ip address <ipv4> 参数 */
+            case 1:
             {
                 const char *text = cli_tlv_entry_get_text(&entry);
                 if (text && net_addr_from_str(text, &prefix.addr) == 0 && prefix.addr.family == AF_INET)
@@ -144,7 +129,7 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                 }
                 break;
             }
-            case 2: /* ip address <prefix-len> 参数（整数） */
+            case 2:
             {
                 prefix.prefix_len = (uint8_t)cli_tlv_entry_get_int(&entry);
                 if (addr_family == 0)
@@ -153,7 +138,7 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                 }
                 break;
             }
-            case 6: /* ipv6 address <ipv6> 参数 */
+            case 6:
             {
                 const char *text = cli_tlv_entry_get_text(&entry);
                 if (text && net_addr_from_str(text, &prefix.addr) == 0 && prefix.addr.family == AF_INET6)
@@ -167,7 +152,7 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                 }
                 break;
             }
-            case 7: /* ipv6 address <prefix-len> 参数（整数） */
+            case 7:
             {
                 prefix.prefix_len = (uint8_t)cli_tlv_entry_get_int(&entry);
                 if (addr_family == 0)
@@ -176,7 +161,7 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                 }
                 break;
             }
-            case 3: /* shutdown 关键字 */
+            case 3:
                 has_shutdown = TRUE;
                 break;
             default:
@@ -185,7 +170,6 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         cli_tlv_entry_free(&entry);
     }
 
-    /* 从上下文解析接口名：loop 接口优先，否则用 GE 索引 */
     char loop_name_buf[32];
     const char *ifname = NULL;
     if (loop_id >= IF_LOOP_ID_MIN && loop_id <= IF_LOOP_ID_MAX)
@@ -210,7 +194,6 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         return ERRCODE_FAIL;
     }
 
-    /* loop 接口不支持 shutdown */
     if (loop_id > 0 && has_shutdown)
     {
         send_resp(msg, "Error: loop 接口不支持 shutdown\r\n");
@@ -219,8 +202,14 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 
     if (has_addr)
     {
-        /* ip address / ipv6 address */
-        if (if_cfg_apply_ip(is_no, ifname, &prefix) != ERRCODE_SUCCESS)
+        if_apply_cmd_t apply;
+        memset(&apply, 0, sizeof(apply));
+        apply.op = IF_APPLY_OP_IP_SET;
+        apply.u.ip_set.is_no = is_no ? 1 : 0;
+        apply.u.ip_set.prefix = prefix;
+        g_strlcpy(apply.u.ip_set.ifname, ifname, sizeof(apply.u.ip_set.ifname));
+
+        if (if_worker_dispatch_apply(&apply) != ERRCODE_SUCCESS || apply.rc != ERRCODE_SUCCESS)
         {
             char resp_buf[128];
             snprintf(resp_buf, sizeof(resp_buf), "Error: Failed to set IP address on %s\r\n", ifname);
@@ -228,7 +217,6 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             return ERRCODE_FAIL;
         }
 
-        /* 持久化 */
         char ip_str[64] = "";
         uint8_t stored_prefix_len = 0;
         if (!is_no)
@@ -241,16 +229,12 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             net_addr_to_str(&prefix.addr, ip_str, sizeof(ip_str));
             stored_prefix_len = prefix.prefix_len;
         }
-        const char *ip_col = (addr_family == AF_INET6) ? "ipv6_address" : "ip_address";
-        const char *plen_col = (addr_family == AF_INET6) ? "ipv6_prefix_len" : "prefix_len";
-        db_condition_t cond = {.field_name = "name", .op = DB_CMP_EQ, .value = db_value_text(ifname)};
-        db_filter_t filter = {.conditions = &cond, .num_conditions = 1};
-        db_record_t *rec = db_record_new();
-        db_record_set_text(rec, ip_col, ip_str);
-        db_record_set_int(rec, plen_col, is_no ? 0 : (int64_t)stored_prefix_len);
-        db_rpc_update_record(if_local_ipc_ctx(), "if_interface", rec, &filter);
-        db_record_free(rec);
-        db_value_free(&cond.value);
+
+        if (if_db_update_ip(ifname, (addr_family == AF_INET6), ip_str, is_no ? 0 : stored_prefix_len) !=
+            ERRCODE_SUCCESS)
+        {
+            LOG_WARN("Failed to update db for ip address on %s", ifname);
+        }
 
         char resp_buf[128];
         snprintf(resp_buf, sizeof(resp_buf), "IP address %s on %s\r\n", is_no ? "cleared" : "configured", ifname);
@@ -258,8 +242,13 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     }
     else if (has_shutdown)
     {
-        /* shutdown / no shutdown */
-        if (if_cfg_apply_shutdown(is_no, ifname) != ERRCODE_SUCCESS)
+        if_apply_cmd_t apply;
+        memset(&apply, 0, sizeof(apply));
+        apply.op = IF_APPLY_OP_SHUTDOWN_SET;
+        apply.u.shutdown_set.is_no = is_no ? 1 : 0;
+        g_strlcpy(apply.u.shutdown_set.ifname, ifname, sizeof(apply.u.shutdown_set.ifname));
+
+        if (if_worker_dispatch_apply(&apply) != ERRCODE_SUCCESS || apply.rc != ERRCODE_SUCCESS)
         {
             char resp_buf[128];
             snprintf(resp_buf, sizeof(resp_buf), "Error: Failed to change state for %s\r\n", ifname);
@@ -267,14 +256,10 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             return ERRCODE_FAIL;
         }
 
-        /* 持久化 */
-        db_condition_t cond = {.field_name = "name", .op = DB_CMP_EQ, .value = db_value_text(ifname)};
-        db_filter_t filter = {.conditions = &cond, .num_conditions = 1};
-        db_record_t *rec = db_record_new();
-        db_record_set_int(rec, "shutdown", is_no ? 0 : 1);
-        db_rpc_update_record(if_local_ipc_ctx(), "if_interface", rec, &filter);
-        db_record_free(rec);
-        db_value_free(&cond.value);
+        if (if_db_update_shutdown(ifname, is_no ? 0 : 1) != ERRCODE_SUCCESS)
+        {
+            LOG_WARN("Failed to update db for shutdown on %s", ifname);
+        }
 
         char resp_buf[128];
         snprintf(resp_buf, sizeof(resp_buf), "Interface %s %s\r\n", ifname, is_no ? "enabled" : "disabled");
@@ -284,201 +269,8 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     return ERRCODE_SUCCESS;
 }
 
-static void show_format_prefix(const net_prefix_t *pfx, char *buf, size_t sz)
-{
-    if (!pfx || !buf || sz == 0)
-    {
-        return;
-    }
-    if (net_prefix_is_set(pfx))
-    {
-        net_prefix_to_str(pfx, buf, sz);
-    }
-    else
-    {
-        g_strlcpy(buf, "-", sz);
-    }
-}
-
-static void show_format_dual_stack(const if_map_entry_t *e, char *buf, size_t sz)
-{
-    if (!e || !buf || sz == 0)
-    {
-        return;
-    }
-
-    char v4[70];
-    char v6[70];
-    show_format_prefix(&e->prefix_v4, v4, sizeof(v4));
-    show_format_prefix(&e->prefix_v6, v6, sizeof(v6));
-
-    if (strcmp(v4, "-") != 0 && strcmp(v6, "-") != 0)
-    {
-        snprintf(buf, sz, "%s, %s", v4, v6);
-    }
-    else if (strcmp(v4, "-") != 0)
-    {
-        g_strlcpy(buf, v4, sz);
-    }
-    else if (strcmp(v6, "-") != 0)
-    {
-        g_strlcpy(buf, v6, sz);
-    }
-    else
-    {
-        g_strlcpy(buf, "-", sz);
-    }
-}
-
-/* 将单个接口条目追加到 show 输出 */
-static void show_append_entry(GString *resp_buf, const if_map_entry_t *e)
-{
-    const char *state_str = e->shutdown ? "DOWN" : "UP";
-    char ip_str[160];
-    show_format_dual_stack(e, ip_str, sizeof(ip_str));
-    g_string_append_printf(resp_buf, "%-14s %-6s %-56s\r\n", e->logical_name, state_str, ip_str);
-}
-
-/* GTree 遍历回调：追加接口行 */
-static gboolean show_foreach_cb(gpointer key, gpointer value, gpointer user_data)
-{
-    (void)key;
-    show_append_entry((GString *)user_data, (const if_map_entry_t *)value);
-    return FALSE;
-}
-
-/* 显示单个接口详情 */
-static void show_single_entry(GString *resp_buf, const char *ifname, const if_map_entry_t *e)
-{
-    if_info_t info;
-    gboolean has_info = (if_get_info(e->physical_name, &info) == ERRCODE_SUCCESS);
-
-    char ip4_str[70];
-    char ip6_str[70];
-    show_format_prefix(&e->prefix_v4, ip4_str, sizeof(ip4_str));
-    show_format_prefix(&e->prefix_v6, ip6_str, sizeof(ip6_str));
-
-    char mac_str[32] = "-";
-    const char *type_str = "-";
-    int mtu = 0;
-    if (has_info)
-    {
-        snprintf(mac_str, sizeof(mac_str), "%02x:%02x:%02x:%02x:%02x:%02x", info.mac[0], info.mac[1], info.mac[2],
-                 info.mac[3], info.mac[4], info.mac[5]);
-        type_str = if_type_to_string(info.type);
-        mtu = info.mtu;
-    }
-
-    const char *state_str = e->shutdown ? "DOWN" : "UP";
-
-    g_string_append_printf(resp_buf,
-                           "\r\nInterface %s Detail:\r\n"
-                           "============================\r\n"
-                           "  Name       : %s\r\n"
-                           "  Ifindex    : %u\r\n"
-                           "  Type       : %s\r\n"
-                           "  State      : %s\r\n"
-                           "  IPv4 Addr  : %s\r\n"
-                           "  IPv6 Addr  : %s\r\n"
-                           "  MAC        : %s\r\n"
-                           "  MTU        : %d\r\n\r\n",
-                           ifname, ifname, e->ifindex, type_str, state_str, ip4_str, ip6_str, mac_str, mtu);
-}
-
-/**
- * @brief 处理 show interface 命令
- *
- * group_id=3, cfg_id: 1=GE-1, 2=GE-2, 3=GE-3, 4=GE-4, 5=loop-id
- * 直接构建格式化文本返回
- */
-static int handle_if_show(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
-{
-    const char *ge_ifname = NULL;
-    uint32_t loop_id = 0;
-
-    /* 解析可选接口名/编号 */
-    cli_tlv_entry_t entry;
-    while (cli_tlv_next(parser, &entry) == 1)
-    {
-        if (CLI_TLV_IS_CTX(&entry))
-        {
-            cli_tlv_entry_free(&entry);
-            continue;
-        }
-
-        if (entry.cfg_id >= 1 && entry.cfg_id <= 4)
-        {
-            ge_ifname = if_cfgid_to_name(entry.cfg_id);
-        }
-        else if (entry.cfg_id == 5)
-        {
-            loop_id = (uint32_t)cli_tlv_entry_get_int(&entry);
-        }
-        cli_tlv_entry_free(&entry);
-    }
-
-    GString *resp_buf = g_string_new("");
-    if (!resp_buf)
-    {
-        send_resp(msg, "IF Error: Out of memory.\r\n");
-        return ERRCODE_FAIL;
-    }
-
-    if (ge_ifname)
-    {
-        /* show if <GE-x> */
-        if_map_entry_t *e = if_cfg_find_entry(ge_ifname);
-        if (!e)
-        {
-            g_string_append_printf(resp_buf, "Error: Interface %s not found\r\n", ge_ifname);
-            send_resp(msg, resp_buf->str);
-            g_string_free(resp_buf, TRUE);
-            return ERRCODE_FAIL;
-        }
-        show_single_entry(resp_buf, ge_ifname, e);
-    }
-    else if (loop_id >= IF_LOOP_ID_MIN && loop_id <= IF_LOOP_ID_MAX)
-    {
-        /* show if loop <N> */
-        char loop_name[32];
-        snprintf(loop_name, sizeof(loop_name), "loop%u", loop_id);
-        if_map_entry_t *e = if_cfg_find_entry(loop_name);
-        if (!e)
-        {
-            g_string_append_printf(resp_buf, "Error: Interface %s not found\r\n", loop_name);
-            send_resp(msg, resp_buf->str);
-            g_string_free(resp_buf, TRUE);
-            return ERRCODE_FAIL;
-        }
-        show_single_entry(resp_buf, loop_name, e);
-    }
-    else
-    {
-        /* show if - 显示所有接口（GE + loop） */
-        g_string_append_printf(resp_buf,
-                               "\r\nInterface Status:\r\n"
-                               "%-14s %-6s %-56s\r\n"
-                               "-------------- ------ --------------------------------------------------------\r\n",
-                               "Name", "State", "IP Address");
-
-        if_map_t *map = &g_if_local->interface_map;
-        if (map->all_entries)
-        {
-            g_tree_foreach(map->all_entries, show_foreach_cb, resp_buf);
-        }
-
-        g_string_append(resp_buf, "\r\n");
-    }
-
-    return if_cli_send_chunked_response(msg, resp_buf);
-}
-
 /**
  * @brief 处理 loop 接口进入/删除命令（if loop <N> / no if loop <N>）
- *
- * group_id=4, cfg_id=1=loop-id 参数
- * is_no=FALSE → 创建并进入 if-loop 视图（框架自动切换）
- * is_no=TRUE  → 删除 loop 接口
  */
 static int handle_if_loop_entry(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
@@ -506,10 +298,13 @@ static int handle_if_loop_entry(dev_ipc_message_t *msg, cli_tlv_parser_t *parser
         return ERRCODE_FAIL;
     }
 
+    if_apply_cmd_t apply;
+    memset(&apply, 0, sizeof(apply));
     if (is_no)
     {
-        /* no if loop <N>：删除 loop 接口 */
-        if (if_cfg_loop_delete(loop_id) != ERRCODE_SUCCESS)
+        apply.op = IF_APPLY_OP_LOOP_DELETE;
+        apply.u.loop_delete.loop_id = loop_id;
+        if (if_worker_dispatch_apply(&apply) != ERRCODE_SUCCESS || apply.rc != ERRCODE_SUCCESS)
         {
             char buf[64];
             snprintf(buf, sizeof(buf), "Error: loop%u 不存在或删除失败\r\n", loop_id);
@@ -522,15 +317,15 @@ static int handle_if_loop_entry(dev_ipc_message_t *msg, cli_tlv_parser_t *parser
     }
     else
     {
-        /* if loop <N>：确保接口存在（DB 已由框架视图切换前由 if_cfg_loop_create 处理） */
-        if (if_cfg_loop_create(loop_id) != ERRCODE_SUCCESS)
+        apply.op = IF_APPLY_OP_LOOP_CREATE;
+        apply.u.loop_create.loop_id = loop_id;
+        if (if_worker_dispatch_apply(&apply) != ERRCODE_SUCCESS || apply.rc != ERRCODE_SUCCESS)
         {
             char buf[64];
             snprintf(buf, sizeof(buf), "Error: 创建 loop%u 失败\r\n", loop_id);
             send_resp(msg, buf);
             return ERRCODE_FAIL;
         }
-        /* 返回空 OK，框架根据 XML to-view 自动切换视图 */
         send_resp(msg, "");
     }
 
@@ -541,92 +336,12 @@ static int handle_if_loop_entry(dev_ipc_message_t *msg, cli_tlv_parser_t *parser
 // 主入口
 // ============================================================================
 
-int if_cli_handle_continue(dev_ipc_message_t *msg)
-{
-    return cli_chunk_stream_continue(&g_if_local->show_stream, if_local_ipc_ctx(), DEV_MODULE_ID_IF, msg);
-}
-
-void if_cli_cleanup_state(void)
-{
-    cli_chunk_stream_reset(&g_if_local->show_stream);
-}
-
-static gint compare_if_entry_name(gconstpointer a, gconstpointer b)
-{
-    const if_map_entry_t *ea = (const if_map_entry_t *)a;
-    const if_map_entry_t *eb = (const if_map_entry_t *)b;
-    return g_ascii_strcasecmp(ea->logical_name, eb->logical_name);
-}
-
-static gboolean collect_candidate_entry_cb(gpointer key, gpointer value, gpointer user_data)
-{
-    (void)key;
-    GList **entries = (GList **)user_data;
-    if (!entries)
-    {
-        return FALSE;
-    }
-    *entries = g_list_prepend(*entries, value);
-    return FALSE;
-}
-
-void if_cli_handle_query_candidates(dev_ipc_message_t *msg)
-{
-    uint32_t query_id = 0;
-    if (msg->payload && msg->payload_len >= sizeof(uint32_t))
-    {
-        uint32_t net_id = 0;
-        memcpy(&net_id, msg->payload, sizeof(uint32_t));
-        query_id = g_ntohl(net_id);
-    }
-
-    GByteArray *buf = g_byte_array_new();
-    if (query_id == 1 && g_if_local && g_if_local->interface_map.all_entries)
-    {
-        GList *entries = NULL;
-        g_tree_foreach(g_if_local->interface_map.all_entries, collect_candidate_entry_cb, &entries);
-        entries = g_list_sort(entries, compare_if_entry_name);
-
-        for (GList *node = entries; node; node = node->next)
-        {
-            const if_map_entry_t *e = (const if_map_entry_t *)node->data;
-            if (!e)
-            {
-                continue;
-            }
-            g_byte_array_append(buf, (const guint8 *)e->logical_name, (guint)strlen(e->logical_name) + 1);
-        }
-        g_list_free(entries);
-    }
-
-    guint8 nul = '\0';
-    g_byte_array_append(buf, &nul, 1);
-
-    guint payload_len = buf->len;
-    uint8_t *payload = g_byte_array_free(buf, FALSE);
-
-    dev_ipc_message_t *resp = dev_ipc_message_create(CLI_MSG_TYPE_QUERY_CANDIDATES_RESP, DEV_MODULE_ID_IF,
-                                                     msg->src_module_id, msg->request_id, payload, payload_len, g_free);
-    if (resp)
-    {
-        dev_ipc_send_response(if_local_ipc_ctx(), resp);
-        dev_ipc_message_free(resp);
-    }
-    else
-    {
-        g_free(payload);
-    }
-    dev_ipc_message_free(msg);
-}
-
-int if_cli_handle_message(dev_ipc_message_t *msg)
+int if_cli_handle_config_msg(dev_ipc_message_t *msg)
 {
     if (!msg || !msg->payload)
     {
         return ERRCODE_FAIL;
     }
-
-    cli_chunk_stream_reset(&g_if_local->show_stream);
 
     cli_tlv_parser_t parser;
     if (cli_tlv_init(&parser, (const uint8_t *)msg->payload, msg->payload_len) != 0)
@@ -646,9 +361,6 @@ int if_cli_handle_message(dev_ipc_message_t *msg)
             break;
         case IF_CLI_GROUP_ID_CONFIG:
             result = handle_if_config(msg, &parser);
-            break;
-        case IF_CLI_GROUP_ID_SHOW:
-            result = handle_if_show(msg, &parser);
             break;
         case IF_CLI_GROUP_ID_LOOP_ENTRY:
             result = handle_if_loop_entry(msg, &parser);

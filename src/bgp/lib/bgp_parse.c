@@ -276,6 +276,8 @@ void bgp_parse_init(void)
 {
     bgp_parse_ipv4uc_register();
     bgp_parse_ipv6uc_register();
+    bgp_parse_ipv4qp_register();
+    bgp_parse_ipv6qp_register();
     bgp_parse_labeled_register();
     bgp_parse_vpn_register();
     bgp_parse_evpn_register();

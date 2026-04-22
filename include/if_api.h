@@ -24,8 +24,9 @@ typedef struct if_api_cache_entry
     char logical_name[IF_LOGICAL_NAME_MAX]; /**< 逻辑接口名（如 GE-1） */
     char physical_name[IFNAMSIZ];           /**< 物理接口名（如 eth0） */
     uint32_t ifindex;                       /**< 接口索引 */
-    uint8_t admin_up;                       /**< 1=up, 0=down */
-    uint8_t _pad[3];                        /**< 对齐填充 */
+    uint8_t link_up;                        /**< 1=物理链路连接, 0=物理链路断开 */
+    uint8_t proto_up;                       /**< 1=协议就绪(有IP且不down), 0=未就绪 */
+    uint8_t _pad[2];                        /**< 对齐填充 */
     net_addr_t ipv4_addr;                   /**< IPv4 地址（family=0 表示未配置） */
     uint8_t ipv4_prefix_len;                /**< IPv4 前缀长度 */
     net_addr_t ipv6_addr;                   /**< IPv6 地址（family=0 表示未配置） */

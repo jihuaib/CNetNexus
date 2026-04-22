@@ -16,6 +16,28 @@
 #include "log.h"
 #include "net_addr.h"
 
+static gboolean af_requires_ext_nexthop(bgp_afi_t afi, bgp_safi_t safi, const net_addr_t *peer_addr)
+{
+    if (afi != BGP_AFI_IPV4)
+    {
+        return FALSE;
+    }
+
+    /* RFC 8950 经典场景：IPv6 邻居承载 IPv4 AF。 */
+    if (peer_addr && peer_addr->family == AF_INET6)
+    {
+        return TRUE;
+    }
+
+    /* QP 设计约束：IPv4-QP 使用 IPv6 BID 作为 NH，必须协商 EXT_NEXTHOP。 */
+    if (safi == BGP_SAFI_QP)
+    {
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
 // ============================================================================
 // VRF 生命周期
 // ============================================================================
@@ -152,8 +174,8 @@ int bgp_vrf_af_enable_neighbor(bgp_vrf_t *vrf, bgp_afi_t afi, bgp_safi_t safi, c
     /* 同时将借用引用加入 session->peer_list，便于通过 session 快速查询 */
     sess->peer_list = g_list_append(sess->peer_list, peer);
 
-    /* IPv6 邻居在 IPv4 AF 下使能时，自动开启 Extended Next Hop 能力（RFC 8950） */
-    if (addr->family == AF_INET6 && afi == BGP_AFI_IPV4)
+    /* 需要 IPv6 NH 编码的 AF（如 IPv4-over-IPv6、IPv4-QP BID）开启 EXT_NEXTHOP。 */
+    if (af_requires_ext_nexthop(afi, safi, addr))
     {
         BIT_SET(sess->flags, BGP_SESS_CAP_EXT_NEXTHOP);
     }
@@ -198,21 +220,24 @@ int bgp_vrf_af_disable_neighbor(bgp_vrf_t *vrf, bgp_afi_t afi, bgp_safi_t safi, 
     /* 再从 instance.peer_hash 中删除，触发 bgp_peer_destroy */
     g_hash_table_remove(inst->peer_hash, addr);
 
-    /* IPv6 邻居从 IPv4 AF 下停用后，检查是否还有其他 IPv4 AF 引用此邻居；
-     * 若没有则清除 Extended Next Hop 能力标志 */
-    if (sess && addr->family == AF_INET6 && afi == BGP_AFI_IPV4)
+    /* 仅当本次停用的 AF 依赖 EXT_NEXTHOP 时，才评估是否清位。 */
+    if (sess && af_requires_ext_nexthop(afi, safi, addr))
     {
-        gboolean still_has_ipv4_af = FALSE;
+        gboolean still_need_ext_nh = FALSE;
         for (GList *l = sess->peer_list; l; l = l->next)
         {
             bgp_peer_t *p = (bgp_peer_t *)l->data;
-            if (p && p->inst && p->inst->afi == BGP_AFI_IPV4)
+            if (!p || !p->inst)
             {
-                still_has_ipv4_af = TRUE;
+                continue;
+            }
+            if (af_requires_ext_nexthop(p->inst->afi, p->inst->safi, &p->addr))
+            {
+                still_need_ext_nh = TRUE;
                 break;
             }
         }
-        if (!still_has_ipv4_af)
+        if (!still_need_ext_nh)
         {
             BIT_CLR(sess->flags, BGP_SESS_CAP_EXT_NEXTHOP);
         }

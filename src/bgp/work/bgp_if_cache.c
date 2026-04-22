@@ -80,7 +80,7 @@ static gboolean bgp_direct_check_iter(const if_api_cache_entry_t *entry, void *u
         return ctx ? ctx->found : TRUE;
     }
 
-    if (!entry->admin_up)
+    if (!entry->proto_up)
     {
         return FALSE;
     }

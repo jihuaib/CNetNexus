@@ -170,6 +170,25 @@ typedef struct bgp_apply_cmd
             uint8_t ttl;     /**< eBGP multihop TTL（1-255，0 表示未配置） */
         } ebgp_multihop;
 
+        /** BGP_CLI_GROUP_ID_QP_ROUTE */
+        struct
+        {
+            bgp_afi_t afi;       /**< 地址族 */
+            bgp_safi_t safi;     /**< 子地址族（必为 BGP_SAFI_QP） */
+            uint32_t start_dqpn; /**< 起始 DQPN */
+            uint32_t count;      /**< 路由条数 */
+            uint8_t mask_len;    /**< 前缀长度 */
+            net_addr_t ip;       /**< 前缀基地址 */
+            net_addr_t bid;      /**< BID（IPv6 下一跳） */
+        } qp_route;
+
+        /** BGP_CLI_GROUP_ID_ROUTE_SELECT */
+        struct
+        {
+            bgp_afi_t afi;   /**< 地址族 */
+            bgp_safi_t safi; /**< 子地址族（必为 BGP_SAFI_QP） */
+        } route_select;
+
         /** BGP_CLI_GROUP_ID_BMP_INSTANCE */
         struct
         {

@@ -540,7 +540,7 @@ static void show_neighbor_item_cb(gpointer key, gpointer value, gpointer user_da
 
     int inst_admin = (inst_ctx->inst->admin_up != 0u);
     int level_enabled = show_level_enabled(inst_ctx->inst, nbr->level);
-    int if_admin = (if_entry && if_entry->admin_up != 0u && if_entry->ifindex != 0u) ? 1 : 0;
+    int if_admin = (if_entry && if_entry->proto_up != 0u && if_entry->ifindex != 0u) ? 1 : 0;
 
     int inst_v4 = (inst_ctx->inst->af_ipv4 != 0u);
     int if_v4 = (cfg_v4 && cfg_v4->enabled) ? 1 : 0;

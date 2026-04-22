@@ -364,7 +364,7 @@ static void isis_spf_add_root_edges(isis_instance_cfg_t *inst, uint8_t level, co
         }
 
         const if_api_cache_entry_t *if_entry = if_api_cache_lookup(nbr->ifname);
-        if (!if_entry || !if_entry->admin_up || if_entry->ifindex == 0u)
+        if (!if_entry || !if_entry->proto_up || if_entry->ifindex == 0u)
         {
             continue;
         }
@@ -617,7 +617,7 @@ static void isis_spf_collect_local_hops(const isis_instance_cfg_t *inst, uint8_t
         }
 
         const if_api_cache_entry_t *if_entry = if_api_cache_lookup(nbr->ifname);
-        if (!if_entry || !if_entry->admin_up || if_entry->ifindex == 0u)
+        if (!if_entry || !if_entry->proto_up || if_entry->ifindex == 0u)
         {
             continue;
         }

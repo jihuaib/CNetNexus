@@ -491,7 +491,7 @@
                 <element id="8" cfg-id="4" type="keyword">
                     <name>ipv4-qp</name>
                     <description>IPv4 qp address family</description>
-                </element>`
+                </element>
                 <element id="9" cfg-id="5" type="keyword">
                     <name>ipv6-qp</name>
                     <description>IPv6 qp address family</description>
@@ -693,11 +693,11 @@
                     <type>uint(1-4294967295)</type>
                     <description>Update group ID to query</description>
                 </element>
-                <element id="8" cfg-id="1" type="keyword">
+                <element id="8" cfg-id="4" type="keyword">
                     <name>ipv4-qp</name>
                     <description>IPv4 qp address family</description>
                 </element>
-                <element id="9" cfg-id="2" type="keyword">
+                <element id="9" cfg-id="5" type="keyword">
                     <name>ipv6-qp</name>
                     <description>IPv6 qp address family</description>
                 </element>
@@ -719,10 +719,128 @@
                     <expression>1 2 3 4 8 [7]</expression>
                     <views>global</views>
                 </command>
-                <!-- show bgp update-group af ipv6-qp [<group-id>]s -->
+                <!-- show bgp update-group af ipv6-qp [<group-id>] -->
                 <command>
                     <expression>1 2 3 4 9 [7]</expression>
                     <views>global</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- QP 自产生路由：route start-dqpn <dqpn> {ip <v4>|ipv6 <v6>} mask <n> count <n> bid <ipv6> -->
+        <group group-id="16">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>route</name>
+                    <description>Self-originated QP route</description>
+                </element>
+                <element id="3" type="keyword">
+                    <name>start-dqpn</name>
+                    <description>Starting destination QP number</description>
+                </element>
+                <element id="4" cfg-id="1" type="parameter">
+                    <name>&lt;dqpn&gt;</name>
+                    <type>uint(1-16777215)</type>
+                    <description>Starting DQPN (24-bit)</description>
+                </element>
+                <element id="5" type="keyword">
+                    <name>ip</name>
+                    <description>IPv4 prefix base</description>
+                </element>
+                <element id="6" cfg-id="2" type="parameter">
+                    <name>&lt;ipv4-address&gt;</name>
+                    <type>ipv4</type>
+                    <description>IPv4 base address</description>
+                </element>
+                <element id="7" type="keyword">
+                    <name>ipv6</name>
+                    <description>IPv6 prefix base</description>
+                </element>
+                <element id="8" cfg-id="3" type="parameter">
+                    <name>&lt;ipv6-address&gt;</name>
+                    <type>ipv6</type>
+                    <description>IPv6 base address</description>
+                </element>
+                <element id="9" type="keyword">
+                    <name>mask</name>
+                    <description>Prefix length</description>
+                </element>
+                <element id="10" cfg-id="4" type="parameter">
+                    <name>&lt;masklen&gt;</name>
+                    <type>uint(1-128)</type>
+                    <description>Prefix length</description>
+                </element>
+                <element id="11" type="keyword">
+                    <name>count</name>
+                    <description>Number of routes</description>
+                </element>
+                <element id="12" cfg-id="5" type="parameter">
+                    <name>&lt;count&gt;</name>
+                    <type>uint(1-65535)</type>
+                    <description>Route count</description>
+                </element>
+                <element id="13" type="keyword">
+                    <name>bid</name>
+                    <description>BID as nexthop (IPv6)</description>
+                </element>
+                <element id="14" cfg-id="6" type="parameter">
+                    <name>&lt;bid-ipv6&gt;</name>
+                    <type>ipv6</type>
+                    <description>BID IPv6 address (used as nexthop)</description>
+                </element>
+            </elements>
+
+            <commands>
+                <!-- ipv4-qp: route start-dqpn <dqpn> ip <v4> mask <m> count <c> bid <ipv6> -->
+                <command>
+                    <expression>2 3 4 5 6 9 10 11 12 13 14</expression>
+                    <views>bgp-af-ipv4-qp</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 5 6 9 10 11 12 13 14</expression>
+                    <views>bgp-af-ipv4-qp</views>
+                </command>
+                <!-- ipv6-qp: route start-dqpn <dqpn> ipv6 <v6> mask <m> count <c> bid <ipv6> -->
+                <command>
+                    <expression>2 3 4 7 8 9 10 11 12 13 14</expression>
+                    <views>bgp-af-ipv6-qp</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4 7 8 9 10 11 12 13 14</expression>
+                    <views>bgp-af-ipv6-qp</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- route-select enable / no route-select enable（QP 地址族，默认不优选） -->
+        <group group-id="17">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>route-select</name>
+                    <description>QP route selection toggle</description>
+                </element>
+                <element id="3" type="keyword">
+                    <name>enable</name>
+                    <description>Enable route selection / announcement</description>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>2 3</expression>
+                    <views>bgp-af-ipv4-qp,bgp-af-ipv6-qp</views>
+                </command>
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>bgp-af-ipv4-qp,bgp-af-ipv6-qp</views>
                 </command>
             </commands>
         </group>

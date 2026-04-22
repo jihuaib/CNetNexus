@@ -25,6 +25,7 @@ typedef struct
     net_prefix_t prefix_v4;              /**< 已配置 IPv4 前缀；addr.family=0 表示未配置 */
     net_prefix_t prefix_v6;              /**< 已配置 IPv6 前缀；addr.family=0 表示未配置 */
     int shutdown;                        /**< 1=shutdown（down），0=no shutdown（up） */
+    int link_up;                         /**< -1=unknown，0=down，1=up（运行态，仅由监控事件更新） */
 } if_map_entry_t;
 
 /** 接口映射表（所有接口类型统一存放，key=逻辑名，value=if_map_entry_t*，按接口名有序） */

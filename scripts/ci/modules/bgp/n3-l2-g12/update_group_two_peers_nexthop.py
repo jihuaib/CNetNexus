@@ -5,7 +5,7 @@ BGP update-group two-peer nexthop check (IPv4).
 Goal:
 - build two eBGP peers on r2 (r1<->r2 and r2<->r3)
 - import one local static route on r2
-- verify r2 update-group state shows a group with two neighbors
+- verify r2 update-group state shows two eBGP groups (one neighbor each)
 - verify r1/r3 learned route nexthop equals each peer's neighbor address
 """
 
@@ -28,6 +28,10 @@ TEST_PFX = f"{TEST_PFX_ADDR}/{TEST_PFX_MASK}"
 
 def _established_regex(peer: str) -> str:
     return rf"(?im)^\s*{re.escape(peer)}\s+\S+\s+\S+\s+Established\s*$"
+
+
+def _ug_detail_peer_established_regex(peer: str) -> str:
+    return rf"(?im)^\s*{re.escape(peer)}\s+\d+\s+Established\s+\S+\s*$"
 
 
 def _cleanup(rt: TopologyRuntime, *, route_nh: str) -> None:
@@ -58,7 +62,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
     r2_to_r3_v4 = str(g_top.r2.GE_2.peer_ip)    # 10.23.0.2 (r3 GE-1)
     r3_peer_v4 = str(g_top.r3.GE_1.peer_ip)     # 10.23.0.1 (r2 GE-2)
 
-    summary_row_re = r"(?im)^\s*(\d+)\s+eBGP\s+\d+\s+2\s+\d+\s+\d+\s+\d+\s+0x[0-9A-Fa-f]+\s*$"
+    summary_row_re = r"(?im)^\s*(\d+)\s+eBGP\s+\d+\s+1\s+\d+\s+\d+\s+\d+\s+0x[0-9A-Fa-f]+\s*$"
     route_nh = r2_to_r1_v4
 
     try:
@@ -209,41 +213,54 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             label="r3 route nexthop=neighbor(r2)",
         )
 
-        step("Verify r2 update-group summary has one eBGP group with two neighbors")
+        step("Verify r2 update-group summary has two eBGP groups (one neighbor each)")
         wait_check(
             rt,
             device="r2",
             command="show bgp update-group af ipv4-unicast",
             timeout=30,
             contains=["BGP Update-Groups (AF: ipv4-unicast)", "Group-ID", "eBGP"],
-            regex=[summary_row_re, r"(?im)^Total:\s*[1-9]\d*\s+groups,\s*"],
-            label="r2 update-group summary (neighbors=2)",
+            regex=[
+                summary_row_re,
+                r"(?im)^Total:\s*2\s+groups,\s*2\s+subgroups,\s*2\s+neighbors,\s*2\s+adj-rib-out entries\s*$",
+            ],
+            label="r2 update-group summary (2 groups x 1 neighbor)",
         )
 
         summary_out = cmd(rt, "r2", "show bgp update-group af ipv4-unicast", strict=False)
-        match = re.search(summary_row_re, summary_out, flags=re.MULTILINE)
-        if not match:
-            raise RuntimeError(f"failed to parse update-group id from summary:\n{summary_out}")
-        group_id = int(match.group(1))
+        group_ids = [int(m.group(1)) for m in re.finditer(summary_row_re, summary_out, flags=re.MULTILINE)]
+        if len(group_ids) != 2:
+            raise RuntimeError(
+                f"expected exactly 2 eBGP groups with 1 neighbor each, got ids={group_ids}\n{summary_out}"
+            )
 
-        step(f"Verify r2 update-group detail (group-id={group_id})")
-        wait_check(
-            rt,
-            device="r2",
-            command=f"show bgp update-group af ipv4-unicast {group_id}",
-            timeout=30,
-            contains=[r2_to_r1_v4, r2_to_r3_v4, "Established"],
-            regex=[
+        step(f"Verify r2 update-group detail for each group ({group_ids})")
+        seen_peers: set[str] = set()
+        target_peers = (r2_to_r1_v4, r2_to_r3_v4)
+
+        for group_id in group_ids:
+            detail_out = cmd(rt, "r2", f"show bgp update-group af ipv4-unicast {group_id}", strict=False)
+
+            for pattern in (
                 rf"(?im)^BGP Update-Group Detail\s+\(AF:\s*ipv4-unicast,\s*Group-ID:\s*{group_id}\)\s*$",
                 r"(?im)^\s*Session-Type\s*:\s*eBGP\s*$",
-                r"(?im)^\s*Neighbors\s*:\s*2\s*$",
+                r"(?im)^\s*Neighbors\s*:\s*1\s*$",
                 r"(?im)^\s*Subgroups\s*:\s*[1-9]\d*\s*$",
                 r"(?im)^\s*Adj-RIB-Out\s*:\s*[1-9]\d*\s*$",
-            ],
-            label=f"r2 update-group detail id={group_id}",
-        )
+            ):
+                if re.search(pattern, detail_out, flags=re.MULTILINE) is None:
+                    raise RuntimeError(f"group-id={group_id} detail mismatch, missing /{pattern}/:\n{detail_out}")
+
+            matched_peers = [p for p in target_peers if re.search(_ug_detail_peer_established_regex(p), detail_out)]
+            if len(matched_peers) != 1:
+                raise RuntimeError(
+                    f"group-id={group_id} expected exactly one established target peer, got {matched_peers}:\n{detail_out}"
+                )
+            seen_peers.add(matched_peers[0])
+
+        if seen_peers != set(target_peers):
+            raise RuntimeError(f"expected both target peers in group details, got {sorted(seen_peers)}")
 
         print("BGP update-group two-peer nexthop check passed.")
     finally:
         _cleanup(rt, route_nh=route_nh)
-

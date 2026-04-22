@@ -15,11 +15,11 @@
 
 #include "errcode.h"
 #include "if.h"
-#include "if_main.h"
+#include "if_worker.h"
 #include "log.h"
 
-/* 使用 g_if_local->interface_map，不再维护独立全局变量 */
-#define g_interface_map (g_if_local->interface_map)
+/* 使用 g_if_work_local->interface_map，不再维护独立全局变量 */
+#define g_interface_map (g_if_work_local->interface_map)
 #define IF_MAP_IFINDEX_RETRY_COUNT 20u
 #define IF_MAP_IFINDEX_RETRY_USEC 50000u
 
@@ -157,6 +157,21 @@ static int if_map_insert(const char *logical, const char *physical, uint32_t aut
     if_map_copy_str(entry->physical_name, sizeof(entry->physical_name), physical);
     entry->auto_mapped = auto_mapped;
     entry->ifindex = ifindex;
+
+    if (if_map_is_virtual_entry(logical))
+    {
+        /* null0 固定虚拟黑洞接口：默认管理/链路都视为 UP */
+        entry->shutdown = 0;
+        entry->link_up = 1;
+    }
+    else
+    {
+        /* 默认物理接口管理状态为 DOWN */
+        entry->shutdown = 1;
+        entry->link_up = -1;
+        (void)if_set_state(physical, 0);
+    }
+
     g_tree_insert(g_interface_map.all_entries, g_strdup(logical), entry);
     return ERRCODE_SUCCESS;
 }

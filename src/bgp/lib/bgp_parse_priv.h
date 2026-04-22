@@ -57,6 +57,8 @@ int bgp_parse_path_attrs(const uint8_t *data, uint16_t len, uint32_t flags, bgp_
  */
 void bgp_parse_ipv4uc_register(void);
 void bgp_parse_ipv6uc_register(void);
+void bgp_parse_ipv4qp_register(void);
+void bgp_parse_ipv6qp_register(void);
 void bgp_parse_evpn_register(void);
 void bgp_parse_flowspec_register(void);
 void bgp_parse_vpn_register(void);

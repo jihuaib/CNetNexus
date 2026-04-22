@@ -358,6 +358,12 @@ void bgp_subgroup_peer_join(bgp_peer_t *peer, bgp_session_t *sess)
 
     bgp_update_group_key_t ugk;
     bgp_session_compute_ug_key(sess, &ugk);
+    /* 实例带 NH_UNCHANGED 策略：所有 session 合入单一 ug，key 清零去除区分维度 */
+    if (inst->flags & BGP_INST_FLAG_NH_UNCHANGED)
+    {
+        memset(&ugk, 0, sizeof(ugk));
+        ugk.sess_type = BGP_SESS_TYPE_UNKNOWN;
+    }
     bgp_update_group_t *ug = bgp_update_group_find_or_create(inst, &ugk);
     if (!ug)
     {
@@ -372,7 +378,16 @@ void bgp_subgroup_peer_join(bgp_peer_t *peer, bgp_session_t *sess)
     }
 
     bgp_nh_rule_t rules[4];
-    int nrules = compute_rules_for_ug(&ugk, rules, (int)(sizeof(rules) / sizeof(rules[0])));
+    int nrules;
+    if (inst->flags & BGP_INST_FLAG_NH_UNCHANGED)
+    {
+        nrules = 1;
+        rules[0] = BGP_NH_RULE_PASS;
+    }
+    else
+    {
+        nrules = compute_rules_for_ug(&ugk, rules, (int)(sizeof(rules) / sizeof(rules[0])));
+    }
 
     for (int i = 0; i < nrules; i++)
     {
@@ -586,9 +601,11 @@ bool bgp_subgroup_eval_export(const bgp_nh_subgroup_t *sg, const bgp_route_node_
     }
 
     bgp_sess_type_t stype = sg->parent ? sg->parent->key.sess_type : BGP_SESS_TYPE_UNKNOWN;
+    const bgp_instance_t *inst = sg->parent ? sg->parent->inst : NULL;
+    const bool nh_unchanged = inst && (inst->flags & BGP_INST_FLAG_NH_UNCHANGED);
 
-    /* iBGP→iBGP 反射检查（子组级，sess_type 统一） */
-    if (stype == BGP_SESS_TYPE_IBGP && !BIT_TEST(best->flags, BGP_ROUTE_FLAG_IMPORT))
+    /* iBGP→iBGP 反射检查；NH_UNCHANGED 实例忽略 split-horizon */
+    if (!nh_unchanged && stype == BGP_SESS_TYPE_IBGP && !BIT_TEST(best->flags, BGP_ROUTE_FLAG_IMPORT))
     {
         const bgp_session_t *src_sess = bgp_best_source_session(best);
         if (src_sess && src_sess->sess_type == BGP_SESS_TYPE_IBGP)
@@ -654,7 +671,16 @@ void bgp_update_group_enqueue_announce(bgp_instance_t *inst, const bgp_nlri_entr
         /* 为本 (ug, route) 选择 rule；若拒绝（如 iBGP split-horizon），确保 ug
          * 内已有的 ARO 条目被撤销。 */
         bgp_nh_rule_t rule;
-        bool accepted = bgp_select_nh_rule(&ug->key, src_class, &rule);
+        bool accepted;
+        if (inst->flags & BGP_INST_FLAG_NH_UNCHANGED)
+        {
+            rule = BGP_NH_RULE_PASS;
+            accepted = true;
+        }
+        else
+        {
+            accepted = bgp_select_nh_rule(&ug->key, src_class, &rule);
+        }
         if (!accepted)
         {
             /* 对本 ug 下所有子组尝试撤销该 NLRI（若存在于其中） */
@@ -1251,9 +1277,8 @@ int bgp_subgroup_process_queues(bgp_nh_subgroup_t *sg, bgp_instance_t *inst, int
                     announce_item_t *it = g_ptr_array_index(bk->items, i);
                     g_ptr_array_add(nlris, (gpointer)it->nlri);
                 }
-                subgroup_pack_and_multicast(sg->peer_list, afi, safi,
-                                            (const bgp_nlri_entry_t *const *)nlris->pdata, (int)nlris->len,
-                                            &bk->attr_ref->attr, &bk->nexthop);
+                subgroup_pack_and_multicast(sg->peer_list, afi, safi, (const bgp_nlri_entry_t *const *)nlris->pdata,
+                                            (int)nlris->len, &bk->attr_ref->attr, &bk->nexthop);
                 g_ptr_array_free(nlris, TRUE);
             }
             else
@@ -1284,8 +1309,7 @@ int bgp_subgroup_process_queues(bgp_nh_subgroup_t *sg, bgp_instance_t *inst, int
                     }
                     if (filtered->len > 0)
                     {
-                        subgroup_send_packed_updates(sess, afi, safi,
-                                                     (const bgp_nlri_entry_t *const *)filtered->pdata,
+                        subgroup_send_packed_updates(sess, afi, safi, (const bgp_nlri_entry_t *const *)filtered->pdata,
                                                      (int)filtered->len, &bk->attr_ref->attr, &bk->nexthop);
                     }
                     g_ptr_array_free(filtered, TRUE);

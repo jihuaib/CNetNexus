@@ -109,6 +109,14 @@ static const char *bgp_af_str(bgp_afi_t afi, bgp_safi_t safi)
     {
         return "ipv6-unicast";
     }
+    if (afi == BGP_AFI_IPV4 && safi == BGP_SAFI_QP)
+    {
+        return "ipv4-qp";
+    }
+    if (afi == BGP_AFI_IPV6 && safi == BGP_SAFI_QP)
+    {
+        return "ipv6-qp";
+    }
     return "unknown";
 }
 
@@ -334,6 +342,14 @@ static int handle_bgp_addr_family(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
             case 2:
                 ctx.afi = BGP_AFI_IPV6;
                 ctx.safi = BGP_SAFI_UNICAST;
+                break;
+            case 3:
+                ctx.afi = BGP_AFI_IPV4;
+                ctx.safi = BGP_SAFI_QP;
+                break;
+            case 4:
+                ctx.afi = BGP_AFI_IPV6;
+                ctx.safi = BGP_SAFI_QP;
                 break;
             default:
                 break;
@@ -1123,6 +1139,180 @@ static int handle_bgp_ebgp_multihop(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
 }
 
 /**
+ * @brief 处理 QP 自产生路由 route start-dqpn ... / no route start-dqpn ...
+ *
+ * group_id=16, cfg_id: 1=dqpn, 2=ipv4-addr, 3=ipv6-addr, 4=mask, 5=count, 6=bid
+ */
+static int handle_bgp_qp_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    bgp_apply_cmd_t apply;
+    memset(&apply, 0, sizeof(apply));
+    apply.group_id = BGP_CLI_GROUP_ID_QP_ROUTE;
+    apply.isNo = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
+    bgp_cli_ctx_t ctx = bgp_cli_ctx_default();
+    char ip_buf[64] = {0};
+    char bid_buf[64] = {0};
+    uint32_t dqpn = 0;
+    uint32_t count = 0;
+    uint32_t mask = 0;
+    int has_dqpn = 0;
+    int has_count = 0;
+    int has_mask = 0;
+
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (CLI_TLV_IS_CTX(&entry))
+        {
+            bgp_cli_ctx_parse(&ctx, &entry);
+            cli_tlv_entry_free(&entry);
+            continue;
+        }
+        switch (entry.cfg_id)
+        {
+            case 1:
+                dqpn = (uint32_t)cli_tlv_entry_get_int(&entry);
+                has_dqpn = 1;
+                break;
+            case 2:
+            case 3:
+            {
+                const char *s = cli_tlv_entry_get_text(&entry);
+                if (s)
+                {
+                    snprintf(ip_buf, sizeof(ip_buf), "%s", s);
+                }
+                break;
+            }
+            case 4:
+                mask = (uint32_t)cli_tlv_entry_get_int(&entry);
+                has_mask = 1;
+                break;
+            case 5:
+                count = (uint32_t)cli_tlv_entry_get_int(&entry);
+                has_count = 1;
+                break;
+            case 6:
+            {
+                const char *s = cli_tlv_entry_get_text(&entry);
+                if (s)
+                {
+                    snprintf(bid_buf, sizeof(bid_buf), "%s", s);
+                }
+                break;
+            }
+            default:
+                break;
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    if (!has_dqpn || !has_count || !has_mask || ip_buf[0] == '\0' || bid_buf[0] == '\0')
+    {
+        bgp_send_cli_response(msg, "BGP Error: Missing QP route parameters.\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (net_addr_from_str(ip_buf, &apply.u.qp_route.ip) != 0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Invalid prefix address.\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (net_addr_from_str(bid_buf, &apply.u.qp_route.bid) != 0 || apply.u.qp_route.bid.family != AF_INET6)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Invalid BID IPv6 address.\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (ctx.safi != BGP_SAFI_QP)
+    {
+        bgp_send_cli_response(msg, "BGP Error: QP address family required.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    apply.vrf_id = ctx.vrf_id;
+    apply.u.qp_route.afi = ctx.afi;
+    apply.u.qp_route.safi = ctx.safi;
+    apply.u.qp_route.start_dqpn = dqpn;
+    apply.u.qp_route.count = count;
+    apply.u.qp_route.mask_len = (uint8_t)mask;
+
+    if (bgp_worker_dispatch_apply(&apply) != 0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Server unavailable.\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (apply.rc == BGP_APPLY_RC_NOOP)
+    {
+        bgp_send_cli_response(msg, "");
+        return ERRCODE_SUCCESS;
+    }
+    if (apply.rc != BGP_APPLY_RC_OK)
+    {
+        char buf[280];
+        snprintf(buf, sizeof(buf), "%s\r\n", apply.errmsg);
+        bgp_send_cli_response(msg, buf);
+        return ERRCODE_FAIL;
+    }
+
+    bgp_send_cli_response(msg, "");
+    return ERRCODE_SUCCESS;
+}
+
+/**
+ * @brief 处理 route-select enable / no route-select enable
+ *
+ * group_id=17，无 cfg-id 参数。
+ */
+static int handle_bgp_route_select(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    bgp_apply_cmd_t apply;
+    memset(&apply, 0, sizeof(apply));
+    apply.group_id = BGP_CLI_GROUP_ID_ROUTE_SELECT;
+    apply.isNo = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
+    bgp_cli_ctx_t ctx = bgp_cli_ctx_default();
+
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (CLI_TLV_IS_CTX(&entry))
+        {
+            bgp_cli_ctx_parse(&ctx, &entry);
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    if (ctx.safi != BGP_SAFI_QP)
+    {
+        bgp_send_cli_response(msg, "BGP Error: QP address family required.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    apply.vrf_id = ctx.vrf_id;
+    apply.u.route_select.afi = ctx.afi;
+    apply.u.route_select.safi = ctx.safi;
+
+    if (bgp_worker_dispatch_apply(&apply) != 0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Server unavailable.\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (apply.rc == BGP_APPLY_RC_NOOP)
+    {
+        bgp_send_cli_response(msg, "");
+        return ERRCODE_SUCCESS;
+    }
+    if (apply.rc != BGP_APPLY_RC_OK)
+    {
+        char buf[280];
+        snprintf(buf, sizeof(buf), "%s\r\n", apply.errmsg);
+        bgp_send_cli_response(msg, buf);
+        return ERRCODE_FAIL;
+    }
+
+    bgp_send_cli_response(msg, "");
+    return ERRCODE_SUCCESS;
+}
+
+/**
  * @brief 处理配置类 CLI 命令（group 1-8, 11-13），在 IPC worker 线程调用
  *
  * 配置命令通过 bgp_worker_dispatch_apply() 将状态变更派发到 BGP worker 线程，
@@ -1180,6 +1370,12 @@ int bgp_cli_handle_config_msg(dev_ipc_message_t *msg)
             break;
         case BGP_CLI_GROUP_ID_EBGP_MULTIHOP:
             result = handle_bgp_ebgp_multihop(msg, &parser);
+            break;
+        case BGP_CLI_GROUP_ID_QP_ROUTE:
+            result = handle_bgp_qp_route(msg, &parser);
+            break;
+        case BGP_CLI_GROUP_ID_ROUTE_SELECT:
+            result = handle_bgp_route_select(msg, &parser);
             break;
         default:
             LOG_WARN("BGP: 未知配置命令 group_id=%u", parser.group_id);

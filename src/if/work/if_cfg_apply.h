@@ -56,4 +56,33 @@ int if_cfg_loop_create(uint32_t loop_id);
  */
 int if_cfg_loop_delete(uint32_t loop_id);
 
+/**
+ * @brief 链路恢复：接口重建后重新 UP、下发 IP 和直连路由（IF work 线程调用）
+ *
+ * 当 Netlink 监听到 RTM_NEWLINK 且 ifindex 发生变化时，由 IF work 线程调用。
+ * 将接口 UP、重新下发已配置的 IPv4/IPv6 地址到内核、注入直连路由到 RIB。
+ *
+ * @param logical_name 逻辑接口名（如 "GE-1"）
+ * @param new_ifindex  新的内核接口索引
+ * @param pfx_v4       快照的 IPv4 前缀（可能未配置，family=0）
+ * @param pfx_v6       快照的 IPv6 前缀（可能未配置，family=0）
+ * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL
+ */
+int if_cfg_recover_link(const char *logical_name, uint32_t new_ifindex, const net_prefix_t *pfx_v4,
+                        const net_prefix_t *pfx_v6);
+
+/**
+ * @brief 链路丢失：接口被销毁后撤销直连路由（IF work 线程调用）
+ *
+ * 当 Netlink 监听到 RTM_DELLINK 时，由 IF work 线程调用。
+ * 使用保存的旧 ifindex 构造路由条目并从 RIB 中撤销直连路由。
+ *
+ * @param logical_name 逻辑接口名（如 "GE-1"）
+ * @param old_ifindex  接口被销毁前的内核接口索引
+ * @param pfx_v4       快照的 IPv4 前缀
+ * @param pfx_v6       快照的 IPv6 前缀
+ */
+void if_cfg_handle_link_down(const char *logical_name, uint32_t old_ifindex, const net_prefix_t *pfx_v4,
+                             const net_prefix_t *pfx_v6);
+
 #endif /* IF_CFG_APPLY_H */

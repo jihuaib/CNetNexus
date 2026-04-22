@@ -141,6 +141,22 @@ static int head_has_flushed_route(const bgp_rthead_t *head)
     return 0;
 }
 
+static void head_clear_best_flags(bgp_rthead_t *head)
+{
+    if (!head)
+    {
+        return;
+    }
+    for (GList *l = head->route_list; l; l = l->next)
+    {
+        bgp_route_node_t *route = (bgp_route_node_t *)l->data;
+        if (route)
+        {
+            BIT_CLR(route->flags, BGP_ROUTE_FLAG_BEST);
+        }
+    }
+}
+
 // ============================================================================
 // 路由优选入口（占位）
 // ============================================================================
@@ -203,14 +219,7 @@ void bgp_calc_run_one(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
     if (!best)
     {
         /* 全部为 invalid 路径：撤销该 NLRI 对外可达性 */
-        for (GList *l = ((bgp_rthead_t *)head)->route_list; l; l = l->next)
-        {
-            bgp_route_node_t *route = (bgp_route_node_t *)l->data;
-            if (route)
-            {
-                BIT_CLR(route->flags, BGP_ROUTE_FLAG_BEST);
-            }
-        }
+        head_clear_best_flags(head);
         if (inst->route_flush_queue && (old_best || had_flushed))
         {
             bgp_route_flush_queue_push(inst->route_flush_queue, head);
@@ -220,6 +229,22 @@ void bgp_calc_run_one(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
         bgp_nlri_to_str(nlri, key, sizeof(key));
         LOG_DEBUG("BGP: calc_run_one WITHDRAW(all-invalid) key=%s afi=%u safi=%u", key, (unsigned)inst->afi,
                   (unsigned)inst->safi);
+        return;
+    }
+
+    /* QP 地址族在未启用 route-select 时不对外发布，也不应有 BEST 标记。 */
+    if (inst->safi == BGP_SAFI_QP && !inst->route_select_enabled)
+    {
+        head_clear_best_flags(head);
+        if (inst->route_flush_queue && (old_best || had_flushed))
+        {
+            bgp_route_flush_queue_push(inst->route_flush_queue, head);
+        }
+        bgp_update_group_enqueue_withdraw(inst, &head->nlri);
+        char key[BGP_NLRI_KEY_MAX];
+        bgp_nlri_to_str(&head->nlri, key, sizeof(key));
+        LOG_DEBUG("BGP: calc_run_one WITHDRAW(qp route-select disabled) key=%s afi=%u safi=%u", key,
+                  (unsigned)inst->afi, (unsigned)inst->safi);
         return;
     }
 

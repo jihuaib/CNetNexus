@@ -17,6 +17,7 @@
 #include "if_event.h"
 #include "if_main.h"
 #include "if_pub.h"
+#include "if_worker.h"
 #include "log.h"
 #include "net_addr.h"
 #include "route.h"
@@ -326,12 +327,12 @@ static int if_sync_connected_prefix(const net_prefix_t *prefix, const char *phys
 
 if_map_entry_t *if_cfg_find_entry(const char *logical_name)
 {
-    if (!logical_name || !g_if_local)
+    if (!logical_name || !g_if_work_local)
     {
         return NULL;
     }
 
-    if_map_t *map = &g_if_local->interface_map;
+    if_map_t *map = &g_if_work_local->interface_map;
 
     if (!map->all_entries)
     {
@@ -346,12 +347,12 @@ int if_cfg_loop_ensure(uint32_t loop_id)
     char name[32];
     snprintf(name, sizeof(name), "loop%u", loop_id);
 
-    if (!g_if_local || !g_if_local->interface_map.all_entries)
+    if (!g_if_work_local || !g_if_work_local->interface_map.all_entries)
     {
         return ERRCODE_FAIL;
     }
 
-    if_map_entry_t *exist = (if_map_entry_t *)g_tree_lookup(g_if_local->interface_map.all_entries, name);
+    if_map_entry_t *exist = (if_map_entry_t *)g_tree_lookup(g_if_work_local->interface_map.all_entries, name);
     if (exist)
     {
         if (exist->ifindex == 0u)
@@ -400,14 +401,15 @@ int if_cfg_loop_ensure(uint32_t loop_id)
     snprintf(entry->physical_name, sizeof(entry->physical_name), "loop%u", loop_id);
     entry->ifindex = ifindex;
     entry->shutdown = 0;
+    entry->link_up = 1;
 
-    g_tree_insert(g_if_local->interface_map.all_entries, g_strdup(name), entry);
+    g_tree_insert(g_if_work_local->interface_map.all_entries, g_strdup(name), entry);
     LOG_INFO("IF: loop 接口 %s 已创建（内存条目 ifindex=%u）", name, ifindex);
 
     uint32_t if_type = if_cfg_type_to_mask(if_detect_type(entry->physical_name));
     if (if_type != 0u)
     {
-        if_pub_notify(g_if_local->subscribers, entry, if_type, IF_EVENT_UP, 1u);
+        if_pub_notify(g_if_work_local->subscribers, entry, if_type, IF_EVENT_LINK_UP, 1u, NULL, 0u);
     }
     return ERRCODE_SUCCESS;
 }
@@ -471,14 +473,14 @@ int if_cfg_loop_delete(uint32_t loop_id)
     uint32_t if_type = if_cfg_type_to_mask(if_detect_type(entry->physical_name));
     if (if_type != 0u)
     {
-        if_pub_notify(g_if_local->subscribers, entry, if_type, IF_EVENT_DOWN, 0u);
+        if_pub_notify(g_if_work_local->subscribers, entry, if_type, IF_EVENT_LINK_DOWN, 0u, NULL, 0u);
     }
 
     /* 删除 OS 接口 */
     if_delete_interface(name);
 
     /* 从有序树中移除（会触发 g_free 释放 key 和 value） */
-    g_tree_remove(g_if_local->interface_map.all_entries, name);
+    g_tree_remove(g_if_work_local->interface_map.all_entries, name);
 
     /* 从 DB 中删除 */
     db_condition_t cond = {.field_name = "name", .op = DB_CMP_EQ, .value = db_value_text(name)};
@@ -537,8 +539,8 @@ int if_cfg_apply_ip(gboolean is_no, const char *logical_name, const net_prefix_t
                 memset(&entry->prefix_v4, 0, sizeof(entry->prefix_v4));
                 if (del_if_type != 0)
                 {
-                    if_pub_notify_addr(g_if_local->subscribers, entry, del_if_type, IF_EVENT_ADDR_DEL, &old_v4,
-                                       del_ifindex);
+                    if_pub_notify(g_if_work_local->subscribers, entry, del_if_type, IF_EVENT_PROTO_DOWN, 0, &old_v4,
+                                  del_ifindex);
                 }
             }
             if (net_prefix_is_set(&entry->prefix_v6))
@@ -552,8 +554,8 @@ int if_cfg_apply_ip(gboolean is_no, const char *logical_name, const net_prefix_t
                 memset(&entry->prefix_v6, 0, sizeof(entry->prefix_v6));
                 if (del_if_type != 0)
                 {
-                    if_pub_notify_addr(g_if_local->subscribers, entry, del_if_type, IF_EVENT_ADDR_DEL, &old_v6,
-                                       del_ifindex);
+                    if_pub_notify(g_if_work_local->subscribers, entry, del_if_type, IF_EVENT_PROTO_DOWN, 0, &old_v6,
+                                  del_ifindex);
                 }
             }
             LOG_INFO("IF: %s all IP addresses cleared", logical_name);
@@ -576,8 +578,8 @@ int if_cfg_apply_ip(gboolean is_no, const char *logical_name, const net_prefix_t
             memset(dst, 0, sizeof(*dst));
             if (del_if_type != 0)
             {
-                if_pub_notify_addr(g_if_local->subscribers, entry, del_if_type, IF_EVENT_ADDR_DEL, &old_pfx,
-                                   del_ifindex);
+                if_pub_notify(g_if_work_local->subscribers, entry, del_if_type, IF_EVENT_PROTO_DOWN, 0, &old_pfx,
+                              del_ifindex);
             }
         }
 
@@ -642,10 +644,13 @@ int if_cfg_apply_ip(gboolean is_no, const char *logical_name, const net_prefix_t
         }
         if (had_old && !if_prefix_equal(&old_prefix, prefix))
         {
-            if_pub_notify_addr(g_if_local->subscribers, entry, add_if_type, IF_EVENT_ADDR_DEL, &old_prefix,
-                               add_ifindex);
+            if_pub_notify(g_if_work_local->subscribers, entry, add_if_type, IF_EVENT_PROTO_DOWN, 0, &old_prefix,
+                          add_ifindex);
         }
-        if_pub_notify_addr(g_if_local->subscribers, entry, add_if_type, IF_EVENT_ADDR_ADD, prefix, add_ifindex);
+        if (!entry->shutdown)
+        {
+            if_pub_notify(g_if_work_local->subscribers, entry, add_if_type, IF_EVENT_PROTO_UP, 0, prefix, add_ifindex);
+        }
     }
 
     LOG_INFO("IF: %s %s=%s/%u configured", logical_name, (prefix->addr.family == AF_INET6) ? "IPv6" : "IPv4", ip_str,
@@ -702,10 +707,35 @@ int if_cfg_apply_shutdown(gboolean is_no, const char *logical_name)
         }
 
         uint32_t if_type = if_cfg_type_to_mask(if_detect_type(entry->physical_name));
-        uint32_t event = up ? IF_EVENT_UP : IF_EVENT_DOWN;
+        /* `shutdown` command only changes protocol state. Physical link state reflects OS actual interface state */
         if (if_type != 0)
         {
-            if_pub_notify(g_if_local->subscribers, entry, if_type, event, (uint8_t)up);
+            if (!up)
+            {
+                if (synced_v4)
+                {
+                    if_pub_notify(g_if_work_local->subscribers, entry, if_type, IF_EVENT_PROTO_DOWN, 0,
+                                  &entry->prefix_v4, entry->ifindex);
+                }
+                if (synced_v6)
+                {
+                    if_pub_notify(g_if_work_local->subscribers, entry, if_type, IF_EVENT_PROTO_DOWN, 0,
+                                  &entry->prefix_v6, entry->ifindex);
+                }
+            }
+            else
+            {
+                if (synced_v4)
+                {
+                    if_pub_notify(g_if_work_local->subscribers, entry, if_type, IF_EVENT_PROTO_UP, 0, &entry->prefix_v4,
+                                  entry->ifindex);
+                }
+                if (synced_v6)
+                {
+                    if_pub_notify(g_if_work_local->subscribers, entry, if_type, IF_EVENT_PROTO_UP, 0, &entry->prefix_v6,
+                                  entry->ifindex);
+                }
+            }
         }
         goto sync_done;
 
@@ -727,4 +757,145 @@ int if_cfg_apply_shutdown(gboolean is_no, const char *logical_name)
 
     LOG_INFO("IF: %s %s", logical_name, up ? "no shutdown" : "shutdown");
     return ERRCODE_SUCCESS;
+}
+
+/* ============================================================================
+ * Link Monitor 恢复 / 清理（由 IF work 线程调用）
+ * ============================================================================ */
+
+/**
+ * @brief 使用保存的 ifindex 构造路由条目并从 RIB 中撤销直连路由
+ *
+ * 当接口被销毁时，if_nametoindex() 已无法获取 ifindex，需要用保存的旧值。
+ */
+static int if_withdraw_connected_with_ifindex(const net_prefix_t *prefix, uint32_t saved_ifindex)
+{
+    if (!prefix || !net_prefix_is_set(prefix) || saved_ifindex == 0u)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    uint16_t afi = 0;
+    if (prefix->addr.family == AF_INET)
+    {
+        afi = ROUTE_AFI_IPV4;
+    }
+    else if (prefix->addr.family == AF_INET6)
+    {
+        afi = ROUTE_AFI_IPV6;
+    }
+    else
+    {
+        return ERRCODE_FAIL;
+    }
+
+    dev_ipc_context_t *ctx = g_if_local ? if_local_ipc_ctx() : NULL;
+    if (!ctx)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    net_addr_t network_addr;
+    if (if_prefix_to_network(prefix, &network_addr) != 0)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    net_addr_t zero_nh;
+    if_make_zero_addr(prefix->addr.family, &zero_nh);
+
+    uint8_t host_len = (prefix->addr.family == AF_INET) ? 32u : 128u;
+
+    route_msg_entry_t network_entry;
+    if_fill_connected_route_entry(&network_entry, afi, prefix->prefix_len, &network_addr, &prefix->addr, &zero_nh,
+                                  saved_ifindex);
+
+    if (prefix->prefix_len == host_len)
+    {
+        return route_rpc_del_wait(ctx, &network_entry, IF_ROUTE_SYNC_TIMEOUT_MS);
+    }
+
+    route_msg_entry_t host_entry = network_entry;
+    host_entry.prefix_addr = prefix->addr;
+    host_entry.prefix_len = host_len;
+
+    (void)route_rpc_del_wait(ctx, &network_entry, IF_ROUTE_SYNC_TIMEOUT_MS);
+    (void)route_rpc_del_wait(ctx, &host_entry, IF_ROUTE_SYNC_TIMEOUT_MS);
+    return ERRCODE_SUCCESS;
+}
+
+int if_cfg_recover_link(const char *logical_name, uint32_t new_ifindex, const net_prefix_t *pfx_v4,
+                        const net_prefix_t *pfx_v6)
+{
+    if (!logical_name)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    if_map_entry_t *entry = if_cfg_find_entry(logical_name);
+    if (!entry)
+    {
+        LOG_WARN("IF-RECOVER: entry not found for %s", logical_name);
+        return ERRCODE_FAIL;
+    }
+
+    /* 确保使用最新 ifindex */
+    entry->ifindex = new_ifindex;
+
+    /* 根据配置状态将新接口 UP 或 DOWN */
+    if (if_set_state(entry->physical_name, entry->shutdown ? 0 : 1) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("IF-RECOVER: failed to change state for %s(%s)", logical_name, entry->physical_name);
+    }
+
+    /* 重新下发 IPv4 地址和直连路由 */
+    if (pfx_v4 && net_prefix_is_set(pfx_v4))
+    {
+        LOG_INFO("IF-RECOVER: re-applying IPv4 on %s", logical_name);
+        if (if_sync_connected_prefix(pfx_v4, entry->physical_name, FALSE) != ERRCODE_SUCCESS)
+        {
+            LOG_WARN("IF-RECOVER: IPv4 sync failed for %s", logical_name);
+        }
+    }
+
+    /* 重新下发 IPv6 地址和直连路由 */
+    if (pfx_v6 && net_prefix_is_set(pfx_v6))
+    {
+        LOG_INFO("IF-RECOVER: re-applying IPv6 on %s", logical_name);
+        if (if_sync_connected_prefix(pfx_v6, entry->physical_name, FALSE) != ERRCODE_SUCCESS)
+        {
+            LOG_WARN("IF-RECOVER: IPv6 sync failed for %s", logical_name);
+        }
+    }
+
+    LOG_INFO("IF-RECOVER: link %s recovered, ifindex=%u", logical_name, new_ifindex);
+    return ERRCODE_SUCCESS;
+}
+
+void if_cfg_handle_link_down(const char *logical_name, uint32_t old_ifindex, const net_prefix_t *pfx_v4,
+                             const net_prefix_t *pfx_v6)
+{
+    if (!logical_name)
+    {
+        return;
+    }
+
+    LOG_INFO("IF-LINKDOWN: withdrawing connected routes for %s (old ifindex=%u)", logical_name, old_ifindex);
+
+    /* 使用保存的旧 ifindex 撤销直连路由 */
+    if (pfx_v4 && net_prefix_is_set(pfx_v4))
+    {
+        if (if_withdraw_connected_with_ifindex(pfx_v4, old_ifindex) != ERRCODE_SUCCESS)
+        {
+            LOG_WARN("IF-LINKDOWN: IPv4 route withdrawal failed for %s", logical_name);
+        }
+    }
+
+    if (pfx_v6 && net_prefix_is_set(pfx_v6))
+    {
+        if (if_withdraw_connected_with_ifindex(pfx_v6, old_ifindex) != ERRCODE_SUCCESS)
+        {
+            LOG_WARN("IF-LINKDOWN: IPv6 route withdrawal failed for %s", logical_name);
+        }
+    }
 }

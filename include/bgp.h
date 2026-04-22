@@ -323,6 +323,7 @@ typedef enum bgp_nlri_type
     BGP_NLRI_EVPN = 1,     /**< L2VPN EVPN 路由 */
     BGP_NLRI_FLOWSPEC = 2, /**< FlowSpec 过滤规则 */
     BGP_NLRI_OPAQUE = 3,   /**< 未知/未注册，保存原始字节 */
+    BGP_NLRI_QP = 4,       /**< QP（SAFI=253）变长 TLV：dqpn + 前缀 */
 } bgp_nlri_type_t;
 
 /**
@@ -401,6 +402,23 @@ typedef struct bgp_nlri_flowspec
     bool has_rd;
 } bgp_nlri_flowspec_t;
 
+/** QP TLV 类型：Destination QP Number */
+#define BGP_QP_TLV_DQPN 1
+/** QP TLV 类型：IP 前缀 */
+#define BGP_QP_TLV_PREFIX 2
+
+/**
+ * @brief QP NLRI（SAFI=253）
+ *
+ * 线上格式：长度(1) | TLV1=dqpn(type 1 + len + dqpn 1-3B) | TLV2=prefix(type 2 + mask + prefix)
+ */
+typedef struct bgp_nlri_qp
+{
+    uint32_t dqpn;       /**< Destination QP Number（主机字节序，<= 0xFFFFFF） */
+    uint8_t dqpn_len;    /**< dqpn 编码字节数 1~3 */
+    net_prefix_t prefix; /**< IP 前缀（v4/v6 由 AFI 决定） */
+} bgp_nlri_qp_t;
+
 /** NLRI 条目字符串最大长度（显示/日志用） */
 #define BGP_NLRI_KEY_MAX 256
 
@@ -417,6 +435,7 @@ typedef struct bgp_nlri_entry
         bgp_nlri_prefix_t prefix;     /**< unicast/VPN/labeled */
         bgp_nlri_evpn_t evpn;         /**< EVPN */
         bgp_nlri_flowspec_t flowspec; /**< FlowSpec */
+        bgp_nlri_qp_t qp;             /**< QP（SAFI=253） */
         struct
         {
             uint8_t data[512];

@@ -11,6 +11,7 @@
  */
 #include "if_bdr.h"
 
+#include <glib.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -19,7 +20,6 @@
 #include "db.h"
 #include "dev.h"
 #include "errcode.h"
-#include "if_cli.h"
 #include "if_main.h"
 #include "log.h"
 #include "net_addr.h"
@@ -116,20 +116,38 @@ static void bdr_emit_iface_self_body(GString *out, const char *name, const char 
 // 公共 API
 // ============================================================================
 
+static void bdr_send_cli_response(dev_ipc_message_t *msg, const char *text)
+{
+    const char *safe = text ? text : "";
+    char *resp_data = g_strdup(safe);
+    dev_ipc_message_t *resp = dev_ipc_message_create(CLI_MSG_TYPE_RESP, DEV_MODULE_ID_IF, msg->src_module_id,
+                                                     msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
+    if (resp)
+    {
+        dev_ipc_send_response(if_local_ipc_ctx(), resp);
+        dev_ipc_message_free(resp);
+    }
+    else
+    {
+        g_free(resp_data);
+    }
+}
+
 void if_bdr_show_config(dev_ipc_message_t *msg)
 {
     dev_ipc_context_t *ctx = if_local_ipc_ctx();
     GString *out = g_string_new("");
     if (!out)
     {
-        (void)if_cli_send_chunked_response(msg, NULL);
+        bdr_send_cli_response(msg, "");
         return;
     }
 
     db_result_t *result = NULL;
     if (db_rpc_query(ctx, "if_interface", NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
     {
-        (void)if_cli_send_chunked_response(msg, out);
+        bdr_send_cli_response(msg, out->str);
+        g_string_free(out, TRUE);
         return;
     }
 
@@ -148,9 +166,6 @@ void if_bdr_show_config(dev_ipc_message_t *msg)
             continue;
         }
 
-        /* 无论是否有自身配置, 都必须作为 anchor 属主声明 header/footer,
-         * 以便其它模块(如 ISIS) 对本接口的贡献能找到归属。聚合器会在
-         * body 完全为空时自动跳过整段, 不会产生 "header + 立即 footer" 的噪声 */
         char key[CLI_CFG_ANCHOR_KEY_MAX];
         char header[96];
         bdr_build_iface_key(key, sizeof(key), name);
@@ -162,5 +177,6 @@ void if_bdr_show_config(dev_ipc_message_t *msg)
     }
 
     db_result_free(result);
-    (void)if_cli_send_chunked_response(msg, out);
+    bdr_send_cli_response(msg, out->str);
+    g_string_free(out, TRUE);
 }

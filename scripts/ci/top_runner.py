@@ -269,12 +269,16 @@ def validate_top(top: dict[str, Any]) -> None:
             raise ValueError(f"device '{dev}' config must be a mapping")
 
     used_if: dict[str, set[str]] = {d: set() for d in devices}
+    seen_links: set[str] = set()
     for link in links:
         if not isinstance(link, dict):
             raise ValueError("each link must be a mapping")
         lname = str(link.get("name", "")).strip()
         if not lname:
             raise ValueError("link.name is required")
+        if lname in seen_links:
+            raise ValueError(f"duplicate link.name '{lname}' is not allowed")
+        seen_links.add(lname)
         eps = link.get("endpoints")
         if not isinstance(eps, list) or len(eps) != 2:
             raise ValueError(f"link '{lname}' must have exactly 2 endpoints")
@@ -454,6 +458,16 @@ class TopologyRuntime:
         self.devices: dict[str, dict[str, Any]] = top["devices"]
         self.device_order: list[str] = sorted(self.devices.keys())
         self.endpoints = build_endpoints(top)
+        self.link_endpoints: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {}
+        for link in self.top["links"]:
+            lname = str(link["name"])
+            eps = link["endpoints"]
+            self.link_endpoints[lname] = (
+                (str(eps[0]["device"]), str(eps[0]["if"])),
+                (str(eps[1]["device"]), str(eps[1]["if"])),
+            )
+        self.link_to_net: dict[str, str] = {}
+        self.link_connected: set[str] = set()
         self.tmpdir: Path | None = (
             Path(tempfile.mkdtemp(prefix=f"{self.prefix}-")) if self.override_if_map else None
         )
@@ -515,6 +529,77 @@ class TopologyRuntime:
         cli.connect(timeout=timeout)
         self.cli_map[device] = cli
 
+    def _get_link_endpoints(self, link_name: str) -> tuple[tuple[str, str], tuple[str, str]]:
+        name = str(link_name).strip()
+        if not name:
+            raise ValueError("link_name is required")
+        endpoints = self.link_endpoints.get(name)
+        if endpoints is None:
+            available = ", ".join(sorted(self.link_endpoints.keys()))
+            raise ValueError(f"unknown link '{name}', available: {available}")
+        return endpoints
+
+    def _get_link_network(self, link_name: str) -> str:
+        name = str(link_name).strip()
+        self._get_link_endpoints(name)
+        net_name = self.link_to_net.get(name, "").strip()
+        if not net_name:
+            raise RuntimeError(
+                f"link '{name}' network is not initialized yet, call TopologyRuntime.start() first"
+            )
+        return net_name
+
+    @staticmethod
+    def _is_benign_link_error(action: str, err_text: str) -> bool:
+        normalized = err_text.lower()
+        if action == "connect":
+            return (
+                "already exists in network" in normalized
+                or "already connected" in normalized
+                or "endpoint with name" in normalized
+            )
+        if action == "disconnect":
+            return "is not connected" in normalized or "endpoint not found" in normalized
+        return False
+
+    def _docker_network_connect(self, network_name: str, container_name: str, *, strict: bool) -> None:
+        try:
+            run_cmd(["docker", "network", "connect", network_name, container_name])
+        except RuntimeError as exc:
+            if (not strict) and self._is_benign_link_error("connect", str(exc)):
+                return
+            raise
+
+    def _docker_network_disconnect(self, network_name: str, container_name: str, *, strict: bool) -> None:
+        try:
+            run_cmd(["docker", "network", "disconnect", network_name, container_name])
+        except RuntimeError as exc:
+            if (not strict) and self._is_benign_link_error("disconnect", str(exc)):
+                return
+            raise
+
+    def remove_link(self, link_name: str, *, strict: bool = True) -> None:
+        """Disconnect both endpoints of a topology link from its docker network."""
+        net_name = self._get_link_network(link_name)
+        endpoints = self._get_link_endpoints(link_name)
+        for device, _if_name in endpoints:
+            self._docker_network_disconnect(net_name, self._container_name(device), strict=strict)
+        self.link_connected.discard(str(link_name).strip())
+
+    def add_link(self, link_name: str, *, strict: bool = True) -> None:
+        """Connect both endpoints of a topology link back to its docker network."""
+        net_name = self._get_link_network(link_name)
+        endpoints = self._get_link_endpoints(link_name)
+        for device, _if_name in endpoints:
+            self._docker_network_connect(net_name, self._container_name(device), strict=strict)
+        self.link_connected.add(str(link_name).strip())
+
+    def disconnect_link(self, link_name: str, *, strict: bool = True) -> None:
+        self.remove_link(link_name, strict=strict)
+
+    def connect_link(self, link_name: str, *, strict: bool = True) -> None:
+        self.add_link(link_name, strict=strict)
+
     def start(self, *, configure_interfaces: bool = True) -> None:
         run_cmd(["docker", "network", "create", "--ipv6", self.mgmt_net])
 
@@ -560,19 +645,20 @@ class TopologyRuntime:
             self.container_names.append(cname)
 
         # 2) Create link networks.
-        link_to_net: dict[str, str] = {}
+        self.link_to_net.clear()
         for link in self.top["links"]:
             lname = str(link["name"])
             net_name = f"{self.prefix}-lnk-{sanitize_name(lname)}"
             run_cmd(["docker", "network", "create", "--ipv6", net_name])
-            link_to_net[lname] = net_name
+            self.link_to_net[lname] = net_name
             self.link_networks.append(net_name)
 
         # 3) Connect each device to link networks in GE index order.
         for dev, eps in self.endpoints.items():
             cname = self._container_name(dev)
             for ep in eps:
-                run_cmd(["docker", "network", "connect", link_to_net[ep.link_name], cname])
+                run_cmd(["docker", "network", "connect", self.link_to_net[ep.link_name], cname])
+        self.link_connected = set(self.link_to_net.keys())
 
         # 4) Start netnexus process inside each container.
         for dev in self.devices:

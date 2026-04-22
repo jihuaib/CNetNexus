@@ -904,6 +904,11 @@ static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree,
                                     {
                                         register_cmd_trees_to_view(virtual_root, tgt->cmd_tree, 1);
                                     }
+                                    else
+                                    {
+                                        LOG_WARN("Skip command registration: module=%u view=%s not found (expr=%s)",
+                                                 module_id, view_token, expression ? expression : "<null>");
+                                    }
 
                                     view_token = strtok(NULL, ",");
                                 }
@@ -927,10 +932,15 @@ static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree,
     cli_group_free(group);
 }
 
-// Load CLI view tree from XML file
-uint32_t cli_xml_load_view_tree(const char *xml_file, cli_view_tree_t *view_tree)
+// Load CLI view tree from XML file (with staged flags)
+uint32_t cli_xml_load_view_tree_ex(const char *xml_file, cli_view_tree_t *view_tree, uint32_t load_flags)
 {
     if (!xml_file || !view_tree)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    if ((load_flags & CLI_XML_LOAD_ALL) == 0)
     {
         return ERRCODE_FAIL;
     }
@@ -962,51 +972,54 @@ uint32_t cli_xml_load_view_tree(const char *xml_file, cli_view_tree_t *view_tree
     }
 
     uint32_t module_id = atoi((const char *)module_id_str);
-    LOG_INFO("Loading XML for module: %u", module_id);
+    LOG_INFO("Loading XML for module: %u (flags=0x%x)", module_id, load_flags);
     xmlFree(module_id_str);
 
-    // Parse views section
-    for (xmlNode *cur = root_element->children; cur; cur = cur->next)
+    if (load_flags & CLI_XML_LOAD_VIEWS)
     {
-        if (cur->type != XML_ELEMENT_NODE)
+        // Parse views section
+        for (xmlNode *cur = root_element->children; cur; cur = cur->next)
         {
-            continue;
-        }
-
-        if (xmlStrcmp(cur->name, (const xmlChar *)"views") == ERRCODE_SUCCESS)
-        {
-            for (xmlNode *view_node = cur->children; view_node; view_node = view_node->next)
+            if (cur->type != XML_ELEMENT_NODE)
             {
-                if (view_node->type != XML_ELEMENT_NODE)
-                {
-                    continue;
-                }
+                continue;
+            }
 
-                if (xmlStrcmp(view_node->name, (const xmlChar *)"view") == ERRCODE_SUCCESS)
+            if (xmlStrcmp(cur->name, (const xmlChar *)"views") == ERRCODE_SUCCESS)
+            {
+                for (xmlNode *view_node = cur->children; view_node; view_node = view_node->next)
                 {
-                    cli_view_node_t *new_view = parse_view_node(view_node);
-                    if (new_view != NULL)
+                    if (view_node->type != XML_ELEMENT_NODE)
                     {
-                        if (view_tree->root == NULL)
+                        continue;
+                    }
+
+                    if (xmlStrcmp(view_node->name, (const xmlChar *)"view") == ERRCODE_SUCCESS)
+                    {
+                        cli_view_node_t *new_view = parse_view_node(view_node);
+                        if (new_view != NULL)
                         {
-                            view_tree->root = new_view;
-                        }
-                        else
-                        {
-                            cli_view_node_t *existing = cli_view_find_by_name(view_tree->root, new_view->view_name);
-                            if (existing == NULL)
+                            if (view_tree->root == NULL)
                             {
-                                cli_view_node_t *parent = cli_view_find_by_name(view_tree->root, CLI_VIEW_CONFIG);
-                                if (parent == NULL)
-                                {
-                                    LOG_ERROR("config view does not exist");
-                                    continue;
-                                }
-                                cli_view_add_child(parent, new_view);
+                                view_tree->root = new_view;
                             }
                             else
                             {
-                                LOG_ERROR("view %s exist", new_view->view_name);
+                                cli_view_node_t *existing = cli_view_find_by_name(view_tree->root, new_view->view_name);
+                                if (existing == NULL)
+                                {
+                                    cli_view_node_t *parent = cli_view_find_by_name(view_tree->root, CLI_VIEW_CONFIG);
+                                    if (parent == NULL)
+                                    {
+                                        LOG_ERROR("config view does not exist");
+                                        continue;
+                                    }
+                                    cli_view_add_child(parent, new_view);
+                                }
+                                else
+                                {
+                                    LOG_ERROR("view %s exist", new_view->view_name);
+                                }
                             }
                         }
                     }
@@ -1015,26 +1028,29 @@ uint32_t cli_xml_load_view_tree(const char *xml_file, cli_view_tree_t *view_tree
         }
     }
 
-    // Parse command groups
-    for (xmlNode *cur = root_element->children; cur; cur = cur->next)
+    if (load_flags & CLI_XML_LOAD_COMMANDS)
     {
-        if (cur->type != XML_ELEMENT_NODE)
+        // Parse command groups
+        for (xmlNode *cur = root_element->children; cur; cur = cur->next)
         {
-            continue;
-        }
-
-        if (xmlStrcmp(cur->name, (const xmlChar *)"command_groups") == ERRCODE_SUCCESS)
-        {
-            for (xmlNode *group_node = cur->children; group_node; group_node = group_node->next)
+            if (cur->type != XML_ELEMENT_NODE)
             {
-                if (group_node->type != XML_ELEMENT_NODE)
-                {
-                    continue;
-                }
+                continue;
+            }
 
-                if (xmlStrcmp(group_node->name, (const xmlChar *)"group") == ERRCODE_SUCCESS)
+            if (xmlStrcmp(cur->name, (const xmlChar *)"command_groups") == ERRCODE_SUCCESS)
+            {
+                for (xmlNode *group_node = cur->children; group_node; group_node = group_node->next)
                 {
-                    parse_command_group(group_node, view_tree, module_id);
+                    if (group_node->type != XML_ELEMENT_NODE)
+                    {
+                        continue;
+                    }
+
+                    if (xmlStrcmp(group_node->name, (const xmlChar *)"group") == ERRCODE_SUCCESS)
+                    {
+                        parse_command_group(group_node, view_tree, module_id);
+                    }
                 }
             }
         }
@@ -1050,4 +1066,10 @@ uint32_t cli_xml_load_view_tree(const char *xml_file, cli_view_tree_t *view_tree
     xmlCleanupParser();
 
     return ERRCODE_SUCCESS;
+}
+
+// Load CLI view tree from XML file (views + commands)
+uint32_t cli_xml_load_view_tree(const char *xml_file, cli_view_tree_t *view_tree)
+{
+    return cli_xml_load_view_tree_ex(xml_file, view_tree, CLI_XML_LOAD_ALL);
 }

@@ -83,6 +83,27 @@ int bgp_nlri_cmp(const bgp_nlri_entry_t *a, const bgp_nlri_entry_t *b)
             }
             return 0;
 
+        case BGP_NLRI_QP:
+            r = (int)a->qp.dqpn_len - (int)b->qp.dqpn_len;
+            if (r)
+            {
+                return r;
+            }
+            if (a->qp.dqpn < b->qp.dqpn)
+            {
+                return -1;
+            }
+            if (a->qp.dqpn > b->qp.dqpn)
+            {
+                return 1;
+            }
+            r = net_addr_cmp(&a->qp.prefix.addr, &b->qp.prefix.addr);
+            if (r)
+            {
+                return r;
+            }
+            return (int)a->qp.prefix.prefix_len - (int)b->qp.prefix.prefix_len;
+
         case BGP_NLRI_EVPN:
             r = (int)a->evpn.raw_len - (int)b->evpn.raw_len;
             if (r)

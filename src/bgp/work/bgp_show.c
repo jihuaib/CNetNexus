@@ -96,6 +96,14 @@ static const char *bgp_af_str(bgp_afi_t afi, bgp_safi_t safi)
     {
         return "ipv6-unicast";
     }
+    if (afi == BGP_AFI_IPV4 && safi == BGP_SAFI_QP)
+    {
+        return "ipv4-qp";
+    }
+    if (afi == BGP_AFI_IPV6 && safi == BGP_SAFI_QP)
+    {
+        return "ipv6-qp";
+    }
     return "unknown";
 }
 
@@ -561,6 +569,16 @@ static int handle_bgp_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parse
                 masklen = (uint32_t)cli_tlv_entry_get_int(&entry);
                 has_masklen = TRUE;
                 break;
+            case 5:
+                ctx.afi = BGP_AFI_IPV4;
+                ctx.safi = BGP_SAFI_QP;
+                has_af = TRUE;
+                break;
+            case 6:
+                ctx.afi = BGP_AFI_IPV6;
+                ctx.safi = BGP_SAFI_QP;
+                has_af = TRUE;
+                break;
             default:
                 break;
         }
@@ -706,6 +724,16 @@ static int handle_bgp_show_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
                 }
                 break;
             }
+            case 4:
+                ctx.afi = BGP_AFI_IPV4;
+                ctx.safi = BGP_SAFI_QP;
+                has_af = TRUE;
+                break;
+            case 5:
+                ctx.afi = BGP_AFI_IPV6;
+                ctx.safi = BGP_SAFI_QP;
+                has_af = TRUE;
+                break;
             default:
                 break;
         }
@@ -1117,6 +1145,16 @@ static int handle_bgp_show_update_group(dev_ipc_message_t *msg, cli_tlv_parser_t
             case 3:
                 group_id = (uint32_t)cli_tlv_entry_get_int(&entry);
                 has_group_id = TRUE;
+                break;
+            case 4:
+                ctx.afi = BGP_AFI_IPV4;
+                ctx.safi = BGP_SAFI_QP;
+                has_af = TRUE;
+                break;
+            case 5:
+                ctx.afi = BGP_AFI_IPV6;
+                ctx.safi = BGP_SAFI_QP;
+                has_af = TRUE;
                 break;
             default:
                 break;

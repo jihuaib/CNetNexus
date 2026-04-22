@@ -80,6 +80,8 @@ int bgp_pkt_encode_prefix(uint8_t *buf, int buf_size, const net_prefix_t *pfx)
 /* 内置编码器注册函数（各实现文件提供） */
 void bgp_pkt_build_ipv4uc_register(void);
 void bgp_pkt_build_ipv6uc_register(void);
+void bgp_pkt_build_ipv4qp_register(void);
+void bgp_pkt_build_ipv6qp_register(void);
 
 void bgp_pkt_build_init(void)
 {
@@ -89,4 +91,6 @@ void bgp_pkt_build_init(void)
     }
     bgp_pkt_build_ipv4uc_register();
     bgp_pkt_build_ipv6uc_register();
+    bgp_pkt_build_ipv4qp_register();
+    bgp_pkt_build_ipv6qp_register();
 }

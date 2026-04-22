@@ -445,6 +445,34 @@ def reboot_device(rt: TopologyRuntime, device: str, *, timeout: int = 90) -> Non
     rt.reboot_device(device, reconnect_timeout=timeout)
 
 
+def remove_link(rt: TopologyRuntime, link_name: str, *, strict: bool = True) -> None:
+    try:
+        rt.remove_link(link_name, strict=strict)
+    except Exception:
+        mark_step_failed()
+        raise
+
+
+def add_link(rt: TopologyRuntime, link_name: str, *, strict: bool = True) -> None:
+    try:
+        rt.add_link(link_name, strict=strict)
+    except Exception:
+        mark_step_failed()
+        raise
+
+
+def delete_link(rt: TopologyRuntime, link_name: str, *, strict: bool = True) -> None:
+    remove_link(rt, link_name, strict=strict)
+
+
+def disconnect_link(rt: TopologyRuntime, link_name: str, *, strict: bool = True) -> None:
+    remove_link(rt, link_name, strict=strict)
+
+
+def connect_link(rt: TopologyRuntime, link_name: str, *, strict: bool = True) -> None:
+    add_link(rt, link_name, strict=strict)
+
+
 def wait_checks(
     rt: TopologyRuntime,
     checks: list[dict[str, object]],
