@@ -45,6 +45,13 @@ cp -v \
     "$HERE/DEPLOY.md" \
     "$PKG_DIR/"
 
+# 1.1) 运行脚本（清空容器/网络等）一并打包
+if [[ -d "$HERE/scripts" ]]; then
+    echo "[package] staging scripts -> $PKG_DIR/scripts"
+    mkdir -p "$PKG_DIR/scripts"
+    cp -av "$HERE/scripts/." "$PKG_DIR/scripts/"
+fi
+
 # 2) 附带一个 install.sh，目标机解压后一条命令到位
 cat > "$PKG_DIR/install.sh" <<'INSTALL_EOF'
 #!/usr/bin/env bash

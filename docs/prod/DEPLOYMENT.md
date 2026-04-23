@@ -126,6 +126,8 @@ printf '%s\n' '<YOUR_GITHUB_TOKEN>' > .secrets/github_token
 chmod 600 .secrets/github_token
 ./scripts/prod/publish.sh --github-release
 # 默认会自动创建/校验并 push tag(v版本号) 到 origin；如需关闭加 --no-sync-tag
+# 仅发布 package/ 已有产物到 GitHub（跳过构建、跳过本地 tag 校验）
+./scripts/prod/publish.sh --publish-only --tag v1.0.0
 
 # 输出
 package/

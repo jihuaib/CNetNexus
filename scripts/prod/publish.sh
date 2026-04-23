@@ -8,6 +8,7 @@
 #   VERSION=2.0.0 ./scripts/prod/publish.sh --github-release
 #   ./scripts/prod/publish.sh --github-release --token-file ./.secrets/github_token
 #   ./scripts/prod/publish.sh --github-release --no-sync-tag
+#   ./scripts/prod/publish.sh --publish-only
 #
 
 set -euo pipefail
@@ -45,6 +46,7 @@ DEFAULT_ARCHS=("amd64" "arm64")
 # ============================================================
 PUBLISH_GITHUB=0
 SYNC_TAG=1
+PUBLISH_ONLY=0
 GITHUB_REPO="${GITHUB_REPO:-}"
 GITHUB_TOKEN_FILE="${GITHUB_TOKEN_FILE:-${PROJECT_ROOT}/.secrets/github_token}"
 GITHUB_TOKEN_ENV="${GITHUB_TOKEN_ENV:-GITHUB_TOKEN}"
@@ -65,6 +67,7 @@ print_usage() {
 
 选项:
   --github-release          构建后自动创建/更新 GitHub Release 并上传产物
+  --publish-only            仅发布 package/ 现有产物到 GitHub（跳过构建与 tag 同步）
   --no-sync-tag             发布 GitHub Release 时不自动同步 git tag 到 origin
   --repo <owner/repo>       指定 GitHub 仓库（默认从 origin 自动识别）
   --token-file <path>       GitHub token 文件路径（默认: ${GITHUB_TOKEN_FILE}）
@@ -332,6 +335,42 @@ publish_github_release() {
     fi
 }
 
+collect_existing_artifacts() {
+    local file=""
+    local arch=""
+    local found=0
+    local prefix=""
+    local base=""
+
+    prefix="${IMAGE_NAME}-${VERSION}-docker-"
+
+    if [ ${#TARGETS[@]} -eq 0 ]; then
+        shopt -s nullglob
+        for file in "${PACKAGE_DIR}/${prefix}"*.tar.gz; do
+            [ -f "$file" ] || continue
+            found=1
+            GENERATED_FILES+=("$file")
+            base="$(basename "$file")"
+            arch="${base#${prefix}}"
+            arch="${arch%.tar.gz}"
+            DOCKER_OK+=("$arch")
+        done
+        shopt -u nullglob
+        [ "$found" -eq 1 ] || die "publish-only 模式未找到产物：${PACKAGE_DIR}/${prefix}*.tar.gz"
+        return 0
+    fi
+
+    for arch in "${TARGETS[@]}"; do
+        file="${PACKAGE_DIR}/${prefix}${arch}.tar.gz"
+        if [ -f "$file" ]; then
+            GENERATED_FILES+=("$file")
+            DOCKER_OK+=("$arch")
+        else
+            DOCKER_FAIL+=("$arch")
+        fi
+    done
+}
+
 # ============================================================
 # 参数解析
 # ============================================================
@@ -339,6 +378,11 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --github-release)
             PUBLISH_GITHUB=1
+            ;;
+        --publish-only)
+            PUBLISH_ONLY=1
+            PUBLISH_GITHUB=1
+            SYNC_TAG=0
             ;;
         --no-sync-tag)
             SYNC_TAG=0
@@ -367,24 +411,26 @@ while [ $# -gt 0 ]; do
             print_usage
             exit 0
             ;;
-        amd64|arm64)
-            TARGETS+=("$1")
+        --*)
+            die "未知参数: $1"
             ;;
         *)
-            die "未知参数或架构: $1（可用架构: ${!DOCKER_ARCH_INFO[*]}）"
+            TARGETS+=("$1")
             ;;
     esac
     shift
 done
 
-[ ${#TARGETS[@]} -eq 0 ] && TARGETS=("${DEFAULT_ARCHS[@]}")
+[ ${#TARGETS[@]} -eq 0 ] && [ "$PUBLISH_ONLY" -eq 0 ] && TARGETS=("${DEFAULT_ARCHS[@]}")
 
 # 校验架构名
-for arch in "${TARGETS[@]}"; do
-    if [ -z "${DOCKER_ARCH_INFO[$arch]+_}" ]; then
-        die "不支持的架构: ${arch}（支持: ${!DOCKER_ARCH_INFO[*]}）"
-    fi
-done
+if [ "$PUBLISH_ONLY" -eq 0 ]; then
+    for arch in "${TARGETS[@]}"; do
+        if [ -z "${DOCKER_ARCH_INFO[$arch]+_}" ]; then
+            die "不支持的架构: ${arch}（支持: ${!DOCKER_ARCH_INFO[*]}）"
+        fi
+    done
+fi
 
 # ============================================================
 # 打印标题
@@ -393,10 +439,21 @@ echo "==========================================="
 echo "NetNexus Docker 发布"
 echo "==========================================="
 echo "版本    : ${VERSION} (${GIT_COMMIT})"
-echo "架构    : ${TARGETS[*]}"
+if [ "$PUBLISH_ONLY" -eq 1 ]; then
+    if [ ${#TARGETS[@]} -eq 0 ]; then
+        echo "架构    : 自动识别（package/ 现有产物）"
+    else
+        echo "架构    : ${TARGETS[*]}"
+    fi
+else
+    echo "架构    : ${TARGETS[*]}"
+fi
 echo "输出    : ${PACKAGE_DIR}/"
 if [ "$PUBLISH_GITHUB" -eq 1 ]; then
     echo "GitHub  : 启用自动 Release 上传"
+fi
+if [ "$PUBLISH_ONLY" -eq 1 ]; then
+    echo "模式    : publish-only（跳过构建，跳过 tag 同步）"
 fi
 echo ""
 
@@ -447,30 +504,35 @@ docker_build_export() {
 # ============================================================
 # 主流程
 # ============================================================
-rc=0
-docker_check_builder || rc=$?
-if [ "$rc" -ne 0 ]; then
-    exit 1
-fi
-
-for arch in "${TARGETS[@]}"; do
-    echo ""
-    echo "[docker:${arch}]"
-
+if [ "$PUBLISH_ONLY" -eq 1 ]; then
+    echo "[publish-only] 跳过镜像构建，读取 package/ 现有产物"
+    collect_existing_artifacts
+else
     rc=0
-    docker_build_export "$arch" || rc=$?
-
-    if [ "$rc" -eq 0 ]; then
-        local_file="${PACKAGE_DIR}/${IMAGE_NAME}-${VERSION}-docker-${arch}.tar.gz"
-        size=$(du -h "${local_file}" | cut -f1)
-        echo "  完成: $(basename "${local_file}") (${size})"
-        DOCKER_OK+=("$arch")
-        GENERATED_FILES+=("${local_file}")
-    else
-        echo "  [错误] 处理失败（退出码 ${rc}）"
-        DOCKER_FAIL+=("$arch")
+    docker_check_builder || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        exit 1
     fi
-done
+
+    for arch in "${TARGETS[@]}"; do
+        echo ""
+        echo "[docker:${arch}]"
+
+        rc=0
+        docker_build_export "$arch" || rc=$?
+
+        if [ "$rc" -eq 0 ]; then
+            local_file="${PACKAGE_DIR}/${IMAGE_NAME}-${VERSION}-docker-${arch}.tar.gz"
+            size=$(du -h "${local_file}" | cut -f1)
+            echo "  完成: $(basename "${local_file}") (${size})"
+            DOCKER_OK+=("$arch")
+            GENERATED_FILES+=("${local_file}")
+        else
+            echo "  [错误] 处理失败（退出码 ${rc}）"
+            DOCKER_FAIL+=("$arch")
+        fi
+    done
+fi
 
 # ============================================================
 # 汇总

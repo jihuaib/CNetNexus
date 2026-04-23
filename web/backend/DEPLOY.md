@@ -336,6 +336,11 @@ curl -X POST -H "X-NN-Token: <TOKEN>" http://127.0.0.1:5174/api/instances/cleanu
 # 查看当前实例 / 链路
 curl -H "X-NN-Token: <TOKEN>" http://127.0.0.1:5174/api/instances
 curl -H "X-NN-Token: <TOKEN>" http://127.0.0.1:5174/api/links
+
+# 本机脚本清空 nn-topo 容器和 nn-link/nn-stub 网络
+/opt/nn-backend/app/scripts/cleanup-runtime.sh
+# 如需连同相关镜像一起删
+/opt/nn-backend/app/scripts/cleanup-runtime.sh --images
 ```
 
 ---
