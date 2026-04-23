@@ -173,6 +173,10 @@ docker volume create netnexus-data
 # Run container
 docker run -d \
   --name netnexus \
+  --cap-add NET_ADMIN \
+  --cap-add NET_RAW \
+  --sysctl net.ipv6.conf.all.disable_ipv6=0 \
+  --sysctl net.ipv6.conf.default.disable_ipv6=0 \
   -p 3788:3788 \
   -v netnexus-data:/opt/netnexus/data \
   --restart unless-stopped \
@@ -198,6 +202,10 @@ Mount custom config directory:
 ```bash
 docker run -d \
   --name netnexus \
+  --cap-add NET_ADMIN \
+  --cap-add NET_RAW \
+  --sysctl net.ipv6.conf.all.disable_ipv6=0 \
+  --sysctl net.ipv6.conf.default.disable_ipv6=0 \
   -p 3788:3788 \
   -v /path/to/custom/config:/opt/netnexus/resources:ro \
   -v netnexus-data:/opt/netnexus/data \

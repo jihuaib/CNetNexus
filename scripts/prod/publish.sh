@@ -507,7 +507,10 @@ else
     echo ""
     echo "GitHub Release 上传后使用方式:"
     echo "  docker load < ${IMAGE_NAME}-${VERSION}-docker-amd64.tar.gz"
-    echo "  docker run --rm -p 3788:3788 ${IMAGE_NAME}:${VERSION}-amd64"
+    echo "  docker run --rm --cap-add NET_ADMIN --cap-add NET_RAW \\"
+    echo "    --sysctl net.ipv6.conf.all.disable_ipv6=0 \\"
+    echo "    --sysctl net.ipv6.conf.default.disable_ipv6=0 \\"
+    echo "    -p 3788:3788 ${IMAGE_NAME}:${VERSION}-amd64"
 fi
 
 echo ""

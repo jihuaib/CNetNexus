@@ -62,6 +62,9 @@ const NN_START_SH = [
     'mkdir -p /opt/netnexus/log /opt/netnexus/log/asan /opt/netnexus/data',
     'export NN_WORK_DIR=/opt/netnexus',
     'export LD_LIBRARY_PATH=/opt/netnexus/lib:${LD_LIBRARY_PATH}',
+    // 某些 x86 线上环境默认把容器内 IPv6 关掉（disable_ipv6=1），会导致 if_addr_apply 返回 Permission denied。
+    // 这里在进程启动前统一尝试打开 all/default/已存在接口的 IPv6 开关。
+    'if [ -d /proc/sys/net/ipv6/conf ]; then for f in /proc/sys/net/ipv6/conf/*/disable_ipv6; do [ -f "$f" ] && echo 0 > "$f" 2>/dev/null || true; done; fi',
     'export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=1:halt_on_error=0:abort_on_error=0:log_path=/opt/netnexus/log/asan/asan}"',
     'exec /opt/netnexus/bin/netnexus > /tmp/netnexus.log 2>&1'
 ].join(' && ');
@@ -766,6 +769,8 @@ app.post('/api/instances', async (req, res) =>
             '--cap-add', 'NET_ADMIN',
             '--cap-add', 'NET_RAW',
             '--cap-add', 'SYS_PTRACE',
+            '--sysctl', 'net.ipv6.conf.all.disable_ipv6=0',
+            '--sysctl', 'net.ipv6.conf.default.disable_ipv6=0',
             '--security-opt', 'seccomp=unconfined',
             ...containerHardeningArgs(),
             '-e', 'NN_WORK_DIR=/opt/netnexus',

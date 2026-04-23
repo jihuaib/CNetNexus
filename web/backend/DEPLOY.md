@@ -351,6 +351,7 @@ curl -H "X-NN-Token: <TOKEN>" http://127.0.0.1:5174/api/links
 | WebSocket 连不上，F12 看到 502 | nginx `/ws/` 块少了 `proxy_http_version 1.1` 或 `Upgrade` 头 |
 | WebSocket 连上但立即 `*** disconnected ***` | 检查 nginx `/ws/` 块的 `set $args "token=..."` 是否写了、token 对不对 |
 | `docker run failed` 且 detail 含 `invalid image` | 镜像名不在 `IMAGE_ALLOWLIST` 前缀里。改 env 加前缀或改名 |
+| 设备配 IPv6 报 `IF: add address ... failed: Permission denied` | 目标机/容器把 IPv6 关了。升级到新版本后后端会自动带 `--sysctl net.ipv6.conf.all/default.disable_ipv6=0`；老版本请手动在容器运行参数补上这两个 sysctl，并保留 `NET_ADMIN` 能力 |
 | 设备停止再启动后 ping 不通 | 升级到本版本后应该修好（后端不再 `docker stop` 容器，只 kill 容器内 netnexus 进程） |
 | `rate limit exceeded` | 写请求过于频繁，调大 `RATE_LIMIT_MAX` 或 `RATE_LIMIT_WINDOW_MS` |
 
