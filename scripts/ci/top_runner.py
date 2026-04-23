@@ -39,6 +39,12 @@ PROMPT_RE = re.compile(br"<NetNexus[^>]*>")
 IF_RE = re.compile(r"^GE-(\d+)$")
 PAGER_DISABLE_CMD = "terminal length 0"
 
+# 每台设备固定预占 4 个 GE 口，没挂 link 的槽位用 stub 网络补位，
+# 保证容器内 eth1..eth4 始终存在且与 if_map.conf.gns3 对齐。
+# remove_link/add_link 通过 link<->stub 原位互换来完成热插拔，避免
+# ethN 变成 eth5+ 导致 GE 映射错位。
+GE_PORT_COUNT = 4
+
 
 def run_cmd(cmd: list[str], check: bool = True) -> str:
     proc = subprocess.run(cmd, text=True, capture_output=True)
@@ -365,9 +371,12 @@ def find_peer_ip(top: dict[str, Any], local: str, peer: str, local_if: str | Non
 
 
 def build_if_map_file(path: Path, endpoints: list[Endpoint]) -> None:
+    # endpoints 仅用于日志/校验，实际 if_map 内容固定写 GE-1..GE-4=eth1..eth4。
+    # 这样 remove_link/add_link 只需原位换网络即可保持 ethN 槽位对齐。
+    del endpoints
     lines = ["# Auto-generated for topology run\n"]
-    for idx, ep in enumerate(endpoints, start=1):
-        lines.append(f"{ep.if_name} = eth{idx}\n")
+    for idx in range(1, GE_PORT_COUNT + 1):
+        lines.append(f"GE-{idx} = eth{idx}\n")
     path.write_text("".join(lines), encoding="utf-8")
 
 
@@ -474,6 +483,11 @@ class TopologyRuntime:
 
         self.container_names: list[str] = []
         self.link_networks: list[str] = []
+        # 所有已创建的 stub 网络（key 由 _stub_network_name 生成），close() 时统一清理
+        self.stub_networks: set[str] = set()
+        # 每台设备每个 GE 槽位当前挂的 docker 网络名（link 或 stub），用于热插拔时知道该 disconnect 哪个
+        # 结构：{device: {ge_idx: net_name}}
+        self.slot_net: dict[str, dict[int, str]] = {dev: {} for dev in self.devices}
         self.cli_map: dict[str, NetNexusCli] = {}
         self.cli_publish_ports: dict[str, int] = {}
         if publish_cli_base is not None:
@@ -578,20 +592,57 @@ class TopologyRuntime:
                 return
             raise
 
+    def _stub_network_name(self, device: str, ge_idx: int) -> str:
+        return f"{self.prefix}-stub-{sanitize_name(device)}-{ge_idx}"
+
+    def _ensure_stub_network(self, device: str, ge_idx: int) -> str:
+        """创建（或复用）某台设备某 GE 槽位专用的 stub 桥网络，仅用于占位保持 ethN 对齐。"""
+        name = self._stub_network_name(device, ge_idx)
+        if name not in self.stub_networks:
+            existing = run_cmd(
+                ["docker", "network", "ls", "--filter", f"name=^{name}$", "--format", "{{.Name}}"],
+                check=False,
+            ).strip()
+            if existing != name:
+                # keep stub slots dual-stack capable so IPv6 address restore does not fail after link<->stub swap
+                run_cmd(["docker", "network", "create", "--ipv6", "--driver", "bridge", "--internal", name])
+            self.stub_networks.add(name)
+        return name
+
+    def _remove_stub_network(self, device: str, ge_idx: int) -> None:
+        name = self._stub_network_name(device, ge_idx)
+        run_cmd(["docker", "network", "rm", name], check=False)
+        self.stub_networks.discard(name)
+
     def remove_link(self, link_name: str, *, strict: bool = True) -> None:
-        """Disconnect both endpoints of a topology link from its docker network."""
+        """删除 link：原位换成 stub 占位，让容器内 ethN 槽位保留 carrier，ping 不通但接口保持 UP。"""
         net_name = self._get_link_network(link_name)
         endpoints = self._get_link_endpoints(link_name)
-        for device, _if_name in endpoints:
-            self._docker_network_disconnect(net_name, self._container_name(device), strict=strict)
+        for device, if_name in endpoints:
+            cname = self._container_name(device)
+            ge_idx = parse_if_index(if_name)
+            # 先 disconnect link，再 connect stub —— 此时 ethN 释放出来，docker 把新 stub 接口挑到同一个最小空位
+            self._docker_network_disconnect(net_name, cname, strict=strict)
+            stub_name = self._ensure_stub_network(device, ge_idx)
+            self._docker_network_connect(stub_name, cname, strict=strict)
+            self.slot_net.setdefault(device, {})[ge_idx] = stub_name
         self.link_connected.discard(str(link_name).strip())
 
     def add_link(self, link_name: str, *, strict: bool = True) -> None:
-        """Connect both endpoints of a topology link back to its docker network."""
+        """加 link：把占位的 stub 换成 link 网络，ethN 槽位保持不变。"""
         net_name = self._get_link_network(link_name)
         endpoints = self._get_link_endpoints(link_name)
-        for device, _if_name in endpoints:
-            self._docker_network_connect(net_name, self._container_name(device), strict=strict)
+        for device, if_name in endpoints:
+            cname = self._container_name(device)
+            ge_idx = parse_if_index(if_name)
+            current = self.slot_net.setdefault(device, {}).get(ge_idx)
+            stub_name = self._stub_network_name(device, ge_idx)
+            # 如果当前槽位是 stub，先解绑并销毁这个私有 stub；随后 connect link 会填到同一个 ethN
+            if current == stub_name:
+                self._docker_network_disconnect(stub_name, cname, strict=strict)
+                self._remove_stub_network(device, ge_idx)
+            self._docker_network_connect(net_name, cname, strict=strict)
+            self.slot_net[device][ge_idx] = net_name
         self.link_connected.add(str(link_name).strip())
 
     def disconnect_link(self, link_name: str, *, strict: bool = True) -> None:
@@ -653,11 +704,18 @@ class TopologyRuntime:
             self.link_to_net[lname] = net_name
             self.link_networks.append(net_name)
 
-        # 3) Connect each device to link networks in GE index order.
+        # 3) 按 GE-1..GE-4 顺序给每台设备挂网络：有 link 的挂 link 网络，没 link 的挂 stub。
+        # 顺序必须严格按 ge_idx 升序，docker 才会把 ethN 的 N 分配成 1,2,3,4 与 if_map 对齐。
         for dev, eps in self.endpoints.items():
             cname = self._container_name(dev)
-            for ep in eps:
-                run_cmd(["docker", "network", "connect", self.link_to_net[ep.link_name], cname])
+            link_by_ge = {parse_if_index(ep.if_name): ep for ep in eps}
+            for ge_idx in range(1, GE_PORT_COUNT + 1):
+                if ge_idx in link_by_ge:
+                    net = self.link_to_net[link_by_ge[ge_idx].link_name]
+                else:
+                    net = self._ensure_stub_network(dev, ge_idx)
+                run_cmd(["docker", "network", "connect", net, cname])
+                self.slot_net[dev][ge_idx] = net
         self.link_connected = set(self.link_to_net.keys())
 
         # 4) Start netnexus process inside each container.
@@ -762,7 +820,8 @@ class TopologyRuntime:
         if self.keep:
             print("Resources kept (--keep enabled).")
             print(f"Containers: {', '.join(self.container_names)}")
-            print(f"Networks: {', '.join([self.mgmt_net] + self.link_networks)}")
+            stub_list = sorted(self.stub_networks)
+            print(f"Networks: {', '.join([self.mgmt_net] + self.link_networks + stub_list)}")
             if self.tmpdir is not None:
                 print(f"Temp dir: {self.tmpdir}")
             return
@@ -771,6 +830,9 @@ class TopologyRuntime:
             run_cmd(["docker", "rm", "-f", name], check=False)
         for net in self.link_networks:
             run_cmd(["docker", "network", "rm", net], check=False)
+        for net in list(self.stub_networks):
+            run_cmd(["docker", "network", "rm", net], check=False)
+        self.stub_networks.clear()
         run_cmd(["docker", "network", "rm", self.mgmt_net], check=False)
         if self.tmpdir is not None:
             shutil.rmtree(self.tmpdir, ignore_errors=True)

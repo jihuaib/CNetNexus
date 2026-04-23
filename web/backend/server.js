@@ -19,7 +19,7 @@
  *   DELETE /api/instances/:id         停止并移除实例
  *   POST   /api/instances/cleanup     清理所有 nn-topo-* 容器
  *   GET    /api/links                 列出当前链路
- *   POST   /api/links                 { id, from, fromPort, to, toPort } 登记链路
+ *   POST   /api/links                 { id, from, fromPort, to, toPort } 新增链路（支持运行时热接线）
  *   DELETE /api/links/:id             删除链路
  *   WS     /ws/terminal?id=<instId>   浏览器 <-> 容器 telnet 3788 双向桥接
  */
@@ -430,24 +430,64 @@ async function dockerContainerRunning(name)
  * 理论上可以吃到 8192 个网络，对 web UI 拓扑场景绰绰有余。
  */
 const SUBNET_POOL_PREFIX = '10.200';
+const SUBNET_ALLOC_MAX_RETRIES = 64;
+
+function ipv4ToU32(ip)
+{
+    const parts = ip.split('.').map(x => Number(x));
+    if (parts.length !== 4 || parts.some(x => !Number.isInteger(x) || x < 0 || x > 255)) return null;
+    return (((parts[0] << 24) >>> 0)
+        | ((parts[1] << 16) >>> 0)
+        | ((parts[2] << 8) >>> 0)
+        | (parts[3] >>> 0)) >>> 0;
+}
+
+function parseIpv4CidrRange(cidr)
+{
+    const [ip, prefixText] = String(cidr || '').trim().split('/');
+    if (!ip || !prefixText) return null;
+    if (ip.includes(':')) return null;
+    const prefix = Number(prefixText);
+    if (!Number.isInteger(prefix) || prefix < 0 || prefix > 32) return null;
+    const ipU32 = ipv4ToU32(ip);
+    if (ipU32 === null) return null;
+    const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+    const start = (ipU32 & mask) >>> 0;
+    const end = (start | (~mask >>> 0)) >>> 0;
+    return { cidr: `${ip}/${prefix}`, start, end };
+}
+
+function cidrRangesOverlap(a, b)
+{
+    return a.start <= b.end && b.start <= a.end;
+}
+
+function isSubnetOverlapErr(detail)
+{
+    return /Pool overlaps with other one on this address space/i.test(detail || '');
+}
 
 async function listUsedSubnets()
 {
-    const used = new Set();
+    const used = [];
     let stdout;
     try
     {
         ({ stdout } = await runDocker(['network', 'ls', '--format', '{{.Name}}']));
     }
     catch (_) { return used; }
-    const names = stdout.split('\n').map(s => s.trim()).filter(n => n.startsWith('nn-link-') || n.startsWith('nn-stub-'));
+    const names = stdout.split('\n').map(s => s.trim()).filter(Boolean);
     for (const n of names)
     {
         try
         {
-            const { stdout: sub } = await runDocker(['inspect', '-f', '{{range .IPAM.Config}}{{.Subnet}}{{end}}', n]);
-            const s = sub.trim();
-            if (s) used.add(s);
+            const { stdout: sub } = await runDocker(['inspect', '-f', '{{range .IPAM.Config}}{{println .Subnet}}{{end}}', n]);
+            const cidrs = sub.split(/\s+/).map(s => s.trim()).filter(Boolean);
+            for (const cidr of cidrs)
+            {
+                const r = parseIpv4CidrRange(cidr);
+                if (r) used.push(r);
+            }
         }
         catch (_) { /* ignore */ }
     }
@@ -463,15 +503,39 @@ async function pickFreeSubnet29()
         const block  = (i >> 5) & 0xff;
         const offset = (i & 31) * 8;
         const candidate = `${SUBNET_POOL_PREFIX}.${block}.${offset}/29`;
-        if (!used.has(candidate)) return candidate;
+        const r = parseIpv4CidrRange(candidate);
+        if (!r) continue;
+        const overlapped = used.some(x => cidrRangesOverlap(x, r));
+        if (!overlapped) return candidate;
     }
     throw new Error('no free /29 subnet in 10.200.0.0/16 pool');
 }
 
 async function createBridgeNetwork(name)
 {
-    const subnet = await pickFreeSubnet29();
-    await runDocker(['network', 'create', '--driver', 'bridge', '--internal', '--subnet', subnet, name]);
+    let lastOverlap = null;
+    for (let attempt = 1; attempt <= SUBNET_ALLOC_MAX_RETRIES; attempt++)
+    {
+        const subnet = await pickFreeSubnet29();
+        try
+        {
+            // 与 CI topology runtime 对齐：链路/占位网络都开启 IPv6，避免双栈恢复时地址下发失败
+            await runDocker(['network', 'create', '--ipv6', '--driver', 'bridge', '--internal', '--subnet', subnet, name]);
+            return;
+        }
+        catch (e)
+        {
+            const detail = String(e.stderr || e.message || '').trim();
+            if (!isSubnetOverlapErr(detail)) throw e;
+            lastOverlap = detail || 'overlap';
+            console.warn(
+                `[backend] create network ${name} subnet ${subnet} overlap, retry ${attempt}/${SUBNET_ALLOC_MAX_RETRIES}`
+            );
+        }
+    }
+    throw new Error(
+        `failed to allocate subnet for ${name}: overlap retries exhausted (${SUBNET_ALLOC_MAX_RETRIES}), last=${lastOverlap || 'unknown'}`
+    );
 }
 
 async function ensureLinkNetwork(link)
@@ -1015,11 +1079,10 @@ app.post('/api/instances/cleanup', async (_req, res) =>
 // -------- Links --------
 
 /**
- * 登记一条链路。
- *   - 两端都未启动：仅登记，等用户启动设备时会把网络 wire 上。
- *   - 一端/两端已启动：仍然只登记，不动已运行容器 —— 因为 if_map 已在容器创建时烧进去，
- *     之后再临时 network connect 会产生 eth5+ 的接口，CLI 的 GE-N 映射不到，ping 不通。
- *     这种情况下提示用户需要重启相关设备。
+ * 新增（或登记）一条链路。
+ *   - 两端都未启动：仅登记，等设备启动时按 GE 槽位自动接通。
+ *   - 一端/两端已启动：对运行中的端点做 "disconnect stub -> connect link" 原位换接口，
+ *     保持容器内 GE-N <-> ethN 对齐，实现热加线。
  */
 app.post('/api/links', async (req, res) =>
 {
@@ -1053,14 +1116,102 @@ app.post('/api/links', async (req, res) =>
     };
     if (!existing) links.set(id, link);
 
-    // 只有真在跑的容器才叫 "running end"（停机状态的 inst 记录也在 Map 里但 status=stopped）
-    const runningEnds = [instances.get(from), instances.get(to)]
-        .filter(x => x && x.status === 'running').length;
-    const note = runningEnds === 0
-        ? `已登记，启动两端设备时会自动接通（${link.networkName}）`
-        : `已登记。检测到 ${runningEnds} 端在运行，需要重启对应设备使链路生效`;
+    const runningEndpoints = [
+        { id: link.from, port: link.fromPort },
+        { id: link.to, port: link.toPort }
+    ].filter(ep => {
+        const inst = instances.get(ep.id);
+        return inst && inst.status === 'running';
+    });
 
-    res.json({ ok: true, link, wired: false, needRestart: runningEnds > 0, note });
+    let hotOkEnds = 0;
+    let hotFailedEnds = 0;
+    if (runningEndpoints.length > 0)
+    {
+        try
+        {
+            await ensureLinkNetwork(link);
+        }
+        catch (e)
+        {
+            hotFailedEnds = runningEndpoints.length;
+            console.warn(`[backend] POST link ${id} ensure network failed: ${e.stderr || e.message}`);
+        }
+    }
+
+    if (runningEndpoints.length > 0 && hotFailedEnds === 0)
+    {
+        for (const ep of runningEndpoints)
+        {
+            const inst = instances.get(ep.id);
+            const geIdx = parsePortIndex(ep.port);
+            if (!inst || geIdx < 1 || geIdx > GE_PORT_COUNT)
+            {
+                hotFailedEnds++;
+                continue;
+            }
+            const stubName = stubNetworkName(inst.id, geIdx);
+            try
+            {
+                if (await containerOnNetwork(inst.containerName, stubName))
+                {
+                    await runDocker(['network', 'disconnect', stubName, inst.containerName]).catch(() => {});
+                }
+                await runDocker(['network', 'rm', stubName]).catch(() => {});
+
+                if (!(await containerOnNetwork(inst.containerName, link.networkName)))
+                {
+                    await runDocker(['network', 'connect', link.networkName, inst.containerName]);
+                }
+
+                inst.stubNets = (inst.stubNets || []).filter(n => n !== stubName);
+                if (!(inst.linkNets || []).includes(link.networkName))
+                {
+                    inst.linkNets = inst.linkNets || [];
+                    inst.linkNets.push(link.networkName);
+                }
+                hotOkEnds++;
+            }
+            catch (e)
+            {
+                hotFailedEnds++;
+                console.warn(
+                    `[backend] POST link ${id} hot-swap failed on ${inst.containerName} ${ep.port}: ${e.stderr || e.message}`
+                );
+            }
+        }
+    }
+
+    const runningEnds = runningEndpoints.length;
+    link.wired = (runningEnds === 2 && hotFailedEnds === 0 && hotOkEnds === 2);
+
+    let note;
+    if (runningEnds === 0)
+    {
+        note = `已登记，启动两端设备时会自动接通（${link.networkName}）`;
+    }
+    else if (hotFailedEnds > 0)
+    {
+        note = `链路已登记，热接线部分失败（成功 ${hotOkEnds}/${runningEnds} 端），建议重启失败端设备`;
+    }
+    else if (runningEnds === 2)
+    {
+        note = `链路已热接通（${link.networkName}）`;
+    }
+    else
+    {
+        note = `链路已热接入 1 端（${link.networkName}），另一端启动后会自动接通`;
+    }
+
+    res.json({
+        ok: true,
+        link,
+        wired: link.wired,
+        hotApplied: hotOkEnds > 0,
+        needRestart: hotFailedEnds > 0,
+        runningEnds,
+        note
+    });
 });
 
 app.get('/api/links', (_req, res) =>
@@ -1078,6 +1229,50 @@ app.delete('/api/links/:id', async (req, res) =>
         await runDocker(['network', 'rm', name]).catch(() => {});
         return res.status(404).json({ error: 'not found' });
     }
+
+    // 对每个运行中的端点做 "disconnect link → connect stub" 原位换接口，
+    // 让容器内 ethN 槽位继续存在，避免后续加线被 docker 分到 eth5+。
+    // 结果：GE-N 保持 UP（stub 提供 carrier），直连路由仍在，但对端不可达。
+    const runningEndpoints = [
+        { id: link.from, port: link.fromPort },
+        { id: link.to, port: link.toPort }
+    ].filter(ep => {
+        const inst = instances.get(ep.id);
+        return inst && inst.status === 'running';
+    });
+
+    try
+    {
+        for (const ep of runningEndpoints)
+        {
+            const inst = instances.get(ep.id);
+            const geIdx = parsePortIndex(ep.port);
+            if (geIdx < 1 || geIdx > GE_PORT_COUNT) continue;
+
+            if (await containerOnNetwork(inst.containerName, link.networkName))
+            {
+                await runDocker(['network', 'disconnect', link.networkName, inst.containerName]).catch(() => {});
+            }
+            const stubName = await ensureStubNetwork(inst.id, geIdx);
+            if (!(await containerOnNetwork(inst.containerName, stubName)))
+            {
+                await runDocker(['network', 'connect', stubName, inst.containerName]);
+            }
+            inst.linkNets = (inst.linkNets || []).filter(n => n !== link.networkName);
+            if (!(inst.stubNets || []).includes(stubName))
+            {
+                inst.stubNets = inst.stubNets || [];
+                inst.stubNets.push(stubName);
+            }
+        }
+    }
+    catch (e)
+    {
+        console.warn(`[backend] DELETE link ${req.params.id} hot-swap failed: ${e.stderr || e.message}`);
+        // 兜底：继续走 unwireLink 把 link 网络彻底清掉，保证一致性
+    }
+
+    // 此时 link 网络上已没有 running 容器；unwireLink 会清干净残余并 rm 网络
     await unwireLink(link);
     links.delete(req.params.id);
     res.json({ ok: true });

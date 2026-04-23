@@ -1,7 +1,7 @@
 /**
  * @file   bgp_pkt_build_ipv6qp.c
  * @brief  BGP UPDATE 报文 IPv6 QP（AFI=2, SAFI=253）AF 编码器
- *         NLRI 变长 TLV：长度(1B) + TLV1[type=1,len,dqpn(1-3B)] + TLV2[type=2,mask,prefix]
+ *         NLRI 变长 TLV：长度(1B) + TLV1[type=1,len,dqpn(1-3B)] + TLV2[type=2,len=mask,prefix]
  * @author jhb
  * @date   2026/04/20
  */
@@ -36,8 +36,8 @@ static int qp_nlri_size(const bgp_nlri_entry_t *nlri)
     }
     int dq = nlri->qp.dqpn_len ? nlri->qp.dqpn_len : dqpn_bytes(nlri->qp.dqpn);
     int pfx = (nlri->qp.prefix.prefix_len + 7) / 8;
-    /* 外层长度(1) + DQPN TLV + PREFIX TLV(type+len+masklen+prefix) */
-    return 1 + (1 + 1 + dq) + (1 + 1 + 1 + pfx);
+    /* 外层长度(1) + DQPN TLV + PREFIX TLV(type+len(mask bits)+prefix bytes) */
+    return 1 + (1 + 1 + dq) + (1 + 1 + pfx);
 }
 
 static int encode_qp_nlri(uint8_t *buf, int buf_size, const bgp_nlri_entry_t *nlri)
@@ -52,8 +52,12 @@ static int encode_qp_nlri(uint8_t *buf, int buf_size, const bgp_nlri_entry_t *nl
         return -1;
     }
     uint8_t plen = nlri->qp.prefix.prefix_len;
+    if (plen > 128)
+    {
+        return -1;
+    }
     int pfx_bytes = (plen + 7) / 8;
-    int value_len = (1 + 1 + dq) + (1 + 1 + 1 + pfx_bytes);
+    int value_len = (1 + 1 + dq) + (1 + 1 + pfx_bytes);
     int total = 1 + value_len;
     if (buf_size < total)
     {
@@ -71,8 +75,7 @@ static int encode_qp_nlri(uint8_t *buf, int buf_size, const bgp_nlri_entry_t *nl
     }
 
     buf[pos++] = BGP_QP_TLV_PREFIX;
-    /* TLV len 为 value 长度（masklen + prefix bytes） */
-    buf[pos++] = (uint8_t)(1 + pfx_bytes);
+    /* TLV len 语义为 masklen(bit)，value 仅携带 prefix bytes。 */
     buf[pos++] = plen;
     if (pfx_bytes > 0)
     {

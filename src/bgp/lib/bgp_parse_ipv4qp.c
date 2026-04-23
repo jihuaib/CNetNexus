@@ -1,7 +1,7 @@
 /**
  * @file   bgp_parse_ipv4qp.c
  * @brief  AFI=1 SAFI=253（IPv4 QP）NLRI 处理器
- *         变长 TLV 格式：长度(1B) + TLV1[type=1,len,dqpn] + TLV2[type=2,mask,prefix]
+ *         变长 TLV 格式：长度(1B) + TLV1[type=1,len,dqpn] + TLV2[type=2,len=mask,prefix]
  * @author jhb
  * @date   2026/04/20
  */
@@ -65,13 +65,9 @@ static int parse_qp_entry(const uint8_t *data, uint16_t avail, int af, bgp_nlri_
         }
         else if (tlv_type == BGP_QP_TLV_PREFIX)
         {
-            if (tlv_len < 1 || pos + tlv_len > end)
-            {
-                return -1;
-            }
-            uint8_t plen = data[pos];
+            uint8_t plen = tlv_len;
             uint8_t nbytes = (uint8_t)((plen + 7) / 8);
-            if (plen > 32 || (uint16_t)(1 + nbytes) != tlv_len)
+            if (plen > 32 || pos + nbytes > end)
             {
                 return -1;
             }
@@ -79,9 +75,9 @@ static int parse_qp_entry(const uint8_t *data, uint16_t avail, int af, bgp_nlri_
             e->qp.prefix.addr.family = AF_INET;
             if (nbytes > 0)
             {
-                memcpy(&e->qp.prefix.addr.u.v4, data + pos + 1, nbytes);
+                memcpy(&e->qp.prefix.addr.u.v4, data + pos, nbytes);
             }
-            pos += tlv_len;
+            pos += nbytes;
             have_prefix = true;
         }
         else

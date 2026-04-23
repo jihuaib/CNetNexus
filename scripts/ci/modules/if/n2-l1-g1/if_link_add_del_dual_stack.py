@@ -4,8 +4,10 @@ IF link add/remove validation (dual-stack).
 
 Goals:
 - remove/add topology link via CI runtime generic helpers
-- verify route OS connected/local entries are withdrawn/restored
-- verify ping behavior changes accordingly for IPv4 and IPv6
+- 在 stub 补位模型下，remove_link 不会让接口 DOWN（因为立刻挂上 stub），
+  但会切断对端可达性。add_link 再把 stub 换回 link，对端恢复可达。
+- 断言关注点：ping IPv4/IPv6 连通性的 down/up 切换；
+  接口状态、直连路由在整个过程中保持 UP/present（指向新的 ifindex）。
 """
 
 from __future__ import annotations
@@ -389,9 +391,10 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         _wait_ping(rt, device="r1", command=f"ping {r2_v4}", expect_success=True)
         _wait_ping(rt, device="r1", command=f"ping ipv6 {r2_v6}", expect_success=True)
 
-        step("Remove link and verify route RIB/OS withdraw + ping fail")
+        step("Remove link: stub 替换后接口仍 UP，直连路由仍在，但对端不可达")
         remove_link(rt, link_name)
-        _wait_if_state(rt, if_name=GE_IF, expect_proto="DOWN", expect_link="DOWN", timeout=30, interval=2)
+        # stub 立刻占位，稳态接口保持 UP（carrier 来自 stub 桥），RIB/OS 直连路由仍指向新 ifindex
+        _wait_if_state(rt, if_name=GE_IF, expect_proto="UP", expect_link="UP", timeout=30, interval=2)
         _wait_rib_route(
             rt,
             device="r1",
@@ -401,7 +404,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             prefix=r1_v4_connected,
             nexthop="0.0.0.0",
             interface=GE_IF,
-            expect_present=False,
+            expect_present=True,
             timeout=40,
         )
         _wait_rib_route(
@@ -413,7 +416,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             prefix=r1_v4_local,
             nexthop="0.0.0.0",
             interface=GE_IF,
-            expect_present=False,
+            expect_present=True,
             timeout=40,
         )
         _wait_rib_route(
@@ -425,7 +428,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             prefix=r1_v6_connected,
             nexthop="::",
             interface=GE_IF,
-            expect_present=False,
+            expect_present=True,
             timeout=40,
         )
         _wait_rib_route(
@@ -437,7 +440,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             prefix=r1_v6_local,
             nexthop="::",
             interface=GE_IF,
-            expect_present=False,
+            expect_present=True,
             timeout=40,
         )
         _wait_os_route(
@@ -449,7 +452,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             route_type="unicast",
             proto="kernel",
             gateway="-",
-            expect_present=False,
+            expect_present=True,
             timeout=40,
         )
         _wait_os_route(
@@ -461,7 +464,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             route_type="local",
             proto="kernel",
             gateway="-",
-            expect_present=False,
+            expect_present=True,
             timeout=40,
         )
         _wait_os_route(
@@ -473,7 +476,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             route_type="unicast",
             proto="kernel",
             gateway="-",
-            expect_present=False,
+            expect_present=True,
             timeout=40,
         )
         _wait_os_route(
@@ -485,7 +488,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             route_type="local",
             proto="kernel",
             gateway="-",
-            expect_present=False,
+            expect_present=True,
             timeout=40,
         )
         _wait_ping(rt, device="r1", command=f"ping {r2_v4}", expect_success=False)

@@ -116,8 +116,16 @@ telnet localhost 3788
 ./scripts/dev/build-docker-image.sh
 
 # 多架构发布包（生成 .tar.gz，用于 GitHub Release）
-./scripts/prod/publish.sh                      # amd64 + arm64 + armv7
+./scripts/prod/publish.sh                      # amd64 + arm64
 ./scripts/prod/publish.sh amd64                # 仅 amd64
+
+# 自动创建/更新 GitHub Release 并上传产物（token 文件不会入库）
+mkdir -p .secrets
+chmod 700 .secrets
+printf '%s\n' '<YOUR_GITHUB_TOKEN>' > .secrets/github_token
+chmod 600 .secrets/github_token
+./scripts/prod/publish.sh --github-release
+# 默认会自动创建/校验并 push tag(v版本号) 到 origin；如需关闭加 --no-sync-tag
 
 # 输出
 package/

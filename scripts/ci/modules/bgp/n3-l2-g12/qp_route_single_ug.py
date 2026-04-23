@@ -215,23 +215,46 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             raise RuntimeError(f"expected exactly 1 update-group for QP, got:\n{ug_summary}")
 
         step("Reject duplicate QP route config")
-        dup_out = cmd(
-            rt, "r2",
-            f"config\nbgp {AS_LOCAL}\naf ipv4-qp\nroute start-dqpn {QP_START_DQPN} ip {QP_PFX_ADDR} "
-            f"mask {QP_MASK} count {QP_COUNT} bid {QP_BID}\nexit\nend",
+        run_cmds(
+            rt=rt,
+            device="r2",
             strict=False,
+            commands=[
+                "config",
+                f"bgp {AS_LOCAL}",
+                "af ipv4-qp",
+                f"route start-dqpn {QP_START_DQPN} ip {QP_PFX_ADDR} mask {QP_MASK} count {QP_COUNT} bid {QP_BID}",
+                "exit",
+                "end",
+            ],
         )
-        # 同配置应为 NOOP（不打印错误也不重复注入）或错误，但不应新增组
-        # 此处只验证不报 fatal
+        dup_show = cmd(rt, "r2", "show bgp route af ipv4-qp", strict=False)
+        dup_total = re.search(r"(?im)^Total:\s*(\d+)\s+networks", dup_show)
+        if not dup_total or int(dup_total.group(1)) != QP_COUNT:
+            raise RuntimeError(f"duplicate QP route changed route count unexpectedly:\n{dup_show}")
+
         step("Reject overlapping-prefix QP route config")
-        ovl_out = cmd(
-            rt, "r2",
-            f"config\nbgp {AS_LOCAL}\naf ipv4-qp\nroute start-dqpn {QP_START_DQPN + 100} ip {QP_PFX_ADDR} "
-            f"mask {QP_MASK - 1} count 1 bid {QP_BID}\nexit\nend",
+        ovl_dqpn = QP_START_DQPN + 100
+        ovl_mask = QP_MASK - 1
+        run_cmds(
+            rt=rt,
+            device="r2",
             strict=False,
+            commands=[
+                "config",
+                f"bgp {AS_LOCAL}",
+                "af ipv4-qp",
+                f"route start-dqpn {ovl_dqpn} ip {QP_PFX_ADDR} mask {ovl_mask} count 1 bid {QP_BID}",
+                "exit",
+                "end",
+            ],
         )
-        if "overlap" not in ovl_out.lower() and "overlaps" not in ovl_out.lower():
-            raise RuntimeError(f"expected overlap rejection, got:\n{ovl_out}")
+        ovl_show = cmd(rt, "r2", "show bgp route af ipv4-qp", strict=False)
+        ovl_total = re.search(r"(?im)^Total:\s*(\d+)\s+networks", ovl_show)
+        if not ovl_total or int(ovl_total.group(1)) != QP_COUNT:
+            raise RuntimeError(f"overlapping QP route changed route count unexpectedly:\n{ovl_show}")
+        if re.search(rf"(?im)\bdqpn={ovl_dqpn}\b", ovl_show) or re.search(rf"(?im)/{ovl_mask}\b", ovl_show):
+            raise RuntimeError(f"overlapping QP route was accepted unexpectedly:\n{ovl_show}")
 
         step("Disable route-select; peers should withdraw QP routes")
         run_cmds(

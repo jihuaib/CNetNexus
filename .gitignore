@@ -54,3 +54,6 @@ scripts/ci/reports/
 
 # graphify output
 graphify-out/
+
+# Local secrets
+.secrets/

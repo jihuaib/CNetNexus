@@ -533,6 +533,21 @@ static int bgp_relay_route_upsert(uint32_t vrf_id, const bgp_nlri_entry_t *nlri,
         return ERRCODE_FAIL;
     }
 
+    /* QP 路由不依赖 nexthop 迭代：直接置 valid 并触发优选。 */
+    if (nlri->type == BGP_NLRI_QP && nlri->safi == BGP_SAFI_QP)
+    {
+        if (old_route && had_old_nh)
+        {
+            bgp_relay_detach_route_from_watch(route, &old_nh_key, TRUE);
+        }
+        if (bgp_relay_set_route_valid(inst, nlri, source, TRUE) < 0)
+        {
+            return ERRCODE_FAIL;
+        }
+        bgp_relay_trigger_calc(inst, nlri);
+        return ERRCODE_SUCCESS;
+    }
+
     bgp_relay_nh_key_t new_nh_key;
     if (!bgp_relay_build_nh_key_from_route(route, &new_nh_key))
     {
@@ -655,6 +670,25 @@ void bgp_relay_ingest_peer_update(bgp_session_t *session, const bgp_update_resul
     for (uint32_t i = 0; i < upd->reach_len; ++i)
     {
         const bgp_nlri_entry_t *nlri = &upd->reach[i];
+
+        /* QP 路由直入 RIB，不做 nexthop 族校验/迭代。 */
+        if (nlri->type == BGP_NLRI_QP && nlri->safi == BGP_SAFI_QP)
+        {
+            if (bgp_relay_route_upsert(vrf_id, nlri, &session->neighbor_addr, &upd->attr, &upd->nexthop) ==
+                ERRCODE_SUCCESS)
+            {
+                if (stats)
+                {
+                    stats->reach_injected++;
+                }
+            }
+            else if (stats)
+            {
+                stats->reach_failed++;
+            }
+            continue;
+        }
+
         uint16_t afi = 0;
         uint8_t prefix_len = 0;
         net_addr_t prefix_addr;
@@ -689,6 +723,17 @@ void bgp_relay_ingest_peer_update(bgp_session_t *session, const bgp_update_resul
     for (uint32_t i = 0; i < upd->unreach_len; ++i)
     {
         const bgp_nlri_entry_t *nlri = &upd->unreach[i];
+
+        if (nlri->type == BGP_NLRI_QP && nlri->safi == BGP_SAFI_QP)
+        {
+            (void)bgp_relay_route_remove(vrf_id, nlri, &session->neighbor_addr);
+            if (stats)
+            {
+                stats->unreach_injected++;
+            }
+            continue;
+        }
+
         uint16_t afi = 0;
         uint8_t prefix_len = 0;
         net_addr_t prefix_addr;

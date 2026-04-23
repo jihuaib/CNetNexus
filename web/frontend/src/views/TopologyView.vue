@@ -427,14 +427,30 @@ async function onCreateLink({ from, fromPort, to, toPort })
         const data = await r.json();
         if (r.ok)
         {
-            if (data.needRestart)
+            if (data.note)
+            {
+                pushLog(data.note);
+            }
+            else if (data.needRestart)
             {
                 pushLog(`链路已登记，但两端已在运行。请重启相关设备使 ${fromPort}/${toPort} 生效`);
+            }
+            else if (data.wired)
+            {
+                pushLog(`链路已热接通（${data.link.networkName}）`);
+            }
+            else if (data.hotApplied)
+            {
+                pushLog(`链路已热接入运行端（${data.link.networkName}）`);
             }
             else
             {
                 pushLog(`链路已登记（${data.link.networkName}），启动两端设备后会自动接通`);
             }
+        }
+        else if (data?.error)
+        {
+            pushLog(`后端登记链路失败：${data.error}`);
         }
     }
     catch (e)
