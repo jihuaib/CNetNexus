@@ -100,10 +100,13 @@ def _session_checks(
 
 
 def _ext_nexthop_capability_checks(
+    r1_peer_v4: str,
     r1_peer_v6: str,
+    r2_peer_v4: str,
     r2_peer_v6: str,
 ) -> list[dict[str, object]]:
     ext_nh_yes_row = r"(?im)^\s*Extended-Nexthop\s+Yes\s+Yes\s+Yes\s*$"
+    ext_nh_no_row = r"(?im)^\s*Extended-Nexthop\s+No\s+No\s+No\s*$"
     return [
         {
             "device": "r1",
@@ -113,11 +116,25 @@ def _ext_nexthop_capability_checks(
             "label": "r1 ipv4-unicast v6-peer ext-nexthop negotiated",
         },
         {
+            "device": "r1",
+            "command": f"show bgp neighbor af ipv6-unicast {r1_peer_v4}",
+            "contains": [r1_peer_v4, "Capabilities:", "Extended-Nexthop"],
+            "regex": [ext_nh_no_row],
+            "label": "r1 ipv6-unicast v4-peer ext-nexthop absent",
+        },
+        {
             "device": "r2",
             "command": f"show bgp neighbor af ipv4-unicast {r2_peer_v6}",
             "contains": [r2_peer_v6, "Capabilities:", "Extended-Nexthop"],
             "regex": [ext_nh_yes_row],
             "label": "r2 ipv4-unicast v6-peer ext-nexthop negotiated",
+        },
+        {
+            "device": "r2",
+            "command": f"show bgp neighbor af ipv6-unicast {r2_peer_v4}",
+            "contains": [r2_peer_v4, "Capabilities:", "Extended-Nexthop"],
+            "regex": [ext_nh_no_row],
+            "label": "r2 ipv6-unicast v4-peer ext-nexthop absent",
         },
     ]
 
@@ -449,7 +466,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
     r2_peer_v6 = str(g_top.r2.GE_1.peer_ip6)
 
     session_checks = _session_checks(r1_peer_v4, r1_peer_v6, r2_peer_v4, r2_peer_v6)
-    ext_nh_checks = _ext_nexthop_capability_checks(r1_peer_v6, r2_peer_v6)
+    ext_nh_checks = _ext_nexthop_capability_checks(r1_peer_v4, r1_peer_v6, r2_peer_v4, r2_peer_v6)
     af_route_checks = _af_local_and_received_checks()
 
     try:

@@ -161,6 +161,16 @@ void bgp_session_reset_negotiated(bgp_session_t *sess)
         g_array_set_size(sess->negotiated_afs, 0);
     }
 
+    /* 同步回落 peer 状态，保证断链/重协商路径上 peer 状态与 session 一致 */
+    for (GList *l = sess->peer_list; l; l = l->next)
+    {
+        bgp_peer_t *peer = (bgp_peer_t *)l->data;
+        if (peer)
+        {
+            peer->state = BGP_PEER_STATE_IDLE;
+        }
+    }
+
     char addr_str[64];
     net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
     LOG_DEBUG("BGP: neighbor %s negotiated params reset", addr_str);

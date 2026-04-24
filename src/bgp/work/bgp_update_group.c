@@ -358,12 +358,7 @@ void bgp_subgroup_peer_join(bgp_peer_t *peer, bgp_session_t *sess)
 
     bgp_update_group_key_t ugk;
     bgp_session_compute_ug_key(sess, &ugk);
-    /* 实例带 NH_UNCHANGED 策略：所有 session 合入单一 ug，key 清零去除区分维度 */
-    if (inst->flags & BGP_INST_FLAG_NH_UNCHANGED)
-    {
-        memset(&ugk, 0, sizeof(ugk));
-        ugk.sess_type = BGP_SESS_TYPE_UNKNOWN;
-    }
+    /* NH_UNCHANGED 仅影响 nexthop 规则，不改变 update-group 划分。 */
     bgp_update_group_t *ug = bgp_update_group_find_or_create(inst, &ugk);
     if (!ug)
     {
@@ -381,6 +376,7 @@ void bgp_subgroup_peer_join(bgp_peer_t *peer, bgp_session_t *sess)
     int nrules;
     if (inst->flags & BGP_INST_FLAG_NH_UNCHANGED)
     {
+        /* QP/next-hop-unchanged：沿用正常 UG 划分，但所有导出统一保留原 nexthop。 */
         nrules = 1;
         rules[0] = BGP_NH_RULE_PASS;
     }
@@ -601,11 +597,9 @@ bool bgp_subgroup_eval_export(const bgp_nh_subgroup_t *sg, const bgp_route_node_
     }
 
     bgp_sess_type_t stype = sg->parent ? sg->parent->key.sess_type : BGP_SESS_TYPE_UNKNOWN;
-    const bgp_instance_t *inst = sg->parent ? sg->parent->inst : NULL;
-    const bool nh_unchanged = inst && (inst->flags & BGP_INST_FLAG_NH_UNCHANGED);
 
-    /* iBGP→iBGP 反射检查；NH_UNCHANGED 实例忽略 split-horizon */
-    if (!nh_unchanged && stype == BGP_SESS_TYPE_IBGP && !BIT_TEST(best->flags, BGP_ROUTE_FLAG_IMPORT))
+    /* iBGP→iBGP 反射检查 */
+    if (stype == BGP_SESS_TYPE_IBGP && !BIT_TEST(best->flags, BGP_ROUTE_FLAG_IMPORT))
     {
         const bgp_session_t *src_sess = bgp_best_source_session(best);
         if (src_sess && src_sess->sess_type == BGP_SESS_TYPE_IBGP)
@@ -865,6 +859,12 @@ void bgp_update_group_catchup_session(bgp_session_t *sess)
             continue;
         }
         bgp_instance_t *inst = peer->inst;
+
+        /* peer 状态已在 fsm_on_established 中设置；未协商本 AF 的 peer 不加入子组、不回放 RIB */
+        if (peer->state != BGP_PEER_STATE_ESTABLISHED)
+        {
+            continue;
+        }
 
         /* 加入子组（幂等）；peer 可能归属多个 rule 的子组 */
         bgp_subgroup_peer_join(peer, sess);

@@ -142,9 +142,10 @@ static void show_single_entry(GString *resp_buf, const char *ifname, const if_ma
     gboolean is_null0 = (strcmp(e->logical_name, "null0") == 0);
     gboolean has_info = (!is_null0 && if_get_info(e->physical_name, &info) == ERRCODE_SUCCESS);
 
-    char ip4_str[70], ip6_str[70];
+    char ip4_str[70], ip6_str[70], ip6_ll_str[70];
     show_format_prefix(&e->prefix_v4, ip4_str, sizeof(ip4_str));
     show_format_prefix(&e->prefix_v6, ip6_str, sizeof(ip6_str));
+    show_format_prefix(&e->prefix_v6_linklocal, ip6_ll_str, sizeof(ip6_ll_str));
 
     char mac_str[32] = "-";
     const char *type_str = is_null0 ? "Blackhole" : "-";
@@ -180,9 +181,11 @@ static void show_single_entry(GString *resp_buf, const char *ifname, const if_ma
                            "  Link State : %s\r\n"
                            "  IPv4 Addr  : %s\r\n"
                            "  IPv6 Addr  : %s\r\n"
+                           "  IPv6 LLAddr: %s\r\n"
                            "  MAC        : %s\r\n"
                            "  MTU        : %d\r\n\r\n",
-                           ifname, ifname, e->ifindex, type_str, proto_str, link_str, ip4_str, ip6_str, mac_str, mtu);
+                           ifname, ifname, e->ifindex, type_str, proto_str, link_str, ip4_str, ip6_str, ip6_ll_str,
+                           mac_str, mtu);
 }
 
 static if_map_entry_t *find_entry(const char *name)

@@ -605,7 +605,6 @@ int if_cfg_apply_ip(gboolean is_no, const char *logical_name, const net_prefix_t
 
     net_prefix_t old_prefix = *dst;
     gboolean had_old = net_prefix_is_set(&old_prefix);
-
     if (had_old && !if_prefix_equal(&old_prefix, prefix))
     {
         if (!entry->shutdown && if_sync_connected_prefix(&old_prefix, entry->physical_name, TRUE) != ERRCODE_SUCCESS)

@@ -265,11 +265,49 @@ static void fsm_reannounce_best(bgp_session_t *sess)
     bgp_update_group_catchup_session(sess);
 }
 
+/** 根据本次 OPEN 协商结果，为本 session 下每个 per-AF peer 写入最终状态 */
+static void fsm_update_peer_states(bgp_session_t *sess)
+{
+    for (GList *l = sess->peer_list; l; l = l->next)
+    {
+        bgp_peer_t *peer = (bgp_peer_t *)l->data;
+        if (!peer || !peer->inst)
+        {
+            continue;
+        }
+        guint32 af_key = ((guint32)peer->inst->afi << 16) | (guint32)peer->inst->safi;
+        bool negotiated = false;
+        if (sess->negotiated_afs)
+        {
+            for (guint i = 0; i < sess->negotiated_afs->len; i++)
+            {
+                if (g_array_index(sess->negotiated_afs, guint32, i) == af_key)
+                {
+                    negotiated = true;
+                    break;
+                }
+            }
+        }
+        peer->state = negotiated ? BGP_PEER_STATE_ESTABLISHED : BGP_PEER_STATE_NOT_NEGOTIATED;
+        if (!negotiated)
+        {
+            char addr_str[64];
+            net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
+            LOG_INFO("BGP: neighbor %s afi=%u safi=%u not negotiated by peer, marking NoNegotiated", addr_str,
+                     (unsigned)peer->inst->afi, (unsigned)peer->inst->safi);
+        }
+    }
+}
+
 /** 进入 ESTABLISHED 状态的统一动作：记录时间戳、启动 KA/Hold 定时器、补发路由 */
 static void fsm_on_established(bgp_session_t *sess)
 {
     sess->established_at_usec = g_get_real_time();
     sess->fsm_state = BGP_FSM_STATE_ESTABLISHED;
+
+    /* 在启动定时器 / 回放路由之前，先把 per-AF peer 状态与 OPEN 协商结果对齐，
+     * 这样后续 catchup / show / 报文路径都能直接读取 peer->state 判断。 */
+    fsm_update_peer_states(sess);
 
     bgp_protocol_t *proto = g_bgp_work_local->protocol;
     bgp_vrf_t *vrf0 = proto ? bgp_protocol_get_vrf(proto, BGP_VRF_PUBLIC_ID) : NULL;
@@ -313,6 +351,18 @@ static void act_start_active(bgp_session_t *sess)
     {
         return; /* 已有连接，幂等 */
     }
+
+    /* router-id 未配置：本端 BGP Identifier 无效，不发起建连，等待配置后 retry 自然恢复 */
+    if (!sess->vrf || sess->vrf->router_id == 0)
+    {
+        char addr_str[64];
+        net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
+        LOG_WARN("BGP FSM: neighbor=%s skip active start: router-id not configured, arming retry", addr_str);
+        fsm_arm_retry(sess);
+        sess->fsm_state = BGP_FSM_STATE_ACTIVE;
+        return;
+    }
+
     bgp_conn_t *new_conn = bgp_conn_create(sess);
 
     bgp_protocol_t *proto = g_bgp_work_local->protocol;

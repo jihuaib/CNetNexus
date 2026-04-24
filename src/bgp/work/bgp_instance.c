@@ -21,7 +21,7 @@ bgp_instance_t *bgp_instance_create(bgp_afi_t afi, bgp_safi_t safi, bgp_vrf_t *v
     inst->afi = afi;
     inst->safi = safi;
     inst->vrf = vrf;
-    /* QP 地址族默认启用"下一跳保持不变"策略：单 UG、全 PASS、忽略 split-horizon */
+    /* QP 地址族默认启用"下一跳保持不变"策略：仍沿用常规 update-group 划分，仅导出时固定 PASS。 */
     if (safi == BGP_SAFI_QP)
     {
         inst->flags |= BGP_INST_FLAG_NH_UNCHANGED;

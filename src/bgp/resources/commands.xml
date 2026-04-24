@@ -554,7 +554,7 @@
             </commands>
         </group>
 
-        <!-- show bgp route af ipv4-unicast|ipv6-unicast [<ip> <masklen>] -->
+        <!-- show bgp route af ipv4-unicast|ipv6-unicast [<ip> <masklen>] / ipv4-qp|ipv6-qp [<qp-route-key>] -->
         <group group-id="10">
             <elements>
                 <element id="1" type="keyword">
@@ -599,6 +599,11 @@
                     <name>ipv6-qp</name>
                     <description>Show IPv6 qp routes</description>
                 </element>
+                <element id="11" cfg-id="7" type="parameter">
+                    <name>&lt;qp-route-key&gt;</name>
+                    <type>string(1-255)</type>
+                    <description>QP route key, e.g. dqpn=1000,ip=10.99.99.0/24 or dqpn=1000,ipv6=2001:db8::/64</description>
+                </element>
             </elements>
 
             <commands>
@@ -612,14 +617,14 @@
                     <expression>1 2 3 4 6 [7 8]</expression>
                     <views>global</views>
                 </command>
-                <!-- show bgp route af ipv4-qp [<ip-address> <masklen>] -->
+                <!-- show bgp route af ipv4-qp [<qp-route-key>] -->
                 <command>
-                    <expression>1 2 3 4 9 [7 8]</expression>
+                    <expression>1 2 3 4 9 [11]</expression>
                     <views>global</views>
                 </command>
-                <!-- show bgp route af ipv6-qp [<ip-address> <masklen>] -->
+                <!-- show bgp route af ipv6-qp [<qp-route-key>] -->
                 <command>
-                    <expression>1 2 3 4 10 [7 8]</expression>
+                    <expression>1 2 3 4 10 [11]</expression>
                     <views>global</views>
                 </command>
             </commands>

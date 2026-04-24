@@ -14,11 +14,22 @@
 // IPv6 单播编码器实现
 // ============================================================================
 
+static void write_ipv4_mapped_ipv6(uint8_t *dst, const struct in_addr *v4)
+{
+    static const uint8_t prefix[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF};
+    if (!dst || !v4)
+    {
+        return;
+    }
+    memcpy(dst, prefix, sizeof(prefix));
+    memcpy(dst + sizeof(prefix), &v4->s_addr, sizeof(v4->s_addr));
+}
+
 /**
  * @brief 编码 MP_REACH_NLRI 路径属性（RFC 4760）
  *
- * 格式：AFI(2) + SAFI(1) + NHLen(1) + NH(4 or 16 or 32) + SNPA(1) + 前缀(1+n)
- * nexthop 支持 IPv4(4B) 或 IPv6(16/32B)。
+ * 格式：AFI(2) + SAFI(1) + NHLen(1) + NH(16 or 32) + SNPA(1) + 前缀(1+n)
+ * 对 IPv4 nexthop，线上按 6PE 形式编码为 IPv4-mapped IPv6（16B）。
  */
 static int encode_mp_reach(uint8_t *buf, int buf_size, const bgp_nlri_entry_t *nlri, const bgp_nexthop_t *nexthop)
 {
@@ -34,7 +45,7 @@ static int encode_mp_reach(uint8_t *buf, int buf_size, const bgp_nlri_entry_t *n
     uint8_t nh_len = 0;
     if (nexthop->global.family == AF_INET)
     {
-        nh_len = 4;
+        nh_len = 16;
     }
     else if (nexthop->global.family == AF_INET6)
     {
@@ -64,8 +75,8 @@ static int encode_mp_reach(uint8_t *buf, int buf_size, const bgp_nlri_entry_t *n
 
     if (nexthop->global.family == AF_INET)
     {
-        memcpy(buf + pos, &nexthop->global.u.v4.s_addr, 4);
-        pos += 4;
+        write_ipv4_mapped_ipv6(buf + pos, &nexthop->global.u.v4);
+        pos += 16;
     }
     else
     {
@@ -183,7 +194,7 @@ static int ipv6uc_encode_reach_pa_packed(uint8_t *buf, int buf_size, const bgp_n
     uint8_t nh_len = 0;
     if (nexthop->global.family == AF_INET)
     {
-        nh_len = 4;
+        nh_len = 16;
     }
     else if (nexthop->global.family == AF_INET6)
     {
@@ -208,8 +219,8 @@ static int ipv6uc_encode_reach_pa_packed(uint8_t *buf, int buf_size, const bgp_n
     buf[pos++] = nh_len;
     if (nexthop->global.family == AF_INET)
     {
-        memcpy(buf + pos, &nexthop->global.u.v4.s_addr, 4);
-        pos += 4;
+        write_ipv4_mapped_ipv6(buf + pos, &nexthop->global.u.v4);
+        pos += 16;
     }
     else
     {

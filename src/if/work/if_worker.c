@@ -36,8 +36,9 @@ typedef enum if_worker_cmd_type
 {
     IF_WORKER_CMD_IPC_MSG = 1,    /**< 通用 IPC 消息（按 msg_type 二次分发） */
     IF_WORKER_CMD_LINK_EVENT = 2, /**< 链路监控事件 */
-    IF_WORKER_CMD_SHUTDOWN = 3,   /**< 停止 worker 线程 */
-    IF_WORKER_CMD_APPLY = 4,      /**< 配置应用命令（waitable） */
+    IF_WORKER_CMD_ADDR_EVENT = 3, /**< 地址监控事件 */
+    IF_WORKER_CMD_SHUTDOWN = 4,   /**< 停止 worker 线程 */
+    IF_WORKER_CMD_APPLY = 5,      /**< 配置应用命令（waitable） */
 } if_worker_cmd_type_t;
 
 /**
@@ -48,6 +49,7 @@ typedef struct if_worker_cmd
     if_worker_cmd_type_t type;
     dev_ipc_message_t *msg;        /**< IPC 消息（IPC_MSG 使用） */
     if_work_link_event_t link_evt; /**< 链路事件（LINK_EVENT 使用） */
+    if_work_addr_event_t addr_evt; /**< 地址事件（ADDR_EVENT 使用） */
     if_apply_cmd_t *apply;         /**< 应用命令（APPLY 使用，借用引用） */
 
     int waitable;
@@ -152,6 +154,27 @@ static int worker_apply_cmd(if_apply_cmd_t *apply)
     }
 }
 
+static uint32_t worker_if_type_to_mask(if_type_t type)
+{
+    switch (type)
+    {
+        case IF_TYPE_ETHERNET:
+        case IF_TYPE_VETH:
+            return IF_INTF_TYPE_ETH;
+        default:
+            return 0u;
+    }
+}
+
+static gboolean worker_prefix_equal(const net_prefix_t *a, const net_prefix_t *b)
+{
+    if (!a || !b)
+    {
+        return FALSE;
+    }
+    return (a->prefix_len == b->prefix_len && net_addr_equal(&a->addr, &b->addr)) ? TRUE : FALSE;
+}
+
 /**
  * @brief 在 worker 线程处理一条 IPC 消息（按 msg_type 二次分发）
  */
@@ -218,6 +241,10 @@ static void *if_worker_thread_fn(void *arg)
 
             case IF_WORKER_CMD_LINK_EVENT:
                 if_link_monitor_handle_work_event(&cmd->link_evt);
+                break;
+
+            case IF_WORKER_CMD_ADDR_EVENT:
+                if_link_monitor_handle_addr_work_event(&cmd->addr_evt);
                 break;
 
             case IF_WORKER_CMD_SHUTDOWN:
@@ -413,6 +440,35 @@ int if_worker_post_link_event(uint16_t nlmsg_type, const char *physical_name, ui
     return ERRCODE_SUCCESS;
 }
 
+int if_worker_post_addr_event(uint16_t nlmsg_type, const char *physical_name, uint32_t ifindex, uint32_t addr_flags,
+                              const net_prefix_t *prefix)
+{
+    if (!physical_name || physical_name[0] == '\0' || !prefix || !net_prefix_is_set(prefix))
+    {
+        return ERRCODE_FAIL;
+    }
+
+    if_worker_cmd_t *cmd = worker_cmd_create(IF_WORKER_CMD_ADDR_EVENT, NULL, 0);
+    if (!cmd)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    cmd->addr_evt.nlmsg_type = nlmsg_type;
+    cmd->addr_evt.ifindex = ifindex;
+    cmd->addr_evt.addr_flags = addr_flags;
+    cmd->addr_evt.prefix = *prefix;
+    g_strlcpy(cmd->addr_evt.physical_name, physical_name, sizeof(cmd->addr_evt.physical_name));
+
+    if (worker_cmd_enqueue(cmd) != ERRCODE_SUCCESS)
+    {
+        worker_cmd_destroy(cmd);
+        return ERRCODE_FAIL;
+    }
+
+    return ERRCODE_SUCCESS;
+}
+
 void if_worker_shutdown(void)
 {
     if (!g_if_work_local)
@@ -531,6 +587,7 @@ static void handle_link_del(const if_work_link_event_t *evt)
 
     entry->ifindex = 0u;
     entry->link_up = 0;
+    memset(&entry->prefix_v6_linklocal, 0, sizeof(entry->prefix_v6_linklocal));
 
     LOG_INFO("IF-MONITOR: interface %s(%s) deleted, old ifindex=%u", logical, ifname, old_ifindex);
 
@@ -670,6 +727,72 @@ static void handle_link_new(const if_work_link_event_t *evt)
                               &entry->prefix_v6, cur_ifindex);
             }
         }
+    }
+}
+
+void if_link_monitor_handle_addr_work_event(const if_work_addr_event_t *evt)
+{
+    if (!evt || evt->physical_name[0] == '\0' || evt->prefix.addr.family != AF_INET6 ||
+        (evt->addr_flags & IF_ADDR_FLAG_LINK_LOCAL) == 0u)
+    {
+        return;
+    }
+
+    if_map_entry_t *entry = find_entry_by_physical(evt->physical_name);
+    if (!entry)
+    {
+        return;
+    }
+
+    if (evt->ifindex != 0u)
+    {
+        entry->ifindex = evt->ifindex;
+    }
+
+    net_prefix_t old_linklocal = entry->prefix_v6_linklocal;
+    gboolean had_old = net_prefix_is_set(&old_linklocal);
+
+    if (evt->nlmsg_type == RTM_NEWADDR)
+    {
+        if (had_old && worker_prefix_equal(&old_linklocal, &evt->prefix))
+        {
+            return;
+        }
+        entry->prefix_v6_linklocal = evt->prefix;
+    }
+    else if (evt->nlmsg_type == RTM_DELADDR)
+    {
+        if (!had_old)
+        {
+            return;
+        }
+        memset(&entry->prefix_v6_linklocal, 0, sizeof(entry->prefix_v6_linklocal));
+    }
+    else
+    {
+        return;
+    }
+
+    uint32_t if_type = worker_if_type_to_mask(if_detect_type(entry->physical_name));
+    if (if_type == 0u)
+    {
+        return;
+    }
+
+    if (had_old && evt->nlmsg_type == RTM_NEWADDR)
+    {
+        if_pub_notify(g_if_work_local->subscribers, entry, if_type, IF_EVENT_PROTO_DOWN, 0, &old_linklocal,
+                      evt->ifindex);
+    }
+    if (evt->nlmsg_type == RTM_DELADDR)
+    {
+        if_pub_notify(g_if_work_local->subscribers, entry, if_type, IF_EVENT_PROTO_DOWN, 0, &old_linklocal,
+                      evt->ifindex);
+    }
+    else
+    {
+        if_pub_notify(g_if_work_local->subscribers, entry, if_type, IF_EVENT_PROTO_UP, 0, &entry->prefix_v6_linklocal,
+                      evt->ifindex);
     }
 }
 

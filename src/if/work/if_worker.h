@@ -74,6 +74,19 @@ typedef struct if_work_link_event
 } if_work_link_event_t;
 
 /**
+ * @brief 地址监控事件载荷（监听线程投递给 worker）
+ */
+typedef struct if_work_addr_event
+{
+    uint16_t nlmsg_type; /**< RTM_NEWADDR / RTM_DELADDR */
+    uint16_t _pad0;
+    uint32_t ifindex;             /**< 接口索引 */
+    uint32_t addr_flags;          /**< 地址标志（IF_ADDR_FLAG_*） */
+    char physical_name[IFNAMSIZ]; /**< 物理接口名 */
+    net_prefix_t prefix;          /**< 地址前缀 */
+} if_work_addr_event_t;
+
+/**
  * @brief IF worker 线程本地状态
  *
  * 业务数据（interface_map / subscribers / show_stream）由 worker 线程独占访问，
@@ -132,6 +145,12 @@ int if_worker_post_ipc_message(dev_ipc_message_t *msg);
  */
 int if_worker_post_link_event(uint16_t nlmsg_type, const char *physical_name, uint32_t ifindex, uint8_t link_up_known,
                               uint8_t link_up);
+
+/**
+ * @brief 向 worker 异步投递地址事件
+ */
+int if_worker_post_addr_event(uint16_t nlmsg_type, const char *physical_name, uint32_t ifindex, uint32_t addr_flags,
+                              const net_prefix_t *prefix);
 
 /**
  * @brief 向 worker 同步派发配置应用命令（阻塞至 worker 处理完毕）

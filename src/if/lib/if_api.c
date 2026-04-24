@@ -82,6 +82,11 @@ static if_api_cache_entry_t *cache_get_or_create(const char *logical_name)
     return entry;
 }
 
+static int cache_addr_event_is_ipv6_linklocal(const if_addr_event_msg_t *evt)
+{
+    return (evt && evt->afi == ROUTE_AFI_IPV6 && (evt->addr_flags & IF_ADDR_FLAG_LINK_LOCAL) != 0u) ? 1 : 0;
+}
+
 static void cache_handle_addr_event(const if_addr_event_msg_t *evt)
 {
     if (!evt)
@@ -97,6 +102,8 @@ static void cache_handle_addr_event(const if_addr_event_msg_t *evt)
 
     cache_update_ifindex(entry, evt->physical_name, evt->ifindex);
 
+    int is_ipv6_linklocal = cache_addr_event_is_ipv6_linklocal(evt);
+
     if (evt->event == IF_EVENT_PROTO_UP)
     {
         if (evt->afi == ROUTE_AFI_IPV4)
@@ -106,8 +113,16 @@ static void cache_handle_addr_event(const if_addr_event_msg_t *evt)
         }
         else if (evt->afi == ROUTE_AFI_IPV6)
         {
-            entry->ipv6_addr = evt->addr;
-            entry->ipv6_prefix_len = evt->prefix_len;
+            if (is_ipv6_linklocal)
+            {
+                entry->ipv6_linklocal_addr = evt->addr;
+                entry->ipv6_linklocal_prefix_len = evt->prefix_len;
+            }
+            else
+            {
+                entry->ipv6_addr = evt->addr;
+                entry->ipv6_prefix_len = evt->prefix_len;
+            }
         }
     }
     else if (evt->event == IF_EVENT_PROTO_DOWN)
@@ -119,13 +134,24 @@ static void cache_handle_addr_event(const if_addr_event_msg_t *evt)
         }
         else if (evt->afi == ROUTE_AFI_IPV6)
         {
-            memset(&entry->ipv6_addr, 0, sizeof(entry->ipv6_addr));
-            entry->ipv6_prefix_len = 0;
+            if (is_ipv6_linklocal)
+            {
+                memset(&entry->ipv6_linklocal_addr, 0, sizeof(entry->ipv6_linklocal_addr));
+                entry->ipv6_linklocal_prefix_len = 0;
+            }
+            else
+            {
+                memset(&entry->ipv6_addr, 0, sizeof(entry->ipv6_addr));
+                entry->ipv6_prefix_len = 0;
+            }
         }
     }
 
-    /* 更新协议状态 */
-    entry->proto_up = (evt->event == IF_EVENT_PROTO_UP) ? 1u : 0u;
+    if (!is_ipv6_linklocal)
+    {
+        /* 协议状态仍由原有的 IPv4/IPv6 主地址事件驱动。 */
+        entry->proto_up = (evt->event == IF_EVENT_PROTO_UP) ? 1u : 0u;
+    }
 }
 
 static void cache_handle_up_down_event(const if_event_msg_t *evt)

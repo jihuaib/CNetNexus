@@ -177,6 +177,8 @@ void bgp_nh_subgroup_remove_if_empty(bgp_update_group_t *ug, bgp_nh_subgroup_t *
  * 规则：peer 所在的 update_group 根据 sess_type 决定需要哪些 rule 的子组：
  *   eBGP: { LOCAL }
  *   iBGP: { LOCAL, PASS }
+ * 若实例启用 BGP_INST_FLAG_NH_UNCHANGED，则保持常规 update-group 划分，
+ * 但 peer 仅加入 { PASS } 子组。
  *
  * @param peer 目标 peer（多子组归属，borrow 指针列表挂在 peer->subgroups）
  * @param sess 目标 session（用于键计算与日志）

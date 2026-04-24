@@ -9,7 +9,6 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <glib.h>
-#include <ifaddrs.h>
 #include <linux/if_link.h>
 #include <linux/if_packet.h>
 #include <net/if.h>
@@ -241,7 +240,7 @@ int if_set_mtu(const char *ifname, int mtu)
     close(sock);
     return ERRCODE_SUCCESS;
 }
-#include <linux/if_addr.h>
+
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 

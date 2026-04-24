@@ -40,7 +40,7 @@ typedef struct bgp_instance
     uint32_t flags;            /**< 实例级策略位（见 BGP_INST_FLAG_*） */
 } bgp_instance_t;
 
-/** 实例策略位：所有出向邻居不改下一跳、合入单一 update-group、忽略 iBGP split-horizon */
+/** 实例策略位：所有出向邻居保留原下一跳（不影响 update-group 划分） */
 #define BGP_INST_FLAG_NH_UNCHANGED (1U << 0)
 
 /**

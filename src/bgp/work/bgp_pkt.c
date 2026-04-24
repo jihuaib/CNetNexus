@@ -29,6 +29,23 @@ static const uint8_t BGP_MARKER[16] = {
     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
 };
 
+static gboolean bgp_open_af_requires_ext_nexthop(const bgp_peer_t *peer, const net_addr_t *remote_addr)
+{
+    if (!peer || !peer->inst || peer->inst->afi != BGP_AFI_IPV4)
+    {
+        return FALSE;
+    }
+
+    /* RFC 8950: only IPv4 NLRI with an IPv6 next hop needs Capability 5. */
+    if (remote_addr && remote_addr->family == AF_INET6)
+    {
+        return TRUE;
+    }
+
+    /* Project extension: IPv4-QP uses an IPv6 BID as next hop. */
+    return peer->inst->safi == BGP_SAFI_QP;
+}
+
 // ============================================================================
 // 报文发送
 // ============================================================================
@@ -42,20 +59,26 @@ int bgp_pkt_send_open(bgp_conn_t *conn, uint32_t local_as, uint32_t router_id, G
     uint32_t cap_flags = (conn->session) ? conn->session->flags : BGP_SESS_CAP_DEFAULT;
     gboolean send_rr = BIT_TEST(cap_flags, BGP_SESS_CAP_ROUTE_REFRESH);
     gboolean send_as4 = BIT_TEST(cap_flags, BGP_SESS_CAP_AS4);
-    gboolean send_ext_nh = BIT_TEST(cap_flags, BGP_SESS_CAP_EXT_NEXTHOP);
+    gboolean want_ext_nh = BIT_TEST(cap_flags, BGP_SESS_CAP_EXT_NEXTHOP);
 
-    /* 统计需要发送 Extended Next Hop 的 IPv4 AF 数量（仅 IPv4 AF 需要声明 IPv6 nexthop） */
+    /* 统计本次 OPEN 中实际需要发送的 Extended Next Hop 三元组。 */
     guint ext_nh_count = 0;
-    if (send_ext_nh && af_peers)
+    if (want_ext_nh && af_peers)
     {
         for (GList *l = af_peers; l != NULL; l = l->next)
         {
             bgp_peer_t *ap = (bgp_peer_t *)l->data;
-            if (ap->inst->afi == BGP_AFI_IPV4)
+            if (bgp_open_af_requires_ext_nexthop(ap, &conn->peer_addr))
             {
                 ext_nh_count++;
             }
         }
+    }
+    gboolean send_ext_nh = (ext_nh_count > 0);
+    uint32_t local_caps_sent = cap_flags;
+    if (!send_ext_nh)
+    {
+        BIT_CLR(local_caps_sent, BGP_SESS_CAP_EXT_NEXTHOP);
     }
 
     /* 计算 Optional Parameters 长度：
@@ -142,7 +165,7 @@ int bgp_pkt_send_open(bgp_conn_t *conn, uint32_t local_as, uint32_t router_id, G
     }
 
     /* 填充 Extended Next Hop 能力（RFC 8950）：仅对 IPv4 AF 声明可使用 IPv6 nexthop */
-    if (ext_nh_count > 0)
+    if (send_ext_nh)
     {
         uint8_t nh_val_len = (uint8_t)(ext_nh_count * 6U);
         opt_ptr[0] = 2;                         /* type=Capability */
@@ -153,7 +176,7 @@ int bgp_pkt_send_open(bgp_conn_t *conn, uint32_t local_as, uint32_t router_id, G
         for (GList *l = af_peers; l != NULL; l = l->next)
         {
             bgp_peer_t *ap = (bgp_peer_t *)l->data;
-            if (ap->inst->afi != BGP_AFI_IPV4)
+            if (!bgp_open_af_requires_ext_nexthop(ap, &conn->peer_addr))
             {
                 continue;
             }
@@ -183,7 +206,7 @@ int bgp_pkt_send_open(bgp_conn_t *conn, uint32_t local_as, uint32_t router_id, G
     /* 记录本次 OPEN 实际发出的能力集和本地 BGP Identifier（用于 RFC §6.8 碰撞检测） */
     if (conn->session)
     {
-        conn->session->local_caps = cap_flags;
+        conn->session->local_caps = local_caps_sent;
         conn->session->local_router_id = router_id;
     }
 
@@ -692,7 +715,17 @@ static int parse_bgp_open(bgp_conn_t *conn, const uint8_t *body, uint16_t body_l
     }
 
     /* 优先使用 4 字节 AS（RFC 6793 AS_TRANS 处理） */
-    conn->session->remote_as = msg.cap_as4 ? msg.cap_as4 : msg.my_as;
+    uint32_t peer_claimed_as = msg.cap_as4 ? msg.cap_as4 : msg.my_as;
+
+    /* RFC 4271 §6.2：对端 OPEN 携带的 AS 必须与本端配置的 remote-as 一致，
+     * 否则发送 NOTIFICATION OPEN/BAD_PEER_AS 并断链；严禁覆盖 sess->remote_as。 */
+    if (conn->session->remote_as != 0 && peer_claimed_as != conn->session->remote_as)
+    {
+        LOG_ERROR("BGP: peer %s OPEN AS mismatch: configured=%u received=%u, sending NOTIFICATION Bad Peer AS", _ip,
+                  conn->session->remote_as, peer_claimed_as);
+        bgp_pkt_send_notification(conn, BGP_ERR_OPEN, BGP_OPEN_ERR_BAD_PEER_AS);
+        return -1;
+    }
 
     /* 将点分十进制 BGP Identifier 转为主机序 uint32_t 存储 */
     struct in_addr _rid_tmp;

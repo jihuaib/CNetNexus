@@ -63,6 +63,7 @@ R3_TO_R4_METRIC = 10
 R4_LOOP_METRIC = 10
 EXPECT_INIT_R1_TO_R4_METRIC = INIT_R1_GE1_METRIC + R2_TO_R4_METRIC + R4_LOOP_METRIC
 EXPECT_SWITCH_R1_TO_R4_METRIC = SWITCH_R1_GE2_METRIC + R3_TO_R4_METRIC + R4_LOOP_METRIC
+IPV6_LINK_LOCAL_RE = r"fe80:[0-9a-f:]+"
 
 
 def _link_prefix(ip: str, prefix: int) -> str:
@@ -286,6 +287,86 @@ def _wait_rib_best(
     )
 
 
+def _wait_isis_route_best_v6_linklocal(
+    rt: TopologyRuntime,
+    *,
+    device: str,
+    destination: str,
+    mask: int,
+    prefix: str,
+    expect_if: str,
+    expect_metric: int,
+    timeout: int = 90,
+) -> None:
+    wait_check(
+        rt,
+        device=device,
+        command=f"show isis ipv6 route {TAG} {destination} {mask}",
+        timeout=timeout,
+        interval=2,
+        contains=[
+            f"ISIS ipv6 Routes Detail (tag {TAG}, {prefix})",
+            f"Prefix       : {prefix}",
+        ],
+        regex=[
+            r"(?im)^\s*Level\s*:\s*L[12]\s*$",
+            rf"(?im)^\s*Nexthop\s*:\s*{IPV6_LINK_LOCAL_RE}\s*$",
+            rf"(?im)^\s*Out-If\s*:\s*{re.escape(expect_if)}\(\d+\)\s*$",
+            rf"(?im)^\s*Metric\s*:\s*{expect_metric}\s*$",
+        ],
+        label=f"{device} show isis ipv6 route best {prefix} via {expect_if} metric {expect_metric}",
+    )
+
+
+def _wait_rib_best_v6_linklocal(
+    rt: TopologyRuntime,
+    *,
+    device: str,
+    destination: str,
+    mask: int,
+    prefix: str,
+    expect_if: str,
+    timeout: int = 90,
+) -> None:
+    wait_check(
+        rt,
+        device=device,
+        command=f"show route ipv6 {destination} {mask}",
+        timeout=timeout,
+        interval=2,
+        contains=[f"Routing entry for {prefix}", "Total 1 path(s)"],
+        regex=[
+            rf"(?is)Path\s*\[1\]\s*:\s*isis\b.*?"
+            rf"Nexthop\s*:\s*{IPV6_LINK_LOCAL_RE}\s*.*?"
+            rf"Interface\s*:\s*{re.escape(expect_if)}\b"
+        ],
+        label=f"{device} show route ipv6 best {prefix} via {expect_if}",
+    )
+
+
+def _wait_os_best_v6_linklocal(
+    rt: TopologyRuntime,
+    *,
+    device: str,
+    prefix: str,
+    expect_interface: str,
+    timeout: int,
+    interval: int = 2,
+) -> None:
+    wait_check(
+        rt,
+        device=device,
+        command="show route ipv6 os",
+        timeout=timeout,
+        interval=interval,
+        regex=[
+            rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+{IPV6_LINK_LOCAL_RE}\s+"
+            rf"{re.escape(expect_interface)}\s+isis\s+\d+\s*$"
+        ],
+        label=f"{device} os ipv6 best {prefix} via link-local dev {expect_interface}",
+    )
+
+
 def _extract_connected_os_if(output: str, *, prefix: str) -> str | None:
     match = re.search(
         rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+-\s+(\S+)\s+kernel\s+\d+\s*$",
@@ -405,9 +486,7 @@ def _verify_r1_to_r4_best(
     expect_if: str,
     expect_metric: int,
     expect_nh_v4: str,
-    expect_nh_v6: str,
     stale_nh_v4: str,
-    stale_nh_v6: str,
     expect_os_if: str,
 ) -> None:
     _wait_isis_route_best(
@@ -421,14 +500,12 @@ def _verify_r1_to_r4_best(
         expect_if=expect_if,
         expect_metric=expect_metric,
     )
-    _wait_isis_route_best(
+    _wait_isis_route_best_v6_linklocal(
         rt,
         device="r1",
-        afi="ipv6",
         destination=R4_LOOP_V6,
         mask=R4_LOOP_V6_LEN,
         prefix=R4_LOOP_V6_PREFIX,
-        expect_nh=expect_nh_v6,
         expect_if=expect_if,
         expect_metric=expect_metric,
     )
@@ -443,16 +520,13 @@ def _verify_r1_to_r4_best(
         expect_if=expect_if,
         stale_nhs=[stale_nh_v4],
     )
-    _wait_rib_best(
+    _wait_rib_best_v6_linklocal(
         rt,
         device="r1",
-        afi="ipv6",
         destination=R4_LOOP_V6,
         mask=R4_LOOP_V6_LEN,
         prefix=R4_LOOP_V6_PREFIX,
-        expect_nh=expect_nh_v6,
         expect_if=expect_if,
-        stale_nhs=[stale_nh_v6],
     )
     _wait_os_best(
         rt,
@@ -464,14 +538,11 @@ def _verify_r1_to_r4_best(
         stale_gateways=[stale_nh_v4],
         timeout=90,
     )
-    _wait_os_best(
+    _wait_os_best_v6_linklocal(
         rt,
         device="r1",
-        afi="ipv6",
         prefix=R4_LOOP_V6_PREFIX,
-        expect_gateway=expect_nh_v6,
         expect_interface=expect_os_if,
-        stale_gateways=[stale_nh_v6],
         timeout=90,
     )
 
@@ -483,9 +554,6 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
 
     r1_r2_nh_v4 = str(g_top.r1.GE_1.peer_ip)
     r1_r3_nh_v4 = str(g_top.r1.GE_2.peer_ip)
-    r1_r2_nh_v6 = str(g_top.r1.GE_1.peer_ip6)
-    r1_r3_nh_v6 = str(g_top.r1.GE_2.peer_ip6)
-
     r1_ge1_prefix = _link_prefix(str(g_top.r1.GE_1.ip), int(g_top.r1.GE_1.prefix))
     r1_ge2_prefix = _link_prefix(str(g_top.r1.GE_2.ip), int(g_top.r1.GE_2.prefix))
 
@@ -867,9 +935,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             expect_if=R1_IF_R2,
             expect_metric=EXPECT_INIT_R1_TO_R4_METRIC,
             expect_nh_v4=r1_r2_nh_v4,
-            expect_nh_v6=r1_r2_nh_v6,
             stale_nh_v4=r1_r3_nh_v4,
-            stale_nh_v6=r1_r3_nh_v6,
             expect_os_if=r1_ge1_os_if,
         )
 
@@ -886,9 +952,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             expect_if=R1_IF_R3,
             expect_metric=EXPECT_SWITCH_R1_TO_R4_METRIC,
             expect_nh_v4=r1_r3_nh_v4,
-            expect_nh_v6=r1_r3_nh_v6,
             stale_nh_v4=r1_r2_nh_v4,
-            stale_nh_v6=r1_r2_nh_v6,
             expect_os_if=r1_ge2_os_if,
         )
 
@@ -905,9 +969,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             expect_if=R1_IF_R2,
             expect_metric=EXPECT_INIT_R1_TO_R4_METRIC,
             expect_nh_v4=r1_r2_nh_v4,
-            expect_nh_v6=r1_r2_nh_v6,
             stale_nh_v4=r1_r3_nh_v4,
-            stale_nh_v6=r1_r3_nh_v6,
             expect_os_if=r1_ge1_os_if,
         )
 

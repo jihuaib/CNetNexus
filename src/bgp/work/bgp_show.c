@@ -133,6 +133,30 @@ static const char *sess_state_str(const bgp_session_t *sess)
     }
 }
 
+/**
+ * @brief 返回 AF 视角下 peer 状态字符串
+ *
+ * 直接读取 peer->state（在 catchup_session / reset_negotiated 中维护）：
+ *   ESTABLISHED       → "Established"
+ *   NOT_NEGOTIATED    → "NoNegotiated"（session ESTABLISHED 但对端未协商本 AF）
+ *   IDLE（session 未 ESTABLISHED） → 回落到 session FSM 状态串
+ */
+static const char *peer_af_state_str(const bgp_peer_t *peer, const bgp_session_t *sess)
+{
+    if (peer)
+    {
+        if (peer->state == BGP_PEER_STATE_ESTABLISHED)
+        {
+            return "Established";
+        }
+        if (peer->state == BGP_PEER_STATE_NOT_NEGOTIATED)
+        {
+            return "NoNegotiated";
+        }
+    }
+    return sess_state_str(sess);
+}
+
 /** 返回能力位对应的可读字符串 */
 static const char *cap_yn(uint32_t caps, uint32_t bit)
 {
@@ -410,9 +434,9 @@ static gboolean bgp_show_route_head_cb(gpointer key, gpointer value, gpointer us
         bgp_route_fmt_fields(route, lp, sizeof(lp), med, sizeof(med), as_path, sizeof(as_path));
 
         /* 路由标记：'>'=BEST，'v'=VALID */
-        g_string_append_printf(ctx->buf, "%c%c%-*s %-*s %-*s %-*s %-*s %s\r\n",
+        g_string_append_printf(ctx->buf, "%c%c %-*s %-*s %-*s %-*s %-*s %s\r\n",
                                BIT_TEST(route->flags, BGP_ROUTE_FLAG_BEST) ? '>' : ' ',
-                               BIT_TEST(route->flags, BGP_ROUTE_FLAG_VALID) ? 'v' : ' ', BGP_RT_COL_NET - 2,
+                               BIT_TEST(route->flags, BGP_ROUTE_FLAG_VALID) ? 'v' : ' ', BGP_RT_COL_NET - 3,
                                first ? prefix_str : "", BGP_RT_COL_NH, nh, BGP_RT_COL_LP, lp, BGP_RT_COL_MED, med,
                                BGP_RT_COL_ORIG, bgp_origin_str(BGP_ROUTE_ATTR(route)->origin), as_path);
 
@@ -519,20 +543,174 @@ static void bgp_show_route_detail(GString *buf, const bgp_rthead_t *head)
     }
 }
 
+static uint8_t bgp_show_qp_dqpn_bytes(uint32_t dqpn)
+{
+    if (dqpn <= 0xFFu)
+    {
+        return 1;
+    }
+    if (dqpn <= 0xFFFFu)
+    {
+        return 2;
+    }
+    return 3;
+}
+
+static gboolean bgp_show_parse_qp_query(const char *query, bgp_afi_t afi, bgp_nlri_entry_t *nlri, char *err,
+                                        size_t err_sz)
+{
+    if (err && err_sz > 0)
+    {
+        err[0] = '\0';
+    }
+    if (!query || !nlri)
+    {
+        if (err && err_sz > 0)
+        {
+            snprintf(err, err_sz, "BGP Error: Invalid QP route query format.\r\n");
+        }
+        return FALSE;
+    }
+
+    const char *expected_prefix = (afi == BGP_AFI_IPV6) ? "ipv6=" : "ip=";
+    const char *comma = strchr(query, ',');
+    if (!comma || comma == query || comma[1] == '\0' || strchr(comma + 1, ','))
+    {
+        if (err && err_sz > 0)
+        {
+            snprintf(err, err_sz, "BGP Error: Invalid QP route query format. Use dqpn=<n>,%s<prefix>/<mask>.\r\n",
+                     expected_prefix);
+        }
+        return FALSE;
+    }
+
+    if (strncmp(query, "dqpn=", 5) != 0)
+    {
+        if (err && err_sz > 0)
+        {
+            snprintf(err, err_sz, "BGP Error: Invalid QP route query format. Use dqpn=<n>,%s<prefix>/<mask>.\r\n",
+                     expected_prefix);
+        }
+        return FALSE;
+    }
+
+    char dqpn_buf[32];
+    size_t dqpn_len = (size_t)(comma - (query + 5));
+    if (dqpn_len == 0 || dqpn_len >= sizeof(dqpn_buf))
+    {
+        if (err && err_sz > 0)
+        {
+            snprintf(err, err_sz, "BGP Error: Invalid QP route query DQPN.\r\n");
+        }
+        return FALSE;
+    }
+    memcpy(dqpn_buf, query + 5, dqpn_len);
+    dqpn_buf[dqpn_len] = '\0';
+
+    char *endp = NULL;
+    unsigned long dqpn_ul = strtoul(dqpn_buf, &endp, 10);
+    if (!endp || *endp != '\0' || dqpn_ul == 0ul || dqpn_ul > 0xFFFFFFul)
+    {
+        if (err && err_sz > 0)
+        {
+            snprintf(err, err_sz, "BGP Error: Invalid QP route query DQPN.\r\n");
+        }
+        return FALSE;
+    }
+
+    const char *prefix_part = comma + 1;
+    if (strncmp(prefix_part, expected_prefix, strlen(expected_prefix)) != 0)
+    {
+        if (err && err_sz > 0)
+        {
+            snprintf(err, err_sz, "BGP Error: Invalid QP route query format. Use dqpn=<n>,%s<prefix>/<mask>.\r\n",
+                     expected_prefix);
+        }
+        return FALSE;
+    }
+
+    const char *prefix_value = prefix_part + strlen(expected_prefix);
+    const char *slash = strrchr(prefix_value, '/');
+    if (!slash || slash == prefix_value || slash[1] == '\0')
+    {
+        if (err && err_sz > 0)
+        {
+            snprintf(err, err_sz, "BGP Error: Invalid QP route query format. Use dqpn=<n>,%s<prefix>/<mask>.\r\n",
+                     expected_prefix);
+        }
+        return FALSE;
+    }
+
+    char addr_buf[INET6_ADDRSTRLEN];
+    size_t addr_len = (size_t)(slash - prefix_value);
+    if (addr_len == 0 || addr_len >= sizeof(addr_buf))
+    {
+        if (err && err_sz > 0)
+        {
+            snprintf(err, err_sz, "BGP Error: Invalid QP route query prefix.\r\n");
+        }
+        return FALSE;
+    }
+    memcpy(addr_buf, prefix_value, addr_len);
+    addr_buf[addr_len] = '\0';
+
+    net_addr_t addr = {0};
+    if (net_addr_from_str(addr_buf, &addr) != 0)
+    {
+        if (err && err_sz > 0)
+        {
+            snprintf(err, err_sz, "BGP Error: Invalid QP route query prefix.\r\n");
+        }
+        return FALSE;
+    }
+    if ((afi == BGP_AFI_IPV4 && addr.family != AF_INET) || (afi == BGP_AFI_IPV6 && addr.family != AF_INET6))
+    {
+        if (err && err_sz > 0)
+        {
+            snprintf(err, err_sz, "BGP Error: QP route query prefix AF mismatch.\r\n");
+        }
+        return FALSE;
+    }
+
+    endp = NULL;
+    unsigned long mask_ul = strtoul(slash + 1, &endp, 10);
+    unsigned long max_mask = (afi == BGP_AFI_IPV6) ? 128ul : 32ul;
+    if (!endp || *endp != '\0' || mask_ul > max_mask)
+    {
+        if (err && err_sz > 0)
+        {
+            snprintf(err, err_sz, "BGP Error: Invalid QP route query prefix length.\r\n");
+        }
+        return FALSE;
+    }
+
+    memset(nlri, 0, sizeof(*nlri));
+    nlri->afi = (uint16_t)afi;
+    nlri->safi = BGP_SAFI_QP;
+    nlri->type = BGP_NLRI_QP;
+    nlri->qp.dqpn = (uint32_t)dqpn_ul;
+    nlri->qp.dqpn_len = bgp_show_qp_dqpn_bytes(nlri->qp.dqpn);
+    nlri->qp.prefix.addr = addr;
+    nlri->qp.prefix.prefix_len = (uint8_t)mask_ul;
+    return TRUE;
+}
+
 /**
- * @brief 处理 show bgp route af ipv4-unicast|ipv6-unicast [<ip> <masklen>] 命令
+ * @brief 处理 show bgp route af ipv4-unicast|ipv6-unicast [<ip> <masklen>] / ipv4-qp|ipv6-qp [<qp-key>] 命令
  *
- * group_id=10, cfg_id: 1=ipv4-unicast, 2=ipv6-unicast, 3=ip-address, 4=masklen
- * 不带 ip/masklen 时显示路由表（table），带时显示单前缀详情
+ * group_id=10, cfg_id: 1=ipv4-unicast, 2=ipv6-unicast, 3=ip-address, 4=masklen, 7=qp-route-key
+ * 不带查询参数时显示路由表；unicast 详情使用 ip/masklen，QP 详情使用 dqpn=<n>,ip=<pfx>/<mask>
  */
 static int handle_bgp_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
     bgp_cli_ctx_t ctx = bgp_cli_ctx_default();
     gboolean has_af = FALSE;
     char ip_str[64] = {0};
+    char qp_query[256] = {0};
     uint32_t masklen = 0;
     gboolean has_ip = FALSE;
     gboolean has_masklen = FALSE;
+    gboolean has_qp_query = FALSE;
 
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
@@ -579,6 +757,16 @@ static int handle_bgp_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parse
                 ctx.safi = BGP_SAFI_QP;
                 has_af = TRUE;
                 break;
+            case 7:
+            {
+                const char *s = cli_tlv_entry_get_text(&entry);
+                if (s)
+                {
+                    snprintf(qp_query, sizeof(qp_query), "%s", s);
+                    has_qp_query = TRUE;
+                }
+                break;
+            }
             default:
                 break;
         }
@@ -587,8 +775,8 @@ static int handle_bgp_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parse
 
     if (!has_af)
     {
-        bgp_show_send_cli_response(
-            msg, "BGP Error: Missing address-family. Use 'af ipv4-unicast' or 'af ipv6-unicast'.\r\n");
+        bgp_show_send_cli_response(msg, "BGP Error: Missing address-family. Use 'af ipv4-unicast', 'af ipv6-unicast', "
+                                        "'af ipv4-qp', or 'af ipv6-qp'.\r\n");
         return ERRCODE_FAIL;
     }
 
@@ -614,22 +802,39 @@ static int handle_bgp_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parse
         return ERRCODE_FAIL;
     }
 
-    if (has_ip && has_masklen)
+    if ((ctx.safi != BGP_SAFI_QP && has_ip && has_masklen) || (ctx.safi == BGP_SAFI_QP && has_qp_query))
     {
         bgp_nlri_entry_t nlri;
         memset(&nlri, 0, sizeof(nlri));
-        nlri.afi = ctx.afi;
-        nlri.safi = ctx.safi;
-        nlri.type = BGP_NLRI_PREFIX;
-        nlri.prefix.prefix.prefix_len = (uint8_t)masklen;
-        nlri.prefix.prefix.addr.family = (ctx.afi == BGP_AFI_IPV6) ? AF_INET6 : AF_INET;
-        if (inet_pton(nlri.prefix.prefix.addr.family, ip_str, &nlri.prefix.prefix.addr.u) != 1)
+        char nlri_str[BGP_NLRI_KEY_MAX];
+
+        if (ctx.safi == BGP_SAFI_QP)
         {
-            g_string_free(resp_buf, TRUE);
-            bgp_show_send_cli_response(msg, "BGP Error: Invalid IP address.\r\n");
-            return ERRCODE_FAIL;
+            char err[160];
+            if (!bgp_show_parse_qp_query(qp_query, ctx.afi, &nlri, err, sizeof(err)))
+            {
+                g_string_free(resp_buf, TRUE);
+                bgp_show_send_cli_response(msg, err);
+                return ERRCODE_FAIL;
+            }
+            bgp_nlri_to_str(&nlri, nlri_str, sizeof(nlri_str));
         }
-        g_string_append_printf(resp_buf, "\r\nBGP Route Detail: %s/%u (AF: %s)\r\n", ip_str, masklen,
+        else
+        {
+            nlri.afi = ctx.afi;
+            nlri.safi = ctx.safi;
+            nlri.type = BGP_NLRI_PREFIX;
+            nlri.prefix.prefix.prefix_len = (uint8_t)masklen;
+            nlri.prefix.prefix.addr.family = (ctx.afi == BGP_AFI_IPV6) ? AF_INET6 : AF_INET;
+            if (inet_pton(nlri.prefix.prefix.addr.family, ip_str, &nlri.prefix.prefix.addr.u) != 1)
+            {
+                g_string_free(resp_buf, TRUE);
+                bgp_show_send_cli_response(msg, "BGP Error: Invalid IP address.\r\n");
+                return ERRCODE_FAIL;
+            }
+            snprintf(nlri_str, sizeof(nlri_str), "%s/%u", ip_str, masklen);
+        }
+        g_string_append_printf(resp_buf, "\r\nBGP Route Detail: %s (AF: %s)\r\n", nlri_str,
                                bgp_af_str(ctx.afi, ctx.safi));
         g_string_append(resp_buf, "============================================================\r\n");
 
@@ -642,7 +847,7 @@ static int handle_bgp_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parse
         const bgp_rthead_t *head = bgp_rib_lookup_head(inst->rib, &nlri);
         if (!head)
         {
-            g_string_append_printf(resp_buf, "  Route %s/%u not found.\r\n", ip_str, masklen);
+            g_string_append_printf(resp_buf, "  Route %s not found.\r\n", nlri_str);
             return bgp_work_send_chunked_response(msg, resp_buf);
         }
 
@@ -808,7 +1013,7 @@ static int handle_bgp_show_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
                 }
                 const char *rid = _psess_rid_str;
                 uint32_t ras = psess ? psess->remote_as : 0;
-                const char *state = psess ? sess_state_str(psess) : "Idle";
+                const char *state = peer_af_state_str(peer, psess);
 
                 g_string_append_printf(resp_buf, "  %-17s%-11u%-17s%s\r\n", nbr_ip, ras, rid, state);
             }
@@ -1004,8 +1209,8 @@ static void bgp_show_ug_append_neighbors(GString *buf, const bgp_nh_subgroup_t *
         net_addr_to_str(&sess->neighbor_addr, nbr_ip, sizeof(nbr_ip));
         bgp_router_id_to_str(sess->remote_id, rid, sizeof(rid));
 
-        g_string_append_printf(buf, "      %-39s %-10u %-12s %s\r\n", nbr_ip, sess->remote_as, sess_state_str(sess),
-                               rid);
+        g_string_append_printf(buf, "      %-39s %-10u %-12s %s\r\n", nbr_ip, sess->remote_as,
+                               peer_af_state_str(peer, sess), rid);
     }
 }
 

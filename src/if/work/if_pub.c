@@ -62,6 +62,10 @@ void if_pub_notify(GList *subscribers, const if_map_entry_t *entry, uint32_t if_
         g_strlcpy(base_proto.physical_name, entry->physical_name, sizeof(base_proto.physical_name));
         base_proto.afi = (prefix->addr.family == AF_INET6) ? ROUTE_AFI_IPV6 : ROUTE_AFI_IPV4;
         base_proto.prefix_len = prefix->prefix_len;
+        if (prefix->addr.family == AF_INET6 && IN6_IS_ADDR_LINKLOCAL(&prefix->addr.u.v6))
+        {
+            base_proto.addr_flags |= IF_ADDR_FLAG_LINK_LOCAL;
+        }
         base_proto.addr = prefix->addr;
         base_proto.ifindex = out_ifindex;
 

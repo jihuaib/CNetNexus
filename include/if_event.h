@@ -37,6 +37,9 @@
 /** 通配：匹配所有事件 */
 #define IF_EVENT_ALL 0xFFFFFFFFu
 
+/** 地址事件标志：IPv6 链路本地地址 */
+#define IF_ADDR_FLAG_LINK_LOCAL (1u << 0)
+
 // ============================================================================
 // IPC 消息类型
 // ============================================================================
@@ -95,7 +98,7 @@ typedef struct if_addr_event_msg
     char physical_name[IFNAMSIZ];           /**< 物理接口名（如 eth0） */
     uint16_t afi;                           /**< 地址族（ROUTE_AFI_IPV4 / ROUTE_AFI_IPV6） */
     uint8_t prefix_len;                     /**< 前缀长度 */
-    uint8_t _pad;                           /**< 对齐填充 */
+    uint8_t addr_flags;                     /**< 地址标志（IF_ADDR_FLAG_*） */
     net_addr_t addr;                        /**< 接口地址 */
     uint32_t ifindex;                       /**< 接口索引 */
 } if_addr_event_msg_t;

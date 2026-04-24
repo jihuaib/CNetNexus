@@ -553,6 +553,14 @@ void bgp_conn_handle_passive_accept(int listen_fd)
         return;
     }
 
+    /* router-id 未配置：本端 BGP Identifier 无效，不允许建立被动连接 */
+    if (vrf0->router_id == 0)
+    {
+        LOG_WARN("BGP: Rejecting connection from %s (router-id not configured)", from_ip);
+        close(conn_fd);
+        return;
+    }
+
     if (sess->sec_conn)
     {
         LOG_WARN("BGP: Rejecting connection from %s (sec_conn already exists fd=%d)", from_ip, sess->sec_conn->fd);

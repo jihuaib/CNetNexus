@@ -162,6 +162,23 @@ static gboolean if_replay_initial_state_foreach(gpointer key, gpointer val, gpoi
         if_replay_send(rctx->module_id, IF_MSG_TYPE_EVENT, &addr_evt, sizeof(addr_evt));
     }
 
+    if ((rctx->event_mask & IF_EVENT_PROTO_UP) != 0 && replay_ifindex != 0u &&
+        net_prefix_is_set(&e->prefix_v6_linklocal))
+    {
+        if_addr_event_msg_t addr_evt;
+        memset(&addr_evt, 0, sizeof(addr_evt));
+        addr_evt.if_type = if_type;
+        addr_evt.event = IF_EVENT_PROTO_UP;
+        g_strlcpy(addr_evt.logical_name, e->logical_name, sizeof(addr_evt.logical_name));
+        g_strlcpy(addr_evt.physical_name, e->physical_name, sizeof(addr_evt.physical_name));
+        addr_evt.afi = ROUTE_AFI_IPV6;
+        addr_evt.prefix_len = e->prefix_v6_linklocal.prefix_len;
+        addr_evt.addr_flags = IF_ADDR_FLAG_LINK_LOCAL;
+        addr_evt.addr = e->prefix_v6_linklocal.addr;
+        addr_evt.ifindex = replay_ifindex;
+        if_replay_send(rctx->module_id, IF_MSG_TYPE_EVENT, &addr_evt, sizeof(addr_evt));
+    }
+
     return FALSE;
 }
 

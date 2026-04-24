@@ -31,6 +31,8 @@ typedef struct if_api_cache_entry
     uint8_t ipv4_prefix_len;                /**< IPv4 前缀长度 */
     net_addr_t ipv6_addr;                   /**< IPv6 地址（family=0 表示未配置） */
     uint8_t ipv6_prefix_len;                /**< IPv6 前缀长度 */
+    net_addr_t ipv6_linklocal_addr;         /**< IPv6 link-local 地址（family=0 表示未知） */
+    uint8_t ipv6_linklocal_prefix_len;      /**< IPv6 link-local 前缀长度 */
 } if_api_cache_entry_t;
 
 /**

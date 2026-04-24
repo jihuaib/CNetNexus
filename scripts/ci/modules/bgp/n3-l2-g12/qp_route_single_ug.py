@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-BGP QP 自产生路由 + 单 update-group + 保持 BID 下一跳 检查（IPv4 QP AF）
+BGP QP 自产生路由 + 常规 update-group 划分 + 保持 BID 下一跳 检查（IPv4 QP AF）
 
 拓扑: r1 --- r2 --- r3
 
@@ -13,9 +13,10 @@ AS 安排:
 1. QP 地址族下，三台设备 BGP 会话 Established
 2. route-select 未启用时，r2 自产生 QP 路由不向外发送
 3. route-select 启用后，r1 (eBGP) 和 r3 (iBGP) 均收到 QP 路由
-4. r2 的 update-group 将两个邻居（iBGP + eBGP）合入"同一个 group"（NH_UNCHANGED 策略）
-5. 重复配置拒绝、前缀覆盖拒绝
-6. `no route-select enable` 生效后 r1/r3 不再见到 QP 路由
+4. r2 的 QP 对外发布复用常规 update-group 划分，不再强制把 eBGP+iBGP 合入同一个 group
+5. QP 对外发布保持 BID 下一跳，且 eBGP 路径仍携带本地 AS
+6. 重复配置拒绝、前缀覆盖拒绝
+7. `no route-select enable` 生效后 r1/r3 不再见到 QP 路由
 """
 
 from __future__ import annotations
@@ -193,8 +194,9 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             timeout=30,
         )
 
-        step("Verify nexthop on r1 and r3 equals BID (not replaced)")
+        step("Verify nexthop stays as BID, and eBGP export still carries local AS")
         # r1 为 eBGP 邻居：正常 next-hop-self 会覆盖为本端地址，QP NH_UNCHANGED 应保留 BID
+        # 同时 eBGP 仍必须 prepend 本地 AS，避免对端因缺少 AS_PATH 丢弃 UPDATE。
         # r3 为 iBGP 邻居：本地 IMPORT 路由通常替换为 local，QP 应保留 BID
         r1_out = cmd(rt, "r1", "show bgp route af ipv4-qp", strict=False)
         r3_out = cmd(rt, "r3", "show bgp route af ipv4-qp", strict=False)
@@ -203,16 +205,27 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             raise RuntimeError(f"r1 QP route output missing BID {QP_BID}:\n{r1_out}")
         if not re.search(bid_compact, r3_out, re.IGNORECASE):
             raise RuntimeError(f"r3 QP route output missing BID {QP_BID}:\n{r3_out}")
+        if not re.search(rf"(?im)\b{re.escape(AS_LOCAL)}\b", r1_out):
+            raise RuntimeError(f"r1 QP route output missing AS_PATH {AS_LOCAL}:\n{r1_out}")
 
-        step("Verify r2 update-group merges eBGP+iBGP QP peers into ONE group")
+        step("Verify QP detail lookup accepts only strict string-key format")
+        qp_key = f"dqpn={QP_START_DQPN},ip={QP_PFX_ADDR}/{QP_MASK}"
+        detail_out = cmd(rt, "r1", f"show bgp route af ipv4-qp {qp_key}", strict=False)
+        if "BGP Route Detail:" not in detail_out or f"AS-Path  : {AS_LOCAL}" not in detail_out:
+            raise RuntimeError(f"r1 strict QP detail query failed unexpectedly:\n{detail_out}")
+        bad_detail_out = cmd(rt, "r1", f"show bgp route af ipv4-qp dqpn={QP_START_DQPN},ip={QP_PFX_ADDR},mask={QP_MASK}", strict=False)
+        if "BGP Error: Invalid QP route query format." not in bad_detail_out:
+            raise RuntimeError(f"r1 non-strict QP detail query was accepted unexpectedly:\n{bad_detail_out}")
+
+        step("Verify r2 reuses normal update-group split for QP peers")
         ug_summary = cmd(rt, "r2", "show bgp update-group af ipv4-qp", strict=False)
-        # 匹配 Neighbors 列 = 2（两个邻居落在同一个组）
-        if not re.search(r"(?im)^\s*\d+\s+\S+\s+\d+\s+2\s+", ug_summary):
-            raise RuntimeError(f"r2 update-group does not show a 2-peer group:\n{ug_summary}")
-        # 只应该有一个 group（两邻居合并）
         total_m = re.search(r"(?im)^Total:\s*(\d+)\s+groups", ug_summary)
-        if not total_m or int(total_m.group(1)) != 1:
-            raise RuntimeError(f"expected exactly 1 update-group for QP, got:\n{ug_summary}")
+        if not total_m or int(total_m.group(1)) != 2:
+            raise RuntimeError(f"expected exactly 2 update-groups for QP (eBGP + iBGP), got:\n{ug_summary}")
+        if len(re.findall(r"(?im)^\s*\d+\s+eBGP\s+", ug_summary)) != 1:
+            raise RuntimeError(f"expected one eBGP update-group for QP, got:\n{ug_summary}")
+        if len(re.findall(r"(?im)^\s*\d+\s+iBGP\s+", ug_summary)) != 1:
+            raise RuntimeError(f"expected one iBGP update-group for QP, got:\n{ug_summary}")
 
         step("Reject duplicate QP route config")
         run_cmds(

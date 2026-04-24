@@ -15,6 +15,12 @@
  * 前缀数量预统计
  * ========================================================================== */
 
+static gboolean is_ipv4_mapped_ipv6_nexthop(const uint8_t *nh_data)
+{
+    static const uint8_t prefix[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF};
+    return nh_data && memcmp(nh_data, prefix, sizeof(prefix)) == 0;
+}
+
 static uint32_t count_ipv6_prefixes(const uint8_t *data, uint16_t len)
 {
     uint16_t pos = 0;
@@ -85,8 +91,7 @@ static int parse_prefixes(const uint8_t *data, uint16_t len, bgp_nlri_entry_t **
 
 /* ============================================================================
  * nexthop 解析
- * 4 字节  = IPv4 地址
- * 16 字节 = 仅 IPv6 全局地址
+ * 16 字节 = IPv4-mapped IPv6（6PE）或仅 IPv6 全局地址
  * 32 字节 = IPv6 全局地址（16B）+ link-local 地址（16B）
  * ========================================================================== */
 
@@ -99,16 +104,16 @@ static int parse_nexthop(const uint8_t *nh_data, uint8_t nh_len, bgp_nexthop_t *
 
     memset(nexthop, 0, sizeof(*nexthop));
 
-    if (nh_len == 4)
-    {
-        nexthop->global.family = AF_INET;
-        memcpy(&nexthop->global.u.v4.s_addr, nh_data, 4);
-        return 0;
-    }
-
     if (nh_len != 16 && nh_len != 32)
     {
         return -1;
+    }
+
+    if (nh_len == 16 && is_ipv4_mapped_ipv6_nexthop(nh_data))
+    {
+        nexthop->global.family = AF_INET;
+        memcpy(&nexthop->global.u.v4.s_addr, nh_data + 12, 4);
+        return 0;
     }
 
     nexthop->global.family = AF_INET6;

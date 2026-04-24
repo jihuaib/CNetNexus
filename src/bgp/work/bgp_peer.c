@@ -24,7 +24,7 @@ bgp_peer_t *bgp_peer_create(bgp_vrf_t *vrf, bgp_instance_t *inst, const net_addr
     }
     peer->vrf = vrf;
     peer->inst = inst;
-    peer->established = false;
+    peer->state = BGP_PEER_STATE_IDLE;
     return peer;
 }
 

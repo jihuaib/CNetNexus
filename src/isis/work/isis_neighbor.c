@@ -397,9 +397,9 @@ static int isis_build_iih_pdu(const isis_instance_cfg_t *inst, const if_api_cach
             return -1;
         }
     }
-    if (inst->af_ipv6 && if_entry->ipv6_addr.family == AF_INET6)
+    if (inst->af_ipv6 && if_entry->ipv6_linklocal_addr.family == AF_INET6)
     {
-        if (isis_tlv_append(pdu, pdu_cap, &p, ISIS_TLV_IPV6_INTF_ADDR, &if_entry->ipv6_addr.u.v6, 16u) != 0)
+        if (isis_tlv_append(pdu, pdu_cap, &p, ISIS_TLV_IPV6_INTF_ADDR, &if_entry->ipv6_linklocal_addr.u.v6, 16u) != 0)
         {
             return -1;
         }

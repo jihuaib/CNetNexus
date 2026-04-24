@@ -133,12 +133,9 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
     r1_ip4 = str(g_top.r1.GE_1.ip)
     r1_ip6 = str(g_top.r1.GE_1.ip6)
     r1_peer_ip4 = str(g_top.r1.GE_1.peer_ip)
-    r1_peer_ip6 = str(g_top.r1.GE_1.peer_ip6)
-
     r2_ip4 = str(g_top.r2.GE_1.ip)
     r2_ip6 = str(g_top.r2.GE_1.ip6)
     r2_peer_ip4 = str(g_top.r2.GE_1.peer_ip)
-    r2_peer_ip6 = str(g_top.r2.GE_1.peer_ip6)
 
     try:
         _cleanup_case_config(rt)
@@ -311,15 +308,21 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 {
                     "device": "r1",
                     "command": f"show isis neighbor {TAG}",
-                    "contains": ["ISIS Neighbors", GE_IF, r1_peer_ip4, r1_peer_ip6],
-                    "regex": [rf"(?im)^\s*{TAG}\s+{re.escape(GE_IF)}\s+L[12]\s+\S+\s+Up\s+"],
+                    "contains": ["ISIS Neighbors", GE_IF, r1_peer_ip4],
+                    "regex": [
+                        rf"(?im)^\s*{TAG}\s+{re.escape(GE_IF)}\s+L[12]\s+\S+\s+Up\s+\d+\s+\d+\s+"
+                        rf"{re.escape(r1_peer_ip4)}\s+fe80:[0-9a-f:]+\s*$"
+                    ],
                     "label": "r1 ISIS neighbor up",
                 },
                 {
                     "device": "r2",
                     "command": f"show isis neighbor {TAG}",
-                    "contains": ["ISIS Neighbors", GE_IF, r2_peer_ip4, r2_peer_ip6],
-                    "regex": [rf"(?im)^\s*{TAG}\s+{re.escape(GE_IF)}\s+L[12]\s+\S+\s+Up\s+"],
+                    "contains": ["ISIS Neighbors", GE_IF, r2_peer_ip4],
+                    "regex": [
+                        rf"(?im)^\s*{TAG}\s+{re.escape(GE_IF)}\s+L[12]\s+\S+\s+Up\s+\d+\s+\d+\s+"
+                        rf"{re.escape(r2_peer_ip4)}\s+fe80:[0-9a-f:]+\s*$"
+                    ],
                     "label": "r2 ISIS neighbor up",
                 },
             ],
