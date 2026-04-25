@@ -35,8 +35,8 @@ static gboolean if_init_db_foreach(gpointer key, gpointer val, gpointer user_dat
     if_map_entry_t *e = (if_map_entry_t *)val;
     const char *logical_name = e->logical_name;
 
-    /* loop 和 null0 接口不写入 DB（由 loop_create 或虚拟，不持久化） */
-    if (strncmp(logical_name, "loop", 4) == 0 || strcmp(logical_name, "null0") == 0)
+    /* loop 接口不写入 DB（由 loop_create 运行时创建，不持久化） */
+    if (strncmp(logical_name, "loop", 4) == 0)
     {
         return FALSE;
     }

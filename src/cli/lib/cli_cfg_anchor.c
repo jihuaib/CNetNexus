@@ -396,14 +396,11 @@ void cli_cfg_anchor_agg_render(cli_cfg_anchor_aggregator_t *agg, GString *out)
             continue;
         }
 
-        /* 没有任何贡献时整体跳过, 避免输出 "header + 立即 footer" 的空壳 */
-        if (!bucket->body || bucket->body->len == 0)
-        {
-            continue;
-        }
-
         g_string_append_len(out, bucket->header->str, bucket->header->len);
-        g_string_append_len(out, bucket->body->str, bucket->body->len);
+        if (bucket->body && bucket->body->len > 0)
+        {
+            g_string_append_len(out, bucket->body->str, bucket->body->len);
+        }
 
         if (bucket->footer_set && bucket->footer->len > 0)
         {

@@ -21,6 +21,10 @@
  *   GET    /api/links                 列出当前链路
  *   POST   /api/links                 { id, from, fromPort, to, toPort } 新增链路（支持运行时热接线）
  *   DELETE /api/links/:id             删除链路
+ *   GET    /api/links/:id/capture     查看某条链路最近一次抓包状态
+ *   POST   /api/links/:id/capture/start  启动链路抓包
+ *   POST   /api/links/:id/capture/stop   停止链路抓包
+ *   GET    /api/captures/:id/download 下载抓包 pcap
  *   WS     /ws/terminal?id=<instId>   浏览器 <-> 容器 telnet 3788 双向桥接
  */
 
@@ -56,6 +60,10 @@ const NN_DB_PATH_IN_CONTAINER = '/opt/netnexus/data/netnexus.db';
 /** 宿主机临时目录：做 docker cp 中转 */
 const DB_TMP_HOST_DIR = path.join(os.tmpdir(), 'nn-topo-db');
 try { fs.mkdirSync(DB_TMP_HOST_DIR, { recursive: true }); } catch (_) { /* ignore */ }
+
+/** 宿主机临时目录：保存链路抓包 pcap */
+const CAPTURE_TMP_HOST_DIR = path.join(os.tmpdir(), 'nn-topo-captures');
+try { fs.mkdirSync(CAPTURE_TMP_HOST_DIR, { recursive: true }); } catch (_) { /* ignore */ }
 
 /** 容器内启动 netnexus 的 bash 片段（与 CI 基本一致） */
 const NN_START_SH = [
@@ -160,6 +168,10 @@ const instances = new Map(); // id -> { id, image, containerName, hostPort, stat
 
 /** 内存链路表：每根线对应一个 docker bridge network */
 const links = new Map(); // id -> { id, from, to, fromPort, toPort, networkName, wired }
+
+/** 抓包会话：保留最近一次链路抓包状态与下载文件 */
+const captureSessions = new Map(); // id -> session
+const captureByLink = new Map();   // linkId -> captureId
 
 /** 停机时把容器里 /opt/netnexus/data 整个 tar.base64 存这里，下次 start 再灌回。
  *  单独存避免挂在 inst 对象上让 GET /api/instances 列表返回巨大 payload。 */
@@ -301,6 +313,365 @@ async function tailNetnexusLog(containerName, lines = 30)
 // -------- 工具 --------
 
 function sanitizeId(s) { return String(s).replace(/[^a-zA-Z0-9_.-]/g, '_'); }
+
+function captureHelperContainerName(sessionId, role)
+{
+    return `nn-cap-${role}-${sanitizeId(sessionId).slice(0, 40)}`;
+}
+
+function captureFileName(linkId, startedAt)
+{
+    const ts = new Date(startedAt).toISOString().replace(/[:.]/g, '-');
+    return `netnexus-capture-${sanitizeId(linkId)}-${ts}.pcap`;
+}
+
+function dockerSpawn(args)
+{
+    return spawn(dockerBin(), dockerArgs(args), { stdio: ['ignore', 'pipe', 'pipe'] });
+}
+
+async function dockerImageExists(name)
+{
+    try
+    {
+        await runDocker(['image', 'inspect', name]);
+        return true;
+    }
+    catch (_) { return false; }
+}
+
+async function dockerImageHasTcpdump(name)
+{
+    try
+    {
+        await runDocker(['run', '--rm', '--entrypoint', '/bin/sh', name, '-lc', 'command -v tcpdump >/dev/null 2>&1']);
+        return true;
+    }
+    catch (_) { return false; }
+}
+
+function getActiveCaptureSessions()
+{
+    return Array.from(captureSessions.values()).filter(s => s.status === 'running' || s.status === 'starting' || s.status === 'stopping');
+}
+
+function appendCaptureLine(session, line)
+{
+    const text = String(line || '').replace(/\r/g, '').trimEnd();
+    if (!text) return;
+    session.lines.push(text);
+    if (session.lines.length > config.CAPTURE_LINE_LIMIT)
+    {
+        session.lines.splice(0, session.lines.length - config.CAPTURE_LINE_LIMIT);
+    }
+}
+
+function pushCaptureText(session, key, chunk, prefix = '')
+{
+    const incoming = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk || '');
+    session.textBuffers[key] = (session.textBuffers[key] || '') + incoming;
+    const parts = session.textBuffers[key].split('\n');
+    session.textBuffers[key] = parts.pop() || '';
+    for (const line of parts)
+    {
+        appendCaptureLine(session, `${prefix}${line}`);
+    }
+}
+
+function flushCaptureText(session, key, prefix = '')
+{
+    if (!session.textBuffers[key]) return;
+    appendCaptureLine(session, `${prefix}${session.textBuffers[key]}`);
+    session.textBuffers[key] = '';
+}
+
+function serializeCapture(session, { includeLines = true } = {})
+{
+    if (!session) return null;
+    const payload = {
+        id: session.id,
+        linkId: session.linkId,
+        status: session.status,
+        startedAt: session.startedAt,
+        stoppedAt: session.stoppedAt || null,
+        stopReason: session.stopReason || null,
+        error: session.error || null,
+        bytes: session.bytes || 0,
+        bridgeName: session.bridgeName,
+        networkName: session.networkName,
+        helperImage: session.helperImage,
+        downloadName: session.downloadName,
+        downloadUrl: (session.bytes || 0) > 0 ? `/api/captures/${encodeURIComponent(session.id)}/download` : null
+    };
+    if (includeLines) payload.lines = [...session.lines];
+    return payload;
+}
+
+async function resolveCaptureHelperImage()
+{
+    for (const image of config.CAPTURE_HELPER_IMAGES)
+    {
+        if (!(await dockerImageExists(image))) continue;
+        if (await dockerImageHasTcpdump(image)) return image;
+    }
+    return null;
+}
+
+async function inspectLinkBridge(link)
+{
+    const networkName = link.networkName || linkNetworkName(link.id);
+    if (!(await dockerNetworkExists(networkName)))
+    {
+        throw new Error(`链路 ${link.id} 尚未接通，docker 网络 ${networkName} 不存在`);
+    }
+    const { stdout } = await runDocker(['network', 'inspect', networkName, '--format', '{{json .}}']);
+    const info = JSON.parse(stdout.trim() || '{}');
+    const networkId = String(info.Id || '').trim();
+    if (!networkId)
+    {
+        throw new Error(`无法读取链路 ${networkName} 的网络 ID`);
+    }
+    const driver = String(info.Driver || '').trim();
+    if (driver && driver !== 'bridge')
+    {
+        throw new Error(`当前仅支持 bridge 网络抓包，实际为 ${driver}`);
+    }
+    const bridgeName = info.Options?.['com.docker.network.bridge.name'] || `br-${networkId.slice(0, 12)}`;
+    return { networkName, networkId, bridgeName };
+}
+
+function maybeFinalizeCapture(session)
+{
+    if (!session || session.finalized) return;
+    if (!session.recorderClosed || !session.viewerClosed) return;
+
+    session.finalized = true;
+    flushCaptureText(session, 'viewer');
+    flushCaptureText(session, 'pcap', '[pcap] ');
+    try { session.fileStream?.end(); } catch (_) { /* ignore */ }
+    session.fileStream = null;
+    session.stoppedAt = session.stoppedAt || Date.now();
+
+    if (session.finalStatus)
+    {
+        session.status = session.finalStatus;
+    }
+    else if (session.stopRequested)
+    {
+        session.status = 'stopped';
+    }
+    else if (session.error)
+    {
+        session.status = 'error';
+    }
+    else
+    {
+        session.status = 'stopped';
+    }
+}
+
+async function stopCaptureSession(session, reason = '用户停止抓包', finalStatus = 'stopped')
+{
+    if (!session) return null;
+    if (session.stopPromise) return session.stopPromise;
+
+    session.stopRequested = true;
+    session.stopReason = session.stopReason || reason;
+    session.finalStatus = session.finalStatus || finalStatus;
+    if (session.status === 'running' || session.status === 'starting') session.status = 'stopping';
+    appendCaptureLine(session, `[capture] ${reason}`);
+
+    session.stopPromise = (async () =>
+    {
+        const names = [session.viewerName, session.recorderName].filter(Boolean);
+        for (const name of names)
+        {
+            await runDocker(['rm', '-f', name]).catch(() => {});
+        }
+        try { session.viewerProc?.kill('SIGTERM'); } catch (_) { /* ignore */ }
+        try { session.recorderProc?.kill('SIGTERM'); } catch (_) { /* ignore */ }
+
+        const deadline = Date.now() + 5000;
+        while ((!session.recorderClosed || !session.viewerClosed) && Date.now() < deadline)
+        {
+            await sleep(100);
+        }
+        if (!session.recorderClosed) session.recorderClosed = true;
+        if (!session.viewerClosed) session.viewerClosed = true;
+
+        maybeFinalizeCapture(session);
+        return session;
+    })();
+
+    return session.stopPromise;
+}
+
+async function stopCaptureByLink(linkId, reason)
+{
+    const captureId = captureByLink.get(linkId);
+    if (!captureId) return null;
+    const session = captureSessions.get(captureId);
+    if (!session || (session.status !== 'running' && session.status !== 'starting' && session.status !== 'stopping'))
+    {
+        return session || null;
+    }
+    return stopCaptureSession(session, reason);
+}
+
+async function stopCapturesForInstance(instanceId, reason)
+{
+    for (const link of links.values())
+    {
+        if (link.from === instanceId || link.to === instanceId)
+        {
+            await stopCaptureByLink(link.id, reason);
+        }
+    }
+}
+
+async function startCaptureForLink(link)
+{
+    const existingId = captureByLink.get(link.id);
+    if (existingId)
+    {
+        const existing = captureSessions.get(existingId);
+        if (existing && (existing.status === 'running' || existing.status === 'starting' || existing.status === 'stopping'))
+        {
+            return existing;
+        }
+    }
+
+    if (getActiveCaptureSessions().length >= config.MAX_ACTIVE_CAPTURES)
+    {
+        const active = getActiveCaptureSessions()[0];
+        const err = new Error(`当前仅允许 ${config.MAX_ACTIVE_CAPTURES} 个活动抓包，请先停止 ${active?.linkId || '现有会话'}`);
+        err.statusCode = 409;
+        err.activeCapture = active ? serializeCapture(active, { includeLines: false }) : null;
+        throw err;
+    }
+
+    const helperImage = await resolveCaptureHelperImage();
+    if (!helperImage)
+    {
+        throw new Error(`抓包需要重建本地 netnexus 镜像并带入 tcpdump，例如重新构建 netnexus:latest；已检查 ${config.CAPTURE_HELPER_IMAGES.join(' / ')}`);
+    }
+
+    const bridge = await inspectLinkBridge(link);
+    const startedAt = Date.now();
+    const sessionId = `cap-${startedAt.toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    const pcapPath = path.join(CAPTURE_TMP_HOST_DIR, `${sessionId}.pcap`);
+    const session = {
+        id: sessionId,
+        linkId: link.id,
+        networkName: bridge.networkName,
+        bridgeName: bridge.bridgeName,
+        helperImage,
+        status: 'starting',
+        startedAt,
+        stoppedAt: null,
+        stopReason: null,
+        error: null,
+        bytes: 0,
+        lines: [],
+        textBuffers: { viewer: '', pcap: '' },
+        downloadName: captureFileName(link.id, startedAt),
+        pcapPath,
+        recorderName: captureHelperContainerName(sessionId, 'rec'),
+        viewerName: captureHelperContainerName(sessionId, 'tap'),
+        recorderClosed: false,
+        viewerClosed: false,
+        finalized: false,
+        stopRequested: false,
+        finalStatus: null,
+        stopPromise: null,
+        fileStream: fs.createWriteStream(pcapPath)
+    };
+
+    captureSessions.set(session.id, session);
+    captureByLink.set(link.id, session.id);
+
+    session.fileStream.on('error', err =>
+    {
+        session.error = `抓包文件写入失败: ${err.message}`;
+        session.finalStatus = 'error';
+        stopCaptureSession(session, session.error, 'error').catch(() => {});
+    });
+
+    appendCaptureLine(
+        session,
+        `[capture] ${link.id} 开始抓包，bridge=${bridge.bridgeName} helper=${helperImage}，文件上限 ${config.CAPTURE_MAX_BYTES} 字节`
+    );
+
+    const commonArgs = ['run', '--rm', '--name', '', '--network', 'host', '--cap-add', 'NET_ADMIN', '--cap-add', 'NET_RAW', helperImage, 'tcpdump'];
+    const recorderArgs = [...commonArgs];
+    recorderArgs[3] = session.recorderName;
+    recorderArgs.push('-i', bridge.bridgeName, '-s', '0', '-U', '-nn', '-w', '-');
+
+    const viewerArgs = [...commonArgs];
+    viewerArgs[3] = session.viewerName;
+    viewerArgs.push('-i', bridge.bridgeName, '-s', '0', '-l', '-nn', '-tttt', '-e', '-vv');
+
+    session.recorderProc = dockerSpawn(recorderArgs);
+    session.viewerProc = dockerSpawn(viewerArgs);
+
+    session.recorderProc.stdout.on('data', chunk =>
+    {
+        session.bytes += chunk.length;
+        session.fileStream.write(chunk);
+        if (!session.stopRequested && session.bytes >= config.CAPTURE_MAX_BYTES)
+        {
+            stopCaptureSession(session, `抓包达到上限 ${config.CAPTURE_MAX_BYTES} 字节，已自动停止`).catch(() => {});
+        }
+    });
+    session.recorderProc.stderr.on('data', chunk => pushCaptureText(session, 'pcap', chunk, '[pcap] '));
+    session.viewerProc.stdout.on('data', chunk => pushCaptureText(session, 'viewer', chunk));
+    session.viewerProc.stderr.on('data', chunk => pushCaptureText(session, 'viewer', chunk, '[tcpdump] '));
+
+    session.recorderProc.on('error', err =>
+    {
+        session.error = `抓包写文件进程启动失败: ${err.message}`;
+        session.finalStatus = 'error';
+        stopCaptureSession(session, session.error, 'error').catch(() => {});
+    });
+    session.viewerProc.on('error', err =>
+    {
+        session.error = `抓包文本进程启动失败: ${err.message}`;
+        session.finalStatus = 'error';
+        stopCaptureSession(session, session.error, 'error').catch(() => {});
+    });
+
+    session.recorderProc.on('close', (code, signal) =>
+    {
+        session.recorderClosed = true;
+        if (!session.stopRequested && code !== 0)
+        {
+            session.error = `抓包写文件进程异常退出(code=${code ?? 'null'}, signal=${signal || '-'})`;
+            session.finalStatus = 'error';
+            stopCaptureSession(session, session.error, 'error').catch(() => {});
+        }
+        maybeFinalizeCapture(session);
+    });
+    session.viewerProc.on('close', (code, signal) =>
+    {
+        session.viewerClosed = true;
+        flushCaptureText(session, 'viewer');
+        if (!session.stopRequested && code !== 0)
+        {
+            session.error = `抓包文本进程异常退出(code=${code ?? 'null'}, signal=${signal || '-'})`;
+            session.finalStatus = 'error';
+            stopCaptureSession(session, session.error, 'error').catch(() => {});
+        }
+        maybeFinalizeCapture(session);
+    });
+
+    await sleep(350);
+    if (!session.error && !session.stopRequested)
+    {
+        session.status = 'running';
+    }
+    maybeFinalizeCapture(session);
+    return session;
+}
 
 /**
  * 容器级 hardening：cgroups 资源上限 + no-new-privileges。
@@ -956,6 +1327,8 @@ app.post('/api/instances/:id/stop', async (req, res) =>
     }
     try
     {
+        await stopCapturesForInstance(inst.id, `设备 ${inst.id} 停止，抓包同步结束`);
+
         // 1) 导出容器里的 /opt/netnexus/data（含 sqlite db-wal）到内存
         let savedDb = null;
         try
@@ -1028,6 +1401,8 @@ app.delete('/api/instances/:id', async (req, res) =>
     }
     try
     {
+        await stopCapturesForInstance(req.params.id, `设备 ${req.params.id} 删除，抓包同步结束`);
+
         // 标记链路 unwired（如果对端也没了就把网络回收）
         for (const link of links.values())
         {
@@ -1064,6 +1439,11 @@ app.post('/api/instances/cleanup', async (_req, res) =>
     let removed = 0;
     try
     {
+        for (const session of getActiveCaptureSessions())
+        {
+            await stopCaptureSession(session, '执行一键清理，抓包同步结束');
+        }
+
         const { stdout } = await runDocker(['ps', '-a', '--filter', 'name=nn-topo-', '--format', '{{.Names}}']);
         const names = stdout.split('\n').map(s => s.trim()).filter(Boolean);
         for (const name of names)
@@ -1224,6 +1604,85 @@ app.get('/api/links', (_req, res) =>
     res.json({ links: Array.from(links.values()) });
 });
 
+app.get('/api/links/:id/capture', (req, res) =>
+{
+    if (!isValidId(req.params.id)) return res.status(400).json({ error: 'invalid id' });
+    if (!links.has(req.params.id))
+    {
+        return res.status(404).json({ error: 'link not found' });
+    }
+    const captureId = captureByLink.get(req.params.id);
+    const session = captureId ? captureSessions.get(captureId) : null;
+    res.json({ capture: serializeCapture(session) });
+});
+
+app.post('/api/links/:id/capture/start', async (req, res) =>
+{
+    if (!isValidId(req.params.id)) return res.status(400).json({ error: 'invalid id' });
+    const link = links.get(req.params.id);
+    if (!link)
+    {
+        return res.status(404).json({ error: 'link not found' });
+    }
+    try
+    {
+        const priorId = captureByLink.get(link.id);
+        const prior = priorId ? captureSessions.get(priorId) : null;
+        const reused = !!(prior && (prior.status === 'running' || prior.status === 'starting' || prior.status === 'stopping'));
+        const session = await startCaptureForLink(link);
+        if (session.status === 'error')
+        {
+            return res.status(500).json({
+                error: 'capture start failed',
+                detail: session.error || 'unknown capture error',
+                capture: serializeCapture(session)
+            });
+        }
+        res.json({ ok: true, capture: serializeCapture(session), reused });
+    }
+    catch (e)
+    {
+        const status = e.statusCode || 500;
+        res.status(status).json({
+            error: 'capture start failed',
+            detail: String(e.message || e),
+            activeCapture: e.activeCapture || null
+        });
+    }
+});
+
+app.post('/api/links/:id/capture/stop', async (req, res) =>
+{
+    if (!isValidId(req.params.id)) return res.status(400).json({ error: 'invalid id' });
+    if (!links.has(req.params.id))
+    {
+        return res.status(404).json({ error: 'link not found' });
+    }
+    const captureId = captureByLink.get(req.params.id);
+    const session = captureId ? captureSessions.get(captureId) : null;
+    if (!session)
+    {
+        return res.status(404).json({ error: 'capture not found' });
+    }
+    await stopCaptureSession(session, '用户手动停止抓包');
+    res.json({ ok: true, capture: serializeCapture(session) });
+});
+
+app.get('/api/captures/:id/download', (req, res) =>
+{
+    if (!isValidId(req.params.id)) return res.status(400).json({ error: 'invalid id' });
+    const session = captureSessions.get(req.params.id);
+    if (!session)
+    {
+        return res.status(404).json({ error: 'capture not found' });
+    }
+    if (!session.pcapPath || !fs.existsSync(session.pcapPath))
+    {
+        return res.status(404).json({ error: 'capture file not found' });
+    }
+    res.download(session.pcapPath, session.downloadName);
+});
+
 app.delete('/api/links/:id', async (req, res) =>
 {
     if (!isValidId(req.params.id)) return res.status(400).json({ error: 'invalid id' });
@@ -1234,6 +1693,8 @@ app.delete('/api/links/:id', async (req, res) =>
         await runDocker(['network', 'rm', name]).catch(() => {});
         return res.status(404).json({ error: 'not found' });
     }
+
+    await stopCaptureByLink(link.id, `链路 ${link.id} 删除，抓包同步结束`);
 
     // 对每个运行中的端点做 "disconnect link → connect stub" 原位换接口，
     // 让容器内 ethN 槽位继续存在，避免后续加线被 docker 分到 eth5+。
@@ -1417,6 +1878,28 @@ async function cleanupOrphanNetworksOnBoot()
         catch (_) { /* ignore */ }
     }
     if (removed > 0) console.log(`[backend] removed ${removed} orphan nn-* network(s)`);
+}
+
+async function cleanupCaptureHelpersOnBoot()
+{
+    let names;
+    try
+    {
+        const { stdout } = await runDocker(['ps', '-a', '--filter', 'name=nn-cap-', '--format', '{{.Names}}']);
+        names = stdout.split('\n').map(s => s.trim()).filter(Boolean);
+    }
+    catch (_) { return; }
+
+    let removed = 0;
+    for (const name of names)
+    {
+        await runDocker(['rm', '-f', name]).catch(() => {});
+        removed++;
+    }
+    if (removed > 0)
+    {
+        console.log(`[backend] removed ${removed} stale capture helper container(s)`);
+    }
 }
 
 /**
@@ -1644,6 +2127,7 @@ server.listen(PORT, config.BIND_HOST, async () =>
 {
     console.log(`[backend] listening on http://${config.BIND_HOST}:${PORT}  env=${config.ENV}`);
     console.log(`[backend] docker bin = ${dockerBin()} ${USE_SUDO ? '(sudo)' : ''}`);
+    await cleanupCaptureHelpersOnBoot();
     await registerExistingOnBoot();
     await cleanupOrphanNetworksOnBoot();
 });

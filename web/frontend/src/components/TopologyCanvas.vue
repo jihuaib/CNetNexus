@@ -5,6 +5,7 @@ const props = defineProps({
     nodes: { type: Array, required: true },
     links: { type: Array, required: true },
     selectedId: { type: String, default: null },
+    selectedLinkId: { type: String, default: null },
     linkingMode: { type: Boolean, default: false },
     maxPorts: { type: Number, default: 4 },
     allPorts: { type: Array, default: () => ['GE-1', 'GE-2', 'GE-3', 'GE-4'] },
@@ -13,12 +14,9 @@ const props = defineProps({
 });
 
 const emit = defineEmits([
-    'drop-device', 'move-node', 'select-node', 'create-link', 'delete-link',
+    'drop-device', 'move-node', 'select-node', 'select-link', 'create-link', 'delete-link',
     'delete-node', 'open-terminal', 'start-node', 'stop-node', 'exit-linking'
 ]);
-
-// 选中的连线 ID（用于删除/高亮）
-const selectedLinkId = ref(null);
 
 // 连线模式状态
 const linkSource = ref(null);    // { nodeId, port } 已确定起点和起点端口后
@@ -64,6 +62,7 @@ function onNodeMouseDown(e, node)
     // 连线模式下不拖动，仅作为点击源
     if (props.linkingMode) return;
 
+    emit('select-link', null);
     emit('select-node', node.id);
     const rect = canvasRef.value.getBoundingClientRect();
     dragState = {
@@ -215,7 +214,7 @@ function onCanvasMouseDown(e)
         return;
     }
     emit('select-node', null);
-    selectedLinkId.value = null;
+    emit('select-link', null);
     closeMenu();
 }
 
@@ -223,7 +222,7 @@ function onLinkClick(e, linkId)
 {
     if (props.linkingMode) return;
     e.stopPropagation();
-    selectedLinkId.value = linkId;
+    emit('select-link', linkId);
     emit('select-node', null);
     // 确保画布拿到焦点，Delete 键才能触发
     canvasRef.value?.focus({ preventScroll: true });
@@ -234,7 +233,7 @@ function onLinkContextMenu(e, linkId)
     if (props.linkingMode) return;
     e.preventDefault();
     e.stopPropagation();
-    selectedLinkId.value = linkId;
+    emit('select-link', linkId);
     // 借用现有的右键菜单：在 menu.value 标记 isLink
     const rect = canvasRef.value.getBoundingClientRect();
     menu.value = {
@@ -257,17 +256,17 @@ function onCanvasKeyDown(e)
             emit('exit-linking');
             e.preventDefault();
         }
-        else if (selectedLinkId.value)
+        else if (props.selectedLinkId)
         {
-            selectedLinkId.value = null;
+            emit('select-link', null);
             e.preventDefault();
         }
         return;
     }
-    if ((e.key === 'Delete' || e.key === 'Backspace') && selectedLinkId.value && !props.linkingMode)
+    if ((e.key === 'Delete' || e.key === 'Backspace') && props.selectedLinkId && !props.linkingMode)
     {
-        emit('delete-link', selectedLinkId.value);
-        selectedLinkId.value = null;
+        emit('delete-link', props.selectedLinkId);
+        emit('select-link', null);
         e.preventDefault();
     }
 }
@@ -295,6 +294,7 @@ function onNodeContextMenu(e, node)
 {
     e.preventDefault();
     e.stopPropagation();
+    emit('select-link', null);
     emit('select-node', node.id);
     const rect = canvasRef.value.getBoundingClientRect();
     menu.value = {
@@ -332,7 +332,7 @@ function menuAction(action)
         if (action === 'delete-link')
         {
             emit('delete-link', m.link);
-            selectedLinkId.value = null;
+            emit('select-link', null);
         }
         return;
     }
@@ -369,8 +369,8 @@ function menuAction(action)
                 />
                 <line
                     :x1="p.x1" :y1="p.y1" :x2="p.x2" :y2="p.y2"
-                    :stroke="p.id === selectedLinkId ? '#3a6cf6' : '#94a3b8'"
-                    :stroke-width="p.id === selectedLinkId ? 2.5 : 1.6"
+                    :stroke="p.id === props.selectedLinkId ? '#3a6cf6' : '#94a3b8'"
+                    :stroke-width="p.id === props.selectedLinkId ? 2.5 : 1.6"
                     stroke-linecap="round"
                     class="link-line"
                 />

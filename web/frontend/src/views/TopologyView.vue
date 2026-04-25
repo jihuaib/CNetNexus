@@ -11,18 +11,23 @@ const images = ref([]);
 const nodes = reactive([]);    // { id, type, x, y, image, status, instance }
 const links = reactive([]);    // { id, from, to }
 const selectedNodeId = ref(null);
+const selectedLinkId = ref(null);
 const terminalNodes = ref([]); // 当前打开终端的节点列表（按打开顺序）
 const activeTerminalId = ref(null);
 const terminalMinimized = ref(false);
 const log = ref([]);
 const linkingMode = ref(false);
 const fileInputRef = ref(null);
+const captureState = ref(null);
+const captureBusy = ref(false);
 
 const MAX_PORTS = 4;
 const ALL_PORTS = ['GE-1', 'GE-2', 'GE-3', 'GE-4'];
 
 let nextId = 1;
 let suppressPersist = false;
+let capturePollTimer = null;
+let capturePollLinkId = null;
 
 function linkCount(nodeId)
 {
@@ -49,6 +54,83 @@ function freePortsOf(nodeId)
 {
     const used = usedPortsOf(nodeId);
     return ALL_PORTS.filter(p => !used.has(p));
+}
+
+function mergeLinkState(target, data)
+{
+    if (!target) return;
+    target.networkName = data?.networkName || '';
+    target.wired = !!data?.wired;
+}
+
+function stopCapturePolling()
+{
+    if (capturePollTimer)
+    {
+        clearInterval(capturePollTimer);
+        capturePollTimer = null;
+    }
+    capturePollLinkId = null;
+}
+
+function startCapturePolling(linkId)
+{
+    if (capturePollTimer && capturePollLinkId === linkId) return;
+    stopCapturePolling();
+    if (!linkId) return;
+    capturePollLinkId = linkId;
+    capturePollTimer = setInterval(() =>
+    {
+        loadCaptureState(linkId, { silent: true });
+    }, 1000);
+}
+
+async function refreshLinksFromBackend({ silent = true } = {})
+{
+    try
+    {
+        const r = await fetch('/api/links');
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const data = await r.json();
+        const known = new Map((data.links || []).map(l => [l.id, l]));
+        for (const link of links)
+        {
+            mergeLinkState(link, known.get(link.id));
+        }
+    }
+    catch (e)
+    {
+        if (!silent) pushLog(`同步链路状态失败: ${e.message}`);
+    }
+}
+
+async function loadCaptureState(linkId = selectedLinkId.value, { silent = false } = {})
+{
+    if (!linkId)
+    {
+        captureState.value = null;
+        return;
+    }
+    try
+    {
+        const r = await fetch(`/api/links/${encodeURIComponent(linkId)}/capture`);
+        const data = await r.json();
+        if (!r.ok) throw new Error(data?.error || `HTTP ${r.status}`);
+        if (selectedLinkId.value === linkId)
+        {
+            captureState.value = data.capture || null;
+            const status = captureState.value?.status;
+            const active = status === 'running' || status === 'starting' || status === 'stopping';
+            if (!active && capturePollLinkId === linkId)
+            {
+                stopCapturePolling();
+            }
+        }
+    }
+    catch (e)
+    {
+        if (!silent) pushLog(`读取抓包状态失败: ${e.message}`);
+    }
 }
 
 function toggleLinkingMode()
@@ -135,9 +217,12 @@ async function hydrateFromSnapshot(snap, { reason = '导入', restoreRunning = f
     nodes.splice(0, nodes.length);
     links.splice(0, links.length);
     selectedNodeId.value = null;
+    selectedLinkId.value = null;
     terminalNodes.value = [];
     activeTerminalId.value = null;
     terminalMinimized.value = false;
+    captureState.value = null;
+    stopCapturePolling();
 
     for (const n of snap.nodes)
     {
@@ -162,7 +247,9 @@ async function hydrateFromSnapshot(snap, { reason = '导入', restoreRunning = f
             from: l.from,
             fromPort: l.fromPort || '',
             to: l.to,
-            toPort: l.toPort || ''
+            toPort: l.toPort || '',
+            networkName: '',
+            wired: false
         });
     }
 
@@ -194,11 +281,17 @@ async function hydrateFromSnapshot(snap, { reason = '导入', restoreRunning = f
     // 把链路重新登记到后端（后端重启会丢内存，这里补一次；两端都运行则自动 wire）
     for (const l of links)
     {
-        fetch('/api/links', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(l)
-        }).catch(() => {});
+        try
+        {
+            const r = await fetch('/api/links', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(l)
+            });
+            const data = await r.json().catch(() => ({}));
+            if (r.ok && data.link) mergeLinkState(l, data.link);
+        }
+        catch (_) { /* ignore */ }
     }
 
     // 导入模式：不主动拉起容器。用户点击"启动"时 startNode 会把 pendingDb 交给后端回灌。
@@ -224,6 +317,7 @@ async function hydrateFromSnapshot(snap, { reason = '导入', restoreRunning = f
 
     suppressPersist = false;
     persistToLocalStorage();
+    await refreshLinksFromBackend();
     pushLog(`${reason}完成：${nodes.length} 个设备 / ${links.length} 条连线`);
     return true;
 }
@@ -338,9 +432,12 @@ async function clearTopology()
     nodes.splice(0, nodes.length);
     links.splice(0, links.length);
     selectedNodeId.value = null;
+    selectedLinkId.value = null;
     terminalNodes.value = [];
     activeTerminalId.value = null;
     terminalMinimized.value = false;
+    captureState.value = null;
+    stopCapturePolling();
     suppressPersist = false;
     persistToLocalStorage();
     pushLog('拓扑已清空');
@@ -360,6 +457,7 @@ onMounted(async () =>
 onBeforeUnmount(() =>
 {
     document.body.classList.remove('topology-active');
+    stopCapturePolling();
 });
 
 // 任何节点 / 连线的变动都自动落盘（深度 watch）
@@ -382,6 +480,9 @@ function onDropDevice({ deviceType, x, y })
     });
     nodes.push(node);
     selectedNodeId.value = node.id;
+    selectedLinkId.value = null;
+    captureState.value = null;
+    stopCapturePolling();
     pushLog(`新增设备 ${node.label}`);
 }
 
@@ -394,6 +495,25 @@ function onMoveNode({ id, x, y })
 function onSelectNode(id)
 {
     selectedNodeId.value = id;
+    if (id) selectedLinkId.value = null;
+}
+
+function onSelectLink(id)
+{
+    selectedLinkId.value = id;
+    captureState.value = null;
+    stopCapturePolling();
+    if (id)
+    {
+        selectedNodeId.value = null;
+        loadCaptureState(id, { silent: true }).then(() =>
+        {
+            if (captureState.value?.status === 'running' || captureState.value?.status === 'starting' || captureState.value?.status === 'stopping')
+            {
+                startCapturePolling(id);
+            }
+        });
+    }
 }
 
 async function onCreateLink({ from, fromPort, to, toPort })
@@ -413,7 +533,7 @@ async function onCreateLink({ from, fromPort, to, toPort })
         return;
     }
     const uniq = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-    const link = { id: `link-${uniq}-${nextId++}`, from, fromPort, to, toPort };
+    const link = { id: `link-${uniq}-${nextId++}`, from, fromPort, to, toPort, networkName: '', wired: false };
     links.push(link);
     pushLog(`连线 ${a.label}:${fromPort} <-> ${b.label}:${toPort}`);
 
@@ -427,6 +547,7 @@ async function onCreateLink({ from, fromPort, to, toPort })
         const data = await r.json();
         if (r.ok)
         {
+            if (data.link) mergeLinkState(link, data.link);
             if (data.note)
             {
                 pushLog(data.note);
@@ -467,6 +588,12 @@ async function onDeleteLink(linkId)
     const a = nodes.find(n => n.id === l.from);
     const b = nodes.find(n => n.id === l.to);
     links.splice(idx, 1);
+    if (selectedLinkId.value === linkId)
+    {
+        selectedLinkId.value = null;
+        captureState.value = null;
+        stopCapturePolling();
+    }
     pushLog(`删除连线 ${a?.label || l.from}:${l.fromPort} <-> ${b?.label || l.to}:${l.toPort}`);
     await fetch(`/api/links/${encodeURIComponent(linkId)}`, { method: 'DELETE' }).catch(() => {});
 }
@@ -480,17 +607,46 @@ function onDeleteNode(id)
     {
         fetch(`/api/instances/${node.id}`, { method: 'DELETE' }).catch(() => {});
     }
+    const removedLinkIds = links.filter(l => l.from === id || l.to === id).map(l => l.id);
     nodes.splice(idx, 1);
     for (let i = links.length - 1; i >= 0; i--)
     {
         if (links[i].from === id || links[i].to === id) links.splice(i, 1);
     }
     if (selectedNodeId.value === id) selectedNodeId.value = null;
+    if (removedLinkIds.includes(selectedLinkId.value))
+    {
+        selectedLinkId.value = null;
+        captureState.value = null;
+        stopCapturePolling();
+    }
+    for (const linkId of removedLinkIds)
+    {
+        fetch(`/api/links/${encodeURIComponent(linkId)}`, { method: 'DELETE' }).catch(() => {});
+    }
     closeTerminalTab(id);
     pushLog(`删除设备 ${node.label}`);
 }
 
 const selectedNode = computed(() => nodes.find(n => n.id === selectedNodeId.value) || null);
+const selectedLink = computed(() => links.find(l => l.id === selectedLinkId.value) || null);
+const selectedLinkEndpoints = computed(() =>
+{
+    const link = selectedLink.value;
+    if (!link) return null;
+    const fromNode = nodes.find(n => n.id === link.from);
+    const toNode = nodes.find(n => n.id === link.to);
+    return {
+        fromLabel: fromNode?.label || link.from,
+        toLabel: toNode?.label || link.to
+    };
+});
+
+function formatTime(ts)
+{
+    if (!ts) return '-';
+    return new Date(ts).toLocaleString();
+}
 
 async function startNode(node)
 {
@@ -521,6 +677,7 @@ async function startNode(node)
         node.instance = data.instance;
         node.status = 'running';
         if (hasDb) node.pendingDb = null;
+        await refreshLinksFromBackend();
         pushLog(`${node.label} 已启动，宿主机端口 ${data.instance.hostPort}`);
     }
     catch (e)
@@ -543,6 +700,8 @@ async function stopNode(node)
         }
         node.status = 'stopped';
         // 保留 node.instance：容器还在，只是停了，再点启动会原地 docker start
+        await refreshLinksFromBackend();
+        await loadCaptureState(selectedLinkId.value, { silent: true });
         pushLog(`${node.label} 已停止（容器保留，配置不丢）`);
         closeTerminalTab(node.id);
     }
@@ -550,6 +709,69 @@ async function stopNode(node)
     {
         pushLog(`停止失败: ${e.message}`);
     }
+}
+
+async function startSelectedLinkCapture()
+{
+    const link = selectedLink.value;
+    if (!link || captureBusy.value) return;
+    captureBusy.value = true;
+    try
+    {
+        const r = await fetch(`/api/links/${encodeURIComponent(link.id)}/capture/start`, { method: 'POST' });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data?.detail || data?.error || `HTTP ${r.status}`);
+        captureState.value = data.capture || null;
+        startCapturePolling(link.id);
+        pushLog(data.reused
+            ? `链路 ${link.id} 已有抓包会话，直接复用`
+            : `链路 ${link.id} 已开始抓包`);
+    }
+    catch (e)
+    {
+        pushLog(`开始抓包失败: ${e.message}`);
+    }
+    finally
+    {
+        captureBusy.value = false;
+    }
+}
+
+async function stopSelectedLinkCapture()
+{
+    const link = selectedLink.value;
+    if (!link || captureBusy.value) return;
+    captureBusy.value = true;
+    try
+    {
+        const r = await fetch(`/api/links/${encodeURIComponent(link.id)}/capture/stop`, { method: 'POST' });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data?.error || `HTTP ${r.status}`);
+        captureState.value = data.capture || null;
+        stopCapturePolling();
+        pushLog(`链路 ${link.id} 抓包已停止`);
+    }
+    catch (e)
+    {
+        pushLog(`停止抓包失败: ${e.message}`);
+    }
+    finally
+    {
+        captureBusy.value = false;
+    }
+}
+
+function downloadSelectedCapture()
+{
+    const downloadUrl = captureState.value?.downloadUrl;
+    if (!downloadUrl) return;
+    const a = document.createElement('a');
+    a.href = downloadUrl;
+    a.download = captureState.value?.downloadName || 'capture.pcap';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    pushLog(`已下载抓包文件 ${a.download}`);
 }
 
 function openTerminal(node)
@@ -637,6 +859,7 @@ function closeTerminalWindow()
                 :nodes="nodes"
                 :links="links"
                 :selected-id="selectedNodeId"
+                :selected-link-id="selectedLinkId"
                 :linking-mode="linkingMode"
                 :max-ports="MAX_PORTS"
                 :all-ports="ALL_PORTS"
@@ -645,6 +868,7 @@ function closeTerminalWindow()
                 @drop-device="onDropDevice"
                 @move-node="onMoveNode"
                 @select-node="onSelectNode"
+                @select-link="onSelectLink"
                 @create-link="onCreateLink"
                 @delete-node="onDeleteNode"
                 @open-terminal="openTerminal"
@@ -655,7 +879,7 @@ function closeTerminalWindow()
             />
 
             <aside class="inspector">
-                <h3>设备属性</h3>
+                <h3>{{ selectedLink ? '链路属性' : '设备属性' }}</h3>
                 <template v-if="selectedNode">
                     <div class="row">
                         <label>名称</label>
@@ -703,7 +927,56 @@ function closeTerminalWindow()
                     </div>
                     <p class="tip">右键节点可启动 / 停止 / 连接 / 删除</p>
                 </template>
-                <p v-else class="hint">从左侧拖拽设备到画布开始编排<br/>右键节点进行操作</p>
+                <template v-else-if="selectedLink">
+                    <div class="row">
+                        <label>ID</label>
+                        <span class="value mono">{{ selectedLink.id }}</span>
+                    </div>
+                    <div class="row">
+                        <label>起点</label>
+                        <span class="value">{{ selectedLinkEndpoints?.fromLabel }} · {{ selectedLink.fromPort }}</span>
+                    </div>
+                    <div class="row">
+                        <label>终点</label>
+                        <span class="value">{{ selectedLinkEndpoints?.toLabel }} · {{ selectedLink.toPort }}</span>
+                    </div>
+                    <div class="row">
+                        <label>状态</label>
+                        <span class="value" :class="selectedLink.wired ? 'status-running' : 'status-stopped'">
+                            {{ selectedLink.wired ? 'wired' : 'registered' }}
+                        </span>
+                    </div>
+                    <div class="row">
+                        <label>网络</label>
+                        <span class="value mono">{{ selectedLink.networkName || '(未创建)' }}</span>
+                    </div>
+                    <div class="capture-actions">
+                        <button
+                            class="btn"
+                            :disabled="captureBusy || captureState?.status === 'running' || captureState?.status === 'starting'"
+                            @click="startSelectedLinkCapture"
+                        >开始抓包</button>
+                        <button
+                            class="btn"
+                            :disabled="captureBusy || !captureState || (captureState.status !== 'running' && captureState.status !== 'starting' && captureState.status !== 'stopping')"
+                            @click="stopSelectedLinkCapture"
+                        >停止抓包</button>
+                        <button
+                            class="btn"
+                            :disabled="!captureState?.downloadUrl"
+                            @click="downloadSelectedCapture"
+                        >下载 pcap</button>
+                    </div>
+                    <div class="capture-meta">
+                        <div>抓包状态：<span :class="captureState ? 'status-' + captureState.status : 'status-stopped'">{{ captureState?.status || 'idle' }}</span></div>
+                        <div>开始时间：{{ formatTime(captureState?.startedAt) }}</div>
+                        <div>结束时间：{{ formatTime(captureState?.stoppedAt) }}</div>
+                        <div>文件大小：{{ captureState?.bytes || 0 }} B</div>
+                    </div>
+                    <pre class="capture-output">{{ captureState?.lines?.join('\n') || '选中链路后可开始抓包；页面会显示 tcpdump 文本输出，停止后可下载 pcap。' }}</pre>
+                    <p class="tip">抓包依赖本地 `netnexus` 镜像内已带 `tcpdump`；重建 `netnexus:latest` 后即可直接使用。</p>
+                </template>
+                <p v-else class="hint">从左侧拖拽设备到画布开始编排<br/>右键节点进行操作，或单击连线查看抓包面板</p>
 
                 <h3>日志</h3>
                 <div class="log">
@@ -837,6 +1110,7 @@ function closeTerminalWindow()
 .status-running { color: #16a34a; font-weight: 600; }
 .status-stopped { color: #6b7280; }
 .status-starting { color: #d97706; font-weight: 600; }
+.status-stopping { color: #b45309; font-weight: 600; }
 .status-error { color: #dc2626; font-weight: 600; }
 
 .btn {
@@ -894,6 +1168,37 @@ function closeTerminalWindow()
     background: #3a6cf6;
     color: #ffffff;
     border-color: #3a6cf6;
+}
+
+.capture-actions {
+    display: flex;
+    gap: 8px;
+    margin: 10px 0 6px;
+}
+
+.capture-meta {
+    display: grid;
+    gap: 4px;
+    margin: 6px 0 10px;
+    font-size: 12px;
+    color: #4b5563;
+}
+
+.capture-output {
+    margin: 0;
+    min-height: 180px;
+    max-height: 260px;
+    overflow: auto;
+    padding: 10px;
+    border-radius: 6px;
+    border: 1px solid #d6dde8;
+    background: #0f172a;
+    color: #dbeafe;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    word-break: break-word;
 }
 
 .log {

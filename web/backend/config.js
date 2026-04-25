@@ -51,6 +51,14 @@ const config = {
     BODY_LIMIT:    process.env.BODY_LIMIT || (IS_PROD ? '8mb' : '64mb'),
     // 单个容器 db 解码后大小上限，防爆内存 / 爆磁盘
     MAX_DB_BYTES:  intEnv('MAX_DB_BYTES',  8 * 1024 * 1024),
+    // 单次抓包文件上限，避免一直抓到打满磁盘
+    CAPTURE_MAX_BYTES: intEnv('CAPTURE_MAX_BYTES', IS_PROD ? 32 * 1024 * 1024 : 256 * 1024 * 1024),
+    // 前端保留的抓包文本行数
+    CAPTURE_LINE_LIMIT: intEnv('CAPTURE_LINE_LIMIT', IS_PROD ? 400 : 1000),
+    // 当前后端默认只允许一个活动抓包，避免多会话叠加占资源
+    MAX_ACTIVE_CAPTURES: intEnv('MAX_ACTIVE_CAPTURES', 1),
+    // 用于 host-network 抓 bridge 的辅助镜像，需本地已存在且内含 tcpdump
+    CAPTURE_HELPER_IMAGES: listEnv('CAPTURE_HELPER_IMAGES', ['netnexus:latest', 'netnexus:debug', 'netnexus:dev']),
 
     // --- 镜像白名单（防止拉任意镜像 DoS / 逃逸） ---
     // 前缀匹配。只要镜像名以白名单中任意一项开头即允许。

@@ -5,6 +5,10 @@
             <!-- {ctx:4} 由框架替换为 CLI_CTX_ID_IF_IDX 值（1=GE-1, 2=GE-2, 3=GE-3, 4=GE-4） -->
             <template>&lt;NetNexus(config-if-GE-{ctx:4})&gt;</template>
         </view>
+        <view view-name="if-null0">
+            <!-- {ctx:4} 由框架替换为 CLI_CTX_ID_IF_IDX 值（0=null0） -->
+            <template>&lt;NetNexus(config-if-null0)&gt;</template>
+        </view>
         <view view-name="if-loop">
             <!-- {ctx:6} 由框架替换为 CLI_CTX_ID_IF_LOOP_IDX 值（loop 接口编号） -->
             <template>&lt;NetNexus(config-if-loop{ctx:6})&gt;</template>
@@ -34,6 +38,10 @@
                 <element id="5" cfg-id="4" type="keyword">
                     <name>GE-4</name> <!-- 5 -->
                     <description>Interface name</description>
+                </element>
+                <element id="6" cfg-id="0" type="keyword">
+                    <name>null0</name> <!-- 6 -->
+                    <description>Null interface</description>
                 </element>
             </elements>
             <commands>
@@ -71,6 +79,15 @@
                     <to-view>if</to-view>
                     <context-out>
                         <entry ctx-id="4" value="4"/>
+                    </context-out>
+                </command>
+                <!-- if null0: ctx-id=4=0 -->
+                <command>
+                    <expression>1 6</expression>
+                    <views>config</views>
+                    <to-view>if-null0</to-view>
+                    <context-out>
+                        <entry ctx-id="4" value="0"/>
                     </context-out>
                 </command>
             </commands>

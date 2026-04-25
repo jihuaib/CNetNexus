@@ -50,6 +50,8 @@ static const char *if_cfgid_to_name(uint32_t cfg_id)
 {
     switch (cfg_id)
     {
+        case 0:
+            return "null0";
         case 1:
             return "GE-1";
         case 2:
@@ -68,7 +70,7 @@ static const char *if_cfgid_to_name(uint32_t cfg_id)
 // ============================================================================
 
 /**
- * @brief 处理接口进入命令（if GE-x → 视图切换）
+ * @brief 处理接口进入命令（if GE-x/null0 → 视图切换）
  */
 static int handle_if_entry(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
@@ -188,9 +190,17 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         return ERRCODE_FAIL;
     }
 
+    gboolean is_null0 = (strcmp(ifname, "null0") == 0);
+
     if (bad_addr_arg)
     {
         send_resp(msg, "Error: Invalid address argument\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    if (is_null0 && (has_addr || has_shutdown))
+    {
+        send_resp(msg, "Error: null0 does not support ip address or shutdown\r\n");
         return ERRCODE_FAIL;
     }
 

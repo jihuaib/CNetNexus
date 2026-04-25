@@ -41,6 +41,8 @@ static const char *if_cfgid_to_name(uint32_t cfg_id)
 {
     switch (cfg_id)
     {
+        case 0:
+            return "null0";
         case 1:
             return "GE-1";
         case 2:
