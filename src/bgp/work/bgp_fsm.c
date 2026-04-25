@@ -265,6 +265,33 @@ static void fsm_reannounce_best(bgp_session_t *sess)
     bgp_update_group_catchup_session(sess);
 }
 
+static gboolean fsm_af_list_contains(const GArray *afs, guint32 af_key)
+{
+    if (!afs)
+    {
+        return FALSE;
+    }
+
+    for (guint i = 0; i < afs->len; i++)
+    {
+        if (g_array_index(afs, guint32, i) == af_key)
+        {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+static gboolean fsm_af_negotiated(const bgp_session_t *sess, guint32 af_key)
+{
+    if (!sess)
+    {
+        return FALSE;
+    }
+
+    return fsm_af_list_contains(sess->local_afs, af_key) && fsm_af_list_contains(sess->remote_afs, af_key);
+}
+
 /** 根据本次 OPEN 协商结果，为本 session 下每个 per-AF peer 写入最终状态 */
 static void fsm_update_peer_states(bgp_session_t *sess)
 {
@@ -276,18 +303,7 @@ static void fsm_update_peer_states(bgp_session_t *sess)
             continue;
         }
         guint32 af_key = ((guint32)peer->inst->afi << 16) | (guint32)peer->inst->safi;
-        bool negotiated = false;
-        if (sess->negotiated_afs)
-        {
-            for (guint i = 0; i < sess->negotiated_afs->len; i++)
-            {
-                if (g_array_index(sess->negotiated_afs, guint32, i) == af_key)
-                {
-                    negotiated = true;
-                    break;
-                }
-            }
-        }
+        gboolean negotiated = fsm_af_negotiated(sess, af_key);
         peer->state = negotiated ? BGP_PEER_STATE_ESTABLISHED : BGP_PEER_STATE_NOT_NEGOTIATED;
         if (!negotiated)
         {

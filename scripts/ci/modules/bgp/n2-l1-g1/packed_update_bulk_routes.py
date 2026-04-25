@@ -58,6 +58,8 @@ RX_UPDATE_RE = re.compile(r"(?im)^\s*UPDATE\s*:\s*(\d+)\s*$")
 RX_TOTAL_RE = re.compile(r"(?im)^\s*Total\s*:\s*(\d+)\s*$")
 RX_NOTIF_RE = re.compile(r"(?im)^\s*NOTIFICATION\s*:\s*(\d+)\s*$")
 RX_UNKNOWN_RE = re.compile(r"(?im)^\s*Unknown\s*:\s*(\d+)\s*$")
+SENT_BLOCK_RE = re.compile(r"(?ims)^\s*Sent Messages:\s*$.*")
+SENT_UPDATE_RE = re.compile(r"(?ims)^\s*Sent Messages:\s*$.*?^\s*UPDATE\s*:\s*(\d+)\s*$")
 
 
 def _get_rx_update_count(rt: TopologyRuntime, *, device: str, peer_ip: str) -> int:
@@ -80,6 +82,21 @@ def _get_rx_update_count(rt: TopologyRuntime, *, device: str, peer_ip: str) -> i
     m = RX_UPDATE_RE.search(output)
     if not m:
         raise RuntimeError(f"{device} neighbor detail missing UPDATE line:\n{output}")
+    return int(m.group(1))
+
+
+def _get_tx_update_count(rt: TopologyRuntime, *, device: str, peer_ip: str) -> int:
+    output = cmd(
+        rt,
+        device,
+        f"show bgp neighbor af ipv4-unicast {peer_ip}",
+        strict=False,
+    )
+    if not SENT_BLOCK_RE.search(output):
+        raise RuntimeError(f"{device} neighbor detail missing Sent Messages section:\n{output}")
+    m = SENT_UPDATE_RE.search(output)
+    if not m:
+        raise RuntimeError(f"{device} neighbor detail missing Sent UPDATE line:\n{output}")
     return int(m.group(1))
 
 
@@ -234,6 +251,20 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             raise RuntimeError(
                 f"expected r2 RX UPDATE == 1 (packed advertisement), got {rx_updates}.\n"
                 f"--- r2 neighbor detail ---\n{r2_detail}\n"
+                f"--- r1 update-group ---\n{r1_ug}\n"
+            )
+
+        step("Verify r1 sent exactly ONE UPDATE message")
+        tx_updates = _get_tx_update_count(rt, device="r1", peer_ip=r1_peer_ip)
+        print(f"r1 TX UPDATE count = {tx_updates}")
+        if tx_updates != 1:
+            r1_detail = cmd(
+                rt, "r1", f"show bgp neighbor af ipv4-unicast {r1_peer_ip}", strict=False
+            )
+            r1_ug = cmd(rt, "r1", "show bgp update-group af ipv4-unicast", strict=False)
+            raise RuntimeError(
+                f"expected r1 TX UPDATE == 1 (packed advertisement), got {tx_updates}.\n"
+                f"--- r1 neighbor detail ---\n{r1_detail}\n"
                 f"--- r1 update-group ---\n{r1_ug}\n"
             )
 

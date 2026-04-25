@@ -27,6 +27,13 @@ fi
 # Create data directory
 mkdir -p "${DATA_DIR}"
 
+# Coredump 目录：异常退出时 core 文件落到这里（依赖宿主机 core_pattern 是相对名）
+CORE_DIR="${DATA_DIR}/cores"
+mkdir -p "${CORE_DIR}"
+
+# 放开 core dump 限制（继承到 netnexus 进程）
+ulimit -c unlimited
+
 # Set environment for development
 export LD_LIBRARY_PATH="${BUILD_DIR}/lib:${LD_LIBRARY_PATH}"
 
@@ -45,7 +52,9 @@ echo -e "${YELLOW}Press Ctrl+C to stop${NC}"
 echo "==================================="
 echo ""
 
-# Change to build/bin directory
+# 注意：不要 cd 到 cores 目录！部分模块（SQLite 等）用 cwd 相对路径打开
+# data/netnexus.db，切 cwd 会导致数据库被建到错误位置。
+# core 文件会落到 cwd（即 build/bin/），需要时 mv 到 cores 目录或 grep 查找。
 cd "${BUILD_DIR}/bin"
 
 # Start NetNexus

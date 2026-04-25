@@ -29,6 +29,23 @@ static const uint8_t BGP_MARKER[16] = {
     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
 };
 
+static gboolean bgp_af_array_contains(const GArray *afs, guint32 packed)
+{
+    if (!afs)
+    {
+        return FALSE;
+    }
+
+    for (guint i = 0; i < afs->len; i++)
+    {
+        if (g_array_index(afs, guint32, i) == packed)
+        {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
 static gboolean bgp_open_af_requires_ext_nexthop(const bgp_peer_t *peer, const net_addr_t *remote_addr)
 {
     if (!peer || !peer->inst || peer->inst->afi != BGP_AFI_IPV4)
@@ -208,6 +225,26 @@ int bgp_pkt_send_open(bgp_conn_t *conn, uint32_t local_as, uint32_t router_id, G
     {
         conn->session->local_caps = local_caps_sent;
         conn->session->local_router_id = router_id;
+        if (conn->session->local_afs)
+        {
+            g_array_free(conn->session->local_afs, TRUE);
+            conn->session->local_afs = NULL;
+        }
+        conn->session->local_afs = g_array_new(FALSE, FALSE, sizeof(guint32));
+        for (GList *l = af_peers; l != NULL; l = l->next)
+        {
+            bgp_peer_t *ap = (bgp_peer_t *)l->data;
+            if (!ap || !ap->inst)
+            {
+                continue;
+            }
+            guint32 packed = ((guint32)ap->inst->afi << 16) | (guint32)ap->inst->safi;
+            if (!bgp_af_array_contains(conn->session->local_afs, packed))
+            {
+                g_array_append_val(conn->session->local_afs, packed);
+            }
+        }
+        bgp_session_tx_msg_count(conn->session, BGP_MSG_OPEN);
     }
 
     char _rid_str[16];
@@ -238,6 +275,7 @@ int bgp_pkt_send_keepalive(bgp_conn_t *conn)
         return -1;
     }
 
+    bgp_session_tx_msg_count(conn->session, BGP_MSG_KEEPALIVE);
     LOG_DEBUG("BGP: Sent KEEPALIVE to %s", _ip);
     return 0;
 }
@@ -269,6 +307,7 @@ int bgp_pkt_send_notification(bgp_conn_t *conn, uint8_t error_code, uint8_t erro
         return -1;
     }
 
+    bgp_session_tx_msg_count(conn->session, BGP_MSG_NOTIFICATION);
     LOG_INFO("BGP: Sent NOTIFICATION to %s: %s (code=%u sub=%u)", _ip, bgp_notif_error_str(error_code, error_subcode),
              error_code, error_subcode);
     return 0;
@@ -696,7 +735,7 @@ int bgp_pkt_build_packed_withdraw(uint8_t *buf, int buf_size, const bgp_nlri_ent
 // ============================================================================
 
 /**
- * @brief 解析 BGP OPEN 报文体，填充 session 的 remote_as / remote_id / negotiated_afs
+ * @brief 解析 BGP OPEN 报文体，填充 session 的 remote_as / remote_id / remote_afs
  * @param conn     连接处理器
  * @param body     报文体指针（header 之后）
  * @param body_len 报文体长度
@@ -772,17 +811,20 @@ static int parse_bgp_open(bgp_conn_t *conn, const uint8_t *body, uint16_t body_l
     LOG_INFO("BGP: Received OPEN from %s (AS=%u, ID=%s, hold=%u, caps=0x%02X)", _ip, conn->session->remote_as,
              _remote_rid_str, msg.hold_time, remote_caps);
 
-    /* 将 MP 能力写入 negotiated_afs（以 afi<<16|safi 打包为 guint32，无堆分配） */
-    if (conn->session->negotiated_afs)
+    /* 将对端 MP 能力写入 remote_afs（以 afi<<16|safi 打包为 guint32，无堆分配） */
+    if (conn->session->remote_afs)
     {
-        g_array_free(conn->session->negotiated_afs, TRUE);
-        conn->session->negotiated_afs = NULL;
+        g_array_free(conn->session->remote_afs, TRUE);
+        conn->session->remote_afs = NULL;
     }
-    conn->session->negotiated_afs = g_array_new(FALSE, FALSE, sizeof(guint32));
+    conn->session->remote_afs = g_array_new(FALSE, FALSE, sizeof(guint32));
     for (uint8_t i = 0; i < msg.mp_count; i++)
     {
         guint32 packed = ((guint32)msg.mp_afs[i] << 16) | (guint32)msg.mp_safis[i];
-        g_array_append_val(conn->session->negotiated_afs, packed);
+        if (!bgp_af_array_contains(conn->session->remote_afs, packed))
+        {
+            g_array_append_val(conn->session->remote_afs, packed);
+        }
         LOG_INFO("BGP: peer %s MP capability: AFI=%u SAFI=%u", _ip, msg.mp_afs[i], msg.mp_safis[i]);
     }
 

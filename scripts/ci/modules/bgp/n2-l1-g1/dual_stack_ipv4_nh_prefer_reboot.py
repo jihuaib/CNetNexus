@@ -30,6 +30,10 @@ IPV6_MASK = "64"
 IPV6_PREFIX = f"{IPV6_PREFIX_ADDR}/{IPV6_MASK}"
 
 
+def _as_6pe_nexthop(ipv4_addr: str) -> str:
+    return f"::ffff:{ipv4_addr}"
+
+
 def _session_checks(
     r1_peer_v4: str,
     r1_peer_v6: str,
@@ -464,6 +468,8 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
     r1_peer_v6 = str(g_top.r1.GE_1.peer_ip6)
     r2_peer_v4 = str(g_top.r2.GE_1.peer_ip)
     r2_peer_v6 = str(g_top.r2.GE_1.peer_ip6)
+    r1_peer_v4_6pe = _as_6pe_nexthop(r1_peer_v4)
+    r2_peer_v4_6pe = _as_6pe_nexthop(r2_peer_v4)
 
     session_checks = _session_checks(r1_peer_v4, r1_peer_v6, r2_peer_v4, r2_peer_v6)
     ext_nh_checks = _ext_nexthop_capability_checks(r1_peer_v4, r1_peer_v6, r2_peer_v4, r2_peer_v6)
@@ -541,8 +547,10 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
 
         step("Verify r2 local routes (af-ipv4/af-ipv6)")
         wait_checks(rt, af_route_checks, timeout=40)
-        step("Verify r1 af-ipv6 receives route with v4/v6 nexthops")
-        _wait_ipv6_bgp_dual_nexthop(rt, device="r1", prefix=IPV6_PREFIX, nh4=r1_peer_v4, nh6=r1_peer_v6, timeout=40)
+        step("Verify r1 af-ipv6 receives route with 6PE/v6 nexthops")
+        _wait_ipv6_bgp_dual_nexthop(
+            rt, device="r1", prefix=IPV6_PREFIX, nh4=r1_peer_v4_6pe, nh6=r1_peer_v6, timeout=40
+        )
         step("Verify r1 Route RIB has IPv6 BGP route")
         _wait_route_best_ipv6_bgp(rt, device="r1", destination=IPV6_PREFIX_ADDR, timeout=40)
         step("Verify r1 OS table has IPv6 BGP route")
@@ -646,7 +654,9 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             ],
         )
         wait_checks(rt, session_checks, timeout=60)
-        _wait_ipv6_bgp_dual_nexthop(rt, device="r1", prefix=IPV6_PREFIX, nh4=r1_peer_v4, nh6=r1_peer_v6, timeout=40)
+        _wait_ipv6_bgp_dual_nexthop(
+            rt, device="r1", prefix=IPV6_PREFIX, nh4=r1_peer_v4_6pe, nh6=r1_peer_v6, timeout=40
+        )
         _wait_route_best_ipv6_bgp(rt, device="r1", destination=IPV6_PREFIX_ADDR, timeout=40)
         _wait_os_ipv6_bgp_route(rt, device="r1", prefix=IPV6_PREFIX, timeout=40)
         _wait_ipv4_bgp_dual_nexthop(rt, device="r1", prefix=IPV4_PREFIX, nh4=r1_peer_v4, nh6=r1_peer_v6, timeout=40)
@@ -683,8 +693,10 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         wait_checks(rt, ext_nh_checks, timeout=40)
         step("Re-verify r2 local routes after reboot")
         wait_checks(rt, af_route_checks, timeout=40)
-        step("Re-verify r1 af-ipv6 receives route with v4/v6 nexthops after reboot")
-        _wait_ipv6_bgp_dual_nexthop(rt, device="r1", prefix=IPV6_PREFIX, nh4=r1_peer_v4, nh6=r1_peer_v6, timeout=40)
+        step("Re-verify r1 af-ipv6 receives route with 6PE/v6 nexthops after reboot")
+        _wait_ipv6_bgp_dual_nexthop(
+            rt, device="r1", prefix=IPV6_PREFIX, nh4=r1_peer_v4_6pe, nh6=r1_peer_v6, timeout=40
+        )
         step("Re-verify r1 Route RIB has IPv6 BGP route after reboot")
         _wait_route_best_ipv6_bgp(rt, device="r1", destination=IPV6_PREFIX_ADDR, timeout=40)
         step("Re-verify r1 OS table has IPv6 BGP route after reboot")

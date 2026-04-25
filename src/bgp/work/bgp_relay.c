@@ -164,6 +164,7 @@ static int bgp_relay_build_nh_key_from_route(const bgp_route_node_t *route, bgp_
         return 0;
     }
 
+    /* 6PE nexthop 先按原始 AF_INET6 地址处理；未引入隧道封装前，不向 IPv4 直连网关继续迭代。 */
     bgp_relay_make_nh_key(nh_key_out, route->head->inst->vrf->vrf_id, route->head->nlri.afi, route->head->nlri.safi,
                           &route->nexthop.global);
     return 1;

@@ -32,12 +32,22 @@ echo "  - SYS_PTRACE (for gdb)"
 echo "  - NET_ADMIN (for network debugging)"
 echo ""
 
+# core dump 准备：要求宿主机已执行 setup-coredump.sh，core_pattern 指向
+# /var/lib/netnexus-cores/。容器把同路径挂进去，崩溃时 core 落到宿主机此目录。
+CORES_DIR="/var/lib/netnexus-cores"
+sudo mkdir -p "${CORES_DIR}"
+sudo chmod 1777 "${CORES_DIR}"
+
 # Start container with debug capabilities
+# --ulimit core=-1：突破 docker daemon 默认的 RLIMIT_CORE 硬上限 0
+# -v ${CORES_DIR}: 容器内崩溃，core 通过宿主机的 core_pattern 落到此挂载目录
 sudo docker run -d \
     --name ${CONTAINER_NAME} \
     --cap-add=SYS_PTRACE \
     --cap-add=NET_ADMIN \
     --security-opt seccomp=unconfined \
+    --ulimit core=-1 \
+    -v "${CORES_DIR}:${CORES_DIR}" \
     -p 3788:3788 \
     ${IMAGE_NAME}:${IMAGE_TAG}
 

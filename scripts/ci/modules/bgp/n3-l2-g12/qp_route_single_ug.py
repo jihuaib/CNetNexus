@@ -136,6 +136,20 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             timeout=40,
         )
 
+        step("Verify QP neighbor detail shows local/remote AFs and sent counters")
+        detail_out = cmd(rt, "r2", f"show bgp neighbor af ipv4-qp {r2_to_r1_v4}", strict=False)
+        for text in (
+            "Local Address Families",
+            "Remote Address Families",
+            "Negotiated Address Families",
+            "Sent Messages:",
+            "afi=1 safi=253 (ipv4-qp)",
+        ):
+            if text not in detail_out:
+                raise RuntimeError(f"r2 QP neighbor detail missing '{text}':\n{detail_out}")
+        if not re.search(r"(?ims)^\s*Sent Messages:\s*$.*?^\s*OPEN\s*:\s*[1-9]\d*\s*$", detail_out):
+            raise RuntimeError(f"r2 QP neighbor detail missing non-zero Sent OPEN counter:\n{detail_out}")
+
         step("Configure QP self-originated route on r2 (route-select disabled by default)")
         run_cmds(
             rt=rt, device="r2",

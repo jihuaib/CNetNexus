@@ -36,6 +36,14 @@ static const char *afi_safi_to_str(int64_t afi, int64_t safi)
     {
         return "ipv6-unicast"; /* BGP_AFI_IPV6 + BGP_SAFI_UNICAST */
     }
+    if (afi == 1 && safi == BGP_SAFI_QP)
+    {
+        return "ipv4-qp";
+    }
+    if (afi == 2 && safi == BGP_SAFI_QP)
+    {
+        return "ipv6-qp";
+    }
     return NULL;
 }
 
@@ -160,10 +168,11 @@ static void bdr_append_sessions(GString *out)
  * @param afi  整数 AFI（与 bgp_neighbor 表存储一致）
  * @param safi 整数 SAFI
  */
-static void bdr_append_af_peers(GString *out, int64_t afi, int64_t safi)
+static void bdr_append_af_peers(GString *out, int64_t vrf_id, int64_t afi, int64_t safi)
 {
     dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     db_condition_t conds[] = {
+        {.field_name = "vrf_id", .op = DB_CMP_EQ, .value = db_value_int(vrf_id)},
         {.field_name = "afi", .op = DB_CMP_EQ, .value = db_value_int(afi)},
         {.field_name = "safi", .op = DB_CMP_EQ, .value = db_value_int(safi)},
     };
@@ -174,6 +183,7 @@ static void bdr_append_af_peers(GString *out, int64_t afi, int64_t safi)
     {
         db_value_free(&conds[0].value);
         db_value_free(&conds[1].value);
+        db_value_free(&conds[2].value);
         return;
     }
 
@@ -190,6 +200,51 @@ static void bdr_append_af_peers(GString *out, int64_t afi, int64_t safi)
     db_result_free(result);
     db_value_free(&conds[0].value);
     db_value_free(&conds[1].value);
+    db_value_free(&conds[2].value);
+}
+
+static void bdr_append_qp_routes(GString *out, int64_t vrf_id, int64_t afi, int64_t safi)
+{
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
+    db_condition_t conds[] = {
+        {.field_name = "vrf_id", .op = DB_CMP_EQ, .value = db_value_int(vrf_id)},
+        {.field_name = "afi", .op = DB_CMP_EQ, .value = db_value_int(afi)},
+        {.field_name = "safi", .op = DB_CMP_EQ, .value = db_value_int(safi)},
+    };
+    db_filter_t filter = {.conditions = conds, .num_conditions = G_N_ELEMENTS(conds)};
+
+    db_result_t *result = NULL;
+    if (db_rpc_query(ctx, BGP_TABLE_QP_ROUTE, NULL, 0, &filter, &result) != ERRCODE_SUCCESS || !result)
+    {
+        db_value_free(&conds[0].value);
+        db_value_free(&conds[1].value);
+        db_value_free(&conds[2].value);
+        return;
+    }
+
+    const char *ip_kw = (afi == BGP_AFI_IPV6) ? "ipv6" : "ip";
+    for (uint32_t i = 0; i < result->num_rows; i++)
+    {
+        db_row_t *row = result->rows[i];
+        int64_t start_dqpn = db_row_get_int(row, "start_dqpn", 0);
+        int64_t route_count = db_row_get_int(row, "route_count", 0);
+        int64_t mask_len = db_row_get_int(row, "mask_len", 0);
+        const char *prefix_addr = db_row_get_text(row, "prefix_addr", NULL);
+        const char *bid = db_row_get_text(row, "bid", NULL);
+
+        if (!prefix_addr || !bid || start_dqpn <= 0 || route_count <= 0 || mask_len <= 0)
+        {
+            continue;
+        }
+
+        g_string_append_printf(out, "  route start-dqpn %ld %s %s mask %ld count %ld bid %s\r\n", start_dqpn, ip_kw,
+                               prefix_addr, mask_len, route_count, bid);
+    }
+
+    db_result_free(result);
+    db_value_free(&conds[0].value);
+    db_value_free(&conds[1].value);
+    db_value_free(&conds[2].value);
 }
 
 /**
@@ -198,17 +253,27 @@ static void bdr_append_af_peers(GString *out, int64_t afi, int64_t safi)
  * @param safi          整数 SAFI
  * @param import_protos 已导入协议位掩码
  */
-static void bdr_append_af_block(GString *out, const char *afi_str, int64_t afi, int64_t safi, int64_t import_protos)
+static void bdr_append_af_block(GString *out, int64_t vrf_id, const char *afi_str, int64_t afi, int64_t safi,
+                                int64_t import_protos, gboolean route_select_enabled)
 {
     g_string_append_printf(out, " af %s\r\n", afi_str);
 
     /* AF 下各子表 BDR，按需扩展 */
-    bdr_append_af_peers(out, afi, safi);
+    bdr_append_af_peers(out, vrf_id, afi, safi);
 
     /* 导入路由配置 */
     if (import_protos & (1 << ROUTE_PROTOCOL_STATIC))
     {
         g_string_append(out, "  import-route static\r\n");
+    }
+
+    if (safi == BGP_SAFI_QP)
+    {
+        bdr_append_qp_routes(out, vrf_id, afi, safi);
+        if (route_select_enabled)
+        {
+            g_string_append(out, "  route-select enable\r\n");
+        }
     }
 
     g_string_append(out, " !\r\n");
@@ -234,9 +299,11 @@ static void bdr_append_af_instances(GString *out)
     for (uint32_t i = 0; i < inst_result->num_rows; i++)
     {
         db_row_t *row = inst_result->rows[i];
+        int64_t vrf_id = db_row_get_int(row, "vrf_id", BGP_VRF_PUBLIC_ID);
         int64_t afi_int = db_row_get_int(row, "afi", 0);
         int64_t safi_int = db_row_get_int(row, "safi", 0);
         int64_t import_protos = db_row_get_int(row, "import_protos", 0);
+        gboolean route_select_enabled = db_row_get_int(row, "route_select_enabled", 0) != 0;
 
         const char *afi_str = afi_safi_to_str(afi_int, safi_int);
         if (!afi_str)
@@ -244,7 +311,7 @@ static void bdr_append_af_instances(GString *out)
             continue;
         }
 
-        bdr_append_af_block(out, afi_str, afi_int, safi_int, import_protos);
+        bdr_append_af_block(out, vrf_id, afi_str, afi_int, safi_int, import_protos, route_select_enabled);
     }
 
     db_result_free(inst_result);

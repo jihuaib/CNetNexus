@@ -67,6 +67,21 @@ typedef struct bgp_msg_rx_stats
 } bgp_msg_rx_stats_t;
 
 /**
+ * @brief BGP 会话发包统计（按协议报文类型分类）
+ *
+ * 记录该 session 生命周期内向对端实际发出的每种 BGP 协议报文的累计个数，
+ * 仅在 send() 完整写出整帧后递增（短写不计）。语义、生命周期与 rx_msg_stats 对称。
+ */
+typedef struct bgp_msg_tx_stats
+{
+    uint32_t open;         /**< 发出 OPEN 报文个数 */
+    uint32_t update;       /**< 发出 UPDATE 报文个数 */
+    uint32_t notification; /**< 发出 NOTIFICATION 报文个数 */
+    uint32_t keepalive;    /**< 发出 KEEPALIVE 报文个数 */
+    uint32_t total;        /**< 发出 BGP 报文总个数（所有类型之和） */
+} bgp_msg_tx_stats_t;
+
+/**
  * @brief epoll timerfd 反向引用结构（内嵌于 bgp_session_t，通用于三类定时器）
  *
  * 注册 timerfd 到 epoll 时，data.ptr 设为
@@ -84,9 +99,10 @@ typedef struct bgp_timer_sentinel
  *
  * pri_conn：主连接；碰撞解决后唯一存活的连接始终在此
  * sec_conn：碰撞检测期间临时持有第二条连接，碰撞解决后置 NULL
- * remote_id / negotiated_afs：由 OPEN 报文协商填入（afs 以 (afi<<16|safi) 打包存储，remote_id 为主机序 uint32_t）
- * local_router_id：发送 OPEN 时使用的本地 BGP Identifier（主机序 uint32_t，用于 §6.8 碰撞检测）
- * peer_list：当前 session 在各 AF 下使能的 bgp_peer_t* 列表（借用引用）
+ * remote_id / remote_afs：由对端 OPEN 报文携带的 MP 能力填入（afs 以 (afi<<16|safi) 打包存储，remote_id 为主机序
+ * uint32_t） local_afs：本端发送 OPEN 时实际携带的 MP 能力快照（与对端协商成功后保留） local_router_id：发送 OPEN
+ * 时使用的本地 BGP Identifier（主机序 uint32_t，用于 §6.8 碰撞检测） peer_list：当前 session 在各 AF 下使能的
+ * bgp_peer_t* 列表（借用引用）
  *
  * timerfd 生命周期：
  *   retry_timerfd  — connect 失败后单次触发，成功后取消
@@ -107,8 +123,9 @@ typedef struct bgp_session
     int sec_last_socket_error; /**< 次连接槽最近一次 socket 错误码（0=无） */
     uint32_t remote_id;        /**< 对端 BGP Router ID（主机序 32 位，由 OPEN 填入，0 表示未建立） */
     uint32_t local_router_id; /**< 本地 BGP Router ID（主机序 32 位，发送 OPEN 时保存，用于 RFC §6.8 比较） */
-    GArray *negotiated_afs; /**< 协商地址族列表（每元素为 guint32，以 afi<<16|safi 打包） */
-    GList *peer_list;       /**< 各 AF 下使能的 bgp_peer_t*（借用引用） */
+    GArray *local_afs;  /**< 本端发送 OPEN 携带的 MP 能力快照（每元素 (afi<<16|safi) 打包） */
+    GArray *remote_afs; /**< 对端 OPEN 携带的 MP 能力（每元素 (afi<<16|safi) 打包） */
+    GList *peer_list;   /**< 各 AF 下使能的 bgp_peer_t*（借用引用） */
 
     /* ---- 能力字段 ---- */
     uint32_t flags;           /**< 已配置的本地能力集（BGP_SESS_CAP_*） */
@@ -129,6 +146,7 @@ typedef struct bgp_session
     gint64 established_at_usec; /**< 会话最近一次进入 ESTABLISHED 状态的时间戳（g_get_real_time，0 表示未建立） */
 
     bgp_msg_rx_stats_t rx_msg_stats; /**< 收到的 BGP 协议报文累计统计（按类型分类） */
+    bgp_msg_tx_stats_t tx_msg_stats; /**< 发出的 BGP 协议报文累计统计（按类型分类） */
 
     bgp_vrf_t *vrf;            /**< 所属 VRF（借用引用，不持有所有权） */
     bgp_fsm_state_t fsm_state; /**< RFC 4271 §8 FSM 当前状态（唯一 BGP 协议态） */
@@ -235,5 +253,16 @@ void bgp_session_cancel_hold(bgp_session_t *sess, int epoll_fd);
  * @param msg_type BGP 报文头部中的 Type 字段（bgp_msg_type_t 枚举值）
  */
 void bgp_session_rx_msg_count(bgp_session_t *sess, uint8_t msg_type);
+
+/**
+ * @brief 为 session 的发包统计计数一个 BGP 报文
+ *
+ * 在 send() 完整写出整帧后调用，按 msg_type 归类计数；
+ * 仅统计真实发出的 BGP 报文，因此短写/失败不会计入。
+ *
+ * @param sess     目标会话（NULL 时为空操作）
+ * @param msg_type BGP 报文头部中的 Type 字段（bgp_msg_type_t 枚举值）
+ */
+void bgp_session_tx_msg_count(bgp_session_t *sess, uint8_t msg_type);
 
 #endif /* BGP_SESSION_H */

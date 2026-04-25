@@ -133,7 +133,7 @@ static void append_context_tlv(GByteArray *buf, const uint8_t *ctx_data, uint32_
 /**
  * @brief 打包 TLV 载荷
  *
- * 格式: [flags:u8][group_id:u32][TLV条目...][视图模板条目（可选）]
+ * 格式: [flags:u8][group_id:u32][TLV条目...][视图上下文条目（非 show 命令可选）]
  *
  * @param result        命令匹配结果
  * @param ctx_data      上下文 TLV 数据
@@ -169,8 +169,13 @@ static uint8_t *pack_tlv_payload(cli_match_result_t *result, const uint8_t *ctx_
         }
     }
 
-    /* 4. 上下文 TLV 条目（加 CONTEXT_FLAG） */
-    append_context_tlv(buf, ctx_data, ctx_len);
+    /* 4. 上下文 TLV 条目
+     * show/display 类命令应只由显式参数决定，不能继承当前视图上下文。
+     */
+    if (!result->has_show_prefix)
+    {
+        append_context_tlv(buf, ctx_data, ctx_len);
+    }
 
     *out_len = buf->len;
     return g_byte_array_free(buf, FALSE);

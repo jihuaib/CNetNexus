@@ -11,6 +11,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
+#include <sys/prctl.h>
+#include <sys/resource.h>
 #include <sys/signalfd.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -19,6 +21,30 @@
 #include "dev/dev_module.h"
 #include "errcode.h"
 #include "log.h"
+
+/**
+ * 放开 core dump 限制并标记进程可 dump。
+ *
+ * 注意：core 实际落盘位置由内核全局参数 /proc/sys/kernel/core_pattern 决定，
+ * 容器/GNS3 场景下该参数继承自宿主机，无法在容器内独立修改。本函数只能保证
+ * 进程自身的 RLIMIT_CORE 和 dumpable 标志到位，cwd 由启动脚本切到可持久化目录。
+ */
+static void enable_core_dump(void)
+{
+    struct rlimit rl;
+    rl.rlim_cur = RLIM_INFINITY;
+    rl.rlim_max = RLIM_INFINITY;
+    if (setrlimit(RLIMIT_CORE, &rl) == -1)
+    {
+        /* 容器若未传 --ulimit core=-1，硬上限会卡在 0，这里只能告警 */
+        LOG_WARN("setrlimit(RLIMIT_CORE) failed: %s (need --ulimit core=-1 in docker)", strerror(errno));
+    }
+    /* setuid/seccomp 等场景下 dumpable 可能被清零，显式置回 1 */
+    if (prctl(PR_SET_DUMPABLE, 1, 0, 0, 0) == -1)
+    {
+        LOG_WARN("prctl(PR_SET_DUMPABLE) failed: %s", strerror(errno));
+    }
+}
 
 /**
  * Self-pipe：用于将 SIGINT 信号通知到 epoll 事件循环。
@@ -47,6 +73,9 @@ int main(int argc, char *argv[])
 
     /* 注册主线程日志文件：$NN_WORK_DIR/log/main.log（未设置 NN_WORK_DIR 时仅输出到 stderr） */
     log_register_module_auto("main");
+
+    /* 异常退出时尽可能产出 core dump，方便事后定位 */
+    enable_core_dump();
 
     int epoll_fd = -1;
     int signal_fd = -1;

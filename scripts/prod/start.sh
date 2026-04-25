@@ -14,6 +14,11 @@ export LD_LIBRARY_PATH="${INSTALL_DIR}/lib:${LD_LIBRARY_PATH}"
 # 创建必要目录
 mkdir -p "${INSTALL_DIR}/data"
 mkdir -p "${INSTALL_DIR}/log"
+mkdir -p "${INSTALL_DIR}/data/cores"
+
+# 放开 core dump 限制（异常退出时尽可能产出 core）
+# 注意：容器内还需 docker 启动时带 --ulimit core=-1 才能突破 daemon 默认硬上限
+ulimit -c unlimited 2>/dev/null || echo "[WARN] ulimit -c unlimited failed; check docker --ulimit core=-1"
 
 # 某些环境（常见于部分 x86 线上节点）默认将容器内 IPv6 关闭，导致地址下发报 Permission denied。
 # 这里尽力开启 all/default/当前接口的 IPv6；失败仅告警，不中断启动。
@@ -62,4 +67,6 @@ echo "Listening on port 3788"
 echo "Press Ctrl+C to stop"
 echo ""
 
+# 注意：不切 cwd 到 cores 目录！部分模块用相对路径打开 data 文件，
+# 切 cwd 会破坏路径解析。core 文件默认会落到 cwd（即 INSTALL_DIR/bin）。
 exec "${INSTALL_DIR}/bin/netnexus"

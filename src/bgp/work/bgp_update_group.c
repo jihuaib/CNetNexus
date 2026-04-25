@@ -1033,6 +1033,7 @@ static void subgroup_send_packed_withdraws(bgp_session_t *sess, uint16_t afi, ui
             LOG_WARN("BGP: packed WITHDRAW send incomplete (sent=%zd want=%d)", sent, len);
             break;
         }
+        bgp_session_tx_msg_count(sess, BGP_MSG_UPDATE);
         cursor += packed;
         remaining -= packed;
     }
@@ -1068,6 +1069,7 @@ static void subgroup_send_packed_updates(bgp_session_t *sess, uint16_t afi, uint
             LOG_WARN("BGP: packed UPDATE send incomplete (sent=%zd want=%d)", sent, len);
             break;
         }
+        bgp_session_tx_msg_count(sess, BGP_MSG_UPDATE);
         cursor += packed;
         remaining -= packed;
     }
@@ -1135,7 +1137,9 @@ static void subgroup_pack_and_multicast(GList *peer_list, uint16_t afi, uint8_t 
             if (sent != (ssize_t)len)
             {
                 LOG_WARN("BGP: packed UPDATE multicast send incomplete (sent=%zd want=%d)", sent, len);
+                continue;
             }
+            bgp_session_tx_msg_count(sess, BGP_MSG_UPDATE);
         }
         cursor += packed;
         remaining -= packed;

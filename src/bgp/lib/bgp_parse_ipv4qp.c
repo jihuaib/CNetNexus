@@ -188,7 +188,7 @@ static void entry_to_str(const bgp_nlri_entry_t *entry, char *buf, size_t sz)
     }
     char ip[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &entry->qp.prefix.addr.u.v4, ip, sizeof(ip));
-    snprintf(buf, sz, "dqpn=%u %s/%u", entry->qp.dqpn, ip, entry->qp.prefix.prefix_len);
+    snprintf(buf, sz, "dqpn=%u,ip=%s/%u", entry->qp.dqpn, ip, entry->qp.prefix.prefix_len);
 }
 
 static const bgp_af_parser_t g_ipv4qp = {

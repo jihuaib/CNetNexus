@@ -14,6 +14,10 @@ export LD_LIBRARY_PATH="${INSTALL_DIR}/lib:${LD_LIBRARY_PATH}"
 # 创建数据目录和日志目录
 mkdir -p "${INSTALL_DIR}/data" 2>/dev/null
 mkdir -p "${INSTALL_DIR}/log" 2>/dev/null
+mkdir -p "${INSTALL_DIR}/data/cores" 2>/dev/null
+
+# 放开 core dump 限制（GNS3 节点需在 extra_docker_options 加 --ulimit core=-1）
+ulimit -c unlimited 2>/dev/null || echo "[WARN] ulimit -c unlimited failed; GNS3 node needs --ulimit core=-1"
 
 # 某些环境（常见于部分 x86 线上节点）默认将容器内 IPv6 关闭，导致地址下发报 Permission denied。
 # 这里尽力开启 all/default/当前接口的 IPv6；失败仅告警，不中断启动。
@@ -41,6 +45,9 @@ if ldd "${INSTALL_DIR}/bin/netnexus" 2>/dev/null | grep -q libasan; then
     echo "[ASAN] AddressSanitizer enabled, logs: ${INSTALL_DIR}/log/asan.*"
 fi
 
+# 注意：不切 cwd 到 cores 目录！部分模块用相对路径打开 data 文件，
+# 切 cwd 会破坏路径解析。core 默认落到 cwd（即 INSTALL_DIR/bin），
+# 通过 setup-coredump.sh 配置绝对路径方案见下方"core 落地位置"说明。
 "${INSTALL_DIR}/bin/netnexus" &
 NETNEXUS_PID=$!
 

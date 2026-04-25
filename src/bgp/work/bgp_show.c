@@ -107,6 +107,81 @@ static const char *bgp_af_str(bgp_afi_t afi, bgp_safi_t safi)
     return "unknown";
 }
 
+static gboolean bgp_show_af_list_contains(const GArray *afs, guint32 af_key)
+{
+    if (!afs)
+    {
+        return FALSE;
+    }
+
+    for (guint i = 0; i < afs->len; i++)
+    {
+        if (g_array_index(afs, guint32, i) == af_key)
+        {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+static void bgp_show_append_af_list(GString *buf, const GArray *afs)
+{
+    if (!buf)
+    {
+        return;
+    }
+
+    if (!afs || afs->len == 0)
+    {
+        g_string_append(buf, "    none\r\n");
+        return;
+    }
+
+    for (guint i = 0; i < afs->len; i++)
+    {
+        guint32 packed = g_array_index(afs, guint32, i);
+        bgp_afi_t afi = (bgp_afi_t)(uint16_t)(packed >> 16);
+        bgp_safi_t safi = (bgp_safi_t)(uint8_t)(packed & 0xFF);
+        g_string_append_printf(buf, "    afi=%u safi=%u (%s)\r\n", (unsigned)afi, (unsigned)safi,
+                               bgp_af_str(afi, safi));
+    }
+}
+
+static void bgp_show_append_negotiated_af_list(GString *buf, const bgp_session_t *sess)
+{
+    gboolean any = FALSE;
+
+    if (!buf)
+    {
+        return;
+    }
+
+    if (!sess || !sess->local_afs || !sess->remote_afs)
+    {
+        g_string_append(buf, "    none\r\n");
+        return;
+    }
+
+    for (guint i = 0; i < sess->local_afs->len; i++)
+    {
+        guint32 packed = g_array_index(sess->local_afs, guint32, i);
+        if (!bgp_show_af_list_contains(sess->remote_afs, packed))
+        {
+            continue;
+        }
+        bgp_afi_t afi = (bgp_afi_t)(uint16_t)(packed >> 16);
+        bgp_safi_t safi = (bgp_safi_t)(uint8_t)(packed & 0xFF);
+        g_string_append_printf(buf, "    afi=%u safi=%u (%s)\r\n", (unsigned)afi, (unsigned)safi,
+                               bgp_af_str(afi, safi));
+        any = TRUE;
+    }
+
+    if (!any)
+    {
+        g_string_append(buf, "    none\r\n");
+    }
+}
+
 /** 返回 session 当前状态字符串 */
 static const char *sess_state_str(const bgp_session_t *sess)
 {
@@ -339,8 +414,9 @@ static void bgp_ifindex_to_str(uint32_t ifindex, char *buf, size_t sz)
     snprintf(buf, sz, "if%u", ifindex);
 }
 
-/* 路由表固定列宽 */
-#define BGP_RT_COL_NET 24
+/* 路由表固定列宽（Network 列按实际前缀长度动态扩展） */
+#define BGP_RT_COL_NET_MIN 24
+#define BGP_RT_MARKER_COL 3
 #define BGP_RT_COL_NH 20
 #define BGP_RT_COL_LP 8
 #define BGP_RT_COL_MED 8
@@ -371,9 +447,15 @@ static void bgp_fmt_time_usec(gint64 usec, char *buf, size_t sz)
 typedef struct bgp_show_route_ctx
 {
     GString *buf;
+    guint net_col_width;
     uint32_t listed_heads;
     uint32_t listed_routes;
 } bgp_show_route_ctx_t;
+
+typedef struct bgp_show_route_width_ctx
+{
+    guint net_col_width;
+} bgp_show_route_width_ctx_t;
 
 /**
  * @brief 将单条路径的各字段格式化到 lp/med/as_path 缓冲区
@@ -407,6 +489,40 @@ static void bgp_route_fmt_fields(const bgp_route_node_t *route, char *lp, size_t
     }
 }
 
+static gboolean bgp_show_route_width_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    const bgp_rthead_t *head = (const bgp_rthead_t *)value;
+    bgp_show_route_width_ctx_t *ctx = (bgp_show_route_width_ctx_t *)user_data;
+    if (!head || !ctx)
+    {
+        return FALSE;
+    }
+
+    char prefix_str[BGP_NLRI_KEY_MAX];
+    bgp_nlri_to_str(&head->nlri, prefix_str, sizeof(prefix_str));
+
+    guint required_width = (guint)strlen(prefix_str) + BGP_RT_MARKER_COL;
+    if (required_width > ctx->net_col_width)
+    {
+        ctx->net_col_width = required_width;
+    }
+    return FALSE;
+}
+
+static guint bgp_show_route_network_col_width(const bgp_instance_t *inst)
+{
+    bgp_show_route_width_ctx_t ctx = {.net_col_width = BGP_RT_COL_NET_MIN};
+
+    if (!inst || !inst->rib || !inst->rib->head_tree)
+    {
+        return ctx.net_col_width;
+    }
+
+    g_tree_foreach(inst->rib->head_tree, bgp_show_route_width_cb, &ctx);
+    return ctx.net_col_width;
+}
+
 static gboolean bgp_show_route_head_cb(gpointer key, gpointer value, gpointer user_data)
 {
     (void)key;
@@ -434,9 +550,11 @@ static gboolean bgp_show_route_head_cb(gpointer key, gpointer value, gpointer us
         bgp_route_fmt_fields(route, lp, sizeof(lp), med, sizeof(med), as_path, sizeof(as_path));
 
         /* 路由标记：'>'=BEST，'v'=VALID */
+        int net_field_width =
+            (int)((ctx->net_col_width > BGP_RT_MARKER_COL) ? (ctx->net_col_width - BGP_RT_MARKER_COL) : 1);
         g_string_append_printf(ctx->buf, "%c%c %-*s %-*s %-*s %-*s %-*s %s\r\n",
                                BIT_TEST(route->flags, BGP_ROUTE_FLAG_BEST) ? '>' : ' ',
-                               BIT_TEST(route->flags, BGP_ROUTE_FLAG_VALID) ? 'v' : ' ', BGP_RT_COL_NET - 3,
+                               BIT_TEST(route->flags, BGP_ROUTE_FLAG_VALID) ? 'v' : ' ', net_field_width,
                                first ? prefix_str : "", BGP_RT_COL_NH, nh, BGP_RT_COL_LP, lp, BGP_RT_COL_MED, med,
                                BGP_RT_COL_ORIG, bgp_origin_str(BGP_ROUTE_ATTR(route)->origin), as_path);
 
@@ -868,15 +986,20 @@ static int handle_bgp_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parse
                            bgp_rib_route_count(inst->rib));
     g_string_append(resp_buf, "  Markers : '>'=BEST, 'v'=VALID\r\n\r\n");
 
-    g_string_append_printf(resp_buf, "%-*s %-*s %-*s %-*s %-*s %s\r\n", BGP_RT_COL_NET, "Network", BGP_RT_COL_NH,
+    guint net_col_width = bgp_show_route_network_col_width(inst);
+    char *net_rule = g_strnfill(net_col_width, '-');
+
+    g_string_append_printf(resp_buf, "%-*s %-*s %-*s %-*s %-*s %s\r\n", (int)net_col_width, "Network", BGP_RT_COL_NH,
                            "NextHop", BGP_RT_COL_LP, "LocPref", BGP_RT_COL_MED, "MED", BGP_RT_COL_ORIG, "Origin",
                            "AS-Path");
-    g_string_append_printf(resp_buf, "%-*s %-*s %-*s %-*s %-*s %s\r\n", BGP_RT_COL_NET, "------------------------",
-                           BGP_RT_COL_NH, "--------------------", BGP_RT_COL_LP, "--------", BGP_RT_COL_MED, "--------",
+    g_string_append_printf(resp_buf, "%-*s %-*s %-*s %-*s %-*s %s\r\n", (int)net_col_width, net_rule, BGP_RT_COL_NH,
+                           "--------------------", BGP_RT_COL_LP, "--------", BGP_RT_COL_MED, "--------",
                            BGP_RT_COL_ORIG, "------------", "--------");
+    g_free(net_rule);
 
     bgp_show_route_ctx_t show_ctx;
     show_ctx.buf = resp_buf;
+    show_ctx.net_col_width = net_col_width;
     show_ctx.listed_heads = 0;
     show_ctx.listed_routes = 0;
 
@@ -889,9 +1012,9 @@ static int handle_bgp_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parse
 }
 
 /**
- * @brief 处理 show bgp neighbor af ipv4-unicast|ipv6-unicast [<ip>] 命令
+ * @brief 处理 show bgp neighbor af ipv4-unicast|ipv6-unicast|ipv4-qp|ipv6-qp [<ip>] 命令
  *
- * group_id=9, cfg_id: 1=ipv4-unicast, 2=ipv6-unicast, 3=ip-address
+ * group_id=9, cfg_id: 1=ipv4-unicast, 2=ipv6-unicast, 3=ip-address, 4=ipv4-qp, 5=ipv6-qp
  */
 static int handle_bgp_show_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
@@ -948,7 +1071,8 @@ static int handle_bgp_show_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
     if (!has_af)
     {
         bgp_show_send_cli_response(
-            msg, "BGP Error: Missing address-family. Use 'af ipv4-unicast' or 'af ipv6-unicast'.\r\n");
+            msg, "BGP Error: Missing address-family. Use 'af ipv4-unicast', 'af ipv6-unicast', 'af ipv4-qp', or 'af "
+                 "ipv6-qp'.\r\n");
         return ERRCODE_FAIL;
     }
 
@@ -1105,31 +1229,39 @@ static int handle_bgp_show_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
     }
     g_string_append_printf(resp_buf, "  %-24s: %u s\r\n", "Negotiated", sess->negotiated_hold);
 
-    GString *af_list = g_string_new("");
-    if (!af_list)
+    GString *local_af_list = g_string_new("");
+    GString *remote_af_list = g_string_new("");
+    GString *negotiated_af_list = g_string_new("");
+    if (!local_af_list || !remote_af_list || !negotiated_af_list)
     {
         g_string_free(resp_buf, TRUE);
+        if (local_af_list)
+        {
+            g_string_free(local_af_list, TRUE);
+        }
+        if (remote_af_list)
+        {
+            g_string_free(remote_af_list, TRUE);
+        }
+        if (negotiated_af_list)
+        {
+            g_string_free(negotiated_af_list, TRUE);
+        }
         bgp_show_send_cli_response(msg, "BGP Error: Out of memory.\r\n");
         return ERRCODE_FAIL;
     }
-    if (sess->negotiated_afs && sess->negotiated_afs->len > 0)
-    {
-        for (guint _af_i = 0; _af_i < sess->negotiated_afs->len; _af_i++)
-        {
-            guint32 packed = g_array_index(sess->negotiated_afs, guint32, _af_i);
-            bgp_afi_t _afi = (bgp_afi_t)(uint16_t)(packed >> 16);
-            bgp_safi_t _safi = (bgp_safi_t)(uint8_t)(packed & 0xFF);
-            g_string_append_printf(af_list, "    afi=%u safi=%u (%s)\r\n", (unsigned)_afi, (unsigned)_safi,
-                                   bgp_af_str(_afi, _safi));
-        }
-    }
-    else
-    {
-        g_string_append(af_list, "    none\r\n");
-    }
 
-    g_string_append_printf(resp_buf, "\r\n  %-24s: \r\n%s", "Negotiated Address Families", af_list->str);
-    g_string_free(af_list, TRUE);
+    bgp_show_append_af_list(local_af_list, sess->local_afs);
+    bgp_show_append_af_list(remote_af_list, sess->remote_afs);
+    bgp_show_append_negotiated_af_list(negotiated_af_list, sess);
+
+    g_string_append_printf(resp_buf, "\r\n  %-24s: \r\n%s", "Local Address Families", local_af_list->str);
+    g_string_append_printf(resp_buf, "  %-24s: \r\n%s", "Remote Address Families", remote_af_list->str);
+    g_string_append_printf(resp_buf, "  %-24s: \r\n%s", "Negotiated Address Families", negotiated_af_list->str);
+
+    g_string_free(local_af_list, TRUE);
+    g_string_free(remote_af_list, TRUE);
+    g_string_free(negotiated_af_list, TRUE);
 
     g_string_append(resp_buf, "\r\n  Received Messages:\r\n");
     g_string_append_printf(resp_buf, "  %-24s: %u\r\n", "OPEN", sess->rx_msg_stats.open);
@@ -1138,6 +1270,13 @@ static int handle_bgp_show_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
     g_string_append_printf(resp_buf, "  %-24s: %u\r\n", "KEEPALIVE", sess->rx_msg_stats.keepalive);
     g_string_append_printf(resp_buf, "  %-24s: %u\r\n", "Unknown", sess->rx_msg_stats.unknown);
     g_string_append_printf(resp_buf, "  %-24s: %u\r\n", "Total", sess->rx_msg_stats.total);
+
+    g_string_append(resp_buf, "\r\n  Sent Messages:\r\n");
+    g_string_append_printf(resp_buf, "  %-24s: %u\r\n", "OPEN", sess->tx_msg_stats.open);
+    g_string_append_printf(resp_buf, "  %-24s: %u\r\n", "UPDATE", sess->tx_msg_stats.update);
+    g_string_append_printf(resp_buf, "  %-24s: %u\r\n", "NOTIFICATION", sess->tx_msg_stats.notification);
+    g_string_append_printf(resp_buf, "  %-24s: %u\r\n", "KEEPALIVE", sess->tx_msg_stats.keepalive);
+    g_string_append_printf(resp_buf, "  %-24s: %u\r\n", "Total", sess->tx_msg_stats.total);
 
     g_string_append(resp_buf, "\r\n");
 

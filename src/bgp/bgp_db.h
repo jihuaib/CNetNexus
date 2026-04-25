@@ -8,6 +8,7 @@
 #ifndef BGP_DB_H
 #define BGP_DB_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "bgp_protocol.h"
@@ -24,6 +25,8 @@
 #define BGP_TABLE_VRF "bgp_vrf"
 /** BGP 地址族实例表名 */
 #define BGP_TABLE_INSTANCE "bgp_instance"
+/** BGP QP 自产生路由配置表名 */
+#define BGP_TABLE_QP_ROUTE "bgp_qp_route"
 
 /**
  * @brief 从数据库恢复 BGP 协议内存状态
@@ -52,7 +55,7 @@ void bgp_db_ensure_defaults(void);
 int bgp_db_set_as(uint32_t as_number);
 
 /**
- * @brief 从数据库删除 BGP 协议及关联配置（protocol/session/neighbor/instance/vrf/bmp_instance/bmp_monitor）
+ * @brief 从数据库删除 BGP 协议及关联配置（protocol/session/neighbor/instance/qp_route/vrf/bmp_instance/bmp_monitor）
  * @return 删除的行数，错误返回 -1
  */
 int bgp_db_del_as(void);
@@ -198,7 +201,7 @@ int bgp_db_set_instance(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi);
  * @param vrf_id VRF ID
  * @param afi    地址族
  * @param safi   子地址族
- * @return 删除总行数（instance + neighbor），-1 失败
+ * @return 删除总行数（instance + neighbor + qp_route），-1 失败
  */
 int bgp_db_del_instance(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi);
 
@@ -220,6 +223,55 @@ int bgp_db_set_import_protos(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi, ui
  * @return 删除行数，-1 失败
  */
 int bgp_db_del_neighbors_by_afi(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi);
+
+/**
+ * @brief 设置 QP 地址族 route-select enable 开关的持久化状态
+ * @param vrf_id  VRF ID
+ * @param afi     地址族
+ * @param safi    子地址族（必为 BGP_SAFI_QP）
+ * @param enabled TRUE=启用，FALSE=关闭
+ * @return 0 成功，-1 失败
+ */
+int bgp_db_set_route_select(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi, bool enabled);
+
+/**
+ * @brief 持久化一条 QP 自产生路由配置
+ * @param vrf_id      VRF ID
+ * @param afi         地址族
+ * @param safi        子地址族（必为 BGP_SAFI_QP）
+ * @param start_dqpn  起始 DQPN
+ * @param count       路由条数
+ * @param prefix_addr 前缀基地址字符串
+ * @param mask_len    前缀长度
+ * @param bid         BID IPv6 地址字符串
+ * @return 0 成功，-1 失败
+ */
+int bgp_db_set_qp_route(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi, uint32_t start_dqpn, uint32_t count,
+                        const char *prefix_addr, uint8_t mask_len, const char *bid);
+
+/**
+ * @brief 删除一条 QP 自产生路由配置
+ * @param vrf_id      VRF ID
+ * @param afi         地址族
+ * @param safi        子地址族（必为 BGP_SAFI_QP）
+ * @param start_dqpn  起始 DQPN
+ * @param count       路由条数
+ * @param prefix_addr 前缀基地址字符串
+ * @param mask_len    前缀长度
+ * @param bid         BID IPv6 地址字符串
+ * @return 删除行数，-1 失败
+ */
+int bgp_db_del_qp_route(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi, uint32_t start_dqpn, uint32_t count,
+                        const char *prefix_addr, uint8_t mask_len, const char *bid);
+
+/**
+ * @brief 删除指定地址族下的所有 QP 自产生路由配置（no af 时批量清理）
+ * @param vrf_id VRF ID
+ * @param afi    地址族
+ * @param safi   子地址族
+ * @return 删除行数，-1 失败
+ */
+int bgp_db_del_qp_routes_by_afi(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi);
 
 // ============================================================================
 // BGP VRF 操作（connect-retry 定时器）

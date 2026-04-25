@@ -22,8 +22,8 @@
     "console_http_path": "/",
     "environment": "",
     "extra_hosts": "",
-    "extra_volumes": [],
-    "extra_docker_options": "--privileged"
+    "extra_volumes": ["/var/lib/netnexus-cores"],
+    "extra_docker_options": "--privileged --ulimit core=-1"
   },
   "images": [
     {

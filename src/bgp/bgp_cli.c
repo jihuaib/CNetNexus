@@ -1253,6 +1253,30 @@ static int handle_bgp_qp_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         return ERRCODE_FAIL;
     }
 
+    char prefix_buf[64] = {0};
+    char bid_db_buf[64] = {0};
+    net_addr_to_str(&apply.u.qp_route.ip, prefix_buf, sizeof(prefix_buf));
+    net_addr_to_str(&apply.u.qp_route.bid, bid_db_buf, sizeof(bid_db_buf));
+
+    if (apply.isNo)
+    {
+        if (bgp_db_del_qp_route(ctx.vrf_id, apply.u.qp_route.afi, apply.u.qp_route.safi, apply.u.qp_route.start_dqpn,
+                                apply.u.qp_route.count, prefix_buf, apply.u.qp_route.mask_len, bid_db_buf) < 0)
+        {
+            bgp_send_cli_response(msg, "BGP Error: Database cleanup failed.\r\n");
+            return ERRCODE_FAIL;
+        }
+    }
+    else
+    {
+        if (bgp_db_set_qp_route(ctx.vrf_id, apply.u.qp_route.afi, apply.u.qp_route.safi, apply.u.qp_route.start_dqpn,
+                                apply.u.qp_route.count, prefix_buf, apply.u.qp_route.mask_len, bid_db_buf) != 0)
+        {
+            bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
+            return ERRCODE_FAIL;
+        }
+    }
+
     bgp_send_cli_response(msg, "");
     return ERRCODE_SUCCESS;
 }
@@ -1305,6 +1329,12 @@ static int handle_bgp_route_select(dev_ipc_message_t *msg, cli_tlv_parser_t *par
         char buf[280];
         snprintf(buf, sizeof(buf), "%s\r\n", apply.errmsg);
         bgp_send_cli_response(msg, buf);
+        return ERRCODE_FAIL;
+    }
+
+    if (bgp_db_set_route_select(ctx.vrf_id, apply.u.route_select.afi, apply.u.route_select.safi, !apply.isNo) != 0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
         return ERRCODE_FAIL;
     }
 

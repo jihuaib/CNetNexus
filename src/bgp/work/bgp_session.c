@@ -38,7 +38,8 @@ bgp_session_t *bgp_session_create(const net_addr_t *addr, uint32_t remote_as, bg
     sess->pri_last_socket_error = 0;
     sess->sec_last_socket_error = 0;
     /* remote_id / local_router_id 初始值为 0（g_malloc0 已置零） */
-    sess->negotiated_afs = NULL;
+    sess->local_afs = NULL;
+    sess->remote_afs = NULL;
 
     /* FSM 初始状态 */
     sess->fsm_state = BGP_FSM_STATE_IDLE;
@@ -97,10 +98,15 @@ void bgp_session_destroy(bgp_session_t *session)
     bgp_conn_destroy(session->sec_conn);
     session->sec_conn = NULL;
 
-    if (session->negotiated_afs)
+    if (session->local_afs)
     {
-        g_array_free(session->negotiated_afs, TRUE);
-        session->negotiated_afs = NULL;
+        g_array_free(session->local_afs, TRUE);
+        session->local_afs = NULL;
+    }
+    if (session->remote_afs)
+    {
+        g_array_free(session->remote_afs, TRUE);
+        session->remote_afs = NULL;
     }
 
     /* peer_list 只存借用引用，仅释放链表节点 */
@@ -156,9 +162,13 @@ void bgp_session_reset_negotiated(bgp_session_t *sess)
     sess->negotiated_hold = 0;
 
     /* 清空地址族协商列表（保留 GArray 对象，仅清除内容） */
-    if (sess->negotiated_afs)
+    if (sess->local_afs)
     {
-        g_array_set_size(sess->negotiated_afs, 0);
+        g_array_set_size(sess->local_afs, 0);
+    }
+    if (sess->remote_afs)
+    {
+        g_array_set_size(sess->remote_afs, 0);
     }
 
     /* 同步回落 peer 状态，保证断链/重协商路径上 peer 状态与 session 一致 */
@@ -448,6 +458,34 @@ void bgp_session_rx_msg_count(bgp_session_t *sess, uint8_t msg_type)
             break;
         default:
             sess->rx_msg_stats.unknown++;
+            break;
+    }
+}
+
+void bgp_session_tx_msg_count(bgp_session_t *sess, uint8_t msg_type)
+{
+    if (!sess)
+    {
+        return;
+    }
+
+    sess->tx_msg_stats.total++;
+    switch (msg_type)
+    {
+        case BGP_MSG_OPEN:
+            sess->tx_msg_stats.open++;
+            break;
+        case BGP_MSG_UPDATE:
+            sess->tx_msg_stats.update++;
+            break;
+        case BGP_MSG_NOTIFICATION:
+            sess->tx_msg_stats.notification++;
+            break;
+        case BGP_MSG_KEEPALIVE:
+            sess->tx_msg_stats.keepalive++;
+            break;
+        default:
+            /* 未知发送类型不应出现，保守起见仍计入 total（已 ++） */
             break;
     }
 }
