@@ -205,10 +205,44 @@ static int handle_vrf_show(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 
 int vrf_cli_handle_show_config(dev_ipc_message_t *msg)
 {
+    cli_show_scope_t scope;
+    if (cli_show_scope_payload_parse((const uint8_t *)msg->payload, msg->payload_len, &scope) != 0)
+    {
+        LOG_WARN("VRF: invalid SHOW_CONFIG scope payload");
+        return cli_chunk_stream_start(&g_vrf_local->show_stream, vrf_local_ipc_ctx(), DEV_MODULE_ID_VRF, msg, NULL);
+    }
+
     GString *out = g_string_new("");
     if (!out)
     {
         return cli_chunk_stream_start(&g_vrf_local->show_stream, vrf_local_ipc_ctx(), DEV_MODULE_ID_VRF, msg, NULL);
+    }
+
+    if (scope.mode == CLI_SHOW_SCOPE_MODE_THIS)
+    {
+        if (strcmp(scope.view_name, CLI_VIEW_VRF) != 0)
+        {
+            g_string_free(out, TRUE);
+            return cli_chunk_stream_start(&g_vrf_local->show_stream, vrf_local_ipc_ctx(), DEV_MODULE_ID_VRF, msg, NULL);
+        }
+
+        char vrf_name[VRF_NAME_MAX_LEN] = {0};
+        if (cli_ctx_lookup_text(scope.ctx_data, scope.ctx_len, CLI_CTX_ID_VRF_NAME, vrf_name, sizeof(vrf_name)) != 0 ||
+            vrf_name[0] == '\0')
+        {
+            g_string_free(out, TRUE);
+            return cli_chunk_stream_start(&g_vrf_local->show_stream, vrf_local_ipc_ctx(), DEV_MODULE_ID_VRF, msg, NULL);
+        }
+
+        const vrf_entry_t *e = vrf_find_by_name(vrf_name);
+        if (e && e->vrf_id != VRF_PUBLIC_VRF_ID)
+        {
+            g_string_append(out, "!\r\n");
+            g_string_append_printf(out, "vrf %s\r\n", e->name);
+            g_string_append(out, "!\r\n");
+        }
+
+        return cli_chunk_stream_start(&g_vrf_local->show_stream, vrf_local_ipc_ctx(), DEV_MODULE_ID_VRF, msg, out);
     }
 
     GList *list = g_hash_table_get_values(g_vrf_local->vrf_by_id);

@@ -1,0 +1,18 @@
+version: 1
+image: netnexus-ci:latest
+
+devices:
+  r1: {}
+  r2: {}
+
+links:
+  - name: r1-r2
+    endpoints:
+      - device: r1
+        if: GE-1
+        cidr: 10.12.0.1/30
+        cidr6: 2001:db8:12::1/64
+      - device: r2
+        if: GE-1
+        cidr: 10.12.0.2/30
+        cidr6: 2001:db8:12::2/64

@@ -6,6 +6,12 @@
         </view>
     </views>
 
+    <show-this>
+        <view name="isis"/>
+        <view name="if"/>
+        <view name="if-loop"/>
+    </show-this>
+
     <command_groups>
         <!-- Group 1: isis <tag> / no isis [<tag>] -->
         <group group-id="1">

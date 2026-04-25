@@ -50,14 +50,24 @@
 #define CLI_VIEW_BGP "bgp"
 /** 接口视图 */
 #define CLI_VIEW_IF "if"
+/** null0 接口视图 */
+#define CLI_VIEW_IF_NULL0 "if-null0"
 /** loop 接口视图 */
 #define CLI_VIEW_IF_LOOP "if-loop"
 /** 路由视图 */
 #define CLI_VIEW_ROUTE "route"
+/** ISIS 配置视图 */
+#define CLI_VIEW_ISIS "isis"
 /** BGP 地址族 IPv4 单播视图 */
 #define CLI_VIEW_BGP_AF_IPV4 "bgp-af-ipv4-uni"
 /** BGP 地址族 IPv6 单播视图 */
 #define CLI_VIEW_BGP_AF_IPV6 "bgp-af-ipv6-uni"
+/** BGP 地址族 IPv4 QP 视图 */
+#define CLI_VIEW_BGP_AF_IPV4_QP "bgp-af-ipv4-qp"
+/** BGP 地址族 IPv6 QP 视图 */
+#define CLI_VIEW_BGP_AF_IPV6_QP "bgp-af-ipv6-qp"
+/** BGP BMP 实例视图 */
+#define CLI_VIEW_BGP_BMP "bgp-bmp"
 /** VRF 配置视图 */
 #define CLI_VIEW_VRF "vrf"
 
@@ -89,6 +99,29 @@
 #define CLI_MAX_VIEW_LEN 64
 /** 提示符最大长度 */
 #define CLI_CLI_MAX_PROMPT_LEN 128
+
+/**
+ * @brief show 配置收集作用域模式
+ */
+typedef enum cli_show_scope_mode
+{
+    CLI_SHOW_SCOPE_MODE_FULL = 0, /**< 全量配置（show current-configuration） */
+    CLI_SHOW_SCOPE_MODE_THIS = 1, /**< 当前视图配置（show this） */
+} cli_show_scope_mode_t;
+
+/**
+ * @brief SHOW_CONFIG 可选作用域描述
+ *
+ * payload 为空时等价于 FULL 模式。
+ * ctx_data 指向 payload 内部切片，不转移所有权。
+ */
+typedef struct cli_show_scope
+{
+    cli_show_scope_mode_t mode;
+    char view_name[CLI_MAX_VIEW_LEN];
+    const uint8_t *ctx_data;
+    uint32_t ctx_len;
+} cli_show_scope_t;
 
 /**
  * 上下文 TLV 类型字节（type 字段）。
@@ -191,6 +224,45 @@ int64_t cli_tlv_entry_get_int(const cli_tlv_entry_t *entry);
  * @return 无符号整数值，类型/长度不匹配返回 0
  */
 uint32_t cli_tlv_entry_get_ctx_uint32(const cli_tlv_entry_t *entry);
+
+/**
+ * @brief 在原始上下文 TLV 缓冲中查找某个 uint32 上下文变量
+ * @param ctx_data 上下文 TLV 原始字节（格式: [num:u16][ctx_id:u32][type:u8][len:u16][value...]...）
+ * @param ctx_len  缓冲长度
+ * @param ctx_id   要查找的上下文 ID
+ * @param out_value 输出值
+ * @return 0=找到，-1=未找到或格式不匹配
+ */
+int cli_ctx_lookup_uint32(const uint8_t *ctx_data, uint32_t ctx_len, uint32_t ctx_id, uint32_t *out_value);
+
+/**
+ * @brief 在原始上下文 TLV 缓冲中查找某个字符串上下文变量
+ * @param ctx_data 上下文 TLV 原始字节（格式: [num:u16][ctx_id:u32][type:u8][len:u16][value...]...）
+ * @param ctx_len  缓冲长度
+ * @param ctx_id   要查找的上下文 ID
+ * @param out_buf  输出缓冲
+ * @param out_cap  输出缓冲大小
+ * @return 0=找到，-1=未找到或格式不匹配
+ */
+int cli_ctx_lookup_text(const uint8_t *ctx_data, uint32_t ctx_len, uint32_t ctx_id, char *out_buf, size_t out_cap);
+
+/**
+ * @brief 构造 SHOW_CONFIG 作用域 payload
+ * payload 格式: [mode:u8][view_len:u16][view_bytes][ctx_len:u32][ctx_bytes]
+ * @param scope   作用域描述
+ * @param out_len 输出 payload 长度
+ * @return 新分配的 payload（g_free 释放）；若 scope 为空或等价于 FULL 无附加信息则返回 NULL
+ */
+uint8_t *cli_show_scope_payload_build(const cli_show_scope_t *scope, uint32_t *out_len);
+
+/**
+ * @brief 解析 SHOW_CONFIG 作用域 payload
+ * @param payload     原始 payload，可为 NULL
+ * @param payload_len payload 长度
+ * @param scope_out   输出作用域；payload 为空时返回 FULL 模式
+ * @return 0=成功，-1=格式非法
+ */
+int cli_show_scope_payload_parse(const uint8_t *payload, uint32_t payload_len, cli_show_scope_t *scope_out);
 
 /**
  * @brief 从 TLV 条目中读取字符串值

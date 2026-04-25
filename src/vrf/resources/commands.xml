@@ -8,6 +8,10 @@
         </view>
     </views>
 
+    <show-this>
+        <view name="vrf"/>
+    </show-this>
+
     <!-- Command group definitions -->
     <command_groups>
 

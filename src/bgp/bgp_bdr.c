@@ -51,6 +51,61 @@ static const char *afi_safi_to_str(int64_t afi, int64_t safi)
 // 内部辅助
 // ============================================================================
 
+static gboolean bgp_bdr_is_af_view(const char *view_name)
+{
+    return view_name &&
+           (strcmp(view_name, CLI_VIEW_BGP_AF_IPV4) == 0 || strcmp(view_name, CLI_VIEW_BGP_AF_IPV6) == 0 ||
+            strcmp(view_name, CLI_VIEW_BGP_AF_IPV4_QP) == 0 || strcmp(view_name, CLI_VIEW_BGP_AF_IPV6_QP) == 0);
+}
+
+static uint32_t bgp_bdr_scope_vrf_id(const cli_show_scope_t *scope)
+{
+    uint32_t vrf_id = BGP_VRF_PUBLIC_ID;
+
+    if (scope)
+    {
+        (void)cli_ctx_lookup_uint32(scope->ctx_data, scope->ctx_len, CLI_CTX_ID_BGP_VRF, &vrf_id);
+    }
+
+    return vrf_id;
+}
+
+static gboolean bgp_bdr_resolve_scoped_af(const cli_show_scope_t *scope, uint32_t *vrf_id_out, int64_t *afi_out,
+                                          int64_t *safi_out)
+{
+    uint32_t afi = 0;
+    uint32_t safi = 0;
+
+    if (!scope || !vrf_id_out || !afi_out || !safi_out || !bgp_bdr_is_af_view(scope->view_name))
+    {
+        return FALSE;
+    }
+
+    if (cli_ctx_lookup_uint32(scope->ctx_data, scope->ctx_len, CLI_CTX_ID_BGP_AFI, &afi) != 0 ||
+        cli_ctx_lookup_uint32(scope->ctx_data, scope->ctx_len, CLI_CTX_ID_BGP_SAFI, &safi) != 0)
+    {
+        return FALSE;
+    }
+
+    *vrf_id_out = bgp_bdr_scope_vrf_id(scope);
+    *afi_out = (int64_t)afi;
+    *safi_out = (int64_t)safi;
+    return afi_safi_to_str(*afi_out, *safi_out) != NULL;
+}
+
+static gboolean bgp_bdr_resolve_scoped_bmp_instance(const cli_show_scope_t *scope, char *inst_name,
+                                                    size_t inst_name_len)
+{
+    if (!scope || !inst_name || inst_name_len == 0 || strcmp(scope->view_name, CLI_VIEW_BGP_BMP) != 0)
+    {
+        return FALSE;
+    }
+
+    return cli_ctx_lookup_text(scope->ctx_data, scope->ctx_len, CLI_CTX_ID_BMP_INST_NAME, inst_name, inst_name_len) ==
+               0 &&
+           inst_name[0] != '\0';
+}
+
 // ============================================================================
 // 各表配置追加函数
 // ============================================================================
@@ -83,6 +138,29 @@ static gboolean bdr_append_protocol(GString *out)
     return TRUE;
 }
 
+static void bdr_append_vrf_row_config(GString *out, db_row_t *row)
+{
+    const char *router_id = db_row_get_text(row, "router_id", NULL);
+    int64_t keepalive = db_row_get_int(row, "keepalive", BGP_TIMER_DEFAULT_KEEPALIVE);
+    int64_t hold_time = db_row_get_int(row, "hold_time", BGP_TIMER_DEFAULT_HOLD);
+    int64_t connect_retry = db_row_get_int(row, "connect_retry", BGP_TIMER_DEFAULT_CONNECT_RETRY);
+
+    if (router_id && strcmp(router_id, "0.0.0.0") != 0)
+    {
+        g_string_append_printf(out, " router-id %s\r\n", router_id);
+    }
+
+    if (keepalive != BGP_TIMER_DEFAULT_KEEPALIVE || hold_time != BGP_TIMER_DEFAULT_HOLD)
+    {
+        g_string_append_printf(out, " timer keepalive %ld hold %ld\r\n", keepalive, hold_time);
+    }
+
+    if (connect_retry != BGP_TIMER_DEFAULT_CONNECT_RETRY)
+    {
+        g_string_append_printf(out, " timer connect-retry %ld\r\n", connect_retry);
+    }
+}
+
 /**
  * @brief 追加 VRF 级配置（router-id）
  */
@@ -101,29 +179,55 @@ static void bdr_append_vrf_config(GString *out)
 
     for (uint32_t i = 0; i < result->num_rows; i++)
     {
-        db_row_t *row = result->rows[i];
-        const char *router_id = db_row_get_text(row, "router_id", NULL);
-        int64_t keepalive = db_row_get_int(row, "keepalive", BGP_TIMER_DEFAULT_KEEPALIVE);
-        int64_t hold_time = db_row_get_int(row, "hold_time", BGP_TIMER_DEFAULT_HOLD);
-        int64_t connect_retry = db_row_get_int(row, "connect_retry", BGP_TIMER_DEFAULT_CONNECT_RETRY);
-
-        if (router_id && strcmp(router_id, "0.0.0.0") != 0)
-        {
-            g_string_append_printf(out, " router-id %s\r\n", router_id);
-        }
-
-        if (keepalive != BGP_TIMER_DEFAULT_KEEPALIVE || hold_time != BGP_TIMER_DEFAULT_HOLD)
-        {
-            g_string_append_printf(out, " timer keepalive %ld hold %ld\r\n", keepalive, hold_time);
-        }
-
-        if (connect_retry != BGP_TIMER_DEFAULT_CONNECT_RETRY)
-        {
-            g_string_append_printf(out, " timer connect-retry %ld\r\n", connect_retry);
-        }
+        bdr_append_vrf_row_config(out, result->rows[i]);
     }
 
     db_result_free(result);
+}
+
+static void bdr_append_vrf_config_scoped(GString *out, uint32_t vrf_id)
+{
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
+    db_condition_t cond = {.field_name = "vrf_id", .op = DB_CMP_EQ, .value = db_value_int(vrf_id)};
+    db_filter_t filter = {.conditions = &cond, .num_conditions = 1};
+    db_result_t *result = NULL;
+
+    if (db_rpc_query(ctx, BGP_TABLE_VRF, NULL, 0, &filter, &result) == ERRCODE_SUCCESS && result)
+    {
+        for (uint32_t i = 0; i < result->num_rows; i++)
+        {
+            bdr_append_vrf_row_config(out, result->rows[i]);
+        }
+    }
+
+    db_value_free(&cond.value);
+    if (result)
+    {
+        db_result_free(result);
+    }
+}
+
+static void bdr_append_session_row(GString *out, db_row_t *row)
+{
+    const char *ip = db_row_get_text(row, "neighbor_ip", NULL);
+    int64_t remote_as = db_row_get_int(row, "remote_as", 0);
+    const char *source_if = db_row_get_text(row, "source_interface", "");
+    int64_t ebgp_multihop = db_row_get_int(row, "ebgp_multihop", 0);
+
+    if (!ip)
+    {
+        return;
+    }
+
+    g_string_append_printf(out, " neighbor %s as %ld\r\n", ip, remote_as);
+    if (source_if && source_if[0] != '\0')
+    {
+        g_string_append_printf(out, " neighbor %s source-interface %s\r\n", ip, source_if);
+    }
+    if (ebgp_multihop > 0)
+    {
+        g_string_append_printf(out, " neighbor %s ebgp-multihop %ld\r\n", ip, ebgp_multihop);
+    }
 }
 
 /**
@@ -140,27 +244,32 @@ static void bdr_append_sessions(GString *out)
 
     for (uint32_t i = 0; i < result->num_rows; i++)
     {
-        db_row_t *row = result->rows[i];
-        const char *ip = db_row_get_text(row, "neighbor_ip", NULL);
-        int64_t remote_as = db_row_get_int(row, "remote_as", 0);
-        const char *source_if = db_row_get_text(row, "source_interface", "");
-        int64_t ebgp_multihop = db_row_get_int(row, "ebgp_multihop", 0);
-
-        if (ip)
-        {
-            g_string_append_printf(out, " neighbor %s as %ld\r\n", ip, remote_as);
-            if (source_if && source_if[0] != '\0')
-            {
-                g_string_append_printf(out, " neighbor %s source-interface %s\r\n", ip, source_if);
-            }
-            if (ebgp_multihop > 0)
-            {
-                g_string_append_printf(out, " neighbor %s ebgp-multihop %ld\r\n", ip, ebgp_multihop);
-            }
-        }
+        bdr_append_session_row(out, result->rows[i]);
     }
 
     db_result_free(result);
+}
+
+static void bdr_append_sessions_scoped(GString *out, uint32_t vrf_id)
+{
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
+    db_condition_t cond = {.field_name = "vrf_id", .op = DB_CMP_EQ, .value = db_value_int(vrf_id)};
+    db_filter_t filter = {.conditions = &cond, .num_conditions = 1};
+    db_result_t *result = NULL;
+
+    if (db_rpc_query(ctx, BGP_TABLE_SESSION, NULL, 0, &filter, &result) == ERRCODE_SUCCESS && result)
+    {
+        for (uint32_t i = 0; i < result->num_rows; i++)
+        {
+            bdr_append_session_row(out, result->rows[i]);
+        }
+    }
+
+    db_value_free(&cond.value);
+    if (result)
+    {
+        db_result_free(result);
+    }
 }
 
 /**
@@ -317,6 +426,80 @@ static void bdr_append_af_instances(GString *out)
     db_result_free(inst_result);
 }
 
+static void bdr_append_af_instances_scoped(GString *out, uint32_t vrf_id)
+{
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
+    db_condition_t cond = {.field_name = "vrf_id", .op = DB_CMP_EQ, .value = db_value_int(vrf_id)};
+    db_filter_t filter = {.conditions = &cond, .num_conditions = 1};
+    db_result_t *inst_result = NULL;
+
+    if (db_rpc_query(ctx, BGP_TABLE_INSTANCE, NULL, 0, &filter, &inst_result) != ERRCODE_SUCCESS || !inst_result ||
+        inst_result->num_rows == 0)
+    {
+        db_value_free(&cond.value);
+        if (inst_result)
+        {
+            db_result_free(inst_result);
+        }
+        return;
+    }
+
+    for (uint32_t i = 0; i < inst_result->num_rows; i++)
+    {
+        db_row_t *row = inst_result->rows[i];
+        int64_t afi_int = db_row_get_int(row, "afi", 0);
+        int64_t safi_int = db_row_get_int(row, "safi", 0);
+        int64_t import_protos = db_row_get_int(row, "import_protos", 0);
+        gboolean route_select_enabled = db_row_get_int(row, "route_select_enabled", 0) != 0;
+        const char *afi_str = afi_safi_to_str(afi_int, safi_int);
+
+        if (!afi_str)
+        {
+            continue;
+        }
+
+        bdr_append_af_block(out, vrf_id, afi_str, afi_int, safi_int, import_protos, route_select_enabled);
+    }
+
+    db_value_free(&cond.value);
+    db_result_free(inst_result);
+}
+
+static void bdr_append_scoped_af_instance(GString *out, uint32_t vrf_id, int64_t afi, int64_t safi)
+{
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
+    db_condition_t conds[] = {
+        {.field_name = "vrf_id", .op = DB_CMP_EQ, .value = db_value_int(vrf_id)},
+        {.field_name = "afi", .op = DB_CMP_EQ, .value = db_value_int(afi)},
+        {.field_name = "safi", .op = DB_CMP_EQ, .value = db_value_int(safi)},
+    };
+    db_filter_t filter = {.conditions = conds, .num_conditions = G_N_ELEMENTS(conds)};
+    db_result_t *result = NULL;
+
+    if (db_rpc_query(ctx, BGP_TABLE_INSTANCE, NULL, 0, &filter, &result) == ERRCODE_SUCCESS && result &&
+        result->num_rows > 0)
+    {
+        db_row_t *row = result->rows[0];
+        int64_t import_protos = db_row_get_int(row, "import_protos", 0);
+        gboolean route_select_enabled = db_row_get_int(row, "route_select_enabled", 0) != 0;
+        const char *afi_str = afi_safi_to_str(afi, safi);
+
+        if (afi_str)
+        {
+            bdr_append_af_block(out, vrf_id, afi_str, afi, safi, import_protos, route_select_enabled);
+        }
+    }
+
+    for (guint i = 0; i < G_N_ELEMENTS(conds); i++)
+    {
+        db_value_free(&conds[i].value);
+    }
+    if (result)
+    {
+        db_result_free(result);
+    }
+}
+
 // ============================================================================
 // BMP 实例配置输出
 // ============================================================================
@@ -354,6 +537,49 @@ static void bdr_append_bmp_monitors(GString *out, const char *inst_name)
     db_value_free(&cond.value);
 }
 
+static void bdr_append_bmp_instance_row(GString *out, db_row_t *row)
+{
+    const char *name = db_row_get_text(row, "instance_name", NULL);
+    if (!name)
+    {
+        return;
+    }
+
+    const char *collector_ip = db_row_get_text(row, "collector_ip", "");
+    int64_t collector_port = db_row_get_int(row, "collector_port", 0);
+    int64_t stats_interval = db_row_get_int(row, "stats_interval", 0);
+    int64_t reconnect_interval = db_row_get_int(row, "reconnect_interval", 30);
+    int64_t monitor_all = db_row_get_int(row, "monitor_all", 1);
+
+    g_string_append_printf(out, " bmp instance %s\r\n", name);
+
+    if (collector_ip[0] != '\0' && collector_port > 0)
+    {
+        g_string_append_printf(out, "  collector %s port %ld\r\n", collector_ip, collector_port);
+    }
+
+    if (stats_interval > 0)
+    {
+        g_string_append_printf(out, "  stats-report interval %ld\r\n", stats_interval);
+    }
+
+    if (reconnect_interval != 30)
+    {
+        g_string_append_printf(out, "  reconnect interval %ld\r\n", reconnect_interval);
+    }
+
+    if (monitor_all)
+    {
+        g_string_append(out, "  monitor neighbor all\r\n");
+    }
+    else
+    {
+        bdr_append_bmp_monitors(out, name);
+    }
+
+    g_string_append(out, " !\r\n");
+}
+
 /**
  * @brief 遍历 bgp_bmp_instance 表，输出所有 BMP 实例配置块
  */
@@ -373,49 +599,73 @@ static void bdr_append_bmp_instances(GString *out)
 
     for (uint32_t i = 0; i < result->num_rows; i++)
     {
-        db_row_t *row = result->rows[i];
-        const char *name = db_row_get_text(row, "instance_name", NULL);
-        if (!name)
-        {
-            continue;
-        }
-
-        const char *collector_ip = db_row_get_text(row, "collector_ip", "");
-        int64_t collector_port = db_row_get_int(row, "collector_port", 0);
-        int64_t stats_interval = db_row_get_int(row, "stats_interval", 0);
-        int64_t reconnect_interval = db_row_get_int(row, "reconnect_interval", 30);
-        int64_t monitor_all = db_row_get_int(row, "monitor_all", 1);
-
-        g_string_append_printf(out, " bmp instance %s\r\n", name);
-
-        if (collector_ip[0] != '\0' && collector_port > 0)
-        {
-            g_string_append_printf(out, "  collector %s port %ld\r\n", collector_ip, collector_port);
-        }
-
-        if (stats_interval > 0)
-        {
-            g_string_append_printf(out, "  stats-report interval %ld\r\n", stats_interval);
-        }
-
-        if (reconnect_interval != 30)
-        {
-            g_string_append_printf(out, "  reconnect interval %ld\r\n", reconnect_interval);
-        }
-
-        if (monitor_all)
-        {
-            g_string_append(out, "  monitor neighbor all\r\n");
-        }
-        else
-        {
-            bdr_append_bmp_monitors(out, name);
-        }
-
-        g_string_append(out, " !\r\n");
+        bdr_append_bmp_instance_row(out, result->rows[i]);
     }
 
     db_result_free(result);
+}
+
+static void bdr_append_scoped_bmp_instance(GString *out, const char *inst_name)
+{
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
+    db_condition_t cond = {.field_name = "instance_name", .op = DB_CMP_EQ, .value = db_value_text(inst_name)};
+    db_filter_t filter = {.conditions = &cond, .num_conditions = 1};
+    db_result_t *result = NULL;
+
+    if (db_rpc_query(ctx, BGP_TABLE_BMP_INSTANCE, NULL, 0, &filter, &result) == ERRCODE_SUCCESS && result &&
+        result->num_rows > 0)
+    {
+        bdr_append_bmp_instance_row(out, result->rows[0]);
+    }
+
+    db_value_free(&cond.value);
+    if (result)
+    {
+        db_result_free(result);
+    }
+}
+
+static void bgp_bdr_show_config_scoped(dev_ipc_message_t *msg, const cli_show_scope_t *scope)
+{
+    GString *out = g_string_new("");
+    if (!out)
+    {
+        bgp_send_cli_response(msg, "");
+        return;
+    }
+
+    if (strcmp(scope->view_name, CLI_VIEW_BGP) == 0)
+    {
+        uint32_t vrf_id = bgp_bdr_scope_vrf_id(scope);
+        (void)bdr_append_protocol(out);
+        bdr_append_vrf_config_scoped(out, vrf_id);
+        bdr_append_sessions_scoped(out, vrf_id);
+        bdr_append_af_instances_scoped(out, vrf_id);
+        bdr_append_bmp_instances(out);
+        g_string_append(out, "!\r\n");
+    }
+    else if (bgp_bdr_is_af_view(scope->view_name))
+    {
+        uint32_t vrf_id = BGP_VRF_PUBLIC_ID;
+        int64_t afi = 0;
+        int64_t safi = 0;
+
+        if (bgp_bdr_resolve_scoped_af(scope, &vrf_id, &afi, &safi))
+        {
+            bdr_append_scoped_af_instance(out, vrf_id, afi, safi);
+        }
+    }
+    else if (strcmp(scope->view_name, CLI_VIEW_BGP_BMP) == 0)
+    {
+        char inst_name[32] = {0};
+        if (bgp_bdr_resolve_scoped_bmp_instance(scope, inst_name, sizeof(inst_name)))
+        {
+            bdr_append_scoped_bmp_instance(out, inst_name);
+        }
+    }
+
+    bgp_send_cli_response(msg, out->str);
+    g_string_free(out, TRUE);
 }
 
 // ============================================================================
@@ -424,6 +674,20 @@ static void bdr_append_bmp_instances(GString *out)
 
 void bgp_bdr_show_config(dev_ipc_message_t *msg)
 {
+    cli_show_scope_t scope;
+    if (cli_show_scope_payload_parse((const uint8_t *)msg->payload, msg->payload_len, &scope) != 0)
+    {
+        LOG_WARN("BGP BDR: invalid SHOW_CONFIG scope payload");
+        bgp_send_cli_response(msg, "");
+        return;
+    }
+
+    if (scope.mode == CLI_SHOW_SCOPE_MODE_THIS)
+    {
+        bgp_bdr_show_config_scoped(msg, &scope);
+        return;
+    }
+
     GString *out = g_string_new("");
     if (!out)
     {

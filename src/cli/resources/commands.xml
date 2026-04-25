@@ -182,6 +182,27 @@
             </commands>
         </group>
 
+        <!-- show this -->
+        <group group-id="10">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>show</name>
+                    <description>Display system information</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>this</name>
+                    <description>Display current view configuration</description>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>1 2</expression>
+                    <views>global</views>
+                </command>
+            </commands>
+        </group>
+
         <!-- bash -->
         <group group-id="7">
             <elements>

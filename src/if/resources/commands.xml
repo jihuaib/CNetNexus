@@ -15,6 +15,12 @@
         </view>
     </views>
 
+    <show-this>
+        <view name="if"/>
+        <view name="if-null0"/>
+        <view name="if-loop"/>
+    </show-this>
+
     <command_groups>
         <!-- Interface Entry Command -->
         <group group-id="1">

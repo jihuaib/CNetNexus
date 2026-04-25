@@ -670,6 +670,44 @@ static cli_view_node_t *parse_view_node(xmlNode *view_xml)
     return view;
 }
 
+static void parse_show_this_views(xmlNode *show_this_node, cli_view_tree_t *view_tree, uint32_t module_id)
+{
+    if (!show_this_node || !view_tree || !view_tree->root || module_id == 0)
+    {
+        return;
+    }
+
+    for (xmlNode *cur = show_this_node->children; cur; cur = cur->next)
+    {
+        if (cur->type != XML_ELEMENT_NODE)
+        {
+            continue;
+        }
+
+        if (xmlStrcmp(cur->name, (const xmlChar *)"view") != ERRCODE_SUCCESS)
+        {
+            continue;
+        }
+
+        xmlChar *name = xmlGetProp(cur, (const xmlChar *)"name");
+        if (!name)
+        {
+            continue;
+        }
+
+        cli_view_node_t *view = cli_view_find_by_name(view_tree->root, (const char *)name);
+        if (!view)
+        {
+            LOG_WARN("Skip show-this registration: module=%u view=%s not found", module_id, (const char *)name);
+            xmlFree(name);
+            continue;
+        }
+
+        cli_view_add_show_this_module(view, module_id);
+        xmlFree(name);
+    }
+}
+
 /**
  * @brief 在虚拟根的所有叶子节点（is_end_node）上设置 context_out 条目
  */
@@ -1030,6 +1068,19 @@ uint32_t cli_xml_load_view_tree_ex(const char *xml_file, cli_view_tree_t *view_t
 
     if (load_flags & CLI_XML_LOAD_COMMANDS)
     {
+        for (xmlNode *cur = root_element->children; cur; cur = cur->next)
+        {
+            if (cur->type != XML_ELEMENT_NODE)
+            {
+                continue;
+            }
+
+            if (xmlStrcmp(cur->name, (const xmlChar *)"show-this") == ERRCODE_SUCCESS)
+            {
+                parse_show_this_views(cur, view_tree, module_id);
+            }
+        }
+
         // Parse command groups
         for (xmlNode *cur = root_element->children; cur; cur = cur->next)
         {

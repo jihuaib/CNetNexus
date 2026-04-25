@@ -260,18 +260,40 @@ static void handle_show_history(cli_session_t *session)
     g_string_free(full_output, TRUE);
 }
 
+static dev_ipc_message_t *create_show_config_request(uint32_t mod_id, const uint8_t *scope_payload,
+                                                     uint32_t scope_payload_len)
+{
+    uint8_t *payload_copy = NULL;
+    if (scope_payload && scope_payload_len > 0)
+    {
+        payload_copy = g_memdup2(scope_payload, scope_payload_len);
+        if (!payload_copy)
+        {
+            return NULL;
+        }
+    }
+
+    dev_ipc_message_t *req = dev_ipc_message_create(CLI_MSG_TYPE_SHOW_CONFIG, DEV_MODULE_ID_CLI, mod_id, 0,
+                                                    payload_copy, scope_payload_len, payload_copy ? g_free : NULL);
+    if (!req)
+    {
+        g_free(payload_copy);
+    }
+    return req;
+}
+
 /**
- * @brief 拉取单个模块 show current-configuration 的完整输出（支持 RESP_MORE/CONTINUE）
+ * @brief 拉取单个模块 SHOW_CONFIG 的完整输出（支持 RESP_MORE/CONTINUE）
  *        output 在调用前会被清空, 函数返回后仅含本模块的完整响应文本。
  */
-static void collect_module_show_config(uint32_t mod_id, GString *output)
+static void collect_module_show_config(uint32_t mod_id, const uint8_t *scope_payload, uint32_t scope_payload_len,
+                                       GString *output)
 {
     if (output)
     {
         g_string_truncate(output, 0);
     }
-    dev_ipc_message_t *req =
-        dev_ipc_message_create(CLI_MSG_TYPE_SHOW_CONFIG, DEV_MODULE_ID_CLI, mod_id, 0, NULL, 0, NULL);
+    dev_ipc_message_t *req = create_show_config_request(mod_id, scope_payload, scope_payload_len);
     if (!req)
     {
         return;
@@ -292,7 +314,7 @@ static void collect_module_show_config(uint32_t mod_id, GString *output)
 
         if (!resp)
         {
-            LOG_WARN("show current-configuration: module 0x%08X query timeout", mod_id);
+            LOG_WARN("SHOW_CONFIG: module 0x%08X query timeout", mod_id);
             break;
         }
 
@@ -315,8 +337,7 @@ static void collect_module_show_config(uint32_t mod_id, GString *output)
         }
         else
         {
-            LOG_WARN("show current-configuration: module 0x%08X returned unexpected msg_type=0x%08X", mod_id,
-                     resp->msg_type);
+            LOG_WARN("SHOW_CONFIG: module 0x%08X returned unexpected msg_type=0x%08X", mod_id, resp->msg_type);
         }
 
         dev_ipc_message_free(resp);
@@ -329,8 +350,7 @@ static void collect_module_show_config(uint32_t mod_id, GString *output)
 
     if (chunks >= max_chunks)
     {
-        LOG_WARN("show current-configuration: module 0x%08X exceeded max chunks(%u), stop collecting", mod_id,
-                 max_chunks);
+        LOG_WARN("SHOW_CONFIG: module 0x%08X exceeded max chunks(%u), stop collecting", mod_id, max_chunks);
     }
 }
 
@@ -347,6 +367,29 @@ static gint cmp_uint32_asc(gconstpointer a, gconstpointer b)
         return 1;
     }
     return 0;
+}
+
+static gboolean is_show_config_module_connected(uint32_t mod_id)
+{
+    if (!g_cli_local || !g_cli_local->dev_ipc_ctx)
+    {
+        return FALSE;
+    }
+
+    gboolean connected = FALSE;
+    dev_ipc_context_t *ctx = g_cli_local->dev_ipc_ctx;
+    pthread_mutex_lock(&ctx->comutex);
+    for (int i = 0; i < ctx->num_connections; i++)
+    {
+        dev_ipc_connection_t *conn = ctx->connections[i];
+        if (conn && conn->state == DEV_IPC_COCONNECTED && conn->remote_module_id == mod_id)
+        {
+            connected = TRUE;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&ctx->comutex);
+    return connected;
 }
 
 /**
@@ -397,6 +440,23 @@ static GArray *collect_connected_modules_for_show_config(void)
     return modules;
 }
 
+static void render_show_config_output(cli_session_t *session, cli_cfg_anchor_aggregator_t *agg)
+{
+    GString *output = g_string_new("");
+    cli_cfg_anchor_agg_render(agg, output);
+
+    if (output->len > 0)
+    {
+        cli_pager_output(session, output->str);
+    }
+    else
+    {
+        cli_send_message(session, "No configuration found.\r\n");
+    }
+
+    g_string_free(output, TRUE);
+}
+
 /**
  * @brief show current-configuration (group_id=3)
  *
@@ -415,7 +475,7 @@ static void handle_show_config(cli_session_t *session)
     {
         uint32_t mod_id = g_array_index(modules, uint32_t, i);
         /* 先完整拉取当前模块的响应再喂给聚合器, 再切下一个模块 */
-        collect_module_show_config(mod_id, buf);
+        collect_module_show_config(mod_id, NULL, 0, buf);
         if (buf->len > 0)
         {
             cli_cfg_anchor_agg_feed(agg, buf->str);
@@ -423,21 +483,68 @@ static void handle_show_config(cli_session_t *session)
     }
     g_array_free(modules, TRUE);
     g_string_free(buf, TRUE);
-
-    GString *output = g_string_new("");
-    cli_cfg_anchor_agg_render(agg, output);
+    render_show_config_output(session, agg);
     cli_cfg_anchor_agg_free(agg);
+}
 
-    if (output->len > 0)
+/**
+ * @brief show this (group_id=10)
+ *
+ * 当前视图是否支持 scoped show-this 以及应查询哪些模块，均由各模块 XML 的
+ * <show-this><view name="..."/></show-this> 元数据声明，不再在 CLI 中硬编码白名单。
+ * 未声明 scoped 支持的视图仍回退到 show current-configuration。
+ */
+static void handle_show_this(cli_session_t *session)
+{
+    if (!session || !session->current_view)
     {
-        cli_pager_output(session, output->str);
-    }
-    else
-    {
-        cli_send_message(session, "No configuration found.\r\n");
+        cli_send_message(session, "Error: No active view.\r\n");
+        return;
     }
 
-    g_string_free(output, TRUE);
+    const char *view_name = session->current_view->view_name;
+    if (!cli_view_supports_show_this(session->current_view))
+    {
+        handle_show_config(session);
+        return;
+    }
+
+    uint32_t ctx_len = 0;
+    const uint8_t *ctx_data = cli_context_get(session, &ctx_len);
+
+    cli_show_scope_t scope;
+    memset(&scope, 0, sizeof(scope));
+    scope.mode = CLI_SHOW_SCOPE_MODE_THIS;
+    strlcpy(scope.view_name, view_name, sizeof(scope.view_name));
+    scope.ctx_data = ctx_data;
+    scope.ctx_len = ctx_len;
+
+    uint32_t payload_len = 0;
+    uint8_t *payload = cli_show_scope_payload_build(&scope, &payload_len);
+    cli_cfg_anchor_aggregator_t *agg = cli_cfg_anchor_agg_new();
+    GString *buf = g_string_new("");
+
+    uint32_t num_mod_ids = 0;
+    const uint32_t *mod_ids = cli_view_get_show_this_modules(session->current_view, &num_mod_ids);
+    for (uint32_t i = 0; i < num_mod_ids; i++)
+    {
+        uint32_t mod_id = mod_ids[i];
+        if (!is_show_config_module_connected(mod_id))
+        {
+            continue;
+        }
+
+        collect_module_show_config(mod_id, payload, payload_len, buf);
+        if (buf->len > 0)
+        {
+            cli_cfg_anchor_agg_feed(agg, buf->str);
+        }
+    }
+
+    g_free(payload);
+    g_string_free(buf, TRUE);
+    render_show_config_output(session, agg);
+    cli_cfg_anchor_agg_free(agg);
 }
 
 /**
@@ -818,6 +925,9 @@ int cli_handle(dev_ipc_message_t *msg, cli_session_t *session)
             break;
         case CLI_GROUP_ID_TERMINAL_LENGTH_ZERO:
             handle_terminal_length_zero(session, parser.flags);
+            break;
+        case CLI_GROUP_ID_SHOW_THIS:
+            handle_show_this(session);
             break;
         default:
             LOG_WARN("Unknown group_id: %u", parser.group_id);

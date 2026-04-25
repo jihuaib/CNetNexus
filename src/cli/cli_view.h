@@ -18,7 +18,10 @@ struct cli_view_node
 {
     char view_name[CLI_CLI_MAX_VIEW_LEN]; // 视图名称，作为唯一标识
     char prompt_template[CLI_MAX_VIEW_LEN];
-    cli_tree_node_t *cmd_tree; // Command tree for this view
+    cli_tree_node_t *cmd_tree;      // Command tree for this view
+    uint32_t *show_this_module_ids; // 显式声明支持 scoped show-this 的模块集合
+    uint32_t num_show_this_modules;
+    uint32_t show_this_modules_capacity;
 
     // View hierarchy
     cli_view_node_t *parent;    // Parent view (NULL for root)
@@ -41,6 +44,12 @@ cli_view_node_t *cli_view_create(const char *view_name, const char *prompt_templ
 void cli_view_add_child(cli_view_node_t *parent, cli_view_node_t *child);
 
 cli_view_node_t *cli_view_find_by_name(cli_view_node_t *root, const char *view_name);
+
+void cli_view_add_show_this_module(cli_view_node_t *view, uint32_t module_id);
+
+gboolean cli_view_supports_show_this(const cli_view_node_t *view);
+
+const uint32_t *cli_view_get_show_this_modules(const cli_view_node_t *view, uint32_t *count_out);
 
 void cli_view_free(cli_view_node_t *view);
 

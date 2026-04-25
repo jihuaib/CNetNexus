@@ -22,6 +22,15 @@
         </view>
     </views>
 
+    <show-this>
+        <view name="bgp"/>
+        <view name="bgp-af-ipv4-uni"/>
+        <view name="bgp-af-ipv6-uni"/>
+        <view name="bgp-af-ipv4-qp"/>
+        <view name="bgp-af-ipv6-qp"/>
+        <view name="bgp-bmp"/>
+    </show-this>
+
     <!-- Command group definitions -->
     <command_groups>
         <!-- BGP 协议配置命令（bgp <as-number> / no bgp [as-number]） -->

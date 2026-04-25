@@ -76,6 +76,76 @@ static void bdr_build_iface_header(char *buf, size_t buflen, const char *name)
     }
 }
 
+static const char *bdr_if_ctx_idx_to_name(uint32_t if_idx)
+{
+    switch (if_idx)
+    {
+        case 0:
+            return "null0";
+        case 1:
+            return "GE-1";
+        case 2:
+            return "GE-2";
+        case 3:
+            return "GE-3";
+        case 4:
+            return "GE-4";
+        default:
+            return NULL;
+    }
+}
+
+static gboolean bdr_resolve_scoped_ifname(const cli_show_scope_t *scope, char *ifname, size_t ifname_len)
+{
+    if (!scope || !ifname || ifname_len == 0)
+    {
+        return FALSE;
+    }
+
+    if (strcmp(scope->view_name, CLI_VIEW_IF) == 0 || strcmp(scope->view_name, CLI_VIEW_IF_NULL0) == 0)
+    {
+        uint32_t if_idx = 0;
+        if (cli_ctx_lookup_uint32(scope->ctx_data, scope->ctx_len, CLI_CTX_ID_IF_IDX, &if_idx) != 0)
+        {
+            return FALSE;
+        }
+
+        const char *name = bdr_if_ctx_idx_to_name(if_idx);
+        if (!name)
+        {
+            return FALSE;
+        }
+
+        g_strlcpy(ifname, name, ifname_len);
+        return TRUE;
+    }
+
+    if (strcmp(scope->view_name, CLI_VIEW_IF_LOOP) == 0)
+    {
+        uint32_t loop_id = 0;
+        if (cli_ctx_lookup_uint32(scope->ctx_data, scope->ctx_len, CLI_CTX_ID_IF_LOOP_IDX, &loop_id) != 0 ||
+            loop_id == 0)
+        {
+            return FALSE;
+        }
+
+        g_snprintf(ifname, ifname_len, "loop%u", loop_id);
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+static void bdr_emit_iface_anchor(GString *out, const char *name)
+{
+    char key[CLI_CFG_ANCHOR_KEY_MAX];
+    char header[96];
+    bdr_build_iface_key(key, sizeof(key), name);
+    bdr_build_iface_header(header, sizeof(header), name);
+    cli_cfg_anchor_emit_header(out, key, header);
+    cli_cfg_anchor_emit_footer(out, key, "!\r\n");
+}
+
 /**
  * @brief 将 IF 自身对某接口的配置(IP/shutdown)发射为 body 贡献
  */
@@ -133,7 +203,7 @@ static void bdr_send_cli_response(dev_ipc_message_t *msg, const char *text)
     }
 }
 
-void if_bdr_show_config(dev_ipc_message_t *msg)
+static void if_bdr_show_config_full(dev_ipc_message_t *msg)
 {
     dev_ipc_context_t *ctx = if_local_ipc_ctx();
     GString *out = g_string_new("");
@@ -166,17 +236,80 @@ void if_bdr_show_config(dev_ipc_message_t *msg)
             continue;
         }
 
-        char key[CLI_CFG_ANCHOR_KEY_MAX];
-        char header[96];
-        bdr_build_iface_key(key, sizeof(key), name);
-        bdr_build_iface_header(header, sizeof(header), name);
-        cli_cfg_anchor_emit_header(out, key, header);
-        cli_cfg_anchor_emit_footer(out, key, "!\r\n");
-
+        bdr_emit_iface_anchor(out, name);
         bdr_emit_iface_self_body(out, name, ip4_str, prefix4_len, ip6_str, prefix6_len, shutdown);
     }
 
     db_result_free(result);
     bdr_send_cli_response(msg, out->str);
     g_string_free(out, TRUE);
+}
+
+static void if_bdr_show_config_scoped(dev_ipc_message_t *msg, const cli_show_scope_t *scope)
+{
+    char ifname[32];
+    if (!bdr_resolve_scoped_ifname(scope, ifname, sizeof(ifname)))
+    {
+        bdr_send_cli_response(msg, "");
+        return;
+    }
+
+    GString *out = g_string_new("");
+    if (!out)
+    {
+        bdr_send_cli_response(msg, "");
+        return;
+    }
+
+    /*
+     * scoped show this 下，IF 作为接口 anchor owner 需要始终提供 header/footer，
+     * 即使本模块当前没有 IP/shutdown 配置，也要给其它模块的 body 贡献提供容器。
+     */
+    bdr_emit_iface_anchor(out, ifname);
+
+    dev_ipc_context_t *ctx = if_local_ipc_ctx();
+    db_condition_t cond = {.field_name = "name", .op = DB_CMP_EQ, .value = db_value_text(ifname)};
+    db_filter_t filter = {.conditions = &cond, .num_conditions = 1};
+    db_result_t *result = NULL;
+
+    if (db_rpc_query(ctx, "if_interface", NULL, 0, &filter, &result) == ERRCODE_SUCCESS && result &&
+        result->num_rows > 0)
+    {
+        db_row_t *row = result->rows[0];
+        const char *ip4_str = db_row_get_text(row, "ip_address", NULL);
+        int64_t prefix4_len = db_row_get_int(row, "prefix_len", 0);
+        const char *ip6_str = db_row_get_text(row, "ipv6_address", NULL);
+        int64_t prefix6_len = db_row_get_int(row, "ipv6_prefix_len", 0);
+        int64_t shutdown = db_row_get_int(row, "shutdown", 0);
+
+        bdr_emit_iface_self_body(out, ifname, ip4_str, prefix4_len, ip6_str, prefix6_len, shutdown);
+    }
+
+    db_value_free(&cond.value);
+    if (result)
+    {
+        db_result_free(result);
+    }
+
+    bdr_send_cli_response(msg, out->str);
+    g_string_free(out, TRUE);
+}
+
+void if_bdr_show_config(dev_ipc_message_t *msg)
+{
+    cli_show_scope_t scope;
+    if (cli_show_scope_payload_parse((const uint8_t *)msg->payload, msg->payload_len, &scope) != 0)
+    {
+        LOG_WARN("IF BDR: invalid SHOW_CONFIG scope payload");
+        bdr_send_cli_response(msg, "");
+        return;
+    }
+
+    if (scope.mode == CLI_SHOW_SCOPE_MODE_THIS)
+    {
+        if_bdr_show_config_scoped(msg, &scope);
+        return;
+    }
+
+    if_bdr_show_config_full(msg);
 }
