@@ -4,6 +4,13 @@ set(BGP_SOURCES
     bgp_bmp_cli.c
     bgp_bmp_db.c
     bgp_db.c
+    db/bgp_db_common.c
+    db/bgp_db_protocol.c
+    db/bgp_db_session.c
+    db/bgp_db_neighbor.c
+    db/bgp_db_vrf.c
+    db/bgp_db_instance.c
+    db/bgp_db_qp_route.c
     bgp_bdr.c
     work/bgp_cfg_apply.c
     work/bgp_if_cache.c
@@ -41,7 +48,7 @@ add_subdirectory(lib)
 
 add_executable(netnexus-bgp bgp_proc.c ${BGP_SOURCES})
 
-target_include_directories(netnexus-bgp PRIVATE . work bmp)
+target_include_directories(netnexus-bgp PRIVATE . db work bmp)
 
 target_link_libraries(netnexus-bgp PRIVATE
     dev_api

@@ -103,14 +103,33 @@ def _as_mismatch_case(rt: TopologyRuntime, r1_peer: str, r2_peer: str, af: str) 
         label=f"r2 {af} must-not Established under AS mismatch",
     )
 
-    step(f"[{af}] 纠正 r1 AS -> 65002, 应恢复 Established")
+    step(f"[{af}] 直接修改 r1 AS -> 65002 应报错")
+    outputs = run_cmds(
+        rt=rt,
+        device="r1",
+        strict=False,
+        commands=[
+            "config",
+            "bgp 65001",
+            f"neighbor {r1_peer} as 65002",
+            "end",
+        ],
+    )
+    if "remote-as cannot be modified in place" not in outputs[2]:
+        raise AssertionError(f"{af}: expected direct remote-as change to be rejected, got:\n{outputs[2]}")
+
+    step(f"[{af}] 删除 r1 错误邻居后按 AS 65002 重配，应恢复 Established")
     run_cmds(
         rt=rt,
         device="r1",
         commands=[
             "config",
             "bgp 65001",
+            f"no neighbor {r1_peer}",
             f"neighbor {r1_peer} as 65002",
+            f"af {af}",
+            f"neighbor {r1_peer} enable",
+            "exit",
             "end",
         ],
     )

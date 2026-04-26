@@ -310,7 +310,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                     "command": f"show isis neighbor {TAG}",
                     "contains": ["ISIS Neighbors", GE_IF, r1_peer_ip4],
                     "regex": [
-                        rf"(?im)^\s*{TAG}\s+{re.escape(GE_IF)}\s+L[12]\s+\S+\s+Up\s+\d+\s+\d+\s+"
+                        rf"(?im)^\s*{TAG}\s+{re.escape(GE_IF)}\s+L[12]\s+\S+\s+Up\s+yes\s+yes\s+\d+\s+\d+\s+"
                         rf"{re.escape(r1_peer_ip4)}\s+fe80:[0-9a-f:]+\s*$"
                     ],
                     "label": "r1 ISIS neighbor up",
@@ -320,7 +320,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                     "command": f"show isis neighbor {TAG}",
                     "contains": ["ISIS Neighbors", GE_IF, r2_peer_ip4],
                     "regex": [
-                        rf"(?im)^\s*{TAG}\s+{re.escape(GE_IF)}\s+L[12]\s+\S+\s+Up\s+\d+\s+\d+\s+"
+                        rf"(?im)^\s*{TAG}\s+{re.escape(GE_IF)}\s+L[12]\s+\S+\s+Up\s+yes\s+yes\s+\d+\s+\d+\s+"
                         rf"{re.escape(r2_peer_ip4)}\s+fe80:[0-9a-f:]+\s*$"
                     ],
                     "label": "r2 ISIS neighbor up",

@@ -367,12 +367,12 @@ static int handle_bgp_addr_family(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
         return ERRCODE_FAIL;
     }
 
-    if (apply.rc == BGP_APPLY_RC_NOOP)
+    if (apply.rc == BGP_APPLY_RC_NOOP && !apply.isNo)
     {
         bgp_send_cli_response(msg, "");
         return ERRCODE_SUCCESS;
     }
-    if (apply.rc != BGP_APPLY_RC_OK)
+    if (apply.rc != BGP_APPLY_RC_OK && !(apply.isNo && apply.rc == BGP_APPLY_RC_NOOP))
     {
         char buf[280];
         snprintf(buf, sizeof(buf), "%s\r\n", apply.errmsg);
@@ -1000,12 +1000,12 @@ static int handle_bgp_source_interface(dev_ipc_message_t *msg, cli_tlv_parser_t 
         return ERRCODE_FAIL;
     }
 
-    if (apply.rc == BGP_APPLY_RC_NOOP)
+    if (apply.rc == BGP_APPLY_RC_NOOP && !apply.isNo)
     {
         bgp_send_cli_response(msg, "");
         return ERRCODE_SUCCESS;
     }
-    if (apply.rc != BGP_APPLY_RC_OK)
+    if (apply.rc != BGP_APPLY_RC_OK && !(apply.isNo && apply.rc == BGP_APPLY_RC_NOOP))
     {
         char buf[280];
         snprintf(buf, sizeof(buf), "%s\r\n", apply.errmsg);

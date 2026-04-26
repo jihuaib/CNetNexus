@@ -15,6 +15,7 @@ int if_db_init(void);
 int if_db_restore(void);
 
 int if_db_ensure_record(const char *ifname);
+int if_db_del_record(const char *ifname);
 int if_db_update_ip(const char *ifname, int is_ipv6, const char *ip_str, uint8_t prefix_len);
 int if_db_update_shutdown(const char *ifname, int shutdown);
 

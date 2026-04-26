@@ -351,7 +351,7 @@ static void isis_spf_add_root_edges(isis_instance_cfg_t *inst, uint8_t level, co
     {
         (void)key;
         const isis_neighbor_t *nbr = (const isis_neighbor_t *)value;
-        if (!nbr || nbr->level != level || nbr->state == ISIS_ADJ_STATE_DOWN)
+        if (!nbr || nbr->level != level || nbr->state != ISIS_ADJ_STATE_UP)
         {
             continue;
         }
@@ -604,7 +604,7 @@ static void isis_spf_collect_local_hops(const isis_instance_cfg_t *inst, uint8_t
     {
         (void)key;
         const isis_neighbor_t *nbr = (const isis_neighbor_t *)value;
-        if (!nbr || nbr->level != level || nbr->state == ISIS_ADJ_STATE_DOWN)
+        if (!nbr || nbr->level != level || nbr->state != ISIS_ADJ_STATE_UP)
         {
             continue;
         }

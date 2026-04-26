@@ -53,6 +53,7 @@
 
 #define ISIS_NLPID_IPV4 0xCCu
 #define ISIS_NLPID_IPV6 0x8Eu
+#define ISIS_IS_NEIGHBORS_TLV_MAX 252u
 
 static const uint8_t g_isis_l1_dst_mac[ETH_ALEN] = {0x01u, 0x80u, 0xC2u, 0x00u, 0x00u, 0x14u};
 static const uint8_t g_isis_l2_dst_mac[ETH_ALEN] = {0x01u, 0x80u, 0xC2u, 0x00u, 0x00u, 0x15u};
@@ -190,6 +191,151 @@ static void isis_zero_addr(sa_family_t family, net_addr_t *out)
     }
     memset(out, 0, sizeof(*out));
     out->family = family;
+}
+
+static int isis_mac_is_zero(const uint8_t mac[ETH_ALEN])
+{
+    if (!mac)
+    {
+        return 1;
+    }
+    for (size_t i = 0u; i < ETH_ALEN; ++i)
+    {
+        if (mac[i] != 0u)
+        {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int isis_mac_equal(const uint8_t a[ETH_ALEN], const uint8_t b[ETH_ALEN])
+{
+    if (!a || !b)
+    {
+        return 0;
+    }
+    return memcmp(a, b, ETH_ALEN) == 0 ? 1 : 0;
+}
+
+static uint8_t isis_instance_circuit_type(const isis_instance_cfg_t *inst)
+{
+    if (!inst)
+    {
+        return 0u;
+    }
+    if (inst->is_type == ISIS_IS_TYPE_LEVEL_1)
+    {
+        return 1u;
+    }
+    if (inst->is_type == ISIS_IS_TYPE_LEVEL_2)
+    {
+        return 2u;
+    }
+    return 3u;
+}
+
+static int isis_circuit_type_supports_level(uint8_t circuit_type, uint8_t level)
+{
+    if (level == 1u)
+    {
+        return (circuit_type & 0x1u) ? 1 : 0;
+    }
+    if (level == 2u)
+    {
+        return (circuit_type & 0x2u) ? 1 : 0;
+    }
+    return 0;
+}
+
+static int isis_area_list_contains(const uint8_t *val, size_t val_len, const uint8_t *area, size_t area_len)
+{
+    if (!val || val_len == 0u || !area || area_len == 0u)
+    {
+        return 0;
+    }
+
+    size_t pos = 0u;
+    while (pos < val_len)
+    {
+        uint8_t len = val[pos++];
+        if (len == 0u || pos + len > val_len)
+        {
+            break;
+        }
+        if ((size_t)len == area_len && memcmp(&val[pos], area, area_len) == 0)
+        {
+            return 1;
+        }
+        pos += len;
+    }
+    return 0;
+}
+
+static int isis_snpa_list_contains(const uint8_t *val, size_t val_len, const uint8_t snpa[ETH_ALEN])
+{
+    if (!val || val_len < ETH_ALEN || !snpa || isis_mac_is_zero(snpa))
+    {
+        return 0;
+    }
+
+    for (size_t pos = 0u; pos + ETH_ALEN <= val_len; pos += ETH_ALEN)
+    {
+        if (isis_mac_equal(&val[pos], snpa))
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static size_t isis_collect_is_neighbors_tlv(const isis_instance_cfg_t *inst, const char *ifname, uint8_t level,
+                                            uint8_t *out, size_t out_cap)
+{
+    if (!inst || !inst->neighbors || !ifname || ifname[0] == '\0' || !out || out_cap < ETH_ALEN)
+    {
+        return 0u;
+    }
+
+    size_t len = 0u;
+    GHashTableIter iter;
+    gpointer key = NULL;
+    gpointer value = NULL;
+    g_hash_table_iter_init(&iter, inst->neighbors);
+    while (g_hash_table_iter_next(&iter, &key, &value))
+    {
+        (void)key;
+        const isis_neighbor_t *nbr = (const isis_neighbor_t *)value;
+        if (!nbr || nbr->level != level || strcmp(nbr->ifname, ifname) != 0 || !nbr->hello_valid ||
+            isis_mac_is_zero(nbr->remote_snpa))
+        {
+            continue;
+        }
+
+        if (len + ETH_ALEN > out_cap)
+        {
+            break;
+        }
+
+        int duplicate = 0;
+        for (size_t pos = 0u; pos + ETH_ALEN <= len; pos += ETH_ALEN)
+        {
+            if (isis_mac_equal(&out[pos], nbr->remote_snpa))
+            {
+                duplicate = 1;
+                break;
+            }
+        }
+        if (duplicate)
+        {
+            continue;
+        }
+
+        memcpy(&out[len], nbr->remote_snpa, ETH_ALEN);
+        len += ETH_ALEN;
+    }
+
+    return len;
 }
 
 static int isis_hex_to_nibble(int c)
@@ -333,15 +479,7 @@ static int isis_build_iih_pdu(const isis_instance_cfg_t *inst, const if_api_cach
     pdu[p++] = 0u;
     pdu[p++] = 3u;
 
-    uint8_t circuit_type = 3u;
-    if (inst->is_type == ISIS_IS_TYPE_LEVEL_1)
-    {
-        circuit_type = 1u;
-    }
-    else if (inst->is_type == ISIS_IS_TYPE_LEVEL_2)
-    {
-        circuit_type = 2u;
-    }
+    uint8_t circuit_type = isis_instance_circuit_type(inst);
     pdu[p++] = circuit_type;
 
     memcpy(&pdu[p], system_id, 6u);
@@ -405,7 +543,11 @@ static int isis_build_iih_pdu(const isis_instance_cfg_t *inst, const if_api_cach
         }
     }
 
-    if (isis_tlv_append(pdu, pdu_cap, &p, ISIS_TLV_IS_NEIGHBORS, NULL, 0u) != 0)
+    uint8_t neighbors_tlv[ISIS_IS_NEIGHBORS_TLV_MAX];
+    size_t neighbors_tlv_len =
+        isis_collect_is_neighbors_tlv(inst, if_entry->logical_name, level, neighbors_tlv, sizeof(neighbors_tlv));
+    if (isis_tlv_append(pdu, pdu_cap, &p, ISIS_TLV_IS_NEIGHBORS, (neighbors_tlv_len > 0u) ? neighbors_tlv : NULL,
+                        (uint8_t)neighbors_tlv_len) != 0)
     {
         return -1;
     }
@@ -645,8 +787,8 @@ static void isis_neighbor_reconcile_learned_afi(isis_instance_cfg_t *inst, const
     isis_route_state_t desired;
     memset(&desired, 0, sizeof(desired));
 
-    if (inst->admin_up && af_enabled && af_cfg && if_entry && if_entry->proto_up && if_entry->ifindex != 0u &&
-        !af_cfg->passive && isis_level_enabled(inst, nbr->level))
+    if (nbr->state == ISIS_ADJ_STATE_UP && inst->admin_up && af_enabled && af_cfg && if_entry && if_entry->proto_up &&
+        if_entry->ifindex != 0u && !af_cfg->passive && isis_level_enabled(inst, nbr->level))
     {
         desired.afi = afi;
         desired.out_ifindex = if_entry->ifindex;
@@ -888,12 +1030,21 @@ void isis_neighbor_reconcile_all(void)
 typedef struct isis_rx_neighbor_ctx
 {
     const char *ifname;
+    const if_api_cache_entry_t *if_entry;
     uint8_t level;
     uint8_t system_id[6];
     uint16_t hold_time_sec;
     uint8_t priority;
+    uint8_t local_snpa[ETH_ALEN];
+    uint8_t remote_snpa[ETH_ALEN];
+    uint8_t remote_circuit_type;
+    uint8_t remote_ipv4_nlpid;
+    uint8_t remote_ipv6_nlpid;
+    uint8_t seen_self;
     uint8_t has_ipv4;
     uint8_t has_ipv6;
+    uint8_t area_tlv[255];
+    uint16_t area_tlv_len;
     net_addr_t ipv4_addr;
     net_addr_t ipv6_addr;
     uint64_t now_msec;
@@ -926,6 +1077,32 @@ static void isis_rx_neighbor_apply_instance(gpointer key, gpointer value, gpoint
         return;
     }
 
+    const isis_if_af_cfg_t *cfg_v4 = isis_neighbor_if_af_cfg(inst, if_cfg, ROUTE_AFI_IPV4);
+    const isis_if_af_cfg_t *cfg_v6 = isis_neighbor_if_af_cfg(inst, if_cfg, ROUTE_AFI_IPV6);
+    int active_v4 = (cfg_v4 && !cfg_v4->passive) ? 1 : 0;
+    int active_v6 = (cfg_v6 && !cfg_v6->passive) ? 1 : 0;
+
+    int hold_ok = (ctx->hold_time_sec != 0u) ? 1 : 0;
+    int circuit_ok = isis_circuit_type_supports_level(ctx->remote_circuit_type, ctx->level);
+    int nlpids_ok = ((active_v4 && ctx->remote_ipv4_nlpid) || (active_v6 && ctx->remote_ipv6_nlpid)) ? 1 : 0;
+    int area_match = 1;
+    if (ctx->level == 1u)
+    {
+        uint8_t local_area[64];
+        uint8_t local_area_len = 0u;
+        if (isis_extract_area(inst->net, local_area, sizeof(local_area), &local_area_len) != 0 || local_area_len == 0u)
+        {
+            area_match = 0;
+        }
+        else
+        {
+            area_match = isis_area_list_contains(ctx->area_tlv, ctx->area_tlv_len, local_area, local_area_len);
+        }
+    }
+
+    int hello_valid = (hold_ok && circuit_ok && nlpids_ok && area_match) ? 1 : 0;
+    uint8_t new_state = !hello_valid ? ISIS_ADJ_STATE_DOWN : (ctx->seen_self ? ISIS_ADJ_STATE_UP : ISIS_ADJ_STATE_INIT);
+
     char key_buf[ISIS_NEIGHBOR_KEY_MAX];
     isis_neighbor_key_format(key_buf, sizeof(key_buf), ctx->ifname, ctx->level, ctx->system_id);
 
@@ -937,30 +1114,41 @@ static void isis_rx_neighbor_apply_instance(gpointer key, gpointer value, gpoint
         {
             return;
         }
-        nbr->state = ISIS_ADJ_STATE_INIT;
         g_strlcpy(nbr->ifname, ctx->ifname, sizeof(nbr->ifname));
         memcpy(nbr->system_id, ctx->system_id, sizeof(nbr->system_id));
         nbr->level = ctx->level;
-        nbr->priority = ctx->priority;
-        nbr->hold_time_sec = (ctx->hold_time_sec == 0u) ? ISIS_DEFAULT_HOLD_TIME_SEC : ctx->hold_time_sec;
-        nbr->ipv4_addr = ctx->has_ipv4 ? ctx->ipv4_addr : (net_addr_t){0};
-        nbr->ipv6_addr = ctx->has_ipv6 ? ctx->ipv6_addr : (net_addr_t){0};
-        nbr->last_seen_msec = ctx->now_msec;
         g_hash_table_replace(inst->neighbors, g_strdup(key_buf), nbr);
-        isis_neighbor_reconcile_learned(inst, nbr);
-        return;
     }
+    uint8_t prev_state = nbr->state;
 
-    nbr->state = ISIS_ADJ_STATE_UP;
+    nbr->state = new_state;
     nbr->priority = ctx->priority;
-    nbr->hold_time_sec = (ctx->hold_time_sec == 0u) ? ISIS_DEFAULT_HOLD_TIME_SEC : ctx->hold_time_sec;
+    nbr->hold_time_sec = ctx->hold_time_sec;
+    memcpy(nbr->local_snpa, ctx->local_snpa, sizeof(nbr->local_snpa));
+    memcpy(nbr->remote_snpa, ctx->remote_snpa, sizeof(nbr->remote_snpa));
+    nbr->remote_circuit_type = ctx->remote_circuit_type;
+    nbr->remote_ipv4_nlpid = ctx->remote_ipv4_nlpid ? 1u : 0u;
+    nbr->remote_ipv6_nlpid = ctx->remote_ipv6_nlpid ? 1u : 0u;
+    nbr->seen_self = ctx->seen_self ? 1u : 0u;
+    nbr->area_match = area_match ? 1u : 0u;
+    nbr->circuit_ok = circuit_ok ? 1u : 0u;
+    nbr->nlpids_ok = nlpids_ok ? 1u : 0u;
+    nbr->hold_ok = hold_ok ? 1u : 0u;
+    nbr->hello_valid = hello_valid ? 1u : 0u;
     nbr->ipv4_addr = ctx->has_ipv4 ? ctx->ipv4_addr : (net_addr_t){0};
     nbr->ipv6_addr = ctx->has_ipv6 ? ctx->ipv6_addr : (net_addr_t){0};
     nbr->last_seen_msec = ctx->now_msec;
+
+    if (prev_state == ISIS_ADJ_STATE_UP && new_state != ISIS_ADJ_STATE_UP)
+    {
+        isis_spf_withdraw_neighbor_routes(inst, nbr);
+        isis_lsp_remove_origin(inst, nbr->level, nbr->system_id);
+    }
     isis_neighbor_reconcile_learned(inst, nbr);
 }
 
-static void isis_handle_iih_payload(const uint8_t *pdu, size_t pdu_len, const struct sockaddr_ll *sll)
+static void isis_handle_iih_payload(const uint8_t *pdu, size_t pdu_len, const struct sockaddr_ll *sll,
+                                    const uint8_t src_mac[ETH_ALEN])
 {
     if (!pdu || pdu_len < ISIS_LAN_IIH_HDR_LEN || !sll)
     {
@@ -1012,15 +1200,31 @@ static void isis_handle_iih_payload(const uint8_t *pdu, size_t pdu_len, const st
     {
         return;
     }
+    const if_api_cache_entry_t *if_entry = if_api_cache_lookup(ifname);
+    if (!if_entry || if_entry->ifindex == 0u)
+    {
+        return;
+    }
 
     isis_rx_neighbor_ctx_t ctx;
     memset(&ctx, 0, sizeof(ctx));
     ctx.ifname = ifname;
+    ctx.if_entry = if_entry;
     ctx.level = level;
     memcpy(ctx.system_id, &pdu[9], sizeof(ctx.system_id));
     ctx.hold_time_sec = (uint16_t)(((uint16_t)pdu[15] << 8) | pdu[16]);
     ctx.priority = pdu[19];
+    ctx.remote_circuit_type = pdu[8];
     ctx.now_msec = isis_now_msec();
+    if (src_mac && !isis_mac_is_zero(src_mac))
+    {
+        memcpy(ctx.remote_snpa, src_mac, sizeof(ctx.remote_snpa));
+    }
+    else if (sll->sll_halen >= ETH_ALEN)
+    {
+        memcpy(ctx.remote_snpa, sll->sll_addr, sizeof(ctx.remote_snpa));
+    }
+    (void)isis_get_src_mac(g_isis_neighbor_local.raw_fd, if_entry, ctx.local_snpa);
 
     size_t pos = ISIS_LAN_IIH_HDR_LEN;
     while (pos + 2u <= pdu_len)
@@ -1034,7 +1238,41 @@ static void isis_handle_iih_payload(const uint8_t *pdu, size_t pdu_len, const st
         }
 
         const uint8_t *tlv_val = &pdu[pos];
-        if (tlv_type == ISIS_TLV_IPV4_INTF_ADDR && tlv_len >= 4u && !ctx.has_ipv4)
+        if (tlv_type == ISIS_TLV_AREA_ADDR)
+        {
+            size_t copy_len = tlv_len;
+            if (copy_len > sizeof(ctx.area_tlv) - ctx.area_tlv_len)
+            {
+                copy_len = sizeof(ctx.area_tlv) - ctx.area_tlv_len;
+            }
+            if (copy_len > 0u)
+            {
+                memcpy(&ctx.area_tlv[ctx.area_tlv_len], tlv_val, copy_len);
+                ctx.area_tlv_len += (uint16_t)copy_len;
+            }
+        }
+        else if (tlv_type == ISIS_TLV_PROTOCOLS_SUPPORTED)
+        {
+            for (uint8_t i = 0u; i < tlv_len; ++i)
+            {
+                if (tlv_val[i] == ISIS_NLPID_IPV4)
+                {
+                    ctx.remote_ipv4_nlpid = 1u;
+                }
+                else if (tlv_val[i] == ISIS_NLPID_IPV6)
+                {
+                    ctx.remote_ipv6_nlpid = 1u;
+                }
+            }
+        }
+        else if (tlv_type == ISIS_TLV_IS_NEIGHBORS)
+        {
+            if (!ctx.seen_self && isis_snpa_list_contains(tlv_val, tlv_len, ctx.local_snpa))
+            {
+                ctx.seen_self = 1u;
+            }
+        }
+        else if (tlv_type == ISIS_TLV_IPV4_INTF_ADDR && tlv_len >= 4u && !ctx.has_ipv4)
         {
             memset(&ctx.ipv4_addr, 0, sizeof(ctx.ipv4_addr));
             ctx.ipv4_addr.family = AF_INET;
@@ -1110,8 +1348,9 @@ void isis_neighbor_handle_raw_event(void)
 
         const uint8_t *pdu = llc + 3u;
         size_t pdu_len = len8023 - 3u;
-        isis_handle_iih_payload(pdu, pdu_len, &sll);
-        isis_lsp_handle_pdu(g_isis_neighbor_local.raw_fd, pdu, pdu_len, &sll);
+        const uint8_t *src_mac = &frame[ETH_ALEN];
+        isis_handle_iih_payload(pdu, pdu_len, &sll, src_mac);
+        isis_lsp_handle_pdu(g_isis_neighbor_local.raw_fd, pdu, pdu_len, &sll, src_mac);
     }
 }
 

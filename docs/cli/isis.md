@@ -91,8 +91,11 @@ Displays learned ISIS LAN neighbors for the specified instance tag.
 - Neighbor negotiation is interface-based (not per AF), so IPv4/IPv6 variants are not provided for this command.
 - `verbose` shows full per-neighbor negotiation details, including:
   - instance/interface status
+  - LAN SNPA echo state
+  - IIH validation result
+  - area/circuit-type/NLPID checks
   - per-AF local enable/passive state
-  - remote AF advertisement
+  - remote AF advertisement / remote NLPID advertisement
   - per-AF negotiated result (`yes`/`no`)
 
 - Fields:
@@ -100,7 +103,9 @@ Displays learned ISIS LAN neighbors for the specified instance tag.
   - `Interface`: Logical interface name
   - `Level`: `L1` or `L2`
   - `System-ID`: Neighbor system-id
-  - `State`: `Init` / `Up`
+  - `State`: `Down` / `Init` / `Up`
+  - `Valid`: Whether the received IIH passed standard LAN adjacency checks
+  - `SeenSelf`: Whether the remote `IS Neighbors` TLV echoed the local SNPA
   - `Hold`: Hold time (seconds)
   - `LastSeen`: Seconds since last IIH received
   - `IPv4`: Neighbor IPv4 interface address (if advertised)
@@ -141,6 +146,7 @@ Displays detailed information for routes matching the given destination prefix i
   - Interface UP/DOWN and address ADD/DEL events are consumed from IF module.
   - IPv4/IPv6 prefixes are injected/withdrawn into Route module with protocol `ISIS`.
 - If a neighbor advertises interface addresses in LAN IIH:
+  - Neighbor host-route learning is only active for established (`Up`) adjacencies.
   - Neighbor IPv4/IPv6 addresses are learned and injected as one-hop host routes (`/32`, `/128`) with protocol `ISIS`.
   - Learned routes age out with neighbor hold timer or AF/interface state changes.
 - ISIS also sends/receives LSP (L1/L2) periodically:
@@ -163,6 +169,8 @@ Displays detailed information for routes matching the given destination prefix i
 - For ISIS-enabled interfaces (for example `isis enable <tag>` / `isis ipv6 enable <tag>`), LAN IIH is sent periodically (default hello 10s, hold-multiplier 3).
 - ISIS LSP (L1/L2) is sent periodically on active non-passive ISIS interfaces.
 - Received LAN IIH updates in-memory neighbor table per instance/interface/level.
+- Standard LAN adjacency uses `IS Neighbors` TLV echo to drive `Down -> Init -> Up`.
+- IIH validation checks include area matching for `L1`, circuit-type compatibility, non-zero hold time, and remote `Protocols Supported` NLPIDs compatibility.
 - Received LSP updates are written into in-memory LSDB (`show isis [ipv4|ipv6] lsdb <tag>`) and used for SPF route learning.
 - Newer LSPs are flooded to other active non-passive ISIS interfaces (except ingress interface).
 - SPF builds topology from LSDB adjacency TLVs and computes first-hop nexthop for route installation.

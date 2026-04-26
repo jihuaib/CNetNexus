@@ -35,7 +35,7 @@ static gboolean if_init_db_foreach(gpointer key, gpointer val, gpointer user_dat
     if_map_entry_t *e = (if_map_entry_t *)val;
     const char *logical_name = e->logical_name;
 
-    /* loop 接口不写入 DB（由 loop_create 运行时创建，不持久化） */
+    /* loop 接口的 DB 行由 CLI 创建路径或 if_db_restore 维护，init 阶段不主动补 */
     if (strncmp(logical_name, "loop", 4) == 0)
     {
         return FALSE;
@@ -226,4 +226,20 @@ int if_db_update_shutdown(const char *ifname, int shutdown)
     db_record_free(rec);
     db_value_free(&cond.value);
     return ERRCODE_SUCCESS;
+}
+
+int if_db_del_record(const char *ifname)
+{
+    if (!ifname || ifname[0] == '\0')
+    {
+        return ERRCODE_FAIL;
+    }
+
+    db_filter_builder_t pk;
+    db_filter_init(&pk);
+    db_filter_add_text(&pk, "name", ifname);
+
+    int rows = db_rpc_delete(if_local_ipc_ctx(), "if_interface", &pk.filter);
+    db_filter_clear(&pk);
+    return (rows < 0) ? ERRCODE_FAIL : ERRCODE_SUCCESS;
 }

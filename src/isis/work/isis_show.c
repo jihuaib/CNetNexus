@@ -416,6 +416,51 @@ static const char *bool_name(int value)
     return value ? "yes" : "no";
 }
 
+static const char *circuit_type_name(uint8_t circuit_type)
+{
+    switch (circuit_type)
+    {
+        case 1u:
+            return "L1";
+        case 2u:
+            return "L2";
+        case 3u:
+            return "L1L2";
+        default:
+            return "unknown";
+    }
+}
+
+static void format_mac_or_dash(const uint8_t *mac, size_t len, char *buf, size_t sz)
+{
+    if (!buf || sz == 0u)
+    {
+        return;
+    }
+
+    g_strlcpy(buf, "-", sz);
+    if (!mac || len < 6u)
+    {
+        return;
+    }
+
+    int non_zero = 0;
+    for (size_t i = 0u; i < 6u; ++i)
+    {
+        if (mac[i] != 0u)
+        {
+            non_zero = 1;
+            break;
+        }
+    }
+    if (!non_zero)
+    {
+        return;
+    }
+
+    g_snprintf(buf, sz, "%02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+
 static int show_level_enabled(const isis_instance_cfg_t *inst, uint8_t level)
 {
     if (!inst)
@@ -521,10 +566,10 @@ static void show_neighbor_item_cb(gpointer key, gpointer value, gpointer user_da
 
     if (!inst_ctx->ctx->verbose)
     {
-        g_string_append_printf(inst_ctx->ctx->buf, "%-8u %-16s L%-5u %-14s %-6s %-5u %-8llu %-15s %-39s\r\n",
+        g_string_append_printf(inst_ctx->ctx->buf, "%-8u %-16s L%-5u %-14s %-6s %-5s %-8s %-5u %-8llu %-15s %-39s\r\n",
                                inst_ctx->inst->tag, nbr->ifname, (unsigned)nbr->level, sysid,
-                               adj_state_name(nbr->state), (unsigned)nbr->hold_time_sec, (unsigned long long)age_sec,
-                               ipv4, ipv6);
+                               adj_state_name(nbr->state), bool_name(nbr->hello_valid), bool_name(nbr->seen_self),
+                               (unsigned)nbr->hold_time_sec, (unsigned long long)age_sec, ipv4, ipv6);
         inst_ctx->ctx->count++;
         return;
     }
@@ -545,14 +590,18 @@ static void show_neighbor_item_cb(gpointer key, gpointer value, gpointer user_da
     int inst_v4 = (inst_ctx->inst->af_ipv4 != 0u);
     int if_v4 = (cfg_v4 && cfg_v4->enabled) ? 1 : 0;
     int passive_v4 = (cfg_v4 && cfg_v4->passive) ? 1 : 0;
+    int remote_nlpid_v4 = (nbr->remote_ipv4_nlpid != 0u);
     int remote_v4 = (nbr->ipv4_addr.family == AF_INET) ? 1 : 0;
-    int negotiated_v4 = (inst_admin && level_enabled && if_admin && inst_v4 && if_v4 && !passive_v4 && remote_v4);
+    int negotiated_v4 = (nbr->state == ISIS_ADJ_STATE_UP && nbr->hello_valid && inst_admin && level_enabled &&
+                         if_admin && inst_v4 && if_v4 && !passive_v4 && remote_nlpid_v4 && remote_v4);
 
     int inst_v6 = (inst_ctx->inst->af_ipv6 != 0u);
     int if_v6 = (cfg_v6 && cfg_v6->enabled) ? 1 : 0;
     int passive_v6 = (cfg_v6 && cfg_v6->passive) ? 1 : 0;
+    int remote_nlpid_v6 = (nbr->remote_ipv6_nlpid != 0u);
     int remote_v6 = (nbr->ipv6_addr.family == AF_INET6) ? 1 : 0;
-    int negotiated_v6 = (inst_admin && level_enabled && if_admin && inst_v6 && if_v6 && !passive_v6 && remote_v6);
+    int negotiated_v6 = (nbr->state == ISIS_ADJ_STATE_UP && nbr->hello_valid && inst_admin && level_enabled &&
+                         if_admin && inst_v6 && if_v6 && !passive_v6 && remote_nlpid_v6 && remote_v6);
 
     char local_v4[64] = "-";
     char local_v6[64] = "-";
@@ -576,32 +625,47 @@ static void show_neighbor_item_cb(gpointer key, gpointer value, gpointer user_da
         lsp_age_sec = (inst_ctx->ctx->now_msec - nbr->last_lsp_rx_msec) / 1000u;
     }
 
+    char local_snpa[32] = "-";
+    char remote_snpa[32] = "-";
+    format_mac_or_dash(nbr->local_snpa, sizeof(nbr->local_snpa), local_snpa, sizeof(local_snpa));
+    format_mac_or_dash(nbr->remote_snpa, sizeof(nbr->remote_snpa), remote_snpa, sizeof(remote_snpa));
+
     inst_ctx->ctx->count++;
-    g_string_append_printf(inst_ctx->ctx->buf,
-                           "Neighbor %u\r\n"
-                           "  Tag            : %u\r\n"
-                           "  Interface      : %s (ifindex=%u, resolved=%s)\r\n"
-                           "  Level          : L%u (enabled=%s)\r\n"
-                           "  System-ID      : %s\r\n"
-                           "  State          : %s\r\n"
-                           "  Hold(sec)      : %u\r\n"
-                           "  LastSeen(sec)  : %llu\r\n"
-                           "  Priority       : %u\r\n"
-                           "  LastLSP        : seq=0x%08x, age=%llus\r\n"
-                           "  Instance Admin : %s\r\n"
-                           "  Interface Up   : %s\r\n"
-                           "  IPv4           : inst-af=%s, if-enable=%s, passive=%s, remote-adv=%s, negotiated=%s\r\n"
-                           "                   local=%s, remote=%s\r\n"
-                           "  IPv6           : inst-af=%s, if-enable=%s, passive=%s, remote-adv=%s, negotiated=%s\r\n"
-                           "                   local=%s, remote=%s\r\n\r\n",
-                           inst_ctx->ctx->count, inst_ctx->inst->tag, ifname, ifindex, bool_name(if_entry != NULL),
-                           (unsigned)nbr->level, bool_name(level_enabled), sysid, adj_state_name(nbr->state),
-                           (unsigned)nbr->hold_time_sec, (unsigned long long)age_sec, (unsigned)nbr->priority,
-                           (unsigned)nbr->last_lsp_seq, (unsigned long long)lsp_age_sec, bool_name(inst_admin),
-                           bool_name(if_admin), bool_name(inst_v4), bool_name(if_v4), bool_name(passive_v4),
-                           bool_name(remote_v4), bool_name(negotiated_v4), local_v4, ipv4, bool_name(inst_v6),
-                           bool_name(if_v6), bool_name(passive_v6), bool_name(remote_v6), bool_name(negotiated_v6),
-                           local_v6, ipv6);
+    g_string_append_printf(
+        inst_ctx->ctx->buf,
+        "Neighbor %u\r\n"
+        "  Tag            : %u\r\n"
+        "  Interface      : %s (ifindex=%u, resolved=%s)\r\n"
+        "  Level          : L%u (enabled=%s)\r\n"
+        "  System-ID      : %s\r\n"
+        "  State          : %s\r\n"
+        "  Hold(sec)      : %u\r\n"
+        "  LastSeen(sec)  : %llu\r\n"
+        "  Priority       : %u\r\n"
+        "  Hello Valid    : %s\r\n"
+        "  Seen Self      : %s\r\n"
+        "  SNPA           : local=%s, remote=%s\r\n"
+        "  Circuit-Type   : remote=%s, level-ok=%s\r\n"
+        "  Area Match     : %s\r\n"
+        "  Hold Valid     : %s\r\n"
+        "  NLPIDs         : remote-v4=%s, remote-v6=%s, compatible=%s\r\n"
+        "  LastLSP        : seq=0x%08x, age=%llus\r\n"
+        "  Instance Admin : %s\r\n"
+        "  Interface Up   : %s\r\n"
+        "  IPv4           : inst-af=%s, if-enable=%s, passive=%s, remote-nlpid=%s, remote-adv=%s, negotiated=%s\r\n"
+        "                   local=%s, remote=%s\r\n"
+        "  IPv6           : inst-af=%s, if-enable=%s, passive=%s, remote-nlpid=%s, remote-adv=%s, negotiated=%s\r\n"
+        "                   local=%s, remote=%s\r\n\r\n",
+        inst_ctx->ctx->count, inst_ctx->inst->tag, ifname, ifindex, bool_name(if_entry != NULL), (unsigned)nbr->level,
+        bool_name(level_enabled), sysid, adj_state_name(nbr->state), (unsigned)nbr->hold_time_sec,
+        (unsigned long long)age_sec, (unsigned)nbr->priority, bool_name(nbr->hello_valid), bool_name(nbr->seen_self),
+        local_snpa, remote_snpa, circuit_type_name(nbr->remote_circuit_type), bool_name(nbr->circuit_ok),
+        bool_name(nbr->area_match), bool_name(nbr->hold_ok), bool_name(remote_nlpid_v4), bool_name(remote_nlpid_v6),
+        bool_name(nbr->nlpids_ok), (unsigned)nbr->last_lsp_seq, (unsigned long long)lsp_age_sec, bool_name(inst_admin),
+        bool_name(if_admin), bool_name(inst_v4), bool_name(if_v4), bool_name(passive_v4), bool_name(remote_nlpid_v4),
+        bool_name(remote_v4), bool_name(negotiated_v4), local_v4, ipv4, bool_name(inst_v6), bool_name(if_v6),
+        bool_name(passive_v6), bool_name(remote_nlpid_v6), bool_name(remote_v6), bool_name(negotiated_v6), local_v6,
+        ipv6);
 }
 
 static void show_neighbor_instance_cb(gpointer key, gpointer value, gpointer user_data)
@@ -650,11 +714,12 @@ static int handle_show_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *parser
     }
     else
     {
-        g_string_append(buf,
-                        "\r\nISIS Neighbors\r\n"
-                        "Tag      Interface        Level  System-ID      State  Hold  LastSeen IPv4            IPv6\r\n"
-                        "-------- ---------------- ------ -------------- ------ ----- -------- --------------- "
-                        "---------------------------------------\r\n");
+        g_string_append(
+            buf, "\r\nISIS Neighbors\r\n"
+                 "Tag      Interface        Level  System-ID      State  Valid SeenSelf Hold  LastSeen IPv4            "
+                 "IPv6\r\n"
+                 "-------- ---------------- ------ -------------- ------ ----- -------- ----- -------- --------------- "
+                 "---------------------------------------\r\n");
     }
 
     show_neighbor_ctx_t ctx = {

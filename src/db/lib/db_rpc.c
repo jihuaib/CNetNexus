@@ -865,28 +865,130 @@ int db_rpc_update_record(dev_ipc_context_t *ctx, const char *table, const db_rec
     return send_exec_sql(ctx, sql);
 }
 
-int db_rpc_upsert(dev_ipc_context_t *ctx, const char *table, const db_record_t *rec, const db_filter_t *filter)
+// ============================================================================
+// 通用便捷 API：(列名,值) 数组直传，免去 db_record_t 模板代码
+// ============================================================================
+
+void db_filter_init(db_filter_builder_t *b)
 {
-    if (!ctx || !table || !rec)
+    if (!b)
+    {
+        return;
+    }
+    memset(b, 0, sizeof(*b));
+    b->filter.conditions = b->conds;
+    b->filter.num_conditions = 0;
+}
+
+static void db_filter_add(db_filter_builder_t *b, const char *name, db_value_t v)
+{
+    if (!b || !name)
+    {
+        db_value_free(&v);
+        return;
+    }
+    if (b->n >= G_N_ELEMENTS(b->conds))
+    {
+        LOG_ERROR("db_filter_builder overflow: cap=%zu, dropping field=%s", G_N_ELEMENTS(b->conds), name);
+        db_value_free(&v);
+        return;
+    }
+    b->conds[b->n].field_name = name;
+    b->conds[b->n].op = DB_CMP_EQ;
+    b->conds[b->n].value = v;
+    b->n++;
+    b->filter.num_conditions = b->n;
+}
+
+void db_filter_add_int(db_filter_builder_t *b, const char *name, int64_t v)
+{
+    db_filter_add(b, name, db_value_int(v));
+}
+
+void db_filter_add_text(db_filter_builder_t *b, const char *name, const char *v)
+{
+    db_filter_add(b, name, db_value_text(v));
+}
+
+void db_filter_clear(db_filter_builder_t *b)
+{
+    if (!b)
+    {
+        return;
+    }
+    for (uint32_t i = 0; i < b->n; i++)
+    {
+        db_value_free(&b->conds[i].value);
+    }
+    b->n = 0;
+    b->filter.num_conditions = 0;
+}
+
+/** 把 (cols,n) 折叠成临时 db_record_t */
+static db_record_t *cols_to_record(const db_col_t *cols, size_t n_cols)
+{
+    db_record_t *rec = db_record_new();
+    if (!rec)
+    {
+        return NULL;
+    }
+    for (size_t i = 0; i < n_cols; i++)
+    {
+        const db_col_t *c = &cols[i];
+        if (!c->name)
+        {
+            continue;
+        }
+        switch (c->value.type)
+        {
+            case DB_TYPE_INTEGER:
+                db_record_set_int(rec, c->name, c->value.data.i64);
+                break;
+            case DB_TYPE_TEXT:
+                db_record_set_text(rec, c->name, c->value.data.text);
+                break;
+            case DB_TYPE_REAL:
+                db_record_set_real(rec, c->name, c->value.data.real);
+                break;
+            case DB_TYPE_NULL:
+            case DB_TYPE_BLOB:
+            default:
+                LOG_WARN("db_rpc_*_cols: unsupported value type=%d for field=%s, skipped", (int)c->value.type, c->name);
+                break;
+        }
+    }
+    return rec;
+}
+
+int db_rpc_update_cols(dev_ipc_context_t *ctx, const char *table, const db_filter_t *where, const db_col_t *cols,
+                       size_t n_cols)
+{
+    if (!ctx || !table || !where || !cols || n_cols == 0)
+    {
+        return -1;
+    }
+    db_record_t *rec = cols_to_record(cols, n_cols);
+    if (!rec)
+    {
+        return -1;
+    }
+    int rows = db_rpc_update_record(ctx, table, rec, where);
+    db_record_free(rec);
+    return rows;
+}
+
+int db_rpc_insert_cols(dev_ipc_context_t *ctx, const char *table, const db_col_t *cols, size_t n_cols)
+{
+    if (!ctx || !table || !cols || n_cols == 0)
     {
         return ERRCODE_FAIL;
     }
-
-    gboolean exists = FALSE;
-    int ret = db_rpc_exists(ctx, table, filter, &exists);
-    if (ret != ERRCODE_SUCCESS)
+    db_record_t *rec = cols_to_record(cols, n_cols);
+    if (!rec)
     {
-        LOG_ERROR("db_rpc_upsert: existence check failed, table=%s", table);
         return ERRCODE_FAIL;
     }
-
-    if (exists)
-    {
-        int rows = db_rpc_update_record(ctx, table, rec, filter);
-        return (rows >= 0) ? ERRCODE_SUCCESS : ERRCODE_FAIL;
-    }
-    else
-    {
-        return db_rpc_insert_record(ctx, table, rec);
-    }
+    int rc = db_rpc_insert_record(ctx, table, rec);
+    db_record_free(rec);
+    return rc;
 }

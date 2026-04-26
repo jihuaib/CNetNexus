@@ -308,10 +308,15 @@ static int handle_if_loop_entry(dev_ipc_message_t *msg, cli_tlv_parser_t *parser
         return ERRCODE_FAIL;
     }
 
+    char name[32];
+    snprintf(name, sizeof(name), "loop%u", loop_id);
+
     if_apply_cmd_t apply;
     memset(&apply, 0, sizeof(apply));
     if (is_no)
     {
+        /* 删除：先 worker 撤销内存+OS 接口，再 CLI 线程清 DB（worker 失败时不删 DB，
+         * 重启可由 if_db_restore 重建内存态） */
         apply.op = IF_APPLY_OP_LOOP_DELETE;
         apply.u.loop_delete.loop_id = loop_id;
         if (if_worker_dispatch_apply(&apply) != ERRCODE_SUCCESS || apply.rc != ERRCODE_SUCCESS)
@@ -321,12 +326,24 @@ static int handle_if_loop_entry(dev_ipc_message_t *msg, cli_tlv_parser_t *parser
             send_resp(msg, buf);
             return ERRCODE_FAIL;
         }
+        (void)if_db_del_record(name);
+
         char buf[64];
         snprintf(buf, sizeof(buf), "loop%u 已删除\r\n", loop_id);
         send_resp(msg, buf);
     }
     else
     {
+        /* 创建：先 CLI 线程写 DB，再派发 worker 创建内存+OS。worker 若失败留下孤儿 DB 行，
+         * 下次 if_db_restore 会幂等重建。 */
+        if (if_db_ensure_record(name) != ERRCODE_SUCCESS)
+        {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "Error: 写入 loop%u DB 失败\r\n", loop_id);
+            send_resp(msg, buf);
+            return ERRCODE_FAIL;
+        }
+
         apply.op = IF_APPLY_OP_LOOP_CREATE;
         apply.u.loop_create.loop_id = loop_id;
         if (if_worker_dispatch_apply(&apply) != ERRCODE_SUCCESS || apply.rc != ERRCODE_SUCCESS)

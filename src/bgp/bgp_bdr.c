@@ -365,6 +365,7 @@ static void bdr_append_qp_routes(GString *out, int64_t vrf_id, int64_t afi, int6
 static void bdr_append_af_block(GString *out, int64_t vrf_id, const char *afi_str, int64_t afi, int64_t safi,
                                 int64_t import_protos, gboolean route_select_enabled)
 {
+    g_string_append(out, " !\r\n");
     g_string_append_printf(out, " af %s\r\n", afi_str);
 
     /* AF 下各子表 BDR，按需扩展 */
@@ -384,8 +385,6 @@ static void bdr_append_af_block(GString *out, int64_t vrf_id, const char *afi_st
             g_string_append(out, "  route-select enable\r\n");
         }
     }
-
-    g_string_append(out, " !\r\n");
 }
 
 /**

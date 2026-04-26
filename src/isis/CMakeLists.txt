@@ -2,6 +2,9 @@ set(ISIS_SOURCES
     isis_main.c
     isis_cli.c
     isis_db.c
+    db/isis_db_common.c
+    db/isis_db_instance.c
+    db/isis_db_interface.c
     isis_bdr.c
     work/isis_worker.c
     work/isis_route.c
@@ -14,7 +17,7 @@ set(ISIS_SOURCES
 
 add_executable(netnexus-isis isis_proc.c ${ISIS_SOURCES})
 
-target_include_directories(netnexus-isis PRIVATE . work)
+target_include_directories(netnexus-isis PRIVATE . db work)
 
 target_link_libraries(netnexus-isis PRIVATE
     dev_api

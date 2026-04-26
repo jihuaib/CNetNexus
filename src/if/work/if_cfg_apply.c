@@ -11,7 +11,6 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "db.h"
 #include "errcode.h"
 #include "if.h"
 #include "if_event.h"
@@ -431,18 +430,8 @@ int if_cfg_loop_create(uint32_t loop_id)
         return ERRCODE_FAIL;
     }
 
-    /* 写入 DB */
-    db_record_t *rec = db_record_new();
-    db_record_set_text(rec, "name", name);
-    db_record_set_text(rec, "ip_address", "");
-    db_record_set_int(rec, "prefix_len", 0);
-    db_record_set_text(rec, "ipv6_address", "");
-    db_record_set_int(rec, "ipv6_prefix_len", 0);
-    db_record_set_int(rec, "shutdown", 0);
-    db_rpc_insert_record(if_local_ipc_ctx(), "if_interface", rec);
-    db_record_free(rec);
-
-    LOG_INFO("IF: loop 接口 %s 已创建（内存 + DB）", name);
+    /* DB 写入由 CLI 线程负责（if_cli.c handle_if_loop_entry / if_db_restore），worker 只动内存+OS */
+    LOG_INFO("IF: loop 接口 %s 已创建（内存 + OS）", name);
     return ERRCODE_SUCCESS;
 }
 
@@ -482,13 +471,8 @@ int if_cfg_loop_delete(uint32_t loop_id)
     /* 从有序树中移除（会触发 g_free 释放 key 和 value） */
     g_tree_remove(g_if_work_local->interface_map.all_entries, name);
 
-    /* 从 DB 中删除 */
-    db_condition_t cond = {.field_name = "name", .op = DB_CMP_EQ, .value = db_value_text(name)};
-    db_filter_t filter = {.conditions = &cond, .num_conditions = 1};
-    db_rpc_delete(if_local_ipc_ctx(), "if_interface", &filter);
-    db_value_free(&cond.value);
-
-    LOG_INFO("IF: loop 接口 %s 已删除", name);
+    /* DB 删除由 CLI 线程负责（if_cli.c handle_if_loop_entry），worker 只动内存+OS */
+    LOG_INFO("IF: loop 接口 %s 已删除（内存 + OS）", name);
     return ERRCODE_SUCCESS;
 }
 

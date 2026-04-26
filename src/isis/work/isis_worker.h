@@ -102,6 +102,18 @@ typedef struct isis_neighbor
     uint8_t state;
     uint8_t priority;
     uint16_t hold_time_sec;
+    uint8_t local_snpa[6];
+    uint8_t remote_snpa[6];
+    uint8_t remote_circuit_type;
+    uint8_t remote_ipv4_nlpid;
+    uint8_t remote_ipv6_nlpid;
+    uint8_t seen_self;
+    uint8_t area_match;
+    uint8_t circuit_ok;
+    uint8_t nlpids_ok;
+    uint8_t hold_ok;
+    uint8_t hello_valid;
+    uint8_t _pad0[3];
     net_addr_t ipv4_addr;
     net_addr_t ipv6_addr;
     uint32_t last_lsp_seq;

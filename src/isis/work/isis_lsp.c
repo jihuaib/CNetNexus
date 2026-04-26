@@ -29,6 +29,9 @@
 #define ISIS_PDU_TYPE_LSP_L1 18u
 #define ISIS_PDU_TYPE_LSP_L2 20u
 #define ISIS_LSP_HDR_LEN 27u
+#define ISIS_LSP_CKSUM_COVER_OFFSET 12u
+#define ISIS_LSP_CKSUM_FIELD_OFFSET 24u
+#define ISIS_LSP_CKSUM_FIELD_REL_OFFSET (ISIS_LSP_CKSUM_FIELD_OFFSET - ISIS_LSP_CKSUM_COVER_OFFSET)
 
 #define ISIS_TLV_EXT_IS_REACH 22u
 #define ISIS_TLV_EXT_IP_REACH 135u
@@ -53,6 +56,7 @@ typedef struct isis_lsp_rx_ctx
     size_t tlv_len;
     uint8_t level;
     uint8_t system_id[6];
+    uint8_t src_mac[ETH_ALEN];
     uint16_t lifetime_sec;
     uint16_t checksum;
     uint32_t seq;
@@ -83,6 +87,31 @@ typedef struct isis_lsp_send_if_ctx
 static uint64_t isis_lsp_now_msec(void)
 {
     return (uint64_t)(g_get_monotonic_time() / 1000);
+}
+
+static int isis_lsp_mac_is_zero(const uint8_t mac[ETH_ALEN])
+{
+    if (!mac)
+    {
+        return 1;
+    }
+    for (size_t i = 0u; i < ETH_ALEN; ++i)
+    {
+        if (mac[i] != 0u)
+        {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int isis_lsp_mac_equal(const uint8_t a[ETH_ALEN], const uint8_t b[ETH_ALEN])
+{
+    if (!a || !b)
+    {
+        return 0;
+    }
+    return memcmp(a, b, ETH_ALEN) == 0 ? 1 : 0;
 }
 
 static int isis_level_enabled(const isis_instance_cfg_t *inst, uint8_t level)
@@ -313,6 +342,76 @@ static void isis_lsp_count_reach_prefixes(const uint8_t *tlvs, size_t tlv_len, u
     }
 }
 
+static int isis_lsp_checksum_fill(uint8_t *buf, size_t len, size_t checksum_off)
+{
+    if (!buf || len == 0u || checksum_off + 1u >= len)
+    {
+        return -1;
+    }
+
+    buf[checksum_off] = 0u;
+    buf[checksum_off + 1u] = 0u;
+
+    int c0 = 0;
+    int c1 = 0;
+    for (size_t i = 0u; i < len; ++i)
+    {
+        c0 = (c0 + buf[i]) % 255;
+        c1 = (c1 + c0) % 255;
+    }
+
+    int x = (((int)(len - checksum_off - 1u) * c0) - c1) % 255;
+    if (x <= 0)
+    {
+        x += 255;
+    }
+
+    int y = (c1 - ((int)(len - checksum_off) * c0)) % 255;
+    if (y <= 0)
+    {
+        y += 255;
+    }
+
+    buf[checksum_off] = (uint8_t)x;
+    buf[checksum_off + 1u] = (uint8_t)y;
+    return 0;
+}
+
+static int isis_lsp_checksum_valid(const uint8_t *pdu, size_t pdu_len, uint16_t lifetime_sec)
+{
+    if (!pdu || pdu_len <= ISIS_LSP_CKSUM_FIELD_OFFSET)
+    {
+        return 0;
+    }
+
+    if (lifetime_sec == 0u)
+    {
+        return 1;
+    }
+
+    const uint8_t *covered = pdu + ISIS_LSP_CKSUM_COVER_OFFSET;
+    size_t covered_len = pdu_len - ISIS_LSP_CKSUM_COVER_OFFSET;
+    if (covered_len <= ISIS_LSP_CKSUM_FIELD_REL_OFFSET + 1u)
+    {
+        return 0;
+    }
+
+    if (covered[ISIS_LSP_CKSUM_FIELD_REL_OFFSET] == 0u && covered[ISIS_LSP_CKSUM_FIELD_REL_OFFSET + 1u] == 0u)
+    {
+        return 0;
+    }
+
+    int c0 = 0;
+    int c1 = 0;
+    for (size_t i = 0u; i < covered_len; ++i)
+    {
+        c0 = (c0 + covered[i]) % 255;
+        c1 = (c1 + c0) % 255;
+    }
+
+    return (c0 == 0 && c1 == 0) ? 1 : 0;
+}
+
 static int isis_get_src_mac(int fd, const if_api_cache_entry_t *if_entry, uint8_t out_mac[ETH_ALEN])
 {
     if (fd < 0 || !if_entry || !out_mac)
@@ -526,7 +625,7 @@ static void isis_lsp_collect_is_reach_cb(gpointer key, gpointer value, gpointer 
     {
         return;
     }
-    if (nbr->level != ctx->level || nbr->state == ISIS_ADJ_STATE_DOWN)
+    if (nbr->level != ctx->level || nbr->state != ISIS_ADJ_STATE_UP)
     {
         return;
     }
@@ -671,6 +770,11 @@ static int isis_lsp_build_pdu(const isis_instance_cfg_t *inst, uint8_t level, ui
 
     pdu[pdu_len_pos] = (uint8_t)((p >> 8) & 0xFFu);
     pdu[pdu_len_pos + 1u] = (uint8_t)(p & 0xFFu);
+    if (isis_lsp_checksum_fill(&pdu[ISIS_LSP_CKSUM_COVER_OFFSET], p - ISIS_LSP_CKSUM_COVER_OFFSET,
+                               ISIS_LSP_CKSUM_FIELD_REL_OFFSET) != 0)
+    {
+        return -1;
+    }
     *pdu_len_out = p;
     return 0;
 }
@@ -815,6 +919,34 @@ static isis_neighbor_t *isis_lsp_find_neighbor(isis_instance_cfg_t *inst, const 
     return NULL;
 }
 
+static isis_neighbor_t *isis_lsp_find_sender_neighbor(isis_instance_cfg_t *inst, const char *ifname, uint8_t level,
+                                                      const uint8_t src_mac[ETH_ALEN])
+{
+    if (!inst || !inst->neighbors || !ifname || ifname[0] == '\0' || isis_lsp_mac_is_zero(src_mac))
+    {
+        return NULL;
+    }
+
+    GHashTableIter iter;
+    gpointer key = NULL;
+    gpointer value = NULL;
+    g_hash_table_iter_init(&iter, inst->neighbors);
+    while (g_hash_table_iter_next(&iter, &key, &value))
+    {
+        (void)key;
+        isis_neighbor_t *nbr = (isis_neighbor_t *)value;
+        if (!nbr)
+        {
+            continue;
+        }
+        if (nbr->level == level && strcmp(nbr->ifname, ifname) == 0 && isis_lsp_mac_equal(nbr->remote_snpa, src_mac))
+        {
+            return nbr;
+        }
+    }
+    return NULL;
+}
+
 typedef struct isis_lsp_flood_if_ctx
 {
     const isis_instance_cfg_t *inst;
@@ -904,6 +1036,12 @@ static void isis_lsp_apply_instance_cb(gpointer key, gpointer value, gpointer us
         return;
     }
 
+    isis_neighbor_t *sender_nbr = isis_lsp_find_sender_neighbor(inst, ctx->ifname, ctx->level, ctx->src_mac);
+    if (!sender_nbr || sender_nbr->state != ISIS_ADJ_STATE_UP)
+    {
+        return;
+    }
+
     isis_neighbor_t *origin_nbr = isis_lsp_find_neighbor(inst, ctx->ifname, ctx->level, ctx->system_id);
 
     isis_lsdb_entry_t *lsdb = NULL;
@@ -916,7 +1054,7 @@ static void isis_lsp_apply_instance_cb(gpointer key, gpointer value, gpointer us
 
     uint32_t last_seq = lsdb ? lsdb->seq : (origin_nbr ? origin_nbr->last_lsp_seq : 0u);
     uint64_t last_rx_msec = lsdb ? lsdb->last_rx_msec : (origin_nbr ? origin_nbr->last_lsp_rx_msec : 0u);
-    if (last_seq != 0u && ctx->seq != 0u && ctx->seq <= last_seq)
+    if (last_seq != 0u && ctx->seq != 0u && ctx->seq < last_seq)
     {
         if (!(last_rx_msec != 0u && ctx->now_msec >= last_rx_msec &&
               (ctx->now_msec - last_rx_msec) > (uint64_t)ISIS_LSP_SEQ_RESTART_GRACE_MSEC))
@@ -924,11 +1062,26 @@ static void isis_lsp_apply_instance_cb(gpointer key, gpointer value, gpointer us
             return;
         }
     }
+    else if (last_seq != 0u && ctx->seq != 0u && ctx->seq == last_seq && ctx->lifetime_sec != 0u)
+    {
+        return;
+    }
 
     if (origin_nbr)
     {
         origin_nbr->last_lsp_seq = ctx->seq;
         origin_nbr->last_lsp_rx_msec = ctx->now_msec;
+    }
+
+    if (ctx->lifetime_sec == 0u)
+    {
+        if (inst->lsdb_entries)
+        {
+            (void)g_hash_table_remove(inst->lsdb_entries, lsdb_key);
+        }
+        isis_spf_withdraw_origin_routes(inst, ctx->level, ctx->system_id);
+        isis_lsp_flood_instance(inst, ctx);
+        return;
     }
 
     if (inst->lsdb_entries)
@@ -978,7 +1131,8 @@ static void isis_lsp_apply_instance_cb(gpointer key, gpointer value, gpointer us
     isis_lsp_flood_instance(inst, ctx);
 }
 
-void isis_lsp_handle_pdu(int raw_fd, const uint8_t *pdu, size_t pdu_len, const struct sockaddr_ll *sll)
+void isis_lsp_handle_pdu(int raw_fd, const uint8_t *pdu, size_t pdu_len, const struct sockaddr_ll *sll,
+                         const uint8_t src_mac[ETH_ALEN])
 {
     if (!pdu || !sll || pdu_len < ISIS_LSP_HDR_LEN)
     {
@@ -1047,7 +1201,19 @@ void isis_lsp_handle_pdu(int raw_fd, const uint8_t *pdu, size_t pdu_len, const s
     ctx.tlv_len = pdu_len - ISIS_LSP_HDR_LEN;
     ctx.level = level;
     memcpy(ctx.system_id, &pdu[12], sizeof(ctx.system_id));
+    if (src_mac && !isis_lsp_mac_is_zero(src_mac))
+    {
+        memcpy(ctx.src_mac, src_mac, sizeof(ctx.src_mac));
+    }
+    else if (sll->sll_halen >= ETH_ALEN)
+    {
+        memcpy(ctx.src_mac, sll->sll_addr, sizeof(ctx.src_mac));
+    }
     ctx.lifetime_sec = (uint16_t)(((uint16_t)pdu[10] << 8) | pdu[11]);
+    if (!isis_lsp_checksum_valid(pdu, pdu_len, ctx.lifetime_sec))
+    {
+        return;
+    }
     ctx.checksum = (uint16_t)(((uint16_t)pdu[24] << 8) | pdu[25]);
     ctx.seq = ((uint32_t)pdu[20] << 24) | ((uint32_t)pdu[21] << 16) | ((uint32_t)pdu[22] << 8) | (uint32_t)pdu[23];
     ctx.now_msec = isis_lsp_now_msec();

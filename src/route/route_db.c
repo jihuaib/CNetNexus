@@ -24,32 +24,42 @@ void route_db_upsert_static(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t af
 {
     const char *safe_ifname = ifname ? ifname : "";
 
-    db_record_t *rec = db_record_new();
-    db_record_set_int(rec, "vrf_id", vrf_id);
-    db_record_set_int(rec, "afi", afi);
-    db_record_set_text(rec, "prefix", prefix_str);
-    db_record_set_int(rec, "prefix_len", prefix_len);
-    db_record_set_text(rec, "nexthop", nexthop_str);
-    db_record_set_int(rec, "metric", metric);
-    db_record_set_int(rec, "preference", preference);
-    db_record_set_text(rec, "ifname", safe_ifname);
+    /* PK：6 列联合（vrf+afi+prefix+len+nh+ifname）；可变列：metric/preference */
+    db_filter_builder_t pk;
+    db_filter_init(&pk);
+    db_filter_add_int(&pk, "vrf_id", (int64_t)vrf_id);
+    db_filter_add_int(&pk, "afi", (int64_t)afi);
+    db_filter_add_text(&pk, "prefix", prefix_str);
+    db_filter_add_int(&pk, "prefix_len", (int64_t)prefix_len);
+    db_filter_add_text(&pk, "nexthop", nexthop_str);
+    db_filter_add_text(&pk, "ifname", safe_ifname);
 
-    db_condition_t conds[6];
-    uint32_t nc = 0;
-    conds[nc++] = (db_condition_t){"vrf_id", DB_CMP_EQ, db_value_int(vrf_id)};
-    conds[nc++] = (db_condition_t){"afi", DB_CMP_EQ, db_value_int(afi)};
-    conds[nc++] = (db_condition_t){"prefix", DB_CMP_EQ, db_value_text(prefix_str)};
-    conds[nc++] = (db_condition_t){"prefix_len", DB_CMP_EQ, db_value_int(prefix_len)};
-    conds[nc++] = (db_condition_t){"nexthop", DB_CMP_EQ, db_value_text(nexthop_str)};
-    conds[nc++] = (db_condition_t){"ifname", DB_CMP_EQ, db_value_text(safe_ifname)};
-    db_filter_t filter = {conds, nc};
-
-    db_rpc_upsert(ctx, "route_static", rec, &filter);
-    db_record_free(rec);
-    for (uint32_t i = 0; i < nc; i++)
+    gboolean exists = FALSE;
+    if (db_rpc_exists(ctx, "route_static", &pk.filter, &exists) != ERRCODE_SUCCESS)
     {
-        db_value_free(&conds[i].value);
+        db_filter_clear(&pk);
+        return;
     }
+
+    if (exists)
+    {
+        db_col_t cols[] = {
+            DB_COL_INT("metric", metric),
+            DB_COL_INT("preference", preference),
+        };
+        (void)db_rpc_update_cols(ctx, "route_static", &pk.filter, cols, G_N_ELEMENTS(cols));
+        db_filter_clear(&pk);
+        return;
+    }
+    db_filter_clear(&pk);
+
+    db_col_t cols[] = {
+        DB_COL_INT("vrf_id", vrf_id),         DB_COL_INT("afi", afi),
+        DB_COL_TEXT("prefix", prefix_str),    DB_COL_INT("prefix_len", prefix_len),
+        DB_COL_TEXT("nexthop", nexthop_str),  DB_COL_INT("metric", metric),
+        DB_COL_INT("preference", preference), DB_COL_TEXT("ifname", safe_ifname),
+    };
+    (void)db_rpc_insert_cols(ctx, "route_static", cols, G_N_ELEMENTS(cols));
 }
 
 void route_db_delete_static(dev_ipc_context_t *ctx, uint32_t vrf_id, uint16_t afi, const char *prefix_str,
@@ -95,20 +105,39 @@ void route_db_delete_static_prefix(dev_ipc_context_t *ctx, uint32_t vrf_id, uint
 void route_db_upsert_batch(dev_ipc_context_t *ctx, const char *name, uint16_t afi, const char *start_addr,
                            uint8_t prefix_len, int64_t count, const char *nexthop)
 {
-    db_record_t *rec = db_record_new();
-    db_record_set_text(rec, "name", name);
-    db_record_set_int(rec, "afi", afi);
-    db_record_set_text(rec, "start_addr", start_addr);
-    db_record_set_int(rec, "prefix_len", prefix_len);
-    db_record_set_int(rec, "count", count);
-    db_record_set_text(rec, "nexthop", nexthop);
+    /* PK：name；可变列：afi/start_addr/prefix_len/count/nexthop */
+    db_filter_builder_t pk;
+    db_filter_init(&pk);
+    db_filter_add_text(&pk, "name", name);
 
-    db_condition_t cond = {"name", DB_CMP_EQ, db_value_text(name)};
-    db_filter_t filter = {&cond, 1};
+    gboolean exists = FALSE;
+    if (db_rpc_exists(ctx, "route_batch", &pk.filter, &exists) != ERRCODE_SUCCESS)
+    {
+        db_filter_clear(&pk);
+        return;
+    }
 
-    db_rpc_upsert(ctx, "route_batch", rec, &filter);
-    db_record_free(rec);
-    db_value_free(&cond.value);
+    if (exists)
+    {
+        db_col_t cols[] = {
+            DB_COL_INT("afi", afi),     DB_COL_TEXT("start_addr", start_addr), DB_COL_INT("prefix_len", prefix_len),
+            DB_COL_INT("count", count), DB_COL_TEXT("nexthop", nexthop),
+        };
+        (void)db_rpc_update_cols(ctx, "route_batch", &pk.filter, cols, G_N_ELEMENTS(cols));
+        db_filter_clear(&pk);
+        return;
+    }
+    db_filter_clear(&pk);
+
+    db_col_t cols[] = {
+        DB_COL_TEXT("name", name),
+        DB_COL_INT("afi", afi),
+        DB_COL_TEXT("start_addr", start_addr),
+        DB_COL_INT("prefix_len", prefix_len),
+        DB_COL_INT("count", count),
+        DB_COL_TEXT("nexthop", nexthop),
+    };
+    (void)db_rpc_insert_cols(ctx, "route_batch", cols, G_N_ELEMENTS(cols));
 }
 
 void route_db_delete_batch(dev_ipc_context_t *ctx, const char *name)

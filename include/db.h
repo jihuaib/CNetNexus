@@ -315,14 +315,104 @@ int db_rpc_insert_record(dev_ipc_context_t *ctx, const char *table, const db_rec
  */
 int db_rpc_update_record(dev_ipc_context_t *ctx, const char *table, const db_record_t *rec, const db_filter_t *filter);
 
+// ============================================================================
+// 通用便捷 API：以 (列名,值) 数组直接执行写操作，免去 db_record_t 模板代码
+// ============================================================================
+
 /**
- * @brief 通过 RPC 执行 upsert：存在则 update，不存在则 insert
- * @param ctx    调用方模块的 IPC 上下文
- * @param table  表名
- * @param rec    记录构建器
- * @param filter 用于检测是否存在及 update 的过滤条件
- * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL
+ * @brief 列名 + 值的轻量封装，调用方在栈上构造数组传入
+ *
+ * 用法示例：
+ *   db_col_t cols[] = {
+ *       { "open_caps",        db_value_int((int64_t)caps) },
+ *       { "source_interface", db_value_text(if_name) },
+ *   };
+ *   db_rpc_update_cols(ctx, "bgp_session", &pk.filter, cols, G_N_ELEMENTS(cols));
+ *
+ * 内部会按 type 分发到 db_record_set_int/text/real，文本字段值由内部复制；
+ * 调用方传入的 db_value_t 不会被本接口接管，调用方自行决定是否需要 db_value_free
+ * （直接通过 db_value_int/real 构造的 INTEGER/REAL 值无堆内存，无需释放）。
  */
-int db_rpc_upsert(dev_ipc_context_t *ctx, const char *table, const db_record_t *rec, const db_filter_t *filter);
+typedef struct db_col
+{
+    const char *name; /**< 列名（指向调用方持有的字符串字面量或长寿命对象） */
+    db_value_t value; /**< 列值（TEXT 用借用指针：内部 db_record_set_text 会 g_strdup 复制，
+                       *  调用方应通过 DB_COL_TEXT 宏构造以避免双重分配） */
+} db_col_t;
+
+/** 栈上构造整数列（无需释放） */
+#define DB_COL_INT(field_name, v)                                                                                      \
+    {                                                                                                                  \
+        (field_name),                                                                                                  \
+        {                                                                                                              \
+            .type = DB_TYPE_INTEGER, .data.i64 = (int64_t)(v)                                                          \
+        }                                                                                                              \
+    }
+
+/** 栈上构造文本列（借用字符串指针，不持有所有权；helper 内部会复制） */
+#define DB_COL_TEXT(field_name, s)                                                                                     \
+    {                                                                                                                  \
+        (field_name),                                                                                                  \
+        {                                                                                                              \
+            .type = DB_TYPE_TEXT, .data.text = (char *)(s)                                                             \
+        }                                                                                                              \
+    }
+
+/** 栈上构造浮点列（无需释放） */
+#define DB_COL_REAL(field_name, v)                                                                                     \
+    {                                                                                                                  \
+        (field_name),                                                                                                  \
+        {                                                                                                              \
+            .type = DB_TYPE_REAL, .data.real = (double)(v)                                                             \
+        }                                                                                                              \
+    }
+
+/** PK / WHERE 条件构造器，封装 db_condition_t 数组 + 内部 db_value_t 释放 */
+typedef struct db_filter_builder
+{
+    db_condition_t conds[8]; /**< 实际表 PK 最多 3-4 列，8 已足够 */
+    uint32_t n;              /**< 已添加条件数 */
+    db_filter_t filter;      /**< 与 conds/n 同步维护，可直接传给 db_rpc_* */
+} db_filter_builder_t;
+
+/**
+ * @brief 初始化 PK 构造器（清零 + 设置 filter.conditions 指针）
+ */
+void db_filter_init(db_filter_builder_t *b);
+
+/**
+ * @brief 追加一个整数等值条件
+ */
+void db_filter_add_int(db_filter_builder_t *b, const char *name, int64_t v);
+
+/**
+ * @brief 追加一个文本等值条件（内部复制字符串）
+ */
+void db_filter_add_text(db_filter_builder_t *b, const char *name, const char *v);
+
+/**
+ * @brief 释放构造器内部所有 db_value_t 占用（文本等）
+ *
+ * 调用后构造器即不再可用。栈分配的 builder 本身无需释放。
+ */
+void db_filter_clear(db_filter_builder_t *b);
+
+/**
+ * @brief 一行调用：用 (列名,值) 数组更新指定行
+ * @param ctx     调用方 IPC 上下文
+ * @param table   表名
+ * @param where   过滤条件（不可为 NULL；为防止全表更新，必须显式传 PK）
+ * @param cols    列数组
+ * @param n_cols  列数
+ * @return 更新行数，错误返回 -1
+ */
+int db_rpc_update_cols(dev_ipc_context_t *ctx, const char *table, const db_filter_t *where, const db_col_t *cols,
+                       size_t n_cols);
+
+/**
+ * @brief 一行调用：用 (列名,值) 数组插入一行
+ * @return ERRCODE_SUCCESS / ERRCODE_FAIL
+ */
+int db_rpc_insert_cols(dev_ipc_context_t *ctx, const char *table, const db_col_t *cols, size_t n_cols);
 
 #endif // DB_H

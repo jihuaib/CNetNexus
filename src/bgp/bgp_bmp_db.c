@@ -120,17 +120,15 @@ int bgp_bmp_db_set_instance(const char *instance_name)
 {
     dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
 
-    db_record_t *rec = db_record_new();
-    db_record_set_text(rec, "instance_name", instance_name);
-    db_record_set_text(rec, "collector_ip", "");
-    db_record_set_int(rec, "collector_port", 0);
-    db_record_set_int(rec, "stats_interval", 0);
-    db_record_set_int(rec, "reconnect_interval", 30);
-    db_record_set_int(rec, "monitor_all", 1);
-
-    int ret = db_rpc_upsert(ctx, BGP_TABLE_BMP_INSTANCE, rec, NULL);
-    db_record_free(rec);
-
+    db_col_t cols[] = {
+        DB_COL_TEXT("instance_name", instance_name),
+        DB_COL_TEXT("collector_ip", ""),
+        DB_COL_INT("collector_port", 0),
+        DB_COL_INT("stats_interval", 0),
+        DB_COL_INT("reconnect_interval", 30),
+        DB_COL_INT("monitor_all", 1),
+    };
+    int ret = db_rpc_insert_cols(ctx, BGP_TABLE_BMP_INSTANCE, cols, G_N_ELEMENTS(cols));
     if (ret != ERRCODE_SUCCESS)
     {
         LOG_ERROR("BMP failed to write instance %s", instance_name);
@@ -252,14 +250,12 @@ int bgp_bmp_db_add_monitor_peer(const char *instance_name, const char *neighbor_
         return -1;
     }
 
-    /* 插入监控邻居（幂等） */
-    db_record_t *rec = db_record_new();
-    db_record_set_text(rec, "instance_name", instance_name);
-    db_record_set_text(rec, "neighbor_ip", neighbor_ip);
-
-    int ret = db_rpc_upsert(ctx, BGP_TABLE_BMP_MONITOR, rec, NULL);
-    db_record_free(rec);
-
+    /* 插入监控邻居（CLI 层保证唯一性，无需 upsert） */
+    db_col_t cols[] = {
+        DB_COL_TEXT("instance_name", instance_name),
+        DB_COL_TEXT("neighbor_ip", neighbor_ip),
+    };
+    int ret = db_rpc_insert_cols(ctx, BGP_TABLE_BMP_MONITOR, cols, G_N_ELEMENTS(cols));
     return ret == ERRCODE_SUCCESS ? 0 : -1;
 }
 

@@ -230,6 +230,16 @@ void bgp_cfg_apply_neighbor(bgp_apply_cmd_t *apply)
             apply->rc = BGP_APPLY_RC_NOOP;
             return;
         }
+        if (existing)
+        {
+            char addr_str[64];
+            net_addr_to_str(&apply->u.neighbor.addr, addr_str, sizeof(addr_str));
+            snprintf(apply->errmsg, sizeof(apply->errmsg),
+                     "BGP Error: Neighbor %s remote-as cannot be modified in place. Delete the neighbor first.",
+                     addr_str);
+            apply->rc = BGP_APPLY_RC_FAIL;
+            return;
+        }
     }
 
     if (is_no)
@@ -255,11 +265,6 @@ void bgp_cfg_apply_neighbor(bgp_apply_cmd_t *apply)
         bgp_session_stop_all(existing);
         bgp_vrf_del_session(vrf, &apply->u.neighbor.addr);
         bgp_cfg_drain_vrf_work(vrf);
-    }
-    else if (existing)
-    {
-        existing->remote_as = apply->u.neighbor.remote_as;
-        bgp_session_update_type(existing, proto->as_number);
     }
     else
     {

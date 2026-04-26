@@ -75,16 +75,9 @@ int sbmp_db_restore(void)
 int sbmp_db_set_server_port(uint16_t port)
 {
     dev_ipc_context_t *ctx = sbmp_local_ipc_ctx();
-    db_record_t *rec = db_record_new();
-    db_record_set_int(rec, "server_port", port);
 
-    db_condition_t cond = {.field_name = "server_port", .op = DB_CMP_EQ, .value = db_value_int(port)};
-    db_filter_t filter = {.conditions = &cond, .num_conditions = 1};
-
-    int ret = db_rpc_upsert(ctx, SBMP_TABLE_SERVER, rec, &filter);
-    db_record_free(rec);
-    db_value_free(&cond.value);
-
+    db_col_t cols[] = {DB_COL_INT("server_port", port)};
+    int ret = db_rpc_insert_cols(ctx, SBMP_TABLE_SERVER, cols, G_N_ELEMENTS(cols));
     if (ret != ERRCODE_SUCCESS)
     {
         LOG_ERROR("SBMP: Failed to write server_port=%u", port);
