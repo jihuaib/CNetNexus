@@ -259,6 +259,7 @@ void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
 int bgp_module_init(void)
 {
+    log_set_tag("bgp");
     LOG_INFO("Module initialization");
 
     bgp_parse_init();

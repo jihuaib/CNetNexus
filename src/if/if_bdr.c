@@ -90,6 +90,14 @@ static const char *bdr_if_ctx_idx_to_name(uint32_t if_idx)
             return "GE-3";
         case 4:
             return "GE-4";
+        case 5:
+            return "GE-5";
+        case 6:
+            return "GE-6";
+        case 7:
+            return "GE-7";
+        case 8:
+            return "GE-8";
         default:
             return NULL;
     }

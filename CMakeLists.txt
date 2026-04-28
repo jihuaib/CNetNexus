@@ -8,6 +8,10 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Compiler flags
 add_definitions(-D_GNU_SOURCE)
+
+# 项目作者信息（注入为编译期宏，供 show version 等位置使用）
+add_definitions(-DNN_AUTHOR="jihuaibin")
+add_definitions(-DNN_AUTHOR_EMAIL="jihuaib@gmail.com")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra")
 # Keep CMake defaults for each build type (notably -DNDEBUG in Release),
 # and only append project-specific tuning flags.

@@ -931,6 +931,7 @@ void sbmp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
 int sbmp_module_init(void)
 {
+    log_set_tag("sbmp");
     LOG_INFO("Module initialization");
 
     /* 复用 bgp_parse 库解析 BMP 携带的 BGP PDU */

@@ -135,7 +135,7 @@
             </commands>
         </group>
 
-        <!-- dev log-level <level> -->
+        <!-- dev log log-level {debug|info|warn|error} -->
         <group group-id="4">
             <elements>
                 <element id="1" type="keyword">
@@ -143,19 +143,46 @@
                     <description>Device and module management</description>
                 </element>
                 <element id="2" type="keyword">
+                    <name>log</name>
+                    <description>Log subsystem configuration</description>
+                </element>
+                <element id="3" type="keyword">
                     <name>log-level</name>
                     <description>Set runtime log level</description>
                 </element>
-                <element id="3" cfg-id="1" type="parameter">
-                    <name>&lt;level&gt;</name>
-                    <description>debug/info/warn/error</description>
-                    <type>string(4-5)</type>
+                <element id="4" cfg-id="1" type="keyword">
+                    <name>debug</name>
+                    <description>Debug level (verbose)</description>
+                </element>
+                <element id="5" cfg-id="2" type="keyword">
+                    <name>info</name>
+                    <description>Info level</description>
+                </element>
+                <element id="6" cfg-id="3" type="keyword">
+                    <name>warn</name>
+                    <description>Warning level</description>
+                </element>
+                <element id="7" cfg-id="4" type="keyword">
+                    <name>error</name>
+                    <description>Error level (least verbose)</description>
                 </element>
             </elements>
 
             <commands>
                 <command>
-                    <expression>1 2 3</expression>
+                    <expression>1 2 3 4</expression>
+                    <views>config</views>
+                </command>
+                <command>
+                    <expression>1 2 3 5</expression>
+                    <views>config</views>
+                </command>
+                <command>
+                    <expression>1 2 3 6</expression>
+                    <views>config</views>
+                </command>
+                <command>
+                    <expression>1 2 3 7</expression>
                     <views>config</views>
                 </command>
             </commands>

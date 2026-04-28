@@ -97,7 +97,7 @@ static void if_map_copy_str(char *dst, size_t dst_size, const char *src)
     dst[len] = '\0';
 }
 
-static gboolean if_map_is_virtual_entry(const char *logical_name)
+gboolean if_map_is_virtual_entry(const char *logical_name)
 {
     return (logical_name && strcmp(logical_name, "null0") == 0) ? TRUE : FALSE;
 }

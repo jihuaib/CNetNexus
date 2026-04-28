@@ -11,8 +11,10 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
@@ -23,8 +25,22 @@
 /** 最大支持注册的模块数量 */
 #define LOG_MAX_MODULES 32
 
-/** 全局日志级别，默认 DEBUG */
+/** 默认单文件最大字节数：10 MB */
+#define LOG_DEFAULT_MAX_SIZE ((size_t)10 * 1024 * 1024)
+
+/** 默认备份文件数量 */
+#define LOG_DEFAULT_MAX_BACKUPS 5
+
+/** 全局轮转配置（0 表示禁用） */
+static size_t g_log_max_size = LOG_DEFAULT_MAX_SIZE;
+static int g_log_max_backups = LOG_DEFAULT_MAX_BACKUPS;
+
+/** 全局日志级别：Release 默认 WARN，Debug 默认 DEBUG（DEV 启动后会从 DB 覆盖） */
+#ifdef NDEBUG
+log_level_t g_log_level = LOG_LEVEL_WARN;
+#else
 log_level_t g_log_level = LOG_LEVEL_DEBUG;
+#endif
 
 /** 当前线程的模块标签（线程局部指针，始终指向 g_log_tag_buf） */
 _Thread_local char g_log_tag_buf[32] = "unknown";
@@ -36,32 +52,54 @@ _Thread_local const char *g_log_tag = "unknown";
 
 typedef struct
 {
-    char *tag; /**< 模块名（注册表持有副本） */
-    int fd;    /**< 文件描述符 */
+    char *tag;                  /**< 模块名（注册表持有副本） */
+    char *path;                 /**< 日志文件路径（注册表持有副本，用于轮转重命名） */
+    int fd;                     /**< 文件描述符 */
+    size_t cur_size;            /**< 当前文件大小（字节，由 rotate_mtx 保护） */
+    pthread_mutex_t rotate_mtx; /**< 串行化对该文件的写入与轮转 */
 } log_file_entry_t;
 
 static log_file_entry_t g_log_files[LOG_MAX_MODULES];
 static int g_log_file_count = 0;
 static pthread_rwlock_t g_log_rwlock = PTHREAD_RWLOCK_INITIALIZER;
 
+void log_set_rotation(size_t max_size_bytes, int max_backups)
+{
+    g_log_max_size = max_size_bytes;
+    g_log_max_backups = max_backups < 0 ? 0 : max_backups;
+}
+
 /**
- * @brief 在注册表中查找 tag 对应的文件描述符（读锁）
- * @return fd（>=0）或 -1（未注册）
+ * @brief 在注册表中查找 tag 对应的 entry（读锁）
+ * @return entry 指针或 NULL；返回的指针在进程生命期内稳定（不缩容、不移动）
  */
-static int find_module_fd(const char *tag)
+static log_file_entry_t *find_module_entry(const char *tag)
 {
     pthread_rwlock_rdlock(&g_log_rwlock);
-    int fd = -1;
+    log_file_entry_t *entry = NULL;
     for (int i = 0; i < g_log_file_count; i++)
     {
         if (strcmp(g_log_files[i].tag, tag) == 0)
         {
-            fd = g_log_files[i].fd;
+            entry = &g_log_files[i];
             break;
         }
     }
     pthread_rwlock_unlock(&g_log_rwlock);
-    return fd;
+    return entry;
+}
+
+/**
+ * @brief 获取已打开文件的当前大小，失败返回 0
+ */
+static size_t fd_current_size(int fd)
+{
+    struct stat st;
+    if (fstat(fd, &st) == 0 && st.st_size > 0)
+    {
+        return (size_t)st.st_size;
+    }
+    return 0;
 }
 
 int log_register_module(const char *tag, const char *path)
@@ -76,16 +114,26 @@ int log_register_module(const char *tag, const char *path)
     {
         return -1;
     }
+    size_t init_size = fd_current_size(fd);
 
     pthread_rwlock_wrlock(&g_log_rwlock);
 
-    /* 若已注册同 tag，更新 fd */
+    /* 若已注册同 tag，更新 fd 与 path */
     for (int i = 0; i < g_log_file_count; i++)
     {
         if (strcmp(g_log_files[i].tag, tag) == 0)
         {
+            pthread_mutex_lock(&g_log_files[i].rotate_mtx);
             close(g_log_files[i].fd);
             g_log_files[i].fd = fd;
+            g_log_files[i].cur_size = init_size;
+            char *new_path = strdup(path);
+            if (new_path)
+            {
+                free(g_log_files[i].path);
+                g_log_files[i].path = new_path;
+            }
+            pthread_mutex_unlock(&g_log_files[i].rotate_mtx);
             pthread_rwlock_unlock(&g_log_rwlock);
             return 0;
         }
@@ -95,14 +143,21 @@ int log_register_module(const char *tag, const char *path)
     if (g_log_file_count < LOG_MAX_MODULES)
     {
         char *tag_copy = strdup(tag);
-        if (!tag_copy)
+        char *path_copy = strdup(path);
+        if (!tag_copy || !path_copy)
         {
+            free(tag_copy);
+            free(path_copy);
             close(fd);
             pthread_rwlock_unlock(&g_log_rwlock);
             return -1;
         }
-        g_log_files[g_log_file_count].tag = tag_copy;
-        g_log_files[g_log_file_count].fd = fd;
+        log_file_entry_t *e = &g_log_files[g_log_file_count];
+        e->tag = tag_copy;
+        e->path = path_copy;
+        e->fd = fd;
+        e->cur_size = init_size;
+        pthread_mutex_init(&e->rotate_mtx, NULL);
         g_log_file_count++;
     }
     else
@@ -261,7 +316,60 @@ static void write_best_effort(int fd, const char *buf, size_t len)
 }
 
 /**
- * @brief 将 buf 写入 stderr 及模块专属日志文件
+ * @brief 执行日志文件轮转：xxx.log -> xxx.log.1 -> ... -> xxx.log.N（最旧丢弃）
+ * @details 调用方需持有 entry->rotate_mtx
+ */
+static void rotate_locked(log_file_entry_t *entry)
+{
+    if (!entry->path || g_log_max_size == 0)
+    {
+        return;
+    }
+
+    int max_backups = g_log_max_backups;
+    char old_name[600];
+    char new_name[600];
+
+    /* 删除最旧的备份 */
+    if (max_backups > 0)
+    {
+        snprintf(old_name, sizeof(old_name), "%s.%d", entry->path, max_backups);
+        unlink(old_name); /* 忽略错误（可能不存在） */
+    }
+    else
+    {
+        /* 不保留备份：直接清空 */
+        unlink(entry->path);
+    }
+
+    /* xxx.log.{i} -> xxx.log.{i+1}，从大到小 */
+    for (int i = max_backups - 1; i >= 1; i--)
+    {
+        snprintf(old_name, sizeof(old_name), "%s.%d", entry->path, i);
+        snprintf(new_name, sizeof(new_name), "%s.%d", entry->path, i + 1);
+        rename(old_name, new_name); /* 忽略错误 */
+    }
+
+    /* xxx.log -> xxx.log.1 */
+    if (max_backups > 0)
+    {
+        snprintf(new_name, sizeof(new_name), "%s.1", entry->path);
+        rename(entry->path, new_name);
+    }
+
+    /* 重新打开新文件 */
+    int new_fd = open(entry->path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+    if (new_fd >= 0)
+    {
+        close(entry->fd);
+        entry->fd = new_fd;
+        entry->cur_size = 0;
+    }
+    /* 打开失败时保留原 fd 继续使用，避免日志丢失 */
+}
+
+/**
+ * @brief 将 buf 写入 stderr 及模块专属日志文件，按需轮转
  */
 static void flush_log(const char *tag, const char *buf, int len)
 {
@@ -271,11 +379,24 @@ static void flush_log(const char *tag, const char *buf, int len)
     }
 
     write_best_effort(STDERR_FILENO, buf, (size_t)len);
-    int fd = find_module_fd(tag);
-    if (fd >= 0)
+
+    log_file_entry_t *entry = find_module_entry(tag);
+    if (!entry)
     {
-        write_best_effort(fd, buf, (size_t)len);
+        return;
     }
+
+    pthread_mutex_lock(&entry->rotate_mtx);
+    if (entry->fd >= 0)
+    {
+        if (g_log_max_size > 0 && entry->cur_size + (size_t)len > g_log_max_size)
+        {
+            rotate_locked(entry);
+        }
+        write_best_effort(entry->fd, buf, (size_t)len);
+        entry->cur_size += (size_t)len;
+    }
+    pthread_mutex_unlock(&entry->rotate_mtx);
 }
 
 void log_output(log_level_t level, const char *tag, const char *file, int line, const char *func, const char *fmt, ...)

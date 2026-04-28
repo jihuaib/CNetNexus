@@ -35,4 +35,10 @@ dev_ipc_context_t *dev_get_ipc_ctx(void);
  */
 void dev_cleanup_self(void);
 
+/**
+ * @brief 广播日志级别给所有已就绪模块（IPC 库层透明应用）
+ * @param level 目标日志级别（log_level_t 取值）
+ */
+void dev_broadcast_log_level(uint32_t level);
+
 #endif // DEV_MAIN_H

@@ -179,9 +179,9 @@ const stoppedDbs = new Map(); // id -> base64 string
 
 let nextHostPort = 13788;
 
-/** 每台设备固定对外呈现 4 个 GE 口，没用到的 GE 槽位挂一个该设备私有的 stub 网络，
- *  这样容器里一定有 eth1..eth4，if_map 可以稳定写 GE-1=eth1 .. GE-4=eth4。 */
-const GE_PORT_COUNT = 4;
+/** 每台设备固定对外呈现 8 个 GE 口，没用到的 GE 槽位挂一个该设备私有的 stub 网络，
+ *  这样容器里一定有 eth1..eth8，if_map 可以稳定写 GE-1=eth1 .. GE-8=eth8。 */
+const GE_PORT_COUNT = 8;
 
 function dockerArgs(args) { return USE_SUDO ? ['docker', ...args] : args; }
 function dockerBin() { return USE_SUDO ? 'sudo' : DOCKER; }
@@ -702,10 +702,10 @@ function parsePortIndex(portName)
 }
 
 /**
- * 为实例规划 4 个 GE 口的 docker 网络：
+ * 为实例规划 8 个 GE 口的 docker 网络：
  *   - 用到的 GE-N 指向 link 对应的 docker 网络
  *   - 未用到的 GE-N 指向一个仅此设备可见的 stub 网络
- * 返回数组长度固定 4，按 GE-1..GE-4 顺序。
+ * 返回数组长度固定 GE_PORT_COUNT，按 GE-1..GE-8 顺序。
  */
 function planInterfacesOf(instanceId)
 {
@@ -732,7 +732,7 @@ function planInterfacesOf(instanceId)
 }
 
 /**
- * 写 if_map 文件：固定写 GE-1..GE-4 = eth1..eth4，与 connect 顺序严格对齐。
+ * 写 if_map 文件：固定写 GE-1..GE-8 = eth1..eth8，与 connect 顺序严格对齐。
  *
  * 文件名带时间戳，每次启动都用新名字。这样能避开两个坑：
  *   1) docker `-v src:dst` 当 src 不存在时会偷偷把 src 建成 root 拥有的空目录，
@@ -1132,7 +1132,7 @@ app.post('/api/instances', async (req, res) =>
         }
 
         // 3) 以 sleep infinity 拉起容器，挂 if_map
-        //    eth0 是 docker 默认 bridge，承载 -p 端口映射和 CLI 3788；eth1..eth4 后面 connect
+        //    eth0 是 docker 默认 bridge，承载 -p 端口映射和 CLI 3788；eth1..eth8 后面 connect
         await runDocker([
             'run', '-d',
             '--name', containerName,
@@ -1152,7 +1152,7 @@ app.post('/api/instances', async (req, res) =>
             'sleep', 'infinity'
         ]);
 
-        // 4) 严格按 GE-1..GE-4 顺序 attach，确保 ethN 命名对齐
+        // 4) 严格按 GE-1..GE-8 顺序 attach，确保 ethN 命名对齐
         for (const item of netsInOrder)
         {
             await runDocker(['network', 'connect', item.net, containerName]);
@@ -1305,7 +1305,7 @@ async function writeDbIntoContainer(containerName, tarBase64)
  *
  * 之所以真销毁：只有 fresh create 才能按当前 links 重新规划 GE-N → ethN 映射。
  * 如果仅 pkill netnexus、容器保活，用户停机时新加的 link 永远接不进来（新 link
- * 会产生 eth5+，打破 GE-N 的 1..4 固定布局，ping 不通）。
+ * 会产生 eth9+，打破 GE-N 的 1..8 固定布局，ping 不通）。
  *
  * docker stop + docker start 不能用的原因：Docker 重新 attach 网络的顺序不保证，
  * ethN 可能错位。所以走完整的 rm → run 路径，顺序由我们自己控制。

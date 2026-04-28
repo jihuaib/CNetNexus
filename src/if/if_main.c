@@ -198,6 +198,7 @@ void if_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
 int if_module_init(void)
 {
+    log_set_tag("if");
     LOG_INFO("Module initialization");
 
     dev_ipc_context_t *ctx = dev_ipc_init(DEV_MODULE_ID_IF, "if", DEV_MODULE_PORT_IF, if_msg_handler);

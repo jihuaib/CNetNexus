@@ -5,3 +5,7 @@ GE-1 = veth1
 GE-2 = veth2
 GE-3 = veth3
 GE-4 = veth4
+GE-5 = veth5
+GE-6 = veth6
+GE-7 = veth7
+GE-8 = veth8

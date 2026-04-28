@@ -2,7 +2,7 @@
 <configuration module-id="4">
     <views>
         <view view-name="if">
-            <!-- {ctx:4} 由框架替换为 CLI_CTX_ID_IF_IDX 值（1=GE-1, 2=GE-2, 3=GE-3, 4=GE-4） -->
+            <!-- {ctx:4} 由框架替换为 CLI_CTX_ID_IF_IDX 值（1=GE-1 ... 8=GE-8） -->
             <template>&lt;NetNexus(config-if-GE-{ctx:4})&gt;</template>
         </view>
         <view view-name="if-null0">
@@ -49,6 +49,22 @@
                     <name>null0</name> <!-- 6 -->
                     <description>Null interface</description>
                 </element>
+                <element id="7" cfg-id="5" type="keyword">
+                    <name>GE-5</name> <!-- 7 -->
+                    <description>Interface name</description>
+                </element>
+                <element id="8" cfg-id="6" type="keyword">
+                    <name>GE-6</name> <!-- 8 -->
+                    <description>Interface name</description>
+                </element>
+                <element id="9" cfg-id="7" type="keyword">
+                    <name>GE-7</name> <!-- 9 -->
+                    <description>Interface name</description>
+                </element>
+                <element id="10" cfg-id="8" type="keyword">
+                    <name>GE-8</name> <!-- 10 -->
+                    <description>Interface name</description>
+                </element>
             </elements>
             <commands>
                 <!-- if GE-1: ctx-id=4(CLI_CTX_ID_IF_IDX)=1 -->
@@ -85,6 +101,42 @@
                     <to-view>if</to-view>
                     <context-out>
                         <entry ctx-id="4" value="4"/>
+                    </context-out>
+                </command>
+                <!-- if GE-5: ctx-id=4=5 -->
+                <command>
+                    <expression>1 7</expression>
+                    <views>config</views>
+                    <to-view>if</to-view>
+                    <context-out>
+                        <entry ctx-id="4" value="5"/>
+                    </context-out>
+                </command>
+                <!-- if GE-6: ctx-id=4=6 -->
+                <command>
+                    <expression>1 8</expression>
+                    <views>config</views>
+                    <to-view>if</to-view>
+                    <context-out>
+                        <entry ctx-id="4" value="6"/>
+                    </context-out>
+                </command>
+                <!-- if GE-7: ctx-id=4=7 -->
+                <command>
+                    <expression>1 9</expression>
+                    <views>config</views>
+                    <to-view>if</to-view>
+                    <context-out>
+                        <entry ctx-id="4" value="7"/>
+                    </context-out>
+                </command>
+                <!-- if GE-8: ctx-id=4=8 -->
+                <command>
+                    <expression>1 10</expression>
+                    <views>config</views>
+                    <to-view>if</to-view>
+                    <context-out>
+                        <entry ctx-id="4" value="8"/>
                     </context-out>
                 </command>
                 <!-- if null0: ctx-id=4=0 -->
@@ -207,10 +259,26 @@
                     <name>loop</name> <!-- 7 -->
                     <description>Loopback interface</description>
                 </element>
-                <element id="8" cfg-id="5" type="parameter">
+                <element id="8" cfg-id="9" type="parameter">
                     <name>&lt;loop-id&gt;</name> <!-- 8 -->
                     <description>Loopback interface number (1-1024)</description>
                     <type>uint(1-1024)</type>
+                </element>
+                <element id="9" cfg-id="5" type="keyword">
+                    <name>GE-5</name> <!-- 9 -->
+                    <description>Interface name</description>
+                </element>
+                <element id="10" cfg-id="6" type="keyword">
+                    <name>GE-6</name> <!-- 10 -->
+                    <description>Interface name</description>
+                </element>
+                <element id="11" cfg-id="7" type="keyword">
+                    <name>GE-7</name> <!-- 11 -->
+                    <description>Interface name</description>
+                </element>
+                <element id="12" cfg-id="8" type="keyword">
+                    <name>GE-8</name> <!-- 12 -->
+                    <description>Interface name</description>
                 </element>
             </elements>
             <commands>
@@ -221,7 +289,7 @@
                 </command>
                 <!-- show if <GE-x> -->
                 <command>
-                    <expression>1 2 { 3 | 4 | 5 | 6 }</expression>
+                    <expression>1 2 { 3 | 4 | 5 | 6 | 9 | 10 | 11 | 12 }</expression>
                     <views>global</views>
                 </command>
                 <!-- show if loop <N> -->

@@ -181,6 +181,7 @@ void db_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
 int db_module_init(void)
 {
+    log_set_tag("db");
     LOG_INFO("Module initialization");
 
     /* 创建 IPC 上下文 */

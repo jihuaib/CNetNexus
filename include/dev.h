@@ -317,6 +317,8 @@ extern dev_ipc_context_t *g_dev_ipc_context;
 #define DEV_IPC_MSG_TYPE_DEV_QUERY_IPC_CONNS DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_DEV, 0x0006)
 /** QUERY_IPC_CONNS 的响应（msg_type 与请求不同，确保 query_mgr 能正确路由） */
 #define DEV_IPC_MSG_TYPE_DEV_QUERY_IPC_CONNS_RESP DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_DEV, 0x0007)
+/** 设置目标模块的日志级别（payload = 4 字节 uint32 网络字节序，由 IPC 库层自动处理） */
+#define DEV_IPC_MSG_TYPE_DEV_SET_LOG_LEVEL DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_DEV, 0x0008)
 /** 模块阶段响应 */
 #define DEV_IPC_MSG_TYPE_DEV_MODULE_RESP DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_DEV, 0x000F)
 

@@ -393,6 +393,27 @@ static void handle_frame(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn, dev
             break;
         }
 
+        case DEV_IPC_MSG_TYPE_DEV_SET_LOG_LEVEL:
+        {
+            /* 设置日志级别：payload = 4 字节 uint32 网络字节序，IPC 库层透明处理 */
+            if (header->payload_len >= sizeof(uint32_t) && payload)
+            {
+                uint32_t level_be;
+                memcpy(&level_be, payload, sizeof(level_be));
+                uint32_t level = ntohl(level_be);
+                if (level <= LOG_LEVEL_ERROR)
+                {
+                    log_set_level((log_level_t)level);
+                    LOG_INFO("<%s> Log level set to %u via IPC", ctx->name, level);
+                }
+                else
+                {
+                    LOG_WARN("<%s> Ignore SET_LOG_LEVEL: invalid level %u", ctx->name, level);
+                }
+            }
+            break;
+        }
+
         case DEV_IPC_MSG_TYPE_DEV_QUERY_IPC_CONNS:
         {
             /* IPC 状态查询：序列化本模块所有连接并直接回复，无需经过应用层 */

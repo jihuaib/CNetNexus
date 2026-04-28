@@ -51,6 +51,14 @@ static const char *if_cfgid_to_name(uint32_t cfg_id)
             return "GE-3";
         case 4:
             return "GE-4";
+        case 5:
+            return "GE-5";
+        case 6:
+            return "GE-6";
+        case 7:
+            return "GE-7";
+        case 8:
+            return "GE-8";
         default:
             return NULL;
     }
@@ -240,11 +248,11 @@ int if_show_handle_cli(dev_ipc_message_t *msg)
             continue;
         }
 
-        if (entry.cfg_id >= 1 && entry.cfg_id <= 4)
+        if (entry.cfg_id >= 1 && entry.cfg_id <= 8)
         {
             ge_ifname = if_cfgid_to_name(entry.cfg_id);
         }
-        else if (entry.cfg_id == 5)
+        else if (entry.cfg_id == 9)
         {
             loop_id = (uint32_t)cli_tlv_entry_get_int(&entry);
         }

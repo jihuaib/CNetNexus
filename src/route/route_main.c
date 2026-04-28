@@ -338,6 +338,7 @@ void route_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
 int route_module_init(void)
 {
+    log_set_tag("route");
     LOG_INFO("Module initialization");
 
     dev_ipc_context_t *ctx = dev_ipc_init(DEV_MODULE_ID_ROUTE, "route", DEV_MODULE_PORT_ROUTE, route_ipc_msg_handler);

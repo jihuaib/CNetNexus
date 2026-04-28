@@ -20,6 +20,7 @@
 #include "db.h"
 #include "dev.h"
 #include "dev_conf_parser.h"
+#include "dev_db.h"
 #include "dev_main.h"
 #include "errcode.h"
 #include "log.h"
@@ -794,6 +795,16 @@ int32_t dev_init_all_modules(void)
     if (dev_require_all_modules_phase(DEV_PHASE_IPC_READY, "Phase 1") != ERRCODE_SUCCESS)
     {
         return ERRCODE_FAIL;
+    }
+
+    /* DEV 自身的 DB 初始化与恢复（DB 进程已就绪，IPC 连接已建立） */
+    if (dev_db_init() == 0)
+    {
+        if (dev_db_restore() == 0)
+        {
+            /* 恢复后立即广播给所有已连接模块，使日志级别全局一致 */
+            dev_broadcast_log_level((uint32_t)log_get_level());
+        }
     }
 
     /* Phase 2: 发送 MODULE_CONNECT — 预留（DB 恢复） */

@@ -7,6 +7,7 @@
 
 #include "dev_main.h"
 
+#include <arpa/inet.h>
 #include <glib.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,6 +15,7 @@
 
 #include "cli.h"
 #include "dev.h"
+#include "dev_bdr.h"
 #include "dev_cli.h"
 #include "dev_module.h"
 #include "errcode.h"
@@ -72,7 +74,7 @@ void dev_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
         case CLI_MSG_TYPE_SHOW_CONFIG:
             LOG_DEBUG("Received show current-configuration request");
-            dev_cli_handle_show_config(msg);
+            dev_bdr_show_config(msg);
             break;
 
         default:
@@ -111,6 +113,38 @@ int dev_init_self(void)
 
     LOG_INFO("DEV IPC initialization complete========================");
     return ERRCODE_SUCCESS;
+}
+
+/**
+ * @brief 广播 log-level 给所有已注册模块（DEV 自身已本地生效，无需再发自己）
+ */
+static gboolean broadcast_log_level_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    dev_module_t *module = (dev_module_t *)value;
+    uint32_t level_be = *(uint32_t *)user_data;
+
+    if (module->module_id == DEV_MODULE_ID_DEV || module->phase < DEV_PHASE_IPC_READY)
+    {
+        return FALSE;
+    }
+
+    dev_ipc_message_t *req = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_SET_LOG_LEVEL, DEV_MODULE_ID_DEV,
+                                                    module->module_id, 0, &level_be, sizeof(level_be), NULL);
+    if (!req)
+    {
+        return FALSE;
+    }
+    /* 单向通知：接收端在 IPC 库层透明处理，无需等待响应 */
+    dev_ipc_send(g_dev_local->dev_ipc_ctx, module->module_id, req);
+    dev_ipc_message_free(req);
+    return FALSE;
+}
+
+void dev_broadcast_log_level(uint32_t level)
+{
+    uint32_t level_be = htonl(level);
+    dev_module_foreach(broadcast_log_level_cb, &level_be);
 }
 
 /**

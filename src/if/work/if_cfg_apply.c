@@ -15,6 +15,7 @@
 #include "if.h"
 #include "if_event.h"
 #include "if_main.h"
+#include "if_map.h"
 #include "if_pub.h"
 #include "if_worker.h"
 #include "log.h"
@@ -659,10 +660,14 @@ int if_cfg_apply_shutdown(gboolean is_no, const char *logical_name)
     int up = is_no ? 1 : 0;
     int old_shutdown = entry->shutdown;
 
-    if (if_set_state(entry->physical_name, up) != ERRCODE_SUCCESS)
+    /* 虚拟接口（如 null0）无对应 OS netdev，跳过 ioctl，仅维护内存态 */
+    if (!if_map_is_virtual_entry(entry->logical_name))
     {
-        LOG_ERROR("IF: Failed to set interface %s state", entry->physical_name);
-        return ERRCODE_FAIL;
+        if (if_set_state(entry->physical_name, up) != ERRCODE_SUCCESS)
+        {
+            LOG_ERROR("IF: Failed to set interface %s state", entry->physical_name);
+            return ERRCODE_FAIL;
+        }
     }
 
     entry->shutdown = up ? 0 : 1;

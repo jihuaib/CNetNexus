@@ -21,7 +21,7 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # Number of interfaces
-NUM_INTERFACES=4
+NUM_INTERFACES=8
 
 echo "Removing virtual network interfaces..."
 echo ""

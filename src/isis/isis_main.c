@@ -172,6 +172,7 @@ void isis_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
 int isis_module_init(void)
 {
+    log_set_tag("isis");
     LOG_INFO("Module initialization");
 
     dev_ipc_context_t *ctx = dev_ipc_init(DEV_MODULE_ID_ISIS, "isis", DEV_MODULE_PORT_ISIS, isis_msg_handler);

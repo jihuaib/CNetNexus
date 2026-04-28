@@ -48,7 +48,7 @@ fi
 # 注意：不切 cwd 到 cores 目录！部分模块用相对路径打开 data 文件，
 # 切 cwd 会破坏路径解析。core 默认落到 cwd（即 INSTALL_DIR/bin），
 # 通过 setup-coredump.sh 配置绝对路径方案见下方"core 落地位置"说明。
-"${INSTALL_DIR}/bin/netnexus" </dev/null >>"${INSTALL_DIR}/log/netnexus.stdout.log" 2>>"${INSTALL_DIR}/log/netnexus.stderr.log" &
+"${INSTALL_DIR}/bin/netnexus" </dev/null >/dev/null 2>/dev/null &
 NETNEXUS_PID=$!
 
 # 等待端口就绪

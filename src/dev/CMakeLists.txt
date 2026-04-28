@@ -7,6 +7,8 @@ set(DEV_SOURCES
     dev_cli.c
     dev_module.c
     dev_conf_parser.c
+    dev_db.c
+    dev_bdr.c
 )
 
 # Create shared library for dev module
@@ -21,6 +23,7 @@ target_include_directories(dev PRIVATE
 target_link_libraries(dev PRIVATE
     dev_api
     cli_api
+    db_api
     dl
     ${GLIB_LIBRARIES}
 )

@@ -7,8 +7,8 @@ const props = defineProps({
     selectedId: { type: String, default: null },
     selectedLinkId: { type: String, default: null },
     linkingMode: { type: Boolean, default: false },
-    maxPorts: { type: Number, default: 4 },
-    allPorts: { type: Array, default: () => ['GE-1', 'GE-2', 'GE-3', 'GE-4'] },
+    maxPorts: { type: Number, default: 8 },
+    allPorts: { type: Array, default: () => ['GE-1', 'GE-2', 'GE-3', 'GE-4', 'GE-5', 'GE-6', 'GE-7', 'GE-8'] },
     linkCountOf: { type: Function, default: () => 0 },
     freePortsOf: { type: Function, default: () => [] }
 });

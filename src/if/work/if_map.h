@@ -53,4 +53,11 @@ void if_map_list(int client_fd);
 // Save mappings to config file
 int if_map_save(const char *config_file);
 
+/**
+ * @brief 判断逻辑接口是否为纯虚拟接口（无对应 OS netdevice，如 null0 黑洞口）
+ * @param logical_name 逻辑接口名
+ * @return TRUE = 虚拟接口，无需对其执行 ioctl 等内核操作
+ */
+gboolean if_map_is_virtual_entry(const char *logical_name);
+
 #endif // IF_MAP_H

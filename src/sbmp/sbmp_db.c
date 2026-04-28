@@ -47,14 +47,18 @@ int sbmp_db_restore(void)
 {
     dev_ipc_context_t *ctx = sbmp_local_ipc_ctx();
     db_result_t *result = NULL;
-    if (db_rpc_query(ctx, SBMP_TABLE_SERVER, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
+    if (db_rpc_query(ctx, SBMP_TABLE_SERVER, NULL, 0, NULL, &result) != ERRCODE_SUCCESS)
     {
         return ERRCODE_FAIL;
     }
 
-    if (result->num_rows == 0)
+    /* 空表：db 层会返回 result=NULL + ERRCODE_SUCCESS */
+    if (!result || result->num_rows == 0)
     {
-        db_result_free(result);
+        if (result)
+        {
+            db_result_free(result);
+        }
         LOG_INFO("SBMP: Database has no config, skipping restore");
         return ERRCODE_SUCCESS;
     }

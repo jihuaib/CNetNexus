@@ -16,6 +16,7 @@
 #include <unistd.h>
 
 #include "cli.h"
+#include "dev_db.h"
 #include "dev_main.h"
 #include "dev_module.h"
 #include "errcode.h"
@@ -263,6 +264,13 @@ static int handle_show_module(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     return cli_chunk_stream_start(&g_dev_local->show_stream, ctx, DEV_MODULE_ID_DEV, msg, show_ctx.resp);
 }
 
+#ifndef NN_AUTHOR
+#    define NN_AUTHOR "jihuaibin"
+#endif
+#ifndef NN_AUTHOR_EMAIL
+#    define NN_AUTHOR_EMAIL "jihuaib@gmail.com"
+#endif
+
 static int handle_show_version(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     char version[64] = "unknown";
@@ -284,6 +292,8 @@ static int handle_show_version(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
     g_string_append(buf, "\r\nNetNexus Version Information:\r\n");
     g_string_append_printf(buf, "  Version      : %s\r\n", version);
+    g_string_append_printf(buf, "  Author       : %s\r\n", NN_AUTHOR);
+    g_string_append_printf(buf, "  Email        : %s\r\n", NN_AUTHOR_EMAIL);
     g_string_append_printf(buf, "  Build Time   : %s %s\r\n", __DATE__, __TIME__);
     g_string_append_printf(buf, "  Build Profile: %s\r\n", build_profile_string());
     g_string_append_printf(buf, "  Compiler     : %s\r\n", __VERSION__);
@@ -324,8 +334,11 @@ static int handle_reboot(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
 static int handle_set_log_level(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
-    cli_tlv_entry_t entry;
+    /* cfg_id 1=debug 2=info 3=warn 4=error，由 commands.xml 中 keyword 元素定义 */
+    log_level_t selected = LOG_LEVEL_DEBUG;
+    int found = 0;
 
+    cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
     {
         if (CLI_TLV_IS_CTX(&entry))
@@ -334,37 +347,54 @@ static int handle_set_log_level(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, 
             continue;
         }
 
-        if (entry.cfg_id == 1)
+        switch (entry.cfg_id)
         {
-            const char *level_text = cli_tlv_entry_get_text(&entry);
-            if (!level_text)
-            {
-                cli_tlv_entry_free(&entry);
-                dev_send_cli_response(ctx, msg, "Dev Error: missing log level parameter.\r\n");
-                return ERRCODE_FAIL;
-            }
-
-            char level_buf[16];
-            strlcpy(level_buf, level_text, sizeof(level_buf));
-            cli_tlv_entry_free(&entry);
-
-            if (log_set_level_by_name(level_buf) == 0)
-            {
-                char resp[128];
-                snprintf(resp, sizeof(resp), "Dev: log level set to '%s'.\r\n", log_level_to_string(log_get_level()));
-                dev_send_cli_response(ctx, msg, resp);
-                return ERRCODE_SUCCESS;
-            }
-
-            dev_send_cli_response(ctx, msg, "Dev Error: invalid log level. Use debug/info/warn/error.\r\n");
-            return ERRCODE_FAIL;
+            case 1:
+                selected = LOG_LEVEL_DEBUG;
+                found = 1;
+                break;
+            case 2:
+                selected = LOG_LEVEL_INFO;
+                found = 1;
+                break;
+            case 3:
+                selected = LOG_LEVEL_WARN;
+                found = 1;
+                break;
+            case 4:
+                selected = LOG_LEVEL_ERROR;
+                found = 1;
+                break;
+            default:
+                break;
         }
-
         cli_tlv_entry_free(&entry);
     }
 
-    dev_send_cli_response(ctx, msg, "Dev Error: missing log level parameter.\r\n");
-    return ERRCODE_FAIL;
+    if (!found)
+    {
+        dev_send_cli_response(ctx, msg, "Dev Error: missing log level keyword.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    /* 本地生效 */
+    log_set_level(selected);
+
+    /* 广播给所有已注册模块，使各模块进程同步生效 */
+    dev_broadcast_log_level((uint32_t)selected);
+
+    /* 持久化到 DB */
+    if (dev_db_set_log_level(selected) != 0)
+    {
+        dev_send_cli_response(ctx, msg, "Dev: log level applied but failed to persist to DB.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    char resp[128];
+    snprintf(resp, sizeof(resp), "Dev: log level set to '%s' (broadcast and persisted).\r\n",
+             log_level_to_string(selected));
+    dev_send_cli_response(ctx, msg, resp);
+    return ERRCODE_SUCCESS;
 }
 
 static const char *ipc_state_to_string(dev_ipc_costate_t state)
@@ -716,12 +746,6 @@ void dev_cli_handle_query_candidates(dev_ipc_message_t *msg)
 // ============================================================================
 // 主入口
 // ============================================================================
-
-int dev_cli_handle_show_config(dev_ipc_message_t *msg)
-{
-    dev_ipc_context_t *ctx = dev_get_ipc_ctx();
-    return cli_chunk_stream_start(&g_dev_local->show_stream, ctx, DEV_MODULE_ID_DEV, msg, NULL);
-}
 
 int dev_cli_handle_continue(dev_ipc_message_t *msg)
 {

@@ -56,6 +56,14 @@ int log_register_module(const char *tag, const char *path);
 int log_register_module_auto(const char *tag);
 
 /**
+ * @brief 配置日志文件轮转参数（全局）
+ * @param max_size_bytes 单个日志文件最大字节数，达到后轮转；0 表示禁用轮转
+ * @param max_backups    保留的历史备份数量（xxx.log.1 ~ xxx.log.N），超出删除最旧
+ * @details 默认 10MB / 5 个备份。在 log_register_module 之前调用以从一开始生效。
+ */
+void log_set_rotation(size_t max_size_bytes, int max_backups);
+
+/**
  * @brief 打开日志文件（兼容旧接口，等价于 log_register_module("main", path)）
  * @param path 日志文件路径，NULL 则无操作
  */

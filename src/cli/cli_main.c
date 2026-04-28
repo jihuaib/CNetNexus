@@ -481,6 +481,7 @@ void cli_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
 int cli_module_init(void)
 {
+    log_set_tag("cli");
     LOG_INFO("Module initialization");
 
     /* 创建 IPC 上下文 */

@@ -215,6 +215,7 @@ void vrf_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
 int vrf_module_init(void)
 {
+    log_set_tag("vrf");
     LOG_INFO("Module initialization");
 
     dev_ipc_context_t *ctx = dev_ipc_init(DEV_MODULE_ID_VRF, "vrf", DEV_MODULE_PORT_VRF, vrf_msg_handler);

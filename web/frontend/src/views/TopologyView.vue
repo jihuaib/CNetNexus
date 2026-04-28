@@ -21,8 +21,8 @@ const fileInputRef = ref(null);
 const captureState = ref(null);
 const captureBusy = ref(false);
 
-const MAX_PORTS = 4;
-const ALL_PORTS = ['GE-1', 'GE-2', 'GE-3', 'GE-4'];
+const MAX_PORTS = 8;
+const ALL_PORTS = ['GE-1', 'GE-2', 'GE-3', 'GE-4', 'GE-5', 'GE-6', 'GE-7', 'GE-8'];
 
 let nextId = 1;
 let suppressPersist = false;

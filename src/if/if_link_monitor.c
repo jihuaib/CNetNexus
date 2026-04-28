@@ -371,6 +371,8 @@ static void *link_monitor_thread(void *arg)
 {
     (void)arg;
 
+    log_set_tag("if");
+
     char buf[LINK_MON_BUF_SIZE];
     struct pollfd fds[2];
     fds[0].fd = g_monitor_nl_fd;

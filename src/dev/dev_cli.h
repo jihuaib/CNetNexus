@@ -37,7 +37,6 @@ typedef struct dev_cli_resp_out
 
 int dev_cli_handle_message(dev_ipc_message_t *msg);
 int dev_cli_handle_continue(dev_ipc_message_t *msg);
-int dev_cli_handle_show_config(dev_ipc_message_t *msg);
 void dev_cli_cleanup_state(void);
 void dev_cli_handle_query_candidates(dev_ipc_message_t *msg);
 
