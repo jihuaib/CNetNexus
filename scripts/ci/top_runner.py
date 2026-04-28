@@ -677,6 +677,8 @@ class TopologyRuntime:
                 "NN_WORK_DIR=/opt/netnexus",
                 "-e",
                 "LD_LIBRARY_PATH=/opt/netnexus/lib",
+                "-v",
+                "/var/run/docker.sock:/var/run/docker.sock",
             ]
             if self.override_if_map:
                 if self.tmpdir is None:

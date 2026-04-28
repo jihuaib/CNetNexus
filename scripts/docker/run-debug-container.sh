@@ -48,6 +48,7 @@ sudo docker run -d \
     --security-opt seccomp=unconfined \
     --ulimit core=-1 \
     -v "${CORES_DIR}:${CORES_DIR}" \
+    -v /var/run/docker.sock:/var/run/docker.sock \
     -p 3788:3788 \
     ${IMAGE_NAME}:${IMAGE_TAG}
 

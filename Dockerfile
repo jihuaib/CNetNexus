@@ -78,7 +78,9 @@ LABEL org.opencontainers.image.vendor="NetNexus Team"
 LABEL org.opencontainers.image.version="${VERSION}"
 LABEL org.opencontainers.image.revision="${GIT_COMMIT}"
 
-# 仅安装运行时依赖，不包含编译工具和开发工具
+# 仅安装运行时依赖,不包含编译工具和开发工具
+# docker.io-cli: dev swap-image 命令需要,容器只用客户端(通过挂载的
+# /var/run/docker.sock 调用宿主 docker daemon)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     libglib2.0-0 \
@@ -89,6 +91,7 @@ RUN apt-get update && \
     iputils-ping \
     net-tools \
     telnet \
+    docker.io \
     && if [ "${ENABLE_ASAN}" = "ON" ]; then apt-get install -y --no-install-recommends libasan8; fi \
     && rm -rf /var/lib/apt/lists/*
 
@@ -97,6 +100,7 @@ COPY --from=builder /build/build/bin/       /opt/netnexus/bin/
 COPY --from=builder /build/build/lib/       /opt/netnexus/lib/
 COPY --from=builder /build/scripts/prod/start.sh      /opt/netnexus/scripts/
 COPY --from=builder /build/scripts/prod/gns3-entry.sh /opt/netnexus/scripts/
+COPY --from=builder /build/scripts/prod/swap-image.sh /opt/netnexus/scripts/
 
 # 复制各模块资源文件（commands.xml、module.conf 等）
 RUN mkdir -p /opt/netnexus/data /opt/netnexus/resources

@@ -1147,6 +1147,7 @@ app.post('/api/instances', async (req, res) =>
             '-e', 'NN_WORK_DIR=/opt/netnexus',
             '-e', 'LD_LIBRARY_PATH=/opt/netnexus/lib',
             '-v', `${ifMapFile}:${IF_MAP_PATH_IN_CONTAINER}:ro`,
+            '-v', '/var/run/docker.sock:/var/run/docker.sock',
             '-p', `${hostPort}:3788`,
             image,
             'sleep', 'infinity'

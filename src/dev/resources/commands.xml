@@ -204,5 +204,31 @@
                 </command>
             </commands>
         </group>
+
+        <!-- dev swap-image <image-name> -->
+        <group group-id="8">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>dev</name>
+                    <description>Device and module management</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>swap-image</name>
+                    <description>Replace bin/lib from a pre-built image and reboot</description>
+                </element>
+                <element id="3" cfg-id="1" type="parameter">
+                    <name>&lt;image-name&gt;</name>
+                    <description>Target image name (e.g. netnexus:1.1.0)</description>
+                    <type>string(1-128)</type>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>global</views>
+                </command>
+            </commands>
+        </group>
     </command_groups>
 </configuration>

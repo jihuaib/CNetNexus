@@ -18,6 +18,7 @@
 #define DEV_CLI_GROUP_ID_PING 5
 #define DEV_CLI_GROUP_ID_SHOW_IPC 6
 #define DEV_CLI_GROUP_ID_REBOOT 7
+#define DEV_CLI_GROUP_ID_SWAP_IMAGE 8
 
 typedef struct dev_cli_out
 {

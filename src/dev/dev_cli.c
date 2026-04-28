@@ -141,6 +141,36 @@ static int resolve_version_file(char *path, size_t path_size)
     return ERRCODE_FAIL;
 }
 
+/* 解析 image_tag 文件路径(由 swap-image.sh 写入)：
+ * 1) ${NN_WORK_DIR}/.image_tag
+ * 2) /opt/netnexus/.image_tag
+ */
+static int resolve_image_tag_file(char *path, size_t path_size)
+{
+    char *p = NULL;
+
+    const char *work_dir = getenv("NN_WORK_DIR");
+    if (work_dir && work_dir[0] != '\0')
+    {
+        p = g_build_filename(work_dir, ".image_tag", NULL);
+        if (access(p, R_OK) == 0)
+        {
+            strlcpy(path, p, path_size);
+            g_free(p);
+            return ERRCODE_SUCCESS;
+        }
+        g_free(p);
+    }
+
+    if (access("/opt/netnexus/.image_tag", R_OK) == 0)
+    {
+        strlcpy(path, "/opt/netnexus/.image_tag", path_size);
+        return ERRCODE_SUCCESS;
+    }
+
+    return ERRCODE_FAIL;
+}
+
 static const char *dev_phase_to_string(uint8_t phase)
 {
     switch (phase)
@@ -290,8 +320,20 @@ static int handle_show_version(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         }
     }
 
+    /* 镜像 tag 由 swap-image.sh 在替换镜像后写入,首次部署可能不存在 */
+    char image_tag[160] = "n/a";
+    char image_tag_path[PATH_MAX];
+    if (resolve_image_tag_file(image_tag_path, sizeof(image_tag_path)) == ERRCODE_SUCCESS)
+    {
+        if (file_read_first_line(image_tag_path, image_tag, sizeof(image_tag)) != ERRCODE_SUCCESS)
+        {
+            strlcpy(image_tag, "n/a", sizeof(image_tag));
+        }
+    }
+
     g_string_append(buf, "\r\nNetNexus Version Information:\r\n");
     g_string_append_printf(buf, "  Version      : %s\r\n", version);
+    g_string_append_printf(buf, "  Image        : %s\r\n", image_tag);
     g_string_append_printf(buf, "  Author       : %s\r\n", NN_AUTHOR);
     g_string_append_printf(buf, "  Email        : %s\r\n", NN_AUTHOR_EMAIL);
     g_string_append_printf(buf, "  Build Time   : %s %s\r\n", __DATE__, __TIME__);
@@ -326,6 +368,185 @@ static int handle_reboot(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     if (ret != ERRCODE_SUCCESS)
     {
         LOG_ERROR("Software reboot failed");
+    }
+
+    g_atomic_int_set(&g_reboot_in_progress, 0);
+    return ret;
+}
+
+/* 校验镜像名：仅允许 [A-Za-z0-9._:/-]，长度 1~128，防止命令注入 */
+static int dev_validate_image_name(const char *s)
+{
+    if (!s || s[0] == '\0')
+    {
+        return ERRCODE_FAIL;
+    }
+    size_t n = strlen(s);
+    if (n > 128)
+    {
+        return ERRCODE_FAIL;
+    }
+    for (size_t i = 0; i < n; i++)
+    {
+        char c = s[i];
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '_' ||
+              c == ':' || c == '/' || c == '-'))
+        {
+            return ERRCODE_FAIL;
+        }
+    }
+    return ERRCODE_SUCCESS;
+}
+
+/* 解析 swap-image helper 脚本路径：
+ * 1) ${NN_WORK_DIR}/scripts/swap-image.sh   （生产部署，由 package/deploy 安装）
+ * 2) /opt/netnexus/scripts/swap-image.sh    （生产默认路径）
+ * 3) <repo>/scripts/prod/swap-image.sh      （开发环境，可执行文件在 build/bin/）
+ */
+static int dev_resolve_swap_image_script(char *path, size_t path_size)
+{
+    char *p = NULL;
+
+    const char *work_dir = getenv("NN_WORK_DIR");
+    if (work_dir && work_dir[0] != '\0')
+    {
+        p = g_build_filename(work_dir, "scripts", "swap-image.sh", NULL);
+        if (access(p, X_OK) == 0)
+        {
+            strlcpy(path, p, path_size);
+            g_free(p);
+            return ERRCODE_SUCCESS;
+        }
+        g_free(p);
+    }
+
+    if (access("/opt/netnexus/scripts/swap-image.sh", X_OK) == 0)
+    {
+        strlcpy(path, "/opt/netnexus/scripts/swap-image.sh", path_size);
+        return ERRCODE_SUCCESS;
+    }
+
+    char exe_dir[PATH_MAX];
+    if (get_exe_dir(exe_dir, sizeof(exe_dir)) == 0)
+    {
+        p = g_build_filename(exe_dir, "..", "..", "scripts", "prod", "swap-image.sh", NULL);
+        if (access(p, X_OK) == 0)
+        {
+            strlcpy(path, p, path_size);
+            g_free(p);
+            return ERRCODE_SUCCESS;
+        }
+        g_free(p);
+    }
+
+    return ERRCODE_FAIL;
+}
+
+static int handle_dev_swap_image(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    char image[160] = {0};
+
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (CLI_TLV_IS_CTX(&entry))
+        {
+            cli_tlv_entry_free(&entry);
+            continue;
+        }
+        if (entry.cfg_id == 1)
+        {
+            const char *text = cli_tlv_entry_get_text(&entry);
+            if (text)
+            {
+                strlcpy(image, text, sizeof(image));
+            }
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    if (dev_validate_image_name(image) != ERRCODE_SUCCESS)
+    {
+        dev_send_cli_response(ctx, msg, "Dev Error: invalid image name (allowed [A-Za-z0-9._:/-], <=128).\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    if (!g_atomic_int_compare_and_exchange(&g_reboot_in_progress, 0, 1))
+    {
+        dev_send_cli_response(ctx, msg, "Dev: reboot/swap already in progress.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    char script[PATH_MAX];
+    if (dev_resolve_swap_image_script(script, sizeof(script)) != ERRCODE_SUCCESS)
+    {
+        g_atomic_int_set(&g_reboot_in_progress, 0);
+        dev_send_cli_response(ctx, msg, "Dev Error: swap-image.sh not found in scripts dir.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    /* 执行 helper：通过挂载的 docker.sock 操作镜像，替换容器内 /opt/netnexus/{bin,lib} */
+    char cmd[PATH_MAX + 256];
+    snprintf(cmd, sizeof(cmd), "'%s' '%s' 2>&1", script, image);
+
+    LOG_WARN("Swap-image requested: image=%s, script=%s", image, script);
+
+    FILE *fp = popen(cmd, "r");
+    if (!fp)
+    {
+        g_atomic_int_set(&g_reboot_in_progress, 0);
+        dev_send_cli_response(ctx, msg, "Dev Error: failed to launch swap-image helper.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    /* 脚本输出是 LF 行;telnet 渲染需要 CRLF,否则光标只下移不回首列,
+     * 出现阶梯状回显。逐行读时把行尾 '\n' 替换为 "\r\n"。 */
+    GString *log = g_string_new("");
+    char line[512];
+    while (fgets(line, sizeof(line), fp))
+    {
+        size_t n = strlen(line);
+        if (n > 0 && line[n - 1] == '\n')
+        {
+            line[n - 1] = '\0';
+            g_string_append(log, line);
+            g_string_append(log, "\r\n");
+        }
+        else
+        {
+            g_string_append(log, line);
+        }
+    }
+    int rc = pclose(fp);
+    int script_ok = (rc != -1 && WIFEXITED(rc) && WEXITSTATUS(rc) == 0);
+
+    if (!script_ok)
+    {
+        char head[256];
+        snprintf(head, sizeof(head), "Dev Error: swap-image failed (rc=%d). Log:\r\n", rc);
+        GString *resp = g_string_new(head);
+        g_string_append(resp, log->str);
+        g_string_append(resp, "\r\n");
+        dev_send_cli_response(ctx, msg, resp->str);
+        g_string_free(resp, TRUE);
+        g_string_free(log, TRUE);
+        g_atomic_int_set(&g_reboot_in_progress, 0);
+        LOG_ERROR("Swap-image script failed: image=%s rc=%d", image, rc);
+        return ERRCODE_FAIL;
+    }
+    g_string_free(log, TRUE);
+
+    /* 通知客户端：镜像已替换，即将软件重启 */
+    char ack[256];
+    snprintf(ack, sizeof(ack), "Dev: image '%s' applied, rebooting now. Reconnect later.\r\n", image);
+    dev_send_cli_response(ctx, msg, ack);
+    /* 短暂让出，提升 ACK 送达 CLI 客户端的概率 */
+    g_usleep(100 * 1000);
+
+    int ret = dev_reboot_software();
+    if (ret != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("Software reboot failed after swap-image");
     }
 
     g_atomic_int_set(&g_reboot_in_progress, 0);
@@ -811,6 +1032,9 @@ int dev_cli_handle_message(dev_ipc_message_t *msg)
             break;
         case DEV_CLI_GROUP_ID_REBOOT:
             result = handle_reboot(ctx, msg);
+            break;
+        case DEV_CLI_GROUP_ID_SWAP_IMAGE:
+            result = handle_dev_swap_image(ctx, msg, &parser);
             break;
         default:
             LOG_WARN("Unknown group_id: %u", parser.group_id);
