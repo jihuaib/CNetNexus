@@ -181,6 +181,34 @@ static const isis_if_af_cfg_t *isis_lsp_pick_active_af_cfg(const isis_instance_c
     return NULL;
 }
 
+static int isis_lsp_if_has_up_adjacency(const isis_instance_cfg_t *inst, const char *ifname, uint8_t level)
+{
+    if (!inst || !inst->neighbors || !ifname || ifname[0] == '\0')
+    {
+        return 0;
+    }
+
+    GHashTableIter iter;
+    gpointer key = NULL;
+    gpointer value = NULL;
+    g_hash_table_iter_init(&iter, inst->neighbors);
+    while (g_hash_table_iter_next(&iter, &key, &value))
+    {
+        (void)key;
+        const isis_neighbor_t *nbr = (const isis_neighbor_t *)value;
+        if (!nbr)
+        {
+            continue;
+        }
+        if (nbr->level == level && nbr->state == ISIS_ADJ_STATE_UP && strcmp(nbr->ifname, ifname) == 0)
+        {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 static int isis_hex_to_nibble(int c)
 {
     if (c >= '0' && c <= '9')
@@ -799,14 +827,14 @@ static void isis_lsp_send_if_cb(gpointer key, gpointer value, gpointer user_data
         return;
     }
 
-    if (ctx->pdu_l1 && ctx->pdu_l1_len > 0u)
+    if (ctx->pdu_l1 && ctx->pdu_l1_len > 0u && isis_lsp_if_has_up_adjacency(ctx->inst, if_cfg->ifname, 1u))
     {
         if (isis_lsp_send_pdu_on_if(ctx->raw_fd, if_entry, 1u, ctx->pdu_l1, ctx->pdu_l1_len) == 0)
         {
             ctx->sent_l1++;
         }
     }
-    if (ctx->pdu_l2 && ctx->pdu_l2_len > 0u)
+    if (ctx->pdu_l2 && ctx->pdu_l2_len > 0u && isis_lsp_if_has_up_adjacency(ctx->inst, if_cfg->ifname, 2u))
     {
         if (isis_lsp_send_pdu_on_if(ctx->raw_fd, if_entry, 2u, ctx->pdu_l2, ctx->pdu_l2_len) == 0)
         {
@@ -982,6 +1010,10 @@ static void isis_lsp_flood_if_cb(gpointer key, gpointer value, gpointer user_dat
         return;
     }
     if (ctx->ingress_ifindex != 0u && if_entry->ifindex == ctx->ingress_ifindex)
+    {
+        return;
+    }
+    if (!isis_lsp_if_has_up_adjacency(ctx->inst, if_cfg->ifname, ctx->level))
     {
         return;
     }

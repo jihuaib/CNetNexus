@@ -15,10 +15,8 @@ import ipaddress
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -370,16 +368,6 @@ def find_peer_ip(top: dict[str, Any], local: str, peer: str, local_if: str | Non
     return parse_cidr(peer_cidr)[0]
 
 
-def build_if_map_file(path: Path, endpoints: list[Endpoint]) -> None:
-    # endpoints 仅用于日志/校验，实际 if_map 内容固定写 GE-1..GE-4=eth1..eth4。
-    # 这样 remove_link/add_link 只需原位换网络即可保持 ethN 槽位对齐。
-    del endpoints
-    lines = ["# Auto-generated for topology run\n"]
-    for idx in range(1, GE_PORT_COUNT + 1):
-        lines.append(f"GE-{idx} = eth{idx}\n")
-    path.write_text("".join(lines), encoding="utf-8")
-
-
 def get_container_network_ip(container_name: str, network_name: str) -> str:
     raw = run_cmd(["docker", "inspect", container_name])
     payload = json.loads(raw)
@@ -451,7 +439,6 @@ class TopologyRuntime:
         connect_timeout: int = 90,
         verbose: bool = False,
         publish_cli_base: int | None = None,
-        override_if_map: bool = True,
     ) -> None:
         validate_top(top)
         self.top = top
@@ -461,7 +448,6 @@ class TopologyRuntime:
         self.cmd_timeout = cmd_timeout
         self.connect_timeout = connect_timeout
         self.verbose = verbose
-        self.override_if_map = override_if_map
 
         self.mgmt_net = f"{self.prefix}-mgmt"
         self.devices: dict[str, dict[str, Any]] = top["devices"]
@@ -477,9 +463,6 @@ class TopologyRuntime:
             )
         self.link_to_net: dict[str, str] = {}
         self.link_connected: set[str] = set()
-        self.tmpdir: Path | None = (
-            Path(tempfile.mkdtemp(prefix=f"{self.prefix}-")) if self.override_if_map else None
-        )
 
         self.container_names: list[str] = []
         self.link_networks: list[str] = []
@@ -654,7 +637,8 @@ class TopologyRuntime:
     def start(self, *, configure_interfaces: bool = True) -> None:
         run_cmd(["docker", "network", "create", "--ipv6", self.mgmt_net])
 
-        # 1) Create paused containers (optionally mount per-device if_map override).
+        # 1) Create paused containers. if_map.conf.gns3 由 image 自带的
+        # GE-1..GE-8=eth1..eth8 提供,不再 bind mount(避免阻碍 dev swap-image)。
         for dev in self.devices:
             cname = self._container_name(dev)
 
@@ -680,17 +664,6 @@ class TopologyRuntime:
                 "-v",
                 "/var/run/docker.sock:/var/run/docker.sock",
             ]
-            if self.override_if_map:
-                if self.tmpdir is None:
-                    raise RuntimeError("override_if_map=True but tmpdir is not initialized")
-                map_file = self.tmpdir / f"{sanitize_name(dev)}-if_map.conf.gns3"
-                build_if_map_file(map_file, self.endpoints[dev])
-                docker_run_cmd.extend(
-                    [
-                        "-v",
-                        f"{map_file}:/opt/netnexus/resources/if/if_map.conf.gns3:ro",
-                    ]
-                )
             if dev in self.cli_publish_ports:
                 docker_run_cmd.extend(["-p", f"{self.cli_publish_ports[dev]}:3788"])
             docker_run_cmd.extend([self.image, "sleep", "infinity"])
@@ -824,8 +797,6 @@ class TopologyRuntime:
             print(f"Containers: {', '.join(self.container_names)}")
             stub_list = sorted(self.stub_networks)
             print(f"Networks: {', '.join([self.mgmt_net] + self.link_networks + stub_list)}")
-            if self.tmpdir is not None:
-                print(f"Temp dir: {self.tmpdir}")
             return
 
         for name in self.container_names:
@@ -836,8 +807,6 @@ class TopologyRuntime:
             run_cmd(["docker", "network", "rm", net], check=False)
         self.stub_networks.clear()
         run_cmd(["docker", "network", "rm", self.mgmt_net], check=False)
-        if self.tmpdir is not None:
-            shutil.rmtree(self.tmpdir, ignore_errors=True)
 
         if failed:
             print("Cleanup complete after failure.", file=sys.stderr)

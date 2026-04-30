@@ -8,11 +8,17 @@
 #include "dev_cli.h"
 
 #include <arpa/inet.h>
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <glib.h>
 #include <limits.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/syscall.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "cli.h"
@@ -27,6 +33,8 @@
 static gint g_reboot_in_progress = 0;
 static FILE *g_ping_stream_fp = NULL;
 static int g_ping_stream_prefixed = 0;
+
+/* swap-image 改为后台线程模型,无需共享状态(参数全部下到 swap_async_args_t) */
 
 // ============================================================================
 // 内部辅助函数：show 命令
@@ -442,6 +450,163 @@ static int dev_resolve_swap_image_script(char *path, size_t path_size)
     return ERRCODE_FAIL;
 }
 
+/* 后台 swap 工作线程(前向声明,实现见下方)。
+ *
+ * dev 的 ipc-wk-dev 是单线程串行,绝不能 block。CFG → DEV 的 IPC 查询有
+ * 5s 超时,RESP_MORE 流式方案在 docker create/export 期间会撞超时。所以
+ * 改成后台线程跑:worker 立刻发 ACK 返回,后台线程独立完成脚本和 execv。
+ *
+ * 后台线程的 execv 会替换整个进程映像,杀掉所有线程(包括 ipc-wk-dev),
+ * 容器内 telnet 连接随之被关闭。客户端重连后看到的是新版 netnexus。
+ */
+static gpointer swap_async_worker(gpointer data);
+
+/* 后台线程参数(分配在堆上,线程结束前自释放) */
+typedef struct
+{
+    char script[PATH_MAX];
+    char image[160];
+    char netnexus_path[PATH_MAX];
+} swap_async_args_t;
+
+static gpointer swap_async_worker(gpointer data)
+{
+    swap_async_args_t *args = (swap_async_args_t *)data;
+
+    /* 日志路径:跟其它模块对齐,统一放 ${NN_WORK_DIR}/log/swap-image-<pid>.log。
+     * 回退 /opt/netnexus/log/...,最后 /tmp/...(NN_WORK_DIR 不可写时) */
+    char *log_dir = NULL;
+    const char *work_dir = getenv("NN_WORK_DIR");
+    if (work_dir && work_dir[0] != '\0')
+    {
+        log_dir = g_build_filename(work_dir, "log", NULL);
+    }
+    else
+    {
+        log_dir = g_strdup("/opt/netnexus/log");
+    }
+    if (g_mkdir_with_parents(log_dir, 0755) != 0)
+    {
+        LOG_WARN("swap-image: cannot create %s (%s), falling back to /tmp", log_dir, strerror(errno));
+        g_free(log_dir);
+        log_dir = g_strdup("/tmp");
+    }
+    char *log_path = g_strdup_printf("%s/swap-image-%d.log", log_dir, (int)getpid());
+    g_free(log_dir);
+
+    /* 把脚本输出重定向到日志文件,失败时方便排错;不再串流给客户端 */
+    char cmd[PATH_MAX + 512];
+    snprintf(cmd, sizeof(cmd), "'%s' '%s' > '%s' 2>&1", args->script, args->image, log_path);
+
+    LOG_WARN("swap-image: launching helper in background: %s", cmd);
+
+    int sysrc = system(cmd);
+    int script_ok = (sysrc != -1 && WIFEXITED(sysrc) && WEXITSTATUS(sysrc) == 0);
+
+    /* 失败时同样查 .image_tag 兜底:多进程 SIGCHLD race 仍可能让 system() 返回非 0 */
+    if (!script_ok)
+    {
+        char tag_path[PATH_MAX];
+        char tag_content[160] = {0};
+        if (resolve_image_tag_file(tag_path, sizeof(tag_path)) == ERRCODE_SUCCESS &&
+            file_read_first_line(tag_path, tag_content, sizeof(tag_content)) == ERRCODE_SUCCESS &&
+            strcmp(tag_content, args->image) == 0)
+        {
+            LOG_WARN("swap-image: system() rc=%d but .image_tag matches '%s', accept as success", sysrc, args->image);
+            script_ok = 1;
+        }
+    }
+
+    if (!script_ok)
+    {
+        LOG_ERROR("swap-image: script failed (rc=%d). See %s for details", sysrc, log_path);
+        g_atomic_int_set(&g_reboot_in_progress, 0);
+        g_free(log_path);
+        g_free(args);
+        return NULL;
+    }
+
+    LOG_WARN("swap-image: script succeeded, cleaning up child modules before execv");
+    cleanup_all_modules();
+
+    if (access(args->netnexus_path, X_OK) != 0)
+    {
+        LOG_ERROR("netnexus binary not executable at %s: %s", args->netnexus_path, strerror(errno));
+        g_atomic_int_set(&g_reboot_in_progress, 0);
+        g_free(log_path);
+        g_free(args);
+        return NULL;
+    }
+
+    LOG_WARN("swap-image: execv %s (image=%s)", args->netnexus_path, args->image);
+    fflush(NULL);
+
+    /* execv 前把 CWD 切到根目录:Dockerfile WORKDIR 让 netnexus 默认 CWD 是
+     * /opt/netnexus/bin,而 swap-image.sh 会把 bin → bin.old。execv 继承 CWD
+     * inode,下次 swap 触发的 `rm -rf bin.old` 会 unlink 这个 inode → 进程
+     * 进入"deleted CWD"状态,后续 bash/getcwd 全部报错。chdir("/") 让新进程
+     * 从根起步,bin/lib 无论怎么动都不影响 CWD。 */
+    if (chdir("/") != 0)
+    {
+        LOG_WARN("swap-image: chdir(/) failed: %s (continuing)", strerror(errno));
+    }
+
+    /* execv 前关 fd ≥ 3,避免新进程继承监听 socket 撞 EADDRINUSE */
+    {
+        int closed = 0;
+#if defined(__linux__) && defined(SYS_close_range)
+        if (syscall(SYS_close_range, 3, ~0U, 0) == 0)
+        {
+            closed = 1;
+        }
+#endif
+        if (!closed)
+        {
+            DIR *d = opendir("/proc/self/fd");
+            if (d)
+            {
+                int dfd = dirfd(d);
+                struct dirent *ent;
+                while ((ent = readdir(d)) != NULL)
+                {
+                    if (ent->d_name[0] == '.')
+                    {
+                        continue;
+                    }
+                    int fd = atoi(ent->d_name);
+                    if (fd >= 3 && fd != dfd)
+                    {
+                        close(fd);
+                    }
+                }
+                closedir(d);
+            }
+            else
+            {
+                long max_fd = sysconf(_SC_OPEN_MAX);
+                if (max_fd <= 0 || max_fd > 65536)
+                {
+                    max_fd = 1024;
+                }
+                for (int fd = 3; fd < (int)max_fd; fd++)
+                {
+                    close(fd);
+                }
+            }
+        }
+    }
+
+    char *new_argv[] = {args->netnexus_path, NULL};
+    execv(args->netnexus_path, new_argv);
+
+    /* execv 失败才会到这里 */
+    LOG_ERROR("execv(%s) failed: %s", args->netnexus_path, strerror(errno));
+    g_atomic_int_set(&g_reboot_in_progress, 0);
+    g_free(log_path);
+    g_free(args);
+    return NULL;
+}
+
 static int handle_dev_swap_image(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
     char image[160] = {0};
@@ -485,72 +650,49 @@ static int handle_dev_swap_image(dev_ipc_context_t *ctx, dev_ipc_message_t *msg,
         return ERRCODE_FAIL;
     }
 
-    /* 执行 helper：通过挂载的 docker.sock 操作镜像，替换容器内 /opt/netnexus/{bin,lib} */
-    char cmd[PATH_MAX + 256];
-    snprintf(cmd, sizeof(cmd), "'%s' '%s' 2>&1", script, image);
+    /* 准备后台线程参数 */
+    swap_async_args_t *args = g_new0(swap_async_args_t, 1);
+    strlcpy(args->script, script, sizeof(args->script));
+    strlcpy(args->image, image, sizeof(args->image));
+    const char *work_dir = getenv("NN_WORK_DIR");
+    if (work_dir && work_dir[0] != '\0')
+    {
+        snprintf(args->netnexus_path, sizeof(args->netnexus_path), "%s/bin/netnexus", work_dir);
+    }
+    else
+    {
+        strlcpy(args->netnexus_path, "/opt/netnexus/bin/netnexus", sizeof(args->netnexus_path));
+    }
 
-    LOG_WARN("Swap-image requested: image=%s, script=%s", image, script);
+    LOG_WARN("Swap-image requested: image=%s, script=%s (async)", image, script);
 
-    FILE *fp = popen(cmd, "r");
-    if (!fp)
+    GError *err = NULL;
+    GThread *th = g_thread_try_new("nn-swap", swap_async_worker, args, &err);
+    if (!th)
     {
         g_atomic_int_set(&g_reboot_in_progress, 0);
-        dev_send_cli_response(ctx, msg, "Dev Error: failed to launch swap-image helper.\r\n");
+        g_free(args);
+        char buf[256];
+        snprintf(buf, sizeof(buf), "Dev Error: failed to spawn swap thread: %s\r\n", err ? err->message : "unknown");
+        if (err)
+        {
+            g_error_free(err);
+        }
+        dev_send_cli_response(ctx, msg, buf);
         return ERRCODE_FAIL;
     }
+    g_thread_unref(th); /* detach,后台跑 */
 
-    /* 脚本输出是 LF 行;telnet 渲染需要 CRLF,否则光标只下移不回首列,
-     * 出现阶梯状回显。逐行读时把行尾 '\n' 替换为 "\r\n"。 */
-    GString *log = g_string_new("");
-    char line[512];
-    while (fgets(line, sizeof(line), fp))
-    {
-        size_t n = strlen(line);
-        if (n > 0 && line[n - 1] == '\n')
-        {
-            line[n - 1] = '\0';
-            g_string_append(log, line);
-            g_string_append(log, "\r\n");
-        }
-        else
-        {
-            g_string_append(log, line);
-        }
-    }
-    int rc = pclose(fp);
-    int script_ok = (rc != -1 && WIFEXITED(rc) && WEXITSTATUS(rc) == 0);
-
-    if (!script_ok)
-    {
-        char head[256];
-        snprintf(head, sizeof(head), "Dev Error: swap-image failed (rc=%d). Log:\r\n", rc);
-        GString *resp = g_string_new(head);
-        g_string_append(resp, log->str);
-        g_string_append(resp, "\r\n");
-        dev_send_cli_response(ctx, msg, resp->str);
-        g_string_free(resp, TRUE);
-        g_string_free(log, TRUE);
-        g_atomic_int_set(&g_reboot_in_progress, 0);
-        LOG_ERROR("Swap-image script failed: image=%s rc=%d", image, rc);
-        return ERRCODE_FAIL;
-    }
-    g_string_free(log, TRUE);
-
-    /* 通知客户端：镜像已替换，即将软件重启 */
-    char ack[256];
-    snprintf(ack, sizeof(ack), "Dev: image '%s' applied, rebooting now. Reconnect later.\r\n", image);
+    /* 立刻给客户端 ACK,不在 IPC 路径里等脚本 */
+    const char *ack_log_dir = (work_dir && work_dir[0] != '\0') ? work_dir : "/opt/netnexus";
+    char ack[384];
+    snprintf(ack, sizeof(ack),
+             "\r\nDev: swap-image started for '%s' (running in background).\r\n"
+             "     Telnet will drop when re-exec fires; reconnect later.\r\n"
+             "     Script log: %s/log/swap-image-<pid>.log\r\n",
+             image, ack_log_dir);
     dev_send_cli_response(ctx, msg, ack);
-    /* 短暂让出，提升 ACK 送达 CLI 客户端的概率 */
-    g_usleep(100 * 1000);
-
-    int ret = dev_reboot_software();
-    if (ret != ERRCODE_SUCCESS)
-    {
-        LOG_ERROR("Software reboot failed after swap-image");
-    }
-
-    g_atomic_int_set(&g_reboot_in_progress, 0);
-    return ret;
+    return ERRCODE_SUCCESS;
 }
 
 static int handle_set_log_level(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_parser_t *parser)

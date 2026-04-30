@@ -460,14 +460,19 @@ static int isis_tlv_append(uint8_t *buf, size_t cap, size_t *len_io, uint8_t typ
     return 0;
 }
 
-static int isis_build_iih_pdu(const isis_instance_cfg_t *inst, const if_api_cache_entry_t *if_entry, uint8_t level,
-                              const uint8_t system_id[6], uint16_t hold_time_sec, uint8_t *pdu, size_t pdu_cap,
-                              size_t *pdu_len_out)
+static int isis_build_iih_pdu(const isis_instance_cfg_t *inst, const isis_if_cfg_t *if_cfg,
+                              const if_api_cache_entry_t *if_entry, uint8_t level, const uint8_t system_id[6],
+                              uint16_t hold_time_sec, uint8_t *pdu, size_t pdu_cap, size_t *pdu_len_out)
 {
-    if (!inst || !if_entry || !system_id || !pdu || !pdu_len_out || pdu_cap < ISIS_LAN_IIH_HDR_LEN)
+    if (!inst || !if_cfg || !if_entry || !system_id || !pdu || !pdu_len_out || pdu_cap < ISIS_LAN_IIH_HDR_LEN)
     {
         return -1;
     }
+
+    const isis_if_af_cfg_t *af_cfg_v4 = isis_neighbor_if_af_cfg(inst, if_cfg, ROUTE_AFI_IPV4);
+    const isis_if_af_cfg_t *af_cfg_v6 = isis_neighbor_if_af_cfg(inst, if_cfg, ROUTE_AFI_IPV6);
+    int adv_v4 = (af_cfg_v4 && !af_cfg_v4->passive) ? 1 : 0;
+    int adv_v6 = (af_cfg_v6 && !af_cfg_v6->passive) ? 1 : 0;
 
     size_t p = 0;
     pdu[p++] = ISIS_NLPID;
@@ -512,11 +517,11 @@ static int isis_build_iih_pdu(const isis_instance_cfg_t *inst, const if_api_cach
 
     uint8_t nlpids[2];
     uint8_t nlpids_len = 0u;
-    if (inst->af_ipv4)
+    if (adv_v4)
     {
         nlpids[nlpids_len++] = ISIS_NLPID_IPV4;
     }
-    if (inst->af_ipv6)
+    if (adv_v6)
     {
         nlpids[nlpids_len++] = ISIS_NLPID_IPV6;
     }
@@ -528,14 +533,14 @@ static int isis_build_iih_pdu(const isis_instance_cfg_t *inst, const if_api_cach
         }
     }
 
-    if (inst->af_ipv4 && if_entry->ipv4_addr.family == AF_INET)
+    if (adv_v4 && if_entry->ipv4_addr.family == AF_INET)
     {
         if (isis_tlv_append(pdu, pdu_cap, &p, ISIS_TLV_IPV4_INTF_ADDR, &if_entry->ipv4_addr.u.v4, 4u) != 0)
         {
             return -1;
         }
     }
-    if (inst->af_ipv6 && if_entry->ipv6_linklocal_addr.family == AF_INET6)
+    if (adv_v6 && if_entry->ipv6_linklocal_addr.family == AF_INET6)
     {
         if (isis_tlv_append(pdu, pdu_cap, &p, ISIS_TLV_IPV6_INTF_ADDR, &if_entry->ipv6_linklocal_addr.u.v6, 16u) != 0)
         {
@@ -629,7 +634,7 @@ static void isis_send_iih_on_if(isis_instance_cfg_t *inst, isis_if_cfg_t *if_cfg
 
     uint8_t pdu[256];
     size_t pdu_len = 0;
-    if (isis_build_iih_pdu(inst, if_entry, level, system_id, hold_time_sec, pdu, sizeof(pdu), &pdu_len) != 0)
+    if (isis_build_iih_pdu(inst, if_cfg, if_entry, level, system_id, hold_time_sec, pdu, sizeof(pdu), &pdu_len) != 0)
     {
         return;
     }

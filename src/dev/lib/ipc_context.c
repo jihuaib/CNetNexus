@@ -868,14 +868,33 @@ static int create_listen_socket(const char *host, uint16_t port)
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
+    addr.sin_family = AF_INET;
     if (inet_pton(AF_INET, host, &addr.sin_addr) != 1)
     {
         addr.sin_addr.s_addr = INADDR_ANY;
     }
 
-    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0)
+    /* `dev swap-image` 触发 execv 时,旧进程 close_range 关闭监听 socket 后
+     * 内核需要短暂时间(通常 <1s)才把端口完全归还。新进程同 PID 立即 bind
+     * 容易撞 EADDRINUSE。这里对 EADDRINUSE 做有限重试(总等待 ≤ 2s),
+     * 其它错误立即失败。SO_REUSEADDR 已设但解决不了这种"刚 close 完"的窗口。 */
+    int rc;
+    int attempts = 0;
+    const int max_attempts = 10;
+    while ((rc = bind(fd, (struct sockaddr *)&addr, sizeof(addr))) < 0)
+    {
+        if (errno != EADDRINUSE || ++attempts >= max_attempts)
+        {
+            break;
+        }
+        if (attempts == 1)
+        {
+            LOG_WARN("port %u busy, retrying bind (likely post-exec port drain)", port);
+        }
+        usleep(200 * 1000);
+    }
+    if (rc < 0)
     {
         close(fd);
         return -1;

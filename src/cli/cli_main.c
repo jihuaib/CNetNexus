@@ -8,6 +8,7 @@
 
 #include <arpa/inet.h>
 #include <dirent.h>
+#include <errno.h>
 #include <glib.h>
 #include <limits.h>
 #include <netinet/in.h>
@@ -18,6 +19,7 @@
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include "cli.h"
 #include "cli_handler.h"
@@ -160,7 +162,25 @@ int32_t cli_create_listen_sock()
     server_addr.sin_addr.s_addr = INADDR_ANY;
     server_addr.sin_port = htons(CLI_PORT);
 
-    if (bind(server_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
+    /* dev swap-image 触发 execv 后,旧进程刚 close 的监听端口需要短暂时间
+     * 才被内核完全释放。SO_REUSEADDR 解决不了这个窗口,这里对 EADDRINUSE
+     * 做有限重试(总等待 ≤ 2s),保证 execv 后 telnet 接入口能稳定 bind。 */
+    int bind_rc;
+    int bind_attempts = 0;
+    const int bind_max_attempts = 10;
+    while ((bind_rc = bind(server_socket, (struct sockaddr *)&server_addr, sizeof(server_addr))) < 0)
+    {
+        if (errno != EADDRINUSE || ++bind_attempts >= bind_max_attempts)
+        {
+            break;
+        }
+        if (bind_attempts == 1)
+        {
+            LOG_WARN("Telnet port %d busy, retrying bind (likely post-exec port drain)", CLI_PORT);
+        }
+        usleep(200 * 1000);
+    }
+    if (bind_rc < 0)
     {
         close(server_socket);
         LOG_PERROR("Failed to bind socket");
