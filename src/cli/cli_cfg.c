@@ -18,7 +18,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include "cli_cfg_anchor.h"
+#include "cli.h"
 #include "cli_handler.h"
 #include "cli_main.h"
 #include "dev.h"

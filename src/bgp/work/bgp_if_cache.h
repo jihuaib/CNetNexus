@@ -12,7 +12,7 @@
 #include <sys/socket.h>
 
 #include "dev.h"
-#include "if_event.h"
+#include "if.h"
 #include "net_addr.h"
 
 /**

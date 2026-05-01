@@ -9,8 +9,7 @@
 #include <string.h>
 
 #include "errcode.h"
-#include "if_api.h"
-#include "if_event.h"
+#include "if.h"
 #include "isis.h"
 #include "isis_main.h"
 #include "isis_route.h"

@@ -95,9 +95,15 @@ static int bgp_import_route_entry(const route_msg_entry_t *entry)
 
     net_addr_t src = entry->source_addr;
 
+    bgp_rib_t *rib = bgp_inst_rib_ensure_for_nlri(inst, &nlri);
+    if (!rib)
+    {
+        return 0;
+    }
+
     if (entry->is_withdraw)
     {
-        int rc = bgp_rib_unreach_one(inst->rib, &nlri, &src);
+        int rc = bgp_rib_unreach_one(rib, &nlri, &src);
         /* 与对端 UPDATE 处理保持一致：撤销成功后触发一次优选，决定是否发 WITHDRAW */
         if (rc == 1 && inst->calc_queue)
         {
@@ -115,7 +121,7 @@ static int bgp_import_route_entry(const route_msg_entry_t *entry)
         bgp_nexthop_t nexthop;
         bgp_nexthop_from_addr(&nexthop, &entry->nexthop_addr);
 
-        bgp_rthead_t *head = bgp_rib_ensure_head(inst->rib, &nlri);
+        bgp_rthead_t *head = bgp_rib_ensure_head(rib, &nlri);
         if (!head)
         {
             return 0;
@@ -125,7 +131,7 @@ static int bgp_import_route_entry(const route_msg_entry_t *entry)
         int rc = 0;
         if (!route)
         {
-            route = bgp_rthead_create_route(inst->rib, head, &src);
+            route = bgp_rthead_create_route(rib, head, &src);
             if (!route)
             {
                 return 0;

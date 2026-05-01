@@ -14,7 +14,7 @@
 #include <unistd.h>
 
 #include "errcode.h"
-#include "if.h"
+#include "if_netlink.h"
 #include "if_worker.h"
 #include "log.h"
 

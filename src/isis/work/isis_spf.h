@@ -10,7 +10,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "if_api.h"
+#include "if.h"
 #include "isis_worker.h"
 
 void isis_spf_process_lsp(isis_instance_cfg_t *inst, uint8_t level, const uint8_t origin_sysid[6],

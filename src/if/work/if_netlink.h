@@ -1,11 +1,11 @@
 /**
- * @file   if.h
+ * @file   if_netlink.h
  * @brief  接口配置模块头文件
  * @author jhb
  * @date   2026/01/22
  */
-#ifndef IF_H
-#define IF_H
+#ifndef IF_NETLINK_H
+#define IF_NETLINK_H
 
 #include <arpa/inet.h>
 #include <net/if.h>
@@ -88,4 +88,4 @@ int if_blackhole_route_add(sa_family_t family, const void *prefix_bin, uint8_t p
 // 撤销 Linux 黑洞路由
 int if_blackhole_route_del(sa_family_t family, const void *prefix_bin, uint8_t prefix_len);
 
-#endif // IF_H
+#endif // IF_NETLINK_H

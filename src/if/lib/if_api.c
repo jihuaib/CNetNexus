@@ -4,12 +4,11 @@
  * @author jhb
  * @date   2026/04/11
  */
-#include "if_api.h"
-
 #include <net/if.h>
 #include <string.h>
 
 #include "errcode.h"
+#include "if.h"
 #include "log.h"
 #include "route.h"
 

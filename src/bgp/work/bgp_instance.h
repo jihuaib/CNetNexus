@@ -18,18 +18,23 @@
 
 /* bgp_peer.h 已前向声明 bgp_vrf_t，此处直接使用 */
 typedef struct bgp_rib bgp_rib_t;
+typedef struct bgp_rd_entry bgp_rd_entry_t;
 typedef struct bgp_calc_queue bgp_calc_queue_t;
 typedef struct bgp_route_flush_queue bgp_route_flush_queue_t;
 
 /**
  * @brief BGP 地址族实例（持有该 AF 下所有已使能邻居的 bgp_peer_t 所有权）
+ *
+ * RIB 存储结构：每个 RD 一张 RIB，挂在 protocol->rd_hash 的 entry 上。
+ * 本实例只通过 rd_entries 持有借用引用列表，便于按 AF 维度遍历所有 RD。
+ * 公网（包含非 VPN AF）由 RD 全 0 的 entry 占位，bgp_instance_create 时自动注入。
  */
 typedef struct bgp_instance
 {
-    bgp_afi_t afi;         /**< 地址族 */
-    bgp_safi_t safi;       /**< 子地址族 */
-    GHashTable *peer_hash; /**< net_addr_t* -> bgp_peer_t*（持有所有权，按二进制地址索引） */
-    bgp_rib_t *rib; /**< 该 AFI/SAFI 的内存 RIB（持有所有权，最优路径为每个 rthead 链表首元素） */
+    bgp_afi_t afi;                /**< 地址族 */
+    bgp_safi_t safi;              /**< 子地址族 */
+    GHashTable *peer_hash;        /**< net_addr_t* -> bgp_peer_t*（持有所有权，按二进制地址索引） */
+    GHashTable *rd_entries;       /**< bgp_rd_t* -> bgp_rd_entry_t*（借用，所有权在 protocol->rd_hash） */
     bgp_vrf_t *vrf;               /**< 所属 VRF（借用引用，不持有所有权） */
     uint32_t import_protos;       /**< 已导入协议位掩码：bit N 置 1 表示 protocol=N 已导入 */
     bgp_calc_queue_t *calc_queue; /**< best-path 待处理队列（持有所有权） */
@@ -89,5 +94,40 @@ void bgp_instance_destroy(bgp_instance_t *inst);
  * 用于配置删除/协议关闭路径，确保销毁前完成已排队的数据队列处理。
  */
 void bgp_instance_drain_pending(bgp_instance_t *inst);
+
+/**
+ * @brief 取该实例下公网（rd=0）entry 的 RIB
+ *
+ * 等价于 bgp_inst_rib_for_nlri(inst, NLRI_with_zero_rd)，专供没有 NLRI 上下文
+ * 但只关心非 VPN AF 的调用方（例如统计/show-all/qp 重哈希）。
+ * VPN AF 调用此函数仅返回 RD=0 entry 的 RIB，不代表全部 VPN 路由。
+ */
+bgp_rib_t *bgp_inst_public_rib(bgp_instance_t *inst);
+
+/**
+ * @brief 按 NLRI 选取所属 RIB
+ *
+ * 非 VPN AF：永远返回公网 entry 的 RIB。
+ * VPN AF：从 NLRI 提取 RD，按 RD 在 inst->rd_entries 中查找对应 entry 的 RIB；
+ *         未找到返回 NULL（调用方自行决定是否 ensure）。
+ */
+bgp_rib_t *bgp_inst_rib_for_nlri(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri);
+
+/**
+ * @brief 按 NLRI 选取或创建 RIB（VPN AF 收报文时按 RD 自动 ensure entry）
+ */
+bgp_rib_t *bgp_inst_rib_ensure_for_nlri(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri);
+
+/**
+ * @brief 遍历回调类型：处理一个 RD entry 的 RIB
+ */
+typedef void (*bgp_inst_rib_iter_cb)(bgp_instance_t *inst, bgp_rd_entry_t *entry, bgp_rib_t *rib, gpointer user_data);
+
+/**
+ * @brief 遍历实例下所有 RD entry，对每个 entry 的 RIB 调用回调
+ *
+ * 用于全 AF 维度的统计/show 操作。
+ */
+void bgp_inst_foreach_rib(bgp_instance_t *inst, bgp_inst_rib_iter_cb cb, gpointer user_data);
 
 #endif /* BGP_INSTANCE_H */

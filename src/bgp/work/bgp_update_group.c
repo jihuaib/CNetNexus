@@ -16,6 +16,7 @@
 #include "bgp_instance.h"
 #include "bgp_peer.h"
 #include "bgp_pkt.h"
+#include "bgp_rd.h"
 #include "bgp_rib.h"
 #include "bgp_vrf.h"
 #include "bgp_worker.h"
@@ -639,12 +640,13 @@ bool bgp_subgroup_eval_export(const bgp_nh_subgroup_t *sg, const bgp_route_node_
 
 void bgp_update_group_enqueue_announce(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
 {
-    if (!inst || !nlri || !inst->rib)
+    if (!inst || !nlri)
     {
         return;
     }
 
-    const bgp_route_node_t *best = bgp_rib_find_best(inst->rib, nlri);
+    bgp_rib_t *rib = bgp_inst_rib_for_nlri(inst, nlri);
+    const bgp_route_node_t *best = rib ? bgp_rib_find_best(rib, nlri) : NULL;
     if (!best)
     {
         /* 无 best：走 withdraw 通路 */
@@ -905,9 +907,21 @@ void bgp_update_group_catchup_session(bgp_session_t *sess)
             }
         }
 
-        if (any_empty && inst->rib)
+        if (any_empty && inst->rd_entries)
         {
-            bgp_rib_foreach_best(inst->rib, catchup_populate_best_cb, inst);
+            /* 跨所有 RD entry 注入 best-path 到 catchup */
+            GHashTableIter rd_iter;
+            gpointer rd_key, rd_val;
+            g_hash_table_iter_init(&rd_iter, inst->rd_entries);
+            while (g_hash_table_iter_next(&rd_iter, &rd_key, &rd_val))
+            {
+                (void)rd_key;
+                bgp_rd_entry_t *e = (bgp_rd_entry_t *)rd_val;
+                if (e && e->rib)
+                {
+                    bgp_rib_foreach_best(e->rib, catchup_populate_best_cb, inst);
+                }
+            }
         }
         if (any_populated)
         {
@@ -1217,7 +1231,8 @@ int bgp_subgroup_process_queues(bgp_nh_subgroup_t *sg, bgp_instance_t *inst, int
 
         announce_item_t *item = g_new0(announce_item_t, 1);
         item->nlri = nlri;
-        const bgp_route_node_t *best = inst->rib ? bgp_rib_find_best(inst->rib, nlri) : NULL;
+        bgp_rib_t *rib_for_nlri = bgp_inst_rib_for_nlri(inst, nlri);
+        const bgp_route_node_t *best = rib_for_nlri ? bgp_rib_find_best(rib_for_nlri, nlri) : NULL;
         if (best)
         {
             item->source = best->source;

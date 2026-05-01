@@ -5,11 +5,10 @@
  * @date   2026/04/17
  */
 
-#include "cli_cfg_anchor.h"
-
 #include <stdint.h>
 #include <string.h>
 
+#include "cli.h"
 #include "log.h"
 
 /* 默认段尾, 属主未声明 footer 时使用 */

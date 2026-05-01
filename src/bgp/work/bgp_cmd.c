@@ -26,7 +26,7 @@
 #include "bgp_relay.h"
 #include "bgp_worker.h"
 #include "errcode.h"
-#include "if_api.h"
+#include "if.h"
 #include "log.h"
 #include "route.h"
 

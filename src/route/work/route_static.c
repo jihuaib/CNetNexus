@@ -10,8 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "if_api.h"
-#include "if_event.h"
+#include "if.h"
 #include "log.h"
 #include "net_addr.h"
 #include "route.h"

@@ -25,7 +25,7 @@
 #include <unistd.h>
 
 #include "errcode.h"
-#include "if_event.h"
+#include "if.h"
 #include "if_main.h"
 #include "log.h"
 #include "work/if_cfg_apply.h"

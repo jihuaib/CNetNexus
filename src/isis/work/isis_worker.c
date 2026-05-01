@@ -13,7 +13,7 @@
 #include <unistd.h>
 
 #include "errcode.h"
-#include "if_api.h"
+#include "if.h"
 #include "isis.h"
 #include "isis_neighbor.h"
 #include "isis_route.h"

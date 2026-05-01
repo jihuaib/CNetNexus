@@ -16,12 +16,14 @@
  * @brief BGP 全局协议结构
  *
  * vrf_hash：key = uint32_t*(vrf_id)，value = bgp_vrf_t*（持有所有权）
+ * rd_hash ：key = bgp_rd_key_t*(指向 entry->key)，value = bgp_rd_entry_t*（持有所有权）
  * bgp_protocol_create 时自动创建 vrf_id=0 的默认公网 VRF。
  */
 typedef struct bgp_protocol
 {
     uint32_t as_number;   /**< 本地 AS 号 */
     GHashTable *vrf_hash; /**< uint32_t* vrf_id -> bgp_vrf_t*（持有所有权） */
+    GHashTable *rd_hash;  /**< bgp_rd_key_t* -> bgp_rd_entry_t*（持有所有权） */
 } bgp_protocol_t;
 
 /**

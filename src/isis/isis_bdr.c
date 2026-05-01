@@ -10,7 +10,6 @@
 #include <string.h>
 
 #include "cli.h"
-#include "cli_cfg_anchor.h"
 #include "db.h"
 #include "errcode.h"
 #include "isis.h"

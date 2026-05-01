@@ -13,7 +13,7 @@
 
 #include "cli.h"
 #include "errcode.h"
-#include "if_api.h"
+#include "if.h"
 #include "isis.h"
 #include "isis_cli.h"
 #include "isis_main.h"

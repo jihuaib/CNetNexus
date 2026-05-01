@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "bgp_attr_intern.h"
+#include "bgp_rd.h"
 #include "net_addr.h"
 
 /**
@@ -34,7 +35,8 @@ static bgp_rthead_t *rthead_create(const bgp_nlri_entry_t *nlri, bgp_rib_t *rib)
     {
         memcpy(&head->nlri, nlri, sizeof(*nlri));
     }
-    head->inst = rib ? rib->inst : NULL;
+    /* inst 经 rd_entry 反向解引用得到（rd_entry 在 bgp_rib_create 之后由调用方装填） */
+    head->inst = (rib && rib->rd_entry) ? rib->rd_entry->inst : NULL;
     head->route_list = NULL; /* 路径列表，首元素为当前最优路径 */
     head->queue_refcnt = 0;
     return head;

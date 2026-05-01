@@ -910,7 +910,13 @@ static gboolean qp_route_cfg_equal(const bgp_qp_route_cfg_t *a, const bgp_qp_rou
  */
 static int qp_inject_cfg_entries(bgp_instance_t *inst, const bgp_qp_route_cfg_t *cfg, gboolean withdraw)
 {
-    if (!inst || !inst->rib || !cfg)
+    if (!inst || !cfg)
+    {
+        return -1;
+    }
+    /* QP 是非 VPN AF，公网 RIB 即唯一 RIB */
+    bgp_rib_t *rib = bgp_inst_public_rib(inst);
+    if (!rib)
     {
         return -1;
     }
@@ -934,7 +940,7 @@ static int qp_inject_cfg_entries(bgp_instance_t *inst, const bgp_qp_route_cfg_t 
 
         if (withdraw)
         {
-            int rc = bgp_rib_unreach_one(inst->rib, &nlri, &src);
+            int rc = bgp_rib_unreach_one(rib, &nlri, &src);
             if (rc == 1 && inst->calc_queue)
             {
                 bgp_calc_queue_push(inst->calc_queue, inst, &nlri);
@@ -942,7 +948,7 @@ static int qp_inject_cfg_entries(bgp_instance_t *inst, const bgp_qp_route_cfg_t 
             continue;
         }
 
-        bgp_rthead_t *head = bgp_rib_ensure_head(inst->rib, &nlri);
+        bgp_rthead_t *head = bgp_rib_ensure_head(rib, &nlri);
         if (!head)
         {
             continue;
@@ -950,7 +956,7 @@ static int qp_inject_cfg_entries(bgp_instance_t *inst, const bgp_qp_route_cfg_t 
         bgp_route_node_t *route = bgp_rthead_lookup_route_mut(head, &src);
         if (!route)
         {
-            route = bgp_rthead_create_route(inst->rib, head, &src);
+            route = bgp_rthead_create_route(rib, head, &src);
             if (!route)
             {
                 continue;
@@ -1141,11 +1147,14 @@ void bgp_cfg_apply_route_select(bgp_apply_cmd_t *apply)
     }
     inst->route_select_enabled = want;
 
-    /* 重新优选所有 rthead：触发 announce（开启时）或 withdraw（关闭时） */
-    if (inst->rib && inst->rib->head_tree)
+    /* 重新优选所有 rthead：触发 announce（开启时）或 withdraw（关闭时）。QP 仅公网 RIB。 */
     {
-        qp_rehash_ctx_t ctx = {inst};
-        g_tree_foreach(inst->rib->head_tree, qp_rehash_cb, &ctx);
+        bgp_rib_t *rib = bgp_inst_public_rib(inst);
+        if (rib && rib->head_tree)
+        {
+            qp_rehash_ctx_t ctx = {inst};
+            g_tree_foreach(rib->head_tree, qp_rehash_cb, &ctx);
+        }
     }
     apply->rc = BGP_APPLY_RC_OK;
 }

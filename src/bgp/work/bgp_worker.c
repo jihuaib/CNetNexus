@@ -26,7 +26,7 @@
 #include "bgp_update_group.h"
 #include "bgp_vrf.h"
 #include "errcode.h"
-#include "if_api.h"
+#include "if.h"
 #include "log.h"
 #include "net_addr.h"
 

@@ -13,7 +13,7 @@
 #include "errcode.h"
 #include "if_main.h"
 #include "log.h"
-#include "work/if.h"
+#include "work/if_netlink.h"
 #include "work/if_worker.h"
 
 static const db_column_def_t IF_INTERFACE_COLS[] = {

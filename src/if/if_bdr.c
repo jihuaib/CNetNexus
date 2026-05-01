@@ -16,7 +16,6 @@
 #include <string.h>
 
 #include "cli.h"
-#include "cli_cfg_anchor.h"
 #include "db.h"
 #include "dev.h"
 #include "errcode.h"

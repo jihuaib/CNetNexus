@@ -15,8 +15,9 @@
 #include "bit.h"
 #include "net_addr.h"
 
-/* 前向声明：bgp_instance_t 与 bgp_rib_t 相互引用 */
+/* 前向声明：bgp_instance_t / bgp_rd_entry_t 与 bgp_rib_t 相互引用 */
 typedef struct bgp_instance bgp_instance_t;
+typedef struct bgp_rd_entry bgp_rd_entry_t;
 typedef struct bgp_rthead bgp_rthead_t;
 
 /** 路由标记位：当前最优路径（由 bgp_calc 置位，需同时满足位于链表首位） */
@@ -69,13 +70,16 @@ struct bgp_rthead
 
 /**
  * @brief BGP 内存 RIB
+ *
+ * 每个 RIB 隶属于一个 RD entry；RD entry 又隶属于 (vrf, afi, safi) 实例。
+ * 通过 rd_entry->inst 可回查 instance/vrf；rd_entry->key.rd 可拿到 RD。
  */
 typedef struct bgp_rib
 {
     GTree *head_tree;     /**< key = &head->nlri（直接指入值，无需堆分配），按 NLRI 二进制比较 */
     uint32_t head_count;  /**< rthead 总数 */
     uint32_t route_count; /**< route 总数（所有 rthead 下累计） */
-    bgp_instance_t *inst; /**< 所属 AF 实例（借用引用，NULL 表示独立/测试使用） */
+    bgp_rd_entry_t *rd_entry; /**< 所属 RD entry（借用引用） */
 } bgp_rib_t;
 
 /**

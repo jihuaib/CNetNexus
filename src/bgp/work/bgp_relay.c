@@ -11,6 +11,7 @@
 #include "bgp_instance.h"
 #include "bgp_main.h"
 #include "bgp_protocol.h"
+#include "bgp_rd.h"
 #include "bgp_rib.h"
 #include "bgp_session.h"
 #include "bgp_vrf.h"
@@ -192,12 +193,18 @@ static int bgp_relay_reach_route_to_rib(bgp_instance_t *inst, const bgp_nlri_ent
     {
         *route_out = NULL;
     }
-    if (!inst || !inst->rib || !nlri || !source || source->family == 0 || !attr || !nexthop)
+    if (!inst || !nlri || !source || source->family == 0 || !attr || !nexthop)
     {
         return -1;
     }
 
-    bgp_rthead_t *head = bgp_rib_ensure_head(inst->rib, nlri);
+    bgp_rib_t *rib = bgp_inst_rib_ensure_for_nlri(inst, nlri);
+    if (!rib)
+    {
+        return -1;
+    }
+
+    bgp_rthead_t *head = bgp_rib_ensure_head(rib, nlri);
     if (!head)
     {
         return -1;
@@ -207,7 +214,7 @@ static int bgp_relay_reach_route_to_rib(bgp_instance_t *inst, const bgp_nlri_ent
     gboolean is_new = FALSE;
     if (!route)
     {
-        route = bgp_rthead_create_route(inst->rib, head, source);
+        route = bgp_rthead_create_route(rib, head, source);
         if (!route)
         {
             return -1;
@@ -220,7 +227,7 @@ static int bgp_relay_reach_route_to_rib(bgp_instance_t *inst, const bgp_nlri_ent
         return -1;
     }
 
-    if (bgp_rib_set_route_valid(inst->rib, nlri, source, FALSE) < 0)
+    if (bgp_rib_set_route_valid(rib, nlri, source, FALSE) < 0)
     {
         return -1;
     }
@@ -239,12 +246,17 @@ static int bgp_relay_reach_route_to_rib(bgp_instance_t *inst, const bgp_nlri_ent
 static int bgp_relay_withdraw_route_from_rib(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri,
                                              const net_addr_t *source)
 {
-    if (!inst || !inst->rib || !nlri || !source || source->family == 0)
+    if (!inst || !nlri || !source || source->family == 0)
     {
         return -1;
     }
 
-    int rc = bgp_rib_unreach_one(inst->rib, nlri, source);
+    bgp_rib_t *rib = bgp_inst_rib_for_nlri(inst, nlri);
+    if (!rib)
+    {
+        return 0;
+    }
+    int rc = bgp_rib_unreach_one(rib, nlri, source);
     if (rc == 1 && inst->calc_queue)
     {
         bgp_calc_queue_push(inst->calc_queue, inst, nlri);
@@ -255,12 +267,17 @@ static int bgp_relay_withdraw_route_from_rib(bgp_instance_t *inst, const bgp_nlr
 static int bgp_relay_set_route_valid(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri, const net_addr_t *source,
                                      gboolean valid)
 {
-    if (!inst || !inst->rib || !nlri || !source || source->family == 0)
+    if (!inst || !nlri || !source || source->family == 0)
     {
         return -1;
     }
 
-    int rc = bgp_rib_set_route_valid(inst->rib, nlri, source, valid);
+    bgp_rib_t *rib = bgp_inst_rib_for_nlri(inst, nlri);
+    if (!rib)
+    {
+        return 0;
+    }
+    int rc = bgp_rib_set_route_valid(rib, nlri, source, valid);
     if (rc > 0 && inst->calc_queue)
     {
         bgp_calc_queue_push(inst->calc_queue, inst, nlri);
@@ -444,12 +461,17 @@ static bgp_relay_nh_watch_t *bgp_relay_attach_route_to_watch(bgp_route_node_t *r
 static int bgp_relay_route_remove_from_inst(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri,
                                             const net_addr_t *source)
 {
-    if (!inst || !inst->rib || !nlri || !source || source->family == 0)
+    if (!inst || !nlri || !source || source->family == 0)
     {
         return -1;
     }
 
-    const bgp_rthead_t *head_ro = bgp_rib_lookup_head(inst->rib, nlri);
+    bgp_rib_t *rib = bgp_inst_rib_for_nlri(inst, nlri);
+    if (!rib)
+    {
+        return 0;
+    }
+    const bgp_rthead_t *head_ro = bgp_rib_lookup_head(rib, nlri);
     if (!head_ro)
     {
         return 0;
@@ -505,12 +527,13 @@ static int bgp_relay_route_upsert(uint32_t vrf_id, const bgp_nlri_entry_t *nlri,
     }
 
     bgp_instance_t *inst = bgp_relay_lookup_instance(vrf_id, (uint16_t)nlri->afi, (uint8_t)nlri->safi);
-    if (!inst || !inst->rib)
+    if (!inst)
     {
         return ERRCODE_FAIL;
     }
 
-    const bgp_rthead_t *head_ro = bgp_rib_lookup_head(inst->rib, nlri);
+    bgp_rib_t *rib = bgp_inst_rib_for_nlri(inst, nlri);
+    const bgp_rthead_t *head_ro = rib ? bgp_rib_lookup_head(rib, nlri) : NULL;
     bgp_route_node_t *old_route = NULL;
     if (head_ro)
     {
@@ -774,7 +797,7 @@ void bgp_relay_flush_peer_routes(uint32_t vrf_id, const net_addr_t *source)
     {
         (void)inst_key_ptr;
         bgp_instance_t *inst = (bgp_instance_t *)inst_val_ptr;
-        if (!inst || !inst->rib)
+        if (!inst || !inst->rd_entries)
         {
             continue;
         }
@@ -785,7 +808,20 @@ void bgp_relay_flush_peer_routes(uint32_t vrf_id, const net_addr_t *source)
             continue;
         }
 
-        bgp_rib_foreach_source(inst->rib, source, bgp_relay_collect_nlri_cb, nlri_list);
+        /* 遍历该 AF 下所有 RD 的 RIB 收集来自指定来源的 NLRI */
+        GHashTableIter rd_iter;
+        gpointer rd_key, rd_val;
+        g_hash_table_iter_init(&rd_iter, inst->rd_entries);
+        while (g_hash_table_iter_next(&rd_iter, &rd_key, &rd_val))
+        {
+            (void)rd_key;
+            bgp_rd_entry_t *e = (bgp_rd_entry_t *)rd_val;
+            if (!e || !e->rib)
+            {
+                continue;
+            }
+            bgp_rib_foreach_source(e->rib, source, bgp_relay_collect_nlri_cb, nlri_list);
+        }
         for (guint i = 0; i < nlri_list->len; ++i)
         {
             bgp_nlri_entry_t *nlri = (bgp_nlri_entry_t *)g_ptr_array_index(nlri_list, i);

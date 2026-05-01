@@ -14,8 +14,8 @@
 
 #include "cli.h"
 #include "dev.h"
-#include "if.h"
 #include "if_map.h"
+#include "if_netlink.h"
 
 /**
  * @brief 配置应用命令操作类型

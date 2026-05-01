@@ -4,7 +4,7 @@ set(IF_SOURCES
     if_main.c
     if_cli.c
     if_bdr.c
-    work/if.c
+    work/if_netlink.c
     work/if_map.c
     work/if_pub.c
     work/if_cfg_apply.c

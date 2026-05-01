@@ -9,7 +9,7 @@
 
 #include <stdint.h>
 
-#include "if_event.h"
+#include "if.h"
 #include "net_addr.h"
 
 // ============================================================================

@@ -1,10 +1,10 @@
 /**
- * @file   if.c
+ * @file   if_netlink.c
  * @brief  接口配置模块，提供不同接口类型的抽象层
  * @author jhb
  * @date   2026/01/22
  */
-#include "if.h"
+#include "if_netlink.h"
 
 #include <arpa/inet.h>
 #include <errno.h>

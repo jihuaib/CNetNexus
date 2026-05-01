@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "bgp_rd.h"
 #include "log.h"
 
 // ============================================================================
@@ -21,6 +22,8 @@ bgp_protocol_t *bgp_protocol_create(uint32_t as_number)
     proto->as_number = as_number;
     /* vrf_hash: key = uint32_t*(vrf_id)，value = bgp_vrf_t*（负责销毁） */
     proto->vrf_hash = g_hash_table_new_full(g_int_hash, g_int_equal, g_free, (GDestroyNotify)bgp_vrf_destroy);
+    /* rd_hash: key 指向 entry->key（不另堆分配），value = bgp_rd_entry_t*（负责销毁） */
+    proto->rd_hash = g_hash_table_new_full(bgp_rd_key_hash, bgp_rd_key_equal, NULL, bgp_rd_entry_destroy_notify());
 
     /* 自动创建 vrf_id=0 的默认公网 VRF */
     bgp_vrf_t *default_vrf = bgp_vrf_create(BGP_VRF_PUBLIC_ID);
@@ -39,10 +42,17 @@ void bgp_protocol_destroy(bgp_protocol_t *proto)
         return;
     }
     LOG_INFO("BGP protocol structure destroyed: AS %u", proto->as_number);
+    /* 先销毁 vrf_hash（间接触发 instance 销毁，instance 会从 rd_hash 摘除自己的 entry），
+     * 再销毁残留的 rd_hash（理论上应已为空） */
     if (proto->vrf_hash)
     {
         g_hash_table_destroy(proto->vrf_hash);
         proto->vrf_hash = NULL;
+    }
+    if (proto->rd_hash)
+    {
+        g_hash_table_destroy(proto->rd_hash);
+        proto->rd_hash = NULL;
     }
     g_free(proto);
 }

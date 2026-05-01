@@ -16,7 +16,7 @@
 #include "cli.h"
 #include "dev.h"
 #include "errcode.h"
-#include "if_api.h"
+#include "if.h"
 #include "log.h"
 #include "net_addr.h"
 #include "route.h"

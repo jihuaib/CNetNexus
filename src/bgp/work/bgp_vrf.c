@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "bgp_calc.h"
+#include "bgp_rd.h"
 #include "bgp_rib.h"
 #include "bgp_update_group.h"
 #include "bgp_worker.h"
@@ -376,23 +377,37 @@ uint32_t bgp_vrf_purge_session_routes(bgp_vrf_t *vrf, const net_addr_t *addr)
     {
         (void)key;
         bgp_instance_t *inst = (bgp_instance_t *)val;
-        if (!inst || !inst->rib)
+        if (!inst || !inst->rd_entries)
         {
             continue;
         }
 
-        /* 先收集该来源的全部 NLRI，推入 calc_queue，再从 RIB 中删除 */
-        if (inst->calc_queue)
+        /* 遍历该 AF 下所有 RD 的 RIB（VPN AF 多张，非 VPN AF 仅公网一张） */
+        GHashTableIter rd_iter;
+        gpointer rd_key, rd_val;
+        g_hash_table_iter_init(&rd_iter, inst->rd_entries);
+        while (g_hash_table_iter_next(&rd_iter, &rd_key, &rd_val))
         {
-            push_calc_ctx_t push_ctx = {.inst = inst, .q = inst->calc_queue};
-            bgp_rib_foreach_source(inst->rib, addr, push_nlri_to_calc_cb, &push_ctx);
-        }
+            (void)rd_key;
+            bgp_rd_entry_t *e = (bgp_rd_entry_t *)rd_val;
+            if (!e || !e->rib)
+            {
+                continue;
+            }
 
-        uint32_t removed_routes = 0;
-        uint32_t removed_heads = 0;
-        bgp_rib_remove_source(inst->rib, addr, &removed_routes, &removed_heads);
-        total_routes += removed_routes;
-        total_heads += removed_heads;
+            /* 先收集该来源的全部 NLRI，推入 calc_queue，再从 RIB 中删除 */
+            if (inst->calc_queue)
+            {
+                push_calc_ctx_t push_ctx = {.inst = inst, .q = inst->calc_queue};
+                bgp_rib_foreach_source(e->rib, addr, push_nlri_to_calc_cb, &push_ctx);
+            }
+
+            uint32_t removed_routes = 0;
+            uint32_t removed_heads = 0;
+            bgp_rib_remove_source(e->rib, addr, &removed_routes, &removed_heads);
+            total_routes += removed_routes;
+            total_heads += removed_heads;
+        }
     }
 
     if (total_routes > 0)
@@ -421,7 +436,19 @@ uint32_t bgp_vrf_rib_head_count(const bgp_vrf_t *vrf)
     {
         (void)key;
         const bgp_instance_t *inst = (const bgp_instance_t *)val;
-        total += bgp_rib_head_count(inst ? inst->rib : NULL);
+        if (!inst || !inst->rd_entries)
+        {
+            continue;
+        }
+        GHashTableIter rd_iter;
+        gpointer rd_key, rd_val;
+        g_hash_table_iter_init(&rd_iter, inst->rd_entries);
+        while (g_hash_table_iter_next(&rd_iter, &rd_key, &rd_val))
+        {
+            (void)rd_key;
+            const bgp_rd_entry_t *e = (const bgp_rd_entry_t *)rd_val;
+            total += bgp_rib_head_count(e ? e->rib : NULL);
+        }
     }
     return total;
 }
@@ -490,7 +517,19 @@ uint32_t bgp_vrf_rib_route_count(const bgp_vrf_t *vrf)
     {
         (void)key;
         const bgp_instance_t *inst = (const bgp_instance_t *)val;
-        total += bgp_rib_route_count(inst ? inst->rib : NULL);
+        if (!inst || !inst->rd_entries)
+        {
+            continue;
+        }
+        GHashTableIter rd_iter;
+        gpointer rd_key, rd_val;
+        g_hash_table_iter_init(&rd_iter, inst->rd_entries);
+        while (g_hash_table_iter_next(&rd_iter, &rd_key, &rd_val))
+        {
+            (void)rd_key;
+            const bgp_rd_entry_t *e = (const bgp_rd_entry_t *)rd_val;
+            total += bgp_rib_route_count(e ? e->rib : NULL);
+        }
     }
     return total;
 }

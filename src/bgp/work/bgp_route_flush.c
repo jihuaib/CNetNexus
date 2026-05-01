@@ -9,7 +9,9 @@
 #include <limits.h>
 #include <string.h>
 
+#include "bgp_instance.h"
 #include "bgp_main.h"
+#include "bgp_rib.h"
 #include "bgp_vrf.h"
 #include "bgp_worker.h"
 #include "errcode.h"
@@ -131,7 +133,7 @@ void bgp_route_flush_queue_destroy(bgp_route_flush_queue_t *q, bgp_instance_t *i
     bgp_rthead_t *head = NULL;
     while ((head = (bgp_rthead_t *)g_queue_pop_head(q->q)) != NULL)
     {
-        if (inst && inst->rib)
+        if (inst)
         {
             bgp_rib_head_unref(head);
         }
@@ -182,7 +184,8 @@ int bgp_route_flush_queue_process(bgp_route_flush_queue_t *q, bgp_instance_t *in
     while (processed < batch_size && (head = (bgp_rthead_t *)g_queue_pop_head(q->q)) != NULL)
     {
         q->count--;
-        const bgp_route_node_t *best = bgp_rib_find_best(inst->rib, &head->nlri);
+        bgp_rib_t *rib = bgp_inst_rib_for_nlri(inst, &head->nlri);
+        const bgp_route_node_t *best = rib ? bgp_rib_find_best(rib, &head->nlri) : NULL;
         /* import-route 仅用于 BGP 内部参考，不下刷到 ROUTE。 */
         const bgp_route_node_t *flush_best = (best && !BIT_TEST(best->flags, BGP_ROUTE_FLAG_IMPORT)) ? best : NULL;
 
@@ -244,7 +247,10 @@ int bgp_route_flush_queue_process(bgp_route_flush_queue_t *q, bgp_instance_t *in
         }
 
         bgp_rib_head_unref(head);
-        (void)bgp_rib_gc_head(inst->rib, head);
+        if (rib)
+        {
+            (void)bgp_rib_gc_head(rib, head);
+        }
         processed++;
     }
 

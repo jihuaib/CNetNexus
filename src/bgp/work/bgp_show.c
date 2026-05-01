@@ -12,9 +12,11 @@
 #include "bgp_attr_intern.h"
 #include "bgp_cli.h"
 #include "bgp_conn.h"
+#include "bgp_instance.h"
 #include "bgp_main.h"
 #include "bgp_pkt.h"
 #include "bgp_protocol.h"
+#include "bgp_rd.h"
 #include "bgp_rib.h"
 #include "bgp_session.h"
 #include "bgp_update_group.h"
@@ -510,16 +512,27 @@ static gboolean bgp_show_route_width_cb(gpointer key, gpointer value, gpointer u
     return FALSE;
 }
 
+static void bgp_show_route_width_each_rib(bgp_instance_t *inst_unused, bgp_rd_entry_t *entry_unused, bgp_rib_t *rib,
+                                          gpointer user_data)
+{
+    (void)inst_unused;
+    (void)entry_unused;
+    if (!rib || !rib->head_tree)
+    {
+        return;
+    }
+    g_tree_foreach(rib->head_tree, bgp_show_route_width_cb, user_data);
+}
+
 static guint bgp_show_route_network_col_width(const bgp_instance_t *inst)
 {
     bgp_show_route_width_ctx_t ctx = {.net_col_width = BGP_RT_COL_NET_MIN};
 
-    if (!inst || !inst->rib || !inst->rib->head_tree)
+    if (!inst || !inst->rd_entries)
     {
         return ctx.net_col_width;
     }
-
-    g_tree_foreach(inst->rib->head_tree, bgp_show_route_width_cb, &ctx);
+    bgp_inst_foreach_rib((bgp_instance_t *)inst, bgp_show_route_width_each_rib, &ctx);
     return ctx.net_col_width;
 }
 
@@ -956,13 +969,14 @@ static int handle_bgp_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parse
                                bgp_af_str(ctx.afi, ctx.safi));
         g_string_append(resp_buf, "============================================================\r\n");
 
-        if (!inst || !inst->rib)
+        if (!inst || !inst->rd_entries)
         {
             g_string_append(resp_buf, "  (no RIB)\r\n");
             return bgp_work_send_chunked_response(msg, resp_buf);
         }
 
-        const bgp_rthead_t *head = bgp_rib_lookup_head(inst->rib, &nlri);
+        bgp_rib_t *rib = bgp_inst_rib_for_nlri(inst, &nlri);
+        const bgp_rthead_t *head = rib ? bgp_rib_lookup_head(rib, &nlri) : NULL;
         if (!head)
         {
             g_string_append_printf(resp_buf, "  Route %s not found.\r\n", nlri_str);
@@ -976,14 +990,33 @@ static int handle_bgp_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parse
     g_string_append_printf(resp_buf, "\r\nBGP Routes (AF: %s)\r\n", bgp_af_str(ctx.afi, ctx.safi));
     g_string_append(resp_buf, "============================================================\r\n");
 
-    if (!inst || !inst->rib || bgp_rib_route_count(inst->rib) == 0)
+    /* 汇总该 AF 下所有 RD 的 RIB 计数 */
+    uint32_t total_heads = 0;
+    uint32_t total_routes = 0;
+    if (inst && inst->rd_entries)
+    {
+        GHashTableIter rd_iter;
+        gpointer rd_key, rd_val;
+        g_hash_table_iter_init(&rd_iter, inst->rd_entries);
+        while (g_hash_table_iter_next(&rd_iter, &rd_key, &rd_val))
+        {
+            (void)rd_key;
+            const bgp_rd_entry_t *e = (const bgp_rd_entry_t *)rd_val;
+            if (!e)
+            {
+                continue;
+            }
+            total_heads += bgp_rib_head_count(e->rib);
+            total_routes += bgp_rib_route_count(e->rib);
+        }
+    }
+    if (!inst || !inst->rd_entries || total_routes == 0)
     {
         g_string_append(resp_buf, "  (no routes)\r\n\r\n");
         return bgp_work_send_chunked_response(msg, resp_buf);
     }
 
-    g_string_append_printf(resp_buf, "  Networks: %-6u  Paths: %u\r\n\r\n", bgp_rib_head_count(inst->rib),
-                           bgp_rib_route_count(inst->rib));
+    g_string_append_printf(resp_buf, "  Networks: %-6u  Paths: %u\r\n\r\n", total_heads, total_routes);
     g_string_append(resp_buf, "  Markers : '>'=BEST, 'v'=VALID\r\n\r\n");
 
     guint net_col_width = bgp_show_route_network_col_width(inst);
@@ -1003,7 +1036,22 @@ static int handle_bgp_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parse
     show_ctx.listed_heads = 0;
     show_ctx.listed_routes = 0;
 
-    g_tree_foreach(inst->rib->head_tree, bgp_show_route_head_cb, &show_ctx);
+    /* 遍历所有 RD entry 的 RIB（VPN AF 下可能多张；非 VPN AF 仅公网一张） */
+    {
+        GHashTableIter rd_iter;
+        gpointer rd_key, rd_val;
+        g_hash_table_iter_init(&rd_iter, inst->rd_entries);
+        while (g_hash_table_iter_next(&rd_iter, &rd_key, &rd_val))
+        {
+            (void)rd_key;
+            bgp_rd_entry_t *e = (bgp_rd_entry_t *)rd_val;
+            if (!e || !e->rib || !e->rib->head_tree)
+            {
+                continue;
+            }
+            g_tree_foreach(e->rib->head_tree, bgp_show_route_head_cb, &show_ctx);
+        }
+    }
 
     g_string_append_printf(resp_buf, "\r\nTotal: %u networks, %u paths\r\n\r\n", show_ctx.listed_heads,
                            show_ctx.listed_routes);

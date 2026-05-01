@@ -15,7 +15,7 @@
 #include "bgp_instance.h"
 #include "bgp_protocol.h"
 #include "dev.h"
-#include "if_event.h"
+#include "if.h"
 #include "net_addr.h"
 
 typedef struct bgp_session bgp_session_t;

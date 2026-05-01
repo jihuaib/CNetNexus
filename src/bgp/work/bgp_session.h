@@ -13,7 +13,7 @@
 #include "bgp_conn.h"
 #include "bgp_fsm.h"
 #include "bit.h"
-#include "if_event.h"
+#include "if.h"
 #include "net_addr.h"
 
 /** OPEN 能力协商标记位（存储于 bgp_session_t.flags） */

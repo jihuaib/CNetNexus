@@ -188,8 +188,9 @@ void bgp_calc_run_one(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
     }
 
     /* 通过 NLRI 内容在 RIB 中定位前缀头（与指针地址无关） */
-    bgp_rthead_t *head = (bgp_rthead_t *)bgp_rib_lookup_head(inst->rib, nlri);
-    const bgp_route_node_t *old_best = head ? bgp_rib_find_best(inst->rib, nlri) : NULL;
+    bgp_rib_t *rib = bgp_inst_rib_for_nlri(inst, nlri);
+    bgp_rthead_t *head = (bgp_rthead_t *)bgp_rib_lookup_head(rib, nlri);
+    const bgp_route_node_t *old_best = head ? bgp_rib_find_best(rib, nlri) : NULL;
     int had_flushed = head ? head_has_flushed_route(head) : 0;
 
     /* 无路由（rthead 不存在或路径列表为空）：同步发送 WITHDRAW */
@@ -249,12 +250,12 @@ void bgp_calc_run_one(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
     }
 
     /* 将最优路径移至链表首位 */
-    bgp_rib_mark_best(inst->rib, &head->nlri, best);
+    bgp_rib_mark_best(rib, &head->nlri, best);
 
     /* 将 NLRI 挂入各 ESTABLISHED 邻居的 session 发布队列 */
     bgp_update_group_enqueue_announce(inst, &head->nlri);
 
-    const bgp_route_node_t *new_best = bgp_rib_find_best(inst->rib, &head->nlri);
+    const bgp_route_node_t *new_best = bgp_rib_find_best(rib, &head->nlri);
     int best_switched = (old_best != new_best);
     int best_need_flush = (new_best && !BIT_TEST(new_best->flags, BGP_ROUTE_FLAG_FLUSHED));
     if (inst->route_flush_queue && (best_switched || best_need_flush))
@@ -290,7 +291,7 @@ void bgp_calc_queue_destroy(bgp_calc_queue_t *q, bgp_instance_t *inst)
     bgp_rthead_t *head = NULL;
     while ((head = (bgp_rthead_t *)g_queue_pop_head(q->q)) != NULL)
     {
-        if (inst && inst->rib)
+        if (inst)
         {
             bgp_rib_head_unref(head);
         }
@@ -301,12 +302,17 @@ void bgp_calc_queue_destroy(bgp_calc_queue_t *q, bgp_instance_t *inst)
 
 int bgp_calc_queue_push(bgp_calc_queue_t *q, bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
 {
-    if (!q || !inst || !inst->rib || !nlri)
+    if (!q || !inst || !nlri)
     {
         return -1;
     }
 
-    bgp_rthead_t *head = bgp_rib_ensure_head(inst->rib, nlri);
+    bgp_rib_t *rib = bgp_inst_rib_ensure_for_nlri(inst, nlri);
+    if (!rib)
+    {
+        return -1;
+    }
+    bgp_rthead_t *head = bgp_rib_ensure_head(rib, nlri);
     if (!head)
     {
         return -1;

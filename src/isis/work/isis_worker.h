@@ -12,7 +12,7 @@
 #include <stdint.h>
 
 #include "dev.h"
-#include "if_event.h"
+#include "if.h"
 #include "isis.h"
 
 #define ISIS_NET_STR_MAX 64

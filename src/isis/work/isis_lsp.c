@@ -15,7 +15,7 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 
-#include "if_api.h"
+#include "if.h"
 #include "isis.h"
 #include "isis_main.h"
 #include "isis_spf.h"

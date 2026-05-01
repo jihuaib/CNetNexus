@@ -10,8 +10,7 @@
 
 #include "cli.h"
 #include "errcode.h"
-#include "if_api.h"
-#include "if_event.h"
+#include "if.h"
 #include "isis_bdr.h"
 #include "isis_cli.h"
 #include "isis_db.h"

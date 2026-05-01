@@ -16,8 +16,8 @@
 
 #include "cli.h"
 #include "errcode.h"
+#include "if.h"
 #include "if_cfg_apply.h"
-#include "if_event.h"
 #include "if_link_monitor.h"
 #include "if_main.h"
 #include "if_map.h"
