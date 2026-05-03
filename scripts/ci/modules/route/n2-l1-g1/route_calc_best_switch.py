@@ -15,7 +15,7 @@ import re
 import time
 from typing import Optional
 
-from module_api import cmd, g_top, require_devices, run_cmds, step, wait_check, wait_checks  # noqa: E402
+from module_api import cmd, g_top, require_devices, run_cmds, step, wait_check, wait_checks, wait_fib_ipv4_route  # noqa: E402
 from top_runner import TopologyRuntime  # noqa: E402
 
 
@@ -144,12 +144,26 @@ def _wait_os_main_gateway(
     wait_check(
         rt,
         device=device,
-        command="show route ipv4 os",
+        command="show fib ipv4 os",
         timeout=timeout,
         interval=interval,
         regex=[row_regex],
         not_regex=[stale_metric_regex],
         label=f"{device} os-best {prefix} via {expect_gateway} metric={expect_metric}",
+    )
+    prefix_addr, prefix_len = prefix.rsplit("/", 1)
+    wait_fib_ipv4_route(
+        rt,
+        device=device,
+        prefix_addr=prefix_addr,
+        prefix_len=prefix_len,
+        expect_present=True,
+        nexthop=expect_gateway,
+        installed=True,
+        skip_os=False,
+        timeout=timeout,
+        interval=interval,
+        label=f"{device} fib-best {prefix} via {expect_gateway}",
     )
 
 

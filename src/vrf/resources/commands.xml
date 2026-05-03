@@ -5,17 +5,24 @@
     <views>
         <view view-name="vrf">
             <template>&lt;NetNexus(config-vrf-{ctx:5})&gt;</template>
+            <view view-name="vrf-af-ipv4-uni">
+                <template>&lt;NetNexus(config-vrf-{ctx:5}-af-ipv4-uni)&gt;</template>
+            </view>
+            <view view-name="vrf-af-ipv6-uni">
+                <template>&lt;NetNexus(config-vrf-{ctx:5}-af-ipv6-uni)&gt;</template>
+            </view>
         </view>
     </views>
 
     <show-this>
         <view name="vrf"/>
+        <view name="vrf-af-ipv4-uni"/>
+        <view name="vrf-af-ipv6-uni"/>
     </show-this>
 
-    <!-- Command group definitions -->
     <command_groups>
 
-        <!-- group 1: vrf <vrf-name>（配置视图，创建 VRF） / no vrf <vrf-name> -->
+        <!-- group 1: vrf <vrf-name> / no vrf <vrf-name> -->
         <group group-id="1">
             <elements>
                 <element id="1" type="keyword">
@@ -34,7 +41,6 @@
             </elements>
 
             <commands>
-                <!-- vrf <vrf-name> -->
                 <command>
                     <expression>1 2</expression>
                     <views>config</views>
@@ -43,7 +49,6 @@
                         <entry ctx-id="5" from-param="1"/>
                     </context-out>
                 </command>
-                <!-- no vrf <vrf-name> -->
                 <command>
                     <expression>3 1 2</expression>
                     <views>config</views>
@@ -51,8 +56,7 @@
             </commands>
         </group>
 
-        <!-- group 2: show vrf [<vrf-name>]（用户视图 + 配置视图） -->
-        <!-- <vrf-name> 使用 dynamic 类型，Tab/? 时 RPC 查询已有 VRF 列表 -->
+        <!-- group 2: show vrf | show vrf name <vrf-name> -->
         <group group-id="2">
             <elements>
                 <element id="1" type="keyword">
@@ -63,7 +67,11 @@
                     <name>vrf</name>
                     <description>VRF table</description>
                 </element>
-                <element id="3" cfg-id="3" type="parameter">
+                <element id="3" type="keyword">
+                    <name>name</name>
+                    <description>Display detail by VRF name</description>
+                </element>
+                <element id="4" cfg-id="3" type="parameter">
                     <name>&lt;vrf-name&gt;</name>
                     <type>dynamic(string(1-63))</type>
                     <description>VRF name</description>
@@ -71,12 +79,115 @@
             </elements>
 
             <commands>
-                <!-- show vrf：显示所有 VRF -->
                 <command>
                     <expression>1 2</expression>
                     <views>global</views>
                 </command>
-                <!-- show vrf <vrf-name>：显示指定 VRF 详情 -->
+                <command>
+                    <expression>1 2 3 4</expression>
+                    <views>global</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- group 3: af ipv4-unicast / af ipv6-unicast / no af ... -->
+        <group group-id="3">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>af</name>
+                    <description>Enter address family configuration</description>
+                </element>
+                <element id="3" cfg-id="1" type="keyword">
+                    <name>ipv4-unicast</name>
+                    <description>IPv4 unicast address family</description>
+                </element>
+                <element id="4" cfg-id="2" type="keyword">
+                    <name>ipv6-unicast</name>
+                    <description>IPv6 unicast address family</description>
+                </element>
+            </elements>
+
+            <commands>
+                <!-- af ipv4-unicast -->
+                <command>
+                    <expression>2 3</expression>
+                    <views>vrf</views>
+                    <to-view>vrf-af-ipv4-uni</to-view>
+                    <context-out>
+                        <entry ctx-id="9" value="1"/>
+                        <entry ctx-id="10" value="1"/>
+                    </context-out>
+                </command>
+                <!-- af ipv6-unicast -->
+                <command>
+                    <expression>2 4</expression>
+                    <views>vrf</views>
+                    <to-view>vrf-af-ipv6-uni</to-view>
+                    <context-out>
+                        <entry ctx-id="9" value="2"/>
+                        <entry ctx-id="10" value="1"/>
+                    </context-out>
+                </command>
+                <!-- no af { ipv4-unicast | ipv6-unicast } -->
+                <command>
+                    <expression>1 2 { 3 | 4 }</expression>
+                    <views>vrf</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- group 4: route-distinguisher <rd> / no route-distinguisher -->
+        <group group-id="4">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>route-distinguisher</name>
+                    <description>VRF Route Distinguisher</description>
+                </element>
+                <element id="2" cfg-id="1" type="parameter">
+                    <name>&lt;rd&gt;</name>
+                    <type>string(3-32)</type>
+                    <description>RD format ASN:NN or IP:NN</description>
+                </element>
+                <element id="3" type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>1 2</expression>
+                    <views>vrf-af-ipv4-uni,vrf-af-ipv6-uni</views>
+                </command>
+                <command>
+                    <expression>3 1</expression>
+                    <views>vrf-af-ipv4-uni,vrf-af-ipv6-uni</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- group 6: show vrf os -->
+        <group group-id="6">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>show</name>
+                    <description>Display system information</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>vrf</name>
+                    <description>VRF</description>
+                </element>
+                <element id="3" type="keyword">
+                    <name>os</name>
+                    <description>Show OS-side L3VRF devices via netlink</description>
+                </element>
+            </elements>
+
+            <commands>
                 <command>
                     <expression>1 2 3</expression>
                     <views>global</views>
@@ -84,7 +195,57 @@
             </commands>
         </group>
 
+        <!-- group 5: vpn-target <rt> [import|export|both] / no ... -->
+        <group group-id="5">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>vpn-target</name>
+                    <description>VRF Route Target</description>
+                </element>
+                <element id="2" cfg-id="1" type="parameter">
+                    <name>&lt;rt&gt;</name>
+                    <type>string(3-32)</type>
+                    <description>RT format ASN:NN or IP:NN</description>
+                </element>
+                <element id="3" cfg-id="2" type="keyword">
+                    <name>import</name>
+                    <description>Import direction</description>
+                </element>
+                <element id="4" cfg-id="2" type="keyword">
+                    <name>export</name>
+                    <description>Export direction</description>
+                </element>
+                <element id="5" cfg-id="2" type="keyword">
+                    <name>both</name>
+                    <description>Both import and export</description>
+                </element>
+                <element id="6" type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+            </elements>
 
+            <commands>
+                <!-- vpn-target <rt> [import|export|both] -->
+                <command>
+                    <expression>1 2</expression>
+                    <views>vrf-af-ipv4-uni,vrf-af-ipv6-uni</views>
+                </command>
+                <command>
+                    <expression>1 2 { 3 | 4 | 5 }</expression>
+                    <views>vrf-af-ipv4-uni,vrf-af-ipv6-uni</views>
+                </command>
+                <!-- no vpn-target <rt> [import|export|both] -->
+                <command>
+                    <expression>6 1 2</expression>
+                    <views>vrf-af-ipv4-uni,vrf-af-ipv6-uni</views>
+                </command>
+                <command>
+                    <expression>6 1 2 { 3 | 4 | 5 }</expression>
+                    <views>vrf-af-ipv4-uni,vrf-af-ipv6-uni</views>
+                </command>
+            </commands>
+        </group>
 
     </command_groups>
 </configuration>

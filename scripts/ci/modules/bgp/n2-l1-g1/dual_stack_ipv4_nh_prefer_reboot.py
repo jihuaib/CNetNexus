@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import re
 
-from module_api import g_top, reboot_device, require_devices, run_cmds, step, wait_check, wait_checks  # noqa: E402
+from module_api import g_top, reboot_device, require_devices, run_cmds, step, wait_check, wait_checks, wait_fib_ipv4_route, wait_fib_ipv6_route  # noqa: E402
 from top_runner import TopologyRuntime  # noqa: E402
 
 
@@ -231,6 +231,19 @@ def _wait_route_iter_ipv4(
         ],
         label=f"{device} route iter-v4 {destination} via {iter_nh}/{iter_oif}",
     )
+    wait_fib_ipv4_route(
+        rt,
+        device=device,
+        prefix_addr=destination,
+        prefix_len=IPV4_MASK,
+        expect_present=True,
+        nexthop=iter_nh,
+        installed=True,
+        skip_os=False,
+        timeout=timeout,
+        interval=2,
+        label=f"{device} fib v4 {destination}/{IPV4_MASK} via {iter_nh}",
+    )
 
 
 def _wait_ipv6_bgp_dual_nexthop(
@@ -312,7 +325,7 @@ def _wait_os_best_ipv4_nexthop(
     wait_check(
         rt,
         device=device,
-        command="show route ipv4 os",
+        command="show fib ipv4 os",
         timeout=timeout,
         interval=2,
         regex=[best_row_regex],
@@ -350,11 +363,24 @@ def _wait_os_ipv6_bgp_route(
     wait_check(
         rt,
         device=device,
-        command="show route ipv6 os",
+        command="show fib ipv6 os",
         timeout=timeout,
         interval=2,
         regex=[best_row_regex],
         label=f"{device} os-has-bgp-v6 {prefix}",
+    )
+    prefix_addr, prefix_len = prefix.rsplit("/", 1)
+    wait_fib_ipv6_route(
+        rt,
+        device=device,
+        prefix_addr=prefix_addr,
+        prefix_len=prefix_len,
+        expect_present=True,
+        installed=True,
+        skip_os=False,
+        timeout=timeout,
+        interval=2,
+        label=f"{device} fib-has-bgp-v6 {prefix}",
     )
 
 

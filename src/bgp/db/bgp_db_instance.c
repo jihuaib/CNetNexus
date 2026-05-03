@@ -240,7 +240,9 @@ void bgp_db_restore_instances(void)
             /* 重新订阅路由模块（fire-and-forget） */
             route_subscribe_req_t *req = g_malloc(sizeof(route_subscribe_req_t));
             req->protocol = ROUTE_PROTOCOL_STATIC;
-            req->vrf_id = ROUTE_VRF_DEFAULT;
+            req->vrf_id = vrf_id;
+            req->afi = (uint16_t)afi;
+            req->_pad = 0;
             req->flags = ROUTE_SUBSCRIBE_FLAG_FULL;
             dev_ipc_message_t *sub_msg =
                 dev_ipc_message_create(ROUTE_MSG_TYPE_SUBSCRIBE, DEV_MODULE_ID_BGP, DEV_MODULE_ID_ROUTE, 0, req,

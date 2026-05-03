@@ -10,6 +10,7 @@
 #include "bgp_calc.h"
 #include "bgp_instance.h"
 #include "bgp_main.h"
+#include "bgp_peer.h"
 #include "bgp_protocol.h"
 #include "bgp_rd.h"
 #include "bgp_rib.h"
@@ -98,7 +99,11 @@ static int bgp_nlri_to_route_prefix(const bgp_nlri_entry_t *nlri, uint16_t *afi_
     {
         return 0;
     }
-    if (nlri->type != BGP_NLRI_PREFIX || nlri->safi != BGP_SAFI_UNICAST)
+    if (nlri->type != BGP_NLRI_PREFIX || (nlri->safi != BGP_SAFI_UNICAST && nlri->safi != BGP_SAFI_LABELED))
+    {
+        return 0;
+    }
+    if (nlri->safi == BGP_SAFI_LABELED && !nlri->prefix.has_label)
     {
         return 0;
     }
@@ -329,6 +334,74 @@ static void bgp_relay_fill_nh_iter_req(route_nh_iter_req_t *req, const bgp_relay
     req->nexthop_addr = key->nexthop_addr;
 }
 
+static void bgp_relay_fill_tunnel_resolve_req(tunnel_resolve_req_t *req, const bgp_relay_nh_key_t *key)
+{
+    if (!req || !key)
+    {
+        return;
+    }
+
+    memset(req, 0, sizeof(*req));
+    req->vrf_id = key->vrf_id;
+    req->afi = key->afi;
+    req->endpoint = key->nexthop_addr;
+}
+
+static guint32 bgp_relay_owner_id_from_source(const net_addr_t *source)
+{
+    return source ? (guint32)net_addr_hash(source) : 0u;
+}
+
+static gboolean bgp_relay_route_is_lu(const bgp_route_node_t *route)
+{
+    return route && route->head && route->head->nlri.type == BGP_NLRI_PREFIX &&
+           route->head->nlri.safi == BGP_SAFI_LABELED && route->head->nlri.prefix.has_label;
+}
+
+static void bgp_relay_fill_lu_candidate(tunnel_candidate_t *candidate, const bgp_route_node_t *route)
+{
+    if (!candidate || !bgp_relay_route_is_lu(route))
+    {
+        return;
+    }
+
+    memset(candidate, 0, sizeof(*candidate));
+    candidate->vrf_id =
+        route->head->inst && route->head->inst->vrf ? route->head->inst->vrf->vrf_id : BGP_VRF_PUBLIC_ID;
+    candidate->afi = route->head->nlri.afi;
+    candidate->source_type = TUNNEL_SOURCE_BGP_LU;
+    candidate->preference = 100u;
+    candidate->owner_module_id = DEV_MODULE_ID_BGP;
+    candidate->owner_id = bgp_relay_owner_id_from_source(&route->source);
+    candidate->fec.vrf_id = candidate->vrf_id;
+    candidate->fec.afi = candidate->afi;
+    candidate->fec.prefix_len = route->head->nlri.prefix.prefix.prefix_len;
+    candidate->fec.addr = route->head->nlri.prefix.prefix.addr;
+    candidate->endpoint = route->head->nlri.prefix.prefix.addr;
+    candidate->nexthop = route->nexthop.global;
+    candidate->label_count = 1u;
+    candidate->labels[0] = route->head->nlri.prefix.label;
+}
+
+static void bgp_relay_publish_lu_candidate(const bgp_route_node_t *route, gboolean add)
+{
+    if (!bgp_relay_route_is_lu(route) || route->nexthop.global.family == 0)
+    {
+        return;
+    }
+
+    tunnel_candidate_t candidate;
+    bgp_relay_fill_lu_candidate(&candidate, route);
+    if (add)
+    {
+        (void)tunnel_rpc_candidate_add(g_bgp_local->dev_ipc_ctx, &candidate);
+    }
+    else
+    {
+        (void)tunnel_rpc_candidate_del(g_bgp_local->dev_ipc_ctx, &candidate);
+    }
+}
+
 static void bgp_relay_nh_watch_remove_if_empty(const bgp_relay_nh_watch_t *watch)
 {
     if (!watch || watch->route_list)
@@ -336,9 +409,18 @@ static void bgp_relay_nh_watch_remove_if_empty(const bgp_relay_nh_watch_t *watch
         return;
     }
 
-    route_nh_iter_req_t req;
-    bgp_relay_fill_nh_iter_req(&req, &watch->key);
-    (void)route_rpc_nh_unregister(g_bgp_local->dev_ipc_ctx, &req);
+    if (watch->key.safi == BGP_SAFI_LABELED)
+    {
+        tunnel_resolve_req_t req;
+        bgp_relay_fill_tunnel_resolve_req(&req, &watch->key);
+        (void)tunnel_rpc_resolve_unregister(g_bgp_local->dev_ipc_ctx, &req);
+    }
+    else
+    {
+        route_nh_iter_req_t req;
+        bgp_relay_fill_nh_iter_req(&req, &watch->key);
+        (void)route_rpc_nh_unregister(g_bgp_local->dev_ipc_ctx, &req);
+    }
 
     g_hash_table_remove(g_bgp_relay_nh_table, &watch->key);
 }
@@ -433,9 +515,21 @@ static bgp_relay_nh_watch_t *bgp_relay_attach_route_to_watch(bgp_route_node_t *r
         watch->updated_at_usec = g_get_real_time();
         watch->route_list = NULL;
 
-        route_nh_iter_req_t req;
-        bgp_relay_fill_nh_iter_req(&req, &watch->key);
-        if (route_rpc_nh_register(g_bgp_local->dev_ipc_ctx, &req) != ERRCODE_SUCCESS)
+        int register_rc = ERRCODE_FAIL;
+        if (watch->key.safi == BGP_SAFI_LABELED)
+        {
+            tunnel_resolve_req_t req;
+            bgp_relay_fill_tunnel_resolve_req(&req, &watch->key);
+            register_rc = tunnel_rpc_resolve_register(g_bgp_local->dev_ipc_ctx, &req);
+        }
+        else
+        {
+            route_nh_iter_req_t req;
+            bgp_relay_fill_nh_iter_req(&req, &watch->key);
+            register_rc = route_rpc_nh_register(g_bgp_local->dev_ipc_ctx, &req);
+        }
+
+        if (register_rc != ERRCODE_SUCCESS)
         {
             g_free(watch);
             return NULL;
@@ -487,6 +581,7 @@ static int bgp_relay_route_remove_from_inst(bgp_instance_t *inst, const bgp_nlri
     gboolean has_nh_key = bgp_relay_build_nh_key_from_route(route, &nh_key) ? TRUE : FALSE;
     if (has_nh_key)
     {
+        bgp_relay_publish_lu_candidate(route, FALSE);
         bgp_relay_detach_route_from_watch(route, &nh_key, TRUE);
     }
 
@@ -579,6 +674,7 @@ static int bgp_relay_route_upsert(uint32_t vrf_id, const bgp_nlri_entry_t *nlri,
         {
             bgp_relay_detach_route_from_watch(route, &old_nh_key, TRUE);
         }
+        bgp_relay_publish_lu_candidate(route, FALSE);
         (void)bgp_relay_withdraw_route_from_rib(inst, nlri, source);
         return ERRCODE_FAIL;
     }
@@ -592,9 +688,12 @@ static int bgp_relay_route_upsert(uint32_t vrf_id, const bgp_nlri_entry_t *nlri,
         {
             bgp_relay_detach_route_from_watch(route, &old_nh_key, TRUE);
         }
+        bgp_relay_publish_lu_candidate(route, FALSE);
         (void)bgp_relay_withdraw_route_from_rib(inst, nlri, source);
         return ERRCODE_FAIL;
     }
+
+    bgp_relay_publish_lu_candidate(route, TRUE);
 
     if (nh_changed && had_old_nh)
     {
@@ -896,4 +995,98 @@ uint32_t bgp_relay_handle_nh_notify(const route_nh_iter_notify_t *notify)
     }
 
     return touched;
+}
+
+uint32_t bgp_relay_handle_tunnel_notify(const tunnel_resolve_notify_t *notify)
+{
+    if (!notify || !g_bgp_relay_nh_table)
+    {
+        return 0;
+    }
+    if (notify->endpoint.family != AF_INET && notify->endpoint.family != AF_INET6)
+    {
+        return 0;
+    }
+
+    bgp_relay_nh_key_t key;
+    bgp_relay_make_nh_key(&key, notify->vrf_id, notify->afi, BGP_SAFI_LABELED, &notify->endpoint);
+
+    bgp_relay_nh_watch_t *watch = bgp_relay_nh_watch_lookup(&key);
+    if (!watch)
+    {
+        return 0;
+    }
+
+    uint8_t new_state = notify->resolved ? 1u : 0u;
+    gboolean state_changed = (watch->resolved != new_state);
+
+    watch->resolved = new_state;
+    watch->out_ifindex = notify->out_ifindex;
+    watch->relay_addr = notify->relay_addr;
+    watch->updated_at_usec = g_get_real_time();
+
+    uint32_t touched = 0;
+    for (GList *l = watch->route_list; l; l = l->next)
+    {
+        bgp_route_node_t *route = (bgp_route_node_t *)l->data;
+        if (!route || !route->head || !route->head->inst)
+        {
+            continue;
+        }
+
+        bgp_relay_route_iter_update_from_watch(route, watch);
+        if (!state_changed)
+        {
+            continue;
+        }
+
+        bgp_instance_t *inst = route->head->inst;
+        if (bgp_relay_set_route_valid(inst, &route->head->nlri, &route->source, watch->resolved ? TRUE : FALSE) > 0)
+        {
+            touched++;
+        }
+    }
+
+    return touched;
+}
+
+void bgp_relay_session_lu_adj_sync(bgp_session_t *session, gboolean up)
+{
+    if (!session || session->neighbor_addr.family == 0)
+    {
+        return;
+    }
+
+    for (GList *l = session->peer_list; l; l = l->next)
+    {
+        bgp_peer_t *peer = (bgp_peer_t *)l->data;
+        if (!peer || !peer->inst || peer->inst->safi != BGP_SAFI_LABELED)
+        {
+            continue;
+        }
+        if (up && peer->state != BGP_PEER_STATE_ESTABLISHED)
+        {
+            continue;
+        }
+
+        tunnel_candidate_t candidate;
+        memset(&candidate, 0, sizeof(candidate));
+        candidate.vrf_id = peer->vrf ? peer->vrf->vrf_id : BGP_VRF_PUBLIC_ID;
+        candidate.afi = peer->inst->afi;
+        candidate.source_type = TUNNEL_SOURCE_BGP_ADJ;
+        candidate.preference = 10u;
+        candidate.owner_module_id = DEV_MODULE_ID_BGP;
+        candidate.owner_id = ((uint32_t)candidate.afi << 16) | (uint32_t)BGP_SAFI_LABELED;
+        candidate.endpoint = session->neighbor_addr;
+        candidate.relay_addr = session->neighbor_addr;
+
+        if (up)
+        {
+            (void)tunnel_rpc_candidate_add(g_bgp_local->dev_ipc_ctx, &candidate);
+        }
+        else
+        {
+            (void)tunnel_rpc_candidate_del(g_bgp_local->dev_ipc_ctx, &candidate);
+        }
+    }
 }

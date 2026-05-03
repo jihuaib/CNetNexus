@@ -117,6 +117,14 @@ static const char *bgp_af_str(bgp_afi_t afi, bgp_safi_t safi)
     {
         return "ipv6-qp";
     }
+    if (afi == BGP_AFI_IPV4 && safi == BGP_SAFI_LABELED)
+    {
+        return "ipv4-labeled";
+    }
+    if (afi == BGP_AFI_IPV6 && safi == BGP_SAFI_LABELED)
+    {
+        return "ipv6-labeled";
+    }
     return "unknown";
 }
 
@@ -350,6 +358,14 @@ static int handle_bgp_addr_family(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
             case 4:
                 ctx.afi = BGP_AFI_IPV6;
                 ctx.safi = BGP_SAFI_QP;
+                break;
+            case 5:
+                ctx.afi = BGP_AFI_IPV4;
+                ctx.safi = BGP_SAFI_LABELED;
+                break;
+            case 6:
+                ctx.afi = BGP_AFI_IPV6;
+                ctx.safi = BGP_SAFI_LABELED;
                 break;
             default:
                 break;
@@ -904,22 +920,28 @@ static int handle_bgp_import_route(dev_ipc_message_t *msg, cli_tlv_parser_t *par
     /* 写 DB */
     bgp_db_set_import_protos(bctx.vrf_id, bctx.afi, bctx.safi, apply.out.import_protos);
 
-    /* 向 ROUTE 模块发送订阅/取消订阅（fire-and-forget） */
-    route_subscribe_req_t *req = (route_subscribe_req_t *)g_malloc(sizeof(route_subscribe_req_t));
-    req->protocol = ROUTE_PROTOCOL_STATIC;
-    req->vrf_id = ROUTE_VRF_DEFAULT;
-    req->flags = (apply.isNo) ? 0u : ROUTE_SUBSCRIBE_FLAG_FULL;
-    uint32_t sub_type = (apply.isNo) ? ROUTE_MSG_TYPE_UNSUBSCRIBE : ROUTE_MSG_TYPE_SUBSCRIBE;
-    dev_ipc_message_t *sub_msg = dev_ipc_message_create(sub_type, DEV_MODULE_ID_BGP, DEV_MODULE_ID_ROUTE, 0, req,
-                                                        sizeof(route_subscribe_req_t), g_free);
-    if (sub_msg)
+    if (apply.out.import_route.route_subscribe_action != 0)
     {
-        if (dev_ipc_send(bgp_local_ipc_ctx(), DEV_MODULE_ID_ROUTE, sub_msg) != 0)
+        /* 向 ROUTE 模块发送订阅/取消订阅（fire-and-forget）。 */
+        route_subscribe_req_t *req = (route_subscribe_req_t *)g_malloc(sizeof(route_subscribe_req_t));
+        req->protocol = ROUTE_PROTOCOL_STATIC;
+        req->vrf_id = bctx.vrf_id;
+        req->afi = (uint16_t)bctx.afi;
+        req->_pad = 0;
+        req->flags = (apply.out.import_route.route_subscribe_action > 0) ? ROUTE_SUBSCRIBE_FLAG_FULL : 0u;
+        uint32_t sub_type =
+            (apply.out.import_route.route_subscribe_action > 0) ? ROUTE_MSG_TYPE_SUBSCRIBE : ROUTE_MSG_TYPE_UNSUBSCRIBE;
+        dev_ipc_message_t *sub_msg = dev_ipc_message_create(sub_type, DEV_MODULE_ID_BGP, DEV_MODULE_ID_ROUTE, 0, req,
+                                                            sizeof(route_subscribe_req_t), g_free);
+        if (sub_msg)
         {
-            LOG_WARN("BGP: Failed to send route %s request (ROUTE module may not be ready)",
-                     (apply.isNo) ? "unsubscribe" : "subscribe");
+            if (dev_ipc_send(bgp_local_ipc_ctx(), DEV_MODULE_ID_ROUTE, sub_msg) != 0)
+            {
+                LOG_WARN("BGP: Failed to send route %s request (ROUTE module may not be ready)",
+                         (sub_type == ROUTE_MSG_TYPE_UNSUBSCRIBE) ? "unsubscribe" : "subscribe");
+            }
+            dev_ipc_message_free(sub_msg);
         }
-        dev_ipc_message_free(sub_msg);
     }
 
     bgp_send_cli_response(msg, (apply.isNo) ? "import-route static disabled\r\n" : "import-route static enabled\r\n");

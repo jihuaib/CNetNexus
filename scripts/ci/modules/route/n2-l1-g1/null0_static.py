@@ -22,6 +22,7 @@ from module_api import (  # noqa: E402
     step,
     wait_check,
     wait_checks,
+    wait_fib_ipv4_route,
 )
 from top_runner import TopologyRuntime  # noqa: E402
 
@@ -49,7 +50,7 @@ def _wait_os_blackhole(
     wait_check(
         rt,
         device=device,
-        command="show route ipv4 os",
+        command="show fib ipv4 os",
         timeout=timeout,
         interval=interval,
         regex=[row_regex] if expect_present else (),
@@ -58,6 +59,21 @@ def _wait_os_blackhole(
             f"{device} os blackhole {prefix} "
             f"{'present' if expect_present else 'absent'}"
         ),
+    )
+    prefix_addr, prefix_len = prefix.rsplit("/", 1)
+    wait_fib_ipv4_route(
+        rt,
+        device=device,
+        prefix_addr=prefix_addr,
+        prefix_len=prefix_len,
+        expect_present=expect_present,
+        nexthop="blackhole",
+        nh_type="blackhole",
+        installed=True,
+        skip_os=False,
+        timeout=timeout,
+        interval=interval,
+        label=f"{device} fib blackhole {prefix} {'present' if expect_present else 'absent'}",
     )
 
 

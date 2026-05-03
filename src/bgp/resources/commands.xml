@@ -16,6 +16,12 @@
             <view view-name="bgp-af-ipv6-qp">
                 <template>&lt;NetNexus(config-bgp-af-ipv6-qp)&gt;</template>
             </view>
+            <view view-name="bgp-af-ipv4-labeled">
+                <template>&lt;NetNexus(config-bgp-af-ipv4-labeled)&gt;</template>
+            </view>
+            <view view-name="bgp-af-ipv6-labeled">
+                <template>&lt;NetNexus(config-bgp-af-ipv6-labeled)&gt;</template>
+            </view>
             <view view-name="bgp-bmp">
                 <template>&lt;NetNexus(config-bgp-bmp-{ctx:7})&gt;</template>
             </view>
@@ -28,6 +34,8 @@
         <view name="bgp-af-ipv6-uni"/>
         <view name="bgp-af-ipv4-qp"/>
         <view name="bgp-af-ipv6-qp"/>
+        <view name="bgp-af-ipv4-labeled"/>
+        <view name="bgp-af-ipv6-labeled"/>
         <view name="bgp-bmp"/>
     </show-this>
 
@@ -137,6 +145,14 @@
                     <name>ipv6-qp</name>
                     <description>IPv6 QP address family</description>
                 </element>
+                <element id="7" cfg-id="5" type="keyword">
+                    <name>ipv4-labeled</name>
+                    <description>IPv4 labeled-unicast address family</description>
+                </element>
+                <element id="8" cfg-id="6" type="keyword">
+                    <name>ipv6-labeled</name>
+                    <description>IPv6 labeled-unicast address family</description>
+                </element>
             </elements>
 
             <commands>
@@ -177,9 +193,27 @@
                         <entry ctx-id="3" value="253"/>
                     </context-out>
                 </command>
-                <!-- no af {ipv4-unicast | ipv6-unicast | ipv4-qp | ipv6-qp} -->
                 <command>
-                    <expression>1  2  { 3 | 4 | 5 | 6 }</expression>
+                    <expression>2 7</expression>
+                    <views>bgp</views>
+                    <to-view>bgp-af-ipv4-labeled</to-view>
+                    <context-out>
+                        <entry ctx-id="2" value="1"/>
+                        <entry ctx-id="3" value="4"/>
+                    </context-out>
+                </command>
+                <command>
+                    <expression>2 8</expression>
+                    <views>bgp</views>
+                    <to-view>bgp-af-ipv6-labeled</to-view>
+                    <context-out>
+                        <entry ctx-id="2" value="2"/>
+                        <entry ctx-id="3" value="4"/>
+                    </context-out>
+                </command>
+                <!-- no af {ipv4-unicast | ipv6-unicast | ipv4-qp | ipv6-qp | ipv4-labeled | ipv6-labeled} -->
+                <command>
+                    <expression>1  2  { 3 | 4 | 5 | 6 | 7 | 8 }</expression>
                     <views>bgp</views>
                 </command>
             </commands>
@@ -216,12 +250,12 @@
                 <!-- neighbor <ipv4|ipv6> enable -->
                 <command>
                     <expression>2 {3 | 4} 5</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-qp,bgp-af-ipv6-qp</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-qp,bgp-af-ipv6-qp,bgp-af-ipv4-labeled,bgp-af-ipv6-labeled</views>
                 </command>
                 <!-- no neighbor <ipv4|ipv6> enable -->
                 <command>
                     <expression>1 2 {3 | 4} 5</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-qp,bgp-af-ipv6-qp</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-qp,bgp-af-ipv6-qp,bgp-af-ipv4-labeled,bgp-af-ipv6-labeled</views>
                 </command>
             </commands>
         </group>
@@ -505,6 +539,14 @@
                     <name>ipv6-qp</name>
                     <description>IPv6 qp address family</description>
                 </element>
+                <element id="10" cfg-id="6" type="keyword">
+                    <name>ipv4-labeled</name>
+                    <description>IPv4 labeled-unicast address family</description>
+                </element>
+                <element id="11" cfg-id="7" type="keyword">
+                    <name>ipv6-labeled</name>
+                    <description>IPv6 labeled-unicast address family</description>
+                </element>
             </elements>
 
             <commands>
@@ -526,6 +568,16 @@
                 <!-- show bgp neighbor af ipv6-qp [<ip-address>] -->
                 <command>
                     <expression>1 2 3 4 9 [7]</expression>
+                    <views>global</views>
+                </command>
+                <!-- show bgp neighbor af ipv4-labeled [<ip-address>] -->
+                <command>
+                    <expression>1 2 3 4 10 [7]</expression>
+                    <views>global</views>
+                </command>
+                <!-- show bgp neighbor af ipv6-labeled [<ip-address>] -->
+                <command>
+                    <expression>1 2 3 4 11 [7]</expression>
                     <views>global</views>
                 </command>
             </commands>
@@ -553,12 +605,12 @@
                 <!-- import-route static -->
                 <command>
                     <expression>2 3</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-labeled,bgp-af-ipv6-labeled</views>
                 </command>
                 <!-- no import-route static -->
                 <command>
                     <expression>1 2 3</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-labeled,bgp-af-ipv6-labeled</views>
                 </command>
             </commands>
         </group>
@@ -613,6 +665,14 @@
                     <type>string(1-255)</type>
                     <description>QP route key, e.g. dqpn=1000,ip=10.99.99.0/24 or dqpn=1000,ipv6=2001:db8::/64</description>
                 </element>
+                <element id="12" cfg-id="8" type="keyword">
+                    <name>ipv4-labeled</name>
+                    <description>Show IPv4 labeled-unicast routes</description>
+                </element>
+                <element id="13" cfg-id="9" type="keyword">
+                    <name>ipv6-labeled</name>
+                    <description>Show IPv6 labeled-unicast routes</description>
+                </element>
             </elements>
 
             <commands>
@@ -634,6 +694,16 @@
                 <!-- show bgp route af ipv6-qp [<qp-route-key>] -->
                 <command>
                     <expression>1 2 3 4 10 [11]</expression>
+                    <views>global</views>
+                </command>
+                <!-- show bgp route af ipv4-labeled [<ip-address> <masklen>] -->
+                <command>
+                    <expression>1 2 3 4 12 [7 8]</expression>
+                    <views>global</views>
+                </command>
+                <!-- show bgp route af ipv6-labeled [<ip-address> <masklen>] -->
+                <command>
+                    <expression>1 2 3 4 13 [7 8]</expression>
                     <views>global</views>
                 </command>
             </commands>
@@ -715,6 +785,14 @@
                     <name>ipv6-qp</name>
                     <description>IPv6 qp address family</description>
                 </element>
+                <element id="10" cfg-id="6" type="keyword">
+                    <name>ipv4-labeled</name>
+                    <description>IPv4 labeled-unicast address family</description>
+                </element>
+                <element id="11" cfg-id="7" type="keyword">
+                    <name>ipv6-labeled</name>
+                    <description>IPv6 labeled-unicast address family</description>
+                </element>
             </elements>
 
             <commands>
@@ -736,6 +814,16 @@
                 <!-- show bgp update-group af ipv6-qp [<group-id>] -->
                 <command>
                     <expression>1 2 3 4 9 [7]</expression>
+                    <views>global</views>
+                </command>
+                <!-- show bgp update-group af ipv4-labeled [<group-id>] -->
+                <command>
+                    <expression>1 2 3 4 10 [7]</expression>
+                    <views>global</views>
+                </command>
+                <!-- show bgp update-group af ipv6-labeled [<group-id>] -->
+                <command>
+                    <expression>1 2 3 4 11 [7]</expression>
                     <views>global</views>
                 </command>
             </commands>

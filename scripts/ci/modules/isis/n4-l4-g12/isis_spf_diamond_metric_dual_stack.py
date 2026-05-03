@@ -15,7 +15,7 @@ import ipaddress
 import re
 import time
 
-from module_api import cmd, g_top, require_devices, run_cmds, step, wait_check, wait_checks  # noqa: E402
+from module_api import cmd, g_top, require_devices, run_cmds, step, wait_check, wait_checks, wait_fib_route, wait_fib_ipv6_route  # noqa: E402
 from top_runner import TopologyRuntime  # noqa: E402
 
 
@@ -356,7 +356,7 @@ def _wait_os_best_v6_linklocal(
     wait_check(
         rt,
         device=device,
-        command="show route ipv6 os",
+        command="show fib ipv6 os",
         timeout=timeout,
         interval=interval,
         regex=[
@@ -364,6 +364,19 @@ def _wait_os_best_v6_linklocal(
             rf"{re.escape(expect_interface)}\s+isis\s+\d+\s*$"
         ],
         label=f"{device} os ipv6 best {prefix} via link-local dev {expect_interface}",
+    )
+    prefix_addr, prefix_len = prefix.rsplit("/", 1)
+    wait_fib_ipv6_route(
+        rt,
+        device=device,
+        prefix_addr=prefix_addr,
+        prefix_len=prefix_len,
+        expect_present=True,
+        installed=True,
+        skip_os=False,
+        timeout=timeout,
+        interval=interval,
+        label=f"{device} fib ipv6 best {prefix} via link-local dev {expect_interface}",
     )
 
 
@@ -389,7 +402,7 @@ def _wait_connected_os_if(
     deadline = time.time() + timeout
     last_out = ""
     while time.time() < deadline:
-        out = cmd(rt, device, f"show route {afi} os", strict=False)
+        out = cmd(rt, device, f"show fib {afi} os", strict=False)
         last_out = out
         os_if = _extract_connected_os_if(out, prefix=prefix)
         if os_if is not None:
@@ -399,7 +412,7 @@ def _wait_connected_os_if(
     raise RuntimeError(
         f"{device} connected OS interface detect timeout after {timeout}s\n"
         f"expect: main unicast {prefix} - <if> kernel\n"
-        f"command: show route {afi} os\n"
+        f"command: show fib {afi} os\n"
         f"last output:\n{last_out}"
     )
 
@@ -431,12 +444,27 @@ def _wait_os_best(
     wait_check(
         rt,
         device=device,
-        command=f"show route {afi} os",
+        command=f"show fib {afi} os",
         timeout=timeout,
         interval=interval,
         regex=[row_regex],
         not_regex=stale_regex,
         label=f"{device} os {afi} best {prefix} via {expect_gateway} dev {expect_interface}",
+    )
+    prefix_addr, prefix_len = prefix.rsplit("/", 1)
+    wait_fib_route(
+        rt,
+        device=device,
+        afi=afi,
+        prefix_addr=prefix_addr,
+        prefix_len=prefix_len,
+        expect_present=True,
+        nexthop=expect_gateway,
+        installed=True,
+        skip_os=False,
+        timeout=timeout,
+        interval=interval,
+        label=f"{device} fib {afi} best {prefix} via {expect_gateway}",
     )
 
 

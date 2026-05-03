@@ -53,6 +53,7 @@ typedef struct bgp_route_node
     uint8_t iter_resolved;      /**< nexthop 迭代是否可达（1=可达，0=不可达） */
     uint8_t _pad0[2];           /**< 对齐填充 */
     uint32_t flags;             /**< 路由标记位，见 BGP_ROUTE_FLAG_* */
+    uint32_t import_proto;      /**< IMPORT 路由来源协议（非 import-route 为 0） */
 } bgp_route_node_t;
 
 /**

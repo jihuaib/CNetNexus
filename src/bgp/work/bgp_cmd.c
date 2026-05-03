@@ -7,6 +7,7 @@
  * 支持 5 种命令：
  *   SHOW_CLI     — CLI 线程投递 show 命令
  *   ROUTE_MSG    — IPC 线程投递 ROUTE 模块消息（update/report/nh-notify）
+ *   TUNNEL_MSG   — IPC 线程投递 TUNNEL 模块解析通知
  *   IF_EVENT     — IPC 线程投递 IF 接口事件
  *   APPLY        — CLI/DB 线程投递同步配置应用命令（waitable）
  *   SHUTDOWN     — bgp_worker_shutdown 投递的退出信号（waitable）
@@ -20,6 +21,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "bgp_apply_vrf.h"
 #include "bgp_cfg_apply.h"
 #include "bgp_cli.h"
 #include "bgp_import_route.h"
@@ -29,6 +31,8 @@
 #include "if.h"
 #include "log.h"
 #include "route.h"
+#include "tunnel.h"
+#include "vrf.h"
 
 /** epoll data.ptr sentinel */
 char bgp_cmd_tag;
@@ -39,11 +43,13 @@ char bgp_cmd_tag;
 
 typedef enum bgp_cmd_type
 {
-    BGP_CMD_TYPE_SHOW_CLI = 1,  /**< show CLI 命令派发（CLI_MSG_TYPE/CLI_MSG_TYPE_CONTINUE） */
-    BGP_CMD_TYPE_SHUTDOWN = 2,  /**< worker 退出信号 */
-    BGP_CMD_TYPE_APPLY = 3,     /**< 跨线程配置应用命令 */
-    BGP_CMD_TYPE_ROUTE_MSG = 4, /**< ROUTE_MSG_TYPE_UPDATE/REPORT/NH_NOTIFY */
-    BGP_CMD_TYPE_IF_EVENT = 5,  /**< IF 接口事件（IF_MSG_TYPE_EVENT） */
+    BGP_CMD_TYPE_SHOW_CLI = 1,   /**< show CLI 命令派发（CLI_MSG_TYPE/CLI_MSG_TYPE_CONTINUE） */
+    BGP_CMD_TYPE_SHUTDOWN = 2,   /**< worker 退出信号 */
+    BGP_CMD_TYPE_APPLY = 3,      /**< 跨线程配置应用命令 */
+    BGP_CMD_TYPE_ROUTE_MSG = 4,  /**< ROUTE_MSG_TYPE_UPDATE/REPORT/NH_NOTIFY */
+    BGP_CMD_TYPE_IF_EVENT = 5,   /**< IF 接口事件（IF_MSG_TYPE_EVENT） */
+    BGP_CMD_TYPE_TUNNEL_MSG = 6, /**< TUNNEL_MSG_TYPE_RESOLVE_NOTIFY */
+    BGP_CMD_TYPE_VRF_EVENT = 7,  /**< VRF_MSG_TYPE_EVENT */
 } bgp_cmd_type_t;
 
 typedef struct bgp_cmd
@@ -238,9 +244,43 @@ int bgp_worker_post_route_message(dev_ipc_message_t *msg)
     return 0;
 }
 
+int bgp_worker_post_tunnel_message(dev_ipc_message_t *msg)
+{
+    bgp_cmd_t *cmd = bgp_cmd_create(BGP_CMD_TYPE_TUNNEL_MSG, msg, FALSE);
+    if (!cmd)
+    {
+        return -1;
+    }
+
+    if (bgp_cmd_enqueue(cmd) != 0)
+    {
+        bgp_cmd_destroy(cmd);
+        return -1;
+    }
+
+    return 0;
+}
+
 int bgp_worker_post_if_event(dev_ipc_message_t *msg)
 {
     bgp_cmd_t *cmd = bgp_cmd_create(BGP_CMD_TYPE_IF_EVENT, msg, FALSE);
+    if (!cmd)
+    {
+        return -1;
+    }
+
+    if (bgp_cmd_enqueue(cmd) != 0)
+    {
+        bgp_cmd_destroy(cmd);
+        return -1;
+    }
+
+    return 0;
+}
+
+int bgp_worker_post_vrf_event(dev_ipc_message_t *msg)
+{
+    bgp_cmd_t *cmd = bgp_cmd_create(BGP_CMD_TYPE_VRF_EVENT, msg, FALSE);
     if (!cmd)
     {
         return -1;
@@ -410,6 +450,37 @@ static void bgp_cmd_dispatch_route_msg(dev_ipc_message_t *msg)
     dev_ipc_message_free(msg);
 }
 
+static void bgp_cmd_dispatch_tunnel_msg(dev_ipc_message_t *msg)
+{
+    if (!msg)
+    {
+        return;
+    }
+
+    switch (msg->msg_type)
+    {
+        case TUNNEL_MSG_TYPE_RESOLVE_NOTIFY:
+        {
+            if (!msg->payload || msg->payload_len < sizeof(tunnel_resolve_notify_t))
+            {
+                LOG_WARN("BGP: TUNNEL_RESOLVE_NOTIFY payload too short: %u", msg->payload_len);
+                break;
+            }
+            uint32_t touched = bgp_relay_handle_tunnel_notify((const tunnel_resolve_notify_t *)msg->payload);
+            if (touched > 0)
+            {
+                LOG_DEBUG("BGP: TUNNEL_RESOLVE_NOTIFY touched=%u", touched);
+            }
+            break;
+        }
+        default:
+            LOG_WARN("BGP: unsupported tunnel message type=0x%08X", msg->msg_type);
+            break;
+    }
+
+    dev_ipc_message_free(msg);
+}
+
 // ============================================================================
 // 主派发入口（worker 主循环调用）
 // ============================================================================
@@ -447,12 +518,27 @@ gboolean bgp_cmd_process_event(void)
                 cmd->msg = NULL;
                 break;
 
+            case BGP_CMD_TYPE_TUNNEL_MSG:
+                bgp_cmd_dispatch_tunnel_msg(cmd->msg);
+                cmd->msg = NULL;
+                break;
+
             case BGP_CMD_TYPE_APPLY:
                 bgp_cmd_dispatch_apply(cmd->apply);
                 break;
 
             case BGP_CMD_TYPE_IF_EVENT:
                 if_api_cache_on_event(cmd->msg);
+                if (cmd->msg)
+                {
+                    dev_ipc_message_free(cmd->msg);
+                    cmd->msg = NULL;
+                }
+                break;
+
+            case BGP_CMD_TYPE_VRF_EVENT:
+                vrf_api_cache_on_event(cmd->msg);
+                bgp_apply_vrf_event(cmd->msg);
                 if (cmd->msg)
                 {
                     dev_ipc_message_free(cmd->msg);

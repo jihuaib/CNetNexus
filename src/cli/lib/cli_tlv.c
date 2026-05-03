@@ -103,6 +103,15 @@ int cli_tlv_next(cli_tlv_parser_t *p, cli_tlv_entry_t *entry)
     return 1;
 }
 
+void cli_tlv_rewind(cli_tlv_parser_t *p)
+{
+    if (!p || !p->_data || p->_len < 5)
+    {
+        return;
+    }
+    p->_pos = 5;
+}
+
 void cli_tlv_entry_free(cli_tlv_entry_t *entry)
 {
     if (entry)
@@ -132,6 +141,35 @@ int64_t cli_tlv_entry_get_int(const cli_tlv_entry_t *entry)
     hi = ntohl(hi);
     lo = ntohl(lo);
     return ((int64_t)hi << 32) | lo;
+}
+
+int cli_tlv_entry_get_u32(const cli_tlv_entry_t *entry, uint32_t *out_value)
+{
+    if (!entry || !entry->value || !out_value)
+    {
+        return -1;
+    }
+
+    if (entry->type == CLI_TLV_TYPE_CTX && entry->length == 4)
+    {
+        uint32_t v;
+        memcpy(&v, entry->value, 4);
+        *out_value = ntohl(v);
+        return 0;
+    }
+
+    if (entry->type == DB_TYPE_INTEGER && entry->length == 8)
+    {
+        int64_t v = cli_tlv_entry_get_int(entry);
+        if (v < 0 || v > UINT32_MAX)
+        {
+            return -1;
+        }
+        *out_value = (uint32_t)v;
+        return 0;
+    }
+
+    return -1;
 }
 
 uint32_t cli_tlv_entry_get_ctx_uint32(const cli_tlv_entry_t *entry)

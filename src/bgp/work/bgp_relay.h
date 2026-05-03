@@ -10,6 +10,7 @@
 #include "bgp.h"
 #include "net_addr.h"
 #include "route.h"
+#include "tunnel.h"
 
 typedef struct bgp_session bgp_session_t;
 typedef struct bgp_peer_update_ingest_stats bgp_peer_update_ingest_stats_t;
@@ -40,5 +41,16 @@ void bgp_relay_flush_peer_routes(uint32_t vrf_id, const net_addr_t *source);
  * @return 受影响路由数
  */
 uint32_t bgp_relay_handle_nh_notify(const route_nh_iter_notify_t *notify);
+
+/**
+ * @brief 处理 TUNNEL 解析通知（LU 隧道可达/不可达）
+ * @return 受影响路由数
+ */
+uint32_t bgp_relay_handle_tunnel_notify(const tunnel_resolve_notify_t *notify);
+
+/**
+ * @brief BGP-LU session adjacency candidate 同步
+ */
+void bgp_relay_session_lu_adj_sync(bgp_session_t *session, gboolean up);
 
 #endif /* BGP_RELAY_H */

@@ -15,7 +15,7 @@ from __future__ import annotations
 import ipaddress
 import re
 
-from module_api import g_top, require_devices, run_cmds, step, wait_check, wait_checks  # noqa: E402
+from module_api import g_top, require_devices, run_cmds, step, wait_check, wait_checks, wait_fib_route  # noqa: E402
 from top_runner import TopologyRuntime  # noqa: E402
 
 
@@ -98,6 +98,19 @@ def _wait_route_in_rib(
         not_contains=["(no routes)", "(no matching routes)"],
         regex=[r"(?im)^\s*Path\s*\[\d+\]\s*:\s*isis\b"],
         label=f"{device} {afi} {prefix} learned via ISIS",
+    )
+    wait_fib_route(
+        rt,
+        device=device,
+        afi=afi,
+        prefix_addr=destination,
+        prefix_len=prefix_len,
+        expect_present=True,
+        installed=True,
+        skip_os=False,
+        timeout=timeout,
+        interval=2,
+        label=f"{device} {afi} fib route {prefix} learned via ISIS",
     )
 
 
@@ -509,25 +522,25 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             [
                 {
                     "device": "r1",
-                    "command": "show route ipv4 os",
+                    "command": "show fib ipv4 os",
                     "contains": [R2_LOOP_V4_PREFIX],
                     "label": "r1 os ipv4 has r2 loop",
                 },
                 {
                     "device": "r1",
-                    "command": "show route ipv6 os",
+                    "command": "show fib ipv6 os",
                     "contains": [R2_LOOP_V6_PREFIX],
                     "label": "r1 os ipv6 has r2 loop",
                 },
                 {
                     "device": "r2",
-                    "command": "show route ipv4 os",
+                    "command": "show fib ipv4 os",
                     "contains": [R1_LOOP_V4_PREFIX],
                     "label": "r2 os ipv4 has r1 loop",
                 },
                 {
                     "device": "r2",
-                    "command": "show route ipv6 os",
+                    "command": "show fib ipv6 os",
                     "contains": [R1_LOOP_V6_PREFIX],
                     "label": "r2 os ipv6 has r1 loop",
                 },

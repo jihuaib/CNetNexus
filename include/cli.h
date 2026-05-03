@@ -66,10 +66,18 @@
 #define CLI_VIEW_BGP_AF_IPV4_QP "bgp-af-ipv4-qp"
 /** BGP 地址族 IPv6 QP 视图 */
 #define CLI_VIEW_BGP_AF_IPV6_QP "bgp-af-ipv6-qp"
+/** BGP 地址族 IPv4 labeled-unicast 视图 */
+#define CLI_VIEW_BGP_AF_IPV4_LABELED "bgp-af-ipv4-labeled"
+/** BGP 地址族 IPv6 labeled-unicast 视图 */
+#define CLI_VIEW_BGP_AF_IPV6_LABELED "bgp-af-ipv6-labeled"
 /** BGP BMP 实例视图 */
 #define CLI_VIEW_BGP_BMP "bgp-bmp"
 /** VRF 配置视图 */
 #define CLI_VIEW_VRF "vrf"
+/** VRF IPv4 单播地址族视图 */
+#define CLI_VIEW_VRF_AF_IPV4 "vrf-af-ipv4-uni"
+/** VRF IPv6 单播地址族视图 */
+#define CLI_VIEW_VRF_AF_IPV6 "vrf-af-ipv6-uni"
 
 // ============================================================================
 // CLI 上下文变量 ID 定义（全局唯一，新增时在此处登记，避免冲突）
@@ -92,6 +100,10 @@
 #define CLI_CTX_ID_BMP_INST_NAME 7
 /** ISIS 实例标签上下文（整数） */
 #define CLI_CTX_ID_ISIS_TAG 8
+/** VRF 视图当前 AF AFI 上下文（整数：VRF_AFI_*） */
+#define CLI_CTX_ID_VRF_AFI 9
+/** VRF 视图当前 AF SAFI 上下文（整数：VRF_SAFI_*） */
+#define CLI_CTX_ID_VRF_SAFI 10
 
 /** 视图名称最大长度 */
 #define CLI_CLI_MAX_VIEW_LEN 20
@@ -200,6 +212,12 @@ int cli_tlv_init(cli_tlv_parser_t *p, const uint8_t *data, uint32_t len);
 int cli_tlv_next(cli_tlv_parser_t *p, cli_tlv_entry_t *entry);
 
 /**
+ * @brief 将 TLV 解析器重置到首个条目位置（保留 flags/group_id）
+ * @param p 解析器
+ */
+void cli_tlv_rewind(cli_tlv_parser_t *p);
+
+/**
  * @brief 释放 TLV 条目资源
  * @param entry 条目
  */
@@ -217,6 +235,14 @@ void cli_tlv_cleanup(cli_tlv_parser_t *p);
  * @return 整数值，类型不匹配返回 0
  */
 int64_t cli_tlv_entry_get_int(const cli_tlv_entry_t *entry);
+
+/**
+ * @brief 从 TLV 条目中读取 uint32 值
+ * @param entry TLV 条目
+ * @param out_value 输出值
+ * @return 0=成功，-1=类型/长度不匹配
+ */
+int cli_tlv_entry_get_u32(const cli_tlv_entry_t *entry, uint32_t *out_value);
 
 /**
  * @brief 从 CTX TLV 条目中读取 uint32 值（type==CLI_TLV_TYPE_CTX，len==4）

@@ -177,10 +177,12 @@ int bgp_rib_route_apply_reach(bgp_route_node_t *route, uint32_t import_proto, co
     if (import_proto != 0)
     {
         BIT_SET(route->flags, BGP_ROUTE_FLAG_IMPORT);
+        route->import_proto = import_proto;
     }
     else
     {
         BIT_CLR(route->flags, BGP_ROUTE_FLAG_IMPORT);
+        route->import_proto = 0;
     }
     BIT_SET(route->flags, BGP_ROUTE_FLAG_VALID);
     BIT_CLR(route->flags, BGP_ROUTE_FLAG_BEST);
@@ -268,6 +270,7 @@ int bgp_rib_unreach_one(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_
         BIT_CLR(route->flags, BGP_ROUTE_FLAG_VALID);
         BIT_CLR(route->flags, BGP_ROUTE_FLAG_BEST);
         BIT_CLR(route->flags, BGP_ROUTE_FLAG_IMPORT);
+        route->import_proto = 0;
         BIT_SET(route->flags, BGP_ROUTE_FLAG_STALE);
         route->updated_at_usec = g_get_real_time();
     }
@@ -362,6 +365,7 @@ static gboolean purge_source_cb(gpointer key, gpointer value, gpointer user_data
             BIT_CLR(route->flags, BGP_ROUTE_FLAG_VALID);
             BIT_CLR(route->flags, BGP_ROUTE_FLAG_BEST);
             BIT_CLR(route->flags, BGP_ROUTE_FLAG_IMPORT);
+            route->import_proto = 0;
             BIT_SET(route->flags, BGP_ROUTE_FLAG_STALE);
             route->updated_at_usec = g_get_real_time();
         }

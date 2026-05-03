@@ -18,6 +18,7 @@
 #include "bgp_calc.h"
 #include "bgp_conn.h"
 #include "bgp_if_cache.h"
+#include "bgp_import_route.h"
 #include "bgp_instance.h"
 #include "bgp_main.h"
 #include "bgp_protocol.h"
@@ -95,6 +96,24 @@ static void bgp_cfg_drain_vrf_work(bgp_vrf_t *vrf)
     }
 }
 
+static void bgp_cfg_cleanup_vrf_import_routes(bgp_vrf_t *vrf)
+{
+    if (!vrf || !vrf->inst_hash)
+    {
+        return;
+    }
+
+    GHashTableIter inst_iter;
+    gpointer inst_key = NULL;
+    gpointer inst_val = NULL;
+    g_hash_table_iter_init(&inst_iter, vrf->inst_hash);
+    while (g_hash_table_iter_next(&inst_iter, &inst_key, &inst_val))
+    {
+        (void)inst_key;
+        (void)bgp_import_route_cleanup_instance_all((bgp_instance_t *)inst_val);
+    }
+}
+
 static void bgp_cfg_stop_all_sessions_and_drain_work(bgp_protocol_t *proto)
 {
     if (!proto || !proto->vrf_hash)
@@ -114,6 +133,8 @@ static void bgp_cfg_stop_all_sessions_and_drain_work(bgp_protocol_t *proto)
         {
             continue;
         }
+
+        bgp_cfg_cleanup_vrf_import_routes(vrf);
 
         if (vrf->sess_hash)
         {
@@ -316,6 +337,9 @@ void bgp_cfg_apply_instance(bgp_apply_cmd_t *apply)
 
     if (is_no)
     {
+        (void)bgp_import_route_cleanup_instance_all(inst);
+        bgp_cfg_drain_instance_work(inst);
+
         if (inst->peer_hash)
         {
             GList *addr_strs = NULL;
@@ -626,6 +650,31 @@ void bgp_cfg_apply_open_cap(bgp_apply_cmd_t *apply)
  * import-route / no import-route
  * ========================================================================== */
 
+static uint32_t bgp_vrf_count_import_proto_afi(const bgp_vrf_t *vrf, uint32_t proto, bgp_afi_t afi)
+{
+    if (!vrf || !vrf->inst_hash)
+    {
+        return 0;
+    }
+
+    uint32_t mask = 1U << proto;
+    uint32_t count = 0;
+    GHashTableIter iter;
+    gpointer key = NULL;
+    gpointer value = NULL;
+    g_hash_table_iter_init(&iter, vrf->inst_hash);
+    while (g_hash_table_iter_next(&iter, &key, &value))
+    {
+        (void)key;
+        bgp_instance_t *inst = (bgp_instance_t *)value;
+        if (inst && inst->afi == afi && (inst->import_protos & mask) != 0u)
+        {
+            count++;
+        }
+    }
+    return count;
+}
+
 void bgp_cfg_apply_import_route(bgp_apply_cmd_t *apply)
 {
     const gboolean is_no = apply->isNo ? TRUE : FALSE;
@@ -643,6 +692,8 @@ void bgp_cfg_apply_import_route(bgp_apply_cmd_t *apply)
         return;
     }
 
+    uint32_t before_count =
+        bgp_vrf_count_import_proto_afi(vrf, apply->u.import_route.import_proto, apply->u.import_route.afi);
     bgp_instance_t *inst = bgp_vrf_get_or_create_instance(vrf, apply->u.import_route.afi, apply->u.import_route.safi);
     if (!inst)
     {
@@ -659,7 +710,23 @@ void bgp_cfg_apply_import_route(bgp_apply_cmd_t *apply)
     {
         inst->import_protos |= proto_mask;
     }
+    uint32_t after_count =
+        bgp_vrf_count_import_proto_afi(vrf, apply->u.import_route.import_proto, apply->u.import_route.afi);
+
     apply->out.import_protos = inst->import_protos;
+    apply->out.import_route.route_subscribe_action = 0;
+    if (!is_no && (inst->import_protos & proto_mask) != 0u)
+    {
+        apply->out.import_route.route_subscribe_action = 1;
+    }
+    else if (is_no && before_count > 0u && after_count == 0u)
+    {
+        apply->out.import_route.route_subscribe_action = -1;
+    }
+    if (is_no)
+    {
+        (void)bgp_import_route_cleanup_instance(inst, apply->u.import_route.import_proto);
+    }
     apply->rc = BGP_APPLY_RC_OK;
 }
 

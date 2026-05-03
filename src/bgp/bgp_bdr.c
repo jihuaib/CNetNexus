@@ -44,6 +44,14 @@ static const char *afi_safi_to_str(int64_t afi, int64_t safi)
     {
         return "ipv6-qp";
     }
+    if (afi == 1 && safi == BGP_SAFI_LABELED)
+    {
+        return "ipv4-labeled";
+    }
+    if (afi == 2 && safi == BGP_SAFI_LABELED)
+    {
+        return "ipv6-labeled";
+    }
     return NULL;
 }
 
@@ -55,7 +63,9 @@ static gboolean bgp_bdr_is_af_view(const char *view_name)
 {
     return view_name &&
            (strcmp(view_name, CLI_VIEW_BGP_AF_IPV4) == 0 || strcmp(view_name, CLI_VIEW_BGP_AF_IPV6) == 0 ||
-            strcmp(view_name, CLI_VIEW_BGP_AF_IPV4_QP) == 0 || strcmp(view_name, CLI_VIEW_BGP_AF_IPV6_QP) == 0);
+            strcmp(view_name, CLI_VIEW_BGP_AF_IPV4_QP) == 0 || strcmp(view_name, CLI_VIEW_BGP_AF_IPV6_QP) == 0 ||
+            strcmp(view_name, CLI_VIEW_BGP_AF_IPV4_LABELED) == 0 ||
+            strcmp(view_name, CLI_VIEW_BGP_AF_IPV6_LABELED) == 0);
 }
 
 static uint32_t bgp_bdr_scope_vrf_id(const cli_show_scope_t *scope)

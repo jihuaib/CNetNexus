@@ -11,6 +11,7 @@
 
 #include "bgp_rd.h"
 #include "log.h"
+#include "vrf.h"
 
 // ============================================================================
 // 协议生命周期
@@ -81,6 +82,14 @@ bgp_vrf_t *bgp_protocol_get_or_create_vrf(bgp_protocol_t *proto, uint32_t vrf_id
     {
         return vrf;
     }
+
+    /* 非公网 VRF 必须已在 VRF 模块创建（通过 vrf_api 缓存验证），否则拒绝隐式创建 */
+    if (vrf_id != BGP_VRF_PUBLIC_ID && vrf_api_cache_lookup(vrf_id) == NULL)
+    {
+        LOG_WARN("BGP: refuse to create bgp_vrf for unknown VRF id=%u (not present in vrf_api cache)", vrf_id);
+        return NULL;
+    }
+
     vrf = bgp_vrf_create(vrf_id);
     uint32_t *key = g_malloc(sizeof(uint32_t));
     *key = vrf_id;

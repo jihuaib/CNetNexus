@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import re
 
-from module_api import g_top, reboot_device, require_devices, run_cmds, step, wait_check, wait_checks  # noqa: E402
+from module_api import g_top, reboot_device, require_devices, run_cmds, step, wait_check, wait_checks, wait_fib_ipv4_route  # noqa: E402
 from top_runner import TopologyRuntime  # noqa: E402
 
 
@@ -172,6 +172,19 @@ def _wait_route_iter_ipv6_oif(
         ],
         label=f"{device} route iter v4 {destination}/{mask} via v6 {iter_nh6}/{iter_oif}",
     )
+    wait_fib_ipv4_route(
+        rt,
+        device=device,
+        prefix_addr=destination,
+        prefix_len=mask,
+        expect_present=True,
+        nexthop=iter_nh6,
+        installed=True,
+        skip_os=False,
+        timeout=timeout,
+        interval=2,
+        label=f"{device} fib v4 {destination}/{mask} via v6 {iter_nh6}",
+    )
 
 
 def _wait_os_ipv4_via_v6(
@@ -183,7 +196,7 @@ def _wait_os_ipv4_via_v6(
     timeout: int,
 ) -> None:
     """
-    OS 路由表（show route ipv4 os）从 netlink RTM_GETROUTE 解析；
+    OS 路由表（show fib ipv4 os）从 netlink RTM_GETROUTE 解析；
     Gateway 列若显示 IPv6 地址，意味着内核以 RTA_VIA AF_INET6 安装了该 IPv4 路由，
     即 RFC 8950 跨族 nexthop 数据面已生效。
     """
@@ -193,7 +206,7 @@ def _wait_os_ipv4_via_v6(
     wait_check(
         rt,
         device=device,
-        command="show route ipv4 os",
+        command="show fib ipv4 os",
         timeout=timeout,
         interval=2,
         regex=[best_row_regex],

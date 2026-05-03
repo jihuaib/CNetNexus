@@ -18,40 +18,231 @@
 #include "bgp_attr_intern.h"
 #include "bgp_calc.h"
 #include "bgp_instance.h"
+#include "bgp_main.h"
 #include "bgp_protocol.h"
 #include "bgp_rib.h"
 #include "bgp_vrf.h"
 #include "bgp_worker.h"
+#include "errcode.h"
 #include "log.h"
 #include "net_addr.h"
 #include "route.h"
+#include "tunnel.h"
+
+#define BGP_IMPORT_LABEL_TIMEOUT_MS 3000u
+
+static void bgp_import_fill_label_req(tunnel_label_req_t *req, uint32_t vrf_id, bgp_afi_t afi, uint8_t prefix_len,
+                                      const net_addr_t *prefix_addr)
+{
+    memset(req, 0, sizeof(*req));
+    req->vrf_id = vrf_id;
+    req->afi = (uint16_t)afi;
+    req->source_type = TUNNEL_SOURCE_BGP_LU;
+    req->owner_module_id = DEV_MODULE_ID_BGP;
+    req->owner_id = ((uint32_t)afi << 16) | (uint32_t)BGP_SAFI_LABELED;
+    req->fec.vrf_id = vrf_id;
+    req->fec.afi = (uint16_t)afi;
+    req->fec.prefix_len = prefix_len;
+    req->fec.addr = *prefix_addr;
+}
+
+static int bgp_import_prepare_labeled_nlri(bgp_nlri_entry_t *nlri, const route_msg_entry_t *entry)
+{
+    if (!nlri || !entry || !g_bgp_local || !g_bgp_local->dev_ipc_ctx)
+    {
+        return 0;
+    }
+
+    tunnel_label_req_t req;
+    bgp_import_fill_label_req(&req, entry->vrf_id, (bgp_afi_t)entry->afi, entry->prefix_len, &entry->prefix_addr);
+
+    uint32_t label = 0;
+    if (tunnel_rpc_label_alloc(g_bgp_local->dev_ipc_ctx, &req, &label, BGP_IMPORT_LABEL_TIMEOUT_MS) != ERRCODE_SUCCESS)
+    {
+        char prefix[64];
+        net_addr_to_str(&entry->prefix_addr, prefix, sizeof(prefix));
+        LOG_WARN("BGP: failed to allocate LU label vrf=%u afi=%u prefix=%s/%u", entry->vrf_id, (unsigned)entry->afi,
+                 prefix, entry->prefix_len);
+        return 0;
+    }
+
+    nlri->safi = BGP_SAFI_LABELED;
+    nlri->prefix.has_label = true;
+    nlri->prefix.label = label;
+
+    return 1;
+}
+
+static void bgp_import_release_labeled_label(const route_msg_entry_t *entry)
+{
+    if (!entry || !g_bgp_local || !g_bgp_local->dev_ipc_ctx)
+    {
+        return;
+    }
+
+    tunnel_label_req_t req;
+    bgp_import_fill_label_req(&req, entry->vrf_id, (bgp_afi_t)entry->afi, entry->prefix_len, &entry->prefix_addr);
+    (void)tunnel_rpc_label_release(g_bgp_local->dev_ipc_ctx, &req);
+}
+
+static void bgp_import_release_labeled_label_for_nlri(const bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
+{
+    if (!inst || !nlri || nlri->type != BGP_NLRI_PREFIX || nlri->safi != BGP_SAFI_LABELED || !g_bgp_local ||
+        !g_bgp_local->dev_ipc_ctx)
+    {
+        return;
+    }
+
+    uint32_t vrf_id = (inst->vrf) ? inst->vrf->vrf_id : ROUTE_VRF_DEFAULT;
+    tunnel_label_req_t req;
+    bgp_import_fill_label_req(&req, vrf_id, (bgp_afi_t)nlri->afi, nlri->prefix.prefix.prefix_len,
+                              &nlri->prefix.prefix.addr);
+    (void)tunnel_rpc_label_release(g_bgp_local->dev_ipc_ctx, &req);
+}
+
+typedef struct bgp_import_cleanup_item
+{
+    bgp_nlri_entry_t nlri;
+    net_addr_t source;
+} bgp_import_cleanup_item_t;
+
+typedef struct bgp_import_cleanup_collect_ctx
+{
+    GPtrArray *items;
+    uint32_t import_proto;
+    gboolean all_import_protos;
+} bgp_import_cleanup_collect_ctx_t;
+
+static gboolean bgp_import_proto_matches(uint32_t route_proto, uint32_t import_proto, gboolean all_import_protos)
+{
+    if (all_import_protos)
+    {
+        return TRUE;
+    }
+    if (route_proto == import_proto)
+    {
+        return TRUE;
+    }
+    return import_proto == ROUTE_PROTOCOL_STATIC && route_proto == ROUTE_PROTOCOL_BLACKHOLE;
+}
+
+static gboolean bgp_import_collect_rib_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    bgp_import_cleanup_collect_ctx_t *ctx = (bgp_import_cleanup_collect_ctx_t *)user_data;
+    const bgp_rthead_t *head = (const bgp_rthead_t *)value;
+    if (!ctx || !ctx->items || !head)
+    {
+        return FALSE;
+    }
+
+    for (const GList *l = head->route_list; l; l = l->next)
+    {
+        const bgp_route_node_t *route = (const bgp_route_node_t *)l->data;
+        if (!route || !BIT_TEST(route->flags, BGP_ROUTE_FLAG_IMPORT) || BIT_TEST(route->flags, BGP_ROUTE_FLAG_STALE))
+        {
+            continue;
+        }
+        if (!bgp_import_proto_matches(route->import_proto, ctx->import_proto, ctx->all_import_protos))
+        {
+            continue;
+        }
+
+        bgp_import_cleanup_item_t *item = g_malloc0(sizeof(*item));
+        item->nlri = head->nlri;
+        item->source = route->source;
+        g_ptr_array_add(ctx->items, item);
+    }
+    return FALSE;
+}
+
+static void bgp_import_collect_inst_rib_cb(bgp_instance_t *inst, bgp_rd_entry_t *entry, bgp_rib_t *rib,
+                                           gpointer user_data)
+{
+    (void)inst;
+    (void)entry;
+    if (!rib || !rib->head_tree)
+    {
+        return;
+    }
+    g_tree_foreach(rib->head_tree, bgp_import_collect_rib_cb, user_data);
+}
+
+static uint32_t bgp_import_route_cleanup_instance_common(bgp_instance_t *inst, uint32_t import_proto,
+                                                         gboolean all_import_protos)
+{
+    if (!inst)
+    {
+        return 0;
+    }
+
+    bgp_import_cleanup_collect_ctx_t ctx = {
+        .items = g_ptr_array_new_with_free_func(g_free),
+        .import_proto = import_proto,
+        .all_import_protos = all_import_protos,
+    };
+    bgp_inst_foreach_rib(inst, bgp_import_collect_inst_rib_cb, &ctx);
+
+    uint32_t removed = 0;
+    for (guint i = 0; i < ctx.items->len; ++i)
+    {
+        const bgp_import_cleanup_item_t *item = (const bgp_import_cleanup_item_t *)g_ptr_array_index(ctx.items, i);
+        bgp_rib_t *rib = bgp_inst_rib_for_nlri(inst, &item->nlri);
+        if (!rib)
+        {
+            continue;
+        }
+
+        int rc = bgp_rib_unreach_one(rib, &item->nlri, &item->source);
+        if (rc != 1)
+        {
+            continue;
+        }
+
+        removed++;
+        if (inst->calc_queue)
+        {
+            bgp_calc_queue_push(inst->calc_queue, inst, &item->nlri);
+        }
+        if (item->nlri.safi == BGP_SAFI_LABELED)
+        {
+            bgp_import_release_labeled_label_for_nlri(inst, &item->nlri);
+        }
+    }
+
+    if (removed > 0)
+    {
+        LOG_INFO("BGP: cleaned %u import-route entries afi=%u safi=%u proto=%s%u", removed, (unsigned)inst->afi,
+                 (unsigned)inst->safi, all_import_protos ? "all/" : "", import_proto);
+    }
+
+    g_ptr_array_free(ctx.items, TRUE);
+    return removed;
+}
+
+uint32_t bgp_import_route_cleanup_instance(bgp_instance_t *inst, uint32_t import_proto)
+{
+    return bgp_import_route_cleanup_instance_common(inst, import_proto, FALSE);
+}
+
+uint32_t bgp_import_route_cleanup_instance_all(bgp_instance_t *inst)
+{
+    return bgp_import_route_cleanup_instance_common(inst, 0, TRUE);
+}
 
 /**
  * @brief 将一条 ROUTE 路由条目导入（或撤销）到 BGP RIB
  * @return 1=已处理，0=被过滤/忽略
  */
-static int bgp_import_route_entry(const route_msg_entry_t *entry)
+static int bgp_import_route_entry_to_safi(const route_msg_entry_t *entry, bgp_vrf_t *vrf, bgp_afi_t afi,
+                                          bgp_safi_t safi)
 {
-    if (!entry)
+    if (!entry || !vrf)
     {
         return 0;
     }
 
-    if (!g_bgp_work_local || !g_bgp_work_local->protocol)
-    {
-        return 0;
-    }
-
-    bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_work_local->protocol, entry->vrf_id);
-    if (!vrf)
-    {
-        return 0;
-    }
-
-    /* 查找对应 AFI/SAFI 实例（不自动创建：未配置 AF 则忽略） */
-    bgp_afi_t afi = (bgp_afi_t)entry->afi;
-    bgp_safi_t safi = (entry->safi == 0) ? BGP_SAFI_UNICAST : (bgp_safi_t)entry->safi;
-    if ((afi != BGP_AFI_IPV4 && afi != BGP_AFI_IPV6) || safi != BGP_SAFI_UNICAST)
+    if ((afi != BGP_AFI_IPV4 && afi != BGP_AFI_IPV6) || (safi != BGP_SAFI_UNICAST && safi != BGP_SAFI_LABELED))
     {
         return 0;
     }
@@ -93,6 +284,11 @@ static int bgp_import_route_entry(const route_msg_entry_t *entry)
     nlri.prefix.has_rd = false;
     nlri.prefix.has_label = false;
 
+    if (safi == BGP_SAFI_LABELED && !bgp_import_prepare_labeled_nlri(&nlri, entry))
+    {
+        return 0;
+    }
+
     net_addr_t src = entry->source_addr;
 
     bgp_rib_t *rib = bgp_inst_rib_ensure_for_nlri(inst, &nlri);
@@ -108,6 +304,10 @@ static int bgp_import_route_entry(const route_msg_entry_t *entry)
         if (rc == 1 && inst->calc_queue)
         {
             bgp_calc_queue_push(inst->calc_queue, inst, &nlri);
+        }
+        if (safi == BGP_SAFI_LABELED)
+        {
+            bgp_import_release_labeled_label(entry);
         }
         char nlri_str[BGP_NLRI_KEY_MAX];
         bgp_nlri_to_str(&nlri, nlri_str, sizeof(nlri_str));
@@ -157,6 +357,41 @@ static int bgp_import_route_entry(const route_msg_entry_t *entry)
     }
 
     return 1;
+}
+
+static int bgp_import_route_entry(const route_msg_entry_t *entry)
+{
+    if (!entry)
+    {
+        return 0;
+    }
+
+    if (!g_bgp_work_local || !g_bgp_work_local->protocol)
+    {
+        return 0;
+    }
+
+    bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_work_local->protocol, entry->vrf_id);
+    if (!vrf)
+    {
+        return 0;
+    }
+
+    bgp_afi_t afi = (bgp_afi_t)entry->afi;
+    if (afi != BGP_AFI_IPV4 && afi != BGP_AFI_IPV6)
+    {
+        return 0;
+    }
+
+    if (entry->safi != 0 && entry->safi != BGP_SAFI_UNICAST)
+    {
+        return 0;
+    }
+
+    int handled = 0;
+    handled += bgp_import_route_entry_to_safi(entry, vrf, afi, BGP_SAFI_UNICAST);
+    handled += bgp_import_route_entry_to_safi(entry, vrf, afi, BGP_SAFI_LABELED);
+    return handled;
 }
 
 /**

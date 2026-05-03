@@ -1,375 +1,506 @@
 /**
  * @file   vrf_cli.c
- * @brief  VRF 模块 CLI 命令处理实现
+ * @brief  VRF CLI 配置命令处理：IPC 线程解析 TLV，构造 apply 派发给 worker
  * @author jhb
  * @date   2026/03/05
  */
 #include "vrf_cli.h"
 
+#include <arpa/inet.h>
 #include <glib.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "cli.h"
-#include "dev.h"
 #include "errcode.h"
-#include "log.h"
+#include "vrf.h"
 #include "vrf_main.h"
+#include "work/vrf_cfg_apply.h"
+#include "work/vrf_worker.h"
 
-/** CLI 命令组 ID：vrf <vrf-name>（创建） 和 no vrf <vrf-name>（删除） */
-#define VRF_CLI_GROUP_ID_CREATE 1
-/** CLI 命令组 ID：show vrf [<vrf-name>] */
-#define VRF_CLI_GROUP_ID_SHOW 2
+/** 命令组 ID（与 commands.xml 对齐） */
+#define VRF_CLI_GROUP_CREATE 1
+#define VRF_CLI_GROUP_AF 3
+#define VRF_CLI_GROUP_RD 4
+#define VRF_CLI_GROUP_RT 5
 
-/** show vrf <vrf-name> 的参数 cfg_id */
-#define VRF_CFGID_SHOW_NAME 3
+/** 参数 cfg_id */
+#define VRF_CFGID_VRF_NAME 1
+#define VRF_CFGID_RD_RT_STR 1
+#define VRF_CFGID_RT_DIRECTION 2
 
 // ============================================================================
-// 发送 CLI 响应辅助
+// 响应辅助
 // ============================================================================
 
-static void vrf_send_cli_response(dev_ipc_message_t *msg, const char *text)
+static void send_resp(dev_ipc_message_t *msg, const char *text)
 {
-    char *resp_data = g_strdup(text);
+    char *data = g_strdup(text ? text : "");
     dev_ipc_message_t *resp = dev_ipc_message_create(CLI_MSG_TYPE_RESP, DEV_MODULE_ID_VRF, msg->src_module_id,
-                                                     msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
+                                                     msg->request_id, data, strlen(data) + 1, g_free);
     if (resp)
     {
         dev_ipc_send_response(vrf_local_ipc_ctx(), resp);
         dev_ipc_message_free(resp);
     }
-}
-
-// ============================================================================
-// 命令处理函数
-// ============================================================================
-
-/**
- * @brief 处理 "vrf <vrf-name>" 和 "no vrf <vrf-name>" 命令（group_id=1）
- *
- * cfg_id: 1=vrf(keyword) 2=vrf-name(parameter) 4=delete-vrf-name(parameter)
- */
-static int handle_vrf_create(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
-{
-    gboolean is_no = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
-    char vrf_name[VRF_NAME_MAX_LEN] = {0};
-
-    cli_tlv_entry_t entry;
-    while (cli_tlv_next(parser, &entry) == 1)
-    {
-        if (!CLI_TLV_IS_CTX(&entry) && entry.cfg_id == 1)
-        {
-            const char *s = cli_tlv_entry_get_text(&entry);
-            if (s)
-            {
-                snprintf(vrf_name, sizeof(vrf_name), "%s", s);
-            }
-        }
-        cli_tlv_entry_free(&entry);
-    }
-
-    if (vrf_name[0] == '\0')
-    {
-        vrf_send_cli_response(msg, "VRF Error: Missing VRF name\r\n");
-        return ERRCODE_FAIL;
-    }
-
-    /* 公网 VRF 不允许手动创建或删除 */
-    if (strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) == 0)
-    {
-        vrf_send_cli_response(msg, is_no ? "VRF Error: Public VRF cannot be deleted\r\n"
-                                         : "VRF Error: Public VRF cannot be manually created\r\n");
-        return ERRCODE_FAIL;
-    }
-
-    if (is_no)
-    {
-        if (vrf_delete(vrf_name) != ERRCODE_SUCCESS)
-        {
-            char errbuf[128];
-            snprintf(errbuf, sizeof(errbuf), "VRF Error: '%s' does not exist\r\n", vrf_name);
-            vrf_send_cli_response(msg, errbuf);
-            return ERRCODE_FAIL;
-        }
-
-        char buf[128];
-        snprintf(buf, sizeof(buf), "VRF '%s' deleted\r\n", vrf_name);
-        vrf_send_cli_response(msg, buf);
-        return ERRCODE_SUCCESS;
-    }
     else
     {
-        /* 检查名称是否已存在 */
-        if (vrf_find_by_name(vrf_name))
-        {
-            vrf_send_cli_response(msg, "");
-            return ERRCODE_SUCCESS;
-        }
-
-        vrf_entry_t *entry2 = vrf_create(vrf_name);
-        if (!entry2)
-        {
-            vrf_send_cli_response(msg, "VRF Error: Creation failed\r\n");
-            return ERRCODE_FAIL;
-        }
-
-        vrf_send_cli_response(msg, "");
-        return ERRCODE_SUCCESS;
+        g_free(data);
     }
 }
 
-/**
- * @brief vrf_entry_t 按 vrf_id 升序比较（用于排序）
- */
-static gint compare_vrf_by_id(gconstpointer a, gconstpointer b)
+// ============================================================================
+// RD/RT 字符串解析（RFC 4364 type 0/1）
+// ============================================================================
+
+static int parse_rd_rt(const char *s, uint8_t out[8])
 {
-    const vrf_entry_t *ea = (const vrf_entry_t *)a;
-    const vrf_entry_t *eb = (const vrf_entry_t *)b;
-    if (ea->vrf_id < eb->vrf_id)
+    if (!s || !out)
     {
         return -1;
     }
-    if (ea->vrf_id > eb->vrf_id)
+    const char *colon = strchr(s, ':');
+    if (!colon || colon == s || colon[1] == '\0')
     {
-        return 1;
+        return -1;
     }
+
+    char left[64];
+    size_t left_len = (size_t)(colon - s);
+    if (left_len >= sizeof(left))
+    {
+        return -1;
+    }
+    memcpy(left, s, left_len);
+    left[left_len] = '\0';
+    const char *right = colon + 1;
+    memset(out, 0, 8);
+
+    if (strchr(left, '.'))
+    {
+        struct in_addr ip;
+        if (inet_pton(AF_INET, left, &ip) != 1)
+        {
+            return -1;
+        }
+        char *endp = NULL;
+        unsigned long val = strtoul(right, &endp, 10);
+        if (!endp || *endp != '\0' || val > 0xFFFFu)
+        {
+            return -1;
+        }
+        out[0] = 0x00;
+        out[1] = 0x01;
+        memcpy(out + 2, &ip.s_addr, 4);
+        out[6] = (uint8_t)(val >> 8);
+        out[7] = (uint8_t)val;
+        return 0;
+    }
+
+    char *endp = NULL;
+    unsigned long asn = strtoul(left, &endp, 10);
+    if (!endp || *endp != '\0' || asn > 0xFFFFu)
+    {
+        return -1;
+    }
+    endp = NULL;
+    unsigned long val = strtoul(right, &endp, 10);
+    if (!endp || *endp != '\0' || val > 0xFFFFFFFFu)
+    {
+        return -1;
+    }
+    out[0] = 0x00;
+    out[1] = 0x00;
+    out[2] = (uint8_t)(asn >> 8);
+    out[3] = (uint8_t)asn;
+    out[4] = (uint8_t)(val >> 24);
+    out[5] = (uint8_t)(val >> 16);
+    out[6] = (uint8_t)(val >> 8);
+    out[7] = (uint8_t)val;
     return 0;
 }
 
-/**
- * @brief 处理 "show vrf [<vrf-name>]" 命令（group_id=2）
- *
- * 无参数时列出所有 VRF；有 cfg_id=3 参数时显示指定 VRF 详情。
- */
-static int handle_vrf_show(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
-{
-    char vrf_name[VRF_NAME_MAX_LEN] = {0};
+// ============================================================================
+// TLV 上下文 / 参数提取
+// ============================================================================
 
+/**
+ * @brief 从 CLI_TLV_TYPE_CTX_STR 上下文条目复制字符串到缓冲区
+ *
+ * cli_tlv_entry_get_text 仅认 DB_TYPE_TEXT，对 ctx_str(0x81) 返回 NULL；
+ * ctx_str 必须直接读 entry->value/length。
+ *
+ * @return 1 复制成功，0 类型不匹配
+ */
+static int ctx_str_copy(const cli_tlv_entry_t *entry, char *out, size_t out_cap)
+{
+    if (!entry || entry->type != CLI_TLV_TYPE_CTX_STR || !entry->value || out_cap == 0)
+    {
+        return 0;
+    }
+    uint16_t copy_len = entry->length;
+    if (copy_len >= out_cap)
+    {
+        copy_len = (uint16_t)(out_cap - 1);
+    }
+    memcpy(out, entry->value, copy_len);
+    out[copy_len] = '\0';
+    return 1;
+}
+
+static int parse_af_ctx(cli_tlv_parser_t *parser, char *vrf_name, size_t vrf_name_size, uint16_t *afi_out,
+                        uint8_t *safi_out)
+{
     cli_tlv_entry_t entry;
+    int got_vrf = 0;
+    int got_afi = 0;
+
+    *safi_out = (uint8_t)VRF_SAFI_UNICAST;
+
     while (cli_tlv_next(parser, &entry) == 1)
     {
-        if (!CLI_TLV_IS_CTX(&entry) && entry.cfg_id == VRF_CFGID_SHOW_NAME)
+        if (CLI_TLV_IS_CTX(&entry))
         {
-            const char *s = cli_tlv_entry_get_text(&entry);
-            if (s)
+            if (entry.cfg_id == CLI_CTX_ID_VRF_NAME)
             {
-                snprintf(vrf_name, sizeof(vrf_name), "%s", s);
+                if (ctx_str_copy(&entry, vrf_name, vrf_name_size))
+                {
+                    got_vrf = 1;
+                }
+            }
+            else if (entry.cfg_id == CLI_CTX_ID_VRF_AFI)
+            {
+                uint32_t v = 0;
+                if (cli_tlv_entry_get_u32(&entry, &v) == 0)
+                {
+                    *afi_out = (uint16_t)v;
+                    got_afi = 1;
+                }
+            }
+            else if (entry.cfg_id == CLI_CTX_ID_VRF_SAFI)
+            {
+                uint32_t v = 0;
+                if (cli_tlv_entry_get_u32(&entry, &v) == 0)
+                {
+                    *safi_out = (uint8_t)v;
+                }
             }
         }
         cli_tlv_entry_free(&entry);
     }
+    cli_tlv_rewind(parser);
+    return (got_vrf && got_afi) ? 0 : -1;
+}
 
-    GString *buf = g_string_new("");
-    if (!buf)
+static int parse_vrf_name(cli_tlv_parser_t *parser, uint32_t cfg_id, char *out, size_t cap)
+{
+    cli_tlv_entry_t entry;
+    int got = 0;
+    while (cli_tlv_next(parser, &entry) == 1)
     {
-        vrf_send_cli_response(msg, "VRF Error: Out of memory\r\n");
+        if (!CLI_TLV_IS_CTX(&entry) && entry.cfg_id == cfg_id)
+        {
+            const char *s = cli_tlv_entry_get_text(&entry);
+            if (s)
+            {
+                snprintf(out, cap, "%s", s);
+                got = 1;
+            }
+        }
+        cli_tlv_entry_free(&entry);
+    }
+    cli_tlv_rewind(parser);
+    return got;
+}
+
+static int parse_param_str(cli_tlv_parser_t *parser, uint32_t cfg_id, char *out, size_t cap)
+{
+    return parse_vrf_name(parser, cfg_id, out, cap);
+}
+
+static int parse_rt_dir(cli_tlv_parser_t *parser)
+{
+    int dir = 2;
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (!CLI_TLV_IS_CTX(&entry) && entry.cfg_id == VRF_CFGID_RT_DIRECTION)
+        {
+            const char *s = cli_tlv_entry_get_text(&entry);
+            if (s)
+            {
+                if (strcmp(s, "import") == 0)
+                {
+                    dir = 0;
+                }
+                else if (strcmp(s, "export") == 0)
+                {
+                    dir = 1;
+                }
+                else
+                {
+                    dir = 2;
+                }
+            }
+        }
+        cli_tlv_entry_free(&entry);
+    }
+    cli_tlv_rewind(parser);
+    return dir;
+}
+
+// ============================================================================
+// 命令处理：构造 apply 同步 dispatch
+// ============================================================================
+
+static int dispatch_apply(vrf_apply_cmd_t *cmd)
+{
+    int rc = vrf_worker_dispatch_apply(cmd);
+    if (rc != ERRCODE_SUCCESS)
+    {
+        return -1;
+    }
+    return cmd->rc;
+}
+
+static int handle_create(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    gboolean is_no = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
+    char vrf_name[VRF_NAME_MAX_LEN] = {0};
+    if (!parse_param_str(parser, VRF_CFGID_VRF_NAME, vrf_name, sizeof(vrf_name)) || vrf_name[0] == '\0')
+    {
+        send_resp(msg, "VRF Error: Missing VRF name\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) == 0)
+    {
+        send_resp(msg, is_no ? "VRF Error: Public VRF cannot be deleted\r\n"
+                             : "VRF Error: Public VRF cannot be manually created\r\n");
         return ERRCODE_FAIL;
     }
 
-    if (vrf_name[0] != '\0')
+    vrf_apply_cmd_t cmd = {0};
+    cmd.op = is_no ? VRF_APPLY_OP_VRF_DELETE : VRF_APPLY_OP_VRF_CREATE;
+    g_strlcpy(cmd.vrf_name, vrf_name, sizeof(cmd.vrf_name));
+    int rc = dispatch_apply(&cmd);
+    if (rc != 0)
     {
-        /* show vrf <vrf-name>：显示单条 VRF 详情 */
-        const vrf_entry_t *e = vrf_find_by_name(vrf_name);
-        if (!e)
-        {
-            char errbuf[128];
-            snprintf(errbuf, sizeof(errbuf), "VRF Error: '%s' does not exist\r\n", vrf_name);
-            vrf_send_cli_response(msg, errbuf);
-            g_string_free(buf, TRUE);
-            return ERRCODE_FAIL;
-        }
+        send_resp(msg, is_no ? "VRF Error: Delete failed\r\n" : "VRF Error: Create failed\r\n");
+        return ERRCODE_FAIL;
+    }
+    send_resp(msg, "");
+    return ERRCODE_SUCCESS;
+}
 
-        g_string_append(buf, "\r\nVRF Detail:\r\n");
-        g_string_append_printf(buf, "  VRF-ID : %u\r\n", e->vrf_id);
-        g_string_append_printf(buf, "  Name   : %s\r\n\r\n", e->name);
+/**
+ * @brief AF 关键字 cfg-id → (afi, safi) 映射
+ *
+ * 与 commands.xml group 3 的关键字 cfg-id 一致：
+ *   cfg-id=1 → ipv4-unicast
+ *   cfg-id=2 → ipv6-unicast
+ * 后续新增 vpn/labeled 等 SAFI 时在此追加，不再写死 SAFI。
+ *
+ * @return 0 命中并填充，-1 未识别
+ */
+static int af_cfgid_to_pair(uint32_t cfg_id, uint16_t *afi_out, uint8_t *safi_out)
+{
+    switch (cfg_id)
+    {
+        case 1:
+            *afi_out = VRF_AFI_IPV4;
+            *safi_out = (uint8_t)VRF_SAFI_UNICAST;
+            return 0;
+        case 2:
+            *afi_out = VRF_AFI_IPV6;
+            *safi_out = (uint8_t)VRF_SAFI_UNICAST;
+            return 0;
+        default:
+            return -1;
+    }
+}
+
+static int handle_af(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    gboolean is_no = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
+    char vrf_name[VRF_NAME_MAX_LEN] = {0};
+    uint16_t afi = 0;
+    uint8_t safi = 0;
+
+    /* AF 命令本身切换视图，CLI_CTX_ID_VRF_AFI/SAFI 此刻尚未注入；
+     * (afi, safi) 由关键字 cfg-id 唯一决定（见 af_cfgid_to_pair），
+     * vrf_name 仍来自父视图已累积的 CLI_CTX_ID_VRF_NAME 上下文。 */
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (CLI_TLV_IS_CTX(&entry))
+        {
+            if (entry.cfg_id == CLI_CTX_ID_VRF_NAME)
+            {
+                (void)ctx_str_copy(&entry, vrf_name, sizeof(vrf_name));
+            }
+        }
+        else
+        {
+            (void)af_cfgid_to_pair(entry.cfg_id, &afi, &safi);
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    if (vrf_name[0] == '\0' || afi == 0 || safi == 0)
+    {
+        send_resp(msg, "VRF Error: Address-family context missing\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    vrf_apply_cmd_t cmd = {0};
+    cmd.op = is_no ? VRF_APPLY_OP_AF_DELETE : VRF_APPLY_OP_AF_CREATE;
+    g_strlcpy(cmd.vrf_name, vrf_name, sizeof(cmd.vrf_name));
+    cmd.afi = afi;
+    cmd.safi = safi;
+    int rc = dispatch_apply(&cmd);
+    if (rc != 0)
+    {
+        send_resp(msg, is_no ? "" : "VRF Error: AF create failed\r\n");
+        return is_no ? ERRCODE_SUCCESS : ERRCODE_FAIL;
+    }
+    send_resp(msg, "");
+    return ERRCODE_SUCCESS;
+}
+
+static int handle_rd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    gboolean is_no = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
+    char vrf_name[VRF_NAME_MAX_LEN] = {0};
+    uint16_t afi = 0;
+    uint8_t safi = 0;
+    if (parse_af_ctx(parser, vrf_name, sizeof(vrf_name), &afi, &safi) != 0)
+    {
+        send_resp(msg, "VRF Error: Address-family context missing\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) == 0)
+    {
+        send_resp(msg, "VRF Error: Public VRF cannot configure RD\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    vrf_apply_cmd_t cmd = {0};
+    g_strlcpy(cmd.vrf_name, vrf_name, sizeof(cmd.vrf_name));
+    cmd.afi = afi;
+    cmd.safi = safi;
+
+    if (is_no)
+    {
+        cmd.op = VRF_APPLY_OP_RD_CLEAR;
     }
     else
     {
-        /* show vrf：列出所有 VRF */
-        GList *list = g_hash_table_get_values(g_vrf_local->vrf_by_id);
-        list = g_list_sort(list, compare_vrf_by_id);
-
-        g_string_append(buf, "VRF Table:\r\n");
-        g_string_append_printf(buf, "  %-8s  %s\r\n", "VRF-ID", "Name");
-        g_string_append(buf, "  --------  --------------------------------\r\n");
-
-        for (GList *node = list; node; node = node->next)
+        char rd_str[64] = {0};
+        if (!parse_param_str(parser, VRF_CFGID_RD_RT_STR, rd_str, sizeof(rd_str)) || rd_str[0] == '\0')
         {
-            const vrf_entry_t *e = (const vrf_entry_t *)node->data;
-            g_string_append_printf(buf, "  %-8u  %s\r\n", e->vrf_id, e->name);
+            send_resp(msg, "VRF Error: Missing RD\r\n");
+            return ERRCODE_FAIL;
         }
-        g_list_free(list);
+        if (parse_rd_rt(rd_str, cmd.rd.bytes) != 0)
+        {
+            send_resp(msg, "VRF Error: Invalid RD format (expect ASN:NN or IP:NN)\r\n");
+            return ERRCODE_FAIL;
+        }
+        cmd.op = VRF_APPLY_OP_RD_SET;
     }
 
-    return cli_chunk_stream_start(&g_vrf_local->show_stream, vrf_local_ipc_ctx(), DEV_MODULE_ID_VRF, msg, buf);
+    if (dispatch_apply(&cmd) != 0)
+    {
+        send_resp(msg, "VRF Error: RD apply failed\r\n");
+        return ERRCODE_FAIL;
+    }
+    send_resp(msg, "");
+    return ERRCODE_SUCCESS;
 }
 
-int vrf_cli_handle_show_config(dev_ipc_message_t *msg)
+static int handle_rt(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
-    cli_show_scope_t scope;
-    if (cli_show_scope_payload_parse((const uint8_t *)msg->payload, msg->payload_len, &scope) != 0)
+    gboolean is_no = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
+    char vrf_name[VRF_NAME_MAX_LEN] = {0};
+    uint16_t afi = 0;
+    uint8_t safi = 0;
+    if (parse_af_ctx(parser, vrf_name, sizeof(vrf_name), &afi, &safi) != 0)
     {
-        LOG_WARN("VRF: invalid SHOW_CONFIG scope payload");
-        return cli_chunk_stream_start(&g_vrf_local->show_stream, vrf_local_ipc_ctx(), DEV_MODULE_ID_VRF, msg, NULL);
+        send_resp(msg, "VRF Error: Address-family context missing\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) == 0)
+    {
+        send_resp(msg, "VRF Error: Public VRF cannot configure RT\r\n");
+        return ERRCODE_FAIL;
     }
 
-    GString *out = g_string_new("");
-    if (!out)
+    char rt_str[64] = {0};
+    if (!parse_param_str(parser, VRF_CFGID_RD_RT_STR, rt_str, sizeof(rt_str)) || rt_str[0] == '\0')
     {
-        return cli_chunk_stream_start(&g_vrf_local->show_stream, vrf_local_ipc_ctx(), DEV_MODULE_ID_VRF, msg, NULL);
+        send_resp(msg, "VRF Error: Missing RT\r\n");
+        return ERRCODE_FAIL;
     }
 
-    if (scope.mode == CLI_SHOW_SCOPE_MODE_THIS)
+    vrf_apply_cmd_t cmd = {0};
+    cmd.op = VRF_APPLY_OP_RT_MODIFY;
+    g_strlcpy(cmd.vrf_name, vrf_name, sizeof(cmd.vrf_name));
+    cmd.afi = afi;
+    cmd.safi = safi;
+    cmd.add = is_no ? 0 : 1;
+    cmd.direction = (uint8_t)parse_rt_dir(parser);
+    if (parse_rd_rt(rt_str, cmd.rt.bytes) != 0)
     {
-        if (strcmp(scope.view_name, CLI_VIEW_VRF) != 0)
-        {
-            g_string_free(out, TRUE);
-            return cli_chunk_stream_start(&g_vrf_local->show_stream, vrf_local_ipc_ctx(), DEV_MODULE_ID_VRF, msg, NULL);
-        }
-
-        char vrf_name[VRF_NAME_MAX_LEN] = {0};
-        if (cli_ctx_lookup_text(scope.ctx_data, scope.ctx_len, CLI_CTX_ID_VRF_NAME, vrf_name, sizeof(vrf_name)) != 0 ||
-            vrf_name[0] == '\0')
-        {
-            g_string_free(out, TRUE);
-            return cli_chunk_stream_start(&g_vrf_local->show_stream, vrf_local_ipc_ctx(), DEV_MODULE_ID_VRF, msg, NULL);
-        }
-
-        const vrf_entry_t *e = vrf_find_by_name(vrf_name);
-        if (e && e->vrf_id != VRF_PUBLIC_VRF_ID)
-        {
-            g_string_append(out, "!\r\n");
-            g_string_append_printf(out, "vrf %s\r\n", e->name);
-            g_string_append(out, "!\r\n");
-        }
-
-        return cli_chunk_stream_start(&g_vrf_local->show_stream, vrf_local_ipc_ctx(), DEV_MODULE_ID_VRF, msg, out);
+        send_resp(msg, "VRF Error: Invalid RT format (expect ASN:NN or IP:NN)\r\n");
+        return ERRCODE_FAIL;
     }
 
-    GList *list = g_hash_table_get_values(g_vrf_local->vrf_by_id);
-    list = g_list_sort(list, compare_vrf_by_id);
-
-    for (GList *node = list; node; node = node->next)
+    if (dispatch_apply(&cmd) != 0)
     {
-        const vrf_entry_t *e = (const vrf_entry_t *)node->data;
-        if (!e || e->vrf_id == VRF_PUBLIC_VRF_ID)
-        {
-            continue;
-        }
-
-        g_string_append(out, "!\r\n");
-        g_string_append_printf(out, "vrf %s\r\n", e->name);
+        send_resp(msg, "VRF Error: RT apply failed\r\n");
+        return ERRCODE_FAIL;
     }
-
-    if (out->len > 0)
-    {
-        g_string_append(out, "!\r\n");
-    }
-
-    g_list_free(list);
-    return cli_chunk_stream_start(&g_vrf_local->show_stream, vrf_local_ipc_ctx(), DEV_MODULE_ID_VRF, msg, out);
+    send_resp(msg, "");
+    return ERRCODE_SUCCESS;
 }
 
 // ============================================================================
-// 消息 dispatch
+// 入口
 // ============================================================================
 
-int vrf_cli_handle_message(dev_ipc_message_t *msg)
+int vrf_cli_handle_config_msg(dev_ipc_message_t *msg)
 {
     if (!msg || !msg->payload)
     {
         return ERRCODE_FAIL;
     }
-
-    cli_chunk_stream_reset(&g_vrf_local->show_stream);
-
     cli_tlv_parser_t parser;
     if (cli_tlv_init(&parser, (const uint8_t *)msg->payload, msg->payload_len) != 0)
     {
-        LOG_ERROR("Payload parsing failed");
-        vrf_send_cli_response(msg, "VRF Error: Failed to parse command\r\n");
+        send_resp(msg, "VRF Error: Failed to parse command\r\n");
         return ERRCODE_FAIL;
     }
 
-    LOG_DEBUG("Received TLV payload (group_id=%u)", parser.group_id);
-
-    int result;
+    int rc = ERRCODE_FAIL;
     switch (parser.group_id)
     {
-        case VRF_CLI_GROUP_ID_CREATE:
-            result = handle_vrf_create(msg, &parser);
+        case VRF_CLI_GROUP_CREATE:
+            rc = handle_create(msg, &parser);
             break;
-        case VRF_CLI_GROUP_ID_SHOW:
-            result = handle_vrf_show(msg, &parser);
+        case VRF_CLI_GROUP_AF:
+            rc = handle_af(msg, &parser);
+            break;
+        case VRF_CLI_GROUP_RD:
+            rc = handle_rd(msg, &parser);
+            break;
+        case VRF_CLI_GROUP_RT:
+            rc = handle_rt(msg, &parser);
             break;
         default:
-            LOG_WARN("Unknown group_id: %u", parser.group_id);
-            vrf_send_cli_response(msg, "VRF Error: Unknown command\r\n");
-            result = ERRCODE_FAIL;
+            send_resp(msg, "VRF Error: Unknown command\r\n");
             break;
     }
-
     cli_tlv_cleanup(&parser);
-    return result;
-}
-
-int vrf_cli_handle_continue(dev_ipc_message_t *msg)
-{
-    return cli_chunk_stream_continue(&g_vrf_local->show_stream, vrf_local_ipc_ctx(), DEV_MODULE_ID_VRF, msg);
-}
-
-void vrf_cli_cleanup_state(void)
-{
-    cli_chunk_stream_reset(&g_vrf_local->show_stream);
-}
-
-// ============================================================================
-// 动态候选值查询
-// ============================================================================
-
-void vrf_cli_handle_query_candidates(dev_ipc_message_t *msg)
-{
-    /* 解析 cfg_id（网络字节序） */
-    uint32_t cfg_id = 0;
-    if (msg->payload && msg->payload_len >= sizeof(uint32_t))
-    {
-        uint32_t net_id;
-        memcpy(&net_id, msg->payload, sizeof(uint32_t));
-        cfg_id = g_ntohl(net_id);
-    }
-
-    (void)cfg_id; // 当前命令仅一个候选值查询，无需区分 cfg_id
-
-    /* 按 vrf_id 升序枚举所有 VRF */
-    GList *list = g_hash_table_get_values(g_vrf_local->vrf_by_id);
-    list = g_list_sort(list, compare_vrf_by_id);
-
-    /* 构建 "name1\0name2\0\0" 格式负载 */
-    GByteArray *buf = g_byte_array_new();
-    for (GList *node = list; node; node = node->next)
-    {
-        const vrf_entry_t *e = (const vrf_entry_t *)node->data;
-
-        g_byte_array_append(buf, (const guint8 *)e->name, (guint)strlen(e->name) + 1);
-    }
-    g_list_free(list);
-
-    /* 末尾额外 '\0' 标记结束 */
-    guint8 nul = '\0';
-    g_byte_array_append(buf, &nul, 1);
-
-    guint payload_len = buf->len;
-    uint8_t *payload = g_byte_array_free(buf, FALSE);
-
-    dev_ipc_message_t *resp = dev_ipc_message_create(CLI_MSG_TYPE_QUERY_CANDIDATES_RESP, DEV_MODULE_ID_VRF,
-                                                     msg->src_module_id, msg->request_id, payload, payload_len, g_free);
-    if (resp)
-    {
-        dev_ipc_send_response(vrf_local_ipc_ctx(), resp);
-        dev_ipc_message_free(resp);
-    }
-    else
-    {
-        g_free(payload);
-    }
-    dev_ipc_message_free(msg);
+    return rc;
 }

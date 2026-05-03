@@ -23,6 +23,7 @@
 #include "bgp_if_cache.h"
 #include "bgp_pkt.h"
 #include "bgp_protocol.h"
+#include "bgp_relay.h"
 #include "bgp_rib.h"
 #include "bgp_session.h"
 #include "bgp_update_group.h"
@@ -324,6 +325,7 @@ static void fsm_on_established(bgp_session_t *sess)
     /* 在启动定时器 / 回放路由之前，先把 per-AF peer 状态与 OPEN 协商结果对齐，
      * 这样后续 catchup / show / 报文路径都能直接读取 peer->state 判断。 */
     fsm_update_peer_states(sess);
+    bgp_relay_session_lu_adj_sync(sess, TRUE);
 
     bgp_protocol_t *proto = g_bgp_work_local->protocol;
     bgp_vrf_t *vrf0 = proto ? bgp_protocol_get_vrf(proto, BGP_VRF_PUBLIC_ID) : NULL;

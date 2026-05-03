@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration module-id="10">
+    <views>
+    </views>
+    <command_groups>
+        <!-- Group 1: show tunnel [label] -->
+        <group group-id="1">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>show</name>
+                    <description>Display system information</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>tunnel</name>
+                    <description>Tunnel forwarding state</description>
+                </element>
+                <element id="3" cfg-id="1" type="keyword">
+                    <name>label</name>
+                    <description>Tunnel label allocations</description>
+                </element>
+            </elements>
+            <commands>
+                <!-- show tunnel -->
+                <command>
+                    <expression>1 2</expression>
+                    <views>global</views>
+                </command>
+                <!-- show tunnel label -->
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>global</views>
+                </command>
+            </commands>
+        </group>
+    </command_groups>
+</configuration>

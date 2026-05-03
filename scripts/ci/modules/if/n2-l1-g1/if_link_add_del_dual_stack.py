@@ -15,7 +15,7 @@ from __future__ import annotations
 import ipaddress
 import re
 
-from module_api import add_link, g_top, remove_link, require_devices, run_cmds, step, wait_check, wait_checks  # noqa: E402
+from module_api import add_link, g_top, remove_link, require_devices, run_cmds, step, wait_check, wait_checks, wait_fib_route  # noqa: E402
 from top_runner import TopologyRuntime  # noqa: E402
 
 
@@ -97,6 +97,18 @@ def _wait_rib_route(
             ],
             label=f"{device} {afi} rib route {prefix} via {interface} present",
         )
+        wait_fib_route(
+            rt,
+            device=device,
+            afi=afi,
+            prefix_addr=route_addr,
+            prefix_len=route_len,
+            expect_present=True,
+            skip_os=True,
+            timeout=timeout,
+            interval=interval,
+            label=f"{device} {afi} fib route {prefix} present",
+        )
         return
 
     wait_check(
@@ -108,6 +120,17 @@ def _wait_rib_route(
         contains=[f"Routing entry for {prefix}"],
         regex=[r"(?im)\((?:no routes|no matching routes)\)"],
         label=f"{device} {afi} rib route {prefix} absent",
+    )
+    wait_fib_route(
+        rt,
+        device=device,
+        afi=afi,
+        prefix_addr=route_addr,
+        prefix_len=route_len,
+        expect_present=False,
+        timeout=timeout,
+        interval=interval,
+        label=f"{device} {afi} fib route {prefix} absent",
     )
 
 
@@ -345,7 +368,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         _wait_os_route(
             rt,
             device="r1",
-            command="show route ipv4 os",
+            command="show fib ipv4 os",
             prefix=r1_v4_connected,
             table="main",
             route_type="unicast",
@@ -356,7 +379,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         _wait_os_route(
             rt,
             device="r1",
-            command="show route ipv4 os",
+            command="show fib ipv4 os",
             prefix=r1_v4_local,
             table="local",
             route_type="local",
@@ -367,7 +390,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         _wait_os_route(
             rt,
             device="r1",
-            command="show route ipv6 os",
+            command="show fib ipv6 os",
             prefix=r1_v6_connected,
             table="main",
             route_type="unicast",
@@ -378,7 +401,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         _wait_os_route(
             rt,
             device="r1",
-            command="show route ipv6 os",
+            command="show fib ipv6 os",
             prefix=r1_v6_local,
             table="local",
             route_type="local",
@@ -446,7 +469,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         _wait_os_route(
             rt,
             device="r1",
-            command="show route ipv4 os",
+            command="show fib ipv4 os",
             prefix=r1_v4_connected,
             table="main",
             route_type="unicast",
@@ -458,7 +481,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         _wait_os_route(
             rt,
             device="r1",
-            command="show route ipv4 os",
+            command="show fib ipv4 os",
             prefix=r1_v4_local,
             table="local",
             route_type="local",
@@ -470,7 +493,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         _wait_os_route(
             rt,
             device="r1",
-            command="show route ipv6 os",
+            command="show fib ipv6 os",
             prefix=r1_v6_connected,
             table="main",
             route_type="unicast",
@@ -482,7 +505,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         _wait_os_route(
             rt,
             device="r1",
-            command="show route ipv6 os",
+            command="show fib ipv6 os",
             prefix=r1_v6_local,
             table="local",
             route_type="local",
@@ -560,7 +583,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         _wait_os_route(
             rt,
             device="r1",
-            command="show route ipv4 os",
+            command="show fib ipv4 os",
             prefix=r1_v4_connected,
             table="main",
             route_type="unicast",
@@ -572,7 +595,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         _wait_os_route(
             rt,
             device="r1",
-            command="show route ipv4 os",
+            command="show fib ipv4 os",
             prefix=r1_v4_local,
             table="local",
             route_type="local",
@@ -584,7 +607,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         _wait_os_route(
             rt,
             device="r1",
-            command="show route ipv6 os",
+            command="show fib ipv6 os",
             prefix=r1_v6_connected,
             table="main",
             route_type="unicast",
@@ -596,7 +619,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         _wait_os_route(
             rt,
             device="r1",
-            command="show route ipv6 os",
+            command="show fib ipv6 os",
             prefix=r1_v6_local,
             table="local",
             route_type="local",

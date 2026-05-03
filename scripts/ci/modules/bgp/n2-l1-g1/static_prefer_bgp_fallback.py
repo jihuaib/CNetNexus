@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 
-from module_api import g_top, require_devices, run_cmds, step, wait_check, wait_checks  # noqa: E402
+from module_api import g_top, require_devices, run_cmds, step, wait_check, wait_checks, wait_fib_ipv4_route  # noqa: E402
 from top_runner import TopologyRuntime  # noqa: E402
 
 
@@ -74,12 +74,26 @@ def _wait_os_best_proto(
     wait_check(
         rt,
         device=device,
-        command="show route ipv4 os",
+        command="show fib ipv4 os",
         timeout=timeout,
         interval=2,
         regex=[best_row_regex],
         not_regex=[alt_row_regex],
         label=f"{device} os-best {prefix} proto={proto}",
+    )
+    prefix_addr, prefix_len = prefix.rsplit("/", 1)
+    wait_fib_ipv4_route(
+        rt,
+        device=device,
+        prefix_addr=prefix_addr,
+        prefix_len=prefix_len,
+        expect_present=True,
+        nexthop=gateway,
+        installed=True,
+        skip_os=False,
+        timeout=timeout,
+        interval=2,
+        label=f"{device} fib-best {prefix} proto={proto}",
     )
 
 

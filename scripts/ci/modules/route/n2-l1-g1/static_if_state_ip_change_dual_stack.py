@@ -7,7 +7,7 @@ Coverage:
 - static route with `interface` only (no nexthop, IPv4/IPv6)
 - interface shutdown / no shutdown impact on static route install state
 - interface address renumber impact on static route resolve/install state
-- OS route table (`show route ... os`) consistency
+- OS route table (`show fib ... os`) consistency
 - single-stack interface: IPv4-only / IPv6-only static route lifecycle
 - duplicate route validation: same route configured twice stays as 1 entry
 """
@@ -17,7 +17,7 @@ from __future__ import annotations
 import ipaddress
 import re
 
-from module_api import g_top, require_devices, run_cmds, step, wait_check, wait_checks  # noqa: E402
+from module_api import g_top, require_devices, run_cmds, step, wait_check, wait_checks, wait_fib_route  # noqa: E402
 from top_runner import TopologyRuntime  # noqa: E402
 
 
@@ -75,6 +75,22 @@ def _wait_rib_static(
             ],
             label=f"r1 {afi} route {prefix} via {nexthop} present",
         )
+        prefix_addr, prefix_len = prefix.rsplit("/", 1)
+        fib_nexthop = "-" if nexthop in ("0.0.0.0", "::") else nexthop
+        wait_fib_route(
+            rt,
+            device="r1",
+            afi=afi,
+            prefix_addr=prefix_addr,
+            prefix_len=prefix_len,
+            expect_present=True,
+            nexthop=fib_nexthop,
+            installed=True,
+            skip_os=False,
+            timeout=timeout,
+            interval=interval,
+            label=f"r1 {afi} fib route {prefix} via {fib_nexthop} present",
+        )
         return
 
     wait_check(
@@ -85,6 +101,18 @@ def _wait_rib_static(
         interval=interval,
         regex=[r"(?im)\((?:no routes|no matching routes)\)"],
         label=f"r1 {afi} route {prefix} absent",
+    )
+    prefix_addr, prefix_len = prefix.rsplit("/", 1)
+    wait_fib_route(
+        rt,
+        device="r1",
+        afi=afi,
+        prefix_addr=prefix_addr,
+        prefix_len=prefix_len,
+        expect_present=False,
+        timeout=timeout,
+        interval=interval,
+        label=f"r1 {afi} fib route {prefix} absent",
     )
 
 
@@ -137,7 +165,7 @@ def _wait_os_route(
     wait_check(
         rt,
         device="r1",
-        command=f"show route {afi} os",
+        command=f"show fib {afi} os",
         timeout=timeout,
         interval=interval,
         regex=[row_regex] if expect_present else (),

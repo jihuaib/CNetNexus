@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration module-id="11">
+    <views>
+    </views>
+    <command_groups>
+        <!-- Group 1: show fib ipv4|ipv6 [<prefix> <mask>] [os] -->
+        <group group-id="1">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>show</name>
+                    <description>Display system information</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>fib</name>
+                    <description>Forwarding information base</description>
+                </element>
+                <element id="3" cfg-id="1" type="keyword">
+                    <name>ipv4</name>
+                    <description>IPv4 forwarding table</description>
+                </element>
+                <element id="4" cfg-id="2" type="keyword">
+                    <name>ipv6</name>
+                    <description>IPv6 forwarding table</description>
+                </element>
+                <element id="5" cfg-id="3" type="keyword">
+                    <name>os</name>
+                    <description>Linux kernel routing table</description>
+                </element>
+                <element id="6" cfg-id="4" type="parameter">
+                    <name>&lt;prefix&gt;</name>
+                    <type>string</type>
+                    <description>Filter by FIB prefix</description>
+                </element>
+                <element id="7" cfg-id="5" type="parameter">
+                    <name>&lt;prefix-length&gt;</name>
+                    <type>uint(0-32)</type>
+                    <description>IPv4 prefix length (0-32)</description>
+                </element>
+                <element id="8" cfg-id="6" type="parameter">
+                    <name>&lt;prefix-length&gt;</name>
+                    <type>uint(0-128)</type>
+                    <description>IPv6 prefix length (0-128)</description>
+                </element>
+            </elements>
+            <commands>
+                <!-- show fib ipv4 -->
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>global</views>
+                </command>
+                <!-- show fib ipv6 -->
+                <command>
+                    <expression>1 2 4</expression>
+                    <views>global</views>
+                </command>
+                <!-- show fib ipv4 <prefix> <prefix-length> -->
+                <command>
+                    <expression>1 2 3 6 7</expression>
+                    <views>global</views>
+                </command>
+                <!-- show fib ipv6 <prefix> <prefix-length> -->
+                <command>
+                    <expression>1 2 4 6 8</expression>
+                    <views>global</views>
+                </command>
+                <!-- show fib ipv4 os -->
+                <command>
+                    <expression>1 2 3 5</expression>
+                    <views>global</views>
+                </command>
+                <!-- show fib ipv6 os -->
+                <command>
+                    <expression>1 2 4 5</expression>
+                    <views>global</views>
+                </command>
+            </commands>
+        </group>
+    </command_groups>
+</configuration>

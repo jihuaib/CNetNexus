@@ -592,6 +592,120 @@ def wait_check(
     wait_checks(rt, [check], timeout=timeout, interval=interval)
 
 
+def wait_fib_route(
+    rt: TopologyRuntime,
+    *,
+    device: str,
+    afi: str,
+    prefix_addr: str,
+    prefix_len: int | str,
+    expect_present: bool,
+    nexthop: str | None = None,
+    nh_type: str | None = None,
+    installed: bool | None = None,
+    skip_os: bool | None = None,
+    timeout: int,
+    interval: int = 2,
+    label: str | None = None,
+) -> None:
+    prefix_len_int = int(prefix_len)
+    network = ipaddress.ip_network(f"{prefix_addr}/{prefix_len_int}", strict=False)
+    prefix = f"{network.network_address}/{prefix_len_int}"
+    afi_value = str(afi).lower()
+    if afi_value not in ("ipv4", "ipv6"):
+        raise ValueError(f"unsupported FIB afi: {afi}")
+
+    if not expect_present:
+        nexthop = None
+        nh_type = None
+        installed = None
+        skip_os = None
+
+    nexthop_pat = r"\S+" if nexthop is None else re.escape(nexthop)
+    nh_type_pat = r"\S+" if nh_type is None else re.escape(nh_type)
+    installed_pat = r"\S+" if installed is None else ("yes" if installed else "no")
+    skip_os_pat = r"\S+" if skip_os is None else ("yes" if skip_os else "no")
+    row_regex = (
+        rf"(?im)^\s*{afi_value}\s+{re.escape(prefix)}\s+{nexthop_pat}\s+"
+        rf"{nh_type_pat}\s+\S+\s+-?\d+\s+-?\d+\s+{installed_pat}\s+{skip_os_pat}\s*$"
+    )
+    wait_check(
+        rt,
+        device=device,
+        command=f"show fib {afi_value} {network.network_address} {prefix_len_int}",
+        timeout=timeout,
+        interval=interval,
+        regex=[row_regex] if expect_present else (),
+        not_regex=[row_regex] if not expect_present else (),
+        label=label
+        or f"{device} fib {afi_value} route {prefix} {'present' if expect_present else 'absent'}",
+    )
+
+
+def wait_fib_ipv4_route(
+    rt: TopologyRuntime,
+    *,
+    device: str,
+    prefix_addr: str,
+    prefix_len: int | str,
+    expect_present: bool,
+    nexthop: str | None = None,
+    nh_type: str | None = None,
+    installed: bool | None = None,
+    skip_os: bool | None = None,
+    timeout: int,
+    interval: int = 2,
+    label: str | None = None,
+) -> None:
+    wait_fib_route(
+        rt,
+        device=device,
+        afi="ipv4",
+        prefix_addr=prefix_addr,
+        prefix_len=prefix_len,
+        expect_present=expect_present,
+        nexthop=nexthop,
+        nh_type=nh_type,
+        installed=installed,
+        skip_os=skip_os,
+        timeout=timeout,
+        interval=interval,
+        label=label,
+    )
+
+
+def wait_fib_ipv6_route(
+    rt: TopologyRuntime,
+    *,
+    device: str,
+    prefix_addr: str,
+    prefix_len: int | str,
+    expect_present: bool,
+    nexthop: str | None = None,
+    nh_type: str | None = None,
+    installed: bool | None = None,
+    skip_os: bool | None = None,
+    timeout: int,
+    interval: int = 2,
+    label: str | None = None,
+) -> None:
+    wait_fib_route(
+        rt,
+        device=device,
+        afi="ipv6",
+        prefix_addr=prefix_addr,
+        prefix_len=prefix_len,
+        expect_present=expect_present,
+        nexthop=nexthop,
+        nh_type=nh_type,
+        installed=installed,
+        skip_os=skip_os,
+        timeout=timeout,
+        interval=interval,
+        label=label,
+    )
+
+
 def hold_check(
     rt: TopologyRuntime,
     *,

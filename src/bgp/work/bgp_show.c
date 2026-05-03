@@ -106,6 +106,14 @@ static const char *bgp_af_str(bgp_afi_t afi, bgp_safi_t safi)
     {
         return "ipv6-qp";
     }
+    if (afi == BGP_AFI_IPV4 && safi == BGP_SAFI_LABELED)
+    {
+        return "ipv4-labeled";
+    }
+    if (afi == BGP_AFI_IPV6 && safi == BGP_SAFI_LABELED)
+    {
+        return "ipv6-labeled";
+    }
     return "unknown";
 }
 
@@ -888,6 +896,16 @@ static int handle_bgp_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parse
                 ctx.safi = BGP_SAFI_QP;
                 has_af = TRUE;
                 break;
+            case 8:
+                ctx.afi = BGP_AFI_IPV4;
+                ctx.safi = BGP_SAFI_LABELED;
+                has_af = TRUE;
+                break;
+            case 9:
+                ctx.afi = BGP_AFI_IPV6;
+                ctx.safi = BGP_SAFI_LABELED;
+                has_af = TRUE;
+                break;
             case 7:
             {
                 const char *s = cli_tlv_entry_get_text(&entry);
@@ -1108,6 +1126,16 @@ static int handle_bgp_show_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
             case 5:
                 ctx.afi = BGP_AFI_IPV6;
                 ctx.safi = BGP_SAFI_QP;
+                has_af = TRUE;
+                break;
+            case 6:
+                ctx.afi = BGP_AFI_IPV4;
+                ctx.safi = BGP_SAFI_LABELED;
+                has_af = TRUE;
+                break;
+            case 7:
+                ctx.afi = BGP_AFI_IPV6;
+                ctx.safi = BGP_SAFI_LABELED;
                 has_af = TRUE;
                 break;
             default:
@@ -1546,6 +1574,16 @@ static int handle_bgp_show_update_group(dev_ipc_message_t *msg, cli_tlv_parser_t
             case 5:
                 ctx.afi = BGP_AFI_IPV6;
                 ctx.safi = BGP_SAFI_QP;
+                has_af = TRUE;
+                break;
+            case 6:
+                ctx.afi = BGP_AFI_IPV4;
+                ctx.safi = BGP_SAFI_LABELED;
+                has_af = TRUE;
+                break;
+            case 7:
+                ctx.afi = BGP_AFI_IPV6;
+                ctx.safi = BGP_SAFI_LABELED;
                 has_af = TRUE;
                 break;
             default:

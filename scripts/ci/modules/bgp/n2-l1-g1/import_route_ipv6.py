@@ -7,6 +7,8 @@ Goal:
 - inject a static route on r2
 - verify r2 imports the static route into local BGP RIB
 - verify r1 receives the route from r2
+- disable `import-route static`
+- verify the imported BGP routes are withdrawn while the original static route remains
 """
 
 from __future__ import annotations
@@ -102,6 +104,21 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             ],
         )
 
+        step("Check ROUTE IPv6 subscription is installed")
+        wait_checks(
+            rt,
+            [
+                {
+                    "device": "r2",
+                    "command": "show route ipv6 subscribe",
+                    "contains": ["Route Subscribers", "bgp", "static", "ipv6"],
+                    "regex": [r"(?im)^\s*bgp\s+static\s+0\s+ipv6\s*$"],
+                    "label": "r2 route ipv6 static subscription installed",
+                },
+            ],
+            timeout=10,
+        )
+
         step("Wait BGP sessions")
         wait_checks(
             rt,
@@ -110,14 +127,14 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                     "device": "r1",
                     "command": "show bgp neighbor af ipv6-unicast",
                     "contains": [r1_peer_ip6],
-                "regex": [rf"(?im)^\s*{re.escape(r1_peer_ip6)}\s+\S+\s+\S+\s+Established\s*$"],
+                    "regex": [rf"(?im)^\s*{re.escape(r1_peer_ip6)}\s+\S+\s+\S+\s+Established\s*$"],
                     "label": "r1->r2 ipv6-unicast",
                 },
                 {
                     "device": "r2",
                     "command": "show bgp neighbor af ipv6-unicast",
                     "contains": [r2_peer_ip6],
-                "regex": [rf"(?im)^\s*{re.escape(r2_peer_ip6)}\s+\S+\s+\S+\s+Established\s*$"],
+                    "regex": [rf"(?im)^\s*{re.escape(r2_peer_ip6)}\s+\S+\s+\S+\s+Established\s*$"],
                     "label": "r2->r1 ipv6-unicast",
                 },
             ],
@@ -147,6 +164,62 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                     "command": "show bgp route af ipv6-unicast",
                     "contains": [TEST_PREFIX],
                     "label": "r1 learned route from r2",
+                },
+            ],
+            timeout=30,
+        )
+
+        step("Disable import-route static on r2")
+        run_cmds(
+            rt=rt,
+            device="r2",
+            strict=False,
+            commands=[
+                "config",
+                "bgp 65002",
+                "af ipv6-unicast",
+                "no import-route static",
+                "exit",
+                "end",
+            ],
+        )
+
+        step("Check ROUTE IPv6 subscription is removed")
+        wait_checks(
+            rt,
+            [
+                {
+                    "device": "r2",
+                    "command": "show route ipv6 subscribe",
+                    "contains": ["(no subscribers)"],
+                    "not_regex": [r"(?im)^\s*bgp\s+static\s+0\s+ipv6\s*$"],
+                    "label": "r2 route ipv6 static subscription removed",
+                },
+            ],
+            timeout=10,
+        )
+
+        step("Check no import-route withdraws BGP copies but keeps static route")
+        wait_checks(
+            rt,
+            [
+                {
+                    "device": "r2",
+                    "command": "show bgp route af ipv6-unicast",
+                    "not_contains": [TEST_PREFIX],
+                    "label": "r2 imported route removed from BGP RIB",
+                },
+                {
+                    "device": "r1",
+                    "command": "show bgp route af ipv6-unicast",
+                    "not_contains": [TEST_PREFIX],
+                    "label": "r1 withdrawn route removed from BGP RIB",
+                },
+                {
+                    "device": "r2",
+                    "command": "show route ipv6 static",
+                    "contains": [TEST_PREFIX, r2_route_nh6],
+                    "label": "r2 original static route remains",
                 },
             ],
             timeout=30,

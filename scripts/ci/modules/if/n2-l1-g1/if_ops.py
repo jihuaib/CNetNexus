@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import ipaddress
 
-from module_api import g_top, reboot_device, require_devices, run_cmds, step, wait_check, wait_checks  # noqa: E402
+from module_api import g_top, reboot_device, require_devices, run_cmds, step, wait_check, wait_checks, wait_fib_ipv4_route  # noqa: E402
 from top_runner import TopologyRuntime  # noqa: E402
 
 
@@ -57,6 +57,19 @@ def _wait_route_state(
         regex=regex,
         label=f"{device} route {route_key} {state}",
     )
+    parts = command.split()
+    if len(parts) == 5 and parts[:3] == ["show", "route", "ipv4"]:
+        wait_fib_ipv4_route(
+            rt,
+            device=device,
+            prefix_addr=parts[3],
+            prefix_len=parts[4],
+            expect_present=expect_present,
+            skip_os=True if expect_present else None,
+            timeout=timeout,
+            interval=interval,
+            label=f"{device} fib route {route_key} {state}",
+        )
 
 
 def _cleanup(rt: TopologyRuntime, if_name: str, cfg_ip: str, cfg_prefix: int) -> None:

@@ -232,6 +232,11 @@ typedef struct bgp_apply_cmd
     {
         uint32_t sess_flags;    /**< OPEN_CAPABILITY: 更新后的 sess->flags */
         uint32_t import_protos; /**< IMPORT_ROUTE: 更新后的 inst->import_protos */
+        struct
+        {
+            uint32_t import_protos;         /**< 更新后的 inst->import_protos */
+            int32_t route_subscribe_action; /**< 1=subscribe full, -1=unsubscribe, 0=no route IPC */
+        } import_route;
     } out;
     char errmsg[256]; /**< 失败时的错误描述 */
 } bgp_apply_cmd_t;
@@ -332,6 +337,15 @@ void bgp_work_show_cleanup(void);
 int bgp_worker_post_route_message(dev_ipc_message_t *msg);
 
 /**
+ * @brief worker 线程投递 TUNNEL 更新消息给 server 线程
+ *
+ * 支持 TUNNEL_MSG_TYPE_RESOLVE_NOTIFY。
+ *
+ * @return 0 成功，-1 失败
+ */
+int bgp_worker_post_tunnel_message(dev_ipc_message_t *msg);
+
+/**
  * @brief 向 BGP worker 投递 IF 接口事件消息
  *
  * 由 IPC 线程收到 IF_MSG_TYPE_EVENT 后调用，转发到 worker 线程更新本地接口缓存。
@@ -339,6 +353,14 @@ int bgp_worker_post_route_message(dev_ipc_message_t *msg);
  * @return 0 成功，-1 失败
  */
 int bgp_worker_post_if_event(dev_ipc_message_t *msg);
+
+/**
+ * @brief 向 BGP worker 投递 VRF 事件消息
+ *
+ * 由 IPC 线程收到 VRF_MSG_TYPE_EVENT 后调用，转发到 worker 线程更新 VRF 缓存
+ * 并联动 bgp_rd_entry_t 等内部结构。
+ */
+int bgp_worker_post_vrf_event(dev_ipc_message_t *msg);
 
 /**
  * @brief 将对端 UPDATE 写入 BGP relay（维护 nexthop<->route 关系，并向 ROUTE 注册 nexthop 门禁）

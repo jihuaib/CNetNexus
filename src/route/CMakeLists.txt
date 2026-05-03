@@ -8,7 +8,6 @@ set(ROUTE_SOURCES
     work/route_pub.c
     work/route_relay.c
     work/route_static.c
-    work/route_os.c
     work/route_show.c
     work/route_work.c
     work/route_worker.c
@@ -23,6 +22,7 @@ target_link_libraries(netnexus-route PRIVATE
     dev_api
     cli_api
     db_api
+    fib_api
     if_api
 )
 

@@ -14,6 +14,7 @@
 #include "db.h"
 #include "dev.h"
 #include "errcode.h"
+#include "fib.h"
 #include "if.h"
 #include "log.h"
 #include "route.h"
@@ -93,6 +94,11 @@ static void route_on_start(dev_ipc_message_t *msg)
     if (dev_ipc_connect(ctx, DEV_MODULE_ID_IF, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_IF) != 0)
     {
         LOG_WARN("Failed to connect to IF module (interface names will show as ifindex)");
+    }
+
+    if (dev_ipc_connect(ctx, DEV_MODULE_ID_FIB, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_FIB) != 0)
+    {
+        LOG_WARN("Failed to connect to FIB module (best routes will not be programmed)");
     }
 
     /*
@@ -323,6 +329,14 @@ void route_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             /* IF 订阅应答，静默丢弃 */
             break;
 
+        case FIB_MSG_TYPE_ROUTE_RESULT:
+            if (route_worker_post(ROUTE_WORKER_CMD_FIB_ROUTE_RESULT, msg) != 0)
+            {
+                LOG_WARN("Route: failed to post FIB_ROUTE_RESULT");
+                dev_ipc_message_free(msg);
+            }
+            return;
+
         default:
             LOG_WARN("Received unknown message type: 0x%08X", msg->msg_type);
             break;
@@ -368,7 +382,7 @@ void route_module_cleanup(void)
         g_route_local->dev_ipc_ctx = NULL;
     }
 
-    /* 再停止 route worker，触发 route_calc_cleanup 撤销 OS 路由。 */
+    /* 再停止 route worker，触发 route_calc_cleanup 撤销 FIB 路由。 */
     route_worker_shutdown();
 
     /* 先停止 IPC 线程，避免退出过程中继续接收业务消息。 */

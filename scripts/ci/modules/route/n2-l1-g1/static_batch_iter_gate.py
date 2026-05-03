@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 
-from module_api import g_top, require_devices, run_cmds, step, wait_check, wait_checks  # noqa: E402
+from module_api import g_top, require_devices, run_cmds, step, wait_check, wait_checks, wait_fib_ipv4_route  # noqa: E402
 from top_runner import TopologyRuntime  # noqa: E402
 
 
@@ -56,6 +56,19 @@ def _wait_route_presence(
         checks.append(check)
 
     wait_checks(rt, checks, timeout=timeout, interval=2)
+    for addr, pfx in routes:
+        wait_fib_ipv4_route(
+            rt,
+            device=device,
+            prefix_addr=addr,
+            prefix_len=PREFIX_LEN,
+            expect_present=expect_present,
+            installed=True if expect_present else None,
+            skip_os=False if expect_present else None,
+            timeout=timeout,
+            interval=2,
+            label=f"{device} fib route presence {pfx}",
+        )
 
 
 def _wait_static_state(

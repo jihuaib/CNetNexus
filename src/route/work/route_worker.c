@@ -14,6 +14,7 @@
 
 #include "cli.h"
 #include "errcode.h"
+#include "fib.h"
 #include "if.h"
 #include "log.h"
 #include "net_addr.h"
@@ -349,17 +350,19 @@ static void worker_handle_subscribe(dev_ipc_message_t *msg)
     const route_subscribe_req_t *req = (const route_subscribe_req_t *)msg->payload;
     uint32_t protocol = req->protocol;
     uint32_t vrf_id = req->vrf_id;
+    uint16_t afi = req->afi;
     uint32_t flags = req->flags;
 
     for (GList *l = g_route_work_local->subscribers; l; l = l->next)
     {
         route_subscriber_t *sub = (route_subscriber_t *)l->data;
-        if (sub->module_id == msg->src_module_id && sub->protocol == protocol && sub->vrf_id == vrf_id)
+        if (sub->module_id == msg->src_module_id && sub->protocol == protocol && sub->vrf_id == vrf_id &&
+            sub->afi == afi)
         {
             LOG_DEBUG("[route_worker] module 0x%08X 重复订阅，忽略", msg->src_module_id);
             if (flags & ROUTE_SUBSCRIBE_FLAG_FULL)
             {
-                route_calc_pub_dump(msg->src_module_id, protocol, vrf_id, msg->request_id);
+                route_calc_pub_dump(msg->src_module_id, protocol, vrf_id, afi, msg->request_id);
             }
             else
             {
@@ -380,14 +383,15 @@ static void worker_handle_subscribe(dev_ipc_message_t *msg)
     sub->module_id = msg->src_module_id;
     sub->protocol = protocol;
     sub->vrf_id = vrf_id;
+    sub->afi = afi;
     g_route_work_local->subscribers = g_list_append(g_route_work_local->subscribers, sub);
 
-    LOG_INFO("[route_worker] module 0x%08X 订阅路由: protocol=%u vrf=%u flags=0x%X", msg->src_module_id, protocol,
-             vrf_id, flags);
+    LOG_INFO("[route_worker] module 0x%08X 订阅路由: protocol=%u vrf=%u afi=%u flags=0x%X", msg->src_module_id,
+             protocol, vrf_id, afi, flags);
 
     if (flags & ROUTE_SUBSCRIBE_FLAG_FULL)
     {
-        route_calc_pub_dump(msg->src_module_id, protocol, vrf_id, msg->request_id);
+        route_calc_pub_dump(msg->src_module_id, protocol, vrf_id, afi, msg->request_id);
     }
     else
     {
@@ -413,17 +417,20 @@ static void worker_handle_unsubscribe(dev_ipc_message_t *msg)
     const route_subscribe_req_t *req = (const route_subscribe_req_t *)msg->payload;
     uint32_t protocol = req->protocol;
     uint32_t vrf_id = req->vrf_id;
+    uint16_t afi = req->afi;
 
     GList *l = g_route_work_local->subscribers;
     while (l)
     {
         route_subscriber_t *sub = (route_subscriber_t *)l->data;
         GList *next = l->next;
-        if (sub->module_id == msg->src_module_id && sub->protocol == protocol && sub->vrf_id == vrf_id)
+        if (sub->module_id == msg->src_module_id && sub->protocol == protocol && sub->vrf_id == vrf_id &&
+            sub->afi == afi)
         {
             g_route_work_local->subscribers = g_list_delete_link(g_route_work_local->subscribers, l);
             g_free(sub);
-            LOG_INFO("[route_worker] module 0x%08X 取消订阅: protocol=%u vrf=%u", msg->src_module_id, protocol, vrf_id);
+            LOG_INFO("[route_worker] module 0x%08X 取消订阅: protocol=%u vrf=%u afi=%u", msg->src_module_id, protocol,
+                     vrf_id, afi);
             break;
         }
         l = next;
@@ -522,6 +529,23 @@ static int worker_dispatch_cmd(route_worker_cmd_t *cmd)
             LOG_DEBUG("[route_worker] 收到 IF 事件，触发 interface-only 静态路由重检查");
             if_api_cache_on_event(cmd->msg);
             route_static_on_if_change();
+            if (cmd->msg)
+            {
+                dev_ipc_message_free(cmd->msg);
+                cmd->msg = NULL;
+            }
+            break;
+
+        case ROUTE_WORKER_CMD_FIB_ROUTE_RESULT:
+            if (cmd->msg && cmd->msg->payload && cmd->msg->payload_len >= sizeof(fib_route_result_t))
+            {
+                const fib_route_result_t *result = (const fib_route_result_t *)cmd->msg->payload;
+                if (result->op_msg_type == FIB_MSG_TYPE_ROUTE_UPSERT && result->result != ERRCODE_SUCCESS)
+                {
+                    route_calc_schedule_fib_retry(result->entry.vrf_id, result->entry.afi, &result->entry.prefix_addr,
+                                                  result->entry.prefix_len);
+                }
+            }
             if (cmd->msg)
             {
                 dev_ipc_message_free(cmd->msg);

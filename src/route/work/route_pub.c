@@ -79,6 +79,11 @@ static int subscriber_matches(const route_subscriber_t *sub, const route_head_t 
     {
         return 0;
     }
+    /* AFI 过滤 */
+    if (sub->afi != ROUTE_AFI_ALL && sub->afi != head->key.afi)
+    {
+        return 0;
+    }
     return 1;
 }
 
@@ -155,6 +160,11 @@ void route_pub_notify_entry(GList *subscribers, const route_msg_entry_t *entry)
         }
         /* VRF 过滤 */
         if (sub->vrf_id != ROUTE_VRF_ALL && sub->vrf_id != entry->vrf_id)
+        {
+            continue;
+        }
+        /* AFI 过滤 */
+        if (sub->afi != ROUTE_AFI_ALL && sub->afi != entry->afi)
         {
             continue;
         }

@@ -1,40 +1,25 @@
 /**
  * @file   vrf_main.h
- * @brief  VRF 模块全局状态声明
+ * @brief  VRF 模块主入口头文件（仅保存 IPC 线程上下文）
  * @author jhb
  * @date   2026/03/05
  */
 #ifndef VRF_MAIN_H
 #define VRF_MAIN_H
 
-#include <glib.h>
-#include <stdint.h>
-
-#include "cli.h"
-#include "vrf.h"
+#include "dev.h"
 
 /**
- * @brief 单条 VRF 表项（内存存储）
+ * @brief VRF 模块 IPC 线程本地上下文
+ *
+ * 业务数据（vrf 表 / subscribers / show_stream）由 worker 线程独占，
+ * 定义在 work/vrf_worker.h 的 vrf_work_local_t 中。
  */
-typedef struct
+typedef struct vrf_local
 {
-    uint32_t vrf_id;             /**< VRF ID，0 为公网 VRF */
-    char name[VRF_NAME_MAX_LEN]; /**< VRF 名称 */
-} vrf_entry_t;
-
-/**
- * @brief VRF 模块本地状态
- */
-typedef struct
-{
-    dev_ipc_context_t *dev_ipc_ctx; /**< IPC 上下文 */
-    cli_chunk_stream_t show_stream; /**< CLI show 命令分片输出状态 */
-    GHashTable *vrf_by_id;          /**< uint32_t → vrf_entry_t*（按 ID 索引） */
-    GHashTable *vrf_by_name;        /**< const char* → vrf_entry_t*（按名称索引） */
-    uint32_t next_id;               /**< 下一个可分配的 VRF ID（从 1 开始） */
+    dev_ipc_context_t *dev_ipc_ctx;
 } vrf_local_t;
 
-/** 全局模块状态 */
 extern vrf_local_t *g_vrf_local;
 
 /**
@@ -46,43 +31,12 @@ static inline dev_ipc_context_t *vrf_local_ipc_ctx(void)
 }
 
 /**
- * @brief IPC 消息处理主回调
- * @param ctx IPC 上下文
- * @param msg 接收到的消息
+ * @brief IPC 消息处理回调
  */
 void vrf_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
 
 /**
- * @brief 创建一条 VRF 表项并加入内存表
- * @param name VRF 名称
- * @return 成功返回新 vrf_entry_t*，名称已存在或其他错误返回 NULL
- */
-vrf_entry_t *vrf_create(const char *name);
-
-/**
- * @brief 按 ID 查找 VRF 表项
- * @param vrf_id VRF ID
- * @return 找到返回 vrf_entry_t*，否则返回 NULL
- */
-vrf_entry_t *vrf_find_by_id(uint32_t vrf_id);
-
-/**
- * @brief 按名称查找 VRF 表项
- * @param name VRF 名称
- * @return 找到返回 vrf_entry_t*，否则返回 NULL
- */
-vrf_entry_t *vrf_find_by_name(const char *name);
-
-/**
- * @brief 按名称删除 VRF 表项
- * @param name VRF 名称
- * @return 成功返回 ERRCODE_SUCCESS，未找到返回 ERRCODE_FAIL
- */
-int vrf_delete(const char *name);
-
-/**
  * @brief VRF 模块初始化（由 vrf_proc.c main() 显式调用）
- * @return 0 成功，-1 失败
  */
 int vrf_module_init(void);
 

@@ -47,6 +47,8 @@
 #define ROUTE_AFI_IPV4 1u
 /** IPv6 地址族 */
 #define ROUTE_AFI_IPV6 2u
+/** 通配符：匹配所有地址族（用于订阅/查询过滤） */
+#define ROUTE_AFI_ALL 0xFFFFu
 /** 单播子地址族 */
 #define ROUTE_SAFI_UNICAST 1u
 
@@ -108,6 +110,8 @@ typedef struct route_subscribe_req
 {
     uint32_t protocol; /**< 订阅的路由协议（ROUTE_PROTOCOL_MAX = 全部） */
     uint32_t vrf_id;   /**< 订阅的 VRF ID（ROUTE_VRF_ALL = 全部） */
+    uint16_t afi;      /**< 订阅的地址族（ROUTE_AFI_ALL = 全部） */
+    uint16_t _pad;     /**< 对齐填充 */
     uint32_t flags;    /**< 标志位（ROUTE_SUBSCRIBE_FLAG_FULL 等） */
 } route_subscribe_req_t;
 

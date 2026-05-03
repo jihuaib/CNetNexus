@@ -18,6 +18,7 @@
 #include "bgp_conn.h"
 #include "bgp_fsm.h"
 #include "bgp_pkt.h"
+#include "bgp_relay.h"
 #include "bgp_update_group.h"
 #include "bgp_vrf.h"
 #include "bgp_worker.h"
@@ -146,6 +147,8 @@ void bgp_session_reset_negotiated(bgp_session_t *sess)
     {
         return;
     }
+
+    bgp_relay_session_lu_adj_sync(sess, FALSE);
 
     /* 清除 OPEN 协商填入的对端信息 */
     sess->remote_id = 0;

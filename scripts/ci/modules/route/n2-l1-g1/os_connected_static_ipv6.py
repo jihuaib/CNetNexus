@@ -13,7 +13,7 @@ from __future__ import annotations
 import ipaddress
 import re
 
-from module_api import g_top, require_devices, run_cmds, step, wait_check, wait_checks  # noqa: E402
+from module_api import g_top, require_devices, run_cmds, step, wait_check, wait_checks, wait_fib_ipv6_route  # noqa: E402
 from top_runner import TopologyRuntime  # noqa: E402
 
 
@@ -53,7 +53,7 @@ def _wait_os_route(
     wait_check(
         rt,
         device=device,
-        command="show route ipv6 os",
+        command="show fib ipv6 os",
         timeout=timeout,
         interval=interval,
         regex=[row_regex] if expect_present else (),
@@ -62,6 +62,24 @@ def _wait_os_route(
             f"{device} os route {prefix} "
             f"{'present' if expect_present else 'absent'} "
             f"(table={table} type={route_type} proto={proto} gw={gateway})"
+        ),
+    )
+    prefix_addr, prefix_len = prefix.rsplit("/", 1)
+    wait_fib_ipv6_route(
+        rt,
+        device=device,
+        prefix_addr=prefix_addr,
+        prefix_len=prefix_len,
+        expect_present=expect_present,
+        nexthop=gateway if gateway != "-" else None,
+        installed=True if proto == "static" else None,
+        skip_os=False if proto == "static" else True,
+        timeout=timeout,
+        interval=interval,
+        label=(
+            f"{device} fib route {prefix} "
+            f"{'present' if expect_present else 'absent'} "
+            f"(proto={proto} gw={gateway})"
         ),
     )
 

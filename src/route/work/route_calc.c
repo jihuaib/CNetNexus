@@ -1,20 +1,21 @@
 /**
  * @file   route_calc.c
- * @brief  Route 优选模块实现：多协议路径管理距离优选，唯一下发 OS 并通知订阅者
+ * @brief  Route 优选模块实现：多协议路径管理距离优选，唯一下发 FIB 并通知订阅者
  * @author jhb
  * @date   2026/03/24
  */
 #include "route_calc.h"
 
 #include <glib.h>
+#include <netinet/in.h>
 #include <string.h>
 
 #include "errcode.h"
+#include "fib.h"
 #include "log.h"
 #include "net_addr.h"
 #include "route.h"
 #include "route_main.h"
-#include "route_os.h"
 #include "route_pub.h"
 #include "route_rib.h"
 #include "route_worker.h"
@@ -186,7 +187,7 @@ static void sync_os_installed_flag(route_head_t *head, const route_path_key_t *i
 // ============================================================================
 // 辅助：从 head + path 构建路由条目
 //   - 协议上报（UPDATE/REPORT）使用原始 nexthop
-//   - OS 下发使用 relay 解析后的 nexthop
+//   - FIB 下发使用 relay 解析后的 nexthop
 // ============================================================================
 
 static void build_report_entry(route_msg_entry_t *e, const route_head_t *head, const route_path_t *path)
@@ -220,6 +221,39 @@ static void build_os_entry(route_msg_entry_t *e, const route_head_t *head, const
     {
         e->iter_out_ifindex = e->out_ifindex;
     }
+}
+
+static void build_fib_entry(fib_route_entry_t *fib, const route_msg_entry_t *route)
+{
+    memset(fib, 0, sizeof(*fib));
+    fib->vrf_id = route->vrf_id;
+    fib->afi = route->afi;
+    fib->safi = route->safi;
+    fib->prefix_len = route->prefix_len;
+    fib->protocol = route->protocol;
+    fib->metric = route->metric;
+    fib->preference = route->preference;
+    fib->flags = (route->protocol == ROUTE_PROTOCOL_CONNECTED) ? FIB_ROUTE_FLAG_SKIP_OS : 0u;
+    fib->nh_type = (route->protocol == ROUTE_PROTOCOL_BLACKHOLE) ? FIB_NH_TYPE_BLACKHOLE : FIB_NH_TYPE_IP;
+    fib->out_ifindex = (route->iter_out_ifindex != 0) ? route->iter_out_ifindex : route->out_ifindex;
+    fib->prefix_addr = route->prefix_addr;
+    fib->nexthop_addr = (route->iter_nexthop_addr.family == AF_INET || route->iter_nexthop_addr.family == AF_INET6)
+                            ? route->iter_nexthop_addr
+                            : route->nexthop_addr;
+}
+
+static int route_calc_fib_upsert(const route_msg_entry_t *route)
+{
+    fib_route_entry_t fib;
+    build_fib_entry(&fib, route);
+    return fib_rpc_route_upsert(route_local_ipc_ctx(), &fib);
+}
+
+static int route_calc_fib_delete(const route_msg_entry_t *route)
+{
+    fib_route_entry_t fib;
+    build_fib_entry(&fib, route);
+    return fib_rpc_route_delete(route_local_ipc_ctx(), &fib);
 }
 
 // ============================================================================
@@ -261,7 +295,7 @@ static const route_path_t *select_best_path(const route_head_t *head, const rout
 }
 
 // ============================================================================
-// 内部：重算前缀最优路径，同步 OS 并通知订阅者
+// 内部：重算前缀最优路径，同步 FIB 并通知订阅者
 //
 // 通知语义：订阅者只接收"当前最优路径"的变更事件。
 //   - 最优路径切换：先发旧路径的 withdraw，再发新路径的 add
@@ -295,12 +329,12 @@ static void update_prefix(const route_head_t *head, const route_path_key_t *skip
             build_report_entry(&cur_entry, head, cur_installed);
             build_os_entry(&cur_os_entry, head, cur_installed);
             net_addr_to_str(&head->key.addr, addr_str, sizeof(addr_str));
-            LOG_INFO("[route_calc] %s/%u vrf=%u 无可用路径，撤销 OS 及通知: proto=%u", addr_str,
+            LOG_INFO("[route_calc] %s/%u vrf=%u 无可用路径，撤销 FIB 及通知: proto=%u", addr_str,
                      (unsigned)head->key.prefix_len, head->key.vrf_id, cur_installed->key.protocol);
 
-            if (route_os_withdraw(&cur_os_entry) != 0)
+            if (route_calc_fib_delete(&cur_os_entry) != 0)
             {
-                LOG_WARN("[route_calc] OS 撤销失败，保留当前最优状态: %s/%u vrf=%u proto=%u", addr_str,
+                LOG_WARN("[route_calc] FIB 撤销失败，保留当前最优状态: %s/%u vrf=%u proto=%u", addr_str,
                          (unsigned)head->key.prefix_len, head->key.vrf_id, cur_installed->key.protocol);
                 return;
             }
@@ -327,9 +361,9 @@ static void update_prefix(const route_head_t *head, const route_path_key_t *skip
         LOG_DEBUG("[route_calc] 最优路径更新: %s/%u vrf=%u proto=%u", addr_str, (unsigned)head->key.prefix_len,
                   head->key.vrf_id, new_best->key.protocol);
 
-        if (route_os_install(&new_os_entry) != 0)
+        if (route_calc_fib_upsert(&new_os_entry) != 0)
         {
-            LOG_WARN("[route_calc] OS 更新失败，保持旧最优: %s/%u vrf=%u proto=%u", addr_str,
+            LOG_WARN("[route_calc] FIB 更新失败，保持旧最优: %s/%u vrf=%u proto=%u", addr_str,
                      (unsigned)head->key.prefix_len, head->key.vrf_id, new_best->key.protocol);
             schedule_os_install_retry(mut_head);
             return;
@@ -356,9 +390,9 @@ static void update_prefix(const route_head_t *head, const route_path_key_t *skip
                  (unsigned)head->key.prefix_len, head->key.vrf_id, cur_installed->key.protocol, cur_entry.preference,
                  new_best->key.protocol, new_best->preference);
 
-        if (route_os_install(&new_os_entry) != 0)
+        if (route_calc_fib_upsert(&new_os_entry) != 0)
         {
-            LOG_WARN("[route_calc] OS 安装失败，保持当前最优不变: %s/%u vrf=%u proto=%u", addr_str,
+            LOG_WARN("[route_calc] FIB 安装失败，保持当前最优不变: %s/%u vrf=%u proto=%u", addr_str,
                      (unsigned)head->key.prefix_len, head->key.vrf_id, new_best->key.protocol);
             schedule_os_install_retry(mut_head);
             return;
@@ -380,9 +414,9 @@ static void update_prefix(const route_head_t *head, const route_path_key_t *skip
                  (unsigned)head->key.prefix_len, head->key.vrf_id, new_best->key.protocol, new_best->preference,
                  new_best->metric);
 
-        if (route_os_install(&new_os_entry) != 0)
+        if (route_calc_fib_upsert(&new_os_entry) != 0)
         {
-            LOG_WARN("[route_calc] OS 安装失败，保持当前最优不变: %s/%u vrf=%u proto=%u", addr_str,
+            LOG_WARN("[route_calc] FIB 安装失败，保持当前最优不变: %s/%u vrf=%u proto=%u", addr_str,
                      (unsigned)head->key.prefix_len, head->key.vrf_id, new_best->key.protocol);
             schedule_os_install_retry(mut_head);
             return;
@@ -410,7 +444,7 @@ void route_calc_init(void)
         g_hash_table_destroy(g_calc_os_retry_table);
         g_calc_os_retry_table = NULL;
     }
-    LOG_INFO("[route_calc] 优选状态初始化完成（基于 route_path OS 标记）");
+    LOG_INFO("[route_calc] 优选状态初始化完成（基于 route_path FIB 标记）");
 }
 
 typedef struct
@@ -440,14 +474,14 @@ static void cleanup_withdraw_os_cb(const route_head_t *head, const route_path_t 
     build_os_entry(&os_entry, head, path);
     net_addr_to_str(&head->key.addr, addr_str, sizeof(addr_str));
 
-    if (route_os_withdraw(&os_entry) == 0)
+    if (route_calc_fib_delete(&os_entry) == 0)
     {
         ctx->withdrawn++;
     }
     else
     {
         ctx->failed++;
-        LOG_WARN("[route_calc] 退出清理撤销 OS 路由失败: %s/%u vrf=%u proto=%u", addr_str,
+        LOG_WARN("[route_calc] 退出清理撤销 FIB 路由失败: %s/%u vrf=%u proto=%u", addr_str,
                  (unsigned)head->key.prefix_len, head->key.vrf_id, path->key.protocol);
     }
 }
@@ -559,6 +593,22 @@ void route_calc_on_periodic(void)
     g_list_free_full(due_keys, g_free);
 }
 
+void route_calc_schedule_fib_retry(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr, uint8_t prefix_len)
+{
+    if (!g_route_work_local || !g_route_work_local->rib || !prefix_addr)
+    {
+        return;
+    }
+
+    const route_head_t *head = route_rib_lookup_head(g_route_work_local->rib, vrf_id, afi, prefix_addr, prefix_len);
+    if (!head)
+    {
+        return;
+    }
+
+    schedule_os_install_retry(head);
+}
+
 // ============================================================================
 // 公共接口：全量最优路径快照（用于 SUBSCRIBE+FULL 响应）
 // ============================================================================
@@ -568,6 +618,7 @@ typedef struct
     route_msg_entry_t *entries; /**< 收集到的条目数组 */
     uint32_t count;             /**< 已收集条目数 */
     uint32_t capacity;          /**< 数组容量 */
+    uint16_t afi_filter;        /**< AFI 过滤（ROUTE_AFI_ALL = 全部） */
 } dump_collect_ctx_t;
 
 static void dump_collect_best(const route_head_t *head, const route_path_t *path, void *userdata)
@@ -579,6 +630,10 @@ static void dump_collect_best(const route_head_t *head, const route_path_t *path
     }
 
     if (!(path->flags & ROUTE_PATH_FLAG_OS_INSTALLED))
+    {
+        return;
+    }
+    if (dctx->afi_filter != ROUTE_AFI_ALL && dctx->afi_filter != head->key.afi)
     {
         return;
     }
@@ -600,7 +655,7 @@ static void dump_collect_best(const route_head_t *head, const route_path_t *path
     dctx->count++;
 }
 
-void route_calc_pub_dump(uint32_t dst_module_id, uint32_t protocol, uint32_t vrf_id, uint32_t request_id)
+void route_calc_pub_dump(uint32_t dst_module_id, uint32_t protocol, uint32_t vrf_id, uint16_t afi, uint32_t request_id)
 {
     if (!g_route_work_local || !g_route_work_local->rib)
     {
@@ -612,6 +667,7 @@ void route_calc_pub_dump(uint32_t dst_module_id, uint32_t protocol, uint32_t vrf
         .entries = NULL,
         .count = 0,
         .capacity = 0,
+        .afi_filter = afi,
     };
     route_rib_walk(g_route_work_local->rib, protocol, vrf_id, dump_collect_best, &dctx);
 
@@ -645,5 +701,6 @@ void route_calc_pub_dump(uint32_t dst_module_id, uint32_t protocol, uint32_t vrf
     }
     dev_ipc_message_free(msg);
 
-    LOG_INFO("[route_calc] 全量最优路径快照: %u 条 -> module 0x%08X", dctx.count, dst_module_id);
+    LOG_INFO("[route_calc] 全量最优路径快照: %u 条 -> module 0x%08X protocol=%u vrf=%u afi=%u", dctx.count,
+             dst_module_id, protocol, vrf_id, afi);
 }

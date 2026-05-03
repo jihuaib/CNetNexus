@@ -22,6 +22,8 @@
 #include "if.h"
 #include "log.h"
 #include "route.h"
+#include "tunnel.h"
+#include "vrf.h"
 
 bgp_local_t *g_bgp_local;
 
@@ -76,8 +78,10 @@ static void bgp_on_start(dev_ipc_message_t *msg)
     dev_ipc_connect(ctx, DEV_MODULE_ID_CLI, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CLI);
     dev_ipc_connect(ctx, DEV_MODULE_ID_DB, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_DB);
     dev_ipc_connect(ctx, DEV_MODULE_ID_ROUTE, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_ROUTE);
+    dev_ipc_connect(ctx, DEV_MODULE_ID_TUNNEL, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_TUNNEL);
     dev_ipc_connect(ctx, DEV_MODULE_ID_IF, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_IF);
-    LOG_INFO("Connected to CFG, DB, ROUTE and IF");
+    dev_ipc_connect(ctx, DEV_MODULE_ID_VRF, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_VRF);
+    LOG_INFO("Connected to CFG, DB, ROUTE, TUNNEL, IF and VRF");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
@@ -137,6 +141,19 @@ static void bgp_on_ready(dev_ipc_message_t *msg)
     else
     {
         LOG_WARN("BGP: Failed to subscribe to IF events via if_api");
+    }
+
+    /* 通过 vrf_api 订阅 VRF 事件（VRF 删除 + RD/RT 变更），并请求初始全量回放 */
+    vrf_api_cache_init();
+    uint32_t vrf_event_mask = VRF_EVENT_VRF_ADD | VRF_EVENT_VRF_DEL | VRF_EVENT_AF_ENABLE | VRF_EVENT_AF_DISABLE |
+                              VRF_EVENT_AF_RD_CHANGE | VRF_EVENT_AF_IMPORT_RT_CHG | VRF_EVENT_AF_EXPORT_RT_CHG;
+    if (vrf_api_subscribe(ctx, VRF_AF_MASK_ALL, vrf_event_mask, VRF_SUBSCRIBE_FLAG_REPLAY) == ERRCODE_SUCCESS)
+    {
+        LOG_INFO("BGP: Subscribed to VRF events via vrf_api (REPLAY)");
+    }
+    else
+    {
+        LOG_WARN("BGP: Failed to subscribe to VRF events via vrf_api");
     }
 
     /* 仅恢复：表不存在（BGP 未曾配置）时静默返回 NULL，不建表也不写默认值 */
@@ -235,6 +252,16 @@ void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             return;
         }
 
+        case TUNNEL_MSG_TYPE_RESOLVE_NOTIFY:
+        {
+            if (bgp_worker_post_tunnel_message(msg) != 0)
+            {
+                LOG_WARN("BGP: Failed to forward tunnel message to worker thread (type=0x%08X)", msg->msg_type);
+                dev_ipc_message_free(msg);
+            }
+            return;
+        }
+
         /* ---- IF 事件通知 ---- */
         case IF_MSG_TYPE_EVENT:
         {
@@ -247,6 +274,20 @@ void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         }
         case IF_MSG_TYPE_ACK:
             /* IF 订阅应答，静默丢弃 */
+            break;
+
+        /* ---- VRF 事件通知 ---- */
+        case VRF_MSG_TYPE_EVENT:
+        {
+            if (bgp_worker_post_vrf_event(msg) != 0)
+            {
+                LOG_WARN("BGP: Failed to forward VRF event to worker thread");
+                dev_ipc_message_free(msg);
+            }
+            return;
+        }
+        case VRF_MSG_TYPE_ACK:
+            /* VRF 订阅应答，静默丢弃 */
             break;
 
         default:

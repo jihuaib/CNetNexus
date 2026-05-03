@@ -20,6 +20,7 @@ set(BGP_SOURCES
     work/bgp_pkt_build.c
     work/bgp_pkt_build_ipv4uc.c
     work/bgp_pkt_build_ipv6uc.c
+    work/bgp_pkt_build_labeled.c
     work/bgp_pkt_build_ipv4qp.c
     work/bgp_pkt_build_ipv6qp.c
     work/bgp_calc.c
@@ -39,6 +40,7 @@ set(BGP_SOURCES
     work/bgp_cmd.c
     work/bgp_import_route.c
     work/bgp_route_flush.c
+    work/bgp_apply_vrf.c
     bmp/bgp_bmp.c
     bmp/bgp_bmp_cfg_apply.c
     bmp/bgp_bmp_pkt.c
@@ -56,7 +58,9 @@ target_link_libraries(netnexus-bgp PRIVATE
     cli_api
     db_api
     if_api
+    vrf_api
     route_api
+    tunnel_api
     utils
     bgp_api
 )

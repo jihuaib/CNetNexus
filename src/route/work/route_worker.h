@@ -35,6 +35,7 @@ typedef enum route_worker_cmd_type
     ROUTE_WORKER_CMD_APPLY = 7,         /**< 配置应用命令（waitable，IPC 线程同步等待结果） */
     ROUTE_WORKER_CMD_SHUTDOWN = 8,      /**< 停止 worker 线程循环 */
     ROUTE_WORKER_CMD_IF_EVENT = 9,      /**< IF 接口事件（UP/DOWN/ADDR_ADD/ADDR_DEL） */
+    ROUTE_WORKER_CMD_FIB_ROUTE_RESULT = 10, /**< FIB route 下发结果事件 */
 } route_worker_cmd_type_t;
 
 // ============================================================================

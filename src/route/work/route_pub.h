@@ -22,6 +22,7 @@ typedef struct route_subscriber
     uint32_t module_id; /**< 订阅方模块 ID */
     uint32_t protocol;  /**< 订阅的协议（ROUTE_PROTOCOL_MAX = 全部） */
     uint32_t vrf_id;    /**< 订阅的 VRF ID（ROUTE_VRF_ALL = 全部） */
+    uint16_t afi;       /**< 订阅的地址族（ROUTE_AFI_ALL = 全部） */
 } route_subscriber_t;
 
 /**
@@ -37,7 +38,7 @@ void route_pub_notify(GList *subscribers, const route_head_t *head, const route_
  * @brief 直接使用 route_msg_entry_t 向所有匹配订阅者发送通知
  *
  * 用于 route_calc 等不持有 RIB head/path 指针、但已知完整条目的场景。
- * 订阅者过滤规则与 route_pub_notify 一致（按 protocol 和 vrf_id 匹配）。
+ * 订阅者过滤规则与 route_pub_notify 一致（按 protocol / vrf_id / afi 匹配）。
  *
  * @param subscribers 订阅者列表 GList<route_subscriber_t*>
  * @param entry       路由条目（is_withdraw 字段已填充）

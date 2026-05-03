@@ -22,7 +22,6 @@
 #include "route.h"
 #include "route_cli.h"
 #include "route_main.h"
-#include "route_os.h"
 #include "route_relay.h"
 #include "route_rib.h"
 #include "route_static.h"
@@ -60,7 +59,7 @@ int route_show_send_chunked(dev_ipc_message_t *msg, GString *full_text)
 //   1=ipv4, 2=ipv6, 4=dest_filter,
 //   5=proto:static, 6=proto:bgp, 7=proto:ospf, 8=summary,
 //   9=proto:connected, 10=os, 11=proto:isis,
-//   12=prefix_len_v4, 13=prefix_len_v6
+//   12=prefix_len_v4, 13=prefix_len_v6, 14=subscribe
 // ============================================================================
 
 typedef struct
@@ -155,9 +154,97 @@ static const char *proto_name_long(uint32_t protocol)
             return "isis";
         case ROUTE_PROTOCOL_BLACKHOLE:
             return "static(blackhole)";
+        case ROUTE_PROTOCOL_MAX:
+            return "all";
         default:
             return "unknown";
     }
+}
+
+static const char *module_name(uint32_t module_id)
+{
+    switch (module_id)
+    {
+        case DEV_MODULE_ID_DEV:
+            return "dev";
+        case DEV_MODULE_ID_DB:
+            return "db";
+        case DEV_MODULE_ID_CLI:
+            return "cli";
+        case DEV_MODULE_ID_IF:
+            return "if";
+        case DEV_MODULE_ID_BGP:
+            return "bgp";
+        case DEV_MODULE_ID_ROUTE:
+            return "route";
+        case DEV_MODULE_ID_VRF:
+            return "vrf";
+        case DEV_MODULE_ID_SBMP:
+            return "sbmp";
+        case DEV_MODULE_ID_ISIS:
+            return "isis";
+        case DEV_MODULE_ID_TUNNEL:
+            return "tunnel";
+        default:
+            return "unknown";
+    }
+}
+
+static const char *route_afi_name(uint16_t afi)
+{
+    switch (afi)
+    {
+        case ROUTE_AFI_IPV4:
+            return "ipv4";
+        case ROUTE_AFI_IPV6:
+            return "ipv6";
+        case ROUTE_AFI_ALL:
+            return "all";
+        default:
+            return "unknown";
+    }
+}
+
+static int route_show_handle_subscribe(dev_ipc_message_t *msg, uint16_t afi_filter)
+{
+    GString *buf = g_string_new("");
+    if (!buf)
+    {
+        send_resp(msg, "Error: Out of memory\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    uint32_t count = 0;
+    g_string_append_printf(buf,
+                           "\r\nRoute Subscribers (AFI: %s)\r\n"
+                           "%-10s %-10s %-10s %-8s\r\n"
+                           "---------- ---------- ---------- --------\r\n",
+                           route_afi_name(afi_filter), "Module", "Protocol", "VRF", "AFI");
+
+    GList *subscribers = g_route_work_local ? g_route_work_local->subscribers : NULL;
+    for (GList *l = subscribers; l; l = l->next)
+    {
+        const route_subscriber_t *sub = (const route_subscriber_t *)l->data;
+        if (!sub)
+        {
+            continue;
+        }
+        if (sub->afi != ROUTE_AFI_ALL && sub->afi != afi_filter)
+        {
+            continue;
+        }
+
+        g_string_append_printf(buf, "%-10s %-10s %-10u %-8s\r\n", module_name(sub->module_id),
+                               proto_name_long(sub->protocol), sub->vrf_id, route_afi_name(sub->afi));
+        count++;
+    }
+
+    if (count == 0)
+    {
+        g_string_append(buf, "  (no subscribers)\r\n");
+    }
+    g_string_append_printf(buf, "\r\nTotal %u subscriber(s)\r\n", count);
+    return route_show_send_chunked(msg, buf);
 }
 
 /* 将接口索引转换为逻辑名字符串，写入 buf（长度至少 IF_NAMESIZE）
@@ -300,7 +387,7 @@ int route_show_handle_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     int show_ipv4 = 0, show_ipv6 = 0;
     uint32_t proto_filter = ROUTE_PROTOCOL_MAX;
     int show_summary = 0;
-    int show_os = 0;
+    int show_subscribe = 0;
     net_addr_t dest_filter_addr;
     gboolean has_dest_filter = FALSE;
     int64_t dest_filter_pfxlen = -1;
@@ -347,9 +434,6 @@ int route_show_handle_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             case 9:
                 proto_filter = ROUTE_PROTOCOL_CONNECTED;
                 break;
-            case 10:
-                show_os = 1;
-                break;
             case 11:
                 proto_filter = ROUTE_PROTOCOL_ISIS;
                 break;
@@ -357,6 +441,9 @@ int route_show_handle_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             case 13:
                 dest_filter_pfxlen = cli_tlv_entry_get_int(&entry);
                 has_dest_filter_pfxlen = TRUE;
+                break;
+            case 14:
+                show_subscribe = 1;
                 break;
             default:
                 break;
@@ -401,22 +488,10 @@ int route_show_handle_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         show_ipv6 = 1;
     }
 
-    if (show_os)
+    if (show_subscribe)
     {
-        GString *buf = g_string_new("");
-        if (!buf)
-        {
-            send_resp(msg, "Error: Out of memory\r\n");
-            return ERRCODE_FAIL;
-        }
-        sa_family_t family = show_ipv6 ? AF_INET6 : AF_INET;
-        if (route_os_show(buf, family) != 0)
-        {
-            g_string_free(buf, TRUE);
-            send_resp(msg, "Error: 读取内核路由表失败\r\n");
-            return ERRCODE_FAIL;
-        }
-        return route_show_send_chunked(msg, buf);
+        uint16_t afi_filter = show_ipv6 ? ROUTE_AFI_IPV6 : ROUTE_AFI_IPV4;
+        return route_show_handle_subscribe(msg, afi_filter);
     }
 
     if (show_summary)

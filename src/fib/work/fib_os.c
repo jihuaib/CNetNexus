@@ -1,43 +1,53 @@
-/**
- * @file   route_os.c
- * @brief  通过 Netlink RTM_NEWROUTE/DELROUTE 向 Linux 内核下发/撤销路由
- * @author jhb
- * @date   2026/03/22
- */
-#include "route_os.h"
+#include "fib_os.h"
 
 #include <arpa/inet.h>
 #include <asm/types.h>
 #include <errno.h>
-#include <glib.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 #include <net/if.h>
-#include <netinet/in.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "errcode.h"
 #include "log.h"
 #include "net_addr.h"
 #include "route.h"
 
-/* Netlink 请求/响应缓冲区大小 */
-#define ROUTE_OS_NL_BUFSIZE 4096
+#define FIB_OS_NL_BUFSIZE 4096
+#define FIB_OS_DUMP_BUFSIZE 65536
 
-/* ============================================================================
- * 内部辅助：添加 Netlink 属性
- * ============================================================================ */
+static uint8_t fib_route_protocol_to_rtproto(uint32_t protocol)
+{
+    switch (protocol)
+    {
+        case ROUTE_PROTOCOL_CONNECTED:
+            return RTPROT_KERNEL;
+        case ROUTE_PROTOCOL_BGP:
+            return RTPROT_BGP;
+        case ROUTE_PROTOCOL_OSPF:
+            return RTPROT_OSPF;
+        case ROUTE_PROTOCOL_ISIS:
+            return RTPROT_ISIS;
+        case ROUTE_PROTOCOL_STATIC:
+        case ROUTE_PROTOCOL_BLACKHOLE:
+        default:
+            return RTPROT_STATIC;
+    }
+}
 
 static void nl_add_attr(struct nlmsghdr *nlh, size_t maxlen, int type, const void *data, int datalen)
 {
     int len = RTA_LENGTH(datalen);
     if (NLMSG_ALIGN(nlh->nlmsg_len) + (size_t)RTA_ALIGN(len) > maxlen)
     {
-        LOG_WARN("route_os: Netlink 属性超出缓冲区，跳过 type=%d", type);
+        LOG_WARN("fib_os: Netlink 属性超出缓冲区，跳过 type=%d", type);
         return;
     }
+
     struct rtattr *rta = (struct rtattr *)((char *)nlh + NLMSG_ALIGN(nlh->nlmsg_len));
     rta->rta_type = (unsigned short)type;
     rta->rta_len = (unsigned short)len;
@@ -47,14 +57,9 @@ static void nl_add_attr(struct nlmsghdr *nlh, size_t maxlen, int type, const voi
 
 static int nl_add_gateway_or_via(struct nlmsghdr *nlh, size_t maxlen, sa_family_t dst_family, const net_addr_t *gateway)
 {
-    if (!nlh || !gateway)
+    if (!nlh || !gateway || (gateway->family != AF_INET && gateway->family != AF_INET6))
     {
-        return -1;
-    }
-
-    if (gateway->family != AF_INET && gateway->family != AF_INET6)
-    {
-        return -1;
+        return ERRCODE_FAIL;
     }
 
     if (gateway->family == dst_family)
@@ -67,10 +72,9 @@ static int nl_add_gateway_or_via(struct nlmsghdr *nlh, size_t maxlen, sa_family_
         {
             nl_add_attr(nlh, maxlen, RTA_GATEWAY, gateway->u.v6.s6_addr, 16);
         }
-        return 0;
+        return ERRCODE_SUCCESS;
     }
 
-    /* 跨族网关使用 RTA_VIA（RFC 8950 场景：IPv4 前缀 + IPv6 下一跳）。 */
     uint8_t via_buf[sizeof(struct rtvia) + 16];
     memset(via_buf, 0, sizeof(via_buf));
     struct rtvia *via = (struct rtvia *)(void *)via_buf;
@@ -89,20 +93,16 @@ static int nl_add_gateway_or_via(struct nlmsghdr *nlh, size_t maxlen, sa_family_
     }
 
     nl_add_attr(nlh, maxlen, RTA_VIA, via_buf, (int)sizeof(struct rtvia) + addr_len);
-    return 0;
+    return ERRCODE_SUCCESS;
 }
-
-/* ============================================================================
- * 内部辅助：Netlink 报文发送与 ACK 接收
- * ============================================================================ */
 
 static int nl_exchange(struct nlmsghdr *nlh, int cmd)
 {
     int fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE);
     if (fd < 0)
     {
-        LOG_ERROR("route_os: socket() 失败: %s", strerror(errno));
-        return -1;
+        LOG_ERROR("fib_os: socket() 失败: %s", strerror(errno));
+        return ERRCODE_FAIL;
     }
 
     struct sockaddr_nl nladdr;
@@ -111,66 +111,43 @@ static int nl_exchange(struct nlmsghdr *nlh, int cmd)
 
     if (sendto(fd, nlh, nlh->nlmsg_len, 0, (struct sockaddr *)&nladdr, sizeof(nladdr)) < 0)
     {
-        LOG_ERROR("route_os: sendto() 失败: %s", strerror(errno));
+        LOG_ERROR("fib_os: sendto() 失败: %s", strerror(errno));
         close(fd);
-        return -1;
+        return ERRCODE_FAIL;
     }
 
-    char ack_buf[ROUTE_OS_NL_BUFSIZE];
+    char ack_buf[FIB_OS_NL_BUFSIZE];
     ssize_t n = recv(fd, ack_buf, sizeof(ack_buf), 0);
     close(fd);
 
     if (n < 0)
     {
-        LOG_ERROR("route_os: recv() 失败: %s", strerror(errno));
-        return -1;
+        LOG_ERROR("fib_os: recv() 失败: %s", strerror(errno));
+        return ERRCODE_FAIL;
     }
 
     struct nlmsghdr *ack = (struct nlmsghdr *)(void *)ack_buf;
     if (ack->nlmsg_type == NLMSG_ERROR)
     {
         const struct nlmsgerr *err = (const struct nlmsgerr *)NLMSG_DATA(ack);
-        /* ESRCH on delete = 路由不存在，正常忽略 */
         if (err->error != 0 && !(cmd == RTM_DELROUTE && err->error == -ESRCH))
         {
-            LOG_WARN("route_os: Netlink 返回错误 %d: %s", -err->error, strerror(-err->error));
-            return -1;
+            LOG_WARN("fib_os: Netlink 返回错误 %d: %s", -err->error, strerror(-err->error));
+            return ERRCODE_FAIL;
         }
     }
 
-    return 0;
+    return ERRCODE_SUCCESS;
 }
 
-/* ============================================================================
- * 核心发送函数：RT_TABLE_MAIN
- * ============================================================================ */
-
-static int route_os_send(int cmd, const route_msg_entry_t *entry)
+static int fib_os_route_send(int cmd, const fib_route_entry_t *route)
 {
-    if (!entry)
+    if (!route)
     {
-        return -1;
+        return ERRCODE_FAIL;
     }
 
-    int is_non_connected = (entry->protocol != ROUTE_PROTOCOL_CONNECTED && entry->protocol != ROUTE_PROTOCOL_BLACKHOLE);
-    /*
-     * OS 网关优先使用迭代解析后的直连网关（iter_nexthop_addr）。
-     * 对于递归路由（如 nexthop 198.51.100.1 经 resolver 解析为 10.12.0.2），
-     * 内核无法直接使用原始递归 nexthop 作为网关（ENETUNREACH），
-     * 必须下发解析后的直连地址。
-     */
-    net_addr_t effective_gateway = entry->nexthop_addr;
-    if (entry->iter_nexthop_addr.family == AF_INET || entry->iter_nexthop_addr.family == AF_INET6)
-    {
-        effective_gateway = entry->iter_nexthop_addr;
-    }
-    uint32_t effective_oif = entry->out_ifindex;
-    if (entry->iter_out_ifindex != 0)
-    {
-        effective_oif = entry->iter_out_ifindex;
-    }
-
-    char buf[ROUTE_OS_NL_BUFSIZE];
+    char buf[FIB_OS_NL_BUFSIZE];
     memset(buf, 0, sizeof(buf));
     struct nlmsghdr *nlh = (struct nlmsghdr *)(void *)buf;
     struct rtmsg *rtm = (struct rtmsg *)NLMSG_DATA(nlh);
@@ -184,47 +161,18 @@ static int route_os_send(int cmd, const route_msg_entry_t *entry)
     }
     nlh->nlmsg_seq = 1;
 
-    /* 填充 rtmsg 基本字段 */
-    rtm->rtm_family = (unsigned char)entry->prefix_addr.family;
-    rtm->rtm_dst_len = entry->prefix_len;
-    rtm->rtm_src_len = 0;
-    rtm->rtm_tos = 0;
+    rtm->rtm_family = (unsigned char)route->prefix_addr.family;
+    rtm->rtm_dst_len = route->prefix_len;
     rtm->rtm_table = RT_TABLE_MAIN;
-    switch (entry->protocol)
-    {
-        case ROUTE_PROTOCOL_CONNECTED:
-            rtm->rtm_protocol = RTPROT_KERNEL;
-            break;
-        case ROUTE_PROTOCOL_BGP:
-            rtm->rtm_protocol = RTPROT_BGP;
-            break;
-        case ROUTE_PROTOCOL_OSPF:
-            rtm->rtm_protocol = RTPROT_OSPF;
-            break;
-        case ROUTE_PROTOCOL_ISIS:
-            rtm->rtm_protocol = RTPROT_ISIS;
-            break;
-        default:
-            rtm->rtm_protocol = RTPROT_STATIC;
-            break;
-    }
-    rtm->rtm_flags = 0;
+    rtm->rtm_protocol = fib_route_protocol_to_rtproto(route->protocol);
 
-    /* 路由类型与 scope */
-    if (entry->protocol == ROUTE_PROTOCOL_BLACKHOLE)
+    if (route->nh_type == FIB_NH_TYPE_BLACKHOLE)
     {
         rtm->rtm_type = RTN_BLACKHOLE;
         rtm->rtm_scope = RT_SCOPE_UNIVERSE;
     }
-    else if (entry->protocol == ROUTE_PROTOCOL_CONNECTED && entry->out_ifindex != 0)
+    else if (net_addr_is_zero(&route->nexthop_addr) && route->out_ifindex != 0)
     {
-        rtm->rtm_type = RTN_UNICAST;
-        rtm->rtm_scope = RT_SCOPE_LINK;
-    }
-    else if (entry->protocol == ROUTE_PROTOCOL_STATIC && net_addr_is_zero(&entry->nexthop_addr) &&
-             entry->out_ifindex != 0)
-    {
-        /* interface-only 静态路由：无下一跳，仅指定出接口，scope=LINK */
         rtm->rtm_type = RTN_UNICAST;
         rtm->rtm_scope = RT_SCOPE_LINK;
     }
@@ -234,90 +182,63 @@ static int route_os_send(int cmd, const route_msg_entry_t *entry)
         rtm->rtm_scope = RT_SCOPE_UNIVERSE;
     }
 
-    /* RTA_DST：目标前缀 */
-    if (entry->prefix_addr.family == AF_INET)
+    if (route->prefix_addr.family == AF_INET)
     {
-        nl_add_attr(nlh, sizeof(buf), RTA_DST, &entry->prefix_addr.u.v4.s_addr, 4);
+        nl_add_attr(nlh, sizeof(buf), RTA_DST, &route->prefix_addr.u.v4.s_addr, 4);
     }
-    else if (entry->prefix_addr.family == AF_INET6)
+    else if (route->prefix_addr.family == AF_INET6)
     {
-        nl_add_attr(nlh, sizeof(buf), RTA_DST, entry->prefix_addr.u.v6.s6_addr, 16);
+        nl_add_attr(nlh, sizeof(buf), RTA_DST, route->prefix_addr.u.v6.s6_addr, 16);
     }
     else
     {
-        return -1;
+        return ERRCODE_FAIL;
     }
 
-    /* RTA_OIF：出接口（直连路由） */
-    if (effective_oif != 0 && entry->protocol != ROUTE_PROTOCOL_BLACKHOLE)
+    if (route->out_ifindex != 0 && route->nh_type != FIB_NH_TYPE_BLACKHOLE)
     {
-        nl_add_attr(nlh, sizeof(buf), RTA_OIF, &effective_oif, (int)sizeof(uint32_t));
+        nl_add_attr(nlh, sizeof(buf), RTA_OIF, &route->out_ifindex, (int)sizeof(route->out_ifindex));
     }
 
-    /*
-     * RTA_PREFSRC：直连路由优选源地址。
-     *
-     * IPv4: 保留，避免内核从管理口地址选源。
-     * IPv6: 不下发该属性。当前模型下 IPv6 地址通过 LOCAL /128 路由表达，
-     *       未在网卡上显式配置 addr；对 connected /64 带 PREFSRC 会被内核
-     *       以 EINVAL 拒绝，导致直连路由安装失败。
-     */
-    if (entry->protocol == ROUTE_PROTOCOL_CONNECTED && entry->source_addr.family == AF_INET &&
-        entry->prefix_addr.family == AF_INET)
+    if (route->nh_type == FIB_NH_TYPE_IP && !net_addr_is_zero(&route->nexthop_addr) &&
+        nl_add_gateway_or_via(nlh, sizeof(buf), route->prefix_addr.family, &route->nexthop_addr) != ERRCODE_SUCCESS)
     {
-        uint32_t zero = 0;
-        if (memcmp(&entry->source_addr.u.v4.s_addr, &zero, sizeof(zero)) != 0)
-        {
-            nl_add_attr(nlh, sizeof(buf), RTA_PREFSRC, &entry->source_addr.u.v4.s_addr, 4);
-        }
-    }
-
-    /* RTA_GATEWAY：网关（非直连、非黑洞路由且 nexthop 非零） */
-    if (is_non_connected && !net_addr_is_zero(&effective_gateway))
-    {
-        if (nl_add_gateway_or_via(nlh, sizeof(buf), entry->prefix_addr.family, &effective_gateway) != 0)
-        {
-            return -1;
-        }
+        return ERRCODE_FAIL;
     }
 
     return nl_exchange(nlh, cmd);
 }
 
-/* ============================================================================
- * 公共 API
- * ============================================================================ */
-
-int route_os_install(const route_msg_entry_t *entry)
+int fib_os_route_install_ip(const fib_route_entry_t *route)
 {
-    /*
-     * CONNECTED 路由由 IF 模块通过 ifaddr 驱动内核自动生成（main/local），
-     * route 模块仅维护内存 RIB，不再显式下发内核 connected 路由。
-     */
-    if (entry && entry->protocol == ROUTE_PROTOCOL_CONNECTED)
+    if (route && (route->flags & FIB_ROUTE_FLAG_SKIP_OS) != 0)
     {
-        return 0;
+        return ERRCODE_SUCCESS;
     }
-
-    return route_os_send(RTM_NEWROUTE, entry);
+    return fib_os_route_send(RTM_NEWROUTE, route);
 }
 
-int route_os_withdraw(const route_msg_entry_t *entry)
+int fib_os_route_install_tunnel(const fib_route_entry_t *route, const fib_tunnel_entry_t *tunnel)
 {
-    if (entry && entry->protocol == ROUTE_PROTOCOL_CONNECTED)
+    if (!route || !tunnel || !tunnel->state || tunnel->label_count == 0)
     {
-        return 0;
+        return ERRCODE_FAIL;
     }
 
-    return route_os_send(RTM_DELROUTE, entry);
+    fib_route_entry_t via_tunnel = *route;
+    via_tunnel.nexthop_addr = tunnel->relay_addr;
+    via_tunnel.out_ifindex = tunnel->out_ifindex;
+    return fib_os_route_send(RTM_NEWROUTE, &via_tunnel);
 }
 
-/* ============================================================================
- * 内核路由表查询（RTM_GETROUTE dump）
- * ============================================================================ */
-
-/* 接收缓冲区：64KB 足以容纳数百条路由的 dump 响应 */
-#define ROUTE_OS_DUMP_BUFSIZE 65536
+int fib_os_route_withdraw(const fib_route_entry_t *route)
+{
+    if (route && (route->flags & FIB_ROUTE_FLAG_SKIP_OS) != 0)
+    {
+        return ERRCODE_SUCCESS;
+    }
+    return fib_os_route_send(RTM_DELROUTE, route);
+}
 
 static const char *os_table_str(uint8_t table)
 {
@@ -381,14 +302,11 @@ static const char *os_proto_str(uint8_t proto)
 static void os_parse_route(struct nlmsghdr *nlh, GString *buf)
 {
     struct rtmsg *rtm = (struct rtmsg *)NLMSG_DATA(nlh);
-
-    /* 默认值 */
     char dst_str[64];
     char gw_str[64] = "-";
     char oif_name[IF_NAMESIZE] = "-";
     uint32_t priority = 0;
 
-    /* 默认目标：全零地址 */
     if (rtm->rtm_family == AF_INET)
     {
         inet_ntop(AF_INET, "\0\0\0\0", dst_str, sizeof(dst_str));
@@ -398,7 +316,6 @@ static void os_parse_route(struct nlmsghdr *nlh, GString *buf)
         inet_ntop(AF_INET6, "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", dst_str, sizeof(dst_str));
     }
 
-    /* 遍历 RTA 属性 */
     struct rtattr *rta = RTM_RTA(rtm);
     int rta_len = (int)RTM_PAYLOAD(nlh);
     for (; RTA_OK(rta, rta_len); rta = RTA_NEXT(rta, rta_len))
@@ -446,27 +363,25 @@ static void os_parse_route(struct nlmsghdr *nlh, GString *buf)
 
     char prefix_str[80];
     snprintf(prefix_str, sizeof(prefix_str), "%s/%u", dst_str, rtm->rtm_dst_len);
-
     g_string_append_printf(buf, "%-7s %-10s %-26s %-20s %-14s %-8s %u\r\n", os_table_str(rtm->rtm_table),
                            os_type_str(rtm->rtm_type), prefix_str, gw_str, oif_name, os_proto_str(rtm->rtm_protocol),
                            priority);
 }
 
-int route_os_show(GString *buf, sa_family_t family)
+int fib_os_show(GString *buf, sa_family_t family)
 {
     if (!buf)
     {
-        return -1;
+        return ERRCODE_FAIL;
     }
 
     int fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE);
     if (fd < 0)
     {
-        LOG_ERROR("route_os: socket() 失败: %s", strerror(errno));
-        return -1;
+        LOG_ERROR("fib_os: socket() 失败: %s", strerror(errno));
+        return ERRCODE_FAIL;
     }
 
-    /* 构造 RTM_GETROUTE dump 请求 */
     struct
     {
         struct nlmsghdr nlh;
@@ -485,9 +400,9 @@ int route_os_show(GString *buf, sa_family_t family)
 
     if (sendto(fd, &req, req.nlh.nlmsg_len, 0, (struct sockaddr *)&nladdr, sizeof(nladdr)) < 0)
     {
-        LOG_ERROR("route_os: sendto() 失败: %s", strerror(errno));
+        LOG_ERROR("fib_os: sendto() 失败: %s", strerror(errno));
         close(fd);
-        return -1;
+        return ERRCODE_FAIL;
     }
 
     g_string_append_printf(buf,
@@ -496,22 +411,21 @@ int route_os_show(GString *buf, sa_family_t family)
                            "-------------------- -------------- -------- ------\r\n",
                            "Table", "Type", "Prefix", "Gateway", "Interface", "Proto", "Metric");
 
-    /* 接收 dump 响应（可能跨多个 recv 报文） */
-    char *recv_buf = (char *)g_malloc(ROUTE_OS_DUMP_BUFSIZE);
+    char *recv_buf = (char *)g_malloc(FIB_OS_DUMP_BUFSIZE);
     if (!recv_buf)
     {
         close(fd);
-        return -1;
+        return ERRCODE_FAIL;
     }
 
     uint32_t count = 0;
     gboolean done = FALSE;
     while (!done)
     {
-        int n = (int)recv(fd, recv_buf, ROUTE_OS_DUMP_BUFSIZE, 0);
+        int n = (int)recv(fd, recv_buf, FIB_OS_DUMP_BUFSIZE, 0);
         if (n < 0)
         {
-            LOG_ERROR("route_os: recv() 失败: %s", strerror(errno));
+            LOG_ERROR("fib_os: recv() 失败: %s", strerror(errno));
             break;
         }
 
@@ -528,7 +442,7 @@ int route_os_show(GString *buf, sa_family_t family)
                 const struct nlmsgerr *err = (const struct nlmsgerr *)NLMSG_DATA(nlh);
                 if (err->error != 0)
                 {
-                    LOG_WARN("route_os: dump 错误 %d: %s", -err->error, strerror(-err->error));
+                    LOG_WARN("fib_os: dump 错误 %d: %s", -err->error, strerror(-err->error));
                 }
                 done = TRUE;
                 break;
@@ -544,5 +458,5 @@ int route_os_show(GString *buf, sa_family_t family)
     g_free(recv_buf);
     close(fd);
     g_string_append_printf(buf, "\r\nTotal %u route(s)\r\n", count);
-    return 0;
+    return ERRCODE_SUCCESS;
 }
