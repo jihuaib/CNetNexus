@@ -35,6 +35,14 @@ void dev_bdr_show_config(dev_ipc_message_t *msg)
 {
     GString *out = g_string_new("");
 
+    /* sysname：DB 中显式存且非空才回显；no sysname 后 DB 为空，不输出 */
+    char sysname[CLI_SYSNAME_MAX_LEN] = {0};
+    if (dev_db_get_sysname(sysname, sizeof(sysname)) == 0 && sysname[0] != '\0')
+    {
+        g_string_append(out, "!\r\n");
+        g_string_append_printf(out, "sysname %s\r\n", sysname);
+    }
+
     log_level_t level;
     int rc = dev_db_get_log_level(&level);
     if (rc == 0 && level != dev_db_default_log_level())
@@ -46,7 +54,6 @@ void dev_bdr_show_config(dev_ipc_message_t *msg)
             g_string_append_printf(out, "dev log log-level %s\r\n", kw);
         }
     }
-    /* rc != 0 或 level == default：不显示 */
 
     (void)cli_chunk_stream_start(&g_dev_local->show_stream, dev_get_ipc_ctx(), DEV_MODULE_ID_DEV, msg, out);
 }

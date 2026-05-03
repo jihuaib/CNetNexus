@@ -41,7 +41,11 @@ static int route_node_to_route_entry(uint32_t vrf_id, const bgp_nlri_entry_t *nl
     {
         return 0;
     }
-    if (nlri->type != BGP_NLRI_PREFIX || nlri->safi != BGP_SAFI_UNICAST)
+    if (nlri->type != BGP_NLRI_PREFIX || (nlri->safi != BGP_SAFI_UNICAST && nlri->safi != BGP_SAFI_LABELED))
+    {
+        return 0;
+    }
+    if (nlri->safi == BGP_SAFI_LABELED && !nlri->prefix.has_label)
     {
         return 0;
     }
@@ -92,6 +96,16 @@ static int route_node_to_route_entry(uint32_t vrf_id, const bgp_nlri_entry_t *nl
     entry_out->preference = ROUTE_ADMIN_DIST_BGP;
     entry_out->is_withdraw = 0u;
     entry_out->flags = 0u;
+    if (route->iter_watched && route->iter_resolved && route->tunnel_id != 0u)
+    {
+        entry_out->nh_type = ROUTE_NH_TYPE_TUNNEL;
+        entry_out->tunnel_id = route->tunnel_id;
+    }
+    else
+    {
+        entry_out->nh_type = ROUTE_NH_TYPE_IP;
+        entry_out->tunnel_id = 0u;
+    }
     entry_out->out_ifindex = 0u;
     entry_out->iter_out_ifindex = iter_oif;
     entry_out->prefix_addr = *prefix;

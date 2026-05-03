@@ -652,6 +652,7 @@ static void bgp_show_route_detail(GString *buf, const bgp_rthead_t *head)
         g_string_append_printf(buf, "    IterState: %s\r\n", iter_state_str);
         g_string_append_printf(buf, "    Iter-NH  : %s\r\n", iter_nh);
         g_string_append_printf(buf, "    Out-If   : %s\r\n", out_if);
+        g_string_append_printf(buf, "    Tunnel-ID: %u\r\n", route->tunnel_id);
         g_string_append_printf(buf, "    Flags    : 0x%08X (%s)\r\n", route->flags, flags_str);
         g_string_append_printf(buf, "    AS-Path  : %s\r\n", as_path);
 

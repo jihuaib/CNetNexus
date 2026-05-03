@@ -52,6 +52,7 @@ static void tunnel_on_start(dev_ipc_message_t *msg)
     (void)dev_ipc_connect(ctx, DEV_MODULE_ID_CLI, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CLI);
     (void)dev_ipc_connect(ctx, DEV_MODULE_ID_ROUTE, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_ROUTE);
     (void)dev_ipc_connect(ctx, DEV_MODULE_ID_IF, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_IF);
+    (void)dev_ipc_connect(ctx, DEV_MODULE_ID_FIB, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_FIB);
 
     if (tunnel_worker_prepare() != ERRCODE_SUCCESS || tunnel_worker_launch() != ERRCODE_SUCCESS)
     {

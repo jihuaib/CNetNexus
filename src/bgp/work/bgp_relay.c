@@ -35,12 +35,15 @@ typedef struct bgp_relay_nh_watch
     uint8_t resolved;
     uint8_t _pad[7];
     uint32_t out_ifindex;
+    uint32_t tunnel_id;
     net_addr_t relay_addr;
     gint64 updated_at_usec;
     GList *route_list; /* bgp_route_node_t* 双挂（同时在 rthead->route_list） */
 } bgp_relay_nh_watch_t;
 
 static GHashTable *g_bgp_relay_nh_table = NULL; /* bgp_relay_nh_key_t* -> bgp_relay_nh_watch_t* */
+
+static gboolean bgp_relay_route_is_lu(const bgp_route_node_t *route);
 
 static guint bgp_relay_nh_key_hash(gconstpointer p)
 {
@@ -168,6 +171,18 @@ static int bgp_relay_build_nh_key_from_route(const bgp_route_node_t *route, bgp_
         route->nexthop.global.family == 0)
     {
         return 0;
+    }
+
+    if (bgp_relay_route_is_lu(route))
+    {
+        const net_addr_t *endpoint = &route->head->nlri.prefix.prefix.addr;
+        if (endpoint->family != AF_INET && endpoint->family != AF_INET6)
+        {
+            return 0;
+        }
+        bgp_relay_make_nh_key(nh_key_out, route->head->inst->vrf->vrf_id, route->head->nlri.afi, route->head->nlri.safi,
+                              endpoint);
+        return 1;
     }
 
     /* 6PE nexthop 先按原始 AF_INET6 地址处理；未引入隧道封装前，不向 IPv4 直连网关继续迭代。 */
@@ -435,6 +450,7 @@ static void bgp_relay_route_iter_clear(bgp_route_node_t *route)
     route->iter_watched = 0u;
     route->iter_resolved = 0u;
     route->iter_out_ifindex = 0u;
+    route->tunnel_id = 0u;
     route->iter_relay_addr.family = 0;
 }
 
@@ -453,6 +469,7 @@ static void bgp_relay_route_iter_update_from_watch(bgp_route_node_t *route, cons
     route->iter_watched = 1u;
     route->iter_resolved = watch->resolved ? 1u : 0u;
     route->iter_out_ifindex = watch->out_ifindex;
+    route->tunnel_id = watch->tunnel_id;
     route->iter_relay_addr = watch->relay_addr;
 }
 
@@ -511,6 +528,7 @@ static bgp_relay_nh_watch_t *bgp_relay_attach_route_to_watch(bgp_route_node_t *r
         watch->key = *nh_key;
         watch->resolved = 0u;
         watch->out_ifindex = 0u;
+        watch->tunnel_id = 0u;
         watch->relay_addr.family = 0;
         watch->updated_at_usec = g_get_real_time();
         watch->route_list = NULL;
@@ -969,6 +987,7 @@ uint32_t bgp_relay_handle_nh_notify(const route_nh_iter_notify_t *notify)
 
     watch->resolved = new_state;
     watch->out_ifindex = notify->out_ifindex;
+    watch->tunnel_id = 0u;
     watch->relay_addr = notify->relay_addr;
     watch->updated_at_usec = g_get_real_time();
 
@@ -1019,9 +1038,11 @@ uint32_t bgp_relay_handle_tunnel_notify(const tunnel_resolve_notify_t *notify)
 
     uint8_t new_state = notify->resolved ? 1u : 0u;
     gboolean state_changed = (watch->resolved != new_state);
+    gboolean tunnel_changed = (watch->tunnel_id != notify->tunnel_id);
 
     watch->resolved = new_state;
     watch->out_ifindex = notify->out_ifindex;
+    watch->tunnel_id = notify->tunnel_id;
     watch->relay_addr = notify->relay_addr;
     watch->updated_at_usec = g_get_real_time();
 
@@ -1035,14 +1056,21 @@ uint32_t bgp_relay_handle_tunnel_notify(const tunnel_resolve_notify_t *notify)
         }
 
         bgp_relay_route_iter_update_from_watch(route, watch);
-        if (!state_changed)
+        if (!state_changed && !tunnel_changed)
         {
             continue;
         }
 
         bgp_instance_t *inst = route->head->inst;
-        if (bgp_relay_set_route_valid(inst, &route->head->nlri, &route->source, watch->resolved ? TRUE : FALSE) > 0)
+        int rc_valid =
+            bgp_relay_set_route_valid(inst, &route->head->nlri, &route->source, watch->resolved ? TRUE : FALSE);
+        if (rc_valid > 0)
         {
+            touched++;
+        }
+        else if (rc_valid == 0 && tunnel_changed && watch->resolved)
+        {
+            bgp_relay_trigger_calc(inst, &route->head->nlri);
             touched++;
         }
     }

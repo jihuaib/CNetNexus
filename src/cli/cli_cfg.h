@@ -22,6 +22,7 @@
 #define CLI_GROUP_ID_SHOW_CONTEXT 8         /**< show cli context */
 #define CLI_GROUP_ID_TERMINAL_LENGTH_ZERO 9 /**< terminal length 0 */
 #define CLI_GROUP_ID_SHOW_THIS 10           /**< show this */
+#define CLI_GROUP_ID_SHOW_CLIENT 11         /**< show cli client */
 
 /**
  * @brief 响应输出结构

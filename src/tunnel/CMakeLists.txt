@@ -16,6 +16,7 @@ target_link_libraries(netnexus-tunnel PRIVATE
     dev_api
     cli_api
     tunnel_api
+    fib_api
     utils
 )
 

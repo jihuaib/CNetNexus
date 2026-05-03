@@ -208,6 +208,8 @@ static void build_report_entry(route_msg_entry_t *e, const route_head_t *head, c
     e->source_addr = path->key.source;
     e->is_withdraw = 0;
     e->flags = 0;
+    e->nh_type = path->nh_type ? path->nh_type : ROUTE_NH_TYPE_IP;
+    e->tunnel_id = (e->nh_type == ROUTE_NH_TYPE_TUNNEL) ? path->tunnel_id : 0u;
 }
 
 static void build_os_entry(route_msg_entry_t *e, const route_head_t *head, const route_path_t *path)
@@ -234,7 +236,19 @@ static void build_fib_entry(fib_route_entry_t *fib, const route_msg_entry_t *rou
     fib->metric = route->metric;
     fib->preference = route->preference;
     fib->flags = (route->protocol == ROUTE_PROTOCOL_CONNECTED) ? FIB_ROUTE_FLAG_SKIP_OS : 0u;
-    fib->nh_type = (route->protocol == ROUTE_PROTOCOL_BLACKHOLE) ? FIB_NH_TYPE_BLACKHOLE : FIB_NH_TYPE_IP;
+    if (route->protocol == ROUTE_PROTOCOL_BLACKHOLE)
+    {
+        fib->nh_type = FIB_NH_TYPE_BLACKHOLE;
+    }
+    else if (route->nh_type == ROUTE_NH_TYPE_TUNNEL && route->tunnel_id != 0u)
+    {
+        fib->nh_type = FIB_NH_TYPE_TUNNEL;
+        fib->tunnel_id = route->tunnel_id;
+    }
+    else
+    {
+        fib->nh_type = FIB_NH_TYPE_IP;
+    }
     fib->out_ifindex = (route->iter_out_ifindex != 0) ? route->iter_out_ifindex : route->out_ifindex;
     fib->prefix_addr = route->prefix_addr;
     fib->nexthop_addr = (route->iter_nexthop_addr.family == AF_INET || route->iter_nexthop_addr.family == AF_INET6)

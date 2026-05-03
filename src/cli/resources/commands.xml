@@ -219,5 +219,30 @@
                 </command>
             </commands>
         </group>
+
+        <!-- show cli client -->
+        <group group-id="11">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>show</name>
+                    <description>Display system information</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>cli</name>
+                    <description>CLI information</description>
+                </element>
+                <element id="3" type="keyword">
+                    <name>client</name>
+                    <description>Connected CLI clients</description>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>global</views>
+                </command>
+            </commands>
+        </group>
     </command_groups>
 </configuration>

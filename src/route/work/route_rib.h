@@ -70,6 +70,9 @@ typedef struct route_path
     int32_t preference;        /**< 管理距离 */
     uint32_t out_ifindex;      /**< 原始出接口索引（由发布方携带） */
     uint32_t iter_out_ifindex; /**< relay 解析后的出接口索引（0 表示未知） */
+    uint8_t nh_type;           /**< ROUTE_NH_TYPE_* */
+    uint8_t _pad0[3];          /**< 对齐填充 */
+    uint32_t tunnel_id;        /**< nh_type=ROUTE_NH_TYPE_TUNNEL 时的隧道 ID */
     uint32_t flags;            /**< 路径状态标志（ROUTE_PATH_FLAG_*） */
     gint64 updated_at_usec;    /**< 最近更新时间（g_get_real_time） */
 } route_path_t;
@@ -137,7 +140,7 @@ void route_rib_destroy(route_rib_t *rib);
  */
 int route_rib_add(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr, uint8_t prefix_len,
                   uint32_t protocol, const net_addr_t *source, const net_addr_t *nexthop, int32_t metric,
-                  int32_t preference, uint32_t out_ifindex);
+                  int32_t preference, uint32_t out_ifindex, uint8_t nh_type, uint32_t tunnel_id);
 
 /**
  * @brief 从 RIB 删除一条路径（可选回调，在删除前触发）

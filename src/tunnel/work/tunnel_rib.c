@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "errcode.h"
+#include "fib.h"
 #include "log.h"
 #include "tunnel_main.h"
 
@@ -15,6 +16,14 @@ typedef struct tunnel_watch
     int last_resolved;
     tunnel_resolve_notify_t last_notify;
 } tunnel_watch_t;
+
+typedef struct tunnel_id_key
+{
+    uint32_t vrf_id;
+    uint16_t afi;
+    uint8_t _pad[2];
+    net_addr_t endpoint;
+} tunnel_id_key_t;
 
 typedef struct tunnel_nhlfe
 {
@@ -58,9 +67,81 @@ struct tunnel_rib
     GList *nhlfes;
     GList *ftns;
     GList *ilms;
+    GHashTable *tunnel_ids;
     uint32_t next_nhlfe_id;
+    uint32_t next_tunnel_id;
     uint32_t next_label;
 };
+
+static guint tunnel_id_key_hash(gconstpointer p)
+{
+    const tunnel_id_key_t *key = (const tunnel_id_key_t *)p;
+    if (!key)
+    {
+        return 0;
+    }
+
+    guint h = key->vrf_id;
+    h = h * 33u + key->afi;
+    h ^= net_addr_hash(&key->endpoint);
+    return h;
+}
+
+static gboolean tunnel_id_key_equal(gconstpointer a, gconstpointer b)
+{
+    const tunnel_id_key_t *ka = (const tunnel_id_key_t *)a;
+    const tunnel_id_key_t *kb = (const tunnel_id_key_t *)b;
+    if (!ka || !kb)
+    {
+        return FALSE;
+    }
+    return ka->vrf_id == kb->vrf_id && ka->afi == kb->afi && net_addr_equal(&ka->endpoint, &kb->endpoint);
+}
+
+static void tunnel_id_make_key(tunnel_id_key_t *key, uint32_t vrf_id, uint16_t afi, const net_addr_t *endpoint)
+{
+    memset(key, 0, sizeof(*key));
+    key->vrf_id = vrf_id;
+    key->afi = afi;
+    key->endpoint = *endpoint;
+}
+
+static uint32_t tunnel_id_lookup_or_alloc(tunnel_rib_t *rib, uint32_t vrf_id, uint16_t afi, const net_addr_t *endpoint,
+                                          gboolean create)
+{
+    if (!rib || !rib->tunnel_ids || !endpoint || endpoint->family == 0)
+    {
+        return 0u;
+    }
+
+    tunnel_id_key_t lookup;
+    tunnel_id_make_key(&lookup, vrf_id, afi, endpoint);
+
+    gpointer value = g_hash_table_lookup(rib->tunnel_ids, &lookup);
+    if (value)
+    {
+        return GPOINTER_TO_UINT(value);
+    }
+    if (!create)
+    {
+        return 0u;
+    }
+
+    tunnel_id_key_t *stored = g_malloc0(sizeof(*stored));
+    if (!stored)
+    {
+        return 0u;
+    }
+    *stored = lookup;
+
+    uint32_t tunnel_id = rib->next_tunnel_id++;
+    if (tunnel_id == 0u)
+    {
+        tunnel_id = rib->next_tunnel_id++;
+    }
+    g_hash_table_insert(rib->tunnel_ids, stored, GUINT_TO_POINTER(tunnel_id));
+    return tunnel_id;
+}
 
 static gboolean tunnel_endpoint_equal(uint32_t vrf_id, uint16_t afi, const net_addr_t *addr,
                                       const tunnel_candidate_t *candidate)
@@ -269,7 +350,7 @@ static gboolean tunnel_resolve_inner(const tunnel_rib_t *rib, uint32_t vrf_id, u
     return tunnel_stack_append(notify, candidate);
 }
 
-static tunnel_resolve_notify_t tunnel_resolve(const tunnel_rib_t *rib, const tunnel_resolve_req_t *req)
+static tunnel_resolve_notify_t tunnel_resolve(tunnel_rib_t *rib, const tunnel_resolve_req_t *req)
 {
     tunnel_resolve_notify_t notify;
     memset(&notify, 0, sizeof(notify));
@@ -283,7 +364,34 @@ static tunnel_resolve_notify_t tunnel_resolve(const tunnel_rib_t *rib, const tun
     notify.afi = req->afi;
     notify.endpoint = req->endpoint;
     (void)tunnel_resolve_inner(rib, req->vrf_id, req->afi, &req->endpoint, &notify, 0);
+    notify.tunnel_id =
+        tunnel_id_lookup_or_alloc(rib, req->vrf_id, req->afi, &req->endpoint, notify.resolved ? TRUE : FALSE);
     return notify;
+}
+
+static void tunnel_sync_fib(const tunnel_resolve_notify_t *notify)
+{
+    if (!notify || notify->tunnel_id == 0u)
+    {
+        return;
+    }
+
+    fib_tunnel_entry_t entry;
+    memset(&entry, 0, sizeof(entry));
+    entry.tunnel_id = notify->tunnel_id;
+
+    if (!notify->resolved)
+    {
+        (void)fib_rpc_tunnel_delete(tunnel_local_ipc_ctx(), &entry);
+        return;
+    }
+
+    entry.state = 1u;
+    entry.label_count = notify->label_count;
+    entry.out_ifindex = notify->out_ifindex;
+    entry.relay_addr = notify->relay_addr;
+    memcpy(entry.labels, notify->labels, sizeof(entry.labels));
+    (void)fib_rpc_tunnel_upsert(tunnel_local_ipc_ctx(), &entry);
 }
 
 static void tunnel_notify_watch(tunnel_watch_t *watch, const tunnel_resolve_notify_t *notify)
@@ -357,7 +465,7 @@ static void tunnel_rebuild_forwarding_tables(tunnel_rib_t *rib)
         {
             continue;
         }
-        nhlfe->id = rib->next_nhlfe_id++;
+        nhlfe->id = resolved.tunnel_id ? resolved.tunnel_id : rib->next_nhlfe_id++;
         nhlfe->endpoint = candidate->endpoint;
         nhlfe->relay_addr = resolved.relay_addr;
         nhlfe->out_ifindex = resolved.out_ifindex;
@@ -391,7 +499,9 @@ tunnel_rib_t *tunnel_rib_create(void)
     tunnel_rib_t *rib = g_malloc0(sizeof(*rib));
     if (rib)
     {
+        rib->tunnel_ids = g_hash_table_new_full(tunnel_id_key_hash, tunnel_id_key_equal, g_free, NULL);
         rib->next_nhlfe_id = 1;
+        rib->next_tunnel_id = 1;
         rib->next_label = TUNNEL_LABEL_DYNAMIC_MIN;
     }
     return rib;
@@ -410,6 +520,10 @@ void tunnel_rib_destroy(tunnel_rib_t *rib)
     g_list_free_full(rib->nhlfes, g_free);
     g_list_free_full(rib->ftns, g_free);
     g_list_free_full(rib->ilms, g_free);
+    if (rib->tunnel_ids)
+    {
+        g_hash_table_destroy(rib->tunnel_ids);
+    }
     g_free(rib);
 }
 
@@ -580,6 +694,7 @@ void tunnel_rib_recompute(tunnel_rib_t *rib)
         tunnel_resolve_notify_t notify = tunnel_resolve(rib, &watch->req);
         if (watch->last_resolved != (int)notify.resolved || !tunnel_notify_equal(&watch->last_notify, &notify))
         {
+            tunnel_sync_fib(&notify);
             tunnel_notify_watch(watch, &notify);
             watch->last_resolved = notify.resolved;
             watch->last_notify = notify;

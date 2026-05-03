@@ -166,9 +166,42 @@ const uint8_t *cli_context_get(cli_session_t *session, uint32_t *out_len)
 }
 
 // Send the prompt to the client
+//
+// 渲染时把模板里的占位符 "NetNexus" 替换为当前 g_cli_local->sysname。
+// 这样 sysname 命令一变，所有 session 下次出 prompt 立即生效，
+// 无需重建每个 view 的模板。
 void send_prompt(cli_session_t *session)
 {
-    cli_send_message(session, session->prompt);
+    const char *sysname = (g_cli_local && g_cli_local->sysname[0] != '\0') ? g_cli_local->sysname : CLI_SYSNAME_DEFAULT;
+
+    if (strcmp(sysname, CLI_SYSNAME_DEFAULT) == 0 || !strstr(session->prompt, CLI_SYSNAME_DEFAULT))
+    {
+        cli_send_message(session, session->prompt);
+    }
+    else
+    {
+        char rendered[CLI_CLI_MAX_PROMPT_LEN * 2];
+        const char *src = session->prompt;
+        size_t out_pos = 0;
+        size_t pat_len = strlen(CLI_SYSNAME_DEFAULT);
+        size_t name_len = strlen(sysname);
+        while (*src && out_pos + 1 < sizeof(rendered))
+        {
+            if (strncmp(src, CLI_SYSNAME_DEFAULT, pat_len) == 0)
+            {
+                size_t copy = (out_pos + name_len < sizeof(rendered) - 1) ? name_len : (sizeof(rendered) - 1 - out_pos);
+                memcpy(rendered + out_pos, sysname, copy);
+                out_pos += copy;
+                src += pat_len;
+            }
+            else
+            {
+                rendered[out_pos++] = *src++;
+            }
+        }
+        rendered[out_pos] = '\0';
+        cli_send_message(session, rendered);
+    }
     cli_send_message(session, " ");
 }
 
@@ -1321,17 +1354,20 @@ cli_session_t *cli_session_create(int client_fd)
     session->pager_lines_per_page = CLI_PAGER_DEFAULT_LINES;
     session->pager_active = 0;
 
-    // Get client IP address
+    // Get client IP address & port
     struct sockaddr_in client_addr;
     socklen_t addr_len = sizeof(client_addr);
+    session->client_port = 0;
     if (getpeername(client_fd, (struct sockaddr *)&client_addr, &addr_len) == 0)
     {
         inet_ntop(AF_INET, &client_addr.sin_addr, session->client_ip, sizeof(session->client_ip));
+        session->client_port = ntohs(client_addr.sin_port);
     }
     else
     {
         strcpy(session->client_ip, "unknown");
     }
+    session->connect_time = time(NULL);
 
     // Enable telnet character mode
     unsigned char telnet_opts[] = {

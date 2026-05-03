@@ -3,6 +3,9 @@
 #include <arpa/inet.h>
 #include <asm/types.h>
 #include <errno.h>
+#include <linux/lwtunnel.h>
+#include <linux/mpls.h>
+#include <linux/mpls_iptunnel.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 #include <net/if.h>
@@ -55,6 +58,31 @@ static void nl_add_attr(struct nlmsghdr *nlh, size_t maxlen, int type, const voi
     nlh->nlmsg_len = (unsigned int)(NLMSG_ALIGN(nlh->nlmsg_len) + (size_t)RTA_ALIGN(len));
 }
 
+static struct rtattr *nl_attr_nest_start(struct nlmsghdr *nlh, size_t maxlen, int type)
+{
+    int len = RTA_LENGTH(0);
+    if (NLMSG_ALIGN(nlh->nlmsg_len) + (size_t)RTA_ALIGN(len) > maxlen)
+    {
+        LOG_WARN("fib_os: Netlink nested 属性超出缓冲区，跳过 type=%d", type);
+        return NULL;
+    }
+
+    struct rtattr *rta = (struct rtattr *)((char *)nlh + NLMSG_ALIGN(nlh->nlmsg_len));
+    rta->rta_type = (unsigned short)type;
+    rta->rta_len = (unsigned short)len;
+    nlh->nlmsg_len = (unsigned int)(NLMSG_ALIGN(nlh->nlmsg_len) + (size_t)RTA_ALIGN(len));
+    return rta;
+}
+
+static void nl_attr_nest_end(struct nlmsghdr *nlh, struct rtattr *nest)
+{
+    if (!nlh || !nest)
+    {
+        return;
+    }
+    nest->rta_len = (unsigned short)((char *)nlh + NLMSG_ALIGN(nlh->nlmsg_len) - (char *)nest);
+}
+
 static int nl_add_gateway_or_via(struct nlmsghdr *nlh, size_t maxlen, sa_family_t dst_family, const net_addr_t *gateway)
 {
     if (!nlh || !gateway || (gateway->family != AF_INET && gateway->family != AF_INET6))
@@ -93,6 +121,42 @@ static int nl_add_gateway_or_via(struct nlmsghdr *nlh, size_t maxlen, sa_family_
     }
 
     nl_add_attr(nlh, maxlen, RTA_VIA, via_buf, (int)sizeof(struct rtvia) + addr_len);
+    return ERRCODE_SUCCESS;
+}
+
+static int nl_add_mpls_encap(struct nlmsghdr *nlh, size_t maxlen, const fib_tunnel_entry_t *tunnel)
+{
+    if (!nlh || !tunnel || tunnel->label_count == 0 || tunnel->label_count > FIB_MAX_LABEL_STACK)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    struct mpls_label stack[FIB_MAX_LABEL_STACK];
+    memset(stack, 0, sizeof(stack));
+    for (uint8_t i = 0; i < tunnel->label_count; i++)
+    {
+        if (tunnel->labels[i] > 0xFFFFFu)
+        {
+            return ERRCODE_FAIL;
+        }
+        uint32_t entry = (tunnel->labels[i] << MPLS_LS_LABEL_SHIFT) | 255u;
+        if (i == tunnel->label_count - 1u)
+        {
+            entry |= (1u << MPLS_LS_S_SHIFT);
+        }
+        stack[i].entry = htonl(entry);
+    }
+
+    uint16_t encap_type = LWTUNNEL_ENCAP_MPLS;
+    nl_add_attr(nlh, maxlen, RTA_ENCAP_TYPE, &encap_type, (int)sizeof(encap_type));
+
+    struct rtattr *encap = nl_attr_nest_start(nlh, maxlen, RTA_ENCAP);
+    if (!encap)
+    {
+        return ERRCODE_FAIL;
+    }
+    nl_add_attr(nlh, maxlen, MPLS_IPTUNNEL_DST, stack, (int)(sizeof(stack[0]) * tunnel->label_count));
+    nl_attr_nest_end(nlh, encap);
     return ERRCODE_SUCCESS;
 }
 
@@ -140,7 +204,7 @@ static int nl_exchange(struct nlmsghdr *nlh, int cmd)
     return ERRCODE_SUCCESS;
 }
 
-static int fib_os_route_send(int cmd, const fib_route_entry_t *route)
+static int fib_os_route_send(int cmd, const fib_route_entry_t *route, const fib_tunnel_entry_t *tunnel)
 {
     if (!route)
     {
@@ -205,6 +269,18 @@ static int fib_os_route_send(int cmd, const fib_route_entry_t *route)
     {
         return ERRCODE_FAIL;
     }
+    if (cmd == RTM_NEWROUTE && route->nh_type == FIB_NH_TYPE_TUNNEL)
+    {
+        if (!tunnel || nl_add_mpls_encap(nlh, sizeof(buf), tunnel) != ERRCODE_SUCCESS)
+        {
+            return ERRCODE_FAIL;
+        }
+        if (!net_addr_is_zero(&route->nexthop_addr) &&
+            nl_add_gateway_or_via(nlh, sizeof(buf), route->prefix_addr.family, &route->nexthop_addr) != ERRCODE_SUCCESS)
+        {
+            return ERRCODE_FAIL;
+        }
+    }
 
     return nl_exchange(nlh, cmd);
 }
@@ -215,7 +291,7 @@ int fib_os_route_install_ip(const fib_route_entry_t *route)
     {
         return ERRCODE_SUCCESS;
     }
-    return fib_os_route_send(RTM_NEWROUTE, route);
+    return fib_os_route_send(RTM_NEWROUTE, route, NULL);
 }
 
 int fib_os_route_install_tunnel(const fib_route_entry_t *route, const fib_tunnel_entry_t *tunnel)
@@ -228,7 +304,7 @@ int fib_os_route_install_tunnel(const fib_route_entry_t *route, const fib_tunnel
     fib_route_entry_t via_tunnel = *route;
     via_tunnel.nexthop_addr = tunnel->relay_addr;
     via_tunnel.out_ifindex = tunnel->out_ifindex;
-    return fib_os_route_send(RTM_NEWROUTE, &via_tunnel);
+    return fib_os_route_send(RTM_NEWROUTE, &via_tunnel, tunnel);
 }
 
 int fib_os_route_withdraw(const fib_route_entry_t *route)
@@ -237,7 +313,7 @@ int fib_os_route_withdraw(const fib_route_entry_t *route)
     {
         return ERRCODE_SUCCESS;
     }
-    return fib_os_route_send(RTM_DELROUTE, route);
+    return fib_os_route_send(RTM_DELROUTE, route, NULL);
 }
 
 static const char *os_table_str(uint8_t table)

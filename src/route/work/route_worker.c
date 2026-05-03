@@ -303,7 +303,7 @@ static void worker_handle_inject(dev_ipc_message_t *msg)
     {
         ret = route_rib_add(g_route_work_local->rib, entry->vrf_id, entry->afi, &entry->prefix_addr, entry->prefix_len,
                             entry->protocol, &entry->source_addr, &entry->nexthop_addr, entry->metric,
-                            entry->preference, entry->out_ifindex);
+                            entry->preference, entry->out_ifindex, entry->nh_type, entry->tunnel_id);
         if (ret >= 0)
         {
             const route_head_t *head = route_rib_lookup_head(g_route_work_local->rib, entry->vrf_id, entry->afi,
@@ -984,7 +984,7 @@ int route_add_and_notify(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix
     }
 
     int ret = route_rib_add(g_route_work_local->rib, vrf_id, afi, prefix_addr, prefix_len, protocol, source_addr,
-                            nexthop_addr, metric, preference, out_ifindex);
+                            nexthop_addr, metric, preference, out_ifindex, ROUTE_NH_TYPE_IP, 0u);
     if (ret < 0)
     {
         return ret;

@@ -205,6 +205,21 @@ static const char *route_afi_name(uint16_t afi)
     }
 }
 
+static const char *route_nh_type_name(uint8_t nh_type)
+{
+    switch (nh_type)
+    {
+        case ROUTE_NH_TYPE_IP:
+            return "ip";
+        case ROUTE_NH_TYPE_TUNNEL:
+            return "tunnel";
+        case ROUTE_NH_TYPE_BLACKHOLE:
+            return "blackhole";
+        default:
+            return "unknown";
+    }
+}
+
 static int route_show_handle_subscribe(dev_ipc_message_t *msg, uint16_t afi_filter)
 {
     GString *buf = g_string_new("");
@@ -370,12 +385,15 @@ static void detail_path_cb(const route_head_t *head, const route_path_t *path, v
                            "    Interface : %s\r\n"
                            "    Iter NH   : %s\r\n"
                            "    Iter OIF  : %s\r\n"
+                           "    NH-Type   : %s\r\n"
+                           "    Tunnel-ID : %u\r\n"
                            "    Flags     : 0x%08X\r\n"
                            "    Metric    : %d\r\n"
                            "    Preference: %d\r\n"
                            "    Updated   : %s\r\n",
                            ctx->count, proto_name_long(path->key.protocol), nh_str, oif_str, iter_nh_str, iter_oif_str,
-                           (unsigned int)path->flags, path->metric, path->preference, time_str);
+                           route_nh_type_name(path->nh_type), path->tunnel_id, (unsigned int)path->flags, path->metric,
+                           path->preference, time_str);
 }
 
 // ============================================================================

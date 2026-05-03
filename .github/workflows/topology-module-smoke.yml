@@ -24,6 +24,25 @@ jobs:
           python -m pip install --upgrade pip
           pip install pyyaml
 
+      - name: Probe & enable VRF kernel module on host
+        run: |
+          set -e
+          uname -r
+          # 先尝试加载；若 vrf.ko 不存在则按需补装 extra modules 包
+          if ! grep -qE '^vrf\s' /proc/modules; then
+            if ! sudo modprobe vrf 2>/dev/null; then
+              sudo apt-get update -y
+              sudo apt-get install -y linux-modules-extra-azure || true
+              sudo apt-get install -y "linux-modules-extra-$(uname -r)" || true
+              sudo modprobe vrf || {
+                echo "::warning::vrf kernel module unavailable; VRF OS install will fail in CI"
+                ls /lib/modules/$(uname -r)/kernel/drivers/net/vrf.ko* 2>&1 || true
+                exit 0
+              }
+            fi
+          fi
+          grep -E '^vrf\s' /proc/modules
+
       - name: Run All CI Modules And Generate Report
         run: |
           scripts/ci/run_all.sh \

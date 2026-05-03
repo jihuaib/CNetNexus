@@ -31,8 +31,9 @@ typedef struct cli_local
     int epoll_fd;         /**< epoll 文件描述符（Telnet 用） */
     int listen_sock;      /**< Telnet 监听 socket */
     pthread_t worker_thread;
-    GHashTable *sessions;           /**< 注册表: fd -> cli_session_t* */
-    dev_ipc_context_t *dev_ipc_ctx; /**< IPC 上下文 */
+    GHashTable *sessions;              /**< 注册表: fd -> cli_session_t* */
+    dev_ipc_context_t *dev_ipc_ctx;    /**< IPC 上下文 */
+    char sysname[CLI_SYSNAME_MAX_LEN]; /**< 当前系统名（默认 "NetNexus"，由 DEV 通过 IPC 推送） */
 } cli_local_t;
 
 extern cli_local_t *g_cli_local;

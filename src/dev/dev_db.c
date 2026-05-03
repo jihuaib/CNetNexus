@@ -8,6 +8,7 @@
 
 #include <glib.h>
 
+#include "cli.h"
 #include "db.h"
 #include "dev.h"
 #include "dev_main.h"
@@ -21,6 +22,7 @@
 static const db_column_def_t DEV_CONFIG_COLS[] = {
     {"id", DB_TYPE_INTEGER, DB_COL_PRIMARY_KEY, NULL},
     {"log_level", DB_TYPE_INTEGER, 0, NULL},
+    {"sysname", DB_TYPE_TEXT, 0, NULL},
 };
 
 static const db_table_def_t DEV_CONFIG_TABLE = {
@@ -150,8 +152,112 @@ int dev_db_set_log_level(log_level_t level)
     return 0;
 }
 
+int dev_db_get_sysname(char *out, size_t cap)
+{
+    if (!out || cap == 0)
+    {
+        return -1;
+    }
+    out[0] = '\0';
+
+    dev_ipc_context_t *ctx = dev_get_ipc_ctx();
+    db_condition_t cond;
+    db_filter_t filter = make_pk_filter(&cond);
+
+    db_result_t *result = NULL;
+    if (db_rpc_query(ctx, DEV_TABLE_CONFIG, NULL, 0, &filter, &result) != ERRCODE_SUCCESS)
+    {
+        return -1;
+    }
+    if (!result || result->num_rows == 0)
+    {
+        if (result)
+        {
+            db_result_free(result);
+        }
+        return 1; /* 不存在 */
+    }
+    const char *v = db_row_get_text(result->rows[0], "sysname", NULL);
+    if (v && v[0] != '\0')
+    {
+        g_strlcpy(out, v, cap);
+    }
+    db_result_free(result);
+    return 0;
+}
+
+int dev_db_set_sysname(const char *sysname)
+{
+    dev_ipc_context_t *ctx = dev_get_ipc_ctx();
+    if (!ctx)
+    {
+        return -1;
+    }
+
+    db_condition_t cond;
+    db_filter_t filter = make_pk_filter(&cond);
+
+    gboolean exists = FALSE;
+    int rc = db_rpc_exists(ctx, DEV_TABLE_CONFIG, &filter, &exists);
+    if (rc != ERRCODE_SUCCESS)
+    {
+        return -1;
+    }
+
+    const char *v = sysname ? sysname : "";
+    if (exists)
+    {
+        db_col_t cols[] = {DB_COL_TEXT("sysname", v)};
+        rc = db_rpc_update_cols(ctx, DEV_TABLE_CONFIG, &filter, cols, G_N_ELEMENTS(cols));
+        return (rc < 0) ? -1 : 0;
+    }
+    db_col_t cols[] = {
+        DB_COL_INT("id", DEV_CONFIG_PK_VALUE),
+        DB_COL_TEXT("sysname", v),
+    };
+    rc = db_rpc_insert_cols(ctx, DEV_TABLE_CONFIG, cols, G_N_ELEMENTS(cols));
+    return (rc != ERRCODE_SUCCESS) ? -1 : 0;
+}
+
+/**
+ * @brief 将 sysname 推送给 CLI 模块（让其覆盖默认 "NetNexus"）
+ */
+static void push_sysname_to_cli(const char *sysname)
+{
+    dev_ipc_context_t *ctx = dev_get_ipc_ctx();
+    if (!ctx)
+    {
+        return;
+    }
+    const char *v = (sysname && sysname[0] != '\0') ? sysname : "";
+    char *payload = g_strdup(v);
+    if (!payload)
+    {
+        return;
+    }
+    dev_ipc_message_t *m = dev_ipc_message_create(CLI_MSG_TYPE_SYSNAME_UPDATE, DEV_MODULE_ID_DEV, DEV_MODULE_ID_CLI, 0,
+                                                  payload, (uint32_t)(strlen(v) + 1), g_free);
+    if (!m)
+    {
+        g_free(payload);
+        return;
+    }
+    if (dev_ipc_send(ctx, DEV_MODULE_ID_CLI, m) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("DEV: failed to push sysname to CLI from restore");
+    }
+    dev_ipc_message_free(m);
+}
+
 int dev_db_restore(void)
 {
+    char sysname[64] = {0};
+    if (dev_db_get_sysname(sysname, sizeof(sysname)) == 0 && sysname[0] != '\0')
+    {
+        push_sysname_to_cli(sysname);
+        LOG_INFO("DEV: Restored sysname=%s from DB", sysname);
+    }
+
     log_level_t level;
     int rc = dev_db_get_log_level(&level);
 

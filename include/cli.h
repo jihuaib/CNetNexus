@@ -32,6 +32,13 @@
 #define CLI_MSG_TYPE_QUERY_CANDIDATES DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0007)
 /** 模块 → CFG：返回候选值列表（payload: "val1\0val2\0\0"，双 null 结尾） */
 #define CLI_MSG_TYPE_QUERY_CANDIDATES_RESP DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0008)
+/** DEV → CFG：更新系统名（payload: 字符串，null 结尾；空字符串=恢复默认 "NetNexus"） */
+#define CLI_MSG_TYPE_SYSNAME_UPDATE DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0009)
+
+/** 系统名最大长度（含 null） */
+#define CLI_SYSNAME_MAX_LEN 64
+/** 默认系统名 */
+#define CLI_SYSNAME_DEFAULT "NetNexus"
 
 /** CLI 响应消息最大长度 */
 #define CLI_MAX_RESP_LEN 4096

@@ -48,7 +48,7 @@
             </commands>
         </group>
 
-        <!-- sysname (placeholder) -->
+        <!-- sysname <hostname> / no sysname -->
         <group group-id="2">
             <elements>
                 <element id="1" type="keyword">
@@ -60,11 +60,19 @@
                     <description>System hostname</description>
                     <type>string(1-63)</type>
                 </element>
+                <element id="3" type="keyword">
+                    <name>no</name>
+                    <description>Restore default hostname</description>
+                </element>
             </elements>
 
             <commands>
                 <command>
                     <expression>1 2</expression>
+                    <views>config</views>
+                </command>
+                <command>
+                    <expression>3 1</expression>
                     <views>config</views>
                 </command>
             </commands>

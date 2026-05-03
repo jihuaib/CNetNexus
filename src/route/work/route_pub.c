@@ -32,6 +32,8 @@ static void build_entry(route_msg_entry_t *entry, const route_head_t *head, cons
     entry->metric = path->metric;
     entry->preference = path->preference;
     entry->is_withdraw = (uint8_t)is_withdraw;
+    entry->nh_type = path->nh_type ? path->nh_type : ROUTE_NH_TYPE_IP;
+    entry->tunnel_id = (entry->nh_type == ROUTE_NH_TYPE_TUNNEL) ? path->tunnel_id : 0u;
     entry->out_ifindex = path->out_ifindex;
     entry->iter_out_ifindex = path->iter_out_ifindex;
     entry->prefix_addr = head->key.addr;

@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/syscall.h>
+#include <sys/utsname.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -339,6 +340,10 @@ static int handle_show_version(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         }
     }
 
+    /* 系统架构 / 内核信息（来自 uname(2)） */
+    struct utsname uts;
+    int has_uts = (uname(&uts) == 0) ? 1 : 0;
+
     g_string_append(buf, "\r\nNetNexus Version Information:\r\n");
     g_string_append_printf(buf, "  Version      : %s\r\n", version);
     g_string_append_printf(buf, "  Image        : %s\r\n", image_tag);
@@ -349,14 +354,99 @@ static int handle_show_version(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     g_string_append_printf(buf, "  Compiler     : %s\r\n", __VERSION__);
     g_string_append_printf(buf, "  ASAN         : %s\r\n", asan_enabled_string());
     g_string_append_printf(buf, "  Log Level    : %s\r\n", log_level_to_string(log_get_level()));
+    g_string_append_printf(buf, "  Architecture : %s\r\n", has_uts ? uts.machine : "unknown");
+    g_string_append_printf(buf, "  OS           : %s %s\r\n", has_uts ? uts.sysname : "unknown",
+                           has_uts ? uts.release : "");
+    g_string_append_printf(buf, "  Hostname     : %s\r\n", has_uts ? uts.nodename : "unknown");
     g_string_append_printf(buf, "  PID          : %d\r\n\r\n", (int)getpid());
 
     return cli_chunk_stream_start(&g_dev_local->show_stream, ctx, DEV_MODULE_ID_DEV, msg, buf);
 }
 
+/**
+ * @brief 把 sysname 推送给 CLI 模块（CLI 收到后立即生效）
+ *
+ * sysname=NULL 或 "" 表示恢复默认 "NetNexus"。
+ */
+static void dev_push_sysname_to_cli(dev_ipc_context_t *ctx, const char *sysname)
+{
+    if (!ctx)
+    {
+        return;
+    }
+    const char *v = (sysname && sysname[0] != '\0') ? sysname : "";
+    uint32_t payload_len = (uint32_t)(strlen(v) + 1);
+    char *payload = g_strdup(v);
+    if (!payload)
+    {
+        return;
+    }
+    dev_ipc_message_t *m = dev_ipc_message_create(CLI_MSG_TYPE_SYSNAME_UPDATE, DEV_MODULE_ID_DEV, DEV_MODULE_ID_CLI, 0,
+                                                  payload, payload_len, g_free);
+    if (!m)
+    {
+        g_free(payload);
+        return;
+    }
+    if (dev_ipc_send(ctx, DEV_MODULE_ID_CLI, m) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("DEV: failed to push sysname to CLI");
+    }
+    dev_ipc_message_free(m);
+}
+
 static int handle_sysname(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    dev_send_cli_response(ctx, msg, "Command 'sysname' not yet implemented in dev module.\r\n");
+    cli_tlv_parser_t parser;
+    if (cli_tlv_init(&parser, (const uint8_t *)msg->payload, msg->payload_len) != 0)
+    {
+        dev_send_cli_response(ctx, msg, "Dev Error: failed to parse sysname command\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    gboolean is_no = (parser.flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
+    char hostname[CLI_SYSNAME_MAX_LEN] = {0};
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(&parser, &entry) == 1)
+    {
+        if (!CLI_TLV_IS_CTX(&entry) && entry.cfg_id == 1)
+        {
+            const char *s = cli_tlv_entry_get_text(&entry);
+            if (s)
+            {
+                snprintf(hostname, sizeof(hostname), "%s", s);
+            }
+        }
+        cli_tlv_entry_free(&entry);
+    }
+    cli_tlv_cleanup(&parser);
+
+    if (is_no)
+    {
+        /* no sysname：清空 DB + 通知 CLI 恢复默认 */
+        if (dev_db_set_sysname("") != 0)
+        {
+            dev_send_cli_response(ctx, msg, "Dev Error: failed to clear sysname\r\n");
+            return ERRCODE_FAIL;
+        }
+        dev_push_sysname_to_cli(ctx, "");
+        dev_send_cli_response(ctx, msg, "");
+        return ERRCODE_SUCCESS;
+    }
+
+    if (hostname[0] == '\0')
+    {
+        dev_send_cli_response(ctx, msg, "Dev Error: hostname required\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    if (dev_db_set_sysname(hostname) != 0)
+    {
+        dev_send_cli_response(ctx, msg, "Dev Error: failed to persist sysname\r\n");
+        return ERRCODE_FAIL;
+    }
+    dev_push_sysname_to_cli(ctx, hostname);
+    dev_send_cli_response(ctx, msg, "");
     return ERRCODE_SUCCESS;
 }
 

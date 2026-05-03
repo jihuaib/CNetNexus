@@ -49,6 +49,7 @@ typedef struct bgp_route_node
     gint64 added_at_usec;       /**< 路由首次加入时间（g_get_real_time，仅新增时写入） */
     gint64 updated_at_usec;     /**< 路由最近更新时间（g_get_real_time，每次 reach 写入） */
     uint32_t iter_out_ifindex;  /**< nexthop 迭代得到的出接口索引（0 表示未知） */
+    uint32_t tunnel_id;         /**< nexthop 迭代得到的隧道 ID（0 表示未使用隧道） */
     uint8_t iter_watched;       /**< 是否已挂 relay watch（1=是，0=否） */
     uint8_t iter_resolved;      /**< nexthop 迭代是否可达（1=可达，0=不可达） */
     uint8_t _pad0[2];           /**< 对齐填充 */

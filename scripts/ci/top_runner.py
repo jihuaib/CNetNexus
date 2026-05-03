@@ -33,7 +33,7 @@ except ImportError:
     yaml = None
 
 
-PROMPT_RE = re.compile(br"<NetNexus[^>]*>")
+PROMPT_RE = re.compile(br"<[A-Za-z0-9_.-]+(?:\([^>]*\))?>")
 IF_RE = re.compile(r"^GE-(\d+)$")
 PAGER_DISABLE_CMD = "terminal length 0"
 
@@ -702,6 +702,18 @@ class TopologyRuntime:
             cname = self._container_name(dev)
             mgmt_ip = get_container_network_ip(cname, self.mgmt_net)
             self._connect_cli(dev, mgmt_ip, timeout=self.connect_timeout)
+
+        # 5b) Apply per-device sysname == top.yaml device key (so prompt 显示 r1 / r2 ...)
+        for dev in self.devices:
+            cli = self.cli_map.get(dev)
+            if cli is None:
+                continue
+            try:
+                cli.cmd("config", strict=False)
+                cli.cmd(f"sysname {dev}", strict=False)
+                cli.cmd("end", strict=False)
+            except Exception as exc:
+                print(f"[{dev}] warn: failed to set sysname: {exc}", flush=True)
 
         # 6) Optional interface base config from top.
         if configure_interfaces:

@@ -31,6 +31,8 @@ typedef struct
     char prompt[CLI_CLI_MAX_PROMPT_LEN];
     cli_session_history_t history;     // Command history
     char client_ip[MAX_CLIENT_IP_LEN]; // Client IP address
+    uint16_t client_port;              // Client TCP source port
+    time_t connect_time;               // 客户端建立连接时刻（秒）
     int client_fd;
     char line_buffer[MAX_CMD_LEN]; // Current command buffer
     uint32_t line_pos;             // Current length of line_buffer

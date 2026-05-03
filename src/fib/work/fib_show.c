@@ -111,6 +111,32 @@ static void nexthop_to_str(const fib_route_entry_t *route, char *buf, size_t sz)
     snprintf(buf, sz, "-");
 }
 
+static void labels_to_str(uint8_t count, const uint32_t *labels, char *buf, size_t sz)
+{
+    if (!buf || sz == 0)
+    {
+        return;
+    }
+    buf[0] = '\0';
+    if (!labels || count == 0)
+    {
+        snprintf(buf, sz, "-");
+        return;
+    }
+
+    gsize used = 0;
+    for (uint8_t i = 0; i < count; i++)
+    {
+        int n = snprintf(buf + used, sz - used, "%s%u", (i == 0) ? "" : ",", labels[i]);
+        if (n < 0 || (size_t)n >= sz - used)
+        {
+            buf[sz - 1] = '\0';
+            return;
+        }
+        used += (gsize)n;
+    }
+}
+
 static void append_route_cb(gpointer key, gpointer value, gpointer user_data)
 {
     (void)key;
@@ -138,6 +164,67 @@ static void append_route_cb(gpointer key, gpointer value, gpointer user_data)
     ctx->count++;
 }
 
+static void append_route_detail_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    fib_route_state_t *state = (fib_route_state_t *)value;
+    fib_show_route_ctx_t *ctx = (fib_show_route_ctx_t *)user_data;
+    if (!state || !ctx || !ctx->buf || state->entry.afi != ctx->afi)
+    {
+        return;
+    }
+    if (ctx->has_filter && (state->entry.prefix_len != ctx->filter_prefix_len ||
+                            !net_addr_equal(&state->entry.prefix_addr, &ctx->filter_addr)))
+    {
+        return;
+    }
+
+    char prefix[96] = "-";
+    char nexthop[64] = "-";
+    prefix_to_str(&state->entry, prefix, sizeof(prefix));
+    nexthop_to_str(&state->entry, nexthop, sizeof(nexthop));
+
+    ctx->count++;
+    g_string_append_printf(ctx->buf,
+                           "\r\nFIB Route Detail: %s\r\n"
+                           "  AFI       : %s\r\n"
+                           "  Protocol  : %u\r\n"
+                           "  Nexthop   : %s\r\n"
+                           "  NH-Type   : %s\r\n"
+                           "  Tunnel-ID : %u\r\n"
+                           "  OIF       : %u\r\n"
+                           "  Metric    : %d\r\n"
+                           "  Preference: %d\r\n"
+                           "  Installed : %s\r\n"
+                           "  Skip OS   : %s\r\n",
+                           prefix, afi_name(state->entry.afi), state->entry.protocol, nexthop,
+                           nh_type_name(state->entry.nh_type), state->entry.tunnel_id, state->entry.out_ifindex,
+                           state->entry.metric, state->entry.preference, state->installed ? "yes" : "no",
+                           (state->entry.flags & FIB_ROUTE_FLAG_SKIP_OS) ? "yes" : "no");
+
+    if (state->entry.nh_type == FIB_NH_TYPE_TUNNEL && state->entry.tunnel_id != 0u)
+    {
+        fib_tunnel_state_t *tun =
+            fib_rib_tunnel_lookup(g_fib_work_local ? g_fib_work_local->rib : NULL, state->entry.tunnel_id);
+        if (tun)
+        {
+            char relay[64] = "-";
+            char labels[128] = "-";
+            if (tun->entry.relay_addr.family == AF_INET || tun->entry.relay_addr.family == AF_INET6)
+            {
+                net_addr_to_str(&tun->entry.relay_addr, relay, sizeof(relay));
+            }
+            labels_to_str(tun->entry.label_count, tun->entry.labels, labels, sizeof(labels));
+            g_string_append_printf(ctx->buf, "  Tunnel    : state=%s relay=%s oif=%u labels=[%s]\r\n",
+                                   tun->entry.state ? "up" : "down", relay, tun->entry.out_ifindex, labels);
+        }
+        else
+        {
+            g_string_append(ctx->buf, "  Tunnel    : pending\r\n");
+        }
+    }
+}
+
 static int handle_show_routes(dev_ipc_message_t *msg, uint16_t afi, const net_addr_t *filter_addr,
                               int64_t filter_prefix_len)
 {
@@ -147,14 +234,6 @@ static int handle_show_routes(dev_ipc_message_t *msg, uint16_t afi, const net_ad
         send_resp(msg, "Error: Out of memory\r\n");
         return ERRCODE_FAIL;
     }
-
-    g_string_append_printf(buf,
-                           "\r\nFIB Routes (%s)\r\n"
-                           "%-7s %-26s %-20s %-10s %-8s %-8s %-8s %-9s %-7s\r\n"
-                           "------- -------------------------- -------------------- ---------- "
-                           "-------- -------- -------- --------- -------\r\n",
-                           afi_name(afi), "AFI", "Prefix", "Nexthop", "NH-Type", "OIF", "Metric", "Pref", "Installed",
-                           "SkipOS");
 
     fib_show_route_ctx_t ctx = {
         .buf = buf,
@@ -167,7 +246,23 @@ static int handle_show_routes(dev_ipc_message_t *msg, uint16_t afi, const net_ad
     {
         ctx.filter_addr = *filter_addr;
     }
-    fib_rib_foreach_route(g_fib_work_local ? g_fib_work_local->rib : NULL, append_route_cb, &ctx);
+
+    if (filter_addr)
+    {
+        fib_rib_foreach_route(g_fib_work_local ? g_fib_work_local->rib : NULL, append_route_detail_cb, &ctx);
+    }
+    else
+    {
+        g_string_append_printf(buf,
+                               "\r\nFIB Routes (%s)\r\n"
+                               "%-7s %-26s %-20s %-10s %-8s %-8s %-8s %-9s %-7s\r\n"
+                               "------- -------------------------- -------------------- ---------- "
+                               "-------- -------- -------- --------- -------\r\n",
+                               afi_name(afi), "AFI", "Prefix", "Nexthop", "NH-Type", "OIF", "Metric", "Pref",
+                               "Installed", "SkipOS");
+
+        fib_rib_foreach_route(g_fib_work_local ? g_fib_work_local->rib : NULL, append_route_cb, &ctx);
+    }
     if (ctx.count == 0)
     {
         g_string_append(buf, "  (no routes)\r\n");

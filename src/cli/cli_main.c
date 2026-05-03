@@ -366,6 +366,7 @@ void cli_init_local(dev_ipc_context_t *ctx)
     g_cli_local->listen_sock = DEV_INVALID_FD;
     g_cli_local->worker_thread = 0;
     g_cli_local->dev_ipc_ctx = ctx;
+    g_strlcpy(g_cli_local->sysname, CLI_SYSNAME_DEFAULT, sizeof(g_cli_local->sysname));
     g_cli_local->sessions = g_hash_table_new_full(g_int_hash, g_int_equal, g_free, (GDestroyNotify)cli_session_destroy);
 
     /* 创建视图树 */
@@ -485,6 +486,21 @@ void cli_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         case DEV_IPC_MSG_TYPE_DEV_MODULE_READY:
             cli_on_ready(msg);
             return;
+
+        case CLI_MSG_TYPE_SYSNAME_UPDATE:
+        {
+            const char *new_name = (msg->payload && msg->payload_len > 0) ? (const char *)msg->payload : "";
+            if (new_name[0] == '\0')
+            {
+                g_strlcpy(g_cli_local->sysname, CLI_SYSNAME_DEFAULT, sizeof(g_cli_local->sysname));
+            }
+            else
+            {
+                g_strlcpy(g_cli_local->sysname, new_name, sizeof(g_cli_local->sysname));
+            }
+            LOG_INFO("CLI: sysname updated to '%s'", g_cli_local->sysname);
+            break;
+        }
 
         default:
             break;

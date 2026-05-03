@@ -162,7 +162,16 @@ static int route_path_rank_cmp(const route_path_t *a, const route_path_t *b)
     return net_addr_cmp(&a->key.source, &b->key.source);
 }
 
-static route_path_t *route_head_best_resolver_path(route_head_t *head)
+static int route_path_is_self_recursive(const route_path_t *path, const net_addr_t *addr)
+{
+    if (!path || !addr || path->key.protocol == ROUTE_PROTOCOL_CONNECTED)
+    {
+        return 0;
+    }
+    return net_addr_equal(&path->nexthop, addr);
+}
+
+static route_path_t *route_head_best_resolver_path(route_head_t *head, const net_addr_t *addr)
 {
     if (!head || !head->path_list)
     {
@@ -174,6 +183,10 @@ static route_path_t *route_head_best_resolver_path(route_head_t *head)
     {
         route_path_t *path = (route_path_t *)l->data;
         if (!path)
+        {
+            continue;
+        }
+        if (route_path_is_self_recursive(path, addr))
         {
             continue;
         }
@@ -214,7 +227,7 @@ static gboolean route_cover_lookup_cb(gpointer key, gpointer value, gpointer use
         return FALSE;
     }
 
-    route_path_t *best = route_head_best_resolver_path(head);
+    route_path_t *best = route_head_best_resolver_path(head, ctx->addr);
     if (!best)
     {
         return FALSE;

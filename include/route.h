@@ -52,6 +52,13 @@
 /** 单播子地址族 */
 #define ROUTE_SAFI_UNICAST 1u
 
+/** 普通 IP 下一跳 */
+#define ROUTE_NH_TYPE_IP 1u
+/** 隧道下一跳（通过 tunnel_id 关联完整隧道信息） */
+#define ROUTE_NH_TYPE_TUNNEL 2u
+/** 黑洞下一跳 */
+#define ROUTE_NH_TYPE_BLACKHOLE 3u
+
 // ============================================================================
 // 管理距离（Administrative Distance）
 // ============================================================================
@@ -129,7 +136,9 @@ typedef struct route_msg_entry
     int32_t preference;           /**< 管理距离（偏好值） */
     uint8_t is_withdraw;          /**< 1=撤销路由, 0=新增/更新路由 */
     uint8_t flags;                /**< 保留标志位（当前未使用） */
-    uint8_t _pad[2];              /**< 对齐填充 */
+    uint8_t nh_type;              /**< ROUTE_NH_TYPE_* */
+    uint8_t _pad;                 /**< 对齐填充 */
+    uint32_t tunnel_id;           /**< nh_type=ROUTE_NH_TYPE_TUNNEL 时的隧道 ID */
     uint32_t out_ifindex;         /**< 原始出接口索引（由发布方携带，0=不指定） */
     uint32_t iter_out_ifindex;    /**< 迭代解析后的出接口索引（0=未知） */
     net_addr_t prefix_addr;       /**< 前缀地址（二进制） */

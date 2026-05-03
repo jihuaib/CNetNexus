@@ -95,6 +95,7 @@ typedef struct tunnel_resolve_notify
     uint16_t afi;
     uint8_t resolved;
     uint8_t source_type;
+    uint32_t tunnel_id;
     uint32_t out_ifindex;
     net_addr_t endpoint;
     net_addr_t relay_addr;

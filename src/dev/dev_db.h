@@ -49,4 +49,16 @@ int dev_db_set_log_level(log_level_t level);
  */
 int dev_db_get_log_level(log_level_t *level);
 
+/**
+ * @brief 读取持久化 sysname
+ * @return 0=已读取（out 可能为空字符串）, 1=DB 中不存在, -1=失败
+ */
+int dev_db_get_sysname(char *out, size_t cap);
+
+/**
+ * @brief 持久化 sysname；NULL 或空串视为清空（恢复默认）
+ * @return 0 成功，-1 失败
+ */
+int dev_db_set_sysname(const char *sysname);
+
 #endif /* DEV_DB_H */

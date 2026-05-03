@@ -832,6 +832,98 @@ static void handle_show_context(cli_session_t *session)
 }
 
 /**
+ * @brief show cli client (group_id=11)：列出全部已登录 CLI 客户端
+ */
+typedef struct show_client_ctx
+{
+    GString *out;
+    time_t now;
+    uint32_t idx;
+} show_client_ctx_t;
+
+static void show_client_format_uptime(time_t connect_time, time_t now, char *buf, size_t cap)
+{
+    if (connect_time <= 0 || now < connect_time)
+    {
+        snprintf(buf, cap, "%s", "n/a");
+        return;
+    }
+    long secs = (long)(now - connect_time);
+    long days = secs / 86400;
+    long hours = (secs % 86400) / 3600;
+    long mins = (secs % 3600) / 60;
+    long s = secs % 60;
+    if (days > 0)
+    {
+        snprintf(buf, cap, "%ldd%02ldh%02ldm%02lds", days, hours, mins, s);
+    }
+    else if (hours > 0)
+    {
+        snprintf(buf, cap, "%02ldh%02ldm%02lds", hours, mins, s);
+    }
+    else
+    {
+        snprintf(buf, cap, "%02ldm%02lds", mins, s);
+    }
+}
+
+static void show_client_iter(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    cli_session_t *s = (cli_session_t *)value;
+    show_client_ctx_t *cx = (show_client_ctx_t *)user_data;
+    if (!s)
+    {
+        return;
+    }
+
+    char time_str[32] = "n/a";
+    if (s->connect_time > 0)
+    {
+        struct tm *tmv = localtime(&s->connect_time);
+        if (tmv)
+        {
+            strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tmv);
+        }
+    }
+
+    char up_str[32];
+    show_client_format_uptime(s->connect_time, cx->now, up_str, sizeof(up_str));
+
+    const char *view_name =
+        (s->current_view && s->current_view->view_name[0] != '\0') ? s->current_view->view_name : "?";
+    const char *mode = s->bash_mode ? "bash" : "cli";
+
+    char line[320];
+    snprintf(line, sizeof(line), "  %-3u  %-15s  %-5u  %-19s  %-13s  %-5s  %-4s  %s\r\n", cx->idx, s->client_ip,
+             s->client_port, time_str, up_str, mode, s->pager_lines_per_page == 0 ? "off" : "on", view_name);
+    g_string_append(cx->out, line);
+    cx->idx++;
+}
+
+static void handle_show_client(cli_session_t *session)
+{
+    GString *out = g_string_new("\r\nCLI Connected Clients:\r\n");
+    g_string_append(out, "  No.  Client IP        Port   Login Time           Uptime         Mode   Page  View\r\n");
+    g_string_append(out,
+                    "  ---  ---------------  -----  -------------------  -------------  -----  ----  --------\r\n");
+
+    if (!g_cli_local || !g_cli_local->sessions || g_hash_table_size(g_cli_local->sessions) == 0)
+    {
+        g_string_append(out, "  (no active client)\r\n");
+    }
+    else
+    {
+        show_client_ctx_t cx = {.out = out, .now = time(NULL), .idx = 1};
+        g_hash_table_foreach(g_cli_local->sessions, show_client_iter, &cx);
+    }
+
+    g_string_append(out, "\r\n");
+    cli_pager_output(session, out->str);
+    g_string_free(out, TRUE);
+}
+
+/**
  * @brief terminal length 0 / no terminal length 0 (group_id=9)：切换当前会话分页输出
  */
 static void handle_terminal_length_zero(cli_session_t *session, uint8_t flags)
@@ -928,6 +1020,9 @@ int cli_handle(dev_ipc_message_t *msg, cli_session_t *session)
             break;
         case CLI_GROUP_ID_SHOW_THIS:
             handle_show_this(session);
+            break;
+        case CLI_GROUP_ID_SHOW_CLIENT:
+            handle_show_client(session);
             break;
         default:
             LOG_WARN("Unknown group_id: %u", parser.group_id);
