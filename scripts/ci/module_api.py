@@ -608,6 +608,17 @@ def wait_fib_route(
     interval: int = 2,
     label: str | None = None,
 ) -> None:
+    """Wait for a FIB route to appear/disappear.
+
+    ``show fib <afi> <addr> <len>`` outputs detail (column) format:
+        FIB Route Detail: <prefix>
+          AFI       : ipv4
+          Nexthop   : x.x.x.x
+          NH-Type   : ip
+          Installed : yes
+          Skip OS   : no
+    We build per-field regexes to match this layout.
+    """
     prefix_len_int = int(prefix_len)
     network = ipaddress.ip_network(f"{prefix_addr}/{prefix_len_int}", strict=False)
     prefix = f"{network.network_address}/{prefix_len_int}"
@@ -621,22 +632,33 @@ def wait_fib_route(
         installed = None
         skip_os = None
 
-    nexthop_pat = r"\S+" if nexthop is None else re.escape(nexthop)
-    nh_type_pat = r"\S+" if nh_type is None else re.escape(nh_type)
-    installed_pat = r"\S+" if installed is None else ("yes" if installed else "no")
-    skip_os_pat = r"\S+" if skip_os is None else ("yes" if skip_os else "no")
-    row_regex = (
-        rf"(?im)^\s*{afi_value}\s+{re.escape(prefix)}\s+{nexthop_pat}\s+"
-        rf"{nh_type_pat}\s+\S+\s+-?\d+\s+-?\d+\s+{installed_pat}\s+{skip_os_pat}\s*$"
-    )
+    # Build per-field regexes matching the detail (column) output.
+    detail_regexes: list[str] = [
+        rf"(?im)^\s*FIB Route Detail:\s*{re.escape(prefix)}\s*$",
+        rf"(?im)^\s*AFI\s*:\s*{re.escape(afi_value)}\s*$",
+    ]
+    if nexthop is not None:
+        detail_regexes.append(rf"(?im)^\s*Nexthop\s*:\s*{re.escape(nexthop)}\s*$")
+    if nh_type is not None:
+        detail_regexes.append(rf"(?im)^\s*NH-Type\s*:\s*{re.escape(nh_type)}\s*$")
+    if installed is not None:
+        installed_val = "yes" if installed else "no"
+        detail_regexes.append(rf"(?im)^\s*Installed\s*:\s*{re.escape(installed_val)}\s*$")
+    if skip_os is not None:
+        skip_os_val = "yes" if skip_os else "no"
+        detail_regexes.append(rf"(?im)^\s*Skip OS\s*:\s*{re.escape(skip_os_val)}\s*$")
+
+    # For expect_present we require ALL detail lines to match.
+    # For expect_absent we require the header line NOT to match (route not found).
+    absent_regex = rf"(?im)^\s*FIB Route Detail:\s*{re.escape(prefix)}\s*$"
     wait_check(
         rt,
         device=device,
         command=f"show fib {afi_value} {network.network_address} {prefix_len_int}",
         timeout=timeout,
         interval=interval,
-        regex=[row_regex] if expect_present else (),
-        not_regex=[row_regex] if not expect_present else (),
+        regex=detail_regexes if expect_present else (),
+        not_regex=[absent_regex] if not expect_present else (),
         label=label
         or f"{device} fib {afi_value} route {prefix} {'present' if expect_present else 'absent'}",
     )
