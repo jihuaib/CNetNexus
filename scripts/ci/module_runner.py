@@ -279,7 +279,7 @@ def wait_device_modules_ready(
             if r["phase"].upper() != "READY" or r["ipc"].lower() != "up"
         ]
         if not bad:
-            print(f"[{dev}] modules READY/up OK ({len(rows)} modules)")
+            print(f"modules on {dev}: READY/up OK ({len(rows)} modules)")
             return
 
         last_bad = bad
@@ -310,7 +310,7 @@ def ensure_cli_pager_disabled(rt: TopologyRuntime, top: dict[str, Any]) -> None:
     print("===== STEP: Disable CLI pager =====")
     rt.disable_pager_for_all_sessions()
     for dev in sorted(devices.keys()):
-        print(f"[{dev}] pager disabled via '{PAGER_DISABLE_CMD}'")
+        print(f"pager disabled on {dev} via '{PAGER_DISABLE_CMD}'")
 
 
 def normalize_cli_command_output(raw: str, command: str) -> str:
@@ -338,11 +338,11 @@ def print_device_versions(rt: TopologyRuntime, top: dict[str, Any]) -> None:
         try:
             out = rt.exec_cmd(dev, SHOW_VERSION_CMD, strict=False, timeout=timeout)
         except Exception as exc:
-            print(f"WARNING: [{dev}] '{SHOW_VERSION_CMD}' failed: {exc}")
+            print(f"WARNING: '{SHOW_VERSION_CMD}' on {dev} failed: {exc}")
             continue
 
         normalized = normalize_cli_command_output(out, SHOW_VERSION_CMD)
-        print(f"[{dev}] {SHOW_VERSION_CMD}:")
+        print(f"{SHOW_VERSION_CMD} on {dev}:")
         print(normalized if normalized else "(empty output)")
 
 
@@ -374,7 +374,7 @@ def collect_show_current_config(rt: TopologyRuntime, top: dict[str, Any], *, sta
         out = rt.exec_cmd(dev, SHOW_CURRENT_CONFIG_CMD, strict=False, timeout=timeout)
         normalized = normalize_show_current_config(out)
         snapshots[dev] = normalized
-        print(f"[{dev}] collected '{SHOW_CURRENT_CONFIG_CMD}' ({len(normalized.splitlines())} lines)")
+        print(f"collected '{SHOW_CURRENT_CONFIG_CMD}' on {dev} ({len(normalized.splitlines())} lines)")
     return snapshots
 
 
@@ -924,13 +924,12 @@ def render_step_panels(step_views: list[dict[str, object]], *, active_index: int
         status = str(step["status"])
         safe_title = html.escape(str(step["title"]))
         body_html = render_step_content(str(step["content"]))
-        hidden_attr = "" if idx == active_index else " hidden"
         panels.append(
             "".join(
                 [
-                    f"<section class='step-panel step-{status}' data-step-panel='{idx}'{hidden_attr}>",
+                    f"<section class='step-panel step-{status}' id='step-{idx}' data-step-panel='{idx}' data-status='{status}'>",
                     "<header class='step-panel-header'>",
-                    f"<h3>Step {idx}: {safe_title}</h3>",
+                    f"<h3><span class='step-num'>#{idx}</span><span class='step-title-text'>{safe_title}</span></h3>",
                     f"<span class='step-badge step-badge-{status}'>{status.upper()}</span>",
                     "</header>",
                     f"<div class='step-panel-body'>{body_html}</div>",
@@ -978,145 +977,172 @@ def write_check_html(path: Path, result: CheckResult, *, index: int) -> None:
   <title>CI Check Detail #{index}</title>
   <style>
     :root {{
-      --bg0: #f2f6ff;
-      --bg1: #eaf5f2;
+      --bg0: #f3f6fb;
       --panel: #ffffff;
+      --panel-soft: #f8fbff;
       --line: #d7e2ea;
+      --line-soft: #e7eef6;
       --text: #0f172a;
       --muted: #4b5563;
+      --accent: #0f3d91;
       --ok: #12754b;
       --ok-bg: #e9f8f0;
+      --ok-line: #a7dec3;
       --warn: #a16207;
       --warn-bg: #fff8e6;
+      --warn-line: #f7d8a6;
       --bad: #b42318;
       --bad-bg: #fdeceb;
+      --bad-line: #f2b3af;
       --ink: #0b1220;
+      --shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
+      --header-h: 124px;
     }}
     * {{ box-sizing: border-box; }}
+    html, body {{ height: 100%; }}
     body {{
       margin: 0;
       font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
       color: var(--text);
-      background: radial-gradient(1400px 700px at 0% 0%, var(--bg0), var(--bg1));
-      padding: 18px;
+      background: var(--bg0);
     }}
-    .wrap {{ max-width: 1360px; margin: 0 auto; }}
-    .top-link {{ margin-bottom: 10px; }}
-    .top-link a {{
-      color: #0f3d91;
-      text-decoration: none;
-      font-weight: 600;
-      border-bottom: 1px dashed #7ea5e0;
+    a {{ color: var(--accent); text-decoration: none; }}
+    a:hover {{ text-decoration: underline; }}
+    code {{
+      background: #eef3fb;
+      border: 1px solid #d6e1f0;
+      padding: 1px 6px;
+      border-radius: 6px;
+      font-size: 12px;
+      word-break: break-all;
     }}
-    .card {{
+
+    /* ========== Sticky compact header ========== */
+    .topbar {{
+      position: sticky;
+      top: 0;
+      z-index: 20;
       background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      box-shadow: 0 8px 28px rgba(15, 23, 42, 0.08);
-      padding: 16px 18px;
-      margin-bottom: 14px;
+      border-bottom: 1px solid var(--line);
+      box-shadow: var(--shadow);
     }}
+    .topbar-inner {{
+      padding: 10px clamp(16px, 2vw, 28px);
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 14px;
+    }}
+    .top-link {{ font-size: 13px; }}
     .title-row {{
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      gap: 12px;
+      gap: 10px;
+      min-width: 0;
+      margin-top: 4px;
+    }}
+    h1 {{
+      margin: 0;
+      font-size: 17px;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }}
+    .idx-tag {{
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 8px;
+      border-radius: 6px;
+      background: var(--panel-soft);
+      border: 1px solid var(--line);
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12px;
+      font-weight: 700;
+      flex: 0 0 auto;
+    }}
+    .status-badge-pass, .status-badge-fail {{
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      flex: 0 0 auto;
+    }}
+    .status-badge-pass {{ color: var(--ok); background: var(--ok-bg); border: 1px solid var(--ok-line); }}
+    .status-badge-fail {{ color: var(--bad); background: var(--bad-bg); border: 1px solid var(--bad-line); }}
+    .meta-strip {{
+      padding: 0 clamp(16px, 2vw, 28px) 10px;
+      display: flex;
       flex-wrap: wrap;
+      gap: 8px 18px;
+      font-size: 12px;
+      color: var(--muted);
     }}
-    h1 {{ margin: 0; font-size: 24px; line-height: 1.3; }}
-    .meta-grid {{
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 8px 14px;
-      margin-top: 12px;
-      font-size: 14px;
+    .meta-strip b {{ color: var(--text); font-weight: 600; }}
+    .toolbar {{
+      padding: 8px clamp(16px, 2vw, 28px) 10px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      border-top: 1px solid var(--line-soft);
+      background: var(--panel-soft);
     }}
-    .meta-item {{ color: var(--muted); }}
-    .meta-item b {{ color: var(--text); }}
+    .toolbar .steps-title {{ font-weight: 600; font-size: 13px; color: var(--muted); margin-right: auto; }}
+    .toolbar .steps-title b {{ color: var(--text); }}
+    .tool-btn {{
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--accent);
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 6px 12px;
+      cursor: pointer;
+    }}
+    .tool-btn:hover {{ background: #f0f6ff; }}
+
     .trunc {{
+      margin: 12px clamp(16px, 2vw, 28px) 0;
       color: #8a4b00;
       background: #fff3df;
       border: 1px solid #f7d8a6;
       padding: 10px 12px;
       border-radius: 10px;
       font-weight: 600;
-      margin-bottom: 12px;
     }}
-    .status-badge-pass, .status-badge-fail {{
-      padding: 4px 10px;
-      border-radius: 999px;
-      font-size: 12px;
-      font-weight: 700;
-      letter-spacing: 0.03em;
-    }}
-    .status-badge-pass {{ color: var(--ok); background: var(--ok-bg); border: 1px solid #a7dec3; }}
-    .status-badge-fail {{ color: var(--bad); background: var(--bad-bg); border: 1px solid #f2b3af; }}
-    code {{
-      background: #eef3fb;
-      border: 1px solid #d6e1f0;
-      padding: 2px 6px;
-      border-radius: 6px;
-      font-size: 12px;
-      word-break: break-all;
-    }}
-    .steps-card {{
-      padding: 14px;
-    }}
-    .steps-toolbar {{
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 10px;
-      flex-wrap: wrap;
-      margin-bottom: 10px;
-    }}
-    .steps-title {{
-      font-weight: 700;
-      font-size: 15px;
-    }}
-    .toolbar-actions {{
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-    }}
-    .tool-btn {{
-      border: 1px solid #bfd0e2;
-      background: #f6fbff;
-      color: #0f3d91;
-      border-radius: 8px;
-      font-size: 12px;
-      font-weight: 700;
-      padding: 6px 10px;
-      cursor: pointer;
-    }}
-    .tool-btn:hover {{
-      background: #ebf4ff;
-    }}
-    .steps-layout {{
+
+    /* ========== Two-pane body ========== */
+    .layout {{
       display: grid;
-      grid-template-columns: 290px minmax(0, 1fr);
-      gap: 12px;
+      grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+      gap: 0;
       align-items: start;
     }}
     .steps-sidebar {{
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      background: #f8fbff;
-      padding: 10px;
       position: sticky;
-      top: 8px;
+      top: var(--header-h);
+      max-height: calc(100vh - var(--header-h));
+      overflow-y: auto;
+      padding: 14px clamp(8px, 1vw, 14px);
+      border-right: 1px solid var(--line-soft);
+      background: var(--panel-soft);
     }}
     .steps-sidebar h2 {{
       margin: 0 0 8px 0;
-      font-size: 14px;
-      color: #1f365a;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
     }}
     .steps-nav {{
       display: flex;
       flex-direction: column;
-      gap: 8px;
-      max-height: 68vh;
-      overflow-y: auto;
+      gap: 5px;
     }}
     .step-nav-item {{
       width: 100%;
@@ -1125,26 +1151,25 @@ def write_check_html(path: Path, result: CheckResult, *, index: int) -> None:
       gap: 8px;
       align-items: center;
       text-align: left;
-      border: 1px solid #d4e1ef;
-      background: #fff;
-      border-radius: 9px;
-      padding: 8px 10px;
+      border: 1px solid transparent;
+      background: transparent;
+      border-radius: 8px;
+      padding: 7px 10px;
       cursor: pointer;
       color: #1a2b45;
     }}
-    .step-nav-item:hover {{
-      background: #f2f8ff;
-    }}
+    .step-nav-item:hover {{ background: #eaf1fb; }}
     .step-nav-item.active {{
+      background: #fff;
       border-color: #2d5fb8;
-      box-shadow: inset 0 0 0 1px #2d5fb8;
-      background: #eef5ff;
+      box-shadow: 0 0 0 2px rgba(45, 95, 184, 0.12);
     }}
     .step-nav-num {{
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
       font-size: 12px;
-      color: #244268;
+      color: var(--muted);
       font-weight: 700;
+      font-variant-numeric: tabular-nums;
     }}
     .step-nav-title {{
       min-width: 0;
@@ -1152,51 +1177,43 @@ def write_check_html(path: Path, result: CheckResult, *, index: int) -> None:
       text-overflow: ellipsis;
       white-space: nowrap;
       font-size: 13px;
-      font-weight: 600;
+      font-weight: 500;
     }}
     .step-nav-status {{
-      font-size: 11px;
+      font-size: 10px;
       font-weight: 700;
       border-radius: 999px;
       padding: 2px 7px;
       border: 1px solid transparent;
+      letter-spacing: 0.04em;
     }}
-    .step-nav-pass .step-nav-status {{
-      color: var(--ok);
-      background: var(--ok-bg);
-      border-color: #a7dec3;
-    }}
-    .step-nav-warn .step-nav-status {{
-      color: var(--warn);
-      background: var(--warn-bg);
-      border-color: #f7d8a6;
-    }}
-    .step-nav-fail .step-nav-status {{
-      color: var(--bad);
-      background: var(--bad-bg);
-      border-color: #f2b3af;
-    }}
-    .steps-content {{
+    .step-nav-pass .step-nav-status {{ color: var(--ok); background: var(--ok-bg); border-color: var(--ok-line); }}
+    .step-nav-warn .step-nav-status {{ color: var(--warn); background: var(--warn-bg); border-color: var(--warn-line); }}
+    .step-nav-fail .step-nav-status {{ color: var(--bad); background: var(--bad-bg); border-color: var(--bad-line); }}
+
+    .main {{
+      padding: 16px clamp(16px, 2vw, 28px) 32px;
       min-width: 0;
     }}
+    .steps-content {{ min-width: 0; display: flex; flex-direction: column; gap: 12px; }}
     .step-panel {{
       border: 1px solid var(--line);
       border-radius: 12px;
-      background: #f7fbff;
+      background: var(--panel);
       overflow: hidden;
-      margin-bottom: 10px;
-    }}
-    .step-panel:last-child {{
-      margin-bottom: 0;
+      box-shadow: var(--shadow);
+      scroll-margin-top: calc(var(--header-h) + 12px);
     }}
     .step-panel-header {{
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 8px;
-      padding: 10px 12px;
-      border-bottom: 1px solid #dce7f2;
+      gap: 10px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--line-soft);
       background: #f2f8ff;
+      cursor: pointer;
+      user-select: none;
     }}
     .step-panel-header h3 {{
       margin: 0;
@@ -1204,41 +1221,41 @@ def write_check_html(path: Path, result: CheckResult, *, index: int) -> None:
       line-height: 1.3;
       color: #1a2b45;
       min-width: 0;
+      flex: 1;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }}
+    .step-panel-header h3::before {{
+      content: '\\25BE';
+      color: #94a3b8;
+      font-size: 10px;
+      transition: transform 0.15s ease;
+      flex: 0 0 auto;
+    }}
+    .step-panel.collapsed .step-panel-header h3::before {{ transform: rotate(-90deg); }}
+    .step-panel-header .step-num {{
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12px;
+      color: var(--muted);
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
     }}
     .step-badge {{
-      font-size: 11px;
+      font-size: 10px;
       font-weight: 700;
       border-radius: 999px;
       padding: 2px 8px;
       border: 1px solid transparent;
+      letter-spacing: 0.04em;
+      flex: 0 0 auto;
     }}
-    .step-badge-pass {{
-      color: var(--ok);
-      background: var(--ok-bg);
-      border-color: #a7dec3;
-    }}
-    .step-badge-warn {{
-      color: var(--warn);
-      background: var(--warn-bg);
-      border-color: #f7d8a6;
-    }}
-    .step-badge-fail {{
-      color: var(--bad);
-      background: var(--bad-bg);
-      border-color: #f2b3af;
-    }}
-    .step-panel-body {{
-      padding: 10px;
-      background: #fbfdff;
-    }}
-    .step-panel.collapsed .step-panel-body {{
-      display: none;
-    }}
-    .log-empty {{
-      color: var(--muted);
-      font-size: 13px;
-      padding: 6px 2px;
-    }}
+    .step-badge-pass {{ color: var(--ok); background: var(--ok-bg); border-color: var(--ok-line); }}
+    .step-badge-warn {{ color: var(--warn); background: var(--warn-bg); border-color: var(--warn-line); }}
+    .step-badge-fail {{ color: var(--bad); background: var(--bad-bg); border-color: var(--bad-line); }}
+    .step-panel-body {{ padding: 12px; background: var(--panel); }}
+    .step-panel.collapsed .step-panel-body {{ display: none; }}
+    .log-empty {{ color: var(--muted); font-size: 13px; padding: 6px 2px; }}
     .log-chunk {{
       margin: 0;
       margin-bottom: 8px;
@@ -1246,129 +1263,152 @@ def write_check_html(path: Path, result: CheckResult, *, index: int) -> None:
       overflow: auto;
       border-radius: 8px;
       border: 1px solid #2a3e5b;
-      background: #0f172a;
+      background: var(--ink);
       color: #dbe7ff;
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
       font-size: 12px;
       line-height: 1.45;
       white-space: pre;
     }}
-    .log-chunk:last-child {{
-      margin-bottom: 0;
-    }}
-    .log-cmd,
-    .log-echo,
-    .log-prompt,
-    .log-marker,
-    .log-fail,
-    .log-warn,
-    .log-text {{
+    .log-chunk:last-child {{ margin-bottom: 0; }}
+    .log-cmd, .log-echo, .log-prompt, .log-marker, .log-fail, .log-warn, .log-text {{
       border-color: #2a3e5b;
-      background: #0f172a;
+      background: var(--ink);
       color: #dbe7ff;
     }}
-    @media (max-width: 980px) {{
-      .steps-layout {{
-        grid-template-columns: 1fr;
-      }}
+
+    /* Responsive */
+    @media (max-width: 1100px) {{
+      :root {{ --header-h: 156px; }}
+      .layout {{ grid-template-columns: 1fr; }}
       .steps-sidebar {{
         position: static;
+        max-height: none;
+        border-right: 0;
+        border-bottom: 1px solid var(--line-soft);
+        padding: 10px clamp(12px, 2vw, 20px);
       }}
-      .steps-nav {{
-        max-height: 240px;
-      }}
+      .steps-nav {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 4px; }}
     }}
-    @media (max-width: 680px) {{
-      body {{ padding: 10px; }}
-      .card {{ padding: 12px; border-radius: 12px; }}
-      h1 {{ font-size: 19px; }}
-      .step-nav-item {{
-        grid-template-columns: auto 1fr;
-      }}
-      .step-nav-status {{
-        grid-column: 1 / span 2;
-        justify-self: start;
-      }}
+    @media (max-width: 720px) {{
+      .topbar-inner {{ grid-template-columns: 1fr; }}
+      h1 {{ font-size: 15px; white-space: normal; }}
+      .meta-strip {{ font-size: 11px; }}
+      .step-nav-item {{ grid-template-columns: auto 1fr; }}
+      .step-nav-status {{ grid-column: 1 / span 2; justify-self: start; }}
     }}
   </style>
 </head>
 <body>
-  <div class=\"wrap\">
-    <p class=\"top-link\"><a href=\"../report.html\">Back to Summary</a></p>
-    <section class=\"card\">
-      <div class=\"title-row\">
-        <h1>#{index} {script_name}</h1>
-        <span class=\"{badge_cls}\">{result.status}</span>
-      </div>
-      <div class=\"meta-grid\">
-        <div class=\"meta-item\"><b>Case:</b> <code>{case_name}</code></div>
-        <div class=\"meta-item\"><b>Command:</b> <code>{command}</code></div>
-        <div class=\"meta-item\"><b>Start (UTC):</b> {html.escape(format_timestamp(result.started_at))}</div>
-        <div class=\"meta-item\"><b>End (UTC):</b> {html.escape(format_timestamp(result.ended_at))}</div>
-        <div class=\"meta-item\"><b>Duration:</b> {result.duration_sec:.2f}s</div>
-      </div>
-    </section>
-    {trunc_note}
-    <section class=\"card steps-card\">
-      <div class=\"steps-toolbar\">
-        <div class=\"steps-title\">执行输出（共 {len(step_views)} 个步骤）</div>
-        <div class=\"toolbar-actions\">
-          <button id=\"expand-all-btn\" class=\"tool-btn\" type=\"button\">全部展开</button>
-          <button id=\"collapse-all-btn\" class=\"tool-btn\" type=\"button\">全部折叠</button>
+  <header class=\"topbar\">
+    <div class=\"topbar-inner\">
+      <div>
+        <p class=\"top-link\"><a href=\"../report.html\">← 返回 Summary</a></p>
+        <div class=\"title-row\">
+          <span class=\"idx-tag\">#{index}</span>
+          <h1 title=\"{script_name}\">{script_name}</h1>
+          <span class=\"{badge_cls}\">{result.status}</span>
         </div>
       </div>
-      <div class=\"steps-layout\">
-        <aside class=\"steps-sidebar\">
-          <h2>步骤目录</h2>
-          <div class=\"steps-nav\">
-            {sidebar_html}
-          </div>
-        </aside>
-        <div class=\"steps-content\">
-          {panel_html}
-        </div>
+    </div>
+    <div class=\"meta-strip\">
+      <span><b>Case</b> <code>{case_name}</code></span>
+      <span><b>Cmd</b> <code>{command}</code></span>
+      <span><b>Start</b> {html.escape(format_timestamp(result.started_at))}</span>
+      <span><b>End</b> {html.escape(format_timestamp(result.ended_at))}</span>
+      <span><b>Duration</b> {result.duration_sec:.2f}s</span>
+    </div>
+    <div class=\"toolbar\">
+      <div class=\"steps-title\">执行输出 共 <b>{len(step_views)}</b> 个步骤</div>
+      <button id=\"expand-all-btn\" class=\"tool-btn\" type=\"button\">全部展开</button>
+      <button id=\"collapse-all-btn\" class=\"tool-btn\" type=\"button\">全部折叠</button>
+      <button id=\"jump-fail-btn\" class=\"tool-btn\" type=\"button\">跳到首个失败</button>
+    </div>
+  </header>
+  {trunc_note}
+  <div class=\"layout\">
+    <aside class=\"steps-sidebar\" aria-label=\"Step navigation\">
+      <h2>步骤目录</h2>
+      <div class=\"steps-nav\">
+        {sidebar_html}
       </div>
-    </section>
+    </aside>
+    <main class=\"main\">
+      <div class=\"steps-content\">
+        {panel_html}
+      </div>
+    </main>
   </div>
   <script>
     (function () {{
       var navItems = Array.prototype.slice.call(document.querySelectorAll('.step-nav-item'));
       var panels = Array.prototype.slice.call(document.querySelectorAll('.step-panel'));
 
-      function activateStep(stepId) {{
+      function setActive(stepId) {{
         navItems.forEach(function (btn) {{
           btn.classList.toggle('active', btn.getAttribute('data-step') === stepId);
         }});
-        panels.forEach(function (panel) {{
-          panel.hidden = panel.getAttribute('data-step-panel') !== stepId;
-        }});
+      }}
+
+      function scrollToStep(stepId) {{
+        var panel = document.getElementById('step-' + stepId);
+        if (!panel) return;
+        panel.classList.remove('collapsed');
+        panel.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
+        setActive(stepId);
       }}
 
       navItems.forEach(function (btn) {{
         btn.addEventListener('click', function () {{
-          activateStep(btn.getAttribute('data-step'));
+          scrollToStep(btn.getAttribute('data-step'));
         }});
+      }});
+
+      // Click panel header toggles collapse
+      panels.forEach(function (panel) {{
+        var hdr = panel.querySelector('.step-panel-header');
+        if (hdr) {{
+          hdr.addEventListener('click', function () {{
+            panel.classList.toggle('collapsed');
+          }});
+        }}
       }});
 
       var expandBtn = document.getElementById('expand-all-btn');
       if (expandBtn) {{
         expandBtn.addEventListener('click', function () {{
-          panels.forEach(function (panel) {{
-            panel.classList.remove('collapsed');
-          }});
+          panels.forEach(function (p) {{ p.classList.remove('collapsed'); }});
         }});
       }}
-
       var collapseBtn = document.getElementById('collapse-all-btn');
       if (collapseBtn) {{
         collapseBtn.addEventListener('click', function () {{
-          panels.forEach(function (panel) {{
-            panel.classList.add('collapsed');
-          }});
+          panels.forEach(function (p) {{ p.classList.add('collapsed'); }});
+        }});
+      }}
+      var jumpFailBtn = document.getElementById('jump-fail-btn');
+      if (jumpFailBtn) {{
+        jumpFailBtn.addEventListener('click', function () {{
+          var firstFail = document.querySelector(".step-panel[data-status='fail']");
+          if (firstFail) scrollToStep(firstFail.getAttribute('data-step-panel'));
         }});
       }}
 
-      activateStep('{active_index}');
+      // Highlight active step on scroll
+      var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function (entries) {{
+        var visible = entries.filter(function (e) {{ return e.isIntersecting; }})
+                             .sort(function (a, b) {{ return a.boundingClientRect.top - b.boundingClientRect.top; }});
+        if (visible.length > 0) setActive(visible[0].target.getAttribute('data-step-panel'));
+      }}, {{ rootMargin: '-20% 0px -60% 0px', threshold: 0 }}) : null;
+      if (io) panels.forEach(function (p) {{ io.observe(p); }});
+
+      // Initial: scroll to active step (failure or step 1)
+      setActive('{active_index}');
+      var initial = document.getElementById('step-{active_index}');
+      if (initial && initial.getAttribute('data-status') === 'fail') {{
+        // Defer to allow layout to settle
+        setTimeout(function () {{ initial.scrollIntoView({{ behavior: 'auto', block: 'start' }}); }}, 0);
+      }}
     }})();
   </script>
 </body>
@@ -1450,16 +1490,25 @@ def write_html_report(
         module_name, testbed_name = split_case_for_report(result.case_dir, modules_dir)
         grouped.setdefault(module_name, {}).setdefault(testbed_name, []).append((idx, result, check_link))
 
+    def _slug(text: str) -> str:
+        return re.sub(r"[^a-zA-Z0-9_-]+", "-", text).strip("-").lower() or "x"
+
     module_blocks: list[str] = []
+    nav_items: list[str] = []
     for module_index, (module_name, testbeds) in enumerate(grouped.items()):
         module_rows = [row for testbed_rows in testbeds.values() for row in testbed_rows]
         module_passed = sum(1 for _, item, _ in module_rows if item.returncode == 0)
         module_failed = len(module_rows) - module_passed
+        module_slug = f"mod-{module_index}-{_slug(module_name)}"
+        module_state = "fail" if module_failed > 0 else "pass"
 
         testbed_blocks: list[str] = []
-        for testbed_name, rows in testbeds.items():
+        nav_testbeds: list[str] = []
+        for testbed_index, (testbed_name, rows) in enumerate(testbeds.items()):
             tb_passed = sum(1 for _, item, _ in rows if item.returncode == 0)
             tb_failed = len(rows) - tb_passed
+            tb_slug = f"{module_slug}-tb-{testbed_index}-{_slug(testbed_name)}"
+            tb_state = "fail" if tb_failed > 0 else "pass"
 
             table_rows: list[str] = []
             for row_index, result, check_link in rows:
@@ -1482,12 +1531,12 @@ def write_html_report(
                 table_rows.append(
                     "".join(
                         [
-                            "<tr>",
-                            f"<td class='mono'>{row_index}</td>",
+                            f"<tr data-status='{cls}' data-script='{html.escape(script_label.lower())}'>",
+                            f"<td class='mono col-idx'>{row_index}</td>",
                             f"<td class='script'>{script_view}</td>",
-                            f"<td>{status_badge}</td>",
-                            f"<td class='mono'>{result.returncode}</td>",
-                            f"<td class='mono'>{result.duration_sec:.2f}</td>",
+                            f"<td class='col-status'>{status_badge}</td>",
+                            f"<td class='mono col-rc'>{result.returncode}</td>",
+                            f"<td class='mono col-dur'>{result.duration_sec:.2f}</td>",
                             "</tr>",
                         ]
                     )
@@ -1496,9 +1545,13 @@ def write_html_report(
             testbed_open = " open" if tb_failed > 0 else ""
             testbed_blocks.append(
                 f"""
-          <details class=\"group-node testbed-group\"{testbed_open}>
+          <details class=\"group-node testbed-group\" id=\"{tb_slug}\" data-state=\"{tb_state}\" data-passed=\"{tb_passed}\" data-failed=\"{tb_failed}\"{testbed_open}>
             <summary>
-              <div class=\"summary-title\">测试床: {html.escape(testbed_name)}</div>
+              <div class=\"summary-title\">
+                <span class=\"sum-dot dot-{tb_state}\"></span>
+                <span class=\"sum-kind\">测试床</span>
+                <span class=\"sum-name\">{html.escape(testbed_name)}</span>
+              </div>
               <div class=\"summary-meta\">
                 <span class=\"chip\">脚本 {len(rows)}</span>
                 <span class=\"chip pass-chip\">通过 {tb_passed}</span>
@@ -1508,7 +1561,7 @@ def write_html_report(
             <div class=\"table-scroll\">
               <table>
                 <thead>
-                  <tr><th>#</th><th>Script Detail</th><th>Status</th><th>RC</th><th>Duration(s)</th></tr>
+                  <tr><th class='col-idx'>#</th><th>Script</th><th class='col-status'>Status</th><th class='col-rc'>RC</th><th class='col-dur'>Duration(s)</th></tr>
                 </thead>
                 <tbody>
                   {''.join(table_rows)}
@@ -1519,12 +1572,23 @@ def write_html_report(
                 """.rstrip()
             )
 
+            nav_testbeds.append(
+                f"<li><a href=\"#{tb_slug}\" data-state=\"{tb_state}\">"
+                f"<span class=\"nav-dot dot-{tb_state}\"></span>"
+                f"<span class=\"nav-label\">{html.escape(testbed_name)}</span>"
+                f"<span class=\"nav-counts\">{tb_passed}/{len(rows)}</span></a></li>"
+            )
+
         module_open = " open" if (module_index == 0 or module_failed > 0) else ""
         module_blocks.append(
             f"""
-      <details class=\"group-node module-group\"{module_open}>
+      <details class=\"group-node module-group\" id=\"{module_slug}\" data-state=\"{module_state}\" data-passed=\"{module_passed}\" data-failed=\"{module_failed}\"{module_open}>
         <summary>
-          <div class=\"summary-title\">模块: {html.escape(module_name)}</div>
+          <div class=\"summary-title\">
+            <span class=\"sum-dot dot-{module_state}\"></span>
+            <span class=\"sum-kind\">模块</span>
+            <span class=\"sum-name\">{html.escape(module_name)}</span>
+          </div>
           <div class=\"summary-meta\">
             <span class=\"chip\">测试床 {len(testbeds)}</span>
             <span class=\"chip\">脚本 {len(module_rows)}</span>
@@ -1539,6 +1603,15 @@ def write_html_report(
             """.rstrip()
         )
 
+        nav_items.append(
+            f"<li class=\"nav-module\" data-state=\"{module_state}\">"
+            f"<a class=\"nav-mod-link\" href=\"#{module_slug}\" data-state=\"{module_state}\">"
+            f"<span class=\"nav-dot dot-{module_state}\"></span>"
+            f"<span class=\"nav-label\">{html.escape(module_name)}</span>"
+            f"<span class=\"nav-counts\">{module_passed}/{len(module_rows)}</span></a>"
+            f"<ul class=\"nav-tb-list\">{''.join(nav_testbeds)}</ul></li>"
+        )
+
     doc = f"""<!DOCTYPE html>
 <html lang=\"en\">
 <head>
@@ -1547,140 +1620,35 @@ def write_html_report(
   <title>CI Module Report</title>
   <style>
     :root {{
-      --bg0: #f1f5ff;
-      --bg1: #ecf7f2;
+      --bg0: #f3f6fb;
+      --bg1: #eef3f9;
       --panel: #ffffff;
+      --panel-soft: #f8fbff;
       --line: #d8e1ea;
+      --line-soft: #e7eef6;
       --text: #0f172a;
       --muted: #4b5563;
+      --accent: #0f3d91;
       --ok: #12754b;
       --ok-bg: #e9f8f0;
+      --ok-line: #a7dec3;
       --bad: #b42318;
       --bad-bg: #fdeceb;
-      --shadow: 0 8px 26px rgba(15, 23, 42, 0.08);
+      --bad-line: #f2b3af;
+      --shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
+      --shadow-strong: 0 8px 22px rgba(15, 23, 42, 0.08);
+      --radius: 12px;
+      --header-h: 116px;
     }}
     * {{ box-sizing: border-box; }}
+    html, body {{ height: 100%; }}
     body {{
       margin: 0;
       font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
       color: var(--text);
-      background: radial-gradient(1400px 700px at 0% 0%, var(--bg0), var(--bg1));
-      padding: 18px;
+      background: var(--bg0);
     }}
-    .wrap {{ max-width: 1200px; margin: 0 auto; }}
-    .hero {{
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      box-shadow: var(--shadow);
-      padding: 18px;
-      margin-bottom: 14px;
-    }}
-    h1 {{ margin: 0 0 8px 0; font-size: 26px; }}
-    .sub {{ color: var(--muted); font-size: 14px; line-height: 1.6; }}
-    .stats {{
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-      gap: 10px;
-      margin-top: 12px;
-    }}
-    .stat {{
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #fbfdff;
-      padding: 10px 12px;
-    }}
-    .stat .label {{ color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }}
-    .stat .value {{ font-size: 22px; font-weight: 700; margin-top: 2px; }}
-    .pass-val {{ color: var(--ok); }}
-    .fail-val {{ color: var(--bad); }}
-    .toolbar {{ margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }}
-    .tool-btn {{
-      border: 1px solid var(--line);
-      background: #fbfdff;
-      color: #0f3d91;
-      font-weight: 600;
-      border-radius: 8px;
-      padding: 6px 10px;
-      cursor: pointer;
-    }}
-    .tool-btn:hover {{ background: #f0f6ff; }}
-    .groups {{ display: grid; gap: 10px; }}
-    .module-group {{
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      box-shadow: var(--shadow);
-      overflow: hidden;
-    }}
-    .module-body {{ padding: 10px; display: grid; gap: 8px; }}
-    .testbed-group {{
-      border: 1px solid #e2e8f0;
-      border-radius: 10px;
-      background: #fcfeff;
-      overflow: hidden;
-    }}
-    details > summary {{
-      list-style: none;
-      cursor: pointer;
-      padding: 11px 12px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 10px;
-      background: #f6faff;
-      border-bottom: 1px solid #e2e8f0;
-    }}
-    details > summary::-webkit-details-marker {{ display: none; }}
-    details[open] > summary {{ background: #f1f7ff; }}
-    .summary-title {{ font-weight: 700; color: #1f3b63; }}
-    .summary-meta {{ display: flex; gap: 6px; flex-wrap: wrap; }}
-    .chip {{
-      border: 1px solid #dbe5f2;
-      background: #ffffff;
-      color: #334155;
-      border-radius: 999px;
-      font-size: 12px;
-      padding: 2px 8px;
-    }}
-    .pass-chip {{ color: var(--ok); border-color: #a7dec3; background: var(--ok-bg); }}
-    .fail-chip {{ color: var(--bad); border-color: #f2b3af; background: var(--bad-bg); }}
-    .table-scroll {{ overflow-x: auto; }}
-    table {{ border-collapse: collapse; width: 100%; min-width: 640px; }}
-    thead th {{
-      text-align: left;
-      padding: 12px;
-      background: #f6faff;
-      border-bottom: 1px solid var(--line);
-      font-size: 13px;
-      color: #244268;
-    }}
-    tbody td {{
-      padding: 11px 12px;
-      border-bottom: 1px solid #edf2f7;
-      vertical-align: top;
-      font-size: 14px;
-    }}
-    tbody tr:nth-child(even) {{ background: #fbfdff; }}
-    tbody tr:hover {{ background: #f4f9ff; }}
-    .mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }}
-    .script a {{
-      color: #0f3d91;
-      text-decoration: none;
-      border-bottom: 1px dashed #9ab7e8;
-      font-weight: 600;
-    }}
-    .script a:hover {{ color: #0b2e6e; }}
-    .status-badge {{
-      display: inline-block;
-      padding: 4px 10px;
-      border-radius: 999px;
-      font-size: 12px;
-      font-weight: 700;
-      letter-spacing: 0.03em;
-    }}
-    .status-pass {{ color: var(--ok); background: var(--ok-bg); border: 1px solid #a7dec3; }}
-    .status-fail {{ color: var(--bad); background: var(--bad-bg); border: 1px solid #f2b3af; }}
+    a {{ color: var(--accent); }}
     code {{
       background: #eef3fb;
       border: 1px solid #d6e1f0;
@@ -1688,69 +1656,406 @@ def write_html_report(
       border-radius: 6px;
       font-size: 12px;
     }}
+
+    /* ========== Sticky header ========== */
+    .topbar {{
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+      box-shadow: var(--shadow);
+    }}
+    .topbar-inner {{
+      padding: 12px clamp(16px, 2vw, 28px);
+      display: grid;
+      grid-template-columns: minmax(280px, 1fr) auto;
+      align-items: center;
+      gap: 14px;
+    }}
+    .topbar h1 {{
+      margin: 0;
+      font-size: 18px;
+      letter-spacing: 0.01em;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }}
+    .topbar h1 .ts {{
+      color: var(--muted);
+      font-weight: 500;
+      font-size: 12px;
+    }}
+    .stats {{
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }}
+    .stat-pill {{
+      display: inline-flex;
+      align-items: baseline;
+      gap: 6px;
+      padding: 5px 11px;
+      border-radius: 999px;
+      background: var(--panel-soft);
+      border: 1px solid var(--line);
+      font-size: 13px;
+      color: var(--muted);
+    }}
+    .stat-pill .v {{ font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }}
+    .stat-pill.pass {{ background: var(--ok-bg); border-color: var(--ok-line); color: var(--ok); }}
+    .stat-pill.pass .v {{ color: var(--ok); }}
+    .stat-pill.fail {{ background: var(--bad-bg); border-color: var(--bad-line); color: var(--bad); }}
+    .stat-pill.fail .v {{ color: var(--bad); }}
+
+    .toolbar {{
+      padding: 10px clamp(16px, 2vw, 28px) 12px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      border-top: 1px solid var(--line-soft);
+      background: var(--panel-soft);
+    }}
+    .filter-group {{ display: inline-flex; gap: 0; border: 1px solid var(--line); background: var(--panel); border-radius: 999px; overflow: hidden; }}
+    .filter-btn {{
+      border: 0;
+      background: transparent;
+      padding: 6px 14px;
+      font-size: 13px;
+      cursor: pointer;
+      color: var(--muted);
+      font-weight: 600;
+    }}
+    .filter-btn + .filter-btn {{ border-left: 1px solid var(--line); }}
+    .filter-btn.active {{ background: var(--accent); color: #fff; }}
+    .filter-btn.fail.active {{ background: var(--bad); }}
+    .filter-btn.pass.active {{ background: var(--ok); }}
+    .tool-btn {{
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--accent);
+      font-weight: 600;
+      border-radius: 8px;
+      padding: 6px 12px;
+      font-size: 13px;
+      cursor: pointer;
+    }}
+    .tool-btn:hover {{ background: #f0f6ff; }}
+    .search-box {{
+      flex: 1 1 220px;
+      min-width: 180px;
+      max-width: 360px;
+    }}
+    .search-box input {{
+      width: 100%;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 8px;
+      padding: 6px 10px;
+      font-size: 13px;
+      color: var(--text);
+    }}
+    .search-box input:focus {{ outline: 2px solid #c4d7f7; outline-offset: 0; }}
+
+    /* ========== Two-pane body ========== */
+    .layout {{
+      display: grid;
+      grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+      gap: 0;
+      align-items: start;
+    }}
+    .sidenav {{
+      position: sticky;
+      top: var(--header-h);
+      max-height: calc(100vh - var(--header-h));
+      overflow-y: auto;
+      padding: 14px clamp(8px, 1vw, 16px);
+      border-right: 1px solid var(--line-soft);
+    }}
+    .sidenav h2 {{
+      margin: 0 0 8px 0;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }}
+    .nav-list, .nav-tb-list {{ list-style: none; margin: 0; padding: 0; }}
+    .nav-list > li {{ margin-bottom: 4px; }}
+    .nav-list a {{
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 8px;
+      border-radius: 6px;
+      text-decoration: none;
+      color: var(--text);
+      font-size: 13px;
+    }}
+    .nav-list a:hover {{ background: #eef3fb; }}
+    .nav-mod-link {{ font-weight: 600; }}
+    .nav-tb-list {{ margin: 2px 0 6px 14px; padding-left: 8px; border-left: 1px dashed var(--line); }}
+    .nav-tb-list a {{ font-size: 12px; color: var(--muted); }}
+    .nav-label {{ flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+    .nav-counts {{ font-variant-numeric: tabular-nums; font-size: 11px; color: var(--muted); }}
+    .nav-dot, .sum-dot {{
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex: 0 0 auto;
+    }}
+    .dot-pass {{ background: #2bb673; box-shadow: 0 0 0 3px rgba(43, 182, 115, 0.15); }}
+    .dot-fail {{ background: #e0463a; box-shadow: 0 0 0 3px rgba(224, 70, 58, 0.16); }}
+
+    .main {{
+      padding: 16px clamp(16px, 2vw, 28px) 32px;
+      min-width: 0;
+    }}
+
+    /* ========== Module / testbed cards ========== */
+    .groups {{ display: flex; flex-direction: column; gap: 14px; }}
+    .module-group {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      scroll-margin-top: calc(var(--header-h) + 12px);
+    }}
+    .module-body {{
+      padding: 14px;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(min(560px, 100%), 1fr));
+      gap: 14px;
+      background: linear-gradient(180deg, #fbfdff 0%, #ffffff 60%);
+    }}
+    .testbed-group {{
+      background: var(--panel);
+      border: 1px solid var(--line-soft);
+      border-radius: 10px;
+      overflow: hidden;
+      scroll-margin-top: calc(var(--header-h) + 12px);
+    }}
+    details > summary {{
+      list-style: none;
+      cursor: pointer;
+      padding: 12px 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      background: #f6faff;
+      border-bottom: 1px solid var(--line-soft);
+      user-select: none;
+    }}
+    details > summary::-webkit-details-marker {{ display: none; }}
+    details > summary::before {{
+      content: '\\25B8';
+      color: #94a3b8;
+      font-size: 11px;
+      transition: transform 0.15s ease;
+      flex: 0 0 auto;
+    }}
+    details[open] > summary::before {{ transform: rotate(90deg); }}
+    details[open].module-group > summary {{ background: #eef5ff; }}
+    .module-group > summary {{ background: #eef5ff; }}
+    .module-group > summary .summary-title {{ font-size: 15px; }}
+    .summary-title {{ display: flex; align-items: center; gap: 8px; font-weight: 600; color: #1f3b63; flex: 1; min-width: 0; }}
+    .summary-title .sum-kind {{ color: var(--muted); font-weight: 500; font-size: 12px; }}
+    .summary-title .sum-name {{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+    .summary-meta {{ display: flex; gap: 6px; flex-wrap: wrap; flex: 0 0 auto; }}
+    .chip {{
+      border: 1px solid #dbe5f2;
+      background: var(--panel);
+      color: #334155;
+      border-radius: 999px;
+      font-size: 12px;
+      padding: 2px 9px;
+      font-variant-numeric: tabular-nums;
+    }}
+    .pass-chip {{ color: var(--ok); border-color: var(--ok-line); background: var(--ok-bg); }}
+    .fail-chip {{ color: var(--bad); border-color: var(--bad-line); background: var(--bad-bg); }}
+
+    /* ========== Result table ========== */
+    .table-scroll {{ overflow-x: auto; }}
+    table {{ border-collapse: collapse; width: 100%; }}
+    thead th {{
+      text-align: left;
+      padding: 9px 12px;
+      background: #f6faff;
+      border-bottom: 1px solid var(--line);
+      font-size: 12px;
+      color: #244268;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }}
+    tbody td {{
+      padding: 9px 12px;
+      border-bottom: 1px solid #edf2f7;
+      vertical-align: middle;
+      font-size: 13px;
+    }}
+    tbody tr:last-child td {{ border-bottom: 0; }}
+    tbody tr:hover {{ background: #f4f9ff; }}
+    .col-idx {{ width: 44px; color: var(--muted); }}
+    .col-status {{ width: 80px; }}
+    .col-rc {{ width: 56px; text-align: right; }}
+    .col-dur {{ width: 92px; text-align: right; }}
+    .mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-variant-numeric: tabular-nums; }}
+    .script a {{
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 600;
+    }}
+    .script a:hover {{ text-decoration: underline; }}
+    .status-badge {{
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+    }}
+    .status-pass {{ color: var(--ok); background: var(--ok-bg); border: 1px solid var(--ok-line); }}
+    .status-fail {{ color: var(--bad); background: var(--bad-bg); border: 1px solid var(--bad-line); }}
+
     .empty {{
       background: var(--panel);
       border: 1px dashed var(--line);
       border-radius: 12px;
-      padding: 16px;
+      padding: 24px;
       color: var(--muted);
+      text-align: center;
     }}
-    @media (max-width: 760px) {{
-      body {{ padding: 10px; }}
-      .hero, .module-group {{ border-radius: 12px; }}
-      h1 {{ font-size: 22px; }}
+
+    /* Filter states */
+    body.filter-pass tr[data-status='fail'] {{ display: none; }}
+    body.filter-fail tr[data-status='pass'] {{ display: none; }}
+    body.filter-pass .testbed-group[data-failed]:not([data-passed='0']) {{ }}
+    body.filter-pass .testbed-group[data-passed='0'] {{ display: none; }}
+    body.filter-fail .testbed-group[data-failed='0'] {{ display: none; }}
+    body.filter-pass .module-group[data-passed='0'] {{ display: none; }}
+    body.filter-fail .module-group[data-failed='0'] {{ display: none; }}
+    body.filter-pass .nav-module[data-state='fail'] > .nav-mod-link[data-state='fail'] {{ opacity: 0.45; }}
+    body.filter-fail .nav-module[data-state='pass'] {{ display: none; }}
+    body.filter-pass .nav-tb-list a[data-state='fail'] {{ display: none; }}
+    body.filter-fail .nav-tb-list a[data-state='pass'] {{ display: none; }}
+    tr.search-hidden {{ display: none; }}
+
+    /* Responsive */
+    @media (max-width: 1100px) {{
+      .layout {{ grid-template-columns: 1fr; }}
+      .sidenav {{
+        position: static;
+        max-height: none;
+        border-right: 0;
+        border-bottom: 1px solid var(--line-soft);
+        padding: 10px clamp(12px, 2vw, 20px);
+      }}
+      .nav-list {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 4px; }}
+      .nav-tb-list {{ display: none; }}
+    }}
+    @media (max-width: 720px) {{
+      .topbar-inner {{ grid-template-columns: 1fr; }}
+      .stats {{ justify-content: flex-start; }}
       details > summary {{ flex-direction: column; align-items: flex-start; }}
     }}
   </style>
 </head>
 <body>
-  <div class=\"wrap\">
-    <section class=\"hero\">
-      <h1>CI Module Execution Report</h1>
-      <p class=\"sub\">
-        Started: {html.escape(format_timestamp(started_at))} UTC<br>
-        Ended: {html.escape(format_timestamp(ended_at))} UTC<br>
-        Artifacts: <code>checks/</code> detail pages + <code>logs/</code> raw logs
-      </p>
+  <header class=\"topbar\">
+    <div class=\"topbar-inner\">
+      <h1>
+        CI Module Execution Report
+        <span class=\"ts\">{html.escape(format_timestamp(started_at))} → {html.escape(format_timestamp(ended_at))} UTC · {duration_total:.1f}s</span>
+      </h1>
       <div class=\"stats\">
-        <div class=\"stat\"><div class=\"label\">Total</div><div class=\"value\">{total}</div></div>
-        <div class=\"stat\"><div class=\"label\">Passed</div><div class=\"value pass-val\">{passed}</div></div>
-        <div class=\"stat\"><div class=\"label\">Failed</div><div class=\"value fail-val\">{failed}</div></div>
-        <div class=\"stat\"><div class=\"label\">Pass Rate</div><div class=\"value\">{pass_rate:.1f}%</div></div>
-        <div class=\"stat\"><div class=\"label\">Duration</div><div class=\"value\">{duration_total:.2f}s</div></div>
+        <span class=\"stat-pill\">Total <span class=\"v\">{total}</span></span>
+        <span class=\"stat-pill pass\">Passed <span class=\"v\">{passed}</span></span>
+        <span class=\"stat-pill fail\">Failed <span class=\"v\">{failed}</span></span>
+        <span class=\"stat-pill\">Pass Rate <span class=\"v\">{pass_rate:.1f}%</span></span>
       </div>
-      <div class=\"toolbar\">
-        <button id=\"expand-all-btn\" class=\"tool-btn\" type=\"button\">全部展开</button>
-        <button id=\"collapse-all-btn\" class=\"tool-btn\" type=\"button\">全部折叠</button>
+    </div>
+    <div class=\"toolbar\">
+      <div class=\"filter-group\" role=\"group\" aria-label=\"Status filter\">
+        <button class=\"filter-btn active\" data-filter=\"all\" type=\"button\">全部</button>
+        <button class=\"filter-btn pass\" data-filter=\"pass\" type=\"button\">仅通过</button>
+        <button class=\"filter-btn fail\" data-filter=\"fail\" type=\"button\">仅失败</button>
       </div>
-    </section>
+      <button id=\"expand-all-btn\" class=\"tool-btn\" type=\"button\">全部展开</button>
+      <button id=\"collapse-all-btn\" class=\"tool-btn\" type=\"button\">全部折叠</button>
+      <div class=\"search-box\">
+        <input id=\"search-input\" type=\"search\" placeholder=\"搜索脚本…\" autocomplete=\"off\">
+      </div>
+    </div>
+  </header>
 
-    <section class=\"groups\">
-      {''.join(module_blocks) if module_blocks else '<div class="empty">No checks executed.</div>'}
-    </section>
+  <div class=\"layout\">
+    <aside class=\"sidenav\" aria-label=\"Module navigation\">
+      <h2>模块导航</h2>
+      <ul class=\"nav-list\">
+        {''.join(nav_items) if nav_items else '<li class="empty">No modules</li>'}
+      </ul>
+    </aside>
+    <main class=\"main\">
+      <section class=\"groups\">
+        {''.join(module_blocks) if module_blocks else '<div class="empty">No checks executed.</div>'}
+      </section>
+    </main>
   </div>
   <script>
     (function () {{
       var nodes = Array.prototype.slice.call(document.querySelectorAll('details.group-node'));
-      function setOpen(openState) {{
-        nodes.forEach(function (node) {{
-          node.open = openState;
-        }});
-      }}
+      function setOpen(openState) {{ nodes.forEach(function (n) {{ n.open = openState; }}); }}
 
       var expandBtn = document.getElementById('expand-all-btn');
-      if (expandBtn) {{
-        expandBtn.addEventListener('click', function () {{
-          setOpen(true);
+      if (expandBtn) expandBtn.addEventListener('click', function () {{ setOpen(true); }});
+      var collapseBtn = document.getElementById('collapse-all-btn');
+      if (collapseBtn) collapseBtn.addEventListener('click', function () {{ setOpen(false); }});
+
+      var filterBtns = document.querySelectorAll('.filter-btn');
+      filterBtns.forEach(function (btn) {{
+        btn.addEventListener('click', function () {{
+          var f = btn.getAttribute('data-filter');
+          filterBtns.forEach(function (b) {{ b.classList.remove('active'); }});
+          btn.classList.add('active');
+          document.body.classList.remove('filter-pass', 'filter-fail');
+          if (f === 'pass') document.body.classList.add('filter-pass');
+          else if (f === 'fail') document.body.classList.add('filter-fail');
+        }});
+      }});
+
+      var searchInput = document.getElementById('search-input');
+      if (searchInput) {{
+        searchInput.addEventListener('input', function () {{
+          var q = searchInput.value.trim().toLowerCase();
+          var rows = document.querySelectorAll('tbody tr[data-script]');
+          rows.forEach(function (r) {{
+            var name = r.getAttribute('data-script') || '';
+            if (!q || name.indexOf(q) >= 0) r.classList.remove('search-hidden');
+            else r.classList.add('search-hidden');
+          }});
+          // Auto-open groups that have hits when searching
+          if (q) {{
+            document.querySelectorAll('details.group-node').forEach(function (d) {{
+              var hasHit = d.querySelector('tbody tr[data-script]:not(.search-hidden)');
+              if (hasHit) d.open = true;
+            }});
+          }}
         }});
       }}
 
-      var collapseBtn = document.getElementById('collapse-all-btn');
-      if (collapseBtn) {{
-        collapseBtn.addEventListener('click', function () {{
-          setOpen(false);
+      // Highlight current nav target on click
+      document.querySelectorAll('.nav-list a').forEach(function (a) {{
+        a.addEventListener('click', function () {{
+          var href = a.getAttribute('href') || '';
+          if (href.charAt(0) === '#') {{
+            var target = document.querySelector(href);
+            if (target && target.tagName === 'DETAILS') target.open = true;
+          }}
         }});
-      }}
+      }});
     }})();
   </script>
 </body>

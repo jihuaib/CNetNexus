@@ -148,12 +148,12 @@ class NetNexusCli:
             raise RuntimeError(f"{self.name}: CLI not connected")
         eff_timeout = timeout if timeout is not None else self.cmd_timeout
         if self.log_commands or self.verbose:
-            print(f"[{self.name}] >>> {command}")
+            print(f">>> {command}")
         self.tn.write(command.encode("ascii") + b"\n")
-        out = self._read_with_prompt_recovery(command=command, timeout=eff_timeout)
+        out = self._read_with_prompt_recovery(command=command, timeout=eff_timeout, expect_echo=command)
         text = out.replace("\r", "")
         if self.log_commands or self.verbose:
-            print(f"[{self.name}] <<< {text.strip()}")
+            print(f"<<< {text.strip()}")
         if strict and ("BGP Error:" in text or "Error:" in text):
             raise RuntimeError(f"{self.name}: command failed: {command}\n{text}")
         return text
@@ -170,12 +170,14 @@ class NetNexusCli:
             raise RuntimeError(f"{self.name}: CLI not connected")
         eff_timeout = timeout if timeout is not None else self.cmd_timeout
         if self.log_commands or self.verbose:
-            print(f"[{self.name}] >>> {partial}? (help)")
+            print(f">>> {partial}? (help)")
         self.tn.write(partial.encode("ascii") + b"?")
-        help_raw = self._read_with_prompt_recovery(command=f"{partial}?", timeout=eff_timeout)
+        help_raw = self._read_with_prompt_recovery(
+            command=f"{partial}?", timeout=eff_timeout, expect_echo=f"{partial}?"
+        )
         help_text = help_raw.replace("\r", "")
         if self.log_commands or self.verbose:
-            print(f"[{self.name}] <<< {help_text.strip()}")
+            print(f"<<< {help_text.strip()}")
         cleanup = (b"\x7f" * len(partial)) + b"\n"
         self.tn.write(cleanup)
         try:
@@ -184,39 +186,61 @@ class NetNexusCli:
             pass
         return help_text
 
-    def _read_with_prompt_recovery(self, command: str, timeout: int) -> str:
+    def _read_with_prompt_recovery(
+        self, command: str, timeout: int, expect_echo: str | None = None
+    ) -> str:
         try:
-            return self._read_until_prompt(timeout=timeout)
+            return self._read_until_prompt(timeout=timeout, expect_echo=expect_echo)
         except RuntimeError as first_exc:
             # In noisy console scenarios, the command may have succeeded but prompt
             # framing can be disrupted. Try a single newline to force a fresh prompt.
             if "timeout waiting prompt" not in str(first_exc):
                 raise
             if self.verbose:
-                print(f"[{self.name}] !!! prompt timeout after '{command}', retry with newline")
+                print(f"!!! prompt timeout after '{command}', retry with newline")
 
             assert self.tn is not None
             self.tn.write(b"\n")
             recovery_timeout = min(4, max(2, timeout // 3))
             try:
+                # 恢复路径不再要求 echo:此时已经无法保证后续 prompt 来自原命令
                 recovered = self._read_until_prompt(timeout=recovery_timeout)
             except Exception:
                 raise first_exc
             if self.verbose:
-                print(f"[{self.name}] !!! prompt recovered after newline")
+                print(f"!!! prompt recovered after newline")
             return recovered
 
-    def _read_until_prompt(self, timeout: int) -> str:
+    def _read_until_prompt(self, timeout: int, expect_echo: str | None = None) -> str:
+        """读到 prompt 为止。
+
+        若 ``expect_echo`` 非空,则要求先在 buffer 中找到本命令的回显,只有
+        回显之后的字节才允许匹配 prompt。这样可以避免上一条命令滞留在
+        buffer 里的 prompt(或 banner/MOTD 残留)被误认为本次回包,从而引
+        发 off-by-one 的应答错位。
+        """
         assert self.tn is not None
         deadline = time.time() + timeout
+        echo_bytes = expect_echo.encode("ascii", errors="ignore") if expect_echo else b""
+        echo_pos = -1  # echo 在当前 _rx_buf 中的起始下标(随 buffer 头截断而调整)
 
         while time.time() < deadline:
-            m = PROMPT_RE.search(self._rx_buf)
-            if m is not None:
-                end = m.end()
-                data = bytes(self._rx_buf[:end])
-                del self._rx_buf[:end]
-                return data.decode("utf-8", errors="ignore")
+            if echo_bytes:
+                if echo_pos < 0:
+                    idx = self._rx_buf.find(echo_bytes)
+                    if idx >= 0:
+                        echo_pos = idx
+                search_from = echo_pos + len(echo_bytes) if echo_pos >= 0 else None
+            else:
+                search_from = 0
+
+            if search_from is not None:
+                m = PROMPT_RE.search(self._rx_buf, search_from)
+                if m is not None:
+                    end = m.end()
+                    data = bytes(self._rx_buf[:end])
+                    del self._rx_buf[:end]
+                    return data.decode("utf-8", errors="ignore")
 
             try:
                 chunk = self.tn.read_very_eager()
@@ -228,10 +252,20 @@ class NetNexusCli:
                 if self.verbose:
                     preview = repr(chunk[:120])
                     suffix = "..." if len(chunk) > 120 else ""
-                    print(f"[{self.name}] ... rx {len(chunk)} bytes {preview}{suffix}")
+                    print(f"... rx {len(chunk)} bytes {preview}{suffix}")
                 self._rx_buf.extend(chunk)
                 if len(self._rx_buf) > 262144:
-                    del self._rx_buf[:-262144]
+                    drop = len(self._rx_buf) - 262144
+                    if echo_pos >= 0:
+                        # 已锁定 echo,可安全丢弃 echo 之前的字节
+                        actual_drop = min(drop, echo_pos)
+                        if actual_drop > 0:
+                            del self._rx_buf[:actual_drop]
+                            echo_pos -= actual_drop
+                    elif not echo_bytes:
+                        # 不需要 echo,旧逻辑:从头丢
+                        del self._rx_buf[:drop]
+                    # 否则 echo 还没出现,保留头部以便后续仍能匹配回显
                 continue
 
             time.sleep(0.02)
@@ -713,7 +747,7 @@ class TopologyRuntime:
                 cli.cmd(f"sysname {dev}", strict=False)
                 cli.cmd("end", strict=False)
             except Exception as exc:
-                print(f"[{dev}] warn: failed to set sysname: {exc}", flush=True)
+                print(f"warn: failed to set sysname on {dev}: {exc}", flush=True)
 
         # 6) Optional interface base config from top.
         if configure_interfaces:
@@ -838,7 +872,7 @@ def cli_configure_interfaces(cli: NetNexusCli, endpoints: list[Endpoint]) -> Non
         plan = f"ip address {ep.ip} {ep.prefix}"
         if ep.ip6:
             plan = f"{plan}; ipv6 address {ep.ip6} {ep.prefix6}"
-        print(f"[{cli.name}] apply interface {ep.if_name}: {plan}, no shutdown", flush=True)
+        print(f"apply interface {ep.if_name}: {plan}, no shutdown", flush=True)
         cli.cmd(f"if {ep.if_name}")
         cli.cmd(f"ip address {ep.ip} {ep.prefix}")
         if ep.ip6:
@@ -902,7 +936,7 @@ def main() -> int:
         print("\n===== STEP: CLI probe =====", flush=True)
         for dev in sorted(rt.devices.keys()):
             out = rt.exec_cmd(dev, "show version", strict=False)
-            print(f"[{dev}] show version ok ({len(out.strip())} chars)")
+            print(f"show version on {dev}: ok ({len(out.strip())} chars)")
 
         print("Topology runtime smoke test passed.")
         return 0

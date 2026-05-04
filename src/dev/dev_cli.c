@@ -563,7 +563,7 @@ static gpointer swap_async_worker(gpointer data)
 {
     swap_async_args_t *args = (swap_async_args_t *)data;
 
-    /* 日志路径:跟其它模块对齐,统一放 ${NN_WORK_DIR}/log/swap-image-<pid>.log。
+    /* 日志路径:跟其它模块对齐,统一放 ${NN_WORK_DIR}/log/swap-image-{pid}.log。
      * 回退 /opt/netnexus/log/...,最后 /tmp/...(NN_WORK_DIR 不可写时) */
     char *log_dir = NULL;
     const char *work_dir = getenv("NN_WORK_DIR");
@@ -779,7 +779,7 @@ static int handle_dev_swap_image(dev_ipc_context_t *ctx, dev_ipc_message_t *msg,
     snprintf(ack, sizeof(ack),
              "\r\nDev: swap-image started for '%s' (running in background).\r\n"
              "     Telnet will drop when re-exec fires; reconnect later.\r\n"
-             "     Script log: %s/log/swap-image-<pid>.log\r\n",
+             "     Script log: %s/log/swap-image-{pid}.log\r\n",
              image, ack_log_dir);
     dev_send_cli_response(ctx, msg, ack);
     return ERRCODE_SUCCESS;
