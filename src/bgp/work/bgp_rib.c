@@ -188,6 +188,9 @@ int bgp_rib_route_apply_reach(bgp_route_node_t *route, uint32_t import_proto, co
     BIT_CLR(route->flags, BGP_ROUTE_FLAG_BEST);
     BIT_CLR(route->flags, BGP_ROUTE_FLAG_FLUSHED);
     BIT_CLR(route->flags, BGP_ROUTE_FLAG_STALE);
+    route->has_label = 0u;
+    route->label_source = BGP_ROUTE_LABEL_SOURCE_NONE;
+    route->label = 0u;
 
     if (attr)
     {
@@ -211,6 +214,18 @@ int bgp_rib_route_apply_reach(bgp_route_node_t *route, uint32_t import_proto, co
     }
 
     return 0;
+}
+
+void bgp_route_set_label_from_nlri(bgp_route_node_t *route, const bgp_nlri_entry_t *nlri, uint8_t label_source)
+{
+    if (!route || !nlri || nlri->type != BGP_NLRI_PREFIX || nlri->safi != BGP_SAFI_LABELED || !nlri->prefix.has_label)
+    {
+        return;
+    }
+
+    route->has_label = 1u;
+    route->label = nlri->prefix.label;
+    route->label_source = label_source;
 }
 
 /* ============================================================================

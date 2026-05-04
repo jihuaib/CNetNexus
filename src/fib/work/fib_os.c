@@ -139,7 +139,7 @@ static int nl_add_mpls_encap(struct nlmsghdr *nlh, size_t maxlen, const fib_tunn
         {
             return ERRCODE_FAIL;
         }
-        uint32_t entry = (tunnel->labels[i] << MPLS_LS_LABEL_SHIFT) | 255u;
+        uint32_t entry = tunnel->labels[i] << MPLS_LS_LABEL_SHIFT;
         if (i == tunnel->label_count - 1u)
         {
             entry |= (1u << MPLS_LS_S_SHIFT);
@@ -375,13 +375,60 @@ static const char *os_proto_str(uint8_t proto)
     }
 }
 
+static void os_parse_mpls_encap(const struct rtattr *encap_attr, char *buf, size_t sz)
+{
+    if (!encap_attr || !buf || sz == 0)
+    {
+        return;
+    }
+
+    int len = RTA_PAYLOAD(encap_attr);
+    struct rtattr *rta = (struct rtattr *)RTA_DATA(encap_attr);
+    for (; RTA_OK(rta, len); rta = RTA_NEXT(rta, len))
+    {
+        if (rta->rta_type != MPLS_IPTUNNEL_DST)
+        {
+            continue;
+        }
+
+        int count = RTA_PAYLOAD(rta) / (int)sizeof(struct mpls_label);
+        const struct mpls_label *labels = (const struct mpls_label *)RTA_DATA(rta);
+        size_t used = 0;
+        int n = snprintf(buf, sz, "mpls[");
+        if (n < 0 || (size_t)n >= sz)
+        {
+            return;
+        }
+        used = (size_t)n;
+
+        for (int i = 0; i < count; i++)
+        {
+            uint32_t entry = ntohl(labels[i].entry);
+            uint32_t label = (entry & MPLS_LS_LABEL_MASK) >> MPLS_LS_LABEL_SHIFT;
+            n = snprintf(buf + used, sz - used, "%s%u", (i == 0) ? "" : ",", label);
+            if (n < 0 || (size_t)n >= sz - used)
+            {
+                snprintf(buf + used, sz - used, "...");
+                return;
+            }
+            used += (size_t)n;
+        }
+
+        snprintf(buf + used, sz - used, "]");
+        return;
+    }
+}
+
 static void os_parse_route(struct nlmsghdr *nlh, GString *buf)
 {
     struct rtmsg *rtm = (struct rtmsg *)NLMSG_DATA(nlh);
     char dst_str[64];
     char gw_str[64] = "-";
     char oif_name[IF_NAMESIZE] = "-";
+    char encap_str[128] = "-";
     uint32_t priority = 0;
+    uint16_t encap_type = 0;
+    const struct rtattr *encap_attr = NULL;
 
     if (rtm->rtm_family == AF_INET)
     {
@@ -432,16 +479,27 @@ static void os_parse_route(struct nlmsghdr *nlh, GString *buf)
             case RTA_PRIORITY:
                 memcpy(&priority, RTA_DATA(rta), sizeof(priority));
                 break;
+            case RTA_ENCAP_TYPE:
+                memcpy(&encap_type, RTA_DATA(rta), sizeof(encap_type));
+                break;
+            case RTA_ENCAP:
+                encap_attr = rta;
+                break;
             default:
                 break;
         }
     }
 
+    if (encap_type == LWTUNNEL_ENCAP_MPLS && encap_attr)
+    {
+        os_parse_mpls_encap(encap_attr, encap_str, sizeof(encap_str));
+    }
+
     char prefix_str[80];
     snprintf(prefix_str, sizeof(prefix_str), "%s/%u", dst_str, rtm->rtm_dst_len);
-    g_string_append_printf(buf, "%-7s %-10s %-26s %-20s %-14s %-8s %u\r\n", os_table_str(rtm->rtm_table),
+    g_string_append_printf(buf, "%-7s %-10s %-26s %-20s %-14s %-8s %-7u %s\r\n", os_table_str(rtm->rtm_table),
                            os_type_str(rtm->rtm_type), prefix_str, gw_str, oif_name, os_proto_str(rtm->rtm_protocol),
-                           priority);
+                           priority, encap_str);
 }
 
 int fib_os_show(GString *buf, sa_family_t family)
@@ -482,10 +540,10 @@ int fib_os_show(GString *buf, sa_family_t family)
     }
 
     g_string_append_printf(buf,
-                           "\r\n%-7s %-10s %-26s %-20s %-14s %-8s %s\r\n"
+                           "\r\n%-7s %-10s %-26s %-20s %-14s %-8s %-7s %s\r\n"
                            "------- ---------- -------------------------- "
-                           "-------------------- -------------- -------- ------\r\n",
-                           "Table", "Type", "Prefix", "Gateway", "Interface", "Proto", "Metric");
+                           "-------------------- -------------- -------- ------- ------------\r\n",
+                           "Table", "Type", "Prefix", "Gateway", "Interface", "Proto", "Metric", "Encap");
 
     char *recv_buf = (char *)g_malloc(FIB_OS_DUMP_BUFSIZE);
     if (!recv_buf)

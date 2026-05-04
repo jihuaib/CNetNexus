@@ -42,8 +42,8 @@ SHOW_VERSION_CMD = "show version"
 PROMPT_LINE_RE = re.compile(r"^\s*<NetNexus[^>]*>.*$")
 MAX_CONFIG_DIFF_LINES = 300
 STEP_MARKER_RE = re.compile(r"^(?:\[[^\]]+\]\s*)?\s*=+\s*STEP:\s*(.*?)\s*=+\s*$")
-LOG_CMD_LINE_RE = re.compile(r"^(?:\[[^\]]+\]\s*)?\[[^\]]+\]\s+>>>\s+.*$")
-LOG_ECHO_LINE_RE = re.compile(r"^(?:\[[^\]]+\]\s*)?\[[^\]]+\]\s+<<<\s+.*$")
+LOG_CMD_LINE_RE = re.compile(r"^(?:\[[^\]]+\]\s*)?\[[^\]]+\]\s+<[A-Za-z0-9_.-]+>\s+\S.*$")
+LOG_ECHO_LINE_RE = re.compile(r"(?!.*)")
 LOG_PROMPT_LINE_RE = re.compile(r"^(?:\[[^\]]+\]\s*)?<NetNexus[^>]*>\s*$")
 LOG_STEP_LINE_RE = re.compile(r"^(?:\[[^\]]+\]\s*)?=+\s*STEP:.*$")
 FAIL_STEP_HINTS = (

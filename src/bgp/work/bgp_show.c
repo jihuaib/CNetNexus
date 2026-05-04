@@ -499,6 +499,24 @@ static void bgp_route_fmt_fields(const bgp_route_node_t *route, char *lp, size_t
     }
 }
 
+static const char *bgp_route_label_name(const bgp_route_node_t *route)
+{
+    if (!route || !route->has_label)
+    {
+        return NULL;
+    }
+
+    switch (route->label_source)
+    {
+        case BGP_ROUTE_LABEL_SOURCE_LOCAL:
+            return "LocalLabel";
+        case BGP_ROUTE_LABEL_SOURCE_RECEIVED:
+            return "RecvLabel";
+        default:
+            return "Label";
+    }
+}
+
 static gboolean bgp_show_route_width_cb(gpointer key, gpointer value, gpointer user_data)
 {
     (void)key;
@@ -640,6 +658,11 @@ static void bgp_show_route_detail(GString *buf, const bgp_rthead_t *head)
         else
         {
             g_string_append_printf(buf, "Imported\r\n");
+        }
+        const char *label_name = bgp_route_label_name(route);
+        if (label_name)
+        {
+            g_string_append_printf(buf, "    %-10s: %u\r\n", label_name, route->label);
         }
         g_string_append_printf(buf, "    Attr-ID  : %u (refcnt=%u)\r\n", route->attr ? route->attr->attr_id : 0,
                                route->attr ? route->attr->refcnt : 0);

@@ -25,19 +25,44 @@ static int tunnel_show_send_chunked(dev_ipc_message_t *msg, GString *full_text)
 static int tunnel_show_handle_tunnel(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
     int show_label = 0;
+    tunnel_show_section_t section = TUNNEL_SHOW_SUMMARY;
 
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
     {
-        if (!CLI_TLV_IS_CTX(&entry) && entry.cfg_id == 1)
+        if (CLI_TLV_IS_CTX(&entry))
         {
-            show_label = 1;
+            cli_tlv_entry_free(&entry);
+            continue;
+        }
+        switch (entry.cfg_id)
+        {
+            case 1:
+                show_label = 1;
+                break;
+            case 2:
+                section = TUNNEL_SHOW_CANDIDATE;
+                break;
+            case 3:
+                section = TUNNEL_SHOW_NHLFE;
+                break;
+            case 4:
+                section = TUNNEL_SHOW_FTN;
+                break;
+            case 5:
+                section = TUNNEL_SHOW_ILM;
+                break;
+            case 6:
+                section = TUNNEL_SHOW_WATCH;
+                break;
+            default:
+                break;
         }
         cli_tlv_entry_free(&entry);
     }
 
     char *text = show_label ? tunnel_rib_show_labels(g_tunnel_work_local ? g_tunnel_work_local->rib : NULL)
-                            : tunnel_rib_show(g_tunnel_work_local ? g_tunnel_work_local->rib : NULL);
+                            : tunnel_rib_show(g_tunnel_work_local ? g_tunnel_work_local->rib : NULL, section);
     GString *out = text ? g_string_new(text) : NULL;
     g_free(text);
     return tunnel_show_send_chunked(msg, out);

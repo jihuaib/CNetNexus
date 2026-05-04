@@ -342,6 +342,7 @@ static int bgp_import_route_entry_to_safi(const route_msg_entry_t *entry, bgp_vr
         {
             return 0;
         }
+        bgp_route_set_label_from_nlri(route, &nlri, BGP_ROUTE_LABEL_SOURCE_LOCAL);
         if (rc >= 0 && inst->calc_queue)
         {
             bgp_calc_queue_push(inst->calc_queue, inst, &nlri);

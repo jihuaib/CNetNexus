@@ -58,6 +58,7 @@ def _wait_r2_lu_route(rt: TopologyRuntime, *, lu_nexthop: str, timeout: int) -> 
         regex=[
             r"(?im)^\s*Paths\s*:\s*1\s*$",
             r"(?im)^>v\s+From Peer\s*:",
+            r"(?im)^\s*RecvLabel\s*:\s*[1-9]\d*\s*$",
             r"(?im)^\s*Valid\s*:\s*Yes\s*$",
             r"(?im)^\s*IterState:\s*Resolved\s*$",
             r"(?im)^\s*Tunnel-ID:\s*[1-9]\d*\s*$",
@@ -68,20 +69,42 @@ def _wait_r2_lu_route(rt: TopologyRuntime, *, lu_nexthop: str, timeout: int) -> 
 
 
 def _wait_r2_tunnel_fec(rt: TopologyRuntime, *, lu_nexthop: str, timeout: int) -> None:
-    wait_check(
+    wait_checks(
         rt,
-        device="r2",
-        command="show tunnel",
+        [
+            {
+                "device": "r2",
+                "command": "show tunnel candidate",
+                "contains": [f"endpoint {TEST_PREFIX_ADDR}", f"nh {lu_nexthop}", "src bgp-lu"],
+                "regex": [
+                    rf"(?im)^\s*vrf\s+0\s+afi\s+1\s+endpoint\s+{re.escape(TEST_PREFIX_ADDR)}\s+nh\s+"
+                    rf"{re.escape(lu_nexthop)}\s+relay\s+-\s+oif\s+\d+\s+src\s+bgp-lu\s+pref\s+\d+\s+"
+                    r"labels\s+\[[0-9,]+\]\s*$",
+                ],
+                "label": "r2 tunnel candidate carries LU label stack",
+            },
+            {
+                "device": "r2",
+                "command": "show tunnel nhlfe",
+                "contains": [f"endpoint {TEST_PREFIX_ADDR}", f"relay {lu_nexthop}"],
+                "regex": [
+                    rf"(?im)^\s*id\s+[1-9]\d*\s+endpoint\s+{re.escape(TEST_PREFIX_ADDR)}\s+relay\s+"
+                    rf"{re.escape(lu_nexthop)}\s+oif\s+\d+\s+src\s+\S+\s+labels\s+\[[0-9,]+\]\s*$",
+                ],
+                "label": "r2 tunnel NHLFE resolves LU FEC through relay",
+            },
+            {
+                "device": "r2",
+                "command": "show tunnel ftn",
+                "regex": [
+                    rf"(?im)^\s*vrf\s+0\s+afi\s+1\s+fec\s+{re.escape(TEST_PREFIX_ADDR)}/{TEST_PREFIX_LEN}\s+"
+                    r"->\s+nhlfe\s+[1-9]\d*\s+src\s+bgp-lu\s+state\s+up\s*$",
+                ],
+                "label": "r2 tunnel FTN maps LU FEC to NHLFE",
+            },
+        ],
         timeout=timeout,
         interval=2,
-        contains=[f"endpoint {TEST_PREFIX_ADDR}", f"nh {lu_nexthop}", f"relay {lu_nexthop}", "src bgp-lu"],
-        regex=[
-            rf"(?im)^\s*id\s+[1-9]\d*\s+endpoint\s+{re.escape(TEST_PREFIX_ADDR)}\s+relay\s+"
-            rf"{re.escape(lu_nexthop)}\s+oif\s+\d+\s+src\s+bgp-lu\s+labels\s+\[[0-9,]+\]\s*$",
-            rf"(?im)^\s*vrf\s+0\s+afi\s+1\s+fec\s+{re.escape(TEST_PREFIX_ADDR)}/{TEST_PREFIX_LEN}\s+"
-            r"->\s+nhlfe\s+[1-9]\d*\s+src\s+bgp-lu\s+state\s+up\s*$",
-        ],
-        label="r2 tunnel RIB builds LU NHLFE/FTN for the FEC",
     )
 
 
@@ -122,7 +145,10 @@ def _wait_r2_fib_tunnel(rt: TopologyRuntime, *, lu_nexthop: str, timeout: int) -
 
 
 def _wait_r2_os_route(rt: TopologyRuntime, *, lu_nexthop: str, timeout: int) -> None:
-    row_regex = rf"(?im)^\s*main\s+unicast\s+{re.escape(TEST_PREFIX)}\s+{re.escape(lu_nexthop)}\s+\S+\s+bgp\s+\d+\s*$"
+    row_regex = (
+        rf"(?im)^\s*main\s+unicast\s+{re.escape(TEST_PREFIX)}\s+{re.escape(lu_nexthop)}\s+"
+        r"\S+\s+bgp\s+\d+\s+mpls\[[0-9,]+\]\s*$"
+    )
     wait_check(
         rt,
         device="r2",
@@ -212,14 +238,24 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         )
 
         step("Verify r1 allocates label and r2 receives LU route")
-        wait_check(
+        wait_checks(
             rt,
-            device="r1",
-            command="show tunnel label",
+            [
+                {
+                    "device": "r1",
+                    "command": "show tunnel label",
+                    "regex": [rf"(?im)^\s*\d+\s+0\s+ipv4\s+{re.escape(TEST_PREFIX)}\s+bgp:\d+\s+bgp-lu\s*$"],
+                    "label": "r1 tunnel label allocated for imported LU FEC",
+                },
+                {
+                    "device": "r1",
+                    "command": "show tunnel ilm",
+                    "regex": [r"(?im)^\s*vrf\s+0\s+label\s+[1-9]\d*\s+->\s+nhlfe\s+0\s+action\s+3\s+state\s+up\s*$"],
+                    "label": "r1 tunnel ILM pops locally allocated LU label",
+                },
+            ],
             timeout=40,
             interval=2,
-            regex=[rf"(?im)^\s*\d+\s+0\s+ipv4\s+{re.escape(TEST_PREFIX)}\s+bgp:\d+\s+bgp-lu\s*$"],
-            label="r1 tunnel label allocated for imported LU FEC",
         )
         _wait_r2_lu_route(rt, lu_nexthop=r2_to_r1_peer, timeout=50)
 

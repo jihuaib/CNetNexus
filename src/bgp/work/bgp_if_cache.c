@@ -70,6 +70,7 @@ typedef struct bgp_direct_check_ctx
 {
     const net_addr_t *neighbor_addr;
     gboolean found;
+    uint32_t ifindex;
 } bgp_direct_check_ctx_t;
 
 static gboolean bgp_direct_check_iter(const if_api_cache_entry_t *entry, void *user_data)
@@ -107,6 +108,7 @@ static gboolean bgp_direct_check_iter(const if_api_cache_entry_t *entry, void *u
     if (prefix_contains_addr(local_addr, prefix_len, ctx->neighbor_addr))
     {
         ctx->found = TRUE;
+        ctx->ifindex = entry->ifindex;
         return TRUE;
     }
 
@@ -127,6 +129,23 @@ gboolean bgp_if_cache_is_directly_connected(const net_addr_t *neighbor_addr)
 
     if_api_cache_foreach(bgp_direct_check_iter, &ctx);
     return ctx.found;
+}
+
+uint32_t bgp_if_cache_direct_ifindex(const net_addr_t *neighbor_addr)
+{
+    if (!neighbor_addr || neighbor_addr->family == 0)
+    {
+        return 0u;
+    }
+
+    bgp_direct_check_ctx_t ctx = {
+        .neighbor_addr = neighbor_addr,
+        .found = FALSE,
+        .ifindex = 0u,
+    };
+
+    if_api_cache_foreach(bgp_direct_check_iter, &ctx);
+    return ctx.ifindex;
 }
 
 int bgp_if_cache_resolve_source_addr(const char *if_name, sa_family_t peer_family, net_addr_t *out_addr, char *errmsg,

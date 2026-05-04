@@ -37,6 +37,19 @@ PROMPT_RE = re.compile(br"<[A-Za-z0-9_.-]+(?:\([^>]*\))?>")
 IF_RE = re.compile(r"^GE-(\d+)$")
 PAGER_DISABLE_CMD = "terminal length 0"
 
+
+def _strip_command_echo(text: str, command: str) -> str:
+    """从 telnet 响应中剥离首个出现的命令回显行，保留实际输出。"""
+    if not command:
+        return text
+    idx = text.find(command)
+    if idx < 0:
+        return text
+    end = idx + len(command)
+    if end < len(text) and text[end] == "\n":
+        end += 1
+    return text[:idx] + text[end:]
+
 # 每台设备固定预占 4 个 GE 口，没挂 link 的槽位用 stub 网络补位，
 # 保证容器内 eth1..eth4 始终存在且与 if_map.conf.gns3 对齐。
 # remove_link/add_link 通过 link<->stub 原位互换来完成热插拔，避免
@@ -148,12 +161,15 @@ class NetNexusCli:
             raise RuntimeError(f"{self.name}: CLI not connected")
         eff_timeout = timeout if timeout is not None else self.cmd_timeout
         if self.log_commands or self.verbose:
-            print(f">>> {command}")
+            print(f"<{self.name}> {command}")
         self.tn.write(command.encode("ascii") + b"\n")
         out = self._read_with_prompt_recovery(command=command, timeout=eff_timeout, expect_echo=command)
         text = out.replace("\r", "")
+        display = _strip_command_echo(text, command)
         if self.log_commands or self.verbose:
-            print(f"<<< {text.strip()}")
+            stripped = display.strip()
+            if stripped:
+                print(stripped)
         if strict and ("BGP Error:" in text or "Error:" in text):
             raise RuntimeError(f"{self.name}: command failed: {command}\n{text}")
         return text
@@ -170,14 +186,17 @@ class NetNexusCli:
             raise RuntimeError(f"{self.name}: CLI not connected")
         eff_timeout = timeout if timeout is not None else self.cmd_timeout
         if self.log_commands or self.verbose:
-            print(f">>> {partial}? (help)")
+            print(f"<{self.name}> {partial}? (help)")
         self.tn.write(partial.encode("ascii") + b"?")
         help_raw = self._read_with_prompt_recovery(
             command=f"{partial}?", timeout=eff_timeout, expect_echo=f"{partial}?"
         )
         help_text = help_raw.replace("\r", "")
+        display = _strip_command_echo(help_text, f"{partial}?")
         if self.log_commands or self.verbose:
-            print(f"<<< {help_text.strip()}")
+            stripped = display.strip()
+            if stripped:
+                print(stripped)
         cleanup = (b"\x7f" * len(partial)) + b"\n"
         self.tn.write(cleanup)
         try:

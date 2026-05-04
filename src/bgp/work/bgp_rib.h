@@ -31,6 +31,10 @@ typedef struct bgp_rthead bgp_rthead_t;
 /** 路由标记位：已逻辑删除，待下刷撤销后物理清理 */
 #define BGP_ROUTE_FLAG_STALE (1U << 4)
 
+#define BGP_ROUTE_LABEL_SOURCE_NONE 0u
+#define BGP_ROUTE_LABEL_SOURCE_LOCAL 1u
+#define BGP_ROUTE_LABEL_SOURCE_RECEIVED 2u
+
 /**
  * @brief 单条路径（同一 rthead 下可挂多条，按 source 来源地址区分）
  *
@@ -50,8 +54,11 @@ typedef struct bgp_route_node
     gint64 updated_at_usec;     /**< 路由最近更新时间（g_get_real_time，每次 reach 写入） */
     uint32_t iter_out_ifindex;  /**< nexthop 迭代得到的出接口索引（0 表示未知） */
     uint32_t tunnel_id;         /**< nexthop 迭代得到的隧道 ID（0 表示未使用隧道） */
+    uint32_t label;             /**< labeled-unicast 路径标签，语义由 label_source 区分 */
     uint8_t iter_watched;       /**< 是否已挂 relay watch（1=是，0=否） */
     uint8_t iter_resolved;      /**< nexthop 迭代是否可达（1=可达，0=不可达） */
+    uint8_t has_label;          /**< label 是否有效 */
+    uint8_t label_source;       /**< BGP_ROUTE_LABEL_SOURCE_* */
     uint8_t _pad0[2];           /**< 对齐填充 */
     uint32_t flags;             /**< 路由标记位，见 BGP_ROUTE_FLAG_* */
     uint32_t import_proto;      /**< IMPORT 路由来源协议（非 import-route 为 0） */
@@ -164,6 +171,7 @@ bgp_route_node_t *bgp_rthead_create_route(bgp_rib_t *rib, bgp_rthead_t *head, co
  */
 int bgp_rib_route_apply_reach(bgp_route_node_t *route, uint32_t import_proto, const bgp_attr_t *attr,
                               const bgp_nexthop_t *nexthop);
+void bgp_route_set_label_from_nlri(bgp_route_node_t *route, const bgp_nlri_entry_t *nlri, uint8_t label_source);
 
 /**
  * @brief rthead 队列引用计数操作

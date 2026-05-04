@@ -268,6 +268,48 @@ static void tunnel_append_ilm_for_fec(tunnel_rib_t *rib, const tunnel_fec_t *fec
     }
 }
 
+static gboolean tunnel_ilm_exists_for_label(const tunnel_rib_t *rib, uint32_t vrf_id, uint32_t in_label)
+{
+    for (const GList *it = rib ? rib->ilms : NULL; it; it = it->next)
+    {
+        const tunnel_ilm_t *ilm = it->data;
+        if (ilm && ilm->vrf_id == vrf_id && ilm->in_label == in_label)
+        {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+static void tunnel_append_local_pop_ilms(tunnel_rib_t *rib)
+{
+    if (!rib)
+    {
+        return;
+    }
+
+    for (const GList *it = rib->label_bindings; it; it = it->next)
+    {
+        const tunnel_label_binding_t *binding = it->data;
+        if (!binding || tunnel_ilm_exists_for_label(rib, binding->req.vrf_id, binding->label))
+        {
+            continue;
+        }
+
+        tunnel_ilm_t *ilm = g_malloc0(sizeof(*ilm));
+        if (!ilm)
+        {
+            continue;
+        }
+        ilm->vrf_id = binding->req.vrf_id;
+        ilm->in_label = binding->label;
+        ilm->nhlfe_id = 0u;
+        ilm->action = TUNNEL_ACTION_POP;
+        ilm->state = 1u;
+        rib->ilms = g_list_prepend(rib->ilms, ilm);
+    }
+}
+
 static tunnel_candidate_t *tunnel_candidate_best(const tunnel_rib_t *rib, uint32_t vrf_id, uint16_t afi,
                                                  const net_addr_t *endpoint)
 {
@@ -324,7 +366,7 @@ static gboolean tunnel_resolve_inner(const tunnel_rib_t *rib, uint32_t vrf_id, u
         return FALSE;
     }
 
-    if (candidate->out_ifindex != 0 || !net_addr_is_zero(&candidate->relay_addr))
+    if (candidate->out_ifindex != 0)
     {
         notify->resolved = 1;
         notify->source_type = candidate->source_type;
@@ -492,6 +534,8 @@ static void tunnel_rebuild_forwarding_tables(tunnel_rib_t *rib)
             tunnel_append_ilm_for_fec(rib, &candidate->fec, nhlfe->id, 1);
         }
     }
+
+    tunnel_append_local_pop_ilms(rib);
 }
 
 tunnel_rib_t *tunnel_rib_create(void)
@@ -789,7 +833,7 @@ static void append_labels(GString *out, uint8_t count, const uint32_t *labels)
     g_string_append_c(out, ']');
 }
 
-char *tunnel_rib_show(const tunnel_rib_t *rib)
+char *tunnel_rib_show(const tunnel_rib_t *rib, tunnel_show_section_t section)
 {
     GString *out = g_string_new(NULL);
     if (!out)
@@ -797,64 +841,95 @@ char *tunnel_rib_show(const tunnel_rib_t *rib)
         return NULL;
     }
 
-    g_string_append_printf(out, "Tunnel candidates: %u\n", rib ? g_list_length(rib->candidates) : 0);
-    for (const GList *it = rib ? rib->candidates : NULL; it; it = it->next)
+    switch (section)
     {
-        const tunnel_candidate_t *c = it->data;
-        g_string_append_printf(out, "  vrf %u afi %u endpoint ", c->vrf_id, c->afi);
-        append_addr(out, &c->endpoint);
-        g_string_append_printf(out, " nh ");
-        append_addr(out, &c->nexthop);
-        g_string_append_printf(out, " relay ");
-        append_addr(out, &c->relay_addr);
-        g_string_append_printf(out, " oif %u src %s pref %u labels ", c->out_ifindex, source_name(c->source_type),
-                               c->preference);
-        append_labels(out, c->label_count, c->labels);
-        g_string_append_c(out, '\n');
-    }
+        case TUNNEL_SHOW_CANDIDATE:
+            g_string_append_printf(out, "Tunnel candidates: %u\n", rib ? g_list_length(rib->candidates) : 0);
+            for (const GList *it = rib ? rib->candidates : NULL; it; it = it->next)
+            {
+                const tunnel_candidate_t *c = it->data;
+                g_string_append_printf(out, "  vrf %u afi %u endpoint ", c->vrf_id, c->afi);
+                append_addr(out, &c->endpoint);
+                g_string_append_printf(out, " nh ");
+                append_addr(out, &c->nexthop);
+                g_string_append_printf(out, " relay ");
+                append_addr(out, &c->relay_addr);
+                g_string_append_printf(out, " oif %u src %s pref %u labels ", c->out_ifindex,
+                                       source_name(c->source_type), c->preference);
+                append_labels(out, c->label_count, c->labels);
+                g_string_append_c(out, '\n');
+            }
+            break;
 
-    g_string_append_printf(out, "\nNHLFE: %u\n", rib ? g_list_length(rib->nhlfes) : 0);
-    for (const GList *it = rib ? rib->nhlfes : NULL; it; it = it->next)
-    {
-        const tunnel_nhlfe_t *n = it->data;
-        g_string_append_printf(out, "  id %u endpoint ", n->id);
-        append_addr(out, &n->endpoint);
-        g_string_append_printf(out, " relay ");
-        append_addr(out, &n->relay_addr);
-        g_string_append_printf(out, " oif %u src %s labels ", n->out_ifindex, source_name(n->source_type));
-        append_labels(out, n->label_count, n->labels);
-        g_string_append_c(out, '\n');
-    }
+        case TUNNEL_SHOW_NHLFE:
+            g_string_append_printf(out, "NHLFE: %u\n", rib ? g_list_length(rib->nhlfes) : 0);
+            for (const GList *it = rib ? rib->nhlfes : NULL; it; it = it->next)
+            {
+                const tunnel_nhlfe_t *n = it->data;
+                g_string_append_printf(out, "  id %u endpoint ", n->id);
+                append_addr(out, &n->endpoint);
+                g_string_append_printf(out, " relay ");
+                append_addr(out, &n->relay_addr);
+                g_string_append_printf(out, " oif %u src %s labels ", n->out_ifindex, source_name(n->source_type));
+                append_labels(out, n->label_count, n->labels);
+                g_string_append_c(out, '\n');
+            }
+            break;
 
-    g_string_append_printf(out, "\nFTN: %u\n", rib ? g_list_length(rib->ftns) : 0);
-    for (const GList *it = rib ? rib->ftns : NULL; it; it = it->next)
-    {
-        const tunnel_ftn_t *f = it->data;
-        g_string_append_printf(out, "  vrf %u afi %u fec ", f->fec.vrf_id, f->fec.afi);
-        append_addr(out, &f->fec.addr);
-        g_string_append_printf(out, "/%u -> nhlfe %u src %s state %s\n", f->fec.prefix_len, f->nhlfe_id,
-                               source_name(f->source_type), f->state ? "up" : "down");
-    }
+        case TUNNEL_SHOW_FTN:
+            g_string_append_printf(out, "FTN: %u\n", rib ? g_list_length(rib->ftns) : 0);
+            for (const GList *it = rib ? rib->ftns : NULL; it; it = it->next)
+            {
+                const tunnel_ftn_t *f = it->data;
+                g_string_append_printf(out, "  vrf %u afi %u fec ", f->fec.vrf_id, f->fec.afi);
+                append_addr(out, &f->fec.addr);
+                g_string_append_printf(out, "/%u -> nhlfe %u src %s state %s\n", f->fec.prefix_len, f->nhlfe_id,
+                                       source_name(f->source_type), f->state ? "up" : "down");
+            }
+            break;
 
-    g_string_append_printf(out, "\nILM: %u\n", rib ? g_list_length(rib->ilms) : 0);
-    for (const GList *it = rib ? rib->ilms : NULL; it; it = it->next)
-    {
-        const tunnel_ilm_t *i = it->data;
-        g_string_append_printf(out, "  vrf %u label %u -> nhlfe %u action %u state %s\n", i->vrf_id, i->in_label,
-                               i->nhlfe_id, i->action, i->state ? "up" : "down");
-    }
+        case TUNNEL_SHOW_ILM:
+            g_string_append_printf(out, "ILM: %u\n", rib ? g_list_length(rib->ilms) : 0);
+            for (const GList *it = rib ? rib->ilms : NULL; it; it = it->next)
+            {
+                const tunnel_ilm_t *i = it->data;
+                g_string_append_printf(out, "  vrf %u label %u -> nhlfe %u action %u state %s\n", i->vrf_id,
+                                       i->in_label, i->nhlfe_id, i->action, i->state ? "up" : "down");
+            }
+            break;
 
-    g_string_append_printf(out, "\nLabel bindings: %u\n", rib ? g_list_length(rib->label_bindings) : 0);
-    for (const GList *it = rib ? rib->label_bindings : NULL; it; it = it->next)
-    {
-        const tunnel_label_binding_t *b = it->data;
-        g_string_append_printf(out, "  vrf %u afi %u fec ", b->req.fec.vrf_id, b->req.fec.afi);
-        append_addr(out, &b->req.fec.addr);
-        g_string_append_printf(out, "/%u owner %u:%u src %s label %u\n", b->req.fec.prefix_len, b->req.owner_module_id,
-                               b->req.owner_id, source_name(b->req.source_type), b->label);
-    }
+        case TUNNEL_SHOW_WATCH:
+            g_string_append_printf(out, "Resolve watches: %u\n", rib ? g_list_length(rib->watches) : 0);
+            for (const GList *it = rib ? rib->watches : NULL; it; it = it->next)
+            {
+                const tunnel_watch_t *w = it->data;
+                const tunnel_resolve_notify_t *n = &w->last_notify;
+                g_string_append_printf(out, "  owner %s vrf %u afi %u endpoint ", module_name(w->owner_module_id),
+                                       w->req.vrf_id, w->req.afi);
+                append_addr(out, &w->req.endpoint);
+                if (w->last_resolved < 0)
+                {
+                    g_string_append(out, " state unknown\n");
+                    continue;
+                }
+                g_string_append_printf(out, " state %s tunnel %u relay ", n->resolved ? "up" : "down", n->tunnel_id);
+                append_addr(out, &n->relay_addr);
+                g_string_append_printf(out, " oif %u labels ", n->out_ifindex);
+                append_labels(out, n->label_count, n->labels);
+                g_string_append_c(out, '\n');
+            }
+            break;
 
-    g_string_append_printf(out, "\nResolve watches: %u\n", rib ? g_list_length(rib->watches) : 0);
+        case TUNNEL_SHOW_SUMMARY:
+        default:
+            g_string_append(out, "Tunnel Summary\n");
+            g_string_append_printf(out, "  Candidates    : %u\n", rib ? g_list_length(rib->candidates) : 0);
+            g_string_append_printf(out, "  NHLFE         : %u\n", rib ? g_list_length(rib->nhlfes) : 0);
+            g_string_append_printf(out, "  FTN           : %u\n", rib ? g_list_length(rib->ftns) : 0);
+            g_string_append_printf(out, "  ILM           : %u\n", rib ? g_list_length(rib->ilms) : 0);
+            g_string_append_printf(out, "  ResolveWatch  : %u\n", rib ? g_list_length(rib->watches) : 0);
+            break;
+    }
     return g_string_free(out, FALSE);
 }
 

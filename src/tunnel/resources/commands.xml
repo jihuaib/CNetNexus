@@ -3,7 +3,7 @@
     <views>
     </views>
     <command_groups>
-        <!-- Group 1: show tunnel [label] -->
+        <!-- Group 1: show tunnel [candidate|nhlfe|ftn|ilm|watch|label] -->
         <group group-id="1">
             <elements>
                 <element id="1" type="keyword">
@@ -18,11 +18,56 @@
                     <name>label</name>
                     <description>Tunnel label allocations</description>
                 </element>
+                <element id="4" cfg-id="2" type="keyword">
+                    <name>candidate</name>
+                    <description>Tunnel candidate entries</description>
+                </element>
+                <element id="5" cfg-id="3" type="keyword">
+                    <name>nhlfe</name>
+                    <description>Next-hop label forwarding entries</description>
+                </element>
+                <element id="6" cfg-id="4" type="keyword">
+                    <name>ftn</name>
+                    <description>FEC-to-NHLFE entries</description>
+                </element>
+                <element id="7" cfg-id="5" type="keyword">
+                    <name>ilm</name>
+                    <description>Incoming label map entries</description>
+                </element>
+                <element id="8" cfg-id="6" type="keyword">
+                    <name>watch</name>
+                    <description>Tunnel resolve watches</description>
+                </element>
             </elements>
             <commands>
                 <!-- show tunnel -->
                 <command>
                     <expression>1 2</expression>
+                    <views>global</views>
+                </command>
+                <!-- show tunnel candidate -->
+                <command>
+                    <expression>1 2 4</expression>
+                    <views>global</views>
+                </command>
+                <!-- show tunnel nhlfe -->
+                <command>
+                    <expression>1 2 5</expression>
+                    <views>global</views>
+                </command>
+                <!-- show tunnel ftn -->
+                <command>
+                    <expression>1 2 6</expression>
+                    <views>global</views>
+                </command>
+                <!-- show tunnel ilm -->
+                <command>
+                    <expression>1 2 7</expression>
+                    <views>global</views>
+                </command>
+                <!-- show tunnel watch -->
+                <command>
+                    <expression>1 2 8</expression>
                     <views>global</views>
                 </command>
                 <!-- show tunnel label -->

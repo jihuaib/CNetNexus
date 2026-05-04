@@ -8,6 +8,7 @@
 #include <sys/socket.h>
 
 #include "bgp_calc.h"
+#include "bgp_if_cache.h"
 #include "bgp_instance.h"
 #include "bgp_main.h"
 #include "bgp_peer.h"
@@ -246,6 +247,7 @@ static int bgp_relay_reach_route_to_rib(bgp_instance_t *inst, const bgp_nlri_ent
     {
         return -1;
     }
+    bgp_route_set_label_from_nlri(route, nlri, BGP_ROUTE_LABEL_SOURCE_RECEIVED);
 
     if (bgp_rib_set_route_valid(rib, nlri, source, FALSE) < 0)
     {
@@ -370,7 +372,7 @@ static guint32 bgp_relay_owner_id_from_source(const net_addr_t *source)
 static gboolean bgp_relay_route_is_lu(const bgp_route_node_t *route)
 {
     return route && route->head && route->head->nlri.type == BGP_NLRI_PREFIX &&
-           route->head->nlri.safi == BGP_SAFI_LABELED && route->head->nlri.prefix.has_label;
+           route->head->nlri.safi == BGP_SAFI_LABELED && route->has_label;
 }
 
 static void bgp_relay_fill_lu_candidate(tunnel_candidate_t *candidate, const bgp_route_node_t *route)
@@ -395,7 +397,7 @@ static void bgp_relay_fill_lu_candidate(tunnel_candidate_t *candidate, const bgp
     candidate->endpoint = route->head->nlri.prefix.prefix.addr;
     candidate->nexthop = route->nexthop.global;
     candidate->label_count = 1u;
-    candidate->labels[0] = route->head->nlri.prefix.label;
+    candidate->labels[0] = route->label;
 }
 
 static void bgp_relay_publish_lu_candidate(const bgp_route_node_t *route, gboolean add)
@@ -1107,8 +1109,9 @@ void bgp_relay_session_lu_adj_sync(bgp_session_t *session, gboolean up)
         candidate.owner_id = ((uint32_t)candidate.afi << 16) | (uint32_t)BGP_SAFI_LABELED;
         candidate.endpoint = session->neighbor_addr;
         candidate.relay_addr = session->neighbor_addr;
+        candidate.out_ifindex = bgp_if_cache_direct_ifindex(&session->neighbor_addr);
 
-        if (up)
+        if (up && candidate.out_ifindex != 0u)
         {
             (void)tunnel_rpc_candidate_add(g_bgp_local->dev_ipc_ctx, &candidate);
         }

@@ -24,6 +24,7 @@
  * @return TRUE=直连，FALSE=非直连
  */
 gboolean bgp_if_cache_is_directly_connected(const net_addr_t *neighbor_addr);
+uint32_t bgp_if_cache_direct_ifindex(const net_addr_t *neighbor_addr);
 
 /**
  * @brief 按接口名解析源地址（替代原 db_rpc_query("if_interface") 按名查询）

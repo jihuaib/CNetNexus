@@ -65,22 +65,6 @@ int bgp_nlri_cmp(const bgp_nlri_entry_t *a, const bgp_nlri_entry_t *b)
                     return r;
                 }
             }
-            r = (int)a->prefix.has_label - (int)b->prefix.has_label;
-            if (r)
-            {
-                return r;
-            }
-            if (a->prefix.has_label)
-            {
-                if (a->prefix.label < b->prefix.label)
-                {
-                    return -1;
-                }
-                if (a->prefix.label > b->prefix.label)
-                {
-                    return 1;
-                }
-            }
             return 0;
 
         case BGP_NLRI_QP:
