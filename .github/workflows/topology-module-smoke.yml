@@ -43,6 +43,19 @@ jobs:
           fi
           grep -E '^vrf\s' /proc/modules
 
+      - name: Load MPLS kernel modules
+        run: |
+          set -e
+          for mod in mpls_router mpls_iptunnel; do
+            if ! grep -qE "^${mod}\\s" /proc/modules; then
+              sudo modprobe "$mod" || {
+                echo "::warning::${mod} kernel module unavailable; MPLS sysctl will fail in CI"
+                exit 0
+              }
+            fi
+            grep -E "^${mod}\\s" /proc/modules
+          done
+
       - name: Run All CI Modules And Generate Report
         run: |
           scripts/ci/run_all.sh \

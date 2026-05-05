@@ -11,7 +11,6 @@ Example:
 from __future__ import annotations
 
 import argparse
-import configparser
 import ipaddress
 import json
 import os
@@ -56,50 +55,6 @@ def _strip_command_echo(text: str, command: str) -> str:
 GE_PORT_COUNT = 4
 
 
-@dataclass(frozen=True)
-class TunnelRuntimeConfig:
-    label_dynamic_min: int
-    label_dynamic_max: int
-    linux_platform_labels: int
-    linux_mpls_input: bool
-
-
-def parse_tunnel_runtime_config(parser: configparser.ConfigParser, source: str) -> TunnelRuntimeConfig:
-    try:
-        label_dynamic_min = parser.getint("label", "dynamic_min")
-        label_dynamic_max = parser.getint("label", "dynamic_max")
-        linux_platform_labels = parser.getint("linux", "platform_labels")
-        linux_mpls_input = parser.getboolean("linux", "mpls_input")
-    except (configparser.Error, ValueError) as exc:
-        raise ValueError(f"invalid tunnel config {source}: {exc}") from exc
-
-    if label_dynamic_min < 1 or label_dynamic_min > label_dynamic_max or label_dynamic_max > 0xFFFFF:
-        raise ValueError(
-            f"invalid tunnel label range in {source}: {label_dynamic_min}-{label_dynamic_max}"
-        )
-    if linux_platform_labels < 1 or linux_platform_labels > 0xFFFFF or label_dynamic_max >= linux_platform_labels:
-        raise ValueError(
-            f"invalid tunnel linux.platform_labels in {source}: {linux_platform_labels}; "
-            f"must be > label.dynamic_max ({label_dynamic_max}) and <= 1048575"
-        )
-
-    return TunnelRuntimeConfig(
-        label_dynamic_min=label_dynamic_min,
-        label_dynamic_max=label_dynamic_max,
-        linux_platform_labels=linux_platform_labels,
-        linux_mpls_input=linux_mpls_input,
-    )
-
-
-def load_tunnel_runtime_config_from_image(image: str) -> TunnelRuntimeConfig:
-    source = f"{image}:/opt/netnexus/resources/tunnel/tunnel.conf"
-    text = run_cmd(["docker", "run", "--rm", "--entrypoint", "cat", image, "/opt/netnexus/resources/tunnel/tunnel.conf"])
-    parser = configparser.ConfigParser()
-    try:
-        parser.read_string(text)
-    except configparser.Error as exc:
-        raise ValueError(f"invalid tunnel config {source}: {exc}") from exc
-    return parse_tunnel_runtime_config(parser, source)
 
 
 def run_cmd(cmd: list[str], check: bool = True) -> str:
@@ -551,7 +506,6 @@ class TopologyRuntime:
         self.devices: dict[str, dict[str, Any]] = top["devices"]
         self.device_order: list[str] = sorted(self.devices.keys())
         self.endpoints = build_endpoints(top)
-        self.tunnel_runtime_config = load_tunnel_runtime_config_from_image(image)
         self.link_endpoints: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {}
         for link in self.top["links"]:
             lname = str(link["name"])
@@ -660,11 +614,7 @@ class TopologyRuntime:
 
     def _docker_network_connect(self, network_name: str, container_name: str, *, strict: bool) -> None:
         try:
-            cmd = ["docker", "network", "connect"]
-            if self.tunnel_runtime_config.linux_mpls_input:
-                cmd.extend(["--driver-opt", "com.docker.network.endpoint.sysctls=net.mpls.conf.IFNAME.input=1"])
-            cmd.extend([network_name, container_name])
-            run_cmd(cmd)
+            run_cmd(["docker", "network", "connect", network_name, container_name])
         except RuntimeError as exc:
             if (not strict) and self._is_benign_link_error("connect", str(exc)):
                 return
@@ -756,12 +706,7 @@ class TopologyRuntime:
                 dev,
                 "--network",
                 self.mgmt_net,
-                "--cap-add",
-                "NET_ADMIN",
-                "--cap-add",
-                "NET_RAW",
-                "--sysctl",
-                f"net.mpls.platform_labels={self.tunnel_runtime_config.linux_platform_labels}",
+                "--privileged",
                 "-e",
                 "NN_WORK_DIR=/opt/netnexus",
                 "-e",
