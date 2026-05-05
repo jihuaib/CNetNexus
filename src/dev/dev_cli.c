@@ -14,6 +14,7 @@
 #include <glib.h>
 #include <limits.h>
 #include <poll.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,13 +27,14 @@
 #include "dev_db.h"
 #include "dev_main.h"
 #include "dev_module.h"
+#include "dev_ping.h"
 #include "errcode.h"
 #include "log.h"
 #include "net_addr.h"
 #include "path_utils.h"
 
 static gint g_reboot_in_progress = 0;
-static FILE *g_ping_stream_fp = NULL;
+static dev_ping_session_t *g_ping_session = NULL;
 static int g_ping_stream_prefixed = 0;
 
 /* swap-image 改为后台线程模型,无需共享状态(参数全部下到 swap_async_args_t) */
@@ -238,26 +240,21 @@ static void dev_send_cli_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg
 
 static int ping_stream_send_next(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    if (!g_ping_stream_fp)
+    if (!g_ping_session)
     {
         dev_send_cli_response(ctx, msg, "");
         return ERRCODE_SUCCESS;
     }
 
     char line[256];
-    if (!fgets(line, sizeof(line), g_ping_stream_fp))
+    int has_line = dev_ping_next_line(g_ping_session, line, sizeof(line));
+    if (!has_line)
     {
-        pclose(g_ping_stream_fp);
-        g_ping_stream_fp = NULL;
+        dev_ping_close(g_ping_session);
+        g_ping_session = NULL;
         g_ping_stream_prefixed = 0;
         dev_send_cli_response_with_type(ctx, msg, CLI_MSG_TYPE_RESP, "");
         return ERRCODE_SUCCESS;
-    }
-
-    size_t len = strlen(line);
-    if (len > 0 && line[len - 1] == '\n')
-    {
-        line[--len] = '\0';
     }
 
     char out[320];
@@ -1072,12 +1069,15 @@ static int handle_show_ipc(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_t
 static int handle_ping(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
     char ip[64] = {0};
+    char src_ip[64] = {0};
     gboolean ping_ipv6 = FALSE;
 
-    /* 解析目标地址参数
+    /* 解析参数：
      * cfg_id=1: ping <ipv4-address>
-     * cfg_id=2: ping ipv6 <ipv6-address> 的 ipv6 关键字
+     * cfg_id=2: ping ipv6 关键字
      * cfg_id=3: ping ipv6 <ipv6-address>
+     * cfg_id=4: -a <src-ipv4>
+     * cfg_id=5: -a <src-ipv6>
      */
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
@@ -1100,6 +1100,14 @@ static int handle_ping(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_p
                 strlcpy(ip, text, sizeof(ip));
             }
         }
+        else if (entry.cfg_id == 4 || entry.cfg_id == 5)
+        {
+            const char *text = cli_tlv_entry_get_text(&entry);
+            if (text)
+            {
+                strlcpy(src_ip, text, sizeof(src_ip));
+            }
+        }
         cli_tlv_entry_free(&entry);
     }
 
@@ -1109,7 +1117,7 @@ static int handle_ping(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_p
         return ERRCODE_FAIL;
     }
 
-    /* 验证 IP 地址格式并规范化，防止命令注入 */
+    /* 验证 IP 地址格式并规范化 */
     net_addr_t addr;
     if (net_addr_from_str(ip, &addr) != 0 || (addr.family != AF_INET && addr.family != AF_INET6))
     {
@@ -1127,28 +1135,32 @@ static int handle_ping(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_p
         return ERRCODE_FAIL;
     }
 
-    char normalized_ip[64];
-    net_addr_to_str(&addr, normalized_ip, sizeof(normalized_ip));
-    const char *family_opt = ping_ipv6 ? "-6" : "-4";
-
-    if (g_ping_stream_fp)
+    net_addr_t src_addr;
+    bool has_src = false;
+    if (src_ip[0] != '\0')
     {
-        pclose(g_ping_stream_fp);
-        g_ping_stream_fp = NULL;
+        if (net_addr_from_str(src_ip, &src_addr) != 0 || src_addr.family != addr.family)
+        {
+            dev_send_cli_response(ctx, msg, "Error: invalid or mismatched source address\r\n");
+            return ERRCODE_FAIL;
+        }
+        has_src = true;
+    }
+
+    if (g_ping_session)
+    {
+        dev_ping_close(g_ping_session);
+        g_ping_session = NULL;
         g_ping_stream_prefixed = 0;
     }
 
-    /* 构造 ping 命令并执行（优先 stdbuf 行缓冲，不可用则回退原生 ping） */
-    char cmd[320];
-    snprintf(cmd, sizeof(cmd),
-             "sh -c 'if command -v stdbuf >/dev/null 2>&1; then exec stdbuf -oL ping %s -c 4 -W 2 %s; "
-             "else exec ping %s -c 4 -W 2 %s; fi' 2>&1",
-             family_opt, normalized_ip, family_opt, normalized_ip);
-
-    g_ping_stream_fp = popen(cmd, "r");
-    if (!g_ping_stream_fp)
+    char errbuf[128] = {0};
+    g_ping_session = dev_ping_start(&addr, has_src ? &src_addr : NULL, 4, 2000, errbuf, sizeof(errbuf));
+    if (!g_ping_session)
     {
-        dev_send_cli_response(ctx, msg, "Error: failed to execute ping command\r\n");
+        char out[256];
+        snprintf(out, sizeof(out), "Error: failed to start ping: %s\r\n", errbuf[0] ? errbuf : "unknown");
+        dev_send_cli_response(ctx, msg, out);
         return ERRCODE_FAIL;
     }
     g_ping_stream_prefixed = 0;
@@ -1203,7 +1215,7 @@ void dev_cli_handle_query_candidates(dev_ipc_message_t *msg)
 int dev_cli_handle_continue(dev_ipc_message_t *msg)
 {
     dev_ipc_context_t *ctx = dev_get_ipc_ctx();
-    if (g_ping_stream_fp)
+    if (g_ping_session)
     {
         return ping_stream_send_next(ctx, msg);
     }
@@ -1212,10 +1224,10 @@ int dev_cli_handle_continue(dev_ipc_message_t *msg)
 
 void dev_cli_cleanup_state(void)
 {
-    if (g_ping_stream_fp)
+    if (g_ping_session)
     {
-        pclose(g_ping_stream_fp);
-        g_ping_stream_fp = NULL;
+        dev_ping_close(g_ping_session);
+        g_ping_session = NULL;
         g_ping_stream_prefixed = 0;
     }
     cli_chunk_stream_reset(&g_dev_local->show_stream);

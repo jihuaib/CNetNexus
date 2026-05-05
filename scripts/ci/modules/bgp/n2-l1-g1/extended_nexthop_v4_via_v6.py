@@ -201,7 +201,7 @@ def _wait_os_ipv4_via_v6(
     即 RFC 8950 跨族 nexthop 数据面已生效。
     """
     best_row_regex = (
-        rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+{re.escape(nh6)}\s+\S+\s+bgp\s+\d+\s*$"
+        rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+{re.escape(nh6)}\s+\S+\s+bgp\s+\d+(?:\s+\S+)?\s*$"
     )
     wait_check(
         rt,

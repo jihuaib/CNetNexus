@@ -13,6 +13,7 @@
 #include "log.h"
 #include "net_addr.h"
 #include "route.h"
+#include "tunnel.h"
 
 static cli_chunk_stream_t g_fib_show_stream;
 
@@ -44,6 +45,14 @@ typedef struct fib_show_route_ctx
     uint32_t count;
 } fib_show_route_ctx_t;
 
+typedef struct fib_show_ilm_ctx
+{
+    GString *buf;
+    gboolean has_filter;
+    uint32_t filter_label;
+    uint32_t count;
+} fib_show_ilm_ctx_t;
+
 static const char *afi_name(uint16_t afi)
 {
     switch (afi)
@@ -67,6 +76,25 @@ static const char *nh_type_name(uint8_t nh_type)
             return "tunnel";
         case FIB_NH_TYPE_BLACKHOLE:
             return "blackhole";
+        default:
+            return "unknown";
+    }
+}
+
+static const char *action_name(uint8_t action)
+{
+    switch (action)
+    {
+        case TUNNEL_ACTION_DROP:
+            return "drop";
+        case TUNNEL_ACTION_PUSH:
+            return "push";
+        case TUNNEL_ACTION_SWAP:
+            return "swap";
+        case TUNNEL_ACTION_POP:
+            return "pop";
+        case TUNNEL_ACTION_PHP:
+            return "php";
         default:
             return "unknown";
     }
@@ -225,6 +253,72 @@ static void append_route_detail_cb(gpointer key, gpointer value, gpointer user_d
     }
 }
 
+static void append_ilm_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    fib_ilm_state_t *state = (fib_ilm_state_t *)value;
+    fib_show_ilm_ctx_t *ctx = (fib_show_ilm_ctx_t *)user_data;
+    if (!state || !ctx || !ctx->buf)
+    {
+        return;
+    }
+    if (ctx->has_filter && state->entry.in_label != ctx->filter_label)
+    {
+        return;
+    }
+
+    char relay[64] = "-";
+    char labels[128] = "-";
+    if (state->entry.relay_addr.family == AF_INET || state->entry.relay_addr.family == AF_INET6)
+    {
+        net_addr_to_str(&state->entry.relay_addr, relay, sizeof(relay));
+    }
+    labels_to_str(state->entry.label_count, state->entry.labels, labels, sizeof(labels));
+    g_string_append_printf(ctx->buf, "%-8u %-8u %-10s %-8u %-14s %-10u %-20s %-14s %-9s %-7s\r\n", state->entry.vrf_id,
+                           state->entry.in_label, action_name(state->entry.action), state->entry.nhlfe_id,
+                           state->entry.state ? "up" : "down", state->entry.out_ifindex, relay, labels,
+                           state->installed ? "yes" : "no", state->entry.state ? "yes" : "no");
+    ctx->count++;
+}
+
+static void append_ilm_detail_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    fib_ilm_state_t *state = (fib_ilm_state_t *)value;
+    fib_show_ilm_ctx_t *ctx = (fib_show_ilm_ctx_t *)user_data;
+    if (!state || !ctx || !ctx->buf)
+    {
+        return;
+    }
+    if (ctx->has_filter && state->entry.in_label != ctx->filter_label)
+    {
+        return;
+    }
+
+    char relay[64] = "-";
+    char labels[128] = "-";
+    if (state->entry.relay_addr.family == AF_INET || state->entry.relay_addr.family == AF_INET6)
+    {
+        net_addr_to_str(&state->entry.relay_addr, relay, sizeof(relay));
+    }
+    labels_to_str(state->entry.label_count, state->entry.labels, labels, sizeof(labels));
+
+    ctx->count++;
+    g_string_append_printf(ctx->buf,
+                           "\r\nFIB MPLS ILM Detail: %u\r\n"
+                           "  VRF       : %u\r\n"
+                           "  Action    : %s(%u)\r\n"
+                           "  State     : %s\r\n"
+                           "  Installed : %s\r\n"
+                           "  NHLFE     : %u\r\n"
+                           "  OIF       : %u\r\n"
+                           "  Relay     : %s\r\n"
+                           "  Labels    : [%s]\r\n",
+                           state->entry.in_label, state->entry.vrf_id, action_name(state->entry.action),
+                           state->entry.action, state->entry.state ? "up" : "down", state->installed ? "yes" : "no",
+                           state->entry.nhlfe_id, state->entry.out_ifindex, relay, labels);
+}
+
 static int handle_show_routes(dev_ipc_message_t *msg, uint16_t afi, const net_addr_t *filter_addr,
                               int64_t filter_prefix_len)
 {
@@ -271,6 +365,46 @@ static int handle_show_routes(dev_ipc_message_t *msg, uint16_t afi, const net_ad
     return send_chunked(msg, buf);
 }
 
+static int handle_show_mpls(dev_ipc_message_t *msg, gboolean has_filter, uint32_t filter_label)
+{
+    GString *buf = g_string_new("");
+    if (!buf)
+    {
+        send_resp(msg, "Error: Out of memory\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    fib_show_ilm_ctx_t ctx = {
+        .buf = buf,
+        .has_filter = has_filter,
+        .filter_label = filter_label,
+        .count = 0,
+    };
+
+    if (has_filter)
+    {
+        fib_rib_foreach_ilm(g_fib_work_local ? g_fib_work_local->rib : NULL, append_ilm_detail_cb, &ctx);
+    }
+    else
+    {
+        g_string_append_printf(buf,
+                               "\r\nFIB MPLS ILM\r\n"
+                               "%-8s %-8s %-10s %-8s %-14s %-10s %-20s %-14s %-9s %-7s\r\n"
+                               "-------- -------- ---------- -------- -------------- ---------- "
+                               "-------------------- -------------- --------- -------\r\n",
+                               "VRF", "Label", "Action", "NHLFE", "State", "OIF", "Relay", "Labels", "Installed",
+                               "Active");
+
+        fib_rib_foreach_ilm(g_fib_work_local ? g_fib_work_local->rib : NULL, append_ilm_cb, &ctx);
+    }
+    if (ctx.count == 0)
+    {
+        g_string_append(buf, "  (no MPLS ILM entries)\r\n");
+    }
+    g_string_append_printf(buf, "\r\nTotal %u ILM entr%s\r\n", ctx.count, ctx.count == 1 ? "y" : "ies");
+    return send_chunked(msg, buf);
+}
+
 static int handle_show_os(dev_ipc_message_t *msg, uint16_t afi)
 {
     GString *buf = g_string_new("");
@@ -280,7 +414,15 @@ static int handle_show_os(dev_ipc_message_t *msg, uint16_t afi)
         return ERRCODE_FAIL;
     }
 
-    sa_family_t family = (afi == ROUTE_AFI_IPV6) ? AF_INET6 : AF_INET;
+    sa_family_t family = AF_INET;
+    if (afi == ROUTE_AFI_IPV6)
+    {
+        family = AF_INET6;
+    }
+    else if (afi == 0)
+    {
+        family = AF_MPLS;
+    }
     if (fib_os_show(buf, family) != ERRCODE_SUCCESS)
     {
         g_string_free(buf, TRUE);
@@ -295,11 +437,14 @@ static int handle_show_fib(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
     int show_ipv4 = 0;
     int show_ipv6 = 0;
+    int show_mpls = 0;
     int show_os = 0;
     net_addr_t filter_addr;
     gboolean has_filter_addr = FALSE;
     int64_t filter_prefix_len = -1;
     gboolean has_filter_prefix_len = FALSE;
+    gboolean has_filter_label = FALSE;
+    uint32_t filter_label = 0;
     cli_tlv_entry_t entry;
 
     while (cli_tlv_next(parser, &entry) == 1)
@@ -316,6 +461,13 @@ static int handle_show_fib(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                     break;
                 case 3:
                     show_os = 1;
+                    break;
+                case 7:
+                    show_mpls = 1;
+                    break;
+                case 8:
+                    filter_label = (uint32_t)cli_tlv_entry_get_int(&entry);
+                    has_filter_label = TRUE;
                     break;
                 case 4:
                 {
@@ -342,6 +494,21 @@ static int handle_show_fib(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     if (!show_ipv4 && !show_ipv6)
     {
         afi = ROUTE_AFI_IPV4;
+    }
+
+    if (show_mpls)
+    {
+        if (has_filter_addr || has_filter_prefix_len)
+        {
+            send_resp(msg, "Error: MPLS FIB query does not support IP prefix filter\r\n");
+            return ERRCODE_FAIL;
+        }
+        if (show_os && has_filter_label)
+        {
+            send_resp(msg, "Error: MPLS OS FIB query does not support label filter\r\n");
+            return ERRCODE_FAIL;
+        }
+        return show_os ? handle_show_os(msg, 0) : handle_show_mpls(msg, has_filter_label, filter_label);
     }
 
     if (has_filter_addr != has_filter_prefix_len)

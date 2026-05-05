@@ -160,7 +160,7 @@ def _wait_os_route(
     interval: int = 2,
 ) -> None:
     row_regex = (
-        rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+{re.escape(gateway)}\s+\S+\s+static\s+\d+\s*$"
+        rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+{re.escape(gateway)}\s+\S+\s+static\s+\d+(?:\s+\S+)?\s*$"
     )
     wait_check(
         rt,

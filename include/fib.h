@@ -19,6 +19,8 @@
 #define FIB_MSG_TYPE_TUNNEL_UPSERT DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_FIB, 0x0003)
 #define FIB_MSG_TYPE_TUNNEL_DELETE DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_FIB, 0x0004)
 #define FIB_MSG_TYPE_ROUTE_RESULT DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_FIB, 0x0005)
+#define FIB_MSG_TYPE_ILM_UPSERT DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_FIB, 0x0006)
+#define FIB_MSG_TYPE_ILM_DELETE DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_FIB, 0x0007)
 #define FIB_MSG_TYPE_ACK DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_FIB, 0x00FF)
 
 typedef enum fib_nh_type
@@ -57,6 +59,20 @@ typedef struct fib_tunnel_entry
     uint32_t labels[FIB_MAX_LABEL_STACK];
 } fib_tunnel_entry_t;
 
+typedef struct fib_ilm_entry
+{
+    uint32_t vrf_id;
+    uint32_t in_label;
+    uint8_t action; /**< TUNNEL_ACTION_* */
+    uint8_t state;
+    uint8_t label_count;
+    uint8_t _pad0;
+    uint32_t nhlfe_id;
+    uint32_t out_ifindex;
+    net_addr_t relay_addr;
+    uint32_t labels[FIB_MAX_LABEL_STACK];
+} fib_ilm_entry_t;
+
 typedef struct fib_msg_ack
 {
     int32_t result;
@@ -73,5 +89,7 @@ int fib_rpc_route_upsert(dev_ipc_context_t *ctx, const fib_route_entry_t *entry)
 int fib_rpc_route_delete(dev_ipc_context_t *ctx, const fib_route_entry_t *entry);
 int fib_rpc_tunnel_upsert(dev_ipc_context_t *ctx, const fib_tunnel_entry_t *entry);
 int fib_rpc_tunnel_delete(dev_ipc_context_t *ctx, const fib_tunnel_entry_t *entry);
+int fib_rpc_ilm_upsert(dev_ipc_context_t *ctx, const fib_ilm_entry_t *entry);
+int fib_rpc_ilm_delete(dev_ipc_context_t *ctx, const fib_ilm_entry_t *entry);
 
 #endif /* FIB_H */

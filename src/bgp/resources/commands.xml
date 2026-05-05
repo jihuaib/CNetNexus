@@ -583,8 +583,8 @@
             </commands>
         </group>
 
-        <!-- import-route static / no import-route static（地址族视图） -->
-        <!-- cfg-id: 1=static -->
+        <!-- import-route static|connected / no import-route ...（地址族视图） -->
+        <!-- cfg-id: 1=static, 2=connected -->
         <group group-id="11">
             <elements>
                 <element id="1" type="keyword">
@@ -599,6 +599,10 @@
                     <name>static</name>
                     <description>Import static routes</description>
                 </element>
+                <element id="4" cfg-id="2" type="keyword">
+                    <name>connected</name>
+                    <description>Import directly connected routes</description>
+                </element>
             </elements>
 
             <commands>
@@ -610,6 +614,16 @@
                 <!-- no import-route static -->
                 <command>
                     <expression>1 2 3</expression>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-labeled,bgp-af-ipv6-labeled</views>
+                </command>
+                <!-- import-route connected -->
+                <command>
+                    <expression>2 4</expression>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-labeled,bgp-af-ipv6-labeled</views>
+                </command>
+                <!-- no import-route connected -->
+                <command>
+                    <expression>1 2 4</expression>
                     <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-labeled,bgp-af-ipv6-labeled</views>
                 </command>
             </commands>

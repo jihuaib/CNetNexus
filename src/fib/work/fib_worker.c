@@ -289,6 +289,58 @@ static int fib_handle_tunnel_delete(fib_worker_cmd_t *cmd)
     return ERRCODE_SUCCESS;
 }
 
+static int fib_handle_ilm_upsert(fib_worker_cmd_t *cmd)
+{
+    if (!cmd || !cmd->msg || !cmd->msg->payload || cmd->msg->payload_len < sizeof(fib_ilm_entry_t))
+    {
+        return ERRCODE_FAIL;
+    }
+
+    const fib_ilm_entry_t *entry = (const fib_ilm_entry_t *)cmd->msg->payload;
+    fib_ilm_entry_t old_entry;
+    uint8_t old_installed = 0u;
+    fib_ilm_state_t *old_state = fib_rib_ilm_lookup(g_fib_work_local->rib, entry->vrf_id, entry->in_label);
+    if (old_state)
+    {
+        old_entry = old_state->entry;
+        old_installed = old_state->installed;
+    }
+
+    fib_ilm_state_t *state = fib_rib_ilm_upsert(g_fib_work_local->rib, entry);
+    int rc = state ? ERRCODE_SUCCESS : ERRCODE_FAIL;
+    if (rc == ERRCODE_SUCCESS && old_state && old_installed)
+    {
+        (void)fib_os_ilm_withdraw(&old_entry);
+        state->installed = 0u;
+    }
+    if (rc == ERRCODE_SUCCESS && entry->state)
+    {
+        rc = fib_os_ilm_install(entry);
+        state->installed = (rc == ERRCODE_SUCCESS) ? 1u : 0u;
+    }
+    fib_worker_send_ack(cmd->msg, rc);
+    return rc;
+}
+
+static int fib_handle_ilm_delete(fib_worker_cmd_t *cmd)
+{
+    if (!cmd || !cmd->msg || !cmd->msg->payload || cmd->msg->payload_len < sizeof(fib_ilm_entry_t))
+    {
+        return ERRCODE_FAIL;
+    }
+
+    fib_ilm_entry_t old_entry;
+    uint8_t installed = 0u;
+    const fib_ilm_entry_t *entry = (const fib_ilm_entry_t *)cmd->msg->payload;
+    gboolean removed = fib_rib_ilm_delete(g_fib_work_local->rib, entry, &old_entry, &installed);
+    if (removed && installed)
+    {
+        (void)fib_os_ilm_withdraw(&old_entry);
+    }
+    fib_worker_send_ack(cmd->msg, ERRCODE_SUCCESS);
+    return ERRCODE_SUCCESS;
+}
+
 static int fib_worker_dispatch_cmd(fib_worker_cmd_t *cmd)
 {
     int stop = 0;
@@ -306,6 +358,12 @@ static int fib_worker_dispatch_cmd(fib_worker_cmd_t *cmd)
             break;
         case FIB_WORKER_CMD_TUNNEL_DELETE:
             (void)fib_handle_tunnel_delete(cmd);
+            break;
+        case FIB_WORKER_CMD_ILM_UPSERT:
+            (void)fib_handle_ilm_upsert(cmd);
+            break;
+        case FIB_WORKER_CMD_ILM_DELETE:
+            (void)fib_handle_ilm_delete(cmd);
             break;
         case FIB_WORKER_CMD_SHOW_CLI:
             (void)fib_show_dispatch(cmd->msg);

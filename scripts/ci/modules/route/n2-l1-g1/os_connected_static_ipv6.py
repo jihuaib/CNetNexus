@@ -48,7 +48,7 @@ def _wait_os_route(
 ) -> None:
     row_regex = (
         rf"(?im)^\s*{re.escape(table)}\s+{re.escape(route_type)}\s+"
-        rf"{re.escape(prefix)}\s+{re.escape(gateway)}\s+\S+\s+{re.escape(proto)}\s+\d+\s*$"
+        rf"{re.escape(prefix)}\s+{re.escape(gateway)}\s+\S+\s+{re.escape(proto)}\s+\d+(?:\s+\S+)?\s*$"
     )
     wait_check(
         rt,

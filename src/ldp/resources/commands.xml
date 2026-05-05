@@ -1,0 +1,208 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration module-id="12">
+    <views>
+        <view view-name="ldp">
+            <template>&lt;NetNexus(config-ldp)&gt;</template>
+        </view>
+    </views>
+
+    <show-this>
+        <view name="ldp"/>
+        <view name="if"/>
+        <view name="if-loop"/>
+    </show-this>
+
+    <command_groups>
+        <!-- Group 1: ldp / no ldp -->
+        <group group-id="1">
+            <elements>
+                <element id="1" cfg-id="1" type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>ldp</name>
+                    <description>LDP protocol</description>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>2</expression>
+                    <views>config</views>
+                    <to-view>ldp</to-view>
+                </command>
+                <command>
+                    <expression>1 2</expression>
+                    <views>config</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- Group 2: lsr-id <ip> / no lsr-id -->
+        <group group-id="2">
+            <elements>
+                <element id="1" cfg-id="2" type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>lsr-id</name>
+                    <description>Set LDP LSR-ID</description>
+                </element>
+                <element id="3" cfg-id="1" type="parameter">
+                    <name>&lt;lsr-id&gt;</name>
+                    <type>ipv4</type>
+                    <description>LSR-ID in dotted notation</description>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>2 3</expression>
+                    <views>ldp</views>
+                </command>
+                <command>
+                    <expression>1 2</expression>
+                    <views>ldp</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- Group 3: hello-interval / hold-time / keepalive-interval -->
+        <group group-id="3">
+            <elements>
+                <element id="1" cfg-id="5" type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+                <element id="2" cfg-id="1" type="keyword">
+                    <name>hello-interval</name>
+                    <description>LDP hello interval (ms)</description>
+                </element>
+                <element id="3" cfg-id="2" type="keyword">
+                    <name>hold-time</name>
+                    <description>LDP hold time (ms)</description>
+                </element>
+                <element id="4" cfg-id="3" type="keyword">
+                    <name>keepalive-interval</name>
+                    <description>LDP keepalive interval (ms)</description>
+                </element>
+                <element id="5" cfg-id="4" type="parameter">
+                    <name>&lt;value&gt;</name>
+                    <type>uint(100-65535000)</type>
+                    <description>Timer value in milliseconds</description>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>2 5</expression>
+                    <views>ldp</views>
+                </command>
+                <command>
+                    <expression>3 5</expression>
+                    <views>ldp</views>
+                </command>
+                <command>
+                    <expression>4 5</expression>
+                    <views>ldp</views>
+                </command>
+                <command>
+                    <expression>1 2</expression>
+                    <views>ldp</views>
+                </command>
+                <command>
+                    <expression>1 3</expression>
+                    <views>ldp</views>
+                </command>
+                <command>
+                    <expression>1 4</expression>
+                    <views>ldp</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- Group 4: 接口视图 LDP 命令 -->
+        <group group-id="4">
+            <elements>
+                <element id="1" cfg-id="5" type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>ldp</name>
+                    <description>LDP protocol</description>
+                </element>
+                <element id="3" cfg-id="1" type="keyword">
+                    <name>enable</name>
+                    <description>Enable LDP on this interface</description>
+                </element>
+                <element id="4" cfg-id="2" type="keyword">
+                    <name>hello-interval</name>
+                    <description>Per-interface hello interval (ms)</description>
+                </element>
+                <element id="5" cfg-id="3" type="keyword">
+                    <name>hold-time</name>
+                    <description>Per-interface hold time (ms)</description>
+                </element>
+                <element id="6" cfg-id="4" type="parameter">
+                    <name>&lt;value&gt;</name>
+                    <type>uint(100-65535000)</type>
+                    <description>Timer value in milliseconds</description>
+                </element>
+            </elements>
+
+            <commands>
+                <!-- ldp enable / no ldp enable -->
+                <command>
+                    <expression>2 3</expression>
+                    <views>if,if-loop</views>
+                </command>
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>if,if-loop</views>
+                </command>
+
+                <!-- ldp hello-interval &lt;ms&gt; / no -->
+                <command>
+                    <expression>2 4 6</expression>
+                    <views>if,if-loop</views>
+                </command>
+                <command>
+                    <expression>1 2 4</expression>
+                    <views>if,if-loop</views>
+                </command>
+
+                <!-- ldp hold-time &lt;ms&gt; / no -->
+                <command>
+                    <expression>2 5 6</expression>
+                    <views>if,if-loop</views>
+                </command>
+                <command>
+                    <expression>1 2 5</expression>
+                    <views>if,if-loop</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- Group 5: show ldp protocol / interface (worker 处理) -->
+        <group group-id="5">
+            <elements>
+                <element id="1" type="keyword"><name>show</name><description>Display system information</description></element>
+                <element id="2" type="keyword"><name>ldp</name><description>LDP information</description></element>
+                <element id="3" cfg-id="1" type="keyword"><name>protocol</name><description>LDP protocol summary</description></element>
+                <element id="4" cfg-id="2" type="keyword"><name>interface</name><description>LDP interface state</description></element>
+                <element id="5" cfg-id="3" type="keyword"><name>neighbor</name><description>LDP neighbors</description></element>
+                <element id="6" cfg-id="4" type="keyword"><name>binding</name><description>LDP label bindings</description></element>
+            </elements>
+
+            <commands>
+                <command><expression>1 2 3</expression><views>global</views></command>
+                <command><expression>1 2 4</expression><views>global</views></command>
+                <command><expression>1 2 5</expression><views>global</views></command>
+                <command><expression>1 2 6</expression><views>global</views></command>
+            </commands>
+        </group>
+    </command_groups>
+</configuration>

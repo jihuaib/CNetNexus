@@ -207,7 +207,8 @@ static void build_report_entry(route_msg_entry_t *e, const route_head_t *head, c
     e->iter_nexthop_addr = path->relay_addr;
     e->source_addr = path->key.source;
     e->is_withdraw = 0;
-    e->flags = 0;
+    /* 透传 path->entry_flags（如 ROUTE_ENTRY_FLAG_NO_ADV），由上层模块根据语义决定是否对外发布 */
+    e->flags = (uint8_t)(path->entry_flags & 0xFFu);
     e->nh_type = path->nh_type ? path->nh_type : ROUTE_NH_TYPE_IP;
     e->tunnel_id = (e->nh_type == ROUTE_NH_TYPE_TUNNEL) ? path->tunnel_id : 0u;
 }

@@ -865,7 +865,8 @@ static int handle_bgp_import_route(dev_ipc_message_t *msg, cli_tlv_parser_t *par
     apply.group_id = BGP_CLI_GROUP_ID_IMPORT_ROUTE;
     apply.isNo = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
     bgp_cli_ctx_t bctx = bgp_cli_ctx_default();
-    int has_static = 0;
+    uint32_t import_proto = 0u;
+    int has_proto = 0;
 
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
@@ -879,7 +880,12 @@ static int handle_bgp_import_route(dev_ipc_message_t *msg, cli_tlv_parser_t *par
         switch (entry.cfg_id)
         {
             case 1: /* static 关键字 */
-                has_static = 1;
+                import_proto = ROUTE_PROTOCOL_STATIC;
+                has_proto = 1;
+                break;
+            case 2: /* connected 关键字 */
+                import_proto = ROUTE_PROTOCOL_CONNECTED;
+                has_proto = 1;
                 break;
             default:
                 break;
@@ -887,7 +893,7 @@ static int handle_bgp_import_route(dev_ipc_message_t *msg, cli_tlv_parser_t *par
         cli_tlv_entry_free(&entry);
     }
 
-    if (!has_static)
+    if (!has_proto)
     {
         bgp_send_cli_response(msg, "Error: Must specify import route type\r\n");
         return ERRCODE_FAIL;
@@ -896,7 +902,7 @@ static int handle_bgp_import_route(dev_ipc_message_t *msg, cli_tlv_parser_t *par
     apply.vrf_id = bctx.vrf_id;
     apply.u.import_route.afi = bctx.afi;
     apply.u.import_route.safi = bctx.safi;
-    apply.u.import_route.import_proto = ROUTE_PROTOCOL_STATIC;
+    apply.u.import_route.import_proto = import_proto;
 
     if (bgp_worker_dispatch_apply(&apply) != 0)
     {
@@ -920,11 +926,35 @@ static int handle_bgp_import_route(dev_ipc_message_t *msg, cli_tlv_parser_t *par
     /* 写 DB */
     bgp_db_set_import_protos(bctx.vrf_id, bctx.afi, bctx.safi, apply.out.import_protos);
 
+    /* 先处理覆盖式互斥导致的取消订阅（new_protos 中已被清掉的协议） */
+    for (size_t ui = 0; ui < G_N_ELEMENTS(apply.out.import_route.unsub_protos); ++ui)
+    {
+        uint32_t up = apply.out.import_route.unsub_protos[ui];
+        if (up == ROUTE_PROTOCOL_MAX)
+        {
+            continue;
+        }
+        route_subscribe_req_t *ureq = (route_subscribe_req_t *)g_malloc(sizeof(route_subscribe_req_t));
+        ureq->protocol = up;
+        ureq->vrf_id = bctx.vrf_id;
+        ureq->afi = (uint16_t)bctx.afi;
+        ureq->_pad = 0;
+        ureq->flags = 0u;
+        dev_ipc_message_t *unmsg =
+            dev_ipc_message_create(ROUTE_MSG_TYPE_UNSUBSCRIBE, DEV_MODULE_ID_BGP, DEV_MODULE_ID_ROUTE, 0, ureq,
+                                   sizeof(route_subscribe_req_t), g_free);
+        if (unmsg)
+        {
+            (void)dev_ipc_send(bgp_local_ipc_ctx(), DEV_MODULE_ID_ROUTE, unmsg);
+            dev_ipc_message_free(unmsg);
+        }
+    }
+
     if (apply.out.import_route.route_subscribe_action != 0)
     {
         /* 向 ROUTE 模块发送订阅/取消订阅（fire-and-forget）。 */
         route_subscribe_req_t *req = (route_subscribe_req_t *)g_malloc(sizeof(route_subscribe_req_t));
-        req->protocol = ROUTE_PROTOCOL_STATIC;
+        req->protocol = import_proto;
         req->vrf_id = bctx.vrf_id;
         req->afi = (uint16_t)bctx.afi;
         req->_pad = 0;
@@ -944,7 +974,10 @@ static int handle_bgp_import_route(dev_ipc_message_t *msg, cli_tlv_parser_t *par
         }
     }
 
-    bgp_send_cli_response(msg, (apply.isNo) ? "import-route static disabled\r\n" : "import-route static enabled\r\n");
+    const char *proto_name = (import_proto == ROUTE_PROTOCOL_CONNECTED) ? "connected" : "static";
+    char rsp[96];
+    snprintf(rsp, sizeof(rsp), "import-route %s %s\r\n", proto_name, apply.isNo ? "disabled" : "enabled");
+    bgp_send_cli_response(msg, rsp);
     return ERRCODE_SUCCESS;
 }
 

@@ -65,6 +65,8 @@
 #define CLI_VIEW_ROUTE "route"
 /** ISIS 配置视图 */
 #define CLI_VIEW_ISIS "isis"
+/** LDP 配置视图 */
+#define CLI_VIEW_LDP "ldp"
 /** BGP 地址族 IPv4 单播视图 */
 #define CLI_VIEW_BGP_AF_IPV4 "bgp-af-ipv4-uni"
 /** BGP 地址族 IPv6 单播视图 */
@@ -111,6 +113,8 @@
 #define CLI_CTX_ID_VRF_AFI 9
 /** VRF 视图当前 AF SAFI 上下文（整数：VRF_SAFI_*） */
 #define CLI_CTX_ID_VRF_SAFI 10
+/** LDP 视图占位上下文（无字段，单实例 LDP；保留给将来多实例使用） */
+#define CLI_CTX_ID_LDP_INST 11
 
 /** 视图名称最大长度 */
 #define CLI_CLI_MAX_VIEW_LEN 20

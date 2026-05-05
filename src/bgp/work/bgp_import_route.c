@@ -32,7 +32,7 @@
 #define BGP_IMPORT_LABEL_TIMEOUT_MS 3000u
 
 static void bgp_import_fill_label_req(tunnel_label_req_t *req, uint32_t vrf_id, bgp_afi_t afi, uint8_t prefix_len,
-                                      const net_addr_t *prefix_addr)
+                                      const net_addr_t *prefix_addr, uint32_t out_ifindex)
 {
     memset(req, 0, sizeof(*req));
     req->vrf_id = vrf_id;
@@ -40,6 +40,7 @@ static void bgp_import_fill_label_req(tunnel_label_req_t *req, uint32_t vrf_id, 
     req->source_type = TUNNEL_SOURCE_BGP_LU;
     req->owner_module_id = DEV_MODULE_ID_BGP;
     req->owner_id = ((uint32_t)afi << 16) | (uint32_t)BGP_SAFI_LABELED;
+    req->out_ifindex = out_ifindex;
     req->fec.vrf_id = vrf_id;
     req->fec.afi = (uint16_t)afi;
     req->fec.prefix_len = prefix_len;
@@ -54,7 +55,9 @@ static int bgp_import_prepare_labeled_nlri(bgp_nlri_entry_t *nlri, const route_m
     }
 
     tunnel_label_req_t req;
-    bgp_import_fill_label_req(&req, entry->vrf_id, (bgp_afi_t)entry->afi, entry->prefix_len, &entry->prefix_addr);
+    uint32_t out_ifindex = (entry->iter_out_ifindex != 0u) ? entry->iter_out_ifindex : entry->out_ifindex;
+    bgp_import_fill_label_req(&req, entry->vrf_id, (bgp_afi_t)entry->afi, entry->prefix_len, &entry->prefix_addr,
+                              out_ifindex);
 
     uint32_t label = 0;
     if (tunnel_rpc_label_alloc(g_bgp_local->dev_ipc_ctx, &req, &label, BGP_IMPORT_LABEL_TIMEOUT_MS) != ERRCODE_SUCCESS)
@@ -81,7 +84,9 @@ static void bgp_import_release_labeled_label(const route_msg_entry_t *entry)
     }
 
     tunnel_label_req_t req;
-    bgp_import_fill_label_req(&req, entry->vrf_id, (bgp_afi_t)entry->afi, entry->prefix_len, &entry->prefix_addr);
+    uint32_t out_ifindex = (entry->iter_out_ifindex != 0u) ? entry->iter_out_ifindex : entry->out_ifindex;
+    bgp_import_fill_label_req(&req, entry->vrf_id, (bgp_afi_t)entry->afi, entry->prefix_len, &entry->prefix_addr,
+                              out_ifindex);
     (void)tunnel_rpc_label_release(g_bgp_local->dev_ipc_ctx, &req);
 }
 
@@ -96,7 +101,7 @@ static void bgp_import_release_labeled_label_for_nlri(const bgp_instance_t *inst
     uint32_t vrf_id = (inst->vrf) ? inst->vrf->vrf_id : ROUTE_VRF_DEFAULT;
     tunnel_label_req_t req;
     bgp_import_fill_label_req(&req, vrf_id, (bgp_afi_t)nlri->afi, nlri->prefix.prefix.prefix_len,
-                              &nlri->prefix.prefix.addr);
+                              &nlri->prefix.prefix.addr, 0u);
     (void)tunnel_rpc_label_release(g_bgp_local->dev_ipc_ctx, &req);
 }
 
@@ -341,6 +346,14 @@ static int bgp_import_route_entry_to_safi(const route_msg_entry_t *entry, bgp_vr
         if (bgp_rib_route_apply_reach(route, (uint32_t)entry->protocol, &attr, &nexthop) != 0)
         {
             return 0;
+        }
+        if (entry->flags & ROUTE_ENTRY_FLAG_NO_ADV)
+        {
+            BIT_SET(route->flags, BGP_ROUTE_FLAG_NO_ADV);
+        }
+        else
+        {
+            BIT_CLR(route->flags, BGP_ROUTE_FLAG_NO_ADV);
         }
         bgp_route_set_label_from_nlri(route, &nlri, BGP_ROUTE_LABEL_SOURCE_LOCAL);
         if (rc >= 0 && inst->calc_queue)

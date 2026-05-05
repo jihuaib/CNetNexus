@@ -1,6 +1,7 @@
 set(TUNNEL_SOURCES
     tunnel_main.c
     tunnel_cli.c
+    work/tunnel_config.c
     work/tunnel_worker.c
     work/tunnel_show.c
     work/tunnel_rib.c

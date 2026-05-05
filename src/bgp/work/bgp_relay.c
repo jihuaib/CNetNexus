@@ -20,6 +20,7 @@
 #include "bgp_worker.h"
 #include "errcode.h"
 #include "log.h"
+#include "route.h"
 
 typedef struct bgp_relay_nh_key
 {
@@ -243,7 +244,8 @@ static int bgp_relay_reach_route_to_rib(bgp_instance_t *inst, const bgp_nlri_ent
         is_new = TRUE;
     }
 
-    if (bgp_rib_route_apply_reach(route, 0, attr, nexthop) != 0)
+    /* peer 学习的路径不是 import-route，传 ROUTE_PROTOCOL_MAX 哨兵以避免被 IMPORT 标记位识别 */
+    if (bgp_rib_route_apply_reach(route, ROUTE_PROTOCOL_MAX, attr, nexthop) != 0)
     {
         return -1;
     }

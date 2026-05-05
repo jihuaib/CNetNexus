@@ -1,10 +1,12 @@
 #include "tunnel_rib.h"
 
+#include <net/if.h>
 #include <string.h>
 
 #include "errcode.h"
 #include "fib.h"
 #include "log.h"
+#include "tunnel_config.h"
 #include "tunnel_main.h"
 
 #define TUNNEL_RESOLVE_MAX_DEPTH 16u
@@ -49,6 +51,7 @@ typedef struct tunnel_ilm
     uint32_t vrf_id;
     uint32_t in_label;
     uint32_t nhlfe_id;
+    uint32_t out_ifindex;
     uint8_t action;
     uint8_t state;
 } tunnel_ilm_t;
@@ -71,6 +74,8 @@ struct tunnel_rib
     uint32_t next_nhlfe_id;
     uint32_t next_tunnel_id;
     uint32_t next_label;
+    uint32_t label_dynamic_min;
+    uint32_t label_dynamic_max;
 };
 
 static guint tunnel_id_key_hash(gconstpointer p)
@@ -204,18 +209,18 @@ static uint32_t tunnel_label_next(tunnel_rib_t *rib)
         return 0;
     }
 
-    if (rib->next_label < TUNNEL_LABEL_DYNAMIC_MIN || rib->next_label > TUNNEL_LABEL_DYNAMIC_MAX)
+    if (rib->next_label < rib->label_dynamic_min || rib->next_label > rib->label_dynamic_max)
     {
-        rib->next_label = TUNNEL_LABEL_DYNAMIC_MIN;
+        rib->next_label = rib->label_dynamic_min;
     }
 
     uint32_t start = rib->next_label;
     do
     {
         uint32_t label = rib->next_label++;
-        if (rib->next_label > TUNNEL_LABEL_DYNAMIC_MAX)
+        if (rib->next_label > rib->label_dynamic_max)
         {
-            rib->next_label = TUNNEL_LABEL_DYNAMIC_MIN;
+            rib->next_label = rib->label_dynamic_min;
         }
         if (!tunnel_label_is_used(rib, label))
         {
@@ -237,6 +242,40 @@ static tunnel_label_binding_t *tunnel_label_binding_lookup(const tunnel_rib_t *r
         }
     }
     return NULL;
+}
+
+static gboolean tunnel_ifname_is_logical_loop(const char *ifname)
+{
+    if (!ifname || strncmp(ifname, "loop", 4) != 0 || ifname[4] == '\0')
+    {
+        return FALSE;
+    }
+
+    for (const char *p = ifname + 4; *p; ++p)
+    {
+        if (*p < '0' || *p > '9')
+        {
+            return FALSE;
+        }
+    }
+    return TRUE;
+}
+
+static uint32_t tunnel_local_pop_out_ifindex(uint32_t out_ifindex)
+{
+    if (out_ifindex == 0u)
+    {
+        return 0u;
+    }
+
+    char ifname[IF_NAMESIZE];
+    if (!if_indextoname(out_ifindex, ifname) || !tunnel_ifname_is_logical_loop(ifname))
+    {
+        return out_ifindex;
+    }
+
+    unsigned int lo_ifindex = if_nametoindex("lo");
+    return lo_ifindex ? (uint32_t)lo_ifindex : out_ifindex;
 }
 
 static void tunnel_append_ilm_for_fec(tunnel_rib_t *rib, const tunnel_fec_t *fec, uint32_t nhlfe_id, uint8_t state)
@@ -281,6 +320,98 @@ static gboolean tunnel_ilm_exists_for_label(const tunnel_rib_t *rib, uint32_t vr
     return FALSE;
 }
 
+static const tunnel_nhlfe_t *tunnel_nhlfe_lookup(const tunnel_rib_t *rib, uint32_t nhlfe_id)
+{
+    if (!rib || nhlfe_id == 0u)
+    {
+        return NULL;
+    }
+
+    for (const GList *it = rib->nhlfes; it; it = it->next)
+    {
+        const tunnel_nhlfe_t *nhlfe = it->data;
+        if (nhlfe && nhlfe->id == nhlfe_id)
+        {
+            return nhlfe;
+        }
+    }
+    return NULL;
+}
+
+static void tunnel_fill_fib_ilm(fib_ilm_entry_t *entry, const tunnel_rib_t *rib, const tunnel_ilm_t *ilm)
+{
+    if (!entry || !ilm)
+    {
+        return;
+    }
+
+    memset(entry, 0, sizeof(*entry));
+    entry->vrf_id = ilm->vrf_id;
+    entry->in_label = ilm->in_label;
+    entry->action = ilm->action;
+    entry->state = ilm->state;
+    entry->nhlfe_id = ilm->nhlfe_id;
+    entry->out_ifindex = ilm->out_ifindex;
+
+    if (ilm->action == TUNNEL_ACTION_SWAP)
+    {
+        const tunnel_nhlfe_t *nhlfe = tunnel_nhlfe_lookup(rib, ilm->nhlfe_id);
+        if (nhlfe)
+        {
+            entry->out_ifindex = nhlfe->out_ifindex;
+            entry->relay_addr = nhlfe->relay_addr;
+            entry->label_count = nhlfe->label_count;
+            memcpy(entry->labels, nhlfe->labels, sizeof(entry->labels));
+        }
+        else
+        {
+            entry->state = 0u;
+        }
+    }
+}
+
+static void tunnel_sync_fib_ilm_delete(const tunnel_ilm_t *ilm)
+{
+    if (!ilm)
+    {
+        return;
+    }
+
+    fib_ilm_entry_t entry;
+    memset(&entry, 0, sizeof(entry));
+    entry.vrf_id = ilm->vrf_id;
+    entry.in_label = ilm->in_label;
+    (void)fib_rpc_ilm_delete(tunnel_local_ipc_ctx(), &entry);
+}
+
+static void tunnel_sync_fib_ilm_upsert(const tunnel_rib_t *rib, const tunnel_ilm_t *ilm)
+{
+    if (!ilm)
+    {
+        return;
+    }
+
+    fib_ilm_entry_t entry;
+    tunnel_fill_fib_ilm(&entry, rib, ilm);
+    (void)fib_rpc_ilm_upsert(tunnel_local_ipc_ctx(), &entry);
+}
+
+static void tunnel_sync_fib_ilm_delete_all(const tunnel_rib_t *rib)
+{
+    for (const GList *it = rib ? rib->ilms : NULL; it; it = it->next)
+    {
+        tunnel_sync_fib_ilm_delete((const tunnel_ilm_t *)it->data);
+    }
+}
+
+static void tunnel_sync_fib_ilm_upsert_all(const tunnel_rib_t *rib)
+{
+    for (const GList *it = rib ? rib->ilms : NULL; it; it = it->next)
+    {
+        tunnel_sync_fib_ilm_upsert(rib, (const tunnel_ilm_t *)it->data);
+    }
+}
+
 static void tunnel_append_local_pop_ilms(tunnel_rib_t *rib)
 {
     if (!rib)
@@ -304,6 +435,7 @@ static void tunnel_append_local_pop_ilms(tunnel_rib_t *rib)
         ilm->vrf_id = binding->req.vrf_id;
         ilm->in_label = binding->label;
         ilm->nhlfe_id = 0u;
+        ilm->out_ifindex = tunnel_local_pop_out_ifindex(binding->req.out_ifindex);
         ilm->action = TUNNEL_ACTION_POP;
         ilm->state = 1u;
         rib->ilms = g_list_prepend(rib->ilms, ilm);
@@ -481,6 +613,8 @@ static void tunnel_rebuild_forwarding_tables(tunnel_rib_t *rib)
         return;
     }
 
+    tunnel_sync_fib_ilm_delete_all(rib);
+
     g_list_free_full(rib->nhlfes, g_free);
     g_list_free_full(rib->ftns, g_free);
     g_list_free_full(rib->ilms, g_free);
@@ -536,17 +670,26 @@ static void tunnel_rebuild_forwarding_tables(tunnel_rib_t *rib)
     }
 
     tunnel_append_local_pop_ilms(rib);
+    tunnel_sync_fib_ilm_upsert_all(rib);
 }
 
 tunnel_rib_t *tunnel_rib_create(void)
 {
+    tunnel_config_t cfg;
+    if (tunnel_config_load(&cfg) != ERRCODE_SUCCESS)
+    {
+        return NULL;
+    }
+
     tunnel_rib_t *rib = g_malloc0(sizeof(*rib));
     if (rib)
     {
         rib->tunnel_ids = g_hash_table_new_full(tunnel_id_key_hash, tunnel_id_key_equal, g_free, NULL);
         rib->next_nhlfe_id = 1;
         rib->next_tunnel_id = 1;
-        rib->next_label = TUNNEL_LABEL_DYNAMIC_MIN;
+        rib->label_dynamic_min = cfg.label_dynamic_min;
+        rib->label_dynamic_max = cfg.label_dynamic_max;
+        rib->next_label = rib->label_dynamic_min;
     }
     return rib;
 }
@@ -607,6 +750,7 @@ int tunnel_rib_label_alloc(tunnel_rib_t *rib, const tunnel_label_req_t *req, uin
     tunnel_label_binding_t *binding = tunnel_label_binding_lookup(rib, req);
     if (binding)
     {
+        binding->req = *req;
         *label_out = binding->label;
         return ERRCODE_SUCCESS;
     }
@@ -767,6 +911,25 @@ static const char *source_name(uint8_t source_type)
     }
 }
 
+static const char *action_name(uint8_t action)
+{
+    switch (action)
+    {
+        case TUNNEL_ACTION_DROP:
+            return "drop";
+        case TUNNEL_ACTION_PUSH:
+            return "push";
+        case TUNNEL_ACTION_SWAP:
+            return "swap";
+        case TUNNEL_ACTION_POP:
+            return "pop";
+        case TUNNEL_ACTION_PHP:
+            return "php";
+        default:
+            return "unknown";
+    }
+}
+
 static const char *afi_name(uint16_t afi)
 {
     switch (afi)
@@ -893,8 +1056,9 @@ char *tunnel_rib_show(const tunnel_rib_t *rib, tunnel_show_section_t section)
             for (const GList *it = rib ? rib->ilms : NULL; it; it = it->next)
             {
                 const tunnel_ilm_t *i = it->data;
-                g_string_append_printf(out, "  vrf %u label %u -> nhlfe %u action %u state %s\n", i->vrf_id,
-                                       i->in_label, i->nhlfe_id, i->action, i->state ? "up" : "down");
+                g_string_append_printf(out, "  vrf %u label %u -> nhlfe %u action %s(%u) state %s\n", i->vrf_id,
+                                       i->in_label, i->nhlfe_id, action_name(i->action), i->action,
+                                       i->state ? "up" : "down");
             }
             break;
 
@@ -947,8 +1111,8 @@ char *tunnel_rib_show_labels(const tunnel_rib_t *rib)
                            "Dynamic range: %u-%u, allocated: %u\r\n"
                            "%-8s %-6s %-4s %-24s %-14s %-12s\r\n"
                            "-------- ------ ---- ------------------------ -------------- ------------\r\n",
-                           TUNNEL_LABEL_DYNAMIC_MIN, TUNNEL_LABEL_DYNAMIC_MAX, count, "Label", "VRF", "AFI", "FEC",
-                           "Owner", "Source");
+                           rib ? rib->label_dynamic_min : 0u, rib ? rib->label_dynamic_max : 0u, count, "Label", "VRF",
+                           "AFI", "FEC", "Owner", "Source");
 
     for (const GList *it = rib ? rib->label_bindings : NULL; it; it = it->next)
     {

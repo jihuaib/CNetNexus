@@ -17,8 +17,10 @@ typedef enum fib_worker_cmd_type
     FIB_WORKER_CMD_ROUTE_DELETE = 2,
     FIB_WORKER_CMD_TUNNEL_UPSERT = 3,
     FIB_WORKER_CMD_TUNNEL_DELETE = 4,
-    FIB_WORKER_CMD_SHOW_CLI = 5,
-    FIB_WORKER_CMD_SHUTDOWN = 6,
+    FIB_WORKER_CMD_ILM_UPSERT = 5,
+    FIB_WORKER_CMD_ILM_DELETE = 6,
+    FIB_WORKER_CMD_SHOW_CLI = 7,
+    FIB_WORKER_CMD_SHUTDOWN = 8,
 } fib_worker_cmd_type_t;
 
 typedef struct fib_work_local

@@ -37,8 +37,10 @@ ulimit -c unlimited
 # Set environment for development
 export LD_LIBRARY_PATH="${BUILD_DIR}/lib:${LD_LIBRARY_PATH}"
 
+# 设置工作目录，避免数据库等使用 cwd 相对路径时落到 build/bin/
+export NN_WORK_DIR="${PROJECT_ROOT}"
+
 # XML files will be auto-discovered from src/ in development mode
-# No need to set NN_WORK_DIR in dev mode
 
 echo "==================================="
 echo "NetNexus Development Mode"

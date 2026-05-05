@@ -112,7 +112,7 @@ int tunnel_rpc_label_alloc(dev_ipc_context_t *ctx, const tunnel_label_req_t *req
     if (resp->msg_type == TUNNEL_MSG_TYPE_ACK && resp->payload && resp->payload_len >= sizeof(tunnel_msg_ack_t))
     {
         const tunnel_msg_ack_t *ack = (const tunnel_msg_ack_t *)resp->payload;
-        if (ack->result == ERRCODE_SUCCESS && ack->label >= TUNNEL_LABEL_DYNAMIC_MIN)
+        if (ack->result == ERRCODE_SUCCESS && ack->label > 0 && ack->label <= TUNNEL_LABEL_VALUE_MAX)
         {
             *label_out = ack->label;
             rc = ERRCODE_SUCCESS;

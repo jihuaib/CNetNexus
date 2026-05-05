@@ -187,9 +187,21 @@ static void if_make_zero_addr(sa_family_t family, net_addr_t *out)
     out->family = family;
 }
 
+static gboolean if_physical_is_loopback(const char *physical_name)
+{
+    if (!physical_name)
+    {
+        return FALSE;
+    }
+    /* loop 前缀且后随数字（loop1/loop123 等）；与 if_bdr.c 中现有判定保持一致 */
+    return (strncmp(physical_name, "loop", 4) == 0 && physical_name[4] >= '0' && physical_name[4] <= '9') ? TRUE
+                                                                                                          : FALSE;
+}
+
 static void if_fill_connected_route_entry(route_msg_entry_t *entry, uint16_t afi, uint8_t prefix_len,
                                           const net_addr_t *prefix_addr, const net_addr_t *source_addr,
-                                          const net_addr_t *nexthop_addr, uint32_t out_ifindex)
+                                          const net_addr_t *nexthop_addr, uint32_t out_ifindex,
+                                          const char *physical_name)
 {
     if (!entry || !prefix_addr || !source_addr || !nexthop_addr)
     {
@@ -205,7 +217,9 @@ static void if_fill_connected_route_entry(route_msg_entry_t *entry, uint16_t afi
     entry->metric = 0;
     entry->preference = ROUTE_ADMIN_DIST_CONNECTED;
     entry->is_withdraw = 0;
-    entry->flags = 0;
+    /* ETH/VETH 接口的直连路由仅用于本地转发可达性，不参与对外通告；
+     * loopback 接口承载本地业务地址，需允许 BGP 等协议正常引入并发布。 */
+    entry->flags = if_physical_is_loopback(physical_name) ? 0u : ROUTE_ENTRY_FLAG_NO_ADV;
     entry->out_ifindex = out_ifindex;
     entry->iter_out_ifindex = out_ifindex;
     entry->prefix_addr = *prefix_addr;
@@ -262,7 +276,7 @@ static int if_sync_connected_host_routes(const net_prefix_t *prefix, const char 
 
     route_msg_entry_t network_entry;
     if_fill_connected_route_entry(&network_entry, afi, prefix->prefix_len, &network_addr, &prefix->addr, &zero_nh,
-                                  out_ifindex);
+                                  out_ifindex, physical_name);
 
     /* 主机前缀（/32 或 /128）下，network 与 host 重合，只下发一条。 */
     if (prefix->prefix_len == host_len)
@@ -756,7 +770,8 @@ int if_cfg_apply_shutdown(gboolean is_no, const char *logical_name)
  *
  * 当接口被销毁时，if_nametoindex() 已无法获取 ifindex，需要用保存的旧值。
  */
-static int if_withdraw_connected_with_ifindex(const net_prefix_t *prefix, uint32_t saved_ifindex)
+static int if_withdraw_connected_with_ifindex(const net_prefix_t *prefix, uint32_t saved_ifindex,
+                                              const char *physical_name)
 {
     if (!prefix || !net_prefix_is_set(prefix) || saved_ifindex == 0u)
     {
@@ -796,7 +811,7 @@ static int if_withdraw_connected_with_ifindex(const net_prefix_t *prefix, uint32
 
     route_msg_entry_t network_entry;
     if_fill_connected_route_entry(&network_entry, afi, prefix->prefix_len, &network_addr, &prefix->addr, &zero_nh,
-                                  saved_ifindex);
+                                  saved_ifindex, physical_name);
 
     if (prefix->prefix_len == host_len)
     {
@@ -870,10 +885,11 @@ void if_cfg_handle_link_down(const char *logical_name, uint32_t old_ifindex, con
 
     LOG_INFO("IF-LINKDOWN: withdrawing connected routes for %s (old ifindex=%u)", logical_name, old_ifindex);
 
+    /* logical_name 与 physical_name 在 loop/GE 直连场景下一致，足以判定是否为 loop。 */
     /* 使用保存的旧 ifindex 撤销直连路由 */
     if (pfx_v4 && net_prefix_is_set(pfx_v4))
     {
-        if (if_withdraw_connected_with_ifindex(pfx_v4, old_ifindex) != ERRCODE_SUCCESS)
+        if (if_withdraw_connected_with_ifindex(pfx_v4, old_ifindex, logical_name) != ERRCODE_SUCCESS)
         {
             LOG_WARN("IF-LINKDOWN: IPv4 route withdrawal failed for %s", logical_name);
         }
@@ -881,7 +897,7 @@ void if_cfg_handle_link_down(const char *logical_name, uint32_t old_ifindex, con
 
     if (pfx_v6 && net_prefix_is_set(pfx_v6))
     {
-        if (if_withdraw_connected_with_ifindex(pfx_v6, old_ifindex) != ERRCODE_SUCCESS)
+        if (if_withdraw_connected_with_ifindex(pfx_v6, old_ifindex, logical_name) != ERRCODE_SUCCESS)
         {
             LOG_WARN("IF-LINKDOWN: IPv6 route withdrawal failed for %s", logical_name);
         }

@@ -40,6 +40,8 @@
 #define DEV_MODULE_ID_TUNNEL 0x0000000A
 /** FIB 模块 */
 #define DEV_MODULE_ID_FIB 0x0000000B
+/** LDP 模块 */
+#define DEV_MODULE_ID_LDP 0x0000000C
 
 /** 无效文件描述符 */
 #define DEV_INVALID_FD (-1)
@@ -76,6 +78,8 @@
 #define DEV_MODULE_PORT_TUNNEL 4010
 /** FIB 模块 IPC 监听端口 */
 #define DEV_MODULE_PORT_FIB 4011
+/** LDP 模块 IPC 监听端口 */
+#define DEV_MODULE_PORT_LDP 4012
 
 // ============================================================================
 // IPC 前向声明
@@ -131,6 +135,8 @@ typedef dev_ipc_msg_handler_fn dev_ipc_msg_handler_fn;
 #define DEV_IPC_CATEGORY_TUNNEL 0x000A
 /** FIB 模块消息大类 */
 #define DEV_IPC_CATEGORY_FIB 0x000B
+/** LDP 模块消息大类 */
+#define DEV_IPC_CATEGORY_LDP 0x000C
 
 // ============================================================================
 // DEV IPC 消息结构

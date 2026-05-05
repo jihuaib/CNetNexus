@@ -69,7 +69,7 @@ def _wait_route_paths(
 
 def _extract_connected_os_if(output: str, *, prefix: str) -> str | None:
     match = re.search(
-        rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+-\s+(\S+)\s+kernel\s+\d+\s*$",
+        rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+-\s+(\S+)\s+kernel\s+\d+(?:\s+\S+)?\s*$",
         output,
     )
     if match is None:
@@ -116,14 +116,14 @@ def _wait_os_best(
 ) -> None:
     row_regex = (
         rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+{re.escape(expect_gateway)}\s+"
-        rf"{re.escape(expect_interface)}\s+static\s+\d+\s*$"
+        rf"{re.escape(expect_interface)}\s+static\s+\d+(?:\s+\S+)?\s*$"
     )
     stale_regex = [
-        rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+{re.escape(gw)}\s+\S+\s+static\s+\d+\s*$"
+        rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+{re.escape(gw)}\s+\S+\s+static\s+\d+(?:\s+\S+)?\s*$"
         for gw in stale_gateways
     ]
     stale_regex.append(
-        rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+{re.escape(expect_gateway)}\s+(?!{re.escape(expect_interface)}\b)\S+\s+static\s+\d+\s*$"
+        rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+{re.escape(expect_gateway)}\s+(?!{re.escape(expect_interface)}\b)\S+\s+static\s+\d+(?:\s+\S+)?\s*$"
     )
     wait_check(
         rt,

@@ -361,7 +361,7 @@ def _wait_os_best_v6_linklocal(
         interval=interval,
         regex=[
             rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+{IPV6_LINK_LOCAL_RE}\s+"
-            rf"{re.escape(expect_interface)}\s+isis\s+\d+\s*$"
+            rf"{re.escape(expect_interface)}\s+isis\s+\d+(?:\s+\S+)?\s*$"
         ],
         label=f"{device} os ipv6 best {prefix} via link-local dev {expect_interface}",
     )
@@ -382,7 +382,7 @@ def _wait_os_best_v6_linklocal(
 
 def _extract_connected_os_if(output: str, *, prefix: str) -> str | None:
     match = re.search(
-        rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+-\s+(\S+)\s+kernel\s+\d+\s*$",
+        rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+-\s+(\S+)\s+kernel\s+\d+(?:\s+\S+)?\s*$",
         output,
     )
     if match is None:
@@ -431,15 +431,15 @@ def _wait_os_best(
 ) -> None:
     row_regex = (
         rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+{re.escape(expect_gateway)}\s+"
-        rf"{re.escape(expect_interface)}\s+isis\s+\d+\s*$"
+        rf"{re.escape(expect_interface)}\s+isis\s+\d+(?:\s+\S+)?\s*$"
     )
     stale_regex = [
-        rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+{re.escape(gw)}\s+\S+\s+isis\s+\d+\s*$"
+        rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+{re.escape(gw)}\s+\S+\s+isis\s+\d+(?:\s+\S+)?\s*$"
         for gw in stale_gateways
     ]
     stale_regex.append(
         rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+{re.escape(expect_gateway)}\s+"
-        rf"(?!{re.escape(expect_interface)}\b)\S+\s+isis\s+\d+\s*$"
+        rf"(?!{re.escape(expect_interface)}\b)\S+\s+isis\s+\d+(?:\s+\S+)?\s*$"
     )
     wait_check(
         rt,

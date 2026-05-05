@@ -3,7 +3,7 @@
     <views>
     </views>
     <command_groups>
-        <!-- Group 1: show fib ipv4|ipv6 [<prefix> <mask>] [os] -->
+        <!-- Group 1: show fib ipv4|ipv6 [<prefix> <mask>] [os], show fib mpls [<label>] [os] -->
         <group group-id="1">
             <elements>
                 <element id="1" type="keyword">
@@ -41,6 +41,15 @@
                     <type>uint(0-128)</type>
                     <description>IPv6 prefix length (0-128)</description>
                 </element>
+                <element id="9" cfg-id="7" type="keyword">
+                    <name>mpls</name>
+                    <description>MPLS incoming label map</description>
+                </element>
+                <element id="10" cfg-id="8" type="parameter">
+                    <name>&lt;label&gt;</name>
+                    <type>uint(0-1048575)</type>
+                    <description>MPLS incoming label</description>
+                </element>
             </elements>
             <commands>
                 <!-- show fib ipv4 -->
@@ -71,6 +80,21 @@
                 <!-- show fib ipv6 os -->
                 <command>
                     <expression>1 2 4 5</expression>
+                    <views>global</views>
+                </command>
+                <!-- show fib mpls -->
+                <command>
+                    <expression>1 2 9</expression>
+                    <views>global</views>
+                </command>
+                <!-- show fib mpls <label> -->
+                <command>
+                    <expression>1 2 9 10</expression>
+                    <views>global</views>
+                </command>
+                <!-- show fib mpls os -->
+                <command>
+                    <expression>1 2 9 5</expression>
                     <views>global</views>
                 </command>
             </commands>

@@ -126,6 +126,12 @@ void fib_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         case FIB_MSG_TYPE_TUNNEL_DELETE:
             post_or_free(FIB_WORKER_CMD_TUNNEL_DELETE, msg);
             return;
+        case FIB_MSG_TYPE_ILM_UPSERT:
+            post_or_free(FIB_WORKER_CMD_ILM_UPSERT, msg);
+            return;
+        case FIB_MSG_TYPE_ILM_DELETE:
+            post_or_free(FIB_WORKER_CMD_ILM_DELETE, msg);
+            return;
         default:
             LOG_WARN("FIB: unknown message type 0x%08X", msg->msg_type);
             break;

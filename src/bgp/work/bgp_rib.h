@@ -30,6 +30,8 @@ typedef struct bgp_rthead bgp_rthead_t;
 #define BGP_ROUTE_FLAG_FLUSHED (1U << 3)
 /** 路由标记位：已逻辑删除，待下刷撤销后物理清理 */
 #define BGP_ROUTE_FLAG_STALE (1U << 4)
+/** 路由标记位：禁止对外通告（来自 import-route 的 ETH 直连等场景，仅用于本地优选/迭代） */
+#define BGP_ROUTE_FLAG_NO_ADV (1U << 5)
 
 #define BGP_ROUTE_LABEL_SOURCE_NONE 0u
 #define BGP_ROUTE_LABEL_SOURCE_LOCAL 1u

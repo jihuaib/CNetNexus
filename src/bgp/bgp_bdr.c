@@ -386,6 +386,10 @@ static void bdr_append_af_block(GString *out, int64_t vrf_id, const char *afi_st
     {
         g_string_append(out, "  import-route static\r\n");
     }
+    if (import_protos & (1 << ROUTE_PROTOCOL_CONNECTED))
+    {
+        g_string_append(out, "  import-route connected\r\n");
+    }
 
     if (safi == BGP_SAFI_QP)
     {

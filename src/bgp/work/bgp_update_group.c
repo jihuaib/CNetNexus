@@ -653,6 +653,13 @@ void bgp_update_group_enqueue_announce(bgp_instance_t *inst, const bgp_nlri_entr
         return;
     }
 
+    /* NO_ADV 路径不允许对外通告：清理可能残留的 ARO 条目并发送 withdraw */
+    if (BIT_TEST(best->flags, BGP_ROUTE_FLAG_NO_ADV))
+    {
+        bgp_update_group_enqueue_withdraw(inst, nlri);
+        return;
+    }
+
     bgp_route_src_class_t src_class = bgp_classify_route_src(best);
 
     uint32_t scheduled = 0;

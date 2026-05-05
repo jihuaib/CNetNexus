@@ -78,7 +78,7 @@
             </commands>
         </group>
 
-        <!-- ping <ipv4-address> / ping ipv6 <ipv6-address> -->
+        <!-- ping <ipv4-address> [-a <src-ipv4>] / ping ipv6 <ipv6-address> [-a <src-ipv6>] -->
         <group group-id="5">
             <elements>
                 <element id="1" type="keyword">
@@ -99,6 +99,20 @@
                     <description>Target IPv6 address</description>
                     <type>ipv6</type>
                 </element>
+                <element id="5" type="keyword">
+                    <name>-a</name>
+                    <description>Specify source address</description>
+                </element>
+                <element id="6" cfg-id="4" type="parameter">
+                    <name>&lt;src-ipv4&gt;</name>
+                    <description>Source IPv4 address</description>
+                    <type>ipv4</type>
+                </element>
+                <element id="7" cfg-id="5" type="parameter">
+                    <name>&lt;src-ipv6&gt;</name>
+                    <description>Source IPv6 address</description>
+                    <type>ipv6</type>
+                </element>
             </elements>
 
             <commands>
@@ -107,7 +121,15 @@
                     <views>global</views>
                 </command>
                 <command>
+                    <expression>1 2 5 6</expression>
+                    <views>global</views>
+                </command>
+                <command>
                     <expression>1 3 4</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 3 4 5 7</expression>
                     <views>global</views>
                 </command>
             </commands>

@@ -20,10 +20,17 @@ typedef struct fib_tunnel_state
     fib_tunnel_entry_t entry;
 } fib_tunnel_state_t;
 
+typedef struct fib_ilm_state
+{
+    fib_ilm_entry_t entry;
+    uint8_t installed;
+} fib_ilm_state_t;
+
 typedef struct fib_rib
 {
     GHashTable *routes;
     GHashTable *tunnels;
+    GHashTable *ilms;
 } fib_rib_t;
 
 fib_rib_t *fib_rib_create(void);
@@ -38,6 +45,12 @@ fib_tunnel_state_t *fib_rib_tunnel_upsert(fib_rib_t *rib, const fib_tunnel_entry
 fib_tunnel_state_t *fib_rib_tunnel_lookup(fib_rib_t *rib, uint32_t tunnel_id);
 gboolean fib_rib_tunnel_delete(fib_rib_t *rib, uint32_t tunnel_id);
 
+fib_ilm_state_t *fib_rib_ilm_upsert(fib_rib_t *rib, const fib_ilm_entry_t *entry);
+fib_ilm_state_t *fib_rib_ilm_lookup(fib_rib_t *rib, uint32_t vrf_id, uint32_t in_label);
+gboolean fib_rib_ilm_delete(fib_rib_t *rib, const fib_ilm_entry_t *entry, fib_ilm_entry_t *old_entry,
+                            uint8_t *old_installed);
+
 void fib_rib_foreach_route(fib_rib_t *rib, GHFunc func, gpointer user_data);
+void fib_rib_foreach_ilm(fib_rib_t *rib, GHFunc func, gpointer user_data);
 
 #endif /* FIB_RIB_H */

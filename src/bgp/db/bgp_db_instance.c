@@ -223,10 +223,17 @@ void bgp_db_restore_instances(void)
         }
         LOG_INFO("BGP restore: VRF %u AF instance afi=%u safi=%u", vrf_id, (unsigned)afi, (unsigned)safi);
 
-        /* 恢复 import-route（当前仅支持 static） */
+        /* 恢复 import-route（支持 static / connected） */
         uint32_t import_protos = (uint32_t)db_row_get_int(row, "import_protos", 0);
-        if (import_protos & (1u << ROUTE_PROTOCOL_STATIC))
+        static const uint32_t k_supported_import_protos[] = {ROUTE_PROTOCOL_STATIC, ROUTE_PROTOCOL_CONNECTED};
+        for (size_t pi = 0; pi < G_N_ELEMENTS(k_supported_import_protos); ++pi)
         {
+            uint32_t proto = k_supported_import_protos[pi];
+            if ((import_protos & (1u << proto)) == 0u)
+            {
+                continue;
+            }
+
             bgp_apply_cmd_t imp;
             memset(&imp, 0, sizeof(imp));
             imp.group_id = BGP_CLI_GROUP_ID_IMPORT_ROUTE;
@@ -234,12 +241,12 @@ void bgp_db_restore_instances(void)
             imp.vrf_id = vrf_id;
             imp.u.import_route.afi = afi;
             imp.u.import_route.safi = safi;
-            imp.u.import_route.import_proto = ROUTE_PROTOCOL_STATIC;
+            imp.u.import_route.import_proto = proto;
             (void)bgp_worker_dispatch_apply(&imp);
 
             /* 重新订阅路由模块（fire-and-forget） */
             route_subscribe_req_t *req = g_malloc(sizeof(route_subscribe_req_t));
-            req->protocol = ROUTE_PROTOCOL_STATIC;
+            req->protocol = proto;
             req->vrf_id = vrf_id;
             req->afi = (uint16_t)afi;
             req->_pad = 0;
@@ -252,8 +259,8 @@ void bgp_db_restore_instances(void)
                 dev_ipc_send(ctx, DEV_MODULE_ID_ROUTE, sub_msg);
                 dev_ipc_message_free(sub_msg);
             }
-            LOG_INFO("BGP restore: VRF %u afi=%u safi=%u import_protos=0x%08X，已重新订阅路由模块", vrf_id,
-                     (unsigned)afi, (unsigned)safi, import_protos);
+            LOG_INFO("BGP restore: VRF %u afi=%u safi=%u import_protos=0x%08X proto=%u，已重新订阅路由模块", vrf_id,
+                     (unsigned)afi, (unsigned)safi, import_protos, proto);
         }
     }
 

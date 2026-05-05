@@ -135,11 +135,11 @@ def _wait_os_main_gateway(
 ) -> None:
     row_regex = (
         rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+{re.escape(expect_gateway)}\s+"
-        rf"\S+\s+static\s+{expect_metric}\s*$"
+        rf"\S+\s+static\s+{expect_metric}(?:\s+\S+)?\s*$"
     )
     stale_metric_regex = (
         rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+{re.escape(expect_gateway)}\s+"
-        rf"\S+\s+static\s+(?!{expect_metric}\b)\d+\s*$"
+        rf"\S+\s+static\s+(?!{expect_metric}\b)\d+(?:\s+\S+)?\s*$"
     )
     wait_check(
         rt,

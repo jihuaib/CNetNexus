@@ -74,6 +74,7 @@ typedef struct route_path
     uint8_t _pad0[3];          /**< 对齐填充 */
     uint32_t tunnel_id;        /**< nh_type=ROUTE_NH_TYPE_TUNNEL 时的隧道 ID */
     uint32_t flags;            /**< 路径状态标志（ROUTE_PATH_FLAG_*） */
+    uint32_t entry_flags;      /**< 路径语义标志（ROUTE_ENTRY_FLAG_*，由发布方携带） */
     gint64 updated_at_usec;    /**< 最近更新时间（g_get_real_time） */
 } route_path_t;
 
@@ -140,7 +141,7 @@ void route_rib_destroy(route_rib_t *rib);
  */
 int route_rib_add(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr, uint8_t prefix_len,
                   uint32_t protocol, const net_addr_t *source, const net_addr_t *nexthop, int32_t metric,
-                  int32_t preference, uint32_t out_ifindex, uint8_t nh_type, uint32_t tunnel_id);
+                  int32_t preference, uint32_t out_ifindex, uint8_t nh_type, uint32_t tunnel_id, uint32_t entry_flags);
 
 /**
  * @brief 从 RIB 删除一条路径（可选回调，在删除前触发）

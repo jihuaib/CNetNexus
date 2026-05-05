@@ -66,10 +66,10 @@ def _wait_os_best_proto(
 ) -> None:
     alt_proto = "bgp" if proto == "static" else "static"
     best_row_regex = (
-        rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+{re.escape(gateway)}\s+\S+\s+{re.escape(proto)}\s+\d+\s*$"
+        rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+{re.escape(gateway)}\s+\S+\s+{re.escape(proto)}\s+\d+(?:\s+\S+)?\s*$"
     )
     alt_row_regex = (
-        rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+{re.escape(gateway)}\s+\S+\s+{re.escape(alt_proto)}\s+\d+\s*$"
+        rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+{re.escape(gateway)}\s+\S+\s+{re.escape(alt_proto)}\s+\d+(?:\s+\S+)?\s*$"
     )
     wait_check(
         rt,

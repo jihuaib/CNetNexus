@@ -11,6 +11,7 @@
 #include "bgp_attr_intern.h"
 #include "bgp_rd.h"
 #include "net_addr.h"
+#include "route.h"
 
 /**
  * @brief GTree 比较函数：按 NLRI 类型分支做二进制字段比较
@@ -173,8 +174,10 @@ int bgp_rib_route_apply_reach(bgp_route_node_t *route, uint32_t import_proto, co
         return -1;
     }
 
-    /* 按 import_proto 置/清 IMPORT 标记；reach 默认置为 valid，路径变更后清除 BEST（等待 calc 重新评选） */
-    if (import_proto != 0)
+    /* 按 import_proto 置/清 IMPORT 标记；reach 默认置为 valid，路径变更后清除 BEST（等待 calc 重新评选）。
+     * ROUTE_PROTOCOL_MAX 作为"非 import"的哨兵值（直接邻居路径调用方传入），其余值（含 CONNECTED=0）
+     * 一律视为 import 路径来源协议。 */
+    if (import_proto != ROUTE_PROTOCOL_MAX)
     {
         BIT_SET(route->flags, BGP_ROUTE_FLAG_IMPORT);
         route->import_proto = import_proto;

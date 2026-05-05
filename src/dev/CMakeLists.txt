@@ -9,6 +9,7 @@ set(DEV_SOURCES
     dev_conf_parser.c
     dev_db.c
     dev_bdr.c
+    dev_ping.c
 )
 
 # Create shared library for dev module

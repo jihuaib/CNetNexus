@@ -105,6 +105,13 @@
 #define ROUTE_SUBSCRIBE_FLAG_FULL (1u << 0)
 
 // ============================================================================
+// 路由条目标志位（route_msg_entry_t.flags / route_path_t.flags 高位区共享语义位）
+// ============================================================================
+
+/** 不允许对外发布（被引入到协议时不参与对外通告） */
+#define ROUTE_ENTRY_FLAG_NO_ADV (1u << 0)
+
+// ============================================================================
 // IPC 载荷结构
 // ============================================================================
 
@@ -135,7 +142,7 @@ typedef struct route_msg_entry
     int32_t metric;               /**< 度量值 */
     int32_t preference;           /**< 管理距离（偏好值） */
     uint8_t is_withdraw;          /**< 1=撤销路由, 0=新增/更新路由 */
-    uint8_t flags;                /**< 保留标志位（当前未使用） */
+    uint8_t flags;                /**< 路由条目标志位（ROUTE_ENTRY_FLAG_*） */
     uint8_t nh_type;              /**< ROUTE_NH_TYPE_* */
     uint8_t _pad;                 /**< 对齐填充 */
     uint32_t tunnel_id;           /**< nh_type=ROUTE_NH_TYPE_TUNNEL 时的隧道 ID */

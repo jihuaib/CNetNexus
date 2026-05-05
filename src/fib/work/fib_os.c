@@ -2,6 +2,7 @@
 
 #include <arpa/inet.h>
 #include <asm/types.h>
+#include <dirent.h>
 #include <errno.h>
 #include <linux/lwtunnel.h>
 #include <linux/mpls.h>
@@ -19,9 +20,15 @@
 #include "log.h"
 #include "net_addr.h"
 #include "route.h"
+#include "tunnel.h"
 
 #define FIB_OS_NL_BUFSIZE 4096
 #define FIB_OS_DUMP_BUFSIZE 65536
+#define FIB_OS_MPLS_DST_LEN 20
+
+#ifndef AF_MPLS
+#    define AF_MPLS 28
+#endif
 
 static uint8_t fib_route_protocol_to_rtproto(uint32_t protocol)
 {
@@ -160,6 +167,104 @@ static int nl_add_mpls_encap(struct nlmsghdr *nlh, size_t maxlen, const fib_tunn
     return ERRCODE_SUCCESS;
 }
 
+static int encode_mpls_label(uint32_t label, gboolean bos, struct mpls_label *out)
+{
+    if (!out || label > 0xFFFFFu)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    uint32_t entry = label << MPLS_LS_LABEL_SHIFT;
+    if (bos)
+    {
+        entry |= (1u << MPLS_LS_S_SHIFT);
+    }
+    out->entry = htonl(entry);
+    return ERRCODE_SUCCESS;
+}
+
+static int nl_add_mpls_label_stack(struct nlmsghdr *nlh, size_t maxlen, int attr_type, uint8_t count,
+                                   const uint32_t *labels)
+{
+    if (!nlh || !labels || count == 0 || count > FIB_MAX_LABEL_STACK)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    struct mpls_label stack[FIB_MAX_LABEL_STACK];
+    memset(stack, 0, sizeof(stack));
+    for (uint8_t i = 0; i < count; i++)
+    {
+        if (encode_mpls_label(labels[i], i == count - 1u, &stack[i]) != ERRCODE_SUCCESS)
+        {
+            return ERRCODE_FAIL;
+        }
+    }
+
+    nl_add_attr(nlh, maxlen, attr_type, stack, (int)(sizeof(stack[0]) * count));
+    return ERRCODE_SUCCESS;
+}
+
+static void fib_os_write_uint_file(const char *path, uint32_t value)
+{
+    FILE *fp = fopen(path, "w");
+    if (!fp)
+    {
+        return;
+    }
+    fprintf(fp, "%u\n", value);
+    fclose(fp);
+}
+
+static void fib_os_prepare_mpls_input(void)
+{
+    DIR *dir = opendir("/proc/sys/net/mpls/conf");
+    if (!dir)
+    {
+        return;
+    }
+
+    struct dirent *de = NULL;
+    while ((de = readdir(dir)) != NULL)
+    {
+        if (de->d_name[0] == '.')
+        {
+            continue;
+        }
+
+        char path[256];
+        int n = snprintf(path, sizeof(path), "/proc/sys/net/mpls/conf/%s/input", de->d_name);
+        if (n < 0 || (size_t)n >= sizeof(path))
+        {
+            continue;
+        }
+        fib_os_write_uint_file(path, 1u);
+    }
+    closedir(dir);
+}
+
+static void fib_os_prepare_mpls_platform_labels(uint32_t label)
+{
+    uint32_t want = (label >= 0xFFFFFu) ? 1048576u : label + 1u;
+    uint32_t current = 0u;
+
+    FILE *fp = fopen("/proc/sys/net/mpls/platform_labels", "r");
+    if (fp)
+    {
+        if (fscanf(fp, "%u", &current) != 1)
+        {
+            current = 0u;
+        }
+        fclose(fp);
+    }
+    if (current >= want)
+    {
+        return;
+    }
+
+    fib_os_write_uint_file("/proc/sys/net/mpls/platform_labels", want);
+}
+
 static int nl_exchange(struct nlmsghdr *nlh, int cmd)
 {
     int fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE);
@@ -285,6 +390,70 @@ static int fib_os_route_send(int cmd, const fib_route_entry_t *route, const fib_
     return nl_exchange(nlh, cmd);
 }
 
+static int fib_os_mpls_route_send(int cmd, const fib_ilm_entry_t *ilm)
+{
+    if (!ilm || ilm->in_label == 0 || ilm->in_label > 0xFFFFFu)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    char buf[FIB_OS_NL_BUFSIZE];
+    memset(buf, 0, sizeof(buf));
+    struct nlmsghdr *nlh = (struct nlmsghdr *)(void *)buf;
+    struct rtmsg *rtm = (struct rtmsg *)NLMSG_DATA(nlh);
+
+    nlh->nlmsg_len = NLMSG_LENGTH(sizeof(struct rtmsg));
+    nlh->nlmsg_type = (unsigned short)cmd;
+    nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+    if (cmd == RTM_NEWROUTE)
+    {
+        nlh->nlmsg_flags |= NLM_F_CREATE | NLM_F_REPLACE;
+    }
+    nlh->nlmsg_seq = 2;
+
+    rtm->rtm_family = AF_MPLS;
+    rtm->rtm_dst_len = FIB_OS_MPLS_DST_LEN;
+    rtm->rtm_table = RT_TABLE_MAIN;
+    rtm->rtm_protocol = RTPROT_STATIC;
+    rtm->rtm_scope = RT_SCOPE_UNIVERSE;
+    rtm->rtm_type = (ilm->action == TUNNEL_ACTION_DROP) ? RTN_BLACKHOLE : RTN_UNICAST;
+
+    struct mpls_label in_label;
+    if (encode_mpls_label(ilm->in_label, TRUE, &in_label) != ERRCODE_SUCCESS)
+    {
+        return ERRCODE_FAIL;
+    }
+    nl_add_attr(nlh, sizeof(buf), RTA_DST, &in_label, (int)sizeof(in_label));
+
+    if (cmd == RTM_NEWROUTE)
+    {
+        if (ilm->action == TUNNEL_ACTION_SWAP)
+        {
+            if (nl_add_mpls_label_stack(nlh, sizeof(buf), RTA_NEWDST, ilm->label_count, ilm->labels) != ERRCODE_SUCCESS)
+            {
+                return ERRCODE_FAIL;
+            }
+        }
+        else if (ilm->action != TUNNEL_ACTION_POP && ilm->action != TUNNEL_ACTION_PHP &&
+                 ilm->action != TUNNEL_ACTION_DROP)
+        {
+            return ERRCODE_FAIL;
+        }
+
+        if (ilm->out_ifindex != 0 && ilm->action != TUNNEL_ACTION_DROP)
+        {
+            nl_add_attr(nlh, sizeof(buf), RTA_OIF, &ilm->out_ifindex, (int)sizeof(ilm->out_ifindex));
+        }
+        if (!net_addr_is_zero(&ilm->relay_addr) &&
+            nl_add_gateway_or_via(nlh, sizeof(buf), AF_MPLS, &ilm->relay_addr) != ERRCODE_SUCCESS)
+        {
+            return ERRCODE_FAIL;
+        }
+    }
+
+    return nl_exchange(nlh, cmd);
+}
+
 int fib_os_route_install_ip(const fib_route_entry_t *route)
 {
     if (route && (route->flags & FIB_ROUTE_FLAG_SKIP_OS) != 0)
@@ -314,6 +483,22 @@ int fib_os_route_withdraw(const fib_route_entry_t *route)
         return ERRCODE_SUCCESS;
     }
     return fib_os_route_send(RTM_DELROUTE, route, NULL);
+}
+
+int fib_os_ilm_install(const fib_ilm_entry_t *ilm)
+{
+    if (!ilm || !ilm->state)
+    {
+        return ERRCODE_FAIL;
+    }
+    fib_os_prepare_mpls_platform_labels(ilm->in_label);
+    fib_os_prepare_mpls_input();
+    return fib_os_mpls_route_send(RTM_NEWROUTE, ilm);
+}
+
+int fib_os_ilm_withdraw(const fib_ilm_entry_t *ilm)
+{
+    return fib_os_mpls_route_send(RTM_DELROUTE, ilm);
 }
 
 static const char *os_table_str(uint8_t table)
@@ -419,6 +604,31 @@ static void os_parse_mpls_encap(const struct rtattr *encap_attr, char *buf, size
     }
 }
 
+static void os_parse_mpls_stack(const struct rtattr *stack_attr, char *buf, size_t sz)
+{
+    if (!stack_attr || !buf || sz == 0)
+    {
+        return;
+    }
+
+    int count = RTA_PAYLOAD(stack_attr) / (int)sizeof(struct mpls_label);
+    const struct mpls_label *labels = (const struct mpls_label *)RTA_DATA(stack_attr);
+    size_t used = 0;
+    buf[0] = '\0';
+    for (int i = 0; i < count; i++)
+    {
+        uint32_t entry = ntohl(labels[i].entry);
+        uint32_t label = (entry & MPLS_LS_LABEL_MASK) >> MPLS_LS_LABEL_SHIFT;
+        int n = snprintf(buf + used, sz - used, "%s%u", (i == 0) ? "" : ",", label);
+        if (n < 0 || (size_t)n >= sz - used)
+        {
+            snprintf(buf + used, sz - used, "...");
+            return;
+        }
+        used += (size_t)n;
+    }
+}
+
 static void os_parse_route(struct nlmsghdr *nlh, GString *buf)
 {
     struct rtmsg *rtm = (struct rtmsg *)NLMSG_DATA(nlh);
@@ -426,6 +636,7 @@ static void os_parse_route(struct nlmsghdr *nlh, GString *buf)
     char gw_str[64] = "-";
     char oif_name[IF_NAMESIZE] = "-";
     char encap_str[128] = "-";
+    char newdst_str[128] = "";
     uint32_t priority = 0;
     uint16_t encap_type = 0;
     const struct rtattr *encap_attr = NULL;
@@ -438,6 +649,11 @@ static void os_parse_route(struct nlmsghdr *nlh, GString *buf)
     {
         inet_ntop(AF_INET6, "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", dst_str, sizeof(dst_str));
     }
+    if (rtm->rtm_family == AF_MPLS)
+    {
+        snprintf(dst_str, sizeof(dst_str), "-");
+        snprintf(encap_str, sizeof(encap_str), "%s", rtm->rtm_type == RTN_BLACKHOLE ? "drop" : "pop");
+    }
 
     struct rtattr *rta = RTM_RTA(rtm);
     int rta_len = (int)RTM_PAYLOAD(nlh);
@@ -446,10 +662,26 @@ static void os_parse_route(struct nlmsghdr *nlh, GString *buf)
         switch (rta->rta_type)
         {
             case RTA_DST:
-                inet_ntop(rtm->rtm_family, RTA_DATA(rta), dst_str, sizeof(dst_str));
+                if (rtm->rtm_family == AF_MPLS)
+                {
+                    os_parse_mpls_stack(rta, dst_str, sizeof(dst_str));
+                }
+                else
+                {
+                    inet_ntop(rtm->rtm_family, RTA_DATA(rta), dst_str, sizeof(dst_str));
+                }
+                break;
+            case RTA_NEWDST:
+                if (rtm->rtm_family == AF_MPLS)
+                {
+                    os_parse_mpls_stack(rta, newdst_str, sizeof(newdst_str));
+                }
                 break;
             case RTA_GATEWAY:
-                inet_ntop(rtm->rtm_family, RTA_DATA(rta), gw_str, sizeof(gw_str));
+                if (rtm->rtm_family == AF_INET || rtm->rtm_family == AF_INET6)
+                {
+                    inet_ntop(rtm->rtm_family, RTA_DATA(rta), gw_str, sizeof(gw_str));
+                }
                 break;
             case RTA_VIA:
             {
@@ -494,9 +726,20 @@ static void os_parse_route(struct nlmsghdr *nlh, GString *buf)
     {
         os_parse_mpls_encap(encap_attr, encap_str, sizeof(encap_str));
     }
+    if (rtm->rtm_family == AF_MPLS && newdst_str[0] != '\0')
+    {
+        snprintf(encap_str, sizeof(encap_str), "swap[%.121s]", newdst_str);
+    }
 
     char prefix_str[80];
-    snprintf(prefix_str, sizeof(prefix_str), "%s/%u", dst_str, rtm->rtm_dst_len);
+    if (rtm->rtm_family == AF_MPLS)
+    {
+        snprintf(prefix_str, sizeof(prefix_str), "%s", dst_str);
+    }
+    else
+    {
+        snprintf(prefix_str, sizeof(prefix_str), "%s/%u", dst_str, rtm->rtm_dst_len);
+    }
     g_string_append_printf(buf, "%-7s %-10s %-26s %-20s %-14s %-8s %-7u %s\r\n", os_table_str(rtm->rtm_table),
                            os_type_str(rtm->rtm_type), prefix_str, gw_str, oif_name, os_proto_str(rtm->rtm_protocol),
                            priority, encap_str);

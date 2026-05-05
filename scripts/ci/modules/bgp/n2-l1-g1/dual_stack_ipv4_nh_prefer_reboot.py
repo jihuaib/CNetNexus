@@ -320,7 +320,7 @@ def _wait_os_best_ipv4_nexthop(
     timeout: int,
 ) -> None:
     best_row_regex = (
-        rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+{re.escape(gateway)}\s+\S+\s+bgp\s+\d+\s*$"
+        rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+{re.escape(gateway)}\s+\S+\s+bgp\s+\d+(?:\s+\S+)?\s*$"
     )
     wait_check(
         rt,
@@ -359,7 +359,7 @@ def _wait_os_ipv6_bgp_route(
     prefix: str,
     timeout: int,
 ) -> None:
-    best_row_regex = rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+\S+\s+\S+\s+bgp\s+\d+\s*$"
+    best_row_regex = rf"(?im)^\s*main\s+unicast\s+{re.escape(prefix)}\s+\S+\s+\S+\s+bgp\s+\d+(?:\s+\S+)?\s*$"
     wait_check(
         rt,
         device=device,

@@ -692,8 +692,6 @@ void bgp_cfg_apply_import_route(bgp_apply_cmd_t *apply)
         return;
     }
 
-    uint32_t before_count =
-        bgp_vrf_count_import_proto_afi(vrf, apply->u.import_route.import_proto, apply->u.import_route.afi);
     bgp_instance_t *inst = bgp_vrf_get_or_create_instance(vrf, apply->u.import_route.afi, apply->u.import_route.safi);
     if (!inst)
     {
@@ -701,32 +699,63 @@ void bgp_cfg_apply_import_route(bgp_apply_cmd_t *apply)
         return;
     }
 
-    uint32_t proto_mask = 1U << apply->u.import_route.import_proto;
+    /* import-route static / import-route connected 互斥（覆盖式）：
+     * 同一 AF 内任意时刻仅保留一种引入协议。 */
+    static const uint32_t k_overwrite_protos[] = {ROUTE_PROTOCOL_STATIC, ROUTE_PROTOCOL_CONNECTED};
+    uint32_t target_proto = apply->u.import_route.import_proto;
+    uint32_t target_mask = 1U << target_proto;
+    uint32_t prev_protos = inst->import_protos;
+
+    /* 计算每个候选协议的 before/after 状态，便于决定是否需要订阅或取消订阅。 */
+    uint32_t new_protos = prev_protos;
     if (is_no)
     {
-        inst->import_protos &= ~proto_mask;
+        new_protos &= ~target_mask;
     }
     else
     {
-        inst->import_protos |= proto_mask;
+        /* 覆盖：先清掉所有可覆盖位，再置目标位 */
+        for (size_t i = 0; i < G_N_ELEMENTS(k_overwrite_protos); ++i)
+        {
+            new_protos &= ~(1U << k_overwrite_protos[i]);
+        }
+        new_protos |= target_mask;
     }
-    uint32_t after_count =
-        bgp_vrf_count_import_proto_afi(vrf, apply->u.import_route.import_proto, apply->u.import_route.afi);
+    inst->import_protos = new_protos;
 
-    apply->out.import_protos = inst->import_protos;
+    apply->out.import_protos = new_protos;
     apply->out.import_route.route_subscribe_action = 0;
-    if (!is_no && (inst->import_protos & proto_mask) != 0u)
+
+    /* 对每个被覆盖位发起 cleanup + 取消订阅；对新启用位发起订阅。
+     * 由于 cfg_apply 一次只能携带一个 subscribe_action，这里同步完成 cleanup，
+     * 取消订阅由 CLI 层在收到 apply.out.import_route.unsubscribe_proto[i] 时发出。 */
+    for (size_t i = 0; i < G_N_ELEMENTS(k_overwrite_protos); ++i)
+    {
+        uint32_t p = k_overwrite_protos[i];
+        uint32_t m = 1U << p;
+        gboolean was_on = (prev_protos & m) != 0u;
+        gboolean now_on = (new_protos & m) != 0u;
+        if (was_on && !now_on)
+        {
+            (void)bgp_import_route_cleanup_instance(inst, p);
+            uint32_t cnt = bgp_vrf_count_import_proto_afi(vrf, p, apply->u.import_route.afi);
+            apply->out.import_route.unsub_protos[i] = (cnt == 0u) ? p : ROUTE_PROTOCOL_MAX;
+        }
+        else
+        {
+            apply->out.import_route.unsub_protos[i] = ROUTE_PROTOCOL_MAX;
+        }
+    }
+
+    if (!is_no && (new_protos & target_mask) != 0u && (prev_protos & target_mask) == 0u)
     {
         apply->out.import_route.route_subscribe_action = 1;
     }
-    else if (is_no && before_count > 0u && after_count == 0u)
+    else if (is_no && (prev_protos & target_mask) != 0u && (new_protos & target_mask) == 0u)
     {
-        apply->out.import_route.route_subscribe_action = -1;
+        /* 单纯 no：取消订阅靠 unsub_protos[]，无需 route_subscribe_action 触发 */
     }
-    if (is_no)
-    {
-        (void)bgp_import_route_cleanup_instance(inst, apply->u.import_route.import_proto);
-    }
+
     apply->rc = BGP_APPLY_RC_OK;
 }
 

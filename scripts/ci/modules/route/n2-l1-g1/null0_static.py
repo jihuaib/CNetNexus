@@ -45,7 +45,7 @@ def _wait_os_blackhole(
 ) -> None:
     """Wait for a blackhole route entry in the OS route table dump."""
     row_regex = (
-        rf"(?im)^\s*main\s+blackhole\s+{re.escape(prefix)}\s+-\s+-\s+static\s+\d+\s*$"
+        rf"(?im)^\s*main\s+blackhole\s+{re.escape(prefix)}\s+-\s+-\s+static\s+\d+(?:\s+\S+)?\s*$"
     )
     wait_check(
         rt,

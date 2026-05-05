@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-BGP labeled-unicast tunnel programming check (IPv4).
+BGP labeled-unicast tunnel programming check (IPv4)。
 
-Topology: r1 --- r2
+拓扑：r1 --- r2
 
-Goal:
-- r1 imports a static route into IPv4 labeled-unicast and allocates a label.
-- r2 receives the LU route, resolves its FEC through the LU tunnel, and
-  programs Route/FIB/OS with an MPLS tunnel nexthop.
+目标：
+- r1 在 IPv4 labeled-unicast 引入直连路由（loop1）；loop1 直连不打 NO_ADV，可被通告。
+- r2 收到 LU 路由，迭代 FEC 经 LU 隧道，向 Route/FIB/OS 下发 MPLS 隧道下一跳。
+- 通过从 r2 ping r1 的 loop1 地址（带 -I r2_loop 源地址，确保返程可达）验证转发面 ping 通。
 """
 
 from __future__ import annotations
@@ -21,8 +21,16 @@ from top_runner import TopologyRuntime  # noqa: E402
 AS_R1 = "65001"
 AS_R2 = "65002"
 
-TEST_PREFIX_ADDR = "10.100.100.0"
-TEST_PREFIX_LEN = "24"
+R1_LOOP_ID = 1
+R1_LOOP_V4 = "1.1.1.1"
+R1_LOOP_V4_PREFIX = 32
+
+R2_LOOP_ID = 2
+R2_LOOP_V4 = "2.2.2.2"
+R2_LOOP_V4_PREFIX = 32
+
+TEST_PREFIX_ADDR = R1_LOOP_V4
+TEST_PREFIX_LEN = str(R1_LOOP_V4_PREFIX)
 TEST_PREFIX = f"{TEST_PREFIX_ADDR}/{TEST_PREFIX_LEN}"
 
 
@@ -30,8 +38,8 @@ def _established_regex(peer: str) -> str:
     return rf"(?im)^\s*{re.escape(peer)}\s+\S+\s+\S+\s+Established\s*$"
 
 
-def _cleanup(rt: TopologyRuntime, *, r1_to_r2_peer: str) -> None:
-    step("Cleanup BGP/static config")
+def _cleanup(rt: TopologyRuntime) -> None:
+    step("Cleanup BGP/loop config")
     run_cmds(
         rt=rt,
         device="r1",
@@ -39,12 +47,23 @@ def _cleanup(rt: TopologyRuntime, *, r1_to_r2_peer: str) -> None:
         commands=[
             "end",
             "config",
-            f"no route ipv4 {TEST_PREFIX_ADDR} {TEST_PREFIX_LEN} {r1_to_r2_peer}",
             "no bgp",
+            f"no if loop {R1_LOOP_ID}",
             "end",
         ],
     )
-    run_cmds(rt=rt, device="r2", strict=False, commands=["end", "config", "no bgp", "end"])
+    run_cmds(
+        rt=rt,
+        device="r2",
+        strict=False,
+        commands=[
+            "end",
+            "config",
+            "no bgp",
+            f"no if loop {R2_LOOP_ID}",
+            "end",
+        ],
+    )
 
 
 def _wait_r2_lu_route(rt: TopologyRuntime, *, lu_nexthop: str, timeout: int) -> None:
@@ -160,6 +179,24 @@ def _wait_r2_os_route(rt: TopologyRuntime, *, lu_nexthop: str, timeout: int) -> 
     )
 
 
+def _verify_ping(rt: TopologyRuntime) -> None:
+    """通过 NetNexus 自带 CLI ping，从 r2 loop2 源地址 ping r1 loop1，验证 LU 转发面可达。"""
+    wait_check(
+        rt,
+        device="r2",
+        command=f"ping {R1_LOOP_V4} -a {R2_LOOP_V4}",
+        timeout=20,
+        interval=2,
+        regex=[
+            rf"(?im)^PING\s+{re.escape(R1_LOOP_V4)}\s+from\s+{re.escape(R2_LOOP_V4)}\s*:\s*\d+\s+data\s+bytes\s*$",
+            rf"(?im)^\s*\d+\s+bytes\s+from\s+{re.escape(R1_LOOP_V4)}\s*:\s*icmp_seq=\d+\s+time=",
+            r"(?im)^\s*\d+\s+packets\s+transmitted,\s+[1-9]\d*\s+received,",
+        ],
+        not_regex=[r"(?im)^\s*\d+\s+packets\s+transmitted,\s+0\s+received,"],
+        label="r2 NetNexus ping r1 loop1 from loop2 succeeds",
+    )
+
+
 def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
     require_devices(top, ("r1", "r2"))
 
@@ -167,24 +204,51 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
     r2_to_r1_peer = str(g_top.r2.GE_1.peer_ip)  # r1 GE-1
 
     try:
-        _cleanup(rt, r1_to_r2_peer=r1_to_r2_peer)
+        _cleanup(rt)
 
-        step("Configure r1 static FEC for BGP LU import")
+        step("Configure loop interfaces on both routers")
         run_cmds(
             rt=rt,
             device="r1",
-            commands=["config", f"route ipv4 {TEST_PREFIX_ADDR} {TEST_PREFIX_LEN} {r1_to_r2_peer}", "end"],
+            commands=[
+                "config",
+                f"if loop {R1_LOOP_ID}",
+                f"ip address {R1_LOOP_V4} {R1_LOOP_V4_PREFIX}",
+                "exit",
+                "end",
+            ],
         )
-        wait_check(
+        run_cmds(
+            rt=rt,
+            device="r2",
+            commands=[
+                "config",
+                f"if loop {R2_LOOP_ID}",
+                f"ip address {R2_LOOP_V4} {R2_LOOP_V4_PREFIX}",
+                "exit",
+                "end",
+            ],
+        )
+        wait_checks(
             rt,
-            device="r1",
-            command="show route ipv4 static",
-            timeout=30,
-            contains=[TEST_PREFIX, r1_to_r2_peer],
-            label="r1 static FEC route exists for LU import",
+            [
+                {
+                    "device": "r1",
+                    "command": f"show route ipv4 {R1_LOOP_V4} {R1_LOOP_V4_PREFIX}",
+                    "contains": [f"Routing entry for {R1_LOOP_V4}/{R1_LOOP_V4_PREFIX}"],
+                    "label": "r1 loop1 connected route present",
+                },
+                {
+                    "device": "r2",
+                    "command": f"show route ipv4 {R2_LOOP_V4} {R2_LOOP_V4_PREFIX}",
+                    "contains": [f"Routing entry for {R2_LOOP_V4}/{R2_LOOP_V4_PREFIX}"],
+                    "label": "r2 loop2 connected route present",
+                },
+            ],
+            timeout=15,
         )
 
-        step("Configure BGP labeled-unicast")
+        step("Configure BGP labeled-unicast with import-route connected")
         run_cmds(
             rt=rt,
             device="r1",
@@ -196,7 +260,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 f"neighbor {r1_to_r2_peer} as {AS_R2}",
                 "af ipv4-labeled",
                 f"neighbor {r1_to_r2_peer} enable",
-                "import-route static",
+                "import-route connected",
                 "exit",
                 "end",
             ],
@@ -212,6 +276,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 f"neighbor {r2_to_r1_peer} as {AS_R1}",
                 "af ipv4-labeled",
                 f"neighbor {r2_to_r1_peer} enable",
+                "import-route connected",
                 "exit",
                 "end",
             ],
@@ -237,7 +302,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             timeout=70,
         )
 
-        step("Verify r1 allocates label and r2 receives LU route")
+        step("Verify r1 allocates label and r2 receives LU route for loop1")
         wait_checks(
             rt,
             [
@@ -250,8 +315,22 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 {
                     "device": "r1",
                     "command": "show tunnel ilm",
-                    "regex": [r"(?im)^\s*vrf\s+0\s+label\s+[1-9]\d*\s+->\s+nhlfe\s+0\s+action\s+3\s+state\s+up\s*$"],
+                    "regex": [
+                        r"(?im)^\s*vrf\s+0\s+label\s+[1-9]\d*\s+->\s+nhlfe\s+0\s+action\s+pop\(3\)\s+state\s+up\s*$"
+                    ],
                     "label": "r1 tunnel ILM pops locally allocated LU label",
+                },
+                {
+                    "device": "r1",
+                    "command": "show fib mpls",
+                    "regex": [r"(?im)^\s*0\s+[1-9]\d*\s+pop\s+0\s+up\s+[1-9]\d*\s+-\s+-\s+yes\s+yes\s*$"],
+                    "label": "r1 FIB MPLS ILM is installed",
+                },
+                {
+                    "device": "r1",
+                    "command": "show fib mpls os",
+                    "regex": [r"(?im)^\s*main\s+unicast\s+[1-9]\d*\s+-\s+\S+\s+static\s+\d+\s+pop\s*$"],
+                    "label": "r1 OS MPLS route pops local LU label",
                 },
             ],
             timeout=40,
@@ -259,12 +338,15 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         )
         _wait_r2_lu_route(rt, lu_nexthop=r2_to_r1_peer, timeout=50)
 
-        step("Verify r2 programs LU tunnel route")
+        step("Verify r2 programs LU tunnel route for loop1")
         _wait_r2_tunnel_fec(rt, lu_nexthop=r2_to_r1_peer, timeout=50)
         _wait_r2_route_rib_tunnel(rt, lu_nexthop=r2_to_r1_peer, timeout=50)
         _wait_r2_fib_tunnel(rt, lu_nexthop=r2_to_r1_peer, timeout=50)
         _wait_r2_os_route(rt, lu_nexthop=r2_to_r1_peer, timeout=50)
 
+        step("Verify forwarding-plane ping over LU tunnel (r2 loop2 -> r1 loop1)")
+        _verify_ping(rt)
+
         print("BGP labeled-unicast tunnel programming check passed.")
     finally:
-        _cleanup(rt, r1_to_r2_peer=r1_to_r2_peer)
+        _cleanup(rt)

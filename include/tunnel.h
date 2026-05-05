@@ -11,8 +11,7 @@
 #include "net_addr.h"
 
 #define TUNNEL_MAX_LABEL_STACK 8u
-#define TUNNEL_LABEL_DYNAMIC_MIN 16000u
-#define TUNNEL_LABEL_DYNAMIC_MAX 1048575u
+#define TUNNEL_LABEL_VALUE_MAX 0xFFFFFu
 
 typedef enum tunnel_source_type
 {
@@ -86,6 +85,7 @@ typedef struct tunnel_label_req
     uint8_t _pad0;
     uint32_t owner_module_id;
     uint32_t owner_id;
+    uint32_t out_ifindex;
     tunnel_fec_t fec;
 } tunnel_label_req_t;
 

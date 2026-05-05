@@ -10,9 +10,15 @@
 
 #include "fib.h"
 
+#ifndef AF_MPLS
+#    define AF_MPLS 28
+#endif
+
 int fib_os_route_install_ip(const fib_route_entry_t *route);
 int fib_os_route_install_tunnel(const fib_route_entry_t *route, const fib_tunnel_entry_t *tunnel);
 int fib_os_route_withdraw(const fib_route_entry_t *route);
+int fib_os_ilm_install(const fib_ilm_entry_t *ilm);
+int fib_os_ilm_withdraw(const fib_ilm_entry_t *ilm);
 int fib_os_show(GString *buf, sa_family_t family);
 
 #endif /* FIB_OS_H */
