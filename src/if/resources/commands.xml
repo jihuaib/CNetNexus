@@ -194,6 +194,19 @@
                     <description>IPv6 prefix length (0-128)</description>
                     <type>uint(0-128)</type>
                 </element>
+                <element id="10" cfg-id="8" type="keyword">
+                    <name>vrf</name> <!-- 10 -->
+                    <description>VRF binding</description>
+                </element>
+                <element id="11" cfg-id="9" type="keyword">
+                    <name>forwarding</name> <!-- 11 -->
+                    <description>Bind interface to VRF</description>
+                </element>
+                <element id="12" cfg-id="10" type="parameter">
+                    <name>&lt;vrf-name&gt;</name> <!-- 12 -->
+                    <description>VRF name</description>
+                    <type>dynamic(7:1,string(1-63))</type>
+                </element>
             </elements>
             <commands>
                 <!-- ip address <ip> <prefix-len>：GE 和 loop 视图均可用 -->
@@ -224,6 +237,15 @@
                 <command>
                     <expression>6 5</expression>
                     <views>if</views>
+                </command>
+                <!-- vrf forwarding <vrf-name> / no vrf forwarding：GE 和 loop 视图均可用，自动清空 IP -->
+                <command>
+                    <expression>10 11 12</expression>
+                    <views>if,if-loop</views>
+                </command>
+                <command>
+                    <expression>6 10 11</expression>
+                    <views>if,if-loop</views>
                 </command>
             </commands>
         </group>

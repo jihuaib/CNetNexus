@@ -113,6 +113,7 @@ typedef struct
     GString *buf;
     uint16_t afi_filter;
     int has_afi_filter;
+    uint32_t vrf_filter;
     uint32_t count;
 } static_show_ctx_t;
 
@@ -128,6 +129,10 @@ static void static_show_cb(gpointer key_ptr, gpointer value_ptr, gpointer user_d
 
     /* 按 AFI 过滤 */
     if (ctx->has_afi_filter && entry->key.afi != ctx->afi_filter)
+    {
+        return;
+    }
+    if (entry->key.vrf_id != ctx->vrf_filter)
     {
         return;
     }
@@ -150,13 +155,14 @@ static void static_show_cb(gpointer key_ptr, gpointer value_ptr, gpointer user_d
     ctx->count++;
 }
 
-void route_static_show(GString *buf, uint16_t afi_filter, int has_afi_filter)
+void route_static_show(GString *buf, uint16_t afi_filter, int has_afi_filter, uint32_t vrf_filter, const char *vrf_name)
 {
     if (!buf)
     {
         return;
     }
 
+    g_string_append_printf(buf, "\r\nStatic Routes (VRF: %s)\r\n", vrf_name ? vrf_name : "public");
     g_string_append_printf(
         buf,
         "\r\n%-4s %-24s %-20s %-10s %4s %4s  %-8s  %s\r\n"
@@ -170,7 +176,13 @@ void route_static_show(GString *buf, uint16_t afi_filter, int has_afi_filter)
         return;
     }
 
-    static_show_ctx_t ctx = {.buf = buf, .afi_filter = afi_filter, .has_afi_filter = has_afi_filter, .count = 0};
+    static_show_ctx_t ctx = {
+        .buf = buf,
+        .afi_filter = afi_filter,
+        .has_afi_filter = has_afi_filter,
+        .vrf_filter = vrf_filter,
+        .count = 0,
+    };
     g_hash_table_foreach(g_static_table, static_show_cb, &ctx);
 
     g_string_append_printf(buf, "\r\nTotal %u static route(s) in candidate table\r\n", ctx.count);
@@ -684,13 +696,14 @@ void route_static_on_nh_change(uint32_t vrf_id, uint16_t afi, const net_addr_t *
 // show route relay static（直接委托通用 relay show，按 owner_module_id 过滤）
 // ============================================================================
 
-void route_static_show_relay(GString *buf, uint16_t afi_filter, int has_afi_filter)
+void route_static_show_relay(GString *buf, uint16_t afi_filter, int has_afi_filter, uint32_t vrf_filter,
+                             const char *vrf_name)
 {
     if (!buf)
     {
         return;
     }
-    route_relay_show(buf, DEV_MODULE_ID_ROUTE, 1, afi_filter, has_afi_filter);
+    route_relay_show(buf, DEV_MODULE_ID_ROUTE, 1, afi_filter, has_afi_filter, vrf_filter, vrf_name);
 }
 
 // ============================================================================

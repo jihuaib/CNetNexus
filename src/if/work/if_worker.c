@@ -149,6 +149,8 @@ static int worker_apply_cmd(if_apply_cmd_t *apply)
             return if_cfg_loop_create(apply->u.loop_create.loop_id);
         case IF_APPLY_OP_LOOP_DELETE:
             return if_cfg_loop_delete(apply->u.loop_delete.loop_id);
+        case IF_APPLY_OP_VRF_BIND:
+            return if_cfg_apply_vrf_binding(apply->u.vrf_bind.ifname, apply->u.vrf_bind.vrf_name);
         default:
             return ERRCODE_FAIL;
     }
@@ -406,9 +408,9 @@ int if_worker_dispatch_apply(if_apply_cmd_t *apply)
         return ERRCODE_FAIL;
     }
 
-    (void)worker_cmd_wait(cmd);
+    int rc = worker_cmd_wait(cmd);
     worker_cmd_destroy(cmd);
-    return ERRCODE_SUCCESS;
+    return rc;
 }
 
 int if_worker_post_link_event(uint16_t nlmsg_type, const char *physical_name, uint32_t ifindex, uint8_t link_up_known,

@@ -37,10 +37,9 @@ ulimit -c unlimited
 # Set environment for development
 export LD_LIBRARY_PATH="${BUILD_DIR}/lib:${LD_LIBRARY_PATH}"
 
-# 设置工作目录，避免数据库等使用 cwd 相对路径时落到 build/bin/
-export NN_WORK_DIR="${PROJECT_ROOT}"
-
-# XML files will be auto-discovered from src/ in development mode
+# 开发环境不要设置 NN_WORK_DIR；资源文件会通过可执行文件路径回退到 src/。
+# 保持 cwd 在项目根目录，让未设置 NN_WORK_DIR 时的 ./data/netnexus.db 落到 PROJECT_ROOT/data。
+unset NN_WORK_DIR
 
 echo "==================================="
 echo "NetNexus Development Mode"
@@ -54,10 +53,9 @@ echo -e "${YELLOW}Press Ctrl+C to stop${NC}"
 echo "==================================="
 echo ""
 
-# 注意：不要 cd 到 cores 目录！部分模块（SQLite 等）用 cwd 相对路径打开
-# data/netnexus.db，切 cwd 会导致数据库被建到错误位置。
-# core 文件会落到 cwd（即 build/bin/），需要时 mv 到 cores 目录或 grep 查找。
-cd "${BUILD_DIR}/bin"
+# 注意：不要 cd 到 build/bin 或 cores 目录。未设置 NN_WORK_DIR 时，
+# SQLite 使用 ./data/netnexus.db，cwd 必须保持在项目根目录。
+cd "${PROJECT_ROOT}"
 
 # Start NetNexus
-exec ./netnexus
+exec "${BUILD_DIR}/bin/netnexus"

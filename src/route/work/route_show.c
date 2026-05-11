@@ -26,6 +26,7 @@
 #include "route_rib.h"
 #include "route_static.h"
 #include "route_worker.h"
+#include "vrf.h"
 
 /** show 命令分片流状态，仅在 worker 线程访问 */
 static cli_chunk_stream_t g_route_show_stream;
@@ -81,6 +82,44 @@ typedef struct
     int show_ipv4;
     int show_ipv6;
 } summary_ctx_t;
+
+typedef struct route_show_vrf_filter
+{
+    char name[VRF_NAME_MAX_LEN];
+    uint32_t vrf_id;
+    uint32_t l3vrf_table_id;
+} route_show_vrf_filter_t;
+
+static void route_show_vrf_filter_default(route_show_vrf_filter_t *filter)
+{
+    if (!filter)
+    {
+        return;
+    }
+    memset(filter, 0, sizeof(*filter));
+    g_strlcpy(filter->name, VRF_PUBLIC_VRF_NAME, sizeof(filter->name));
+    filter->vrf_id = VRF_PUBLIC_VRF_ID;
+}
+
+static int route_show_vrf_filter_resolve(const char *vrf_name, route_show_vrf_filter_t *filter)
+{
+    route_show_vrf_filter_default(filter);
+    if (!filter || !vrf_name || vrf_name[0] == '\0' || strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) == 0)
+    {
+        return ERRCODE_SUCCESS;
+    }
+
+    const vrf_api_cache_entry_t *vrf = vrf_api_cache_lookup_by_name(vrf_name);
+    if (!vrf)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    g_strlcpy(filter->name, vrf->name, sizeof(filter->name));
+    filter->vrf_id = vrf->vrf_id;
+    filter->l3vrf_table_id = vrf->l3vrf_table_id;
+    return ERRCODE_SUCCESS;
+}
 
 static void summary_path_cb(const route_head_t *head, const route_path_t *path, void *userdata)
 {
@@ -185,6 +224,10 @@ static const char *module_name(uint32_t module_id)
             return "isis";
         case DEV_MODULE_ID_TUNNEL:
             return "tunnel";
+        case DEV_MODULE_ID_FIB:
+            return "fib";
+        case DEV_MODULE_ID_LDP:
+            return "ldp";
         default:
             return "unknown";
     }
@@ -220,7 +263,8 @@ static const char *route_nh_type_name(uint8_t nh_type)
     }
 }
 
-static int route_show_handle_subscribe(dev_ipc_message_t *msg, uint16_t afi_filter)
+static int route_show_handle_subscribe(dev_ipc_message_t *msg, uint16_t afi_filter, uint32_t vrf_filter,
+                                       const char *vrf_name)
 {
     GString *buf = g_string_new("");
     if (!buf)
@@ -235,6 +279,7 @@ static int route_show_handle_subscribe(dev_ipc_message_t *msg, uint16_t afi_filt
                            "%-10s %-10s %-10s %-8s\r\n"
                            "---------- ---------- ---------- --------\r\n",
                            route_afi_name(afi_filter), "Module", "Protocol", "VRF", "AFI");
+    g_string_append_printf(buf, "VRF filter: %s\r\n", vrf_name ? vrf_name : VRF_PUBLIC_VRF_NAME);
 
     GList *subscribers = g_route_work_local ? g_route_work_local->subscribers : NULL;
     for (GList *l = subscribers; l; l = l->next)
@@ -245,6 +290,10 @@ static int route_show_handle_subscribe(dev_ipc_message_t *msg, uint16_t afi_filt
             continue;
         }
         if (sub->afi != ROUTE_AFI_ALL && sub->afi != afi_filter)
+        {
+            continue;
+        }
+        if (sub->vrf_id != ROUTE_VRF_ALL && sub->vrf_id != vrf_filter)
         {
             continue;
         }
@@ -410,6 +459,7 @@ int route_show_handle_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     gboolean has_dest_filter = FALSE;
     int64_t dest_filter_pfxlen = -1;
     gboolean has_dest_filter_pfxlen = FALSE;
+    char vrf_name[VRF_NAME_MAX_LEN] = {0};
 
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
@@ -463,10 +513,28 @@ int route_show_handle_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             case 14:
                 show_subscribe = 1;
                 break;
+            case 16:
+            {
+                const char *text = cli_tlv_entry_get_text(&entry);
+                if (text)
+                {
+                    g_strlcpy(vrf_name, text, sizeof(vrf_name));
+                }
+                break;
+            }
             default:
                 break;
         }
         cli_tlv_entry_free(&entry);
+    }
+
+    route_show_vrf_filter_t vrf_filter;
+    if (route_show_vrf_filter_resolve(vrf_name, &vrf_filter) != ERRCODE_SUCCESS)
+    {
+        char resp[160];
+        snprintf(resp, sizeof(resp), "Error: VRF %s not found\r\n", vrf_name);
+        send_resp(msg, resp);
+        return ERRCODE_FAIL;
     }
 
     if (has_dest_filter != has_dest_filter_pfxlen)
@@ -509,7 +577,7 @@ int route_show_handle_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     if (show_subscribe)
     {
         uint16_t afi_filter = show_ipv6 ? ROUTE_AFI_IPV6 : ROUTE_AFI_IPV4;
-        return route_show_handle_subscribe(msg, afi_filter);
+        return route_show_handle_subscribe(msg, afi_filter, vrf_filter.vrf_id, vrf_filter.name);
     }
 
     if (show_summary)
@@ -518,11 +586,11 @@ int route_show_handle_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         memset(&sctx, 0, sizeof(sctx));
         sctx.show_ipv4 = show_ipv4;
         sctx.show_ipv6 = show_ipv6;
-        route_rib_walk(g_route_work_local->rib, ROUTE_PROTOCOL_MAX, ROUTE_VRF_DEFAULT, summary_path_cb, &sctx);
+        route_rib_walk(g_route_work_local->rib, ROUTE_PROTOCOL_MAX, vrf_filter.vrf_id, summary_path_cb, &sctx);
         uint32_t total = sctx.connected + sctx.static_ + sctx.bgp + sctx.ospf + sctx.isis + sctx.other;
         char buf[512];
         snprintf(buf, sizeof(buf),
-                 "\r\nRoute Summary:\r\n"
+                 "\r\nRoute Summary (VRF: %s):\r\n"
                  "  %-12s %u\r\n"
                  "  %-12s %u\r\n"
                  "  %-12s %u\r\n"
@@ -530,8 +598,8 @@ int route_show_handle_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                  "  %-12s %u\r\n"
                  "  %-12s %u\r\n"
                  "  %-12s %u\r\n\r\n",
-                 "Connected:", sctx.connected, "Static:", sctx.static_, "BGP:", sctx.bgp, "OSPF:", sctx.ospf,
-                 "ISIS:", sctx.isis, "Other:", sctx.other, "Total:", total);
+                 vrf_filter.name, "Connected:", sctx.connected, "Static:", sctx.static_, "BGP:", sctx.bgp,
+                 "OSPF:", sctx.ospf, "ISIS:", sctx.isis, "Other:", sctx.other, "Total:", total);
         send_resp(msg, buf);
         return ERRCODE_SUCCESS;
     }
@@ -554,9 +622,10 @@ int route_show_handle_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 
         char filter_str[64];
         net_addr_to_str(&dest_filter_addr, filter_str, sizeof(filter_str));
-        g_string_append_printf(dctx.buf, "\r\nRouting entry for %s/%u\r\n", filter_str, dctx.dest_prefix_len);
+        g_string_append_printf(dctx.buf, "\r\nRouting entry for %s/%u (VRF: %s)\r\n", filter_str, dctx.dest_prefix_len,
+                               vrf_filter.name);
 
-        route_rib_walk(g_route_work_local->rib, proto_filter, ROUTE_VRF_DEFAULT, detail_path_cb, &dctx);
+        route_rib_walk(g_route_work_local->rib, proto_filter, vrf_filter.vrf_id, detail_path_cb, &dctx);
 
         if (dctx.count == 0)
         {
@@ -581,11 +650,12 @@ int route_show_handle_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     ctx.show_ipv6 = show_ipv6;
 
     g_string_append_printf(ctx.buf,
-                           "\r\n%-2s %-24s %-20s %-14s %4s %4s\r\n"
+                           "\r\nRoutes (VRF: %s)\r\n"
+                           "%-2s %-24s %-20s %-14s %4s %4s\r\n"
                            "-- ------------------------ -------------------- -------------- ---- ----\r\n",
-                           "P", "Prefix", "Nexthop", "Interface", "Met", "Pref");
+                           vrf_filter.name, "P", "Prefix", "Nexthop", "Interface", "Met", "Pref");
 
-    route_rib_walk(g_route_work_local->rib, proto_filter, ROUTE_VRF_DEFAULT, show_path_cb, &ctx);
+    route_rib_walk(g_route_work_local->rib, proto_filter, vrf_filter.vrf_id, show_path_cb, &ctx);
 
     if (ctx.count == 0)
     {
@@ -603,6 +673,7 @@ int route_show_handle_relay(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     int show_static = 0;
     uint16_t afi_filter = 0;
     int has_afi_filter = 0;
+    char vrf_name[VRF_NAME_MAX_LEN] = {0};
 
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
@@ -634,10 +705,28 @@ int route_show_handle_relay(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                 /* static 关键字：显示候选静态路由的 nexthop 迭代状态 */
                 show_static = 1;
                 break;
+            case 6:
+            {
+                const char *text = cli_tlv_entry_get_text(&entry);
+                if (text)
+                {
+                    g_strlcpy(vrf_name, text, sizeof(vrf_name));
+                }
+                break;
+            }
             default:
                 break;
         }
         cli_tlv_entry_free(&entry);
+    }
+
+    route_show_vrf_filter_t vrf_filter;
+    if (route_show_vrf_filter_resolve(vrf_name, &vrf_filter) != ERRCODE_SUCCESS)
+    {
+        char resp[160];
+        snprintf(resp, sizeof(resp), "Error: VRF %s not found\r\n", vrf_name);
+        send_resp(msg, resp);
+        return ERRCODE_FAIL;
     }
 
     GString *buf = g_string_new("");
@@ -649,11 +738,12 @@ int route_show_handle_relay(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 
     if (show_static)
     {
-        route_static_show_relay(buf, afi_filter, has_afi_filter);
+        route_static_show_relay(buf, afi_filter, has_afi_filter, vrf_filter.vrf_id, vrf_filter.name);
     }
     else
     {
-        route_relay_show(buf, module_filter, has_filter, afi_filter, has_afi_filter);
+        route_relay_show(buf, module_filter, has_filter, afi_filter, has_afi_filter, vrf_filter.vrf_id,
+                         vrf_filter.name);
     }
     return route_show_send_chunked(msg, buf);
 }
@@ -662,6 +752,7 @@ int route_show_handle_static(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
     uint16_t afi_filter = 0;
     int has_afi_filter = 0;
+    char vrf_name[VRF_NAME_MAX_LEN] = {0};
 
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
@@ -678,11 +769,29 @@ int route_show_handle_static(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                     afi_filter = ROUTE_AFI_IPV6;
                     has_afi_filter = 1;
                     break;
+                case 4:
+                {
+                    const char *text = cli_tlv_entry_get_text(&entry);
+                    if (text)
+                    {
+                        g_strlcpy(vrf_name, text, sizeof(vrf_name));
+                    }
+                    break;
+                }
                 default:
                     break;
             }
         }
         cli_tlv_entry_free(&entry);
+    }
+
+    route_show_vrf_filter_t vrf_filter;
+    if (route_show_vrf_filter_resolve(vrf_name, &vrf_filter) != ERRCODE_SUCCESS)
+    {
+        char resp[160];
+        snprintf(resp, sizeof(resp), "Error: VRF %s not found\r\n", vrf_name);
+        send_resp(msg, resp);
+        return ERRCODE_FAIL;
     }
 
     GString *buf = g_string_new("");
@@ -692,7 +801,7 @@ int route_show_handle_static(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         return ERRCODE_FAIL;
     }
 
-    route_static_show(buf, afi_filter, has_afi_filter);
+    route_static_show(buf, afi_filter, has_afi_filter, vrf_filter.vrf_id, vrf_filter.name);
     return route_show_send_chunked(msg, buf);
 }
 

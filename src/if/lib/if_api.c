@@ -100,6 +100,7 @@ static void cache_handle_addr_event(const if_addr_event_msg_t *evt)
     }
 
     cache_update_ifindex(entry, evt->physical_name, evt->ifindex);
+    g_strlcpy(entry->vrf_name, evt->vrf_name, sizeof(entry->vrf_name));
 
     int is_ipv6_linklocal = cache_addr_event_is_ipv6_linklocal(evt);
 
@@ -167,6 +168,7 @@ static void cache_handle_up_down_event(const if_event_msg_t *evt)
     }
 
     entry->link_up = evt->link_up ? 1u : 0u;
+    g_strlcpy(entry->vrf_name, evt->vrf_name, sizeof(entry->vrf_name));
     cache_update_ifindex(entry, evt->physical_name, 0);
 }
 
@@ -219,7 +221,7 @@ void if_api_cache_on_event(const dev_ipc_message_t *msg)
     if (msg->payload_len >= sizeof(if_event_msg_t))
     {
         const if_event_msg_t *evt = (const if_event_msg_t *)msg->payload;
-        if (evt->event == IF_EVENT_LINK_UP || evt->event == IF_EVENT_LINK_DOWN)
+        if (evt->event == IF_EVENT_LINK_UP || evt->event == IF_EVENT_LINK_DOWN || evt->event == IF_EVENT_VRF_CHANGE)
         {
             cache_handle_up_down_event(evt);
         }

@@ -22,6 +22,7 @@
 #include "route_cli.h"
 #include "route_db.h"
 #include "route_worker.h"
+#include "vrf.h"
 
 route_local_t *g_route_local = NULL;
 
@@ -100,6 +101,10 @@ static void route_on_start(dev_ipc_message_t *msg)
     {
         LOG_WARN("Failed to connect to FIB module (best routes will not be programmed)");
     }
+    if (dev_ipc_connect(ctx, DEV_MODULE_ID_VRF, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_VRF) != 0)
+    {
+        LOG_WARN("Failed to connect to VRF module (VRF-name show filters may be unavailable)");
+    }
 
     /*
      * 线程化后 ROUTE_MSG_TYPE_INJECT/NH_* 可能在 MODULE_READY 前到达（例如 IF 在其 READY 阶段恢复直连路由）。
@@ -174,6 +179,14 @@ static void route_on_ready(dev_ipc_message_t *msg)
     else
     {
         LOG_WARN("Failed to subscribe to IF events via if_api");
+    }
+    if (vrf_api_subscribe_all(ctx) == ERRCODE_SUCCESS)
+    {
+        LOG_INFO("Subscribed to VRF events via vrf_api");
+    }
+    else
+    {
+        LOG_WARN("Failed to subscribe to VRF events via vrf_api");
     }
 
     LOG_INFO("Route database tables ready");
@@ -329,6 +342,14 @@ void route_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             /* IF 订阅应答，静默丢弃 */
             break;
 
+        case VRF_MSG_TYPE_EVENT:
+            vrf_api_cache_on_event(msg);
+            break;
+
+        case VRF_MSG_TYPE_ACK:
+            /* VRF 订阅应答，静默丢弃 */
+            break;
+
         case FIB_MSG_TYPE_ROUTE_RESULT:
             if (route_worker_post(ROUTE_WORKER_CMD_FIB_ROUTE_RESULT, msg) != 0)
             {
@@ -353,6 +374,7 @@ int route_module_init(void)
 {
     log_set_tag("route");
     LOG_INFO("Module initialization");
+    vrf_api_cache_init();
 
     dev_ipc_context_t *ctx = dev_ipc_init(DEV_MODULE_ID_ROUTE, "route", DEV_MODULE_PORT_ROUTE, route_ipc_msg_handler);
     if (!ctx)
@@ -384,6 +406,7 @@ void route_module_cleanup(void)
 
     /* 再停止 route worker，触发 route_calc_cleanup 撤销 FIB 路由。 */
     route_worker_shutdown();
+    vrf_api_cache_cleanup();
 
     /* 先停止 IPC 线程，避免退出过程中继续接收业务消息。 */
     if (ctx)

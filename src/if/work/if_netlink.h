@@ -82,6 +82,9 @@ int if_delete_interface(const char *ifname);
 int if_addr_add_prefix(const char *ifname, const net_prefix_t *prefix);
 int if_addr_del_prefix(const char *ifname, const net_prefix_t *prefix);
 
+// 设置 Linux L3VRF master；master_ifindex=0 表示 nomaster。
+int if_set_master(const char *ifname, uint32_t master_ifindex);
+
 // 通过 Netlink 下发 Linux 黑洞路由（RTN_BLACKHOLE）
 int if_blackhole_route_add(sa_family_t family, const void *prefix_bin, uint8_t prefix_len);
 

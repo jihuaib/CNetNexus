@@ -20,6 +20,7 @@
 #include "ldp_db.h"
 #include "ldp_main.h"
 #include "log.h"
+#include "work/ldp_worker.h"
 
 #define LDP_IF_LOOP_ID_MIN 1u
 #define LDP_IF_LOOP_ID_MAX 1024u
@@ -54,6 +55,50 @@ static const char *if_ctx_idx_to_name(uint32_t if_idx)
     }
 }
 
+static int dispatch_proto_apply(void)
+{
+    ldp_proto_cfg_t cfg;
+    if (ldp_db_get_proto_cfg(&cfg) != ERRCODE_SUCCESS)
+    {
+        return ERRCODE_FAIL;
+    }
+    ldp_apply_cmd_t apply;
+    memset(&apply, 0, sizeof(apply));
+    apply.op = LDP_APPLY_OP_PROTO_SET;
+    apply.u.proto = cfg;
+    if (ldp_worker_dispatch_apply(&apply) != ERRCODE_SUCCESS)
+    {
+        return ERRCODE_FAIL;
+    }
+    return apply.rc;
+}
+
+static int dispatch_if_apply(const char *ifname, int enabled)
+{
+    ldp_apply_cmd_t apply;
+    memset(&apply, 0, sizeof(apply));
+    if (enabled)
+    {
+        ldp_if_cfg_t cfg;
+        if (ldp_db_get_interface(ifname, &cfg) != ERRCODE_SUCCESS)
+        {
+            return ERRCODE_FAIL;
+        }
+        apply.op = LDP_APPLY_OP_IF_SET;
+        apply.u.if_set = cfg;
+    }
+    else
+    {
+        apply.op = LDP_APPLY_OP_IF_DEL;
+        g_strlcpy(apply.u.if_del.ifname, ifname, sizeof(apply.u.if_del.ifname));
+    }
+    if (ldp_worker_dispatch_apply(&apply) != ERRCODE_SUCCESS)
+    {
+        return ERRCODE_FAIL;
+    }
+    return apply.rc;
+}
+
 static int handle_proto_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
     const int is_no = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
@@ -69,6 +114,7 @@ static int handle_proto_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         send_resp(msg, "LDP Error: Failed to persist admin state\r\n");
         return ERRCODE_FAIL;
     }
+    (void)dispatch_proto_apply();
     send_resp(msg, "");
     return ERRCODE_SUCCESS;
 }
@@ -127,6 +173,7 @@ static int handle_lsr_id_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         send_resp(msg, "LDP Error: Failed to persist LSR-ID\r\n");
         return ERRCODE_FAIL;
     }
+    (void)dispatch_proto_apply();
     send_resp(msg, "");
     return ERRCODE_SUCCESS;
 }
@@ -203,6 +250,7 @@ static int handle_timers_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         send_resp(msg, "LDP Error: Failed to persist timer\r\n");
         return ERRCODE_FAIL;
     }
+    (void)dispatch_proto_apply();
     send_resp(msg, "");
     return ERRCODE_SUCCESS;
 }
@@ -316,6 +364,7 @@ static int handle_if_view_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             {
                 (void)ldp_db_del_interface(ifname);
             }
+            (void)dispatch_if_apply(ifname, 0);
             send_resp(msg, "");
             return ERRCODE_SUCCESS;
         }
@@ -355,6 +404,7 @@ static int handle_if_view_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         send_resp(msg, "LDP Error: Failed to persist interface config\r\n");
         return ERRCODE_FAIL;
     }
+    (void)dispatch_if_apply(ifname, cfg.enabled ? 1 : 0);
     send_resp(msg, "");
     return ERRCODE_SUCCESS;
 }

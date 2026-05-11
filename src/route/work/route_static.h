@@ -135,7 +135,8 @@ void route_static_on_if_change(void);
  * @param afi_filter     地址族过滤（ROUTE_AFI_IPV4/IPV6）
  * @param has_afi_filter 非零表示启用 afi_filter 过滤
  */
-void route_static_show(GString *buf, uint16_t afi_filter, int has_afi_filter);
+void route_static_show(GString *buf, uint16_t afi_filter, int has_afi_filter, uint32_t vrf_filter,
+                       const char *vrf_name);
 
 /**
  * @brief 以 relay 风格输出候选静态路由的 nexthop 迭代状态（按 nexthop 聚合）
@@ -147,7 +148,8 @@ void route_static_show(GString *buf, uint16_t afi_filter, int has_afi_filter);
  * @param afi_filter     地址族过滤（ROUTE_AFI_IPV4/IPV6）
  * @param has_afi_filter 非零表示启用 afi_filter 过滤
  */
-void route_static_show_relay(GString *buf, uint16_t afi_filter, int has_afi_filter);
+void route_static_show_relay(GString *buf, uint16_t afi_filter, int has_afi_filter, uint32_t vrf_filter,
+                             const char *vrf_name);
 
 /**
  * @brief 清理候选静态路由表（shutdown 时调用）

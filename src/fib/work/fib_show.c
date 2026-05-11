@@ -1,6 +1,8 @@
 #include "fib_show.h"
 
 #include <glib.h>
+#include <linux/rtnetlink.h>
+#include <net/if.h>
 #include <netinet/in.h>
 #include <stdio.h>
 #include <string.h>
@@ -14,6 +16,7 @@
 #include "net_addr.h"
 #include "route.h"
 #include "tunnel.h"
+#include "vrf.h"
 
 static cli_chunk_stream_t g_fib_show_stream;
 
@@ -39,6 +42,7 @@ typedef struct fib_show_route_ctx
 {
     GString *buf;
     uint16_t afi;
+    uint32_t vrf_id;
     gboolean has_filter;
     net_addr_t filter_addr;
     uint8_t filter_prefix_len;
@@ -48,10 +52,50 @@ typedef struct fib_show_route_ctx
 typedef struct fib_show_ilm_ctx
 {
     GString *buf;
+    uint32_t vrf_id;
     gboolean has_filter;
     uint32_t filter_label;
     uint32_t count;
 } fib_show_ilm_ctx_t;
+
+typedef struct fib_show_vrf_filter
+{
+    char name[VRF_NAME_MAX_LEN];
+    uint32_t vrf_id;
+    uint32_t l3vrf_table_id;
+} fib_show_vrf_filter_t;
+
+static void fib_show_vrf_filter_default(fib_show_vrf_filter_t *filter)
+{
+    if (!filter)
+    {
+        return;
+    }
+    memset(filter, 0, sizeof(*filter));
+    g_strlcpy(filter->name, VRF_PUBLIC_VRF_NAME, sizeof(filter->name));
+    filter->vrf_id = VRF_PUBLIC_VRF_ID;
+    filter->l3vrf_table_id = RT_TABLE_MAIN;
+}
+
+static int fib_show_vrf_filter_resolve(const char *vrf_name, fib_show_vrf_filter_t *filter)
+{
+    fib_show_vrf_filter_default(filter);
+    if (!filter || !vrf_name || vrf_name[0] == '\0' || strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) == 0)
+    {
+        return ERRCODE_SUCCESS;
+    }
+
+    const vrf_api_cache_entry_t *vrf = vrf_api_cache_lookup_by_name(vrf_name);
+    if (!vrf)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    g_strlcpy(filter->name, vrf->name, sizeof(filter->name));
+    filter->vrf_id = vrf->vrf_id;
+    filter->l3vrf_table_id = vrf->l3vrf_table_id;
+    return ERRCODE_SUCCESS;
+}
 
 static const char *afi_name(uint16_t afi)
 {
@@ -170,7 +214,7 @@ static void append_route_cb(gpointer key, gpointer value, gpointer user_data)
     (void)key;
     fib_route_state_t *state = (fib_route_state_t *)value;
     fib_show_route_ctx_t *ctx = (fib_show_route_ctx_t *)user_data;
-    if (!state || !ctx || !ctx->buf || state->entry.afi != ctx->afi)
+    if (!state || !ctx || !ctx->buf || state->entry.afi != ctx->afi || state->entry.vrf_id != ctx->vrf_id)
     {
         return;
     }
@@ -197,7 +241,7 @@ static void append_route_detail_cb(gpointer key, gpointer value, gpointer user_d
     (void)key;
     fib_route_state_t *state = (fib_route_state_t *)value;
     fib_show_route_ctx_t *ctx = (fib_show_route_ctx_t *)user_data;
-    if (!state || !ctx || !ctx->buf || state->entry.afi != ctx->afi)
+    if (!state || !ctx || !ctx->buf || state->entry.afi != ctx->afi || state->entry.vrf_id != ctx->vrf_id)
     {
         return;
     }
@@ -215,6 +259,7 @@ static void append_route_detail_cb(gpointer key, gpointer value, gpointer user_d
     ctx->count++;
     g_string_append_printf(ctx->buf,
                            "\r\nFIB Route Detail: %s\r\n"
+                           "  VRF       : %u\r\n"
                            "  AFI       : %s\r\n"
                            "  Protocol  : %u\r\n"
                            "  Nexthop   : %s\r\n"
@@ -225,7 +270,7 @@ static void append_route_detail_cb(gpointer key, gpointer value, gpointer user_d
                            "  Preference: %d\r\n"
                            "  Installed : %s\r\n"
                            "  Skip OS   : %s\r\n",
-                           prefix, afi_name(state->entry.afi), state->entry.protocol, nexthop,
+                           prefix, state->entry.vrf_id, afi_name(state->entry.afi), state->entry.protocol, nexthop,
                            nh_type_name(state->entry.nh_type), state->entry.tunnel_id, state->entry.out_ifindex,
                            state->entry.metric, state->entry.preference, state->installed ? "yes" : "no",
                            (state->entry.flags & FIB_ROUTE_FLAG_SKIP_OS) ? "yes" : "no");
@@ -258,7 +303,7 @@ static void append_ilm_cb(gpointer key, gpointer value, gpointer user_data)
     (void)key;
     fib_ilm_state_t *state = (fib_ilm_state_t *)value;
     fib_show_ilm_ctx_t *ctx = (fib_show_ilm_ctx_t *)user_data;
-    if (!state || !ctx || !ctx->buf)
+    if (!state || !ctx || !ctx->buf || state->entry.vrf_id != ctx->vrf_id)
     {
         return;
     }
@@ -286,7 +331,7 @@ static void append_ilm_detail_cb(gpointer key, gpointer value, gpointer user_dat
     (void)key;
     fib_ilm_state_t *state = (fib_ilm_state_t *)value;
     fib_show_ilm_ctx_t *ctx = (fib_show_ilm_ctx_t *)user_data;
-    if (!state || !ctx || !ctx->buf)
+    if (!state || !ctx || !ctx->buf || state->entry.vrf_id != ctx->vrf_id)
     {
         return;
     }
@@ -320,7 +365,7 @@ static void append_ilm_detail_cb(gpointer key, gpointer value, gpointer user_dat
 }
 
 static int handle_show_routes(dev_ipc_message_t *msg, uint16_t afi, const net_addr_t *filter_addr,
-                              int64_t filter_prefix_len)
+                              int64_t filter_prefix_len, const fib_show_vrf_filter_t *vrf_filter)
 {
     GString *buf = g_string_new("");
     if (!buf)
@@ -332,6 +377,7 @@ static int handle_show_routes(dev_ipc_message_t *msg, uint16_t afi, const net_ad
     fib_show_route_ctx_t ctx = {
         .buf = buf,
         .afi = afi,
+        .vrf_id = vrf_filter ? vrf_filter->vrf_id : VRF_PUBLIC_VRF_ID,
         .has_filter = filter_addr != NULL,
         .filter_prefix_len = filter_addr ? (uint8_t)filter_prefix_len : 0u,
         .count = 0,
@@ -349,11 +395,12 @@ static int handle_show_routes(dev_ipc_message_t *msg, uint16_t afi, const net_ad
     {
         g_string_append_printf(buf,
                                "\r\nFIB Routes (%s)\r\n"
+                               "VRF: %s\r\n"
                                "%-7s %-26s %-20s %-10s %-8s %-8s %-8s %-9s %-7s\r\n"
                                "------- -------------------------- -------------------- ---------- "
                                "-------- -------- -------- --------- -------\r\n",
-                               afi_name(afi), "AFI", "Prefix", "Nexthop", "NH-Type", "OIF", "Metric", "Pref",
-                               "Installed", "SkipOS");
+                               afi_name(afi), vrf_filter ? vrf_filter->name : VRF_PUBLIC_VRF_NAME, "AFI", "Prefix",
+                               "Nexthop", "NH-Type", "OIF", "Metric", "Pref", "Installed", "SkipOS");
 
         fib_rib_foreach_route(g_fib_work_local ? g_fib_work_local->rib : NULL, append_route_cb, &ctx);
     }
@@ -365,7 +412,8 @@ static int handle_show_routes(dev_ipc_message_t *msg, uint16_t afi, const net_ad
     return send_chunked(msg, buf);
 }
 
-static int handle_show_mpls(dev_ipc_message_t *msg, gboolean has_filter, uint32_t filter_label)
+static int handle_show_mpls(dev_ipc_message_t *msg, gboolean has_filter, uint32_t filter_label,
+                            const fib_show_vrf_filter_t *vrf_filter)
 {
     GString *buf = g_string_new("");
     if (!buf)
@@ -376,6 +424,7 @@ static int handle_show_mpls(dev_ipc_message_t *msg, gboolean has_filter, uint32_
 
     fib_show_ilm_ctx_t ctx = {
         .buf = buf,
+        .vrf_id = vrf_filter ? vrf_filter->vrf_id : VRF_PUBLIC_VRF_ID,
         .has_filter = has_filter,
         .filter_label = filter_label,
         .count = 0,
@@ -388,12 +437,12 @@ static int handle_show_mpls(dev_ipc_message_t *msg, gboolean has_filter, uint32_
     else
     {
         g_string_append_printf(buf,
-                               "\r\nFIB MPLS ILM\r\n"
+                               "\r\nFIB MPLS ILM (VRF: %s)\r\n"
                                "%-8s %-8s %-10s %-8s %-14s %-10s %-20s %-14s %-9s %-7s\r\n"
                                "-------- -------- ---------- -------- -------------- ---------- "
                                "-------------------- -------------- --------- -------\r\n",
-                               "VRF", "Label", "Action", "NHLFE", "State", "OIF", "Relay", "Labels", "Installed",
-                               "Active");
+                               vrf_filter ? vrf_filter->name : VRF_PUBLIC_VRF_NAME, "VRF", "Label", "Action", "NHLFE",
+                               "State", "OIF", "Relay", "Labels", "Installed", "Active");
 
         fib_rib_foreach_ilm(g_fib_work_local ? g_fib_work_local->rib : NULL, append_ilm_cb, &ctx);
     }
@@ -405,7 +454,7 @@ static int handle_show_mpls(dev_ipc_message_t *msg, gboolean has_filter, uint32_
     return send_chunked(msg, buf);
 }
 
-static int handle_show_os(dev_ipc_message_t *msg, uint16_t afi)
+static int handle_show_os(dev_ipc_message_t *msg, uint16_t afi, const fib_show_vrf_filter_t *vrf_filter)
 {
     GString *buf = g_string_new("");
     if (!buf)
@@ -423,7 +472,18 @@ static int handle_show_os(dev_ipc_message_t *msg, uint16_t afi)
     {
         family = AF_MPLS;
     }
-    if (fib_os_show(buf, family) != ERRCODE_SUCCESS)
+    uint32_t table_filter = vrf_filter ? vrf_filter->l3vrf_table_id : RT_TABLE_MAIN;
+    gboolean include_local_table = family != AF_MPLS;
+    uint32_t local_master_ifindex = 0u;
+    if (vrf_filter && vrf_filter->vrf_id != VRF_PUBLIC_VRF_ID)
+    {
+        local_master_ifindex = if_nametoindex(vrf_filter->name);
+        include_local_table = local_master_ifindex != 0u;
+    }
+    g_string_append_printf(buf, "\r\nOS FIB (VRF: %s table=%u%s)\r\n",
+                           vrf_filter ? vrf_filter->name : VRF_PUBLIC_VRF_NAME, table_filter,
+                           include_local_table ? "+local" : "");
+    if (fib_os_show(buf, family, table_filter, TRUE, include_local_table, local_master_ifindex) != ERRCODE_SUCCESS)
     {
         g_string_free(buf, TRUE);
         send_resp(msg, "Error: 读取内核路由表失败\r\n");
@@ -445,6 +505,7 @@ static int handle_show_fib(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     gboolean has_filter_prefix_len = FALSE;
     gboolean has_filter_label = FALSE;
     uint32_t filter_label = 0;
+    char vrf_name[VRF_NAME_MAX_LEN] = {0};
     cli_tlv_entry_t entry;
 
     while (cli_tlv_next(parser, &entry) == 1)
@@ -469,6 +530,15 @@ static int handle_show_fib(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                     filter_label = (uint32_t)cli_tlv_entry_get_int(&entry);
                     has_filter_label = TRUE;
                     break;
+                case 10:
+                {
+                    const char *text = cli_tlv_entry_get_text(&entry);
+                    if (text)
+                    {
+                        g_strlcpy(vrf_name, text, sizeof(vrf_name));
+                    }
+                    break;
+                }
                 case 4:
                 {
                     const char *text = cli_tlv_entry_get_text(&entry);
@@ -496,6 +566,15 @@ static int handle_show_fib(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         afi = ROUTE_AFI_IPV4;
     }
 
+    fib_show_vrf_filter_t vrf_filter;
+    if (fib_show_vrf_filter_resolve(vrf_name, &vrf_filter) != ERRCODE_SUCCESS)
+    {
+        char resp[160];
+        snprintf(resp, sizeof(resp), "Error: VRF %s not found\r\n", vrf_name);
+        send_resp(msg, resp);
+        return ERRCODE_FAIL;
+    }
+
     if (show_mpls)
     {
         if (has_filter_addr || has_filter_prefix_len)
@@ -508,7 +587,8 @@ static int handle_show_fib(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             send_resp(msg, "Error: MPLS OS FIB query does not support label filter\r\n");
             return ERRCODE_FAIL;
         }
-        return show_os ? handle_show_os(msg, 0) : handle_show_mpls(msg, has_filter_label, filter_label);
+        return show_os ? handle_show_os(msg, 0, &vrf_filter)
+                       : handle_show_mpls(msg, has_filter_label, filter_label, &vrf_filter);
     }
 
     if (has_filter_addr != has_filter_prefix_len)
@@ -537,8 +617,9 @@ static int handle_show_fib(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         (void)net_addr_prefix_normalize(&filter_addr, (uint8_t)filter_prefix_len);
     }
 
-    return show_os ? handle_show_os(msg, afi)
-                   : handle_show_routes(msg, afi, has_filter_addr ? &filter_addr : NULL, filter_prefix_len);
+    return show_os
+               ? handle_show_os(msg, afi, &vrf_filter)
+               : handle_show_routes(msg, afi, has_filter_addr ? &filter_addr : NULL, filter_prefix_len, &vrf_filter);
 }
 
 int fib_show_dispatch(dev_ipc_message_t *msg)

@@ -22,6 +22,7 @@ target_link_libraries(netnexus-if PRIVATE
     cli_api
     db_api
     route_api
+    vrf_api
     ${GLIB_LIBRARIES}
 )
 

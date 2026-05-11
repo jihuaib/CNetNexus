@@ -18,9 +18,21 @@
 #include "if_db.h"
 #include "if_link_monitor.h"
 #include "log.h"
+#include "vrf.h"
 #include "work/if_worker.h"
 
 if_local_t *g_if_local = NULL;
+static dev_ipc_message_t *g_if_ready_pending_msg = NULL;
+
+static int vrf_ack_result(const dev_ipc_message_t *msg)
+{
+    if (!msg || !msg->payload || msg->payload_len < sizeof(vrf_msg_ack_t))
+    {
+        return ERRCODE_FAIL;
+    }
+    const vrf_msg_ack_t *ack = (const vrf_msg_ack_t *)msg->payload;
+    return ack->result;
+}
 
 // ============================================================================
 // 三阶段回调辅助
@@ -51,6 +63,7 @@ static void if_on_start(dev_ipc_message_t *msg)
     dev_ipc_connect(ctx, DEV_MODULE_ID_CLI, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CLI);
     dev_ipc_connect(ctx, DEV_MODULE_ID_DB, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_DB);
     dev_ipc_connect(ctx, DEV_MODULE_ID_ROUTE, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_ROUTE);
+    dev_ipc_connect(ctx, DEV_MODULE_ID_VRF, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_VRF);
 
     if (if_worker_prepare() != ERRCODE_SUCCESS)
     {
@@ -67,7 +80,7 @@ static void if_on_start(dev_ipc_message_t *msg)
         return;
     }
 
-    LOG_INFO("Connected to CLI, DB and ROUTE; IF worker running");
+    LOG_INFO("Connected to CLI, DB, ROUTE and VRF; IF worker running");
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
@@ -98,18 +111,25 @@ static void if_on_ready(dev_ipc_message_t *msg)
         return;
     }
 
-    if (if_db_restore() != ERRCODE_SUCCESS)
-    {
-        LOG_WARN("IF database restore failed");
-    }
-
     if (if_link_monitor_start() != 0)
     {
         LOG_WARN("IF: link monitor start failed, link recovery disabled");
     }
 
-    LOG_INFO("IF module ready");
-    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
+    if (vrf_api_subscribe_all(ctx) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("IF: failed to subscribe to VRF events via vrf_api");
+        if (if_db_restore() != ERRCODE_SUCCESS)
+        {
+            LOG_WARN("IF database restore failed");
+        }
+        LOG_INFO("IF module ready");
+        send_phase_response(ctx, msg, ERRCODE_SUCCESS);
+        return;
+    }
+
+    g_if_ready_pending_msg = msg;
+    LOG_INFO("IF: subscribed to VRF events via vrf_api; waiting for replay ACK before DB restore");
 }
 
 // ============================================================================
@@ -146,6 +166,49 @@ void if_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
         /* ---- IF 订阅应答：静默丢弃 ---- */
         case IF_MSG_TYPE_ACK:
+            dev_ipc_message_free(msg);
+            return;
+
+        case VRF_MSG_TYPE_EVENT:
+            vrf_api_cache_on_event(msg);
+            /* VRF 事件到达后，唤醒等待该 VRF 出现的挂起项 */
+            if (msg->payload && msg->payload_len >= sizeof(vrf_event_msg_t))
+            {
+                const vrf_event_msg_t *evt = (const vrf_event_msg_t *)msg->payload;
+                if (evt->event == VRF_EVENT_VRF_ADD && evt->name[0] != '\0')
+                {
+                    pending_resolve(g_if_local->pending, IF_DEP_VRF, g_str_hash(evt->name));
+                }
+                else if (evt->event == VRF_EVENT_VRF_DEL && evt->name[0] != '\0')
+                {
+                    pending_invalidate(g_if_local->pending, IF_DEP_VRF, g_str_hash(evt->name));
+                }
+            }
+            dev_ipc_message_free(msg);
+            return;
+
+        case VRF_MSG_TYPE_ACK:
+            if (g_if_ready_pending_msg)
+            {
+                if (vrf_ack_result(msg) != ERRCODE_SUCCESS)
+                {
+                    LOG_WARN("IF: VRF subscription ACK failed; restoring IF DB with current VRF cache");
+                }
+                else
+                {
+                    LOG_INFO("IF: VRF replay ACK received; restoring IF database");
+                }
+
+                if (if_db_restore() != ERRCODE_SUCCESS)
+                {
+                    LOG_WARN("IF database restore failed");
+                }
+
+                dev_ipc_message_t *ready_msg = g_if_ready_pending_msg;
+                g_if_ready_pending_msg = NULL;
+                LOG_INFO("IF module ready");
+                send_phase_response(ctx, ready_msg, ERRCODE_SUCCESS);
+            }
             dev_ipc_message_free(msg);
             return;
 
@@ -200,6 +263,7 @@ int if_module_init(void)
 {
     log_set_tag("if");
     LOG_INFO("Module initialization");
+    vrf_api_cache_init();
 
     dev_ipc_context_t *ctx = dev_ipc_init(DEV_MODULE_ID_IF, "if", DEV_MODULE_PORT_IF, if_msg_handler);
     if (!ctx)
@@ -216,6 +280,7 @@ int if_module_init(void)
         return -1;
     }
     g_if_local->dev_ipc_ctx = ctx;
+    g_if_local->pending = pending_new("if");
 
     return 0;
 }
@@ -224,6 +289,7 @@ void if_module_cleanup(void)
 {
     if_link_monitor_stop();
     if_worker_shutdown();
+    vrf_api_cache_cleanup();
 
     if (!g_if_local)
     {
@@ -235,6 +301,12 @@ void if_module_cleanup(void)
     if (ctx)
     {
         dev_ipc_destroy(ctx);
+    }
+
+    if (g_if_local->pending)
+    {
+        pending_destroy(g_if_local->pending);
+        g_if_local->pending = NULL;
     }
 
     g_free(g_if_local);

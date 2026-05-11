@@ -6,6 +6,7 @@
 #include "fib.h"
 #include "fib_worker.h"
 #include "log.h"
+#include "vrf.h"
 
 fib_local_t *g_fib_local = NULL;
 
@@ -43,6 +44,10 @@ static void fib_on_start(dev_ipc_message_t *msg)
     {
         LOG_WARN("FIB: failed to connect to CLI module");
     }
+    if (dev_ipc_connect(ctx, DEV_MODULE_ID_VRF, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_VRF) != 0)
+    {
+        LOG_WARN("FIB: failed to connect to VRF module (VRF-name show filters may be unavailable)");
+    }
 
     if (fib_worker_prepare() != ERRCODE_SUCCESS || fib_worker_launch() != ERRCODE_SUCCESS)
     {
@@ -62,7 +67,12 @@ static void fib_on_connect(dev_ipc_message_t *msg)
 
 static void fib_on_ready(dev_ipc_message_t *msg)
 {
-    send_phase_response(fib_local_ipc_ctx(), msg, ERRCODE_SUCCESS);
+    dev_ipc_context_t *ctx = fib_local_ipc_ctx();
+    if (vrf_api_subscribe_all(ctx) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("FIB: failed to subscribe to VRF events via vrf_api");
+    }
+    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
 static void post_or_free(fib_worker_cmd_type_t type, dev_ipc_message_t *msg)
@@ -132,6 +142,11 @@ void fib_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         case FIB_MSG_TYPE_ILM_DELETE:
             post_or_free(FIB_WORKER_CMD_ILM_DELETE, msg);
             return;
+        case VRF_MSG_TYPE_EVENT:
+            vrf_api_cache_on_event(msg);
+            break;
+        case VRF_MSG_TYPE_ACK:
+            break;
         default:
             LOG_WARN("FIB: unknown message type 0x%08X", msg->msg_type);
             break;
@@ -144,6 +159,7 @@ int fib_module_init(void)
 {
     log_set_tag("fib");
     LOG_INFO("Module initialization");
+    vrf_api_cache_init();
 
     dev_ipc_context_t *ctx = dev_ipc_init(DEV_MODULE_ID_FIB, "fib", DEV_MODULE_PORT_FIB, fib_ipc_msg_handler);
     if (!ctx)
@@ -172,6 +188,7 @@ void fib_module_cleanup(void)
     }
 
     fib_worker_shutdown();
+    vrf_api_cache_cleanup();
     if (ctx)
     {
         dev_ipc_destroy(ctx);

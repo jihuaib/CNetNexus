@@ -71,7 +71,7 @@ struct tunnel_rib
     GList *ftns;
     GList *ilms;
     GHashTable *tunnel_ids;
-    uint32_t next_nhlfe_id;
+    /* Tunnel IDs are also used as NHLFE IDs for the resolved endpoint. */
     uint32_t next_tunnel_id;
     uint32_t next_label;
     uint32_t label_dynamic_min;
@@ -111,6 +111,59 @@ static void tunnel_id_make_key(tunnel_id_key_t *key, uint32_t vrf_id, uint16_t a
     key->endpoint = *endpoint;
 }
 
+static gboolean tunnel_id_value_is_used(const tunnel_rib_t *rib, uint32_t tunnel_id)
+{
+    if (!rib || !rib->tunnel_ids || tunnel_id == 0u)
+    {
+        return FALSE;
+    }
+
+    GHashTableIter iter;
+    gpointer key = NULL;
+    gpointer value = NULL;
+    g_hash_table_iter_init(&iter, rib->tunnel_ids);
+    while (g_hash_table_iter_next(&iter, &key, &value))
+    {
+        (void)key;
+        if (GPOINTER_TO_UINT(value) == tunnel_id)
+        {
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
+static uint32_t tunnel_id_alloc(tunnel_rib_t *rib)
+{
+    if (!rib)
+    {
+        return 0u;
+    }
+
+    if (rib->next_tunnel_id == 0u)
+    {
+        rib->next_tunnel_id = 1u;
+    }
+
+    uint32_t start = rib->next_tunnel_id;
+    do
+    {
+        uint32_t tunnel_id = rib->next_tunnel_id++;
+        if (rib->next_tunnel_id == 0u)
+        {
+            rib->next_tunnel_id = 1u;
+        }
+
+        if (!tunnel_id_value_is_used(rib, tunnel_id))
+        {
+            return tunnel_id;
+        }
+    } while (rib->next_tunnel_id != start);
+
+    return 0u;
+}
+
 static uint32_t tunnel_id_lookup_or_alloc(tunnel_rib_t *rib, uint32_t vrf_id, uint16_t afi, const net_addr_t *endpoint,
                                           gboolean create)
 {
@@ -139,10 +192,11 @@ static uint32_t tunnel_id_lookup_or_alloc(tunnel_rib_t *rib, uint32_t vrf_id, ui
     }
     *stored = lookup;
 
-    uint32_t tunnel_id = rib->next_tunnel_id++;
+    uint32_t tunnel_id = tunnel_id_alloc(rib);
     if (tunnel_id == 0u)
     {
-        tunnel_id = rib->next_tunnel_id++;
+        g_free(stored);
+        return 0u;
     }
     g_hash_table_insert(rib->tunnel_ids, stored, GUINT_TO_POINTER(tunnel_id));
     return tunnel_id;
@@ -635,13 +689,17 @@ static void tunnel_rebuild_forwarding_tables(tunnel_rib_t *rib)
         {
             continue;
         }
+        if (resolved.tunnel_id == 0u)
+        {
+            continue;
+        }
 
         tunnel_nhlfe_t *nhlfe = g_malloc0(sizeof(*nhlfe));
         if (!nhlfe)
         {
             continue;
         }
-        nhlfe->id = resolved.tunnel_id ? resolved.tunnel_id : rib->next_nhlfe_id++;
+        nhlfe->id = resolved.tunnel_id;
         nhlfe->endpoint = candidate->endpoint;
         nhlfe->relay_addr = resolved.relay_addr;
         nhlfe->out_ifindex = resolved.out_ifindex;
@@ -685,7 +743,6 @@ tunnel_rib_t *tunnel_rib_create(void)
     if (rib)
     {
         rib->tunnel_ids = g_hash_table_new_full(tunnel_id_key_hash, tunnel_id_key_equal, g_free, NULL);
-        rib->next_nhlfe_id = 1;
         rib->next_tunnel_id = 1;
         rib->label_dynamic_min = cfg.label_dynamic_min;
         rib->label_dynamic_max = cfg.label_dynamic_max;

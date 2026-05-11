@@ -33,7 +33,8 @@ void route_relay_handle_nh_unregister(dev_ipc_message_t *msg);
  * @param afi_filter   地址族过滤（ROUTE_AFI_IPV4/IPV6）
  * @param has_afi_filter 非零表示启用 afi_filter 过滤
  */
-void route_relay_show(GString *buf, uint32_t module_filter, int has_filter, uint16_t afi_filter, int has_afi_filter);
+void route_relay_show(GString *buf, uint32_t module_filter, int has_filter, uint16_t afi_filter, int has_afi_filter,
+                      uint32_t vrf_filter, const char *vrf_name);
 
 /**
  * @brief 清理 relay 内部状态

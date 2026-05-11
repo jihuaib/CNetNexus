@@ -26,6 +26,7 @@ typedef enum if_apply_op
     IF_APPLY_OP_SHUTDOWN_SET = 2,
     IF_APPLY_OP_LOOP_CREATE = 3,
     IF_APPLY_OP_LOOP_DELETE = 4,
+    IF_APPLY_OP_VRF_BIND = 5,
 } if_apply_op_t;
 
 /**
@@ -57,6 +58,11 @@ typedef struct if_apply_cmd
         {
             uint32_t loop_id;
         } loop_delete;
+        struct
+        {
+            char ifname[LOGICAL_NAME_LEN];
+            char vrf_name[IF_VRF_NAME_MAX];
+        } vrf_bind;
     } u;
 } if_apply_cmd_t;
 

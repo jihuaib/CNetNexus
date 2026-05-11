@@ -60,6 +60,7 @@ void if_pub_notify(GList *subscribers, const if_map_entry_t *entry, uint32_t if_
         base_proto.event = event;
         g_strlcpy(base_proto.logical_name, entry->logical_name, sizeof(base_proto.logical_name));
         g_strlcpy(base_proto.physical_name, entry->physical_name, sizeof(base_proto.physical_name));
+        g_strlcpy(base_proto.vrf_name, entry->vrf_name, sizeof(base_proto.vrf_name));
         base_proto.afi = (prefix->addr.family == AF_INET6) ? ROUTE_AFI_IPV6 : ROUTE_AFI_IPV4;
         base_proto.prefix_len = prefix->prefix_len;
         if (prefix->addr.family == AF_INET6 && IN6_IS_ADDR_LINKLOCAL(&prefix->addr.u.v6))
@@ -80,6 +81,7 @@ void if_pub_notify(GList *subscribers, const if_map_entry_t *entry, uint32_t if_
         base_link.link_up = link_up ? 1 : 0;
         g_strlcpy(base_link.logical_name, entry->logical_name, sizeof(base_link.logical_name));
         g_strlcpy(base_link.physical_name, entry->physical_name, sizeof(base_link.physical_name));
+        g_strlcpy(base_link.vrf_name, entry->vrf_name, sizeof(base_link.vrf_name));
 
         base_ptr = &base_link;
         payload_sz = sizeof(base_link);

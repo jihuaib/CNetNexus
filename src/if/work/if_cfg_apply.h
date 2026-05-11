@@ -36,6 +36,13 @@ int if_cfg_apply_ip(gboolean is_no, const char *logical_name, const net_prefix_t
 int if_cfg_apply_shutdown(gboolean is_no, const char *logical_name);
 
 /**
+ * @brief 应用接口 VRF 绑定。执行时自动清空接口 IPv4/IPv6 地址和旧 connected route。
+ * @param logical_name 逻辑接口名
+ * @param vrf_name     目标 VRF 名称；NULL/空字符串表示 public/nomaster
+ */
+int if_cfg_apply_vrf_binding(const char *logical_name, const char *vrf_name);
+
+/**
  * @brief 确保 loop 接口内存条目和 OS dummy 接口存在（不操作 DB，供 DB 恢复使用）
  * @param loop_id loop 接口编号（1-1024）
  * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL

@@ -11,6 +11,7 @@
 #include <net/if.h>
 #include <stdint.h>
 
+#include "if.h"
 #include "net_addr.h"
 
 #define LOGICAL_NAME_LEN 32
@@ -25,6 +26,7 @@ typedef struct
     net_prefix_t prefix_v4;              /**< 已配置 IPv4 前缀；addr.family=0 表示未配置 */
     net_prefix_t prefix_v6;              /**< 已配置 IPv6 前缀；addr.family=0 表示未配置 */
     net_prefix_t prefix_v6_linklocal;    /**< 运行态 IPv6 link-local 前缀；addr.family=0 表示未知 */
+    char vrf_name[IF_VRF_NAME_MAX];      /**< 接口所属 VRF 名称，空字符串表示 public */
     int shutdown;                        /**< 1=shutdown（down），0=no shutdown（up） */
     int link_up;                         /**< -1=unknown，0=down，1=up（运行态，仅由监控事件更新） */
 } if_map_entry_t;

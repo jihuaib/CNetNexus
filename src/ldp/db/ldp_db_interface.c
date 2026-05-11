@@ -9,6 +9,7 @@
 
 #include "errcode.h"
 #include "ldp_db_internal.h"
+#include "work/ldp_worker.h"
 
 static const db_column_def_t LDP_IF_COLS[] = {
     {"ifname", DB_TYPE_TEXT, DB_COL_PRIMARY_KEY, NULL},
@@ -141,6 +142,32 @@ void ldp_db_restore_interfaces(void)
     {
         return;
     }
-    /* M1：仅占位，后续 M2 把使能接口推送给 worker */
+
+    for (uint32_t i = 0; i < result->num_rows; i++)
+    {
+        db_row_t *row = result->rows[i];
+        const char *ifname = db_row_get_text(row, "ifname", NULL);
+        if (!ifname || ifname[0] == '\0')
+        {
+            continue;
+        }
+        ldp_apply_cmd_t apply;
+        memset(&apply, 0, sizeof(apply));
+        if (db_row_get_int(row, "enabled", 0))
+        {
+            apply.op = LDP_APPLY_OP_IF_SET;
+            g_strlcpy(apply.u.if_set.ifname, ifname, sizeof(apply.u.if_set.ifname));
+            apply.u.if_set.enabled = 1u;
+            apply.u.if_set.hello_interval_ms = (uint32_t)db_row_get_int(row, "hello_interval_ms", 0);
+            apply.u.if_set.hold_time_ms = (uint32_t)db_row_get_int(row, "hold_time_ms", 0);
+        }
+        else
+        {
+            apply.op = LDP_APPLY_OP_IF_DEL;
+            g_strlcpy(apply.u.if_del.ifname, ifname, sizeof(apply.u.if_del.ifname));
+        }
+        (void)ldp_worker_dispatch_apply(&apply);
+    }
+
     db_result_free(result);
 }

@@ -8,6 +8,10 @@
 #define IF_MAIN_H
 
 #include "dev.h"
+#include "pending.h"
+
+/** IF 挂起表依赖类型：等待某 VRF 出现 */
+#define IF_DEP_VRF 1u
 
 /**
  * @brief IF 模块 IPC 线程本地上下文（仅保留 IPC 相关，不包含业务数据）
@@ -18,6 +22,7 @@
 typedef struct
 {
     dev_ipc_context_t *dev_ipc_ctx;
+    pending_t *pending; /**< 跨模块依赖挂起表（仅在 IPC 线程内访问） */
 } if_local_t;
 
 extern if_local_t *g_if_local;

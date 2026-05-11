@@ -136,7 +136,8 @@ static void show_append_entry(GString *resp_buf, const if_map_entry_t *e)
 
     char ip_str[160];
     show_format_dual_stack(e, ip_str, sizeof(ip_str));
-    g_string_append_printf(resp_buf, "%-14s %-6s %-6s %-48s\r\n", e->logical_name, proto_str, link_str, ip_str);
+    g_string_append_printf(resp_buf, "%-14s %-12s %-6s %-6s %-48s\r\n", e->logical_name,
+                           e->vrf_name[0] ? e->vrf_name : "public", proto_str, link_str, ip_str);
 }
 
 static gboolean show_foreach_cb(gpointer key, gpointer value, gpointer user_data)
@@ -186,6 +187,7 @@ static void show_single_entry(GString *resp_buf, const char *ifname, const if_ma
                            "============================\r\n"
                            "  Name       : %s\r\n"
                            "  Ifindex    : %u\r\n"
+                           "  VRF        : %s\r\n"
                            "  Type       : %s\r\n"
                            "  Proto State: %s\r\n"
                            "  Link State : %s\r\n"
@@ -194,8 +196,8 @@ static void show_single_entry(GString *resp_buf, const char *ifname, const if_ma
                            "  IPv6 LLAddr: %s\r\n"
                            "  MAC        : %s\r\n"
                            "  MTU        : %d\r\n\r\n",
-                           ifname, ifname, e->ifindex, type_str, proto_str, link_str, ip4_str, ip6_str, ip6_ll_str,
-                           mac_str, mtu);
+                           ifname, ifname, e->ifindex, e->vrf_name[0] ? e->vrf_name : "public", type_str, proto_str,
+                           link_str, ip4_str, ip6_str, ip6_ll_str, mac_str, mtu);
 }
 
 static if_map_entry_t *find_entry(const char *name)
@@ -295,11 +297,12 @@ int if_show_handle_cli(dev_ipc_message_t *msg)
     }
     else
     {
-        g_string_append_printf(resp_buf,
-                               "\r\nInterface Status:\r\n"
-                               "%-14s %-6s %-6s %-48s\r\n"
-                               "-------------- ------ ------ ------------------------------------------------\r\n",
-                               "Name", "Proto", "Link", "IP Address");
+        g_string_append_printf(
+            resp_buf,
+            "\r\nInterface Status:\r\n"
+            "%-14s %-12s %-6s %-6s %-48s\r\n"
+            "-------------- ------------ ------ ------ ------------------------------------------------\r\n",
+            "Name", "VRF", "Proto", "Link", "IP Address");
 
         if_map_t *map = &g_if_work_local->interface_map;
         if (map->all_entries)

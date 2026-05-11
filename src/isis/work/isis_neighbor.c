@@ -813,7 +813,26 @@ static void isis_neighbor_reconcile_learned_afi(isis_instance_cfg_t *inst, const
                 isis_zero_addr(AF_INET, &desired.source_addr);
             }
 
-            if (!(if_entry->ipv4_addr.family == AF_INET && net_addr_equal(&if_entry->ipv4_addr, &nbr->ipv4_addr)))
+            /* 邻居与本端 iface 同 IPv4 子网（典型 transit link） → connected /30 已
+             * 覆盖到对端，不必再装一条冗余的 /32。这条 /32 没带 PREFSRC 时，
+             * kernel 会按 iface 上 IP 添加顺序乱选源地址（如 docker 管理网 IP），
+             * 导致上层（LDP TCP 等）从错误的接口 IP 发起连接。
+             * 自己 IP == 邻居 IP（退化情况）也跳过。
+             * 对于 unnumbered / loopback 邻居（IP 不在本端子网内），仍按 /32 装，
+             * 用于 nexthop 解析。*/
+            if (if_entry->ipv4_addr.family == AF_INET && if_entry->ipv4_prefix_len > 0u &&
+                if_entry->ipv4_prefix_len <= 32u)
+            {
+                net_addr_t self_net = if_entry->ipv4_addr;
+                net_addr_t nbr_net = nbr->ipv4_addr;
+                if (net_addr_prefix_normalize(&self_net, if_entry->ipv4_prefix_len) == 0 &&
+                    net_addr_prefix_normalize(&nbr_net, if_entry->ipv4_prefix_len) == 0 &&
+                    !net_addr_equal(&self_net, &nbr_net))
+                {
+                    has_desired = 1;
+                }
+            }
+            else
             {
                 has_desired = 1;
             }
@@ -832,7 +851,20 @@ static void isis_neighbor_reconcile_learned_afi(isis_instance_cfg_t *inst, const
                 isis_zero_addr(AF_INET6, &desired.source_addr);
             }
 
-            if (!(if_entry->ipv6_addr.family == AF_INET6 && net_addr_equal(&if_entry->ipv6_addr, &nbr->ipv6_addr)))
+            /* 同 IPv4 注释，IPv6 同样处理 */
+            if (if_entry->ipv6_addr.family == AF_INET6 && if_entry->ipv6_prefix_len > 0u &&
+                if_entry->ipv6_prefix_len <= 128u)
+            {
+                net_addr_t self_net = if_entry->ipv6_addr;
+                net_addr_t nbr_net = nbr->ipv6_addr;
+                if (net_addr_prefix_normalize(&self_net, if_entry->ipv6_prefix_len) == 0 &&
+                    net_addr_prefix_normalize(&nbr_net, if_entry->ipv6_prefix_len) == 0 &&
+                    !net_addr_equal(&self_net, &nbr_net))
+                {
+                    has_desired = 1;
+                }
+            }
+            else
             {
                 has_desired = 1;
             }

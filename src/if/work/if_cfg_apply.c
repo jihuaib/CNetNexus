@@ -21,6 +21,7 @@
 #include "log.h"
 #include "net_addr.h"
 #include "route.h"
+#include "vrf.h"
 
 #define IF_ROUTE_SYNC_TIMEOUT_MS 3000u
 #define IF_LOOP_IFINDEX_RETRY_COUNT 20u
@@ -198,10 +199,34 @@ static gboolean if_physical_is_loopback(const char *physical_name)
                                                                                                           : FALSE;
 }
 
+static int if_resolve_vrf_id(const char *vrf_name, uint32_t *vrf_id)
+{
+    if (!vrf_id)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    *vrf_id = ROUTE_VRF_DEFAULT;
+    if (!vrf_name || vrf_name[0] == '\0' || strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) == 0)
+    {
+        return ERRCODE_SUCCESS;
+    }
+
+    const vrf_api_cache_entry_t *vrf = vrf_api_cache_lookup_by_name(vrf_name);
+    if (!vrf)
+    {
+        LOG_ERROR("IF: VRF %s not found in cache, skip connected route sync", vrf_name);
+        return ERRCODE_FAIL;
+    }
+
+    *vrf_id = vrf->vrf_id;
+    return ERRCODE_SUCCESS;
+}
+
 static void if_fill_connected_route_entry(route_msg_entry_t *entry, uint16_t afi, uint8_t prefix_len,
                                           const net_addr_t *prefix_addr, const net_addr_t *source_addr,
                                           const net_addr_t *nexthop_addr, uint32_t out_ifindex,
-                                          const char *physical_name)
+                                          const char *physical_name, uint32_t vrf_id)
 {
     if (!entry || !prefix_addr || !source_addr || !nexthop_addr)
     {
@@ -209,7 +234,7 @@ static void if_fill_connected_route_entry(route_msg_entry_t *entry, uint16_t afi
     }
 
     memset(entry, 0, sizeof(*entry));
-    entry->vrf_id = ROUTE_VRF_DEFAULT;
+    entry->vrf_id = vrf_id;
     entry->afi = afi;
     entry->safi = ROUTE_SAFI_UNICAST;
     entry->prefix_len = prefix_len;
@@ -228,9 +253,10 @@ static void if_fill_connected_route_entry(route_msg_entry_t *entry, uint16_t afi
     entry->iter_nexthop_addr = *nexthop_addr;
 }
 
-static int if_sync_connected_host_routes(const net_prefix_t *prefix, const char *physical_name, gboolean is_withdraw)
+static int if_sync_connected_host_routes(const if_map_entry_t *if_entry, const net_prefix_t *prefix,
+                                         gboolean is_withdraw)
 {
-    if (!prefix || !net_prefix_is_set(prefix) || !physical_name)
+    if (!if_entry || !prefix || !net_prefix_is_set(prefix) || if_entry->physical_name[0] == '\0')
     {
         return ERRCODE_FAIL;
     }
@@ -255,6 +281,12 @@ static int if_sync_connected_host_routes(const net_prefix_t *prefix, const char 
         return ERRCODE_FAIL;
     }
 
+    uint32_t vrf_id = ROUTE_VRF_DEFAULT;
+    if (if_resolve_vrf_id(if_entry->vrf_name, &vrf_id) != ERRCODE_SUCCESS)
+    {
+        return ERRCODE_FAIL;
+    }
+
     /* 普通接口：注入/撤销直连路由 */
     net_addr_t network_addr;
     if (if_prefix_to_network(prefix, &network_addr) != 0)
@@ -266,17 +298,17 @@ static int if_sync_connected_host_routes(const net_prefix_t *prefix, const char 
     if_make_zero_addr(prefix->addr.family, &zero_nh);
 
     /* 出接口索引必须有效，避免将 ifindex=0 下发到路由模块。 */
-    uint32_t out_ifindex = if_cfg_wait_ifindex(physical_name);
+    uint32_t out_ifindex = if_cfg_wait_ifindex(if_entry->physical_name);
     if (out_ifindex == 0u)
     {
-        LOG_ERROR("IF: interface %s ifindex invalid(0), skip connected route sync", physical_name);
+        LOG_ERROR("IF: interface %s ifindex invalid(0), skip connected route sync", if_entry->physical_name);
         return ERRCODE_FAIL;
     }
     uint8_t host_len = (prefix->addr.family == AF_INET) ? 32u : 128u;
 
     route_msg_entry_t network_entry;
     if_fill_connected_route_entry(&network_entry, afi, prefix->prefix_len, &network_addr, &prefix->addr, &zero_nh,
-                                  out_ifindex, physical_name);
+                                  out_ifindex, if_entry->physical_name, vrf_id);
 
     /* 主机前缀（/32 或 /128）下，network 与 host 重合，只下发一条。 */
     if (prefix->prefix_len == host_len)
@@ -321,18 +353,24 @@ static int if_sync_connected_host_routes(const net_prefix_t *prefix, const char 
     return ERRCODE_SUCCESS;
 }
 
-static int if_sync_connected_prefix(const net_prefix_t *prefix, const char *physical_name, gboolean is_withdraw)
+static int if_sync_connected_prefix(const if_map_entry_t *if_entry, const net_prefix_t *prefix, gboolean is_withdraw)
 {
-    if (if_sync_connected_host_routes(prefix, physical_name, is_withdraw) != ERRCODE_SUCCESS)
+    if (!if_entry)
     {
         return ERRCODE_FAIL;
     }
 
-    int ret = is_withdraw ? if_addr_del_prefix(physical_name, prefix) : if_addr_add_prefix(physical_name, prefix);
+    if (if_sync_connected_host_routes(if_entry, prefix, is_withdraw) != ERRCODE_SUCCESS)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    int ret = is_withdraw ? if_addr_del_prefix(if_entry->physical_name, prefix)
+                          : if_addr_add_prefix(if_entry->physical_name, prefix);
     if (ret != ERRCODE_SUCCESS)
     {
         /* 地址下发失败时回滚 route 内存态，避免 RIB 与 OS 失配。 */
-        (void)if_sync_connected_host_routes(prefix, physical_name, is_withdraw ? FALSE : TRUE);
+        (void)if_sync_connected_host_routes(if_entry, prefix, is_withdraw ? FALSE : TRUE);
         return ERRCODE_FAIL;
     }
 
@@ -530,8 +568,7 @@ int if_cfg_apply_ip(gboolean is_no, const char *logical_name, const net_prefix_t
             if (net_prefix_is_set(&entry->prefix_v4))
             {
                 net_prefix_t old_v4 = entry->prefix_v4;
-                if (!entry->shutdown &&
-                    if_sync_connected_prefix(&entry->prefix_v4, entry->physical_name, TRUE) != ERRCODE_SUCCESS)
+                if (!entry->shutdown && if_sync_connected_prefix(entry, &entry->prefix_v4, TRUE) != ERRCODE_SUCCESS)
                 {
                     return ERRCODE_FAIL;
                 }
@@ -545,8 +582,7 @@ int if_cfg_apply_ip(gboolean is_no, const char *logical_name, const net_prefix_t
             if (net_prefix_is_set(&entry->prefix_v6))
             {
                 net_prefix_t old_v6 = entry->prefix_v6;
-                if (!entry->shutdown &&
-                    if_sync_connected_prefix(&entry->prefix_v6, entry->physical_name, TRUE) != ERRCODE_SUCCESS)
+                if (!entry->shutdown && if_sync_connected_prefix(entry, &entry->prefix_v6, TRUE) != ERRCODE_SUCCESS)
                 {
                     return ERRCODE_FAIL;
                 }
@@ -570,7 +606,7 @@ int if_cfg_apply_ip(gboolean is_no, const char *logical_name, const net_prefix_t
         if (net_prefix_is_set(dst))
         {
             net_prefix_t old_pfx = *dst;
-            if (!entry->shutdown && if_sync_connected_prefix(dst, entry->physical_name, TRUE) != ERRCODE_SUCCESS)
+            if (!entry->shutdown && if_sync_connected_prefix(entry, dst, TRUE) != ERRCODE_SUCCESS)
             {
                 return ERRCODE_FAIL;
             }
@@ -606,7 +642,7 @@ int if_cfg_apply_ip(gboolean is_no, const char *logical_name, const net_prefix_t
     gboolean had_old = net_prefix_is_set(&old_prefix);
     if (had_old && !if_prefix_equal(&old_prefix, prefix))
     {
-        if (!entry->shutdown && if_sync_connected_prefix(&old_prefix, entry->physical_name, TRUE) != ERRCODE_SUCCESS)
+        if (!entry->shutdown && if_sync_connected_prefix(entry, &old_prefix, TRUE) != ERRCODE_SUCCESS)
         {
             return ERRCODE_FAIL;
         }
@@ -615,11 +651,11 @@ int if_cfg_apply_ip(gboolean is_no, const char *logical_name, const net_prefix_t
     *dst = *prefix;
     if (!entry->shutdown)
     {
-        if (if_sync_connected_prefix(dst, entry->physical_name, FALSE) != ERRCODE_SUCCESS)
+        if (if_sync_connected_prefix(entry, dst, FALSE) != ERRCODE_SUCCESS)
         {
             if (had_old && !if_prefix_equal(&old_prefix, prefix))
             {
-                (void)if_sync_connected_prefix(&old_prefix, entry->physical_name, FALSE);
+                (void)if_sync_connected_prefix(entry, &old_prefix, FALSE);
                 *dst = old_prefix;
             }
             else if (!had_old)
@@ -693,7 +729,7 @@ int if_cfg_apply_shutdown(gboolean is_no, const char *logical_name)
 
         if (net_prefix_is_set(&entry->prefix_v4))
         {
-            if (if_sync_connected_prefix(&entry->prefix_v4, entry->physical_name, up ? FALSE : TRUE) != ERRCODE_SUCCESS)
+            if (if_sync_connected_prefix(entry, &entry->prefix_v4, up ? FALSE : TRUE) != ERRCODE_SUCCESS)
             {
                 goto sync_rollback;
             }
@@ -701,7 +737,7 @@ int if_cfg_apply_shutdown(gboolean is_no, const char *logical_name)
         }
         if (net_prefix_is_set(&entry->prefix_v6))
         {
-            if (if_sync_connected_prefix(&entry->prefix_v6, entry->physical_name, up ? FALSE : TRUE) != ERRCODE_SUCCESS)
+            if (if_sync_connected_prefix(entry, &entry->prefix_v6, up ? FALSE : TRUE) != ERRCODE_SUCCESS)
             {
                 goto sync_rollback;
             }
@@ -744,11 +780,11 @@ int if_cfg_apply_shutdown(gboolean is_no, const char *logical_name)
     sync_rollback:
         if (synced_v6)
         {
-            (void)if_sync_connected_prefix(&entry->prefix_v6, entry->physical_name, up ? TRUE : FALSE);
+            (void)if_sync_connected_prefix(entry, &entry->prefix_v6, up ? TRUE : FALSE);
         }
         if (synced_v4)
         {
-            (void)if_sync_connected_prefix(&entry->prefix_v4, entry->physical_name, up ? TRUE : FALSE);
+            (void)if_sync_connected_prefix(entry, &entry->prefix_v4, up ? TRUE : FALSE);
         }
         (void)if_set_state(entry->physical_name, old_shutdown ? 0 : 1);
         entry->shutdown = old_shutdown;
@@ -761,6 +797,80 @@ int if_cfg_apply_shutdown(gboolean is_no, const char *logical_name)
     return ERRCODE_SUCCESS;
 }
 
+int if_cfg_apply_vrf_binding(const char *logical_name, const char *vrf_name)
+{
+    if (!logical_name)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    if_map_entry_t *entry = if_cfg_find_entry(logical_name);
+    if (!entry)
+    {
+        LOG_ERROR("IF: Interface %s not found", logical_name);
+        return ERRCODE_FAIL;
+    }
+
+    if (strcmp(entry->logical_name, "null0") == 0)
+    {
+        LOG_ERROR("IF: null0 does not support VRF binding");
+        return ERRCODE_FAIL;
+    }
+
+    const char *target_vrf = vrf_name ? vrf_name : "";
+    if (strcmp(entry->vrf_name, target_vrf) == 0)
+    {
+        return ERRCODE_SUCCESS;
+    }
+
+    uint32_t master_ifindex = 0u;
+    if (target_vrf[0] != '\0')
+    {
+        master_ifindex = (uint32_t)if_nametoindex(target_vrf);
+        if (master_ifindex == 0u)
+        {
+            LOG_WARN("IF: VRF device %s not yet present for %s, caller may retry", target_vrf, logical_name);
+            return ERRCODE_DEP_MISSING;
+        }
+    }
+
+    /* VRF 切换语义：先清空地址和旧 connected route，再移动 OS master。 */
+    if (net_prefix_is_set(&entry->prefix_v4) || net_prefix_is_set(&entry->prefix_v6))
+    {
+        if (if_cfg_apply_ip(TRUE, logical_name, NULL) != ERRCODE_SUCCESS)
+        {
+            return ERRCODE_FAIL;
+        }
+    }
+
+    if (!if_map_is_virtual_entry(entry->logical_name) &&
+        if_set_master(entry->physical_name, master_ifindex) != ERRCODE_SUCCESS)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    g_strlcpy(entry->vrf_name, target_vrf, sizeof(entry->vrf_name));
+
+    uint32_t if_type = if_cfg_type_to_mask(if_detect_type(entry->physical_name));
+    if (if_type != 0u)
+    {
+        if_info_t info;
+        uint8_t link_up = 0u;
+        if (if_get_info(entry->physical_name, &info) == ERRCODE_SUCCESS)
+        {
+            link_up = (info.state == IF_STATE_UP) ? 1u : 0u;
+        }
+        else if (entry->link_up > 0)
+        {
+            link_up = 1u;
+        }
+        if_pub_notify(g_if_work_local->subscribers, entry, if_type, IF_EVENT_VRF_CHANGE, link_up, NULL, entry->ifindex);
+    }
+
+    LOG_INFO("IF: %s vrf forwarding %s", logical_name, target_vrf[0] ? target_vrf : "public");
+    return ERRCODE_SUCCESS;
+}
+
 /* ============================================================================
  * Link Monitor 恢复 / 清理（由 IF work 线程调用）
  * ============================================================================ */
@@ -770,10 +880,10 @@ int if_cfg_apply_shutdown(gboolean is_no, const char *logical_name)
  *
  * 当接口被销毁时，if_nametoindex() 已无法获取 ifindex，需要用保存的旧值。
  */
-static int if_withdraw_connected_with_ifindex(const net_prefix_t *prefix, uint32_t saved_ifindex,
-                                              const char *physical_name)
+static int if_withdraw_connected_with_ifindex(const if_map_entry_t *if_entry, const net_prefix_t *prefix,
+                                              uint32_t saved_ifindex)
 {
-    if (!prefix || !net_prefix_is_set(prefix) || saved_ifindex == 0u)
+    if (!if_entry || !prefix || !net_prefix_is_set(prefix) || saved_ifindex == 0u)
     {
         return ERRCODE_FAIL;
     }
@@ -798,6 +908,12 @@ static int if_withdraw_connected_with_ifindex(const net_prefix_t *prefix, uint32
         return ERRCODE_FAIL;
     }
 
+    uint32_t vrf_id = ROUTE_VRF_DEFAULT;
+    if (if_resolve_vrf_id(if_entry->vrf_name, &vrf_id) != ERRCODE_SUCCESS)
+    {
+        return ERRCODE_FAIL;
+    }
+
     net_addr_t network_addr;
     if (if_prefix_to_network(prefix, &network_addr) != 0)
     {
@@ -811,7 +927,7 @@ static int if_withdraw_connected_with_ifindex(const net_prefix_t *prefix, uint32
 
     route_msg_entry_t network_entry;
     if_fill_connected_route_entry(&network_entry, afi, prefix->prefix_len, &network_addr, &prefix->addr, &zero_nh,
-                                  saved_ifindex, physical_name);
+                                  saved_ifindex, if_entry->physical_name, vrf_id);
 
     if (prefix->prefix_len == host_len)
     {
@@ -855,7 +971,7 @@ int if_cfg_recover_link(const char *logical_name, uint32_t new_ifindex, const ne
     if (pfx_v4 && net_prefix_is_set(pfx_v4))
     {
         LOG_INFO("IF-RECOVER: re-applying IPv4 on %s", logical_name);
-        if (if_sync_connected_prefix(pfx_v4, entry->physical_name, FALSE) != ERRCODE_SUCCESS)
+        if (if_sync_connected_prefix(entry, pfx_v4, FALSE) != ERRCODE_SUCCESS)
         {
             LOG_WARN("IF-RECOVER: IPv4 sync failed for %s", logical_name);
         }
@@ -865,7 +981,7 @@ int if_cfg_recover_link(const char *logical_name, uint32_t new_ifindex, const ne
     if (pfx_v6 && net_prefix_is_set(pfx_v6))
     {
         LOG_INFO("IF-RECOVER: re-applying IPv6 on %s", logical_name);
-        if (if_sync_connected_prefix(pfx_v6, entry->physical_name, FALSE) != ERRCODE_SUCCESS)
+        if (if_sync_connected_prefix(entry, pfx_v6, FALSE) != ERRCODE_SUCCESS)
         {
             LOG_WARN("IF-RECOVER: IPv6 sync failed for %s", logical_name);
         }
@@ -883,13 +999,20 @@ void if_cfg_handle_link_down(const char *logical_name, uint32_t old_ifindex, con
         return;
     }
 
+    if_map_entry_t *entry = if_cfg_find_entry(logical_name);
+    if (!entry)
+    {
+        LOG_WARN("IF-LINKDOWN: entry not found for %s", logical_name);
+        return;
+    }
+
     LOG_INFO("IF-LINKDOWN: withdrawing connected routes for %s (old ifindex=%u)", logical_name, old_ifindex);
 
     /* logical_name 与 physical_name 在 loop/GE 直连场景下一致，足以判定是否为 loop。 */
     /* 使用保存的旧 ifindex 撤销直连路由 */
     if (pfx_v4 && net_prefix_is_set(pfx_v4))
     {
-        if (if_withdraw_connected_with_ifindex(pfx_v4, old_ifindex, logical_name) != ERRCODE_SUCCESS)
+        if (if_withdraw_connected_with_ifindex(entry, pfx_v4, old_ifindex) != ERRCODE_SUCCESS)
         {
             LOG_WARN("IF-LINKDOWN: IPv4 route withdrawal failed for %s", logical_name);
         }
@@ -897,7 +1020,7 @@ void if_cfg_handle_link_down(const char *logical_name, uint32_t old_ifindex, con
 
     if (pfx_v6 && net_prefix_is_set(pfx_v6))
     {
-        if (if_withdraw_connected_with_ifindex(pfx_v6, old_ifindex, logical_name) != ERRCODE_SUCCESS)
+        if (if_withdraw_connected_with_ifindex(entry, pfx_v6, old_ifindex) != ERRCODE_SUCCESS)
         {
             LOG_WARN("IF-LINKDOWN: IPv6 route withdrawal failed for %s", logical_name);
         }

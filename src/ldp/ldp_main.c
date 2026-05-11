@@ -15,6 +15,7 @@
 #include "ldp_cli.h"
 #include "ldp_db.h"
 #include "log.h"
+#include "route.h"
 #include "work/ldp_worker.h"
 
 ldp_local_t *g_ldp_local = NULL;
@@ -155,6 +156,14 @@ void ldp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
         case IF_MSG_TYPE_EVENT:
             if (ldp_worker_post_if_event(msg) != 0)
+            {
+                dev_ipc_message_free(msg);
+            }
+            return;
+
+        case ROUTE_MSG_TYPE_REPORT:
+        case ROUTE_MSG_TYPE_UPDATE:
+            if (ldp_worker_post_route_msg(msg) != 0)
             {
                 dev_ipc_message_free(msg);
             }

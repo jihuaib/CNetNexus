@@ -16,6 +16,7 @@
 #include "db.h"
 #include "dev.h"
 #include "errcode.h"
+#include "if.h"
 #include "if_db.h"
 #include "if_main.h"
 #include "log.h"
@@ -92,7 +93,7 @@ static int handle_if_entry(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 }
 
 /**
- * @brief 处理接口配置命令（ip address / ipv6 address / shutdown / no shutdown）
+ * @brief 处理接口配置命令（ip address / ipv6 address / shutdown / no shutdown / vrf forwarding）
  */
 static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
@@ -101,10 +102,12 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     memset(&prefix, 0, sizeof(prefix));
     gboolean has_addr = FALSE;
     gboolean has_shutdown = FALSE;
+    gboolean has_vrf = FALSE;
     gboolean bad_addr_arg = FALSE;
     sa_family_t addr_family = 0;
     uint32_t if_idx = 0;
     uint32_t loop_id = 0;
+    char vrf_name[IF_VRF_NAME_MAX] = {0};
 
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
@@ -174,6 +177,18 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             case 3:
                 has_shutdown = TRUE;
                 break;
+            case 8:
+                has_vrf = TRUE;
+                break;
+            case 10:
+            {
+                const char *text = cli_tlv_entry_get_text(&entry);
+                if (text)
+                {
+                    g_strlcpy(vrf_name, text, sizeof(vrf_name));
+                }
+                break;
+            }
             default:
                 break;
         }
@@ -206,9 +221,9 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         return ERRCODE_FAIL;
     }
 
-    if (is_null0 && (has_addr || has_shutdown))
+    if (is_null0 && (has_addr || has_shutdown || has_vrf))
     {
-        send_resp(msg, "Error: null0 does not support ip address or shutdown\r\n");
+        send_resp(msg, "Error: null0 does not support ip address, shutdown or vrf forwarding\r\n");
         return ERRCODE_FAIL;
     }
 
@@ -218,7 +233,47 @@ static int handle_if_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         return ERRCODE_FAIL;
     }
 
-    if (has_addr)
+    if (has_vrf)
+    {
+        if (!is_no && vrf_name[0] == '\0')
+        {
+            send_resp(msg, "Error: Missing VRF name\r\n");
+            return ERRCODE_FAIL;
+        }
+
+        if_apply_cmd_t apply;
+        memset(&apply, 0, sizeof(apply));
+        apply.op = IF_APPLY_OP_VRF_BIND;
+        g_strlcpy(apply.u.vrf_bind.ifname, ifname, sizeof(apply.u.vrf_bind.ifname));
+        if (!is_no)
+        {
+            g_strlcpy(apply.u.vrf_bind.vrf_name, vrf_name, sizeof(apply.u.vrf_bind.vrf_name));
+        }
+
+        if (if_worker_dispatch_apply(&apply) != ERRCODE_SUCCESS || apply.rc != ERRCODE_SUCCESS)
+        {
+            char resp_buf[160];
+            snprintf(resp_buf, sizeof(resp_buf), "Error: Failed to bind %s to VRF %s\r\n", ifname,
+                     is_no ? "public" : vrf_name);
+            send_resp(msg, resp_buf);
+            return ERRCODE_FAIL;
+        }
+
+        if (if_db_update_vrf(ifname, is_no ? "" : vrf_name) != ERRCODE_SUCCESS)
+        {
+            LOG_WARN("Failed to update db for vrf binding on %s", ifname);
+        }
+        if (if_db_update_ip(ifname, 0, "", 0) != ERRCODE_SUCCESS ||
+            if_db_update_ip(ifname, 1, "", 0) != ERRCODE_SUCCESS)
+        {
+            LOG_WARN("Failed to clear db addresses after vrf binding on %s", ifname);
+        }
+
+        char resp_buf[160];
+        snprintf(resp_buf, sizeof(resp_buf), "Interface %s vrf forwarding %s\r\n", ifname, is_no ? "public" : vrf_name);
+        send_resp(msg, resp_buf);
+    }
+    else if (has_addr)
     {
         if_apply_cmd_t apply;
         memset(&apply, 0, sizeof(apply));

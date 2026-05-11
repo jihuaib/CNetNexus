@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Route static nexthop iteration gate check with 10 routes.
+Route static nexthop iteration gate check with 10 routes, dual-stack.
 
 Goal:
-- add 10 static routes while nexthop is unresolved
+- add 10 static IPv4/IPv6 routes while nexthop is unresolved
 - unresolved routes must not appear in `show route`
 - `show route static` must always keep all configured routes
 - `show route relay static` must reflect static nexthop resolve state
@@ -12,6 +12,7 @@ Goal:
 
 from __future__ import annotations
 
+import ipaddress
 import re
 
 from module_api import g_top, require_devices, run_cmds, step, wait_check, wait_checks, wait_fib_ipv4_route  # noqa: E402
@@ -24,6 +25,11 @@ PREFIX_COUNT = 10
 PREFIX_BASE_OCTET = 66
 RESOLVER_MASK = "32"
 UNRESOLVED_NH = "198.51.100.1"
+
+GE_IF = "GE-1"
+V6_PREFIX_LEN = 64
+V6_RESOLVER_LEN = 128
+V6_UNRESOLVED_NH = "2001:db8:198:51::1"
 
 
 def _build_prefixes() -> list[tuple[str, str]]:
@@ -142,7 +148,123 @@ def _cleanup_case_config(
     run_cmds(rt=rt, device=device, strict=False, commands=commands)
 
 
+def _build_prefixes_ipv6() -> list[tuple[str, str]]:
+    routes: list[tuple[str, str]] = []
+    for idx in range(PREFIX_COUNT):
+        addr = str(ipaddress.ip_network(f"2001:db8:66:{idx}::/{V6_PREFIX_LEN}", strict=False).network_address)
+        routes.append((addr, f"{addr}/{V6_PREFIX_LEN}"))
+    return routes
+
+
+def _wait_route_presence_ipv6(
+    rt: TopologyRuntime,
+    *,
+    device: str,
+    routes: list[tuple[str, str]],
+    expect_present: bool,
+    timeout: int,
+) -> None:
+    checks: list[dict[str, object]] = []
+    for addr, pfx in routes:
+        check: dict[str, object] = {
+            "device": device,
+            "command": f"show route ipv6 {addr} {V6_PREFIX_LEN}",
+            "label": f"{device} ipv6 route presence {pfx}",
+        }
+        if expect_present:
+            check["not_contains"] = ["(no matching routes)"]
+        else:
+            check["contains"] = ["(no matching routes)"]
+        checks.append(check)
+
+    wait_checks(rt, checks, timeout=timeout, interval=2)
+
+
+def _wait_static_state_ipv6(
+    rt: TopologyRuntime,
+    *,
+    device: str,
+    routes: list[tuple[str, str]],
+    nexthop: str,
+    expect_total: int,
+    expect_resolved: bool,
+    expect_in_rib: bool,
+    timeout: int,
+    interval: int = 2,
+) -> None:
+    expect_resolved_str = "yes" if expect_resolved else "no"
+    expect_in_rib_str = "yes" if expect_in_rib else "no"
+    route_regex = [
+        rf"(?im)^\s*ipv6\s+{re.escape(pfx)}\s+{re.escape(nexthop)}\b.*\b{expect_resolved_str}\s+{expect_in_rib_str}\s*$"
+        for _, pfx in routes
+    ]
+    wait_check(
+        rt,
+        device=device,
+        command="show route ipv6 static",
+        timeout=timeout,
+        interval=interval,
+        contains=[f"Total {expect_total} static route(s)"],
+        regex=route_regex,
+        label=f"{device} ipv6 static state",
+    )
+
+
+def _wait_relay_state_ipv6(
+    rt: TopologyRuntime,
+    *,
+    device: str,
+    nexthop: str,
+    expect_total_entries: int,
+    expect_resolved: bool,
+    timeout: int,
+    interval: int = 2,
+) -> None:
+    expect_resolved_str = "yes" if expect_resolved else "no"
+    wait_check(
+        rt,
+        device=device,
+        command="show route ipv6 relay static",
+        timeout=timeout,
+        interval=interval,
+        regex=[
+            rf"(?im)\bTotal\s+{expect_total_entries}\s+entry\b",
+            rf"(?im)^.*\b{re.escape(nexthop)}\b\s+{expect_resolved_str}\s*$",
+        ],
+        label=f"{device} ipv6 static relay state",
+    )
+
+
+def _cleanup_case_config_ipv6(
+    rt: TopologyRuntime,
+    *,
+    device: str,
+    route_nexthop: str,
+    resolver_nexthop: str,
+    routes: list[tuple[str, str]],
+) -> None:
+    commands = ["config"]
+    for addr, _ in routes:
+        commands.append(f"no route ipv6 {addr} {V6_PREFIX_LEN} {route_nexthop}")
+    commands.append(f"no route ipv6 {V6_UNRESOLVED_NH} {V6_RESOLVER_LEN} {resolver_nexthop}")
+    commands.extend(
+        [
+            f"if {GE_IF}",
+            "no shutdown",
+            "exit",
+            "end",
+        ]
+    )
+    run_cmds(rt=rt, device=device, strict=False, commands=commands)
+
+
 def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
+    _run_ipv4(rt, top)
+    _run_ipv6(rt, top)
+    print("Route static batch nexthop iteration gate dual-stack check passed.")
+
+
+def _run_ipv4(rt: TopologyRuntime, top: dict[str, object]) -> None:
     require_devices(top, ("r1", "r2"))
 
     routes = _build_prefixes()
@@ -259,10 +381,155 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             interval=2,
         )
 
-        print("Route static batch nexthop iteration gate check passed.")
     finally:
         step("Cleanup static batch routes")
         _cleanup_case_config(
+            rt,
+            device="r1",
+            route_nexthop=route_nexthop,
+            resolver_nexthop=resolver_nexthop,
+            routes=routes,
+        )
+
+
+def _run_ipv6(rt: TopologyRuntime, top: dict[str, object]) -> None:
+    require_devices(top, ("r1", "r2"))
+
+    routes = _build_prefixes_ipv6()
+    route_nexthop = V6_UNRESOLVED_NH
+    resolver_nexthop = str(g_top.r1.GE_1.peer_ip6)
+
+    try:
+        step("Cleanup stale IPv6 config")
+        _cleanup_case_config_ipv6(
+            rt,
+            device="r1",
+            route_nexthop=route_nexthop,
+            resolver_nexthop=resolver_nexthop,
+            routes=routes,
+        )
+
+        step("Verify IPv6 underlay from top on GE-1")
+        wait_checks(
+            rt,
+            [
+                {
+                    "device": "r1",
+                    "command": f"show if {GE_IF}",
+                    "contains": [
+                        f"Interface {GE_IF} Detail:",
+                        "State      : UP",
+                        f"IPv6 Addr  : {ipaddress.ip_address(str(g_top.r1.GE_1.ip6))}/{int(g_top.r1.GE_1.prefix6)}",
+                    ],
+                    "label": "r1 GE-1 ipv6 up from top",
+                }
+            ],
+            timeout=20,
+            interval=2,
+        )
+
+        step("Add 10 IPv6 static routes with unresolved nexthop")
+        add_cmds = ["config"]
+        for addr, _ in routes:
+            add_cmds.append(f"route ipv6 {addr} {V6_PREFIX_LEN} {route_nexthop}")
+        add_cmds.append("end")
+        run_cmds(rt=rt, device="r1", strict=False, commands=add_cmds)
+
+        step("Verify unresolved IPv6 gate behavior")
+        _wait_route_presence_ipv6(rt, device="r1", routes=routes, expect_present=False, timeout=30)
+        _wait_static_state_ipv6(
+            rt,
+            device="r1",
+            routes=routes,
+            nexthop=route_nexthop,
+            expect_total=PREFIX_COUNT,
+            expect_resolved=False,
+            expect_in_rib=False,
+            timeout=30,
+            interval=2,
+        )
+        _wait_relay_state_ipv6(
+            rt,
+            device="r1",
+            nexthop=route_nexthop,
+            expect_total_entries=1,
+            expect_resolved=False,
+            timeout=30,
+            interval=2,
+        )
+
+        step("Add IPv6 resolver route so nexthop becomes reachable")
+        run_cmds(
+            rt=rt,
+            device="r1",
+            strict=False,
+            commands=[
+                "config",
+                f"route ipv6 {V6_UNRESOLVED_NH} {V6_RESOLVER_LEN} {resolver_nexthop}",
+                "end",
+            ],
+        )
+
+        step("Verify resolved IPv6 gate behavior")
+        _wait_route_presence_ipv6(rt, device="r1", routes=routes, expect_present=True, timeout=30)
+        _wait_static_state_ipv6(
+            rt,
+            device="r1",
+            routes=routes,
+            nexthop=route_nexthop,
+            expect_total=PREFIX_COUNT + 1,
+            expect_resolved=True,
+            expect_in_rib=True,
+            timeout=30,
+            interval=2,
+        )
+        _wait_relay_state_ipv6(
+            rt,
+            device="r1",
+            nexthop=route_nexthop,
+            expect_total_entries=2,
+            expect_resolved=True,
+            timeout=30,
+            interval=2,
+        )
+
+        step("Remove IPv6 resolver route so nexthop becomes unreachable again")
+        run_cmds(
+            rt=rt,
+            device="r1",
+            strict=False,
+            commands=[
+                "config",
+                f"no route ipv6 {V6_UNRESOLVED_NH} {V6_RESOLVER_LEN} {resolver_nexthop}",
+                "end",
+            ],
+        )
+
+        step("Verify IPv6 route invalidation after nexthop loss")
+        _wait_route_presence_ipv6(rt, device="r1", routes=routes, expect_present=False, timeout=30)
+        _wait_static_state_ipv6(
+            rt,
+            device="r1",
+            routes=routes,
+            nexthop=route_nexthop,
+            expect_total=PREFIX_COUNT,
+            expect_resolved=False,
+            expect_in_rib=False,
+            timeout=30,
+            interval=2,
+        )
+        _wait_relay_state_ipv6(
+            rt,
+            device="r1",
+            nexthop=route_nexthop,
+            expect_total_entries=1,
+            expect_resolved=False,
+            timeout=30,
+            interval=2,
+        )
+    finally:
+        step("Cleanup static batch IPv6 routes")
+        _cleanup_case_config_ipv6(
             rt,
             device="r1",
             route_nexthop=route_nexthop,

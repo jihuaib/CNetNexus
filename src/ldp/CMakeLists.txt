@@ -7,6 +7,12 @@ set(LDP_SOURCES
     db/ldp_db_protocol.c
     db/ldp_db_interface.c
     work/ldp_worker.c
+    work/ldp_pkt.c
+    work/ldp_discovery.c
+    work/ldp_session.c
+    work/ldp_lib.c
+    work/ldp_route_sync.c
+    work/ldp_show.c
 )
 
 add_executable(netnexus-ldp ldp_proc.c ${LDP_SOURCES})
@@ -18,6 +24,8 @@ target_link_libraries(netnexus-ldp PRIVATE
     cli_api
     db_api
     if_api
+    route_api
+    tunnel_api
     utils
 )
 

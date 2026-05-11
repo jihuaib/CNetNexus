@@ -126,8 +126,22 @@ static gboolean if_replay_initial_state_foreach(gpointer key, gpointer val, gpoi
             evt.link_up = (replay_ifindex != 0u) ? 1 : 0;
             g_strlcpy(evt.logical_name, e->logical_name, sizeof(evt.logical_name));
             g_strlcpy(evt.physical_name, e->physical_name, sizeof(evt.physical_name));
+            g_strlcpy(evt.vrf_name, e->vrf_name, sizeof(evt.vrf_name));
             if_replay_send(rctx->module_id, IF_MSG_TYPE_EVENT, &evt, sizeof(evt));
         }
+    }
+
+    if ((rctx->event_mask & IF_EVENT_VRF_CHANGE) != 0)
+    {
+        if_event_msg_t evt;
+        memset(&evt, 0, sizeof(evt));
+        evt.if_type = if_type;
+        evt.event = IF_EVENT_VRF_CHANGE;
+        evt.link_up = (replay_ifindex != 0u) ? 1 : 0;
+        g_strlcpy(evt.logical_name, e->logical_name, sizeof(evt.logical_name));
+        g_strlcpy(evt.physical_name, e->physical_name, sizeof(evt.physical_name));
+        g_strlcpy(evt.vrf_name, e->vrf_name, sizeof(evt.vrf_name));
+        if_replay_send(rctx->module_id, IF_MSG_TYPE_EVENT, &evt, sizeof(evt));
     }
 
     if ((rctx->event_mask & IF_EVENT_PROTO_UP) != 0 && replay_ifindex != 0u && !e->shutdown &&
@@ -139,6 +153,7 @@ static gboolean if_replay_initial_state_foreach(gpointer key, gpointer val, gpoi
         addr_evt.event = IF_EVENT_PROTO_UP;
         g_strlcpy(addr_evt.logical_name, e->logical_name, sizeof(addr_evt.logical_name));
         g_strlcpy(addr_evt.physical_name, e->physical_name, sizeof(addr_evt.physical_name));
+        g_strlcpy(addr_evt.vrf_name, e->vrf_name, sizeof(addr_evt.vrf_name));
         addr_evt.afi = ROUTE_AFI_IPV4;
         addr_evt.prefix_len = e->prefix_v4.prefix_len;
         addr_evt.addr = e->prefix_v4.addr;
@@ -155,6 +170,7 @@ static gboolean if_replay_initial_state_foreach(gpointer key, gpointer val, gpoi
         addr_evt.event = IF_EVENT_PROTO_UP;
         g_strlcpy(addr_evt.logical_name, e->logical_name, sizeof(addr_evt.logical_name));
         g_strlcpy(addr_evt.physical_name, e->physical_name, sizeof(addr_evt.physical_name));
+        g_strlcpy(addr_evt.vrf_name, e->vrf_name, sizeof(addr_evt.vrf_name));
         addr_evt.afi = ROUTE_AFI_IPV6;
         addr_evt.prefix_len = e->prefix_v6.prefix_len;
         addr_evt.addr = e->prefix_v6.addr;
@@ -171,6 +187,7 @@ static gboolean if_replay_initial_state_foreach(gpointer key, gpointer val, gpoi
         addr_evt.event = IF_EVENT_PROTO_UP;
         g_strlcpy(addr_evt.logical_name, e->logical_name, sizeof(addr_evt.logical_name));
         g_strlcpy(addr_evt.physical_name, e->physical_name, sizeof(addr_evt.physical_name));
+        g_strlcpy(addr_evt.vrf_name, e->vrf_name, sizeof(addr_evt.vrf_name));
         addr_evt.afi = ROUTE_AFI_IPV6;
         addr_evt.prefix_len = e->prefix_v6_linklocal.prefix_len;
         addr_evt.addr_flags = IF_ADDR_FLAG_LINK_LOCAL;

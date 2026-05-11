@@ -638,3 +638,70 @@ int if_addr_del_prefix(const char *ifname, const net_prefix_t *prefix)
 {
     return if_addr_apply(ifname, prefix, RTM_DELADDR);
 }
+
+int if_set_master(const char *ifname, uint32_t master_ifindex)
+{
+    if (!ifname || ifname[0] == '\0')
+    {
+        return ERRCODE_FAIL;
+    }
+
+    unsigned int ifidx = if_nametoindex(ifname);
+    if (ifidx == 0)
+    {
+        LOG_ERROR("IF: interface %s not found for VRF master bind", ifname);
+        return ERRCODE_FAIL;
+    }
+
+    int sock = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE);
+    if (sock < 0)
+    {
+        LOG_PERROR("socket(AF_NETLINK) for master bind");
+        return ERRCODE_FAIL;
+    }
+
+    struct
+    {
+        struct nlmsghdr n;
+        struct ifinfomsg i;
+        char buf[128];
+    } req;
+    memset(&req, 0, sizeof(req));
+
+    req.n.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+    req.n.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+    req.n.nlmsg_type = RTM_NEWLINK;
+    req.i.ifi_family = AF_UNSPEC;
+    req.i.ifi_index = (int)ifidx;
+
+    if_add_attr(&req.n, sizeof(req), IFLA_MASTER, &master_ifindex, (int)sizeof(master_ifindex));
+
+    if (send(sock, &req, req.n.nlmsg_len, 0) < 0)
+    {
+        LOG_PERROR("Netlink send (master bind)");
+        close(sock);
+        return ERRCODE_FAIL;
+    }
+
+    char ans[4096];
+    int len = recv(sock, ans, sizeof(ans), 0);
+    close(sock);
+    if (len < 0)
+    {
+        LOG_PERROR("Netlink recv (master bind)");
+        return ERRCODE_FAIL;
+    }
+
+    struct nlmsghdr *nlh = (struct nlmsghdr *)ans;
+    if (nlh->nlmsg_type == NLMSG_ERROR)
+    {
+        struct nlmsgerr *err = (struct nlmsgerr *)NLMSG_DATA(nlh);
+        if (err->error < 0)
+        {
+            LOG_ERROR("IF: set master for %s failed: %s", ifname, strerror(-err->error));
+            return ERRCODE_FAIL;
+        }
+    }
+
+    return ERRCODE_SUCCESS;
+}

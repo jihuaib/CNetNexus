@@ -723,6 +723,7 @@ typedef struct
     int has_filter;
     uint16_t afi_filter;
     int has_afi_filter;
+    uint32_t vrf_filter;
     uint32_t count;
 } relay_show_ctx_t;
 
@@ -747,6 +748,10 @@ static void relay_show_cb(gpointer key, gpointer value, gpointer user_data)
     {
         return;
     }
+    if (watch->key.vrf_id != ctx->vrf_filter)
+    {
+        return;
+    }
 
     char nh_str[64];
     net_addr_to_str(&watch->key.nexthop_addr, nh_str, sizeof(nh_str));
@@ -762,13 +767,15 @@ static void relay_show_cb(gpointer key, gpointer value, gpointer user_data)
     ctx->count++;
 }
 
-void route_relay_show(GString *buf, uint32_t module_filter, int has_filter, uint16_t afi_filter, int has_afi_filter)
+void route_relay_show(GString *buf, uint32_t module_filter, int has_filter, uint16_t afi_filter, int has_afi_filter,
+                      uint32_t vrf_filter, const char *vrf_name)
 {
     if (!buf)
     {
         return;
     }
 
+    g_string_append_printf(buf, "\r\nRoute Relay (VRF: %s)\r\n", vrf_name ? vrf_name : "public");
     g_string_append_printf(buf,
                            "\r\n%-10s  %4s  %-4s  %-7s  %-20s  %s\r\n"
                            "----------  ----  ----  -------  --------------------  --------\r\n",
@@ -787,6 +794,7 @@ void route_relay_show(GString *buf, uint32_t module_filter, int has_filter, uint
         .has_filter = has_filter,
         .afi_filter = afi_filter,
         .has_afi_filter = has_afi_filter,
+        .vrf_filter = vrf_filter,
         .count = 0,
     };
 

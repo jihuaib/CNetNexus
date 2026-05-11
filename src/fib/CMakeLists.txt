@@ -13,6 +13,8 @@ target_include_directories(netnexus-fib PRIVATE . work)
 target_link_libraries(netnexus-fib PRIVATE
     dev_api
     cli_api
+    vrf_api
+    utils
 )
 
 set_target_properties(netnexus-fib PROPERTIES

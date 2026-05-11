@@ -14,5 +14,7 @@
 #define ERRCODE_FAIL (-1)
 /** 数据库未打开 */
 #define ERRCODE_DB_NOT_OPEN (-2)
+/** 依赖暂未就绪：调用方应挂起重试（如等 VRF 设备出现） */
+#define ERRCODE_DEP_MISSING (-3)
 
 #endif // ERRCODE_H

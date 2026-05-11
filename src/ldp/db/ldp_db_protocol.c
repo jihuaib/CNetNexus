@@ -9,6 +9,7 @@
 
 #include "errcode.h"
 #include "ldp_db_internal.h"
+#include "work/ldp_worker.h"
 
 static const db_column_def_t LDP_PROTO_COLS[] = {
     {"inst_id", DB_TYPE_INTEGER, DB_COL_PRIMARY_KEY, NULL},
@@ -144,10 +145,14 @@ int ldp_db_get_proto_cfg(ldp_proto_cfg_t *cfg_out)
 
 void ldp_db_restore_proto(void)
 {
-    /* M1：仅占位，后续 M2/M3 在此向 worker 派发协议参数 */
     ldp_proto_cfg_t cfg;
     if (ldp_db_get_proto_cfg(&cfg) != ERRCODE_SUCCESS)
     {
         return;
     }
+    ldp_apply_cmd_t apply;
+    memset(&apply, 0, sizeof(apply));
+    apply.op = LDP_APPLY_OP_PROTO_SET;
+    apply.u.proto = cfg;
+    (void)ldp_worker_dispatch_apply(&apply);
 }

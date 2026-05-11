@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-BGP dual-peer reboot check script.
+BGP dual-peer reboot dual-stack check script.
 
 Topology:
 - device a <-> device b has two links (GE-1 and GE-2)
@@ -34,17 +34,24 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
     a_ge2_peer = str(g_top.a.GE_2.peer_ip)
     b_ge1_peer = str(g_top.b.GE_1.peer_ip)
     b_ge2_peer = str(g_top.b.GE_2.peer_ip)
+    a_ge1_peer6 = str(g_top.a.GE_1.peer_ip6)
+    a_ge2_peer6 = str(g_top.a.GE_2.peer_ip6)
+    b_ge1_peer6 = str(g_top.b.GE_1.peer_ip6)
+    b_ge2_peer6 = str(g_top.b.GE_2.peer_ip6)
 
     try:
-        _run_inner(rt, a_ge1_peer, a_ge2_peer, b_ge1_peer, b_ge2_peer)
+        _run_inner_ipv4(rt, a_ge1_peer, a_ge2_peer, b_ge1_peer, b_ge2_peer)
+        step("Cleanup BGP config before IPv6 scenario")
+        _cleanup(rt)
+        _run_inner_ipv6(rt, a_ge1_peer6, a_ge2_peer6, b_ge1_peer6, b_ge2_peer6)
     finally:
         step("Cleanup BGP config")
         _cleanup(rt)
 
-    print("BGP dual-peer reboot check passed.")
+    print("BGP dual-peer reboot dual-stack check passed.")
 
 
-def _run_inner(
+def _run_inner_ipv4(
     rt: TopologyRuntime,
     a_ge1_peer: str,
     a_ge2_peer: str,
@@ -117,6 +124,92 @@ def _run_inner(
             "contains": [b_ge2_peer],
                 "regex": [rf"(?im)^\s*{re.escape(b_ge2_peer)}\s+\S+\s+\S+\s+Established\s*$"],
             "label": "b(GE-2)->a ipv4-unicast",
+        },
+    ]
+
+    step("Wait dual-link BGP sessions")
+    wait_checks(rt, session_checks, timeout=30)
+
+    step("Reboot a and wait CLI reconnect")
+    reboot_device(rt, "a", timeout=120)
+
+    step("Wait dual-link BGP sessions after reboot")
+    wait_checks(rt, session_checks, timeout=30)
+
+
+def _run_inner_ipv6(
+    rt: TopologyRuntime,
+    a_ge1_peer6: str,
+    a_ge2_peer6: str,
+    b_ge1_peer6: str,
+    b_ge2_peer6: str,
+) -> None:
+    step("Configure BGP base")
+    run_cmds(rt=rt, device="a", strict=False, commands=["config", "bgp 65001", "router-id 1.1.1.1", "end"])
+    run_cmds(rt=rt, device="b", strict=False, commands=["config", "bgp 65002", "router-id 2.2.2.2", "end"])
+
+    step("Configure dual-link BGP neighbors")
+    run_cmds(
+        rt=rt,
+        device="a",
+        strict=False,
+        commands=[
+            "config",
+            "bgp 65001",
+            f"neighbor {a_ge1_peer6} as 65002",
+            f"neighbor {a_ge2_peer6} as 65002",
+            "af ipv6-unicast",
+            f"neighbor {a_ge1_peer6} enable",
+            f"neighbor {a_ge2_peer6} enable",
+            "exit",
+            "end",
+        ],
+    )
+    run_cmds(
+        rt=rt,
+        device="b",
+        strict=False,
+        commands=[
+            "config",
+            "bgp 65002",
+            f"neighbor {b_ge1_peer6} as 65001",
+            f"neighbor {b_ge2_peer6} as 65001",
+            "af ipv6-unicast",
+            f"neighbor {b_ge1_peer6} enable",
+            f"neighbor {b_ge2_peer6} enable",
+            "exit",
+            "end",
+        ],
+    )
+
+    session_checks = [
+        {
+            "device": "a",
+            "command": "show bgp neighbor af ipv6-unicast",
+            "contains": [a_ge1_peer6],
+                "regex": [rf"(?im)^\s*{re.escape(a_ge1_peer6)}\s+\S+\s+\S+\s+Established\s*$"],
+            "label": "a(GE-1)->b ipv6-unicast",
+        },
+        {
+            "device": "a",
+            "command": "show bgp neighbor af ipv6-unicast",
+            "contains": [a_ge2_peer6],
+                "regex": [rf"(?im)^\s*{re.escape(a_ge2_peer6)}\s+\S+\s+\S+\s+Established\s*$"],
+            "label": "a(GE-2)->b ipv6-unicast",
+        },
+        {
+            "device": "b",
+            "command": "show bgp neighbor af ipv6-unicast",
+            "contains": [b_ge1_peer6],
+                "regex": [rf"(?im)^\s*{re.escape(b_ge1_peer6)}\s+\S+\s+\S+\s+Established\s*$"],
+            "label": "b(GE-1)->a ipv6-unicast",
+        },
+        {
+            "device": "b",
+            "command": "show bgp neighbor af ipv6-unicast",
+            "contains": [b_ge2_peer6],
+                "regex": [rf"(?im)^\s*{re.escape(b_ge2_peer6)}\s+\S+\s+\S+\s+Established\s*$"],
+            "label": "b(GE-2)->a ipv6-unicast",
         },
     ]
 

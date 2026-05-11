@@ -12,6 +12,7 @@
 #include "fib_os.h"
 #include "fib_show.h"
 #include "log.h"
+#include "mpls_config.h"
 
 #define FIB_MAX_EPOLL_EVENTS 8
 
@@ -130,6 +131,18 @@ static int fib_worker_cmd_enqueue(fib_worker_cmd_t *cmd)
     g_async_queue_push(g_fib_work_local->cmd_queue, cmd);
     fib_signal_cmd_event();
     return ERRCODE_SUCCESS;
+}
+
+static int fib_worker_prepare_os(void)
+{
+    nn_mpls_config_t cfg;
+    if (nn_mpls_config_load(&cfg) != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("FIB: failed to load MPLS config for kernel programming");
+        return ERRCODE_FAIL;
+    }
+
+    return fib_os_mpls_configure(cfg.linux_platform_labels, cfg.linux_mpls_input);
 }
 
 static int tunnel_ready(const fib_tunnel_entry_t *tunnel)
@@ -468,6 +481,11 @@ int fib_worker_prepare(void)
     ev.events = EPOLLIN;
     ev.data.ptr = &g_fib_cmd_tag;
     if (epoll_ctl(g_fib_work_local->epoll_fd, EPOLL_CTL_ADD, g_fib_work_local->cmd_eventfd, &ev) != 0)
+    {
+        fib_worker_shutdown();
+        return ERRCODE_FAIL;
+    }
+    if (fib_worker_prepare_os() != ERRCODE_SUCCESS)
     {
         fib_worker_shutdown();
         return ERRCODE_FAIL;

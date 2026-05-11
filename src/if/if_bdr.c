@@ -157,7 +157,7 @@ static void bdr_emit_iface_anchor(GString *out, const char *name)
  * @brief 将 IF 自身对某接口的配置(IP/shutdown)发射为 body 贡献
  */
 static void bdr_emit_iface_self_body(GString *out, const char *name, const char *ip4_str, int64_t prefix4_len,
-                                     const char *ip6_str, int64_t prefix6_len, int64_t shutdown)
+                                     const char *ip6_str, int64_t prefix6_len, int64_t shutdown, const char *vrf_name)
 {
     char key[CLI_CFG_ANCHOR_KEY_MAX];
     bdr_build_iface_key(key, sizeof(key), name);
@@ -165,13 +165,18 @@ static void bdr_emit_iface_self_body(GString *out, const char *name, const char 
     gboolean has_ip4 = bdr_addr_is_valid(ip4_str, prefix4_len, AF_INET);
     gboolean has_ip6 = bdr_addr_is_valid(ip6_str, prefix6_len, AF_INET6);
     gboolean is_shutdown = (shutdown != 0);
+    gboolean has_vrf = (vrf_name && vrf_name[0] != '\0');
 
-    if (!has_ip4 && !has_ip6 && !is_shutdown)
+    if (!has_vrf && !has_ip4 && !has_ip6 && !is_shutdown)
     {
         return;
     }
 
     GString *body = g_string_new("");
+    if (has_vrf)
+    {
+        g_string_append_printf(body, " vrf forwarding %s\r\n", vrf_name);
+    }
     if (has_ip4)
     {
         g_string_append_printf(body, " ip address %s %ld\r\n", ip4_str, prefix4_len);
@@ -237,6 +242,7 @@ static void if_bdr_show_config_full(dev_ipc_message_t *msg)
         const char *ip6_str = db_row_get_text(row, "ipv6_address", NULL);
         int64_t prefix6_len = db_row_get_int(row, "ipv6_prefix_len", 0);
         int64_t shutdown = db_row_get_int(row, "shutdown", 0);
+        const char *vrf_name = db_row_get_text(row, "vrf_name", "");
 
         if (!name)
         {
@@ -244,7 +250,7 @@ static void if_bdr_show_config_full(dev_ipc_message_t *msg)
         }
 
         bdr_emit_iface_anchor(out, name);
-        bdr_emit_iface_self_body(out, name, ip4_str, prefix4_len, ip6_str, prefix6_len, shutdown);
+        bdr_emit_iface_self_body(out, name, ip4_str, prefix4_len, ip6_str, prefix6_len, shutdown, vrf_name);
     }
 
     db_result_free(result);
@@ -288,8 +294,9 @@ static void if_bdr_show_config_scoped(dev_ipc_message_t *msg, const cli_show_sco
         const char *ip6_str = db_row_get_text(row, "ipv6_address", NULL);
         int64_t prefix6_len = db_row_get_int(row, "ipv6_prefix_len", 0);
         int64_t shutdown = db_row_get_int(row, "shutdown", 0);
+        const char *vrf_name = db_row_get_text(row, "vrf_name", "");
 
-        bdr_emit_iface_self_body(out, ifname, ip4_str, prefix4_len, ip6_str, prefix6_len, shutdown);
+        bdr_emit_iface_self_body(out, ifname, ip4_str, prefix4_len, ip6_str, prefix6_len, shutdown, vrf_name);
     }
 
     db_value_free(&cond.value);

@@ -20,6 +20,7 @@
 #include "route_db.h"
 #include "route_main.h"
 #include "route_worker.h"
+#include "vrf.h"
 
 // ============================================================================
 // 辅助函数
@@ -38,13 +39,36 @@ static void send_resp(dev_ipc_message_t *msg, const char *text)
     }
 }
 
+static int route_cli_resolve_vrf_id(const char *vrf_name, uint32_t *vrf_id)
+{
+    if (!vrf_id)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    *vrf_id = ROUTE_VRF_DEFAULT;
+    if (!vrf_name || vrf_name[0] == '\0' || strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) == 0)
+    {
+        return ERRCODE_SUCCESS;
+    }
+
+    const vrf_api_cache_entry_t *vrf = vrf_api_cache_lookup_by_name(vrf_name);
+    if (!vrf)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    *vrf_id = vrf->vrf_id;
+    return ERRCODE_SUCCESS;
+}
+
 // ============================================================================
 // Group 1: 路由配置命令
 //
 // cfg-id 映射：
 //   1=no, 2=ipv4, 3=ipv6, 4=prefix(dest), 5=prefix_len(IPv4),
 //   6=prefix_len(IPv6), 7=nexthop, 8=metric value,
-//   9=interface(keyword), 10=ifname(parameter)
+//   9=interface(keyword), 10=ifname(parameter), 11=vrf(keyword), 12=vrf-name
 // ============================================================================
 
 static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
@@ -57,6 +81,7 @@ static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     int64_t ipv6_prefix_len = 0;
     char nexthop_str[64] = {0};
     char ifname_str[IF_LOGICAL_NAME_MAX] = {0};
+    char vrf_name[VRF_NAME_MAX_LEN] = {0};
     int64_t metric = 0;
     int has_prefix = 0;
     int has_ipv4_pfxlen = 0;
@@ -127,6 +152,15 @@ static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                 if (text)
                 {
                     g_strlcpy(ifname_str, text, sizeof(ifname_str));
+                }
+                break;
+            }
+            case 12:
+            {
+                const char *text = cli_tlv_entry_get_text(&entry);
+                if (text)
+                {
+                    g_strlcpy(vrf_name, text, sizeof(vrf_name));
                 }
                 break;
             }
@@ -204,6 +238,15 @@ static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     net_addr_to_str(&prefix_addr, normalized_prefix_str, sizeof(normalized_prefix_str));
     int prefix_text_changed = (strcmp(prefix_str, normalized_prefix_str) != 0);
 
+    uint32_t vrf_id = ROUTE_VRF_DEFAULT;
+    if (route_cli_resolve_vrf_id(vrf_name, &vrf_id) != ERRCODE_SUCCESS)
+    {
+        char resp[160];
+        snprintf(resp, sizeof(resp), "Error: VRF %s not found\r\n", vrf_name);
+        send_resp(msg, resp);
+        return ERRCODE_FAIL;
+    }
+
     if (is_no)
     {
         if (has_nexthop || has_interface)
@@ -231,11 +274,11 @@ static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             }
 
             /* 先删除 DB 记录 */
-            route_db_delete_static(g_route_local->dev_ipc_ctx, ROUTE_VRF_DEFAULT, afi, normalized_prefix_str,
-                                   prefix_len, has_nexthop ? nexthop_str : "", ifname_str);
+            route_db_delete_static(g_route_local->dev_ipc_ctx, vrf_id, afi, normalized_prefix_str, prefix_len,
+                                   has_nexthop ? nexthop_str : "", ifname_str);
             if (prefix_text_changed)
             {
-                route_db_delete_static(g_route_local->dev_ipc_ctx, ROUTE_VRF_DEFAULT, afi, prefix_str, prefix_len,
+                route_db_delete_static(g_route_local->dev_ipc_ctx, vrf_id, afi, prefix_str, prefix_len,
                                        has_nexthop ? nexthop_str : "", ifname_str);
             }
 
@@ -243,7 +286,7 @@ static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             route_apply_cmd_t apply;
             memset(&apply, 0, sizeof(apply));
             apply.op = ROUTE_APPLY_STATIC_DEL;
-            apply.u.static_del.vrf_id = ROUTE_VRF_DEFAULT;
+            apply.u.static_del.vrf_id = vrf_id;
             apply.u.static_del.afi = afi;
             apply.u.static_del.prefix_len = prefix_len;
             apply.u.static_del.prefix_addr = prefix_addr;
@@ -258,18 +301,16 @@ static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         else
         {
             /* 删除该前缀下所有候选静态路由 */
-            route_db_delete_static_prefix(g_route_local->dev_ipc_ctx, ROUTE_VRF_DEFAULT, afi, normalized_prefix_str,
-                                          prefix_len);
+            route_db_delete_static_prefix(g_route_local->dev_ipc_ctx, vrf_id, afi, normalized_prefix_str, prefix_len);
             if (prefix_text_changed)
             {
-                route_db_delete_static_prefix(g_route_local->dev_ipc_ctx, ROUTE_VRF_DEFAULT, afi, prefix_str,
-                                              prefix_len);
+                route_db_delete_static_prefix(g_route_local->dev_ipc_ctx, vrf_id, afi, prefix_str, prefix_len);
             }
 
             route_apply_cmd_t apply;
             memset(&apply, 0, sizeof(apply));
             apply.op = ROUTE_APPLY_STATIC_DEL_PREFIX;
-            apply.u.static_del_prefix.vrf_id = ROUTE_VRF_DEFAULT;
+            apply.u.static_del_prefix.vrf_id = vrf_id;
             apply.u.static_del_prefix.afi = afi;
             apply.u.static_del_prefix.prefix_len = prefix_len;
             apply.u.static_del_prefix.prefix_addr = prefix_addr;
@@ -318,11 +359,11 @@ static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         int32_t m = has_metric ? (int32_t)metric : 0;
 
         /* 先写入 DB */
-        route_db_upsert_static(g_route_local->dev_ipc_ctx, ROUTE_VRF_DEFAULT, afi, normalized_prefix_str, prefix_len,
+        route_db_upsert_static(g_route_local->dev_ipc_ctx, vrf_id, afi, normalized_prefix_str, prefix_len,
                                has_nexthop ? nexthop_str : "", m, pref, ifname_str);
         if (prefix_text_changed)
         {
-            route_db_delete_static(g_route_local->dev_ipc_ctx, ROUTE_VRF_DEFAULT, afi, prefix_str, prefix_len,
+            route_db_delete_static(g_route_local->dev_ipc_ctx, vrf_id, afi, prefix_str, prefix_len,
                                    has_nexthop ? nexthop_str : "", ifname_str);
         }
 
@@ -330,7 +371,7 @@ static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         route_apply_cmd_t apply;
         memset(&apply, 0, sizeof(apply));
         apply.op = ROUTE_APPLY_STATIC_ADD;
-        apply.u.static_add.vrf_id = ROUTE_VRF_DEFAULT;
+        apply.u.static_add.vrf_id = vrf_id;
         apply.u.static_add.afi = afi;
         apply.u.static_add.prefix_len = prefix_len;
         apply.u.static_add.prefix_addr = prefix_addr;

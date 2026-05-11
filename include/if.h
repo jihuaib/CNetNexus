@@ -38,6 +38,8 @@
 #define IF_EVENT_PROTO_UP (1u << 2)
 /** 协议层断开事件（IP 删除、或者链路 DOWN、或者被 Shutdown） */
 #define IF_EVENT_PROTO_DOWN (1u << 3)
+/** 接口 VRF 绑定变化事件 */
+#define IF_EVENT_VRF_CHANGE (1u << 4)
 /** 通配：匹配所有事件 */
 #define IF_EVENT_ALL 0xFFFFFFFFu
 
@@ -63,6 +65,8 @@
 
 /** 逻辑接口名最大长度（与 if_map.h 的 LOGICAL_NAME_LEN 保持一致） */
 #define IF_LOGICAL_NAME_MAX 32
+/** VRF 名称最大长度（与 VRF 模块保持一致，避免 IF 公共头依赖 vrf.h） */
+#define IF_VRF_NAME_MAX 64
 
 // ============================================================================
 // IPC 载荷结构
@@ -89,6 +93,7 @@ typedef struct if_event_msg
     uint8_t _pad[3];                        /**< 对齐填充 */
     char logical_name[IF_LOGICAL_NAME_MAX]; /**< 逻辑接口名（如 GE-1） */
     char physical_name[IFNAMSIZ];           /**< 物理接口名（如 eth0） */
+    char vrf_name[IF_VRF_NAME_MAX];         /**< 接口所属 VRF 名称，空=public */
 } if_event_msg_t;
 
 /**
@@ -100,6 +105,7 @@ typedef struct if_addr_event_msg
     uint32_t event;                         /**< 事件类型（IF_EVENT_PROTO_UP 或 IF_EVENT_PROTO_DOWN） */
     char logical_name[IF_LOGICAL_NAME_MAX]; /**< 逻辑接口名（如 GE-1） */
     char physical_name[IFNAMSIZ];           /**< 物理接口名（如 eth0） */
+    char vrf_name[IF_VRF_NAME_MAX];         /**< 接口所属 VRF 名称，空=public */
     uint16_t afi;                           /**< 地址族（ROUTE_AFI_IPV4 / ROUTE_AFI_IPV6） */
     uint8_t prefix_len;                     /**< 前缀长度 */
     uint8_t addr_flags;                     /**< 地址标志（IF_ADDR_FLAG_*） */
@@ -149,6 +155,7 @@ typedef struct if_api_cache_entry
     char logical_name[IF_LOGICAL_NAME_MAX]; /**< 逻辑接口名（如 GE-1） */
     char physical_name[IFNAMSIZ];           /**< 物理接口名（如 eth0） */
     uint32_t ifindex;                       /**< 接口索引 */
+    char vrf_name[IF_VRF_NAME_MAX];         /**< 接口所属 VRF 名称，空=public */
     uint8_t link_up;                        /**< 1=物理链路连接, 0=物理链路断开 */
     uint8_t proto_up;                       /**< 1=协议就绪(有IP且不down), 0=未就绪 */
     uint8_t _pad[2];                        /**< 对齐填充 */

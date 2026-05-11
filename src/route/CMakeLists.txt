@@ -24,6 +24,7 @@ target_link_libraries(netnexus-route PRIVATE
     db_api
     fib_api
     if_api
+    vrf_api
 )
 
 set_target_properties(netnexus-route PROPERTIES

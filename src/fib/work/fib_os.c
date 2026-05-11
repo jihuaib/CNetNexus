@@ -4,6 +4,7 @@
 #include <asm/types.h>
 #include <dirent.h>
 #include <errno.h>
+#include <limits.h>
 #include <linux/lwtunnel.h>
 #include <linux/mpls.h>
 #include <linux/mpls_iptunnel.h>
@@ -18,6 +19,7 @@
 
 #include "errcode.h"
 #include "log.h"
+#include "mpls_config.h"
 #include "net_addr.h"
 #include "route.h"
 #include "tunnel.h"
@@ -29,6 +31,10 @@
 #ifndef AF_MPLS
 #    define AF_MPLS 28
 #endif
+
+static uint32_t g_mpls_platform_labels;
+static gboolean g_mpls_input = TRUE;
+static gboolean g_mpls_configured;
 
 static uint8_t fib_route_protocol_to_rtproto(uint32_t protocol)
 {
@@ -216,7 +222,17 @@ static void fib_os_write_uint_file(const char *path, uint32_t value)
     fclose(fp);
 }
 
-static void fib_os_prepare_mpls_input(void)
+static void fib_os_apply_mpls_platform_labels(uint32_t labels)
+{
+    if (labels == 0u)
+    {
+        return;
+    }
+
+    fib_os_write_uint_file("/proc/sys/net/mpls/platform_labels", labels);
+}
+
+static void fib_os_apply_mpls_input(gboolean enabled)
 {
     DIR *dir = opendir("/proc/sys/net/mpls/conf");
     if (!dir)
@@ -238,14 +254,19 @@ static void fib_os_prepare_mpls_input(void)
         {
             continue;
         }
-        fib_os_write_uint_file(path, 1u);
+        fib_os_write_uint_file(path, enabled ? 1u : 0u);
     }
     closedir(dir);
 }
 
 static void fib_os_prepare_mpls_platform_labels(uint32_t label)
 {
-    uint32_t want = (label >= 0xFFFFFu) ? 1048576u : label + 1u;
+    uint32_t want = (g_mpls_configured && g_mpls_platform_labels != 0u) ? g_mpls_platform_labels : 0u;
+    uint32_t min_want = (label >= 0xFFFFFu) ? NN_MPLS_PLATFORM_LABELS_MAX : label + 1u;
+    if (want < min_want)
+    {
+        want = min_want;
+    }
     uint32_t current = 0u;
 
     FILE *fp = fopen("/proc/sys/net/mpls/platform_labels", "r");
@@ -263,6 +284,24 @@ static void fib_os_prepare_mpls_platform_labels(uint32_t label)
     }
 
     fib_os_write_uint_file("/proc/sys/net/mpls/platform_labels", want);
+}
+
+int fib_os_mpls_configure(uint32_t platform_labels, gboolean mpls_input)
+{
+    if (platform_labels == 0u || platform_labels > NN_MPLS_PLATFORM_LABELS_MAX)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    g_mpls_platform_labels = platform_labels;
+    g_mpls_input = mpls_input;
+    g_mpls_configured = TRUE;
+
+    fib_os_apply_mpls_platform_labels(g_mpls_platform_labels);
+    fib_os_apply_mpls_input(g_mpls_input);
+    LOG_INFO("fib_os: MPLS kernel config platform_labels=%u mpls_input=%s", g_mpls_platform_labels,
+             g_mpls_input ? "true" : "false");
+    return ERRCODE_SUCCESS;
 }
 
 static int nl_exchange(struct nlmsghdr *nlh, int cmd)
@@ -492,7 +531,7 @@ int fib_os_ilm_install(const fib_ilm_entry_t *ilm)
         return ERRCODE_FAIL;
     }
     fib_os_prepare_mpls_platform_labels(ilm->in_label);
-    fib_os_prepare_mpls_input();
+    fib_os_apply_mpls_input(g_mpls_input);
     return fib_os_mpls_route_send(RTM_NEWROUTE, ilm);
 }
 
@@ -501,18 +540,26 @@ int fib_os_ilm_withdraw(const fib_ilm_entry_t *ilm)
     return fib_os_mpls_route_send(RTM_DELROUTE, ilm);
 }
 
-static const char *os_table_str(uint8_t table)
+static void os_table_format(uint32_t table, char *buf, size_t sz)
 {
+    if (!buf || sz == 0)
+    {
+        return;
+    }
     switch (table)
     {
         case RT_TABLE_MAIN:
-            return "main";
+            g_strlcpy(buf, "main", sz);
+            return;
         case RT_TABLE_LOCAL:
-            return "local";
+            g_strlcpy(buf, "local", sz);
+            return;
         case RT_TABLE_DEFAULT:
-            return "default";
+            g_strlcpy(buf, "default", sz);
+            return;
         default:
-            return "other";
+            snprintf(buf, sz, "%u", table);
+            return;
     }
 }
 
@@ -629,7 +676,59 @@ static void os_parse_mpls_stack(const struct rtattr *stack_attr, char *buf, size
     }
 }
 
-static void os_parse_route(struct nlmsghdr *nlh, GString *buf)
+static gboolean os_if_master_matches(uint32_t ifindex, uint32_t expected_master_ifindex)
+{
+    if (ifindex == 0)
+    {
+        return FALSE;
+    }
+
+    char ifname[IF_NAMESIZE];
+    if (!if_indextoname(ifindex, ifname))
+    {
+        return FALSE;
+    }
+
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "/sys/class/net/%s/master/ifindex", ifname);
+    FILE *fp = fopen(path, "r");
+    if (!fp)
+    {
+        return expected_master_ifindex == 0;
+    }
+
+    uint32_t actual_master_ifindex = 0;
+    gboolean has_master = fscanf(fp, "%u", &actual_master_ifindex) == 1;
+    fclose(fp);
+
+    if (expected_master_ifindex == 0)
+    {
+        return !has_master;
+    }
+    return has_master && actual_master_ifindex == expected_master_ifindex;
+}
+
+static gboolean os_route_table_matches(uint32_t table_id, uint32_t out_ifindex, uint32_t table_filter,
+                                       gboolean has_table_filter, gboolean include_local_table,
+                                       uint32_t local_master_ifindex)
+{
+    if (!has_table_filter)
+    {
+        return TRUE;
+    }
+    if (table_id == table_filter)
+    {
+        return TRUE;
+    }
+    if (include_local_table && table_id == RT_TABLE_LOCAL)
+    {
+        return os_if_master_matches(out_ifindex, local_master_ifindex);
+    }
+    return FALSE;
+}
+
+static gboolean os_parse_route(struct nlmsghdr *nlh, GString *buf, uint32_t table_filter, gboolean has_table_filter,
+                               gboolean include_local_table, uint32_t local_master_ifindex)
 {
     struct rtmsg *rtm = (struct rtmsg *)NLMSG_DATA(nlh);
     char dst_str[64];
@@ -638,6 +737,8 @@ static void os_parse_route(struct nlmsghdr *nlh, GString *buf)
     char encap_str[128] = "-";
     char newdst_str[128] = "";
     uint32_t priority = 0;
+    uint32_t table_id = rtm->rtm_table;
+    uint32_t out_ifindex = 0;
     uint16_t encap_type = 0;
     const struct rtattr *encap_attr = NULL;
 
@@ -702,6 +803,7 @@ static void os_parse_route(struct nlmsghdr *nlh, GString *buf)
             {
                 uint32_t idx;
                 memcpy(&idx, RTA_DATA(rta), sizeof(idx));
+                out_ifindex = idx;
                 if (!if_indextoname(idx, oif_name))
                 {
                     snprintf(oif_name, sizeof(oif_name), "if%u", idx);
@@ -710,6 +812,9 @@ static void os_parse_route(struct nlmsghdr *nlh, GString *buf)
             }
             case RTA_PRIORITY:
                 memcpy(&priority, RTA_DATA(rta), sizeof(priority));
+                break;
+            case RTA_TABLE:
+                memcpy(&table_id, RTA_DATA(rta), sizeof(table_id));
                 break;
             case RTA_ENCAP_TYPE:
                 memcpy(&encap_type, RTA_DATA(rta), sizeof(encap_type));
@@ -720,6 +825,12 @@ static void os_parse_route(struct nlmsghdr *nlh, GString *buf)
             default:
                 break;
         }
+    }
+
+    if (!os_route_table_matches(table_id, out_ifindex, table_filter, has_table_filter, include_local_table,
+                                local_master_ifindex))
+    {
+        return FALSE;
     }
 
     if (encap_type == LWTUNNEL_ENCAP_MPLS && encap_attr)
@@ -740,12 +851,15 @@ static void os_parse_route(struct nlmsghdr *nlh, GString *buf)
     {
         snprintf(prefix_str, sizeof(prefix_str), "%s/%u", dst_str, rtm->rtm_dst_len);
     }
-    g_string_append_printf(buf, "%-7s %-10s %-26s %-20s %-14s %-8s %-7u %s\r\n", os_table_str(rtm->rtm_table),
-                           os_type_str(rtm->rtm_type), prefix_str, gw_str, oif_name, os_proto_str(rtm->rtm_protocol),
-                           priority, encap_str);
+    char table_str[24];
+    os_table_format(table_id, table_str, sizeof(table_str));
+    g_string_append_printf(buf, "%-7s %-10s %-26s %-20s %-14s %-8s %-7u %s\r\n", table_str, os_type_str(rtm->rtm_type),
+                           prefix_str, gw_str, oif_name, os_proto_str(rtm->rtm_protocol), priority, encap_str);
+    return TRUE;
 }
 
-int fib_os_show(GString *buf, sa_family_t family)
+int fib_os_show(GString *buf, sa_family_t family, uint32_t table_filter, gboolean has_table_filter,
+                gboolean include_local_table, uint32_t local_master_ifindex)
 {
     if (!buf)
     {
@@ -826,8 +940,10 @@ int fib_os_show(GString *buf, sa_family_t family)
             }
             if (nlh->nlmsg_type == RTM_NEWROUTE)
             {
-                os_parse_route(nlh, buf);
-                count++;
+                if (os_parse_route(nlh, buf, table_filter, has_table_filter, include_local_table, local_master_ifindex))
+                {
+                    count++;
+                }
             }
         }
     }

@@ -17,8 +17,10 @@
 int fib_os_route_install_ip(const fib_route_entry_t *route);
 int fib_os_route_install_tunnel(const fib_route_entry_t *route, const fib_tunnel_entry_t *tunnel);
 int fib_os_route_withdraw(const fib_route_entry_t *route);
+int fib_os_mpls_configure(uint32_t platform_labels, gboolean mpls_input);
 int fib_os_ilm_install(const fib_ilm_entry_t *ilm);
 int fib_os_ilm_withdraw(const fib_ilm_entry_t *ilm);
-int fib_os_show(GString *buf, sa_family_t family);
+int fib_os_show(GString *buf, sa_family_t family, uint32_t table_filter, gboolean has_table_filter,
+                gboolean include_local_table, uint32_t local_master_ifindex);
 
 #endif /* FIB_OS_H */

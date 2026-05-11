@@ -50,51 +50,60 @@
                     <type>uint(0-1048575)</type>
                     <description>MPLS incoming label</description>
                 </element>
+                <element id="11" cfg-id="9" type="keyword">
+                    <name>vrf</name>
+                    <description>Filter by VRF name</description>
+                </element>
+                <element id="12" cfg-id="10" type="parameter">
+                    <name>&lt;vrf-name&gt;</name>
+                    <type>dynamic(7:1,string(1-63))</type>
+                    <description>VRF name</description>
+                </element>
             </elements>
             <commands>
                 <!-- show fib ipv4 -->
                 <command>
-                    <expression>1 2 3</expression>
+                    <expression>1 2 3 [11 12]</expression>
                     <views>global</views>
                 </command>
                 <!-- show fib ipv6 -->
                 <command>
-                    <expression>1 2 4</expression>
+                    <expression>1 2 4 [11 12]</expression>
                     <views>global</views>
                 </command>
                 <!-- show fib ipv4 <prefix> <prefix-length> -->
                 <command>
-                    <expression>1 2 3 6 7</expression>
+                    <expression>1 2 3 6 7 [11 12]</expression>
                     <views>global</views>
                 </command>
                 <!-- show fib ipv6 <prefix> <prefix-length> -->
                 <command>
-                    <expression>1 2 4 6 8</expression>
+                    <expression>1 2 4 6 8 [11 12]</expression>
                     <views>global</views>
                 </command>
                 <!-- show fib ipv4 os -->
                 <command>
-                    <expression>1 2 3 5</expression>
+                    <expression>1 2 3 5 [11 12]</expression>
                     <views>global</views>
                 </command>
                 <!-- show fib ipv6 os -->
                 <command>
-                    <expression>1 2 4 5</expression>
+                    <expression>1 2 4 5 [11 12]</expression>
                     <views>global</views>
                 </command>
                 <!-- show fib mpls -->
                 <command>
-                    <expression>1 2 9</expression>
+                    <expression>1 2 9 [11 12]</expression>
                     <views>global</views>
                 </command>
                 <!-- show fib mpls <label> -->
                 <command>
-                    <expression>1 2 9 10</expression>
+                    <expression>1 2 9 10 [11 12]</expression>
                     <views>global</views>
                 </command>
                 <!-- show fib mpls os -->
                 <command>
-                    <expression>1 2 9 5</expression>
+                    <expression>1 2 9 5 [11 12]</expression>
                     <views>global</views>
                 </command>
             </commands>
