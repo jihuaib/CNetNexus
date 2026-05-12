@@ -1,6 +1,6 @@
 # Route CLI Documentation
 
-This document describes the static route commands provided by the Route module (module-id: 6).
+This document describes the static route commands provided by the Route module (module-id: 7).
 
 ## 1. Configuration Commands (config view)
 

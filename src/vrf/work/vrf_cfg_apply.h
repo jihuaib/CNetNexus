@@ -27,6 +27,10 @@ typedef enum vrf_apply_op
 
 /**
  * @brief 配置应用命令载荷（IPC 线程构造，worker 线程执行）
+ *
+ * @note worker 只负责内存表 + OS 下发 + 事件发布，**不写 DB**。
+ *       DB 持久化由 CLI/恢复路径在 dispatch_apply 返回后自行处理；
+ *       worker 通过 vrf_id / l3vrf_table_id 字段把分配/查到的标识回传给调用方。
  */
 typedef struct vrf_apply_cmd
 {
@@ -39,6 +43,12 @@ typedef struct vrf_apply_cmd
     uint8_t direction; /**< 0=import, 1=export, 2=both */
     uint8_t add;       /**< 1=添加, 0=删除（RT_MODIFY 时） */
     uint8_t _pad[3];
+
+    /** 输入/输出：VRF_CREATE 输入 0 表示 worker 分配，非 0 表示按指定 id 建（恢复路径用）；
+     *  其它操作或 CREATE 完成后由 worker 回填实际 vrf_id 给调用方做 DB 写。 */
+    uint32_t vrf_id;
+    /** 输入/输出：同 vrf_id。 */
+    uint32_t l3vrf_table_id;
 
     vrf_rd_t rd;
     vrf_rt_t rt;

@@ -1,11 +1,12 @@
 /**
  * @file   bgp_pkt_build_ipv6qp.c
  * @brief  BGP UPDATE 报文 IPv6 QP（AFI=2, SAFI=253）AF 编码器
- *         NLRI 变长 TLV：长度(1B) + TLV1[type=1,len,dqpn(1-3B)] + TLV2[type=2,len=mask,prefix]
+ *         NLRI 变长 TLV：长度(1B) + TLV1[type=1,bit-len,dqpn(1-3B)] + TLV2[type=2,len=mask,prefix]
  * @author jhb
  * @date   2026/04/20
  */
 #include <arpa/inet.h>
+#include <stdbool.h>
 #include <string.h>
 
 #include "bgp_conn.h"
@@ -15,17 +16,27 @@
 // QP TLV 编码辅助
 // ============================================================================
 
-static int dqpn_bytes(uint32_t dqpn)
+static int dqpn_wire_bits(uint32_t dqpn)
 {
     if (dqpn <= 0xFFu)
     {
-        return 1;
+        return 8;
     }
     if (dqpn <= 0xFFFFu)
     {
-        return 2;
+        return 16;
     }
-    return 3;
+    return 24;
+}
+
+static int dqpn_bytes_from_bits(int dqpn_bits)
+{
+    return (dqpn_bits + 7) / 8;
+}
+
+static bool dqpn_bits_valid(uint32_t dqpn, int dqpn_bits)
+{
+    return dqpn <= 0xFFFFFFu && dqpn_bits >= 1 && dqpn_bits <= 24 && (dqpn_bits == 24 || (dqpn >> dqpn_bits) == 0);
 }
 
 static int qp_nlri_size(const bgp_nlri_entry_t *nlri)
@@ -34,7 +45,12 @@ static int qp_nlri_size(const bgp_nlri_entry_t *nlri)
     {
         return -1;
     }
-    int dq = nlri->qp.dqpn_len ? nlri->qp.dqpn_len : dqpn_bytes(nlri->qp.dqpn);
+    int dq_bits = nlri->qp.dqpn_len ? nlri->qp.dqpn_len : dqpn_wire_bits(nlri->qp.dqpn);
+    if (!dqpn_bits_valid(nlri->qp.dqpn, dq_bits))
+    {
+        return -1;
+    }
+    int dq = dqpn_bytes_from_bits(dq_bits);
     int pfx = (nlri->qp.prefix.prefix_len + 7) / 8;
     /* 外层长度(1) + DQPN TLV + PREFIX TLV(type+len(mask bits)+prefix bytes) */
     return 1 + (1 + 1 + dq) + (1 + 1 + pfx);
@@ -46,11 +62,12 @@ static int encode_qp_nlri(uint8_t *buf, int buf_size, const bgp_nlri_entry_t *nl
     {
         return -1;
     }
-    int dq = nlri->qp.dqpn_len ? nlri->qp.dqpn_len : dqpn_bytes(nlri->qp.dqpn);
-    if (dq < 1 || dq > 3)
+    int dq_bits = nlri->qp.dqpn_len ? nlri->qp.dqpn_len : dqpn_wire_bits(nlri->qp.dqpn);
+    if (!dqpn_bits_valid(nlri->qp.dqpn, dq_bits))
     {
         return -1;
     }
+    int dq = dqpn_bytes_from_bits(dq_bits);
     uint8_t plen = nlri->qp.prefix.prefix_len;
     if (plen > 128)
     {
@@ -68,7 +85,7 @@ static int encode_qp_nlri(uint8_t *buf, int buf_size, const bgp_nlri_entry_t *nl
     buf[pos++] = (uint8_t)value_len;
 
     buf[pos++] = BGP_QP_TLV_DQPN;
-    buf[pos++] = (uint8_t)dq;
+    buf[pos++] = (uint8_t)dq_bits;
     for (int i = dq - 1; i >= 0; i--)
     {
         buf[pos++] = (uint8_t)((nlri->qp.dqpn >> (i * 8)) & 0xFFu);

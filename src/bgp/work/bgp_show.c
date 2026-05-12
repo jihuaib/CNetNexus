@@ -706,17 +706,17 @@ static void bgp_show_route_detail(GString *buf, const bgp_rthead_t *head)
     }
 }
 
-static uint8_t bgp_show_qp_dqpn_bytes(uint32_t dqpn)
+static uint8_t bgp_show_qp_dqpn_wire_bits(uint32_t dqpn)
 {
     if (dqpn <= 0xFFu)
     {
-        return 1;
+        return 8;
     }
     if (dqpn <= 0xFFFFu)
     {
-        return 2;
+        return 16;
     }
-    return 3;
+    return 24;
 }
 
 static gboolean bgp_show_parse_qp_query(const char *query, bgp_afi_t afi, bgp_nlri_entry_t *nlri, char *err,
@@ -852,7 +852,7 @@ static gboolean bgp_show_parse_qp_query(const char *query, bgp_afi_t afi, bgp_nl
     nlri->safi = BGP_SAFI_QP;
     nlri->type = BGP_NLRI_QP;
     nlri->qp.dqpn = (uint32_t)dqpn_ul;
-    nlri->qp.dqpn_len = bgp_show_qp_dqpn_bytes(nlri->qp.dqpn);
+    nlri->qp.dqpn_len = bgp_show_qp_dqpn_wire_bits(nlri->qp.dqpn);
     nlri->qp.prefix.addr = addr;
     nlri->qp.prefix.prefix_len = (uint8_t)mask_ul;
     return TRUE;

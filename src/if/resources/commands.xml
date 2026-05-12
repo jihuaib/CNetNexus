@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<configuration module-id="4">
+<configuration module-id="5">
     <views>
         <view view-name="if">
             <!-- {ctx:4} 由框架替换为 CLI_CTX_ID_IF_IDX 值（1=GE-1 ... 8=GE-8） -->
@@ -205,7 +205,7 @@
                 <element id="12" cfg-id="10" type="parameter">
                     <name>&lt;vrf-name&gt;</name> <!-- 12 -->
                     <description>VRF name</description>
-                    <type>dynamic(7:1,string(1-63))</type>
+                    <type>dynamic(4:1,string(1-63))</type>
                 </element>
             </elements>
             <commands>

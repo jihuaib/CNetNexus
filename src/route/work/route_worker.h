@@ -36,6 +36,8 @@ typedef enum route_worker_cmd_type
     ROUTE_WORKER_CMD_SHUTDOWN = 8,      /**< 停止 worker 线程循环 */
     ROUTE_WORKER_CMD_IF_EVENT = 9,      /**< IF 接口事件（UP/DOWN/ADDR_ADD/ADDR_DEL） */
     ROUTE_WORKER_CMD_FIB_ROUTE_RESULT = 10, /**< FIB route 下发结果事件 */
+    ROUTE_WORKER_CMD_VRF_EVENT = 11,        /**< VRF 事件：维护 worker 独占 VRF cache */
+    ROUTE_WORKER_CMD_VRF_QUERY = 12,        /**< VRF 查询：其他线程同步请求 worker 查询 */
 } route_worker_cmd_type_t;
 
 // ============================================================================
@@ -126,6 +128,26 @@ int route_worker_post_show_cli(dev_ipc_message_t *msg);
  * @return 0 成功，-1 失败
  */
 int route_worker_dispatch_apply(route_apply_cmd_t *apply);
+
+/**
+ * @brief 向 worker 同步投递 VRF 事件（msg 所有权转移）
+ *
+ * VRF 客户端缓存由 route worker 线程独占维护。IPC 线程收到 VRF_MSG_TYPE_EVENT 后
+ * 必须通过本接口让 worker 更新缓存。
+ *
+ * @param msg VRF 事件消息；所有权转移给 worker
+ * @return 0 成功，-1 失败
+ */
+int route_worker_dispatch_vrf_event(dev_ipc_message_t *msg);
+
+/**
+ * @brief 通过 worker 线程按 VRF 名称解析 vrf_id
+ *
+ * @param vrf_name VRF 名称；NULL/空/public 解析为默认 VRF
+ * @param vrf_id   输出 VRF ID
+ * @return ERRCODE_SUCCESS 成功，否则失败
+ */
+int route_worker_resolve_vrf_id_by_name(const char *vrf_name, uint32_t *vrf_id);
 
 /**
  * @brief 关闭 worker 线程并释放所有 worker 资源（含 rib / subscribers / batch_entries）

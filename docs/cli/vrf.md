@@ -1,6 +1,6 @@
 # VRF CLI Documentation
 
-This document describes the VRF management commands provided by the VRF module (module-id: 7).
+This document describes the VRF management commands provided by the VRF module (module-id: 4).
 
 ## 1. Configuration Commands (config view)
 

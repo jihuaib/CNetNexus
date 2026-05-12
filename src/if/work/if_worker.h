@@ -147,6 +147,14 @@ void if_worker_shutdown(void);
 int if_worker_post_ipc_message(dev_ipc_message_t *msg);
 
 /**
+ * @brief 向 worker 同步投递 VRF 事件（msg 所有权转移）
+ *
+ * VRF 客户端缓存由 IF worker 线程独占维护。IPC 线程收到 VRF_MSG_TYPE_EVENT 后
+ * 必须通过本接口让 worker 更新缓存，再执行依赖该缓存的恢复/挂起唤醒逻辑。
+ */
+int if_worker_dispatch_vrf_event(dev_ipc_message_t *msg);
+
+/**
  * @brief 向 worker 异步投递链路事件
  */
 int if_worker_post_link_event(uint16_t nlmsg_type, const char *physical_name, uint32_t ifindex, uint8_t link_up_known,
@@ -165,5 +173,10 @@ int if_worker_post_addr_event(uint16_t nlmsg_type, const char *physical_name, ui
  * @return ERRCODE_SUCCESS 表示已完成派发，实际应用结果见 apply->rc
  */
 int if_worker_dispatch_apply(if_apply_cmd_t *apply);
+
+/**
+ * @brief 通过 worker 线程按 VRF 名称解析 vrf_id
+ */
+int if_worker_resolve_vrf_id_by_name(const char *vrf_name, uint32_t *vrf_id);
 
 #endif /* IF_WORKER_H */

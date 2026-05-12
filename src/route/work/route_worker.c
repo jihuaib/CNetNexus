@@ -29,6 +29,7 @@
 #include "route_show.h"
 #include "route_static.h"
 #include "route_work.h"
+#include "vrf.h"
 
 /** worker epoll 单次最大事件数 */
 #define ROUTE_MAX_EPOLL_EVENTS 8
@@ -52,11 +53,13 @@ typedef struct route_worker_cmd
     route_worker_cmd_type_t type; /**< 命令类型 */
     dev_ipc_message_t *msg;       /**< 关联 IPC 消息（可为 NULL） */
     route_apply_cmd_t *apply;     /**< APPLY 命令参数（借用引用，不持有所有权） */
-    int waitable;                 /**< 是否需要同步等待结果（APPLY 命令为 1） */
-    pthread_mutex_t mutex;        /**< 同步等待互斥锁 */
-    pthread_cond_t cond;          /**< 同步等待条件变量 */
-    int done;                     /**< worker 是否已完成处理 */
-    int rc;                       /**< worker 处理结果 */
+    char vrf_name[VRF_NAME_MAX_LEN];
+    uint32_t *vrf_id_out;
+    int waitable;          /**< 是否需要同步等待结果（APPLY 命令为 1） */
+    pthread_mutex_t mutex; /**< 同步等待互斥锁 */
+    pthread_cond_t cond;   /**< 同步等待条件变量 */
+    int done;              /**< worker 是否已完成处理 */
+    int rc;                /**< worker 处理结果 */
 } route_worker_cmd_t;
 
 typedef enum route_worker_event_type
@@ -231,6 +234,29 @@ static int route_worker_post_calc_event(const route_head_key_t *key)
         return -1;
     }
     return 0;
+}
+
+static int worker_resolve_vrf_id_by_name(const char *vrf_name, uint32_t *vrf_id)
+{
+    if (!vrf_id)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    *vrf_id = ROUTE_VRF_DEFAULT;
+    if (!vrf_name || vrf_name[0] == '\0' || strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) == 0)
+    {
+        return ERRCODE_SUCCESS;
+    }
+
+    const vrf_api_cache_entry_t *vrf = vrf_api_cache_lookup_by_name(vrf_name);
+    if (!vrf)
+    {
+        return ERRCODE_DEP_MISSING;
+    }
+
+    *vrf_id = vrf->vrf_id;
+    return ERRCODE_SUCCESS;
 }
 
 // ============================================================================
@@ -554,6 +580,20 @@ static int worker_dispatch_cmd(route_worker_cmd_t *cmd)
             }
             break;
 
+        case ROUTE_WORKER_CMD_VRF_EVENT:
+            vrf_api_cache_on_event(cmd->msg);
+            if (cmd->msg)
+            {
+                dev_ipc_message_free(cmd->msg);
+                cmd->msg = NULL;
+            }
+            worker_cmd_complete(cmd, ERRCODE_SUCCESS);
+            return 0;
+
+        case ROUTE_WORKER_CMD_VRF_QUERY:
+            worker_cmd_complete(cmd, worker_resolve_vrf_id_by_name(cmd->vrf_name, cmd->vrf_id_out));
+            return 0;
+
         case ROUTE_WORKER_CMD_SHUTDOWN:
             if (cmd->msg)
             {
@@ -656,6 +696,7 @@ static void *route_worker_thread_fn(void *arg)
     (void)arg;
     pthread_setname_np(pthread_self(), "route-worker");
     log_set_tag("route");
+    vrf_api_cache_init();
 
     route_work_local_t *wl = g_route_work_local;
     struct epoll_event events[ROUTE_MAX_EPOLL_EVENTS];
@@ -705,6 +746,7 @@ static void *route_worker_thread_fn(void *arg)
 
 out:
     LOG_INFO("[route_worker] worker 线程退出");
+    vrf_api_cache_cleanup();
     return NULL;
 }
 
@@ -876,6 +918,60 @@ int route_worker_dispatch_apply(route_apply_cmd_t *apply)
     worker_cmd_wait(cmd);
     worker_cmd_destroy(cmd);
     return 0;
+}
+
+int route_worker_dispatch_vrf_event(dev_ipc_message_t *msg)
+{
+    if (!msg)
+    {
+        return -1;
+    }
+
+    route_worker_cmd_t *cmd = worker_cmd_create(ROUTE_WORKER_CMD_VRF_EVENT, msg, 1);
+    if (!cmd)
+    {
+        return -1;
+    }
+
+    if (worker_cmd_enqueue(cmd) != 0)
+    {
+        cmd->msg = NULL;
+        worker_cmd_destroy(cmd);
+        return -1;
+    }
+
+    int rc = worker_cmd_wait(cmd);
+    worker_cmd_destroy(cmd);
+    return rc;
+}
+
+int route_worker_resolve_vrf_id_by_name(const char *vrf_name, uint32_t *vrf_id)
+{
+    if (!vrf_id || !g_route_work_local || !g_route_work_local->running || g_route_work_local->thread == 0)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    route_worker_cmd_t *cmd = worker_cmd_create(ROUTE_WORKER_CMD_VRF_QUERY, NULL, 1);
+    if (!cmd)
+    {
+        return ERRCODE_FAIL;
+    }
+    if (vrf_name)
+    {
+        g_strlcpy(cmd->vrf_name, vrf_name, sizeof(cmd->vrf_name));
+    }
+    cmd->vrf_id_out = vrf_id;
+
+    if (worker_cmd_enqueue(cmd) != 0)
+    {
+        worker_cmd_destroy(cmd);
+        return ERRCODE_FAIL;
+    }
+
+    int rc = worker_cmd_wait(cmd);
+    worker_cmd_destroy(cmd);
+    return rc;
 }
 
 void route_worker_shutdown(void)

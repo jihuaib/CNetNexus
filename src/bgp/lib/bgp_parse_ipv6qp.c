@@ -1,7 +1,7 @@
 /**
  * @file   bgp_parse_ipv6qp.c
  * @brief  AFI=2 SAFI=253（IPv6 QP）NLRI 处理器
- *         变长 TLV 格式：长度(1B) + TLV1[type=1,len,dqpn] + TLV2[type=2,len=mask,prefix]
+ *         变长 TLV 格式：长度(1B) + TLV1[type=1,bit-len,dqpn] + TLV2[type=2,len=mask,prefix]
  * @author jhb
  * @date   2026/04/20
  */
@@ -49,18 +49,24 @@ static int parse_qp_entry(const uint8_t *data, uint16_t avail, bgp_nlri_entry_t 
 
         if (tlv_type == BGP_QP_TLV_DQPN)
         {
-            if (tlv_len < 1 || tlv_len > 3 || pos + tlv_len > end)
+            uint8_t dqpn_bits = tlv_len;
+            uint8_t dqpn_bytes = (uint8_t)((dqpn_bits + 7u) / 8u);
+            if (dqpn_bits < 1 || dqpn_bits > 24 || pos + dqpn_bytes > end)
             {
                 return -1;
             }
             uint32_t v = 0;
-            for (uint8_t i = 0; i < tlv_len; i++)
+            for (uint8_t i = 0; i < dqpn_bytes; i++)
             {
                 v = (v << 8) | data[pos + i];
             }
+            if (dqpn_bits < 24 && (v >> dqpn_bits) != 0)
+            {
+                return -1;
+            }
             e->qp.dqpn = v;
-            e->qp.dqpn_len = tlv_len;
-            pos += tlv_len;
+            e->qp.dqpn_len = dqpn_bits;
+            pos += dqpn_bytes;
             have_dqpn = true;
         }
         else if (tlv_type == BGP_QP_TLV_PREFIX)

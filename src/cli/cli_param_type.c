@@ -188,7 +188,7 @@ cli_param_type_t *cli_param_type_parse(const char *type_str)
         /* 解析可选的 "module_id:query_id," 前缀
          * 格式：dynamic(<module_id>:<query_id>,<inner_type>) — 跨模块查询
          *       dynamic(<inner_type>)                        — 同模块查询（向后兼容）
-         * 示例：dynamic(7:3,string(1-63)) 表示向模块 7 发 query_id=3 的 RPC */
+         * 示例：dynamic(4:3,string(1-63)) 表示向模块 4 发 query_id=3 的 RPC */
         uint32_t mod_id = 0;
         uint32_t qry_id = 0;
         const char *inner_str = range_str;

@@ -115,6 +115,8 @@ detect_github_repo() {
         GITHUB_REPO="${remote_url#https://github.com/}"
     elif [[ "$remote_url" == ssh://git@github.com/* ]]; then
         GITHUB_REPO="${remote_url#ssh://git@github.com/}"
+    elif [[ "$remote_url" =~ ^ssh://git@ssh\.github\.com(:[0-9]+)?/(.+)$ ]]; then
+        GITHUB_REPO="${BASH_REMATCH[2]}"
     else
         die "无法从 origin 识别 GitHub 仓库: ${remote_url}"
     fi

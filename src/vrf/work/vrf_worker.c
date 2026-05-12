@@ -28,7 +28,6 @@ typedef enum vrf_worker_cmd_type
 {
     VRF_WORKER_CMD_IPC_MSG = 1,
     VRF_WORKER_CMD_APPLY = 2,
-    VRF_WORKER_CMD_DB_RESTORE = 3,
     VRF_WORKER_CMD_SHUTDOWN = 4,
 } vrf_worker_cmd_type_t;
 
@@ -176,9 +175,6 @@ static void *worker_thread_fn(void *arg)
                 }
                 cmd_complete(c, ERRCODE_SUCCESS);
                 continue; /* waitable 由派发方回收 */
-            case VRF_WORKER_CMD_DB_RESTORE:
-                (void)vrf_db_load_snapshot();
-                break;
             case VRF_WORKER_CMD_SHUTDOWN:
                 g_vrf_work_local->running = 0;
                 break;
@@ -282,17 +278,6 @@ int vrf_worker_dispatch_apply(vrf_apply_cmd_t *apply)
     int rc = cmd_wait(c);
     cmd_destroy(c);
     return rc;
-}
-
-int vrf_worker_dispatch_db_restore(void)
-{
-    vrf_worker_cmd_t *c = cmd_create(VRF_WORKER_CMD_DB_RESTORE, 0);
-    if (cmd_enqueue(c) != ERRCODE_SUCCESS)
-    {
-        cmd_destroy(c);
-        return ERRCODE_FAIL;
-    }
-    return ERRCODE_SUCCESS;
 }
 
 dev_ipc_context_t *vrf_worker_ipc_ctx(void)

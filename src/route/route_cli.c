@@ -52,14 +52,7 @@ static int route_cli_resolve_vrf_id(const char *vrf_name, uint32_t *vrf_id)
         return ERRCODE_SUCCESS;
     }
 
-    const vrf_api_cache_entry_t *vrf = vrf_api_cache_lookup_by_name(vrf_name);
-    if (!vrf)
-    {
-        return ERRCODE_FAIL;
-    }
-
-    *vrf_id = vrf->vrf_id;
-    return ERRCODE_SUCCESS;
+    return route_worker_resolve_vrf_id_by_name(vrf_name, vrf_id);
 }
 
 // ============================================================================

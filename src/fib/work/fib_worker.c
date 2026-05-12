@@ -13,6 +13,7 @@
 #include "fib_show.h"
 #include "log.h"
 #include "mpls_config.h"
+#include "vrf.h"
 
 #define FIB_MAX_EPOLL_EVENTS 8
 
@@ -381,6 +382,9 @@ static int fib_worker_dispatch_cmd(fib_worker_cmd_t *cmd)
         case FIB_WORKER_CMD_SHOW_CLI:
             (void)fib_show_dispatch(cmd->msg);
             break;
+        case FIB_WORKER_CMD_VRF_EVENT:
+            vrf_api_cache_on_event(cmd->msg);
+            break;
         case FIB_WORKER_CMD_SHUTDOWN:
             g_fib_work_local->running = 0;
             stop = 1;
@@ -421,6 +425,7 @@ static void *fib_worker_thread_fn(void *arg)
     (void)arg;
     pthread_setname_np(pthread_self(), "fib-worker");
     log_set_tag("fib");
+    vrf_api_cache_init();
 
     struct epoll_event events[FIB_MAX_EPOLL_EVENTS];
     LOG_INFO("FIB: worker thread started");
@@ -447,6 +452,7 @@ static void *fib_worker_thread_fn(void *arg)
     }
 
     LOG_INFO("FIB: worker thread stopped");
+    vrf_api_cache_cleanup();
     return NULL;
 }
 

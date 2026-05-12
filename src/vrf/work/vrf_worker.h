@@ -58,11 +58,6 @@ int vrf_worker_post_ipc_message(dev_ipc_message_t *msg);
 int vrf_worker_dispatch_apply(vrf_apply_cmd_t *apply);
 
 /**
- * @brief 派发"DB 恢复"任务给 worker（用于 Phase3）
- */
-int vrf_worker_dispatch_db_restore(void);
-
-/**
  * @brief 给 pub 模块用的访问器
  */
 dev_ipc_context_t *vrf_worker_ipc_ctx(void);

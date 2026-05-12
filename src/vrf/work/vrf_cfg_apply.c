@@ -1,15 +1,17 @@
 /**
  * @file   vrf_cfg_apply.c
- * @brief  VRF 配置应用实现（worker 线程内：内存表 + DB + 事件）
+ * @brief  VRF 配置应用实现（worker 线程内：内存表 + OS + 事件，**不写 DB**）
  * @author jhb
  * @date   2026/05/02
+ *
+ * @note DB 持久化由 CLI 路径在 dispatch_apply 返回后处理；恢复路径已有 DB 数据，
+ *       直接 dispatch 即可，apply 函数对两种路径行为一致。
  */
 #include "vrf_cfg_apply.h"
 
 #include <string.h>
 
 #include "log.h"
-#include "vrf_db.h"
 #include "vrf_os.h"
 #include "vrf_pub.h"
 #include "vrf_table.h"
@@ -18,18 +20,20 @@
 static int apply_vrf_create(vrf_apply_cmd_t *cmd)
 {
     vrf_table_t *t = vrf_worker_table();
-    if (vrf_table_find_by_name(t, cmd->vrf_name))
+    vrf_entry_t *existing = vrf_table_find_by_name(t, cmd->vrf_name);
+    if (existing)
     {
+        cmd->vrf_id = existing->vrf_id;
+        cmd->l3vrf_table_id = existing->l3vrf_table_id;
         return 0; /* 幂等 */
     }
-    vrf_entry_t *e = vrf_table_create(t, cmd->vrf_name);
+
+    /* 恢复路径用 DB 里的 vrf_id/l3vrf_table_id；CLI 路径（vrf_id=0）让 table 自分配 */
+    vrf_entry_t *e = (cmd->vrf_id != 0) ? vrf_table_create_with_id(t, cmd->vrf_id, cmd->vrf_name, cmd->l3vrf_table_id)
+                                        : vrf_table_create(t, cmd->vrf_name);
     if (!e)
     {
         return -1;
-    }
-    if (vrf_db_insert_vrf(e->vrf_id, e->name, e->l3vrf_table_id) != 0)
-    {
-        LOG_WARN("VRF: DB insert failed for vrf=%s", e->name);
     }
 
     /* 下发 OS L3VRF 设备；公网 vrf_id=0 不进入此分支（CLI 已挡） */
@@ -45,6 +49,10 @@ static int apply_vrf_create(vrf_apply_cmd_t *cmd)
 
     vrf_pub_notify_vrf_add(e);
     vrf_pub_notify_vrf_state(e);
+
+    /* 回传给调用方做 DB 写 */
+    cmd->vrf_id = e->vrf_id;
+    cmd->l3vrf_table_id = e->l3vrf_table_id;
     return 0;
 }
 
@@ -65,8 +73,8 @@ static int apply_vrf_delete(vrf_apply_cmd_t *cmd)
     /* 先发事件，订阅者拿到 entry 上的 name/id */
     vrf_pub_notify_vrf_del(e);
 
-    (void)vrf_db_delete_vrf(vrf_id);
     (void)vrf_os_remove(e->name);
+    cmd->vrf_id = vrf_id; /* 回传给调用方做 DB 删除 */
     return vrf_table_delete(t, vrf_id);
 }
 
@@ -78,6 +86,7 @@ static int apply_af_create(vrf_apply_cmd_t *cmd)
     {
         return -1;
     }
+    cmd->vrf_id = e->vrf_id; /* 回传 */
     if (vrf_af_find(e, cmd->afi, cmd->safi))
     {
         return 0;
@@ -87,7 +96,6 @@ static int apply_af_create(vrf_apply_cmd_t *cmd)
     {
         return -1;
     }
-    (void)vrf_db_set_af_rd(e->vrf_id, cmd->afi, cmd->safi, NULL);
     vrf_pub_notify_af_enable(e, cmd->afi, cmd->safi);
     return 0;
 }
@@ -100,12 +108,12 @@ static int apply_af_delete(vrf_apply_cmd_t *cmd)
     {
         return -1;
     }
+    cmd->vrf_id = e->vrf_id; /* 回传 */
     if (!vrf_af_find(e, cmd->afi, cmd->safi))
     {
         return 0;
     }
     vrf_pub_notify_af_disable(e, cmd->afi, cmd->safi);
-    (void)vrf_db_delete_af(e->vrf_id, cmd->afi, cmd->safi);
     return vrf_af_delete(e, cmd->afi, cmd->safi);
 }
 
@@ -117,6 +125,7 @@ static int apply_rd_set(vrf_apply_cmd_t *cmd, int clear)
     {
         return -1;
     }
+    cmd->vrf_id = e->vrf_id; /* 回传 */
     vrf_af_state_t *af = vrf_af_get_or_create(e, cmd->afi, cmd->safi);
     if (!af)
     {
@@ -127,7 +136,6 @@ static int apply_rd_set(vrf_apply_cmd_t *cmd, int clear)
     {
         return -1;
     }
-    (void)vrf_db_set_af_rd(e->vrf_id, cmd->afi, cmd->safi, clear ? NULL : &cmd->rd);
     vrf_pub_notify_af_rd(e, af);
     return 0;
 }
@@ -138,7 +146,6 @@ static int apply_rt_modify_dir(vrf_entry_t *e, vrf_af_state_t *af, vrf_apply_cmd
     {
         return -1;
     }
-    (void)vrf_db_modify_rt(e->vrf_id, cmd->afi, cmd->safi, direction, cmd->add ? 1 : 0, &cmd->rt);
     if (direction == 0)
     {
         vrf_pub_notify_af_import_rt(e, af);
@@ -158,6 +165,7 @@ static int apply_rt_modify(vrf_apply_cmd_t *cmd)
     {
         return -1;
     }
+    cmd->vrf_id = e->vrf_id; /* 回传 */
     vrf_af_state_t *af = vrf_af_get_or_create(e, cmd->afi, cmd->safi);
     if (!af)
     {

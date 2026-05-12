@@ -343,8 +343,12 @@ void route_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             break;
 
         case VRF_MSG_TYPE_EVENT:
-            vrf_api_cache_on_event(msg);
-            break;
+            if (route_worker_dispatch_vrf_event(msg) != 0)
+            {
+                LOG_WARN("Route: failed to dispatch VRF_EVENT to worker");
+                dev_ipc_message_free(msg);
+            }
+            return;
 
         case VRF_MSG_TYPE_ACK:
             /* VRF 订阅应答，静默丢弃 */
@@ -374,7 +378,6 @@ int route_module_init(void)
 {
     log_set_tag("route");
     LOG_INFO("Module initialization");
-    vrf_api_cache_init();
 
     dev_ipc_context_t *ctx = dev_ipc_init(DEV_MODULE_ID_ROUTE, "route", DEV_MODULE_PORT_ROUTE, route_ipc_msg_handler);
     if (!ctx)
@@ -406,7 +409,6 @@ void route_module_cleanup(void)
 
     /* 再停止 route worker，触发 route_calc_cleanup 撤销 FIB 路由。 */
     route_worker_shutdown();
-    vrf_api_cache_cleanup();
 
     /* 先停止 IPC 线程，避免退出过程中继续接收业务消息。 */
     if (ctx)

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<configuration module-id="6">
+<configuration module-id="7">
     <!-- 视图定义 -->
     <views>
     </views>
@@ -66,7 +66,7 @@
                 </element>
                 <element id="12" cfg-id="10" type="parameter">
                     <name>&lt;ifname&gt;</name>
-                    <type>dynamic(4:1,string(1-31))</type>
+                    <type>dynamic(5:1,string(1-31))</type>
                     <description>Output interface name</description>
                 </element>
                 <element id="13" cfg-id="11" type="keyword">
@@ -75,7 +75,7 @@
                 </element>
                 <element id="14" cfg-id="12" type="parameter">
                     <name>&lt;vrf-name&gt;</name>
-                    <type>dynamic(7:1,string(1-63))</type>
+                    <type>dynamic(4:1,string(1-63))</type>
                     <description>VRF name</description>
                 </element>
             </elements>
@@ -276,7 +276,7 @@
                 </element>
                 <element id="17" cfg-id="16" type="parameter">
                     <name>&lt;vrf-name&gt;</name>
-                    <type>dynamic(7:1,string(1-63))</type>
+                    <type>dynamic(4:1,string(1-63))</type>
                     <description>VRF name</description>
                 </element>
             </elements>
@@ -490,7 +490,7 @@
                 </element>
                 <element id="7" cfg-id="4" type="parameter">
                     <name>&lt;vrf-name&gt;</name>
-                    <type>dynamic(7:1,string(1-63))</type>
+                    <type>dynamic(4:1,string(1-63))</type>
                     <description>VRF name</description>
                 </element>
             </elements>
@@ -549,7 +549,7 @@
                 </element>
                 <element id="9" cfg-id="6" type="parameter">
                     <name>&lt;vrf-name&gt;</name>
-                    <type>dynamic(7:1,string(1-63))</type>
+                    <type>dynamic(4:1,string(1-63))</type>
                     <description>VRF name</description>
                 </element>
             </elements>

@@ -14,6 +14,7 @@
 #include "if.h"
 #include "if_main.h"
 #include "log.h"
+#include "route.h"
 #include "vrf.h"
 #include "work/if_netlink.h"
 #include "work/if_worker.h"
@@ -91,6 +92,16 @@ static int if_db_apply_row(void *item, void *ctx)
     const if_db_row_snapshot_t *r = (const if_db_row_snapshot_t *)item;
     const char *name = r->name;
 
+    /* 依赖 VRF 时先通过 worker 查询其独占维护的 VRF cache，避免 IPC 线程跨线程读 cache。 */
+    uint32_t vrf_id = ROUTE_VRF_DEFAULT;
+    if (r->vrf_name[0] != '\0' && if_worker_resolve_vrf_id_by_name(r->vrf_name, &vrf_id) != ERRCODE_SUCCESS)
+    {
+        LOG_INFO("IF: %s waits on vrf '%s' (cache not yet synced), parked", name, r->vrf_name);
+        pending_park(g_if_local->pending, IF_DEP_VRF, g_str_hash(r->vrf_name), r, sizeof(*r), NULL, if_db_apply_row,
+                     NULL);
+        return PENDING_AGAIN;
+    }
+
     /* loop 接口创建恢复（无依赖，先做） */
     if (strncmp(name, "loop", 4) == 0 && name[4] >= '1' && name[4] <= '9')
     {
@@ -105,9 +116,8 @@ static int if_db_apply_row(void *item, void *ctx)
         }
     }
 
-    /* VRF 绑定：依赖 OS 中 VRF 设备存在。
-     * 若 worker 返回 DEP_MISSING，挂起整行等待 VRF_ADD 事件再重试——
-     * IP/shutdown 不能先下发，否则 VRF 后到时会清掉刚下发的地址。 */
+    /* VRF 绑定：cache 已 OK 也可能 kernel 设备尚未创建（极少见，软重启时通常残留）。
+     * worker 返回 DEP_MISSING 也挂起。 */
     if (r->vrf_name[0] != '\0')
     {
         if_apply_cmd_t apply;

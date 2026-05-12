@@ -26,6 +26,8 @@
 #include "if_show.h"
 #include "log.h"
 #include "path_utils.h"
+#include "route.h"
+#include "vrf.h"
 
 if_work_local_t *g_if_work_local = NULL;
 
@@ -39,6 +41,8 @@ typedef enum if_worker_cmd_type
     IF_WORKER_CMD_ADDR_EVENT = 3, /**< 地址监控事件 */
     IF_WORKER_CMD_SHUTDOWN = 4,   /**< 停止 worker 线程 */
     IF_WORKER_CMD_APPLY = 5,      /**< 配置应用命令（waitable） */
+    IF_WORKER_CMD_VRF_EVENT = 6,  /**< VRF 事件：维护 worker 独占 VRF cache */
+    IF_WORKER_CMD_VRF_QUERY = 7,  /**< VRF 查询：其他线程同步请求 worker 查询 */
 } if_worker_cmd_type_t;
 
 /**
@@ -51,6 +55,8 @@ typedef struct if_worker_cmd
     if_work_link_event_t link_evt; /**< 链路事件（LINK_EVENT 使用） */
     if_work_addr_event_t addr_evt; /**< 地址事件（ADDR_EVENT 使用） */
     if_apply_cmd_t *apply;         /**< 应用命令（APPLY 使用，借用引用） */
+    char vrf_name[IF_VRF_NAME_MAX];
+    uint32_t *vrf_id_out;
 
     int waitable;
     pthread_mutex_t mutex;
@@ -156,6 +162,29 @@ static int worker_apply_cmd(if_apply_cmd_t *apply)
     }
 }
 
+static int worker_resolve_vrf_id_by_name(const char *vrf_name, uint32_t *vrf_id)
+{
+    if (!vrf_id)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    *vrf_id = ROUTE_VRF_DEFAULT;
+    if (!vrf_name || vrf_name[0] == '\0' || strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) == 0)
+    {
+        return ERRCODE_SUCCESS;
+    }
+
+    const vrf_api_cache_entry_t *vrf = vrf_api_cache_lookup_by_name(vrf_name);
+    if (!vrf)
+    {
+        return ERRCODE_DEP_MISSING;
+    }
+
+    *vrf_id = vrf->vrf_id;
+    return ERRCODE_SUCCESS;
+}
+
 static uint32_t worker_if_type_to_mask(if_type_t type)
 {
     switch (type)
@@ -225,6 +254,7 @@ static void *if_worker_thread_fn(void *arg)
     (void)arg;
     pthread_setname_np(pthread_self(), "if-worker");
     log_set_tag("if");
+    vrf_api_cache_init();
 
     while (g_if_work_local && g_if_work_local->running)
     {
@@ -262,6 +292,17 @@ static void *if_worker_thread_fn(void *arg)
                 /* waitable 命令由派发方在 worker_cmd_wait 返回后释放 */
                 continue;
 
+            case IF_WORKER_CMD_VRF_EVENT:
+                vrf_api_cache_on_event(cmd->msg);
+                dev_ipc_message_free(cmd->msg);
+                cmd->msg = NULL;
+                worker_cmd_complete(cmd, ERRCODE_SUCCESS);
+                continue;
+
+            case IF_WORKER_CMD_VRF_QUERY:
+                worker_cmd_complete(cmd, worker_resolve_vrf_id_by_name(cmd->vrf_name, cmd->vrf_id_out));
+                continue;
+
             default:
                 LOG_WARN("IF-WORKER: unknown cmd type=%d", (int)cmd->type);
                 if (cmd->msg)
@@ -274,6 +315,8 @@ static void *if_worker_thread_fn(void *arg)
 
         worker_cmd_destroy(cmd);
     }
+
+    vrf_api_cache_cleanup();
 
     return NULL;
 }
@@ -388,6 +431,31 @@ int if_worker_post_ipc_message(dev_ipc_message_t *msg)
     return ERRCODE_SUCCESS;
 }
 
+int if_worker_dispatch_vrf_event(dev_ipc_message_t *msg)
+{
+    if (!msg)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    if_worker_cmd_t *cmd = worker_cmd_create(IF_WORKER_CMD_VRF_EVENT, msg, 1);
+    if (!cmd)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    if (worker_cmd_enqueue(cmd) != ERRCODE_SUCCESS)
+    {
+        cmd->msg = NULL;
+        worker_cmd_destroy(cmd);
+        return ERRCODE_FAIL;
+    }
+
+    int rc = worker_cmd_wait(cmd);
+    worker_cmd_destroy(cmd);
+    return rc;
+}
+
 int if_worker_dispatch_apply(if_apply_cmd_t *apply)
 {
     if (!apply)
@@ -401,6 +469,35 @@ int if_worker_dispatch_apply(if_apply_cmd_t *apply)
         return ERRCODE_FAIL;
     }
     cmd->apply = apply;
+
+    if (worker_cmd_enqueue(cmd) != ERRCODE_SUCCESS)
+    {
+        worker_cmd_destroy(cmd);
+        return ERRCODE_FAIL;
+    }
+
+    int rc = worker_cmd_wait(cmd);
+    worker_cmd_destroy(cmd);
+    return rc;
+}
+
+int if_worker_resolve_vrf_id_by_name(const char *vrf_name, uint32_t *vrf_id)
+{
+    if (!vrf_id)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    if_worker_cmd_t *cmd = worker_cmd_create(IF_WORKER_CMD_VRF_QUERY, NULL, 1);
+    if (!cmd)
+    {
+        return ERRCODE_FAIL;
+    }
+    if (vrf_name)
+    {
+        g_strlcpy(cmd->vrf_name, vrf_name, sizeof(cmd->vrf_name));
+    }
+    cmd->vrf_id_out = vrf_id;
 
     if (worker_cmd_enqueue(cmd) != ERRCODE_SUCCESS)
     {
@@ -497,6 +594,11 @@ void if_worker_shutdown(void)
         while ((cmd = (if_worker_cmd_t *)g_async_queue_try_pop(g_if_work_local->cmd_queue)) != NULL)
         {
             if (cmd->msg)
+            {
+                dev_ipc_message_free(cmd->msg);
+                cmd->msg = NULL;
+            }
+            if (cmd->type == IF_WORKER_CMD_VRF_EVENT && cmd->msg)
             {
                 dev_ipc_message_free(cmd->msg);
                 cmd->msg = NULL;

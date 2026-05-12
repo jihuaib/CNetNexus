@@ -24,14 +24,14 @@
 #define DEV_MODULE_ID_DB 0x00000002
 /** CFG 模块 */
 #define DEV_MODULE_ID_CLI 0x00000003
-/** IF 接口模块 */
-#define DEV_MODULE_ID_IF 0x00000004
-/** BGP 模块 */
-#define DEV_MODULE_ID_BGP 0x00000005
-/** Route 模块 */
-#define DEV_MODULE_ID_ROUTE 0x00000006
 /** VRF 模块 */
-#define DEV_MODULE_ID_VRF 0x00000007
+#define DEV_MODULE_ID_VRF 0x00000004
+/** IF 接口模块 */
+#define DEV_MODULE_ID_IF 0x00000005
+/** BGP 模块 */
+#define DEV_MODULE_ID_BGP 0x00000006
+/** Route 模块 */
+#define DEV_MODULE_ID_ROUTE 0x00000007
 /** SBMP（BMP Server）模块 */
 #define DEV_MODULE_ID_SBMP 0x00000008
 /** ISIS 模块 */

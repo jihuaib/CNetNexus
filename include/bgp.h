@@ -410,12 +410,12 @@ typedef struct bgp_nlri_flowspec
 /**
  * @brief QP NLRI（SAFI=253）
  *
- * 线上格式：长度(1) | TLV1=dqpn(type 1 + len + dqpn 1-3B) | TLV2=prefix(type 2 + mask + prefix)
+ * 线上格式：长度(1) | TLV1=dqpn(type 1 + bit-len + dqpn 1-3B) | TLV2=prefix(type 2 + mask + prefix)
  */
 typedef struct bgp_nlri_qp
 {
     uint32_t dqpn;       /**< Destination QP Number（主机字节序，<= 0xFFFFFF） */
-    uint8_t dqpn_len;    /**< dqpn 编码字节数 1~3 */
+    uint8_t dqpn_len;    /**< dqpn 编码 bit 数 1~24 */
     net_prefix_t prefix; /**< IP 前缀（v4/v6 由 AFI 决定） */
 } bgp_nlri_qp_t;
 

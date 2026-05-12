@@ -916,19 +916,19 @@ void bgp_cfg_apply_ebgp_multihop(bgp_apply_cmd_t *apply)
  * ========================================================================== */
 
 /**
- * @brief 计算 DQPN 编码所需字节数（1~3 字节）
+ * @brief 计算 DQPN 线上长度 bit 数（8/16/24）
  */
-static uint8_t qp_dqpn_bytes(uint32_t dqpn)
+static uint8_t qp_dqpn_wire_bits(uint32_t dqpn)
 {
     if (dqpn <= 0xFFU)
     {
-        return 1u;
+        return 8u;
     }
     if (dqpn <= 0xFFFFU)
     {
-        return 2u;
+        return 16u;
     }
-    return 3u;
+    return 24u;
 }
 
 /**
@@ -941,7 +941,7 @@ static void qp_build_nlri(bgp_nlri_entry_t *nlri, bgp_afi_t afi, uint32_t dqpn, 
     nlri->safi = BGP_SAFI_QP;
     nlri->type = BGP_NLRI_QP;
     nlri->qp.dqpn = dqpn;
-    nlri->qp.dqpn_len = qp_dqpn_bytes(dqpn);
+    nlri->qp.dqpn_len = qp_dqpn_wire_bits(dqpn);
     nlri->qp.prefix.prefix_len = mask_len;
     nlri->qp.prefix.addr = *ip;
 }

@@ -71,9 +71,9 @@ static void on_ready(dev_ipc_message_t *msg)
     {
         LOG_WARN("VRF: db init failed");
     }
-    else
+    else if (vrf_db_load_snapshot() != 0)
     {
-        (void)vrf_worker_dispatch_db_restore();
+        LOG_WARN("VRF: db_load_snapshot failed");
     }
     send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }

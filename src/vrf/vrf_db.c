@@ -12,9 +12,7 @@
 #include "errcode.h"
 #include "log.h"
 #include "vrf_main.h"
-#include "work/vrf_os.h"
-#include "work/vrf_pub.h"
-#include "work/vrf_table.h"
+#include "work/vrf_cfg_apply.h"
 #include "work/vrf_worker.h"
 
 // ============================================================================
@@ -245,22 +243,101 @@ int vrf_db_modify_rt(uint32_t vrf_id, uint16_t afi, uint8_t safi, int direction,
 }
 
 // ============================================================================
-// 快照装载（worker 线程调用）
+// 快照装载（IPC 线程调用）
+//
+// 与其他模块（IF/BGP/ROUTE 等）一致：IPC 线程读 DB，每行通过 dispatch_apply
+// 同步派发到 worker 完成内存/OS/事件下发；apply 函数通过 from_restore=1 跳过
+// 回写 DB（避免对刚读出的数据重复写）。
 // ============================================================================
+
+static int dispatch_vrf_create(uint32_t vrf_id, const char *name, uint32_t table_id)
+{
+    vrf_apply_cmd_t cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.op = VRF_APPLY_OP_VRF_CREATE;
+    cmd.vrf_id = vrf_id; /* 非零 → worker 用此 id 建条目（而非自分配） */
+    cmd.l3vrf_table_id = table_id;
+    g_strlcpy(cmd.vrf_name, name, sizeof(cmd.vrf_name));
+    (void)vrf_worker_dispatch_apply(&cmd);
+    return cmd.rc;
+}
+
+static int dispatch_af_create(const char *vrf_name, uint16_t afi, uint8_t safi)
+{
+    vrf_apply_cmd_t cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.op = VRF_APPLY_OP_AF_CREATE;
+    cmd.afi = afi;
+    cmd.safi = safi;
+    g_strlcpy(cmd.vrf_name, vrf_name, sizeof(cmd.vrf_name));
+    (void)vrf_worker_dispatch_apply(&cmd);
+    return cmd.rc;
+}
+
+static int dispatch_rd_set(const char *vrf_name, uint16_t afi, uint8_t safi, const vrf_rd_t *rd)
+{
+    vrf_apply_cmd_t cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.op = VRF_APPLY_OP_RD_SET;
+    cmd.afi = afi;
+    cmd.safi = safi;
+    cmd.rd = *rd;
+    g_strlcpy(cmd.vrf_name, vrf_name, sizeof(cmd.vrf_name));
+    (void)vrf_worker_dispatch_apply(&cmd);
+    return cmd.rc;
+}
+
+static int dispatch_rt_add(const char *vrf_name, uint16_t afi, uint8_t safi, int direction, const vrf_rt_t *rt)
+{
+    vrf_apply_cmd_t cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.op = VRF_APPLY_OP_RT_MODIFY;
+    cmd.afi = afi;
+    cmd.safi = safi;
+    cmd.direction = (uint8_t)direction;
+    cmd.add = 1;
+    cmd.rt = *rt;
+    g_strlcpy(cmd.vrf_name, vrf_name, sizeof(cmd.vrf_name));
+    (void)vrf_worker_dispatch_apply(&cmd);
+    return cmd.rc;
+}
+
+/* 查表用：从 vrf_id 反查 vrf_name；DB 里 AF/RT 行用 vrf_id 关联实例，
+ * 而 apply 命令用 vrf_name 定位，所以 IPC 线程内先把 instance 表缓存一份 (id→name)。 */
+typedef struct
+{
+    uint32_t vrf_id;
+    char name[VRF_NAME_MAX_LEN];
+} vrf_id_name_t;
+
+static const char *find_name_by_id(GArray *id_names, uint32_t vrf_id)
+{
+    for (guint i = 0; i < id_names->len; i++)
+    {
+        const vrf_id_name_t *e = &g_array_index(id_names, vrf_id_name_t, i);
+        if (e->vrf_id == vrf_id)
+        {
+            return e->name;
+        }
+    }
+    return NULL;
+}
 
 int vrf_db_load_snapshot(void)
 {
     dev_ipc_context_t *ctx = vrf_local_ipc_ctx();
-    vrf_table_t *t = vrf_worker_table();
-    if (!ctx || !t)
+    if (!ctx)
     {
         return -1;
     }
 
-    /* VRF 实例 */
+    GArray *id_names = g_array_new(FALSE, FALSE, sizeof(vrf_id_name_t));
+
+    /* VRF 实例：每行派发 VRF_CREATE 给 worker（worker 内 vrf_os_install + notify） */
     db_result_t *res = NULL;
     if (db_rpc_query(ctx, VRF_TABLE_INSTANCE, NULL, 0, NULL, &res) != ERRCODE_SUCCESS)
     {
+        g_array_free(id_names, TRUE);
         return -1;
     }
     if (res)
@@ -271,34 +348,25 @@ int vrf_db_load_snapshot(void)
             uint32_t vrf_id = (uint32_t)db_row_get_int(row, "vrf_id", 0);
             const char *name = db_row_get_text(row, "name", NULL);
             uint32_t table_id = (uint32_t)db_row_get_int(row, "l3vrf_table_id", 0);
-            if (!name)
+            if (!name || vrf_id == VRF_PUBLIC_VRF_ID)
             {
-                continue;
+                continue; /* 公网 VRF 由 worker 启动时就建好，无需恢复 */
             }
-            vrf_entry_t *e = vrf_table_create_with_id(t, vrf_id, name, table_id);
-            if (!e)
-            {
-                continue;
-            }
-            if (vrf_id != VRF_PUBLIC_VRF_ID)
-            {
-                if (vrf_os_install(e->name, e->l3vrf_table_id) == 0)
-                {
-                    e->os_state = VRF_OS_STATE_UP;
-                }
-                else
-                {
-                    e->os_state = VRF_OS_STATE_DOWN;
-                }
-            }
+            vrf_id_name_t entry;
+            entry.vrf_id = vrf_id;
+            g_strlcpy(entry.name, name, sizeof(entry.name));
+            g_array_append_val(id_names, entry);
+
+            (void)dispatch_vrf_create(vrf_id, name, table_id);
         }
         db_result_free(res);
         res = NULL;
     }
 
-    /* AF + RD */
+    /* AF（含 RD）：每行派发 AF_CREATE，has_rd=1 时追加 RD_SET */
     if (db_rpc_query(ctx, VRF_TABLE_AF, NULL, 0, NULL, &res) != ERRCODE_SUCCESS)
     {
+        g_array_free(id_names, TRUE);
         return -1;
     }
     if (res)
@@ -311,20 +379,18 @@ int vrf_db_load_snapshot(void)
             uint8_t safi = (uint8_t)db_row_get_int(row, "safi", 0);
             int has_rd = (int)db_row_get_int(row, "has_rd", 0);
             const char *rd_hex = db_row_get_text(row, "rd", NULL);
-
-            vrf_entry_t *e = vrf_table_find_by_id(t, vrf_id);
-            if (!e)
+            const char *vrf_name = find_name_by_id(id_names, vrf_id);
+            if (!vrf_name)
             {
                 continue;
             }
-            vrf_af_state_t *af = vrf_af_get_or_create(e, afi, safi);
-            if (af && has_rd && rd_hex)
+            (void)dispatch_af_create(vrf_name, afi, safi);
+            if (has_rd && rd_hex)
             {
                 vrf_rd_t rd;
                 if (parse_hex16_bytes(rd_hex, rd.bytes) == 0)
                 {
-                    af->has_rd = 1;
-                    af->rd = rd;
+                    (void)dispatch_rd_set(vrf_name, afi, safi, &rd);
                 }
             }
         }
@@ -332,9 +398,10 @@ int vrf_db_load_snapshot(void)
         res = NULL;
     }
 
-    /* RT */
+    /* RT：每行派发 RT_MODIFY(add=1) */
     if (db_rpc_query(ctx, VRF_TABLE_RT, NULL, 0, NULL, &res) != ERRCODE_SUCCESS)
     {
+        g_array_free(id_names, TRUE);
         return -1;
     }
     if (res)
@@ -347,14 +414,8 @@ int vrf_db_load_snapshot(void)
             uint8_t safi = (uint8_t)db_row_get_int(row, "safi", 0);
             int direction = (int)db_row_get_int(row, "direction", 0);
             const char *hex = db_row_get_text(row, "rt", NULL);
-
-            vrf_entry_t *e = vrf_table_find_by_id(t, vrf_id);
-            if (!e || !hex)
-            {
-                continue;
-            }
-            vrf_af_state_t *af = vrf_af_get_or_create(e, afi, safi);
-            if (!af)
+            const char *vrf_name = find_name_by_id(id_names, vrf_id);
+            if (!vrf_name || !hex)
             {
                 continue;
             }
@@ -363,9 +424,11 @@ int vrf_db_load_snapshot(void)
             {
                 continue;
             }
-            (void)vrf_af_modify_rt(af, direction, 1, &rt);
+            (void)dispatch_rt_add(vrf_name, afi, safi, direction, &rt);
         }
         db_result_free(res);
     }
+
+    g_array_free(id_names, TRUE);
     return 0;
 }

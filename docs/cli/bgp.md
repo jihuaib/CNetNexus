@@ -1,6 +1,6 @@
 # BGP CLI Documentation
 
-This document describes the BGP-related commands available in NetNexus.
+This document describes the BGP-related commands provided by the BGP module (module-id: 6).
 
 ## 1. Configuration Commands (config view)
 

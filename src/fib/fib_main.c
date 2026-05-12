@@ -143,8 +143,8 @@ void fib_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             post_or_free(FIB_WORKER_CMD_ILM_DELETE, msg);
             return;
         case VRF_MSG_TYPE_EVENT:
-            vrf_api_cache_on_event(msg);
-            break;
+            post_or_free(FIB_WORKER_CMD_VRF_EVENT, msg);
+            return;
         case VRF_MSG_TYPE_ACK:
             break;
         default:
@@ -159,7 +159,6 @@ int fib_module_init(void)
 {
     log_set_tag("fib");
     LOG_INFO("Module initialization");
-    vrf_api_cache_init();
 
     dev_ipc_context_t *ctx = dev_ipc_init(DEV_MODULE_ID_FIB, "fib", DEV_MODULE_PORT_FIB, fib_ipc_msg_handler);
     if (!ctx)
@@ -188,7 +187,6 @@ void fib_module_cleanup(void)
     }
 
     fib_worker_shutdown();
-    vrf_api_cache_cleanup();
     if (ctx)
     {
         dev_ipc_destroy(ctx);

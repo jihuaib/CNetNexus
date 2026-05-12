@@ -1,6 +1,6 @@
 # Interface CLI Documentation
 
-This document describes the interface management commands provided by the IF module (module-id: 4).
+This document describes the interface management commands provided by the IF module (module-id: 5).
 
 ## 1. Interface Entry Commands (config view)
 

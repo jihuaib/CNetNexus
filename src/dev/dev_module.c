@@ -63,6 +63,22 @@ static void ensure_registry_initialized(void)
     }
 }
 
+static gint module_conf_id_compare(gconstpointer a, gconstpointer b)
+{
+    const dev_module_conf_t *conf_a = (const dev_module_conf_t *)a;
+    const dev_module_conf_t *conf_b = (const dev_module_conf_t *)b;
+
+    if (conf_a->module_id < conf_b->module_id)
+    {
+        return -1;
+    }
+    if (conf_a->module_id > conf_b->module_id)
+    {
+        return 1;
+    }
+    return 0;
+}
+
 // ============================================================================
 // 辅助函数
 // ============================================================================
@@ -169,6 +185,12 @@ static int dev_scan_dir_for_modules(const char *base_dir)
 
     int loaded = 0;
     struct dirent *entry;
+    GArray *module_confs = g_array_new(FALSE, FALSE, sizeof(dev_module_conf_t));
+    if (!module_confs)
+    {
+        closedir(dir);
+        return 0;
+    }
 
     while ((entry = readdir(dir)) != NULL)
     {
@@ -219,32 +241,42 @@ static int dev_scan_dir_for_modules(const char *base_dir)
         }
 
         LOG_INFO("Found module: %s (id=%u, exe=%s)", conf.name, conf.module_id, conf.exe_name);
+        g_array_append_val(module_confs, conf);
+    }
+
+    closedir(dir);
+
+    g_array_sort(module_confs, module_conf_id_compare);
+
+    for (guint i = 0; i < module_confs->len; i++)
+    {
+        dev_module_conf_t *conf = &g_array_index(module_confs, dev_module_conf_t, i);
 
         /* fork+exec 启动模块子进程 */
-        pid_t child_pid = dev_spawn_module(conf.exe_name, conf.name);
+        pid_t child_pid = dev_spawn_module(conf->exe_name, conf->name);
         if (child_pid < 0)
         {
-            LOG_ERROR("Failed to start module %s", conf.name);
+            LOG_ERROR("Failed to start module %s", conf->name);
             continue;
         }
 
         /* 创建模块并添加到注册表 */
-        dev_module_t *module = dev_add_module_to_registry(conf.module_id, conf.name);
+        dev_module_t *module = dev_add_module_to_registry(conf->module_id, conf->name);
         if (!module)
         {
-            LOG_ERROR("Module %s registration failed", conf.name);
+            LOG_ERROR("Module %s registration failed", conf->name);
             kill(child_pid, SIGKILL);
             continue;
         }
 
         module->child_pid = child_pid;
-        module->port = conf.port;
+        module->port = conf->port;
 
         loaded++;
-        LOG_INFO("Module %s started (pid=%d)", conf.name, child_pid);
+        LOG_INFO("Module %s started (pid=%d)", conf->name, child_pid);
     }
 
-    closedir(dir);
+    g_array_free(module_confs, TRUE);
     return loaded;
 }
 

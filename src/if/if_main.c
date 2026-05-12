@@ -7,6 +7,7 @@
 #include "if_main.h"
 
 #include <glib.h>
+#include <stddef.h>
 #include <stdlib.h>
 
 #include "cli.h"
@@ -22,17 +23,6 @@
 #include "work/if_worker.h"
 
 if_local_t *g_if_local = NULL;
-static dev_ipc_message_t *g_if_ready_pending_msg = NULL;
-
-static int vrf_ack_result(const dev_ipc_message_t *msg)
-{
-    if (!msg || !msg->payload || msg->payload_len < sizeof(vrf_msg_ack_t))
-    {
-        return ERRCODE_FAIL;
-    }
-    const vrf_msg_ack_t *ack = (const vrf_msg_ack_t *)msg->payload;
-    return ack->result;
-}
 
 // ============================================================================
 // 三阶段回调辅助
@@ -119,17 +109,19 @@ static void if_on_ready(dev_ipc_message_t *msg)
     if (vrf_api_subscribe_all(ctx) != ERRCODE_SUCCESS)
     {
         LOG_WARN("IF: failed to subscribe to VRF events via vrf_api");
-        if (if_db_restore() != ERRCODE_SUCCESS)
-        {
-            LOG_WARN("IF database restore failed");
-        }
-        LOG_INFO("IF module ready");
-        send_phase_response(ctx, msg, ERRCODE_SUCCESS);
-        return;
+    }
+    else
+    {
+        LOG_INFO("IF: subscribed to VRF events via vrf_api");
     }
 
-    g_if_ready_pending_msg = msg;
-    LOG_INFO("IF: subscribed to VRF events via vrf_api; waiting for replay ACK before DB restore");
+    if (if_db_restore() != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("IF database restore failed");
+    }
+
+    LOG_INFO("IF module ready");
+    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
 // ============================================================================
@@ -170,45 +162,39 @@ void if_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             return;
 
         case VRF_MSG_TYPE_EVENT:
-            vrf_api_cache_on_event(msg);
-            /* VRF 事件到达后，唤醒等待该 VRF 出现的挂起项 */
-            if (msg->payload && msg->payload_len >= sizeof(vrf_event_msg_t))
+        {
+            /* VRF 事件到达后，唤醒等待该 VRF 出现的挂起项。
+             * 用 offsetof(rts) 而非 sizeof(vrf_event_msg_t)——后者多算了末尾变长数组的一个元素，
+             * 对 rt_count=0 的 ADD/STATE/AF_ENABLE 事件会误判为载荷不足。 */
+            char vrf_name[VRF_NAME_MAX_LEN] = "";
+            uint32_t vrf_event = 0;
+            if (msg->payload && msg->payload_len >= offsetof(vrf_event_msg_t, rts))
             {
                 const vrf_event_msg_t *evt = (const vrf_event_msg_t *)msg->payload;
-                if (evt->event == VRF_EVENT_VRF_ADD && evt->name[0] != '\0')
+                vrf_event = evt->event;
+                g_strlcpy(vrf_name, evt->name, sizeof(vrf_name));
+            }
+            if (if_worker_dispatch_vrf_event(msg) != ERRCODE_SUCCESS)
+            {
+                LOG_WARN("IF: failed to dispatch VRF event to worker");
+                dev_ipc_message_free(msg);
+                return;
+            }
+            if (vrf_name[0] != '\0')
+            {
+                if (vrf_event == VRF_EVENT_VRF_ADD)
                 {
-                    pending_resolve(g_if_local->pending, IF_DEP_VRF, g_str_hash(evt->name));
+                    pending_resolve(g_if_local->pending, IF_DEP_VRF, g_str_hash(vrf_name));
                 }
-                else if (evt->event == VRF_EVENT_VRF_DEL && evt->name[0] != '\0')
+                else if (vrf_event == VRF_EVENT_VRF_DEL)
                 {
-                    pending_invalidate(g_if_local->pending, IF_DEP_VRF, g_str_hash(evt->name));
+                    pending_invalidate(g_if_local->pending, IF_DEP_VRF, g_str_hash(vrf_name));
                 }
             }
-            dev_ipc_message_free(msg);
             return;
+        }
 
         case VRF_MSG_TYPE_ACK:
-            if (g_if_ready_pending_msg)
-            {
-                if (vrf_ack_result(msg) != ERRCODE_SUCCESS)
-                {
-                    LOG_WARN("IF: VRF subscription ACK failed; restoring IF DB with current VRF cache");
-                }
-                else
-                {
-                    LOG_INFO("IF: VRF replay ACK received; restoring IF database");
-                }
-
-                if (if_db_restore() != ERRCODE_SUCCESS)
-                {
-                    LOG_WARN("IF database restore failed");
-                }
-
-                dev_ipc_message_t *ready_msg = g_if_ready_pending_msg;
-                g_if_ready_pending_msg = NULL;
-                LOG_INFO("IF module ready");
-                send_phase_response(ctx, ready_msg, ERRCODE_SUCCESS);
-            }
             dev_ipc_message_free(msg);
             return;
 
@@ -263,7 +249,6 @@ int if_module_init(void)
 {
     log_set_tag("if");
     LOG_INFO("Module initialization");
-    vrf_api_cache_init();
 
     dev_ipc_context_t *ctx = dev_ipc_init(DEV_MODULE_ID_IF, "if", DEV_MODULE_PORT_IF, if_msg_handler);
     if (!ctx)
@@ -289,7 +274,6 @@ void if_module_cleanup(void)
 {
     if_link_monitor_stop();
     if_worker_shutdown();
-    vrf_api_cache_cleanup();
 
     if (!g_if_local)
     {

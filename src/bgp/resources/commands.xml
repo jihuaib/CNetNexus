@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<configuration module-id="5">
+<configuration module-id="6">
     <!-- View definitions -->
     <views>
         <view view-name="bgp">
@@ -436,7 +436,7 @@
                 </element>
                 <element id="6" cfg-id="3" type="parameter">
                     <name>&lt;if-name&gt;</name>
-                    <type>dynamic(4:1,string(1-31))</type>
+                    <type>dynamic(5:1,string(1-31))</type>
                     <description>Source interface name (dynamic candidates from IF module)</description>
                 </element>
             </elements>

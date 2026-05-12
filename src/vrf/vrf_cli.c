@@ -14,7 +14,9 @@
 
 #include "cli.h"
 #include "errcode.h"
+#include "log.h"
 #include "vrf.h"
+#include "vrf_db.h"
 #include "vrf_main.h"
 #include "work/vrf_cfg_apply.h"
 #include "work/vrf_worker.h"
@@ -289,6 +291,18 @@ static int handle_create(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         send_resp(msg, is_no ? "VRF Error: Delete failed\r\n" : "VRF Error: Create failed\r\n");
         return ERRCODE_FAIL;
     }
+    /* worker 把分配/查到的 vrf_id 回传到 cmd.vrf_id，这里负责持久化到 DB */
+    if (is_no)
+    {
+        (void)vrf_db_delete_vrf(cmd.vrf_id);
+    }
+    else
+    {
+        if (vrf_db_insert_vrf(cmd.vrf_id, cmd.vrf_name, cmd.l3vrf_table_id) != 0)
+        {
+            LOG_WARN("VRF: DB insert failed for vrf=%s", cmd.vrf_name);
+        }
+    }
     send_resp(msg, "");
     return ERRCODE_SUCCESS;
 }
@@ -364,6 +378,14 @@ static int handle_af(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         send_resp(msg, is_no ? "" : "VRF Error: AF create failed\r\n");
         return is_no ? ERRCODE_SUCCESS : ERRCODE_FAIL;
     }
+    if (is_no)
+    {
+        (void)vrf_db_delete_af(cmd.vrf_id, cmd.afi, cmd.safi);
+    }
+    else
+    {
+        (void)vrf_db_set_af_rd(cmd.vrf_id, cmd.afi, cmd.safi, NULL);
+    }
     send_resp(msg, "");
     return ERRCODE_SUCCESS;
 }
@@ -415,6 +437,7 @@ static int handle_rd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         send_resp(msg, "VRF Error: RD apply failed\r\n");
         return ERRCODE_FAIL;
     }
+    (void)vrf_db_set_af_rd(cmd.vrf_id, cmd.afi, cmd.safi, is_no ? NULL : &cmd.rd);
     send_resp(msg, "");
     return ERRCODE_SUCCESS;
 }
@@ -460,6 +483,15 @@ static int handle_rt(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     {
         send_resp(msg, "VRF Error: RT apply failed\r\n");
         return ERRCODE_FAIL;
+    }
+    /* both 方向写两次 */
+    if (cmd.direction == 0 || cmd.direction == 2)
+    {
+        (void)vrf_db_modify_rt(cmd.vrf_id, cmd.afi, cmd.safi, 0, cmd.add ? 1 : 0, &cmd.rt);
+    }
+    if (cmd.direction == 1 || cmd.direction == 2)
+    {
+        (void)vrf_db_modify_rt(cmd.vrf_id, cmd.afi, cmd.safi, 1, cmd.add ? 1 : 0, &cmd.rt);
     }
     send_resp(msg, "");
     return ERRCODE_SUCCESS;

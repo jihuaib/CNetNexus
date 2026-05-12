@@ -56,7 +56,7 @@
                 </element>
                 <element id="12" cfg-id="10" type="parameter">
                     <name>&lt;vrf-name&gt;</name>
-                    <type>dynamic(7:1,string(1-63))</type>
+                    <type>dynamic(4:1,string(1-63))</type>
                     <description>VRF name</description>
                 </element>
             </elements>
