@@ -15,6 +15,7 @@ import ipaddress
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -36,6 +37,14 @@ except ImportError:
 PROMPT_RE = re.compile(br"<[A-Za-z0-9_.-]+(?:\([^>]*\))?>")
 IF_RE = re.compile(r"^GE-(\d+)$")
 PAGER_DISABLE_CMD = "terminal length 0"
+CORE_DIR_ENV = "NN_CORE_DIR"
+
+
+def get_core_dump_dir() -> str | None:
+    core_dir = os.environ.get(CORE_DIR_ENV, "").strip()
+    return core_dir or None
+
+
 def _strip_command_echo(text: str, command: str) -> str:
     """从 telnet 响应中剥离首个出现的命令回显行，保留实际输出。"""
     if not command:
@@ -554,6 +563,12 @@ class TopologyRuntime:
         return self.cli_publish_ports.get(device)
 
     def _start_netnexus_process(self, container_name: str) -> None:
+        core_dir = get_core_dump_dir()
+        core_setup = ""
+        if core_dir:
+            quoted_core_dir = shlex.quote(core_dir)
+            core_setup = f"mkdir -p {quoted_core_dir} && chmod 1777 {quoted_core_dir} 2>/dev/null || true; "
+
         run_cmd(
             [
                 "docker",
@@ -563,6 +578,8 @@ class TopologyRuntime:
                 "/bin/bash",
                 "-lc",
                 (
+                    "ulimit -c unlimited || true; "
+                    f"{core_setup}"
                     "mkdir -p /opt/netnexus/log /opt/netnexus/log/asan /opt/netnexus/data && "
                     "export NN_WORK_DIR=/opt/netnexus && "
                     "export LD_LIBRARY_PATH=/opt/netnexus/lib:${LD_LIBRARY_PATH} && "
@@ -714,6 +731,9 @@ class TopologyRuntime:
                 "-v",
                 "/var/run/docker.sock:/var/run/docker.sock",
             ]
+            core_dir = get_core_dump_dir()
+            if core_dir:
+                docker_run_cmd.extend(["--ulimit", "core=-1", "-v", f"{core_dir}:{core_dir}"])
             if dev in self.cli_publish_ports:
                 docker_run_cmd.extend(["-p", f"{self.cli_publish_ports[dev]}:3788"])
             docker_run_cmd.extend([self.image, "sleep", "infinity"])

@@ -15,6 +15,7 @@ import io
 import json
 import os
 import re
+import shutil
 import shlex
 import subprocess
 import sys
@@ -56,6 +57,7 @@ WARN_STEP_HINTS = (
     "疑似未清理本次脚本配置",
     "config drift",
 )
+CORE_DIR_ENV = "NN_CORE_DIR"
 TIMESTAMP_FMT = "%Y-%m-%dT%H:%M:%S.%fZ"
 MODULE_ROW_RE = re.compile(
     r"^\s*(?P<id>\d+)\s+(?P<name>[A-Za-z0-9_-]+)\s+(?P<phase>[A-Za-z0-9_-]+)\s+(?P<port>\d+)\s+(?P<ipc>[A-Za-z0-9_-]+)\s*$"
@@ -157,6 +159,71 @@ def make_case_artifact_token(case_dir: Path) -> str:
 
 def make_script_log_token(index: int, script: Path) -> str:
     return f"{index:02d}-{sanitize_name(script.stem)}"
+
+
+def get_core_dump_dir() -> Path | None:
+    raw = os.environ.get(CORE_DIR_ENV, "").strip()
+    return Path(raw) if raw else None
+
+
+def unique_dest_path(dest_dir: Path, name: str) -> Path:
+    dest = dest_dir / name
+    if not dest.exists():
+        return dest
+
+    stem = dest.stem
+    suffix = dest.suffix
+    for idx in range(1, 1000):
+        candidate = dest_dir / f"{stem}.{idx}{suffix}"
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError(f"too many duplicate core dump names under {dest_dir}")
+
+
+def copy_and_remove_core_file(src: Path, dest: Path) -> None:
+    try:
+        shutil.copy2(src, dest)
+        src.unlink()
+        return
+    except PermissionError:
+        pass
+
+    subprocess.run(["sudo", "cp", "-a", "--", str(src), str(dest)], check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["sudo", "chown", f"{os.getuid()}:{os.getgid()}", "--", str(dest)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    subprocess.run(["sudo", "rm", "-f", "--", str(src)], check=True, text=True, capture_output=True)
+
+
+def collect_core_dumps(dest_dir: Path) -> list[Path]:
+    core_dir = get_core_dump_dir()
+    if core_dir is None or not core_dir.is_dir():
+        return []
+
+    core_files = sorted(path for path in core_dir.iterdir() if path.is_file() and path.name.startswith("core."))
+    if not core_files:
+        return []
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    collected: list[Path] = []
+    errors: list[str] = []
+    for src in core_files:
+        dest = unique_dest_path(dest_dir, src.name)
+        try:
+            copy_and_remove_core_file(src, dest)
+            collected.append(dest)
+        except Exception as exc:
+            errors.append(f"{src}: {exc}")
+
+    if errors:
+        err_path = unique_dest_path(dest_dir, "core-collector.err")
+        err_path.write_text("\n".join(errors) + "\n", encoding="utf-8")
+        collected.append(err_path)
+
+    return collected
 
 
 def find_top_file(case_dir: Path) -> Path | None:
@@ -639,6 +706,7 @@ def run_case(
     verbose: bool,
     keep: bool,
     container_logs_dir: Path,
+    core_dumps_dir: Path,
     scripts_override: list[Path] | None = None,
 ) -> list[CheckResult]:
     scripts = sorted(scripts_override) if scripts_override is not None else discover_case_scripts(case_dir)
@@ -697,9 +765,13 @@ def run_case(
             rt.start(configure_interfaces=True)
         startup_stdout = startup_out_buf.getvalue()
         startup_stderr = startup_err_buf.getvalue()
+        startup_cores = collect_core_dumps(core_dumps_dir / make_case_artifact_token(case_dir) / "startup")
+        if startup_cores:
+            print(f"Collected startup core dumps for case '{case_dir.name}' -> {core_dumps_dir} ({len(startup_cores)} files)")
 
         for idx, script in enumerate(scripts, start=1):
             module_logs_cleared = False
+            script_token = make_script_log_token(idx, script)
             result = run_check(script, rt, top)
             if idx == 1:
                 prefix_parts: list[str] = []
@@ -713,7 +785,13 @@ def run_case(
             if result.returncode != 0:
                 case_failed = True
             try:
-                script_token = make_script_log_token(idx, script)
+                script_cores = collect_core_dumps(core_dumps_dir / make_case_artifact_token(case_dir) / script_token)
+                if script_cores:
+                    print(
+                        f"Collected core dumps for '{script.name}' -> {core_dumps_dir} "
+                        f"({len(script_cores)} files)"
+                    )
+
                 exported = export_case_container_logs(
                     rt,
                     case_dir,
@@ -750,6 +828,9 @@ def run_case(
 
     except Exception as exc:
         case_failed = True
+        startup_cores = collect_core_dumps(core_dumps_dir / make_case_artifact_token(case_dir) / "startup")
+        if startup_cores:
+            print(f"Collected startup core dumps for case '{case_dir.name}' -> {core_dumps_dir} ({len(startup_cores)} files)")
         err = f"case startup/runtime failed for {case_dir}: {exc}\n{traceback.format_exc()}"
         print(err, file=sys.stderr)
         executed = {r.script for r in results}
@@ -772,6 +853,12 @@ def run_case(
             except Exception as log_exc:
                 print(f"WARNING: failed to export container logs for case '{case_dir}': {log_exc}", file=sys.stderr)
             rt.close(failed=case_failed)
+            teardown_cores = collect_core_dumps(core_dumps_dir / make_case_artifact_token(case_dir) / "teardown")
+            if teardown_cores:
+                print(
+                    f"Collected teardown core dumps for case '{case_dir.name}' -> {core_dumps_dir} "
+                    f"({len(teardown_cores)} files)"
+                )
         print(f"===== END CASE: {case_dir} =====")
 
     return results
@@ -2147,6 +2234,7 @@ def main() -> int:
             verbose=args.verbose_modules,
             keep=args.keep,
             container_logs_dir=report_dir / "containers",
+            core_dumps_dir=report_dir / "core-dumps",
             scripts_override=selected_by_case.get(case_dir),
         )
         results.extend(case_results)

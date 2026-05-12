@@ -56,13 +56,78 @@ jobs:
             grep -E "^${mod}\\s" /proc/modules
           done
 
-      - name: Run All CI Modules And Generate Report
+      - name: Enable core dumps
         run: |
+          set -e
+          sudo mkdir -p /var/lib/netnexus-cores
+          sudo chmod 1777 /var/lib/netnexus-cores
+          sudo sysctl -w kernel.core_pattern=/var/lib/netnexus-cores/core.%e.%p.%t
+          sudo sysctl -w kernel.core_uses_pid=0
+          cat /proc/sys/kernel/core_pattern
+
+      - name: Run All CI Modules And Generate Report
+        env:
+          NN_CORE_DIR: /var/lib/netnexus-cores
+        run: |
+          ulimit -c unlimited
           scripts/ci/run_all.sh \
             --image "netnexus-ci:${{ github.sha }}" \
             --report-dir "scripts/ci/reports" \
+            --debug \
             --cmd-timeout 30 \
             --connect-timeout 90
+
+      - name: Collect Debug Symbols
+        if: always()
+        run: |
+          set -e
+          mkdir -p scripts/ci/reports/debug-build
+          if docker image inspect "netnexus-ci:${{ github.sha }}" >/dev/null 2>&1; then
+            docker run --rm \
+              -v "$PWD/scripts/ci/reports/debug-build:/out" \
+              "netnexus-ci:${{ github.sha }}" \
+              /bin/bash -lc 'cp -a /opt/netnexus/bin /out/ && cp -a /opt/netnexus/lib /out/'
+            find scripts/ci/reports/debug-build -maxdepth 2 -type f -ls
+          else
+            echo "Debug image netnexus-ci:${{ github.sha }} not found; skip symbol collection"
+          fi
+
+      - name: Generate Core Backtraces
+        if: always()
+        run: |
+          set -e
+          if ! docker image inspect "netnexus-ci:${{ github.sha }}" >/dev/null 2>&1; then
+            echo "Debug image netnexus-ci:${{ github.sha }} not found; skip core backtraces"
+            exit 0
+          fi
+          if ! find scripts/ci/reports/core-dumps -type f -name 'core.*' ! -name '*.gdb.txt' -print -quit 2>/dev/null | grep -q .; then
+            echo "No core dumps found; skip core backtraces"
+            exit 0
+          fi
+          docker run --rm \
+            -v "$PWD:/build:ro" \
+            -v "$PWD/scripts/ci/reports:/reports" \
+            "netnexus-ci:${{ github.sha }}" \
+            /bin/bash -lc '
+              set -e
+              while IFS= read -r core; do
+                out="${core}.gdb.txt"
+                {
+                  echo "core: ${core}"
+                  echo "binary: /opt/netnexus/bin/netnexus"
+                  echo
+                  gdb -batch \
+                    -ex "set pagination off" \
+                    -ex "set confirm off" \
+                    -ex "set solib-search-path /opt/netnexus/lib" \
+                    -ex "info files" \
+                    -ex "info sharedlibrary" \
+                    -ex "thread apply all bt full" \
+                    /opt/netnexus/bin/netnexus "${core}"
+                } > "${out}" 2>&1 || true
+                echo "Wrote ${out}"
+              done < <(find /reports/core-dumps -type f -name "core.*" ! -name "*.gdb.txt" | sort)
+            '
 
       - name: Publish CI Summary
         if: always()
@@ -108,7 +173,9 @@ jobs:
 
           lines.append(
               "Download artifact `topology-module-report-<run_id>` for full `report.html`, "
-              "`summary.json`, `logs/*.log`, and `containers/*/*/modules/*.log`."
+              "`summary.json`, `logs/*.log`, `containers/*/*/modules/*.log`, and any "
+              "`core-dumps/<case>/<script>/core.*` files. CI-generated x86 backtraces are "
+              "`core.*.gdb.txt`; debug binaries are under `debug-build/bin` and `debug-build/lib`."
           )
           lines.append("")
 
