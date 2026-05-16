@@ -58,12 +58,13 @@ typedef enum bgp_timer_type
  */
 typedef struct bgp_msg_rx_stats
 {
-    uint32_t open;         /**< 收到 OPEN 报文个数 */
-    uint32_t update;       /**< 收到 UPDATE 报文个数 */
-    uint32_t notification; /**< 收到 NOTIFICATION 报文个数 */
-    uint32_t keepalive;    /**< 收到 KEEPALIVE 报文个数 */
-    uint32_t unknown;      /**< 收到未知/非法类型报文个数 */
-    uint32_t total;        /**< 收到 BGP 报文总个数（所有类型之和） */
+    uint32_t open;          /**< 收到 OPEN 报文个数 */
+    uint32_t update;        /**< 收到 UPDATE 报文个数 */
+    uint32_t notification;  /**< 收到 NOTIFICATION 报文个数 */
+    uint32_t keepalive;     /**< 收到 KEEPALIVE 报文个数 */
+    uint32_t route_refresh; /**< 收到 ROUTE-REFRESH 报文个数（RFC 2918） */
+    uint32_t unknown;       /**< 收到未知/非法类型报文个数 */
+    uint32_t total;         /**< 收到 BGP 报文总个数（所有类型之和） */
 } bgp_msg_rx_stats_t;
 
 /**
@@ -74,11 +75,12 @@ typedef struct bgp_msg_rx_stats
  */
 typedef struct bgp_msg_tx_stats
 {
-    uint32_t open;         /**< 发出 OPEN 报文个数 */
-    uint32_t update;       /**< 发出 UPDATE 报文个数 */
-    uint32_t notification; /**< 发出 NOTIFICATION 报文个数 */
-    uint32_t keepalive;    /**< 发出 KEEPALIVE 报文个数 */
-    uint32_t total;        /**< 发出 BGP 报文总个数（所有类型之和） */
+    uint32_t open;          /**< 发出 OPEN 报文个数 */
+    uint32_t update;        /**< 发出 UPDATE 报文个数 */
+    uint32_t notification;  /**< 发出 NOTIFICATION 报文个数 */
+    uint32_t keepalive;     /**< 发出 KEEPALIVE 报文个数 */
+    uint32_t route_refresh; /**< 发出 ROUTE-REFRESH 报文个数（RFC 2918） */
+    uint32_t total;         /**< 发出 BGP 报文总个数（所有类型之和） */
 } bgp_msg_tx_stats_t;
 
 /**

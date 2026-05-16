@@ -76,4 +76,19 @@ void bgp_cfg_apply_qp_route(bgp_apply_cmd_t *apply);
  */
 void bgp_cfg_apply_route_select(bgp_apply_cmd_t *apply);
 
+/**
+ * @brief 应用 refresh bgp 命令：import 向对端发 ROUTE-REFRESH，export 本端重发 Adj-RIB-Out
+ */
+void bgp_cfg_apply_refresh(bgp_apply_cmd_t *apply);
+
+/**
+ * @brief 应用 reflector cluster-id / no reflector cluster-id（RFC 4456）
+ */
+void bgp_cfg_apply_cluster_id(bgp_apply_cmd_t *apply);
+
+/**
+ * @brief 应用 neighbor reflect-client / no neighbor reflect-client（AF 视图）
+ */
+void bgp_cfg_apply_reflect_client(bgp_apply_cmd_t *apply);
+
 #endif /* BGP_CFG_APPLY_H */

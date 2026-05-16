@@ -194,6 +194,80 @@ void bgp_worker_ingest_peer_update(bgp_session_t *session, const bgp_update_resu
         return;
     }
 
+    /* RFC 4456 §7：iBGP 收到的 reach 路由若 ORIGINATOR_ID == 本端 router-id，
+     * 或 CLUSTER_LIST 已含本端 cluster-id，视为反射环路。
+     * 处理方式：把这批 reach NLRI 拼到 unreach 数组里走标准撤销链——
+     * 若 RIB 中已存在历史副本（如本端 cluster-id 刚变更前接收的）会被正常撤销，
+     * 新条目则相当于 no-op（unreach 未命中），无需额外回扫机制。 */
+    if (upd->reach_len > 0 && session->sess_type == BGP_SESS_TYPE_IBGP && session->vrf)
+    {
+        bool drop = false;
+        const bgp_vrf_t *vrf = session->vrf;
+        uint32_t local_rid = vrf->router_id;
+        /* cluster-id 是 per-AF 的，按 UPDATE 的 (afi, safi) 找对应 instance */
+        bgp_instance_t *inst = (bgp_instance_t *)g_hash_table_lookup(
+            vrf->inst_hash, bgp_inst_hash_key((bgp_afi_t)upd->afi, (bgp_safi_t)upd->safi));
+        uint32_t local_cid = bgp_inst_effective_cluster_id(inst);
+
+        if (upd->attr.has_originator_id && upd->attr.originator_id.family == AF_INET && local_rid != 0)
+        {
+            uint32_t orig = ntohl(upd->attr.originator_id.u.v4.s_addr);
+            if (orig == local_rid)
+            {
+                drop = true;
+            }
+        }
+        if (!drop && local_cid != 0)
+        {
+            for (uint8_t i = 0; i < upd->attr.cluster_list_len; i++)
+            {
+                if (upd->attr.cluster_list[i].family != AF_INET)
+                {
+                    continue;
+                }
+                uint32_t cid = ntohl(upd->attr.cluster_list[i].u.v4.s_addr);
+                if (cid == local_cid)
+                {
+                    drop = true;
+                    break;
+                }
+            }
+        }
+        if (drop)
+        {
+            char peer[64];
+            net_addr_to_str(&session->neighbor_addr, peer, sizeof(peer));
+            LOG_WARN("BGP: UPDATE from %s reach RR-loop, treating as withdraw (count=%u)", peer, upd->reach_len);
+
+            uint32_t total = upd->unreach_len + upd->reach_len;
+            bgp_nlri_entry_t *merged = g_malloc_n(total, sizeof(*merged));
+            if (upd->unreach_len > 0)
+            {
+                memcpy(merged, upd->unreach, upd->unreach_len * sizeof(*merged));
+            }
+            if (upd->reach_len > 0)
+            {
+                memcpy(merged + upd->unreach_len, upd->reach, upd->reach_len * sizeof(*merged));
+            }
+
+            bgp_update_result_t filtered = *upd;
+            filtered.reach = NULL;
+            filtered.reach_len = 0;
+            filtered.unreach = merged;
+            filtered.unreach_len = total;
+
+            bgp_peer_update_ingest_stats_t relay_stats = {0};
+            bgp_relay_ingest_peer_update(session, &filtered, &relay_stats);
+            relay_stats.reach_failed += upd->reach_len;
+            g_free(merged);
+            if (stats)
+            {
+                *stats = relay_stats;
+            }
+            return;
+        }
+    }
+
     bgp_relay_ingest_peer_update(session, upd, stats);
 }
 

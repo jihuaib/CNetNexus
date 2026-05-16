@@ -48,11 +48,14 @@ typedef struct ldp_peer
      * 端 reject。这里把 transport 地址和首次 adjacency 时间缓存下来，由 tick
      * 在延迟（LDP_INIT_CONNECT_DELAY_MS）后才真正 connect_active。*/
     uint32_t peer_transport_v4;   /**< adjacency 通告的对端 transport 地址（host order） */
+    uint32_t self_transport_v4;   /**< 本端用于该 adjacency 的 transport 地址（host order） */
+    uint32_t peer_link_addr_v4;   /**< adjacency 中 hello 包源 IP（对端直连接口, host order） */
     uint64_t adj_first_seen_msec; /**< 第一次为这个 peer 学到 adjacency 的时间 */
 } ldp_peer_t;
 
 /* 由 discovery 在邻接出现/消失时调用 */
-void ldp_session_on_adjacency_up(uint32_t peer_lsr_id, uint16_t peer_label_space, uint32_t peer_transport_v4);
+void ldp_session_on_adjacency_up(uint32_t peer_lsr_id, uint16_t peer_label_space, uint32_t peer_transport_v4,
+                                 uint32_t self_transport_v4, uint32_t peer_link_addr_v4);
 void ldp_session_on_adjacency_down(uint32_t peer_lsr_id, uint16_t peer_label_space);
 
 /* 工作线程内部入口 */

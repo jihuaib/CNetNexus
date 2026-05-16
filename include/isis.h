@@ -40,4 +40,13 @@
 /** ISIS 接口默认非 passive */
 #define ISIS_DEFAULT_IF_PASSIVE 0u
 
+/** ISIS cost-style: narrow (RFC 1195, TLV 2/128, 6-bit metric) */
+#define ISIS_COST_STYLE_NARROW 1u
+/** ISIS cost-style: wide (RFC 5305/5308, TLV 22/135/236, 24/32-bit metric) */
+#define ISIS_COST_STYLE_WIDE 2u
+/** ISIS cost-style 默认值 */
+#define ISIS_DEFAULT_COST_STYLE ISIS_COST_STYLE_NARROW
+/** narrow metric 上限（6 bits） */
+#define ISIS_NARROW_MAX_METRIC 63u
+
 #endif /* ISIS_H */

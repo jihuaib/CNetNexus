@@ -492,6 +492,43 @@ static void send_keepalive(ldp_peer_t *p)
     (void)peer_send_buf(p, buf, (size_t)n);
 }
 
+static void send_notification(ldp_peer_t *p, uint32_t status_code, int fatal, uint32_t ref_msg_id,
+                              uint16_t ref_msg_type)
+{
+    if (!p || !g_ldp_work_local || p->fd < 0)
+    {
+        return;
+    }
+    uint8_t buf[64];
+    int n = ldp_pkt_encode_notification(g_ldp_work_local->proto.lsr_id, 0u, ++p->next_msg_id, status_code, fatal,
+                                        ref_msg_id, ref_msg_type, buf, sizeof(buf));
+    if (n <= 0)
+    {
+        return;
+    }
+    ssize_t s = send(p->fd, buf, (size_t)n, MSG_NOSIGNAL);
+    if (s > 0)
+    {
+        p->last_tx_msec = now_msec();
+    }
+}
+
+static void send_label_release(ldp_peer_t *p, uint32_t prefix, uint8_t prefix_len)
+{
+    if (!p || !g_ldp_work_local)
+    {
+        return;
+    }
+    uint8_t buf[64];
+    int n = ldp_pkt_encode_label_release(g_ldp_work_local->proto.lsr_id, 0u, ++p->next_msg_id, prefix, prefix_len, 0u,
+                                         0, buf, sizeof(buf));
+    if (n <= 0)
+    {
+        return;
+    }
+    (void)peer_send_buf(p, buf, (size_t)n);
+}
+
 static int connect_active(ldp_peer_t *p, uint32_t peer_transport_v4)
 {
     if (!p)
@@ -548,13 +585,20 @@ static int connect_active(ldp_peer_t *p, uint32_t peer_transport_v4)
     return 0;
 }
 
-void ldp_session_on_adjacency_up(uint32_t peer_lsr, uint16_t peer_space, uint32_t peer_xport)
+void ldp_session_on_adjacency_up(uint32_t peer_lsr, uint16_t peer_space, uint32_t peer_xport, uint32_t self_xport,
+                                 uint32_t peer_link_addr)
 {
     if (!g_ldp_work_local || g_ldp_work_local->proto.lsr_id == 0u)
     {
         return;
     }
-    int active = (g_ldp_work_local->proto.lsr_id > peer_lsr) ? 1 : 0;
+    uint32_t local_xport = self_xport ? self_xport : g_ldp_work_local->proto.lsr_id;
+    uint32_t remote_xport = peer_xport ? peer_xport : peer_link_addr;
+    if (remote_xport == 0u)
+    {
+        remote_xport = peer_lsr;
+    }
+    int active = (local_xport > remote_xport) ? 1 : 0;
     ldp_peer_t *p = ldp_session_lookup(peer_lsr, peer_space);
     if (!p)
     {
@@ -565,14 +609,16 @@ void ldp_session_on_adjacency_up(uint32_t peer_lsr, uint16_t peer_space, uint32_
         }
     }
     p->is_active = active ? 1u : 0u;
-    p->peer_transport_v4 = peer_xport;
+    p->peer_transport_v4 = remote_xport;
+    p->self_transport_v4 = local_xport;
+    p->peer_link_addr_v4 = peer_link_addr;
     if (p->adj_first_seen_msec == 0u)
     {
         p->adj_first_seen_msec = now_msec();
     }
     /* 邻接到来时刷新 pending accept：对端可能已经先发了 SYN 但 R1 当时没认出来；
      * 现在 transport 已知，可以把 pending fd 接管到 peer。*/
-    ldp_session_pending_promote_for_transport(peer_xport);
+    ldp_session_pending_promote_for_transport(p->peer_transport_v4);
 }
 
 void ldp_session_on_adjacency_down(uint32_t peer_lsr, uint16_t peer_space)
@@ -755,11 +801,13 @@ static int peer_process_pdu(ldp_peer_t *p, const uint8_t *pdu_buf, size_t pdu_bu
     ldp_pdu_hdr_t pdu;
     if (ldp_pkt_parse_pdu_hdr(pdu_buf, pdu_buf_len, &pdu) != 0)
     {
+        send_notification(p, LDP_STATUS_BAD_PDU_LENGTH, 1, 0u, 0u);
         return -1;
     }
     /* 主动方：第一帧到达时校验 LSR-ID 与预期匹配 */
     if (p->peer_lsr_id != pdu.lsr_id || p->peer_label_space != pdu.label_space)
     {
+        send_notification(p, LDP_STATUS_BAD_LDP_IDENTIFIER, 1, 0u, 0u);
         return -1;
     }
 
@@ -775,6 +823,7 @@ static int peer_process_pdu(ldp_peer_t *p, const uint8_t *pdu_buf, size_t pdu_bu
         ldp_msg_hdr_t mh;
         if (ldp_pkt_parse_msg_hdr(pdu_buf + pos, end - pos, &mh) != 0)
         {
+            send_notification(p, LDP_STATUS_BAD_MESSAGE_LENGTH, 1, 0u, 0u);
             return -1;
         }
         const uint8_t *body = pdu_buf + pos + LDP_MSG_HEADER_SIZE;
@@ -787,6 +836,22 @@ static int peer_process_pdu(ldp_peer_t *p, const uint8_t *pdu_buf, size_t pdu_bu
                 ldp_init_info_t info;
                 if (ldp_pkt_parse_init(body, body_len, &info) != 0)
                 {
+                    send_notification(p, LDP_STATUS_MISSING_MESSAGE_PARAMETERS, 0, mh.msg_id, mh.msg_type);
+                    return -1;
+                }
+                if (info.protocol_version != LDP_VERSION)
+                {
+                    send_notification(p, LDP_STATUS_BAD_PROTOCOL_VERSION, 1, mh.msg_id, mh.msg_type);
+                    return -1;
+                }
+                if (info.recv_lsr_id != g_ldp_work_local->proto.lsr_id || info.recv_label_space != 0u)
+                {
+                    send_notification(p, LDP_STATUS_BAD_LDP_IDENTIFIER, 1, mh.msg_id, mh.msg_type);
+                    return -1;
+                }
+                if (info.keepalive_time_sec == 0u)
+                {
+                    send_notification(p, LDP_STATUS_SESSION_REJECTED_BAD_KEEPALIVE_TIME, 1, mh.msg_id, mh.msg_type);
                     return -1;
                 }
                 p->peer_keepalive_ms = (uint32_t)info.keepalive_time_sec * 1000u;
@@ -820,7 +885,7 @@ static int peer_process_pdu(ldp_peer_t *p, const uint8_t *pdu_buf, size_t pdu_bu
                 break;
             case LDP_MSG_TYPE_NOTIFICATION:
                 ldp_session_close(p, "peer notification");
-                return -1;
+                return (int)end;
             case LDP_MSG_TYPE_ADDRESS:
             case LDP_MSG_TYPE_ADDRESS_WITHDRAW:
             {
@@ -861,7 +926,6 @@ static int peer_process_pdu(ldp_peer_t *p, const uint8_t *pdu_buf, size_t pdu_bu
                 break;
             }
             case LDP_MSG_TYPE_LABEL_WITHDRAW:
-            case LDP_MSG_TYPE_LABEL_RELEASE:
             {
                 if (p->state != LDP_PEER_OPERATIONAL)
                 {
@@ -875,10 +939,17 @@ static int peer_process_pdu(ldp_peer_t *p, const uint8_t *pdu_buf, size_t pdu_bu
                     ldp_fec_t fec = {.prefix = prefix, .prefix_len = plen};
                     ldp_route_sync_on_remote_label_withdraw(p->peer_lsr_id, p->peer_label_space, &fec);
                     ldp_lib_del_remote(p->peer_lsr_id, p->peer_label_space, &fec);
+                    send_label_release(p, prefix, plen);
                 }
                 break;
             }
+            case LDP_MSG_TYPE_LABEL_RELEASE:
+                break;
             default:
+                if (!mh.u_bit)
+                {
+                    send_notification(p, LDP_STATUS_UNKNOWN_MESSAGE_TYPE, 0, mh.msg_id, mh.msg_type);
+                }
                 break;
         }
 
@@ -942,6 +1013,10 @@ static void peer_drain_rx(ldp_peer_t *p)
         if (consumed < 0)
         {
             ldp_session_close(p, "pdu processing failed");
+            return;
+        }
+        if (p->fd < 0)
+        {
             return;
         }
         memmove(p->rx_buf, p->rx_buf + consumed, p->rx_len - (size_t)consumed);
@@ -1059,10 +1134,10 @@ void ldp_session_tick(void)
             {
                 send_keepalive(p);
             }
-            uint32_t hold = ka * 3u; /* 按 RFC 推荐 KA timeout = 3*KA */
-            if (p->last_rx_msec != 0u && (now - p->last_rx_msec) > hold)
+            if (p->last_rx_msec != 0u && (now - p->last_rx_msec) > ka)
             {
                 LOG_INFO("LDP: session %u keepalive timeout", p->peer_lsr_id);
+                send_notification(p, LDP_STATUS_KEEPALIVE_TIMER_EXPIRED, 1, 0u, 0u);
                 ldp_session_close(p, "keepalive timeout");
                 to_remove = g_list_prepend(to_remove, key);
             }

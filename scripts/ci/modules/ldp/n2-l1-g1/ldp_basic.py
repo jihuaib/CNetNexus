@@ -309,10 +309,11 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             interval=3,
         )
 
-        step("Best-effort: TUNNEL candidate registered when peer LSR-ID == route nexthop")
-        # 路由的 nexthop 对应 GE-1 上对端的 IP（10.12.0.x），不等于 LSR-ID，所以 M5 简化匹配规则下
-        # candidate 可能不会注册。这里仅做存在性弱校验，不强制——失败不算用例失败。
-        # 当 nexthop 与某 peer 的 LSR-ID 重合时，期望出现 'src ldp' 行。
+        step("Best-effort: TUNNEL candidate registration (M6 matching)")
+        # M6 把 peer↔nexthop 匹配扩展为 lsr_id / transport_v4 / link_addr_v4 三选一。
+        # 但本用例没有 IGP，r1 不会学到去 r2 loopback (/32) 的路由——M6 限制只
+        # 为 /32 host route 申请 LSP，因此 candidate 不会注册。这里保留弱校验，
+        # 真正的 M6 验证在 ldp_with_isis.py 中（ISIS 注入的 /32 命中 link_addr_v4 规则）。
         try:
             wait_check(
                 rt,
@@ -325,7 +326,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             )
             print("  [info] r1 has LDP tunnel candidate")
         except Exception:
-            print("  [info] r1 has no LDP tunnel candidate (expected when peer LSR-ID != nexthop)")
+            print("  [info] r1 has no LDP tunnel candidate (expected without IGP /32 route to peer loopback)")
 
         print("LDP basic scenario check passed.")
     finally:

@@ -8,8 +8,13 @@
 #define BGP_PEER_H
 
 #include <glib.h>
+#include <stdbool.h>
+#include <stdint.h>
 
 #include "net_addr.h"
+
+/** per-peer 配置标记位 */
+#define BGP_PEER_FLAG_RR_CLIENT (1U << 0) /**< 标记为 Route Reflector 客户端（RFC 4456） */
 
 /* 前向声明，避免循环包含 */
 typedef struct bgp_vrf bgp_vrf_t;
@@ -35,6 +40,7 @@ typedef struct bgp_peer
 {
     net_addr_t addr;        /**< 邻居 IP 地址 */
     bgp_peer_state_t state; /**< 本 AF 下的协商状态 */
+    uint32_t flags;         /**< per-peer 配置位（BGP_PEER_FLAG_*） */
     bgp_vrf_t *vrf;         /**< 所属 VRF（借用引用，不持有所有权） */
     bgp_instance_t *inst;   /**< 所属 AF 实例（借用引用，不持有所有权） */
     GList *subgroups;       /**< bgp_nh_subgroup_t* 借用引用列表（可同时归属多个子组） */

@@ -961,6 +961,147 @@
             </commands>
         </group>
 
+        <!-- refresh bgp <ip> import|export af ipv4-unicast|ipv6-unicast（RFC 2918） -->
+        <!-- cfg-id: 1=ipv4-address, 2=ipv6-address, 3=import, 4=export, 5=ipv4-unicast, 6=ipv6-unicast -->
+        <group group-id="18">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>refresh</name>
+                    <description>Refresh BGP routes (RFC 2918)</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>bgp</name>
+                    <description>BGP protocol</description>
+                </element>
+                <element id="3" type="keyword">
+                    <name>neighbor</name>
+                    <description>Refresh a single neighbor</description>
+                </element>
+                <element id="4" cfg-id="1" type="parameter">
+                    <name>&lt;ipv4-address&gt;</name>
+                    <type>ipv4</type>
+                    <description>Neighbor IPv4 address</description>
+                </element>
+                <element id="5" cfg-id="2" type="parameter">
+                    <name>&lt;ipv6-address&gt;</name>
+                    <type>ipv6</type>
+                    <description>Neighbor IPv6 address</description>
+                </element>
+                <element id="6" cfg-id="3" type="keyword">
+                    <name>import</name>
+                    <description>Send ROUTE-REFRESH to peer (pull routes in)</description>
+                </element>
+                <element id="7" cfg-id="4" type="keyword">
+                    <name>export</name>
+                    <description>Re-advertise routes from local Adj-RIB-Out</description>
+                </element>
+                <element id="8" type="keyword">
+                    <name>af</name>
+                    <description>Address-family selector</description>
+                </element>
+                <element id="9" cfg-id="5" type="keyword">
+                    <name>ipv4-unicast</name>
+                    <description>IPv4 unicast address family</description>
+                </element>
+                <element id="10" cfg-id="6" type="keyword">
+                    <name>ipv6-unicast</name>
+                    <description>IPv6 unicast address family</description>
+                </element>
+            </elements>
+
+            <commands>
+                <!-- refresh bgp neighbor <ipv4-address> import|export af ipv4-unicast|ipv6-unicast -->
+                <command>
+                    <expression>1 2 3 4 {6 | 7} 8 {9 | 10}</expression>
+                    <views>user</views>
+                </command>
+                <!-- refresh bgp neighbor <ipv6-address> import|export af ipv4-unicast|ipv6-unicast -->
+                <command>
+                    <expression>1 2 3 5 {6 | 7} 8 {9 | 10}</expression>
+                    <views>user</views>
+                </command>
+                <!-- refresh bgp af ipv4-unicast|ipv6-unicast import|export（按 AF 刷新所有 peer） -->
+                <command>
+                    <expression>1 2 8 {9 | 10} {6 | 7}</expression>
+                    <views>user</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- reflector cluster-id <ipv4> / no reflector cluster-id（AF 视图：per-AF cluster-id） -->
+        <group group-id="20">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>reflector</name>
+                    <description>Route Reflector (RFC 4456)</description>
+                </element>
+                <element id="3" type="keyword">
+                    <name>cluster-id</name>
+                    <description>Explicit Cluster-ID (default: router-id)</description>
+                </element>
+                <element id="4" cfg-id="1" type="parameter">
+                    <name>&lt;cluster-id&gt;</name>
+                    <type>ipv4</type>
+                    <description>Cluster-ID in IPv4 dotted-decimal form</description>
+                </element>
+            </elements>
+            <commands>
+                <!-- reflector cluster-id <ipv4> -->
+                <command>
+                    <expression>2 3 4</expression>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni</views>
+                </command>
+                <!-- no reflector cluster-id -->
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- neighbor <ip> reflect-client / no neighbor <ip> reflect-client（AF 视图） -->
+        <!-- cfg-id: 1=ipv4-address, 2=ipv6-address -->
+        <group group-id="21">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>neighbor</name>
+                    <description>BGP neighbor configuration</description>
+                </element>
+                <element id="3" cfg-id="1" type="parameter">
+                    <name>&lt;ipv4-address&gt;</name>
+                    <type>ipv4</type>
+                    <description>Neighbor IPv4 address</description>
+                </element>
+                <element id="4" cfg-id="2" type="parameter">
+                    <name>&lt;ipv6-address&gt;</name>
+                    <type>ipv6</type>
+                    <description>Neighbor IPv6 address</description>
+                </element>
+                <element id="5" type="keyword">
+                    <name>reflect-client</name>
+                    <description>Mark this neighbor as a Route Reflector client</description>
+                </element>
+            </elements>
+            <commands>
+                <command>
+                    <expression>2 {3 | 4} 5</expression>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni</views>
+                </command>
+                <command>
+                    <expression>1 2 {3 | 4} 5</expression>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni</views>
+                </command>
+            </commands>
+        </group>
+
         <!-- ================================================================ -->
         <!-- BMP 上报功能命令（group 14-19）                                   -->
         <!-- ================================================================ -->

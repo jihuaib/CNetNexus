@@ -498,7 +498,8 @@ void ldp_discovery_handle_rx(ldp_iface_state_t *iface)
                         ldp_worker_format_lsr_id(pdu.lsr_id, ip, sizeof(ip));
                         LOG_INFO("LDP: adjacency learned %s:%u on %s", ip, pdu.label_space, iface->ifname);
                     }
-                    adj->peer_transport_v4 = info.transport_v4;
+                    adj->peer_link_addr_v4 = ntohl(src.sin_addr.s_addr);
+                    adj->peer_transport_v4 = info.transport_v4 ? info.transport_v4 : adj->peer_link_addr_v4;
                     adj->peer_hello_hold_ms = (uint32_t)info.hold_time_sec * 1000u;
                     adj->configuration_seq = info.configuration_seq;
 
@@ -508,9 +509,9 @@ void ldp_discovery_handle_rx(ldp_iface_state_t *iface)
                     adj->neg_hold_ms = (self_hold && self_hold < peer_hold) ? self_hold : peer_hold;
                     adj->last_seen_msec = now_msec();
 
-                    /* 触发 session 建立（M3）：transport_v4 缺失时退化为对端 LSR-ID */
-                    uint32_t xport = adj->peer_transport_v4 ? adj->peer_transport_v4 : pdu.lsr_id;
-                    ldp_session_on_adjacency_up(pdu.lsr_id, pdu.label_space, xport);
+                    uint32_t self_transport = iface->ipv4_local ? iface->ipv4_local : g_ldp_work_local->proto.lsr_id;
+                    ldp_session_on_adjacency_up(pdu.lsr_id, pdu.label_space, adj->peer_transport_v4, self_transport,
+                                                adj->peer_link_addr_v4);
                 }
             }
 

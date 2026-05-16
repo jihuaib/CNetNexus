@@ -189,6 +189,31 @@ typedef struct bgp_apply_cmd
             bgp_safi_t safi; /**< 子地址族（必为 BGP_SAFI_QP） */
         } route_select;
 
+        /** BGP_CLI_GROUP_ID_REFRESH */
+        struct
+        {
+            net_addr_t addr; /**< 邻居 IP 地址 */
+            bgp_afi_t afi;   /**< 地址族 */
+            bgp_safi_t safi; /**< 子地址族 */
+            bool is_export;  /**< TRUE=export(本端重发)，FALSE=import(发 REFRESH 拉取) */
+        } refresh;
+
+        /** BGP_CLI_GROUP_ID_CLUSTER_ID（per-AF） */
+        struct
+        {
+            bgp_afi_t afi;       /**< 地址族 */
+            bgp_safi_t safi;     /**< 子地址族 */
+            uint32_t cluster_id; /**< Cluster-ID 主机序 32 位（0=未配置） */
+        } cluster_id;
+
+        /** BGP_CLI_GROUP_ID_REFLECT_CLIENT */
+        struct
+        {
+            net_addr_t addr; /**< 邻居 IP 地址 */
+            bgp_afi_t afi;   /**< 地址族 */
+            bgp_safi_t safi; /**< 子地址族 */
+        } reflect_client;
+
         /** BGP_CLI_GROUP_ID_BMP_INSTANCE */
         struct
         {

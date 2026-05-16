@@ -292,4 +292,15 @@ int bgp_db_set_vrf_connect_retry(uint32_t vrf_id, uint16_t connect_retry);
  */
 int bgp_db_del_vrf_connect_retry(uint32_t vrf_id);
 
+/**
+ * @brief 设置 AF 实例的 Route Reflector Cluster-ID（RFC 4456，per-AF）
+ */
+int bgp_db_set_inst_cluster_id(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi, uint32_t cluster_id);
+
+/**
+ * @brief 设置 AF 下邻居的 RR 客户端标记（RFC 4456）
+ */
+int bgp_db_set_neighbor_rr_client(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi, const char *neighbor_ip,
+                                  bool is_client);
+
 #endif /* BGP_DB_H */

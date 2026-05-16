@@ -6,6 +6,7 @@
  */
 #include "bgp_bdr.h"
 
+#include <arpa/inet.h>
 #include <string.h>
 
 #include "bgp_bmp_db.h"
@@ -310,9 +311,14 @@ static void bdr_append_af_peers(GString *out, int64_t vrf_id, int64_t afi, int64
     {
         db_row_t *row = result->rows[i];
         const char *ip = db_row_get_text(row, "neighbor_ip", NULL);
-        if (ip)
+        if (!ip)
         {
-            g_string_append_printf(out, "  neighbor %s enable\r\n", ip);
+            continue;
+        }
+        g_string_append_printf(out, "  neighbor %s enable\r\n", ip);
+        if (db_row_get_int(row, "is_rr_client", 0) != 0)
+        {
+            g_string_append_printf(out, "  neighbor %s reflect-client\r\n", ip);
         }
     }
 
@@ -373,10 +379,19 @@ static void bdr_append_qp_routes(GString *out, int64_t vrf_id, int64_t afi, int6
  * @param import_protos 已导入协议位掩码
  */
 static void bdr_append_af_block(GString *out, int64_t vrf_id, const char *afi_str, int64_t afi, int64_t safi,
-                                int64_t import_protos, gboolean route_select_enabled)
+                                int64_t import_protos, gboolean route_select_enabled, int64_t cluster_id)
 {
     g_string_append(out, " !\r\n");
     g_string_append_printf(out, " af %s\r\n", afi_str);
+
+    /* 反射器 cluster-id（per-AF） */
+    if (cluster_id != 0)
+    {
+        char cid_str[16];
+        struct in_addr ia = {.s_addr = htonl((uint32_t)cluster_id)};
+        inet_ntop(AF_INET, &ia, cid_str, sizeof(cid_str));
+        g_string_append_printf(out, "  reflector cluster-id %s\r\n", cid_str);
+    }
 
     /* AF 下各子表 BDR，按需扩展 */
     bdr_append_af_peers(out, vrf_id, afi, safi);
@@ -426,6 +441,7 @@ static void bdr_append_af_instances(GString *out)
         int64_t safi_int = db_row_get_int(row, "safi", 0);
         int64_t import_protos = db_row_get_int(row, "import_protos", 0);
         gboolean route_select_enabled = db_row_get_int(row, "route_select_enabled", 0) != 0;
+        int64_t cluster_id = db_row_get_int(row, "cluster_id", 0);
 
         const char *afi_str = afi_safi_to_str(afi_int, safi_int);
         if (!afi_str)
@@ -433,7 +449,7 @@ static void bdr_append_af_instances(GString *out)
             continue;
         }
 
-        bdr_append_af_block(out, vrf_id, afi_str, afi_int, safi_int, import_protos, route_select_enabled);
+        bdr_append_af_block(out, vrf_id, afi_str, afi_int, safi_int, import_protos, route_select_enabled, cluster_id);
     }
 
     db_result_free(inst_result);
@@ -464,6 +480,7 @@ static void bdr_append_af_instances_scoped(GString *out, uint32_t vrf_id)
         int64_t safi_int = db_row_get_int(row, "safi", 0);
         int64_t import_protos = db_row_get_int(row, "import_protos", 0);
         gboolean route_select_enabled = db_row_get_int(row, "route_select_enabled", 0) != 0;
+        int64_t cluster_id = db_row_get_int(row, "cluster_id", 0);
         const char *afi_str = afi_safi_to_str(afi_int, safi_int);
 
         if (!afi_str)
@@ -471,7 +488,7 @@ static void bdr_append_af_instances_scoped(GString *out, uint32_t vrf_id)
             continue;
         }
 
-        bdr_append_af_block(out, vrf_id, afi_str, afi_int, safi_int, import_protos, route_select_enabled);
+        bdr_append_af_block(out, vrf_id, afi_str, afi_int, safi_int, import_protos, route_select_enabled, cluster_id);
     }
 
     db_value_free(&cond.value);
@@ -495,11 +512,12 @@ static void bdr_append_scoped_af_instance(GString *out, uint32_t vrf_id, int64_t
         db_row_t *row = result->rows[0];
         int64_t import_protos = db_row_get_int(row, "import_protos", 0);
         gboolean route_select_enabled = db_row_get_int(row, "route_select_enabled", 0) != 0;
+        int64_t cluster_id = db_row_get_int(row, "cluster_id", 0);
         const char *afi_str = afi_safi_to_str(afi, safi);
 
         if (afi_str)
         {
-            bdr_append_af_block(out, vrf_id, afi_str, afi, safi, import_protos, route_select_enabled);
+            bdr_append_af_block(out, vrf_id, afi_str, afi, safi, import_protos, route_select_enabled, cluster_id);
         }
     }
 

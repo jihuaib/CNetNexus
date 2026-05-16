@@ -24,7 +24,16 @@ CI_DIR = PROJECT_ROOT / "scripts" / "ci"
 if str(CI_DIR) not in sys.path:
     sys.path.insert(0, str(CI_DIR))
 
-from top_runner import TopologyRuntime, dump_logs, load_topology, run_cmd, validate_top
+from top_runner import (
+    DEVICE_KIND_FRR,
+    DEVICE_KIND_NETNEXUS,
+    FRR_IMAGE_ENV,
+    TopologyRuntime,
+    dump_logs,
+    load_topology,
+    run_cmd,
+    validate_top,
+)
 
 
 def main() -> int:
@@ -34,6 +43,11 @@ def main() -> int:
     )
     parser.add_argument("--top", required=True, help="topology file path (.yaml/.yml/.json)")
     parser.add_argument("--image", required=False, help="docker image tag (fallback: top.image)")
+    parser.add_argument(
+        "--frr-image",
+        required=False,
+        help=f"FRR docker image tag for kind=frr nodes (fallback: ${FRR_IMAGE_ENV}, top.images.frr, or default)",
+    )
     parser.add_argument("--prefix", default=f"nn-topup-{os.getpid()}", help="resource name prefix")
     parser.add_argument("--cmd-timeout", type=int, default=20, help="CLI command timeout seconds")
     parser.add_argument("--connect-timeout", type=int, default=60, help="CLI initial connect timeout seconds")
@@ -61,9 +75,8 @@ def main() -> int:
     if not image:
         raise SystemExit("image is required (use --image or top.image)")
 
-    if args.pull:
-        print(f"\n===== STEP: docker pull {image} =====", flush=True)
-        run_cmd(["docker", "pull", image])
+    if args.frr_image:
+        os.environ[FRR_IMAGE_ENV] = args.frr_image
 
     rt = TopologyRuntime(
         top=top,
@@ -74,8 +87,12 @@ def main() -> int:
         connect_timeout=args.connect_timeout,
         verbose=args.verbose,
         publish_cli_base=args.publish_cli,
-        override_if_map=False,
     )
+
+    if args.pull:
+        for pull_image in sorted(set(rt.device_images.values())):
+            print(f"\n===== STEP: docker pull {pull_image} =====", flush=True)
+            run_cmd(["docker", "pull", pull_image])
 
     failed = False
     try:
@@ -87,10 +104,14 @@ def main() -> int:
         print("\nCLI connect targets:", flush=True)
         for dev in sorted(rt.devices.keys()):
             mgmt_ip = rt.get_mgmt_ip(dev)
-            print(f"  - {dev} (mgmt): telnet {mgmt_ip} 3788")
-            host_port = rt.get_published_cli_port(dev)
-            if host_port is not None:
-                print(f"  - {dev} (host): telnet 127.0.0.1 {host_port}")
+            kind = rt.get_device_kind(dev)
+            if kind == DEVICE_KIND_NETNEXUS:
+                print(f"  - {dev} (mgmt): telnet {mgmt_ip} 3788")
+                host_port = rt.get_published_cli_port(dev)
+                if host_port is not None:
+                    print(f"  - {dev} (host): telnet 127.0.0.1 {host_port}")
+            elif kind == DEVICE_KIND_FRR:
+                print(f"  - {dev} (vtysh): docker exec -it {rt.container_name(dev)} vtysh")
 
         print("\nConfigured interfaces:", flush=True)
         for dev in sorted(rt.devices.keys()):
@@ -99,7 +120,10 @@ def main() -> int:
                 print(f"  - {dev}: (no interfaces from top)")
                 continue
             for ep in eps:
-                print(f"  - {dev} {ep.if_name}: {ep.ip}/{ep.prefix}")
+                if ep.ip6:
+                    print(f"  - {dev} {ep.if_name}: {ep.ip}/{ep.prefix}, {ep.ip6}/{ep.prefix6}")
+                else:
+                    print(f"  - {dev} {ep.if_name}: {ep.ip}/{ep.prefix}")
 
         print("\nContainers:", ", ".join(rt.container_names))
         print("Networks:", ", ".join([rt.mgmt_net] + rt.link_networks))

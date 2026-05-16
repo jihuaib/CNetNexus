@@ -370,6 +370,24 @@ int bgp_parse_path_attrs(const uint8_t *data, uint16_t len, uint32_t flags, bgp_
                 }
                 break;
 
+            case ATTR_CLUSTER_LIST:
+                if (attr_len > 0 && (attr_len % 4) == 0)
+                {
+                    uint8_t cap = (uint8_t)(sizeof(attr->cluster_list) / sizeof(attr->cluster_list[0]));
+                    uint8_t n = (uint8_t)(attr_len / 4);
+                    if (n > cap)
+                    {
+                        n = cap;
+                    }
+                    for (uint8_t i = 0; i < n; i++)
+                    {
+                        attr->cluster_list[i].family = AF_INET;
+                        memcpy(&attr->cluster_list[i].u.v4, val + i * 4, 4);
+                    }
+                    attr->cluster_list_len = n;
+                }
+                break;
+
             case ATTR_MP_REACH_NLRI:
             {
                 /* AFI(2) + SAFI(1) + NH_LEN(1) + NH + SNPA(1) + NLRI */

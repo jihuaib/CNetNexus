@@ -44,6 +44,7 @@ typedef struct ldp_adjacency
     uint32_t peer_lsr_id;             /**< 对端 LSR-ID（IPv4 host order） */
     uint16_t peer_label_space;        /**< 对端标签空间 */
     uint32_t peer_transport_v4;       /**< 对端 transport addr（host order） */
+    uint32_t peer_link_addr_v4;       /**< 对端 hello 报文的源 IP（直连接口地址, host order） */
     uint32_t peer_hello_hold_ms;      /**< 对端通告的 hold 时间 */
     uint32_t neg_hold_ms;             /**< 双方协商后的 hold（min） */
     uint32_t configuration_seq;       /**< 对端 Configuration Sequence Number */

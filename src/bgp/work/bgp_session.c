@@ -459,6 +459,9 @@ void bgp_session_rx_msg_count(bgp_session_t *sess, uint8_t msg_type)
         case BGP_MSG_KEEPALIVE:
             sess->rx_msg_stats.keepalive++;
             break;
+        case BGP_MSG_ROUTE_REFRESH:
+            sess->rx_msg_stats.route_refresh++;
+            break;
         default:
             sess->rx_msg_stats.unknown++;
             break;
@@ -486,6 +489,9 @@ void bgp_session_tx_msg_count(bgp_session_t *sess, uint8_t msg_type)
             break;
         case BGP_MSG_KEEPALIVE:
             sess->tx_msg_stats.keepalive++;
+            break;
+        case BGP_MSG_ROUTE_REFRESH:
+            sess->tx_msg_stats.route_refresh++;
             break;
         default:
             /* 未知发送类型不应出现，保守起见仍计入 total（已 ++） */

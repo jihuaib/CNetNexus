@@ -69,6 +69,9 @@ typedef enum bgp_route_src_class
  * 因此除了 sess_type / policy_hash / peer_family 外，还需把影响发送结果的
  * remote_as 与 negotiated_caps 一并纳入 key。
  */
+/** UG-key 扩展标记位：影响 update-group 划分的目标 peer 属性 */
+#define BGP_UG_FLAG_TARGET_RR_CLIENT (1U << 0) /**< 目标 peer 是 RR 客户端（影响 iBGP 反射决策） */
+
 typedef struct bgp_update_group_key
 {
     bgp_sess_type_t sess_type; /**< iBGP / eBGP（不同类型走不同属性准备逻辑） */
@@ -76,6 +79,7 @@ typedef struct bgp_update_group_key
     uint16_t peer_family;      /**< peer 地址族（AF_INET / AF_INET6，用于区分双栈邻居） */
     uint32_t remote_as;        /**< 远端 AS 号（AS_PATH 防环检查基准；同 UG 内结果一致） */
     uint32_t negotiated_caps;  /**< 协商能力集（AS4/EXT_NEXTHOP 等，影响报文编码） */
+    uint32_t flags;            /**< UG 扩展标记位（BGP_UG_FLAG_*） */
 } bgp_update_group_key_t;
 
 /**
@@ -121,8 +125,19 @@ struct bgp_update_group
  * @brief 计算 session 的 update group 键
  * @param sess 目标 session（不可为 NULL）
  * @param out  输出键
+ *
+ * 注意：target_is_rr_client 字段由该函数置 0，调用者若需该信息应使用
+ * bgp_peer_compute_ug_key 或在调用后单独设置。
  */
 void bgp_session_compute_ug_key(const bgp_session_t *sess, bgp_update_group_key_t *out);
+
+/**
+ * @brief 基于 peer 计算 update group 键（含 target_is_rr_client）
+ * @param peer 目标 peer（不可为 NULL）
+ * @param sess peer 对应 session（不可为 NULL）
+ * @param out  输出键
+ */
+void bgp_peer_compute_ug_key(const bgp_peer_t *peer, const bgp_session_t *sess, bgp_update_group_key_t *out);
 
 /**
  * @brief 计算 session 的 nh subgroup 键
@@ -261,6 +276,32 @@ void bgp_update_group_enqueue_withdraw(bgp_instance_t *inst, const bgp_nlri_entr
  * @brief 邻居进入 ESTABLISHED 后，将其加入各 AF subgroup 并补发路由
  */
 void bgp_update_group_catchup_session(bgp_session_t *sess);
+
+/**
+ * @brief 向指定 session 直接发送一组 NLRI 的 packed WITHDRAW
+ *        用于 peer 离开子组、reflect-client 解除等场景下定向撤销已发路由
+ * @param sess  目标 session（pri_conn 必须可用）
+ * @param afi   地址族
+ * @param safi  子地址族
+ * @param nlri_list NLRI 指针数组
+ * @param nlri_count 数组长度
+ */
+void bgp_send_packed_withdraws_to_session(bgp_session_t *sess, uint16_t afi, uint8_t safi,
+                                          const bgp_nlri_entry_t *const *nlri_list, int nlri_count);
+
+/**
+ * @brief 响应对端 ROUTE-REFRESH：将该 session 在指定 AF 下所有 Adj-RIB-Out 条目
+ *        重新挂入 announce_queue，并调度一次发布
+ *
+ * RFC 2918 §4：收到 REFRESH 后须重新对该对端宣告本端 Adj-RIB-Out 中匹配 AFI/SAFI
+ * 的全部路由。本函数定位 session 在 AF=(afi,safi) 下使能的 peer，对其所属的每个
+ * NH subgroup 遍历 adj_rib_out 重新入队。
+ *
+ * @param sess 目标 session（不可为 NULL）
+ * @param afi  请求刷新的地址族
+ * @param safi 请求刷新的子地址族
+ */
+void bgp_update_group_refresh_session_af(bgp_session_t *sess, uint16_t afi, uint8_t safi);
 
 /**
  * @brief 批量处理 subgroup 的 announce/withdraw 队列（打包发送）

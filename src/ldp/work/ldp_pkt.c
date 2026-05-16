@@ -127,7 +127,7 @@ int ldp_pkt_parse_pdu_hdr(const uint8_t *buf, size_t buf_len, ldp_pdu_hdr_t *hdr
     {
         return -1;
     }
-    if ((size_t)hdr_out->pdu_length + 4u > buf_len)
+    if (hdr_out->pdu_length < 14u || (size_t)hdr_out->pdu_length + 4u > buf_len)
     {
         return -1;
     }
@@ -147,7 +147,7 @@ int ldp_pkt_parse_msg_hdr(const uint8_t *buf, size_t buf_len, ldp_msg_hdr_t *hdr
     hdr_out->msg_length = get_u16(buf + 2);
     hdr_out->msg_id = get_u32(buf + 4);
 
-    if ((size_t)hdr_out->msg_length + 4u > buf_len)
+    if (hdr_out->msg_length < 4u || (size_t)hdr_out->msg_length + 4u > buf_len)
     {
         return -1;
     }
@@ -320,6 +320,53 @@ int ldp_pkt_encode_keepalive(uint32_t self_lsr_id, uint16_t self_label_space, ui
     return (int)(p - out);
 }
 
+int ldp_pkt_encode_notification(uint32_t self_lsr_id, uint16_t self_label_space, uint32_t msg_id, uint32_t status_code,
+                                int fatal, uint32_t ref_msg_id, uint16_t ref_msg_type, uint8_t *out, size_t out_cap)
+{
+    if (!out)
+    {
+        return -1;
+    }
+    const size_t status_tlv_value_len = 10u; /* Status Code(4) + Msg ID(4) + Msg Type(2) */
+    const size_t status_tlv_total = 4u + status_tlv_value_len;
+    const size_t msg_body_len = status_tlv_total;
+    const size_t msg_total = LDP_MSG_HEADER_SIZE + msg_body_len;
+    const size_t pdu_total = LDP_PDU_HEADER_SIZE + msg_total;
+    if (out_cap < pdu_total)
+    {
+        return -1;
+    }
+
+    uint8_t *p = out;
+    put_u16(p, LDP_VERSION);
+    p += 2;
+    put_u16(p, (uint16_t)(6u + msg_total));
+    p += 2;
+    put_u32(p, self_lsr_id);
+    p += 4;
+    put_u16(p, self_label_space);
+    p += 2;
+
+    put_u16(p, LDP_MSG_TYPE_NOTIFICATION);
+    p += 2;
+    put_u16(p, (uint16_t)(4u + msg_body_len));
+    p += 2;
+    put_u32(p, msg_id);
+    p += 4;
+
+    put_u16(p, LDP_TLV_STATUS);
+    p += 2;
+    put_u16(p, (uint16_t)status_tlv_value_len);
+    p += 2;
+    put_u32(p, (status_code & 0x3FFFFFFFu) | (fatal ? LDP_STATUS_FATAL_BIT : 0u));
+    p += 4;
+    put_u32(p, ref_msg_id);
+    p += 4;
+    put_u16(p, ref_msg_type);
+    p += 2;
+    return (int)(p - out);
+}
+
 int ldp_pkt_parse_init(const uint8_t *body, size_t body_len, ldp_init_info_t *info_out)
 {
     if (!body || !info_out)
@@ -349,17 +396,12 @@ int ldp_pkt_parse_init(const uint8_t *body, size_t body_len, ldp_init_info_t *in
             const uint8_t *v = body + pos;
             info_out->protocol_version = get_u16(v);
             info_out->keepalive_time_sec = get_u16(v + 2);
-            uint16_t flags = get_u16(v + 4);
-            info_out->a_bit = (flags & 0x8000u) ? 1u : 0u;
-            info_out->d_bit = (flags & 0x4000u) ? 1u : 0u;
-            info_out->pvlim = (uint16_t)v[6];
-            info_out->max_pdu_len = get_u16(v + 8);
-            info_out->recv_lsr_id = get_u32(v + 10);
-            /* recv label space 紧随其后 */
-            if (tlv_len >= 16u)
-            {
-                info_out->recv_label_space = get_u16(v + 14);
-            }
+            info_out->a_bit = (v[4] & 0x80u) ? 1u : 0u;
+            info_out->d_bit = (v[4] & 0x40u) ? 1u : 0u;
+            info_out->pvlim = (uint16_t)v[5];
+            info_out->max_pdu_len = get_u16(v + 6);
+            info_out->recv_lsr_id = get_u32(v + 8);
+            info_out->recv_label_space = get_u16(v + 12);
             info_out->valid = 1u;
         }
         pos += tlv_len;
@@ -475,7 +517,7 @@ int ldp_pkt_parse_address_list_tlv(const uint8_t *body, size_t body_len, uint32_
  *   [type=2:1][address_family:2][prefix_len:1][prefix(...)]
  * 其中 prefix 字节数 = ceil(prefix_len/8)
  *
- * Generic Label TLV value = 4 bytes (低 20 位为 label)
+ * Generic Label TLV value = 4 bytes (高 20 位为 label)
  */
 
 static size_t prefix_octets(uint8_t plen)
@@ -510,7 +552,7 @@ static int encode_generic_label_tlv(uint8_t *p, uint32_t label)
 {
     put_u16(p, LDP_TLV_GENERIC_LABEL);
     put_u16(p + 2, 4u);
-    put_u32(p + 4, label & 0x000FFFFFu);
+    put_u32(p + 4, (label & 0x000FFFFFu) << 12);
     return 8;
 }
 
@@ -597,6 +639,50 @@ int ldp_pkt_encode_label_withdraw(uint32_t self_lsr_id, uint16_t self_label_spac
     return (int)(p - out);
 }
 
+int ldp_pkt_encode_label_release(uint32_t self_lsr_id, uint16_t self_label_space, uint32_t msg_id, uint32_t fec_prefix,
+                                 uint8_t fec_prefix_len, uint32_t label, int include_label, uint8_t *out,
+                                 size_t out_cap)
+{
+    if (!out || fec_prefix_len > 32)
+    {
+        return -1;
+    }
+    size_t octets = prefix_octets(fec_prefix_len);
+    size_t fec_tlv_total = 4u + 1u + 2u + 1u + octets;
+    size_t label_tlv_total = include_label ? 8u : 0u;
+    size_t msg_body_len = fec_tlv_total + label_tlv_total;
+    size_t msg_total = LDP_MSG_HEADER_SIZE + msg_body_len;
+    size_t pdu_total = LDP_PDU_HEADER_SIZE + msg_total;
+    if (out_cap < pdu_total)
+    {
+        return -1;
+    }
+
+    uint8_t *p = out;
+    put_u16(p, LDP_VERSION);
+    p += 2;
+    put_u16(p, (uint16_t)(6u + msg_total));
+    p += 2;
+    put_u32(p, self_lsr_id);
+    p += 4;
+    put_u16(p, self_label_space);
+    p += 2;
+
+    put_u16(p, LDP_MSG_TYPE_LABEL_RELEASE);
+    p += 2;
+    put_u16(p, (uint16_t)(4u + msg_body_len));
+    p += 2;
+    put_u32(p, msg_id);
+    p += 4;
+
+    p += encode_fec_tlv(p, fec_prefix, fec_prefix_len);
+    if (include_label)
+    {
+        p += encode_generic_label_tlv(p, label);
+    }
+    return (int)(p - out);
+}
+
 static int parse_fec_tlv(const uint8_t *body, size_t body_len, uint32_t *prefix_out, uint8_t *plen_out)
 {
     if (!body || body_len < 4u)
@@ -669,7 +755,7 @@ static int parse_generic_label_tlv(const uint8_t *body, size_t body_len, uint32_
     {
         return -1;
     }
-    *label_out = get_u32(body + 4) & 0x000FFFFFu;
+    *label_out = (get_u32(body + 4) >> 12) & 0x000FFFFFu;
     return (int)(4u + tlv_len);
 }
 

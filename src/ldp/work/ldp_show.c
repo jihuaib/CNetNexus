@@ -65,8 +65,12 @@ static void show_interface(GString *out)
         g_string_append(out, "No LDP-enabled interface\r\n");
         return;
     }
-    g_string_append(out, "Interface  IfIdx  Local-IP        State        Hello(ms)  Hold(ms)\r\n");
-    g_string_append(out, "---------- ------ --------------- ------------ ---------- ---------\r\n");
+/* 统一的 show ldp interface 列宽 */
+#define LDP_IF_FMT "%-14s  %-6s  %-16s  %-12s  %-10s  %s\r\n"
+
+    g_string_append_printf(out, LDP_IF_FMT, "Interface", "IfIdx", "Local-IP", "State", "Hello(ms)", "Hold(ms)");
+    g_string_append_printf(out, LDP_IF_FMT, "--------------", "------", "----------------", "------------",
+                           "----------", "--------");
 
     GHashTableIter it;
     gpointer key = NULL, val = NULL;
@@ -100,9 +104,16 @@ static void show_interface(GString *out)
         {
             state = "up";
         }
-        g_string_append_printf(out, "%-10s %-6u %-15s %-12s %-10u %-9u\r\n", iface->ifname, iface->ifindex, ip, state,
-                               ldp_worker_effective_hello_ms(iface), ldp_worker_effective_hold_ms(iface));
+        char ifidx[16];
+        snprintf(ifidx, sizeof(ifidx), "%u", iface->ifindex);
+        char hello[16];
+        snprintf(hello, sizeof(hello), "%u", ldp_worker_effective_hello_ms(iface));
+        char hold[16];
+        snprintf(hold, sizeof(hold), "%u", ldp_worker_effective_hold_ms(iface));
+        g_string_append_printf(out, LDP_IF_FMT, iface->ifname, ifidx, ip, state, hello, hold);
     }
+
+#undef LDP_IF_FMT
 }
 
 static void show_neighbor(GString *out)
@@ -112,8 +123,13 @@ static void show_neighbor(GString *out)
         g_string_append(out, "No LDP adjacency\r\n");
         return;
     }
-    g_string_append(out, "Peer-LSR-ID    Lsp Interface  Transport       Session       Hold(ms)\r\n");
-    g_string_append(out, "-------------- --- ---------- --------------- ------------- ---------\r\n");
+/* 统一的 show ldp neighbor 列宽：与表头/分隔/数据共享同一格式串 */
+#define LDP_NBR_FMT "%-15s  %-11s  %-14s  %-16s  %-14s  %s\r\n"
+
+    g_string_append_printf(out, LDP_NBR_FMT, "Peer-LSR-ID", "Label-Space", "Interface", "Transport", "Session",
+                           "Hold(ms)");
+    g_string_append_printf(out, LDP_NBR_FMT, "---------------", "-----------", "--------------", "----------------",
+                           "--------------", "--------");
 
     GHashTableIter it;
     gpointer key = NULL, val = NULL;
@@ -138,9 +154,14 @@ static void show_neighbor(GString *out)
         {
             sess = ldp_session_state_str(peer->state);
         }
-        g_string_append_printf(out, "%-14s %-3u %-10s %-15s %-13s %-9u\r\n", lsr, adj->peer_label_space, adj->ifname,
-                               xport, sess, adj->neg_hold_ms);
+        char lblspace[16];
+        snprintf(lblspace, sizeof(lblspace), "%u", adj->peer_label_space);
+        char hold[16];
+        snprintf(hold, sizeof(hold), "%u", adj->neg_hold_ms);
+        g_string_append_printf(out, LDP_NBR_FMT, lsr, lblspace, adj->ifname, xport, sess, hold);
     }
+
+#undef LDP_NBR_FMT
 }
 
 int ldp_show_handle_msg(dev_ipc_message_t *msg)
@@ -220,9 +241,12 @@ int ldp_show_handle_msg(dev_ipc_message_t *msg)
         }
         else
         {
+#define LDP_LOCAL_BIND_FMT "%-22s  %s\r\n"
+#define LDP_REMOTE_BIND_FMT "%-15s  %-22s  %s\r\n"
+
             g_string_append(out, "Local Label Information Base\r\n");
-            g_string_append(out, "Prefix              Label\r\n");
-            g_string_append(out, "------------------- ---------\r\n");
+            g_string_append_printf(out, LDP_LOCAL_BIND_FMT, "Prefix", "Label");
+            g_string_append_printf(out, LDP_LOCAL_BIND_FMT, "----------------------", "----------");
             if (local)
             {
                 GHashTableIter it;
@@ -231,15 +255,19 @@ int ldp_show_handle_msg(dev_ipc_message_t *msg)
                 while (g_hash_table_iter_next(&it, &k, &v))
                 {
                     const ldp_local_label_t *e = (const ldp_local_label_t *)v;
+                    char pfx_with_len[32];
                     char pfx[16];
                     ldp_worker_format_lsr_id(e->fec.prefix, pfx, sizeof(pfx));
-                    g_string_append_printf(out, "%s/%-16u %u\r\n", pfx, e->fec.prefix_len, e->label);
+                    snprintf(pfx_with_len, sizeof(pfx_with_len), "%s/%u", pfx, e->fec.prefix_len);
+                    char lbl[16];
+                    snprintf(lbl, sizeof(lbl), "%u", e->label);
+                    g_string_append_printf(out, LDP_LOCAL_BIND_FMT, pfx_with_len, lbl);
                 }
             }
 
             g_string_append(out, "\r\nRemote Label Information Base\r\n");
-            g_string_append(out, "Peer-LSR-ID    Prefix              Label\r\n");
-            g_string_append(out, "-------------- ------------------- ---------\r\n");
+            g_string_append_printf(out, LDP_REMOTE_BIND_FMT, "Peer-LSR-ID", "Prefix", "Label");
+            g_string_append_printf(out, LDP_REMOTE_BIND_FMT, "---------------", "----------------------", "----------");
             if (remote)
             {
                 GHashTableIter it;
@@ -248,12 +276,20 @@ int ldp_show_handle_msg(dev_ipc_message_t *msg)
                 while (g_hash_table_iter_next(&it, &k, &v))
                 {
                     const ldp_remote_label_t *e = (const ldp_remote_label_t *)v;
-                    char peer[16], pfx[16];
+                    char peer[16];
+                    char pfx[16];
+                    char pfx_with_len[32];
+                    char lbl[16];
                     ldp_worker_format_lsr_id(e->peer_lsr_id, peer, sizeof(peer));
                     ldp_worker_format_lsr_id(e->fec.prefix, pfx, sizeof(pfx));
-                    g_string_append_printf(out, "%-14s %s/%-16u %u\r\n", peer, pfx, e->fec.prefix_len, e->label);
+                    snprintf(pfx_with_len, sizeof(pfx_with_len), "%s/%u", pfx, e->fec.prefix_len);
+                    snprintf(lbl, sizeof(lbl), "%u", e->label);
+                    g_string_append_printf(out, LDP_REMOTE_BIND_FMT, peer, pfx_with_len, lbl);
                 }
             }
+
+#undef LDP_LOCAL_BIND_FMT
+#undef LDP_REMOTE_BIND_FMT
         }
     }
     else

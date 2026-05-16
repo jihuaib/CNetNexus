@@ -33,13 +33,22 @@ if str(CI_DIR) not in sys.path:
     sys.path.insert(0, str(CI_DIR))
 
 from module_api import get_failed_step, get_last_step, load_global_top, reset_last_step  # noqa: E402
-from top_runner import PAGER_DISABLE_CMD, TopologyRuntime, load_topology, sanitize_name  # noqa: E402
+from top_runner import (  # noqa: E402
+    DEVICE_KIND_FRR,
+    DEVICE_KIND_NETNEXUS,
+    PAGER_DISABLE_CMD,
+    TopologyRuntime,
+    load_topology,
+    sanitize_name,
+)
 
 
 MAX_HTML_OUTPUT_CHARS = 200000
 TOP_CANDIDATES = ("top.yaml", "top.yml", "top.json")
 SHOW_CURRENT_CONFIG_CMD = "show current-configuration"
 SHOW_VERSION_CMD = "show version"
+FRR_SHOW_CURRENT_CONFIG_CMD = "vtysh -c 'show running-config'"
+FRR_SHOW_VERSION_CMD = "vtysh -c 'show version'"
 PROMPT_LINE_RE = re.compile(r"^\s*<NetNexus[^>]*>.*$")
 MAX_CONFIG_DIFF_LINES = 300
 STEP_MARKER_RE = re.compile(r"^(?:\[[^\]]+\]\s*)?\s*=+\s*STEP:\s*(.*?)\s*=+\s*$")
@@ -58,6 +67,10 @@ WARN_STEP_HINTS = (
     "config drift",
 )
 CORE_DIR_ENV = "NN_CORE_DIR"
+
+
+def _device_kind(rt: TopologyRuntime, dev: str) -> str:
+    return rt.get_device_kind(dev)
 TIMESTAMP_FMT = "%Y-%m-%dT%H:%M:%S.%fZ"
 MODULE_ROW_RE = re.compile(
     r"^\s*(?P<id>\d+)\s+(?P<name>[A-Za-z0-9_-]+)\s+(?P<phase>[A-Za-z0-9_-]+)\s+(?P<port>\d+)\s+(?P<ipc>[A-Za-z0-9_-]+)\s*$"
@@ -366,6 +379,9 @@ def ensure_device_modules_ready(rt: TopologyRuntime, top: dict[str, Any]) -> Non
 
     print("===== STEP: Precheck device modules =====")
     for dev in sorted(devices.keys()):
+        if _device_kind(rt, dev) != DEVICE_KIND_NETNEXUS:
+            print(f"skip NetNexus module precheck on {dev} ({_device_kind(rt, dev)})")
+            continue
         wait_device_modules_ready(rt, dev)
 
 
@@ -377,6 +393,8 @@ def ensure_cli_pager_disabled(rt: TopologyRuntime, top: dict[str, Any]) -> None:
     print("===== STEP: Disable CLI pager =====")
     rt.disable_pager_for_all_sessions()
     for dev in sorted(devices.keys()):
+        if _device_kind(rt, dev) != DEVICE_KIND_NETNEXUS:
+            continue
         print(f"pager disabled on {dev} via '{PAGER_DISABLE_CMD}'")
 
 
@@ -402,14 +420,15 @@ def print_device_versions(rt: TopologyRuntime, top: dict[str, Any]) -> None:
     print("===== STEP: Print device versions =====")
     timeout = max(20, rt.cmd_timeout * 2)
     for dev in sorted(devices.keys()):
+        show_cmd = FRR_SHOW_VERSION_CMD if _device_kind(rt, dev) == DEVICE_KIND_FRR else SHOW_VERSION_CMD
         try:
-            out = rt.exec_cmd(dev, SHOW_VERSION_CMD, strict=False, timeout=timeout)
+            out = rt.exec_cmd(dev, show_cmd, strict=False, timeout=timeout)
         except Exception as exc:
-            print(f"WARNING: '{SHOW_VERSION_CMD}' on {dev} failed: {exc}")
+            print(f"WARNING: '{show_cmd}' on {dev} failed: {exc}")
             continue
 
-        normalized = normalize_cli_command_output(out, SHOW_VERSION_CMD)
-        print(f"{SHOW_VERSION_CMD} on {dev}:")
+        normalized = normalize_cli_command_output(out, show_cmd)
+        print(f"{show_cmd} on {dev}:")
         print(normalized if normalized else "(empty output)")
 
 
@@ -438,10 +457,14 @@ def collect_show_current_config(rt: TopologyRuntime, top: dict[str, Any], *, sta
     timeout = max(30, rt.cmd_timeout * 3)
     snapshots: dict[str, str] = {}
     for dev in sorted(devices.keys()):
-        out = rt.exec_cmd(dev, SHOW_CURRENT_CONFIG_CMD, strict=False, timeout=timeout)
+        if _device_kind(rt, dev) == DEVICE_KIND_FRR:
+            show_cmd = FRR_SHOW_CURRENT_CONFIG_CMD
+        else:
+            show_cmd = SHOW_CURRENT_CONFIG_CMD
+        out = rt.exec_cmd(dev, show_cmd, strict=False, timeout=timeout)
         normalized = normalize_show_current_config(out)
         snapshots[dev] = normalized
-        print(f"collected '{SHOW_CURRENT_CONFIG_CMD}' on {dev} ({len(normalized.splitlines())} lines)")
+        print(f"collected '{show_cmd}' on {dev} ({len(normalized.splitlines())} lines)")
     return snapshots
 
 
@@ -571,6 +594,7 @@ def collect_container_log_files(
     *,
     include_docker: bool,
     include_modules: bool,
+    log_specs: list[tuple[str, str]] | None = None,
 ) -> dict[str, str]:
     files: dict[str, str] = {}
 
@@ -589,26 +613,28 @@ def collect_container_log_files(
     if not include_modules:
         return files
 
-    with tempfile.TemporaryDirectory(prefix="nn-ci-logs-") as tmpdir:
-        tmp_path = Path(tmpdir)
-        cp_proc = subprocess.run(
-            ["docker", "cp", f"{container}:/opt/netnexus/log/.", str(tmp_path)],
-            text=True,
-            capture_output=True,
-        )
-        if cp_proc.returncode != 0:
-            files["modules-copy.err"] = (
-                "[collector] failed to copy /opt/netnexus/log from container\n"
-                f"container={container}\n"
-                f"rc={cp_proc.returncode}\n"
-                f"stdout:\n{cp_proc.stdout or ''}\n"
-                f"stderr:\n{cp_proc.stderr or ''}\n"
+    specs = log_specs or [("/opt/netnexus/log", "modules")]
+    for src_path, out_prefix in specs:
+        with tempfile.TemporaryDirectory(prefix="nn-ci-logs-") as tmpdir:
+            tmp_path = Path(tmpdir)
+            cp_proc = subprocess.run(
+                ["docker", "cp", f"{container}:{src_path}/.", str(tmp_path)],
+                text=True,
+                capture_output=True,
             )
-            return files
+            if cp_proc.returncode != 0:
+                files[f"{out_prefix}-copy.err"] = (
+                    f"[collector] failed to copy {src_path} from container\n"
+                    f"container={container}\n"
+                    f"rc={cp_proc.returncode}\n"
+                    f"stdout:\n{cp_proc.stdout or ''}\n"
+                    f"stderr:\n{cp_proc.stderr or ''}\n"
+                )
+                continue
 
-        for log_path in sorted(path for path in tmp_path.rglob("*") if path.is_file()):
-            rel_path = log_path.relative_to(tmp_path).as_posix()
-            files[f"modules/{rel_path}"] = log_path.read_text(encoding="utf-8", errors="replace")
+            for log_path in sorted(path for path in tmp_path.rglob("*") if path.is_file()):
+                rel_path = log_path.relative_to(tmp_path).as_posix()
+                files[f"{out_prefix}/{rel_path}"] = log_path.read_text(encoding="utf-8", errors="replace")
 
     return files
 
@@ -661,10 +687,12 @@ def export_case_container_logs(
     exported: list[Path] = []
     for container in rt.container_names:
         container_out = case_out / sanitize_name(container)
+        log_specs = rt.get_container_log_specs(container)
         files = collect_container_log_files(
             container,
             include_docker=include_docker,
             include_modules=include_modules,
+            log_specs=log_specs,
         )
         exported.extend(
             write_container_log_files(
@@ -682,20 +710,8 @@ def clear_case_container_module_logs(rt: TopologyRuntime) -> None:
     if not rt.container_names:
         return
 
-    # Truncate all files recursively (including ASAN reports under /opt/netnexus/log/asan)
-    # so next check script gets a clean per-script log window.
-    clear_cmd = "if [ -d /opt/netnexus/log ]; then find /opt/netnexus/log -type f -exec truncate -s 0 {} +; fi"
     for container in rt.container_names:
-        proc = subprocess.run(
-            ["docker", "exec", container, "/bin/bash", "-lc", clear_cmd],
-            text=True,
-            capture_output=True,
-        )
-        if proc.returncode != 0:
-            raise RuntimeError(
-                "failed to clear /opt/netnexus/log in container "
-                f"{container}: rc={proc.returncode}, stdout={proc.stdout or ''}, stderr={proc.stderr or ''}"
-            )
+        rt.clear_container_logs(container)
 
 
 def run_case(

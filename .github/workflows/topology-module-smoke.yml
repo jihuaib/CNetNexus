@@ -72,6 +72,7 @@ jobs:
           ulimit -c unlimited
           scripts/ci/run_all.sh \
             --image "netnexus-ci:${{ github.sha }}" \
+            --frr-image "netnexus-frr-ci:${{ github.sha }}" \
             --report-dir "scripts/ci/reports" \
             --debug \
             --cmd-timeout 30 \

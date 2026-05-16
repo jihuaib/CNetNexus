@@ -43,7 +43,13 @@ typedef struct bgp_instance
     GList *qp_routes;     /**< bgp_qp_route_cfg_t*（持有所有权），已配置的 QP 自产生路由条目 */
     bool route_select_enabled; /**< 是否对该地址族启用路由优选/发布（默认 false，仅 QP 地址族使用） */
     uint32_t flags;            /**< 实例级策略位（见 BGP_INST_FLAG_*） */
+    uint32_t cluster_id; /**< 本 AF 反射器 Cluster-ID（主机序，0=用 router-id） */
 } bgp_instance_t;
+
+/**
+ * @brief 获取实例有效的 Cluster-ID：inst->cluster_id 非 0 用它，否则 fallback 到 vrf->router_id
+ */
+uint32_t bgp_inst_effective_cluster_id(const bgp_instance_t *inst);
 
 /** 实例策略位：所有出向邻居保留原下一跳（不影响 update-group 划分） */
 #define BGP_INST_FLAG_NH_UNCHANGED (1U << 0)

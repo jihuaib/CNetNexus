@@ -23,14 +23,16 @@ typedef struct bgp_conn bgp_conn_t;
 #define BGP_PA_FLAG_TRANSITIVE 0x40u /**< Transitive bit */
 
 /** 路径属性类型码（RFC 4271 / RFC 4760） */
-#define BGP_PA_TYPE_ORIGIN 1u      /**< ORIGIN */
-#define BGP_PA_TYPE_AS_PATH 2u     /**< AS_PATH */
-#define BGP_PA_TYPE_NEXT_HOP 3u    /**< NEXT_HOP */
-#define BGP_PA_TYPE_MED 4u         /**< MULTI_EXIT_DISC */
-#define BGP_PA_TYPE_LOCAL_PREF 5u  /**< LOCAL_PREF */
-#define BGP_PA_TYPE_COMMUNITY 8u   /**< COMMUNITY */
-#define BGP_PA_TYPE_MP_REACH 14u   /**< MP_REACH_NLRI（RFC 4760） */
-#define BGP_PA_TYPE_MP_UNREACH 15u /**< MP_UNREACH_NLRI（RFC 4760） */
+#define BGP_PA_TYPE_ORIGIN 1u        /**< ORIGIN */
+#define BGP_PA_TYPE_AS_PATH 2u       /**< AS_PATH */
+#define BGP_PA_TYPE_NEXT_HOP 3u      /**< NEXT_HOP */
+#define BGP_PA_TYPE_MED 4u           /**< MULTI_EXIT_DISC */
+#define BGP_PA_TYPE_LOCAL_PREF 5u    /**< LOCAL_PREF */
+#define BGP_PA_TYPE_COMMUNITY 8u     /**< COMMUNITY */
+#define BGP_PA_TYPE_ORIGINATOR_ID 9u /**< ORIGINATOR_ID（RFC 4456） */
+#define BGP_PA_TYPE_CLUSTER_LIST 10u /**< CLUSTER_LIST（RFC 4456） */
+#define BGP_PA_TYPE_MP_REACH 14u     /**< MP_REACH_NLRI（RFC 4760） */
+#define BGP_PA_TYPE_MP_UNREACH 15u   /**< MP_UNREACH_NLRI（RFC 4760） */
 
 // ============================================================================
 // AF 编码器描述符

@@ -33,7 +33,7 @@ static uint32_t g_next_group_id = 1;
 static gboolean ug_key_equal(const bgp_update_group_key_t *a, const bgp_update_group_key_t *b)
 {
     return a->sess_type == b->sess_type && a->policy_hash == b->policy_hash && a->peer_family == b->peer_family &&
-           a->remote_as == b->remote_as && a->negotiated_caps == b->negotiated_caps;
+           a->remote_as == b->remote_as && a->negotiated_caps == b->negotiated_caps && a->flags == b->flags;
 }
 
 static gboolean sg_key_equal(const bgp_nh_subgroup_key_t *a, const bgp_nh_subgroup_key_t *b)
@@ -68,6 +68,16 @@ void bgp_session_compute_ug_key(const bgp_session_t *sess, bgp_update_group_key_
     out->peer_family = (uint16_t)sess->neighbor_addr.family;
     out->remote_as = sess->remote_as;
     out->negotiated_caps = sess->negotiated_caps;
+    out->flags = 0;
+}
+
+void bgp_peer_compute_ug_key(const bgp_peer_t *peer, const bgp_session_t *sess, bgp_update_group_key_t *out)
+{
+    bgp_session_compute_ug_key(sess, out);
+    if (peer && BIT_TEST(peer->flags, BGP_PEER_FLAG_RR_CLIENT))
+    {
+        BIT_SET(out->flags, BGP_UG_FLAG_TARGET_RR_CLIENT);
+    }
 }
 
 void bgp_session_compute_sg_key(const bgp_session_t *sess, bgp_nh_subgroup_key_t *out)
@@ -310,7 +320,13 @@ bool bgp_select_nh_rule(const bgp_update_group_key_t *ug_key, bgp_route_src_clas
             return true;
         case BGP_RSRC_FROM_IBGP:
         default:
-            /* iBGP split-horizon：非 RR 场景下不转发 iBGP-learned 给 iBGP */
+            /* RR 场景：目标 peer 是客户端时，反射 iBGP 路由（保留原 nh） */
+            if (BIT_TEST(ug_key->flags, BGP_UG_FLAG_TARGET_RR_CLIENT))
+            {
+                *out_rule = BGP_NH_RULE_PASS;
+                return true;
+            }
+            /* 非 RR 场景：iBGP split-horizon，不转发 */
             return false;
     }
 }
@@ -358,7 +374,7 @@ void bgp_subgroup_peer_join(bgp_peer_t *peer, bgp_session_t *sess)
     }
 
     bgp_update_group_key_t ugk;
-    bgp_session_compute_ug_key(sess, &ugk);
+    bgp_peer_compute_ug_key(peer, sess, &ugk);
     /* NH_UNCHANGED 仅影响 nexthop 规则，不改变 update-group 划分。 */
     bgp_update_group_t *ug = bgp_update_group_find_or_create(inst, &ugk);
     if (!ug)
@@ -598,19 +614,55 @@ bool bgp_subgroup_eval_export(const bgp_nh_subgroup_t *sg, const bgp_route_node_
     }
 
     bgp_sess_type_t stype = sg->parent ? sg->parent->key.sess_type : BGP_SESS_TYPE_UNKNOWN;
+    bool target_is_client = sg->parent ? BIT_TEST(sg->parent->key.flags, BGP_UG_FLAG_TARGET_RR_CLIENT) : false;
+    bool is_reflecting = false;
 
-    /* iBGP→iBGP 反射检查 */
+    /* iBGP→iBGP 反射检查：仅当目标 peer 是 RR client 时允许反射，否则 split-horizon */
     if (stype == BGP_SESS_TYPE_IBGP && !BIT_TEST(best->flags, BGP_ROUTE_FLAG_IMPORT))
     {
         const bgp_session_t *src_sess = bgp_best_source_session(best);
         if (src_sess && src_sess->sess_type == BGP_SESS_TYPE_IBGP)
         {
-            return false;
+            if (!target_is_client)
+            {
+                return false;
+            }
+            is_reflecting = true;
         }
     }
 
     /* 属性准备：复制 + eBGP AS_PATH prepend */
     memcpy(out_attr, BGP_ROUTE_ATTR(best), sizeof(*out_attr));
+
+    /* RR 反射：注入 ORIGINATOR_ID + 在 CLUSTER_LIST 头部 prepend 本端 cluster-id（RFC 4456 §8） */
+    if (is_reflecting)
+    {
+        const bgp_session_t *src_sess = bgp_best_source_session(best);
+        if (!out_attr->has_originator_id && src_sess)
+        {
+            /* ORIGINATOR_ID = 路由原始 iBGP peer 的 BGP Identifier */
+            memset(&out_attr->originator_id, 0, sizeof(out_attr->originator_id));
+            out_attr->originator_id.family = AF_INET;
+            out_attr->originator_id.u.v4.s_addr = htonl(src_sess->remote_id);
+            out_attr->has_originator_id = true;
+        }
+        /* 出向 cluster-id 取自目标 AF 实例 */
+        const bgp_instance_t *inst = (sg && sg->parent) ? sg->parent->inst : NULL;
+        uint32_t cid = bgp_inst_effective_cluster_id(inst);
+        if (cid != 0 &&
+            out_attr->cluster_list_len < (uint8_t)(sizeof(out_attr->cluster_list) / sizeof(out_attr->cluster_list[0])))
+        {
+            /* 在头部 prepend 本端 cluster-id */
+            for (int i = out_attr->cluster_list_len; i > 0; i--)
+            {
+                out_attr->cluster_list[i] = out_attr->cluster_list[i - 1];
+            }
+            memset(&out_attr->cluster_list[0], 0, sizeof(out_attr->cluster_list[0]));
+            out_attr->cluster_list[0].family = AF_INET;
+            out_attr->cluster_list[0].u.v4.s_addr = htonl(cid);
+            out_attr->cluster_list_len++;
+        }
+    }
 
     if (stype == BGP_SESS_TYPE_EBGP)
     {
@@ -967,6 +1019,115 @@ void bgp_update_group_catchup_session(bgp_session_t *sess)
     }
 }
 
+void bgp_update_group_refresh_session_af(bgp_session_t *sess, uint16_t afi, uint8_t safi)
+{
+    if (!sess)
+    {
+        return;
+    }
+
+    char addr_str[64];
+    net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
+
+    bgp_peer_t *target_peer = NULL;
+    for (GList *l = sess->peer_list; l; l = l->next)
+    {
+        bgp_peer_t *peer = (bgp_peer_t *)l->data;
+        if (!peer || !peer->inst)
+        {
+            continue;
+        }
+        if ((uint16_t)peer->inst->afi == afi && (uint8_t)peer->inst->safi == safi)
+        {
+            target_peer = peer;
+            break;
+        }
+    }
+
+    if (!target_peer)
+    {
+        LOG_WARN("BGP: neighbor=%s ROUTE-REFRESH ignored, AF=(%u/%u) not enabled", addr_str, afi, safi);
+        return;
+    }
+
+    if (target_peer->state != BGP_PEER_STATE_ESTABLISHED)
+    {
+        LOG_WARN("BGP: neighbor=%s ROUTE-REFRESH ignored, AF=(%u/%u) peer not established", addr_str, afi, safi);
+        return;
+    }
+
+    if (!target_peer->subgroups)
+    {
+        LOG_INFO("BGP: neighbor=%s ROUTE-REFRESH AF=(%u/%u) no subgroup membership, nothing to resend", addr_str, afi,
+                 safi);
+        return;
+    }
+
+    /* soft-out 语义：先走 RIB best 重 enqueue_announce 让 eval_export 用当前出向策略
+     * （cluster-id / route-map 等）刷新 ARO 里的 attr_ref；然后强制把 ARO 内容全推到
+     * announce_queue 触发重发——无条件 force-resend，不依赖 ARO 比对（attr 与上次相同
+     * 也要发，否则配置未引起 attr 变更时对端拿不到新报文）。 */
+    bgp_instance_t *inst = target_peer->inst;
+    uint32_t before_total = 0;
+    for (GList *sl = target_peer->subgroups; sl; sl = sl->next)
+    {
+        bgp_nh_subgroup_t *sg = (bgp_nh_subgroup_t *)sl->data;
+        if (sg)
+        {
+            before_total += sg->announce_count;
+        }
+    }
+
+    /* (1) RIB best → enqueue_announce：刷新 ARO（处理 attr 变更场景） */
+    if (inst->rd_entries)
+    {
+        GHashTableIter rd_iter;
+        gpointer rd_key = NULL;
+        gpointer rd_val = NULL;
+        g_hash_table_iter_init(&rd_iter, inst->rd_entries);
+        while (g_hash_table_iter_next(&rd_iter, &rd_key, &rd_val))
+        {
+            (void)rd_key;
+            bgp_rd_entry_t *e = (bgp_rd_entry_t *)rd_val;
+            if (e && e->rib)
+            {
+                bgp_rib_foreach_best(e->rib, catchup_populate_best_cb, inst);
+            }
+        }
+    }
+
+    /* (2) ARO → announce_queue：强制把所有持有的条目重推一遍（force-resend） */
+    for (GList *sl = target_peer->subgroups; sl; sl = sl->next)
+    {
+        bgp_nh_subgroup_t *sg = (bgp_nh_subgroup_t *)sl->data;
+        if (sg && sg->adj_rib_out && bgp_adj_rib_out_count(sg->adj_rib_out) > 0U)
+        {
+            bgp_adj_rib_out_foreach(sg->adj_rib_out, catchup_requeue_aro_cb, sg);
+        }
+    }
+
+    uint32_t after_total = 0;
+    for (GList *sl = target_peer->subgroups; sl; sl = sl->next)
+    {
+        bgp_nh_subgroup_t *sg = (bgp_nh_subgroup_t *)sl->data;
+        if (sg)
+        {
+            after_total += sg->announce_count;
+        }
+    }
+
+    uint32_t scheduled = (after_total > before_total) ? (after_total - before_total) : 0u;
+    if (scheduled > 0u)
+    {
+        bgp_update_group_schedule_pub(target_peer->inst);
+        LOG_INFO("BGP: neighbor=%s ROUTE-REFRESH AF=(%u/%u) re-scheduled %u NLRI(s)", addr_str, afi, safi, scheduled);
+    }
+    else
+    {
+        LOG_INFO("BGP: neighbor=%s ROUTE-REFRESH AF=(%u/%u) Adj-RIB-Out empty, nothing to resend", addr_str, afi, safi);
+    }
+}
+
 // ============================================================================
 // Packed 发送辅助
 // ============================================================================
@@ -1058,6 +1219,12 @@ static void subgroup_send_packed_withdraws(bgp_session_t *sess, uint16_t afi, ui
         cursor += packed;
         remaining -= packed;
     }
+}
+
+void bgp_send_packed_withdraws_to_session(bgp_session_t *sess, uint16_t afi, uint8_t safi,
+                                          const bgp_nlri_entry_t *const *nlri_list, int nlri_count)
+{
+    subgroup_send_packed_withdraws(sess, afi, safi, nlri_list, nlri_count);
 }
 
 /**

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+import shlex
 import time
 from typing import Any, Iterable
 
@@ -424,6 +425,46 @@ def run_cmds(
     for command in commands:
         outputs.append(cmd(rt, device, command, strict=strict, timeout=timeout))
     return outputs
+
+
+def frr_vtysh(
+    rt: TopologyRuntime,
+    device: str,
+    commands: Iterable[str],
+    *,
+    strict: bool = True,
+    timeout: int | None = None,
+) -> str:
+    args = " ".join(f"-c {shlex.quote(str(command))}" for command in commands)
+    return cmd(rt, device, f"vtysh {args}", strict=strict, timeout=timeout)
+
+
+def frr_config(
+    rt: TopologyRuntime,
+    device: str,
+    commands: Iterable[str],
+    *,
+    strict: bool = True,
+    timeout: int | None = None,
+) -> str:
+    return frr_vtysh(
+        rt,
+        device,
+        ["configure terminal", *[str(command) for command in commands]],
+        strict=strict,
+        timeout=timeout,
+    )
+
+
+def frr_show(
+    rt: TopologyRuntime,
+    device: str,
+    command: str,
+    *,
+    strict: bool = True,
+    timeout: int | None = None,
+) -> str:
+    return frr_vtysh(rt, device, [command], strict=strict, timeout=timeout)
 
 
 def cmd_query_help(

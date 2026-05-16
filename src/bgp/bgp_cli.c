@@ -1398,6 +1398,266 @@ static int handle_bgp_route_select(dev_ipc_message_t *msg, cli_tlv_parser_t *par
 }
 
 /**
+ * @brief 处理 refresh bgp 命令（group_id=18）
+ *
+ * 两种形态：
+ *   refresh bgp neighbor <ip> import|export af <af>   ← 单 peer
+ *   refresh bgp af <af> import|export                  ← 整 AF 所有 peer
+ *
+ * cfg_id 映射：1=ipv4-addr, 2=ipv6-addr, 3=import, 4=export, 5=ipv4-unicast, 6=ipv6-unicast
+ */
+static int handle_bgp_refresh(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    bgp_apply_cmd_t apply;
+    memset(&apply, 0, sizeof(apply));
+    apply.group_id = BGP_CLI_GROUP_ID_REFRESH;
+    apply.vrf_id = BGP_VRF_PUBLIC_ID;
+    char ip_buf[64] = {0};
+    gboolean has_import = FALSE;
+    gboolean has_export = FALSE;
+    gboolean has_v4_af = FALSE;
+    gboolean has_v6_af = FALSE;
+
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (CLI_TLV_IS_CTX(&entry))
+        {
+            cli_tlv_entry_free(&entry);
+            continue;
+        }
+        switch (entry.cfg_id)
+        {
+            case 1: /* ipv4-address */
+            case 2: /* ipv6-address */
+            {
+                const char *s = cli_tlv_entry_get_text(&entry);
+                if (s)
+                {
+                    snprintf(ip_buf, sizeof(ip_buf), "%s", s);
+                }
+                break;
+            }
+            case 3:
+                has_import = TRUE;
+                break;
+            case 4:
+                has_export = TRUE;
+                break;
+            case 5:
+                has_v4_af = TRUE;
+                break;
+            case 6:
+                has_v6_af = TRUE;
+                break;
+            default:
+                break;
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    if (!has_import && !has_export)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Missing direction (import|export).\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (!has_v4_af && !has_v6_af)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Missing address-family.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    apply.u.refresh.afi = has_v6_af ? BGP_AFI_IPV6 : BGP_AFI_IPV4;
+    apply.u.refresh.safi = BGP_SAFI_UNICAST;
+    apply.u.refresh.is_export = has_export ? true : false;
+
+    if (ip_buf[0] == '\0')
+    {
+        /* 无 peer：按 AF 刷所有 peer */
+        memset(&apply.u.refresh.addr, 0, sizeof(apply.u.refresh.addr));
+    }
+    else if (net_addr_from_str(ip_buf, &apply.u.refresh.addr) != 0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Invalid IP address.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    if (bgp_worker_dispatch_apply(&apply) != 0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Server unavailable.\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (apply.rc != BGP_APPLY_RC_OK)
+    {
+        char buf[280];
+        snprintf(buf, sizeof(buf), "%s\r\n", apply.errmsg);
+        bgp_send_cli_response(msg, buf);
+        return ERRCODE_FAIL;
+    }
+
+    bgp_send_cli_response(msg, "");
+    return ERRCODE_SUCCESS;
+}
+
+/**
+ * @brief 处理 reflector cluster-id <ipv4> / no reflector cluster-id（bgp 视图）
+ *
+ * group_id=20, cfg_id: 1=<cluster-id>
+ */
+static int handle_bgp_cluster_id(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    bgp_apply_cmd_t apply;
+    memset(&apply, 0, sizeof(apply));
+    apply.group_id = BGP_CLI_GROUP_ID_CLUSTER_ID;
+    apply.isNo = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
+    bgp_cli_ctx_t ctx = bgp_cli_ctx_default();
+    char id_buf[64] = {0};
+
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (CLI_TLV_IS_CTX(&entry))
+        {
+            bgp_cli_ctx_parse(&ctx, &entry);
+            cli_tlv_entry_free(&entry);
+            continue;
+        }
+        if (entry.cfg_id == 1)
+        {
+            const char *s = cli_tlv_entry_get_text(&entry);
+            if (s)
+            {
+                snprintf(id_buf, sizeof(id_buf), "%s", s);
+            }
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    apply.vrf_id = ctx.vrf_id;
+    apply.u.cluster_id.afi = ctx.afi;
+    apply.u.cluster_id.safi = ctx.safi;
+    if (!apply.isNo)
+    {
+        if (id_buf[0] == '\0')
+        {
+            bgp_send_cli_response(msg, "BGP Error: Missing cluster-id.\r\n");
+            return ERRCODE_FAIL;
+        }
+        struct in_addr tmp;
+        if (inet_pton(AF_INET, id_buf, &tmp) != 1)
+        {
+            bgp_send_cli_response(msg, "BGP Error: Invalid cluster-id.\r\n");
+            return ERRCODE_FAIL;
+        }
+        apply.u.cluster_id.cluster_id = ntohl(tmp.s_addr);
+    }
+
+    if (bgp_worker_dispatch_apply(&apply) != 0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Server unavailable.\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (apply.rc == BGP_APPLY_RC_NOOP)
+    {
+        bgp_send_cli_response(msg, "");
+        return ERRCODE_SUCCESS;
+    }
+    if (apply.rc != BGP_APPLY_RC_OK)
+    {
+        char buf[280];
+        snprintf(buf, sizeof(buf), "%s\r\n", apply.errmsg);
+        bgp_send_cli_response(msg, buf);
+        return ERRCODE_FAIL;
+    }
+
+    /* 写 DB：cluster-id 持久化（per AF instance） */
+    if (bgp_db_set_inst_cluster_id(ctx.vrf_id, ctx.afi, ctx.safi, apply.u.cluster_id.cluster_id) != 0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
+        return ERRCODE_FAIL;
+    }
+    bgp_send_cli_response(msg, "");
+    return ERRCODE_SUCCESS;
+}
+
+/**
+ * @brief 处理 neighbor <ip> reflect-client / no neighbor <ip> reflect-client（AF 视图）
+ *
+ * group_id=21, cfg_id: 1=ipv4-address, 2=ipv6-address
+ */
+static int handle_bgp_reflect_client(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    bgp_apply_cmd_t apply;
+    memset(&apply, 0, sizeof(apply));
+    apply.group_id = BGP_CLI_GROUP_ID_REFLECT_CLIENT;
+    apply.isNo = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
+    bgp_cli_ctx_t ctx = bgp_cli_ctx_default();
+    char ip_buf[64] = {0};
+
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (CLI_TLV_IS_CTX(&entry))
+        {
+            bgp_cli_ctx_parse(&ctx, &entry);
+            cli_tlv_entry_free(&entry);
+            continue;
+        }
+        if (entry.cfg_id == 1 || entry.cfg_id == 2)
+        {
+            const char *s = cli_tlv_entry_get_text(&entry);
+            if (s)
+            {
+                snprintf(ip_buf, sizeof(ip_buf), "%s", s);
+            }
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    if (ip_buf[0] == '\0')
+    {
+        bgp_send_cli_response(msg, "BGP Error: Missing neighbor IP address.\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (net_addr_from_str(ip_buf, &apply.u.reflect_client.addr) != 0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Invalid IP address.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    apply.vrf_id = ctx.vrf_id;
+    apply.u.reflect_client.afi = ctx.afi;
+    apply.u.reflect_client.safi = ctx.safi;
+
+    if (bgp_worker_dispatch_apply(&apply) != 0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Server unavailable.\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (apply.rc == BGP_APPLY_RC_NOOP)
+    {
+        bgp_send_cli_response(msg, "");
+        return ERRCODE_SUCCESS;
+    }
+    if (apply.rc != BGP_APPLY_RC_OK)
+    {
+        char buf[280];
+        snprintf(buf, sizeof(buf), "%s\r\n", apply.errmsg);
+        bgp_send_cli_response(msg, buf);
+        return ERRCODE_FAIL;
+    }
+
+    /* 写 DB：is_rr_client 标记持久化 */
+    if (bgp_db_set_neighbor_rr_client(ctx.vrf_id, ctx.afi, ctx.safi, ip_buf, !apply.isNo) != 0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
+        return ERRCODE_FAIL;
+    }
+    bgp_send_cli_response(msg, "");
+    return ERRCODE_SUCCESS;
+}
+
+/**
  * @brief 处理配置类 CLI 命令（group 1-8, 11-13），在 IPC worker 线程调用
  *
  * 配置命令通过 bgp_worker_dispatch_apply() 将状态变更派发到 BGP worker 线程，
@@ -1461,6 +1721,15 @@ int bgp_cli_handle_config_msg(dev_ipc_message_t *msg)
             break;
         case BGP_CLI_GROUP_ID_ROUTE_SELECT:
             result = handle_bgp_route_select(msg, &parser);
+            break;
+        case BGP_CLI_GROUP_ID_REFRESH:
+            result = handle_bgp_refresh(msg, &parser);
+            break;
+        case BGP_CLI_GROUP_ID_CLUSTER_ID:
+            result = handle_bgp_cluster_id(msg, &parser);
+            break;
+        case BGP_CLI_GROUP_ID_REFLECT_CLIENT:
+            result = handle_bgp_reflect_client(msg, &parser);
             break;
         default:
             LOG_WARN("BGP: 未知配置命令 group_id=%u", parser.group_id);

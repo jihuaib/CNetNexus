@@ -372,6 +372,15 @@ static void bgp_cmd_dispatch_apply(bgp_apply_cmd_t *apply)
         case BGP_CLI_GROUP_ID_ROUTE_SELECT:
             bgp_cfg_apply_route_select(apply);
             break;
+        case BGP_CLI_GROUP_ID_REFRESH:
+            bgp_cfg_apply_refresh(apply);
+            break;
+        case BGP_CLI_GROUP_ID_CLUSTER_ID:
+            bgp_cfg_apply_cluster_id(apply);
+            break;
+        case BGP_CLI_GROUP_ID_REFLECT_CLIENT:
+            bgp_cfg_apply_reflect_client(apply);
+            break;
         default:
             snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: Unknown apply group_id %u.", apply->group_id);
             break;

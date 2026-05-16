@@ -36,10 +36,29 @@
 #define LDP_TLV_FEC 0x0100
 #define LDP_TLV_ADDRESS_LIST 0x0101
 #define LDP_TLV_GENERIC_LABEL 0x0200
+#define LDP_TLV_STATUS 0x0300
 #define LDP_TLV_COMMON_HELLO_PARAMS 0x0400
 #define LDP_TLV_IPV4_TRANSPORT_ADDR 0x0401
 #define LDP_TLV_CONFIG_SEQ_NUMBER 0x0402
 #define LDP_TLV_COMMON_SESSION_PARAMS 0x0500
+
+/* Status Code values (without E/F bits; RFC 5036 §3.9) */
+#define LDP_STATUS_BAD_LDP_IDENTIFIER 0x00000001u
+#define LDP_STATUS_BAD_PROTOCOL_VERSION 0x00000002u
+#define LDP_STATUS_BAD_PDU_LENGTH 0x00000003u
+#define LDP_STATUS_UNKNOWN_MESSAGE_TYPE 0x00000004u
+#define LDP_STATUS_BAD_MESSAGE_LENGTH 0x00000005u
+#define LDP_STATUS_BAD_TLV_LENGTH 0x00000007u
+#define LDP_STATUS_MALFORMED_TLV_VALUE 0x00000008u
+#define LDP_STATUS_SHUTDOWN 0x0000000Au
+#define LDP_STATUS_SESSION_REJECTED_NO_HELLO 0x00000010u
+#define LDP_STATUS_SESSION_REJECTED_MAX_PDU_LENGTH 0x00000012u
+#define LDP_STATUS_KEEPALIVE_TIMER_EXPIRED 0x00000014u
+#define LDP_STATUS_MISSING_MESSAGE_PARAMETERS 0x00000016u
+#define LDP_STATUS_SESSION_REJECTED_BAD_KEEPALIVE_TIME 0x00000018u
+#define LDP_STATUS_INTERNAL_ERROR 0x00000019u
+
+#define LDP_STATUS_FATAL_BIT 0x80000000u
 
 /* FEC 元素类型（RFC 5036 §3.4.1） */
 #define LDP_FEC_ELEM_WILDCARD 0x01
@@ -175,6 +194,16 @@ int ldp_pkt_encode_keepalive(uint32_t self_lsr_id, uint16_t self_label_space, ui
                              size_t out_cap);
 
 /**
+ * @brief 编码 Notification PDU（Status TLV only）
+ * @param status_code 30-bit status data，fatal=1 时自动设置 E-bit
+ * @param fatal       1=fatal error notification
+ * @param ref_msg_id  关联的对端消息 ID；0 表示无
+ * @param ref_msg_type 关联的对端消息类型；0 表示无
+ */
+int ldp_pkt_encode_notification(uint32_t self_lsr_id, uint16_t self_label_space, uint32_t msg_id, uint32_t status_code,
+                                int fatal, uint32_t ref_msg_id, uint16_t ref_msg_type, uint8_t *out, size_t out_cap);
+
+/**
  * @brief 解析 Initialization 消息体（去掉消息头后）
  * @return 0 成功，-1 失败
  */
@@ -217,6 +246,13 @@ int ldp_pkt_encode_label_mapping(uint32_t self_lsr_id, uint16_t self_label_space
  */
 int ldp_pkt_encode_label_withdraw(uint32_t self_lsr_id, uint16_t self_label_space, uint32_t msg_id, uint32_t fec_prefix,
                                   uint8_t fec_prefix_len, uint8_t *out, size_t out_cap);
+
+/**
+ * @brief 编码 Label Release（IPv4 Prefix FEC + 可选 Generic Label）
+ */
+int ldp_pkt_encode_label_release(uint32_t self_lsr_id, uint16_t self_label_space, uint32_t msg_id, uint32_t fec_prefix,
+                                 uint8_t fec_prefix_len, uint32_t label, int include_label, uint8_t *out,
+                                 size_t out_cap);
 
 /**
  * @brief 解析 Label Mapping/Withdraw 消息体

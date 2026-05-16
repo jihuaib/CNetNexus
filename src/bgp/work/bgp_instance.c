@@ -18,12 +18,26 @@
 #include "log.h"
 #include "net_addr.h"
 
+uint32_t bgp_inst_effective_cluster_id(const bgp_instance_t *inst)
+{
+    if (!inst)
+    {
+        return 0;
+    }
+    if (inst->cluster_id != 0)
+    {
+        return inst->cluster_id;
+    }
+    return inst->vrf ? inst->vrf->router_id : 0;
+}
+
 bgp_instance_t *bgp_instance_create(bgp_afi_t afi, bgp_safi_t safi, bgp_vrf_t *vrf)
 {
     bgp_instance_t *inst = g_malloc0(sizeof(bgp_instance_t));
     inst->afi = afi;
     inst->safi = safi;
     inst->vrf = vrf;
+    inst->cluster_id = 0;
     /* QP 地址族默认启用"下一跳保持不变"策略：仍沿用常规 update-group 划分，仅导出时固定 PASS。 */
     if (safi == BGP_SAFI_QP)
     {

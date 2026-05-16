@@ -8,6 +8,7 @@
 #define BGP_VRF_H
 
 #include <glib.h>
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "bgp_instance.h"

@@ -18,10 +18,11 @@
  * ========================================================================== */
 
 /** @brief BGP 报文类型码（RFC 4271） */
-#define BGP_MSG_TYPE_OPEN 1         /**< OPEN 报文 */
-#define BGP_MSG_TYPE_UPDATE 2       /**< UPDATE 报文 */
-#define BGP_MSG_TYPE_NOTIFICATION 3 /**< NOTIFICATION 报文 */
-#define BGP_MSG_TYPE_KEEPALIVE 4    /**< KEEPALIVE 报文 */
+#define BGP_MSG_TYPE_OPEN 1          /**< OPEN 报文 */
+#define BGP_MSG_TYPE_UPDATE 2        /**< UPDATE 报文 */
+#define BGP_MSG_TYPE_NOTIFICATION 3  /**< NOTIFICATION 报文 */
+#define BGP_MSG_TYPE_KEEPALIVE 4     /**< KEEPALIVE 报文 */
+#define BGP_MSG_TYPE_ROUTE_REFRESH 5 /**< ROUTE-REFRESH 报文（RFC 2918） */
 
 /** BGP header 长度（Marker 16B + Length 2B + Type 1B） */
 #define BGP_HEADER_LEN 19
@@ -294,6 +295,8 @@ typedef struct bgp_attr
     char large_communities[BGP_ATTR_COMMUNITY_MAX]; /**< LARGE_COMMUNITY "GADM:LD1:LD2 ..." */
     net_addr_t originator_id;                       /**< ORIGINATOR_ID（4 字节 IPv4） */
     bool has_originator_id;                         /**< ORIGINATOR_ID 是否存在 */
+    net_addr_t cluster_list[16];                    /**< CLUSTER_LIST（IPv4 cluster-id 数组，RFC 4456） */
+    uint8_t cluster_list_len;                       /**< CLUSTER_LIST 元素数（0 表示无） */
 } bgp_attr_t;
 
 /* ============================================================================

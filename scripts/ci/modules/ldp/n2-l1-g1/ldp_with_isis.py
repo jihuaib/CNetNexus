@@ -258,25 +258,20 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             interval=3,
         )
 
-        step("Best-effort: TUNNEL candidate registration (peer_lsr_id == nexthop rule)")
-        # ISIS 注入的 nexthop 为对端 GE-1 IP（10.12.0.x），不等于对端 LSR-ID（loopback），
-        # 因此 M5 简化匹配规则下 candidate 不一定注册——这里仅做存在性弱校验，
-        # 失败不算用例失败，只用于观察。
+        step("TUNNEL candidate registration via M6 link-addr matching")
+        # M6：peer ↔ nexthop 匹配扩展为三选一（lsr_id / transport_v4 / link_addr_v4）。
+        # ISIS 注入的 nexthop 为对端 GE-1 IP（10.12.0.x），即对端 hello 包的源 IP，
+        # 命中 link_addr_v4 规则，candidate 必然注册。
         for dev, dev_label in (("r1", "r1"), ("r2", "r2")):
-            try:
-                wait_check(
-                    rt,
-                    device=dev,
-                    command="show tunnel candidate",
-                    timeout=10,
-                    interval=2,
-                    regex=[r"(?im)\bsrc\s+ldp\b"],
-                    label=f"{dev_label} ldp tunnel candidate (best effort)",
-                )
-                print(f"  [info] {dev_label} has LDP tunnel candidate")
-            except Exception:
-                print(f"  [info] {dev_label} has no LDP tunnel candidate "
-                      "(expected when peer LSR-ID != IGP nexthop)")
+            wait_check(
+                rt,
+                device=dev,
+                command="show tunnel candidate",
+                timeout=15,
+                interval=2,
+                regex=[r"(?im)\bsrc\s+ldp\b"],
+                label=f"{dev_label} ldp tunnel candidate present",
+            )
 
         # 顺便确认两个 ldp 监控展示在 IGP 帮助下的 GE-1 接口仍然 up
         step("Sanity: show ldp interface still healthy after IGP integration")

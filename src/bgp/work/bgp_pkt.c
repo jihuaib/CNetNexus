@@ -20,6 +20,7 @@
 #include "bgp_pkt_build.h"
 #include "bgp_rib.h"
 #include "bgp_session.h"
+#include "bgp_update_group.h"
 #include "bgp_vrf.h"
 #include "bgp_worker.h"
 #include "log.h"
@@ -280,6 +281,41 @@ int bgp_pkt_send_keepalive(bgp_conn_t *conn)
     return 0;
 }
 
+int bgp_pkt_send_route_refresh(bgp_conn_t *conn, uint16_t afi, uint8_t safi)
+{
+    if (!conn || conn->fd < 0)
+    {
+        return -1;
+    }
+
+    char _ip[64];
+    net_addr_to_str(&conn->peer_addr, _ip, sizeof(_ip));
+
+    /* ROUTE-REFRESH：头部 19 B + AFI(2) + Reserved(1) + SAFI(1) = 23 B */
+    uint8_t msg[BGP_MSG_HEADER_SIZE + 4];
+    memcpy(msg, BGP_MARKER, 16);
+
+    uint16_t len_be = htons((uint16_t)(BGP_MSG_HEADER_SIZE + 4));
+    memcpy(msg + 16, &len_be, 2);
+    msg[18] = (uint8_t)BGP_MSG_ROUTE_REFRESH;
+
+    uint16_t afi_be = htons(afi);
+    memcpy(msg + 19, &afi_be, 2);
+    msg[21] = 0; /* Reserved */
+    msg[22] = safi;
+
+    ssize_t n = send(conn->fd, msg, sizeof(msg), MSG_NOSIGNAL);
+    if (n != (ssize_t)sizeof(msg))
+    {
+        LOG_ERROR("BGP: Failed to send ROUTE-REFRESH to %s (afi=%u safi=%u)", _ip, afi, safi);
+        return -1;
+    }
+
+    bgp_session_tx_msg_count(conn->session, BGP_MSG_ROUTE_REFRESH);
+    LOG_INFO("BGP: Sent ROUTE-REFRESH to %s (afi=%u safi=%u)", _ip, afi, safi);
+    return 0;
+}
+
 int bgp_pkt_send_notification(bgp_conn_t *conn, uint8_t error_code, uint8_t error_subcode)
 {
     if (!conn || conn->fd < 0)
@@ -512,6 +548,57 @@ static int encode_community(uint8_t *buf, int buf_size, const char *community_st
     return attr_total;
 }
 
+/**
+ * @brief 编码 ORIGINATOR_ID 路径属性（optional non-transitive，4 字节，RFC 4456）
+ * @return 写入字节数，0=未携带，-1=空间不足
+ */
+static int encode_originator_id(uint8_t *buf, int buf_size, const bgp_attr_t *attr)
+{
+    if (!attr || !attr->has_originator_id || attr->originator_id.family != AF_INET)
+    {
+        return 0;
+    }
+    if (buf_size < 7)
+    {
+        return -1;
+    }
+    buf[0] = BGP_PA_FLAG_OPTIONAL;
+    buf[1] = BGP_PA_TYPE_ORIGINATOR_ID;
+    buf[2] = 4;
+    memcpy(buf + 3, &attr->originator_id.u.v4.s_addr, 4);
+    return 7;
+}
+
+/**
+ * @brief 编码 CLUSTER_LIST 路径属性（optional non-transitive，n*4 字节，RFC 4456）
+ * @return 写入字节数，0=未携带，-1=空间不足
+ */
+static int encode_cluster_list(uint8_t *buf, int buf_size, const bgp_attr_t *attr)
+{
+    if (!attr || attr->cluster_list_len == 0)
+    {
+        return 0;
+    }
+    int n = attr->cluster_list_len;
+    int attr_total = 3 + n * 4;
+    if (buf_size < attr_total)
+    {
+        return -1;
+    }
+    buf[0] = BGP_PA_FLAG_OPTIONAL;
+    buf[1] = BGP_PA_TYPE_CLUSTER_LIST;
+    buf[2] = (uint8_t)(n * 4);
+    for (int i = 0; i < n; i++)
+    {
+        if (attr->cluster_list[i].family != AF_INET)
+        {
+            return -1;
+        }
+        memcpy(buf + 3 + i * 4, &attr->cluster_list[i].u.v4.s_addr, 4);
+    }
+    return attr_total;
+}
+
 // ============================================================================
 // Packed UPDATE / WITHDRAW 构建（多 NLRI 共享属性）
 // ============================================================================
@@ -598,6 +685,21 @@ int bgp_pkt_build_packed_update(uint8_t *buf, int buf_size, const bgp_nlri_entry
     }
 
     n = encode_community(buf + pos, buf_size - pos, attr->communities);
+    if (n < 0)
+    {
+        return -1;
+    }
+    pos += n;
+
+    /* RFC 4456 RR 反射属性：ORIGINATOR_ID + CLUSTER_LIST */
+    n = encode_originator_id(buf + pos, buf_size - pos, attr);
+    if (n < 0)
+    {
+        return -1;
+    }
+    pos += n;
+
+    n = encode_cluster_list(buf + pos, buf_size - pos, attr);
     if (n < 0)
     {
         return -1;
@@ -1177,6 +1279,44 @@ void bgp_pkt_on_data(bgp_conn_t *conn)
 
                 bgp_bmp_thread_notify_route_monitoring(sess, frame, msg_len);
                 bgp_session_reset_hold(sess);
+                break;
+            }
+
+            case BGP_MSG_ROUTE_REFRESH:
+            {
+                /* sec_conn 或非 ESTABLISHED 状态收到 ROUTE-REFRESH：异常 */
+                if (conn != sess->pri_conn || sess->fsm_state != BGP_FSM_STATE_ESTABLISHED)
+                {
+                    LOG_WARN("BGP: peer %s unexpected ROUTE-REFRESH while session in %s", _ip,
+                             bgp_fsm_state_str(sess->fsm_state));
+                    pkt_conn_error(sess, conn, BGP_EVT_BGP_HEADER_ERR);
+                    return;
+                }
+
+                /* 报文体长度必须为 4 字节（AFI 2 + Reserved 1 + SAFI 1） */
+                if (body_len != 4)
+                {
+                    LOG_ERROR("BGP: peer %s ROUTE-REFRESH bad length %u", _ip, body_len);
+                    pkt_conn_error(sess, conn, BGP_EVT_BGP_HEADER_ERR);
+                    return;
+                }
+
+                uint16_t rr_afi_be;
+                memcpy(&rr_afi_be, body, 2);
+                uint16_t rr_afi = ntohs(rr_afi_be);
+                uint8_t rr_safi = body[3];
+
+                /* 本端必须已在 OPEN 中协商成功 Route Refresh 能力（双向）；
+                 * 未协商即收到 REFRESH 视为协议错误，断邻居 */
+                if (!BIT_TEST(sess->negotiated_caps, BGP_SESS_CAP_ROUTE_REFRESH))
+                {
+                    LOG_ERROR("BGP: peer %s sent ROUTE-REFRESH without negotiated capability, closing session", _ip);
+                    pkt_conn_error(sess, conn, BGP_EVT_BGP_HEADER_ERR);
+                    return;
+                }
+
+                LOG_INFO("BGP: Received ROUTE-REFRESH from %s (afi=%u safi=%u)", _ip, rr_afi, rr_safi);
+                bgp_update_group_refresh_session_af(sess, rr_afi, rr_safi);
                 break;
             }
 

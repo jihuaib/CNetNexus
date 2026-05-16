@@ -701,6 +701,17 @@ static void bgp_show_route_detail(GString *buf, const bgp_rthead_t *head)
             net_addr_to_str(&BGP_ROUTE_ATTR(route)->originator_id, oid, sizeof(oid));
             g_string_append_printf(buf, "    Originator: %s\r\n", oid);
         }
+        if (BGP_ROUTE_ATTR(route)->cluster_list_len > 0)
+        {
+            g_string_append(buf, "    Cluster-List:");
+            for (uint8_t i = 0; i < BGP_ROUTE_ATTR(route)->cluster_list_len; i++)
+            {
+                char cid[64];
+                net_addr_to_str(&BGP_ROUTE_ATTR(route)->cluster_list[i], cid, sizeof(cid));
+                g_string_append_printf(buf, " %s", cid);
+            }
+            g_string_append(buf, "\r\n");
+        }
         g_string_append_printf(buf, "    Added    : %s\r\n", ts_added);
         g_string_append_printf(buf, "    Updated  : %s\r\n\r\n", ts_updated);
     }
@@ -1368,6 +1379,7 @@ static int handle_bgp_show_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
     g_string_append_printf(resp_buf, "  %-24s: %u\r\n", "UPDATE", sess->rx_msg_stats.update);
     g_string_append_printf(resp_buf, "  %-24s: %u\r\n", "NOTIFICATION", sess->rx_msg_stats.notification);
     g_string_append_printf(resp_buf, "  %-24s: %u\r\n", "KEEPALIVE", sess->rx_msg_stats.keepalive);
+    g_string_append_printf(resp_buf, "  %-24s: %u\r\n", "ROUTE-REFRESH", sess->rx_msg_stats.route_refresh);
     g_string_append_printf(resp_buf, "  %-24s: %u\r\n", "Unknown", sess->rx_msg_stats.unknown);
     g_string_append_printf(resp_buf, "  %-24s: %u\r\n", "Total", sess->rx_msg_stats.total);
 
@@ -1376,6 +1388,7 @@ static int handle_bgp_show_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
     g_string_append_printf(resp_buf, "  %-24s: %u\r\n", "UPDATE", sess->tx_msg_stats.update);
     g_string_append_printf(resp_buf, "  %-24s: %u\r\n", "NOTIFICATION", sess->tx_msg_stats.notification);
     g_string_append_printf(resp_buf, "  %-24s: %u\r\n", "KEEPALIVE", sess->tx_msg_stats.keepalive);
+    g_string_append_printf(resp_buf, "  %-24s: %u\r\n", "ROUTE-REFRESH", sess->tx_msg_stats.route_refresh);
     g_string_append_printf(resp_buf, "  %-24s: %u\r\n", "Total", sess->tx_msg_stats.total);
 
     g_string_append(resp_buf, "\r\n");

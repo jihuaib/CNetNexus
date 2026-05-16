@@ -8,9 +8,11 @@ Usage:
 
 Options:
   --image <tag>         Docker image tag (default: netnexus-ci:localtest)
+  --frr-image <tag>     FRR interop image tag (default: netnexus-frr-ci:localtest)
   --report-dir <path>   Report output directory
                         (default: scripts/ci/reports/local-<timestamp>)
   --no-build            Skip docker build step
+  --no-build-frr        Skip FRR interop image build only
   --debug               Build debug image (with gdb/tcpdump, Debug build type)
   --keep                Keep case containers/networks for debugging
   --cmd-timeout <sec>   CLI command timeout for runtime (default: 30)
@@ -30,8 +32,10 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT_DIR}"
 
 IMAGE="netnexus-ci:localtest"
+FRR_IMAGE="netnexus-frr-ci:localtest"
 REPORT_DIR="scripts/ci/reports/local-$(date -u +%Y%m%d-%H%M%S)"
 BUILD_IMAGE=1
+BUILD_FRR_IMAGE=1
 DEBUG_BUILD=0
 KEEP_CASE=0
 CMD_TIMEOUT=30
@@ -44,12 +48,21 @@ while [[ $# -gt 0 ]]; do
       IMAGE="$2"
       shift 2
       ;;
+    --frr-image)
+      FRR_IMAGE="$2"
+      shift 2
+      ;;
     --report-dir)
       REPORT_DIR="$2"
       shift 2
       ;;
     --no-build)
       BUILD_IMAGE=0
+      BUILD_FRR_IMAGE=0
+      shift
+      ;;
+    --no-build-frr)
+      BUILD_FRR_IMAGE=0
       shift
       ;;
     --debug)
@@ -98,8 +111,14 @@ if [[ "${BUILD_IMAGE}" -eq 1 ]]; then
   fi
 fi
 
+if [[ "${BUILD_FRR_IMAGE}" -eq 1 ]]; then
+  echo ">>> Building FRR interop image: ${FRR_IMAGE}"
+  docker build -f scripts/ci/images/frr/Dockerfile -t "${FRR_IMAGE}" scripts/ci/images/frr
+fi
+
 echo ">>> Running all CI modules"
 echo "    image: ${IMAGE}"
+echo "    frr image: ${FRR_IMAGE}"
 echo "    report: ${REPORT_DIR}"
 
 CMD=(
@@ -116,6 +135,7 @@ if [[ "${VERBOSE_MODULES}" -eq 1 ]]; then
   CMD+=(--verbose-modules)
 fi
 
+CNETNEXUS_FRR_IMAGE="${FRR_IMAGE}" \
 "${CMD[@]}"
 
 echo ">>> Done. Open report:"

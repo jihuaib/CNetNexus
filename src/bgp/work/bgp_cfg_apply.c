@@ -21,6 +21,7 @@
 #include "bgp_import_route.h"
 #include "bgp_instance.h"
 #include "bgp_main.h"
+#include "bgp_pkt.h"
 #include "bgp_protocol.h"
 #include "bgp_rib.h"
 #include "bgp_route_flush.h"
@@ -1251,6 +1252,291 @@ void bgp_cfg_apply_route_select(bgp_apply_cmd_t *apply)
             qp_rehash_ctx_t ctx = {inst};
             g_tree_foreach(rib->head_tree, qp_rehash_cb, &ctx);
         }
+    }
+    apply->rc = BGP_APPLY_RC_OK;
+}
+
+/* ============================================================================
+ * refresh bgp neighbor <ip> import|export af <afi-safi>     ← 单 peer
+ * refresh bgp af <afi-safi> import|export                    ← 整 AF 所有 peer
+ *
+ * import：向对端发 ROUTE-REFRESH（RFC 2918），让对端重新发送其 Adj-RIB-Out
+ * export：本端从 Adj-RIB-Out 重新向该邻居发送匹配 AF 的全部路由
+ * ========================================================================== */
+
+/** 对单条 session 执行一次 refresh；返回 0=ok / 失败原因码（>0=部分失败计数） */
+static int bgp_refresh_one_session(bgp_session_t *sess, bgp_afi_t afi, bgp_safi_t safi, bool is_export, char *errmsg,
+                                   size_t errsz)
+{
+    if (sess->fsm_state != BGP_FSM_STATE_ESTABLISHED || !sess->pri_conn)
+    {
+        snprintf(errmsg, errsz, "BGP Error: Session not established.");
+        return -1;
+    }
+    if (is_export)
+    {
+        bgp_update_group_refresh_session_af(sess, (uint16_t)afi, (uint8_t)safi);
+        return 0;
+    }
+    if (!BIT_TEST(sess->negotiated_caps, BGP_SESS_CAP_ROUTE_REFRESH))
+    {
+        snprintf(errmsg, errsz, "BGP Error: Route Refresh capability not negotiated.");
+        return -1;
+    }
+    if (bgp_pkt_send_route_refresh(sess->pri_conn, (uint16_t)afi, (uint8_t)safi) != 0)
+    {
+        snprintf(errmsg, errsz, "BGP Error: Failed to send ROUTE-REFRESH.");
+        return -1;
+    }
+    return 0;
+}
+
+void bgp_cfg_apply_refresh(bgp_apply_cmd_t *apply)
+{
+    bgp_protocol_t *proto = g_bgp_work_local->protocol;
+    if (!proto)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: BGP not configured.");
+        return;
+    }
+
+    bgp_vrf_t *vrf = bgp_protocol_get_vrf(proto, apply->vrf_id);
+    if (!vrf)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VRF not found.");
+        return;
+    }
+
+    bgp_afi_t afi = apply->u.refresh.afi;
+    bgp_safi_t safi = apply->u.refresh.safi;
+    bool is_export = apply->u.refresh.is_export;
+
+    /* 单 peer 模式：addr 非全零 */
+    if (apply->u.refresh.addr.family != 0)
+    {
+        bgp_session_t *sess = bgp_vrf_find_session(vrf, &apply->u.refresh.addr);
+        if (!sess)
+        {
+            snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: Neighbor not found.");
+            return;
+        }
+        if (bgp_refresh_one_session(sess, afi, safi, is_export, apply->errmsg, sizeof(apply->errmsg)) != 0)
+        {
+            return;
+        }
+        apply->rc = BGP_APPLY_RC_OK;
+        return;
+    }
+
+    /* AF 模式：addr.family == 0，刷该 AF 下所有 peer */
+    bgp_instance_t *inst = (bgp_instance_t *)g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(afi, safi));
+    if (!inst)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: Address family not enabled.");
+        return;
+    }
+
+    GHashTableIter iter;
+    gpointer key = NULL;
+    gpointer value = NULL;
+    uint32_t ok_count = 0;
+    uint32_t skip_count = 0;
+    g_hash_table_iter_init(&iter, inst->peer_hash);
+    while (g_hash_table_iter_next(&iter, &key, &value))
+    {
+        (void)key;
+        bgp_peer_t *peer = (bgp_peer_t *)value;
+        if (!peer)
+        {
+            continue;
+        }
+        bgp_session_t *sess = bgp_vrf_find_session(vrf, &peer->addr);
+        if (!sess)
+        {
+            skip_count++;
+            continue;
+        }
+        char tmp_err[128] = {0};
+        if (bgp_refresh_one_session(sess, afi, safi, is_export, tmp_err, sizeof(tmp_err)) == 0)
+        {
+            ok_count++;
+        }
+        else
+        {
+            skip_count++;
+        }
+    }
+    if (ok_count == 0 && skip_count > 0)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: No peers refreshed in AF (skipped=%u)", skip_count);
+        return;
+    }
+    apply->rc = BGP_APPLY_RC_OK;
+}
+
+/* ============================================================================
+ * reflector cluster-id / no reflector cluster-id（RFC 4456）
+ * ========================================================================== */
+
+void bgp_cfg_apply_cluster_id(bgp_apply_cmd_t *apply)
+{
+    bgp_protocol_t *proto = g_bgp_work_local->protocol;
+    if (!proto)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: BGP not configured.");
+        return;
+    }
+    bgp_vrf_t *vrf = bgp_protocol_get_vrf(proto, apply->vrf_id);
+    if (!vrf)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VRF not found.");
+        return;
+    }
+    bgp_instance_t *inst = (bgp_instance_t *)g_hash_table_lookup(
+        vrf->inst_hash, bgp_inst_hash_key(apply->u.cluster_id.afi, apply->u.cluster_id.safi));
+    if (!inst)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: Address family not enabled.");
+        return;
+    }
+
+    uint32_t want = apply->isNo ? 0u : apply->u.cluster_id.cluster_id;
+    if (inst->cluster_id == want)
+    {
+        apply->rc = BGP_APPLY_RC_NOOP;
+        return;
+    }
+    inst->cluster_id = want;
+
+    /* cluster-id 变化对两侧路由都有影响，自动触发本 AF 下所有 ESTABLISHED peer：
+     *   (1) 出向 soft-out：refresh_session_af 重 eval_export 用新 cluster-id 刷新 ARO，
+     *       强推 announce_queue 让 client 收到新 CLUSTER_LIST
+     *   (2) 入向：给协商过 RR 能力的 peer 发 ROUTE-REFRESH，让对端重传 → 本端 ingest
+     *       命中新 cluster-id 的环路检测把历史环路路径转 unreach 撤销 */
+    if (inst->peer_hash)
+    {
+        GHashTableIter iter;
+        gpointer key = NULL;
+        gpointer value = NULL;
+        g_hash_table_iter_init(&iter, inst->peer_hash);
+        while (g_hash_table_iter_next(&iter, &key, &value))
+        {
+            (void)key;
+            bgp_peer_t *peer = (bgp_peer_t *)value;
+            if (!peer)
+            {
+                continue;
+            }
+            bgp_session_t *sess = bgp_vrf_find_session(vrf, &peer->addr);
+            if (!sess || sess->fsm_state != BGP_FSM_STATE_ESTABLISHED || !sess->pri_conn)
+            {
+                continue;
+            }
+            bgp_update_group_refresh_session_af(sess, (uint16_t)inst->afi, (uint8_t)inst->safi);
+            if (BIT_TEST(sess->negotiated_caps, BGP_SESS_CAP_ROUTE_REFRESH))
+            {
+                (void)bgp_pkt_send_route_refresh(sess->pri_conn, (uint16_t)inst->afi, (uint8_t)inst->safi);
+            }
+        }
+    }
+
+    apply->rc = BGP_APPLY_RC_OK;
+}
+
+/* ============================================================================
+ * neighbor reflect-client / no neighbor reflect-client（RFC 4456，AF 视图）
+ * ========================================================================== */
+
+void bgp_cfg_apply_reflect_client(bgp_apply_cmd_t *apply)
+{
+    bgp_protocol_t *proto = g_bgp_work_local->protocol;
+    if (!proto)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: BGP not configured.");
+        return;
+    }
+    bgp_vrf_t *vrf = bgp_protocol_get_vrf(proto, apply->vrf_id);
+    if (!vrf)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VRF not found.");
+        return;
+    }
+
+    bgp_instance_t *inst = (bgp_instance_t *)g_hash_table_lookup(
+        vrf->inst_hash, bgp_inst_hash_key(apply->u.reflect_client.afi, apply->u.reflect_client.safi));
+    if (!inst)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: Address family not enabled.");
+        return;
+    }
+
+    bgp_peer_t *peer = (bgp_peer_t *)g_hash_table_lookup(inst->peer_hash, &apply->u.reflect_client.addr);
+    if (!peer)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: Neighbor not enabled in this address family.");
+        return;
+    }
+
+    bool want = !apply->isNo;
+    bool cur = BIT_TEST(peer->flags, BGP_PEER_FLAG_RR_CLIENT);
+    if (cur == want)
+    {
+        apply->rc = BGP_APPLY_RC_NOOP;
+        return;
+    }
+
+    /* 切换 client 属性会改变 UG-key 中的 RR_CLIENT 标记，需要先离开旧子组、
+     * 修改标记、再重新加入正确的子组，然后触发一次 catchup 重发已有 ARO。 */
+    bgp_session_t *sess = bgp_vrf_find_session(vrf, &apply->u.reflect_client.addr);
+
+    /* client → non-client 过渡：peer 离开后 RR-client 子组若 peer_count 归零会被销毁，
+     * ARO 跟着丢失，下游不会收到 WITHDRAW。这里在 leave 之前把 ARO 内容定向 WITHDRAW
+     * 发给该 peer，让对端及时清掉这些路径（split-horizon 接管后本就不该再有）。 */
+    if (cur && !want && sess && sess->pri_conn && peer->subgroups)
+    {
+        for (GList *sl = peer->subgroups; sl; sl = sl->next)
+        {
+            bgp_nh_subgroup_t *sg = (bgp_nh_subgroup_t *)sl->data;
+            if (!sg || !sg->adj_rib_out || bgp_adj_rib_out_count(sg->adj_rib_out) == 0u)
+            {
+                continue;
+            }
+            GPtrArray *nlri_ptrs = g_ptr_array_new_with_free_func(g_free);
+            GHashTableIter aro_iter;
+            gpointer aro_key = NULL;
+            gpointer aro_val = NULL;
+            g_hash_table_iter_init(&aro_iter, sg->adj_rib_out->table);
+            while (g_hash_table_iter_next(&aro_iter, &aro_key, &aro_val))
+            {
+                bgp_nlri_entry_t *copy = (bgp_nlri_entry_t *)g_malloc(sizeof(*copy));
+                memcpy(copy, aro_key, sizeof(*copy));
+                g_ptr_array_add(nlri_ptrs, copy);
+            }
+            if (nlri_ptrs->len > 0)
+            {
+                bgp_send_packed_withdraws_to_session(sess, (uint16_t)inst->afi, (uint8_t)inst->safi,
+                                                     (const bgp_nlri_entry_t *const *)nlri_ptrs->pdata,
+                                                     (int)nlri_ptrs->len);
+            }
+            g_ptr_array_free(nlri_ptrs, TRUE);
+        }
+    }
+
+    if (peer->subgroups)
+    {
+        bgp_subgroup_peer_leave(peer, sess);
+    }
+    if (want)
+    {
+        BIT_SET(peer->flags, BGP_PEER_FLAG_RR_CLIENT);
+    }
+    else
+    {
+        BIT_CLR(peer->flags, BGP_PEER_FLAG_RR_CLIENT);
+    }
+    if (sess && sess->fsm_state == BGP_FSM_STATE_ESTABLISHED && peer->state == BGP_PEER_STATE_ESTABLISHED)
+    {
+        bgp_update_group_catchup_session(sess);
     }
     apply->rc = BGP_APPLY_RC_OK;
 }

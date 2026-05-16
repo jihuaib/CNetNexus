@@ -38,6 +38,11 @@ PROMPT_RE = re.compile(br"<[A-Za-z0-9_.-]+(?:\([^>]*\))?>")
 IF_RE = re.compile(r"^GE-(\d+)$")
 PAGER_DISABLE_CMD = "terminal length 0"
 CORE_DIR_ENV = "NN_CORE_DIR"
+DEVICE_KIND_NETNEXUS = "netnexus"
+DEVICE_KIND_FRR = "frr"
+SUPPORTED_DEVICE_KINDS = {DEVICE_KIND_NETNEXUS, DEVICE_KIND_FRR}
+DEFAULT_FRR_IMAGE = "netnexus-frr-ci:localtest"
+FRR_IMAGE_ENV = "CNETNEXUS_FRR_IMAGE"
 
 
 def get_core_dump_dir() -> str | None:
@@ -89,6 +94,15 @@ def parse_if_index(if_name: str) -> int:
     if idx < 1:
         raise ValueError(f"invalid interface index in '{if_name}'")
     return idx
+
+
+def device_kind(cfg: dict[str, Any]) -> str:
+    kind = str(cfg.get("kind", cfg.get("type", DEVICE_KIND_NETNEXUS))).strip().lower()
+    return kind or DEVICE_KIND_NETNEXUS
+
+
+def if_linux_name(if_name: str) -> str:
+    return f"eth{parse_if_index(if_name)}"
 
 
 def parse_cidr(cidr: str) -> tuple[str, int]:
@@ -333,6 +347,10 @@ def validate_top(top: dict[str, Any]) -> None:
     for dev, cfg in devices.items():
         if not isinstance(cfg, dict):
             raise ValueError(f"device '{dev}' config must be a mapping")
+        kind = device_kind(cfg)
+        if kind not in SUPPORTED_DEVICE_KINDS:
+            supported = ", ".join(sorted(SUPPORTED_DEVICE_KINDS))
+            raise ValueError(f"device '{dev}' has unsupported kind '{kind}', supported: {supported}")
 
     used_if: dict[str, set[str]] = {d: set() for d in devices}
     seen_links: set[str] = set()
@@ -514,6 +532,10 @@ class TopologyRuntime:
         self.mgmt_net = f"{self.prefix}-mgmt"
         self.devices: dict[str, dict[str, Any]] = top["devices"]
         self.device_order: list[str] = sorted(self.devices.keys())
+        self.device_kinds: dict[str, str] = {dev: device_kind(cfg) for dev, cfg in self.devices.items()}
+        self.device_images: dict[str, str] = {
+            dev: self._resolve_device_image(dev, cfg, image) for dev, cfg in self.devices.items()
+        }
         self.endpoints = build_endpoints(top)
         self.link_endpoints: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {}
         for link in self.top["links"]:
@@ -527,6 +549,7 @@ class TopologyRuntime:
         self.link_connected: set[str] = set()
 
         self.container_names: list[str] = []
+        self.container_to_device: dict[str, str] = {}
         self.link_networks: list[str] = []
         # 所有已创建的 stub 网络（key 由 _stub_network_name 生成），close() 时统一清理
         self.stub_networks: set[str] = set()
@@ -545,6 +568,41 @@ class TopologyRuntime:
                 )
             for idx, dev in enumerate(self.device_order):
                 self.cli_publish_ports[dev] = publish_cli_base + idx
+
+    def _resolve_device_image(self, device: str, cfg: dict[str, Any], default_image: str) -> str:
+        explicit = str(cfg.get("image", "")).strip()
+        if explicit:
+            return explicit
+
+        images = self.top.get("images", {})
+        if not isinstance(images, dict):
+            images = {}
+
+        kind = device_kind(cfg)
+        if kind == DEVICE_KIND_FRR:
+            env_image = os.environ.get(FRR_IMAGE_ENV, "").strip()
+            return (
+                env_image
+                or str(images.get(DEVICE_KIND_FRR, "")).strip()
+                or str(self.top.get("frr_image", "")).strip()
+                or DEFAULT_FRR_IMAGE
+            )
+
+        return str(images.get(DEVICE_KIND_NETNEXUS, "")).strip() or default_image
+
+    def _device_kind(self, device: str) -> str:
+        if device not in self.devices:
+            raise ValueError(f"unknown device '{device}'")
+        return self.device_kinds[device]
+
+    def get_device_kind(self, device: str) -> str:
+        return self._device_kind(device)
+
+    def _is_netnexus(self, device: str) -> bool:
+        return self._device_kind(device) == DEVICE_KIND_NETNEXUS
+
+    def _is_frr(self, device: str) -> bool:
+        return self._device_kind(device) == DEVICE_KIND_FRR
 
     def _container_name(self, device: str) -> str:
         return f"{self.prefix}-{sanitize_name(device)}"
@@ -590,6 +648,64 @@ class TopologyRuntime:
                 ),
             ]
         )
+
+    def _start_frr_process(self, container_name: str) -> None:
+        run_cmd(
+            [
+                "docker",
+                "exec",
+                "-d",
+                container_name,
+                "/bin/bash",
+                "-lc",
+                "exec /usr/local/bin/ci-start-frr.sh > /tmp/frr-ci-start.log 2>&1",
+            ]
+        )
+
+    def _wait_frr_ready(self, device: str, *, timeout: int) -> None:
+        cname = self._container_name(device)
+        deadline = time.time() + timeout
+        last_err = ""
+        while time.time() < deadline:
+            proc = subprocess.run(
+                ["docker", "exec", cname, "vtysh", "-c", "show version"],
+                text=True,
+                capture_output=True,
+            )
+            if proc.returncode == 0:
+                return
+            last_err = (proc.stderr or proc.stdout or "").strip()
+            time.sleep(1)
+        raise RuntimeError(f"{device}: FRR vtysh not ready within {timeout}s: {last_err}")
+
+    def _exec_frr_shell(
+        self,
+        device: str,
+        command: str,
+        *,
+        timeout: int | None = None,
+        strict: bool = True,
+    ) -> str:
+        cname = self._container_name(device)
+        eff_timeout = timeout if timeout is not None else self.cmd_timeout
+        if self.verbose:
+            print(f"<{device}:shell> {command}")
+        proc = subprocess.run(
+            ["docker", "exec", cname, "/bin/bash", "-lc", command],
+            text=True,
+            capture_output=True,
+            timeout=eff_timeout,
+        )
+        text = proc.stdout or ""
+        if proc.stderr:
+            if text and not text.endswith("\n"):
+                text += "\n"
+            text += proc.stderr
+        if self.verbose and text.strip():
+            print(text.strip())
+        if strict and proc.returncode != 0:
+            raise RuntimeError(f"{device}: command failed ({proc.returncode}): {command}\n{text}")
+        return text
 
     def _connect_cli(self, device: str, host: str, *, timeout: int) -> None:
         cli = NetNexusCli(host, 3788, device, cmd_timeout=self.cmd_timeout, verbose=self.verbose)
@@ -724,21 +840,27 @@ class TopologyRuntime:
                 "--network",
                 self.mgmt_net,
                 "--privileged",
-                "-e",
-                "NN_WORK_DIR=/opt/netnexus",
-                "-e",
-                "LD_LIBRARY_PATH=/opt/netnexus/lib",
-                "-v",
-                "/var/run/docker.sock:/var/run/docker.sock",
             ]
-            core_dir = get_core_dump_dir()
-            if core_dir:
-                docker_run_cmd.extend(["--ulimit", "core=-1", "-v", f"{core_dir}:{core_dir}"])
-            if dev in self.cli_publish_ports:
-                docker_run_cmd.extend(["-p", f"{self.cli_publish_ports[dev]}:3788"])
-            docker_run_cmd.extend([self.image, "sleep", "infinity"])
+            if self._is_netnexus(dev):
+                docker_run_cmd.extend(
+                    [
+                        "-e",
+                        "NN_WORK_DIR=/opt/netnexus",
+                        "-e",
+                        "LD_LIBRARY_PATH=/opt/netnexus/lib",
+                        "-v",
+                        "/var/run/docker.sock:/var/run/docker.sock",
+                    ]
+                )
+                core_dir = get_core_dump_dir()
+                if core_dir:
+                    docker_run_cmd.extend(["--ulimit", "core=-1", "-v", f"{core_dir}:{core_dir}"])
+                if dev in self.cli_publish_ports:
+                    docker_run_cmd.extend(["-p", f"{self.cli_publish_ports[dev]}:3788"])
+            docker_run_cmd.extend([self.device_images[dev], "sleep", "infinity"])
             run_cmd(docker_run_cmd)
             self.container_names.append(cname)
+            self.container_to_device[cname] = dev
 
         # 2) Create link networks.
         self.link_to_net.clear()
@@ -763,18 +885,26 @@ class TopologyRuntime:
                 self.slot_net[dev][ge_idx] = net
         self.link_connected = set(self.link_to_net.keys())
 
-        # 4) Start netnexus process inside each container.
+        # 4) Start device control-plane processes inside each container.
         for dev in self.devices:
-            self._start_netnexus_process(self._container_name(dev))
+            if self._is_netnexus(dev):
+                self._start_netnexus_process(self._container_name(dev))
+            elif self._is_frr(dev):
+                self._start_frr_process(self._container_name(dev))
 
-        # 5) Connect CLI via management network IP.
+        # 5) Connect NetNexus CLI via management network IP; wait for FRR vtysh.
         for dev in self.devices:
-            cname = self._container_name(dev)
-            mgmt_ip = get_container_network_ip(cname, self.mgmt_net)
-            self._connect_cli(dev, mgmt_ip, timeout=self.connect_timeout)
+            if self._is_netnexus(dev):
+                cname = self._container_name(dev)
+                mgmt_ip = get_container_network_ip(cname, self.mgmt_net)
+                self._connect_cli(dev, mgmt_ip, timeout=self.connect_timeout)
+            elif self._is_frr(dev):
+                self._wait_frr_ready(dev, timeout=self.connect_timeout)
 
         # 5b) Apply per-device sysname == top.yaml device key (so prompt 显示 r1 / r2 ...)
         for dev in self.devices:
+            if not self._is_netnexus(dev):
+                continue
             cli = self.cli_map.get(dev)
             if cli is None:
                 continue
@@ -788,11 +918,16 @@ class TopologyRuntime:
         # 6) Optional interface base config from top.
         if configure_interfaces:
             for dev, eps in self.endpoints.items():
-                cli_configure_interfaces(self.cli_map[dev], eps)
+                if self._is_netnexus(dev):
+                    cli_configure_interfaces(self.cli_map[dev], eps)
+                elif self._is_frr(dev):
+                    frr_configure_interfaces(self, dev, eps)
 
     def reboot_device(self, device: str, *, reconnect_timeout: int = 90) -> None:
         if device not in self.devices:
             raise ValueError(f"unknown device '{device}'")
+        if not self._is_netnexus(device):
+            raise ValueError(f"reboot_device is only supported for NetNexus nodes, got {device}")
 
         # Unified software reboot path (container/non-container):
         # DEV handles MODULE_SHUTDOWN notification before restarting modules.
@@ -852,6 +987,9 @@ class TopologyRuntime:
         )
 
     def exec_cmd(self, device: str, command: str, *, timeout: int | None = None, strict: bool = True) -> str:
+        if self._is_frr(device):
+            return self._exec_frr_shell(device, command, timeout=timeout, strict=strict)
+
         cli = self.cli_map.get(device)
         if cli is None:
             raise ValueError(f"unknown or disconnected device '{device}'")
@@ -859,6 +997,8 @@ class TopologyRuntime:
 
     def disable_pager_for_all_sessions(self) -> None:
         for dev in sorted(self.devices.keys()):
+            if not self._is_netnexus(dev):
+                continue
             cli = self.cli_map.get(dev)
             if cli is None:
                 raise RuntimeError(f"device '{dev}' has no active CLI session")
@@ -868,6 +1008,31 @@ class TopologyRuntime:
         if device not in self.devices:
             raise ValueError(f"unknown device '{device}'")
         return DeviceExec(self, device)
+
+    def get_container_log_specs(self, container_name: str) -> list[tuple[str, str]]:
+        device = self.container_to_device.get(container_name)
+        if not device:
+            return [("/opt/netnexus/log", "modules")]
+        if self._is_frr(device):
+            return [("/var/log/frr", "frr")]
+        return [("/opt/netnexus/log", "modules")]
+
+    def clear_container_logs(self, container_name: str) -> None:
+        device = self.container_to_device.get(container_name)
+        if device and self._is_frr(device):
+            clear_cmd = "if [ -d /var/log/frr ]; then find /var/log/frr -type f -exec truncate -s 0 {} +; fi"
+        else:
+            clear_cmd = "if [ -d /opt/netnexus/log ]; then find /opt/netnexus/log -type f -exec truncate -s 0 {} +; fi"
+        proc = subprocess.run(
+            ["docker", "exec", container_name, "/bin/bash", "-lc", clear_cmd],
+            text=True,
+            capture_output=True,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"failed to clear logs in container {container_name}: "
+                f"rc={proc.returncode}, stdout={proc.stdout or ''}, stderr={proc.stderr or ''}"
+            )
 
     def close(self, *, failed: bool = False) -> None:
         for cli in self.cli_map.values():
@@ -918,6 +1083,21 @@ def cli_configure_interfaces(cli: NetNexusCli, endpoints: list[Endpoint]) -> Non
     cli.cmd("end")
 
 
+def frr_configure_interfaces(rt: TopologyRuntime, device: str, endpoints: list[Endpoint]) -> None:
+    print(f"\n===== STEP: Auto configure FRR/Linux interface IPs on {device} =====", flush=True)
+    rt.exec_cmd(device, "sysctl -w net.ipv4.ip_forward=1 net.ipv6.conf.all.forwarding=1 >/dev/null", strict=False)
+    for ep in endpoints:
+        linux_if = if_linux_name(ep.if_name)
+        plan = f"{linux_if}: {ep.ip}/{ep.prefix}"
+        if ep.ip6:
+            plan = f"{plan}; {ep.ip6}/{ep.prefix6}"
+        print(f"apply interface {ep.if_name} ({linux_if}): {plan}, up", flush=True)
+        rt.exec_cmd(device, f"ip link set dev {shlex.quote(linux_if)} up")
+        rt.exec_cmd(device, f"ip addr replace {shlex.quote(ep.ip)}/{ep.prefix} dev {shlex.quote(linux_if)}")
+        if ep.ip6:
+            rt.exec_cmd(device, f"ip -6 addr replace {shlex.quote(ep.ip6)}/{ep.prefix6} dev {shlex.quote(linux_if)}")
+
+
 def dump_logs(container_names: list[str]) -> None:
     for name in container_names:
         print(f"\n===== docker logs: {name} =====")
@@ -927,12 +1107,21 @@ def dump_logs(container_names: list[str]) -> None:
         if proc.stderr:
             print(proc.stderr, file=sys.stderr)
         inner = subprocess.run(
-            ["docker", "exec", name, "/bin/bash", "-lc", "test -f /tmp/netnexus.log && cat /tmp/netnexus.log"],
+            [
+                "docker",
+                "exec",
+                name,
+                "/bin/bash",
+                "-lc",
+                "test -f /tmp/netnexus.log && cat /tmp/netnexus.log; "
+                "test -f /tmp/frr-ci-start.log && cat /tmp/frr-ci-start.log; "
+                "test -d /var/log/frr && find /var/log/frr -maxdepth 1 -type f -print -exec cat {} \\;",
+            ],
             text=True,
             capture_output=True,
         )
         if inner.stdout.strip():
-            print(f"----- /tmp/netnexus.log ({name}) -----")
+            print(f"----- device logs ({name}) -----")
             print(inner.stdout)
 
 
@@ -971,7 +1160,10 @@ def main() -> int:
 
         print("\n===== STEP: CLI probe =====", flush=True)
         for dev in sorted(rt.devices.keys()):
-            out = rt.exec_cmd(dev, "show version", strict=False)
+            if rt._is_frr(dev):
+                out = rt.exec_cmd(dev, "vtysh -c 'show version'", strict=False)
+            else:
+                out = rt.exec_cmd(dev, "show version", strict=False)
             print(f"show version on {dev}: ok ({len(out.strip())} chars)")
 
         print("Topology runtime smoke test passed.")

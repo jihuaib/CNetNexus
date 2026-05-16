@@ -2,12 +2,19 @@
  * @file   ldp_route_sync.c
  * @brief  ROUTE 订阅 + TUNNEL candidate 联动
  *
- * M5 简化策略：
+ * M5 简化策略（已被 M6 扩展，保留作为历史记录）：
  *   - 仅订阅 IPv4 单播，VRF=ROUTE_VRF_DEFAULT，全协议
  *   - 学到路由 → 通过 TUNNEL 申请 local label，写 local LIB，向所有 OPERATIONAL peer 通告 Label Mapping
  *   - 撤销路由 → Label Withdraw，释放 label
  *   - 收到 peer Label Mapping：查找对应路由，若 nexthop 与 peer 关联则注册 tunnel candidate
- *   - 匹配 peer 与 nexthop 的规则：peer 的 transport_v4 == route nexthop（不做 longest-prefix match）
+ *
+ * M6 调整：
+ *   - 学到/撤销路由只处理 host route（IPv4 /32），过滤直连子网与默认路由
+ *   - peer 与 route nexthop 的匹配扩展为三选一：
+ *       a) nexthop == peer LSR-ID（M5 原规则，保留兼容）
+ *       b) nexthop == peer.peer_transport_v4（hello 中通告的 transport）
+ *       c) nexthop == peer.peer_link_addr_v4（hello 报文源 IP，即对端直连接口）
+ *     实际拓扑中 IGP 注入的 nexthop 通常是 (c)，由此让 candidate 在常规组网下能注册
  *
  * @author jhb
  * @date   2026/05/06
@@ -50,6 +57,42 @@ static gboolean fec_equal(gconstpointer a, gconstpointer b)
 
 static void send_label_mapping_all_peers(uint32_t prefix, uint8_t prefix_len, uint32_t label);
 static void send_label_withdraw_all_peers(uint32_t prefix, uint8_t prefix_len);
+
+/**
+ * @brief M6 peer ↔ nexthop 匹配：检查给定 peer 是否承载该 nexthop。
+ *
+ * 三种命中方式（host order 比较）：
+ *   - peer_lsr_id == nexthop（M5 原规则，保留以兼容 transport == LSR-ID 的场景）
+ *   - peer.peer_transport_v4 == nexthop（hello 中通告的 transport）
+ *   - peer.peer_link_addr_v4 == nexthop（hello 报文源 IP，即对端直连接口）
+ *
+ * @return 1 命中 / 0 不命中
+ */
+static int peer_matches_nexthop(uint32_t peer_lsr_id, uint16_t peer_label_space, uint32_t nexthop_v4)
+{
+    if (nexthop_v4 == 0u)
+    {
+        return 0;
+    }
+    if (peer_lsr_id == nexthop_v4)
+    {
+        return 1;
+    }
+    ldp_peer_t *peer = ldp_session_lookup(peer_lsr_id, peer_label_space);
+    if (!peer)
+    {
+        return 0;
+    }
+    if (peer->peer_transport_v4 == nexthop_v4)
+    {
+        return 1;
+    }
+    if (peer->peer_link_addr_v4 == nexthop_v4)
+    {
+        return 1;
+    }
+    return 0;
+}
 
 static void fill_label_req(tunnel_label_req_t *req, const ldp_learned_route_t *route)
 {
@@ -190,7 +233,11 @@ static void learn_route(const route_msg_entry_t *e)
     {
         return;
     }
-    /* 仅吸收 host route 与可达路由（M5 不限制 prefix_len，等 M6 再 trim） */
+    /* M6: 只为 IPv4 host route (/32) 申请 LSP；过滤直连子网、默认路由等 */
+    if (e->prefix_len != 32u)
+    {
+        return;
+    }
     ldp_fec_t fec = {.prefix = ntohl(e->prefix_addr.u.v4.s_addr), .prefix_len = e->prefix_len};
 
     ldp_learned_route_t *r = (ldp_learned_route_t *)g_hash_table_lookup(g_routes, &fec);
@@ -251,7 +298,7 @@ static void learn_route(const route_msg_entry_t *e)
                 {
                     continue;
                 }
-                if (rl->peer_lsr_id == r->nexthop_v4)
+                if (peer_matches_nexthop(rl->peer_lsr_id, rl->peer_label_space, r->nexthop_v4))
                 {
                     tunnel_candidate_t cand;
                     fill_candidate(&cand, r, rl->label);
@@ -269,6 +316,10 @@ static void withdraw_route(const route_msg_entry_t *e)
         return;
     }
     if (e->afi != ROUTE_AFI_IPV4 || e->safi != ROUTE_SAFI_UNICAST)
+    {
+        return;
+    }
+    if (e->prefix_len != 32u)
     {
         return;
     }
@@ -295,7 +346,7 @@ static void withdraw_route(const route_msg_entry_t *e)
                 {
                     continue;
                 }
-                if (rl->peer_lsr_id == r->nexthop_v4)
+                if (peer_matches_nexthop(rl->peer_lsr_id, rl->peer_label_space, r->nexthop_v4))
                 {
                     tunnel_candidate_t cand;
                     fill_candidate(&cand, r, rl->label);
@@ -460,18 +511,18 @@ void ldp_route_sync_on_session_down(uint32_t peer_lsr_id, uint16_t peer_label_sp
 {
     /* session 关闭后，candidate 已通过 ldp_lib_purge_peer 清掉的 remote 表里没了；
      * 仍需主动撤销已注册的 candidate */
-    (void)peer_label_space;
     if (!g_routes)
     {
         return;
     }
+    /* 此时 peer 尚未从表中移除（close 在 remove 之前），仍可解析其 transport / link_addr */
     GHashTableIter it;
     gpointer k = NULL, v = NULL;
     g_hash_table_iter_init(&it, g_routes);
     while (g_hash_table_iter_next(&it, &k, &v))
     {
         ldp_learned_route_t *r = (ldp_learned_route_t *)v;
-        if (!r || r->nexthop_v4 != peer_lsr_id)
+        if (!r || !peer_matches_nexthop(peer_lsr_id, peer_label_space, r->nexthop_v4))
         {
             continue;
         }
@@ -484,13 +535,12 @@ void ldp_route_sync_on_session_down(uint32_t peer_lsr_id, uint16_t peer_label_sp
 void ldp_route_sync_on_remote_label(uint32_t peer_lsr_id, uint16_t peer_label_space, const ldp_fec_t *fec,
                                     uint32_t label)
 {
-    (void)peer_label_space;
     if (!fec || !g_routes)
     {
         return;
     }
     ldp_learned_route_t *r = (ldp_learned_route_t *)g_hash_table_lookup(g_routes, fec);
-    if (!r || r->nexthop_v4 != peer_lsr_id)
+    if (!r || !peer_matches_nexthop(peer_lsr_id, peer_label_space, r->nexthop_v4))
     {
         return;
     }
@@ -501,13 +551,12 @@ void ldp_route_sync_on_remote_label(uint32_t peer_lsr_id, uint16_t peer_label_sp
 
 void ldp_route_sync_on_remote_label_withdraw(uint32_t peer_lsr_id, uint16_t peer_label_space, const ldp_fec_t *fec)
 {
-    (void)peer_label_space;
     if (!fec || !g_routes)
     {
         return;
     }
     ldp_learned_route_t *r = (ldp_learned_route_t *)g_hash_table_lookup(g_routes, fec);
-    if (!r || r->nexthop_v4 != peer_lsr_id)
+    if (!r || !peer_matches_nexthop(peer_lsr_id, peer_label_space, r->nexthop_v4))
     {
         return;
     }

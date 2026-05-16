@@ -26,6 +26,7 @@ static const db_column_def_t BGP_INSTANCE_COLS[] = {
     {"safi", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
     {"import_protos", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},        /* 已导入协议位掩码 */
     {"route_select_enabled", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"}, /* QP route-select 开关 */
+    {"cluster_id", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"}, /* 主机序 32 位 cluster-id（0=用 router-id） */
 };
 
 const db_table_def_t BGP_INSTANCE_TABLE = {
@@ -149,6 +150,30 @@ int bgp_db_set_import_protos(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi, ui
     return 0;
 }
 
+int bgp_db_set_inst_cluster_id(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi, uint32_t cluster_id)
+{
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
+    if (!ctx)
+    {
+        return -1;
+    }
+    db_filter_builder_t pk;
+    bgp_db_instance_pk(&pk, vrf_id, afi, safi);
+    db_col_t cols[] = {
+        DB_COL_INT("cluster_id", (int64_t)cluster_id),
+    };
+    int rows = db_rpc_update_cols(ctx, BGP_TABLE_INSTANCE, &pk.filter, cols, G_N_ELEMENTS(cols));
+    db_filter_clear(&pk);
+    if (rows <= 0)
+    {
+        LOG_ERROR("BGP 写入 instance cluster-id vrf=%u afi=%u safi=%u 失败", vrf_id, (unsigned)afi, (unsigned)safi);
+        return -1;
+    }
+    LOG_INFO("BGP instance vrf=%u afi=%u safi=%u cluster-id=%u 已写入", vrf_id, (unsigned)afi, (unsigned)safi,
+             cluster_id);
+    return 0;
+}
+
 int bgp_db_set_route_select(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi, bool enabled)
 {
     dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
@@ -261,6 +286,23 @@ void bgp_db_restore_instances(void)
             }
             LOG_INFO("BGP restore: VRF %u afi=%u safi=%u import_protos=0x%08X proto=%u，已重新订阅路由模块", vrf_id,
                      (unsigned)afi, (unsigned)safi, import_protos, proto);
+        }
+
+        /* 恢复 cluster-id（RFC 4456） */
+        uint32_t cluster_id = (uint32_t)db_row_get_int(row, "cluster_id", 0);
+        if (cluster_id != 0)
+        {
+            bgp_apply_cmd_t cid;
+            memset(&cid, 0, sizeof(cid));
+            cid.group_id = BGP_CLI_GROUP_ID_CLUSTER_ID;
+            cid.isNo = false;
+            cid.vrf_id = vrf_id;
+            cid.u.cluster_id.afi = afi;
+            cid.u.cluster_id.safi = safi;
+            cid.u.cluster_id.cluster_id = cluster_id;
+            (void)bgp_worker_dispatch_apply(&cid);
+            LOG_INFO("BGP restore: VRF %u afi=%u safi=%u cluster-id=%u", vrf_id, (unsigned)afi, (unsigned)safi,
+                     cluster_id);
         }
     }
 

@@ -25,10 +25,11 @@
 /** BGP 报文类型 */
 typedef enum bgp_msg_type
 {
-    BGP_MSG_OPEN = 1,         /**< OPEN 报文 */
-    BGP_MSG_UPDATE = 2,       /**< UPDATE 报文 */
-    BGP_MSG_NOTIFICATION = 3, /**< NOTIFICATION 报文 */
-    BGP_MSG_KEEPALIVE = 4,    /**< KEEPALIVE 报文 */
+    BGP_MSG_OPEN = 1,          /**< OPEN 报文 */
+    BGP_MSG_UPDATE = 2,        /**< UPDATE 报文 */
+    BGP_MSG_NOTIFICATION = 3,  /**< NOTIFICATION 报文 */
+    BGP_MSG_KEEPALIVE = 4,     /**< KEEPALIVE 报文 */
+    BGP_MSG_ROUTE_REFRESH = 5, /**< ROUTE-REFRESH 报文（RFC 2918） */
 } bgp_msg_type_t;
 
 /**
@@ -47,6 +48,19 @@ int bgp_pkt_send_open(bgp_conn_t *conn, uint32_t local_as, uint32_t router_id, G
  * @return 0 成功，-1 失败
  */
 int bgp_pkt_send_keepalive(bgp_conn_t *conn);
+
+/**
+ * @brief 向对端发送 BGP ROUTE-REFRESH 报文（RFC 2918）
+ *
+ * 报文格式：BGP 头部（19 B）+ AFI（2 B）+ Reserved（1 B）+ SAFI（1 B），共 23 B。
+ * 仅当对端在 OPEN 中宣告了 Route Refresh 能力时才应发送。
+ *
+ * @param conn 连接处理器（fd 必须有效）
+ * @param afi  请求刷新的地址族
+ * @param safi 请求刷新的子地址族
+ * @return 0 成功，-1 发送失败
+ */
+int bgp_pkt_send_route_refresh(bgp_conn_t *conn, uint16_t afi, uint8_t safi);
 
 /**
  * @brief 向对端发送 BGP NOTIFICATION 报文
