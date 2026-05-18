@@ -26,12 +26,25 @@ typedef struct isis_if_af_cfg
     uint32_t metric;
 } isis_if_af_cfg_t;
 
+/** 单 (interface, level) 的 DIS 选举状态 */
+typedef struct isis_dis_state
+{
+    uint8_t lan_id[7];      /**< 当前 DIS 的 LAN-ID（sysid 6B + circuit-id 1B） */
+    uint8_t we_are_dis;     /**< 我们是当前 DIS？ */
+    uint8_t our_circuit_id; /**< 我们做 DIS 时使用的 circuit-id（非 0） */
+    uint8_t _pad0;
+    uint64_t last_election_msec; /**< 最近一次跑选举的时间，用于节流 */
+    uint32_t pseudo_seq;         /**< 我们做 DIS 时的伪节点 LSP 序列号 */
+} isis_dis_state_t;
+
 typedef struct isis_if_cfg
 {
     char ifname[IF_LOGICAL_NAME_MAX];
     isis_if_af_cfg_t v4;
     isis_if_af_cfg_t v6;
     uint64_t last_hello_tx_msec; /**< interface-level IIH tx pacing timestamp */
+    isis_dis_state_t dis_l1;     /**< 该接口 L1 的 DIS 状态 */
+    isis_dis_state_t dis_l2;     /**< 该接口 L2 的 DIS 状态 */
 } isis_if_cfg_t;
 
 static inline isis_if_af_cfg_t *isis_if_cfg_af(isis_if_cfg_t *cfg, uint16_t afi)
@@ -114,6 +127,8 @@ typedef struct isis_neighbor
     uint8_t hold_ok;
     uint8_t hello_valid;
     uint8_t _pad0[3];
+    uint8_t remote_lan_id[7]; /**< 邻居在 IIH 里声明的 LAN-ID（DIS sysid + circuit-id） */
+    uint8_t _pad1;
     net_addr_t ipv4_addr;
     net_addr_t ipv6_addr;
     uint32_t last_lsp_seq;
@@ -126,6 +141,8 @@ typedef struct isis_lsdb_entry
     char rx_ifname[IF_LOGICAL_NAME_MAX];
     uint8_t system_id[6];
     uint8_t level;
+    uint8_t pseudonode_id;
+    uint8_t fragment_id;
     uint8_t _pad0;
     uint16_t lifetime_sec;
     uint16_t checksum;
@@ -144,6 +161,7 @@ typedef struct isis_instance_cfg
     uint8_t admin_up;
     uint8_t af_ipv4;
     uint8_t af_ipv6;
+    uint8_t cost_style;              /**< ISIS_COST_STYLE_NARROW / ISIS_COST_STYLE_WIDE */
     GHashTable *if_cfgs;             /**< key=ifname(strdup), value=isis_if_cfg_t* */
     GHashTable *route_states;        /**< key=ifname|afi(strdup), value=isis_route_state_t* */
     GHashTable *learned_route_heads; /**< key=learned-route-id(strdup),
@@ -165,12 +183,22 @@ typedef enum isis_apply_op
     ISIS_APPLY_OP_AF_DEL = 6,
     ISIS_APPLY_OP_IF_SET = 7,
     ISIS_APPLY_OP_IF_DEL = 8,
+    ISIS_APPLY_OP_COST_STYLE_SET = 9,
 } isis_apply_op_t;
+
+/** 应用命令执行结果码（与 BGP 对齐） */
+typedef enum isis_apply_rc
+{
+    ISIS_APPLY_RC_OK = 0,    /**< 成功，已应用，CLI 线程需写 DB */
+    ISIS_APPLY_RC_NOOP = 1,  /**< 同配置或可忽略，CLI 线程无需写 DB */
+    ISIS_APPLY_RC_FAIL = -1, /**< 参数或状态错误，errmsg 已填写 */
+} isis_apply_rc_t;
 
 typedef struct isis_apply_cmd
 {
     isis_apply_op_t op;
-    int rc;
+    isis_apply_rc_t rc;
+    char errmsg[256]; /**< 失败时的错误描述（CLI 直接回显） */
 
     union
     {
@@ -215,6 +243,11 @@ typedef struct isis_apply_cmd
             uint32_t tag;
             char ifname[IF_LOGICAL_NAME_MAX];
         } if_del;
+        struct
+        {
+            uint32_t tag;
+            uint8_t cost_style;
+        } cost_style_set;
     } u;
 } isis_apply_cmd_t;
 
@@ -239,5 +272,10 @@ int isis_worker_post_show_cli(dev_ipc_message_t *msg);
 int isis_worker_post_if_event(dev_ipc_message_t *msg);
 
 int isis_worker_dispatch_apply(isis_apply_cmd_t *apply);
+
+/** worker 线程内：按 tag 查找 instance（cfg_apply 使用） */
+isis_instance_cfg_t *isis_lookup_instance(uint32_t tag);
+/** worker 线程内：按 tag 获取或创建 instance（cfg_apply 使用） */
+isis_instance_cfg_t *isis_get_or_create_instance(uint32_t tag);
 
 #endif /* ISIS_WORKER_H */

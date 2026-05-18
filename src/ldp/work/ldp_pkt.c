@@ -517,7 +517,7 @@ int ldp_pkt_parse_address_list_tlv(const uint8_t *body, size_t body_len, uint32_
  *   [type=2:1][address_family:2][prefix_len:1][prefix(...)]
  * 其中 prefix 字节数 = ceil(prefix_len/8)
  *
- * Generic Label TLV value = 4 bytes (高 20 位为 label)
+ * Generic Label TLV value = 4 bytes label value.
  */
 
 static size_t prefix_octets(uint8_t plen)
@@ -552,7 +552,7 @@ static int encode_generic_label_tlv(uint8_t *p, uint32_t label)
 {
     put_u16(p, LDP_TLV_GENERIC_LABEL);
     put_u16(p + 2, 4u);
-    put_u32(p + 4, (label & 0x000FFFFFu) << 12);
+    put_u32(p + 4, label & 0x000FFFFFu);
     return 8;
 }
 
@@ -755,7 +755,7 @@ static int parse_generic_label_tlv(const uint8_t *body, size_t body_len, uint32_
     {
         return -1;
     }
-    *label_out = (get_u32(body + 4) >> 12) & 0x000FFFFFu;
+    *label_out = get_u32(body + 4) & 0x000FFFFFu;
     return (int)(4u + tlv_len);
 }
 

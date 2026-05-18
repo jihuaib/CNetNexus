@@ -6,6 +6,12 @@ import WebTerminal from '../components/WebTerminal.vue';
 
 const STORAGE_KEY = 'netnexus-topology-v1';
 const TOPOLOGY_VERSION = 1;
+const DEVICE_KIND_NETNEXUS = 'netnexus';
+const DEVICE_KIND_FRR = 'frr';
+const DEFAULT_IMAGE_BY_TYPE = {
+    [DEVICE_KIND_NETNEXUS]: 'netnexus:latest',
+    [DEVICE_KIND_FRR]: 'netnexus-frr-ci:localtest'
+};
 
 const images = ref([]);
 const nodes = reactive([]);    // { id, type, x, y, image, status, instance }
@@ -21,13 +27,86 @@ const fileInputRef = ref(null);
 const captureState = ref(null);
 const captureBusy = ref(false);
 
-const MAX_PORTS = 8;
+const NETNEXUS_PORTS = 8;
+const FRR_PORTS = 4;
+const MAX_PORTS = NETNEXUS_PORTS;
 const ALL_PORTS = ['GE-1', 'GE-2', 'GE-3', 'GE-4', 'GE-5', 'GE-6', 'GE-7', 'GE-8'];
 
 let nextId = 1;
 let suppressPersist = false;
 let capturePollTimer = null;
 let capturePollLinkId = null;
+
+function isFrrType(type)
+{
+    return String(type || '').toLowerCase() === DEVICE_KIND_FRR;
+}
+
+function isFrrImageName(name)
+{
+    return /(^|[-_/])frr($|[-_:/.])/i.test(String(name || ''));
+}
+
+function ensureDefaultImages(list)
+{
+    const normalized = Array.isArray(list) ? [...list] : [];
+    const has = name => normalized.some(img => img.name === name);
+    if (!normalized.some(img => !isFrrImageName(img.name)) && !has(DEFAULT_IMAGE_BY_TYPE[DEVICE_KIND_NETNEXUS]))
+    {
+        normalized.push({ name: DEFAULT_IMAGE_BY_TYPE[DEVICE_KIND_NETNEXUS], id: '-', size: '(not built)' });
+    }
+    if (!normalized.some(img => isFrrImageName(img.name)) && !has(DEFAULT_IMAGE_BY_TYPE[DEVICE_KIND_FRR]))
+    {
+        normalized.push({ name: DEFAULT_IMAGE_BY_TYPE[DEVICE_KIND_FRR], id: '-', size: '(not built)' });
+    }
+    return normalized;
+}
+
+function imagesForDeviceType(type)
+{
+    const wantFrr = isFrrType(type);
+    const matched = images.value.filter(img => isFrrImageName(img.name) === wantFrr);
+    if (matched.length > 0) return matched;
+    return [{ name: DEFAULT_IMAGE_BY_TYPE[wantFrr ? DEVICE_KIND_FRR : DEVICE_KIND_NETNEXUS], id: '-', size: '(not built)' }];
+}
+
+function defaultImageForDeviceType(type)
+{
+    return imagesForDeviceType(type)[0]?.name || DEFAULT_IMAGE_BY_TYPE[isFrrType(type) ? DEVICE_KIND_FRR : DEVICE_KIND_NETNEXUS];
+}
+
+function maxPortsForType(type)
+{
+    return isFrrType(type) ? FRR_PORTS : NETNEXUS_PORTS;
+}
+
+function maxPortsOf(nodeId)
+{
+    const node = nodes.find(n => n.id === nodeId);
+    return maxPortsForType(node?.type);
+}
+
+function portsForType(type)
+{
+    return ALL_PORTS.slice(0, maxPortsForType(type));
+}
+
+function portsOfNode(node)
+{
+    return portsForType(node?.type);
+}
+
+function portLabelOf(node, port)
+{
+    if (!isFrrType(node?.type)) return port;
+    const m = /^GE-(\d+)$/.exec(String(port || ''));
+    return m ? `eth${m[1]}` : port;
+}
+
+function portLabelOfNodeId(nodeId, port)
+{
+    return portLabelOf(nodes.find(n => n.id === nodeId), port);
+}
 
 function linkCount(nodeId)
 {
@@ -53,7 +132,8 @@ function usedPortsOf(nodeId)
 function freePortsOf(nodeId)
 {
     const used = usedPortsOf(nodeId);
-    return ALL_PORTS.filter(p => !used.has(p));
+    const node = nodes.find(n => n.id === nodeId);
+    return portsOfNode(node).filter(p => !used.has(p));
 }
 
 function mergeLinkState(target, data)
@@ -152,7 +232,7 @@ async function loadImages()
     {
         const r = await fetch('/api/images');
         const data = await r.json();
-        images.value = data.images || [];
+        images.value = ensureDefaultImages(data.images || []);
         pushLog(`镜像列表加载成功，共 ${images.value.length} 个`);
     }
     catch (e)
@@ -232,7 +312,7 @@ async function hydrateFromSnapshot(snap, { reason = '导入', restoreRunning = f
             label: n.label ?? `${n.type}`,
             x: Number(n.x) || 0,
             y: Number(n.y) || 0,
-            image: n.image ?? (images.value[0]?.name || 'netnexus:latest'),
+            image: n.image ?? defaultImageForDeviceType(n.type),
             status: 'stopped',
             instance: null,
             // 从 JSON 里带出来的 db，等启动时回灌给后端；
@@ -465,7 +545,7 @@ watch([nodes, links], () => persistToLocalStorage(), { deep: true });
 
 function onDropDevice({ deviceType, x, y })
 {
-    const defaultImage = images.value[0]?.name || 'netnexus:latest';
+    const defaultImage = defaultImageForDeviceType(deviceType);
     const seq = nextId++;
     // 用时间戳 + 序号生成唯一 id，避免刷新页面后与后端残留实例冲突
     const uniq = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
@@ -524,18 +604,18 @@ async function onCreateLink({ from, fromPort, to, toPort })
     if (!a || !b) return;
     if (usedPortsOf(from).has(fromPort))
     {
-        pushLog(`${a.label} 的 ${fromPort} 已被占用`);
+        pushLog(`${a.label} 的 ${portLabelOf(a, fromPort)} 已被占用`);
         return;
     }
     if (usedPortsOf(to).has(toPort))
     {
-        pushLog(`${b.label} 的 ${toPort} 已被占用`);
+        pushLog(`${b.label} 的 ${portLabelOf(b, toPort)} 已被占用`);
         return;
     }
     const uniq = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
     const link = { id: `link-${uniq}-${nextId++}`, from, fromPort, to, toPort, networkName: '', wired: false };
     links.push(link);
-    pushLog(`连线 ${a.label}:${fromPort} <-> ${b.label}:${toPort}`);
+    pushLog(`连线 ${a.label}:${portLabelOf(a, fromPort)} <-> ${b.label}:${portLabelOf(b, toPort)}`);
 
     try
     {
@@ -554,7 +634,7 @@ async function onCreateLink({ from, fromPort, to, toPort })
             }
             else if (data.needRestart)
             {
-                pushLog(`链路已登记，但两端已在运行。请重启相关设备使 ${fromPort}/${toPort} 生效`);
+                pushLog(`链路已登记，但两端已在运行。请重启相关设备使 ${portLabelOf(a, fromPort)}/${portLabelOf(b, toPort)} 生效`);
             }
             else if (data.wired)
             {
@@ -594,7 +674,7 @@ async function onDeleteLink(linkId)
         captureState.value = null;
         stopCapturePolling();
     }
-    pushLog(`删除连线 ${a?.label || l.from}:${l.fromPort} <-> ${b?.label || l.to}:${l.toPort}`);
+    pushLog(`删除连线 ${a?.label || l.from}:${portLabelOf(a, l.fromPort)} <-> ${b?.label || l.to}:${portLabelOf(b, l.toPort)}`);
     await fetch(`/api/links/${encodeURIComponent(linkId)}`, { method: 'DELETE' }).catch(() => {});
 }
 
@@ -638,7 +718,9 @@ const selectedLinkEndpoints = computed(() =>
     const toNode = nodes.find(n => n.id === link.to);
     return {
         fromLabel: fromNode?.label || link.from,
-        toLabel: toNode?.label || link.to
+        toLabel: toNode?.label || link.to,
+        fromPortLabel: portLabelOf(fromNode, link.fromPort),
+        toPortLabel: portLabelOf(toNode, link.toPort)
     };
 });
 
@@ -658,7 +740,7 @@ async function startNode(node)
         : `启动 ${node.label} (${node.image}) ...`);
     try
     {
-        const body = { id: node.id, image: node.image };
+        const body = { id: node.id, image: node.image, kind: node.type };
         if (hasDb) body.dbBase64 = node.pendingDb;
 
         const r = await fetch('/api/instances', {
@@ -678,7 +760,9 @@ async function startNode(node)
         node.status = 'running';
         if (hasDb) node.pendingDb = null;
         await refreshLinksFromBackend();
-        pushLog(`${node.label} 已启动，宿主机端口 ${data.instance.hostPort}`);
+        pushLog(isFrrType(node.type)
+            ? `${node.label} 已启动，网页终端将连接 vtysh`
+            : `${node.label} 已启动，宿主机端口 ${data.instance.hostPort}`);
     }
     catch (e)
     {
@@ -865,6 +949,9 @@ function closeTerminalWindow()
                 :all-ports="ALL_PORTS"
                 :link-count-of="linkCount"
                 :free-ports-of="freePortsOf"
+                :ports-of="portsOfNode"
+                :max-ports-of="maxPortsOf"
+                :port-label-of="portLabelOf"
                 @drop-device="onDropDevice"
                 @move-node="onMoveNode"
                 @select-node="onSelectNode"
@@ -896,7 +983,7 @@ function closeTerminalWindow()
                     <div class="row">
                         <label>镜像</label>
                         <select v-model="selectedNode.image" :disabled="selectedNode.status === 'running' || selectedNode.status === 'starting'">
-                            <option v-for="img in images" :key="img.name" :value="img.name">
+                            <option v-for="img in imagesForDeviceType(selectedNode.type)" :key="img.name" :value="img.name">
                                 {{ img.name }}
                             </option>
                         </select>
@@ -907,15 +994,16 @@ function closeTerminalWindow()
                     </div>
                     <div class="row">
                         <label>接口</label>
-                        <span class="value">{{ linkCount(selectedNode.id) }} / {{ MAX_PORTS }}</span>
+                        <span class="value">{{ linkCount(selectedNode.id) }} / {{ maxPortsOf(selectedNode.id) }}</span>
                     </div>
                     <div class="ports">
                         <span
-                            v-for="p in ALL_PORTS"
+                            v-for="p in portsOfNode(selectedNode)"
                             :key="p"
                             class="port-pill"
                             :class="{ used: usedPortsOf(selectedNode.id).has(p) }"
-                        >{{ p }}</span>
+                            :title="p"
+                        >{{ portLabelOf(selectedNode, p) }}</span>
                     </div>
                     <div v-if="selectedNode.instance" class="row">
                         <label>容器</label>
@@ -923,7 +1011,9 @@ function closeTerminalWindow()
                     </div>
                     <div v-if="selectedNode.instance" class="row">
                         <label>端口</label>
-                        <span class="value mono">127.0.0.1:{{ selectedNode.instance.hostPort }}</span>
+                        <span class="value mono">
+                            {{ isFrrType(selectedNode.type) ? 'vtysh' : `127.0.0.1:${selectedNode.instance.hostPort}` }}
+                        </span>
                     </div>
                     <p class="tip">右键节点可启动 / 停止 / 连接 / 删除</p>
                 </template>
@@ -934,11 +1024,11 @@ function closeTerminalWindow()
                     </div>
                     <div class="row">
                         <label>起点</label>
-                        <span class="value">{{ selectedLinkEndpoints?.fromLabel }} · {{ selectedLink.fromPort }}</span>
+                        <span class="value">{{ selectedLinkEndpoints?.fromLabel }} · {{ selectedLinkEndpoints?.fromPortLabel }}</span>
                     </div>
                     <div class="row">
                         <label>终点</label>
-                        <span class="value">{{ selectedLinkEndpoints?.toLabel }} · {{ selectedLink.toPort }}</span>
+                        <span class="value">{{ selectedLinkEndpoints?.toLabel }} · {{ selectedLinkEndpoints?.toPortLabel }}</span>
                     </div>
                     <div class="row">
                         <label>状态</label>

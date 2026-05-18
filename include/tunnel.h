@@ -39,6 +39,7 @@ typedef enum tunnel_forward_action
 #define TUNNEL_MSG_TYPE_RESOLVE_NOTIFY DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_TUNNEL, 0x0005)
 #define TUNNEL_MSG_TYPE_LABEL_ALLOC DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_TUNNEL, 0x0006)
 #define TUNNEL_MSG_TYPE_LABEL_RELEASE DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_TUNNEL, 0x0007)
+#define TUNNEL_MSG_TYPE_RESOLVE_QUERY DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_TUNNEL, 0x0008)
 #define TUNNEL_MSG_TYPE_ACK DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_TUNNEL, 0x00FF)
 
 typedef struct tunnel_fec
@@ -114,6 +115,8 @@ int tunnel_rpc_candidate_add(dev_ipc_context_t *ctx, const tunnel_candidate_t *c
 int tunnel_rpc_candidate_del(dev_ipc_context_t *ctx, const tunnel_candidate_t *candidate);
 int tunnel_rpc_resolve_register(dev_ipc_context_t *ctx, const tunnel_resolve_req_t *req);
 int tunnel_rpc_resolve_unregister(dev_ipc_context_t *ctx, const tunnel_resolve_req_t *req);
+int tunnel_rpc_resolve_query(dev_ipc_context_t *ctx, const tunnel_resolve_req_t *req,
+                             tunnel_resolve_notify_t *notify_out, uint32_t timeout_ms);
 int tunnel_rpc_label_alloc(dev_ipc_context_t *ctx, const tunnel_label_req_t *req, uint32_t *label_out,
                            uint32_t timeout_ms);
 int tunnel_rpc_label_release(dev_ipc_context_t *ctx, const tunnel_label_req_t *req);

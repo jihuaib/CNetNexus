@@ -56,6 +56,31 @@ static void worker_send_ack(const dev_ipc_message_t *req, int32_t result)
     worker_send_ack_label(req, result, 0u);
 }
 
+static void worker_send_resolve_notify(const dev_ipc_message_t *req, const tunnel_resolve_notify_t *notify)
+{
+    if (!req || req->request_id == 0 || !notify)
+    {
+        return;
+    }
+
+    tunnel_resolve_notify_t *payload = g_memdup2(notify, sizeof(*notify));
+    if (!payload)
+    {
+        return;
+    }
+
+    dev_ipc_message_t *resp =
+        dev_ipc_message_create(TUNNEL_MSG_TYPE_RESOLVE_NOTIFY, DEV_MODULE_ID_TUNNEL, req->src_module_id,
+                               req->request_id, payload, sizeof(*payload), g_free);
+    if (!resp)
+    {
+        g_free(payload);
+        return;
+    }
+    dev_ipc_send_response(tunnel_local_ipc_ctx(), resp);
+    dev_ipc_message_free(resp);
+}
+
 static tunnel_worker_cmd_t *worker_cmd_create(tunnel_worker_cmd_type_t type, dev_ipc_message_t *msg)
 {
     tunnel_worker_cmd_t *cmd = g_malloc0(sizeof(*cmd));
@@ -142,6 +167,29 @@ static int worker_handle_watch(tunnel_worker_cmd_t *cmd, int add)
     return rc;
 }
 
+static int worker_handle_resolve_query(tunnel_worker_cmd_t *cmd)
+{
+    if (!cmd || !cmd->msg || !g_tunnel_work_local || !g_tunnel_work_local->rib || !cmd->msg->payload ||
+        cmd->msg->payload_len < sizeof(tunnel_resolve_req_t))
+    {
+        return ERRCODE_FAIL;
+    }
+
+    const tunnel_resolve_req_t *req = cmd->msg->payload;
+    tunnel_resolve_notify_t notify;
+    memset(&notify, 0, sizeof(notify));
+    int rc = tunnel_rib_resolve_query(g_tunnel_work_local->rib, req, &notify);
+    if (rc == ERRCODE_SUCCESS)
+    {
+        worker_send_resolve_notify(cmd->msg, &notify);
+    }
+    else
+    {
+        worker_send_ack(cmd->msg, rc);
+    }
+    return rc;
+}
+
 static int worker_handle_label_alloc(tunnel_worker_cmd_t *cmd)
 {
     if (!cmd || !cmd->msg || !g_tunnel_work_local || !g_tunnel_work_local->rib || !cmd->msg->payload ||
@@ -196,6 +244,9 @@ static int worker_dispatch_cmd(tunnel_worker_cmd_t *cmd)
             break;
         case TUNNEL_WORKER_CMD_RESOLVE_UNREGISTER:
             (void)worker_handle_watch(cmd, 0);
+            break;
+        case TUNNEL_WORKER_CMD_RESOLVE_QUERY:
+            (void)worker_handle_resolve_query(cmd);
             break;
         case TUNNEL_WORKER_CMD_LABEL_ALLOC:
             (void)worker_handle_label_alloc(cmd);

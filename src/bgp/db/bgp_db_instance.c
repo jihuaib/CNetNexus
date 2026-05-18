@@ -27,6 +27,7 @@ static const db_column_def_t BGP_INSTANCE_COLS[] = {
     {"import_protos", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},        /* 已导入协议位掩码 */
     {"route_select_enabled", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"}, /* QP route-select 开关 */
     {"cluster_id", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"}, /* 主机序 32 位 cluster-id（0=用 router-id） */
+    {"import_rib_sources", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"}, /* import-rib 源位掩码（bgp_import_src_t） */
 };
 
 const db_table_def_t BGP_INSTANCE_TABLE = {
@@ -147,6 +148,31 @@ int bgp_db_set_import_protos(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi, ui
 
     LOG_INFO("BGP instance vrf=%u afi=%u safi=%u import_protos=0x%08X 已写入", vrf_id, (unsigned)afi, (unsigned)safi,
              import_protos);
+    return 0;
+}
+
+int bgp_db_set_import_rib_sources(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi, uint32_t sources)
+{
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
+    if (!ctx)
+    {
+        return -1;
+    }
+    db_filter_builder_t pk;
+    bgp_db_instance_pk(&pk, vrf_id, afi, safi);
+    db_col_t cols[] = {
+        DB_COL_INT("import_rib_sources", (int64_t)sources),
+    };
+    int rows = db_rpc_update_cols(ctx, BGP_TABLE_INSTANCE, &pk.filter, cols, G_N_ELEMENTS(cols));
+    db_filter_clear(&pk);
+    if (rows <= 0)
+    {
+        LOG_ERROR("BGP 写入 instance import_rib_sources vrf=%u afi=%u safi=%u 失败", vrf_id, (unsigned)afi,
+                  (unsigned)safi);
+        return -1;
+    }
+    LOG_INFO("BGP instance vrf=%u afi=%u safi=%u import_rib_sources=0x%08X 已写入", vrf_id, (unsigned)afi,
+             (unsigned)safi, sources);
     return 0;
 }
 
@@ -286,6 +312,27 @@ void bgp_db_restore_instances(void)
             }
             LOG_INFO("BGP restore: VRF %u afi=%u safi=%u import_protos=0x%08X proto=%u，已重新订阅路由模块", vrf_id,
                      (unsigned)afi, (unsigned)safi, import_protos, proto);
+        }
+
+        /* 恢复 import-rib 跨 AF 路由互导 */
+        uint32_t import_rib_sources = (uint32_t)db_row_get_int(row, "import_rib_sources", 0);
+        for (uint32_t bit = 0; bit < 32 && import_rib_sources != 0; ++bit)
+        {
+            if ((import_rib_sources & (1U << bit)) == 0U)
+            {
+                continue;
+            }
+            bgp_apply_cmd_t imp;
+            memset(&imp, 0, sizeof(imp));
+            imp.group_id = BGP_CLI_GROUP_ID_IMPORT_RIB;
+            imp.isNo = false;
+            imp.vrf_id = vrf_id;
+            imp.u.import_rib.afi = afi;
+            imp.u.import_rib.safi = safi;
+            imp.u.import_rib.src = bit;
+            (void)bgp_worker_dispatch_apply(&imp);
+            LOG_INFO("BGP restore: VRF %u afi=%u safi=%u import-rib src=%u", vrf_id, (unsigned)afi, (unsigned)safi,
+                     bit);
         }
 
         /* 恢复 cluster-id（RFC 4456） */

@@ -47,12 +47,47 @@ static bgp_rthead_t *rthead_create(const bgp_nlri_entry_t *nlri, bgp_rib_t *rib)
 static void route_node_free(gpointer data)
 {
     bgp_route_node_t *route = (bgp_route_node_t *)data;
-    if (route)
+    if (!route)
     {
+        return;
+    }
+    /* 外部借用引用门控：若有 import_rib mirror 或 relay watch 仍持有借用指针，
+     * 标 PENDING_FREE 并跳过实际释放；待最后一次 bgp_route_node_borrow_unref
+     * 触发真正释放。 */
+    if (route->borrow_refcnt > 0)
+    {
+        BIT_SET(route->flags, BGP_ROUTE_FLAG_PENDING_FREE);
+        return;
+    }
+    bgp_attr_release(route->attr);
+    route->attr = NULL;
+    g_free(route);
+}
+
+void bgp_route_node_borrow_ref(bgp_route_node_t *route)
+{
+    if (!route)
+    {
+        return;
+    }
+    route->borrow_refcnt++;
+}
+
+void bgp_route_node_borrow_unref(bgp_route_node_t *route)
+{
+    if (!route || route->borrow_refcnt == 0)
+    {
+        return;
+    }
+    route->borrow_refcnt--;
+    if (route->borrow_refcnt == 0 && BIT_TEST(route->flags, BGP_ROUTE_FLAG_PENDING_FREE))
+    {
+        /* 节点早已被 RIB 路径上的清理流程（unreach/purge）从 head->route_list 摘除，
+         * 这里只需释放节点本身内存即可。 */
         bgp_attr_release(route->attr);
         route->attr = NULL;
+        g_free(route);
     }
-    g_free(route);
 }
 
 static void rthead_destroy(bgp_rthead_t *head)

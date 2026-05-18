@@ -2192,6 +2192,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image", required=False, help="docker image tag (fallback to top.image when omitted)")
     parser.add_argument("--report-dir", default="scripts/ci/reports", help="output directory for reports")
     parser.add_argument("--keep", action="store_true", help="keep case containers/networks for debugging")
+    parser.add_argument(
+        "--pause-on-fail",
+        action="store_true",
+        help="on check failure, skip the script's own cleanup and (with --keep) preserve runtime state so you can docker exec into the container to debug",
+    )
     parser.add_argument("--cmd-timeout", type=int, default=30, help="CLI command timeout seconds")
     parser.add_argument("--connect-timeout", type=int, default=90, help="CLI initial connect timeout seconds")
     parser.add_argument("--verbose-modules", action="store_true", help="enable verbose runtime CLI logs")
@@ -2209,6 +2214,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if args.pause_on_fail:
+        os.environ["NN_PAUSE_ON_FAIL"] = "1"
+        # 自动启用 --keep，否则容器会被 runner 清掉
+        args.keep = True
     modules_dir = Path(args.modules_dir).resolve()
     report_dir = Path(args.report_dir)
     report_html, summary_json, logs_dir, checks_dir = ensure_report_dir(report_dir)

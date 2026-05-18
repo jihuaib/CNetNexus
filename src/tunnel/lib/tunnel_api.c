@@ -78,6 +78,47 @@ int tunnel_rpc_resolve_unregister(dev_ipc_context_t *ctx, const tunnel_resolve_r
     return tunnel_rpc_send_resolve(ctx, TUNNEL_MSG_TYPE_RESOLVE_UNREGISTER, req);
 }
 
+int tunnel_rpc_resolve_query(dev_ipc_context_t *ctx, const tunnel_resolve_req_t *req,
+                             tunnel_resolve_notify_t *notify_out, uint32_t timeout_ms)
+{
+    if (!ctx || !req || !notify_out)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    tunnel_resolve_req_t *payload = g_memdup2(req, sizeof(*req));
+    if (!payload)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    dev_ipc_message_t *msg = dev_ipc_message_create(TUNNEL_MSG_TYPE_RESOLVE_QUERY, dev_ipc_get_module_id(ctx),
+                                                    DEV_MODULE_ID_TUNNEL, 0, payload, sizeof(*payload), g_free);
+    if (!msg)
+    {
+        g_free(payload);
+        return ERRCODE_FAIL;
+    }
+
+    uint32_t wait_ms = (timeout_ms == 0) ? TUNNEL_RPC_DEFAULT_TIMEOUT_MS : timeout_ms;
+    dev_ipc_message_t *resp = dev_ipc_query(ctx, DEV_MODULE_ID_TUNNEL, msg, wait_ms);
+    dev_ipc_message_free(msg);
+    if (!resp)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    int rc = ERRCODE_FAIL;
+    if (resp->msg_type == TUNNEL_MSG_TYPE_RESOLVE_NOTIFY && resp->payload &&
+        resp->payload_len >= sizeof(tunnel_resolve_notify_t))
+    {
+        memcpy(notify_out, resp->payload, sizeof(*notify_out));
+        rc = ERRCODE_SUCCESS;
+    }
+    dev_ipc_message_free(resp);
+    return rc;
+}
+
 int tunnel_rpc_label_alloc(dev_ipc_context_t *ctx, const tunnel_label_req_t *req, uint32_t *label_out,
                            uint32_t timeout_ms)
 {

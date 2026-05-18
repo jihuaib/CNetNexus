@@ -21,6 +21,7 @@ int isis_db_set_instance(uint32_t tag);
 int isis_db_del_instance(uint32_t tag);
 int isis_db_set_net(uint32_t tag, const char *net);
 int isis_db_set_is_type(uint32_t tag, uint8_t is_type);
+int isis_db_set_cost_style(uint32_t tag, uint8_t cost_style);
 int isis_db_set_af(uint32_t tag, uint16_t afi, int enabled);
 int isis_db_is_af_enabled(uint32_t tag, uint16_t afi, int *enabled_out);
 

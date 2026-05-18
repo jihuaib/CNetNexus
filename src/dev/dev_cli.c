@@ -1066,11 +1066,82 @@ static int handle_show_ipc(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_t
     return cli_chunk_stream_start(&g_dev_local->show_stream, ctx, DEV_MODULE_ID_DEV, msg, buf);
 }
 
+static int parse_ipv4_prefix_token(const char *token, net_addr_t *addr, uint8_t *prefix_len)
+{
+    if (!token || !addr || !prefix_len)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    char tmp[80];
+    g_strlcpy(tmp, token, sizeof(tmp));
+    char *slash = strchr(tmp, '/');
+    if (!slash || slash == tmp || slash[1] == '\0')
+    {
+        return ERRCODE_FAIL;
+    }
+    *slash = '\0';
+
+    char *end = NULL;
+    unsigned long len = strtoul(slash + 1, &end, 10);
+    if (!end || *end != '\0' || len > 32)
+    {
+        return ERRCODE_FAIL;
+    }
+    if (net_addr_from_str(tmp, addr) != 0 || addr->family != AF_INET)
+    {
+        return ERRCODE_FAIL;
+    }
+    *prefix_len = (uint8_t)len;
+    return ERRCODE_SUCCESS;
+}
+
+static int dev_tunnel_resolve_query(dev_ipc_context_t *ctx, const tunnel_resolve_req_t *req,
+                                    tunnel_resolve_notify_t *notify_out, uint32_t timeout_ms)
+{
+    if (!ctx || !req || !notify_out)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    tunnel_resolve_req_t *payload = g_memdup2(req, sizeof(*req));
+    if (!payload)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    dev_ipc_message_t *query = dev_ipc_message_create(TUNNEL_MSG_TYPE_RESOLVE_QUERY, DEV_MODULE_ID_DEV,
+                                                      DEV_MODULE_ID_TUNNEL, 0, payload, sizeof(*payload), g_free);
+    if (!query)
+    {
+        g_free(payload);
+        return ERRCODE_FAIL;
+    }
+
+    dev_ipc_message_t *resp = dev_ipc_query(ctx, DEV_MODULE_ID_TUNNEL, query, timeout_ms);
+    dev_ipc_message_free(query);
+    if (!resp)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    int rc = ERRCODE_FAIL;
+    if (resp->msg_type == TUNNEL_MSG_TYPE_RESOLVE_NOTIFY && resp->payload &&
+        resp->payload_len >= sizeof(tunnel_resolve_notify_t))
+    {
+        memcpy(notify_out, resp->payload, sizeof(*notify_out));
+        rc = ERRCODE_SUCCESS;
+    }
+    dev_ipc_message_free(resp);
+    return rc;
+}
+
 static int handle_ping(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
     char ip[64] = {0};
     char src_ip[64] = {0};
     gboolean ping_ipv6 = FALSE;
+    gboolean ping_mpls = FALSE;
 
     /* 解析参数：
      * cfg_id=1: ping <ipv4-address>
@@ -1078,6 +1149,8 @@ static int handle_ping(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_p
      * cfg_id=3: ping ipv6 <ipv6-address>
      * cfg_id=4: -a <src-ipv4>
      * cfg_id=5: -a <src-ipv6>
+     * cfg_id=6: ping mpls 关键字
+     * cfg_id=8: ping mpls ipv4 <ipv4-prefix>
      */
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
@@ -1092,7 +1165,11 @@ static int handle_ping(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_p
         {
             ping_ipv6 = TRUE;
         }
-        else if (entry.cfg_id == 1 || entry.cfg_id == 3)
+        else if (entry.cfg_id == 6)
+        {
+            ping_mpls = TRUE;
+        }
+        else if (entry.cfg_id == 1 || entry.cfg_id == 3 || entry.cfg_id == 8)
         {
             const char *text = cli_tlv_entry_get_text(&entry);
             if (text)
@@ -1115,6 +1192,69 @@ static int handle_ping(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_p
     {
         dev_send_cli_response(ctx, msg, "Error: missing IP address\r\n");
         return ERRCODE_FAIL;
+    }
+
+    if (ping_mpls)
+    {
+        net_addr_t target;
+        uint8_t prefix_len = 0;
+        if (parse_ipv4_prefix_token(ip, &target, &prefix_len) != ERRCODE_SUCCESS)
+        {
+            dev_send_cli_response(ctx, msg, "Error: invalid MPLS IPv4 prefix; use A.B.C.D/len\r\n");
+            return ERRCODE_FAIL;
+        }
+        if (prefix_len != 32u)
+        {
+            dev_send_cli_response(ctx, msg, "Error: MPLS ping currently requires an IPv4 /32 FEC\r\n");
+            return ERRCODE_FAIL;
+        }
+
+        net_addr_t src_addr;
+        bool has_src = false;
+        if (src_ip[0] != '\0')
+        {
+            if (net_addr_from_str(src_ip, &src_addr) != 0 || src_addr.family != AF_INET)
+            {
+                dev_send_cli_response(ctx, msg, "Error: invalid MPLS ping source address\r\n");
+                return ERRCODE_FAIL;
+            }
+            has_src = true;
+        }
+
+        tunnel_resolve_req_t req;
+        memset(&req, 0, sizeof(req));
+        req.vrf_id = 0;
+        req.afi = 1;
+        req.endpoint = target;
+
+        tunnel_resolve_notify_t notify;
+        memset(&notify, 0, sizeof(notify));
+        if (dev_tunnel_resolve_query(ctx, &req, &notify, 3000) != ERRCODE_SUCCESS || !notify.resolved ||
+            notify.label_count == 0)
+        {
+            dev_send_cli_response(ctx, msg, "Error: no resolved MPLS tunnel for target FEC\r\n");
+            return ERRCODE_FAIL;
+        }
+
+        if (g_ping_session)
+        {
+            dev_ping_close(g_ping_session);
+            g_ping_session = NULL;
+            g_ping_stream_prefixed = 0;
+        }
+
+        char errbuf[160] = {0};
+        g_ping_session =
+            dev_ping_mpls_start(&target, has_src ? &src_addr : NULL, &notify, 4, 2000, errbuf, sizeof(errbuf));
+        if (!g_ping_session)
+        {
+            char out[256];
+            snprintf(out, sizeof(out), "Error: failed to start MPLS ping: %s\r\n", errbuf[0] ? errbuf : "unknown");
+            dev_send_cli_response(ctx, msg, out);
+            return ERRCODE_FAIL;
+        }
+        g_ping_stream_prefixed = 0;
+        return ping_stream_send_next(ctx, msg);
     }
 
     /* 验证 IP 地址格式并规范化 */

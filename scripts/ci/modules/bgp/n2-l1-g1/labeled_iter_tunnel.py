@@ -6,8 +6,11 @@ BGP labeled-unicast tunnel programming check (IPv4)。
 
 目标：
 - r1 在 IPv4 labeled-unicast 引入直连路由（loop1）；loop1 直连不打 NO_ADV，可被通告。
-- r2 收到 LU 路由，迭代 FEC 经 LU 隧道，向 Route/FIB/OS 下发 MPLS 隧道下一跳。
-- 通过从 r2 ping r1 的 loop1 地址（带 -I r2_loop 源地址，确保返程可达）验证转发面 ping 通。
+- r1 端：分配本地标签，下发 MPLS ILM/POP 隧道。
+- r2 端：收到 LU 路由后停留在 BGP labeled RIB，labeled AF 不下刷 ROUTE；但仍注册
+  bgp-lu 隧道候选 + NHLFE + FTN（labeled 隧道平面）。
+- 注：route/FIB/OS install 以及转发面 ping 由 import-rib 测试单独验证（见
+  import_rib_labeled_unicast.py），本测试只覆盖 labeled AF 自身的隧道面。
 """
 
 from __future__ import annotations
@@ -124,76 +127,6 @@ def _wait_r2_tunnel_fec(rt: TopologyRuntime, *, lu_nexthop: str, timeout: int) -
         ],
         timeout=timeout,
         interval=2,
-    )
-
-
-def _wait_r2_route_rib_tunnel(rt: TopologyRuntime, *, lu_nexthop: str, timeout: int) -> None:
-    wait_check(
-        rt,
-        device="r2",
-        command=f"show route ipv4 {TEST_PREFIX_ADDR} {TEST_PREFIX_LEN}",
-        timeout=timeout,
-        interval=2,
-        contains=[f"Routing entry for {TEST_PREFIX}", f"Nexthop   : {lu_nexthop}"],
-        regex=[
-            r"(?is)Path\s*\[1\]\s*:\s*bgp\b.*?Iter NH\s*:\s*"
-            + re.escape(lu_nexthop)
-            + r"\b.*?NH-Type\s*:\s*tunnel\b.*?Tunnel-ID\s*:\s*[1-9]\d*",
-        ],
-        label="r2 Route RIB installs LU path as tunnel nexthop",
-    )
-
-
-def _wait_r2_fib_tunnel(rt: TopologyRuntime, *, lu_nexthop: str, timeout: int) -> None:
-    wait_check(
-        rt,
-        device="r2",
-        command=f"show fib ipv4 {TEST_PREFIX_ADDR} {TEST_PREFIX_LEN}",
-        timeout=timeout,
-        interval=2,
-        contains=[f"FIB Route Detail: {TEST_PREFIX}"],
-        regex=[
-            r"(?im)^\s*NH-Type\s*:\s*tunnel\s*$",
-            r"(?im)^\s*Tunnel-ID\s*:\s*[1-9]\d*\s*$",
-            r"(?im)^\s*Installed\s*:\s*yes\s*$",
-            r"(?im)^\s*Skip OS\s*:\s*no\s*$",
-            rf"(?im)^\s*Tunnel\s*:\s*state=up\s+relay={re.escape(lu_nexthop)}\s+oif=\d+\s+labels=\[[0-9,]+\]\s*$",
-        ],
-        label="r2 FIB route joins LU tunnel state and is installed",
-    )
-
-
-def _wait_r2_os_route(rt: TopologyRuntime, *, lu_nexthop: str, timeout: int) -> None:
-    row_regex = (
-        rf"(?im)^\s*main\s+unicast\s+{re.escape(TEST_PREFIX)}\s+{re.escape(lu_nexthop)}\s+"
-        r"\S+\s+bgp\s+\d+\s+mpls\[[0-9,]+\]\s*$"
-    )
-    wait_check(
-        rt,
-        device="r2",
-        command="show fib ipv4 os",
-        timeout=timeout,
-        interval=2,
-        regex=[row_regex],
-        label="r2 OS route table has LU tunnel route",
-    )
-
-
-def _verify_ping(rt: TopologyRuntime) -> None:
-    """通过 NetNexus 自带 CLI ping，从 r2 loop2 源地址 ping r1 loop1，验证 LU 转发面可达。"""
-    wait_check(
-        rt,
-        device="r2",
-        command=f"ping {R1_LOOP_V4} -a {R2_LOOP_V4}",
-        timeout=20,
-        interval=2,
-        regex=[
-            rf"(?im)^PING\s+{re.escape(R1_LOOP_V4)}\s+from\s+{re.escape(R2_LOOP_V4)}\s*:\s*\d+\s+data\s+bytes\s*$",
-            rf"(?im)^\s*\d+\s+bytes\s+from\s+{re.escape(R1_LOOP_V4)}\s*:\s*icmp_seq=\d+\s+time=",
-            r"(?im)^\s*\d+\s+packets\s+transmitted,\s+[1-9]\d*\s+received,",
-        ],
-        not_regex=[r"(?im)^\s*\d+\s+packets\s+transmitted,\s+0\s+received,"],
-        label="r2 NetNexus ping r1 loop1 from loop2 succeeds",
     )
 
 
@@ -338,14 +271,40 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         )
         _wait_r2_lu_route(rt, lu_nexthop=r2_to_r1_peer, timeout=50)
 
-        step("Verify r2 programs LU tunnel route for loop1")
+        step("Verify r2 LU tunnel candidate/NHLFE/FTN are programmed (labeled plane only)")
         _wait_r2_tunnel_fec(rt, lu_nexthop=r2_to_r1_peer, timeout=50)
-        _wait_r2_route_rib_tunnel(rt, lu_nexthop=r2_to_r1_peer, timeout=50)
-        _wait_r2_fib_tunnel(rt, lu_nexthop=r2_to_r1_peer, timeout=50)
-        _wait_r2_os_route(rt, lu_nexthop=r2_to_r1_peer, timeout=50)
 
-        step("Verify forwarding-plane ping over LU tunnel (r2 loop2 -> r1 loop1)")
-        _verify_ping(rt)
+        step("Verify r2 labeled AF does NOT install to ROUTE/FIB/OS without import-rib")
+        # show route 即使没匹配路由也会打印 "Routing entry for ..." 头部，需要用
+        # "(no matching routes)" 或 Path[N] 是否出现来判别
+        wait_checks(
+            rt,
+            [
+                {
+                    "device": "r2",
+                    "command": f"show route ipv4 {TEST_PREFIX_ADDR} {TEST_PREFIX_LEN}",
+                    "contains": ["(no matching routes)"],
+                    "not_regex": [r"Path\s*\[\d+\]\s*:\s*bgp"],
+                    "label": "r2 Route RIB has no BGP path for the LU prefix (labeled AF skips flush)",
+                },
+                {
+                    "device": "r2",
+                    "command": f"show fib ipv4 {TEST_PREFIX_ADDR} {TEST_PREFIX_LEN}",
+                    "not_contains": [f"FIB Route Detail: {TEST_PREFIX}"],
+                    "label": "r2 FIB does not have the LU prefix",
+                },
+                {
+                    "device": "r2",
+                    "command": "show fib ipv4 os",
+                    "not_regex": [
+                        rf"(?im)^\s*main\s+unicast\s+{re.escape(TEST_PREFIX)}\s+\S+\s+\S+\s+bgp\b",
+                    ],
+                    "label": "r2 OS route table does not have the LU prefix",
+                },
+            ],
+            timeout=10,
+            interval=2,
+        )
 
         print("BGP labeled-unicast tunnel programming check passed.")
     finally:

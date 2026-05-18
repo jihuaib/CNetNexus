@@ -247,6 +247,7 @@ static void append_instance_global_block(GString *out, db_row_t *row)
     int64_t is_type = db_row_get_int(row, "is_type", ISIS_IS_TYPE_LEVEL_1_2);
     int64_t af4 = db_row_get_int(row, "af_ipv4", 1);
     int64_t af6 = db_row_get_int(row, "af_ipv6", 1);
+    int64_t cost_style = db_row_get_int(row, "cost_style", ISIS_DEFAULT_COST_STYLE);
 
     g_string_append(out, "!\r\n");
     g_string_append_printf(out, "isis %u\r\n", tag);
@@ -257,6 +258,10 @@ static void append_instance_global_block(GString *out, db_row_t *row)
     if ((uint8_t)is_type != ISIS_IS_TYPE_LEVEL_1_2)
     {
         g_string_append_printf(out, " is-type %s\r\n", is_type_to_text(is_type));
+    }
+    if ((uint8_t)cost_style != ISIS_DEFAULT_COST_STYLE && (uint8_t)cost_style == ISIS_COST_STYLE_WIDE)
+    {
+        g_string_append(out, " cost-style wide\r\n");
     }
     if (af4 == 0)
     {

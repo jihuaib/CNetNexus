@@ -298,6 +298,16 @@ int bgp_db_del_vrf_connect_retry(uint32_t vrf_id);
 int bgp_db_set_inst_cluster_id(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi, uint32_t cluster_id);
 
 /**
+ * @brief 更新 AF 实例的 import-rib 源位掩码
+ * @param vrf_id  VRF ID
+ * @param afi     地址族
+ * @param safi    子地址族
+ * @param sources bgp_import_src_t 位掩码（bit N = 第 N 类源已启用）
+ * @return 0 成功，-1 失败
+ */
+int bgp_db_set_import_rib_sources(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi, uint32_t sources);
+
+/**
  * @brief 设置 AF 下邻居的 RR 客户端标记（RFC 4456）
  */
 int bgp_db_set_neighbor_rr_client(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi, const char *neighbor_ip,

@@ -113,6 +113,140 @@ static int isis_instance_af_enabled(const isis_instance_cfg_t *inst, uint16_t af
     return 0;
 }
 
+/* 前向声明（实现在本文件后半部分） */
+static int isis_extract_system_id(const char *net, uint8_t sysid[6]);
+static int isis_get_src_mac(int raw_fd, const if_api_cache_entry_t *if_entry, uint8_t out[ETH_ALEN]);
+
+/** 为 if_cfg 的 DIS 状态分配一个稳定的非零 circuit-id（按 ifindex 派生） */
+static uint8_t isis_dis_circuit_id_for(const if_api_cache_entry_t *if_entry)
+{
+    if (!if_entry || if_entry->ifindex == 0u)
+    {
+        return 1u;
+    }
+    uint8_t cid = (uint8_t)((if_entry->ifindex & 0xFFu));
+    if (cid == 0u)
+    {
+        cid = 1u;
+    }
+    return cid;
+}
+
+/** 比较 (priority, snpa)：返回 >0 表示 a 胜出，<0 表示 b 胜出，0 相等 */
+static int isis_dis_compare(uint8_t pri_a, const uint8_t snpa_a[ETH_ALEN], uint8_t pri_b,
+                            const uint8_t snpa_b[ETH_ALEN])
+{
+    if (pri_a != pri_b)
+    {
+        return (pri_a > pri_b) ? 1 : -1;
+    }
+    return memcmp(snpa_a, snpa_b, ETH_ALEN);
+}
+
+/** 在 (instance, ifname, level) 上跑一次 DIS 选举：从 ourselves + 所有 UP 邻居中
+ *  选出 (priority, SNPA) 最大者；更新 if_cfg->dis_l1/l2 状态 */
+static void isis_dis_run_election(isis_instance_cfg_t *inst, const char *ifname, uint8_t level, uint64_t now_msec)
+{
+    if (!inst || !inst->if_cfgs || !inst->neighbors || !ifname)
+    {
+        return;
+    }
+
+    isis_if_cfg_t *if_cfg = (isis_if_cfg_t *)g_hash_table_lookup(inst->if_cfgs, ifname);
+    if (!if_cfg)
+    {
+        return;
+    }
+
+    const if_api_cache_entry_t *if_entry = if_api_cache_lookup(ifname);
+    if (!if_entry || if_entry->ifindex == 0u)
+    {
+        return;
+    }
+
+    uint8_t local_sysid[6] = {0};
+    if (isis_extract_system_id(inst->net, local_sysid) != 0)
+    {
+        return;
+    }
+
+    /* 候选先放本机 */
+    uint8_t winner_pri = 64u; /* TODO: 可配置；目前固定 64 */
+    uint8_t winner_snpa[ETH_ALEN] = {0};
+    if (isis_get_src_mac(g_isis_neighbor_local.raw_fd, if_entry, winner_snpa) != 0)
+    {
+        return;
+    }
+    uint8_t winner_sysid[6];
+    memcpy(winner_sysid, local_sysid, 6u);
+    uint8_t winner_circuit_id = isis_dis_circuit_id_for(if_entry);
+    uint8_t winner_is_local = 1u;
+    uint8_t winner_remote_lan_id[7] = {0};
+
+    /* 扫描该 (ifname, level) 上所有 UP 邻居 */
+    GHashTableIter iter;
+    gpointer k = NULL;
+    gpointer v = NULL;
+    g_hash_table_iter_init(&iter, inst->neighbors);
+    while (g_hash_table_iter_next(&iter, &k, &v))
+    {
+        (void)k;
+        const isis_neighbor_t *nbr = (const isis_neighbor_t *)v;
+        if (!nbr || nbr->level != level || nbr->state != ISIS_ADJ_STATE_UP)
+        {
+            continue;
+        }
+        if (strcmp(nbr->ifname, ifname) != 0)
+        {
+            continue;
+        }
+        if (isis_dis_compare(nbr->priority, nbr->remote_snpa, winner_pri, winner_snpa) > 0)
+        {
+            winner_pri = nbr->priority;
+            memcpy(winner_snpa, nbr->remote_snpa, ETH_ALEN);
+            memcpy(winner_sysid, nbr->system_id, 6u);
+            memcpy(winner_remote_lan_id, nbr->remote_lan_id, 7u);
+            winner_is_local = 0u;
+        }
+    }
+
+    isis_dis_state_t *dis = (level == 1u) ? &if_cfg->dis_l1 : &if_cfg->dis_l2;
+    uint8_t prev_we_dis = dis->we_are_dis;
+    uint8_t prev_lan_id[7];
+    memcpy(prev_lan_id, dis->lan_id, 7u);
+
+    if (winner_is_local)
+    {
+        dis->we_are_dis = 1u;
+        dis->our_circuit_id = winner_circuit_id;
+        memcpy(dis->lan_id, local_sysid, 6u);
+        dis->lan_id[6] = winner_circuit_id;
+    }
+    else
+    {
+        dis->we_are_dis = 0u;
+        /* 邻居告诉我们他认为 DIS 是谁（remote_lan_id），优先采纳；否则用 winner_sysid+1 兜底 */
+        if (winner_remote_lan_id[6] != 0u)
+        {
+            memcpy(dis->lan_id, winner_remote_lan_id, 7u);
+        }
+        else
+        {
+            memcpy(dis->lan_id, winner_sysid, 6u);
+            dis->lan_id[6] = 1u;
+        }
+    }
+    dis->last_election_msec = now_msec;
+
+    if (dis->we_are_dis && !prev_we_dis)
+    {
+        /* 刚成为 DIS：bump 伪节点 LSP seq，等下一个 LSP tick 发出 */
+        dis->pseudo_seq += 1u;
+    }
+    /* LAN-ID 变更也会让 IS reach TLV 内容变（指向新的 pseudonode），LSP 自然在下个 tick 重发新版本 */
+    (void)prev_lan_id;
+}
+
 static const isis_if_af_cfg_t *isis_neighbor_if_af_cfg(const isis_instance_cfg_t *inst, const isis_if_cfg_t *if_cfg,
                                                        uint16_t afi)
 {
@@ -497,10 +631,28 @@ static int isis_build_iih_pdu(const isis_instance_cfg_t *inst, const isis_if_cfg
     pdu[p++] = 0u;
     pdu[p++] = 0u;
 
-    pdu[p++] = 64u;
-    memcpy(&pdu[p], system_id, 6u);
-    p += 6u;
-    pdu[p++] = 0u;
+    pdu[p++] = 64u; /* priority */
+
+    /* LAN-ID：写本机当前所认的 DIS LAN-ID（sysid 6B + circuit-id 1B）。
+     * 若刚启动还没选举（lan_id 全 0），临时用 own_sysid + own_circuit_id 占位，
+     * 让对端能尝试匹配；选举跑过后会被正确覆盖。 */
+    const isis_dis_state_t *dis = (level == 1u) ? &if_cfg->dis_l1 : &if_cfg->dis_l2;
+    uint8_t lan_id_out[7];
+    if (dis->lan_id[6] != 0u || dis->we_are_dis)
+    {
+        memcpy(lan_id_out, dis->lan_id, 7u);
+        if (lan_id_out[6] == 0u && dis->we_are_dis)
+        {
+            lan_id_out[6] = dis->our_circuit_id ? dis->our_circuit_id : isis_dis_circuit_id_for(if_entry);
+        }
+    }
+    else
+    {
+        memcpy(lan_id_out, system_id, 6u);
+        lan_id_out[6] = isis_dis_circuit_id_for(if_entry);
+    }
+    memcpy(&pdu[p], lan_id_out, 7u);
+    p += 7u;
 
     uint8_t area[64];
     uint8_t area_len = 0u;
@@ -719,12 +871,15 @@ static void isis_send_hello_if_cb(gpointer key, gpointer value, gpointer user_da
         return;
     }
 
+    /* hello tick 也跑一次选举，保证 dis 状态在没收到对端 IIH 时也能初始化（自己单独时当 DIS） */
     if (isis_level_enabled(ctx->inst, 1u))
     {
+        isis_dis_run_election(ctx->inst, if_cfg->ifname, 1u, ctx->now_msec);
         isis_send_iih_on_if(ctx->inst, if_cfg, if_entry, 1u);
     }
     if (isis_level_enabled(ctx->inst, 2u))
     {
+        isis_dis_run_election(ctx->inst, if_cfg->ifname, 2u, ctx->now_msec);
         isis_send_iih_on_if(ctx->inst, if_cfg, if_entry, 2u);
     }
 
@@ -1072,6 +1227,7 @@ typedef struct isis_rx_neighbor_ctx
     uint8_t system_id[6];
     uint16_t hold_time_sec;
     uint8_t priority;
+    uint8_t remote_lan_id[7]; /**< 邻居在 IIH 里写的 LAN-ID（DIS sysid+circuit-id） */
     uint8_t local_snpa[ETH_ALEN];
     uint8_t remote_snpa[ETH_ALEN];
     uint8_t remote_circuit_type;
@@ -1172,6 +1328,7 @@ static void isis_rx_neighbor_apply_instance(gpointer key, gpointer value, gpoint
     nbr->nlpids_ok = nlpids_ok ? 1u : 0u;
     nbr->hold_ok = hold_ok ? 1u : 0u;
     nbr->hello_valid = hello_valid ? 1u : 0u;
+    memcpy(nbr->remote_lan_id, ctx->remote_lan_id, sizeof(nbr->remote_lan_id));
     nbr->ipv4_addr = ctx->has_ipv4 ? ctx->ipv4_addr : (net_addr_t){0};
     nbr->ipv6_addr = ctx->has_ipv6 ? ctx->ipv6_addr : (net_addr_t){0};
     nbr->last_seen_msec = ctx->now_msec;
@@ -1181,6 +1338,9 @@ static void isis_rx_neighbor_apply_instance(gpointer key, gpointer value, gpoint
         isis_spf_withdraw_neighbor_routes(inst, nbr);
         isis_lsp_remove_origin(inst, nbr->level, nbr->system_id);
     }
+
+    /* 邻居状态变更或新邻居：跑 DIS 选举 */
+    isis_dis_run_election(inst, ctx->ifname, ctx->level, ctx->now_msec);
     isis_neighbor_reconcile_learned(inst, nbr);
 }
 
@@ -1251,6 +1411,7 @@ static void isis_handle_iih_payload(const uint8_t *pdu, size_t pdu_len, const st
     memcpy(ctx.system_id, &pdu[9], sizeof(ctx.system_id));
     ctx.hold_time_sec = (uint16_t)(((uint16_t)pdu[15] << 8) | pdu[16]);
     ctx.priority = pdu[19];
+    memcpy(ctx.remote_lan_id, &pdu[20], 7u);
     ctx.remote_circuit_type = pdu[8];
     ctx.now_msec = isis_now_msec();
     if (src_mac && !isis_mac_is_zero(src_mac))

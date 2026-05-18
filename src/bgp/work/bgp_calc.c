@@ -9,6 +9,7 @@
 #include <stdbool.h>
 #include <sys/socket.h>
 
+#include "bgp_import_rib.h"
 #include "bgp_rib.h"
 #include "bgp_route_flush.h"
 #include "bgp_update_group.h"
@@ -68,6 +69,13 @@ static bool route_is_better(const bgp_route_node_t *candidate, const bgp_route_n
     if (!current || !BIT_TEST(current->flags, BGP_ROUTE_FLAG_VALID))
     {
         return true;
+    }
+
+    /* 0. import-rib tiebreak：IP 迭代（非 mirror）优于隧道迭代（mirror） */
+    int tb = bgp_import_rib_tiebreak(candidate, current);
+    if (tb != 0)
+    {
+        return tb > 0;
     }
 
     /* 1. LOCAL_PREF（越高越优，未携带时默认 100） */
@@ -201,6 +209,7 @@ void bgp_calc_run_one(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
             bgp_route_flush_queue_push(inst->route_flush_queue, head);
         }
         bgp_update_group_enqueue_withdraw(inst, nlri);
+        bgp_import_rib_on_calc_done(inst, head, old_best, NULL);
         char key[BGP_NLRI_KEY_MAX];
         bgp_nlri_to_str(nlri, key, sizeof(key));
         LOG_DEBUG("BGP: calc_run_one WITHDRAW key=%s afi=%u safi=%u", key, (unsigned)inst->afi, (unsigned)inst->safi);
@@ -226,6 +235,7 @@ void bgp_calc_run_one(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
             bgp_route_flush_queue_push(inst->route_flush_queue, head);
         }
         bgp_update_group_enqueue_withdraw(inst, nlri);
+        bgp_import_rib_on_calc_done(inst, head, old_best, NULL);
         char key[BGP_NLRI_KEY_MAX];
         bgp_nlri_to_str(nlri, key, sizeof(key));
         LOG_DEBUG("BGP: calc_run_one WITHDRAW(all-invalid) key=%s afi=%u safi=%u", key, (unsigned)inst->afi,
@@ -262,6 +272,8 @@ void bgp_calc_run_one(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
     {
         bgp_route_flush_queue_push(inst->route_flush_queue, head);
     }
+
+    bgp_import_rib_on_calc_done(inst, head, old_best, new_best);
 
     char key[BGP_NLRI_KEY_MAX];
     bgp_nlri_to_str(&head->nlri, key, sizeof(key));
@@ -345,6 +357,7 @@ int bgp_calc_queue_process(bgp_calc_queue_t *q, bgp_instance_t *inst, int batch_
         LOG_DEBUG("BGP: calc_queue afi=%u safi=%u 批量处理 %d 条，剩余 %u 条", (unsigned)inst->afi,
                   (unsigned)inst->safi, processed, q->count);
     }
+    bgp_import_rib_drain_after_calc(inst);
     return processed;
 }
 

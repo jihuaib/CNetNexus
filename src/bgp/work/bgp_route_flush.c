@@ -9,6 +9,7 @@
 #include <limits.h>
 #include <string.h>
 
+#include "bgp_import_rib.h"
 #include "bgp_instance.h"
 #include "bgp_main.h"
 #include "bgp_rib.h"
@@ -183,6 +184,21 @@ int bgp_route_flush_queue_process(bgp_route_flush_queue_t *q, bgp_instance_t *in
     if (!q || !inst || batch_size <= 0)
     {
         return 0;
+    }
+
+    /* labeled instance（或其他设了 no_route_flush 的 inst）不下刷 ROUTE，
+     * 路由停留在 BGP RIB 内由 unicast 通过 import-rib 接管下刷。 */
+    if (bgp_import_rib_should_skip_flush(inst))
+    {
+        bgp_rthead_t *skip_head = NULL;
+        int drained = 0;
+        while ((skip_head = (bgp_rthead_t *)g_queue_pop_head(q->q)) != NULL)
+        {
+            q->count--;
+            bgp_rib_head_unref(skip_head);
+            drained++;
+        }
+        return drained;
     }
 
     dev_ipc_context_t *ctx = bgp_local_ipc_ctx();

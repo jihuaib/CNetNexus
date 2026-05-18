@@ -7,7 +7,8 @@ defineProps({
 const emit = defineEmits(['toggle-linking', 'restore-terminal']);
 
 const devices = [
-    { type: 'netnexus', name: 'NetNexus' }
+    { type: 'netnexus', name: 'NetNexus' },
+    { type: 'frr', name: 'FRR' }
 ];
 
 function onDragStart(ev, type)

@@ -37,6 +37,7 @@
 
 static uint64_t now_msec(void);
 static int register_peer_fd(ldp_peer_t *p, uint32_t events);
+static void peer_close_socket(ldp_peer_t *p);
 
 typedef struct ldp_pending_accept
 {
@@ -71,12 +72,18 @@ static void pending_attach_to_peer(ldp_peer_t *match, ldp_pending_accept_t *pa)
     {
         return;
     }
+    if (match->fd >= 0)
+    {
+        LOG_INFO("LDP: TCP collision for peer %u, replacing active connection with passive accept", match->peer_lsr_id);
+        peer_close_socket(match);
+    }
     /* 摘掉 pending 上挂的 epoll 注册，再以 PEER 类型重新注册到 peer fd 上 */
     if (g_ldp_work_local && g_ldp_work_local->epoll_fd >= 0)
     {
         (void)epoll_ctl(g_ldp_work_local->epoll_fd, EPOLL_CTL_DEL, pa->fd, NULL);
     }
     match->fd = pa->fd;
+    match->is_active = 0u;
     match->state = LDP_PEER_INITIALIZED;
     match->connecting_since_msec = now_msec();
     if (register_peer_fd(match, EPOLLIN | EPOLLRDHUP) < 0)
@@ -118,7 +125,7 @@ void ldp_session_pending_promote_for_transport(uint32_t transport_v4)
                     continue;
                 }
                 ldp_peer_t *cand = ldp_session_lookup(adj->peer_lsr_id, adj->peer_label_space);
-                if (cand && !cand->is_active && cand->fd < 0)
+                if (cand && cand->state != LDP_PEER_OPERATIONAL && (cand->fd < 0 || cand->is_active))
                 {
                     match = cand;
                     break;
@@ -235,7 +242,10 @@ static ldp_peer_t *peer_create(uint32_t lsr, uint16_t space, int active)
     }
     p->peer_lsr_id = lsr;
     p->peer_label_space = space;
-    p->is_active = active ? 1u : 0u;
+    if (p->fd < 0 && p->state == LDP_PEER_NON_EXIST)
+    {
+        p->is_active = active ? 1u : 0u;
+    }
     p->fd = -1;
     p->state = LDP_PEER_NON_EXIST;
     p->our_keepalive_ms =
@@ -458,7 +468,7 @@ static void advertise_local_fecs(ldp_peer_t *p)
     fec.prefix = g_ldp_work_local->proto.lsr_id;
     fec.prefix_len = 32u;
     /* 入口（egress）LSR 通告 implicit-null 让上游执行 PHP */
-    (void)ldp_lib_alloc_local_label(&fec); /* 占位，方便 show 显示 */
+    ldp_lib_set_local_label(&fec, LDP_LABEL_IMPLICIT_NULL);
     send_label_mapping(p, fec.prefix, fec.prefix_len, LDP_LABEL_IMPLICIT_NULL);
 }
 
@@ -598,7 +608,7 @@ void ldp_session_on_adjacency_up(uint32_t peer_lsr, uint16_t peer_space, uint32_
     {
         remote_xport = peer_lsr;
     }
-    int active = (local_xport > remote_xport) ? 1 : 0;
+    int active = (local_xport < remote_xport) ? 1 : 0;
     ldp_peer_t *p = ldp_session_lookup(peer_lsr, peer_space);
     if (!p)
     {
@@ -743,7 +753,7 @@ void ldp_session_handle_listen_accept(void)
                     continue;
                 }
                 ldp_peer_t *cand = ldp_session_lookup(adj->peer_lsr_id, adj->peer_label_space);
-                if (cand && !cand->is_active && cand->fd < 0)
+                if (cand && cand->state != LDP_PEER_OPERATIONAL && (cand->fd < 0 || cand->is_active))
                 {
                     match = cand;
                     break;
@@ -779,7 +789,14 @@ void ldp_session_handle_listen_accept(void)
             continue;
         }
 
+        if (match->fd >= 0)
+        {
+            LOG_INFO("LDP: TCP collision for peer %u, replacing active connection with passive accept",
+                     match->peer_lsr_id);
+            peer_close_socket(match);
+        }
         match->fd = fd;
+        match->is_active = 0u;
         match->state = LDP_PEER_INITIALIZED;
         match->connecting_since_msec = now_msec();
         if (register_peer_fd(match, EPOLLIN | EPOLLRDHUP) < 0)

@@ -26,6 +26,7 @@
 #include <sys/socket.h>
 
 #include "errcode.h"
+#include "ldp.h"
 #include "ldp_main.h"
 #include "ldp_pkt.h"
 #include "ldp_session.h"
@@ -127,9 +128,17 @@ static void fill_candidate(tunnel_candidate_t *cand, const ldp_learned_route_t *
     cand->endpoint = cand->fec.addr;
     cand->nexthop.family = AF_INET;
     cand->nexthop.u.v4.s_addr = htonl(route->nexthop_v4);
+    cand->relay_addr = cand->nexthop;
     cand->out_ifindex = route->out_ifindex;
-    cand->label_count = 1u;
-    cand->labels[0] = remote_label;
+    if (remote_label == LDP_LABEL_IMPLICIT_NULL)
+    {
+        cand->label_count = 0u;
+    }
+    else
+    {
+        cand->label_count = 1u;
+        cand->labels[0] = remote_label;
+    }
 }
 
 // ============================================================================
@@ -238,6 +247,10 @@ static void learn_route(const route_msg_entry_t *e)
     {
         return;
     }
+    if (e->flags & ROUTE_ENTRY_FLAG_NO_ADV)
+    {
+        return;
+    }
     ldp_fec_t fec = {.prefix = ntohl(e->prefix_addr.u.v4.s_addr), .prefix_len = e->prefix_len};
 
     ldp_learned_route_t *r = (ldp_learned_route_t *)g_hash_table_lookup(g_routes, &fec);
@@ -266,6 +279,13 @@ static void learn_route(const route_msg_entry_t *e)
     /* 申请 local label（如未分配） */
     if (r->local_label == 0u)
     {
+        if (e->protocol == ROUTE_PROTOCOL_CONNECTED)
+        {
+            r->local_label = LDP_LABEL_IMPLICIT_NULL;
+            ldp_lib_set_local_label(&fec, r->local_label);
+            send_label_mapping_all_peers(fec.prefix, fec.prefix_len, r->local_label);
+            return;
+        }
         tunnel_label_req_t req;
         fill_label_req(&req, r);
         uint32_t label = 0u;
@@ -273,7 +293,7 @@ static void learn_route(const route_msg_entry_t *e)
             label != 0u)
         {
             r->local_label = label;
-            ldp_lib_alloc_local_label(&fec); /* placeholder for show */
+            ldp_lib_set_local_label(&fec, label);
             send_label_mapping_all_peers(fec.prefix, fec.prefix_len, label);
         }
         else
@@ -360,9 +380,12 @@ static void withdraw_route(const route_msg_entry_t *e)
     if (r->local_label != 0u)
     {
         send_label_withdraw_all_peers(fec.prefix, fec.prefix_len);
-        tunnel_label_req_t req;
-        fill_label_req(&req, r);
-        (void)tunnel_rpc_label_release(ldp_local_ipc_ctx(), &req);
+        if (r->local_label != LDP_LABEL_IMPLICIT_NULL)
+        {
+            tunnel_label_req_t req;
+            fill_label_req(&req, r);
+            (void)tunnel_rpc_label_release(ldp_local_ipc_ctx(), &req);
+        }
         ldp_lib_free_local_label(&fec);
     }
 

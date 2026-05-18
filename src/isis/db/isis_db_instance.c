@@ -11,9 +11,10 @@
 #include "isis_db_internal.h"
 
 static const db_column_def_t ISIS_INSTANCE_COLS[] = {
-    {"tag", DB_TYPE_INTEGER, DB_COL_PRIMARY_KEY, NULL}, {"net", DB_TYPE_TEXT, DB_COL_NOT_NULL, "''"},
-    {"is_type", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "3"}, {"admin_up", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"},
-    {"af_ipv4", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"}, {"af_ipv6", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"},
+    {"tag", DB_TYPE_INTEGER, DB_COL_PRIMARY_KEY, NULL},    {"net", DB_TYPE_TEXT, DB_COL_NOT_NULL, "''"},
+    {"is_type", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "3"},    {"admin_up", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"},
+    {"af_ipv4", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"},    {"af_ipv6", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"},
+    {"cost_style", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"},
 };
 
 const db_table_def_t ISIS_INSTANCE_TABLE = {
@@ -89,8 +90,13 @@ int isis_db_set_instance(uint32_t tag)
     }
 
     db_col_t cols[] = {
-        DB_COL_INT("tag", tag),    DB_COL_TEXT("net", ""),   DB_COL_INT("is_type", ISIS_IS_TYPE_LEVEL_1_2),
-        DB_COL_INT("admin_up", 1), DB_COL_INT("af_ipv4", 1), DB_COL_INT("af_ipv6", 1),
+        DB_COL_INT("tag", tag),
+        DB_COL_TEXT("net", ""),
+        DB_COL_INT("is_type", ISIS_IS_TYPE_LEVEL_1_2),
+        DB_COL_INT("admin_up", 1),
+        DB_COL_INT("af_ipv4", 1),
+        DB_COL_INT("af_ipv6", 1),
+        DB_COL_INT("cost_style", ISIS_DEFAULT_COST_STYLE),
     };
     return db_rpc_insert_cols(ctx, ISIS_TABLE_INSTANCE, cols, G_N_ELEMENTS(cols));
 }
@@ -138,6 +144,15 @@ int isis_db_set_is_type(uint32_t tag, uint8_t is_type)
         return ERRCODE_FAIL;
     }
     return isis_db_update_instance_field_u32(tag, "is_type", (uint32_t)is_type);
+}
+
+int isis_db_set_cost_style(uint32_t tag, uint8_t cost_style)
+{
+    if (tag == 0u || (cost_style != ISIS_COST_STYLE_NARROW && cost_style != ISIS_COST_STYLE_WIDE))
+    {
+        return ERRCODE_FAIL;
+    }
+    return isis_db_update_instance_field_u32(tag, "cost_style", (uint32_t)cost_style);
 }
 
 int isis_db_set_af(uint32_t tag, uint16_t afi, int enabled)
@@ -288,6 +303,18 @@ void isis_db_restore_instances(void)
         const char *net = db_row_get_text(row, "net", "");
         g_strlcpy(apply.u.instance_set.net, net ? net : "", sizeof(apply.u.instance_set.net));
         (void)isis_worker_dispatch_apply(&apply);
+
+        uint8_t cost_style = (uint8_t)db_row_get_int(row, "cost_style", ISIS_DEFAULT_COST_STYLE);
+        if (cost_style != ISIS_COST_STYLE_NARROW && cost_style != ISIS_COST_STYLE_WIDE)
+        {
+            cost_style = ISIS_DEFAULT_COST_STYLE;
+        }
+        isis_apply_cmd_t cs_apply;
+        memset(&cs_apply, 0, sizeof(cs_apply));
+        cs_apply.op = ISIS_APPLY_OP_COST_STYLE_SET;
+        cs_apply.u.cost_style_set.tag = tag;
+        cs_apply.u.cost_style_set.cost_style = cost_style;
+        (void)isis_worker_dispatch_apply(&cs_apply);
 
         int64_t af4 = db_row_get_int(row, "af_ipv4", 1);
         int64_t af6 = db_row_get_int(row, "af_ipv6", 1);

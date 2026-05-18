@@ -99,6 +99,26 @@ void ldp_lib_cleanup(void)
     g_next_label = LDP_LOCAL_LABEL_MIN;
 }
 
+void ldp_lib_set_local_label(const ldp_fec_t *fec, uint32_t label)
+{
+    if (!fec || !g_local)
+    {
+        return;
+    }
+    ldp_local_label_t *e = (ldp_local_label_t *)g_hash_table_lookup(g_local, fec);
+    if (e)
+    {
+        e->label = label;
+        return;
+    }
+    ldp_fec_t *kheap = g_malloc(sizeof(*kheap));
+    *kheap = *fec;
+    e = g_malloc0(sizeof(*e));
+    e->fec = *fec;
+    e->label = label;
+    g_hash_table_insert(g_local, kheap, e);
+}
+
 uint32_t ldp_lib_alloc_local_label(const ldp_fec_t *fec)
 {
     if (!fec || !g_local)

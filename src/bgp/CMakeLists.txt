@@ -39,6 +39,7 @@ set(BGP_SOURCES
     work/bgp_worker.c
     work/bgp_cmd.c
     work/bgp_import_route.c
+    work/bgp_import_rib.c
     work/bgp_route_flush.c
     work/bgp_apply_vrf.c
     bmp/bgp_bmp.c

@@ -42,6 +42,7 @@ void ldp_lib_init(void);
 void ldp_lib_cleanup(void);
 
 /* local LIB */
+void ldp_lib_set_local_label(const ldp_fec_t *fec, uint32_t label);
 uint32_t ldp_lib_alloc_local_label(const ldp_fec_t *fec);
 void ldp_lib_free_local_label(const ldp_fec_t *fec);
 const ldp_local_label_t *ldp_lib_lookup_local(const ldp_fec_t *fec);

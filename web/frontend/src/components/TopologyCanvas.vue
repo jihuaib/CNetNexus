@@ -10,7 +10,10 @@ const props = defineProps({
     maxPorts: { type: Number, default: 8 },
     allPorts: { type: Array, default: () => ['GE-1', 'GE-2', 'GE-3', 'GE-4', 'GE-5', 'GE-6', 'GE-7', 'GE-8'] },
     linkCountOf: { type: Function, default: () => 0 },
-    freePortsOf: { type: Function, default: () => [] }
+    freePortsOf: { type: Function, default: () => [] },
+    portsOf: { type: Function, default: (_node) => [] },
+    maxPortsOf: { type: Function, default: (_nodeId) => 8 },
+    portLabelOf: { type: Function, default: (_node, port) => port }
 });
 
 const emit = defineEmits([
@@ -37,6 +40,16 @@ const NODE_R = 30; // 连线端点距节点中心的半径（贴近图标边缘�
 const LINK_GAP = 10; // 同一对节点间多条平行线之间的间距
 
 const canvasRef = ref(null);
+
+function nodeById(id)
+{
+    return props.nodes.find(n => n.id === id) || null;
+}
+
+function displayPort(node, port)
+{
+    return props.portLabelOf(node, port);
+}
 
 function onDragOver(e) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }
 
@@ -86,7 +99,7 @@ function onNodeClick(e, node)
         portMenu.value = null;
         return;
     }
-    if (props.linkCountOf(node.id) >= props.maxPorts) return;
+    if (props.linkCountOf(node.id) >= props.maxPortsOf(node.id)) return;
 
     // 弹出端口菜单（位置贴近节点中心略偏右）
     const role = linkSource.value ? 'to' : 'from';
@@ -191,8 +204,8 @@ const linkPaths = computed(() =>
             out.push({
                 id: l.id,
                 x1: sx, y1: sy, x2: ex, y2: ey,
-                fromPort: l.fromPort || '',
-                toPort: l.toPort || '',
+                fromPort: displayPort(a, l.fromPort || ''),
+                toPort: displayPort(b, l.toPort || ''),
                 fromLabel: pa,
                 toLabel: pb
             });
@@ -397,7 +410,7 @@ function menuAction(action)
                 selected: node.id === selectedId,
                 'link-source': linkSource && node.id === linkSource.nodeId,
                 'link-target': linkingMode && linkSource && linkSource.nodeId !== node.id,
-                'link-full': linkCountOf(node.id) >= maxPorts,
+                'link-full': linkCountOf(node.id) >= maxPortsOf(node.id),
                 ['status-' + node.status]: true
             }"
             :style="{ left: node.x + 'px', top: node.y + 'px', width: NODE_W + 'px', height: NODE_H + 'px' }"
@@ -411,14 +424,14 @@ function menuAction(action)
         >
             <img src="/icon.ico" class="node-icon" alt="" draggable="false" />
             <div class="node-label" :title="node.label">{{ node.label }}</div>
-            <div class="node-ports">{{ linkCountOf(node.id) }}/{{ maxPorts }}</div>
+            <div class="node-ports">{{ linkCountOf(node.id) }}/{{ maxPortsOf(node.id) }}</div>
         </div>
 
         <div class="hint" v-if="nodes.length === 0">从左侧拖一个设备过来 →</div>
         <div class="banner" v-if="linkingMode">
             <template v-if="!linkSource && !portMenu">连线模式：点击第一台设备并选择端口（Esc 取消）</template>
             <template v-else-if="!linkSource && portMenu">为起点选择端口</template>
-            <template v-else-if="linkSource && !portMenu">起点已选 {{ linkSource.port }}，点击目标设备</template>
+            <template v-else-if="linkSource && !portMenu">起点已选 {{ displayPort(nodeById(linkSource.nodeId), linkSource.port) }}，点击目标设备</template>
             <template v-else>为目标设备选择端口</template>
         </div>
 
@@ -431,11 +444,12 @@ function menuAction(action)
         >
             <li class="port-menu-title">{{ portMenu.role === 'from' ? '起点端口' : '目标端口' }}</li>
             <li
-                v-for="p in allPorts"
+                v-for="p in portsOf(portMenu.node)"
                 :key="p"
                 :class="{ disabled: !freePortsOf(portMenu.node.id).includes(p) }"
+                :title="p"
                 @click="freePortsOf(portMenu.node.id).includes(p) && onPickPort($event, p)"
-            >{{ p }}</li>
+            >{{ displayPort(portMenu.node, p) }}</li>
         </ul>
 
         <ul

@@ -15,6 +15,7 @@
 #include "errcode.h"
 #include "if.h"
 #include "isis.h"
+#include "isis_cfg_apply.h"
 #include "isis_neighbor.h"
 #include "isis_route.h"
 #include "isis_route_sync.h"
@@ -128,6 +129,7 @@ static isis_instance_cfg_t *isis_instance_create(uint32_t tag)
     inst->admin_up = 1u;
     inst->af_ipv4 = 1u;
     inst->af_ipv6 = 1u;
+    inst->cost_style = ISIS_DEFAULT_COST_STYLE;
     inst->if_cfgs = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, isis_if_cfg_free);
     if (!inst->if_cfgs)
     {
@@ -182,7 +184,7 @@ static isis_instance_cfg_t *isis_instance_create(uint32_t tag)
     return inst;
 }
 
-static isis_instance_cfg_t *isis_lookup_instance(uint32_t tag)
+isis_instance_cfg_t *isis_lookup_instance(uint32_t tag)
 {
     if (!g_isis_work_local || !g_isis_work_local->instances || tag == 0u)
     {
@@ -191,7 +193,7 @@ static isis_instance_cfg_t *isis_lookup_instance(uint32_t tag)
     return (isis_instance_cfg_t *)g_hash_table_lookup(g_isis_work_local->instances, GUINT_TO_POINTER(tag));
 }
 
-static isis_instance_cfg_t *isis_get_or_create_instance(uint32_t tag)
+isis_instance_cfg_t *isis_get_or_create_instance(uint32_t tag)
 {
     isis_instance_cfg_t *inst = isis_lookup_instance(tag);
     if (inst)
@@ -308,174 +310,46 @@ static int worker_apply_cmd(isis_apply_cmd_t *apply)
         return ERRCODE_FAIL;
     }
 
+    apply->rc = ISIS_APPLY_RC_FAIL;
+    apply->errmsg[0] = '\0';
+
     switch (apply->op)
     {
         case ISIS_APPLY_OP_INSTANCE_SET:
-        {
-            isis_instance_cfg_t *inst = isis_lookup_instance(apply->u.instance_set.tag);
-            if (inst)
-            {
-                g_strlcpy(inst->net, apply->u.instance_set.net, sizeof(inst->net));
-                inst->is_type = apply->u.instance_set.is_type;
-                inst->admin_up = apply->u.instance_set.admin_up ? 1u : 0u;
-                isis_neighbor_reconcile_instance(inst);
-                isis_route_sync_reconcile_instance_all_if(inst);
-                return ERRCODE_SUCCESS;
-            }
-
-            inst = isis_get_or_create_instance(apply->u.instance_set.tag);
-            if (!inst)
-            {
-                return ERRCODE_FAIL;
-            }
-            g_strlcpy(inst->net, apply->u.instance_set.net, sizeof(inst->net));
-            inst->is_type = apply->u.instance_set.is_type;
-            inst->admin_up = apply->u.instance_set.admin_up ? 1u : 0u;
-            isis_neighbor_reconcile_instance(inst);
-            isis_route_sync_reconcile_instance_all_if(inst);
-            return ERRCODE_SUCCESS;
-        }
-
+            isis_cfg_apply_instance_set(apply);
+            break;
         case ISIS_APPLY_OP_INSTANCE_DEL:
-        {
-            isis_instance_cfg_t *inst = isis_lookup_instance(apply->u.instance_del.tag);
-            if (!inst)
-            {
-                return ERRCODE_FAIL;
-            }
-            isis_route_sync_withdraw_all_instance_routes(inst);
-            return g_hash_table_remove(g_isis_work_local->instances, GUINT_TO_POINTER(apply->u.instance_del.tag))
-                       ? ERRCODE_SUCCESS
-                       : ERRCODE_FAIL;
-        }
-
+            isis_cfg_apply_instance_del(apply);
+            break;
         case ISIS_APPLY_OP_NET_SET:
-        {
-            isis_instance_cfg_t *inst = isis_lookup_instance(apply->u.net_set.tag);
-            if (!inst)
-            {
-                return ERRCODE_FAIL;
-            }
-            g_strlcpy(inst->net, apply->u.net_set.net, sizeof(inst->net));
-            return ERRCODE_SUCCESS;
-        }
-
+            isis_cfg_apply_net_set(apply);
+            break;
         case ISIS_APPLY_OP_IS_TYPE_SET:
-        {
-            isis_instance_cfg_t *inst = isis_lookup_instance(apply->u.is_type_set.tag);
-            if (!inst)
-            {
-                return ERRCODE_FAIL;
-            }
-            inst->is_type = apply->u.is_type_set.is_type;
-            isis_neighbor_reconcile_instance(inst);
-            return ERRCODE_SUCCESS;
-        }
-
+            isis_cfg_apply_is_type_set(apply);
+            break;
+        case ISIS_APPLY_OP_COST_STYLE_SET:
+            isis_cfg_apply_cost_style_set(apply);
+            break;
         case ISIS_APPLY_OP_AF_SET:
-        {
-            isis_instance_cfg_t *inst = isis_lookup_instance(apply->u.af_set.tag);
-            if (!inst)
-            {
-                return ERRCODE_FAIL;
-            }
-            if (apply->u.af_set.afi == ISIS_AFI_IPV4)
-            {
-                inst->af_ipv4 = 1u;
-                isis_neighbor_reconcile_instance(inst);
-                isis_route_sync_reconcile_instance_all_if(inst);
-                return ERRCODE_SUCCESS;
-            }
-            if (apply->u.af_set.afi == ISIS_AFI_IPV6)
-            {
-                inst->af_ipv6 = 1u;
-                isis_neighbor_reconcile_instance(inst);
-                isis_route_sync_reconcile_instance_all_if(inst);
-                return ERRCODE_SUCCESS;
-            }
-            return ERRCODE_FAIL;
-        }
-
+            isis_cfg_apply_af_set(apply);
+            break;
         case ISIS_APPLY_OP_AF_DEL:
-        {
-            isis_instance_cfg_t *inst = isis_lookup_instance(apply->u.af_del.tag);
-            if (!inst)
-            {
-                return ERRCODE_FAIL;
-            }
-            if (apply->u.af_del.afi == ISIS_AFI_IPV4)
-            {
-                inst->af_ipv4 = 0u;
-                isis_neighbor_reconcile_instance(inst);
-                isis_route_sync_reconcile_instance_all_if(inst);
-                return ERRCODE_SUCCESS;
-            }
-            if (apply->u.af_del.afi == ISIS_AFI_IPV6)
-            {
-                inst->af_ipv6 = 0u;
-                isis_neighbor_reconcile_instance(inst);
-                isis_route_sync_reconcile_instance_all_if(inst);
-                return ERRCODE_SUCCESS;
-            }
-            return ERRCODE_FAIL;
-        }
-
+            isis_cfg_apply_af_del(apply);
+            break;
         case ISIS_APPLY_OP_IF_SET:
-        {
-            isis_instance_cfg_t *inst = isis_lookup_instance(apply->u.if_set.tag);
-            if (!inst || apply->u.if_set.cfg.ifname[0] == '\0')
-            {
-                return ERRCODE_FAIL;
-            }
-
-            if (!isis_if_cfg_any_enabled(&apply->u.if_set.cfg))
-            {
-                (void)g_hash_table_remove(inst->if_cfgs, apply->u.if_set.cfg.ifname);
-                isis_neighbor_on_if_removed(inst, apply->u.if_set.cfg.ifname);
-                isis_route_sync_reconcile_instance_if(inst, apply->u.if_set.cfg.ifname);
-                return ERRCODE_SUCCESS;
-            }
-
-            isis_if_cfg_t *cfg = (isis_if_cfg_t *)g_hash_table_lookup(inst->if_cfgs, apply->u.if_set.cfg.ifname);
-            uint64_t last_hello_tx_msec = 0u;
-            if (cfg)
-            {
-                last_hello_tx_msec = cfg->last_hello_tx_msec;
-                *cfg = apply->u.if_set.cfg;
-                cfg->last_hello_tx_msec = last_hello_tx_msec;
-            }
-            else
-            {
-                cfg = g_malloc0(sizeof(*cfg));
-                if (!cfg)
-                {
-                    return ERRCODE_FAIL;
-                }
-                *cfg = apply->u.if_set.cfg;
-                g_hash_table_insert(inst->if_cfgs, g_strdup(cfg->ifname), cfg);
-            }
-
-            isis_neighbor_reconcile_if(cfg->ifname);
-            isis_route_sync_reconcile_instance_if(inst, cfg->ifname);
-            return ERRCODE_SUCCESS;
-        }
-
+            isis_cfg_apply_if_set(apply);
+            break;
         case ISIS_APPLY_OP_IF_DEL:
-        {
-            isis_instance_cfg_t *inst = isis_lookup_instance(apply->u.if_del.tag);
-            if (!inst || apply->u.if_del.ifname[0] == '\0')
-            {
-                return ERRCODE_FAIL;
-            }
-            int removed = g_hash_table_remove(inst->if_cfgs, apply->u.if_del.ifname) ? 1 : 0;
-            isis_neighbor_on_if_removed(inst, apply->u.if_del.ifname);
-            isis_route_sync_reconcile_instance_if(inst, apply->u.if_del.ifname);
-            return removed ? ERRCODE_SUCCESS : ERRCODE_FAIL;
-        }
-
+            isis_cfg_apply_if_del(apply);
+            break;
         default:
-            return ERRCODE_FAIL;
+            g_snprintf(apply->errmsg, sizeof(apply->errmsg), "ISIS Error: Unknown apply op %d", apply->op);
+            apply->rc = ISIS_APPLY_RC_FAIL;
+            break;
     }
+
+    /* worker_dispatch_apply 调用方只关心 apply->rc；本函数返回值仅指示派发完成 */
+    return ERRCODE_SUCCESS;
 }
 
 static int worker_dispatch_cmd(isis_worker_cmd_t *cmd)
@@ -518,7 +392,9 @@ static int worker_dispatch_cmd(isis_worker_cmd_t *cmd)
         case ISIS_WORKER_CMD_APPLY:
             if (cmd->apply)
             {
-                cmd->apply->rc = worker_apply_cmd(cmd->apply);
+                /* worker_apply_cmd 通过 cfg_apply 内部填充 apply->rc / apply->errmsg；
+                 * 这里不要用其返回值覆盖 apply->rc */
+                (void)worker_apply_cmd(cmd->apply);
             }
             worker_cmd_complete(cmd, ERRCODE_SUCCESS);
             return 0;

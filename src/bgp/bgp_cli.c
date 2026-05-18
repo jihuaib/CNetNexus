@@ -14,6 +14,7 @@
 #include "bgp_cfg_apply.h"
 #include "bgp_conn.h"
 #include "bgp_db.h"
+#include "bgp_import_rib.h"
 #include "bgp_main.h"
 #include "bgp_pkt.h"
 #include "bgp_protocol.h"
@@ -982,6 +983,82 @@ static int handle_bgp_import_route(dev_ipc_message_t *msg, cli_tlv_parser_t *par
 }
 
 /**
+ * @brief 处理 import-rib labeled-unicast / no import-rib labeled-unicast
+ *
+ * group_id=22, cfg-id: 1=labeled-unicast（未来 2=vpn-unicast, 3=vpn-instance）
+ * 仅允许在 unicast AF 视图下配置。
+ */
+static int handle_bgp_import_rib(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    bgp_apply_cmd_t apply;
+    memset(&apply, 0, sizeof(apply));
+    apply.group_id = BGP_CLI_GROUP_ID_IMPORT_RIB;
+    apply.isNo = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
+    bgp_cli_ctx_t bctx = bgp_cli_ctx_default();
+    int has_src = 0;
+    uint32_t src_id = 0;
+
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (CLI_TLV_IS_CTX(&entry))
+        {
+            bgp_cli_ctx_parse(&bctx, &entry);
+            cli_tlv_entry_free(&entry);
+            continue;
+        }
+        switch (entry.cfg_id)
+        {
+            case 1: /* labeled-unicast */
+                src_id = (uint32_t)BGP_IMPORT_SRC_LABELED_UC;
+                has_src = 1;
+                break;
+            default:
+                break;
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    if (!has_src)
+    {
+        bgp_send_cli_response(msg, "Error: Must specify import-rib source.\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (bctx.safi != BGP_SAFI_UNICAST)
+    {
+        bgp_send_cli_response(msg, "Error: import-rib only supported in unicast address-family.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    apply.vrf_id = bctx.vrf_id;
+    apply.u.import_rib.afi = bctx.afi;
+    apply.u.import_rib.safi = bctx.safi;
+    apply.u.import_rib.src = src_id;
+
+    if (bgp_worker_dispatch_apply(&apply) != 0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Server unavailable.\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (apply.rc == BGP_APPLY_RC_NOOP)
+    {
+        bgp_send_cli_response(msg, "");
+        return ERRCODE_SUCCESS;
+    }
+    if (apply.rc != BGP_APPLY_RC_OK)
+    {
+        char buf[280];
+        snprintf(buf, sizeof(buf), "%s\r\n", apply.errmsg);
+        bgp_send_cli_response(msg, buf);
+        return ERRCODE_FAIL;
+    }
+
+    bgp_db_set_import_rib_sources(bctx.vrf_id, bctx.afi, bctx.safi, apply.out.import_rib_sources);
+    bgp_send_cli_response(msg, "");
+    return ERRCODE_SUCCESS;
+}
+
+/**
  * @brief 处理 neighbor <ip> source-interface <if-name> / no neighbor <ip> source-interface
  *
  * group_id=12, cfg_id: 1=ipv4-address, 2=ipv6-address, 3=if-name
@@ -1730,6 +1807,9 @@ int bgp_cli_handle_config_msg(dev_ipc_message_t *msg)
             break;
         case BGP_CLI_GROUP_ID_REFLECT_CLIENT:
             result = handle_bgp_reflect_client(msg, &parser);
+            break;
+        case BGP_CLI_GROUP_ID_IMPORT_RIB:
+            result = handle_bgp_import_rib(msg, &parser);
             break;
         default:
             LOG_WARN("BGP: 未知配置命令 group_id=%u", parser.group_id);

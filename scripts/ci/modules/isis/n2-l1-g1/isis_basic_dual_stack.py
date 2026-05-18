@@ -127,7 +127,7 @@ def _wait_isis_route_detail(
     wait_check(
         rt,
         device=device,
-        command=f"show isis {afi} route {TAG} {destination} {mask}",
+        command=f"show isis route {afi} {TAG} {destination} {mask}",
         timeout=timeout,
         interval=2,
         contains=[
@@ -136,7 +136,7 @@ def _wait_isis_route_detail(
         ],
         not_contains=["(no matching routes)", "(instance not found)"],
         regex=[r"(?im)^\s*Route\s+\d+\s*$"],
-        label=f"{device} show isis {afi} route detail {prefix}",
+        label=f"{device} show isis route {afi} detail {prefix}",
     )
 
 
@@ -249,6 +249,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 f"isis {TAG}",
                 f"net {R1_NET}",
                 "is-type level-1-2",
+                "cost-style wide",
                 "af ipv4",
                 "af ipv6",
                 "end",
@@ -262,6 +263,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 f"isis {TAG}",
                 f"net {R2_NET}",
                 "is-type level-1-2",
+                "cost-style wide",
                 "af ipv4",
                 "af ipv6",
                 "end",
@@ -349,7 +351,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             [
                 {
                     "device": "r1",
-                    "command": f"show isis ipv4 lsdb {TAG}",
+                    "command": f"show isis lsdb ipv4 {TAG}",
                     "contains": ["ISIS LSDB", GE_IF],
                     "not_contains": ["(no entries)"],
                     "regex": [
@@ -359,11 +361,11 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                         r"(?im)^\s*TLV\[\d+\]\s*:\s*type=22\b",
                         r"(?im)^\s*TLV\[\d+\]\s*:\s*type=135\b",
                     ],
-                    "label": "r1 ipv4 lsdb has remote lsp",
+                    "label": "r1 lsdb ipv4 has remote lsp",
                 },
                 {
                     "device": "r1",
-                    "command": f"show isis ipv6 lsdb {TAG}",
+                    "command": f"show isis lsdb ipv6 {TAG}",
                     "contains": ["ISIS LSDB", GE_IF],
                     "not_contains": ["(no entries)"],
                     "regex": [
@@ -373,11 +375,11 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                         r"(?im)^\s*TLV\[\d+\]\s*:\s*type=22\b",
                         r"(?im)^\s*TLV\[\d+\]\s*:\s*type=236\b",
                     ],
-                    "label": "r1 ipv6 lsdb has remote lsp",
+                    "label": "r1 lsdb ipv6 has remote lsp",
                 },
                 {
                     "device": "r2",
-                    "command": f"show isis ipv4 lsdb {TAG}",
+                    "command": f"show isis lsdb ipv4 {TAG}",
                     "contains": ["ISIS LSDB", GE_IF],
                     "not_contains": ["(no entries)"],
                     "regex": [
@@ -387,11 +389,11 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                         r"(?im)^\s*TLV\[\d+\]\s*:\s*type=22\b",
                         r"(?im)^\s*TLV\[\d+\]\s*:\s*type=135\b",
                     ],
-                    "label": "r2 ipv4 lsdb has remote lsp",
+                    "label": "r2 lsdb ipv4 has remote lsp",
                 },
                 {
                     "device": "r2",
-                    "command": f"show isis ipv6 lsdb {TAG}",
+                    "command": f"show isis lsdb ipv6 {TAG}",
                     "contains": ["ISIS LSDB", GE_IF],
                     "not_contains": ["(no entries)"],
                     "regex": [
@@ -401,7 +403,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                         r"(?im)^\s*TLV\[\d+\]\s*:\s*type=22\b",
                         r"(?im)^\s*TLV\[\d+\]\s*:\s*type=236\b",
                     ],
-                    "label": "r2 ipv6 lsdb has remote lsp",
+                    "label": "r2 lsdb ipv6 has remote lsp",
                 },
             ],
             timeout=80,
@@ -420,31 +422,31 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             [
                 {
                     "device": "r1",
-                    "command": f"show isis ipv4 route {TAG}",
+                    "command": f"show isis route ipv4 {TAG}",
                     "contains": [f"ISIS ipv4 Routes (tag {TAG})", R2_LOOP_V4_PREFIX],
                     "not_contains": ["(no routes)", "(instance not found)"],
-                    "label": "r1 show isis ipv4 route list",
+                    "label": "r1 show isis route ipv4 list",
                 },
                 {
                     "device": "r2",
-                    "command": f"show isis ipv4 route {TAG}",
+                    "command": f"show isis route ipv4 {TAG}",
                     "contains": [f"ISIS ipv4 Routes (tag {TAG})", R1_LOOP_V4_PREFIX],
                     "not_contains": ["(no routes)", "(instance not found)"],
-                    "label": "r2 show isis ipv4 route list",
+                    "label": "r2 show isis route ipv4 list",
                 },
                 {
                     "device": "r1",
-                    "command": f"show isis ipv6 route {TAG}",
+                    "command": f"show isis route ipv6 {TAG}",
                     "contains": [f"ISIS ipv6 Routes (tag {TAG})", R2_LOOP_V6_PREFIX],
                     "not_contains": ["(no routes)", "(instance not found)"],
-                    "label": "r1 show isis ipv6 route list",
+                    "label": "r1 show isis route ipv6 list",
                 },
                 {
                     "device": "r2",
-                    "command": f"show isis ipv6 route {TAG}",
+                    "command": f"show isis route ipv6 {TAG}",
                     "contains": [f"ISIS ipv6 Routes (tag {TAG})", R1_LOOP_V6_PREFIX],
                     "not_contains": ["(no routes)", "(instance not found)"],
-                    "label": "r2 show isis ipv6 route list",
+                    "label": "r2 show isis route ipv6 list",
                 },
             ],
             timeout=80,
@@ -553,22 +555,22 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         wait_check(
             rt,
             device="r1",
-            command=f"show isis ipv4 interface {TAG}",
+            command=f"show isis interface ipv4 {TAG}",
             timeout=20,
             interval=2,
             contains=[f"Tag {TAG}", GE_IF, f"loop{R1_LOOP_ID}", "ipv4"],
             not_regex=[r"(?im)\bipv6\b"],
-            label="r1 show isis ipv4 interface filtered",
+            label="r1 show isis interface ipv4 filtered",
         )
         wait_check(
             rt,
             device="r1",
-            command=f"show isis ipv6 interface {TAG}",
+            command=f"show isis interface ipv6 {TAG}",
             timeout=20,
             interval=2,
             contains=[f"Tag {TAG}", GE_IF, f"loop{R1_LOOP_ID}", "ipv6"],
             not_regex=[r"(?im)\bipv4\b"],
-            label="r1 show isis ipv6 interface filtered",
+            label="r1 show isis interface ipv6 filtered",
         )
 
         print("ISIS basic dual-stack check passed.")

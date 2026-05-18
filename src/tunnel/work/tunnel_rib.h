@@ -27,6 +27,7 @@ int tunnel_rib_label_alloc(tunnel_rib_t *rib, const tunnel_label_req_t *req, uin
 int tunnel_rib_label_release(tunnel_rib_t *rib, const tunnel_label_req_t *req);
 int tunnel_rib_watch_add(tunnel_rib_t *rib, uint32_t owner_module_id, const tunnel_resolve_req_t *req);
 int tunnel_rib_watch_del(tunnel_rib_t *rib, uint32_t owner_module_id, const tunnel_resolve_req_t *req);
+int tunnel_rib_resolve_query(tunnel_rib_t *rib, const tunnel_resolve_req_t *req, tunnel_resolve_notify_t *notify_out);
 void tunnel_rib_recompute(tunnel_rib_t *rib);
 char *tunnel_rib_show(const tunnel_rib_t *rib, tunnel_show_section_t section);
 char *tunnel_rib_show_labels(const tunnel_rib_t *rib);

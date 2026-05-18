@@ -24,6 +24,7 @@
 #include "bgp_apply_vrf.h"
 #include "bgp_cfg_apply.h"
 #include "bgp_cli.h"
+#include "bgp_import_rib.h"
 #include "bgp_import_route.h"
 #include "bgp_relay.h"
 #include "bgp_worker.h"
@@ -380,6 +381,9 @@ static void bgp_cmd_dispatch_apply(bgp_apply_cmd_t *apply)
             break;
         case BGP_CLI_GROUP_ID_REFLECT_CLIENT:
             bgp_cfg_apply_reflect_client(apply);
+            break;
+        case BGP_CLI_GROUP_ID_IMPORT_RIB:
+            bgp_cfg_apply_import_rib(apply);
             break;
         default:
             snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: Unknown apply group_id %u.", apply->group_id);

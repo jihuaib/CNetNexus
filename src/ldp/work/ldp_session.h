@@ -26,7 +26,7 @@ typedef struct ldp_peer
 {
     uint32_t peer_lsr_id; /**< host order */
     uint16_t peer_label_space;
-    uint8_t is_active; /**< 1 = 主动方（self_lsr > peer_lsr） */
+    uint8_t is_active; /**< 1 = 主动方 */
     int fd;            /**< TCP socket；-1 未连接 */
     ldp_peer_state_t state;
 

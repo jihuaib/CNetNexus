@@ -15,8 +15,9 @@ typedef enum tunnel_worker_cmd_type
     TUNNEL_WORKER_CMD_RESOLVE_UNREGISTER = 4,
     TUNNEL_WORKER_CMD_LABEL_ALLOC = 5,
     TUNNEL_WORKER_CMD_LABEL_RELEASE = 6,
-    TUNNEL_WORKER_CMD_CLI_SHOW = 7,
-    TUNNEL_WORKER_CMD_SHUTDOWN = 8,
+    TUNNEL_WORKER_CMD_RESOLVE_QUERY = 7,
+    TUNNEL_WORKER_CMD_CLI_SHOW = 8,
+    TUNNEL_WORKER_CMD_SHUTDOWN = 9,
 } tunnel_worker_cmd_type_t;
 
 typedef struct tunnel_work_local

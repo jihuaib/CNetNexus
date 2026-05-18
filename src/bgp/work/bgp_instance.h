@@ -43,7 +43,9 @@ typedef struct bgp_instance
     GList *qp_routes;     /**< bgp_qp_route_cfg_t*（持有所有权），已配置的 QP 自产生路由条目 */
     bool route_select_enabled; /**< 是否对该地址族启用路由优选/发布（默认 false，仅 QP 地址族使用） */
     uint32_t flags;            /**< 实例级策略位（见 BGP_INST_FLAG_*） */
-    uint32_t cluster_id; /**< 本 AF 反射器 Cluster-ID（主机序，0=用 router-id） */
+    uint32_t cluster_id;         /**< 本 AF 反射器 Cluster-ID（主机序，0=用 router-id） */
+    uint32_t import_rib_sources; /**< import-rib 源位掩码（bgp_import_src_t），DB 持久化 */
+    void *import_rib_state;      /**< bgp_import_rib 模块内部状态（pending queue / mirror 反向索引等） */
 } bgp_instance_t;
 
 /**

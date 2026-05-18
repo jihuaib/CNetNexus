@@ -22,9 +22,17 @@
 #include "route.h"
 
 /* TLV 类型（与 lsp/spf 模块保持一致） */
-#define ISIS_TLV_EXT_IS_REACH 22u
-#define ISIS_TLV_EXT_IP_REACH 135u
-#define ISIS_TLV_IPV6_REACH 236u
+#define ISIS_TLV_AREA_ADDR 1u             /* ISO 10589 Area Addresses */
+#define ISIS_TLV_IS_REACH 2u              /* RFC 1195 narrow IS reach */
+#define ISIS_TLV_IP_INT_REACH 128u        /* RFC 1195 narrow IPv4 internal reach */
+#define ISIS_TLV_PROTOCOLS_SUPPORTED 129u /* RFC 1195 NLPID list */
+#define ISIS_TLV_IPV4_INTF_ADDR 132u      /* RFC 1195 IPv4 interface address */
+#define ISIS_TLV_EXT_IS_REACH 22u         /* RFC 5305 wide IS reach */
+#define ISIS_TLV_EXT_IP_REACH 135u        /* RFC 5305 wide IPv4 reach */
+#define ISIS_TLV_IPV6_REACH 236u          /* RFC 5308 IPv6 reach */
+
+#define ISIS_NLPID_IPV4 0xCCu
+#define ISIS_NLPID_IPV6 0x8Eu
 
 static cli_chunk_stream_t g_isis_show_stream;
 static int show_send_simple_resp(dev_ipc_message_t *msg, const char *text);
@@ -117,10 +125,32 @@ static void show_summary_cb(gpointer key, gpointer value, gpointer user_data)
         g_hash_table_foreach(inst->learned_route_heads, show_summary_head_count_cb, &route_count);
     }
 
-    g_string_append_printf(ctx->buf, "%-8u %-10s %-6u %-6u %-8u %-4u %-6u\r\n", inst->tag, is_type_name(inst->is_type),
-                           inst->af_ipv4 ? 1u : 0u, inst->af_ipv6 ? 1u : 0u, inst->admin_up ? 1u : 0u,
-                           g_hash_table_size(inst->if_cfgs), route_count);
+    const char *cs_name = (inst->cost_style == ISIS_COST_STYLE_WIDE) ? "wide" : "narrow";
+    g_string_append_printf(ctx->buf, "%-8u %-10s %-6s %-6u %-6u %-8u %-4u %-6u\r\n", inst->tag,
+                           is_type_name(inst->is_type), cs_name, inst->af_ipv4 ? 1u : 0u, inst->af_ipv6 ? 1u : 0u,
+                           inst->admin_up ? 1u : 0u, g_hash_table_size(inst->if_cfgs), route_count);
     ctx->count++;
+}
+
+static void show_dis_line(GString *buf, const char *ifname, uint8_t level, const isis_dis_state_t *dis)
+{
+    if (!buf || !dis)
+    {
+        return;
+    }
+    char lan_id_str[24] = "(not-elected)";
+    if (dis->lan_id[6] != 0u || dis->we_are_dis)
+    {
+        g_snprintf(lan_id_str, sizeof(lan_id_str), "%02x%02x.%02x%02x.%02x%02x.%02x", dis->lan_id[0], dis->lan_id[1],
+                   dis->lan_id[2], dis->lan_id[3], dis->lan_id[4], dis->lan_id[5], dis->lan_id[6]);
+    }
+    g_string_append_printf(buf, "  %-16s L%u   dis=%s%s\r\n", ifname, (unsigned)level, lan_id_str,
+                           dis->we_are_dis ? "  [we-are-DIS]" : "");
+    if (dis->we_are_dis)
+    {
+        g_string_append_printf(buf, "                       our-circuit-id=%u pseudo-lsp-seq=%u\r\n",
+                               (unsigned)dis->our_circuit_id, dis->pseudo_seq);
+    }
 }
 
 static void show_if_cfg_item(gpointer key, gpointer value, gpointer user_data)
@@ -135,6 +165,7 @@ static void show_if_cfg_item(gpointer key, gpointer value, gpointer user_data)
     }
 
     GString *buf = walk->show_ctx->buf;
+    int any_line = 0;
     if (cfg->v4.enabled && walk->inst->af_ipv4 &&
         (walk->show_ctx->afi_filter == 0u || walk->show_ctx->afi_filter == ROUTE_AFI_IPV4))
     {
@@ -142,6 +173,7 @@ static void show_if_cfg_item(gpointer key, gpointer value, gpointer user_data)
                                cfg->v4.metric, (unsigned)cfg->v4.hello_interval, (unsigned)cfg->v4.hold_multiplier,
                                (unsigned)cfg->v4.passive);
         walk->line_count++;
+        any_line = 1;
     }
     if (cfg->v6.enabled && walk->inst->af_ipv6 &&
         (walk->show_ctx->afi_filter == 0u || walk->show_ctx->afi_filter == ROUTE_AFI_IPV6))
@@ -150,6 +182,22 @@ static void show_if_cfg_item(gpointer key, gpointer value, gpointer user_data)
                                cfg->v6.metric, (unsigned)cfg->v6.hello_interval, (unsigned)cfg->v6.hold_multiplier,
                                (unsigned)cfg->v6.passive);
         walk->line_count++;
+        any_line = 1;
+    }
+
+    /* DIS 选举状态：每个 (interface, level) 打印一行（passive 接口跳过，loopback 无 LAN 语义） */
+    if (any_line && (!cfg->v4.passive || !cfg->v6.passive))
+    {
+        if (walk->inst->is_type == ISIS_IS_TYPE_LEVEL_1 || walk->inst->is_type == ISIS_IS_TYPE_LEVEL_1_2)
+        {
+            show_dis_line(buf, ifname, 1u, &cfg->dis_l1);
+            walk->line_count++;
+        }
+        if (walk->inst->is_type == ISIS_IS_TYPE_LEVEL_2 || walk->inst->is_type == ISIS_IS_TYPE_LEVEL_1_2)
+        {
+            show_dis_line(buf, ifname, 2u, &cfg->dis_l2);
+            walk->line_count++;
+        }
     }
 }
 
@@ -244,8 +292,8 @@ static int handle_show_summary(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     }
 
     g_string_append(buf, "\r\nISIS Summary\r\n"
-                         "Tag      IS-Type    IPv4   IPv6   AdminUp  Ifs  Routes\r\n"
-                         "-------- ---------- ------ ------ -------- ---- ------\r\n");
+                         "Tag      IS-Type    Cost   IPv4   IPv6   AdminUp  Ifs  Routes\r\n"
+                         "-------- ---------- ------ ------ ------ -------- ---- ------\r\n");
 
     show_instance_ctx_t ctx = {
         .buf = buf,
@@ -780,6 +828,16 @@ static const char *lsdb_tlv_name(uint8_t tlv_type)
 {
     switch (tlv_type)
     {
+        case ISIS_TLV_AREA_ADDR:
+            return "Area-Addresses";
+        case ISIS_TLV_IS_REACH:
+            return "IS-Reachability(narrow)";
+        case ISIS_TLV_IP_INT_REACH:
+            return "IP-Internal-Reachability(IPv4 narrow)";
+        case ISIS_TLV_PROTOCOLS_SUPPORTED:
+            return "Protocols-Supported";
+        case ISIS_TLV_IPV4_INTF_ADDR:
+            return "IPv4-Interface-Address";
         case ISIS_TLV_EXT_IS_REACH:
             return "Extended-IS-Reachability";
         case ISIS_TLV_EXT_IP_REACH:
@@ -904,6 +962,160 @@ static void lsdb_parse_sub_tlvs(GString *buf, const uint8_t *data, size_t data_l
     }
 }
 
+/* TLV 1 Area Addresses：N 个 (1B 长度 + 区域字节) 序列 */
+static void lsdb_parse_area_tlv(GString *buf, const uint8_t *val, size_t val_len)
+{
+    if (!buf || !val || val_len == 0u)
+    {
+        return;
+    }
+    size_t pos = 0u;
+    uint32_t idx = 0u;
+    while (pos < val_len)
+    {
+        uint8_t alen = val[pos];
+        if (pos + 1u + alen > val_len)
+        {
+            g_string_append_printf(buf, "    Area          : parse-error (len=%u truncated)\r\n", (unsigned)alen);
+            break;
+        }
+        idx++;
+        g_string_append_printf(buf, "    Area[%u]       : ", idx);
+        /* 第一字节是 AFI（49=ISO），按 ISIS 习惯打印为 49.xxxx.xxxx... */
+        for (uint8_t i = 0u; i < alen; ++i)
+        {
+            if (i == 1u || (i > 1u && ((i - 1u) % 2u) == 0u))
+            {
+                g_string_append_c(buf, '.');
+            }
+            g_string_append_printf(buf, "%02x", val[pos + 1u + i]);
+        }
+        g_string_append(buf, "\r\n");
+        pos += 1u + alen;
+    }
+}
+
+/* TLV 129 Protocols Supported：NLPID 字节序列（0xCC=IPv4, 0x8E=IPv6） */
+static void lsdb_parse_protocols_tlv(GString *buf, const uint8_t *val, size_t val_len)
+{
+    if (!buf || !val)
+    {
+        return;
+    }
+    g_string_append(buf, "    NLPIDs        :");
+    for (size_t i = 0u; i < val_len; ++i)
+    {
+        const char *name = NULL;
+        if (val[i] == ISIS_NLPID_IPV4)
+        {
+            name = "IPv4";
+        }
+        else if (val[i] == ISIS_NLPID_IPV6)
+        {
+            name = "IPv6";
+        }
+        g_string_append_printf(buf, " %s(0x%02x)", name ? name : "Unknown", (unsigned)val[i]);
+    }
+    g_string_append(buf, "\r\n");
+}
+
+/* TLV 132 IPv4 Interface Address：N 个 4 字节 IPv4 地址 */
+static void lsdb_parse_ipv4_intf_addr_tlv(GString *buf, const uint8_t *val, size_t val_len)
+{
+    if (!buf || !val || (val_len % 4u) != 0u)
+    {
+        return;
+    }
+    uint32_t idx = 0u;
+    for (size_t i = 0u; i + 4u <= val_len; i += 4u)
+    {
+        struct in_addr a;
+        memcpy(&a.s_addr, &val[i], 4u);
+        char ip_buf[INET_ADDRSTRLEN] = {0};
+        inet_ntop(AF_INET, &a, ip_buf, sizeof(ip_buf));
+        idx++;
+        g_string_append_printf(buf, "    IPv4-Addr[%u]  : %s\r\n", idx, ip_buf);
+    }
+}
+
+/* TLV 2 (narrow IS reach)：体首 1 字节 virtual flag + N*11 字节 entry */
+static void lsdb_parse_narrow_is_tlv(GString *buf, const uint8_t *val, size_t val_len, isis_lsdb_parse_stats_t *stats)
+{
+    if (!buf || !val || val_len < 1u || !stats)
+    {
+        return;
+    }
+
+    g_string_append_printf(buf, "    Virtual-Flag  : 0x%02x\r\n", (unsigned)val[0]);
+    size_t pos = 1u;
+    uint32_t idx = 0u;
+    while (pos + 11u <= val_len)
+    {
+        uint8_t default_metric = val[pos];
+        uint8_t metric_val = (uint8_t)(default_metric & 0x3Fu);
+        uint8_t not_supported = (uint8_t)((default_metric & 0x80u) != 0u);
+        const uint8_t *neighbor_id = &val[pos + 4u];
+        uint8_t pseudo = val[pos + 10u];
+
+        idx++;
+        stats->is_count++;
+
+        char nbr_sysid[20] = {0};
+        format_sysid(neighbor_id, nbr_sysid, sizeof(nbr_sysid));
+        g_string_append_printf(buf, "    IS[%u]         : neighbor=%s pseudo=%u metric=%u%s\r\n", idx, nbr_sysid,
+                               (unsigned)pseudo, (unsigned)metric_val, not_supported ? " (S=1 unsupported)" : "");
+        pos += 11u;
+    }
+
+    if (idx == 0u)
+    {
+        g_string_append(buf, "    (no IS reach entries)\r\n");
+    }
+    if (pos < val_len)
+    {
+        g_string_append_printf(buf, "    IS            : trailing-bytes=%zu\r\n", val_len - pos);
+    }
+}
+
+/* TLV 128 (narrow IPv4 internal reach)：N*12 字节 entry */
+static void lsdb_parse_narrow_ip_tlv(GString *buf, const uint8_t *val, size_t val_len, isis_lsdb_parse_stats_t *stats)
+{
+    if (!buf || !val || val_len == 0u || !stats)
+    {
+        return;
+    }
+
+    size_t pos = 0u;
+    uint32_t idx = 0u;
+    while (pos + 12u <= val_len)
+    {
+        uint8_t default_metric = val[pos];
+        uint8_t metric_val = (uint8_t)(default_metric & 0x3Fu);
+        uint8_t not_supported = (uint8_t)((default_metric & 0x80u) != 0u);
+        struct in_addr ip_be;
+        memcpy(&ip_be.s_addr, &val[pos + 4u], 4u);
+        struct in_addr mask_be;
+        memcpy(&mask_be.s_addr, &val[pos + 8u], 4u);
+        char ip_buf[INET_ADDRSTRLEN] = {0};
+        char mask_buf[INET_ADDRSTRLEN] = {0};
+        inet_ntop(AF_INET, &ip_be, ip_buf, sizeof(ip_buf));
+        inet_ntop(AF_INET, &mask_be, mask_buf, sizeof(mask_buf));
+        idx++;
+        stats->v4_count++;
+        g_string_append_printf(buf, "    IPv4[%u]       : prefix=%s mask=%s metric=%u%s\r\n", idx, ip_buf, mask_buf,
+                               (unsigned)metric_val, not_supported ? " (S=1 unsupported)" : "");
+        pos += 12u;
+    }
+    if (idx == 0u)
+    {
+        g_string_append(buf, "    (no IPv4 reach entries)\r\n");
+    }
+    if (pos < val_len)
+    {
+        g_string_append_printf(buf, "    IPv4          : trailing-bytes=%zu\r\n", val_len - pos);
+    }
+}
+
 static void lsdb_parse_ext_is_tlv(GString *buf, const uint8_t *val, size_t val_len, isis_lsdb_parse_stats_t *stats)
 {
     if (!buf || !val || val_len == 0u || !stats)
@@ -961,15 +1173,30 @@ static void lsdb_parse_prefix_tlv(GString *buf, const uint8_t *val, size_t val_l
     const char *label = (afi == ROUTE_AFI_IPV4) ? "IPv4" : "IPv6";
     size_t pos = 0u;
     uint32_t idx = 0u;
-    while (pos + 6u <= val_len)
+    size_t min_hdr = (afi == ROUTE_AFI_IPV4) ? 5u : 6u;
+    while (pos + min_hdr <= val_len)
     {
         uint32_t metric = ((uint32_t)val[pos] << 24) | ((uint32_t)val[pos + 1u] << 16) |
                           ((uint32_t)val[pos + 2u] << 8) | (uint32_t)val[pos + 3u];
         uint8_t ctrl = val[pos + 4u];
-        uint8_t prefix_len = val[pos + 5u];
+        uint8_t prefix_len = 0u;
+        uint8_t has_sub = 0u;
+        if (afi == ROUTE_AFI_IPV4)
+        {
+            /* RFC 5305 TLV 135: ctrl 低 6 位为 prefix_len，bit6 为 S */
+            prefix_len = (uint8_t)(ctrl & 0x3Fu);
+            has_sub = (uint8_t)((ctrl & 0x40u) != 0u);
+            pos += 5u;
+        }
+        else
+        {
+            /* RFC 5308 TLV 236: prefix_len 独立字节，ctrl bit5 为 S */
+            prefix_len = val[pos + 5u];
+            has_sub = (uint8_t)((ctrl & 0x20u) != 0u);
+            pos += 6u;
+        }
         uint8_t max_prefix = (afi == ROUTE_AFI_IPV4) ? 32u : 128u;
         uint8_t pfx_bytes = (uint8_t)((prefix_len + 7u) / 8u);
-        pos += 6u;
 
         if (prefix_len > max_prefix || (afi == ROUTE_AFI_IPV4 && pfx_bytes > 4u) ||
             (afi == ROUTE_AFI_IPV6 && pfx_bytes > 16u) || pos + pfx_bytes > val_len)
@@ -977,6 +1204,24 @@ static void lsdb_parse_prefix_tlv(GString *buf, const uint8_t *val, size_t val_l
             g_string_append_printf(buf, "    %s          : parse-error (prefix-len=%u pfx-bytes=%u)\r\n", label,
                                    (unsigned)prefix_len, (unsigned)pfx_bytes);
             break;
+        }
+
+        size_t sub_extra = 0u;
+        if (has_sub)
+        {
+            if (pos + pfx_bytes + 1u > val_len)
+            {
+                g_string_append_printf(buf, "    %s          : parse-error (sub-TLV truncated)\r\n", label);
+                break;
+            }
+            uint8_t sub_len = val[pos + pfx_bytes];
+            sub_extra = 1u + (size_t)sub_len;
+            if (pos + pfx_bytes + sub_extra > val_len)
+            {
+                g_string_append_printf(buf, "    %s          : parse-error (sub-TLV overflow len=%u)\r\n", label,
+                                       (unsigned)sub_len);
+                break;
+            }
         }
 
         char prefix[96] = {0};
@@ -1006,7 +1251,7 @@ static void lsdb_parse_prefix_tlv(GString *buf, const uint8_t *val, size_t val_l
             g_string_append(buf, "\r\n");
         }
 
-        pos += pfx_bytes;
+        pos += pfx_bytes + sub_extra;
     }
 
     if (idx == 0u)
@@ -1052,7 +1297,27 @@ static void lsdb_parse_all_tlvs(GString *buf, const isis_lsdb_entry_t *entry, is
         g_string_append_printf(buf, "  TLV[%u]         : type=%u (%s) len=%u\r\n", tlv_idx, (unsigned)tlv_type,
                                lsdb_tlv_name(tlv_type), (unsigned)len);
 
-        if (tlv_type == ISIS_TLV_EXT_IS_REACH)
+        if (tlv_type == ISIS_TLV_AREA_ADDR)
+        {
+            lsdb_parse_area_tlv(buf, &tlvs[pos], len);
+        }
+        else if (tlv_type == ISIS_TLV_PROTOCOLS_SUPPORTED)
+        {
+            lsdb_parse_protocols_tlv(buf, &tlvs[pos], len);
+        }
+        else if (tlv_type == ISIS_TLV_IPV4_INTF_ADDR)
+        {
+            lsdb_parse_ipv4_intf_addr_tlv(buf, &tlvs[pos], len);
+        }
+        else if (tlv_type == ISIS_TLV_IS_REACH)
+        {
+            lsdb_parse_narrow_is_tlv(buf, &tlvs[pos], len, stats);
+        }
+        else if (tlv_type == ISIS_TLV_IP_INT_REACH)
+        {
+            lsdb_parse_narrow_ip_tlv(buf, &tlvs[pos], len, stats);
+        }
+        else if (tlv_type == ISIS_TLV_EXT_IS_REACH)
         {
             lsdb_parse_ext_is_tlv(buf, &tlvs[pos], len, stats);
         }
@@ -1143,6 +1408,9 @@ static void show_lsdb_item_cb(gpointer key, gpointer value, gpointer user_data)
 
     char sysid[20] = {0};
     format_sysid(entry->system_id, sysid, sizeof(sysid));
+    char lsp_id[32] = {0};
+    g_snprintf(lsp_id, sizeof(lsp_id), "%s.%02x-%02x", sysid, (unsigned)entry->pseudonode_id,
+               (unsigned)entry->fragment_id);
 
     uint64_t age_sec = 0u;
     if (inst_ctx->ctx->now_msec >= entry->last_rx_msec)
@@ -1159,6 +1427,7 @@ static void show_lsdb_item_cb(gpointer key, gpointer value, gpointer user_data)
                            "  Tag             : %u\r\n"
                            "  Rx-If           : %s\r\n"
                            "  Level           : L%u\r\n"
+                           "  LSP-ID          : %s\r\n"
                            "  System-ID       : %s\r\n"
                            "  Seq             : 0x%08x\r\n"
                            "  Lifetime(sec)   : %u\r\n"
@@ -1166,9 +1435,10 @@ static void show_lsdb_item_cb(gpointer key, gpointer value, gpointer user_data)
                            "  Prefix Count    : ipv4=%u ipv6=%u\r\n"
                            "  LastRx(sec)     : %llu\r\n"
                            "  TLV Bytes       : %u\r\n",
-                           inst_ctx->ctx->count, inst_ctx->inst->tag, rx_if, (unsigned)entry->level, sysid, entry->seq,
-                           (unsigned)entry->lifetime_sec, (unsigned)entry->checksum, (unsigned)entry->ipv4_prefix_count,
-                           (unsigned)entry->ipv6_prefix_count, (unsigned long long)age_sec, (unsigned)tlv_bytes);
+                           inst_ctx->ctx->count, inst_ctx->inst->tag, rx_if, (unsigned)entry->level, lsp_id, sysid,
+                           entry->seq, (unsigned)entry->lifetime_sec, (unsigned)entry->checksum,
+                           (unsigned)entry->ipv4_prefix_count, (unsigned)entry->ipv6_prefix_count,
+                           (unsigned long long)age_sec, (unsigned)tlv_bytes);
 
     isis_lsdb_parse_stats_t parse_stats = {0};
     lsdb_parse_all_tlvs(inst_ctx->ctx->buf, entry, &parse_stats);

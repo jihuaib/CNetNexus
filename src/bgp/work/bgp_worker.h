@@ -214,6 +214,14 @@ typedef struct bgp_apply_cmd
             bgp_safi_t safi; /**< 子地址族 */
         } reflect_client;
 
+        /** BGP_CLI_GROUP_ID_IMPORT_RIB */
+        struct
+        {
+            bgp_afi_t afi;   /**< 地址族 */
+            bgp_safi_t safi; /**< 子地址族（应为 BGP_SAFI_UNICAST） */
+            uint32_t src;    /**< bgp_import_src_t 值 */
+        } import_rib;
+
         /** BGP_CLI_GROUP_ID_BMP_INSTANCE */
         struct
         {
@@ -255,8 +263,9 @@ typedef struct bgp_apply_cmd
     bgp_apply_rc_t rc; /**< 执行结果码 */
     union
     {
-        uint32_t sess_flags;    /**< OPEN_CAPABILITY: 更新后的 sess->flags */
-        uint32_t import_protos; /**< IMPORT_ROUTE: 更新后的 inst->import_protos */
+        uint32_t sess_flags;         /**< OPEN_CAPABILITY: 更新后的 sess->flags */
+        uint32_t import_protos;      /**< IMPORT_ROUTE: 更新后的 inst->import_protos */
+        uint32_t import_rib_sources; /**< IMPORT_RIB: 更新后的 inst->import_rib_sources */
         struct
         {
             uint32_t import_protos;         /**< 更新后的 inst->import_protos */

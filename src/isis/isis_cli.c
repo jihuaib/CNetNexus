@@ -45,22 +45,45 @@ static const char *if_ctx_idx_to_name(uint32_t if_idx)
             return "GE-3";
         case 4:
             return "GE-4";
+        case 5:
+            return "GE-5";
+        case 6:
+            return "GE-6";
+        case 7:
+            return "GE-7";
+        case 8:
+            return "GE-8";
         default:
             return NULL;
     }
 }
 
-static int dispatch_apply(isis_apply_cmd_t *apply)
+/**
+ * 派发 apply 并按 BGP 风格处理响应。返回：
+ *    1 = apply.rc == OK，调用方需继续写 DB，最后 send_resp("")
+ *    0 = apply.rc == NOOP，响应已发空串，调用方直接 return ERRCODE_SUCCESS
+ *   -1 = apply.rc == FAIL 或派发失败，响应已发 errmsg，调用方直接 return ERRCODE_FAIL
+ */
+static int dispatch_and_respond(dev_ipc_message_t *msg, isis_apply_cmd_t *apply)
 {
-    if (!apply)
+    if (!apply || isis_worker_dispatch_apply(apply) != ERRCODE_SUCCESS)
     {
-        return ERRCODE_FAIL;
+        send_resp(msg, "ISIS Error: Server unavailable\r\n");
+        return -1;
     }
-    if (isis_worker_dispatch_apply(apply) != ERRCODE_SUCCESS)
+    if (apply->rc == ISIS_APPLY_RC_NOOP)
     {
-        return ERRCODE_FAIL;
+        send_resp(msg, "");
+        return 0;
     }
-    return (apply->rc == ERRCODE_SUCCESS) ? ERRCODE_SUCCESS : ERRCODE_FAIL;
+    if (apply->rc != ISIS_APPLY_RC_OK)
+    {
+        char buf[300];
+        g_snprintf(buf, sizeof(buf), "%s\r\n", apply->errmsg[0] != '\0' ? apply->errmsg : "ISIS Error: Apply failed");
+        send_resp(msg, buf);
+        return -1;
+    }
+    return 1;
 }
 
 static int handle_instance_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
@@ -105,22 +128,25 @@ static int handle_instance_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             return ERRCODE_FAIL;
         }
 
-        if (isis_db_del_instance(tag) != ERRCODE_SUCCESS)
-        {
-            send_resp(msg, "ISIS Error: Failed to delete instance\r\n");
-            return ERRCODE_FAIL;
-        }
-
         isis_apply_cmd_t apply;
         memset(&apply, 0, sizeof(apply));
         apply.op = ISIS_APPLY_OP_INSTANCE_DEL;
         apply.u.instance_del.tag = tag;
-        if (dispatch_apply(&apply) != ERRCODE_SUCCESS)
+        int dr = dispatch_and_respond(msg, &apply);
+        if (dr < 0)
         {
-            send_resp(msg, "ISIS Error: Failed to apply delete\r\n");
             return ERRCODE_FAIL;
         }
+        if (dr == 0)
+        {
+            return ERRCODE_SUCCESS;
+        }
 
+        if (isis_db_del_instance(tag) != ERRCODE_SUCCESS)
+        {
+            send_resp(msg, "ISIS Error: Failed to delete instance from DB\r\n");
+            return ERRCODE_FAIL;
+        }
         send_resp(msg, "");
         return ERRCODE_SUCCESS;
     }
@@ -131,12 +157,6 @@ static int handle_instance_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         return ERRCODE_FAIL;
     }
 
-    if (isis_db_set_instance(tag) != ERRCODE_SUCCESS)
-    {
-        send_resp(msg, "ISIS Error: Failed to create instance\r\n");
-        return ERRCODE_FAIL;
-    }
-
     isis_apply_cmd_t apply;
     memset(&apply, 0, sizeof(apply));
     apply.op = ISIS_APPLY_OP_INSTANCE_SET;
@@ -144,12 +164,21 @@ static int handle_instance_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     apply.u.instance_set.admin_up = 1u;
     apply.u.instance_set.is_type = ISIS_IS_TYPE_LEVEL_1_2;
     apply.u.instance_set.net[0] = '\0';
-    if (dispatch_apply(&apply) != ERRCODE_SUCCESS)
+    int dr = dispatch_and_respond(msg, &apply);
+    if (dr < 0)
     {
-        send_resp(msg, "ISIS Error: Failed to apply instance\r\n");
         return ERRCODE_FAIL;
     }
+    if (dr == 0)
+    {
+        return ERRCODE_SUCCESS;
+    }
 
+    if (isis_db_set_instance(tag) != ERRCODE_SUCCESS)
+    {
+        send_resp(msg, "ISIS Error: Failed to persist instance\r\n");
+        return ERRCODE_FAIL;
+    }
     send_resp(msg, "");
     return ERRCODE_SUCCESS;
 }
@@ -189,23 +218,26 @@ static int handle_net_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         return ERRCODE_FAIL;
     }
 
-    if (isis_db_set_net(tag, net) != ERRCODE_SUCCESS)
-    {
-        send_resp(msg, "ISIS Error: Failed to persist net\r\n");
-        return ERRCODE_FAIL;
-    }
-
     isis_apply_cmd_t apply;
     memset(&apply, 0, sizeof(apply));
     apply.op = ISIS_APPLY_OP_NET_SET;
     apply.u.net_set.tag = tag;
     g_strlcpy(apply.u.net_set.net, net, sizeof(apply.u.net_set.net));
-    if (dispatch_apply(&apply) != ERRCODE_SUCCESS)
+    int dr = dispatch_and_respond(msg, &apply);
+    if (dr < 0)
     {
-        send_resp(msg, "ISIS Error: Failed to apply net\r\n");
         return ERRCODE_FAIL;
     }
+    if (dr == 0)
+    {
+        return ERRCODE_SUCCESS;
+    }
 
+    if (isis_db_set_net(tag, net) != ERRCODE_SUCCESS)
+    {
+        send_resp(msg, "ISIS Error: Failed to persist net\r\n");
+        return ERRCODE_FAIL;
+    }
     send_resp(msg, "");
     return ERRCODE_SUCCESS;
 }
@@ -250,23 +282,86 @@ static int handle_is_type_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         return ERRCODE_FAIL;
     }
 
-    if (isis_db_set_is_type(tag, is_type) != ERRCODE_SUCCESS)
-    {
-        send_resp(msg, "ISIS Error: Failed to persist is-type\r\n");
-        return ERRCODE_FAIL;
-    }
-
     isis_apply_cmd_t apply;
     memset(&apply, 0, sizeof(apply));
     apply.op = ISIS_APPLY_OP_IS_TYPE_SET;
     apply.u.is_type_set.tag = tag;
     apply.u.is_type_set.is_type = is_type;
-    if (dispatch_apply(&apply) != ERRCODE_SUCCESS)
+    int dr = dispatch_and_respond(msg, &apply);
+    if (dr < 0)
     {
-        send_resp(msg, "ISIS Error: Failed to apply is-type\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (dr == 0)
+    {
+        return ERRCODE_SUCCESS;
+    }
+
+    if (isis_db_set_is_type(tag, is_type) != ERRCODE_SUCCESS)
+    {
+        send_resp(msg, "ISIS Error: Failed to persist is-type\r\n");
+        return ERRCODE_FAIL;
+    }
+    send_resp(msg, "");
+    return ERRCODE_SUCCESS;
+}
+
+static int handle_cost_style_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    uint32_t tag = 0u;
+    uint8_t cost_style = 0u;
+
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (CLI_TLV_IS_CTX(&entry))
+        {
+            if (entry.cfg_id == CLI_CTX_ID_ISIS_TAG)
+            {
+                tag = cli_tlv_entry_get_ctx_uint32(&entry);
+            }
+            cli_tlv_entry_free(&entry);
+            continue;
+        }
+
+        if (entry.cfg_id == 1)
+        {
+            cost_style = ISIS_COST_STYLE_NARROW;
+        }
+        else if (entry.cfg_id == 2)
+        {
+            cost_style = ISIS_COST_STYLE_WIDE;
+        }
+
+        cli_tlv_entry_free(&entry);
+    }
+
+    if (tag == 0u || cost_style == 0u)
+    {
+        send_resp(msg, "ISIS Error: Missing tag or cost-style\r\n");
         return ERRCODE_FAIL;
     }
 
+    isis_apply_cmd_t apply;
+    memset(&apply, 0, sizeof(apply));
+    apply.op = ISIS_APPLY_OP_COST_STYLE_SET;
+    apply.u.cost_style_set.tag = tag;
+    apply.u.cost_style_set.cost_style = cost_style;
+    int dr = dispatch_and_respond(msg, &apply);
+    if (dr < 0)
+    {
+        return ERRCODE_FAIL;
+    }
+    if (dr == 0)
+    {
+        return ERRCODE_SUCCESS;
+    }
+
+    if (isis_db_set_cost_style(tag, cost_style) != ERRCODE_SUCCESS)
+    {
+        send_resp(msg, "ISIS Error: Failed to persist cost-style\r\n");
+        return ERRCODE_FAIL;
+    }
     send_resp(msg, "");
     return ERRCODE_SUCCESS;
 }
@@ -307,23 +402,26 @@ static int handle_af_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         return ERRCODE_FAIL;
     }
 
-    if (isis_db_set_af(tag, afi, enable) != ERRCODE_SUCCESS)
-    {
-        send_resp(msg, "ISIS Error: Failed to persist AF setting\r\n");
-        return ERRCODE_FAIL;
-    }
-
     isis_apply_cmd_t apply;
     memset(&apply, 0, sizeof(apply));
     apply.op = enable ? ISIS_APPLY_OP_AF_SET : ISIS_APPLY_OP_AF_DEL;
     apply.u.af_set.tag = tag;
     apply.u.af_set.afi = afi;
-    if (dispatch_apply(&apply) != ERRCODE_SUCCESS)
+    int dr = dispatch_and_respond(msg, &apply);
+    if (dr < 0)
     {
-        send_resp(msg, "ISIS Error: Failed to apply AF setting\r\n");
         return ERRCODE_FAIL;
     }
+    if (dr == 0)
+    {
+        return ERRCODE_SUCCESS;
+    }
 
+    if (isis_db_set_af(tag, afi, enable) != ERRCODE_SUCCESS)
+    {
+        send_resp(msg, "ISIS Error: Failed to persist AF setting\r\n");
+        return ERRCODE_FAIL;
+    }
     send_resp(msg, "");
     return ERRCODE_SUCCESS;
 }
@@ -353,19 +451,24 @@ static void if_cfg_set_defaults(isis_if_cfg_t *cfg, const char *ifname)
     cfg->last_hello_tx_msec = 0u;
 }
 
-static int dispatch_if_set(uint32_t tag, const isis_if_cfg_t *cfg)
+/**
+ * 派发 IF_SET 并按 BGP 风格处理响应。返回与 dispatch_and_respond 相同：
+ *    1 = OK 调用方写 DB
+ *    0 = NOOP 调用方直接 return ERRCODE_SUCCESS
+ *   -1 = FAIL 调用方直接 return ERRCODE_FAIL
+ */
+static int dispatch_if_set(dev_ipc_message_t *msg, uint32_t tag, const isis_if_cfg_t *cfg)
 {
     if (!cfg)
     {
-        return ERRCODE_FAIL;
+        return -1;
     }
-
     isis_apply_cmd_t apply;
     memset(&apply, 0, sizeof(apply));
     apply.op = ISIS_APPLY_OP_IF_SET;
     apply.u.if_set.tag = tag;
     apply.u.if_set.cfg = *cfg;
-    return dispatch_apply(&apply);
+    return dispatch_and_respond(msg, &apply);
 }
 
 typedef enum isis_if_action
@@ -606,54 +709,62 @@ static int handle_if_view_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 
             if (!isis_if_cfg_any_enabled(&cfg))
             {
-                if (isis_db_del_interface(tag, ifname) != ERRCODE_SUCCESS)
-                {
-                    send_resp(msg, "ISIS Error: Failed to delete interface config\r\n");
-                    return ERRCODE_FAIL;
-                }
-
                 isis_apply_cmd_t apply;
                 memset(&apply, 0, sizeof(apply));
                 apply.op = ISIS_APPLY_OP_IF_DEL;
                 apply.u.if_del.tag = tag;
                 g_strlcpy(apply.u.if_del.ifname, ifname, sizeof(apply.u.if_del.ifname));
-                if (dispatch_apply(&apply) != ERRCODE_SUCCESS)
+                int dr = dispatch_and_respond(msg, &apply);
+                if (dr < 0)
                 {
-                    send_resp(msg, "ISIS Error: Failed to apply interface disable\r\n");
+                    return ERRCODE_FAIL;
+                }
+                if (dr == 0)
+                {
+                    return ERRCODE_SUCCESS;
+                }
+                if (isis_db_del_interface(tag, ifname) != ERRCODE_SUCCESS)
+                {
+                    send_resp(msg, "ISIS Error: Failed to delete interface config\r\n");
                     return ERRCODE_FAIL;
                 }
             }
             else
             {
+                int dr = dispatch_if_set(msg, tag, &cfg);
+                if (dr < 0)
+                {
+                    return ERRCODE_FAIL;
+                }
+                if (dr == 0)
+                {
+                    return ERRCODE_SUCCESS;
+                }
                 if (isis_db_set_interface_cfg(tag, ifname, &cfg) != ERRCODE_SUCCESS)
                 {
                     send_resp(msg, "ISIS Error: Failed to persist interface config\r\n");
                     return ERRCODE_FAIL;
                 }
-
-                if (dispatch_if_set(tag, &cfg) != ERRCODE_SUCCESS)
-                {
-                    send_resp(msg, "ISIS Error: Failed to apply interface disable\r\n");
-                    return ERRCODE_FAIL;
-                }
             }
+            send_resp(msg, "");
+            return ERRCODE_SUCCESS;
         }
-        else
+
+        af_cfg->enabled = 1u;
+        int dr = dispatch_if_set(msg, tag, &cfg);
+        if (dr < 0)
         {
-            af_cfg->enabled = 1u;
-            if (isis_db_set_interface_cfg(tag, ifname, &cfg) != ERRCODE_SUCCESS)
-            {
-                send_resp(msg, "ISIS Error: Failed to persist interface config\r\n");
-                return ERRCODE_FAIL;
-            }
-
-            if (dispatch_if_set(tag, &cfg) != ERRCODE_SUCCESS)
-            {
-                send_resp(msg, "ISIS Error: Failed to apply interface enable\r\n");
-                return ERRCODE_FAIL;
-            }
+            return ERRCODE_FAIL;
         }
-
+        if (dr == 0)
+        {
+            return ERRCODE_SUCCESS;
+        }
+        if (isis_db_set_interface_cfg(tag, ifname, &cfg) != ERRCODE_SUCCESS)
+        {
+            send_resp(msg, "ISIS Error: Failed to persist interface config\r\n");
+            return ERRCODE_FAIL;
+        }
         send_resp(msg, "");
         return ERRCODE_SUCCESS;
     }
@@ -674,18 +785,20 @@ static int handle_if_view_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             af_cfg->metric = metric;
         }
 
+        int dr = dispatch_if_set(msg, tag, &cfg);
+        if (dr < 0)
+        {
+            return ERRCODE_FAIL;
+        }
+        if (dr == 0)
+        {
+            return ERRCODE_SUCCESS;
+        }
         if (isis_db_set_interface_cfg(tag, ifname, &cfg) != ERRCODE_SUCCESS)
         {
             send_resp(msg, "ISIS Error: Failed to persist interface metric\r\n");
             return ERRCODE_FAIL;
         }
-
-        if (dispatch_if_set(tag, &cfg) != ERRCODE_SUCCESS)
-        {
-            send_resp(msg, "ISIS Error: Failed to apply interface metric\r\n");
-            return ERRCODE_FAIL;
-        }
-
         send_resp(msg, "");
         return ERRCODE_SUCCESS;
     }
@@ -706,18 +819,20 @@ static int handle_if_view_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             af_cfg->hello_interval = hello_interval;
         }
 
+        int dr = dispatch_if_set(msg, tag, &cfg);
+        if (dr < 0)
+        {
+            return ERRCODE_FAIL;
+        }
+        if (dr == 0)
+        {
+            return ERRCODE_SUCCESS;
+        }
         if (isis_db_set_interface_cfg(tag, ifname, &cfg) != ERRCODE_SUCCESS)
         {
             send_resp(msg, "ISIS Error: Failed to persist hello-interval\r\n");
             return ERRCODE_FAIL;
         }
-
-        if (dispatch_if_set(tag, &cfg) != ERRCODE_SUCCESS)
-        {
-            send_resp(msg, "ISIS Error: Failed to apply hello-interval\r\n");
-            return ERRCODE_FAIL;
-        }
-
         send_resp(msg, "");
         return ERRCODE_SUCCESS;
     }
@@ -738,18 +853,20 @@ static int handle_if_view_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             af_cfg->hold_multiplier = hold_multiplier;
         }
 
+        int dr = dispatch_if_set(msg, tag, &cfg);
+        if (dr < 0)
+        {
+            return ERRCODE_FAIL;
+        }
+        if (dr == 0)
+        {
+            return ERRCODE_SUCCESS;
+        }
         if (isis_db_set_interface_cfg(tag, ifname, &cfg) != ERRCODE_SUCCESS)
         {
             send_resp(msg, "ISIS Error: Failed to persist hold-multiplier\r\n");
             return ERRCODE_FAIL;
         }
-
-        if (dispatch_if_set(tag, &cfg) != ERRCODE_SUCCESS)
-        {
-            send_resp(msg, "ISIS Error: Failed to apply hold-multiplier\r\n");
-            return ERRCODE_FAIL;
-        }
-
         send_resp(msg, "");
         return ERRCODE_SUCCESS;
     }
@@ -758,18 +875,20 @@ static int handle_if_view_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     {
         af_cfg->passive = is_no ? 0u : 1u;
 
+        int dr = dispatch_if_set(msg, tag, &cfg);
+        if (dr < 0)
+        {
+            return ERRCODE_FAIL;
+        }
+        if (dr == 0)
+        {
+            return ERRCODE_SUCCESS;
+        }
         if (isis_db_set_interface_cfg(tag, ifname, &cfg) != ERRCODE_SUCCESS)
         {
             send_resp(msg, "ISIS Error: Failed to persist passive setting\r\n");
             return ERRCODE_FAIL;
         }
-
-        if (dispatch_if_set(tag, &cfg) != ERRCODE_SUCCESS)
-        {
-            send_resp(msg, "ISIS Error: Failed to apply passive setting\r\n");
-            return ERRCODE_FAIL;
-        }
-
         send_resp(msg, "");
         return ERRCODE_SUCCESS;
     }
@@ -809,6 +928,9 @@ int isis_cli_handle_config_msg(dev_ipc_message_t *msg)
             break;
         case ISIS_CLI_GROUP_ID_IF_VIEW:
             rc = handle_if_view_cmd(msg, &parser);
+            break;
+        case ISIS_CLI_GROUP_ID_COST_STYLE:
+            rc = handle_cost_style_cmd(msg, &parser);
             break;
         default:
             send_resp(msg, "ISIS Error: Unknown command group\r\n");

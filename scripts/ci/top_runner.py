@@ -688,8 +688,7 @@ class TopologyRuntime:
     ) -> str:
         cname = self._container_name(device)
         eff_timeout = timeout if timeout is not None else self.cmd_timeout
-        if self.verbose:
-            print(f"<{device}:shell> {command}")
+        print(f"<{device}:shell> {command}")
         proc = subprocess.run(
             ["docker", "exec", cname, "/bin/bash", "-lc", command],
             text=True,
@@ -701,7 +700,7 @@ class TopologyRuntime:
             if text and not text.endswith("\n"):
                 text += "\n"
             text += proc.stderr
-        if self.verbose and text.strip():
+        if text.strip():
             print(text.strip())
         if strict and proc.returncode != 0:
             raise RuntimeError(f"{device}: command failed ({proc.returncode}): {command}\n{text}")
@@ -1093,6 +1092,8 @@ def frr_configure_interfaces(rt: TopologyRuntime, device: str, endpoints: list[E
             plan = f"{plan}; {ep.ip6}/{ep.prefix6}"
         print(f"apply interface {ep.if_name} ({linux_if}): {plan}, up", flush=True)
         rt.exec_cmd(device, f"ip link set dev {shlex.quote(linux_if)} up")
+        rt.exec_cmd(device, f"ip -4 addr flush dev {shlex.quote(linux_if)} scope global", strict=False)
+        rt.exec_cmd(device, f"ip -6 addr flush dev {shlex.quote(linux_if)} scope global", strict=False)
         rt.exec_cmd(device, f"ip addr replace {shlex.quote(ep.ip)}/{ep.prefix} dev {shlex.quote(linux_if)}")
         if ep.ip6:
             rt.exec_cmd(device, f"ip -6 addr replace {shlex.quote(ep.ip6)}/{ep.prefix6} dev {shlex.quote(linux_if)}")

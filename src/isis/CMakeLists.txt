@@ -7,6 +7,7 @@ set(ISIS_SOURCES
     db/isis_db_interface.c
     isis_bdr.c
     work/isis_worker.c
+    work/isis_cfg_apply.c
     work/isis_route.c
     work/isis_route_sync.c
     work/isis_show.c

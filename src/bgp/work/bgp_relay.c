@@ -336,6 +336,8 @@ static int bgp_relay_nh_watch_add_route(bgp_relay_nh_watch_t *watch, bgp_route_n
         return ERRCODE_FAIL;
     }
     watch->route_list = new_list;
+    /* 登记借用引用：阻止 route_node_free 在 watch 仍持有指针时真正释放节点 */
+    bgp_route_node_borrow_ref(route);
     return ERRCODE_SUCCESS;
 }
 
@@ -499,7 +501,13 @@ static void bgp_relay_detach_route_from_watch(bgp_route_node_t *route, const bgp
         return;
     }
 
+    GList *prev = watch->route_list;
     watch->route_list = g_list_remove(watch->route_list, route);
+    if (prev != watch->route_list)
+    {
+        /* 借用计数与 add_route 配对：watch 不再持有该指针 */
+        bgp_route_node_borrow_unref(route);
+    }
     bgp_relay_nh_watch_remove_if_empty(watch);
     if (clear_state)
     {

@@ -9,6 +9,7 @@
 #include <glib.h>
 
 #include "bgp_calc.h"
+#include "bgp_import_rib.h"
 #include "bgp_protocol.h"
 #include "bgp_rd.h"
 #include "bgp_rib.h"
@@ -57,6 +58,7 @@ bgp_instance_t *bgp_instance_create(bgp_afi_t afi, bgp_safi_t safi, bgp_vrf_t *v
     {
         (void)bgp_protocol_ensure_rd_entry(proto, inst, &BGP_RD_PUBLIC);
     }
+    bgp_import_rib_inst_init(inst);
     return inst;
 }
 
@@ -66,6 +68,7 @@ void bgp_instance_destroy(bgp_instance_t *inst)
     {
         return;
     }
+    bgp_import_rib_inst_destroy(inst);
     bgp_calc_queue_destroy(inst->calc_queue, inst);
     inst->calc_queue = NULL;
     bgp_route_flush_queue_destroy(inst->route_flush_queue, inst);
@@ -194,6 +197,7 @@ void bgp_instance_drain_pending(bgp_instance_t *inst)
     {
         int processed = 0;
         processed += bgp_calc_process_pending(inst);
+        processed += bgp_import_rib_process_pending(inst);
         processed += bgp_route_flush_process_pending(inst);
         processed += bgp_update_group_process_pending(inst);
         if (processed <= 0)

@@ -191,7 +191,7 @@ def _wait_isis_route_best(
     wait_check(
         rt,
         device=device,
-        command=f"show isis {afi} route {TAG} {destination} {mask}",
+        command=f"show isis route {afi} {TAG} {destination} {mask}",
         timeout=timeout,
         interval=2,
         contains=[
@@ -204,7 +204,7 @@ def _wait_isis_route_best(
             rf"(?im)^\s*Out-If\s*:\s*{re.escape(expect_if)}\(\d+\)\s*$",
             rf"(?im)^\s*Metric\s*:\s*{expect_metric}\s*$",
         ],
-        label=f"{device} show isis {afi} route best {prefix} via {expect_if} metric {expect_metric}",
+        label=f"{device} show isis route {afi} best {prefix} via {expect_if} metric {expect_metric}",
     )
 
 
@@ -217,7 +217,7 @@ def _wait_lsdb_entry(
     level: int,
     timeout: int = 60,
 ) -> None:
-    command = f"show isis {afi} lsdb {TAG}"
+    command = f"show isis lsdb {afi} {TAG}"
     prefix_tlv = "135" if afi == "ipv4" else "236"
     deadline = time.time() + timeout
     last_out = ""
@@ -248,7 +248,7 @@ def _wait_lsdb_entry(
         time.sleep(2)
 
     raise RuntimeError(
-        f"{device} show isis {afi} lsdb wait timeout after {timeout}s\n"
+        f"{device} show isis lsdb {afi} wait timeout after {timeout}s\n"
         f"expect block: tag={TAG}, level=L{level}, sysid={remote_sysid}, "
         f"TLV22 + TLV{prefix_tlv}\n"
         f"command: {command}\n"
@@ -301,7 +301,7 @@ def _wait_isis_route_best_v6_linklocal(
     wait_check(
         rt,
         device=device,
-        command=f"show isis ipv6 route {TAG} {destination} {mask}",
+        command=f"show isis route ipv6 {TAG} {destination} {mask}",
         timeout=timeout,
         interval=2,
         contains=[
@@ -314,7 +314,7 @@ def _wait_isis_route_best_v6_linklocal(
             rf"(?im)^\s*Out-If\s*:\s*{re.escape(expect_if)}\(\d+\)\s*$",
             rf"(?im)^\s*Metric\s*:\s*{expect_metric}\s*$",
         ],
-        label=f"{device} show isis ipv6 route best {prefix} via {expect_if} metric {expect_metric}",
+        label=f"{device} show isis route ipv6 best {prefix} via {expect_if} metric {expect_metric}",
     )
 
 
@@ -480,7 +480,7 @@ def _wait_interface_metric(
     wait_check(
         rt,
         device=device,
-        command=f"show isis {afi} interface {TAG}",
+        command=f"show isis interface {afi} {TAG}",
         timeout=timeout,
         interval=2,
         contains=[if_name, afi],
@@ -742,6 +742,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                     f"isis {TAG}",
                     f"net {net}",
                     "is-type level-1-2",
+                    "cost-style wide",
                     "af ipv4",
                     "af ipv6",
                     "end",
@@ -935,17 +936,17 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             [
                 {
                     "device": "r1",
-                    "command": f"show isis ipv4 route {TAG}",
+                    "command": f"show isis route ipv4 {TAG}",
                     "contains": [f"ISIS ipv4 Routes (tag {TAG})", "Level", R4_LOOP_V4_PREFIX],
                     "not_contains": ["(no routes)", "(instance not found)"],
-                    "label": "r1 show isis ipv4 route list",
+                    "label": "r1 show isis route ipv4 list",
                 },
                 {
                     "device": "r1",
-                    "command": f"show isis ipv6 route {TAG}",
+                    "command": f"show isis route ipv6 {TAG}",
                     "contains": [f"ISIS ipv6 Routes (tag {TAG})", "Level", R4_LOOP_V6_PREFIX],
                     "not_contains": ["(no routes)", "(instance not found)"],
-                    "label": "r1 show isis ipv6 route list",
+                    "label": "r1 show isis route ipv6 list",
                 },
             ],
             timeout=60,

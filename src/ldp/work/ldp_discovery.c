@@ -19,6 +19,7 @@
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/uio.h>
 #include <unistd.h>
 
 #include "errcode.h"
@@ -66,15 +67,30 @@ static int join_multicast(int fd, uint32_t ifindex)
     return 0;
 }
 
-static int set_multicast_egress(int fd, uint32_t ifindex)
+static int set_multicast_egress(int fd, uint32_t ifindex, uint32_t src_v4)
 {
     struct ip_mreqn mreq;
     memset(&mreq, 0, sizeof(mreq));
     mreq.imr_ifindex = (int)ifindex;
+    if (src_v4 != 0u)
+    {
+        mreq.imr_address.s_addr = htonl(src_v4);
+    }
     if (setsockopt(fd, IPPROTO_IP, IP_MULTICAST_IF, &mreq, sizeof(mreq)) < 0)
     {
-        LOG_WARN("LDP: IP_MULTICAST_IF failed on ifindex %u: %s", ifindex, strerror(errno));
-        return -1;
+        if (src_v4 == 0u)
+        {
+            LOG_WARN("LDP: IP_MULTICAST_IF failed on ifindex %u: %s", ifindex, strerror(errno));
+            return -1;
+        }
+        memset(&mreq, 0, sizeof(mreq));
+        mreq.imr_ifindex = (int)ifindex;
+        if (setsockopt(fd, IPPROTO_IP, IP_MULTICAST_IF, &mreq, sizeof(mreq)) < 0)
+        {
+            LOG_WARN("LDP: IP_MULTICAST_IF failed on ifindex %u src %u.%u.%u.%u: %s", ifindex, (src_v4 >> 24) & 0xFF,
+                     (src_v4 >> 16) & 0xFF, (src_v4 >> 8) & 0xFF, src_v4 & 0xFF, strerror(errno));
+            return -1;
+        }
     }
     uint8_t ttl = 1;
     (void)setsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl));
@@ -125,7 +141,7 @@ static int open_iface_socket(ldp_iface_state_t *iface)
         return -1;
     }
 
-    if (set_multicast_egress(fd, iface->ifindex) < 0 || join_multicast(fd, iface->ifindex) < 0)
+    if (set_multicast_egress(fd, iface->ifindex, iface->ipv4_local) < 0 || join_multicast(fd, iface->ifindex) < 0)
     {
         close(fd);
         return -1;
@@ -304,6 +320,47 @@ void ldp_discovery_on_if_event(const char *ifname)
     }
 }
 
+static ssize_t send_hello_datagram(const ldp_iface_state_t *iface, const uint8_t *buf, size_t len,
+                                   const struct sockaddr_in *dst)
+{
+    if (!iface || iface->udp_fd < 0 || !buf || !dst)
+    {
+        return -1;
+    }
+    if (iface->ipv4_local == 0u)
+    {
+        return sendto(iface->udp_fd, buf, len, 0, (const struct sockaddr *)dst, sizeof(*dst));
+    }
+
+    struct iovec iov;
+    memset(&iov, 0, sizeof(iov));
+    iov.iov_base = (void *)buf;
+    iov.iov_len = len;
+
+    char cbuf[CMSG_SPACE(sizeof(struct in_pktinfo))];
+    memset(cbuf, 0, sizeof(cbuf));
+
+    struct msghdr msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.msg_name = (void *)dst;
+    msg.msg_namelen = sizeof(*dst);
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = cbuf;
+    msg.msg_controllen = sizeof(cbuf);
+
+    struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+    cmsg->cmsg_level = IPPROTO_IP;
+    cmsg->cmsg_type = IP_PKTINFO;
+    cmsg->cmsg_len = CMSG_LEN(sizeof(struct in_pktinfo));
+    struct in_pktinfo *pktinfo = (struct in_pktinfo *)CMSG_DATA(cmsg);
+    memset(pktinfo, 0, sizeof(*pktinfo));
+    pktinfo->ipi_ifindex = (int)iface->ifindex;
+    pktinfo->ipi_spec_dst.s_addr = htonl(iface->ipv4_local);
+
+    return sendmsg(iface->udp_fd, &msg, 0);
+}
+
 static void send_hello_one(ldp_iface_state_t *iface)
 {
     if (!iface || iface->udp_fd < 0 || !g_ldp_work_local)
@@ -338,7 +395,7 @@ static void send_hello_one(ldp_iface_state_t *iface)
     dst.sin_port = htons(LDP_PORT);
     dst.sin_addr.s_addr = inet_addr(LDP_MCAST_GROUP_V4);
 
-    ssize_t s = sendto(iface->udp_fd, buf, (size_t)n, 0, (struct sockaddr *)&dst, sizeof(dst));
+    ssize_t s = send_hello_datagram(iface, buf, (size_t)n, &dst);
     if (s < 0)
     {
         if (errno != ENETUNREACH && errno != EAGAIN)

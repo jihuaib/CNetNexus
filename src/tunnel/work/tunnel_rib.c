@@ -332,6 +332,8 @@ static uint32_t tunnel_local_pop_out_ifindex(uint32_t out_ifindex)
     return lo_ifindex ? (uint32_t)lo_ifindex : out_ifindex;
 }
 
+static const tunnel_nhlfe_t *tunnel_nhlfe_lookup(const tunnel_rib_t *rib, uint32_t nhlfe_id);
+
 static void tunnel_append_ilm_for_fec(tunnel_rib_t *rib, const tunnel_fec_t *fec, uint32_t nhlfe_id, uint8_t state)
 {
     if (!rib || !fec)
@@ -355,7 +357,12 @@ static void tunnel_append_ilm_for_fec(tunnel_rib_t *rib, const tunnel_fec_t *fec
         ilm->vrf_id = fec->vrf_id;
         ilm->in_label = binding->label;
         ilm->nhlfe_id = nhlfe_id;
+        const tunnel_nhlfe_t *nhlfe = tunnel_nhlfe_lookup(rib, nhlfe_id);
         ilm->action = state ? TUNNEL_ACTION_SWAP : TUNNEL_ACTION_DROP;
+        if (state && nhlfe && nhlfe->label_count == 0u)
+        {
+            ilm->action = TUNNEL_ACTION_POP;
+        }
         ilm->state = state;
         rib->ilms = g_list_prepend(rib->ilms, ilm);
     }
@@ -407,15 +414,18 @@ static void tunnel_fill_fib_ilm(fib_ilm_entry_t *entry, const tunnel_rib_t *rib,
     entry->nhlfe_id = ilm->nhlfe_id;
     entry->out_ifindex = ilm->out_ifindex;
 
-    if (ilm->action == TUNNEL_ACTION_SWAP)
+    if (ilm->action == TUNNEL_ACTION_SWAP || ilm->action == TUNNEL_ACTION_POP || ilm->action == TUNNEL_ACTION_PHP)
     {
         const tunnel_nhlfe_t *nhlfe = tunnel_nhlfe_lookup(rib, ilm->nhlfe_id);
         if (nhlfe)
         {
             entry->out_ifindex = nhlfe->out_ifindex;
             entry->relay_addr = nhlfe->relay_addr;
-            entry->label_count = nhlfe->label_count;
-            memcpy(entry->labels, nhlfe->labels, sizeof(entry->labels));
+            if (ilm->action == TUNNEL_ACTION_SWAP)
+            {
+                entry->label_count = nhlfe->label_count;
+                memcpy(entry->labels, nhlfe->labels, sizeof(entry->labels));
+            }
         }
         else
         {
@@ -921,6 +931,17 @@ int tunnel_rib_watch_del(tunnel_rib_t *rib, uint32_t owner_module_id, const tunn
         }
     }
 
+    return ERRCODE_SUCCESS;
+}
+
+int tunnel_rib_resolve_query(tunnel_rib_t *rib, const tunnel_resolve_req_t *req, tunnel_resolve_notify_t *notify_out)
+{
+    if (!rib || !req || !notify_out || req->endpoint.family == 0)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    *notify_out = tunnel_resolve(rib, req);
     return ERRCODE_SUCCESS;
 }
 

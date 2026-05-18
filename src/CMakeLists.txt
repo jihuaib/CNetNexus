@@ -48,9 +48,9 @@ set_target_properties(netnexus PROPERTIES
 # Auto setcap (dev only)
 # =========================
 add_custom_command(TARGET netnexus POST_BUILD
-    COMMAND sudo -n setcap cap_net_admin,cap_net_bind_service=+ep $<TARGET_FILE:netnexus>
-    || echo "提示：如需绑定 179 端口，请手动执行：sudo setcap cap_net_admin,cap_net_bind_service=+ep $<TARGET_FILE:netnexus>"
-    COMMENT "授予 cap_net_admin + cap_net_bind_service"
+    COMMAND sudo -n setcap cap_net_admin,cap_net_bind_service,cap_net_raw=+ep $<TARGET_FILE:netnexus>
+    || echo "提示：如需 MPLS ping/raw socket，请手动执行：sudo setcap cap_net_admin,cap_net_bind_service,cap_net_raw=+ep $<TARGET_FILE:netnexus>"
+    COMMENT "授予 cap_net_admin + cap_net_bind_service + cap_net_raw"
 )
 
 # =========================

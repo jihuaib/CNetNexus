@@ -33,9 +33,17 @@
 #define ISIS_LSP_CKSUM_FIELD_OFFSET 24u
 #define ISIS_LSP_CKSUM_FIELD_REL_OFFSET (ISIS_LSP_CKSUM_FIELD_OFFSET - ISIS_LSP_CKSUM_COVER_OFFSET)
 
-#define ISIS_TLV_EXT_IS_REACH 22u
-#define ISIS_TLV_EXT_IP_REACH 135u
-#define ISIS_TLV_IPV6_REACH 236u
+#define ISIS_TLV_AREA_ADDR 1u             /* ISO 10589 Area Addresses */
+#define ISIS_TLV_IS_REACH 2u              /* RFC 1195 narrow IS reach */
+#define ISIS_TLV_IP_INT_REACH 128u        /* RFC 1195 narrow IPv4 internal reach */
+#define ISIS_TLV_PROTOCOLS_SUPPORTED 129u /* RFC 1195 NLPID list */
+#define ISIS_TLV_IPV4_INTF_ADDR 132u      /* RFC 1195 IPv4 interface address */
+#define ISIS_TLV_EXT_IS_REACH 22u         /* RFC 5305 wide IS reach */
+#define ISIS_TLV_EXT_IP_REACH 135u        /* RFC 5305 wide IPv4 reach */
+#define ISIS_TLV_IPV6_REACH 236u          /* RFC 5308 IPv6 reach */
+
+#define ISIS_NLPID_IPV4 0xCCu
+#define ISIS_NLPID_IPV6 0x8Eu
 
 #define ISIS_LSP_PKT_MAX 1500u
 #define ISIS_LSP_TX_INTERVAL_SEC 10u
@@ -56,6 +64,8 @@ typedef struct isis_lsp_rx_ctx
     size_t tlv_len;
     uint8_t level;
     uint8_t system_id[6];
+    uint8_t pseudonode_id;
+    uint8_t fragment_id;
     uint8_t src_mac[ETH_ALEN];
     uint16_t lifetime_sec;
     uint16_t checksum;
@@ -299,7 +309,8 @@ static void isis_sysid_to_hex(const uint8_t sysid[6], char *buf, size_t sz)
     g_snprintf(buf, sz, "%02x%02x%02x%02x%02x%02x", sysid[0], sysid[1], sysid[2], sysid[3], sysid[4], sysid[5]);
 }
 
-static void isis_lsp_lsdb_key_format(char *buf, size_t sz, uint8_t level, const uint8_t sysid[6])
+static void isis_lsp_lsdb_key_format(char *buf, size_t sz, uint8_t level, const uint8_t sysid[6], uint8_t pseudonode_id,
+                                     uint8_t fragment_id)
 {
     if (!buf || sz == 0)
     {
@@ -307,7 +318,7 @@ static void isis_lsp_lsdb_key_format(char *buf, size_t sz, uint8_t level, const 
     }
     char sysid_hex[13] = {0};
     isis_sysid_to_hex(sysid, sysid_hex, sizeof(sysid_hex));
-    g_snprintf(buf, sz, "%u|%s", (unsigned)level, sysid_hex);
+    g_snprintf(buf, sz, "%u|%s|%02x|%02x", (unsigned)level, sysid_hex, (unsigned)pseudonode_id, (unsigned)fragment_id);
 }
 
 static void isis_lsp_count_reach_prefixes(const uint8_t *tlvs, size_t tlv_len, uint32_t *v4_cnt, uint32_t *v6_cnt)
@@ -336,34 +347,87 @@ static void isis_lsp_count_reach_prefixes(const uint8_t *tlvs, size_t tlv_len, u
             break;
         }
 
-        if (tlv_type == ISIS_TLV_EXT_IP_REACH || tlv_type == ISIS_TLV_IPV6_REACH)
+        if (tlv_type == ISIS_TLV_IP_INT_REACH)
         {
+            /* RFC 1195 TLV 128 entry：12 字节固定（metric(4) + ip(4) + mask(4)） */
             size_t epos = 0;
-            while (epos + 6u <= len)
+            while (epos + 12u <= len)
             {
-                uint8_t prefix_len = tlvs[pos + epos + 5u];
+                if (v4_cnt)
+                {
+                    (*v4_cnt)++;
+                }
+                epos += 12u;
+            }
+        }
+        else if (tlv_type == ISIS_TLV_EXT_IP_REACH)
+        {
+            /* RFC 5305 TLV 135 entry：metric(4) + ctrl(1) + prefix(N) [+ sub-TLV len(1) + sub-TLVs] */
+            size_t epos = 0;
+            while (epos + 5u <= len)
+            {
+                uint8_t ctrl = tlvs[pos + epos + 4u];
+                uint8_t prefix_len = (uint8_t)(ctrl & 0x3Fu);
+                uint8_t has_sub = (uint8_t)((ctrl & 0x40u) != 0u);
                 uint8_t pfx_bytes = (uint8_t)((prefix_len + 7u) / 8u);
-                if ((tlv_type == ISIS_TLV_EXT_IP_REACH && (prefix_len > 32u || pfx_bytes > 4u)) ||
-                    (tlv_type == ISIS_TLV_IPV6_REACH && (prefix_len > 128u || pfx_bytes > 16u)) ||
-                    epos + 6u + pfx_bytes > len)
+                size_t entry_len = 5u + pfx_bytes;
+                if (prefix_len > 32u || pfx_bytes > 4u || epos + entry_len > len)
                 {
                     break;
                 }
-                if (tlv_type == ISIS_TLV_EXT_IP_REACH)
+                if (has_sub)
                 {
-                    if (v4_cnt)
+                    if (epos + entry_len + 1u > len)
                     {
-                        (*v4_cnt)++;
+                        break;
+                    }
+                    uint8_t sub_len = tlvs[pos + epos + entry_len];
+                    entry_len += 1u + (size_t)sub_len;
+                    if (epos + entry_len > len)
+                    {
+                        break;
                     }
                 }
-                else
+                if (v4_cnt)
                 {
-                    if (v6_cnt)
+                    (*v4_cnt)++;
+                }
+                epos += entry_len;
+            }
+        }
+        else if (tlv_type == ISIS_TLV_IPV6_REACH)
+        {
+            /* RFC 5308 TLV 236 entry：metric(4) + ctrl(1) + prefix_len(1) + prefix(N) [+ sub-TLV len(1) + sub-TLVs] */
+            size_t epos = 0;
+            while (epos + 6u <= len)
+            {
+                uint8_t ctrl = tlvs[pos + epos + 4u];
+                uint8_t prefix_len = tlvs[pos + epos + 5u];
+                uint8_t has_sub = (uint8_t)((ctrl & 0x20u) != 0u);
+                uint8_t pfx_bytes = (uint8_t)((prefix_len + 7u) / 8u);
+                size_t entry_len = 6u + pfx_bytes;
+                if (prefix_len > 128u || pfx_bytes > 16u || epos + entry_len > len)
+                {
+                    break;
+                }
+                if (has_sub)
+                {
+                    if (epos + entry_len + 1u > len)
                     {
-                        (*v6_cnt)++;
+                        break;
+                    }
+                    uint8_t sub_len = tlvs[pos + epos + entry_len];
+                    entry_len += 1u + (size_t)sub_len;
+                    if (epos + entry_len > len)
+                    {
+                        break;
                     }
                 }
-                epos += 6u + pfx_bytes;
+                if (v6_cnt)
+                {
+                    (*v6_cnt)++;
+                }
+                epos += entry_len;
             }
         }
         pos += len;
@@ -527,6 +591,53 @@ static int isis_lsp_send_pdu_on_if(int raw_fd, const if_api_cache_entry_t *if_en
     return 0;
 }
 
+/* 从 NET 字符串里抽取 area 字节（NET 末 7 字节是 sysid+selector，其余前缀就是 area） */
+static int isis_lsp_extract_area(const char *net, uint8_t *area, size_t area_cap, uint8_t *area_len)
+{
+    uint8_t bytes[64];
+    size_t len = 0u;
+    if (!area || !area_len)
+    {
+        return -1;
+    }
+    if (isis_parse_net_bytes(net, bytes, sizeof(bytes), &len) != 0 || len < 7u)
+    {
+        return -1;
+    }
+    size_t n = len - 7u;
+    if (n == 0u || n > area_cap || n > 255u)
+    {
+        return -1;
+    }
+    memcpy(area, bytes, n);
+    *area_len = (uint8_t)n;
+    return 0;
+}
+
+/* 单 TLV 直接写入（type + len + val），val_len 最大 255 */
+static int isis_lsp_append_single_tlv(uint8_t *pdu, size_t cap, size_t *len_io, uint8_t type, const uint8_t *val,
+                                      uint8_t val_len)
+{
+    if (!pdu || !len_io)
+    {
+        return -1;
+    }
+    size_t pos = *len_io;
+    if (pos + 2u + (size_t)val_len > cap)
+    {
+        return -1;
+    }
+    pdu[pos++] = type;
+    pdu[pos++] = val_len;
+    if (val_len > 0u && val)
+    {
+        memcpy(&pdu[pos], val, val_len);
+        pos += val_len;
+    }
+    *len_io = pos;
+    return 0;
+}
+
 static int isis_lsp_append_tlv_chunks(uint8_t *pdu, size_t cap, size_t *len_io, uint8_t tlv_type, const uint8_t *val,
                                       size_t val_len)
 {
@@ -559,6 +670,92 @@ static int isis_lsp_append_tlv_chunks(uint8_t *pdu, size_t cap, size_t *len_io, 
     return 0;
 }
 
+/* TLV 2 (narrow IS reach) 分块器：每个 TLV 体 = 1 字节 Virtual Flag + N*11 字节 entries
+ * 按 11 字节 entry 对齐拆分，TLV body 上限 255 字节，每块都重新写一次 Virtual Flag */
+static int isis_lsp_append_tlv2_chunks(uint8_t *pdu, size_t cap, size_t *len_io, const uint8_t *entries,
+                                       size_t entries_len)
+{
+    if (!pdu || !len_io)
+    {
+        return -1;
+    }
+    if (entries_len == 0u)
+    {
+        return 0;
+    }
+    if ((entries_len % 11u) != 0u)
+    {
+        return -1;
+    }
+
+    size_t pos = *len_io;
+    size_t done = 0;
+    const size_t body_avail = 254u; /* 255 - 1 virtual flag */
+    while (done < entries_len)
+    {
+        size_t remaining = entries_len - done;
+        size_t this_bytes = (remaining < body_avail) ? remaining : (body_avail - (body_avail % 11u));
+        this_bytes -= this_bytes % 11u;
+        if (this_bytes == 0u)
+        {
+            return -1;
+        }
+        size_t body_len = 1u + this_bytes;
+        if (pos + 2u + body_len > cap)
+        {
+            return -1;
+        }
+        pdu[pos++] = ISIS_TLV_IS_REACH;
+        pdu[pos++] = (uint8_t)body_len;
+        pdu[pos++] = 0u; /* virtual flag */
+        memcpy(&pdu[pos], entries + done, this_bytes);
+        pos += this_bytes;
+        done += this_bytes;
+    }
+    *len_io = pos;
+    return 0;
+}
+
+/* 把 wide metric 截断到 narrow 6-bit 范围 */
+static uint8_t isis_narrow_clamp_metric(uint32_t metric)
+{
+    if (metric == 0u)
+    {
+        metric = ISIS_DEFAULT_IF_METRIC;
+    }
+    if (metric > ISIS_NARROW_MAX_METRIC)
+    {
+        return (uint8_t)ISIS_NARROW_MAX_METRIC;
+    }
+    return (uint8_t)metric;
+}
+
+/* narrow TLV 128 entry：metric(4) + ip(4) + mask(4) = 12 bytes */
+static int isis_lsp_append_reach_entry_narrow_v4(GByteArray *arr, const net_addr_t *prefix_addr, uint8_t prefix_len,
+                                                 uint32_t metric)
+{
+    if (!arr || !prefix_addr || prefix_addr->family != AF_INET || prefix_len > 32u)
+    {
+        return -1;
+    }
+
+    uint8_t entry[12];
+    /* default metric：bit7=S(supported=0), bit6=I/E(internal=0), bits5..0 = value */
+    entry[0] = (uint8_t)(isis_narrow_clamp_metric(metric) & 0x3Fu);
+    /* delay/expense/error metrics：bit7=S=1 (not supported) */
+    entry[1] = 0x80u;
+    entry[2] = 0x80u;
+    entry[3] = 0x80u;
+    memcpy(&entry[4], &prefix_addr->u.v4.s_addr, 4u);
+    uint32_t mask = (prefix_len == 0u) ? 0u : (0xFFFFFFFFu << (32u - prefix_len));
+    entry[8] = (uint8_t)((mask >> 24) & 0xFFu);
+    entry[9] = (uint8_t)((mask >> 16) & 0xFFu);
+    entry[10] = (uint8_t)((mask >> 8) & 0xFFu);
+    entry[11] = (uint8_t)(mask & 0xFFu);
+    g_byte_array_append(arr, entry, sizeof(entry));
+    return 0;
+}
+
 static int isis_lsp_append_reach_entry(GByteArray *arr, const net_addr_t *prefix_addr, uint8_t prefix_len,
                                        uint32_t metric)
 {
@@ -582,13 +779,25 @@ static int isis_lsp_append_reach_entry(GByteArray *arr, const net_addr_t *prefix
     }
 
     uint8_t hdr[6];
+    size_t hdr_len = 0u;
     hdr[0] = (uint8_t)((metric >> 24) & 0xFFu);
     hdr[1] = (uint8_t)((metric >> 16) & 0xFFu);
     hdr[2] = (uint8_t)((metric >> 8) & 0xFFu);
     hdr[3] = (uint8_t)(metric & 0xFFu);
-    hdr[4] = 0u;
-    hdr[5] = prefix_len;
-    g_byte_array_append(arr, hdr, sizeof(hdr));
+    if (prefix_addr->family == AF_INET)
+    {
+        /* RFC 5305 TLV 135: byte4 = U(1)|S(1)|prefix_len(6)，无独立 prefix_len 字段 */
+        hdr[4] = (uint8_t)(prefix_len & 0x3Fu);
+        hdr_len = 5u;
+    }
+    else
+    {
+        /* RFC 5308 TLV 236: byte4 = U|X|S|rsv，byte5 = prefix_len */
+        hdr[4] = 0u;
+        hdr[5] = prefix_len;
+        hdr_len = 6u;
+    }
+    g_byte_array_append(arr, hdr, hdr_len);
 
     if (pfx_bytes > 0u)
     {
@@ -621,6 +830,8 @@ static void isis_lsp_collect_reach_cb(gpointer key, gpointer value, gpointer use
         return;
     }
 
+    const uint8_t narrow = (ctx->inst->cost_style == ISIS_COST_STYLE_NARROW) ? 1u : 0u;
+
     const isis_if_af_cfg_t *af_cfg_v4 = isis_lsp_if_af_cfg(ctx->inst, if_cfg, ISIS_AFI_IPV4);
     if (af_cfg_v4 && if_entry->ipv4_addr.family == AF_INET && if_entry->ipv4_prefix_len <= 32u)
     {
@@ -628,49 +839,91 @@ static void isis_lsp_collect_reach_cb(gpointer key, gpointer value, gpointer use
         net_addr_t prefix = if_entry->ipv4_addr;
         if (net_addr_prefix_normalize(&prefix, if_entry->ipv4_prefix_len) == 0)
         {
-            (void)isis_lsp_append_reach_entry(ctx->v4_entries, &prefix, if_entry->ipv4_prefix_len, metric);
+            if (narrow)
+            {
+                (void)isis_lsp_append_reach_entry_narrow_v4(ctx->v4_entries, &prefix, if_entry->ipv4_prefix_len,
+                                                            metric);
+            }
+            else
+            {
+                (void)isis_lsp_append_reach_entry(ctx->v4_entries, &prefix, if_entry->ipv4_prefix_len, metric);
+            }
         }
     }
 
-    const isis_if_af_cfg_t *af_cfg_v6 = isis_lsp_if_af_cfg(ctx->inst, if_cfg, ISIS_AFI_IPV6);
-    if (af_cfg_v6 && if_entry->ipv6_addr.family == AF_INET6 && if_entry->ipv6_prefix_len <= 128u)
+    /* IPv6 仅在 wide cost-style 下发布（narrow/RFC 1195 不支持 IPv6） */
+    if (!narrow)
     {
-        uint32_t metric = (af_cfg_v6->metric == 0u) ? ISIS_DEFAULT_IF_METRIC : af_cfg_v6->metric;
-        net_addr_t prefix = if_entry->ipv6_addr;
-        if (net_addr_prefix_normalize(&prefix, if_entry->ipv6_prefix_len) == 0)
+        const isis_if_af_cfg_t *af_cfg_v6 = isis_lsp_if_af_cfg(ctx->inst, if_cfg, ISIS_AFI_IPV6);
+        if (af_cfg_v6 && if_entry->ipv6_addr.family == AF_INET6 && if_entry->ipv6_prefix_len <= 128u)
         {
-            (void)isis_lsp_append_reach_entry(ctx->v6_entries, &prefix, if_entry->ipv6_prefix_len, metric);
+            uint32_t metric = (af_cfg_v6->metric == 0u) ? ISIS_DEFAULT_IF_METRIC : af_cfg_v6->metric;
+            net_addr_t prefix = if_entry->ipv6_addr;
+            if (net_addr_prefix_normalize(&prefix, if_entry->ipv6_prefix_len) == 0)
+            {
+                (void)isis_lsp_append_reach_entry(ctx->v6_entries, &prefix, if_entry->ipv6_prefix_len, metric);
+            }
         }
     }
 }
 
-static void isis_lsp_collect_is_reach_cb(gpointer key, gpointer value, gpointer user_data)
+/** 检查该 (instance, ifname, level) 是否有 UP 邻居（用于判断 LAN 是否上行） */
+static int isis_lsp_lan_has_up_adj(const isis_instance_cfg_t *inst, const char *ifname, uint8_t level)
+{
+    if (!inst || !inst->neighbors || !ifname)
+    {
+        return 0;
+    }
+    GHashTableIter iter;
+    gpointer k = NULL;
+    gpointer v = NULL;
+    g_hash_table_iter_init(&iter, inst->neighbors);
+    while (g_hash_table_iter_next(&iter, &k, &v))
+    {
+        (void)k;
+        const isis_neighbor_t *nbr = (const isis_neighbor_t *)v;
+        if (nbr && nbr->level == level && nbr->state == ISIS_ADJ_STATE_UP && strcmp(nbr->ifname, ifname) == 0)
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/** 每个有 UP 邻居的 LAN 接口，向 LSP 写一条 IS reach，目标是该 LAN 的 DIS LAN-ID（伪节点）。 */
+static void isis_lsp_collect_is_reach_per_if_cb(gpointer key, gpointer value, gpointer user_data)
 {
     (void)key;
-    const isis_neighbor_t *nbr = (const isis_neighbor_t *)value;
+    const isis_if_cfg_t *if_cfg = (const isis_if_cfg_t *)value;
     isis_lsp_adv_ctx_t *ctx = (isis_lsp_adv_ctx_t *)user_data;
-    if (!nbr || !ctx || !ctx->inst || !ctx->is_entries)
+    if (!if_cfg || !ctx || !ctx->inst || !ctx->is_entries)
     {
         return;
     }
-    if (nbr->level != ctx->level || nbr->state != ISIS_ADJ_STATE_UP)
+    if (!isis_lsp_lan_has_up_adj(ctx->inst, if_cfg->ifname, ctx->level))
     {
         return;
-    }
-
-    const isis_if_cfg_t *if_cfg = NULL;
-    if (ctx->inst->if_cfgs)
-    {
-        if_cfg = (const isis_if_cfg_t *)g_hash_table_lookup(ctx->inst->if_cfgs, nbr->ifname);
     }
     const isis_if_af_cfg_t *active_af_cfg = isis_lsp_pick_active_af_cfg(ctx->inst, if_cfg);
     if (!active_af_cfg)
     {
         return;
     }
+    const isis_dis_state_t *dis = (ctx->level == 1u) ? &if_cfg->dis_l1 : &if_cfg->dis_l2;
+    if (dis->lan_id[6] == 0u && !dis->we_are_dis)
+    {
+        /* DIS 还没收敛，跳过 */
+        return;
+    }
 
-    const if_api_cache_entry_t *if_entry = if_api_cache_lookup(nbr->ifname);
-    if (!if_entry || !if_entry->proto_up || if_entry->ifindex == 0u)
+    /* 目标 LAN-ID：DIS 的 sysid+circuit-id */
+    uint8_t target_lan_id[7];
+    memcpy(target_lan_id, dis->lan_id, 7u);
+    if (dis->we_are_dis && target_lan_id[6] == 0u)
+    {
+        target_lan_id[6] = dis->our_circuit_id;
+    }
+    if (target_lan_id[6] == 0u)
     {
         return;
     }
@@ -681,14 +934,28 @@ static void isis_lsp_collect_is_reach_cb(gpointer key, gpointer value, gpointer 
         metric = 0x00FFFFFFu;
     }
 
-    uint8_t entry[11];
-    memcpy(entry, nbr->system_id, 6u);
-    entry[6] = 0u; /* pseudonode-id */
-    entry[7] = (uint8_t)((metric >> 16) & 0xFFu);
-    entry[8] = (uint8_t)((metric >> 8) & 0xFFu);
-    entry[9] = (uint8_t)(metric & 0xFFu);
-    entry[10] = 0u; /* no sub-TLVs */
-    g_byte_array_append(ctx->is_entries, entry, sizeof(entry));
+    if (ctx->inst->cost_style == ISIS_COST_STYLE_NARROW)
+    {
+        uint8_t entry[11];
+        entry[0] = (uint8_t)(isis_narrow_clamp_metric(metric) & 0x3Fu);
+        entry[1] = 0x80u;
+        entry[2] = 0x80u;
+        entry[3] = 0x80u;
+        memcpy(&entry[4], target_lan_id, 6u); /* sysid */
+        entry[10] = target_lan_id[6];         /* circuit-id（pseudonode） */
+        g_byte_array_append(ctx->is_entries, entry, sizeof(entry));
+    }
+    else
+    {
+        uint8_t entry[11];
+        memcpy(entry, target_lan_id, 6u);
+        entry[6] = target_lan_id[6];
+        entry[7] = (uint8_t)((metric >> 16) & 0xFFu);
+        entry[8] = (uint8_t)((metric >> 8) & 0xFFu);
+        entry[9] = (uint8_t)(metric & 0xFFu);
+        entry[10] = 0u;
+        g_byte_array_append(ctx->is_entries, entry, sizeof(entry));
+    }
 }
 
 static int isis_lsp_build_pdu(const isis_instance_cfg_t *inst, uint8_t level, uint32_t seq, uint8_t *pdu,
@@ -735,10 +1002,8 @@ static int isis_lsp_build_pdu(const isis_instance_cfg_t *inst, uint8_t level, ui
     if (inst->if_cfgs)
     {
         g_hash_table_foreach(inst->if_cfgs, isis_lsp_collect_reach_cb, &adv_ctx);
-    }
-    if (inst->neighbors)
-    {
-        g_hash_table_foreach(inst->neighbors, isis_lsp_collect_is_reach_cb, &adv_ctx);
+        /* IS 邻接走 per-interface 聚合，目标是 LAN 的 DIS LAN-ID（伪节点）而非每个邻居 sysid。 */
+        g_hash_table_foreach(inst->if_cfgs, isis_lsp_collect_is_reach_per_if_cb, &adv_ctx);
     }
 
     size_t p = 0;
@@ -774,15 +1039,54 @@ static int isis_lsp_build_pdu(const isis_instance_cfg_t *inst, uint8_t level, ui
     pdu[p++] = (level == 1u) ? 1u : 2u;
 
     int rc = 0;
+    const uint8_t narrow = (inst->cost_style == ISIS_COST_STYLE_NARROW) ? 1u : 0u;
+
+    /* RFC 1195/ISO 10589 必备元 TLV：Area + Protocols Supported。FRR/IOS-XR 等收到
+     * 缺这两个 TLV 的 LSP 会在 SPF 阶段把发起者当成"不能讲 IP"的节点而忽略整个 LSP。 */
+    {
+        uint8_t area[64];
+        uint8_t area_len = 0u;
+        if (isis_lsp_extract_area(inst->net, area, sizeof(area), &area_len) == 0 && area_len > 0u)
+        {
+            uint8_t area_val[1 + 64];
+            area_val[0] = area_len;
+            memcpy(&area_val[1], area, area_len);
+            (void)isis_lsp_append_single_tlv(pdu, pdu_cap, &p, ISIS_TLV_AREA_ADDR, area_val, (uint8_t)(area_len + 1u));
+        }
+
+        uint8_t nlpids[2];
+        uint8_t nlpids_len = 0u;
+        if (inst->af_ipv4)
+        {
+            nlpids[nlpids_len++] = ISIS_NLPID_IPV4;
+        }
+        if (inst->af_ipv6 && !narrow)
+        {
+            nlpids[nlpids_len++] = ISIS_NLPID_IPV6;
+        }
+        if (nlpids_len > 0u)
+        {
+            (void)isis_lsp_append_single_tlv(pdu, pdu_cap, &p, ISIS_TLV_PROTOCOLS_SUPPORTED, nlpids, nlpids_len);
+        }
+    }
+
     if (is_entries->len > 0u)
     {
-        rc = isis_lsp_append_tlv_chunks(pdu, pdu_cap, &p, ISIS_TLV_EXT_IS_REACH, is_entries->data, is_entries->len);
+        if (narrow)
+        {
+            rc = isis_lsp_append_tlv2_chunks(pdu, pdu_cap, &p, is_entries->data, is_entries->len);
+        }
+        else
+        {
+            rc = isis_lsp_append_tlv_chunks(pdu, pdu_cap, &p, ISIS_TLV_EXT_IS_REACH, is_entries->data, is_entries->len);
+        }
     }
     if (rc == 0 && v4_entries->len > 0u)
     {
-        rc = isis_lsp_append_tlv_chunks(pdu, pdu_cap, &p, ISIS_TLV_EXT_IP_REACH, v4_entries->data, v4_entries->len);
+        uint8_t tlv_type = narrow ? ISIS_TLV_IP_INT_REACH : ISIS_TLV_EXT_IP_REACH;
+        rc = isis_lsp_append_tlv_chunks(pdu, pdu_cap, &p, tlv_type, v4_entries->data, v4_entries->len);
     }
-    if (rc == 0 && v6_entries->len > 0u)
+    if (rc == 0 && !narrow && v6_entries->len > 0u)
     {
         rc = isis_lsp_append_tlv_chunks(pdu, pdu_cap, &p, ISIS_TLV_IPV6_REACH, v6_entries->data, v6_entries->len);
     }
@@ -805,6 +1109,243 @@ static int isis_lsp_build_pdu(const isis_instance_cfg_t *inst, uint8_t level, ui
     }
     *pdu_len_out = p;
     return 0;
+}
+
+/* 构造一条伪节点 LSP：LSP-ID = <our_sysid>.<circuit_id>-00；body 包含 Area + Protocols + 一组
+ * IS reach（到本 LAN 上所有 UP 邻居 + 自己，metric=0，pseudonode-id=0）。
+ * 仅 we_are_dis 的 (level, interface) 才应调用本函数。 */
+static int isis_lsp_build_pseudonode_pdu(const isis_instance_cfg_t *inst, uint8_t level, const char *ifname,
+                                         uint8_t circuit_id, uint32_t seq, uint8_t *pdu, size_t pdu_cap,
+                                         size_t *pdu_len_out)
+{
+    if (!inst || !ifname || circuit_id == 0u || !pdu || !pdu_len_out || pdu_cap < ISIS_LSP_HDR_LEN)
+    {
+        return -1;
+    }
+
+    uint8_t system_id[6];
+    if (isis_extract_system_id(inst->net, system_id) != 0)
+    {
+        return -1;
+    }
+
+    GByteArray *is_entries = g_byte_array_new();
+    if (!is_entries)
+    {
+        return -1;
+    }
+    const uint8_t narrow = (inst->cost_style == ISIS_COST_STYLE_NARROW) ? 1u : 0u;
+
+    /* 加入本机自己（sysid + pn=0），度量 0 */
+    {
+        uint8_t entry[11];
+        memset(entry, 0, sizeof(entry));
+        if (narrow)
+        {
+            entry[0] = 0u;
+            entry[1] = 0x80u;
+            entry[2] = 0x80u;
+            entry[3] = 0x80u;
+            memcpy(&entry[4], system_id, 6u);
+            entry[10] = 0u;
+        }
+        else
+        {
+            memcpy(entry, system_id, 6u);
+            entry[6] = 0u;
+            entry[7] = 0u;
+            entry[8] = 0u;
+            entry[9] = 0u;
+            entry[10] = 0u;
+        }
+        g_byte_array_append(is_entries, entry, sizeof(entry));
+    }
+
+    /* 加入该 (ifname, level) 上所有 UP 邻居 */
+    if (inst->neighbors)
+    {
+        GHashTableIter iter;
+        gpointer k = NULL;
+        gpointer v = NULL;
+        g_hash_table_iter_init(&iter, inst->neighbors);
+        while (g_hash_table_iter_next(&iter, &k, &v))
+        {
+            (void)k;
+            const isis_neighbor_t *nbr = (const isis_neighbor_t *)v;
+            if (!nbr || nbr->level != level || nbr->state != ISIS_ADJ_STATE_UP)
+            {
+                continue;
+            }
+            if (strcmp(nbr->ifname, ifname) != 0)
+            {
+                continue;
+            }
+            uint8_t entry[11];
+            memset(entry, 0, sizeof(entry));
+            if (narrow)
+            {
+                entry[0] = 0u;
+                entry[1] = 0x80u;
+                entry[2] = 0x80u;
+                entry[3] = 0x80u;
+                memcpy(&entry[4], nbr->system_id, 6u);
+                entry[10] = 0u;
+            }
+            else
+            {
+                memcpy(entry, nbr->system_id, 6u);
+                entry[6] = 0u;
+                entry[7] = 0u;
+                entry[8] = 0u;
+                entry[9] = 0u;
+                entry[10] = 0u;
+            }
+            g_byte_array_append(is_entries, entry, sizeof(entry));
+        }
+    }
+
+    /* 组 LSP 头 */
+    size_t p = 0;
+    pdu[p++] = ISIS_NLPID;
+    pdu[p++] = ISIS_LSP_HDR_LEN;
+    pdu[p++] = 1u;
+    pdu[p++] = 6u;
+    pdu[p++] = (level == 1u) ? ISIS_PDU_TYPE_LSP_L1 : ISIS_PDU_TYPE_LSP_L2;
+    pdu[p++] = 1u;
+    pdu[p++] = 0u;
+    pdu[p++] = 3u;
+
+    size_t pdu_len_pos = p;
+    pdu[p++] = 0u;
+    pdu[p++] = 0u;
+
+    pdu[p++] = (uint8_t)((ISIS_LSP_DEFAULT_LIFETIME_SEC >> 8) & 0xFFu);
+    pdu[p++] = (uint8_t)(ISIS_LSP_DEFAULT_LIFETIME_SEC & 0xFFu);
+
+    memcpy(&pdu[p], system_id, 6u);
+    p += 6u;
+    pdu[p++] = circuit_id; /* pseudonode-id */
+    pdu[p++] = 0u;         /* fragment */
+
+    pdu[p++] = (uint8_t)((seq >> 24) & 0xFFu);
+    pdu[p++] = (uint8_t)((seq >> 16) & 0xFFu);
+    pdu[p++] = (uint8_t)((seq >> 8) & 0xFFu);
+    pdu[p++] = (uint8_t)(seq & 0xFFu);
+
+    pdu[p++] = 0u; /* checksum hi */
+    pdu[p++] = 0u; /* checksum lo */
+
+    pdu[p++] = (level == 1u) ? 1u : 2u;
+
+    int rc = 0;
+    /* Area */
+    {
+        uint8_t area[64];
+        uint8_t area_len = 0u;
+        if (isis_lsp_extract_area(inst->net, area, sizeof(area), &area_len) == 0 && area_len > 0u)
+        {
+            uint8_t area_val[1 + 64];
+            area_val[0] = area_len;
+            memcpy(&area_val[1], area, area_len);
+            rc |= isis_lsp_append_single_tlv(pdu, pdu_cap, &p, ISIS_TLV_AREA_ADDR, area_val, (uint8_t)(area_len + 1u));
+        }
+        /* Protocols */
+        uint8_t nlpids[2];
+        uint8_t nlpids_len = 0u;
+        if (inst->af_ipv4)
+        {
+            nlpids[nlpids_len++] = ISIS_NLPID_IPV4;
+        }
+        if (inst->af_ipv6 && !narrow)
+        {
+            nlpids[nlpids_len++] = ISIS_NLPID_IPV6;
+        }
+        if (nlpids_len > 0u)
+        {
+            rc |= isis_lsp_append_single_tlv(pdu, pdu_cap, &p, ISIS_TLV_PROTOCOLS_SUPPORTED, nlpids, nlpids_len);
+        }
+    }
+
+    /* IS reach entries */
+    if (is_entries->len > 0u)
+    {
+        if (narrow)
+        {
+            rc |= isis_lsp_append_tlv2_chunks(pdu, pdu_cap, &p, is_entries->data, is_entries->len);
+        }
+        else
+        {
+            rc |=
+                isis_lsp_append_tlv_chunks(pdu, pdu_cap, &p, ISIS_TLV_EXT_IS_REACH, is_entries->data, is_entries->len);
+        }
+    }
+
+    g_byte_array_free(is_entries, TRUE);
+
+    if (rc != 0 || p > 0xFFFFu)
+    {
+        return -1;
+    }
+
+    pdu[pdu_len_pos] = (uint8_t)((p >> 8) & 0xFFu);
+    pdu[pdu_len_pos + 1u] = (uint8_t)(p & 0xFFu);
+    if (isis_lsp_checksum_fill(&pdu[ISIS_LSP_CKSUM_COVER_OFFSET], p - ISIS_LSP_CKSUM_COVER_OFFSET,
+                               ISIS_LSP_CKSUM_FIELD_REL_OFFSET) != 0)
+    {
+        return -1;
+    }
+    *pdu_len_out = p;
+    return 0;
+}
+
+typedef struct isis_lsp_flood_if_ctx
+{
+    const isis_instance_cfg_t *inst;
+    int raw_fd;
+    uint8_t level;
+    const uint8_t *pdu;
+    size_t pdu_len;
+    const char *ingress_ifname;
+    uint32_t ingress_ifindex;
+    uint32_t sent;
+} isis_lsp_flood_if_ctx_t;
+
+static void isis_lsp_flood_if_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    const isis_if_cfg_t *if_cfg = (const isis_if_cfg_t *)value;
+    isis_lsp_flood_if_ctx_t *ctx = (isis_lsp_flood_if_ctx_t *)user_data;
+    if (!if_cfg || !ctx || !ctx->pdu || ctx->pdu_len == 0u)
+    {
+        return;
+    }
+    if (!isis_lsp_pick_active_af_cfg(ctx->inst, if_cfg))
+    {
+        return;
+    }
+    if (ctx->ingress_ifname && strcmp(if_cfg->ifname, ctx->ingress_ifname) == 0)
+    {
+        return;
+    }
+
+    const if_api_cache_entry_t *if_entry = if_api_cache_lookup(if_cfg->ifname);
+    if (!if_entry || !if_entry->proto_up || if_entry->ifindex == 0u)
+    {
+        return;
+    }
+    if (ctx->ingress_ifindex != 0u && if_entry->ifindex == ctx->ingress_ifindex)
+    {
+        return;
+    }
+    if (!isis_lsp_if_has_up_adjacency(ctx->inst, if_cfg->ifname, ctx->level))
+    {
+        return;
+    }
+
+    if (isis_lsp_send_pdu_on_if(ctx->raw_fd, if_entry, ctx->level, ctx->pdu, ctx->pdu_len) == 0)
+    {
+        ctx->sent++;
+    }
 }
 
 static void isis_lsp_send_if_cb(gpointer key, gpointer value, gpointer user_data)
@@ -913,6 +1454,73 @@ void isis_lsp_send_due(isis_instance_cfg_t *inst, int raw_fd, uint64_t now_msec)
     {
         inst->lsp_seq_l2 = seq_l2;
     }
+
+    /* 伪节点 LSP：每个 (interface, level) 我们当 DIS 的，发一份 pseudonode LSP，
+     * 沿 LAN 泛洪给所有邻居。 */
+    GHashTableIter pn_iter;
+    gpointer pn_k = NULL;
+    gpointer pn_v = NULL;
+    g_hash_table_iter_init(&pn_iter, inst->if_cfgs);
+    while (g_hash_table_iter_next(&pn_iter, &pn_k, &pn_v))
+    {
+        (void)pn_k;
+        isis_if_cfg_t *pn_if_cfg = (isis_if_cfg_t *)pn_v;
+        if (!pn_if_cfg)
+        {
+            continue;
+        }
+        const if_api_cache_entry_t *pn_if_entry = if_api_cache_lookup(pn_if_cfg->ifname);
+        if (!pn_if_entry || !pn_if_entry->proto_up || pn_if_entry->ifindex == 0u)
+        {
+            continue;
+        }
+        for (uint8_t lvl = 1u; lvl <= 2u; ++lvl)
+        {
+            if (!isis_level_enabled(inst, lvl))
+            {
+                continue;
+            }
+            isis_dis_state_t *dis = (lvl == 1u) ? &pn_if_cfg->dis_l1 : &pn_if_cfg->dis_l2;
+            if (!dis->we_are_dis || dis->our_circuit_id == 0u)
+            {
+                continue;
+            }
+            if (!isis_lsp_if_has_up_adjacency(inst, pn_if_cfg->ifname, lvl))
+            {
+                /* 没邻居就不发伪节点（避免污染对端 LSDB） */
+                continue;
+            }
+            uint32_t pn_seq = dis->pseudo_seq + 1u;
+            if (pn_seq == 0u)
+            {
+                pn_seq = 1u;
+            }
+            uint8_t pn_pdu[ISIS_LSP_PKT_MAX];
+            size_t pn_pdu_len = 0u;
+            if (isis_lsp_build_pseudonode_pdu(inst, lvl, pn_if_cfg->ifname, dis->our_circuit_id, pn_seq, pn_pdu,
+                                              sizeof(pn_pdu), &pn_pdu_len) != 0 ||
+                pn_pdu_len == 0u)
+            {
+                continue;
+            }
+            isis_lsp_flood_if_ctx_t pn_flood_ctx = {
+                .inst = inst,
+                .raw_fd = raw_fd,
+                .level = lvl,
+                .pdu = pn_pdu,
+                .pdu_len = pn_pdu_len,
+                .ingress_ifname = NULL,
+                .ingress_ifindex = 0u,
+                .sent = 0u,
+            };
+            g_hash_table_foreach(inst->if_cfgs, isis_lsp_flood_if_cb, &pn_flood_ctx);
+            if (pn_flood_ctx.sent > 0u)
+            {
+                dis->pseudo_seq = pn_seq;
+            }
+        }
+    }
+
     if (send_ctx.sent_l1 > 0u || send_ctx.sent_l2 > 0u)
     {
         inst->last_lsp_tx_msec = now_msec;
@@ -975,52 +1583,6 @@ static isis_neighbor_t *isis_lsp_find_sender_neighbor(isis_instance_cfg_t *inst,
     return NULL;
 }
 
-typedef struct isis_lsp_flood_if_ctx
-{
-    const isis_instance_cfg_t *inst;
-    int raw_fd;
-    uint8_t level;
-    const uint8_t *pdu;
-    size_t pdu_len;
-    const char *ingress_ifname;
-    uint32_t ingress_ifindex;
-} isis_lsp_flood_if_ctx_t;
-
-static void isis_lsp_flood_if_cb(gpointer key, gpointer value, gpointer user_data)
-{
-    (void)key;
-    const isis_if_cfg_t *if_cfg = (const isis_if_cfg_t *)value;
-    isis_lsp_flood_if_ctx_t *ctx = (isis_lsp_flood_if_ctx_t *)user_data;
-    if (!if_cfg || !ctx || !ctx->pdu || ctx->pdu_len == 0u)
-    {
-        return;
-    }
-    if (!isis_lsp_pick_active_af_cfg(ctx->inst, if_cfg))
-    {
-        return;
-    }
-    if (ctx->ingress_ifname && strcmp(if_cfg->ifname, ctx->ingress_ifname) == 0)
-    {
-        return;
-    }
-
-    const if_api_cache_entry_t *if_entry = if_api_cache_lookup(if_cfg->ifname);
-    if (!if_entry || !if_entry->proto_up || if_entry->ifindex == 0u)
-    {
-        return;
-    }
-    if (ctx->ingress_ifindex != 0u && if_entry->ifindex == ctx->ingress_ifindex)
-    {
-        return;
-    }
-    if (!isis_lsp_if_has_up_adjacency(ctx->inst, if_cfg->ifname, ctx->level))
-    {
-        return;
-    }
-
-    (void)isis_lsp_send_pdu_on_if(ctx->raw_fd, if_entry, ctx->level, ctx->pdu, ctx->pdu_len);
-}
-
 static void isis_lsp_flood_instance(isis_instance_cfg_t *inst, const isis_lsp_rx_ctx_t *ctx)
 {
     if (!inst || !ctx || ctx->raw_fd < 0 || !ctx->pdu || ctx->pdu_len == 0u || !inst->if_cfgs || !inst->admin_up ||
@@ -1077,15 +1639,24 @@ static void isis_lsp_apply_instance_cb(gpointer key, gpointer value, gpointer us
     isis_neighbor_t *origin_nbr = isis_lsp_find_neighbor(inst, ctx->ifname, ctx->level, ctx->system_id);
 
     isis_lsdb_entry_t *lsdb = NULL;
-    char lsdb_key[24] = {0};
+    char lsdb_key[32] = {0};
     if (inst->lsdb_entries)
     {
-        isis_lsp_lsdb_key_format(lsdb_key, sizeof(lsdb_key), ctx->level, ctx->system_id);
+        isis_lsp_lsdb_key_format(lsdb_key, sizeof(lsdb_key), ctx->level, ctx->system_id, ctx->pseudonode_id,
+                                 ctx->fragment_id);
         lsdb = (isis_lsdb_entry_t *)g_hash_table_lookup(inst->lsdb_entries, lsdb_key);
     }
 
-    uint32_t last_seq = lsdb ? lsdb->seq : (origin_nbr ? origin_nbr->last_lsp_seq : 0u);
-    uint64_t last_rx_msec = lsdb ? lsdb->last_rx_msec : (origin_nbr ? origin_nbr->last_lsp_rx_msec : 0u);
+    /*
+     * Sequence numbers are scoped to a single LSP-ID.  A router LSP
+     * (<sysid>.00-00) and that router's pseudonode LSPs (<sysid>.<pn>-00)
+     * each have independent sequence spaces.  Do not fall back to the
+     * neighbor-level last_lsp_seq here, or a fresh pseudonode LSP with seq 1
+     * can be discarded after a higher-sequence router LSP from the same
+     * system has already been accepted.
+     */
+    uint32_t last_seq = lsdb ? lsdb->seq : 0u;
+    uint64_t last_rx_msec = lsdb ? lsdb->last_rx_msec : 0u;
     if (last_seq != 0u && ctx->seq != 0u && ctx->seq < last_seq)
     {
         if (!(last_rx_msec != 0u && ctx->now_msec >= last_rx_msec &&
@@ -1099,7 +1670,7 @@ static void isis_lsp_apply_instance_cb(gpointer key, gpointer value, gpointer us
         return;
     }
 
-    if (origin_nbr)
+    if (origin_nbr && ctx->pseudonode_id == 0u && ctx->fragment_id == 0u)
     {
         origin_nbr->last_lsp_seq = ctx->seq;
         origin_nbr->last_lsp_rx_msec = ctx->now_msec;
@@ -1125,6 +1696,8 @@ static void isis_lsp_apply_instance_cb(gpointer key, gpointer value, gpointer us
             {
                 lsdb->level = ctx->level;
                 memcpy(lsdb->system_id, ctx->system_id, sizeof(lsdb->system_id));
+                lsdb->pseudonode_id = ctx->pseudonode_id;
+                lsdb->fragment_id = ctx->fragment_id;
                 g_hash_table_replace(inst->lsdb_entries, g_strdup(lsdb_key), lsdb);
             }
         }
@@ -1233,6 +1806,8 @@ void isis_lsp_handle_pdu(int raw_fd, const uint8_t *pdu, size_t pdu_len, const s
     ctx.tlv_len = pdu_len - ISIS_LSP_HDR_LEN;
     ctx.level = level;
     memcpy(ctx.system_id, &pdu[12], sizeof(ctx.system_id));
+    ctx.pseudonode_id = pdu[18];
+    ctx.fragment_id = pdu[19];
     if (src_mac && !isis_lsp_mac_is_zero(src_mac))
     {
         memcpy(ctx.src_mac, src_mac, sizeof(ctx.src_mac));
@@ -1294,7 +1869,7 @@ void isis_lsp_remove_origin(isis_instance_cfg_t *inst, uint8_t level, const uint
         return;
     }
 
-    char key[24] = {0};
-    isis_lsp_lsdb_key_format(key, sizeof(key), level, system_id);
+    char key[32] = {0};
+    isis_lsp_lsdb_key_format(key, sizeof(key), level, system_id, 0u, 0u);
     (void)g_hash_table_remove(inst->lsdb_entries, key);
 }

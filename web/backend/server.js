@@ -1,6 +1,6 @@
 /**
  * @file   server.js
- * @brief  NetNexus 拓扑编排后端：管理 Docker 容器并桥接浏览器到 telnet 3788
+ * @brief  NetNexus 拓扑编排后端：管理 Docker 容器并桥接浏览器终端
  * @author NetNexus Team
  * @date   2026-04-17
  *
@@ -11,7 +11,7 @@
  *   3) 按 GE 端口序号从小到大 `docker network connect` 链路网络，保证 ethX
  *      的命名顺序与 GE-X 一致。
  *   4) 接口都就位后，`docker exec -d` 在容器里拉起 /opt/netnexus/bin/netnexus。
- *   5) 宿主机上暴露一个端口映射到容器 3788，供 WebSocket 终端桥接。
+ *   5) NetNexus 暴露一个端口映射到容器 3788，FRR 终端通过 docker exec vtysh 桥接。
  *
  * 接口:
  *   GET    /api/images                列出本地可用的 netnexus 镜像
@@ -26,7 +26,7 @@
  *   POST   /api/links/:id/capture/start  启动链路抓包
  *   POST   /api/links/:id/capture/stop   停止链路抓包
  *   GET    /api/captures/:id/download 下载抓包 pcap
- *   WS     /ws/terminal?id=<instId>   浏览器 <-> 容器 telnet 3788 双向桥接
+ *   WS     /ws/terminal?id=<instId>   浏览器 <-> NetNexus telnet 3788 或 FRR vtysh 双向桥接
  */
 
 const express = require('express');
@@ -71,6 +71,12 @@ const NN_START_SH = [
     'export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=1:halt_on_error=0:abort_on_error=0:log_path=/opt/netnexus/log/asan/asan}"',
     'exec /opt/netnexus/bin/netnexus > /tmp/netnexus.log 2>&1'
 ].join(' && ');
+
+const DEVICE_KIND_NETNEXUS = 'netnexus';
+const DEVICE_KIND_FRR = 'frr';
+const SUPPORTED_DEVICE_KINDS = new Set([DEVICE_KIND_NETNEXUS, DEVICE_KIND_FRR]);
+const DEFAULT_FRR_IMAGE = 'netnexus-frr-ci:localtest';
+const FRR_START_SH = 'exec /usr/local/bin/ci-start-frr.sh > /tmp/frr-ci-start.log 2>&1';
 
 const app = express();
 app.set('trust proxy', true); // nginx 反代场景下取真实客户端 IP 做限流
@@ -159,7 +165,7 @@ app.use('/api', rateLimitMutations);
 app.use('/api', requireAuth);
 
 /** 内存实例表，重启服务即丢失 */
-const instances = new Map(); // id -> { id, image, containerName, hostPort, status, createdAt, linkNets }
+const instances = new Map(); // id -> { id, kind, image, containerName, hostPort, status, createdAt, linkNets }
 
 /** 内存链路表：每根线对应一个 docker bridge network */
 const links = new Map(); // id -> { id, from, to, fromPort, toPort, networkName, wired }
@@ -174,10 +180,17 @@ const stoppedDbs = new Map(); // id -> base64 string
 
 let nextHostPort = 13788;
 
-/** 每台设备固定对外呈现 8 个 GE 口，没用到的 GE 槽位挂一个该设备私有的 stub 网络，
- *  保证容器里一定有 eth1..eth8,与 image 自带的 if_map.conf.gns3
- *  (GE-1..GE-8=eth1..eth8) 对齐。 */
-const GE_PORT_COUNT = 8;
+/** NetNexus 固定对外呈现 8 个 GE 口，FRR 与 CI runtime 对齐为 4 个槽位。
+ *  没用到的 GE 槽位挂一个该设备私有的 stub 网络，保证容器里 ethN 顺序稳定。
+ *  NetNexus 的 image 自带 if_map.conf.gns3 映射 GE-1..GE-8=eth1..eth8；
+ *  FRR 页面显示为 Linux 真实接口 eth1..eth4。 */
+const NETNEXUS_PORT_COUNT = 8;
+const FRR_PORT_COUNT = 4;
+
+function portCountForKind(kind)
+{
+    return kind === DEVICE_KIND_FRR ? FRR_PORT_COUNT : NETNEXUS_PORT_COUNT;
+}
 
 function dockerArgs(args) { return USE_SUDO ? ['docker', ...args] : args; }
 function dockerBin() { return USE_SUDO ? 'sudo' : DOCKER; }
@@ -261,6 +274,43 @@ async function killNetnexusInContainer(containerName)
     ]).catch(() => { /* 没进程 pkill 会非零，不是错 */ });
 }
 
+async function killFrrInContainer(containerName)
+{
+    await runDocker([
+        'exec', containerName, '/bin/bash', '-lc',
+        [
+            'if [ -x /usr/lib/frr/frrinit.sh ]; then /usr/lib/frr/frrinit.sh stop 2>/dev/null || true; fi',
+            'pkill -f "tail -F /var/log/frr" 2>/dev/null || true',
+            'pkill -x zebra 2>/dev/null || true',
+            'pkill -x bgpd 2>/dev/null || true',
+            'pkill -x staticd 2>/dev/null || true',
+            'pkill -x isisd 2>/dev/null || true',
+            'pkill -x ldpd 2>/dev/null || true',
+            'sleep 0.2',
+            'true'
+        ].join('; ')
+    ]).catch(() => { /* FRR 镜像/进程不存在时忽略 */ });
+}
+
+function normalizeDeviceKind(kind)
+{
+    const k = String(kind || DEVICE_KIND_NETNEXUS).trim().toLowerCase();
+    return SUPPORTED_DEVICE_KINDS.has(k) ? k : null;
+}
+
+function inferDeviceKindFromImage(image)
+{
+    return /(^|[-_/])frr($|[-_:/.])/i.test(String(image || '')) ? DEVICE_KIND_FRR : DEVICE_KIND_NETNEXUS;
+}
+
+function instanceKind(inst)
+{
+    return normalizeDeviceKind(inst?.kind) || inferDeviceKindFromImage(inst?.image);
+}
+
+function isNetNexusInstance(inst) { return instanceKind(inst) === DEVICE_KIND_NETNEXUS; }
+function isFrrInstance(inst)      { return instanceKind(inst) === DEVICE_KIND_FRR; }
+
 /**
  * 等 netnexus 进程起来 + 3788 端口进入 LISTEN。
  * 为兼容各类镜像（可能没装 ss/netstat/awk），用多种手段串联：
@@ -288,6 +338,27 @@ async function waitForNetnexusReady(containerName, maxMs = 5000)
         catch (_) { /* 继续重试 */ }
         await sleep(200);
     }
+    return false;
+}
+
+async function waitForFrrReady(containerName, maxMs = 30000)
+{
+    const deadline = Date.now() + maxMs;
+    let last = '';
+    while (Date.now() < deadline)
+    {
+        try
+        {
+            await runDocker(['exec', containerName, 'vtysh', '-c', 'show version'], 10000);
+            return true;
+        }
+        catch (e)
+        {
+            last = String(e.stderr || e.message || '').trim();
+        }
+        await sleep(500);
+    }
+    console.warn(`[backend] ${containerName} FRR not ready: ${last || 'timeout'}`);
     return false;
 }
 
@@ -335,6 +406,20 @@ async function tailNetnexusLog(containerName, lines = 30)
     catch (_) { return ''; }
 }
 
+async function tailFrrLog(containerName, lines = 30)
+{
+    try
+    {
+        const { stdout } = await runDocker([
+            'exec', containerName, '/bin/bash', '-lc',
+            `for f in /tmp/frr-ci-start.log /var/log/frr/*.log; do ` +
+            `if [ -s "$f" ]; then echo "==> $f <=="; tail -n ${lines} "$f"; fi; done`
+        ]);
+        return stdout;
+    }
+    catch (_) { return ''; }
+}
+
 // -------- 工具 --------
 
 function sanitizeId(s) { return String(s).replace(/[^a-zA-Z0-9_.-]/g, '_'); }
@@ -353,6 +438,16 @@ function captureFileName(linkId, startedAt)
 function dockerSpawn(args)
 {
     return spawn(dockerBin(), dockerArgs(args), { stdio: ['ignore', 'pipe', 'pipe'] });
+}
+
+function shQuote(s)
+{
+    return `'${String(s).replace(/'/g, `'\\''`)}'`;
+}
+
+function dockerCommandString(args)
+{
+    return [dockerBin(), ...dockerArgs(args)].map(shQuote).join(' ');
 }
 
 async function dockerImageExists(name)
@@ -715,6 +810,21 @@ function containerHardeningArgs()
     if (config.CONTAINER_NOFILE > 0) a.push('--ulimit', `nofile=${config.CONTAINER_NOFILE}:${config.CONTAINER_NOFILE}`);
     return a;
 }
+
+function devicePermissionArgs()
+{
+    if (!config.IS_PROD) return ['--privileged'];
+    return [
+        '--cap-add', 'NET_ADMIN',
+        '--cap-add', 'NET_RAW',
+        '--cap-add', 'SYS_PTRACE',
+        '--sysctl', 'net.ipv6.conf.all.disable_ipv6=0',
+        '--sysctl', 'net.ipv6.conf.default.disable_ipv6=0',
+        '--security-opt', 'seccomp=unconfined',
+        ...containerHardeningArgs()
+    ];
+}
+
 function linkNetworkName(linkId) { return `nn-link-${sanitizeId(linkId).slice(0, 40)}`; }
 function stubNetworkName(instanceId, geIdx) { return `nn-stub-${sanitizeId(instanceId).slice(0, 32)}-${geIdx}`; }
 
@@ -727,16 +837,16 @@ function parsePortIndex(portName)
 }
 
 /**
- * 为实例规划 8 个 GE 口的 docker 网络：
+ * 为实例规划固定数量 GE 槽位的 docker 网络：
  *   - 用到的 GE-N 指向 link 对应的 docker 网络
  *   - 未用到的 GE-N 指向一个仅此设备可见的 stub 网络
- * 返回数组长度固定 GE_PORT_COUNT，按 GE-1..GE-8 顺序。
+ * 返回数组长度固定 portCount，按 GE-1..GE-N 顺序。
  */
-function planInterfacesOf(instanceId)
+function planInterfacesOf(instanceId, portCount)
 {
     /** @type {{ port: string, geIdx: number, link: any | null }[]} */
     const slots = [];
-    for (let i = 1; i <= GE_PORT_COUNT; i++)
+    for (let i = 1; i <= portCount; i++)
     {
         slots.push({ port: `GE-${i}`, geIdx: i, link: null });
     }
@@ -745,15 +855,31 @@ function planInterfacesOf(instanceId)
         if (link.from === instanceId)
         {
             const idx = parsePortIndex(link.fromPort);
-            if (idx >= 1 && idx <= GE_PORT_COUNT) slots[idx - 1].link = link;
+            if (idx >= 1 && idx <= portCount) slots[idx - 1].link = link;
         }
         if (link.to === instanceId)
         {
             const idx = parsePortIndex(link.toPort);
-            if (idx >= 1 && idx <= GE_PORT_COUNT) slots[idx - 1].link = link;
+            if (idx >= 1 && idx <= portCount) slots[idx - 1].link = link;
         }
     }
     return slots;
+}
+
+function validateInstanceLinksFit(instanceId, portCount)
+{
+    for (const link of links.values())
+    {
+        let port = '';
+        if (link.from === instanceId) port = link.fromPort;
+        else if (link.to === instanceId) port = link.toPort;
+        else continue;
+        const idx = parsePortIndex(port);
+        if (idx < 1 || idx > portCount)
+        {
+            throw new Error(`设备 ${instanceId} 只支持 GE-1..GE-${portCount}，链路 ${link.id} 使用了 ${port || '(空)'}`);
+        }
+    }
 }
 
 async function dockerNetworkExists(name)
@@ -764,6 +890,27 @@ async function dockerNetworkExists(name)
         return stdout.trim() === name;
     }
     catch (_) { return false; }
+}
+
+async function dockerNetworkIsInternal(name)
+{
+    try
+    {
+        const { stdout } = await runDocker(['network', 'inspect', '-f', '{{.Internal}}', name]);
+        return stdout.trim() === 'true';
+    }
+    catch (_) { return false; }
+}
+
+async function dockerNetworkContainerCount(name)
+{
+    try
+    {
+        const { stdout } = await runDocker(['network', 'inspect', '-f', '{{len .Containers}}', name]);
+        const n = parseInt(stdout.trim(), 10);
+        return Number.isFinite(n) ? n : 0;
+    }
+    catch (_) { return 0; }
 }
 
 async function dockerContainerExists(name)
@@ -877,7 +1024,7 @@ async function pickFreeSubnet29()
     throw new Error('no free /29 subnet in 10.200.0.0/16 pool');
 }
 
-async function createBridgeNetwork(name)
+async function createBridgeNetwork(name, { internal = false } = {})
 {
     let lastOverlap = null;
     for (let attempt = 1; attempt <= SUBNET_ALLOC_MAX_RETRIES; attempt++)
@@ -885,8 +1032,11 @@ async function createBridgeNetwork(name)
         const subnet = await pickFreeSubnet29();
         try
         {
-            // 与 CI topology runtime 对齐：链路/占位网络都开启 IPv6，避免双栈恢复时地址下发失败
-            await runDocker(['network', 'create', '--ipv6', '--driver', 'bridge', '--internal', '--subnet', subnet, name]);
+            // 与 CI topology runtime 对齐：link/stub 都开启 IPv6；只有 stub 用 internal 做占位隔离。
+            const args = ['network', 'create', '--ipv6', '--driver', 'bridge'];
+            if (internal) args.push('--internal');
+            args.push('--subnet', subnet, name);
+            await runDocker(args);
             return;
         }
         catch (e)
@@ -908,9 +1058,25 @@ async function ensureLinkNetwork(link)
 {
     const name = link.networkName || linkNetworkName(link.id);
     link.networkName = name;
-    if (!(await dockerNetworkExists(name)))
+    if (await dockerNetworkExists(name))
     {
-        await createBridgeNetwork(name);
+        if (await dockerNetworkIsInternal(name))
+        {
+            const count = await dockerNetworkContainerCount(name);
+            if (count === 0)
+            {
+                await runDocker(['network', 'rm', name]).catch(() => {});
+                await createBridgeNetwork(name, { internal: false });
+            }
+            else
+            {
+                console.warn(`[backend] link network ${name} is internal but has ${count} container(s); recreate it by stopping endpoints or deleting the link`);
+            }
+        }
+    }
+    else
+    {
+        await createBridgeNetwork(name, { internal: false });
     }
     return name;
 }
@@ -920,7 +1086,7 @@ async function ensureStubNetwork(instanceId, geIdx)
     const name = stubNetworkName(instanceId, geIdx);
     if (!(await dockerNetworkExists(name)))
     {
-        await createBridgeNetwork(name);
+        await createBridgeNetwork(name, { internal: true });
     }
     return name;
 }
@@ -971,6 +1137,7 @@ app.get('/api/images', async (_req, res) =>
         {
             images.push({ name: 'netnexus:latest', id: '-', size: '(not built)' });
             images.push({ name: 'netnexus:debug', id: '-', size: '(not built)' });
+            images.push({ name: DEFAULT_FRR_IMAGE, id: '-', size: '(not built)' });
         }
         res.json({ images });
     }
@@ -988,20 +1155,25 @@ app.get('/api/instances', (_req, res) =>
 });
 
 /**
- * 启动一个 NetNexus 容器。流程完全按 CI 的顺序：
+ * 启动一个 NetNexus/FRR 容器。NetNexus 流程保持与 CI 对齐，FRR 走 CI 的 ci-start-frr.sh：
  *   1) 收集 links,规划 GE 槽位
- *   2) docker run --cap-add NET_ADMIN/NET_RAW -p host:3788 image sleep infinity
+ *   2) dev 按 CI 使用 docker run --privileged；production 保持收敛权限
  *      (if_map.conf.gns3 由 image 自带,不再 bind mount)
  *   3) 按 GE 序号依次 docker network connect
- *   4) docker exec -d 启动 netnexus
+ *   4) docker exec -d 启动 netnexus 或 frr
  */
 app.post('/api/instances', async (req, res) =>
 {
     const { id, image } = req.body || {};
+    const kind = normalizeDeviceKind((req.body || {}).kind || (req.body || {}).type);
     let dbBase64 = (req.body || {}).dbBase64 || null;
     if (!id || !image)
     {
         return res.status(400).json({ error: 'id and image required' });
+    }
+    if (!kind)
+    {
+        return res.status(400).json({ error: 'invalid kind', detail: '设备类型仅支持 netnexus / frr' });
     }
     if (!isValidId(id))
     {
@@ -1042,25 +1214,41 @@ app.post('/api/instances', async (req, res) =>
             // 容器还在跑（用户重复点启动、或刚 pkill 没等到 stop 真销毁）
             try
             {
-                await killNetnexusInContainer(existing.containerName);
-                await runDocker([
-                    'exec', '-d', existing.containerName, '/bin/bash', '-lc', NN_START_SH
-                ]);
-                const ready = await waitForNetnexusReady(existing.containerName, 15000);
-                const hostReady = ready && await waitForHostTcpReady('127.0.0.1', existing.hostPort, 5000);
-                if (!ready || !hostReady)
+                if (isFrrInstance(existing))
                 {
-                    const tail = await tailNetnexusLog(existing.containerName);
-                    console.warn(`[backend] ${existing.containerName} terminal not ready (container=${ready}, host=${hostReady}), log tail:\n${tail}`);
-                    return res.status(500).json({ error: 'netnexus terminal did not become ready', detail: tail || 'no log' });
+                    await runDocker([
+                        'exec', '-d', existing.containerName, '/bin/bash', '-lc',
+                        `pgrep -x zebra >/dev/null || (${FRR_START_SH})`
+                    ]);
+                    const ready = await waitForFrrReady(existing.containerName, 30000);
+                    if (!ready)
+                    {
+                        const tail = await tailFrrLog(existing.containerName);
+                        return res.status(500).json({ error: 'frr did not become ready', detail: tail || 'no log' });
+                    }
+                }
+                else
+                {
+                    await killNetnexusInContainer(existing.containerName);
+                    await runDocker([
+                        'exec', '-d', existing.containerName, '/bin/bash', '-lc', NN_START_SH
+                    ]);
+                    const ready = await waitForNetnexusReady(existing.containerName, 15000);
+                    const hostReady = ready && await waitForHostTcpReady('127.0.0.1', existing.hostPort, 5000);
+                    if (!ready || !hostReady)
+                    {
+                        const tail = await tailNetnexusLog(existing.containerName);
+                        console.warn(`[backend] ${existing.containerName} terminal not ready (container=${ready}, host=${hostReady}), log tail:\n${tail}`);
+                        return res.status(500).json({ error: 'netnexus terminal did not become ready', detail: tail || 'no log' });
+                    }
                 }
                 existing.status = 'running';
                 return res.json({ instance: existing, reused: true });
             }
             catch (e)
             {
-                console.warn(`[backend] exec netnexus in ${existing.containerName} failed: ${e.stderr || e.message}`);
-                return res.status(500).json({ error: 'exec netnexus failed', detail: String(e.stderr || e.message) });
+                console.warn(`[backend] exec control-plane in ${existing.containerName} failed: ${e.stderr || e.message}`);
+                return res.status(500).json({ error: 'exec control-plane failed', detail: String(e.stderr || e.message) });
             }
         }
 
@@ -1070,7 +1258,7 @@ app.post('/api/instances', async (req, res) =>
 
         // 迁移/降级场景：后端 restart 时 registerExistingOnBoot 把旧 container 置为 stopped
         // 但容器还在，db 没导出到 stoppedDbs —— 这里补救，rm 前先导一次
-        if (!stoppedDbs.has(id) && await dockerContainerExists(containerName))
+        if (kind === DEVICE_KIND_NETNEXUS && !stoppedDbs.has(id) && await dockerContainerExists(containerName))
         {
             try
             {
@@ -1093,7 +1281,7 @@ app.post('/api/instances', async (req, res) =>
     {
         if (await dockerContainerRunning(containerName))
         {
-            const adopted = await tryAdoptOne(containerName, id, image);
+            const adopted = await tryAdoptOne(containerName, id, image, kind);
             if (adopted) return res.json({ instance: adopted, reused: true });
         }
         // 存在但没跑：用户可能想重建，但为了避免误删，这里返回冲突让用户显式删除
@@ -1103,15 +1291,17 @@ app.post('/api/instances', async (req, res) =>
         });
     }
 
-    const hostPort = reservedHostPort || nextHostPort++;
-    if (hostPort >= nextHostPort) nextHostPort = hostPort + 1;
+    const hostPort = kind === DEVICE_KIND_NETNEXUS ? (reservedHostPort || nextHostPort++) : 0;
+    if (kind === DEVICE_KIND_NETNEXUS && hostPort >= nextHostPort) nextHostPort = hostPort + 1;
 
     try
     {
-        // 1) 规划 4 个 GE 口：有 link 的用 link 网络，没 link 的用 stub 网络
+        // 1) 规划固定数量 GE 槽位：有 link 的用 link 网络，没 link 的用 stub 网络
         //    if_map.conf.gns3 由 image 自带的 GE-1..GE-8=eth1..eth8 提供,不再 bind mount
         //    (避免阻碍 dev swap-image 替换该文件)
-        const slots = planInterfacesOf(id);
+        const portCount = portCountForKind(kind);
+        validateInstanceLinksFit(id, portCount);
+        const slots = planInterfacesOf(id, portCount);
 
         // 到这里已经确认没有同名容器（或是用户允许的情况），不再 rm
 
@@ -1127,33 +1317,32 @@ app.post('/api/instances', async (req, res) =>
 
         // 3) 以 sleep infinity 拉起容器
         //    eth0 是 docker 默认 bridge，承载 -p 端口映射和 CLI 3788；eth1..eth8 后面 connect
-        await runDocker([
+        const dockerRunArgs = [
             'run', '-d',
             '--name', containerName,
             '--hostname', id,
-            '--cap-add', 'NET_ADMIN',
-            '--cap-add', 'NET_RAW',
-            '--cap-add', 'SYS_PTRACE',
-            '--sysctl', 'net.ipv6.conf.all.disable_ipv6=0',
-            '--sysctl', 'net.ipv6.conf.default.disable_ipv6=0',
-            '--security-opt', 'seccomp=unconfined',
-            ...containerHardeningArgs(),
-            '-e', 'NN_WORK_DIR=/opt/netnexus',
-            '-e', 'LD_LIBRARY_PATH=/opt/netnexus/lib',
-            '-v', '/var/run/docker.sock:/var/run/docker.sock',
-            '-p', `${hostPort}:3788`,
-            image,
-            'sleep', 'infinity'
-        ]);
+            ...devicePermissionArgs(),
+        ];
+        if (kind === DEVICE_KIND_NETNEXUS)
+        {
+            dockerRunArgs.push(
+                '-e', 'NN_WORK_DIR=/opt/netnexus',
+                '-e', 'LD_LIBRARY_PATH=/opt/netnexus/lib',
+                '-v', '/var/run/docker.sock:/var/run/docker.sock',
+                '-p', `${hostPort}:3788`
+            );
+        }
+        dockerRunArgs.push(image, 'sleep', 'infinity');
+        await runDocker(dockerRunArgs);
 
-        // 4) 严格按 GE-1..GE-8 顺序 attach，确保 ethN 命名对齐
+        // 4) 严格按 GE-1..GE-N 顺序 attach，确保 ethN 命名对齐
         for (const item of netsInOrder)
         {
             await runDocker(['network', 'connect', item.net, containerName]);
         }
 
         // 4.5) 如果调用方带了 dbBase64（比如从导出文件恢复），在 netnexus 启动前把 db 灌进容器
-        if (dbBase64)
+        if (kind === DEVICE_KIND_NETNEXUS && dbBase64)
         {
             try
             {
@@ -1165,9 +1354,17 @@ app.post('/api/instances', async (req, res) =>
             }
         }
 
-        // 5) exec 启动 netnexus
-        await runDocker(['exec', '-d', containerName, '/bin/bash', '-lc', NN_START_SH]);
-        console.log(`[backend] ${containerName} created, netnexus exec'd; hostPort=${hostPort}`);
+        // 5) exec 启动设备控制平面
+        if (kind === DEVICE_KIND_FRR)
+        {
+            await runDocker(['exec', '-d', containerName, '/bin/bash', '-lc', FRR_START_SH]);
+            console.log(`[backend] ${containerName} created, frr exec'd`);
+        }
+        else
+        {
+            await runDocker(['exec', '-d', containerName, '/bin/bash', '-lc', NN_START_SH]);
+            console.log(`[backend] ${containerName} created, netnexus exec'd; hostPort=${hostPort}`);
+        }
 
         // 标记已接通的 link：两端都在跑（status=running）才算真的 wired
         for (const item of netsInOrder)
@@ -1181,9 +1378,10 @@ app.post('/api/instances', async (req, res) =>
 
         const inst = {
             id,
+            kind,
             image,
             containerName,
-            hostPort,
+            hostPort: kind === DEVICE_KIND_NETNEXUS ? hostPort : 0,
             status: 'starting',
             createdAt: Date.now(),
             linkNets: netsInOrder.map(x => x.net),
@@ -1191,21 +1389,24 @@ app.post('/api/instances', async (req, res) =>
         };
         instances.set(id, inst);
 
-        // 等 netnexus 真的 listen 3788，且宿主机映射端口可连后再返回。
-        // 页面终端走 127.0.0.1:hostPort；只检查容器内监听会让 UI 显示 running 但终端连不上。
+        // 等设备控制平面 ready 后再返回。
         const t0 = Date.now();
-        const ready = await waitForNetnexusReady(containerName, 20000);
-        const hostReady = ready && await waitForHostTcpReady('127.0.0.1', hostPort, 5000);
+        const ready = kind === DEVICE_KIND_FRR
+            ? await waitForFrrReady(containerName, 30000)
+            : await waitForNetnexusReady(containerName, 20000);
+        const hostReady = kind === DEVICE_KIND_FRR
+            ? true
+            : ready && await waitForHostTcpReady('127.0.0.1', hostPort, 5000);
         const t1 = Date.now();
         if (ready && hostReady)
         {
             inst.status = 'running';
-            console.log(`[backend] ${containerName} netnexus terminal ready in ${t1 - t0}ms`);
+            console.log(`[backend] ${containerName} ${kind} ready in ${t1 - t0}ms`);
         }
         else
         {
-            const tail = await tailNetnexusLog(containerName);
-            const err = new Error(`netnexus terminal did not become ready (container=${ready}, host=${hostReady})`);
+            const tail = kind === DEVICE_KIND_FRR ? await tailFrrLog(containerName) : await tailNetnexusLog(containerName);
+            const err = new Error(`${kind} did not become ready (container=${ready}, host=${hostReady})`);
             err.stderr = tail || err.message;
             console.warn(`[backend] ${containerName} ${err.message} after ${t1 - t0}ms, log tail:\n${tail}`);
             throw err;
@@ -1241,6 +1442,10 @@ app.get('/api/instances/:id/db', async (req, res) =>
     if (!inst)
     {
         return res.status(404).json({ error: 'instance not found' });
+    }
+    if (isFrrInstance(inst))
+    {
+        return res.json({ id: req.params.id, dbBase64: null, size: 0 });
     }
     // 停机状态：容器已 rm，直接返回 /stop 时保存的快照
     if (inst.status === 'stopped')
@@ -1327,19 +1532,23 @@ app.post('/api/instances/:id/stop', async (req, res) =>
     {
         await stopCapturesForInstance(inst.id, `设备 ${inst.id} 停止，抓包同步结束`);
 
-        // 1) 导出容器里的 /opt/netnexus/data（含 sqlite db-wal）到内存
+        // 1) 导出 NetNexus 容器里的 /opt/netnexus/data（含 sqlite db-wal）到内存
         let savedDb = null;
-        try
+        if (isNetNexusInstance(inst))
         {
-            savedDb = await readDbFromContainer(inst.containerName);
-        }
-        catch (e)
-        {
-            console.warn(`[backend] stop ${inst.containerName}: export db failed: ${e.stderr || e.message}`);
+            try
+            {
+                savedDb = await readDbFromContainer(inst.containerName);
+            }
+            catch (e)
+            {
+                console.warn(`[backend] stop ${inst.containerName}: export db failed: ${e.stderr || e.message}`);
+            }
         }
 
-        // 2) 先 pkill netnexus，防止 docker rm 时还在写盘
-        await killNetnexusInContainer(inst.containerName).catch(() => {});
+        // 2) 先停控制平面，防止 docker rm 时还在写盘/写日志
+        if (isFrrInstance(inst)) await killFrrInContainer(inst.containerName).catch(() => {});
+        else await killNetnexusInContainer(inst.containerName).catch(() => {});
 
         // 3) 真销毁容器
         await runDocker(['rm', '-f', inst.containerName]).catch(() => {});
@@ -1520,7 +1729,7 @@ app.post('/api/links', async (req, res) =>
         {
             const inst = instances.get(ep.id);
             const geIdx = parsePortIndex(ep.port);
-            if (!inst || geIdx < 1 || geIdx > GE_PORT_COUNT)
+            if (!inst || geIdx < 1 || geIdx > portCountForKind(instanceKind(inst)))
             {
                 hotFailedEnds++;
                 continue;
@@ -1703,7 +1912,7 @@ app.delete('/api/links/:id', async (req, res) =>
         {
             const inst = instances.get(ep.id);
             const geIdx = parsePortIndex(ep.port);
-            if (geIdx < 1 || geIdx > GE_PORT_COUNT) continue;
+            if (geIdx < 1 || geIdx > portCountForKind(instanceKind(inst))) continue;
 
             if (await containerOnNetwork(inst.containerName, link.networkName))
             {
@@ -1752,7 +1961,7 @@ app.delete('/api/links/:id', async (req, res) =>
  * 继承单个已有容器。start + 重新 exec netnexus（幂等），读端口 / 挂载 / 网络，
  * 写入 instances Map。imageHint 可从 docker ps 来，否则自己 inspect。
  */
-async function tryAdoptOne(containerName, idOverride = null, imageHint = null)
+async function tryAdoptOne(containerName, idOverride = null, imageHint = null, kindHint = null)
 {
     const id = idOverride || containerName.replace(/^nn-topo-/, '');
     let image = imageHint;
@@ -1765,6 +1974,7 @@ async function tryAdoptOne(containerName, idOverride = null, imageHint = null)
         }
     }
     catch (_) { /* ignore */ }
+    const kind = normalizeDeviceKind(kindHint) || inferDeviceKindFromImage(image);
 
     try
     {
@@ -1780,19 +1990,33 @@ async function tryAdoptOne(containerName, idOverride = null, imageHint = null)
     }
 
     let hostPort = 0;
-    try
+    if (kind === DEVICE_KIND_NETNEXUS)
     {
-        const { stdout: po } = await runDocker(['port', containerName, '3788/tcp']);
-        const m = /:(\d+)\s*$/.exec((po.trim().split('\n')[0] || '').trim());
-        if (m) hostPort = parseInt(m[1], 10);
+        try
+        {
+            const { stdout: po } = await runDocker(['port', containerName, '3788/tcp']);
+            const m = /:(\d+)\s*$/.exec((po.trim().split('\n')[0] || '').trim());
+            if (m) hostPort = parseInt(m[1], 10);
+        }
+        catch (_) { /* ignore */ }
     }
-    catch (_) { /* ignore */ }
 
-    // netnexus 进程可能因为 docker stop 丢掉了，幂等地重新 exec 一次
-    await runDocker([
-        'exec', '-d', containerName, '/bin/bash', '-lc',
-        `pgrep -x netnexus >/dev/null || (${NN_START_SH})`
-    ]).catch(() => { /* ignore */ });
+    // 控制平面可能因为 docker stop 丢掉了，幂等地重新 exec 一次
+    if (kind === DEVICE_KIND_FRR)
+    {
+        await runDocker([
+            'exec', '-d', containerName, '/bin/bash', '-lc',
+            `pgrep -x zebra >/dev/null || (${FRR_START_SH})`
+        ]).catch(() => { /* ignore */ });
+        await waitForFrrReady(containerName, 30000).catch(() => {});
+    }
+    else
+    {
+        await runDocker([
+            'exec', '-d', containerName, '/bin/bash', '-lc',
+            `pgrep -x netnexus >/dev/null || (${NN_START_SH})`
+        ]).catch(() => { /* ignore */ });
+    }
 
     const linkNets = [];
     const stubNets = [];
@@ -1812,6 +2036,7 @@ async function tryAdoptOne(containerName, idOverride = null, imageHint = null)
 
     const inst = {
         id,
+        kind,
         image: image || 'unknown',
         containerName,
         hostPort,
@@ -1918,19 +2143,24 @@ async function registerExistingOnBoot()
         const containerRunning = await dockerContainerRunning(name);
         // 后端重启时把容器里残留的 netnexus 全部 kill 掉，统一置为 stopped，
         // 容器本身保留（避免 docker stop/start 导致网络重连序错位）。
+        const kind = inferDeviceKindFromImage(image);
         if (containerRunning)
         {
-            await killNetnexusInContainer(name);
+            if (kind === DEVICE_KIND_FRR) await killFrrInContainer(name);
+            else await killNetnexusInContainer(name);
         }
 
         let hostPort = 0;
-        try
+        if (kind === DEVICE_KIND_NETNEXUS)
         {
-            const { stdout: po } = await runDocker(['port', name, '3788/tcp']);
-            const m = /:(\d+)\s*$/.exec((po.trim().split('\n')[0] || '').trim());
-            if (m) hostPort = parseInt(m[1], 10);
+            try
+            {
+                const { stdout: po } = await runDocker(['port', name, '3788/tcp']);
+                const m = /:(\d+)\s*$/.exec((po.trim().split('\n')[0] || '').trim());
+                if (m) hostPort = parseInt(m[1], 10);
+            }
+            catch (_) { /* ignore */ }
         }
-        catch (_) { /* ignore */ }
 
         const linkNets = [];
         const stubNets = [];
@@ -1950,6 +2180,7 @@ async function registerExistingOnBoot()
 
         const inst = {
             id,
+            kind,
             image: image || 'unknown',
             containerName: name,
             hostPort,
@@ -2018,12 +2249,58 @@ server.on('upgrade', (req, socket, head) =>
         socket.destroy();
         return;
     }
-    console.log(`[ws] upgrade id=${query.id} → ${inst.containerName} 127.0.0.1:${inst.hostPort}`);
+    console.log(`[ws] upgrade id=${query.id} → ${inst.containerName} kind=${instanceKind(inst)} port=${inst.hostPort || '-'}`);
     wss.handleUpgrade(req, socket, head, (ws) =>
     {
-        bridgeTerminal(ws, inst);
+        if (isFrrInstance(inst)) bridgeFrrTerminal(ws, inst);
+        else bridgeTerminal(ws, inst);
     });
 });
+
+function bridgeFrrTerminal(ws, inst)
+{
+    let alive = true;
+    const command = dockerCommandString([
+        'exec', '-it', inst.containerName,
+        '/bin/bash', '-lc',
+        'vtysh || exec /bin/bash -i'
+    ]);
+    const p = spawn('script', ['-qfec', command, '/dev/null'], { stdio: ['pipe', 'pipe', 'pipe'] });
+
+    function sendSafe(data)
+    {
+        try { ws.send(data); } catch (_) { /* ignore */ }
+    }
+
+    function closeAll()
+    {
+        if (!alive) return;
+        alive = false;
+        try { p.kill('SIGTERM'); } catch (_) { /* ignore */ }
+        try { ws.close(); } catch (_) { /* ignore */ }
+    }
+
+    sendSafe(`\r\n*** Connected to ${inst.containerName} (${inst.image}) via FRR vtysh ***\r\n`);
+    p.stdin.on('error', () => { /* docker/script 已退出时吞掉 EPIPE */ });
+    p.stdout.on('data', chunk => { if (alive) sendSafe(chunk); });
+    p.stderr.on('data', chunk => { if (alive) sendSafe(chunk); });
+    p.on('error', err =>
+    {
+        sendSafe(`\r\n*** terminal error: ${err.message} ***\r\n`);
+        closeAll();
+    });
+    p.on('close', () =>
+    {
+        closeAll();
+    });
+    ws.on('message', data =>
+    {
+        if (!alive || !p.stdin.writable) return;
+        const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+        try { p.stdin.write(buf); } catch (_) { /* ignore */ }
+    });
+    ws.on('close', closeAll);
+}
 
 /** 带重试的 TCP 桥接，因为 netnexus 进程起来后需要一点时间开始 listen 3788 */
 function bridgeTerminal(ws, inst)

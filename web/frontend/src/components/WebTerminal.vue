@@ -38,6 +38,12 @@ function setPaneRef(id, el)
     else    delete paneRefs.value[id];
 }
 
+function terminalTitle(node)
+{
+    const endpoint = node.type === 'frr' ? 'vtysh' : `127.0.0.1:${node.instance?.hostPort || '-'}`;
+    return `${node.label}  ${node.image}  ${endpoint}`;
+}
+
 function initPos()
 {
     const w = Math.min(size.value.w, window.innerWidth - 40);
@@ -203,7 +209,7 @@ onBeforeUnmount(() =>
                     :key="n.id"
                     class="tab no-drag"
                     :class="{ active: n.id === activeId }"
-                    :title="`${n.label}  ${n.image}  127.0.0.1:${n.instance?.hostPort}`"
+                    :title="terminalTitle(n)"
                     @mousedown.stop
                     @click="emit('switch-tab', n.id)"
                 >

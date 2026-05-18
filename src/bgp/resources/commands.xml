@@ -583,6 +583,38 @@
             </commands>
         </group>
 
+        <!-- import-rib <source-af> / no import-rib <source-af>（仅 unicast AF 视图） -->
+        <!-- cfg-id: 1=labeled-unicast（未来扩展 2=vpn-unicast, 3=vpn-instance） -->
+        <group group-id="22">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>import-rib</name>
+                    <description>Import routes from another address-family RIB</description>
+                </element>
+                <element id="3" cfg-id="1" type="keyword">
+                    <name>labeled-unicast</name>
+                    <description>Import labeled-unicast RIB best routes (with label, via tunnel iteration)</description>
+                </element>
+            </elements>
+
+            <commands>
+                <!-- import-rib labeled-unicast -->
+                <command>
+                    <expression>2 3</expression>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni</views>
+                </command>
+                <!-- no import-rib labeled-unicast -->
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni</views>
+                </command>
+            </commands>
+        </group>
+
         <!-- import-route static|connected / no import-route ...（地址族视图） -->
         <!-- cfg-id: 1=static, 2=connected -->
         <group group-id="11">

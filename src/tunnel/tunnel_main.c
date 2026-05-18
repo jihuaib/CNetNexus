@@ -141,6 +141,12 @@ void tunnel_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
                 dev_ipc_message_free(msg);
             }
             return;
+        case TUNNEL_MSG_TYPE_RESOLVE_QUERY:
+            if (tunnel_worker_post(TUNNEL_WORKER_CMD_RESOLVE_QUERY, msg) != ERRCODE_SUCCESS)
+            {
+                dev_ipc_message_free(msg);
+            }
+            return;
         case TUNNEL_MSG_TYPE_LABEL_ALLOC:
             if (tunnel_worker_post(TUNNEL_WORKER_CMD_LABEL_ALLOC, msg) != ERRCODE_SUCCESS)
             {

@@ -14,32 +14,35 @@
 #include "isis_route_sync.h"
 #include "route.h"
 
-#define ISIS_TLV_EXT_IS_REACH 22u
-#define ISIS_TLV_EXT_IP_REACH 135u
-#define ISIS_TLV_IPV6_REACH 236u
+#define ISIS_TLV_IS_REACH 2u       /* RFC 1195 narrow IS reach */
+#define ISIS_TLV_IP_INT_REACH 128u /* RFC 1195 narrow IPv4 internal reach */
+#define ISIS_TLV_EXT_IS_REACH 22u  /* RFC 5305 wide IS reach */
+#define ISIS_TLV_EXT_IP_REACH 135u /* RFC 5305 wide IPv4 reach */
+#define ISIS_TLV_IPV6_REACH 236u   /* RFC 5308 IPv6 reach */
 
 #define ISIS_LSP_ROUTE_KEY_MAX (IF_LOGICAL_NAME_MAX + 160u)
 #define ISIS_SPF_INF_DIST ((uint64_t)0x3FFFFFFFFFFFFFFFULL)
+#define ISIS_SPF_NODE_ID_LEN 7u
 
 typedef struct isis_spf_edge
 {
-    uint8_t to_sysid[6];
+    uint8_t to_node_id[ISIS_SPF_NODE_ID_LEN];
     uint32_t metric;
 } isis_spf_edge_t;
 
 typedef struct isis_spf_node
 {
-    uint8_t system_id[6];
+    uint8_t node_id[ISIS_SPF_NODE_ID_LEN];
     GPtrArray *edges; /* isis_spf_edge_t* */
     uint64_t dist;
-    uint8_t first_hop[6];
+    uint8_t first_hop[ISIS_SPF_NODE_ID_LEN];
     uint8_t has_first_hop;
     uint8_t visited;
 } isis_spf_node_t;
 
 typedef struct isis_spf_local_hop
 {
-    uint8_t system_id[6];
+    uint8_t node_id[ISIS_SPF_NODE_ID_LEN];
     uint32_t local_metric;
     uint32_t out_ifindex;
     net_addr_t source_addr;
@@ -166,6 +169,35 @@ static void isis_sysid_to_hex(const uint8_t sysid[6], char *buf, size_t sz)
     g_snprintf(buf, sz, "%02x%02x%02x%02x%02x%02x", sysid[0], sysid[1], sysid[2], sysid[3], sysid[4], sysid[5]);
 }
 
+static void isis_spf_make_node_id(const uint8_t sysid[6], uint8_t pseudonode_id, uint8_t node_id[ISIS_SPF_NODE_ID_LEN])
+{
+    if (!node_id)
+    {
+        return;
+    }
+    memset(node_id, 0, ISIS_SPF_NODE_ID_LEN);
+    if (sysid)
+    {
+        memcpy(node_id, sysid, 6u);
+    }
+    node_id[6] = pseudonode_id;
+}
+
+static void isis_spf_node_id_to_hex(const uint8_t node_id[ISIS_SPF_NODE_ID_LEN], char *buf, size_t sz)
+{
+    if (!buf || sz == 0u)
+    {
+        return;
+    }
+    if (!node_id)
+    {
+        g_strlcpy(buf, "00000000000000", sz);
+        return;
+    }
+    g_snprintf(buf, sz, "%02x%02x%02x%02x%02x%02x%02x", node_id[0], node_id[1], node_id[2], node_id[3], node_id[4],
+               node_id[5], node_id[6]);
+}
+
 static void isis_spf_origin_prefix(char *buf, size_t sz, uint8_t level, const uint8_t origin_sysid[6])
 {
     if (!buf || sz == 0u)
@@ -192,15 +224,16 @@ static void isis_spf_route_key_format(char *buf, size_t sz, uint8_t level, const
     g_snprintf(buf, sz, "%s%u|%s/%u", key_prefix, (unsigned)afi, addr_buf, (unsigned)prefix_len);
 }
 
-static isis_spf_node_t *isis_spf_graph_get_node(GHashTable *nodes, const uint8_t sysid[6], int create_if_missing)
+static isis_spf_node_t *isis_spf_graph_get_node(GHashTable *nodes, const uint8_t node_id[ISIS_SPF_NODE_ID_LEN],
+                                                int create_if_missing)
 {
-    if (!nodes || !sysid)
+    if (!nodes || !node_id)
     {
         return NULL;
     }
 
-    char key[13] = {0};
-    isis_sysid_to_hex(sysid, key, sizeof(key));
+    char key[15] = {0};
+    isis_spf_node_id_to_hex(node_id, key, sizeof(key));
 
     isis_spf_node_t *node = (isis_spf_node_t *)g_hash_table_lookup(nodes, key);
     if (node || !create_if_missing)
@@ -213,7 +246,7 @@ static isis_spf_node_t *isis_spf_graph_get_node(GHashTable *nodes, const uint8_t
     {
         return NULL;
     }
-    memcpy(node->system_id, sysid, sizeof(node->system_id));
+    memcpy(node->node_id, node_id, sizeof(node->node_id));
     node->edges = g_ptr_array_new_with_free_func(isis_spf_edge_free);
     if (!node->edges)
     {
@@ -226,16 +259,16 @@ static isis_spf_node_t *isis_spf_graph_get_node(GHashTable *nodes, const uint8_t
     return node;
 }
 
-static void isis_spf_graph_add_edge(GHashTable *nodes, const uint8_t from_sysid[6], const uint8_t to_sysid[6],
-                                    uint32_t metric)
+static void isis_spf_graph_add_edge(GHashTable *nodes, const uint8_t from_node_id[ISIS_SPF_NODE_ID_LEN],
+                                    const uint8_t to_node_id[ISIS_SPF_NODE_ID_LEN], uint32_t metric)
 {
-    if (!nodes || !from_sysid || !to_sysid)
+    if (!nodes || !from_node_id || !to_node_id)
     {
         return;
     }
 
-    isis_spf_node_t *from = isis_spf_graph_get_node(nodes, from_sysid, 1);
-    (void)isis_spf_graph_get_node(nodes, to_sysid, 1);
+    isis_spf_node_t *from = isis_spf_graph_get_node(nodes, from_node_id, 1);
+    (void)isis_spf_graph_get_node(nodes, to_node_id, 1);
     if (!from || !from->edges)
     {
         return;
@@ -248,7 +281,7 @@ static void isis_spf_graph_add_edge(GHashTable *nodes, const uint8_t from_sysid[
         {
             continue;
         }
-        if (memcmp(e->to_sysid, to_sysid, 6u) == 0)
+        if (memcmp(e->to_node_id, to_node_id, ISIS_SPF_NODE_ID_LEN) == 0)
         {
             if (metric < e->metric)
             {
@@ -263,7 +296,7 @@ static void isis_spf_graph_add_edge(GHashTable *nodes, const uint8_t from_sysid[
     {
         return;
     }
-    memcpy(edge->to_sysid, to_sysid, sizeof(edge->to_sysid));
+    memcpy(edge->to_node_id, to_node_id, sizeof(edge->to_node_id));
     edge->metric = metric;
     g_ptr_array_add(from->edges, edge);
 }
@@ -374,14 +407,135 @@ static void isis_spf_add_root_edges(isis_instance_cfg_t *inst, uint8_t level, co
         {
             metric = 0x00FFFFFFu;
         }
-        isis_spf_graph_add_edge(nodes, local_sysid, nbr->system_id, metric);
+        uint8_t local_node_id[ISIS_SPF_NODE_ID_LEN];
+        uint8_t nbr_node_id[ISIS_SPF_NODE_ID_LEN];
+        isis_spf_make_node_id(local_sysid, 0u, local_node_id);
+        isis_spf_make_node_id(nbr->system_id, 0u, nbr_node_id);
+        isis_spf_graph_add_edge(nodes, local_node_id, nbr_node_id, metric);
     }
 }
 
-static void isis_spf_parse_ext_is_reach_tlv(GHashTable *nodes, const uint8_t origin_sysid[6], const uint8_t *val,
-                                            size_t val_len)
+/* RFC 1195 TLV 2 (narrow IS reach) 解析：
+ * 体首 1 字节 virtual flag；其后 N * 11 字节 entry：
+ *   default_metric(1) + delay(1) + expense(1) + error(1) + sysid(6) + pseudo(1)
+ * 仅取 default metric 低 6 位作为度量值 */
+static void isis_spf_parse_narrow_is_reach_tlv(GHashTable *nodes, const uint8_t origin_node_id[ISIS_SPF_NODE_ID_LEN],
+                                               const uint8_t *val, size_t val_len)
 {
-    if (!nodes || !origin_sysid || !val || val_len == 0u)
+    if (!nodes || !origin_node_id || !val || val_len < 1u)
+    {
+        return;
+    }
+
+    size_t pos = 1u; /* skip virtual flag */
+    while (pos + 11u <= val_len)
+    {
+        uint8_t default_metric = val[pos];
+        if ((default_metric & 0x80u) != 0u)
+        {
+            pos += 11u;
+            continue;
+        }
+        uint32_t metric = (uint32_t)(default_metric & 0x3Fu);
+        const uint8_t *neighbor_id = &val[pos + 4u];
+
+        isis_spf_graph_add_edge(nodes, origin_node_id, neighbor_id, metric);
+        pos += 11u;
+    }
+}
+
+/* RFC 1195 TLV 128 (narrow IPv4 internal reach) 解析：12 字节/entry：
+ *   default(1) + delay(1) + expense(1) + error(1) + ipv4(4) + mask(4) */
+static void isis_spf_parse_narrow_ip_reach_entries(const uint8_t *val, size_t val_len, uint8_t level,
+                                                   const uint8_t origin_sysid[6], uint64_t path_metric,
+                                                   const isis_spf_local_hop_t *hop, GHashTable *desired)
+{
+    if (!val || val_len == 0u || !origin_sysid || !hop || hop->out_ifindex == 0u || !desired)
+    {
+        return;
+    }
+
+    size_t pos = 0u;
+    while (pos + 12u <= val_len)
+    {
+        uint8_t default_metric = val[pos];
+        if ((default_metric & 0x80u) != 0u)
+        {
+            pos += 12u;
+            continue;
+        }
+        uint32_t remote_metric = (uint32_t)(default_metric & 0x3Fu);
+
+        struct in_addr ip_be;
+        memcpy(&ip_be.s_addr, &val[pos + 4u], 4u);
+        uint32_t mask_he = ((uint32_t)val[pos + 8u] << 24) | ((uint32_t)val[pos + 9u] << 16) |
+                           ((uint32_t)val[pos + 10u] << 8) | (uint32_t)val[pos + 11u];
+        pos += 12u;
+
+        /* 把 mask 转 prefix_len，仅接受连续 mask */
+        uint8_t prefix_len = 0u;
+        if (mask_he == 0u)
+        {
+            prefix_len = 0u;
+        }
+        else
+        {
+            uint32_t inv = ~mask_he;
+            if ((inv & (inv + 1u)) != 0u)
+            {
+                /* 非连续 mask，丢弃 */
+                continue;
+            }
+            while ((mask_he & 0x80000000u) != 0u)
+            {
+                prefix_len++;
+                mask_he <<= 1;
+            }
+        }
+
+        isis_route_state_t route;
+        memset(&route, 0, sizeof(route));
+        route.afi = ROUTE_AFI_IPV4;
+        route.prefix_len = prefix_len;
+        route.out_ifindex = hop->out_ifindex;
+        route.prefix_addr.family = AF_INET;
+        route.prefix_addr.u.v4 = ip_be;
+        if (net_addr_prefix_normalize(&route.prefix_addr, route.prefix_len) != 0)
+        {
+            continue;
+        }
+
+        uint64_t total_metric = path_metric + (uint64_t)remote_metric;
+        route.metric = (total_metric > 0xFFFFFFFFu) ? 0xFFFFFFFFu : (uint32_t)total_metric;
+
+        route.source_addr = hop->source_addr;
+        if (route.source_addr.family != AF_INET)
+        {
+            isis_zero_addr(AF_INET, &route.source_addr);
+        }
+        if (hop->nexthop_addr.family != AF_INET || net_addr_is_zero(&hop->nexthop_addr))
+        {
+            continue;
+        }
+        route.nexthop_addr = hop->nexthop_addr;
+        if (route.prefix_len == 32u && net_addr_equal(&route.prefix_addr, &route.nexthop_addr))
+        {
+            continue;
+        }
+
+        char route_key[ISIS_LSP_ROUTE_KEY_MAX] = {0};
+        char path_key[ISIS_LSP_ROUTE_KEY_MAX + 160u] = {0};
+        isis_spf_route_key_format(route_key, sizeof(route_key), level, origin_sysid, route.afi, &route.prefix_addr,
+                                  route.prefix_len);
+        isis_route_path_key_format(path_key, sizeof(path_key), route_key, &route);
+        isis_route_head_table_add_path(desired, route_key, path_key, &route);
+    }
+}
+
+static void isis_spf_parse_ext_is_reach_tlv(GHashTable *nodes, const uint8_t origin_node_id[ISIS_SPF_NODE_ID_LEN],
+                                            const uint8_t *val, size_t val_len)
+{
+    if (!nodes || !origin_node_id || !val || val_len == 0u)
     {
         return;
     }
@@ -398,10 +552,7 @@ static void isis_spf_parse_ext_is_reach_tlv(GHashTable *nodes, const uint8_t ori
             break;
         }
 
-        if (neighbor_id[6] == 0u)
-        {
-            isis_spf_graph_add_edge(nodes, origin_sysid, neighbor_id, metric);
-        }
+        isis_spf_graph_add_edge(nodes, origin_node_id, neighbor_id, metric);
 
         pos += entry_len;
     }
@@ -413,6 +564,8 @@ static void isis_spf_collect_graph_from_lsdb(isis_instance_cfg_t *inst, uint8_t 
     {
         return;
     }
+
+    const uint8_t want_narrow = (inst->cost_style == ISIS_COST_STYLE_NARROW) ? 1u : 0u;
 
     GHashTableIter iter;
     gpointer key = NULL;
@@ -440,9 +593,16 @@ static void isis_spf_collect_graph_from_lsdb(isis_instance_cfg_t *inst, uint8_t 
                 break;
             }
 
-            if (tlv_type == ISIS_TLV_EXT_IS_REACH)
+            uint8_t origin_node_id[ISIS_SPF_NODE_ID_LEN];
+            isis_spf_make_node_id(entry->system_id, entry->pseudonode_id, origin_node_id);
+
+            if (want_narrow && tlv_type == ISIS_TLV_IS_REACH)
             {
-                isis_spf_parse_ext_is_reach_tlv(nodes, entry->system_id, &tlvs[pos], len);
+                isis_spf_parse_narrow_is_reach_tlv(nodes, origin_node_id, &tlvs[pos], len);
+            }
+            else if (!want_narrow && tlv_type == ISIS_TLV_EXT_IS_REACH)
+            {
+                isis_spf_parse_ext_is_reach_tlv(nodes, origin_node_id, &tlvs[pos], len);
             }
             pos += len;
         }
@@ -503,16 +663,16 @@ static isis_spf_node_t *isis_spf_pick_next_node(GHashTable *nodes)
     return best;
 }
 
-static void isis_spf_run_dijkstra(GHashTable *nodes, const uint8_t local_sysid[6])
+static void isis_spf_run_dijkstra(GHashTable *nodes, const uint8_t root_node_id[ISIS_SPF_NODE_ID_LEN])
 {
-    if (!nodes || !local_sysid)
+    if (!nodes || !root_node_id)
     {
         return;
     }
 
     isis_spf_reset_nodes(nodes);
 
-    isis_spf_node_t *root = isis_spf_graph_get_node(nodes, local_sysid, 1);
+    isis_spf_node_t *root = isis_spf_graph_get_node(nodes, root_node_id, 1);
     if (!root)
     {
         return;
@@ -541,7 +701,7 @@ static void isis_spf_run_dijkstra(GHashTable *nodes, const uint8_t local_sysid[6
                 continue;
             }
 
-            isis_spf_node_t *v = isis_spf_graph_get_node(nodes, edge->to_sysid, 1);
+            isis_spf_node_t *v = isis_spf_graph_get_node(nodes, edge->to_node_id, 1);
             if (!v)
             {
                 continue;
@@ -552,9 +712,9 @@ static void isis_spf_run_dijkstra(GHashTable *nodes, const uint8_t local_sysid[6
             if (alt < v->dist)
             {
                 v->dist = alt;
-                if (memcmp(u->system_id, local_sysid, 6u) == 0)
+                if (memcmp(u->node_id, root_node_id, ISIS_SPF_NODE_ID_LEN) == 0)
                 {
-                    memcpy(v->first_hop, edge->to_sysid, sizeof(v->first_hop));
+                    memcpy(v->first_hop, edge->to_node_id, sizeof(v->first_hop));
                     v->has_first_hop = 1u;
                 }
                 else if (u->has_first_hop)
@@ -572,14 +732,15 @@ static void isis_spf_local_hop_free(gpointer data)
     g_free(data);
 }
 
-static int isis_spf_get_distance(GHashTable *nodes, const uint8_t target_sysid[6], uint64_t *dist_out)
+static int isis_spf_get_distance(GHashTable *nodes, const uint8_t target_node_id[ISIS_SPF_NODE_ID_LEN],
+                                 uint64_t *dist_out)
 {
-    if (!nodes || !target_sysid || !dist_out)
+    if (!nodes || !target_node_id || !dist_out)
     {
         return 0;
     }
 
-    isis_spf_node_t *node = isis_spf_graph_get_node(nodes, target_sysid, 0);
+    isis_spf_node_t *node = isis_spf_graph_get_node(nodes, target_node_id, 0);
     if (!node || node->dist == ISIS_SPF_INF_DIST)
     {
         return 0;
@@ -628,7 +789,7 @@ static void isis_spf_collect_local_hops(const isis_instance_cfg_t *inst, uint8_t
             continue;
         }
 
-        memcpy(hop->system_id, nbr->system_id, sizeof(hop->system_id));
+        isis_spf_make_node_id(nbr->system_id, 0u, hop->node_id);
         hop->local_metric = (af_cfg->metric == 0u) ? ISIS_DEFAULT_IF_METRIC : af_cfg->metric;
         if (hop->local_metric > 0x00FFFFFFu)
         {
@@ -684,12 +845,28 @@ static void isis_spf_parse_prefix_entries(const uint8_t *val, size_t val_len, ui
     }
 
     size_t pos = 0u;
-    while (pos + 6u <= val_len)
+    size_t min_hdr = (afi == ROUTE_AFI_IPV4) ? 5u : 6u;
+    while (pos + min_hdr <= val_len)
     {
         uint32_t remote_metric = ((uint32_t)val[pos] << 24) | ((uint32_t)val[pos + 1u] << 16) |
                                  ((uint32_t)val[pos + 2u] << 8) | (uint32_t)val[pos + 3u];
-        uint8_t prefix_len = val[pos + 5u];
-        pos += 6u;
+        uint8_t ctrl = val[pos + 4u];
+        uint8_t prefix_len = 0u;
+        uint8_t has_sub = 0u;
+        if (afi == ROUTE_AFI_IPV4)
+        {
+            /* RFC 5305: ctrl 低 6 位为 prefix_len，bit6 为 S（sub-TLV 存在） */
+            prefix_len = (uint8_t)(ctrl & 0x3Fu);
+            has_sub = (uint8_t)((ctrl & 0x40u) != 0u);
+            pos += 5u;
+        }
+        else
+        {
+            /* RFC 5308: prefix_len 独立字节，ctrl bit5 为 S */
+            prefix_len = val[pos + 5u];
+            has_sub = (uint8_t)((ctrl & 0x20u) != 0u);
+            pos += 6u;
+        }
 
         uint8_t max_prefix = (afi == ROUTE_AFI_IPV4) ? 32u : 128u;
         uint8_t pfx_bytes = (uint8_t)((prefix_len + 7u) / 8u);
@@ -697,6 +874,22 @@ static void isis_spf_parse_prefix_entries(const uint8_t *val, size_t val_len, ui
             (afi == ROUTE_AFI_IPV6 && pfx_bytes > 16u) || pos + pfx_bytes > val_len)
         {
             break;
+        }
+
+        /* 计算 sub-TLV 尾部长度（S=1 时 prefix 后跟 1 字节 sub-TLV-len + sub-TLV 数据） */
+        size_t sub_extra = 0u;
+        if (has_sub)
+        {
+            if (pos + pfx_bytes + 1u > val_len)
+            {
+                break;
+            }
+            uint8_t sub_len = val[pos + pfx_bytes];
+            sub_extra = 1u + (size_t)sub_len;
+            if (pos + pfx_bytes + sub_extra > val_len)
+            {
+                break;
+            }
         }
 
         isis_route_state_t route;
@@ -717,7 +910,7 @@ static void isis_spf_parse_prefix_entries(const uint8_t *val, size_t val_len, ui
             }
             if (net_addr_prefix_normalize(&route.prefix_addr, route.prefix_len) != 0)
             {
-                pos += pfx_bytes;
+                pos += pfx_bytes + sub_extra;
                 continue;
             }
 
@@ -729,14 +922,14 @@ static void isis_spf_parse_prefix_entries(const uint8_t *val, size_t val_len, ui
 
             if (hop->nexthop_addr.family != AF_INET || net_addr_is_zero(&hop->nexthop_addr))
             {
-                pos += pfx_bytes;
+                pos += pfx_bytes + sub_extra;
                 continue;
             }
             route.nexthop_addr = hop->nexthop_addr;
 
             if (route.prefix_len == 32u && net_addr_equal(&route.prefix_addr, &route.nexthop_addr))
             {
-                pos += pfx_bytes;
+                pos += pfx_bytes + sub_extra;
                 continue;
             }
         }
@@ -749,7 +942,7 @@ static void isis_spf_parse_prefix_entries(const uint8_t *val, size_t val_len, ui
             }
             if (net_addr_prefix_normalize(&route.prefix_addr, route.prefix_len) != 0)
             {
-                pos += pfx_bytes;
+                pos += pfx_bytes + sub_extra;
                 continue;
             }
 
@@ -761,14 +954,14 @@ static void isis_spf_parse_prefix_entries(const uint8_t *val, size_t val_len, ui
 
             if (hop->nexthop_addr.family != AF_INET6 || net_addr_is_zero(&hop->nexthop_addr))
             {
-                pos += pfx_bytes;
+                pos += pfx_bytes + sub_extra;
                 continue;
             }
             route.nexthop_addr = hop->nexthop_addr;
 
             if (route.prefix_len == 128u && net_addr_equal(&route.prefix_addr, &route.nexthop_addr))
             {
-                pos += pfx_bytes;
+                pos += pfx_bytes + sub_extra;
                 continue;
             }
         }
@@ -780,7 +973,7 @@ static void isis_spf_parse_prefix_entries(const uint8_t *val, size_t val_len, ui
         isis_route_path_key_format(path_key, sizeof(path_key), route_key, &route);
         isis_route_head_table_add_path(desired, route_key, path_key, &route);
 
-        pos += pfx_bytes;
+        pos += pfx_bytes + sub_extra;
     }
 }
 
@@ -792,9 +985,16 @@ static void isis_spf_collect_prefixes_from_lsdb(isis_instance_cfg_t *inst, uint8
         return;
     }
 
+    const uint8_t want_narrow = (inst->cost_style == ISIS_COST_STYLE_NARROW) ? 1u : 0u;
+
     for (uint16_t afi = ROUTE_AFI_IPV4; afi <= ROUTE_AFI_IPV6; ++afi)
     {
         if ((afi == ROUTE_AFI_IPV4 && !inst->af_ipv4) || (afi == ROUTE_AFI_IPV6 && !inst->af_ipv6))
+        {
+            continue;
+        }
+        /* narrow (RFC 1195) 不支持 IPv6 */
+        if (want_narrow && afi == ROUTE_AFI_IPV6)
         {
             continue;
         }
@@ -820,7 +1020,7 @@ static void isis_spf_collect_prefixes_from_lsdb(isis_instance_cfg_t *inst, uint8
                 continue;
             }
 
-            isis_spf_run_dijkstra(nodes, hop->system_id);
+            isis_spf_run_dijkstra(nodes, hop->node_id);
 
             GHashTableIter iter;
             gpointer key = NULL;
@@ -835,9 +1035,12 @@ static void isis_spf_collect_prefixes_from_lsdb(isis_instance_cfg_t *inst, uint8
                     continue;
                 }
 
+                uint8_t entry_node_id[ISIS_SPF_NODE_ID_LEN];
+                isis_spf_make_node_id(entry->system_id, entry->pseudonode_id, entry_node_id);
+
                 uint64_t dist = 0u;
-                if (memcmp(entry->system_id, hop->system_id, 6u) != 0 &&
-                    !isis_spf_get_distance(nodes, entry->system_id, &dist))
+                if (memcmp(entry_node_id, hop->node_id, ISIS_SPF_NODE_ID_LEN) != 0 &&
+                    !isis_spf_get_distance(nodes, entry_node_id, &dist))
                 {
                     continue;
                 }
@@ -858,12 +1061,17 @@ static void isis_spf_collect_prefixes_from_lsdb(isis_instance_cfg_t *inst, uint8
                         break;
                     }
 
-                    if (afi == ROUTE_AFI_IPV4 && tlv_type == ISIS_TLV_EXT_IP_REACH)
+                    if (afi == ROUTE_AFI_IPV4 && !want_narrow && tlv_type == ISIS_TLV_EXT_IP_REACH)
                     {
                         isis_spf_parse_prefix_entries(&tlvs[pos], len, ROUTE_AFI_IPV4, level, entry->system_id,
                                                       path_metric, hop, desired);
                     }
-                    else if (afi == ROUTE_AFI_IPV6 && tlv_type == ISIS_TLV_IPV6_REACH)
+                    else if (afi == ROUTE_AFI_IPV4 && want_narrow && tlv_type == ISIS_TLV_IP_INT_REACH)
+                    {
+                        isis_spf_parse_narrow_ip_reach_entries(&tlvs[pos], len, level, entry->system_id, path_metric,
+                                                               hop, desired);
+                    }
+                    else if (afi == ROUTE_AFI_IPV6 && !want_narrow && tlv_type == ISIS_TLV_IPV6_REACH)
                     {
                         isis_spf_parse_prefix_entries(&tlvs[pos], len, ROUTE_AFI_IPV6, level, entry->system_id,
                                                       path_metric, hop, desired);
@@ -928,10 +1136,13 @@ static void isis_spf_recompute_instance(isis_instance_cfg_t *inst)
             continue;
         }
 
-        (void)isis_spf_graph_get_node(nodes, local_sysid, 1);
+        uint8_t local_node_id[ISIS_SPF_NODE_ID_LEN];
+        isis_spf_make_node_id(local_sysid, 0u, local_node_id);
+
+        (void)isis_spf_graph_get_node(nodes, local_node_id, 1);
         isis_spf_add_root_edges(inst, level, local_sysid, nodes);
         isis_spf_collect_graph_from_lsdb(inst, level, nodes);
-        isis_spf_run_dijkstra(nodes, local_sysid);
+        isis_spf_run_dijkstra(nodes, local_node_id);
 
         if (inst->af_ipv4 || inst->af_ipv6)
         {

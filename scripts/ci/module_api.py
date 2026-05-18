@@ -9,6 +9,7 @@ execution/wait boilerplate lives here.
 from __future__ import annotations
 
 import ipaddress
+import os
 import re
 import shlex
 import time
@@ -300,6 +301,23 @@ def step(title: str) -> None:
     normalized = str(title).strip() or "Step"
     _last_step_title = normalized
     print(f"\n===== STEP: {normalized} =====", flush=True)
+
+
+def should_skip_cleanup() -> bool:
+    """
+    Scripts call this in their `finally:` block; if a check has failed (set by
+    `mark_step_failed`) AND `NN_PAUSE_ON_FAIL` is set in env (by module_runner's
+    `--pause-on-fail`), skip cleanup so the operator can `docker exec` into the
+    container and inspect live state.
+    """
+    if os.environ.get("NN_PAUSE_ON_FAIL", "").strip() not in ("", "0", "false", "False"):
+        if _failed_step_title is not None:
+            print(
+                f"\n===== PAUSE-ON-FAIL: skipping cleanup; failed step: {_failed_step_title} =====",
+                flush=True,
+            )
+            return True
+    return False
 
 
 def require_devices(top: dict, required: Iterable[str]) -> None:
