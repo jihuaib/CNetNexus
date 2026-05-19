@@ -110,10 +110,6 @@ static const char *bgp_af_str(bgp_afi_t afi, bgp_safi_t safi)
     {
         return "ipv4-labeled";
     }
-    if (afi == BGP_AFI_IPV6 && safi == BGP_SAFI_LABELED)
-    {
-        return "ipv6-labeled";
-    }
     return "unknown";
 }
 
@@ -387,6 +383,18 @@ static void bgp_route_flags_to_str(uint32_t flags, char *buf, size_t sz)
     if (BIT_TEST(flags, BGP_ROUTE_FLAG_STALE))
     {
         g_strlcat(buf, "STALE|", sz);
+    }
+    if (BIT_TEST(flags, BGP_ROUTE_FLAG_NO_ADV))
+    {
+        g_strlcat(buf, "NO_ADV|", sz);
+    }
+    if (BIT_TEST(flags, BGP_ROUTE_FLAG_IMPORT_RIB))
+    {
+        g_strlcat(buf, "IMPORT_RIB|", sz);
+    }
+    if (BIT_TEST(flags, BGP_ROUTE_FLAG_PENDING_FREE))
+    {
+        g_strlcat(buf, "PENDING_FREE|", sz);
     }
 
     size_t n = strlen(buf);
@@ -677,6 +685,13 @@ static void bgp_show_route_detail(GString *buf, const bgp_rthead_t *head)
         g_string_append_printf(buf, "    Out-If   : %s\r\n", out_if);
         g_string_append_printf(buf, "    Tunnel-ID: %u\r\n", route->tunnel_id);
         g_string_append_printf(buf, "    Flags    : 0x%08X (%s)\r\n", route->flags, flags_str);
+        /* 借用引用计数：> 0 表示有 import_rib mirror / bgp_relay watch 等模块持有借用指针 */
+        g_string_append_printf(buf, "    BorrowRef: %u\r\n", route->borrow_refcnt);
+        /* mirror 指向的源节点（仅 IMPORT_RIB 路径有效） */
+        if (route->src_route)
+        {
+            g_string_append_printf(buf, "    SrcRoute : %p\r\n", (void *)route->src_route);
+        }
         g_string_append_printf(buf, "    AS-Path  : %s\r\n", as_path);
 
         if (BGP_ROUTE_ATTR(route)->communities[0] != '\0')

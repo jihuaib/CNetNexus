@@ -122,10 +122,6 @@ static const char *bgp_af_str(bgp_afi_t afi, bgp_safi_t safi)
     {
         return "ipv4-labeled";
     }
-    if (afi == BGP_AFI_IPV6 && safi == BGP_SAFI_LABELED)
-    {
-        return "ipv6-labeled";
-    }
     return "unknown";
 }
 
@@ -927,54 +923,6 @@ static int handle_bgp_import_route(dev_ipc_message_t *msg, cli_tlv_parser_t *par
     /* 写 DB */
     bgp_db_set_import_protos(bctx.vrf_id, bctx.afi, bctx.safi, apply.out.import_protos);
 
-    /* 先处理覆盖式互斥导致的取消订阅（new_protos 中已被清掉的协议） */
-    for (size_t ui = 0; ui < G_N_ELEMENTS(apply.out.import_route.unsub_protos); ++ui)
-    {
-        uint32_t up = apply.out.import_route.unsub_protos[ui];
-        if (up == ROUTE_PROTOCOL_MAX)
-        {
-            continue;
-        }
-        route_subscribe_req_t *ureq = (route_subscribe_req_t *)g_malloc(sizeof(route_subscribe_req_t));
-        ureq->protocol = up;
-        ureq->vrf_id = bctx.vrf_id;
-        ureq->afi = (uint16_t)bctx.afi;
-        ureq->_pad = 0;
-        ureq->flags = 0u;
-        dev_ipc_message_t *unmsg =
-            dev_ipc_message_create(ROUTE_MSG_TYPE_UNSUBSCRIBE, DEV_MODULE_ID_BGP, DEV_MODULE_ID_ROUTE, 0, ureq,
-                                   sizeof(route_subscribe_req_t), g_free);
-        if (unmsg)
-        {
-            (void)dev_ipc_send(bgp_local_ipc_ctx(), DEV_MODULE_ID_ROUTE, unmsg);
-            dev_ipc_message_free(unmsg);
-        }
-    }
-
-    if (apply.out.import_route.route_subscribe_action != 0)
-    {
-        /* 向 ROUTE 模块发送订阅/取消订阅（fire-and-forget）。 */
-        route_subscribe_req_t *req = (route_subscribe_req_t *)g_malloc(sizeof(route_subscribe_req_t));
-        req->protocol = import_proto;
-        req->vrf_id = bctx.vrf_id;
-        req->afi = (uint16_t)bctx.afi;
-        req->_pad = 0;
-        req->flags = (apply.out.import_route.route_subscribe_action > 0) ? ROUTE_SUBSCRIBE_FLAG_FULL : 0u;
-        uint32_t sub_type =
-            (apply.out.import_route.route_subscribe_action > 0) ? ROUTE_MSG_TYPE_SUBSCRIBE : ROUTE_MSG_TYPE_UNSUBSCRIBE;
-        dev_ipc_message_t *sub_msg = dev_ipc_message_create(sub_type, DEV_MODULE_ID_BGP, DEV_MODULE_ID_ROUTE, 0, req,
-                                                            sizeof(route_subscribe_req_t), g_free);
-        if (sub_msg)
-        {
-            if (dev_ipc_send(bgp_local_ipc_ctx(), DEV_MODULE_ID_ROUTE, sub_msg) != 0)
-            {
-                LOG_WARN("BGP: Failed to send route %s request (ROUTE module may not be ready)",
-                         (sub_type == ROUTE_MSG_TYPE_UNSUBSCRIBE) ? "unsubscribe" : "subscribe");
-            }
-            dev_ipc_message_free(sub_msg);
-        }
-    }
-
     const char *proto_name = (import_proto == ROUTE_PROTOCOL_CONNECTED) ? "connected" : "static";
     char rsp[96];
     snprintf(rsp, sizeof(rsp), "import-route %s %s\r\n", proto_name, apply.isNo ? "disabled" : "enabled");
@@ -983,10 +931,10 @@ static int handle_bgp_import_route(dev_ipc_message_t *msg, cli_tlv_parser_t *par
 }
 
 /**
- * @brief 处理 import-rib labeled-unicast / no import-rib labeled-unicast
+ * @brief 处理 import public ipv4-labeled-unicast / no import public ipv4-labeled-unicast
  *
- * group_id=22, cfg-id: 1=labeled-unicast（未来 2=vpn-unicast, 3=vpn-instance）
- * 仅允许在 unicast AF 视图下配置。
+ * group_id=22, cfg-id: 1=public(VRF)，2=ipv4-labeled-unicast（未来扩展更多 VRF/源 AF）
+ * 仅允许在 IPv4 unicast AF 视图下配置。
  */
 static int handle_bgp_import_rib(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
@@ -995,6 +943,7 @@ static int handle_bgp_import_rib(dev_ipc_message_t *msg, cli_tlv_parser_t *parse
     apply.group_id = BGP_CLI_GROUP_ID_IMPORT_RIB;
     apply.isNo = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
     bgp_cli_ctx_t bctx = bgp_cli_ctx_default();
+    int has_vrf = 0;
     int has_src = 0;
     uint32_t src_id = 0;
 
@@ -1009,7 +958,10 @@ static int handle_bgp_import_rib(dev_ipc_message_t *msg, cli_tlv_parser_t *parse
         }
         switch (entry.cfg_id)
         {
-            case 1: /* labeled-unicast */
+            case 1: /* public VRF */
+                has_vrf = 1;
+                break;
+            case 2: /* ipv4-labeled-unicast */
                 src_id = (uint32_t)BGP_IMPORT_SRC_LABELED_UC;
                 has_src = 1;
                 break;
@@ -1019,14 +971,19 @@ static int handle_bgp_import_rib(dev_ipc_message_t *msg, cli_tlv_parser_t *parse
         cli_tlv_entry_free(&entry);
     }
 
-    if (!has_src)
+    if (!has_vrf)
     {
-        bgp_send_cli_response(msg, "Error: Must specify import-rib source.\r\n");
+        bgp_send_cli_response(msg, "Error: Must specify source VRF.\r\n");
         return ERRCODE_FAIL;
     }
-    if (bctx.safi != BGP_SAFI_UNICAST)
+    if (!has_src)
     {
-        bgp_send_cli_response(msg, "Error: import-rib only supported in unicast address-family.\r\n");
+        bgp_send_cli_response(msg, "Error: Must specify import source address-family.\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (bctx.afi != BGP_AFI_IPV4 || bctx.safi != BGP_SAFI_UNICAST)
+    {
+        bgp_send_cli_response(msg, "Error: import only supported in IPv4 unicast address-family.\r\n");
         return ERRCODE_FAIL;
     }
 

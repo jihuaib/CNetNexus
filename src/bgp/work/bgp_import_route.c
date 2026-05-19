@@ -31,6 +31,154 @@
 
 #define BGP_IMPORT_LABEL_TIMEOUT_MS 3000u
 
+typedef struct bgp_import_route_sub_key
+{
+    uint32_t import_proto;
+    uint32_t vrf_id;
+    uint16_t afi;
+} bgp_import_route_sub_key_t;
+
+static int bgp_import_route_send_subscribe(uint32_t msg_type, uint32_t import_proto, uint32_t vrf_id, uint16_t afi,
+                                           uint32_t flags)
+{
+    route_subscribe_req_t *req = (route_subscribe_req_t *)g_malloc(sizeof(route_subscribe_req_t));
+    if (!req)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    req->protocol = import_proto;
+    req->vrf_id = vrf_id;
+    req->afi = afi;
+    req->_pad = 0;
+    req->flags = flags;
+
+    dev_ipc_message_t *msg = dev_ipc_message_create(msg_type, DEV_MODULE_ID_BGP, DEV_MODULE_ID_ROUTE, 0, req,
+                                                    sizeof(route_subscribe_req_t), g_free);
+    if (!msg)
+    {
+        g_free(req);
+        return ERRCODE_FAIL;
+    }
+
+    int rc = dev_ipc_send(bgp_local_ipc_ctx(), DEV_MODULE_ID_ROUTE, msg);
+    if (rc != 0)
+    {
+        LOG_WARN("BGP: failed to send route %s request proto=%u vrf=%u afi=%u",
+                 (msg_type == ROUTE_MSG_TYPE_UNSUBSCRIBE) ? "unsubscribe" : "subscribe", import_proto, vrf_id,
+                 (unsigned)afi);
+    }
+    dev_ipc_message_free(msg);
+    return rc;
+}
+
+int bgp_import_route_subscribe(uint32_t import_proto, uint32_t vrf_id, uint16_t afi, uint32_t flags)
+{
+    return bgp_import_route_send_subscribe(ROUTE_MSG_TYPE_SUBSCRIBE, import_proto, vrf_id, afi, flags);
+}
+
+int bgp_import_route_unsubscribe(uint32_t import_proto, uint32_t vrf_id, uint16_t afi)
+{
+    return bgp_import_route_send_subscribe(ROUTE_MSG_TYPE_UNSUBSCRIBE, import_proto, vrf_id, afi, 0u);
+}
+
+static int bgp_import_route_sub_key_exists(const GArray *keys, const bgp_import_route_sub_key_t *needle)
+{
+    if (!keys || !needle)
+    {
+        return 0;
+    }
+
+    for (guint i = 0; i < keys->len; ++i)
+    {
+        const bgp_import_route_sub_key_t *key = &g_array_index(keys, bgp_import_route_sub_key_t, i);
+        if (key->import_proto == needle->import_proto && key->vrf_id == needle->vrf_id && key->afi == needle->afi)
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void bgp_import_route_sub_key_append_unique(GArray *keys, const bgp_import_route_sub_key_t *key)
+{
+    if (!keys || !key || bgp_import_route_sub_key_exists(keys, key))
+    {
+        return;
+    }
+    g_array_append_val(keys, *key);
+}
+
+static void bgp_import_route_collect_vrf_subs(const bgp_vrf_t *vrf, GArray *keys)
+{
+    if (!vrf || !vrf->inst_hash || !keys)
+    {
+        return;
+    }
+
+    static const uint32_t k_import_protos[] = {ROUTE_PROTOCOL_CONNECTED, ROUTE_PROTOCOL_STATIC};
+    GHashTableIter iter;
+    gpointer inst_key = NULL;
+    gpointer inst_val = NULL;
+    g_hash_table_iter_init(&iter, vrf->inst_hash);
+    while (g_hash_table_iter_next(&iter, &inst_key, &inst_val))
+    {
+        (void)inst_key;
+        const bgp_instance_t *inst = (const bgp_instance_t *)inst_val;
+        if (!inst)
+        {
+            continue;
+        }
+
+        for (size_t i = 0; i < G_N_ELEMENTS(k_import_protos); ++i)
+        {
+            uint32_t proto = k_import_protos[i];
+            if ((inst->import_protos & (1U << proto)) == 0u)
+            {
+                continue;
+            }
+
+            bgp_import_route_sub_key_t key = {
+                .import_proto = proto,
+                .vrf_id = vrf->vrf_id,
+                .afi = (uint16_t)inst->afi,
+            };
+            bgp_import_route_sub_key_append_unique(keys, &key);
+        }
+    }
+}
+
+void bgp_import_route_unsubscribe_protocol_imports(const bgp_protocol_t *proto)
+{
+    if (!proto || !proto->vrf_hash)
+    {
+        return;
+    }
+
+    GArray *keys = g_array_new(FALSE, FALSE, sizeof(bgp_import_route_sub_key_t));
+    if (!keys)
+    {
+        return;
+    }
+
+    GHashTableIter vrf_iter;
+    gpointer vrf_key = NULL;
+    gpointer vrf_val = NULL;
+    g_hash_table_iter_init(&vrf_iter, proto->vrf_hash);
+    while (g_hash_table_iter_next(&vrf_iter, &vrf_key, &vrf_val))
+    {
+        (void)vrf_key;
+        bgp_import_route_collect_vrf_subs((const bgp_vrf_t *)vrf_val, keys);
+    }
+
+    for (guint i = 0; i < keys->len; ++i)
+    {
+        const bgp_import_route_sub_key_t *key = &g_array_index(keys, bgp_import_route_sub_key_t, i);
+        (void)bgp_import_route_unsubscribe(key->import_proto, key->vrf_id, key->afi);
+    }
+    g_array_free(keys, TRUE);
+}
+
 static void bgp_import_fill_label_req(tunnel_label_req_t *req, uint32_t vrf_id, bgp_afi_t afi, uint8_t prefix_len,
                                       const net_addr_t *prefix_addr, uint32_t out_ifindex)
 {
@@ -248,6 +396,11 @@ static int bgp_import_route_entry_to_safi(const route_msg_entry_t *entry, bgp_vr
     }
 
     if ((afi != BGP_AFI_IPV4 && afi != BGP_AFI_IPV6) || (safi != BGP_SAFI_UNICAST && safi != BGP_SAFI_LABELED))
+    {
+        return 0;
+    }
+    /* IPv6 labeled-unicast 已移除 */
+    if (afi == BGP_AFI_IPV6 && safi == BGP_SAFI_LABELED)
     {
         return 0;
     }

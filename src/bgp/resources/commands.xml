@@ -19,9 +19,6 @@
             <view view-name="bgp-af-ipv4-labeled">
                 <template>&lt;NetNexus(config-bgp-af-ipv4-labeled)&gt;</template>
             </view>
-            <view view-name="bgp-af-ipv6-labeled">
-                <template>&lt;NetNexus(config-bgp-af-ipv6-labeled)&gt;</template>
-            </view>
             <view view-name="bgp-bmp">
                 <template>&lt;NetNexus(config-bgp-bmp-{ctx:7})&gt;</template>
             </view>
@@ -35,7 +32,6 @@
         <view name="bgp-af-ipv4-qp"/>
         <view name="bgp-af-ipv6-qp"/>
         <view name="bgp-af-ipv4-labeled"/>
-        <view name="bgp-af-ipv6-labeled"/>
         <view name="bgp-bmp"/>
     </show-this>
 
@@ -149,10 +145,6 @@
                     <name>ipv4-labeled</name>
                     <description>IPv4 labeled-unicast address family</description>
                 </element>
-                <element id="8" cfg-id="6" type="keyword">
-                    <name>ipv6-labeled</name>
-                    <description>IPv6 labeled-unicast address family</description>
-                </element>
             </elements>
 
             <commands>
@@ -202,18 +194,9 @@
                         <entry ctx-id="3" value="4"/>
                     </context-out>
                 </command>
+                <!-- no af {ipv4-unicast | ipv6-unicast | ipv4-qp | ipv6-qp | ipv4-labeled} -->
                 <command>
-                    <expression>2 8</expression>
-                    <views>bgp</views>
-                    <to-view>bgp-af-ipv6-labeled</to-view>
-                    <context-out>
-                        <entry ctx-id="2" value="2"/>
-                        <entry ctx-id="3" value="4"/>
-                    </context-out>
-                </command>
-                <!-- no af {ipv4-unicast | ipv6-unicast | ipv4-qp | ipv6-qp | ipv4-labeled | ipv6-labeled} -->
-                <command>
-                    <expression>1  2  { 3 | 4 | 5 | 6 | 7 | 8 }</expression>
+                    <expression>1  2  { 3 | 4 | 5 | 6 | 7 }</expression>
                     <views>bgp</views>
                 </command>
             </commands>
@@ -250,12 +233,12 @@
                 <!-- neighbor <ipv4|ipv6> enable -->
                 <command>
                     <expression>2 {3 | 4} 5</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-qp,bgp-af-ipv6-qp,bgp-af-ipv4-labeled,bgp-af-ipv6-labeled</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-qp,bgp-af-ipv6-qp,bgp-af-ipv4-labeled</views>
                 </command>
                 <!-- no neighbor <ipv4|ipv6> enable -->
                 <command>
                     <expression>1 2 {3 | 4} 5</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-qp,bgp-af-ipv6-qp,bgp-af-ipv4-labeled,bgp-af-ipv6-labeled</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-qp,bgp-af-ipv6-qp,bgp-af-ipv4-labeled</views>
                 </command>
             </commands>
         </group>
@@ -543,10 +526,6 @@
                     <name>ipv4-labeled</name>
                     <description>IPv4 labeled-unicast address family</description>
                 </element>
-                <element id="11" cfg-id="7" type="keyword">
-                    <name>ipv6-labeled</name>
-                    <description>IPv6 labeled-unicast address family</description>
-                </element>
             </elements>
 
             <commands>
@@ -575,16 +554,11 @@
                     <expression>1 2 3 4 10 [7]</expression>
                     <views>global</views>
                 </command>
-                <!-- show bgp neighbor af ipv6-labeled [<ip-address>] -->
-                <command>
-                    <expression>1 2 3 4 11 [7]</expression>
-                    <views>global</views>
-                </command>
             </commands>
         </group>
 
-        <!-- import-rib <source-af> / no import-rib <source-af>（仅 unicast AF 视图） -->
-        <!-- cfg-id: 1=labeled-unicast（未来扩展 2=vpn-unicast, 3=vpn-instance） -->
+        <!-- import-rib <vrf> <source-af> / no import-rib <vrf> <source-af>（仅 IPv4 unicast AF 视图） -->
+        <!-- cfg-id: 1=public(VRF)，2=ipv4-labeled-unicast（未来扩展更多 VRF/源 AF） -->
         <group group-id="22">
             <elements>
                 <element id="1" type="keyword">
@@ -596,21 +570,25 @@
                     <description>Import routes from another address-family RIB</description>
                 </element>
                 <element id="3" cfg-id="1" type="keyword">
-                    <name>labeled-unicast</name>
-                    <description>Import labeled-unicast RIB best routes (with label, via tunnel iteration)</description>
+                    <name>public</name>
+                    <description>Public VRF</description>
+                </element>
+                <element id="4" cfg-id="2" type="keyword">
+                    <name>ipv4-labeled-unicast</name>
+                    <description>Import IPv4 labeled-unicast RIB best routes (with label, via tunnel iteration)</description>
                 </element>
             </elements>
 
             <commands>
-                <!-- import-rib labeled-unicast -->
+                <!--mport-rib public ipv4-labeled-unicast -->
                 <command>
-                    <expression>2 3</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni</views>
+                    <expression>2 3 4</expression>
+                    <views>bgp-af-ipv4-uni</views>
                 </command>
-                <!-- no import-rib labeled-unicast -->
+                <!-- no import-rib public ipv4-labeled-unicast -->
                 <command>
-                    <expression>1 2 3</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni</views>
+                    <expression>1 2 3 4</expression>
+                    <views>bgp-af-ipv4-uni</views>
                 </command>
             </commands>
         </group>
@@ -641,22 +619,22 @@
                 <!-- import-route static -->
                 <command>
                     <expression>2 3</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-labeled,bgp-af-ipv6-labeled</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-labeled</views>
                 </command>
                 <!-- no import-route static -->
                 <command>
                     <expression>1 2 3</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-labeled,bgp-af-ipv6-labeled</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-labeled</views>
                 </command>
                 <!-- import-route connected -->
                 <command>
                     <expression>2 4</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-labeled,bgp-af-ipv6-labeled</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-labeled</views>
                 </command>
                 <!-- no import-route connected -->
                 <command>
                     <expression>1 2 4</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-labeled,bgp-af-ipv6-labeled</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-labeled</views>
                 </command>
             </commands>
         </group>
@@ -715,10 +693,6 @@
                     <name>ipv4-labeled</name>
                     <description>Show IPv4 labeled-unicast routes</description>
                 </element>
-                <element id="13" cfg-id="9" type="keyword">
-                    <name>ipv6-labeled</name>
-                    <description>Show IPv6 labeled-unicast routes</description>
-                </element>
             </elements>
 
             <commands>
@@ -745,11 +719,6 @@
                 <!-- show bgp route af ipv4-labeled [<ip-address> <masklen>] -->
                 <command>
                     <expression>1 2 3 4 12 [7 8]</expression>
-                    <views>global</views>
-                </command>
-                <!-- show bgp route af ipv6-labeled [<ip-address> <masklen>] -->
-                <command>
-                    <expression>1 2 3 4 13 [7 8]</expression>
                     <views>global</views>
                 </command>
             </commands>
@@ -835,10 +804,6 @@
                     <name>ipv4-labeled</name>
                     <description>IPv4 labeled-unicast address family</description>
                 </element>
-                <element id="11" cfg-id="7" type="keyword">
-                    <name>ipv6-labeled</name>
-                    <description>IPv6 labeled-unicast address family</description>
-                </element>
             </elements>
 
             <commands>
@@ -865,11 +830,6 @@
                 <!-- show bgp update-group af ipv4-labeled [<group-id>] -->
                 <command>
                     <expression>1 2 3 4 10 [7]</expression>
-                    <views>global</views>
-                </command>
-                <!-- show bgp update-group af ipv6-labeled [<group-id>] -->
-                <command>
-                    <expression>1 2 3 4 11 [7]</expression>
                     <views>global</views>
                 </command>
             </commands>

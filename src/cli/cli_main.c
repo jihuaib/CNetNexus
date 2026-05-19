@@ -540,6 +540,17 @@ void cli_module_cleanup(void)
         return;
     }
 
+    /* 必须先停掉 server thread 再释放它会读到的状态（视图、session、fd）。
+     * 否则 T3 仍在 epoll_wait / process_command 中触碰 current_view，
+     * 而主线程已经走到 cli_cleanup() 释放视图，出现 heap-use-after-free。 */
+    g_cli_local->running = 0;
+    if (g_cli_local->worker_thread != 0)
+    {
+        pthread_join(g_cli_local->worker_thread, NULL);
+        g_cli_local->worker_thread = 0;
+    }
+
+    /* server thread 已退出，可以安全销毁 IPC（IPC 线程不会再触发依赖 CLI 状态的回调）。 */
     dev_ipc_context_t *ctx = g_cli_local->dev_ipc_ctx;
     g_cli_local->dev_ipc_ctx = NULL;
     if (ctx)
@@ -547,36 +558,29 @@ void cli_module_cleanup(void)
         dev_ipc_destroy(ctx);
     }
 
-    if (!g_cli_local)
-    {
-        return;
-    }
-
-    g_cli_local->running = 0;
-    cli_cleanup();
-
-    cli_global_history_cleanup(&g_cli_local->global_history);
-    pthread_mutex_destroy(&g_cli_local->history_mutex);
-
     if (g_cli_local->listen_sock != DEV_INVALID_FD)
     {
         close(g_cli_local->listen_sock);
+        g_cli_local->listen_sock = DEV_INVALID_FD;
     }
 
     if (g_cli_local->epoll_fd != DEV_INVALID_FD)
     {
         close(g_cli_local->epoll_fd);
+        g_cli_local->epoll_fd = DEV_INVALID_FD;
     }
 
-    if (g_cli_local->worker_thread != 0)
-    {
-        pthread_join(g_cli_local->worker_thread, NULL);
-    }
-
+    /* 先销毁 session（其 current_view 是借用指针），再释放视图树。 */
     if (g_cli_local->sessions != NULL)
     {
         g_hash_table_destroy(g_cli_local->sessions);
+        g_cli_local->sessions = NULL;
     }
+
+    cli_cleanup();
+
+    cli_global_history_cleanup(&g_cli_local->global_history);
+    pthread_mutex_destroy(&g_cli_local->history_mutex);
 
     g_free(g_cli_local);
     g_cli_local = NULL;

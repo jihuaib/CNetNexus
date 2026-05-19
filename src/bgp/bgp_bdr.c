@@ -49,10 +49,6 @@ static const char *afi_safi_to_str(int64_t afi, int64_t safi)
     {
         return "ipv4-labeled";
     }
-    if (afi == 2 && safi == BGP_SAFI_LABELED)
-    {
-        return "ipv6-labeled";
-    }
     return NULL;
 }
 
@@ -65,8 +61,7 @@ static gboolean bgp_bdr_is_af_view(const char *view_name)
     return view_name &&
            (strcmp(view_name, CLI_VIEW_BGP_AF_IPV4) == 0 || strcmp(view_name, CLI_VIEW_BGP_AF_IPV6) == 0 ||
             strcmp(view_name, CLI_VIEW_BGP_AF_IPV4_QP) == 0 || strcmp(view_name, CLI_VIEW_BGP_AF_IPV6_QP) == 0 ||
-            strcmp(view_name, CLI_VIEW_BGP_AF_IPV4_LABELED) == 0 ||
-            strcmp(view_name, CLI_VIEW_BGP_AF_IPV6_LABELED) == 0);
+            strcmp(view_name, CLI_VIEW_BGP_AF_IPV4_LABELED) == 0);
 }
 
 static uint32_t bgp_bdr_scope_vrf_id(const cli_show_scope_t *scope)
@@ -407,10 +402,11 @@ static void bdr_append_af_block(GString *out, int64_t vrf_id, const char *afi_st
         g_string_append(out, "  import-route connected\r\n");
     }
 
-    /* import-rib 跨 AF 路由互导（unicast AF 视图） */
-    if (safi == BGP_SAFI_UNICAST && (import_rib_sources & (1 << 0 /* BGP_IMPORT_SRC_LABELED_UC */)))
+    /* import 跨 AF 路由互导（仅 IPv4 unicast AF 视图） */
+    if (afi == BGP_AFI_IPV4 && safi == BGP_SAFI_UNICAST &&
+        (import_rib_sources & (1 << 0 /* BGP_IMPORT_SRC_LABELED_UC */)))
     {
-        g_string_append(out, "  import-rib labeled-unicast\r\n");
+        g_string_append(out, "  import-rib public ipv4-labeled-unicast\r\n");
     }
 
     if (safi == BGP_SAFI_QP)

@@ -268,9 +268,7 @@ typedef struct bgp_apply_cmd
         uint32_t import_rib_sources; /**< IMPORT_RIB: 更新后的 inst->import_rib_sources */
         struct
         {
-            uint32_t import_protos;         /**< 更新后的 inst->import_protos */
-            int32_t route_subscribe_action; /**< 1=subscribe full, -1=unsubscribe, 0=no route IPC */
-            uint32_t unsub_protos[2]; /**< 需要取消订阅的协议（覆盖式互斥导致），ROUTE_PROTOCOL_MAX 表示不取消 */
+            uint32_t import_protos; /**< 更新后的 inst->import_protos */
         } import_route;
     } out;
     char errmsg[256]; /**< 失败时的错误描述 */

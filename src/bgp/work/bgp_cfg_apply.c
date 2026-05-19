@@ -199,6 +199,7 @@ void bgp_cfg_apply_protocol(bgp_apply_cmd_t *apply)
         }
         bgp_listen_stop();
         bgp_cfg_stop_all_sessions_and_drain_work(proto);
+        bgp_import_route_unsubscribe_protocol_imports(proto);
         bgp_protocol_destroy(g_bgp_work_local->protocol);
         g_bgp_work_local->protocol = NULL;
     }
@@ -725,11 +726,9 @@ void bgp_cfg_apply_import_route(bgp_apply_cmd_t *apply)
     inst->import_protos = new_protos;
 
     apply->out.import_protos = new_protos;
-    apply->out.import_route.route_subscribe_action = 0;
 
     /* 对每个被覆盖位发起 cleanup + 取消订阅；对新启用位发起订阅。
-     * 由于 cfg_apply 一次只能携带一个 subscribe_action，这里同步完成 cleanup，
-     * 取消订阅由 CLI 层在收到 apply.out.import_route.unsubscribe_proto[i] 时发出。 */
+     * 订阅生命周期跟随 BGP work 内存态，避免 CLI/DB restore 各自维护 ROUTE IPC 副作用。 */
     for (size_t i = 0; i < G_N_ELEMENTS(k_overwrite_protos); ++i)
     {
         uint32_t p = k_overwrite_protos[i];
@@ -740,21 +739,17 @@ void bgp_cfg_apply_import_route(bgp_apply_cmd_t *apply)
         {
             (void)bgp_import_route_cleanup_instance(inst, p);
             uint32_t cnt = bgp_vrf_count_import_proto_afi(vrf, p, apply->u.import_route.afi);
-            apply->out.import_route.unsub_protos[i] = (cnt == 0u) ? p : ROUTE_PROTOCOL_MAX;
-        }
-        else
-        {
-            apply->out.import_route.unsub_protos[i] = ROUTE_PROTOCOL_MAX;
+            if (cnt == 0u)
+            {
+                (void)bgp_import_route_unsubscribe(p, apply->vrf_id, (uint16_t)apply->u.import_route.afi);
+            }
         }
     }
 
     if (!is_no && (new_protos & target_mask) != 0u && (prev_protos & target_mask) == 0u)
     {
-        apply->out.import_route.route_subscribe_action = 1;
-    }
-    else if (is_no && (prev_protos & target_mask) != 0u && (new_protos & target_mask) == 0u)
-    {
-        /* 单纯 no：取消订阅靠 unsub_protos[]，无需 route_subscribe_action 触发 */
+        (void)bgp_import_route_subscribe(target_proto, apply->vrf_id, (uint16_t)apply->u.import_route.afi,
+                                         ROUTE_SUBSCRIBE_FLAG_FULL);
     }
 
     apply->rc = BGP_APPLY_RC_OK;

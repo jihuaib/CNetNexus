@@ -13,6 +13,7 @@
 #include "dev.h"
 
 typedef struct bgp_instance bgp_instance_t;
+typedef struct bgp_protocol bgp_protocol_t;
 
 /**
  * @brief 处理 ROUTE 模块推送的增量路由更新（ROUTE_MSG_TYPE_UPDATE）
@@ -42,5 +43,20 @@ uint32_t bgp_import_route_cleanup_instance(bgp_instance_t *inst, uint32_t import
  * @return 已撤销的 BGP route 节点数量
  */
 uint32_t bgp_import_route_cleanup_instance_all(bgp_instance_t *inst);
+
+/**
+ * @brief 向 ROUTE 模块订阅指定协议/VRF/AFI 的路由，全量快照由 flags 控制。
+ */
+int bgp_import_route_subscribe(uint32_t import_proto, uint32_t vrf_id, uint16_t afi, uint32_t flags);
+
+/**
+ * @brief 取消向 ROUTE 模块订阅指定协议/VRF/AFI 的路由。
+ */
+int bgp_import_route_unsubscribe(uint32_t import_proto, uint32_t vrf_id, uint16_t afi);
+
+/**
+ * @brief no bgp 销毁协议前，取消该协议下所有 import-route 订阅。
+ */
+void bgp_import_route_unsubscribe_protocol_imports(const bgp_protocol_t *proto);
 
 #endif /* BGP_IMPORT_ROUTE_H */

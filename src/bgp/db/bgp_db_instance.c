@@ -294,24 +294,8 @@ void bgp_db_restore_instances(void)
             imp.u.import_route.safi = safi;
             imp.u.import_route.import_proto = proto;
             (void)bgp_worker_dispatch_apply(&imp);
-
-            /* 重新订阅路由模块（fire-and-forget） */
-            route_subscribe_req_t *req = g_malloc(sizeof(route_subscribe_req_t));
-            req->protocol = proto;
-            req->vrf_id = vrf_id;
-            req->afi = (uint16_t)afi;
-            req->_pad = 0;
-            req->flags = ROUTE_SUBSCRIBE_FLAG_FULL;
-            dev_ipc_message_t *sub_msg =
-                dev_ipc_message_create(ROUTE_MSG_TYPE_SUBSCRIBE, DEV_MODULE_ID_BGP, DEV_MODULE_ID_ROUTE, 0, req,
-                                       sizeof(route_subscribe_req_t), g_free);
-            if (sub_msg)
-            {
-                dev_ipc_send(ctx, DEV_MODULE_ID_ROUTE, sub_msg);
-                dev_ipc_message_free(sub_msg);
-            }
-            LOG_INFO("BGP restore: VRF %u afi=%u safi=%u import_protos=0x%08X proto=%u，已重新订阅路由模块", vrf_id,
-                     (unsigned)afi, (unsigned)safi, import_protos, proto);
+            LOG_INFO("BGP restore: VRF %u afi=%u safi=%u import_protos=0x%08X proto=%u", vrf_id, (unsigned)afi,
+                     (unsigned)safi, import_protos, proto);
         }
 
         /* 恢复 import-rib 跨 AF 路由互导 */
