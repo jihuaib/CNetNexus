@@ -461,7 +461,16 @@ int bgp_import_rib_queue_process(bgp_instance_t *inst, int batch)
     {
         st->pending_count--;
         (void)bgp_import_rib_process_one(inst, head);
+        /* 收尾 GC：head 来自源 inst（labeled），unref 后若已无任何队列引用且 route_list 空，
+         * 必须从源 RIB tree 摘除，否则源 ensure_head 会复用残留空 head 导致 head->nlri 陈旧
+         * （例如 labeled label 字段保留旧值），使后续 announce 携带过期 label。 */
+        bgp_instance_t *src_inst = head->inst;
+        bgp_rib_t *src_rib = src_inst ? bgp_inst_rib_for_nlri(src_inst, &head->nlri) : NULL;
         bgp_rib_head_unref(head);
+        if (src_rib)
+        {
+            (void)bgp_rib_gc_head(src_rib, head);
+        }
         processed++;
     }
     return processed;

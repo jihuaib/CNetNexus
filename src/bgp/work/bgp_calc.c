@@ -349,7 +349,15 @@ int bgp_calc_queue_process(bgp_calc_queue_t *q, bgp_instance_t *inst, int batch_
     {
         q->count--;
         bgp_calc_run_one(inst, &head->nlri);
+        bgp_rib_t *rib = bgp_inst_rib_for_nlri(inst, &head->nlri);
         bgp_rib_head_unref(head);
+        /* 收尾 GC：若 head 已空且队列引用全部释放，立即从 tree 摘除。
+         * 否则下次 ensure_head 会命中这个残留空 head 复用——其 NLRI 仍带着旧值（例如 labeled
+         * 的 label），导致按 head->nlri 编码的 announce 发出陈旧字段，对端 MPLS NHLFE 不匹配。 */
+        if (rib)
+        {
+            (void)bgp_rib_gc_head(rib, head);
+        }
         processed++;
     }
     if (processed > 0)

@@ -148,6 +148,7 @@ class NetNexusCli:
         self.log_commands = log_commands
         self.tn: telnetlib.Telnet | None = None
         self._rx_buf = bytearray()
+        self._last_prompt = f"<{self.name}>"
 
     def connect(self, timeout: int = 25) -> None:
         deadline = time.time() + timeout
@@ -184,7 +185,7 @@ class NetNexusCli:
             raise RuntimeError(f"{self.name}: CLI not connected")
         eff_timeout = timeout if timeout is not None else self.cmd_timeout
         if self.log_commands or self.verbose:
-            print(f"<{self.name}> {command}")
+            print(f"{self._last_prompt} {command}")
         self.tn.write(command.encode("ascii") + b"\n")
         out = self._read_with_prompt_recovery(command=command, timeout=eff_timeout, expect_echo=command)
         text = out.replace("\r", "")
@@ -209,7 +210,7 @@ class NetNexusCli:
             raise RuntimeError(f"{self.name}: CLI not connected")
         eff_timeout = timeout if timeout is not None else self.cmd_timeout
         if self.log_commands or self.verbose:
-            print(f"<{self.name}> {partial}? (help)")
+            print(f"{self._last_prompt} {partial}? (help)")
         self.tn.write(partial.encode("ascii") + b"?")
         help_raw = self._read_with_prompt_recovery(
             command=f"{partial}?", timeout=eff_timeout, expect_echo=f"{partial}?"
@@ -281,6 +282,7 @@ class NetNexusCli:
                 if m is not None:
                     end = m.end()
                     data = bytes(self._rx_buf[:end])
+                    self._last_prompt = m.group(0).decode("utf-8", errors="ignore")
                     del self._rx_buf[:end]
                     return data.decode("utf-8", errors="ignore")
 

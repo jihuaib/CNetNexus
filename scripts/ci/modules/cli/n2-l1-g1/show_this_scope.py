@@ -113,6 +113,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 f"isis {TAG}",
                 f"net {ISIS_NET}",
                 "is-type level-2",
+                "cost-style wide",
                 "end",
                 "config",
                 f"if {GE_IF}",
@@ -172,6 +173,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 f"isis {TAG}",
                 f"net {ISIS_NET}",
                 "is-type level-2",
+                "cost-style wide",
                 f"isis enable {TAG}",
                 f"isis ipv6 enable {TAG}",
                 f"bgp {BGP_AS_R1}",
@@ -217,6 +219,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 f"isis {TAG}",
                 f"net {ISIS_NET}",
                 "is-type level-2",
+                "cost-style wide",
             ],
             not_regex=[
                 rf"(?mi)^\s*if\s+{GE_IF}\s*$",

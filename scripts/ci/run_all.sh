@@ -14,6 +14,7 @@ Options:
   --no-build            Skip docker build step
   --no-build-frr        Skip FRR interop image build only
   --debug               Build debug image (with gdb/tcpdump, Debug build type)
+  --asan                Build debug image with AddressSanitizer enabled
   --keep                Keep case containers/networks for debugging
   --cmd-timeout <sec>   CLI command timeout for runtime (default: 30)
   --connect-timeout <sec>  CLI initial connect timeout (default: 60)
@@ -24,6 +25,7 @@ Examples:
   scripts/ci/run_all.sh
   scripts/ci/run_all.sh --no-build --image netnexus-ci:latest
   scripts/ci/run_all.sh --debug
+  scripts/ci/run_all.sh --asan
   scripts/ci/run_all.sh --keep
 EOF
 }
@@ -37,6 +39,7 @@ REPORT_DIR="scripts/ci/reports/local-$(date -u +%Y%m%d-%H%M%S)"
 BUILD_IMAGE=1
 BUILD_FRR_IMAGE=1
 DEBUG_BUILD=0
+ENABLE_ASAN=OFF
 KEEP_CASE=0
 CMD_TIMEOUT=30
 CONNECT_TIMEOUT=60
@@ -67,6 +70,11 @@ while [[ $# -gt 0 ]]; do
       ;;
     --debug)
       DEBUG_BUILD=1
+      shift
+      ;;
+    --asan)
+      DEBUG_BUILD=1
+      ENABLE_ASAN=ON
       shift
       ;;
     --keep)
@@ -103,8 +111,12 @@ done
 
 if [[ "${BUILD_IMAGE}" -eq 1 ]]; then
   if [[ "${DEBUG_BUILD}" -eq 1 ]]; then
-    echo ">>> Building debug image: ${IMAGE}"
-    docker build --target debug --build-arg BUILD_TYPE=Debug -t "${IMAGE}" .
+    if [[ "${ENABLE_ASAN}" == "ON" ]]; then
+      echo ">>> Building debug ASAN image: ${IMAGE}"
+    else
+      echo ">>> Building debug image: ${IMAGE}"
+    fi
+    docker build --target debug --build-arg BUILD_TYPE=Debug --build-arg ENABLE_ASAN="${ENABLE_ASAN}" -t "${IMAGE}" .
   else
     echo ">>> Building production image: ${IMAGE}"
     docker build --target production -t "${IMAGE}" .
@@ -120,6 +132,7 @@ echo ">>> Running all CI modules"
 echo "    image: ${IMAGE}"
 echo "    frr image: ${FRR_IMAGE}"
 echo "    report: ${REPORT_DIR}"
+echo "    asan: ${ENABLE_ASAN}"
 
 CMD=(
   python3 scripts/ci/module_runner.py

@@ -65,7 +65,7 @@ jobs:
           sudo sysctl -w kernel.core_uses_pid=0
           cat /proc/sys/kernel/core_pattern
 
-      - name: Run All CI Modules And Generate Report
+      - name: Run All CI Modules With ASAN And Generate Report
         env:
           NN_CORE_DIR: /var/lib/netnexus-cores
         run: |
@@ -75,6 +75,7 @@ jobs:
             --frr-image "netnexus-frr-ci:${{ github.sha }}" \
             --report-dir "scripts/ci/reports" \
             --debug \
+            --asan \
             --cmd-timeout 30 \
             --connect-timeout 90
 

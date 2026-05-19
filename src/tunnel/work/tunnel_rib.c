@@ -416,20 +416,30 @@ static void tunnel_fill_fib_ilm(fib_ilm_entry_t *entry, const tunnel_rib_t *rib,
 
     if (ilm->action == TUNNEL_ACTION_SWAP || ilm->action == TUNNEL_ACTION_POP || ilm->action == TUNNEL_ACTION_PHP)
     {
-        const tunnel_nhlfe_t *nhlfe = tunnel_nhlfe_lookup(rib, ilm->nhlfe_id);
-        if (nhlfe)
+        /* 出口节点的本地 POP（如 BGP-LU 本端分配的 label）action=POP 且 nhlfe_id=0：
+         * 不依赖 NHLFE，直接以 ilm->out_ifindex 作为入接口 hint 下刷即可。
+         * 仅 SWAP/PHP 以及关联了 NHLFE 的 POP 才需要 lookup。 */
+        if (ilm->action == TUNNEL_ACTION_POP && ilm->nhlfe_id == 0u)
         {
-            entry->out_ifindex = nhlfe->out_ifindex;
-            entry->relay_addr = nhlfe->relay_addr;
-            if (ilm->action == TUNNEL_ACTION_SWAP)
-            {
-                entry->label_count = nhlfe->label_count;
-                memcpy(entry->labels, nhlfe->labels, sizeof(entry->labels));
-            }
+            /* keep entry->state from ilm->state, entry->out_ifindex from ilm->out_ifindex */
         }
         else
         {
-            entry->state = 0u;
+            const tunnel_nhlfe_t *nhlfe = tunnel_nhlfe_lookup(rib, ilm->nhlfe_id);
+            if (nhlfe)
+            {
+                entry->out_ifindex = nhlfe->out_ifindex;
+                entry->relay_addr = nhlfe->relay_addr;
+                if (ilm->action == TUNNEL_ACTION_SWAP)
+                {
+                    entry->label_count = nhlfe->label_count;
+                    memcpy(entry->labels, nhlfe->labels, sizeof(entry->labels));
+                }
+            }
+            else
+            {
+                entry->state = 0u;
+            }
         }
     }
 }

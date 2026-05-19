@@ -89,6 +89,8 @@ class CheckResult:
     returncode: int
     stdout: str
     stderr: str
+    previous_script: str | None = None
+    previous_status: str | None = None
     failed_step: str | None = None
 
     @property
@@ -172,6 +174,15 @@ def make_case_artifact_token(case_dir: Path) -> str:
 
 def make_script_log_token(index: int, script: Path) -> str:
     return f"{index:02d}-{sanitize_name(script.stem)}"
+
+
+def check_script_label(script: Path, case_dir: Path | None = None) -> str:
+    if case_dir is not None:
+        try:
+            return str(script.resolve().relative_to(case_dir.resolve()))
+        except ValueError:
+            pass
+    return str(script)
 
 
 def get_core_dump_dir() -> Path | None:
@@ -504,9 +515,16 @@ def report_config_drift(drifts: dict[str, str]) -> None:
         print(drifts[dev])
 
 
-def run_check(script: Path, rt: TopologyRuntime, top: dict[str, Any]) -> CheckResult:
+def run_check(
+    script: Path,
+    rt: TopologyRuntime,
+    top: dict[str, Any],
+    previous_result: CheckResult | None = None,
+) -> CheckResult:
     command = ["run(rt, top)"]
     started = time.time()
+    previous_script = check_script_label(previous_result.script, previous_result.case_dir) if previous_result else None
+    previous_status = previous_result.status if previous_result else None
 
     out_buf = TimestampedBuffer()
     err_buf = TimestampedBuffer()
@@ -521,6 +539,10 @@ def run_check(script: Path, rt: TopologyRuntime, top: dict[str, Any]) -> CheckRe
         run_fn = load_run_callable(script)
         with contextlib.redirect_stdout(tee_out), contextlib.redirect_stderr(tee_err):
             print(f"===== RUN CHECK: {script} =====")
+            if previous_script is None:
+                print("===== PREVIOUS CHECK: <none> =====")
+            else:
+                print(f"===== PREVIOUS CHECK: {previous_script} [{previous_status}] =====")
             load_global_top(top)
             ensure_device_modules_ready(rt, top)
             print_device_versions(rt, top)
@@ -571,12 +593,21 @@ def run_check(script: Path, rt: TopologyRuntime, top: dict[str, Any]) -> CheckRe
         returncode=rc,
         stdout=out_buf.getvalue(),
         stderr=err_buf.getvalue(),
+        previous_script=previous_script,
+        previous_status=previous_status,
         failed_step=failed_step_title,
     )
 
 
-def synth_failed_result(case_dir: Path, script: Path, err: str) -> CheckResult:
+def synth_failed_result(
+    case_dir: Path,
+    script: Path,
+    err: str,
+    previous_result: CheckResult | None = None,
+) -> CheckResult:
     now = time.time()
+    previous_script = check_script_label(previous_result.script, previous_result.case_dir) if previous_result else None
+    previous_status = previous_result.status if previous_result else None
     return CheckResult(
         case_dir=case_dir,
         script=script,
@@ -586,6 +617,8 @@ def synth_failed_result(case_dir: Path, script: Path, err: str) -> CheckResult:
         returncode=1,
         stdout="",
         stderr=err,
+        previous_script=previous_script,
+        previous_status=previous_status,
     )
 
 
@@ -785,10 +818,11 @@ def run_case(
         if startup_cores:
             print(f"Collected startup core dumps for case '{case_dir.name}' -> {core_dumps_dir} ({len(startup_cores)} files)")
 
+        previous_result: CheckResult | None = None
         for idx, script in enumerate(scripts, start=1):
             module_logs_cleared = False
             script_token = make_script_log_token(idx, script)
-            result = run_check(script, rt, top)
+            result = run_check(script, rt, top, previous_result=previous_result)
             if idx == 1:
                 prefix_parts: list[str] = []
                 if startup_stdout:
@@ -800,6 +834,7 @@ def run_case(
             results.append(result)
             if result.returncode != 0:
                 case_failed = True
+            previous_result = result
             try:
                 script_cores = collect_core_dumps(core_dumps_dir / make_case_artifact_token(case_dir) / script_token)
                 if script_cores:
@@ -834,6 +869,16 @@ def run_case(
                             f"Collected per-script ASAN reports for '{script.name}' -> {container_logs_dir} "
                             f"({len(asan_reports)} files)"
                         )
+                        rel_reports = [str(p.relative_to(container_logs_dir)) for p in asan_reports]
+                        result.stdout += (
+                            "\n===== STEP: ASAN report check =====\n"
+                            "RuntimeError: ASAN reports detected after check script:\n"
+                            + "\n".join(f"  {item}" for item in rel_reports)
+                            + "\n"
+                        )
+                        result.failed_step = result.failed_step or "ASAN report check"
+                        result.returncode = 1
+                        case_failed = True
                 clear_case_container_module_logs(rt)
                 module_logs_cleared = True
             except Exception as log_exc:
@@ -850,7 +895,13 @@ def run_case(
         err = f"case startup/runtime failed for {case_dir}: {exc}\n{traceback.format_exc()}"
         print(err, file=sys.stderr)
         executed = {r.script for r in results}
-        results.extend(synth_failed_result(case_dir, script, err) for script in scripts if script not in executed)
+        previous_result = results[-1] if results else None
+        for script in scripts:
+            if script in executed:
+                continue
+            result = synth_failed_result(case_dir, script, err, previous_result=previous_result)
+            results.append(result)
+            previous_result = result
     finally:
         if rt is not None:
             try:
@@ -886,6 +937,8 @@ def write_check_log(log_path: Path, result: CheckResult) -> None:
         f"script: {result.script}",
         f"status: {result.status}",
         f"returncode: {result.returncode}",
+        f"previous_script: {result.previous_script or '-'}",
+        f"previous_status: {result.previous_status or '-'}",
         f"failed_step: {result.failed_step or '-'}",
         f"started_at_utc: {format_timestamp(result.started_at)}",
         f"ended_at_utc: {format_timestamp(result.ended_at)}",
@@ -1048,6 +1101,9 @@ def write_check_html(path: Path, result: CheckResult, *, index: int) -> None:
     case_name = html.escape(str(result.case_dir))
     script_name = html.escape(str(result.script))
     command = html.escape(" ".join(shlex.quote(part) for part in result.command))
+    previous_label = result.previous_script or "<none>"
+    previous_status = result.previous_status or "-"
+    previous_meta = html.escape(f"{previous_label} [{previous_status}]" if result.previous_script else previous_label)
 
     combined = result.stdout
     if result.stderr:
@@ -1416,6 +1472,7 @@ def write_check_html(path: Path, result: CheckResult, *, index: int) -> None:
     </div>
     <div class=\"meta-strip\">
       <span><b>Case</b> <code>{case_name}</code></span>
+      <span><b>Prev</b> <code>{previous_meta}</code></span>
       <span><b>Cmd</b> <code>{command}</code></span>
       <span><b>Start</b> {html.escape(format_timestamp(result.started_at))}</span>
       <span><b>End</b> {html.escape(format_timestamp(result.ended_at))}</span>
@@ -1534,6 +1591,8 @@ def write_summary_json(path: Path, results: list[CheckResult], started_at: float
                 "script": str(r.script),
                 "status": r.status,
                 "returncode": r.returncode,
+                "previous_script": r.previous_script,
+                "previous_status": r.previous_status,
                 "failed_step": r.failed_step,
                 "duration_sec": round(r.duration_sec, 3),
                 "started_at_utc": format_timestamp(r.started_at),
@@ -1630,6 +1689,11 @@ def write_html_report(
                     script_view = f"<a href=\"{link}\">{script_name}</a>"
                 else:
                     script_view = script_name
+                previous_view = html.escape(
+                    f"{result.previous_script} [{result.previous_status or '-'}]"
+                    if result.previous_script
+                    else "-"
+                )
 
                 table_rows.append(
                     "".join(
@@ -1637,6 +1701,7 @@ def write_html_report(
                             f"<tr data-status='{cls}' data-script='{html.escape(script_label.lower())}'>",
                             f"<td class='mono col-idx'>{row_index}</td>",
                             f"<td class='script'>{script_view}</td>",
+                            f"<td class='mono col-prev'>{previous_view}</td>",
                             f"<td class='col-status'>{status_badge}</td>",
                             f"<td class='mono col-rc'>{result.returncode}</td>",
                             f"<td class='mono col-dur'>{result.duration_sec:.2f}</td>",
@@ -1664,7 +1729,7 @@ def write_html_report(
             <div class=\"table-scroll\">
               <table>
                 <thead>
-                  <tr><th class='col-idx'>#</th><th>Script</th><th class='col-status'>Status</th><th class='col-rc'>RC</th><th class='col-dur'>Duration(s)</th></tr>
+                  <tr><th class='col-idx'>#</th><th>Script</th><th class='col-prev'>Previous</th><th class='col-status'>Status</th><th class='col-rc'>RC</th><th class='col-dur'>Duration(s)</th></tr>
                 </thead>
                 <tbody>
                   {''.join(table_rows)}
@@ -2002,6 +2067,7 @@ def write_html_report(
     tbody tr:last-child td {{ border-bottom: 0; }}
     tbody tr:hover {{ background: #f4f9ff; }}
     .col-idx {{ width: 44px; color: var(--muted); }}
+    .col-prev {{ max-width: 260px; color: var(--muted); overflow-wrap: anywhere; }}
     .col-status {{ width: 80px; }}
     .col-rc {{ width: 56px; text-align: right; }}
     .col-dur {{ width: 92px; text-align: right; }}
