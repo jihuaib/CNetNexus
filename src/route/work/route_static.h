@@ -102,6 +102,16 @@ int route_static_del(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_add
 int route_static_del_prefix(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr, uint8_t prefix_len);
 
 /**
+ * @brief 删除指定 VRF 下所有候选静态路由（VRF 删除级联）
+ *
+ * 若相关路由已在 RIB 中，则同步撤销并通知订阅者；并注销 relay watch。
+ *
+ * @param vrf_id VRF ID
+ * @return 删除条目数（>=0）
+ */
+int route_static_del_vrf(uint32_t vrf_id);
+
+/**
  * @brief 指定 nexthop 可达性变化时，更新所有关联的候选静态路由
  *
  * 由 route_relay 在 watch 表检测到 nexthop 状态变化时统一回调（与协议迭代走同一流程）。

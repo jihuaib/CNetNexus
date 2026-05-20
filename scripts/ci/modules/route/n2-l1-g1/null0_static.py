@@ -4,8 +4,8 @@ Null0 (blackhole) static route end-to-end check (IPv4).
 
 Goals:
 - CLI `?` 候选必须包含 ``null0`` 接口（动态参数联想）。
-- `route ipv4 <prefix> <len> interface null0` 配置后能下发到 RIB 和 OS（RTN_BLACKHOLE）。
-- `no route ipv4 <prefix> <len> interface null0` 之后 RIB 与 OS 均撤销。
+- `route static ipv4 <prefix> <len> interface null0` 配置后能下发到 RIB 和 OS（RTN_BLACKHOLE）。
+- `no route static ipv4 <prefix> <len> interface null0` 之后 RIB 与 OS 均撤销。
 - 打开 BGP `import-route static` 后，null0 黑洞路由能被导入到本地 BGP RIB，
   并通告给对端；路由删除后，本地导入消失、对端撤销。
 """
@@ -30,8 +30,8 @@ from top_runner import TopologyRuntime  # noqa: E402
 NULL0_PREFIX_ADDR = "198.51.100.0"
 NULL0_MASK = "24"
 NULL0_PREFIX = f"{NULL0_PREFIX_ADDR}/{NULL0_MASK}"
-NULL0_ADD_CMD = f"route ipv4 {NULL0_PREFIX_ADDR} {NULL0_MASK} interface null0"
-NULL0_DEL_CMD = f"no route ipv4 {NULL0_PREFIX_ADDR} {NULL0_MASK} interface null0"
+NULL0_ADD_CMD = f"route static ipv4 {NULL0_PREFIX_ADDR} {NULL0_MASK} interface null0"
+NULL0_DEL_CMD = f"no route static ipv4 {NULL0_PREFIX_ADDR} {NULL0_MASK} interface null0"
 
 
 def _wait_os_blackhole(
@@ -146,7 +146,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         )
 
         step("Verify CLI `?` candidates include null0 for interface ifname")
-        partial = f"route ipv4 {NULL0_PREFIX_ADDR} {NULL0_MASK} interface n"
+        partial = f"route static ipv4 {NULL0_PREFIX_ADDR} {NULL0_MASK} interface n"
         help_out = cmd_query_help(rt, "r2", partial)
         if not re.search(r"(?m)^\s*null0\b", help_out):
             raise RuntimeError(

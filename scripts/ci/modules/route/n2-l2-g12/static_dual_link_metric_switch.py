@@ -162,8 +162,8 @@ def _cleanup(rt: TopologyRuntime, *, device: str, nh_ge1: str, nh_ge2: str) -> N
         strict=False,
         commands=[
             "config",
-            f"no route ipv4 {TARGET_PREFIX_ADDR} {TARGET_MASK} {nh_ge1}",
-            f"no route ipv4 {TARGET_PREFIX_ADDR} {TARGET_MASK} {nh_ge2}",
+            f"no route static ipv4 {TARGET_PREFIX_ADDR} {TARGET_MASK} {nh_ge1}",
+            f"no route static ipv4 {TARGET_PREFIX_ADDR} {TARGET_MASK} {nh_ge2}",
             "end",
         ],
     )
@@ -299,8 +299,8 @@ def _cleanup_ipv6(rt: TopologyRuntime, *, device: str, nh_ge1: str, nh_ge2: str)
         strict=False,
         commands=[
             "config",
-            f"no route ipv6 {V6_TARGET_PREFIX_ADDR} {V6_TARGET_PREFIX_LEN} {nh_ge1}",
-            f"no route ipv6 {V6_TARGET_PREFIX_ADDR} {V6_TARGET_PREFIX_LEN} {nh_ge2}",
+            f"no route static ipv6 {V6_TARGET_PREFIX_ADDR} {V6_TARGET_PREFIX_LEN} {nh_ge1}",
+            f"no route static ipv6 {V6_TARGET_PREFIX_ADDR} {V6_TARGET_PREFIX_LEN} {nh_ge2}",
             "if GE-1",
             "no shutdown",
             "exit",
@@ -403,8 +403,8 @@ def _run_ipv4(rt: TopologyRuntime, top: dict[str, object]) -> None:
             device="r1",
             commands=[
                 "config",
-                f"route ipv4 {TARGET_PREFIX_ADDR} {TARGET_MASK} {ge1_nh} metric 10",
-                f"route ipv4 {TARGET_PREFIX_ADDR} {TARGET_MASK} {ge2_nh} metric 20",
+                f"route static ipv4 {TARGET_PREFIX_ADDR} {TARGET_MASK} {ge1_nh} metric 10",
+                f"route static ipv4 {TARGET_PREFIX_ADDR} {TARGET_MASK} {ge2_nh} metric 20",
                 "end",
             ],
         )
@@ -437,7 +437,7 @@ def _run_ipv4(rt: TopologyRuntime, top: dict[str, object]) -> None:
             device="r1",
             commands=[
                 "config",
-                f"route ipv4 {TARGET_PREFIX_ADDR} {TARGET_MASK} {ge1_nh} metric 30",
+                f"route static ipv4 {TARGET_PREFIX_ADDR} {TARGET_MASK} {ge1_nh} metric 30",
                 "end",
             ],
         )
@@ -468,7 +468,7 @@ def _run_ipv4(rt: TopologyRuntime, top: dict[str, object]) -> None:
             device="r1",
             commands=[
                 "config",
-                f"route ipv4 {TARGET_PREFIX_ADDR} {TARGET_MASK} {ge1_nh} metric 5",
+                f"route static ipv4 {TARGET_PREFIX_ADDR} {TARGET_MASK} {ge1_nh} metric 5",
                 "end",
             ],
         )
@@ -558,8 +558,8 @@ def _run_ipv6(rt: TopologyRuntime, top: dict[str, object]) -> None:
             device="r1",
             commands=[
                 "config",
-                f"route ipv6 {V6_TARGET_PREFIX_ADDR} {V6_TARGET_PREFIX_LEN} {ge1_nh} metric 10",
-                f"route ipv6 {V6_TARGET_PREFIX_ADDR} {V6_TARGET_PREFIX_LEN} {ge2_nh} metric 20",
+                f"route static ipv6 {V6_TARGET_PREFIX_ADDR} {V6_TARGET_PREFIX_LEN} {ge1_nh} metric 10",
+                f"route static ipv6 {V6_TARGET_PREFIX_ADDR} {V6_TARGET_PREFIX_LEN} {ge2_nh} metric 20",
                 "end",
             ],
         )
@@ -592,7 +592,7 @@ def _run_ipv6(rt: TopologyRuntime, top: dict[str, object]) -> None:
             device="r1",
             commands=[
                 "config",
-                f"route ipv6 {V6_TARGET_PREFIX_ADDR} {V6_TARGET_PREFIX_LEN} {ge1_nh} metric 30",
+                f"route static ipv6 {V6_TARGET_PREFIX_ADDR} {V6_TARGET_PREFIX_LEN} {ge1_nh} metric 30",
                 "end",
             ],
         )
@@ -623,7 +623,7 @@ def _run_ipv6(rt: TopologyRuntime, top: dict[str, object]) -> None:
             device="r1",
             commands=[
                 "config",
-                f"route ipv6 {V6_TARGET_PREFIX_ADDR} {V6_TARGET_PREFIX_LEN} {ge1_nh} metric 5",
+                f"route static ipv6 {V6_TARGET_PREFIX_ADDR} {V6_TARGET_PREFIX_LEN} {ge1_nh} metric 5",
                 "end",
             ],
         )

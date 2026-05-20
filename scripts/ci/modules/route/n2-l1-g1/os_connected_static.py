@@ -150,7 +150,7 @@ def _cleanup_ipv6(rt: TopologyRuntime, *, static_nh: str) -> None:
             f"if {GE_IF}",
             "no shutdown",
             "exit",
-            f"no route ipv6 {V6_STATIC_PREFIX_ADDR} {V6_STATIC_PREFIX_LEN} {static_nh}",
+            f"no route static ipv6 {V6_STATIC_PREFIX_ADDR} {V6_STATIC_PREFIX_LEN} {static_nh}",
             f"no if loop {LOOP_ID}",
             "end",
         ],
@@ -197,7 +197,7 @@ def _run_ipv4(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 f"if {if_name}",
                 "no shutdown",
                 "exit",
-                f"no route ipv4 {STATIC_PREFIX_ADDR} {STATIC_MASK} {static_nh}",
+                f"no route static ipv4 {STATIC_PREFIX_ADDR} {STATIC_MASK} {static_nh}",
                 f"no if loop {LOOP_ID}",
                 "end",
             ],
@@ -449,7 +449,7 @@ def _run_ipv4(rt: TopologyRuntime, top: dict[str, object]) -> None:
             device="r1",
             commands=[
                 "config",
-                f"route ipv4 {STATIC_PREFIX_ADDR} {STATIC_MASK} {static_nh}",
+                f"route static ipv4 {STATIC_PREFIX_ADDR} {STATIC_MASK} {static_nh}",
                 "end",
             ],
         )
@@ -471,7 +471,7 @@ def _run_ipv4(rt: TopologyRuntime, top: dict[str, object]) -> None:
             device="r1",
             commands=[
                 "config",
-                f"no route ipv4 {STATIC_PREFIX_ADDR} {STATIC_MASK} {static_nh}",
+                f"no route static ipv4 {STATIC_PREFIX_ADDR} {STATIC_MASK} {static_nh}",
                 "end",
             ],
         )
@@ -498,7 +498,7 @@ def _run_ipv4(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 f"if {if_name}",
                 "no shutdown",
                 "exit",
-                f"no route ipv4 {STATIC_PREFIX_ADDR} {STATIC_MASK} {static_nh}",
+                f"no route static ipv4 {STATIC_PREFIX_ADDR} {STATIC_MASK} {static_nh}",
                 f"no if loop {LOOP_ID}",
                 "end",
             ],
@@ -772,7 +772,7 @@ def _run_ipv6(rt: TopologyRuntime, top: dict[str, object]) -> None:
             device="r1",
             commands=[
                 "config",
-                f"route ipv6 {V6_STATIC_PREFIX_ADDR} {V6_STATIC_PREFIX_LEN} {static_nh}",
+                f"route static ipv6 {V6_STATIC_PREFIX_ADDR} {V6_STATIC_PREFIX_LEN} {static_nh}",
                 "end",
             ],
         )
@@ -794,7 +794,7 @@ def _run_ipv6(rt: TopologyRuntime, top: dict[str, object]) -> None:
             device="r1",
             commands=[
                 "config",
-                f"no route ipv6 {V6_STATIC_PREFIX_ADDR} {V6_STATIC_PREFIX_LEN} {static_nh}",
+                f"no route static ipv6 {V6_STATIC_PREFIX_ADDR} {V6_STATIC_PREFIX_LEN} {static_nh}",
                 "end",
             ],
         )

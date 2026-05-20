@@ -26,6 +26,7 @@ typedef enum route_apply_op
     ROUTE_APPLY_STATIC_DEL_PREFIX = 3, /**< 删除某前缀的所有静态路由 */
     ROUTE_APPLY_BATCH_ADD = 4,         /**< 添加 batch 路由 */
     ROUTE_APPLY_BATCH_DEL = 5,         /**< 删除 batch 路由 */
+    ROUTE_APPLY_STATIC_DEL_VRF = 6,    /**< 删除指定 VRF 下所有静态路由（VRF 删除级联） */
 } route_apply_op_t;
 
 /**
@@ -72,6 +73,12 @@ typedef struct route_apply_cmd
             uint8_t prefix_len;     /**< 前缀长度 */
             net_addr_t prefix_addr; /**< 前缀地址（二进制） */
         } static_del_prefix;
+
+        /** ROUTE_APPLY_STATIC_DEL_VRF */
+        struct
+        {
+            uint32_t vrf_id; /**< VRF ID（删除该 VRF 下所有静态路由） */
+        } static_del_vrf;
 
         /** ROUTE_APPLY_BATCH_ADD */
         struct

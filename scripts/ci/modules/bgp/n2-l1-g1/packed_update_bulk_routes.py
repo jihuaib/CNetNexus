@@ -105,7 +105,7 @@ def _cleanup(rt: TopologyRuntime, *, r1_nh: str) -> None:
     r1_cmds: list[str] = ["config"]
     for i in range(ROUTE_COUNT):
         addr, mask = _prefix_cli_args(i)
-        r1_cmds.append(f"no route ipv4 {addr} {mask} {r1_nh}")
+        r1_cmds.append(f"no route static ipv4 {addr} {mask} {r1_nh}")
     r1_cmds.extend(["no bgp", "end"])
     run_cmds(rt=rt, device="r1", strict=False, commands=r1_cmds)
     run_cmds(rt=rt, device="r2", strict=False, commands=["config", "no bgp", "end"])
@@ -157,7 +157,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         inject_cmds: list[str] = ["config"]
         for i in range(ROUTE_COUNT):
             addr, mask = _prefix_cli_args(i)
-            inject_cmds.append(f"route ipv4 {addr} {mask} {r1_static_nh}")
+            inject_cmds.append(f"route static ipv4 {addr} {mask} {r1_static_nh}")
         inject_cmds.append("end")
         run_cmds(rt=rt, device="r1", commands=inject_cmds)
 

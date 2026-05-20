@@ -196,7 +196,7 @@ def _cleanup_case_config_ipv4(rt: TopologyRuntime, *, r1_nh: str, r2_nh: str) ->
         strict=False,
         commands=[
             "config",
-            f"no route ipv4 {TARGET_PREFIX_ADDR_V4} {TARGET_MASK_V4} {r1_nh}",
+            f"no route static ipv4 {TARGET_PREFIX_ADDR_V4} {TARGET_MASK_V4} {r1_nh}",
             "no bgp",
             "end",
         ],
@@ -207,7 +207,7 @@ def _cleanup_case_config_ipv4(rt: TopologyRuntime, *, r1_nh: str, r2_nh: str) ->
         strict=False,
         commands=[
             "config",
-            f"no route ipv4 {TARGET_PREFIX_ADDR_V4} {TARGET_MASK_V4} {r2_nh}",
+            f"no route static ipv4 {TARGET_PREFIX_ADDR_V4} {TARGET_MASK_V4} {r2_nh}",
             "no bgp",
             "end",
         ],
@@ -222,7 +222,7 @@ def _cleanup_case_config_ipv6(rt: TopologyRuntime, *, r1_nh6: str, r2_nh6: str) 
         strict=False,
         commands=[
             "config",
-            f"no route ipv6 {TARGET_PREFIX_ADDR_V6} {TARGET_MASK_V6} {r1_nh6}",
+            f"no route static ipv6 {TARGET_PREFIX_ADDR_V6} {TARGET_MASK_V6} {r1_nh6}",
             "no bgp",
             "end",
         ],
@@ -233,7 +233,7 @@ def _cleanup_case_config_ipv6(rt: TopologyRuntime, *, r1_nh6: str, r2_nh6: str) 
         strict=False,
         commands=[
             "config",
-            f"no route ipv6 {TARGET_PREFIX_ADDR_V6} {TARGET_MASK_V6} {r2_nh6}",
+            f"no route static ipv6 {TARGET_PREFIX_ADDR_V6} {TARGET_MASK_V6} {r2_nh6}",
             "no bgp",
             "end",
         ],
@@ -308,7 +308,7 @@ def _run_ipv4(rt: TopologyRuntime, *, r1_peer_ip: str, r2_peer_ip: str, r2_route
         strict=False,
         commands=[
             "config",
-            f"route ipv4 {TARGET_PREFIX_ADDR_V4} {TARGET_MASK_V4} {r2_route_nh}",
+            f"route static ipv4 {TARGET_PREFIX_ADDR_V4} {TARGET_MASK_V4} {r2_route_nh}",
             "end",
         ],
     )
@@ -332,7 +332,7 @@ def _run_ipv4(rt: TopologyRuntime, *, r1_peer_ip: str, r2_peer_ip: str, r2_route
         strict=False,
         commands=[
             "config",
-            f"route ipv4 {TARGET_PREFIX_ADDR_V4} {TARGET_MASK_V4} {r1_peer_ip}",
+            f"route static ipv4 {TARGET_PREFIX_ADDR_V4} {TARGET_MASK_V4} {r1_peer_ip}",
             "end",
         ],
     )
@@ -348,7 +348,7 @@ def _run_ipv4(rt: TopologyRuntime, *, r1_peer_ip: str, r2_peer_ip: str, r2_route
         strict=False,
         commands=[
             "config",
-            f"no route ipv4 {TARGET_PREFIX_ADDR_V4} {TARGET_MASK_V4} {r1_peer_ip}",
+            f"no route static ipv4 {TARGET_PREFIX_ADDR_V4} {TARGET_MASK_V4} {r1_peer_ip}",
             "end",
         ],
     )
@@ -426,7 +426,7 @@ def _run_ipv6(rt: TopologyRuntime, *, r1_peer_ip6: str, r2_peer_ip6: str, r2_rou
         strict=False,
         commands=[
             "config",
-            f"route ipv6 {TARGET_PREFIX_ADDR_V6} {TARGET_MASK_V6} {r2_route_nh6}",
+            f"route static ipv6 {TARGET_PREFIX_ADDR_V6} {TARGET_MASK_V6} {r2_route_nh6}",
             "end",
         ],
     )
@@ -450,7 +450,7 @@ def _run_ipv6(rt: TopologyRuntime, *, r1_peer_ip6: str, r2_peer_ip6: str, r2_rou
         strict=False,
         commands=[
             "config",
-            f"route ipv6 {TARGET_PREFIX_ADDR_V6} {TARGET_MASK_V6} {r1_peer_ip6}",
+            f"route static ipv6 {TARGET_PREFIX_ADDR_V6} {TARGET_MASK_V6} {r1_peer_ip6}",
             "end",
         ],
     )
@@ -466,7 +466,7 @@ def _run_ipv6(rt: TopologyRuntime, *, r1_peer_ip6: str, r2_peer_ip6: str, r2_rou
         strict=False,
         commands=[
             "config",
-            f"no route ipv6 {TARGET_PREFIX_ADDR_V6} {TARGET_MASK_V6} {r1_peer_ip6}",
+            f"no route static ipv6 {TARGET_PREFIX_ADDR_V6} {TARGET_MASK_V6} {r1_peer_ip6}",
             "end",
         ],
     )

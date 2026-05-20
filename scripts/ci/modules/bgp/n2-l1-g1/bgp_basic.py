@@ -32,8 +32,8 @@ def _cleanup_case_config(rt: TopologyRuntime, r1_peer_ip: str, r1_peer_ip6: str)
         strict=False,
         commands=[
             "config",
-            f"no route ipv4 {TEST_V4_PREFIX} {TEST_V4_PREFIX_LEN} {r1_peer_ip}",
-            f"no route ipv6 {TEST_V6_PREFIX} {TEST_V6_PREFIX_LEN} {r1_peer_ip6}",
+            f"no route static ipv4 {TEST_V4_PREFIX} {TEST_V4_PREFIX_LEN} {r1_peer_ip}",
+            f"no route static ipv6 {TEST_V6_PREFIX} {TEST_V6_PREFIX_LEN} {r1_peer_ip6}",
             "no bgp",
             "end",
         ],
@@ -143,8 +143,8 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             device="r1",
             commands=[
                 "config",
-                f"route ipv4 {TEST_V4_PREFIX} {TEST_V4_PREFIX_LEN} {r1_peer_ip}",
-                f"route ipv6 {TEST_V6_PREFIX} {TEST_V6_PREFIX_LEN} {r1_peer_ip6}",
+                f"route static ipv4 {TEST_V4_PREFIX} {TEST_V4_PREFIX_LEN} {r1_peer_ip}",
+                f"route static ipv6 {TEST_V6_PREFIX} {TEST_V6_PREFIX_LEN} {r1_peer_ip6}",
                 "end",
             ],
         )

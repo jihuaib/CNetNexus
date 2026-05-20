@@ -13,6 +13,7 @@
 #include "bgp_worker.h"
 #include "errcode.h"
 #include "log.h"
+#include "vrf.h"
 
 // ============================================================================
 // 表 schema
@@ -52,16 +53,16 @@ int bgp_db_set_as(uint32_t as_number)
      * router-id/timers/connect-retry 的纯 UPDATE 路径都能命中。
      * bgp_db_del_as 会清空 bgp_vrf 表，所以每次 set_as 都需要补一次。 */
     db_filter_builder_t pk;
-    bgp_db_vrf_pk(&pk, BGP_VRF_PUBLIC_ID);
+    bgp_db_vrf_pk(&pk, VRF_PUBLIC_VRF_NAME);
     gboolean exists = FALSE;
     int rc = db_rpc_exists(ctx, BGP_TABLE_VRF, &pk.filter, &exists);
     db_filter_clear(&pk);
     if (rc == ERRCODE_SUCCESS && !exists)
     {
-        db_col_t vrf_cols[] = {DB_COL_INT("vrf_id", BGP_VRF_PUBLIC_ID)};
+        db_col_t vrf_cols[] = {DB_COL_TEXT("vrf_name", VRF_PUBLIC_VRF_NAME)};
         if (db_rpc_insert_cols(ctx, BGP_TABLE_VRF, vrf_cols, G_N_ELEMENTS(vrf_cols)) != ERRCODE_SUCCESS)
         {
-            LOG_ERROR("BGP failed to seed default VRF row vrf_id=%u", BGP_VRF_PUBLIC_ID);
+            LOG_ERROR("BGP failed to seed default VRF row vrf=%s", VRF_PUBLIC_VRF_NAME);
             return -1;
         }
     }

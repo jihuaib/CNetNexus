@@ -27,6 +27,52 @@
 
 bgp_local_t *g_bgp_local;
 
+static bgp_afi_t bgp_vrf_event_map_afi(uint16_t afi)
+{
+    if (afi == VRF_AFI_IPV6)
+    {
+        return BGP_AFI_IPV6;
+    }
+    return BGP_AFI_IPV4;
+}
+
+static bgp_safi_t bgp_vrf_event_map_safi(uint8_t safi)
+{
+    return (safi == VRF_SAFI_UNICAST) ? BGP_SAFI_UNICAST : (bgp_safi_t)safi;
+}
+
+static void bgp_handle_vrf_event_db_side_effect(const dev_ipc_message_t *msg)
+{
+    if (!msg || !msg->payload || msg->payload_len < offsetof(vrf_event_msg_t, rts))
+    {
+        return;
+    }
+
+    const vrf_event_msg_t *evt = (const vrf_event_msg_t *)msg->payload;
+    if (evt->name[0] == '\0' || strcmp(evt->name, VRF_PUBLIC_VRF_NAME) == 0)
+    {
+        return;
+    }
+
+    switch (evt->event)
+    {
+        case VRF_EVENT_VRF_DEL:
+            (void)bgp_db_del_vrf(evt->name);
+            break;
+
+        case VRF_EVENT_AF_DISABLE:
+            (void)bgp_db_del_instance(evt->name, bgp_vrf_event_map_afi(evt->afi), bgp_vrf_event_map_safi(evt->safi));
+            break;
+
+        case VRF_EVENT_AF_RD_DEL:
+            (void)bgp_db_del_instance(evt->name, bgp_vrf_event_map_afi(evt->afi), bgp_vrf_event_map_safi(evt->safi));
+            break;
+
+        default:
+            break;
+    }
+}
+
 static uint8_t bgp_cli_payload_flags(const dev_ipc_message_t *msg)
 {
     if (!msg || !msg->payload || msg->payload_len < 1)
@@ -143,10 +189,11 @@ static void bgp_on_ready(dev_ipc_message_t *msg)
         LOG_WARN("BGP: Failed to subscribe to IF events via if_api");
     }
 
-    /* 通过 vrf_api 订阅 VRF 事件（VRF 删除 + RD/RT 变更），并请求初始全量回放 */
+    /* 通过 vrf_api 订阅 VRF 事件（VRF 删除 + RD/RT 增删），并请求初始全量回放 */
     vrf_api_cache_init();
     uint32_t vrf_event_mask = VRF_EVENT_VRF_ADD | VRF_EVENT_VRF_DEL | VRF_EVENT_AF_ENABLE | VRF_EVENT_AF_DISABLE |
-                              VRF_EVENT_AF_RD_CHANGE | VRF_EVENT_AF_IMPORT_RT_CHG | VRF_EVENT_AF_EXPORT_RT_CHG;
+                              VRF_EVENT_AF_RD_ADD | VRF_EVENT_AF_RD_DEL | VRF_EVENT_AF_IMPORT_RT_ADD |
+                              VRF_EVENT_AF_IMPORT_RT_DEL | VRF_EVENT_AF_EXPORT_RT_ADD | VRF_EVENT_AF_EXPORT_RT_DEL;
     if (vrf_api_subscribe(ctx, VRF_AF_MASK_ALL, vrf_event_mask, VRF_SUBSCRIBE_FLAG_REPLAY) == ERRCODE_SUCCESS)
     {
         LOG_INFO("BGP: Subscribed to VRF events via vrf_api (REPLAY)");
@@ -279,6 +326,7 @@ void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         /* ---- VRF 事件通知 ---- */
         case VRF_MSG_TYPE_EVENT:
         {
+            bgp_handle_vrf_event_db_side_effect(msg);
             if (bgp_worker_post_vrf_event(msg) != 0)
             {
                 LOG_WARN("BGP: Failed to forward VRF event to worker thread");

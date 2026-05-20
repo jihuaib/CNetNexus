@@ -155,9 +155,9 @@ static void fsm_send_open(bgp_session_t *sess)
         return;
     }
     bgp_protocol_t *proto = g_bgp_work_local->protocol;
-    bgp_vrf_t *vrf0 = proto ? bgp_protocol_get_vrf(proto, BGP_VRF_PUBLIC_ID) : NULL;
-    GList *af_peers = vrf0 ? bgp_vrf_get_session_peers(vrf0, &sess->neighbor_addr) : NULL;
-    bgp_pkt_send_open(conn, proto ? proto->as_number : 0, vrf0 ? vrf0->router_id : 0, af_peers);
+    bgp_vrf_t *vrf = sess->vrf;
+    GList *af_peers = vrf ? bgp_vrf_get_session_peers(vrf, &sess->neighbor_addr) : NULL;
+    bgp_pkt_send_open(conn, proto ? proto->as_number : 0, vrf ? vrf->router_id : 0, af_peers);
     g_list_free(af_peers);
 }
 
@@ -335,9 +335,8 @@ static void fsm_on_established(bgp_session_t *sess)
     fsm_update_peer_states(sess);
     bgp_relay_session_lu_adj_sync(sess, TRUE);
 
-    bgp_protocol_t *proto = g_bgp_work_local->protocol;
-    bgp_vrf_t *vrf0 = proto ? bgp_protocol_get_vrf(proto, BGP_VRF_PUBLIC_ID) : NULL;
-    uint16_t ka_sec = vrf0 ? vrf0->keepalive : BGP_TIMER_DEFAULT_KEEPALIVE;
+    bgp_vrf_t *vrf = sess->vrf;
+    uint16_t ka_sec = vrf ? vrf->keepalive : BGP_TIMER_DEFAULT_KEEPALIVE;
     bgp_session_arm_keepalive(sess, fsm_epoll_fd(), ka_sec);
     if (sess->negotiated_hold > 0)
     {

@@ -14,16 +14,21 @@
 #include "errcode.h"
 #include "log.h"
 #include "net_addr.h"
+#include "vrf.h"
 
 // ============================================================================
 // 表 schema
 // ============================================================================
 
 static const db_column_def_t BGP_QP_ROUTE_COLS[] = {
-    {"vrf_id", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},       {"afi", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
-    {"safi", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},        {"start_dqpn", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
-    {"route_count", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL}, {"prefix_addr", DB_TYPE_TEXT, DB_COL_NOT_NULL, NULL},
-    {"mask_len", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},    {"bid", DB_TYPE_TEXT, DB_COL_NOT_NULL, NULL},
+    {"vrf_name", DB_TYPE_TEXT, DB_COL_NOT_NULL, VRF_PUBLIC_VRF_NAME},
+    {"afi", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
+    {"safi", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
+    {"start_dqpn", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
+    {"route_count", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
+    {"prefix_addr", DB_TYPE_TEXT, DB_COL_NOT_NULL, NULL},
+    {"mask_len", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
+    {"bid", DB_TYPE_TEXT, DB_COL_NOT_NULL, NULL},
 };
 
 const db_table_def_t BGP_QP_ROUTE_TABLE = {
@@ -36,17 +41,17 @@ const db_table_def_t BGP_QP_ROUTE_TABLE = {
 // CRUD
 // ============================================================================
 
-int bgp_db_set_qp_route(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi, uint32_t start_dqpn, uint32_t count,
+int bgp_db_set_qp_route(const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi, uint32_t start_dqpn, uint32_t count,
                         const char *prefix_addr, uint8_t mask_len, const char *bid)
 {
     dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
-    if (!ctx || !prefix_addr || !bid || safi != BGP_SAFI_QP)
+    if (!ctx || !vrf_name || !prefix_addr || !bid || safi != BGP_SAFI_QP)
     {
         return -1;
     }
 
     db_filter_builder_t pk;
-    bgp_db_qp_route_pk(&pk, vrf_id, afi, safi, start_dqpn, count, prefix_addr, mask_len, bid);
+    bgp_db_qp_route_pk(&pk, vrf_name, afi, safi, start_dqpn, count, prefix_addr, mask_len, bid);
 
     gboolean exists = FALSE;
     int ret = db_rpc_exists(ctx, BGP_TABLE_QP_ROUTE, &pk.filter, &exists);
@@ -54,7 +59,7 @@ int bgp_db_set_qp_route(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi, uint32_
 
     if (ret != ERRCODE_SUCCESS)
     {
-        LOG_ERROR("BGP 写入 QP route vrf=%u afi=%u start_dqpn=%u 失败", vrf_id, (unsigned)afi, start_dqpn);
+        LOG_ERROR("BGP 写入 QP route vrf=%s afi=%u start_dqpn=%u 失败", vrf_name, (unsigned)afi, start_dqpn);
         return -1;
     }
     if (exists)
@@ -63,67 +68,67 @@ int bgp_db_set_qp_route(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi, uint32_
     }
 
     db_col_t cols[] = {
-        DB_COL_INT("vrf_id", vrf_id),         DB_COL_INT("afi", afi),           DB_COL_INT("safi", safi),
+        DB_COL_TEXT("vrf_name", vrf_name),    DB_COL_INT("afi", afi),           DB_COL_INT("safi", safi),
         DB_COL_INT("start_dqpn", start_dqpn), DB_COL_INT("route_count", count), DB_COL_TEXT("prefix_addr", prefix_addr),
         DB_COL_INT("mask_len", mask_len),     DB_COL_TEXT("bid", bid),
     };
     ret = db_rpc_insert_cols(ctx, BGP_TABLE_QP_ROUTE, cols, G_N_ELEMENTS(cols));
     if (ret != ERRCODE_SUCCESS)
     {
-        LOG_ERROR("BGP 写入 QP route vrf=%u afi=%u start_dqpn=%u 失败", vrf_id, (unsigned)afi, start_dqpn);
+        LOG_ERROR("BGP 写入 QP route vrf=%s afi=%u start_dqpn=%u 失败", vrf_name, (unsigned)afi, start_dqpn);
         return -1;
     }
 
-    LOG_INFO("BGP QP route vrf=%u afi=%u start_dqpn=%u count=%u 已写入", vrf_id, (unsigned)afi, start_dqpn, count);
+    LOG_INFO("BGP QP route vrf=%s afi=%u start_dqpn=%u count=%u 已写入", vrf_name, (unsigned)afi, start_dqpn, count);
     return 0;
 }
 
-int bgp_db_del_qp_route(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi, uint32_t start_dqpn, uint32_t count,
+int bgp_db_del_qp_route(const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi, uint32_t start_dqpn, uint32_t count,
                         const char *prefix_addr, uint8_t mask_len, const char *bid)
 {
     dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
-    if (!ctx || !prefix_addr || !bid || safi != BGP_SAFI_QP)
+    if (!ctx || !vrf_name || !prefix_addr || !bid || safi != BGP_SAFI_QP)
     {
         return -1;
     }
 
     db_filter_builder_t pk;
-    bgp_db_qp_route_pk(&pk, vrf_id, afi, safi, start_dqpn, count, prefix_addr, mask_len, bid);
+    bgp_db_qp_route_pk(&pk, vrf_name, afi, safi, start_dqpn, count, prefix_addr, mask_len, bid);
 
     int rows = db_rpc_delete(ctx, BGP_TABLE_QP_ROUTE, &pk.filter);
     db_filter_clear(&pk);
 
     if (rows < 0)
     {
-        LOG_ERROR("BGP 删除 QP route vrf=%u afi=%u start_dqpn=%u 失败", vrf_id, (unsigned)afi, start_dqpn);
+        LOG_ERROR("BGP 删除 QP route vrf=%s afi=%u start_dqpn=%u 失败", vrf_name, (unsigned)afi, start_dqpn);
         return -1;
     }
 
-    LOG_INFO("BGP 删除 QP route vrf=%u afi=%u start_dqpn=%u，影响行数: %d", vrf_id, (unsigned)afi, start_dqpn, rows);
+    LOG_INFO("BGP 删除 QP route vrf=%s afi=%u start_dqpn=%u，影响行数: %d", vrf_name, (unsigned)afi, start_dqpn, rows);
     return rows;
 }
 
-int bgp_db_del_qp_routes_by_afi(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi)
+int bgp_db_del_qp_routes_by_afi(const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi)
 {
     dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
-    if (!ctx)
+    if (!ctx || !vrf_name)
     {
         return -1;
     }
 
     db_filter_builder_t pk;
-    bgp_db_instance_pk(&pk, vrf_id, afi, safi);
+    bgp_db_instance_pk(&pk, vrf_name, afi, safi);
 
     int rows = db_rpc_delete(ctx, BGP_TABLE_QP_ROUTE, &pk.filter);
     db_filter_clear(&pk);
 
     if (rows < 0)
     {
-        LOG_ERROR("BGP 删除 AF 下 QP routes vrf=%u afi=%u safi=%u 失败", vrf_id, (unsigned)afi, (unsigned)safi);
+        LOG_ERROR("BGP 删除 AF 下 QP routes vrf=%s afi=%u safi=%u 失败", vrf_name, (unsigned)afi, (unsigned)safi);
         return -1;
     }
 
-    LOG_INFO("BGP 删除 AF 下 QP routes vrf=%u afi=%u safi=%u，影响行数: %d", vrf_id, (unsigned)afi, (unsigned)safi,
+    LOG_INFO("BGP 删除 AF 下 QP routes vrf=%s afi=%u safi=%u，影响行数: %d", vrf_name, (unsigned)afi, (unsigned)safi,
              rows);
     return rows;
 }
@@ -149,7 +154,7 @@ void bgp_db_restore_qp_routes(void)
     for (uint32_t i = 0; i < result->num_rows; i++)
     {
         db_row_t *row = result->rows[i];
-        uint32_t vrf_id = (uint32_t)db_row_get_int(row, "vrf_id", BGP_VRF_PUBLIC_ID);
+        const char *vrf_name = db_row_get_text(row, "vrf_name", VRF_PUBLIC_VRF_NAME);
         bgp_afi_t afi = (bgp_afi_t)db_row_get_int(row, "afi", 0);
         bgp_safi_t safi = (bgp_safi_t)db_row_get_int(row, "safi", 0);
         uint32_t start_dqpn = (uint32_t)db_row_get_int(row, "start_dqpn", 0);
@@ -167,7 +172,7 @@ void bgp_db_restore_qp_routes(void)
         memset(&apply, 0, sizeof(apply));
         apply.group_id = BGP_CLI_GROUP_ID_QP_ROUTE;
         apply.isNo = false;
-        apply.vrf_id = vrf_id;
+        snprintf(apply.vrf_name, sizeof(apply.vrf_name), "%s", vrf_name);
         apply.u.qp_route.afi = afi;
         apply.u.qp_route.safi = safi;
         apply.u.qp_route.start_dqpn = start_dqpn;
@@ -187,12 +192,12 @@ void bgp_db_restore_qp_routes(void)
 
         if (bgp_worker_dispatch_apply(&apply) != 0 || apply.rc != BGP_APPLY_RC_OK)
         {
-            LOG_WARN("BGP restore: QP route vrf=%u afi=%u start_dqpn=%u apply failed", vrf_id, (unsigned)afi,
+            LOG_WARN("BGP restore: QP route vrf=%s afi=%u start_dqpn=%u apply failed", vrf_name, (unsigned)afi,
                      start_dqpn);
             continue;
         }
 
-        LOG_INFO("BGP restore: QP route vrf=%u afi=%u start_dqpn=%u count=%u restored", vrf_id, (unsigned)afi,
+        LOG_INFO("BGP restore: QP route vrf=%s afi=%u start_dqpn=%u count=%u restored", vrf_name, (unsigned)afi,
                  start_dqpn, count);
     }
 

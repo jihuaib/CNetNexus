@@ -1,6 +1,6 @@
 /**
  * @file   vrf_cfg_apply.h
- * @brief  VRF 配置应用（worker 线程）：内存表 + DB 持久化 + 事件发布
+ * @brief  VRF 配置应用（worker 线程）：内存表 + 事件发布
  * @author jhb
  * @date   2026/05/02
  */
@@ -10,6 +10,10 @@
 #include <stdint.h>
 
 #include "vrf.h"
+
+#define VRF_APPLY_RC_OK 0
+#define VRF_APPLY_RC_NOOP 1
+#define VRF_APPLY_RC_FAIL -1
 
 /**
  * @brief 配置应用操作类型
@@ -52,11 +56,12 @@ typedef struct vrf_apply_cmd
 
     vrf_rd_t rd;
     vrf_rt_t rt;
+    char errmsg[256]; /**< 失败时的错误描述 */
 } vrf_apply_cmd_t;
 
 /**
  * @brief 在 worker 线程中执行配置应用
- * @return 0 成功，-1 失败
+ * @return VRF_APPLY_RC_OK 成功应用，VRF_APPLY_RC_NOOP 无变更，VRF_APPLY_RC_FAIL 失败
  */
 int vrf_cfg_apply(vrf_apply_cmd_t *cmd);
 

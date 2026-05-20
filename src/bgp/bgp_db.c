@@ -18,6 +18,7 @@
 #include "db/bgp_db_internal.h"
 #include "errcode.h"
 #include "log.h"
+#include "vrf.h"
 
 // ============================================================================
 // 启动恢复
@@ -98,19 +99,19 @@ int bgp_db_init(void)
 
     /* 默认公网 VRF 行：保证后续 router-id/timers/connect-retry 走纯 UPDATE 路径都能命中 */
     db_filter_builder_t pk;
-    bgp_db_vrf_pk(&pk, BGP_VRF_PUBLIC_ID);
+    bgp_db_vrf_pk(&pk, VRF_PUBLIC_VRF_NAME);
     gboolean exists = FALSE;
     int rc = db_rpc_exists(ctx, BGP_TABLE_VRF, &pk.filter, &exists);
     db_filter_clear(&pk);
     if (rc == ERRCODE_SUCCESS && !exists)
     {
-        db_col_t cols[] = {DB_COL_INT("vrf_id", BGP_VRF_PUBLIC_ID)};
+        db_col_t cols[] = {DB_COL_TEXT("vrf_name", VRF_PUBLIC_VRF_NAME)};
         if (db_rpc_insert_cols(ctx, BGP_TABLE_VRF, cols, G_N_ELEMENTS(cols)) != ERRCODE_SUCCESS)
         {
-            LOG_ERROR("BGP failed to seed default VRF row vrf_id=%u", BGP_VRF_PUBLIC_ID);
+            LOG_ERROR("BGP failed to seed default VRF row vrf=%s", VRF_PUBLIC_VRF_NAME);
             return -1;
         }
-        LOG_INFO("BGP default VRF %u row seeded", BGP_VRF_PUBLIC_ID);
+        LOG_INFO("BGP default VRF %s row seeded", VRF_PUBLIC_VRF_NAME);
     }
 
     return 0;
@@ -166,8 +167,8 @@ static void write_defaults(void)
     if (table_is_empty(BGP_TABLE_VRF))
     {
         LOG_INFO("BGP %s table empty, writing default VRF timers", BGP_TABLE_VRF);
-        bgp_db_set_vrf_timers(BGP_VRF_PUBLIC_ID, BGP_TIMER_DEFAULT_KEEPALIVE, BGP_TIMER_DEFAULT_HOLD);
-        bgp_db_set_vrf_connect_retry(BGP_VRF_PUBLIC_ID, BGP_TIMER_DEFAULT_CONNECT_RETRY);
+        bgp_db_set_vrf_timers(VRF_PUBLIC_VRF_NAME, BGP_TIMER_DEFAULT_KEEPALIVE, BGP_TIMER_DEFAULT_HOLD);
+        bgp_db_set_vrf_connect_retry(VRF_PUBLIC_VRF_NAME, BGP_TIMER_DEFAULT_CONNECT_RETRY);
     }
 }
 

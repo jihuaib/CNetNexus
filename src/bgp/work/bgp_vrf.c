@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "bgp_calc.h"
+#include "bgp_conn.h"
 #include "bgp_rd.h"
 #include "bgp_rib.h"
 #include "bgp_update_group.h"
@@ -50,6 +51,8 @@ bgp_vrf_t *bgp_vrf_create(uint32_t vrf_id)
     vrf->keepalive = BGP_TIMER_DEFAULT_KEEPALIVE;
     vrf->hold_time = BGP_TIMER_DEFAULT_HOLD;
     vrf->connect_retry = BGP_TIMER_DEFAULT_CONNECT_RETRY;
+    vrf->listen_fd = -1;
+    vrf->listen_fd_v6 = -1;
     /* sess_hash: key = net_addr_t*（堆分配，g_free 释放），value = bgp_session_t*（负责销毁） */
     vrf->sess_hash =
         g_hash_table_new_full(net_addr_hash, net_addr_hash_equal, g_free, (GDestroyNotify)bgp_session_destroy);
@@ -72,6 +75,7 @@ void bgp_vrf_destroy(bgp_vrf_t *vrf)
         g_hash_table_destroy(vrf->inst_hash);
         vrf->inst_hash = NULL;
     }
+    bgp_listen_stop_vrf(vrf);
     if (vrf->sess_hash)
     {
         g_hash_table_destroy(vrf->sess_hash);

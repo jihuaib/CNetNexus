@@ -14,14 +14,17 @@
 #include "errcode.h"
 #include "log.h"
 #include "net_addr.h"
+#include "vrf.h"
 
 // ============================================================================
 // 表 schema
 // ============================================================================
 
 static const db_column_def_t BGP_NEIGHBOR_COLS[] = {
-    {"vrf_id", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},       {"afi", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
-    {"safi", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},        {"neighbor_ip", DB_TYPE_TEXT, DB_COL_NOT_NULL, NULL},
+    {"vrf_name", DB_TYPE_TEXT, DB_COL_NOT_NULL, VRF_PUBLIC_VRF_NAME},
+    {"afi", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
+    {"safi", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
+    {"neighbor_ip", DB_TYPE_TEXT, DB_COL_NOT_NULL, NULL},
     {"is_rr_client", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"}, /* RFC 4456: 1=RR 客户端 */
 };
 
@@ -35,16 +38,16 @@ const db_table_def_t BGP_NEIGHBOR_TABLE = {
 // CRUD
 // ============================================================================
 
-int bgp_db_set_neighbor(uint32_t vrf_id, const char *neighbor_ip, bgp_afi_t afi, bgp_safi_t safi)
+int bgp_db_set_neighbor(const char *vrf_name, const char *neighbor_ip, bgp_afi_t afi, bgp_safi_t safi)
 {
     dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
-    if (!ctx || !neighbor_ip)
+    if (!ctx || !vrf_name || !neighbor_ip)
     {
         return -1;
     }
 
     db_filter_builder_t pk;
-    bgp_db_neighbor_pk(&pk, vrf_id, afi, safi, neighbor_ip);
+    bgp_db_neighbor_pk(&pk, vrf_name, afi, safi, neighbor_ip);
 
     /* neighbor 记录 4 列联合为键，存在即幂等 */
     gboolean exists = FALSE;
@@ -58,13 +61,13 @@ int bgp_db_set_neighbor(uint32_t vrf_id, const char *neighbor_ip, bgp_afi_t afi,
     }
     if (exists)
     {
-        LOG_INFO("BGP neighbor vrf=%u %s afi=%u safi=%u already exists", vrf_id, neighbor_ip, (unsigned)afi,
+        LOG_INFO("BGP neighbor vrf=%s %s afi=%u safi=%u already exists", vrf_name, neighbor_ip, (unsigned)afi,
                  (unsigned)safi);
         return 0;
     }
 
     db_col_t cols[] = {
-        DB_COL_INT("vrf_id", vrf_id),
+        DB_COL_TEXT("vrf_name", vrf_name),
         DB_COL_INT("afi", afi),
         DB_COL_INT("safi", safi),
         DB_COL_TEXT("neighbor_ip", neighbor_ip),
@@ -72,25 +75,25 @@ int bgp_db_set_neighbor(uint32_t vrf_id, const char *neighbor_ip, bgp_afi_t afi,
     ret = db_rpc_insert_cols(ctx, BGP_TABLE_NEIGHBOR, cols, G_N_ELEMENTS(cols));
     if (ret != ERRCODE_SUCCESS)
     {
-        LOG_ERROR("BGP failed to insert neighbor vrf=%u %s afi=%u safi=%u", vrf_id, neighbor_ip, (unsigned)afi,
+        LOG_ERROR("BGP failed to insert neighbor vrf=%s %s afi=%u safi=%u", vrf_name, neighbor_ip, (unsigned)afi,
                   (unsigned)safi);
         return -1;
     }
 
-    LOG_INFO("BGP neighbor vrf=%u %s afi=%u safi=%u enabled", vrf_id, neighbor_ip, (unsigned)afi, (unsigned)safi);
+    LOG_INFO("BGP neighbor vrf=%s %s afi=%u safi=%u enabled", vrf_name, neighbor_ip, (unsigned)afi, (unsigned)safi);
     return 0;
 }
 
-int bgp_db_del_neighbor(uint32_t vrf_id, const char *neighbor_ip, bgp_afi_t afi, bgp_safi_t safi)
+int bgp_db_del_neighbor(const char *vrf_name, const char *neighbor_ip, bgp_afi_t afi, bgp_safi_t safi)
 {
     dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
-    if (!ctx || !neighbor_ip)
+    if (!ctx || !vrf_name || !neighbor_ip)
     {
         return -1;
     }
 
     db_filter_builder_t pk;
-    bgp_db_neighbor_pk(&pk, vrf_id, afi, safi, neighbor_ip);
+    bgp_db_neighbor_pk(&pk, vrf_name, afi, safi, neighbor_ip);
 
     int rows = db_rpc_delete(ctx, BGP_TABLE_NEIGHBOR, &pk.filter);
     db_filter_clear(&pk);
@@ -101,21 +104,21 @@ int bgp_db_del_neighbor(uint32_t vrf_id, const char *neighbor_ip, bgp_afi_t afi,
         return -1;
     }
 
-    LOG_INFO("BGP deleted neighbor vrf=%u %s afi=%u safi=%u, affected rows: %d", vrf_id, neighbor_ip, (unsigned)afi,
+    LOG_INFO("BGP deleted neighbor vrf=%s %s afi=%u safi=%u, affected rows: %d", vrf_name, neighbor_ip, (unsigned)afi,
              (unsigned)safi, rows);
     return rows;
 }
 
-int bgp_db_set_neighbor_rr_client(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi, const char *neighbor_ip,
+int bgp_db_set_neighbor_rr_client(const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi, const char *neighbor_ip,
                                   bool is_client)
 {
     dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
-    if (!ctx || !neighbor_ip)
+    if (!ctx || !vrf_name || !neighbor_ip)
     {
         return -1;
     }
     db_filter_builder_t pk;
-    bgp_db_neighbor_pk(&pk, vrf_id, afi, safi, neighbor_ip);
+    bgp_db_neighbor_pk(&pk, vrf_name, afi, safi, neighbor_ip);
     db_col_t cols[] = {
         DB_COL_INT("is_rr_client", is_client ? 1 : 0),
     };
@@ -123,36 +126,36 @@ int bgp_db_set_neighbor_rr_client(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t saf
     db_filter_clear(&pk);
     if (rows <= 0)
     {
-        LOG_ERROR("BGP failed to write neighbor rr-client vrf=%u %s afi=%u safi=%u", vrf_id, neighbor_ip, (unsigned)afi,
-                  (unsigned)safi);
+        LOG_ERROR("BGP failed to write neighbor rr-client vrf=%s %s afi=%u safi=%u", vrf_name, neighbor_ip,
+                  (unsigned)afi, (unsigned)safi);
         return -1;
     }
-    LOG_INFO("BGP neighbor vrf=%u %s afi=%u safi=%u rr-client=%d written", vrf_id, neighbor_ip, (unsigned)afi,
+    LOG_INFO("BGP neighbor vrf=%s %s afi=%u safi=%u rr-client=%d written", vrf_name, neighbor_ip, (unsigned)afi,
              (unsigned)safi, is_client ? 1 : 0);
     return 0;
 }
 
-int bgp_db_del_neighbors_by_afi(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi)
+int bgp_db_del_neighbors_by_afi(const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi)
 {
     dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
-    if (!ctx)
+    if (!ctx || !vrf_name)
     {
         return -1;
     }
 
     db_filter_builder_t pk;
-    bgp_db_instance_pk(&pk, vrf_id, afi, safi);
+    bgp_db_instance_pk(&pk, vrf_name, afi, safi);
 
     int rows = db_rpc_delete(ctx, BGP_TABLE_NEIGHBOR, &pk.filter);
     db_filter_clear(&pk);
 
     if (rows < 0)
     {
-        LOG_ERROR("BGP failed to batch delete neighbor vrf=%u afi=%u safi=%u", vrf_id, (unsigned)afi, (unsigned)safi);
+        LOG_ERROR("BGP failed to batch delete neighbor vrf=%s afi=%u safi=%u", vrf_name, (unsigned)afi, (unsigned)safi);
         return -1;
     }
 
-    LOG_INFO("BGP batch deleted neighbor vrf=%u afi=%u safi=%u, affected rows: %d", vrf_id, (unsigned)afi,
+    LOG_INFO("BGP batch deleted neighbor vrf=%s afi=%u safi=%u, affected rows: %d", vrf_name, (unsigned)afi,
              (unsigned)safi, rows);
     return rows;
 }
@@ -181,7 +184,7 @@ void bgp_db_restore_neighbors(void)
         const char *nb_ip = db_row_get_text(row, "neighbor_ip", NULL);
         bgp_afi_t afi = (bgp_afi_t)db_row_get_int(row, "afi", 0);
         bgp_safi_t safi = (bgp_safi_t)db_row_get_int(row, "safi", 0);
-        uint32_t vrf_id = (uint32_t)db_row_get_int(row, "vrf_id", BGP_VRF_PUBLIC_ID);
+        const char *vrf_name = db_row_get_text(row, "vrf_name", VRF_PUBLIC_VRF_NAME);
 
         if (!nb_ip)
         {
@@ -199,7 +202,7 @@ void bgp_db_restore_neighbors(void)
         memset(&apply, 0, sizeof(apply));
         apply.group_id = BGP_CLI_GROUP_ID_AF_NEIGHBOR;
         apply.isNo = false;
-        apply.vrf_id = vrf_id;
+        snprintf(apply.vrf_name, sizeof(apply.vrf_name), "%s", vrf_name);
         apply.u.af_neighbor.afi = afi;
         apply.u.af_neighbor.safi = safi;
         apply.u.af_neighbor.addr = nb_addr;
@@ -212,12 +215,12 @@ void bgp_db_restore_neighbors(void)
             memset(&rr, 0, sizeof(rr));
             rr.group_id = BGP_CLI_GROUP_ID_REFLECT_CLIENT;
             rr.isNo = false;
-            rr.vrf_id = vrf_id;
+            snprintf(rr.vrf_name, sizeof(rr.vrf_name), "%s", vrf_name);
             rr.u.reflect_client.afi = afi;
             rr.u.reflect_client.safi = safi;
             rr.u.reflect_client.addr = nb_addr;
             (void)bgp_worker_dispatch_apply(&rr);
-            LOG_INFO("BGP restore: VRF %u %s afi=%u safi=%u reflect-client", vrf_id, nb_ip, (unsigned)afi,
+            LOG_INFO("BGP restore: VRF %s %s afi=%u safi=%u reflect-client", vrf_name, nb_ip, (unsigned)afi,
                      (unsigned)safi);
         }
     }

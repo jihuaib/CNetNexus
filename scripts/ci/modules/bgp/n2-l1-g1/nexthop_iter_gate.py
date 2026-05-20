@@ -151,7 +151,7 @@ def _cleanup_case_config_ipv4(rt: TopologyRuntime, *, r1_peer_ip: str, r2_peer_i
         strict=False,
         commands=[
             "config",
-            f"no route ipv4 {NH_UNRESOLVED_V4} {NH_MASK_V4} {r1_peer_ip}",
+            f"no route static ipv4 {NH_UNRESOLVED_V4} {NH_MASK_V4} {r1_peer_ip}",
             "no bgp",
             "end",
         ],
@@ -162,8 +162,8 @@ def _cleanup_case_config_ipv4(rt: TopologyRuntime, *, r1_peer_ip: str, r2_peer_i
         strict=False,
         commands=[
             "config",
-            f"no route ipv4 {PFX_ADDR_V4} {PFX_MASK_V4} {NH_UNRESOLVED_V4}",
-            f"no route ipv4 {NH_UNRESOLVED_V4} {NH_MASK_V4} {r2_peer_ip}",
+            f"no route static ipv4 {PFX_ADDR_V4} {PFX_MASK_V4} {NH_UNRESOLVED_V4}",
+            f"no route static ipv4 {NH_UNRESOLVED_V4} {NH_MASK_V4} {r2_peer_ip}",
             "no bgp",
             "end",
         ],
@@ -178,7 +178,7 @@ def _cleanup_case_config_ipv6(rt: TopologyRuntime, *, r1_peer_ip6: str, r2_peer_
         strict=False,
         commands=[
             "config",
-            f"no route ipv6 {NH_UNRESOLVED_V6} {NH_MASK_V6} {r1_peer_ip6}",
+            f"no route static ipv6 {NH_UNRESOLVED_V6} {NH_MASK_V6} {r1_peer_ip6}",
             "no bgp",
             "end",
         ],
@@ -189,8 +189,8 @@ def _cleanup_case_config_ipv6(rt: TopologyRuntime, *, r1_peer_ip6: str, r2_peer_
         strict=False,
         commands=[
             "config",
-            f"no route ipv6 {PFX_ADDR_V6} {PFX_MASK_V6} {NH_UNRESOLVED_V6}",
-            f"no route ipv6 {NH_UNRESOLVED_V6} {NH_MASK_V6} {r2_peer_ip6}",
+            f"no route static ipv6 {PFX_ADDR_V6} {PFX_MASK_V6} {NH_UNRESOLVED_V6}",
+            f"no route static ipv6 {NH_UNRESOLVED_V6} {NH_MASK_V6} {r2_peer_ip6}",
             "no bgp",
             "end",
         ],
@@ -260,7 +260,7 @@ def _run_ipv4(rt: TopologyRuntime, *, r1_peer_ip: str, r2_peer_ip: str) -> None:
         strict=False,
         commands=[
             "config",
-            f"route ipv4 {NH_UNRESOLVED_V4} {NH_MASK_V4} {r2_peer_ip}",
+            f"route static ipv4 {NH_UNRESOLVED_V4} {NH_MASK_V4} {r2_peer_ip}",
             "end",
         ],
     )
@@ -272,7 +272,7 @@ def _run_ipv4(rt: TopologyRuntime, *, r1_peer_ip: str, r2_peer_ip: str) -> None:
         strict=False,
         commands=[
             "config",
-            f"route ipv4 {PFX_ADDR_V4} {PFX_MASK_V4} {NH_UNRESOLVED_V4}",
+            f"route static ipv4 {PFX_ADDR_V4} {PFX_MASK_V4} {NH_UNRESOLVED_V4}",
             "end",
         ],
     )
@@ -318,7 +318,7 @@ def _run_ipv4(rt: TopologyRuntime, *, r1_peer_ip: str, r2_peer_ip: str) -> None:
         strict=False,
         commands=[
             "config",
-            f"no route ipv4 {NH_UNRESOLVED_V4} {NH_MASK_V4} {r2_peer_ip}",
+            f"no route static ipv4 {NH_UNRESOLVED_V4} {NH_MASK_V4} {r2_peer_ip}",
             "end",
         ],
     )
@@ -340,7 +340,7 @@ def _run_ipv4(rt: TopologyRuntime, *, r1_peer_ip: str, r2_peer_ip: str) -> None:
         strict=False,
         commands=[
             "config",
-            f"route ipv4 {NH_UNRESOLVED_V4} {NH_MASK_V4} {r2_peer_ip}",
+            f"route static ipv4 {NH_UNRESOLVED_V4} {NH_MASK_V4} {r2_peer_ip}",
             "end",
         ],
     )
@@ -429,7 +429,7 @@ def _run_ipv6(rt: TopologyRuntime, *, r1_peer_ip6: str, r2_peer_ip6: str) -> Non
         strict=False,
         commands=[
             "config",
-            f"route ipv6 {NH_UNRESOLVED_V6} {NH_MASK_V6} {r2_peer_ip6}",
+            f"route static ipv6 {NH_UNRESOLVED_V6} {NH_MASK_V6} {r2_peer_ip6}",
             "end",
         ],
     )
@@ -441,7 +441,7 @@ def _run_ipv6(rt: TopologyRuntime, *, r1_peer_ip6: str, r2_peer_ip6: str) -> Non
         strict=False,
         commands=[
             "config",
-            f"route ipv6 {PFX_ADDR_V6} {PFX_MASK_V6} {NH_UNRESOLVED_V6}",
+            f"route static ipv6 {PFX_ADDR_V6} {PFX_MASK_V6} {NH_UNRESOLVED_V6}",
             "end",
         ],
     )
@@ -487,7 +487,7 @@ def _run_ipv6(rt: TopologyRuntime, *, r1_peer_ip6: str, r2_peer_ip6: str) -> Non
         strict=False,
         commands=[
             "config",
-            f"no route ipv6 {NH_UNRESOLVED_V6} {NH_MASK_V6} {r2_peer_ip6}",
+            f"no route static ipv6 {NH_UNRESOLVED_V6} {NH_MASK_V6} {r2_peer_ip6}",
             "end",
         ],
     )
@@ -509,7 +509,7 @@ def _run_ipv6(rt: TopologyRuntime, *, r1_peer_ip6: str, r2_peer_ip6: str) -> Non
         strict=False,
         commands=[
             "config",
-            f"route ipv6 {NH_UNRESOLVED_V6} {NH_MASK_V6} {r2_peer_ip6}",
+            f"route static ipv6 {NH_UNRESOLVED_V6} {NH_MASK_V6} {r2_peer_ip6}",
             "end",
         ],
     )

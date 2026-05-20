@@ -8,42 +8,42 @@
 #include "bgp_db_internal.h"
 #include "log.h"
 
-void bgp_db_session_pk(db_filter_builder_t *pk, uint32_t vrf_id, const char *neighbor_ip)
+void bgp_db_session_pk(db_filter_builder_t *pk, const char *vrf_name, const char *neighbor_ip)
 {
     db_filter_init(pk);
+    db_filter_add_text(pk, "vrf_name", vrf_name);
     db_filter_add_text(pk, "neighbor_ip", neighbor_ip);
-    db_filter_add_int(pk, "vrf_id", (int64_t)vrf_id);
 }
 
-void bgp_db_neighbor_pk(db_filter_builder_t *pk, uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi,
+void bgp_db_neighbor_pk(db_filter_builder_t *pk, const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi,
                         const char *neighbor_ip)
 {
     db_filter_init(pk);
-    db_filter_add_int(pk, "vrf_id", (int64_t)vrf_id);
+    db_filter_add_text(pk, "vrf_name", vrf_name);
     db_filter_add_int(pk, "afi", (int64_t)afi);
     db_filter_add_int(pk, "safi", (int64_t)safi);
     db_filter_add_text(pk, "neighbor_ip", neighbor_ip);
 }
 
-void bgp_db_vrf_pk(db_filter_builder_t *pk, uint32_t vrf_id)
+void bgp_db_vrf_pk(db_filter_builder_t *pk, const char *vrf_name)
 {
     db_filter_init(pk);
-    db_filter_add_int(pk, "vrf_id", (int64_t)vrf_id);
+    db_filter_add_text(pk, "vrf_name", vrf_name);
 }
 
-void bgp_db_instance_pk(db_filter_builder_t *pk, uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi)
+void bgp_db_instance_pk(db_filter_builder_t *pk, const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi)
 {
     db_filter_init(pk);
-    db_filter_add_int(pk, "vrf_id", (int64_t)vrf_id);
+    db_filter_add_text(pk, "vrf_name", vrf_name);
     db_filter_add_int(pk, "afi", (int64_t)afi);
     db_filter_add_int(pk, "safi", (int64_t)safi);
 }
 
-void bgp_db_qp_route_pk(db_filter_builder_t *pk, uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi, uint32_t start_dqpn,
-                        uint32_t count, const char *prefix_addr, uint8_t mask_len, const char *bid)
+void bgp_db_qp_route_pk(db_filter_builder_t *pk, const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi,
+                        uint32_t start_dqpn, uint32_t count, const char *prefix_addr, uint8_t mask_len, const char *bid)
 {
     db_filter_init(pk);
-    db_filter_add_int(pk, "vrf_id", (int64_t)vrf_id);
+    db_filter_add_text(pk, "vrf_name", vrf_name);
     db_filter_add_int(pk, "afi", (int64_t)afi);
     db_filter_add_int(pk, "safi", (int64_t)safi);
     db_filter_add_int(pk, "start_dqpn", (int64_t)start_dqpn);

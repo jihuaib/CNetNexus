@@ -235,7 +235,7 @@ def _verify_one_direction(
         strict=False,
         commands=[
             "config",
-            f"route ipv4 {prefix_addr} {mask} {sender_nh4}",
+            f"route static ipv4 {prefix_addr} {mask} {sender_nh4}",
             "end",
         ],
     )
@@ -273,7 +273,7 @@ def _cleanup(rt: TopologyRuntime) -> None:
         strict=False,
         commands=[
             "config",
-            f"no route ipv4 {R1_IPV4_PREFIX_ADDR} {R1_IPV4_MASK} {g_top.r1.GE_1.peer_ip}",
+            f"no route static ipv4 {R1_IPV4_PREFIX_ADDR} {R1_IPV4_MASK} {g_top.r1.GE_1.peer_ip}",
             "no bgp",
             "end",
         ],
@@ -284,7 +284,7 @@ def _cleanup(rt: TopologyRuntime) -> None:
         strict=False,
         commands=[
             "config",
-            f"no route ipv4 {R2_IPV4_PREFIX_ADDR} {R2_IPV4_MASK} {g_top.r2.GE_1.peer_ip}",
+            f"no route static ipv4 {R2_IPV4_PREFIX_ADDR} {R2_IPV4_MASK} {g_top.r2.GE_1.peer_ip}",
             "no bgp",
             "end",
         ],

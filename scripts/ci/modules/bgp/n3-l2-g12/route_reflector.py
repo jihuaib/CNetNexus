@@ -63,8 +63,8 @@ def _cleanup(rt: TopologyRuntime, *, r1_nh4: str, r1_nh6: str) -> None:
         strict=False,
         commands=[
             "config",
-            f"no route ipv4 {V4_PREFIX_ADDR} {V4_PREFIX_LEN} {r1_nh4}",
-            f"no route ipv6 {V6_PREFIX_ADDR} {V6_PREFIX_LEN} {r1_nh6}",
+            f"no route static ipv4 {V4_PREFIX_ADDR} {V4_PREFIX_LEN} {r1_nh4}",
+            f"no route static ipv6 {V6_PREFIX_ADDR} {V6_PREFIX_LEN} {r1_nh6}",
             "no bgp",
             "end",
         ],
@@ -224,8 +224,8 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             rt=rt, device="r1",
             commands=[
                 "config",
-                f"route ipv4 {V4_PREFIX_ADDR} {V4_PREFIX_LEN} {r1_peer_v4}",
-                f"route ipv6 {V6_PREFIX_ADDR} {V6_PREFIX_LEN} {r1_peer_v6}",
+                f"route static ipv4 {V4_PREFIX_ADDR} {V4_PREFIX_LEN} {r1_peer_v4}",
+                f"route static ipv6 {V6_PREFIX_ADDR} {V6_PREFIX_LEN} {r1_peer_v6}",
                 "end",
             ],
         )

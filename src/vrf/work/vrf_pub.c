@@ -173,40 +173,48 @@ void vrf_pub_notify_af_disable(const vrf_entry_t *e, uint16_t afi, uint8_t safi)
     }
 }
 
-void vrf_pub_notify_af_rd(const vrf_entry_t *e, const vrf_af_state_t *af)
+void vrf_pub_notify_af_rd_add(const vrf_entry_t *e, const vrf_af_state_t *af)
 {
-    if (e && af)
+    if (e && af && af->has_rd)
     {
-        notify_all(VRF_EVENT_AF_RD_CHANGE, e, af->afi, af->safi, af, NULL, 0);
+        notify_all(VRF_EVENT_AF_RD_ADD, e, af->afi, af->safi, af, NULL, 0);
     }
 }
 
-static void notify_rt(uint32_t event, const vrf_entry_t *e, const vrf_af_state_t *af, const GArray *rts)
+void vrf_pub_notify_af_rd_del(const vrf_entry_t *e, uint16_t afi, uint8_t safi)
 {
-    const vrf_rt_t *base = NULL;
-    uint16_t count = 0;
-    if (rts && rts->len > 0)
+    if (e)
     {
-        base = (const vrf_rt_t *)rts->data;
-        count = (uint16_t)rts->len;
-    }
-    notify_all(event, e, af->afi, af->safi, af, base, count);
-}
-
-void vrf_pub_notify_af_import_rt(const vrf_entry_t *e, const vrf_af_state_t *af)
-{
-    if (e && af)
-    {
-        notify_rt(VRF_EVENT_AF_IMPORT_RT_CHG, e, af, af->import_rts);
+        notify_all(VRF_EVENT_AF_RD_DEL, e, afi, safi, NULL, NULL, 0);
     }
 }
 
-void vrf_pub_notify_af_export_rt(const vrf_entry_t *e, const vrf_af_state_t *af)
+static void notify_rt_one(uint32_t event, const vrf_entry_t *e, const vrf_af_state_t *af, const vrf_rt_t *rt)
 {
-    if (e && af)
+    if (e && af && rt)
     {
-        notify_rt(VRF_EVENT_AF_EXPORT_RT_CHG, e, af, af->export_rts);
+        notify_all(event, e, af->afi, af->safi, af, rt, 1);
     }
+}
+
+void vrf_pub_notify_af_import_rt_add(const vrf_entry_t *e, const vrf_af_state_t *af, const vrf_rt_t *rt)
+{
+    notify_rt_one(VRF_EVENT_AF_IMPORT_RT_ADD, e, af, rt);
+}
+
+void vrf_pub_notify_af_import_rt_del(const vrf_entry_t *e, const vrf_af_state_t *af, const vrf_rt_t *rt)
+{
+    notify_rt_one(VRF_EVENT_AF_IMPORT_RT_DEL, e, af, rt);
+}
+
+void vrf_pub_notify_af_export_rt_add(const vrf_entry_t *e, const vrf_af_state_t *af, const vrf_rt_t *rt)
+{
+    notify_rt_one(VRF_EVENT_AF_EXPORT_RT_ADD, e, af, rt);
+}
+
+void vrf_pub_notify_af_export_rt_del(const vrf_entry_t *e, const vrf_af_state_t *af, const vrf_rt_t *rt)
+{
+    notify_rt_one(VRF_EVENT_AF_EXPORT_RT_DEL, e, af, rt);
 }
 
 // ============================================================================
@@ -236,17 +244,23 @@ static void replay_af(uint32_t module_id, uint32_t event_mask, uint32_t af_mask,
     replay_one(module_id, event_mask, af_mask, VRF_EVENT_AF_ENABLE, e, af->afi, af->safi, af, NULL, 0);
     if (af->has_rd)
     {
-        replay_one(module_id, event_mask, af_mask, VRF_EVENT_AF_RD_CHANGE, e, af->afi, af->safi, af, NULL, 0);
+        replay_one(module_id, event_mask, af_mask, VRF_EVENT_AF_RD_ADD, e, af->afi, af->safi, af, NULL, 0);
     }
     if (af->import_rts && af->import_rts->len > 0)
     {
-        replay_one(module_id, event_mask, af_mask, VRF_EVENT_AF_IMPORT_RT_CHG, e, af->afi, af->safi, af,
-                   (const vrf_rt_t *)af->import_rts->data, (uint16_t)af->import_rts->len);
+        for (guint i = 0; i < af->import_rts->len; i++)
+        {
+            const vrf_rt_t *rt = &g_array_index(af->import_rts, vrf_rt_t, i);
+            replay_one(module_id, event_mask, af_mask, VRF_EVENT_AF_IMPORT_RT_ADD, e, af->afi, af->safi, af, rt, 1);
+        }
     }
     if (af->export_rts && af->export_rts->len > 0)
     {
-        replay_one(module_id, event_mask, af_mask, VRF_EVENT_AF_EXPORT_RT_CHG, e, af->afi, af->safi, af,
-                   (const vrf_rt_t *)af->export_rts->data, (uint16_t)af->export_rts->len);
+        for (guint i = 0; i < af->export_rts->len; i++)
+        {
+            const vrf_rt_t *rt = &g_array_index(af->export_rts, vrf_rt_t, i);
+            replay_one(module_id, event_mask, af_mask, VRF_EVENT_AF_EXPORT_RT_ADD, e, af->afi, af->safi, af, rt, 1);
+        }
     }
 }
 

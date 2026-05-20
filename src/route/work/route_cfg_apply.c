@@ -179,6 +179,14 @@ void route_cfg_apply_static(route_apply_cmd_t *apply)
             break;
         }
 
+        case ROUTE_APPLY_STATIC_DEL_VRF:
+        {
+            int ret = route_static_del_vrf(apply->u.static_del_vrf.vrf_id);
+            route_recompute_iter_paths();
+            apply->rc = (ret > 0) ? ret : 0;
+            break;
+        }
+
         default:
             LOG_WARN("[route_cfg_apply] 无效的静态路由操作: %d", (int)apply->op);
             apply->rc = -1;

@@ -77,6 +77,12 @@
 #define CLI_VIEW_BGP_AF_IPV6_QP "bgp-af-ipv6-qp"
 /** BGP 地址族 IPv4 labeled-unicast 视图 */
 #define CLI_VIEW_BGP_AF_IPV4_LABELED "bgp-af-ipv4-labeled"
+/** BGP VRF 配置视图 */
+#define CLI_VIEW_BGP_VRF "bgp-vrf"
+/** BGP VRF IPv4 单播地址族视图 */
+#define CLI_VIEW_BGP_VRF_AF_IPV4 "bgp-vrf-af-ipv4-uni"
+/** BGP VRF IPv6 单播地址族视图 */
+#define CLI_VIEW_BGP_VRF_AF_IPV6 "bgp-vrf-af-ipv6-uni"
 /** BGP BMP 实例视图 */
 #define CLI_VIEW_BGP_BMP "bgp-bmp"
 /** VRF 配置视图 */

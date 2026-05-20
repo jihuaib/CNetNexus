@@ -469,8 +469,8 @@ def _cleanup_case_config(
         strict=False,
         commands=[
             "config",
-            f"no route ipv4 {IPV4_PREFIX_ADDR} {IPV4_MASK} {r2_nh4}",
-            f"no route ipv6 {IPV6_PREFIX_ADDR} {IPV6_MASK} {r2_nh6}",
+            f"no route static ipv4 {IPV4_PREFIX_ADDR} {IPV4_MASK} {r2_nh4}",
+            f"no route static ipv6 {IPV6_PREFIX_ADDR} {IPV6_MASK} {r2_nh6}",
             "no bgp",
             "end",
         ],
@@ -565,8 +565,8 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             strict=False,
             commands=[
                 "config",
-                f"route ipv4 {IPV4_PREFIX_ADDR} {IPV4_MASK} {r2_peer_v4}",
-                f"route ipv6 {IPV6_PREFIX_ADDR} {IPV6_MASK} {r2_peer_v6}",
+                f"route static ipv4 {IPV4_PREFIX_ADDR} {IPV4_MASK} {r2_peer_v4}",
+                f"route static ipv6 {IPV6_PREFIX_ADDR} {IPV6_MASK} {r2_peer_v6}",
                 "end",
             ],
         )

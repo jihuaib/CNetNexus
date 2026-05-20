@@ -13,8 +13,8 @@
  * @brief 处理一条 VRF_MSG_TYPE_EVENT 通知
  *
  * 1. 调用 vrf_api_cache_on_event() 维护本地缓存
- * 2. 联动 BGP 内部状态：RD 变更触发 bgp_protocol_ensure_rd_entry，
- *    VRF 删除等价于销毁 bgp_vrf（若已存在），RT 变更暂作 no-op 留作后续
+ * 2. 联动 BGP 内部状态：RD 新增触发 bgp_protocol_ensure_rd_entry，
+ *    RD 删除/VRF AF 删除清理 BGP VRF AF，VRF 删除等价于销毁 bgp_vrf（若已存在）
  *
  * 调用方仍持有 msg 所有权，函数不释放。
  */

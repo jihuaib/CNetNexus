@@ -26,7 +26,7 @@ def _cleanup(rt: TopologyRuntime, nn_peer_ip: str) -> None:
         strict=False,
         commands=[
             "config",
-            f"no route ipv4 {NN_PREFIX} {NN_PREFIX_LEN} {nn_peer_ip}",
+            f"no route static ipv4 {NN_PREFIX} {NN_PREFIX_LEN} {nn_peer_ip}",
             "no bgp",
             "end",
         ],
@@ -109,7 +109,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             device="r1",
             commands=[
                 "config",
-                f"route ipv4 {NN_PREFIX} {NN_PREFIX_LEN} {nn_peer_ip}",
+                f"route static ipv4 {NN_PREFIX} {NN_PREFIX_LEN} {nn_peer_ip}",
                 "end",
             ],
         )

@@ -43,8 +43,8 @@ def _cleanup_case_config(
         strict=False,
         commands=[
             "config",
-            f"no route ipv4 {R2_LOOP_V4} {HOST_MASK_V4} {r1_peer_ip}",
-            f"no route ipv6 {R2_LOOP_V6} {HOST_MASK_V6} {r1_peer_ip6}",
+            f"no route static ipv4 {R2_LOOP_V4} {HOST_MASK_V4} {r1_peer_ip}",
+            f"no route static ipv6 {R2_LOOP_V6} {HOST_MASK_V6} {r1_peer_ip6}",
             f"no if loop {R1_LOOP_ID}",
             "no bgp",
             "end",
@@ -56,8 +56,8 @@ def _cleanup_case_config(
         strict=False,
         commands=[
             "config",
-            f"no route ipv4 {R1_LOOP_V4} {HOST_MASK_V4} {r2_peer_ip}",
-            f"no route ipv6 {R1_LOOP_V6} {HOST_MASK_V6} {r2_peer_ip6}",
+            f"no route static ipv4 {R1_LOOP_V4} {HOST_MASK_V4} {r2_peer_ip}",
+            f"no route static ipv6 {R1_LOOP_V6} {HOST_MASK_V6} {r2_peer_ip6}",
             f"no if loop {R2_LOOP_ID}",
             "no bgp",
             "end",
@@ -166,8 +166,8 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             strict=False,
             commands=[
                 "config",
-                f"route ipv4 {R2_LOOP_V4} {HOST_MASK_V4} {r1_peer_ip}",
-                f"route ipv6 {R2_LOOP_V6} {HOST_MASK_V6} {r1_peer_ip6}",
+                f"route static ipv4 {R2_LOOP_V4} {HOST_MASK_V4} {r1_peer_ip}",
+                f"route static ipv6 {R2_LOOP_V6} {HOST_MASK_V6} {r1_peer_ip6}",
                 "end",
             ],
         )
@@ -177,8 +177,8 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             strict=False,
             commands=[
                 "config",
-                f"route ipv4 {R1_LOOP_V4} {HOST_MASK_V4} {r2_peer_ip}",
-                f"route ipv6 {R1_LOOP_V6} {HOST_MASK_V6} {r2_peer_ip6}",
+                f"route static ipv4 {R1_LOOP_V4} {HOST_MASK_V4} {r2_peer_ip}",
+                f"route static ipv6 {R1_LOOP_V6} {HOST_MASK_V6} {r2_peer_ip6}",
                 "end",
             ],
         )

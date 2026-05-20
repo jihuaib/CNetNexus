@@ -38,6 +38,8 @@ typedef struct bgp_vrf
     uint16_t keepalive;     /**< keepalive 定时器（秒），默认 60 */
     uint16_t hold_time;     /**< hold time（秒），默认 180，须大于 keepalive */
     uint16_t connect_retry; /**< TCP 主动连接失败后重试间隔（秒），默认 10 */
+    int listen_fd;          /**< IPv4 BGP listen socket fd，-1 表示未监听 */
+    int listen_fd_v6;       /**< IPv6 BGP listen socket fd，-1 表示未监听 */
     GHashTable *sess_hash;  /**< addr_str -> bgp_session_t*（持有所有权） */
     GHashTable *inst_hash;  /**< (afi<<16|safi) -> bgp_instance_t*（持有所有权，g_direct_hash） */
 } bgp_vrf_t;

@@ -245,6 +245,15 @@ int vrf_show_handle_show_config(dev_ipc_message_t *msg)
 
 void vrf_show_handle_query_candidates(dev_ipc_message_t *msg)
 {
+    uint32_t query_id = VRF_CANDIDATE_QUERY_ALL;
+    if (msg->payload && msg->payload_len >= sizeof(uint32_t))
+    {
+        uint32_t net_id = 0;
+        memcpy(&net_id, msg->payload, sizeof(uint32_t));
+        query_id = g_ntohl(net_id);
+    }
+    gboolean include_public = (query_id != VRF_CANDIDATE_QUERY_NON_PUBLIC);
+
     vrf_table_t *t = vrf_worker_table();
     GList *list = g_hash_table_get_values(t->by_id);
     list = g_list_sort(list, compare_vrf_by_id);
@@ -253,6 +262,10 @@ void vrf_show_handle_query_candidates(dev_ipc_message_t *msg)
     for (GList *node = list; node; node = node->next)
     {
         const vrf_entry_t *e = (const vrf_entry_t *)node->data;
+        if (!include_public && e && strcmp(e->name, VRF_PUBLIC_VRF_NAME) == 0)
+        {
+            continue;
+        }
         g_byte_array_append(buf, (const guint8 *)e->name, (guint)strlen(e->name) + 1);
     }
     g_list_free(list);

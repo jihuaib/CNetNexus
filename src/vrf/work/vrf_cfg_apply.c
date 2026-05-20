@@ -9,6 +9,7 @@
  */
 #include "vrf_cfg_apply.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "log.h"
@@ -89,15 +90,15 @@ static int apply_af_create(vrf_apply_cmd_t *cmd)
     cmd->vrf_id = e->vrf_id; /* 回传 */
     if (vrf_af_find(e, cmd->afi, cmd->safi))
     {
-        return 0;
+        return VRF_APPLY_RC_NOOP;
     }
     vrf_af_state_t *af = vrf_af_get_or_create(e, cmd->afi, cmd->safi);
     if (!af)
     {
-        return -1;
+        return VRF_APPLY_RC_FAIL;
     }
     vrf_pub_notify_af_enable(e, cmd->afi, cmd->safi);
-    return 0;
+    return VRF_APPLY_RC_OK;
 }
 
 static int apply_af_delete(vrf_apply_cmd_t *cmd)
@@ -111,7 +112,7 @@ static int apply_af_delete(vrf_apply_cmd_t *cmd)
     cmd->vrf_id = e->vrf_id; /* 回传 */
     if (!vrf_af_find(e, cmd->afi, cmd->safi))
     {
-        return 0;
+        return VRF_APPLY_RC_NOOP;
     }
     vrf_pub_notify_af_disable(e, cmd->afi, cmd->safi);
     return vrf_af_delete(e, cmd->afi, cmd->safi);
@@ -123,36 +124,101 @@ static int apply_rd_set(vrf_apply_cmd_t *cmd, int clear)
     vrf_entry_t *e = vrf_table_find_by_name(t, cmd->vrf_name);
     if (!e || e->vrf_id == VRF_PUBLIC_VRF_ID)
     {
-        return -1;
+        snprintf(cmd->errmsg, sizeof(cmd->errmsg), "VRF Error: VRF not found\r\n");
+        return VRF_APPLY_RC_FAIL;
     }
     cmd->vrf_id = e->vrf_id; /* 回传 */
-    vrf_af_state_t *af = vrf_af_get_or_create(e, cmd->afi, cmd->safi);
-    if (!af)
+    vrf_af_state_t *af = vrf_af_find(e, cmd->afi, cmd->safi);
+    if (clear)
     {
-        return -1;
+        if (!af || !af->has_rd)
+        {
+            return VRF_APPLY_RC_NOOP;
+        }
+    }
+    else
+    {
+        if (af && af->has_rd)
+        {
+            snprintf(cmd->errmsg, sizeof(cmd->errmsg), "VRF Error: RD already configured; delete it first\r\n");
+            return VRF_APPLY_RC_FAIL;
+        }
+        if (!af)
+        {
+            af = vrf_af_get_or_create(e, cmd->afi, cmd->safi);
+            if (!af)
+            {
+                snprintf(cmd->errmsg, sizeof(cmd->errmsg), "VRF Error: AF create failed\r\n");
+                return VRF_APPLY_RC_FAIL;
+            }
+        }
     }
     int rc = vrf_af_set_rd(af, clear ? NULL : &cmd->rd);
     if (rc != 0)
     {
-        return -1;
+        return VRF_APPLY_RC_FAIL;
     }
-    vrf_pub_notify_af_rd(e, af);
-    return 0;
+    if (clear)
+    {
+        vrf_pub_notify_af_rd_del(e, cmd->afi, cmd->safi);
+    }
+    else
+    {
+        vrf_pub_notify_af_rd_add(e, af);
+    }
+    return VRF_APPLY_RC_OK;
+}
+
+static gboolean rt_array_contains(const GArray *arr, const vrf_rt_t *rt)
+{
+    if (!arr || !rt)
+    {
+        return FALSE;
+    }
+    for (guint i = 0; i < arr->len; i++)
+    {
+        const vrf_rt_t *cur = &g_array_index(arr, vrf_rt_t, i);
+        if (memcmp(cur->bytes, rt->bytes, sizeof(rt->bytes)) == 0)
+        {
+            return TRUE;
+        }
+    }
+    return FALSE;
 }
 
 static int apply_rt_modify_dir(vrf_entry_t *e, vrf_af_state_t *af, vrf_apply_cmd_t *cmd, int direction)
 {
+    GArray *arr = (direction == 0) ? af->import_rts : af->export_rts;
+    gboolean existed = rt_array_contains(arr, &cmd->rt);
     if (vrf_af_modify_rt(af, direction, cmd->add ? 1 : 0, &cmd->rt) != 0)
     {
         return -1;
     }
+    if ((cmd->add && existed) || (!cmd->add && !existed))
+    {
+        return 0;
+    }
     if (direction == 0)
     {
-        vrf_pub_notify_af_import_rt(e, af);
+        if (cmd->add)
+        {
+            vrf_pub_notify_af_import_rt_add(e, af, &cmd->rt);
+        }
+        else
+        {
+            vrf_pub_notify_af_import_rt_del(e, af, &cmd->rt);
+        }
     }
     else
     {
-        vrf_pub_notify_af_export_rt(e, af);
+        if (cmd->add)
+        {
+            vrf_pub_notify_af_export_rt_add(e, af, &cmd->rt);
+        }
+        else
+        {
+            vrf_pub_notify_af_export_rt_del(e, af, &cmd->rt);
+        }
     }
     return 0;
 }

@@ -17,6 +17,7 @@
 #include "log.h"
 #include "route.h"
 #include "route_main.h"
+#include "vrf.h"
 
 static void route_bdr_send_cli_response(dev_ipc_message_t *msg, const char *text)
 {
@@ -62,6 +63,7 @@ int route_bdr_handle_show_config(dev_ipc_message_t *msg)
         const char *nexthop = db_row_get_text(row, "nexthop", NULL);
         int64_t metric = db_row_get_int(row, "metric", 0);
         const char *ifname = db_row_get_text(row, "ifname", "");
+        const char *vrf_name = db_row_get_text(row, "vrf_name", VRF_PUBLIC_VRF_NAME);
 
         if (!prefix)
         {
@@ -86,23 +88,27 @@ int route_bdr_handle_show_config(dev_ipc_message_t *msg)
         if (has_nh && has_if)
         {
             /* nexthop + interface */
-            g_string_append_printf(out, "route %s %s %ld %s interface %s", afi_str, prefix, prefix_len, nexthop,
+            g_string_append_printf(out, "route static %s %s %ld %s interface %s", afi_str, prefix, prefix_len, nexthop,
                                    ifname);
         }
         else if (has_if)
         {
             /* interface-only */
-            g_string_append_printf(out, "route %s %s %ld interface %s", afi_str, prefix, prefix_len, ifname);
+            g_string_append_printf(out, "route static %s %s %ld interface %s", afi_str, prefix, prefix_len, ifname);
         }
         else
         {
             /* 纯 nexthop */
-            g_string_append_printf(out, "route %s %s %ld %s", afi_str, prefix, prefix_len, nexthop);
+            g_string_append_printf(out, "route static %s %s %ld %s", afi_str, prefix, prefix_len, nexthop);
         }
 
         if (metric != 0)
         {
             g_string_append_printf(out, " metric %ld", metric);
+        }
+        if (vrf_name && vrf_name[0] != '\0' && strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) != 0)
+        {
+            g_string_append_printf(out, " vrf %s", vrf_name);
         }
         g_string_append(out, "\r\n");
     }

@@ -373,10 +373,15 @@ static int handle_af(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     cmd.afi = afi;
     cmd.safi = safi;
     int rc = dispatch_apply(&cmd);
-    if (rc != 0)
+    if (rc == VRF_APPLY_RC_FAIL)
     {
         send_resp(msg, is_no ? "" : "VRF Error: AF create failed\r\n");
         return is_no ? ERRCODE_SUCCESS : ERRCODE_FAIL;
+    }
+    if (rc == VRF_APPLY_RC_NOOP)
+    {
+        send_resp(msg, "");
+        return ERRCODE_SUCCESS;
     }
     if (is_no)
     {
@@ -432,10 +437,16 @@ static int handle_rd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         cmd.op = VRF_APPLY_OP_RD_SET;
     }
 
-    if (dispatch_apply(&cmd) != 0)
+    int rc = dispatch_apply(&cmd);
+    if (rc == VRF_APPLY_RC_FAIL)
     {
-        send_resp(msg, "VRF Error: RD apply failed\r\n");
+        send_resp(msg, cmd.errmsg[0] ? cmd.errmsg : "VRF Error: RD apply failed\r\n");
         return ERRCODE_FAIL;
+    }
+    if (rc == VRF_APPLY_RC_NOOP)
+    {
+        send_resp(msg, "");
+        return ERRCODE_SUCCESS;
     }
     (void)vrf_db_set_af_rd(cmd.vrf_id, cmd.afi, cmd.safi, is_no ? NULL : &cmd.rd);
     send_resp(msg, "");

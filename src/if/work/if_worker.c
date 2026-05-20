@@ -11,6 +11,7 @@
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 #include <pthread.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -293,11 +294,35 @@ static void *if_worker_thread_fn(void *arg)
                 continue;
 
             case IF_WORKER_CMD_VRF_EVENT:
+            {
+                /* 先解析事件类型 / VRF 名，再更新缓存（缓存更新后 VRF entry 可能被释放） */
+                uint32_t vrf_event = 0;
+                char vrf_name[VRF_NAME_MAX_LEN] = {0};
+                if (cmd->msg && cmd->msg->payload && cmd->msg->payload_len >= offsetof(vrf_event_msg_t, rts))
+                {
+                    const vrf_event_msg_t *evt = (const vrf_event_msg_t *)cmd->msg->payload;
+                    vrf_event = evt->event;
+                    g_strlcpy(vrf_name, evt->name, sizeof(vrf_name));
+                }
+
                 vrf_api_cache_on_event(cmd->msg);
+
+                /* 级联：VRF 删除时把所有绑定该 VRF 的接口移回 public，
+                 * 否则 IF 模块会保留 stale 的 vrf_name 状态，CLI 后续无法 no vrf forwarding。 */
+                if (vrf_event == VRF_EVENT_VRF_DEL && vrf_name[0] != '\0')
+                {
+                    int unbound = if_cfg_apply_vrf_deleted(vrf_name);
+                    if (unbound > 0)
+                    {
+                        LOG_INFO("IF: VRF '%s' deleted, cascaded unbind on %d interface(s)", vrf_name, unbound);
+                    }
+                }
+
                 dev_ipc_message_free(cmd->msg);
                 cmd->msg = NULL;
                 worker_cmd_complete(cmd, ERRCODE_SUCCESS);
                 continue;
+            }
 
             case IF_WORKER_CMD_VRF_QUERY:
                 worker_cmd_complete(cmd, worker_resolve_vrf_id_by_name(cmd->vrf_name, cmd->vrf_id_out));

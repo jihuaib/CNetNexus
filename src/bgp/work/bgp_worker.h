@@ -17,6 +17,7 @@
 #include "dev.h"
 #include "if.h"
 #include "net_addr.h"
+#include "vrf.h"
 
 typedef struct bgp_session bgp_session_t;
 
@@ -42,9 +43,6 @@ typedef struct bgp_work_local
     int epoll_fd;            /**< BGP worker epoll fd */
     int running;             /**< worker 线程运行标志 */
     pthread_t worker_thread; /**< BGP worker 线程句柄 */
-
-    int listen_fd;    /**< IPv4 0.0.0.0:179 listen socket fd，-1 表示未监听 */
-    int listen_fd_v6; /**< IPv6 [::]:179 listen socket fd，-1 表示未监听 */
 
     /* IPC worker -> BGP worker 命令投递（eventfd + queue） */
     int cmd_eventfd;         /**< 命令唤醒 eventfd，-1 表示未创建 */
@@ -86,9 +84,9 @@ typedef enum bgp_apply_rc
 typedef struct bgp_apply_cmd
 {
     /* ---- 公共字段 ---- */
-    uint32_t group_id; /**< CLI group_id（使用 BGP_CLI_GROUP_ID_*） */
-    bool isNo;         /**< 是否 no 命令 */
-    uint32_t vrf_id;   /**< VRF ID（PROTOCOL 可不填，其余必填） */
+    uint32_t group_id;               /**< CLI group_id（使用 BGP_CLI_GROUP_ID_*） */
+    bool isNo;                       /**< 是否 no 命令 */
+    char vrf_name[VRF_NAME_MAX_LEN]; /**< CLI/DB 传入的 VRF 名称上下文 */
 
     /* ---- group_id 特定输入参数（联合体，按 group_id 选择对应分支） ---- */
     union

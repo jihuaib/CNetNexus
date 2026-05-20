@@ -402,9 +402,7 @@ static void bgp_handle_retry_timer(bgp_session_t *sess)
     }
 
     /* 守卫：若邻居 AF 已删除，取消定时器并退出 */
-    bgp_protocol_t *proto = g_bgp_work_local->protocol;
-    bgp_vrf_t *vrf0 = proto ? bgp_protocol_get_vrf(proto, BGP_VRF_PUBLIC_ID) : NULL;
-    if (!vrf0 || !bgp_vrf_neighbor_has_any_af(vrf0, &sess->neighbor_addr))
+    if (!sess->vrf || !bgp_vrf_neighbor_has_any_af(sess->vrf, &sess->neighbor_addr))
     {
         bgp_session_cancel_retry(sess, g_bgp_work_local->epoll_fd);
         return;
@@ -443,14 +441,8 @@ static void *bgp_worker_thread(void *arg)
         {
             uintptr_t raw = (uintptr_t)events[i].data.ptr;
 
-            if (events[i].data.ptr == (void *)&bgp_listen_tag_v4)
+            if (bgp_listen_handle_event_ptr(events[i].data.ptr))
             {
-                bgp_conn_handle_passive_accept(g_bgp_work_local->listen_fd);
-                continue;
-            }
-            if (events[i].data.ptr == (void *)&bgp_listen_tag_v6)
-            {
-                bgp_conn_handle_passive_accept(g_bgp_work_local->listen_fd_v6);
                 continue;
             }
             if (events[i].data.ptr == (void *)&bgp_cmd_tag)
@@ -667,8 +659,6 @@ int bgp_worker_prepare(void)
             return ERRCODE_FAIL;
         }
         g_bgp_work_local->epoll_fd = DEV_INVALID_FD;
-        g_bgp_work_local->listen_fd = -1;
-        g_bgp_work_local->listen_fd_v6 = -1;
         g_bgp_work_local->cmd_eventfd = -1;
         g_bgp_work_local->work_eventfd = -1;
     }

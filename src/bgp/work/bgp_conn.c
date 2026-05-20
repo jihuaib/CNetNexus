@@ -22,13 +22,10 @@
 #include "bgp_vrf.h"
 #include "bgp_worker.h"
 #include "log.h"
+#include "vrf.h"
 
 /** BGP 协议标准端口 */
 #define BGP_PORT 179
-
-/** epoll data.ptr sentinel：区分 IPv4/IPv6 listen fd 事件与连接 fd 事件 */
-char bgp_listen_tag_v4;
-char bgp_listen_tag_v6;
 
 // ============================================================================
 // 生命周期
@@ -149,6 +146,20 @@ int bgp_conn_start_active(bgp_conn_t *conn, const net_addr_t *peer_addr, int epo
     {
         LOG_PERROR("BGP: Failed to create active connection socket");
         return -1;
+    }
+
+    /* 非 public VRF 必须 SO_BINDTODEVICE 到 L3VRF 设备，否则 connect 走主表无法到达对端 */
+    if (conn->session && conn->session->vrf && conn->session->vrf->vrf_id != BGP_VRF_PUBLIC_ID)
+    {
+        const vrf_api_cache_entry_t *vrf_entry = vrf_api_cache_lookup(conn->session->vrf->vrf_id);
+        const char *vrf_name = vrf_entry ? vrf_entry->name : NULL;
+        if (vrf_name && vrf_name[0] != '\0' &&
+            setsockopt(sock, SOL_SOCKET, SO_BINDTODEVICE, vrf_name, strlen(vrf_name) + 1) < 0)
+        {
+            LOG_PERROR("BGP: bind active socket to VRF device %s failed", vrf_name);
+            close(sock);
+            return -1;
+        }
     }
 
     if (conn->has_ttl)
@@ -340,154 +351,223 @@ void bgp_conn_flush_deferred(void)
 }
 
 // ============================================================================
-// 监听（IPv4 + IPv6）
+// 监听（per-VRF IPv4 + IPv6）
 // ============================================================================
 
-void bgp_listen_start(void)
+static const char *bgp_listen_vrf_name(const bgp_vrf_t *vrf)
 {
-    if (g_bgp_work_local->epoll_fd < 0)
+    if (!vrf || vrf->vrf_id == BGP_VRF_PUBLIC_ID)
     {
-        return;
-    }
-    if (g_bgp_work_local->listen_fd >= 0 || g_bgp_work_local->listen_fd_v6 >= 0)
-    {
-        return; /* 已在监听，幂等 */
+        return VRF_PUBLIC_VRF_NAME;
     }
 
-    int fd4 = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd4 >= 0)
-    {
-        int opt = 1;
-        (void)setsockopt(fd4, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-        (void)setsockopt(fd4, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
+    const vrf_api_cache_entry_t *entry = vrf_api_cache_lookup(vrf->vrf_id);
+    return entry ? entry->name : NULL;
+}
 
+static int bgp_listen_open_socket(bgp_vrf_t *vrf, int family, int *slot)
+{
+    if (!vrf || !slot || *slot >= 0 || !g_bgp_work_local || g_bgp_work_local->epoll_fd < 0)
+    {
+        return -1;
+    }
+
+    const char *vrf_name = bgp_listen_vrf_name(vrf);
+    if (!vrf_name)
+    {
+        LOG_WARN("BGP: skip listen for VRF %u: VRF name not in cache", vrf->vrf_id);
+        return -1;
+    }
+
+    int fd = socket(family, SOCK_STREAM, 0);
+    if (fd < 0)
+    {
+        LOG_PERROR("BGP: create listen socket failed");
+        return -1;
+    }
+
+    int opt = 1;
+    (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    (void)setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
+    if (family == AF_INET6)
+    {
+        int v6_only = 1;
+        (void)setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6_only, sizeof(v6_only));
+    }
+    if (vrf->vrf_id != BGP_VRF_PUBLIC_ID &&
+        setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, vrf_name, strlen(vrf_name) + 1) < 0)
+    {
+        LOG_PERROR("BGP: bind listen socket to VRF device %s failed", vrf_name);
+        close(fd);
+        return -1;
+    }
+
+    if (family == AF_INET)
+    {
         struct sockaddr_in addr4;
         memset(&addr4, 0, sizeof(addr4));
         addr4.sin_family = AF_INET;
         addr4.sin_addr.s_addr = INADDR_ANY;
         addr4.sin_port = htons(BGP_PORT);
-
-        if (bind(fd4, (struct sockaddr *)&addr4, sizeof(addr4)) < 0)
+        if (bind(fd, (struct sockaddr *)&addr4, sizeof(addr4)) < 0)
         {
-            LOG_PERROR("BGP: bind 0.0.0.0:179 failed");
-            close(fd4);
-            fd4 = -1;
-        }
-        else if (listen(fd4, 32) < 0)
-        {
-            LOG_PERROR("BGP: listen IPv4 failed");
-            close(fd4);
-            fd4 = -1;
-        }
-        else
-        {
-            struct epoll_event ev4;
-            memset(&ev4, 0, sizeof(ev4));
-            ev4.events = EPOLLIN;
-            ev4.data.ptr = &bgp_listen_tag_v4;
-            if (epoll_ctl(g_bgp_work_local->epoll_fd, EPOLL_CTL_ADD, fd4, &ev4) < 0)
-            {
-                LOG_PERROR("BGP: epoll_ctl ADD IPv4 listen fd failed");
-                close(fd4);
-                fd4 = -1;
-            }
+            LOG_PERROR("BGP: bind %s 0.0.0.0:179 failed", vrf_name);
+            close(fd);
+            return -1;
         }
     }
-
-    int fd6 = socket(AF_INET6, SOCK_STREAM, 0);
-    if (fd6 >= 0)
+    else
     {
-        int opt = 1;
-        int v6_only = 1;
-        (void)setsockopt(fd6, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-        (void)setsockopt(fd6, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
-        (void)setsockopt(fd6, IPPROTO_IPV6, IPV6_V6ONLY, &v6_only, sizeof(v6_only));
-
         struct sockaddr_in6 addr6;
         memset(&addr6, 0, sizeof(addr6));
         addr6.sin6_family = AF_INET6;
         addr6.sin6_addr = in6addr_any;
         addr6.sin6_port = htons(BGP_PORT);
-
-        if (bind(fd6, (struct sockaddr *)&addr6, sizeof(addr6)) < 0)
+        if (bind(fd, (struct sockaddr *)&addr6, sizeof(addr6)) < 0)
         {
-            LOG_PERROR("BGP: bind [::]:179 failed");
-            close(fd6);
-            fd6 = -1;
-        }
-        else if (listen(fd6, 32) < 0)
-        {
-            LOG_PERROR("BGP: listen IPv6 failed");
-            close(fd6);
-            fd6 = -1;
-        }
-        else
-        {
-            struct epoll_event ev6;
-            memset(&ev6, 0, sizeof(ev6));
-            ev6.events = EPOLLIN;
-            ev6.data.ptr = &bgp_listen_tag_v6;
-            if (epoll_ctl(g_bgp_work_local->epoll_fd, EPOLL_CTL_ADD, fd6, &ev6) < 0)
-            {
-                LOG_PERROR("BGP: epoll_ctl ADD IPv6 listen fd failed");
-                close(fd6);
-                fd6 = -1;
-            }
+            LOG_PERROR("BGP: bind %s [::]:179 failed", vrf_name);
+            close(fd);
+            return -1;
         }
     }
 
-    g_bgp_work_local->listen_fd = fd4;
-    g_bgp_work_local->listen_fd_v6 = fd6;
+    if (listen(fd, 32) < 0)
+    {
+        LOG_PERROR("BGP: listen %s %s failed", vrf_name, family == AF_INET ? "IPv4" : "IPv6");
+        close(fd);
+        return -1;
+    }
 
-    if (fd4 >= 0)
+    struct epoll_event ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.events = EPOLLIN;
+    ev.data.ptr = slot;
+    if (epoll_ctl(g_bgp_work_local->epoll_fd, EPOLL_CTL_ADD, fd, &ev) < 0)
     {
-        LOG_INFO("BGP: Listening on 0.0.0.0:179 (fd=%d)", fd4);
+        LOG_PERROR("BGP: epoll_ctl ADD %s listen fd failed", family == AF_INET ? "IPv4" : "IPv6");
+        close(fd);
+        return -1;
     }
-    if (fd6 >= 0)
+
+    *slot = fd;
+    LOG_INFO("BGP: VRF %s listening on %s:179 (fd=%d)", vrf_name, family == AF_INET ? "0.0.0.0" : "[::]", fd);
+    return 0;
+}
+
+void bgp_listen_start_vrf(bgp_vrf_t *vrf)
+{
+    if (!vrf)
     {
-        LOG_INFO("BGP: Listening on [::]:179 (fd=%d)", fd6);
+        return;
     }
-    if (fd4 < 0 && fd6 < 0)
+    (void)bgp_listen_open_socket(vrf, AF_INET, &vrf->listen_fd);
+    (void)bgp_listen_open_socket(vrf, AF_INET6, &vrf->listen_fd_v6);
+}
+
+void bgp_listen_stop_vrf(bgp_vrf_t *vrf)
+{
+    if (!vrf)
     {
-        LOG_ERROR("BGP: Failed to start listen sockets on both IPv4 and IPv6");
+        return;
+    }
+
+    if (vrf->listen_fd >= 0)
+    {
+        if (g_bgp_work_local && g_bgp_work_local->epoll_fd >= 0)
+        {
+            epoll_ctl(g_bgp_work_local->epoll_fd, EPOLL_CTL_DEL, vrf->listen_fd, NULL);
+        }
+        close(vrf->listen_fd);
+        vrf->listen_fd = -1;
+    }
+
+    if (vrf->listen_fd_v6 >= 0)
+    {
+        if (g_bgp_work_local && g_bgp_work_local->epoll_fd >= 0)
+        {
+            epoll_ctl(g_bgp_work_local->epoll_fd, EPOLL_CTL_DEL, vrf->listen_fd_v6, NULL);
+        }
+        close(vrf->listen_fd_v6);
+        vrf->listen_fd_v6 = -1;
+    }
+}
+
+void bgp_listen_start(void)
+{
+    if (!g_bgp_work_local || !g_bgp_work_local->protocol || !g_bgp_work_local->protocol->vrf_hash)
+    {
+        return;
+    }
+
+    GHashTableIter iter;
+    gpointer key = NULL;
+    gpointer value = NULL;
+    g_hash_table_iter_init(&iter, g_bgp_work_local->protocol->vrf_hash);
+    while (g_hash_table_iter_next(&iter, &key, &value))
+    {
+        (void)key;
+        bgp_listen_start_vrf((bgp_vrf_t *)value);
     }
 }
 
 void bgp_listen_stop(void)
 {
-    if (g_bgp_work_local->listen_fd < 0 && g_bgp_work_local->listen_fd_v6 < 0)
+    if (!g_bgp_work_local || !g_bgp_work_local->protocol || !g_bgp_work_local->protocol->vrf_hash)
     {
         return;
     }
 
-    if (g_bgp_work_local->listen_fd >= 0)
+    GHashTableIter iter;
+    gpointer key = NULL;
+    gpointer value = NULL;
+    g_hash_table_iter_init(&iter, g_bgp_work_local->protocol->vrf_hash);
+    while (g_hash_table_iter_next(&iter, &key, &value))
     {
-        if (g_bgp_work_local->epoll_fd >= 0)
-        {
-            epoll_ctl(g_bgp_work_local->epoll_fd, EPOLL_CTL_DEL, g_bgp_work_local->listen_fd, NULL);
-        }
-        close(g_bgp_work_local->listen_fd);
-        g_bgp_work_local->listen_fd = -1;
+        (void)key;
+        bgp_listen_stop_vrf((bgp_vrf_t *)value);
+    }
+}
+
+gboolean bgp_listen_handle_event_ptr(void *ptr)
+{
+    if (!ptr || !g_bgp_work_local || !g_bgp_work_local->protocol || !g_bgp_work_local->protocol->vrf_hash)
+    {
+        return FALSE;
     }
 
-    if (g_bgp_work_local->listen_fd_v6 >= 0)
+    GHashTableIter iter;
+    gpointer key = NULL;
+    gpointer value = NULL;
+    g_hash_table_iter_init(&iter, g_bgp_work_local->protocol->vrf_hash);
+    while (g_hash_table_iter_next(&iter, &key, &value))
     {
-        if (g_bgp_work_local->epoll_fd >= 0)
+        (void)key;
+        bgp_vrf_t *vrf = (bgp_vrf_t *)value;
+        if (ptr == &vrf->listen_fd)
         {
-            epoll_ctl(g_bgp_work_local->epoll_fd, EPOLL_CTL_DEL, g_bgp_work_local->listen_fd_v6, NULL);
+            if (vrf->listen_fd >= 0)
+            {
+                bgp_conn_handle_passive_accept(vrf->listen_fd, vrf->vrf_id);
+            }
+            return TRUE;
         }
-        close(g_bgp_work_local->listen_fd_v6);
-        g_bgp_work_local->listen_fd_v6 = -1;
+        if (ptr == &vrf->listen_fd_v6)
+        {
+            if (vrf->listen_fd_v6 >= 0)
+            {
+                bgp_conn_handle_passive_accept(vrf->listen_fd_v6, vrf->vrf_id);
+            }
+            return TRUE;
+        }
     }
-
-    LOG_INFO("BGP: Stopped listening on 0.0.0.0:179 and [::]:179");
+    return FALSE;
 }
 
 // ============================================================================
 // 被动入站 / 主动完成
 // ============================================================================
 
-void bgp_conn_handle_passive_accept(int listen_fd)
+void bgp_conn_handle_passive_accept(int listen_fd, uint32_t listen_vrf_id)
 {
     bgp_protocol_t *proto = g_bgp_work_local->protocol;
 
@@ -544,19 +624,19 @@ void bgp_conn_handle_passive_accept(int listen_fd)
         return;
     }
 
-    bgp_vrf_t *vrf0 = bgp_protocol_get_vrf(proto, BGP_VRF_PUBLIC_ID);
-    bgp_session_t *sess = vrf0 ? bgp_vrf_find_session(vrf0, &from_addr) : NULL;
-    if (!sess || !bgp_vrf_neighbor_has_any_af(vrf0, &from_addr))
+    bgp_vrf_t *vrf = bgp_protocol_get_vrf(proto, listen_vrf_id);
+    bgp_session_t *sess = vrf ? bgp_vrf_find_session(vrf, &from_addr) : NULL;
+    if (!sess || !bgp_vrf_neighbor_has_any_af(vrf, &from_addr))
     {
-        LOG_WARN("BGP: Rejecting connection from %s (no AF neighbor configured)", from_ip);
+        LOG_WARN("BGP: Rejecting connection from %s in VRF %u (no AF neighbor configured)", from_ip, listen_vrf_id);
         close(conn_fd);
         return;
     }
 
     /* router-id 未配置：本端 BGP Identifier 无效，不允许建立被动连接 */
-    if (vrf0->router_id == 0)
+    if (vrf->router_id == 0)
     {
-        LOG_WARN("BGP: Rejecting connection from %s (router-id not configured)", from_ip);
+        LOG_WARN("BGP: Rejecting connection from %s in VRF %u (router-id not configured)", from_ip, listen_vrf_id);
         close(conn_fd);
         return;
     }
@@ -611,8 +691,8 @@ void bgp_conn_handle_passive_accept(int listen_fd)
         sess->sec_last_socket_error = 0;
 
         /* 向 sec_conn 发送 OPEN，碰撞将在收到对端 OPEN 时解决 */
-        GList *af_peers = bgp_vrf_get_session_peers(vrf0, &sess->neighbor_addr);
-        bgp_pkt_send_open(conn, proto->as_number, vrf0->router_id, af_peers);
+        GList *af_peers = bgp_vrf_get_session_peers(vrf, &sess->neighbor_addr);
+        bgp_pkt_send_open(conn, proto->as_number, vrf->router_id, af_peers);
         g_list_free(af_peers);
         /* FSM 状态不变（跟踪 pri_conn） */
     }

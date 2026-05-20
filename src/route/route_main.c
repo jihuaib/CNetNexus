@@ -6,6 +6,7 @@
  */
 #include "route_main.h"
 
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,8 +18,10 @@
 #include "fib.h"
 #include "if.h"
 #include "log.h"
+#include "pending.h"
 #include "route.h"
 #include "route_bdr.h"
+#include "route_cfg_apply.h"
 #include "route_cli.h"
 #include "route_db.h"
 #include "route_worker.h"
@@ -26,12 +29,16 @@
 
 route_local_t *g_route_local = NULL;
 
-/* route_static 表：用户手动配置的静态路由 */
+/* route_static 表：用户手动配置的静态路由（vrf_name 持久化；vrf_id 仅在内存有效，重启可变） */
 static const db_column_def_t ROUTE_STATIC_COLS[] = {
-    {"vrf_id", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},     {"afi", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"},
-    {"prefix", DB_TYPE_TEXT, DB_COL_NOT_NULL, NULL},       {"prefix_len", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
-    {"nexthop", DB_TYPE_TEXT, DB_COL_NOT_NULL, NULL},      {"metric", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},
-    {"preference", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"}, {"ifname", DB_TYPE_TEXT, 0, ""},
+    {"vrf_name", DB_TYPE_TEXT, DB_COL_NOT_NULL, VRF_PUBLIC_VRF_NAME},
+    {"afi", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"},
+    {"prefix", DB_TYPE_TEXT, DB_COL_NOT_NULL, NULL},
+    {"prefix_len", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
+    {"nexthop", DB_TYPE_TEXT, DB_COL_NOT_NULL, NULL},
+    {"metric", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},
+    {"preference", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"},
+    {"ifname", DB_TYPE_TEXT, 0, ""},
 };
 
 static const db_table_def_t ROUTE_STATIC_TABLE = {
@@ -343,12 +350,53 @@ void route_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             break;
 
         case VRF_MSG_TYPE_EVENT:
+        {
+            /* 提取 VRF 事件类型与名称（worker dispatch 后 msg 已被消费，不可再访问） */
+            uint32_t vrf_event = 0;
+            uint32_t vrf_id = 0;
+            char vrf_name[VRF_NAME_MAX_LEN] = {0};
+            if (msg->payload && msg->payload_len >= offsetof(vrf_event_msg_t, rts))
+            {
+                const vrf_event_msg_t *evt = (const vrf_event_msg_t *)msg->payload;
+                vrf_event = evt->event;
+                vrf_id = evt->vrf_id;
+                g_strlcpy(vrf_name, evt->name, sizeof(vrf_name));
+            }
+
             if (route_worker_dispatch_vrf_event(msg) != 0)
             {
                 LOG_WARN("Route: failed to dispatch VRF_EVENT to worker");
                 dev_ipc_message_free(msg);
+                return;
+            }
+
+            if (vrf_name[0] != '\0')
+            {
+                if (vrf_event == VRF_EVENT_VRF_ADD)
+                {
+                    pending_resolve(g_route_local->pending, ROUTE_DEP_VRF, g_str_hash(vrf_name));
+                }
+                else if (vrf_event == VRF_EVENT_VRF_DEL)
+                {
+                    pending_invalidate(g_route_local->pending, ROUTE_DEP_VRF, g_str_hash(vrf_name));
+
+                    /* 级联：删除该 VRF 下所有静态路由（DB + 内存 RIB） */
+                    if (vrf_id != ROUTE_VRF_DEFAULT)
+                    {
+                        route_apply_cmd_t apply;
+                        memset(&apply, 0, sizeof(apply));
+                        apply.op = ROUTE_APPLY_STATIC_DEL_VRF;
+                        apply.u.static_del_vrf.vrf_id = vrf_id;
+                        route_worker_dispatch_apply(&apply);
+
+                        int db_rc = route_db_delete_static_by_vrf(route_local_ipc_ctx(), vrf_name);
+                        LOG_INFO("Route: VRF '%s' (id=%u) deleted, cascaded %d static path(s), db rc=%d", vrf_name,
+                                 vrf_id, apply.rc > 0 ? apply.rc : 0, db_rc);
+                    }
+                }
             }
             return;
+        }
 
         case VRF_MSG_TYPE_ACK:
             /* VRF 订阅应答，静默丢弃 */
@@ -394,6 +442,7 @@ int route_module_init(void)
     }
 
     g_route_local->dev_ipc_ctx = ctx;
+    g_route_local->pending = pending_new("route");
 
     return 0;
 }
@@ -421,9 +470,12 @@ void route_module_cleanup(void)
         return;
     }
 
-    if (g_route_local)
+    if (g_route_local->pending)
     {
-        g_free(g_route_local);
-        g_route_local = NULL;
+        pending_destroy(g_route_local->pending);
+        g_route_local->pending = NULL;
     }
+
+    g_free(g_route_local);
+    g_route_local = NULL;
 }

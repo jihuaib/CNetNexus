@@ -11,6 +11,11 @@
 
 #include "dev.h"
 #include "net_addr.h"
+#include "pending.h"
+
+/** Route 模块挂起表依赖域 */
+#define ROUTE_DEP_VRF 1u
+
 /**
  * @brief Route 模块本地状态（IPC 线程专用）
  *
@@ -20,6 +25,7 @@
 typedef struct route_local
 {
     dev_ipc_context_t *dev_ipc_ctx; /**< IPC 上下文 */
+    pending_t *pending;             /**< 跨模块依赖挂起表（仅在 IPC 线程内访问） */
 } route_local_t;
 
 extern route_local_t *g_route_local;

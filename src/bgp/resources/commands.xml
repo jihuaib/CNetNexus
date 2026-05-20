@@ -4,6 +4,15 @@
     <views>
         <view view-name="bgp">
             <template>&lt;NetNexus(config-bgp)&gt;</template>
+            <view view-name="bgp-vrf">
+                <template>&lt;NetNexus(config-bgp-vrf-{ctx:5})&gt;</template>
+                <view view-name="bgp-vrf-af-ipv4-uni">
+                    <template>&lt;NetNexus(config-bgp-vrf-{ctx:5}-af-ipv4-uni)&gt;</template>
+                </view>
+                <view view-name="bgp-vrf-af-ipv6-uni">
+                    <template>&lt;NetNexus(config-bgp-vrf-{ctx:5}-af-ipv6-uni)&gt;</template>
+                </view>
+            </view>
             <view view-name="bgp-af-ipv4-uni">
                 <template>&lt;NetNexus(config-bgp-af-ipv4-uni)&gt;</template>
             </view>
@@ -27,6 +36,9 @@
 
     <show-this>
         <view name="bgp"/>
+        <view name="bgp-vrf"/>
+        <view name="bgp-vrf-af-ipv4-uni"/>
+        <view name="bgp-vrf-af-ipv6-uni"/>
         <view name="bgp-af-ipv4-uni"/>
         <view name="bgp-af-ipv6-uni"/>
         <view name="bgp-af-ipv4-qp"/>
@@ -68,6 +80,40 @@
             </commands>
         </group>
 
+        <!-- vrf <vrf-name>: enter BGP VRF view under BGP protocol view -->
+        <group group-id="23">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>vrf</name>
+                    <description>Enter BGP VRF configuration</description>
+                </element>
+                <element id="2" cfg-id="1" type="parameter">
+                    <name>&lt;vrf-name&gt;</name>
+                    <type>dynamic(4:2,string(1-63))</type>
+                    <description>VRF name</description>
+                </element>
+                <element id="3" type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>1 2</expression>
+                    <views>bgp</views>
+                    <to-view>bgp-vrf</to-view>
+                    <context-out>
+                        <entry ctx-id="5" from-param="1"/>
+                    </context-out>
+                </command>
+                <command>
+                    <expression>3 1 2</expression>
+                    <views>bgp</views>
+                </command>
+            </commands>
+        </group>
+
         <!-- neighbor <ipv4|ipv6> as <as-num> / no neighbor <ipv4|ipv6> -->
         <group group-id="2">
             <elements>
@@ -104,12 +150,12 @@
                 <!-- neighbor <ipv4|ipv6> as <as-num> -->
                 <command>
                     <expression>2 {3 | 4} 5 6</expression>
-                    <views>bgp</views>
+                    <views>bgp,bgp-vrf</views>
                 </command>
                 <!-- no neighbor <ipv4|ipv6> -->
                 <command>
                     <expression>1 2 {3 | 4}</expression>
-                    <views>bgp</views>
+                    <views>bgp,bgp-vrf</views>
                 </command>
             </commands>
         </group>
@@ -194,10 +240,32 @@
                         <entry ctx-id="3" value="4"/>
                     </context-out>
                 </command>
+                <command>
+                    <expression>2 3</expression>
+                    <views>bgp-vrf</views>
+                    <to-view>bgp-vrf-af-ipv4-uni</to-view>
+                    <context-out>
+                        <entry ctx-id="2" value="1"/>
+                        <entry ctx-id="3" value="1"/>
+                    </context-out>
+                </command>
+                <command>
+                    <expression>2 4</expression>
+                    <views>bgp-vrf</views>
+                    <to-view>bgp-vrf-af-ipv6-uni</to-view>
+                    <context-out>
+                        <entry ctx-id="2" value="2"/>
+                        <entry ctx-id="3" value="1"/>
+                    </context-out>
+                </command>
                 <!-- no af {ipv4-unicast | ipv6-unicast | ipv4-qp | ipv6-qp | ipv4-labeled} -->
                 <command>
                     <expression>1  2  { 3 | 4 | 5 | 6 | 7 }</expression>
                     <views>bgp</views>
+                </command>
+                <command>
+                    <expression>1  2  { 3 | 4 }</expression>
+                    <views>bgp-vrf</views>
                 </command>
             </commands>
         </group>
@@ -233,12 +301,12 @@
                 <!-- neighbor <ipv4|ipv6> enable -->
                 <command>
                     <expression>2 {3 | 4} 5</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-qp,bgp-af-ipv6-qp,bgp-af-ipv4-labeled</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-qp,bgp-af-ipv6-qp,bgp-af-ipv4-labeled,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
                 </command>
                 <!-- no neighbor <ipv4|ipv6> enable -->
                 <command>
                     <expression>1 2 {3 | 4} 5</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-qp,bgp-af-ipv6-qp,bgp-af-ipv4-labeled</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-qp,bgp-af-ipv6-qp,bgp-af-ipv4-labeled,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
                 </command>
             </commands>
         </group>
@@ -264,12 +332,12 @@
                 <!-- router-id <ip-address> -->
                 <command>
                     <expression>2 3</expression>
-                    <views>bgp</views>
+                    <views>bgp,bgp-vrf</views>
                 </command>
                 <!-- no router-id -->
                 <command>
                     <expression>1 2</expression>
-                    <views>bgp</views>
+                    <views>bgp,bgp-vrf</views>
                 </command>
             </commands>
         </group>
@@ -299,12 +367,12 @@
                 <!-- timer connect-retry <seconds> -->
                 <command>
                     <expression>2 3 4</expression>
-                    <views>bgp</views>
+                    <views>bgp,bgp-vrf</views>
                 </command>
                 <!-- no timer connect-retry -->
                 <command>
                     <expression>1 2 3</expression>
-                    <views>bgp</views>
+                    <views>bgp,bgp-vrf</views>
                 </command>
             </commands>
         </group>
@@ -340,7 +408,7 @@
                 <!-- timer keepalive <n> hold <n> -->
                 <command>
                     <expression>1 2 3 4 5</expression>
-                    <views>bgp</views>
+                    <views>bgp,bgp-vrf</views>
                 </command>
             </commands>
         </group>
@@ -383,12 +451,12 @@
                 <!-- neighbor <ipv4|ipv6> open-capability as4|route-refresh -->
                 <command>
                     <expression>2 {3 | 4} 5 {6 | 7}</expression>
-                    <views>bgp</views>
+                    <views>bgp,bgp-vrf</views>
                 </command>
                 <!-- no neighbor <ipv4|ipv6> open-capability as4|route-refresh -->
                 <command>
                     <expression>1 2 {3 | 4} 5 {6 | 7}</expression>
-                    <views>bgp</views>
+                    <views>bgp,bgp-vrf</views>
                 </command>
             </commands>
         </group>
@@ -428,12 +496,12 @@
                 <!-- neighbor <ipv4|ipv6> source-interface <if-name> -->
                 <command>
                     <expression>2 {3 | 4} 5 6</expression>
-                    <views>bgp</views>
+                    <views>bgp,bgp-vrf</views>
                 </command>
                 <!-- no neighbor <ipv4|ipv6> source-interface -->
                 <command>
                     <expression>1 2 {3 | 4} 5</expression>
-                    <views>bgp</views>
+                    <views>bgp,bgp-vrf</views>
                 </command>
             </commands>
         </group>
@@ -473,12 +541,12 @@
                 <!-- neighbor <ipv4|ipv6> ebgp-multihop <ttl> -->
                 <command>
                     <expression>2 {3 | 4} 5 6</expression>
-                    <views>bgp</views>
+                    <views>bgp,bgp-vrf</views>
                 </command>
                 <!-- no neighbor <ipv4|ipv6> ebgp-multihop -->
                 <command>
                     <expression>1 2 {3 | 4} 5</expression>
-                    <views>bgp</views>
+                    <views>bgp,bgp-vrf</views>
                 </command>
             </commands>
         </group>
@@ -526,17 +594,26 @@
                     <name>ipv4-labeled</name>
                     <description>IPv4 labeled-unicast address family</description>
                 </element>
+                <element id="11" type="keyword">
+                    <name>vrf</name>
+                    <description>Filter by VRF name</description>
+                </element>
+                <element id="12" cfg-id="7" type="parameter">
+                    <name>&lt;vrf-name&gt;</name>
+                    <type>dynamic(4:1,string(1-63))</type>
+                    <description>VRF name</description>
+                </element>
             </elements>
 
             <commands>
-                <!-- show bgp neighbor af ipv4-unicast [<ip-address>] -->
+                <!-- show bgp neighbor af ipv4-unicast [vrf <vrf-name>] [<ip-address>] -->
                 <command>
-                    <expression>1 2 3 4 5 [7]</expression>
+                    <expression>1 2 3 4 5 [11 12] [7]</expression>
                     <views>global</views>
                 </command>
-                <!-- show bgp neighbor af ipv6-unicast [<ip-address>] -->
+                <!-- show bgp neighbor af ipv6-unicast [vrf <vrf-name>] [<ip-address>] -->
                 <command>
-                    <expression>1 2 3 4 6 [7]</expression>
+                    <expression>1 2 3 4 6 [11 12] [7]</expression>
                     <views>global</views>
                 </command>
                 <!-- show bgp neighbor af ipv4-qp [<ip-address>] -->
@@ -619,22 +696,22 @@
                 <!-- import-route static -->
                 <command>
                     <expression>2 3</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-labeled</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-labeled,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
                 </command>
                 <!-- no import-route static -->
                 <command>
                     <expression>1 2 3</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-labeled</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-labeled,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
                 </command>
                 <!-- import-route connected -->
                 <command>
                     <expression>2 4</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-labeled</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-labeled,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
                 </command>
                 <!-- no import-route connected -->
                 <command>
                     <expression>1 2 4</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-labeled</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-labeled,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
                 </command>
             </commands>
         </group>
@@ -693,17 +770,26 @@
                     <name>ipv4-labeled</name>
                     <description>Show IPv4 labeled-unicast routes</description>
                 </element>
+                <element id="13" type="keyword">
+                    <name>vrf</name>
+                    <description>Filter by VRF name</description>
+                </element>
+                <element id="14" cfg-id="9" type="parameter">
+                    <name>&lt;vrf-name&gt;</name>
+                    <type>dynamic(4:1,string(1-63))</type>
+                    <description>VRF name</description>
+                </element>
             </elements>
 
             <commands>
-                <!-- show bgp route af ipv4-unicast [<ip-address> <masklen>] -->
+                <!-- show bgp route af ipv4-unicast [vrf <vrf-name>] [<ip-address> <masklen>] -->
                 <command>
-                    <expression>1 2 3 4 5 [7 8]</expression>
+                    <expression>1 2 3 4 5 [13 14] [7 8]</expression>
                     <views>global</views>
                 </command>
-                <!-- show bgp route af ipv6-unicast [<ip-address> <masklen>] -->
+                <!-- show bgp route af ipv6-unicast [vrf <vrf-name>] [<ip-address> <masklen>] -->
                 <command>
-                    <expression>1 2 3 4 6 [7 8]</expression>
+                    <expression>1 2 3 4 6 [13 14] [7 8]</expression>
                     <views>global</views>
                 </command>
                 <!-- show bgp route af ipv4-qp [<qp-route-key>] -->
@@ -804,17 +890,26 @@
                     <name>ipv4-labeled</name>
                     <description>IPv4 labeled-unicast address family</description>
                 </element>
+                <element id="11" type="keyword">
+                    <name>vrf</name>
+                    <description>Filter by VRF name</description>
+                </element>
+                <element id="12" cfg-id="7" type="parameter">
+                    <name>&lt;vrf-name&gt;</name>
+                    <type>dynamic(4:1,string(1-63))</type>
+                    <description>VRF name</description>
+                </element>
             </elements>
 
             <commands>
-                <!-- show bgp update-group af ipv4-unicast [<group-id>] -->
+                <!-- show bgp update-group af ipv4-unicast [vrf <vrf-name>] [<group-id>] -->
                 <command>
-                    <expression>1 2 3 4 5 [7]</expression>
+                    <expression>1 2 3 4 5 [11 12] [7]</expression>
                     <views>global</views>
                 </command>
-                <!-- show bgp update-group af ipv6-unicast [<group-id>] -->
+                <!-- show bgp update-group af ipv6-unicast [vrf <vrf-name>] [<group-id>] -->
                 <command>
-                    <expression>1 2 3 4 6 [7]</expression>
+                    <expression>1 2 3 4 6 [11 12] [7]</expression>
                     <views>global</views>
                 </command>
                 <!-- show bgp update-group af ipv4-qp [<group-id>] -->
@@ -953,8 +1048,8 @@
             </commands>
         </group>
 
-        <!-- refresh bgp <ip> import|export af ipv4-unicast|ipv6-unicast（RFC 2918） -->
-        <!-- cfg-id: 1=ipv4-address, 2=ipv6-address, 3=import, 4=export, 5=ipv4-unicast, 6=ipv6-unicast -->
+        <!-- refresh bgp <ip> import|export af ipv4-unicast|ipv6-unicast [vrf <vrf-name>]（RFC 2918） -->
+        <!-- cfg-id: 1=ipv4-address, 2=ipv6-address, 3=import, 4=export, 5=ipv4-unicast, 6=ipv6-unicast, 7=vrf-name -->
         <group group-id="18">
             <elements>
                 <element id="1" type="keyword">
@@ -999,22 +1094,31 @@
                     <name>ipv6-unicast</name>
                     <description>IPv6 unicast address family</description>
                 </element>
+                <element id="11" type="keyword">
+                    <name>vrf</name>
+                    <description>Filter by VRF name</description>
+                </element>
+                <element id="12" cfg-id="7" type="parameter">
+                    <name>&lt;vrf-name&gt;</name>
+                    <type>dynamic(4:1,string(1-63))</type>
+                    <description>VRF name</description>
+                </element>
             </elements>
 
             <commands>
-                <!-- refresh bgp neighbor <ipv4-address> import|export af ipv4-unicast|ipv6-unicast -->
+                <!-- refresh bgp neighbor <ipv4-address> import|export af ipv4-unicast|ipv6-unicast [vrf <vrf-name>] -->
                 <command>
-                    <expression>1 2 3 4 {6 | 7} 8 {9 | 10}</expression>
+                    <expression>1 2 3 4 {6 | 7} 8 {9 | 10} [11 12]</expression>
                     <views>user</views>
                 </command>
-                <!-- refresh bgp neighbor <ipv6-address> import|export af ipv4-unicast|ipv6-unicast -->
+                <!-- refresh bgp neighbor <ipv6-address> import|export af ipv4-unicast|ipv6-unicast [vrf <vrf-name>] -->
                 <command>
-                    <expression>1 2 3 5 {6 | 7} 8 {9 | 10}</expression>
+                    <expression>1 2 3 5 {6 | 7} 8 {9 | 10} [11 12]</expression>
                     <views>user</views>
                 </command>
-                <!-- refresh bgp af ipv4-unicast|ipv6-unicast import|export（按 AF 刷新所有 peer） -->
+                <!-- refresh bgp af ipv4-unicast|ipv6-unicast [vrf <vrf-name>] import|export -->
                 <command>
-                    <expression>1 2 8 {9 | 10} {6 | 7}</expression>
+                    <expression>1 2 8 {9 | 10} [11 12] {6 | 7}</expression>
                     <views>user</views>
                 </command>
             </commands>
@@ -1045,12 +1149,12 @@
                 <!-- reflector cluster-id <ipv4> -->
                 <command>
                     <expression>2 3 4</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
                 </command>
                 <!-- no reflector cluster-id -->
                 <command>
                     <expression>1 2 3</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
                 </command>
             </commands>
         </group>
@@ -1085,11 +1189,11 @@
             <commands>
                 <command>
                     <expression>2 {3 | 4} 5</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
                 </command>
                 <command>
                     <expression>1 2 {3 | 4} 5</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
                 </command>
             </commands>
         </group>

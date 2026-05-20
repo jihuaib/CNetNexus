@@ -193,10 +193,10 @@ def _restore_ipv4(
             f"no ip address {NEW_R1_V4} {NEW_V4_LEN}",
             f"ip address {r1_base_ip} {r1_base_len}",
             "exit",
-            f"no route ipv4 {TARGET4_ADDR} {TARGET4_LEN} {r2_base_ip} interface {GE_IF}",
-            f"no route ipv4 {TARGET4_ADDR} {TARGET4_LEN} {NEW_R2_V4} interface {GE_IF}",
-            f"no route ipv4 {TARGET4_ADDR} {TARGET4_LEN} {r2_base_ip}",
-            f"no route ipv4 {TARGET4_ADDR} {TARGET4_LEN} {NEW_R2_V4}",
+            f"no route static ipv4 {TARGET4_ADDR} {TARGET4_LEN} {r2_base_ip} interface {GE_IF}",
+            f"no route static ipv4 {TARGET4_ADDR} {TARGET4_LEN} {NEW_R2_V4} interface {GE_IF}",
+            f"no route static ipv4 {TARGET4_ADDR} {TARGET4_LEN} {r2_base_ip}",
+            f"no route static ipv4 {TARGET4_ADDR} {TARGET4_LEN} {NEW_R2_V4}",
             "end",
         ],
     )
@@ -235,10 +235,10 @@ def _restore_ipv6(
             f"no ipv6 address {NEW_R1_V6} {NEW_V6_LEN}",
             f"ipv6 address {r1_base_ip} {r1_base_len}",
             "exit",
-            f"no route ipv6 {TARGET6_ADDR} {TARGET6_LEN} {r2_base_ip} interface {GE_IF}",
-            f"no route ipv6 {TARGET6_ADDR} {TARGET6_LEN} {NEW_R2_V6} interface {GE_IF}",
-            f"no route ipv6 {TARGET6_ADDR} {TARGET6_LEN} {r2_base_ip}",
-            f"no route ipv6 {TARGET6_ADDR} {TARGET6_LEN} {NEW_R2_V6}",
+            f"no route static ipv6 {TARGET6_ADDR} {TARGET6_LEN} {r2_base_ip} interface {GE_IF}",
+            f"no route static ipv6 {TARGET6_ADDR} {TARGET6_LEN} {NEW_R2_V6} interface {GE_IF}",
+            f"no route static ipv6 {TARGET6_ADDR} {TARGET6_LEN} {r2_base_ip}",
+            f"no route static ipv6 {TARGET6_ADDR} {TARGET6_LEN} {NEW_R2_V6}",
             "end",
         ],
     )
@@ -302,7 +302,7 @@ def _run_ipv4(
         device="r1",
         commands=[
             "config",
-            f"route ipv4 {TARGET4_ADDR} {TARGET4_LEN} {r2_base_ip} interface {GE_IF}",
+            f"route static ipv4 {TARGET4_ADDR} {TARGET4_LEN} {r2_base_ip} interface {GE_IF}",
             "end",
         ],
     )
@@ -450,8 +450,8 @@ def _run_ipv4(
         device="r1",
         commands=[
             "config",
-            f"no route ipv4 {TARGET4_ADDR} {TARGET4_LEN} {r2_base_ip} interface {GE_IF}",
-            f"route ipv4 {TARGET4_ADDR} {TARGET4_LEN} {NEW_R2_V4} interface {GE_IF}",
+            f"no route static ipv4 {TARGET4_ADDR} {TARGET4_LEN} {r2_base_ip} interface {GE_IF}",
+            f"route static ipv4 {TARGET4_ADDR} {TARGET4_LEN} {NEW_R2_V4} interface {GE_IF}",
             "end",
         ],
     )
@@ -511,7 +511,7 @@ def _run_ipv6(
         device="r1",
         commands=[
             "config",
-            f"route ipv6 {TARGET6_ADDR} {TARGET6_LEN} {r2_base_ip} interface {GE_IF}",
+            f"route static ipv6 {TARGET6_ADDR} {TARGET6_LEN} {r2_base_ip} interface {GE_IF}",
             "end",
         ],
     )
@@ -659,8 +659,8 @@ def _run_ipv6(
         device="r1",
         commands=[
             "config",
-            f"no route ipv6 {TARGET6_ADDR} {TARGET6_LEN} {r2_base_ip} interface {GE_IF}",
-            f"route ipv6 {TARGET6_ADDR} {TARGET6_LEN} {NEW_R2_V6} interface {GE_IF}",
+            f"no route static ipv6 {TARGET6_ADDR} {TARGET6_LEN} {r2_base_ip} interface {GE_IF}",
+            f"route static ipv6 {TARGET6_ADDR} {TARGET6_LEN} {NEW_R2_V6} interface {GE_IF}",
             "end",
         ],
     )
@@ -754,7 +754,7 @@ def _run_ipv4_single_stack(
         device="r1",
         commands=[
             "config",
-            f"route ipv4 {TARGET4_ADDR} {TARGET4_LEN} {r2_v4_ip} interface {GE_IF}",
+            f"route static ipv4 {TARGET4_ADDR} {TARGET4_LEN} {r2_v4_ip} interface {GE_IF}",
             "end",
         ],
     )
@@ -902,8 +902,8 @@ def _run_ipv4_single_stack(
         device="r1",
         commands=[
             "config",
-            f"no route ipv4 {TARGET4_ADDR} {TARGET4_LEN} {r2_v4_ip} interface {GE_IF}",
-            f"route ipv4 {TARGET4_ADDR} {TARGET4_LEN} {NEW_R2_V4} interface {GE_IF}",
+            f"no route static ipv4 {TARGET4_ADDR} {TARGET4_LEN} {r2_v4_ip} interface {GE_IF}",
+            f"route static ipv4 {TARGET4_ADDR} {TARGET4_LEN} {NEW_R2_V4} interface {GE_IF}",
             "end",
         ],
     )
@@ -997,7 +997,7 @@ def _run_ipv6_single_stack(
         device="r1",
         commands=[
             "config",
-            f"route ipv6 {TARGET6_ADDR} {TARGET6_LEN} {r2_v6_ip} interface {GE_IF}",
+            f"route static ipv6 {TARGET6_ADDR} {TARGET6_LEN} {r2_v6_ip} interface {GE_IF}",
             "end",
         ],
     )
@@ -1145,8 +1145,8 @@ def _run_ipv6_single_stack(
         device="r1",
         commands=[
             "config",
-            f"no route ipv6 {TARGET6_ADDR} {TARGET6_LEN} {r2_v6_ip} interface {GE_IF}",
-            f"route ipv6 {TARGET6_ADDR} {TARGET6_LEN} {NEW_R2_V6} interface {GE_IF}",
+            f"no route static ipv6 {TARGET6_ADDR} {TARGET6_LEN} {r2_v6_ip} interface {GE_IF}",
+            f"route static ipv6 {TARGET6_ADDR} {TARGET6_LEN} {NEW_R2_V6} interface {GE_IF}",
             "end",
         ],
     )
@@ -1170,8 +1170,8 @@ def _restore_if_only(rt: TopologyRuntime) -> None:
         strict=False,
         commands=[
             "config",
-            f"no route ipv4 {TARGET4_IF_ADDR} {TARGET4_IF_LEN} interface {GE_IF}",
-            f"no route ipv6 {TARGET6_IF_ADDR} {TARGET6_IF_LEN} interface {GE_IF}",
+            f"no route static ipv4 {TARGET4_IF_ADDR} {TARGET4_IF_LEN} interface {GE_IF}",
+            f"no route static ipv6 {TARGET6_IF_ADDR} {TARGET6_IF_LEN} interface {GE_IF}",
             "end",
         ],
     )
@@ -1190,7 +1190,7 @@ def _run_ipv4_if_only(
         device="r1",
         commands=[
             "config",
-            f"route ipv4 {TARGET4_IF_ADDR} {TARGET4_IF_LEN} interface {GE_IF}",
+            f"route static ipv4 {TARGET4_IF_ADDR} {TARGET4_IF_LEN} interface {GE_IF}",
             "end",
         ],
     )
@@ -1283,7 +1283,7 @@ def _run_ipv6_if_only(
         device="r1",
         commands=[
             "config",
-            f"route ipv6 {TARGET6_IF_ADDR} {TARGET6_IF_LEN} interface {GE_IF}",
+            f"route static ipv6 {TARGET6_IF_ADDR} {TARGET6_IF_LEN} interface {GE_IF}",
             "end",
         ],
     )
@@ -1375,7 +1375,7 @@ def _run_duplicate_check(
         device="r1",
         commands=[
             "config",
-            f"route ipv4 {TARGET4_ADDR} {TARGET4_LEN} {r2_base_ip} interface {GE_IF}",
+            f"route static ipv4 {TARGET4_ADDR} {TARGET4_LEN} {r2_base_ip} interface {GE_IF}",
             "end",
         ],
     )
@@ -1395,7 +1395,7 @@ def _run_duplicate_check(
         device="r1",
         commands=[
             "config",
-            f"route ipv4 {TARGET4_ADDR} {TARGET4_LEN} {r2_base_ip} interface {GE_IF}",
+            f"route static ipv4 {TARGET4_ADDR} {TARGET4_LEN} {r2_base_ip} interface {GE_IF}",
             "end",
         ],
     )
@@ -1416,7 +1416,7 @@ def _run_duplicate_check(
         device="r1",
         commands=[
             "config",
-            f"no route ipv4 {TARGET4_ADDR} {TARGET4_LEN} {r2_base_ip} interface {GE_IF}",
+            f"no route static ipv4 {TARGET4_ADDR} {TARGET4_LEN} {r2_base_ip} interface {GE_IF}",
             "end",
         ],
     )
@@ -1428,7 +1428,7 @@ def _run_duplicate_check(
         device="r1",
         commands=[
             "config",
-            f"route ipv4 {TARGET4_ADDR} {TARGET4_LEN} {r2_base_ip} interface {GE_IF}",
+            f"route static ipv4 {TARGET4_ADDR} {TARGET4_LEN} {r2_base_ip} interface {GE_IF}",
             "end",
         ],
     )
@@ -1449,8 +1449,8 @@ def _run_duplicate_check(
         device="r1",
         commands=[
             "config",
-            f"no route ipv4 {TARGET4_ADDR} {TARGET4_LEN} {r2_base_ip} interface {GE_IF}",
-            f"route ipv4 {TARGET4_IF_ADDR} {TARGET4_IF_LEN} interface {GE_IF}",
+            f"no route static ipv4 {TARGET4_ADDR} {TARGET4_LEN} {r2_base_ip} interface {GE_IF}",
+            f"route static ipv4 {TARGET4_IF_ADDR} {TARGET4_IF_LEN} interface {GE_IF}",
             "end",
         ],
     )
@@ -1470,7 +1470,7 @@ def _run_duplicate_check(
         device="r1",
         commands=[
             "config",
-            f"route ipv4 {TARGET4_IF_ADDR} {TARGET4_IF_LEN} interface {GE_IF}",
+            f"route static ipv4 {TARGET4_IF_ADDR} {TARGET4_IF_LEN} interface {GE_IF}",
             "end",
         ],
     )

@@ -23,6 +23,7 @@
 #include "net_addr.h"
 #include "route.h"
 #include "tunnel.h"
+#include "vrf.h"
 
 #define FIB_OS_NL_BUFSIZE 4096
 #define FIB_OS_DUMP_BUFSIZE 65536
@@ -371,8 +372,30 @@ static int fib_os_route_send(int cmd, const fib_route_entry_t *route, const fib_
 
     rtm->rtm_family = (unsigned char)route->prefix_addr.family;
     rtm->rtm_dst_len = route->prefix_len;
-    rtm->rtm_table = RT_TABLE_MAIN;
     rtm->rtm_protocol = fib_route_protocol_to_rtproto(route->protocol);
+
+    /* 路由表 ID 解析：公网 VRF → MAIN；私网 VRF → L3VRF table_id（从 VRF 缓存查询） */
+    uint32_t table_id = RT_TABLE_MAIN;
+    if (route->vrf_id != VRF_PUBLIC_VRF_ID)
+    {
+        const vrf_api_cache_entry_t *vrf = vrf_api_cache_lookup(route->vrf_id);
+        if (!vrf || vrf->l3vrf_table_id == 0)
+        {
+            LOG_WARN("[fib_os] VRF id=%u not in cache or no l3vrf_table_id, route not programmed", route->vrf_id);
+            return ERRCODE_FAIL;
+        }
+        table_id = vrf->l3vrf_table_id;
+    }
+
+    if (table_id < 256)
+    {
+        rtm->rtm_table = (unsigned char)table_id;
+    }
+    else
+    {
+        /* 大表 ID 必须走 RTA_TABLE 属性 */
+        rtm->rtm_table = RT_TABLE_UNSPEC;
+    }
 
     if (route->nh_type == FIB_NH_TYPE_BLACKHOLE)
     {
@@ -389,6 +412,9 @@ static int fib_os_route_send(int cmd, const fib_route_entry_t *route, const fib_
         rtm->rtm_type = RTN_UNICAST;
         rtm->rtm_scope = RT_SCOPE_UNIVERSE;
     }
+
+    /* 写 RTA_TABLE（任何 VRF 都补一份，保持与内核 dump 行为一致） */
+    nl_add_attr(nlh, sizeof(buf), RTA_TABLE, &table_id, (int)sizeof(table_id));
 
     if (route->prefix_addr.family == AF_INET)
     {

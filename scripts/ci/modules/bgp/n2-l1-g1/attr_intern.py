@@ -31,7 +31,7 @@ LOCAL_NET = "10.200.{third}.0"
 def _gen_static_cmds(prefix_fmt: str, count: int, nexthop: str, *, negate: bool = False) -> list[str]:
     """Generate route ipv4 commands from a prefix template."""
     cmds: list[str] = []
-    verb = "no route" if negate else "route"
+    verb = "no route static" if negate else "route static"
     for i in range(count):
         second = 100 + i // 256
         third = i % 256

@@ -32,6 +32,7 @@
 #define BGP_CLI_GROUP_ID_CLUSTER_ID 20     /**< reflector cluster-id 配置命令 */
 #define BGP_CLI_GROUP_ID_REFLECT_CLIENT 21 /**< neighbor reflect-client 配置命令（AF 视图） */
 #define BGP_CLI_GROUP_ID_IMPORT_RIB 22     /**< import-rib 跨 AF 路由互导命令（AF 视图） */
+#define BGP_CLI_GROUP_ID_VRF_VIEW 23       /**< BGP VRF 子视图入口 */
 
 /**
  * @brief 处理配置类 CLI 命令（group 1-8, 11-13），在 IPC worker 线程调用

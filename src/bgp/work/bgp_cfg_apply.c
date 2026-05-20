@@ -31,6 +31,7 @@
 #include "bgp_worker.h"
 #include "errcode.h"
 #include "route.h"
+#include "vrf.h"
 
 /* 在配置删除路径中，同步抽干 work 队列的最大轮次，避免销毁前遗留待撤销任务。 */
 #define BGP_CFG_DRAIN_MAX_PASSES 1024u
@@ -115,6 +116,89 @@ static void bgp_cfg_cleanup_vrf_import_routes(bgp_vrf_t *vrf)
     }
 }
 
+static gboolean bgp_cfg_resolve_vrf_id(bgp_apply_cmd_t *apply, uint32_t *vrf_id_out)
+{
+    if (!apply || !vrf_id_out || apply->vrf_name[0] == '\0')
+    {
+        if (apply)
+        {
+            snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: Missing VRF name.");
+        }
+        return FALSE;
+    }
+
+    if (strcmp(apply->vrf_name, VRF_PUBLIC_VRF_NAME) == 0)
+    {
+        *vrf_id_out = BGP_VRF_PUBLIC_ID;
+        return TRUE;
+    }
+
+    const vrf_api_cache_entry_t *entry = vrf_api_cache_lookup_by_name(apply->vrf_name);
+    if (!entry)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VRF not found.");
+        return FALSE;
+    }
+
+    *vrf_id_out = entry->vrf_id;
+    return TRUE;
+}
+
+static bgp_vrf_t *bgp_cfg_lookup_vrf(bgp_protocol_t *proto, bgp_apply_cmd_t *apply, uint32_t *vrf_id_out)
+{
+    uint32_t vrf_id = 0;
+    if (!proto || !apply || !bgp_cfg_resolve_vrf_id(apply, &vrf_id))
+    {
+        return NULL;
+    }
+    if (vrf_id_out)
+    {
+        *vrf_id_out = vrf_id;
+    }
+    return bgp_protocol_get_vrf(proto, vrf_id);
+}
+
+static int bgp_cfg_vrf_af_has_rd(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi)
+{
+    if (vrf_id == BGP_VRF_PUBLIC_ID)
+    {
+        return 1;
+    }
+    if (safi != BGP_SAFI_UNICAST)
+    {
+        return 0;
+    }
+
+    uint16_t vafi = (afi == BGP_AFI_IPV6) ? VRF_AFI_IPV6 : VRF_AFI_IPV4;
+    const vrf_api_af_t *af = vrf_api_cache_get_af(vrf_id, vafi, VRF_SAFI_UNICAST);
+    return af && af->has_rd;
+}
+
+static void bgp_cfg_stop_vrf_sessions_and_drain_work(bgp_vrf_t *vrf)
+{
+    if (!vrf)
+    {
+        return;
+    }
+
+    bgp_cfg_cleanup_vrf_import_routes(vrf);
+
+    if (vrf->sess_hash)
+    {
+        GHashTableIter sess_iter;
+        gpointer sess_key = NULL;
+        gpointer sess_val = NULL;
+        g_hash_table_iter_init(&sess_iter, vrf->sess_hash);
+        while (g_hash_table_iter_next(&sess_iter, &sess_key, &sess_val))
+        {
+            (void)sess_key;
+            bgp_session_stop_all((bgp_session_t *)sess_val);
+        }
+    }
+
+    bgp_cfg_drain_vrf_work(vrf);
+}
+
 static void bgp_cfg_stop_all_sessions_and_drain_work(bgp_protocol_t *proto)
 {
     if (!proto || !proto->vrf_hash)
@@ -135,22 +219,7 @@ static void bgp_cfg_stop_all_sessions_and_drain_work(bgp_protocol_t *proto)
             continue;
         }
 
-        bgp_cfg_cleanup_vrf_import_routes(vrf);
-
-        if (vrf->sess_hash)
-        {
-            GHashTableIter sess_iter;
-            gpointer sess_key = NULL;
-            gpointer sess_val = NULL;
-            g_hash_table_iter_init(&sess_iter, vrf->sess_hash);
-            while (g_hash_table_iter_next(&sess_iter, &sess_key, &sess_val))
-            {
-                (void)sess_key;
-                bgp_session_stop_all((bgp_session_t *)sess_val);
-            }
-        }
-
-        bgp_cfg_drain_vrf_work(vrf);
+        bgp_cfg_stop_vrf_sessions_and_drain_work(vrf);
     }
 }
 
@@ -217,6 +286,64 @@ void bgp_cfg_apply_protocol(bgp_apply_cmd_t *apply)
 }
 
 /* ============================================================================
+ * vrf <name>（BGP VRF 视图入口）
+ * ========================================================================== */
+
+void bgp_cfg_apply_vrf(bgp_apply_cmd_t *apply)
+{
+    bgp_protocol_t *proto = g_bgp_work_local->protocol;
+
+    if (!proto)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: BGP not configured. Run 'bgp <as-number>' first.");
+        return;
+    }
+    if (!apply->isNo && strcmp(apply->vrf_name, VRF_PUBLIC_VRF_NAME) == 0)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: public VRF uses the base BGP view.");
+        return;
+    }
+    uint32_t vrf_id = 0;
+    if (!bgp_cfg_resolve_vrf_id(apply, &vrf_id))
+    {
+        return;
+    }
+    if (apply->isNo)
+    {
+        if (vrf_id == BGP_VRF_PUBLIC_ID)
+        {
+            snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: public VRF cannot be deleted.");
+            return;
+        }
+        bgp_vrf_t *vrf = bgp_protocol_get_vrf(proto, vrf_id);
+        if (!vrf)
+        {
+            apply->rc = BGP_APPLY_RC_NOOP;
+            return;
+        }
+        bgp_listen_stop_vrf(vrf);
+        bgp_cfg_stop_vrf_sessions_and_drain_work(vrf);
+        g_hash_table_remove(proto->vrf_hash, &vrf_id);
+        apply->rc = BGP_APPLY_RC_OK;
+        return;
+    }
+    if (bgp_protocol_get_vrf(proto, vrf_id))
+    {
+        apply->rc = BGP_APPLY_RC_NOOP;
+        return;
+    }
+    bgp_vrf_t *vrf = bgp_protocol_get_or_create_vrf(proto, vrf_id);
+    if (!vrf)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VRF not found.");
+        return;
+    }
+    bgp_listen_start_vrf(vrf);
+
+    apply->rc = BGP_APPLY_RC_OK;
+}
+
+/* ============================================================================
  * neighbor / no neighbor（BGP 视图）
  * ========================================================================== */
 
@@ -230,7 +357,7 @@ void bgp_cfg_apply_neighbor(bgp_apply_cmd_t *apply)
         snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: BGP not configured. Run 'bgp <as-number>' first.");
         return;
     }
-    bgp_vrf_t *vrf = bgp_protocol_get_vrf(proto, apply->vrf_id);
+    bgp_vrf_t *vrf = bgp_cfg_lookup_vrf(proto, apply, NULL);
     if (!vrf)
     {
         snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VRF not found.");
@@ -317,10 +444,15 @@ void bgp_cfg_apply_instance(bgp_apply_cmd_t *apply)
         snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: BGP not configured.");
         return;
     }
-    bgp_vrf_t *vrf = bgp_protocol_get_vrf(proto, apply->vrf_id);
+    bgp_vrf_t *vrf = bgp_cfg_lookup_vrf(proto, apply, NULL);
     if (!vrf)
     {
         snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VRF not found.");
+        return;
+    }
+    if (!is_no && !bgp_cfg_vrf_af_has_rd(vrf->vrf_id, apply->u.instance.afi, apply->u.instance.safi))
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VRF address-family RD is not configured.");
         return;
     }
 
@@ -396,7 +528,7 @@ void bgp_cfg_apply_af_neighbor(bgp_apply_cmd_t *apply)
         snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: BGP not configured.");
         return;
     }
-    bgp_vrf_t *vrf = bgp_protocol_get_vrf(proto, apply->vrf_id);
+    bgp_vrf_t *vrf = bgp_cfg_lookup_vrf(proto, apply, NULL);
     if (!vrf)
     {
         snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VRF not found.");
@@ -474,7 +606,7 @@ void bgp_cfg_apply_router_id(bgp_apply_cmd_t *apply)
         snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: BGP not configured.");
         return;
     }
-    bgp_vrf_t *vrf = bgp_protocol_get_vrf(proto, apply->vrf_id);
+    bgp_vrf_t *vrf = bgp_cfg_lookup_vrf(proto, apply, NULL);
     if (!vrf)
     {
         snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VRF not found.");
@@ -529,7 +661,7 @@ void bgp_cfg_apply_timers(bgp_apply_cmd_t *apply)
         snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: BGP not configured.");
         return;
     }
-    bgp_vrf_t *vrf = bgp_protocol_get_vrf(proto, apply->vrf_id);
+    bgp_vrf_t *vrf = bgp_cfg_lookup_vrf(proto, apply, NULL);
     if (!vrf)
     {
         snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VRF not found.");
@@ -576,7 +708,7 @@ void bgp_cfg_apply_connect_retry(bgp_apply_cmd_t *apply)
         snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: BGP not configured.");
         return;
     }
-    bgp_vrf_t *vrf = bgp_protocol_get_vrf(proto, apply->vrf_id);
+    bgp_vrf_t *vrf = bgp_cfg_lookup_vrf(proto, apply, NULL);
     if (!vrf)
     {
         snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VRF not found.");
@@ -621,7 +753,7 @@ void bgp_cfg_apply_open_cap(bgp_apply_cmd_t *apply)
         snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: BGP not configured.");
         return;
     }
-    bgp_vrf_t *vrf = bgp_protocol_get_vrf(proto, apply->vrf_id);
+    bgp_vrf_t *vrf = bgp_cfg_lookup_vrf(proto, apply, NULL);
     if (!vrf)
     {
         snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VRF not found.");
@@ -687,7 +819,7 @@ void bgp_cfg_apply_import_route(bgp_apply_cmd_t *apply)
         snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: BGP not configured.");
         return;
     }
-    bgp_vrf_t *vrf = bgp_protocol_get_vrf(proto, apply->vrf_id);
+    bgp_vrf_t *vrf = bgp_cfg_lookup_vrf(proto, apply, NULL);
     if (!vrf)
     {
         snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VRF not found.");
@@ -741,14 +873,14 @@ void bgp_cfg_apply_import_route(bgp_apply_cmd_t *apply)
             uint32_t cnt = bgp_vrf_count_import_proto_afi(vrf, p, apply->u.import_route.afi);
             if (cnt == 0u)
             {
-                (void)bgp_import_route_unsubscribe(p, apply->vrf_id, (uint16_t)apply->u.import_route.afi);
+                (void)bgp_import_route_unsubscribe(p, vrf->vrf_id, (uint16_t)apply->u.import_route.afi);
             }
         }
     }
 
     if (!is_no && (new_protos & target_mask) != 0u && (prev_protos & target_mask) == 0u)
     {
-        (void)bgp_import_route_subscribe(target_proto, apply->vrf_id, (uint16_t)apply->u.import_route.afi,
+        (void)bgp_import_route_subscribe(target_proto, vrf->vrf_id, (uint16_t)apply->u.import_route.afi,
                                          ROUTE_SUBSCRIBE_FLAG_FULL);
     }
 
@@ -775,7 +907,7 @@ void bgp_cfg_apply_source_if(bgp_apply_cmd_t *apply)
         snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: BGP not configured.");
         return;
     }
-    bgp_vrf_t *vrf = bgp_protocol_get_vrf(proto, apply->vrf_id);
+    bgp_vrf_t *vrf = bgp_cfg_lookup_vrf(proto, apply, NULL);
     if (!vrf)
     {
         snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VRF not found.");
@@ -855,7 +987,7 @@ void bgp_cfg_apply_ebgp_multihop(bgp_apply_cmd_t *apply)
         snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: BGP not configured.");
         return;
     }
-    bgp_vrf_t *vrf = bgp_protocol_get_vrf(proto, apply->vrf_id);
+    bgp_vrf_t *vrf = bgp_cfg_lookup_vrf(proto, apply, NULL);
     if (!vrf)
     {
         snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VRF not found.");
@@ -1077,7 +1209,7 @@ void bgp_cfg_apply_qp_route(bgp_apply_cmd_t *apply)
         snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: BGP not configured.");
         return;
     }
-    bgp_vrf_t *vrf = bgp_protocol_get_vrf(proto, apply->vrf_id);
+    bgp_vrf_t *vrf = bgp_cfg_lookup_vrf(proto, apply, NULL);
     if (!vrf)
     {
         snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VRF not found.");
@@ -1212,7 +1344,7 @@ void bgp_cfg_apply_route_select(bgp_apply_cmd_t *apply)
         snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: BGP not configured.");
         return;
     }
-    bgp_vrf_t *vrf = bgp_protocol_get_vrf(proto, apply->vrf_id);
+    bgp_vrf_t *vrf = bgp_cfg_lookup_vrf(proto, apply, NULL);
     if (!vrf)
     {
         snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VRF not found.");
@@ -1295,7 +1427,7 @@ void bgp_cfg_apply_refresh(bgp_apply_cmd_t *apply)
         return;
     }
 
-    bgp_vrf_t *vrf = bgp_protocol_get_vrf(proto, apply->vrf_id);
+    bgp_vrf_t *vrf = bgp_cfg_lookup_vrf(proto, apply, NULL);
     if (!vrf)
     {
         snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VRF not found.");
@@ -1381,7 +1513,7 @@ void bgp_cfg_apply_cluster_id(bgp_apply_cmd_t *apply)
         snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: BGP not configured.");
         return;
     }
-    bgp_vrf_t *vrf = bgp_protocol_get_vrf(proto, apply->vrf_id);
+    bgp_vrf_t *vrf = bgp_cfg_lookup_vrf(proto, apply, NULL);
     if (!vrf)
     {
         snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VRF not found.");
@@ -1450,7 +1582,7 @@ void bgp_cfg_apply_reflect_client(bgp_apply_cmd_t *apply)
         snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: BGP not configured.");
         return;
     }
-    bgp_vrf_t *vrf = bgp_protocol_get_vrf(proto, apply->vrf_id);
+    bgp_vrf_t *vrf = bgp_cfg_lookup_vrf(proto, apply, NULL);
     if (!vrf)
     {
         snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VRF not found.");

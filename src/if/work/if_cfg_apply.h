@@ -43,6 +43,18 @@ int if_cfg_apply_shutdown(gboolean is_no, const char *logical_name);
 int if_cfg_apply_vrf_binding(const char *logical_name, const char *vrf_name);
 
 /**
+ * @brief VRF 被删除时的级联清理：把所有绑定该 VRF 的接口移回 public，并清掉其 IP。
+ *
+ * 由 IF worker 在收到 VRF_EVENT_VRF_DEL 时调用。
+ * 内核侧的 master 设备已随 VRF 销毁消失，本函数只负责同步内存态和 DB，
+ * 并通过 IF_EVENT_VRF_CHANGE 通知订阅者（route 模块据此清理候选静态路由迭代关系）。
+ *
+ * @param vrf_name 被删除的 VRF 名称
+ * @return 实际被解绑的接口数量（>=0），失败返回 -1
+ */
+int if_cfg_apply_vrf_deleted(const char *vrf_name);
+
+/**
  * @brief 确保 loop 接口内存条目和 OS dummy 接口存在（不操作 DB，供 DB 恢复使用）
  * @param loop_id loop 接口编号（1-1024）
  * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL

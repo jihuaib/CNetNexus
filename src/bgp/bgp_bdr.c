@@ -18,6 +18,7 @@
 #include "errcode.h"
 #include "log.h"
 #include "route.h"
+#include "vrf.h"
 
 // ============================================================================
 // AFI/SAFI 转换辅助
@@ -61,28 +62,37 @@ static gboolean bgp_bdr_is_af_view(const char *view_name)
     return view_name &&
            (strcmp(view_name, CLI_VIEW_BGP_AF_IPV4) == 0 || strcmp(view_name, CLI_VIEW_BGP_AF_IPV6) == 0 ||
             strcmp(view_name, CLI_VIEW_BGP_AF_IPV4_QP) == 0 || strcmp(view_name, CLI_VIEW_BGP_AF_IPV6_QP) == 0 ||
-            strcmp(view_name, CLI_VIEW_BGP_AF_IPV4_LABELED) == 0);
+            strcmp(view_name, CLI_VIEW_BGP_AF_IPV4_LABELED) == 0 || strcmp(view_name, CLI_VIEW_BGP_VRF_AF_IPV4) == 0 ||
+            strcmp(view_name, CLI_VIEW_BGP_VRF_AF_IPV6) == 0);
 }
 
-static uint32_t bgp_bdr_scope_vrf_id(const cli_show_scope_t *scope)
+static const char *bgp_bdr_scope_vrf_name(const cli_show_scope_t *scope, char *buf, size_t buf_len)
 {
-    uint32_t vrf_id = BGP_VRF_PUBLIC_ID;
+    if (!buf || buf_len == 0)
+    {
+        return VRF_PUBLIC_VRF_NAME;
+    }
+    snprintf(buf, buf_len, "%s", VRF_PUBLIC_VRF_NAME);
 
     if (scope)
     {
-        (void)cli_ctx_lookup_uint32(scope->ctx_data, scope->ctx_len, CLI_CTX_ID_BGP_VRF, &vrf_id);
+        if (cli_ctx_lookup_text(scope->ctx_data, scope->ctx_len, CLI_CTX_ID_VRF_NAME, buf, buf_len) != 0 ||
+            buf[0] == '\0')
+        {
+            snprintf(buf, buf_len, "%s", VRF_PUBLIC_VRF_NAME);
+        }
     }
 
-    return vrf_id;
+    return buf;
 }
 
-static gboolean bgp_bdr_resolve_scoped_af(const cli_show_scope_t *scope, uint32_t *vrf_id_out, int64_t *afi_out,
-                                          int64_t *safi_out)
+static gboolean bgp_bdr_resolve_scoped_af(const cli_show_scope_t *scope, char *vrf_name, size_t vrf_name_len,
+                                          int64_t *afi_out, int64_t *safi_out)
 {
     uint32_t afi = 0;
     uint32_t safi = 0;
 
-    if (!scope || !vrf_id_out || !afi_out || !safi_out || !bgp_bdr_is_af_view(scope->view_name))
+    if (!scope || !vrf_name || vrf_name_len == 0 || !afi_out || !safi_out || !bgp_bdr_is_af_view(scope->view_name))
     {
         return FALSE;
     }
@@ -93,7 +103,7 @@ static gboolean bgp_bdr_resolve_scoped_af(const cli_show_scope_t *scope, uint32_
         return FALSE;
     }
 
-    *vrf_id_out = bgp_bdr_scope_vrf_id(scope);
+    (void)bgp_bdr_scope_vrf_name(scope, vrf_name, vrf_name_len);
     *afi_out = (int64_t)afi;
     *safi_out = (int64_t)safi;
     return afi_safi_to_str(*afi_out, *safi_out) != NULL;
@@ -167,34 +177,10 @@ static void bdr_append_vrf_row_config(GString *out, db_row_t *row)
     }
 }
 
-/**
- * @brief 追加 VRF 级配置（router-id）
- */
-static void bdr_append_vrf_config(GString *out)
+static void bdr_append_vrf_config_scoped(GString *out, const char *vrf_name)
 {
     dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
-    db_result_t *result = NULL;
-    if (db_rpc_query(ctx, BGP_TABLE_VRF, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result || result->num_rows == 0)
-    {
-        if (result)
-        {
-            db_result_free(result);
-        }
-        return;
-    }
-
-    for (uint32_t i = 0; i < result->num_rows; i++)
-    {
-        bdr_append_vrf_row_config(out, result->rows[i]);
-    }
-
-    db_result_free(result);
-}
-
-static void bdr_append_vrf_config_scoped(GString *out, uint32_t vrf_id)
-{
-    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
-    db_condition_t cond = {.field_name = "vrf_id", .op = DB_CMP_EQ, .value = db_value_int(vrf_id)};
+    db_condition_t cond = {.field_name = "vrf_name", .op = DB_CMP_EQ, .value = db_value_text(vrf_name)};
     db_filter_t filter = {.conditions = &cond, .num_conditions = 1};
     db_result_t *result = NULL;
 
@@ -236,30 +222,10 @@ static void bdr_append_session_row(GString *out, db_row_t *row)
     }
 }
 
-/**
- * @brief 追加会话配置行（neighbor <ip> as <as>）
- */
-static void bdr_append_sessions(GString *out)
+static void bdr_append_sessions_scoped(GString *out, const char *vrf_name)
 {
     dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
-    db_result_t *result = NULL;
-    if (db_rpc_query(ctx, BGP_TABLE_SESSION, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
-    {
-        return;
-    }
-
-    for (uint32_t i = 0; i < result->num_rows; i++)
-    {
-        bdr_append_session_row(out, result->rows[i]);
-    }
-
-    db_result_free(result);
-}
-
-static void bdr_append_sessions_scoped(GString *out, uint32_t vrf_id)
-{
-    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
-    db_condition_t cond = {.field_name = "vrf_id", .op = DB_CMP_EQ, .value = db_value_int(vrf_id)};
+    db_condition_t cond = {.field_name = "vrf_name", .op = DB_CMP_EQ, .value = db_value_text(vrf_name)};
     db_filter_t filter = {.conditions = &cond, .num_conditions = 1};
     db_result_t *result = NULL;
 
@@ -283,11 +249,11 @@ static void bdr_append_sessions_scoped(GString *out, uint32_t vrf_id)
  * @param afi  整数 AFI（与 bgp_neighbor 表存储一致）
  * @param safi 整数 SAFI
  */
-static void bdr_append_af_peers(GString *out, int64_t vrf_id, int64_t afi, int64_t safi)
+static void bdr_append_af_peers(GString *out, const char *vrf_name, int64_t afi, int64_t safi)
 {
     dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     db_condition_t conds[] = {
-        {.field_name = "vrf_id", .op = DB_CMP_EQ, .value = db_value_int(vrf_id)},
+        {.field_name = "vrf_name", .op = DB_CMP_EQ, .value = db_value_text(vrf_name)},
         {.field_name = "afi", .op = DB_CMP_EQ, .value = db_value_int(afi)},
         {.field_name = "safi", .op = DB_CMP_EQ, .value = db_value_int(safi)},
     };
@@ -323,11 +289,11 @@ static void bdr_append_af_peers(GString *out, int64_t vrf_id, int64_t afi, int64
     db_value_free(&conds[2].value);
 }
 
-static void bdr_append_qp_routes(GString *out, int64_t vrf_id, int64_t afi, int64_t safi)
+static void bdr_append_qp_routes(GString *out, const char *vrf_name, int64_t afi, int64_t safi)
 {
     dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     db_condition_t conds[] = {
-        {.field_name = "vrf_id", .op = DB_CMP_EQ, .value = db_value_int(vrf_id)},
+        {.field_name = "vrf_name", .op = DB_CMP_EQ, .value = db_value_text(vrf_name)},
         {.field_name = "afi", .op = DB_CMP_EQ, .value = db_value_int(afi)},
         {.field_name = "safi", .op = DB_CMP_EQ, .value = db_value_int(safi)},
     };
@@ -373,7 +339,7 @@ static void bdr_append_qp_routes(GString *out, int64_t vrf_id, int64_t afi, int6
  * @param safi          整数 SAFI
  * @param import_protos 已导入协议位掩码
  */
-static void bdr_append_af_block(GString *out, int64_t vrf_id, const char *afi_str, int64_t afi, int64_t safi,
+static void bdr_append_af_block(GString *out, const char *vrf_name, const char *afi_str, int64_t afi, int64_t safi,
                                 int64_t import_protos, gboolean route_select_enabled, int64_t cluster_id,
                                 int64_t import_rib_sources)
 {
@@ -390,7 +356,7 @@ static void bdr_append_af_block(GString *out, int64_t vrf_id, const char *afi_st
     }
 
     /* AF 下各子表 BDR，按需扩展 */
-    bdr_append_af_peers(out, vrf_id, afi, safi);
+    bdr_append_af_peers(out, vrf_name, afi, safi);
 
     /* 导入路由配置 */
     if (import_protos & (1 << ROUTE_PROTOCOL_STATIC))
@@ -411,7 +377,7 @@ static void bdr_append_af_block(GString *out, int64_t vrf_id, const char *afi_st
 
     if (safi == BGP_SAFI_QP)
     {
-        bdr_append_qp_routes(out, vrf_id, afi, safi);
+        bdr_append_qp_routes(out, vrf_name, afi, safi);
         if (route_select_enabled)
         {
             g_string_append(out, "  route-select enable\r\n");
@@ -419,51 +385,10 @@ static void bdr_append_af_block(GString *out, int64_t vrf_id, const char *afi_st
     }
 }
 
-/**
- * @brief 遍历 bgp_instance 表，对每个 AF 实例输出完整配置块
- */
-static void bdr_append_af_instances(GString *out)
+static void bdr_append_af_instances_scoped(GString *out, const char *vrf_name)
 {
     dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
-    db_result_t *inst_result = NULL;
-    if (db_rpc_query(ctx, BGP_TABLE_INSTANCE, NULL, 0, NULL, &inst_result) != ERRCODE_SUCCESS || !inst_result ||
-        inst_result->num_rows == 0)
-    {
-        if (inst_result)
-        {
-            db_result_free(inst_result);
-        }
-        return;
-    }
-
-    for (uint32_t i = 0; i < inst_result->num_rows; i++)
-    {
-        db_row_t *row = inst_result->rows[i];
-        int64_t vrf_id = db_row_get_int(row, "vrf_id", BGP_VRF_PUBLIC_ID);
-        int64_t afi_int = db_row_get_int(row, "afi", 0);
-        int64_t safi_int = db_row_get_int(row, "safi", 0);
-        int64_t import_protos = db_row_get_int(row, "import_protos", 0);
-        gboolean route_select_enabled = db_row_get_int(row, "route_select_enabled", 0) != 0;
-        int64_t cluster_id = db_row_get_int(row, "cluster_id", 0);
-        int64_t import_rib_sources = db_row_get_int(row, "import_rib_sources", 0);
-
-        const char *afi_str = afi_safi_to_str(afi_int, safi_int);
-        if (!afi_str)
-        {
-            continue;
-        }
-
-        bdr_append_af_block(out, vrf_id, afi_str, afi_int, safi_int, import_protos, route_select_enabled, cluster_id,
-                            import_rib_sources);
-    }
-
-    db_result_free(inst_result);
-}
-
-static void bdr_append_af_instances_scoped(GString *out, uint32_t vrf_id)
-{
-    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
-    db_condition_t cond = {.field_name = "vrf_id", .op = DB_CMP_EQ, .value = db_value_int(vrf_id)};
+    db_condition_t cond = {.field_name = "vrf_name", .op = DB_CMP_EQ, .value = db_value_text(vrf_name)};
     db_filter_t filter = {.conditions = &cond, .num_conditions = 1};
     db_result_t *inst_result = NULL;
 
@@ -494,7 +419,7 @@ static void bdr_append_af_instances_scoped(GString *out, uint32_t vrf_id)
             continue;
         }
 
-        bdr_append_af_block(out, vrf_id, afi_str, afi_int, safi_int, import_protos, route_select_enabled, cluster_id,
+        bdr_append_af_block(out, vrf_name, afi_str, afi_int, safi_int, import_protos, route_select_enabled, cluster_id,
                             import_rib_sources);
     }
 
@@ -502,11 +427,76 @@ static void bdr_append_af_instances_scoped(GString *out, uint32_t vrf_id)
     db_result_free(inst_result);
 }
 
-static void bdr_append_scoped_af_instance(GString *out, uint32_t vrf_id, int64_t afi, int64_t safi)
+static void bdr_collect_vrf_names_from_table(GHashTable *names, const char *table_name)
+{
+    if (!names || !table_name)
+    {
+        return;
+    }
+
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
+    db_result_t *result = NULL;
+    if (db_rpc_query(ctx, table_name, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
+    {
+        return;
+    }
+
+    for (uint32_t i = 0; i < result->num_rows; i++)
+    {
+        const char *vrf_name = db_row_get_text(result->rows[i], "vrf_name", VRF_PUBLIC_VRF_NAME);
+        if (vrf_name && strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) != 0)
+        {
+            g_hash_table_add(names, g_strdup(vrf_name));
+        }
+    }
+
+    db_result_free(result);
+}
+
+static gint bdr_compare_vrf_name(gconstpointer a, gconstpointer b)
+{
+    return g_strcmp0((const char *)a, (const char *)b);
+}
+
+static void bdr_append_non_public_vrf_blocks(GString *out)
+{
+    GHashTable *names = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    if (!names)
+    {
+        return;
+    }
+
+    bdr_collect_vrf_names_from_table(names, BGP_TABLE_VRF);
+    bdr_collect_vrf_names_from_table(names, BGP_TABLE_SESSION);
+    bdr_collect_vrf_names_from_table(names, BGP_TABLE_INSTANCE);
+
+    GList *keys = g_hash_table_get_keys(names);
+    keys = g_list_sort(keys, bdr_compare_vrf_name);
+
+    for (GList *l = keys; l; l = l->next)
+    {
+        const char *vrf_name = (const char *)l->data;
+        if (!vrf_name || vrf_name[0] == '\0')
+        {
+            continue;
+        }
+
+        g_string_append(out, " !\r\n");
+        g_string_append_printf(out, " vrf %s\r\n", vrf_name);
+        bdr_append_vrf_config_scoped(out, vrf_name);
+        bdr_append_sessions_scoped(out, vrf_name);
+        bdr_append_af_instances_scoped(out, vrf_name);
+    }
+
+    g_list_free(keys);
+    g_hash_table_destroy(names);
+}
+
+static void bdr_append_scoped_af_instance(GString *out, const char *vrf_name, int64_t afi, int64_t safi)
 {
     dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     db_condition_t conds[] = {
-        {.field_name = "vrf_id", .op = DB_CMP_EQ, .value = db_value_int(vrf_id)},
+        {.field_name = "vrf_name", .op = DB_CMP_EQ, .value = db_value_text(vrf_name)},
         {.field_name = "afi", .op = DB_CMP_EQ, .value = db_value_int(afi)},
         {.field_name = "safi", .op = DB_CMP_EQ, .value = db_value_int(safi)},
     };
@@ -525,7 +515,7 @@ static void bdr_append_scoped_af_instance(GString *out, uint32_t vrf_id, int64_t
 
         if (afi_str)
         {
-            bdr_append_af_block(out, vrf_id, afi_str, afi, safi, import_protos, route_select_enabled, cluster_id,
+            bdr_append_af_block(out, vrf_name, afi_str, afi, safi, import_protos, route_select_enabled, cluster_id,
                                 import_rib_sources);
         }
     }
@@ -674,25 +664,32 @@ static void bgp_bdr_show_config_scoped(dev_ipc_message_t *msg, const cli_show_sc
         return;
     }
 
-    if (strcmp(scope->view_name, CLI_VIEW_BGP) == 0)
+    if (strcmp(scope->view_name, CLI_VIEW_BGP) == 0 || strcmp(scope->view_name, CLI_VIEW_BGP_VRF) == 0)
     {
-        uint32_t vrf_id = bgp_bdr_scope_vrf_id(scope);
-        (void)bdr_append_protocol(out);
-        bdr_append_vrf_config_scoped(out, vrf_id);
-        bdr_append_sessions_scoped(out, vrf_id);
-        bdr_append_af_instances_scoped(out, vrf_id);
-        bdr_append_bmp_instances(out);
+        char vrf_name[VRF_NAME_MAX_LEN];
+        (void)bgp_bdr_scope_vrf_name(scope, vrf_name, sizeof(vrf_name));
+        if (strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) == 0)
+        {
+            (void)bdr_append_protocol(out);
+        }
+        bdr_append_vrf_config_scoped(out, vrf_name);
+        bdr_append_sessions_scoped(out, vrf_name);
+        bdr_append_af_instances_scoped(out, vrf_name);
+        if (strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) == 0)
+        {
+            bdr_append_bmp_instances(out);
+        }
         g_string_append(out, "!\r\n");
     }
     else if (bgp_bdr_is_af_view(scope->view_name))
     {
-        uint32_t vrf_id = BGP_VRF_PUBLIC_ID;
+        char vrf_name[VRF_NAME_MAX_LEN];
         int64_t afi = 0;
         int64_t safi = 0;
 
-        if (bgp_bdr_resolve_scoped_af(scope, &vrf_id, &afi, &safi))
+        if (bgp_bdr_resolve_scoped_af(scope, vrf_name, sizeof(vrf_name), &afi, &safi))
         {
-            bdr_append_scoped_af_instance(out, vrf_id, afi, safi);
+            bdr_append_scoped_af_instance(out, vrf_name, afi, safi);
         }
     }
     else if (strcmp(scope->view_name, CLI_VIEW_BGP_BMP) == 0)
@@ -736,9 +733,10 @@ void bgp_bdr_show_config(dev_ipc_message_t *msg)
     }
 
     (void)bdr_append_protocol(out);
-    bdr_append_vrf_config(out);
-    bdr_append_sessions(out);
-    bdr_append_af_instances(out);
+    bdr_append_vrf_config_scoped(out, VRF_PUBLIC_VRF_NAME);
+    bdr_append_sessions_scoped(out, VRF_PUBLIC_VRF_NAME);
+    bdr_append_af_instances_scoped(out, VRF_PUBLIC_VRF_NAME);
+    bdr_append_non_public_vrf_blocks(out);
     bdr_append_bmp_instances(out);
     g_string_append(out, "!\r\n");
 

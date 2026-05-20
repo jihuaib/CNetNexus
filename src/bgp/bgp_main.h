@@ -15,7 +15,7 @@
 /**
  * @brief BGP 模块本地状态
  *
- * epoll 事件通过 data.ptr 直接携带 bgp_conn_t*（连接 fd）或 &bgp_listen_tag（listener），
+ * epoll 事件通过 data.ptr 直接携带 bgp_conn_t*（连接 fd）或 VRF listener fd 字段地址，
  * 无需额外的 fd → conn 映射表。
  */
 typedef struct bgp_local

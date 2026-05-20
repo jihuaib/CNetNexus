@@ -26,6 +26,7 @@
 #include "errcode.h"
 #include "log.h"
 #include "net_addr.h"
+#include "vrf.h"
 
 /* show 路径专属分片流状态，仅在 BGP worker 线程访问 */
 static cli_chunk_stream_t g_bgp_show_stream;
@@ -59,33 +60,67 @@ void bgp_work_show_cleanup(void)
 
 typedef struct bgp_cli_ctx
 {
-    uint32_t vrf_id;
+    char vrf_name[VRF_NAME_MAX_LEN];
     bgp_afi_t afi;
     bgp_safi_t safi;
 } bgp_cli_ctx_t;
 
 static bgp_cli_ctx_t bgp_cli_ctx_default(void)
 {
-    bgp_cli_ctx_t c = {BGP_VRF_PUBLIC_ID, BGP_AFI_IPV4, BGP_SAFI_UNICAST};
+    bgp_cli_ctx_t c;
+    memset(&c, 0, sizeof(c));
+    snprintf(c.vrf_name, sizeof(c.vrf_name), "%s", VRF_PUBLIC_VRF_NAME);
+    c.afi = BGP_AFI_IPV4;
+    c.safi = BGP_SAFI_UNICAST;
     return c;
+}
+
+static int bgp_cli_ctx_str_copy(const cli_tlv_entry_t *entry, char *out, size_t out_cap)
+{
+    if (!entry || entry->type != CLI_TLV_TYPE_CTX_STR || !entry->value || out_cap == 0)
+    {
+        return 0;
+    }
+    uint16_t copy_len = entry->length;
+    if (copy_len >= out_cap)
+    {
+        copy_len = (uint16_t)(out_cap - 1);
+    }
+    memcpy(out, entry->value, copy_len);
+    out[copy_len] = '\0';
+    return 1;
 }
 
 static void bgp_cli_ctx_parse(bgp_cli_ctx_t *ctx, cli_tlv_entry_t *entry)
 {
     switch (entry->cfg_id)
     {
-        case CLI_CTX_ID_BGP_VRF:
-            ctx->vrf_id = cli_tlv_entry_get_ctx_uint32(entry);
-            break;
         case CLI_CTX_ID_BGP_AFI:
             ctx->afi = (bgp_afi_t)cli_tlv_entry_get_ctx_uint32(entry);
             break;
         case CLI_CTX_ID_BGP_SAFI:
             ctx->safi = (bgp_safi_t)cli_tlv_entry_get_ctx_uint32(entry);
             break;
+        case CLI_CTX_ID_VRF_NAME:
+            (void)bgp_cli_ctx_str_copy(entry, ctx->vrf_name, sizeof(ctx->vrf_name));
+            break;
         default:
             break;
     }
+}
+
+static bgp_vrf_t *bgp_show_lookup_vrf(const bgp_cli_ctx_t *ctx)
+{
+    if (!ctx || !g_bgp_work_local->protocol)
+    {
+        return NULL;
+    }
+    if (strcmp(ctx->vrf_name, VRF_PUBLIC_VRF_NAME) == 0)
+    {
+        return bgp_protocol_get_vrf(g_bgp_work_local->protocol, BGP_VRF_PUBLIC_ID);
+    }
+    const vrf_api_cache_entry_t *entry = vrf_api_cache_lookup_by_name(ctx->vrf_name);
+    return entry ? bgp_protocol_get_vrf(g_bgp_work_local->protocol, entry->vrf_id) : NULL;
 }
 
 static const char *bgp_af_str(bgp_afi_t afi, bgp_safi_t safi)
@@ -951,11 +986,6 @@ static int handle_bgp_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parse
                 ctx.safi = BGP_SAFI_LABELED;
                 has_af = TRUE;
                 break;
-            case 9:
-                ctx.afi = BGP_AFI_IPV6;
-                ctx.safi = BGP_SAFI_LABELED;
-                has_af = TRUE;
-                break;
             case 7:
             {
                 const char *s = cli_tlv_entry_get_text(&entry);
@@ -963,6 +993,16 @@ static int handle_bgp_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parse
                 {
                     snprintf(qp_query, sizeof(qp_query), "%s", s);
                     has_qp_query = TRUE;
+                }
+                break;
+            }
+            case 9:
+            {
+                /* vrf <vrf-name> (仅 ipv4/ipv6 unicast 支持) */
+                const char *s = cli_tlv_entry_get_text(&entry);
+                if (s)
+                {
+                    snprintf(ctx.vrf_name, sizeof(ctx.vrf_name), "%s", s);
                 }
                 break;
             }
@@ -985,7 +1025,7 @@ static int handle_bgp_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parse
         return ERRCODE_FAIL;
     }
 
-    bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_work_local->protocol, ctx.vrf_id);
+    bgp_vrf_t *vrf = bgp_show_lookup_vrf(&ctx);
     if (!vrf)
     {
         bgp_show_send_cli_response(msg, "BGP Error: VRF not found.\r\n");
@@ -1184,10 +1224,15 @@ static int handle_bgp_show_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
                 has_af = TRUE;
                 break;
             case 7:
-                ctx.afi = BGP_AFI_IPV6;
-                ctx.safi = BGP_SAFI_LABELED;
-                has_af = TRUE;
+            {
+                /* vrf <vrf-name> (仅 ipv4/ipv6 unicast 支持) */
+                const char *s = cli_tlv_entry_get_text(&entry);
+                if (s)
+                {
+                    snprintf(ctx.vrf_name, sizeof(ctx.vrf_name), "%s", s);
+                }
                 break;
+            }
             default:
                 break;
         }
@@ -1208,7 +1253,7 @@ static int handle_bgp_show_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
         return ERRCODE_FAIL;
     }
 
-    bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_work_local->protocol, ctx.vrf_id);
+    bgp_vrf_t *vrf = bgp_show_lookup_vrf(&ctx);
     if (!vrf)
     {
         bgp_show_send_cli_response(msg, "BGP Error: VRF not found.\r\n");
@@ -1634,10 +1679,15 @@ static int handle_bgp_show_update_group(dev_ipc_message_t *msg, cli_tlv_parser_t
                 has_af = TRUE;
                 break;
             case 7:
-                ctx.afi = BGP_AFI_IPV6;
-                ctx.safi = BGP_SAFI_LABELED;
-                has_af = TRUE;
+            {
+                /* vrf <vrf-name> (仅 ipv4/ipv6 unicast 支持) */
+                const char *s = cli_tlv_entry_get_text(&entry);
+                if (s)
+                {
+                    snprintf(ctx.vrf_name, sizeof(ctx.vrf_name), "%s", s);
+                }
                 break;
+            }
             default:
                 break;
         }
@@ -1656,7 +1706,7 @@ static int handle_bgp_show_update_group(dev_ipc_message_t *msg, cli_tlv_parser_t
         return ERRCODE_FAIL;
     }
 
-    bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_work_local->protocol, ctx.vrf_id);
+    bgp_vrf_t *vrf = bgp_show_lookup_vrf(&ctx);
     if (!vrf)
     {
         bgp_show_send_cli_response(msg, "BGP Error: VRF not found.\r\n");

@@ -142,8 +142,8 @@ def _cleanup_case_config(
 ) -> None:
     commands = ["config"]
     for addr, _ in routes:
-        commands.append(f"no route ipv4 {addr} {PREFIX_MASK} {route_nexthop}")
-    commands.append(f"no route ipv4 {UNRESOLVED_NH} {RESOLVER_MASK} {resolver_nexthop}")
+        commands.append(f"no route static ipv4 {addr} {PREFIX_MASK} {route_nexthop}")
+    commands.append(f"no route static ipv4 {UNRESOLVED_NH} {RESOLVER_MASK} {resolver_nexthop}")
     commands.append("end")
     run_cmds(rt=rt, device=device, strict=False, commands=commands)
 
@@ -245,8 +245,8 @@ def _cleanup_case_config_ipv6(
 ) -> None:
     commands = ["config"]
     for addr, _ in routes:
-        commands.append(f"no route ipv6 {addr} {V6_PREFIX_LEN} {route_nexthop}")
-    commands.append(f"no route ipv6 {V6_UNRESOLVED_NH} {V6_RESOLVER_LEN} {resolver_nexthop}")
+        commands.append(f"no route static ipv6 {addr} {V6_PREFIX_LEN} {route_nexthop}")
+    commands.append(f"no route static ipv6 {V6_UNRESOLVED_NH} {V6_RESOLVER_LEN} {resolver_nexthop}")
     commands.extend(
         [
             f"if {GE_IF}",
@@ -284,7 +284,7 @@ def _run_ipv4(rt: TopologyRuntime, top: dict[str, object]) -> None:
         step("Add 10 static routes with unresolved nexthop")
         add_cmds = ["config"]
         for addr, _ in routes:
-            add_cmds.append(f"route ipv4 {addr} {PREFIX_MASK} {route_nexthop}")
+            add_cmds.append(f"route static ipv4 {addr} {PREFIX_MASK} {route_nexthop}")
         add_cmds.append("end")
         run_cmds(rt=rt, device="r1", strict=False, commands=add_cmds)
 
@@ -318,7 +318,7 @@ def _run_ipv4(rt: TopologyRuntime, top: dict[str, object]) -> None:
             strict=False,
             commands=[
                 "config",
-                f"route ipv4 {UNRESOLVED_NH} {RESOLVER_MASK} {resolver_nexthop}",
+                f"route static ipv4 {UNRESOLVED_NH} {RESOLVER_MASK} {resolver_nexthop}",
                 "end",
             ],
         )
@@ -353,7 +353,7 @@ def _run_ipv4(rt: TopologyRuntime, top: dict[str, object]) -> None:
             strict=False,
             commands=[
                 "config",
-                f"no route ipv4 {UNRESOLVED_NH} {RESOLVER_MASK} {resolver_nexthop}",
+                f"no route static ipv4 {UNRESOLVED_NH} {RESOLVER_MASK} {resolver_nexthop}",
                 "end",
             ],
         )
@@ -431,7 +431,7 @@ def _run_ipv6(rt: TopologyRuntime, top: dict[str, object]) -> None:
         step("Add 10 IPv6 static routes with unresolved nexthop")
         add_cmds = ["config"]
         for addr, _ in routes:
-            add_cmds.append(f"route ipv6 {addr} {V6_PREFIX_LEN} {route_nexthop}")
+            add_cmds.append(f"route static ipv6 {addr} {V6_PREFIX_LEN} {route_nexthop}")
         add_cmds.append("end")
         run_cmds(rt=rt, device="r1", strict=False, commands=add_cmds)
 
@@ -465,7 +465,7 @@ def _run_ipv6(rt: TopologyRuntime, top: dict[str, object]) -> None:
             strict=False,
             commands=[
                 "config",
-                f"route ipv6 {V6_UNRESOLVED_NH} {V6_RESOLVER_LEN} {resolver_nexthop}",
+                f"route static ipv6 {V6_UNRESOLVED_NH} {V6_RESOLVER_LEN} {resolver_nexthop}",
                 "end",
             ],
         )
@@ -500,7 +500,7 @@ def _run_ipv6(rt: TopologyRuntime, top: dict[str, object]) -> None:
             strict=False,
             commands=[
                 "config",
-                f"no route ipv6 {V6_UNRESOLVED_NH} {V6_RESOLVER_LEN} {resolver_nexthop}",
+                f"no route static ipv6 {V6_UNRESOLVED_NH} {V6_RESOLVER_LEN} {resolver_nexthop}",
                 "end",
             ],
         )

@@ -17,6 +17,11 @@ typedef struct bgp_apply_cmd bgp_apply_cmd_t;
 void bgp_cfg_apply_protocol(bgp_apply_cmd_t *apply);
 
 /**
+ * @brief 应用 BGP VRF 视图入口到内存（创建 BGP 侧 VRF 容器）
+ */
+void bgp_cfg_apply_vrf(bgp_apply_cmd_t *apply);
+
+/**
  * @brief 应用 neighbor/no neighbor（BGP 视图）到内存
  */
 void bgp_cfg_apply_neighbor(bgp_apply_cmd_t *apply);

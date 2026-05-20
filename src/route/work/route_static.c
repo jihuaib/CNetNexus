@@ -592,6 +592,114 @@ int route_static_del_prefix(uint32_t vrf_id, uint16_t afi, const net_addr_t *pre
 }
 
 // ============================================================================
+// 按 VRF 删除：VRF 删除级联
+// ============================================================================
+
+typedef struct
+{
+    uint32_t vrf_id;
+    GSList *keys_to_remove;   /**< 待移除的 key 指针（指向 entry->key） */
+    GSList *nexthops_removed; /**< 已删除条目的 nexthop 拷贝（用于检查孤立） */
+    GSList *afis_for_nh;      /**< 与 nexthops_removed 同步的 afi 列表 */
+    int count;
+} static_del_vrf_ctx_t;
+
+static void static_collect_for_vrf(gpointer key_ptr, gpointer value_ptr, gpointer user_data)
+{
+    (void)key_ptr;
+    route_static_entry_t *entry = (route_static_entry_t *)value_ptr;
+    static_del_vrf_ctx_t *vctx = (static_del_vrf_ctx_t *)user_data;
+    if (!entry || !vctx)
+    {
+        return;
+    }
+
+    if (entry->key.vrf_id != vctx->vrf_id)
+    {
+        return;
+    }
+
+    /* 若已在 RIB 中：先撤销 */
+    if (entry->in_rib)
+    {
+        int is_null0 = (!entry->has_nexthop && g_ascii_strcasecmp(entry->key.out_ifname, "null0") == 0);
+        uint32_t protocol = is_null0 ? ROUTE_PROTOCOL_BLACKHOLE : ROUTE_PROTOCOL_STATIC;
+
+        net_addr_t if_source;
+        const net_addr_t *rib_source = &entry->key.nexthop_addr;
+        if (!entry->has_nexthop && !is_null0)
+        {
+            encode_ifindex_as_addr(entry->cfg_ifindex, &if_source);
+            rib_source = &if_source;
+        }
+        else if (is_null0)
+        {
+            memset(&if_source, 0, sizeof(if_source));
+            if_source.family = (entry->key.afi == ROUTE_AFI_IPV6) ? AF_INET6 : AF_INET;
+            rib_source = &if_source;
+        }
+
+        route_rib_del(g_route_work_local->rib, entry->key.vrf_id, entry->key.afi, &entry->key.prefix_addr,
+                      entry->key.prefix_len, protocol, rib_source, on_static_rib_del, NULL);
+    }
+
+    /* 收集有 nexthop 的条目用于后续 relay unregister 检查 */
+    if (entry->has_nexthop)
+    {
+        net_addr_t *nh_copy = (net_addr_t *)g_malloc(sizeof(net_addr_t));
+        if (nh_copy)
+        {
+            *nh_copy = entry->key.nexthop_addr;
+            vctx->nexthops_removed = g_slist_prepend(vctx->nexthops_removed, nh_copy);
+            vctx->afis_for_nh = g_slist_prepend(vctx->afis_for_nh, GUINT_TO_POINTER((guint)entry->key.afi));
+        }
+    }
+
+    vctx->keys_to_remove = g_slist_prepend(vctx->keys_to_remove, &entry->key);
+    vctx->count++;
+}
+
+int route_static_del_vrf(uint32_t vrf_id)
+{
+    if (!g_static_table || !g_route_work_local)
+    {
+        return 0;
+    }
+
+    static_del_vrf_ctx_t vctx;
+    memset(&vctx, 0, sizeof(vctx));
+    vctx.vrf_id = vrf_id;
+
+    g_hash_table_foreach(g_static_table, static_collect_for_vrf, &vctx);
+
+    for (GSList *l = vctx.keys_to_remove; l; l = l->next)
+    {
+        g_hash_table_remove(g_static_table, l->data);
+    }
+    g_slist_free(vctx.keys_to_remove);
+
+    /* 对每个移除的 nexthop 检查是否还有用户（同 vrf+afi+nh） */
+    GSList *nh_it = vctx.nexthops_removed;
+    GSList *afi_it = vctx.afis_for_nh;
+    while (nh_it && afi_it)
+    {
+        net_addr_t *nh = (net_addr_t *)nh_it->data;
+        uint16_t afi = (uint16_t)GPOINTER_TO_UINT(afi_it->data);
+        if (!static_nexthop_has_users(vrf_id, afi, nh))
+        {
+            route_relay_unregister_direct(vrf_id, afi, nh, DEV_MODULE_ID_ROUTE);
+        }
+        g_free(nh);
+        nh_it = nh_it->next;
+        afi_it = afi_it->next;
+    }
+    g_slist_free(vctx.nexthops_removed);
+    g_slist_free(vctx.afis_for_nh);
+
+    return vctx.count;
+}
+
+// ============================================================================
 // nexthop 状态变化回调（由 relay 统一触发，与协议迭代同一流程）
 // ============================================================================
 

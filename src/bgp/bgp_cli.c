@@ -29,6 +29,7 @@
 #include "log.h"
 #include "net_addr.h"
 #include "route.h"
+#include "vrf.h"
 
 // ============================================================================
 // 发送 CLI 响应辅助
@@ -61,15 +62,36 @@ void bgp_send_cli_response(dev_ipc_message_t *msg, const char *text)
 /** 从 TLV 上下文提取的视图参数，带默认值（公网 VRF + IPv4 单播） */
 typedef struct bgp_cli_ctx
 {
-    uint32_t vrf_id; /**< VRF ID */
-    bgp_afi_t afi;   /**< 地址族 */
-    bgp_safi_t safi; /**< 子地址族 */
+    char vrf_name[VRF_NAME_MAX_LEN]; /**< VRF 名称上下文，交由 worker 线程解析 */
+    bgp_afi_t afi;                   /**< 地址族 */
+    bgp_safi_t safi;                 /**< 子地址族 */
 } bgp_cli_ctx_t;
+
+static int bgp_cli_ctx_str_copy(const cli_tlv_entry_t *entry, char *out, size_t out_cap)
+{
+    if (!entry || entry->type != CLI_TLV_TYPE_CTX_STR || !entry->value || out_cap == 0)
+    {
+        return 0;
+    }
+
+    uint16_t copy_len = entry->length;
+    if (copy_len >= out_cap)
+    {
+        copy_len = (uint16_t)(out_cap - 1);
+    }
+    memcpy(out, entry->value, copy_len);
+    out[copy_len] = '\0';
+    return 1;
+}
 
 /** 返回默认上下文（公网 VRF + IPv4 单播） */
 static bgp_cli_ctx_t bgp_cli_ctx_default(void)
 {
-    bgp_cli_ctx_t c = {BGP_VRF_PUBLIC_ID, BGP_AFI_IPV4, BGP_SAFI_UNICAST};
+    bgp_cli_ctx_t c;
+    memset(&c, 0, sizeof(c));
+    snprintf(c.vrf_name, sizeof(c.vrf_name), "%s", VRF_PUBLIC_VRF_NAME);
+    c.afi = BGP_AFI_IPV4;
+    c.safi = BGP_SAFI_UNICAST;
     return c;
 }
 
@@ -83,18 +105,27 @@ static void bgp_cli_ctx_parse(bgp_cli_ctx_t *ctx, cli_tlv_entry_t *entry)
     /* entry->cfg_id 即 ctx_id（独立命名空间），type == CLI_TLV_TYPE_CTX 已由调用者检查 */
     switch (entry->cfg_id)
     {
-        case CLI_CTX_ID_BGP_VRF:
-            ctx->vrf_id = cli_tlv_entry_get_ctx_uint32(entry);
-            break;
         case CLI_CTX_ID_BGP_AFI:
             ctx->afi = (bgp_afi_t)cli_tlv_entry_get_ctx_uint32(entry);
             break;
         case CLI_CTX_ID_BGP_SAFI:
             ctx->safi = (bgp_safi_t)cli_tlv_entry_get_ctx_uint32(entry);
             break;
+        case CLI_CTX_ID_VRF_NAME:
+            (void)bgp_cli_ctx_str_copy(entry, ctx->vrf_name, sizeof(ctx->vrf_name));
+            break;
         default:
             break;
     }
+}
+
+static void bgp_cli_apply_ctx_set(bgp_apply_cmd_t *apply, const bgp_cli_ctx_t *ctx)
+{
+    if (!apply || !ctx)
+    {
+        return;
+    }
+    snprintf(apply->vrf_name, sizeof(apply->vrf_name), "%s", ctx->vrf_name);
 }
 
 /**
@@ -140,7 +171,6 @@ static int handle_bgp_protocol(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     memset(&apply, 0, sizeof(apply));
     apply.group_id = BGP_CLI_GROUP_ID_PROTOCOL;
     apply.isNo = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
-    apply.vrf_id = BGP_VRF_PUBLIC_ID;
 
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
@@ -195,7 +225,7 @@ static int handle_bgp_protocol(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     else
     {
         if (bgp_db_set_as(apply.u.protocol.as_number) != 0 ||
-            bgp_db_set_vrf_router_id(BGP_VRF_PUBLIC_ID, "0.0.0.0") != 0)
+            bgp_db_set_vrf_router_id(VRF_PUBLIC_VRF_NAME, "0.0.0.0") != 0)
         {
             bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
             return ERRCODE_FAIL;
@@ -268,7 +298,7 @@ static int handle_bgp_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         bgp_send_cli_response(msg, "BGP Error: Missing remote AS number.\r\n");
         return ERRCODE_FAIL;
     }
-    apply.vrf_id = ctx.vrf_id;
+    bgp_cli_apply_ctx_set(&apply, &ctx);
 
     if (bgp_worker_dispatch_apply(&apply) != 0)
     {
@@ -294,7 +324,7 @@ static int handle_bgp_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     resp_buf[0] = '\0';
     if (apply.isNo)
     {
-        int rows = bgp_db_del_session(ctx.vrf_id, ip_buf);
+        int rows = bgp_db_del_session(ctx.vrf_name, ip_buf);
         if (rows < 0)
         {
             bgp_send_cli_response(msg, "BGP Error: Database cleanup failed.\r\n");
@@ -304,7 +334,7 @@ static int handle_bgp_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     }
     else
     {
-        if (bgp_db_set_session(ctx.vrf_id, ip_buf, apply.u.neighbor.remote_as) != 0)
+        if (bgp_db_set_session(ctx.vrf_name, ip_buf, apply.u.neighbor.remote_as) != 0)
         {
             bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
             return ERRCODE_FAIL;
@@ -313,6 +343,85 @@ static int handle_bgp_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                  apply.u.neighbor.remote_as);
     }
     bgp_send_cli_response(msg, resp_buf);
+    return ERRCODE_SUCCESS;
+}
+
+/**
+ * @brief 处理 vrf <vrf-name>，校验 VRF 存在后进入 BGP VRF 子视图
+ */
+static int handle_bgp_vrf_view(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    bgp_apply_cmd_t apply;
+    memset(&apply, 0, sizeof(apply));
+    apply.group_id = BGP_CLI_GROUP_ID_VRF_VIEW;
+    apply.isNo = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
+    char vrf_name[VRF_NAME_MAX_LEN] = {0};
+
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (!CLI_TLV_IS_CTX(&entry) && entry.cfg_id == 1)
+        {
+            const char *s = cli_tlv_entry_get_text(&entry);
+            if (s)
+            {
+                snprintf(vrf_name, sizeof(vrf_name), "%s", s);
+            }
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    if (vrf_name[0] == '\0')
+    {
+        bgp_send_cli_response(msg, "BGP Error: Missing VRF name.\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) == 0)
+    {
+        bgp_send_cli_response(msg, apply.isNo ? "BGP Error: public VRF cannot be deleted.\r\n"
+                                              : "BGP Error: public VRF uses the base BGP view.\r\n");
+        return ERRCODE_FAIL;
+    }
+    snprintf(apply.vrf_name, sizeof(apply.vrf_name), "%s", vrf_name);
+
+    if (bgp_worker_dispatch_apply(&apply) != 0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Server unavailable.\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (apply.rc != BGP_APPLY_RC_OK && apply.rc != BGP_APPLY_RC_NOOP)
+    {
+        char buf[280];
+        snprintf(buf, sizeof(buf), "%s\r\n", apply.errmsg);
+        bgp_send_cli_response(msg, buf);
+        return ERRCODE_FAIL;
+    }
+    if (apply.isNo)
+    {
+        int rows = 0;
+        if (apply.rc == BGP_APPLY_RC_OK)
+        {
+            rows = bgp_db_del_vrf(vrf_name);
+            if (rows < 0)
+            {
+                bgp_send_cli_response(msg, "BGP Error: Database cleanup failed.\r\n");
+                return ERRCODE_FAIL;
+            }
+        }
+
+        char buf[160];
+        snprintf(buf, sizeof(buf), "BGP: VRF %s deleted (%d row).\r\n", vrf_name, rows > 0 ? rows : 0);
+        bgp_send_cli_response(msg, buf);
+        return ERRCODE_SUCCESS;
+    }
+
+    if (apply.rc == BGP_APPLY_RC_OK && bgp_db_ensure_vrf(vrf_name) != 0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    bgp_send_cli_response(msg, "");
     return ERRCODE_SUCCESS;
 }
 
@@ -360,17 +469,13 @@ static int handle_bgp_addr_family(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
                 ctx.afi = BGP_AFI_IPV4;
                 ctx.safi = BGP_SAFI_LABELED;
                 break;
-            case 6:
-                ctx.afi = BGP_AFI_IPV6;
-                ctx.safi = BGP_SAFI_LABELED;
-                break;
             default:
                 break;
         }
         cli_tlv_entry_free(&entry);
     }
 
-    apply.vrf_id = ctx.vrf_id;
+    bgp_cli_apply_ctx_set(&apply, &ctx);
     apply.u.instance.afi = ctx.afi;
     apply.u.instance.safi = ctx.safi;
 
@@ -396,7 +501,7 @@ static int handle_bgp_addr_family(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
     /* 写 DB */
     if (apply.isNo)
     {
-        if (bgp_db_del_instance(ctx.vrf_id, ctx.afi, ctx.safi) < 0)
+        if (bgp_db_del_instance(ctx.vrf_name, ctx.afi, ctx.safi) < 0)
         {
             bgp_send_cli_response(msg, "BGP Error: Database cleanup failed.\r\n");
             return ERRCODE_FAIL;
@@ -404,7 +509,7 @@ static int handle_bgp_addr_family(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
     }
     else
     {
-        if (bgp_db_set_instance(ctx.vrf_id, ctx.afi, ctx.safi) != 0)
+        if (bgp_db_set_instance(ctx.vrf_name, ctx.afi, ctx.safi) != 0)
         {
             bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
             return ERRCODE_FAIL;
@@ -458,7 +563,7 @@ static int handle_bgp_af_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
         bgp_send_cli_response(msg, "BGP Error: Invalid IP address.\r\n");
         return ERRCODE_FAIL;
     }
-    apply.vrf_id = ctx.vrf_id;
+    bgp_cli_apply_ctx_set(&apply, &ctx);
     apply.u.af_neighbor.afi = ctx.afi;
     apply.u.af_neighbor.safi = ctx.safi;
 
@@ -487,13 +592,13 @@ static int handle_bgp_af_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
     resp_buf[0] = '\0';
     if (apply.isNo)
     {
-        int rows = bgp_db_del_neighbor(ctx.vrf_id, ip_buf, ctx.afi, ctx.safi);
+        int rows = bgp_db_del_neighbor(ctx.vrf_name, ip_buf, ctx.afi, ctx.safi);
         snprintf(resp_buf, sizeof(resp_buf), "BGP: Neighbor %s disabled for %s (%d row).\r\n", ip_buf, af_name,
                  rows > 0 ? rows : 0);
     }
     else
     {
-        if (bgp_db_set_neighbor(ctx.vrf_id, ip_buf, ctx.afi, ctx.safi) != 0)
+        if (bgp_db_set_neighbor(ctx.vrf_name, ip_buf, ctx.afi, ctx.safi) != 0)
         {
             bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
             return ERRCODE_FAIL;
@@ -551,7 +656,7 @@ static int handle_bgp_timers(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         bgp_send_cli_response(msg, "BGP Error: Hold time must be greater than keepalive time.\r\n");
         return ERRCODE_FAIL;
     }
-    apply.vrf_id = ctx.vrf_id;
+    bgp_cli_apply_ctx_set(&apply, &ctx);
     apply.u.timers.keepalive = (uint16_t)keepalive;
     apply.u.timers.hold_time = (uint16_t)hold_time;
 
@@ -577,11 +682,11 @@ static int handle_bgp_timers(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     /* 写 DB */
     if (apply.isNo)
     {
-        (void)bgp_db_del_vrf_timers(ctx.vrf_id);
+        (void)bgp_db_del_vrf_timers(ctx.vrf_name);
     }
     else
     {
-        if (bgp_db_set_vrf_timers(ctx.vrf_id, apply.u.timers.keepalive, apply.u.timers.hold_time) != 0)
+        if (bgp_db_set_vrf_timers(ctx.vrf_name, apply.u.timers.keepalive, apply.u.timers.hold_time) != 0)
         {
             bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
             return ERRCODE_FAIL;
@@ -638,7 +743,7 @@ static int handle_bgp_router_id(dev_ipc_message_t *msg, cli_tlv_parser_t *parser
             return ERRCODE_FAIL;
         }
     }
-    apply.vrf_id = ctx.vrf_id;
+    bgp_cli_apply_ctx_set(&apply, &ctx);
 
     if (bgp_worker_dispatch_apply(&apply) != 0)
     {
@@ -662,11 +767,11 @@ static int handle_bgp_router_id(dev_ipc_message_t *msg, cli_tlv_parser_t *parser
     /* 写 DB */
     if (apply.isNo)
     {
-        (void)bgp_db_del_vrf_router_id(ctx.vrf_id);
+        (void)bgp_db_del_vrf_router_id(ctx.vrf_name);
     }
     else
     {
-        if (bgp_db_set_vrf_router_id(ctx.vrf_id, apply.u.router_id.id) != 0)
+        if (bgp_db_set_vrf_router_id(ctx.vrf_name, apply.u.router_id.id) != 0)
         {
             bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
             return ERRCODE_FAIL;
@@ -711,7 +816,7 @@ static int handle_bgp_connect_retry(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
         bgp_send_cli_response(msg, "BGP Error: Missing connect-retry parameter.\r\n");
         return ERRCODE_FAIL;
     }
-    apply.vrf_id = ctx.vrf_id;
+    bgp_cli_apply_ctx_set(&apply, &ctx);
     apply.u.connect_retry.interval = (uint16_t)connect_retry;
 
     if (bgp_worker_dispatch_apply(&apply) != 0)
@@ -736,11 +841,11 @@ static int handle_bgp_connect_retry(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
     /* 写 DB */
     if (apply.isNo)
     {
-        (void)bgp_db_del_vrf_connect_retry(ctx.vrf_id);
+        (void)bgp_db_del_vrf_connect_retry(ctx.vrf_name);
     }
     else
     {
-        if (bgp_db_set_vrf_connect_retry(ctx.vrf_id, apply.u.connect_retry.interval) != 0)
+        if (bgp_db_set_vrf_connect_retry(ctx.vrf_name, apply.u.connect_retry.interval) != 0)
         {
             bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
             return ERRCODE_FAIL;
@@ -816,7 +921,7 @@ static int handle_bgp_open_capability(dev_ipc_message_t *msg, cli_tlv_parser_t *
         return ERRCODE_FAIL;
     }
 
-    apply.vrf_id = ctx.vrf_id;
+    bgp_cli_apply_ctx_set(&apply, &ctx);
     apply.u.open_cap.cap_bit = has_rr ? BGP_SESS_CAP_ROUTE_REFRESH : BGP_SESS_CAP_AS4;
 
     if (bgp_worker_dispatch_apply(&apply) != 0)
@@ -839,7 +944,7 @@ static int handle_bgp_open_capability(dev_ipc_message_t *msg, cli_tlv_parser_t *
     }
 
     /* 写 DB */
-    if (bgp_db_set_session_caps(ctx.vrf_id, ip_buf, apply.out.sess_flags) != 0)
+    if (bgp_db_set_session_caps(ctx.vrf_name, ip_buf, apply.out.sess_flags) != 0)
     {
         bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
         return ERRCODE_FAIL;
@@ -896,7 +1001,7 @@ static int handle_bgp_import_route(dev_ipc_message_t *msg, cli_tlv_parser_t *par
         return ERRCODE_FAIL;
     }
 
-    apply.vrf_id = bctx.vrf_id;
+    bgp_cli_apply_ctx_set(&apply, &bctx);
     apply.u.import_route.afi = bctx.afi;
     apply.u.import_route.safi = bctx.safi;
     apply.u.import_route.import_proto = import_proto;
@@ -921,7 +1026,7 @@ static int handle_bgp_import_route(dev_ipc_message_t *msg, cli_tlv_parser_t *par
     }
 
     /* 写 DB */
-    bgp_db_set_import_protos(bctx.vrf_id, bctx.afi, bctx.safi, apply.out.import_protos);
+    bgp_db_set_import_protos(bctx.vrf_name, bctx.afi, bctx.safi, apply.out.import_protos);
 
     const char *proto_name = (import_proto == ROUTE_PROTOCOL_CONNECTED) ? "connected" : "static";
     char rsp[96];
@@ -987,7 +1092,7 @@ static int handle_bgp_import_rib(dev_ipc_message_t *msg, cli_tlv_parser_t *parse
         return ERRCODE_FAIL;
     }
 
-    apply.vrf_id = bctx.vrf_id;
+    bgp_cli_apply_ctx_set(&apply, &bctx);
     apply.u.import_rib.afi = bctx.afi;
     apply.u.import_rib.safi = bctx.safi;
     apply.u.import_rib.src = src_id;
@@ -1010,7 +1115,7 @@ static int handle_bgp_import_rib(dev_ipc_message_t *msg, cli_tlv_parser_t *parse
         return ERRCODE_FAIL;
     }
 
-    bgp_db_set_import_rib_sources(bctx.vrf_id, bctx.afi, bctx.safi, apply.out.import_rib_sources);
+    bgp_db_set_import_rib_sources(bctx.vrf_name, bctx.afi, bctx.safi, apply.out.import_rib_sources);
     bgp_send_cli_response(msg, "");
     return ERRCODE_SUCCESS;
 }
@@ -1081,7 +1186,7 @@ static int handle_bgp_source_interface(dev_ipc_message_t *msg, cli_tlv_parser_t 
         bgp_send_cli_response(msg, "BGP Error: Missing source interface name.\r\n");
         return ERRCODE_FAIL;
     }
-    apply.vrf_id = ctx.vrf_id;
+    bgp_cli_apply_ctx_set(&apply, &ctx);
 
     if (bgp_worker_dispatch_apply(&apply) != 0)
     {
@@ -1104,7 +1209,7 @@ static int handle_bgp_source_interface(dev_ipc_message_t *msg, cli_tlv_parser_t 
 
     if (apply.isNo)
     {
-        if (bgp_db_del_session_source_if(ctx.vrf_id, ip_buf) != 0)
+        if (bgp_db_del_session_source_if(ctx.vrf_name, ip_buf) != 0)
         {
             bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
             return ERRCODE_FAIL;
@@ -1112,7 +1217,7 @@ static int handle_bgp_source_interface(dev_ipc_message_t *msg, cli_tlv_parser_t 
     }
     else
     {
-        if (bgp_db_set_session_source_if(ctx.vrf_id, ip_buf, apply.u.source_if.if_name) != 0)
+        if (bgp_db_set_session_source_if(ctx.vrf_name, ip_buf, apply.u.source_if.if_name) != 0)
         {
             bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
             return ERRCODE_FAIL;
@@ -1184,7 +1289,7 @@ static int handle_bgp_ebgp_multihop(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
         bgp_send_cli_response(msg, "BGP Error: Invalid ebgp-multihop TTL (1-255).\r\n");
         return ERRCODE_FAIL;
     }
-    apply.vrf_id = ctx.vrf_id;
+    bgp_cli_apply_ctx_set(&apply, &ctx);
     apply.u.ebgp_multihop.ttl = (uint8_t)ttl;
 
     if (bgp_worker_dispatch_apply(&apply) != 0)
@@ -1208,7 +1313,7 @@ static int handle_bgp_ebgp_multihop(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
 
     if (apply.isNo)
     {
-        if (bgp_db_del_session_ebgp_multihop(ctx.vrf_id, ip_buf) != 0)
+        if (bgp_db_del_session_ebgp_multihop(ctx.vrf_name, ip_buf) != 0)
         {
             bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
             return ERRCODE_FAIL;
@@ -1216,7 +1321,7 @@ static int handle_bgp_ebgp_multihop(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
     }
     else
     {
-        if (bgp_db_set_session_ebgp_multihop(ctx.vrf_id, ip_buf, apply.u.ebgp_multihop.ttl) != 0)
+        if (bgp_db_set_session_ebgp_multihop(ctx.vrf_name, ip_buf, apply.u.ebgp_multihop.ttl) != 0)
         {
             bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
             return ERRCODE_FAIL;
@@ -1317,7 +1422,7 @@ static int handle_bgp_qp_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         return ERRCODE_FAIL;
     }
 
-    apply.vrf_id = ctx.vrf_id;
+    bgp_cli_apply_ctx_set(&apply, &ctx);
     apply.u.qp_route.afi = ctx.afi;
     apply.u.qp_route.safi = ctx.safi;
     apply.u.qp_route.start_dqpn = dqpn;
@@ -1349,7 +1454,7 @@ static int handle_bgp_qp_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 
     if (apply.isNo)
     {
-        if (bgp_db_del_qp_route(ctx.vrf_id, apply.u.qp_route.afi, apply.u.qp_route.safi, apply.u.qp_route.start_dqpn,
+        if (bgp_db_del_qp_route(ctx.vrf_name, apply.u.qp_route.afi, apply.u.qp_route.safi, apply.u.qp_route.start_dqpn,
                                 apply.u.qp_route.count, prefix_buf, apply.u.qp_route.mask_len, bid_db_buf) < 0)
         {
             bgp_send_cli_response(msg, "BGP Error: Database cleanup failed.\r\n");
@@ -1358,7 +1463,7 @@ static int handle_bgp_qp_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     }
     else
     {
-        if (bgp_db_set_qp_route(ctx.vrf_id, apply.u.qp_route.afi, apply.u.qp_route.safi, apply.u.qp_route.start_dqpn,
+        if (bgp_db_set_qp_route(ctx.vrf_name, apply.u.qp_route.afi, apply.u.qp_route.safi, apply.u.qp_route.start_dqpn,
                                 apply.u.qp_route.count, prefix_buf, apply.u.qp_route.mask_len, bid_db_buf) != 0)
         {
             bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
@@ -1399,7 +1504,7 @@ static int handle_bgp_route_select(dev_ipc_message_t *msg, cli_tlv_parser_t *par
         return ERRCODE_FAIL;
     }
 
-    apply.vrf_id = ctx.vrf_id;
+    bgp_cli_apply_ctx_set(&apply, &ctx);
     apply.u.route_select.afi = ctx.afi;
     apply.u.route_select.safi = ctx.safi;
 
@@ -1421,7 +1526,7 @@ static int handle_bgp_route_select(dev_ipc_message_t *msg, cli_tlv_parser_t *par
         return ERRCODE_FAIL;
     }
 
-    if (bgp_db_set_route_select(ctx.vrf_id, apply.u.route_select.afi, apply.u.route_select.safi, !apply.isNo) != 0)
+    if (bgp_db_set_route_select(ctx.vrf_name, apply.u.route_select.afi, apply.u.route_select.safi, !apply.isNo) != 0)
     {
         bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
         return ERRCODE_FAIL;
@@ -1445,7 +1550,7 @@ static int handle_bgp_refresh(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     bgp_apply_cmd_t apply;
     memset(&apply, 0, sizeof(apply));
     apply.group_id = BGP_CLI_GROUP_ID_REFRESH;
-    apply.vrf_id = BGP_VRF_PUBLIC_ID;
+    snprintf(apply.vrf_name, sizeof(apply.vrf_name), "%s", VRF_PUBLIC_VRF_NAME);
     char ip_buf[64] = {0};
     gboolean has_import = FALSE;
     gboolean has_export = FALSE;
@@ -1484,6 +1589,16 @@ static int handle_bgp_refresh(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             case 6:
                 has_v6_af = TRUE;
                 break;
+            case 7:
+            {
+                /* 可选 vrf <vrf-name>，不指定时默认 public */
+                const char *s = cli_tlv_entry_get_text(&entry);
+                if (s)
+                {
+                    snprintf(apply.vrf_name, sizeof(apply.vrf_name), "%s", s);
+                }
+                break;
+            }
             default:
                 break;
         }
@@ -1567,7 +1682,7 @@ static int handle_bgp_cluster_id(dev_ipc_message_t *msg, cli_tlv_parser_t *parse
         cli_tlv_entry_free(&entry);
     }
 
-    apply.vrf_id = ctx.vrf_id;
+    bgp_cli_apply_ctx_set(&apply, &ctx);
     apply.u.cluster_id.afi = ctx.afi;
     apply.u.cluster_id.safi = ctx.safi;
     if (!apply.isNo)
@@ -1605,7 +1720,7 @@ static int handle_bgp_cluster_id(dev_ipc_message_t *msg, cli_tlv_parser_t *parse
     }
 
     /* 写 DB：cluster-id 持久化（per AF instance） */
-    if (bgp_db_set_inst_cluster_id(ctx.vrf_id, ctx.afi, ctx.safi, apply.u.cluster_id.cluster_id) != 0)
+    if (bgp_db_set_inst_cluster_id(ctx.vrf_name, ctx.afi, ctx.safi, apply.u.cluster_id.cluster_id) != 0)
     {
         bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
         return ERRCODE_FAIL;
@@ -1659,7 +1774,7 @@ static int handle_bgp_reflect_client(dev_ipc_message_t *msg, cli_tlv_parser_t *p
         return ERRCODE_FAIL;
     }
 
-    apply.vrf_id = ctx.vrf_id;
+    bgp_cli_apply_ctx_set(&apply, &ctx);
     apply.u.reflect_client.afi = ctx.afi;
     apply.u.reflect_client.safi = ctx.safi;
 
@@ -1682,7 +1797,7 @@ static int handle_bgp_reflect_client(dev_ipc_message_t *msg, cli_tlv_parser_t *p
     }
 
     /* 写 DB：is_rr_client 标记持久化 */
-    if (bgp_db_set_neighbor_rr_client(ctx.vrf_id, ctx.afi, ctx.safi, ip_buf, !apply.isNo) != 0)
+    if (bgp_db_set_neighbor_rr_client(ctx.vrf_name, ctx.afi, ctx.safi, ip_buf, !apply.isNo) != 0)
     {
         bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
         return ERRCODE_FAIL;
@@ -1722,6 +1837,9 @@ int bgp_cli_handle_config_msg(dev_ipc_message_t *msg)
             break;
         case BGP_CLI_GROUP_ID_NEIGHBOR:
             result = handle_bgp_neighbor(msg, &parser);
+            break;
+        case BGP_CLI_GROUP_ID_VRF_VIEW:
+            result = handle_bgp_vrf_view(msg, &parser);
             break;
         case BGP_CLI_GROUP_ID_ADDR_FAMILY:
             result = handle_bgp_addr_family(msg, &parser);

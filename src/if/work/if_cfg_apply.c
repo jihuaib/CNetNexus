@@ -13,6 +13,7 @@
 
 #include "errcode.h"
 #include "if.h"
+#include "if_db.h"
 #include "if_main.h"
 #include "if_map.h"
 #include "if_netlink.h"
@@ -869,6 +870,94 @@ int if_cfg_apply_vrf_binding(const char *logical_name, const char *vrf_name)
 
     LOG_INFO("IF: %s vrf forwarding %s", logical_name, target_vrf[0] ? target_vrf : "public");
     return ERRCODE_SUCCESS;
+}
+
+/* ============================================================================
+ * VRF 删除级联解绑
+ * ============================================================================ */
+
+typedef struct
+{
+    const char *vrf_name;
+    GPtrArray *names; /**< 命中的 logical_name g_strdup 列表 */
+} if_vrf_del_collect_ctx_t;
+
+static gboolean if_vrf_del_collect_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    if_map_entry_t *e = (if_map_entry_t *)value;
+    if_vrf_del_collect_ctx_t *ctx = (if_vrf_del_collect_ctx_t *)user_data;
+    if (!e || !ctx || !ctx->vrf_name)
+    {
+        return FALSE;
+    }
+    if (e->vrf_name[0] != '\0' && strcmp(e->vrf_name, ctx->vrf_name) == 0)
+    {
+        g_ptr_array_add(ctx->names, g_strdup(e->logical_name));
+    }
+    return FALSE;
+}
+
+int if_cfg_apply_vrf_deleted(const char *vrf_name)
+{
+    if (!vrf_name || vrf_name[0] == '\0')
+    {
+        return 0;
+    }
+    if (!g_if_work_local || !g_if_work_local->interface_map.all_entries)
+    {
+        return 0;
+    }
+
+    if_vrf_del_collect_ctx_t cctx = {.vrf_name = vrf_name, .names = g_ptr_array_new_with_free_func(g_free)};
+    g_tree_foreach(g_if_work_local->interface_map.all_entries, if_vrf_del_collect_cb, &cctx);
+
+    int unbound = 0;
+    for (guint i = 0; i < cctx.names->len; i++)
+    {
+        const char *logical_name = (const char *)cctx.names->pdata[i];
+        if_map_entry_t *entry = if_cfg_find_entry(logical_name);
+        if (!entry)
+        {
+            continue;
+        }
+
+        /* 清掉 IPv4/IPv6 地址（内核 master 已消失，连同 IP 一并失效） */
+        if (net_prefix_is_set(&entry->prefix_v4) || net_prefix_is_set(&entry->prefix_v6))
+        {
+            (void)if_cfg_apply_ip(TRUE, logical_name, NULL);
+        }
+
+        /* 内核 master 设备已随 VRF 销毁消失，无需再调用 if_set_master(0) */
+        entry->vrf_name[0] = '\0';
+
+        /* DB 同步 */
+        if_db_update_vrf(logical_name, "");
+
+        /* 通知订阅者：VRF_CHANGE 让 route 等模块刷新候选静态路由迭代关系 */
+        uint32_t if_type = if_cfg_type_to_mask(if_detect_type(entry->physical_name));
+        if (if_type != 0u)
+        {
+            if_info_t info;
+            uint8_t link_up = 0u;
+            if (if_get_info(entry->physical_name, &info) == ERRCODE_SUCCESS)
+            {
+                link_up = (info.state == IF_STATE_UP) ? 1u : 0u;
+            }
+            else if (entry->link_up > 0)
+            {
+                link_up = 1u;
+            }
+            if_pub_notify(g_if_work_local->subscribers, entry, if_type, IF_EVENT_VRF_CHANGE, link_up, NULL,
+                          entry->ifindex);
+        }
+
+        LOG_INFO("IF: %s unbound from deleted VRF %s -> public", logical_name, vrf_name);
+        unbound++;
+    }
+
+    g_ptr_array_free(cctx.names, TRUE);
+    return unbound;
 }
 
 /* ============================================================================

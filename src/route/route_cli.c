@@ -266,12 +266,12 @@ static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                 nexthop_addr.family = expect_family;
             }
 
-            /* 先删除 DB 记录 */
-            route_db_delete_static(g_route_local->dev_ipc_ctx, vrf_id, afi, normalized_prefix_str, prefix_len,
+            /* 先删除 DB 记录（用 vrf_name 持久化） */
+            route_db_delete_static(g_route_local->dev_ipc_ctx, vrf_name, afi, normalized_prefix_str, prefix_len,
                                    has_nexthop ? nexthop_str : "", ifname_str);
             if (prefix_text_changed)
             {
-                route_db_delete_static(g_route_local->dev_ipc_ctx, vrf_id, afi, prefix_str, prefix_len,
+                route_db_delete_static(g_route_local->dev_ipc_ctx, vrf_name, afi, prefix_str, prefix_len,
                                        has_nexthop ? nexthop_str : "", ifname_str);
             }
 
@@ -294,10 +294,10 @@ static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         else
         {
             /* 删除该前缀下所有候选静态路由 */
-            route_db_delete_static_prefix(g_route_local->dev_ipc_ctx, vrf_id, afi, normalized_prefix_str, prefix_len);
+            route_db_delete_static_prefix(g_route_local->dev_ipc_ctx, vrf_name, afi, normalized_prefix_str, prefix_len);
             if (prefix_text_changed)
             {
-                route_db_delete_static_prefix(g_route_local->dev_ipc_ctx, vrf_id, afi, prefix_str, prefix_len);
+                route_db_delete_static_prefix(g_route_local->dev_ipc_ctx, vrf_name, afi, prefix_str, prefix_len);
             }
 
             route_apply_cmd_t apply;
@@ -351,12 +351,12 @@ static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         int32_t pref = ROUTE_ADMIN_DIST_STATIC;
         int32_t m = has_metric ? (int32_t)metric : 0;
 
-        /* 先写入 DB */
-        route_db_upsert_static(g_route_local->dev_ipc_ctx, vrf_id, afi, normalized_prefix_str, prefix_len,
+        /* 先写入 DB（用 vrf_name 持久化；id 仅在内存有效） */
+        route_db_upsert_static(g_route_local->dev_ipc_ctx, vrf_name, afi, normalized_prefix_str, prefix_len,
                                has_nexthop ? nexthop_str : "", m, pref, ifname_str);
         if (prefix_text_changed)
         {
-            route_db_delete_static(g_route_local->dev_ipc_ctx, vrf_id, afi, prefix_str, prefix_len,
+            route_db_delete_static(g_route_local->dev_ipc_ctx, vrf_name, afi, prefix_str, prefix_len,
                                    has_nexthop ? nexthop_str : "", ifname_str);
         }
 

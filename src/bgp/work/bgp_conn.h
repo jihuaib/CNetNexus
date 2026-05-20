@@ -17,6 +17,7 @@
 
 /* 前向声明：bgp_conn_t 内嵌于 bgp_session_t，此处仅需指针 */
 struct bgp_session;
+struct bgp_vrf;
 
 /**
  * @brief BGP TCP 连接处理器
@@ -84,24 +85,30 @@ void bgp_conn_close(struct bgp_session *sess, bgp_conn_t **slot, int epoll_fd);
 // ============================================================================
 
 /**
- * @brief epoll data.ptr sentinel：IPv4/IPv6 listen fd 事件标识
- *
- * 由 bgp_listen_start 在 epoll_ctl ADD 时写入 data.ptr，
- * worker 线程主循环通过指针比较识别 listen 事件并调用 bgp_conn_handle_passive_accept。
- */
-extern char bgp_listen_tag_v4;
-extern char bgp_listen_tag_v6;
-
-/**
- * @brief 启动 BGP 179 监听（IPv4 0.0.0.0 + IPv6 [::]），并加入 worker epoll
- *        幂等：已在监听时立即返回
+ * @brief 启动当前所有 BGP VRF 的 179 监听，并加入 worker epoll。
+ *        public VRF 使用普通 wildcard socket，非 public VRF 使用 SO_BINDTODEVICE。
  */
 void bgp_listen_start(void);
 
 /**
- * @brief 停止 BGP 179 监听（epoll_ctl DEL + close 两个 listen fd）
+ * @brief 启动单个 BGP VRF 的 179 监听（IPv4 + IPv6）。
+ */
+void bgp_listen_start_vrf(struct bgp_vrf *vrf);
+
+/**
+ * @brief 停止单个 BGP VRF 的 179 监听。
+ */
+void bgp_listen_stop_vrf(struct bgp_vrf *vrf);
+
+/**
+ * @brief 停止当前所有 BGP VRF 的 179 监听。
  */
 void bgp_listen_stop(void);
+
+/**
+ * @brief 若 epoll data.ptr 指向某个 VRF listen fd 字段，处理 accept 并返回 TRUE。
+ */
+gboolean bgp_listen_handle_event_ptr(void *ptr);
 
 /**
  * @brief 处理指定 listener 上的被动入站连接
@@ -109,7 +116,7 @@ void bgp_listen_stop(void);
  * 由 worker 主循环在 listen fd 事件触发时调用。完成 accept、非阻塞设置、
  * 地址解析、VRF/neighbor 合法性校验、碰撞处理、bgp_conn_t 分配与 epoll 注册。
  */
-void bgp_conn_handle_passive_accept(int listen_fd);
+void bgp_conn_handle_passive_accept(int listen_fd, uint32_t listen_vrf_id);
 
 /**
  * @brief 处理主动连接完成事件（EPOLLOUT）

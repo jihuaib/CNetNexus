@@ -155,19 +155,55 @@ static vrf_api_af_t *af_get_or_create(vrf_api_cache_entry_t *e, uint16_t afi, ui
     return af;
 }
 
-static void af_replace_rts(vrf_rt_t **slot, uint16_t *count_slot, const vrf_rt_t *rts, uint16_t count)
+static int af_rt_find(const vrf_rt_t *rts, uint16_t count, const vrf_rt_t *rt)
 {
-    g_free(*slot);
-    *slot = NULL;
-    *count_slot = 0;
+    if (!rts || !rt)
+    {
+        return -1;
+    }
+    for (uint16_t i = 0; i < count; i++)
+    {
+        if (memcmp(rts[i].bytes, rt->bytes, sizeof(rt->bytes)) == 0)
+        {
+            return (int)i;
+        }
+    }
+    return -1;
+}
 
-    if (count == 0 || !rts)
+static void af_add_rt(vrf_rt_t **slot, uint16_t *count_slot, const vrf_rt_t *rt)
+{
+    if (!slot || !count_slot || !rt || af_rt_find(*slot, *count_slot, rt) >= 0)
     {
         return;
     }
-    *slot = g_malloc(sizeof(vrf_rt_t) * count);
-    memcpy(*slot, rts, sizeof(vrf_rt_t) * count);
-    *count_slot = count;
+    vrf_rt_t *next = g_realloc(*slot, sizeof(vrf_rt_t) * ((size_t)*count_slot + 1));
+    next[*count_slot] = *rt;
+    *slot = next;
+    (*count_slot)++;
+}
+
+static void af_del_rt(vrf_rt_t **slot, uint16_t *count_slot, const vrf_rt_t *rt)
+{
+    if (!slot || !count_slot || !*slot || !rt)
+    {
+        return;
+    }
+    int idx = af_rt_find(*slot, *count_slot, rt);
+    if (idx < 0)
+    {
+        return;
+    }
+    if ((uint16_t)idx + 1 < *count_slot)
+    {
+        memmove(&(*slot)[idx], &(*slot)[idx + 1], sizeof(vrf_rt_t) * ((size_t)*count_slot - (size_t)idx - 1));
+    }
+    (*count_slot)--;
+    if (*count_slot == 0)
+    {
+        g_free(*slot);
+        *slot = NULL;
+    }
 }
 
 // ============================================================================
@@ -324,34 +360,65 @@ void vrf_api_cache_on_event(const dev_ipc_message_t *msg)
             }
             break;
         }
-        case VRF_EVENT_AF_RD_CHANGE:
+        case VRF_EVENT_AF_RD_ADD:
         {
             vrf_api_cache_entry_t *e = cache_get_or_create(evt->vrf_id, evt->name, evt->l3vrf_table_id);
             vrf_api_af_t *af = af_get_or_create(e, evt->afi, evt->safi);
             if (af)
             {
-                af->has_rd = evt->has_rd;
+                af->has_rd = 1;
                 af->rd = evt->rd;
             }
             break;
         }
-        case VRF_EVENT_AF_IMPORT_RT_CHG:
+        case VRF_EVENT_AF_RD_DEL:
         {
-            vrf_api_cache_entry_t *e = cache_get_or_create(evt->vrf_id, evt->name, evt->l3vrf_table_id);
-            vrf_api_af_t *af = af_get_or_create(e, evt->afi, evt->safi);
+            vrf_api_cache_entry_t *e = g_hash_table_lookup(g_vrf_cache_by_id, GUINT_TO_POINTER(evt->vrf_id));
+            vrf_api_af_t *af = (e && e->afs) ? g_hash_table_lookup(e->afs, af_key_make(evt->afi, evt->safi)) : NULL;
             if (af)
             {
-                af_replace_rts(&af->import_rts, &af->import_rt_count, evt->rts, evt->rt_count);
+                af->has_rd = 0;
+                memset(&af->rd, 0, sizeof(af->rd));
             }
             break;
         }
-        case VRF_EVENT_AF_EXPORT_RT_CHG:
+        case VRF_EVENT_AF_IMPORT_RT_ADD:
         {
             vrf_api_cache_entry_t *e = cache_get_or_create(evt->vrf_id, evt->name, evt->l3vrf_table_id);
             vrf_api_af_t *af = af_get_or_create(e, evt->afi, evt->safi);
-            if (af)
+            if (af && evt->rt_count > 0)
             {
-                af_replace_rts(&af->export_rts, &af->export_rt_count, evt->rts, evt->rt_count);
+                af_add_rt(&af->import_rts, &af->import_rt_count, &evt->rts[0]);
+            }
+            break;
+        }
+        case VRF_EVENT_AF_IMPORT_RT_DEL:
+        {
+            vrf_api_cache_entry_t *e = g_hash_table_lookup(g_vrf_cache_by_id, GUINT_TO_POINTER(evt->vrf_id));
+            vrf_api_af_t *af = (e && e->afs) ? g_hash_table_lookup(e->afs, af_key_make(evt->afi, evt->safi)) : NULL;
+            if (af && evt->rt_count > 0)
+            {
+                af_del_rt(&af->import_rts, &af->import_rt_count, &evt->rts[0]);
+            }
+            break;
+        }
+        case VRF_EVENT_AF_EXPORT_RT_ADD:
+        {
+            vrf_api_cache_entry_t *e = cache_get_or_create(evt->vrf_id, evt->name, evt->l3vrf_table_id);
+            vrf_api_af_t *af = af_get_or_create(e, evt->afi, evt->safi);
+            if (af && evt->rt_count > 0)
+            {
+                af_add_rt(&af->export_rts, &af->export_rt_count, &evt->rts[0]);
+            }
+            break;
+        }
+        case VRF_EVENT_AF_EXPORT_RT_DEL:
+        {
+            vrf_api_cache_entry_t *e = g_hash_table_lookup(g_vrf_cache_by_id, GUINT_TO_POINTER(evt->vrf_id));
+            vrf_api_af_t *af = (e && e->afs) ? g_hash_table_lookup(e->afs, af_key_make(evt->afi, evt->safi)) : NULL;
+            if (af && evt->rt_count > 0)
+            {
+                af_del_rt(&af->export_rts, &af->export_rt_count, &evt->rts[0]);
             }
             break;
         }

@@ -26,6 +26,12 @@
 /** 公网 VRF 名称 */
 #define VRF_PUBLIC_VRF_NAME "public"
 
+/** 动态候选查询：全部 VRF 名称 */
+#define VRF_CANDIDATE_QUERY_ALL 1u
+
+/** 动态候选查询：仅非 public VRF 名称 */
+#define VRF_CANDIDATE_QUERY_NON_PUBLIC 2u
+
 /** OS L3VRF 路由表 ID 起始基址（避开 main/local/default） */
 #define VRF_OS_TABLE_BASE 1000u
 
@@ -137,12 +143,18 @@ typedef gboolean (*vrf_api_cache_iter_fn)(const vrf_api_cache_entry_t *entry, vo
 #define VRF_EVENT_AF_ENABLE (1u << 3)
 /** AF 关闭（最后一个 afi/safi 配置被清空） */
 #define VRF_EVENT_AF_DISABLE (1u << 4)
-/** AF 下 RD 变更（has_rd / rd 字段有效） */
-#define VRF_EVENT_AF_RD_CHANGE (1u << 5)
-/** AF 下 import RT 集合变更（rts[0..rt_count) 为新全量列表） */
-#define VRF_EVENT_AF_IMPORT_RT_CHG (1u << 6)
-/** AF 下 export RT 集合变更（rts[0..rt_count) 为新全量列表） */
-#define VRF_EVENT_AF_EXPORT_RT_CHG (1u << 7)
+/** AF 下 RD 新增（has_rd=1 / rd 字段有效） */
+#define VRF_EVENT_AF_RD_ADD (1u << 5)
+/** AF 下 RD 删除 */
+#define VRF_EVENT_AF_RD_DEL (1u << 6)
+/** AF 下 import RT 新增（rt_count=1 / rts[0] 有效） */
+#define VRF_EVENT_AF_IMPORT_RT_ADD (1u << 7)
+/** AF 下 import RT 删除（rt_count=1 / rts[0] 有效） */
+#define VRF_EVENT_AF_IMPORT_RT_DEL (1u << 8)
+/** AF 下 export RT 新增（rt_count=1 / rts[0] 有效） */
+#define VRF_EVENT_AF_EXPORT_RT_ADD (1u << 9)
+/** AF 下 export RT 删除（rt_count=1 / rts[0] 有效） */
+#define VRF_EVENT_AF_EXPORT_RT_DEL (1u << 10)
 /** 通配：匹配所有事件 */
 #define VRF_EVENT_ALL 0xFFFFFFFFu
 
@@ -186,8 +198,9 @@ typedef struct vrf_subscribe_req
  *   - VRF_ADD / VRF_DEL：vrf_id, name, l3vrf_table_id 有效；afi/safi=0
  *   - VRF_STATE       ：vrf_id, os_state 有效
  *   - AF_ENABLE/DISABLE：vrf_id, afi, safi 有效
- *   - AF_RD_CHANGE    ：vrf_id, afi, safi, has_rd, rd 有效
- *   - AF_IMPORT_RT_CHG / AF_EXPORT_RT_CHG：vrf_id, afi, safi, rt_count, rts[] 有效（覆盖语义）
+ *   - AF_RD_ADD       ：vrf_id, afi, safi, has_rd=1, rd 有效
+ *   - AF_RD_DEL       ：vrf_id, afi, safi 有效
+ *   - AF_IMPORT_RT_ADD/DEL / AF_EXPORT_RT_ADD/DEL：vrf_id, afi, safi, rt_count=1, rts[0] 有效
  */
 typedef struct vrf_event_msg
 {
@@ -202,7 +215,7 @@ typedef struct vrf_event_msg
     uint8_t _pad;                /**< 对齐填充 */
     vrf_rd_t rd;                 /**< RD（has_rd=1 时有效） */
     uint16_t rt_count;           /**< rts[] 元素数 */
-    vrf_rt_t rts[1];             /**< 变长 RT 数组（覆盖语义） */
+    vrf_rt_t rts[1];             /**< 变长 RT 数组 */
 } vrf_event_msg_t;
 
 /**

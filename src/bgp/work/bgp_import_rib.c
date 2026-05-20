@@ -24,6 +24,7 @@
 #include "bgp_worker.h"
 #include "bit.h"
 #include "log.h"
+#include "vrf.h"
 
 /**
  * @brief 单个 unicast inst 的 import-rib 状态（挂在 inst->import_rib_state）
@@ -672,7 +673,24 @@ void bgp_cfg_apply_import_rib(bgp_apply_cmd_t *apply)
         return;
     }
     bgp_protocol_t *proto = g_bgp_work_local->protocol;
-    bgp_vrf_t *vrf = bgp_protocol_get_vrf(proto, apply->vrf_id);
+    uint32_t vrf_id = BGP_VRF_PUBLIC_ID;
+    if (apply->vrf_name[0] == '\0')
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: Missing VRF name.");
+        return;
+    }
+    if (strcmp(apply->vrf_name, VRF_PUBLIC_VRF_NAME) != 0)
+    {
+        const vrf_api_cache_entry_t *entry = vrf_api_cache_lookup_by_name(apply->vrf_name);
+        if (!entry)
+        {
+            snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VRF not found.");
+            return;
+        }
+        vrf_id = entry->vrf_id;
+    }
+
+    bgp_vrf_t *vrf = bgp_protocol_get_vrf(proto, vrf_id);
     if (!vrf)
     {
         snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VRF not found.");

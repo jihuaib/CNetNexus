@@ -74,7 +74,7 @@ def _cleanup(rt: TopologyRuntime, *, r1_static_nh: str) -> None:
         commands=[
             "end",
             "config",
-            f"no route ipv4 {TEST_PFX_ADDR} {TEST_PFX_MASK} {r1_static_nh}",
+            f"no route static ipv4 {TEST_PFX_ADDR} {TEST_PFX_MASK} {r1_static_nh}",
             "no bgp",
             "end",
         ],
@@ -419,7 +419,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             device="r1",
             commands=[
                 "config",
-                f"route ipv4 {TEST_PFX_ADDR} {TEST_PFX_MASK} {r1_static_nh}",
+                f"route static ipv4 {TEST_PFX_ADDR} {TEST_PFX_MASK} {r1_static_nh}",
                 "end",
             ],
         )

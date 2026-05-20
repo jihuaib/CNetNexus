@@ -172,6 +172,30 @@ def _run_inner(rt: TopologyRuntime) -> None:
         label=f"r1 ipv4-unicast RD/RT visible",
     )
 
+    step("Direct RD modification must fail before no route-distinguisher")
+    run_cmds(
+        rt=rt,
+        device="r1",
+        strict=False,
+        commands=[
+            "config",
+            f"vrf {VRF_NAME}",
+            "af ipv4-unicast",
+        ],
+    )
+    out = rt.exec_cmd("r1", "route-distinguisher 65000:101", strict=False)
+    rt.exec_cmd("r1", "end", strict=False)
+    assert "VRF Error:" in out, f"direct RD modify unexpectedly succeeded:\n{out}"
+    wait_check(
+        rt,
+        device="r1",
+        command="show current-configuration",
+        timeout=10,
+        contains=["route-distinguisher 65000:100"],
+        not_contains=["route-distinguisher 65000:101"],
+        label="direct RD modify failure keeps original RD in DB config",
+    )
+
     # ---- Phase 3: af ipv6-unicast 仅 RD ----
     step(f"Configure AF ipv6-unicast under VRF {VRF_NAME}: RD only")
     run_cmds(
