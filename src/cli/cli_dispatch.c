@@ -428,6 +428,32 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
         return ERRCODE_FAIL;
     }
 
+    /* CFG 自身命令在创建 IPC 消息之前直接本地处理（无目标模块概念，也不需要按需启动）。 */
+    /* 按需启动触发：若目标模块未连接，先订阅 + auto_start=1 等其就绪
+     *   - 配置命令（含 no）：触发按需 spawn；调用方等待几百毫秒后正常分发
+     *   - show 命令：read-only，不应有副作用——目标不在跑就直接返回提示，不拉起进程
+     * 这样像 TUNNEL 这种纯基础设施模块只会被业务模块（LDP/BGP-MPLS）显式拉起，
+     * 用户输入 show 不会意外把它启动。 */
+    if (result->module_id != DEV_MODULE_ID_CLI && !dev_ipc_is_connected(g_cli_local->dev_ipc_ctx, result->module_id))
+    {
+        /* CFG 被动等待业务模块主动建联（业务模块在自己 init 中 subscribe(CLI)）。
+         * 此处不主动连任何模块。
+         *   - show 命令：is_connected=false 就意味着模块没在跑，直接返回，零副作用
+         *   - 配置命令：调 wait_module_ready 让 DEV 把按需模块拉起；目标 init 中会 subscribe(CLI)，
+         *               届时 CFG 自然收到 inbound 连接，is_connected 变 true */
+        if (result->has_show_prefix)
+        {
+            cli_send_message(session, "Info: target module is not running; no data to show.\r\n");
+            return ERRCODE_SUCCESS;
+        }
+        cli_send_message(session, "[Starting module, please wait...]\r\n");
+        if (dev_ipc_wait_module_ready(g_cli_local->dev_ipc_ctx, result->module_id, 15000) != ERRCODE_SUCCESS)
+        {
+            cli_send_message(session, "Error: Required module failed to start.\r\n");
+            return ERRCODE_FAIL;
+        }
+    }
+
     /* 获取当前视图上下文 */
     uint32_t ctx_len = 0;
     const uint8_t *ctx_data = cli_context_get(session, &ctx_len);

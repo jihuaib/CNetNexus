@@ -102,6 +102,16 @@ static dev_ipc_connection_t *find_connection_by_fd(dev_ipc_context_t *ctx, int f
     return NULL;
 }
 
+static void notify_connection_down(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn)
+{
+    if (!ctx || !conn || !ctx->disconnect_handler || conn->remote_module_id == 0 || conn->state != DEV_IPC_COCONNECTED)
+    {
+        return;
+    }
+
+    ctx->disconnect_handler(ctx, conn->remote_module_id, ctx->disconnect_user);
+}
+
 // ============================================================================
 // 连接状态序列化（供 QUERY_IPC_CONNS 响应和自查询使用）
 // ============================================================================
@@ -414,6 +424,17 @@ static void handle_frame(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn, dev
             break;
         }
 
+        case DEV_IPC_MSG_TYPE_DEV_MODULE_EVENT:
+        {
+            /* MODULE_EVENT 在 IO 线程直接派发：自动建联 + 触发回调（包括 wait_module_ready 的 condvar）
+             * 这样即使业务 worker 线程被阻塞，wait 仍能被唤醒。 */
+            if (header->payload_len >= sizeof(dev_module_event_payload_t) && payload)
+            {
+                dev_ipc_dispatch_module_event(ctx, (const dev_module_event_payload_t *)payload);
+            }
+            break;
+        }
+
         case DEV_IPC_MSG_TYPE_DEV_QUERY_IPC_CONNS:
         {
             /* IPC 状态查询：序列化本模块所有连接并直接回复，无需经过应用层 */
@@ -487,6 +508,7 @@ static void process_received_data(dev_ipc_context_t *ctx, dev_ipc_connection_t *
         {
             /* 无效帧，断开连接 */
             LOG_WARN("<%s> Received invalid frame, disconnecting", ctx->name);
+            notify_connection_down(ctx, conn);
             dev_ipc_connection_close(conn);
             return;
         }
@@ -545,6 +567,7 @@ static void check_heartbeats(dev_ipc_context_t *ctx)
                 LOG_WARN("<%s> Heartbeat timeout, disconnecting %s", ctx->name,
                          fmt_module_id(conn->remote_module_id, _buf, sizeof(_buf)));
             }
+            notify_connection_down(ctx, conn);
             epoll_ctl(ctx->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
             dev_ipc_connection_close(conn);
             if (conn->is_initiator)
@@ -815,6 +838,7 @@ static void *dev_ipc_io_thread(void *arg)
                             LOG_WARN("<%s> Connection lost (module=%s)", ctx->name,
                                      fmt_module_id(conn->remote_module_id, _buf, sizeof(_buf)));
                         }
+                        notify_connection_down(ctx, conn);
                         epoll_ctl(ctx->epoll_fd, EPOLL_CTL_DEL, fd, NULL);
                         dev_ipc_connection_close(conn);
                         if (conn->is_initiator)
@@ -833,6 +857,7 @@ static void *dev_ipc_io_thread(void *arg)
             if (events[i].events & (EPOLLERR | EPOLLHUP))
             {
                 epoll_ctl(ctx->epoll_fd, EPOLL_CTL_DEL, fd, NULL);
+                notify_connection_down(ctx, conn);
                 dev_ipc_connection_close(conn);
                 if (conn->is_initiator)
                 {
@@ -949,6 +974,9 @@ dev_ipc_context_t *dev_ipc_init(uint32_t module_id, const char *name, uint16_t l
     /* 创建查询管理器 */
     ctx->query_mgr = dev_ipc_query_mgr_create();
 
+    /* 创建订阅管理器 */
+    ctx->sub_mgr = dev_ipc_subscribe_mgr_create();
+
     /* 创建 epoll */
     ctx->epoll_fd = epoll_create1(EPOLL_CLOEXEC);
     if (ctx->epoll_fd < 0)
@@ -1000,6 +1028,17 @@ dev_ipc_context_t *dev_ipc_init(uint32_t module_id, const char *name, uint16_t l
 
     LOG_INFO("<%s> IPC initialization complete (module_id=0x%08X)", ctx->name, module_id);
     return ctx;
+}
+
+void dev_ipc_set_disconnect_handler(dev_ipc_context_t *ctx, dev_ipc_disconnect_handler_fn handler, void *user)
+{
+    if (!ctx)
+    {
+        return;
+    }
+
+    ctx->disconnect_handler = handler;
+    ctx->disconnect_user = user;
 }
 
 void dev_ipc_destroy(dev_ipc_context_t *ctx)
@@ -1059,6 +1098,12 @@ void dev_ipc_destroy(dev_ipc_context_t *ctx)
     if (ctx->query_mgr)
     {
         dev_ipc_query_mgr_destroy(ctx->query_mgr);
+    }
+
+    if (ctx->sub_mgr)
+    {
+        dev_ipc_subscribe_mgr_destroy(ctx->sub_mgr);
+        ctx->sub_mgr = NULL;
     }
 
     pthread_mutex_destroy(&ctx->comutex);

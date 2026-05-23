@@ -9,6 +9,7 @@
 #include <glib.h>
 #include <string.h>
 
+#include "bgp_adj_rib_in.h"
 #include "log.h"
 
 // ============================================================================
@@ -25,6 +26,7 @@ bgp_peer_t *bgp_peer_create(bgp_vrf_t *vrf, bgp_instance_t *inst, const net_addr
     peer->vrf = vrf;
     peer->inst = inst;
     peer->state = BGP_PEER_STATE_IDLE;
+    peer->rib_in = bgp_adj_rib_in_create();
     return peer;
 }
 
@@ -41,5 +43,7 @@ void bgp_peer_destroy(bgp_peer_t *peer)
         g_list_free(peer->subgroups);
         peer->subgroups = NULL;
     }
+    bgp_adj_rib_in_destroy(peer->rib_in);
+    peer->rib_in = NULL;
     g_free(peer);
 }

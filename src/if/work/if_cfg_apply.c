@@ -378,6 +378,49 @@ static int if_sync_connected_prefix(const if_map_entry_t *if_entry, const net_pr
     return ERRCODE_SUCCESS;
 }
 
+typedef struct if_replay_connected_ctx
+{
+    int replayed;
+} if_replay_connected_ctx_t;
+
+static gboolean if_replay_connected_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    if_map_entry_t *entry = (if_map_entry_t *)value;
+    if_replay_connected_ctx_t *ctx = (if_replay_connected_ctx_t *)user_data;
+    if (!entry || !ctx || entry->shutdown)
+    {
+        return FALSE;
+    }
+
+    if (net_prefix_is_set(&entry->prefix_v4) &&
+        if_sync_connected_host_routes(entry, &entry->prefix_v4, FALSE) == ERRCODE_SUCCESS)
+    {
+        ctx->replayed++;
+    }
+    if (net_prefix_is_set(&entry->prefix_v6) &&
+        if_sync_connected_host_routes(entry, &entry->prefix_v6, FALSE) == ERRCODE_SUCCESS)
+    {
+        ctx->replayed++;
+    }
+    return FALSE;
+}
+
+int if_cfg_replay_connected_routes(void)
+{
+    if (!g_if_work_local || !g_if_work_local->interface_map.all_entries)
+    {
+        return -1;
+    }
+
+    if_replay_connected_ctx_t ctx = {
+        .replayed = 0,
+    };
+    g_tree_foreach(g_if_work_local->interface_map.all_entries, if_replay_connected_cb, &ctx);
+    LOG_INFO("IF: replayed %d connected route prefix(es) to ROUTE", ctx.replayed);
+    return ctx.replayed;
+}
+
 if_map_entry_t *if_cfg_find_entry(const char *logical_name)
 {
     if (!logical_name || !g_if_work_local)

@@ -10,20 +10,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "bgp_instance.h"
 #include "log.h"
-
-/* ============================================================================
- * 全局状态
- * ========================================================================== */
-
-/** 属性 intern 表：key = bgp_attr_ref_t*，value = 同一指针 */
-static GHashTable *g_attr_table = NULL;
-
-/** attr_id → bgp_attr_ref_t* 反查表（用于按 ID 查找） */
-static GHashTable *g_attr_id_table = NULL;
-
-/** 下一个可分配的 attr_id（从 1 开始，0 表示无效） */
-static uint32_t g_next_attr_id = 1;
 
 /* ============================================================================
  * Hash / Equal
@@ -63,42 +51,59 @@ static gboolean g_equal_attr_ref(gconstpointer a, gconstpointer b)
 
 void bgp_attr_intern_init(void)
 {
-    if (g_attr_table)
-    {
-        return; /* 幂等 */
-    }
-    g_attr_table = g_hash_table_new(g_hash_attr_ref, g_equal_attr_ref);
-    g_attr_id_table = g_hash_table_new(g_direct_hash, g_direct_equal);
-    g_next_attr_id = 1;
-    LOG_INFO("BGP: attr intern 表已初始化");
+    LOG_INFO("BGP: attr intern 模块已初始化");
 }
 
-void bgp_attr_intern_fini(void)
+void bgp_attr_intern_fini(void) {}
+
+void bgp_attr_store_init(bgp_instance_t *inst)
 {
-    if (g_attr_id_table)
+    if (!inst || inst->attr_table)
     {
-        g_hash_table_destroy(g_attr_id_table);
-        g_attr_id_table = NULL;
+        return;
     }
-    if (g_attr_table)
+    inst->attr_table = g_hash_table_new(g_hash_attr_ref, g_equal_attr_ref);
+    inst->attr_id_table = g_hash_table_new(g_direct_hash, g_direct_equal);
+    inst->next_attr_id = 1;
+}
+
+void bgp_attr_store_destroy(bgp_instance_t *inst)
+{
+    if (!inst)
     {
-        /* 释放所有残留 ref（正常情况应为空） */
+        return;
+    }
+    if (inst->attr_id_table)
+    {
+        g_hash_table_destroy(inst->attr_id_table);
+        inst->attr_id_table = NULL;
+    }
+    if (inst->attr_table)
+    {
         GHashTableIter iter;
         gpointer key;
-        g_hash_table_iter_init(&iter, g_attr_table);
+        g_hash_table_iter_init(&iter, inst->attr_table);
         while (g_hash_table_iter_next(&iter, &key, NULL))
         {
             g_free(key);
         }
-        g_hash_table_destroy(g_attr_table);
-        g_attr_table = NULL;
+        g_hash_table_destroy(inst->attr_table);
+        inst->attr_table = NULL;
     }
-    g_next_attr_id = 1;
+    inst->next_attr_id = 1;
 }
 
-bgp_attr_ref_t *bgp_attr_intern(const bgp_attr_t *attr, uint32_t source_flag)
+bgp_attr_ref_t *bgp_attr_intern(bgp_instance_t *inst, const bgp_attr_t *attr)
 {
-    if (!attr || !g_attr_table)
+    if (!inst || !attr)
+    {
+        return NULL;
+    }
+    if (!inst->attr_table || !inst->attr_id_table)
+    {
+        bgp_attr_store_init(inst);
+    }
+    if (!inst->attr_table || !inst->attr_id_table)
     {
         return NULL;
     }
@@ -108,24 +113,23 @@ bgp_attr_ref_t *bgp_attr_intern(const bgp_attr_t *attr, uint32_t source_flag)
     memcpy(&probe.attr, attr, sizeof(bgp_attr_t));
     probe.hash = attr_hash_fn(attr);
 
-    bgp_attr_ref_t *existing = (bgp_attr_ref_t *)g_hash_table_lookup(g_attr_table, &probe);
+    bgp_attr_ref_t *existing = (bgp_attr_ref_t *)g_hash_table_lookup(inst->attr_table, &probe);
     if (existing)
     {
         existing->refcnt++;
-        existing->source_flags |= source_flag;
         return existing;
     }
 
     /* 不存在，分配新节点 */
     bgp_attr_ref_t *ref = g_malloc(sizeof(bgp_attr_ref_t));
+    ref->inst = inst;
     memcpy(&ref->attr, attr, sizeof(bgp_attr_t));
     ref->refcnt = 1;
     ref->hash = probe.hash;
-    ref->attr_id = g_next_attr_id++;
-    ref->source_flags = source_flag;
+    ref->attr_id = inst->next_attr_id++;
 
-    g_hash_table_insert(g_attr_table, ref, ref);
-    g_hash_table_insert(g_attr_id_table, GUINT_TO_POINTER(ref->attr_id), ref);
+    g_hash_table_insert(inst->attr_table, ref, ref);
+    g_hash_table_insert(inst->attr_id_table, GUINT_TO_POINTER(ref->attr_id), ref);
 
     return ref;
 }
@@ -152,41 +156,42 @@ void bgp_attr_release(bgp_attr_ref_t *ref)
     ref->refcnt--;
     if (ref->refcnt == 0)
     {
-        if (g_attr_id_table)
+        bgp_instance_t *inst = ref->inst;
+        if (inst && inst->attr_id_table)
         {
-            g_hash_table_remove(g_attr_id_table, GUINT_TO_POINTER(ref->attr_id));
+            g_hash_table_remove(inst->attr_id_table, GUINT_TO_POINTER(ref->attr_id));
         }
-        if (g_attr_table)
+        if (inst && inst->attr_table)
         {
-            g_hash_table_remove(g_attr_table, ref);
+            g_hash_table_remove(inst->attr_table, ref);
         }
         g_free(ref);
     }
 }
 
-const bgp_attr_ref_t *bgp_attr_find_by_id(uint32_t attr_id)
+const bgp_attr_ref_t *bgp_attr_find_by_id(const bgp_instance_t *inst, uint32_t attr_id)
 {
-    if (!g_attr_id_table || attr_id == 0)
+    if (!inst || !inst->attr_id_table || attr_id == 0)
     {
         return NULL;
     }
-    return (const bgp_attr_ref_t *)g_hash_table_lookup(g_attr_id_table, GUINT_TO_POINTER(attr_id));
+    return (const bgp_attr_ref_t *)g_hash_table_lookup(inst->attr_id_table, GUINT_TO_POINTER(attr_id));
 }
 
-uint32_t bgp_attr_intern_count(void)
+uint32_t bgp_attr_intern_count(const bgp_instance_t *inst)
 {
-    return g_attr_table ? g_hash_table_size(g_attr_table) : 0;
+    return (inst && inst->attr_table) ? g_hash_table_size(inst->attr_table) : 0;
 }
 
-void bgp_attr_intern_foreach(bgp_attr_intern_cb cb, gpointer user_data)
+void bgp_attr_intern_foreach(const bgp_instance_t *inst, bgp_attr_intern_cb cb, gpointer user_data)
 {
-    if (!cb || !g_attr_table)
+    if (!inst || !cb || !inst->attr_table)
     {
         return;
     }
     GHashTableIter iter;
     gpointer key;
-    g_hash_table_iter_init(&iter, g_attr_table);
+    g_hash_table_iter_init(&iter, inst->attr_table);
     while (g_hash_table_iter_next(&iter, &key, NULL))
     {
         cb((const bgp_attr_ref_t *)key, user_data);

@@ -10,19 +10,6 @@
 
 fib_local_t *g_fib_local = NULL;
 
-static void send_phase_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, int32_t result)
-{
-    dev_ipc_message_t *resp = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_MODULE_RESP, DEV_MODULE_ID_FIB,
-                                                     msg->src_module_id, msg->request_id, NULL, 0, NULL);
-    if (resp)
-    {
-        dev_ipc_send_response(ctx, resp);
-        dev_ipc_message_free(resp);
-    }
-    dev_ipc_message_free(msg);
-    (void)result;
-}
-
 static void send_empty_show_config_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     dev_ipc_message_t *resp = dev_ipc_message_create(CLI_MSG_TYPE_RESP, DEV_MODULE_ID_FIB, msg->src_module_id,
@@ -35,44 +22,88 @@ static void send_empty_show_config_response(dev_ipc_context_t *ctx, dev_ipc_mess
     dev_ipc_message_free(msg);
 }
 
-static void fib_on_start(dev_ipc_message_t *msg)
+/* VRF dep 就绪回调（含初次 + 重启）。
+ * IO/同步上下文，不阻塞——投递 worker 内部消息让 worker 线程做实际订阅。 */
+static void fib_on_vrf_ready_cb(uint32_t module_id, uint8_t event, const char *host, uint16_t port, uint32_t epoch,
+                                void *user)
+{
+    (void)module_id;
+    (void)host;
+    (void)port;
+    (void)epoch;
+    (void)user;
+    if (event != DEV_MODULE_EVENT_READY)
+    {
+        return;
+    }
+    if (!g_fib_local || !g_fib_local->dev_ipc_ctx)
+    {
+        return;
+    }
+    dev_ipc_message_t *m =
+        dev_ipc_message_create(FIB_MSG_TYPE_INTERNAL_VRF_READY, DEV_MODULE_ID_FIB, DEV_MODULE_ID_FIB, 0, NULL, 0, NULL);
+    if (m)
+    {
+        g_async_queue_push(g_fib_local->dev_ipc_ctx->msg_queue, m);
+    }
+}
+
+static void fib_handle_vrf_ready(void)
 {
     dev_ipc_context_t *ctx = fib_local_ipc_ctx();
-    LOG_INFO("Phase 1: MODULE_START - preparing FIB worker");
-
-    if (dev_ipc_connect(ctx, DEV_MODULE_ID_CLI, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CLI) != 0)
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_VRF, 3000) != ERRCODE_SUCCESS)
     {
-        LOG_WARN("FIB: failed to connect to CLI module");
+        LOG_WARN("FIB: VRF not connected within 3s; vrf_api_subscribe deferred");
+        return;
     }
-    if (dev_ipc_connect(ctx, DEV_MODULE_ID_VRF, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_VRF) != 0)
+    if (vrf_api_subscribe_all(ctx) != ERRCODE_SUCCESS)
     {
-        LOG_WARN("FIB: failed to connect to VRF module (VRF-name show filters may be unavailable)");
+        LOG_WARN("FIB: vrf_api_subscribe_all failed");
+    }
+    else
+    {
+        LOG_INFO("FIB: subscribed to VRF events");
+    }
+}
+
+/**
+ * FIB 本地 init（合并原 on_start/on_ready 逻辑）。
+ */
+static int fib_init_local(void)
+{
+    dev_ipc_context_t *ctx = fib_local_ipc_ctx();
+
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DEV, 10000) != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("FIB: timed out waiting for DEV connection");
     }
 
     if (fib_worker_prepare() != ERRCODE_SUCCESS || fib_worker_launch() != ERRCODE_SUCCESS)
     {
-        LOG_ERROR("FIB worker startup failed");
+        LOG_ERROR("FIB: worker start failed");
         fib_worker_shutdown();
-        send_phase_response(ctx, msg, ERRCODE_FAIL);
-        return;
+        return -1;
     }
 
-    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
-}
-
-static void fib_on_connect(dev_ipc_message_t *msg)
-{
-    send_phase_response(fib_local_ipc_ctx(), msg, ERRCODE_SUCCESS);
-}
-
-static void fib_on_ready(dev_ipc_message_t *msg)
-{
-    dev_ipc_context_t *ctx = fib_local_ipc_ctx();
-    if (vrf_api_subscribe_all(ctx) != ERRCODE_SUCCESS)
+    /* VRF（on-demand）：auto_start=1 + cb 重启感知 */
+    /* VRF 用 auto_start=0：FIB 不硬依赖 VRF；cb 在 VRF 实际启动后才触发 vrf_api_subscribe_all */
+    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_VRF, 0, fib_on_vrf_ready_cb, NULL) != ERRCODE_SUCCESS)
     {
-        LOG_WARN("FIB: failed to subscribe to VRF events via vrf_api");
+        LOG_WARN("FIB: subscribe(VRF) failed");
     }
-    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
+
+    /* CLI 末尾 */
+    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_CLI, 0, NULL, NULL) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("FIB: subscribe(CLI) failed");
+    }
+
+    if (dev_ipc_notify_ready(ctx) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("FIB: notify_ready to DEV failed");
+    }
+    LOG_INFO("FIB: module ready");
+    return 0;
 }
 
 static void post_or_free(fib_worker_cmd_type_t type, dev_ipc_message_t *msg)
@@ -102,15 +133,9 @@ void fib_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
     switch (msg->msg_type)
     {
-        case DEV_IPC_MSG_TYPE_DEV_MODULE_START:
-            fib_on_start(msg);
-            return;
-        case DEV_IPC_MSG_TYPE_DEV_MODULE_CONNECT:
-            fib_on_connect(msg);
-            return;
-        case DEV_IPC_MSG_TYPE_DEV_MODULE_READY:
-            fib_on_ready(msg);
-            return;
+        case FIB_MSG_TYPE_INTERNAL_VRF_READY:
+            fib_handle_vrf_ready();
+            break;
         case CLI_MSG_TYPE_SHOW_CONFIG:
             send_empty_show_config_response(ctx, msg);
             return;
@@ -174,7 +199,7 @@ int fib_module_init(void)
         return -1;
     }
     g_fib_local->dev_ipc_ctx = ctx;
-    return 0;
+    return fib_init_local();
 }
 
 void fib_module_cleanup(void)

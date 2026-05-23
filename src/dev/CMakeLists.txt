@@ -10,6 +10,7 @@ set(DEV_SOURCES
     dev_db.c
     dev_bdr.c
     dev_ping.c
+    dev_subscribe.c
 )
 
 # Create shared library for dev module

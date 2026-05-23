@@ -37,6 +37,8 @@ typedef enum ldp_worker_cmd_type
     LDP_WORKER_CMD_APPLY = 3,
     LDP_WORKER_CMD_ROUTE_MSG = 4,
     LDP_WORKER_CMD_SHUTDOWN = 5,
+    LDP_WORKER_CMD_ROUTE_READY = 6,
+    LDP_WORKER_CMD_IF_DOWN = 7,
 } ldp_worker_cmd_type_t;
 
 typedef struct ldp_worker_cmd
@@ -311,6 +313,47 @@ static int worker_dispatch_cmd(ldp_worker_cmd_t *cmd)
                 cmd->msg = NULL;
             }
             break;
+
+        case LDP_WORKER_CMD_ROUTE_READY:
+            if (dev_ipc_wait_connected(ldp_local_ipc_ctx(), DEV_MODULE_ID_ROUTE, 3000) != ERRCODE_SUCCESS)
+            {
+                LOG_WARN("LDP: ROUTE connection not ready after 3s; resubscribe deferred to next READY");
+                break;
+            }
+            if (g_ldp_work_local->proto.admin_up && g_ldp_work_local->proto.lsr_id != 0u)
+            {
+                ldp_route_sync_resubscribe();
+            }
+            break;
+
+        case LDP_WORKER_CMD_IF_DOWN:
+        {
+            /* IF 模块下线：
+             *   1) 清掉 IF 共享缓存。
+             *   2) 对每个本地已知接口调 ldp_discovery_on_if_event：因为缓存被清空，
+             *      refresh_iface_from_cache 会判 !link_up，触发 close_iface_socket +
+             *      purge_adjacencies_for_iface → 级联 ldp_session_on_adjacency_down
+             *      关闭 TCP 会话。
+             * IF READY 后由 if_api_subscribe_all 重新拉接口状态，本地接口会再次激活。 */
+            LOG_INFO("LDP: IF DOWN detected, flushing IF cache + tearing down adjacencies/sessions");
+            if_api_cache_cleanup();
+            if_api_cache_init();
+            if (g_ldp_work_local && g_ldp_work_local->interfaces)
+            {
+                /* 复制 key 列表，避免回调内部修改 interfaces 时迭代器失效 */
+                GList *names = g_hash_table_get_keys(g_ldp_work_local->interfaces);
+                for (GList *it = names; it; it = it->next)
+                {
+                    const char *ifname = (const char *)it->data;
+                    if (ifname && ifname[0])
+                    {
+                        ldp_discovery_on_if_event(ifname);
+                    }
+                }
+                g_list_free(names);
+            }
+            break;
+        }
 
         case LDP_WORKER_CMD_SHUTDOWN:
             g_ldp_work_local->running = 0;
@@ -721,6 +764,36 @@ int ldp_worker_post_if_event(dev_ipc_message_t *msg)
 int ldp_worker_post_route_msg(dev_ipc_message_t *msg)
 {
     ldp_worker_cmd_t *cmd = worker_cmd_create(LDP_WORKER_CMD_ROUTE_MSG, msg, 0);
+    if (!cmd)
+    {
+        return ERRCODE_FAIL;
+    }
+    if (worker_cmd_enqueue(cmd) != 0)
+    {
+        worker_cmd_destroy(cmd);
+        return ERRCODE_FAIL;
+    }
+    return ERRCODE_SUCCESS;
+}
+
+int ldp_worker_post_if_down(void)
+{
+    ldp_worker_cmd_t *cmd = worker_cmd_create(LDP_WORKER_CMD_IF_DOWN, NULL, 0);
+    if (!cmd)
+    {
+        return ERRCODE_FAIL;
+    }
+    if (worker_cmd_enqueue(cmd) != 0)
+    {
+        worker_cmd_destroy(cmd);
+        return ERRCODE_FAIL;
+    }
+    return ERRCODE_SUCCESS;
+}
+
+int ldp_worker_post_route_ready(void)
+{
+    ldp_worker_cmd_t *cmd = worker_cmd_create(LDP_WORKER_CMD_ROUTE_READY, NULL, 0);
     if (!cmd)
     {
         return ERRCODE_FAIL;

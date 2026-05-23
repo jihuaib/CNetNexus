@@ -270,6 +270,13 @@ void isis_worker_shutdown(void);
 
 int isis_worker_post_show_cli(dev_ipc_message_t *msg);
 int isis_worker_post_if_event(dev_ipc_message_t *msg);
+int isis_worker_post_route_ready(void);
+
+/**
+ * @brief IPC 线程通知 worker：IF 模块下线，执行 IF 缓存清空 + 邻接撤销 + 路由收回。
+ * @return ERRCODE_SUCCESS 成功投递；失败返回 ERRCODE_FAIL。
+ */
+int isis_worker_post_if_down(void);
 
 int isis_worker_dispatch_apply(isis_apply_cmd_t *apply);
 

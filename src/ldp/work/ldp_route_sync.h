@@ -26,6 +26,7 @@ typedef struct ldp_learned_route
 /* 生命周期 */
 void ldp_route_sync_init(void);
 void ldp_route_sync_subscribe(void);
+void ldp_route_sync_resubscribe(void);
 void ldp_route_sync_unsubscribe(void);
 void ldp_route_sync_cleanup(void);
 

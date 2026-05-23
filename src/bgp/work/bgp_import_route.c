@@ -17,6 +17,7 @@
 #include "bgp.h"
 #include "bgp_attr_intern.h"
 #include "bgp_calc.h"
+#include "bgp_ext_community.h"
 #include "bgp_instance.h"
 #include "bgp_main.h"
 #include "bgp_protocol.h"
@@ -175,6 +176,46 @@ void bgp_import_route_unsubscribe_protocol_imports(const bgp_protocol_t *proto)
     {
         const bgp_import_route_sub_key_t *key = &g_array_index(keys, bgp_import_route_sub_key_t, i);
         (void)bgp_import_route_unsubscribe(key->import_proto, key->vrf_id, key->afi);
+    }
+    g_array_free(keys, TRUE);
+}
+
+void bgp_import_route_resubscribe_protocol_imports(const bgp_protocol_t *proto)
+{
+    if (!proto || !proto->vrf_hash)
+    {
+        return;
+    }
+
+    GArray *keys = g_array_new(FALSE, FALSE, sizeof(bgp_import_route_sub_key_t));
+    if (!keys)
+    {
+        return;
+    }
+
+    GHashTableIter vrf_iter;
+    gpointer vrf_key = NULL;
+    gpointer vrf_val = NULL;
+    g_hash_table_iter_init(&vrf_iter, proto->vrf_hash);
+    while (g_hash_table_iter_next(&vrf_iter, &vrf_key, &vrf_val))
+    {
+        (void)vrf_key;
+        bgp_import_route_collect_vrf_subs((const bgp_vrf_t *)vrf_val, keys);
+    }
+
+    uint32_t ok = 0;
+    for (guint i = 0; i < keys->len; ++i)
+    {
+        const bgp_import_route_sub_key_t *key = &g_array_index(keys, bgp_import_route_sub_key_t, i);
+        if (bgp_import_route_subscribe(key->import_proto, key->vrf_id, key->afi, ROUTE_SUBSCRIBE_FLAG_FULL) ==
+            ERRCODE_SUCCESS)
+        {
+            ok++;
+        }
+    }
+    if (keys->len > 0)
+    {
+        LOG_INFO("BGP: replayed %u/%u import-route subscription(s) to ROUTE", ok, keys->len);
     }
     g_array_free(keys, TRUE);
 }
@@ -475,6 +516,7 @@ static int bgp_import_route_entry_to_safi(const route_msg_entry_t *entry, bgp_vr
     {
         bgp_attr_t attr;
         bgp_attr_build_imported(&attr);
+        bgp_ext_community_merge_vrf_export_rts(&attr, vrf->vrf_id, afi);
 
         bgp_nexthop_t nexthop;
         bgp_nexthop_from_addr(&nexthop, &entry->nexthop_addr);

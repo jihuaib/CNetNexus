@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "cli.h"
 #include "db.h"
 #include "db_serialize.h"
 #include "dev.h"
@@ -443,9 +444,18 @@ static int build_select_sql(const char *table_name, const char **field_names, ui
 
 /**
  * @brief 发送 EXEC_SQL 请求（DML/DDL），返回影响行数或错误码
+ *
+ * 入口先做一次 O(1) 的 IPC 连接状态检查：DB 离线时直接返回 -1，避免阻塞
+ * 5 秒 IPC 超时（DB crash / 重启过程中这一点很关键）。
  */
 static int send_exec_sql(dev_ipc_context_t *ctx, const char *sql)
 {
+    if (!dev_ipc_is_connected(ctx, DEV_MODULE_ID_DB))
+    {
+        LOG_ERROR("RPC exec_sql rejected: DB module not connected");
+        return -1;
+    }
+
     void *payload = NULL;
     uint32_t payload_len = 0;
     db_serialize_request_sql(DB_GLOBAL_NAME, sql, &payload, &payload_len);
@@ -470,9 +480,17 @@ static int send_exec_sql(dev_ipc_context_t *ctx, const char *sql)
 
 /**
  * @brief 发送 QUERY_SQL 请求（SELECT），返回结果集
+ *
+ * 入口连接预检逻辑与 send_exec_sql 一致：DB 离线时快速失败。
  */
 static int send_query_sql(dev_ipc_context_t *ctx, const char *sql, db_result_t **result)
 {
+    if (!dev_ipc_is_connected(ctx, DEV_MODULE_ID_DB))
+    {
+        LOG_ERROR("RPC query_sql rejected: DB module not connected");
+        return ERRCODE_FAIL;
+    }
+
     void *payload = NULL;
     uint32_t payload_len = 0;
     db_serialize_request_sql(DB_GLOBAL_NAME, sql, &payload, &payload_len);
@@ -493,6 +511,61 @@ static int send_query_sql(dev_ipc_context_t *ctx, const char *sql, db_result_t *
     db_deserialize_response(resp->payload, resp->payload_len, &retval, result);
     dev_ipc_message_free(resp);
     return retval;
+}
+
+// ============================================================================
+// DB 可用性检查 / 配置 Guard（业务模块在 CLI config 入口调用）
+// ============================================================================
+
+int db_rpc_is_available(dev_ipc_context_t *ctx)
+{
+    if (!ctx)
+    {
+        return 0;
+    }
+    return dev_ipc_is_connected(ctx, DEV_MODULE_ID_DB);
+}
+
+int db_rpc_guard_reject(dev_ipc_context_t *ctx, dev_ipc_message_t *cli_msg, const char *module_tag)
+{
+    if (!ctx || !cli_msg)
+    {
+        return 0;
+    }
+    if (dev_ipc_is_connected(ctx, DEV_MODULE_ID_DB))
+    {
+        return 0;
+    }
+
+    const char *tag = module_tag ? module_tag : "DB";
+    char text[160];
+    int n =
+        snprintf(text, sizeof(text), "%s Error: configuration rejected because DB module is not available\r\n", tag);
+    if (n < 0)
+    {
+        n = 0;
+    }
+    size_t text_len = (size_t)n + 1; /* 含末尾 NUL */
+
+    char *payload = g_strdup(text);
+    dev_ipc_message_t *resp =
+        dev_ipc_message_create(CLI_MSG_TYPE_RESP, dev_ipc_get_module_id(ctx), cli_msg->src_module_id,
+                               cli_msg->request_id, payload, text_len, g_free);
+    if (resp)
+    {
+        if (dev_ipc_send_response(ctx, resp) != 0)
+        {
+            LOG_WARN("db_rpc_guard_reject: failed to send error response to module 0x%08X", cli_msg->src_module_id);
+        }
+        dev_ipc_message_free(resp);
+    }
+    else
+    {
+        g_free(payload);
+    }
+
+    LOG_WARN("%s: config command rejected (DB module not available)", tag);
+    return 1;
 }
 
 /**

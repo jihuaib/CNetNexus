@@ -802,7 +802,20 @@ void bgp_update_group_enqueue_announce(bgp_instance_t *inst, const bgp_nlri_entr
                 continue;
             }
 
-            bgp_attr_ref_t *ref = bgp_attr_intern(&out_attr, BGP_ATTR_SRC_RIB_OUT);
+            if (ug->key.remote_as != 0U && bgp_attr_as_path_contains_as(out_attr.as_path, ug->key.remote_as))
+            {
+                if (bgp_adj_rib_out_remove(sg->adj_rib_out, nlri))
+                {
+                    bgp_nlri_entry_t *copy = g_malloc(sizeof(*copy));
+                    memcpy(copy, nlri, sizeof(*copy));
+                    g_queue_push_tail(sg->withdraw_queue, copy);
+                    sg->withdraw_count++;
+                    scheduled++;
+                }
+                continue;
+            }
+
+            bgp_attr_ref_t *ref = bgp_attr_intern(ug->inst, &out_attr);
             if (!ref)
             {
                 continue;

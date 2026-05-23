@@ -19,6 +19,7 @@
 
 #include "dev/dev_main.h"
 #include "dev/dev_module.h"
+#include "dev/dev_subscribe.h"
 #include "errcode.h"
 #include "log.h"
 
@@ -201,12 +202,66 @@ int main(int argc, char *argv[])
                     }
                     else if (si.ssi_signo == SIGCHLD)
                     {
-                        /* 回收已退出的子进程，记录异常退出 */
+                        /* 回收所有已退出的子进程（可能一次到达多个 SIGCHLD 但只读一次）。
+                         * 若 cleanup_all_modules / dev_reboot_software 正在主动关闭，
+                         * 仅回收 + 记录，不做"crashed/respawn"判定。 */
                         int wstatus;
-                        pid_t dead = waitpid(-1, &wstatus, WNOHANG);
-                        if (dead > 0)
+                        pid_t dead;
+                        int in_cleanup = dev_module_is_cleanup_in_progress();
+                        while ((dead = waitpid(-1, &wstatus, WNOHANG)) > 0)
                         {
-                            LOG_WARN("Child process pid=%d exited (status=%d)", dead, wstatus);
+                            dev_module_t *m = dev_module_find_by_pid(dead);
+                            if (!m)
+                            {
+                                LOG_WARN("Reaped unknown child pid=%d (status=%d)", dead, wstatus);
+                                continue;
+                            }
+
+                            LOG_WARN("Module %s (pid=%d) exited (status=%d, on_demand=%u, pending_restart=%u, "
+                                     "pending_stop=%u%s)",
+                                     m->name, dead, wstatus, m->on_demand, m->pending_restart, m->pending_stop,
+                                     in_cleanup ? ", cleanup" : "");
+
+                            if (in_cleanup)
+                            {
+                                /* 主动关闭路径：cleanup_all_modules 会自己 reap + 释放结构体，
+                                 * 这里仅回收 pid 防止僵尸；不要改 phase/child_pid，更不要 respawn。 */
+                                continue;
+                            }
+
+                            /* 通知订阅者：模块下线 */
+                            dev_subscribe_broadcast_event(m, DEV_MODULE_EVENT_DOWN);
+
+                            m->child_pid = 0;
+                            m->phase = DEV_PHASE_REGISTERED;
+
+                            if (m->pending_stop)
+                            {
+                                /* 用户主动 stop：保持 REGISTERED，不重启、不告警 */
+                                m->pending_stop = 0;
+                                LOG_INFO("Module %s stopped by user", m->name);
+                            }
+                            else if (m->pending_restart)
+                            {
+                                m->pending_restart = 0;
+                                LOG_INFO("Module %s: pending_restart, respawning...", m->name);
+                                if (dev_module_respawn(m) == ERRCODE_SUCCESS)
+                                {
+                                    if (g_dev_local && g_dev_local->dev_ipc_ctx)
+                                    {
+                                        dev_ipc_connect(g_dev_local->dev_ipc_ctx, m->module_id, DEV_IPC_HOST_LOCAL,
+                                                        m->port);
+                                    }
+                                }
+                                else
+                                {
+                                    LOG_ERROR("Module %s respawn failed", m->name);
+                                }
+                            }
+                            else if (!m->on_demand)
+                            {
+                                LOG_ERROR("Basic module %s crashed; manual intervention required", m->name);
+                            }
                         }
                     }
                 }

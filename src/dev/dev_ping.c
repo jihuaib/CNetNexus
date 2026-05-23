@@ -245,8 +245,8 @@ static int get_arp_mac(const char *ifname, const net_addr_t *addr, uint8_t mac[E
     return 0;
 }
 
-dev_ping_session_t *dev_ping_start(const net_addr_t *target, const net_addr_t *source, int count, int timeout_ms,
-                                   char *errmsg, size_t errmsg_len)
+dev_ping_session_t *dev_ping_start_bound(const net_addr_t *target, const net_addr_t *source, const char *bind_ifname,
+                                         int count, int timeout_ms, char *errmsg, size_t errmsg_len)
 {
     if (!target || (target->family != AF_INET && target->family != AF_INET6))
     {
@@ -284,6 +284,18 @@ dev_ping_session_t *dev_ping_start(const net_addr_t *target, const net_addr_t *s
                        strerror(errno));
         }
         return NULL;
+    }
+    if (bind_ifname && bind_ifname[0] != '\0')
+    {
+        if (setsockopt(sockfd, SOL_SOCKET, SO_BINDTODEVICE, bind_ifname, strlen(bind_ifname) + 1u) != 0)
+        {
+            if (errmsg)
+            {
+                g_snprintf(errmsg, errmsg_len, "bind to interface %s failed: %s", bind_ifname, strerror(errno));
+            }
+            close(sockfd);
+            return NULL;
+        }
     }
 
     bool has_source = false;
@@ -351,6 +363,12 @@ dev_ping_session_t *dev_ping_start(const net_addr_t *target, const net_addr_t *s
         }
     }
     return s;
+}
+
+dev_ping_session_t *dev_ping_start(const net_addr_t *target, const net_addr_t *source, int count, int timeout_ms,
+                                   char *errmsg, size_t errmsg_len)
+{
+    return dev_ping_start_bound(target, source, NULL, count, timeout_ms, errmsg, errmsg_len);
 }
 
 dev_ping_session_t *dev_ping_mpls_start(const net_addr_t *target, const net_addr_t *source,

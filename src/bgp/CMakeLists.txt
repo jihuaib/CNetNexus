@@ -13,6 +13,7 @@ set(BGP_SOURCES
     db/bgp_db_qp_route.c
     bgp_bdr.c
     work/bgp_cfg_apply.c
+    work/bgp_adj_rib_in.c
     work/bgp_if_cache.c
     work/bgp_peer.c
     work/bgp_conn.c
@@ -32,6 +33,7 @@ set(BGP_SOURCES
     work/bgp_rd.c
     work/bgp_relay.c
     work/bgp_attr_intern.c
+    work/bgp_ext_community.c
     work/bgp_rib.c
     work/bgp_update_group.c
     work/bgp_adj_rib_out.c

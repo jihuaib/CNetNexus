@@ -59,4 +59,9 @@ int bgp_import_route_unsubscribe(uint32_t import_proto, uint32_t vrf_id, uint16_
  */
 void bgp_import_route_unsubscribe_protocol_imports(const bgp_protocol_t *proto);
 
+/**
+ * @brief ROUTE READY/restart 后，按当前 import-route 配置重发订阅并请求全量回放。
+ */
+void bgp_import_route_resubscribe_protocol_imports(const bgp_protocol_t *proto);
+
 #endif /* BGP_IMPORT_ROUTE_H */

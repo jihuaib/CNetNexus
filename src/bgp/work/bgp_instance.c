@@ -8,6 +8,7 @@
 
 #include <glib.h>
 
+#include "bgp_attr_intern.h"
 #include "bgp_calc.h"
 #include "bgp_import_rib.h"
 #include "bgp_protocol.h"
@@ -39,6 +40,7 @@ bgp_instance_t *bgp_instance_create(bgp_afi_t afi, bgp_safi_t safi, bgp_vrf_t *v
     inst->safi = safi;
     inst->vrf = vrf;
     inst->cluster_id = 0;
+    bgp_attr_store_init(inst);
     /* QP 地址族默认启用"下一跳保持不变"策略：仍沿用常规 update-group 划分，仅导出时固定 PASS。 */
     if (safi == BGP_SAFI_QP)
     {
@@ -103,6 +105,7 @@ void bgp_instance_destroy(bgp_instance_t *inst)
         g_list_free_full(inst->qp_routes, g_free);
         inst->qp_routes = NULL;
     }
+    bgp_attr_store_destroy(inst);
     g_free(inst);
 }
 

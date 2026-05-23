@@ -245,8 +245,9 @@ void if_msg_handle_subscribe(dev_ipc_message_t *msg)
         if (sub->module_id == msg->src_module_id && sub->if_type_mask == req->if_type_mask &&
             sub->event_mask == req->event_mask)
         {
-            LOG_DEBUG("IF: duplicate subscribe ignored: module=0x%08X type=0x%08X event=0x%08X", msg->src_module_id,
-                      req->if_type_mask, req->event_mask);
+            LOG_INFO("IF: duplicate subscribe replay: module=0x%08X type=0x%08X event=0x%08X", msg->src_module_id,
+                     req->if_type_mask, req->event_mask);
+            if_replay_initial_state(msg->src_module_id, req->if_type_mask, req->event_mask);
             send_if_ack(msg, ERRCODE_SUCCESS);
             return;
         }

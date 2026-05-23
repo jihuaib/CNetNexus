@@ -121,6 +121,7 @@ typedef struct sbmp_local
     pthread_mutex_t runtime_mutex; /**< 运行态数据锁 */
     GHashTable *client_hash;       /**< key=client_id(gchar*) value=sbmp_client_t* */
     GHashTable *fd_hash;           /**< key=GINT_TO_POINTER(fd) value=sbmp_client_t* */
+
 } sbmp_local_t;
 
 /** SBMP 模块全局状态 */

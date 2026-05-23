@@ -366,6 +366,13 @@ void bgp_work_show_cleanup(void);
  * @return 0 成功，-1 失败
  */
 int bgp_worker_post_route_message(dev_ipc_message_t *msg);
+int bgp_worker_post_route_ready(void);
+
+/**
+ * @brief IPC 线程通知 worker：IF 模块下线，执行 IF 缓存清空 + source-if 会话拆除 + nexthop 重注册。
+ * @return 0 成功；非 0 失败。
+ */
+int bgp_worker_post_if_down(void);
 
 /**
  * @brief worker 线程投递 TUNNEL 更新消息给 server 线程

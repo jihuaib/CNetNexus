@@ -820,71 +820,36 @@ void sbmp_listen_stop(void)
 }
 
 // ============================================================================
-// 三阶段回调辅助
+// 本地初始化辅助（弱依赖模式）
 // ============================================================================
 
-static void send_phase_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, int32_t result)
+/**
+ * 等 DB 模块就绪后建表 + restore。
+ * DB 是基础模块，wait_module_ready 通常立即返回；若 DB 暂时不在则在 timeout 内等。
+ *
+ * 失败不致命：init 函数会跳过 notify_ready，CFG 后续命令会重试 wait_module_ready(SBMP) 直至成功。
+ */
+static int sbmp_init_db_state(void)
 {
-    dev_ipc_message_t *resp = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_MODULE_RESP, DEV_MODULE_ID_SBMP,
-                                                     msg->src_module_id, msg->request_id, NULL, 0, NULL);
-    if (resp)
+    dev_ipc_context_t *ctx = sbmp_local_ipc_ctx();
+
+    if (dev_ipc_wait_module_ready(ctx, DEV_MODULE_ID_DB, 5000) != ERRCODE_SUCCESS)
     {
-        dev_ipc_send_response(ctx, resp);
-        dev_ipc_message_free(resp);
+        LOG_ERROR("SBMP: DB not ready, skip db init/restore");
+        return -1;
     }
-    dev_ipc_message_free(msg);
-    (void)result;
-}
-
-// ============================================================================
-// Phase 1: MODULE_START - Establishing IPC connections到 CFG
-// ============================================================================
-
-static void sbmp_on_start(dev_ipc_message_t *msg)
-{
-    dev_ipc_context_t *ctx = sbmp_local_ipc_ctx();
-    LOG_INFO("SBMP Phase 1: MODULE_START - Establishing IPC connections");
-    dev_ipc_connect(ctx, DEV_MODULE_ID_CLI, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CLI);
-    dev_ipc_connect(ctx, DEV_MODULE_ID_DB, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_DB);
-    LOG_INFO("SBMP: Connected to CFG and DB");
-    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
-}
-
-// ============================================================================
-// Phase 2: MODULE_CONNECT — 预留
-// ============================================================================
-
-static void sbmp_on_connect(dev_ipc_message_t *msg)
-{
-    dev_ipc_context_t *ctx = sbmp_local_ipc_ctx();
-    LOG_INFO("SBMP Phase 2: MODULE_CONNECT (reserved)");
-    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
-}
-
-// ============================================================================
-// Phase 3: MODULE_READY — 建表 + DB 恢复
-// ============================================================================
-
-static void sbmp_on_ready(dev_ipc_message_t *msg)
-{
-    dev_ipc_context_t *ctx = sbmp_local_ipc_ctx();
-    LOG_INFO("SBMP Phase 3: MODULE_READY - Initializing database tables and restoring state");
 
     if (sbmp_db_init() != 0)
     {
-        LOG_ERROR("SBMP: Database table initialization failed");
-        send_phase_response(ctx, msg, ERRCODE_FAIL);
-        return;
+        LOG_ERROR("SBMP: database table initialization failed");
+        return -1;
     }
-
     if (sbmp_db_restore() != ERRCODE_SUCCESS)
     {
-        LOG_ERROR("SBMP: Failed to restore state from database");
-        send_phase_response(ctx, msg, ERRCODE_FAIL);
-        return;
+        LOG_ERROR("SBMP: database restore failed");
+        return -1;
     }
-
-    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
+    return 0;
 }
 
 // ============================================================================
@@ -896,15 +861,6 @@ void sbmp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     (void)ctx;
     switch (msg->msg_type)
     {
-        case DEV_IPC_MSG_TYPE_DEV_MODULE_START:
-            sbmp_on_start(msg);
-            return;
-        case DEV_IPC_MSG_TYPE_DEV_MODULE_CONNECT:
-            sbmp_on_connect(msg);
-            return;
-        case DEV_IPC_MSG_TYPE_DEV_MODULE_READY:
-            sbmp_on_ready(msg);
-            return;
         case CLI_MSG_TYPE:
             LOG_DEBUG("SBMP: Received CLI command message");
             sbmp_cli_handle_message(msg);
@@ -975,6 +931,32 @@ int sbmp_module_init(void)
         g_sbmp_local = NULL;
         return -1;
     }
+
+    /* 弱依赖模型启动：
+     *   1. 等 DEV 控制连接（DEV spawn 后会主动 connect）
+     *   2. 同步做 db_restore（端口配置 → listen_start）
+     *   3. 最后才 subscribe(CLI)：让 CFG 看到 is_connected 时本模块已完全可服务
+     *      —— 避免 CFG 在 SBMP 还没读 DB 就发命令，导致 race 出错
+     *   4. notify_ready 通知 DEV 模块就绪 */
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DEV, 10000) != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("SBMP: timed out waiting for DEV connection; module may be unusable");
+    }
+
+    (void)sbmp_init_db_state();
+
+    /* db_restore 完成后再让 CFG 可见自己：CFG poll is_connected(SBMP) == true 时
+     * SBMP 已 listen + 状态 ready，任何 show/config 命令都能正确处理。 */
+    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_CLI, 0, NULL, NULL) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("SBMP: subscribe(CLI) failed; commands from CFG won't be reachable");
+    }
+
+    if (dev_ipc_notify_ready(ctx) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("SBMP: notify_ready to DEV failed");
+    }
+    LOG_INFO("SBMP: module ready");
 
     return 0;
 }

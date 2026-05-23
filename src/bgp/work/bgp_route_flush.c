@@ -12,6 +12,8 @@
 #include "bgp_import_rib.h"
 #include "bgp_instance.h"
 #include "bgp_main.h"
+#include "bgp_protocol.h"
+#include "bgp_rd.h"
 #include "bgp_rib.h"
 #include "bgp_vrf.h"
 #include "bgp_worker.h"
@@ -340,4 +342,76 @@ void bgp_route_flush_handle_event(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t saf
 int bgp_route_flush_process_pending(bgp_instance_t *inst)
 {
     return bgp_route_flush_process_event(inst, FALSE);
+}
+
+static void bgp_route_flush_replay_best_cb(const bgp_rthead_t *head, const bgp_route_node_t *route, gpointer user_data)
+{
+    uint32_t *queued = (uint32_t *)user_data;
+    if (!head || !route || !BIT_TEST(route->flags, BGP_ROUTE_FLAG_FLUSHED) || !head->inst ||
+        !head->inst->route_flush_queue)
+    {
+        return;
+    }
+
+    BIT_CLR(((bgp_route_node_t *)route)->flags, BGP_ROUTE_FLAG_FLUSHED);
+    if (bgp_route_flush_queue_push(head->inst->route_flush_queue, (bgp_rthead_t *)head) == 0 && queued)
+    {
+        (*queued)++;
+    }
+}
+
+static void bgp_route_flush_replay_rib_cb(bgp_instance_t *inst, bgp_rd_entry_t *entry, bgp_rib_t *rib,
+                                          gpointer user_data)
+{
+    (void)inst;
+    (void)entry;
+    if (!rib)
+    {
+        return;
+    }
+    bgp_rib_foreach_best(rib, bgp_route_flush_replay_best_cb, user_data);
+}
+
+uint32_t bgp_route_flush_replay_flushed_all(void)
+{
+    if (!g_bgp_work_local || !g_bgp_work_local->protocol || !g_bgp_work_local->protocol->vrf_hash)
+    {
+        return 0;
+    }
+
+    uint32_t queued = 0;
+    GHashTableIter vrf_iter;
+    gpointer vrf_key = NULL;
+    gpointer vrf_val = NULL;
+    g_hash_table_iter_init(&vrf_iter, g_bgp_work_local->protocol->vrf_hash);
+    while (g_hash_table_iter_next(&vrf_iter, &vrf_key, &vrf_val))
+    {
+        (void)vrf_key;
+        bgp_vrf_t *vrf = (bgp_vrf_t *)vrf_val;
+        if (!vrf || !vrf->inst_hash)
+        {
+            continue;
+        }
+
+        GHashTableIter inst_iter;
+        gpointer inst_key = NULL;
+        gpointer inst_val = NULL;
+        g_hash_table_iter_init(&inst_iter, vrf->inst_hash);
+        while (g_hash_table_iter_next(&inst_iter, &inst_key, &inst_val))
+        {
+            (void)inst_key;
+            bgp_instance_t *inst = (bgp_instance_t *)inst_val;
+            if (!inst || bgp_import_rib_should_skip_flush(inst))
+            {
+                continue;
+            }
+            bgp_inst_foreach_rib(inst, bgp_route_flush_replay_rib_cb, &queued);
+        }
+    }
+
+    if (queued > 0)
+    {
+        LOG_INFO("BGP: replay queued %u flushed best route(s) to ROUTE", queued);
+    }
+    return queued;
 }

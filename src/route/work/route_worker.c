@@ -552,15 +552,30 @@ static int worker_dispatch_cmd(route_worker_cmd_t *cmd)
         }
 
         case ROUTE_WORKER_CMD_IF_EVENT:
-            /* IF 事件（UP/DOWN/ADDR_ADD/ADDR_DEL）：触发 interface-only 静态路由重检查 */
-            LOG_DEBUG("[route_worker] 收到 IF 事件，触发 interface-only 静态路由重检查");
+            /* IF 事件（UP/DOWN/ADDR_ADD/ADDR_DEL）：更新 IF 缓存，重算静态路由与 nexthop watch */
+            LOG_DEBUG("[route_worker] 收到 IF 事件，触发 static/nexthop 重检查");
             if_api_cache_on_event(cmd->msg);
             route_static_on_if_change();
+            route_recompute_iter_paths();
             if (cmd->msg)
             {
                 dev_ipc_message_free(cmd->msg);
                 cmd->msg = NULL;
             }
+            break;
+
+        case ROUTE_WORKER_CMD_IF_DOWN:
+            /* IF 模块下线（process stop/crash）：
+             *   1) 清 IF 共享缓存，避免 route_nh_resolve 仍认为接口 up。
+             *   2) route_recompute_iter_paths 重算所有已注册 nexthop watch，resolved
+             *      变化时 route_relay_notify_state → NH_NOTIFY 通知 BGP 等 owner。
+             *   3) route_static_on_if_change 撤销 interface-only 静态路由。
+             * IF READY 后由 route_on_if_event_cb → if_api_subscribe_all 重建订阅。 */
+            LOG_INFO("[route_worker] IF DOWN detected, flushing IF cache + recomputing nexthop watches");
+            if_api_cache_cleanup();
+            if_api_cache_init();
+            route_recompute_iter_paths();
+            route_static_on_if_change();
             break;
 
         case ROUTE_WORKER_CMD_FIB_ROUTE_RESULT:

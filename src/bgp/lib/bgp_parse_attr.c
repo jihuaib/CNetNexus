@@ -156,71 +156,6 @@ static void parse_community(const uint8_t *data, uint16_t len, char *buf, size_t
 }
 
 /* ============================================================================
- * EXT_COMMUNITY 解析（8 字节）
- * ========================================================================== */
-
-static void parse_ext_community_one(const uint8_t *d, char *buf, size_t bufsz)
-{
-    uint8_t high = d[0];
-    uint8_t sub = d[1];
-
-    /* 判断是否为 Route Target（sub-type 0x02） */
-    bool is_rt = (sub == 0x02);
-
-    switch (high & 0x3F) /* 低 6 位为 type */
-    {
-        case 0x00: /* 2-Octet AS */
-        {
-            uint16_t as = ((uint16_t)d[2] << 8) | d[3];
-            uint32_t val = ((uint32_t)d[4] << 24) | ((uint32_t)d[5] << 16) | ((uint32_t)d[6] << 8) | d[7];
-            snprintf(buf, bufsz, "%s:%u:%u", is_rt ? "rt" : "ro", as, val);
-            break;
-        }
-        case 0x01: /* IPv4 Address Specific */
-        {
-            char ip[INET_ADDRSTRLEN];
-            uint32_t raw = ((uint32_t)d[2] << 24) | ((uint32_t)d[3] << 16) | ((uint32_t)d[4] << 8) | d[5];
-            struct in_addr ia;
-            ia.s_addr = htonl(raw);
-            inet_ntop(AF_INET, &ia, ip, sizeof(ip));
-            uint16_t val2 = ((uint16_t)d[6] << 8) | d[7];
-            snprintf(buf, bufsz, "%s:%s:%u", is_rt ? "rt" : "ro", ip, val2);
-            break;
-        }
-        case 0x02: /* 4-Octet AS */
-        {
-            uint32_t as4 = ((uint32_t)d[2] << 24) | ((uint32_t)d[3] << 16) | ((uint32_t)d[4] << 8) | d[5];
-            uint16_t val = ((uint16_t)d[6] << 8) | d[7];
-            snprintf(buf, bufsz, "%s:%u:%u", is_rt ? "rt" : "ro", as4, val);
-            break;
-        }
-        default:
-            snprintf(buf, bufsz, "0x%02x%02x:%02x%02x%02x%02x%02x%02x", d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);
-            break;
-    }
-}
-
-static void parse_ext_communities(const uint8_t *data, uint16_t len, char *buf, size_t bufsz)
-{
-    size_t wpos = 0;
-    for (uint16_t i = 0; i + 8 <= len; i += 8)
-    {
-        char one[64];
-        parse_ext_community_one(data + i, one, sizeof(one));
-        if (wpos > 0 && wpos < bufsz - 1)
-        {
-            buf[wpos++] = ' ';
-        }
-        int n = snprintf(buf + wpos, bufsz - wpos, "%s", one);
-        if (n > 0)
-        {
-            wpos += (size_t)n;
-        }
-    }
-    buf[wpos < bufsz ? wpos : bufsz - 1] = '\0';
-}
-
-/* ============================================================================
  * LARGE_COMMUNITY 解析（12 字节，RFC 8092）
  * ========================================================================== */
 
@@ -437,7 +372,16 @@ int bgp_parse_path_attrs(const uint8_t *data, uint16_t len, uint32_t flags, bgp_
             }
 
             case ATTR_EXT_COMMUNITIES:
-                parse_ext_communities(val, attr_len, attr->ext_communities, sizeof(attr->ext_communities));
+                if ((attr_len % 8) == 0)
+                {
+                    uint16_t copy_len = attr_len;
+                    if (copy_len > sizeof(attr->ext_communities))
+                    {
+                        copy_len = sizeof(attr->ext_communities);
+                    }
+                    memcpy(attr->ext_communities, val, copy_len);
+                    attr->ext_communities_len = copy_len;
+                }
                 break;
 
             case ATTR_LARGE_COMMUNITY:

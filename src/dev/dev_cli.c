@@ -13,7 +13,9 @@
 #include <fcntl.h>
 #include <glib.h>
 #include <limits.h>
+#include <net/if.h>
 #include <poll.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,6 +26,7 @@
 #include <unistd.h>
 
 #include "cli.h"
+#include "db.h"
 #include "dev_db.h"
 #include "dev_main.h"
 #include "dev_module.h"
@@ -32,6 +35,7 @@
 #include "log.h"
 #include "net_addr.h"
 #include "path_utils.h"
+#include "vrf.h"
 
 static gint g_reboot_in_progress = 0;
 static dev_ping_session_t *g_ping_session = NULL;
@@ -190,10 +194,6 @@ static const char *dev_phase_to_string(uint8_t phase)
             return "REGISTERED";
         case DEV_PHASE_LOADED:
             return "LOADED";
-        case DEV_PHASE_IPC_READY:
-            return "DEV_IPC_READY";
-        case DEV_PHASE_DB_RECOVERED:
-            return "DB_RECOVERED";
         case DEV_PHASE_READY:
             return "READY";
         default:
@@ -206,12 +206,33 @@ static gboolean show_module_callback(gpointer key, gpointer value, gpointer data
     (void)key;
     show_module_ctx_t *ctx = (show_module_ctx_t *)data;
     dev_module_t *module = (dev_module_t *)value;
-    const char *phase = dev_phase_to_string(module->phase);
+    const char *phase;
+    /* on-demand 模块在未启动状态（REGISTERED + 无 child）显示为 ON-DEMAND，
+     * 这是空闲待命的正常状态；框架的 precheck 应将其视为健康。 */
+    if (module->on_demand && module->phase == DEV_PHASE_REGISTERED && module->child_pid <= 0)
+    {
+        phase = "ON-DEMAND";
+    }
+    else
+    {
+        phase = dev_phase_to_string(module->phase);
+    }
     const char *dev_ipc_state =
         (module->module_id == DEV_MODULE_ID_DEV || dev_ipc_is_connected(ctx->dev_ipc_ctx, module->module_id)) ? "up"
                                                                                                               : "down";
-    g_string_append_printf(ctx->resp, "  %-10u %-14s %-12s %-6u %s\r\n", module->module_id, module->name, phase,
-                           module->port, dev_ipc_state);
+    /* PID 列：DEV 自身显示当前进程 pid；其它模块显示 child_pid（未运行=0 显示 "-"） */
+    char pid_str[16];
+    pid_t pid_to_show = (module->module_id == DEV_MODULE_ID_DEV) ? getpid() : module->child_pid;
+    if (pid_to_show > 0)
+    {
+        snprintf(pid_str, sizeof(pid_str), "%d", (int)pid_to_show);
+    }
+    else
+    {
+        snprintf(pid_str, sizeof(pid_str), "-");
+    }
+    g_string_append_printf(ctx->resp, "  %-10u %-14s %-12s %-6u %-6s %s\r\n", module->module_id, module->name, phase,
+                           module->port, dev_ipc_state, pid_str);
 
     return FALSE;
 }
@@ -291,9 +312,9 @@ static int handle_show_module(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
     g_string_append_printf(show_ctx.resp,
                            "\r\nRegistered Modules:\r\n"
-                           "  %-10s %-14s %-12s %-6s %s\r\n"
-                           "  --------------------------------------------------------\r\n",
-                           "ID", "Name", "Phase", "Port", "IPC");
+                           "  %-10s %-14s %-12s %-6s %-6s %s\r\n"
+                           "  ----------------------------------------------------------------\r\n",
+                           "ID", "Name", "Phase", "Port", "IPC", "PID");
 
     dev_module_foreach(show_module_callback, &show_ctx);
     g_string_append(show_ctx.resp, "\r\n");
@@ -394,6 +415,12 @@ static void dev_push_sysname_to_cli(dev_ipc_context_t *ctx, const char *sysname)
 
 static int handle_sysname(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
+    /* DB 不可用时直接拒绝配置下发，避免内存/OS 与 DB 静默偏移 */
+    if (db_rpc_guard_reject(ctx, msg, "Dev"))
+    {
+        return ERRCODE_FAIL;
+    }
+
     cli_tlv_parser_t parser;
     if (cli_tlv_init(&parser, (const uint8_t *)msg->payload, msg->payload_len) != 0)
     {
@@ -447,6 +474,38 @@ static int handle_sysname(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     return ERRCODE_SUCCESS;
 }
 
+/* reboot 必须在单独线程跑（不能阻塞 DEV worker，否则会和子模块 SUBSCRIBE RPC 形成跨进程死锁）。
+ * 这个线程必须常驻——它通过 fork() 创建子进程，PR_SET_PDEATHSIG=SIGTERM 会让子进程
+ * 在创建它的线程退出时收到 SIGTERM。所以 reboot 线程持续等下一次请求，永不退出。 */
+static pthread_mutex_t g_reboot_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_reboot_cond = PTHREAD_COND_INITIALIZER;
+static int g_reboot_pending = 0;
+static int g_reboot_worker_started = 0;
+
+static void *reboot_worker_thread(void *arg)
+{
+    (void)arg;
+    pthread_setname_np(pthread_self(), "dev-reboot");
+    while (1)
+    {
+        pthread_mutex_lock(&g_reboot_mutex);
+        while (!g_reboot_pending)
+        {
+            pthread_cond_wait(&g_reboot_cond, &g_reboot_mutex);
+        }
+        g_reboot_pending = 0;
+        pthread_mutex_unlock(&g_reboot_mutex);
+
+        int ret = dev_reboot_software();
+        if (ret != ERRCODE_SUCCESS)
+        {
+            LOG_ERROR("Software reboot failed");
+        }
+        g_atomic_int_set(&g_reboot_in_progress, 0);
+    }
+    return NULL;
+}
+
 static int handle_reboot(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     if (!g_atomic_int_compare_and_exchange(&g_reboot_in_progress, 0, 1))
@@ -459,14 +518,189 @@ static int handle_reboot(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     /* 短暂让出，提升 ACK 送达 CLI 客户端的概率。 */
     g_usleep(100 * 1000);
 
-    int ret = dev_reboot_software();
-    if (ret != ERRCODE_SUCCESS)
+    /* 第一次进入：起常驻 reboot 线程 */
+    if (g_atomic_int_compare_and_exchange(&g_reboot_worker_started, 0, 1))
     {
-        LOG_ERROR("Software reboot failed");
+        pthread_t tid;
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+        int rc = pthread_create(&tid, &attr, reboot_worker_thread, NULL);
+        pthread_attr_destroy(&attr);
+        if (rc != 0)
+        {
+            LOG_ERROR("Failed to spawn reboot worker thread: %s", strerror(rc));
+            g_atomic_int_set(&g_reboot_worker_started, 0);
+            g_atomic_int_set(&g_reboot_in_progress, 0);
+            return ERRCODE_FAIL;
+        }
     }
 
-    g_atomic_int_set(&g_reboot_in_progress, 0);
-    return ret;
+    pthread_mutex_lock(&g_reboot_mutex);
+    g_reboot_pending = 1;
+    pthread_cond_signal(&g_reboot_cond);
+    pthread_mutex_unlock(&g_reboot_mutex);
+
+    return ERRCODE_SUCCESS;
+}
+
+/**
+ * @brief 处理 process { reboot | start | stop } <module-name>
+ *
+ * 子命令通过 keyword 的 cfg-id 区分（XML 中 reboot=1, start=2, stop=3, modname=4）：
+ *   - reboot：进程在跑→SIGTERM + pending_restart→SIGCHLD respawn；不在跑→直接 spawn
+ *   - start ：进程不在跑→spawn；在跑→提示已在运行
+ *   - stop  ：进程在跑→SIGTERM + pending_stop（SIGCHLD 不重启、不告警）；不在跑→no-op
+ */
+static int handle_process_cmd(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    enum
+    {
+        OP_REBOOT = 1,
+        OP_START = 2,
+        OP_STOP = 3
+    };
+    int op = 0;
+    char modname[DEV_MODULE_NAME_MAX_LEN] = {0};
+
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (!CLI_TLV_IS_CTX(&entry))
+        {
+            switch (entry.cfg_id)
+            {
+                case 1: /* reboot */
+                    op = OP_REBOOT;
+                    break;
+                case 2: /* start */
+                    op = OP_START;
+                    break;
+                case 3: /* stop */
+                    op = OP_STOP;
+                    break;
+                case 4: /* <module-name> */
+                {
+                    const char *s = cli_tlv_entry_get_text(&entry);
+                    if (s)
+                    {
+                        snprintf(modname, sizeof(modname), "%s", s);
+                    }
+                    break;
+                }
+                default:
+                    break;
+            }
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    if (op == 0 || modname[0] == '\0')
+    {
+        dev_send_cli_response(ctx, msg, "Dev Error: usage: process {reboot|start|stop} <module>\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    uint32_t module_id = 0;
+    if (dev_get_module_id_by_name(modname, &module_id) != ERRCODE_SUCCESS)
+    {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "Dev Error: module '%s' not registered.\r\n", modname);
+        dev_send_cli_response(ctx, msg, buf);
+        return ERRCODE_FAIL;
+    }
+    if (module_id == DEV_MODULE_ID_DEV)
+    {
+        dev_send_cli_response(ctx, msg, "Dev Error: cannot manage DEV via this command.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    dev_module_t *m = dev_module_find(module_id);
+    if (!m)
+    {
+        dev_send_cli_response(ctx, msg, "Dev Error: module entry not found.\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (m->exe_name[0] == '\0' && op != OP_STOP)
+    {
+        dev_send_cli_response(ctx, msg, "Dev Error: module has no exe_name, cannot spawn.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    char buf[160];
+    switch (op)
+    {
+        case OP_STOP:
+            if (m->child_pid <= 0)
+            {
+                snprintf(buf, sizeof(buf), "Dev: %s is not running.\r\n", m->name);
+                dev_send_cli_response(ctx, msg, buf);
+                return ERRCODE_SUCCESS;
+            }
+            m->pending_stop = 1;
+            m->pending_restart = 0;
+            LOG_INFO("Process stop: SIGTERM %s (pid=%d), pending_stop=1", m->name, m->child_pid);
+            if (kill(m->child_pid, SIGTERM) != 0)
+            {
+                snprintf(buf, sizeof(buf), "Dev Error: SIGTERM %s failed: %s\r\n", m->name, strerror(errno));
+                m->pending_stop = 0;
+                dev_send_cli_response(ctx, msg, buf);
+                return ERRCODE_FAIL;
+            }
+            snprintf(buf, sizeof(buf), "Dev: stop %s requested (pid=%d).\r\n", m->name, m->child_pid);
+            dev_send_cli_response(ctx, msg, buf);
+            return ERRCODE_SUCCESS;
+
+        case OP_START:
+            if (m->child_pid > 0)
+            {
+                snprintf(buf, sizeof(buf), "Dev: %s already running (pid=%d).\r\n", m->name, m->child_pid);
+                dev_send_cli_response(ctx, msg, buf);
+                return ERRCODE_SUCCESS;
+            }
+            if (dev_module_respawn(m) != ERRCODE_SUCCESS)
+            {
+                snprintf(buf, sizeof(buf), "Dev Error: failed to spawn %s\r\n", m->name);
+                dev_send_cli_response(ctx, msg, buf);
+                return ERRCODE_FAIL;
+            }
+            dev_ipc_connect(ctx, m->module_id, DEV_IPC_HOST_LOCAL, m->port);
+            snprintf(buf, sizeof(buf), "Dev: start %s ok (pid=%d).\r\n", m->name, m->child_pid);
+            dev_send_cli_response(ctx, msg, buf);
+            return ERRCODE_SUCCESS;
+
+        case OP_REBOOT:
+            if (m->child_pid > 0)
+            {
+                m->pending_restart = 1;
+                LOG_INFO("Process reboot: SIGTERM %s (pid=%d), pending_restart=1", m->name, m->child_pid);
+                if (kill(m->child_pid, SIGTERM) != 0)
+                {
+                    snprintf(buf, sizeof(buf), "Dev Error: SIGTERM %s failed: %s\r\n", m->name, strerror(errno));
+                    m->pending_restart = 0;
+                    dev_send_cli_response(ctx, msg, buf);
+                    return ERRCODE_FAIL;
+                }
+                snprintf(buf, sizeof(buf), "Dev: reboot %s requested (pid=%d → respawn).\r\n", m->name, m->child_pid);
+                dev_send_cli_response(ctx, msg, buf);
+                return ERRCODE_SUCCESS;
+            }
+            /* 未运行：直接 spawn */
+            if (dev_module_respawn(m) != ERRCODE_SUCCESS)
+            {
+                snprintf(buf, sizeof(buf), "Dev Error: failed to spawn %s\r\n", m->name);
+                dev_send_cli_response(ctx, msg, buf);
+                return ERRCODE_FAIL;
+            }
+            dev_ipc_connect(ctx, m->module_id, DEV_IPC_HOST_LOCAL, m->port);
+            snprintf(buf, sizeof(buf), "Dev: %s was not running, spawned (pid=%d).\r\n", m->name, m->child_pid);
+            dev_send_cli_response(ctx, msg, buf);
+            return ERRCODE_SUCCESS;
+
+        default:
+            dev_send_cli_response(ctx, msg, "Dev Error: invalid op\r\n");
+            return ERRCODE_FAIL;
+    }
 }
 
 /* 校验镜像名：仅允许 [A-Za-z0-9._:/-]，长度 1~128，防止命令注入 */
@@ -784,6 +1018,12 @@ static int handle_dev_swap_image(dev_ipc_context_t *ctx, dev_ipc_message_t *msg,
 
 static int handle_set_log_level(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
+    /* DB 不可用时直接拒绝配置下发，避免本地/广播内存与 DB 静默偏移 */
+    if (db_rpc_guard_reject(ctx, msg, "Dev"))
+    {
+        return ERRCODE_FAIL;
+    }
+
     /* cfg_id 1=debug 2=info 3=warn 4=error，由 commands.xml 中 keyword 元素定义 */
     log_level_t selected = LOG_LEVEL_DEBUG;
     int found = 0;
@@ -1140,6 +1380,7 @@ static int handle_ping(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_p
 {
     char ip[64] = {0};
     char src_ip[64] = {0};
+    char vrf_name[VRF_NAME_MAX_LEN] = {0};
     gboolean ping_ipv6 = FALSE;
     gboolean ping_mpls = FALSE;
 
@@ -1151,6 +1392,7 @@ static int handle_ping(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_p
      * cfg_id=5: -a <src-ipv6>
      * cfg_id=6: ping mpls 关键字
      * cfg_id=8: ping mpls ipv4 <ipv4-prefix>
+     * cfg_id=9: vrf <vrf-name>
      */
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
@@ -1185,6 +1427,14 @@ static int handle_ping(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_p
                 strlcpy(src_ip, text, sizeof(src_ip));
             }
         }
+        else if (entry.cfg_id == 9)
+        {
+            const char *text = cli_tlv_entry_get_text(&entry);
+            if (text)
+            {
+                strlcpy(vrf_name, text, sizeof(vrf_name));
+            }
+        }
         cli_tlv_entry_free(&entry);
     }
 
@@ -1196,6 +1446,11 @@ static int handle_ping(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_p
 
     if (ping_mpls)
     {
+        if (vrf_name[0] != '\0' && strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) != 0)
+        {
+            dev_send_cli_response(ctx, msg, "Error: MPLS ping vrf is not supported\r\n");
+            return ERRCODE_FAIL;
+        }
         net_addr_t target;
         uint8_t prefix_len = 0;
         if (parse_ipv4_prefix_token(ip, &target, &prefix_len) != ERRCODE_SUCCESS)
@@ -1295,7 +1550,20 @@ static int handle_ping(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_p
     }
 
     char errbuf[128] = {0};
-    g_ping_session = dev_ping_start(&addr, has_src ? &src_addr : NULL, 4, 2000, errbuf, sizeof(errbuf));
+    const char *bind_ifname = NULL;
+    if (vrf_name[0] != '\0' && strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) != 0)
+    {
+        if (if_nametoindex(vrf_name) == 0)
+        {
+            char out[160];
+            snprintf(out, sizeof(out), "Error: VRF %s not found\r\n", vrf_name);
+            dev_send_cli_response(ctx, msg, out);
+            return ERRCODE_FAIL;
+        }
+        bind_ifname = vrf_name;
+    }
+    g_ping_session =
+        dev_ping_start_bound(&addr, has_src ? &src_addr : NULL, bind_ifname, 4, 2000, errbuf, sizeof(errbuf));
     if (!g_ping_session)
     {
         char out[256];
@@ -1419,6 +1687,9 @@ int dev_cli_handle_message(dev_ipc_message_t *msg)
             break;
         case DEV_CLI_GROUP_ID_SWAP_IMAGE:
             result = handle_dev_swap_image(ctx, msg, &parser);
+            break;
+        case DEV_CLI_GROUP_ID_PROCESS_CMD:
+            result = handle_process_cmd(ctx, msg, &parser);
             break;
         default:
             LOG_WARN("Unknown group_id: %u", parser.group_id);

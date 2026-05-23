@@ -469,15 +469,10 @@ typedef struct
     uint32_t failed;
 } calc_cleanup_ctx_t;
 
-static void cleanup_withdraw_os_cb(const route_head_t *head, const route_path_t *path, void *userdata)
+static void cleanup_withdraw_fib_cb(const route_head_t *head, const route_path_t *path, void *userdata)
 {
     calc_cleanup_ctx_t *ctx = (calc_cleanup_ctx_t *)userdata;
     if (!head || !path || !ctx)
-    {
-        return;
-    }
-
-    if (!(path->flags & ROUTE_PATH_FLAG_OS_INSTALLED))
     {
         return;
     }
@@ -496,7 +491,7 @@ static void cleanup_withdraw_os_cb(const route_head_t *head, const route_path_t 
     else
     {
         ctx->failed++;
-        LOG_WARN("[route_calc] 退出清理撤销 FIB 路由失败: %s/%u vrf=%u proto=%u", addr_str,
+        LOG_WARN("[route_calc] 退出清理删除 FIB 路由失败: %s/%u vrf=%u proto=%u", addr_str,
                  (unsigned)head->key.prefix_len, head->key.vrf_id, path->key.protocol);
     }
 }
@@ -511,12 +506,11 @@ void route_calc_cleanup(void)
             .failed = 0u,
         };
 
-        route_rib_walk(g_route_work_local->rib, ROUTE_PROTOCOL_MAX, ROUTE_VRF_ALL, cleanup_withdraw_os_cb, &ctx);
+        route_rib_walk(g_route_work_local->rib, ROUTE_PROTOCOL_MAX, ROUTE_VRF_ALL, cleanup_withdraw_fib_cb, &ctx);
 
         if (ctx.total > 0 || ctx.failed > 0)
         {
-            LOG_INFO("[route_calc] 退出清理完成：installed=%u withdrawn=%u failed=%u", ctx.total, ctx.withdrawn,
-                     ctx.failed);
+            LOG_INFO("[route_calc] 退出清理完成：fib=%u deleted=%u failed=%u", ctx.total, ctx.withdrawn, ctx.failed);
         }
     }
 

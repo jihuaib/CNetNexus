@@ -183,6 +183,12 @@ void ldp_route_sync_subscribe(void)
     }
 }
 
+void ldp_route_sync_resubscribe(void)
+{
+    g_route_subscribed = 0;
+    ldp_route_sync_subscribe();
+}
+
 void ldp_route_sync_unsubscribe(void)
 {
     if (!g_route_subscribed)

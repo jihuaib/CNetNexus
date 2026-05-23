@@ -73,7 +73,7 @@ def _device_kind(rt: TopologyRuntime, dev: str) -> str:
     return rt.get_device_kind(dev)
 TIMESTAMP_FMT = "%Y-%m-%dT%H:%M:%S.%fZ"
 MODULE_ROW_RE = re.compile(
-    r"^\s*(?P<id>\d+)\s+(?P<name>[A-Za-z0-9_-]+)\s+(?P<phase>[A-Za-z0-9_-]+)\s+(?P<port>\d+)\s+(?P<ipc>[A-Za-z0-9_-]+)\s*$"
+    r"^\s*(?P<id>\d+)\s+(?P<name>[A-Za-z0-9_-]+)\s+(?P<phase>[A-Za-z0-9_-]+)\s+(?P<port>\d+)\s+(?P<ipc>[A-Za-z0-9_-]+)(\s+(?P<pid>\S+))?\s*$"
 )
 MODULE_HEALTH_WAIT_TIMEOUT_SEC = 60
 MODULE_HEALTH_WAIT_INTERVAL_SEC = 2
@@ -364,11 +364,17 @@ def wait_device_modules_ready(
             continue
 
         last_parse_ok = True
-        bad = [
-            f"{r['name']}(phase={r['phase']},ipc={r['ipc']})"
-            for r in rows
-            if r["phase"].upper() != "READY" or r["ipc"].lower() != "up"
-        ]
+        # on-demand 模块未启动时 phase=ON-DEMAND + ipc=down 视为正常待命状态。
+        # 框架 precheck 接受 READY/up 或 ON-DEMAND/down 这两种健康态。
+        bad = []
+        for r in rows:
+            phase = r["phase"].upper()
+            ipc = r["ipc"].lower()
+            if phase == "READY" and ipc == "up":
+                continue
+            if phase == "ON-DEMAND" and ipc == "down":
+                continue
+            bad.append(f"{r['name']}(phase={r['phase']},ipc={r['ipc']})")
         if not bad:
             print(f"modules on {dev}: READY/up OK ({len(rows)} modules)")
             return
@@ -739,6 +745,17 @@ def export_case_container_logs(
     return exported
 
 
+def format_artifact_paths(paths: list[Path], root: Path) -> str:
+    lines: list[str] = []
+    for path in sorted(paths):
+        try:
+            label = path.relative_to(root)
+        except ValueError:
+            label = path
+        lines.append(f"  {label}")
+    return "\n".join(lines)
+
+
 def clear_case_container_module_logs(rt: TopologyRuntime) -> None:
     if not rt.container_names:
         return
@@ -793,6 +810,8 @@ def run_case(
     rt: TopologyRuntime | None = None
     startup_stdout = ""
     startup_stderr = ""
+    startup_out_buf: TimestampedBuffer | None = None
+    startup_err_buf: TimestampedBuffer | None = None
 
     try:
         print(f"\n===== START CASE: {case_dir} =====")
@@ -892,7 +911,41 @@ def run_case(
         startup_cores = collect_core_dumps(core_dumps_dir / make_case_artifact_token(case_dir) / "startup")
         if startup_cores:
             print(f"Collected startup core dumps for case '{case_dir.name}' -> {core_dumps_dir} ({len(startup_cores)} files)")
-        err = f"case startup/runtime failed for {case_dir}: {exc}\n{traceback.format_exc()}"
+        startup_log_note = ""
+        if rt is not None:
+            try:
+                exported = export_case_container_logs(
+                    rt,
+                    case_dir,
+                    container_logs_dir,
+                    include_docker=True,
+                    include_modules=True,
+                )
+                if exported:
+                    startup_log_note = (
+                        "\nCollected startup/runtime container logs:\n"
+                        + format_artifact_paths(exported, container_logs_dir)
+                    )
+                    print(
+                        f"Collected startup/runtime container logs for case {case_dir.name!r} -> "
+                        f"{container_logs_dir} ({len(exported)} files)"
+                    )
+            except Exception as log_exc:
+                startup_log_note = f"\nWARNING: failed to export startup/runtime container logs: {log_exc}"
+                print(startup_log_note.strip(), file=sys.stderr)
+        startup_capture_note = ""
+        if startup_out_buf is not None:
+            captured_out = startup_out_buf.getvalue()
+            if captured_out:
+                startup_capture_note += "\n===== Runtime startup stdout =====\n" + captured_out
+        if startup_err_buf is not None:
+            captured_err = startup_err_buf.getvalue()
+            if captured_err:
+                startup_capture_note += "\n===== Runtime startup stderr =====\n" + captured_err
+        err = (
+            f"case startup/runtime failed for {case_dir}: {exc}\n"
+            f"{traceback.format_exc()}{startup_capture_note}{startup_log_note}\n"
+        )
         print(err, file=sys.stderr)
         executed = {r.script for r in results}
         previous_result = results[-1] if results else None

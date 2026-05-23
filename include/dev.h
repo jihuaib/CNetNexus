@@ -96,6 +96,15 @@ typedef struct dev_ipc_message dev_ipc_message_t;
 typedef void (*dev_ipc_msg_handler_fn)(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
 typedef dev_ipc_msg_handler_fn dev_ipc_msg_handler_fn;
 
+/**
+ *  DEV IPC 连接断开回调函数类型
+ *  ctx IPC 上下文
+ *  remote_module_id 断开的对端模块 ID
+ *  user 用户数据
+ */
+typedef void (*dev_ipc_disconnect_handler_fn)(dev_ipc_context_t *ctx, uint32_t remote_module_id, void *user);
+typedef dev_ipc_disconnect_handler_fn dev_ipc_disconnect_handler_fn;
+
 // ============================================================================
 // DEV IPC 消息类型编码：msg_type = (大类 << 16) | 子类
 // ============================================================================
@@ -266,6 +275,9 @@ typedef struct dev_ipc_query_mgr
 
 typedef dev_ipc_query_mgr_t dev_ipc_query_mgr_t;
 
+/* 前向声明：订阅管理器（细节在 ipc_subscribe.c） */
+typedef struct dev_ipc_subscribe_mgr dev_ipc_subscribe_mgr_t;
+
 /** IPC 上下文完整定义 */
 struct dev_ipc_context
 {
@@ -274,7 +286,9 @@ struct dev_ipc_context
     char name[DEV_IPC_MODULE_NAME_MAX]; /**< 模块名称 */
 
     /* 消息处理 */
-    dev_ipc_msg_handler_fn msg_handler; /**< 消息处理回调 */
+    dev_ipc_msg_handler_fn msg_handler;               /**< 消息处理回调 */
+    dev_ipc_disconnect_handler_fn disconnect_handler; /**< 连接断开回调（IO 线程上下文） */
+    void *disconnect_user;                            /**< 连接断开回调用户数据 */
 
     /* 连接 */
     dev_ipc_connection_t *connections[DEV_IPC_MAX_CONNECTIONS]; /**< 连接数组 */
@@ -296,6 +310,9 @@ struct dev_ipc_context
 
     /* 同步查询 */
     dev_ipc_query_mgr_t *query_mgr; /**< 查询管理器 */
+
+    /* 订阅管理器（按需启动 / MODULE_EVENT 路由） */
+    dev_ipc_subscribe_mgr_t *sub_mgr;
 };
 
 // ============================================================================
@@ -323,12 +340,6 @@ extern dev_ipc_context_t *g_dev_ipc_context;
 // DEV 模块生命周期消息子类（大类 = DEV_IPC_CATEGORY_DEV）
 // ============================================================================
 
-/** 模块启动通知（Phase 1） */
-#define DEV_IPC_MSG_TYPE_DEV_MODULE_START DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_DEV, 0x0001)
-/** 模块建连通知（Phase 2） */
-#define DEV_IPC_MSG_TYPE_DEV_MODULE_CONNECT DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_DEV, 0x0002)
-/** 模块就绪通知（Phase 3） */
-#define DEV_IPC_MSG_TYPE_DEV_MODULE_READY DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_DEV, 0x0003)
 /** 查询模块名称 */
 #define DEV_IPC_MSG_TYPE_DEV_GET_MODULE_NAME DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_DEV, 0x0005)
 /** 查询目标模块的所有 IPC 连接状态（由 IPC 库层自动处理，无需应用层介入） */
@@ -339,6 +350,58 @@ extern dev_ipc_context_t *g_dev_ipc_context;
 #define DEV_IPC_MSG_TYPE_DEV_SET_LOG_LEVEL DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_DEV, 0x0008)
 /** 模块阶段响应 */
 #define DEV_IPC_MSG_TYPE_DEV_MODULE_RESP DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_DEV, 0x000F)
+
+/* ---------------- 订阅 / 按需启动相关 ---------------- */
+
+/** 订阅目标模块就绪事件（payload=dev_subscribe_req_t；响应=dev_subscribe_resp_t） */
+#define DEV_IPC_MSG_TYPE_DEV_SUBSCRIBE_MODULE DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_DEV, 0x0010)
+/** 取消订阅（payload=4B target_module_id 网络字节序；无响应） */
+#define DEV_IPC_MSG_TYPE_DEV_UNSUBSCRIBE_MODULE DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_DEV, 0x0011)
+/** 模块通知 DEV "我已就绪"（payload=无；触发 DEV 推送 MODULE_EVENT 给订阅者） */
+#define DEV_IPC_MSG_TYPE_DEV_NOTIFY_READY DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_DEV, 0x0012)
+/** DEV → 订阅者推送的模块事件（payload=dev_module_event_payload_t；单向，无响应） */
+#define DEV_IPC_MSG_TYPE_DEV_MODULE_EVENT DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_DEV, 0x0013)
+
+/** 模块状态码（dev_subscribe_resp_t.current_state 取值） */
+#define DEV_MODULE_STATE_NOT_RUNNING 0
+#define DEV_MODULE_STATE_STARTING 1
+#define DEV_MODULE_STATE_READY 2
+
+/** 模块事件类型（dev_module_event_payload_t.event 取值） */
+#define DEV_MODULE_EVENT_READY 0
+#define DEV_MODULE_EVENT_DOWN 1
+
+/** SUBSCRIBE 请求 payload（全部小端序，直接拷贝，未跨主机字节序敏感） */
+typedef struct dev_subscribe_req
+{
+    uint32_t target_module_id; /**< 要订阅的模块 ID（网络字节序） */
+    uint8_t auto_start;        /**< 1=未运行则触发启动；0=只订阅不拉起 */
+    uint8_t _pad[3];
+} dev_subscribe_req_t;
+
+/** SUBSCRIBE 响应 payload */
+typedef struct dev_subscribe_resp
+{
+    int32_t result;        /**< 0=成功；<0=失败错误码 */
+    uint8_t current_state; /**< DEV_MODULE_STATE_* */
+    uint8_t _pad[3];
+    char host[64]; /**< 目标模块监听地址（仅 READY 时有效） */
+    uint16_t port; /**< 目标模块监听端口（仅 READY 时有效，网络字节序） */
+    uint16_t _pad2;
+    uint32_t epoch; /**< 目标模块当前 epoch（网络字节序） */
+} dev_subscribe_resp_t;
+
+/** MODULE_EVENT 推送 payload */
+typedef struct dev_module_event_payload
+{
+    uint32_t module_id; /**< 事件来源模块 ID（网络字节序） */
+    uint8_t event;      /**< DEV_MODULE_EVENT_* */
+    uint8_t _pad[3];
+    char host[64]; /**< 模块监听地址 */
+    uint16_t port; /**< 模块监听端口（网络字节序） */
+    uint16_t _pad2;
+    uint32_t epoch; /**< 本次事件对应的 epoch（网络字节序） */
+} dev_module_event_payload_t;
 
 // ============================================================================
 // DB RPC 消息子类（大类 = DEV_IPC_CATEGORY_DB）
@@ -386,6 +449,14 @@ void dev_ipc_message_free(dev_ipc_message_t *msg);
  */
 dev_ipc_context_t *dev_ipc_init(uint32_t module_id, const char *name, uint16_t listen_port,
                                 dev_ipc_msg_handler_fn msg_handler);
+
+/**
+ *  设置 IPC 连接断开回调
+ *
+ *  回调在 IPC IO 线程上下文执行，禁止阻塞、禁止调用 dev_ipc_query。
+ *       如需访问业务状态，请投递到业务 worker 线程。
+ */
+void dev_ipc_set_disconnect_handler(dev_ipc_context_t *ctx, dev_ipc_disconnect_handler_fn handler, void *user);
 
 /**
  * @brief 销毁 DEV IPC 上下文
@@ -471,6 +542,90 @@ int dev_ipc_is_connected(dev_ipc_context_t *ctx, uint32_t target_module_id);
  * @return 本模块名称字符串（初始化时由调用方传入，生命周期与 ctx 相同）
  */
 const char *dev_ipc_get_self_name(dev_ipc_context_t *ctx);
+
+// ============================================================================
+// 订阅 / 按需启动 API
+// ============================================================================
+
+/**
+ * @brief 模块事件回调
+ * @param module_id 事件来源模块 ID
+ * @param event     DEV_MODULE_EVENT_READY / DEV_MODULE_EVENT_DOWN
+ * @param host      模块监听地址（仅 READY 时有效）
+ * @param port      模块监听端口（仅 READY 时有效）
+ * @param epoch     模块当前 epoch（重启会递增）
+ * @param user      订阅时传入的用户数据
+ *
+ * @note 回调在 IPC IO 线程上下文执行，禁止阻塞、禁止调用 dev_ipc_query。
+ *       如需重活，请通过线程间消息队列投递到业务线程处理。
+ */
+typedef void (*dev_module_event_fn)(uint32_t module_id, uint8_t event, const char *host, uint16_t port, uint32_t epoch,
+                                    void *user);
+
+/**
+ * @brief 订阅目标模块的就绪/下线事件
+ *
+ * 行为：
+ *   - 向 DEV 发送 SUBSCRIBE RPC；DEV 内部把本模块加入 target 的订阅列表
+ *   - 若 target 当前已 READY：DEV 响应即带 host/port，IPC 库自动 connect 并立即回调 READY
+ *   - 若 target 未运行且 auto_start=1：DEV fork target；待 target 完成 NOTIFY_READY 后推送 MODULE_EVENT
+ *
+ * 同一 (ctx, target_module_id) 重复 subscribe 会覆盖旧的 callback/user。
+ *
+ * @param ctx        本模块 IPC 上下文
+ * @param target_id  要订阅的模块 ID
+ * @param auto_start 1=若 target 未运行则请求 DEV fork；0=只订阅
+ * @param cb         事件回调（NULL 表示只用于建联，不需要业务感知）
+ * @param user       回调用户数据
+ * @return 成功返回 ERRCODE_SUCCESS，失败返回 ERRCODE_FAIL
+ */
+int dev_ipc_subscribe_module(dev_ipc_context_t *ctx, uint32_t target_id, int auto_start, dev_module_event_fn cb,
+                             void *user);
+
+/**
+ * @brief 取消订阅
+ * @param ctx       本模块 IPC 上下文
+ * @param target_id 要取消订阅的模块 ID
+ * @return 成功返回 ERRCODE_SUCCESS
+ */
+int dev_ipc_unsubscribe_module(dev_ipc_context_t *ctx, uint32_t target_id);
+
+/**
+ * @brief 通知 DEV 本模块已完成本地初始化（含 deps 全连上 + DB restore 完成）
+ *
+ * DEV 收到后：phase=READY、epoch+=1、向所有 subscribers 推 MODULE_EVENT(READY)
+ *
+ * @param ctx 本模块 IPC 上下文
+ * @return 成功返回 ERRCODE_SUCCESS
+ */
+int dev_ipc_notify_ready(dev_ipc_context_t *ctx);
+
+/**
+ * @brief 阻塞等待已发起的 IPC 连接进入 CONNECTED 状态（轮询 is_connected）
+ *
+ * 适用于：本模块刚 dev_ipc_connect 到对端，需要等握手完成才能发首条 RPC（如 SUBSCRIBE）。
+ *
+ * @param ctx        本模块 IPC 上下文
+ * @param target_id  要等待的对端模块 ID
+ * @param timeout_ms 超时时间（毫秒）
+ * @return 已连接返回 ERRCODE_SUCCESS，超时返回 ERRCODE_FAIL
+ */
+int dev_ipc_wait_connected(dev_ipc_context_t *ctx, uint32_t target_id, uint32_t timeout_ms);
+
+/**
+ * @brief 阻塞等待目标模块就绪并与之建立连接
+ *
+ * 内部用 SUBSCRIBE(auto_start=1) 触发 DEV 拉起按需模块；
+ * 目标 init 完成后会主动 subscribe(CLI) 反向连接，本端 is_connected 变 true 即返回。
+ *
+ * 仅用于"需要 spawn"的场景（如 CFG 接收到配置命令）；read-only 命令不应调用此 API。
+ *
+ * @param ctx        本模块 IPC 上下文
+ * @param target_id  要等待的模块 ID
+ * @param timeout_ms 超时（毫秒，0=使用默认）
+ * @return 成功（连接已建立）返回 ERRCODE_SUCCESS；超时/失败返回 ERRCODE_FAIL
+ */
+int dev_ipc_wait_module_ready(dev_ipc_context_t *ctx, uint32_t target_id, uint32_t timeout_ms);
 
 // ============================================================================
 // DEV IPC 内部 API（供 DEV IPC 子模块实现使用）
@@ -594,6 +749,23 @@ int dev_ipc_frame_parse_header(const uint8_t *buf, dev_ipc_message_t *header);
  * @return 新创建的消息，失败返回 NULL
  */
 dev_ipc_message_t *dev_ipc_frame_to_message(const dev_ipc_message_t *header, const uint8_t *payload);
+
+/**
+ * @brief 创建订阅管理器（由 dev_ipc_init 调用）
+ */
+dev_ipc_subscribe_mgr_t *dev_ipc_subscribe_mgr_create(void);
+
+/**
+ * @brief 销毁订阅管理器（由 dev_ipc_destroy 调用）
+ */
+void dev_ipc_subscribe_mgr_destroy(dev_ipc_subscribe_mgr_t *mgr);
+
+/**
+ * @brief IO 线程：路由 DEV_IPC_MSG_TYPE_DEV_MODULE_EVENT 帧到本地订阅回调
+ * @param ctx IPC 上下文
+ * @param pl  事件 payload
+ */
+void dev_ipc_dispatch_module_event(dev_ipc_context_t *ctx, const dev_module_event_payload_t *pl);
 
 /**
  * @brief 序列化本模块所有 IPC 连接状态为 QUERY_IPC_CONNS wire format 二进制载荷

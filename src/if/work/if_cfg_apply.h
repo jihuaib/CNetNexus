@@ -91,6 +91,15 @@ int if_cfg_recover_link(const char *logical_name, uint32_t new_ifindex, const ne
                         const net_prefix_t *pfx_v6);
 
 /**
+ * @brief ROUTE 模块重启后重刷当前所有运行态 connected 路由。
+ *
+ * 只重发 ROUTE RPC，不重新配置 OS 地址。
+ *
+ * @return 成功重刷条目数；参数/状态错误返回 -1
+ */
+int if_cfg_replay_connected_routes(void);
+
+/**
  * @brief 链路丢失：接口被销毁后撤销直连路由（IF work 线程调用）
  *
  * 当 Netlink 监听到 RTM_DELLINK 时，由 IF work 线程调用。

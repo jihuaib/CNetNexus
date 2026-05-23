@@ -91,6 +91,14 @@ int dev_conf_parse(const char *path, dev_module_conf_t *conf)
         {
             conf->port = (uint16_t)atoi(value);
         }
+        else if (strcmp(key, "on-demand") == 0)
+        {
+            conf->on_demand = (uint8_t)atoi(value);
+        }
+        else if (strcmp(key, "revive-table") == 0)
+        {
+            snprintf(conf->revive_table, sizeof(conf->revive_table), "%s", value);
+        }
     }
 
     fclose(fp);

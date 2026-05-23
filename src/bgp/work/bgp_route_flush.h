@@ -63,4 +63,10 @@ void bgp_route_flush_handle_event(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t saf
  */
 int bgp_route_flush_process_pending(bgp_instance_t *inst);
 
+/**
+ * @brief ROUTE READY/restart 后，将已标记 FLUSHED 的 best 路由清标并重新入队下刷。
+ * @return 入队的前缀头数量
+ */
+uint32_t bgp_route_flush_replay_flushed_all(void);
+
 #endif /* BGP_ROUTE_FLUSH_H */

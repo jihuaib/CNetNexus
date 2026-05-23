@@ -36,6 +36,20 @@ static inline dev_ipc_context_t *bgp_local_ipc_ctx(void)
 /**
  * @brief IPC 消息处理回调（供 API 层引用）
  */
+/** BGP 内部消息：IF 模块就绪（含初次 + 重启后），worker 线程做 if_api_subscribe_all */
+#define BGP_MSG_TYPE_INTERNAL_IF_READY DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_BGP, 0xFFFE)
+
+/** BGP 内部消息：VRF 模块就绪（含初次 + 重启后），worker 线程做 vrf_api_subscribe */
+#define BGP_MSG_TYPE_INTERNAL_VRF_READY DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_BGP, 0xFFFD)
+
+/** BGP 内部消息：ROUTE 模块就绪（含初次 + 重启后），worker 线程重订阅/重注册/重下刷 */
+#define BGP_MSG_TYPE_INTERNAL_ROUTE_READY DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_BGP, 0xFFFC)
+
+/** BGP 内部消息：IF 模块下线（DEV_MODULE_EVENT_DOWN），worker 线程清 IF 缓存、
+ *  对所有 source-if 绑定的会话发 NOTIFICATION 并拆 TCP，触发 nexthop 重注册。
+ *  category=BGP, subtype=0xFFFB */
+#define BGP_MSG_TYPE_INTERNAL_IF_DOWN DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_BGP, 0xFFFB)
+
 void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
 
 /**

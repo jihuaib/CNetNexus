@@ -549,6 +549,44 @@ static int encode_community(uint8_t *buf, int buf_size, const char *community_st
 }
 
 /**
+ * @brief 编码 EXTENDED_COMMUNITIES 路径属性（attr 中保存原始 8 字节条目 buffer）
+ * @return 写入字节数，0=无 ext-community，-1=空间不足
+ */
+static int encode_ext_communities(uint8_t *buf, int buf_size, const bgp_attr_t *attr)
+{
+    if (!attr || attr->ext_communities_len == 0)
+    {
+        return 0;
+    }
+    if ((attr->ext_communities_len % 8) != 0)
+    {
+        return -1;
+    }
+
+    gboolean ext_len = attr->ext_communities_len > 255;
+    int hdr_len = ext_len ? 4 : 3;
+    int attr_total = hdr_len + (int)attr->ext_communities_len;
+    if (buf_size < attr_total)
+    {
+        return -1;
+    }
+
+    buf[0] = BGP_PA_FLAG_OPTIONAL | BGP_PA_FLAG_TRANSITIVE | (ext_len ? BGP_PA_FLAG_EXT_LEN : 0);
+    buf[1] = BGP_PA_TYPE_EXT_COMMUNITY;
+    if (ext_len)
+    {
+        uint16_t len_be = htons(attr->ext_communities_len);
+        memcpy(buf + 2, &len_be, 2);
+    }
+    else
+    {
+        buf[2] = (uint8_t)attr->ext_communities_len;
+    }
+    memcpy(buf + hdr_len, attr->ext_communities, attr->ext_communities_len);
+    return attr_total;
+}
+
+/**
  * @brief 编码 ORIGINATOR_ID 路径属性（optional non-transitive，4 字节，RFC 4456）
  * @return 写入字节数，0=未携带，-1=空间不足
  */
@@ -685,6 +723,13 @@ int bgp_pkt_build_packed_update(uint8_t *buf, int buf_size, const bgp_nlri_entry
     }
 
     n = encode_community(buf + pos, buf_size - pos, attr->communities);
+    if (n < 0)
+    {
+        return -1;
+    }
+    pos += n;
+
+    n = encode_ext_communities(buf + pos, buf_size - pos, attr);
     if (n < 0)
     {
         return -1;

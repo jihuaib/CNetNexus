@@ -18,6 +18,7 @@
 #include "bgp_db.h"
 #include "bgp_pkt.h"
 #include "bgp_worker.h"
+#include "db.h"
 #include "errcode.h"
 #include "if.h"
 #include "log.h"
@@ -104,122 +105,115 @@ static gboolean bgp_is_bmp_group(uint32_t group_id)
     return group_id >= BGP_CLI_GROUP_ID_BMP_INSTANCE && group_id <= BGP_CLI_GROUP_ID_BMP_MONITOR;
 }
 
-static void send_phase_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, int32_t result)
+/* ============================================================================
+ * 依赖就绪回调（IF / VRF 重启后自动重新订阅事件）
+ * ============================================================================ */
+
+static void bgp_post_internal(uint32_t msg_type)
 {
-    dev_ipc_message_t *resp = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_MODULE_RESP, DEV_MODULE_ID_BGP,
-                                                     msg->src_module_id, msg->request_id, NULL, 0, NULL);
-    if (resp)
+    if (!g_bgp_local || !g_bgp_local->dev_ipc_ctx)
     {
-        dev_ipc_send_response(ctx, resp);
-        dev_ipc_message_free(resp);
+        return;
     }
-    dev_ipc_message_free(msg);
-    (void)result;
+    dev_ipc_message_t *m = dev_ipc_message_create(msg_type, DEV_MODULE_ID_BGP, DEV_MODULE_ID_BGP, 0, NULL, 0, NULL);
+    if (m)
+    {
+        g_async_queue_push(g_bgp_local->dev_ipc_ctx->msg_queue, m);
+    }
 }
 
-static void bgp_on_start(dev_ipc_message_t *msg)
+/* IF dep 事件回调：
+ *   READY → 投递 IF_READY，worker 做 if_api_subscribe_all。
+ *   DOWN  → 投递 IF_DOWN，worker 清 IF 缓存、拆 source-if 绑定的会话。
+ *           路由 nexthop 可达性由 ROUTE 侧重算后通过 NH_NOTIFY 主动通知 BGP，
+ *           无需在此重注册（重注册仅用于 ROUTE 进程重启后 watch 丢失的场景）。 */
+static void bgp_on_if_ready_cb(uint32_t module_id, uint8_t event, const char *host, uint16_t port, uint32_t epoch,
+                               void *user)
 {
-    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
-    LOG_INFO("Phase 1: MODULE_START - Establishing IPC connections");
-    dev_ipc_connect(ctx, DEV_MODULE_ID_CLI, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CLI);
-    dev_ipc_connect(ctx, DEV_MODULE_ID_DB, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_DB);
-    dev_ipc_connect(ctx, DEV_MODULE_ID_ROUTE, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_ROUTE);
-    dev_ipc_connect(ctx, DEV_MODULE_ID_TUNNEL, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_TUNNEL);
-    dev_ipc_connect(ctx, DEV_MODULE_ID_IF, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_IF);
-    dev_ipc_connect(ctx, DEV_MODULE_ID_VRF, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_VRF);
-    LOG_INFO("Connected to CFG, DB, ROUTE, TUNNEL, IF and VRF");
-    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
+    (void)module_id;
+    (void)host;
+    (void)port;
+    (void)epoch;
+    (void)user;
+    if (event == DEV_MODULE_EVENT_READY)
+    {
+        bgp_post_internal(BGP_MSG_TYPE_INTERNAL_IF_READY);
+    }
+    else if (event == DEV_MODULE_EVENT_DOWN)
+    {
+        bgp_post_internal(BGP_MSG_TYPE_INTERNAL_IF_DOWN);
+    }
 }
 
-static void bgp_on_connect(dev_ipc_message_t *msg)
+static void bgp_on_vrf_ready_cb(uint32_t module_id, uint8_t event, const char *host, uint16_t port, uint32_t epoch,
+                                void *user)
 {
-    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
-    LOG_INFO("Phase 2: MODULE_CONNECT (reserved)");
-    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
+    (void)module_id;
+    (void)host;
+    (void)port;
+    (void)epoch;
+    (void)user;
+    if (event == DEV_MODULE_EVENT_READY)
+    {
+        bgp_post_internal(BGP_MSG_TYPE_INTERNAL_VRF_READY);
+    }
 }
 
-static void bgp_on_ready(dev_ipc_message_t *msg)
+static void bgp_on_route_ready_cb(uint32_t module_id, uint8_t event, const char *host, uint16_t port, uint32_t epoch,
+                                  void *user)
+{
+    (void)module_id;
+    (void)host;
+    (void)port;
+    (void)epoch;
+    (void)user;
+    if (event == DEV_MODULE_EVENT_READY)
+    {
+        bgp_post_internal(BGP_MSG_TYPE_INTERNAL_ROUTE_READY);
+    }
+}
+
+static void bgp_handle_if_ready(void)
 {
     dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
-    LOG_INFO("Phase 3: MODULE_READY - Initializing database tables and restoring BGP state");
-
-    if (bgp_db_init() != 0)
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_IF, 3000) != ERRCODE_SUCCESS)
     {
-        LOG_ERROR("BGP: Database table initialization failed");
-        send_phase_response(ctx, msg, ERRCODE_FAIL);
+        LOG_WARN("BGP: IF not connected within 3s; if_api_subscribe_all deferred");
         return;
     }
-
-    if (bgp_worker_prepare() != ERRCODE_SUCCESS)
+    if (if_api_subscribe_all(ctx) != ERRCODE_SUCCESS)
     {
-        send_phase_response(ctx, msg, ERRCODE_FAIL);
-        return;
-    }
-
-    /* bgp_worker 线程必须先启动，restore 通过 bgp_worker_dispatch_apply() 向其派发命令 */
-    if (bgp_worker_launch() != ERRCODE_SUCCESS)
-    {
-        bgp_worker_shutdown();
-        send_phase_response(ctx, msg, ERRCODE_FAIL);
-        return;
-    }
-
-    /* BMP 线程初始化并启动 */
-    if (bgp_bmp_thread_prepare() != ERRCODE_SUCCESS)
-    {
-        bgp_worker_shutdown();
-        send_phase_response(ctx, msg, ERRCODE_FAIL);
-        return;
-    }
-    if (bgp_bmp_thread_launch() != ERRCODE_SUCCESS)
-    {
-        bgp_bmp_thread_shutdown();
-        bgp_worker_shutdown();
-        send_phase_response(ctx, msg, ERRCODE_FAIL);
-        return;
-    }
-
-    /* 通过 if_api 订阅 IF 全量事件，用于维护统一接口缓存 */
-    if (if_api_subscribe_all(ctx) == ERRCODE_SUCCESS)
-    {
-        LOG_INFO("BGP: Subscribed to IF events via if_api (ALL types, ALL events)");
+        LOG_WARN("BGP: if_api_subscribe_all failed");
     }
     else
     {
-        LOG_WARN("BGP: Failed to subscribe to IF events via if_api");
+        LOG_INFO("BGP: subscribed to IF events");
     }
+}
 
-    /* 通过 vrf_api 订阅 VRF 事件（VRF 删除 + RD/RT 增删），并请求初始全量回放 */
-    vrf_api_cache_init();
+static void bgp_handle_vrf_ready(void)
+{
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_VRF, 3000) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("BGP: VRF not connected within 3s; vrf_api_subscribe deferred");
+        return;
+    }
     uint32_t vrf_event_mask = VRF_EVENT_VRF_ADD | VRF_EVENT_VRF_DEL | VRF_EVENT_AF_ENABLE | VRF_EVENT_AF_DISABLE |
                               VRF_EVENT_AF_RD_ADD | VRF_EVENT_AF_RD_DEL | VRF_EVENT_AF_IMPORT_RT_ADD |
                               VRF_EVENT_AF_IMPORT_RT_DEL | VRF_EVENT_AF_EXPORT_RT_ADD | VRF_EVENT_AF_EXPORT_RT_DEL;
-    if (vrf_api_subscribe(ctx, VRF_AF_MASK_ALL, vrf_event_mask, VRF_SUBSCRIBE_FLAG_REPLAY) == ERRCODE_SUCCESS)
+    if (vrf_api_subscribe(ctx, VRF_AF_MASK_ALL, vrf_event_mask, VRF_SUBSCRIBE_FLAG_REPLAY) != ERRCODE_SUCCESS)
     {
-        LOG_INFO("BGP: Subscribed to VRF events via vrf_api (REPLAY)");
+        LOG_WARN("BGP: vrf_api_subscribe failed");
     }
     else
     {
-        LOG_WARN("BGP: Failed to subscribe to VRF events via vrf_api");
+        LOG_INFO("BGP: subscribed to VRF events (with REPLAY)");
     }
-
-    /* 仅恢复：表不存在（BGP 未曾配置）时静默返回 NULL，不建表也不写默认值 */
-    uint32_t ret = bgp_db_restore();
-    if (ret != ERRCODE_SUCCESS)
-    {
-        LOG_ERROR("BGP: Failed to restore state from database");
-        bgp_worker_shutdown();
-        send_phase_response(ctx, msg, ERRCODE_FAIL);
-        return;
-    }
-
-    LOG_INFO("BGP worker thread started");
-    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
 }
 
 void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    (void)ctx;
     if (!msg)
     {
         return;
@@ -227,17 +221,25 @@ void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
     switch (msg->msg_type)
     {
-        case DEV_IPC_MSG_TYPE_DEV_MODULE_START:
-            bgp_on_start(msg);
-            return;
+        case BGP_MSG_TYPE_INTERNAL_IF_READY:
+            bgp_handle_if_ready();
+            break;
+        case BGP_MSG_TYPE_INTERNAL_VRF_READY:
+            bgp_handle_vrf_ready();
+            break;
+        case BGP_MSG_TYPE_INTERNAL_ROUTE_READY:
+            if (bgp_worker_post_route_ready() != 0)
+            {
+                LOG_WARN("BGP: failed to post ROUTE-ready replay");
+            }
+            break;
+        case BGP_MSG_TYPE_INTERNAL_IF_DOWN:
+            if (bgp_worker_post_if_down() != 0)
+            {
+                LOG_WARN("BGP: failed to post IF-down teardown");
+            }
+            break;
 
-        case DEV_IPC_MSG_TYPE_DEV_MODULE_CONNECT:
-            bgp_on_connect(msg);
-            return;
-
-        case DEV_IPC_MSG_TYPE_DEV_MODULE_READY:
-            bgp_on_ready(msg);
-            return;
         case CLI_MSG_TYPE:
         {
             uint8_t flags = bgp_cli_payload_flags(msg);
@@ -260,6 +262,12 @@ void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             }
             else
             {
+                /* DB 不可用时直接拒绝配置下发，避免内存/OS 与 DB 静默偏移 */
+                if (db_rpc_guard_reject(ctx, msg, "BGP"))
+                {
+                    dev_ipc_message_free(msg);
+                    return;
+                }
                 uint32_t gid = bgp_cli_payload_group_id(msg);
                 if (bgp_is_bmp_group(gid))
                 {
@@ -369,6 +377,93 @@ int bgp_module_init(void)
     }
 
     g_bgp_local->dev_ipc_ctx = ctx;
+
+    /* 弱依赖模型启动（顺序至关重要）：
+     *   1. 等 DEV 控制连接
+     *   2. wait_module_ready(DB) → db_init（建表）
+     *   3. worker + BMP 线程启动（之后才能安全处理 IF/VRF/ROUTE 事件）
+     *   4. vrf_api cache 初始化（msg_handler 收到 VRF_EVENT 时会用）
+     *   5. 各种 subscribe：触发依赖拉起 + 注册重启回调
+     *      （此时 worker 已 ready，事件回调到达不会 crash）
+     *   6. db_restore（依赖 vrf cache 等已就绪）
+     *   7. subscribe(CLI) 放最后：CFG 看到本模块在跑即可立即 dispatch
+     *   8. notify_ready */
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DEV, 10000) != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("BGP: timed out waiting for DEV connection; module may be unusable");
+    }
+
+    /* DB：只 init 建表，restore 推迟到 subscribes 之后（依赖 cache） */
+    if (dev_ipc_wait_module_ready(ctx, DEV_MODULE_ID_DB, 5000) != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("BGP: DB not ready, skip db init");
+    }
+    else if (bgp_db_init() != 0)
+    {
+        LOG_ERROR("BGP: DB init failed");
+    }
+
+    if (bgp_worker_prepare() != ERRCODE_SUCCESS || bgp_worker_launch() != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("BGP: worker start failed");
+        bgp_worker_shutdown();
+        return -1;
+    }
+    if (bgp_bmp_thread_prepare() != ERRCODE_SUCCESS || bgp_bmp_thread_launch() != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("BGP: BMP thread start failed");
+        bgp_bmp_thread_shutdown();
+        bgp_worker_shutdown();
+        return -1;
+    }
+
+    vrf_api_cache_init();
+
+    /* 现在 worker 已 ready，可以安全订阅（订阅 → 事件 → bgp_worker_post_*） */
+
+    /* TUNNEL 用 auto_start=0：BGP 不硬依赖 TUNNEL（纯 IPv4-unicast 用不到 MPLS）。
+     * 用户配 labeled / VPN 地址族时由 CLI handler (handle_bgp_addr_family) 显式触发 TUNNEL 启动。 */
+    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_TUNNEL, 0, NULL, NULL) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("BGP: subscribe(TUNNEL) failed");
+    }
+
+    /* VRF：auto_start=1 触发 + cb 在每次 VRF READY 时重新订阅事件 */
+    /* VRF 用 auto_start=0：BGP 默认 VRF 不需要 VRF 模块；用户配 VRF AF 时再由 VRF 命令触发拉起 */
+    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_VRF, 0, bgp_on_vrf_ready_cb, NULL) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("BGP: subscribe(VRF) failed");
+    }
+
+    /* ROUTE：基础模块，每次 READY 后由 worker 重订阅/重注册/重下刷。 */
+    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_ROUTE, 0, bgp_on_route_ready_cb, NULL) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("BGP: subscribe(ROUTE) failed");
+    }
+
+    /* IF：用回调模式，IF 每次 READY 触发 worker 重新订阅事件 */
+    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_IF, 0, bgp_on_if_ready_cb, NULL) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("BGP: subscribe(IF) failed");
+    }
+
+    /* db_restore 放最后（subscribes 已触发缓存回放） */
+    if (bgp_db_restore() != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("BGP: DB restore failed");
+    }
+
+    /* subscribe(CLI) 最后：CFG poll is_connected(BGP)=true 时 BGP 已 fully ready */
+    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_CLI, 0, NULL, NULL) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("BGP: subscribe(CLI) failed");
+    }
+
+    if (dev_ipc_notify_ready(ctx) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("BGP: notify_ready to DEV failed");
+    }
+    LOG_INFO("BGP: module ready");
 
     return 0;
 }

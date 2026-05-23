@@ -18,9 +18,7 @@
 #include "bgp.h"
 #include "net_addr.h"
 
-/** 属性来源标识位（可多 bit 共存：同一 attr 可能同时被 loc-rib 与 rib-out 持有） */
-#define BGP_ATTR_SRC_LOC_RIB (1U << 0) /**< 来自本地 RIB（接收/导入路径） */
-#define BGP_ATTR_SRC_RIB_OUT (1U << 1) /**< 来自出向 Adj-RIB-Out（发布路径评估后） */
+typedef struct bgp_instance bgp_instance_t;
 
 /**
  * @brief 带引用计数的共享属性
@@ -29,11 +27,11 @@
  */
 typedef struct bgp_attr_ref
 {
-    bgp_attr_t attr;       /**< 路径属性（不可变） */
-    uint32_t refcnt;       /**< 引用计数 */
-    uint32_t hash;         /**< 预计算 hash 值（加速查找） */
-    uint32_t attr_id;      /**< 全局唯一属性 ID（自增，从 1 开始） */
-    uint32_t source_flags; /**< 来源位图（BGP_ATTR_SRC_*），按 OR 累积 */
+    bgp_instance_t *inst; /**< 所属 AF 实例（借用引用，用于 release 时回表删除） */
+    bgp_attr_t attr;      /**< 路径属性（不可变） */
+    uint32_t refcnt;      /**< 引用计数 */
+    uint32_t hash;        /**< 预计算 hash 值（加速查找） */
+    uint32_t attr_id;     /**< instance 内唯一属性 ID（自增，从 1 开始） */
 } bgp_attr_ref_t;
 
 /**
@@ -43,24 +41,29 @@ typedef struct bgp_attr_ref
  */
 #define BGP_ROUTE_ATTR(route) (&(route)->attr->attr)
 
-/** 初始化全局 intern 表（在 bgp_module_init 中调用） */
+/** 初始化 attr intern 模块（当前无全局状态，保留为模块生命周期入口） */
 void bgp_attr_intern_init(void);
 
-/** 销毁全局 intern 表 */
+/** 销毁 attr intern 模块（当前无全局状态，保留为模块生命周期入口） */
 void bgp_attr_intern_fini(void);
+
+/** 初始化指定 instance 的 attr store */
+void bgp_attr_store_init(bgp_instance_t *inst);
+
+/** 销毁指定 instance 的 attr store */
+void bgp_attr_store_destroy(bgp_instance_t *inst);
 
 /**
  * @brief 查找或插入属性，返回共享引用（refcnt 已 +1）
  *
- * 若表中已存在内容相同的属性，返回已有引用并 refcnt +1。
+ * 若 instance 表中已存在内容相同的属性，返回已有引用并 refcnt +1。
  * 若不存在，分配新 bgp_attr_ref_t 并插入表中，refcnt=1，分配新 attr_id。
- * 无论新建还是复用，source_flag 都会 OR 合并到 ref->source_flags。
  *
+ * @param inst        所属 AF instance
  * @param attr        待 intern 的属性（内容被复制，调用方可释放原始值）
- * @param source_flag 来源位图（BGP_ATTR_SRC_*，允许为 0）
  * @return 共享引用指针（不为 NULL）
  */
-bgp_attr_ref_t *bgp_attr_intern(const bgp_attr_t *attr, uint32_t source_flag);
+bgp_attr_ref_t *bgp_attr_intern(bgp_instance_t *inst, const bgp_attr_t *attr);
 
 /**
  * @brief 增加引用计数
@@ -79,10 +82,10 @@ void bgp_attr_release(bgp_attr_ref_t *ref);
  * @param attr_id 属性 ID
  * @return 属性引用指针（借用，不增加引用计数），未找到返回 NULL
  */
-const bgp_attr_ref_t *bgp_attr_find_by_id(uint32_t attr_id);
+const bgp_attr_ref_t *bgp_attr_find_by_id(const bgp_instance_t *inst, uint32_t attr_id);
 
-/** 当前 intern 表中的唯一属性数量 */
-uint32_t bgp_attr_intern_count(void);
+/** 指定 instance intern 表中的唯一属性数量 */
+uint32_t bgp_attr_intern_count(const bgp_instance_t *inst);
 
 /**
  * @brief intern 表遍历回调
@@ -92,9 +95,9 @@ uint32_t bgp_attr_intern_count(void);
 typedef void (*bgp_attr_intern_cb)(const bgp_attr_ref_t *ref, gpointer user_data);
 
 /**
- * @brief 遍历 intern 表所有属性（顺序不保证；回调期间禁止修改表）
+ * @brief 遍历指定 instance intern 表所有属性（顺序不保证；回调期间禁止修改表）
  */
-void bgp_attr_intern_foreach(bgp_attr_intern_cb cb, gpointer user_data);
+void bgp_attr_intern_foreach(const bgp_instance_t *inst, bgp_attr_intern_cb cb, gpointer user_data);
 
 /* ============================================================================
  * 属性语义 helper（与存储无关，可在任意上下文调用）

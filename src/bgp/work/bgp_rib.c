@@ -43,6 +43,18 @@ static bgp_rthead_t *rthead_create(const bgp_nlri_entry_t *nlri, bgp_rib_t *rib)
     return head;
 }
 
+static void route_node_release_attrs(bgp_route_node_t *route)
+{
+    if (!route)
+    {
+        return;
+    }
+    bgp_attr_release(route->attr);
+    route->attr = NULL;
+    bgp_attr_release(route->base_attr);
+    route->base_attr = NULL;
+}
+
 /** 释放路径节点前先 release 共享属性 */
 static void route_node_free(gpointer data)
 {
@@ -59,8 +71,7 @@ static void route_node_free(gpointer data)
         BIT_SET(route->flags, BGP_ROUTE_FLAG_PENDING_FREE);
         return;
     }
-    bgp_attr_release(route->attr);
-    route->attr = NULL;
+    route_node_release_attrs(route);
     g_free(route);
 }
 
@@ -84,8 +95,7 @@ void bgp_route_node_borrow_unref(bgp_route_node_t *route)
     {
         /* 节点早已被 RIB 路径上的清理流程（unreach/purge）从 head->route_list 摘除，
          * 这里只需释放节点本身内存即可。 */
-        bgp_attr_release(route->attr);
-        route->attr = NULL;
+        route_node_release_attrs(route);
         g_free(route);
     }
 }
@@ -216,6 +226,8 @@ int bgp_rib_route_apply_reach(bgp_route_node_t *route, uint32_t import_proto, co
     {
         BIT_SET(route->flags, BGP_ROUTE_FLAG_IMPORT);
         route->import_proto = import_proto;
+        bgp_attr_release(route->base_attr);
+        route->base_attr = NULL;
     }
     else
     {
@@ -232,9 +244,12 @@ int bgp_rib_route_apply_reach(bgp_route_node_t *route, uint32_t import_proto, co
 
     if (attr)
     {
-        bgp_attr_ref_t *new_ref = bgp_attr_intern(attr, BGP_ATTR_SRC_LOC_RIB);
-        bgp_attr_release(route->attr);
-        route->attr = new_ref;
+        bgp_attr_ref_t *new_ref = bgp_attr_intern(route->head ? route->head->inst : NULL, attr);
+        if (new_ref)
+        {
+            bgp_attr_release(route->attr);
+            route->attr = new_ref;
+        }
     }
     if (nexthop)
     {
@@ -251,6 +266,28 @@ int bgp_rib_route_apply_reach(bgp_route_node_t *route, uint32_t import_proto, co
         route->added_at_usec = route->updated_at_usec;
     }
 
+    return 0;
+}
+
+int bgp_rib_route_set_base_attr(bgp_route_node_t *route, const bgp_attr_t *base_attr)
+{
+    if (!route)
+    {
+        return -1;
+    }
+
+    bgp_attr_ref_t *new_ref = NULL;
+    if (base_attr)
+    {
+        new_ref = bgp_attr_intern(route->head ? route->head->inst : NULL, base_attr);
+        if (!new_ref)
+        {
+            return -1;
+        }
+    }
+
+    bgp_attr_release(route->base_attr);
+    route->base_attr = new_ref;
     return 0;
 }
 

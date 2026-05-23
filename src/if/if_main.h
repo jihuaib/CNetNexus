@@ -13,6 +13,14 @@
 /** IF 挂起表依赖类型：等待某 VRF 出现 */
 #define IF_DEP_VRF 1u
 
+/** IF 内部消息：VRF 每次 READY（含初次 + 重启）触发 worker 重新订阅 VRF 事件
+ *  category=IF, subtype=0xFFFE */
+#define IF_MSG_TYPE_INTERNAL_VRF_READY DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_IF, 0xFFFE)
+
+/** IF 内部消息：ROUTE 每次 READY（含初次 + 重启）触发 worker 重刷 connected 路由
+ *  category=IF, subtype=0xFFFD */
+#define IF_MSG_TYPE_INTERNAL_ROUTE_READY DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_IF, 0xFFFD)
+
 /**
  * @brief IF 模块 IPC 线程本地上下文（仅保留 IPC 相关，不包含业务数据）
  *

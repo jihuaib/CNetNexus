@@ -26,7 +26,12 @@
 #include "bgp_cli.h"
 #include "bgp_import_rib.h"
 #include "bgp_import_route.h"
+#include "bgp_main.h"
+#include "bgp_protocol.h"
 #include "bgp_relay.h"
+#include "bgp_route_flush.h"
+#include "bgp_session.h"
+#include "bgp_vrf.h"
 #include "bgp_worker.h"
 #include "errcode.h"
 #include "if.h"
@@ -44,13 +49,15 @@ char bgp_cmd_tag;
 
 typedef enum bgp_cmd_type
 {
-    BGP_CMD_TYPE_SHOW_CLI = 1,   /**< show CLI 命令派发（CLI_MSG_TYPE/CLI_MSG_TYPE_CONTINUE） */
-    BGP_CMD_TYPE_SHUTDOWN = 2,   /**< worker 退出信号 */
-    BGP_CMD_TYPE_APPLY = 3,      /**< 跨线程配置应用命令 */
-    BGP_CMD_TYPE_ROUTE_MSG = 4,  /**< ROUTE_MSG_TYPE_UPDATE/REPORT/NH_NOTIFY */
-    BGP_CMD_TYPE_IF_EVENT = 5,   /**< IF 接口事件（IF_MSG_TYPE_EVENT） */
-    BGP_CMD_TYPE_TUNNEL_MSG = 6, /**< TUNNEL_MSG_TYPE_RESOLVE_NOTIFY */
-    BGP_CMD_TYPE_VRF_EVENT = 7,  /**< VRF_MSG_TYPE_EVENT */
+    BGP_CMD_TYPE_SHOW_CLI = 1,    /**< show CLI 命令派发（CLI_MSG_TYPE/CLI_MSG_TYPE_CONTINUE） */
+    BGP_CMD_TYPE_SHUTDOWN = 2,    /**< worker 退出信号 */
+    BGP_CMD_TYPE_APPLY = 3,       /**< 跨线程配置应用命令 */
+    BGP_CMD_TYPE_ROUTE_MSG = 4,   /**< ROUTE_MSG_TYPE_UPDATE/REPORT/NH_NOTIFY */
+    BGP_CMD_TYPE_IF_EVENT = 5,    /**< IF 接口事件（IF_MSG_TYPE_EVENT） */
+    BGP_CMD_TYPE_TUNNEL_MSG = 6,  /**< TUNNEL_MSG_TYPE_RESOLVE_NOTIFY */
+    BGP_CMD_TYPE_VRF_EVENT = 7,   /**< VRF_MSG_TYPE_EVENT */
+    BGP_CMD_TYPE_ROUTE_READY = 8, /**< ROUTE READY/restart 后重订阅/重注册/重下刷 */
+    BGP_CMD_TYPE_IF_DOWN = 9,     /**< IF 模块下线，清缓存 + 拆 source-if 会话 + 重注册 nexthop */
 } bgp_cmd_type_t;
 
 typedef struct bgp_cmd
@@ -231,6 +238,40 @@ int bgp_worker_post_show_cli(dev_ipc_message_t *msg)
 int bgp_worker_post_route_message(dev_ipc_message_t *msg)
 {
     bgp_cmd_t *cmd = bgp_cmd_create(BGP_CMD_TYPE_ROUTE_MSG, msg, FALSE);
+    if (!cmd)
+    {
+        return -1;
+    }
+
+    if (bgp_cmd_enqueue(cmd) != 0)
+    {
+        bgp_cmd_destroy(cmd);
+        return -1;
+    }
+
+    return 0;
+}
+
+int bgp_worker_post_route_ready(void)
+{
+    bgp_cmd_t *cmd = bgp_cmd_create(BGP_CMD_TYPE_ROUTE_READY, NULL, FALSE);
+    if (!cmd)
+    {
+        return -1;
+    }
+
+    if (bgp_cmd_enqueue(cmd) != 0)
+    {
+        bgp_cmd_destroy(cmd);
+        return -1;
+    }
+
+    return 0;
+}
+
+int bgp_worker_post_if_down(void)
+{
+    bgp_cmd_t *cmd = bgp_cmd_create(BGP_CMD_TYPE_IF_DOWN, NULL, FALSE);
     if (!cmd)
     {
         return -1;
@@ -534,6 +575,17 @@ gboolean bgp_cmd_process_event(void)
                 cmd->msg = NULL;
                 break;
 
+            case BGP_CMD_TYPE_ROUTE_READY:
+                if (dev_ipc_wait_connected(bgp_local_ipc_ctx(), DEV_MODULE_ID_ROUTE, 3000) != ERRCODE_SUCCESS)
+                {
+                    LOG_WARN("BGP: ROUTE connection not ready after 3s; replay deferred to next READY");
+                    break;
+                }
+                bgp_import_route_resubscribe_protocol_imports(g_bgp_work_local->protocol);
+                bgp_relay_reregister_route_nexthops();
+                bgp_route_flush_replay_flushed_all();
+                break;
+
             case BGP_CMD_TYPE_TUNNEL_MSG:
                 bgp_cmd_dispatch_tunnel_msg(cmd->msg);
                 cmd->msg = NULL;
@@ -551,6 +603,60 @@ gboolean bgp_cmd_process_event(void)
                     cmd->msg = NULL;
                 }
                 break;
+
+            case BGP_CMD_TYPE_IF_DOWN:
+            {
+                /* IF 模块下线：
+                 *   1) 清掉 IF 共享缓存，避免后续解析读到陈旧 source-addr/ifindex。
+                 *   2) 对所有配置了 source-interface 的会话调 bgp_neighbor_down——
+                 *      它会发送 NOTIFICATION Cease/Admin-Reset、取消所有定时器、关闭
+                 *      TCP、flush peer 路由、purge session 路由、FSM 重置到 ACTIVE。
+                 * 路由 nexthop 可达性不在此重注册：ROUTE 进程仍存活，watch 仍在；
+                 * ISIS/静态路由等撤销或 IF 事件触发 route_recompute_iter_paths() 后，
+                 * ROUTE 会通过 ROUTE_MSG_TYPE_NH_NOTIFY 通知 BGP（bgp_relay_handle_nh_notify）。
+                 * bgp_relay_reregister_route_nexthops 仅用于 ROUTE 进程重启后 watch 丢失。
+                 * 没配 source-interface 的会话依赖内核选源，TCP 不会立刻断；它们走
+                 * 原有 BGP hold-time 机制由对端拆链。 */
+                LOG_INFO("BGP: IF DOWN detected, flushing IF cache + tearing source-if bound sessions");
+                if_api_cache_cleanup();
+                if_api_cache_init();
+                if (g_bgp_work_local && g_bgp_work_local->protocol && g_bgp_work_local->protocol->vrf_hash)
+                {
+                    GHashTableIter vit;
+                    gpointer vk, vv;
+                    g_hash_table_iter_init(&vit, g_bgp_work_local->protocol->vrf_hash);
+                    while (g_hash_table_iter_next(&vit, &vk, &vv))
+                    {
+                        bgp_vrf_t *vrf = (bgp_vrf_t *)vv;
+                        if (!vrf || !vrf->sess_hash)
+                        {
+                            continue;
+                        }
+                        /* 复制 session 指针到临时数组：bgp_neighbor_down 可能间接修改
+                         * sess_hash（虽然当前实现不会，但要保稳）。 */
+                        GPtrArray *snapshot = g_ptr_array_new();
+                        GHashTableIter sit;
+                        gpointer sk, sv;
+                        g_hash_table_iter_init(&sit, vrf->sess_hash);
+                        while (g_hash_table_iter_next(&sit, &sk, &sv))
+                        {
+                            bgp_session_t *sess = (bgp_session_t *)sv;
+                            if (sess && sess->source_if_name[0] != '\0')
+                            {
+                                g_ptr_array_add(snapshot, sess);
+                            }
+                        }
+                        for (guint i = 0; i < snapshot->len; i++)
+                        {
+                            bgp_neighbor_down((bgp_session_t *)snapshot->pdata[i], g_bgp_work_local->epoll_fd);
+                        }
+                        /* g_ptr_array_new 没设 element_free_func，free_seg=TRUE 仅释放
+                         * 内部 pdata 段，不会触动借用的 session 指针，所有权仍归 sess_hash */
+                        g_ptr_array_free(snapshot, TRUE);
+                    }
+                }
+                break;
+            }
 
             case BGP_CMD_TYPE_VRF_EVENT:
                 vrf_api_cache_on_event(cmd->msg);

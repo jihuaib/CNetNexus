@@ -16,6 +16,18 @@
 /** Route 模块挂起表依赖域 */
 #define ROUTE_DEP_VRF 1u
 
+/** ROUTE 内部消息：VRF 每次 READY（含初次 + 重启）触发 worker 重新订阅 VRF 事件
+ *  category=ROUTE, subtype=0xFFFE */
+#define ROUTE_MSG_TYPE_INTERNAL_VRF_READY DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ROUTE, 0xFFFE)
+
+/** ROUTE 内部消息：IF 模块 READY（含初次 + 重启），IPC 线程重新订阅 IF 事件
+ *  category=ROUTE, subtype=0xFFFD */
+#define ROUTE_MSG_TYPE_INTERNAL_IF_READY DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ROUTE, 0xFFFD)
+
+/** ROUTE 内部消息：IF 模块 DOWN（process stop/crash），worker 清 IF 缓存并重算 nexthop
+ *  category=ROUTE, subtype=0xFFFC */
+#define ROUTE_MSG_TYPE_INTERNAL_IF_DOWN DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ROUTE, 0xFFFC)
+
 /**
  * @brief Route 模块本地状态（IPC 线程专用）
  *

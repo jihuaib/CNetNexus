@@ -13,6 +13,7 @@
 #include "isis.h"
 #include "isis_main.h"
 #include "isis_route.h"
+#include "log.h"
 #include "route.h"
 
 #define ISIS_ROUTE_SYNC_TIMEOUT_MS 3000u
@@ -380,6 +381,65 @@ void isis_route_sync_reconcile_all_instances(void)
         (void)key;
         isis_route_sync_reconcile_instance_all_if((isis_instance_cfg_t *)value);
     }
+}
+
+static void isis_route_sync_replay_instance_route_state_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    uint32_t *replayed = (uint32_t *)user_data;
+    const isis_route_state_t *state = (const isis_route_state_t *)value;
+    if (state && isis_route_sync_publish_add(state) == ERRCODE_SUCCESS && replayed)
+    {
+        (*replayed)++;
+    }
+}
+
+static void isis_route_sync_replay_instance_learned_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    uint32_t *replayed = (uint32_t *)user_data;
+    const isis_route_head_t *head = (const isis_route_head_t *)value;
+    const isis_route_path_t *best = isis_route_head_best_path(head);
+    if (best && isis_route_sync_publish_add(&best->state) == ERRCODE_SUCCESS && replayed)
+    {
+        (*replayed)++;
+    }
+}
+
+static void isis_route_sync_replay_instance(isis_instance_cfg_t *inst, uint32_t *replayed)
+{
+    if (!inst)
+    {
+        return;
+    }
+    if (inst->route_states)
+    {
+        g_hash_table_foreach(inst->route_states, isis_route_sync_replay_instance_route_state_cb, replayed);
+    }
+    if (inst->learned_route_heads)
+    {
+        g_hash_table_foreach(inst->learned_route_heads, isis_route_sync_replay_instance_learned_cb, replayed);
+    }
+}
+
+void isis_route_sync_replay_all_instances(void)
+{
+    if (!g_isis_work_local || !g_isis_work_local->instances)
+    {
+        return;
+    }
+
+    uint32_t replayed = 0;
+    GHashTableIter iter;
+    gpointer key = NULL;
+    gpointer value = NULL;
+    g_hash_table_iter_init(&iter, g_isis_work_local->instances);
+    while (g_hash_table_iter_next(&iter, &key, &value))
+    {
+        (void)key;
+        isis_route_sync_replay_instance((isis_instance_cfg_t *)value, &replayed);
+    }
+    LOG_INFO("ISIS: replayed %u route(s) to ROUTE", replayed);
 }
 
 const char *isis_route_sync_if_event_get_logical_name(const dev_ipc_message_t *msg, char *ifname_out, size_t out_sz)

@@ -12,6 +12,7 @@
 #include "bgp_attr_intern.h"
 #include "bgp_cli.h"
 #include "bgp_conn.h"
+#include "bgp_ext_community.h"
 #include "bgp_instance.h"
 #include "bgp_main.h"
 #include "bgp_pkt.h"
@@ -733,9 +734,12 @@ static void bgp_show_route_detail(GString *buf, const bgp_rthead_t *head)
         {
             g_string_append_printf(buf, "    Community: %s\r\n", BGP_ROUTE_ATTR(route)->communities);
         }
-        if (BGP_ROUTE_ATTR(route)->ext_communities[0] != '\0')
+        if (BGP_ROUTE_ATTR(route)->ext_communities_len > 0)
         {
-            g_string_append_printf(buf, "    Ext-Comm : %s\r\n", BGP_ROUTE_ATTR(route)->ext_communities);
+            char ext_comm[BGP_ATTR_COMMUNITY_MAX];
+            bgp_ext_community_format(BGP_ROUTE_ATTR(route)->ext_communities, BGP_ROUTE_ATTR(route)->ext_communities_len,
+                                     ext_comm, sizeof(ext_comm));
+            g_string_append_printf(buf, "    Ext-Comm : %s\r\n", ext_comm);
         }
         if (BGP_ROUTE_ATTR(route)->large_communities[0] != '\0')
         {
@@ -1795,39 +1799,6 @@ static int handle_bgp_show_update_group(dev_ipc_message_t *msg, cli_tlv_parser_t
     return bgp_work_send_chunked_response(msg, buf);
 }
 
-/** 把 source_flags 位图转成可读字符串，如 "loc-rib" / "rib-out" / "loc-rib,rib-out" / "-" */
-static void bgp_show_attr_source_str(uint32_t flags, char *buf, size_t buf_size)
-{
-    if (buf_size == 0)
-    {
-        return;
-    }
-    buf[0] = '\0';
-    const char *parts[2];
-    int n = 0;
-    if (flags & BGP_ATTR_SRC_LOC_RIB)
-    {
-        parts[n++] = "loc-rib";
-    }
-    if (flags & BGP_ATTR_SRC_RIB_OUT)
-    {
-        parts[n++] = "rib-out";
-    }
-    if (n == 0)
-    {
-        g_strlcpy(buf, "-", buf_size);
-        return;
-    }
-    for (int i = 0; i < n; i++)
-    {
-        if (i > 0)
-        {
-            g_strlcat(buf, ",", buf_size);
-        }
-        g_strlcat(buf, parts[i], buf_size);
-    }
-}
-
 /** intern 表遍历回调：把单条 attr 追加到摘要表格中 */
 static void bgp_show_attr_summary_cb(const bgp_attr_ref_t *ref, gpointer user_data)
 {
@@ -1836,9 +1807,7 @@ static void bgp_show_attr_summary_cb(const bgp_attr_ref_t *ref, gpointer user_da
     {
         return;
     }
-    char src_str[32];
-    bgp_show_attr_source_str(ref->source_flags, src_str, sizeof(src_str));
-    g_string_append_printf(b, "  %-8u %-6u %-16s %s\r\n", ref->attr_id, ref->refcnt, src_str,
+    g_string_append_printf(b, "  %-8u %-6u %s\r\n", ref->attr_id, ref->refcnt,
                            ref->attr.as_path[0] ? ref->attr.as_path : "-");
 }
 
@@ -1848,10 +1817,7 @@ static void bgp_show_attr_summary_cb(const bgp_attr_ref_t *ref, gpointer user_da
 static void bgp_show_attr_detail(GString *buf, const bgp_attr_ref_t *ref)
 {
     const bgp_attr_t *a = &ref->attr;
-    char src_str[32];
-    bgp_show_attr_source_str(ref->source_flags, src_str, sizeof(src_str));
     g_string_append_printf(buf, "  Attr-ID    : %u\r\n", ref->attr_id);
-    g_string_append_printf(buf, "  Source     : %s\r\n", src_str);
     g_string_append_printf(buf, "  RefCount   : %u\r\n", ref->refcnt);
     g_string_append_printf(buf, "  Hash       : 0x%08X\r\n", ref->hash);
     g_string_append_printf(buf, "  Origin     : %s\r\n", bgp_origin_str(a->origin));
@@ -1877,9 +1843,11 @@ static void bgp_show_attr_detail(GString *buf, const bgp_attr_ref_t *ref)
     {
         g_string_append_printf(buf, "  Community  : %s\r\n", a->communities);
     }
-    if (a->ext_communities[0] != '\0')
+    if (a->ext_communities_len > 0)
     {
-        g_string_append_printf(buf, "  Ext-Comm   : %s\r\n", a->ext_communities);
+        char ext_comm[BGP_ATTR_COMMUNITY_MAX];
+        bgp_ext_community_format(a->ext_communities, a->ext_communities_len, ext_comm, sizeof(ext_comm));
+        g_string_append_printf(buf, "  Ext-Comm   : %s\r\n", ext_comm);
     }
     if (a->large_communities[0] != '\0')
     {
@@ -1894,13 +1862,14 @@ static void bgp_show_attr_detail(GString *buf, const bgp_attr_ref_t *ref)
 }
 
 /**
- * @brief 处理 show bgp attr [<attr-id>] 命令
+ * @brief 处理 show bgp attr af <afi-safi> [vrf <vrf-name>] [<attr-id>] 命令
  *
- * group_id=20, cfg_id: 1=attr-id
- * 不带 attr-id 时显示 intern 表摘要，带时显示指定属性详情。
+ * group_id=14, cfg_id: 1/2/4/5/6=AF, 7=vrf-name, 8=attr-id
  */
 static int handle_bgp_show_attr(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
+    bgp_cli_ctx_t ctx = bgp_cli_ctx_default();
+    gboolean has_af = FALSE;
     uint32_t attr_id = 0;
     gboolean has_id = FALSE;
 
@@ -1909,40 +1878,106 @@ static int handle_bgp_show_attr(dev_ipc_message_t *msg, cli_tlv_parser_t *parser
     {
         if (CLI_TLV_IS_CTX(&entry))
         {
+            bgp_cli_ctx_parse(&ctx, &entry);
             cli_tlv_entry_free(&entry);
             continue;
         }
-        if (entry.cfg_id == 1)
+        switch (entry.cfg_id)
         {
-            attr_id = (uint32_t)cli_tlv_entry_get_int(&entry);
-            has_id = TRUE;
+            case 1:
+                ctx.afi = BGP_AFI_IPV4;
+                ctx.safi = BGP_SAFI_UNICAST;
+                has_af = TRUE;
+                break;
+            case 2:
+                ctx.afi = BGP_AFI_IPV6;
+                ctx.safi = BGP_SAFI_UNICAST;
+                has_af = TRUE;
+                break;
+            case 4:
+                ctx.afi = BGP_AFI_IPV4;
+                ctx.safi = BGP_SAFI_QP;
+                has_af = TRUE;
+                break;
+            case 5:
+                ctx.afi = BGP_AFI_IPV6;
+                ctx.safi = BGP_SAFI_QP;
+                has_af = TRUE;
+                break;
+            case 6:
+                ctx.afi = BGP_AFI_IPV4;
+                ctx.safi = BGP_SAFI_LABELED;
+                has_af = TRUE;
+                break;
+            case 7:
+            {
+                const char *s = cli_tlv_entry_get_text(&entry);
+                if (s)
+                {
+                    snprintf(ctx.vrf_name, sizeof(ctx.vrf_name), "%s", s);
+                }
+                break;
+            }
+            case 8:
+                attr_id = (uint32_t)cli_tlv_entry_get_int(&entry);
+                has_id = TRUE;
+                break;
+            default:
+                break;
         }
         cli_tlv_entry_free(&entry);
     }
 
+    if (!has_af)
+    {
+        bgp_show_send_cli_response(msg, "BGP Error: Missing address-family. Use 'show bgp attr af <afi-safi>'.\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (!g_bgp_work_local->protocol)
+    {
+        bgp_show_send_cli_response(msg, "BGP Error: BGP not configured.\r\n");
+        return ERRCODE_FAIL;
+    }
+
     GString *buf = g_string_sized_new(512);
+    bgp_vrf_t *vrf = bgp_show_lookup_vrf(&ctx);
+    if (!vrf)
+    {
+        g_string_append_printf(buf, "\r\nBGP Error: VRF not found.\r\n\r\n");
+        return bgp_work_send_chunked_response(msg, buf);
+    }
+    bgp_instance_t *inst = g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(ctx.afi, ctx.safi));
+    if (!inst)
+    {
+        g_string_append_printf(buf, "\r\nBGP Error: AF instance not found (%s).\r\n\r\n",
+                               bgp_af_str(ctx.afi, ctx.safi));
+        return bgp_work_send_chunked_response(msg, buf);
+    }
 
     if (!has_id)
     {
         /* 摘要模式：显示 intern 表统计 + 逐条列表 */
-        g_string_append_printf(buf, "\r\nBGP Attribute Intern Table\r\n");
-        g_string_append_printf(buf, "  Unique attributes: %u\r\n\r\n", bgp_attr_intern_count());
-        g_string_append(buf, "  Attr-ID  Refs   Source           AS-Path\r\n");
-        g_string_append(buf, "  -------- ------ ---------------- ----------------\r\n");
-        bgp_attr_intern_foreach(bgp_show_attr_summary_cb, buf);
+        g_string_append_printf(buf, "\r\nBGP Attribute Intern Table (AF: %s, VRF: %s)\r\n",
+                               bgp_af_str(ctx.afi, ctx.safi), ctx.vrf_name);
+        g_string_append_printf(buf, "  Unique attributes: %u\r\n\r\n", bgp_attr_intern_count(inst));
+        g_string_append(buf, "  Attr-ID  Refs   AS-Path\r\n");
+        g_string_append(buf, "  -------- ------ ----------------\r\n");
+        bgp_attr_intern_foreach(inst, bgp_show_attr_summary_cb, buf);
         g_string_append(buf, "\r\n");
         return bgp_work_send_chunked_response(msg, buf);
     }
 
     /* 详情模式：按 ID 查找并输出 */
-    const bgp_attr_ref_t *ref = bgp_attr_find_by_id(attr_id);
+    const bgp_attr_ref_t *ref = bgp_attr_find_by_id(inst, attr_id);
     if (!ref)
     {
-        g_string_append_printf(buf, "\r\nBGP Error: Attribute ID %u not found.\r\n\r\n", attr_id);
+        g_string_append_printf(buf, "\r\nBGP Error: Attribute ID %u not found in AF %s VRF %s.\r\n\r\n", attr_id,
+                               bgp_af_str(ctx.afi, ctx.safi), ctx.vrf_name);
         return bgp_work_send_chunked_response(msg, buf);
     }
 
-    g_string_append_printf(buf, "\r\nBGP Attribute Detail\r\n");
+    g_string_append_printf(buf, "\r\nBGP Attribute Detail (AF: %s, VRF: %s)\r\n", bgp_af_str(ctx.afi, ctx.safi),
+                           ctx.vrf_name);
     bgp_show_attr_detail(buf, ref);
     g_string_append(buf, "\r\n");
     return bgp_work_send_chunked_response(msg, buf);

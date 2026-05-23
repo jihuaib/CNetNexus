@@ -265,6 +265,9 @@ static inline uint32_t bgp_label_decode(const uint8_t *b)
 /** Community 字符串最大长度 */
 #define BGP_ATTR_COMMUNITY_MAX 1024
 
+/** Extended Community 原始报文 buffer 最大长度（8 字节对齐） */
+#define BGP_ATTR_EXT_COMMUNITY_MAX 1024
+
 /**
  * @brief BGP ORIGIN 值
  */
@@ -282,21 +285,22 @@ typedef enum bgp_origin
  */
 typedef struct bgp_attr
 {
-    bgp_origin_t origin;                            /**< ORIGIN */
-    char as_path[BGP_ATTR_AS_PATH_MAX];             /**< AS_PATH 字符串，如 "65001 65002 {65003}" */
-    uint32_t local_pref;                            /**< LOCAL_PREF（has_local_pref=true 时有效） */
-    uint32_t med;                                   /**< MULTI_EXIT_DISC（has_med=true 时有效） */
-    bool has_local_pref;                            /**< LOCAL_PREF 是否存在 */
-    bool has_med;                                   /**< MED 是否存在 */
-    bool atomic_aggregate;                          /**< ATOMIC_AGGREGATE 标志 */
-    char aggregator[48];                            /**< AGGREGATOR，格式 "AS:IP" */
-    char communities[BGP_ATTR_COMMUNITY_MAX];       /**< COMMUNITY，空格分隔 "ASN:VAL ..." */
-    char ext_communities[BGP_ATTR_COMMUNITY_MAX];   /**< EXT_COMMUNITY，空格分隔 */
-    char large_communities[BGP_ATTR_COMMUNITY_MAX]; /**< LARGE_COMMUNITY "GADM:LD1:LD2 ..." */
-    net_addr_t originator_id;                       /**< ORIGINATOR_ID（4 字节 IPv4） */
-    bool has_originator_id;                         /**< ORIGINATOR_ID 是否存在 */
-    net_addr_t cluster_list[16];                    /**< CLUSTER_LIST（IPv4 cluster-id 数组，RFC 4456） */
-    uint8_t cluster_list_len;                       /**< CLUSTER_LIST 元素数（0 表示无） */
+    bgp_origin_t origin;                                 /**< ORIGIN */
+    char as_path[BGP_ATTR_AS_PATH_MAX];                  /**< AS_PATH 字符串，如 "65001 65002 {65003}" */
+    uint32_t local_pref;                                 /**< LOCAL_PREF（has_local_pref=true 时有效） */
+    uint32_t med;                                        /**< MULTI_EXIT_DISC（has_med=true 时有效） */
+    bool has_local_pref;                                 /**< LOCAL_PREF 是否存在 */
+    bool has_med;                                        /**< MED 是否存在 */
+    bool atomic_aggregate;                               /**< ATOMIC_AGGREGATE 标志 */
+    char aggregator[48];                                 /**< AGGREGATOR，格式 "AS:IP" */
+    char communities[BGP_ATTR_COMMUNITY_MAX];            /**< COMMUNITY，空格分隔 "ASN:VAL ..." */
+    uint8_t ext_communities[BGP_ATTR_EXT_COMMUNITY_MAX]; /**< EXT_COMMUNITY 原始 8 字节条目 buffer */
+    uint16_t ext_communities_len;                        /**< EXT_COMMUNITY 原始 buffer 长度 */
+    char large_communities[BGP_ATTR_COMMUNITY_MAX];      /**< LARGE_COMMUNITY "GADM:LD1:LD2 ..." */
+    net_addr_t originator_id;                            /**< ORIGINATOR_ID（4 字节 IPv4） */
+    bool has_originator_id;                              /**< ORIGINATOR_ID 是否存在 */
+    net_addr_t cluster_list[16];                         /**< CLUSTER_LIST（IPv4 cluster-id 数组，RFC 4456） */
+    uint8_t cluster_list_len;                            /**< CLUSTER_LIST 元素数（0 表示无） */
 } bgp_attr_t;
 
 /* ============================================================================

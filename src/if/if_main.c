@@ -11,6 +11,7 @@
 #include <stdlib.h>
 
 #include "cli.h"
+#include "db.h"
 #include "dev.h"
 #include "errcode.h"
 #include "if.h"
@@ -25,103 +26,98 @@
 if_local_t *g_if_local = NULL;
 
 // ============================================================================
-// 三阶段回调辅助
+// 依赖就绪回调（含初次 + 重启）
 // ============================================================================
 
-static void send_phase_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, int32_t result)
+static void if_on_vrf_ready_cb(uint32_t module_id, uint8_t event, const char *host, uint16_t port, uint32_t epoch,
+                               void *user)
 {
-    dev_ipc_message_t *resp = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_MODULE_RESP, DEV_MODULE_ID_IF,
-                                                     msg->src_module_id, msg->request_id, NULL, 0, NULL);
-    if (resp)
+    (void)module_id;
+    (void)host;
+    (void)port;
+    (void)epoch;
+    (void)user;
+    if (event != DEV_MODULE_EVENT_READY)
     {
-        dev_ipc_send_response(ctx, resp);
-        dev_ipc_message_free(resp);
-    }
-    dev_ipc_message_free(msg);
-    (void)result;
-}
-
-// ============================================================================
-// Phase 1: MODULE_START - 建立 IPC 连接并启动 worker
-// ============================================================================
-
-static void if_on_start(dev_ipc_message_t *msg)
-{
-    dev_ipc_context_t *ctx = if_local_ipc_ctx();
-    LOG_INFO("Phase 1: MODULE_START - Establishing IPC connections");
-
-    dev_ipc_connect(ctx, DEV_MODULE_ID_CLI, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CLI);
-    dev_ipc_connect(ctx, DEV_MODULE_ID_DB, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_DB);
-    dev_ipc_connect(ctx, DEV_MODULE_ID_ROUTE, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_ROUTE);
-    dev_ipc_connect(ctx, DEV_MODULE_ID_VRF, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_VRF);
-
-    if (if_worker_prepare() != ERRCODE_SUCCESS)
-    {
-        LOG_ERROR("IF: worker prepare failed");
-        send_phase_response(ctx, msg, ERRCODE_FAIL);
         return;
     }
-
-    if (if_worker_launch() != ERRCODE_SUCCESS)
+    if (!g_if_local || !g_if_local->dev_ipc_ctx)
     {
-        LOG_ERROR("IF: worker launch failed");
-        if_worker_shutdown();
-        send_phase_response(ctx, msg, ERRCODE_FAIL);
         return;
     }
-
-    LOG_INFO("Connected to CLI, DB, ROUTE and VRF; IF worker running");
-    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
-}
-
-// ============================================================================
-// Phase 2: MODULE_CONNECT - 预留
-// ============================================================================
-
-static void if_on_connect(dev_ipc_message_t *msg)
-{
-    dev_ipc_context_t *ctx = if_local_ipc_ctx();
-    LOG_INFO("Phase 2: MODULE_CONNECT (reserved)");
-    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
-}
-
-// ============================================================================
-// Phase 3: MODULE_READY - 建表、恢复配置、启动链路监控
-// ============================================================================
-
-static void if_on_ready(dev_ipc_message_t *msg)
-{
-    dev_ipc_context_t *ctx = if_local_ipc_ctx();
-    LOG_INFO("Phase 3: MODULE_READY - Initializing IF database");
-
-    if (if_db_init() != ERRCODE_SUCCESS)
+    dev_ipc_message_t *m =
+        dev_ipc_message_create(IF_MSG_TYPE_INTERNAL_VRF_READY, DEV_MODULE_ID_IF, DEV_MODULE_ID_IF, 0, NULL, 0, NULL);
+    if (m)
     {
-        LOG_WARN("IF database init failed");
-        send_phase_response(ctx, msg, ERRCODE_SUCCESS);
+        g_async_queue_push(g_if_local->dev_ipc_ctx->msg_queue, m);
+    }
+}
+
+static void if_on_route_ready_cb(uint32_t module_id, uint8_t event, const char *host, uint16_t port, uint32_t epoch,
+                                 void *user)
+{
+    (void)module_id;
+    (void)host;
+    (void)port;
+    (void)epoch;
+    (void)user;
+    if (event != DEV_MODULE_EVENT_READY)
+    {
         return;
     }
-
-    if (if_link_monitor_start() != 0)
+    if (!g_if_local || !g_if_local->dev_ipc_ctx)
     {
-        LOG_WARN("IF: link monitor start failed, link recovery disabled");
+        return;
     }
+    dev_ipc_message_t *m =
+        dev_ipc_message_create(IF_MSG_TYPE_INTERNAL_ROUTE_READY, DEV_MODULE_ID_IF, DEV_MODULE_ID_IF, 0, NULL, 0, NULL);
+    if (m)
+    {
+        g_async_queue_push(g_if_local->dev_ipc_ctx->msg_queue, m);
+    }
+}
 
+static void if_on_ipc_disconnect(dev_ipc_context_t *ctx, uint32_t remote_module_id, void *user)
+{
+    (void)ctx;
+    (void)user;
+
+    if (if_worker_post_module_down(remote_module_id) != ERRCODE_SUCCESS)
+    {
+        LOG_DEBUG("IF: skip module-down cleanup for 0x%08X", remote_module_id);
+    }
+}
+
+static void if_handle_vrf_ready(void)
+{
+    dev_ipc_context_t *ctx = if_local_ipc_ctx();
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_VRF, 3000) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("IF: VRF not connected within 3s; vrf_api_subscribe deferred");
+        return;
+    }
     if (vrf_api_subscribe_all(ctx) != ERRCODE_SUCCESS)
     {
-        LOG_WARN("IF: failed to subscribe to VRF events via vrf_api");
+        LOG_WARN("IF: vrf_api_subscribe_all failed");
     }
     else
     {
-        LOG_INFO("IF: subscribed to VRF events via vrf_api");
+        LOG_INFO("IF: subscribed to VRF events");
     }
+}
 
-    if (if_db_restore() != ERRCODE_SUCCESS)
+static void if_handle_route_ready(void)
+{
+    dev_ipc_context_t *ctx = if_local_ipc_ctx();
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_ROUTE, 3000) != ERRCODE_SUCCESS)
     {
-        LOG_WARN("IF database restore failed");
+        LOG_WARN("IF: ROUTE not connected within 3s; connected route replay deferred");
+        return;
     }
-
-    LOG_INFO("IF module ready");
-    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
+    if (if_worker_post_route_ready() != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("IF: failed to post ROUTE-ready replay");
+    }
 }
 
 // ============================================================================
@@ -130,7 +126,6 @@ static void if_on_ready(dev_ipc_message_t *msg)
 
 void if_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    (void)ctx;
     if (!msg)
     {
         return;
@@ -138,17 +133,6 @@ void if_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
     switch (msg->msg_type)
     {
-        /* ---- DEV 生命周期消息：IPC 线程直接处理 ---- */
-        case DEV_IPC_MSG_TYPE_DEV_MODULE_START:
-            if_on_start(msg);
-            return;
-        case DEV_IPC_MSG_TYPE_DEV_MODULE_CONNECT:
-            if_on_connect(msg);
-            return;
-        case DEV_IPC_MSG_TYPE_DEV_MODULE_READY:
-            if_on_ready(msg);
-            return;
-
         /* ---- show current-configuration：IPC 线程直接读 DB 生成 ---- */
         case CLI_MSG_TYPE_SHOW_CONFIG:
             LOG_DEBUG("Received show current-configuration request");
@@ -158,6 +142,17 @@ void if_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
         /* ---- IF 订阅应答：静默丢弃 ---- */
         case IF_MSG_TYPE_ACK:
+            dev_ipc_message_free(msg);
+            return;
+
+        /* ---- 内部：VRF 模块就绪 → worker 线程做 vrf_api_subscribe_all ---- */
+        case IF_MSG_TYPE_INTERNAL_VRF_READY:
+            if_handle_vrf_ready();
+            dev_ipc_message_free(msg);
+            return;
+
+        case IF_MSG_TYPE_INTERNAL_ROUTE_READY:
+            if_handle_route_ready();
             dev_ipc_message_free(msg);
             return;
 
@@ -216,6 +211,12 @@ void if_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             }
             else
             {
+                /* DB 不可用时直接拒绝配置下发，避免内存/OS 与 DB 静默偏移 */
+                if (db_rpc_guard_reject(ctx, msg, "IF"))
+                {
+                    dev_ipc_message_free(msg);
+                    return;
+                }
                 if_cli_handle_config_msg(msg);
                 dev_ipc_message_free(msg);
             }
@@ -266,12 +267,82 @@ int if_module_init(void)
     }
     g_if_local->dev_ipc_ctx = ctx;
     g_if_local->pending = pending_new("if");
+    dev_ipc_set_disconnect_handler(ctx, if_on_ipc_disconnect, NULL);
+
+    /* 弱依赖模型 init：
+     *   1. 等 DEV 控制连接
+     *   2. worker 启动（先于触发回调的 subscribes，避免 race）
+     *   3. subscribe(VRF, auto_start=1, cb) 触发 VRF + 注册重启感知
+     *   4. db_init + restore + link_monitor 启动
+     *   5. subscribe(CLI) 末尾
+     *   6. notify_ready */
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DEV, 10000) != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("IF: timed out waiting for DEV connection");
+    }
+
+    if (if_worker_prepare() != ERRCODE_SUCCESS || if_worker_launch() != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("IF: worker start failed");
+        if_worker_shutdown();
+        return -1;
+    }
+
+    /* VRF 用 auto_start=0：IF 不硬依赖 VRF（默认 VRF 由 OS 提供），不应在 boot 时拉起 VRF。
+     * cb 在 VRF 实际启动后（用户配置触发 / revive）才会被调用 → vrf_api_subscribe_all。 */
+    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_VRF, 0, if_on_vrf_ready_cb, NULL) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("IF: subscribe(VRF) failed");
+    }
+
+    /* ROUTE 重启后需要重刷 connected 路由。 */
+    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_ROUTE, 0, if_on_route_ready_cb, NULL) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("IF: subscribe(ROUTE) failed");
+    }
+
+    /* db_init / db_restore 需要 DB 连接已建立（dev_ipc_send 要 active 连接） */
+    if (dev_ipc_wait_module_ready(ctx, DEV_MODULE_ID_DB, 5000) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("IF: DB not ready, skipping db init/restore");
+    }
+    else
+    {
+        if (if_db_init() != ERRCODE_SUCCESS)
+        {
+            LOG_WARN("IF: db init failed");
+        }
+        if (if_link_monitor_start() != 0)
+        {
+            LOG_WARN("IF: link monitor start failed, link recovery disabled");
+        }
+        if (if_db_restore() != ERRCODE_SUCCESS)
+        {
+            LOG_WARN("IF: db restore failed");
+        }
+    }
+
+    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_CLI, 0, NULL, NULL) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("IF: subscribe(CLI) failed");
+    }
+
+    if (dev_ipc_notify_ready(ctx) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("IF: notify_ready to DEV failed");
+    }
+    LOG_INFO("IF: module ready");
 
     return 0;
 }
 
 void if_module_cleanup(void)
 {
+    /* 优雅退出：runtime-only 清掉所有 IP（OS kernel 路由 + ROUTE RIB 都会跟着消失）
+     * DB 配置保留，process start 后 db_restore 能完整还原。
+     * 必须在 worker_shutdown 之前调（worker 仍要处理 dispatch + netlink/RPC）。 */
+    (void)if_worker_pre_shutdown_cleanup();
+
     if_link_monitor_stop();
     if_worker_shutdown();
 

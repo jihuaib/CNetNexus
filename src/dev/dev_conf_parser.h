@@ -12,10 +12,13 @@
 /** 模块配置结构体（从 module.conf 解析） */
 typedef struct dev_module_conf
 {
-    uint32_t module_id; /**< module-id 字段 */
-    char name[16];      /**< name 字段 */
-    char exe_name[64];  /**< exe 字段：独立进程可执行文件名 */
-    uint16_t port;      /**< port 字段：IPC 监听端口，dev连接使用 */
+    uint32_t module_id;    /**< module-id 字段 */
+    char name[16];         /**< name 字段 */
+    char exe_name[64];     /**< exe 字段：独立进程可执行文件名 */
+    uint16_t port;         /**< port 字段：IPC 监听端口，dev连接使用 */
+    uint8_t on_demand;     /**< on-demand 字段：1=按需启动（首次被 CFG 触发时由 DEV fork），0=常驻 */
+    char revive_table[64]; /**< revive-table 字段：on-demand 模块的"配置存在标识表"；
+                                DEV 在 boot 时扫到此表非空即自动 fork，实现 DB 配置自动恢复 */
 } dev_module_conf_t;
 
 /**

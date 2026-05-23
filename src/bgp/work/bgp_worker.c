@@ -12,6 +12,7 @@
 #include <sys/eventfd.h>
 #include <unistd.h>
 
+#include "bgp_adj_rib_in.h"
 #include "bgp_attr_intern.h"
 #include "bgp_bmp_thread.h"
 #include "bgp_calc.h"
@@ -184,7 +185,7 @@ void bgp_worker_ingest_peer_update(bgp_session_t *session, const bgp_update_resu
         filtered.reach_len = 0;
 
         bgp_peer_update_ingest_stats_t relay_stats = {0};
-        bgp_relay_ingest_peer_update(session, &filtered, &relay_stats);
+        bgp_adj_rib_in_ingest_peer_update(session, &filtered, &relay_stats);
         relay_stats.reach_failed += upd->reach_len;
 
         if (stats)
@@ -257,7 +258,7 @@ void bgp_worker_ingest_peer_update(bgp_session_t *session, const bgp_update_resu
             filtered.unreach_len = total;
 
             bgp_peer_update_ingest_stats_t relay_stats = {0};
-            bgp_relay_ingest_peer_update(session, &filtered, &relay_stats);
+            bgp_adj_rib_in_ingest_peer_update(session, &filtered, &relay_stats);
             relay_stats.reach_failed += upd->reach_len;
             g_free(merged);
             if (stats)
@@ -268,7 +269,7 @@ void bgp_worker_ingest_peer_update(bgp_session_t *session, const bgp_update_resu
         }
     }
 
-    bgp_relay_ingest_peer_update(session, upd, stats);
+    bgp_adj_rib_in_ingest_peer_update(session, upd, stats);
 }
 
 void bgp_worker_flush_peer_routes(uint32_t vrf_id, const net_addr_t *source)

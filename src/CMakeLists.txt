@@ -33,6 +33,7 @@ add_executable(netnexus main.c)
 target_link_libraries(netnexus PRIVATE
     utils
     dev
+    dev_api
     Threads::Threads
 )
 

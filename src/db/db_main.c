@@ -54,88 +54,12 @@ db_connection_t *db_get_connection(const char *db_name)
 }
 
 // ============================================================================
-// 三阶段回调辅助
-// ============================================================================
-
-static void send_phase_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, int32_t result)
-{
-    dev_ipc_message_t *resp = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_MODULE_RESP, DEV_MODULE_ID_DB,
-                                                     msg->src_module_id, msg->request_id, NULL, 0, NULL);
-    if (resp)
-    {
-        dev_ipc_send_response(ctx, resp);
-        dev_ipc_message_free(resp);
-    }
-    dev_ipc_message_free(msg);
-    (void)result;
-}
-
-// ============================================================================
-// Phase 1: MODULE_START - Establishing IPC connections到 CFG
-// ============================================================================
-
-static void db_on_start(dev_ipc_message_t *msg)
-{
-    dev_ipc_context_t *ctx = db_local_ipc_ctx();
-    LOG_INFO("Phase 1: MODULE_START - Establishing IPC connections");
-
-    dev_ipc_connect(ctx, DEV_MODULE_ID_CLI, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CLI);
-
-    /* 打开统一数据库文件 */
-    if (db_initialize_database() != ERRCODE_SUCCESS)
-    {
-        LOG_ERROR("Unified database initialization failed");
-    }
-
-    LOG_INFO("Connected to CFG");
-    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
-}
-
-// ============================================================================
-// Phase 2: MODULE_CONNECT — 预留（直接回复 OK）
-// ============================================================================
-
-static void db_on_connect(dev_ipc_message_t *msg)
-{
-    dev_ipc_context_t *ctx = db_local_ipc_ctx();
-    LOG_INFO("Phase 2: MODULE_CONNECT (reserved)");
-    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
-}
-
-// ============================================================================
-// Phase 3: MODULE_READY — 预留（直接回复 OK）
-// ============================================================================
-
-static void db_on_ready(dev_ipc_message_t *msg)
-{
-    dev_ipc_context_t *ctx = db_local_ipc_ctx();
-    LOG_INFO("Phase 3: MODULE_READY (reserved)");
-    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
-}
-
-// ============================================================================
 // IPC 消息处理回调
 // ============================================================================
 
 void db_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     (void)ctx;
-    /* DEV 生命周期消息 */
-    switch (msg->msg_type)
-    {
-        case DEV_IPC_MSG_TYPE_DEV_MODULE_START:
-            db_on_start(msg);
-            return;
-        case DEV_IPC_MSG_TYPE_DEV_MODULE_CONNECT:
-            db_on_connect(msg);
-            return;
-        case DEV_IPC_MSG_TYPE_DEV_MODULE_READY:
-            db_on_ready(msg);
-            return;
-        default:
-            break;
-    }
-
     /* DB RPC 消息 */
     uint32_t category = DEV_IPC_MSG_CATEGORY(msg->msg_type);
     if (category == DEV_IPC_CATEGORY_DB)
@@ -192,10 +116,36 @@ int db_module_init(void)
         return -1;
     }
 
-    /* 初始化本地状态（原 db_on_start 逻辑） */
     g_db_local = g_malloc0(sizeof(db_local_t));
     g_db_local->main_conn = NULL;
     g_db_local->dev_ipc_ctx = ctx;
+
+    /* 弱依赖模型 init：
+     *   1. 打开 sqlite 文件（本地操作，不依赖其它模块）
+     *   2. 等 DEV 控制连接
+     *   3. 订阅 CLI 让 CFG 能 dispatch 命令到本模块
+     *   4. notify_ready 通知 DEV 模块就绪 */
+    if (db_initialize_database() != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("DB: unified database initialization failed");
+    }
+
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DEV, 10000) != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("DB: timed out waiting for DEV connection; module may be unusable");
+    }
+
+    if (dev_ipc_notify_ready(ctx) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("DB: notify_ready to DEV failed");
+    }
+
+    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_CLI, 0, NULL, NULL) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("DB: subscribe(CLI) failed");
+    }
+    LOG_INFO("DB: module ready");
+
     return 0;
 }
 

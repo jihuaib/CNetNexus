@@ -39,11 +39,14 @@ typedef struct bgp_instance
     uint32_t import_protos;       /**< 已导入协议位掩码：bit N 置 1 表示 protocol=N 已导入 */
     bgp_calc_queue_t *calc_queue; /**< best-path 待处理队列（持有所有权） */
     bgp_route_flush_queue_t *route_flush_queue; /**< ROUTE 下刷待处理队列（持有所有权） */
-    GList *update_groups; /**< bgp_update_group_t*（持有所有权），按出向策略分组的发布单元 */
-    GList *qp_routes;     /**< bgp_qp_route_cfg_t*（持有所有权），已配置的 QP 自产生路由条目 */
+    GHashTable *attr_table;    /**< bgp_attr_ref_t* -> bgp_attr_ref_t*（本 instance 内属性去重表） */
+    GHashTable *attr_id_table; /**< attr_id -> bgp_attr_ref_t*（本 instance 内反查表） */
+    GList *update_groups;      /**< bgp_update_group_t*（持有所有权），按出向策略分组的发布单元 */
+    GList *qp_routes;          /**< bgp_qp_route_cfg_t*（持有所有权），已配置的 QP 自产生路由条目 */
     bool route_select_enabled; /**< 是否对该地址族启用路由优选/发布（默认 false，仅 QP 地址族使用） */
     uint32_t flags;            /**< 实例级策略位（见 BGP_INST_FLAG_*） */
     uint32_t cluster_id;         /**< 本 AF 反射器 Cluster-ID（主机序，0=用 router-id） */
+    uint32_t next_attr_id;       /**< 本 instance 下一个可分配 attr_id（从 1 开始） */
     uint32_t import_rib_sources; /**< import-rib 源位掩码（bgp_import_src_t），DB 持久化 */
     void *import_rib_state;      /**< bgp_import_rib 模块内部状态（pending queue / mirror 反向索引等） */
 } bgp_instance_t;

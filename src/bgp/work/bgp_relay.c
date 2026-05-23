@@ -204,8 +204,9 @@ static void bgp_relay_trigger_calc(bgp_instance_t *inst, const bgp_nlri_entry_t 
 }
 
 static int bgp_relay_reach_route_to_rib(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri, const net_addr_t *source,
-                                        const bgp_attr_t *attr, const bgp_nexthop_t *nexthop,
-                                        bgp_route_node_t **route_out, gboolean *is_new_out)
+                                        const bgp_attr_t *attr, const bgp_attr_t *base_attr,
+                                        const bgp_nexthop_t *nexthop, bgp_route_node_t **route_out,
+                                        gboolean *is_new_out)
 {
     if (is_new_out)
     {
@@ -246,6 +247,10 @@ static int bgp_relay_reach_route_to_rib(bgp_instance_t *inst, const bgp_nlri_ent
 
     /* peer 学习的路径不是 import-route，传 ROUTE_PROTOCOL_MAX 哨兵以避免被 IMPORT 标记位识别 */
     if (bgp_rib_route_apply_reach(route, ROUTE_PROTOCOL_MAX, attr, nexthop) != 0)
+    {
+        return -1;
+    }
+    if (bgp_rib_route_set_base_attr(route, base_attr) != 0)
     {
         return -1;
     }
@@ -640,7 +645,7 @@ static int bgp_relay_route_remove(uint32_t vrf_id, const bgp_nlri_entry_t *nlri,
 }
 
 static int bgp_relay_route_upsert(uint32_t vrf_id, const bgp_nlri_entry_t *nlri, const net_addr_t *source,
-                                  const bgp_attr_t *attr, const bgp_nexthop_t *nexthop)
+                                  const bgp_attr_t *attr, const bgp_attr_t *base_attr, const bgp_nexthop_t *nexthop)
 {
     if (!nlri || !source || source->family == 0 || !attr || !nexthop)
     {
@@ -677,7 +682,7 @@ static int bgp_relay_route_upsert(uint32_t vrf_id, const bgp_nlri_entry_t *nlri,
 
     /* 先写 RIB（置 invalid，等待 nexthop 迭代结果）。 */
     bgp_route_node_t *route = NULL;
-    if (bgp_relay_reach_route_to_rib(inst, nlri, source, attr, nexthop, &route, NULL) < 0 || !route)
+    if (bgp_relay_reach_route_to_rib(inst, nlri, source, attr, base_attr, nexthop, &route, NULL) < 0 || !route)
     {
         return ERRCODE_FAIL;
     }
@@ -806,7 +811,7 @@ void bgp_relay_cleanup(void)
     }
 }
 
-void bgp_relay_ingest_peer_update(bgp_session_t *session, const bgp_update_result_t *upd,
+void bgp_relay_ingest_peer_update(bgp_session_t *session, const bgp_update_result_t *upd, const bgp_attr_t *base_attr,
                                   bgp_peer_update_ingest_stats_t *stats)
 {
     if (stats)
@@ -819,6 +824,7 @@ void bgp_relay_ingest_peer_update(bgp_session_t *session, const bgp_update_resul
     }
 
     uint32_t vrf_id = session->vrf->vrf_id;
+    const bgp_attr_t *route_base_attr = base_attr ? base_attr : &upd->attr;
 
     for (uint32_t i = 0; i < upd->reach_len; ++i)
     {
@@ -827,8 +833,8 @@ void bgp_relay_ingest_peer_update(bgp_session_t *session, const bgp_update_resul
         /* QP 路由直入 RIB，不做 nexthop 族校验/迭代。 */
         if (nlri->type == BGP_NLRI_QP && nlri->safi == BGP_SAFI_QP)
         {
-            if (bgp_relay_route_upsert(vrf_id, nlri, &session->neighbor_addr, &upd->attr, &upd->nexthop) ==
-                ERRCODE_SUCCESS)
+            if (bgp_relay_route_upsert(vrf_id, nlri, &session->neighbor_addr, &upd->attr, route_base_attr,
+                                       &upd->nexthop) == ERRCODE_SUCCESS)
             {
                 if (stats)
                 {
@@ -860,7 +866,8 @@ void bgp_relay_ingest_peer_update(bgp_session_t *session, const bgp_update_resul
             continue;
         }
 
-        if (bgp_relay_route_upsert(vrf_id, nlri, &session->neighbor_addr, &upd->attr, &upd->nexthop) == ERRCODE_SUCCESS)
+        if (bgp_relay_route_upsert(vrf_id, nlri, &session->neighbor_addr, &upd->attr, route_base_attr, &upd->nexthop) ==
+            ERRCODE_SUCCESS)
         {
             if (stats)
             {
@@ -1026,6 +1033,42 @@ uint32_t bgp_relay_handle_nh_notify(const route_nh_iter_notify_t *notify)
     }
 
     return touched;
+}
+
+uint32_t bgp_relay_reregister_route_nexthops(void)
+{
+    if (!g_bgp_relay_nh_table || !g_bgp_local || !g_bgp_local->dev_ipc_ctx)
+    {
+        return 0;
+    }
+
+    uint32_t registered = 0;
+    GHashTableIter iter;
+    gpointer key = NULL;
+    gpointer value = NULL;
+    g_hash_table_iter_init(&iter, g_bgp_relay_nh_table);
+    while (g_hash_table_iter_next(&iter, &key, &value))
+    {
+        (void)key;
+        bgp_relay_nh_watch_t *watch = (bgp_relay_nh_watch_t *)value;
+        if (!watch || watch->key.safi == BGP_SAFI_LABELED)
+        {
+            continue;
+        }
+
+        route_nh_iter_req_t req;
+        bgp_relay_fill_nh_iter_req(&req, &watch->key);
+        if (route_rpc_nh_register(g_bgp_local->dev_ipc_ctx, &req) == ERRCODE_SUCCESS)
+        {
+            registered++;
+        }
+    }
+
+    if (registered > 0)
+    {
+        LOG_INFO("BGP: replayed %u ROUTE nexthop watch registration(s)", registered);
+    }
+    return registered;
 }
 
 uint32_t bgp_relay_handle_tunnel_notify(const tunnel_resolve_notify_t *notify)

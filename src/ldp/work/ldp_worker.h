@@ -130,6 +130,13 @@ void ldp_worker_shutdown(void);
 int ldp_worker_post_show_cli(dev_ipc_message_t *msg);
 int ldp_worker_post_if_event(dev_ipc_message_t *msg);
 int ldp_worker_post_route_msg(dev_ipc_message_t *msg);
+int ldp_worker_post_route_ready(void);
+
+/**
+ * @brief IPC 线程通知 worker：IF 模块下线，执行 IF 缓存清空 + 接口 socket 关闭 + 会话拆除。
+ * @return ERRCODE_SUCCESS 成功投递；失败返回 ERRCODE_FAIL。
+ */
+int ldp_worker_post_if_down(void);
 int ldp_worker_dispatch_apply(ldp_apply_cmd_t *apply);
 
 // ============================================================================

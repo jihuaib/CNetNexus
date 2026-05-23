@@ -810,7 +810,7 @@
             </commands>
         </group>
 
-        <!-- show bgp attr [<attr-id>] -->
+        <!-- show bgp attr af ipv4-unicast|ipv6-unicast|ipv4-qp|ipv6-qp|ipv4-labeled [vrf <vrf-name>] [<attr-id>] -->
         <group group-id="14">
             <elements>
                 <element id="1" type="keyword">
@@ -825,22 +825,70 @@
                     <name>attr</name>
                     <description>BGP path attribute intern table</description>
                 </element>
-                <element id="4" cfg-id="1" type="parameter">
+                <element id="4" type="keyword">
+                    <name>af</name>
+                    <description>Address-family selector</description>
+                </element>
+                <element id="5" cfg-id="1" type="keyword">
+                    <name>ipv4-unicast</name>
+                    <description>IPv4 unicast address family</description>
+                </element>
+                <element id="6" cfg-id="2" type="keyword">
+                    <name>ipv6-unicast</name>
+                    <description>IPv6 unicast address family</description>
+                </element>
+                <element id="7" cfg-id="8" type="parameter">
                     <name>&lt;attr-id&gt;</name>
                     <type>uint(1-4294967295)</type>
                     <description>Attribute ID to query</description>
                 </element>
+                <element id="8" cfg-id="4" type="keyword">
+                    <name>ipv4-qp</name>
+                    <description>IPv4 qp address family</description>
+                </element>
+                <element id="9" cfg-id="5" type="keyword">
+                    <name>ipv6-qp</name>
+                    <description>IPv6 qp address family</description>
+                </element>
+                <element id="10" cfg-id="6" type="keyword">
+                    <name>ipv4-labeled</name>
+                    <description>IPv4 labeled-unicast address family</description>
+                </element>
+                <element id="11" type="keyword">
+                    <name>vrf</name>
+                    <description>Filter by VRF name</description>
+                </element>
+                <element id="12" cfg-id="7" type="parameter">
+                    <name>&lt;vrf-name&gt;</name>
+                    <type>dynamic(4:1,string(1-63))</type>
+                    <description>VRF name</description>
+                </element>
             </elements>
 
             <commands>
-                <!-- show bgp attr（显示 intern 表摘要） -->
+                <!-- show bgp attr af ipv4-unicast [vrf <vrf-name>] [<attr-id>] -->
                 <command>
-                    <expression>1 2 3</expression>
+                    <expression>1 2 3 4 5 [11 12] [7]</expression>
                     <views>global</views>
                 </command>
-                <!-- show bgp attr <attr-id>（显示指定属性详情） -->
+                <!-- show bgp attr af ipv6-unicast [vrf <vrf-name>] [<attr-id>] -->
                 <command>
-                    <expression>1 2 3 4</expression>
+                    <expression>1 2 3 4 6 [11 12] [7]</expression>
+                    <views>global</views>
+                </command>
+                <!-- show bgp attr af ipv4-qp [<attr-id>] -->
+                <command>
+                    <expression>1 2 3 4 8 [7]</expression>
+                    <views>global</views>
+                </command>
+                <!-- show bgp attr af ipv6-qp [<attr-id>] -->
+                <command>
+                    <expression>1 2 3 4 9 [7]</expression>
+                    <views>global</views>
+                </command>
+                <!-- show bgp attr af ipv4-labeled [<attr-id>] -->
+                <command>
+                    <expression>1 2 3 4 10 [7]</expression>
                     <views>global</views>
                 </command>
             </commands>

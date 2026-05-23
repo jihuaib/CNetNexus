@@ -18,6 +18,7 @@
 #include "dev_bdr.h"
 #include "dev_cli.h"
 #include "dev_module.h"
+#include "dev_subscribe.h"
 #include "errcode.h"
 #include "log.h"
 
@@ -56,6 +57,18 @@ void dev_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     {
         case DEV_IPC_MSG_TYPE_DEV_GET_MODULE_NAME:
             handle_dev_get_module_name(msg);
+            break;
+
+        case DEV_IPC_MSG_TYPE_DEV_SUBSCRIBE_MODULE:
+            dev_subscribe_handle_subscribe(msg);
+            break;
+
+        case DEV_IPC_MSG_TYPE_DEV_UNSUBSCRIBE_MODULE:
+            dev_subscribe_handle_unsubscribe(msg);
+            break;
+
+        case DEV_IPC_MSG_TYPE_DEV_NOTIFY_READY:
+            dev_subscribe_handle_notify_ready(msg);
             break;
 
         case CLI_MSG_TYPE_QUERY_CANDIDATES:
@@ -104,11 +117,12 @@ int dev_init_self(void)
         return ERRCODE_FAIL;
     }
 
-    /* 注册 DEV 模块到 GTree，并补充端口号 */
+    /* 注册 DEV 模块到 GTree，并补充端口号；DEV 是 supervisor，自身永远就绪 */
     dev_module_t *dev_self = dev_add_module_to_registry(DEV_MODULE_ID_DEV, "dev");
     if (dev_self)
     {
         dev_self->port = DEV_MODULE_PORT_DEV;
+        dev_self->phase = DEV_PHASE_READY;
     }
 
     LOG_INFO("DEV IPC initialization complete========================");
@@ -124,7 +138,7 @@ static gboolean broadcast_log_level_cb(gpointer key, gpointer value, gpointer us
     dev_module_t *module = (dev_module_t *)value;
     uint32_t level_be = *(uint32_t *)user_data;
 
-    if (module->module_id == DEV_MODULE_ID_DEV || module->phase < DEV_PHASE_IPC_READY)
+    if (module->module_id == DEV_MODULE_ID_DEV || module->phase < DEV_PHASE_LOADED)
     {
         return FALSE;
     }

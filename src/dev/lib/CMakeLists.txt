@@ -5,6 +5,7 @@ set(IPC_SOURCES
     ipc_connection.c
     ipc_query.c
     ipc_message.c
+    ipc_subscribe.c
     dev_api.c
 )
 

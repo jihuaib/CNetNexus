@@ -201,19 +201,6 @@ int32_t cli_create_listen_sock()
 // 三阶段回调辅助函数
 // ============================================================================
 
-static void send_phase_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, int32_t result)
-{
-    dev_ipc_message_t *resp = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_MODULE_RESP, DEV_MODULE_ID_CLI,
-                                                     msg->src_module_id, msg->request_id, NULL, 0, NULL);
-    if (resp)
-    {
-        dev_ipc_send_response(ctx, resp);
-        dev_ipc_message_free(resp);
-    }
-    dev_ipc_message_free(msg);
-    (void)result;
-}
-
 // ============================================================================
 // 自动发现并加载 commands.xml
 // ============================================================================
@@ -392,79 +379,44 @@ void cli_init_local(dev_ipc_context_t *ctx)
     LOG_INFO("Local state initialization complete");
 }
 
-// ============================================================================
-// Phase 1: MODULE_START — CFG 不需要连接其他模块，直接回复 OK
-// ============================================================================
-
-static void cli_on_start(dev_ipc_message_t *msg)
+/**
+ * 启动 Telnet 监听 + epoll + server 线程。
+ */
+static int cli_start_telnet(void)
 {
-    dev_ipc_context_t *ctx = cli_local_ipc_ctx();
-    LOG_INFO("Phase 1: MODULE_START (no external connections needed)");
-    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
-}
-
-// ============================================================================
-// Phase 2: MODULE_CONNECT — 预留（直接回复 OK）
-// ============================================================================
-
-static void cli_on_connect(dev_ipc_message_t *msg)
-{
-    dev_ipc_context_t *ctx = cli_local_ipc_ctx();
-    LOG_INFO("Phase 2: MODULE_CONNECT (reserved)");
-    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
-}
-
-// ============================================================================
-// Phase 3: MODULE_READY — 加载所有 XML
-// ============================================================================
-
-static void cli_on_ready(dev_ipc_message_t *msg)
-{
-    dev_ipc_context_t *ctx = cli_local_ipc_ctx();
-    LOG_INFO("Phase 3: MODULE_READY - Starting Telnet server");
-
-    /* 创建 epoll */
     int epoll_fd = epoll_create1(EPOLL_CLOEXEC);
     if (epoll_fd < 0)
     {
         LOG_PERROR("Failed to create epoll");
-        send_phase_response(ctx, msg, ERRCODE_FAIL);
-        return;
+        return -1;
     }
     g_cli_local->epoll_fd = epoll_fd;
 
-    /* 创建监听 socket */
     int32_t listen_sock = cli_create_listen_sock();
     if (listen_sock < 0)
     {
-        send_phase_response(ctx, msg, ERRCODE_FAIL);
-        return;
+        return -1;
     }
     g_cli_local->listen_sock = listen_sock;
 
-    /* 将监听 socket 加入 epoll */
     struct epoll_event ev;
     ev.events = EPOLLIN;
     ev.data.fd = listen_sock;
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, listen_sock, &ev) < 0)
     {
         LOG_PERROR("Failed to add listen socket to epoll");
-        send_phase_response(ctx, msg, ERRCODE_FAIL);
-        return;
+        return -1;
     }
 
-    /* 启动 Telnet server 线程 */
     g_cli_local->running = 1;
     if (pthread_create(&g_cli_local->worker_thread, NULL, cli_server_thread, NULL) != 0)
     {
         LOG_PERROR("Failed to create server thread");
         g_cli_local->running = 0;
-        send_phase_response(ctx, msg, ERRCODE_FAIL);
-        return;
+        return -1;
     }
-
     LOG_INFO("Telnet server listening on port %d", CLI_PORT);
-    send_phase_response(ctx, msg, ERRCODE_SUCCESS);
+    return 0;
 }
 
 // ============================================================================
@@ -476,17 +428,6 @@ void cli_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     (void)ctx;
     switch (msg->msg_type)
     {
-        /* ---- DEV 生命周期消息 ---- */
-        case DEV_IPC_MSG_TYPE_DEV_MODULE_START:
-            cli_on_start(msg);
-            return;
-        case DEV_IPC_MSG_TYPE_DEV_MODULE_CONNECT:
-            cli_on_connect(msg);
-            return;
-        case DEV_IPC_MSG_TYPE_DEV_MODULE_READY:
-            cli_on_ready(msg);
-            return;
-
         case CLI_MSG_TYPE_SYSNAME_UPDATE:
         {
             const char *new_name = (msg->payload && msg->payload_len > 0) ? (const char *)msg->payload : "";
@@ -528,8 +469,31 @@ int cli_module_init(void)
         return -1;
     }
 
-    /* 初始化本地状态（epoll、socket、server thread、view tree） */
+    /* 初始化本地状态（view tree、sessions 等；不含 telnet 监听） */
     cli_init_local(ctx);
+
+    /* 弱依赖模型 init：
+     *   1. 等 DEV 控制连接
+     *   2. 启动 Telnet server（业务模块需要它来收命令）
+     *   3. notify_ready
+     * CLI 不订阅其它模块（业务模块 init 末尾会反向 subscribe(CLI)）。 */
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DEV, 10000) != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("CLI: timed out waiting for DEV connection");
+    }
+
+    if (cli_start_telnet() != 0)
+    {
+        LOG_ERROR("CLI: telnet server start failed");
+        /* 继续 notify_ready，避免 DEV 卡在等待；运维查日志 */
+    }
+
+    if (dev_ipc_notify_ready(ctx) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("CLI: notify_ready to DEV failed");
+    }
+    LOG_INFO("CLI: module ready");
+
     return 0;
 }
 

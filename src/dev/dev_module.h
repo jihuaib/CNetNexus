@@ -12,14 +12,12 @@
 
 #include "dev.h"
 
-/** 模块初始化阶段 */
+/** 模块状态。模块靠 NOTIFY_READY 显式上报 READY；中间 LOADED 表示已 fork 但未 ready。 */
 enum
 {
-    DEV_PHASE_REGISTERED = 0, /**< 已注册（无 IPC） */
-    DEV_PHASE_LOADED,         /**< 已加载（constructor 执行完毕，IPC+本地状态已初始化） */
-    DEV_PHASE_IPC_READY,      /**< Phase 1: IPC 连接已建立 */
-    DEV_PHASE_DB_RECOVERED,   /**< Phase 2: 预留（DB 恢复） */
-    DEV_PHASE_READY           /**< Phase 3: 预留 */
+    DEV_PHASE_REGISTERED = 0, /**< 已注册（未 fork / 已退出） */
+    DEV_PHASE_LOADED,         /**< 已 fork，等待 NOTIFY_READY */
+    DEV_PHASE_READY           /**< 模块自报 NOTIFY_READY，可用 */
 };
 
 /** 模块描述结构体 */
@@ -30,6 +28,15 @@ typedef struct module
     pid_t child_pid;                    /**< 子进程 PID（多进程模式，0 表示未启动） */
     uint8_t phase;                      /**< 当前初始化阶段 */
     uint16_t port;                      /**< IPC 监听端口（从 module.conf 读取） */
+
+    /* 按需启动 & 订阅机制相关 */
+    uint8_t on_demand; /**< 1=按需启动（首次被订阅且 auto_start=1 时由 DEV fork） */
+    uint8_t pending_restart; /**< 1=用户/DEV 主动请求重启；SIGCHLD 收到后自动 fork 同样进程（无视 on_demand） */
+    uint8_t pending_stop; /**< 1=用户主动 stop；SIGCHLD 收到后保持 REGISTERED，不告警、不重启 */
+    char exe_name[64];    /**< 可执行文件名（按需启动时使用） */
+    char revive_table[64]; /**< on-demand 模块的"配置存在标识表"，DEV 在 boot 时扫到非空即自动 fork */
+    uint32_t epoch;        /**< 每次启动 +1，订阅方据此判断对端是否重启过 */
+    GList *subscribers; /**< 订阅者列表 GList<GUINT_TO_POINTER(subscriber_module_id)>，本模块 READY/DOWN 时推送给他们 */
 } dev_module_t;
 
 /**
@@ -85,5 +92,54 @@ int dev_get_module_name_inner(uint32_t module_id, char *module_name);
  * @return 成功返回 ERRCODE_SUCCESS，未找到返回 ERRCODE_FAIL
  */
 int dev_get_module_id_by_name(const char *name, uint32_t *module_id);
+
+/**
+ * @brief 按 ID 在注册表中查找模块（供 dev_subscribe.c 等使用）
+ * @param module_id 模块 ID
+ * @return 找到返回指针；未找到返回 NULL
+ */
+dev_module_t *dev_module_find(uint32_t module_id);
+
+/**
+ * @brief 按需启动一个已注册但未运行的模块（fork + exec）
+ *
+ * 仅当 module->on_demand==1 且 module->child_pid<=0 时实际启动；
+ * 已在运行则幂等返回成功。
+ *
+ * @param module 模块条目
+ * @return 成功返回 ERRCODE_SUCCESS，失败返回 ERRCODE_FAIL
+ */
+int dev_module_spawn_on_demand(dev_module_t *module);
+
+/**
+ * @brief 按 PID 反查模块（供 SIGCHLD 处理使用）
+ * @param pid 子进程 PID
+ * @return 找到返回指针；未找到返回 NULL
+ */
+dev_module_t *dev_module_find_by_pid(pid_t pid);
+
+/**
+ * @brief 标记是否正在执行批量清理（cleanup_all_modules / dev_reboot_software）
+ *
+ * SIGCHLD 处理器据此抑制"crashed/respawn"逻辑——批量退出全是预期内的。
+ *
+ * @param flag 1=进入清理；0=清理结束
+ */
+void dev_module_set_cleanup_in_progress(int flag);
+
+/**
+ * @brief 查询批量清理标志（供 SIGCHLD 处理器使用）
+ */
+int dev_module_is_cleanup_in_progress(void);
+
+/**
+ * @brief 重新 fork 一个已注册模块（用于显式重启，绕过 on_demand 判定）
+ *
+ * 仅当 module->child_pid <= 0 时实际启动；已在运行则幂等返回成功。
+ *
+ * @param module 模块条目
+ * @return 成功返回 ERRCODE_SUCCESS，失败返回 ERRCODE_FAIL
+ */
+int dev_module_respawn(dev_module_t *module);
 
 #endif // DEV_MODULE_H

@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "cli.h"
+#include "db.h"
 #include "errcode.h"
 #include "if.h"
 #include "isis_bdr.h"
@@ -28,83 +29,117 @@ static uint8_t isis_cli_payload_flags(const dev_ipc_message_t *msg)
     return ((const uint8_t *)msg->payload)[0];
 }
 
-static void send_phase_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+/* IF dep 事件回调：
+ *   READY → 投递 IF_READY，worker 做 if_api_subscribe_all 重新订阅（支持重启）。
+ *   DOWN  → 投递 IF_DOWN，worker 立刻清 IF 缓存 + 拆所有邻接 + 撤销 ISIS 路由，
+ *           不等 hello hold-time（~9s）自然失效。 */
+static void isis_on_if_ready_cb(uint32_t module_id, uint8_t event, const char *host, uint16_t port, uint32_t epoch,
+                                void *user)
 {
-    dev_ipc_message_t *resp = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_MODULE_RESP, DEV_MODULE_ID_ISIS,
-                                                     msg->src_module_id, msg->request_id, NULL, 0, NULL);
-    if (resp)
+    (void)module_id;
+    (void)host;
+    (void)port;
+    (void)epoch;
+    (void)user;
+
+    if (!g_isis_local || !g_isis_local->dev_ipc_ctx)
     {
-        dev_ipc_send_response(ctx, resp);
-        dev_ipc_message_free(resp);
-    }
-    dev_ipc_message_free(msg);
-}
-
-static void isis_on_start(dev_ipc_message_t *msg)
-{
-    dev_ipc_context_t *ctx = isis_local_ipc_ctx();
-    LOG_INFO("Phase 1: MODULE_START - Establishing IPC connections");
-
-    (void)dev_ipc_connect(ctx, DEV_MODULE_ID_CLI, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_CLI);
-    (void)dev_ipc_connect(ctx, DEV_MODULE_ID_DB, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_DB);
-    (void)dev_ipc_connect(ctx, DEV_MODULE_ID_IF, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_IF);
-    (void)dev_ipc_connect(ctx, DEV_MODULE_ID_ROUTE, DEV_IPC_HOST_LOCAL, DEV_MODULE_PORT_ROUTE);
-
-    send_phase_response(ctx, msg);
-}
-
-static void isis_on_connect(dev_ipc_message_t *msg)
-{
-    send_phase_response(isis_local_ipc_ctx(), msg);
-}
-
-static void isis_on_ready(dev_ipc_message_t *msg)
-{
-    dev_ipc_context_t *ctx = isis_local_ipc_ctx();
-    LOG_INFO("Phase 3: MODULE_READY - Initializing ISIS DB and worker");
-
-    if (isis_db_init() != ERRCODE_SUCCESS)
-    {
-        LOG_ERROR("ISIS: DB init failed");
-        send_phase_response(ctx, msg);
         return;
     }
-
-    if (isis_worker_prepare() != ERRCODE_SUCCESS)
+    uint32_t msg_type;
+    if (event == DEV_MODULE_EVENT_READY)
     {
-        LOG_ERROR("ISIS: worker prepare failed");
-        send_phase_response(ctx, msg);
-        return;
+        msg_type = ISIS_MSG_TYPE_INTERNAL_IF_READY;
     }
-
-    if (isis_worker_launch() != ERRCODE_SUCCESS)
+    else if (event == DEV_MODULE_EVENT_DOWN)
     {
-        LOG_ERROR("ISIS: worker launch failed");
-        isis_worker_shutdown();
-        send_phase_response(ctx, msg);
-        return;
-    }
-
-    if (if_api_subscribe_all(ctx) == ERRCODE_SUCCESS)
-    {
-        LOG_INFO("ISIS: Subscribed to IF events via if_api");
+        msg_type = ISIS_MSG_TYPE_INTERNAL_IF_DOWN;
     }
     else
     {
-        LOG_WARN("ISIS: Failed to subscribe IF events");
+        return;
     }
+    dev_ipc_message_t *m = dev_ipc_message_create(msg_type, DEV_MODULE_ID_ISIS, DEV_MODULE_ID_ISIS, 0, NULL, 0, NULL);
+    if (m)
+    {
+        g_async_queue_push(g_isis_local->dev_ipc_ctx->msg_queue, m);
+    }
+}
 
+static void isis_on_route_ready_cb(uint32_t module_id, uint8_t event, const char *host, uint16_t port, uint32_t epoch,
+                                   void *user)
+{
+    (void)module_id;
+    (void)host;
+    (void)port;
+    (void)epoch;
+    (void)user;
+
+    if (event != DEV_MODULE_EVENT_READY)
+    {
+        return;
+    }
+    if (!g_isis_local || !g_isis_local->dev_ipc_ctx)
+    {
+        return;
+    }
+    dev_ipc_message_t *m = dev_ipc_message_create(ISIS_MSG_TYPE_INTERNAL_ROUTE_READY, DEV_MODULE_ID_ISIS,
+                                                  DEV_MODULE_ID_ISIS, 0, NULL, 0, NULL);
+    if (m)
+    {
+        g_async_queue_push(g_isis_local->dev_ipc_ctx->msg_queue, m);
+    }
+}
+
+static void isis_handle_if_ready(void)
+{
+    dev_ipc_context_t *ctx = isis_local_ipc_ctx();
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_IF, 3000) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("ISIS: IF connection not ready after 3s; subscribe deferred to next READY");
+        return;
+    }
+    if (if_api_subscribe_all(ctx) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("ISIS: if_api_subscribe_all failed");
+    }
+    else
+    {
+        LOG_INFO("ISIS: subscribed to IF events");
+    }
+}
+
+/**
+ * 等 DB 就绪后建表。配置 restore 需要 worker 已启动，因为 restore 通过 apply
+ * 命令回放到 worker 状态。
+ */
+static int isis_init_db_schema(void)
+{
+    dev_ipc_context_t *ctx = isis_local_ipc_ctx();
+
+    if (dev_ipc_wait_module_ready(ctx, DEV_MODULE_ID_DB, 5000) != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("ISIS: DB not ready, skip db init");
+        return -1;
+    }
+    if (isis_db_init() != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("ISIS: DB init failed");
+        return -1;
+    }
+    return 0;
+}
+
+static void isis_restore_db_state(void)
+{
     if (isis_db_restore() != ERRCODE_SUCCESS)
     {
-        LOG_WARN("ISIS: restore failed");
+        LOG_WARN("ISIS: DB restore failed");
     }
-
-    send_phase_response(ctx, msg);
 }
 
 void isis_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    (void)ctx;
     if (!msg)
     {
         return;
@@ -112,15 +147,23 @@ void isis_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
     switch (msg->msg_type)
     {
-        case DEV_IPC_MSG_TYPE_DEV_MODULE_START:
-            isis_on_start(msg);
-            return;
-        case DEV_IPC_MSG_TYPE_DEV_MODULE_CONNECT:
-            isis_on_connect(msg);
-            return;
-        case DEV_IPC_MSG_TYPE_DEV_MODULE_READY:
-            isis_on_ready(msg);
-            return;
+        case ISIS_MSG_TYPE_INTERNAL_IF_READY:
+            isis_handle_if_ready();
+            break;
+
+        case ISIS_MSG_TYPE_INTERNAL_ROUTE_READY:
+            if (isis_worker_post_route_ready() != ERRCODE_SUCCESS)
+            {
+                LOG_WARN("ISIS: failed to post ROUTE-ready replay");
+            }
+            break;
+
+        case ISIS_MSG_TYPE_INTERNAL_IF_DOWN:
+            if (isis_worker_post_if_down() != ERRCODE_SUCCESS)
+            {
+                LOG_WARN("ISIS: failed to post IF-down teardown");
+            }
+            break;
 
         case CLI_MSG_TYPE:
         {
@@ -134,6 +177,12 @@ void isis_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             }
             else
             {
+                /* DB 不可用时直接拒绝配置下发，避免内存/OS 与 DB 静默偏移 */
+                if (db_rpc_guard_reject(ctx, msg, "ISIS"))
+                {
+                    dev_ipc_message_free(msg);
+                    return;
+                }
                 (void)isis_cli_handle_config_msg(msg);
                 dev_ipc_message_free(msg);
             }
@@ -190,6 +239,54 @@ int isis_module_init(void)
     }
 
     g_isis_local->dev_ipc_ctx = ctx;
+
+    /* 弱依赖模型启动：
+     *   1. 等 DEV 控制连接
+     *   2. wait_module_ready(DB) → db_init
+     *   3. worker 启动
+     *   4. db_restore 回放配置到 worker + 订阅 IF 事件
+     *   5. subscribe(CLI) 放最后：CFG 看到本模块在跑即可立即 dispatch
+     *   6. notify_ready 通知 DEV
+     * ISIS 没有 on-demand dep 需要触发（IF/ROUTE 都是基础模块），运行时 RPC 调用即可。 */
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DEV, 10000) != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("ISIS: timed out waiting for DEV connection; module may be unusable");
+    }
+
+    (void)isis_init_db_schema();
+
+    if (isis_worker_prepare() != ERRCODE_SUCCESS || isis_worker_launch() != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("ISIS: worker start failed");
+        isis_worker_shutdown();
+        return -1;
+    }
+
+    isis_restore_db_state();
+
+    /* ROUTE：回调模式，ROUTE 每次 READY 触发 worker 重刷 ISIS 路由。 */
+    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_ROUTE, 0, isis_on_route_ready_cb, NULL) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("ISIS: subscribe(ROUTE) failed");
+    }
+
+    /* IF：回调模式，IF 每次 READY 触发 worker 重新订阅事件。支持 IF 重启。 */
+    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_IF, 0, isis_on_if_ready_cb, NULL) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("ISIS: subscribe(IF) failed");
+    }
+
+    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_CLI, 0, NULL, NULL) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("ISIS: subscribe(CLI) failed; commands from CFG won't be reachable");
+    }
+
+    if (dev_ipc_notify_ready(ctx) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("ISIS: notify_ready to DEV failed");
+    }
+    LOG_INFO("ISIS: module ready");
+
     return 0;
 }
 

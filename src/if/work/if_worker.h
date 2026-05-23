@@ -179,4 +179,20 @@ int if_worker_dispatch_apply(if_apply_cmd_t *apply);
  */
 int if_worker_resolve_vrf_id_by_name(const char *vrf_name, uint32_t *vrf_id);
 
+/**
+ * @brief 优雅停止前清理：worker 线程上撤销所有运行态 IP（kernel 路由 + ROUTE 通知）；不动 DB
+ * @return ERRCODE_SUCCESS / FAIL
+ */
+int if_worker_pre_shutdown_cleanup(void);
+
+/**
+ * @brief ROUTE READY 后异步重刷 connected 路由到 ROUTE。
+ */
+int if_worker_post_route_ready(void);
+
+/**
+ *  对端模块 IPC 断开后异步清理该模块的 IF 事件订阅。
+ */
+int if_worker_post_module_down(uint32_t module_id);
+
 #endif /* IF_WORKER_H */

@@ -155,20 +155,28 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         wait_check(
             rt,
             device="r2",
-            command="show bgp attr",
-            regex=[r"(?m)Unique attributes:\s+([1-9]|[1-4]\d)\s*$"],
+            command="show bgp attr af ipv4-unicast",
+            regex=[r"(?m)Unique attributes:\s+1\s*$"],
             timeout=10,
-            label="r2 unique attrs < 50",
+            label="r2 unique attrs == 1",
         )
 
         step("Verify refcnt >= route count on 10.100.0.0/24")
+        # 每条 peer 路由共持有 3 个 attr 引用（intern dedup 后共享 attr_id）：
+        #   1) Adj-RIB-In  entry->attr_ref          —— 邻居入站表
+        #   2) Loc-RIB     route->attr              —— 决策后生效属性
+        #   3) Loc-RIB     route->base_attr         —— peer 原始属性（未合入本 VRF
+        #      export RT），本地 import 路由该字段为 NULL，所以本 phase 全部 peer
+        #      路由才会贡献 3x；Phase 3 的 local-import 路由仍是 1 个 ref/路由。
+        # 详见 src/bgp/work/bgp_rib.h 中 bgp_route_node_t 的 attr/base_attr 字段。
+        expected_peer_refcnt_p1 = PEER_ROUTE_COUNT * 3
         wait_check(
             rt,
             device="r2",
             command="show bgp route af ipv4-unicast 10.100.0.0 24",
-            regex=[r"Attr-ID\s*:\s*\d+\s*\(refcnt=([5-9]\d|\d{3,})\)"],
+            regex=[rf"Attr-ID\s*:\s*\d+\s*\(refcnt={expected_peer_refcnt_p1}\)"],
             timeout=10,
-            label="r2 refcnt >= 50",
+            label=f"r2 refcnt == {expected_peer_refcnt_p1}",
         )
 
         # extract attr_id for cross-phase checks
@@ -179,7 +187,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         wait_check(
             rt,
             device="r2",
-            command=f"show bgp attr {attr_id_p1}",
+            command=f"show bgp attr af ipv4-unicast {attr_id_p1}",
             contains=["RefCount", "AS-Path", "65001"],
             timeout=10,
             label="r2 peer attr detail",
@@ -208,13 +216,15 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
 
         surviving_i = WITHDRAW_COUNT
         surviving_prefix = PEER_NET.format(second=100 + surviving_i // 256, third=surviving_i % 256)
+        # 每条 peer 路由贡献 3 个 ref（同 Phase 1 注释）
+        expected_peer_refcnt_p2 = (PEER_ROUTE_COUNT - WITHDRAW_COUNT) * 3
 
         step("Verify refcnt decreased, attr_id unchanged")
         wait_check(
             rt,
             device="r2",
             command=f"show bgp route af ipv4-unicast {surviving_prefix} 24",
-            regex=[rf"Attr-ID\s*:\s*{attr_id_p1}\s*\(refcnt=([1-9]|[1-4]\d)\)"],
+            regex=[rf"Attr-ID\s*:\s*{attr_id_p1}\s*\(refcnt={expected_peer_refcnt_p2}\)"],
             timeout=10,
             label="r2 refcnt decreased & attr unchanged",
         )
@@ -258,7 +268,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         wait_check(
             rt,
             device="r2",
-            command="show bgp attr",
+            command="show bgp attr af ipv4-unicast",
             regex=[r"(?m)Unique attributes:\s+([2-9]|\d{2,})\s*$"],
             timeout=10,
             label="r2 unique >= 2",

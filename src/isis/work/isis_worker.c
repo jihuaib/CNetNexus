@@ -16,6 +16,7 @@
 #include "if.h"
 #include "isis.h"
 #include "isis_cfg_apply.h"
+#include "isis_main.h"
 #include "isis_neighbor.h"
 #include "isis_route.h"
 #include "isis_route_sync.h"
@@ -30,6 +31,8 @@ typedef enum isis_worker_cmd_type
     ISIS_WORKER_CMD_IF_EVENT = 2,
     ISIS_WORKER_CMD_APPLY = 3,
     ISIS_WORKER_CMD_SHUTDOWN = 4,
+    ISIS_WORKER_CMD_ROUTE_READY = 5,
+    ISIS_WORKER_CMD_IF_DOWN = 6,
 } isis_worker_cmd_type_t;
 
 typedef struct isis_worker_cmd
@@ -399,6 +402,30 @@ static int worker_dispatch_cmd(isis_worker_cmd_t *cmd)
             worker_cmd_complete(cmd, ERRCODE_SUCCESS);
             return 0;
 
+        case ISIS_WORKER_CMD_ROUTE_READY:
+            if (dev_ipc_wait_connected(isis_local_ipc_ctx(), DEV_MODULE_ID_ROUTE, 3000) != ERRCODE_SUCCESS)
+            {
+                LOG_WARN("ISIS: ROUTE connection not ready after 3s; route replay deferred to next READY");
+                break;
+            }
+            isis_route_sync_reconcile_all_instances();
+            isis_route_sync_replay_all_instances();
+            break;
+
+        case ISIS_WORKER_CMD_IF_DOWN:
+            /* IF 模块下线（崩溃/被停）：
+             *   1) 清掉 IF 共享缓存——所有 isis_neighbor_should_remove 会立即判 true。
+             *   2) reconcile_all 触发邻接逐个 withdraw 学到的 LSP、撤 SPF 路由、删邻接表项。
+             *   3) reconcile route_sync：把所有 instance 的 route_state 与 ROUTE 模块对账，
+             *      由于第 2 步已清空 SPF，结果是把残留下发的路由一次性 withdraw。
+             * 此后 IF READY 再到时，if_api_subscribe_all 会把新一轮 IF 状态推回来。 */
+            LOG_INFO("ISIS: IF DOWN detected, flushing IF cache + tearing down all adjacencies and routes");
+            if_api_cache_cleanup();
+            if_api_cache_init();
+            isis_neighbor_reconcile_all();
+            isis_route_sync_reconcile_all_instances();
+            break;
+
         case ISIS_WORKER_CMD_SHUTDOWN:
             g_isis_work_local->running = 0;
             if (cmd->msg)
@@ -569,6 +596,36 @@ int isis_worker_post_show_cli(dev_ipc_message_t *msg)
 int isis_worker_post_if_event(dev_ipc_message_t *msg)
 {
     isis_worker_cmd_t *cmd = worker_cmd_create(ISIS_WORKER_CMD_IF_EVENT, msg, 0);
+    if (!cmd)
+    {
+        return ERRCODE_FAIL;
+    }
+    if (worker_cmd_enqueue(cmd) != 0)
+    {
+        worker_cmd_destroy(cmd);
+        return ERRCODE_FAIL;
+    }
+    return ERRCODE_SUCCESS;
+}
+
+int isis_worker_post_route_ready(void)
+{
+    isis_worker_cmd_t *cmd = worker_cmd_create(ISIS_WORKER_CMD_ROUTE_READY, NULL, 0);
+    if (!cmd)
+    {
+        return ERRCODE_FAIL;
+    }
+    if (worker_cmd_enqueue(cmd) != 0)
+    {
+        worker_cmd_destroy(cmd);
+        return ERRCODE_FAIL;
+    }
+    return ERRCODE_SUCCESS;
+}
+
+int isis_worker_post_if_down(void)
+{
+    isis_worker_cmd_t *cmd = worker_cmd_create(ISIS_WORKER_CMD_IF_DOWN, NULL, 0);
     if (!cmd)
     {
         return ERRCODE_FAIL;

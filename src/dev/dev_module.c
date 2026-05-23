@@ -37,6 +37,19 @@ static pid_t dev_spawn_module(const char *exe_name, const char *module_name);
 /* 全局模块注册表（GLib tree: id -> dev_module_t*） */
 static GTree *g_module_registry = NULL;
 
+/* 批量清理标志（SIGCHLD handler 据此抑制"crashed/respawn"误报） */
+static volatile gint g_cleanup_in_progress = 0;
+
+void dev_module_set_cleanup_in_progress(int flag)
+{
+    g_atomic_int_set(&g_cleanup_in_progress, flag ? 1 : 0);
+}
+
+int dev_module_is_cleanup_in_progress(void)
+{
+    return g_atomic_int_get(&g_cleanup_in_progress);
+}
+
 /* GTree 比较函数 */
 static gint module_id_compare(gconstpointer a, gconstpointer b)
 {
@@ -142,6 +155,89 @@ int dev_get_module_id_by_name(const char *name, uint32_t *module_id)
     }
 
     return ERRCODE_FAIL;
+}
+
+dev_module_t *dev_module_find(uint32_t module_id)
+{
+    if (!g_module_registry)
+    {
+        return NULL;
+    }
+    return (dev_module_t *)g_tree_lookup(g_module_registry, GUINT_TO_POINTER(module_id));
+}
+
+/* 按 pid 查找模块的遍历上下文 */
+typedef struct
+{
+    pid_t pid;
+    dev_module_t *found;
+} find_by_pid_ctx_t;
+
+static gboolean find_module_by_pid_cb(gpointer key, gpointer value, gpointer data)
+{
+    (void)key;
+    dev_module_t *module = (dev_module_t *)value;
+    find_by_pid_ctx_t *ctx = (find_by_pid_ctx_t *)data;
+
+    if (module->child_pid == ctx->pid)
+    {
+        ctx->found = module;
+        return TRUE; /* 停止遍历 */
+    }
+    return FALSE;
+}
+
+dev_module_t *dev_module_find_by_pid(pid_t pid)
+{
+    if (!g_module_registry || pid <= 0)
+    {
+        return NULL;
+    }
+    find_by_pid_ctx_t ctx = {.pid = pid, .found = NULL};
+    g_tree_foreach(g_module_registry, find_module_by_pid_cb, &ctx);
+    return ctx.found;
+}
+
+int dev_module_spawn_on_demand(dev_module_t *module)
+{
+    if (!module)
+    {
+        return ERRCODE_FAIL;
+    }
+    if (!module->on_demand)
+    {
+        LOG_WARN("Module %s is not on-demand, refuse to spawn via on-demand path", module->name);
+        return ERRCODE_FAIL;
+    }
+    return dev_module_respawn(module);
+}
+
+int dev_module_respawn(dev_module_t *module)
+{
+    if (!module)
+    {
+        return ERRCODE_FAIL;
+    }
+    if (module->child_pid > 0)
+    {
+        /* 已有进程在跑（可能仍在初始化），幂等返回 */
+        return ERRCODE_SUCCESS;
+    }
+    if (module->exe_name[0] == '\0')
+    {
+        LOG_ERROR("Module %s has no exe_name, cannot spawn", module->name);
+        return ERRCODE_FAIL;
+    }
+
+    pid_t pid = dev_spawn_module(module->exe_name, module->name);
+    if (pid < 0)
+    {
+        return ERRCODE_FAIL;
+    }
+    module->child_pid = pid;
+    module->phase = DEV_PHASE_LOADED;
+    LOG_INFO("Module %s spawned (pid=%d, on_demand=%u)", module->name, pid, module->on_demand);
+    return ERRCODE_SUCCESS;
 }
 
 void dev_module_foreach(GTraverseFunc func, gpointer user_data)
@@ -252,7 +348,30 @@ static int dev_scan_dir_for_modules(const char *base_dir)
     {
         dev_module_conf_t *conf = &g_array_index(module_confs, dev_module_conf_t, i);
 
-        /* fork+exec 启动模块子进程 */
+        /* 创建模块条目（无论是否按需都先入注册表） */
+        dev_module_t *module = dev_add_module_to_registry(conf->module_id, conf->name);
+        if (!module)
+        {
+            LOG_ERROR("Module %s registration failed", conf->name);
+            continue;
+        }
+        module->port = conf->port;
+        module->on_demand = conf->on_demand;
+        strlcpy(module->exe_name, conf->exe_name, sizeof(module->exe_name));
+        strlcpy(module->revive_table, conf->revive_table, sizeof(module->revive_table));
+
+        /* 按需模块：留到首个订阅请求时再 fork
+         * 注意 phase 保持默认 DEV_PHASE_LOADED（由 dev_add_module_to_registry 设置）
+         * 改为 DEV_PHASE_REGISTERED 表示"未运行"，三阶段回调和 IPC 等待都会跳过它 */
+        if (conf->on_demand)
+        {
+            module->phase = DEV_PHASE_REGISTERED;
+            LOG_INFO("Module %s registered as on-demand (deferred spawn)", conf->name);
+            loaded++;
+            continue;
+        }
+
+        /* 常驻模块：fork+exec 启动子进程 */
         pid_t child_pid = dev_spawn_module(conf->exe_name, conf->name);
         if (child_pid < 0)
         {
@@ -260,18 +379,7 @@ static int dev_scan_dir_for_modules(const char *base_dir)
             continue;
         }
 
-        /* 创建模块并添加到注册表 */
-        dev_module_t *module = dev_add_module_to_registry(conf->module_id, conf->name);
-        if (!module)
-        {
-            LOG_ERROR("Module %s registration failed", conf->name);
-            kill(child_pid, SIGKILL);
-            continue;
-        }
-
         module->child_pid = child_pid;
-        module->port = conf->port;
-
         loaded++;
         LOG_INFO("Module %s started (pid=%d)", conf->name, child_pid);
     }
@@ -411,6 +519,7 @@ int32_t dev_scan_and_load_modules(void)
             }
         }
         dev_self->port = DEV_MODULE_PORT_DEV;
+        dev_self->phase = DEV_PHASE_READY; /* DEV is supervisor, always ready */
         if (dev_self->phase < DEV_PHASE_LOADED)
         {
             dev_self->phase = DEV_PHASE_LOADED;
@@ -557,14 +666,18 @@ static gboolean collect_ipc_pending_cb(gpointer key, gpointer value, gpointer da
     return FALSE;
 }
 
-/* 收集“阶段低于 required_phase”的模块（不含 DEV） */
+/* 收集“阶段低于 required_phase”的模块（不含 DEV）。
+ * 注意：on-demand 模块完全不走 Phase 1/2/3，由各自 *_module_init 直接 notify_ready → READY，
+ * 中间会短暂处于 LOADED（fork 之后、notify_ready 之前）。这种情况不算 Phase 失败。
+ * 只对常驻模块（!on_demand）做阶段门控。 */
 static gboolean collect_phase_pending_cb(gpointer key, gpointer value, gpointer data)
 {
     (void)key;
     dev_module_t *module = (dev_module_t *)value;
     dev_phase_wait_ctx_t *ctx = (dev_phase_wait_ctx_t *)data;
 
-    if (!module || !ctx || module->module_id == DEV_MODULE_ID_DEV || module->phase < DEV_PHASE_LOADED)
+    if (!module || !ctx || module->module_id == DEV_MODULE_ID_DEV || module->phase < DEV_PHASE_LOADED ||
+        module->on_demand)
     {
         return FALSE;
     }
@@ -662,145 +775,78 @@ static int dev_require_all_modules_phase(uint8_t required_phase, const char *pha
 }
 
 // ============================================================================
-// Phase 1: 发送 MODULE_START RPC（无 payload，各模块名称已在 dev_ipc_init 中配置）
+// 按需模块自动恢复（DB 已就绪后调用）
 // ============================================================================
 
-static gboolean phase1_start_callback(gpointer key, gpointer value, gpointer data)
+/**
+ * 对每个 on_demand 且声明了 revive_table 的模块，检查表中是否存在配置；
+ * 存在即 fork 该模块（使其完成 db_restore 并自动 listen/服务）。
+ *
+ * Why: 用户配置过的模块在 NetNexus 重启后应该自动恢复业务，无需用户重新触发 CLI。
+ */
+static gboolean revive_on_demand_cb(gpointer key, gpointer value, gpointer data)
 {
     (void)key;
-    int32_t *failed_count = (int32_t *)data;
+    (void)data;
     dev_module_t *module = (dev_module_t *)value;
 
-    if (module->module_id == DEV_MODULE_ID_DEV)
-    {
-        module->phase = DEV_PHASE_IPC_READY;
-        return FALSE;
-    }
-
-    if (module->phase < DEV_PHASE_LOADED)
+    if (!module || !module->on_demand || module->revive_table[0] == '\0')
     {
         return FALSE;
     }
-
-    LOG_INFO("Phase 1: Sending MODULE_START -> %s", module->name);
-
-    dev_ipc_message_t *req = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_MODULE_START, DEV_MODULE_ID_DEV,
-                                                    module->module_id, 0, NULL, 0, NULL);
-
-    dev_ipc_message_t *resp = dev_ipc_query(g_dev_local->dev_ipc_ctx, module->module_id, req, 5000);
-    if (resp)
+    if (module->phase >= DEV_PHASE_LOADED || module->child_pid > 0)
     {
-        LOG_INFO("Phase 1: %s IPC connection established", module->name);
-        module->phase = DEV_PHASE_IPC_READY;
-        dev_ipc_message_free(resp);
-    }
-    else
-    {
-        LOG_ERROR("Phase 1: %s IPC connection timeout or failed", module->name);
-        (*failed_count)++;
+        return FALSE; /* 已经在跑（可能刚被另一个 CLI 命令触发） */
     }
 
+    /* 查表是否非空：db_rpc_exists 内部用 EXISTS 查询，表不存在或为空都返回 FALSE */
+    gboolean exists = FALSE;
+    int rc = db_rpc_exists(g_dev_local->dev_ipc_ctx, module->revive_table, NULL, &exists);
+    if (rc != ERRCODE_SUCCESS)
+    {
+        /* 表不存在等错误：说明该模块从未配置过，跳过 */
+        LOG_DEBUG("Revive check: %s/%s not present in DB, skip", module->name, module->revive_table);
+        return FALSE;
+    }
+    if (!exists)
+    {
+        LOG_INFO("Revive check: %s has no rows in %s, skip", module->name, module->revive_table);
+        return FALSE;
+    }
+
+    LOG_INFO("Revive: %s has config in %s, auto-spawning", module->name, module->revive_table);
+    if (dev_module_spawn_on_demand(module) != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("Revive: failed to spawn %s", module->name);
+        return FALSE;
+    }
+    /* 主动建联，与 SUBSCRIBE 路径一致；IPC 库异步握手 + 自动重试 */
+    dev_ipc_connect(g_dev_local->dev_ipc_ctx, module->module_id, DEV_IPC_HOST_LOCAL, module->port);
     return FALSE;
 }
 
-// ============================================================================
-// Phase 2: 发送 MODULE_CONNECT RPC
-// ============================================================================
-
-static gboolean phase2_connect_callback(gpointer key, gpointer value, gpointer data)
+static void dev_revive_on_demand_modules(void)
 {
-    (void)key;
-    int32_t *failed_count = (int32_t *)data;
-    dev_module_t *module = (dev_module_t *)value;
-
-    if (module->module_id == DEV_MODULE_ID_DEV)
+    if (!g_module_registry || !g_dev_local || !g_dev_local->dev_ipc_ctx)
     {
-        module->phase = DEV_PHASE_DB_RECOVERED;
-        return FALSE;
+        return;
     }
-
-    if (module->phase < DEV_PHASE_IPC_READY)
-    {
-        return FALSE;
-    }
-
-    LOG_INFO("Phase 2: Sending MODULE_CONNECT -> %s", module->name);
-
-    dev_ipc_message_t *req = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_MODULE_CONNECT, DEV_MODULE_ID_DEV,
-                                                    module->module_id, 0, NULL, 0, NULL);
-
-    dev_ipc_message_t *resp = dev_ipc_query(g_dev_local->dev_ipc_ctx, module->module_id, req, 5000);
-    if (resp)
-    {
-        LOG_INFO("Phase 2: %s reserved phase complete", module->name);
-        module->phase = DEV_PHASE_DB_RECOVERED;
-        dev_ipc_message_free(resp);
-    }
-    else
-    {
-        LOG_ERROR("Phase 2: %s reserved phase timeout or failed", module->name);
-        (*failed_count)++;
-    }
-
-    return FALSE;
+    LOG_INFO("=== Reviving on-demand modules with persisted config ===");
+    g_tree_foreach(g_module_registry, revive_on_demand_cb, NULL);
 }
 
 // ============================================================================
-// Phase 3: 发送 MODULE_READY RPC
-// ============================================================================
-
-static gboolean phase3_ready_callback(gpointer key, gpointer value, gpointer data)
-{
-    (void)key;
-    int32_t *failed_count = (int32_t *)data;
-    dev_module_t *module = (dev_module_t *)value;
-
-    if (module->module_id == DEV_MODULE_ID_DEV)
-    {
-        module->phase = DEV_PHASE_READY;
-        return FALSE;
-    }
-
-    if (module->phase < DEV_PHASE_DB_RECOVERED)
-    {
-        return FALSE;
-    }
-
-    LOG_INFO("Phase 3: Sending MODULE_READY -> %s", module->name);
-
-    dev_ipc_message_t *req = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_MODULE_READY, DEV_MODULE_ID_DEV,
-                                                    module->module_id, 0, NULL, 0, NULL);
-
-    dev_ipc_message_t *resp = dev_ipc_query(g_dev_local->dev_ipc_ctx, module->module_id, req, 5000);
-    if (resp)
-    {
-        LOG_INFO("Phase 3: %s ready", module->name);
-        module->phase = DEV_PHASE_READY;
-        dev_ipc_message_free(resp);
-    }
-    else
-    {
-        LOG_ERROR("Phase 3: %s ready timeout or failed", module->name);
-        (*failed_count)++;
-    }
-
-    return FALSE;
-}
-
-// ============================================================================
-// 三阶段初始化主流程
+// 初始化主流程（基础模块在自身 init 中调 notify_ready，DEV 等所有就绪）
 // ============================================================================
 
 int32_t dev_init_all_modules(void)
 {
     /* 所有模块 constructor 执行完毕后，主线程的日志标签已被最后一个模块改写。
-     * 在三阶段初始化期间统一恢复为 "dev"，使日志便于识别。 */
+     * 在初始化期间统一恢复为 "dev"，使日志便于识别。 */
     log_set_tag("dev");
 
-    int32_t failed_count = 0;
-
     LOG_INFO("=============================================");
-    LOG_INFO("Starting three-phase module initialization");
+    LOG_INFO("Starting module initialization (notify_ready model)");
     LOG_INFO("=============================================");
 
     if (!g_module_registry)
@@ -809,11 +855,11 @@ int32_t dev_init_all_modules(void)
         return ERRCODE_SUCCESS;
     }
 
-    /* DEV connecting to all modules */
-    LOG_INFO("DEV connecting to all modules");
+    /* DEV 主动连接所有 LOADED（基础）模块；on-demand 模块跳过 */
+    LOG_INFO("DEV connecting to all loaded modules");
     g_tree_foreach(g_module_registry, dev_connect_to_module_callback, g_dev_local->dev_ipc_ctx);
 
-    /* 阶段门控 0：所有模块 IPC 必须先 ready，再进入 Phase 1 */
+    /* 等待 IPC 链路全部就绪 */
     LOG_INFO("Waiting for IPC connections to be ready...");
     if (dev_wait_all_ipc_ready(g_dev_local->dev_ipc_ctx, DEV_INIT_IPC_WAIT_TIMEOUT_SEC) != ERRCODE_SUCCESS)
     {
@@ -821,15 +867,7 @@ int32_t dev_init_all_modules(void)
         return ERRCODE_FAIL;
     }
 
-    /* Phase 1: 发送 MODULE_START — 模块建立 IPC 连接 */
-    LOG_INFO("=== Phase 1: MODULE_START (IPC setup) ===");
-    g_tree_foreach(g_module_registry, phase1_start_callback, &failed_count);
-    if (dev_require_all_modules_phase(DEV_PHASE_IPC_READY, "Phase 1") != ERRCODE_SUCCESS)
-    {
-        return ERRCODE_FAIL;
-    }
-
-    /* DEV 自身的 DB 初始化与恢复（DB 进程已就绪，IPC 连接已建立） */
+    /* DEV 自身的 DB 初始化与恢复（DB 已通过 notify_ready 报告就绪也好，连接已建立即可发 RPC） */
     if (dev_db_init() == 0)
     {
         if (dev_db_restore() == 0)
@@ -839,28 +877,31 @@ int32_t dev_init_all_modules(void)
         }
     }
 
-    /* Phase 2: 发送 MODULE_CONNECT — 预留（DB 恢复） */
-    LOG_INFO("=== Phase 2: MODULE_CONNECT (reserved) ===");
-    g_tree_foreach(g_module_registry, phase2_connect_callback, &failed_count);
-    if (dev_require_all_modules_phase(DEV_PHASE_DB_RECOVERED, "Phase 2") != ERRCODE_SUCCESS)
+    /* 等待所有基础模块 notify_ready（即 phase == READY），超时仍继续 */
+    LOG_INFO("Waiting for all basic modules to notify_ready...");
+    gint64 deadline = g_get_monotonic_time() + (gint64)DEV_INIT_IPC_WAIT_TIMEOUT_SEC * G_USEC_PER_SEC;
+    while (g_get_monotonic_time() < deadline)
     {
-        return ERRCODE_FAIL;
+        if (dev_require_all_modules_phase(DEV_PHASE_READY, "ready") == ERRCODE_SUCCESS)
+        {
+            break;
+        }
+        usleep(DEV_INIT_IPC_WAIT_INTERVAL_USEC);
     }
-    LOG_INFO("Phase 2: All modules reserved phase complete");
-
-    /* Phase 3: 发送 MODULE_READY — 预留（CFG 加载 XML） */
-    LOG_INFO("=== Phase 3: MODULE_READY (reserved) ===");
-    g_tree_foreach(g_module_registry, phase3_ready_callback, &failed_count);
-    if (dev_require_all_modules_phase(DEV_PHASE_READY, "Phase 3") != ERRCODE_SUCCESS)
+    if (dev_require_all_modules_phase(DEV_PHASE_READY, "ready") != ERRCODE_SUCCESS)
     {
-        return ERRCODE_FAIL;
+        LOG_WARN("Some basic modules did not notify_ready within timeout (continuing)");
     }
 
     LOG_INFO("=============================================");
-    LOG_INFO("Three-phase initialization complete (failed: %d)", failed_count);
+    LOG_INFO("Module initialization complete");
     LOG_INFO("=============================================");
 
-    return failed_count;
+    /* 按需模块自动恢复：检查每个 on-demand 模块的 revive_table，非空即 fork。
+     * 在基础模块就绪后执行，确保 DB 可用、其它模块表已存在。 */
+    dev_revive_on_demand_modules();
+
+    return ERRCODE_SUCCESS;
 }
 
 // ============================================================================
@@ -885,6 +926,9 @@ void cleanup_all_modules(void)
         LOG_INFO("No modules to clean up");
         return;
     }
+
+    /* 进入清理：抑制 SIGCHLD handler 的"crash"判定和 pending_restart 重启 */
+    dev_module_set_cleanup_in_progress(1);
 
     /* 收集模块，g_list_prepend 得到逆序（高 ID 先） */
     GList *modules = NULL;
@@ -952,4 +996,5 @@ void cleanup_all_modules(void)
     g_module_registry = NULL;
 
     LOG_INFO("Module cleanup complete");
+    dev_module_set_cleanup_in_progress(0);
 }

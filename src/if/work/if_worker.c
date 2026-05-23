@@ -37,13 +37,16 @@ if_work_local_t *g_if_work_local = NULL;
  */
 typedef enum if_worker_cmd_type
 {
-    IF_WORKER_CMD_IPC_MSG = 1,    /**< 通用 IPC 消息（按 msg_type 二次分发） */
-    IF_WORKER_CMD_LINK_EVENT = 2, /**< 链路监控事件 */
-    IF_WORKER_CMD_ADDR_EVENT = 3, /**< 地址监控事件 */
-    IF_WORKER_CMD_SHUTDOWN = 4,   /**< 停止 worker 线程 */
-    IF_WORKER_CMD_APPLY = 5,      /**< 配置应用命令（waitable） */
-    IF_WORKER_CMD_VRF_EVENT = 6,  /**< VRF 事件：维护 worker 独占 VRF cache */
-    IF_WORKER_CMD_VRF_QUERY = 7,  /**< VRF 查询：其他线程同步请求 worker 查询 */
+    IF_WORKER_CMD_IPC_MSG = 1,              /**< 通用 IPC 消息（按 msg_type 二次分发） */
+    IF_WORKER_CMD_LINK_EVENT = 2,           /**< 链路监控事件 */
+    IF_WORKER_CMD_ADDR_EVENT = 3,           /**< 地址监控事件 */
+    IF_WORKER_CMD_SHUTDOWN = 4,             /**< 停止 worker 线程 */
+    IF_WORKER_CMD_APPLY = 5,                /**< 配置应用命令（waitable） */
+    IF_WORKER_CMD_VRF_EVENT = 6,            /**< VRF 事件：维护 worker 独占 VRF cache */
+    IF_WORKER_CMD_VRF_QUERY = 7,            /**< VRF 查询：其他线程同步请求 worker 查询 */
+    IF_WORKER_CMD_PRE_SHUTDOWN_CLEANUP = 8, /**< 优雅停止前清除所有运行态 IP（不动 DB） */
+    IF_WORKER_CMD_ROUTE_READY = 9,          /**< ROUTE ready/restart 后重刷 connected 路由 */
+    IF_WORKER_CMD_MODULE_DOWN = 10,         /**< 对端模块 IPC 断开，清理运行态订阅 */
 } if_worker_cmd_type_t;
 
 /**
@@ -58,6 +61,7 @@ typedef struct if_worker_cmd
     if_apply_cmd_t *apply;         /**< 应用命令（APPLY 使用，借用引用） */
     char vrf_name[IF_VRF_NAME_MAX];
     uint32_t *vrf_id_out;
+    uint32_t module_id;
 
     int waitable;
     pthread_mutex_t mutex;
@@ -184,6 +188,86 @@ static int worker_resolve_vrf_id_by_name(const char *vrf_name, uint32_t *vrf_id)
 
     *vrf_id = vrf->vrf_id;
     return ERRCODE_SUCCESS;
+}
+
+/* g_tree_foreach 收集名字的回调 */
+typedef struct
+{
+    GList *names;
+} collect_names_ctx_t;
+
+static gboolean collect_named_with_ip_cb(gpointer key, gpointer value, gpointer data)
+{
+    (void)key;
+    if_map_entry_t *e = (if_map_entry_t *)value;
+    collect_names_ctx_t *ctx = (collect_names_ctx_t *)data;
+    if (net_prefix_is_set(&e->prefix_v4) || net_prefix_is_set(&e->prefix_v6))
+    {
+        ctx->names = g_list_append(ctx->names, g_strdup(e->logical_name));
+    }
+    return FALSE;
+}
+
+/**
+ * 优雅停止前清理运行态：遍历所有接口，对配置了 IP 的逐个 if_cfg_apply_ip(is_no=1)：
+ * - 移除 OS netlink IP（kernel 自动撤销直连路由）
+ * - if_pub_notify(PROTO_DOWN) 通知 ROUTE 撤路由
+ * 不写 DB → process start 后 db_restore 仍能完整还原。
+ */
+static int worker_pre_shutdown_cleanup(void)
+{
+    if (!g_if_work_local || !g_if_work_local->interface_map.all_entries)
+    {
+        return ERRCODE_SUCCESS;
+    }
+
+    collect_names_ctx_t ctx = {NULL};
+    g_tree_foreach(g_if_work_local->interface_map.all_entries, collect_named_with_ip_cb, &ctx);
+
+    int removed = 0;
+    for (GList *l = ctx.names; l != NULL; l = l->next)
+    {
+        const char *name = (const char *)l->data;
+        if (if_cfg_apply_ip(TRUE, name, NULL) == ERRCODE_SUCCESS)
+        {
+            removed++;
+        }
+    }
+    g_list_free_full(ctx.names, g_free);
+    LOG_INFO("IF: pre-shutdown cleanup removed IPs from %d interface(s)", removed);
+    return ERRCODE_SUCCESS;
+}
+
+static int worker_remove_subscribers_by_module(uint32_t module_id)
+{
+    int removed = 0;
+    GList *l = g_if_work_local ? g_if_work_local->subscribers : NULL;
+
+    while (l)
+    {
+        if_subscriber_t *sub = (if_subscriber_t *)l->data;
+        GList *next = l->next;
+
+        if (sub && sub->module_id == module_id)
+        {
+            g_if_work_local->subscribers = g_list_delete_link(g_if_work_local->subscribers, l);
+            g_free(sub);
+            removed++;
+        }
+
+        l = next;
+    }
+
+    if (removed > 0)
+    {
+        LOG_INFO("IF: module 0x%08X down, removed %d subscriber(s)", module_id, removed);
+    }
+    else
+    {
+        LOG_DEBUG("IF: module 0x%08X down, no subscriber to remove", module_id);
+    }
+
+    return removed;
 }
 
 static uint32_t worker_if_type_to_mask(if_type_t type)
@@ -327,6 +411,18 @@ static void *if_worker_thread_fn(void *arg)
             case IF_WORKER_CMD_VRF_QUERY:
                 worker_cmd_complete(cmd, worker_resolve_vrf_id_by_name(cmd->vrf_name, cmd->vrf_id_out));
                 continue;
+
+            case IF_WORKER_CMD_PRE_SHUTDOWN_CLEANUP:
+                worker_cmd_complete(cmd, worker_pre_shutdown_cleanup());
+                continue;
+
+            case IF_WORKER_CMD_ROUTE_READY:
+                (void)if_cfg_replay_connected_routes();
+                break;
+
+            case IF_WORKER_CMD_MODULE_DOWN:
+                (void)worker_remove_subscribers_by_module(cmd->module_id);
+                break;
 
             default:
                 LOG_WARN("IF-WORKER: unknown cmd type=%d", (int)cmd->type);
@@ -479,6 +575,66 @@ int if_worker_dispatch_vrf_event(dev_ipc_message_t *msg)
     int rc = worker_cmd_wait(cmd);
     worker_cmd_destroy(cmd);
     return rc;
+}
+
+int if_worker_pre_shutdown_cleanup(void)
+{
+    if (!g_if_work_local || !g_if_work_local->running || g_if_work_local->thread == 0)
+    {
+        return ERRCODE_SUCCESS;
+    }
+    if_worker_cmd_t *cmd = worker_cmd_create(IF_WORKER_CMD_PRE_SHUTDOWN_CLEANUP, NULL, 1);
+    if (!cmd)
+    {
+        return ERRCODE_FAIL;
+    }
+    if (worker_cmd_enqueue(cmd) != ERRCODE_SUCCESS)
+    {
+        worker_cmd_destroy(cmd);
+        return ERRCODE_FAIL;
+    }
+    int rc = worker_cmd_wait(cmd);
+    worker_cmd_destroy(cmd);
+    return rc;
+}
+
+int if_worker_post_route_ready(void)
+{
+    if (!g_if_work_local || !g_if_work_local->running || g_if_work_local->thread == 0)
+    {
+        return ERRCODE_SUCCESS;
+    }
+    if_worker_cmd_t *cmd = worker_cmd_create(IF_WORKER_CMD_ROUTE_READY, NULL, 0);
+    if (!cmd)
+    {
+        return ERRCODE_FAIL;
+    }
+    if (worker_cmd_enqueue(cmd) != ERRCODE_SUCCESS)
+    {
+        worker_cmd_destroy(cmd);
+        return ERRCODE_FAIL;
+    }
+    return ERRCODE_SUCCESS;
+}
+
+int if_worker_post_module_down(uint32_t module_id)
+{
+    if (!g_if_work_local || !g_if_work_local->running || g_if_work_local->thread == 0 || module_id == 0)
+    {
+        return ERRCODE_FAIL;
+    }
+    if_worker_cmd_t *cmd = worker_cmd_create(IF_WORKER_CMD_MODULE_DOWN, NULL, 0);
+    if (!cmd)
+    {
+        return ERRCODE_FAIL;
+    }
+    cmd->module_id = module_id;
+    if (worker_cmd_enqueue(cmd) != ERRCODE_SUCCESS)
+    {
+        worker_cmd_destroy(cmd);
+        return ERRCODE_FAIL;
+    }
+    return ERRCODE_SUCCESS;
 }
 
 int if_worker_dispatch_apply(if_apply_cmd_t *apply)

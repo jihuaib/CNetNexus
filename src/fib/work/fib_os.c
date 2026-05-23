@@ -434,6 +434,12 @@ static int fib_os_route_send(int cmd, const fib_route_entry_t *route, const fib_
         nl_add_attr(nlh, sizeof(buf), RTA_OIF, &route->out_ifindex, (int)sizeof(route->out_ifindex));
     }
 
+    if (cmd == RTM_NEWROUTE && route->out_ifindex != 0 && route->nh_type != FIB_NH_TYPE_BLACKHOLE &&
+        !net_addr_is_zero(&route->nexthop_addr))
+    {
+        rtm->rtm_flags |= RTNH_F_ONLINK;
+    }
+
     if (route->nh_type == FIB_NH_TYPE_IP && !net_addr_is_zero(&route->nexthop_addr) &&
         nl_add_gateway_or_via(nlh, sizeof(buf), route->prefix_addr.family, &route->nexthop_addr) != ERRCODE_SUCCESS)
     {

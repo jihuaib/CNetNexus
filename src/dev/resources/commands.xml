@@ -78,7 +78,7 @@
             </commands>
         </group>
 
-        <!-- ping <ipv4-address> [-a <src-ipv4>] / ping ipv6 <ipv6-address> [-a <src-ipv6>] / ping mpls ipv4 <prefix/len> [-a <src-ipv4>] -->
+        <!-- ping <ipv4-address> [-a <src-ipv4>] [vrf <vrf-name>] / ping ipv6 <ipv6-address> [-a <src-ipv6>] [vrf <vrf-name>] / ping mpls ipv4 <prefix/len> [-a <src-ipv4>] -->
         <group group-id="5">
             <elements>
                 <element id="1" type="keyword">
@@ -126,23 +126,32 @@
                     <description>Target IPv4 FEC prefix, for example 3.3.3.3/32</description>
                     <type>string(1-63)</type>
                 </element>
+                <element id="11" type="keyword">
+                    <name>vrf</name>
+                    <description>Use VRF routing table</description>
+                </element>
+                <element id="12" cfg-id="9" type="parameter">
+                    <name>&lt;vrf-name&gt;</name>
+                    <description>VRF name</description>
+                    <type>dynamic(4:1,string(1-63))</type>
+                </element>
             </elements>
 
             <commands>
                 <command>
-                    <expression>1 2</expression>
+                    <expression>1 2 [11 12]</expression>
                     <views>global</views>
                 </command>
                 <command>
-                    <expression>1 2 5 6</expression>
+                    <expression>1 2 5 6 [11 12]</expression>
                     <views>global</views>
                 </command>
                 <command>
-                    <expression>1 3 4</expression>
+                    <expression>1 3 4 [11 12]</expression>
                     <views>global</views>
                 </command>
                 <command>
-                    <expression>1 3 4 5 7</expression>
+                    <expression>1 3 4 5 7 [11 12]</expression>
                     <views>global</views>
                 </command>
                 <command>
@@ -251,6 +260,48 @@
             <commands>
                 <command>
                     <expression>1</expression>
+                    <views>global</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- process { reboot | start | stop } <module-name> -->
+        <group group-id="9">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>process</name>
+                    <description>Module process lifecycle control</description>
+                </element>
+                <element id="2" cfg-id="1" type="keyword">
+                    <name>reboot</name>
+                    <description>Restart a module process (SIGTERM + respawn, DB config preserved)</description>
+                </element>
+                <element id="3" cfg-id="2" type="keyword">
+                    <name>start</name>
+                    <description>Start a stopped module process (spawn if not running)</description>
+                </element>
+                <element id="4" cfg-id="3" type="keyword">
+                    <name>stop</name>
+                    <description>Stop a running module process (graceful shutdown, no respawn)</description>
+                </element>
+                <element id="5" cfg-id="4" type="parameter">
+                    <name>&lt;module-name&gt;</name>
+                    <description>Target module name (e.g. if, sbmp, bgp)</description>
+                    <type>string(1-12)</type>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>1 2 5</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 3 5</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 4 5</expression>
                     <views>global</views>
                 </command>
             </commands>

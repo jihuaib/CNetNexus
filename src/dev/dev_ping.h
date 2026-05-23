@@ -33,6 +33,12 @@ dev_ping_session_t *dev_ping_start(const net_addr_t *target, const net_addr_t *s
                                    char *errmsg, size_t errmsg_len);
 
 /**
+ * @brief 开启一个绑定到指定 Linux 接口/VRF 设备的 ping 会话
+ */
+dev_ping_session_t *dev_ping_start_bound(const net_addr_t *target, const net_addr_t *source, const char *bind_ifname,
+                                         int count, int timeout_ms, char *errmsg, size_t errmsg_len);
+
+/**
  * @brief 开启一个显式 MPLS IPv4 ping 会话
  * @param target      内层 IPv4 目的地址
  * @param source      内层 IPv4 源地址（NULL 时使用出接口 IPv4）

@@ -14,6 +14,7 @@
 #include <unistd.h>
 
 #include "bgp.h"
+#include "bgp_adj_rib_in.h"
 #include "bgp_bmp_thread.h"
 #include "bgp_conn.h"
 #include "bgp_fsm.h"
@@ -183,6 +184,7 @@ void bgp_session_reset_negotiated(bgp_session_t *sess)
             peer->state = BGP_PEER_STATE_IDLE;
         }
     }
+    bgp_adj_rib_in_clear_session(sess);
 
     char addr_str[64];
     net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));

@@ -6,9 +6,12 @@
  */
 #include "sbmp_cli.h"
 
+#include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/types.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "cli.h"
 #include "db.h"
@@ -168,6 +171,12 @@ static int handle_bmp_server(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
     gboolean is_no = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
 
+    /* DB 不可用时直接拒绝配置下发，避免内存/OS 与 DB 静默偏移 */
+    if (db_rpc_guard_reject(sbmp_local_ipc_ctx(), msg, "SBMP"))
+    {
+        return ERRCODE_FAIL;
+    }
+
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
     {
@@ -184,7 +193,14 @@ static int handle_bmp_server(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     sbmp_db_del_server_port();
     g_sbmp_local->server_port = 0;
 
-    sbmp_send_cli_response(msg, "");
+    sbmp_send_cli_response(msg, "SBMP: configuration cleared, process exiting.\r\n");
+
+    /* 配置清空后让进程自退出：DEV 的 SIGCHLD handler 会标记 REGISTERED + 推送 DOWN；
+     * 下次用户配 bmp-server 时 CFG 的 wait_module_ready(SBMP) 会让 DEV 重新 fork。
+     * 用 raise(SIGTERM) 触发 sbmp_proc.c 的 shutdown_handler，走优雅退出流程。 */
+    /* kill(getpid(), SIGTERM) 而非 raise(SIGTERM)：raise 只送到调用线程，
+     * 主线程的 sigsuspend 不会被唤醒；kill 是进程级信号，会派给可处理它的线程。 */
+    kill(getpid(), SIGTERM);
     return ERRCODE_SUCCESS;
 }
 
@@ -197,6 +213,12 @@ static int handle_server_port(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
     gboolean is_no = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
     uint32_t port = 0;
+
+    /* DB 不可用时直接拒绝配置下发，避免内存/OS 与 DB 静默偏移 */
+    if (db_rpc_guard_reject(sbmp_local_ipc_ctx(), msg, "SBMP"))
+    {
+        return ERRCODE_FAIL;
+    }
 
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
@@ -217,13 +239,20 @@ static int handle_server_port(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     {
         if (g_sbmp_local->server_port == 0)
         {
-            sbmp_send_cli_response(msg, "");
+            sbmp_send_cli_response(msg, "SBMP: no config to remove, process exiting.\r\n");
+            /* kill(getpid(), SIGTERM) 而非 raise(SIGTERM)：raise 只送到调用线程，
+             * 主线程的 sigsuspend 不会被唤醒；kill 是进程级信号，会派给可处理它的线程。 */
+            kill(getpid(), SIGTERM);
             return ERRCODE_SUCCESS;
         }
         sbmp_listen_stop();
         sbmp_db_del_server_port();
         g_sbmp_local->server_port = 0;
-        sbmp_send_cli_response(msg, "");
+        sbmp_send_cli_response(msg, "SBMP: server port cleared, process exiting.\r\n");
+        /* 与 no bmp-server 路径一致：清空配置后自退出，让 DEV 回到 on-demand 待命状态 */
+        /* kill(getpid(), SIGTERM) 而非 raise(SIGTERM)：raise 只送到调用线程，
+         * 主线程的 sigsuspend 不会被唤醒；kill 是进程级信号，会派给可处理它的线程。 */
+        kill(getpid(), SIGTERM);
         return ERRCODE_SUCCESS;
     }
 

@@ -38,6 +38,7 @@ typedef enum route_worker_cmd_type
     ROUTE_WORKER_CMD_FIB_ROUTE_RESULT = 10, /**< FIB route 下发结果事件 */
     ROUTE_WORKER_CMD_VRF_EVENT = 11,        /**< VRF 事件：维护 worker 独占 VRF cache */
     ROUTE_WORKER_CMD_VRF_QUERY = 12,        /**< VRF 查询：其他线程同步请求 worker 查询 */
+    ROUTE_WORKER_CMD_IF_DOWN = 13,          /**< IF 模块 DOWN：清 IF 缓存 + 重算 nexthop watch */
 } route_worker_cmd_type_t;
 
 // ============================================================================
