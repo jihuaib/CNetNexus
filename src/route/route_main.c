@@ -28,6 +28,7 @@
 #include "vrf.h"
 
 route_local_t *g_route_local = NULL;
+static gboolean g_route_db_restored = FALSE;
 
 /* route_static 表：用户手动配置的静态路由（vrf_name 持久化；vrf_id 仅在内存有效，重启可变） */
 static const db_column_def_t ROUTE_STATIC_COLS[] = {
@@ -118,9 +119,9 @@ static void route_handle_vrf_ready(void)
 static void route_handle_if_ready(void)
 {
     dev_ipc_context_t *ctx = route_local_ipc_ctx();
-    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_IF, 3000) != ERRCODE_SUCCESS)
+    if (!dev_ipc_is_connected(ctx, DEV_MODULE_ID_IF))
     {
-        LOG_WARN("Route: IF not connected within 3s; if_api_subscribe_all deferred");
+        LOG_WARN("Route: IF not connected yet; if_api_subscribe_all deferred");
         return;
     }
     if (if_api_subscribe_all(ctx) != ERRCODE_SUCCESS)
@@ -130,6 +131,63 @@ static void route_handle_if_ready(void)
     else
     {
         LOG_INFO("Route: subscribed to IF events");
+    }
+}
+
+static void route_handle_db_ready(void)
+{
+    dev_ipc_context_t *ctx = route_local_ipc_ctx();
+
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DB, 3000) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("Route: DB not connected within 3s; db restore deferred");
+        return;
+    }
+
+    if (db_rpc_create_table_from_def(ctx, &ROUTE_STATIC_TABLE) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("Route: create table route_static failed");
+        return;
+    }
+    if (db_rpc_create_table_from_def(ctx, &ROUTE_BATCH_TABLE) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("Route: create table route_batch failed");
+        return;
+    }
+
+    if (g_route_db_restored)
+    {
+        LOG_INFO("Route: DB schema ready; restore already completed");
+        return;
+    }
+
+    if (route_db_restore() != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("Route: DB restore failed");
+        return;
+    }
+    g_route_db_restored = TRUE;
+}
+
+static void route_on_db_event_cb(uint32_t module_id, uint8_t event, const char *host, uint16_t port, uint32_t epoch,
+                                 void *user)
+{
+    (void)module_id;
+    (void)host;
+    (void)port;
+    (void)epoch;
+    (void)user;
+
+    if (event != DEV_MODULE_EVENT_READY || !g_route_local || !g_route_local->dev_ipc_ctx)
+    {
+        return;
+    }
+
+    dev_ipc_message_t *m = dev_ipc_message_create(ROUTE_MSG_TYPE_INTERNAL_DB_READY, DEV_MODULE_ID_ROUTE,
+                                                  DEV_MODULE_ID_ROUTE, 0, NULL, 0, NULL);
+    if (m)
+    {
+        g_async_queue_push(g_route_local->dev_ipc_ctx->msg_queue, m);
     }
 }
 
@@ -171,7 +229,7 @@ static void route_on_if_event_cb(uint32_t module_id, uint8_t event, const char *
 
 /**
  * Route 本地 init（合并原 on_start + on_ready 逻辑）。
- * 顺序：worker 起来 → 订阅依赖 → 建表 restore → 订阅 CLI → notify_ready
+ * 顺序：worker 起来 → notify_ready → 订阅依赖；DB/IF READY 后再做各自恢复/事件订阅
  */
 static int route_init_local(void)
 {
@@ -190,12 +248,13 @@ static int route_init_local(void)
         return -1;
     }
 
-    /* DB 等基础模块只 kick 连接，worker 后续 RPC 时已就绪 */
-    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_DB, 0, NULL, NULL) != ERRCODE_SUCCESS)
+    if (dev_ipc_notify_ready(ctx) != ERRCODE_SUCCESS)
     {
-        LOG_WARN("Route: subscribe(DB) failed");
+        LOG_WARN("Route: notify_ready to DEV failed");
     }
-    /* IF：注册 cb 感知 READY/DOWN；事件订阅由 if_api_subscribe_all 发起 */
+
+    /* Dependency subscription is Route-owned follow-up work. It must not gate
+     * notify_ready; each READY event drives its own delayed initialization. */
     if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_IF, 0, route_on_if_event_cb, NULL) != ERRCODE_SUCCESS)
     {
         LOG_WARN("Route: subscribe(IF) failed");
@@ -204,53 +263,19 @@ static int route_init_local(void)
     {
         LOG_WARN("Route: subscribe(FIB) failed");
     }
-    /* VRF（on-demand）：auto_start=1 触发 + cb 重启感知 */
-    /* VRF 用 auto_start=0：ROUTE 不硬依赖 VRF；cb 在 VRF 实际启动后才触发 vrf_api_subscribe_all */
     if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_VRF, 0, route_on_vrf_ready_cb, NULL) != ERRCODE_SUCCESS)
     {
         LOG_WARN("Route: subscribe(VRF) failed");
     }
-
-    /* DB 建表（同步 RPC，DB 必须可达；DB 是基础模块，wait_connected 通常瞬间完成） */
-    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DB, 5000) == ERRCODE_SUCCESS)
-    {
-        if (db_rpc_create_table_from_def(ctx, &ROUTE_STATIC_TABLE) != ERRCODE_SUCCESS)
-        {
-            LOG_WARN("Route: create table route_static failed");
-        }
-        if (db_rpc_create_table_from_def(ctx, &ROUTE_BATCH_TABLE) != ERRCODE_SUCCESS)
-        {
-            LOG_WARN("Route: create table route_batch failed");
-        }
-        if (route_db_restore() != ERRCODE_SUCCESS)
-        {
-            LOG_WARN("Route: DB restore failed");
-        }
-    }
-    else
-    {
-        LOG_WARN("Route: DB not reachable, skipped init/restore");
-    }
-
-    /* if_api_subscribe_all 是 send → 需要 IF 连接已建立；basic 模块 IF 一般已 up */
-    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_IF, 3000) == ERRCODE_SUCCESS)
-    {
-        if (if_api_subscribe_all(ctx) != ERRCODE_SUCCESS)
-        {
-            LOG_WARN("Route: if_api_subscribe_all failed");
-        }
-    }
-
-    /* subscribe(CLI) 末尾，CFG 看到 is_connected 即本模块已 fully ready */
     if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_CLI, 0, NULL, NULL) != ERRCODE_SUCCESS)
     {
         LOG_WARN("Route: subscribe(CLI) failed");
     }
-
-    if (dev_ipc_notify_ready(ctx) != ERRCODE_SUCCESS)
+    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_DB, 0, route_on_db_event_cb, NULL) != ERRCODE_SUCCESS)
     {
-        LOG_WARN("Route: notify_ready to DEV failed");
+        LOG_WARN("Route: subscribe(DB) failed; DB restore deferred until a later READY event");
     }
+
     LOG_INFO("Route: module ready");
     return 0;
 }
@@ -293,6 +318,10 @@ void route_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             {
                 LOG_WARN("Route: failed to post IF-down recompute to worker");
             }
+            break;
+
+        case ROUTE_MSG_TYPE_INTERNAL_DB_READY:
+            route_handle_db_ready();
             break;
 
         /* ---- CLI 命令 ---- */

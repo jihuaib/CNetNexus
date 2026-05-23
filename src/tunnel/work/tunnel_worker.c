@@ -415,6 +415,7 @@ int tunnel_worker_post(tunnel_worker_cmd_type_t type, dev_ipc_message_t *msg)
     }
     if (worker_cmd_enqueue(cmd) != ERRCODE_SUCCESS)
     {
+        cmd->msg = NULL;
         worker_cmd_destroy(cmd);
         return ERRCODE_FAIL;
     }

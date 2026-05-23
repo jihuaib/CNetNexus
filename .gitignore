@@ -57,3 +57,5 @@ graphify-out/
 
 # Local secrets
 .secrets/
+
+topology-module-report-*

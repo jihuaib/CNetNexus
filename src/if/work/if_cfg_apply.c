@@ -179,6 +179,26 @@ static int if_prefix_to_network(const net_prefix_t *prefix, net_addr_t *out)
     return -1;
 }
 
+static gboolean if_cfg_route_ready(void)
+{
+    return (g_if_work_local && g_if_work_local->route_ready) ? TRUE : FALSE;
+}
+
+static void if_prefix_log_str(const net_prefix_t *prefix, char *buf, size_t buf_len)
+{
+    if (!buf || buf_len == 0)
+    {
+        return;
+    }
+    buf[0] = '\0';
+    if (!prefix || !net_prefix_is_set(prefix))
+    {
+        g_strlcpy(buf, "<unset>", buf_len);
+        return;
+    }
+    net_prefix_to_str(prefix, buf, buf_len);
+}
+
 static void if_make_zero_addr(sa_family_t family, net_addr_t *out)
 {
     if (!out)
@@ -356,22 +376,47 @@ static int if_sync_connected_host_routes(const if_map_entry_t *if_entry, const n
 
 static int if_sync_connected_prefix(const if_map_entry_t *if_entry, const net_prefix_t *prefix, gboolean is_withdraw)
 {
-    if (!if_entry)
+    if (!if_entry || !prefix || !net_prefix_is_set(prefix))
     {
         return ERRCODE_FAIL;
     }
 
-    if (if_sync_connected_host_routes(if_entry, prefix, is_withdraw) != ERRCODE_SUCCESS)
+    if (is_withdraw)
+    {
+        int os_rc = if_addr_del_prefix(if_entry->physical_name, prefix);
+        if (!if_cfg_route_ready())
+        {
+            char pfx[80];
+            if_prefix_log_str(prefix, pfx, sizeof(pfx));
+            LOG_WARN("IF: ROUTE not ready, skipped connected route withdraw for %s on %s", pfx, if_entry->logical_name);
+            return os_rc;
+        }
+        if (if_sync_connected_host_routes(if_entry, prefix, TRUE) != ERRCODE_SUCCESS)
+        {
+            return ERRCODE_FAIL;
+        }
+        return os_rc;
+    }
+
+    if (!if_cfg_route_ready())
+    {
+        char pfx[80];
+        if_prefix_log_str(prefix, pfx, sizeof(pfx));
+        LOG_WARN("IF: ROUTE not ready, deferred OS address and connected route apply for %s on %s", pfx,
+                 if_entry->logical_name);
+        return ERRCODE_DEP_MISSING;
+    }
+
+    if (if_sync_connected_host_routes(if_entry, prefix, FALSE) != ERRCODE_SUCCESS)
     {
         return ERRCODE_FAIL;
     }
 
-    int ret = is_withdraw ? if_addr_del_prefix(if_entry->physical_name, prefix)
-                          : if_addr_add_prefix(if_entry->physical_name, prefix);
+    int ret = if_addr_add_prefix(if_entry->physical_name, prefix);
     if (ret != ERRCODE_SUCCESS)
     {
         /* 地址下发失败时回滚 route 内存态，避免 RIB 与 OS 失配。 */
-        (void)if_sync_connected_host_routes(if_entry, prefix, is_withdraw ? FALSE : TRUE);
+        (void)if_sync_connected_host_routes(if_entry, prefix, TRUE);
         return ERRCODE_FAIL;
     }
 
@@ -393,15 +438,28 @@ static gboolean if_replay_connected_cb(gpointer key, gpointer value, gpointer us
         return FALSE;
     }
 
+    uint32_t if_type = if_cfg_type_to_mask(if_detect_type(entry->physical_name));
+    uint32_t ifindex = if_cfg_resolve_entry_ifindex(entry);
+
     if (net_prefix_is_set(&entry->prefix_v4) &&
-        if_sync_connected_host_routes(entry, &entry->prefix_v4, FALSE) == ERRCODE_SUCCESS)
+        if_sync_connected_prefix(entry, &entry->prefix_v4, FALSE) == ERRCODE_SUCCESS)
     {
         ctx->replayed++;
+        if (if_type != 0u && ifindex != 0u)
+        {
+            if_pub_notify(g_if_work_local->subscribers, entry, if_type, IF_EVENT_PROTO_UP, 0, &entry->prefix_v4,
+                          ifindex);
+        }
     }
     if (net_prefix_is_set(&entry->prefix_v6) &&
-        if_sync_connected_host_routes(entry, &entry->prefix_v6, FALSE) == ERRCODE_SUCCESS)
+        if_sync_connected_prefix(entry, &entry->prefix_v6, FALSE) == ERRCODE_SUCCESS)
     {
         ctx->replayed++;
+        if (if_type != 0u && ifindex != 0u)
+        {
+            if_pub_notify(g_if_work_local->subscribers, entry, if_type, IF_EVENT_PROTO_UP, 0, &entry->prefix_v6,
+                          ifindex);
+        }
     }
     return FALSE;
 }
@@ -693,9 +751,19 @@ int if_cfg_apply_ip(gboolean is_no, const char *logical_name, const net_prefix_t
     }
 
     *dst = *prefix;
+    gboolean sync_applied = entry->shutdown ? FALSE : TRUE;
     if (!entry->shutdown)
     {
-        if (if_sync_connected_prefix(entry, dst, FALSE) != ERRCODE_SUCCESS)
+        int sync_rc = if_sync_connected_prefix(entry, dst, FALSE);
+        if (sync_rc == ERRCODE_SUCCESS)
+        {
+            sync_applied = TRUE;
+        }
+        else if (sync_rc == ERRCODE_DEP_MISSING)
+        {
+            sync_applied = FALSE;
+        }
+        else
         {
             if (had_old && !if_prefix_equal(&old_prefix, prefix))
             {
@@ -725,7 +793,7 @@ int if_cfg_apply_ip(gboolean is_no, const char *logical_name, const net_prefix_t
             if_pub_notify(g_if_work_local->subscribers, entry, add_if_type, IF_EVENT_PROTO_DOWN, 0, &old_prefix,
                           add_ifindex);
         }
-        if (!entry->shutdown)
+        if (!entry->shutdown && sync_applied)
         {
             if_pub_notify(g_if_work_local->subscribers, entry, add_if_type, IF_EVENT_PROTO_UP, 0, prefix, add_ifindex);
         }
@@ -773,19 +841,27 @@ int if_cfg_apply_shutdown(gboolean is_no, const char *logical_name)
 
         if (net_prefix_is_set(&entry->prefix_v4))
         {
-            if (if_sync_connected_prefix(entry, &entry->prefix_v4, up ? FALSE : TRUE) != ERRCODE_SUCCESS)
+            int sync_rc = if_sync_connected_prefix(entry, &entry->prefix_v4, up ? FALSE : TRUE);
+            if (sync_rc == ERRCODE_SUCCESS)
+            {
+                synced_v4 = TRUE;
+            }
+            else if (sync_rc != ERRCODE_DEP_MISSING)
             {
                 goto sync_rollback;
             }
-            synced_v4 = TRUE;
         }
         if (net_prefix_is_set(&entry->prefix_v6))
         {
-            if (if_sync_connected_prefix(entry, &entry->prefix_v6, up ? FALSE : TRUE) != ERRCODE_SUCCESS)
+            int sync_rc = if_sync_connected_prefix(entry, &entry->prefix_v6, up ? FALSE : TRUE);
+            if (sync_rc == ERRCODE_SUCCESS)
+            {
+                synced_v6 = TRUE;
+            }
+            else if (sync_rc != ERRCODE_DEP_MISSING)
             {
                 goto sync_rollback;
             }
-            synced_v6 = TRUE;
         }
 
         uint32_t if_type = if_cfg_type_to_mask(if_detect_type(entry->physical_name));

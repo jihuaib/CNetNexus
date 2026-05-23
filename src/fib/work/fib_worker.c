@@ -529,6 +529,7 @@ int fib_worker_post(fib_worker_cmd_type_t type, dev_ipc_message_t *msg)
     }
     if (fib_worker_cmd_enqueue(cmd) != ERRCODE_SUCCESS)
     {
+        cmd->msg = NULL;
         fib_worker_cmd_destroy(cmd);
         return ERRCODE_FAIL;
     }

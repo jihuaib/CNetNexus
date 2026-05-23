@@ -372,8 +372,11 @@ static void *if_worker_thread_fn(void *arg)
                 if (cmd->apply)
                 {
                     cmd->apply->rc = worker_apply_cmd(cmd->apply);
+                    worker_cmd_complete(cmd, cmd->apply->rc);
+                    /* waitable 命令由派发方在 worker_cmd_wait 返回后释放 */
+                    continue;
                 }
-                worker_cmd_complete(cmd, ERRCODE_SUCCESS);
+                worker_cmd_complete(cmd, ERRCODE_FAIL);
                 /* waitable 命令由派发方在 worker_cmd_wait 返回后释放 */
                 continue;
 
@@ -417,10 +420,15 @@ static void *if_worker_thread_fn(void *arg)
                 continue;
 
             case IF_WORKER_CMD_ROUTE_READY:
+                g_if_work_local->route_ready = 1;
                 (void)if_cfg_replay_connected_routes();
                 break;
 
             case IF_WORKER_CMD_MODULE_DOWN:
+                if (cmd->module_id == DEV_MODULE_ID_ROUTE)
+                {
+                    g_if_work_local->route_ready = 0;
+                }
                 (void)worker_remove_subscribers_by_module(cmd->module_id);
                 break;
 

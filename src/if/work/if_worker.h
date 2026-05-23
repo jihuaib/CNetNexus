@@ -104,6 +104,7 @@ typedef struct if_work_local
     if_map_t interface_map;         /**< 接口逻辑名到物理名的映射表 */
     GList *subscribers;             /**< IF 事件订阅者列表 GList<if_subscriber_t*> */
     cli_chunk_stream_t show_stream; /**< CLI show 命令分片输出状态 */
+    int route_ready;                /**< ROUTE ready 后才允许 connected route 与 OS 地址成对下发 */
 
     /* ---- Worker 基础设施 ---- */
     pthread_t thread;

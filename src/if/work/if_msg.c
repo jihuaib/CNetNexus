@@ -144,8 +144,8 @@ static gboolean if_replay_initial_state_foreach(gpointer key, gpointer val, gpoi
         if_replay_send(rctx->module_id, IF_MSG_TYPE_EVENT, &evt, sizeof(evt));
     }
 
-    if ((rctx->event_mask & IF_EVENT_PROTO_UP) != 0 && replay_ifindex != 0u && !e->shutdown &&
-        net_prefix_is_set(&e->prefix_v4))
+    if ((rctx->event_mask & IF_EVENT_PROTO_UP) != 0 && replay_ifindex != 0u && !e->shutdown && g_if_work_local &&
+        g_if_work_local->route_ready && net_prefix_is_set(&e->prefix_v4))
     {
         if_addr_event_msg_t addr_evt;
         memset(&addr_evt, 0, sizeof(addr_evt));
@@ -161,8 +161,8 @@ static gboolean if_replay_initial_state_foreach(gpointer key, gpointer val, gpoi
         if_replay_send(rctx->module_id, IF_MSG_TYPE_EVENT, &addr_evt, sizeof(addr_evt));
     }
 
-    if ((rctx->event_mask & IF_EVENT_PROTO_UP) != 0 && replay_ifindex != 0u && !e->shutdown &&
-        net_prefix_is_set(&e->prefix_v6))
+    if ((rctx->event_mask & IF_EVENT_PROTO_UP) != 0 && replay_ifindex != 0u && !e->shutdown && g_if_work_local &&
+        g_if_work_local->route_ready && net_prefix_is_set(&e->prefix_v6))
     {
         if_addr_event_msg_t addr_evt;
         memset(&addr_evt, 0, sizeof(addr_evt));

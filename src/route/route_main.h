@@ -28,6 +28,10 @@
  *  category=ROUTE, subtype=0xFFFC */
 #define ROUTE_MSG_TYPE_INTERNAL_IF_DOWN DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ROUTE, 0xFFFC)
 
+/** ROUTE 内部消息：DB 模块 READY（含初次 + 重启），延后建表并恢复持久化路由
+ *  category=ROUTE, subtype=0xFFFB */
+#define ROUTE_MSG_TYPE_INTERNAL_DB_READY DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ROUTE, 0xFFFB)
+
 /**
  * @brief Route 模块本地状态（IPC 线程专用）
  *
