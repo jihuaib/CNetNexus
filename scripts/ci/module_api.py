@@ -504,6 +504,90 @@ def reboot_device(rt: TopologyRuntime, device: str, *, timeout: int = 90) -> Non
     rt.reboot_device(device, reconnect_timeout=timeout)
 
 
+# 模块名 → module_id（与 include/dev.h DEV_MODULE_ID_* 对齐）。
+# 仅用于 wait_module_ipc_ready 的对端匹配；保留小写。
+_MODULE_NAME_TO_ID: dict[str, int] = {
+    "dev": 0x00000001,
+    "db": 0x00000002,
+    "cli": 0x00000003,
+    "vrf": 0x00000004,
+    "if": 0x00000005,
+    "bgp": 0x00000006,
+    "route": 0x00000007,
+    "sbmp": 0x00000008,
+    "access": 0x00000009,
+    "ldp": 0x0000000A,
+    "fib": 0x0000000B,
+    "tunnel": 0x0000000C,
+    "isis": 0x0000000D,
+}
+
+
+def wait_module_ipc_ready(
+    rt: TopologyRuntime,
+    device: str,
+    module: str,
+    *,
+    peers: Iterable[str],
+    timeout: int = 30,
+    interval: int = 1,
+) -> None:
+    """轮询 ``show dev ipc <module>``，直到 module 与所有指定 peers 的 IPC 都 CONNECTED。
+
+    用法示例（等 VRF 与 DB/CLI 全连上再下发配置）::
+
+        wait_module_ipc_ready(rt, "r1", "vrf", peers=["db", "cli"])
+
+    每个 peer 是模块名（"db" / "cli" / "if" / "vrf" 等，大小写不敏感）。
+    show 输出形如::
+
+        Connection #N (peer: 0x00000002):
+            Direction       : ...
+            State           : CONNECTED
+
+    任一 peer 不存在或非 CONNECTED 即继续轮询；超时报 AssertionError。
+    """
+    peer_list = [str(p).strip().lower() for p in peers]
+    peer_ids: list[tuple[str, int]] = []
+    for name in peer_list:
+        if name not in _MODULE_NAME_TO_ID:
+            raise ValueError(f"wait_module_ipc_ready: unknown peer module '{name}'")
+        peer_ids.append((name, _MODULE_NAME_TO_ID[name]))
+
+    show_cmd = f"show dev ipc {module}"
+    deadline = time.monotonic() + timeout
+    last_out = ""
+    last_missing: list[str] = []
+
+    while time.monotonic() < deadline:
+        out = cmd(rt, device, show_cmd, strict=False, timeout=5)
+        last_out = out
+        last_missing = []
+        for name, pid in peer_ids:
+            header_pat = rf"Connection\s+#\d+\s*\(peer:\s*0x{pid:08X}\):"
+            m = re.search(header_pat, out)
+            if not m:
+                last_missing.append(f"{name}(0x{pid:08X}) absent")
+                continue
+            tail = out[m.end() : m.end() + 400]  # 限定查找紧随其后的 State 行
+            state_m = re.search(r"State\s*:\s*(\S+)", tail)
+            if not state_m:
+                last_missing.append(f"{name}(0x{pid:08X}) no State line")
+                continue
+            if state_m.group(1) != "CONNECTED":
+                last_missing.append(f"{name}(0x{pid:08X}) state={state_m.group(1)}")
+        if not last_missing:
+            return
+        time.sleep(interval)
+
+    mark_step_failed()
+    raise AssertionError(
+        f"{device}: wait_module_ipc_ready({module}, peers={peer_list}) timed out after {timeout}s;\n"
+        f"  unsatisfied: {', '.join(last_missing) or '(none)'}\n"
+        f"  last `{show_cmd}` output:\n{last_out}"
+    )
+
+
 def remove_link(rt: TopologyRuntime, link_name: str, *, strict: bool = True) -> None:
     try:
         rt.remove_link(link_name, strict=strict)

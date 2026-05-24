@@ -312,7 +312,9 @@ static int route_show_handle_subscribe(dev_ipc_message_t *msg, uint16_t afi_filt
 }
 
 /* 将接口索引转换为逻辑名字符串，写入 buf（长度至少 IF_NAMESIZE）
- * 优先使用 Route 本地缓存中的逻辑名；不可用时回退到 OS 物理名。 */
+ * Route 视角只输出 IF 模块管理的逻辑接口名（GE-1 / loop1 / ...）；
+ * cache 无对应 ifindex 时显示 "-"，绝不直接回退 OS 物理名（eth1 等）—
+ * 否则会让用户看到 IF 层下面的物理设备名，违反"逻辑接口对外、物理接口对内"的封装。 */
 static void ifindex_to_name(uint32_t ifindex, char *buf)
 {
     if (ifindex == 0)
@@ -326,10 +328,9 @@ static void ifindex_to_name(uint32_t ifindex, char *buf)
         g_strlcpy(buf, logical, IF_NAMESIZE);
         return;
     }
-    if (if_indextoname(ifindex, buf) == NULL)
-    {
-        g_strlcpy(buf, "-", IF_NAMESIZE);
-    }
+    /* cache miss：标注 ifindex 让用户/排错方知道是 IF cache 未同步，而不是
+     * 假装一切正常打印物理名。 */
+    snprintf(buf, IF_NAMESIZE, "ifindex=%u", ifindex);
 }
 
 static void show_path_cb(const route_head_t *head, const route_path_t *path, void *userdata)

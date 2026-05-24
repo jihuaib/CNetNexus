@@ -176,54 +176,6 @@ typedef struct dev_ipc_context dev_ipc_context_t;
 typedef struct dev_ipc_message dev_ipc_message_t;
 
 // ============================================================================
-// DB 可用性检查 / 配置 Guard
-// ----------------------------------------------------------------------------
-// 设计目的：解决"DB 不可用时业务仍能改内存/OS 而 DB 写失败 → 内存与持久层
-// 静默偏移"的问题。业务模块在执行任何会持久化的配置命令之前应先调用
-// db_rpc_guard_reject() 进行预检：若 DB 当前不在线，直接给 CLI 回错，不允许
-// 进入 worker 修改内存/OS，保证 "all-or-nothing" 语义。
-// ============================================================================
-
-/**
- * @brief 检查 DB 模块当前是否可用（IPC 已建联）
- *
- * 仅做本地 O(1) 连接状态检查，不发送任何网络请求，调用安全且开销极低。
- * 适合在每个配置命令入口频繁调用。
- *
- * @param ctx 调用方模块的 IPC 上下文
- * @return 1 表示 DB 可用（已建联），0 表示不可用
- */
-int db_rpc_is_available(dev_ipc_context_t *ctx);
-
-/**
- * @brief 配置入口 DB 可用性 Guard：DB 不可用时直接回错并拒绝配置下发
- *
- * 用法（在业务模块 *_main.c 的 CLI config 分支前 1 行调用）：
- * @code
- *   else // config 命令
- *   {
- *       if (db_rpc_guard_reject(ctx, msg, "VRF"))
- *       {
- *           dev_ipc_message_free(msg);
- *           return;
- *       }
- *       xxx_cli_handle_config_msg(msg);
- *       dev_ipc_message_free(msg);
- *   }
- * @endcode
- *
- * 当返回 1 时，本函数已通过 CLI_MSG_TYPE_RESP 把错误信息发回 CLI，调用方
- * 仅需释放原始 msg 并直接 return，不要再进入业务处理。
- *
- * @param ctx        调用方模块的 IPC 上下文（用于查询连接状态 + 发送响应）
- * @param cli_msg    原始 CLI 命令消息（用于提取 src_module_id / request_id）
- * @param module_tag 业务模块简短标签（如 "VRF"/"BGP"），仅用于错误文案
- * @return 1 = DB 不可用、已回错，调用方应立即丢弃 msg 并 return；
- *         0 = DB 可用，调用方继续正常处理
- */
-int db_rpc_guard_reject(dev_ipc_context_t *ctx, dev_ipc_message_t *cli_msg, const char *module_tag);
-
-// ============================================================================
 // 数据库 RPC 接口（通过 IPC 调用 DB 模块）
 // ============================================================================
 

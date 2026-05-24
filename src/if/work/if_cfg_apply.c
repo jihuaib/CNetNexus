@@ -1017,6 +1017,69 @@ static gboolean if_vrf_del_collect_cb(gpointer key, gpointer value, gpointer use
     return FALSE;
 }
 
+/* SMOOTHSTART 时使用：把所有绑非 public VRF 的接口在内存中解绑（不动 DB / 不动 netlink，
+ * 因 VRF 进程重启时其 L3VRF kernel 设备已经消失）。后续 SMOOTHEND 再从 DB 重恢复。 */
+typedef struct
+{
+    GPtrArray *names; /**< g_strdup 出来的接口逻辑名 */
+} if_vrf_purge_collect_ctx_t;
+
+static gboolean if_vrf_purge_collect_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    if_map_entry_t *e = (if_map_entry_t *)value;
+    if_vrf_purge_collect_ctx_t *ctx = (if_vrf_purge_collect_ctx_t *)user_data;
+    if (e && ctx && e->vrf_name[0] != '\0')
+    {
+        g_ptr_array_add(ctx->names, g_strdup(e->logical_name));
+    }
+    return FALSE;
+}
+
+int if_cfg_purge_non_public_vrf_bindings_mem(void)
+{
+    if (!g_if_work_local || !g_if_work_local->interface_map.all_entries)
+    {
+        return 0;
+    }
+
+    if_vrf_purge_collect_ctx_t cctx = {.names = g_ptr_array_new_with_free_func(g_free)};
+    g_tree_foreach(g_if_work_local->interface_map.all_entries, if_vrf_purge_collect_cb, &cctx);
+
+    int cleared = 0;
+    for (guint i = 0; i < cctx.names->len; i++)
+    {
+        const char *logical_name = (const char *)cctx.names->pdata[i];
+        if_map_entry_t *entry = if_cfg_find_entry(logical_name);
+        if (!entry)
+        {
+            continue;
+        }
+
+        /* 清掉 IPv4/IPv6 地址（VRF 已消失，连同 IP 一并失效），仅内存态。 */
+        if (net_prefix_is_set(&entry->prefix_v4))
+        {
+            memset(&entry->prefix_v4, 0, sizeof(entry->prefix_v4));
+        }
+        if (net_prefix_is_set(&entry->prefix_v6))
+        {
+            memset(&entry->prefix_v6, 0, sizeof(entry->prefix_v6));
+        }
+        entry->vrf_name[0] = '\0';
+
+        uint32_t if_type = if_cfg_type_to_mask(if_detect_type(entry->physical_name));
+        if (if_type != 0u)
+        {
+            if_pub_notify(g_if_work_local->subscribers, entry, if_type, IF_EVENT_VRF_CHANGE,
+                          entry->link_up > 0 ? 1u : 0u, NULL, entry->ifindex);
+        }
+        cleared++;
+    }
+
+    g_ptr_array_free(cctx.names, TRUE);
+    return cleared;
+}
+
 int if_cfg_apply_vrf_deleted(const char *vrf_name)
 {
     if (!vrf_name || vrf_name[0] == '\0')

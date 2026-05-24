@@ -167,6 +167,10 @@ void bgp_db_restore_qp_routes(void)
         {
             continue;
         }
+        if (g_bgp_db_resync_only_vrf_bound && (!vrf_name || strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) == 0))
+        {
+            continue;
+        }
 
         bgp_apply_cmd_t apply;
         memset(&apply, 0, sizeof(apply));

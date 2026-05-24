@@ -50,6 +50,13 @@ static inline dev_ipc_context_t *bgp_local_ipc_ctx(void)
  *  category=BGP, subtype=0xFFFB */
 #define BGP_MSG_TYPE_INTERNAL_IF_DOWN DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_BGP, 0xFFFB)
 
+/** BGP 内部消息：DB 模块就绪，worker 线程做 db_init + db_restore */
+#define BGP_MSG_TYPE_INTERNAL_DB_READY DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_BGP, 0xFFFA)
+
+/** BGP 内部消息：VRF 模块 DOWN，worker 线程拆非 public VRF 业务 + 清 cache
+ *  category=BGP, subtype=0xFFF9 */
+#define BGP_MSG_TYPE_INTERNAL_VRF_DOWN DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_BGP, 0xFFF9)
+
 void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
 
 /**

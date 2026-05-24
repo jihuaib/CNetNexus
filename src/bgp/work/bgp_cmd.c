@@ -58,6 +58,7 @@ typedef enum bgp_cmd_type
     BGP_CMD_TYPE_VRF_EVENT = 7,   /**< VRF_MSG_TYPE_EVENT */
     BGP_CMD_TYPE_ROUTE_READY = 8, /**< ROUTE READY/restart 后重订阅/重注册/重下刷 */
     BGP_CMD_TYPE_IF_DOWN = 9,     /**< IF 模块下线，清缓存 + 拆 source-if 会话 + 重注册 nexthop */
+    BGP_CMD_TYPE_VRF_DOWN = 10,   /**< VRF 模块下线，拆非 public bgp_vrf_t + 清 vrf_api cache */
 } bgp_cmd_type_t;
 
 typedef struct bgp_cmd
@@ -272,6 +273,23 @@ int bgp_worker_post_route_ready(void)
 int bgp_worker_post_if_down(void)
 {
     bgp_cmd_t *cmd = bgp_cmd_create(BGP_CMD_TYPE_IF_DOWN, NULL, FALSE);
+    if (!cmd)
+    {
+        return -1;
+    }
+
+    if (bgp_cmd_enqueue(cmd) != 0)
+    {
+        bgp_cmd_destroy(cmd);
+        return -1;
+    }
+
+    return 0;
+}
+
+int bgp_worker_post_vrf_down(void)
+{
+    bgp_cmd_t *cmd = bgp_cmd_create(BGP_CMD_TYPE_VRF_DOWN, NULL, FALSE);
     if (!cmd)
     {
         return -1;
@@ -659,6 +677,8 @@ gboolean bgp_cmd_process_event(void)
             }
 
             case BGP_CMD_TYPE_VRF_EVENT:
+                /* BGP 业务清理已在 VRF DOWN 路径完成；此处只走 lib 缓存维护与
+                 * BGP 内部 VRF 事件联动。 */
                 vrf_api_cache_on_event(cmd->msg);
                 bgp_apply_vrf_event(cmd->msg);
                 if (cmd->msg)
@@ -666,6 +686,13 @@ gboolean bgp_cmd_process_event(void)
                     dev_ipc_message_free(cmd->msg);
                     cmd->msg = NULL;
                 }
+                break;
+
+            case BGP_CMD_TYPE_VRF_DOWN:
+                /* VRF 模块 DOWN：拆所有非 public 的 bgp_vrf_t（级联 session/instance/neighbor），
+                 * 再清掉 vrf_api cache。DB 保留，等 SMOOTHEND 后再恢复。 */
+                bgp_apply_vrf_purge_non_public();
+                vrf_api_cache_clear();
                 break;
 
             case BGP_CMD_TYPE_SHUTDOWN:

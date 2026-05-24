@@ -8,8 +8,11 @@
 
 #include <arpa/inet.h>
 #include <glib.h>
+#include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 #include "bgp_cfg_apply.h"
 #include "bgp_conn.h"
@@ -221,15 +224,18 @@ static int handle_bgp_protocol(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             bgp_send_cli_response(msg, "BGP Error: Database cleanup failed.\r\n");
             return ERRCODE_FAIL;
         }
+        /* `no bgp`：协议级配置清空 + revive_table（bgp_protocol）已空，进程自退出。
+         * DEV 的 SIGCHLD handler 会把 BGP 状态回到 REGISTERED，下次配 bgp <as> 时
+         * wait_module_ready 重新 fork。kill(getpid, SIGTERM) 而非 raise：raise 只
+         * 送到调用线程，主线程的 sigsuspend 收不到。 */
+        bgp_send_cli_response(msg, "BGP: configuration cleared, process exiting.\r\n");
+        kill(getpid(), SIGTERM);
+        return ERRCODE_SUCCESS;
     }
-    else
+    if (bgp_db_set_as(apply.u.protocol.as_number) != 0 || bgp_db_set_vrf_router_id(VRF_PUBLIC_VRF_NAME, "0.0.0.0") != 0)
     {
-        if (bgp_db_set_as(apply.u.protocol.as_number) != 0 ||
-            bgp_db_set_vrf_router_id(VRF_PUBLIC_VRF_NAME, "0.0.0.0") != 0)
-        {
-            bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
-            return ERRCODE_FAIL;
-        }
+        bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
+        return ERRCODE_FAIL;
     }
 
     bgp_send_cli_response(msg, "");

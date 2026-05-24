@@ -375,6 +375,12 @@ int bgp_worker_post_route_ready(void);
 int bgp_worker_post_if_down(void);
 
 /**
+ * @brief IPC 线程通知 worker：VRF 模块下线，拆非 public bgp_vrf_t 并清 vrf_api cache。
+ * @return 0 成功；非 0 失败。
+ */
+int bgp_worker_post_vrf_down(void);
+
+/**
  * @brief worker 线程投递 TUNNEL 更新消息给 server 线程
  *
  * 支持 TUNNEL_MSG_TYPE_RESOLVE_NOTIFY。

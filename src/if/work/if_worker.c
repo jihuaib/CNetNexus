@@ -47,6 +47,7 @@ typedef enum if_worker_cmd_type
     IF_WORKER_CMD_PRE_SHUTDOWN_CLEANUP = 8, /**< 优雅停止前清除所有运行态 IP（不动 DB） */
     IF_WORKER_CMD_ROUTE_READY = 9,          /**< ROUTE ready/restart 后重刷 connected 路由 */
     IF_WORKER_CMD_MODULE_DOWN = 10,         /**< 对端模块 IPC 断开，清理运行态订阅 */
+    IF_WORKER_CMD_VRF_DOWN = 11,            /**< VRF 模块 DOWN：清接口 VRF 绑定 + 清 cache */
 } if_worker_cmd_type_t;
 
 /**
@@ -382,7 +383,8 @@ static void *if_worker_thread_fn(void *arg)
 
             case IF_WORKER_CMD_VRF_EVENT:
             {
-                /* 先解析事件类型 / VRF 名，再更新缓存（缓存更新后 VRF entry 可能被释放） */
+                /* 先解析事件类型 / VRF 名，再更新缓存（缓存更新后 VRF entry 可能被释放）。
+                 * 接口业务清理已在 VRF DOWN 路径（IF_WORKER_CMD_VRF_DOWN）完成。 */
                 uint32_t vrf_event = 0;
                 char vrf_name[VRF_NAME_MAX_LEN] = {0};
                 if (cmd->msg && cmd->msg->payload && cmd->msg->payload_len >= offsetof(vrf_event_msg_t, rts))
@@ -431,6 +433,17 @@ static void *if_worker_thread_fn(void *arg)
                 }
                 (void)worker_remove_subscribers_by_module(cmd->module_id);
                 break;
+
+            case IF_WORKER_CMD_VRF_DOWN:
+            {
+                int cleared = if_cfg_purge_non_public_vrf_bindings_mem();
+                if (cleared > 0)
+                {
+                    LOG_INFO("IF: VRF down, purged binding on %d interface(s)", cleared);
+                }
+                vrf_api_cache_clear();
+                break;
+            }
 
             default:
                 LOG_WARN("IF-WORKER: unknown cmd type=%d", (int)cmd->type);
@@ -613,6 +626,25 @@ int if_worker_post_route_ready(void)
         return ERRCODE_SUCCESS;
     }
     if_worker_cmd_t *cmd = worker_cmd_create(IF_WORKER_CMD_ROUTE_READY, NULL, 0);
+    if (!cmd)
+    {
+        return ERRCODE_FAIL;
+    }
+    if (worker_cmd_enqueue(cmd) != ERRCODE_SUCCESS)
+    {
+        worker_cmd_destroy(cmd);
+        return ERRCODE_FAIL;
+    }
+    return ERRCODE_SUCCESS;
+}
+
+int if_worker_post_vrf_down(void)
+{
+    if (!g_if_work_local || !g_if_work_local->running || g_if_work_local->thread == 0)
+    {
+        return ERRCODE_SUCCESS;
+    }
+    if_worker_cmd_t *cmd = worker_cmd_create(IF_WORKER_CMD_VRF_DOWN, NULL, 0);
     if (!cmd)
     {
         return ERRCODE_FAIL;

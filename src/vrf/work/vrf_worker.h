@@ -28,6 +28,11 @@ typedef struct vrf_work_local
     pthread_t thread;
     volatile int running;
     GAsyncQueue *cmd_queue;
+
+    /* DB 恢复完成前到达的订阅请求要把 REPLAY 推迟到恢复完成后，避免推空数据。
+     * restore_done=1 表示 db_load_snapshot 已完成；订阅方挂在已有的 subscribers
+     * 列表，每个 vrf_subscriber_t 自带 pending_replay 标记。 */
+    int restore_done;
 } vrf_work_local_t;
 
 extern vrf_work_local_t *g_vrf_work_local;
@@ -65,5 +70,22 @@ vrf_table_t *vrf_worker_table(void);
 GList *vrf_worker_subscribers(void);
 GList **vrf_worker_subscribers_ptr(void);
 cli_chunk_stream_t *vrf_worker_show_stream(void);
+
+/**
+ * @brief 标记 VRF 自身 DB 恢复完成（worker 线程内执行）。
+ *        会顺带把所有 pending_replay 订阅者补发 REPLAY。
+ */
+void vrf_worker_mark_restore_done(void);
+
+/**
+ * @brief 从 IPC 线程异步通知 worker：restore 已完成。worker 收到后调用
+ *        vrf_worker_mark_restore_done。
+ */
+int vrf_worker_post_restore_done(void);
+
+/**
+ * @brief worker 内查询：当前是否已经 restore 完成。
+ */
+int vrf_worker_is_restore_done(void);
 
 #endif /* VRF_WORKER_H */

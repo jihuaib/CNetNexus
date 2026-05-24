@@ -513,61 +513,6 @@ static int send_query_sql(dev_ipc_context_t *ctx, const char *sql, db_result_t *
     return retval;
 }
 
-// ============================================================================
-// DB 可用性检查 / 配置 Guard（业务模块在 CLI config 入口调用）
-// ============================================================================
-
-int db_rpc_is_available(dev_ipc_context_t *ctx)
-{
-    if (!ctx)
-    {
-        return 0;
-    }
-    return dev_ipc_is_connected(ctx, DEV_MODULE_ID_DB);
-}
-
-int db_rpc_guard_reject(dev_ipc_context_t *ctx, dev_ipc_message_t *cli_msg, const char *module_tag)
-{
-    if (!ctx || !cli_msg)
-    {
-        return 0;
-    }
-    if (dev_ipc_is_connected(ctx, DEV_MODULE_ID_DB))
-    {
-        return 0;
-    }
-
-    const char *tag = module_tag ? module_tag : "DB";
-    char text[160];
-    int n =
-        snprintf(text, sizeof(text), "%s Error: configuration rejected because DB module is not available\r\n", tag);
-    if (n < 0)
-    {
-        n = 0;
-    }
-    size_t text_len = (size_t)n + 1; /* 含末尾 NUL */
-
-    char *payload = g_strdup(text);
-    dev_ipc_message_t *resp =
-        dev_ipc_message_create(CLI_MSG_TYPE_RESP, dev_ipc_get_module_id(ctx), cli_msg->src_module_id,
-                               cli_msg->request_id, payload, text_len, g_free);
-    if (resp)
-    {
-        if (dev_ipc_send_response(ctx, resp) != 0)
-        {
-            LOG_WARN("db_rpc_guard_reject: failed to send error response to module 0x%08X", cli_msg->src_module_id);
-        }
-        dev_ipc_message_free(resp);
-    }
-    else
-    {
-        g_free(payload);
-    }
-
-    LOG_WARN("%s: config command rejected (DB module not available)", tag);
-    return 1;
-}
-
 /**
  * @brief 根据表定义自动补齐缺失列（仅新增列，不改动已有列）
  */

@@ -155,6 +155,10 @@ typedef gboolean (*vrf_api_cache_iter_fn)(const vrf_api_cache_entry_t *entry, vo
 #define VRF_EVENT_AF_EXPORT_RT_ADD (1u << 9)
 /** AF 下 export RT 删除（rt_count=1 / rts[0] 有效） */
 #define VRF_EVENT_AF_EXPORT_RT_DEL (1u << 10)
+/** 平滑同步开始：订阅 REPLAY 时先发本事件，再推送全量数据；payload 所有字段为 0 */
+#define VRF_EVENT_SMOOTHSTART (1u << 11)
+/** 平滑同步结束：REPLAY 全量数据送达后发送，订阅方据此判断 VRF 缓存已完整 */
+#define VRF_EVENT_SMOOTHEND (1u << 12)
 /** 通配：匹配所有事件 */
 #define VRF_EVENT_ALL 0xFFFFFFFFu
 
@@ -253,6 +257,15 @@ void vrf_api_cache_init(void);
  * @brief 清理 VRF 客户端缓存
  */
 void vrf_api_cache_cleanup(void);
+
+/**
+ * @brief 清空缓存内容（保留两个 hash table 本身，仅 remove_all）
+ *
+ * 用于 VRF 模块 DOWN 时业务模块主动丢弃旧 VRF 视图；REPLAY 阶段
+ * 在 SMOOTHSTART → SMOOTHEND 之间会重新填充。仅在拥有该 cache 的
+ * worker 线程内调用，无需加锁。
+ */
+void vrf_api_cache_clear(void);
 
 /**
  * @brief 用 VRF 事件更新缓存

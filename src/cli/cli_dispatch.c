@@ -439,11 +439,18 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
         /* CFG 被动等待业务模块主动建联（业务模块在自己 init 中 subscribe(CLI)）。
          * 此处不主动连任何模块。
          *   - show 命令：is_connected=false 就意味着模块没在跑，直接返回，零副作用
+         *   - no 命令：目标既然不在跑，业务也不存在，没东西可"取消"，直接返回提示，
+         *              避免 spawn → 立刻 self-exit 的无谓往返（如 `no bgp` / `no ldp` 时 on-demand 模块未起）
          *   - 配置命令：调 wait_module_ready 让 DEV 把按需模块拉起；目标 init 中会 subscribe(CLI)，
          *               届时 CFG 自然收到 inbound 连接，is_connected 变 true */
         if (result->has_show_prefix)
         {
             cli_send_message(session, "Info: target module is not running; no data to show.\r\n");
+            return ERRCODE_SUCCESS;
+        }
+        if (result->has_no_prefix)
+        {
+            cli_send_message(session, "Info: target module is not running; nothing to undo.\r\n");
             return ERRCODE_SUCCESS;
         }
         cli_send_message(session, "[Starting module, please wait...]\r\n");
@@ -488,7 +495,9 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
 
     while (!done)
     {
-        dev_ipc_message_t *response = dev_ipc_query(g_cli_local->dev_ipc_ctx, result->module_id, msg, 5000);
+        /* 超时给到 60s：覆盖 process reboot/start 之类需要等模块 READY 才回响应的长命令。
+         * 普通命令响应在毫秒级，长超时只有在对端真的失联或卡死时才影响 CLI 体验。 */
+        dev_ipc_message_t *response = dev_ipc_query(g_cli_local->dev_ipc_ctx, result->module_id, msg, 60000);
 
         /* 释放查询消息（原始或 continue） */
         dev_ipc_message_free(msg);

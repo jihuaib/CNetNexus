@@ -19,7 +19,7 @@
 #include "work/if_netlink.h"
 #include "work/if_worker.h"
 
-/* DB 恢复时单行的快照——挂起重试需要值语义，所以这里全是定长字段 */
+/* DB 恢复时单行的快照 */
 typedef struct
 {
     char name[IF_LOGICAL_NAME_MAX];
@@ -31,7 +31,7 @@ typedef struct
     uint8_t shutdown;
 } if_db_row_snapshot_t;
 
-static int if_db_apply_row(void *item, void *ctx);
+static void if_db_apply_row(const if_db_row_snapshot_t *r);
 
 static const db_column_def_t IF_INTERFACE_COLS[] = {
     {"name", DB_TYPE_TEXT, DB_COL_PRIMARY_KEY, NULL},           {"ip_address", DB_TYPE_TEXT, DB_COL_NOT_NULL, "''"},
@@ -85,21 +85,16 @@ int if_db_init(void)
     return ERRCODE_SUCCESS;
 }
 
-/* 应用一行恢复快照；幂等，可由首次 restore 或 pending_resolve 重复调用 */
-static int if_db_apply_row(void *item, void *ctx)
+/* 应用一行恢复快照（VRF smoothend 已确保 cache 与 OS 设备就绪） */
+static void if_db_apply_row(const if_db_row_snapshot_t *r)
 {
-    (void)ctx;
-    const if_db_row_snapshot_t *r = (const if_db_row_snapshot_t *)item;
     const char *name = r->name;
 
-    /* 依赖 VRF 时先通过 worker 查询其独占维护的 VRF cache，避免 IPC 线程跨线程读 cache。 */
     uint32_t vrf_id = ROUTE_VRF_DEFAULT;
     if (r->vrf_name[0] != '\0' && if_worker_resolve_vrf_id_by_name(r->vrf_name, &vrf_id) != ERRCODE_SUCCESS)
     {
-        LOG_INFO("IF: %s waits on vrf '%s' (cache not yet synced), parked", name, r->vrf_name);
-        pending_park(g_if_local->pending, IF_DEP_VRF, g_str_hash(r->vrf_name), r, sizeof(*r), NULL, if_db_apply_row,
-                     NULL);
-        return PENDING_AGAIN;
+        LOG_WARN("IF: %s references unknown vrf '%s', skipped", name, r->vrf_name);
+        return;
     }
 
     /* loop 接口创建恢复（无依赖，先做） */
@@ -116,8 +111,6 @@ static int if_db_apply_row(void *item, void *ctx)
         }
     }
 
-    /* VRF 绑定：cache 已 OK 也可能 kernel 设备尚未创建（极少见，软重启时通常残留）。
-     * worker 返回 DEP_MISSING 也挂起。 */
     if (r->vrf_name[0] != '\0')
     {
         if_apply_cmd_t apply;
@@ -128,10 +121,7 @@ static int if_db_apply_row(void *item, void *ctx)
         int rc = if_worker_dispatch_apply(&apply);
         if (rc == ERRCODE_DEP_MISSING)
         {
-            LOG_INFO("IF: %s waits on vrf '%s' (OS device absent), parked", name, r->vrf_name);
-            pending_park(g_if_local->pending, IF_DEP_VRF, g_str_hash(r->vrf_name), r, sizeof(*r), NULL, if_db_apply_row,
-                         NULL);
-            return PENDING_AGAIN;
+            LOG_WARN("IF: %s vrf-bind to '%s' failed (OS device absent)", name, r->vrf_name);
         }
     }
 
@@ -173,20 +163,19 @@ static int if_db_apply_row(void *item, void *ctx)
     g_strlcpy(apply_sht.u.shutdown_set.ifname, name, sizeof(apply_sht.u.shutdown_set.ifname));
     apply_sht.u.shutdown_set.is_no = !r->shutdown;
     (void)if_worker_dispatch_apply(&apply_sht);
-
-    return PENDING_DONE;
 }
 
-int if_db_restore(void)
+static int if_db_restore_rows(gboolean only_vrf_bound)
 {
     dev_ipc_context_t *ctx = if_local_ipc_ctx();
     db_result_t *result = NULL;
     if (db_rpc_query(ctx, "if_interface", NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
     {
-        LOG_WARN("IF: Failed to restore database config");
+        LOG_WARN("IF: Failed to query if_interface for restore");
         return ERRCODE_FAIL;
     }
 
+    uint32_t applied = 0;
     for (uint32_t i = 0; i < result->num_rows; i++)
     {
         db_row_t *row = result->rows[i];
@@ -196,23 +185,39 @@ int if_db_restore(void)
             continue;
         }
 
+        const char *vrf_name = db_row_get_text(row, "vrf_name", "");
+        if (only_vrf_bound && (!vrf_name || vrf_name[0] == '\0'))
+        {
+            continue; /* re-sync 只处理绑非 public VRF 的接口 */
+        }
+
         if_db_row_snapshot_t snap;
         memset(&snap, 0, sizeof(snap));
         g_strlcpy(snap.name, name, sizeof(snap.name));
-        g_strlcpy(snap.vrf_name, db_row_get_text(row, "vrf_name", ""), sizeof(snap.vrf_name));
+        g_strlcpy(snap.vrf_name, vrf_name, sizeof(snap.vrf_name));
         g_strlcpy(snap.ip4, db_row_get_text(row, "ip_address", ""), sizeof(snap.ip4));
         g_strlcpy(snap.ip6, db_row_get_text(row, "ipv6_address", ""), sizeof(snap.ip6));
         snap.prefix4_len = (uint8_t)db_row_get_int(row, "prefix_len", 0);
         snap.prefix6_len = (uint8_t)db_row_get_int(row, "ipv6_prefix_len", 0);
         snap.shutdown = (uint8_t)(db_row_get_int(row, "shutdown", 0) ? 1 : 0);
 
-        /* 乐观下发；apply_row 内部若 worker 返回 ERRCODE_DEP_MISSING 会自挂起 */
-        (void)if_db_apply_row(&snap, NULL);
+        if_db_apply_row(&snap);
+        applied++;
     }
 
     db_result_free(result);
-    LOG_INFO("IF: Database config restoration complete (pending=%zu)", pending_count(g_if_local->pending));
+    LOG_INFO("IF: Database restore applied %u row(s)%s", applied, only_vrf_bound ? " (vrf-bound only)" : "");
     return ERRCODE_SUCCESS;
+}
+
+int if_db_restore(void)
+{
+    return if_db_restore_rows(FALSE);
+}
+
+int if_db_restore_vrf_bound(void)
+{
+    return if_db_restore_rows(TRUE);
 }
 
 int if_db_ensure_record(const char *ifname)

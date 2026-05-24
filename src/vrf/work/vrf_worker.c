@@ -28,6 +28,7 @@ typedef enum vrf_worker_cmd_type
 {
     VRF_WORKER_CMD_IPC_MSG = 1,
     VRF_WORKER_CMD_APPLY = 2,
+    VRF_WORKER_CMD_RESTORE_DONE = 3, /**< 标记 db restore 完成 + flush pending subscribes */
     VRF_WORKER_CMD_SHUTDOWN = 4,
 } vrf_worker_cmd_type_t;
 
@@ -175,6 +176,9 @@ static void *worker_thread_fn(void *arg)
                 }
                 cmd_complete(c, ERRCODE_SUCCESS);
                 continue; /* waitable 由派发方回收 */
+            case VRF_WORKER_CMD_RESTORE_DONE:
+                vrf_worker_mark_restore_done();
+                break;
             case VRF_WORKER_CMD_SHUTDOWN:
                 g_vrf_work_local->running = 0;
                 break;
@@ -303,4 +307,31 @@ GList **vrf_worker_subscribers_ptr(void)
 cli_chunk_stream_t *vrf_worker_show_stream(void)
 {
     return g_vrf_work_local ? &g_vrf_work_local->show_stream : NULL;
+}
+
+int vrf_worker_is_restore_done(void)
+{
+    return g_vrf_work_local ? g_vrf_work_local->restore_done : 0;
+}
+
+int vrf_worker_post_restore_done(void)
+{
+    vrf_worker_cmd_t *c = cmd_create(VRF_WORKER_CMD_RESTORE_DONE, 0);
+    if (cmd_enqueue(c) != ERRCODE_SUCCESS)
+    {
+        cmd_destroy(c);
+        return ERRCODE_FAIL;
+    }
+    return ERRCODE_SUCCESS;
+}
+
+void vrf_worker_mark_restore_done(void)
+{
+    if (!g_vrf_work_local || g_vrf_work_local->restore_done)
+    {
+        return;
+    }
+    g_vrf_work_local->restore_done = 1;
+    LOG_INFO("VRF: db restore done, flushing %u pending REPLAY(s)", g_list_length(g_vrf_work_local->subscribers));
+    vrf_pub_flush_pending_replays();
 }

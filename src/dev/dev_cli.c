@@ -415,12 +415,6 @@ static void dev_push_sysname_to_cli(dev_ipc_context_t *ctx, const char *sysname)
 
 static int handle_sysname(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    /* DB 不可用时直接拒绝配置下发，避免内存/OS 与 DB 静默偏移 */
-    if (db_rpc_guard_reject(ctx, msg, "Dev"))
-    {
-        return ERRCODE_FAIL;
-    }
-
     cli_tlv_parser_t parser;
     if (cli_tlv_init(&parser, (const uint8_t *)msg->payload, msg->payload_len) != 0)
     {
@@ -544,22 +538,157 @@ static int handle_reboot(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     return ERRCODE_SUCCESS;
 }
 
+/* ============================================================================
+ * process reboot/start 异步等 READY 才回响应
+ *
+ * 不能阻塞 DEV 的 IPC worker（会和被等模块的 SUBSCRIBE RPC 形成死锁），
+ * 也不能阻塞 CLI 派发线程；专门起一个常驻 poller 线程消费 job 队列，每 200ms
+ * 查一次目标模块 phase（DEV 进程内直接 dev_module_find），ready / 超时再补响应。
+ * ============================================================================ */
+enum
+{
+    OP_REBOOT = 1,
+    OP_START = 2,
+    OP_STOP = 3
+};
+
+typedef struct process_wait_job
+{
+    int op; /* OP_START / OP_REBOOT */
+    uint32_t module_id;
+    uint32_t src_module_id; /* 原始请求方（CLI 模块或 ACCESS 模块） */
+    uint32_t request_id;
+    char modname[DEV_MODULE_NAME_MAX_LEN];
+    uint32_t epoch_before; /* 触发动作前模块的 epoch，等到 READY 且 epoch>before 才算新进程就绪 */
+    int64_t deadline_us;
+} process_wait_job_t;
+
+#define PROCESS_WAIT_TIMEOUT_MS 30000
+#define PROCESS_WAIT_POLL_US (200 * 1000)
+
+static GAsyncQueue *g_process_wait_queue = NULL;
+static gint g_process_wait_worker_started = 0;
+
+static void send_cli_response_to(uint32_t dst_module_id, uint32_t request_id, const char *text)
+{
+    dev_ipc_context_t *ctx = dev_get_ipc_ctx();
+    if (!ctx || !text)
+    {
+        return;
+    }
+    char *data = g_strdup(text);
+    dev_ipc_message_t *resp = dev_ipc_message_create(CLI_MSG_TYPE_RESP, DEV_MODULE_ID_DEV, dst_module_id, request_id,
+                                                     data, strlen(data) + 1, g_free);
+    if (resp)
+    {
+        dev_ipc_send_response(ctx, resp);
+        dev_ipc_message_free(resp);
+    }
+}
+
+static void *process_wait_worker_thread(void *arg)
+{
+    (void)arg;
+    pthread_setname_np(pthread_self(), "dev-procwait");
+    while (1)
+    {
+        process_wait_job_t *job = (process_wait_job_t *)g_async_queue_pop(g_process_wait_queue);
+        if (!job)
+        {
+            continue;
+        }
+
+        char buf[160];
+        while (1)
+        {
+            dev_module_t *m = dev_module_find(job->module_id);
+            const char *op_label = (job->op == OP_REBOOT) ? "reboot" : "start";
+            if (!m)
+            {
+                snprintf(buf, sizeof(buf), "Dev Error: module %s vanished during %s\r\n", job->modname, op_label);
+                send_cli_response_to(job->src_module_id, job->request_id, buf);
+                break;
+            }
+            if (m->phase == DEV_PHASE_READY && m->epoch > job->epoch_before)
+            {
+                snprintf(buf, sizeof(buf), "Dev: %s %s ok (pid=%d).\r\n", op_label, m->name, m->child_pid);
+                send_cli_response_to(job->src_module_id, job->request_id, buf);
+                break;
+            }
+            if ((int64_t)g_get_monotonic_time() >= job->deadline_us)
+            {
+                snprintf(buf, sizeof(buf), "Dev Error: %s %s timed out waiting for READY (phase=%u, pid=%d).\r\n",
+                         op_label, job->modname, m->phase, m->child_pid);
+                send_cli_response_to(job->src_module_id, job->request_id, buf);
+                break;
+            }
+            g_usleep(PROCESS_WAIT_POLL_US);
+        }
+        g_free(job);
+    }
+    return NULL;
+}
+
+static int process_wait_worker_ensure_started(void)
+{
+    if (g_atomic_int_get(&g_process_wait_worker_started))
+    {
+        return ERRCODE_SUCCESS;
+    }
+    if (!g_process_wait_queue)
+    {
+        g_process_wait_queue = g_async_queue_new();
+    }
+    if (!g_atomic_int_compare_and_exchange(&g_process_wait_worker_started, 0, 1))
+    {
+        return ERRCODE_SUCCESS;
+    }
+    pthread_t tid;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    int rc = pthread_create(&tid, &attr, process_wait_worker_thread, NULL);
+    pthread_attr_destroy(&attr);
+    if (rc != 0)
+    {
+        LOG_ERROR("Failed to spawn process-wait worker: %s", strerror(rc));
+        g_atomic_int_set(&g_process_wait_worker_started, 0);
+        return ERRCODE_FAIL;
+    }
+    return ERRCODE_SUCCESS;
+}
+
+static int process_wait_enqueue(int op, dev_module_t *m, dev_ipc_message_t *msg, uint32_t epoch_before)
+{
+    if (process_wait_worker_ensure_started() != ERRCODE_SUCCESS)
+    {
+        return ERRCODE_FAIL;
+    }
+    process_wait_job_t *job = g_malloc0(sizeof(*job));
+    job->op = op;
+    job->module_id = m->module_id;
+    job->src_module_id = msg->src_module_id;
+    job->request_id = msg->request_id;
+    snprintf(job->modname, sizeof(job->modname), "%s", m->name);
+    job->epoch_before = epoch_before;
+    job->deadline_us = (int64_t)g_get_monotonic_time() + (int64_t)PROCESS_WAIT_TIMEOUT_MS * 1000;
+    g_async_queue_push(g_process_wait_queue, job);
+    return ERRCODE_SUCCESS;
+}
+
 /**
  * @brief 处理 process { reboot | start | stop } <module-name>
  *
  * 子命令通过 keyword 的 cfg-id 区分（XML 中 reboot=1, start=2, stop=3, modname=4）：
- *   - reboot：进程在跑→SIGTERM + pending_restart→SIGCHLD respawn；不在跑→直接 spawn
- *   - start ：进程不在跑→spawn；在跑→提示已在运行
+ *   - reboot：进程在跑→SIGTERM + pending_restart→SIGCHLD respawn；不在跑→直接 spawn；
+ *             响应延迟到目标模块 phase=READY 且 epoch 推进后才送出
+ *   - start ：进程不在跑→spawn；在跑→提示已在运行（已在跑时立即响应）；
+ *             新拉起的进程响应延迟到 phase=READY 才送出
  *   - stop  ：进程在跑→SIGTERM + pending_stop（SIGCHLD 不重启、不告警）；不在跑→no-op
+ *             stop 不等异步退出，立即响应
  */
 static int handle_process_cmd(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
-    enum
-    {
-        OP_REBOOT = 1,
-        OP_START = 2,
-        OP_STOP = 3
-    };
     int op = 0;
     char modname[DEV_MODULE_NAME_MAX_LEN] = {0};
 
@@ -652,12 +781,14 @@ static int handle_process_cmd(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cl
             return ERRCODE_SUCCESS;
 
         case OP_START:
+        {
             if (m->child_pid > 0)
             {
                 snprintf(buf, sizeof(buf), "Dev: %s already running (pid=%d).\r\n", m->name, m->child_pid);
                 dev_send_cli_response(ctx, msg, buf);
                 return ERRCODE_SUCCESS;
             }
+            uint32_t epoch_before = m->epoch;
             if (dev_module_respawn(m) != ERRCODE_SUCCESS)
             {
                 snprintf(buf, sizeof(buf), "Dev Error: failed to spawn %s\r\n", m->name);
@@ -665,11 +796,19 @@ static int handle_process_cmd(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cl
                 return ERRCODE_FAIL;
             }
             dev_ipc_connect(ctx, m->module_id, DEV_IPC_HOST_LOCAL, m->port);
-            snprintf(buf, sizeof(buf), "Dev: start %s ok (pid=%d).\r\n", m->name, m->child_pid);
-            dev_send_cli_response(ctx, msg, buf);
+            /* 异步等 READY；worker 会替我们回响应 */
+            if (process_wait_enqueue(OP_START, m, msg, epoch_before) != ERRCODE_SUCCESS)
+            {
+                snprintf(buf, sizeof(buf), "Dev: start %s spawned (pid=%d), wait failed.\r\n", m->name, m->child_pid);
+                dev_send_cli_response(ctx, msg, buf);
+            }
+            /* 注意：实际响应由 worker 在 READY 后发送 */
             return ERRCODE_SUCCESS;
+        }
 
         case OP_REBOOT:
+        {
+            uint32_t epoch_before = m->epoch;
             if (m->child_pid > 0)
             {
                 m->pending_restart = 1;
@@ -681,8 +820,13 @@ static int handle_process_cmd(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cl
                     dev_send_cli_response(ctx, msg, buf);
                     return ERRCODE_FAIL;
                 }
-                snprintf(buf, sizeof(buf), "Dev: reboot %s requested (pid=%d → respawn).\r\n", m->name, m->child_pid);
-                dev_send_cli_response(ctx, msg, buf);
+                /* SIGCHLD 处理路径会 respawn；worker 等新进程 READY 后回响应 */
+                if (process_wait_enqueue(OP_REBOOT, m, msg, epoch_before) != ERRCODE_SUCCESS)
+                {
+                    snprintf(buf, sizeof(buf), "Dev: reboot %s requested (pid=%d), wait failed.\r\n", m->name,
+                             m->child_pid);
+                    dev_send_cli_response(ctx, msg, buf);
+                }
                 return ERRCODE_SUCCESS;
             }
             /* 未运行：直接 spawn */
@@ -693,9 +837,13 @@ static int handle_process_cmd(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cl
                 return ERRCODE_FAIL;
             }
             dev_ipc_connect(ctx, m->module_id, DEV_IPC_HOST_LOCAL, m->port);
-            snprintf(buf, sizeof(buf), "Dev: %s was not running, spawned (pid=%d).\r\n", m->name, m->child_pid);
-            dev_send_cli_response(ctx, msg, buf);
+            if (process_wait_enqueue(OP_REBOOT, m, msg, epoch_before) != ERRCODE_SUCCESS)
+            {
+                snprintf(buf, sizeof(buf), "Dev: reboot %s spawned (pid=%d), wait failed.\r\n", m->name, m->child_pid);
+                dev_send_cli_response(ctx, msg, buf);
+            }
             return ERRCODE_SUCCESS;
+        }
 
         default:
             dev_send_cli_response(ctx, msg, "Dev Error: invalid op\r\n");
@@ -1018,12 +1166,6 @@ static int handle_dev_swap_image(dev_ipc_context_t *ctx, dev_ipc_message_t *msg,
 
 static int handle_set_log_level(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
-    /* DB 不可用时直接拒绝配置下发，避免本地/广播内存与 DB 静默偏移 */
-    if (db_rpc_guard_reject(ctx, msg, "Dev"))
-    {
-        return ERRCODE_FAIL;
-    }
-
     /* cfg_id 1=debug 2=info 3=warn 4=error，由 commands.xml 中 keyword 元素定义 */
     log_level_t selected = LOG_LEVEL_DEBUG;
     int found = 0;

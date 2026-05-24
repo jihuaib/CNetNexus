@@ -13,15 +13,14 @@
 #include "errcode.h"
 #include "log.h"
 #include "net_addr.h"
-#include "pending.h"
 #include "route.h"
 #include "route_cfg_apply.h"
 #include "route_main.h"
 #include "route_worker.h"
 #include "vrf.h"
 
-/* 静态路由恢复挂起载荷：等待 VRF cache 就绪后重新应用 */
-typedef struct route_static_pending_row
+/* 静态路由恢复行快照（VRF smoothend 已确保 cache 就绪） */
+typedef struct route_static_row
 {
     char vrf_name[VRF_NAME_MAX_LEN];
     uint16_t afi;
@@ -31,7 +30,7 @@ typedef struct route_static_pending_row
     char prefix[64];
     char nexthop[64];
     char ifname[IF_LOGICAL_NAME_MAX];
-} route_static_pending_row_t;
+} route_static_row_t;
 
 static const char *route_db_safe_vrf_name(const char *vrf_name)
 {
@@ -196,30 +195,25 @@ void route_db_delete_batch(dev_ipc_context_t *ctx, const char *name)
 // 启动恢复（通过 worker 派发 apply，避免 IPC 线程直调 work 内部函数）
 // ============================================================================
 
-static int route_db_apply_static_row(void *item, void *ctx_unused)
+static void route_db_apply_static_row(const route_static_row_t *r)
 {
-    (void)ctx_unused;
-    const route_static_pending_row_t *r = (const route_static_pending_row_t *)item;
     if (!r)
     {
-        return PENDING_DONE;
+        return;
     }
 
     dev_ipc_context_t *ctx = route_local_ipc_ctx();
     if (!ctx)
     {
-        return PENDING_DONE;
+        return;
     }
 
-    /* 通过 worker 查询 VRF cache；未就绪时挂起，等 VRF_ADD 事件解锁 */
     uint32_t vrf_id = ROUTE_VRF_DEFAULT;
-    int rc = route_worker_resolve_vrf_id_by_name(r->vrf_name, &vrf_id);
-    if (rc != ERRCODE_SUCCESS)
+    if (route_worker_resolve_vrf_id_by_name(r->vrf_name, &vrf_id) != ERRCODE_SUCCESS)
     {
-        LOG_INFO("Route restore: static '%s/%u' waits on vrf '%s', parked", r->prefix, r->prefix_len, r->vrf_name);
-        pending_park(g_route_local->pending, ROUTE_DEP_VRF, g_str_hash(r->vrf_name), r, sizeof(*r), NULL,
-                     route_db_apply_static_row, NULL);
-        return PENDING_AGAIN;
+        LOG_WARN("Route restore: static '%s/%u' references unknown vrf '%s', skipped", r->prefix, r->prefix_len,
+                 r->vrf_name);
+        return;
     }
 
     /* nexthop 可以为空（interface-only 路由） */
@@ -231,12 +225,12 @@ static int route_db_apply_static_row(void *item, void *ctx_unused)
     if (net_addr_from_str(r->prefix, &prefix_addr) != 0)
     {
         LOG_WARN("Route restore: invalid static row prefix='%s', skipped", r->prefix);
-        return PENDING_DONE;
+        return;
     }
     if (has_nh && net_addr_from_str(r->nexthop, &nexthop_addr) != 0)
     {
         LOG_WARN("Route restore: invalid static row nexthop='%s', skipped", r->nexthop);
-        return PENDING_DONE;
+        return;
     }
     if (!has_nh)
     {
@@ -245,7 +239,7 @@ static int route_db_apply_static_row(void *item, void *ctx_unused)
     if (net_addr_prefix_normalize(&prefix_addr, r->prefix_len) != 0)
     {
         LOG_WARN("Route restore: invalid static prefix len row prefix='%s' len=%u, skipped", r->prefix, r->prefix_len);
-        return PENDING_DONE;
+        return;
     }
 
     char normalized_prefix[64] = {0};
@@ -276,13 +270,10 @@ static int route_db_apply_static_row(void *item, void *ctx_unused)
     {
         LOG_WARN("Route restore: static apply failed vrf=%s afi=%u pfx=%s/%u nh=%s", r->vrf_name, r->afi, r->prefix,
                  r->prefix_len, r->nexthop);
-        return PENDING_DONE;
     }
-
-    return PENDING_DONE;
 }
 
-static int route_restore_static_from_db(dev_ipc_context_t *ctx)
+static int route_restore_static_rows(dev_ipc_context_t *ctx, gboolean only_vrf_bound)
 {
     db_result_t *result = NULL;
     int ret = db_rpc_query(ctx, "route_static", NULL, 0, NULL, &result);
@@ -299,6 +290,7 @@ static int route_restore_static_from_db(dev_ipc_context_t *ctx)
         return ERRCODE_SUCCESS;
     }
 
+    uint32_t applied = 0;
     for (uint32_t i = 0; i < result->num_rows; i++)
     {
         db_row_t *row = result->rows[i];
@@ -308,9 +300,15 @@ static int route_restore_static_from_db(dev_ipc_context_t *ctx)
             continue;
         }
 
-        route_static_pending_row_t snap;
+        const char *vrf_name = db_row_get_text(row, "vrf_name", VRF_PUBLIC_VRF_NAME);
+        if (only_vrf_bound && (!vrf_name || strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) == 0))
+        {
+            continue;
+        }
+
+        route_static_row_t snap;
         memset(&snap, 0, sizeof(snap));
-        g_strlcpy(snap.vrf_name, db_row_get_text(row, "vrf_name", VRF_PUBLIC_VRF_NAME), sizeof(snap.vrf_name));
+        g_strlcpy(snap.vrf_name, vrf_name, sizeof(snap.vrf_name));
         snap.afi = (uint16_t)db_row_get_int(row, "afi", ROUTE_AFI_IPV4);
         snap.prefix_len = (uint8_t)db_row_get_int(row, "prefix_len", 0);
         snap.metric = (int32_t)db_row_get_int(row, "metric", 0);
@@ -319,14 +317,29 @@ static int route_restore_static_from_db(dev_ipc_context_t *ctx)
         g_strlcpy(snap.nexthop, db_row_get_text(row, "nexthop", ""), sizeof(snap.nexthop));
         g_strlcpy(snap.ifname, db_row_get_text(row, "ifname", ""), sizeof(snap.ifname));
 
-        /* 乐观应用：缺 VRF 时 apply_row 内部自挂起 */
-        (void)route_db_apply_static_row(&snap, NULL);
+        route_db_apply_static_row(&snap);
+        applied++;
     }
 
-    LOG_INFO("Route restore: static processed %u row(s), pending=%zu", result->num_rows,
-             pending_count(g_route_local->pending));
+    LOG_INFO("Route restore: static processed %u/%u row(s)%s", applied, result->num_rows,
+             only_vrf_bound ? " (vrf-bound only)" : "");
     db_result_free(result);
     return ERRCODE_SUCCESS;
+}
+
+static int route_restore_static_from_db(dev_ipc_context_t *ctx)
+{
+    return route_restore_static_rows(ctx, FALSE);
+}
+
+int route_db_restore_vrf_bound(void)
+{
+    dev_ipc_context_t *ctx = route_local_ipc_ctx();
+    if (!ctx)
+    {
+        return ERRCODE_FAIL;
+    }
+    return route_restore_static_rows(ctx, TRUE);
 }
 
 static int route_restore_batch_from_db(dev_ipc_context_t *ctx)

@@ -19,7 +19,14 @@ typedef struct vrf_subscriber
     uint32_t module_id;
     uint32_t af_mask;
     uint32_t event_mask;
+    uint8_t pending_replay; /**< 1=订阅时 restore 未完成，REPLAY 已被推迟，需在 restore 完成后补发 */
 } vrf_subscriber_t;
+
+/**
+ * @brief restore 完成后给所有 pending_replay=1 的订阅者补发 SMOOTHSTART/REPLAY/SMOOTHEND。
+ *        仅 worker 线程调用。
+ */
+void vrf_pub_flush_pending_replays(void);
 
 /**
  * @brief 处理订阅 / 取消订阅消息（worker 线程）

@@ -33,6 +33,9 @@ static inline dev_ipc_context_t *vrf_local_ipc_ctx(void)
 /**
  * @brief IPC 消息处理回调
  */
+/** VRF 内部消息：DB 模块就绪，worker 线程做 db_init + db_restore */
+#define VRF_MSG_TYPE_INTERNAL_DB_READY DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_VRF, 0xFFFB)
+
 void vrf_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
 
 /**

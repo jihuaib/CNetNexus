@@ -10,8 +10,11 @@
  */
 #include "ldp_cli.h"
 
+#include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 #include "cli.h"
 #include "errcode.h"
@@ -123,6 +126,17 @@ static int handle_proto_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         return ERRCODE_FAIL;
     }
     (void)dispatch_proto_apply();
+
+    if (is_no)
+    {
+        /* `no ldp`：admin=0，业务停摆，进程自退出让 DEV 回到 on-demand 待命。
+         * 接口级配置在 DB 中保留，下次 `ldp` 启动时由 db_restore 还原。
+         * kill(getpid, SIGTERM) 触发 ldp_proc.c 的 shutdown_handler 优雅退出。 */
+        send_resp(msg, "LDP: admin disabled, process exiting.\r\n");
+        kill(getpid(), SIGTERM);
+        return ERRCODE_SUCCESS;
+    }
+
     send_resp(msg, "");
     return ERRCODE_SUCCESS;
 }

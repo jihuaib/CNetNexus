@@ -14,6 +14,11 @@
 int if_db_init(void);
 int if_db_restore(void);
 
+/**
+ * @brief VRF 重启 re-sync：只重恢复 vrf_name 非空且非 public 的接口行。
+ */
+int if_db_restore_vrf_bound(void);
+
 int if_db_ensure_record(const char *ifname);
 int if_db_del_record(const char *ifname);
 int if_db_update_ip(const char *ifname, int is_ipv6, const char *ip_str, uint8_t prefix_len);

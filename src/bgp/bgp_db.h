@@ -35,6 +35,12 @@
 uint32_t bgp_db_restore(void);
 
 /**
+ * @brief VRF 重启 re-sync：只重恢复 vrf_name 非 public 的行（vrf/session/instance/neighbor/qp_route）。
+ * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL
+ */
+uint32_t bgp_db_restore_vrf_bound(void);
+
+/**
  * @brief 初始化 BGP 数据库（建表，如已存在则跳过）
  * @return 0 成功，-1 失败
  */

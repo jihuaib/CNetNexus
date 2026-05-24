@@ -39,6 +39,7 @@ typedef enum route_worker_cmd_type
     ROUTE_WORKER_CMD_VRF_EVENT = 11,        /**< VRF 事件：维护 worker 独占 VRF cache */
     ROUTE_WORKER_CMD_VRF_QUERY = 12,        /**< VRF 查询：其他线程同步请求 worker 查询 */
     ROUTE_WORKER_CMD_IF_DOWN = 13,          /**< IF 模块 DOWN：清 IF 缓存 + 重算 nexthop watch */
+    ROUTE_WORKER_CMD_VRF_DOWN = 14,         /**< VRF 模块 DOWN：拆非 public VRF 业务 + 清 cache */
 } route_worker_cmd_type_t;
 
 // ============================================================================
@@ -140,6 +141,12 @@ int route_worker_dispatch_apply(route_apply_cmd_t *apply);
  * @return 0 成功，-1 失败
  */
 int route_worker_dispatch_vrf_event(dev_ipc_message_t *msg);
+
+/**
+ * @brief worker 线程内：拆除所有非 public VRF 在 RIB 中的静态路由（保留 DB）。
+ *        仅在 VRF SMOOTHSTART 路径上调用，用于 VRF 进程重启的业务清理。
+ */
+void route_worker_purge_non_public_vrf_business(void);
 
 /**
  * @brief 通过 worker 线程按 VRF 名称解析 vrf_id

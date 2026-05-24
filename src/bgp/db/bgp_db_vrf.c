@@ -278,6 +278,11 @@ void bgp_db_restore_vrf(void)
         db_row_t *row = result->rows[i];
         const char *vrf_name = db_row_get_text(row, "vrf_name", VRF_PUBLIC_VRF_NAME);
 
+        if (g_bgp_db_resync_only_vrf_bound && (!vrf_name || strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) == 0))
+        {
+            continue; /* re-sync 跳过 public VRF 行 */
+        }
+
         if (vrf_name && strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) != 0)
         {
             bgp_apply_cmd_t apply;

@@ -667,17 +667,16 @@ static gboolean collect_ipc_pending_cb(gpointer key, gpointer value, gpointer da
 }
 
 /* 收集“阶段低于 required_phase”的模块（不含 DEV）。
- * 注意：on-demand 模块完全不走 Phase 1/2/3，由各自 *_module_init 直接 notify_ready → READY，
- * 中间会短暂处于 LOADED（fork 之后、notify_ready 之前）。这种情况不算 Phase 失败。
- * 只对常驻模块（!on_demand）做阶段门控。 */
+ * 已 fork（phase >= LOADED）的模块都参与门控，无论 on-demand 与否；
+ * 这样 revive 之后 on-demand 模块也会被等到 READY。
+ * 未 fork（REGISTERED）的 on-demand 模块由于 phase < LOADED 自然被跳过。 */
 static gboolean collect_phase_pending_cb(gpointer key, gpointer value, gpointer data)
 {
     (void)key;
     dev_module_t *module = (dev_module_t *)value;
     dev_phase_wait_ctx_t *ctx = (dev_phase_wait_ctx_t *)data;
 
-    if (!module || !ctx || module->module_id == DEV_MODULE_ID_DEV || module->phase < DEV_PHASE_LOADED ||
-        module->on_demand)
+    if (!module || !ctx || module->module_id == DEV_MODULE_ID_DEV || module->phase < DEV_PHASE_LOADED)
     {
         return FALSE;
     }
@@ -894,12 +893,34 @@ int32_t dev_init_all_modules(void)
     }
 
     LOG_INFO("=============================================");
-    LOG_INFO("Module initialization complete");
+    LOG_INFO("Basic modules initialization complete");
     LOG_INFO("=============================================");
 
     /* 按需模块自动恢复：检查每个 on-demand 模块的 revive_table，非空即 fork。
      * 在基础模块就绪后执行，确保 DB 可用、其它模块表已存在。 */
     dev_revive_on_demand_modules();
+
+    /* revive 之后再次等所有已 fork 的模块（含 on-demand）达到 READY。
+     * collect_phase_pending_cb 不再跳过 on-demand，自然把它们纳入门控。
+     * 没有被 revive 的 on-demand 模块仍处于 REGISTERED（< LOADED），被天然跳过。 */
+    LOG_INFO("Waiting for revived on-demand modules to notify_ready...");
+    gint64 deadline2 = g_get_monotonic_time() + (gint64)DEV_INIT_IPC_WAIT_TIMEOUT_SEC * G_USEC_PER_SEC;
+    while (g_get_monotonic_time() < deadline2)
+    {
+        if (dev_require_all_modules_phase(DEV_PHASE_READY, "ready") == ERRCODE_SUCCESS)
+        {
+            break;
+        }
+        usleep(DEV_INIT_IPC_WAIT_INTERVAL_USEC);
+    }
+    if (dev_require_all_modules_phase(DEV_PHASE_READY, "ready") != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("Some on-demand modules did not notify_ready within timeout (continuing)");
+    }
+
+    LOG_INFO("=============================================");
+    LOG_INFO("All modules ready (basic + revived on-demand)");
+    LOG_INFO("=============================================");
 
     return ERRCODE_SUCCESS;
 }

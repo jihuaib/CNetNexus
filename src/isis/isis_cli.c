@@ -6,16 +6,23 @@
  */
 #include "isis_cli.h"
 
+#include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 #include "cli.h"
+#include "db.h"
 #include "errcode.h"
 #include "isis.h"
 #include "isis_db.h"
 #include "isis_main.h"
 #include "isis_worker.h"
 #include "log.h"
+
+/* 表名重复但保持就近：避免引 isis_db_internal.h（仅 db/ 子目录可见） */
+#define ISIS_TABLE_INSTANCE_NAME "isis_instance"
 
 #define IF_LOOP_ID_MIN 1u
 #define IF_LOOP_ID_MAX 1024u
@@ -146,6 +153,16 @@ static int handle_instance_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         {
             send_resp(msg, "ISIS Error: Failed to delete instance from DB\r\n");
             return ERRCODE_FAIL;
+        }
+        /* 最后一个实例被删 → revive_table（isis_instance）空 → 进程自退出，
+         * 让 DEV 回到 on-demand 待命；下次配 isis <tag> 时 wait_module_ready 重新 fork。 */
+        gboolean has_more = FALSE;
+        if (db_rpc_exists(isis_local_ipc_ctx(), ISIS_TABLE_INSTANCE_NAME, NULL, &has_more) == ERRCODE_SUCCESS &&
+            !has_more)
+        {
+            send_resp(msg, "ISIS: last instance removed, process exiting.\r\n");
+            kill(getpid(), SIGTERM);
+            return ERRCODE_SUCCESS;
         }
         send_resp(msg, "");
         return ERRCODE_SUCCESS;

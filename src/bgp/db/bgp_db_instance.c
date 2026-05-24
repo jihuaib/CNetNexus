@@ -260,6 +260,10 @@ void bgp_db_restore_instances(void)
         {
             continue;
         }
+        if (g_bgp_db_resync_only_vrf_bound && (!vrf_name || strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) == 0))
+        {
+            continue;
+        }
 
         /* 恢复 AF 实例 */
         bgp_apply_cmd_t apply;
@@ -365,6 +369,10 @@ void bgp_db_restore_qp_route_select(void)
         gboolean enabled = db_row_get_int(row, "route_select_enabled", 0) != 0;
 
         if (!enabled || safi != BGP_SAFI_QP || afi == 0)
+        {
+            continue;
+        }
+        if (g_bgp_db_resync_only_vrf_bound && (!vrf_name || strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) == 0))
         {
             continue;
         }

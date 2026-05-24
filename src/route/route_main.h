@@ -11,14 +11,14 @@
 
 #include "dev.h"
 #include "net_addr.h"
-#include "pending.h"
-
-/** Route 模块挂起表依赖域 */
-#define ROUTE_DEP_VRF 1u
 
 /** ROUTE 内部消息：VRF 每次 READY（含初次 + 重启）触发 worker 重新订阅 VRF 事件
  *  category=ROUTE, subtype=0xFFFE */
 #define ROUTE_MSG_TYPE_INTERNAL_VRF_READY DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ROUTE, 0xFFFE)
+
+/** ROUTE 内部消息：VRF 模块 DOWN，worker 清非 public VRF 的内存业务并清 cache
+ *  category=ROUTE, subtype=0xFFFA */
+#define ROUTE_MSG_TYPE_INTERNAL_VRF_DOWN DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ROUTE, 0xFFFA)
 
 /** ROUTE 内部消息：IF 模块 READY（含初次 + 重启），IPC 线程重新订阅 IF 事件
  *  category=ROUTE, subtype=0xFFFD */
@@ -41,7 +41,6 @@
 typedef struct route_local
 {
     dev_ipc_context_t *dev_ipc_ctx; /**< IPC 上下文 */
-    pending_t *pending;             /**< 跨模块依赖挂起表（仅在 IPC 线程内访问） */
 } route_local_t;
 
 extern route_local_t *g_route_local;

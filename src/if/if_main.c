@@ -37,16 +37,24 @@ static void if_on_vrf_ready_cb(uint32_t module_id, uint8_t event, const char *ho
     (void)port;
     (void)epoch;
     (void)user;
-    if (event != DEV_MODULE_EVENT_READY)
-    {
-        return;
-    }
     if (!g_if_local || !g_if_local->dev_ipc_ctx)
     {
         return;
     }
-    dev_ipc_message_t *m =
-        dev_ipc_message_create(IF_MSG_TYPE_INTERNAL_VRF_READY, DEV_MODULE_ID_IF, DEV_MODULE_ID_IF, 0, NULL, 0, NULL);
+    uint32_t msg_type;
+    if (event == DEV_MODULE_EVENT_READY)
+    {
+        msg_type = IF_MSG_TYPE_INTERNAL_VRF_READY;
+    }
+    else if (event == DEV_MODULE_EVENT_DOWN)
+    {
+        msg_type = IF_MSG_TYPE_INTERNAL_VRF_DOWN;
+    }
+    else
+    {
+        return;
+    }
+    dev_ipc_message_t *m = dev_ipc_message_create(msg_type, DEV_MODULE_ID_IF, DEV_MODULE_ID_IF, 0, NULL, 0, NULL);
     if (m)
     {
         g_async_queue_push(g_if_local->dev_ipc_ctx->msg_queue, m);
@@ -120,6 +128,96 @@ static void if_handle_route_ready(void)
     }
 }
 
+static gboolean g_if_db_restored = FALSE;
+static gboolean g_if_db_ready = FALSE;      /* DB 已建表 / link_monitor 已起 */
+static gboolean g_if_vrf_smoothend = FALSE; /* VRF REPLAY 已完成 */
+
+static void if_try_db_restore(void)
+{
+    if (g_if_db_restored)
+    {
+        return;
+    }
+    if (!g_if_db_ready || !g_if_vrf_smoothend)
+    {
+        return;
+    }
+
+    if (if_db_restore() != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("IF: db restore failed");
+        return;
+    }
+    g_if_db_restored = TRUE;
+    LOG_INFO("IF: DB restore completed (db_ready + vrf_smoothend)");
+}
+
+static void if_handle_db_ready(void)
+{
+    dev_ipc_context_t *ctx = if_local_ipc_ctx();
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DB, 3000) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("IF: DB not connected within 3s; db restore deferred");
+        return;
+    }
+
+    if (!g_if_db_ready)
+    {
+        if (if_db_init() != ERRCODE_SUCCESS)
+        {
+            LOG_WARN("IF: db init failed");
+            return;
+        }
+        if (if_link_monitor_start() != 0)
+        {
+            LOG_WARN("IF: link monitor start failed, link recovery disabled");
+        }
+        g_if_db_ready = TRUE;
+    }
+
+    if_try_db_restore();
+}
+
+static void if_handle_vrf_smoothend(void)
+{
+    gboolean first = !g_if_vrf_smoothend;
+    g_if_vrf_smoothend = TRUE;
+
+    if (first)
+    {
+        LOG_INFO("IF: VRF smoothend received (initial sync)");
+        if_try_db_restore();
+        return;
+    }
+
+    /* VRF 进程重启后的再同步：worker 已在 SMOOTHSTART 时清掉非 public VRF 的接口内存绑定，
+     * 这里只从 DB 重恢复 vrf_name 非空的接口行。 */
+    LOG_INFO("IF: VRF smoothend received (resync)");
+    (void)if_db_restore_vrf_bound();
+}
+
+static void if_on_db_event_cb(uint32_t module_id, uint8_t event, const char *host, uint16_t port, uint32_t epoch,
+                              void *user)
+{
+    (void)module_id;
+    (void)host;
+    (void)port;
+    (void)epoch;
+    (void)user;
+
+    if (event != DEV_MODULE_EVENT_READY || !g_if_local || !g_if_local->dev_ipc_ctx)
+    {
+        return;
+    }
+
+    dev_ipc_message_t *m =
+        dev_ipc_message_create(IF_MSG_TYPE_INTERNAL_DB_READY, DEV_MODULE_ID_IF, DEV_MODULE_ID_IF, 0, NULL, 0, NULL);
+    if (m)
+    {
+        g_async_queue_push(g_if_local->dev_ipc_ctx->msg_queue, m);
+    }
+}
+
 // ============================================================================
 // IPC 消息分发
 // ============================================================================
@@ -151,6 +249,17 @@ void if_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             dev_ipc_message_free(msg);
             return;
 
+        /* ---- 内部：VRF 模块 DOWN → worker 清接口绑定 + 清 vrf_api cache ---- */
+        case IF_MSG_TYPE_INTERNAL_VRF_DOWN:
+            (void)if_worker_post_vrf_down();
+            dev_ipc_message_free(msg);
+            return;
+
+        case IF_MSG_TYPE_INTERNAL_DB_READY:
+            if_handle_db_ready();
+            dev_ipc_message_free(msg);
+            return;
+
         case IF_MSG_TYPE_INTERNAL_ROUTE_READY:
             if_handle_route_ready();
             dev_ipc_message_free(msg);
@@ -169,23 +278,17 @@ void if_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
                 vrf_event = evt->event;
                 g_strlcpy(vrf_name, evt->name, sizeof(vrf_name));
             }
+            if (vrf_event == VRF_EVENT_SMOOTHEND)
+            {
+                if_handle_vrf_smoothend();
+            }
             if (if_worker_dispatch_vrf_event(msg) != ERRCODE_SUCCESS)
             {
                 LOG_WARN("IF: failed to dispatch VRF event to worker");
                 dev_ipc_message_free(msg);
                 return;
             }
-            if (vrf_name[0] != '\0')
-            {
-                if (vrf_event == VRF_EVENT_VRF_ADD)
-                {
-                    pending_resolve(g_if_local->pending, IF_DEP_VRF, g_str_hash(vrf_name));
-                }
-                else if (vrf_event == VRF_EVENT_VRF_DEL)
-                {
-                    pending_invalidate(g_if_local->pending, IF_DEP_VRF, g_str_hash(vrf_name));
-                }
-            }
+            (void)vrf_name;
             return;
         }
 
@@ -211,12 +314,7 @@ void if_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             }
             else
             {
-                /* DB 不可用时直接拒绝配置下发，避免内存/OS 与 DB 静默偏移 */
-                if (db_rpc_guard_reject(ctx, msg, "IF"))
-                {
-                    dev_ipc_message_free(msg);
-                    return;
-                }
+                /* CFG 已经卡 READY 才派发；IF 在 READY 时业务已从 DB 恢复完，不再业务侧拦截 */
                 if_cli_handle_config_msg(msg);
                 dev_ipc_message_free(msg);
             }
@@ -266,7 +364,6 @@ int if_module_init(void)
         return -1;
     }
     g_if_local->dev_ipc_ctx = ctx;
-    g_if_local->pending = pending_new("if");
     dev_ipc_set_disconnect_handler(ctx, if_on_ipc_disconnect, NULL);
 
     /* 弱依赖模型 init：
@@ -288,49 +385,41 @@ int if_module_init(void)
         return -1;
     }
 
-    /* VRF 用 auto_start=0：IF 不硬依赖 VRF（默认 VRF 由 OS 提供），不应在 boot 时拉起 VRF。
-     * cb 在 VRF 实际启动后（用户配置触发 / revive）才会被调用 → vrf_api_subscribe_all。 */
+    /* 一次性订阅所有依赖（CLI 也含在内；CFG 卡 PHASE=READY，与 CLI 订阅顺序无关）*/
     if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_VRF, 0, if_on_vrf_ready_cb, NULL) != ERRCODE_SUCCESS)
     {
         LOG_WARN("IF: subscribe(VRF) failed");
     }
-
-    /* ROUTE 重启后需要重刷 connected 路由。 */
     if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_ROUTE, 0, if_on_route_ready_cb, NULL) != ERRCODE_SUCCESS)
     {
         LOG_WARN("IF: subscribe(ROUTE) failed");
     }
-
-    /* db_init / db_restore 需要 DB 连接已建立（dev_ipc_send 要 active 连接） */
-    if (dev_ipc_wait_module_ready(ctx, DEV_MODULE_ID_DB, 5000) != ERRCODE_SUCCESS)
+    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_DB, 0, if_on_db_event_cb, NULL) != ERRCODE_SUCCESS)
     {
-        LOG_WARN("IF: DB not ready, skipping db init/restore");
+        LOG_WARN("IF: subscribe(DB) failed");
     }
-    else
-    {
-        if (if_db_init() != ERRCODE_SUCCESS)
-        {
-            LOG_WARN("IF: db init failed");
-        }
-        if (if_link_monitor_start() != 0)
-        {
-            LOG_WARN("IF: link monitor start failed, link recovery disabled");
-        }
-        if (if_db_restore() != ERRCODE_SUCCESS)
-        {
-            LOG_WARN("IF: db restore failed");
-        }
-    }
-
     if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_CLI, 0, NULL, NULL) != ERRCODE_SUCCESS)
     {
         LOG_WARN("IF: subscribe(CLI) failed");
     }
 
+    /* DEPS_READY：等所有订阅 peer 都 CONNECTED 再做 DB 恢复 */
+    if (dev_ipc_wait_all_subscribed_connected(ctx, 10000) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("IF: deps not fully connected within 10s; proceeding anyway");
+    }
+
+    if (dev_ipc_is_connected(ctx, DEV_MODULE_ID_DB))
+    {
+        if_handle_db_ready();
+    }
+
+    /* 业务已就绪，进入 READY 阶段；CFG 此后才会派 config */
     if (dev_ipc_notify_ready(ctx) != ERRCODE_SUCCESS)
     {
         LOG_WARN("IF: notify_ready to DEV failed");
     }
+
     LOG_INFO("IF: module ready");
 
     return 0;
@@ -356,12 +445,6 @@ void if_module_cleanup(void)
     if (ctx)
     {
         dev_ipc_destroy(ctx);
-    }
-
-    if (g_if_local->pending)
-    {
-        pending_destroy(g_if_local->pending);
-        g_if_local->pending = NULL;
     }
 
     g_free(g_if_local);

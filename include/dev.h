@@ -627,6 +627,24 @@ int dev_ipc_wait_connected(dev_ipc_context_t *ctx, uint32_t target_id, uint32_t 
  */
 int dev_ipc_wait_module_ready(dev_ipc_context_t *ctx, uint32_t target_id, uint32_t timeout_ms);
 
+/**
+ * @brief 等待本模块自己订阅过的所有 peer 都进入 CONNECTED 状态
+ *
+ * 业务模块 init 序列推荐：
+ *   1. dev_ipc_init + wait DEV connected
+ *   2. subscribe(deps...)
+ *   3. dev_ipc_wait_all_subscribed_connected()  ← 此函数，DEPS_READY 判定
+ *   4. db_init + db_restore
+ *   5. dev_ipc_notify_ready()                   ← 这时 CFG 才会派 config
+ *
+ * 内部 100ms 轮询 sub_mgr 中记录的所有订阅 target；不阻塞 IPC worker。
+ *
+ * @param ctx        本模块 IPC 上下文
+ * @param timeout_ms 超时（毫秒，0=使用默认）
+ * @return 全部连上返回 ERRCODE_SUCCESS；超时返回 ERRCODE_FAIL
+ */
+int dev_ipc_wait_all_subscribed_connected(dev_ipc_context_t *ctx, uint32_t timeout_ms);
+
 // ============================================================================
 // DEV IPC 内部 API（供 DEV IPC 子模块实现使用）
 // ============================================================================

@@ -30,6 +30,8 @@ typedef struct ipc_subscription
     dev_module_event_fn callback;
     void *user;
     uint32_t last_epoch; /**< 上次收到 READY 时的 epoch，0=尚未收到 */
+    uint8_t must_be_up;  /**< 1=订阅时 DEV 报告 target 在跑/正在拉起；0=NOT_RUNNING（按需且未起）
+                              wait_all_subscribed_connected 只等 must_be_up=1 的 peer */
 } ipc_subscription_t;
 
 struct dev_ipc_subscribe_mgr
@@ -167,25 +169,36 @@ int dev_ipc_subscribe_module(dev_ipc_context_t *ctx, uint32_t target_id, int aut
     sub->user = user;
     pthread_mutex_unlock(&ctx->sub_mgr->lock);
 
-    /* 2. 向 DEV 发送 SUBSCRIBE RPC */
+    /* 2. 向 DEV 发送 SUBSCRIBE RPC（冷启动期间 DEV 可能因为忙于建表/批量握手
+     *    导致首次请求被丢弃，加 short-timeout 重试，最多 3 次。 */
     dev_subscribe_req_t req;
     memset(&req, 0, sizeof(req));
     req.target_module_id = htonl(target_id);
     req.auto_start = auto_start ? 1 : 0;
 
-    dev_ipc_message_t *msg = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_SUBSCRIBE_MODULE, ctx->module_id,
-                                                    DEV_MODULE_ID_DEV, 0, &req, sizeof(req), NULL);
-    if (!msg)
+    dev_ipc_message_t *resp = NULL;
+    const int max_attempts = 3;
+    const uint32_t per_attempt_timeout_ms = 2000;
+    for (int attempt = 1; attempt <= max_attempts; attempt++)
     {
-        return ERRCODE_FAIL;
+        dev_ipc_message_t *msg = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_SUBSCRIBE_MODULE, ctx->module_id,
+                                                        DEV_MODULE_ID_DEV, 0, &req, sizeof(req), NULL);
+        if (!msg)
+        {
+            return ERRCODE_FAIL;
+        }
+        resp = dev_ipc_query(ctx, DEV_MODULE_ID_DEV, msg, per_attempt_timeout_ms);
+        dev_ipc_message_free(msg);
+        if (resp)
+        {
+            break;
+        }
+        LOG_WARN("<%s> SUBSCRIBE(0x%08X) attempt %d/%d timed out, retrying", ctx->name, target_id, attempt,
+                 max_attempts);
     }
-
-    dev_ipc_message_t *resp = dev_ipc_query(ctx, DEV_MODULE_ID_DEV, msg, 0);
-    dev_ipc_message_free(msg);
-
     if (!resp)
     {
-        LOG_WARN("<%s> SUBSCRIBE(0x%08X) RPC timeout", ctx->name, target_id);
+        LOG_WARN("<%s> SUBSCRIBE(0x%08X) RPC timeout after %d attempts", ctx->name, target_id, max_attempts);
         return ERRCODE_FAIL;
     }
 
@@ -308,6 +321,51 @@ int dev_ipc_wait_connected(dev_ipc_context_t *ctx, uint32_t target_id, uint32_t 
  * 因此 CFG 不需要监听 READY 事件——只要轮询 is_connected(target) 即可知 target 准备好了。
  * ============================================================================ */
 
+/* 查 target 在 DEV 那里的当前 phase（DEV_MODULE_STATE_*）。
+ * 复用 SUBSCRIBE RPC（DEV 端幂等），auto_start=0 不触发拉起；返回值即响应里的 state。
+ * synth 事件会在 state=READY 时被发起（自动 connect 到 target）。 */
+static int query_target_state(dev_ipc_context_t *ctx, uint32_t target_id, int auto_start, uint8_t *state_out)
+{
+    if (!ctx || target_id == 0 || !state_out)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    /* 复用 dev_ipc_subscribe_module —— 它已有重试、synth READY 后 auto-connect */
+    int rc = dev_ipc_subscribe_module(ctx, target_id, auto_start, NULL, NULL);
+    if (rc != ERRCODE_SUCCESS)
+    {
+        return ERRCODE_FAIL;
+    }
+    /* subscribe 成功后，sub_mgr 已记录订阅；DEV 端 phase 由后续异步 MODULE_EVENT 推送。
+     * 但我们这里要的是"当前 phase"，直接再发一次 subscribe RPC 拿响应 state。
+     * 为避免循环 auto-connect，第二次显式构造 RPC 不走 lib 的 dispatch。 */
+    dev_subscribe_req_t req;
+    memset(&req, 0, sizeof(req));
+    req.target_module_id = htonl(target_id);
+    req.auto_start = 0;
+    dev_ipc_message_t *msg = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_SUBSCRIBE_MODULE, ctx->module_id,
+                                                    DEV_MODULE_ID_DEV, 0, &req, sizeof(req), NULL);
+    if (!msg)
+    {
+        return ERRCODE_FAIL;
+    }
+    dev_ipc_message_t *resp = dev_ipc_query(ctx, DEV_MODULE_ID_DEV, msg, 2000);
+    dev_ipc_message_free(msg);
+    if (!resp || !resp->payload || resp->payload_len < sizeof(dev_subscribe_resp_t))
+    {
+        if (resp)
+        {
+            dev_ipc_message_free(resp);
+        }
+        return ERRCODE_FAIL;
+    }
+    const dev_subscribe_resp_t *r = (const dev_subscribe_resp_t *)resp->payload;
+    *state_out = r->current_state;
+    dev_ipc_message_free(resp);
+    return ERRCODE_SUCCESS;
+}
+
 int dev_ipc_wait_module_ready(dev_ipc_context_t *ctx, uint32_t target_id, uint32_t timeout_ms)
 {
     if (!ctx || target_id == 0)
@@ -319,20 +377,97 @@ int dev_ipc_wait_module_ready(dev_ipc_context_t *ctx, uint32_t target_id, uint32
         timeout_ms = DEV_IPC_QUERY_TIMEOUT_DEFAULT;
     }
 
-    /* 快路径：已连接直接返回 */
-    if (dev_ipc_is_connected(ctx, target_id))
+    /* 轮询 target 在 DEV 那里的 phase；只接受 READY（DB restore 完成 + 已 notify_ready）。
+     * 不再依赖 is_connected——业务模块的 subscribe(CLI) 顺序与 READY 解耦：
+     * READY 才意味着模块业务真正可用，CFG 此时派发 config 才安全。
+     *
+     * 第一次轮询 auto_start=1 触发按需拉起；之后每次 200ms 复查直到 READY 或超时。 */
+    int64_t deadline_us = (int64_t)g_get_monotonic_time() + (int64_t)timeout_ms * 1000;
+    int triggered_autostart = 0;
+    uint8_t last_state = DEV_MODULE_STATE_NOT_RUNNING;
+    while (1)
     {
-        return ERRCODE_SUCCESS;
+        uint8_t state = DEV_MODULE_STATE_NOT_RUNNING;
+        if (query_target_state(ctx, target_id, triggered_autostart ? 0 : 1, &state) == ERRCODE_SUCCESS)
+        {
+            last_state = state;
+            triggered_autostart = 1;
+            if (state == DEV_MODULE_STATE_READY)
+            {
+                return ERRCODE_SUCCESS;
+            }
+        }
+        if ((int64_t)g_get_monotonic_time() >= deadline_us)
+        {
+            LOG_WARN("<%s> wait_module_ready(0x%08X) timeout (last state=%u)", ctx->name, target_id, last_state);
+            return ERRCODE_FAIL;
+        }
+        usleep(200 * 1000);
     }
+}
 
-    /* 触发 DEV 把按需 target fork 出来（已在跑则 no-op；非按需且未跑则失败）。
-     * 不注册回调——目标 init 完成时会主动 subscribe(CLI) 反向连接，本端被动收 inbound。 */
-    int rc = dev_ipc_subscribe_module(ctx, target_id, 1, NULL, NULL);
-    if (rc != ERRCODE_SUCCESS)
+/* ============================================================================
+ * dev_ipc_wait_all_subscribed_connected：DEPS_READY 阶段判定
+ *
+ * 业务模块自己订阅了哪些 peer 都记录在 ctx->sub_mgr 里。此函数遍历这张表，
+ * 等到每个订阅 target 的 IPC 都进入 CONNECTED 状态后返回。
+ * 用于业务模块 init 时在 db_restore 之前确认依赖通道齐备，再 notify_ready。
+ * 内部 100ms 轮询；调用方在自身 init 主线程上调用，不阻塞 IPC worker。
+ * ============================================================================ */
+
+int dev_ipc_wait_all_subscribed_connected(dev_ipc_context_t *ctx, uint32_t timeout_ms)
+{
+    if (!ctx || !ctx->sub_mgr)
     {
         return ERRCODE_FAIL;
     }
+    if (timeout_ms == 0)
+    {
+        timeout_ms = DEV_IPC_QUERY_TIMEOUT_DEFAULT;
+    }
 
-    /* 轮询等 target 反向 connect 进来（target init 中 subscribe(CLI) → 自动 connect → CFG accept） */
-    return dev_ipc_wait_connected(ctx, target_id, timeout_ms);
+    const uint32_t poll_step_us = 100 * 1000; /* 100ms */
+    int64_t deadline_us = (int64_t)g_get_monotonic_time() + (int64_t)timeout_ms * 1000;
+
+    while (1)
+    {
+        /* 快照本端的订阅 target id 列表，避免持锁期间调 is_connected（is_connected 自己也加锁） */
+        GArray *targets = g_array_new(FALSE, FALSE, sizeof(uint32_t));
+        pthread_mutex_lock(&ctx->sub_mgr->lock);
+        GHashTableIter iter;
+        gpointer key = NULL;
+        gpointer val = NULL;
+        g_hash_table_iter_init(&iter, ctx->sub_mgr->subs);
+        while (g_hash_table_iter_next(&iter, &key, &val))
+        {
+            ipc_subscription_t *sub = (ipc_subscription_t *)val;
+            if (sub)
+            {
+                g_array_append_val(targets, sub->target_module_id);
+            }
+        }
+        pthread_mutex_unlock(&ctx->sub_mgr->lock);
+
+        guint missing = 0;
+        for (guint i = 0; i < targets->len; i++)
+        {
+            uint32_t tid = g_array_index(targets, uint32_t, i);
+            if (!dev_ipc_is_connected(ctx, tid))
+            {
+                missing++;
+            }
+        }
+        g_array_free(targets, TRUE);
+
+        if (missing == 0)
+        {
+            return ERRCODE_SUCCESS;
+        }
+        if ((int64_t)g_get_monotonic_time() >= deadline_us)
+        {
+            LOG_WARN("<%s> wait_all_subscribed_connected: %u target(s) still not connected", ctx->name, missing);
+            return ERRCODE_FAIL;
+        }
+        usleep(poll_step_us);
+    }
 }

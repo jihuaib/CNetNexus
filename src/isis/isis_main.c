@@ -113,28 +113,60 @@ static void isis_handle_if_ready(void)
  * 等 DB 就绪后建表。配置 restore 需要 worker 已启动，因为 restore 通过 apply
  * 命令回放到 worker 状态。
  */
-static int isis_init_db_schema(void)
-{
-    dev_ipc_context_t *ctx = isis_local_ipc_ctx();
-
-    if (dev_ipc_wait_module_ready(ctx, DEV_MODULE_ID_DB, 5000) != ERRCODE_SUCCESS)
-    {
-        LOG_ERROR("ISIS: DB not ready, skip db init");
-        return -1;
-    }
-    if (isis_db_init() != ERRCODE_SUCCESS)
-    {
-        LOG_ERROR("ISIS: DB init failed");
-        return -1;
-    }
-    return 0;
-}
+static gboolean g_isis_db_restored = FALSE;
 
 static void isis_restore_db_state(void)
 {
     if (isis_db_restore() != ERRCODE_SUCCESS)
     {
         LOG_WARN("ISIS: DB restore failed");
+    }
+}
+
+static void isis_handle_db_ready(void)
+{
+    dev_ipc_context_t *ctx = isis_local_ipc_ctx();
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DB, 3000) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("ISIS: DB not connected within 3s; db restore deferred");
+        return;
+    }
+
+    if (isis_db_init() != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("ISIS: DB init failed");
+        return;
+    }
+
+    if (g_isis_db_restored)
+    {
+        LOG_INFO("ISIS: DB ready; restore already completed");
+        return;
+    }
+
+    isis_restore_db_state();
+    g_isis_db_restored = TRUE;
+}
+
+static void isis_on_db_event_cb(uint32_t module_id, uint8_t event, const char *host, uint16_t port, uint32_t epoch,
+                                void *user)
+{
+    (void)module_id;
+    (void)host;
+    (void)port;
+    (void)epoch;
+    (void)user;
+
+    if (event != DEV_MODULE_EVENT_READY || !g_isis_local || !g_isis_local->dev_ipc_ctx)
+    {
+        return;
+    }
+
+    dev_ipc_message_t *m = dev_ipc_message_create(ISIS_MSG_TYPE_INTERNAL_DB_READY, DEV_MODULE_ID_ISIS,
+                                                  DEV_MODULE_ID_ISIS, 0, NULL, 0, NULL);
+    if (m)
+    {
+        g_async_queue_push(g_isis_local->dev_ipc_ctx->msg_queue, m);
     }
 }
 
@@ -147,6 +179,10 @@ void isis_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
     switch (msg->msg_type)
     {
+        case ISIS_MSG_TYPE_INTERNAL_DB_READY:
+            isis_handle_db_ready();
+            break;
+
         case ISIS_MSG_TYPE_INTERNAL_IF_READY:
             isis_handle_if_ready();
             break;
@@ -177,12 +213,7 @@ void isis_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             }
             else
             {
-                /* DB 不可用时直接拒绝配置下发，避免内存/OS 与 DB 静默偏移 */
-                if (db_rpc_guard_reject(ctx, msg, "ISIS"))
-                {
-                    dev_ipc_message_free(msg);
-                    return;
-                }
+                /* CFG 已经卡 READY 才派发；READY 时业务已从 DB 恢复完，不再业务侧拦截 */
                 (void)isis_cli_handle_config_msg(msg);
                 dev_ipc_message_free(msg);
             }
@@ -253,8 +284,6 @@ int isis_module_init(void)
         LOG_ERROR("ISIS: timed out waiting for DEV connection; module may be unusable");
     }
 
-    (void)isis_init_db_schema();
-
     if (isis_worker_prepare() != ERRCODE_SUCCESS || isis_worker_launch() != ERRCODE_SUCCESS)
     {
         LOG_ERROR("ISIS: worker start failed");
@@ -262,7 +291,10 @@ int isis_module_init(void)
         return -1;
     }
 
-    isis_restore_db_state();
+    if (dev_ipc_notify_ready(ctx) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("ISIS: notify_ready to DEV failed");
+    }
 
     /* ROUTE：回调模式，ROUTE 每次 READY 触发 worker 重刷 ISIS 路由。 */
     if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_ROUTE, 0, isis_on_route_ready_cb, NULL) != ERRCODE_SUCCESS)
@@ -281,10 +313,16 @@ int isis_module_init(void)
         LOG_WARN("ISIS: subscribe(CLI) failed; commands from CFG won't be reachable");
     }
 
-    if (dev_ipc_notify_ready(ctx) != ERRCODE_SUCCESS)
+    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_DB, 0, isis_on_db_event_cb, NULL) != ERRCODE_SUCCESS)
     {
-        LOG_WARN("ISIS: notify_ready to DEV failed");
+        LOG_WARN("ISIS: subscribe(DB) failed; DB restore deferred until a later READY event");
     }
+
+    if (dev_ipc_is_connected(ctx, DEV_MODULE_ID_DB))
+    {
+        isis_handle_db_ready();
+    }
+
     LOG_INFO("ISIS: module ready");
 
     return 0;

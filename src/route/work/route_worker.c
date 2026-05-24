@@ -236,6 +236,32 @@ static int route_worker_post_calc_event(const route_head_key_t *key)
     return 0;
 }
 
+/* SMOOTHSTART 时回调：收集 cache 内所有非 public VRF id，拆除其在 RIB 中的静态路由。
+ * 注意只清内存，不动 DB（DB 是后续 SMOOTHEND 重恢复的依据）。 */
+static gboolean purge_collect_cb(const vrf_api_cache_entry_t *entry, void *user_data)
+{
+    GArray *vrf_ids = (GArray *)user_data;
+    if (entry && entry->vrf_id != VRF_PUBLIC_VRF_ID)
+    {
+        g_array_append_val(vrf_ids, entry->vrf_id);
+    }
+    return FALSE; /* 继续遍历 */
+}
+
+void route_worker_purge_non_public_vrf_business(void)
+{
+    GArray *vrf_ids = g_array_new(FALSE, FALSE, sizeof(uint32_t));
+    vrf_api_cache_foreach(purge_collect_cb, vrf_ids);
+
+    for (guint i = 0; i < vrf_ids->len; i++)
+    {
+        uint32_t vid = g_array_index(vrf_ids, uint32_t, i);
+        int rc = route_static_del_vrf(vid);
+        LOG_INFO("Route resync: purged %d static path(s) for vrf_id=%u", rc > 0 ? rc : 0, vid);
+    }
+    g_array_free(vrf_ids, TRUE);
+}
+
 static int worker_resolve_vrf_id_by_name(const char *vrf_name, uint32_t *vrf_id)
 {
     if (!vrf_id)
@@ -596,12 +622,21 @@ static int worker_dispatch_cmd(route_worker_cmd_t *cmd)
             break;
 
         case ROUTE_WORKER_CMD_VRF_EVENT:
+            /* SMOOTHSTART/EVENT 直接交给 lib：DOWN 路径已在前面拆掉非 public VRF 业务，
+             * 这里只负责让 cache 跟随 REPLAY 流重建。 */
             vrf_api_cache_on_event(cmd->msg);
             if (cmd->msg)
             {
                 dev_ipc_message_free(cmd->msg);
                 cmd->msg = NULL;
             }
+            worker_cmd_complete(cmd, ERRCODE_SUCCESS);
+            return 0;
+
+        case ROUTE_WORKER_CMD_VRF_DOWN:
+            /* VRF 模块 DOWN：先拆 RIB 中所有非 public VRF 的静态路由，再清 vrf_api cache。 */
+            route_worker_purge_non_public_vrf_business();
+            vrf_api_cache_clear();
             worker_cmd_complete(cmd, ERRCODE_SUCCESS);
             return 0;
 

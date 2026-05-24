@@ -18,7 +18,6 @@
 #include "fib.h"
 #include "if.h"
 #include "log.h"
-#include "pending.h"
 #include "route.h"
 #include "route_bdr.h"
 #include "route_cfg_apply.h"
@@ -72,8 +71,9 @@ static const db_table_def_t ROUTE_BATCH_TABLE = {
 // Phase 1: MODULE_START
 // ============================================================================
 
-/* VRF dep 就绪回调（含初次 + 重启）。
- * IO/同步上下文，不阻塞——投递 worker 内部消息让 worker 线程做实际订阅。 */
+/* VRF dep 事件回调（含初次 + 重启）。
+ *   READY → 投递 VRF_READY，IPC 线程做 vrf_api_subscribe_all。
+ *   DOWN  → 投递 VRF_DOWN，worker 拆非 public VRF 业务 + 清 cache。 */
 static void route_on_vrf_ready_cb(uint32_t module_id, uint8_t event, const char *host, uint16_t port, uint32_t epoch,
                                   void *user)
 {
@@ -82,16 +82,24 @@ static void route_on_vrf_ready_cb(uint32_t module_id, uint8_t event, const char 
     (void)port;
     (void)epoch;
     (void)user;
-    if (event != DEV_MODULE_EVENT_READY)
-    {
-        return;
-    }
     if (!g_route_local || !g_route_local->dev_ipc_ctx)
     {
         return;
     }
-    dev_ipc_message_t *m = dev_ipc_message_create(ROUTE_MSG_TYPE_INTERNAL_VRF_READY, DEV_MODULE_ID_ROUTE,
-                                                  DEV_MODULE_ID_ROUTE, 0, NULL, 0, NULL);
+    uint32_t msg_type;
+    if (event == DEV_MODULE_EVENT_READY)
+    {
+        msg_type = ROUTE_MSG_TYPE_INTERNAL_VRF_READY;
+    }
+    else if (event == DEV_MODULE_EVENT_DOWN)
+    {
+        msg_type = ROUTE_MSG_TYPE_INTERNAL_VRF_DOWN;
+    }
+    else
+    {
+        return;
+    }
+    dev_ipc_message_t *m = dev_ipc_message_create(msg_type, DEV_MODULE_ID_ROUTE, DEV_MODULE_ID_ROUTE, 0, NULL, 0, NULL);
     if (m)
     {
         g_async_queue_push(g_route_local->dev_ipc_ctx->msg_queue, m);
@@ -119,9 +127,11 @@ static void route_handle_vrf_ready(void)
 static void route_handle_if_ready(void)
 {
     dev_ipc_context_t *ctx = route_local_ipc_ctx();
-    if (!dev_ipc_is_connected(ctx, DEV_MODULE_ID_IF))
+    /* IF READY 事件可能比 IF 连接建立先到（synth READY 来自 DEV，连接由 IO 异步建）。
+     * 用 wait_connected 给点时间，避免一次性 deferred 后再没人补订阅。 */
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_IF, 3000) != ERRCODE_SUCCESS)
     {
-        LOG_WARN("Route: IF not connected yet; if_api_subscribe_all deferred");
+        LOG_WARN("Route: IF not connected within 3s; if_api_subscribe_all deferred");
         return;
     }
     if (if_api_subscribe_all(ctx) != ERRCODE_SUCCESS)
@@ -134,6 +144,29 @@ static void route_handle_if_ready(void)
     }
 }
 
+static gboolean g_route_db_ready = FALSE;      /* DB 已建表 */
+static gboolean g_route_vrf_smoothend = FALSE; /* VRF REPLAY 已完成 */
+
+static void route_try_db_restore(void)
+{
+    if (g_route_db_restored)
+    {
+        return;
+    }
+    if (!g_route_db_ready || !g_route_vrf_smoothend)
+    {
+        return;
+    }
+
+    if (route_db_restore() != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("Route: DB restore failed");
+        return;
+    }
+    g_route_db_restored = TRUE;
+    LOG_INFO("Route: DB restore completed (db_ready + vrf_smoothend)");
+}
+
 static void route_handle_db_ready(void)
 {
     dev_ipc_context_t *ctx = route_local_ipc_ctx();
@@ -144,29 +177,40 @@ static void route_handle_db_ready(void)
         return;
     }
 
-    if (db_rpc_create_table_from_def(ctx, &ROUTE_STATIC_TABLE) != ERRCODE_SUCCESS)
+    if (!g_route_db_ready)
     {
-        LOG_WARN("Route: create table route_static failed");
-        return;
+        if (db_rpc_create_table_from_def(ctx, &ROUTE_STATIC_TABLE) != ERRCODE_SUCCESS)
+        {
+            LOG_WARN("Route: create table route_static failed");
+            return;
+        }
+        if (db_rpc_create_table_from_def(ctx, &ROUTE_BATCH_TABLE) != ERRCODE_SUCCESS)
+        {
+            LOG_WARN("Route: create table route_batch failed");
+            return;
+        }
+        g_route_db_ready = TRUE;
     }
-    if (db_rpc_create_table_from_def(ctx, &ROUTE_BATCH_TABLE) != ERRCODE_SUCCESS)
+
+    route_try_db_restore();
+}
+
+static void route_handle_vrf_smoothend(void)
+{
+    gboolean first = !g_route_vrf_smoothend;
+    g_route_vrf_smoothend = TRUE;
+
+    if (first)
     {
-        LOG_WARN("Route: create table route_batch failed");
+        LOG_INFO("Route: VRF smoothend received (initial sync)");
+        route_try_db_restore();
         return;
     }
 
-    if (g_route_db_restored)
-    {
-        LOG_INFO("Route: DB schema ready; restore already completed");
-        return;
-    }
-
-    if (route_db_restore() != ERRCODE_SUCCESS)
-    {
-        LOG_WARN("Route: DB restore failed");
-        return;
-    }
-    g_route_db_restored = TRUE;
+    /* VRF 进程重启后的再同步：worker 已在 SMOOTHSTART 时清掉非 public VRF 的内存静态路由，
+     * 这里只从 DB 重恢复 vrf_name 非 public 的行。 */
+    LOG_INFO("Route: VRF smoothend received (resync)");
+    (void)route_db_restore_vrf_bound();
 }
 
 static void route_on_db_event_cb(uint32_t module_id, uint8_t event, const char *host, uint16_t port, uint32_t epoch,
@@ -248,13 +292,7 @@ static int route_init_local(void)
         return -1;
     }
 
-    if (dev_ipc_notify_ready(ctx) != ERRCODE_SUCCESS)
-    {
-        LOG_WARN("Route: notify_ready to DEV failed");
-    }
-
-    /* Dependency subscription is Route-owned follow-up work. It must not gate
-     * notify_ready; each READY event drives its own delayed initialization. */
+    /* 一次性订阅所有依赖（含 CLI） */
     if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_IF, 0, route_on_if_event_cb, NULL) != ERRCODE_SUCCESS)
     {
         LOG_WARN("Route: subscribe(IF) failed");
@@ -267,13 +305,30 @@ static int route_init_local(void)
     {
         LOG_WARN("Route: subscribe(VRF) failed");
     }
+    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_DB, 0, route_on_db_event_cb, NULL) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("Route: subscribe(DB) failed");
+    }
     if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_CLI, 0, NULL, NULL) != ERRCODE_SUCCESS)
     {
         LOG_WARN("Route: subscribe(CLI) failed");
     }
-    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_DB, 0, route_on_db_event_cb, NULL) != ERRCODE_SUCCESS)
+
+    /* DEPS_READY：等所有订阅 peer IPC 都 CONNECTED 再做 DB 恢复 */
+    if (dev_ipc_wait_all_subscribed_connected(ctx, 10000) != ERRCODE_SUCCESS)
     {
-        LOG_WARN("Route: subscribe(DB) failed; DB restore deferred until a later READY event");
+        LOG_WARN("Route: deps not fully connected within 10s; proceeding anyway");
+    }
+
+    if (dev_ipc_is_connected(ctx, DEV_MODULE_ID_DB))
+    {
+        route_handle_db_ready();
+    }
+
+    /* 业务恢复完成，进入 READY 阶段 */
+    if (dev_ipc_notify_ready(ctx) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("Route: notify_ready to DEV failed");
     }
 
     LOG_INFO("Route: module ready");
@@ -320,6 +375,13 @@ void route_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             }
             break;
 
+        case ROUTE_MSG_TYPE_INTERNAL_VRF_DOWN:
+            if (route_worker_post(ROUTE_WORKER_CMD_VRF_DOWN, NULL) != 0)
+            {
+                LOG_WARN("Route: failed to post VRF-down purge to worker");
+            }
+            break;
+
         case ROUTE_MSG_TYPE_INTERNAL_DB_READY:
             route_handle_db_ready();
             break;
@@ -340,14 +402,8 @@ void route_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             }
             else
             {
-                /* 配置命令：在 IPC 线程完成 DB 持久化后同步等待 worker 完成内存应用 */
+                /* CFG 已经卡 READY 才派发；Route 在 READY 时业务已从 DB 恢复完，不再业务侧拦截 */
                 LOG_DEBUG("Received CLI config command (%u bytes)", msg->payload_len);
-                /* DB 不可用时直接拒绝配置下发，避免内存/OS 与 DB 静默偏移 */
-                if (db_rpc_guard_reject(ctx, msg, "Route"))
-                {
-                    dev_ipc_message_free(msg);
-                    return;
-                }
                 route_cli_handle_config_msg(msg);
                 dev_ipc_message_free(msg);
             }
@@ -456,6 +512,11 @@ void route_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
                 g_strlcpy(vrf_name, evt->name, sizeof(vrf_name));
             }
 
+            if (vrf_event == VRF_EVENT_SMOOTHEND)
+            {
+                route_handle_vrf_smoothend();
+            }
+
             if (route_worker_dispatch_vrf_event(msg) != 0)
             {
                 LOG_WARN("Route: failed to dispatch VRF_EVENT to worker");
@@ -465,14 +526,8 @@ void route_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
             if (vrf_name[0] != '\0')
             {
-                if (vrf_event == VRF_EVENT_VRF_ADD)
+                if (vrf_event == VRF_EVENT_VRF_DEL)
                 {
-                    pending_resolve(g_route_local->pending, ROUTE_DEP_VRF, g_str_hash(vrf_name));
-                }
-                else if (vrf_event == VRF_EVENT_VRF_DEL)
-                {
-                    pending_invalidate(g_route_local->pending, ROUTE_DEP_VRF, g_str_hash(vrf_name));
-
                     /* 级联：删除该 VRF 下所有静态路由（DB + 内存 RIB） */
                     if (vrf_id != ROUTE_VRF_DEFAULT)
                     {
@@ -535,7 +590,6 @@ int route_module_init(void)
     }
 
     g_route_local->dev_ipc_ctx = ctx;
-    g_route_local->pending = pending_new("route");
 
     return route_init_local();
 }
@@ -565,12 +619,6 @@ void route_module_cleanup(void)
     if (!g_route_local)
     {
         return;
-    }
-
-    if (g_route_local->pending)
-    {
-        pending_destroy(g_route_local->pending);
-        g_route_local->pending = NULL;
     }
 
     g_free(g_route_local);

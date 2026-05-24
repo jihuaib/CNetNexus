@@ -4,7 +4,6 @@ add_library(utils SHARED
     log.c
     mpls_config.c
     net_addr.c
-    pending.c
 )
 
 # Link dependencies

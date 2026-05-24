@@ -154,15 +154,16 @@ int tunnel_module_init(void)
         return -1;
     }
 
+    if (dev_ipc_notify_ready(ctx) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("TUNNEL: notify_ready to DEV failed");
+    }
+
     if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_CLI, 0, NULL, NULL) != ERRCODE_SUCCESS)
     {
         LOG_WARN("TUNNEL: subscribe(CLI) failed; commands from CFG won't be reachable");
     }
 
-    if (dev_ipc_notify_ready(ctx) != ERRCODE_SUCCESS)
-    {
-        LOG_WARN("TUNNEL: notify_ready to DEV failed");
-    }
     LOG_INFO("TUNNEL: module ready");
 
     return 0;

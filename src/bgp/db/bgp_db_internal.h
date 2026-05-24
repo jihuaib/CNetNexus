@@ -64,6 +64,10 @@ int bgp_db_delete_table_all(dev_ipc_context_t *ctx, const char *table_name, int 
 // 各表的启动恢复入口（由 bgp_db_restore 顺序调用）
 // ============================================================================
 
+/* VRF re-sync 模式：bgp_db_restore_vrf_bound 期间置 TRUE，各 restore 函数
+ * 据此跳过 vrf_name == public 的行。worker 线程独占访问，无需加锁。 */
+extern gboolean g_bgp_db_resync_only_vrf_bound;
+
 uint32_t bgp_db_restore_protocol(void);
 void bgp_db_restore_vrf(void);
 void bgp_db_restore_sessions(void);

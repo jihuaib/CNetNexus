@@ -264,40 +264,58 @@ static void replay_af(uint32_t module_id, uint32_t event_mask, uint32_t af_mask,
     }
 }
 
-static void replay_full(uint32_t module_id, uint32_t af_mask, uint32_t event_mask)
+/* 单独投递一条平滑同步标记事件（不受 af_mask 限制：标记事件无地址族维度）。
+ * 直接走 send_event_to，绕过 subscriber_match 中的事件位检查——
+ * smoothstart/smoothend 是 REPLAY 路径的强制框架，订阅方无需显式 opt-in。 */
+static void send_smooth_marker(uint32_t module_id, uint32_t event)
 {
-    vrf_table_t *t = vrf_worker_table();
-    if (!t || !t->by_id)
+    size_t sz = 0;
+    vrf_event_msg_t *src = build_event(NULL, event, 0, 0, NULL, NULL, 0, &sz);
+    if (!src)
     {
         return;
     }
-    GHashTableIter iter;
-    gpointer key = NULL;
-    gpointer val = NULL;
-    g_hash_table_iter_init(&iter, t->by_id);
-    while (g_hash_table_iter_next(&iter, &key, &val))
+    send_event_to(module_id, src, sz);
+    g_free(src);
+}
+
+static void replay_full(uint32_t module_id, uint32_t af_mask, uint32_t event_mask)
+{
+    send_smooth_marker(module_id, VRF_EVENT_SMOOTHSTART);
+
+    vrf_table_t *t = vrf_worker_table();
+    if (t && t->by_id)
     {
-        (void)key;
-        const vrf_entry_t *e = (const vrf_entry_t *)val;
-        replay_one(module_id, event_mask, af_mask, VRF_EVENT_VRF_ADD, e, 0, 0, NULL, NULL, 0);
-        if (e->os_state != VRF_OS_STATE_UNKNOWN)
+        GHashTableIter iter;
+        gpointer key = NULL;
+        gpointer val = NULL;
+        g_hash_table_iter_init(&iter, t->by_id);
+        while (g_hash_table_iter_next(&iter, &key, &val))
         {
-            replay_one(module_id, event_mask, af_mask, VRF_EVENT_VRF_STATE, e, 0, 0, NULL, NULL, 0);
-        }
-        if (!e->afs)
-        {
-            continue;
-        }
-        GHashTableIter af_iter;
-        gpointer af_key = NULL;
-        gpointer af_val = NULL;
-        g_hash_table_iter_init(&af_iter, e->afs);
-        while (g_hash_table_iter_next(&af_iter, &af_key, &af_val))
-        {
-            (void)af_key;
-            replay_af(module_id, event_mask, af_mask, e, (const vrf_af_state_t *)af_val);
+            (void)key;
+            const vrf_entry_t *e = (const vrf_entry_t *)val;
+            replay_one(module_id, event_mask, af_mask, VRF_EVENT_VRF_ADD, e, 0, 0, NULL, NULL, 0);
+            if (e->os_state != VRF_OS_STATE_UNKNOWN)
+            {
+                replay_one(module_id, event_mask, af_mask, VRF_EVENT_VRF_STATE, e, 0, 0, NULL, NULL, 0);
+            }
+            if (!e->afs)
+            {
+                continue;
+            }
+            GHashTableIter af_iter;
+            gpointer af_key = NULL;
+            gpointer af_val = NULL;
+            g_hash_table_iter_init(&af_iter, e->afs);
+            while (g_hash_table_iter_next(&af_iter, &af_key, &af_val))
+            {
+                (void)af_key;
+                replay_af(module_id, event_mask, af_mask, e, (const vrf_af_state_t *)af_val);
+            }
         }
     }
+
+    send_smooth_marker(module_id, VRF_EVENT_SMOOTHEND);
 }
 
 // ============================================================================
@@ -369,10 +387,36 @@ void vrf_pub_handle_subscribe(dev_ipc_message_t *msg)
 
     if ((req->flags & VRF_SUBSCRIBE_FLAG_REPLAY) != 0)
     {
-        replay_full(msg->src_module_id, req->af_mask, req->event_mask);
+        if (vrf_worker_is_restore_done())
+        {
+            replay_full(msg->src_module_id, req->af_mask, req->event_mask);
+        }
+        else
+        {
+            /* DB 恢复未完成：先记住要补发，等 restore 完成后由 flush 统一推送 */
+            sub->pending_replay = 1;
+            LOG_INFO("VRF: defer REPLAY to module 0x%08X until db restore done", msg->src_module_id);
+        }
     }
     send_ack(msg, ERRCODE_SUCCESS);
     dev_ipc_message_free(msg);
+}
+
+void vrf_pub_flush_pending_replays(void)
+{
+    GList **plist = vrf_worker_subscribers_ptr();
+    for (GList *l = *plist; l; l = l->next)
+    {
+        vrf_subscriber_t *sub = (vrf_subscriber_t *)l->data;
+        if (!sub || !sub->pending_replay)
+        {
+            continue;
+        }
+        LOG_INFO("VRF: flushing deferred REPLAY to module 0x%08X (af=0x%08X event=0x%08X)", sub->module_id,
+                 sub->af_mask, sub->event_mask);
+        replay_full(sub->module_id, sub->af_mask, sub->event_mask);
+        sub->pending_replay = 0;
+    }
 }
 
 void vrf_pub_handle_unsubscribe(dev_ipc_message_t *msg)

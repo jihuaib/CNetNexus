@@ -55,6 +55,14 @@ int if_cfg_apply_vrf_binding(const char *logical_name, const char *vrf_name);
 int if_cfg_apply_vrf_deleted(const char *vrf_name);
 
 /**
+ * @brief 把所有绑非 public VRF 的接口在内存态解绑（不动 DB / 不动 netlink）。
+ *        仅 VRF SMOOTHSTART 路径调用：VRF 进程重启后 L3VRF kernel 设备已不存在，
+ *        DB 配置保留供 SMOOTHEND 后的 re-sync 恢复。
+ * @return 被清理的接口数
+ */
+int if_cfg_purge_non_public_vrf_bindings_mem(void);
+
+/**
  * @brief 确保 loop 接口内存条目和 OS dummy 接口存在（不操作 DB，供 DB 恢复使用）
  * @param loop_id loop 接口编号（1-1024）
  * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL

@@ -35,6 +35,9 @@ static inline dev_ipc_context_t *ldp_local_ipc_ctx(void)
  *  category=LDP, subtype=0xFFFC */
 #define LDP_MSG_TYPE_INTERNAL_IF_DOWN DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_LDP, 0xFFFC)
 
+/** LDP 内部消息：DB 模块就绪，worker 线程做 db_init + db_restore */
+#define LDP_MSG_TYPE_INTERNAL_DB_READY DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_LDP, 0xFFFB)
+
 void ldp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
 int ldp_module_init(void);
 void ldp_module_cleanup(void);

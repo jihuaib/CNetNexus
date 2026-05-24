@@ -275,6 +275,10 @@ void bgp_db_restore_sessions(void)
         {
             continue;
         }
+        if (g_bgp_db_resync_only_vrf_bound && (!vrf_name || strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) == 0))
+        {
+            continue; /* re-sync 跳过 public VRF 行 */
+        }
 
         net_addr_t nb_addr;
         if (net_addr_from_str(ip_val, &nb_addr) != 0)

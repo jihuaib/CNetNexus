@@ -118,29 +118,56 @@ static void ldp_handle_if_ready(void)
     }
 }
 
-/**
- * 等 DB 就绪后建表 + restore。
- */
-static int ldp_init_db_state(void)
+static gboolean g_ldp_db_restored = FALSE;
+
+static void ldp_handle_db_ready(void)
 {
     dev_ipc_context_t *ctx = ldp_local_ipc_ctx();
-
-    if (dev_ipc_wait_module_ready(ctx, DEV_MODULE_ID_DB, 5000) != ERRCODE_SUCCESS)
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DB, 3000) != ERRCODE_SUCCESS)
     {
-        LOG_ERROR("LDP: DB not ready, skip db init/restore");
-        return -1;
+        LOG_WARN("LDP: DB not connected within 3s; db restore deferred");
+        return;
     }
+
     if (ldp_db_init() != ERRCODE_SUCCESS)
     {
         LOG_ERROR("LDP: DB init failed");
-        return -1;
+        return;
     }
+
+    if (g_ldp_db_restored)
+    {
+        LOG_INFO("LDP: DB ready; restore already completed");
+        return;
+    }
+
     if (ldp_db_restore() != ERRCODE_SUCCESS)
     {
         LOG_WARN("LDP: DB restore failed");
-        /* 不致命：可能 db_init 成功但表里数据有问题；继续启动让用户排查 */
     }
-    return 0;
+    g_ldp_db_restored = TRUE;
+}
+
+static void ldp_on_db_event_cb(uint32_t module_id, uint8_t event, const char *host, uint16_t port, uint32_t epoch,
+                               void *user)
+{
+    (void)module_id;
+    (void)host;
+    (void)port;
+    (void)epoch;
+    (void)user;
+
+    if (event != DEV_MODULE_EVENT_READY || !g_ldp_local || !g_ldp_local->dev_ipc_ctx)
+    {
+        return;
+    }
+
+    dev_ipc_message_t *m =
+        dev_ipc_message_create(LDP_MSG_TYPE_INTERNAL_DB_READY, DEV_MODULE_ID_LDP, DEV_MODULE_ID_LDP, 0, NULL, 0, NULL);
+    if (m)
+    {
+        g_async_queue_push(g_ldp_local->dev_ipc_ctx->msg_queue, m);
+    }
 }
 
 void ldp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
@@ -152,6 +179,10 @@ void ldp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
     switch (msg->msg_type)
     {
+        case LDP_MSG_TYPE_INTERNAL_DB_READY:
+            ldp_handle_db_ready();
+            break;
+
         case LDP_MSG_TYPE_INTERNAL_IF_READY:
             ldp_handle_if_ready();
             break;
@@ -182,12 +213,7 @@ void ldp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             }
             else
             {
-                /* DB 不可用时直接拒绝配置下发，避免内存/OS 与 DB 静默偏移 */
-                if (db_rpc_guard_reject(ctx, msg, "LDP"))
-                {
-                    dev_ipc_message_free(msg);
-                    return;
-                }
+                /* CFG 已经卡 READY 才派发；READY 时业务已从 DB 恢复完，不再业务侧拦截 */
                 (void)ldp_cli_handle_config_msg(msg);
                 dev_ipc_message_free(msg);
             }
@@ -254,12 +280,24 @@ int ldp_module_init(void)
      *   1. 等 DEV 控制连接
      *   2. 业务模块依赖声明：subscribe(TUNNEL, auto_start=1) —— LDP 需要 TUNNEL 做标签转发
      *   3. wait_module_ready(DB) → db_init + db_restore
-     *   4. worker 启动 + 订阅 IF 事件
-     *   5. subscribe(CLI) 放最后：CFG 看到本模块在跑即可立即 dispatch
-     *   6. notify_ready 通知 DEV */
+     *   4. worker 启动
+     *   5. notify_ready 通知 DEV
+     *   6. 订阅依赖放 ready 后面：各 READY 事件驱动自身延迟初始化 */
     if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DEV, 10000) != ERRCODE_SUCCESS)
     {
         LOG_ERROR("LDP: timed out waiting for DEV connection; module may be unusable");
+    }
+
+    if (ldp_worker_prepare() != ERRCODE_SUCCESS || ldp_worker_launch() != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("LDP: worker start failed");
+        ldp_worker_shutdown();
+        return -1;
+    }
+
+    if (dev_ipc_notify_ready(ctx) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("LDP: notify_ready to DEV failed");
     }
 
     /* 显式依赖：使能 LDP 即拉起 TUNNEL（按需模块，否则保持 idle）。
@@ -267,15 +305,6 @@ int ldp_module_init(void)
     if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_TUNNEL, 1, NULL, NULL) != ERRCODE_SUCCESS)
     {
         LOG_WARN("LDP: subscribe(TUNNEL) failed; MPLS forwarding may not work");
-    }
-
-    (void)ldp_init_db_state();
-
-    if (ldp_worker_prepare() != ERRCODE_SUCCESS || ldp_worker_launch() != ERRCODE_SUCCESS)
-    {
-        LOG_ERROR("LDP: worker start failed");
-        ldp_worker_shutdown();
-        return -1;
     }
 
     /* ROUTE：回调模式，ROUTE 每次 READY 触发 worker 重发路由订阅。 */
@@ -298,10 +327,16 @@ int ldp_module_init(void)
         LOG_WARN("LDP: subscribe(CLI) failed; commands from CFG won't be reachable");
     }
 
-    if (dev_ipc_notify_ready(ctx) != ERRCODE_SUCCESS)
+    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_DB, 0, ldp_on_db_event_cb, NULL) != ERRCODE_SUCCESS)
     {
-        LOG_WARN("LDP: notify_ready to DEV failed");
+        LOG_WARN("LDP: subscribe(DB) failed; DB restore deferred until a later READY event");
     }
+
+    if (dev_ipc_is_connected(ctx, DEV_MODULE_ID_DB))
+    {
+        ldp_handle_db_ready();
+    }
+
     LOG_INFO("LDP: module ready");
 
     return 0;

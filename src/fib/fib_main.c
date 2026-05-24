@@ -85,8 +85,12 @@ static int fib_init_local(void)
         return -1;
     }
 
-    /* VRF（on-demand）：auto_start=1 + cb 重启感知 */
-    /* VRF 用 auto_start=0：FIB 不硬依赖 VRF；cb 在 VRF 实际启动后才触发 vrf_api_subscribe_all */
+    if (dev_ipc_notify_ready(ctx) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("FIB: notify_ready to DEV failed");
+    }
+
+    /* VRF（常驻）：auto_start=0；cb 在 VRF READY（含重启）时触发 vrf_api_subscribe_all。 */
     if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_VRF, 0, fib_on_vrf_ready_cb, NULL) != ERRCODE_SUCCESS)
     {
         LOG_WARN("FIB: subscribe(VRF) failed");
@@ -98,10 +102,6 @@ static int fib_init_local(void)
         LOG_WARN("FIB: subscribe(CLI) failed");
     }
 
-    if (dev_ipc_notify_ready(ctx) != ERRCODE_SUCCESS)
-    {
-        LOG_WARN("FIB: notify_ready to DEV failed");
-    }
     LOG_INFO("FIB: module ready");
     return 0;
 }

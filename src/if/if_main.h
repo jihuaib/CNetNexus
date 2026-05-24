@@ -8,18 +8,22 @@
 #define IF_MAIN_H
 
 #include "dev.h"
-#include "pending.h"
-
-/** IF 挂起表依赖类型：等待某 VRF 出现 */
-#define IF_DEP_VRF 1u
 
 /** IF 内部消息：VRF 每次 READY（含初次 + 重启）触发 worker 重新订阅 VRF 事件
  *  category=IF, subtype=0xFFFE */
 #define IF_MSG_TYPE_INTERNAL_VRF_READY DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_IF, 0xFFFE)
 
+/** IF 内部消息：VRF 模块 DOWN，worker 清接口 VRF 绑定 + 清 cache
+ *  category=IF, subtype=0xFFFA */
+#define IF_MSG_TYPE_INTERNAL_VRF_DOWN DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_IF, 0xFFFA)
+
 /** IF 内部消息：ROUTE 每次 READY（含初次 + 重启）触发 worker 重刷 connected 路由
  *  category=IF, subtype=0xFFFD */
 #define IF_MSG_TYPE_INTERNAL_ROUTE_READY DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_IF, 0xFFFD)
+
+/** IF 内部消息：DB 模块就绪，worker 线程做 db_init + db_restore
+ *  category=IF, subtype=0xFFFC */
+#define IF_MSG_TYPE_INTERNAL_DB_READY DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_IF, 0xFFFC)
 
 /**
  * @brief IF 模块 IPC 线程本地上下文（仅保留 IPC 相关，不包含业务数据）
@@ -30,7 +34,6 @@
 typedef struct
 {
     dev_ipc_context_t *dev_ipc_ctx;
-    pending_t *pending; /**< 跨模块依赖挂起表（仅在 IPC 线程内访问） */
 } if_local_t;
 
 extern if_local_t *g_if_local;

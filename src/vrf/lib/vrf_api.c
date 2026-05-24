@@ -235,6 +235,18 @@ void vrf_api_cache_cleanup(void)
     }
 }
 
+void vrf_api_cache_clear(void)
+{
+    if (g_vrf_cache_by_name)
+    {
+        g_hash_table_remove_all(g_vrf_cache_by_name);
+    }
+    if (g_vrf_cache_by_id)
+    {
+        g_hash_table_remove_all(g_vrf_cache_by_id);
+    }
+}
+
 const vrf_api_cache_entry_t *vrf_api_cache_lookup(uint32_t vrf_id)
 {
     if (!g_vrf_cache_by_id)
@@ -317,6 +329,17 @@ void vrf_api_cache_on_event(const dev_ipc_message_t *msg)
 
     switch (evt->event)
     {
+        case VRF_EVENT_SMOOTHSTART:
+            /* VRF 进程（重）启动通告：丢弃旧 cache，REPLAY 全量数据会立即填回。
+             * 订阅方业务清理动作发生在调用本函数之前。 */
+            g_hash_table_remove_all(g_vrf_cache_by_name);
+            g_hash_table_remove_all(g_vrf_cache_by_id);
+            return;
+
+        case VRF_EVENT_SMOOTHEND:
+            /* REPLAY 结束标记，本函数不处理。 */
+            return;
+
         case VRF_EVENT_VRF_ADD:
         {
             vrf_api_cache_entry_t *e = cache_get_or_create(evt->vrf_id, evt->name, evt->l3vrf_table_id);

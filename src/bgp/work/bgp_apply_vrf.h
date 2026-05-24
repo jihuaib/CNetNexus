@@ -20,4 +20,13 @@
  */
 void bgp_apply_vrf_event(const dev_ipc_message_t *msg);
 
+/**
+ * @brief 拆除所有非 public 的 bgp_vrf_t（保留 public VRF）。
+ *
+ * VRF 进程重启时由 SMOOTHSTART 触发：清掉所有依赖被重启 VRF 的内存业务
+ * （sessions / instances / neighbors 由 bgp_vrf_destroy 级联释放）。
+ * 不动 DB，等 SMOOTHEND 后从 DB 重恢复。
+ */
+void bgp_apply_vrf_purge_non_public(void);
+
 #endif /* BGP_APPLY_VRF_H */

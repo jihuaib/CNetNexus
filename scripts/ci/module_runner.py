@@ -43,7 +43,6 @@ from top_runner import (  # noqa: E402
 )
 
 
-MAX_HTML_OUTPUT_CHARS = 200000
 TOP_CANDIDATES = ("top.yaml", "top.yml", "top.json")
 SHOW_CURRENT_CONFIG_CMD = "show current-configuration"
 SHOW_VERSION_CMD = "show version"
@@ -402,6 +401,163 @@ def ensure_device_modules_ready(rt: TopologyRuntime, top: dict[str, Any]) -> Non
         wait_device_modules_ready(rt, dev)
 
 
+# 模块名 → module_id（与 include/dev.h DEV_MODULE_ID_* 对齐）
+_MODULE_NAME_TO_ID: dict[str, int] = {
+    "dev": 0x00000001,
+    "db": 0x00000002,
+    "cli": 0x00000003,
+    "vrf": 0x00000004,
+    "if": 0x00000005,
+    "bgp": 0x00000006,
+    "route": 0x00000007,
+    "sbmp": 0x00000008,
+    "access": 0x00000009,
+    "ldp": 0x0000000A,
+    "fib": 0x0000000B,
+    "tunnel": 0x0000000C,
+    "isis": 0x0000000D,
+}
+
+# 每个常驻模块期望保持 CONNECTED 的 peer 列表。
+# 只列"业务上必须存在"的连接（DB 持久化 / CLI 命令分发 / DEV 控制平面），
+# 不在此表的模块只校验 DEV 一项（避免 FIB 这种无 DB 的模块被误判）。
+_EXPECTED_PEERS_BY_MODULE: dict[str, tuple[str, ...]] = {
+    # 业务模块（有 DB 表，订阅 CLI 接命令）
+    "vrf": ("dev", "db", "cli"),
+    "if": ("dev", "db", "cli"),
+    "bgp": ("dev", "db", "cli"),
+    "route": ("dev", "db", "cli"),
+    "isis": ("dev", "db", "cli"),
+    "ldp": ("dev", "db", "cli"),
+    "sbmp": ("dev", "db", "cli"),
+    # 服务模块（无 DB）
+    "fib": ("dev",),
+    "tunnel": ("dev",),
+    "access": ("dev", "cli"),
+    # 核心模块（被订阅方，最少只需要 DEV）
+    "db": ("dev",),
+    "cli": ("dev",),
+}
+RESIDENT_IPC_WAIT_TIMEOUT_SEC = 30
+RESIDENT_IPC_WAIT_INTERVAL_SEC = 1
+
+_IPC_CONN_HEADER_TPL = r"Connection\s+#\d+\s*\(peer:\s*0x{pid:08X}\):"
+
+
+def _list_resident_modules(rt: TopologyRuntime, dev: str) -> list[str]:
+    """从 `show dev modules` 输出里抽出所有 phase=READY 的模块名（即非 ON-DEMAND
+    且当前在跑的常驻模块）。"""
+    out = rt.exec_cmd(dev, "show dev modules", strict=False)
+    names: list[str] = []
+    for line in out.splitlines():
+        m = MODULE_ROW_RE.match(line)
+        if not m:
+            continue
+        if m.group("phase").upper() != "READY":
+            continue
+        names.append(m.group("name").lower())
+    return names
+
+
+def _check_module_peers_connected(
+    rt: TopologyRuntime,
+    dev: str,
+    module: str,
+    required_peer_ids: list[tuple[str, int]],
+) -> list[str]:
+    """检查 module 在 dev 上的 `show dev ipc <module>` 是否对每个 required_peer
+    都呈现 State=CONNECTED；返回未满足的描述列表（空则全通过）。"""
+    out = rt.exec_cmd(dev, f"show dev ipc {module}", strict=False)
+    unmet: list[str] = []
+    for peer_name, peer_id in required_peer_ids:
+        header_pat = _IPC_CONN_HEADER_TPL.format(pid=peer_id)
+        hm = re.search(header_pat, out)
+        if not hm:
+            unmet.append(f"{peer_name}(0x{peer_id:08X}) absent")
+            continue
+        tail = out[hm.end() : hm.end() + 400]
+        sm = re.search(r"State\s*:\s*(\S+)", tail)
+        if not sm:
+            unmet.append(f"{peer_name}(0x{peer_id:08X}) no State")
+        elif sm.group(1) != "CONNECTED":
+            unmet.append(f"{peer_name}(0x{peer_id:08X}) state={sm.group(1)}")
+    return unmet
+
+
+def wait_resident_modules_ipc_connected(
+    rt: TopologyRuntime,
+    dev: str,
+    *,
+    timeout: int = RESIDENT_IPC_WAIT_TIMEOUT_SEC,
+) -> None:
+    """轮询直到 dev 上所有常驻模块对核心 peer 的 IPC 都已 CONNECTED。
+
+    检查规则：
+      - 先从 `show dev modules` 拿到当前 phase=READY 的模块列表（=常驻）
+      - 对其中每个模块 M（DEV 自身除外），按 _EXPECTED_PEERS_BY_MODULE 查
+        期望连接的 peer 集合；表里没列的模块只查 DEV 这一项
+      - peer 也必须在本机常驻；任何 peer 缺失或非 CONNECTED 即继续轮询
+
+    这能挡掉 VRF→DB 等冷启动 race 漏掉的连接（虽然 show dev modules 显示
+    ipc=up，仅代表模块自身上线，不等于业务依赖的 peer 都连上了）。
+    """
+    deadline = time.time() + timeout
+    last_problems: list[str] = []
+    last_resident: list[str] = []
+
+    while time.time() < deadline:
+        resident = _list_resident_modules(rt, dev)
+        if not resident:
+            time.sleep(RESIDENT_IPC_WAIT_INTERVAL_SEC)
+            continue
+        last_resident = resident
+        resident_set = set(resident)
+
+        problems: list[str] = []
+        for m in resident:
+            if m == "dev":
+                continue  # DEV 主动连别人，自己不做对外 peer 检查
+            expected_peers = _EXPECTED_PEERS_BY_MODULE.get(m, ("dev",))
+            required: list[tuple[str, int]] = []
+            for peer in expected_peers:
+                if peer == m:
+                    continue
+                if peer not in resident_set:
+                    continue  # 本设备没跑这个 peer 就不强求
+                if peer not in _MODULE_NAME_TO_ID:
+                    continue
+                required.append((peer, _MODULE_NAME_TO_ID[peer]))
+            if not required:
+                continue
+            unmet = _check_module_peers_connected(rt, dev, m, required)
+            for u in unmet:
+                problems.append(f"{m}: {u}")
+
+        if not problems:
+            print(f"resident IPC mesh on {dev}: OK ({len(resident)} modules / core peers all CONNECTED)")
+            return
+        last_problems = problems
+        time.sleep(RESIDENT_IPC_WAIT_INTERVAL_SEC)
+
+    raise RuntimeError(
+        f"{dev}: resident modules IPC mesh not ready within {timeout}s\n"
+        f"  resident modules: {last_resident}\n"
+        f"  unsatisfied: {', '.join(last_problems) or '(none)'}"
+    )
+
+
+def ensure_resident_module_ipc_ready(rt: TopologyRuntime, top: dict[str, Any]) -> None:
+    devices = top.get("devices", {})
+    if not isinstance(devices, dict) or not devices:
+        return
+    print("===== STEP: Precheck resident-module IPC mesh =====")
+    for dev in sorted(devices.keys()):
+        if _device_kind(rt, dev) != DEVICE_KIND_NETNEXUS:
+            print(f"skip resident-IPC precheck on {dev} ({_device_kind(rt, dev)})")
+            continue
+        wait_resident_modules_ipc_connected(rt, dev)
+
+
 def ensure_cli_pager_disabled(rt: TopologyRuntime, top: dict[str, Any]) -> None:
     devices = top.get("devices", {})
     if not isinstance(devices, dict) or not devices:
@@ -551,6 +707,7 @@ def run_check(
                 print(f"===== PREVIOUS CHECK: {previous_script} [{previous_status}] =====")
             load_global_top(top)
             ensure_device_modules_ready(rt, top)
+            ensure_resident_module_ipc_ready(rt, top)
             print_device_versions(rt, top)
 
             before_cfg = collect_show_current_config(rt, top, stage="before")
@@ -1008,12 +1165,6 @@ def write_check_log(log_path: Path, result: CheckResult) -> None:
     log_path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def truncate_for_html(text: str) -> tuple[str, bool]:
-    if len(text) <= MAX_HTML_OUTPUT_CHARS:
-        return text, False
-    return text[:MAX_HTML_OUTPUT_CHARS], True
-
-
 def split_output_steps(text: str) -> list[tuple[str, str]]:
     """
     Parse output by lines like:
@@ -1161,9 +1312,7 @@ def write_check_html(path: Path, result: CheckResult, *, index: int) -> None:
     combined = result.stdout
     if result.stderr:
         combined = f"{combined}\n\n===== STEP: STDERR =====\n{result.stderr}"
-    clipped, truncated = truncate_for_html(combined)
-    trunc_note = "<p class='trunc'>Output truncated in HTML. See logs/*.log for full content.</p>" if truncated else ""
-    steps = split_output_steps(clipped)
+    steps = split_output_steps(combined)
     step_views = build_step_views(steps, failed_step_title=result.failed_step)
     active_index = 1
     if step_views:
@@ -1317,16 +1466,6 @@ def write_check_html(path: Path, result: CheckResult, *, index: int) -> None:
       cursor: pointer;
     }}
     .tool-btn:hover {{ background: #f0f6ff; }}
-
-    .trunc {{
-      margin: 12px clamp(16px, 2vw, 28px) 0;
-      color: #8a4b00;
-      background: #fff3df;
-      border: 1px solid #f7d8a6;
-      padding: 10px 12px;
-      border-radius: 10px;
-      font-weight: 600;
-    }}
 
     /* ========== Two-pane body ========== */
     .layout {{
@@ -1538,7 +1677,6 @@ def write_check_html(path: Path, result: CheckResult, *, index: int) -> None:
       <button id=\"jump-fail-btn\" class=\"tool-btn\" type=\"button\">跳到首个失败</button>
     </div>
   </header>
-  {trunc_note}
   <div class=\"layout\">
     <aside class=\"steps-sidebar\" aria-label=\"Step navigation\">
       <h2>步骤目录</h2>

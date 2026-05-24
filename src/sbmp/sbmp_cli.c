@@ -171,11 +171,7 @@ static int handle_bmp_server(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
     gboolean is_no = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
 
-    /* DB 不可用时直接拒绝配置下发，避免内存/OS 与 DB 静默偏移 */
-    if (db_rpc_guard_reject(sbmp_local_ipc_ctx(), msg, "SBMP"))
-    {
-        return ERRCODE_FAIL;
-    }
+    /* CFG 已经卡 READY 才派发；READY 时业务已从 DB 恢复完，不再业务侧拦截 */
 
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
@@ -214,11 +210,7 @@ static int handle_server_port(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     gboolean is_no = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
     uint32_t port = 0;
 
-    /* DB 不可用时直接拒绝配置下发，避免内存/OS 与 DB 静默偏移 */
-    if (db_rpc_guard_reject(sbmp_local_ipc_ctx(), msg, "SBMP"))
-    {
-        return ERRCODE_FAIL;
-    }
+    /* CFG 已经卡 READY 才派发；READY 时业务已从 DB 恢复完，不再业务侧拦截 */
 
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)

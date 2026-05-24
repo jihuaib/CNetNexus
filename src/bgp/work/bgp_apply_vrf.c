@@ -126,6 +126,38 @@ static void on_af_rd_del(uint32_t vrf_id, uint16_t afi, uint8_t safi)
     delete_vrf_af(vrf_id, map_afi(afi), map_safi(safi), "driven by VRF_EVENT_AF_RD_DEL");
 }
 
+void bgp_apply_vrf_purge_non_public(void)
+{
+    bgp_protocol_t *proto = bgp_proto();
+    if (!proto || !proto->vrf_hash)
+    {
+        return;
+    }
+
+    /* 先收集非 public vrf_id，避免在迭代过程中修改 hash table */
+    GArray *vrf_ids = g_array_new(FALSE, FALSE, sizeof(uint32_t));
+    GHashTableIter iter;
+    gpointer key = NULL;
+    gpointer val = NULL;
+    g_hash_table_iter_init(&iter, proto->vrf_hash);
+    while (g_hash_table_iter_next(&iter, &key, &val))
+    {
+        uint32_t vid = *(uint32_t *)key;
+        if (vid != BGP_VRF_PUBLIC_ID)
+        {
+            g_array_append_val(vrf_ids, vid);
+        }
+    }
+
+    for (guint i = 0; i < vrf_ids->len; i++)
+    {
+        uint32_t vid = g_array_index(vrf_ids, uint32_t, i);
+        g_hash_table_remove(proto->vrf_hash, &vid); /* 触发 bgp_vrf_destroy */
+        LOG_INFO("BGP resync: purged bgp_vrf for VRF %u", vid);
+    }
+    g_array_free(vrf_ids, TRUE);
+}
+
 void bgp_apply_vrf_event(const dev_ipc_message_t *msg)
 {
     if (!msg || !msg->payload || msg->payload_len < offsetof(vrf_event_msg_t, rts))

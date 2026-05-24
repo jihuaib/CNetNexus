@@ -95,4 +95,9 @@ void route_db_delete_batch(dev_ipc_context_t *ctx, const char *name);
  */
 int route_db_restore(void);
 
+/**
+ * @brief VRF 重启 re-sync：只重恢复 vrf_name 非 public 的 route_static 行。
+ */
+int route_db_restore_vrf_bound(void);
+
 #endif /* ROUTE_DB_H */

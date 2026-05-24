@@ -24,6 +24,8 @@
 // 启动恢复
 // ============================================================================
 
+gboolean g_bgp_db_resync_only_vrf_bound = FALSE;
+
 uint32_t bgp_db_restore(void)
 {
     dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
@@ -51,6 +53,26 @@ uint32_t bgp_db_restore(void)
     bgp_db_restore_qp_route_select();
     bgp_bmp_db_restore();
 
+    return ERRCODE_SUCCESS;
+}
+
+uint32_t bgp_db_restore_vrf_bound(void)
+{
+    if (!bgp_local_ipc_ctx() || !g_bgp_local || !g_bgp_work_local || !g_bgp_work_local->protocol)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    /* 跳过 bgp_db_restore_protocol：protocol 表不依赖 VRF，并且 router-id / AS 在 SMOOTHSTART
+     * 中也不会被清。BMP 同理。 */
+    g_bgp_db_resync_only_vrf_bound = TRUE;
+    bgp_db_restore_vrf();
+    bgp_db_restore_sessions();
+    bgp_db_restore_instances();
+    bgp_db_restore_neighbors();
+    bgp_db_restore_qp_routes();
+    bgp_db_restore_qp_route_select();
+    g_bgp_db_resync_only_vrf_bound = FALSE;
     return ERRCODE_SUCCESS;
 }
 

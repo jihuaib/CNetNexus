@@ -196,4 +196,9 @@ int if_worker_post_route_ready(void);
  */
 int if_worker_post_module_down(uint32_t module_id);
 
+/**
+ * @brief VRF 模块 DOWN：异步在 worker 内清掉非 public VRF 的接口绑定并清 vrf_api cache。
+ */
+int if_worker_post_vrf_down(void);
+
 #endif /* IF_WORKER_H */
