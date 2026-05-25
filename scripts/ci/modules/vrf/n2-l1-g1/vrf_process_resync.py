@@ -38,6 +38,9 @@ from module_api import (  # noqa: E402
     cmd,
     g_top,
     mark_step_failed,
+    process_reboot,
+    process_start,
+    process_stop,
     require_devices,
     run_cmds,
     step,
@@ -377,7 +380,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         # 若 stop 阶段失败导致 VRF 未运行，先确保进程在跑，否则 cleanup 命令会失败
         if not _list_vrf_pids(container):
             try:
-                cmd(rt, "r1", "process start vrf", strict=False, timeout=10)
+                process_start(rt, "r1", "vrf")
                 _wait_pid(container, predicate=lambda p: len(p) == 1, timeout=WAIT_PID_SEC,
                           what="vrf pid after cleanup-start")
             except Exception as e:
@@ -426,8 +429,8 @@ def _run_inner(rt: TopologyRuntime, container: str) -> None:
 
     # ============================ Phase B: reboot ============================
     step(f"Phase B: process reboot vrf on r1 (old pid={pid_phase_a})")
-    # CLI 现在卡 READY 才返回，超时给到 60s
-    out = cmd(rt, "r1", "process reboot vrf", strict=False, timeout=60)
+    # process_reboot 已封装 cmd + wait_modules_ready
+    out = process_reboot(rt, "r1", "vrf")
     if "reboot vrf ok" not in out and "spawned" not in out:
         mark_step_failed()
         raise AssertionError(f"Phase B: unexpected `process reboot vrf` response:\n{out}")
@@ -450,7 +453,7 @@ def _run_inner(rt: TopologyRuntime, container: str) -> None:
 
     # ============================ Phase C: stop ============================
     step(f"Phase C: process stop vrf on r1 (pid={pid_phase_b})")
-    out = cmd(rt, "r1", "process stop vrf", strict=False, timeout=10)
+    out = process_stop(rt, "r1", "vrf")
     if "stop vrf requested" not in out:
         mark_step_failed()
         raise AssertionError(f"Phase C: unexpected `process stop vrf` response:\n{out}")
@@ -467,7 +470,7 @@ def _run_inner(rt: TopologyRuntime, container: str) -> None:
 
     # ============================ Phase D: start ============================
     step("Phase D: process start vrf on r1")
-    out = cmd(rt, "r1", "process start vrf", strict=False, timeout=60)
+    out = process_start(rt, "r1", "vrf")
     if "start vrf ok" not in out and "already running" not in out:
         mark_step_failed()
         raise AssertionError(f"Phase D: unexpected `process start vrf` response:\n{out}")

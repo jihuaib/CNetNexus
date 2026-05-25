@@ -17,7 +17,7 @@ import re
 import subprocess
 import time
 
-from module_api import cmd, mark_step_failed, require_devices, step  # noqa: E402
+from module_api import cmd, mark_step_failed, process_reboot, process_start, process_stop, require_devices, step  # noqa: E402
 from top_runner import TopologyRuntime  # noqa: E402
 
 
@@ -132,7 +132,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             raise AssertionError(f"Phase C: expected exactly 1 if pid, got {before}")
         old_pid = before[0]
 
-        out = cmd(rt, "r1", "process reboot if", timeout=10)
+        out = process_reboot(rt, "r1", "if")
         if "reboot" not in out.lower():
             mark_step_failed()
             raise AssertionError(f"Phase C: unexpected reboot response:\n{out}")
@@ -153,7 +153,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             raise AssertionError(f"Phase E: expected 1 if pid, got {running}")
         pid_before_stop = running[0]
 
-        out = cmd(rt, "r1", "process stop if", timeout=10)
+        out = process_stop(rt, "r1", "if")
         if "stop" not in out.lower():
             mark_step_failed()
             raise AssertionError(f"Phase E: unexpected stop response:\n{out}")
@@ -169,7 +169,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         _wait_fib_os_gone(rt, "r1", LOOP_PREFIX, timeout=10)
 
         step("Phase F: process start if → 路由恢复")
-        out = cmd(rt, "r1", "process start if", timeout=10)
+        out = process_start(rt, "r1", "if")
         if "start" not in out.lower() and "ok" not in out.lower():
             mark_step_failed()
             raise AssertionError(f"Phase F: unexpected start response:\n{out}")

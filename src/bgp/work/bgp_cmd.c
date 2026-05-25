@@ -143,7 +143,9 @@ static int bgp_cmd_wait(bgp_cmd_t *cmd)
 
 static int bgp_cmd_enqueue(bgp_cmd_t *cmd)
 {
-    if (!cmd || !g_bgp_work_local->cmd_queue || g_bgp_work_local->cmd_eventfd < 0)
+    /* g_bgp_work_local 可能在 module_cleanup 期间已经 NULL（IPC 派发线程的尾巴上还
+     * 可能继续派发到 bgp_worker_post_*）。先 NULL 守门，避免对 NULL->cmd_queue 的解引用。 */
+    if (!cmd || !g_bgp_work_local || !g_bgp_work_local->cmd_queue || g_bgp_work_local->cmd_eventfd < 0)
     {
         return -1;
     }

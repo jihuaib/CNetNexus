@@ -19,9 +19,10 @@
  */
 typedef struct if_subscriber
 {
-    uint32_t module_id;    /**< 订阅模块 ID */
-    uint32_t if_type_mask; /**< 订阅接口类型位图（IF_INTF_TYPE_*） */
-    uint32_t event_mask;   /**< 订阅事件位图（IF_EVENT_*） */
+    uint32_t module_id;     /**< 订阅模块 ID */
+    uint32_t if_type_mask;  /**< 订阅接口类型位图（IF_INTF_TYPE_*） */
+    uint32_t event_mask;    /**< 订阅事件位图（IF_EVENT_*） */
+    uint8_t pending_replay; /**< 1=IF restore 未完成，订阅者等 restore 后由 flush 推送 REPLAY */
 } if_subscriber_t;
 
 /**

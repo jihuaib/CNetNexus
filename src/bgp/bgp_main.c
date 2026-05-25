@@ -217,8 +217,8 @@ static void bgp_handle_vrf_ready(void)
 }
 
 static gboolean g_bgp_db_restored = FALSE;
-static gboolean g_bgp_db_ready = FALSE;      /* DB 已建表，可发查询 */
 static gboolean g_bgp_vrf_smoothend = FALSE; /* VRF REPLAY 已完成（缓存就绪） */
+static gboolean g_bgp_if_smoothend = FALSE;  /* IF REPLAY 已完成（接口缓存就绪） */
 
 static void bgp_try_db_restore(void)
 {
@@ -226,7 +226,7 @@ static void bgp_try_db_restore(void)
     {
         return;
     }
-    if (!g_bgp_db_ready || !g_bgp_vrf_smoothend)
+    if (!g_bgp_vrf_smoothend || !g_bgp_if_smoothend)
     {
         return;
     }
@@ -237,11 +237,13 @@ static void bgp_try_db_restore(void)
         return;
     }
     g_bgp_db_restored = TRUE;
-    LOG_INFO("BGP: DB restore completed (db_ready + vrf_smoothend)");
+    LOG_INFO("BGP: DB restore completed");
 }
 
 static void bgp_handle_db_ready(void)
 {
+    /* DB MODULE_EVENT READY 触发：等握手完成（subscribe / event 只是触发 connect，IO 线程异步建联），
+     * 然后无条件 db_init（CREATE TABLE IF NOT EXISTS 幂等；DB 重启后若丢了状态可重建表）。 */
     dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DB, 3000) != ERRCODE_SUCCESS)
     {
@@ -249,16 +251,11 @@ static void bgp_handle_db_ready(void)
         return;
     }
 
-    if (!g_bgp_db_ready)
+    if (bgp_db_init() != 0)
     {
-        if (bgp_db_init() != 0)
-        {
-            LOG_ERROR("BGP: DB init failed");
-            return;
-        }
-        g_bgp_db_ready = TRUE;
+        LOG_ERROR("BGP: DB init failed");
+        return;
     }
-
     bgp_try_db_restore();
 }
 
@@ -278,6 +275,22 @@ static void bgp_handle_vrf_smoothend(void)
      * 这里只从 DB 重恢复 vrf_name 非 public 的行（vrf/session/instance/neighbor/qp_route）。 */
     LOG_INFO("BGP: VRF smoothend received (resync)");
     (void)bgp_db_restore_vrf_bound();
+}
+
+static void bgp_handle_if_smoothend(void)
+{
+    gboolean first = !g_bgp_if_smoothend;
+    g_bgp_if_smoothend = TRUE;
+
+    if (first)
+    {
+        LOG_INFO("BGP: IF smoothend received (initial sync)");
+        bgp_try_db_restore();
+    }
+    else
+    {
+        LOG_INFO("BGP: IF smoothend received (resync)");
+    }
 }
 
 static void bgp_on_db_event_cb(uint32_t module_id, uint8_t event, const char *host, uint16_t port, uint32_t epoch,
@@ -356,8 +369,12 @@ void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             }
             else
             {
-                /* CFG 已经卡 READY 才派发 config，BGP 在 READY 时业务已从 DB 恢复完，
-                 * 不再需要业务侧重复拦截 DB 不可用的命令。 */
+                /* DB 不在线时拒绝配置：避免内存改了 / DB 写不到的静默偏移 */
+                if (db_rpc_guard_reject(ctx, msg, "BGP"))
+                {
+                    dev_ipc_message_free(msg);
+                    return;
+                }
                 uint32_t gid = bgp_cli_payload_group_id(msg);
                 if (bgp_is_bmp_group(gid))
                 {
@@ -410,6 +427,15 @@ void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         /* ---- IF 事件通知 ---- */
         case IF_MSG_TYPE_EVENT:
         {
+            uint32_t if_event = 0;
+            if (msg->payload && msg->payload_len >= sizeof(if_event_msg_t))
+            {
+                if_event = ((const if_event_msg_t *)msg->payload)->event;
+            }
+            if (if_event == IF_EVENT_SMOOTHEND)
+            {
+                bgp_handle_if_smoothend();
+            }
             if (bgp_worker_post_if_event(msg) != 0)
             {
                 LOG_WARN("BGP: Failed to forward IF event to worker thread");
@@ -511,11 +537,10 @@ int bgp_module_init(void)
     vrf_api_cache_init();
 
     /* 一次性订阅所有依赖（含 CLI）。订阅顺序不影响 CFG 的派发时机——
-     * CFG 卡在 DEV 的 PHASE=READY，subscribe(CLI) 早晚都不会让 CFG 提前下发 config。 */
-    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_TUNNEL, 0, NULL, NULL) != ERRCODE_SUCCESS)
-    {
-        LOG_WARN("BGP: subscribe(TUNNEL) failed");
-    }
+     * CFG 卡在 DEV 的 PHASE=READY，subscribe(CLI) 早晚都不会让 CFG 提前下发 config。
+     * 注意：TUNNEL 不在这里订阅；它由 labeled / VPN AF 的配置路径在用到时按需
+     * wait_module_ready 拉起（见 bgp_cli.c）。常驻订阅一个未运行的按需模块会让
+     * wait_all_subscribed_connected 一直等到 10s 超时。 */
     if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_VRF, 0, bgp_on_vrf_ready_cb, NULL) != ERRCODE_SUCCESS)
     {
         LOG_WARN("BGP: subscribe(VRF) failed");
@@ -543,27 +568,16 @@ int bgp_module_init(void)
         LOG_WARN("BGP: deps not fully connected within 10s; proceeding anyway");
     }
 
-    if (dev_ipc_is_connected(ctx, DEV_MODULE_ID_DB))
+    if (bgp_db_init() != 0)
     {
-        if (bgp_db_init() == 0)
-        {
-            g_bgp_db_ready = TRUE;
-            /* 首次 restore：VRF-bound 行此时 vrf_api cache 可能为空被跳过，
-             * 后续 VRF smoothend 会触发 bgp_db_restore_vrf_bound 补齐 */
-            if (bgp_db_restore() == ERRCODE_SUCCESS)
-            {
-                g_bgp_db_restored = TRUE;
-                LOG_INFO("BGP: initial DB restore done");
-            }
-        }
-        else
-        {
-            LOG_ERROR("BGP: DB init failed");
-        }
+        LOG_ERROR("BGP: DB init failed");
     }
-    else
+    else if (bgp_db_restore() == ERRCODE_SUCCESS)
     {
-        LOG_WARN("BGP: DB not connected; notify_ready will still proceed but restore deferred");
+        /* 首次 restore：VRF-bound 行此时 vrf_api cache 可能为空被跳过，
+         * 后续 VRF smoothend 会触发 bgp_db_restore_vrf_bound 补齐 */
+        g_bgp_db_restored = TRUE;
+        LOG_INFO("BGP: initial DB restore done");
     }
 
     /* 业务状态已恢复，进入 READY 阶段；CFG 此后才会派 config */
@@ -584,9 +598,9 @@ void bgp_module_cleanup(void)
         return;
     }
 
-    bgp_bmp_thread_shutdown();
-    bgp_worker_shutdown();
-
+    /* 顺序至关重要：必须先销毁 IPC（停掉 IO + 业务消息派发线程），再 shutdown worker。
+     * 反过来时 IPC 线程可能正在派发 IF_MSG_TYPE_EVENT → bgp_worker_post_if_event →
+     * bgp_cmd_enqueue 访问 g_bgp_work_local，而后者已被 worker_shutdown 置为 NULL。 */
     dev_ipc_context_t *ctx = g_bgp_local->dev_ipc_ctx;
     g_bgp_local->dev_ipc_ctx = NULL;
     if (ctx)
@@ -594,10 +608,8 @@ void bgp_module_cleanup(void)
         dev_ipc_destroy(ctx);
     }
 
-    if (!g_bgp_local)
-    {
-        return;
-    }
+    bgp_bmp_thread_shutdown();
+    bgp_worker_shutdown();
 
     g_free(g_bgp_local);
     g_bgp_local = NULL;

@@ -115,9 +115,8 @@ def _trigger_swap_and_reconnect(rt: TopologyRuntime, device: str, target_image: 
             last_image = image
             if image == target_image:
                 # Image 翻到目标 tag → execv 已生效;再确认所有子模块 READY
-                from module_runner import wait_device_modules_ready
                 remaining = max(10, int(deadline - time.time()))
-                wait_device_modules_ready(rt, device, timeout=remaining)
+                rt.wait_modules_ready(device, timeout=remaining)
                 return
         except Exception as exc:
             last_err = exc
@@ -237,11 +236,27 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 f"(failed swap must NOT execv)"
             )
 
-        # 所有模块仍然在跑
+        # 所有模块状态健康：resident=READY/up，on-demand=ON-DEMAND/down 视为正常待命。
+        # 失败回退不应让任何模块进入异常状态（LOADED/REGISTERED/未知）。
         modules_out = cmd(rt, "r1", "show dev modules", strict=False)
-        if modules_out.count("READY") < 9 or modules_out.count("up") < 8:
+        modules_row_re = re.compile(
+            r"^\s*\d+\s+(?P<name>\S+)\s+(?P<phase>\S+)\s+\d+\s+(?P<ipc>\S+)\s+\S+\s*$"
+        )
+        rows = [m.groupdict() for line in modules_out.splitlines() if (m := modules_row_re.match(line))]
+        bad: list[str] = []
+        for r in rows:
+            phase = r["phase"].upper()
+            ipc = r["ipc"].lower()
+            if phase == "READY" and ipc == "up":
+                continue
+            if phase == "ON-DEMAND" and ipc == "down":
+                continue
+            bad.append(f"{r['name']}(phase={r['phase']},ipc={r['ipc']})")
+        if not rows:
+            raise RuntimeError(f"after failed swap, could not parse module table:\n{modules_out}")
+        if bad:
             raise RuntimeError(
-                f"after failed swap, not all modules are READY/up:\n{modules_out}"
+                f"after failed swap, modules in abnormal state: {', '.join(bad)}\n{modules_out}"
             )
 
         # 容器内 .image_tag 仍然是上次成功 swap 的 tag,bogus tag 不该写进去

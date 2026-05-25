@@ -83,7 +83,8 @@ static void bmp_timer_cancel(int *tfd_ptr, int epoll_fd)
 static void bmp_timer_consume(int tfd)
 {
     uint64_t expirations;
-    (void)read(tfd, &expirations, sizeof(expirations));
+    ssize_t n = read(tfd, &expirations, sizeof(expirations));
+    (void)n;
 }
 
 // ============================================================================

@@ -30,8 +30,6 @@ typedef struct ipc_subscription
     dev_module_event_fn callback;
     void *user;
     uint32_t last_epoch; /**< 上次收到 READY 时的 epoch，0=尚未收到 */
-    uint8_t must_be_up;  /**< 1=订阅时 DEV 报告 target 在跑/正在拉起；0=NOT_RUNNING（按需且未起）
-                              wait_all_subscribed_connected 只等 must_be_up=1 的 peer */
 } ipc_subscription_t;
 
 struct dev_ipc_subscribe_mgr

@@ -8,6 +8,7 @@
 
 #include <arpa/inet.h>
 #include <net/if.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -567,7 +568,7 @@ static void ifindex_to_name(uint32_t ifindex, char *buf, size_t sz)
 
     /* cache miss：标注 ifindex 让用户/排错方知道是 IF cache 未同步，而不是
      * 假装一切正常打印物理名。 */
-    snprintf(buf, IF_NAMESIZE, "ifindex=%u", ifindex);
+    snprintf(buf, sz, "if-%u", ifindex);
 }
 
 static void format_oif(uint32_t ifindex, char *buf, size_t sz)

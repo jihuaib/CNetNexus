@@ -29,6 +29,9 @@ from module_api import (  # noqa: E402
     check_output,
     cmd,
     mark_step_failed,
+    process_reboot,
+    process_start,
+    process_stop,
     require_devices,
     run_cmds,
     step,
@@ -96,6 +99,8 @@ DOWN_BGP_RTR_ID = "10.202.0.1"
 DOWN_ISIS_TAG_CHANGE = "is-type level-2"
 
 # 每个 step 表达：标签 / 命令序列 / 验证当 db 不可用时应出现的错误关键字
+# 业务模块在 CLI 配置入口统一调 db_rpc_guard_reject，DB 离线时返回固定字样
+# "<Module> Error: configuration rejected because DB module is not available"。
 BLOCKED_STEPS: list[dict[str, object]] = [
     {
         "label": "Dev sysname rejected when db down",
@@ -105,10 +110,8 @@ BLOCKED_STEPS: list[dict[str, object]] = [
             f"sysname {DOWN_SYSNAME}",
             "end",
         ],
-        # Dev 模块的 guard 关键字
         "expect_error_in": [f"sysname {DOWN_SYSNAME}"],
         "expect_keywords": ["Dev Error", "DB module is not available"],
-        # 静默偏移检查：不应出现在 show current-configuration
         "absent_after": [f"sysname {DOWN_SYSNAME}"],
     },
     {
@@ -317,7 +320,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
 
         # ---- Phase 3: 停掉 db ----
         step("Phase 3: process stop db")
-        out_stop = cmd(rt, device, "process stop db", strict=False)
+        out_stop = process_stop(rt, device, "db")
         if "stop db requested" not in out_stop:
             mark_step_failed()
             raise AssertionError(f"unexpected 'process stop db' output:\n{out_stop}")
@@ -334,7 +337,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
 
         # ---- Phase 5: 拉起 db ----
         step("Phase 5: process start db and wait IPC=up")
-        out_start = cmd(rt, device, "process start db", strict=False)
+        out_start = process_start(rt, device, "db")
         if "start db ok" not in out_start and "already running" not in out_start:
             mark_step_failed()
             raise AssertionError(f"unexpected 'process start db' output:\n{out_start}")
@@ -384,8 +387,8 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
 
         # ---- Phase 7: reboot db, 业务配置应继续可见（持久层数据未丢） ----
         step("Phase 7: process reboot db and verify business config survives")
-        out_reboot = cmd(rt, device, "process reboot db", strict=False)
-        if "reboot db requested" not in out_reboot and "spawned" not in out_reboot:
+        out_reboot = process_reboot(rt, device, "db")
+        if "reboot db ok" not in out_reboot and "spawned" not in out_reboot:
             mark_step_failed()
             raise AssertionError(f"unexpected 'process reboot db' output:\n{out_reboot}")
         # reboot 会让 db 短暂 down 然后自动起来

@@ -144,8 +144,8 @@ static void route_handle_if_ready(void)
     }
 }
 
-static gboolean g_route_db_ready = FALSE;      /* DB 已建表 */
 static gboolean g_route_vrf_smoothend = FALSE; /* VRF REPLAY 已完成 */
+static gboolean g_route_if_smoothend = FALSE;  /* IF REPLAY 已完成 */
 
 static void route_try_db_restore(void)
 {
@@ -153,7 +153,7 @@ static void route_try_db_restore(void)
     {
         return;
     }
-    if (!g_route_db_ready || !g_route_vrf_smoothend)
+    if (!g_route_vrf_smoothend || !g_route_if_smoothend)
     {
         return;
     }
@@ -164,32 +164,29 @@ static void route_try_db_restore(void)
         return;
     }
     g_route_db_restored = TRUE;
-    LOG_INFO("Route: DB restore completed (db_ready + vrf_smoothend)");
+    LOG_INFO("Route: DB restore completed");
 }
 
 static void route_handle_db_ready(void)
 {
+    /* DB MODULE_EVENT READY 触发：等握手完成（subscribe / event 只是触发 connect，IO 线程异步建联）。
+     * CREATE TABLE IF NOT EXISTS 幂等。 */
     dev_ipc_context_t *ctx = route_local_ipc_ctx();
-
     if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DB, 3000) != ERRCODE_SUCCESS)
     {
         LOG_WARN("Route: DB not connected within 3s; db restore deferred");
         return;
     }
 
-    if (!g_route_db_ready)
+    if (db_rpc_create_table_from_def(ctx, &ROUTE_STATIC_TABLE) != ERRCODE_SUCCESS)
     {
-        if (db_rpc_create_table_from_def(ctx, &ROUTE_STATIC_TABLE) != ERRCODE_SUCCESS)
-        {
-            LOG_WARN("Route: create table route_static failed");
-            return;
-        }
-        if (db_rpc_create_table_from_def(ctx, &ROUTE_BATCH_TABLE) != ERRCODE_SUCCESS)
-        {
-            LOG_WARN("Route: create table route_batch failed");
-            return;
-        }
-        g_route_db_ready = TRUE;
+        LOG_WARN("Route: create table route_static failed");
+        return;
+    }
+    if (db_rpc_create_table_from_def(ctx, &ROUTE_BATCH_TABLE) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("Route: create table route_batch failed");
+        return;
     }
 
     route_try_db_restore();
@@ -211,6 +208,22 @@ static void route_handle_vrf_smoothend(void)
      * 这里只从 DB 重恢复 vrf_name 非 public 的行。 */
     LOG_INFO("Route: VRF smoothend received (resync)");
     (void)route_db_restore_vrf_bound();
+}
+
+static void route_handle_if_smoothend(void)
+{
+    gboolean first = !g_route_if_smoothend;
+    g_route_if_smoothend = TRUE;
+
+    if (first)
+    {
+        LOG_INFO("Route: IF smoothend received (initial sync)");
+        route_try_db_restore();
+    }
+    else
+    {
+        LOG_INFO("Route: IF smoothend received (resync)");
+    }
 }
 
 static void route_on_db_event_cb(uint32_t module_id, uint8_t event, const char *host, uint16_t port, uint32_t epoch,
@@ -402,7 +415,12 @@ void route_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             }
             else
             {
-                /* CFG 已经卡 READY 才派发；Route 在 READY 时业务已从 DB 恢复完，不再业务侧拦截 */
+                /* DB 不在线时拒绝配置：避免内存改了 / DB 写不到的静默偏移 */
+                if (db_rpc_guard_reject(ctx, msg, "Route"))
+                {
+                    dev_ipc_message_free(msg);
+                    return;
+                }
                 LOG_DEBUG("Received CLI config command (%u bytes)", msg->payload_len);
                 route_cli_handle_config_msg(msg);
                 dev_ipc_message_free(msg);
@@ -487,12 +505,23 @@ void route_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
         /* ---- IF 事件通知 ---- */
         case IF_MSG_TYPE_EVENT:
+        {
+            uint32_t if_event = 0;
+            if (msg->payload && msg->payload_len >= sizeof(if_event_msg_t))
+            {
+                if_event = ((const if_event_msg_t *)msg->payload)->event;
+            }
+            if (if_event == IF_EVENT_SMOOTHEND)
+            {
+                route_handle_if_smoothend();
+            }
             if (route_worker_post(ROUTE_WORKER_CMD_IF_EVENT, msg) != 0)
             {
                 LOG_WARN("Route: failed to post IF_EVENT to worker");
                 dev_ipc_message_free(msg);
             }
             return;
+        }
 
         case IF_MSG_TYPE_ACK:
             /* IF 订阅应答，静默丢弃 */

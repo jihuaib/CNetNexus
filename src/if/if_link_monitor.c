@@ -512,7 +512,8 @@ void if_link_monitor_stop(void)
     if (g_monitor_pipe[1] >= 0)
     {
         char c = 'x';
-        (void)write(g_monitor_pipe[1], &c, 1);
+        ssize_t wret = write(g_monitor_pipe[1], &c, 1);
+        (void)wret;
     }
 
     (void)pthread_join(g_monitor_thread, NULL);

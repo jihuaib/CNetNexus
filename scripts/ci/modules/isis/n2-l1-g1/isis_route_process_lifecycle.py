@@ -28,6 +28,9 @@ import time
 from module_api import (  # noqa: E402
     cmd,
     g_top,
+    process_reboot,
+    process_start,
+    process_stop,
     require_devices,
     run_cmds,
     should_skip_cleanup,
@@ -103,7 +106,7 @@ def _process_reboot(rt: TopologyRuntime, device: str, container: str, module: st
         what="single pid before reboot",
     )
     old_pid = before[0]
-    cmd(rt, device, f"process reboot {module}", strict=False, timeout=10)
+    process_reboot(rt, device, module)
     _wait_module_pids(
         container,
         module,
@@ -128,12 +131,12 @@ def _process_stop(rt: TopologyRuntime, device: str, container: str, module: str)
         timeout=10,
         what="single pid before stop",
     )
-    cmd(rt, device, f"process stop {module}", strict=False, timeout=10)
+    process_stop(rt, device, module)
     _wait_module_pids(container, module, predicate=lambda p: not p, timeout=20, what="no pid after stop")
 
 
 def _process_start(rt: TopologyRuntime, device: str, container: str, module: str) -> None:
-    cmd(rt, device, f"process start {module}", strict=False, timeout=10)
+    process_start(rt, device, module)
     _wait_module_pids(container, module, predicate=lambda p: len(p) == 1, timeout=20, what="single pid after start")
 
 

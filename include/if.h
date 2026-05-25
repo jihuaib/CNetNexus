@@ -40,6 +40,10 @@
 #define IF_EVENT_PROTO_DOWN (1u << 3)
 /** 接口 VRF 绑定变化事件 */
 #define IF_EVENT_VRF_CHANGE (1u << 4)
+/** 平滑同步起始：IF replay 即将开始（订阅方据此清空 IF 缓存） */
+#define IF_EVENT_SMOOTHSTART (1u << 5)
+/** 平滑同步结束：IF replay 已完成（订阅方据此触发 IF 相关的 db_restore） */
+#define IF_EVENT_SMOOTHEND (1u << 6)
 /** 通配：匹配所有事件 */
 #define IF_EVENT_ALL 0xFFFFFFFFu
 

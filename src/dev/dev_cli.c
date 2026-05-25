@@ -415,6 +415,12 @@ static void dev_push_sysname_to_cli(dev_ipc_context_t *ctx, const char *sysname)
 
 static int handle_sysname(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
+    /* DB 不在线时拒绝：避免 sysname 改了内存（CLI 提示）但 DB 写不到 */
+    if (db_rpc_guard_reject(ctx, msg, "Dev"))
+    {
+        return ERRCODE_FAIL;
+    }
+
     cli_tlv_parser_t parser;
     if (cli_tlv_init(&parser, (const uint8_t *)msg->payload, msg->payload_len) != 0)
     {

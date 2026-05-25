@@ -208,6 +208,22 @@ void if_api_cache_on_event(const dev_ipc_message_t *msg)
         return;
     }
 
+    /* 平滑标记：IF（重）启动通告，本函数 SMOOTHSTART 时丢弃旧 cache；
+     * SMOOTHEND 在订阅方主流程里看 event 字段做 gating，不在 cache 层处理。 */
+    if (msg->payload_len >= sizeof(if_event_msg_t))
+    {
+        const if_event_msg_t *evt0 = (const if_event_msg_t *)msg->payload;
+        if (evt0->event == IF_EVENT_SMOOTHSTART)
+        {
+            g_hash_table_remove_all(g_if_cache_by_name);
+            return;
+        }
+        if (evt0->event == IF_EVENT_SMOOTHEND)
+        {
+            return;
+        }
+    }
+
     if (msg->payload_len >= sizeof(if_addr_event_msg_t))
     {
         const if_addr_event_msg_t *addr_evt = (const if_addr_event_msg_t *)msg->payload;

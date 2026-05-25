@@ -18,6 +18,7 @@ Coverage:
 from __future__ import annotations
 
 import re
+import time
 
 from module_api import g_top, require_devices, run_cmds, step, wait_check, wait_checks  # noqa: E402
 from top_runner import TopologyRuntime  # noqa: E402
@@ -445,19 +446,22 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         )
 
         step("Exercise no server port and no bmp-server")
+        # `no server port` 让 SBMP 自删配置后 self-exit（on-demand 模块设计），
+        # show 命令此时 CFG 看到 SBMP 未运行，返回 'target module is not running'。
         run_cmds(
             rt=rt,
             device="s1",
             strict=False,
             commands=["config", "bmp-server", "no server port", "end"],
         )
+        time.sleep(2)  # 等 SBMP 进程退出 + CFG is_connected 翻 false
         wait_check(
             rt,
             device="s1",
             command="show bmp-server",
             timeout=20,
-            contains=["State            : not configured"],
-            label="s1 no server port",
+            contains=["target module is not running"],
+            label="s1 no server port -> SBMP exited",
         )
 
         run_cmds(
@@ -476,13 +480,14 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         )
 
         run_cmds(rt=rt, device="s1", strict=False, commands=["config", "no bmp-server", "end"])
+        time.sleep(2)
         wait_check(
             rt,
             device="s1",
             command="show bmp-server",
             timeout=20,
-            contains=["State            : not configured"],
-            label="s1 no bmp-server",
+            contains=["target module is not running"],
+            label="s1 no bmp-server -> SBMP exited",
         )
 
         print("SBMP BMP client-report check passed.")

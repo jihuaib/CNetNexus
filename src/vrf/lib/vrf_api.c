@@ -301,7 +301,7 @@ void vrf_api_cache_foreach(vrf_api_cache_iter_fn iter_fn, void *user_data)
 
 static size_t event_min_size(uint16_t rt_count)
 {
-    /* vrf_event_msg_t 已含 rts[1]，再追加 rt_count-1 个 RT */
+    /* vrf_event_msg_t 包含变长 RT 数组 */
     if (rt_count == 0)
     {
         return offsetof(vrf_event_msg_t, rts);

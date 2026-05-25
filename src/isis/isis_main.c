@@ -114,17 +114,32 @@ static void isis_handle_if_ready(void)
  * 命令回放到 worker 状态。
  */
 static gboolean g_isis_db_restored = FALSE;
+static gboolean g_isis_db_ready = FALSE;     /* DB 已建表 */
+static gboolean g_isis_if_smoothend = FALSE; /* IF REPLAY 已完成 */
 
-static void isis_restore_db_state(void)
+static void isis_try_db_restore(void)
 {
+    if (g_isis_db_restored)
+    {
+        return;
+    }
+    if (!g_isis_db_ready || !g_isis_if_smoothend)
+    {
+        return;
+    }
     if (isis_db_restore() != ERRCODE_SUCCESS)
     {
         LOG_WARN("ISIS: DB restore failed");
+        return;
     }
+    g_isis_db_restored = TRUE;
+    LOG_INFO("ISIS: DB restore completed");
 }
 
 static void isis_handle_db_ready(void)
 {
+    /* DB MODULE_EVENT READY 触发：等握手完成（subscribe / event 只是触发 connect，IO 线程异步建联）。
+     * db_init 幂等。 */
     dev_ipc_context_t *ctx = isis_local_ipc_ctx();
     if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DB, 3000) != ERRCODE_SUCCESS)
     {
@@ -137,15 +152,23 @@ static void isis_handle_db_ready(void)
         LOG_ERROR("ISIS: DB init failed");
         return;
     }
+    g_isis_db_ready = TRUE;
+    isis_try_db_restore();
+}
 
-    if (g_isis_db_restored)
+static void isis_handle_if_smoothend(void)
+{
+    gboolean first = !g_isis_if_smoothend;
+    g_isis_if_smoothend = TRUE;
+    if (first)
     {
-        LOG_INFO("ISIS: DB ready; restore already completed");
-        return;
+        LOG_INFO("ISIS: IF smoothend received (initial sync)");
+        isis_try_db_restore();
     }
-
-    isis_restore_db_state();
-    g_isis_db_restored = TRUE;
+    else
+    {
+        LOG_INFO("ISIS: IF smoothend received (resync)");
+    }
 }
 
 static void isis_on_db_event_cb(uint32_t module_id, uint8_t event, const char *host, uint16_t port, uint32_t epoch,
@@ -213,7 +236,12 @@ void isis_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             }
             else
             {
-                /* CFG 已经卡 READY 才派发；READY 时业务已从 DB 恢复完，不再业务侧拦截 */
+                /* DB 不在线时拒绝配置：避免内存改了 / DB 写不到的静默偏移 */
+                if (db_rpc_guard_reject(ctx, msg, "ISIS"))
+                {
+                    dev_ipc_message_free(msg);
+                    return;
+                }
                 (void)isis_cli_handle_config_msg(msg);
                 dev_ipc_message_free(msg);
             }
@@ -233,11 +261,22 @@ void isis_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             return;
 
         case IF_MSG_TYPE_EVENT:
+        {
+            uint32_t if_event = 0;
+            if (msg->payload && msg->payload_len >= sizeof(if_event_msg_t))
+            {
+                if_event = ((const if_event_msg_t *)msg->payload)->event;
+            }
+            if (if_event == IF_EVENT_SMOOTHEND)
+            {
+                isis_handle_if_smoothend();
+            }
             if (isis_worker_post_if_event(msg) != 0)
             {
                 dev_ipc_message_free(msg);
             }
             return;
+        }
 
         case IF_MSG_TYPE_ACK:
             break;
@@ -273,12 +312,11 @@ int isis_module_init(void)
 
     /* 弱依赖模型启动：
      *   1. 等 DEV 控制连接
-     *   2. wait_module_ready(DB) → db_init
-     *   3. worker 启动
-     *   4. db_restore 回放配置到 worker + 订阅 IF 事件
-     *   5. subscribe(CLI) 放最后：CFG 看到本模块在跑即可立即 dispatch
-     *   6. notify_ready 通知 DEV
-     * ISIS 没有 on-demand dep 需要触发（IF/ROUTE 都是基础模块），运行时 RPC 调用即可。 */
+     *   2. worker 启动
+     *   3. 订阅所有依赖（含 CLI）
+     *   4. wait_all_subscribed_connected：等所有 peer IPC 都 CONNECTED
+     *   5. db_init + db_restore
+     *   6. notify_ready：业务真正可用 */
     if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DEV, 10000) != ERRCODE_SUCCESS)
     {
         LOG_ERROR("ISIS: timed out waiting for DEV connection; module may be unusable");
@@ -291,36 +329,36 @@ int isis_module_init(void)
         return -1;
     }
 
-    if (dev_ipc_notify_ready(ctx) != ERRCODE_SUCCESS)
-    {
-        LOG_WARN("ISIS: notify_ready to DEV failed");
-    }
-
-    /* ROUTE：回调模式，ROUTE 每次 READY 触发 worker 重刷 ISIS 路由。 */
     if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_ROUTE, 0, isis_on_route_ready_cb, NULL) != ERRCODE_SUCCESS)
     {
         LOG_WARN("ISIS: subscribe(ROUTE) failed");
     }
-
-    /* IF：回调模式，IF 每次 READY 触发 worker 重新订阅事件。支持 IF 重启。 */
     if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_IF, 0, isis_on_if_ready_cb, NULL) != ERRCODE_SUCCESS)
     {
         LOG_WARN("ISIS: subscribe(IF) failed");
     }
-
-    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_CLI, 0, NULL, NULL) != ERRCODE_SUCCESS)
-    {
-        LOG_WARN("ISIS: subscribe(CLI) failed; commands from CFG won't be reachable");
-    }
-
     if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_DB, 0, isis_on_db_event_cb, NULL) != ERRCODE_SUCCESS)
     {
-        LOG_WARN("ISIS: subscribe(DB) failed; DB restore deferred until a later READY event");
+        LOG_WARN("ISIS: subscribe(DB) failed");
+    }
+    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_CLI, 0, NULL, NULL) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("ISIS: subscribe(CLI) failed");
+    }
+
+    if (dev_ipc_wait_all_subscribed_connected(ctx, 10000) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("ISIS: deps not fully connected within 10s; proceeding anyway");
     }
 
     if (dev_ipc_is_connected(ctx, DEV_MODULE_ID_DB))
     {
         isis_handle_db_ready();
+    }
+
+    if (dev_ipc_notify_ready(ctx) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("ISIS: notify_ready to DEV failed");
     }
 
     LOG_INFO("ISIS: module ready");
@@ -335,14 +373,15 @@ void isis_module_cleanup(void)
         return;
     }
 
-    isis_worker_shutdown();
-
+    /* 先停 IPC 再 shutdown worker，避免 IPC 派发到 isis_worker_post_* 时 g_isis_work_local 已 NULL */
     dev_ipc_context_t *ctx = g_isis_local->dev_ipc_ctx;
     g_isis_local->dev_ipc_ctx = NULL;
     if (ctx)
     {
         dev_ipc_destroy(ctx);
     }
+
+    isis_worker_shutdown();
 
     g_free(g_isis_local);
     g_isis_local = NULL;

@@ -199,21 +199,58 @@ static gboolean if_replay_initial_state_foreach(gpointer key, gpointer val, gpoi
     return FALSE;
 }
 
+/* 单独投递一条平滑同步标记事件：marker 不受 if_type_mask / event_mask 限制——
+ * 订阅者无需 opt-in；REPLAY 路径强制框架。 */
+static void if_replay_send_marker(uint32_t module_id, uint32_t event)
+{
+    if_event_msg_t evt;
+    memset(&evt, 0, sizeof(evt));
+    evt.if_type = IF_INTF_TYPE_ALL;
+    evt.event = event;
+    if_replay_send(module_id, IF_MSG_TYPE_EVENT, &evt, sizeof(evt));
+}
+
 static void if_replay_initial_state(uint32_t module_id, uint32_t if_type_mask, uint32_t event_mask)
 {
-    if (!g_if_work_local || !g_if_work_local->interface_map.all_entries)
+    if (!g_if_work_local)
     {
         return;
     }
 
-    if_replay_ctx_t rctx = {
-        .module_id = module_id,
-        .if_type_mask = if_type_mask,
-        .event_mask = event_mask,
-    };
+    if_replay_send_marker(module_id, IF_EVENT_SMOOTHSTART);
 
-    g_tree_foreach(g_if_work_local->interface_map.all_entries, if_replay_initial_state_foreach, &rctx);
-    LOG_INFO("IF: replayed initial state to module 0x%08X", module_id);
+    if (g_if_work_local->interface_map.all_entries)
+    {
+        if_replay_ctx_t rctx = {
+            .module_id = module_id,
+            .if_type_mask = if_type_mask,
+            .event_mask = event_mask,
+        };
+        g_tree_foreach(g_if_work_local->interface_map.all_entries, if_replay_initial_state_foreach, &rctx);
+    }
+
+    if_replay_send_marker(module_id, IF_EVENT_SMOOTHEND);
+    LOG_INFO("IF: replayed initial state to module 0x%08X (with smoothstart/smoothend)", module_id);
+}
+
+void if_msg_flush_pending_replays(void)
+{
+    if (!g_if_work_local)
+    {
+        return;
+    }
+    for (GList *l = g_if_work_local->subscribers; l; l = l->next)
+    {
+        if_subscriber_t *sub = (if_subscriber_t *)l->data;
+        if (!sub || !sub->pending_replay)
+        {
+            continue;
+        }
+        LOG_INFO("IF: flushing deferred REPLAY to module 0x%08X (type=0x%08X event=0x%08X)", sub->module_id,
+                 sub->if_type_mask, sub->event_mask);
+        if_replay_initial_state(sub->module_id, sub->if_type_mask, sub->event_mask);
+        sub->pending_replay = 0;
+    }
 }
 
 void if_msg_handle_subscribe(dev_ipc_message_t *msg)
@@ -239,35 +276,46 @@ void if_msg_handle_subscribe(dev_ipc_message_t *msg)
         return;
     }
 
+    if_subscriber_t *sub = NULL;
     for (GList *l = g_if_work_local->subscribers; l; l = l->next)
     {
-        if_subscriber_t *sub = (if_subscriber_t *)l->data;
-        if (sub->module_id == msg->src_module_id && sub->if_type_mask == req->if_type_mask &&
-            sub->event_mask == req->event_mask)
+        if_subscriber_t *cur = (if_subscriber_t *)l->data;
+        if (cur->module_id == msg->src_module_id && cur->if_type_mask == req->if_type_mask &&
+            cur->event_mask == req->event_mask)
         {
             LOG_INFO("IF: duplicate subscribe replay: module=0x%08X type=0x%08X event=0x%08X", msg->src_module_id,
                      req->if_type_mask, req->event_mask);
-            if_replay_initial_state(msg->src_module_id, req->if_type_mask, req->event_mask);
-            send_if_ack(msg, ERRCODE_SUCCESS);
-            return;
+            sub = cur;
+            break;
         }
     }
 
-    if_subscriber_t *sub = (if_subscriber_t *)g_malloc0(sizeof(if_subscriber_t));
     if (!sub)
     {
-        send_if_ack(msg, ERRCODE_FAIL);
-        return;
+        sub = (if_subscriber_t *)g_malloc0(sizeof(if_subscriber_t));
+        if (!sub)
+        {
+            send_if_ack(msg, ERRCODE_FAIL);
+            return;
+        }
+        sub->module_id = msg->src_module_id;
+        sub->if_type_mask = req->if_type_mask;
+        sub->event_mask = req->event_mask;
+        g_if_work_local->subscribers = g_list_append(g_if_work_local->subscribers, sub);
+
+        LOG_INFO("IF: module 0x%08X subscribed: type=0x%08X event=0x%08X", msg->src_module_id, req->if_type_mask,
+                 req->event_mask);
     }
-    sub->module_id = msg->src_module_id;
-    sub->if_type_mask = req->if_type_mask;
-    sub->event_mask = req->event_mask;
-    g_if_work_local->subscribers = g_list_append(g_if_work_local->subscribers, sub);
 
-    LOG_INFO("IF: module 0x%08X subscribed: type=0x%08X event=0x%08X", msg->src_module_id, req->if_type_mask,
-             req->event_mask);
-
-    if_replay_initial_state(msg->src_module_id, req->if_type_mask, req->event_mask);
+    if (if_worker_is_restore_done())
+    {
+        if_replay_initial_state(msg->src_module_id, req->if_type_mask, req->event_mask);
+    }
+    else
+    {
+        sub->pending_replay = 1;
+        LOG_INFO("IF: defer REPLAY to module 0x%08X until db restore done", msg->src_module_id);
+    }
 
     send_if_ack(msg, ERRCODE_SUCCESS);
 }

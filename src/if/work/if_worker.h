@@ -105,6 +105,7 @@ typedef struct if_work_local
     GList *subscribers;             /**< IF 事件订阅者列表 GList<if_subscriber_t*> */
     cli_chunk_stream_t show_stream; /**< CLI show 命令分片输出状态 */
     int route_ready;                /**< ROUTE ready 后才允许 connected route 与 OS 地址成对下发 */
+    int restore_done;               /**< DB restore + 接口 cache 已就绪，可以对外发 REPLAY */
 
     /* ---- Worker 基础设施 ---- */
     pthread_t thread;
@@ -200,5 +201,15 @@ int if_worker_post_module_down(uint32_t module_id);
  * @brief VRF 模块 DOWN：异步在 worker 内清掉非 public VRF 的接口绑定并清 vrf_api cache。
  */
 int if_worker_post_vrf_down(void);
+
+/**
+ * @brief IF DB restore 完成后异步通知 worker：标记 restore_done 并 flush pending REPLAY。
+ */
+int if_worker_post_restore_done(void);
+
+/**
+ * @brief 查询 worker restore_done 标志（worker 线程内调用）
+ */
+int if_worker_is_restore_done(void);
 
 #endif /* IF_WORKER_H */

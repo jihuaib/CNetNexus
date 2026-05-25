@@ -22,6 +22,7 @@
 #include "dev_conf_parser.h"
 #include "dev_db.h"
 #include "dev_main.h"
+#include "dev_subscribe.h"
 #include "errcode.h"
 #include "log.h"
 #include "path_utils.h"
@@ -519,11 +520,8 @@ int32_t dev_scan_and_load_modules(void)
             }
         }
         dev_self->port = DEV_MODULE_PORT_DEV;
-        dev_self->phase = DEV_PHASE_READY; /* DEV is supervisor, always ready */
-        if (dev_self->phase < DEV_PHASE_LOADED)
-        {
-            dev_self->phase = DEV_PHASE_LOADED;
-        }
+        /* 软重启路径：把 DEV 的 phase 回退到 LOADED，结束后由 dev_init_all_modules 再次置 READY */
+        dev_self->phase = DEV_PHASE_LOADED;
     }
 
     LOG_INFO("Begin scanning and loading modules=============================================");
@@ -918,8 +916,18 @@ int32_t dev_init_all_modules(void)
         LOG_WARN("Some on-demand modules did not notify_ready within timeout (continuing)");
     }
 
+    /* DEV 自身的 READY：含义是 supervisor 已完成所有启动工作（基础模块 ready + DB 恢复 + on-demand revive）。
+     * 业务模块此时如果 subscribe(DEV) 会立即拿到 READY 状态。 */
+    dev_module_t *dev_self = (dev_module_t *)g_tree_lookup(g_module_registry, GUINT_TO_POINTER(DEV_MODULE_ID_DEV));
+    if (dev_self)
+    {
+        dev_self->phase = DEV_PHASE_READY;
+        dev_self->epoch++;
+        dev_subscribe_broadcast_event(dev_self, DEV_MODULE_EVENT_READY);
+    }
+
     LOG_INFO("=============================================");
-    LOG_INFO("All modules ready (basic + revived on-demand)");
+    LOG_INFO("All modules ready (basic + revived on-demand + dev)");
     LOG_INFO("=============================================");
 
     return ERRCODE_SUCCESS;

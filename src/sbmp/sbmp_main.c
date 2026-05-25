@@ -20,6 +20,7 @@
 
 #include "bgp.h"
 #include "cli.h"
+#include "db.h"
 #include "dev.h"
 #include "errcode.h"
 #include "log.h"
@@ -827,6 +828,8 @@ static gboolean g_sbmp_db_restored = FALSE;
 
 static void sbmp_handle_db_ready(void)
 {
+    /* DB MODULE_EVENT READY 触发：等握手完成（subscribe / event 只是触发 connect，IO 线程异步建联）。
+     * db_init 幂等。 */
     dev_ipc_context_t *ctx = sbmp_local_ipc_ctx();
     if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DB, 3000) != ERRCODE_SUCCESS)
     {
@@ -882,16 +885,30 @@ static void sbmp_on_db_event_cb(uint32_t module_id, uint8_t event, const char *h
 
 void sbmp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
-    (void)ctx;
     switch (msg->msg_type)
     {
         case SBMP_MSG_TYPE_INTERNAL_DB_READY:
             sbmp_handle_db_ready();
             break;
         case CLI_MSG_TYPE:
+        {
             LOG_DEBUG("SBMP: Received CLI command message");
+            uint8_t flags = 0;
+            if (msg->payload && msg->payload_len >= 1)
+            {
+                flags = ((const uint8_t *)msg->payload)[0];
+            }
+            /* 非 show（=配置类）命令：DB 不在线时拒绝，避免内存/DB 静默偏移 */
+            if ((flags & CLI_PAYLOAD_FLAG_SHOW_CMD) == 0)
+            {
+                if (db_rpc_guard_reject(ctx, msg, "SBMP"))
+                {
+                    break;
+                }
+            }
             sbmp_cli_handle_message(msg);
             break;
+        }
         case CLI_MSG_TYPE_CONTINUE:
             LOG_DEBUG("SBMP: Received CLI continue request");
             sbmp_cli_handle_continue(msg);

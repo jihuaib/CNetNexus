@@ -219,7 +219,7 @@ typedef struct vrf_event_msg
     uint8_t _pad;                /**< 对齐填充 */
     vrf_rd_t rd;                 /**< RD（has_rd=1 时有效） */
     uint16_t rt_count;           /**< rts[] 元素数 */
-    vrf_rt_t rts[1];             /**< 变长 RT 数组 */
+    vrf_rt_t rts[];              /**< 变长 RT 数组 */
 } vrf_event_msg_t;
 
 /**

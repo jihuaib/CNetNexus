@@ -713,6 +713,49 @@ class TopologyRuntime:
         cli.connect(timeout=timeout)
         self.cli_map[device] = cli
 
+    # `show dev modules` 输出行：id name phase port ipc pid（id 为十进制；pid 可能是 '-'）
+    _MODULES_ROW_RE = re.compile(
+        r"^\s*\d+\s+(?P<name>[A-Za-z0-9_-]+)\s+(?P<phase>[A-Za-z0-9_-]+)\s+\d+\s+(?P<ipc>[A-Za-z0-9_-]+)\s+\S+\s*$"
+    )
+
+    def wait_modules_ready(self, device: str, *, timeout: int = 60, interval: float = 1.0) -> None:
+        """轮询 ``show dev modules`` 直到所有模块 Phase=READY/ON-DEMAND，IPC=up/down 匹配。
+
+        必须在下发任何配置命令之前调用——sysname、接口配置等需要 DEV 自身和被涉及模块都已 READY。
+        """
+        deadline = time.monotonic() + timeout
+        last_bad: list[str] = []
+        last_out = ""
+        while time.monotonic() < deadline:
+            try:
+                last_out = self.exec_cmd(device, "show dev modules", strict=False)
+            except Exception as e:
+                last_out = f"(exec_cmd failed: {e})"
+                time.sleep(interval)
+                continue
+            rows = []
+            for line in last_out.splitlines():
+                m = TopologyRuntime._MODULES_ROW_RE.match(line)
+                if m:
+                    rows.append({"name": m.group("name"), "phase": m.group("phase"), "ipc": m.group("ipc")})
+            if rows:
+                bad = []
+                for r in rows:
+                    phase = r["phase"].upper()
+                    ipc = r["ipc"].lower()
+                    if phase == "READY" and ipc == "up":
+                        continue
+                    if phase == "ON-DEMAND" and ipc == "down":
+                        continue
+                    bad.append(f"{r['name']}(phase={r['phase']},ipc={r['ipc']})")
+                if not bad:
+                    return
+                last_bad = bad
+            time.sleep(interval)
+        raise RuntimeError(
+            f"{device}: modules not ready within {timeout}s; pending: {', '.join(last_bad) or '(parse failed)'}\n{last_out}"
+        )
+
     def _get_link_endpoints(self, link_name: str) -> tuple[tuple[str, str], tuple[str, str]]:
         name = str(link_name).strip()
         if not name:
@@ -902,6 +945,12 @@ class TopologyRuntime:
             elif self._is_frr(dev):
                 self._wait_frr_ready(dev, timeout=self.connect_timeout)
 
+        # 5a) 在下发任何配置（sysname / 接口）前等所有模块 READY，否则配置会丢
+        for dev in self.devices:
+            if self._is_netnexus(dev):
+                print(f"===== STEP: Wait modules ready on {dev} =====")
+                self.wait_modules_ready(dev)
+
         # 5b) Apply per-device sysname == top.yaml device key (so prompt 显示 r1 / r2 ...)
         for dev in self.devices:
             if not self._is_netnexus(dev):
@@ -969,9 +1018,8 @@ class TopologyRuntime:
                 self.cli_map[device] = new_cli
 
                 # 等待所有模块 Phase=READY 且 IPC=up，再返回给调用方
-                from module_runner import wait_device_modules_ready
                 remaining = max(10, int(deadline - time.time()))
-                wait_device_modules_ready(self, device, timeout=remaining)
+                self.wait_modules_ready(device, timeout=remaining)
                 return
             except Exception as exc:
                 last_err = exc

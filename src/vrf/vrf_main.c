@@ -42,6 +42,8 @@ static void vrf_restore_db_state(void)
 
 static void vrf_handle_db_ready(void)
 {
+    /* DB MODULE_EVENT READY 触发：等握手完成（subscribe / event 只是触发 connect，IO 线程异步建联），
+     * 然后无条件 db_init（幂等）。 */
     dev_ipc_context_t *ctx = vrf_local_ipc_ctx();
     if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DB, 3000) != ERRCODE_SUCCESS)
     {
@@ -129,7 +131,13 @@ void vrf_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             }
             else
             {
-                /* CFG 已经卡 READY 才派发；VRF 在 READY 时业务已从 DB 恢复完，不再业务侧拦截 */
+                /* DB 不在线（process stop db / DB 进程崩溃）时拒绝配置：避免改了内存
+                 * 又写不到 DB，造成内存与持久层静默偏移。 */
+                if (db_rpc_guard_reject(ctx, msg, "VRF"))
+                {
+                    dev_ipc_message_free(msg);
+                    return;
+                }
                 vrf_cli_handle_config_msg(msg);
                 dev_ipc_message_free(msg);
             }
@@ -223,18 +231,22 @@ int vrf_module_init(void)
 
 void vrf_module_cleanup(void)
 {
-    vrf_worker_shutdown();
-
     if (!g_vrf_local)
     {
         return;
     }
+
+    /* 先 dev_ipc_destroy 停掉 IPC 派发线程，再 vrf_worker_shutdown，避免 IPC 派发到
+     * vrf_worker_post_* 时访问已置 NULL 的 g_vrf_work_local → SEGV */
     dev_ipc_context_t *ctx = g_vrf_local->dev_ipc_ctx;
     g_vrf_local->dev_ipc_ctx = NULL;
     if (ctx)
     {
         dev_ipc_destroy(ctx);
     }
+
+    vrf_worker_shutdown();
+
     g_free(g_vrf_local);
     g_vrf_local = NULL;
 }

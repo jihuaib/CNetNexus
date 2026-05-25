@@ -21,4 +21,10 @@ void if_msg_handle_subscribe(dev_ipc_message_t *msg);
  */
 void if_msg_handle_unsubscribe(dev_ipc_message_t *msg);
 
+/**
+ * @brief IF DB restore 完成后，给所有 pending_replay=1 的订阅者补发 REPLAY（含 SMOOTHSTART/END）。
+ *        仅 worker 线程内调用。
+ */
+void if_msg_flush_pending_replays(void);
+
 #endif /* IF_MSG_H */

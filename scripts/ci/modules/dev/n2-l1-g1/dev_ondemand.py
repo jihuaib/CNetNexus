@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-端到端验证按需模块 (SBMP) + 订阅启动 + reboot process + 自动恢复机制。
+端到端验证按需模块 (SBMP) + 订阅启动 + process reboot + 自动恢复机制。
 
 覆盖：
   Phase A. boot 完成 → SBMP 进程不存在（DB 空）
   Phase B. `bmp-server` 命令触发 SBMP 启动（DEV 按订阅 fork）
   Phase C. `no bmp-server` 让 SBMP 进程自退出（raise SIGTERM）
   Phase D. 重新配置 → 整机 `reboot` → boot 时 SBMP 由 revive-table 自动 spawn
-  Phase E. `reboot process sbmp` SIGTERM + 自动 respawn，DB 配置不丢
+  Phase E. `process reboot sbmp`（封装函数 process_reboot；DEV 卡 READY 才返回）
+            进程更替 + DB 配置不丢
 
 跑在 dev/n2-l1-g1 拓扑里，只用 r1。
 """
@@ -18,7 +19,7 @@ import re
 import subprocess
 import time
 
-from module_api import cmd, mark_step_failed, require_devices, step  # noqa: E402
+from module_api import cmd, mark_step_failed, process_reboot, require_devices, step  # noqa: E402
 from top_runner import TopologyRuntime, run_cmd  # noqa: E402
 
 
@@ -151,18 +152,19 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         # 用重试：SBMP init 中 subscribe(CLI) 在 db_restore 之后，CFG 看到连接才能 dispatch。
         out = _show_retry(rt, "r1", "show bmp-server", must_contain=str(SBMP_PORT), timeout=10)
 
-        step("Phase E: 'reboot process sbmp' restarts process, config preserved")
+        step("Phase E: 'process reboot sbmp' restarts process, config preserved")
         old_pid = post_reboot_pids[0]
-        out = cmd(rt, "r1", "reboot process sbmp", timeout=10)
-        if "reboot process sbmp" not in out and "respawn" not in out.lower():
+        # 封装的 process_reboot：CLI 卡 READY 才返回，且响应后已自动等所有模块 ready
+        out = process_reboot(rt, "r1", "sbmp")
+        if "reboot sbmp ok" not in out and "spawned" not in out:
             mark_step_failed()
-            raise AssertionError(f"Phase E: unexpected reboot process response:\n{out}")
-        # 等旧 pid 消失 + 新 pid 出现
+            raise AssertionError(f"Phase E: unexpected `process reboot sbmp` response:\n{out}")
+        # process_reboot 已保证新 pid 完成 init；再校验一下进程更替
         _wait_for_pids(container, predicate=lambda p: old_pid not in p,
-                       timeout=WAIT_EXIT_SEC, what=f"old sbmp pid {old_pid} to exit on reboot process")
+                       timeout=WAIT_EXIT_SEC, what=f"old sbmp pid {old_pid} to exit on process reboot")
         new_pids = _wait_for_pids(container, predicate=lambda p: len(p) == 1 and p[0] != old_pid,
-                                   timeout=WAIT_SPAWN_SEC, what="new sbmp pid after reboot process")
-        # DB 配置应在；新进程 init 完成 subscribe(CLI) 后 CFG 才能 dispatch
+                                   timeout=WAIT_SPAWN_SEC, what="new sbmp pid after process reboot")
+        # DB 配置应在；READY 后 CFG 已可 dispatch，show 立即可用
         out = _show_retry(rt, "r1", "show bmp-server", must_contain=str(SBMP_PORT), timeout=10)
 
         step("Phase F: TUNNEL on-demand idle (show is read-only, must NOT trigger spawn)")

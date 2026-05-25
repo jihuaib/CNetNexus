@@ -119,9 +119,32 @@ static void ldp_handle_if_ready(void)
 }
 
 static gboolean g_ldp_db_restored = FALSE;
+static gboolean g_ldp_db_ready = FALSE;     /* DB 已建表 */
+static gboolean g_ldp_if_smoothend = FALSE; /* IF REPLAY 已完成 */
+
+static void ldp_try_db_restore(void)
+{
+    if (g_ldp_db_restored)
+    {
+        return;
+    }
+    if (!g_ldp_db_ready || !g_ldp_if_smoothend)
+    {
+        return;
+    }
+    if (ldp_db_restore() != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("LDP: DB restore failed");
+        return;
+    }
+    g_ldp_db_restored = TRUE;
+    LOG_INFO("LDP: DB restore completed");
+}
 
 static void ldp_handle_db_ready(void)
 {
+    /* DB MODULE_EVENT READY 触发：等握手完成（subscribe / event 只是触发 connect，IO 线程异步建联）。
+     * db_init 幂等。 */
     dev_ipc_context_t *ctx = ldp_local_ipc_ctx();
     if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DB, 3000) != ERRCODE_SUCCESS)
     {
@@ -134,18 +157,23 @@ static void ldp_handle_db_ready(void)
         LOG_ERROR("LDP: DB init failed");
         return;
     }
+    g_ldp_db_ready = TRUE;
+    ldp_try_db_restore();
+}
 
-    if (g_ldp_db_restored)
+static void ldp_handle_if_smoothend(void)
+{
+    gboolean first = !g_ldp_if_smoothend;
+    g_ldp_if_smoothend = TRUE;
+    if (first)
     {
-        LOG_INFO("LDP: DB ready; restore already completed");
-        return;
+        LOG_INFO("LDP: IF smoothend received (initial sync)");
+        ldp_try_db_restore();
     }
-
-    if (ldp_db_restore() != ERRCODE_SUCCESS)
+    else
     {
-        LOG_WARN("LDP: DB restore failed");
+        LOG_INFO("LDP: IF smoothend received (resync)");
     }
-    g_ldp_db_restored = TRUE;
 }
 
 static void ldp_on_db_event_cb(uint32_t module_id, uint8_t event, const char *host, uint16_t port, uint32_t epoch,
@@ -213,7 +241,12 @@ void ldp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             }
             else
             {
-                /* CFG 已经卡 READY 才派发；READY 时业务已从 DB 恢复完，不再业务侧拦截 */
+                /* DB 不在线时拒绝配置：避免内存改了 / DB 写不到的静默偏移 */
+                if (db_rpc_guard_reject(ctx, msg, "LDP"))
+                {
+                    dev_ipc_message_free(msg);
+                    return;
+                }
                 (void)ldp_cli_handle_config_msg(msg);
                 dev_ipc_message_free(msg);
             }
@@ -233,11 +266,22 @@ void ldp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             return;
 
         case IF_MSG_TYPE_EVENT:
+        {
+            uint32_t if_event = 0;
+            if (msg->payload && msg->payload_len >= sizeof(if_event_msg_t))
+            {
+                if_event = ((const if_event_msg_t *)msg->payload)->event;
+            }
+            if (if_event == IF_EVENT_SMOOTHEND)
+            {
+                ldp_handle_if_smoothend();
+            }
             if (ldp_worker_post_if_event(msg) != 0)
             {
                 dev_ipc_message_free(msg);
             }
             return;
+        }
 
         case ROUTE_MSG_TYPE_REPORT:
         case ROUTE_MSG_TYPE_UPDATE:
@@ -278,11 +322,11 @@ int ldp_module_init(void)
 
     /* 弱依赖模型启动：
      *   1. 等 DEV 控制连接
-     *   2. 业务模块依赖声明：subscribe(TUNNEL, auto_start=1) —— LDP 需要 TUNNEL 做标签转发
-     *   3. wait_module_ready(DB) → db_init + db_restore
-     *   4. worker 启动
-     *   5. notify_ready 通知 DEV
-     *   6. 订阅依赖放 ready 后面：各 READY 事件驱动自身延迟初始化 */
+     *   2. worker 启动
+     *   3. 订阅所有依赖（含 CLI；TUNNEL 因 LDP 必需用 auto_start=1）
+     *   4. wait_all_subscribed_connected：等所有 peer IPC 都 CONNECTED
+     *   5. db_init + db_restore
+     *   6. notify_ready：业务真正可用 */
     if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DEV, 10000) != ERRCODE_SUCCESS)
     {
         LOG_ERROR("LDP: timed out waiting for DEV connection; module may be unusable");
@@ -295,46 +339,42 @@ int ldp_module_init(void)
         return -1;
     }
 
-    if (dev_ipc_notify_ready(ctx) != ERRCODE_SUCCESS)
-    {
-        LOG_WARN("LDP: notify_ready to DEV failed");
-    }
-
-    /* 显式依赖：使能 LDP 即拉起 TUNNEL（按需模块，否则保持 idle）。
-     * 不带回调——纯触发，IPC 库自动建联，运行时 RPC 走该连接。 */
+    /* 显式依赖：使能 LDP 即拉起 TUNNEL（按需模块，否则保持 idle）。 */
     if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_TUNNEL, 1, NULL, NULL) != ERRCODE_SUCCESS)
     {
         LOG_WARN("LDP: subscribe(TUNNEL) failed; MPLS forwarding may not work");
     }
-
-    /* ROUTE：回调模式，ROUTE 每次 READY 触发 worker 重发路由订阅。 */
     if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_ROUTE, 0, ldp_on_route_ready_cb, NULL) != ERRCODE_SUCCESS)
     {
         LOG_WARN("LDP: subscribe(ROUTE) failed");
     }
-
-    /* IF：用回调模式。on_if_ready 在 IF 每次 READY 时（含首次/重启）触发，
-     * 投递 worker 内部消息，由 worker 线程做实际的 if_api_subscribe_all。
-     * 这样 init 完全不阻塞 IF 的可达性，IF 重启也能自动重新订阅事件。 */
     if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_IF, 0, ldp_on_if_ready_cb, NULL) != ERRCODE_SUCCESS)
     {
         LOG_WARN("LDP: subscribe(IF) failed");
     }
-
-    /* 放在末尾：CFG poll is_connected(LDP)=true 时本模块已 fully ready */
-    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_CLI, 0, NULL, NULL) != ERRCODE_SUCCESS)
-    {
-        LOG_WARN("LDP: subscribe(CLI) failed; commands from CFG won't be reachable");
-    }
-
     if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_DB, 0, ldp_on_db_event_cb, NULL) != ERRCODE_SUCCESS)
     {
-        LOG_WARN("LDP: subscribe(DB) failed; DB restore deferred until a later READY event");
+        LOG_WARN("LDP: subscribe(DB) failed");
+    }
+    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_CLI, 0, NULL, NULL) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("LDP: subscribe(CLI) failed");
+    }
+
+    /* DEPS_READY：等所有订阅 peer 的 IPC 都 CONNECTED 才继续 db_init/restore */
+    if (dev_ipc_wait_all_subscribed_connected(ctx, 10000) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("LDP: deps not fully connected within 10s; proceeding anyway");
     }
 
     if (dev_ipc_is_connected(ctx, DEV_MODULE_ID_DB))
     {
         ldp_handle_db_ready();
+    }
+
+    if (dev_ipc_notify_ready(ctx) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("LDP: notify_ready to DEV failed");
     }
 
     LOG_INFO("LDP: module ready");
@@ -349,14 +389,16 @@ void ldp_module_cleanup(void)
         return;
     }
 
-    ldp_worker_shutdown();
-
+    /* 先 dev_ipc_destroy 停掉 IPC 派发线程，再 worker_shutdown 释放 worker 本地状态。
+     * 否则 IPC 派发到 ldp_worker_post_* 会访问已置 NULL 的全局指针 → SEGV。 */
     dev_ipc_context_t *ctx = g_ldp_local->dev_ipc_ctx;
     g_ldp_local->dev_ipc_ctx = NULL;
     if (ctx)
     {
         dev_ipc_destroy(ctx);
     }
+
+    ldp_worker_shutdown();
 
     g_free(g_ldp_local);
     g_ldp_local = NULL;

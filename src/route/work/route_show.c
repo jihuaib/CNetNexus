@@ -330,7 +330,7 @@ static void ifindex_to_name(uint32_t ifindex, char *buf)
     }
     /* cache miss：标注 ifindex 让用户/排错方知道是 IF cache 未同步，而不是
      * 假装一切正常打印物理名。 */
-    snprintf(buf, IF_NAMESIZE, "ifindex=%u", ifindex);
+    snprintf(buf, IF_NAMESIZE, "if-%u", ifindex);
 }
 
 static void show_path_cb(const route_head_t *head, const route_path_t *path, void *userdata)

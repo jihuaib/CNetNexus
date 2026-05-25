@@ -129,7 +129,7 @@ static void if_handle_route_ready(void)
 }
 
 static gboolean g_if_db_restored = FALSE;
-static gboolean g_if_db_ready = FALSE;      /* DB 已建表 / link_monitor 已起 */
+static gboolean g_if_link_monitor_started = FALSE;
 static gboolean g_if_vrf_smoothend = FALSE; /* VRF REPLAY 已完成 */
 
 static void if_try_db_restore(void)
@@ -138,7 +138,7 @@ static void if_try_db_restore(void)
     {
         return;
     }
-    if (!g_if_db_ready || !g_if_vrf_smoothend)
+    if (!g_if_vrf_smoothend)
     {
         return;
     }
@@ -149,11 +149,16 @@ static void if_try_db_restore(void)
         return;
     }
     g_if_db_restored = TRUE;
-    LOG_INFO("IF: DB restore completed (db_ready + vrf_smoothend)");
+    /* 通知 worker：restore 已结束。worker 收到后会把 pending_replay 的订阅者
+     * 统一补发 SMOOTHSTART/REPLAY/SMOOTHEND，避免推空数据。 */
+    (void)if_worker_post_restore_done();
+    LOG_INFO("IF: DB restore completed");
 }
 
 static void if_handle_db_ready(void)
 {
+    /* DB MODULE_EVENT READY 触发：等握手完成（subscribe / event 只是触发 connect，IO 线程异步建联）。
+     * db_init 幂等；link_monitor 只起一次。 */
     dev_ipc_context_t *ctx = if_local_ipc_ctx();
     if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DB, 3000) != ERRCODE_SUCCESS)
     {
@@ -161,18 +166,18 @@ static void if_handle_db_ready(void)
         return;
     }
 
-    if (!g_if_db_ready)
+    if (if_db_init() != ERRCODE_SUCCESS)
     {
-        if (if_db_init() != ERRCODE_SUCCESS)
-        {
-            LOG_WARN("IF: db init failed");
-            return;
-        }
+        LOG_WARN("IF: db init failed");
+        return;
+    }
+    if (!g_if_link_monitor_started)
+    {
         if (if_link_monitor_start() != 0)
         {
             LOG_WARN("IF: link monitor start failed, link recovery disabled");
         }
-        g_if_db_ready = TRUE;
+        g_if_link_monitor_started = TRUE;
     }
 
     if_try_db_restore();
@@ -314,7 +319,12 @@ void if_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             }
             else
             {
-                /* CFG 已经卡 READY 才派发；IF 在 READY 时业务已从 DB 恢复完，不再业务侧拦截 */
+                /* DB 不在线时拒绝配置：避免内存改了 / DB 写不到的静默偏移 */
+                if (db_rpc_guard_reject(ctx, msg, "IF"))
+                {
+                    dev_ipc_message_free(msg);
+                    return;
+                }
                 if_cli_handle_config_msg(msg);
                 dev_ipc_message_free(msg);
             }
@@ -427,10 +437,23 @@ int if_module_init(void)
 
 void if_module_cleanup(void)
 {
-    /* 优雅退出：runtime-only 清掉所有 IP（OS kernel 路由 + ROUTE RIB 都会跟着消失）
-     * DB 配置保留，process start 后 db_restore 能完整还原。
-     * 必须在 worker_shutdown 之前调（worker 仍要处理 dispatch + netlink/RPC）。 */
+    /* 优雅退出顺序：
+     *   1. if_worker_pre_shutdown_cleanup：清 OS netlink IP + 通知 ROUTE。此时 worker
+     *      仍要处理 dispatch + 通过 IPC 发 RPC，必须放最前。
+     *   2. dev_ipc_destroy：停掉 IPC 派发线程，避免后续 worker_shutdown 释放 g_if_work_local
+     *      之后 IPC 派发到 if_worker_post_* 触发 NULL 解引用 SEGV。
+     *   3. if_link_monitor_stop / if_worker_shutdown：拆掉 worker 自身资源。 */
     (void)if_worker_pre_shutdown_cleanup();
+
+    if (g_if_local)
+    {
+        dev_ipc_context_t *ctx = g_if_local->dev_ipc_ctx;
+        g_if_local->dev_ipc_ctx = NULL;
+        if (ctx)
+        {
+            dev_ipc_destroy(ctx);
+        }
+    }
 
     if_link_monitor_stop();
     if_worker_shutdown();
@@ -439,14 +462,6 @@ void if_module_cleanup(void)
     {
         return;
     }
-
-    dev_ipc_context_t *ctx = g_if_local->dev_ipc_ctx;
-    g_if_local->dev_ipc_ctx = NULL;
-    if (ctx)
-    {
-        dev_ipc_destroy(ctx);
-    }
-
     g_free(g_if_local);
     g_if_local = NULL;
 }

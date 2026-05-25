@@ -117,12 +117,13 @@ int dev_init_self(void)
         return ERRCODE_FAIL;
     }
 
-    /* 注册 DEV 模块到 GTree，并补充端口号；DEV 是 supervisor，自身永远就绪 */
+    /* 注册 DEV 模块到 GTree，并补充端口号；DEV 自身的 READY 推迟到 dev_init_all_modules
+     * 末尾再置：含义为 “supervisor 完成了基础模块拉起 / DB 恢复 / 按需模块 revive”。 */
     dev_module_t *dev_self = dev_add_module_to_registry(DEV_MODULE_ID_DEV, "dev");
     if (dev_self)
     {
         dev_self->port = DEV_MODULE_PORT_DEV;
-        dev_self->phase = DEV_PHASE_READY;
+        dev_self->phase = DEV_PHASE_LOADED;
     }
 
     LOG_INFO("DEV IPC initialization complete========================");

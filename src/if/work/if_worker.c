@@ -48,6 +48,7 @@ typedef enum if_worker_cmd_type
     IF_WORKER_CMD_ROUTE_READY = 9,          /**< ROUTE ready/restart 后重刷 connected 路由 */
     IF_WORKER_CMD_MODULE_DOWN = 10,         /**< 对端模块 IPC 断开，清理运行态订阅 */
     IF_WORKER_CMD_VRF_DOWN = 11,            /**< VRF 模块 DOWN：清接口 VRF 绑定 + 清 cache */
+    IF_WORKER_CMD_RESTORE_DONE = 12,        /**< DB restore 完成：flush pending REPLAY */
 } if_worker_cmd_type_t;
 
 /**
@@ -445,6 +446,11 @@ static void *if_worker_thread_fn(void *arg)
                 break;
             }
 
+            case IF_WORKER_CMD_RESTORE_DONE:
+                g_if_work_local->restore_done = 1;
+                if_msg_flush_pending_replays();
+                break;
+
             default:
                 LOG_WARN("IF-WORKER: unknown cmd type=%d", (int)cmd->type);
                 if (cmd->msg)
@@ -636,6 +642,30 @@ int if_worker_post_route_ready(void)
         return ERRCODE_FAIL;
     }
     return ERRCODE_SUCCESS;
+}
+
+int if_worker_post_restore_done(void)
+{
+    if (!g_if_work_local || !g_if_work_local->running || g_if_work_local->thread == 0)
+    {
+        return ERRCODE_SUCCESS;
+    }
+    if_worker_cmd_t *cmd = worker_cmd_create(IF_WORKER_CMD_RESTORE_DONE, NULL, 0);
+    if (!cmd)
+    {
+        return ERRCODE_FAIL;
+    }
+    if (worker_cmd_enqueue(cmd) != ERRCODE_SUCCESS)
+    {
+        worker_cmd_destroy(cmd);
+        return ERRCODE_FAIL;
+    }
+    return ERRCODE_SUCCESS;
+}
+
+int if_worker_is_restore_done(void)
+{
+    return (g_if_work_local && g_if_work_local->restore_done) ? 1 : 0;
 }
 
 int if_worker_post_vrf_down(void)
