@@ -69,4 +69,17 @@ int bgp_route_flush_process_pending(bgp_instance_t *inst);
  */
 uint32_t bgp_route_flush_replay_flushed_all(void);
 
+/**
+ * @brief BGP 进程优雅退出前,把已下刷给 ROUTE 的所有路由都主动撤销。
+ *
+ * 遍历 protocol->vrf_hash → inst_hash → rd_entries → rib.head_tree → head.route_list,
+ * 对带 BGP_ROUTE_FLAG_FLUSHED 标记的 route 直接 route_rpc_del 给 ROUTE。
+ * 避免依赖关闭路径上的 route_flush_queue/calc_queue（关闭时这两个队列只销毁不处理）。
+ *
+ * 仅在 bgp_worker_runtime_cleanup 调用,IPC ctx 此时尚未销毁。
+ *
+ * @return 实际撤销的路由条目数
+ */
+uint32_t bgp_route_flush_withdraw_all_for_shutdown(void);
+
 #endif /* BGP_ROUTE_FLUSH_H */

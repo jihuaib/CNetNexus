@@ -350,6 +350,29 @@ def normalize_cli_command_output(raw: str, command: str) -> str:
     return "\n".join(lines).strip()
 
 
+def ensure_cli_sessions_alive(rt: TopologyRuntime, top: dict[str, Any]) -> None:
+    """case 起手前探活 + 必要时重连每台 netnexus 的 CLI 会话。
+
+    上一个 case 的 cleanup 若在用户视图发了 ``exit``,ACCESS 会按
+    access_session_t.close_requested 关掉 socket。本步骤在每个 case 开头
+    捕获这种"死链复用",避免后续命令一上来就 BrokenPipe 且不收集任何
+    模块日志。
+    """
+    devices = top.get("devices", {})
+    if not isinstance(devices, dict) or not devices:
+        return
+    for dev in sorted(devices.keys()):
+        if _device_kind(rt, dev) != DEVICE_KIND_NETNEXUS:
+            continue
+        try:
+            reused = rt.ensure_cli_alive(dev)
+        except Exception as exc:
+            print(f"WARNING: ensure_cli_alive({dev}) failed: {exc}")
+            continue
+        if not reused:
+            print(f"NOTE: CLI session to {dev} was dead; reconnected before case run")
+
+
 def print_device_versions(rt: TopologyRuntime, top: dict[str, Any]) -> None:
     devices = top.get("devices", {})
     if not isinstance(devices, dict) or not devices:
@@ -472,6 +495,7 @@ def run_check(
             else:
                 print(f"===== PREVIOUS CHECK: {previous_script} [{previous_status}] =====")
             load_global_top(top)
+            ensure_cli_sessions_alive(rt, top)
             print_device_versions(rt, top)
 
             before_cfg = collect_show_current_config(rt, top, stage="before")

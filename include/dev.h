@@ -214,6 +214,11 @@ typedef dev_ipc_costate_t dev_ipc_costate_t;
 #define DEV_IPC_RECONNECT_DELAY_MIN 500
 /** 最大重连延迟（毫秒） */
 #define DEV_IPC_RECONNECT_DELAY_MAX 10000
+/** 本 socket 的 SYN 重传上限(per-socket TCP_SYNCNT)。
+ *  Linux 默认 tcp_syn_retries=6 → ~63s 才 ETIMEDOUT;
+ *  设 3 → ~7s(1+2+4),避免 fork→connect 抢跑被 kernel SYN-RETRY 卡住,
+ *  和 GDB 调试无关(SYN 处理在内核,断不到用户态)。 */
+#define DEV_IPC_TCP_SYN_RETRIES 3
 /** 模块名称最大长度 */
 #define DEV_IPC_MODULE_NAME_MAX 32
 /** 最大连接数 */
@@ -313,6 +318,11 @@ struct dev_ipc_context
 
     /* 订阅管理器（按需启动 / MODULE_EVENT 路由） */
     dev_ipc_subscribe_mgr_t *sub_mgr;
+
+    /* notify_ready 延迟标志:业务调用 dev_ipc_notify_ready 时若 DEV 还未连上,
+     * 置位本标志,IO 线程在 handshake 完成时自动补发。
+     * 仅 IO 线程读/写 + dev_ipc_notify_ready 写,无锁原子语义足够。 */
+    volatile int pending_notify_ready;
 };
 
 // ============================================================================
@@ -479,6 +489,20 @@ int dev_ipc_connect(dev_ipc_context_t *ctx, uint32_t target_module_id, const cha
  * @param ctx IPC 上下文
  */
 void dev_ipc_clear_connections(dev_ipc_context_t *ctx);
+
+/**
+ * @brief 删除到指定模块的所有 IPC 连接记录
+ * @param ctx              IPC 上下文
+ * @param target_module_id 目标模块 ID
+ *
+ * 用于子进程退出后清理残留 conn：避免下次 spawn 时 dev_ipc_connect 命中
+ * 旧 conn（已封顶到 RECONNECT_DELAY_MAX 的 backoff），导致新进程的 init 等待窗口
+ * 与 IO 线程的重连计时器对齐失败。
+ *
+ * 实现安全性等同 dev_ipc_clear_connections：先停 IO 线程→拆 conn→重启 IO 线程，
+ * 不可在 IO 线程上下文中调用。
+ */
+void dev_ipc_drop_connection(dev_ipc_context_t *ctx, uint32_t target_module_id);
 
 /**
  * @brief 发送消息到目标模块（异步）

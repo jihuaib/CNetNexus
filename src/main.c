@@ -232,6 +232,14 @@ int main(int argc, char *argv[])
                             /* 通知订阅者：模块下线 */
                             dev_subscribe_broadcast_event(m, DEV_MODULE_EVENT_DOWN);
 
+                            /* 删除 IPC 连接记录：避免老 conn 残留的 backoff 拖慢下次拉起
+                             * （否则 next dev_ipc_connect 会命中旧 conn 而不重置计时器，
+                             *  新进程的 init 等待窗口可能与 IO 线程的 10s 重连周期错过）*/
+                            if (g_dev_local && g_dev_local->dev_ipc_ctx)
+                            {
+                                dev_ipc_drop_connection(g_dev_local->dev_ipc_ctx, m->module_id);
+                            }
+
                             m->child_pid = 0;
                             m->phase = DEV_PHASE_REGISTERED;
 

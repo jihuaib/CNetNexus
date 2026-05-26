@@ -317,6 +317,13 @@ void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         return;
     }
 
+    /* cleanup 阶段:worker 已经/正在销毁,直接丢弃避免 worker_post_* 撞 NULL g_bgp_work_local */
+    if (g_bgp_local && g_bgp_local->shutting_down)
+    {
+        dev_ipc_message_free(msg);
+        return;
+    }
+
     switch (msg->msg_type)
     {
         case BGP_MSG_TYPE_INTERNAL_DB_READY:
@@ -598,18 +605,23 @@ void bgp_module_cleanup(void)
         return;
     }
 
-    /* 顺序至关重要：必须先销毁 IPC（停掉 IO + 业务消息派发线程），再 shutdown worker。
-     * 反过来时 IPC 线程可能正在派发 IF_MSG_TYPE_EVENT → bgp_worker_post_if_event →
-     * bgp_cmd_enqueue 访问 g_bgp_work_local，而后者已被 worker_shutdown 置为 NULL。 */
+    /* 1) 置 shutting_down,msg_handler 后续丢弃所有消息,避免 worker 销毁过程中
+     *    被 bgp_worker_post_if_event 等访问 NULL g_bgp_work_local。 */
+    g_bgp_local->shutting_down = 1;
+
+    /* 2) worker 仍可用 + IPC 仍可用 → 给业务一次机会做 graceful withdraw
+     *    (撤销 BGP 注入到 ROUTE 的路由)。原顺序在 worker_shutdown 前就 dev_ipc_destroy,
+     *    导致 worker 里通过 IPC 发的撤销 RPC 全部失败。 */
+    bgp_bmp_thread_shutdown();
+    bgp_worker_shutdown();
+
+    /* 3) 关 IPC,join IO/worker 线程,断所有连接。 */
     dev_ipc_context_t *ctx = g_bgp_local->dev_ipc_ctx;
     g_bgp_local->dev_ipc_ctx = NULL;
     if (ctx)
     {
         dev_ipc_destroy(ctx);
     }
-
-    bgp_bmp_thread_shutdown();
-    bgp_worker_shutdown();
 
     g_free(g_bgp_local);
     g_bgp_local = NULL;

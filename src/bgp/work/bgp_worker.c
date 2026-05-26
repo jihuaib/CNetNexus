@@ -507,6 +507,10 @@ static void *bgp_worker_thread(void *arg)
 
 static void bgp_worker_runtime_cleanup(void)
 {
+    /* 先把所有已下刷到 ROUTE 的路由主动撤销:此刻 IPC ctx 仍可用,worker 仍存活,
+     * 不依赖 route_flush_queue/calc_queue(关闭路径上它们只销毁不处理)。 */
+    (void)bgp_route_flush_withdraw_all_for_shutdown();
+
     if (g_bgp_work_local->protocol && g_bgp_work_local->protocol->vrf_hash)
     {
         GHashTableIter vrf_iter;

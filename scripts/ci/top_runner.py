@@ -180,6 +180,25 @@ class NetNexusCli:
             self.tn = None
         self._rx_buf.clear()
 
+    def is_alive(self, probe_timeout: float = 2.0) -> bool:
+        """非破坏性探活:发一个空行,等 prompt 回来。
+
+        覆盖两种死法:
+        - 全关:write 抛 BrokenPipeError;
+        - 半关(对端发了 FIN 还没回 RST):read_very_eager 抛 EOFError 或拿不到 prompt 超时。
+        """
+        if not self.tn:
+            return False
+        try:
+            self.tn.write(b"\n")
+        except (BrokenPipeError, OSError, EOFError):
+            return False
+        try:
+            self._read_until_prompt(timeout=max(1, int(probe_timeout)))
+            return True
+        except Exception:
+            return False
+
     def cmd(self, command: str, timeout: int | None = None, strict: bool = True) -> str:
         if not self.tn:
             raise RuntimeError(f"{self.name}: CLI not connected")
@@ -1033,6 +1052,65 @@ class TopologyRuntime:
 
         raise RuntimeError(
             f"{device}: failed to reconnect after reboot within {reconnect_timeout}s: {last_err}"
+        )
+
+    def ensure_cli_alive(self, device: str, *, reconnect_timeout: int = 30) -> bool:
+        """探活 + 必要时重连 device 的 CLI 会话。
+
+        case 之间 ACCESS 端可能因用户态 ``exit`` 关掉 telnet socket
+        (新架构 access_session_t.close_requested 路径),老 cli 复用就会
+        碰到 BrokenPipe。本方法在每个 case 起手前调用,确保会话可用。
+
+        - 返回 True  : 会话原本就活着,未做任何动作;
+        - 返回 False : 会话已死,完成了一次重连(含 wait_modules_ready)。
+
+        ``reboot_device`` 走的是另一条专用路径,带 reboot 探针 + 较长超时,
+        与此处的 lightweight reconnect 互不重叠。
+        """
+        if not self._is_netnexus(device):
+            return True
+
+        cli = self.cli_map.get(device)
+        if cli is not None and cli.is_alive():
+            return True
+
+        host = cli.host if cli is not None else None
+        port = cli.port if cli is not None else None
+        if cli is not None:
+            try:
+                cli.close()
+            except Exception:
+                pass
+        self.cli_map.pop(device, None)
+        if host is None or port is None:
+            raise RuntimeError(
+                f"{device}: CLI session is dead and runtime has no host/port to reconnect"
+            )
+
+        print(f"===== STEP: Reconnect CLI to {device} (previous session closed) =====", flush=True)
+        deadline = time.time() + reconnect_timeout
+        last_err: Exception | None = None
+        while time.time() < deadline:
+            new_cli: NetNexusCli | None = None
+            try:
+                new_cli = NetNexusCli(host, port, device, cmd_timeout=self.cmd_timeout, verbose=self.verbose)
+                new_cli.connect(timeout=min(10, max(2, int(deadline - time.time()))))
+                self.cli_map[device] = new_cli
+                remaining = max(10, int(deadline - time.time()))
+                self.wait_modules_ready(device, timeout=remaining)
+                return False
+            except Exception as exc:
+                last_err = exc
+                if new_cli is not None:
+                    try:
+                        new_cli.close()
+                    except Exception:
+                        pass
+                    self.cli_map.pop(device, None)
+                time.sleep(1)
+
+        raise RuntimeError(
+            f"{device}: failed to reconnect CLI within {reconnect_timeout}s: {last_err}"
         )
 
     def exec_cmd(self, device: str, command: str, *, timeout: int | None = None, strict: bool = True) -> str:

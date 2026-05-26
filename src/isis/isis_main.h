@@ -7,11 +7,14 @@
 #ifndef ISIS_MAIN_H
 #define ISIS_MAIN_H
 
+#include <signal.h>
+
 #include "dev.h"
 
 typedef struct isis_local
 {
     dev_ipc_context_t *dev_ipc_ctx;
+    volatile sig_atomic_t shutting_down; /**< 进入 cleanup 阶段:msg_handler 全部丢弃,避免 worker 已销毁仍被投递 */
 } isis_local_t;
 
 extern isis_local_t *g_isis_local;

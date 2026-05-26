@@ -71,6 +71,11 @@ int dev_ipc_connection_initiate(dev_ipc_connection_t *conn, const char *host, ui
     /* 设置 SO_KEEPALIVE */
     setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &opt, sizeof(opt));
 
+    /* 限制本 socket SYN 重传次数,避免 kernel 默认 ~63s 重传序列把
+     * 启动竞争窗口的 conn 卡在 COCONNECTING 太久。 */
+    int syn_retries = DEV_IPC_TCP_SYN_RETRIES;
+    setsockopt(fd, IPPROTO_TCP, TCP_SYNCNT, &syn_retries, sizeof(syn_retries));
+
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;

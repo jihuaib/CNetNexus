@@ -32,6 +32,52 @@ static const char *fmt_module_id(uint32_t module_id, char *buf, size_t buf_size)
 
 #define DEV_IPC_MAX_EPOLL_EVENTS 32
 
+/* 与 DEV 握手完成时,若 dev_ipc_notify_ready 之前因 DEV 未连而置了延迟标志,
+ * 这里把 NOTIFY_READY 帧补发给 DEV。仅在 IO 线程上下文中调用。 */
+static void flush_pending_notify_ready(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn)
+{
+    if (!ctx || !conn || !ctx->pending_notify_ready)
+    {
+        return;
+    }
+    if (conn->remote_module_id != DEV_MODULE_ID_DEV)
+    {
+        return;
+    }
+    if (conn->state != DEV_IPC_COCONNECTED)
+    {
+        return;
+    }
+
+    dev_ipc_message_t msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.msg_type = DEV_IPC_MSG_TYPE_DEV_NOTIFY_READY;
+    msg.src_module_id = ctx->module_id;
+    msg.dst_module_id = DEV_MODULE_ID_DEV;
+
+    uint8_t *buf = NULL;
+    uint32_t buf_len = 0;
+    if (dev_ipc_frame_serialize(&msg, &buf, &buf_len) != ERRCODE_SUCCESS)
+    {
+        return;
+    }
+
+    pthread_mutex_lock(&ctx->comutex);
+    int rc = dev_ipc_connection_send(conn, buf, buf_len);
+    pthread_mutex_unlock(&ctx->comutex);
+    g_free(buf);
+
+    if (rc == ERRCODE_SUCCESS)
+    {
+        ctx->pending_notify_ready = 0;
+        LOG_INFO("<%s> Deferred notify_ready flushed to DEV after handshake", ctx->name);
+    }
+    else
+    {
+        LOG_WARN("<%s> Deferred notify_ready send failed; will retry on next handshake", ctx->name);
+    }
+}
+
 // 全局 IPC 上下文实例，用于其他模块方便获取
 dev_ipc_context_t *g_ipc_context = NULL;
 /* Worker 退出哨兵（GAsyncQueue 不能推送 NULL）。 */
@@ -346,6 +392,7 @@ static void handle_frame(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn, dev
                 LOG_INFO("<%s> Connection established with %s", ctx->name,
                          fmt_module_id(conn->remote_module_id, _buf, sizeof(_buf)));
             }
+            flush_pending_notify_ready(ctx, conn);
             break;
         }
 
@@ -365,6 +412,7 @@ static void handle_frame(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn, dev
                 LOG_INFO("<%s> Handshake completed with %s", ctx->name,
                          fmt_module_id(conn->remote_module_id, _buf, sizeof(_buf)));
             }
+            flush_pending_notify_ready(ctx, conn);
             break;
         }
 
@@ -1145,6 +1193,73 @@ void dev_ipc_clear_connections(dev_ipc_context_t *ctx)
     }
     ctx->num_connections = 0;
     pthread_mutex_unlock(&ctx->comutex);
+
+    if (restart_io)
+    {
+        ctx->running = 1;
+        if (pthread_create(&ctx->io_thread, NULL, dev_ipc_io_thread, ctx) != 0)
+        {
+            LOG_PERROR("pthread_create (io restart)");
+            ctx->running = 0;
+        }
+    }
+}
+
+void dev_ipc_drop_connection(dev_ipc_context_t *ctx, uint32_t target_module_id)
+{
+    if (!ctx)
+    {
+        return;
+    }
+
+    int restart_io = 0;
+    if (ctx->running && ctx->io_thread != 0 && !pthread_equal(pthread_self(), ctx->io_thread))
+    {
+        /* 先停 IO 线程，避免并发访问 conn 导致 UAF（同 dev_ipc_clear_connections） */
+        ctx->running = 0;
+        pthread_join(ctx->io_thread, NULL);
+        ctx->io_thread = 0;
+        restart_io = 1;
+    }
+
+    int dropped = 0;
+    pthread_mutex_lock(&ctx->comutex);
+    int new_count = 0;
+    for (int i = 0; i < ctx->num_connections; i++)
+    {
+        dev_ipc_connection_t *conn = ctx->connections[i];
+        if (!conn)
+        {
+            continue;
+        }
+        if (conn->remote_module_id == target_module_id)
+        {
+            if (conn->fd >= 0)
+            {
+                epoll_ctl(ctx->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
+            }
+            dev_ipc_connection_destroy(conn);
+            dropped++;
+        }
+        else
+        {
+            ctx->connections[new_count++] = conn;
+        }
+    }
+    /* 紧凑后清空末尾遗留指针 */
+    for (int i = new_count; i < ctx->num_connections; i++)
+    {
+        ctx->connections[i] = NULL;
+    }
+    ctx->num_connections = new_count;
+    pthread_mutex_unlock(&ctx->comutex);
+
+    if (dropped > 0)
+    {
+        char _buf[16];
+        LOG_INFO("<%s> Dropped %d connection(s) to module %s", ctx->name, dropped,
+                 fmt_module_id(target_module_id, _buf, sizeof(_buf)));
+    }
 
     if (restart_io)
     {

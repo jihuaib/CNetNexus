@@ -415,3 +415,110 @@ uint32_t bgp_route_flush_replay_flushed_all(void)
     }
     return queued;
 }
+
+// ============================================================================
+// shutdown 撤销
+// ============================================================================
+
+typedef struct withdraw_all_ctx
+{
+    dev_ipc_context_t *ctx;
+    uint32_t vrf_id;
+    uint32_t withdrawn;
+} withdraw_all_ctx_t;
+
+static gboolean shutdown_withdraw_head_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    bgp_rthead_t *head = (bgp_rthead_t *)value;
+    withdraw_all_ctx_t *fctx = (withdraw_all_ctx_t *)user_data;
+    if (!head || !fctx || !fctx->ctx)
+    {
+        return FALSE;
+    }
+    for (GList *l = head->route_list; l; l = l->next)
+    {
+        bgp_route_node_t *route = (bgp_route_node_t *)l->data;
+        if (!route || !BIT_TEST(route->flags, BGP_ROUTE_FLAG_FLUSHED))
+        {
+            continue;
+        }
+        route_msg_entry_t withdraw_entry;
+        if (!route_node_to_route_entry(fctx->vrf_id, &head->nlri, route, &withdraw_entry))
+        {
+            continue;
+        }
+        if (route_rpc_del(fctx->ctx, &withdraw_entry) == ERRCODE_SUCCESS)
+        {
+            BIT_CLR(route->flags, BGP_ROUTE_FLAG_FLUSHED);
+            fctx->withdrawn++;
+        }
+    }
+    return FALSE; /* 继续遍历 GTree */
+}
+
+static void shutdown_withdraw_rib_cb(bgp_instance_t *inst, bgp_rd_entry_t *entry, bgp_rib_t *rib, gpointer user_data)
+{
+    (void)inst;
+    (void)entry;
+    if (!rib || !rib->head_tree)
+    {
+        return;
+    }
+    g_tree_foreach(rib->head_tree, shutdown_withdraw_head_cb, user_data);
+}
+
+uint32_t bgp_route_flush_withdraw_all_for_shutdown(void)
+{
+    if (!g_bgp_work_local || !g_bgp_work_local->protocol || !g_bgp_work_local->protocol->vrf_hash)
+    {
+        return 0;
+    }
+    dev_ipc_context_t *ipc_ctx = bgp_local_ipc_ctx();
+    if (!ipc_ctx)
+    {
+        LOG_WARN("BGP shutdown withdraw: IPC ctx already gone, skip");
+        return 0;
+    }
+
+    uint32_t total = 0;
+    GHashTableIter vrf_iter;
+    gpointer vrf_key = NULL;
+    gpointer vrf_val = NULL;
+    g_hash_table_iter_init(&vrf_iter, g_bgp_work_local->protocol->vrf_hash);
+    while (g_hash_table_iter_next(&vrf_iter, &vrf_key, &vrf_val))
+    {
+        (void)vrf_key;
+        bgp_vrf_t *vrf = (bgp_vrf_t *)vrf_val;
+        if (!vrf || !vrf->inst_hash)
+        {
+            continue;
+        }
+        GHashTableIter inst_iter;
+        gpointer inst_key = NULL;
+        gpointer inst_val = NULL;
+        g_hash_table_iter_init(&inst_iter, vrf->inst_hash);
+        while (g_hash_table_iter_next(&inst_iter, &inst_key, &inst_val))
+        {
+            (void)inst_key;
+            bgp_instance_t *inst = (bgp_instance_t *)inst_val;
+            if (!inst || bgp_import_rib_should_skip_flush(inst))
+            {
+                continue;
+            }
+            withdraw_all_ctx_t fctx = {
+                .ctx = ipc_ctx,
+                .vrf_id = (inst->vrf) ? inst->vrf->vrf_id : ROUTE_VRF_DEFAULT,
+                .withdrawn = 0,
+            };
+            bgp_inst_foreach_rib(inst, shutdown_withdraw_rib_cb, &fctx);
+            if (fctx.withdrawn > 0)
+            {
+                LOG_INFO("BGP shutdown: withdrew %u route(s) to ROUTE (vrf=%u afi=%u safi=%u)", fctx.withdrawn,
+                         fctx.vrf_id, (unsigned)inst->afi, (unsigned)inst->safi);
+                total += fctx.withdrawn;
+            }
+        }
+    }
+    return total;
+}

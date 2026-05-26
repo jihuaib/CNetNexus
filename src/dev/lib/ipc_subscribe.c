@@ -278,9 +278,13 @@ int dev_ipc_notify_ready(dev_ipc_context_t *ctx)
 
     if (rc != ERRCODE_SUCCESS)
     {
-        LOG_WARN("<%s> notify_ready: failed to send to DEV", ctx->name);
-        return ERRCODE_FAIL;
+        /* DEV 还没连上(初始化竞争):置标志,IO 线程在 DEV 握手完成时补发。
+         * 对调用方返回 SUCCESS,让 init 继续向下走;DEV 视角的 READY 由补发补齐。 */
+        ctx->pending_notify_ready = 1;
+        LOG_INFO("<%s> notify_ready deferred: DEV not connected yet, will flush on handshake", ctx->name);
+        return ERRCODE_SUCCESS;
     }
+    ctx->pending_notify_ready = 0;
     LOG_INFO("<%s> Notified DEV: module ready", ctx->name);
     return ERRCODE_SUCCESS;
 }

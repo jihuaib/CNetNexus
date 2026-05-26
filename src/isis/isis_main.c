@@ -200,6 +200,13 @@ void isis_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         return;
     }
 
+    /* cleanup 阶段:worker 已经/正在销毁,直接丢弃避免 worker_post_* 撞 NULL g_isis_work_local */
+    if (g_isis_local && g_isis_local->shutting_down)
+    {
+        dev_ipc_message_free(msg);
+        return;
+    }
+
     switch (msg->msg_type)
     {
         case ISIS_MSG_TYPE_INTERNAL_DB_READY:
@@ -373,15 +380,21 @@ void isis_module_cleanup(void)
         return;
     }
 
-    /* 先停 IPC 再 shutdown worker，避免 IPC 派发到 isis_worker_post_* 时 g_isis_work_local 已 NULL */
+    /* 1) 置 shutting_down,新到达 msg_handler 一律丢弃。
+     *    这样 worker_shutdown 期间不会有新的 worker_post_* 进入异步队列。 */
+    g_isis_local->shutting_down = 1;
+
+    /* 2) worker 仍在跑、IPC 仍可用 → withdraw_all_instance_routes 才能真正发出 RPC 到 ROUTE,
+     *    清掉 RIB 中的 ISIS 条目。原顺序在此之前就 dev_ipc_destroy 了,导致撤销静默失败。 */
+    isis_worker_shutdown();
+
+    /* 3) 关 IPC,join IO/worker 线程,断所有连接。 */
     dev_ipc_context_t *ctx = g_isis_local->dev_ipc_ctx;
     g_isis_local->dev_ipc_ctx = NULL;
     if (ctx)
     {
         dev_ipc_destroy(ctx);
     }
-
-    isis_worker_shutdown();
 
     g_free(g_isis_local);
     g_isis_local = NULL;
