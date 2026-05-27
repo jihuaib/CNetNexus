@@ -148,38 +148,6 @@ def _process_reboot(rt: TopologyRuntime, device: str, container: str, module: st
     )
 
 
-_MODULES_ROW_RE = re.compile(
-    r"^\s*\d+\s+(?P<name>\S+)\s+(?P<phase>\S+)\s+\d+\s+(?P<ipc>\S+)\s+(?P<pid>\S+)\s*$"
-)
-
-
-def _wait_dev_module_unloaded(rt: TopologyRuntime, device: str, module: str, *, timeout: float = 10.0) -> None:
-    """等 DEV 视角看到 module 已下线。
-
-    process_stop 后 pgrep 看不到子进程,但 DEV 主线程的 SIGCHLD handler(含
-    dev_ipc_drop_connection join IO thread)还在跑,m->child_pid 可能尚未置 0。
-    此时立刻 process_start 会撞到 "Dev: <m> already running (pid=N)" 假阳性。
-    这里轮询 show dev modules,直到对应行 phase != LOADED/READY 且 pid 列是
-    `-`(即 child_pid 已被 SIGCHLD handler 清成 0)。
-    """
-    deadline = time.monotonic() + timeout
-    last_row = ""
-    while time.monotonic() < deadline:
-        out = cmd(rt, device, "show dev modules", strict=False)
-        for line in out.splitlines():
-            m = _MODULES_ROW_RE.match(line)
-            if not m or m.group("name") != module:
-                continue
-            last_row = line.strip()
-            phase = m.group("phase").upper()
-            pid_field = m.group("pid")
-            if phase not in ("LOADED", "READY") and pid_field == "-":
-                return
-            break
-        time.sleep(0.2)
-    raise AssertionError(f"timeout waiting DEV view to unload {module}; last row: {last_row!r}")
-
-
 def _process_stop(rt: TopologyRuntime, device: str, container: str, module: str) -> None:
     _wait_module_pids(
         container,
@@ -188,11 +156,9 @@ def _process_stop(rt: TopologyRuntime, device: str, container: str, module: str)
         timeout=10,
         what="single pid before stop",
     )
+    # module_api.process_stop 默认已经等 DEV SIGCHLD handler 把 child_pid 清零，
+    # 这里不需要再做 pgrep / show dev modules 的二次轮询。
     process_stop(rt, device, module)
-    _wait_module_pids(container, module, predicate=lambda p: not p, timeout=20, what="no pid after stop")
-    # DEV 端 SIGCHLD handler 异步清理 child_pid,需要再等它收敛,
-    # 否则紧跟着的 process_start 会拿到 "already running" 假阳性。
-    _wait_dev_module_unloaded(rt, device, module, timeout=10.0)
 
 
 def _process_start(rt: TopologyRuntime, device: str, container: str, module: str) -> None:

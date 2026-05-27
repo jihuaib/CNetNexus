@@ -15,7 +15,7 @@ import shlex
 import time
 from typing import Any, Iterable
 
-from top_runner import TopologyRuntime, execCmd, parse_if_index
+from top_runner import TopologyRuntime, dump_thread_stacks, execCmd, parse_if_index
 
 
 SAFE_ATTR_RE = re.compile(r"[^0-9A-Za-z_]+")
@@ -533,15 +533,66 @@ def process_start(
     return out
 
 
+_MODULES_ROW_RE = re.compile(
+    r"^\s*\d+\s+(?P<name>\S+)\s+(?P<phase>\S+)\s+\d+\s+(?P<ipc>\S+)\s+(?P<pid>\S+)\s*$"
+)
+
+
+def wait_dev_module_unloaded(
+    rt: TopologyRuntime,
+    device: str,
+    module: str,
+    *,
+    timeout: float = 10.0,
+) -> None:
+    """等 DEV 视角看到 module 已下线。
+
+    `process stop` 后子进程立刻退出，但 DEV 主线程的 SIGCHLD handler（含
+    `dev_ipc_drop_connection` join IO thread）还在跑，registry 里的 `child_pid`
+    可能尚未清零。此时紧跟着 `process start` 会撞到 "Dev: <m> already running
+    (pid=N)" 假阳性。这里轮询 `show dev modules`，直到对应行 phase != LOADED/READY
+    且 pid 列为 `-`（child_pid 已被 SIGCHLD handler 清成 0）。
+    """
+    deadline = time.monotonic() + timeout
+    last_row = ""
+    while time.monotonic() < deadline:
+        out = cmd(rt, device, "show dev modules", strict=False)
+        for line in out.splitlines():
+            m = _MODULES_ROW_RE.match(line)
+            if not m or m.group("name") != module:
+                continue
+            last_row = line.strip()
+            phase = m.group("phase").upper()
+            pid_field = m.group("pid")
+            if phase not in ("LOADED", "READY") and pid_field == "-":
+                return
+            break
+        time.sleep(0.2)
+    dump_thread_stacks(rt, f"wait_dev_module_unloaded-{device}-{module}")
+    raise AssertionError(
+        f"timeout waiting DEV view to unload {module} on {device}; last row: {last_row!r}"
+    )
+
+
 def process_stop(
     rt: TopologyRuntime,
     device: str,
     module: str,
     *,
     cmd_timeout: int = 30,
+    wait_unloaded: bool = True,
+    unload_timeout: float = 10.0,
 ) -> str:
-    """``process stop <module>``：stop 不卡 READY（业务模块退出即可），立即返回。"""
-    return cmd(rt, device, f"process stop {module}", strict=False, timeout=cmd_timeout)
+    """``process stop <module>``：stop 不卡 READY（业务模块退出即可），立即返回。
+
+    返回前默认轮询 DEV 视角直到 module 真正下线（pid 列变 `-`），避免后续紧跟的
+    `process_start` 撞到 "already running" 假阳性。如调用方有特殊需要（例如要
+    立即观察过渡态），可传 `wait_unloaded=False` 跳过这一步。
+    """
+    out = cmd(rt, device, f"process stop {module}", strict=False, timeout=cmd_timeout)
+    if wait_unloaded:
+        wait_dev_module_unloaded(rt, device, module, timeout=unload_timeout)
+    return out
 
 
 def remove_link(rt: TopologyRuntime, link_name: str, *, strict: bool = True) -> None:
@@ -652,6 +703,7 @@ def wait_checks(
         print(f"ERROR: unsatisfied checks:\n{detail}")
     if output_dump:
         print(f"ERROR: last outputs:\n{output_dump}")
+    dump_thread_stacks(rt, f"wait_checks-{step_title}")
     raise RuntimeError(
         f"checks not satisfied within {timeout}s\n{detail}\n\nlast outputs:\n{output_dump}"
     )
@@ -868,6 +920,7 @@ def hold_check(
         )
         if violations:
             mark_step_failed()
+            dump_thread_stacks(rt, f"hold_check-{target}")
             raise RuntimeError(
                 f"{target} violated during hold window {duration}s: {'; '.join(violations)}\n"
                 f"last output:\n{out}"

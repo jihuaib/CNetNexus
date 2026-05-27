@@ -336,6 +336,7 @@ class NetNexusCli:
         tail_raw = bytes(self._rx_buf[-512:])
         tail_txt = tail_raw.decode("utf-8", errors="ignore").replace("\r", "")
         tail_hex = tail_raw.hex(" ")
+        dump_thread_stacks(None, f"cli_prompt_timeout-{self.name}")
         raise RuntimeError(f"{self.name}: timeout waiting prompt ({timeout}s), tail:\n{tail_txt}\nhex:\n{tail_hex}")
 
 
@@ -467,6 +468,81 @@ def find_peer_ip(top: dict[str, Any], local: str, peer: str, local_if: str | Non
 
     peer_cidr = chosen[2]
     return parse_cidr(peer_cidr)[0]
+
+
+_STACK_DUMP_IN_PROGRESS = False
+_ACTIVE_RUNTIME: "TopologyRuntime | None" = None  # 由 TopologyRuntime.start 注册，供低层 raise 点回退
+
+
+def dump_thread_stacks(rt: "TopologyRuntime | None", label: str) -> list[Path]:
+    """超时点抓全部 netnexus 进程的多线程 backtrace 到 NN_STACKS_DIR。
+
+    在 wait_modules_ready / wait_check{,s} 等等待逻辑发现要 raise 前调用一次，
+    把每个容器里 netnexus-* 进程的 `thread apply all bt` 落到文件，便于排查死锁。
+    best-effort：失败不抛、二级递归（dump 内部又触发等待超时）只做一次。
+    """
+    global _STACK_DUMP_IN_PROGRESS
+    if _STACK_DUMP_IN_PROGRESS:
+        return []
+    if os.environ.get("NN_NO_STACK_DUMP", "").strip() in ("1", "true", "True"):
+        return []
+    dest_raw = os.environ.get("NN_STACKS_DIR", "").strip()
+    if not dest_raw:
+        return []
+    if rt is None:
+        rt = _ACTIVE_RUNTIME
+    containers = list(getattr(rt, "container_names", []) or []) if rt is not None else []
+    if not containers:
+        return []
+    _STACK_DUMP_IN_PROGRESS = True
+    try:
+        dest = Path(dest_raw)
+        dest.mkdir(parents=True, exist_ok=True)
+        safe_label = re.sub(r"[^0-9A-Za-z_.-]+", "_", label).strip("_")[:80] or "timeout"
+        ts = time.strftime("%H%M%S")
+        gdb_script = (
+            'PIDS=$(pgrep -x -f "netnexus(-[a-z]+)?$" 2>/dev/null || true); '
+            'if [ -z "$PIDS" ]; then echo "(no netnexus processes found)"; exit 0; fi; '
+            'for pid in $PIDS; do '
+            '  cmdline=$(tr -d "\\0" </proc/$pid/cmdline 2>/dev/null | head -c 200); '
+            '  echo "============ pid=$pid cmdline=[$cmdline] ============"; '
+            '  timeout 8 gdb -p $pid -batch '
+            '    -ex "set pagination off" '
+            '    -ex "set print thread-events off" '
+            '    -ex "info threads" '
+            '    -ex "thread apply all bt 30" '
+            '    -ex "detach" 2>&1 || echo "(gdb failed for pid=$pid rc=$?)"; '
+            'done'
+        )
+        written: list[Path] = []
+        for cname in containers:
+            out_path = dest / f"stacks-{cname}-{safe_label}-{ts}.txt"
+            try:
+                proc = subprocess.run(
+                    ["docker", "exec", cname, "bash", "-c", gdb_script],
+                    capture_output=True, text=True, timeout=90,
+                )
+                body = proc.stdout
+                if proc.stderr:
+                    body += "\n----- stderr -----\n" + proc.stderr
+                if proc.returncode != 0:
+                    body += f"\n----- docker exec rc={proc.returncode} -----\n"
+                out_path.write_text(body)
+                written.append(out_path)
+            except Exception as e:
+                try:
+                    out_path.write_text(f"(stack dump failed: {e})")
+                    written.append(out_path)
+                except Exception:
+                    pass
+        if written:
+            print(f"[stack-dump] {label}: saved {len(written)} file(s) to {dest}", flush=True)
+        return written
+    except Exception as e:
+        print(f"[stack-dump] unexpected error: {e}", flush=True)
+        return []
+    finally:
+        _STACK_DUMP_IN_PROGRESS = False
 
 
 def get_container_network_ip(container_name: str, network_name: str) -> str:
@@ -771,6 +847,7 @@ class TopologyRuntime:
                     return
                 last_bad = bad
             time.sleep(interval)
+        dump_thread_stacks(self, f"wait_modules_ready-{device}")
         raise RuntimeError(
             f"{device}: modules not ready within {timeout}s; pending: {', '.join(last_bad) or '(parse failed)'}\n{last_out}"
         )
@@ -884,6 +961,8 @@ class TopologyRuntime:
         self.add_link(link_name, strict=strict)
 
     def start(self, *, configure_interfaces: bool = True) -> None:
+        global _ACTIVE_RUNTIME
+        _ACTIVE_RUNTIME = self
         run_cmd(["docker", "network", "create", "--ipv6", self.mgmt_net])
 
         # 1) Create paused containers. if_map.conf.gns3 由 image 自带的
@@ -1162,6 +1241,9 @@ class TopologyRuntime:
             )
 
     def close(self, *, failed: bool = False) -> None:
+        global _ACTIVE_RUNTIME
+        if _ACTIVE_RUNTIME is self:
+            _ACTIVE_RUNTIME = None
         for cli in self.cli_map.values():
             cli.close()
         self.cli_map.clear()

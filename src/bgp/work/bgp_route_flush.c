@@ -246,11 +246,11 @@ int bgp_route_flush_queue_process(bgp_route_flush_queue_t *q, bgp_instance_t *in
                     continue;
                 }
 
-                if (route_rpc_del(ctx, &withdraw_entry) == ERRCODE_SUCCESS)
-                {
-                    BIT_CLR(route->flags, BGP_ROUTE_FLAG_FLUSHED);
-                }
-                else
+                /* 投递失败也清 FLUSHED：ROUTE 此刻不可达 ⇒ 必不持有这条路由，
+                 * 若保留 FLUSHED 会让 ROUTE 重启回来后的 add 分支
+                 * `if (!BIT_TEST(... FLUSHED))` 把这条 route_rpc_add 直接跳过。 */
+                BIT_CLR(route->flags, BGP_ROUTE_FLAG_FLUSHED);
+                if (route_rpc_del(ctx, &withdraw_entry) != ERRCODE_SUCCESS)
                 {
                     LOG_WARN("BGP: route flush withdraw failed nlri=%s", nlri_str);
                 }

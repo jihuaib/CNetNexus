@@ -758,6 +758,11 @@ def run_case(
     startup_out_buf: TimestampedBuffer | None = None
     startup_err_buf: TimestampedBuffer | None = None
 
+    # 让 top_runner.dump_thread_stacks 知道把超时点的 backtrace 落到哪
+    stacks_dir = container_logs_dir / make_case_artifact_token(case_dir) / "stacks"
+    prev_stacks_dir = os.environ.get("NN_STACKS_DIR")
+    os.environ["NN_STACKS_DIR"] = str(stacks_dir)
+
     try:
         print(f"\n===== START CASE: {case_dir} =====")
         rt = TopologyRuntime(
@@ -924,6 +929,11 @@ def run_case(
                     f"Collected teardown core dumps for case '{case_dir.name}' -> {core_dumps_dir} "
                     f"({len(teardown_cores)} files)"
                 )
+        # 复位 NN_STACKS_DIR，避免泄漏到下一个 case
+        if prev_stacks_dir is None:
+            os.environ.pop("NN_STACKS_DIR", None)
+        else:
+            os.environ["NN_STACKS_DIR"] = prev_stacks_dir
         print(f"===== END CASE: {case_dir} =====")
 
     return results

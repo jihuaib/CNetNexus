@@ -8,7 +8,7 @@ on:
 jobs:
   topology-module-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 360
 
     steps:
       - name: Checkout
@@ -76,7 +76,7 @@ jobs:
             --report-dir "scripts/ci/reports" \
             --debug \
             --asan \
-            --cmd-timeout 30 \
+            --cmd-timeout 90 \
             --connect-timeout 90
 
       - name: Collect Debug Symbols
