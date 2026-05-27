@@ -202,13 +202,29 @@ typedef dev_ipc_costate_t dev_ipc_costate_t;
 #    define DEV_IPC_HEARTBEAT_TIMEOUT 15
 #    define DEV_IPC_CONNECT_TIMEOUT 2
 #    define DEV_IPC_QUERY_TIMEOUT_DEFAULT 5000
+/* 模块层等待 peer / DEV / module-ready 的超时（毫秒） */
+#    define DEV_IPC_WAIT_PEER_MS 3000
+#    define DEV_IPC_WAIT_DEV_MS 10000
+#    define DEV_IPC_WAIT_READY_MS 15000
+/* 控制面 RPC 单次超时（毫秒） */
+#    define DEV_IPC_SUBSCRIBE_RPC_MS 2000
 #else
 /* Debug 模式：延长心跳和超时，方便 GDB 调试 */
 #    define DEV_IPC_HEARTBEAT_INTERVAL 300
 #    define DEV_IPC_HEARTBEAT_TIMEOUT 600
 #    define DEV_IPC_CONNECT_TIMEOUT 30
 #    define DEV_IPC_QUERY_TIMEOUT_DEFAULT 30000
+/* Debug 下 DEV 的 connect 兜底 30s，模块层等待必须 ≥ 它 + 余量，
+ * 否则 vrf 类模块会在 DEV 还没连过来时就放弃，后续 SUBSCRIBE/notify_ready 全部翻车 */
+#    define DEV_IPC_WAIT_PEER_MS 45000
+#    define DEV_IPC_WAIT_DEV_MS 45000
+#    define DEV_IPC_WAIT_READY_MS 60000
+#    define DEV_IPC_SUBSCRIBE_RPC_MS 10000
 #endif
+
+/* 硬约束：模块等 DEV 的窗口必须能覆盖 DEV 自己 connect 的兜底超时 */
+_Static_assert(DEV_IPC_WAIT_DEV_MS >= (DEV_IPC_CONNECT_TIMEOUT * 1000 + 5000),
+               "DEV_IPC_WAIT_DEV_MS must exceed DEV_IPC_CONNECT_TIMEOUT by at least 5s");
 
 /** 初始重连延迟（毫秒） */
 #define DEV_IPC_RECONNECT_DELAY_MIN 500

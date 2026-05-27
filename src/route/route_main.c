@@ -109,9 +109,9 @@ static void route_on_vrf_ready_cb(uint32_t module_id, uint8_t event, const char 
 static void route_handle_vrf_ready(void)
 {
     dev_ipc_context_t *ctx = route_local_ipc_ctx();
-    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_VRF, 3000) != ERRCODE_SUCCESS)
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_VRF, DEV_IPC_WAIT_PEER_MS) != ERRCODE_SUCCESS)
     {
-        LOG_WARN("Route: VRF not connected within 3s; vrf_api_subscribe deferred");
+        LOG_WARN("Route: VRF not connected in time; vrf_api_subscribe deferred");
         return;
     }
     if (vrf_api_subscribe_all(ctx) != ERRCODE_SUCCESS)
@@ -129,9 +129,9 @@ static void route_handle_if_ready(void)
     dev_ipc_context_t *ctx = route_local_ipc_ctx();
     /* IF READY 事件可能比 IF 连接建立先到（synth READY 来自 DEV，连接由 IO 异步建）。
      * 用 wait_connected 给点时间，避免一次性 deferred 后再没人补订阅。 */
-    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_IF, 3000) != ERRCODE_SUCCESS)
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_IF, DEV_IPC_WAIT_PEER_MS) != ERRCODE_SUCCESS)
     {
-        LOG_WARN("Route: IF not connected within 3s; if_api_subscribe_all deferred");
+        LOG_WARN("Route: IF not connected in time; if_api_subscribe_all deferred");
         return;
     }
     if (if_api_subscribe_all(ctx) != ERRCODE_SUCCESS)
@@ -172,9 +172,9 @@ static void route_handle_db_ready(void)
     /* DB MODULE_EVENT READY 触发：等握手完成（subscribe / event 只是触发 connect，IO 线程异步建联）。
      * CREATE TABLE IF NOT EXISTS 幂等。 */
     dev_ipc_context_t *ctx = route_local_ipc_ctx();
-    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DB, 3000) != ERRCODE_SUCCESS)
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DB, DEV_IPC_WAIT_PEER_MS) != ERRCODE_SUCCESS)
     {
-        LOG_WARN("Route: DB not connected within 3s; db restore deferred");
+        LOG_WARN("Route: DB not connected in time; db restore deferred");
         return;
     }
 
@@ -292,7 +292,7 @@ static int route_init_local(void)
 {
     dev_ipc_context_t *ctx = route_local_ipc_ctx();
 
-    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DEV, 10000) != ERRCODE_SUCCESS)
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DEV, DEV_IPC_WAIT_DEV_MS) != ERRCODE_SUCCESS)
     {
         LOG_ERROR("Route: timed out waiting for DEV connection");
     }

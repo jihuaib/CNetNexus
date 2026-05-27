@@ -143,7 +143,7 @@ int tunnel_module_init(void)
      *      必须在 init 阶段把连接建好，否则 tunnel resolve notify 推不到 FIB；
      *   4. subscribe(CLI)：让 CFG is_connected 时本模块已完全可服务；
      *   5. notify_ready 告知 DEV（DEV 把 READY 推给订阅者如 BGP/LDP）。 */
-    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DEV, 10000) != ERRCODE_SUCCESS)
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DEV, DEV_IPC_WAIT_DEV_MS) != ERRCODE_SUCCESS)
     {
         LOG_ERROR("TUNNEL: timed out waiting for DEV connection; module may be unusable");
     }

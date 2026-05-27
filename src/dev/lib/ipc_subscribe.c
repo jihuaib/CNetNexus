@@ -154,21 +154,10 @@ int dev_ipc_subscribe_module(dev_ipc_context_t *ctx, uint32_t target_id, int aut
         return ERRCODE_FAIL;
     }
 
-    /* 1. 先把订阅条目记录到本地（即使 RPC 失败也保留，IO 线程后续重连/事件还能用） */
-    pthread_mutex_lock(&ctx->sub_mgr->lock);
-    ipc_subscription_t *sub = sub_mgr_find_locked(ctx->sub_mgr, target_id);
-    if (!sub)
-    {
-        sub = g_malloc0(sizeof(*sub));
-        sub->target_module_id = target_id;
-        g_hash_table_insert(ctx->sub_mgr->subs, GUINT_TO_POINTER(target_id), sub);
-    }
-    sub->callback = cb;
-    sub->user = user;
-    pthread_mutex_unlock(&ctx->sub_mgr->lock);
-
-    /* 2. 向 DEV 发送 SUBSCRIBE RPC（冷启动期间 DEV 可能因为忙于建表/批量握手
-     *    导致首次请求被丢弃，加 short-timeout 重试，最多 3 次。 */
+    /* 1. 向 DEV 发送 SUBSCRIBE RPC（冷启动期间 DEV 可能因为忙于建表/批量握手
+     *    导致首次请求被丢弃，加 short-timeout 重试，最多 3 次。
+     *    本地 sub_mgr 条目延迟到 RPC 成功后再插入：若 RPC 失败就丢，避免
+     *    wait_all_subscribed_connected 等一个 DEV 不会广播的 peer 永久卡住。 */
     dev_subscribe_req_t req;
     memset(&req, 0, sizeof(req));
     req.target_module_id = htonl(target_id);
@@ -176,7 +165,7 @@ int dev_ipc_subscribe_module(dev_ipc_context_t *ctx, uint32_t target_id, int aut
 
     dev_ipc_message_t *resp = NULL;
     const int max_attempts = 3;
-    const uint32_t per_attempt_timeout_ms = 2000;
+    const uint32_t per_attempt_timeout_ms = DEV_IPC_SUBSCRIBE_RPC_MS;
     for (int attempt = 1; attempt <= max_attempts; attempt++)
     {
         dev_ipc_message_t *msg = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_SUBSCRIBE_MODULE, ctx->module_id,
@@ -214,27 +203,44 @@ int dev_ipc_subscribe_module(dev_ipc_context_t *ctx, uint32_t target_id, int aut
             LOG_WARN("<%s> SUBSCRIBE(0x%08X) DEV refused (result=%d)", ctx->name, target_id, result);
             ret = ERRCODE_FAIL;
         }
-        else if (state == DEV_MODULE_STATE_READY)
+        else
         {
-            /* 已就绪：在订阅响应中直接拿到 host/port，立即合成一次 READY 事件
-             * （走和 IO 线程同样的派发逻辑，自动建联 + 回调） */
-            dev_module_event_payload_t synth;
-            memset(&synth, 0, sizeof(synth));
-            synth.module_id = htonl(target_id);
-            synth.event = DEV_MODULE_EVENT_READY;
-            snprintf(synth.host, sizeof(synth.host), "%s", r->host);
-            synth.port = htons(port);
-            synth.epoch = htonl(epoch);
-            dev_ipc_dispatch_module_event(ctx, &synth);
+            /* DEV 接受了订阅：现在才把条目写进本地 sub_mgr。
+             * 之后才能合成事件 / dispatch（dispatch 要靠 sub_mgr 找回调）。 */
+            pthread_mutex_lock(&ctx->sub_mgr->lock);
+            ipc_subscription_t *sub = sub_mgr_find_locked(ctx->sub_mgr, target_id);
+            if (!sub)
+            {
+                sub = g_malloc0(sizeof(*sub));
+                sub->target_module_id = target_id;
+                g_hash_table_insert(ctx->sub_mgr->subs, GUINT_TO_POINTER(target_id), sub);
+            }
+            sub->callback = cb;
+            sub->user = user;
+            pthread_mutex_unlock(&ctx->sub_mgr->lock);
+
+            if (state == DEV_MODULE_STATE_READY)
+            {
+                /* 已就绪：在订阅响应中直接拿到 host/port，立即合成一次 READY 事件
+                 * （走和 IO 线程同样的派发逻辑，自动建联 + 回调） */
+                dev_module_event_payload_t synth;
+                memset(&synth, 0, sizeof(synth));
+                synth.module_id = htonl(target_id);
+                synth.event = DEV_MODULE_EVENT_READY;
+                snprintf(synth.host, sizeof(synth.host), "%s", r->host);
+                synth.port = htons(port);
+                synth.epoch = htonl(epoch);
+                dev_ipc_dispatch_module_event(ctx, &synth);
+            }
+            else if (state == DEV_MODULE_STATE_STARTING && port != 0)
+            {
+                /* 目标已经 fork 且 IPC listener 起来了，但还没 notify_ready：
+                 * 立即把 TCP 通道建好，避免互订阅模块（IF↔ROUTE）各自卡在 wait_all 的循环死锁。
+                 * 业务 READY 回调仍等真正的 MODULE_EVENT_READY 异步推送，语义不变。 */
+                (void)dev_ipc_connect(ctx, target_id, r->host, port);
+            }
+            /* NOT_RUNNING：等异步 MODULE_EVENT */
         }
-        else if (state == DEV_MODULE_STATE_STARTING && port != 0)
-        {
-            /* 目标已经 fork 且 IPC listener 起来了，但还没 notify_ready：
-             * 立即把 TCP 通道建好，避免互订阅模块（IF↔ROUTE）各自卡在 wait_all 的循环死锁。
-             * 业务 READY 回调仍等真正的 MODULE_EVENT_READY 异步推送，语义不变。 */
-            (void)dev_ipc_connect(ctx, target_id, r->host, port);
-        }
-        /* NOT_RUNNING：等异步 MODULE_EVENT */
     }
     dev_ipc_message_free(resp);
 
@@ -359,7 +365,7 @@ static int query_target_state(dev_ipc_context_t *ctx, uint32_t target_id, int au
     {
         return ERRCODE_FAIL;
     }
-    dev_ipc_message_t *resp = dev_ipc_query(ctx, DEV_MODULE_ID_DEV, msg, 2000);
+    dev_ipc_message_t *resp = dev_ipc_query(ctx, DEV_MODULE_ID_DEV, msg, DEV_IPC_SUBSCRIBE_RPC_MS);
     dev_ipc_message_free(msg);
     if (!resp || !resp->payload || resp->payload_len < sizeof(dev_subscribe_resp_t))
     {

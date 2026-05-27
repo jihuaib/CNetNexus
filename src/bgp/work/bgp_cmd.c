@@ -596,9 +596,9 @@ gboolean bgp_cmd_process_event(void)
                 break;
 
             case BGP_CMD_TYPE_ROUTE_READY:
-                if (dev_ipc_wait_connected(bgp_local_ipc_ctx(), DEV_MODULE_ID_ROUTE, 3000) != ERRCODE_SUCCESS)
+                if (dev_ipc_wait_connected(bgp_local_ipc_ctx(), DEV_MODULE_ID_ROUTE, DEV_IPC_WAIT_PEER_MS) != ERRCODE_SUCCESS)
                 {
-                    LOG_WARN("BGP: ROUTE connection not ready after 3s; replay deferred to next READY");
+                    LOG_WARN("BGP: ROUTE connection not ready in time; replay deferred to next READY");
                     break;
                 }
                 bgp_import_route_resubscribe_protocol_imports(g_bgp_work_local->protocol);

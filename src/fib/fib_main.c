@@ -51,9 +51,9 @@ static void fib_on_vrf_ready_cb(uint32_t module_id, uint8_t event, const char *h
 static void fib_handle_vrf_ready(void)
 {
     dev_ipc_context_t *ctx = fib_local_ipc_ctx();
-    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_VRF, 3000) != ERRCODE_SUCCESS)
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_VRF, DEV_IPC_WAIT_PEER_MS) != ERRCODE_SUCCESS)
     {
-        LOG_WARN("FIB: VRF not connected within 3s; vrf_api_subscribe deferred");
+        LOG_WARN("FIB: VRF not connected in time; vrf_api_subscribe deferred");
         return;
     }
     if (vrf_api_subscribe_all(ctx) != ERRCODE_SUCCESS)
@@ -73,7 +73,7 @@ static int fib_init_local(void)
 {
     dev_ipc_context_t *ctx = fib_local_ipc_ctx();
 
-    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DEV, 10000) != ERRCODE_SUCCESS)
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DEV, DEV_IPC_WAIT_DEV_MS) != ERRCODE_SUCCESS)
     {
         LOG_ERROR("FIB: timed out waiting for DEV connection");
     }

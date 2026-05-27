@@ -130,7 +130,7 @@ int db_module_init(void)
         LOG_ERROR("DB: unified database initialization failed");
     }
 
-    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DEV, 10000) != ERRCODE_SUCCESS)
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DEV, DEV_IPC_WAIT_DEV_MS) != ERRCODE_SUCCESS)
     {
         LOG_ERROR("DB: timed out waiting for DEV connection; module may be unusable");
     }

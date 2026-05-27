@@ -99,9 +99,9 @@ static void if_on_ipc_disconnect(dev_ipc_context_t *ctx, uint32_t remote_module_
 static void if_handle_vrf_ready(void)
 {
     dev_ipc_context_t *ctx = if_local_ipc_ctx();
-    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_VRF, 3000) != ERRCODE_SUCCESS)
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_VRF, DEV_IPC_WAIT_PEER_MS) != ERRCODE_SUCCESS)
     {
-        LOG_WARN("IF: VRF not connected within 3s; vrf_api_subscribe deferred");
+        LOG_WARN("IF: VRF not connected in time; vrf_api_subscribe deferred");
         return;
     }
     if (vrf_api_subscribe_all(ctx) != ERRCODE_SUCCESS)
@@ -117,9 +117,9 @@ static void if_handle_vrf_ready(void)
 static void if_handle_route_ready(void)
 {
     dev_ipc_context_t *ctx = if_local_ipc_ctx();
-    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_ROUTE, 3000) != ERRCODE_SUCCESS)
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_ROUTE, DEV_IPC_WAIT_PEER_MS) != ERRCODE_SUCCESS)
     {
-        LOG_WARN("IF: ROUTE not connected within 3s; connected route replay deferred");
+        LOG_WARN("IF: ROUTE not connected in time; connected route replay deferred");
         return;
     }
     if (if_worker_post_route_ready() != ERRCODE_SUCCESS)
@@ -160,9 +160,9 @@ static void if_handle_db_ready(void)
     /* DB MODULE_EVENT READY 触发：等握手完成（subscribe / event 只是触发 connect，IO 线程异步建联）。
      * db_init 幂等；link_monitor 只起一次。 */
     dev_ipc_context_t *ctx = if_local_ipc_ctx();
-    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DB, 3000) != ERRCODE_SUCCESS)
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DB, DEV_IPC_WAIT_PEER_MS) != ERRCODE_SUCCESS)
     {
-        LOG_WARN("IF: DB not connected within 3s; db restore deferred");
+        LOG_WARN("IF: DB not connected in time; db restore deferred");
         return;
     }
 
@@ -383,7 +383,7 @@ int if_module_init(void)
      *   4. db_init + restore + link_monitor 启动
      *   5. subscribe(CLI) 末尾
      *   6. notify_ready */
-    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DEV, 10000) != ERRCODE_SUCCESS)
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DEV, DEV_IPC_WAIT_DEV_MS) != ERRCODE_SUCCESS)
     {
         LOG_ERROR("IF: timed out waiting for DEV connection");
     }

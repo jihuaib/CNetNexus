@@ -502,7 +502,7 @@ static int handle_bgp_addr_family(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
      * UNICAST 纯 IP 不需要。 */
     if (!apply.isNo && (ctx.safi == BGP_SAFI_LABELED || ctx.safi == BGP_SAFI_QP))
     {
-        if (dev_ipc_wait_module_ready(bgp_local_ipc_ctx(), DEV_MODULE_ID_TUNNEL, 10000) != ERRCODE_SUCCESS)
+        if (dev_ipc_wait_module_ready(bgp_local_ipc_ctx(), DEV_MODULE_ID_TUNNEL, DEV_IPC_WAIT_READY_MS) != ERRCODE_SUCCESS)
         {
             bgp_send_cli_response(msg, "BGP Error: TUNNEL module not available for MPLS AF.\r\n");
             return ERRCODE_FAIL;

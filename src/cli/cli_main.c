@@ -477,7 +477,7 @@ int cli_module_init(void)
      *   2. 启动 Telnet server（业务模块需要它来收命令）
      *   3. notify_ready
      * CLI 不订阅其它模块（业务模块 init 末尾会反向 subscribe(CLI)）。 */
-    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DEV, 10000) != ERRCODE_SUCCESS)
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DEV, DEV_IPC_WAIT_DEV_MS) != ERRCODE_SUCCESS)
     {
         LOG_ERROR("CLI: timed out waiting for DEV connection");
     }

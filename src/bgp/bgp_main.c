@@ -180,9 +180,9 @@ static void bgp_on_route_ready_cb(uint32_t module_id, uint8_t event, const char 
 static void bgp_handle_if_ready(void)
 {
     dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
-    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_IF, 3000) != ERRCODE_SUCCESS)
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_IF, DEV_IPC_WAIT_PEER_MS) != ERRCODE_SUCCESS)
     {
-        LOG_WARN("BGP: IF not connected within 3s; if_api_subscribe_all deferred");
+        LOG_WARN("BGP: IF not connected in time; if_api_subscribe_all deferred");
         return;
     }
     if (if_api_subscribe_all(ctx) != ERRCODE_SUCCESS)
@@ -198,9 +198,9 @@ static void bgp_handle_if_ready(void)
 static void bgp_handle_vrf_ready(void)
 {
     dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
-    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_VRF, 3000) != ERRCODE_SUCCESS)
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_VRF, DEV_IPC_WAIT_PEER_MS) != ERRCODE_SUCCESS)
     {
-        LOG_WARN("BGP: VRF not connected within 3s; vrf_api_subscribe deferred");
+        LOG_WARN("BGP: VRF not connected in time; vrf_api_subscribe deferred");
         return;
     }
     uint32_t vrf_event_mask = VRF_EVENT_VRF_ADD | VRF_EVENT_VRF_DEL | VRF_EVENT_AF_ENABLE | VRF_EVENT_AF_DISABLE |
@@ -245,9 +245,9 @@ static void bgp_handle_db_ready(void)
     /* DB MODULE_EVENT READY 触发：等握手完成（subscribe / event 只是触发 connect，IO 线程异步建联），
      * 然后无条件 db_init（CREATE TABLE IF NOT EXISTS 幂等；DB 重启后若丢了状态可重建表）。 */
     dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
-    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DB, 3000) != ERRCODE_SUCCESS)
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DB, DEV_IPC_WAIT_PEER_MS) != ERRCODE_SUCCESS)
     {
-        LOG_WARN("BGP: DB not connected within 3s; db restore deferred");
+        LOG_WARN("BGP: DB not connected in time; db restore deferred");
         return;
     }
 
@@ -522,7 +522,7 @@ int bgp_module_init(void)
      *   6. db_restore（依赖 vrf cache 等已就绪）
      *   7. subscribe(CLI) 放最后：CFG 看到本模块在跑即可立即 dispatch
      *   8. notify_ready */
-    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DEV, 10000) != ERRCODE_SUCCESS)
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DEV, DEV_IPC_WAIT_DEV_MS) != ERRCODE_SUCCESS)
     {
         LOG_ERROR("BGP: timed out waiting for DEV connection; module may be unusable");
     }

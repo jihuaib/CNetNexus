@@ -103,9 +103,9 @@ static void ldp_handle_if_ready(void)
 {
     dev_ipc_context_t *ctx = ldp_local_ipc_ctx();
     /* 等 IPC 库异步握手完成，再下 subscribe 请求 */
-    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_IF, 3000) != ERRCODE_SUCCESS)
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_IF, DEV_IPC_WAIT_PEER_MS) != ERRCODE_SUCCESS)
     {
-        LOG_WARN("LDP: IF connection not ready after 3s; subscribe deferred to next READY");
+        LOG_WARN("LDP: IF connection not ready in time; subscribe deferred to next READY");
         return;
     }
     if (if_api_subscribe_all(ctx) != ERRCODE_SUCCESS)
@@ -146,9 +146,9 @@ static void ldp_handle_db_ready(void)
     /* DB MODULE_EVENT READY 触发：等握手完成（subscribe / event 只是触发 connect，IO 线程异步建联）。
      * db_init 幂等。 */
     dev_ipc_context_t *ctx = ldp_local_ipc_ctx();
-    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DB, 3000) != ERRCODE_SUCCESS)
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DB, DEV_IPC_WAIT_PEER_MS) != ERRCODE_SUCCESS)
     {
-        LOG_WARN("LDP: DB not connected within 3s; db restore deferred");
+        LOG_WARN("LDP: DB not connected in time; db restore deferred");
         return;
     }
 
@@ -327,7 +327,7 @@ int ldp_module_init(void)
      *   4. wait_all_subscribed_connected：等所有 peer IPC 都 CONNECTED
      *   5. db_init + db_restore
      *   6. notify_ready：业务真正可用 */
-    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DEV, 10000) != ERRCODE_SUCCESS)
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DEV, DEV_IPC_WAIT_DEV_MS) != ERRCODE_SUCCESS)
     {
         LOG_ERROR("LDP: timed out waiting for DEV connection; module may be unusable");
     }

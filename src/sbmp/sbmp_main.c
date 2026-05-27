@@ -831,9 +831,9 @@ static void sbmp_handle_db_ready(void)
     /* DB MODULE_EVENT READY 触发：等握手完成（subscribe / event 只是触发 connect，IO 线程异步建联）。
      * db_init 幂等。 */
     dev_ipc_context_t *ctx = sbmp_local_ipc_ctx();
-    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DB, 3000) != ERRCODE_SUCCESS)
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DB, DEV_IPC_WAIT_PEER_MS) != ERRCODE_SUCCESS)
     {
-        LOG_WARN("SBMP: DB not connected within 3s; db restore deferred");
+        LOG_WARN("SBMP: DB not connected in time; db restore deferred");
         return;
     }
 
@@ -982,7 +982,7 @@ int sbmp_module_init(void)
      *   3. 最后才 subscribe(CLI)：让 CFG 看到 is_connected 时本模块已完全可服务
      *      —— 避免 CFG 在 SBMP 还没读 DB 就发命令，导致 race 出错
      *   4. notify_ready 通知 DEV 模块就绪 */
-    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DEV, 10000) != ERRCODE_SUCCESS)
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DEV, DEV_IPC_WAIT_DEV_MS) != ERRCODE_SUCCESS)
     {
         LOG_ERROR("SBMP: timed out waiting for DEV connection; module may be unusable");
     }

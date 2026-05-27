@@ -45,9 +45,9 @@ static void vrf_handle_db_ready(void)
     /* DB MODULE_EVENT READY 触发：等握手完成（subscribe / event 只是触发 connect，IO 线程异步建联），
      * 然后无条件 db_init（幂等）。 */
     dev_ipc_context_t *ctx = vrf_local_ipc_ctx();
-    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DB, 3000) != ERRCODE_SUCCESS)
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DB, DEV_IPC_WAIT_PEER_MS) != ERRCODE_SUCCESS)
     {
-        LOG_WARN("VRF: DB not connected within 3s; db restore deferred");
+        LOG_WARN("VRF: DB not connected in time; db restore deferred");
         return;
     }
 
@@ -185,7 +185,7 @@ int vrf_module_init(void)
      *   4. db_restore 回放配置到 worker + OS
      *   5. subscribe(CLI) 放最后：CFG 看到 is_connected(VRF)=true 时本模块已 fully ready
      *   6. notify_ready */
-    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DEV, 10000) != ERRCODE_SUCCESS)
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DEV, DEV_IPC_WAIT_DEV_MS) != ERRCODE_SUCCESS)
     {
         LOG_ERROR("VRF: timed out waiting for DEV connection; module may be unusable");
     }
