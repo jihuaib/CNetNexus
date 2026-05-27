@@ -413,11 +413,9 @@ int if_module_init(void)
         LOG_WARN("IF: subscribe(CLI) failed");
     }
 
-    /* DEPS_READY：等所有订阅 peer 都 CONNECTED 再做 DB 恢复 */
-    if (dev_ipc_wait_all_subscribed_connected(ctx, 10000) != ERRCODE_SUCCESS)
-    {
-        LOG_WARN("IF: deps not fully connected within 10s; proceeding anyway");
-    }
+    /* DEPS_READY：阻塞直到所有订阅 peer 都 CONNECTED 再继续 DB 恢复 + notify_ready。
+     * 不能用超时后继续 —— DEV 视角 READY 而 CFG 还连不上 IF 会让命令派发踩到 race。 */
+    (void)dev_ipc_wait_all_subscribed_connected(ctx, 0);
 
     if (dev_ipc_is_connected(ctx, DEV_MODULE_ID_DB))
     {

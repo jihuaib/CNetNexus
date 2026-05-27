@@ -139,9 +139,10 @@ int tunnel_module_init(void)
     /* 弱依赖模型：
      *   1. 等 DEV 控制连接；
      *   2. 启动本地 worker（本地状态就绪）；
-     *   3. 最后才 subscribe(CLI)：让 CFG is_connected 时本模块已完全可服务；
-     *   4. notify_ready 告知 DEV（DEV 把 READY 推给订阅者如 BGP/LDP）。
-     *   其它 dep (ROUTE/IF/FIB) 运行时 RPC 调用即可。 */
+     *   3. subscribe(FIB)：tunnel_sync_fib / fib_rpc_*_upsert 走 dev_ipc_send，不会自动建联，
+     *      必须在 init 阶段把连接建好，否则 tunnel resolve notify 推不到 FIB；
+     *   4. subscribe(CLI)：让 CFG is_connected 时本模块已完全可服务；
+     *   5. notify_ready 告知 DEV（DEV 把 READY 推给订阅者如 BGP/LDP）。 */
     if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DEV, 10000) != ERRCODE_SUCCESS)
     {
         LOG_ERROR("TUNNEL: timed out waiting for DEV connection; module may be unusable");
@@ -152,6 +153,11 @@ int tunnel_module_init(void)
         LOG_ERROR("TUNNEL: worker start failed");
         tunnel_worker_shutdown();
         return -1;
+    }
+
+    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_FIB, 0, NULL, NULL) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("TUNNEL: subscribe(FIB) failed; tunnel sync to FIB will be dropped");
     }
 
     if (dev_ipc_notify_ready(ctx) != ERRCODE_SUCCESS)

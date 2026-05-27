@@ -28,17 +28,22 @@
 #define LDP_IF_LOOP_ID_MIN 1u
 #define LDP_IF_LOOP_ID_MAX 1024u
 
-static void send_resp(dev_ipc_message_t *msg, const char *text)
+static void send_resp_typed(dev_ipc_message_t *msg, uint32_t msg_type, const char *text)
 {
     const char *safe_text = text ? text : "";
     char *resp_data = g_strdup(safe_text);
-    dev_ipc_message_t *resp = dev_ipc_message_create(CLI_MSG_TYPE_RESP, DEV_MODULE_ID_LDP, msg->src_module_id,
-                                                     msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
+    dev_ipc_message_t *resp = dev_ipc_message_create(msg_type, DEV_MODULE_ID_LDP, msg->src_module_id, msg->request_id,
+                                                     resp_data, strlen(resp_data) + 1, g_free);
     if (resp)
     {
         dev_ipc_send_response(ldp_local_ipc_ctx(), resp);
         dev_ipc_message_free(resp);
     }
+}
+
+static void send_resp(dev_ipc_message_t *msg, const char *text)
+{
+    send_resp_typed(msg, CLI_MSG_TYPE_RESP, text);
 }
 
 static const char *if_ctx_idx_to_name(uint32_t if_idx)
@@ -132,7 +137,7 @@ static int handle_proto_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         /* `no ldp`：admin=0，业务停摆，进程自退出让 DEV 回到 on-demand 待命。
          * 接口级配置在 DB 中保留，下次 `ldp` 启动时由 db_restore 还原。
          * kill(getpid, SIGTERM) 触发 ldp_proc.c 的 shutdown_handler 优雅退出。 */
-        send_resp(msg, "LDP: admin disabled, process exiting.\r\n");
+        send_resp_typed(msg, CLI_MSG_TYPE_RESP_EXITING, "LDP: admin disabled, process exiting.\r\n");
         kill(getpid(), SIGTERM);
         return ERRCODE_SUCCESS;
     }

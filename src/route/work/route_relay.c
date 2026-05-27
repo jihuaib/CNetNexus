@@ -637,6 +637,43 @@ void route_relay_cleanup(void)
     g_route_nh_watch_table = NULL;
 }
 
+void route_relay_publish_unreachable_for_shutdown(void)
+{
+    if (!g_route_nh_watch_table)
+    {
+        return;
+    }
+    uint32_t notified = 0;
+    GHashTableIter it;
+    gpointer key = NULL;
+    gpointer val = NULL;
+    g_hash_table_iter_init(&it, g_route_nh_watch_table);
+    while (g_hash_table_iter_next(&it, &key, &val))
+    {
+        (void)key;
+        route_nh_watch_t *w = (route_nh_watch_t *)val;
+        if (!w || w->key.owner_module_id == DEV_MODULE_ID_ROUTE)
+        {
+            /* 自模块注册的 nh(供静态路由迭代用)走 static_on_nh_change 内部回调,
+             * 退出阶段不需要 IPC 通知。 */
+            continue;
+        }
+        /* 临时把 watch 标为不可达,通过现有 notify_state 把 NH_NOTIFY(resolved=0) 发出去。
+         * route_nh_watch_table 紧随其后会被 route_relay_cleanup 整张销毁,
+         * 这里直接改字段不会影响后续逻辑。 */
+        w->resolved = 0u;
+        memset(&w->relay_addr, 0, sizeof(w->relay_addr));
+        w->out_ifindex = 0u;
+        w->updated_at_usec = g_get_real_time();
+        route_relay_notify_state(w);
+        notified++;
+    }
+    if (notified > 0)
+    {
+        LOG_INFO("[route_relay] shutdown: notified %u external nh-watcher(s) as unreachable", notified);
+    }
+}
+
 int route_relay_register_direct(uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop_addr, uint32_t owner_module_id,
                                 net_addr_t *gateway_out, uint32_t *ifindex_out)
 {

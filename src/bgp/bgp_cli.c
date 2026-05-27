@@ -51,6 +51,22 @@ void bgp_send_cli_response(dev_ipc_message_t *msg, const char *text)
     }
 }
 
+/* 与 bgp_send_cli_response 相同，但响应 msg_type 为 RESP_EXITING：CFG 收到后会先等
+ * BGP 真正断开再把内容回显给用户，让紧邻的下一条命令稳定走按需 spawn 路径。
+ * 必须紧接着 kill(getpid, SIGTERM) 调用，否则语义与事实不符。 */
+static void bgp_send_cli_response_exiting(dev_ipc_message_t *msg, const char *text)
+{
+    const char *safe_text = text ? text : "";
+    char *resp_data = g_strdup(safe_text);
+    dev_ipc_message_t *resp = dev_ipc_message_create(CLI_MSG_TYPE_RESP_EXITING, DEV_MODULE_ID_BGP, msg->src_module_id,
+                                                     msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
+    if (resp)
+    {
+        dev_ipc_send_response(bgp_local_ipc_ctx(), resp);
+        dev_ipc_message_free(resp);
+    }
+}
+
 // ============================================================================
 // 上下文序列化辅助（TLV 格式）
 // 保留备用，当前视图切换由 CLI 框架自动处理
@@ -227,8 +243,9 @@ static int handle_bgp_protocol(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         /* `no bgp`：协议级配置清空 + revive_table（bgp_protocol）已空，进程自退出。
          * DEV 的 SIGCHLD handler 会把 BGP 状态回到 REGISTERED，下次配 bgp <as> 时
          * wait_module_ready 重新 fork。kill(getpid, SIGTERM) 而非 raise：raise 只
-         * 送到调用线程，主线程的 sigsuspend 收不到。 */
-        bgp_send_cli_response(msg, "BGP: configuration cleared, process exiting.\r\n");
+         * 送到调用线程，主线程的 sigsuspend 收不到。
+         * 用 RESP_EXITING 让 CFG 在转发响应前等连接确实断开，避免下条命令踩到旧连接。 */
+        bgp_send_cli_response_exiting(msg, "BGP: configuration cleared, process exiting.\r\n");
         kill(getpid(), SIGTERM);
         return ERRCODE_SUCCESS;
     }

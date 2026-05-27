@@ -26,16 +26,21 @@
 // 发送 CLI 响应辅助
 // ============================================================================
 
-static void sbmp_send_cli_response(dev_ipc_message_t *msg, const char *text)
+static void sbmp_send_cli_response_typed(dev_ipc_message_t *msg, uint32_t msg_type, const char *text)
 {
     char *resp_data = g_strdup(text);
-    dev_ipc_message_t *resp = dev_ipc_message_create(CLI_MSG_TYPE_RESP, DEV_MODULE_ID_SBMP, msg->src_module_id,
-                                                     msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
+    dev_ipc_message_t *resp = dev_ipc_message_create(msg_type, DEV_MODULE_ID_SBMP, msg->src_module_id, msg->request_id,
+                                                     resp_data, strlen(resp_data) + 1, g_free);
     if (resp)
     {
         dev_ipc_send_response(sbmp_local_ipc_ctx(), resp);
         dev_ipc_message_free(resp);
     }
+}
+
+static void sbmp_send_cli_response(dev_ipc_message_t *msg, const char *text)
+{
+    sbmp_send_cli_response_typed(msg, CLI_MSG_TYPE_RESP, text);
 }
 
 int sbmp_cli_send_chunked_response(dev_ipc_message_t *msg, GString *full_text)
@@ -189,7 +194,7 @@ static int handle_bmp_server(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     sbmp_db_del_server_port();
     g_sbmp_local->server_port = 0;
 
-    sbmp_send_cli_response(msg, "SBMP: configuration cleared, process exiting.\r\n");
+    sbmp_send_cli_response_typed(msg, CLI_MSG_TYPE_RESP_EXITING, "SBMP: configuration cleared, process exiting.\r\n");
 
     /* 配置清空后让进程自退出：DEV 的 SIGCHLD handler 会标记 REGISTERED + 推送 DOWN；
      * 下次用户配 bmp-server 时 CFG 的 wait_module_ready(SBMP) 会让 DEV 重新 fork。
@@ -231,7 +236,8 @@ static int handle_server_port(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     {
         if (g_sbmp_local->server_port == 0)
         {
-            sbmp_send_cli_response(msg, "SBMP: no config to remove, process exiting.\r\n");
+            sbmp_send_cli_response_typed(msg, CLI_MSG_TYPE_RESP_EXITING,
+                                         "SBMP: no config to remove, process exiting.\r\n");
             /* kill(getpid(), SIGTERM) 而非 raise(SIGTERM)：raise 只送到调用线程，
              * 主线程的 sigsuspend 不会被唤醒；kill 是进程级信号，会派给可处理它的线程。 */
             kill(getpid(), SIGTERM);
@@ -240,7 +246,7 @@ static int handle_server_port(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         sbmp_listen_stop();
         sbmp_db_del_server_port();
         g_sbmp_local->server_port = 0;
-        sbmp_send_cli_response(msg, "SBMP: server port cleared, process exiting.\r\n");
+        sbmp_send_cli_response_typed(msg, CLI_MSG_TYPE_RESP_EXITING, "SBMP: server port cleared, process exiting.\r\n");
         /* 与 no bmp-server 路径一致：清空配置后自退出，让 DEV 回到 on-demand 待命状态 */
         /* kill(getpid(), SIGTERM) 而非 raise(SIGTERM)：raise 只送到调用线程，
          * 主线程的 sigsuspend 不会被唤醒；kill 是进程级信号，会派给可处理它的线程。 */

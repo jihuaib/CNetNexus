@@ -48,7 +48,7 @@ void dev_ipc_query_mgr_destroy(dev_ipc_query_mgr_t *mgr)
     g_free(mgr);
 }
 
-uint32_t dev_ipc_query_mgr_register(dev_ipc_query_mgr_t *mgr)
+uint32_t dev_ipc_query_mgr_register(dev_ipc_query_mgr_t *mgr, uint32_t target_module_id)
 {
     if (!mgr)
     {
@@ -65,6 +65,7 @@ uint32_t dev_ipc_query_mgr_register(dev_ipc_query_mgr_t *mgr)
 
     dev_ipc_pending_query_t *pq = g_malloc0(sizeof(dev_ipc_pending_query_t));
     pq->request_id = id;
+    pq->target_module_id = target_module_id;
     pq->response = NULL;
     pq->completed = 0;
     pthread_cond_init(&pq->cond, NULL);
@@ -155,5 +156,33 @@ void dev_ipc_query_mgr_cancel(dev_ipc_query_mgr_t *mgr, uint32_t request_id)
 
     pthread_mutex_lock(&mgr->lock);
     g_hash_table_remove(mgr->pending, GUINT_TO_POINTER(request_id));
+    pthread_mutex_unlock(&mgr->lock);
+}
+
+void dev_ipc_query_mgr_cancel_by_target(dev_ipc_query_mgr_t *mgr, uint32_t target_module_id)
+{
+    if (!mgr || target_module_id == 0)
+    {
+        return;
+    }
+
+    pthread_mutex_lock(&mgr->lock);
+
+    GHashTableIter iter;
+    gpointer key, value;
+    g_hash_table_iter_init(&iter, mgr->pending);
+    while (g_hash_table_iter_next(&iter, &key, &value))
+    {
+        dev_ipc_pending_query_t *pq = (dev_ipc_pending_query_t *)value;
+        if (!pq || pq->completed || pq->target_module_id != target_module_id)
+        {
+            continue;
+        }
+        /* 不释放 pq——等 wait() 醒来按正常路径移除 */
+        pq->response = NULL;
+        pq->completed = 1;
+        pthread_cond_signal(&pq->cond);
+    }
+
     pthread_mutex_unlock(&mgr->lock);
 }

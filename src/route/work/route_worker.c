@@ -1098,6 +1098,13 @@ void route_worker_shutdown(void)
         g_route_work_local->work_eventfd = -1;
     }
 
+    /* 主动给依赖 ROUTE 的模块发"撤销"通知:
+     *   1) NH-iter watcher (BGP/ISIS 等):resolved=0 NH_NOTIFY → 它们立即把对应 nexthop 标不可达
+     *   2) ROUTE 订阅者:对每个 OS-installed best path 发 ROUTE_MSG_TYPE_UPDATE(is_withdraw=1)
+     * 二者必须在 route_relay_cleanup / RIB destroy 之前调,IPC ctx 此时仍可用。 */
+    route_relay_publish_unreachable_for_shutdown();
+    route_pub_withdraw_all_for_shutdown();
+
     route_relay_cleanup();
     route_show_cleanup_state();
     if_api_cache_cleanup();

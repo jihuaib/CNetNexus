@@ -42,6 +42,15 @@ void route_relay_show(GString *buf, uint32_t module_filter, int has_filter, uint
 void route_relay_cleanup(void);
 
 /**
+ * @brief ROUTE 进程优雅退出前,主动给所有外部 owner 的 nh-iter watcher 推一发
+ *        resolved=0 的 NH_NOTIFY。BGP/ISIS 等收到后会立即把对应 nexthop 视为不可达,
+ *        重算路径优选 (BGP_ROUTE_FLAG_VALID/BEST 清零),避免依赖 ROUTE_DOWN 的 DEV 广播。
+ *
+ * 仅在 route_worker_shutdown 内、route_relay_cleanup 之前调用,此时 IPC ctx 还活着。
+ */
+void route_relay_publish_unreachable_for_shutdown(void);
+
+/**
  * @brief 直接将 nexthop 注册到 relay watch 表（供模块内部使用，不经过 IPC）
  *
  * 若同键条目已存在则更新；创建后立即计算当前可达性，一次迭代同时解析网关和出接口。

@@ -227,7 +227,14 @@ int dev_ipc_subscribe_module(dev_ipc_context_t *ctx, uint32_t target_id, int aut
             synth.epoch = htonl(epoch);
             dev_ipc_dispatch_module_event(ctx, &synth);
         }
-        /* STARTING / NOT_RUNNING：等异步 MODULE_EVENT */
+        else if (state == DEV_MODULE_STATE_STARTING && port != 0)
+        {
+            /* 目标已经 fork 且 IPC listener 起来了，但还没 notify_ready：
+             * 立即把 TCP 通道建好，避免互订阅模块（IF↔ROUTE）各自卡在 wait_all 的循环死锁。
+             * 业务 READY 回调仍等真正的 MODULE_EVENT_READY 异步推送，语义不变。 */
+            (void)dev_ipc_connect(ctx, target_id, r->host, port);
+        }
+        /* NOT_RUNNING：等异步 MODULE_EVENT */
     }
     dev_ipc_message_free(resp);
 
@@ -423,13 +430,16 @@ int dev_ipc_wait_all_subscribed_connected(dev_ipc_context_t *ctx, uint32_t timeo
     {
         return ERRCODE_FAIL;
     }
-    if (timeout_ms == 0)
-    {
-        timeout_ms = DEV_IPC_QUERY_TIMEOUT_DEFAULT;
-    }
 
+    /* timeout_ms == 0 → 无超时（推荐用法）：阻塞直到全部订阅 peer CONNECTED。
+     * 业务模块只有真正全连上才该宣告 READY，否则会出现 DEV 视角 READY 但 CFG 端发不出
+     * 命令的 race（CFG 的 dev_ipc_query 找不到 conn）。
+     *
+     * timeout_ms != 0 → 老语义保留：超时返回 FAIL，由调用方决定怎么办。 */
     const uint32_t poll_step_us = 100 * 1000; /* 100ms */
-    int64_t deadline_us = (int64_t)g_get_monotonic_time() + (int64_t)timeout_ms * 1000;
+    const int log_every_iters = 30;           /* ~3s 一条 progress 日志 */
+    int64_t deadline_us = (timeout_ms == 0) ? 0 : (int64_t)g_get_monotonic_time() + (int64_t)timeout_ms * 1000;
+    int iter_count = 0;
 
     while (1)
     {
@@ -451,25 +461,56 @@ int dev_ipc_wait_all_subscribed_connected(dev_ipc_context_t *ctx, uint32_t timeo
         pthread_mutex_unlock(&ctx->sub_mgr->lock);
 
         guint missing = 0;
+        GString *missing_list = NULL;
+        gboolean want_log = (iter_count > 0) && (iter_count % log_every_iters == 0);
         for (guint i = 0; i < targets->len; i++)
         {
             uint32_t tid = g_array_index(targets, uint32_t, i);
             if (!dev_ipc_is_connected(ctx, tid))
             {
                 missing++;
+                if (want_log)
+                {
+                    if (!missing_list)
+                    {
+                        missing_list = g_string_new("");
+                    }
+                    else
+                    {
+                        g_string_append_c(missing_list, ' ');
+                    }
+                    g_string_append_printf(missing_list, "0x%08X", tid);
+                }
             }
         }
         g_array_free(targets, TRUE);
 
         if (missing == 0)
         {
+            if (missing_list)
+            {
+                g_string_free(missing_list, TRUE);
+            }
             return ERRCODE_SUCCESS;
         }
-        if ((int64_t)g_get_monotonic_time() >= deadline_us)
+
+        if (want_log)
         {
-            LOG_WARN("<%s> wait_all_subscribed_connected: %u target(s) still not connected", ctx->name, missing);
+            LOG_WARN("<%s> wait_all_subscribed_connected: still waiting %u peer(s): %s", ctx->name, missing,
+                     missing_list ? missing_list->str : "?");
+        }
+        if (missing_list)
+        {
+            g_string_free(missing_list, TRUE);
+        }
+
+        if (timeout_ms != 0 && (int64_t)g_get_monotonic_time() >= deadline_us)
+        {
+            LOG_WARN("<%s> wait_all_subscribed_connected: %u target(s) still not connected (timeout)", ctx->name,
+                     missing);
             return ERRCODE_FAIL;
         }
         usleep(poll_step_us);
+        iter_count++;
     }
 }

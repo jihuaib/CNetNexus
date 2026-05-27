@@ -13,6 +13,8 @@
 #include "log.h"
 #include "route.h"
 #include "route_main.h"
+#include "route_rib.h"
+#include "route_worker.h"
 
 // ============================================================================
 // 内部辅助
@@ -192,5 +194,48 @@ void route_pub_notify_entry(GList *subscribers, const route_msg_entry_t *entry)
             LOG_WARN("Failed to send route update to module 0x%08X", sub->module_id);
         }
         dev_ipc_message_free(msg);
+    }
+}
+
+// ============================================================================
+// shutdown 撤销:遍历 RIB 所有 OS-installed 路径 × 订阅者发 withdraw
+// ============================================================================
+
+typedef struct
+{
+    GList *subscribers;
+    uint32_t withdrawn;
+} pub_shutdown_ctx_t;
+
+static void pub_shutdown_each_path_cb(const route_head_t *head, const route_path_t *path, void *userdata)
+{
+    pub_shutdown_ctx_t *c = (pub_shutdown_ctx_t *)userdata;
+    if (!c || !head || !path)
+    {
+        return;
+    }
+    /* 只对当前 OS-installed 的最优路径发 withdraw,匹配订阅者实际见过的 add 事件。 */
+    if ((path->flags & ROUTE_PATH_FLAG_OS_INSTALLED) == 0u)
+    {
+        return;
+    }
+    route_pub_notify(c->subscribers, head, path, /*is_withdraw=*/1);
+    c->withdrawn++;
+}
+
+void route_pub_withdraw_all_for_shutdown(void)
+{
+    if (!g_route_work_local || !g_route_work_local->rib || !g_route_work_local->subscribers)
+    {
+        return;
+    }
+    pub_shutdown_ctx_t c = {
+        .subscribers = g_route_work_local->subscribers,
+        .withdrawn = 0,
+    };
+    route_rib_walk(g_route_work_local->rib, ROUTE_PROTOCOL_MAX, ROUTE_VRF_ALL, pub_shutdown_each_path_cb, &c);
+    if (c.withdrawn > 0)
+    {
+        LOG_INFO("[route_pub] shutdown: notified subscribers about %u withdrawn best-path(s)", c.withdrawn);
     }
 }

@@ -436,13 +436,6 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
      * 用户输入 show 不会意外把它启动。 */
     if (result->module_id != DEV_MODULE_ID_CLI && !dev_ipc_is_connected(g_cli_local->dev_ipc_ctx, result->module_id))
     {
-        /* CFG 被动等待业务模块主动建联（业务模块在自己 init 中 subscribe(CLI)）。
-         * 此处不主动连任何模块。
-         *   - show 命令：is_connected=false 就意味着模块没在跑，直接返回，零副作用
-         *   - no 命令：目标既然不在跑，业务也不存在，没东西可"取消"，直接返回提示，
-         *              避免 spawn → 立刻 self-exit 的无谓往返（如 `no bgp` / `no ldp` 时 on-demand 模块未起）
-         *   - 配置命令：调 wait_module_ready 让 DEV 把按需模块拉起；目标 init 中会 subscribe(CLI)，
-         *               届时 CFG 自然收到 inbound 连接，is_connected 变 true */
         if (result->has_show_prefix)
         {
             cli_send_message(session, "Info: target module is not running; no data to show.\r\n");
@@ -507,10 +500,46 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
         {
             if (full_output->len == 0)
             {
-                cli_send_message(session, "Error: Module timed out or failed to respond.\r\n");
+                /* 区分两种 NULL：连接已断开（query 被 cancel_by_target 唤醒）vs 真超时。
+                 * 这两种情况对用户语义不同，且测试脚本需要稳定的字符串。 */
+                if (!dev_ipc_is_connected(g_cli_local->dev_ipc_ctx, result->module_id))
+                {
+                    if (result->has_show_prefix)
+                    {
+                        cli_send_message(session, "Info: target module is not running; no data to show.\r\n");
+                    }
+                    else if (result->has_no_prefix)
+                    {
+                        cli_send_message(session, "Info: target module is not running; nothing to undo.\r\n");
+                    }
+                    else
+                    {
+                        cli_send_message(session, "Info: target module is not running.\r\n");
+                    }
+                }
+                else
+                {
+                    cli_send_message(session, "Error: Module timed out or failed to respond.\r\n");
+                }
             }
             g_string_free(full_output, TRUE);
             return ERRCODE_FAIL;
+        }
+
+        /* RESP_EXITING：目标在响应后会自退出。先等连接真断（最长 3s），再走正常 RESP 流程，
+         * 这样紧跟其后的下一条命令一定看到 is_connected=false，自动走按需 spawn 路径。 */
+        if (response->msg_type == CLI_MSG_TYPE_RESP_EXITING)
+        {
+            gint64 deadline_us = g_get_monotonic_time() + 3LL * G_TIME_SPAN_SECOND;
+            while (g_get_monotonic_time() < deadline_us)
+            {
+                if (!dev_ipc_is_connected(g_cli_local->dev_ipc_ctx, result->module_id))
+                {
+                    break;
+                }
+                g_usleep(20 * 1000); /* 20ms */
+            }
+            response->msg_type = CLI_MSG_TYPE_RESP; /* 后续分支按普通最终响应处理 */
         }
 
         if (response->msg_type == CLI_MSG_TYPE_RESP)

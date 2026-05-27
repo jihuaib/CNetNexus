@@ -22,6 +22,10 @@
 #define CLI_MSG_TYPE DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0001)
 /** CLI 响应消息 */
 #define CLI_MSG_TYPE_RESP DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0002)
+/** CLI 终态响应：模块即将自退出（如 no bgp）。
+ *  CFG 在转发响应前会先等 is_connected(目标) 翻假（最长 3s），
+ *  这样紧跟着的下一条命令一定走按需 spawn 路径，不会踩到旧连接 race。 */
+#define CLI_MSG_TYPE_RESP_EXITING DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0003)
 /** CLI 响应（还有更多数据待发送） */
 #define CLI_MSG_TYPE_RESP_MORE DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0004)
 /** CLI 请求下一批数据 */

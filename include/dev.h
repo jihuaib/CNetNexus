@@ -263,6 +263,7 @@ typedef dev_ipc_connection_t dev_ipc_connection_t;
 typedef struct dev_ipc_pending_query
 {
     uint32_t request_id;         /**< 请求 ID */
+    uint32_t target_module_id;   /**< 目标模块 ID（用于按目标取消） */
     dev_ipc_message_t *response; /**< 响应消息（由 IO 线程设置） */
     pthread_cond_t cond;         /**< 条件变量 */
     int completed;               /**< 是否已完成 */
@@ -738,9 +739,10 @@ void dev_ipc_query_mgr_destroy(dev_ipc_query_mgr_t *mgr);
 /**
  * @brief 分配新请求 ID 并注册挂起查询
  * @param mgr 查询管理器
+ * @param target_module_id 目标模块 ID（用于连接断开时按目标取消）
  * @return 请求 ID
  */
-uint32_t dev_ipc_query_mgr_register(dev_ipc_query_mgr_t *mgr);
+uint32_t dev_ipc_query_mgr_register(dev_ipc_query_mgr_t *mgr, uint32_t target_module_id);
 
 /**
  * @brief 等待查询响应
@@ -766,6 +768,17 @@ int dev_ipc_query_mgr_complete(dev_ipc_query_mgr_t *mgr, uint32_t request_id, de
  * @param request_id 请求 ID
  */
 void dev_ipc_query_mgr_cancel(dev_ipc_query_mgr_t *mgr, uint32_t request_id);
+
+/**
+ * @brief 取消所有打到指定目标的挂起查询（连接断开时调用）
+ *
+ * 将匹配 target_module_id 的 pending query 置为 completed 且 response=NULL，
+ * 唤醒等待者，让 dev_ipc_query() 立即返回 NULL 而不再等满超时。
+ *
+ * @param mgr 查询管理器
+ * @param target_module_id 目标模块 ID
+ */
+void dev_ipc_query_mgr_cancel_by_target(dev_ipc_query_mgr_t *mgr, uint32_t target_module_id);
 
 /**
  * @brief 将 dev_ipc_message_t 序列化为 IPC 帧（头部 + 负载）

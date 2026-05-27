@@ -159,10 +159,13 @@ void dev_subscribe_handle_subscribe(dev_ipc_message_t *msg)
         return;
     }
 
-    /* 正在启动 / 等待依赖：响应 STARTING，待 NOTIFY_READY 时再推 MODULE_EVENT */
+    /* 正在启动 / 等待依赖：响应 STARTING + 带上 port/epoch。
+     * 模块 IPC 监听在 fork 后早期就 listen 上了，所以即便 phase 还没到 READY，
+     * 订阅方此时 connect 也能成功；先把 TCP 通道建好，等 NOTIFY_READY 再推 MODULE_EVENT 触发业务回调。
+     * 这避免了互订阅模块（如 IF↔ROUTE）在 cold-start 时各自等对方 READY 的循环死锁。 */
     if (target->child_pid > 0 || target->phase >= DEV_PHASE_LOADED)
     {
-        send_subscribe_resp(msg, ERRCODE_SUCCESS, DEV_MODULE_STATE_STARTING, 0, 0);
+        send_subscribe_resp(msg, ERRCODE_SUCCESS, DEV_MODULE_STATE_STARTING, target->port, target->epoch);
         return;
     }
 

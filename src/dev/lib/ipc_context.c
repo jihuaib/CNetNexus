@@ -150,12 +150,21 @@ static dev_ipc_connection_t *find_connection_by_fd(dev_ipc_context_t *ctx, int f
 
 static void notify_connection_down(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn)
 {
-    if (!ctx || !conn || !ctx->disconnect_handler || conn->remote_module_id == 0 || conn->state != DEV_IPC_COCONNECTED)
+    if (!ctx || !conn || conn->remote_module_id == 0 || conn->state != DEV_IPC_COCONNECTED)
     {
         return;
     }
 
-    ctx->disconnect_handler(ctx, conn->remote_module_id, ctx->disconnect_user);
+    /* 立即唤醒所有打到该目标的挂起 query，避免等满 60s 超时 */
+    if (ctx->query_mgr)
+    {
+        dev_ipc_query_mgr_cancel_by_target(ctx->query_mgr, conn->remote_module_id);
+    }
+
+    if (ctx->disconnect_handler)
+    {
+        ctx->disconnect_handler(ctx, conn->remote_module_id, ctx->disconnect_user);
+    }
 }
 
 // ============================================================================
@@ -1375,8 +1384,8 @@ dev_ipc_message_t *dev_ipc_query(dev_ipc_context_t *ctx, uint32_t target_module_
         timeout_ms = DEV_IPC_QUERY_TIMEOUT_DEFAULT;
     }
 
-    /* 分配请求 ID */
-    uint32_t request_id = dev_ipc_query_mgr_register(ctx->query_mgr);
+    /* 分配请求 ID（带目标，便于连接断开时按目标取消） */
+    uint32_t request_id = dev_ipc_query_mgr_register(ctx->query_mgr, target_module_id);
     if (request_id == 0)
     {
         return NULL;

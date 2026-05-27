@@ -27,17 +27,22 @@
 #define IF_LOOP_ID_MIN 1u
 #define IF_LOOP_ID_MAX 1024u
 
-static void send_resp(dev_ipc_message_t *msg, const char *text)
+static void send_resp_typed(dev_ipc_message_t *msg, uint32_t msg_type, const char *text)
 {
     const char *safe_text = text ? text : "";
     char *resp_data = g_strdup(safe_text);
-    dev_ipc_message_t *resp = dev_ipc_message_create(CLI_MSG_TYPE_RESP, DEV_MODULE_ID_ISIS, msg->src_module_id,
-                                                     msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
+    dev_ipc_message_t *resp = dev_ipc_message_create(msg_type, DEV_MODULE_ID_ISIS, msg->src_module_id, msg->request_id,
+                                                     resp_data, strlen(resp_data) + 1, g_free);
     if (resp)
     {
         dev_ipc_send_response(isis_local_ipc_ctx(), resp);
         dev_ipc_message_free(resp);
     }
+}
+
+static void send_resp(dev_ipc_message_t *msg, const char *text)
+{
+    send_resp_typed(msg, CLI_MSG_TYPE_RESP, text);
 }
 
 static const char *if_ctx_idx_to_name(uint32_t if_idx)
@@ -160,7 +165,7 @@ static int handle_instance_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         if (db_rpc_exists(isis_local_ipc_ctx(), ISIS_TABLE_INSTANCE_NAME, NULL, &has_more) == ERRCODE_SUCCESS &&
             !has_more)
         {
-            send_resp(msg, "ISIS: last instance removed, process exiting.\r\n");
+            send_resp_typed(msg, CLI_MSG_TYPE_RESP_EXITING, "ISIS: last instance removed, process exiting.\r\n");
             kill(getpid(), SIGTERM);
             return ERRCODE_SUCCESS;
         }

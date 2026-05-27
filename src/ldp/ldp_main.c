@@ -361,11 +361,9 @@ int ldp_module_init(void)
         LOG_WARN("LDP: subscribe(CLI) failed");
     }
 
-    /* DEPS_READY：等所有订阅 peer 的 IPC 都 CONNECTED 才继续 db_init/restore */
-    if (dev_ipc_wait_all_subscribed_connected(ctx, 10000) != ERRCODE_SUCCESS)
-    {
-        LOG_WARN("LDP: deps not fully connected within 10s; proceeding anyway");
-    }
+    /* DEPS_READY：阻塞直到所有订阅 peer 的 IPC 都 CONNECTED 才继续 db_init/restore + notify_ready。
+     * 不能用超时后继续 —— DEV 视角 READY 而 CFG 还连不上 LDP 会让命令派发踩到 race。 */
+    (void)dev_ipc_wait_all_subscribed_connected(ctx, 0);
 
     if (dev_ipc_is_connected(ctx, DEV_MODULE_ID_DB))
     {

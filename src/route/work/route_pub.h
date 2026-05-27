@@ -51,4 +51,12 @@ void route_pub_notify_entry(GList *subscribers, const route_msg_entry_t *entry);
 void route_pub_notify_module(uint32_t dst_module_id, const route_head_t *head, const route_path_t *path,
                              int is_withdraw);
 
+/**
+ * @brief ROUTE 进程优雅退出前,对 RIB 中所有 OS-installed 的 best path 给订阅者发 withdraw。
+ *
+ * 仅在 route_worker_shutdown 内调用,此时 IPC ctx 仍可用、subscribers 链表尚未释放。
+ * 订阅者收到 ROUTE_MSG_TYPE_UPDATE(is_withdraw=1) 后可正确清理本模块持有的镜像状态。
+ */
+void route_pub_withdraw_all_for_shutdown(void);
+
 #endif /* ROUTE_PUB_H */

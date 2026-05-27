@@ -212,33 +212,42 @@ static int nl_add_mpls_label_stack(struct nlmsghdr *nlh, size_t maxlen, int attr
     return ERRCODE_SUCCESS;
 }
 
-static void fib_os_write_uint_file(const char *path, uint32_t value)
+static int fib_os_write_uint_file(const char *path, uint32_t value)
 {
     FILE *fp = fopen(path, "w");
     if (!fp)
     {
-        return;
+        LOG_WARN("fib_os: open %s failed: %s (kernel MPLS support not loaded?)", path, strerror(errno));
+        return ERRCODE_FAIL;
     }
-    fprintf(fp, "%u\n", value);
+    int rc = (fprintf(fp, "%u\n", value) > 0) ? ERRCODE_SUCCESS : ERRCODE_FAIL;
+    if (rc != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("fib_os: write %s=%u failed: %s", path, value, strerror(errno));
+    }
     fclose(fp);
+    return rc;
 }
 
-static void fib_os_apply_mpls_platform_labels(uint32_t labels)
+static int fib_os_apply_mpls_platform_labels(uint32_t labels)
 {
     if (labels == 0u)
     {
-        return;
+        return ERRCODE_SUCCESS;
     }
 
-    fib_os_write_uint_file("/proc/sys/net/mpls/platform_labels", labels);
+    return fib_os_write_uint_file("/proc/sys/net/mpls/platform_labels", labels);
 }
 
-static void fib_os_apply_mpls_input(gboolean enabled)
+static int fib_os_apply_mpls_input(gboolean enabled)
 {
     DIR *dir = opendir("/proc/sys/net/mpls/conf");
     if (!dir)
     {
-        return;
+        LOG_WARN("fib_os: opendir /proc/sys/net/mpls/conf failed: %s "
+                 "(kernel mpls_router module not loaded; MPLS forwarding will not work)",
+                 strerror(errno));
+        return ERRCODE_FAIL;
     }
 
     struct dirent *de = NULL;
@@ -255,9 +264,10 @@ static void fib_os_apply_mpls_input(gboolean enabled)
         {
             continue;
         }
-        fib_os_write_uint_file(path, enabled ? 1u : 0u);
+        (void)fib_os_write_uint_file(path, enabled ? 1u : 0u);
     }
     closedir(dir);
+    return ERRCODE_SUCCESS;
 }
 
 static void fib_os_prepare_mpls_platform_labels(uint32_t label)
@@ -298,9 +308,17 @@ int fib_os_mpls_configure(uint32_t platform_labels, gboolean mpls_input)
     g_mpls_input = mpls_input;
     g_mpls_configured = TRUE;
 
-    fib_os_apply_mpls_platform_labels(g_mpls_platform_labels);
-    fib_os_apply_mpls_input(g_mpls_input);
-    LOG_INFO("fib_os: MPLS kernel config platform_labels=%u mpls_input=%s", g_mpls_platform_labels,
+    int labels_rc = fib_os_apply_mpls_platform_labels(g_mpls_platform_labels);
+    int input_rc = fib_os_apply_mpls_input(g_mpls_input);
+    if (labels_rc != ERRCODE_SUCCESS || input_rc != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("fib_os: MPLS kernel config NOT fully applied (platform_labels=%u %s, mpls_input=%s %s); "
+                 "load mpls_router kernel module and grant NET_ADMIN to enable MPLS forwarding",
+                 g_mpls_platform_labels, labels_rc == ERRCODE_SUCCESS ? "ok" : "FAIL", g_mpls_input ? "true" : "false",
+                 input_rc == ERRCODE_SUCCESS ? "ok" : "FAIL");
+        return ERRCODE_FAIL;
+    }
+    LOG_INFO("fib_os: MPLS kernel config applied platform_labels=%u mpls_input=%s", g_mpls_platform_labels,
              g_mpls_input ? "true" : "false");
     return ERRCODE_SUCCESS;
 }
