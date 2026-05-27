@@ -315,7 +315,8 @@ static int worker_dispatch_cmd(ldp_worker_cmd_t *cmd)
             break;
 
         case LDP_WORKER_CMD_ROUTE_READY:
-            if (dev_ipc_wait_connected(ldp_local_ipc_ctx(), DEV_MODULE_ID_ROUTE, DEV_IPC_WAIT_PEER_MS) != ERRCODE_SUCCESS)
+            if (dev_ipc_wait_connected(ldp_local_ipc_ctx(), DEV_MODULE_ID_ROUTE, DEV_IPC_WAIT_PEER_MS) !=
+                ERRCODE_SUCCESS)
             {
                 LOG_WARN("LDP: ROUTE connection not ready in time; resubscribe deferred to next READY");
                 break;

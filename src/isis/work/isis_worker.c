@@ -403,7 +403,8 @@ static int worker_dispatch_cmd(isis_worker_cmd_t *cmd)
             return 0;
 
         case ISIS_WORKER_CMD_ROUTE_READY:
-            if (dev_ipc_wait_connected(isis_local_ipc_ctx(), DEV_MODULE_ID_ROUTE, DEV_IPC_WAIT_PEER_MS) != ERRCODE_SUCCESS)
+            if (dev_ipc_wait_connected(isis_local_ipc_ctx(), DEV_MODULE_ID_ROUTE, DEV_IPC_WAIT_PEER_MS) !=
+                ERRCODE_SUCCESS)
             {
                 LOG_WARN("ISIS: ROUTE connection not ready in time; route replay deferred to next READY");
                 break;

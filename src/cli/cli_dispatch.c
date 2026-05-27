@@ -447,7 +447,8 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
             return ERRCODE_SUCCESS;
         }
         cli_send_message(session, "[Starting module, please wait...]\r\n");
-        if (dev_ipc_wait_module_ready(g_cli_local->dev_ipc_ctx, result->module_id, DEV_IPC_WAIT_READY_MS) != ERRCODE_SUCCESS)
+        if (dev_ipc_wait_module_ready(g_cli_local->dev_ipc_ctx, result->module_id, DEV_IPC_WAIT_READY_MS) !=
+            ERRCODE_SUCCESS)
         {
             cli_send_message(session, "Error: Required module failed to start.\r\n");
             return ERRCODE_FAIL;
