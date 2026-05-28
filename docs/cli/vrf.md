@@ -37,6 +37,12 @@ Displays detailed information for a specific VRF instance.
 - **Parameters**:
     - `<vrf-name>`: VRF name (`dynamic(string(1-63))`). Supports Tab completion.
 
+### 2.3 `show vrf subscribe`
+Displays VRF event subscribers, including subscriber module, AF mask, event mask, and replay state.
+
+- **Usage**: `show vrf subscribe`
+- **View**: `global` (available in all views)
+
 ## 3. View Contexts
 
 | View Name | Prompt Template | Description |

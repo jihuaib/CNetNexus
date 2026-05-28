@@ -17,6 +17,7 @@
 #include "if_main.h"
 #include "if_map.h"
 #include "if_netlink.h"
+#include "if_pub.h"
 #include "if_worker.h"
 #include "log.h"
 #include "net_addr.h"
@@ -62,6 +63,179 @@ static const char *if_cfgid_to_name(uint32_t cfg_id)
         default:
             return NULL;
     }
+}
+
+static const char *module_name(uint32_t module_id)
+{
+    switch (module_id)
+    {
+        case DEV_MODULE_ID_DEV:
+            return "dev";
+        case DEV_MODULE_ID_DB:
+            return "db";
+        case DEV_MODULE_ID_CLI:
+            return "cli";
+        case DEV_MODULE_ID_IF:
+            return "if";
+        case DEV_MODULE_ID_BGP:
+            return "bgp";
+        case DEV_MODULE_ID_ROUTE:
+            return "route";
+        case DEV_MODULE_ID_VRF:
+            return "vrf";
+        case DEV_MODULE_ID_SBMP:
+            return "sbmp";
+        case DEV_MODULE_ID_ISIS:
+            return "isis";
+        case DEV_MODULE_ID_TUNNEL:
+            return "tunnel";
+        case DEV_MODULE_ID_FIB:
+            return "fib";
+        case DEV_MODULE_ID_LDP:
+            return "ldp";
+        default:
+            return "unknown";
+    }
+}
+
+static void append_mask_name(char *buf, size_t cap, const char *name)
+{
+    if (!buf || cap == 0 || !name || name[0] == '\0')
+    {
+        return;
+    }
+    if (buf[0] != '\0')
+    {
+        g_strlcat(buf, "|", cap);
+    }
+    g_strlcat(buf, name, cap);
+}
+
+static void if_type_mask_to_str(uint32_t mask, char *buf, size_t cap)
+{
+    if (!buf || cap == 0)
+    {
+        return;
+    }
+    buf[0] = '\0';
+    if (mask == IF_INTF_TYPE_ALL)
+    {
+        g_strlcpy(buf, "all", cap);
+        return;
+    }
+    if ((mask & IF_INTF_TYPE_ETH) != 0)
+    {
+        append_mask_name(buf, cap, "eth");
+    }
+    uint32_t unknown = mask & ~IF_INTF_TYPE_ETH;
+    if (unknown != 0)
+    {
+        char tmp[16];
+        snprintf(tmp, sizeof(tmp), "0x%08X", unknown);
+        append_mask_name(buf, cap, tmp);
+    }
+    if (buf[0] == '\0')
+    {
+        g_strlcpy(buf, "-", cap);
+    }
+}
+
+static void if_event_mask_to_str(uint32_t mask, char *buf, size_t cap)
+{
+    if (!buf || cap == 0)
+    {
+        return;
+    }
+    buf[0] = '\0';
+    if (mask == IF_EVENT_ALL)
+    {
+        g_strlcpy(buf, "all", cap);
+        return;
+    }
+    if ((mask & IF_EVENT_LINK_UP) != 0)
+    {
+        append_mask_name(buf, cap, "link-up");
+    }
+    if ((mask & IF_EVENT_LINK_DOWN) != 0)
+    {
+        append_mask_name(buf, cap, "link-down");
+    }
+    if ((mask & IF_EVENT_PROTO_UP) != 0)
+    {
+        append_mask_name(buf, cap, "proto-up");
+    }
+    if ((mask & IF_EVENT_PROTO_DOWN) != 0)
+    {
+        append_mask_name(buf, cap, "proto-down");
+    }
+    if ((mask & IF_EVENT_VRF_CHANGE) != 0)
+    {
+        append_mask_name(buf, cap, "vrf-change");
+    }
+    if ((mask & IF_EVENT_SMOOTHSTART) != 0)
+    {
+        append_mask_name(buf, cap, "smoothstart");
+    }
+    if ((mask & IF_EVENT_SMOOTHEND) != 0)
+    {
+        append_mask_name(buf, cap, "smoothend");
+    }
+    uint32_t known = IF_EVENT_LINK_UP | IF_EVENT_LINK_DOWN | IF_EVENT_PROTO_UP | IF_EVENT_PROTO_DOWN |
+                     IF_EVENT_VRF_CHANGE | IF_EVENT_SMOOTHSTART | IF_EVENT_SMOOTHEND;
+    uint32_t unknown = mask & ~known;
+    if (unknown != 0)
+    {
+        char tmp[16];
+        snprintf(tmp, sizeof(tmp), "0x%08X", unknown);
+        append_mask_name(buf, cap, tmp);
+    }
+    if (buf[0] == '\0')
+    {
+        g_strlcpy(buf, "-", cap);
+    }
+}
+
+static int show_subscribers(dev_ipc_message_t *msg)
+{
+    GString *resp_buf = g_string_new("");
+    if (!resp_buf)
+    {
+        send_resp(msg, "IF Error: Out of memory.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    g_string_append_printf(resp_buf,
+                           "\r\nIF Subscribers:\r\n"
+                           "%-10s %-10s %-14s %-64s %-8s\r\n"
+                           "---------- ---------- -------------- ------------------------------------------------"
+                           "---------------- --------\r\n",
+                           "Module", "Module-ID", "IF-Type", "Events", "Replay");
+
+    uint32_t count = 0;
+    GList *subscribers = g_if_work_local ? g_if_work_local->subscribers : NULL;
+    for (GList *l = subscribers; l; l = l->next)
+    {
+        const if_subscriber_t *sub = (const if_subscriber_t *)l->data;
+        if (!sub)
+        {
+            continue;
+        }
+
+        char type_str[64];
+        char event_str[192];
+        if_type_mask_to_str(sub->if_type_mask, type_str, sizeof(type_str));
+        if_event_mask_to_str(sub->event_mask, event_str, sizeof(event_str));
+        g_string_append_printf(resp_buf, "%-10s 0x%08X %-14s %-64s %-8s\r\n", module_name(sub->module_id),
+                               sub->module_id, type_str, event_str, sub->pending_replay ? "pending" : "ready");
+        count++;
+    }
+
+    if (count == 0)
+    {
+        g_string_append(resp_buf, "  (no subscribers)\r\n");
+    }
+    g_string_append_printf(resp_buf, "\r\nTotal %u subscriber(s)\r\n", count);
+    return if_show_send_chunked(msg, resp_buf);
 }
 
 static void show_format_prefix(const net_prefix_t *pfx, char *buf, size_t sz)
@@ -240,6 +414,7 @@ int if_show_handle_cli(dev_ipc_message_t *msg)
 
     const char *ge_ifname = NULL;
     uint32_t loop_id = 0;
+    gboolean show_subscribe = FALSE;
 
     cli_tlv_entry_t entry;
     while (cli_tlv_next(&parser, &entry) == 1)
@@ -258,9 +433,18 @@ int if_show_handle_cli(dev_ipc_message_t *msg)
         {
             loop_id = (uint32_t)cli_tlv_entry_get_int(&entry);
         }
+        else if (entry.cfg_id == 10)
+        {
+            show_subscribe = TRUE;
+        }
         cli_tlv_entry_free(&entry);
     }
     cli_tlv_cleanup(&parser);
+
+    if (show_subscribe)
+    {
+        return show_subscribers(msg);
+    }
 
     GString *resp_buf = g_string_new("");
     if (!resp_buf)

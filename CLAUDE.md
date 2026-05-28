@@ -552,12 +552,3 @@ SQLite 数据库存储位置：
 - **生产环境**：`/opt/netnexus/data/{module}/{db_name}.db`（通过环境变量）
 
 示例：BGP 模块数据库位于 `/opt/netnexus/data/bgp/bgp_db.db`
-
-## graphify
-
-This project has a graphify knowledge graph at graphify-out/.
-
-Rules:
-- Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure
-- If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
-- After modifying code files in this session, run `graphify update .` to keep the graph current (AST-only, no API cost)

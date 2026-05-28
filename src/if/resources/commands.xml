@@ -302,6 +302,10 @@
                     <name>GE-8</name> <!-- 12 -->
                     <description>Interface name</description>
                 </element>
+                <element id="13" cfg-id="10" type="keyword">
+                    <name>subscribe</name> <!-- 13 -->
+                    <description>IF event subscriptions</description>
+                </element>
             </elements>
             <commands>
                 <!-- show if -->
@@ -317,6 +321,11 @@
                 <!-- show if loop <N> -->
                 <command>
                     <expression>1 2 7 8</expression>
+                    <views>global</views>
+                </command>
+                <!-- show if subscribe -->
+                <command>
+                    <expression>1 2 13</expression>
                     <views>global</views>
                 </command>
             </commands>

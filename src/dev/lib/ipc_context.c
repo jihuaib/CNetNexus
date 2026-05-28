@@ -87,7 +87,7 @@ static dev_ipc_message_t g_worker_exit_sentinel;
 static int is_response_like_msg_type(uint32_t msg_type)
 {
     if (msg_type == DEV_IPC_MSG_TYPE_DEV_MODULE_RESP || msg_type == DEV_IPC_MSG_TYPE_DEV_QUERY_IPC_CONNS_RESP ||
-        msg_type == DEV_IPC_MSG_TYPE_DB_RESP)
+        msg_type == DEV_IPC_MSG_TYPE_DEV_QUERY_SUBS_RESP || msg_type == DEV_IPC_MSG_TYPE_DB_RESP)
     {
         return 1;
     }
@@ -506,6 +506,39 @@ static void handle_frame(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn, dev
             resp_hdr.dst_module_id = header->src_module_id;
             resp_hdr.request_id = header->request_id;
             resp_hdr.payload = pl;
+            resp_hdr.payload_len = pl_len;
+
+            uint8_t *frame_buf = NULL;
+            uint32_t frame_len = 0;
+            if (dev_ipc_frame_serialize(&resp_hdr, &frame_buf, &frame_len) == ERRCODE_SUCCESS)
+            {
+                pthread_mutex_lock(&ctx->comutex);
+                dev_ipc_connection_send(conn, frame_buf, frame_len);
+                pthread_mutex_unlock(&ctx->comutex);
+                g_free(frame_buf);
+            }
+            g_free(pl);
+            break;
+        }
+
+        case DEV_IPC_MSG_TYPE_DEV_QUERY_SUBS:
+        {
+            /* sub_mgr 本地视图查询：把本模块订阅了哪些 peer 序列化成文本回去 */
+            uint32_t pl_len = 0;
+            char *pl = dev_ipc_format_local_subs(ctx, &pl_len);
+            if (!pl)
+            {
+                pl = g_strdup("(no sub_mgr)");
+                pl_len = (uint32_t)strlen(pl) + 1;
+            }
+
+            dev_ipc_message_t resp_hdr;
+            memset(&resp_hdr, 0, sizeof(resp_hdr));
+            resp_hdr.msg_type = DEV_IPC_MSG_TYPE_DEV_QUERY_SUBS_RESP;
+            resp_hdr.src_module_id = ctx->module_id;
+            resp_hdr.dst_module_id = header->src_module_id;
+            resp_hdr.request_id = header->request_id;
+            resp_hdr.payload = (uint8_t *)pl;
             resp_hdr.payload_len = pl_len;
 
             uint8_t *frame_buf = NULL;

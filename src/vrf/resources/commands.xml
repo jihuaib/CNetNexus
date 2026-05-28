@@ -76,6 +76,10 @@
                     <type>dynamic(string(1-63))</type>
                     <description>VRF name</description>
                 </element>
+                <element id="5" cfg-id="4" type="keyword">
+                    <name>subscribe</name>
+                    <description>VRF event subscriptions</description>
+                </element>
             </elements>
 
             <commands>
@@ -85,6 +89,10 @@
                 </command>
                 <command>
                     <expression>1 2 3 4</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 5</expression>
                     <views>global</views>
                 </command>
             </commands>

@@ -14,6 +14,7 @@
 #include "errcode.h"
 #include "vrf.h"
 #include "vrf_os.h"
+#include "vrf_pub.h"
 #include "vrf_table.h"
 #include "vrf_worker.h"
 
@@ -23,6 +24,8 @@
 #define VRF_CLI_GROUP_ID_SHOW_OS 6
 /** show vrf <name> 参数 cfg_id */
 #define VRF_CFGID_SHOW_NAME 3
+/** show vrf subscribe 参数 cfg_id */
+#define VRF_CFGID_SHOW_SUBSCRIBE 4
 
 static gint compare_vrf_by_id(gconstpointer a, gconstpointer b)
 {
@@ -86,6 +89,210 @@ static const char *safi_to_str(uint8_t safi)
     }
 }
 
+static const char *module_name(uint32_t module_id)
+{
+    switch (module_id)
+    {
+        case DEV_MODULE_ID_DEV:
+            return "dev";
+        case DEV_MODULE_ID_DB:
+            return "db";
+        case DEV_MODULE_ID_CLI:
+            return "cli";
+        case DEV_MODULE_ID_IF:
+            return "if";
+        case DEV_MODULE_ID_BGP:
+            return "bgp";
+        case DEV_MODULE_ID_ROUTE:
+            return "route";
+        case DEV_MODULE_ID_VRF:
+            return "vrf";
+        case DEV_MODULE_ID_SBMP:
+            return "sbmp";
+        case DEV_MODULE_ID_ISIS:
+            return "isis";
+        case DEV_MODULE_ID_TUNNEL:
+            return "tunnel";
+        case DEV_MODULE_ID_FIB:
+            return "fib";
+        case DEV_MODULE_ID_LDP:
+            return "ldp";
+        default:
+            return "unknown";
+    }
+}
+
+static void append_mask_name(char *buf, size_t cap, const char *name)
+{
+    if (!buf || cap == 0 || !name || name[0] == '\0')
+    {
+        return;
+    }
+    if (buf[0] != '\0')
+    {
+        g_strlcat(buf, "|", cap);
+    }
+    g_strlcat(buf, name, cap);
+}
+
+static void af_mask_to_str(uint32_t mask, char *buf, size_t cap)
+{
+    if (!buf || cap == 0)
+    {
+        return;
+    }
+    buf[0] = '\0';
+    if (mask == VRF_AF_MASK_ALL)
+    {
+        g_strlcpy(buf, "all", cap);
+        return;
+    }
+    if ((mask & VRF_AF_MASK_IPV4) != 0)
+    {
+        append_mask_name(buf, cap, "ipv4");
+    }
+    if ((mask & VRF_AF_MASK_IPV6) != 0)
+    {
+        append_mask_name(buf, cap, "ipv6");
+    }
+    uint32_t known = VRF_AF_MASK_IPV4 | VRF_AF_MASK_IPV6;
+    uint32_t unknown = mask & ~known;
+    if (unknown != 0)
+    {
+        char tmp[16];
+        snprintf(tmp, sizeof(tmp), "0x%08X", unknown);
+        append_mask_name(buf, cap, tmp);
+    }
+    if (buf[0] == '\0')
+    {
+        g_strlcpy(buf, "-", cap);
+    }
+}
+
+static void vrf_event_mask_to_str(uint32_t mask, char *buf, size_t cap)
+{
+    if (!buf || cap == 0)
+    {
+        return;
+    }
+    buf[0] = '\0';
+    if (mask == VRF_EVENT_ALL)
+    {
+        g_strlcpy(buf, "all", cap);
+        return;
+    }
+    if ((mask & VRF_EVENT_VRF_ADD) != 0)
+    {
+        append_mask_name(buf, cap, "vrf-add");
+    }
+    if ((mask & VRF_EVENT_VRF_DEL) != 0)
+    {
+        append_mask_name(buf, cap, "vrf-del");
+    }
+    if ((mask & VRF_EVENT_VRF_STATE) != 0)
+    {
+        append_mask_name(buf, cap, "vrf-state");
+    }
+    if ((mask & VRF_EVENT_AF_ENABLE) != 0)
+    {
+        append_mask_name(buf, cap, "af-enable");
+    }
+    if ((mask & VRF_EVENT_AF_DISABLE) != 0)
+    {
+        append_mask_name(buf, cap, "af-disable");
+    }
+    if ((mask & VRF_EVENT_AF_RD_ADD) != 0)
+    {
+        append_mask_name(buf, cap, "rd-add");
+    }
+    if ((mask & VRF_EVENT_AF_RD_DEL) != 0)
+    {
+        append_mask_name(buf, cap, "rd-del");
+    }
+    if ((mask & VRF_EVENT_AF_IMPORT_RT_ADD) != 0)
+    {
+        append_mask_name(buf, cap, "import-rt-add");
+    }
+    if ((mask & VRF_EVENT_AF_IMPORT_RT_DEL) != 0)
+    {
+        append_mask_name(buf, cap, "import-rt-del");
+    }
+    if ((mask & VRF_EVENT_AF_EXPORT_RT_ADD) != 0)
+    {
+        append_mask_name(buf, cap, "export-rt-add");
+    }
+    if ((mask & VRF_EVENT_AF_EXPORT_RT_DEL) != 0)
+    {
+        append_mask_name(buf, cap, "export-rt-del");
+    }
+    if ((mask & VRF_EVENT_SMOOTHSTART) != 0)
+    {
+        append_mask_name(buf, cap, "smoothstart");
+    }
+    if ((mask & VRF_EVENT_SMOOTHEND) != 0)
+    {
+        append_mask_name(buf, cap, "smoothend");
+    }
+
+    uint32_t known = VRF_EVENT_VRF_ADD | VRF_EVENT_VRF_DEL | VRF_EVENT_VRF_STATE | VRF_EVENT_AF_ENABLE |
+                     VRF_EVENT_AF_DISABLE | VRF_EVENT_AF_RD_ADD | VRF_EVENT_AF_RD_DEL | VRF_EVENT_AF_IMPORT_RT_ADD |
+                     VRF_EVENT_AF_IMPORT_RT_DEL | VRF_EVENT_AF_EXPORT_RT_ADD | VRF_EVENT_AF_EXPORT_RT_DEL |
+                     VRF_EVENT_SMOOTHSTART | VRF_EVENT_SMOOTHEND;
+    uint32_t unknown = mask & ~known;
+    if (unknown != 0)
+    {
+        char tmp[16];
+        snprintf(tmp, sizeof(tmp), "0x%08X", unknown);
+        append_mask_name(buf, cap, tmp);
+    }
+    if (buf[0] == '\0')
+    {
+        g_strlcpy(buf, "-", cap);
+    }
+}
+
+static int handle_show_subscribe(dev_ipc_message_t *msg)
+{
+    GString *buf = g_string_new("");
+    if (!buf)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    g_string_append_printf(buf,
+                           "\r\nVRF Subscribers:\r\n"
+                           "%-10s %-10s %-14s %-88s %-8s\r\n"
+                           "---------- ---------- -------------- ------------------------------------------------"
+                           "---------------------------------------- --------\r\n",
+                           "Module", "Module-ID", "AF", "Events", "Replay");
+
+    uint32_t count = 0;
+    GList *subscribers = vrf_worker_subscribers();
+    for (GList *l = subscribers; l; l = l->next)
+    {
+        const vrf_subscriber_t *sub = (const vrf_subscriber_t *)l->data;
+        if (!sub)
+        {
+            continue;
+        }
+
+        char af_str[64];
+        char event_str[256];
+        af_mask_to_str(sub->af_mask, af_str, sizeof(af_str));
+        vrf_event_mask_to_str(sub->event_mask, event_str, sizeof(event_str));
+        g_string_append_printf(buf, "%-10s 0x%08X %-14s %-88s %-8s\r\n", module_name(sub->module_id), sub->module_id,
+                               af_str, event_str, sub->pending_replay ? "pending" : "ready");
+        count++;
+    }
+
+    if (count == 0)
+    {
+        g_string_append(buf, "  (no subscribers)\r\n");
+    }
+    g_string_append_printf(buf, "\r\nTotal %u subscriber(s)\r\n", count);
+    return cli_chunk_stream_start(vrf_worker_show_stream(), vrf_worker_ipc_ctx(), DEV_MODULE_ID_VRF, msg, buf);
+}
+
 static const char *os_state_str(uint8_t state)
 {
     switch (state)
@@ -102,6 +309,7 @@ static const char *os_state_str(uint8_t state)
 static int handle_show(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
     char vrf_name[VRF_NAME_MAX_LEN] = {0};
+    gboolean show_subscribe = FALSE;
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
     {
@@ -113,7 +321,16 @@ static int handle_show(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                 snprintf(vrf_name, sizeof(vrf_name), "%s", s);
             }
         }
+        else if (!CLI_TLV_IS_CTX(&entry) && entry.cfg_id == VRF_CFGID_SHOW_SUBSCRIBE)
+        {
+            show_subscribe = TRUE;
+        }
         cli_tlv_entry_free(&entry);
+    }
+
+    if (show_subscribe)
+    {
+        return handle_show_subscribe(msg);
     }
 
     GString *buf = g_string_new("");

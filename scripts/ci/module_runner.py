@@ -394,6 +394,32 @@ def print_device_versions(rt: TopologyRuntime, top: dict[str, Any]) -> None:
         print(normalized if normalized else "(empty output)")
 
 
+def print_device_subscriptions(rt: TopologyRuntime, top: dict[str, Any]) -> None:
+    """脚本起跑前 dump 每个 netnexus 设备的模块订阅关系，作为 baseline 给后续定位卡死用。"""
+    devices = top.get("devices", {})
+    if not isinstance(devices, dict) or not devices:
+        return
+
+    show_cmd = "show dev subscribe"
+    timeout = max(10, rt.cmd_timeout)
+    printed_any = False
+    for dev in sorted(devices.keys()):
+        # FRR 设备没有这条命令，跳过
+        if _device_kind(rt, dev) == DEVICE_KIND_FRR:
+            continue
+        try:
+            out = rt.exec_cmd(dev, show_cmd, strict=False, timeout=timeout)
+        except Exception as exc:
+            print(f"WARNING: '{show_cmd}' on {dev} failed: {exc}")
+            continue
+        if not printed_any:
+            print("===== STEP: Print module subscriptions (baseline) =====")
+            printed_any = True
+        normalized = normalize_cli_command_output(out, show_cmd)
+        print(f"{show_cmd} on {dev}:")
+        print(normalized if normalized else "(empty output)")
+
+
 def normalize_show_current_config(raw: str) -> str:
     lines: list[str] = []
     for raw_line in raw.replace("\r", "").splitlines():
@@ -497,6 +523,7 @@ def run_check(
             load_global_top(top)
             ensure_cli_sessions_alive(rt, top)
             print_device_versions(rt, top)
+            print_device_subscriptions(rt, top)
 
             before_cfg = collect_show_current_config(rt, top, stage="before")
             run_failed = False
@@ -718,6 +745,8 @@ def run_case(
     keep: bool,
     container_logs_dir: Path,
     core_dumps_dir: Path,
+    logs_dir: Path,
+    modules_dir: Path,
     scripts_override: list[Path] | None = None,
 ) -> list[CheckResult]:
     scripts = sorted(scripts_override) if scripts_override is not None else discover_case_scripts(case_dir)
@@ -757,6 +786,9 @@ def run_case(
     startup_stderr = ""
     startup_out_buf: TimestampedBuffer | None = None
     startup_err_buf: TimestampedBuffer | None = None
+    startup_started_at = 0.0
+    startup_ended_at = 0.0
+    runtime_log_path = make_runtime_log_path(logs_dir, case_dir, modules_dir)
 
     # 让 top_runner.dump_thread_stacks 知道把超时点的 backtrace 落到哪
     stacks_dir = container_logs_dir / make_case_artifact_token(case_dir) / "stacks"
@@ -778,11 +810,27 @@ def run_case(
         startup_err_buf = TimestampedBuffer()
         startup_tee_out = Tee(sys.stdout, startup_out_buf)
         startup_tee_err = Tee(sys.stderr, startup_err_buf)
+        startup_started_at = time.time()
         with contextlib.redirect_stdout(startup_tee_out), contextlib.redirect_stderr(startup_tee_err):
             print("===== STEP: Runtime startup =====")
             rt.start(configure_interfaces=True)
+        startup_ended_at = time.time()
         startup_stdout = startup_out_buf.getvalue()
         startup_stderr = startup_err_buf.getvalue()
+        # 写一份独立的 topology 启动日志：00-<case>-runtime.log
+        # 所有 script 共用同一套容器，这份日志就是"top 执行记录"的单一出处
+        try:
+            write_runtime_log(
+                runtime_log_path,
+                case_dir=case_dir,
+                started_at=startup_started_at,
+                ended_at=startup_ended_at,
+                status="PASS",
+                stdout_text=startup_stdout,
+                stderr_text=startup_stderr,
+            )
+        except Exception as log_exc:
+            print(f"WARNING: failed to write runtime log {runtime_log_path}: {log_exc}", file=sys.stderr)
         startup_cores = collect_core_dumps(core_dumps_dir / make_case_artifact_token(case_dir) / "startup")
         if startup_cores:
             print(f"Collected startup core dumps for case '{case_dir.name}' -> {core_dumps_dir} ({len(startup_cores)} files)")
@@ -793,13 +841,29 @@ def run_case(
             script_token = make_script_log_token(idx, script)
             result = run_check(script, rt, top, previous_result=previous_result)
             if idx == 1:
+                # Script 1 的 log 顶部嵌入 topology 启动记录，附明显分隔；
+                # 同样的内容也独立写到 00-<case>-runtime.log
                 prefix_parts: list[str] = []
+                runtime_log_rel = runtime_log_path.name
+                banner = (
+                    f"========================================================================\n"
+                    f"===== TOPOLOGY STARTUP (shared by all scripts in this case) ============\n"
+                    f"===== full record: logs/{runtime_log_rel} =============================\n"
+                    f"========================================================================"
+                )
                 if startup_stdout:
-                    prefix_parts.append(startup_stdout)
+                    prefix_parts.append(banner + "\n" + startup_stdout)
                 if startup_stderr:
                     prefix_parts.append(f"===== STEP: Runtime startup stderr =====\n{startup_stderr}")
                 if prefix_parts:
-                    result.stdout = "\n\n".join(prefix_parts) + ("\n" if result.stdout else "") + result.stdout
+                    end_banner = (
+                        "========================================================================\n"
+                        "===== END TOPOLOGY STARTUP =============================================\n"
+                        "========================================================================\n"
+                    )
+                    result.stdout = (
+                        "\n\n".join(prefix_parts) + "\n" + end_banner + ("\n" if result.stdout else "") + result.stdout
+                    )
             results.append(result)
             if result.returncode != 0:
                 case_failed = True
@@ -884,19 +948,31 @@ def run_case(
                 startup_log_note = f"\nWARNING: failed to export startup/runtime container logs: {log_exc}"
                 print(startup_log_note.strip(), file=sys.stderr)
         startup_capture_note = ""
-        if startup_out_buf is not None:
-            captured_out = startup_out_buf.getvalue()
-            if captured_out:
-                startup_capture_note += "\n===== Runtime startup stdout =====\n" + captured_out
-        if startup_err_buf is not None:
-            captured_err = startup_err_buf.getvalue()
-            if captured_err:
-                startup_capture_note += "\n===== Runtime startup stderr =====\n" + captured_err
+        captured_out_text = startup_out_buf.getvalue() if startup_out_buf is not None else ""
+        captured_err_text = startup_err_buf.getvalue() if startup_err_buf is not None else ""
+        if captured_out_text:
+            startup_capture_note += "\n===== Runtime startup stdout =====\n" + captured_out_text
+        if captured_err_text:
+            startup_capture_note += "\n===== Runtime startup stderr =====\n" + captured_err_text
         err = (
             f"case startup/runtime failed for {case_dir}: {exc}\n"
             f"{traceback.format_exc()}{startup_capture_note}{startup_log_note}\n"
         )
         print(err, file=sys.stderr)
+        # 即便 startup 失败也落 runtime log，方便定位
+        try:
+            write_runtime_log(
+                runtime_log_path,
+                case_dir=case_dir,
+                started_at=startup_started_at if startup_started_at else time.time(),
+                ended_at=time.time(),
+                status="FAIL",
+                stdout_text=captured_out_text,
+                stderr_text=captured_err_text,
+                error=f"{exc}\n{traceback.format_exc()}",
+            )
+        except Exception as log_exc:
+            print(f"WARNING: failed to write runtime log {runtime_log_path}: {log_exc}", file=sys.stderr)
         executed = {r.script for r in results}
         previous_result = results[-1] if results else None
         for script in scripts:
@@ -937,6 +1013,54 @@ def run_case(
         print(f"===== END CASE: {case_dir} =====")
 
     return results
+
+
+def write_runtime_log(
+    log_path: Path,
+    *,
+    case_dir: Path,
+    started_at: float,
+    ended_at: float,
+    status: str,
+    stdout_text: str,
+    stderr_text: str,
+    error: str | None = None,
+) -> None:
+    """落一份"top 启动记录"日志，per-case 一份，所有 script 共用同一份 topology。
+
+    位置：<logs_dir>/00-<case>-runtime.log
+    内容头部模仿 write_check_log，方便复用 grep / HTML 渲染习惯。
+    """
+    duration = max(0.0, float(ended_at) - float(started_at))
+    lines = [
+        f"case: {case_dir}",
+        f"phase: topology runtime startup (shared by all scripts in this case)",
+        f"status: {status}",
+        f"started_at_utc: {format_timestamp(started_at)}",
+        f"ended_at_utc: {format_timestamp(ended_at)}",
+        f"duration_sec: {duration:.3f}",
+        "",
+        "===== STDOUT =====",
+        stdout_text or "",
+        "",
+        "===== STDERR =====",
+        stderr_text or "",
+    ]
+    if error:
+        lines += ["", "===== ERROR =====", error]
+    lines.append("")
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def make_runtime_log_path(logs_dir: Path, case_dir: Path, modules_dir: Path) -> Path:
+    try:
+        rel_case = case_dir.resolve().relative_to(modules_dir.resolve())
+        case_name = str(rel_case)
+    except ValueError:
+        case_name = case_dir.name
+    case_token = sanitize_name(case_name.replace(os.sep, "-"))
+    return logs_dir / f"00-{case_token}-runtime.log"
 
 
 def write_check_log(log_path: Path, result: CheckResult) -> None:
@@ -1098,7 +1222,7 @@ def render_step_panels(step_views: list[dict[str, object]], *, active_index: int
     return "".join(panels)
 
 
-def write_check_html(path: Path, result: CheckResult, *, index: int) -> None:
+def write_check_html(path: Path, result: CheckResult, *, index: int, runtime_log_relpath: str | None = None) -> None:
     badge_cls = "status-badge-pass" if result.returncode == 0 else "status-badge-fail"
     case_name = html.escape(str(result.case_dir))
     script_name = html.escape(str(result.script))
@@ -1467,6 +1591,7 @@ def write_check_html(path: Path, result: CheckResult, *, index: int) -> None:
       <span><b>Start</b> {html.escape(format_timestamp(result.started_at))}</span>
       <span><b>End</b> {html.escape(format_timestamp(result.ended_at))}</span>
       <span><b>Duration</b> {result.duration_sec:.2f}s</span>
+      {f'<span><b>TopLog</b> <a href="{html.escape(runtime_log_relpath)}" target="_blank" rel="noopener">' f'topology startup</a></span>' if runtime_log_relpath else ''}
     </div>
     <div class=\"toolbar\">
       <div class=\"steps-title\">执行输出 共 <b>{len(step_views)}</b> 个步骤</div>
@@ -1699,6 +1824,20 @@ def write_html_report(
                     )
                 )
 
+            # Runtime log link: 同一 testbed 的所有 script 共用一份 topology 启动记录
+            runtime_link_html = ""
+            if rows and modules_dir is not None:
+                try:
+                    runtime_log_path = make_runtime_log_path(Path(""), rows[0][1].case_dir, modules_dir)
+                    runtime_log_rel = f"logs/{runtime_log_path.name}"
+                    runtime_link_html = (
+                        f'<a class="chip runtime-chip" href="{html.escape(runtime_log_rel)}" '
+                        f'target="_blank" rel="noopener" title="Topology startup log shared by this testbed">'
+                        f'Top 启动日志</a>'
+                    )
+                except Exception:
+                    runtime_link_html = ""
+
             testbed_open = " open" if tb_failed > 0 else ""
             testbed_blocks.append(
                 f"""
@@ -1713,6 +1852,7 @@ def write_html_report(
                 <span class=\"chip\">脚本 {len(rows)}</span>
                 <span class=\"chip pass-chip\">通过 {tb_passed}</span>
                 <span class=\"chip fail-chip\">失败 {tb_failed}</span>
+                {runtime_link_html}
               </div>
             </summary>
             <div class=\"table-scroll\">
@@ -2315,6 +2455,8 @@ def main() -> int:
             keep=args.keep,
             container_logs_dir=report_dir / "containers",
             core_dumps_dir=report_dir / "core-dumps",
+            logs_dir=logs_dir,
+            modules_dir=modules_dir,
             scripts_override=selected_by_case.get(case_dir),
         )
         results.extend(case_results)
@@ -2325,7 +2467,15 @@ def main() -> int:
         log_name = f"{base}.log"
         html_name = f"{base}.html"
         write_check_log(logs_dir / log_name, result)
-        write_check_html(checks_dir / html_name, result, index=idx)
+        # 每个 script HTML 加一条指向 top 启动日志的链接（checks/ → ../logs/）
+        runtime_log_basename = make_runtime_log_path(Path(""), result.case_dir, modules_dir).name
+        runtime_log_relpath = f"../logs/{runtime_log_basename}"
+        write_check_html(
+            checks_dir / html_name,
+            result,
+            index=idx,
+            runtime_log_relpath=runtime_log_relpath,
+        )
         check_html_relpaths.append(f"checks/{html_name}")
 
     run_ended = time.time()

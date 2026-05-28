@@ -229,6 +229,13 @@ int main(int argc, char *argv[])
                                 continue;
                             }
 
+                            /* 先翻状态再做 IPC 清理：dev_ipc_drop_connection 会 join+重启 IO 线程，
+                             * 整路径数百 ms。在这期间 worker 线程若收到 SUBSCRIBE(auto_start=1)，
+                             * 读到 m->phase 还是上一轮的 READY 就会短路返回，错过 on-demand 拉起，
+                             * 导致 CFG 的 dev_ipc_wait_module_ready 永远等不到 READY。 */
+                            m->child_pid = 0;
+                            m->phase = DEV_PHASE_REGISTERED;
+
                             /* 通知订阅者：模块下线 */
                             dev_subscribe_broadcast_event(m, DEV_MODULE_EVENT_DOWN);
 
@@ -239,9 +246,6 @@ int main(int argc, char *argv[])
                             {
                                 dev_ipc_drop_connection(g_dev_local->dev_ipc_ctx, m->module_id);
                             }
-
-                            m->child_pid = 0;
-                            m->phase = DEV_PHASE_REGISTERED;
 
                             if (m->pending_stop)
                             {

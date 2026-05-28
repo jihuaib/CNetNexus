@@ -20,6 +20,7 @@
 #define DEV_CLI_GROUP_ID_REBOOT 7
 #define DEV_CLI_GROUP_ID_SWAP_IMAGE 8
 #define DEV_CLI_GROUP_ID_PROCESS_CMD 9
+#define DEV_CLI_GROUP_ID_SHOW_SUBSCRIPTIONS 10
 
 typedef struct dev_cli_out
 {

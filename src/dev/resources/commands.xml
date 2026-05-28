@@ -48,6 +48,31 @@
             </commands>
         </group>
 
+        <!-- show dev subscribe -->
+        <group group-id="10">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>show</name>
+                    <description>Display system information</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>dev</name>
+                    <description>Device and module management</description>
+                </element>
+                <element id="3" type="keyword">
+                    <name>subscribe</name>
+                    <description>Show DEV-view module subscription relationships</description>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>global</views>
+                </command>
+            </commands>
+        </group>
+
         <!-- sysname <hostname> / no sysname -->
         <group group-id="2">
             <elements>

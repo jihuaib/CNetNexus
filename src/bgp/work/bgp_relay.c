@@ -82,6 +82,11 @@ static void bgp_relay_nh_watch_destroy(gpointer p)
     }
     if (watch->route_list)
     {
+        for (GList *l = watch->route_list; l; l = l->next)
+        {
+            bgp_route_node_t *route = (bgp_route_node_t *)l->data;
+            bgp_route_node_borrow_unref(route);
+        }
         g_list_free(watch->route_list);
         watch->route_list = NULL;
     }
@@ -506,10 +511,10 @@ static void bgp_relay_detach_route_from_watch(bgp_route_node_t *route, const bgp
         return;
     }
 
-    GList *prev = watch->route_list;
-    watch->route_list = g_list_remove(watch->route_list, route);
-    if (prev != watch->route_list)
+    GList *link = g_list_find(watch->route_list, route);
+    if (link)
     {
+        watch->route_list = g_list_delete_link(watch->route_list, link);
         /* 借用计数与 add_route 配对：watch 不再持有该指针 */
         bgp_route_node_borrow_unref(route);
     }

@@ -377,6 +377,10 @@ extern dev_ipc_context_t *g_dev_ipc_context;
 #define DEV_IPC_MSG_TYPE_DEV_SET_LOG_LEVEL DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_DEV, 0x0008)
 /** 模块阶段响应 */
 #define DEV_IPC_MSG_TYPE_DEV_MODULE_RESP DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_DEV, 0x000F)
+/** 查询目标模块的本地 sub_mgr 订阅表（由 IPC 库层自动处理，无需应用层介入） */
+#define DEV_IPC_MSG_TYPE_DEV_QUERY_SUBS DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_DEV, 0x0009)
+/** QUERY_SUBS 的响应（payload 为 NUL 结尾的文本 dump） */
+#define DEV_IPC_MSG_TYPE_DEV_QUERY_SUBS_RESP DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_DEV, 0x000A)
 
 /* ---------------- 订阅 / 按需启动相关 ---------------- */
 
@@ -685,6 +689,15 @@ int dev_ipc_wait_module_ready(dev_ipc_context_t *ctx, uint32_t target_id, uint32
  * @return 全部连上返回 ERRCODE_SUCCESS；超时返回 ERRCODE_FAIL
  */
 int dev_ipc_wait_all_subscribed_connected(dev_ipc_context_t *ctx, uint32_t timeout_ms);
+
+/**
+ * @brief 把本模块 sub_mgr 内的订阅条目格式化成 NUL 结尾文本（每行一个 subscription）
+ *        供 show dev subscribe 远程拉取使用，调用方 g_free 返回的 buf。
+ * @param ctx     本模块 IPC 上下文
+ * @param out_len 返回 buf 长度（含 NUL）；NULL 不写
+ * @return        NUL 结尾的字符串；ctx 无效返回 NULL
+ */
+char *dev_ipc_format_local_subs(dev_ipc_context_t *ctx, uint32_t *out_len);
 
 // ============================================================================
 // DEV IPC 内部 API（供 DEV IPC 子模块实现使用）

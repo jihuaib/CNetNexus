@@ -30,6 +30,9 @@ typedef struct ipc_subscription
     dev_module_event_fn callback;
     void *user;
     uint32_t last_epoch; /**< 上次收到 READY 时的 epoch，0=尚未收到 */
+    int auto_start;      /**< 初次 subscribe 时的 auto_start 标志，wait_all 中重订阅时复用 */
+    char last_host[64];  /**< 上次见过的目标 host（订阅响应或 MODULE_EVENT），用于强制重连 */
+    uint16_t last_port;  /**< 上次见过的目标 port */
 } ipc_subscription_t;
 
 struct dev_ipc_subscribe_mgr
@@ -104,6 +107,12 @@ void dev_ipc_dispatch_module_event(dev_ipc_context_t *ctx, const dev_module_even
         if (event == DEV_MODULE_EVENT_READY)
         {
             sub->last_epoch = epoch;
+            /* 缓存最新 host/port：之后 wait_all 卡住时可拿来强制重连 */
+            if (pl->host[0] != '\0' && port != 0)
+            {
+                snprintf(sub->last_host, sizeof(sub->last_host), "%s", pl->host);
+                sub->last_port = port;
+            }
         }
     }
     pthread_mutex_unlock(&ctx->sub_mgr->lock);
@@ -206,7 +215,8 @@ int dev_ipc_subscribe_module(dev_ipc_context_t *ctx, uint32_t target_id, int aut
         else
         {
             /* DEV 接受了订阅：现在才把条目写进本地 sub_mgr。
-             * 之后才能合成事件 / dispatch（dispatch 要靠 sub_mgr 找回调）。 */
+             * 之后才能合成事件 / dispatch（dispatch 要靠 sub_mgr 找回调）。
+             * 同时缓存 auto_start 和 host/port，供 wait_all 卡住时强制重连。 */
             pthread_mutex_lock(&ctx->sub_mgr->lock);
             ipc_subscription_t *sub = sub_mgr_find_locked(ctx->sub_mgr, target_id);
             if (!sub)
@@ -217,6 +227,12 @@ int dev_ipc_subscribe_module(dev_ipc_context_t *ctx, uint32_t target_id, int aut
             }
             sub->callback = cb;
             sub->user = user;
+            sub->auto_start = auto_start ? 1 : 0;
+            if (r->host[0] != '\0' && port != 0)
+            {
+                snprintf(sub->last_host, sizeof(sub->last_host), "%s", r->host);
+                sub->last_port = port;
+            }
             pthread_mutex_unlock(&ctx->sub_mgr->lock);
 
             if (state == DEV_MODULE_STATE_READY)
@@ -245,6 +261,53 @@ int dev_ipc_subscribe_module(dev_ipc_context_t *ctx, uint32_t target_id, int aut
     dev_ipc_message_free(resp);
 
     return ret;
+}
+
+char *dev_ipc_format_local_subs(dev_ipc_context_t *ctx, uint32_t *out_len)
+{
+    if (!ctx || !ctx->sub_mgr)
+    {
+        if (out_len)
+        {
+            *out_len = 0;
+        }
+        return NULL;
+    }
+
+    GString *buf = g_string_new("");
+    pthread_mutex_lock(&ctx->sub_mgr->lock);
+    GHashTableIter iter;
+    gpointer key = NULL;
+    gpointer val = NULL;
+    g_hash_table_iter_init(&iter, ctx->sub_mgr->subs);
+    int count = 0;
+    while (g_hash_table_iter_next(&iter, &key, &val))
+    {
+        ipc_subscription_t *sub = (ipc_subscription_t *)val;
+        if (!sub)
+        {
+            continue;
+        }
+        int connected = dev_ipc_is_connected(ctx, sub->target_module_id) ? 1 : 0;
+        g_string_append_printf(buf, "  target=0x%08X auto_start=%d last_epoch=%u last_host=%s last_port=%u conn=%s\n",
+                               sub->target_module_id, sub->auto_start, sub->last_epoch,
+                               sub->last_host[0] ? sub->last_host : "-", sub->last_port, connected ? "up" : "down");
+        count++;
+    }
+    pthread_mutex_unlock(&ctx->sub_mgr->lock);
+
+    if (count == 0)
+    {
+        g_string_append(buf, "  (no subscriptions)\n");
+    }
+
+    uint32_t len = (uint32_t)buf->len + 1; /* 含 NUL */
+    char *result = g_string_free(buf, FALSE);
+    if (out_len)
+    {
+        *out_len = len;
+    }
+    return result;
 }
 
 int dev_ipc_unsubscribe_module(dev_ipc_context_t *ctx, uint32_t target_id)
@@ -444,6 +507,8 @@ int dev_ipc_wait_all_subscribed_connected(dev_ipc_context_t *ctx, uint32_t timeo
      * timeout_ms != 0 → 老语义保留：超时返回 FAIL，由调用方决定怎么办。 */
     const uint32_t poll_step_us = 100 * 1000; /* 100ms */
     const int log_every_iters = 30;           /* ~3s 一条 progress 日志 */
+    const int resubscribe_every_iters = 100;  /* ~10s 强制一次 re-subscribe + 重连，
+                                               *   恢复 stuck-SYN / 丢失 MODULE_EVENT 等异常 */
     int64_t deadline_us = (timeout_ms == 0) ? 0 : (int64_t)g_get_monotonic_time() + (int64_t)timeout_ms * 1000;
     int iter_count = 0;
 
@@ -469,6 +534,7 @@ int dev_ipc_wait_all_subscribed_connected(dev_ipc_context_t *ctx, uint32_t timeo
         guint missing = 0;
         GString *missing_list = NULL;
         gboolean want_log = (iter_count > 0) && (iter_count % log_every_iters == 0);
+        GArray *stuck = g_array_new(FALSE, FALSE, sizeof(uint32_t));
         for (guint i = 0; i < targets->len; i++)
         {
             uint32_t tid = g_array_index(targets, uint32_t, i);
@@ -487,6 +553,7 @@ int dev_ipc_wait_all_subscribed_connected(dev_ipc_context_t *ctx, uint32_t timeo
                     }
                     g_string_append_printf(missing_list, "0x%08X", tid);
                 }
+                g_array_append_val(stuck, tid);
             }
         }
         g_array_free(targets, TRUE);
@@ -497,6 +564,7 @@ int dev_ipc_wait_all_subscribed_connected(dev_ipc_context_t *ctx, uint32_t timeo
             {
                 g_string_free(missing_list, TRUE);
             }
+            g_array_free(stuck, TRUE);
             return ERRCODE_SUCCESS;
         }
 
@@ -509,6 +577,41 @@ int dev_ipc_wait_all_subscribed_connected(dev_ipc_context_t *ctx, uint32_t timeo
         {
             g_string_free(missing_list, TRUE);
         }
+
+        /* 周期性强制恢复：tear down 残连 + 重发 SUBSCRIBE，向 DEV 索取最新 state/port/epoch。
+         * 处理几类不靠 IO 线程自愈的卡死：
+         *   a. SYN 卡在 EINPROGRESS（kernel 没 RST），check_pending_connects 兜底之后还是连到同一陈旧 port
+         *   b. 目标进程在我们订阅后被重启，新 epoch+新 port，但 DEV 推 MODULE_EVENT 那一刻投递失败
+         *   c. 首次 SUBSCRIBE 时目标 NOT_RUNNING，后续 READY 广播因为 IPC 抖动丢了 */
+        if (iter_count > 0 && iter_count % resubscribe_every_iters == 0 && stuck->len > 0)
+        {
+            for (guint i = 0; i < stuck->len; i++)
+            {
+                uint32_t tid = g_array_index(stuck, uint32_t, i);
+                dev_module_event_fn cb = NULL;
+                void *user_ptr = NULL;
+                int auto_start_cached = 0;
+                pthread_mutex_lock(&ctx->sub_mgr->lock);
+                ipc_subscription_t *sub = sub_mgr_find_locked(ctx->sub_mgr, tid);
+                if (sub)
+                {
+                    cb = sub->callback;
+                    user_ptr = sub->user;
+                    auto_start_cached = sub->auto_start;
+                }
+                pthread_mutex_unlock(&ctx->sub_mgr->lock);
+                if (!sub)
+                {
+                    continue;
+                }
+                LOG_WARN("<%s> wait_all_subscribed_connected: forcing resubscribe for 0x%08X", ctx->name, tid);
+                /* 拆掉残连（idempotent；若没有 conn 则 no-op） */
+                dev_ipc_drop_connection(ctx, tid);
+                /* 重发 SUBSCRIBE：里头会按响应里的最新 state 再触发 dispatch / connect */
+                (void)dev_ipc_subscribe_module(ctx, tid, auto_start_cached, cb, user_ptr);
+            }
+        }
+        g_array_free(stuck, TRUE);
 
         if (timeout_ms != 0 && (int64_t)g_get_monotonic_time() >= deadline_us)
         {

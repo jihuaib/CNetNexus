@@ -59,6 +59,12 @@ Displays detailed information for a specific interface, including name, ifindex,
 - **Usage**: `show if GE-1` / `show if GE-2` / `show if GE-3` / `show if GE-4`
 - **View**: `global` (available in all views)
 
+### 3.3 `show if subscribe`
+Displays IF event subscribers, including subscriber module, interface type mask, event mask, and replay state.
+
+- **Usage**: `show if subscribe`
+- **View**: `global` (available in all views)
+
 ## 4. View Contexts
 
 | View Name | Prompt Template | Description |

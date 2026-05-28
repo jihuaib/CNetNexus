@@ -321,6 +321,152 @@ static int handle_show_module(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     return cli_chunk_stream_start(&g_dev_local->show_stream, ctx, DEV_MODULE_ID_DEV, msg, show_ctx.resp);
 }
 
+/* ----------------------------------------------------------------------------
+ * show dev subscriptions —— 打印 DEV 视角的模块订阅关系，给 CI 定位卡死用
+ * 输出格式：每个 module 列名 + phase + 订阅者列表（其它模块对它的 SUBSCRIBE）
+ * -------------------------------------------------------------------------- */
+static gboolean show_subscriptions_callback(gpointer key, gpointer value, gpointer data)
+{
+    (void)key;
+    show_module_ctx_t *ctx = (show_module_ctx_t *)data;
+    dev_module_t *module = (dev_module_t *)value;
+
+    const char *phase;
+    if (module->on_demand && module->phase == DEV_PHASE_REGISTERED && module->child_pid <= 0)
+    {
+        phase = "ON-DEMAND";
+    }
+    else
+    {
+        phase = dev_phase_to_string(module->phase);
+    }
+
+    g_string_append_printf(ctx->resp, "  %-14s id=0x%08X phase=%-10s epoch=%u port=%u subscribers=[", module->name,
+                           module->module_id, phase, module->epoch, module->port);
+    int first = 1;
+    for (GList *l = module->subscribers; l != NULL; l = l->next)
+    {
+        uint32_t sub_id = GPOINTER_TO_UINT(l->data);
+        dev_module_t *sub_mod = dev_module_find(sub_id);
+        if (!first)
+        {
+            g_string_append_c(ctx->resp, ' ');
+        }
+        if (sub_mod)
+        {
+            g_string_append_printf(ctx->resp, "%s(0x%08X)", sub_mod->name, sub_id);
+        }
+        else
+        {
+            g_string_append_printf(ctx->resp, "0x%08X", sub_id);
+        }
+        first = 0;
+    }
+    g_string_append(ctx->resp, "]\r\n");
+    return FALSE;
+}
+
+/* 收集需要 RPC 查询的模块 id 列表（除自己之外 IPC 已连上的） */
+typedef struct collect_connected_ctx
+{
+    dev_ipc_context_t *dev_ipc_ctx;
+    GArray *ids;
+} collect_connected_ctx_t;
+
+static gboolean collect_connected_cb(gpointer key, gpointer value, gpointer data)
+{
+    (void)key;
+    collect_connected_ctx_t *cc = (collect_connected_ctx_t *)data;
+    dev_module_t *module = (dev_module_t *)value;
+    if (!module || module->module_id == DEV_MODULE_ID_DEV)
+    {
+        return FALSE;
+    }
+    if (dev_ipc_is_connected(cc->dev_ipc_ctx, module->module_id))
+    {
+        g_array_append_val(cc->ids, module->module_id);
+    }
+    return FALSE;
+}
+
+static int handle_show_subscriptions(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+{
+    show_module_ctx_t show_ctx;
+    memset(&show_ctx, 0, sizeof(show_ctx));
+    show_ctx.resp = g_string_new("");
+    if (!show_ctx.resp)
+    {
+        dev_send_cli_response(ctx, msg, "Dev Error: out of memory.\r\n");
+        return ERRCODE_FAIL;
+    }
+    show_ctx.dev_ipc_ctx = ctx;
+
+    /* Section 1: DEV-side view —— 每个模块的"被谁订阅"列表 */
+    g_string_append(show_ctx.resp, "\r\n========== DEV view: subscribers per module ==========\r\n");
+    dev_module_foreach(show_subscriptions_callback, &show_ctx);
+
+    /* Section 2: 模块本地视图 —— 通过 RPC 询问每个已连接的模块"你订阅了谁"
+     * 由 IPC 库层（ipc_context.c handle_frame）自动响应，无需各业务模块写 handler */
+    g_string_append(show_ctx.resp, "\r\n========== Module local view: subscriptions per module ==========\r\n");
+    /* DEV 自己也带上一份本地视图，便于看清依赖闭环 */
+    {
+        char *local_dump = dev_ipc_format_local_subs(ctx, NULL);
+        g_string_append_printf(show_ctx.resp, "[dev local sub_mgr]\r\n%s",
+                               local_dump ? local_dump : "  (unavailable)\r\n");
+        g_free(local_dump);
+    }
+
+    collect_connected_ctx_t cc = {.dev_ipc_ctx = ctx, .ids = g_array_new(FALSE, FALSE, sizeof(uint32_t))};
+    dev_module_foreach(collect_connected_cb, &cc);
+    for (guint i = 0; i < cc.ids->len; i++)
+    {
+        uint32_t tid = g_array_index(cc.ids, uint32_t, i);
+        dev_module_t *m = dev_module_find(tid);
+        const char *mname = m ? m->name : "?";
+        g_string_append_printf(show_ctx.resp, "[%s(0x%08X) local sub_mgr]\r\n", mname, tid);
+
+        dev_ipc_message_t *req =
+            dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_QUERY_SUBS, ctx->module_id, tid, 0, NULL, 0, NULL);
+        if (!req)
+        {
+            g_string_append(show_ctx.resp, "  (oom)\r\n");
+            continue;
+        }
+        dev_ipc_message_t *resp = dev_ipc_query(ctx, tid, req, 1500);
+        dev_ipc_message_free(req);
+        if (!resp)
+        {
+            g_string_append(show_ctx.resp, "  (no response within 1.5s)\r\n");
+            continue;
+        }
+        if (resp->payload && resp->payload_len > 0)
+        {
+            const char *text = (const char *)resp->payload;
+            /* 文本里换行用 \n；CLI 输出习惯 \r\n */
+            for (const char *p = text; *p; p++)
+            {
+                if (*p == '\n')
+                {
+                    g_string_append(show_ctx.resp, "\r\n");
+                }
+                else if (*p != '\r')
+                {
+                    g_string_append_c(show_ctx.resp, *p);
+                }
+            }
+        }
+        else
+        {
+            g_string_append(show_ctx.resp, "  (empty response)\r\n");
+        }
+        dev_ipc_message_free(resp);
+    }
+    g_array_free(cc.ids, TRUE);
+
+    g_string_append(show_ctx.resp, "\r\n");
+    return cli_chunk_stream_start(&g_dev_local->show_stream, ctx, DEV_MODULE_ID_DEV, msg, show_ctx.resp);
+}
+
 #ifndef NN_AUTHOR
 #    define NN_AUTHOR "jihuaibin"
 #endif
@@ -1838,6 +1984,9 @@ int dev_cli_handle_message(dev_ipc_message_t *msg)
             break;
         case DEV_CLI_GROUP_ID_PROCESS_CMD:
             result = handle_process_cmd(ctx, msg, &parser);
+            break;
+        case DEV_CLI_GROUP_ID_SHOW_SUBSCRIPTIONS:
+            result = handle_show_subscriptions(ctx, msg);
             break;
         default:
             LOG_WARN("Unknown group_id: %u", parser.group_id);
