@@ -55,6 +55,23 @@ static void handle_dev_pre_exit(dev_ipc_message_t *msg)
 {
     dev_ipc_context_t *ctx = dev_get_ipc_ctx();
     uint32_t module_id = msg->src_module_id;
+
+    /* `reboot software` 路径下 cleanup_all_modules 已经在串行：SIGTERM、waitpid、
+     * g_free(module)。此时 PRE_EXIT handler 若再去改 m->child_pid / 调 drop_connection
+     * 会与主线程的释放路径 race（worker 触碰 g_free'd m → UAF；child_pid 被清零导致
+     * cleanup_all_modules Step 2 跳过 waitpid → 子进程后续退出无人 reap）。
+     * 这里只回 ACK，让模块继续 exit；后续清理交给 cleanup_all_modules + 框架的
+     * IO 线程"Connection lost"路径。 */
+    if (dev_module_is_cleanup_in_progress())
+    {
+        LOG_INFO("PRE_EXIT received from id=0x%08X during cleanup_all_modules; ACK only", module_id);
+        dev_ipc_message_t *resp = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_PRE_EXIT_RESP, DEV_MODULE_ID_DEV,
+                                                         module_id, msg->request_id, NULL, 0, NULL);
+        dev_ipc_send_response(ctx, resp);
+        dev_ipc_message_free(resp);
+        return;
+    }
+
     dev_module_t *m = dev_module_find(module_id);
 
     if (m)
