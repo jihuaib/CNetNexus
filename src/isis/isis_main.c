@@ -386,8 +386,15 @@ void isis_module_cleanup(void)
      *    清掉 RIB 中的 ISIS 条目。原顺序在此之前就 dev_ipc_destroy 了,导致撤销静默失败。 */
     isis_worker_shutdown();
 
-    /* 3) 关 IPC,join IO/worker 线程,断所有连接。 */
+    /* 3) 向 DEV 发 PRE_EXIT 通知，等 DEV 同步完成 phase/broadcast/drop 后再 ACK。
+     *    必须在 dev_ipc_destroy 之前；超时/失败不阻塞退出，SIGCHLD 路径仍会兜底清理。 */
     dev_ipc_context_t *ctx = g_isis_local->dev_ipc_ctx;
+    if (ctx)
+    {
+        dev_ipc_pre_exit_notify(ctx, 3000);
+    }
+
+    /* 4) 关 IPC,join IO/worker 线程,断所有连接。 */
     g_isis_local->dev_ipc_ctx = NULL;
     if (ctx)
     {

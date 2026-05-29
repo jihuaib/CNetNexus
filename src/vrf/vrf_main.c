@@ -234,9 +234,16 @@ void vrf_module_cleanup(void)
         return;
     }
 
+    /* 向 DEV 发 PRE_EXIT 通知，等 DEV 同步完成 phase/broadcast/drop 后再 ACK。
+     * 必须在 dev_ipc_destroy 之前；超时/失败不阻塞退出，SIGCHLD 路径仍会兜底清理。 */
+    dev_ipc_context_t *ctx = g_vrf_local->dev_ipc_ctx;
+    if (ctx)
+    {
+        dev_ipc_pre_exit_notify(ctx, 3000);
+    }
+
     /* 先 dev_ipc_destroy 停掉 IPC 派发线程，再 vrf_worker_shutdown，避免 IPC 派发到
      * vrf_worker_post_* 时访问已置 NULL 的 g_vrf_work_local → SEGV */
-    dev_ipc_context_t *ctx = g_vrf_local->dev_ipc_ctx;
     g_vrf_local->dev_ipc_ctx = NULL;
     if (ctx)
     {

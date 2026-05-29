@@ -33,7 +33,10 @@ typedef struct module
     uint8_t on_demand; /**< 1=按需启动（首次被订阅且 auto_start=1 时由 DEV fork） */
     uint8_t pending_restart; /**< 1=用户/DEV 主动请求重启；SIGCHLD 收到后自动 fork 同样进程（无视 on_demand） */
     uint8_t pending_stop; /**< 1=用户主动 stop；SIGCHLD 收到后保持 REGISTERED，不告警、不重启 */
-    char exe_name[64];    /**< 可执行文件名（按需启动时使用） */
+    uint8_t pre_cleaned; /**< 1=模块在 exit 前已通过 PRE_EXIT RPC 让 DEV 同步做完清理；SIGCHLD 据此跳过重复清理 */
+    pid_t pre_cleaned_pid; /**< PRE_EXIT 时把 child_pid 转存到这里，留给 SIGCHLD 的 find_by_pid 兜底；child_pid
+                              同时清零以便订阅判断 */
+    char exe_name[64];     /**< 可执行文件名（按需启动时使用） */
     char revive_table[64]; /**< on-demand 模块的"配置存在标识表"，DEV 在 boot 时扫到非空即自动 fork */
     uint32_t epoch;        /**< 每次启动 +1，订阅方据此判断对端是否重启过 */
     GList *subscribers; /**< 订阅者列表 GList<GUINT_TO_POINTER(subscriber_module_id)>，本模块 READY/DOWN 时推送给他们 */

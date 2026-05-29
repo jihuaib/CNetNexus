@@ -516,6 +516,14 @@ void cli_module_cleanup(void)
 
     /* server thread 已退出，可以安全销毁 IPC（IPC 线程不会再触发依赖 CLI 状态的回调）。 */
     dev_ipc_context_t *ctx = g_cli_local->dev_ipc_ctx;
+
+    /* 向 DEV 发 PRE_EXIT 通知，等 DEV 同步完成 phase/broadcast/drop 后再 ACK。
+     * 必须在 dev_ipc_destroy 之前；超时/失败不阻塞退出，SIGCHLD 路径仍会兜底清理。 */
+    if (ctx)
+    {
+        dev_ipc_pre_exit_notify(ctx, 3000);
+    }
+
     g_cli_local->dev_ipc_ctx = NULL;
     if (ctx)
     {

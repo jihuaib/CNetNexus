@@ -180,7 +180,9 @@ static gboolean find_module_by_pid_cb(gpointer key, gpointer value, gpointer dat
     dev_module_t *module = (dev_module_t *)value;
     find_by_pid_ctx_t *ctx = (find_by_pid_ctx_t *)data;
 
-    if (module->child_pid == ctx->pid)
+    /* PRE_EXIT 路径会把 child_pid 清零、原 pid 转存到 pre_cleaned_pid，
+     * 这里两个字段都要匹配，否则 SIGCHLD reap 时找不到模块。 */
+    if (module->child_pid == ctx->pid || module->pre_cleaned_pid == ctx->pid)
     {
         ctx->found = module;
         return TRUE; /* 停止遍历 */

@@ -220,7 +220,8 @@ After run, report files are generated under `--report-dir`:
 
 - `report.html`: human-readable execution report
 - `summary.json`: structured result summary
-- `logs/*.log`: full stdout/stderr per module
+- `logs/<module>/<top>/00-runtime.log`: shared topology startup log for that case
+- `logs/<module>/<top>/<NN-script>.log`: full stdout/stderr per check script
 - `containers/<case>/<container>/docker.log`: container stdout/stderr
 - `containers/<case>/<container>/scripts/<NN-script>/modules/*.log`: per-script module logs copied after each script run, then `/opt/netnexus/log/*.log` is truncated in-place before the next script
 - `containers/<case>/<container>/modules/*.log`: fallback raw module logs when the case exits before per-script export/reset completes

@@ -632,6 +632,13 @@ void route_module_cleanup(void)
     /* 先停止 route worker，保留 IPC ctx 供 route_calc_cleanup 撤销 FIB 路由。 */
     route_worker_shutdown();
 
+    /* 向 DEV 发 PRE_EXIT 通知，等 DEV 同步完成 phase/broadcast/drop 后再 ACK。
+     * 必须在 dev_ipc_destroy 之前；超时/失败不阻塞退出，SIGCHLD 路径仍会兜底清理。 */
+    if (ctx)
+    {
+        dev_ipc_pre_exit_notify(ctx, 3000);
+    }
+
     if (g_route_local)
     {
         g_route_local->dev_ipc_ctx = NULL;

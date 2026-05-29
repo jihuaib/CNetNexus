@@ -381,6 +381,12 @@ extern dev_ipc_context_t *g_dev_ipc_context;
 #define DEV_IPC_MSG_TYPE_DEV_QUERY_SUBS DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_DEV, 0x0009)
 /** QUERY_SUBS 的响应（payload 为 NUL 结尾的文本 dump） */
 #define DEV_IPC_MSG_TYPE_DEV_QUERY_SUBS_RESP DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_DEV, 0x000A)
+/** 模块即将退出（自报）：DEV 同步完成 phase/broadcast/drop_connection 后再 ACK，
+ *  调用方收到 ACK 才真正 exit()，避免 SIGCHLD/SUBSCRIBE 抢锁 race。
+ *  payload 无（src_module_id 即为退出模块） */
+#define DEV_IPC_MSG_TYPE_DEV_PRE_EXIT DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_DEV, 0x000B)
+/** PRE_EXIT 的响应（payload 无） */
+#define DEV_IPC_MSG_TYPE_DEV_PRE_EXIT_RESP DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_DEV, 0x000C)
 
 /* ---------------- 订阅 / 按需启动相关 ---------------- */
 
@@ -644,6 +650,24 @@ int dev_ipc_unsubscribe_module(dev_ipc_context_t *ctx, uint32_t target_id);
  * @return 成功返回 ERRCODE_SUCCESS
  */
 int dev_ipc_notify_ready(dev_ipc_context_t *ctx);
+
+/**
+ * @brief 模块退出前通知 DEV 同步完成清理，收到 ACK 后再 exit()
+ *
+ * 流程：本模块 → DEV 发 DEV_IPC_MSG_TYPE_DEV_PRE_EXIT；DEV worker 同步完成
+ *   phase=REGISTERED / broadcast DOWN / dev_ipc_drop_connection / m->pre_cleaned=1，
+ *   然后回 ACK；本模块收到 ACK 后 destroy IPC 并 exit()。SIGCHLD 处理时见 pre_cleaned=1
+ *   就跳过重复清理。
+ *
+ * 调用时机：在 dev_ipc_destroy() 之前，业务清理完毕（worker 已 shutdown，
+ *   不再处理新业务消息）即可。
+ *
+ * @param ctx        本模块 IPC 上下文
+ * @param timeout_ms ACK 等待超时（ms），建议 3000
+ * @return 成功返回 ERRCODE_SUCCESS；超时/参数错返回 ERRCODE_FAIL
+ *         （失败也应继续 exit；SIGCHLD 路径会兜底，仍能正确清理）
+ */
+int dev_ipc_pre_exit_notify(dev_ipc_context_t *ctx, uint32_t timeout_ms);
 
 /**
  * @brief 阻塞等待已发起的 IPC 连接进入 CONNECTED 状态（轮询 is_connected）

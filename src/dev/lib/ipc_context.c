@@ -167,6 +167,51 @@ static void notify_connection_down(dev_ipc_context_t *ctx, dev_ipc_connection_t 
     }
 }
 
+/* IO 线程关闭并回收连接。
+ * 主动方：close + backoff_reconnect，保留 slot 让 attempt_reconnects 复用。
+ * 被动方：从 ctx->connections[] 摘除并 destroy，避免 slot 永久泄漏。
+ * lock_held=1 表示调用者已持有 ctx->comutex；为 0 时本函数自行加解锁。
+ * 返回后被动方 conn 指针失效，调用者不得再访问。
+ * 对被动方返回 1（slot 已摘除），调用者若在数组迭代中需 i-- 重检当前位。 */
+static int io_close_connection(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn, int lock_held)
+{
+    if (!conn)
+    {
+        return 0;
+    }
+
+    if (conn->is_initiator)
+    {
+        dev_ipc_connection_close(conn);
+        dev_ipc_connection_backoff_reconnect(conn);
+        return 0;
+    }
+
+    if (!lock_held)
+    {
+        pthread_mutex_lock(&ctx->comutex);
+    }
+
+    for (int i = 0; i < ctx->num_connections; i++)
+    {
+        if (ctx->connections[i] == conn)
+        {
+            ctx->connections[i] = ctx->connections[ctx->num_connections - 1];
+            ctx->connections[ctx->num_connections - 1] = NULL;
+            ctx->num_connections--;
+            break;
+        }
+    }
+
+    if (!lock_held)
+    {
+        pthread_mutex_unlock(&ctx->comutex);
+    }
+
+    dev_ipc_connection_destroy(conn);
+    return 1;
+}
+
 // ============================================================================
 // 连接状态序列化（供 QUERY_IPC_CONNS 响应和自查询使用）
 // ============================================================================
@@ -599,7 +644,11 @@ static void process_received_data(dev_ipc_context_t *ctx, dev_ipc_connection_t *
             /* 无效帧，断开连接 */
             LOG_WARN("<%s> Received invalid frame, disconnecting", ctx->name);
             notify_connection_down(ctx, conn);
-            dev_ipc_connection_close(conn);
+            if (conn->fd >= 0)
+            {
+                epoll_ctl(ctx->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
+            }
+            io_close_connection(ctx, conn, 0);
             return;
         }
 
@@ -659,10 +708,11 @@ static void check_heartbeats(dev_ipc_context_t *ctx)
             }
             notify_connection_down(ctx, conn);
             epoll_ctl(ctx->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
-            dev_ipc_connection_close(conn);
-            if (conn->is_initiator)
+            if (io_close_connection(ctx, conn, 1))
             {
-                dev_ipc_connection_backoff_reconnect(conn);
+                /* 被动连接已从数组摘除，swap-with-last 把 last 移到当前位 i，
+                 * 退一格让下次 i++ 重新检查该位 */
+                i--;
             }
         }
     }
@@ -774,8 +824,10 @@ static void accept_new_connection(dev_ipc_context_t *ctx)
     pthread_mutex_lock(&ctx->comutex);
     if (ctx->num_connections >= DEV_IPC_MAX_CONNECTIONS)
     {
+        int cur = ctx->num_connections;
         pthread_mutex_unlock(&ctx->comutex);
         close(fd);
+        LOG_WARN("<%s> Reject accept: connections table full (%d/%d)", ctx->name, cur, DEV_IPC_MAX_CONNECTIONS);
         return;
     }
 
@@ -930,11 +982,7 @@ static void *dev_ipc_io_thread(void *arg)
                         }
                         notify_connection_down(ctx, conn);
                         epoll_ctl(ctx->epoll_fd, EPOLL_CTL_DEL, fd, NULL);
-                        dev_ipc_connection_close(conn);
-                        if (conn->is_initiator)
-                        {
-                            dev_ipc_connection_backoff_reconnect(conn);
-                        }
+                        io_close_connection(ctx, conn, 0);
                     }
                     continue;
                 }
@@ -948,11 +996,7 @@ static void *dev_ipc_io_thread(void *arg)
             {
                 epoll_ctl(ctx->epoll_fd, EPOLL_CTL_DEL, fd, NULL);
                 notify_connection_down(ctx, conn);
-                dev_ipc_connection_close(conn);
-                if (conn->is_initiator)
-                {
-                    dev_ipc_connection_backoff_reconnect(conn);
-                }
+                io_close_connection(ctx, conn, 0);
             }
         }
 

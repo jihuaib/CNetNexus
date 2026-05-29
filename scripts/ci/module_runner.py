@@ -166,6 +166,28 @@ def make_case_artifact_token(case_dir: Path) -> str:
         return sanitize_name(str(case_abs))
 
 
+def make_case_artifact_relpath(case_dir: Path, modules_dir: Path) -> Path:
+    case_abs = case_dir.resolve()
+    candidate_roots: list[Path] = [(CI_DIR / "modules").resolve()]
+    modules_root = modules_dir.resolve()
+    if modules_root not in candidate_roots:
+        candidate_roots.append(modules_root)
+    parts: tuple[str, ...] | None = None
+    for root in candidate_roots:
+        try:
+            rel = case_abs.relative_to(root)
+        except ValueError:
+            continue
+        if rel.parts:
+            parts = rel.parts
+            break
+    if parts is None:
+        parts = (case_abs.parent.name or "external", case_abs.name)
+    if not parts:
+        parts = ("root",)
+    return Path(*(sanitize_name(part) for part in parts))
+
+
 def make_script_log_token(index: int, script: Path) -> str:
     return f"{index:02d}-{sanitize_name(script.stem)}"
 
@@ -817,7 +839,7 @@ def run_case(
         startup_ended_at = time.time()
         startup_stdout = startup_out_buf.getvalue()
         startup_stderr = startup_err_buf.getvalue()
-        # 写一份独立的 topology 启动日志：00-<case>-runtime.log
+        # 写一份独立的 topology 启动日志：logs/<module>/<top>/00-runtime.log
         # 所有 script 共用同一套容器，这份日志就是"top 执行记录"的单一出处
         try:
             write_runtime_log(
@@ -842,9 +864,9 @@ def run_case(
             result = run_check(script, rt, top, previous_result=previous_result)
             if idx == 1:
                 # Script 1 的 log 顶部嵌入 topology 启动记录，附明显分隔；
-                # 同样的内容也独立写到 00-<case>-runtime.log
+                # 同样的内容也独立写到 logs/<module>/<top>/00-runtime.log
                 prefix_parts: list[str] = []
-                runtime_log_rel = runtime_log_path.name
+                runtime_log_rel = os.path.relpath(runtime_log_path, logs_dir).replace(os.sep, "/")
                 banner = (
                     f"========================================================================\n"
                     f"===== TOPOLOGY STARTUP (shared by all scripts in this case) ============\n"
@@ -1028,7 +1050,7 @@ def write_runtime_log(
 ) -> None:
     """落一份"top 启动记录"日志，per-case 一份，所有 script 共用同一份 topology。
 
-    位置：<logs_dir>/00-<case>-runtime.log
+    位置：<logs_dir>/<module>/<top>/00-runtime.log
     内容头部模仿 write_check_log，方便复用 grep / HTML 渲染习惯。
     """
     duration = max(0.0, float(ended_at) - float(started_at))
@@ -1054,13 +1076,15 @@ def write_runtime_log(
 
 
 def make_runtime_log_path(logs_dir: Path, case_dir: Path, modules_dir: Path) -> Path:
-    try:
-        rel_case = case_dir.resolve().relative_to(modules_dir.resolve())
-        case_name = str(rel_case)
-    except ValueError:
-        case_name = case_dir.name
-    case_token = sanitize_name(case_name.replace(os.sep, "-"))
-    return logs_dir / f"00-{case_token}-runtime.log"
+    return logs_dir / make_case_artifact_relpath(case_dir, modules_dir) / "00-runtime.log"
+
+
+def make_check_log_path(logs_dir: Path, index: int, result: CheckResult, modules_dir: Path) -> Path:
+    return (
+        logs_dir
+        / make_case_artifact_relpath(result.case_dir, modules_dir)
+        / f"{index:02d}-{sanitize_name(result.script.stem)}.log"
+    )
 
 
 def write_check_log(log_path: Path, result: CheckResult) -> None:
@@ -1829,7 +1853,7 @@ def write_html_report(
             if rows and modules_dir is not None:
                 try:
                     runtime_log_path = make_runtime_log_path(Path(""), rows[0][1].case_dir, modules_dir)
-                    runtime_log_rel = f"logs/{runtime_log_path.name}"
+                    runtime_log_rel = f"logs/{runtime_log_path.as_posix()}"
                     runtime_link_html = (
                         f'<a class="chip runtime-chip" href="{html.escape(runtime_log_rel)}" '
                         f'target="_blank" rel="noopener" title="Topology startup log shared by this testbed">'
@@ -2464,12 +2488,12 @@ def main() -> int:
     check_html_relpaths: list[str] = []
     for idx, result in enumerate(results, start=1):
         base = make_artifact_base_name(idx, result, modules_dir)
-        log_name = f"{base}.log"
         html_name = f"{base}.html"
-        write_check_log(logs_dir / log_name, result)
+        write_check_log(make_check_log_path(logs_dir, idx, result, modules_dir), result)
         # 每个 script HTML 加一条指向 top 启动日志的链接（checks/ → ../logs/）
-        runtime_log_basename = make_runtime_log_path(Path(""), result.case_dir, modules_dir).name
-        runtime_log_relpath = f"../logs/{runtime_log_basename}"
+        runtime_log_relpath = (
+            f"../logs/{make_runtime_log_path(Path(''), result.case_dir, modules_dir).as_posix()}"
+        )
         write_check_html(
             checks_dir / html_name,
             result,

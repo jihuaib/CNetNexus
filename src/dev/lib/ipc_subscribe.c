@@ -366,6 +366,42 @@ int dev_ipc_notify_ready(dev_ipc_context_t *ctx)
 }
 
 /* ============================================================================
+ * pre_exit_notify：模块退出前 RPC 通知 DEV，等 ACK 后再 exit
+ * ============================================================================ */
+
+int dev_ipc_pre_exit_notify(dev_ipc_context_t *ctx, uint32_t timeout_ms)
+{
+    if (!ctx)
+    {
+        return ERRCODE_FAIL;
+    }
+    if (timeout_ms == 0)
+    {
+        timeout_ms = DEV_IPC_QUERY_TIMEOUT_DEFAULT;
+    }
+
+    dev_ipc_message_t *msg =
+        dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_PRE_EXIT, ctx->module_id, DEV_MODULE_ID_DEV, 0, NULL, 0, NULL);
+    if (!msg)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    dev_ipc_message_t *resp = dev_ipc_query(ctx, DEV_MODULE_ID_DEV, msg, timeout_ms);
+    dev_ipc_message_free(msg);
+
+    if (!resp)
+    {
+        LOG_WARN("<%s> PRE_EXIT RPC timed out after %u ms; SIGCHLD path will clean up", ctx->name, timeout_ms);
+        return ERRCODE_FAIL;
+    }
+
+    dev_ipc_message_free(resp);
+    LOG_INFO("<%s> PRE_EXIT ack received from DEV", ctx->name);
+    return ERRCODE_SUCCESS;
+}
+
+/* ============================================================================
  * wait_connected：轮询等待已发起的连接握手完成
  * ============================================================================ */
 

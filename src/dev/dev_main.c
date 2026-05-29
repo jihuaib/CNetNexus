@@ -50,6 +50,50 @@ static void handle_dev_get_module_name(dev_ipc_message_t *msg)
     dev_ipc_message_free(resp);
 }
 
+/** 处理模块 PRE_EXIT 通知：在模块真正 exit() 前同步完成 DEV 侧清理 */
+static void handle_dev_pre_exit(dev_ipc_message_t *msg)
+{
+    dev_ipc_context_t *ctx = dev_get_ipc_ctx();
+    uint32_t module_id = msg->src_module_id;
+    dev_module_t *m = dev_module_find(module_id);
+
+    if (m)
+    {
+        LOG_INFO("PRE_EXIT received from %s (id=0x%08X)", m->name, module_id);
+        /* 1) 翻状态 + 标记 pre_cleaned + 把 child_pid 挪到 pre_cleaned_pid。
+         *    把 child_pid 清零，让随后 SUBSCRIBE handler 的 "child_pid > 0" 短路分支
+         *    不再误把这个即将退出的进程当成 STARTING 报给订阅者；老 pid 转存到
+         *    pre_cleaned_pid，SIGCHLD 的 find_by_pid 仍能找到本模块。 */
+        m->phase = DEV_PHASE_REGISTERED;
+        m->pre_cleaned = 1;
+        m->pre_cleaned_pid = m->child_pid;
+        m->child_pid = 0;
+
+        /* 2) 通知订阅者：模块下线 */
+        dev_subscribe_broadcast_event(m, DEV_MODULE_EVENT_DOWN);
+    }
+    else
+    {
+        LOG_WARN("PRE_EXIT from unknown module id=0x%08X", module_id);
+    }
+
+    /* 3) ACK 先发出去（drop 之前），让对端收到 ACK 即可放心 exit。
+     *    TCP close 会在 FIN 之前把 send buffer 里的 ACK bytes 刷出，对端先读到
+     *    ACK，再读到 EOF —— 顺序天然正确。 */
+    dev_ipc_message_t *resp = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_PRE_EXIT_RESP, DEV_MODULE_ID_DEV, module_id,
+                                                     msg->request_id, NULL, 0, NULL);
+    dev_ipc_send_response(ctx, resp);
+    dev_ipc_message_free(resp);
+
+    /* 4) 同步摘掉 IPC 连接记录。drop_connection 会 pthread_join IO 线程；
+     *    此时对端进程尚未退出（仍在等我们 ACK），IO 线程会正常 epoll_wait 超时退出，
+     *    pthread_join 一般几十 ms 返回。 */
+    if (m && ctx)
+    {
+        dev_ipc_drop_connection(ctx, module_id);
+    }
+}
+
 void dev_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     (void)ctx;
@@ -69,6 +113,10 @@ void dev_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
         case DEV_IPC_MSG_TYPE_DEV_NOTIFY_READY:
             dev_subscribe_handle_notify_ready(msg);
+            break;
+
+        case DEV_IPC_MSG_TYPE_DEV_PRE_EXIT:
+            handle_dev_pre_exit(msg);
             break;
 
         case CLI_MSG_TYPE_QUERY_CANDIDATES:

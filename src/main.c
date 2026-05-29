@@ -229,6 +229,41 @@ int main(int argc, char *argv[])
                                 continue;
                             }
 
+                            /* PRE_EXIT 路径：模块退出前已通过 RPC 通知 DEV 同步做完清理
+                             * （phase=REGISTERED / broadcast DOWN / drop_connection），并置
+                             * m->pre_cleaned=1。此时只回收 pid + 清标志，跳过重复清理；这条
+                             * 通路也覆盖了"worker 处理新 SUBSCRIBE 与 main 处理 SIGCHLD 抢同一把 comutex"
+                             * 的 race（drop 已在 RPC 同步链上完成，SIGCHLD 这里不再 drop）。 */
+                            if (m->pre_cleaned)
+                            {
+                                m->pre_cleaned = 0;
+                                m->pre_cleaned_pid = 0;
+                                m->child_pid = 0;
+                                if (m->pending_stop)
+                                {
+                                    m->pending_stop = 0;
+                                    LOG_INFO("Module %s stopped by user (pre-cleaned)", m->name);
+                                }
+                                else if (m->pending_restart)
+                                {
+                                    m->pending_restart = 0;
+                                    LOG_INFO("Module %s: pending_restart (pre-cleaned), respawning...", m->name);
+                                    if (dev_module_respawn(m) == ERRCODE_SUCCESS)
+                                    {
+                                        if (g_dev_local && g_dev_local->dev_ipc_ctx)
+                                        {
+                                            dev_ipc_connect(g_dev_local->dev_ipc_ctx, m->module_id, DEV_IPC_HOST_LOCAL,
+                                                            m->port);
+                                        }
+                                    }
+                                    else
+                                    {
+                                        LOG_ERROR("Module %s respawn failed", m->name);
+                                    }
+                                }
+                                continue;
+                            }
+
                             /* 先翻状态再做 IPC 清理：dev_ipc_drop_connection 会 join+重启 IO 线程，
                              * 整路径数百 ms。在这期间 worker 线程若收到 SUBSCRIBE(auto_start=1)，
                              * 读到 m->phase 还是上一轮的 READY 就会短路返回，错过 on-demand 拉起，

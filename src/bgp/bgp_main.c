@@ -613,8 +613,16 @@ void bgp_module_cleanup(void)
     bgp_bmp_thread_shutdown();
     bgp_worker_shutdown();
 
-    /* 3) 关 IPC,join IO/worker 线程,断所有连接。 */
+    /* 3) 向 DEV 发 PRE_EXIT 通知，等 DEV 同步完成 phase/broadcast/drop 后再 ACK；
+     *    这一步必须在 dev_ipc_destroy 之前（destroy 会关掉 IPC，再发 RPC 拿不到 ACK）。
+     *    超时/失败不阻塞退出——SIGCHLD 路径仍能兜底清理。 */
     dev_ipc_context_t *ctx = g_bgp_local->dev_ipc_ctx;
+    if (ctx)
+    {
+        dev_ipc_pre_exit_notify(ctx, 3000);
+    }
+
+    /* 4) 关 IPC,join IO/worker 线程,断所有连接。 */
     g_bgp_local->dev_ipc_ctx = NULL;
     if (ctx)
     {

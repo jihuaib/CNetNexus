@@ -445,7 +445,14 @@ void if_module_cleanup(void)
 
     if (g_if_local)
     {
+        /* 向 DEV 发 PRE_EXIT 通知，等 DEV 同步完成 phase/broadcast/drop 后再 ACK。
+         * 必须在 dev_ipc_destroy 之前；超时/失败不阻塞退出，SIGCHLD 路径仍会兜底清理。 */
         dev_ipc_context_t *ctx = g_if_local->dev_ipc_ctx;
+        if (ctx)
+        {
+            dev_ipc_pre_exit_notify(ctx, 3000);
+        }
+
         g_if_local->dev_ipc_ctx = NULL;
         if (ctx)
         {
