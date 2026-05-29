@@ -210,6 +210,18 @@ int main(int argc, char *argv[])
                         int in_cleanup = dev_module_is_cleanup_in_progress();
                         while ((dead = waitpid(-1, &wstatus, WNOHANG)) > 0)
                         {
+                            /* cleanup_in_progress 期间 reboot_worker_thread 正在串行
+                             *   waitpid + g_free(module) + 最后 g_tree_destroy(g_module_registry)，
+                             * 树里指针随时变陈旧。这里如果再调 dev_module_find_by_pid 去
+                             * g_tree_foreach 遍历，访问每个 dev_module_t 字段就会踩到
+                             * g_free 过的对象（ASan: heap-use-after-free in find_module_by_pid_cb）。
+                             * 主动关闭路径下仅 reap pid 防僵尸，不查注册表、不改 m 字段。 */
+                            if (in_cleanup)
+                            {
+                                LOG_WARN("Reaped pid=%d (status=%d) during cleanup", dead, wstatus);
+                                continue;
+                            }
+
                             dev_module_t *m = dev_module_find_by_pid(dead);
                             if (!m)
                             {
@@ -218,16 +230,8 @@ int main(int argc, char *argv[])
                             }
 
                             LOG_WARN("Module %s (pid=%d) exited (status=%d, on_demand=%u, pending_restart=%u, "
-                                     "pending_stop=%u%s)",
-                                     m->name, dead, wstatus, m->on_demand, m->pending_restart, m->pending_stop,
-                                     in_cleanup ? ", cleanup" : "");
-
-                            if (in_cleanup)
-                            {
-                                /* 主动关闭路径：cleanup_all_modules 会自己 reap + 释放结构体，
-                                 * 这里仅回收 pid 防止僵尸；不要改 phase/child_pid，更不要 respawn。 */
-                                continue;
-                            }
+                                     "pending_stop=%u)",
+                                     m->name, dead, wstatus, m->on_demand, m->pending_restart, m->pending_stop);
 
                             /* PRE_EXIT 路径：模块退出前已通过 RPC 通知 DEV 同步做完清理
                              * （phase=REGISTERED / broadcast DOWN / drop_connection），并置
@@ -307,7 +311,41 @@ int main(int argc, char *argv[])
                             }
                             else if (!m->on_demand)
                             {
-                                LOG_ERROR("Basic module %s crashed; manual intervention required", m->name);
+                                /* 常驻模块意外退出 (SIGSEGV / ASan abort / OOM kill 等) —
+                                 * 自动 respawn 恢复服务；用窗口内崩溃次数做指数式停手，
+                                 * 防止启动期常驻 bug 把宿主 CPU 打满。
+                                 * on-demand 模块这里不动，等下次 SUBSCRIBE 时再 fork。 */
+                                time_t now = time(NULL);
+                                if (now - m->last_crash_time > DEV_MODULE_CRASH_WINDOW_SEC)
+                                {
+                                    m->crash_count = 0;
+                                }
+                                m->last_crash_time = now;
+                                m->crash_count++;
+
+                                if (m->crash_count > DEV_MODULE_CRASH_MAX_RETRIES)
+                                {
+                                    LOG_ERROR("Module %s crashed %u times within %ds; giving up auto-respawn "
+                                              "(manual intervention required)",
+                                              m->name, m->crash_count, DEV_MODULE_CRASH_WINDOW_SEC);
+                                }
+                                else
+                                {
+                                    LOG_WARN("Module %s crashed unexpectedly (attempt %u/%u); auto-respawning...",
+                                             m->name, m->crash_count, DEV_MODULE_CRASH_MAX_RETRIES);
+                                    if (dev_module_respawn(m) == ERRCODE_SUCCESS)
+                                    {
+                                        if (g_dev_local && g_dev_local->dev_ipc_ctx)
+                                        {
+                                            dev_ipc_connect(g_dev_local->dev_ipc_ctx, m->module_id, DEV_IPC_HOST_LOCAL,
+                                                            m->port);
+                                        }
+                                    }
+                                    else
+                                    {
+                                        LOG_ERROR("Module %s respawn failed", m->name);
+                                    }
+                                }
                             }
                         }
                     }

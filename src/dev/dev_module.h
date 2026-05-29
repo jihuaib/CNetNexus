@@ -9,8 +9,15 @@
 
 #include <glib.h>
 #include <stdint.h>
+#include <sys/types.h>
+#include <time.h>
 
 #include "dev.h"
+
+/** 模块崩溃自愈窗口：crash_count 在窗口内累加，超过窗口归零重新计数 */
+#define DEV_MODULE_CRASH_WINDOW_SEC 60
+/** 窗口内允许的最大自动重启次数；超过则放弃，等待人工介入 */
+#define DEV_MODULE_CRASH_MAX_RETRIES 5
 
 /** 模块状态。模块靠 NOTIFY_READY 显式上报 READY；中间 LOADED 表示已 fork 但未 ready。 */
 enum
@@ -36,7 +43,9 @@ typedef struct module
     uint8_t pre_cleaned; /**< 1=模块在 exit 前已通过 PRE_EXIT RPC 让 DEV 同步做完清理；SIGCHLD 据此跳过重复清理 */
     pid_t pre_cleaned_pid; /**< PRE_EXIT 时把 child_pid 转存到这里，留给 SIGCHLD 的 find_by_pid 兜底；child_pid
                               同时清零以便订阅判断 */
-    char exe_name[64];     /**< 可执行文件名（按需启动时使用） */
+    time_t last_crash_time; /**< 上一次意外退出时间戳，用于 crash backoff 窗口判定 */
+    uint32_t crash_count;   /**< 当前窗口内的连续意外退出次数 */
+    char exe_name[64];      /**< 可执行文件名（按需启动时使用） */
     char revive_table[64]; /**< on-demand 模块的"配置存在标识表"，DEV 在 boot 时扫到非空即自动 fork */
     uint32_t epoch;        /**< 每次启动 +1，订阅方据此判断对端是否重启过 */
     GList *subscribers; /**< 订阅者列表 GList<GUINT_TO_POINTER(subscriber_module_id)>，本模块 READY/DOWN 时推送给他们 */

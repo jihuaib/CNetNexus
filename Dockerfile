@@ -99,6 +99,7 @@ RUN apt-get update && \
 COPY --from=builder /build/build/bin/       /opt/netnexus/bin/
 COPY --from=builder /build/build/lib/       /opt/netnexus/lib/
 COPY --from=builder /build/scripts/prod/start.sh      /opt/netnexus/scripts/
+COPY --from=builder /build/scripts/prod/supervise.sh  /opt/netnexus/scripts/
 COPY --from=builder /build/scripts/prod/gns3-entry.sh /opt/netnexus/scripts/
 COPY --from=builder /build/scripts/prod/swap-image.sh /opt/netnexus/scripts/
 

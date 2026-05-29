@@ -741,7 +741,12 @@ class TopologyRuntime:
                     "export ASAN_OPTIONS="
                     "\"${ASAN_OPTIONS:-detect_leaks=1:halt_on_error=0:abort_on_error=0:"
                     "log_path=/opt/netnexus/log/asan/asan}\" && "
-                    "exec /opt/netnexus/bin/netnexus > /tmp/netnexus.log 2>&1"
+                    # 走 supervise.sh：DEV 异常退出后自动按 backoff 重起（≤10次/120s）。
+                    # CI 用更紧的窗口让短时 crash 也能很快恢复，但仍保留上限以暴露持续性 bug。
+                    "export NN_SUPERVISE_WINDOW_SEC=60 && "
+                    "export NN_SUPERVISE_MAX_RETRIES=5 && "
+                    "export NN_SUPERVISE_BACKOFF_SEC=1 && "
+                    "exec /opt/netnexus/scripts/supervise.sh > /tmp/netnexus.log 2>&1"
                 ),
             ]
         )

@@ -940,6 +940,10 @@ static int handle_process_cmd(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cl
                 dev_send_cli_response(ctx, msg, buf);
                 return ERRCODE_SUCCESS;
             }
+            /* 人工 start：清掉历史 crash 窗口，让模块从干净状态开始计数；
+             * 这样自动 respawn 触发上限放弃后，运维 process start 即可重置。 */
+            m->crash_count = 0;
+            m->last_crash_time = 0;
             uint32_t epoch_before = m->epoch;
             if (dev_module_respawn(m) != ERRCODE_SUCCESS)
             {

@@ -63,6 +63,7 @@ done
 echo "[6/6] Copying deployment scripts..."
 cp "${SCRIPT_DIR}/deploy.sh" "${PACKAGE_DIR}/${PACKAGE_NAME}/scripts/"
 cp "${SCRIPT_DIR}/start.sh" "${PACKAGE_DIR}/${PACKAGE_NAME}/scripts/"
+cp "${SCRIPT_DIR}/supervise.sh" "${PACKAGE_DIR}/${PACKAGE_NAME}/scripts/"
 cp "${SCRIPT_DIR}/gns3-entry.sh" "${PACKAGE_DIR}/${PACKAGE_NAME}/scripts/"
 cp "${SCRIPT_DIR}/swap-image.sh" "${PACKAGE_DIR}/${PACKAGE_NAME}/scripts/"
 chmod +x "${PACKAGE_DIR}/${PACKAGE_NAME}/scripts"/*.sh

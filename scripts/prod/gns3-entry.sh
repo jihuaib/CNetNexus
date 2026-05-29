@@ -48,7 +48,10 @@ fi
 # 注意：不切 cwd 到 cores 目录！部分模块用相对路径打开 data 文件，
 # 切 cwd 会破坏路径解析。core 默认落到 cwd（即 INSTALL_DIR/bin），
 # 通过 setup-coredump.sh 配置绝对路径方案见下方"core 落地位置"说明。
-"${INSTALL_DIR}/bin/netnexus" </dev/null >/dev/null 2>/dev/null &
+#
+# 通过 supervise.sh 启动：DEV 异常退出后自动按 backoff 重启，10 次/120s 超限才放弃。
+# wrapper 内部 trap SIGTERM/SIGINT 转发给 child，保证容器 stop 时 netnexus 能 graceful 收尾。
+"${INSTALL_DIR}/scripts/supervise.sh" </dev/null >>"${INSTALL_DIR}/log/supervise.log" 2>&1 &
 NETNEXUS_PID=$!
 
 # 等待端口就绪
