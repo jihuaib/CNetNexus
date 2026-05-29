@@ -268,6 +268,13 @@ static void bgp_handle_vrf_smoothend(void)
     {
         LOG_INFO("BGP: VRF smoothend received (initial sync)");
         bgp_try_db_restore();
+        /* init 阶段 bgp_db_restore 已经把 protocol 和 public VRF 行恢复完，但 vrf_name != public 的
+         * VRF-bound 行（vrf/session/instance/neighbor/qp_route）此时 vrf_api cache 为空，会通过
+         * bgp_cfg_resolve_vrf_id 静默失败被跳过；等到第一次 VRF smoothend，cache 终于就绪，
+         * 必须补做一遍 VRF-bound restore（apply 全部幂等，public 行会被显式跳过）。
+         * `process reboot bgp` 触发的初始化也走这条路径，是 BGP 重启后能恢复 vrf blue 上 BGP
+         * 配置的关键。 */
+        (void)bgp_db_restore_vrf_bound();
         return;
     }
 
