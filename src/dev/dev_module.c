@@ -33,7 +33,7 @@
 
 /* 前向声明 */
 static gboolean collect_module_callback(gpointer key, gpointer value, gpointer data);
-static pid_t dev_spawn_module(const char *exe_name, const char *module_name);
+static pid_t dev_spawn_module(const char *exe_name, const char *module_name, gboolean warm_restart);
 
 /* 全局模块注册表（GLib tree: id -> dev_module_t*） */
 static GTree *g_module_registry = NULL;
@@ -232,7 +232,9 @@ int dev_module_respawn(dev_module_t *module)
         return ERRCODE_FAIL;
     }
 
-    pid_t pid = dev_spawn_module(module->exe_name, module->name);
+    /* respawn 路径（process start/reboot、on-demand 拉起、revive）都发生在系统已运行时，
+     * 属"热重启"：DB 子进程据此保留磁盘上的 running.db，不当残留清掉。 */
+    pid_t pid = dev_spawn_module(module->exe_name, module->name, TRUE);
     if (pid < 0)
     {
         return ERRCODE_FAIL;
@@ -374,8 +376,8 @@ static int dev_scan_dir_for_modules(const char *base_dir)
             continue;
         }
 
-        /* 常驻模块：fork+exec 启动子进程 */
-        pid_t child_pid = dev_spawn_module(conf->exe_name, conf->name);
+        /* 常驻模块：fork+exec 启动子进程（整机冷启动路径，warm_restart=FALSE） */
+        pid_t child_pid = dev_spawn_module(conf->exe_name, conf->name, FALSE);
         if (child_pid < 0)
         {
             LOG_ERROR("Failed to start module %s", conf->name);
@@ -434,7 +436,7 @@ static void close_inherited_fds(void)
  *   1. 与 netnexus 同目录（开发环境 build/bin/）
  *   2. NN_WORK_DIR/bin/（生产环境）
  */
-static pid_t dev_spawn_module(const char *exe_name, const char *module_name)
+static pid_t dev_spawn_module(const char *exe_name, const char *module_name, gboolean warm_restart)
 {
     char exe_path[PATH_MAX] = {0};
 
@@ -471,9 +473,21 @@ static pid_t dev_spawn_module(const char *exe_name, const char *module_name)
         return -1;
     }
 
+    /* 热重启标记：在 fork 前 setenv，子进程经 fork 继承该环境变量（execv 后仍保留），
+     * 父进程随即 unsetenv，避免影响后续 spawn 或 DEV 自身。DB 子进程据此在
+     * db_config_boot_prepare 中保留磁盘上的 running.db（见 db_config.c）。 */
+    if (warm_restart)
+    {
+        setenv("NN_WARM_RESTART", "1", 1);
+    }
+
     pid_t pid = fork();
     if (pid < 0)
     {
+        if (warm_restart)
+        {
+            unsetenv("NN_WARM_RESTART");
+        }
         LOG_ERROR("fork failed (%s): %s", module_name, strerror(errno));
         return -1;
     }
@@ -489,6 +503,12 @@ static pid_t dev_spawn_module(const char *exe_name, const char *module_name)
         /* execv 失败 */
         fprintf(stderr, "[dev] execv(%s) failed: %s\n", exe_path, strerror(errno));
         _exit(127);
+    }
+
+    /* 父进程：清掉临时环境变量（子进程已在 fork 时继承其副本） */
+    if (warm_restart)
+    {
+        unsetenv("NN_WARM_RESTART");
     }
 
     return pid;

@@ -290,7 +290,8 @@ def _run_inner(rt: TopologyRuntime) -> None:
 
     # ---- Phase 6: reboot + DB 恢复（VRF blue 的 ipv6-unicast/RD 与 VRF red 的 ipv4-unicast/RD/RT 应回来）----
     step("Reboot r1 and verify VRF DB restore + OS reapply")
-    reboot_device(rt, "r1", timeout=120)
+    # reboot 后要验证 VRF 从 DB 恢复并回放到 OS，配置必须存活：先 save 落盘到 startup-config
+    reboot_device(rt, "r1", timeout=120, save_config=True)
     wait_check(
         rt,
         device="r1",

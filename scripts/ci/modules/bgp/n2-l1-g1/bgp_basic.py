@@ -180,7 +180,8 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         wait_checks(rt, route_checks, timeout=40)
 
         step("Reboot r1 and wait CLI reconnect")
-        reboot_device(rt, "r1", timeout=90)
+        # reboot 后要等会话重建，配置必须存活：先 save 落盘到 startup-config
+        reboot_device(rt, "r1", timeout=90, save_config=True)
 
         step("Wait BGP sessions after reboot")
         wait_checks(rt, session_checks, timeout=40)

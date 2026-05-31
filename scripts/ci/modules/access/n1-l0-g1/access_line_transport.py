@@ -7,7 +7,7 @@
 3. `show line` 反映 server 状态 + 各线 transport。
 4. `line console 0` 可进入 console 视图，但视图内不支持配置命令（串口无 transport input）。
 5. show current-configuration 含 ACCESS 配置块（从 DB 读：telnet server / line console 0 / line vty）。
-6. reboot 后配置 + 监听从 DB 恢复；关闭后不复活。
+6. reboot 后未 save 的 running 配置全部清空（running.db 掉电即丢，须 save 才跨重启保留）；关闭后不复活。
 
 注意：CI 经 console（串口）连设备，本用例全程经 console 验证；telnet(23) 的"是否监听"
 通过 docker exec ss 直接探端口，验证两道闸门（server enable + per-line transport）的真实效果。
@@ -129,19 +129,23 @@ def run(rt: TopologyRuntime, top: dict) -> None:
         _assert("console view rejects config", out, contains=["Invalid command"])
         run_cmds(rt=rt, device=DEV, strict=False, commands=["end"])
 
-        # ---- Phase D: reboot 后从 DB 恢复 ----
-        step("Phase D: reboot r1，配置 + 监听应从 DB 恢复")
-        reboot_device(rt, DEV, timeout=120)
+        # ---- Phase D: reboot 后未 save 的 running 配置被清空 ----
+        # running.db 是临时库，整机 reboot 即丢；本用例未执行 `save configuration`，
+        # 故 telnet server / per-line transport 都不应保留，仅剩出厂默认骨架。
+        step("Phase D: reboot r1，未保存的 running 配置应全部清空")
+        # 本用例刻意不 save，验证 running.db 掉电即丢；故显式 save_config=False
+        reboot_device(rt, DEV, timeout=120, save_config=False)
         wait_check(
             rt,
             device=DEV,
             command="show current-configuration",
             timeout=60,
             interval=3,
-            contains=["telnet server enable", "line console 0", "line vty 0 4", "transport input telnet"],
-            label="Phase D running-config restored from DB",
+            contains=["line console 0"],
+            not_contains=["telnet server enable", "line vty 0 4", "transport input telnet"],
+            label="Phase D running-config cleared after reboot (not saved)",
         )
-        _wait_port23(rt, DEV, want=True, timeout=30)
+        _wait_port23(rt, DEV, want=False, timeout=30)
 
         # ---- Phase E: 关闭后验证 + 不复活 ----
         step("Phase E: no telnet server enable + transport input none")

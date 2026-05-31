@@ -559,7 +559,8 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         )
 
         step("Phase B: reboot r1 and verify config persisted via DB restore")
-        reboot_device(rt, "r1", timeout=120)
+        # 验证配置跨重启存活：先 save 落盘到 startup-config，重启时从快照恢复
+        reboot_device(rt, "r1", timeout=120, save_config=True)
         wait_check(
             rt,
             device="r1",
@@ -599,7 +600,8 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         )
 
         step("Phase D: reboot r1 again to confirm deletes are persisted (no resurrection)")
-        reboot_device(rt, "r1", timeout=120)
+        # 删除后再 save，确认"删除态"被持久化（不重新 save 会被 Phase B 的旧快照复活）
+        reboot_device(rt, "r1", timeout=120, save_config=True)
         wait_check(
             rt,
             device="r1",

@@ -295,7 +295,17 @@ int db_config_boot_prepare(void)
     char running_path[512];
     db_config_running_path(running_path, sizeof(running_path));
 
-    /* 1. 清除上次运行残留：运行库是临时库，掉电/重启即丢 */
+    /* 0. 热重启（process start/reboot db，整机未掉电、业务模块仍在线持有内存配置）：
+     * 磁盘上的 running.db 即当前运行配置，必须原样保留——既不清残留、也不按 startup
+     * 指针覆盖，否则会把仍然有效的运行配置抹掉，造成内存/OS 与 DB 静默偏移。
+     * NN_WARM_RESTART 由 DEV 在 respawn 子进程时通过环境变量传入（见 dev_module.c）。 */
+    if (getenv("NN_WARM_RESTART") != NULL)
+    {
+        LOG_INFO("DB-CONFIG: warm restart, preserving existing running db (%s)", running_path);
+        return ERRCODE_SUCCESS;
+    }
+
+    /* 1. 清除上次运行残留：运行库是临时库，整机掉电/冷启动即丢 */
     db_config_remove_running(running_path);
 
     /* 2. 读 startup 指针 */

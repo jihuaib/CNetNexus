@@ -328,7 +328,8 @@ def _run_inner_ipv4(
     )
 
     step("Reboot r1 and verify IF/route restore")
-    reboot_device(rt, "r1", timeout=120)
+    # reboot 后要验证 IF/路由从 DB 恢复，配置必须存活：先 save 落盘到 startup-config
+    reboot_device(rt, "r1", timeout=120, save_config=True)
     wait_checks(
         rt,
         [
@@ -611,7 +612,8 @@ def _run_inner_ipv6(
     )
 
     step("Reboot r1 and verify IF/IPv6 route restore")
-    reboot_device(rt, "r1", timeout=120)
+    # reboot 后要验证 IF/IPv6 路由从 DB 恢复，配置必须存活：先 save 落盘到 startup-config
+    reboot_device(rt, "r1", timeout=120, save_config=True)
     wait_checks(
         rt,
         [

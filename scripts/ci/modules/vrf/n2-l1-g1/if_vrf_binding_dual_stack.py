@@ -587,7 +587,8 @@ def _run_inner(rt: TopologyRuntime, base_v4: str, base_v4_len: int) -> None:
     _wait_ipv4_host_route_fib_os(rt, host_addr=NEW_V4, vrf=VRF_NAME, expect_present=True)
 
     step("Reboot r1 and verify VRF binding and routes restore")
-    reboot_device(rt, "r1", timeout=120)
+    # reboot 后要验证 VRF 绑定/路由从 DB 恢复，配置必须存活：先 save 落盘到 startup-config
+    reboot_device(rt, "r1", timeout=120, save_config=True)
     wait_check(
         rt,
         device="r1",

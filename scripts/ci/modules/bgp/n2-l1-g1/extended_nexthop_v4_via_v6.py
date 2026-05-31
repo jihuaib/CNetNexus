@@ -391,7 +391,8 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         )
 
         step("Reboot r1 and re-verify all RFC 8950 forwarding state")
-        reboot_device(rt, "r1", timeout=120)
+        # reboot 后要等会话/转发态重建，配置必须存活：先 save 落盘到 startup-config
+        reboot_device(rt, "r1", timeout=120, save_config=True)
 
         step("Wait sessions after reboot")
         wait_checks(rt, session_checks, timeout=60)

@@ -172,6 +172,10 @@ static const char *bgp_af_str(bgp_afi_t afi, bgp_safi_t safi)
     {
         return "ipv4-labeled";
     }
+    if (afi == BGP_AFI_IPV4 && safi == BGP_SAFI_VPN_UNICAST)
+    {
+        return "vpnv4";
+    }
     return "unknown";
 }
 
@@ -492,15 +496,19 @@ static int handle_bgp_addr_family(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
                 ctx.afi = BGP_AFI_IPV4;
                 ctx.safi = BGP_SAFI_LABELED;
                 break;
+            case 6:
+                ctx.afi = BGP_AFI_IPV4;
+                ctx.safi = BGP_SAFI_VPN_UNICAST;
+                break;
             default:
                 break;
         }
         cli_tlv_entry_free(&entry);
     }
 
-    /* 使能 labeled / QP(VPN) 地址族时需要 TUNNEL 进程做 MPLS 转发表项；按需拉起。
+    /* 使能 labeled / QP / vpnv4 地址族时需要 TUNNEL 进程做 MPLS 转发表项；按需拉起。
      * UNICAST 纯 IP 不需要。 */
-    if (!apply.isNo && (ctx.safi == BGP_SAFI_LABELED || ctx.safi == BGP_SAFI_QP))
+    if (!apply.isNo && (ctx.safi == BGP_SAFI_LABELED || ctx.safi == BGP_SAFI_QP || ctx.safi == BGP_SAFI_VPN_UNICAST))
     {
         if (dev_ipc_wait_module_ready(bgp_local_ipc_ctx(), DEV_MODULE_ID_TUNNEL, DEV_IPC_WAIT_READY_MS) !=
             ERRCODE_SUCCESS)

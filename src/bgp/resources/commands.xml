@@ -28,6 +28,9 @@
             <view view-name="bgp-af-ipv4-labeled">
                 <template>&lt;NetNexus(config-bgp-af-ipv4-labeled)&gt;</template>
             </view>
+            <view view-name="bgp-af-vpnv4">
+                <template>&lt;NetNexus(config-bgp-af-vpnv4)&gt;</template>
+            </view>
             <view view-name="bgp-bmp">
                 <template>&lt;NetNexus(config-bgp-bmp-{ctx:7})&gt;</template>
             </view>
@@ -44,6 +47,7 @@
         <view name="bgp-af-ipv4-qp"/>
         <view name="bgp-af-ipv6-qp"/>
         <view name="bgp-af-ipv4-labeled"/>
+        <view name="bgp-af-vpnv4"/>
         <view name="bgp-bmp"/>
     </show-this>
 
@@ -191,6 +195,10 @@
                     <name>ipv4-labeled</name>
                     <description>IPv4 labeled-unicast address family</description>
                 </element>
+                <element id="8" cfg-id="6" type="keyword">
+                    <name>vpnv4</name>
+                    <description>VPNv4 (MPLS L3VPN) address family</description>
+                </element>
             </elements>
 
             <commands>
@@ -241,6 +249,15 @@
                     </context-out>
                 </command>
                 <command>
+                    <expression>2 8</expression>
+                    <views>bgp</views>
+                    <to-view>bgp-af-vpnv4</to-view>
+                    <context-out>
+                        <entry ctx-id="2" value="1"/>
+                        <entry ctx-id="3" value="128"/>
+                    </context-out>
+                </command>
+                <command>
                     <expression>2 3</expression>
                     <views>bgp-vrf</views>
                     <to-view>bgp-vrf-af-ipv4-uni</to-view>
@@ -258,9 +275,9 @@
                         <entry ctx-id="3" value="1"/>
                     </context-out>
                 </command>
-                <!-- no af {ipv4-unicast | ipv6-unicast | ipv4-qp | ipv6-qp | ipv4-labeled} -->
+                <!-- no af {ipv4-unicast | ipv6-unicast | ipv4-qp | ipv6-qp | ipv4-labeled | vpnv4} -->
                 <command>
-                    <expression>1  2  { 3 | 4 | 5 | 6 | 7 }</expression>
+                    <expression>1  2  { 3 | 4 | 5 | 6 | 7 | 8 }</expression>
                     <views>bgp</views>
                 </command>
                 <command>
@@ -301,12 +318,12 @@
                 <!-- neighbor <ipv4|ipv6> enable -->
                 <command>
                     <expression>2 {3 | 4} 5</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-qp,bgp-af-ipv6-qp,bgp-af-ipv4-labeled,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-qp,bgp-af-ipv6-qp,bgp-af-ipv4-labeled,bgp-af-vpnv4,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
                 </command>
                 <!-- no neighbor <ipv4|ipv6> enable -->
                 <command>
                     <expression>1 2 {3 | 4} 5</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-qp,bgp-af-ipv6-qp,bgp-af-ipv4-labeled,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-qp,bgp-af-ipv6-qp,bgp-af-ipv4-labeled,bgp-af-vpnv4,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
                 </command>
             </commands>
         </group>
@@ -603,9 +620,18 @@
                     <type>dynamic(4:1,string(1-63))</type>
                     <description>VRF name</description>
                 </element>
+                <element id="13" cfg-id="8" type="keyword">
+                    <name>vpnv4</name>
+                    <description>VPNv4 (MPLS L3VPN) address family</description>
+                </element>
             </elements>
 
             <commands>
+                <!-- show bgp neighbor af vpnv4 [<ip-address>] -->
+                <command>
+                    <expression>1 2 3 4 13 [7]</expression>
+                    <views>global</views>
+                </command>
                 <!-- show bgp neighbor af ipv4-unicast [vrf <vrf-name>] [<ip-address>] -->
                 <command>
                     <expression>1 2 3 4 5 [11 12] [7]</expression>
@@ -779,9 +805,18 @@
                     <type>dynamic(4:1,string(1-63))</type>
                     <description>VRF name</description>
                 </element>
+                <element id="15" cfg-id="10" type="keyword">
+                    <name>vpnv4</name>
+                    <description>Show VPNv4 (MPLS L3VPN) routes</description>
+                </element>
             </elements>
 
             <commands>
+                <!-- show bgp route af vpnv4 [<ip-address> <masklen>]（vpnv4 为全局表，无 vrf 过滤） -->
+                <command>
+                    <expression>1 2 3 4 15 [7 8]</expression>
+                    <views>global</views>
+                </command>
                 <!-- show bgp route af ipv4-unicast [vrf <vrf-name>] [<ip-address> <masklen>] -->
                 <command>
                     <expression>1 2 3 4 5 [13 14] [7 8]</expression>
@@ -863,9 +898,18 @@
                     <type>dynamic(4:1,string(1-63))</type>
                     <description>VRF name</description>
                 </element>
+                <element id="13" cfg-id="9" type="keyword">
+                    <name>vpnv4</name>
+                    <description>VPNv4 (MPLS L3VPN) address family</description>
+                </element>
             </elements>
 
             <commands>
+                <!-- show bgp attr af vpnv4 [<attr-id>]（vpnv4 为全局表，无 vrf 过滤） -->
+                <command>
+                    <expression>1 2 3 4 13 [7]</expression>
+                    <views>global</views>
+                </command>
                 <!-- show bgp attr af ipv4-unicast [vrf <vrf-name>] [<attr-id>] -->
                 <command>
                     <expression>1 2 3 4 5 [11 12] [7]</expression>
@@ -947,9 +991,18 @@
                     <type>dynamic(4:1,string(1-63))</type>
                     <description>VRF name</description>
                 </element>
+                <element id="13" cfg-id="8" type="keyword">
+                    <name>vpnv4</name>
+                    <description>VPNv4 (MPLS L3VPN) address family</description>
+                </element>
             </elements>
 
             <commands>
+                <!-- show bgp update-group af vpnv4 [<group-id>]（vpnv4 为全局表，无 vrf 过滤） -->
+                <command>
+                    <expression>1 2 3 4 13 [7]</expression>
+                    <views>global</views>
+                </command>
                 <!-- show bgp update-group af ipv4-unicast [vrf <vrf-name>] [<group-id>] -->
                 <command>
                     <expression>1 2 3 4 5 [11 12] [7]</expression>

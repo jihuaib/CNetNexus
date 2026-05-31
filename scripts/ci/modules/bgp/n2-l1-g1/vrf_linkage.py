@@ -230,7 +230,8 @@ def _verify_reboot_keeps_bgp_vrf_config(rt: TopologyRuntime) -> None:
         label="BGP VRF dual-stack config exists before reboot",
     )
 
-    reboot_device(rt, "r1", timeout=120)
+    # reboot 后要验证 BGP VRF 配置从 DB 恢复，配置必须存活：先 save 落盘
+    reboot_device(rt, "r1", timeout=120, save_config=True)
     _wait_bgp_config(
         rt,
         contains=[

@@ -287,7 +287,8 @@ def _run_inner(rt: TopologyRuntime, r1_peer_ip: str, r2_peer_ip: str) -> None:
     )
 
     step("Reboot r1 and verify negotiated params after restore")
-    reboot_device(rt, "r1", timeout=120)
+    # reboot 后要验证协商参数从 DB 恢复，配置必须存活：先 save 落盘
+    reboot_device(rt, "r1", timeout=120, save_config=True)
     wait_checks(rt, _session_checks(r1_peer_ip, r2_peer_ip), timeout=60)
     wait_checks(
         rt,
@@ -525,7 +526,8 @@ def _run_inner_ipv6(rt: TopologyRuntime, r1_peer_ip6: str, r2_peer_ip6: str) -> 
     )
 
     step("Reboot r1 and verify negotiated params after restore")
-    reboot_device(rt, "r1", timeout=120)
+    # reboot 后要验证协商参数从 DB 恢复，配置必须存活：先 save 落盘
+    reboot_device(rt, "r1", timeout=120, save_config=True)
     wait_checks(rt, _session_checks_ipv6(r1_peer_ip6, r2_peer_ip6), timeout=60)
     wait_checks(
         rt,

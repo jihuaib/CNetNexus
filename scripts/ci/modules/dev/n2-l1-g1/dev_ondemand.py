@@ -19,7 +19,7 @@ import re
 import subprocess
 import time
 
-from module_api import cmd, mark_step_failed, process_reboot, require_devices, step  # noqa: E402
+from module_api import cmd, mark_step_failed, process_reboot, reboot_device, require_devices, step  # noqa: E402
 from top_runner import TopologyRuntime, run_cmd  # noqa: E402
 
 
@@ -137,7 +137,8 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                                           timeout=WAIT_SPAWN_SEC,
                                           what="sbmp to be running before reboot")
 
-        rt.reboot_device("r1", reconnect_timeout=120)
+        # reboot 后要验证 SBMP 配置从 DB 恢复并按需自动复活，配置必须存活：先 save 落盘
+        reboot_device(rt, "r1", timeout=120, save_config=True)
 
         # boot 完成后，由 dev_revive_on_demand_modules 触发；不需要再发 CLI 触发
         post_reboot_pids = _wait_for_pids(

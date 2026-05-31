@@ -131,7 +131,8 @@ def _run_inner_ipv4(
     wait_checks(rt, session_checks, timeout=30)
 
     step("Reboot a and wait CLI reconnect")
-    reboot_device(rt, "a", timeout=120)
+    # reboot 后要等会话重建，配置必须存活：先 save 落盘到 startup-config
+    reboot_device(rt, "a", timeout=120, save_config=True)
 
     step("Wait dual-link BGP sessions after reboot")
     wait_checks(rt, session_checks, timeout=30)
@@ -217,7 +218,8 @@ def _run_inner_ipv6(
     wait_checks(rt, session_checks, timeout=30)
 
     step("Reboot a and wait CLI reconnect")
-    reboot_device(rt, "a", timeout=120)
+    # reboot 后要等会话重建，配置必须存活：先 save 落盘到 startup-config
+    reboot_device(rt, "a", timeout=120, save_config=True)
 
     step("Wait dual-link BGP sessions after reboot")
     wait_checks(rt, session_checks, timeout=30)

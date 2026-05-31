@@ -146,6 +146,10 @@ static const char *bgp_af_str(bgp_afi_t afi, bgp_safi_t safi)
     {
         return "ipv4-labeled";
     }
+    if (afi == BGP_AFI_IPV4 && safi == BGP_SAFI_VPN_UNICAST)
+    {
+        return "vpnv4";
+    }
     return "unknown";
 }
 
@@ -990,6 +994,11 @@ static int handle_bgp_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parse
                 ctx.safi = BGP_SAFI_LABELED;
                 has_af = TRUE;
                 break;
+            case 10:
+                ctx.afi = BGP_AFI_IPV4;
+                ctx.safi = BGP_SAFI_VPN_UNICAST;
+                has_af = TRUE;
+                break;
             case 7:
             {
                 const char *s = cli_tlv_entry_get_text(&entry);
@@ -1225,6 +1234,11 @@ static int handle_bgp_show_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
             case 6:
                 ctx.afi = BGP_AFI_IPV4;
                 ctx.safi = BGP_SAFI_LABELED;
+                has_af = TRUE;
+                break;
+            case 8:
+                ctx.afi = BGP_AFI_IPV4;
+                ctx.safi = BGP_SAFI_VPN_UNICAST;
                 has_af = TRUE;
                 break;
             case 7:
@@ -1682,6 +1696,11 @@ static int handle_bgp_show_update_group(dev_ipc_message_t *msg, cli_tlv_parser_t
                 ctx.safi = BGP_SAFI_LABELED;
                 has_af = TRUE;
                 break;
+            case 8:
+                ctx.afi = BGP_AFI_IPV4;
+                ctx.safi = BGP_SAFI_VPN_UNICAST;
+                has_af = TRUE;
+                break;
             case 7:
             {
                 /* vrf <vrf-name> (仅 ipv4/ipv6 unicast 支持) */
@@ -1918,6 +1937,11 @@ static int handle_bgp_show_attr(dev_ipc_message_t *msg, cli_tlv_parser_t *parser
                 }
                 break;
             }
+            case 9:
+                ctx.afi = BGP_AFI_IPV4;
+                ctx.safi = BGP_SAFI_VPN_UNICAST;
+                has_af = TRUE;
+                break;
             case 8:
                 attr_id = (uint32_t)cli_tlv_entry_get_int(&entry);
                 has_id = TRUE;
