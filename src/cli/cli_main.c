@@ -21,6 +21,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "access.h"
 #include "cli.h"
 #include "cli_handler.h"
 #include "cli_xml_parser.h"
@@ -29,173 +30,7 @@
 #include "log.h"
 #include "path_utils.h"
 
-enum
-{
-    CLI_PORT = 3788,
-    CLI_BACKLOG = 5
-};
-
-#define CLI_MAX_EPOLL_EVENTS 16
-
 cli_local_t *g_cli_local = NULL;
-
-// Forward declarations
-static void *cli_server_thread(void *arg);
-
-// Server thread function
-static void *cli_server_thread(void *arg)
-{
-    (void)arg;
-    pthread_setname_np(pthread_self(), "cli-telnet");
-    log_set_tag(dev_ipc_get_self_name(g_cli_local->dev_ipc_ctx));
-
-    struct sockaddr_in client_addr;
-    socklen_t client_len;
-
-    while (g_cli_local && g_cli_local->running)
-    {
-        struct epoll_event events[CLI_MAX_EPOLL_EVENTS];
-        // Wait for events with 1 second timeout
-        int nfds = epoll_wait(g_cli_local->epoll_fd, events, CLI_MAX_EPOLL_EVENTS, 1000);
-
-        if (nfds < 0)
-        {
-            if (errno == EINTR)
-            {
-                continue;
-            }
-            LOG_PERROR("epoll_wait failed");
-            break;
-        }
-
-        if (nfds == 0)
-        {
-            continue;
-        }
-
-        // Process events
-        for (int i = 0; i < nfds; i++)
-        {
-            if (events[i].data.fd == g_cli_local->listen_sock)
-            {
-                // New connection
-                client_len = sizeof(client_addr);
-                int conn_fd = accept(g_cli_local->listen_sock, (struct sockaddr *)&client_addr, &client_len);
-
-                if (conn_fd < 0)
-                {
-                    if (g_cli_local && g_cli_local->running)
-                    {
-                        LOG_PERROR("Accept failed");
-                    }
-                    continue;
-                }
-
-                int *fd_key = g_malloc(sizeof(int));
-                *fd_key = conn_fd;
-
-                cli_session_t *session = cli_session_create(conn_fd);
-                if (session)
-                {
-                    g_hash_table_insert(g_cli_local->sessions, fd_key, session);
-
-                    struct epoll_event client_ev;
-                    client_ev.events = EPOLLIN;
-                    client_ev.data.fd = conn_fd;
-                    if (epoll_ctl(g_cli_local->epoll_fd, EPOLL_CTL_ADD, conn_fd, &client_ev) < 0)
-                    {
-                        LOG_PERROR("Failed to add client to epoll");
-                        g_hash_table_remove(g_cli_local->sessions, fd_key);
-                    }
-                    else
-                    {
-                        LOG_INFO("Client connected (fd: %d)", conn_fd);
-                    }
-                }
-                else
-                {
-                    g_free(fd_key);
-                    close(conn_fd);
-                }
-            }
-            else
-            {
-                // Input from existing client
-                int fd = events[i].data.fd;
-                cli_session_t *session = g_hash_table_lookup(g_cli_local->sessions, &fd);
-                if (session)
-                {
-                    if (cli_process_input(session) < 0)
-                    {
-                        LOG_INFO("Client disconnected (fd: %d)", fd);
-                        epoll_ctl(g_cli_local->epoll_fd, EPOLL_CTL_DEL, fd, NULL);
-                        g_hash_table_remove(g_cli_local->sessions, &fd);
-                    }
-                }
-            }
-        }
-    }
-
-    return NULL;
-}
-
-int32_t cli_create_listen_sock()
-{
-    int32_t server_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_socket < 0)
-    {
-        LOG_PERROR("Failed to create socket");
-        return DEV_INVALID_FD;
-    }
-
-    int opt = 1;
-    if (setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
-    {
-        close(server_socket);
-        LOG_PERROR("Failed to set socket options");
-        return DEV_INVALID_FD;
-    }
-
-    struct sockaddr_in server_addr;
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(CLI_PORT);
-
-    /* dev swap-image 触发 execv 后,旧进程刚 close 的监听端口需要短暂时间
-     * 才被内核完全释放。SO_REUSEADDR 解决不了这个窗口,这里对 EADDRINUSE
-     * 做有限重试(总等待 ≤ 2s),保证 execv 后 telnet 接入口能稳定 bind。 */
-    int bind_rc;
-    int bind_attempts = 0;
-    const int bind_max_attempts = 10;
-    while ((bind_rc = bind(server_socket, (struct sockaddr *)&server_addr, sizeof(server_addr))) < 0)
-    {
-        if (errno != EADDRINUSE || ++bind_attempts >= bind_max_attempts)
-        {
-            break;
-        }
-        if (bind_attempts == 1)
-        {
-            LOG_WARN("Telnet port %d busy, retrying bind (likely post-exec port drain)", CLI_PORT);
-        }
-        usleep(200 * 1000);
-    }
-    if (bind_rc < 0)
-    {
-        close(server_socket);
-        LOG_PERROR("Failed to bind socket");
-        return DEV_INVALID_FD;
-    }
-
-    if (listen(server_socket, CLI_BACKLOG) < 0)
-    {
-        close(server_socket);
-        LOG_PERROR("Failed to listen");
-        return DEV_INVALID_FD;
-    }
-
-    return server_socket;
-}
 
 // ============================================================================
 // 三阶段回调辅助函数
@@ -379,44 +214,207 @@ void cli_init_local(dev_ipc_context_t *ctx)
     LOG_INFO("Local state initialization complete");
 }
 
+// ============================================================================
+// ACCESS（line 层）RPC 处理
+// ============================================================================
+
+/** 连接建立后发给 ACCESS 的欢迎语 */
+#define CLI_WELCOME_TEXT "\r\nWelcome to NetNexus CLI\r\nType '?' for available commands\r\n\r\n"
+
 /**
- * 启动 Telnet 监听 + epoll + server 线程。
+ * @brief 建立一条逻辑会话（以 ACCESS 线号为键）
+ *
+ * ACCESS 架构下 CLI 不持有 socket：client_fd 恒为 -1，命令输出累积到 out 缓冲。
  */
-static int cli_start_telnet(void)
+static cli_session_t *cli_logical_session_create(uint32_t line_id, const char *ip, uint16_t port)
 {
-    int epoll_fd = epoll_create1(EPOLL_CLOEXEC);
-    if (epoll_fd < 0)
-    {
-        LOG_PERROR("Failed to create epoll");
-        return -1;
-    }
-    g_cli_local->epoll_fd = epoll_fd;
+    cli_session_t *session = g_malloc0(sizeof(cli_session_t));
+    session->line_id = line_id;
+    session->current_view = g_cli_local->view_tree.root;
+    session->out = g_string_new("");
+    session->close_requested = 0;
+    g_strlcpy(session->client_ip, ip ? ip : "unknown", sizeof(session->client_ip));
+    session->client_port = port;
+    session->connect_time = time(NULL);
+    update_prompt_from_template(session, session->current_view->prompt_template);
 
-    int32_t listen_sock = cli_create_listen_sock();
-    if (listen_sock < 0)
-    {
-        return -1;
-    }
-    g_cli_local->listen_sock = listen_sock;
+    guint *key = g_malloc(sizeof(guint));
+    *key = line_id;
+    g_hash_table_insert(g_cli_local->sessions, key, session);
+    return session;
+}
 
-    struct epoll_event ev;
-    ev.events = EPOLLIN;
-    ev.data.fd = listen_sock;
-    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, listen_sock, &ev) < 0)
+/** @brief 构造并发送 access_text_resp_t 响应（OPEN_RESP / INPUT_RESP / CLOSE_RESP） */
+static void cli_send_text_resp(dev_ipc_context_t *ctx, dev_ipc_message_t *req, uint32_t msg_type, uint32_t flags,
+                               const cli_session_t *line_src, const char *prompt, const char *text)
+{
+    size_t text_len = text ? strlen(text) : 0;
+    size_t payload_len = sizeof(access_text_resp_t) + text_len + 1;
+    access_text_resp_t *r = g_malloc0(payload_len);
+    r->flags = flags;
+    if (line_src)
     {
-        LOG_PERROR("Failed to add listen socket to epoll");
-        return -1;
+        r->line_cmd = line_src->line_cmd;
+        r->line_cmd_no = line_src->line_cmd_no;
+        r->line_arg1 = line_src->line_cmd_arg1;
+        r->line_arg2 = line_src->line_cmd_arg2;
+    }
+    if (prompt)
+    {
+        g_strlcpy(r->prompt, prompt, sizeof(r->prompt));
+    }
+    if (text_len > 0)
+    {
+        memcpy(r->text, text, text_len);
+    }
+    r->text[text_len] = '\0';
+
+    dev_ipc_message_t *resp = dev_ipc_message_create(msg_type, DEV_MODULE_ID_CLI, req->src_module_id, req->request_id,
+                                                     r, payload_len, g_free);
+    if (resp)
+    {
+        dev_ipc_send_response(ctx, resp);
+        dev_ipc_message_free(resp);
+    }
+    else
+    {
+        g_free(r);
+    }
+}
+
+/** @brief 处理 ACCESS_MSG_SESSION_OPEN：建逻辑会话，回 welcome + 初始提示符 */
+static void cli_handle_session_open(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+{
+    if (!msg->payload || msg->payload_len < sizeof(access_session_open_t))
+    {
+        cli_send_text_resp(ctx, msg, ACCESS_MSG_OPEN_RESP, 0, NULL, "<NetNexus>", "");
+        return;
+    }
+    access_session_open_t *req = (access_session_open_t *)msg->payload;
+    cli_session_t *s = cli_logical_session_create(req->line_id, req->client_ip, req->client_port);
+    char prompt[ACCESS_PROMPT_MAX_LEN];
+    cli_render_prompt(s, prompt, sizeof(prompt));
+    LOG_INFO("CLI: line %u session opened (peer=%s)", req->line_id, req->client_ip);
+    cli_send_text_resp(ctx, msg, ACCESS_MSG_OPEN_RESP, 0, NULL, prompt, CLI_WELCOME_TEXT);
+}
+
+/** @brief 处理 ACCESS_MSG_LINE_INPUT：执行命令，回输出文本 + 新提示符 + close/line 命令标志 */
+static void cli_handle_line_input(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+{
+    access_line_input_t *req = (access_line_input_t *)msg->payload;
+    if (!req || msg->payload_len <= sizeof(access_line_input_t))
+    {
+        cli_send_text_resp(ctx, msg, ACCESS_MSG_INPUT_RESP, 0, NULL, "<NetNexus>", "");
+        return;
     }
 
-    g_cli_local->running = 1;
-    if (pthread_create(&g_cli_local->worker_thread, NULL, cli_server_thread, NULL) != 0)
+    cli_session_t *s = g_hash_table_lookup(g_cli_local->sessions, &req->line_id);
+    if (!s)
     {
-        LOG_PERROR("Failed to create server thread");
-        g_cli_local->running = 0;
-        return -1;
+        /* 会话不存在（CLI 重启后丢失）：要求 ACCESS 关闭该线，触发其重新 OPEN。 */
+        cli_send_text_resp(ctx, msg, ACCESS_MSG_INPUT_RESP, ACCESS_RESP_FLAG_CLOSE_SESSION, NULL, "", "");
+        return;
     }
-    LOG_INFO("Telnet server listening on port %d", CLI_PORT);
-    return 0;
+
+    s->line_cmd = 0;
+    s->line_cmd_no = 0;
+    s->line_cmd_arg1 = 0;
+    s->line_cmd_arg2 = 0;
+    g_string_truncate(s->out, 0);
+    process_command(req->cmdline, s);
+
+    if (req->cmdline[0] != '\0')
+    {
+        pthread_mutex_lock(&g_cli_local->history_mutex);
+        cli_global_history_add(&g_cli_local->global_history, req->cmdline, s->client_ip);
+        pthread_mutex_unlock(&g_cli_local->history_mutex);
+    }
+
+    char prompt[ACCESS_PROMPT_MAX_LEN];
+    cli_render_prompt(s, prompt, sizeof(prompt));
+    uint32_t flags = s->close_requested ? ACCESS_RESP_FLAG_CLOSE_SESSION : 0;
+    cli_send_text_resp(ctx, msg, ACCESS_MSG_INPUT_RESP, flags, s, prompt, s->out->str);
+}
+
+/** @brief 处理 ACCESS_MSG_SESSION_CLOSE：销毁逻辑会话 */
+static void cli_handle_session_close(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+{
+    if (msg->payload && msg->payload_len >= sizeof(uint32_t))
+    {
+        uint32_t line_id = *(uint32_t *)msg->payload;
+        g_hash_table_remove(g_cli_local->sessions, &line_id);
+        LOG_INFO("CLI: line %u session closed", line_id);
+    }
+    cli_send_text_resp(ctx, msg, ACCESS_MSG_CLOSE_RESP, 0, NULL, "", "");
+}
+
+/** @brief 处理 ACCESS_MSG_TAB_REQ：用命令树算候选 token 列表回传 */
+static void cli_handle_tab_req(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+{
+    access_line_input_t *req = (access_line_input_t *)msg->payload;
+    GString *toks = g_string_new("");
+    if (req && msg->payload_len >= sizeof(access_line_input_t))
+    {
+        cli_session_t *s = g_hash_table_lookup(g_cli_local->sessions, &req->line_id);
+        if (s)
+        {
+            cli_build_tab_candidates(s, req->cmdline, toks);
+        }
+    }
+
+    size_t payload_len = sizeof(access_tab_resp_t) + toks->len;
+    access_tab_resp_t *r = g_malloc0(payload_len);
+    r->kind = (toks->len > 0) ? ACCESS_TAB_KIND_TOKENS : ACCESS_TAB_KIND_NONE;
+    if (toks->len > 0)
+    {
+        memcpy(r->data, toks->str, toks->len);
+    }
+    g_string_free(toks, TRUE);
+
+    dev_ipc_message_t *resp = dev_ipc_message_create(ACCESS_MSG_TAB_RESP, DEV_MODULE_ID_CLI, msg->src_module_id,
+                                                     msg->request_id, r, payload_len, g_free);
+    if (resp)
+    {
+        dev_ipc_send_response(ctx, resp);
+        dev_ipc_message_free(resp);
+    }
+    else
+    {
+        g_free(r);
+    }
+}
+
+/** @brief 处理 ACCESS_MSG_HELP_REQ：用命令树构建帮助文本回传 */
+static void cli_handle_help_req(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+{
+    access_line_input_t *req = (access_line_input_t *)msg->payload;
+    GString *h = g_string_new("");
+    if (req && msg->payload_len >= sizeof(access_line_input_t))
+    {
+        cli_session_t *s = g_hash_table_lookup(g_cli_local->sessions, &req->line_id);
+        if (s)
+        {
+            cli_build_help_text(s, req->cmdline, h);
+        }
+    }
+
+    size_t payload_len = h->len + 1;
+    char *text = g_malloc(payload_len);
+    memcpy(text, h->str, h->len);
+    text[h->len] = '\0';
+    g_string_free(h, TRUE);
+
+    dev_ipc_message_t *resp = dev_ipc_message_create(ACCESS_MSG_HELP_RESP, DEV_MODULE_ID_CLI, msg->src_module_id,
+                                                     msg->request_id, text, payload_len, g_free);
+    if (resp)
+    {
+        dev_ipc_send_response(ctx, resp);
+        dev_ipc_message_free(resp);
+    }
+    else
+    {
+        g_free(text);
+    }
 }
 
 // ============================================================================
@@ -428,6 +426,26 @@ void cli_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     (void)ctx;
     switch (msg->msg_type)
     {
+        case ACCESS_MSG_SESSION_OPEN:
+            cli_handle_session_open(ctx, msg);
+            break;
+
+        case ACCESS_MSG_LINE_INPUT:
+            cli_handle_line_input(ctx, msg);
+            break;
+
+        case ACCESS_MSG_SESSION_CLOSE:
+            cli_handle_session_close(ctx, msg);
+            break;
+
+        case ACCESS_MSG_TAB_REQ:
+            cli_handle_tab_req(ctx, msg);
+            break;
+
+        case ACCESS_MSG_HELP_REQ:
+            cli_handle_help_req(ctx, msg);
+            break;
+
         case CLI_MSG_TYPE_SYSNAME_UPDATE:
         {
             const char *new_name = (msg->payload && msg->payload_len > 0) ? (const char *)msg->payload : "";
@@ -482,11 +500,8 @@ int cli_module_init(void)
         LOG_ERROR("CLI: timed out waiting for DEV connection");
     }
 
-    if (cli_start_telnet() != 0)
-    {
-        LOG_ERROR("CLI: telnet server start failed");
-        /* 继续 notify_ready，避免 DEV 卡在等待；运维查日志 */
-    }
+    /* Telnet 接入由 ACCESS 模块（line 层）承担，CLI 不再监听 3788，
+     * 仅作为命令引擎按 line_id 处理 ACCESS 转发来的会话/命令 RPC。 */
 
     if (dev_ipc_notify_ready(ctx) != ERRCODE_SUCCESS)
     {

@@ -106,7 +106,10 @@ def _trigger_swap_and_reconnect(rt: TopologyRuntime, device: str, target_image: 
             # 当前会话没了就重连
             cur = rt.cli_map.get(device)
             if cur is None:
-                cur = NetNexusCli(host, port, device, cmd_timeout=rt.cmd_timeout, verbose=rt.verbose)
+                cur = NetNexusCli(
+                    host, port, device, cmd_timeout=rt.cmd_timeout, verbose=rt.verbose,
+                    container=rt._container_name(device),
+                )
                 cur.connect(timeout=5)
                 rt.cli_map[device] = cur
 

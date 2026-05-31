@@ -12,6 +12,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "db_config.h"
 #include "db_main.h"
 #include "dev.h"
 #include "errcode.h"
@@ -55,26 +56,6 @@ static int create_directory_recursive(const char *path)
         return -1;
     }
 
-    return 0;
-}
-
-/**
- * @brief 获取统一数据库文件路径（所有模块共享同一个数据库文件）
- *
- * 设置了 NN_WORK_DIR 时使用 $NN_WORK_DIR/data/netnexus.db，
- * 否则回退到 ./data/netnexus.db（开发环境）。
- */
-static int get_database_path(char *path_buf, size_t buf_size)
-{
-    const char *work_dir = getenv("NN_WORK_DIR");
-    if (work_dir != NULL)
-    {
-        snprintf(path_buf, buf_size, "%s/data/netnexus.db", work_dir);
-    }
-    else
-    {
-        snprintf(path_buf, buf_size, "./data/netnexus.db");
-    }
     return 0;
 }
 
@@ -144,7 +125,11 @@ int db_create_database_file(const char *db_name, const char *db_path, sqlite3 **
 // ============================================================================
 
 /**
- * @brief 打开统一数据库文件，建立 main_conn（仅执行一次）
+ * @brief 打开运行库文件，建立 main_conn（仅执行一次）
+ *
+ * 运行库（running.db）为临时库：开机前先 db_config_boot_prepare() 清掉上次残留，
+ * 并按 startup 指针恢复对应命名快照；无 startup 指针时为空库（出厂启动）。
+ * 因此直接写运行库的配置不会跨重启保留，须经 save/startup configuration 显式落盘。
  */
 int db_initialize_database(void)
 {
@@ -153,12 +138,12 @@ int db_initialize_database(void)
         return ERRCODE_SUCCESS;
     }
 
+    /* 开机预处理：重建运行库（清残留 + 按 startup 指针恢复快照），
+     * 纯本地文件操作，必须在打开句柄前完成 */
+    db_config_boot_prepare();
+
     char db_path[512];
-    if (get_database_path(db_path, sizeof(db_path)) != 0)
-    {
-        LOG_ERROR("Failed to get unified database path");
-        return ERRCODE_FAIL;
-    }
+    db_config_running_path(db_path, sizeof(db_path));
 
     sqlite3 *handle = NULL;
     if (db_create_database_file("netnexus", db_path, &handle) != ERRCODE_SUCCESS)

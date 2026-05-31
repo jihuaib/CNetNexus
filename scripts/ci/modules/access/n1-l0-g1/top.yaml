@@ -1,0 +1,8 @@
+version: 1
+image: netnexus-ci:latest
+
+# ACCESS（line 层）特性为单机能力，无需链路/邻居。
+devices:
+  r1: {}
+
+links: []

@@ -10,14 +10,41 @@ INSTALL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # 统一工作目录：resources/data/log 均从此派生
 export NN_WORK_DIR="${INSTALL_DIR}"
 export LD_LIBRARY_PATH="${INSTALL_DIR}/lib:${LD_LIBRARY_PATH}"
+# console（串口）通道 unix socket：ACCESS 监听端与 netnexus-console 客户端共用此路径
+export NN_CONSOLE_SOCK="${INSTALL_DIR}/run/console.sock"
 
 # 创建数据目录和日志目录
 mkdir -p "${INSTALL_DIR}/data" 2>/dev/null
 mkdir -p "${INSTALL_DIR}/log" 2>/dev/null
 mkdir -p "${INSTALL_DIR}/data/cores" 2>/dev/null
+mkdir -p "${INSTALL_DIR}/run" 2>/dev/null
 
 # 放开 core dump 限制（GNS3 节点需在 extra_docker_options 加 --ulimit core=-1）
 ulimit -c unlimited 2>/dev/null || echo "[WARN] ulimit -c unlimited failed; GNS3 node needs --ulimit core=-1"
+
+
+check_mpls_modules()
+{
+    local modules="mpls_router mpls_iptunnel mpls_gso"
+    local missing=""
+
+    for mod in ${modules}; do
+        if ! grep -qw "^${mod} " /proc/modules 2>/dev/null; then
+            missing="${missing} ${mod}"
+        fi
+    done
+
+    if [ -z "${missing}" ]; then
+        echo "[INFO] MPLS kernel modules ready"
+    else
+        echo "[WARN] MPLS kernel modules missing on host:${missing}; MPLS forwarding may not work"
+        echo "[WARN] Load them on the GNS3 host: sudo modprobe mpls_router mpls_iptunnel mpls_gso"
+    fi
+}
+
+# /proc/modules is the host kernel module view. Containers should not try to
+# load host modules at device startup; just report the state clearly.
+check_mpls_modules
 
 # 某些环境（常见于部分 x86 线上节点）默认将容器内 IPv6 关闭，导致地址下发报 Permission denied。
 # 这里尽力开启 all/default/当前接口的 IPv6；失败仅告警，不中断启动。
@@ -54,9 +81,9 @@ fi
 "${INSTALL_DIR}/scripts/supervise.sh" </dev/null >>"${INSTALL_DIR}/log/supervise.log" 2>&1 &
 NETNEXUS_PID=$!
 
-# 等待端口就绪
+# 等待 console 通道就绪（串口入口，永远在线，不依赖 telnet 使能）
 for i in $(seq 1 30); do
-    if netstat -tlnp 2>/dev/null | grep -q ':3788'; then
+    if [ -S "${NN_CONSOLE_SOCK}" ]; then
         break
     fi
     sleep 0.5
@@ -67,15 +94,16 @@ echo "========================================"
 echo "        NetNexus Network Device"
 echo "========================================"
 echo ""
-echo "  Press ENTER to connect to CLI..."
+echo "  Press ENTER to connect to console..."
 echo ""
 
-# 循环：断开后可以重新回车连接
+# 循环：断开后可以重新回车连接。console 走串口通道（netnexus-console），
+# 永远可用；telnet(vty) 需在 console 上配置 transport input 后才开。
 while kill -0 $NETNEXUS_PID 2>/dev/null; do
     read -r
-    telnet 127.0.0.1 3788
+    "${INSTALL_DIR}/bin/netnexus-console"
     echo ""
-    echo "  Connection closed."
+    echo "  Console disconnected."
     echo "  Press ENTER to reconnect..."
     echo ""
 done

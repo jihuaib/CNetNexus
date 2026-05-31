@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "access.h"
 #include "cli.h"
 #include "cli_cfg.h"
 #include "cli_main.h"
@@ -421,11 +422,61 @@ static void cli_context_build_merged(cli_session_t *session, cli_match_result_t 
 /* 命令分发                                                                   */
 /* ========================================================================= */
 
+/* 自动视图切换：命令带 to-view 时切换 current_view + 写 context-out + 渲染提示符 */
+static void cli_apply_view_switch(cli_session_t *session, cli_match_result_t *result)
+{
+    if (!result->final_node || result->final_node->target_view_name == NULL)
+    {
+        return;
+    }
+    cli_view_node_t *tgt_view =
+        cli_view_find_by_name(g_cli_local->view_tree.root, result->final_node->target_view_name);
+    if (!tgt_view)
+    {
+        return;
+    }
+    uint8_t *new_ctx = NULL;
+    uint32_t new_ctx_len = 0;
+    cli_context_build_merged(session, result, result->final_node->context_out, result->final_node->num_context_out,
+                             &new_ctx, &new_ctx_len);
+
+    cli_prompt_push(session);
+    session->current_view = tgt_view;
+    format_prompt_with_ctx(tgt_view->prompt_template, new_ctx, new_ctx_len, session->prompt, sizeof(session->prompt));
+
+    if (new_ctx)
+    {
+        cli_context_set(session, new_ctx, new_ctx_len);
+        g_free(new_ctx);
+    }
+    LOG_DEBUG("Framework auto-switched to view %s, context %u bytes", tgt_view->view_name, new_ctx_len);
+}
+
 int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
 {
     if (!result || result->module_id == 0 || !session)
     {
         return ERRCODE_FAIL;
+    }
+
+    /* ACCESS line 层命令（bash / terminal length / line vty / transport input）：不走 IPC 分发，
+     * 把 group + no 前缀 + 线区间（取自 line 视图上下文）回传给 ACCESS 本地执行；
+     * 若命令带 to-view（如 line vty）仍由 CLI 完成视图切换 + context-out。 */
+    if (result->module_id == DEV_MODULE_ID_ACCESS)
+    {
+        session->line_cmd = result->group_id;
+        session->line_cmd_no = result->has_no_prefix ? 1 : 0;
+        session->line_cmd_arg1 = 0;
+        session->line_cmd_arg2 = 0;
+        uint32_t clen = 0;
+        const uint8_t *cdata = cli_context_get(session, &clen);
+        if (cdata)
+        {
+            cli_ctx_lookup_uint32(cdata, clen, ACCESS_CTX_ID_LINE_FIRST, &session->line_cmd_arg1);
+            cli_ctx_lookup_uint32(cdata, clen, ACCESS_CTX_ID_LINE_LAST, &session->line_cmd_arg2);
+        }
+        cli_apply_view_switch(session, result);
+        return ERRCODE_SUCCESS;
     }
 
     /* CFG 自身命令在创建 IPC 消息之前直接本地处理（无目标模块概念，也不需要按需启动）。 */
@@ -560,30 +611,9 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
 
             /* 自动视图切换：响应为空 + 命令有目标视图名（context-out 可选） */
             gboolean payload_empty = (!response->payload || strlen(response->payload) == 0);
-            if (payload_empty && result->final_node && result->final_node->target_view_name != NULL)
+            if (payload_empty)
             {
-                cli_view_node_t *tgt_view =
-                    cli_view_find_by_name(g_cli_local->view_tree.root, result->final_node->target_view_name);
-                if (tgt_view)
-                {
-                    uint8_t *new_ctx = NULL;
-                    uint32_t new_ctx_len = 0;
-                    cli_context_build_merged(session, result, result->final_node->context_out,
-                                             result->final_node->num_context_out, &new_ctx, &new_ctx_len);
-
-                    cli_prompt_push(session);
-                    session->current_view = tgt_view;
-                    /* 支持 {ctx:N} 占位符，用合并后的上下文值格式化提示符 */
-                    format_prompt_with_ctx(tgt_view->prompt_template, new_ctx, new_ctx_len, session->prompt,
-                                           sizeof(session->prompt));
-
-                    if (new_ctx)
-                    {
-                        cli_context_set(session, new_ctx, new_ctx_len);
-                        g_free(new_ctx);
-                    }
-                    LOG_DEBUG("Framework auto-switched to view %s, context %u bytes", tgt_view->view_name, new_ctx_len);
-                }
+                cli_apply_view_switch(session, result);
             }
 
             dev_ipc_message_free(response);

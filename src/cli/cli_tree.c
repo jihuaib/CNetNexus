@@ -298,6 +298,12 @@ uint32_t cli_tree_find_children_input_token(cli_tree_node_t *parent, const char 
     {
         if (parent->children[i]->type == CLI_NODE_ARGUMENT)
         {
+            if (token_len == 0)
+            {
+                matches[count++] = parent->children[i];
+                continue;
+            }
+
             // If param_type exists, validate the token
             if (parent->children[i]->param_type)
             {
@@ -485,6 +491,27 @@ uint32_t cli_tree_match_command_get_matches(cli_tree_node_t *root, const char *c
                                             uint32_t max_matches)
 {
     if (!root || !cmd_line || !matches)
+    {
+        return ERRCODE_SUCCESS;
+    }
+
+    size_t cmd_len = strlen(cmd_line);
+    if (cmd_len == 0)
+    {
+        return ERRCODE_SUCCESS;
+    }
+
+    const char *first_non_space = cmd_line;
+    while (*first_non_space && isspace((unsigned char)*first_non_space))
+    {
+        first_non_space++;
+    }
+    if (*first_non_space == '\0')
+    {
+        return ERRCODE_SUCCESS;
+    }
+
+    if (isspace((unsigned char)cmd_line[cmd_len - 1]))
     {
         return ERRCODE_SUCCESS;
     }

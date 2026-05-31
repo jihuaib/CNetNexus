@@ -13,6 +13,7 @@ add_subdirectory(dev)
 # =========================
 # 模块独立进程（各自构建为可执行文件）
 # =========================
+add_subdirectory(access)
 add_subdirectory(cli)
 add_subdirectory(db)
 add_subdirectory(fib)

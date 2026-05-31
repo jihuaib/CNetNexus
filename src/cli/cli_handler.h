@@ -7,70 +7,53 @@
 #ifndef CLI_HANDLER_H
 #define CLI_HANDLER_H
 
+#include <glib.h>
 #include <stdint.h>
 #include <time.h>
 
 #include "cli_history.h"
 #include "cli_view.h"
 
-// Input state machine for ANSI escape sequences
-typedef enum
-{
-    CLI_STATE_NORMAL,
-    CLI_STATE_ESC,
-    CLI_STATE_CSI,
-} cli_input_state_t;
-
 #define CLI_PROMPT_STACK_DEPTH 8
 #define CLI_PAGER_DEFAULT_LINES 24
 
-// Client session structure
+// 逻辑会话结构（ACCESS 架构）
+//
+// CLI 是纯命令引擎：以 line_id（ACCESS 线号）为键维护逻辑会话，只持有命令解析所需的
+// 视图/上下文状态；终端态（行编辑/光标/ANSI/历史/pager/socket）全部在 ACCESS line 层。
 typedef struct
 {
-    cli_view_node_t *current_view; // Current view node
-    char prompt[CLI_CLI_MAX_PROMPT_LEN];
-    cli_session_history_t history;     // Command history
-    char client_ip[MAX_CLIENT_IP_LEN]; // Client IP address
-    uint16_t client_port;              // Client TCP source port
-    time_t connect_time;               // 客户端建立连接时刻（秒）
-    int client_fd;
-    char line_buffer[MAX_CMD_LEN]; // Current command buffer
-    uint32_t line_pos;             // Current length of line_buffer
-    uint32_t cursor_pos;           // Cursor position in buffer
-    cli_input_state_t state;       // Input state machine state
+    cli_view_node_t *current_view;       // 当前视图节点
+    char prompt[CLI_CLI_MAX_PROMPT_LEN]; // 当前提示符模板（渲染前）
+    char client_ip[MAX_CLIENT_IP_LEN];   // 客户端地址（用于 show client / 全局历史）
+    uint16_t client_port;                // 客户端源端口
+    time_t connect_time;                 // 建连时刻（秒）
 
-    // Tab completion cycling state
-    uint32_t tab_cycling;           // 1 if currently cycling through matches
-    uint32_t tab_match_index;       // Current index in tab matches
-    char tab_original[MAX_CMD_LEN]; // Original input before tab cycling
-    uint32_t tab_original_pos;      // Original cursor position before tab cycling
+    uint32_t line_id;         // ACCESS 线号（= session_id）
+    GString *out;             // 命令输出缓冲（cli_send_* 累积到此，经 IPC 回传 ACCESS）
+    uint32_t close_requested; // 1=命令要求关闭本会话（顶层 exit）
 
-    // Prompt stack: saves prompt before entering sub-views
+    // ACCESS line 层本地命令：CLI 匹配到 module=ACCESS 的命令时填这两个字段，
+    // 经 INPUT_RESP 回传给 ACCESS 本地执行（bash/terminal length），不走 IPC 分发。
+    uint32_t line_cmd;    // 见 ACCESS_LINE_CMD_*，0=无
+    uint32_t line_cmd_no; // 是否带 no 前缀
+    uint32_t line_cmd_arg1; // line 命令参数1（如 transport input 的 vty 起始线号，取自 line 视图上下文）
+    uint32_t line_cmd_arg2; // line 命令参数2（vty 结束线号）
+
+    // 提示符栈：进入子视图前保存上层提示符
     char prompt_stack[CLI_PROMPT_STACK_DEPTH][CLI_CLI_MAX_PROMPT_LEN];
     uint32_t prompt_stack_depth;
 
     // 视图上下文栈：保存进入子视图时模块设置的环境变量
     uint8_t *view_context_stack[CLI_PROMPT_STACK_DEPTH]; // 每层上下文 TLV 数据
     uint32_t view_context_len[CLI_PROMPT_STACK_DEPTH];   // 每层数据长度
-
-    // Pager state for --More-- output
-    char *pager_buffer;            // Dynamically allocated output buffer
-    uint32_t pager_offset;         // Current position in buffer
-    uint32_t pager_total_len;      // Total buffer length
-    uint32_t pager_lines_per_page; // Lines per screen (default 24, 0 means disabled for this session)
-    uint32_t pager_active;         // 1 if pager is active
-
-    // Bash 模式标志：1 表示当前在后台 bash shell 中，主循环不发送提示符
-    uint32_t bash_mode;
 } cli_session_t;
 
 // Function prototypes
 void cli_cleanup(void);
-cli_session_t *cli_session_create(int client_fd);
-int cli_process_input(cli_session_t *session);
 void cli_session_destroy(cli_session_t *session);
 void send_prompt(cli_session_t *session);
-void update_prompt(cli_session_t *session);
+void cli_render_prompt(cli_session_t *session, char *out, size_t out_size);
 void update_prompt_from_template(cli_session_t *session, const char *module_prompt);
 void cli_prompt_push(cli_session_t *session);
 void cli_prompt_pop(cli_session_t *session);
@@ -79,7 +62,8 @@ const uint8_t *cli_context_get(cli_session_t *session, uint32_t *out_len);
 void cli_send_message(cli_session_t *session, const char *message);
 void cli_send_data(cli_session_t *session, const void *data, size_t len);
 int process_command(const char *cmd_line, cli_session_t *session);
+void cli_build_tab_candidates(cli_session_t *session, const char *partial, GString *out);
+void cli_build_help_text(cli_session_t *session, const char *partial, GString *out);
 void cli_pager_output(cli_session_t *session, const char *message);
-void cli_pager_stop(cli_session_t *session);
 
 #endif // CLI_HANDLER_H

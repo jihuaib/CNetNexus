@@ -149,39 +149,6 @@
             </commands>
         </group>
 
-        <!-- terminal length 0 -->
-        <group group-id="9">
-            <elements>
-                <element id="1" type="keyword">
-                    <name>no</name>
-                    <description>Restore default behavior</description>
-                </element>
-                <element id="2" type="keyword">
-                    <name>terminal</name>
-                    <description>Terminal session options</description>
-                </element>
-                <element id="3" type="keyword">
-                    <name>length</name>
-                    <description>Set terminal output length</description>
-                </element>
-                <element id="4" type="keyword">
-                    <name>0</name>
-                    <description>Disable paging for current session</description>
-                </element>
-            </elements>
-
-            <commands>
-                <command>
-                    <expression>2 3 4</expression>
-                    <views>user</views>
-                </command>
-                <command>
-                    <expression>1 2 3 4</expression>
-                    <views>user</views>
-                </command>
-            </commands>
-        </group>
-
         <!-- show this -->
         <group group-id="10">
             <elements>
@@ -199,23 +166,6 @@
                 <command>
                     <expression>1 2</expression>
                     <views>global</views>
-                </command>
-            </commands>
-        </group>
-
-        <!-- bash -->
-        <group group-id="7">
-            <elements>
-                <element id="1" type="keyword">
-                    <name>bash</name>
-                    <description>Enter bash shell</description>
-                </element>
-            </elements>
-
-            <commands>
-                <command>
-                    <expression>1</expression>
-                    <views>user</views>
                 </command>
             </commands>
         </group>

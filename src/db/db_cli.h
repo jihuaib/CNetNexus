@@ -24,7 +24,8 @@ typedef struct db_cli_resp_out
 } db_cli_resp_out_t;
 
 /** DB CLI group_id 定义（与 commands.xml 中 group-id 一致） */
-#define DB_CLI_GROUP_ID_SHOW 1 /**< show db 命令 */
+#define DB_CLI_GROUP_ID_SHOW 1   /**< show db 命令 */
+#define DB_CLI_GROUP_ID_CONFIG 2 /**< save/startup/display configuration 命令 */
 
 /**
  * @brief DB CLI 命令处理主入口

@@ -11,6 +11,7 @@ Example:
 from __future__ import annotations
 
 import argparse
+import fcntl
 import ipaddress
 import json
 import os
@@ -34,7 +35,7 @@ except ImportError:
     yaml = None
 
 
-PROMPT_RE = re.compile(br"<[A-Za-z0-9_.-]+(?:\([^>]*\))?>")
+PROMPT_RE = re.compile(br"^<[A-Za-z0-9_.-]+(?:\([^>\r\n]*\))?>", re.MULTILINE)
 IF_RE = re.compile(r"^GE-(\d+)$")
 PAGER_DISABLE_CMD = "terminal length 0"
 CORE_DIR_ENV = "NN_CORE_DIR"
@@ -130,6 +131,67 @@ class Endpoint:
     prefix6: int = 0
 
 
+class _ConsolePipe:
+    """串口/console 传输：driving ``docker exec -i <ctr> netnexus-console`` 的管道。
+
+    暴露与 telnetlib.Telnet 相同的 write/read_very_eager/close 子集，使 NetNexusCli
+    其余逻辑无需改动。console 是容器内的 AF_UNIX socket（telnet 默认关闭后唯一可用入口），
+    宿主无法直连，故借 docker exec 跑内置客户端经其 stdio 中转。
+    """
+
+    NETNEXUS_CONSOLE_BIN = "/opt/netnexus/bin/netnexus-console"
+
+    def __init__(self, container: str) -> None:
+        self.container = container
+        self.proc = subprocess.Popen(
+            ["docker", "exec", "-i", container, self.NETNEXUS_CONSOLE_BIN],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        # stdout 置非阻塞，使 read_very_eager 不阻塞（与 telnetlib 语义一致）
+        fd = self.proc.stdout.fileno()
+        flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+        fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+
+    def write(self, data: bytes) -> None:
+        try:
+            self.proc.stdin.write(data)
+            self.proc.stdin.flush()
+        except (BrokenPipeError, OSError) as exc:
+            raise EOFError(f"console pipe write failed: {exc}") from exc
+
+    def read_very_eager(self) -> bytes:
+        if self.proc.poll() is not None:
+            # 客户端已退出（如 console.sock 尚未就绪）：视作连接关闭，触发上层重连/超时
+            raise EOFError("netnexus-console process exited")
+        try:
+            # 直接 os.read 裸 fd（非阻塞）：无数据抛 BlockingIOError，EOF 返回 b""
+            data = os.read(self.proc.stdout.fileno(), 65536)
+        except BlockingIOError:
+            return b""
+        except OSError as exc:
+            raise EOFError(f"console pipe read failed: {exc}") from exc
+        if data == b"":
+            raise EOFError("console stdout closed")
+        return data
+
+    def close(self) -> None:
+        try:
+            if self.proc.stdin:
+                self.proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            self.proc.terminate()
+            self.proc.wait(timeout=3)
+        except Exception:
+            try:
+                self.proc.kill()
+            except Exception:
+                pass
+
+
 class NetNexusCli:
     def __init__(
         self,
@@ -139,6 +201,7 @@ class NetNexusCli:
         cmd_timeout: int = 20,
         verbose: bool = False,
         log_commands: bool = True,
+        container: str | None = None,
     ) -> None:
         self.host = host
         self.port = port
@@ -146,16 +209,24 @@ class NetNexusCli:
         self.cmd_timeout = cmd_timeout
         self.verbose = verbose
         self.log_commands = log_commands
-        self.tn: telnetlib.Telnet | None = None
+        # container 非空 → 走 console（串口）传输（docker exec netnexus-console）；
+        # 否则回退 telnet（仅在显式使能 telnet 的场景）。
+        self.container = container
+        self.tn: telnetlib.Telnet | _ConsolePipe | None = None
         self._rx_buf = bytearray()
         self._last_prompt = f"<{self.name}>"
+
+    def _open_transport(self) -> telnetlib.Telnet | _ConsolePipe:
+        if self.container:
+            return _ConsolePipe(self.container)
+        return telnetlib.Telnet(self.host, self.port, timeout=5)
 
     def connect(self, timeout: int = 25) -> None:
         deadline = time.time() + timeout
         last_err: Exception | None = None
         while time.time() < deadline:
             try:
-                self.tn = telnetlib.Telnet(self.host, self.port, timeout=5)
+                self.tn = self._open_transport()
                 self._read_until_prompt(timeout=6)
                 self.disable_pager(timeout=min(self.cmd_timeout, 6))
                 return
@@ -363,8 +434,8 @@ def validate_top(top: dict[str, Any]) -> None:
 
     if not isinstance(devices, dict) or not devices:
         raise ValueError("top.devices must be a non-empty mapping")
-    if not isinstance(links, list) or not links:
-        raise ValueError("top.links must be a non-empty list")
+    if not isinstance(links, list):
+        raise ValueError("top.links must be a list")
 
     for dev, cfg in devices.items():
         if not isinstance(cfg, dict):
@@ -809,7 +880,15 @@ class TopologyRuntime:
         return text
 
     def _connect_cli(self, device: str, host: str, *, timeout: int) -> None:
-        cli = NetNexusCli(host, 3788, device, cmd_timeout=self.cmd_timeout, verbose=self.verbose)
+        # 经串口/console 连接：telnet 默认关闭，console（容器内 unix socket）是唯一稳定入口。
+        cli = NetNexusCli(
+            host,
+            3788,
+            device,
+            cmd_timeout=self.cmd_timeout,
+            verbose=self.verbose,
+            container=self._container_name(device),
+        )
         cli.connect(timeout=timeout)
         self.cli_map[device] = cli
 
@@ -1110,7 +1189,10 @@ class TopologyRuntime:
                 continue
             new_cli: NetNexusCli | None = None
             try:
-                new_cli = NetNexusCli(host, port, device, cmd_timeout=self.cmd_timeout, verbose=self.verbose)
+                new_cli = NetNexusCli(
+                    host, port, device, cmd_timeout=self.cmd_timeout, verbose=self.verbose,
+                    container=self._container_name(device),
+                )
                 new_cli.connect(timeout=min(10, max(2, int(deadline - time.time()))))
 
                 # Two probes reduce false-positive reconnect against pre-reboot/unstable state.
@@ -1177,7 +1259,10 @@ class TopologyRuntime:
         while time.time() < deadline:
             new_cli: NetNexusCli | None = None
             try:
-                new_cli = NetNexusCli(host, port, device, cmd_timeout=self.cmd_timeout, verbose=self.verbose)
+                new_cli = NetNexusCli(
+                    host, port, device, cmd_timeout=self.cmd_timeout, verbose=self.verbose,
+                    container=self._container_name(device),
+                )
                 new_cli.connect(timeout=min(10, max(2, int(deadline - time.time()))))
                 self.cli_map[device] = new_cli
                 remaining = max(10, int(deadline - time.time()))

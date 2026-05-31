@@ -1,0 +1,285 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ACCESS（line 层）命令。module-id=13，由 CLI 自动发现并加载进命令树，因此能在 ?/Tab 显示、
+  由命令树解析；CLI 匹配到 module=ACCESS 的命令时不走 IPC 分发，而是把 group-id（+ no 前缀
+  + line 视图上下文里的 vty 区间）经 INPUT_RESP 回传给 ACCESS 在本线本地执行。
+  group-id 必须与 include/access.h 的 ACCESS_LINE_CMD_* 对齐。
+-->
+<configuration module-id="13">
+    <!-- line 配置视图 -->
+    <views>
+        <view view-name="line">
+            <template>&lt;NetNexus(config-line-vty{ctx:20}-{ctx:21})&gt;</template>
+        </view>
+        <!-- console 线视图：仅可进入（串口固定存在），内部暂不支持配置命令 -->
+        <view view-name="line-console">
+            <template>&lt;NetNexus(config-line-console0)&gt;</template>
+        </view>
+    </views>
+
+    <command_groups>
+        <!-- bash (ACCESS_LINE_CMD_BASH=1)：进入 bash shell -->
+        <group group-id="1">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>bash</name>
+                    <description>Enter bash shell</description>
+                </element>
+            </elements>
+            <commands>
+                <command>
+                    <expression>1</expression>
+                    <views>user</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- terminal length 0 / no terminal length 0 (ACCESS_LINE_CMD_TERMINAL_LENGTH=2) -->
+        <group group-id="2">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>no</name>
+                    <description>Restore default behavior</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>terminal</name>
+                    <description>Terminal session options</description>
+                </element>
+                <element id="3" type="keyword">
+                    <name>length</name>
+                    <description>Set terminal output length</description>
+                </element>
+                <element id="4" type="keyword">
+                    <name>0</name>
+                    <description>Disable paging for current session</description>
+                </element>
+            </elements>
+            <commands>
+                <command>
+                    <expression>2 3 4</expression>
+                    <views>user</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4</expression>
+                    <views>user</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- line vty <first> <last>：进入 line 视图（ACCESS_LINE_CMD_LINE_ENTER=3） -->
+        <group group-id="3">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>line</name>
+                    <description>Configure a terminal line</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>vty</name>
+                    <description>Virtual terminal (telnet/ssh) lines</description>
+                </element>
+                <element id="3" cfg-id="1" type="parameter">
+                    <name>&lt;first-line&gt;</name>
+                    <type>uint(0-4)</type>
+                    <description>First vty line number</description>
+                </element>
+                <element id="4" cfg-id="2" type="parameter">
+                    <name>&lt;last-line&gt;</name>
+                    <type>uint(0-4)</type>
+                    <description>Last vty line number</description>
+                </element>
+            </elements>
+            <commands>
+                <command>
+                    <expression>1 2 3 4</expression>
+                    <views>config</views>
+                    <to-view>line</to-view>
+                    <context-out>
+                        <entry ctx-id="20" from-param="1"/>
+                        <entry ctx-id="21" from-param="2"/>
+                    </context-out>
+                </command>
+            </commands>
+        </group>
+
+        <!-- transport input telnet (ACCESS_LINE_CMD_TRANSPORT_TELNET=4) -->
+        <group group-id="4">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>transport</name>
+                    <description>Define transport protocols for line</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>input</name>
+                    <description>Define inbound transport protocols</description>
+                </element>
+                <element id="3" type="keyword">
+                    <name>telnet</name>
+                    <description>Allow telnet (TCP 23)</description>
+                </element>
+            </elements>
+            <commands>
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>line</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- transport input ssh (ACCESS_LINE_CMD_TRANSPORT_SSH=5，占位) -->
+        <group group-id="5">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>transport</name>
+                    <description>Define transport protocols for line</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>input</name>
+                    <description>Define inbound transport protocols</description>
+                </element>
+                <element id="3" type="keyword">
+                    <name>ssh</name>
+                    <description>Allow SSH (not yet implemented)</description>
+                </element>
+            </elements>
+            <commands>
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>line</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- transport input all (ACCESS_LINE_CMD_TRANSPORT_ALL=6) -->
+        <group group-id="6">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>transport</name>
+                    <description>Define transport protocols for line</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>input</name>
+                    <description>Define inbound transport protocols</description>
+                </element>
+                <element id="3" type="keyword">
+                    <name>all</name>
+                    <description>Allow all transports (telnet + ssh)</description>
+                </element>
+            </elements>
+            <commands>
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>line</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- transport input none / no transport input (ACCESS_LINE_CMD_TRANSPORT_NONE=7) -->
+        <group group-id="7">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>no</name>
+                    <description>Disable</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>transport</name>
+                    <description>Define transport protocols for line</description>
+                </element>
+                <element id="3" type="keyword">
+                    <name>input</name>
+                    <description>Define inbound transport protocols</description>
+                </element>
+                <element id="4" type="keyword">
+                    <name>none</name>
+                    <description>Disallow all remote login on these lines</description>
+                </element>
+            </elements>
+            <commands>
+                <command>
+                    <expression>2 3 4</expression>
+                    <views>line</views>
+                </command>
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>line</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- telnet server enable / no telnet server enable (ACCESS_LINE_CMD_TELNET_SERVER=8)：全局监听开关 -->
+        <group group-id="8">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>no</name>
+                    <description>Disable</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>telnet</name>
+                    <description>Telnet service</description>
+                </element>
+                <element id="3" type="keyword">
+                    <name>server</name>
+                    <description>Telnet server</description>
+                </element>
+                <element id="4" type="keyword">
+                    <name>enable</name>
+                    <description>Enable telnet server (listen on TCP 23)</description>
+                </element>
+            </elements>
+            <commands>
+                <command>
+                    <expression>2 3 4</expression>
+                    <views>config</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4</expression>
+                    <views>config</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- line console 0：进入 console 线视图（group-id=10，仅视图切换，无配置动作） -->
+        <group group-id="10">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>line</name>
+                    <description>Configure a terminal line</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>console</name>
+                    <description>Console (serial) line</description>
+                </element>
+                <element id="3" type="keyword">
+                    <name>0</name>
+                    <description>Console line number</description>
+                </element>
+            </elements>
+            <commands>
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>config</views>
+                    <to-view>line-console</to-view>
+                </command>
+            </commands>
+        </group>
+
+        <!-- show line (ACCESS_LINE_CMD_SHOW_LINE=9)：显示各线类型/transport/状态 -->
+        <group group-id="9">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>show</name>
+                    <description>Display information</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>line</name>
+                    <description>Terminal line status and configuration</description>
+                </element>
+            </elements>
+            <commands>
+                <command>
+                    <expression>1 2</expression>
+                    <views>global</views>
+                </command>
+            </commands>
+        </group>
+    </command_groups>
+</configuration>

@@ -34,6 +34,43 @@ mkdir -p "${CORE_DIR}"
 # 放开 core dump 限制（继承到 netnexus 进程）
 ulimit -c unlimited
 
+
+load_mpls_modules_best_effort()
+{
+    local failed=0
+    local modules="mpls_router mpls_iptunnel mpls_gso"
+
+    if ! command -v modprobe >/dev/null 2>&1; then
+        echo "[WARN] modprobe not available; MPLS kernel modules not auto-loaded"
+        return 0
+    fi
+
+    for mod in ${modules}; do
+        if grep -qw "^${mod} " /proc/modules 2>/dev/null; then
+            continue
+        fi
+
+        if [ "$(id -u)" -eq 0 ]; then
+            if ! modprobe "${mod}" 2>/dev/null; then
+                echo "[WARN] failed to load kernel module ${mod}; MPLS forwarding may not work"
+                failed=1
+            fi
+        else
+            if ! command -v sudo >/dev/null 2>&1 || ! sudo -n modprobe "${mod}" 2>/dev/null; then
+                echo "[WARN] failed to load kernel module ${mod}; run: sudo modprobe ${mod}"
+                failed=1
+            fi
+        fi
+    done
+
+    if [ "${failed}" -eq 0 ]; then
+        echo "[INFO] MPLS kernel modules ready"
+    fi
+}
+
+# MPLS is required by FIB for label forwarding; failure is non-fatal.
+load_mpls_modules_best_effort
+
 # Set environment for development
 export LD_LIBRARY_PATH="${BUILD_DIR}/lib:${LD_LIBRARY_PATH}"
 

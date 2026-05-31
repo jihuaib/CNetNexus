@@ -42,6 +42,8 @@
 #define DEV_MODULE_ID_FIB 0x0000000B
 /** LDP 模块 */
 #define DEV_MODULE_ID_LDP 0x0000000C
+/** ACCESS 接入层模块（line 层：telnet/串口/ssh 接入） */
+#define DEV_MODULE_ID_ACCESS 0x0000000D
 
 /** 无效文件描述符 */
 #define DEV_INVALID_FD (-1)
@@ -80,6 +82,8 @@
 #define DEV_MODULE_PORT_FIB 4011
 /** LDP 模块 IPC 监听端口 */
 #define DEV_MODULE_PORT_LDP 4012
+/** ACCESS 接入层模块 IPC 监听端口 */
+#define DEV_MODULE_PORT_ACCESS 4013
 
 // ============================================================================
 // IPC 前向声明
@@ -146,6 +150,8 @@ typedef dev_ipc_disconnect_handler_fn dev_ipc_disconnect_handler_fn;
 #define DEV_IPC_CATEGORY_FIB 0x000B
 /** LDP 模块消息大类 */
 #define DEV_IPC_CATEGORY_LDP 0x000C
+/** ACCESS 接入层模块消息大类 */
+#define DEV_IPC_CATEGORY_ACCESS 0x000D
 
 // ============================================================================
 // DEV IPC 消息结构

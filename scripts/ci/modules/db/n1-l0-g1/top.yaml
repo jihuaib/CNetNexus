@@ -1,0 +1,8 @@
+version: 1
+image: netnexus-ci:latest
+
+# DB configuration snapshot management is local to one device.
+devices:
+  r1: {}
+
+links: []

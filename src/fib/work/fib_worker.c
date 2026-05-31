@@ -143,7 +143,12 @@ static int fib_worker_prepare_os(void)
         return ERRCODE_FAIL;
     }
 
-    return fib_os_mpls_configure(cfg.linux_platform_labels, cfg.linux_mpls_input);
+    if (fib_os_mpls_configure(cfg.linux_platform_labels, cfg.linux_mpls_input) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("FIB: MPLS kernel setup failed; continuing startup without MPLS forwarding");
+    }
+
+    return ERRCODE_SUCCESS;
 }
 
 static int tunnel_ready(const fib_tunnel_entry_t *tunnel)

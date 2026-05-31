@@ -20,6 +20,30 @@ mkdir -p "${INSTALL_DIR}/data/cores"
 # 注意：容器内还需 docker 启动时带 --ulimit core=-1 才能突破 daemon 默认硬上限
 ulimit -c unlimited 2>/dev/null || echo "[WARN] ulimit -c unlimited failed; check docker --ulimit core=-1"
 
+
+check_mpls_modules()
+{
+    local modules="mpls_router mpls_iptunnel mpls_gso"
+    local missing=""
+
+    for mod in ${modules}; do
+        if ! grep -qw "^${mod} " /proc/modules 2>/dev/null; then
+            missing="${missing} ${mod}"
+        fi
+    done
+
+    if [ -z "${missing}" ]; then
+        echo "[INFO] MPLS kernel modules ready"
+    else
+        echo "[WARN] MPLS kernel modules missing on host:${missing}; MPLS forwarding may not work"
+        echo "[WARN] Load them on the host: sudo modprobe mpls_router mpls_iptunnel mpls_gso"
+    fi
+}
+
+# /proc/modules is the kernel module view. Startup only reports MPLS readiness;
+# host module loading belongs in deploy.sh or manual host setup.
+check_mpls_modules
+
 # 某些环境（常见于部分 x86 线上节点）默认将容器内 IPv6 关闭，导致地址下发报 Permission denied。
 # 这里尽力开启 all/default/当前接口的 IPv6；失败仅告警，不中断启动。
 if [ -d /proc/sys/net/ipv6/conf ]; then

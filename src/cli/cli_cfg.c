@@ -555,7 +555,9 @@ static void handle_op_exit(cli_session_t *session)
     cli_view_node_t *parent_view = session->current_view->parent;
     if (parent_view == NULL)
     {
-        close(session->client_fd);
+        /* 顶层 exit：ACCESS 架构下 CLI 不持有 socket，置关闭标志，
+         * 由 LINE_INPUT 响应携带 close flag 通知 ACCESS 关连接。 */
+        session->close_requested = 1;
     }
     else
     {
@@ -577,173 +579,6 @@ static void handle_op_config(cli_session_t *session)
         session->current_view = config_view;
         update_prompt_from_template(session, session->current_view->prompt_template);
     }
-}
-
-// ============================================================================
-// Bash 模式：转发 telnet 会话与 PTY 之间的数据
-// ============================================================================
-
-/**
- * @brief bash 桥接线程上下文
- */
-typedef struct
-{
-    cli_session_t *session; /**< 当前 CLI 会话 */
-    int client_fd;          /**< 客户端 socket fd */
-} bash_bridge_ctx_t;
-
-/**
- * @brief bash 桥接线程：在客户端 socket 与 bash PTY 之间双向转发数据
- */
-static void *bash_bridge_thread(void *arg)
-{
-    pthread_setname_np(pthread_self(), "cfg-bash");
-    bash_bridge_ctx_t *ctx = (bash_bridge_ctx_t *)arg;
-    cli_session_t *session = ctx->session;
-    int client_fd = ctx->client_fd;
-    g_free(ctx);
-
-    /* 创建 PTY 并 fork bash */
-    int pty_master;
-    struct winsize ws = {.ws_row = 24, .ws_col = 80, .ws_xpixel = 0, .ws_ypixel = 0};
-    pid_t pid = forkpty(&pty_master, NULL, NULL, &ws);
-
-    if (pid < 0)
-    {
-        /* fork 失败，恢复 epoll 监听 */
-        cli_send_message(session, "Error: Failed to start bash.\r\n");
-        session->bash_mode = 0;
-        struct epoll_event ev;
-        ev.events = EPOLLIN;
-        ev.data.fd = client_fd;
-        epoll_ctl(g_cli_local->epoll_fd, EPOLL_CTL_ADD, client_fd, &ev);
-        send_prompt(session);
-        return NULL;
-    }
-
-    if (pid == 0)
-    {
-        /* 子进程：执行 bash */
-        setenv("TERM", "xterm", 1);
-        execlp("/bin/bash", "bash", "--login", NULL);
-        _exit(1);
-    }
-
-    /* 父进程：双向数据转发 */
-    char buf[4096];
-    struct pollfd fds[2];
-
-    while (1)
-    {
-        fds[0].fd = client_fd;
-        fds[0].events = POLLIN;
-        fds[1].fd = pty_master;
-        fds[1].events = POLLIN;
-
-        int ret = poll(fds, 2, 500);
-        if (ret < 0)
-        {
-            if (errno == EINTR)
-            {
-                continue;
-            }
-            break;
-        }
-
-        /* 检查 bash 是否已退出 */
-        int status;
-        if (waitpid(pid, &status, WNOHANG) == pid)
-        {
-            pid = -1;
-            break;
-        }
-
-        if (fds[0].revents & POLLIN)
-        {
-            ssize_t n = read(client_fd, buf, sizeof(buf));
-            if (n <= 0)
-            {
-                /* 客户端断开 */
-                break;
-            }
-            if (write(pty_master, buf, (size_t)n) < 0)
-            {
-                break;
-            }
-        }
-
-        if (fds[1].revents & POLLIN)
-        {
-            ssize_t n = read(pty_master, buf, sizeof(buf));
-            if (n <= 0)
-            {
-                /* bash 已退出或 PTY 关闭 */
-                break;
-            }
-            if (write(client_fd, buf, (size_t)n) < 0)
-            {
-                break;
-            }
-        }
-    }
-
-    /* 清理：等待 bash 子进程退出 */
-    if (pid > 0)
-    {
-        kill(pid, SIGTERM);
-        waitpid(pid, NULL, 0);
-    }
-    close(pty_master);
-
-    /* 恢复 epoll 监听，返回 CLI */
-    session->bash_mode = 0;
-    struct epoll_event ev;
-    ev.events = EPOLLIN;
-    ev.data.fd = client_fd;
-    epoll_ctl(g_cli_local->epoll_fd, EPOLL_CTL_ADD, client_fd, &ev);
-
-    cli_send_message(session, "\r\nBash session ended, returning to CLI...\r\n");
-    send_prompt(session);
-
-    return NULL;
-}
-
-/**
- * @brief bash (group_id=7)：暂时将客户端 socket 移出 epoll，由后台线程桥接 bash PTY
- */
-static void handle_op_bash(cli_session_t *session)
-{
-    /* 从 epoll 中移除，防止主线程继续读取该 socket */
-    epoll_ctl(g_cli_local->epoll_fd, EPOLL_CTL_DEL, session->client_fd, NULL);
-
-    /* 标记会话进入 bash 模式（主循环不再发送 CLI 提示符） */
-    session->bash_mode = 1;
-
-    cli_send_message(session, "\r\nEntering bash shell, type 'exit' to return to CLI.\r\n\r\n");
-
-    /* 创建桥接线程 */
-    bash_bridge_ctx_t *ctx = g_malloc(sizeof(*ctx));
-    ctx->session = session;
-    ctx->client_fd = session->client_fd;
-
-    pthread_t tid;
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-
-    if (pthread_create(&tid, &attr, bash_bridge_thread, ctx) != 0)
-    {
-        /* 线程创建失败，立即恢复 */
-        g_free(ctx);
-        session->bash_mode = 0;
-        struct epoll_event ev;
-        ev.events = EPOLLIN;
-        ev.data.fd = session->client_fd;
-        epoll_ctl(g_cli_local->epoll_fd, EPOLL_CTL_ADD, session->client_fd, &ev);
-        cli_send_message(session, "Error: Failed to create bash thread.\r\n");
-    }
-
-    pthread_attr_destroy(&attr);
 }
 
 /**
@@ -892,11 +727,11 @@ static void show_client_iter(gpointer key, gpointer value, gpointer user_data)
 
     const char *view_name =
         (s->current_view && s->current_view->view_name[0] != '\0') ? s->current_view->view_name : "?";
-    const char *mode = s->bash_mode ? "bash" : "cli";
+    const char *mode = "cli";
 
     char line[320];
-    snprintf(line, sizeof(line), "  %-3u  %-15s  %-5u  %-19s  %-13s  %-5s  %-4s  %s\r\n", cx->idx, s->client_ip,
-             s->client_port, time_str, up_str, mode, s->pager_lines_per_page == 0 ? "off" : "on", view_name);
+    snprintf(line, sizeof(line), "  %-3u  %-15s  %-5u  %-19s  %-13s  %-5s  %s\r\n", cx->idx, s->client_ip,
+             s->client_port, time_str, up_str, mode, view_name);
     g_string_append(cx->out, line);
     cx->idx++;
 }
@@ -904,9 +739,8 @@ static void show_client_iter(gpointer key, gpointer value, gpointer user_data)
 static void handle_show_client(cli_session_t *session)
 {
     GString *out = g_string_new("\r\nCLI Connected Clients:\r\n");
-    g_string_append(out, "  No.  Client IP        Port   Login Time           Uptime         Mode   Page  View\r\n");
-    g_string_append(out,
-                    "  ---  ---------------  -----  -------------------  -------------  -----  ----  --------\r\n");
+    g_string_append(out, "  No.  Client IP        Port   Login Time           Uptime         Mode   View\r\n");
+    g_string_append(out, "  ---  ---------------  -----  -------------------  -------------  -----  --------\r\n");
 
     if (!g_cli_local || !g_cli_local->sessions || g_hash_table_size(g_cli_local->sessions) == 0)
     {
@@ -921,28 +755,6 @@ static void handle_show_client(cli_session_t *session)
     g_string_append(out, "\r\n");
     cli_pager_output(session, out->str);
     g_string_free(out, TRUE);
-}
-
-/**
- * @brief terminal length 0 / no terminal length 0 (group_id=9)：切换当前会话分页输出
- */
-static void handle_terminal_length_zero(cli_session_t *session, uint8_t flags)
-{
-    if (!session)
-    {
-        return;
-    }
-
-    if (flags & CLI_PAYLOAD_FLAG_NO_CMD)
-    {
-        session->pager_lines_per_page = CLI_PAGER_DEFAULT_LINES;
-        cli_send_message(session, "CLI pager restored to default for this session.\r\n");
-        return;
-    }
-
-    session->pager_lines_per_page = 0;
-    cli_pager_stop(session);
-    cli_send_message(session, "CLI pager disabled for this session.\r\n");
 }
 
 /**
@@ -1009,14 +821,8 @@ int cli_handle(dev_ipc_message_t *msg, cli_session_t *session)
         case CLI_GROUP_ID_END:
             handle_op_end(session);
             break;
-        case CLI_GROUP_ID_BASH:
-            handle_op_bash(session);
-            break;
         case CLI_GROUP_ID_SHOW_CONTEXT:
             handle_show_context(session);
-            break;
-        case CLI_GROUP_ID_TERMINAL_LENGTH_ZERO:
-            handle_terminal_length_zero(session, parser.flags);
             break;
         case CLI_GROUP_ID_SHOW_THIS:
             handle_show_this(session);

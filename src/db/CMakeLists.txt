@@ -1,6 +1,7 @@
 set(DB_SOURCES
     db_main.c
     db_schema.c
+    db_config.c
     db_api.c
     db_cli.c
     db_serialize.c

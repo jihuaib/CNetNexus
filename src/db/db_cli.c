@@ -11,6 +11,7 @@
 
 #include "cli.h"
 #include "db.h"
+#include "db_config.h"
 #include "db_main.h"
 #include "dev.h"
 #include "errcode.h"
@@ -53,7 +54,7 @@ static int handle_db_show_table_list(dev_ipc_message_t *msg)
     }
 
     g_string_append_printf(resp_out,
-                           "Tables in netnexus.db:\r\n"
+                           "Tables in running.db:\r\n"
                            "  %-40s\r\n"
                            "  ----------------------------------------\r\n",
                            "Name");
@@ -328,6 +329,141 @@ static int handle_db_show_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 }
 
 // ============================================================================
+// save / startup / show configuration
+// ============================================================================
+
+/* config 组动作（与 commands.xml cfg-id 对齐） */
+#define DB_CFG_ACT_SAVE 1    /**< save configuration [<name>] */
+#define DB_CFG_ACT_STARTUP 2 /**< startup configuration <name> */
+#define DB_CFG_ACT_SHOW 3    /**< show startup configuration */
+#define DB_CFG_PARAM_NAME 4  /**< <name> 参数 */
+
+static int handle_db_config_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    gboolean has_save = FALSE;
+    gboolean has_startup = FALSE;
+    gboolean has_show = FALSE;
+    char *name = NULL;
+
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (CLI_TLV_IS_CTX(&entry))
+        {
+            cli_tlv_entry_free(&entry);
+            continue;
+        }
+
+        switch (entry.cfg_id)
+        {
+            case DB_CFG_ACT_SAVE:
+                has_save = TRUE;
+                break;
+            case DB_CFG_ACT_STARTUP:
+                has_startup = TRUE;
+                break;
+            case DB_CFG_ACT_SHOW:
+                has_show = TRUE;
+                break;
+            case DB_CFG_PARAM_NAME:
+            {
+                const char *text = cli_tlv_entry_get_text(&entry);
+                if (text)
+                {
+                    g_free(name);
+                    name = g_strdup(text);
+                }
+                break;
+            }
+            default:
+                break;
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    int ret = ERRCODE_FAIL;
+    char *err = NULL;
+    char outbuf[256];
+
+    if (has_show)
+    {
+        /* show startup configuration */
+        char cur[DB_CONFIG_NAME_MAX + 1];
+        db_config_get_startup(cur, sizeof(cur));
+        if (cur[0] != '\0')
+        {
+            snprintf(outbuf, sizeof(outbuf), "Startup configuration: %s\r\n", cur);
+        }
+        else
+        {
+            snprintf(outbuf, sizeof(outbuf), "Startup configuration: <none> (factory default)\r\n");
+        }
+        db_send_cli_response(msg, outbuf);
+        ret = ERRCODE_SUCCESS;
+    }
+    else if (has_save)
+    {
+        /* save configuration [<name>] */
+        ret = db_config_save(name, &err);
+        if (ret == ERRCODE_SUCCESS)
+        {
+            char saved[DB_CONFIG_NAME_MAX + 1];
+            if (name && name[0] != '\0')
+            {
+                snprintf(saved, sizeof(saved), "%s", name);
+            }
+            else
+            {
+                db_config_get_startup(saved, sizeof(saved));
+                if (saved[0] == '\0')
+                {
+                    snprintf(saved, sizeof(saved), "%s", DB_CONFIG_DEFAULT_NAME);
+                }
+            }
+            snprintf(outbuf, sizeof(outbuf), "Configuration saved as '%s'.\r\n", saved);
+            db_send_cli_response(msg, outbuf);
+        }
+        else
+        {
+            snprintf(outbuf, sizeof(outbuf), "Error: %s.\r\n", err ? err : "save failed");
+            db_send_cli_response(msg, outbuf);
+        }
+    }
+    else if (has_startup)
+    {
+        /* startup configuration <name> */
+        if (!name || name[0] == '\0')
+        {
+            db_send_cli_response(msg, "Error: Missing configuration name.\r\n");
+            ret = ERRCODE_FAIL;
+        }
+        else
+        {
+            ret = db_config_set_startup(name, &err);
+            if (ret == ERRCODE_SUCCESS)
+            {
+                snprintf(outbuf, sizeof(outbuf), "Startup configuration set to '%s'.\r\n", name);
+                db_send_cli_response(msg, outbuf);
+            }
+            else
+            {
+                snprintf(outbuf, sizeof(outbuf), "Error: %s.\r\n", err ? err : "startup failed");
+                db_send_cli_response(msg, outbuf);
+            }
+        }
+    }
+    else
+    {
+        db_send_cli_response(msg, "Error: Unknown configuration command.\r\n");
+        ret = ERRCODE_FAIL;
+    }
+
+    g_free(err);
+    g_free(name);
+    return ret;
+}
+
+// ============================================================================
 // 动态候选值查询：返回所有用户表名
 // ============================================================================
 
@@ -422,6 +558,9 @@ int db_cli_process_command(dev_ipc_message_t *msg)
     {
         case DB_CLI_GROUP_ID_SHOW:
             result = handle_db_show_cmd(msg, &parser);
+            break;
+        case DB_CLI_GROUP_ID_CONFIG:
+            result = handle_db_config_cmd(msg, &parser);
             break;
         default:
             LOG_WARN("Unknown group_id: %u", parser.group_id);
