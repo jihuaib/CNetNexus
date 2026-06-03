@@ -17,6 +17,11 @@
         </view>
     </views>
 
+    <show-this>
+        <view name="line"/>
+        <view name="line-console"/>
+    </show-this>
+
     <command_groups>
         <!-- bash (ACCESS_LINE_CMD_BASH=1)：进入 bash shell -->
         <group group-id="1">

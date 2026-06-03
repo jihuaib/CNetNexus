@@ -13,6 +13,8 @@
 #include "bgp_rib.h"
 #include "bgp_route_flush.h"
 #include "bgp_update_group.h"
+#include "bgp_vrf_export.h"
+#include "bgp_vrf_import.h"
 #include "bgp_worker.h"
 #include "log.h"
 
@@ -210,6 +212,8 @@ void bgp_calc_run_one(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
         }
         bgp_update_group_enqueue_withdraw(inst, nlri);
         bgp_import_rib_on_calc_done(inst, head, old_best, NULL);
+        bgp_vrf_export_on_calc_done(inst, head);
+        bgp_vrf_import_on_calc_done(inst, head);
         char key[BGP_NLRI_KEY_MAX];
         bgp_nlri_to_str(nlri, key, sizeof(key));
         LOG_DEBUG("BGP: calc_run_one WITHDRAW key=%s afi=%u safi=%u", key, (unsigned)inst->afi, (unsigned)inst->safi);
@@ -236,6 +240,8 @@ void bgp_calc_run_one(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
         }
         bgp_update_group_enqueue_withdraw(inst, nlri);
         bgp_import_rib_on_calc_done(inst, head, old_best, NULL);
+        bgp_vrf_export_on_calc_done(inst, head);
+        bgp_vrf_import_on_calc_done(inst, head);
         char key[BGP_NLRI_KEY_MAX];
         bgp_nlri_to_str(nlri, key, sizeof(key));
         LOG_DEBUG("BGP: calc_run_one WITHDRAW(all-invalid) key=%s afi=%u safi=%u", key, (unsigned)inst->afi,
@@ -274,6 +280,10 @@ void bgp_calc_run_one(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
     }
 
     bgp_import_rib_on_calc_done(inst, head, old_best, new_best);
+    /* 私网 VRF 的 ipv4-unicast best 变化时，若 vpnv4 已使能，补推到 vrf-export pending */
+    bgp_vrf_export_on_calc_done(inst, head);
+    /* public vpnv4 best 变化时，按 import-RT 把 best 导入/撤出命中的私网 VRF */
+    bgp_vrf_import_on_calc_done(inst, head);
 
     char key[BGP_NLRI_KEY_MAX];
     bgp_nlri_to_str(&head->nlri, key, sizeof(key));

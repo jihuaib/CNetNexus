@@ -19,6 +19,7 @@
 #include "bgp_rd.h"
 #include "bgp_rib.h"
 #include "bgp_vrf.h"
+#include "bgp_vrf_export.h"
 #include "bgp_worker.h"
 #include "log.h"
 #include "net_addr.h"
@@ -1414,12 +1415,26 @@ int bgp_subgroup_process_queues(bgp_nh_subgroup_t *sg, bgp_instance_t *inst, int
         {
             continue;
         }
+        bgp_rib_t *rib_for_nlri = bgp_inst_rib_for_nlri(inst, nlri);
+        const bgp_route_node_t *best = rib_for_nlri ? bgp_rib_find_best(rib_for_nlri, nlri) : NULL;
+
+        /* vpnv4 本地导出路由：loc-rib 不带标签，发送时按 per-vrf 申请标签注入 NLRI;
+         * 申请不到则 hold（本次不通告），待标签可得后下次 pub 重试。 */
+        if (best && inst->safi == BGP_SAFI_VPN_UNICAST && BIT_TEST(best->flags, BGP_ROUTE_FLAG_IMPORT))
+        {
+            uint32_t label = bgp_vrf_export_resolve_send_label(best);
+            if (label == 0u)
+            {
+                continue; /* hold：nlri 堆副本最终随 ann_nlris 统一释放 */
+            }
+            nlri->prefix.label = label;
+            nlri->prefix.has_label = true;
+        }
+
         announce_bucket_t *bk = announce_bucket_find_or_create(&buckets, entry->attr_ref, &entry->nexthop);
 
         announce_item_t *item = g_new0(announce_item_t, 1);
         item->nlri = nlri;
-        bgp_rib_t *rib_for_nlri = bgp_inst_rib_for_nlri(inst, nlri);
-        const bgp_route_node_t *best = rib_for_nlri ? bgp_rib_find_best(rib_for_nlri, nlri) : NULL;
         if (best)
         {
             item->source = best->source;

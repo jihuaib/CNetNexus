@@ -255,5 +255,38 @@
             </commands>
         </group>
 
+        <!-- group 7: apply-label per-vrf|per-route / no apply-label -->
+        <group group-id="7">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>apply-label</name>
+                    <description>VPN label allocation mode for export to vpnv4</description>
+                </element>
+                <element id="2" cfg-id="3" type="keyword">
+                    <name>per-vrf</name>
+                    <description>One aggregate label per VRF (default)</description>
+                </element>
+                <element id="3" cfg-id="3" type="keyword">
+                    <name>per-route</name>
+                    <description>One label per route</description>
+                </element>
+                <element id="4" type="keyword">
+                    <name>no</name>
+                    <description>Restore default (per-vrf)</description>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>1 { 2 | 3 }</expression>
+                    <views>vrf-af-ipv4-uni,vrf-af-ipv6-uni</views>
+                </command>
+                <command>
+                    <expression>4 1</expression>
+                    <views>vrf-af-ipv4-uni,vrf-af-ipv6-uni</views>
+                </command>
+            </commands>
+        </group>
+
     </command_groups>
 </configuration>

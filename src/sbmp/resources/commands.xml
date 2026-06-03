@@ -7,6 +7,10 @@
         </view>
     </views>
 
+    <show-this>
+        <view name="sbmp"/>
+    </show-this>
+
     <!-- 命令组定义 -->
     <command_groups>
         <!-- Group 1: bmp-server / no bmp-server (config 视图) -->
@@ -23,7 +27,7 @@
             </elements>
 
             <commands>
-                <command>
+                <command auto-start="true">
                     <expression>2</expression>
                     <views>config</views>
                     <to-view>sbmp</to-view>

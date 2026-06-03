@@ -105,6 +105,7 @@ cli_tree_node_t *cli_tree_create_node(uint32_t cfg_id, const char *name, const c
     node->target_view_name = target_view_name ? g_strdup(target_view_name) : NULL;
     node->param_type = NULL;
     node->is_end_node = FALSE;
+    node->allow_auto_start = FALSE;
     node->children = NULL;
     node->num_children = 0;
     node->children_capacity = 0;
@@ -157,6 +158,10 @@ void cli_tree_add_child(cli_tree_node_t *parent, cli_tree_node_t *child)
         if (child->is_end_node)
         {
             existing->is_end_node = TRUE;
+        }
+        if (child->allow_auto_start)
+        {
+            existing->allow_auto_start = TRUE;
         }
 
         /* 合并时 child 节点会被释放；参数类型要么转移给 existing，要么显式释放，
@@ -383,6 +388,7 @@ cli_tree_node_t *cli_tree_clone(cli_tree_node_t *node)
 
     // Clone is_end_node flag
     clone->is_end_node = node->is_end_node;
+    clone->allow_auto_start = node->allow_auto_start;
 
     // Clone context_out entries
     if (node->context_out && node->num_context_out > 0)
@@ -654,6 +660,7 @@ cli_match_result_t *cli_match_result_create(void)
     result->num_elements = 0;
     result->capacity = MATCH_RESULT_INITIAL_CAPACITY;
     result->final_node = NULL;
+    result->allow_auto_start = FALSE;
 
     return result;
 }
@@ -817,6 +824,7 @@ cli_match_result_t *cli_tree_match_command_full(cli_tree_node_t *root, const cha
     }
 
     result->final_node = current;
+    result->allow_auto_start = current ? current->allow_auto_start : FALSE;
 
     for (uint32_t i = 0; i < path_nodes->len && i < path_values->len; i++)
     {

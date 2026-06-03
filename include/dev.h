@@ -688,6 +688,16 @@ int dev_ipc_pre_exit_notify(dev_ipc_context_t *ctx, uint32_t timeout_ms);
 int dev_ipc_wait_connected(dev_ipc_context_t *ctx, uint32_t target_id, uint32_t timeout_ms);
 
 /**
+ * @brief wait_module_ready 进度回调
+ *
+ * @param target_id  目标模块 ID
+ * @param state      DEV_MODULE_STATE_*
+ * @param elapsed_ms 已等待时间（毫秒）
+ * @param user       调用方上下文
+ */
+typedef void (*dev_ipc_wait_progress_fn)(uint32_t target_id, uint8_t state, uint32_t elapsed_ms, void *user);
+
+/**
  * @brief 阻塞等待目标模块就绪并与之建立连接
  *
  * 内部用 SUBSCRIBE(auto_start=1) 触发 DEV 拉起按需模块；
@@ -701,6 +711,14 @@ int dev_ipc_wait_connected(dev_ipc_context_t *ctx, uint32_t target_id, uint32_t 
  * @return 成功（连接已建立）返回 ERRCODE_SUCCESS；超时/失败返回 ERRCODE_FAIL
  */
 int dev_ipc_wait_module_ready(dev_ipc_context_t *ctx, uint32_t target_id, uint32_t timeout_ms);
+
+/**
+ * @brief 阻塞等待目标模块 READY，并在等待期间按状态/周期回调进度
+ *
+ * 语义同 dev_ipc_wait_module_ready()；progress_cb 可为 NULL。
+ */
+int dev_ipc_wait_module_ready_with_progress(dev_ipc_context_t *ctx, uint32_t target_id, uint32_t timeout_ms,
+                                            dev_ipc_wait_progress_fn progress_cb, void *user);
 
 /**
  * @brief 等待本模块自己订阅过的所有 peer 都进入 CONNECTED 状态

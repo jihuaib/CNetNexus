@@ -90,7 +90,7 @@ static int parse_prefixes(const uint8_t *data, uint16_t len, bgp_nlri_entry_t **
  *   32B = IPv6 global + link-local nexthop（RFC 8950）
  * ========================================================================== */
 
-static int parse_nexthop(const uint8_t *nh_data, uint8_t nh_len, bgp_nexthop_t *nexthop)
+static int parse_nexthop(const uint8_t *nh_data, uint8_t nh_len, uint32_t flags, bgp_nexthop_t *nexthop)
 {
     if (nh_len == 4)
     {
@@ -98,6 +98,12 @@ static int parse_nexthop(const uint8_t *nh_data, uint8_t nh_len, bgp_nexthop_t *
         memcpy(&nexthop->global.u.v4, nh_data, 4);
         nexthop->has_link_local = false;
         return 0;
+    }
+
+    /* IPv4 unicast 携带 IPv6 nexthop（RFC 8950）必须已协商 Extended Next Hop，否则非法。 */
+    if (!(flags & BGP_PARSE_FLAG_EXT_NEXTHOP))
+    {
+        return -1;
     }
 
     if (nh_len == 16)

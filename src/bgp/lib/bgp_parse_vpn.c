@@ -169,8 +169,9 @@ static int parse_vpn(const uint8_t *data, uint16_t len, int af, uint16_t afi, bg
  * VPN-IPv6: RD(8B) + IPv6(16B) = 24B
  * ========================================================================== */
 
-static int vpn_ipv4_nexthop(const uint8_t *nh_data, uint8_t nh_len, bgp_nexthop_t *nexthop)
+static int vpn_ipv4_nexthop(const uint8_t *nh_data, uint8_t nh_len, uint32_t flags, bgp_nexthop_t *nexthop)
 {
+    (void)flags;
     if (nh_len < 12)
     {
         return -1;
@@ -181,8 +182,9 @@ static int vpn_ipv4_nexthop(const uint8_t *nh_data, uint8_t nh_len, bgp_nexthop_
     return 0;
 }
 
-static int vpn_ipv6_nexthop(const uint8_t *nh_data, uint8_t nh_len, bgp_nexthop_t *nexthop)
+static int vpn_ipv6_nexthop(const uint8_t *nh_data, uint8_t nh_len, uint32_t flags, bgp_nexthop_t *nexthop)
 {
+    (void)flags;
     if (nh_len < 24)
     {
         return -1;

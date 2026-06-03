@@ -135,8 +135,9 @@ static int ipv4_labeled_reach(const uint8_t *data, uint16_t len, bgp_nlri_entry_
     return 0;
 }
 
-static int ipv4_labeled_nexthop(const uint8_t *nh_data, uint8_t nh_len, bgp_nexthop_t *nexthop)
+static int ipv4_labeled_nexthop(const uint8_t *nh_data, uint8_t nh_len, uint32_t flags, bgp_nexthop_t *nexthop)
 {
+    (void)flags; /* labeled IPv4 nexthop 固定取前 4 字节 IPv4 */
     if (nh_len < 4)
     {
         return -1;

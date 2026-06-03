@@ -205,7 +205,8 @@ static void bgp_handle_vrf_ready(void)
     }
     uint32_t vrf_event_mask = VRF_EVENT_VRF_ADD | VRF_EVENT_VRF_DEL | VRF_EVENT_AF_ENABLE | VRF_EVENT_AF_DISABLE |
                               VRF_EVENT_AF_RD_ADD | VRF_EVENT_AF_RD_DEL | VRF_EVENT_AF_IMPORT_RT_ADD |
-                              VRF_EVENT_AF_IMPORT_RT_DEL | VRF_EVENT_AF_EXPORT_RT_ADD | VRF_EVENT_AF_EXPORT_RT_DEL;
+                              VRF_EVENT_AF_IMPORT_RT_DEL | VRF_EVENT_AF_EXPORT_RT_ADD | VRF_EVENT_AF_EXPORT_RT_DEL |
+                              VRF_EVENT_AF_APPLY_LABEL;
     if (vrf_api_subscribe(ctx, VRF_AF_MASK_ALL, vrf_event_mask, VRF_SUBSCRIBE_FLAG_REPLAY) != ERRCODE_SUCCESS)
     {
         LOG_WARN("BGP: vrf_api_subscribe failed");

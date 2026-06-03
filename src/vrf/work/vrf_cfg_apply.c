@@ -169,6 +169,31 @@ static int apply_rd_set(vrf_apply_cmd_t *cmd, int clear)
     return VRF_APPLY_RC_OK;
 }
 
+static int apply_apply_label_set(vrf_apply_cmd_t *cmd)
+{
+    vrf_table_t *t = vrf_worker_table();
+    vrf_entry_t *e = vrf_table_find_by_name(t, cmd->vrf_name);
+    if (!e || e->vrf_id == VRF_PUBLIC_VRF_ID)
+    {
+        snprintf(cmd->errmsg, sizeof(cmd->errmsg), "VRF Error: VRF not found\r\n");
+        return VRF_APPLY_RC_FAIL;
+    }
+    cmd->vrf_id = e->vrf_id; /* 回传 */
+    vrf_af_state_t *af = vrf_af_get_or_create(e, cmd->afi, cmd->safi);
+    if (!af)
+    {
+        snprintf(cmd->errmsg, sizeof(cmd->errmsg), "VRF Error: AF create failed\r\n");
+        return VRF_APPLY_RC_FAIL;
+    }
+    if (af->apply_label_mode == cmd->apply_label_mode)
+    {
+        return VRF_APPLY_RC_NOOP;
+    }
+    af->apply_label_mode = cmd->apply_label_mode;
+    vrf_pub_notify_af_apply_label(e, af);
+    return VRF_APPLY_RC_OK;
+}
+
 static gboolean rt_array_contains(const GArray *arr, const vrf_rt_t *rt)
 {
     if (!arr || !rt)
@@ -271,6 +296,8 @@ int vrf_cfg_apply(vrf_apply_cmd_t *cmd)
             return apply_rd_set(cmd, 1);
         case VRF_APPLY_OP_RT_MODIFY:
             return apply_rt_modify(cmd);
+        case VRF_APPLY_OP_APPLY_LABEL_SET:
+            return apply_apply_label_set(cmd);
         default:
             return -1;
     }

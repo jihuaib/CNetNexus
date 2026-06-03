@@ -157,23 +157,17 @@ int bgp_update_parse(const uint8_t *body, uint32_t body_len, uint32_t flags, bgp
         r->afi = mp_reach.afi;
         r->safi = mp_reach.safi;
 
-        /* RFC 8950：IPv4 unicast 的 MP_REACH 中 nexthop 为 IPv6（16/32B）时，
-         * 必须已协商 Extended Next Hop，否则丢弃整段 MP_REACH */
-        gboolean ext_nh_reject = FALSE;
-        if (mp_reach.afi == BGP_AFI_IPV4 && mp_reach.nh_len > 4 && !(flags & BGP_PARSE_FLAG_EXT_NEXTHOP))
-        {
-            ext_nh_reject = TRUE;
-        }
-
+        /* nexthop 长度/族合法性（含 RFC 8950 Extended Next Hop 校验）由各 AF 的 parse_nexthop
+         * 回调按自身 AFI/SAFI 规则判断（VPN nexthop 前置 8B RD，长度与单播不同），外层不再硬判长度。
+         * 回调返回 <0 表示 nexthop 非法（如未协商 ext-nexthop 的 IPv6 nexthop）→ 丢弃整段 MP_REACH。 */
         const bgp_af_parser_t *p = bgp_af_parser_find(mp_reach.afi, mp_reach.safi);
-        if (p && !ext_nh_reject)
+        int nh_rc = 0;
+        if (p && p->parse_nexthop && mp_reach.nh_len > 0)
         {
-            /* 解析 MP nexthop（覆盖 NEXT_HOP 属性，更精确） */
-            if (p->parse_nexthop && mp_reach.nh_len > 0)
-            {
-                p->parse_nexthop(mp_reach.nh_data, mp_reach.nh_len, &r->nexthop);
-            }
-
+            nh_rc = p->parse_nexthop(mp_reach.nh_data, mp_reach.nh_len, flags, &r->nexthop);
+        }
+        if (p && nh_rc == 0)
+        {
             if (p->parse_reach && mp_reach.nlri_len > 0)
             {
                 p->parse_reach(mp_reach.nlri_data, mp_reach.nlri_len, &mp_reach_entries, &mp_reach_entries_len);

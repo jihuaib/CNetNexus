@@ -3,6 +3,7 @@ set(CLI_API_SOURCES
     cli_tlv.c
     cli_stream.c
     cli_cfg_anchor.c
+    cli_progress.c
 )
 
 # 创建 CLI API 共享库

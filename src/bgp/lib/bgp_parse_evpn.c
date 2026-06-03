@@ -481,8 +481,9 @@ static int parse_evpn_nlri(const uint8_t *data, uint16_t len, bgp_nlri_entry_t *
  * nexthop 解析（EVPN 支持 IPv4 4B 或 IPv6 16B）
  * ========================================================================== */
 
-static int evpn_nexthop(const uint8_t *nh_data, uint8_t nh_len, bgp_nexthop_t *nexthop)
+static int evpn_nexthop(const uint8_t *nh_data, uint8_t nh_len, uint32_t flags, bgp_nexthop_t *nexthop)
 {
+    (void)flags;
     if (nh_len == 4)
     {
         nexthop->global.family = AF_INET;

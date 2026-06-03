@@ -446,9 +446,34 @@ static void access_on_db_event_cb(uint32_t module_id, uint8_t event, const char 
 static void access_bdr_show_config(dev_ipc_message_t *msg)
 {
     GString *out = g_string_new("");
-    access_db_build_running_config(out); /* 从 DB 读取（与其它模块 BDR 一致） */
+    cli_show_scope_t scope;
+    if (cli_show_scope_payload_parse((const uint8_t *)msg->payload, msg->payload_len, &scope) == 0 &&
+        scope.mode == CLI_SHOW_SCOPE_MODE_THIS)
+    {
+        access_db_build_running_config_scoped(out, &scope);
+    }
+    else
+    {
+        access_db_build_running_config(out); /* 从 DB 读取（与其它模块 BDR 一致） */
+    }
     /* cli_chunk_stream_start 接管 out 所有权（含 NULL/空），按需分片回 RESP/RESP_MORE。 */
     (void)cli_chunk_stream_start(&g_access.show_stream, g_access.dev_ipc_ctx, DEV_MODULE_ID_ACCESS, msg, out);
+}
+
+static void access_handle_line_progress(dev_ipc_message_t *msg)
+{
+    if (!msg || !msg->payload || msg->payload_len < sizeof(access_line_progress_t) + 1)
+    {
+        return;
+    }
+
+    access_line_progress_t *p = (access_line_progress_t *)msg->payload;
+    size_t text_len = msg->payload_len - sizeof(access_line_progress_t);
+    if (!memchr(p->text, '\0', text_len))
+    {
+        return;
+    }
+    access_line_send_to(p->line_id, p->text);
 }
 
 void access_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
@@ -465,6 +490,9 @@ void access_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             break;
         case CLI_MSG_TYPE_CONTINUE:
             (void)cli_chunk_stream_continue(&g_access.show_stream, ctx, DEV_MODULE_ID_ACCESS, msg);
+            break;
+        case ACCESS_MSG_LINE_PROGRESS:
+            access_handle_line_progress(msg);
             break;
         default:
             break;

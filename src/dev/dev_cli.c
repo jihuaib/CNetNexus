@@ -38,8 +38,6 @@
 #include "vrf.h"
 
 static gint g_reboot_in_progress = 0;
-static dev_ping_session_t *g_ping_session = NULL;
-static int g_ping_stream_prefixed = 0;
 
 /* swap-image 改为后台线程模型,无需共享状态(参数全部下到 swap_async_args_t) */
 
@@ -259,37 +257,122 @@ static void dev_send_cli_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg
     dev_send_cli_response_with_type(ctx, msg, CLI_MSG_TYPE_RESP, text);
 }
 
-static int ping_stream_send_next(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+typedef struct ping_stream_job
 {
-    if (!g_ping_session)
+    dev_ping_session_t *session;
+    uint32_t src_module_id;
+    uint32_t request_id;
+    uint32_t line_id;
+} ping_stream_job_t;
+
+static GAsyncQueue *g_ping_stream_queue = NULL;
+static gint g_ping_stream_worker_started = 0;
+
+static void ping_stream_send_final(uint32_t dst_module_id, uint32_t request_id, const char *text)
+{
+    dev_ipc_context_t *ctx = dev_get_ipc_ctx();
+    if (!ctx || !text)
     {
-        dev_send_cli_response(ctx, msg, "");
-        return ERRCODE_SUCCESS;
+        return;
     }
 
-    char line[256];
-    int has_line = dev_ping_next_line(g_ping_session, line, sizeof(line));
-    if (!has_line)
+    char *data = g_strdup(text);
+    dev_ipc_message_t *resp = dev_ipc_message_create(CLI_MSG_TYPE_RESP, DEV_MODULE_ID_DEV, dst_module_id, request_id,
+                                                     data, strlen(data) + 1, g_free);
+    if (resp)
     {
-        dev_ping_close(g_ping_session);
-        g_ping_session = NULL;
-        g_ping_stream_prefixed = 0;
-        dev_send_cli_response_with_type(ctx, msg, CLI_MSG_TYPE_RESP, "");
-        return ERRCODE_SUCCESS;
-    }
-
-    char out[320];
-    if (!g_ping_stream_prefixed)
-    {
-        g_ping_stream_prefixed = 1;
-        snprintf(out, sizeof(out), "\r\n%s\r\n", line);
+        dev_ipc_send_response(ctx, resp);
+        dev_ipc_message_free(resp);
     }
     else
     {
-        snprintf(out, sizeof(out), "%s\r\n", line);
+        g_free(data);
+    }
+}
+
+static void *ping_stream_worker_thread(void *arg)
+{
+    (void)arg;
+    pthread_setname_np(pthread_self(), "dev-pingstream");
+    while (1)
+    {
+        ping_stream_job_t *job = (ping_stream_job_t *)g_async_queue_pop(g_ping_stream_queue);
+        if (!job || !job->session)
+        {
+            g_free(job);
+            continue;
+        }
+
+        char line[256];
+        char out[320];
+        int prefixed = 0;
+        while (dev_ping_next_line(job->session, line, sizeof(line)))
+        {
+            if (!prefixed)
+            {
+                prefixed = 1;
+                snprintf(out, sizeof(out), "\r\n%s\r\n", line);
+            }
+            else
+            {
+                snprintf(out, sizeof(out), "%s\r\n", line);
+            }
+            (void)cli_line_progress_send(dev_get_ipc_ctx(), job->line_id, out);
+        }
+
+        dev_ping_close(job->session);
+        ping_stream_send_final(job->src_module_id, job->request_id, "");
+        g_free(job);
+    }
+    return NULL;
+}
+
+static int ping_stream_worker_ensure_started(void)
+{
+    if (g_atomic_int_get(&g_ping_stream_worker_started))
+    {
+        return ERRCODE_SUCCESS;
+    }
+    if (!g_ping_stream_queue)
+    {
+        g_ping_stream_queue = g_async_queue_new();
+    }
+    if (!g_atomic_int_compare_and_exchange(&g_ping_stream_worker_started, 0, 1))
+    {
+        return ERRCODE_SUCCESS;
+    }
+    pthread_t tid;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    int rc = pthread_create(&tid, &attr, ping_stream_worker_thread, NULL);
+    pthread_attr_destroy(&attr);
+    if (rc != 0)
+    {
+        LOG_ERROR("Failed to spawn ping stream worker: %s", strerror(rc));
+        g_atomic_int_set(&g_ping_stream_worker_started, 0);
+        return ERRCODE_FAIL;
+    }
+    return ERRCODE_SUCCESS;
+}
+
+static int ping_stream_start(dev_ping_session_t *session, dev_ipc_message_t *msg, uint32_t line_id)
+{
+    if (!session || !msg || msg->request_id == 0)
+    {
+        return ERRCODE_FAIL;
+    }
+    if (ping_stream_worker_ensure_started() != ERRCODE_SUCCESS)
+    {
+        return ERRCODE_FAIL;
     }
 
-    dev_send_cli_response_with_type(ctx, msg, CLI_MSG_TYPE_RESP_MORE, out);
+    ping_stream_job_t *job = g_malloc0(sizeof(*job));
+    job->session = session;
+    job->src_module_id = msg->src_module_id;
+    job->request_id = msg->request_id;
+    job->line_id = line_id;
+    g_async_queue_push(g_ping_stream_queue, job);
     return ERRCODE_SUCCESS;
 }
 
@@ -600,7 +683,7 @@ static int handle_sysname(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             return ERRCODE_FAIL;
         }
         dev_push_sysname_to_cli(ctx, "");
-        dev_send_cli_response(ctx, msg, "");
+        dev_send_cli_response_with_type(ctx, msg, CLI_MSG_TYPE_SYSNAME_UPDATE_RESP, "");
         return ERRCODE_SUCCESS;
     }
 
@@ -616,7 +699,7 @@ static int handle_sysname(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         return ERRCODE_FAIL;
     }
     dev_push_sysname_to_cli(ctx, hostname);
-    dev_send_cli_response(ctx, msg, "");
+    dev_send_cli_response_with_type(ctx, msg, CLI_MSG_TYPE_SYSNAME_UPDATE_RESP, hostname);
     return ERRCODE_SUCCESS;
 }
 
@@ -709,17 +792,29 @@ typedef struct process_wait_job
     int op; /* OP_START / OP_REBOOT */
     uint32_t module_id;
     uint32_t src_module_id; /* 原始请求方（CLI 模块或 ACCESS 模块） */
-    uint32_t request_id;
+    uint32_t line_id;       /* ACCESS line_id，用于异步进度输出 */
     char modname[DEV_MODULE_NAME_MAX_LEN];
     uint32_t epoch_before; /* 触发动作前模块的 epoch，等到 READY 且 epoch>before 才算新进程就绪 */
+    pid_t pid_before;
+    int64_t start_us;
     int64_t deadline_us;
+    int64_t next_progress_us;
 } process_wait_job_t;
+
+typedef struct process_wait_request
+{
+    process_wait_job_t *job;
+    uint32_t request_id;
+} process_wait_request_t;
 
 #define PROCESS_WAIT_TIMEOUT_MS 30000
 #define PROCESS_WAIT_POLL_US (200 * 1000)
+#define PROCESS_WAIT_PROGRESS_US (1000 * 1000)
 
 static GAsyncQueue *g_process_wait_queue = NULL;
 static gint g_process_wait_worker_started = 0;
+static GMutex g_process_wait_mutex;
+static process_wait_job_t *g_process_wait_active = NULL;
 
 static void send_cli_response_to(uint32_t dst_module_id, uint32_t request_id, const char *text)
 {
@@ -738,45 +833,132 @@ static void send_cli_response_to(uint32_t dst_module_id, uint32_t request_id, co
     }
 }
 
+static const char *process_wait_op_label(int op)
+{
+    switch (op)
+    {
+        case OP_REBOOT:
+            return "reboot";
+        case OP_START:
+            return "start";
+        case OP_STOP:
+            return "stop";
+        default:
+            return "process";
+    }
+}
+
+static void process_wait_send_progress(process_wait_job_t *job, const char *text)
+{
+    if (!job || !text)
+    {
+        return;
+    }
+    (void)cli_line_progress_send(dev_get_ipc_ctx(), job->line_id, text);
+}
+
+static void process_wait_finish(process_wait_job_t *job)
+{
+    g_mutex_lock(&g_process_wait_mutex);
+    if (g_process_wait_active == job)
+    {
+        g_process_wait_active = NULL;
+    }
+    g_mutex_unlock(&g_process_wait_mutex);
+    g_free(job);
+}
+
+static int process_wait_schedule(process_wait_job_t *job, uint32_t request_id)
+{
+    if (!job || request_id == 0)
+    {
+        return ERRCODE_FAIL;
+    }
+    process_wait_request_t *req = g_malloc0(sizeof(*req));
+    req->job = job;
+    req->request_id = request_id;
+    g_async_queue_push(g_process_wait_queue, req);
+    return ERRCODE_SUCCESS;
+}
+
 static void *process_wait_worker_thread(void *arg)
 {
     (void)arg;
     pthread_setname_np(pthread_self(), "dev-procwait");
     while (1)
     {
-        process_wait_job_t *job = (process_wait_job_t *)g_async_queue_pop(g_process_wait_queue);
-        if (!job)
+        process_wait_request_t *req = (process_wait_request_t *)g_async_queue_pop(g_process_wait_queue);
+        if (!req || !req->job)
         {
+            g_free(req);
             continue;
         }
+        process_wait_job_t *job = req->job;
 
         char buf[160];
         while (1)
         {
             dev_module_t *m = dev_module_find(job->module_id);
-            const char *op_label = (job->op == OP_REBOOT) ? "reboot" : "start";
+            const char *op_label = process_wait_op_label(job->op);
             if (!m)
             {
                 snprintf(buf, sizeof(buf), "Dev Error: module %s vanished during %s\r\n", job->modname, op_label);
-                send_cli_response_to(job->src_module_id, job->request_id, buf);
+                send_cli_response_to(job->src_module_id, req->request_id, buf);
+                process_wait_finish(job);
+                break;
+            }
+            if (job->op == OP_STOP && m->phase == DEV_PHASE_REGISTERED && m->child_pid <= 0)
+            {
+                snprintf(buf, sizeof(buf), "Dev: stop %s ok (pid=%d).\r\n", m->name, job->pid_before);
+                send_cli_response_to(job->src_module_id, req->request_id, buf);
+                process_wait_finish(job);
                 break;
             }
             if (m->phase == DEV_PHASE_READY && m->epoch > job->epoch_before)
             {
                 snprintf(buf, sizeof(buf), "Dev: %s %s ok (pid=%d).\r\n", op_label, m->name, m->child_pid);
-                send_cli_response_to(job->src_module_id, job->request_id, buf);
+                send_cli_response_to(job->src_module_id, req->request_id, buf);
+                process_wait_finish(job);
                 break;
             }
-            if ((int64_t)g_get_monotonic_time() >= job->deadline_us)
+            int64_t now_us = (int64_t)g_get_monotonic_time();
+            if (now_us >= job->deadline_us)
             {
-                snprintf(buf, sizeof(buf), "Dev Error: %s %s timed out waiting for READY (phase=%u, pid=%d).\r\n",
-                         op_label, job->modname, m->phase, m->child_pid);
-                send_cli_response_to(job->src_module_id, job->request_id, buf);
+                const char *state_label = (job->op == OP_STOP) ? "STOPPED" : "READY";
+                snprintf(buf, sizeof(buf), "Dev Error: %s %s timed out waiting for %s (phase=%u, pid=%d).\r\n",
+                         op_label, job->modname, state_label, m->phase, m->child_pid);
+                send_cli_response_to(job->src_module_id, req->request_id, buf);
+                process_wait_finish(job);
                 break;
             }
-            g_usleep(PROCESS_WAIT_POLL_US);
+            if (now_us >= job->next_progress_us)
+            {
+                uint32_t elapsed_sec = (uint32_t)((now_us - job->start_us) / 1000000);
+                if (elapsed_sec == 0)
+                {
+                    snprintf(buf, sizeof(buf), "Dev: %s requested, waiting for %s...\r\n", op_label,
+                             (job->op == OP_STOP) ? "STOPPED" : "READY");
+                }
+                else
+                {
+                    snprintf(buf, sizeof(buf), "Dev: waiting for %s (%us)...\r\n",
+                             (job->op == OP_STOP) ? "STOPPED" : "READY", elapsed_sec);
+                }
+                job->next_progress_us = now_us + PROCESS_WAIT_PROGRESS_US;
+                process_wait_send_progress(job, buf);
+            }
+
+            int64_t sleep_us = job->next_progress_us - now_us;
+            if (sleep_us > PROCESS_WAIT_POLL_US)
+            {
+                sleep_us = PROCESS_WAIT_POLL_US;
+            }
+            if (sleep_us > 0)
+            {
+                g_usleep((gulong)sleep_us);
+            }
         }
-        g_free(job);
+        g_free(req);
     }
     return NULL;
 }
@@ -810,21 +992,39 @@ static int process_wait_worker_ensure_started(void)
     return ERRCODE_SUCCESS;
 }
 
-static int process_wait_enqueue(int op, dev_module_t *m, dev_ipc_message_t *msg, uint32_t epoch_before)
+static int process_wait_enqueue(int op, dev_module_t *m, dev_ipc_message_t *msg, uint32_t epoch_before,
+                                uint32_t line_id)
 {
     if (process_wait_worker_ensure_started() != ERRCODE_SUCCESS)
     {
         return ERRCODE_FAIL;
     }
+    g_mutex_lock(&g_process_wait_mutex);
+    if (g_process_wait_active)
+    {
+        g_mutex_unlock(&g_process_wait_mutex);
+        return ERRCODE_FAIL;
+    }
+
     process_wait_job_t *job = g_malloc0(sizeof(*job));
     job->op = op;
     job->module_id = m->module_id;
     job->src_module_id = msg->src_module_id;
-    job->request_id = msg->request_id;
+    job->line_id = line_id;
     snprintf(job->modname, sizeof(job->modname), "%s", m->name);
     job->epoch_before = epoch_before;
-    job->deadline_us = (int64_t)g_get_monotonic_time() + (int64_t)PROCESS_WAIT_TIMEOUT_MS * 1000;
-    g_async_queue_push(g_process_wait_queue, job);
+    job->pid_before = m->child_pid;
+    job->start_us = (int64_t)g_get_monotonic_time();
+    job->deadline_us = job->start_us + (int64_t)PROCESS_WAIT_TIMEOUT_MS * 1000;
+    job->next_progress_us = job->start_us;
+    g_process_wait_active = job;
+    g_mutex_unlock(&g_process_wait_mutex);
+
+    if (process_wait_schedule(job, msg->request_id) != ERRCODE_SUCCESS)
+    {
+        process_wait_finish(job);
+        return ERRCODE_FAIL;
+    }
     return ERRCODE_SUCCESS;
 }
 
@@ -837,17 +1037,25 @@ static int process_wait_enqueue(int op, dev_module_t *m, dev_ipc_message_t *msg,
  *   - start ：进程不在跑→spawn；在跑→提示已在运行（已在跑时立即响应）；
  *             新拉起的进程响应延迟到 phase=READY 才送出
  *   - stop  ：进程在跑→SIGTERM + pending_stop（SIGCHLD 不重启、不告警）；不在跑→no-op
- *             stop 不等异步退出，立即响应
+ *             响应延迟到目标模块 STOPPED 才送出
  */
 static int handle_process_cmd(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
     int op = 0;
     char modname[DEV_MODULE_NAME_MAX_LEN] = {0};
+    uint32_t line_id = UINT32_MAX;
 
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
     {
-        if (!CLI_TLV_IS_CTX(&entry))
+        if (CLI_TLV_IS_CTX(&entry))
+        {
+            if (entry.cfg_id == CLI_CTX_ID_ACCESS_LINE)
+            {
+                line_id = cli_tlv_entry_get_ctx_uint32(&entry);
+            }
+        }
+        else
         {
             switch (entry.cfg_id)
             {
@@ -928,8 +1136,11 @@ static int handle_process_cmd(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cl
                 dev_send_cli_response(ctx, msg, buf);
                 return ERRCODE_FAIL;
             }
-            snprintf(buf, sizeof(buf), "Dev: stop %s requested (pid=%d).\r\n", m->name, m->child_pid);
-            dev_send_cli_response(ctx, msg, buf);
+            if (process_wait_enqueue(OP_STOP, m, msg, m->epoch, line_id) != ERRCODE_SUCCESS)
+            {
+                snprintf(buf, sizeof(buf), "Dev: stop %s requested (pid=%d), wait failed.\r\n", m->name, m->child_pid);
+                dev_send_cli_response(ctx, msg, buf);
+            }
             return ERRCODE_SUCCESS;
 
         case OP_START:
@@ -953,7 +1164,7 @@ static int handle_process_cmd(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cl
             }
             dev_ipc_connect(ctx, m->module_id, DEV_IPC_HOST_LOCAL, m->port);
             /* 异步等 READY；worker 会替我们回响应 */
-            if (process_wait_enqueue(OP_START, m, msg, epoch_before) != ERRCODE_SUCCESS)
+            if (process_wait_enqueue(OP_START, m, msg, epoch_before, line_id) != ERRCODE_SUCCESS)
             {
                 snprintf(buf, sizeof(buf), "Dev: start %s spawned (pid=%d), wait failed.\r\n", m->name, m->child_pid);
                 dev_send_cli_response(ctx, msg, buf);
@@ -977,7 +1188,7 @@ static int handle_process_cmd(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cl
                     return ERRCODE_FAIL;
                 }
                 /* SIGCHLD 处理路径会 respawn；worker 等新进程 READY 后回响应 */
-                if (process_wait_enqueue(OP_REBOOT, m, msg, epoch_before) != ERRCODE_SUCCESS)
+                if (process_wait_enqueue(OP_REBOOT, m, msg, epoch_before, line_id) != ERRCODE_SUCCESS)
                 {
                     snprintf(buf, sizeof(buf), "Dev: reboot %s requested (pid=%d), wait failed.\r\n", m->name,
                              m->child_pid);
@@ -993,7 +1204,7 @@ static int handle_process_cmd(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cl
                 return ERRCODE_FAIL;
             }
             dev_ipc_connect(ctx, m->module_id, DEV_IPC_HOST_LOCAL, m->port);
-            if (process_wait_enqueue(OP_REBOOT, m, msg, epoch_before) != ERRCODE_SUCCESS)
+            if (process_wait_enqueue(OP_REBOOT, m, msg, epoch_before, line_id) != ERRCODE_SUCCESS)
             {
                 snprintf(buf, sizeof(buf), "Dev: reboot %s spawned (pid=%d), wait failed.\r\n", m->name, m->child_pid);
                 dev_send_cli_response(ctx, msg, buf);
@@ -1681,6 +1892,7 @@ static int handle_ping(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_p
     char vrf_name[VRF_NAME_MAX_LEN] = {0};
     gboolean ping_ipv6 = FALSE;
     gboolean ping_mpls = FALSE;
+    uint32_t line_id = UINT32_MAX;
 
     /* 解析参数：
      * cfg_id=1: ping <ipv4-address>
@@ -1697,6 +1909,10 @@ static int handle_ping(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_p
     {
         if (CLI_TLV_IS_CTX(&entry))
         {
+            if (entry.cfg_id == CLI_CTX_ID_ACCESS_LINE)
+            {
+                line_id = cli_tlv_entry_get_ctx_uint32(&entry);
+            }
             cli_tlv_entry_free(&entry);
             continue;
         }
@@ -1789,25 +2005,23 @@ static int handle_ping(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_p
             return ERRCODE_FAIL;
         }
 
-        if (g_ping_session)
-        {
-            dev_ping_close(g_ping_session);
-            g_ping_session = NULL;
-            g_ping_stream_prefixed = 0;
-        }
-
         char errbuf[160] = {0};
-        g_ping_session =
+        dev_ping_session_t *session =
             dev_ping_mpls_start(&target, has_src ? &src_addr : NULL, &notify, 4, 2000, errbuf, sizeof(errbuf));
-        if (!g_ping_session)
+        if (!session)
         {
             char out[256];
             snprintf(out, sizeof(out), "Error: failed to start MPLS ping: %s\r\n", errbuf[0] ? errbuf : "unknown");
             dev_send_cli_response(ctx, msg, out);
             return ERRCODE_FAIL;
         }
-        g_ping_stream_prefixed = 0;
-        return ping_stream_send_next(ctx, msg);
+        if (ping_stream_start(session, msg, line_id) != ERRCODE_SUCCESS)
+        {
+            dev_ping_close(session);
+            dev_send_cli_response(ctx, msg, "Error: failed to start ping stream\r\n");
+            return ERRCODE_FAIL;
+        }
+        return ERRCODE_SUCCESS;
     }
 
     /* 验证 IP 地址格式并规范化 */
@@ -1840,13 +2054,6 @@ static int handle_ping(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_p
         has_src = true;
     }
 
-    if (g_ping_session)
-    {
-        dev_ping_close(g_ping_session);
-        g_ping_session = NULL;
-        g_ping_stream_prefixed = 0;
-    }
-
     char errbuf[128] = {0};
     const char *bind_ifname = NULL;
     if (vrf_name[0] != '\0' && strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) != 0)
@@ -1860,18 +2067,23 @@ static int handle_ping(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_p
         }
         bind_ifname = vrf_name;
     }
-    g_ping_session =
+    dev_ping_session_t *session =
         dev_ping_start_bound(&addr, has_src ? &src_addr : NULL, bind_ifname, 4, 2000, errbuf, sizeof(errbuf));
-    if (!g_ping_session)
+    if (!session)
     {
         char out[256];
         snprintf(out, sizeof(out), "Error: failed to start ping: %s\r\n", errbuf[0] ? errbuf : "unknown");
         dev_send_cli_response(ctx, msg, out);
         return ERRCODE_FAIL;
     }
-    g_ping_stream_prefixed = 0;
 
-    return ping_stream_send_next(ctx, msg);
+    if (ping_stream_start(session, msg, line_id) != ERRCODE_SUCCESS)
+    {
+        dev_ping_close(session);
+        dev_send_cli_response(ctx, msg, "Error: failed to start ping stream\r\n");
+        return ERRCODE_FAIL;
+    }
+    return ERRCODE_SUCCESS;
 }
 
 // ============================================================================
@@ -1921,21 +2133,11 @@ void dev_cli_handle_query_candidates(dev_ipc_message_t *msg)
 int dev_cli_handle_continue(dev_ipc_message_t *msg)
 {
     dev_ipc_context_t *ctx = dev_get_ipc_ctx();
-    if (g_ping_session)
-    {
-        return ping_stream_send_next(ctx, msg);
-    }
     return cli_chunk_stream_continue(&g_dev_local->show_stream, ctx, DEV_MODULE_ID_DEV, msg);
 }
 
 void dev_cli_cleanup_state(void)
 {
-    if (g_ping_session)
-    {
-        dev_ping_close(g_ping_session);
-        g_ping_session = NULL;
-        g_ping_stream_prefixed = 0;
-    }
     cli_chunk_stream_reset(&g_dev_local->show_stream);
 }
 

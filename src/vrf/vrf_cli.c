@@ -26,11 +26,13 @@
 #define VRF_CLI_GROUP_AF 3
 #define VRF_CLI_GROUP_RD 4
 #define VRF_CLI_GROUP_RT 5
+#define VRF_CLI_GROUP_APPLY_LABEL 7
 
 /** 参数 cfg_id */
 #define VRF_CFGID_VRF_NAME 1
 #define VRF_CFGID_RD_RT_STR 1
 #define VRF_CFGID_RT_DIRECTION 2
+#define VRF_CFGID_APPLY_LABEL_MODE 3
 
 // ============================================================================
 // 响应辅助
@@ -508,6 +510,68 @@ static int handle_rt(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     return ERRCODE_SUCCESS;
 }
 
+/** 解析 apply-label 模式关键字（per-vrf / per-route），缺省返回 per-vrf */
+static uint8_t parse_apply_label_mode(cli_tlv_parser_t *parser)
+{
+    uint8_t mode = VRF_APPLY_LABEL_PER_VRF;
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (!CLI_TLV_IS_CTX(&entry) && entry.cfg_id == VRF_CFGID_APPLY_LABEL_MODE)
+        {
+            const char *s = cli_tlv_entry_get_text(&entry);
+            if (s && strcmp(s, "per-route") == 0)
+            {
+                mode = VRF_APPLY_LABEL_PER_ROUTE;
+            }
+        }
+        cli_tlv_entry_free(&entry);
+    }
+    cli_tlv_rewind(parser);
+    return mode;
+}
+
+static int handle_apply_label(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    gboolean is_no = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
+    char vrf_name[VRF_NAME_MAX_LEN] = {0};
+    uint16_t afi = 0;
+    uint8_t safi = 0;
+    if (parse_af_ctx(parser, vrf_name, sizeof(vrf_name), &afi, &safi) != 0)
+    {
+        send_resp(msg, "VRF Error: Address-family context missing\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) == 0)
+    {
+        send_resp(msg, "VRF Error: Public VRF cannot configure apply-label\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    vrf_apply_cmd_t cmd = {0};
+    g_strlcpy(cmd.vrf_name, vrf_name, sizeof(cmd.vrf_name));
+    cmd.afi = afi;
+    cmd.safi = safi;
+    cmd.op = VRF_APPLY_OP_APPLY_LABEL_SET;
+    /* no apply-label 恢复默认 per-vrf；否则取命令中的模式 */
+    cmd.apply_label_mode = is_no ? VRF_APPLY_LABEL_PER_VRF : parse_apply_label_mode(parser);
+
+    int rc = dispatch_apply(&cmd);
+    if (rc == VRF_APPLY_RC_FAIL)
+    {
+        send_resp(msg, cmd.errmsg[0] ? cmd.errmsg : "VRF Error: apply-label apply failed\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (rc == VRF_APPLY_RC_NOOP)
+    {
+        send_resp(msg, "");
+        return ERRCODE_SUCCESS;
+    }
+    (void)vrf_db_set_af_apply_label(cmd.vrf_id, cmd.afi, cmd.safi, cmd.apply_label_mode);
+    send_resp(msg, "");
+    return ERRCODE_SUCCESS;
+}
+
 // ============================================================================
 // 入口
 // ============================================================================
@@ -539,6 +603,9 @@ int vrf_cli_handle_config_msg(dev_ipc_message_t *msg)
             break;
         case VRF_CLI_GROUP_RT:
             rc = handle_rt(msg, &parser);
+            break;
+        case VRF_CLI_GROUP_APPLY_LABEL:
+            rc = handle_apply_label(msg, &parser);
             break;
         default:
             send_resp(msg, "VRF Error: Unknown command\r\n");

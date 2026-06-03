@@ -390,8 +390,9 @@ static int fs_ipv6_reach(const uint8_t *data, uint16_t len, bgp_nlri_entry_t **o
     return parse_flowspec_nlri(data, len, AF_INET6, out, out_len);
 }
 
-static int fs_nexthop(const uint8_t *nh_data, uint8_t nh_len, bgp_nexthop_t *nexthop)
+static int fs_nexthop(const uint8_t *nh_data, uint8_t nh_len, uint32_t flags, bgp_nexthop_t *nexthop)
 {
+    (void)flags;
     /* FlowSpec 通常无 nexthop，但可能携带 redirect next-hop */
     if (nh_len == 4)
     {

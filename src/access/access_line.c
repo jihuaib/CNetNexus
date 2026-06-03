@@ -243,6 +243,22 @@ void access_line_send(access_line_t *line, const char *msg)
     }
 }
 
+void access_line_send_to(uint32_t line_id, const char *msg)
+{
+    if (!msg || line_id >= ACCESS_LINE_POOL_SIZE)
+    {
+        return;
+    }
+
+    g_mutex_lock(&g_pool_mutex);
+    access_line_t *line = &g_lines[line_id];
+    if (line->in_use)
+    {
+        access_line_send(line, msg);
+    }
+    g_mutex_unlock(&g_pool_mutex);
+}
+
 void access_line_send_data(access_line_t *line, const void *data, size_t len)
 {
     if (line && data && len > 0)
@@ -975,14 +991,13 @@ static void handle_help(access_line_t *line)
     }
     g_free(text);
 
+    line->line_pos = line->cursor_pos;
+    line->line_buffer[line->line_pos] = '\0';
+
     /* pager 激活时由 pager 收尾重画提示符 */
     if (!line->pager_active)
     {
-        send_prompt(line);
-        if (line->line_pos > 0)
-        {
-            access_line_send_data(line, line->line_buffer, line->line_pos);
-        }
+        clear_and_redraw_line(line, line->line_buffer, line->line_pos, line->cursor_pos);
     }
 }
 

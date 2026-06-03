@@ -13,6 +13,8 @@
 #include "bgp_protocol.h"
 #include "bgp_rd.h"
 #include "bgp_vrf.h"
+#include "bgp_vrf_export.h"
+#include "bgp_vrf_import.h"
 #include "bgp_worker.h"
 #include "log.h"
 #include "vrf.h"
@@ -119,6 +121,12 @@ static void on_af_rd_add(uint32_t vrf_id, uint16_t afi, uint8_t safi, const vrf_
     memcpy(bgp_rd.bytes, rd->bytes, sizeof(bgp_rd.bytes));
     (void)bgp_protocol_ensure_rd_entry(proto, inst, &bgp_rd);
     LOG_INFO("BGP: VRF %u afi=%u safi=%u RD ensured", vrf_id, afi, safi);
+
+    /* vpnv4 已使能时,RD 配置晚于使能 → 把该 VRF 已有 ipv4-unicast 路由补灌导出 */
+    if (bafi == BGP_AFI_IPV4 && bsafi == BGP_SAFI_UNICAST)
+    {
+        bgp_vrf_export_backfill_vrf(vrf_id);
+    }
 }
 
 static void on_af_rd_del(uint32_t vrf_id, uint16_t afi, uint8_t safi)
@@ -169,11 +177,18 @@ void bgp_apply_vrf_event(const dev_ipc_message_t *msg)
     switch (evt->event)
     {
         case VRF_EVENT_VRF_DEL:
+            bgp_vrf_import_purge_vrf(evt->vrf_id);
             on_vrf_del(evt->vrf_id);
             break;
 
         case VRF_EVENT_AF_DISABLE:
+            /* 仅 ipv4-unicast AF 关闭才影响 vpnv4 导入的 IRT 索引 */
+            if (evt->afi == VRF_AFI_IPV4 && evt->safi == VRF_SAFI_UNICAST)
+            {
+                bgp_vrf_import_purge_vrf(evt->vrf_id);
+            }
             on_af_disable(evt->vrf_id, evt->afi, evt->safi);
+            bgp_vrf_import_backfill();
             break;
 
         case VRF_EVENT_AF_RD_ADD:
@@ -184,11 +199,30 @@ void bgp_apply_vrf_event(const dev_ipc_message_t *msg)
             on_af_rd_del(evt->vrf_id, evt->afi, evt->safi);
             break;
 
+        case VRF_EVENT_AF_IMPORT_RT_ADD:
+            /* 仅 ipv4-unicast import RT 参与 vpnv4 导入匹配；维护 IRT 索引并补评估已有 vpnv4 路由 */
+            if (evt->afi == VRF_AFI_IPV4 && evt->safi == VRF_SAFI_UNICAST &&
+                msg->payload_len >= offsetof(vrf_event_msg_t, rts) + sizeof(vrf_rt_t) && evt->rt_count >= 1)
+            {
+                bgp_vrf_import_irt_add(evt->vrf_id, &evt->rts[0]);
+                bgp_vrf_import_backfill();
+                /* 新增 import-RT：让 vpnv4 邻居重传，re-ingest 命中新 IRT 索引(此前被丢弃的路由) */
+                bgp_vrf_import_request_refresh();
+            }
+            break;
+
+        case VRF_EVENT_AF_IMPORT_RT_DEL:
+            if (evt->afi == VRF_AFI_IPV4 && evt->safi == VRF_SAFI_UNICAST &&
+                msg->payload_len >= offsetof(vrf_event_msg_t, rts) + sizeof(vrf_rt_t) && evt->rt_count >= 1)
+            {
+                bgp_vrf_import_irt_del(evt->vrf_id, &evt->rts[0]);
+                bgp_vrf_import_backfill();
+            }
+            break;
+
         case VRF_EVENT_VRF_ADD:
         case VRF_EVENT_VRF_STATE:
         case VRF_EVENT_AF_ENABLE:
-        case VRF_EVENT_AF_IMPORT_RT_ADD:
-        case VRF_EVENT_AF_IMPORT_RT_DEL:
         case VRF_EVENT_AF_EXPORT_RT_ADD:
         case VRF_EVENT_AF_EXPORT_RT_DEL:
             /* 当前阶段仅由 vrf_api_cache 持有；BGP 内部使用从缓存按需读取 */

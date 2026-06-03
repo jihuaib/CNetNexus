@@ -21,7 +21,8 @@ typedef struct vrf_af_state
     uint8_t safi;
     uint8_t has_rd;
     vrf_rd_t rd;
-    GArray *import_rts; /**< vrf_rt_t 数组 */
+    uint8_t apply_label_mode; /**< VRF_APPLY_LABEL_*（默认 per-vrf=0） */
+    GArray *import_rts;       /**< vrf_rt_t 数组 */
     GArray *export_rts;
 } vrf_af_state_t;
 

@@ -131,6 +131,8 @@ int access_line_process_input(access_line_t *line);
 
 /** @brief 向本线发送字符串（null 结尾） */
 void access_line_send(access_line_t *line, const char *msg);
+/** @brief 按线号发送字符串（null 结尾），供非 line 线程输出 */
+void access_line_send_to(uint32_t line_id, const char *msg);
 /** @brief 向本线发送原始数据 */
 void access_line_send_data(access_line_t *line, const void *data, size_t len);
 

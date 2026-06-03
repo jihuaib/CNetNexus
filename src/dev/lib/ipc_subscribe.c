@@ -480,7 +480,8 @@ static int query_target_state(dev_ipc_context_t *ctx, uint32_t target_id, int au
     return ERRCODE_SUCCESS;
 }
 
-int dev_ipc_wait_module_ready(dev_ipc_context_t *ctx, uint32_t target_id, uint32_t timeout_ms)
+int dev_ipc_wait_module_ready_with_progress(dev_ipc_context_t *ctx, uint32_t target_id, uint32_t timeout_ms,
+                                            dev_ipc_wait_progress_fn progress_cb, void *user)
 {
     if (!ctx || target_id == 0)
     {
@@ -496,16 +497,34 @@ int dev_ipc_wait_module_ready(dev_ipc_context_t *ctx, uint32_t target_id, uint32
      * READY 才意味着模块业务真正可用，CFG 此时派发 config 才安全。
      *
      * 第一次轮询 auto_start=1 触发按需拉起；之后每次 200ms 复查直到 READY 或超时。 */
-    int64_t deadline_us = (int64_t)g_get_monotonic_time() + (int64_t)timeout_ms * 1000;
+    int64_t start_us = (int64_t)g_get_monotonic_time();
+    int64_t deadline_us = start_us + (int64_t)timeout_ms * 1000;
+    int64_t next_progress_us = start_us;
     int triggered_autostart = 0;
     uint8_t last_state = DEV_MODULE_STATE_NOT_RUNNING;
+    uint8_t last_reported_state = 0xFF;
     while (1)
     {
+        int64_t now_us = (int64_t)g_get_monotonic_time();
         uint8_t state = DEV_MODULE_STATE_NOT_RUNNING;
         if (query_target_state(ctx, target_id, triggered_autostart ? 0 : 1, &state) == ERRCODE_SUCCESS)
         {
+            now_us = (int64_t)g_get_monotonic_time();
             last_state = state;
             triggered_autostart = 1;
+            if (progress_cb &&
+                (state == DEV_MODULE_STATE_READY || state != last_reported_state || now_us >= next_progress_us))
+            {
+                int64_t elapsed_us = now_us - start_us;
+                uint32_t elapsed_ms = 0;
+                if (elapsed_us > 0)
+                {
+                    elapsed_ms = (elapsed_us / 1000 > UINT32_MAX) ? UINT32_MAX : (uint32_t)(elapsed_us / 1000);
+                }
+                progress_cb(target_id, state, elapsed_ms, user);
+                last_reported_state = state;
+                next_progress_us = now_us + 1000 * 1000;
+            }
             if (state == DEV_MODULE_STATE_READY)
             {
                 return ERRCODE_SUCCESS;
@@ -518,6 +537,11 @@ int dev_ipc_wait_module_ready(dev_ipc_context_t *ctx, uint32_t target_id, uint32
         }
         usleep(200 * 1000);
     }
+}
+
+int dev_ipc_wait_module_ready(dev_ipc_context_t *ctx, uint32_t target_id, uint32_t timeout_ms)
+{
+    return dev_ipc_wait_module_ready_with_progress(ctx, target_id, timeout_ms, NULL, NULL);
 }
 
 /* ============================================================================

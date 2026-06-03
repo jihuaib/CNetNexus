@@ -22,9 +22,6 @@
 #include "errcode.h"
 #include "log.h"
 
-/* 与 src/dev/dev_cli.h 中 DEV_CLI_GROUP_ID_PING 保持一致。 */
-#define DEV_CLI_GROUP_ID_PING_COMPAT 5
-
 /* ========================================================================= */
 /* TLV 载荷写入辅助函数                                                       */
 /* ========================================================================= */
@@ -52,6 +49,22 @@ static void tlv_write_i64(GByteArray *buf, int64_t v)
     uint32_t lo = htonl((uint32_t)(v & 0xFFFFFFFF));
     g_byte_array_append(buf, (const uint8_t *)&hi, 4);
     g_byte_array_append(buf, (const uint8_t *)&lo, 4);
+}
+
+static void cli_apply_sysname_update_payload(const char *sysname)
+{
+    if (!g_cli_local)
+    {
+        return;
+    }
+
+    if (!sysname || sysname[0] == '\0')
+    {
+        g_strlcpy(g_cli_local->sysname, CLI_SYSNAME_DEFAULT, sizeof(g_cli_local->sysname));
+        return;
+    }
+
+    g_strlcpy(g_cli_local->sysname, sysname, sizeof(g_cli_local->sysname));
 }
 
 /**
@@ -131,6 +144,14 @@ static void append_context_tlv(GByteArray *buf, const uint8_t *ctx_data, uint32_
     }
 }
 
+static void append_ctx_u32_tlv(GByteArray *buf, uint32_t ctx_id, uint32_t value)
+{
+    tlv_write_u32(buf, ctx_id);
+    tlv_write_u8(buf, CLI_TLV_TYPE_CTX);
+    tlv_write_u16(buf, 4);
+    tlv_write_u32(buf, value);
+}
+
 /**
  * @brief 打包 TLV 载荷
  *
@@ -142,7 +163,7 @@ static void append_context_tlv(GByteArray *buf, const uint8_t *ctx_data, uint32_
  * @param out_len       输出载荷长度
  */
 static uint8_t *pack_tlv_payload(cli_match_result_t *result, const uint8_t *ctx_data, uint32_t ctx_len,
-                                 uint32_t *out_len)
+                                 uint32_t line_id, uint32_t *out_len)
 {
     GByteArray *buf = g_byte_array_new();
 
@@ -177,6 +198,8 @@ static uint8_t *pack_tlv_payload(cli_match_result_t *result, const uint8_t *ctx_
     {
         append_context_tlv(buf, ctx_data, ctx_len);
     }
+
+    append_ctx_u32_tlv(buf, CLI_CTX_ID_ACCESS_LINE, line_id);
 
     *out_len = buf->len;
     return g_byte_array_free(buf, FALSE);
@@ -422,6 +445,48 @@ static void cli_context_build_merged(cli_session_t *session, cli_match_result_t 
 /* 命令分发                                                                   */
 /* ========================================================================= */
 
+static void cli_send_line_progress(cli_session_t *session, const char *text)
+{
+    if (!session || !text || !g_cli_local || !g_cli_local->dev_ipc_ctx)
+    {
+        return;
+    }
+    (void)cli_line_progress_send(g_cli_local->dev_ipc_ctx, session->line_id, text);
+}
+
+static void cli_autostart_progress_cb(uint32_t target_id, uint8_t state, uint32_t elapsed_ms, void *user)
+{
+    (void)target_id;
+    cli_session_t *session = (cli_session_t *)user;
+    if (!session)
+    {
+        return;
+    }
+
+    if (state == DEV_MODULE_STATE_READY)
+    {
+        cli_send_line_progress(session, "[auto-start] module READY.\r\n");
+        return;
+    }
+
+    if (elapsed_ms < 1000)
+    {
+        return;
+    }
+
+    char buf[96];
+    uint32_t elapsed_sec = elapsed_ms / 1000;
+    if (state == DEV_MODULE_STATE_STARTING)
+    {
+        snprintf(buf, sizeof(buf), "[auto-start] waiting for module READY (%us)...\r\n", elapsed_sec);
+    }
+    else
+    {
+        snprintf(buf, sizeof(buf), "[auto-start] requesting module start (%us)...\r\n", elapsed_sec);
+    }
+    cli_send_line_progress(session, buf);
+}
+
 /* 自动视图切换：命令带 to-view 时切换 current_view + 写 context-out + 渲染提示符 */
 static void cli_apply_view_switch(cli_session_t *session, cli_match_result_t *result)
 {
@@ -480,11 +545,9 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
     }
 
     /* CFG 自身命令在创建 IPC 消息之前直接本地处理（无目标模块概念，也不需要按需启动）。 */
-    /* 按需启动触发：若目标模块未连接，先订阅 + auto_start=1 等其就绪
-     *   - 配置命令（含 no）：触发按需 spawn；调用方等待几百毫秒后正常分发
-     *   - show 命令：read-only，不应有副作用——目标不在跑就直接返回提示，不拉起进程
-     * 这样像 TUNNEL 这种纯基础设施模块只会被业务模块（LDP/BGP-MPLS）显式拉起，
-     * 用户输入 show 不会意外把它启动。 */
+    /* 按需启动触发：若目标模块未连接，仅允许 XML 显式标记 auto-start="true" 的
+     * 入口配置命令拉起模块。show/no/read-only 或普通视图内配置命令都不应有启动副作用，
+     * 避免例如 BGP 协议已删除后，在 BGP 视图里敲普通命令拉起一个无法自退出的空进程。 */
     if (result->module_id != DEV_MODULE_ID_CLI && !dev_ipc_is_connected(g_cli_local->dev_ipc_ctx, result->module_id))
     {
         if (result->has_show_prefix)
@@ -497,9 +560,14 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
             cli_send_message(session, "Info: target module is not running; nothing to undo.\r\n");
             return ERRCODE_SUCCESS;
         }
-        cli_send_message(session, "[Starting module, please wait...]\r\n");
-        if (dev_ipc_wait_module_ready(g_cli_local->dev_ipc_ctx, result->module_id, DEV_IPC_WAIT_READY_MS) !=
-            ERRCODE_SUCCESS)
+        if (!result->allow_auto_start)
+        {
+            cli_send_message(session, "Error: target module is not running; command not applied.\r\n");
+            return ERRCODE_SUCCESS;
+        }
+        cli_send_line_progress(session, "[auto-start] starting module, waiting for READY...\r\n");
+        if (dev_ipc_wait_module_ready_with_progress(g_cli_local->dev_ipc_ctx, result->module_id, DEV_IPC_WAIT_READY_MS,
+                                                    cli_autostart_progress_cb, session) != ERRCODE_SUCCESS)
         {
             cli_send_message(session, "Error: Required module failed to start.\r\n");
             return ERRCODE_FAIL;
@@ -511,7 +579,7 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
     const uint8_t *ctx_data = cli_context_get(session, &ctx_len);
 
     uint32_t msg_len = 0;
-    uint8_t *msg_data = pack_tlv_payload(result, ctx_data, ctx_len, &msg_len);
+    uint8_t *msg_data = pack_tlv_payload(result, ctx_data, ctx_len, session->line_id, &msg_len);
 
     /* 创建 CLI 消息 */
     dev_ipc_message_t *msg =
@@ -534,8 +602,6 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
     LOG_DEBUG("Sending query to module 0x%08X...", result->module_id);
 
     GString *full_output = g_string_new("");
-    gboolean stream_live_output =
-        (result->module_id == DEV_MODULE_ID_DEV && result->group_id == DEV_CLI_GROUP_ID_PING_COMPAT);
     int done = 0;
 
     while (!done)
@@ -582,16 +648,44 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
          * 这样紧跟其后的下一条命令一定看到 is_connected=false，自动走按需 spawn 路径。 */
         if (response->msg_type == CLI_MSG_TYPE_RESP_EXITING)
         {
-            gint64 deadline_us = g_get_monotonic_time() + 3LL * G_TIME_SPAN_SECOND;
+            gint64 start_us = g_get_monotonic_time();
+            gint64 deadline_us = start_us + 3LL * G_TIME_SPAN_SECOND;
+            gint64 next_progress_us = start_us;
             while (g_get_monotonic_time() < deadline_us)
             {
                 if (!dev_ipc_is_connected(g_cli_local->dev_ipc_ctx, result->module_id))
                 {
                     break;
                 }
+                gint64 now_us = g_get_monotonic_time();
+                if (now_us >= next_progress_us)
+                {
+                    char buf[96];
+                    uint32_t elapsed_sec = (uint32_t)((now_us - start_us) / G_TIME_SPAN_SECOND);
+                    if (elapsed_sec == 0)
+                    {
+                        snprintf(buf, sizeof(buf), "[shutdown] waiting for module exit...\r\n");
+                    }
+                    else
+                    {
+                        snprintf(buf, sizeof(buf), "[shutdown] waiting for module exit (%us)...\r\n", elapsed_sec);
+                    }
+                    cli_send_line_progress(session, buf);
+                    next_progress_us = now_us + G_TIME_SPAN_SECOND;
+                }
                 g_usleep(20 * 1000); /* 20ms */
             }
             response->msg_type = CLI_MSG_TYPE_RESP; /* 后续分支按普通最终响应处理 */
+        }
+
+        if (response->msg_type == CLI_MSG_TYPE_SYSNAME_UPDATE_RESP)
+        {
+            cli_apply_sysname_update_payload(response->payload ? (const char *)response->payload : "");
+            if (response->payload)
+            {
+                ((char *)response->payload)[0] = '\0';
+            }
+            response->msg_type = CLI_MSG_TYPE_RESP; /* 后续分支按空成功响应处理 */
         }
 
         if (response->msg_type == CLI_MSG_TYPE_RESP)
@@ -599,14 +693,7 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
             /* 最终响应块 */
             if (response->payload)
             {
-                if (stream_live_output)
-                {
-                    cli_send_message(session, response->payload);
-                }
-                else
-                {
-                    g_string_append(full_output, response->payload);
-                }
+                g_string_append(full_output, response->payload);
             }
 
             /* 自动视图切换：响应为空 + 命令有目标视图名（context-out 可选） */
@@ -624,14 +711,7 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
             /* 部分响应 - 追加并请求更多 */
             if (response->payload)
             {
-                if (stream_live_output)
-                {
-                    cli_send_message(session, response->payload);
-                }
-                else
-                {
-                    g_string_append(full_output, response->payload);
-                }
+                g_string_append(full_output, response->payload);
             }
             dev_ipc_message_free(response);
 
@@ -650,7 +730,7 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
     }
 
     /* 输出结果 */
-    if (!stream_live_output && full_output->len > 0)
+    if (full_output->len > 0)
     {
         cli_pager_output(session, full_output->str);
     }

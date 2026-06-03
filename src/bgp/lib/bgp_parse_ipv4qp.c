@@ -158,8 +158,9 @@ static int parse_qp_entries(const uint8_t *data, uint16_t len, bgp_nlri_entry_t 
 }
 
 /* QP nexthop 与 IPv4 单播等价：4B 传统 / 16B or 32B IPv6（RFC 8950） */
-static int parse_nexthop(const uint8_t *nh_data, uint8_t nh_len, bgp_nexthop_t *nexthop)
+static int parse_nexthop(const uint8_t *nh_data, uint8_t nh_len, uint32_t flags, bgp_nexthop_t *nexthop)
 {
+    (void)flags;
     if (nh_len == 4)
     {
         nexthop->global.family = AF_INET;

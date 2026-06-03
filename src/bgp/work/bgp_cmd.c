@@ -32,6 +32,7 @@
 #include "bgp_route_flush.h"
 #include "bgp_session.h"
 #include "bgp_vrf.h"
+#include "bgp_vrf_import.h"
 #include "bgp_worker.h"
 #include "errcode.h"
 #include "if.h"
@@ -696,6 +697,7 @@ gboolean bgp_cmd_process_event(void)
                  * 再清掉 vrf_api cache。DB 保留，等 SMOOTHEND 后再恢复。 */
                 bgp_apply_vrf_purge_non_public();
                 vrf_api_cache_clear();
+                bgp_vrf_import_purge_all(); /* IRT 索引整体清空，待 REPLAY 的 IMPORT_RT_ADD 重建 */
                 break;
 
             case BGP_CMD_TYPE_SHUTDOWN:

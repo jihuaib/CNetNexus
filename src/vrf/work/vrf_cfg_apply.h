@@ -26,7 +26,8 @@ typedef enum vrf_apply_op
     VRF_APPLY_OP_AF_DELETE = 4,
     VRF_APPLY_OP_RD_SET = 5, /**< rd 字段有效 */
     VRF_APPLY_OP_RD_CLEAR = 6,
-    VRF_APPLY_OP_RT_MODIFY = 7, /**< direction + add + rt 有效 */
+    VRF_APPLY_OP_RT_MODIFY = 7,       /**< direction + add + rt 有效 */
+    VRF_APPLY_OP_APPLY_LABEL_SET = 8, /**< apply_label_mode 有效 */
 } vrf_apply_op_t;
 
 /**
@@ -44,9 +45,10 @@ typedef struct vrf_apply_cmd
     char vrf_name[VRF_NAME_MAX_LEN];
     uint16_t afi;
     uint8_t safi;
-    uint8_t direction; /**< 0=import, 1=export, 2=both */
-    uint8_t add;       /**< 1=添加, 0=删除（RT_MODIFY 时） */
-    uint8_t _pad[3];
+    uint8_t direction;        /**< 0=import, 1=export, 2=both */
+    uint8_t add;              /**< 1=添加, 0=删除（RT_MODIFY 时） */
+    uint8_t apply_label_mode; /**< VRF_APPLY_LABEL_*（APPLY_LABEL_SET 时） */
+    uint8_t _pad[2];
 
     /** 输入/输出：VRF_CREATE 输入 0 表示 worker 分配，非 0 表示按指定 id 建（恢复路径用）；
      *  其它操作或 CREATE 完成后由 worker 回填实际 vrf_id 给调用方做 DB 写。 */

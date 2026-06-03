@@ -40,6 +40,7 @@ typedef struct bgp_vrf
     uint16_t connect_retry; /**< TCP 主动连接失败后重试间隔（秒），默认 10 */
     int listen_fd;          /**< IPv4 BGP listen socket fd，-1 表示未监听 */
     int listen_fd_v6;       /**< IPv6 BGP listen socket fd，-1 表示未监听 */
+    uint32_t vpn_label;     /**< 本 VRF 导出到 vpnv4 的 per-VRF 单标签（0 表示未分配） */
     GHashTable *sess_hash;  /**< addr_str -> bgp_session_t*（持有所有权） */
     GHashTable *inst_hash;  /**< (afi<<16|safi) -> bgp_instance_t*（持有所有权，g_direct_hash） */
 } bgp_vrf_t;

@@ -293,7 +293,9 @@ int bgp_rib_route_set_base_attr(bgp_route_node_t *route, const bgp_attr_t *base_
 
 void bgp_route_set_label_from_nlri(bgp_route_node_t *route, const bgp_nlri_entry_t *nlri, uint8_t label_source)
 {
-    if (!route || !nlri || nlri->type != BGP_NLRI_PREFIX || nlri->safi != BGP_SAFI_LABELED || !nlri->prefix.has_label)
+    /* labeled-unicast 与 VPN（vpnv4/vpn-flowspec）的 NLRI 都携带 MPLS 标签。 */
+    if (!route || !nlri || nlri->type != BGP_NLRI_PREFIX || !nlri->prefix.has_label ||
+        (nlri->safi != BGP_SAFI_LABELED && nlri->safi != BGP_SAFI_VPN_UNICAST && nlri->safi != BGP_SAFI_VPN_FLOWSPEC))
     {
         return;
     }

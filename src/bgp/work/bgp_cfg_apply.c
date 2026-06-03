@@ -28,6 +28,7 @@
 #include "bgp_session.h"
 #include "bgp_update_group.h"
 #include "bgp_vrf.h"
+#include "bgp_vrf_export.h"
 #include "bgp_worker.h"
 #include "errcode.h"
 #include "route.h"
@@ -499,6 +500,13 @@ void bgp_cfg_apply_instance(bgp_apply_cmd_t *apply)
             }
             g_list_free_full(addr_strs, g_free);
         }
+        /* public vpnv4 去使能：先撤销所有已导出 VPN 路由，再删实例 */
+        if (vrf->vrf_id == BGP_VRF_PUBLIC_ID && apply->u.instance.afi == BGP_AFI_IPV4 &&
+            apply->u.instance.safi == BGP_SAFI_VPN_UNICAST)
+        {
+            (void)bgp_vrf_export_disable(inst);
+            bgp_cfg_drain_instance_work(inst);
+        }
         bgp_cfg_drain_instance_work(inst);
         bgp_vrf_del_instance(vrf, apply->u.instance.afi, apply->u.instance.safi);
     }
@@ -509,6 +517,12 @@ void bgp_cfg_apply_instance(bgp_apply_cmd_t *apply)
         {
             snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: Failed to apply instance configuration.");
             return;
+        }
+        /* public vpnv4 使能：把所有私网 VRF 的 unicast 路由按 RD 全量导出到 vpnv4(分批) */
+        if (vrf->vrf_id == BGP_VRF_PUBLIC_ID && apply->u.instance.afi == BGP_AFI_IPV4 &&
+            apply->u.instance.safi == BGP_SAFI_VPN_UNICAST)
+        {
+            (void)bgp_vrf_export_enable(inst);
         }
     }
     apply->rc = BGP_APPLY_RC_OK;

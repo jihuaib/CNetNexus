@@ -5,8 +5,9 @@ Scoped `show this` coverage for CLI-owned config views.
 Covers:
 - interface view: IF anchor body plus ISIS cross-module contribution
 - ISIS view: only the ISIS top-level block
-- BGP root view: root config plus AF/BMP child blocks
-- BGP AF/BMP child views: only the current scoped block
+- BGP root view: root config plus AF/VRF/BMP child blocks
+- BGP VRF/AF/BMP child views: only the current scoped block
+- ACCESS line and SBMP views: only the current scoped block
 """
 
 from __future__ import annotations
@@ -21,11 +22,17 @@ BGP_AS_R1 = 65001
 BGP_AS_R2 = 65002
 BGP_ROUTER_ID_R1 = "1.1.1.1"
 BGP_ROUTER_ID_R2 = "2.2.2.2"
+BGP_VRF_NAME = "ci-show-this"
+BGP_VRF_ROUTER_ID = "11.11.11.11"
+BGP_VRF_RD = "65001:101"
 BMP_NAME = "ci-bmp"
 BMP_COLLECTOR_IP = "192.0.2.9"
 BMP_COLLECTOR_PORT = 5000
 BMP_STATS_INTERVAL = 60
 BMP_RECONNECT_INTERVAL = 45
+SBMP_SERVER_PORT = 5010
+VTY_FIRST = 1
+VTY_LAST = 2
 ISIS_NET = "49.0001.0000.0000.0f01.00"
 
 
@@ -44,6 +51,11 @@ def _cleanup(rt: TopologyRuntime) -> None:
             "exit",
             f"no isis {TAG}",
             "no bgp",
+            f"no vrf {BGP_VRF_NAME}",
+            f"line vty {VTY_FIRST} {VTY_LAST}",
+            "transport input none",
+            "exit",
+            "no bmp-server",
             "end",
         ],
     )
@@ -145,6 +157,44 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             ],
         )
 
+        step("Configure BGP VRF child view on r1")
+        run_cmds(
+            rt=rt,
+            device="r1",
+            commands=[
+                "config",
+                f"vrf {BGP_VRF_NAME}",
+                "af ipv4-unicast",
+                f"route-distinguisher {BGP_VRF_RD}",
+                "exit",
+                "exit",
+                f"bgp {BGP_AS_R1}",
+                f"vrf {BGP_VRF_NAME}",
+                f"router-id {BGP_VRF_ROUTER_ID}",
+                f"neighbor {r1_peer_ip} as {BGP_AS_R2}",
+                "af ipv4-unicast",
+                "import-route static",
+                "exit",
+                "end",
+            ],
+        )
+
+        step("Configure ACCESS line view and SBMP view on r1")
+        run_cmds(
+            rt=rt,
+            device="r1",
+            commands=[
+                "config",
+                f"line vty {VTY_FIRST} {VTY_LAST}",
+                "transport input telnet",
+                "end",
+                "config",
+                "bmp-server",
+                f"server port {SBMP_SERVER_PORT}",
+                "end",
+            ],
+        )
+
         step("Configure matching BGP peer on r2")
         run_cmds(
             rt=rt,
@@ -186,6 +236,18 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 f"stats-report interval {BMP_STATS_INTERVAL}",
                 f"reconnect interval {BMP_RECONNECT_INTERVAL}",
                 "monitor neighbor all",
+                f"vrf {BGP_VRF_NAME}",
+                f"route-distinguisher {BGP_VRF_RD}",
+                f"router-id {BGP_VRF_ROUTER_ID}",
+                f"neighbor {r1_peer_ip} as {BGP_AS_R2}",
+                f"line vty {VTY_FIRST} {VTY_LAST}",
+                "transport input telnet",
+                "bmp-server",
+                f"server port {SBMP_SERVER_PORT}",
+            ],
+            regex=[
+                rf"(?m)^  af ipv4-unicast\s*$",
+                rf"(?m)^   import-route static\s*$",
             ],
             label="r1 current-config reflects CLI show-this scenario",
         )
@@ -230,6 +292,55 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             count={f"isis {TAG}": 1},
         )
 
+        step("Verify ACCESS line-view show this only includes the selected line block")
+        line_out = _show_this(rt, "r1", [f"line vty {VTY_FIRST} {VTY_LAST}"])
+        _assert_show_this(
+            "line show this",
+            line_out,
+            contains=[
+                f"line vty {VTY_FIRST} {VTY_LAST}",
+                "transport input telnet",
+            ],
+            not_regex=[
+                rf"(?mi)^\s*line\s+console\s+0\s*$",
+                rf"(?mi)^\s*bgp\s+{BGP_AS_R1}\s*$",
+                rf"(?mi)^\s*isis\s+{TAG}\s*$",
+                rf"(?mi)^\s*bmp-server\s*$",
+            ],
+            count={f"line vty {VTY_FIRST} {VTY_LAST}": 1},
+        )
+
+        step("Verify ACCESS console-view show this only includes the console block")
+        console_out = _show_this(rt, "r1", ["line console 0"])
+        _assert_show_this(
+            "line console show this",
+            console_out,
+            contains=["line console 0"],
+            not_regex=[
+                rf"(?mi)^\s*line\s+vty\s+{VTY_FIRST}\s+{VTY_LAST}\s*$",
+                rf"(?mi)^\s*transport\s+input\s+telnet\s*$",
+                rf"(?mi)^\s*bgp\s+{BGP_AS_R1}\s*$",
+                rf"(?mi)^\s*isis\s+{TAG}\s*$",
+            ],
+            count={"line console 0": 1},
+        )
+
+        step("Verify SBMP-view show this only includes the SBMP block")
+        sbmp_out = _show_this(rt, "r1", ["bmp-server"])
+        _assert_show_this(
+            "sbmp show this",
+            sbmp_out,
+            contains=[
+                "bmp-server",
+                f"server port {SBMP_SERVER_PORT}",
+            ],
+            not_regex=[
+                rf"(?mi)^\s*line\s+vty\s+{VTY_FIRST}\s+{VTY_LAST}\s*$",
+                rf"(?mi)^\s*bgp\s+{BGP_AS_R1}\s*$",
+                rf"(?mi)^\s*isis\s+{TAG}\s*$",
+            ],
+        )
+
         step("Verify BGP root-view show this includes AF and BMP child blocks")
         bgp_out = _show_this(rt, "r1", [f"bgp {BGP_AS_R1}"])
         _assert_show_this(
@@ -247,6 +358,12 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 f"stats-report interval {BMP_STATS_INTERVAL}",
                 f"reconnect interval {BMP_RECONNECT_INTERVAL}",
                 "monitor neighbor all",
+                f"vrf {BGP_VRF_NAME}",
+                f"router-id {BGP_VRF_ROUTER_ID}",
+            ],
+            regex=[
+                rf"(?m)^  af ipv4-unicast\s*$",
+                rf"(?m)^   import-route static\s*$",
             ],
             not_regex=[
                 rf"(?mi)^\s*if\s+{GE_IF}\s*$",
@@ -254,9 +371,59 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             ],
             count={
                 f"bgp {BGP_AS_R1}": 1,
-                "af ipv4-unicast": 1,
+                "af ipv4-unicast": 2,
                 f"bmp instance {BMP_NAME}": 1,
             },
+        )
+
+        step("Verify BGP VRF-view show this only includes the current VRF block")
+        bgp_vrf_out = _show_this(rt, "r1", [f"bgp {BGP_AS_R1}", f"vrf {BGP_VRF_NAME}"])
+        _assert_show_this(
+            "bgp vrf show this",
+            bgp_vrf_out,
+            contains=[
+                f"vrf {BGP_VRF_NAME}",
+                f"router-id {BGP_VRF_ROUTER_ID}",
+                f"neighbor {r1_peer_ip} as {BGP_AS_R2}",
+                "af ipv4-unicast",
+                "import-route static",
+            ],
+            regex=[
+                rf"(?m)^  af ipv4-unicast\s*$",
+                rf"(?m)^   import-route static\s*$",
+            ],
+            not_regex=[
+                rf"(?mi)^\s*bgp\s+{BGP_AS_R1}\s*$",
+                rf"(?m)^ af ipv4-unicast\s*$",
+                rf"(?mi)^\s*bmp\s+instance\s+{BMP_NAME}\s*$",
+                rf"(?mi)^\s*if\s+{GE_IF}\s*$",
+                rf"(?mi)^\s*isis\s+{TAG}\s*$",
+            ],
+            count={f"vrf {BGP_VRF_NAME}": 1, "af ipv4-unicast": 1},
+        )
+
+        step("Verify BGP VRF AF-view show this only includes the current VRF AF block")
+        bgp_vrf_af_out = _show_this(rt, "r1", [f"bgp {BGP_AS_R1}", f"vrf {BGP_VRF_NAME}", "af ipv4-unicast"])
+        _assert_show_this(
+            "bgp vrf af show this",
+            bgp_vrf_af_out,
+            contains=[
+                "af ipv4-unicast",
+                "import-route static",
+            ],
+            regex=[
+                rf"(?m)^  af ipv4-unicast\s*$",
+                rf"(?m)^   import-route static\s*$",
+            ],
+            not_regex=[
+                rf"(?mi)^\s*bgp\s+{BGP_AS_R1}\s*$",
+                rf"(?mi)^\s*vrf\s+{BGP_VRF_NAME}\s*$",
+                rf"(?m)^ af ipv4-unicast\s*$",
+                rf"(?mi)^\s*bmp\s+instance\s+{BMP_NAME}\s*$",
+                rf"(?mi)^\s*if\s+{GE_IF}\s*$",
+                rf"(?mi)^\s*isis\s+{TAG}\s*$",
+            ],
+            count={"af ipv4-unicast": 1},
         )
 
         step("Verify BGP AF-view show this only includes the current AF block")

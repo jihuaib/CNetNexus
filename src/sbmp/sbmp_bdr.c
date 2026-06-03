@@ -30,6 +30,19 @@ void sbmp_bdr_show_config(dev_ipc_message_t *msg)
         return;
     }
 
+    cli_show_scope_t scope;
+    if (cli_show_scope_payload_parse((const uint8_t *)msg->payload, msg->payload_len, &scope) != 0)
+    {
+        LOG_WARN("SBMP BDR: invalid SHOW_CONFIG scope payload");
+        (void)sbmp_cli_send_chunked_response(msg, out);
+        return;
+    }
+    if (scope.mode == CLI_SHOW_SCOPE_MODE_THIS && strcmp(scope.view_name, CLI_VIEW_SBMP) != 0)
+    {
+        (void)sbmp_cli_send_chunked_response(msg, out);
+        return;
+    }
+
     /* 查询 sbmp_server 表 */
     db_result_t *result = NULL;
     if (db_rpc_query(ctx, SBMP_TABLE_SERVER, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result ||

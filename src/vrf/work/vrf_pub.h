@@ -44,6 +44,7 @@ void vrf_pub_notify_af_enable(const vrf_entry_t *e, uint16_t afi, uint8_t safi);
 void vrf_pub_notify_af_disable(const vrf_entry_t *e, uint16_t afi, uint8_t safi);
 void vrf_pub_notify_af_rd_add(const vrf_entry_t *e, const vrf_af_state_t *af);
 void vrf_pub_notify_af_rd_del(const vrf_entry_t *e, uint16_t afi, uint8_t safi);
+void vrf_pub_notify_af_apply_label(const vrf_entry_t *e, const vrf_af_state_t *af);
 void vrf_pub_notify_af_import_rt_add(const vrf_entry_t *e, const vrf_af_state_t *af, const vrf_rt_t *rt);
 void vrf_pub_notify_af_import_rt_del(const vrf_entry_t *e, const vrf_af_state_t *af, const vrf_rt_t *rt);
 void vrf_pub_notify_af_export_rt_add(const vrf_entry_t *e, const vrf_af_state_t *af, const vrf_rt_t *rt);

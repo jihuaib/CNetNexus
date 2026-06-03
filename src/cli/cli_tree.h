@@ -55,6 +55,7 @@ struct cli_tree_node
     char *target_view_name;       // 命令执行成功后切换到的视图名称（NULL 表示不切换）
     cli_param_type_t *param_type; // Parameter type for validation (only for ARGUMENT nodes)
     gboolean is_end_node;         // 1 if this node is a valid command end point, 0 otherwise
+    gboolean allow_auto_start;    // 1 if this command endpoint may auto-start an on-demand module
 
     /** XML <context-out> 条目数组：视图切换成功时由框架自动写入上下文（NULL 表示无） */
     cli_ctx_out_entry_t *context_out;
@@ -92,6 +93,7 @@ typedef struct cli_match_result
     cli_tree_node_t *final_node;   // Final matched node
     gboolean has_no_prefix;        // 命令是否带有 "no" 前缀（无需 cfg-id 亦可检测）
     gboolean has_show_prefix;      // 命令是否带有 "show" 关键字
+    gboolean allow_auto_start;     // 命令是否允许触发按需拉起目标模块
 } cli_match_result_t;
 
 // Match result functions

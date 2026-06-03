@@ -371,7 +371,21 @@ void vrf_api_cache_on_event(const dev_ipc_message_t *msg)
         case VRF_EVENT_AF_ENABLE:
         {
             vrf_api_cache_entry_t *e = cache_get_or_create(evt->vrf_id, evt->name, evt->l3vrf_table_id);
-            (void)af_get_or_create(e, evt->afi, evt->safi);
+            vrf_api_af_t *af = af_get_or_create(e, evt->afi, evt->safi);
+            if (af)
+            {
+                af->apply_label_mode = evt->apply_label_mode;
+            }
+            break;
+        }
+        case VRF_EVENT_AF_APPLY_LABEL:
+        {
+            vrf_api_cache_entry_t *e = cache_get_or_create(evt->vrf_id, evt->name, evt->l3vrf_table_id);
+            vrf_api_af_t *af = af_get_or_create(e, evt->afi, evt->safi);
+            if (af)
+            {
+                af->apply_label_mode = evt->apply_label_mode;
+            }
             break;
         }
         case VRF_EVENT_AF_DISABLE:

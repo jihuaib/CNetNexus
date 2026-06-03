@@ -83,6 +83,7 @@ void bgp_pkt_build_ipv6uc_register(void);
 void bgp_pkt_build_ipv4qp_register(void);
 void bgp_pkt_build_ipv6qp_register(void);
 void bgp_pkt_build_labeled_register(void);
+void bgp_pkt_build_vpn_register(void);
 
 void bgp_pkt_build_init(void)
 {
@@ -95,4 +96,5 @@ void bgp_pkt_build_init(void)
     bgp_pkt_build_ipv4qp_register();
     bgp_pkt_build_ipv6qp_register();
     bgp_pkt_build_labeled_register();
+    bgp_pkt_build_vpn_register();
 }

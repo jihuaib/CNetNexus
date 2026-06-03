@@ -174,6 +174,45 @@ static const char *bdr_transport_str(uint8_t bits)
     return "none";
 }
 
+static int bdr_load_line_state(uint8_t vty_tr[ACCESS_VTY_COUNT], int *con_present)
+{
+    dev_ipc_context_t *ctx = access_ipc_ctx();
+    if (!vty_tr || !con_present || !db_rpc_is_available(ctx))
+    {
+        return ERRCODE_FAIL;
+    }
+
+    memset(vty_tr, 0, ACCESS_VTY_COUNT);
+    *con_present = 0;
+
+    db_result_t *r = NULL;
+    if (db_rpc_query(ctx, ACCESS_TABLE_LINE, NULL, 0, NULL, &r) != ERRCODE_SUCCESS)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    if (r)
+    {
+        for (uint32_t i = 0; i < r->num_rows; i++)
+        {
+            int line_type = (int)db_row_get_int(r->rows[i], "line_type", 0);
+            uint32_t num = (uint32_t)db_row_get_int(r->rows[i], "line_num", 0);
+            uint8_t tr = (uint8_t)db_row_get_int(r->rows[i], "transport", 0);
+            if (line_type == ACCESS_LINE_TYPE_CON)
+            {
+                *con_present = 1;
+            }
+            else if (line_type == ACCESS_LINE_TYPE_VTY && num < ACCESS_VTY_COUNT)
+            {
+                vty_tr[num] = tr;
+            }
+        }
+        db_result_free(r);
+    }
+
+    return ERRCODE_SUCCESS;
+}
+
 void access_db_build_running_config(GString *out)
 {
     dev_ipc_context_t *ctx = access_ipc_ctx();
@@ -200,29 +239,10 @@ void access_db_build_running_config(GString *out)
 
     /* 各线（access_line 表）：con 线存在则输出 line console 0；vty 按 transport 分组 */
     uint8_t vty_tr[ACCESS_VTY_COUNT];
-    memset(vty_tr, 0, sizeof(vty_tr));
     int con_present = 0;
-    r = NULL;
-    if (db_rpc_query(ctx, ACCESS_TABLE_LINE, NULL, 0, NULL, &r) == ERRCODE_SUCCESS && r)
+    if (bdr_load_line_state(vty_tr, &con_present) != ERRCODE_SUCCESS)
     {
-        for (uint32_t i = 0; i < r->num_rows; i++)
-        {
-            int line_type = (int)db_row_get_int(r->rows[i], "line_type", 0);
-            uint32_t num = (uint32_t)db_row_get_int(r->rows[i], "line_num", 0);
-            uint8_t tr = (uint8_t)db_row_get_int(r->rows[i], "transport", 0);
-            if (line_type == ACCESS_LINE_TYPE_CON)
-            {
-                con_present = 1;
-            }
-            else if (line_type == ACCESS_LINE_TYPE_VTY && num < ACCESS_VTY_COUNT)
-            {
-                vty_tr[num] = tr;
-            }
-        }
-    }
-    if (r)
-    {
-        db_result_free(r);
+        return;
     }
 
     if (con_present)
@@ -248,6 +268,84 @@ void access_db_build_running_config(GString *out)
         g_string_append_printf(out, "line vty %u %u\r\n", i, j);
         g_string_append_printf(out, " transport input %s\r\n", bdr_transport_str(t));
         i = j + 1;
+    }
+}
+
+void access_db_build_running_config_scoped(GString *out, const cli_show_scope_t *scope)
+{
+    if (!out || !scope || scope->mode != CLI_SHOW_SCOPE_MODE_THIS || !db_rpc_is_available(access_ipc_ctx()))
+    {
+        return;
+    }
+
+    if (strcmp(scope->view_name, CLI_VIEW_LINE_CONSOLE) == 0)
+    {
+        g_string_append(out, "!\r\nline console 0\r\n");
+        return;
+    }
+
+    if (strcmp(scope->view_name, CLI_VIEW_LINE) != 0)
+    {
+        return;
+    }
+
+    uint32_t first = 0;
+    uint32_t last = 0;
+    if (cli_ctx_lookup_uint32(scope->ctx_data, scope->ctx_len, ACCESS_CTX_ID_LINE_FIRST, &first) != 0 ||
+        cli_ctx_lookup_uint32(scope->ctx_data, scope->ctx_len, ACCESS_CTX_ID_LINE_LAST, &last) != 0)
+    {
+        return;
+    }
+
+    if (first >= ACCESS_VTY_COUNT)
+    {
+        return;
+    }
+    if (last >= ACCESS_VTY_COUNT)
+    {
+        last = ACCESS_VTY_COUNT - 1;
+    }
+    if (first > last)
+    {
+        return;
+    }
+
+    uint8_t vty_tr[ACCESS_VTY_COUNT];
+    int con_present = 0;
+    if (bdr_load_line_state(vty_tr, &con_present) != ERRCODE_SUCCESS)
+    {
+        return;
+    }
+    (void)con_present;
+
+    gboolean emitted = FALSE;
+    uint32_t i = first;
+    while (i <= last)
+    {
+        uint8_t t = vty_tr[i];
+        if (t == 0)
+        {
+            i++;
+            continue;
+        }
+
+        uint32_t j = i;
+        while (j + 1 <= last && vty_tr[j + 1] == t)
+        {
+            j++;
+        }
+
+        g_string_append(out, "!\r\n");
+        g_string_append_printf(out, "line vty %u %u\r\n", i, j);
+        g_string_append_printf(out, " transport input %s\r\n", bdr_transport_str(t));
+        emitted = TRUE;
+        i = j + 1;
+    }
+
+    if (!emitted)
+    {
+        g_string_append(out, "!\r\n");
+        g_string_append_printf(out, "line vty %u %u\r\n", first, last);
     }
 }
 

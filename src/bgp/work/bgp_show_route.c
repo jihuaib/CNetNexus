@@ -1,0 +1,968 @@
+/**
+ * @file   bgp_show_route.c
+ * @brief  BGP show route 命令处理（从 bgp_show.c 拆出，专用于路由显示）
+ * @author jhb
+ * @date   2026/06/01
+ */
+#include "bgp_show_route.h"
+
+#include <arpa/inet.h>
+#include <glib.h>
+#include <net/if.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "bgp.h"
+#include "bgp_attr_intern.h"
+#include "bgp_ext_community.h"
+#include "bgp_instance.h"
+#include "bgp_main.h"
+#include "bgp_pkt.h"
+#include "bgp_rd.h"
+#include "bgp_rib.h"
+#include "bgp_show.h"
+#include "bgp_vrf.h"
+#include "bgp_worker.h"
+#include "bit.h"
+#include "cli.h"
+#include "dev.h"
+#include "errcode.h"
+#include "net_addr.h"
+
+/**
+ * @brief 解析 RD 字符串（ASN:NN 或 IP:NN）到 8 字节，供 rd 过滤使用
+ * @return 0 成功，-1 格式非法
+ */
+static int bgp_show_rd_from_str(const char *s, bgp_rd_t *out)
+{
+    if (!s || !out)
+    {
+        return -1;
+    }
+    const char *colon = strchr(s, ':');
+    if (!colon || colon == s || colon[1] == '\0')
+    {
+        return -1;
+    }
+    char left[64];
+    size_t left_len = (size_t)(colon - s);
+    if (left_len >= sizeof(left))
+    {
+        return -1;
+    }
+    memcpy(left, s, left_len);
+    left[left_len] = '\0';
+    const char *right = colon + 1;
+    memset(out->bytes, 0, sizeof(out->bytes));
+
+    if (strchr(left, '.'))
+    {
+        struct in_addr ip;
+        char *endp = NULL;
+        unsigned long val = strtoul(right, &endp, 10);
+        if (inet_pton(AF_INET, left, &ip) != 1 || !endp || *endp != '\0' || val > 0xFFFFu)
+        {
+            return -1;
+        }
+        out->bytes[0] = 0x00;
+        out->bytes[1] = 0x01;
+        memcpy(out->bytes + 2, &ip.s_addr, 4);
+        out->bytes[6] = (uint8_t)(val >> 8);
+        out->bytes[7] = (uint8_t)val;
+        return 0;
+    }
+
+    char *endp = NULL;
+    unsigned long asn = strtoul(left, &endp, 10);
+    if (!endp || *endp != '\0' || asn > 0xFFFFu)
+    {
+        return -1;
+    }
+    endp = NULL;
+    unsigned long val = strtoul(right, &endp, 10);
+    if (!endp || *endp != '\0' || val > 0xFFFFFFFFul)
+    {
+        return -1;
+    }
+    out->bytes[0] = 0x00;
+    out->bytes[1] = 0x00;
+    out->bytes[2] = (uint8_t)(asn >> 8);
+    out->bytes[3] = (uint8_t)asn;
+    out->bytes[4] = (uint8_t)(val >> 24);
+    out->bytes[5] = (uint8_t)(val >> 16);
+    out->bytes[6] = (uint8_t)(val >> 8);
+    out->bytes[7] = (uint8_t)val;
+    return 0;
+}
+
+static void bgp_nexthop_to_str(const bgp_nexthop_t *nexthop, char *buf, size_t sz)
+{
+    if (!buf || sz == 0)
+    {
+        return;
+    }
+
+    char global[64] = "-";
+    if (nexthop && nexthop->global.family != 0)
+    {
+        net_addr_to_str(&nexthop->global, global, sizeof(global));
+    }
+
+    if (nexthop && nexthop->has_link_local && nexthop->link_local.family != 0)
+    {
+        char ll[64];
+        net_addr_to_str(&nexthop->link_local, ll, sizeof(ll));
+        g_strlcpy(buf, global, sz);
+        g_strlcat(buf, " (ll:", sz);
+        g_strlcat(buf, ll, sz);
+        g_strlcat(buf, ")", sz);
+        return;
+    }
+
+    snprintf(buf, sz, "%s", global);
+}
+
+/** 将 BGP route flags 格式化为可读字符串 */
+static void bgp_route_flags_to_str(uint32_t flags, char *buf, size_t sz)
+{
+    if (!buf || sz == 0)
+    {
+        return;
+    }
+
+    buf[0] = '\0';
+    if (BIT_TEST(flags, BGP_ROUTE_FLAG_BEST))
+    {
+        g_strlcat(buf, "BEST|", sz);
+    }
+    if (BIT_TEST(flags, BGP_ROUTE_FLAG_IMPORT))
+    {
+        g_strlcat(buf, "IMPORT|", sz);
+    }
+    if (BIT_TEST(flags, BGP_ROUTE_FLAG_VALID))
+    {
+        g_strlcat(buf, "VALID|", sz);
+    }
+    if (BIT_TEST(flags, BGP_ROUTE_FLAG_FLUSHED))
+    {
+        g_strlcat(buf, "FLUSHED|", sz);
+    }
+    if (BIT_TEST(flags, BGP_ROUTE_FLAG_STALE))
+    {
+        g_strlcat(buf, "STALE|", sz);
+    }
+    if (BIT_TEST(flags, BGP_ROUTE_FLAG_NO_ADV))
+    {
+        g_strlcat(buf, "NO_ADV|", sz);
+    }
+    if (BIT_TEST(flags, BGP_ROUTE_FLAG_IMPORT_RIB))
+    {
+        g_strlcat(buf, "IMPORT_RIB|", sz);
+    }
+    if (BIT_TEST(flags, BGP_ROUTE_FLAG_PENDING_FREE))
+    {
+        g_strlcat(buf, "PENDING_FREE|", sz);
+    }
+
+    size_t n = strlen(buf);
+    if (n == 0)
+    {
+        g_strlcpy(buf, "NONE", sz);
+        return;
+    }
+    if (buf[n - 1] == '|')
+    {
+        buf[n - 1] = '\0';
+    }
+}
+
+/** 将出接口索引格式化为 ifname(ifindex) */
+static void bgp_ifindex_to_str(uint32_t ifindex, char *buf, size_t sz)
+{
+    if (!buf || sz == 0)
+    {
+        return;
+    }
+    if (ifindex == 0)
+    {
+        snprintf(buf, sz, "-");
+        return;
+    }
+
+    char ifname[IF_NAMESIZE] = {0};
+    if (if_indextoname(ifindex, ifname))
+    {
+        snprintf(buf, sz, "%s(%u)", ifname, ifindex);
+        return;
+    }
+
+    snprintf(buf, sz, "if%u", ifindex);
+}
+
+/* 路由表固定列宽（Network 列按实际前缀长度动态扩展） */
+#define BGP_RT_COL_NET_MIN 24
+#define BGP_RT_MARKER_COL 3
+#define BGP_RT_COL_NH 20
+#define BGP_RT_COL_LP 8
+#define BGP_RT_COL_MED 8
+#define BGP_RT_COL_ORIG 12
+
+typedef struct bgp_show_route_ctx
+{
+    GString *buf;
+    guint net_col_width;
+    uint32_t listed_heads;
+    uint32_t listed_routes;
+} bgp_show_route_ctx_t;
+
+typedef struct bgp_show_route_width_ctx
+{
+    guint net_col_width;
+} bgp_show_route_width_ctx_t;
+
+/**
+ * @brief 将单条路径的各字段格式化到 lp/med/as_path 缓冲区
+ */
+static void bgp_route_fmt_fields(const bgp_route_node_t *route, char *lp, size_t lp_sz, char *med, size_t med_sz,
+                                 char *as_path, size_t as_sz)
+{
+    if (BGP_ROUTE_ATTR(route)->has_local_pref)
+    {
+        snprintf(lp, lp_sz, "%u", BGP_ROUTE_ATTR(route)->local_pref);
+    }
+    else
+    {
+        snprintf(lp, lp_sz, "-");
+    }
+    if (BGP_ROUTE_ATTR(route)->has_med)
+    {
+        snprintf(med, med_sz, "%u", BGP_ROUTE_ATTR(route)->med);
+    }
+    else
+    {
+        snprintf(med, med_sz, "-");
+    }
+    if (BGP_ROUTE_ATTR(route)->as_path[0] != '\0')
+    {
+        snprintf(as_path, as_sz, "%.*s", (int)(as_sz - 1), BGP_ROUTE_ATTR(route)->as_path);
+    }
+    else
+    {
+        snprintf(as_path, as_sz, "-");
+    }
+}
+
+static const char *bgp_route_label_name(const bgp_route_node_t *route)
+{
+    if (!route || !route->has_label)
+    {
+        return NULL;
+    }
+
+    switch (route->label_source)
+    {
+        case BGP_ROUTE_LABEL_SOURCE_LOCAL:
+            return "LocalLabel";
+        case BGP_ROUTE_LABEL_SOURCE_RECEIVED:
+            return "RecvLabel";
+        default:
+            return "Label";
+    }
+}
+
+static gboolean bgp_show_route_width_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    const bgp_rthead_t *head = (const bgp_rthead_t *)value;
+    bgp_show_route_width_ctx_t *ctx = (bgp_show_route_width_ctx_t *)user_data;
+    if (!head || !ctx)
+    {
+        return FALSE;
+    }
+
+    char prefix_str[BGP_NLRI_KEY_MAX];
+    bgp_nlri_to_str(&head->nlri, prefix_str, sizeof(prefix_str));
+
+    guint required_width = (guint)strlen(prefix_str) + BGP_RT_MARKER_COL;
+    if (required_width > ctx->net_col_width)
+    {
+        ctx->net_col_width = required_width;
+    }
+    return FALSE;
+}
+
+static void bgp_show_route_width_each_rib(bgp_instance_t *inst_unused, bgp_rd_entry_t *entry_unused, bgp_rib_t *rib,
+                                          gpointer user_data)
+{
+    (void)inst_unused;
+    (void)entry_unused;
+    if (!rib || !rib->head_tree)
+    {
+        return;
+    }
+    g_tree_foreach(rib->head_tree, bgp_show_route_width_cb, user_data);
+}
+
+static guint bgp_show_route_network_col_width(const bgp_instance_t *inst)
+{
+    bgp_show_route_width_ctx_t ctx = {.net_col_width = BGP_RT_COL_NET_MIN};
+
+    if (!inst || !inst->rd_entries)
+    {
+        return ctx.net_col_width;
+    }
+    bgp_inst_foreach_rib((bgp_instance_t *)inst, bgp_show_route_width_each_rib, &ctx);
+    return ctx.net_col_width;
+}
+
+static gboolean bgp_show_route_head_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    bgp_rthead_t *head = (bgp_rthead_t *)value;
+    bgp_show_route_ctx_t *ctx = (bgp_show_route_ctx_t *)user_data;
+    if (!head || !ctx)
+    {
+        return FALSE;
+    }
+
+    char prefix_str[BGP_NLRI_KEY_MAX];
+    /* VPN AF：RD 已在段头显示，行内只打印纯前缀 ip/len；其它 AF 用通用格式化 */
+    if (bgp_safi_is_vpn(head->nlri.safi) && head->nlri.type == BGP_NLRI_PREFIX)
+    {
+        char ipbuf[INET6_ADDRSTRLEN] = "?";
+        inet_ntop(head->nlri.prefix.prefix.addr.family, &head->nlri.prefix.prefix.addr.u, ipbuf, sizeof(ipbuf));
+        snprintf(prefix_str, sizeof(prefix_str), "%s/%u", ipbuf, head->nlri.prefix.prefix.prefix_len);
+    }
+    else
+    {
+        bgp_nlri_to_str(&head->nlri, prefix_str, sizeof(prefix_str));
+    }
+    gboolean first = TRUE;
+
+    for (const GList *l = head->route_list; l; l = l->next)
+    {
+        bgp_route_node_t *route = (bgp_route_node_t *)l->data;
+        if (!route)
+        {
+            continue;
+        }
+
+        char nh[64], lp[16], med[16], as_path[64];
+        bgp_nexthop_to_str(&route->nexthop, nh, sizeof(nh));
+        bgp_route_fmt_fields(route, lp, sizeof(lp), med, sizeof(med), as_path, sizeof(as_path));
+
+        /* 路由标记：'>'=BEST，'v'=VALID */
+        int net_field_width =
+            (int)((ctx->net_col_width > BGP_RT_MARKER_COL) ? (ctx->net_col_width - BGP_RT_MARKER_COL) : 1);
+        g_string_append_printf(ctx->buf, "%c%c %-*s %-*s %-*s %-*s %-*s %s\r\n",
+                               BIT_TEST(route->flags, BGP_ROUTE_FLAG_BEST) ? '>' : ' ',
+                               BIT_TEST(route->flags, BGP_ROUTE_FLAG_VALID) ? 'v' : ' ', net_field_width,
+                               first ? prefix_str : "", BGP_RT_COL_NH, nh, BGP_RT_COL_LP, lp, BGP_RT_COL_MED, med,
+                               BGP_RT_COL_ORIG, bgp_origin_str(BGP_ROUTE_ATTR(route)->origin), as_path);
+
+        if (first)
+        {
+            ctx->listed_heads++;
+            first = FALSE;
+        }
+        ctx->listed_routes++;
+    }
+
+    return FALSE;
+}
+
+/**
+ * @brief 显示单条前缀的所有路径详情（供 show bgp route af ... <ip> <masklen> 使用）
+ */
+static void bgp_show_route_detail(GString *buf, const bgp_rthead_t *head)
+{
+    uint32_t path_count = (uint32_t)g_list_length(head->route_list);
+    g_string_append_printf(buf, "  Head QueueRefCnt: %u\r\n", head->queue_refcnt);
+    g_string_append_printf(buf, "  Paths          : %u\r\n\r\n", path_count);
+
+    for (const GList *l = head->route_list; l; l = l->next)
+    {
+        const bgp_route_node_t *route = (const bgp_route_node_t *)l->data;
+        if (!route)
+        {
+            continue;
+        }
+
+        char nh[64], lp[16], med[16], as_path[256], ts_added[32], ts_updated[32];
+        char iter_nh[64], out_if[64], flags_str[128];
+        bgp_nexthop_to_str(&route->nexthop, nh, sizeof(nh));
+        bgp_route_fmt_fields(route, lp, sizeof(lp), med, sizeof(med), as_path, sizeof(as_path));
+        bgp_fmt_time_usec(route->added_at_usec, ts_added, sizeof(ts_added));
+        bgp_fmt_time_usec(route->updated_at_usec, ts_updated, sizeof(ts_updated));
+        bgp_route_flags_to_str(route->flags, flags_str, sizeof(flags_str));
+
+        if (route->iter_watched && route->iter_relay_addr.family != 0)
+        {
+            net_addr_to_str(&route->iter_relay_addr, iter_nh, sizeof(iter_nh));
+        }
+        else
+        {
+            snprintf(iter_nh, sizeof(iter_nh), "-");
+        }
+        bgp_ifindex_to_str((route->iter_watched && route->iter_resolved) ? route->iter_out_ifindex : 0u, out_if,
+                           sizeof(out_if));
+        const char *iter_state_str =
+            route->iter_watched ? (route->iter_resolved ? "Resolved" : "Unresolved") : "Unwatched";
+
+        /* 路由标记：'>'=BEST，'v'=VALID */
+        g_string_append_printf(buf, "%c%c ", BIT_TEST(route->flags, BGP_ROUTE_FLAG_BEST) ? '>' : ' ',
+                               BIT_TEST(route->flags, BGP_ROUTE_FLAG_VALID) ? 'v' : ' ');
+        if (!BIT_TEST(route->flags, BGP_ROUTE_FLAG_IMPORT))
+        {
+            char peer_str[64];
+            net_addr_to_str(&route->source, peer_str, sizeof(peer_str));
+            g_string_append_printf(buf, "From Peer  : %s\r\n", peer_str);
+        }
+        else
+        {
+            g_string_append_printf(buf, "Imported\r\n");
+        }
+        const char *label_name = bgp_route_label_name(route);
+        if (label_name)
+        {
+            g_string_append_printf(buf, "    %-10s: %u\r\n", label_name, route->label);
+        }
+        g_string_append_printf(buf, "    Attr-ID  : %u (refcnt=%u)\r\n", route->attr ? route->attr->attr_id : 0,
+                               route->attr ? route->attr->refcnt : 0);
+        g_string_append_printf(buf, "    NextHop  : %s\r\n", nh);
+        g_string_append_printf(buf, "    LocPref  : %s\r\n", lp);
+        g_string_append_printf(buf, "    MED      : %s\r\n", med);
+        g_string_append_printf(buf, "    Origin   : %s\r\n", bgp_origin_str(BGP_ROUTE_ATTR(route)->origin));
+        g_string_append_printf(buf, "    Valid    : %s\r\n",
+                               BIT_TEST(route->flags, BGP_ROUTE_FLAG_VALID) ? "Yes" : "No");
+        g_string_append_printf(buf, "    IterState: %s\r\n", iter_state_str);
+        g_string_append_printf(buf, "    Iter-NH  : %s\r\n", iter_nh);
+        g_string_append_printf(buf, "    Out-If   : %s\r\n", out_if);
+        g_string_append_printf(buf, "    Tunnel-ID: %u\r\n", route->tunnel_id);
+        g_string_append_printf(buf, "    Flags    : 0x%08X (%s)\r\n", route->flags, flags_str);
+        /* 借用引用计数：> 0 表示有 import_rib mirror / bgp_relay watch 等模块持有借用指针 */
+        g_string_append_printf(buf, "    BorrowRef: %u\r\n", route->borrow_refcnt);
+        /* mirror 指向的源节点（仅 IMPORT_RIB 路径有效） */
+        if (route->src_route)
+        {
+            g_string_append_printf(buf, "    SrcRoute : %p\r\n", (void *)route->src_route);
+        }
+        g_string_append_printf(buf, "    AS-Path  : %s\r\n", as_path);
+
+        if (BGP_ROUTE_ATTR(route)->communities[0] != '\0')
+        {
+            g_string_append_printf(buf, "    Community: %s\r\n", BGP_ROUTE_ATTR(route)->communities);
+        }
+        if (BGP_ROUTE_ATTR(route)->ext_communities_len > 0)
+        {
+            char ext_comm[BGP_ATTR_COMMUNITY_MAX];
+            bgp_ext_community_format(BGP_ROUTE_ATTR(route)->ext_communities, BGP_ROUTE_ATTR(route)->ext_communities_len,
+                                     ext_comm, sizeof(ext_comm));
+            g_string_append_printf(buf, "    Ext-Comm : %s\r\n", ext_comm);
+        }
+        if (BGP_ROUTE_ATTR(route)->large_communities[0] != '\0')
+        {
+            g_string_append_printf(buf, "    Lrg-Comm : %s\r\n", BGP_ROUTE_ATTR(route)->large_communities);
+        }
+        if (BGP_ROUTE_ATTR(route)->aggregator[0] != '\0')
+        {
+            g_string_append_printf(buf, "    Aggregator: %s\r\n", BGP_ROUTE_ATTR(route)->aggregator);
+        }
+        if (BGP_ROUTE_ATTR(route)->has_originator_id)
+        {
+            char oid[64];
+            net_addr_to_str(&BGP_ROUTE_ATTR(route)->originator_id, oid, sizeof(oid));
+            g_string_append_printf(buf, "    Originator: %s\r\n", oid);
+        }
+        if (BGP_ROUTE_ATTR(route)->cluster_list_len > 0)
+        {
+            g_string_append(buf, "    Cluster-List:");
+            for (uint8_t i = 0; i < BGP_ROUTE_ATTR(route)->cluster_list_len; i++)
+            {
+                char cid[64];
+                net_addr_to_str(&BGP_ROUTE_ATTR(route)->cluster_list[i], cid, sizeof(cid));
+                g_string_append_printf(buf, " %s", cid);
+            }
+            g_string_append(buf, "\r\n");
+        }
+        g_string_append_printf(buf, "    Added    : %s\r\n", ts_added);
+        g_string_append_printf(buf, "    Updated  : %s\r\n\r\n", ts_updated);
+    }
+}
+
+static uint8_t bgp_show_qp_dqpn_wire_bits(uint32_t dqpn)
+{
+    if (dqpn <= 0xFFu)
+    {
+        return 8;
+    }
+    if (dqpn <= 0xFFFFu)
+    {
+        return 16;
+    }
+    return 24;
+}
+
+static gboolean bgp_show_parse_qp_query(const char *query, bgp_afi_t afi, bgp_nlri_entry_t *nlri, char *err,
+                                        size_t err_sz)
+{
+    if (err && err_sz > 0)
+    {
+        err[0] = '\0';
+    }
+    if (!query || !nlri)
+    {
+        if (err && err_sz > 0)
+        {
+            snprintf(err, err_sz, "BGP Error: Invalid QP route query format.\r\n");
+        }
+        return FALSE;
+    }
+
+    const char *expected_prefix = (afi == BGP_AFI_IPV6) ? "ipv6=" : "ip=";
+    const char *comma = strchr(query, ',');
+    if (!comma || comma == query || comma[1] == '\0' || strchr(comma + 1, ','))
+    {
+        if (err && err_sz > 0)
+        {
+            snprintf(err, err_sz, "BGP Error: Invalid QP route query format. Use dqpn=<n>,%s<prefix>/<mask>.\r\n",
+                     expected_prefix);
+        }
+        return FALSE;
+    }
+
+    if (strncmp(query, "dqpn=", 5) != 0)
+    {
+        if (err && err_sz > 0)
+        {
+            snprintf(err, err_sz, "BGP Error: Invalid QP route query format. Use dqpn=<n>,%s<prefix>/<mask>.\r\n",
+                     expected_prefix);
+        }
+        return FALSE;
+    }
+
+    char dqpn_buf[32];
+    size_t dqpn_len = (size_t)(comma - (query + 5));
+    if (dqpn_len == 0 || dqpn_len >= sizeof(dqpn_buf))
+    {
+        if (err && err_sz > 0)
+        {
+            snprintf(err, err_sz, "BGP Error: Invalid QP route query DQPN.\r\n");
+        }
+        return FALSE;
+    }
+    memcpy(dqpn_buf, query + 5, dqpn_len);
+    dqpn_buf[dqpn_len] = '\0';
+
+    char *endp = NULL;
+    unsigned long dqpn_ul = strtoul(dqpn_buf, &endp, 10);
+    if (!endp || *endp != '\0' || dqpn_ul == 0ul || dqpn_ul > 0xFFFFFFul)
+    {
+        if (err && err_sz > 0)
+        {
+            snprintf(err, err_sz, "BGP Error: Invalid QP route query DQPN.\r\n");
+        }
+        return FALSE;
+    }
+
+    const char *prefix_part = comma + 1;
+    if (strncmp(prefix_part, expected_prefix, strlen(expected_prefix)) != 0)
+    {
+        if (err && err_sz > 0)
+        {
+            snprintf(err, err_sz, "BGP Error: Invalid QP route query format. Use dqpn=<n>,%s<prefix>/<mask>.\r\n",
+                     expected_prefix);
+        }
+        return FALSE;
+    }
+
+    const char *prefix_value = prefix_part + strlen(expected_prefix);
+    const char *slash = strrchr(prefix_value, '/');
+    if (!slash || slash == prefix_value || slash[1] == '\0')
+    {
+        if (err && err_sz > 0)
+        {
+            snprintf(err, err_sz, "BGP Error: Invalid QP route query format. Use dqpn=<n>,%s<prefix>/<mask>.\r\n",
+                     expected_prefix);
+        }
+        return FALSE;
+    }
+
+    char addr_buf[INET6_ADDRSTRLEN];
+    size_t addr_len = (size_t)(slash - prefix_value);
+    if (addr_len == 0 || addr_len >= sizeof(addr_buf))
+    {
+        if (err && err_sz > 0)
+        {
+            snprintf(err, err_sz, "BGP Error: Invalid QP route query prefix.\r\n");
+        }
+        return FALSE;
+    }
+    memcpy(addr_buf, prefix_value, addr_len);
+    addr_buf[addr_len] = '\0';
+
+    net_addr_t addr = {0};
+    if (net_addr_from_str(addr_buf, &addr) != 0)
+    {
+        if (err && err_sz > 0)
+        {
+            snprintf(err, err_sz, "BGP Error: Invalid QP route query prefix.\r\n");
+        }
+        return FALSE;
+    }
+    if ((afi == BGP_AFI_IPV4 && addr.family != AF_INET) || (afi == BGP_AFI_IPV6 && addr.family != AF_INET6))
+    {
+        if (err && err_sz > 0)
+        {
+            snprintf(err, err_sz, "BGP Error: QP route query prefix AF mismatch.\r\n");
+        }
+        return FALSE;
+    }
+
+    endp = NULL;
+    unsigned long mask_ul = strtoul(slash + 1, &endp, 10);
+    unsigned long max_mask = (afi == BGP_AFI_IPV6) ? 128ul : 32ul;
+    if (!endp || *endp != '\0' || mask_ul > max_mask)
+    {
+        if (err && err_sz > 0)
+        {
+            snprintf(err, err_sz, "BGP Error: Invalid QP route query prefix length.\r\n");
+        }
+        return FALSE;
+    }
+
+    memset(nlri, 0, sizeof(*nlri));
+    nlri->afi = (uint16_t)afi;
+    nlri->safi = BGP_SAFI_QP;
+    nlri->type = BGP_NLRI_QP;
+    nlri->qp.dqpn = (uint32_t)dqpn_ul;
+    nlri->qp.dqpn_len = bgp_show_qp_dqpn_wire_bits(nlri->qp.dqpn);
+    nlri->qp.prefix.addr = addr;
+    nlri->qp.prefix.prefix_len = (uint8_t)mask_ul;
+    return TRUE;
+}
+
+/**
+ * @brief 处理 show bgp route af ipv4-unicast|ipv6-unicast [<ip> <masklen>] / ipv4-qp|ipv6-qp [<qp-key>] 命令
+ *
+ * group_id=10, cfg_id: 1=ipv4-unicast, 2=ipv6-unicast, 3=ip-address, 4=masklen, 7=qp-route-key
+ * 不带查询参数时显示路由表；unicast 详情使用 ip/masklen，QP 详情使用 dqpn=<n>,ip=<pfx>/<mask>
+ */
+int handle_bgp_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    bgp_cli_ctx_t ctx = bgp_cli_ctx_default();
+    gboolean has_af = FALSE;
+    char ip_str[64] = {0};
+    char qp_query[256] = {0};
+    uint32_t masklen = 0;
+    gboolean has_ip = FALSE;
+    gboolean has_masklen = FALSE;
+    gboolean has_qp_query = FALSE;
+    bgp_rd_t rd_filter;
+    gboolean has_rd_filter = FALSE;
+    memset(&rd_filter, 0, sizeof(rd_filter));
+
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (CLI_TLV_IS_CTX(&entry))
+        {
+            bgp_cli_ctx_parse(&ctx, &entry);
+            cli_tlv_entry_free(&entry);
+            continue;
+        }
+        switch (entry.cfg_id)
+        {
+            case 1:
+                ctx.afi = BGP_AFI_IPV4;
+                ctx.safi = BGP_SAFI_UNICAST;
+                has_af = TRUE;
+                break;
+            case 2:
+                ctx.afi = BGP_AFI_IPV6;
+                ctx.safi = BGP_SAFI_UNICAST;
+                has_af = TRUE;
+                break;
+            case 3:
+            {
+                const char *s = cli_tlv_entry_get_text(&entry);
+                if (s)
+                {
+                    snprintf(ip_str, sizeof(ip_str), "%s", s);
+                    has_ip = TRUE;
+                }
+                break;
+            }
+            case 4:
+                masklen = (uint32_t)cli_tlv_entry_get_int(&entry);
+                has_masklen = TRUE;
+                break;
+            case 5:
+                ctx.afi = BGP_AFI_IPV4;
+                ctx.safi = BGP_SAFI_QP;
+                has_af = TRUE;
+                break;
+            case 6:
+                ctx.afi = BGP_AFI_IPV6;
+                ctx.safi = BGP_SAFI_QP;
+                has_af = TRUE;
+                break;
+            case 8:
+                ctx.afi = BGP_AFI_IPV4;
+                ctx.safi = BGP_SAFI_LABELED;
+                has_af = TRUE;
+                break;
+            case 10:
+                ctx.afi = BGP_AFI_IPV4;
+                ctx.safi = BGP_SAFI_VPN_UNICAST;
+                has_af = TRUE;
+                break;
+            case 7:
+            {
+                const char *s = cli_tlv_entry_get_text(&entry);
+                if (s)
+                {
+                    snprintf(qp_query, sizeof(qp_query), "%s", s);
+                    has_qp_query = TRUE;
+                }
+                break;
+            }
+            case 9:
+            {
+                /* vrf <vrf-name> (仅 ipv4/ipv6 unicast 支持) */
+                const char *s = cli_tlv_entry_get_text(&entry);
+                if (s)
+                {
+                    snprintf(ctx.vrf_name, sizeof(ctx.vrf_name), "%s", s);
+                }
+                break;
+            }
+            case 11:
+            {
+                /* rd <rd> 过滤（仅 VPN AF 有意义） */
+                const char *s = cli_tlv_entry_get_text(&entry);
+                if (s && bgp_show_rd_from_str(s, &rd_filter) == 0)
+                {
+                    has_rd_filter = TRUE;
+                }
+                break;
+            }
+            default:
+                break;
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    if (!has_af)
+    {
+        bgp_show_send_cli_response(msg, "BGP Error: Missing address-family. Use 'af ipv4-unicast', 'af ipv6-unicast', "
+                                        "'af ipv4-qp', or 'af ipv6-qp'.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    if (!g_bgp_work_local->protocol)
+    {
+        bgp_show_send_cli_response(msg, "BGP Error: BGP not configured.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    bgp_vrf_t *vrf = bgp_show_lookup_vrf(&ctx);
+    if (!vrf)
+    {
+        bgp_show_send_cli_response(msg, "BGP Error: VRF not found.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    bgp_instance_t *inst = g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(ctx.afi, ctx.safi));
+
+    GString *resp_buf = g_string_new("");
+    if (!resp_buf)
+    {
+        bgp_show_send_cli_response(msg, "BGP Error: Out of memory.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    if ((ctx.safi != BGP_SAFI_QP && has_ip && has_masklen) || (ctx.safi == BGP_SAFI_QP && has_qp_query))
+    {
+        bgp_nlri_entry_t nlri;
+        memset(&nlri, 0, sizeof(nlri));
+        char nlri_str[BGP_NLRI_KEY_MAX];
+
+        if (ctx.safi == BGP_SAFI_QP)
+        {
+            char err[160];
+            if (!bgp_show_parse_qp_query(qp_query, ctx.afi, &nlri, err, sizeof(err)))
+            {
+                g_string_free(resp_buf, TRUE);
+                bgp_show_send_cli_response(msg, err);
+                return ERRCODE_FAIL;
+            }
+            bgp_nlri_to_str(&nlri, nlri_str, sizeof(nlri_str));
+        }
+        else
+        {
+            nlri.afi = ctx.afi;
+            nlri.safi = ctx.safi;
+            nlri.type = BGP_NLRI_PREFIX;
+            nlri.prefix.prefix.prefix_len = (uint8_t)masklen;
+            nlri.prefix.prefix.addr.family = (ctx.afi == BGP_AFI_IPV6) ? AF_INET6 : AF_INET;
+            if (inet_pton(nlri.prefix.prefix.addr.family, ip_str, &nlri.prefix.prefix.addr.u) != 1)
+            {
+                g_string_free(resp_buf, TRUE);
+                bgp_show_send_cli_response(msg, "BGP Error: Invalid IP address.\r\n");
+                return ERRCODE_FAIL;
+            }
+            /* VPN AF 前缀查询不强制带 RD：带 rd 只查该 RD，不带则跨所有 RD 按段列出。 */
+            snprintf(nlri_str, sizeof(nlri_str), "%s/%u", ip_str, masklen);
+        }
+        g_string_append_printf(resp_buf, "\r\nBGP Route Detail: %s (AF: %s)\r\n", nlri_str,
+                               bgp_af_str(ctx.afi, ctx.safi));
+        g_string_append(resp_buf, "============================================================\r\n");
+
+        if (!inst || !inst->rd_entries)
+        {
+            g_string_append(resp_buf, "  (no RIB)\r\n");
+            return bgp_work_send_chunked_response(msg, resp_buf);
+        }
+
+        /* VPN AF：跨 RD 查同一前缀，按 RD 分段显示（带 rd 过滤时只看匹配的 RD）。 */
+        if (bgp_safi_is_vpn(ctx.safi))
+        {
+            uint32_t found = 0;
+            GHashTableIter rd_iter;
+            gpointer rd_key = NULL;
+            gpointer rd_val = NULL;
+            g_hash_table_iter_init(&rd_iter, inst->rd_entries);
+            while (g_hash_table_iter_next(&rd_iter, &rd_key, &rd_val))
+            {
+                (void)rd_key;
+                bgp_rd_entry_t *e = (bgp_rd_entry_t *)rd_val;
+                if (!e || !e->rib)
+                {
+                    continue;
+                }
+                if (has_rd_filter && memcmp(e->key.rd.bytes, rd_filter.bytes, sizeof(rd_filter.bytes)) != 0)
+                {
+                    continue;
+                }
+                bgp_nlri_entry_t q = nlri;
+                memcpy(q.prefix.rd.bytes, e->key.rd.bytes, sizeof(q.prefix.rd.bytes));
+                q.prefix.has_rd = true;
+                const bgp_rthead_t *h = bgp_rib_lookup_head(e->rib, &q);
+                if (!h)
+                {
+                    continue;
+                }
+                char rd_str[48];
+                bgp_rd_to_str(&e->key.rd, rd_str, sizeof(rd_str));
+                g_string_append_printf(resp_buf, "\r\n RD: %s\r\n", rd_str);
+                bgp_show_route_detail(resp_buf, h);
+                found++;
+            }
+            if (found == 0)
+            {
+                g_string_append_printf(resp_buf, "  Route %s not found.\r\n", nlri_str);
+            }
+            return bgp_work_send_chunked_response(msg, resp_buf);
+        }
+
+        bgp_rib_t *rib = bgp_inst_rib_for_nlri(inst, &nlri);
+        const bgp_rthead_t *head = rib ? bgp_rib_lookup_head(rib, &nlri) : NULL;
+        if (!head)
+        {
+            g_string_append_printf(resp_buf, "  Route %s not found.\r\n", nlri_str);
+            return bgp_work_send_chunked_response(msg, resp_buf);
+        }
+
+        bgp_show_route_detail(resp_buf, head);
+        return bgp_work_send_chunked_response(msg, resp_buf);
+    }
+
+    g_string_append_printf(resp_buf, "\r\nBGP Routes (AF: %s)\r\n", bgp_af_str(ctx.afi, ctx.safi));
+    g_string_append(resp_buf, "============================================================\r\n");
+
+    /* 汇总该 AF 下所有 RD 的 RIB 计数 */
+    uint32_t total_heads = 0;
+    uint32_t total_routes = 0;
+    if (inst && inst->rd_entries)
+    {
+        GHashTableIter rd_iter;
+        gpointer rd_key, rd_val;
+        g_hash_table_iter_init(&rd_iter, inst->rd_entries);
+        while (g_hash_table_iter_next(&rd_iter, &rd_key, &rd_val))
+        {
+            (void)rd_key;
+            const bgp_rd_entry_t *e = (const bgp_rd_entry_t *)rd_val;
+            if (!e)
+            {
+                continue;
+            }
+            if (has_rd_filter && memcmp(e->key.rd.bytes, rd_filter.bytes, sizeof(rd_filter.bytes)) != 0)
+            {
+                continue;
+            }
+            total_heads += bgp_rib_head_count(e->rib);
+            total_routes += bgp_rib_route_count(e->rib);
+        }
+    }
+    if (!inst || !inst->rd_entries || total_routes == 0)
+    {
+        g_string_append(resp_buf, "  (no routes)\r\n\r\n");
+        return bgp_work_send_chunked_response(msg, resp_buf);
+    }
+
+    g_string_append_printf(resp_buf, "  Networks: %-6u  Paths: %u\r\n\r\n", total_heads, total_routes);
+    g_string_append(resp_buf, "  Markers : '>'=BEST, 'v'=VALID\r\n\r\n");
+
+    guint net_col_width = bgp_show_route_network_col_width(inst);
+    char *net_rule = g_strnfill(net_col_width, '-');
+
+    g_string_append_printf(resp_buf, "%-*s %-*s %-*s %-*s %-*s %s\r\n", (int)net_col_width, "Network", BGP_RT_COL_NH,
+                           "NextHop", BGP_RT_COL_LP, "LocPref", BGP_RT_COL_MED, "MED", BGP_RT_COL_ORIG, "Origin",
+                           "AS-Path");
+    g_string_append_printf(resp_buf, "%-*s %-*s %-*s %-*s %-*s %s\r\n", (int)net_col_width, net_rule, BGP_RT_COL_NH,
+                           "--------------------", BGP_RT_COL_LP, "--------", BGP_RT_COL_MED, "--------",
+                           BGP_RT_COL_ORIG, "------------", "--------");
+    g_free(net_rule);
+
+    bgp_show_route_ctx_t show_ctx;
+    show_ctx.buf = resp_buf;
+    show_ctx.net_col_width = net_col_width;
+    show_ctx.listed_heads = 0;
+    show_ctx.listed_routes = 0;
+
+    /* 遍历所有 RD entry 的 RIB（VPN AF 下可能多张并按 RD 分段显示；非 VPN AF 仅公网一张） */
+    gboolean is_vpn = bgp_safi_is_vpn(ctx.safi);
+    {
+        GHashTableIter rd_iter;
+        gpointer rd_key, rd_val;
+        g_hash_table_iter_init(&rd_iter, inst->rd_entries);
+        while (g_hash_table_iter_next(&rd_iter, &rd_key, &rd_val))
+        {
+            (void)rd_key;
+            bgp_rd_entry_t *e = (bgp_rd_entry_t *)rd_val;
+            if (!e || !e->rib || !e->rib->head_tree || bgp_rib_head_count(e->rib) == 0)
+            {
+                continue;
+            }
+            /* rd 过滤（仅匹配的 RD 显示） */
+            if (has_rd_filter && memcmp(e->key.rd.bytes, rd_filter.bytes, sizeof(rd_filter.bytes)) != 0)
+            {
+                continue;
+            }
+            /* VPN AF：每个 RD 打印段头，同前缀在不同 RD 下据此区分 */
+            if (is_vpn)
+            {
+                char rd_str[48];
+                bgp_rd_to_str(&e->key.rd, rd_str, sizeof(rd_str));
+                g_string_append_printf(resp_buf, "\r\n RD: %s\r\n", rd_str);
+            }
+            g_tree_foreach(e->rib->head_tree, bgp_show_route_head_cb, &show_ctx);
+        }
+    }
+
+    g_string_append_printf(resp_buf, "\r\nTotal: %u networks, %u paths\r\n\r\n", show_ctx.listed_heads,
+                           show_ctx.listed_routes);
+
+    return bgp_work_send_chunked_response(msg, resp_buf);
+}

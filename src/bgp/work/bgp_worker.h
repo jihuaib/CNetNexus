@@ -312,6 +312,11 @@ int bgp_worker_post_route_flush_event(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t
 int bgp_worker_post_session_pub_event(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi);
 
 /**
+ * @brief 向 BGP worker 投递一条 vrf-export 工作事件(触发 vpnv4 pending 分批处理)
+ */
+int bgp_worker_post_vrf_export_event(void);
+
+/**
  * @brief 在 worker 线程内同步抽干所有待处理工作事件
  */
 void bgp_worker_drain_work_events(void);

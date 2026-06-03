@@ -36,6 +36,7 @@ static const db_column_def_t VRF_AF_COLS[] = {
     {"safi", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
     {"has_rd", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},
     {"rd", DB_TYPE_TEXT, DB_COL_NONE, NULL},
+    {"apply_label_mode", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},
 };
 static const db_table_def_t VRF_AF_TBL = {
     .table_name = VRF_TABLE_AF,
@@ -196,6 +197,37 @@ int vrf_db_set_af_rd(uint32_t vrf_id, uint16_t afi, uint8_t safi, const vrf_rd_t
     return 0;
 }
 
+int vrf_db_set_af_apply_label(uint32_t vrf_id, uint16_t afi, uint8_t safi, uint8_t mode)
+{
+    dev_ipc_context_t *ctx = vrf_local_ipc_ctx();
+
+    db_filter_builder_t b;
+    af_filter_init(&b, vrf_id, afi, safi);
+
+    db_record_t *rec = db_record_new();
+    db_record_set_int(rec, "apply_label_mode", (int64_t)mode);
+    int updated = db_rpc_update_record(ctx, VRF_TABLE_AF, rec, &b.filter);
+    db_record_free(rec);
+
+    if (updated <= 0)
+    {
+        db_record_t *ins = db_record_new();
+        db_record_set_int(ins, "vrf_id", (int64_t)vrf_id);
+        db_record_set_int(ins, "afi", (int64_t)afi);
+        db_record_set_int(ins, "safi", (int64_t)safi);
+        db_record_set_int(ins, "apply_label_mode", (int64_t)mode);
+        int ret = db_rpc_insert_record(ctx, VRF_TABLE_AF, ins);
+        db_record_free(ins);
+        if (ret != ERRCODE_SUCCESS)
+        {
+            db_filter_clear(&b);
+            return -1;
+        }
+    }
+    db_filter_clear(&b);
+    return 0;
+}
+
 int vrf_db_delete_af(uint32_t vrf_id, uint16_t afi, uint8_t safi)
 {
     dev_ipc_context_t *ctx = vrf_local_ipc_ctx();
@@ -282,6 +314,19 @@ static int dispatch_rd_set(const char *vrf_name, uint16_t afi, uint8_t safi, con
     cmd.afi = afi;
     cmd.safi = safi;
     cmd.rd = *rd;
+    g_strlcpy(cmd.vrf_name, vrf_name, sizeof(cmd.vrf_name));
+    (void)vrf_worker_dispatch_apply(&cmd);
+    return cmd.rc;
+}
+
+static int dispatch_apply_label_set(const char *vrf_name, uint16_t afi, uint8_t safi, uint8_t mode)
+{
+    vrf_apply_cmd_t cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.op = VRF_APPLY_OP_APPLY_LABEL_SET;
+    cmd.afi = afi;
+    cmd.safi = safi;
+    cmd.apply_label_mode = mode;
     g_strlcpy(cmd.vrf_name, vrf_name, sizeof(cmd.vrf_name));
     (void)vrf_worker_dispatch_apply(&cmd);
     return cmd.rc;
@@ -392,6 +437,11 @@ int vrf_db_load_snapshot(void)
                 {
                     (void)dispatch_rd_set(vrf_name, afi, safi, &rd);
                 }
+            }
+            uint8_t apply_label_mode = (uint8_t)db_row_get_int(row, "apply_label_mode", 0);
+            if (apply_label_mode != VRF_APPLY_LABEL_PER_VRF)
+            {
+                (void)dispatch_apply_label_set(vrf_name, afi, safi, apply_label_mode);
             }
         }
         db_result_free(res);

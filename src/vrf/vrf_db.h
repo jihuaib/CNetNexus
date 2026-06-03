@@ -44,6 +44,11 @@ int vrf_db_delete_vrf(uint32_t vrf_id);
 int vrf_db_set_af_rd(uint32_t vrf_id, uint16_t afi, uint8_t safi, const vrf_rd_t *rd);
 
 /**
+ * @brief 写入 / 更新 (vrf_id, afi, safi) 的 apply-label 模式（VRF_APPLY_LABEL_*）
+ */
+int vrf_db_set_af_apply_label(uint32_t vrf_id, uint16_t afi, uint8_t safi, uint8_t mode);
+
+/**
  * @brief 删除一条 AF 配置（含级联 RT）
  */
 int vrf_db_delete_af(uint32_t vrf_id, uint16_t afi, uint8_t safi);

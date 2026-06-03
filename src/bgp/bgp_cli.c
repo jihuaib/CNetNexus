@@ -9,6 +9,7 @@
 #include <arpa/inet.h>
 #include <glib.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/types.h>
@@ -84,6 +85,7 @@ typedef struct bgp_cli_ctx
     char vrf_name[VRF_NAME_MAX_LEN]; /**< VRF 名称上下文，交由 worker 线程解析 */
     bgp_afi_t afi;                   /**< 地址族 */
     bgp_safi_t safi;                 /**< 子地址族 */
+    uint32_t line_id;                /**< ACCESS line_id（用于内部依赖启动进度输出） */
 } bgp_cli_ctx_t;
 
 static int bgp_cli_ctx_str_copy(const cli_tlv_entry_t *entry, char *out, size_t out_cap)
@@ -111,6 +113,7 @@ static bgp_cli_ctx_t bgp_cli_ctx_default(void)
     snprintf(c.vrf_name, sizeof(c.vrf_name), "%s", VRF_PUBLIC_VRF_NAME);
     c.afi = BGP_AFI_IPV4;
     c.safi = BGP_SAFI_UNICAST;
+    c.line_id = UINT32_MAX;
     return c;
 }
 
@@ -133,9 +136,45 @@ static void bgp_cli_ctx_parse(bgp_cli_ctx_t *ctx, cli_tlv_entry_t *entry)
         case CLI_CTX_ID_VRF_NAME:
             (void)bgp_cli_ctx_str_copy(entry, ctx->vrf_name, sizeof(ctx->vrf_name));
             break;
+        case CLI_CTX_ID_ACCESS_LINE:
+            ctx->line_id = cli_tlv_entry_get_ctx_uint32(entry);
+            break;
         default:
             break;
     }
+}
+
+static void bgp_wait_dependency_progress_cb(uint32_t target_id, uint8_t state, uint32_t elapsed_ms, void *user)
+{
+    (void)target_id;
+    uint32_t line_id = user ? *(uint32_t *)user : UINT32_MAX;
+    if (line_id == UINT32_MAX)
+    {
+        return;
+    }
+
+    if (state == DEV_MODULE_STATE_READY)
+    {
+        (void)cli_line_progress_send(bgp_local_ipc_ctx(), line_id, "BGP: dependency module READY.\r\n");
+        return;
+    }
+
+    if (elapsed_ms < 1000)
+    {
+        return;
+    }
+
+    char buf[96];
+    uint32_t elapsed_sec = elapsed_ms / 1000;
+    if (state == DEV_MODULE_STATE_STARTING)
+    {
+        snprintf(buf, sizeof(buf), "BGP: waiting for dependency module READY (%us)...\r\n", elapsed_sec);
+    }
+    else
+    {
+        snprintf(buf, sizeof(buf), "BGP: requesting dependency module start (%us)...\r\n", elapsed_sec);
+    }
+    (void)cli_line_progress_send(bgp_local_ipc_ctx(), line_id, buf);
 }
 
 static void bgp_cli_apply_ctx_set(bgp_apply_cmd_t *apply, const bgp_cli_ctx_t *ctx)
@@ -506,12 +545,14 @@ static int handle_bgp_addr_family(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
         cli_tlv_entry_free(&entry);
     }
 
-    /* 使能 labeled / QP / vpnv4 地址族时需要 TUNNEL 进程做 MPLS 转发表项；按需拉起。
+    /* 使能 labeled / vpnv4 地址族时需要 TUNNEL 进程做 MPLS 转发表项；按需拉起。
      * UNICAST 纯 IP 不需要。 */
-    if (!apply.isNo && (ctx.safi == BGP_SAFI_LABELED || ctx.safi == BGP_SAFI_QP || ctx.safi == BGP_SAFI_VPN_UNICAST))
+    if (!apply.isNo && (ctx.safi == BGP_SAFI_LABELED || ctx.safi == BGP_SAFI_VPN_UNICAST))
     {
-        if (dev_ipc_wait_module_ready(bgp_local_ipc_ctx(), DEV_MODULE_ID_TUNNEL, DEV_IPC_WAIT_READY_MS) !=
-            ERRCODE_SUCCESS)
+        (void)cli_line_progress_send(bgp_local_ipc_ctx(), ctx.line_id,
+                                     "BGP: starting dependency module, waiting for READY...\r\n");
+        if (dev_ipc_wait_module_ready_with_progress(bgp_local_ipc_ctx(), DEV_MODULE_ID_TUNNEL, DEV_IPC_WAIT_READY_MS,
+                                                    bgp_wait_dependency_progress_cb, &ctx.line_id) != ERRCODE_SUCCESS)
         {
             bgp_send_cli_response(msg, "BGP Error: TUNNEL module not available for MPLS AF.\r\n");
             return ERRCODE_FAIL;

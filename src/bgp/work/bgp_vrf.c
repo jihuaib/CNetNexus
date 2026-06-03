@@ -14,6 +14,7 @@
 #include "bgp_rd.h"
 #include "bgp_rib.h"
 #include "bgp_update_group.h"
+#include "bgp_vrf_export.h"
 #include "bgp_worker.h"
 #include "log.h"
 #include "net_addr.h"
@@ -69,6 +70,8 @@ void bgp_vrf_destroy(bgp_vrf_t *vrf)
         return;
     }
     LOG_INFO("BGP VRF destroyed: id=%u", vrf->vrf_id);
+    /* 释放本 VRF 的 per-vrf VPN 标签（若曾在发送时申请过） */
+    bgp_vrf_export_release_vrf_label(vrf);
     /* 先销毁 inst_hash（释放 bgp_peer_t 和 RIB），再销毁 sess_hash */
     if (vrf->inst_hash)
     {

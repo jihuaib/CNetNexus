@@ -22,6 +22,7 @@ set(BGP_SOURCES
     work/bgp_pkt_build_ipv4uc.c
     work/bgp_pkt_build_ipv6uc.c
     work/bgp_pkt_build_labeled.c
+    work/bgp_pkt_build_vpn.c
     work/bgp_pkt_build_ipv4qp.c
     work/bgp_pkt_build_ipv6qp.c
     work/bgp_calc.c
@@ -38,12 +39,15 @@ set(BGP_SOURCES
     work/bgp_update_group.c
     work/bgp_adj_rib_out.c
     work/bgp_show.c
+    work/bgp_show_route.c
     work/bgp_worker.c
     work/bgp_cmd.c
     work/bgp_import_route.c
     work/bgp_import_rib.c
     work/bgp_route_flush.c
     work/bgp_apply_vrf.c
+    work/bgp_vrf_export.c
+    work/bgp_vrf_import.c
     bmp/bgp_bmp.c
     bmp/bgp_bmp_cfg_apply.c
     bmp/bgp_bmp_pkt.c

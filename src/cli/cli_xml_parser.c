@@ -729,6 +729,42 @@ static void set_context_out_on_leaves(cli_tree_node_t *node, const cli_ctx_out_e
     }
 }
 
+static gboolean parse_bool_attr(xmlNode *node, const char *name)
+{
+    if (!node || !name)
+    {
+        return FALSE;
+    }
+
+    xmlChar *value = xmlGetProp(node, (const xmlChar *)name);
+    if (!value)
+    {
+        return FALSE;
+    }
+
+    gboolean enabled =
+        (strcmp((const char *)value, "1") == 0 || g_ascii_strcasecmp((const char *)value, "true") == 0 ||
+         g_ascii_strcasecmp((const char *)value, "yes") == 0 || g_ascii_strcasecmp((const char *)value, "on") == 0);
+    xmlFree(value);
+    return enabled;
+}
+
+static void set_auto_start_on_leaves(cli_tree_node_t *node)
+{
+    if (!node)
+    {
+        return;
+    }
+    if (node->is_end_node)
+    {
+        node->allow_auto_start = TRUE;
+    }
+    for (uint32_t i = 0; i < node->num_children; i++)
+    {
+        set_auto_start_on_leaves(node->children[i]);
+    }
+}
+
 // Parse command group and register commands to views
 static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree, uint32_t module_id)
 {
@@ -800,6 +836,7 @@ static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree,
                     char *expression = NULL;
                     char *views = NULL;
                     char *target_view_name = NULL; /* <to-view> 内容，命令执行后切换到的视图名称 */
+                    gboolean allow_auto_start = parse_bool_attr(cmd, "auto-start");
 
                     /* context-out 条目临时数组（最多 16 条） */
                     cli_ctx_out_entry_t ctx_out_buf[16];
@@ -895,6 +932,10 @@ static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree,
                         if (virtual_root && num_ctx_out > 0)
                         {
                             set_context_out_on_leaves(virtual_root, ctx_out_buf, num_ctx_out);
+                        }
+                        if (virtual_root && allow_auto_start)
+                        {
+                            set_auto_start_on_leaves(virtual_root);
                         }
 
                         if (virtual_root)

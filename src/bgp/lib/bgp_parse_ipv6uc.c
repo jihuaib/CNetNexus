@@ -90,8 +90,9 @@ static int parse_prefixes(const uint8_t *data, uint16_t len, bgp_nlri_entry_t **
  * 32 字节 = IPv6 全局地址（16B）+ link-local 地址（16B）
  * ========================================================================== */
 
-static int parse_nexthop(const uint8_t *nh_data, uint8_t nh_len, bgp_nexthop_t *nexthop)
+static int parse_nexthop(const uint8_t *nh_data, uint8_t nh_len, uint32_t flags, bgp_nexthop_t *nexthop)
 {
+    (void)flags;
     if (!nh_data || !nexthop)
     {
         return -1;

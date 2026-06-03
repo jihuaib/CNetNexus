@@ -129,6 +129,13 @@ static void emit_vrf_block(GString *out, dev_ipc_context_t *ctx, uint32_t vrf_id
                 }
             }
 
+            /* apply-label 模式（仅非默认 per-route 才显示） */
+            int apply_label_mode = (int)db_row_get_int(row, "apply_label_mode", 0);
+            if (apply_label_mode == (int)VRF_APPLY_LABEL_PER_ROUTE)
+            {
+                g_string_append(out, "  apply-label per-route\r\n");
+            }
+
             /* 该 AF 下的 RT */
             db_filter_builder_t rfb;
             db_filter_init(&rfb);

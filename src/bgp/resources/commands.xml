@@ -72,7 +72,7 @@
             </elements>
 
             <commands>
-                <command>
+                <command auto-start="true">
                     <expression>2 3</expression>
                     <views>config</views>
                     <to-view>bgp</to-view>
@@ -809,12 +809,22 @@
                     <name>vpnv4</name>
                     <description>Show VPNv4 (MPLS L3VPN) routes</description>
                 </element>
+                <element id="16" type="keyword">
+                    <name>rd</name>
+                    <description>Filter by Route Distinguisher</description>
+                </element>
+                <element id="17" cfg-id="11" type="parameter">
+                    <name>&lt;rd&gt;</name>
+                    <type>string(3-32)</type>
+                    <description>RD format ASN:NN or IP:NN</description>
+                </element>
             </elements>
 
             <commands>
-                <!-- show bgp route af vpnv4 [<ip-address> <masklen>]（vpnv4 为全局表，无 vrf 过滤） -->
+                <!-- show bgp route af vpnv4 [<ip-address> <masklen>] [rd <rd>]（vpnv4 全局表按 RD 分段；
+                     不带前缀=列全部，带前缀不带 rd=跨所有 RD 查该前缀，带 rd=缩到单个 RD） -->
                 <command>
-                    <expression>1 2 3 4 15 [7 8]</expression>
+                    <expression>1 2 3 4 15 [7 8] [16 17]</expression>
                     <views>global</views>
                 </command>
                 <!-- show bgp route af ipv4-unicast [vrf <vrf-name>] [<ip-address> <masklen>] -->

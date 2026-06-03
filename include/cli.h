@@ -38,6 +38,8 @@
 #define CLI_MSG_TYPE_QUERY_CANDIDATES_RESP DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0008)
 /** DEV → CFG：更新系统名（payload: 字符串，null 结尾；空字符串=恢复默认 "NetNexus"） */
 #define CLI_MSG_TYPE_SYSNAME_UPDATE DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0009)
+/** DEV → CFG：sysname 命令成功响应，同时携带新系统名（空字符串=恢复默认） */
+#define CLI_MSG_TYPE_SYSNAME_UPDATE_RESP DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x000A)
 
 /** 系统名最大长度（含 null） */
 #define CLI_SYSNAME_MAX_LEN 64
@@ -97,6 +99,12 @@
 #define CLI_VIEW_VRF_AF_IPV4 "vrf-af-ipv4-uni"
 /** VRF IPv6 单播地址族视图 */
 #define CLI_VIEW_VRF_AF_IPV6 "vrf-af-ipv6-uni"
+/** BMP server 配置视图 */
+#define CLI_VIEW_SBMP "sbmp"
+/** VTY line 配置视图 */
+#define CLI_VIEW_LINE "line"
+/** console line 配置视图 */
+#define CLI_VIEW_LINE_CONSOLE "line-console"
 
 // ============================================================================
 // CLI 上下文变量 ID 定义（全局唯一，新增时在此处登记，避免冲突）
@@ -125,6 +133,8 @@
 #define CLI_CTX_ID_VRF_SAFI 10
 /** LDP 视图占位上下文（无字段，单实例 LDP；保留给将来多实例使用） */
 #define CLI_CTX_ID_LDP_INST 11
+/** ACCESS line_id 系统上下文（CLI 分发时注入，供业务模块输出实时进度） */
+#define CLI_CTX_ID_ACCESS_LINE 12
 
 /** 视图名称最大长度 */
 #define CLI_CLI_MAX_VIEW_LEN 20
@@ -317,6 +327,15 @@ int cli_show_scope_payload_parse(const uint8_t *payload, uint32_t payload_len, c
  * @return 字符串（内部指针，不转移所有权），类型不匹配返回 NULL
  */
 const char *cli_tlv_entry_get_text(const cli_tlv_entry_t *entry);
+
+/**
+ * @brief 向发起当前 CLI 命令的 ACCESS line 输出实时进度
+ * @param ctx     调用方 IPC 上下文
+ * @param line_id ACCESS line ID（CLI_CTX_ID_ACCESS_LINE）
+ * @param text    输出文本
+ * @return ERRCODE_SUCCESS / ERRCODE_FAIL
+ */
+int cli_line_progress_send(dev_ipc_context_t *ctx, uint32_t line_id, const char *text);
 
 /**
  * @brief 重置并释放分片流状态

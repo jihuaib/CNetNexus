@@ -71,6 +71,7 @@ static vrf_event_msg_t *build_event(const vrf_entry_t *e, uint32_t event, uint16
     {
         evt->has_rd = af->has_rd;
         evt->rd = af->rd;
+        evt->apply_label_mode = af->apply_label_mode;
     }
     evt->rt_count = rt_count;
     if (rt_count > 0 && rts)
@@ -189,6 +190,14 @@ void vrf_pub_notify_af_rd_del(const vrf_entry_t *e, uint16_t afi, uint8_t safi)
     }
 }
 
+void vrf_pub_notify_af_apply_label(const vrf_entry_t *e, const vrf_af_state_t *af)
+{
+    if (e && af)
+    {
+        notify_all(VRF_EVENT_AF_APPLY_LABEL, e, af->afi, af->safi, af, NULL, 0);
+    }
+}
+
 static void notify_rt_one(uint32_t event, const vrf_entry_t *e, const vrf_af_state_t *af, const vrf_rt_t *rt)
 {
     if (e && af && rt)
@@ -245,6 +254,10 @@ static void replay_af(uint32_t module_id, uint32_t event_mask, uint32_t af_mask,
     if (af->has_rd)
     {
         replay_one(module_id, event_mask, af_mask, VRF_EVENT_AF_RD_ADD, e, af->afi, af->safi, af, NULL, 0);
+    }
+    if (af->apply_label_mode != VRF_APPLY_LABEL_PER_VRF)
+    {
+        replay_one(module_id, event_mask, af_mask, VRF_EVENT_AF_APPLY_LABEL, e, af->afi, af->safi, af, NULL, 0);
     }
     if (af->import_rts && af->import_rts->len > 0)
     {

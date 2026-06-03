@@ -17,6 +17,7 @@
 #include "bgp_rib.h"
 #include "bgp_session.h"
 #include "bgp_vrf.h"
+#include "bgp_vrf_import.h"
 #include "bgp_worker.h"
 #include "errcode.h"
 #include "log.h"
@@ -100,48 +101,6 @@ static void bgp_relay_tables_ensure(void)
         g_bgp_relay_nh_table =
             g_hash_table_new_full(bgp_relay_nh_key_hash, bgp_relay_nh_key_equal, NULL, bgp_relay_nh_watch_destroy);
     }
-}
-
-static int bgp_nlri_to_route_prefix(const bgp_nlri_entry_t *nlri, uint16_t *afi_out, uint8_t *prefix_len_out,
-                                    net_addr_t *prefix_addr_out)
-{
-    if (!nlri || !afi_out || !prefix_len_out || !prefix_addr_out)
-    {
-        return 0;
-    }
-    if (nlri->type != BGP_NLRI_PREFIX || (nlri->safi != BGP_SAFI_UNICAST && nlri->safi != BGP_SAFI_LABELED))
-    {
-        return 0;
-    }
-    if (nlri->safi == BGP_SAFI_LABELED && !nlri->prefix.has_label)
-    {
-        return 0;
-    }
-
-    if (nlri->afi == BGP_AFI_IPV4)
-    {
-        if (nlri->prefix.prefix.addr.family != AF_INET || nlri->prefix.prefix.prefix_len > 32)
-        {
-            return 0;
-        }
-        *afi_out = ROUTE_AFI_IPV4;
-    }
-    else if (nlri->afi == BGP_AFI_IPV6)
-    {
-        if (nlri->prefix.prefix.addr.family != AF_INET6 || nlri->prefix.prefix.prefix_len > 128)
-        {
-            return 0;
-        }
-        *afi_out = ROUTE_AFI_IPV6;
-    }
-    else
-    {
-        return 0;
-    }
-
-    *prefix_len_out = nlri->prefix.prefix.prefix_len;
-    *prefix_addr_out = nlri->prefix.prefix.addr;
-    return 1;
 }
 
 static void bgp_relay_make_nh_key(bgp_relay_nh_key_t *key, uint32_t vrf_id, uint16_t afi, uint8_t safi,
@@ -556,7 +515,8 @@ static bgp_relay_nh_watch_t *bgp_relay_attach_route_to_watch(bgp_route_node_t *r
         watch->route_list = NULL;
 
         int register_rc = ERRCODE_FAIL;
-        if (watch->key.safi == BGP_SAFI_LABELED)
+        /* 携带标签的地址族（labeled / vpnv4）走隧道迭代：向 TUNNEL 解析远端端点（nexthop）。 */
+        if (watch->key.safi == BGP_SAFI_LABELED || bgp_safi_is_vpn(watch->key.safi))
         {
             tunnel_resolve_req_t req;
             bgp_relay_fill_tunnel_resolve_req(&req, &watch->key);
@@ -707,6 +667,7 @@ static int bgp_relay_route_upsert(uint32_t vrf_id, const bgp_nlri_entry_t *nlri,
         return ERRCODE_SUCCESS;
     }
 
+    /* 无可迭代 nexthop：路由仍保留在 Loc-RIB，仅置 invalid（不优选），绝不撤销。 */
     bgp_relay_nh_key_t new_nh_key;
     if (!bgp_relay_build_nh_key_from_route(route, &new_nh_key))
     {
@@ -715,12 +676,13 @@ static int bgp_relay_route_upsert(uint32_t vrf_id, const bgp_nlri_entry_t *nlri,
             bgp_relay_detach_route_from_watch(route, &old_nh_key, TRUE);
         }
         bgp_relay_publish_lu_candidate(route, FALSE);
-        (void)bgp_relay_withdraw_route_from_rib(inst, nlri, source);
-        return ERRCODE_FAIL;
+        (void)bgp_relay_set_route_valid(inst, nlri, source, FALSE); /* 内部按需触发 calc */
+        return ERRCODE_SUCCESS;
     }
 
     gboolean nh_changed = (old_route && (!had_old_nh || !bgp_relay_nh_key_equal(&old_nh_key, &new_nh_key)));
 
+    /* 迭代 watch 注册失败：同样保留在 Loc-RIB 置 invalid，不撤销。 */
     bgp_relay_nh_watch_t *watch = bgp_relay_attach_route_to_watch(route, &new_nh_key);
     if (!watch)
     {
@@ -729,8 +691,8 @@ static int bgp_relay_route_upsert(uint32_t vrf_id, const bgp_nlri_entry_t *nlri,
             bgp_relay_detach_route_from_watch(route, &old_nh_key, TRUE);
         }
         bgp_relay_publish_lu_candidate(route, FALSE);
-        (void)bgp_relay_withdraw_route_from_rib(inst, nlri, source);
-        return ERRCODE_FAIL;
+        (void)bgp_relay_set_route_valid(inst, nlri, source, FALSE); /* 内部按需触发 calc */
+        return ERRCODE_SUCCESS;
     }
 
     bgp_relay_publish_lu_candidate(route, TRUE);
@@ -753,36 +715,6 @@ static int bgp_relay_route_upsert(uint32_t vrf_id, const bgp_nlri_entry_t *nlri,
     }
 
     return ERRCODE_SUCCESS;
-}
-
-static gboolean bgp_relay_nexthop_family_compatible(const bgp_session_t *session, const net_addr_t *prefix_addr,
-                                                    const bgp_nexthop_t *nexthop)
-{
-    if (!session || !prefix_addr || !nexthop)
-    {
-        return FALSE;
-    }
-
-    /* 常规场景：前缀与 nexthop 同族。 */
-    if (nexthop->global.family == prefix_addr->family)
-    {
-        return TRUE;
-    }
-
-    /* RFC 8950：仅在协商了 Extended Nexthop 时，允许 IPv4 前缀使用 IPv6 nexthop。 */
-    if (prefix_addr->family == AF_INET && nexthop->global.family == AF_INET6 &&
-        BIT_TEST(session->negotiated_caps, BGP_SESS_CAP_EXT_NEXTHOP))
-    {
-        return TRUE;
-    }
-
-    /* 双栈场景：允许 IPv6 前缀使用 IPv4 nexthop。 */
-    if (prefix_addr->family == AF_INET6 && nexthop->global.family == AF_INET)
-    {
-        return TRUE;
-    }
-
-    return FALSE;
 }
 
 static void bgp_relay_collect_nlri_cb(const bgp_nlri_entry_t *nlri, gpointer user_data)
@@ -831,11 +763,15 @@ void bgp_relay_ingest_peer_update(bgp_session_t *session, const bgp_update_resul
     uint32_t vrf_id = session->vrf->vrf_id;
     const bgp_attr_t *route_base_attr = base_attr ? base_attr : &upd->attr;
 
+    /* vpnv4 入向 RT 过滤判据(本 UPDATE 内 RT 属性共享，仅需计算一次)：-1 未算/1 命中/0 不命中 */
+    int vpn_rt_match = -1;
+
     for (uint32_t i = 0; i < upd->reach_len; ++i)
     {
         const bgp_nlri_entry_t *nlri = &upd->reach[i];
 
-        /* QP 路由直入 RIB，不做 nexthop 族校验/迭代。 */
+        /* QP 路由直入 RIB，不依赖 nexthop 迭代。
+         * VPN 路由不走此分支：它需要（隧道）迭代，由下方正常路径经 route_upsert 完成。 */
         if (nlri->type == BGP_NLRI_QP && nlri->safi == BGP_SAFI_QP)
         {
             if (bgp_relay_route_upsert(vrf_id, nlri, &session->neighbor_addr, &upd->attr, route_base_attr,
@@ -853,22 +789,26 @@ void bgp_relay_ingest_peer_update(bgp_session_t *session, const bgp_update_resul
             continue;
         }
 
-        uint16_t afi = 0;
-        uint8_t prefix_len = 0;
-        net_addr_t prefix_addr;
-        memset(&prefix_addr, 0, sizeof(prefix_addr));
-        if (!bgp_nlri_to_route_prefix(nlri, &afi, &prefix_len, &prefix_addr))
+        /* 仅处理 IP 前缀类（unicast/labeled/vpn）；NLRI 格式与 nexthop 合法性（含族兼容/
+         * ext-nexthop）已在解析侧各 AF 回调校验完毕，非法路由在解析时即丢弃，此处不再重复判断。
+         * 其它 NLRI 类型（EVPN/FlowSpec 等）不在本 nexthop 迭代路径处理。 */
+        if (nlri->type != BGP_NLRI_PREFIX)
         {
             continue;
         }
 
-        if (!bgp_relay_nexthop_family_compatible(session, &prefix_addr, &upd->nexthop))
+        /* vpnv4 入向按 import-RT 过滤：本路由的 RT 不命中任何私网 VRF → 整条丢弃(不入 vpnv4 RIB)。
+         * 命中则正常入公网 vpnv4 RIB，导入对应 VRF 由 vpnv4 calc 完成后的 reconcile 处理。 */
+        if (nlri->safi == BGP_SAFI_VPN_UNICAST)
         {
-            if (stats)
+            if (vpn_rt_match < 0)
             {
-                stats->reach_failed++;
+                vpn_rt_match = bgp_vrf_import_attr_has_match(&upd->attr) ? 1 : 0;
             }
-            continue;
+            if (vpn_rt_match == 0)
+            {
+                continue; /* 无 IRT 匹配，丢弃；不计入 injected/failed */
+            }
         }
 
         if (bgp_relay_route_upsert(vrf_id, nlri, &session->neighbor_addr, &upd->attr, route_base_attr, &upd->nexthop) ==
@@ -877,6 +817,12 @@ void bgp_relay_ingest_peer_update(bgp_session_t *session, const bgp_update_resul
             if (stats)
             {
                 stats->reach_injected++;
+            }
+            /* vpnv4 路由恒因远端 PE 下一跳无 LSP 而 invalid、不触发 calc，
+             * 显式触发按 import-RT 导入评估(IRT 匹配即接受，与 FIB 可达解耦)。 */
+            if (nlri->safi == BGP_SAFI_VPN_UNICAST)
+            {
+                bgp_vrf_import_on_vpn_received(nlri);
             }
         }
         else if (stats)
@@ -899,11 +845,7 @@ void bgp_relay_ingest_peer_update(bgp_session_t *session, const bgp_update_resul
             continue;
         }
 
-        uint16_t afi = 0;
-        uint8_t prefix_len = 0;
-        net_addr_t prefix_addr;
-        memset(&prefix_addr, 0, sizeof(prefix_addr));
-        if (!bgp_nlri_to_route_prefix(nlri, &afi, &prefix_len, &prefix_addr))
+        if (nlri->type != BGP_NLRI_PREFIX)
         {
             continue;
         }

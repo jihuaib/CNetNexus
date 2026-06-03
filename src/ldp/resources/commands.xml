@@ -27,7 +27,7 @@
             </elements>
 
             <commands>
-                <command>
+                <command auto-start="true">
                     <expression>2</expression>
                     <views>config</views>
                     <to-view>ldp</to-view>

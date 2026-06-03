@@ -32,7 +32,7 @@
             </elements>
 
             <commands>
-                <command>
+                <command auto-start="true">
                     <expression>2 3</expression>
                     <views>config</views>
                     <to-view>isis</to-view>

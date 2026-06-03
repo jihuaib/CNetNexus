@@ -50,6 +50,8 @@ static inline const char *access_console_sock_path(void)
 #define ACCESS_MSG_HELP_RESP DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ACCESS, 0x0084)
 /** CLI→ACCESS：SESSION_CLOSE 响应（空 payload） */
 #define ACCESS_MSG_CLOSE_RESP DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ACCESS, 0x0085)
+/** CLI→ACCESS：LINE_INPUT 执行期间的单向进度输出（access_line_progress_t） */
+#define ACCESS_MSG_LINE_PROGRESS DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ACCESS, 0x0086)
 
 /** ACCESS 内部消息：DB READY（DB 事件回调投递到 worker 线程做建表/恢复，回调本身不能阻塞） */
 #define ACCESS_MSG_INTERNAL_DB_READY DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ACCESS, 0x00F1)
@@ -141,6 +143,15 @@ typedef struct access_text_resp
     char prompt[ACCESS_PROMPT_MAX_LEN]; /**< 渲染好的当前提示符 */
     char text[];                        /**< 变长，null 结尾 */
 } access_text_resp_t;
+
+/**
+ * @brief LINE_INPUT 执行期间的单向进度输出
+ */
+typedef struct access_line_progress
+{
+    uint32_t line_id; /**< 线号 */
+    char text[];      /**< 变长，null 结尾 */
+} access_line_progress_t;
 
 /**
  * @brief TAB_RESP 响应

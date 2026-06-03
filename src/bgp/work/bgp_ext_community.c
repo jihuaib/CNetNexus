@@ -33,7 +33,7 @@ static gboolean ext_community_exists(const bgp_attr_t *attr, const uint8_t ext[8
     return FALSE;
 }
 
-static gboolean vrf_rt_to_ext_community(const vrf_rt_t *rt, uint8_t ext[8])
+gboolean bgp_ext_community_rt_canon(const vrf_rt_t *rt, uint8_t ext[8])
 {
     if (!rt || !ext)
     {
@@ -65,6 +65,18 @@ static gboolean vrf_rt_to_ext_community(const vrf_rt_t *rt, uint8_t ext[8])
     return FALSE;
 }
 
+gboolean bgp_ext_community_is_rt(const uint8_t entry[8])
+{
+    if (!entry)
+    {
+        return FALSE;
+    }
+    /* Route Target 子类型固定为 0x02；主类型可为 2-octet AS / IPv4 / 4-octet AS
+     * 的传输或非传输形式((entry[0] & 0x3F) ∈ {0x00,0x01,0x02})。 */
+    uint8_t kind = (uint8_t)(entry[0] & 0x3Fu);
+    return (entry[1] == 0x02 && (kind == 0x00 || kind == 0x01 || kind == 0x02)) ? TRUE : FALSE;
+}
+
 void bgp_ext_community_merge_vrf_export_rts(bgp_attr_t *attr, uint32_t vrf_id, uint16_t afi)
 {
     if (!attr || vrf_id == VRF_PUBLIC_VRF_ID)
@@ -81,7 +93,7 @@ void bgp_ext_community_merge_vrf_export_rts(bgp_attr_t *attr, uint32_t vrf_id, u
     for (uint16_t i = 0; i < af->export_rt_count; i++)
     {
         uint8_t ext[8];
-        if (!vrf_rt_to_ext_community(&af->export_rts[i], ext) || ext_community_exists(attr, ext))
+        if (!bgp_ext_community_rt_canon(&af->export_rts[i], ext) || ext_community_exists(attr, ext))
         {
             continue;
         }

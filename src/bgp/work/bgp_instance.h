@@ -49,6 +49,7 @@ typedef struct bgp_instance
     uint32_t next_attr_id;       /**< 本 instance 下一个可分配 attr_id（从 1 开始） */
     uint32_t import_rib_sources; /**< import-rib 源位掩码（bgp_import_src_t），DB 持久化 */
     void *import_rib_state;      /**< bgp_import_rib 模块内部状态（pending queue / mirror 反向索引等） */
+    void *vrf_export_state;      /**< bgp_vrf_export 状态（仅 public vpnv4 instance 非空） */
 } bgp_instance_t;
 
 /**

@@ -26,6 +26,8 @@
 #include "bgp_session.h"
 #include "bgp_update_group.h"
 #include "bgp_vrf.h"
+#include "bgp_vrf_export.h"
+#include "bgp_vrf_import.h"
 #include "errcode.h"
 #include "if.h"
 #include "log.h"
@@ -46,6 +48,7 @@ typedef enum bgp_worker_event_type
     BGP_WORKER_EVENT_CALC = 1,
     BGP_WORKER_EVENT_ROUTE_FLUSH = 2,
     BGP_WORKER_EVENT_SESSION_PUB = 3,
+    BGP_WORKER_EVENT_VRF_EXPORT = 4,
 } bgp_worker_event_type_t;
 
 typedef struct bgp_worker_event
@@ -322,6 +325,22 @@ int bgp_worker_post_session_pub_event(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t
     return 0;
 }
 
+int bgp_worker_post_vrf_export_event(void)
+{
+    bgp_worker_event_t *evt =
+        bgp_worker_event_create(BGP_WORKER_EVENT_VRF_EXPORT, BGP_VRF_PUBLIC_ID, BGP_AFI_IPV4, BGP_SAFI_VPN_UNICAST);
+    if (!evt)
+    {
+        return -1;
+    }
+    if (bgp_worker_event_enqueue(evt) != 0)
+    {
+        bgp_worker_event_destroy(evt);
+        return -1;
+    }
+    return 0;
+}
+
 void bgp_worker_drain_work_events(void)
 {
     if (!g_bgp_work_local || g_bgp_work_local->work_eventfd < 0 || !g_bgp_work_local->work_queue)
@@ -355,6 +374,21 @@ void bgp_worker_drain_work_events(void)
             case BGP_WORKER_EVENT_SESSION_PUB:
                 bgp_update_group_handle_pub_event(evt->vrf_id, evt->afi, evt->safi);
                 break;
+            case BGP_WORKER_EVENT_VRF_EXPORT:
+            {
+                bgp_instance_t *vpn_inst = bgp_vrf_export_target_inst();
+                if (vpn_inst)
+                {
+                    (void)bgp_vrf_export_queue_process(vpn_inst, BGP_VRF_EXPORT_BATCH);
+                    /* pending 未抽干则再投事件自重排，让出 epoll 处理报文/定时器 */
+                    if (vpn_inst->vrf_export_state &&
+                        ((bgp_vrf_export_state_t *)vpn_inst->vrf_export_state)->pending_count > 0)
+                    {
+                        (void)bgp_worker_post_vrf_export_event();
+                    }
+                }
+                break;
+            }
             default:
                 LOG_WARN("BGP: unknown work event type=%d", (int)evt->type);
                 break;
@@ -688,6 +722,7 @@ int bgp_worker_prepare(void)
     }
 
     bgp_relay_init();
+    bgp_vrf_import_init();
 
     return ERRCODE_SUCCESS;
 }

@@ -16,6 +16,8 @@
 #include "bgp_rib.h"
 #include "bgp_route_flush.h"
 #include "bgp_update_group.h"
+#include "bgp_vrf_export.h"
+#include "bgp_vrf_import.h"
 #include "bgp_worker.h"
 #include "log.h"
 #include "net_addr.h"
@@ -61,6 +63,7 @@ bgp_instance_t *bgp_instance_create(bgp_afi_t afi, bgp_safi_t safi, bgp_vrf_t *v
         (void)bgp_protocol_ensure_rd_entry(proto, inst, &BGP_RD_PUBLIC);
     }
     bgp_import_rib_inst_init(inst);
+    bgp_vrf_export_inst_init(inst);
     return inst;
 }
 
@@ -70,6 +73,11 @@ void bgp_instance_destroy(bgp_instance_t *inst)
     {
         return;
     }
+    /* 私网 VRF unicast 实例销毁前，先撤销其在 vpnv4 的导出(解除 borrow，源 RIB 尚存活) */
+    bgp_vrf_export_purge_source_inst(inst);
+    bgp_vrf_export_inst_destroy(inst);
+    /* public vpnv4 实例销毁前，先撤销其导入到各 VRF 的合成路径(解除 borrow，源 RIB 尚存活) */
+    bgp_vrf_import_purge_target_inst(inst);
     bgp_import_rib_inst_destroy(inst);
     bgp_calc_queue_destroy(inst->calc_queue, inst);
     inst->calc_queue = NULL;

@@ -82,6 +82,7 @@ typedef struct vrf_api_af
     uint8_t safi;             /**< VRF_SAFI_* */
     uint8_t has_rd;           /**< 1=已配置 RD */
     vrf_rd_t rd;              /**< RD（has_rd=1 时有效） */
+    uint8_t apply_label_mode; /**< VRF_APPLY_LABEL_*（默认 per-vrf=0） */
     uint16_t import_rt_count; /**< import RT 数量 */
     uint16_t export_rt_count; /**< export RT 数量 */
     vrf_rt_t *import_rts;     /**< import RT 数组（lib 持有） */
@@ -159,8 +160,15 @@ typedef gboolean (*vrf_api_cache_iter_fn)(const vrf_api_cache_entry_t *entry, vo
 #define VRF_EVENT_SMOOTHSTART (1u << 11)
 /** 平滑同步结束：REPLAY 全量数据送达后发送，订阅方据此判断 VRF 缓存已完整 */
 #define VRF_EVENT_SMOOTHEND (1u << 12)
+/** AF 下 apply-label 模式变更（apply_label_mode 有效） */
+#define VRF_EVENT_AF_APPLY_LABEL (1u << 13)
 /** 通配：匹配所有事件 */
 #define VRF_EVENT_ALL 0xFFFFFFFFu
+
+/** apply-label 模式：per-vrf 聚合标签（默认） */
+#define VRF_APPLY_LABEL_PER_VRF 0u
+/** apply-label 模式：per-route 每前缀一标签 */
+#define VRF_APPLY_LABEL_PER_ROUTE 1u
 
 // ----------------------------------------------------------------------------
 // AF 位图（订阅 af_mask 用）
@@ -216,7 +224,7 @@ typedef struct vrf_event_msg
     uint32_t l3vrf_table_id;     /**< OS L3VRF 路由表 ID */
     char name[VRF_NAME_MAX_LEN]; /**< VRF 名称 */
     uint8_t has_rd;              /**< RD 是否有效 */
-    uint8_t _pad;                /**< 对齐填充 */
+    uint8_t apply_label_mode;    /**< VRF_APPLY_LABEL_*（每个 AF 事件都携带当前值） */
     vrf_rd_t rd;                 /**< RD（has_rd=1 时有效） */
     uint16_t rt_count;           /**< rts[] 元素数 */
     vrf_rt_t rts[];              /**< 变长 RT 数组 */

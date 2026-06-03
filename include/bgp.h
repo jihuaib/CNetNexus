@@ -470,6 +470,14 @@ bool bgp_nlri_equal(const bgp_nlri_entry_t *a, const bgp_nlri_entry_t *b);
  */
 void bgp_nlri_to_str(const bgp_nlri_entry_t *entry, char *buf, size_t sz);
 
+/**
+ * @brief 将 8 字节 RD 格式化为可读字符串（Type 0/1/2 → ASN:NN / IP:NN）
+ * @param rd  RD（大端原始字节）
+ * @param buf 输出缓冲区
+ * @param sz  缓冲区大小
+ */
+void bgp_rd_to_str(const bgp_rd_t *rd, char *buf, size_t sz);
+
 /* ============================================================================
  * UPDATE 解析结果
  * ========================================================================== */
@@ -537,13 +545,14 @@ typedef struct bgp_af_parser
     int (*parse_unreach)(const uint8_t *data, uint16_t len, bgp_nlri_entry_t **out, uint32_t *out_len);
 
     /**
-     * @brief 解析 MP_REACH nexthop 字节（格式因 AFI 而异）
+     * @brief 解析 MP_REACH nexthop 字节（格式/合法长度因 AFI/SAFI 而异，由回调自行判断）
      * @param nh_data nexthop 字节
      * @param nh_len  字节长度
+     * @param flags   解析标志（BGP_PARSE_FLAG_*，含是否协商 Extended Next Hop）
      * @param nexthop 输出 nexthop
-     * @return 0=成功, -1=格式错误
+     * @return 0=成功, -1=长度/族非法（如未协商 ext-nexthop 的 IPv6 nexthop）
      */
-    int (*parse_nexthop)(const uint8_t *nh_data, uint8_t nh_len, bgp_nexthop_t *nexthop);
+    int (*parse_nexthop)(const uint8_t *nh_data, uint8_t nh_len, uint32_t flags, bgp_nexthop_t *nexthop);
 
     /**
      * @brief 将 entry 格式化为字符串

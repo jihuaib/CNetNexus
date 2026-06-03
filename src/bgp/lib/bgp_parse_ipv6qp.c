@@ -155,8 +155,9 @@ static int parse_qp_entries(const uint8_t *data, uint16_t len, bgp_nlri_entry_t 
     return 0;
 }
 
-static int parse_nexthop(const uint8_t *nh_data, uint8_t nh_len, bgp_nexthop_t *nexthop)
+static int parse_nexthop(const uint8_t *nh_data, uint8_t nh_len, uint32_t flags, bgp_nexthop_t *nexthop)
 {
+    (void)flags;
     if (!nh_data || !nexthop)
     {
         return -1;
