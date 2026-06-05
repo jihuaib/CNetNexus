@@ -9,11 +9,17 @@
 #include <string.h>
 
 #include "errcode.h"
+#include "isis_nexthop.h"
 #include "isis_route_sync.h"
 
 static void isis_route_state_free(gpointer data)
 {
-    g_free(data);
+    isis_route_state_t *state = (isis_route_state_t *)data;
+    if (state)
+    {
+        isis_route_state_reset(state);
+    }
+    g_free(state);
 }
 
 static void isis_route_path_free(isis_route_path_t *path)
@@ -24,6 +30,7 @@ static void isis_route_path_free(isis_route_path_t *path)
     }
     g_free(path->path_key);
     path->path_key = NULL;
+    isis_route_state_reset(&path->state);
     path->head = NULL;
     g_free(path);
 }
@@ -47,6 +54,120 @@ static void isis_route_addr_key_str(const net_addr_t *addr, char *buf, size_t sz
     }
 }
 
+void isis_route_state_reset(isis_route_state_t *state)
+{
+    if (!state)
+    {
+        return;
+    }
+    if (state->nexthop_id != 0u)
+    {
+        isis_nexthop_release(state->nexthop_table, state->nexthop_id);
+    }
+    state->nexthop_id = 0u;
+    state->nexthop_table = NULL;
+}
+
+int isis_route_state_copy(isis_route_state_t *dst, const isis_route_state_t *src)
+{
+    if (!dst || !src)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    isis_route_state_t copy = *src;
+    if (copy.nexthop_id != 0u && isis_nexthop_retain(copy.nexthop_table, copy.nexthop_id) != ERRCODE_SUCCESS)
+    {
+        copy.nexthop_id = 0u;
+        copy.nexthop_table = NULL;
+        return ERRCODE_FAIL;
+    }
+
+    *dst = copy;
+    return ERRCODE_SUCCESS;
+}
+
+static int isis_nexthop_value_same(const isis_nexthop_value_t *a, const isis_nexthop_value_t *b)
+{
+    if (!a || !b)
+    {
+        return 0;
+    }
+    return a->out_ifindex == b->out_ifindex && net_addr_equal(&a->relay_addr, &b->relay_addr);
+}
+
+int isis_route_state_set_nexthop(isis_route_state_t *state, isis_nexthop_table_t *table, uint32_t key_ifindex,
+                                 uint32_t out_ifindex, const net_addr_t *nexthop)
+{
+    if (!state || !table)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    route_nhobj_key_t key;
+    isis_nexthop_make_route_key(state->afi, key_ifindex, nexthop, &key);
+
+    isis_nexthop_value_t value;
+    memset(&value, 0, sizeof(value));
+    value.relay_addr = key.nexthop;
+    value.out_ifindex = out_ifindex;
+
+    route_nhobj_key_t cur_key;
+    isis_nexthop_value_t cur_value;
+    if (state->nexthop_id != 0u && state->nexthop_table == table &&
+        isis_nexthop_lookup(table, state->nexthop_id, &cur_key) == ERRCODE_SUCCESS &&
+        isis_nexthop_get_value(table, state->nexthop_id, &cur_value) == ERRCODE_SUCCESS &&
+        isis_nexthop_key_equal(&cur_key, &key) && isis_nexthop_value_same(&cur_value, &value))
+    {
+        return ERRCODE_SUCCESS;
+    }
+
+    uint32_t new_id = 0u;
+    if (isis_nexthop_acquire(table, &key, &value, &new_id) != ERRCODE_SUCCESS)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    isis_route_state_reset(state);
+    state->nexthop_id = new_id;
+    state->nexthop_table = table;
+    return ERRCODE_SUCCESS;
+}
+
+int isis_route_state_get_nexthop(const isis_route_state_t *state, net_addr_t *nexthop_out)
+{
+    if (!state || !nexthop_out)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    route_nhobj_key_t key;
+    if (isis_nexthop_lookup(state->nexthop_table, state->nexthop_id, &key) != ERRCODE_SUCCESS)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    *nexthop_out = key.nexthop;
+    return ERRCODE_SUCCESS;
+}
+
+int isis_route_state_get_out_ifindex(const isis_route_state_t *state, uint32_t *out_ifindex)
+{
+    if (!state || !out_ifindex)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    isis_nexthop_value_t value;
+    if (isis_nexthop_get_value(state->nexthop_table, state->nexthop_id, &value) != ERRCODE_SUCCESS)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    *out_ifindex = value.out_ifindex;
+    return ERRCODE_SUCCESS;
+}
+
 int isis_route_state_same(const isis_route_state_t *a, const isis_route_state_t *b)
 {
     if (!a || !b)
@@ -54,11 +175,25 @@ int isis_route_state_same(const isis_route_state_t *a, const isis_route_state_t 
         return 0;
     }
 
-    return (a->afi == b->afi && a->prefix_len == b->prefix_len && a->out_ifindex == b->out_ifindex &&
-            a->metric == b->metric && net_addr_equal(&a->prefix_addr, &b->prefix_addr) &&
-            net_addr_equal(&a->source_addr, &b->source_addr) && net_addr_equal(&a->nexthop_addr, &b->nexthop_addr))
-               ? 1
-               : 0;
+    if (a->afi != b->afi || a->prefix_len != b->prefix_len || a->metric != b->metric ||
+        !net_addr_equal(&a->prefix_addr, &b->prefix_addr) || !net_addr_equal(&a->source_addr, &b->source_addr))
+    {
+        return 0;
+    }
+
+    route_nhobj_key_t a_key;
+    route_nhobj_key_t b_key;
+    isis_nexthop_value_t a_value;
+    isis_nexthop_value_t b_value;
+    if (a->nexthop_table != b->nexthop_table ||
+        isis_nexthop_lookup(a->nexthop_table, a->nexthop_id, &a_key) != ERRCODE_SUCCESS ||
+        isis_nexthop_lookup(b->nexthop_table, b->nexthop_id, &b_key) != ERRCODE_SUCCESS ||
+        isis_nexthop_get_value(a->nexthop_table, a->nexthop_id, &a_value) != ERRCODE_SUCCESS ||
+        isis_nexthop_get_value(b->nexthop_table, b->nexthop_id, &b_value) != ERRCODE_SUCCESS)
+    {
+        return 0;
+    }
+    return isis_nexthop_key_equal(&a_key, &b_key) && isis_nexthop_value_same(&a_value, &b_value);
 }
 
 static gint isis_route_path_cmp(gconstpointer a, gconstpointer b)
@@ -74,15 +209,25 @@ static gint isis_route_path_cmp(gconstpointer a, gconstpointer b)
     {
         return (pa->state.metric < pb->state.metric) ? -1 : 1;
     }
-    if (pa->state.out_ifindex != pb->state.out_ifindex)
+    uint32_t pa_oif = 0u;
+    uint32_t pb_oif = 0u;
+    (void)isis_route_state_get_out_ifindex(&pa->state, &pa_oif);
+    (void)isis_route_state_get_out_ifindex(&pb->state, &pb_oif);
+    if (pa_oif != pb_oif)
     {
-        return (pa->state.out_ifindex < pb->state.out_ifindex) ? -1 : 1;
+        return (pa_oif < pb_oif) ? -1 : 1;
     }
 
     char pa_nh[64] = {0};
     char pb_nh[64] = {0};
-    isis_route_addr_key_str(&pa->state.nexthop_addr, pa_nh, sizeof(pa_nh));
-    isis_route_addr_key_str(&pb->state.nexthop_addr, pb_nh, sizeof(pb_nh));
+    net_addr_t pa_nh_addr;
+    net_addr_t pb_nh_addr;
+    isis_route_addr_key_str((isis_route_state_get_nexthop(&pa->state, &pa_nh_addr) == ERRCODE_SUCCESS) ? &pa_nh_addr
+                                                                                                       : NULL,
+                            pa_nh, sizeof(pa_nh));
+    isis_route_addr_key_str((isis_route_state_get_nexthop(&pb->state, &pb_nh_addr) == ERRCODE_SUCCESS) ? &pb_nh_addr
+                                                                                                       : NULL,
+                            pb_nh, sizeof(pb_nh));
     int nh_cmp = strcmp(pa_nh, pb_nh);
     if (nh_cmp != 0)
     {
@@ -150,9 +295,16 @@ void isis_route_path_key_format(char *buf, size_t sz, const char *route_key, con
 
     char nh[64] = {0};
     char src[64] = {0};
-    isis_route_addr_key_str(state ? &state->nexthop_addr : NULL, nh, sizeof(nh));
+    net_addr_t nexthop;
+    uint32_t out_ifindex = 0u;
+    isis_route_addr_key_str(
+        (state && isis_route_state_get_nexthop(state, &nexthop) == ERRCODE_SUCCESS) ? &nexthop : NULL, nh, sizeof(nh));
+    if (state)
+    {
+        (void)isis_route_state_get_out_ifindex(state, &out_ifindex);
+    }
     isis_route_addr_key_str(state ? &state->source_addr : NULL, src, sizeof(src));
-    g_snprintf(buf, sz, "%s|oif=%u|nh=%s|src=%s", route_key ? route_key : "", state ? state->out_ifindex : 0u, nh, src);
+    g_snprintf(buf, sz, "%s|oif=%u|nh=%s|src=%s", route_key ? route_key : "", out_ifindex, nh, src);
 }
 
 static isis_route_head_t *isis_route_head_create(const char *route_key)
@@ -217,7 +369,13 @@ void isis_route_head_table_add_path(GHashTable *head_table, const char *route_ke
     isis_route_path_t *path = isis_route_head_lookup_path_mut(head, path_key);
     if (path)
     {
-        path->state = *state;
+        isis_route_state_t next_state;
+        if (isis_route_state_copy(&next_state, state) != ERRCODE_SUCCESS)
+        {
+            return;
+        }
+        isis_route_state_reset(&path->state);
+        path->state = next_state;
         isis_route_head_resort(head);
         return;
     }
@@ -235,7 +393,11 @@ void isis_route_head_table_add_path(GHashTable *head_table, const char *route_ke
         g_free(path);
         return;
     }
-    path->state = *state;
+    if (isis_route_state_copy(&path->state, state) != ERRCODE_SUCCESS)
+    {
+        isis_route_path_free(path);
+        return;
+    }
 
     head->path_list = g_list_append(head->path_list, path);
     head->path_count++;
@@ -285,7 +447,11 @@ static isis_route_head_t *isis_route_head_clone(const isis_route_head_t *src)
             g_free(dst_path);
             continue;
         }
-        dst_path->state = src_path->state;
+        if (isis_route_state_copy(&dst_path->state, &src_path->state) != ERRCODE_SUCCESS)
+        {
+            isis_route_path_free(dst_path);
+            continue;
+        }
 
         dst->path_list = g_list_append(dst->path_list, dst_path);
         dst->path_count++;
@@ -327,7 +493,11 @@ static GHashTable *isis_route_build_best_table(const GHashTable *head_table)
         {
             continue;
         }
-        *copy = best_path->state;
+        if (isis_route_state_copy(copy, &best_path->state) != ERRCODE_SUCCESS)
+        {
+            g_free(copy);
+            continue;
+        }
         g_hash_table_replace(best, g_strdup(route_key), copy);
     }
 

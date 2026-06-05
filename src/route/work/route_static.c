@@ -1,8 +1,15 @@
 /**
  * @file   route_static.c
- * @brief  静态路由候选表：存储配置的静态路由，仅在 nexthop 迭代可达时才写入 RIB
+ * @brief  静态路由候选表：按「下一跳」分组的全局静态 nexthop 哈希 + 仅引用 nexthop_id 的路由表
  * @author jhb
  * @date   2026-03-21
+ *
+ * 设计（与 RIB 路由的 nexthop 对象统一）：
+ * - 全局静态 nexthop 哈希 g_static_nh_table：键 = route_nhobj_key_t（与 RIB 路由一致），
+ *   值 = route_static_nh_t（复用 route_nhobj_info_t 承载 key+relay；本地维护，不每次查 route_nhobj）。
+ *   建组时 route_nhobj_acquire 申请一个 nexthop_id、注册一次 relay 迭代；多前缀共享之。
+ * - 路由候选表 g_static_route_table：键 = 前缀 + nexthop_id（路由只看到 nexthop id）。
+ * - 迭代/可达性按「下一跳（组）」驱动：on_nh_change 定位组后整组更新其全部前缀。
  */
 #include "route_static.h"
 
@@ -10,46 +17,68 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "errcode.h"
+#include "fib.h"
 #include "if.h"
 #include "log.h"
 #include "net_addr.h"
 #include "route.h"
 #include "route_calc.h"
 #include "route_main.h"
+#include "route_nhobj.h"
 #include "route_pub.h"
 #include "route_relay.h"
 #include "route_rib.h"
 #include "route_worker.h"
 
-/* 候选静态路由哈希表：route_static_entry_key_t* -> route_static_entry_t*（key 内嵌于 value） */
-static GHashTable *g_static_table = NULL;
+/* 全局静态 nexthop 哈希：route_nhobj_key_t*(&nh->key) -> route_static_nh_t* */
+static GHashTable *g_static_nh_table = NULL;
+/* 按 id 反查：nexthop_id -> route_static_nh_t*（借用，不拥有） */
+static GHashTable *g_static_nh_by_id = NULL;
+/* 路由候选表：route_static_entry_key_t*(&entry->key) -> route_static_entry_t* */
+static GHashTable *g_static_route_table = NULL;
 
 // ============================================================================
 // 哈希 / 相等函数
 // ============================================================================
 
-static guint static_key_hash(gconstpointer p)
+static guint static_nh_key_hash(gconstpointer p)
+{
+    const route_nhobj_key_t *k = (const route_nhobj_key_t *)p;
+    if (!k)
+    {
+        return 0;
+    }
+    guint h = (guint)k->vrf_id;
+    h = h * 33u + (guint)k->protocol;
+    h = h * 33u + (guint)k->afi;
+    h = h * 33u + (guint)k->nh_type;
+    h = h * 33u + (guint)k->key_ifindex;
+    h ^= net_addr_hash(&k->nexthop);
+    return h;
+}
+
+static gboolean static_nh_key_equal(gconstpointer a, gconstpointer b)
+{
+    return route_nhobj_key_equal((const route_nhobj_key_t *)a, (const route_nhobj_key_t *)b) ? TRUE : FALSE;
+}
+
+static guint static_rkey_hash(gconstpointer p)
 {
     const route_static_entry_key_t *k = (const route_static_entry_key_t *)p;
     if (!k)
     {
         return 0;
     }
-
     guint h = (guint)k->vrf_id;
     h = h * 33u + (guint)k->afi;
     h = h * 33u + (guint)k->prefix_len;
+    h = h * 33u + (guint)k->nexthop_id;
     h ^= net_addr_hash(&k->prefix_addr);
-    h ^= net_addr_hash(&k->nexthop_addr) * 31u;
-    /* out_ifname 参与 hash */
-    for (const char *c = k->out_ifname; *c; c++)
-    {
-        h = h * 33u + (guint)(unsigned char)*c;
-    }
     return h;
 }
 
-static gboolean static_key_equal(gconstpointer a, gconstpointer b)
+static gboolean static_rkey_equal(gconstpointer a, gconstpointer b)
 {
     const route_static_entry_key_t *ka = (const route_static_entry_key_t *)a;
     const route_static_entry_key_t *kb = (const route_static_entry_key_t *)b;
@@ -57,10 +86,8 @@ static gboolean static_key_equal(gconstpointer a, gconstpointer b)
     {
         return FALSE;
     }
-
     return ka->vrf_id == kb->vrf_id && ka->afi == kb->afi && ka->prefix_len == kb->prefix_len &&
-           net_addr_equal(&ka->prefix_addr, &kb->prefix_addr) && net_addr_equal(&ka->nexthop_addr, &kb->nexthop_addr) &&
-           strcmp(ka->out_ifname, kb->out_ifname) == 0;
+           ka->nexthop_id == kb->nexthop_id && net_addr_equal(&ka->prefix_addr, &kb->prefix_addr);
 }
 
 // ============================================================================
@@ -74,10 +101,8 @@ static void on_static_rib_del(const route_head_t *head, const route_path_t *path
     {
         return;
     }
-
     /* 触发优选重算：路径仍在 RIB 中，calc 跳过此路径选次优并同步 OS */
     route_calc_on_path_del(head, path);
-
     route_pub_notify(g_route_work_local->subscribers, head, path, 1);
 }
 
@@ -87,109 +112,41 @@ static void on_static_rib_del(const route_head_t *head, const route_path_t *path
 
 void route_static_init(void)
 {
-    if (g_static_table)
+    if (!g_static_nh_table)
     {
-        return;
+        g_static_nh_table = g_hash_table_new_full(static_nh_key_hash, static_nh_key_equal, NULL, g_free);
     }
-    g_static_table = g_hash_table_new_full(static_key_hash, static_key_equal, NULL, g_free);
+    if (!g_static_nh_by_id)
+    {
+        g_static_nh_by_id = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, NULL);
+    }
+    if (!g_static_route_table)
+    {
+        g_static_route_table = g_hash_table_new_full(static_rkey_hash, static_rkey_equal, NULL, g_free);
+    }
 }
 
 void route_static_cleanup(void)
 {
-    if (!g_static_table)
+    if (g_static_route_table)
     {
-        return;
+        g_hash_table_destroy(g_static_route_table);
+        g_static_route_table = NULL;
     }
-    g_hash_table_destroy(g_static_table);
-    g_static_table = NULL;
+    if (g_static_nh_by_id)
+    {
+        g_hash_table_destroy(g_static_nh_by_id);
+        g_static_nh_by_id = NULL;
+    }
+    if (g_static_nh_table)
+    {
+        g_hash_table_destroy(g_static_nh_table);
+        g_static_nh_table = NULL;
+    }
 }
 
 // ============================================================================
-// show route static
-// ============================================================================
-
-typedef struct
-{
-    GString *buf;
-    uint16_t afi_filter;
-    int has_afi_filter;
-    uint32_t vrf_filter;
-    uint32_t count;
-} static_show_ctx_t;
-
-static void static_show_cb(gpointer key_ptr, gpointer value_ptr, gpointer user_data)
-{
-    (void)key_ptr;
-    const route_static_entry_t *entry = (const route_static_entry_t *)value_ptr;
-    static_show_ctx_t *ctx = (static_show_ctx_t *)user_data;
-    if (!entry || !ctx)
-    {
-        return;
-    }
-
-    /* 按 AFI 过滤 */
-    if (ctx->has_afi_filter && entry->key.afi != ctx->afi_filter)
-    {
-        return;
-    }
-    if (entry->key.vrf_id != ctx->vrf_filter)
-    {
-        return;
-    }
-
-    char prefix_str[64];
-    char nh_str[64];
-    char prefix_with_len[80];
-
-    net_addr_to_str(&entry->key.prefix_addr, prefix_str, sizeof(prefix_str));
-    net_addr_to_str(&entry->key.nexthop_addr, nh_str, sizeof(nh_str));
-    snprintf(prefix_with_len, sizeof(prefix_with_len), "%s/%u", prefix_str, (unsigned)entry->key.prefix_len);
-
-    const char *afi_str = (entry->key.afi == ROUTE_AFI_IPV4) ? "ipv4" : "ipv6";
-    const char *resolved_str = entry->nh_resolved ? "yes" : "no ";
-    const char *in_rib_str = entry->in_rib ? "yes" : "no ";
-    const char *ifname = entry->key.out_ifname[0] ? entry->key.out_ifname : "-";
-
-    g_string_append_printf(ctx->buf, "%-4s %-24s %-20s %-10s %4d %4d  %-8s  %s\r\n", afi_str, prefix_with_len, nh_str,
-                           ifname, entry->metric, entry->preference, resolved_str, in_rib_str);
-    ctx->count++;
-}
-
-void route_static_show(GString *buf, uint16_t afi_filter, int has_afi_filter, uint32_t vrf_filter, const char *vrf_name)
-{
-    if (!buf)
-    {
-        return;
-    }
-
-    g_string_append_printf(buf, "\r\nStatic Routes (VRF: %s)\r\n", vrf_name ? vrf_name : "public");
-    g_string_append_printf(
-        buf,
-        "\r\n%-4s %-24s %-20s %-10s %4s %4s  %-8s  %s\r\n"
-        "---- ------------------------ -------------------- ---------- ---- ----  --------  ------\r\n",
-        "AFI", "Prefix", "Nexthop", "Interface", "Met", "Pref", "Resolved", "InRIB");
-
-    if (!g_static_table || g_hash_table_size(g_static_table) == 0)
-    {
-        g_string_append(buf, "  (no entries)\r\n");
-        g_string_append(buf, "\r\nTotal 0 static route(s)\r\n");
-        return;
-    }
-
-    static_show_ctx_t ctx = {
-        .buf = buf,
-        .afi_filter = afi_filter,
-        .has_afi_filter = has_afi_filter,
-        .vrf_filter = vrf_filter,
-        .count = 0,
-    };
-    g_hash_table_foreach(g_static_table, static_show_cb, &ctx);
-
-    g_string_append_printf(buf, "\r\nTotal %u static route(s) in candidate table\r\n", ctx.count);
-}
-
-// ============================================================================
-// 辅助：接口名 → ifindex 解析
+// 辅助：接口名 → ifindex / 直连可达性 / ifindex 编码
 // ============================================================================
 
 static uint32_t resolve_ifindex(const char *ifname)
@@ -200,10 +157,6 @@ static uint32_t resolve_ifindex(const char *ifname)
     }
     return if_api_cache_get_ifindex(ifname);
 }
-
-// ============================================================================
-// 辅助：检查 RIB 中是否有指定 ifindex 的已安装 CONNECTED 路由
-// ============================================================================
 
 typedef struct
 {
@@ -219,7 +172,6 @@ static void connected_check_cb(const route_head_t *head, const route_path_t *pat
     {
         return;
     }
-    /* 按 AFI 过滤（walk 只按协议和 VRF 过滤） */
     if (head->key.afi != ctx->afi)
     {
         return;
@@ -241,14 +193,256 @@ static int rib_has_active_connected(uint32_t vrf_id, uint16_t afi, uint32_t ifin
     return ctx.found;
 }
 
-/**
- * @brief 将 ifindex 编码为 net_addr_t（用于 interface-only 路由的 RIB path source）
- */
 static void encode_ifindex_as_addr(uint32_t ifindex, net_addr_t *out)
 {
     memset(out, 0, sizeof(*out));
     out->family = AF_INET;
     out->u.v4.s_addr = htonl(ifindex);
+}
+
+static void zero_addr_with_family(net_addr_t *out, uint16_t afi)
+{
+    memset(out, 0, sizeof(*out));
+    out->family = (afi == ROUTE_AFI_IPV6) ? AF_INET6 : AF_INET;
+}
+
+// ============================================================================
+// nexthop 组：键构造 / 解析 / 增删
+// ============================================================================
+
+static void build_nh_key(route_nhobj_key_t *key, uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop,
+                         uint32_t cfg_ifindex, int is_null0)
+{
+    memset(key, 0, sizeof(*key));
+    key->vrf_id = vrf_id;
+    key->afi = afi;
+    key->protocol = is_null0 ? ROUTE_PROTOCOL_BLACKHOLE : ROUTE_PROTOCOL_STATIC;
+    key->nh_type = is_null0 ? FIB_NH_TYPE_BLACKHOLE : FIB_NH_TYPE_IP;
+    key->key_ifindex = cfg_ifindex;
+    key->nexthop = *nexthop; /* has_nexthop=真实地址；否则 zero-with-family（由调用方构造） */
+}
+
+/* 把组本地维护的 relay 结果同步写进 nexthop 对象（FIB 侧 value），供 id 注入后下发 OS。
+ * relay 是「两步都用的 value」：static 组与 nexthop 对象各维护一份。 */
+static void nh_set_object_relay(const route_static_nh_t *nh)
+{
+    if (nh->is_null0)
+    {
+        return; /* 黑洞无 relay */
+    }
+    const net_addr_t *gw = nh->has_nexthop ? &nh->relay_addr : NULL; /* interface-only 无网关 */
+    route_nhobj_set_relay(nh->nexthop_id, gw, nh->relay_ifindex);
+}
+
+/* 组首次创建时解析可达性 + 注册一次 relay 迭代（has_nexthop 才注册） */
+static void nh_resolve_initial(route_static_nh_t *nh)
+{
+    uint32_t vrf_id = nh->key.vrf_id;
+    uint16_t afi = nh->key.afi;
+
+    if (nh->is_null0)
+    {
+        nh->resolved = 1u; /* null0 黑洞配置即生效 */
+        return;
+    }
+    if (!nh->has_nexthop)
+    {
+        /* interface-only：基于直连路由判断 */
+        uint32_t oif = nh->key.key_ifindex;
+        nh->resolved = ((oif != 0) && rib_has_active_connected(vrf_id, afi, oif)) ? 1u : 0u;
+        nh->relay_ifindex = oif;
+        nh_set_object_relay(nh);
+        return;
+    }
+
+    /* IP nexthop：注册迭代并取首解析结果 */
+    net_addr_t relay;
+    uint32_t oif = 0;
+    memset(&relay, 0, sizeof(relay));
+    int resolved = route_relay_register_direct(nh->nexthop_id, DEV_MODULE_ID_ROUTE, &relay, &oif);
+    /* nexthop+interface：relay 解析出接口须与配置接口一致 */
+    if (resolved && nh->key.key_ifindex != 0 && oif != nh->key.key_ifindex)
+    {
+        resolved = 0;
+    }
+    nh->resolved = resolved ? 1u : 0u;
+    if (resolved)
+    {
+        nh->relay_addr = relay;
+        nh->relay_ifindex = oif;
+        nh_set_object_relay(nh);
+    }
+}
+
+static route_static_nh_t *nh_get_or_create(const route_nhobj_key_t *key, int has_nexthop, int is_null0,
+                                           const char *ifname)
+{
+    route_static_nh_t *nh = (route_static_nh_t *)g_hash_table_lookup(g_static_nh_table, key);
+    if (nh)
+    {
+        return nh;
+    }
+
+    uint32_t id = 0;
+    if (route_nhobj_acquire(key, 0u, &id) != ERRCODE_SUCCESS || id == 0)
+    {
+        return NULL;
+    }
+
+    nh = (route_static_nh_t *)g_malloc0(sizeof(*nh));
+    if (!nh)
+    {
+        route_nhobj_release(id);
+        return NULL;
+    }
+    nh->key = *key;
+    nh->nexthop_id = id;
+    nh->refcount = 0u;
+    nh->has_nexthop = has_nexthop ? 1u : 0u;
+    nh->is_null0 = is_null0 ? 1u : 0u;
+    nh->resolved = 0u;
+    g_strlcpy(nh->out_ifname, ifname ? ifname : "", sizeof(nh->out_ifname));
+
+    g_hash_table_insert(g_static_nh_table, &nh->key, nh);
+    g_hash_table_insert(g_static_nh_by_id, GUINT_TO_POINTER(id), nh);
+
+    nh_resolve_initial(nh);
+    return nh;
+}
+
+static void nh_unref(route_static_nh_t *nh)
+{
+    if (!nh)
+    {
+        return;
+    }
+    if (nh->refcount > 1u)
+    {
+        nh->refcount--;
+        return;
+    }
+    nh->refcount = 0u;
+
+    if (nh->has_nexthop)
+    {
+        route_relay_unregister_direct(nh->nexthop_id, DEV_MODULE_ID_ROUTE);
+    }
+    route_nhobj_release(nh->nexthop_id);
+    g_hash_table_remove(g_static_nh_by_id, GUINT_TO_POINTER(nh->nexthop_id));
+    g_hash_table_remove(g_static_nh_table, &nh->key); /* GDestroyNotify 释放 nh */
+}
+
+// ============================================================================
+// RIB 写入 / 撤销（按组的模式统一推导参数）
+// ============================================================================
+
+static void nh_rib_params(const route_static_nh_t *nh, net_addr_t *source, net_addr_t *nexthop,
+                          const net_addr_t **relay, uint32_t *relay_oif, uint32_t *out_ifindex, uint32_t *protocol)
+{
+    net_addr_t zero;
+    zero_addr_with_family(&zero, nh->key.afi);
+
+    if (nh->is_null0)
+    {
+        *protocol = ROUTE_PROTOCOL_BLACKHOLE;
+        *source = zero;
+        *nexthop = zero;
+        *relay = NULL;
+        *relay_oif = 0u;
+        *out_ifindex = 0u;
+    }
+    else if (!nh->has_nexthop)
+    {
+        /* interface-only：source 用 ifindex 编码，nexthop 全零 */
+        *protocol = ROUTE_PROTOCOL_STATIC;
+        encode_ifindex_as_addr(nh->key.key_ifindex, source);
+        *nexthop = zero;
+        *relay = NULL;
+        *relay_oif = nh->key.key_ifindex;
+        *out_ifindex = nh->key.key_ifindex;
+    }
+    else
+    {
+        *protocol = ROUTE_PROTOCOL_STATIC;
+        *source = nh->key.nexthop;
+        *nexthop = nh->key.nexthop;
+        *relay = &nh->relay_addr;
+        *relay_oif = nh->relay_ifindex;
+        *out_ifindex = nh->key.key_ifindex;
+    }
+}
+
+/* 按组当前可达性写入或暂存某前缀：写入时只下发 nexthop_id（relay 已在对象里） */
+static void route_apply(route_static_entry_t *entry, route_static_nh_t *nh)
+{
+    net_addr_t source;
+    net_addr_t nexthop;
+    const net_addr_t *relay = NULL;
+    uint32_t relay_oif = 0u;
+    uint32_t out_ifindex = 0u;
+    uint32_t protocol = ROUTE_PROTOCOL_STATIC;
+    nh_rib_params(nh, &source, &nexthop, &relay, &relay_oif, &out_ifindex, &protocol);
+
+    if (nh->resolved)
+    {
+        int ret = route_add_and_notify_nexthop_id(entry->key.vrf_id, entry->key.afi, &entry->key.prefix_addr,
+                                                  entry->key.prefix_len, protocol, &source, nh->nexthop_id,
+                                                  entry->metric, entry->preference, out_ifindex);
+        if (ret >= 0)
+        {
+            entry->in_rib = 1u;
+        }
+    }
+    else if (entry->in_rib)
+    {
+        route_rib_del(g_route_work_local->rib, entry->key.vrf_id, entry->key.afi, &entry->key.prefix_addr,
+                      entry->key.prefix_len, protocol, &source, on_static_rib_del, NULL);
+        entry->in_rib = 0u;
+    }
+}
+
+/* 撤销某前缀（删除场景） */
+static void route_withdraw(route_static_entry_t *entry, route_static_nh_t *nh)
+{
+    if (!entry->in_rib)
+    {
+        return;
+    }
+    net_addr_t source;
+    net_addr_t nexthop;
+    const net_addr_t *relay = NULL;
+    uint32_t relay_oif = 0u;
+    uint32_t out_ifindex = 0u;
+    uint32_t protocol = ROUTE_PROTOCOL_STATIC;
+    nh_rib_params(nh, &source, &nexthop, &relay, &relay_oif, &out_ifindex, &protocol);
+
+    route_rib_del(g_route_work_local->rib, entry->key.vrf_id, entry->key.afi, &entry->key.prefix_addr,
+                  entry->key.prefix_len, protocol, &source, on_static_rib_del, NULL);
+    entry->in_rib = 0u;
+}
+
+typedef struct
+{
+    uint32_t nexthop_id;
+    route_static_nh_t *nh;
+} apply_nh_ctx_t;
+
+static void apply_routes_of_nh_cb(gpointer key_ptr, gpointer value_ptr, gpointer user_data)
+{
+    (void)key_ptr;
+    route_static_entry_t *entry = (route_static_entry_t *)value_ptr;
+    apply_nh_ctx_t *ctx = (apply_nh_ctx_t *)user_data;
+    if (entry->key.nexthop_id == ctx->nexthop_id)
+    {
+        route_apply(entry, ctx->nh);
+    }
+}
+
+/* 整组重应用所有引用该 nexthop 的前缀 */
+static void apply_routes_of_nh(route_static_nh_t *nh)
+{
+    apply_nh_ctx_t ctx = {.nexthop_id = nh->nexthop_id, .nh = nh};
+    g_hash_table_foreach(g_static_route_table, apply_routes_of_nh_cb, &ctx);
 }
 
 // ============================================================================
@@ -258,250 +452,131 @@ static void encode_ifindex_as_addr(uint32_t ifindex, net_addr_t *out)
 int route_static_add(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr, uint8_t prefix_len,
                      const net_addr_t *nexthop_addr, int32_t metric, int32_t preference, const char *out_ifname)
 {
-    if (!prefix_addr || !nexthop_addr || !g_static_table || !g_route_work_local)
+    if (!prefix_addr || !nexthop_addr || !g_static_nh_table || !g_route_work_local)
     {
         return -1;
     }
 
     const char *safe_ifname = (out_ifname && out_ifname[0]) ? out_ifname : "";
     int has_nh = !net_addr_is_zero(nexthop_addr);
+    int is_null0 = (!has_nh && g_ascii_strcasecmp(safe_ifname, "null0") == 0);
 
-    /* 构造查找键 */
-    route_static_entry_key_t key;
-    memset(&key, 0, sizeof(key));
-    key.vrf_id = vrf_id;
-    key.afi = afi;
-    key.prefix_len = prefix_len;
-    key.prefix_addr = *prefix_addr;
-    key.nexthop_addr = *nexthop_addr;
-    g_strlcpy(key.out_ifname, safe_ifname, sizeof(key.out_ifname));
-
-    /* 查找已有条目（upsert） */
-    route_static_entry_t *entry = (route_static_entry_t *)g_hash_table_lookup(g_static_table, &key);
-    gboolean is_new = (entry == NULL);
-
-    if (is_new)
+    /* 配置/身份出接口：纯 nexthop=0；nexthop+interface / interface-only = 解析 ifname；null0=0 */
+    uint32_t cfg_ifindex = 0u;
+    if (!is_null0 && safe_ifname[0] != '\0')
     {
-        entry = (route_static_entry_t *)g_malloc0(sizeof(route_static_entry_t));
-        if (!entry)
-        {
-            return -1;
-        }
-        entry->key = key;
-        entry->has_nexthop = has_nh ? 1u : 0u;
-        g_hash_table_insert(g_static_table, &entry->key, entry);
+        cfg_ifindex = resolve_ifindex(safe_ifname);
     }
 
-    /* 更新属性 */
-    entry->metric = metric;
-    entry->preference = preference;
-
+    /* 下一跳身份键（与 RIB 路由一致） */
+    net_addr_t nh_for_key;
     if (has_nh)
     {
-        /* 模式 A（nexthop + interface）或纯 nexthop：复用 relay 迭代 */
-        net_addr_t relay_addr;
-        uint32_t oif = 0;
-        memset(&relay_addr, 0, sizeof(relay_addr));
-        int resolved = route_relay_register_direct(vrf_id, afi, nexthop_addr, DEV_MODULE_ID_ROUTE, &relay_addr, &oif);
-
-        /* 模式 A：若指定了接口，校验 relay 解析出的 ifindex 是否匹配 */
-        if (resolved && safe_ifname[0] != '\0')
-        {
-            uint32_t cfg_ifidx = resolve_ifindex(safe_ifname);
-            entry->cfg_ifindex = cfg_ifidx;
-            if (cfg_ifidx != 0 && oif != cfg_ifidx)
-            {
-                resolved = 0; /* ifindex 不匹配 → 视为不可达 */
-            }
-        }
-
-        entry->nh_resolved = resolved ? 1u : 0u;
-
-        if (resolved)
-        {
-            int ret = route_add_and_notify(vrf_id, afi, prefix_addr, prefix_len, ROUTE_PROTOCOL_STATIC, nexthop_addr,
-                                           nexthop_addr, &relay_addr, metric, preference, oif);
-            if (ret >= 0)
-            {
-                entry->in_rib = 1u;
-                LOG_DEBUG("Static route written to RIB: vrf=%u afi=%u pfxlen=%u (nexthop resolved)", vrf_id, afi,
-                          prefix_len);
-            }
-        }
-        else
-        {
-            if (entry->in_rib)
-            {
-                route_rib_del(g_route_work_local->rib, vrf_id, afi, prefix_addr, prefix_len, ROUTE_PROTOCOL_STATIC,
-                              nexthop_addr, on_static_rib_del, NULL);
-                entry->in_rib = 0u;
-            }
-            LOG_DEBUG("Static route held in candidate table (nexthop unresolved): vrf=%u afi=%u pfxlen=%u", vrf_id, afi,
-                      prefix_len);
-        }
+        nh_for_key = *nexthop_addr;
     }
     else
     {
-        /* interface-only 路由 */
-        if (g_ascii_strcasecmp(safe_ifname, "null0") == 0)
-        {
-            /* 模式 C：null0 黑洞路由，配置即生效 */
-            net_addr_t zero_src;
-            memset(&zero_src, 0, sizeof(zero_src));
-            zero_src.family = (afi == ROUTE_AFI_IPV6) ? AF_INET6 : AF_INET;
-            net_addr_t zero_nh = zero_src;
+        zero_addr_with_family(&nh_for_key, afi);
+    }
+    route_nhobj_key_t key;
+    build_nh_key(&key, vrf_id, afi, &nh_for_key, cfg_ifindex, is_null0);
 
-            int ret = route_add_and_notify(vrf_id, afi, prefix_addr, prefix_len, ROUTE_PROTOCOL_BLACKHOLE, &zero_src,
-                                           &zero_nh, NULL, metric, preference, 0);
-            if (ret >= 0)
-            {
-                entry->in_rib = 1u;
-                entry->nh_resolved = 1u;
-                LOG_DEBUG("null0 blackhole route written to RIB: vrf=%u afi=%u pfxlen=%u", vrf_id, afi, prefix_len);
-            }
-        }
-        else
-        {
-            /* 模式 B：普通接口，检查 RIB 中是否有活跃 CONNECTED 路由 */
-            uint32_t cfg_ifidx = resolve_ifindex(safe_ifname);
-            entry->cfg_ifindex = cfg_ifidx;
-
-            int reachable = (cfg_ifidx != 0) && rib_has_active_connected(vrf_id, afi, cfg_ifidx);
-            entry->nh_resolved = reachable ? 1u : 0u;
-
-            if (reachable)
-            {
-                net_addr_t source_addr;
-                encode_ifindex_as_addr(cfg_ifidx, &source_addr);
-                net_addr_t zero_nh;
-                memset(&zero_nh, 0, sizeof(zero_nh));
-                zero_nh.family = (afi == ROUTE_AFI_IPV6) ? AF_INET6 : AF_INET;
-
-                int ret = route_add_and_notify(vrf_id, afi, prefix_addr, prefix_len, ROUTE_PROTOCOL_STATIC,
-                                               &source_addr, &zero_nh, NULL, metric, preference, cfg_ifidx);
-                if (ret >= 0)
-                {
-                    entry->in_rib = 1u;
-                    LOG_DEBUG("Interface-only static route written to RIB: vrf=%u afi=%u pfxlen=%u ifname=%s", vrf_id,
-                              afi, prefix_len, safe_ifname);
-                }
-            }
-            else
-            {
-                if (entry->in_rib)
-                {
-                    net_addr_t source_addr;
-                    encode_ifindex_as_addr(entry->cfg_ifindex, &source_addr);
-                    route_rib_del(g_route_work_local->rib, vrf_id, afi, prefix_addr, prefix_len, ROUTE_PROTOCOL_STATIC,
-                                  &source_addr, on_static_rib_del, NULL);
-                    entry->in_rib = 0u;
-                }
-                LOG_DEBUG("Interface-only static route held in candidate table (if=%s): vrf=%u afi=%u pfxlen=%u",
-                          safe_ifname, vrf_id, afi, prefix_len);
-            }
-        }
+    route_static_nh_t *nh = nh_get_or_create(&key, has_nh, is_null0, safe_ifname);
+    if (!nh)
+    {
+        return -1;
     }
 
+    /* 路由条目（前缀 + nexthop_id），upsert */
+    route_static_entry_key_t ekey;
+    memset(&ekey, 0, sizeof(ekey));
+    ekey.vrf_id = vrf_id;
+    ekey.afi = afi;
+    ekey.prefix_len = prefix_len;
+    ekey.prefix_addr = *prefix_addr;
+    ekey.nexthop_id = nh->nexthop_id;
+
+    route_static_entry_t *entry = (route_static_entry_t *)g_hash_table_lookup(g_static_route_table, &ekey);
+    if (!entry)
+    {
+        entry = (route_static_entry_t *)g_malloc0(sizeof(*entry));
+        if (!entry)
+        {
+            nh_unref(nh); /* 撤回本次可能新建的组 */
+            return -1;
+        }
+        entry->key = ekey;
+        g_hash_table_insert(g_static_route_table, &entry->key, entry);
+        nh->refcount++;
+    }
+    entry->metric = metric;
+    entry->preference = preference;
+
+    route_apply(entry, nh);
     return 0;
 }
 
 // ============================================================================
-// 删除候选静态路由（精确匹配 prefix + nexthop）
+// 删除候选静态路由（精确匹配 prefix + nexthop[+ifname]）
 // ============================================================================
-
-/**
- * @brief 检查候选表中是否还有其他条目（不含 exclude_key 自身）使用相同的 (vrf, afi, nexthop)
- */
-static int static_nexthop_has_users(uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop_addr)
-{
-    if (!g_static_table)
-    {
-        return 0;
-    }
-    GHashTableIter iter;
-    gpointer value;
-    g_hash_table_iter_init(&iter, g_static_table);
-    while (g_hash_table_iter_next(&iter, NULL, &value))
-    {
-        const route_static_entry_t *e = (const route_static_entry_t *)value;
-        if (e->key.vrf_id == vrf_id && e->key.afi == afi && net_addr_equal(&e->key.nexthop_addr, nexthop_addr))
-        {
-            return 1;
-        }
-    }
-    return 0;
-}
 
 int route_static_del(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr, uint8_t prefix_len,
                      const net_addr_t *nexthop_addr, const char *out_ifname)
 {
-    if (!prefix_addr || !nexthop_addr || !g_static_table || !g_route_work_local)
+    if (!prefix_addr || !nexthop_addr || !g_static_nh_table || !g_route_work_local)
     {
         return -1;
     }
 
     const char *safe_ifname = (out_ifname && out_ifname[0]) ? out_ifname : "";
+    int has_nh = !net_addr_is_zero(nexthop_addr);
+    int is_null0 = (!has_nh && g_ascii_strcasecmp(safe_ifname, "null0") == 0);
+    uint32_t cfg_ifindex = 0u;
+    if (!is_null0 && safe_ifname[0] != '\0')
+    {
+        cfg_ifindex = resolve_ifindex(safe_ifname);
+    }
 
-    route_static_entry_key_t key;
-    memset(&key, 0, sizeof(key));
-    key.vrf_id = vrf_id;
-    key.afi = afi;
-    key.prefix_len = prefix_len;
-    key.prefix_addr = *prefix_addr;
-    key.nexthop_addr = *nexthop_addr;
-    g_strlcpy(key.out_ifname, safe_ifname, sizeof(key.out_ifname));
+    net_addr_t nh_for_key;
+    if (has_nh)
+    {
+        nh_for_key = *nexthop_addr;
+    }
+    else
+    {
+        zero_addr_with_family(&nh_for_key, afi);
+    }
+    route_nhobj_key_t key;
+    build_nh_key(&key, vrf_id, afi, &nh_for_key, cfg_ifindex, is_null0);
 
-    route_static_entry_t *entry = (route_static_entry_t *)g_hash_table_lookup(g_static_table, &key);
+    route_static_nh_t *nh = (route_static_nh_t *)g_hash_table_lookup(g_static_nh_table, &key);
+    if (!nh)
+    {
+        return 0;
+    }
+
+    route_static_entry_key_t ekey;
+    memset(&ekey, 0, sizeof(ekey));
+    ekey.vrf_id = vrf_id;
+    ekey.afi = afi;
+    ekey.prefix_len = prefix_len;
+    ekey.prefix_addr = *prefix_addr;
+    ekey.nexthop_id = nh->nexthop_id;
+
+    route_static_entry_t *entry = (route_static_entry_t *)g_hash_table_lookup(g_static_route_table, &ekey);
     if (!entry)
     {
         return 0;
     }
 
-    /* g_hash_table_remove() will free entry (value destroy func = g_free), cache fields needed afterwards. */
-    uint8_t had_nexthop = entry->has_nexthop;
-    net_addr_t del_nexthop = entry->key.nexthop_addr;
-
-    /* 确定 RIB 中的 source 地址 */
-    const net_addr_t *rib_source = nexthop_addr;
-    net_addr_t if_source;
-    int is_null0 = (!entry->has_nexthop && g_ascii_strcasecmp(safe_ifname, "null0") == 0);
-    if (!entry->has_nexthop && !is_null0)
-    {
-        /* interface-only：source 是 ifindex 编码 */
-        encode_ifindex_as_addr(entry->cfg_ifindex, &if_source);
-        rib_source = &if_source;
-    }
-    else if (is_null0)
-    {
-        /* null0 黑洞：source 是全零地址 */
-        net_addr_t zero_src;
-        memset(&zero_src, 0, sizeof(zero_src));
-        zero_src.family = (afi == ROUTE_AFI_IPV6) ? AF_INET6 : AF_INET;
-        if_source = zero_src;
-        rib_source = &if_source;
-    }
-
-    /* 若已在 RIB 中则先撤销并通知订阅者 */
-    if (entry->in_rib)
-    {
-        uint32_t protocol = is_null0 ? ROUTE_PROTOCOL_BLACKHOLE : ROUTE_PROTOCOL_STATIC;
-        route_rib_del(g_route_work_local->rib, vrf_id, afi, prefix_addr, prefix_len, protocol, rib_source,
-                      on_static_rib_del, NULL);
-    }
-
-    /* 从候选表移除；对有 nexthop 的路由判断是否还有其他引用者 */
-    g_hash_table_remove(g_static_table, &key);
-
-    if (had_nexthop && !static_nexthop_has_users(vrf_id, afi, &del_nexthop))
-    {
-        route_relay_unregister_direct(vrf_id, afi, &del_nexthop, DEV_MODULE_ID_ROUTE);
-    }
-
+    route_withdraw(entry, nh);
+    g_hash_table_remove(g_static_route_table, &ekey); /* 释放 entry */
+    nh_unref(nh);
     return 1;
 }
 
 // ============================================================================
-// 删除某前缀下所有候选静态路由
+// 批量删除：按前缀 / 按 VRF
 // ============================================================================
 
 typedef struct
@@ -509,300 +584,370 @@ typedef struct
     uint32_t vrf_id;
     uint16_t afi;
     uint8_t prefix_len;
-    uint8_t _pad;
+    int by_prefix; /* 1=按前缀匹配；0=按 VRF 匹配 */
     const net_addr_t *prefix_addr;
-    GSList *keys_to_remove;   /**< 待从候选表移除的键指针列表（指向 entry->key） */
-    GSList *nexthops_removed; /**< 被删除条目的 nexthop 拷贝列表（需在移除后检查是否孤立） */
-    int count;
-} static_del_prefix_ctx_t;
+    GSList *entries; /* 待删除的 entry 指针 */
+} static_collect_ctx_t;
 
-static void static_collect_for_prefix(gpointer key_ptr, gpointer value_ptr, gpointer user_data)
+static void static_collect_cb(gpointer key_ptr, gpointer value_ptr, gpointer user_data)
 {
     (void)key_ptr;
     route_static_entry_t *entry = (route_static_entry_t *)value_ptr;
-    static_del_prefix_ctx_t *pctx = (static_del_prefix_ctx_t *)user_data;
-    if (!entry || !pctx)
+    static_collect_ctx_t *ctx = (static_collect_ctx_t *)user_data;
+
+    if (entry->key.vrf_id != ctx->vrf_id)
     {
         return;
     }
-
-    if (entry->key.vrf_id != pctx->vrf_id || entry->key.afi != pctx->afi || entry->key.prefix_len != pctx->prefix_len ||
-        !net_addr_equal(&entry->key.prefix_addr, pctx->prefix_addr))
+    if (ctx->by_prefix)
     {
-        return;
+        if (entry->key.afi != ctx->afi || entry->key.prefix_len != ctx->prefix_len ||
+            !net_addr_equal(&entry->key.prefix_addr, ctx->prefix_addr))
+        {
+            return;
+        }
     }
+    ctx->entries = g_slist_prepend(ctx->entries, entry);
+}
 
-    /* 若已在 RIB 中则先撤销（在 foreach 中修改 rib 是安全的） */
-    if (entry->in_rib)
+static int static_del_collected(static_collect_ctx_t *ctx)
+{
+    int count = 0;
+    for (GSList *l = ctx->entries; l; l = l->next)
     {
-        route_rib_del(g_route_work_local->rib, entry->key.vrf_id, entry->key.afi, &entry->key.prefix_addr,
-                      entry->key.prefix_len, ROUTE_PROTOCOL_STATIC, &entry->key.nexthop_addr, on_static_rib_del, NULL);
+        route_static_entry_t *entry = (route_static_entry_t *)l->data;
+        route_static_nh_t *nh =
+            (route_static_nh_t *)g_hash_table_lookup(g_static_nh_by_id, GUINT_TO_POINTER(entry->key.nexthop_id));
+        if (nh)
+        {
+            route_withdraw(entry, nh);
+        }
+        route_static_entry_key_t ekey = entry->key;
+        g_hash_table_remove(g_static_route_table, &ekey); /* 释放 entry，之后不可再用 entry */
+        if (nh)
+        {
+            nh_unref(nh);
+        }
+        count++;
     }
-
-    /* 拷贝 nexthop 地址，用于移除后检查是否孤立 */
-    net_addr_t *nh_copy = (net_addr_t *)g_malloc(sizeof(net_addr_t));
-    if (nh_copy)
-    {
-        *nh_copy = entry->key.nexthop_addr;
-        pctx->nexthops_removed = g_slist_prepend(pctx->nexthops_removed, nh_copy);
-    }
-
-    /* 收集键用于后续从候选表中移除（不能在 foreach 中修改 g_static_table） */
-    pctx->keys_to_remove = g_slist_prepend(pctx->keys_to_remove, &entry->key);
-    pctx->count++;
+    g_slist_free(ctx->entries);
+    ctx->entries = NULL;
+    return count;
 }
 
 int route_static_del_prefix(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr, uint8_t prefix_len)
 {
-    if (!prefix_addr || !g_static_table || !g_route_work_local)
+    if (!prefix_addr || !g_static_route_table || !g_route_work_local)
     {
         return -1;
     }
-
-    static_del_prefix_ctx_t pctx;
-    memset(&pctx, 0, sizeof(pctx));
-    pctx.vrf_id = vrf_id;
-    pctx.afi = afi;
-    pctx.prefix_len = prefix_len;
-    pctx.prefix_addr = prefix_addr;
-
-    /* 第一轮：收集匹配条目并撤销 RIB */
-    g_hash_table_foreach(g_static_table, static_collect_for_prefix, &pctx);
-
-    /* 第二轮：从候选表移除 */
-    for (GSList *l = pctx.keys_to_remove; l; l = l->next)
-    {
-        g_hash_table_remove(g_static_table, l->data);
-    }
-    g_slist_free(pctx.keys_to_remove);
-
-    /* 第三轮：对已移除条目的 nexthop，若无其他引用则注销 relay watch */
-    for (GSList *l = pctx.nexthops_removed; l; l = l->next)
-    {
-        net_addr_t *nh = (net_addr_t *)l->data;
-        if (!static_nexthop_has_users(vrf_id, afi, nh))
-        {
-            route_relay_unregister_direct(vrf_id, afi, nh, DEV_MODULE_ID_ROUTE);
-        }
-        g_free(nh);
-    }
-    g_slist_free(pctx.nexthops_removed);
-
-    return pctx.count;
-}
-
-// ============================================================================
-// 按 VRF 删除：VRF 删除级联
-// ============================================================================
-
-typedef struct
-{
-    uint32_t vrf_id;
-    GSList *keys_to_remove;   /**< 待移除的 key 指针（指向 entry->key） */
-    GSList *nexthops_removed; /**< 已删除条目的 nexthop 拷贝（用于检查孤立） */
-    GSList *afis_for_nh;      /**< 与 nexthops_removed 同步的 afi 列表 */
-    int count;
-} static_del_vrf_ctx_t;
-
-static void static_collect_for_vrf(gpointer key_ptr, gpointer value_ptr, gpointer user_data)
-{
-    (void)key_ptr;
-    route_static_entry_t *entry = (route_static_entry_t *)value_ptr;
-    static_del_vrf_ctx_t *vctx = (static_del_vrf_ctx_t *)user_data;
-    if (!entry || !vctx)
-    {
-        return;
-    }
-
-    if (entry->key.vrf_id != vctx->vrf_id)
-    {
-        return;
-    }
-
-    /* 若已在 RIB 中：先撤销 */
-    if (entry->in_rib)
-    {
-        int is_null0 = (!entry->has_nexthop && g_ascii_strcasecmp(entry->key.out_ifname, "null0") == 0);
-        uint32_t protocol = is_null0 ? ROUTE_PROTOCOL_BLACKHOLE : ROUTE_PROTOCOL_STATIC;
-
-        net_addr_t if_source;
-        const net_addr_t *rib_source = &entry->key.nexthop_addr;
-        if (!entry->has_nexthop && !is_null0)
-        {
-            encode_ifindex_as_addr(entry->cfg_ifindex, &if_source);
-            rib_source = &if_source;
-        }
-        else if (is_null0)
-        {
-            memset(&if_source, 0, sizeof(if_source));
-            if_source.family = (entry->key.afi == ROUTE_AFI_IPV6) ? AF_INET6 : AF_INET;
-            rib_source = &if_source;
-        }
-
-        route_rib_del(g_route_work_local->rib, entry->key.vrf_id, entry->key.afi, &entry->key.prefix_addr,
-                      entry->key.prefix_len, protocol, rib_source, on_static_rib_del, NULL);
-    }
-
-    /* 收集有 nexthop 的条目用于后续 relay unregister 检查 */
-    if (entry->has_nexthop)
-    {
-        net_addr_t *nh_copy = (net_addr_t *)g_malloc(sizeof(net_addr_t));
-        if (nh_copy)
-        {
-            *nh_copy = entry->key.nexthop_addr;
-            vctx->nexthops_removed = g_slist_prepend(vctx->nexthops_removed, nh_copy);
-            vctx->afis_for_nh = g_slist_prepend(vctx->afis_for_nh, GUINT_TO_POINTER((guint)entry->key.afi));
-        }
-    }
-
-    vctx->keys_to_remove = g_slist_prepend(vctx->keys_to_remove, &entry->key);
-    vctx->count++;
+    static_collect_ctx_t ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.vrf_id = vrf_id;
+    ctx.afi = afi;
+    ctx.prefix_len = prefix_len;
+    ctx.by_prefix = 1;
+    ctx.prefix_addr = prefix_addr;
+    g_hash_table_foreach(g_static_route_table, static_collect_cb, &ctx);
+    return static_del_collected(&ctx);
 }
 
 int route_static_del_vrf(uint32_t vrf_id)
 {
-    if (!g_static_table || !g_route_work_local)
+    if (!g_static_route_table || !g_route_work_local)
     {
         return 0;
     }
-
-    static_del_vrf_ctx_t vctx;
-    memset(&vctx, 0, sizeof(vctx));
-    vctx.vrf_id = vrf_id;
-
-    g_hash_table_foreach(g_static_table, static_collect_for_vrf, &vctx);
-
-    for (GSList *l = vctx.keys_to_remove; l; l = l->next)
-    {
-        g_hash_table_remove(g_static_table, l->data);
-    }
-    g_slist_free(vctx.keys_to_remove);
-
-    /* 对每个移除的 nexthop 检查是否还有用户（同 vrf+afi+nh） */
-    GSList *nh_it = vctx.nexthops_removed;
-    GSList *afi_it = vctx.afis_for_nh;
-    while (nh_it && afi_it)
-    {
-        net_addr_t *nh = (net_addr_t *)nh_it->data;
-        uint16_t afi = (uint16_t)GPOINTER_TO_UINT(afi_it->data);
-        if (!static_nexthop_has_users(vrf_id, afi, nh))
-        {
-            route_relay_unregister_direct(vrf_id, afi, nh, DEV_MODULE_ID_ROUTE);
-        }
-        g_free(nh);
-        nh_it = nh_it->next;
-        afi_it = afi_it->next;
-    }
-    g_slist_free(vctx.nexthops_removed);
-    g_slist_free(vctx.afis_for_nh);
-
-    return vctx.count;
+    static_collect_ctx_t ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.vrf_id = vrf_id;
+    ctx.by_prefix = 0;
+    g_hash_table_foreach(g_static_route_table, static_collect_cb, &ctx);
+    return static_del_collected(&ctx);
 }
 
 // ============================================================================
-// nexthop 状态变化回调（由 relay 统一触发，与协议迭代同一流程）
+// nexthop 可达性变化（relay 统一回调）：按下一跳组驱动
 // ============================================================================
 
 typedef struct
 {
-    uint32_t vrf_id;
-    uint16_t afi;
-    const net_addr_t *nexthop_addr;
+    uint32_t nexthop_id;
     int resolved;
-    const net_addr_t *gateway; /**< relay 已解析的直连网关 */
-    uint32_t out_ifindex;      /**< relay 已解析的出接口 */
-    uint32_t added;
-    uint32_t withdrawn;
+    const net_addr_t *gateway;
+    uint32_t out_ifindex;
+    uint32_t changed;
 } static_nh_change_ctx_t;
 
 static void static_nh_change_cb(gpointer key_ptr, gpointer value_ptr, gpointer user_data)
 {
     (void)key_ptr;
-    route_static_entry_t *entry = (route_static_entry_t *)value_ptr;
+    route_static_nh_t *nh = (route_static_nh_t *)value_ptr;
     static_nh_change_ctx_t *ctx = (static_nh_change_ctx_t *)user_data;
-    if (!entry || !ctx || !g_route_work_local)
-    {
-        return;
-    }
 
-    /* 仅处理有 nexthop 的条目（interface-only 由 on_if_change 处理） */
-    if (!entry->has_nexthop)
-    {
-        return;
-    }
-
-    /* 只处理匹配 (vrf, afi, nexthop) 的条目 */
-    if (entry->key.vrf_id != ctx->vrf_id || entry->key.afi != ctx->afi ||
-        !net_addr_equal(&entry->key.nexthop_addr, ctx->nexthop_addr))
+    if (!nh->has_nexthop || nh->nexthop_id != ctx->nexthop_id)
     {
         return;
     }
 
     int resolved = ctx->resolved;
     uint32_t oif = ctx->out_ifindex;
-
-    /* 模式 A：若指定了接口，校验 relay 解析出的 ifindex 是否匹配 */
-    if (resolved && entry->key.out_ifname[0] != '\0')
+    /* nexthop+interface：校验 relay 出接口与配置接口一致 */
+    if (resolved && nh->key.key_ifindex != 0 && oif != nh->key.key_ifindex)
     {
-        if (entry->cfg_ifindex != 0 && oif != entry->cfg_ifindex)
-        {
-            resolved = 0;
-        }
+        resolved = 0;
     }
 
-    entry->nh_resolved = resolved ? 1u : 0u;
-
+    nh->resolved = resolved ? 1u : 0u;
     if (resolved)
     {
-        int ret = route_add_and_notify(entry->key.vrf_id, entry->key.afi, &entry->key.prefix_addr,
-                                       entry->key.prefix_len, ROUTE_PROTOCOL_STATIC, &entry->key.nexthop_addr,
-                                       &entry->key.nexthop_addr, ctx->gateway, entry->metric, entry->preference, oif);
-        if (ret >= 0 && !entry->in_rib)
+        if (ctx->gateway)
         {
-            entry->in_rib = 1u;
-            ctx->added++;
+            nh->relay_addr = *ctx->gateway;
         }
+        nh->relay_ifindex = oif;
+        nh_set_object_relay(nh); /* 同步 relay 到 nexthop 对象（再按 id 整组重写） */
     }
-    else if (entry->in_rib)
-    {
-        route_rib_del(g_route_work_local->rib, entry->key.vrf_id, entry->key.afi, &entry->key.prefix_addr,
-                      entry->key.prefix_len, ROUTE_PROTOCOL_STATIC, &entry->key.nexthop_addr, on_static_rib_del, NULL);
-        entry->in_rib = 0u;
-        ctx->withdrawn++;
-    }
+    apply_routes_of_nh(nh);
+    ctx->changed++;
 }
 
-void route_static_on_nh_change(uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop_addr, int resolved,
-                               const net_addr_t *gateway, uint32_t out_ifindex)
+void route_static_on_nh_change(uint32_t nexthop_id, int resolved, const net_addr_t *gateway, uint32_t out_ifindex)
 {
-    if (!g_static_table || g_hash_table_size(g_static_table) == 0 || !nexthop_addr)
+    if (!g_static_nh_table || g_hash_table_size(g_static_nh_table) == 0 || nexthop_id == 0u)
+    {
+        return;
+    }
+    static_nh_change_ctx_t ctx = {
+        .nexthop_id = nexthop_id,
+        .resolved = resolved,
+        .gateway = gateway,
+        .out_ifindex = out_ifindex,
+        .changed = 0u,
+    };
+    g_hash_table_foreach(g_static_nh_table, static_nh_change_cb, &ctx);
+}
+
+// ============================================================================
+// 接口状态变化：重检查 interface-only 组
+// ============================================================================
+
+static void static_if_change_cb(gpointer key_ptr, gpointer value_ptr, gpointer user_data)
+{
+    (void)key_ptr;
+    (void)user_data;
+    route_static_nh_t *nh = (route_static_nh_t *)value_ptr;
+
+    /* 仅 interface-only 组（null0 永远有效；IP nexthop 走 on_nh_change） */
+    if (nh->has_nexthop || nh->is_null0)
     {
         return;
     }
 
-    static_nh_change_ctx_t ctx = {
-        .vrf_id = vrf_id,
-        .afi = afi,
-        .nexthop_addr = nexthop_addr,
-        .resolved = resolved,
-        .gateway = gateway,
-        .out_ifindex = out_ifindex,
-        .added = 0u,
-        .withdrawn = 0u,
-    };
+    uint32_t ifindex = nh->key.key_ifindex;
+    int reachable = (ifindex != 0) && rib_has_active_connected(nh->key.vrf_id, nh->key.afi, ifindex);
+    nh->resolved = reachable ? 1u : 0u;
+    nh->relay_ifindex = ifindex;
+    nh_set_object_relay(nh); /* 同步 relay 到 nexthop 对象 */
+    apply_routes_of_nh(nh);
+}
 
-    g_hash_table_foreach(g_static_table, static_nh_change_cb, &ctx);
-
-    if (ctx.added > 0 || ctx.withdrawn > 0)
+void route_static_on_if_change(void)
+{
+    if (!g_static_nh_table || g_hash_table_size(g_static_nh_table) == 0)
     {
-        LOG_DEBUG("Static nh-change: vrf=%u afi=%u resolved=%d added=%u withdrawn=%u", vrf_id, afi, resolved, ctx.added,
-                  ctx.withdrawn);
+        return;
     }
+    g_hash_table_foreach(g_static_nh_table, static_if_change_cb, NULL);
 }
 
 // ============================================================================
-// show route relay static（直接委托通用 relay show，按 owner_module_id 过滤）
+// show route static
 // ============================================================================
+
+typedef struct
+{
+    GString *buf;
+    uint16_t afi_filter;
+    int has_afi_filter;
+    uint32_t vrf_filter;
+    uint32_t count;
+} static_show_ctx_t;
+
+static void static_show_cb(gpointer key_ptr, gpointer value_ptr, gpointer user_data)
+{
+    (void)key_ptr;
+    const route_static_entry_t *entry = (const route_static_entry_t *)value_ptr;
+    static_show_ctx_t *ctx = (static_show_ctx_t *)user_data;
+
+    if (ctx->has_afi_filter && entry->key.afi != ctx->afi_filter)
+    {
+        return;
+    }
+    if (entry->key.vrf_id != ctx->vrf_filter)
+    {
+        return;
+    }
+
+    const route_static_nh_t *nh =
+        (const route_static_nh_t *)g_hash_table_lookup(g_static_nh_by_id, GUINT_TO_POINTER(entry->key.nexthop_id));
+
+    char prefix_str[64];
+    char nh_str[64];
+    char prefix_with_len[80];
+    net_addr_to_str(&entry->key.prefix_addr, prefix_str, sizeof(prefix_str));
+    if (nh && nh->has_nexthop)
+    {
+        net_addr_to_str(&nh->key.nexthop, nh_str, sizeof(nh_str));
+    }
+    else
+    {
+        g_strlcpy(nh_str, "-", sizeof(nh_str));
+    }
+    snprintf(prefix_with_len, sizeof(prefix_with_len), "%s/%u", prefix_str, (unsigned)entry->key.prefix_len);
+
+    const char *afi_str = (entry->key.afi == ROUTE_AFI_IPV4) ? "ipv4" : "ipv6";
+    const char *ifname = (nh && nh->out_ifname[0]) ? nh->out_ifname : "-";
+    const char *resolved_str = (nh && nh->resolved) ? "yes" : "no ";
+    const char *in_rib_str = entry->in_rib ? "yes" : "no ";
+
+    g_string_append_printf(ctx->buf, "%-4s %-24s %-20s %-10s %4d %4d  %-8s  %s\r\n", afi_str, prefix_with_len, nh_str,
+                           ifname, entry->metric, entry->preference, resolved_str, in_rib_str);
+    ctx->count++;
+}
+
+void route_static_show(GString *buf, uint16_t afi_filter, int has_afi_filter, uint32_t vrf_filter, const char *vrf_name)
+{
+    if (!buf)
+    {
+        return;
+    }
+
+    g_string_append_printf(buf, "\r\nStatic Routes (VRF: %s)\r\n", vrf_name ? vrf_name : "public");
+    g_string_append_printf(
+        buf,
+        "\r\n%-4s %-24s %-20s %-10s %4s %4s  %-8s  %s\r\n"
+        "---- ------------------------ -------------------- ---------- ---- ----  --------  ------\r\n",
+        "AFI", "Prefix", "Nexthop", "Interface", "Met", "Pref", "Resolved", "InRIB");
+
+    if (!g_static_route_table || g_hash_table_size(g_static_route_table) == 0)
+    {
+        g_string_append(buf, "  (no entries)\r\n");
+        g_string_append(buf, "\r\nTotal 0 static route(s)\r\n");
+        return;
+    }
+
+    static_show_ctx_t ctx = {
+        .buf = buf,
+        .afi_filter = afi_filter,
+        .has_afi_filter = has_afi_filter,
+        .vrf_filter = vrf_filter,
+        .count = 0,
+    };
+    g_hash_table_foreach(g_static_route_table, static_show_cb, &ctx);
+
+    g_string_append_printf(buf, "\r\nTotal %u static route(s) in candidate table\r\n", ctx.count);
+}
+
+// ============================================================================
+// show route static nexthop（按下一跳分组）
+// ============================================================================
+
+typedef struct
+{
+    GString *buf;
+    int has_afi;
+    uint16_t afi;
+    int has_vrf;
+    uint32_t vrf_id;
+    int has_nhid;
+    uint32_t nexthop_id;
+    uint32_t count;
+} static_nh_show_ctx_t;
+
+static const char *static_nh_kind(const route_static_nh_t *nh)
+{
+    if (nh->is_null0)
+    {
+        return "null0";
+    }
+    if (!nh->has_nexthop)
+    {
+        return "iface";
+    }
+    return "ip";
+}
+
+static void static_nh_show_cb(gpointer key_ptr, gpointer value_ptr, gpointer user_data)
+{
+    (void)key_ptr;
+    const route_static_nh_t *nh = (const route_static_nh_t *)value_ptr;
+    static_nh_show_ctx_t *ctx = (static_nh_show_ctx_t *)user_data;
+    if (ctx->has_afi && nh->key.afi != ctx->afi)
+    {
+        return;
+    }
+    if (ctx->has_vrf && nh->key.vrf_id != ctx->vrf_id)
+    {
+        return;
+    }
+    if (ctx->has_nhid && nh->nexthop_id != ctx->nexthop_id)
+    {
+        return;
+    }
+
+    char nh_str[64] = "-";
+    char relay_str[64] = "-";
+    if (nh->has_nexthop)
+    {
+        net_addr_to_str(&nh->key.nexthop, nh_str, sizeof(nh_str));
+    }
+    if (!net_addr_is_zero(&nh->relay_addr))
+    {
+        net_addr_to_str(&nh->relay_addr, relay_str, sizeof(relay_str));
+    }
+    const char *ifname = nh->out_ifname[0] ? nh->out_ifname : "-";
+
+    g_string_append_printf(ctx->buf, "%-10u %-6u %-5s %-6s %-20s %-20s %-10s %-6u %-8s %-5u\r\n", nh->nexthop_id,
+                           nh->key.vrf_id, (nh->key.afi == ROUTE_AFI_IPV6) ? "ipv6" : "ipv4", static_nh_kind(nh),
+                           nh_str, relay_str, ifname, nh->relay_ifindex, nh->resolved ? "yes" : "no", nh->refcount);
+    ctx->count++;
+}
+
+void route_static_show_nexthop(GString *buf, int has_afi, uint16_t afi, int has_vrf, uint32_t vrf_id, int has_nhid,
+                               uint32_t nexthop_id)
+{
+    if (!buf)
+    {
+        return;
+    }
+    g_string_append_printf(
+        buf,
+        "\r\nStatic Nexthop Groups\r\n"
+        "%-10s %-6s %-5s %-6s %-20s %-20s %-10s %-6s %-8s %-5s\r\n"
+        "---------- ------ ----- ------ -------------------- -------------------- ---------- ------ -------- -----\r\n",
+        "NH-ID", "VRF", "AFI", "Kind", "Nexthop", "Relay", "Interface", "OIF", "Resolved", "Ref");
+
+    if (!g_static_nh_table || g_hash_table_size(g_static_nh_table) == 0)
+    {
+        g_string_append(buf, "  (no entries)\r\n");
+        g_string_append(buf, "\r\nTotal 0 static nexthop(s)\r\n");
+        return;
+    }
+
+    static_nh_show_ctx_t ctx = {
+        .buf = buf,
+        .has_afi = has_afi,
+        .afi = afi,
+        .has_vrf = has_vrf,
+        .vrf_id = vrf_id,
+        .has_nhid = has_nhid,
+        .nexthop_id = nexthop_id,
+        .count = 0,
+    };
+    g_hash_table_foreach(g_static_nh_table, static_nh_show_cb, &ctx);
+    g_string_append_printf(buf, "\r\nTotal %u static nexthop(s)\r\n", ctx.count);
+}
 
 void route_static_show_relay(GString *buf, uint16_t afi_filter, int has_afi_filter, uint32_t vrf_filter,
                              const char *vrf_name)
@@ -812,86 +957,4 @@ void route_static_show_relay(GString *buf, uint16_t afi_filter, int has_afi_filt
         return;
     }
     route_relay_show(buf, DEV_MODULE_ID_ROUTE, 1, afi_filter, has_afi_filter, vrf_filter, vrf_name);
-}
-
-// ============================================================================
-// 接口状态变化：重检查 interface-only 静态路由
-// ============================================================================
-
-static void static_if_change_cb(gpointer key_ptr, gpointer value_ptr, gpointer user_data)
-{
-    (void)key_ptr;
-    (void)user_data;
-    route_static_entry_t *entry = (route_static_entry_t *)value_ptr;
-    if (!entry || !g_route_work_local)
-    {
-        return;
-    }
-
-    /* 仅处理 interface-only 条目（has_nexthop=0） */
-    if (entry->has_nexthop)
-    {
-        return;
-    }
-
-    /* null0 黑洞路由永远有效，跳过 */
-    if (g_ascii_strcasecmp(entry->key.out_ifname, "null0") == 0)
-    {
-        return;
-    }
-
-    /*
-     * IF 事件回调路径避免同步 RPC：优先使用事件驱动缓存，
-     * 若缓存暂未命中则回退到条目已有 ifindex。
-     */
-    uint32_t cached_ifindex = if_api_cache_get_ifindex(entry->key.out_ifname);
-    uint32_t ifindex = (cached_ifindex != 0u) ? cached_ifindex : entry->cfg_ifindex;
-    if (cached_ifindex != 0u)
-    {
-        entry->cfg_ifindex = cached_ifindex;
-    }
-
-    /* 检查 RIB 中是否有该接口的活跃 CONNECTED 路由 */
-    int reachable = (ifindex != 0) && rib_has_active_connected(entry->key.vrf_id, entry->key.afi, ifindex);
-
-    if (reachable && !entry->in_rib)
-    {
-        /* 接口就绪 → 写入 RIB */
-        net_addr_t source_addr;
-        encode_ifindex_as_addr(ifindex, &source_addr);
-        net_addr_t zero_nh;
-        memset(&zero_nh, 0, sizeof(zero_nh));
-        zero_nh.family = (entry->key.afi == ROUTE_AFI_IPV6) ? AF_INET6 : AF_INET;
-
-        int ret = route_add_and_notify(entry->key.vrf_id, entry->key.afi, &entry->key.prefix_addr,
-                                       entry->key.prefix_len, ROUTE_PROTOCOL_STATIC, &source_addr, &zero_nh, NULL,
-                                       entry->metric, entry->preference, ifindex);
-        if (ret >= 0)
-        {
-            entry->in_rib = 1u;
-            entry->nh_resolved = 1u;
-            LOG_DEBUG("Interface-only static route installed: ifname=%s ifindex=%u", entry->key.out_ifname, ifindex);
-        }
-    }
-    else if (!reachable && entry->in_rib)
-    {
-        /* 接口不可用 → 从 RIB 撤销 */
-        uint32_t withdraw_ifindex = (ifindex != 0u) ? ifindex : entry->cfg_ifindex;
-        net_addr_t source_addr;
-        encode_ifindex_as_addr(withdraw_ifindex, &source_addr);
-        route_rib_del(g_route_work_local->rib, entry->key.vrf_id, entry->key.afi, &entry->key.prefix_addr,
-                      entry->key.prefix_len, ROUTE_PROTOCOL_STATIC, &source_addr, on_static_rib_del, NULL);
-        entry->in_rib = 0u;
-        entry->nh_resolved = 0u;
-        LOG_DEBUG("Interface-only static route withdrawn: ifname=%s", entry->key.out_ifname);
-    }
-}
-
-void route_static_on_if_change(void)
-{
-    if (!g_static_table || g_hash_table_size(g_static_table) == 0)
-    {
-        return;
-    }
-    g_hash_table_foreach(g_static_table, static_if_change_cb, NULL);
 }

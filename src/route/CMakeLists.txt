@@ -5,6 +5,7 @@ set(ROUTE_SOURCES
     route_db.c
     work/route_rib.c
     work/route_calc.c
+    work/route_nhobj.c
     work/route_pub.c
     work/route_relay.c
     work/route_static.c

@@ -21,6 +21,7 @@
 #include "bgp_import_route.h"
 #include "bgp_instance.h"
 #include "bgp_main.h"
+#include "bgp_nexthop.h"
 #include "bgp_pkt.h"
 #include "bgp_protocol.h"
 #include "bgp_rib.h"
@@ -1200,7 +1201,8 @@ static int qp_inject_cfg_entries(bgp_instance_t *inst, const bgp_qp_route_cfg_t 
                 continue;
             }
         }
-        if (bgp_rib_route_apply_reach(route, ROUTE_PROTOCOL_STATIC, &attr, &nexthop) != 0)
+        if (bgp_rib_route_apply_reach(route, ROUTE_PROTOCOL_STATIC, &attr) != 0 ||
+            bgp_nexthop_set_route(route, &nexthop) != ERRCODE_SUCCESS)
         {
             continue;
         }

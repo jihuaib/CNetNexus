@@ -157,6 +157,19 @@ static int tunnel_ready(const fib_tunnel_entry_t *tunnel)
            (tunnel->relay_addr.family == AF_INET || tunnel->relay_addr.family == AF_INET6);
 }
 
+static int nexthop_ready(const fib_nexthop_entry_t *nh)
+{
+    if (!nh || !nh->state)
+    {
+        return 0;
+    }
+    if (nh->nh_type == FIB_NH_TYPE_BLACKHOLE)
+    {
+        return 1;
+    }
+    return nh->gateway_addr.family == AF_INET || nh->gateway_addr.family == AF_INET6 || nh->out_ifindex != 0;
+}
+
 static int fib_reconcile_route(fib_route_state_t *route_state)
 {
     if (!route_state || !g_fib_work_local || !g_fib_work_local->rib)
@@ -174,7 +187,33 @@ static int fib_reconcile_route(fib_route_state_t *route_state)
     int rc = ERRCODE_FAIL;
     if (route->nh_type == FIB_NH_TYPE_IP || route->nh_type == FIB_NH_TYPE_BLACKHOLE)
     {
-        rc = fib_os_route_install_ip(route);
+        /* nexthop 对象化：路由必须等 ROUTE 下刷对应 nexthop 对象就绪后才下 OS。
+         * nexthop_id==0 时退回内联 nexthop（兼容/防御路径）。 */
+        if (route->nexthop_id != 0)
+        {
+            fib_nexthop_state_t *nh = fib_rib_nexthop_lookup(g_fib_work_local->rib, route->nexthop_id);
+            if (!nh || !nexthop_ready(&nh->entry))
+            {
+                if (route_state->installed)
+                {
+                    (void)fib_os_route_withdraw(route);
+                    route_state->installed = 0u;
+                }
+                LOG_DEBUG("FIB: route pending nexthop=%u", route->nexthop_id);
+                return ERRCODE_SUCCESS;
+            }
+
+            /* 用 nexthop 对象的网关/出接口/类型构造一份临时条目下发 OS */
+            fib_route_entry_t resolved = *route;
+            resolved.nh_type = nh->entry.nh_type;
+            resolved.out_ifindex = nh->entry.out_ifindex;
+            resolved.nexthop_addr = nh->entry.gateway_addr;
+            rc = fib_os_route_install_ip(&resolved);
+        }
+        else
+        {
+            rc = fib_os_route_install_ip(route);
+        }
     }
     else if (route->nh_type == FIB_NH_TYPE_TUNNEL)
     {
@@ -217,6 +256,33 @@ static void fib_reconcile_tunnel(uint32_t tunnel_id)
 {
     fib_reconcile_tunnel_ctx_t ctx = {.tunnel_id = tunnel_id};
     fib_rib_foreach_route(g_fib_work_local ? g_fib_work_local->rib : NULL, fib_reconcile_tunnel_route_cb, &ctx);
+}
+
+typedef struct fib_reconcile_nexthop_ctx
+{
+    uint32_t nexthop_id;
+} fib_reconcile_nexthop_ctx_t;
+
+static void fib_reconcile_nexthop_route_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    fib_route_state_t *route = (fib_route_state_t *)value;
+    const fib_reconcile_nexthop_ctx_t *ctx = (const fib_reconcile_nexthop_ctx_t *)user_data;
+    if (!route || !ctx || route->entry.nexthop_id != ctx->nexthop_id)
+    {
+        return;
+    }
+    if (route->entry.nh_type != FIB_NH_TYPE_IP && route->entry.nh_type != FIB_NH_TYPE_BLACKHOLE)
+    {
+        return;
+    }
+    (void)fib_reconcile_route(route);
+}
+
+static void fib_reconcile_nexthop(uint32_t nexthop_id)
+{
+    fib_reconcile_nexthop_ctx_t ctx = {.nexthop_id = nexthop_id};
+    fib_rib_foreach_route(g_fib_work_local ? g_fib_work_local->rib : NULL, fib_reconcile_nexthop_route_cb, &ctx);
 }
 
 static int fib_handle_route_upsert(fib_worker_cmd_t *cmd)
@@ -308,6 +374,38 @@ static int fib_handle_tunnel_delete(fib_worker_cmd_t *cmd)
     return ERRCODE_SUCCESS;
 }
 
+static int fib_handle_nexthop_upsert(fib_worker_cmd_t *cmd)
+{
+    if (!cmd || !cmd->msg || !cmd->msg->payload || cmd->msg->payload_len < sizeof(fib_nexthop_entry_t))
+    {
+        return ERRCODE_FAIL;
+    }
+
+    const fib_nexthop_entry_t *entry = (const fib_nexthop_entry_t *)cmd->msg->payload;
+    fib_nexthop_state_t *state = fib_rib_nexthop_upsert(g_fib_work_local->rib, entry);
+    int rc = state ? ERRCODE_SUCCESS : ERRCODE_FAIL;
+    if (rc == ERRCODE_SUCCESS)
+    {
+        fib_reconcile_nexthop(entry->nexthop_id);
+    }
+    fib_worker_send_ack(cmd->msg, rc);
+    return rc;
+}
+
+static int fib_handle_nexthop_delete(fib_worker_cmd_t *cmd)
+{
+    if (!cmd || !cmd->msg || !cmd->msg->payload || cmd->msg->payload_len < sizeof(fib_nexthop_entry_t))
+    {
+        return ERRCODE_FAIL;
+    }
+
+    const fib_nexthop_entry_t *entry = (const fib_nexthop_entry_t *)cmd->msg->payload;
+    (void)fib_rib_nexthop_delete(g_fib_work_local->rib, entry->nexthop_id);
+    fib_reconcile_nexthop(entry->nexthop_id);
+    fib_worker_send_ack(cmd->msg, ERRCODE_SUCCESS);
+    return ERRCODE_SUCCESS;
+}
+
 static int fib_handle_ilm_upsert(fib_worker_cmd_t *cmd)
 {
     if (!cmd || !cmd->msg || !cmd->msg->payload || cmd->msg->payload_len < sizeof(fib_ilm_entry_t))
@@ -383,6 +481,12 @@ static int fib_worker_dispatch_cmd(fib_worker_cmd_t *cmd)
             break;
         case FIB_WORKER_CMD_ILM_DELETE:
             (void)fib_handle_ilm_delete(cmd);
+            break;
+        case FIB_WORKER_CMD_NEXTHOP_UPSERT:
+            (void)fib_handle_nexthop_upsert(cmd);
+            break;
+        case FIB_WORKER_CMD_NEXTHOP_DELETE:
+            (void)fib_handle_nexthop_delete(cmd);
             break;
         case FIB_WORKER_CMD_SHOW_CLI:
             (void)fib_show_dispatch(cmd->msg);

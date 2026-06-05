@@ -45,6 +45,7 @@ typedef struct isis_spf_local_hop
     uint8_t node_id[ISIS_SPF_NODE_ID_LEN];
     uint32_t local_metric;
     uint32_t out_ifindex;
+    isis_nexthop_table_t *nexthop_table;
     net_addr_t source_addr;
     net_addr_t nexthop_addr;
 } isis_spf_local_hop_t;
@@ -497,7 +498,6 @@ static void isis_spf_parse_narrow_ip_reach_entries(const uint8_t *val, size_t va
         memset(&route, 0, sizeof(route));
         route.afi = ROUTE_AFI_IPV4;
         route.prefix_len = prefix_len;
-        route.out_ifindex = hop->out_ifindex;
         route.prefix_addr.family = AF_INET;
         route.prefix_addr.u.v4 = ip_be;
         if (net_addr_prefix_normalize(&route.prefix_addr, route.prefix_len) != 0)
@@ -517,8 +517,12 @@ static void isis_spf_parse_narrow_ip_reach_entries(const uint8_t *val, size_t va
         {
             continue;
         }
-        route.nexthop_addr = hop->nexthop_addr;
-        if (route.prefix_len == 32u && net_addr_equal(&route.prefix_addr, &route.nexthop_addr))
+        if (route.prefix_len == 32u && net_addr_equal(&route.prefix_addr, &hop->nexthop_addr))
+        {
+            continue;
+        }
+        if (isis_route_state_set_nexthop(&route, hop->nexthop_table, 0u, hop->out_ifindex, &hop->nexthop_addr) !=
+            ERRCODE_SUCCESS)
         {
             continue;
         }
@@ -529,6 +533,7 @@ static void isis_spf_parse_narrow_ip_reach_entries(const uint8_t *val, size_t va
                                   route.prefix_len);
         isis_route_path_key_format(path_key, sizeof(path_key), route_key, &route);
         isis_route_head_table_add_path(desired, route_key, path_key, &route);
+        isis_route_state_reset(&route);
     }
 }
 
@@ -796,6 +801,12 @@ static void isis_spf_collect_local_hops(const isis_instance_cfg_t *inst, uint8_t
             hop->local_metric = 0x00FFFFFFu;
         }
         hop->out_ifindex = if_entry->ifindex;
+        hop->nexthop_table = isis_instance_nexthop_table((isis_instance_cfg_t *)inst, afi);
+        if (!hop->nexthop_table)
+        {
+            g_free(hop);
+            continue;
+        }
 
         if (afi == ROUTE_AFI_IPV4)
         {
@@ -896,7 +907,6 @@ static void isis_spf_parse_prefix_entries(const uint8_t *val, size_t val_len, ui
         memset(&route, 0, sizeof(route));
         route.afi = afi;
         route.prefix_len = prefix_len;
-        route.out_ifindex = hop->out_ifindex;
 
         uint64_t total_metric = path_metric + (uint64_t)remote_metric;
         route.metric = (total_metric > 0xFFFFFFFFu) ? 0xFFFFFFFFu : (uint32_t)total_metric;
@@ -925,9 +935,14 @@ static void isis_spf_parse_prefix_entries(const uint8_t *val, size_t val_len, ui
                 pos += pfx_bytes + sub_extra;
                 continue;
             }
-            route.nexthop_addr = hop->nexthop_addr;
 
-            if (route.prefix_len == 32u && net_addr_equal(&route.prefix_addr, &route.nexthop_addr))
+            if (route.prefix_len == 32u && net_addr_equal(&route.prefix_addr, &hop->nexthop_addr))
+            {
+                pos += pfx_bytes + sub_extra;
+                continue;
+            }
+            if (isis_route_state_set_nexthop(&route, hop->nexthop_table, 0u, hop->out_ifindex, &hop->nexthop_addr) !=
+                ERRCODE_SUCCESS)
             {
                 pos += pfx_bytes + sub_extra;
                 continue;
@@ -957,9 +972,14 @@ static void isis_spf_parse_prefix_entries(const uint8_t *val, size_t val_len, ui
                 pos += pfx_bytes + sub_extra;
                 continue;
             }
-            route.nexthop_addr = hop->nexthop_addr;
 
-            if (route.prefix_len == 128u && net_addr_equal(&route.prefix_addr, &route.nexthop_addr))
+            if (route.prefix_len == 128u && net_addr_equal(&route.prefix_addr, &hop->nexthop_addr))
+            {
+                pos += pfx_bytes + sub_extra;
+                continue;
+            }
+            if (isis_route_state_set_nexthop(&route, hop->nexthop_table, 0u, hop->out_ifindex, &hop->nexthop_addr) !=
+                ERRCODE_SUCCESS)
             {
                 pos += pfx_bytes + sub_extra;
                 continue;
@@ -972,6 +992,7 @@ static void isis_spf_parse_prefix_entries(const uint8_t *val, size_t val_len, ui
                                   route.prefix_len);
         isis_route_path_key_format(path_key, sizeof(path_key), route_key, &route);
         isis_route_head_table_add_path(desired, route_key, path_key, &route);
+        isis_route_state_reset(&route);
 
         pos += pfx_bytes + sub_extra;
     }

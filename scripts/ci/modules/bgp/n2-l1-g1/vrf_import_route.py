@@ -66,8 +66,8 @@ def _cleanup(rt: TopologyRuntime, base: dict[str, dict[str, str | int]]) -> None
             commands=[
                 "end",
                 "config",
-                f"no route static ipv4 {TEST_V4_PREFIX_ADDR} {TEST_V4_PREFIX_LEN} {R1_V4} vrf {VRF_NAME}",
-                f"no route static ipv6 {TEST_V6_PREFIX_ADDR} {TEST_V6_PREFIX_LEN} {R1_V6} vrf {VRF_NAME}",
+                f"no route static ipv4 vrf {VRF_NAME} {TEST_V4_PREFIX_ADDR} {TEST_V4_PREFIX_LEN} {R1_V4}",
+                f"no route static ipv6 vrf {VRF_NAME} {TEST_V6_PREFIX_ADDR} {TEST_V6_PREFIX_LEN} {R1_V6}",
                 "no bgp",
                 f"if {GE_IF}",
                 "no shutdown",
@@ -250,14 +250,14 @@ def _wait_import_subscriptions(rt: TopologyRuntime, *, present: bool) -> None:
         checks = [
             {
                 "device": "r2",
-                "command": f"show route ipv4 subscribe vrf {VRF_NAME}",
+                "command": f"show route ipv4 vrf {VRF_NAME} subscribe",
                 "contains": ["Route Subscribers", f"VRF filter: {VRF_NAME}"],
                 "regex": [r"(?im)^\s*bgp\s+static\s+[1-9]\d*\s+ipv4\s*$"],
                 "label": "r2 vrf ipv4 static subscription installed",
             },
             {
                 "device": "r2",
-                "command": f"show route ipv6 subscribe vrf {VRF_NAME}",
+                "command": f"show route ipv6 vrf {VRF_NAME} subscribe",
                 "contains": ["Route Subscribers", f"VRF filter: {VRF_NAME}"],
                 "regex": [r"(?im)^\s*bgp\s+static\s+[1-9]\d*\s+ipv6\s*$"],
                 "label": "r2 vrf ipv6 static subscription installed",
@@ -267,14 +267,14 @@ def _wait_import_subscriptions(rt: TopologyRuntime, *, present: bool) -> None:
         checks = [
             {
                 "device": "r2",
-                "command": f"show route ipv4 subscribe vrf {VRF_NAME}",
+                "command": f"show route ipv4 vrf {VRF_NAME} subscribe",
                 "contains": ["(no subscribers)"],
                 "not_regex": [r"(?im)^\s*bgp\s+static\s+\d+\s+ipv4\s*$"],
                 "label": "r2 vrf ipv4 static subscription removed",
             },
             {
                 "device": "r2",
-                "command": f"show route ipv6 subscribe vrf {VRF_NAME}",
+                "command": f"show route ipv6 vrf {VRF_NAME} subscribe",
                 "contains": ["(no subscribers)"],
                 "not_regex": [r"(?im)^\s*bgp\s+static\s+\d+\s+ipv6\s*$"],
                 "label": "r2 vrf ipv6 static subscription removed",
@@ -289,14 +289,14 @@ def _wait_vrf_static_routes(rt: TopologyRuntime) -> None:
         [
             {
                 "device": "r2",
-                "command": f"show route ipv4 {TEST_V4_PREFIX_ADDR} {TEST_V4_PREFIX_LEN} vrf {VRF_NAME}",
+                "command": f"show route ipv4 vrf {VRF_NAME} {TEST_V4_PREFIX_ADDR} {TEST_V4_PREFIX_LEN}",
                 "contains": [TEST_V4_PREFIX, R1_V4],
                 "regex": [r"(?im)^\s*Path\s*\[\d+\]\s*:\s*static\b"],
                 "label": "r2 vrf ipv4 static route installed",
             },
             {
                 "device": "r2",
-                "command": f"show route ipv6 {TEST_V6_PREFIX_ADDR} {TEST_V6_PREFIX_LEN} vrf {VRF_NAME}",
+                "command": f"show route ipv6 vrf {VRF_NAME} {TEST_V6_PREFIX_ADDR} {TEST_V6_PREFIX_LEN}",
                 "contains": [TEST_V6_PREFIX, R1_V6],
                 "regex": [r"(?im)^\s*Path\s*\[\d+\]\s*:\s*static\b"],
                 "label": "r2 vrf ipv6 static route installed",
@@ -403,14 +403,14 @@ def _wait_bgp_routes_withdrawn(rt: TopologyRuntime) -> None:
             },
             {
                 "device": "r2",
-                "command": f"show route ipv4 {TEST_V4_PREFIX_ADDR} {TEST_V4_PREFIX_LEN} vrf {VRF_NAME}",
+                "command": f"show route ipv4 vrf {VRF_NAME} {TEST_V4_PREFIX_ADDR} {TEST_V4_PREFIX_LEN}",
                 "contains": [TEST_V4_PREFIX, R1_V4],
                 "regex": [r"(?im)^\s*Path\s*\[\d+\]\s*:\s*static\b"],
                 "label": "r2 original vrf ipv4 static route remains",
             },
             {
                 "device": "r2",
-                "command": f"show route ipv6 {TEST_V6_PREFIX_ADDR} {TEST_V6_PREFIX_LEN} vrf {VRF_NAME}",
+                "command": f"show route ipv6 vrf {VRF_NAME} {TEST_V6_PREFIX_ADDR} {TEST_V6_PREFIX_LEN}",
                 "contains": [TEST_V6_PREFIX, R1_V6],
                 "regex": [r"(?im)^\s*Path\s*\[\d+\]\s*:\s*static\b"],
                 "label": "r2 original vrf ipv6 static route remains",
@@ -460,8 +460,8 @@ def _legacy_static_run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             device="r2",
             commands=[
                 "config",
-                f"route static ipv4 {TEST_V4_PREFIX_ADDR} {TEST_V4_PREFIX_LEN} {R1_V4} vrf {VRF_NAME}",
-                f"route static ipv6 {TEST_V6_PREFIX_ADDR} {TEST_V6_PREFIX_LEN} {R1_V6} vrf {VRF_NAME}",
+                f"route static ipv4 vrf {VRF_NAME} {TEST_V4_PREFIX_ADDR} {TEST_V4_PREFIX_LEN} {R1_V4}",
+                f"route static ipv6 vrf {VRF_NAME} {TEST_V6_PREFIX_ADDR} {TEST_V6_PREFIX_LEN} {R1_V6}",
                 "end",
             ],
         )
@@ -547,13 +547,13 @@ def _configure_r2_vrf_loop(rt: TopologyRuntime) -> None:
         [
             {
                 "device": "r2",
-                "command": f"show route ipv4 {LOOP_V4} {LOOP_V4_LEN} vrf {VRF_NAME}",
+                "command": f"show route ipv4 vrf {VRF_NAME} {LOOP_V4} {LOOP_V4_LEN}",
                 "regex": [r"(?im)^\s*Path\s*\[\d+\]\s*:\s*connected\b"],
                 "label": "r2 vrf loop ipv4 connected route",
             },
             {
                 "device": "r2",
-                "command": f"show route ipv6 {LOOP_V6} {LOOP_V6_LEN} vrf {VRF_NAME}",
+                "command": f"show route ipv6 vrf {VRF_NAME} {LOOP_V6} {LOOP_V6_LEN}",
                 "regex": [r"(?im)^\s*Path\s*\[\d+\]\s*:\s*connected\b"],
                 "label": "r2 vrf loop ipv6 connected route",
             },
@@ -615,14 +615,14 @@ def _wait_connected_subscriptions(rt: TopologyRuntime, *, present: bool) -> None
         checks = [
             {
                 "device": "r2",
-                "command": f"show route ipv4 subscribe vrf {VRF_NAME}",
+                "command": f"show route ipv4 vrf {VRF_NAME} subscribe",
                 "contains": ["Route Subscribers", f"VRF filter: {VRF_NAME}"],
                 "regex": [r"(?im)^\s*bgp\s+connected\s+[1-9]\d*\s+ipv4\s*$"],
                 "label": "r2 vrf ipv4 connected subscription installed",
             },
             {
                 "device": "r2",
-                "command": f"show route ipv6 subscribe vrf {VRF_NAME}",
+                "command": f"show route ipv6 vrf {VRF_NAME} subscribe",
                 "contains": ["Route Subscribers", f"VRF filter: {VRF_NAME}"],
                 "regex": [r"(?im)^\s*bgp\s+connected\s+[1-9]\d*\s+ipv6\s*$"],
                 "label": "r2 vrf ipv6 connected subscription installed",
@@ -632,14 +632,14 @@ def _wait_connected_subscriptions(rt: TopologyRuntime, *, present: bool) -> None
         checks = [
             {
                 "device": "r2",
-                "command": f"show route ipv4 subscribe vrf {VRF_NAME}",
+                "command": f"show route ipv4 vrf {VRF_NAME} subscribe",
                 "contains": ["(no subscribers)"],
                 "not_regex": [r"(?im)^\s*bgp\s+connected\s+\d+\s+ipv4\s*$"],
                 "label": "r2 vrf ipv4 connected subscription removed",
             },
             {
                 "device": "r2",
-                "command": f"show route ipv6 subscribe vrf {VRF_NAME}",
+                "command": f"show route ipv6 vrf {VRF_NAME} subscribe",
                 "contains": ["(no subscribers)"],
                 "not_regex": [r"(?im)^\s*bgp\s+connected\s+\d+\s+ipv6\s*$"],
                 "label": "r2 vrf ipv6 connected subscription removed",
@@ -700,22 +700,22 @@ def _wait_r1_vrf_data_plane(rt: TopologyRuntime) -> None:
         [
             {
                 "device": "r1",
-                "command": f"show route ipv4 {LOOP_V4} {LOOP_V4_LEN} vrf {VRF_NAME}",
+                "command": f"show route ipv4 vrf {VRF_NAME} {LOOP_V4} {LOOP_V4_LEN}",
                 "contains": [LOOP_V4_PREFIX, R2_V4],
                 "regex": [r"(?im)^\s*Path\s*\[\d+\]\s*:\s*bgp\b"],
                 "label": "r1 vrf route ipv4 has bgp path",
             },
             {
                 "device": "r1",
-                "command": f"show route ipv6 {LOOP_V6} {LOOP_V6_LEN} vrf {VRF_NAME}",
+                "command": f"show route ipv6 vrf {VRF_NAME} {LOOP_V6} {LOOP_V6_LEN}",
                 "contains": [LOOP_V6_PREFIX, R2_V6],
                 "regex": [r"(?im)^\s*Path\s*\[\d+\]\s*:\s*bgp\b"],
                 "label": "r1 vrf route ipv6 has bgp path",
             },
             {
                 "device": "r1",
-                "command": f"show fib ipv4 {LOOP_V4} {LOOP_V4_LEN} vrf {VRF_NAME}",
-                "contains": [f"FIB Route Detail: {LOOP_V4_PREFIX}", f"Nexthop   : {R2_V4}"],
+                "command": f"show fib ipv4 vrf {VRF_NAME} {LOOP_V4} {LOOP_V4_LEN}",
+                "contains": [f"Routing entry for {LOOP_V4_PREFIX}", f"Nexthop   : {R2_V4}"],
                 "regex": [
                     r"(?im)^\s*AFI\s*:\s*ipv4\s*$",
                     r"(?im)^\s*NH-Type\s*:\s*ip\s*$",
@@ -726,8 +726,8 @@ def _wait_r1_vrf_data_plane(rt: TopologyRuntime) -> None:
             },
             {
                 "device": "r1",
-                "command": f"show fib ipv6 {LOOP_V6} {LOOP_V6_LEN} vrf {VRF_NAME}",
-                "contains": [f"FIB Route Detail: {LOOP_V6_PREFIX}", f"Nexthop   : {R2_V6}"],
+                "command": f"show fib ipv6 vrf {VRF_NAME} {LOOP_V6} {LOOP_V6_LEN}",
+                "contains": [f"Routing entry for {LOOP_V6_PREFIX}", f"Nexthop   : {R2_V6}"],
                 "regex": [
                     r"(?im)^\s*AFI\s*:\s*ipv6\s*$",
                     r"(?im)^\s*NH-Type\s*:\s*ip\s*$",
@@ -738,13 +738,13 @@ def _wait_r1_vrf_data_plane(rt: TopologyRuntime) -> None:
             },
             {
                 "device": "r1",
-                "command": f"show fib ipv4 os vrf {VRF_NAME}",
+                "command": f"show fib ipv4 vrf {VRF_NAME} os",
                 "contains": [LOOP_V4_PREFIX],
                 "label": "r1 vrf os fib ipv4 installed",
             },
             {
                 "device": "r1",
-                "command": f"show fib ipv6 os vrf {VRF_NAME}",
+                "command": f"show fib ipv6 vrf {VRF_NAME} os",
                 "contains": [LOOP_V6_PREFIX],
                 "label": "r1 vrf os fib ipv6 installed",
             },
@@ -818,25 +818,25 @@ def _wait_connected_routes_withdrawn(rt: TopologyRuntime) -> None:
             },
             {
                 "device": "r1",
-                "command": f"show fib ipv4 {LOOP_V4} {LOOP_V4_LEN} vrf {VRF_NAME}",
-                "not_contains": [f"FIB Route Detail: {LOOP_V4_PREFIX}"],
+                "command": f"show fib ipv4 vrf {VRF_NAME} {LOOP_V4} {LOOP_V4_LEN}",
+                "not_contains": [f"Routing entry for {LOOP_V4_PREFIX}"],
                 "label": "r1 vrf fib ipv4 withdrawn",
             },
             {
                 "device": "r1",
-                "command": f"show fib ipv6 {LOOP_V6} {LOOP_V6_LEN} vrf {VRF_NAME}",
-                "not_contains": [f"FIB Route Detail: {LOOP_V6_PREFIX}"],
+                "command": f"show fib ipv6 vrf {VRF_NAME} {LOOP_V6} {LOOP_V6_LEN}",
+                "not_contains": [f"Routing entry for {LOOP_V6_PREFIX}"],
                 "label": "r1 vrf fib ipv6 withdrawn",
             },
             {
                 "device": "r2",
-                "command": f"show route ipv4 {LOOP_V4} {LOOP_V4_LEN} vrf {VRF_NAME}",
+                "command": f"show route ipv4 vrf {VRF_NAME} {LOOP_V4} {LOOP_V4_LEN}",
                 "regex": [r"(?im)^\s*Path\s*\[\d+\]\s*:\s*connected\b"],
                 "label": "r2 original vrf loop ipv4 connected route remains",
             },
             {
                 "device": "r2",
-                "command": f"show route ipv6 {LOOP_V6} {LOOP_V6_LEN} vrf {VRF_NAME}",
+                "command": f"show route ipv6 vrf {VRF_NAME} {LOOP_V6} {LOOP_V6_LEN}",
                 "regex": [r"(?im)^\s*Path\s*\[\d+\]\s*:\s*connected\b"],
                 "label": "r2 original vrf loop ipv6 connected route remains",
             },

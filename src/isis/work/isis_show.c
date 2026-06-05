@@ -1825,17 +1825,20 @@ static void show_route_emit_item(const char *route_key, const isis_route_state_t
     g_snprintf(prefix, sizeof(prefix), "%s/%u", prefix_addr, (unsigned)state->prefix_len);
 
     char nexthop[64] = "-";
-    if ((state->nexthop_addr.family == AF_INET || state->nexthop_addr.family == AF_INET6) &&
-        !net_addr_is_zero(&state->nexthop_addr))
+    net_addr_t nh_addr;
+    if (isis_route_state_get_nexthop(state, &nh_addr) == ERRCODE_SUCCESS &&
+        (nh_addr.family == AF_INET || nh_addr.family == AF_INET6) && !net_addr_is_zero(&nh_addr))
     {
-        net_addr_to_str(&state->nexthop_addr, nexthop, sizeof(nexthop));
+        net_addr_to_str(&nh_addr, nexthop, sizeof(nexthop));
     }
 
     char src_addr[64] = "-";
     format_addr_or_dash(&state->source_addr, src_addr, sizeof(src_addr));
 
     char oif[64] = "-";
-    format_oif(state->out_ifindex, oif, sizeof(oif));
+    uint32_t out_ifindex = 0u;
+    (void)isis_route_state_get_out_ifindex(state, &out_ifindex);
+    format_oif(out_ifindex, oif, sizeof(oif));
 
     table_ctx->ctx->count++;
     if (table_ctx->ctx->detail)
@@ -1849,13 +1852,14 @@ static void show_route_emit_item(const char *route_key, const isis_route_state_t
                                "  AF           : %s\r\n"
                                "  Prefix       : %s\r\n"
                                "  Nexthop      : %s\r\n"
+                               "  NH-ID        : %u\r\n"
                                "  Source-Addr  : %s\r\n"
                                "  Out-If       : %s\r\n"
                                "  Metric       : %u\r\n\r\n",
                                table_ctx->ctx->count, route_source_name(table_ctx->table_name, route_key),
                                table_ctx->table_name ? table_ctx->table_name : "-", route_key,
-                               route_level_name(route_key), afi_name(state->afi), prefix, nexthop, src_addr, oif,
-                               (unsigned)state->metric);
+                               route_level_name(route_key), afi_name(state->afi), prefix, nexthop, state->nexthop_id,
+                               src_addr, oif, (unsigned)state->metric);
     }
     else
     {

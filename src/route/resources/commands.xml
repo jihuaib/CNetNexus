@@ -87,110 +87,110 @@
             <commands>
                 <!-- route static ipv4 <prefix> <prefix-length> <nexthop> -->
                 <command>
-                    <expression>2 3 4 6 7 9 [14 15]</expression>
+                    <expression>2 3 4 [14 15] 6 7 9</expression>
                     <views>config</views>
                 </command>
                 <!-- route static ipv4 <prefix> <prefix-length> <nexthop> metric <value> -->
                 <command>
-                    <expression>2 3 4 6 7 9 10 11 [14 15]</expression>
+                    <expression>2 3 4 [14 15] 6 7 9 10 11</expression>
                     <views>config</views>
                 </command>
                 <!-- no route static ipv4 <prefix> <prefix-length> -->
                 <command>
-                    <expression>1 2 3 4 6 7 [14 15]</expression>
+                    <expression>1 2 3 4 [14 15] 6 7</expression>
                     <views>config</views>
                 </command>
                 <!-- no route static ipv4 <prefix> <prefix-length> <nexthop> -->
                 <command>
-                    <expression>1 2 3 4 6 7 9 [14 15]</expression>
+                    <expression>1 2 3 4 [14 15] 6 7 9</expression>
                     <views>config</views>
                 </command>
                 <!-- route static ipv6 <prefix> <prefix-length> <nexthop> -->
                 <command>
-                    <expression>2 3 5 6 8 9 [14 15]</expression>
+                    <expression>2 3 5 [14 15] 6 8 9</expression>
                     <views>config</views>
                 </command>
                 <!-- route static ipv6 <prefix> <prefix-length> <nexthop> metric <value> -->
                 <command>
-                    <expression>2 3 5 6 8 9 10 11 [14 15]</expression>
+                    <expression>2 3 5 [14 15] 6 8 9 10 11</expression>
                     <views>config</views>
                 </command>
                 <!-- no route static ipv6 <prefix> <prefix-length> -->
                 <command>
-                    <expression>1 2 3 5 6 8 [14 15]</expression>
+                    <expression>1 2 3 5 [14 15] 6 8</expression>
                     <views>config</views>
                 </command>
                 <!-- no route static ipv6 <prefix> <prefix-length> <nexthop> -->
                 <command>
-                    <expression>1 2 3 5 6 8 9 [14 15]</expression>
+                    <expression>1 2 3 5 [14 15] 6 8 9</expression>
                     <views>config</views>
                 </command>
 
                 <!-- ===== nexthop + interface（IPv4）===== -->
                 <!-- route static ipv4 <prefix> <pfxlen> <nexthop> interface <ifname> -->
                 <command>
-                    <expression>2 3 4 6 7 9 12 13 [14 15]</expression>
+                    <expression>2 3 4 [14 15] 6 7 9 12 13</expression>
                     <views>config</views>
                 </command>
                 <!-- route static ipv4 <prefix> <pfxlen> <nexthop> interface <ifname> metric <value> -->
                 <command>
-                    <expression>2 3 4 6 7 9 12 13 10 11 [14 15]</expression>
+                    <expression>2 3 4 [14 15] 6 7 9 12 13 10 11</expression>
                     <views>config</views>
                 </command>
                 <!-- no route static ipv4 <prefix> <pfxlen> <nexthop> interface <ifname> -->
                 <command>
-                    <expression>1 2 3 4 6 7 9 12 13 [14 15]</expression>
+                    <expression>1 2 3 4 [14 15] 6 7 9 12 13</expression>
                     <views>config</views>
                 </command>
 
                 <!-- ===== interface-only（IPv4）===== -->
                 <!-- route static ipv4 <prefix> <pfxlen> interface <ifname> -->
                 <command>
-                    <expression>2 3 4 6 7 12 13 [14 15]</expression>
+                    <expression>2 3 4 [14 15] 6 7 12 13</expression>
                     <views>config</views>
                 </command>
                 <!-- route static ipv4 <prefix> <pfxlen> interface <ifname> metric <value> -->
                 <command>
-                    <expression>2 3 4 6 7 12 13 10 11 [14 15]</expression>
+                    <expression>2 3 4 [14 15] 6 7 12 13 10 11</expression>
                     <views>config</views>
                 </command>
                 <!-- no route static ipv4 <prefix> <pfxlen> interface <ifname> -->
                 <command>
-                    <expression>1 2 3 4 6 7 12 13 [14 15]</expression>
+                    <expression>1 2 3 4 [14 15] 6 7 12 13</expression>
                     <views>config</views>
                 </command>
 
                 <!-- ===== nexthop + interface（IPv6）===== -->
                 <!-- route static ipv6 <prefix> <pfxlen> <nexthop> interface <ifname> -->
                 <command>
-                    <expression>2 3 5 6 8 9 12 13 [14 15]</expression>
+                    <expression>2 3 5 [14 15] 6 8 9 12 13</expression>
                     <views>config</views>
                 </command>
                 <!-- route static ipv6 <prefix> <pfxlen> <nexthop> interface <ifname> metric <value> -->
                 <command>
-                    <expression>2 3 5 6 8 9 12 13 10 11 [14 15]</expression>
+                    <expression>2 3 5 [14 15] 6 8 9 12 13 10 11</expression>
                     <views>config</views>
                 </command>
                 <!-- no route static ipv6 <prefix> <pfxlen> <nexthop> interface <ifname> -->
                 <command>
-                    <expression>1 2 3 5 6 8 9 12 13 [14 15]</expression>
+                    <expression>1 2 3 5 [14 15] 6 8 9 12 13</expression>
                     <views>config</views>
                 </command>
 
                 <!-- ===== interface-only（IPv6）===== -->
                 <!-- route static ipv6 <prefix> <pfxlen> interface <ifname> -->
                 <command>
-                    <expression>2 3 5 6 8 12 13 [14 15]</expression>
+                    <expression>2 3 5 [14 15] 6 8 12 13</expression>
                     <views>config</views>
                 </command>
                 <!-- route static ipv6 <prefix> <pfxlen> interface <ifname> metric <value> -->
                 <command>
-                    <expression>2 3 5 6 8 12 13 10 11 [14 15]</expression>
+                    <expression>2 3 5 [14 15] 6 8 12 13 10 11</expression>
                     <views>config</views>
                 </command>
                 <!-- no route static ipv6 <prefix> <pfxlen> interface <ifname> -->
                 <command>
-                    <expression>1 2 3 5 6 8 12 13 [14 15]</expression>
+                    <expression>1 2 3 5 [14 15] 6 8 12 13</expression>
                     <views>config</views>
                 </command>
             </commands>
@@ -293,82 +293,82 @@
                 </command>
                 <!-- show route ipv4 <destination> <prefix-length> -->
                 <command>
-                    <expression>1 2 3 5 13 [16 17]</expression>
+                    <expression>1 2 3 [16 17] 5 13</expression>
                     <views>global</views>
                 </command>
                 <!-- show route ipv6 <destination> <prefix-length> -->
                 <command>
-                    <expression>1 2 4 5 14 [16 17]</expression>
+                    <expression>1 2 4 [16 17] 5 14</expression>
                     <views>global</views>
                 </command>
                 <!-- show route ipv4 proto static -->
                 <command>
-                    <expression>1 2 3 6 7 [16 17]</expression>
+                    <expression>1 2 3 [16 17] 6 7</expression>
                     <views>global</views>
                 </command>
                 <!-- show route ipv6 proto static -->
                 <command>
-                    <expression>1 2 4 6 7 [16 17]</expression>
+                    <expression>1 2 4 [16 17] 6 7</expression>
                     <views>global</views>
                 </command>
                 <!-- show route ipv4 proto bgp -->
                 <command>
-                    <expression>1 2 3 6 8 [16 17]</expression>
+                    <expression>1 2 3 [16 17] 6 8</expression>
                     <views>global</views>
                 </command>
                 <!-- show route ipv6 proto bgp -->
                 <command>
-                    <expression>1 2 4 6 8 [16 17]</expression>
+                    <expression>1 2 4 [16 17] 6 8</expression>
                     <views>global</views>
                 </command>
                 <!-- show route ipv4 proto ospf -->
                 <command>
-                    <expression>1 2 3 6 9 [16 17]</expression>
+                    <expression>1 2 3 [16 17] 6 9</expression>
                     <views>global</views>
                 </command>
                 <!-- show route ipv6 proto ospf -->
                 <command>
-                    <expression>1 2 4 6 9 [16 17]</expression>
+                    <expression>1 2 4 [16 17] 6 9</expression>
                     <views>global</views>
                 </command>
                 <!-- show route ipv4 proto connected -->
                 <command>
-                    <expression>1 2 3 6 11 [16 17]</expression>
+                    <expression>1 2 3 [16 17] 6 11</expression>
                     <views>global</views>
                 </command>
                 <!-- show route ipv6 proto connected -->
                 <command>
-                    <expression>1 2 4 6 11 [16 17]</expression>
+                    <expression>1 2 4 [16 17] 6 11</expression>
                     <views>global</views>
                 </command>
                 <!-- show route ipv4 proto isis -->
                 <command>
-                    <expression>1 2 3 6 12 [16 17]</expression>
+                    <expression>1 2 3 [16 17] 6 12</expression>
                     <views>global</views>
                 </command>
                 <!-- show route ipv6 proto isis -->
                 <command>
-                    <expression>1 2 4 6 12 [16 17]</expression>
+                    <expression>1 2 4 [16 17] 6 12</expression>
                     <views>global</views>
                 </command>
                 <!-- show route ipv4 summary -->
                 <command>
-                    <expression>1 2 3 10 [16 17]</expression>
+                    <expression>1 2 3 [16 17] 10</expression>
                     <views>global</views>
                 </command>
                 <!-- show route ipv6 summary -->
                 <command>
-                    <expression>1 2 4 10 [16 17]</expression>
+                    <expression>1 2 4 [16 17] 10</expression>
                     <views>global</views>
                 </command>
                 <!-- show route ipv4 subscribe -->
                 <command>
-                    <expression>1 2 3 15 [16 17]</expression>
+                    <expression>1 2 3 [16 17] 15</expression>
                     <views>global</views>
                 </command>
                 <!-- show route ipv6 subscribe -->
                 <command>
-                    <expression>1 2 4 15 [16 17]</expression>
+                    <expression>1 2 4 [16 17] 15</expression>
                     <views>global</views>
                 </command>
             </commands>
@@ -502,12 +502,12 @@
             <commands>
                 <!-- show route ipv4 static -->
                 <command>
-                    <expression>1 2 3 5 [6 7]</expression>
+                    <expression>1 2 3 [6 7] 5</expression>
                     <views>global</views>
                 </command>
                 <!-- show route ipv6 static -->
                 <command>
-                    <expression>1 2 4 5 [6 7]</expression>
+                    <expression>1 2 4 [6 7] 5</expression>
                     <views>global</views>
                 </command>
             </commands>
@@ -561,32 +561,103 @@
             <commands>
                 <!-- show route ipv4 relay -->
                 <command>
-                    <expression>1 2 3 5 [8 9]</expression>
+                    <expression>1 2 3 [8 9] 5</expression>
                     <views>global</views>
                 </command>
                 <!-- show route ipv6 relay -->
                 <command>
-                    <expression>1 2 4 5 [8 9]</expression>
+                    <expression>1 2 4 [8 9] 5</expression>
                     <views>global</views>
                 </command>
                 <!-- show route ipv4 relay bgp -->
                 <command>
-                    <expression>1 2 3 5 6 [8 9]</expression>
+                    <expression>1 2 3 [8 9] 5 6</expression>
                     <views>global</views>
                 </command>
                 <!-- show route ipv6 relay bgp -->
                 <command>
-                    <expression>1 2 4 5 6 [8 9]</expression>
+                    <expression>1 2 4 [8 9] 5 6</expression>
                     <views>global</views>
                 </command>
                 <!-- show route ipv4 relay static -->
                 <command>
-                    <expression>1 2 3 5 7 [8 9]</expression>
+                    <expression>1 2 3 [8 9] 5 7</expression>
                     <views>global</views>
                 </command>
                 <!-- show route ipv6 relay static -->
                 <command>
-                    <expression>1 2 4 5 7 [8 9]</expression>
+                    <expression>1 2 4 [8 9] 5 7</expression>
+                    <views>global</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- ================================================================
+             Group 6: show route [static] nexthop（nexthop 对象/静态 nexthop 组）
+             cfg-id: 1=nexthop, 2=static, 3=ipv4, 4=ipv6, 5=id, 6=nexthop-id, 7=vrf, 8=vrf-name
+             ================================================================ -->
+        <group group-id="6">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>show</name>
+                    <description>Display system information</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>route</name>
+                    <description>Route module</description>
+                </element>
+                <element id="3" cfg-id="1" type="keyword">
+                    <name>nexthop</name>
+                    <description>Nexthop objects</description>
+                </element>
+                <element id="4" cfg-id="2" type="keyword">
+                    <name>static</name>
+                    <description>Static nexthop groups</description>
+                </element>
+                <element id="5" cfg-id="3" type="keyword">
+                    <name>ipv4</name>
+                    <description>Filter by IPv4</description>
+                </element>
+                <element id="6" cfg-id="4" type="keyword">
+                    <name>ipv6</name>
+                    <description>Filter by IPv6</description>
+                </element>
+                <element id="7" cfg-id="5" type="keyword">
+                    <name>id</name>
+                    <description>Filter by nexthop id</description>
+                </element>
+                <element id="8" cfg-id="6" type="parameter">
+                    <name>&lt;nexthop-id&gt;</name>
+                    <type>uint(1-4294967295)</type>
+                    <description>Nexthop object id</description>
+                </element>
+                <element id="9" cfg-id="7" type="keyword">
+                    <name>vrf</name>
+                    <description>Filter by VRF name</description>
+                </element>
+                <element id="10" cfg-id="8" type="parameter">
+                    <name>&lt;vrf-name&gt;</name>
+                    <type>dynamic(4:1,string(1-63))</type>
+                    <description>VRF name</description>
+                </element>
+            </elements>
+            <commands>
+                <!-- show route nexthop {ipv4|ipv6} [vrf <name>] [id <id>]（afi 必填，vrf 在 id 之前） -->
+                <command>
+                    <expression>1 2 3 5 [9 10] [7 8]</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 3 6 [9 10] [7 8]</expression>
+                    <views>global</views>
+                </command>
+                <!-- show route static nexthop {ipv4|ipv6} [vrf <name>] [id <id>] -->
+                <command>
+                    <expression>1 2 4 3 5 [9 10] [7 8]</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 4 3 6 [9 10] [7 8]</expression>
                     <views>global</views>
                 </command>
             </commands>

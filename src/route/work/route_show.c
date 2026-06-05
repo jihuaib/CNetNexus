@@ -22,6 +22,7 @@
 #include "route.h"
 #include "route_cli.h"
 #include "route_main.h"
+#include "route_nhobj.h"
 #include "route_relay.h"
 #include "route_rib.h"
 #include "route_static.h"
@@ -353,8 +354,15 @@ static void show_path_cb(const route_head_t *head, const route_path_t *path, voi
     }
 
     char addr_str[64], nh_str[64], prefix_str[80], oif_str[IF_NAMESIZE];
+    route_nhobj_info_t nhinfo;
+    net_addr_t nh_zero;
+    memset(&nh_zero, 0, sizeof(nh_zero));
+    int has_nh = (route_nhobj_lookup(path->nexthop_id, &nhinfo) == 0);
+    const net_addr_t *nh_addr = has_nh ? &nhinfo.key.nexthop : &nh_zero;
+    /* 出接口：优先原始(配置)出接口，无则用 nexthop 对象解析出的 relay 出接口 */
+    uint32_t show_oif = (path->out_ifindex != 0) ? path->out_ifindex : (has_nh ? nhinfo.relay_ifindex : 0u);
     net_addr_to_str(&head->key.addr, addr_str, sizeof(addr_str));
-    net_addr_to_str(&path->nexthop, nh_str, sizeof(nh_str));
+    net_addr_to_str(nh_addr, nh_str, sizeof(nh_str));
     snprintf(prefix_str, sizeof(prefix_str), "%s/%u", addr_str, head->key.prefix_len);
     if (path->key.protocol == ROUTE_PROTOCOL_BLACKHOLE)
     {
@@ -362,7 +370,7 @@ static void show_path_cb(const route_head_t *head, const route_path_t *path, voi
     }
     else
     {
-        ifindex_to_name(path->out_ifindex, oif_str);
+        ifindex_to_name(show_oif, oif_str);
     }
 
     g_string_append_printf(ctx->buf, "%-2s %-24s %-20s %-14s %4d %4d\r\n", proto_name(path->key.protocol), prefix_str,
@@ -404,9 +412,16 @@ static void detail_path_cb(const route_head_t *head, const route_path_t *path, v
     }
 
     char addr_str[64], nh_str[64], iter_nh_str[64], oif_str[IF_NAMESIZE], iter_oif_str[IF_NAMESIZE];
+    route_nhobj_info_t nhinfo;
+    net_addr_t nh_zero;
+    memset(&nh_zero, 0, sizeof(nh_zero));
+    int has_nh = (route_nhobj_lookup(path->nexthop_id, &nhinfo) == 0);
+    const net_addr_t *nh_addr = has_nh ? &nhinfo.key.nexthop : &nh_zero;
+    const net_addr_t *relay_addr = has_nh ? &nhinfo.relay_addr : &nh_zero;
+    uint32_t relay_oif = has_nh ? nhinfo.relay_ifindex : 0u;
     net_addr_to_str(&head->key.addr, addr_str, sizeof(addr_str));
-    net_addr_to_str(&path->nexthop, nh_str, sizeof(nh_str));
-    net_addr_to_str(&path->relay_addr, iter_nh_str, sizeof(iter_nh_str));
+    net_addr_to_str(nh_addr, nh_str, sizeof(nh_str));
+    net_addr_to_str(relay_addr, iter_nh_str, sizeof(iter_nh_str));
     if (path->key.protocol == ROUTE_PROTOCOL_BLACKHOLE)
     {
         g_strlcpy(oif_str, "Null0", IF_NAMESIZE);
@@ -415,7 +430,7 @@ static void detail_path_cb(const route_head_t *head, const route_path_t *path, v
     else
     {
         ifindex_to_name(path->out_ifindex, oif_str);
-        ifindex_to_name(path->iter_out_ifindex, iter_oif_str);
+        ifindex_to_name(relay_oif, iter_oif_str);
     }
 
     /* 格式化更新时间 */
@@ -432,6 +447,7 @@ static void detail_path_cb(const route_head_t *head, const route_path_t *path, v
     g_string_append_printf(ctx->buf,
                            "  Path [%u]: %s\r\n"
                            "    Nexthop   : %s\r\n"
+                           "    NH-ID     : %u\r\n"
                            "    Interface : %s\r\n"
                            "    Iter NH   : %s\r\n"
                            "    Iter OIF  : %s\r\n"
@@ -441,9 +457,9 @@ static void detail_path_cb(const route_head_t *head, const route_path_t *path, v
                            "    Metric    : %d\r\n"
                            "    Preference: %d\r\n"
                            "    Updated   : %s\r\n",
-                           ctx->count, proto_name_long(path->key.protocol), nh_str, oif_str, iter_nh_str, iter_oif_str,
-                           route_nh_type_name(path->nh_type), path->tunnel_id, (unsigned int)path->flags, path->metric,
-                           path->preference, time_str);
+                           ctx->count, proto_name_long(path->key.protocol), nh_str, path->nexthop_id, oif_str,
+                           iter_nh_str, iter_oif_str, route_nh_type_name(path->nh_type), path->tunnel_id,
+                           (unsigned int)path->flags, path->metric, path->preference, time_str);
 }
 
 // ============================================================================
@@ -806,6 +822,160 @@ int route_show_handle_static(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     return route_show_send_chunked(msg, buf);
 }
 
+// ============================================================================
+// show route [static] nexthop
+// ============================================================================
+
+typedef struct
+{
+    GString *buf;
+    int has_afi;
+    uint16_t afi;
+    int has_vrf;
+    uint32_t vrf_id;
+    int has_nhid;
+    uint32_t nhid;
+    uint32_t count;
+} route_nhobj_show_ctx_t;
+
+static void route_nhobj_show_cb(uint32_t id, const route_nhobj_info_t *info, uint32_t refcount, uint32_t fib_refcount,
+                                void *user)
+{
+    route_nhobj_show_ctx_t *ctx = (route_nhobj_show_ctx_t *)user;
+    if (!info || !ctx)
+    {
+        return;
+    }
+    if (ctx->has_afi && info->key.afi != ctx->afi)
+    {
+        return;
+    }
+    if (ctx->has_vrf && info->key.vrf_id != ctx->vrf_id)
+    {
+        return;
+    }
+    if (ctx->has_nhid && id != ctx->nhid)
+    {
+        return;
+    }
+
+    char nh_str[64] = "-";
+    char relay_str[64] = "-";
+    if (!net_addr_is_zero(&info->key.nexthop))
+    {
+        net_addr_to_str(&info->key.nexthop, nh_str, sizeof(nh_str));
+    }
+    if (!net_addr_is_zero(&info->relay_addr))
+    {
+        net_addr_to_str(&info->relay_addr, relay_str, sizeof(relay_str));
+    }
+    g_string_append_printf(ctx->buf, "%-10u %-6u %-5s %-10s %-20s %-20s %-6u %-5u %-6u\r\n", id, info->key.vrf_id,
+                           (info->key.afi == ROUTE_AFI_IPV6) ? "ipv6" : "ipv4", proto_name_long(info->key.protocol),
+                           nh_str, relay_str, info->relay_ifindex, refcount, fib_refcount);
+    ctx->count++;
+}
+
+static int route_show_handle_nexthop(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    int is_static = 0;
+    int has_afi = 0;
+    uint16_t afi = ROUTE_AFI_IPV4;
+    gboolean has_nhid = FALSE;
+    uint32_t nhid = 0;
+    char vrf_name[VRF_NAME_MAX_LEN] = {0};
+
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (!CLI_TLV_IS_CTX(&entry))
+        {
+            switch (entry.cfg_id)
+            {
+                case 2:
+                    is_static = 1;
+                    break;
+                case 3:
+                    afi = ROUTE_AFI_IPV4;
+                    has_afi = 1;
+                    break;
+                case 4:
+                    afi = ROUTE_AFI_IPV6;
+                    has_afi = 1;
+                    break;
+                case 6:
+                    nhid = (uint32_t)cli_tlv_entry_get_int(&entry);
+                    has_nhid = TRUE;
+                    break;
+                case 8:
+                {
+                    const char *text = cli_tlv_entry_get_text(&entry);
+                    if (text)
+                    {
+                        g_strlcpy(vrf_name, text, sizeof(vrf_name));
+                    }
+                    break;
+                }
+                default:
+                    break;
+            }
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    int has_vrf = (vrf_name[0] != '\0');
+    uint32_t vrf_id = ROUTE_VRF_DEFAULT;
+    if (has_vrf)
+    {
+        route_show_vrf_filter_t vf;
+        if (route_show_vrf_filter_resolve(vrf_name, &vf) != ERRCODE_SUCCESS)
+        {
+            char resp[160];
+            snprintf(resp, sizeof(resp), "Error: VRF %s not found\r\n", vrf_name);
+            send_resp(msg, resp);
+            return ERRCODE_FAIL;
+        }
+        vrf_id = vf.vrf_id;
+    }
+
+    GString *buf = g_string_new("");
+    if (!buf)
+    {
+        send_resp(msg, "Error: Out of memory\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    if (is_static)
+    {
+        route_static_show_nexthop(buf, has_afi, afi, has_vrf, vrf_id, has_nhid, nhid);
+    }
+    else
+    {
+        route_nhobj_show_ctx_t ctx = {
+            .buf = buf,
+            .has_afi = has_afi,
+            .afi = afi,
+            .has_vrf = has_vrf,
+            .vrf_id = vrf_id,
+            .has_nhid = has_nhid,
+            .nhid = nhid,
+            .count = 0,
+        };
+        g_string_append_printf(buf,
+                               "\r\nRoute Nexthop Objects\r\n"
+                               "%-10s %-6s %-5s %-10s %-20s %-20s %-6s %-5s %-6s\r\n"
+                               "---------- ------ ----- ---------- -------------------- -------------------- ------ "
+                               "----- ------\r\n",
+                               "NH-ID", "VRF", "AFI", "Proto", "Nexthop", "Relay", "OIF", "Ref", "FibRef");
+        route_nhobj_foreach(route_nhobj_show_cb, &ctx);
+        if (ctx.count == 0)
+        {
+            g_string_append(buf, "  (no nexthop objects)\r\n");
+        }
+        g_string_append_printf(buf, "\r\nTotal %u nexthop(s)\r\n", ctx.count);
+    }
+    return route_show_send_chunked(msg, buf);
+}
+
 int route_show_handle_continue(dev_ipc_message_t *msg)
 {
     return cli_chunk_stream_continue(&g_route_show_stream, route_local_ipc_ctx(), DEV_MODULE_ID_ROUTE, msg);
@@ -855,6 +1025,9 @@ int route_show_dispatch(dev_ipc_message_t *msg)
             break;
         case ROUTE_CLI_GROUP_ID_STATIC_SHOW:
             result = route_show_handle_static(msg, &parser);
+            break;
+        case ROUTE_CLI_GROUP_ID_NEXTHOP_SHOW:
+            result = route_show_handle_nexthop(msg, &parser);
             break;
         default:
             LOG_WARN("[route_show] 未知 show group_id: %u", parser.group_id);

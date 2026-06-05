@@ -10,11 +10,12 @@
 #include "dev.h"
 
 /** Route CLI group_id 定义（与 commands.xml 中 group-id 一致） */
-#define ROUTE_CLI_GROUP_ID_CONFIG 1      /**< 路由配置命令 */
-#define ROUTE_CLI_GROUP_ID_SHOW 2        /**< show route 命令 */
-#define ROUTE_CLI_GROUP_ID_BATCH 3       /**< 批量路由命令 */
-#define ROUTE_CLI_GROUP_ID_RELAY_SHOW 4  /**< show route relay 命令 */
-#define ROUTE_CLI_GROUP_ID_STATIC_SHOW 5 /**< show route static 命令（候选静态路由表） */
+#define ROUTE_CLI_GROUP_ID_CONFIG 1       /**< 路由配置命令 */
+#define ROUTE_CLI_GROUP_ID_SHOW 2         /**< show route 命令 */
+#define ROUTE_CLI_GROUP_ID_BATCH 3        /**< 批量路由命令 */
+#define ROUTE_CLI_GROUP_ID_RELAY_SHOW 4   /**< show route relay 命令 */
+#define ROUTE_CLI_GROUP_ID_STATIC_SHOW 5  /**< show route static 命令（候选静态路由表） */
+#define ROUTE_CLI_GROUP_ID_NEXTHOP_SHOW 6 /**< show route [static] nexthop 命令（nexthop 对象/组） */
 
 /**
  * @brief 处理来自 CFG 模块的 CLI 配置命令消息（在 IPC 线程调用）

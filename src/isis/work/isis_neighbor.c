@@ -950,15 +950,25 @@ static void isis_neighbor_reconcile_learned_afi(isis_instance_cfg_t *inst, const
     if (nbr->state == ISIS_ADJ_STATE_UP && inst->admin_up && af_enabled && af_cfg && if_entry && if_entry->proto_up &&
         if_entry->ifindex != 0u && !af_cfg->passive && isis_level_enabled(inst, nbr->level))
     {
+        isis_nexthop_table_t *nh_table = isis_instance_nexthop_table(inst, afi);
+        if (!nh_table)
+        {
+            return;
+        }
         desired.afi = afi;
-        desired.out_ifindex = if_entry->ifindex;
         desired.metric = ((af_cfg->metric == 0u) ? ISIS_DEFAULT_IF_METRIC : af_cfg->metric) + ISIS_NEIGHBOR_ROUTE_COST;
 
         if (afi == ROUTE_AFI_IPV4 && nbr->ipv4_addr.family == AF_INET)
         {
             desired.prefix_len = 32u;
             desired.prefix_addr = nbr->ipv4_addr;
-            isis_zero_addr(AF_INET, &desired.nexthop_addr);
+            net_addr_t zero_nh;
+            isis_zero_addr(AF_INET, &zero_nh);
+            if (isis_route_state_set_nexthop(&desired, nh_table, if_entry->ifindex, if_entry->ifindex, &zero_nh) !=
+                ERRCODE_SUCCESS)
+            {
+                return;
+            }
             if (if_entry->ipv4_addr.family == AF_INET)
             {
                 desired.source_addr = if_entry->ipv4_addr;
@@ -996,7 +1006,13 @@ static void isis_neighbor_reconcile_learned_afi(isis_instance_cfg_t *inst, const
         {
             desired.prefix_len = 128u;
             desired.prefix_addr = nbr->ipv6_addr;
-            isis_zero_addr(AF_INET6, &desired.nexthop_addr);
+            net_addr_t zero_nh;
+            isis_zero_addr(AF_INET6, &zero_nh);
+            if (isis_route_state_set_nexthop(&desired, nh_table, if_entry->ifindex, if_entry->ifindex, &zero_nh) !=
+                ERRCODE_SUCCESS)
+            {
+                return;
+            }
             if (if_entry->ipv6_addr.family == AF_INET6)
             {
                 desired.source_addr = if_entry->ipv6_addr;
@@ -1028,6 +1044,7 @@ static void isis_neighbor_reconcile_learned_afi(isis_instance_cfg_t *inst, const
 
     if (!has_desired)
     {
+        isis_route_state_reset(&desired);
         if (current)
         {
             (void)isis_route_sync_publish_del(current);
@@ -1038,6 +1055,7 @@ static void isis_neighbor_reconcile_learned_afi(isis_instance_cfg_t *inst, const
 
     if (current && isis_route_state_same(current, &desired))
     {
+        isis_route_state_reset(&desired);
         return;
     }
 
@@ -1049,12 +1067,14 @@ static void isis_neighbor_reconcile_learned_afi(isis_instance_cfg_t *inst, const
 
     if (isis_route_sync_publish_add(&desired) != ERRCODE_SUCCESS)
     {
+        isis_route_state_reset(&desired);
         return;
     }
 
     char path_key[ISIS_ROUTE_PATH_KEY_MAX];
     isis_route_path_key_format(path_key, sizeof(path_key), key_buf, &desired);
     isis_route_head_table_add_path(inst->learned_route_heads, key_buf, path_key, &desired);
+    isis_route_state_reset(&desired);
 }
 
 static void isis_neighbor_reconcile_learned(isis_instance_cfg_t *inst, const isis_neighbor_t *nbr)

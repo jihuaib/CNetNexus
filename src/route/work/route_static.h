@@ -13,39 +13,61 @@
 #include "dev.h"
 #include "if.h"
 #include "net_addr.h"
+#include "route_nhobj.h"
 
 /**
- * @brief 候选静态路由条目键（prefix + nexthop + out_ifname 唯一标识一条静态路由）
+ * @brief 全局静态 nexthop 组（按下一跳分组：多条静态路由共享一个 id + 一次 relay 迭代注册）
  *
- * 三种模式：
- * - 纯 nexthop：nexthop_addr 有值，out_ifname 空
- * - nexthop + interface：nexthop_addr 有值，out_ifname 有值
- * - interface-only：nexthop_addr 全零，out_ifname 有值
+ * 下一跳身份键（key）与 RIB 路由的 nexthop 对象键 route_nhobj_key_t 完全一致
+ * （protocol=STATIC/BLACKHOLE）。仅**复用 route_nhobj_key_t（key）**。
+ *
+ * relay 解析结果（网关/出接口）是「两步都要用的 value」——在「添加下一跳」（acquire/解析）时
+ * 写入 nexthop 对象，同时 static 全局 nexthop 组本地保存一份用于整组前缀重写；
+ * route 注入只带 nexthop_id。
+ *
+ * 四种模式经 key 统一编码：
+ * - 纯 nexthop：nh_type=IP，nexthop 有值，key_ifindex=0
+ * - nexthop + interface：nh_type=IP，nexthop 有值，key_ifindex=cfg_ifindex
+ * - interface-only：nh_type=IP，nexthop 全零，key_ifindex=cfg_ifindex
+ * - null0：nh_type=BLACKHOLE，nexthop 全零，key_ifindex=0
+ */
+typedef struct route_static_nh
+{
+    route_nhobj_key_t key;  /**< 复用：下一跳身份键（与 RIB 路由一致；同时作为哈希键） */
+    uint32_t nexthop_id;    /**< route_nhobj_acquire 申请的 id，引用归零时 release */
+    uint32_t refcount;      /**< 引用本下一跳的静态路由条数 */
+    uint8_t has_nexthop;    /**< 1=有 IP 下一跳；0=interface-only/null0 */
+    uint8_t is_null0;       /**< 1=null0 黑洞 */
+    uint8_t resolved;       /**< 当前可达性（1=可达，0=不可达） */
+    uint8_t _pad;           /**< 填充对齐 */
+    net_addr_t relay_addr;  /**< relay 解析后的网关（组级 value） */
+    uint32_t relay_ifindex; /**< relay 解析后的出接口（组级 value） */
+    char out_ifname[IF_LOGICAL_NAME_MAX]; /**< 原始接口名（用于 ifname→ifindex 再解析） */
+} route_static_nh_t;
+
+/**
+ * @brief 静态路由候选条目键：前缀 + nexthop_id（路由只看到 nexthop id，不存下一跳地址）
  */
 typedef struct route_static_entry_key
 {
-    uint32_t vrf_id;                      /**< VRF ID */
-    uint16_t afi;                         /**< 地址族（ROUTE_AFI_IPV4 / ROUTE_AFI_IPV6） */
-    uint8_t prefix_len;                   /**< 前缀长度 */
-    uint8_t _pad;                         /**< 填充对齐 */
-    net_addr_t prefix_addr;               /**< 前缀地址（二进制） */
-    net_addr_t nexthop_addr;              /**< 下一跳地址（二进制，全零表示 interface-only） */
-    char out_ifname[IF_LOGICAL_NAME_MAX]; /**< 出接口逻辑名（空字符串=不约束） */
+    uint32_t vrf_id;        /**< VRF ID */
+    uint16_t afi;           /**< 地址族 */
+    uint8_t prefix_len;     /**< 前缀长度 */
+    uint8_t _pad;           /**< 填充对齐 */
+    net_addr_t prefix_addr; /**< 前缀地址（二进制） */
+    uint32_t nexthop_id;    /**< 静态路由的下一跳（以全局静态 nexthop 组的 id 表示） */
 } route_static_entry_key_t;
 
 /**
- * @brief 候选静态路由条目（存于候选表，等待可达后写入 RIB）
+ * @brief 静态路由候选条目（存于全局候选表，等待 nexthop 可达后写入 RIB）
  */
 typedef struct route_static_entry
 {
-    route_static_entry_key_t key; /**< 内嵌键 */
+    route_static_entry_key_t key; /**< 内嵌键（前缀 + nexthop_id） */
     int32_t metric;               /**< 度量值 */
     int32_t preference;           /**< 管理距离 */
-    uint8_t nh_resolved;          /**< nexthop 当前是否可达（1=可达，0=不可达） */
     uint8_t in_rib;               /**< 是否已写入 RIB（1=已写入，0=未写入） */
-    uint8_t has_nexthop;          /**< 1=有 nexthop IP，0=interface-only */
-    uint8_t _pad[5];              /**< 填充对齐 */
-    uint32_t cfg_ifindex;         /**< 配置时/刷新时解析的接口 ifindex */
+    uint8_t _pad[3];              /**< 填充对齐 */
 } route_static_entry_t;
 
 /**
@@ -115,18 +137,15 @@ int route_static_del_vrf(uint32_t vrf_id);
  * @brief 指定 nexthop 可达性变化时，更新所有关联的候选静态路由
  *
  * 由 route_relay 在 watch 表检测到 nexthop 状态变化时统一回调（与协议迭代走同一流程）。
- * 遍历候选表中 (vrf_id, afi, nexthop_addr) 匹配的条目，按新状态写入/撤销 RIB。
+ * 遍历候选表中 nexthop_id 匹配的条目，按新状态写入/撤销 RIB。
  * gateway 和 out_ifindex 由 relay 迭代一次性解析完成，无需二次迭代。
  *
- * @param vrf_id       VRF ID
- * @param afi          地址族
- * @param nexthop_addr 状态发生变化的下一跳地址
+ * @param nexthop_id   nexthop 对象 ID
  * @param resolved     新的可达性状态（1=可达，0=不可达）
  * @param gateway      解析出的直连网关地址（仅 resolved=1 时有效）
  * @param out_ifindex  解析出的出接口索引（仅 resolved=1 时有效）
  */
-void route_static_on_nh_change(uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop_addr, int resolved,
-                               const net_addr_t *gateway, uint32_t out_ifindex);
+void route_static_on_nh_change(uint32_t nexthop_id, int resolved, const net_addr_t *gateway, uint32_t out_ifindex);
 
 /**
  * @brief 接口状态变化时，重检查所有 interface-only 静态路由的可达性
@@ -160,6 +179,20 @@ void route_static_show(GString *buf, uint16_t afi_filter, int has_afi_filter, ui
  */
 void route_static_show_relay(GString *buf, uint16_t afi_filter, int has_afi_filter, uint32_t vrf_filter,
                              const char *vrf_name);
+
+/**
+ * @brief 输出静态 nexthop 组表（按下一跳分组），供 `show route static nexthop`
+ *
+ * @param buf        输出缓冲区
+ * @param has_afi    是否按地址族过滤
+ * @param afi        地址族（has_afi 时有效）
+ * @param has_vrf    是否按 VRF 过滤
+ * @param vrf_id     VRF ID（has_vrf 时有效）
+ * @param has_nhid   是否按 nexthop_id 过滤
+ * @param nexthop_id nexthop 对象 id（has_nhid 时有效）
+ */
+void route_static_show_nexthop(GString *buf, int has_afi, uint16_t afi, int has_vrf, uint32_t vrf_id, int has_nhid,
+                               uint32_t nexthop_id);
 
 /**
  * @brief 清理候选静态路由表（shutdown 时调用）

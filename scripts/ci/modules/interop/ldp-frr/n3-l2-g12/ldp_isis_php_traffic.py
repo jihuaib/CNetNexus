@@ -471,7 +471,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                     "device": "r1",
                     "command": f"show fib ipv4 {FRR_LOOP_V4} {LOOP_V4_LEN}",
                     "contains": [
-                        f"FIB Route Detail: {FRR_LOOP_V4}/{LOOP_V4_LEN}",
+                        f"Routing entry for {FRR_LOOP_V4}/{LOOP_V4_LEN}",
                         "NH-Type   : ip",
                     ],
                     "not_contains": ["NH-Type   : tunnel", "Tunnel    : state=up"],

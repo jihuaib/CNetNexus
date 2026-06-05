@@ -11,6 +11,7 @@
 #include "bgp_attr_intern.h"
 #include "bgp_calc.h"
 #include "bgp_import_rib.h"
+#include "bgp_nexthop.h"
 #include "bgp_protocol.h"
 #include "bgp_rd.h"
 #include "bgp_rib.h"
@@ -55,6 +56,7 @@ bgp_instance_t *bgp_instance_create(bgp_afi_t afi, bgp_safi_t safi, bgp_vrf_t *v
     inst->rd_entries = g_hash_table_new(bgp_rd_hash, bgp_rd_equal);
     inst->calc_queue = bgp_calc_queue_create();
     inst->route_flush_queue = bgp_route_flush_queue_create();
+    bgp_nexthop_init(inst);
 
     /* 注入公网（rd=0）entry：所有 AF 都需要至少一条 entry 提供 RIB */
     bgp_protocol_t *proto = g_bgp_work_local ? g_bgp_work_local->protocol : NULL;
@@ -108,6 +110,7 @@ void bgp_instance_destroy(bgp_instance_t *inst)
         g_hash_table_destroy(inst->rd_entries);
         inst->rd_entries = NULL;
     }
+    bgp_nexthop_cleanup(inst);
     if (inst->qp_routes)
     {
         g_list_free_full(inst->qp_routes, g_free);

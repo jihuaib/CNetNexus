@@ -108,7 +108,7 @@ def _wait_route_fib_os(
     fib_os_cmd = _fib_os_cmd(afi, vrf)
 
     route_header = rf"(?im)^\s*Routing entry for {re.escape(prefix)} \(VRF: {re.escape(vrf)}\)\s*$"
-    fib_header = rf"(?im)^\s*FIB Route Detail:\s*{re.escape(prefix)}\s*$"
+    fib_header = rf"(?im)^\s*Routing entry for\s+{re.escape(prefix)}\b"
     fib_afi = rf"(?im)^\s*AFI\s*:\s*{re.escape(afi)}\s*$"
     fib_skip_os = r"(?im)^\s*Skip OS\s*:\s*yes\s*$"
     os_row = (
@@ -192,7 +192,7 @@ def _wait_ipv4_host_route_fib_os(
 
     route_header = rf"(?im)^\s*Routing entry for {re.escape(prefix)} \(VRF: {re.escape(vrf)}\)\s*$"
     route_path = r"(?im)^\s*Path\s*\[1\]\s*:\s*(?:connected|local)\b"
-    fib_header = rf"(?im)^\s*FIB Route Detail:\s*{re.escape(prefix)}\s*$"
+    fib_header = rf"(?im)^\s*Routing entry for\s+{re.escape(prefix)}\b"
     fib_afi = r"(?im)^\s*AFI\s*:\s*ipv4\s*$"
     fib_skip_os = r"(?im)^\s*Skip OS\s*:\s*yes\s*$"
     os_local_row = (

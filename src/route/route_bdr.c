@@ -84,31 +84,36 @@ int route_bdr_handle_show_config(dev_ipc_message_t *msg)
             continue;
         }
 
+        /* vrf 紧跟 afi（与 show / 配置命令语法保持一致：route static <afi> [vrf <name>] ...） */
+        char vrf_clause[80] = "";
+        if (vrf_name && vrf_name[0] != '\0' && strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) != 0)
+        {
+            snprintf(vrf_clause, sizeof(vrf_clause), " vrf %s", vrf_name);
+        }
+
         g_string_append(out, "!\r\n");
         if (has_nh && has_if)
         {
             /* nexthop + interface */
-            g_string_append_printf(out, "route static %s %s %ld %s interface %s", afi_str, prefix, prefix_len, nexthop,
-                                   ifname);
+            g_string_append_printf(out, "route static %s%s %s %ld %s interface %s", afi_str, vrf_clause, prefix,
+                                   prefix_len, nexthop, ifname);
         }
         else if (has_if)
         {
             /* interface-only */
-            g_string_append_printf(out, "route static %s %s %ld interface %s", afi_str, prefix, prefix_len, ifname);
+            g_string_append_printf(out, "route static %s%s %s %ld interface %s", afi_str, vrf_clause, prefix,
+                                   prefix_len, ifname);
         }
         else
         {
             /* 纯 nexthop */
-            g_string_append_printf(out, "route static %s %s %ld %s", afi_str, prefix, prefix_len, nexthop);
+            g_string_append_printf(out, "route static %s%s %s %ld %s", afi_str, vrf_clause, prefix, prefix_len,
+                                   nexthop);
         }
 
         if (metric != 0)
         {
             g_string_append_printf(out, " metric %ld", metric);
-        }
-        if (vrf_name && vrf_name[0] != '\0' && strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) != 0)
-        {
-            g_string_append_printf(out, " vrf %s", vrf_name);
         }
         g_string_append(out, "\r\n");
     }

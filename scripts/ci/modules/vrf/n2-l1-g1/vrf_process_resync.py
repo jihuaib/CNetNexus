@@ -213,7 +213,7 @@ def _wait_static_in_rib(
     expect_present: bool,
     timeout: int = WAIT_ROUTE_SEC,
 ) -> None:
-    cmd_str = f"show route ipv4 {STATIC_PREFIX_ADDR} {STATIC_PREFIX_LEN} vrf {VRF_NAME}"
+    cmd_str = f"show route ipv4 vrf {VRF_NAME} {STATIC_PREFIX_ADDR} {STATIC_PREFIX_LEN}"
     route_header = rf"(?im)^\s*Routing entry for {re.escape(STATIC_PREFIX)} \(VRF: {re.escape(VRF_NAME)}\)\s*$"
     static_path = r"(?im)^\s*Path\s*\[\d+\]\s*:\s*static\b"
 
@@ -248,7 +248,7 @@ def _wait_direct_in_rib(
     *,
     timeout: int = WAIT_ROUTE_SEC,
 ) -> None:
-    cmd_str = f"show route ipv4 {V4_NET} {V4_LEN} vrf {VRF_NAME}"
+    cmd_str = f"show route ipv4 vrf {VRF_NAME} {V4_NET} {V4_LEN}"
     wait_check(
         rt,
         device=device,
@@ -284,7 +284,7 @@ def _cleanup(rt: TopologyRuntime, baseline: dict[str, dict[str, str | int]]) -> 
         ]
         if dev == "r1":
             commands.append(
-                f"no route static ipv4 {STATIC_PREFIX_ADDR} {STATIC_PREFIX_LEN} {STATIC_NH} vrf {VRF_NAME}"
+                f"no route static ipv4 vrf {VRF_NAME} {STATIC_PREFIX_ADDR} {STATIC_PREFIX_LEN} {STATIC_NH}"
             )
         local_v4 = R1_V4 if dev == "r1" else R2_V4
         commands += [
@@ -414,7 +414,7 @@ def _run_inner(rt: TopologyRuntime, container: str) -> None:
         device="r1",
         commands=[
             "config",
-            f"route static ipv4 {STATIC_PREFIX_ADDR} {STATIC_PREFIX_LEN} {STATIC_NH} vrf {VRF_NAME}",
+            f"route static ipv4 vrf {VRF_NAME} {STATIC_PREFIX_ADDR} {STATIC_PREFIX_LEN} {STATIC_NH}",
             "end",
         ],
     )

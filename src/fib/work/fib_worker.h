@@ -22,6 +22,8 @@ typedef enum fib_worker_cmd_type
     FIB_WORKER_CMD_SHOW_CLI = 7,
     FIB_WORKER_CMD_SHUTDOWN = 8,
     FIB_WORKER_CMD_VRF_EVENT = 9,
+    FIB_WORKER_CMD_NEXTHOP_UPSERT = 10,
+    FIB_WORKER_CMD_NEXTHOP_DELETE = 11,
 } fib_worker_cmd_type_t;
 
 typedef struct fib_work_local

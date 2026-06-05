@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include "bgp.h"
+#include "bgp_nexthop.h"
 #include "net_addr.h"
 #include "route.h"
 #include "tunnel.h"
@@ -37,6 +38,13 @@ void bgp_relay_ingest_peer_update(bgp_session_t *session, const bgp_update_resul
  * @brief 清理指定 source 的所有 relay 路由
  */
 void bgp_relay_flush_peer_routes(uint32_t vrf_id, const net_addr_t *source);
+
+/**
+ * @brief 读取 route 当前 nexthop 迭代 value。
+ *
+ * 普通 IP nexthop 从 BGP nexthop registry 读取；labeled/import-rib 隧道路径从 relay watch 读取。
+ */
+int bgp_relay_get_route_iter_value(const bgp_route_node_t *route, bgp_nexthop_value_t *value_out);
 
 /**
  * @brief 处理 ROUTE nexthop 通知（可达/不可达）

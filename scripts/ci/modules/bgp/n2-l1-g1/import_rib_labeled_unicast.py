@@ -177,7 +177,7 @@ def _assert_r2_route_table_present_tunnel(rt: TopologyRuntime, *, lu_nexthop: st
         command=f"show fib ipv4 {TEST_PREFIX_ADDR} {TEST_PREFIX_LEN}",
         timeout=timeout,
         interval=2,
-        contains=[f"FIB Route Detail: {TEST_PREFIX}"],
+        contains=[f"Routing entry for {TEST_PREFIX}"],
         regex=[
             r"(?im)^\s*NH-Type\s*:\s*tunnel\s*$",
             r"(?im)^\s*Tunnel-ID\s*:\s*[1-9]\d*\s*$",

@@ -55,26 +55,21 @@ void route_relay_publish_unreachable_for_shutdown(void);
  *
  * 若同键条目已存在则更新；创建后立即计算当前可达性，一次迭代同时解析网关和出接口。
  *
- * @param vrf_id         VRF ID
- * @param afi            地址族
- * @param nexthop_addr   下一跳地址（二进制）
+ * @param nexthop_id     nexthop 对象 ID
  * @param owner_module_id 注册方模块 ID
  * @param gateway_out    解析后的直连网关地址（输出，可为 NULL）
  * @param ifindex_out    解析出的出接口索引（输出，可为 NULL）
  * @return 1=当前可达，0=当前不可达
  */
-int route_relay_register_direct(uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop_addr, uint32_t owner_module_id,
-                                net_addr_t *gateway_out, uint32_t *ifindex_out);
+int route_relay_register_direct(uint32_t nexthop_id, uint32_t owner_module_id, net_addr_t *gateway_out,
+                                uint32_t *ifindex_out);
 
 /**
  * @brief 直接从 relay watch 表移除 nexthop（供模块内部使用，不经过 IPC）
  *
- * @param vrf_id         VRF ID
- * @param afi            地址族
- * @param nexthop_addr   下一跳地址（二进制）
+ * @param nexthop_id     nexthop 对象 ID
  * @param owner_module_id 注册方模块 ID
  */
-void route_relay_unregister_direct(uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop_addr,
-                                   uint32_t owner_module_id);
+void route_relay_unregister_direct(uint32_t nexthop_id, uint32_t owner_module_id);
 
 #endif /* ROUTE_RELAY_H */

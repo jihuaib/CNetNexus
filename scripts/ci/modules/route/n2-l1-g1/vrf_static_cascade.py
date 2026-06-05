@@ -4,7 +4,7 @@ VRF 静态路由级联删除验证（含 RIB / FIB / FIB-OS 数据面校验，IP
 
 覆盖：
 - 绑定 GE-1 到 VRF "red"，在 VRF 内配置 IPv4/IPv6 直连地址。
-- `route static ipv4 ... vrf red` / `route static ipv6 ... vrf red` 配置后：
+- `route static ipv4 vrf red` ... / `route static ipv6 vrf red` ... 配置后：
     * VRF RIB（show route）中能看到 S 路径，nexthop 解析正确；
     * VRF FIB（show fib）中有详情条目，Installed=yes，Skip OS=no；
     * VRF OS FIB（show fib ipv{4,6} os vrf red）有内核条目。
@@ -100,7 +100,7 @@ def _wait_static_installed(
     route_static_path = r"(?im)^\s*Path\s*\[\d+\]\s*:\s*static\b"
     route_nh = rf"(?im)^\s*Nexthop\s*:\s*{re.escape(nexthop)}\s*$"
 
-    fib_header = rf"(?im)^\s*FIB Route Detail:\s*{re.escape(prefix)}\s*$"
+    fib_header = rf"(?im)^\s*Routing entry for\s+{re.escape(prefix)}\b"
     fib_afi = rf"(?im)^\s*AFI\s*:\s*{re.escape(afi)}\s*$"
     fib_installed = r"(?im)^\s*Installed\s*:\s*yes\s*$"
     fib_skip_os = r"(?im)^\s*Skip OS\s*:\s*no\s*$"
@@ -153,7 +153,7 @@ def _wait_static_absent_in_public(
 
     route_header = rf"(?im)^\s*Routing entry for {re.escape(prefix)} \(VRF: public\)\s*$"
     route_static_path = r"(?im)^\s*Path\s*\[\d+\]\s*:\s*static\b"
-    fib_header = rf"(?im)^\s*FIB Route Detail:\s*{re.escape(prefix)}\s*$"
+    fib_header = rf"(?im)^\s*Routing entry for\s+{re.escape(prefix)}\b"
     os_row = rf"(?im)^\s*\S+\s+unicast\s+{re.escape(prefix)}\s+"
 
     wait_checks(
@@ -230,8 +230,8 @@ def _cleanup(
             "end",
             "config",
             f"no route static ipv4 {PUB_PREFIX_ADDR} {PUB_PREFIX_LEN}",
-            f"no route static ipv4 {VRF_PREFIX_ADDR} {VRF_PREFIX_LEN} vrf {VRF_NAME}",
-            f"no route static ipv6 {VRF_PREFIX6_ADDR} {VRF_PREFIX6_LEN} vrf {VRF_NAME}",
+            f"no route static ipv4 vrf {VRF_NAME} {VRF_PREFIX_ADDR} {VRF_PREFIX_LEN}",
+            f"no route static ipv6 vrf {VRF_NAME} {VRF_PREFIX6_ADDR} {VRF_PREFIX6_LEN}",
             f"if {GE_IF}",
             "no shutdown",
             f"no ip address {VRF_V4} {VRF_V4_LEN}",
@@ -303,7 +303,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         wait_check(
             rt,
             device="r1",
-            command=f"show route ipv4 {vrf_v4_net} {VRF_V4_LEN} vrf {VRF_NAME}",
+            command=f"show route ipv4 vrf {VRF_NAME} {vrf_v4_net} {VRF_V4_LEN}",
             timeout=15,
             interval=2,
             regex=[r"(?im)^\s*Path\s*\[\d+\]\s*:\s*connected\b"],
@@ -312,7 +312,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         wait_check(
             rt,
             device="r1",
-            command=f"show route ipv6 {vrf_v6_net} {VRF_V6_LEN} vrf {VRF_NAME}",
+            command=f"show route ipv6 vrf {VRF_NAME} {vrf_v6_net} {VRF_V6_LEN}",
             timeout=15,
             interval=2,
             regex=[r"(?im)^\s*Path\s*\[\d+\]\s*:\s*connected\b"],
@@ -325,8 +325,8 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             device="r1",
             commands=[
                 "config",
-                f"route static ipv4 {VRF_PREFIX_ADDR} {VRF_PREFIX_LEN} {VRF_V4_NH} vrf {VRF_NAME}",
-                f"route static ipv6 {VRF_PREFIX6_ADDR} {VRF_PREFIX6_LEN} {VRF_V6_NH} vrf {VRF_NAME}",
+                f"route static ipv4 vrf {VRF_NAME} {VRF_PREFIX_ADDR} {VRF_PREFIX_LEN} {VRF_V4_NH}",
+                f"route static ipv6 vrf {VRF_NAME} {VRF_PREFIX6_ADDR} {VRF_PREFIX6_LEN} {VRF_V6_NH}",
                 "end",
             ],
         )

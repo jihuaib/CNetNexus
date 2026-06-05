@@ -17,6 +17,7 @@
 #include "bgp_attr_intern.h"
 #include "bgp_calc.h"
 #include "bgp_instance.h"
+#include "bgp_nexthop.h"
 #include "bgp_protocol.h"
 #include "bgp_rd.h"
 #include "bgp_rib.h"
@@ -85,7 +86,7 @@ static void bgp_import_rib_derive_target_nlri(const bgp_nlri_entry_t *src, bgp_n
 }
 
 /**
- * @brief 将 mirror 节点字段从源节点同步过来（attr/nexthop/iter/label/时间戳）
+ * @brief 将 mirror 节点字段从源节点同步过来（attr/label/时间戳）
  *
  * 不触碰 borrow_refcnt、src_route、flags 中的 IMPORT_RIB；这些由调用方在 create/复用时维护。
  */
@@ -101,15 +102,10 @@ static void bgp_import_rib_mirror_sync_from_src(bgp_route_node_t *mirror, const 
         bgp_attr_release(mirror->attr);
         mirror->attr = src->attr;
     }
-    mirror->nexthop = src->nexthop;
+    bgp_nexthop_reset_route(mirror);
     mirror->label = src->label;
     mirror->has_label = src->has_label;
     mirror->label_source = src->label_source;
-    mirror->iter_watched = src->iter_watched;
-    mirror->iter_resolved = src->iter_resolved;
-    mirror->iter_relay_addr = src->iter_relay_addr;
-    mirror->iter_out_ifindex = src->iter_out_ifindex;
-    mirror->tunnel_id = src->tunnel_id;
     mirror->updated_at_usec = g_get_real_time();
 }
 
@@ -352,8 +348,8 @@ int bgp_import_rib_flush_mirror(dev_ipc_context_t *ctx, uint32_t vrf_id, const b
     (void)nlri;
     (void)mirror;
     (void)withdraw;
-    /* 下刷路径：mirror 的 iter_* / tunnel_id 已从源继承；bgp_route_flush 的
-     * route_node_to_route_entry 会根据 mirror->tunnel_id 自动选择 nh_type=TUNNEL。
+    /* 下刷路径：mirror 通过 src_route 复用源路径的 nexthop/tunnel value；bgp_route_flush 的
+     * route_node_to_route_entry 会根据该 value 自动选择 nh_type=TUNNEL。
      * 因此这里返回 0 表示"按标准 flush 流程下刷"，避免重复路径。
      * （真正的隧道注册由 labeled 侧 bgp_relay 完成，mirror 仅复用结果。） */
     return 0;

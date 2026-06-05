@@ -793,7 +793,7 @@ def wait_fib_route(
     """Wait for a FIB route to appear/disappear.
 
     ``show fib <afi> <addr> <len>`` outputs detail (column) format:
-        FIB Route Detail: <prefix>
+        Routing entry for <prefix>
           AFI       : ipv4
           Nexthop   : x.x.x.x
           NH-Type   : ip
@@ -814,10 +814,10 @@ def wait_fib_route(
         installed = None
         skip_os = None
 
-    # Build per-field regexes matching the detail (column) output.
+    # Build per-field regexes matching the detail output (route-style:
+    # ``Routing entry for <prefix> (VRF: ...)`` + ``Path [N]:`` block，含 NH-ID).
     detail_regexes: list[str] = [
-        rf"(?im)^\s*FIB Route Detail:\s*{re.escape(prefix)}\s*$",
-        rf"(?im)^\s*AFI\s*:\s*{re.escape(afi_value)}\s*$",
+        rf"(?im)^\s*Routing entry for\s+{re.escape(prefix)}\b",
     ]
     if nexthop is not None:
         detail_regexes.append(rf"(?im)^\s*Nexthop\s*:\s*{re.escape(nexthop)}\s*$")
@@ -832,7 +832,7 @@ def wait_fib_route(
 
     # For expect_present we require ALL detail lines to match.
     # For expect_absent we require the header line NOT to match (route not found).
-    absent_regex = rf"(?im)^\s*FIB Route Detail:\s*{re.escape(prefix)}\s*$"
+    absent_regex = rf"(?im)^\s*Routing entry for\s+{re.escape(prefix)}\b"
     wait_check(
         rt,
         device=device,

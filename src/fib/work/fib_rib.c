@@ -79,6 +79,11 @@ static void tunnel_state_free(gpointer p)
     g_free(p);
 }
 
+static void nexthop_state_free(gpointer p)
+{
+    g_free(p);
+}
+
 static fib_ilm_key_t *ilm_key_create(const fib_ilm_entry_t *entry)
 {
     if (!entry)
@@ -132,8 +137,9 @@ fib_rib_t *fib_rib_create(void)
 
     rib->routes = g_hash_table_new_full(route_key_hash, route_key_equal, g_free, route_state_free);
     rib->tunnels = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, tunnel_state_free);
+    rib->nexthops = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, nexthop_state_free);
     rib->ilms = g_hash_table_new_full(ilm_key_hash, ilm_key_equal, g_free, ilm_state_free);
-    if (!rib->routes || !rib->tunnels || !rib->ilms)
+    if (!rib->routes || !rib->tunnels || !rib->nexthops || !rib->ilms)
     {
         fib_rib_destroy(rib);
         return NULL;
@@ -154,6 +160,10 @@ void fib_rib_destroy(fib_rib_t *rib)
     if (rib->tunnels)
     {
         g_hash_table_destroy(rib->tunnels);
+    }
+    if (rib->nexthops)
+    {
+        g_hash_table_destroy(rib->nexthops);
     }
     if (rib->ilms)
     {
@@ -276,6 +286,45 @@ gboolean fib_rib_tunnel_delete(fib_rib_t *rib, uint32_t tunnel_id)
     return g_hash_table_remove(rib->tunnels, GUINT_TO_POINTER(tunnel_id));
 }
 
+fib_nexthop_state_t *fib_rib_nexthop_lookup(fib_rib_t *rib, uint32_t nexthop_id)
+{
+    if (!rib || !rib->nexthops || nexthop_id == 0)
+    {
+        return NULL;
+    }
+    return (fib_nexthop_state_t *)g_hash_table_lookup(rib->nexthops, GUINT_TO_POINTER(nexthop_id));
+}
+
+fib_nexthop_state_t *fib_rib_nexthop_upsert(fib_rib_t *rib, const fib_nexthop_entry_t *entry)
+{
+    if (!rib || !rib->nexthops || !entry || entry->nexthop_id == 0)
+    {
+        return NULL;
+    }
+
+    fib_nexthop_state_t *state = fib_rib_nexthop_lookup(rib, entry->nexthop_id);
+    if (!state)
+    {
+        state = g_malloc0(sizeof(*state));
+        if (!state)
+        {
+            return NULL;
+        }
+        g_hash_table_insert(rib->nexthops, GUINT_TO_POINTER(entry->nexthop_id), state);
+    }
+    state->entry = *entry;
+    return state;
+}
+
+gboolean fib_rib_nexthop_delete(fib_rib_t *rib, uint32_t nexthop_id)
+{
+    if (!rib || !rib->nexthops || nexthop_id == 0)
+    {
+        return FALSE;
+    }
+    return g_hash_table_remove(rib->nexthops, GUINT_TO_POINTER(nexthop_id));
+}
+
 fib_ilm_state_t *fib_rib_ilm_lookup(fib_rib_t *rib, uint32_t vrf_id, uint32_t in_label)
 {
     if (!rib || !rib->ilms || in_label == 0)
@@ -364,4 +413,13 @@ void fib_rib_foreach_ilm(fib_rib_t *rib, GHFunc func, gpointer user_data)
         return;
     }
     g_hash_table_foreach(rib->ilms, func, user_data);
+}
+
+void fib_rib_foreach_nexthop(fib_rib_t *rib, GHFunc func, gpointer user_data)
+{
+    if (!rib || !rib->nexthops || !func)
+    {
+        return;
+    }
+    g_hash_table_foreach(rib->nexthops, func, user_data);
 }

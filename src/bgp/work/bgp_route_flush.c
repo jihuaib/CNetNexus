@@ -12,8 +12,10 @@
 #include "bgp_import_rib.h"
 #include "bgp_instance.h"
 #include "bgp_main.h"
+#include "bgp_nexthop.h"
 #include "bgp_protocol.h"
 #include "bgp_rd.h"
+#include "bgp_relay.h"
 #include "bgp_rib.h"
 #include "bgp_vrf.h"
 #include "bgp_worker.h"
@@ -65,22 +67,22 @@ static int route_node_to_route_entry(uint32_t vrf_id, const bgp_nlri_entry_t *nl
         return 0;
     }
 
+    net_addr_t nexthop_addr;
     /* 允许跨族 nexthop/source（双栈场景：IPv4 前缀 + IPv6 nexthop/source, RFC 8950） */
-    if (route->nexthop.global.family != AF_INET && route->nexthop.global.family != AF_INET6)
+    if (bgp_nexthop_get_route_addr(route, &nexthop_addr) != ERRCODE_SUCCESS ||
+        (nexthop_addr.family != AF_INET && nexthop_addr.family != AF_INET6))
     {
         return 0;
     }
 
-    net_addr_t iter_nh;
-    memset(&iter_nh, 0, sizeof(iter_nh));
-    uint32_t iter_oif = 0u;
-    if (route->iter_watched && route->iter_resolved)
+    bgp_nexthop_value_t nh_value;
+    memset(&nh_value, 0, sizeof(nh_value));
+    (void)bgp_relay_get_route_iter_value(route, &nh_value);
+    gboolean use_tunnel = (nh_value.iter_watched && nh_value.iter_resolved && nh_value.tunnel_id != 0u);
+
+    if (!use_tunnel && (route->nexthop_id == 0u || nlri->safi == BGP_SAFI_LABELED))
     {
-        if (route->iter_relay_addr.family == AF_INET || route->iter_relay_addr.family == AF_INET6)
-        {
-            iter_nh = route->iter_relay_addr;
-        }
-        iter_oif = route->iter_out_ifindex;
+        return 0;
     }
 
     int32_t metric = 0;
@@ -99,10 +101,10 @@ static int route_node_to_route_entry(uint32_t vrf_id, const bgp_nlri_entry_t *nl
     entry_out->preference = ROUTE_ADMIN_DIST_BGP;
     entry_out->is_withdraw = 0u;
     entry_out->flags = 0u;
-    if (route->iter_watched && route->iter_resolved && route->tunnel_id != 0u)
+    if (use_tunnel)
     {
         entry_out->nh_type = ROUTE_NH_TYPE_TUNNEL;
-        entry_out->tunnel_id = route->tunnel_id;
+        entry_out->tunnel_id = nh_value.tunnel_id;
     }
     else
     {
@@ -110,10 +112,8 @@ static int route_node_to_route_entry(uint32_t vrf_id, const bgp_nlri_entry_t *nl
         entry_out->tunnel_id = 0u;
     }
     entry_out->out_ifindex = 0u;
-    entry_out->iter_out_ifindex = iter_oif;
     entry_out->prefix_addr = *prefix;
-    entry_out->nexthop_addr = route->nexthop.global;
-    entry_out->iter_nexthop_addr = iter_nh;
+    entry_out->nexthop_id = use_tunnel ? 0u : route->nexthop_id;
     entry_out->source_addr = route->source;
     return 1;
 }

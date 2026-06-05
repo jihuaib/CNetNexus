@@ -12,6 +12,7 @@
 #include "if.h"
 #include "isis.h"
 #include "isis_main.h"
+#include "isis_nexthop.h"
 #include "isis_route.h"
 #include "log.h"
 #include "route.h"
@@ -76,21 +77,11 @@ static void isis_fill_route_msg_entry(const isis_route_state_t *state, route_msg
     entry->metric = (int32_t)state->metric;
     entry->preference = ROUTE_ADMIN_DIST_ISIS;
     entry->is_withdraw = 0;
-    entry->out_ifindex = state->out_ifindex;
-    entry->iter_out_ifindex = state->out_ifindex;
+    (void)isis_route_state_get_out_ifindex(state, &entry->out_ifindex);
     entry->prefix_addr = state->prefix_addr;
     entry->source_addr = state->source_addr;
-    if ((state->nexthop_addr.family == AF_INET || state->nexthop_addr.family == AF_INET6) &&
-        !net_addr_is_zero(&state->nexthop_addr))
-    {
-        entry->nexthop_addr = state->nexthop_addr;
-        entry->iter_nexthop_addr = state->nexthop_addr;
-    }
-    else
-    {
-        isis_make_zero_addr(state->source_addr.family, &entry->nexthop_addr);
-        isis_make_zero_addr(state->source_addr.family, &entry->iter_nexthop_addr);
-    }
+    entry->nh_type = ROUTE_NH_TYPE_IP;
+    entry->nexthop_id = state->nexthop_id;
 }
 
 int isis_route_sync_publish_add(const isis_route_state_t *state)
@@ -114,24 +105,25 @@ static int isis_route_sync_state_same(const isis_route_state_t *a, const isis_ro
         return 0;
     }
 
-    return (a->afi == b->afi && a->prefix_len == b->prefix_len && a->out_ifindex == b->out_ifindex &&
-            a->metric == b->metric && net_addr_equal(&a->prefix_addr, &b->prefix_addr) &&
-            net_addr_equal(&a->source_addr, &b->source_addr) && net_addr_equal(&a->nexthop_addr, &b->nexthop_addr))
-               ? 1
-               : 0;
+    return isis_route_state_same(a, b);
 }
 
-static int isis_build_desired_route_state(const if_api_cache_entry_t *if_entry, uint16_t afi, uint32_t metric,
-                                          isis_route_state_t *out)
+static int isis_build_desired_route_state(isis_instance_cfg_t *inst, const if_api_cache_entry_t *if_entry, uint16_t afi,
+                                          uint32_t metric, isis_route_state_t *out)
 {
-    if (!if_entry || !out || !if_entry->proto_up || if_entry->ifindex == 0u)
+    if (!inst || !if_entry || !out || !if_entry->proto_up || if_entry->ifindex == 0u)
+    {
+        return 0;
+    }
+
+    isis_nexthop_table_t *nh_table = isis_instance_nexthop_table(inst, afi);
+    if (!nh_table)
     {
         return 0;
     }
 
     memset(out, 0, sizeof(*out));
     out->afi = afi;
-    out->out_ifindex = if_entry->ifindex;
     out->metric = (metric == 0u) ? ISIS_DEFAULT_IF_METRIC : metric;
 
     if (afi == ROUTE_AFI_IPV4)
@@ -141,14 +133,18 @@ static int isis_build_desired_route_state(const if_api_cache_entry_t *if_entry, 
             return 0;
         }
         out->source_addr = if_entry->ipv4_addr;
-        isis_make_zero_addr(AF_INET, &out->nexthop_addr);
         out->prefix_addr = if_entry->ipv4_addr;
         out->prefix_len = if_entry->ipv4_prefix_len;
         if (net_addr_prefix_normalize(&out->prefix_addr, out->prefix_len) != 0)
         {
             return 0;
         }
-        return 1;
+        net_addr_t zero_nh;
+        isis_make_zero_addr(AF_INET, &zero_nh);
+        return (isis_route_state_set_nexthop(out, nh_table, if_entry->ifindex, if_entry->ifindex, &zero_nh) ==
+                ERRCODE_SUCCESS)
+                   ? 1
+                   : 0;
     }
 
     if (afi == ROUTE_AFI_IPV6)
@@ -158,14 +154,18 @@ static int isis_build_desired_route_state(const if_api_cache_entry_t *if_entry, 
             return 0;
         }
         out->source_addr = if_entry->ipv6_addr;
-        isis_make_zero_addr(AF_INET6, &out->nexthop_addr);
         out->prefix_addr = if_entry->ipv6_addr;
         out->prefix_len = if_entry->ipv6_prefix_len;
         if (net_addr_prefix_normalize(&out->prefix_addr, out->prefix_len) != 0)
         {
             return 0;
         }
-        return 1;
+        net_addr_t zero_nh;
+        isis_make_zero_addr(AF_INET6, &zero_nh);
+        return (isis_route_state_set_nexthop(out, nh_table, if_entry->ifindex, if_entry->ifindex, &zero_nh) ==
+                ERRCODE_SUCCESS)
+                   ? 1
+                   : 0;
     }
 
     return 0;
@@ -207,7 +207,7 @@ static void isis_reconcile_instance_if_afi(isis_instance_cfg_t *inst, const isis
     int has_desired = 0;
     if (inst->admin_up && af_cfg)
     {
-        has_desired = isis_build_desired_route_state(if_entry, afi, af_cfg->metric, &desired);
+        has_desired = isis_build_desired_route_state(inst, if_entry, afi, af_cfg->metric, &desired);
     }
 
     if (!has_desired)
@@ -222,6 +222,7 @@ static void isis_reconcile_instance_if_afi(isis_instance_cfg_t *inst, const isis
 
     if (current && isis_route_sync_state_same(current, &desired))
     {
+        isis_route_state_reset(&desired);
         return;
     }
 
@@ -234,12 +235,15 @@ static void isis_reconcile_instance_if_afi(isis_instance_cfg_t *inst, const isis
     isis_route_state_t *next = g_malloc0(sizeof(*next));
     if (!next)
     {
+        isis_route_state_reset(&desired);
         return;
     }
     *next = desired;
+    desired.nexthop_id = 0u;
 
     if (isis_route_sync_publish_add(next) != ERRCODE_SUCCESS)
     {
+        isis_route_state_reset(next);
         g_free(next);
         return;
     }
@@ -419,6 +423,36 @@ static void isis_route_sync_replay_instance(isis_instance_cfg_t *inst, uint32_t 
     if (inst->learned_route_heads)
     {
         g_hash_table_foreach(inst->learned_route_heads, isis_route_sync_replay_instance_learned_cb, replayed);
+    }
+}
+
+void isis_nexthop_resync_all_instances(void)
+{
+    if (!g_isis_work_local || !g_isis_work_local->instances)
+    {
+        return;
+    }
+
+    const uint16_t afis[] = {ROUTE_AFI_IPV4, ROUTE_AFI_IPV6};
+    uint32_t pushed = 0;
+    GHashTableIter iter;
+    gpointer value = NULL;
+    g_hash_table_iter_init(&iter, g_isis_work_local->instances);
+    while (g_hash_table_iter_next(&iter, NULL, &value))
+    {
+        isis_instance_cfg_t *inst = (isis_instance_cfg_t *)value;
+        for (size_t i = 0; i < G_N_ELEMENTS(afis); i++)
+        {
+            isis_nexthop_table_t *table = isis_instance_nexthop_table(inst, afis[i]);
+            if (table)
+            {
+                pushed += isis_nexthop_table_resync(table);
+            }
+        }
+    }
+    if (pushed > 0)
+    {
+        LOG_INFO("ISIS: re-pushed %u nexthop object(s) to ROUTE after restart", pushed);
     }
 }
 

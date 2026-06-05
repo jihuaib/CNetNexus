@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "bgp_attr_intern.h"
+#include "bgp_nexthop.h"
 #include "bgp_rd.h"
 #include "net_addr.h"
 #include "route.h"
@@ -53,6 +54,7 @@ static void route_node_release_attrs(bgp_route_node_t *route)
     route->attr = NULL;
     bgp_attr_release(route->base_attr);
     route->base_attr = NULL;
+    bgp_nexthop_reset_route(route);
 }
 
 /** 释放路径节点前先 release 共享属性 */
@@ -211,8 +213,7 @@ bgp_route_node_t *bgp_rthead_create_route(bgp_rib_t *rib, bgp_rthead_t *head, co
     return route;
 }
 
-int bgp_rib_route_apply_reach(bgp_route_node_t *route, uint32_t import_proto, const bgp_attr_t *attr,
-                              const bgp_nexthop_t *nexthop)
+int bgp_rib_route_apply_reach(bgp_route_node_t *route, uint32_t import_proto, const bgp_attr_t *attr)
 {
     if (!route)
     {
@@ -251,15 +252,6 @@ int bgp_rib_route_apply_reach(bgp_route_node_t *route, uint32_t import_proto, co
             route->attr = new_ref;
         }
     }
-    if (nexthop)
-    {
-        memcpy(&route->nexthop, nexthop, sizeof(*nexthop));
-    }
-    /* reach 后迭代状态由 relay 更新，这里先清空，避免显示旧值。 */
-    route->iter_watched = 0u;
-    route->iter_resolved = 0u;
-    route->iter_out_ifindex = 0u;
-    route->iter_relay_addr.family = 0;
     route->updated_at_usec = g_get_real_time();
     if (route->added_at_usec == 0)
     {

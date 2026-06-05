@@ -167,6 +167,12 @@ void fib_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         case FIB_MSG_TYPE_ILM_DELETE:
             post_or_free(FIB_WORKER_CMD_ILM_DELETE, msg);
             return;
+        case FIB_MSG_TYPE_NEXTHOP_UPSERT:
+            post_or_free(FIB_WORKER_CMD_NEXTHOP_UPSERT, msg);
+            return;
+        case FIB_MSG_TYPE_NEXTHOP_DELETE:
+            post_or_free(FIB_WORKER_CMD_NEXTHOP_DELETE, msg);
+            return;
         case VRF_MSG_TYPE_EVENT:
             post_or_free(FIB_WORKER_CMD_VRF_EVENT, msg);
             return;

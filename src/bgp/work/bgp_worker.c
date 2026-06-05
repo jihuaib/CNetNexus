@@ -19,6 +19,7 @@
 #include "bgp_cmd.h"
 #include "bgp_conn.h"
 #include "bgp_fsm.h"
+#include "bgp_nexthop.h"
 #include "bgp_pkt.h"
 #include "bgp_protocol.h"
 #include "bgp_relay.h"

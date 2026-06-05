@@ -17,8 +17,10 @@
 #include "bgp_ext_community.h"
 #include "bgp_instance.h"
 #include "bgp_main.h"
+#include "bgp_nexthop.h"
 #include "bgp_pkt.h"
 #include "bgp_rd.h"
+#include "bgp_relay.h"
 #include "bgp_rib.h"
 #include "bgp_show.h"
 #include "bgp_vrf.h"
@@ -348,7 +350,10 @@ static gboolean bgp_show_route_head_cb(gpointer key, gpointer value, gpointer us
         }
 
         char nh[64], lp[16], med[16], as_path[64];
-        bgp_nexthop_to_str(&route->nexthop, nh, sizeof(nh));
+        bgp_nexthop_t bgp_nh;
+        memset(&bgp_nh, 0, sizeof(bgp_nh));
+        (void)bgp_nexthop_get_route_bgp(route, &bgp_nh);
+        bgp_nexthop_to_str(&bgp_nh, nh, sizeof(nh));
         bgp_route_fmt_fields(route, lp, sizeof(lp), med, sizeof(med), as_path, sizeof(as_path));
 
         /* 路由标记：'>'=BEST，'v'=VALID */
@@ -390,24 +395,31 @@ static void bgp_show_route_detail(GString *buf, const bgp_rthead_t *head)
 
         char nh[64], lp[16], med[16], as_path[256], ts_added[32], ts_updated[32];
         char iter_nh[64], out_if[64], flags_str[128];
-        bgp_nexthop_to_str(&route->nexthop, nh, sizeof(nh));
+        bgp_nexthop_t bgp_nh;
+        memset(&bgp_nh, 0, sizeof(bgp_nh));
+        (void)bgp_nexthop_get_route_bgp(route, &bgp_nh);
+        bgp_nexthop_to_str(&bgp_nh, nh, sizeof(nh));
         bgp_route_fmt_fields(route, lp, sizeof(lp), med, sizeof(med), as_path, sizeof(as_path));
         bgp_fmt_time_usec(route->added_at_usec, ts_added, sizeof(ts_added));
         bgp_fmt_time_usec(route->updated_at_usec, ts_updated, sizeof(ts_updated));
         bgp_route_flags_to_str(route->flags, flags_str, sizeof(flags_str));
 
-        if (route->iter_watched && route->iter_relay_addr.family != 0)
+        bgp_nexthop_value_t nh_value;
+        memset(&nh_value, 0, sizeof(nh_value));
+        (void)bgp_relay_get_route_iter_value(route, &nh_value);
+
+        if (nh_value.iter_watched && nh_value.iter_relay_addr.family != 0)
         {
-            net_addr_to_str(&route->iter_relay_addr, iter_nh, sizeof(iter_nh));
+            net_addr_to_str(&nh_value.iter_relay_addr, iter_nh, sizeof(iter_nh));
         }
         else
         {
             snprintf(iter_nh, sizeof(iter_nh), "-");
         }
-        bgp_ifindex_to_str((route->iter_watched && route->iter_resolved) ? route->iter_out_ifindex : 0u, out_if,
+        bgp_ifindex_to_str((nh_value.iter_watched && nh_value.iter_resolved) ? nh_value.iter_out_ifindex : 0u, out_if,
                            sizeof(out_if));
         const char *iter_state_str =
-            route->iter_watched ? (route->iter_resolved ? "Resolved" : "Unresolved") : "Unwatched";
+            nh_value.iter_watched ? (nh_value.iter_resolved ? "Resolved" : "Unresolved") : "Unwatched";
 
         /* 路由标记：'>'=BEST，'v'=VALID */
         g_string_append_printf(buf, "%c%c ", BIT_TEST(route->flags, BGP_ROUTE_FLAG_BEST) ? '>' : ' ',
@@ -430,6 +442,7 @@ static void bgp_show_route_detail(GString *buf, const bgp_rthead_t *head)
         g_string_append_printf(buf, "    Attr-ID  : %u (refcnt=%u)\r\n", route->attr ? route->attr->attr_id : 0,
                                route->attr ? route->attr->refcnt : 0);
         g_string_append_printf(buf, "    NextHop  : %s\r\n", nh);
+        g_string_append_printf(buf, "    NH-ID    : %u\r\n", route->nexthop_id);
         g_string_append_printf(buf, "    LocPref  : %s\r\n", lp);
         g_string_append_printf(buf, "    MED      : %s\r\n", med);
         g_string_append_printf(buf, "    Origin   : %s\r\n", bgp_origin_str(BGP_ROUTE_ATTR(route)->origin));
@@ -438,7 +451,7 @@ static void bgp_show_route_detail(GString *buf, const bgp_rthead_t *head)
         g_string_append_printf(buf, "    IterState: %s\r\n", iter_state_str);
         g_string_append_printf(buf, "    Iter-NH  : %s\r\n", iter_nh);
         g_string_append_printf(buf, "    Out-If   : %s\r\n", out_if);
-        g_string_append_printf(buf, "    Tunnel-ID: %u\r\n", route->tunnel_id);
+        g_string_append_printf(buf, "    Tunnel-ID: %u\r\n", nh_value.tunnel_id);
         g_string_append_printf(buf, "    Flags    : 0x%08X (%s)\r\n", route->flags, flags_str);
         /* 借用引用计数：> 0 表示有 import_rib mirror / bgp_relay watch 等模块持有借用指针 */
         g_string_append_printf(buf, "    BorrowRef: %u\r\n", route->borrow_refcnt);

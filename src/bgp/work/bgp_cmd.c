@@ -27,6 +27,7 @@
 #include "bgp_import_rib.h"
 #include "bgp_import_route.h"
 #include "bgp_main.h"
+#include "bgp_nexthop.h"
 #include "bgp_protocol.h"
 #include "bgp_relay.h"
 #include "bgp_route_flush.h"
@@ -604,6 +605,9 @@ gboolean bgp_cmd_process_event(void)
                     break;
                 }
                 bgp_import_route_resubscribe_protocol_imports(g_bgp_work_local->protocol);
+                /* 先把本模块的 nexthop 对象按原 id 反刷到 ROUTE（重建对象），
+                 * 再重注册迭代 watch（沿用同一 id）并重下刷路由 */
+                bgp_nexthop_resync_all(g_bgp_work_local->protocol);
                 bgp_relay_reregister_route_nexthops();
                 bgp_route_flush_replay_flushed_all();
                 break;

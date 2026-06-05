@@ -465,7 +465,7 @@ void route_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
                 LOG_WARN("Route: failed to post INJECT to worker");
                 if (msg->request_id != 0)
                 {
-                    route_msg_ack_t *ack = (route_msg_ack_t *)g_malloc(sizeof(route_msg_ack_t));
+                    route_msg_ack_t *ack = (route_msg_ack_t *)g_malloc0(sizeof(route_msg_ack_t));
                     if (ack)
                     {
                         ack->result = ERRCODE_FAIL;
@@ -497,6 +497,42 @@ void route_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             if (route_worker_post(ROUTE_WORKER_CMD_NH_UNREGISTER, msg) != 0)
             {
                 LOG_WARN("Route: failed to post NH_UNREGISTER to worker");
+                dev_ipc_message_free(msg);
+            }
+            return;
+
+        case ROUTE_MSG_TYPE_NHOBJ_ACQUIRE:
+            if (route_worker_post(ROUTE_WORKER_CMD_NHOBJ_ACQUIRE, msg) != 0)
+            {
+                LOG_WARN("Route: failed to post NHOBJ_ACQUIRE to worker");
+                if (msg->request_id != 0)
+                {
+                    route_msg_ack_t *ack = (route_msg_ack_t *)g_malloc0(sizeof(route_msg_ack_t));
+                    if (ack)
+                    {
+                        ack->result = ERRCODE_FAIL;
+                        dev_ipc_message_t *resp =
+                            dev_ipc_message_create(ROUTE_MSG_TYPE_ACK, DEV_MODULE_ID_ROUTE, msg->src_module_id,
+                                                   msg->request_id, ack, sizeof(route_msg_ack_t), g_free);
+                        if (resp)
+                        {
+                            dev_ipc_send_response(route_local_ipc_ctx(), resp);
+                            dev_ipc_message_free(resp);
+                        }
+                        else
+                        {
+                            g_free(ack);
+                        }
+                    }
+                }
+                dev_ipc_message_free(msg);
+            }
+            return;
+
+        case ROUTE_MSG_TYPE_NHOBJ_RELEASE:
+            if (route_worker_post(ROUTE_WORKER_CMD_NHOBJ_RELEASE, msg) != 0)
+            {
+                LOG_WARN("Route: failed to post NHOBJ_RELEASE to worker");
                 dev_ipc_message_free(msg);
             }
             return;

@@ -13,6 +13,7 @@
 #include "log.h"
 #include "route.h"
 #include "route_main.h"
+#include "route_nhobj.h"
 #include "route_rib.h"
 #include "route_worker.h"
 
@@ -37,11 +38,17 @@ static void build_entry(route_msg_entry_t *entry, const route_head_t *head, cons
     entry->flags = (uint8_t)(path->entry_flags & 0xFFu);
     entry->nh_type = path->nh_type ? path->nh_type : ROUTE_NH_TYPE_IP;
     entry->tunnel_id = (entry->nh_type == ROUTE_NH_TYPE_TUNNEL) ? path->tunnel_id : 0u;
+    entry->nexthop_id = path->nexthop_id;
     entry->out_ifindex = path->out_ifindex;
-    entry->iter_out_ifindex = path->iter_out_ifindex;
     entry->prefix_addr = head->key.addr;
-    entry->nexthop_addr = path->nexthop;
-    entry->iter_nexthop_addr = path->relay_addr;
+    /* nexthop / relay 信息从 nexthop 对象读取（route_path 不再各存一份） */
+    route_nhobj_info_t info;
+    if (route_nhobj_lookup(path->nexthop_id, &info) == 0)
+    {
+        entry->iter_out_ifindex = info.relay_ifindex;
+        entry->nexthop_addr = info.key.nexthop;
+        entry->iter_nexthop_addr = info.relay_addr;
+    }
     entry->source_addr = path->key.source;
 }
 

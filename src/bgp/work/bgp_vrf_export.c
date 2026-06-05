@@ -15,6 +15,7 @@
 #include "bgp_ext_community.h"
 #include "bgp_instance.h"
 #include "bgp_main.h"
+#include "bgp_nexthop.h"
 #include "bgp_protocol.h"
 #include "bgp_rd.h"
 #include "bgp_vrf.h"
@@ -358,7 +359,8 @@ static int bgp_vrf_export_process_one(bgp_instance_t *vpn_inst, bgp_rthead_t *sr
             return 0;
         }
     }
-    if (bgp_rib_route_apply_reach(route, ROUTE_PROTOCOL_BGP, &attr, &src_best->nexthop) != 0)
+    bgp_nexthop_reset_route(route);
+    if (bgp_rib_route_apply_reach(route, ROUTE_PROTOCOL_BGP, &attr) != 0)
     {
         return 0;
     }

@@ -29,17 +29,19 @@ typedef enum route_worker_cmd_type
     ROUTE_WORKER_CMD_INJECT = 1,        /**< 路由注入/撤销（ROUTE_MSG_TYPE_INJECT） */
     ROUTE_WORKER_CMD_NH_REGISTER = 2,   /**< nexthop 注册（ROUTE_MSG_TYPE_NH_REGISTER） */
     ROUTE_WORKER_CMD_NH_UNREGISTER = 3, /**< nexthop 取消注册（ROUTE_MSG_TYPE_NH_UNREGISTER） */
-    ROUTE_WORKER_CMD_SUBSCRIBE = 4,     /**< 路由订阅（ROUTE_MSG_TYPE_SUBSCRIBE） */
-    ROUTE_WORKER_CMD_UNSUBSCRIBE = 5,   /**< 取消订阅（ROUTE_MSG_TYPE_UNSUBSCRIBE） */
-    ROUTE_WORKER_CMD_CLI_SHOW = 6,      /**< show 命令（CLI_MSG_TYPE with SHOW_CMD flag / CLI_MSG_TYPE_CONTINUE） */
-    ROUTE_WORKER_CMD_APPLY = 7,         /**< 配置应用命令（waitable，IPC 线程同步等待结果） */
-    ROUTE_WORKER_CMD_SHUTDOWN = 8,      /**< 停止 worker 线程循环 */
-    ROUTE_WORKER_CMD_IF_EVENT = 9,      /**< IF 接口事件（UP/DOWN/ADDR_ADD/ADDR_DEL） */
-    ROUTE_WORKER_CMD_FIB_ROUTE_RESULT = 10, /**< FIB route 下发结果事件 */
-    ROUTE_WORKER_CMD_VRF_EVENT = 11,        /**< VRF 事件：维护 worker 独占 VRF cache */
-    ROUTE_WORKER_CMD_VRF_QUERY = 12,        /**< VRF 查询：其他线程同步请求 worker 查询 */
-    ROUTE_WORKER_CMD_IF_DOWN = 13,          /**< IF 模块 DOWN：清 IF 缓存 + 重算 nexthop watch */
-    ROUTE_WORKER_CMD_VRF_DOWN = 14,         /**< VRF 模块 DOWN：拆非 public VRF 业务 + 清 cache */
+    ROUTE_WORKER_CMD_NHOBJ_ACQUIRE = 4, /**< nexthop 对象申请（ROUTE_MSG_TYPE_NHOBJ_ACQUIRE） */
+    ROUTE_WORKER_CMD_NHOBJ_RELEASE = 5, /**< nexthop 对象释放（ROUTE_MSG_TYPE_NHOBJ_RELEASE） */
+    ROUTE_WORKER_CMD_SUBSCRIBE = 6,     /**< 路由订阅（ROUTE_MSG_TYPE_SUBSCRIBE） */
+    ROUTE_WORKER_CMD_UNSUBSCRIBE = 7,   /**< 取消订阅（ROUTE_MSG_TYPE_UNSUBSCRIBE） */
+    ROUTE_WORKER_CMD_CLI_SHOW = 8,      /**< show 命令（CLI_MSG_TYPE with SHOW_CMD flag / CLI_MSG_TYPE_CONTINUE） */
+    ROUTE_WORKER_CMD_APPLY = 9,         /**< 配置应用命令（waitable，IPC 线程同步等待结果） */
+    ROUTE_WORKER_CMD_SHUTDOWN = 10,     /**< 停止 worker 线程循环 */
+    ROUTE_WORKER_CMD_IF_EVENT = 11,     /**< IF 接口事件（UP/DOWN/ADDR_ADD/ADDR_DEL） */
+    ROUTE_WORKER_CMD_FIB_ROUTE_RESULT = 12, /**< FIB route 下发结果事件 */
+    ROUTE_WORKER_CMD_VRF_EVENT = 13,        /**< VRF 事件：维护 worker 独占 VRF cache */
+    ROUTE_WORKER_CMD_VRF_QUERY = 14,        /**< VRF 查询：其他线程同步请求 worker 查询 */
+    ROUTE_WORKER_CMD_IF_DOWN = 15,          /**< IF 模块 DOWN：清 IF 缓存 + 重算 nexthop watch */
+    ROUTE_WORKER_CMD_VRF_DOWN = 16,         /**< VRF 模块 DOWN：拆非 public VRF 业务 + 清 cache */
 } route_worker_cmd_type_t;
 
 // ============================================================================
@@ -163,23 +165,16 @@ int route_worker_resolve_vrf_id_by_name(const char *vrf_name, uint32_t *vrf_id);
 void route_worker_shutdown(void);
 
 /**
- * @brief 统一入口：向 RIB 添加一条路径，并通过 calc_queue 异步触发优选/OS 同步/通知
+ * @brief 统一入口（按 nexthop_id）：发布方已预先申请 nexthop 对象（并写好 relay），下发 route 只带 id。
  *
- * @param vrf_id      VRF ID
- * @param afi         地址族
- * @param prefix_addr 前缀地址
- * @param prefix_len  前缀长度
- * @param protocol    协议来源
- * @param source_addr 路径来源地址
- * @param nexthop_addr 下一跳地址
- * @param relay_addr_ptr relay 解析地址（NULL 时默认使用 nexthop_addr）
- * @param metric      度量
- * @param preference  管理距离/优先级
+ *
+ * @param nexthop_id  已申请的 nexthop 对象 id（非 0）
+ * @param out_ifindex 原始(配置)出接口（进入路径；是否参与 nexthop 身份由发布方申请对象时决定）
  * @return <0 失败；0 表示更新已有路径；>0 表示新增路径
  */
-int route_add_and_notify(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr, uint8_t prefix_len,
-                         uint32_t protocol, const net_addr_t *source_addr, const net_addr_t *nexthop_addr,
-                         const net_addr_t *relay_addr_ptr, int32_t metric, int32_t preference, uint32_t out_ifindex);
+int route_add_and_notify_nexthop_id(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr, uint8_t prefix_len,
+                                    uint32_t protocol, const net_addr_t *source_addr, uint32_t nexthop_id,
+                                    int32_t metric, int32_t preference, uint32_t out_ifindex);
 
 /**
  * @brief 全量重算"已注册 nexthop watch"的可达性，并按状态变化回推

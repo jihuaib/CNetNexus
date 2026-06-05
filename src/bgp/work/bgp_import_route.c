@@ -20,6 +20,7 @@
 #include "bgp_ext_community.h"
 #include "bgp_instance.h"
 #include "bgp_main.h"
+#include "bgp_nexthop.h"
 #include "bgp_protocol.h"
 #include "bgp_rib.h"
 #include "bgp_vrf.h"
@@ -538,7 +539,8 @@ static int bgp_import_route_entry_to_safi(const route_msg_entry_t *entry, bgp_vr
             }
             rc = 1;
         }
-        if (bgp_rib_route_apply_reach(route, (uint32_t)entry->protocol, &attr, &nexthop) != 0)
+        if (bgp_rib_route_apply_reach(route, (uint32_t)entry->protocol, &attr) != 0 ||
+            bgp_nexthop_set_route(route, &nexthop) != ERRCODE_SUCCESS)
         {
             return 0;
         }

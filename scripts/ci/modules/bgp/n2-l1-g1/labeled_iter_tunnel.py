@@ -290,7 +290,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 {
                     "device": "r2",
                     "command": f"show fib ipv4 {TEST_PREFIX_ADDR} {TEST_PREFIX_LEN}",
-                    "not_contains": [f"FIB Route Detail: {TEST_PREFIX}"],
+                    "not_contains": [f"Routing entry for {TEST_PREFIX}"],
                     "label": "r2 FIB does not have the LU prefix",
                 },
                 {

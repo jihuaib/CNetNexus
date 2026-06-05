@@ -23,6 +23,7 @@
 #include "route_calc.h"
 #include "route_cfg_apply.h"
 #include "route_main.h"
+#include "route_nhobj.h"
 #include "route_pub.h"
 #include "route_relay.h"
 #include "route_rib.h"
@@ -307,7 +308,7 @@ static void worker_send_inject_ack(const dev_ipc_message_t *req, int32_t result)
         return;
     }
 
-    route_msg_ack_t *ack = (route_msg_ack_t *)g_malloc(sizeof(route_msg_ack_t));
+    route_msg_ack_t *ack = (route_msg_ack_t *)g_malloc0(sizeof(route_msg_ack_t));
     if (!ack)
     {
         return;
@@ -324,6 +325,74 @@ static void worker_send_inject_ack(const dev_ipc_message_t *req, int32_t result)
 
     dev_ipc_send_response(route_local_ipc_ctx(), resp);
     dev_ipc_message_free(resp);
+}
+
+static void worker_send_nhobj_ack(const dev_ipc_message_t *req, int32_t result, uint32_t nexthop_id)
+{
+    if (!req || req->request_id == 0)
+    {
+        return;
+    }
+
+    route_msg_ack_t *ack = (route_msg_ack_t *)g_malloc0(sizeof(route_msg_ack_t));
+    if (!ack)
+    {
+        return;
+    }
+    ack->result = result;
+    ack->nexthop_id = nexthop_id;
+
+    dev_ipc_message_t *resp = dev_ipc_message_create(ROUTE_MSG_TYPE_ACK, DEV_MODULE_ID_ROUTE, req->src_module_id,
+                                                     req->request_id, ack, sizeof(route_msg_ack_t), g_free);
+    if (!resp)
+    {
+        g_free(ack);
+        return;
+    }
+
+    dev_ipc_send_response(route_local_ipc_ctx(), resp);
+    dev_ipc_message_free(resp);
+}
+
+static void worker_handle_nhobj_acquire(dev_ipc_message_t *msg)
+{
+    if (!msg || !msg->payload || msg->payload_len < sizeof(route_nhobj_msg_t))
+    {
+        worker_send_nhobj_ack(msg, ERRCODE_FAIL, 0u);
+        if (msg)
+        {
+            dev_ipc_message_free(msg);
+        }
+        return;
+    }
+
+    const route_nhobj_msg_t *req = (const route_nhobj_msg_t *)msg->payload;
+    uint32_t nexthop_id = 0u;
+    /* req->nexthop_id 非 0 表示业务进程重启反刷，要求按原 id 恢复对象 */
+    int rc = route_nhobj_acquire(&req->key, req->nexthop_id, &nexthop_id);
+    if (rc == ERRCODE_SUCCESS)
+    {
+        route_nhobj_set_relay(nexthop_id, &req->relay_addr, req->relay_ifindex);
+    }
+
+    worker_send_nhobj_ack(msg, (rc == ERRCODE_SUCCESS) ? ERRCODE_SUCCESS : ERRCODE_FAIL, nexthop_id);
+    dev_ipc_message_free(msg);
+}
+
+static void worker_handle_nhobj_release(dev_ipc_message_t *msg)
+{
+    if (!msg || !msg->payload || msg->payload_len < sizeof(route_nhobj_release_req_t))
+    {
+        if (msg)
+        {
+            dev_ipc_message_free(msg);
+        }
+        return;
+    }
+
+    const route_nhobj_release_req_t *req = (const route_nhobj_release_req_t *)msg->payload;
+    route_nhobj_release(req->nexthop_id);
+    dev_ipc_message_free(msg);
 }
 
 // ============================================================================
@@ -353,10 +422,20 @@ static void worker_handle_inject(dev_ipc_message_t *msg)
     }
     else
     {
-        ret =
-            route_rib_add(g_route_work_local->rib, entry->vrf_id, entry->afi, &entry->prefix_addr, entry->prefix_len,
-                          entry->protocol, &entry->source_addr, &entry->nexthop_addr, entry->metric, entry->preference,
-                          entry->out_ifindex, entry->nh_type, entry->tunnel_id, (uint32_t)entry->flags);
+        if (entry->nexthop_id != 0u)
+        {
+            ret = route_rib_add_nexthop_id(g_route_work_local->rib, entry->vrf_id, entry->afi, &entry->prefix_addr,
+                                           entry->prefix_len, entry->protocol, &entry->source_addr, entry->nexthop_id,
+                                           entry->metric, entry->preference, entry->out_ifindex, entry->nh_type,
+                                           entry->tunnel_id, (uint32_t)entry->flags);
+        }
+        else
+        {
+            ret = route_rib_add(g_route_work_local->rib, entry->vrf_id, entry->afi, &entry->prefix_addr,
+                                entry->prefix_len, entry->protocol, &entry->source_addr, &entry->nexthop_addr,
+                                entry->metric, entry->preference, entry->out_ifindex, entry->nh_type, entry->tunnel_id,
+                                (uint32_t)entry->flags);
+        }
         if (ret >= 0)
         {
             const route_head_t *head = route_rib_lookup_head(g_route_work_local->rib, entry->vrf_id, entry->afi,
@@ -364,19 +443,14 @@ static void worker_handle_inject(dev_ipc_message_t *msg)
             if (head)
             {
                 const route_path_t *path = route_rib_lookup_path(head, entry->protocol, &entry->source_addr);
-                if (path)
+                if (path && entry->nexthop_id == 0u)
                 {
-                    route_path_t *mut = (route_path_t *)path;
-                    if (entry->iter_nexthop_addr.family == AF_INET || entry->iter_nexthop_addr.family == AF_INET6)
-                    {
-                        mut->relay_addr = entry->iter_nexthop_addr;
-                    }
-                    else
-                    {
-                        mut->relay_addr = entry->nexthop_addr;
-                    }
-                    mut->iter_out_ifindex =
-                        (entry->iter_out_ifindex != 0u) ? entry->iter_out_ifindex : entry->out_ifindex;
+                    net_addr_t relay =
+                        (entry->iter_nexthop_addr.family == AF_INET || entry->iter_nexthop_addr.family == AF_INET6)
+                            ? entry->iter_nexthop_addr
+                            : entry->nexthop_addr;
+                    uint32_t relay_oif = (entry->iter_out_ifindex != 0u) ? entry->iter_out_ifindex : entry->out_ifindex;
+                    route_nhobj_set_relay(path->nexthop_id, &relay, relay_oif);
                 }
                 if (route_worker_post_calc_event(&head->key) != 0)
                 {
@@ -419,7 +493,7 @@ static void worker_handle_subscribe(dev_ipc_message_t *msg)
             }
             else
             {
-                route_msg_ack_t *ack = (route_msg_ack_t *)g_malloc(sizeof(route_msg_ack_t));
+                route_msg_ack_t *ack = (route_msg_ack_t *)g_malloc0(sizeof(route_msg_ack_t));
                 ack->result = ERRCODE_SUCCESS;
                 dev_ipc_message_t *resp =
                     dev_ipc_message_create(ROUTE_MSG_TYPE_ACK, DEV_MODULE_ID_ROUTE, msg->src_module_id, msg->request_id,
@@ -448,7 +522,7 @@ static void worker_handle_subscribe(dev_ipc_message_t *msg)
     }
     else
     {
-        route_msg_ack_t *ack = (route_msg_ack_t *)g_malloc(sizeof(route_msg_ack_t));
+        route_msg_ack_t *ack = (route_msg_ack_t *)g_malloc0(sizeof(route_msg_ack_t));
         ack->result = ERRCODE_SUCCESS;
         dev_ipc_message_t *resp = dev_ipc_message_create(ROUTE_MSG_TYPE_ACK, DEV_MODULE_ID_ROUTE, msg->src_module_id,
                                                          msg->request_id, ack, sizeof(route_msg_ack_t), g_free);
@@ -489,7 +563,7 @@ static void worker_handle_unsubscribe(dev_ipc_message_t *msg)
         l = next;
     }
 
-    route_msg_ack_t *ack = (route_msg_ack_t *)g_malloc(sizeof(route_msg_ack_t));
+    route_msg_ack_t *ack = (route_msg_ack_t *)g_malloc0(sizeof(route_msg_ack_t));
     ack->result = ERRCODE_SUCCESS;
     dev_ipc_message_t *resp = dev_ipc_message_create(ROUTE_MSG_TYPE_ACK, DEV_MODULE_ID_ROUTE, msg->src_module_id,
                                                      msg->request_id, ack, sizeof(route_msg_ack_t), g_free);
@@ -529,6 +603,16 @@ static int worker_dispatch_cmd(route_worker_cmd_t *cmd)
 
         case ROUTE_WORKER_CMD_NH_UNREGISTER:
             route_relay_handle_nh_unregister(cmd->msg);
+            cmd->msg = NULL;
+            break;
+
+        case ROUTE_WORKER_CMD_NHOBJ_ACQUIRE:
+            worker_handle_nhobj_acquire(cmd->msg);
+            cmd->msg = NULL;
+            break;
+
+        case ROUTE_WORKER_CMD_NHOBJ_RELEASE:
+            worker_handle_nhobj_release(cmd->msg);
             cmd->msg = NULL;
             break;
 
@@ -829,6 +913,7 @@ int route_worker_prepare(void)
         route_static_init();
         if_api_cache_init();
         route_calc_init();
+        route_nhobj_init();
     }
 
     g_route_work_local->epoll_fd = -1;
@@ -1110,6 +1195,8 @@ void route_worker_shutdown(void)
     if_api_cache_cleanup();
     route_static_cleanup();
     route_calc_cleanup();
+    /* route_nhobj 须在 route_calc_cleanup 之后清理：calc cleanup 会走 calc_fib_withdraw 释放对象引用 */
+    route_nhobj_cleanup();
 
     /* 释放业务数据 */
     if (g_route_work_local->rib)
@@ -1128,17 +1215,19 @@ void route_worker_shutdown(void)
     LOG_INFO("[route_worker] worker 资源已释放");
 }
 
-int route_add_and_notify(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr, uint8_t prefix_len,
-                         uint32_t protocol, const net_addr_t *source_addr, const net_addr_t *nexthop_addr,
-                         const net_addr_t *relay_addr_ptr, int32_t metric, int32_t preference, uint32_t out_ifindex)
+int route_add_and_notify_nexthop_id(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr, uint8_t prefix_len,
+                                    uint32_t protocol, const net_addr_t *source_addr, uint32_t nexthop_id,
+                                    int32_t metric, int32_t preference, uint32_t out_ifindex)
 {
-    if (!g_route_work_local || !g_route_work_local->rib || !prefix_addr || !source_addr || !nexthop_addr)
+    if (!g_route_work_local || !g_route_work_local->rib || !prefix_addr || !source_addr || nexthop_id == 0u)
     {
         return ERRCODE_FAIL;
     }
 
-    int ret = route_rib_add(g_route_work_local->rib, vrf_id, afi, prefix_addr, prefix_len, protocol, source_addr,
-                            nexthop_addr, metric, preference, out_ifindex, ROUTE_NH_TYPE_IP, 0u, 0u);
+    /* 只带 nexthop_id：relay 已由对象维护（发布方在「添加下一跳」时写入），此处不 set_relay */
+    int ret =
+        route_rib_add_nexthop_id(g_route_work_local->rib, vrf_id, afi, prefix_addr, prefix_len, protocol, source_addr,
+                                 nexthop_id, metric, preference, out_ifindex, ROUTE_NH_TYPE_IP, 0u, 0u);
     if (ret < 0)
     {
         return ret;
@@ -1150,19 +1239,8 @@ int route_add_and_notify(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix
         return ret;
     }
 
-    const route_path_t *path = route_rib_lookup_path(head, protocol, source_addr);
-    if (!path)
-    {
-        return ret;
-    }
-
-    route_path_t *mut = (route_path_t *)path;
-    mut->relay_addr = relay_addr_ptr ? *relay_addr_ptr : *nexthop_addr;
-    mut->iter_out_ifindex = out_ifindex;
-
     if (route_worker_post_calc_event(&head->key) != 0)
     {
-        /* 异常兜底：队列不可用时仍执行直接重算，避免路径状态卡死。 */
         route_work_handle_calc_event(&head->key);
     }
 

@@ -18,6 +18,7 @@
 #include "isis_cfg_apply.h"
 #include "isis_main.h"
 #include "isis_neighbor.h"
+#include "isis_nexthop.h"
 #include "isis_route.h"
 #include "isis_route_sync.h"
 #include "isis_show.h"
@@ -61,7 +62,12 @@ static void isis_if_cfg_free(gpointer data)
 
 static void isis_route_state_free(gpointer data)
 {
-    g_free(data);
+    isis_route_state_t *state = (isis_route_state_t *)data;
+    if (state)
+    {
+        isis_route_state_reset(state);
+    }
+    g_free(state);
 }
 
 static void isis_neighbor_free(gpointer data)
@@ -116,6 +122,16 @@ static void isis_instance_cfg_free(gpointer data)
         g_hash_table_destroy(inst->lsdb_entries);
         inst->lsdb_entries = NULL;
     }
+    if (inst->nexthop_v4)
+    {
+        isis_nexthop_table_destroy(inst->nexthop_v4);
+        inst->nexthop_v4 = NULL;
+    }
+    if (inst->nexthop_v6)
+    {
+        isis_nexthop_table_destroy(inst->nexthop_v6);
+        inst->nexthop_v6 = NULL;
+    }
     g_free(inst);
 }
 
@@ -133,55 +149,42 @@ static isis_instance_cfg_t *isis_instance_create(uint32_t tag)
     inst->af_ipv4 = 1u;
     inst->af_ipv6 = 1u;
     inst->cost_style = ISIS_DEFAULT_COST_STYLE;
+    inst->nexthop_v4 = isis_nexthop_table_create();
+    inst->nexthop_v6 = isis_nexthop_table_create();
+    if (!inst->nexthop_v4 || !inst->nexthop_v6)
+    {
+        isis_instance_cfg_free(inst);
+        return NULL;
+    }
     inst->if_cfgs = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, isis_if_cfg_free);
     if (!inst->if_cfgs)
     {
-        g_free(inst);
+        isis_instance_cfg_free(inst);
         return NULL;
     }
     inst->route_states = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, isis_route_state_free);
     if (!inst->route_states)
     {
-        g_hash_table_destroy(inst->if_cfgs);
-        inst->if_cfgs = NULL;
-        g_free(inst);
+        isis_instance_cfg_free(inst);
         return NULL;
     }
     inst->learned_route_heads = isis_route_head_table_new();
     if (!inst->learned_route_heads)
     {
-        g_hash_table_destroy(inst->route_states);
-        inst->route_states = NULL;
-        g_hash_table_destroy(inst->if_cfgs);
-        inst->if_cfgs = NULL;
-        g_free(inst);
+        isis_instance_cfg_free(inst);
         return NULL;
     }
     inst->neighbors = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, isis_neighbor_free);
     if (!inst->neighbors)
     {
-        g_hash_table_destroy(inst->learned_route_heads);
-        inst->learned_route_heads = NULL;
-        g_hash_table_destroy(inst->route_states);
-        inst->route_states = NULL;
-        g_hash_table_destroy(inst->if_cfgs);
-        inst->if_cfgs = NULL;
-        g_free(inst);
+        isis_instance_cfg_free(inst);
         return NULL;
     }
 
     inst->lsdb_entries = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, isis_lsdb_entry_free);
     if (!inst->lsdb_entries)
     {
-        g_hash_table_destroy(inst->neighbors);
-        inst->neighbors = NULL;
-        g_hash_table_destroy(inst->learned_route_heads);
-        inst->learned_route_heads = NULL;
-        g_hash_table_destroy(inst->route_states);
-        inst->route_states = NULL;
-        g_hash_table_destroy(inst->if_cfgs);
-        inst->if_cfgs = NULL;
-        g_free(inst);
+        isis_instance_cfg_free(inst);
         return NULL;
     }
     return inst;
@@ -409,6 +412,8 @@ static int worker_dispatch_cmd(isis_worker_cmd_t *cmd)
                 LOG_WARN("ISIS: ROUTE connection not ready in time; route replay deferred to next READY");
                 break;
             }
+            /* 先按原 id 反刷 nexthop 对象（ROUTE 重建），再对账/重放路由（复用同一 id） */
+            isis_nexthop_resync_all_instances();
             isis_route_sync_reconcile_all_instances();
             isis_route_sync_replay_all_instances();
             break;

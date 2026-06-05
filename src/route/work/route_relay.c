@@ -7,10 +7,12 @@
 #include <string.h>
 #include <sys/socket.h>
 
+#include "errcode.h"
 #include "log.h"
 #include "net_addr.h"
 #include "route.h"
 #include "route_main.h"
+#include "route_nhobj.h"
 #include "route_static.h"
 #include "route_worker.h"
 
@@ -19,19 +21,20 @@
 typedef struct route_nh_watch_key
 {
     uint32_t owner_module_id;
-    uint32_t vrf_id;
-    uint16_t afi;
+    uint32_t nexthop_id;
     uint8_t safi;
-    uint8_t _pad0;
-    net_addr_t nexthop_addr;
+    uint8_t _pad0[3];
 } route_nh_watch_key_t;
 
 typedef struct route_nh_watch
 {
     route_nh_watch_key_t key;
+    uint32_t vrf_id;
+    uint16_t afi;
     uint8_t resolved;
-    uint8_t _pad[3];
-    uint32_t out_ifindex;  /**< 解析出的出接口索引 */
+    uint8_t _pad0;
+    uint32_t out_ifindex; /**< 解析出的出接口索引 */
+    net_addr_t nexthop_addr;
     net_addr_t relay_addr; /**< 解析出的 relay 地址 */
     gint64 updated_at_usec;
 } route_nh_watch_t;
@@ -47,10 +50,8 @@ static guint route_nh_watch_key_hash(gconstpointer p)
     }
 
     guint h = (guint)k->owner_module_id;
-    h = h * 33u + (guint)k->vrf_id;
-    h = h * 33u + (guint)k->afi;
+    h = h * 33u + (guint)k->nexthop_id;
     h = h * 33u + (guint)k->safi;
-    h ^= net_addr_hash(&k->nexthop_addr);
     return h;
 }
 
@@ -63,8 +64,7 @@ static gboolean route_nh_watch_key_equal(gconstpointer a, gconstpointer b)
         return FALSE;
     }
 
-    return ka->owner_module_id == kb->owner_module_id && ka->vrf_id == kb->vrf_id && ka->afi == kb->afi &&
-           ka->safi == kb->safi && net_addr_equal(&ka->nexthop_addr, &kb->nexthop_addr);
+    return ka->owner_module_id == kb->owner_module_id && ka->nexthop_id == kb->nexthop_id && ka->safi == kb->safi;
 }
 
 static void route_nh_watch_table_ensure(void)
@@ -168,7 +168,12 @@ static int route_path_is_self_recursive(const route_path_t *path, const net_addr
     {
         return 0;
     }
-    return net_addr_equal(&path->nexthop, addr);
+    route_nhobj_info_t info;
+    if (route_nhobj_lookup(path->nexthop_id, &info) != 0)
+    {
+        return 0;
+    }
+    return net_addr_equal(&info.key.nexthop, addr);
 }
 
 static route_path_t *route_head_best_resolver_path(route_head_t *head, const net_addr_t *addr)
@@ -370,16 +375,24 @@ static int route_nh_resolve(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, con
             }
             return 1;
         }
-        if (resolver->nexthop.family == 0)
+        /* 非直连解析路径：取其 nexthop（来自 nexthop 对象）继续递归 */
+        route_nhobj_info_t rinfo;
+        net_addr_t resolver_nh;
+        memset(&resolver_nh, 0, sizeof(resolver_nh));
+        if (route_nhobj_lookup(resolver->nexthop_id, &rinfo) == 0)
+        {
+            resolver_nh = rinfo.key.nexthop;
+        }
+        if (resolver_nh.family == 0)
         {
             return 1;
         }
-        if (resolver->nexthop.family != AF_INET && resolver->nexthop.family != AF_INET6)
+        if (resolver_nh.family != AF_INET && resolver_nh.family != AF_INET6)
         {
             return 0;
         }
 
-        cursor = resolver->nexthop;
+        cursor = resolver_nh;
         resolve_afi = (cursor.family == AF_INET) ? ROUTE_AFI_IPV4 : ROUTE_AFI_IPV6;
     }
 
@@ -396,8 +409,7 @@ static void route_relay_notify_state(const route_nh_watch_t *watch)
     /* 自模块注册的 nexthop（静态路由）：走统一回调流程，不发 IPC */
     if (watch->key.owner_module_id == DEV_MODULE_ID_ROUTE)
     {
-        route_static_on_nh_change(watch->key.vrf_id, watch->key.afi, &watch->key.nexthop_addr, watch->resolved,
-                                  &watch->relay_addr, watch->out_ifindex);
+        route_static_on_nh_change(watch->key.nexthop_id, watch->resolved, &watch->relay_addr, watch->out_ifindex);
         return;
     }
 
@@ -409,12 +421,12 @@ static void route_relay_notify_state(const route_nh_watch_t *watch)
         return;
     }
 
-    payload->vrf_id = watch->key.vrf_id;
-    payload->afi = watch->key.afi;
+    payload->nexthop_id = watch->key.nexthop_id;
+    payload->vrf_id = watch->vrf_id;
+    payload->afi = watch->afi;
     payload->safi = watch->key.safi;
     payload->resolved = watch->resolved ? 1u : 0u;
     payload->out_ifindex = watch->out_ifindex;
-    payload->nexthop_addr = watch->key.nexthop_addr;
     payload->relay_addr = watch->relay_addr;
 
     dev_ipc_message_t *msg =
@@ -428,13 +440,13 @@ static void route_relay_notify_state(const route_nh_watch_t *watch)
 
     if (dev_ipc_send(send_ctx, watch->key.owner_module_id, msg) != 0)
     {
-        LOG_WARN("ROUTE nh-notify send failed: dst=0x%08X vrf=%u afi=%u", watch->key.owner_module_id, watch->key.vrf_id,
-                 watch->key.afi);
+        LOG_WARN("ROUTE nh-notify send failed: dst=0x%08X nhid=%u vrf=%u afi=%u", watch->key.owner_module_id,
+                 watch->key.nexthop_id, watch->vrf_id, watch->afi);
     }
     dev_ipc_message_free(msg);
 }
 
-static int route_relay_validate_req(const route_nh_iter_req_t *req)
+static int route_relay_validate_req(const route_nh_iter_req_t *req, route_nhobj_info_t *info_out)
 {
     if (!req)
     {
@@ -444,12 +456,79 @@ static int route_relay_validate_req(const route_nh_iter_req_t *req)
     {
         return 0;
     }
-    if (req->afi != ROUTE_AFI_IPV4 && req->afi != ROUTE_AFI_IPV6)
+    if (req->nexthop_id == 0u || !info_out || route_nhobj_lookup(req->nexthop_id, info_out) != ERRCODE_SUCCESS)
     {
         return 0;
     }
-    /* 允许 v4/v6 任意 nexthop 家族，具体可达性由 route_nh_resolve 判定。 */
-    return req->nexthop_addr.family == AF_INET || req->nexthop_addr.family == AF_INET6;
+    if (info_out->key.afi != ROUTE_AFI_IPV4 && info_out->key.afi != ROUTE_AFI_IPV6)
+    {
+        return 0;
+    }
+    if (info_out->key.nh_type != ROUTE_NH_TYPE_IP)
+    {
+        return 0;
+    }
+    return info_out->key.nexthop.family == AF_INET || info_out->key.nexthop.family == AF_INET6;
+}
+
+static int route_relay_validate_unregister_req(const route_nh_iter_req_t *req)
+{
+    if (!req || req->nexthop_id == 0u)
+    {
+        return 0;
+    }
+    return (req->safi == 0 || req->safi == ROUTE_SAFI_UNICAST) ? 1 : 0;
+}
+
+static gboolean route_relay_refresh_watch(route_nh_watch_t *watch)
+{
+    if (!watch)
+    {
+        return FALSE;
+    }
+
+    uint32_t old_vrf_id = watch->vrf_id;
+    uint16_t old_afi = watch->afi;
+    uint8_t old_resolved = watch->resolved;
+    uint32_t old_oif = watch->out_ifindex;
+    net_addr_t old_nh = watch->nexthop_addr;
+    net_addr_t old_relay = watch->relay_addr;
+
+    route_nhobj_info_t info;
+    memset(&info, 0, sizeof(info));
+    if (route_nhobj_lookup(watch->key.nexthop_id, &info) != ERRCODE_SUCCESS || info.key.nexthop.family == 0)
+    {
+        watch->resolved = 0u;
+        watch->out_ifindex = 0u;
+        memset(&watch->relay_addr, 0, sizeof(watch->relay_addr));
+        watch->updated_at_usec = g_get_real_time();
+        return old_resolved != watch->resolved || old_oif != watch->out_ifindex ||
+               !net_addr_equal(&old_relay, &watch->relay_addr);
+    }
+
+    watch->vrf_id = info.key.vrf_id;
+    watch->afi = info.key.afi;
+    watch->nexthop_addr = info.key.nexthop;
+
+    net_addr_t gw;
+    uint32_t oif = 0;
+    memset(&gw, 0, sizeof(gw));
+    int res = route_nh_resolve(g_route_work_local ? g_route_work_local->rib : NULL, watch->vrf_id, watch->afi,
+                               &watch->nexthop_addr, &gw, &oif);
+    watch->resolved = res ? 1u : 0u;
+    watch->relay_addr = gw;
+    watch->out_ifindex = oif;
+    watch->updated_at_usec = g_get_real_time();
+
+    if (watch->key.owner_module_id != DEV_MODULE_ID_ROUTE)
+    {
+        route_nhobj_set_relay(watch->key.nexthop_id, watch->resolved ? &watch->relay_addr : NULL,
+                              watch->resolved ? watch->out_ifindex : 0u);
+    }
+
+    return old_vrf_id != watch->vrf_id || old_afi != watch->afi || old_resolved != watch->resolved ||
+           old_oif != watch->out_ifindex || !net_addr_equal(&old_nh, &watch->nexthop_addr) ||
+           !net_addr_equal(&old_relay, &watch->relay_addr);
 }
 
 void route_relay_handle_nh_register(dev_ipc_message_t *msg)
@@ -465,10 +544,11 @@ void route_relay_handle_nh_register(dev_ipc_message_t *msg)
     }
 
     const route_nh_iter_req_t *req = (const route_nh_iter_req_t *)msg->payload;
-    if (!route_relay_validate_req(req))
+    route_nhobj_info_t info;
+    memset(&info, 0, sizeof(info));
+    if (!route_relay_validate_req(req, &info))
     {
-        LOG_WARN("ROUTE_NH_REGISTER invalid payload: src=0x%08X vrf=%u afi=%u", msg->src_module_id, req->vrf_id,
-                 req->afi);
+        LOG_WARN("ROUTE_NH_REGISTER invalid payload: src=0x%08X nhid=%u", msg->src_module_id, req->nexthop_id);
         dev_ipc_message_free(msg);
         return;
     }
@@ -483,10 +563,8 @@ void route_relay_handle_nh_register(dev_ipc_message_t *msg)
     route_nh_watch_key_t key;
     memset(&key, 0, sizeof(key));
     key.owner_module_id = msg->src_module_id;
-    key.vrf_id = req->vrf_id;
-    key.afi = req->afi;
+    key.nexthop_id = req->nexthop_id;
     key.safi = (req->safi == 0) ? ROUTE_SAFI_UNICAST : req->safi;
-    key.nexthop_addr = req->nexthop_addr;
 
     route_nh_watch_t *watch = (route_nh_watch_t *)g_hash_table_lookup(g_route_nh_watch_table, &key);
     gboolean is_new = FALSE;
@@ -499,22 +577,15 @@ void route_relay_handle_nh_register(dev_ipc_message_t *msg)
             return;
         }
         watch->key = key;
+        watch->vrf_id = info.key.vrf_id;
+        watch->afi = info.key.afi;
+        watch->nexthop_addr = info.key.nexthop;
         g_hash_table_insert(g_route_nh_watch_table, &watch->key, watch);
         is_new = TRUE;
     }
 
-    uint8_t old_resolved = watch->resolved;
-    net_addr_t gw;
-    uint32_t oif = 0;
-    memset(&gw, 0, sizeof(gw));
-    int res = route_nh_resolve(g_route_work_local ? g_route_work_local->rib : NULL, watch->key.vrf_id, watch->key.afi,
-                               &watch->key.nexthop_addr, &gw, &oif);
-    watch->resolved = res ? 1u : 0u;
-    watch->relay_addr = gw;
-    watch->out_ifindex = oif;
-    watch->updated_at_usec = g_get_real_time();
-
-    if (is_new || old_resolved != watch->resolved)
+    gboolean changed = route_relay_refresh_watch(watch);
+    if (is_new || changed)
     {
         route_relay_notify_state(watch);
     }
@@ -534,7 +605,7 @@ void route_relay_handle_nh_unregister(dev_ipc_message_t *msg)
     }
 
     const route_nh_iter_req_t *req = (const route_nh_iter_req_t *)msg->payload;
-    if (!route_relay_validate_req(req))
+    if (!route_relay_validate_unregister_req(req))
     {
         dev_ipc_message_free(msg);
         return;
@@ -545,10 +616,8 @@ void route_relay_handle_nh_unregister(dev_ipc_message_t *msg)
         route_nh_watch_key_t key;
         memset(&key, 0, sizeof(key));
         key.owner_module_id = msg->src_module_id;
-        key.vrf_id = req->vrf_id;
-        key.afi = req->afi;
+        key.nexthop_id = req->nexthop_id;
         key.safi = (req->safi == 0) ? ROUTE_SAFI_UNICAST : req->safi;
-        key.nexthop_addr = req->nexthop_addr;
         g_hash_table_remove(g_route_nh_watch_table, &key);
     }
 
@@ -573,23 +642,14 @@ static void route_recompute_watch_cb(gpointer key, gpointer value, gpointer user
         return;
     }
 
-    uint8_t old_resolved = watch->resolved;
-    net_addr_t gw;
-    uint32_t oif = 0;
-    memset(&gw, 0, sizeof(gw));
-    int res = route_nh_resolve(g_route_work_local ? g_route_work_local->rib : NULL, watch->key.vrf_id, watch->key.afi,
-                               &watch->key.nexthop_addr, &gw, &oif);
-    watch->resolved = res ? 1u : 0u;
-    watch->relay_addr = gw;
-    watch->out_ifindex = oif;
-    watch->updated_at_usec = g_get_real_time();
+    gboolean changed = route_relay_refresh_watch(watch);
 
     ctx->total++;
     if (watch->resolved)
     {
         ctx->resolved++;
     }
-    if (old_resolved != watch->resolved)
+    if (changed)
     {
         if (watch->resolved)
         {
@@ -674,10 +734,12 @@ void route_relay_publish_unreachable_for_shutdown(void)
     }
 }
 
-int route_relay_register_direct(uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop_addr, uint32_t owner_module_id,
-                                net_addr_t *gateway_out, uint32_t *ifindex_out)
+int route_relay_register_direct(uint32_t nexthop_id, uint32_t owner_module_id, net_addr_t *gateway_out,
+                                uint32_t *ifindex_out)
 {
-    if (!nexthop_addr)
+    route_nhobj_info_t info;
+    memset(&info, 0, sizeof(info));
+    if (nexthop_id == 0u || route_nhobj_lookup(nexthop_id, &info) != ERRCODE_SUCCESS || info.key.nexthop.family == 0)
     {
         return 0;
     }
@@ -691,10 +753,8 @@ int route_relay_register_direct(uint32_t vrf_id, uint16_t afi, const net_addr_t 
     route_nh_watch_key_t key;
     memset(&key, 0, sizeof(key));
     key.owner_module_id = owner_module_id;
-    key.vrf_id = vrf_id;
-    key.afi = afi;
+    key.nexthop_id = nexthop_id;
     key.safi = ROUTE_SAFI_UNICAST;
-    key.nexthop_addr = *nexthop_addr;
 
     route_nh_watch_t *watch = (route_nh_watch_t *)g_hash_table_lookup(g_route_nh_watch_table, &key);
     if (!watch)
@@ -705,35 +765,29 @@ int route_relay_register_direct(uint32_t vrf_id, uint16_t afi, const net_addr_t 
             return 0;
         }
         watch->key = key;
+        watch->vrf_id = info.key.vrf_id;
+        watch->afi = info.key.afi;
+        watch->nexthop_addr = info.key.nexthop;
         g_hash_table_insert(g_route_nh_watch_table, &watch->key, watch);
     }
 
-    net_addr_t gw;
-    uint32_t oif = 0;
-    memset(&gw, 0, sizeof(gw));
-    int res =
-        route_nh_resolve(g_route_work_local ? g_route_work_local->rib : NULL, vrf_id, afi, nexthop_addr, &gw, &oif);
-    watch->resolved = res ? 1u : 0u;
-    watch->relay_addr = gw;
-    watch->out_ifindex = oif;
-    watch->updated_at_usec = g_get_real_time();
+    (void)route_relay_refresh_watch(watch);
 
     if (gateway_out)
     {
-        *gateway_out = gw;
+        *gateway_out = watch->relay_addr;
     }
     if (ifindex_out)
     {
-        *ifindex_out = oif;
+        *ifindex_out = watch->out_ifindex;
     }
 
     return (int)watch->resolved;
 }
 
-void route_relay_unregister_direct(uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop_addr,
-                                   uint32_t owner_module_id)
+void route_relay_unregister_direct(uint32_t nexthop_id, uint32_t owner_module_id)
 {
-    if (!g_route_nh_watch_table || !nexthop_addr)
+    if (!g_route_nh_watch_table || nexthop_id == 0u)
     {
         return;
     }
@@ -741,10 +795,8 @@ void route_relay_unregister_direct(uint32_t vrf_id, uint16_t afi, const net_addr
     route_nh_watch_key_t key;
     memset(&key, 0, sizeof(key));
     key.owner_module_id = owner_module_id;
-    key.vrf_id = vrf_id;
-    key.afi = afi;
+    key.nexthop_id = nexthop_id;
     key.safi = ROUTE_SAFI_UNICAST;
-    key.nexthop_addr = *nexthop_addr;
 
     g_hash_table_remove(g_route_nh_watch_table, &key);
 }
@@ -781,26 +833,24 @@ static void relay_show_cb(gpointer key, gpointer value, gpointer user_data)
     }
 
     /* 按 AFI 过滤 */
-    if (ctx->has_afi_filter && watch->key.afi != ctx->afi_filter)
+    if (ctx->has_afi_filter && watch->afi != ctx->afi_filter)
     {
         return;
     }
-    if (watch->key.vrf_id != ctx->vrf_filter)
+    if (watch->vrf_id != ctx->vrf_filter)
     {
         return;
     }
 
     char nh_str[64];
-    net_addr_to_str(&watch->key.nexthop_addr, nh_str, sizeof(nh_str));
+    net_addr_to_str(&watch->nexthop_addr, nh_str, sizeof(nh_str));
 
-    const char *afi_str = (watch->key.afi == ROUTE_AFI_IPV4)   ? "ipv4"
-                          : (watch->key.afi == ROUTE_AFI_IPV6) ? "ipv6"
-                                                               : "?";
+    const char *afi_str = (watch->afi == ROUTE_AFI_IPV4) ? "ipv4" : (watch->afi == ROUTE_AFI_IPV6) ? "ipv6" : "?";
     const char *safi_str = (watch->key.safi == ROUTE_SAFI_UNICAST) ? "unicast" : "?";
     const char *resolved_str = watch->resolved ? "yes" : "no";
 
-    g_string_append_printf(ctx->buf, "0x%08X  %4u  %-4s  %-7s  %-20s  %s\r\n", watch->key.owner_module_id,
-                           watch->key.vrf_id, afi_str, safi_str, nh_str, resolved_str);
+    g_string_append_printf(ctx->buf, "0x%08X  %-10u  %4u  %-4s  %-7s  %-20s  %s\r\n", watch->key.owner_module_id,
+                           watch->key.nexthop_id, watch->vrf_id, afi_str, safi_str, nh_str, resolved_str);
     ctx->count++;
 }
 
@@ -814,9 +864,9 @@ void route_relay_show(GString *buf, uint32_t module_filter, int has_filter, uint
 
     g_string_append_printf(buf, "\r\nRoute Relay (VRF: %s)\r\n", vrf_name ? vrf_name : "public");
     g_string_append_printf(buf,
-                           "\r\n%-10s  %4s  %-4s  %-7s  %-20s  %s\r\n"
-                           "----------  ----  ----  -------  --------------------  --------\r\n",
-                           "Module", "VRF", "AFI", "SAFI", "Nexthop", "Resolved");
+                           "\r\n%-10s  %-10s  %4s  %-4s  %-7s  %-20s  %s\r\n"
+                           "----------  ----------  ----  ----  -------  --------------------  --------\r\n",
+                           "Module", "NexthopID", "VRF", "AFI", "SAFI", "Nexthop", "Resolved");
 
     if (!g_route_nh_watch_table || g_hash_table_size(g_route_nh_watch_table) == 0)
     {

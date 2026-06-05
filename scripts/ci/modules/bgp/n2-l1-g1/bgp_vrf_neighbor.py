@@ -185,7 +185,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             wait_check(
                 rt,
                 device=dev,
-                command=f"show route ipv4 10.99.0.0 30 vrf {VRF_NAME}",
+                command=f"show route ipv4 vrf {VRF_NAME} 10.99.0.0 30",
                 timeout=15,
                 interval=2,
                 regex=[r"(?im)^\s*Path\s*\[\d+\]\s*:\s*connected\b"],
@@ -194,7 +194,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             wait_check(
                 rt,
                 device=dev,
-                command=f"show route ipv6 2001:db8:99:: 64 vrf {VRF_NAME}",
+                command=f"show route ipv6 vrf {VRF_NAME} 2001:db8:99:: 64",
                 timeout=15,
                 interval=2,
                 regex=[r"(?im)^\s*Path\s*\[\d+\]\s*:\s*connected\b"],

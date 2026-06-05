@@ -59,6 +59,19 @@
                     <type>dynamic(4:1,string(1-63))</type>
                     <description>VRF name</description>
                 </element>
+                <element id="13" cfg-id="11" type="keyword">
+                    <name>nexthop</name>
+                    <description>FIB nexthop objects</description>
+                </element>
+                <element id="14" cfg-id="12" type="keyword">
+                    <name>id</name>
+                    <description>Filter by nexthop id</description>
+                </element>
+                <element id="15" cfg-id="13" type="parameter">
+                    <name>&lt;nexthop-id&gt;</name>
+                    <type>uint(1-4294967295)</type>
+                    <description>Nexthop object id</description>
+                </element>
             </elements>
             <commands>
                 <!-- show fib ipv4 -->
@@ -73,22 +86,22 @@
                 </command>
                 <!-- show fib ipv4 <prefix> <prefix-length> -->
                 <command>
-                    <expression>1 2 3 6 7 [11 12]</expression>
+                    <expression>1 2 3 [11 12] 6 7</expression>
                     <views>global</views>
                 </command>
                 <!-- show fib ipv6 <prefix> <prefix-length> -->
                 <command>
-                    <expression>1 2 4 6 8 [11 12]</expression>
+                    <expression>1 2 4 [11 12] 6 8</expression>
                     <views>global</views>
                 </command>
                 <!-- show fib ipv4 os -->
                 <command>
-                    <expression>1 2 3 5 [11 12]</expression>
+                    <expression>1 2 3 [11 12] 5</expression>
                     <views>global</views>
                 </command>
                 <!-- show fib ipv6 os -->
                 <command>
-                    <expression>1 2 4 5 [11 12]</expression>
+                    <expression>1 2 4 [11 12] 5</expression>
                     <views>global</views>
                 </command>
                 <!-- show fib mpls -->
@@ -98,12 +111,21 @@
                 </command>
                 <!-- show fib mpls <label> -->
                 <command>
-                    <expression>1 2 9 10 [11 12]</expression>
+                    <expression>1 2 9 [11 12] 10</expression>
                     <views>global</views>
                 </command>
                 <!-- show fib mpls os -->
                 <command>
-                    <expression>1 2 9 5 [11 12]</expression>
+                    <expression>1 2 9 [11 12] 5</expression>
+                    <views>global</views>
+                </command>
+                <!-- show fib nexthop {ipv4|ipv6} [vrf <name>] [id <id>]（afi 必填，vrf 在 id 之前） -->
+                <command>
+                    <expression>1 2 13 3 [11 12] [14 15]</expression>
+                    <views>global</views>
+                </command>
+                <command>
+                    <expression>1 2 13 4 [11 12] [14 15]</expression>
                     <views>global</views>
                 </command>
             </commands>

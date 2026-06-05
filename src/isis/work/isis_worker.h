@@ -17,6 +17,8 @@
 
 #define ISIS_NET_STR_MAX 64
 
+typedef struct isis_nexthop_table isis_nexthop_table_t;
+
 typedef struct isis_if_af_cfg
 {
     uint8_t enabled;
@@ -93,9 +95,9 @@ typedef struct isis_route_state
     uint8_t _pad0;
     net_addr_t prefix_addr;
     net_addr_t source_addr;
-    net_addr_t nexthop_addr;
-    uint32_t out_ifindex;
     uint32_t metric;
+    uint32_t nexthop_id;
+    isis_nexthop_table_t *nexthop_table; /**< 持有 nexthop_id 的地址族表（借用，随 instance 生命周期） */
 } isis_route_state_t;
 
 typedef struct isis_route_head isis_route_head_t;
@@ -161,17 +163,36 @@ typedef struct isis_instance_cfg
     uint8_t admin_up;
     uint8_t af_ipv4;
     uint8_t af_ipv6;
-    uint8_t cost_style;              /**< ISIS_COST_STYLE_NARROW / ISIS_COST_STYLE_WIDE */
-    GHashTable *if_cfgs;             /**< key=ifname(strdup), value=isis_if_cfg_t* */
-    GHashTable *route_states;        /**< key=ifname|afi(strdup), value=isis_route_state_t* */
-    GHashTable *learned_route_heads; /**< key=learned-route-id(strdup),
-                                        value=isis_route_head_t*（多路径，首路径为best且已下发） */
-    GHashTable *neighbors;           /**< key=ifname|level|sysid(strdup), value=isis_neighbor_t* */
-    GHashTable *lsdb_entries;        /**< key=level|sysid(strdup), value=isis_lsdb_entry_t* */
+    uint8_t cost_style;               /**< ISIS_COST_STYLE_NARROW / ISIS_COST_STYLE_WIDE */
+    GHashTable *if_cfgs;              /**< key=ifname(strdup), value=isis_if_cfg_t* */
+    GHashTable *route_states;         /**< key=ifname|afi(strdup), value=isis_route_state_t* */
+    GHashTable *learned_route_heads;  /**< key=learned-route-id(strdup),
+                                         value=isis_route_head_t*（多路径，首路径为best且已下发） */
+    GHashTable *neighbors;            /**< key=ifname|level|sysid(strdup), value=isis_neighbor_t* */
+    GHashTable *lsdb_entries;         /**< key=level|sysid(strdup), value=isis_lsdb_entry_t* */
+    isis_nexthop_table_t *nexthop_v4; /**< IPv4 地址组 nexthop registry */
+    isis_nexthop_table_t *nexthop_v6; /**< IPv6 地址组 nexthop registry */
     uint32_t lsp_seq_l1;
     uint32_t lsp_seq_l2;
     uint64_t last_lsp_tx_msec;
 } isis_instance_cfg_t;
+
+static inline isis_nexthop_table_t *isis_instance_nexthop_table(isis_instance_cfg_t *inst, uint16_t afi)
+{
+    if (!inst)
+    {
+        return NULL;
+    }
+    if (afi == ISIS_AFI_IPV4)
+    {
+        return inst->nexthop_v4;
+    }
+    if (afi == ISIS_AFI_IPV6)
+    {
+        return inst->nexthop_v6;
+    }
+    return NULL;
+}
 
 typedef enum isis_apply_op
 {

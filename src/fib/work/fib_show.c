@@ -43,6 +43,7 @@ typedef struct fib_show_route_ctx
     GString *buf;
     uint16_t afi;
     uint32_t vrf_id;
+    const char *vrf_name;
     gboolean has_filter;
     net_addr_t filter_addr;
     uint8_t filter_prefix_len;
@@ -105,6 +106,27 @@ static const char *afi_name(uint16_t afi)
             return "ipv4";
         case ROUTE_AFI_IPV6:
             return "ipv6";
+        default:
+            return "unknown";
+    }
+}
+
+static const char *proto_name_long(uint32_t protocol)
+{
+    switch (protocol)
+    {
+        case ROUTE_PROTOCOL_CONNECTED:
+            return "connected";
+        case ROUTE_PROTOCOL_STATIC:
+            return "static";
+        case ROUTE_PROTOCOL_BGP:
+            return "bgp";
+        case ROUTE_PROTOCOL_OSPF:
+            return "ospf";
+        case ROUTE_PROTOCOL_ISIS:
+            return "isis";
+        case ROUTE_PROTOCOL_BLACKHOLE:
+            return "static(blackhole)";
         default:
             return "unknown";
     }
@@ -256,24 +278,41 @@ static void append_route_detail_cb(gpointer key, gpointer value, gpointer user_d
     prefix_to_str(&state->entry, prefix, sizeof(prefix));
     nexthop_to_str(&state->entry, nexthop, sizeof(nexthop));
 
+    /* 取关联 nexthop 对象（按 nexthop_id），展示解析后的网关/出接口（Iter NH / Iter OIF） */
+    char iter_nh[64] = "-";
+    uint32_t iter_oif = 0u;
+    fib_nexthop_state_t *nh =
+        fib_rib_nexthop_lookup(g_fib_work_local ? g_fib_work_local->rib : NULL, state->entry.nexthop_id);
+    if (nh)
+    {
+        if (nh->entry.gateway_addr.family == AF_INET || nh->entry.gateway_addr.family == AF_INET6)
+        {
+            net_addr_to_str(&nh->entry.gateway_addr, iter_nh, sizeof(iter_nh));
+        }
+        iter_oif = nh->entry.out_ifindex;
+    }
+
     ctx->count++;
-    g_string_append_printf(ctx->buf,
-                           "\r\nFIB Route Detail: %s\r\n"
-                           "  VRF       : %u\r\n"
-                           "  AFI       : %s\r\n"
-                           "  Protocol  : %u\r\n"
-                           "  Nexthop   : %s\r\n"
-                           "  NH-Type   : %s\r\n"
-                           "  Tunnel-ID : %u\r\n"
-                           "  OIF       : %u\r\n"
-                           "  Metric    : %d\r\n"
-                           "  Preference: %d\r\n"
-                           "  Installed : %s\r\n"
-                           "  Skip OS   : %s\r\n",
-                           prefix, state->entry.vrf_id, afi_name(state->entry.afi), state->entry.protocol, nexthop,
-                           nh_type_name(state->entry.nh_type), state->entry.tunnel_id, state->entry.out_ifindex,
-                           state->entry.metric, state->entry.preference, state->installed ? "yes" : "no",
-                           (state->entry.flags & FIB_ROUTE_FLAG_SKIP_OS) ? "yes" : "no");
+    /* 与 `show route <prefix> <len>` 详情格式对齐，并新增 NH-ID 显示 */
+    g_string_append_printf(
+        ctx->buf,
+        "\r\nRouting entry for %s (VRF: %s)\r\n"
+        "  Path [%u]: %s\r\n"
+        "    Nexthop   : %s\r\n"
+        "    NH-ID     : %u\r\n"
+        "    Interface : %u\r\n"
+        "    Iter NH   : %s\r\n"
+        "    Iter OIF  : %u\r\n"
+        "    NH-Type   : %s\r\n"
+        "    Tunnel-ID : %u\r\n"
+        "    Metric    : %d\r\n"
+        "    Preference: %d\r\n"
+        "    Installed : %s\r\n"
+        "    Skip OS   : %s\r\n",
+        prefix, ctx->vrf_name ? ctx->vrf_name : "-", ctx->count, proto_name_long(state->entry.protocol), nexthop,
+        state->entry.nexthop_id, state->entry.out_ifindex, iter_nh, iter_oif, nh_type_name(state->entry.nh_type),
+        state->entry.tunnel_id, state->entry.metric, state->entry.preference, state->installed ? "yes" : "no",
+        (state->entry.flags & FIB_ROUTE_FLAG_SKIP_OS) ? "yes" : "no");
 
     if (state->entry.nh_type == FIB_NH_TYPE_TUNNEL && state->entry.tunnel_id != 0u)
     {
@@ -378,6 +417,7 @@ static int handle_show_routes(dev_ipc_message_t *msg, uint16_t afi, const net_ad
         .buf = buf,
         .afi = afi,
         .vrf_id = vrf_filter ? vrf_filter->vrf_id : VRF_PUBLIC_VRF_ID,
+        .vrf_name = vrf_filter ? vrf_filter->name : VRF_PUBLIC_VRF_NAME,
         .has_filter = filter_addr != NULL,
         .filter_prefix_len = filter_addr ? (uint8_t)filter_prefix_len : 0u,
         .count = 0,
@@ -493,12 +533,94 @@ static int handle_show_os(dev_ipc_message_t *msg, uint16_t afi, const fib_show_v
     return send_chunked(msg, buf);
 }
 
+typedef struct fib_show_nexthop_ctx
+{
+    GString *buf;
+    int has_afi;
+    uint16_t afi;
+    int has_vrf;
+    uint32_t vrf_id;
+    int has_nhid;
+    uint32_t nhid;
+    uint32_t count;
+} fib_show_nexthop_ctx_t;
+
+static void append_nexthop_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    const fib_nexthop_state_t *state = (const fib_nexthop_state_t *)value;
+    fib_show_nexthop_ctx_t *ctx = (fib_show_nexthop_ctx_t *)user_data;
+    if (!state || !ctx)
+    {
+        return;
+    }
+    const fib_nexthop_entry_t *e = &state->entry;
+    if (ctx->has_afi && e->afi != ctx->afi)
+    {
+        return;
+    }
+    if (ctx->has_vrf && e->vrf_id != ctx->vrf_id)
+    {
+        return;
+    }
+    if (ctx->has_nhid && e->nexthop_id != ctx->nhid)
+    {
+        return;
+    }
+
+    char gw[64] = "-";
+    if (e->gateway_addr.family == AF_INET || e->gateway_addr.family == AF_INET6)
+    {
+        net_addr_to_str(&e->gateway_addr, gw, sizeof(gw));
+    }
+    g_string_append_printf(ctx->buf, "%-10u %-6u %-5s %-10s %-6s %-20s %-6u\r\n", e->nexthop_id, e->vrf_id,
+                           afi_name(e->afi), nh_type_name(e->nh_type), e->state ? "up" : "down", gw, e->out_ifindex);
+    ctx->count++;
+}
+
+static int handle_show_fib_nexthop(dev_ipc_message_t *msg, int has_afi, uint16_t afi, int has_vrf, uint32_t vrf_id,
+                                   int has_nhid, uint32_t nhid)
+{
+    GString *buf = g_string_new("");
+    if (!buf)
+    {
+        send_resp(msg, "Error: Out of memory\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    fib_show_nexthop_ctx_t ctx = {
+        .buf = buf,
+        .has_afi = has_afi,
+        .afi = afi,
+        .has_vrf = has_vrf,
+        .vrf_id = vrf_id,
+        .has_nhid = has_nhid,
+        .nhid = nhid,
+        .count = 0,
+    };
+    g_string_append_printf(buf,
+                           "\r\nFIB Nexthop Objects\r\n"
+                           "%-10s %-6s %-5s %-10s %-6s %-20s %-6s\r\n"
+                           "---------- ------ ----- ---------- ------ -------------------- ------\r\n",
+                           "NH-ID", "VRF", "AFI", "NH-Type", "State", "Gateway", "OIF");
+    fib_rib_foreach_nexthop(g_fib_work_local ? g_fib_work_local->rib : NULL, append_nexthop_cb, &ctx);
+    if (ctx.count == 0)
+    {
+        g_string_append(buf, "  (no nexthop objects)\r\n");
+    }
+    g_string_append_printf(buf, "\r\nTotal %u nexthop(s)\r\n", ctx.count);
+    return send_chunked(msg, buf);
+}
+
 static int handle_show_fib(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
     int show_ipv4 = 0;
     int show_ipv6 = 0;
     int show_mpls = 0;
     int show_os = 0;
+    int show_nexthop = 0;
+    gboolean has_nhid = FALSE;
+    uint32_t filter_nhid = 0;
     net_addr_t filter_addr;
     gboolean has_filter_addr = FALSE;
     int64_t filter_prefix_len = -1;
@@ -530,6 +652,13 @@ static int handle_show_fib(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                     filter_label = (uint32_t)cli_tlv_entry_get_int(&entry);
                     has_filter_label = TRUE;
                     break;
+                case 11:
+                    show_nexthop = 1;
+                    break;
+                case 13:
+                    filter_nhid = (uint32_t)cli_tlv_entry_get_int(&entry);
+                    has_nhid = TRUE;
+                    break;
                 case 10:
                 {
                     const char *text = cli_tlv_entry_get_text(&entry);
@@ -558,6 +687,28 @@ static int handle_show_fib(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             }
         }
         cli_tlv_entry_free(&entry);
+    }
+
+    if (show_nexthop)
+    {
+        /* show fib nexthop [ipv4|ipv6] [vrf X] [id N]：afi/vrf/id 不指定即全部 */
+        int has_afi = (show_ipv4 || show_ipv6);
+        uint16_t nh_afi = show_ipv6 ? ROUTE_AFI_IPV6 : ROUTE_AFI_IPV4;
+        int has_vrf = (vrf_name[0] != '\0');
+        uint32_t vrf_id = VRF_PUBLIC_VRF_ID;
+        if (has_vrf)
+        {
+            fib_show_vrf_filter_t vf;
+            if (fib_show_vrf_filter_resolve(vrf_name, &vf) != ERRCODE_SUCCESS)
+            {
+                char resp[160];
+                snprintf(resp, sizeof(resp), "Error: VRF %s not found\r\n", vrf_name);
+                send_resp(msg, resp);
+                return ERRCODE_FAIL;
+            }
+            vrf_id = vf.vrf_id;
+        }
+        return handle_show_fib_nexthop(msg, has_afi, nh_afi, has_vrf, vrf_id, has_nhid, filter_nhid);
     }
 
     uint16_t afi = show_ipv6 ? ROUTE_AFI_IPV6 : ROUTE_AFI_IPV4;

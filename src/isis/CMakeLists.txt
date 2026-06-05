@@ -8,6 +8,7 @@ set(ISIS_SOURCES
     isis_bdr.c
     work/isis_worker.c
     work/isis_cfg_apply.c
+    work/isis_nexthop.c
     work/isis_route.c
     work/isis_route_sync.c
     work/isis_show.c
@@ -18,7 +19,7 @@ set(ISIS_SOURCES
 
 add_executable(netnexus-isis isis_proc.c ${ISIS_SOURCES})
 
-target_include_directories(netnexus-isis PRIVATE . db work)
+target_include_directories(netnexus-isis PRIVATE . db work ../route/work)
 
 target_link_libraries(netnexus-isis PRIVATE
     dev_api

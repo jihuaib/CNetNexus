@@ -8,7 +8,9 @@
 
 #include <string.h>
 
+#include "fib.h"
 #include "route.h"
+#include "route_nhobj.h"
 
 // ============================================================================
 // 内部辅助：键构造
@@ -77,6 +79,21 @@ static route_path_t *head_lookup_path_mut(route_head_t *head, const route_path_k
     return NULL;
 }
 
+static void path_drop_nexthop_ref(route_path_t *path)
+{
+    if (!path || path->nexthop_id == 0u)
+    {
+        return;
+    }
+    if (path->fib_attached)
+    {
+        route_nhobj_fib_detach(path->nexthop_id);
+        path->fib_attached = 0u;
+    }
+    route_nhobj_release(path->nexthop_id);
+    path->nexthop_id = 0u;
+}
+
 // ============================================================================
 // 内存释放
 // ============================================================================
@@ -86,6 +103,8 @@ static route_path_t *head_lookup_path_mut(route_head_t *head, const route_path_k
  */
 static void path_free(gpointer data)
 {
+    route_path_t *path = (route_path_t *)data;
+    path_drop_nexthop_ref(path);
     g_free(data);
 }
 
@@ -198,12 +217,119 @@ int route_rib_add(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, const net_add
         rib->path_count++;
     }
 
-    path->nexthop = *nexthop;
-    path->relay_addr = *nexthop;
     path->metric = metric;
     path->preference = preference;
     path->out_ifindex = out_ifindex;
-    path->iter_out_ifindex = out_ifindex;
+    path->nh_type = (nh_type == ROUTE_NH_TYPE_TUNNEL && tunnel_id != 0u) ? ROUTE_NH_TYPE_TUNNEL : ROUTE_NH_TYPE_IP;
+    path->tunnel_id = (path->nh_type == ROUTE_NH_TYPE_TUNNEL) ? tunnel_id : 0u;
+    path->entry_flags = entry_flags;
+    path->updated_at_usec = g_get_real_time();
+
+    /* nexthop 身份信息收敛到 nexthop 对象：本路径持有一份 registry 引用。
+     * 下一跳变化（如 BGP nexthop 改变，同 path_key）时换对象；relay 初值=原始 nexthop。
+     * 仅 registry 操作，不触发 FIB；FIB 下刷由 route_calc 的 fib_attach/detach 驱动。 */
+    route_nhobj_key_t nk;
+    memset(&nk, 0, sizeof(nk));
+    nk.vrf_id = vrf_id;
+    nk.protocol = protocol;
+    nk.afi = afi;
+    nk.nh_type = (protocol == ROUTE_PROTOCOL_BLACKHOLE || nh_type == ROUTE_NH_TYPE_BLACKHOLE) ? FIB_NH_TYPE_BLACKHOLE
+                                                                                              : FIB_NH_TYPE_IP;
+    nk.key_ifindex = out_ifindex;
+    nk.nexthop = *nexthop;
+
+    route_nhobj_info_t cur;
+    if (path->nexthop_id == 0u)
+    {
+        if (route_nhobj_acquire(&nk, 0u, &path->nexthop_id) != 0)
+        {
+            if (is_new)
+            {
+                head->path_list = g_list_remove(head->path_list, path);
+                rib->path_count--;
+                g_free(path);
+            }
+            return -1;
+        }
+    }
+    else if (route_nhobj_lookup(path->nexthop_id, &cur) != 0 || !route_nhobj_key_equal(&cur.key, &nk))
+    {
+        uint32_t new_id = 0u;
+        if (route_nhobj_acquire(&nk, 0u, &new_id) != 0)
+        {
+            return -1;
+        }
+        /* 下一跳身份变化：先 detach 旧对象的 FIB 引用（若有），释放旧 registry 引用，再申请新对象 */
+        if (path->fib_attached)
+        {
+            route_nhobj_fib_detach(path->nexthop_id);
+            path->fib_attached = 0u;
+        }
+        route_nhobj_release(path->nexthop_id);
+        path->nexthop_id = new_id;
+    }
+
+    return is_new ? 1 : 0;
+}
+
+int route_rib_add_nexthop_id(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr,
+                             uint8_t prefix_len, uint32_t protocol, const net_addr_t *source, uint32_t nexthop_id,
+                             int32_t metric, int32_t preference, uint32_t out_ifindex, uint8_t nh_type,
+                             uint32_t tunnel_id, uint32_t entry_flags)
+{
+    if (!rib || !prefix_addr || !source || nexthop_id == 0u)
+    {
+        return -1;
+    }
+
+    route_nhobj_info_t info;
+    if (route_nhobj_lookup(nexthop_id, &info) != 0)
+    {
+        return -1;
+    }
+
+    route_head_t *head = get_or_create_head(rib, vrf_id, afi, prefix_addr, prefix_len);
+    if (!head)
+    {
+        return -1;
+    }
+
+    route_path_key_t tmp_key;
+    make_path_key(&tmp_key, protocol, source);
+
+    route_path_t *path = head_lookup_path_mut(head, &tmp_key);
+    int is_new = (path == NULL);
+    if (is_new)
+    {
+        path = (route_path_t *)g_malloc0(sizeof(route_path_t));
+        if (!path)
+        {
+            return -1;
+        }
+        path->key = tmp_key;
+        head->path_list = g_list_prepend(head->path_list, path);
+        rib->path_count++;
+    }
+
+    if (path->nexthop_id != nexthop_id)
+    {
+        if (route_nhobj_retain(nexthop_id) != 0)
+        {
+            if (is_new)
+            {
+                head->path_list = g_list_remove(head->path_list, path);
+                rib->path_count--;
+                g_free(path);
+            }
+            return -1;
+        }
+        path_drop_nexthop_ref(path);
+        path->nexthop_id = nexthop_id;
+    }
+
+    path->metric = metric;
+    path->preference = preference;
+    path->out_ifindex = out_ifindex;
     path->nh_type = (nh_type == ROUTE_NH_TYPE_TUNNEL && tunnel_id != 0u) ? ROUTE_NH_TYPE_TUNNEL : ROUTE_NH_TYPE_IP;
     path->tunnel_id = (path->nh_type == ROUTE_NH_TYPE_TUNNEL) ? tunnel_id : 0u;
     path->entry_flags = entry_flags;

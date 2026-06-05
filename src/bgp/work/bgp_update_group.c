@@ -14,6 +14,7 @@
 #include "bgp_conn.h"
 #include "bgp_fsm.h"
 #include "bgp_instance.h"
+#include "bgp_nexthop.h"
 #include "bgp_peer.h"
 #include "bgp_pkt.h"
 #include "bgp_rd.h"
@@ -21,6 +22,7 @@
 #include "bgp_vrf.h"
 #include "bgp_vrf_export.h"
 #include "bgp_worker.h"
+#include "errcode.h"
 #include "log.h"
 #include "net_addr.h"
 
@@ -558,22 +560,25 @@ static const bgp_session_t *bgp_best_source_session(const bgp_route_node_t *best
  *
  * R_LOCAL：使用子组缓存的本端连接地址替换 nexthop（eBGP 的 next-hop-self、iBGP
  *          对 IMPORT 路由的反射均走此路径）；处理双栈/RFC 8950 family 转换。
- * R_PASS： 保留 best->nexthop 原值。
+ * R_PASS： 保留 best 的 nhobj key.nexthop 原值。
  * R_CONFIG：预留未实现，当前回退到 PASS。
  */
-static void bgp_subgroup_apply_nexthop(const bgp_nh_subgroup_t *sg, const bgp_route_node_t *best, bgp_nexthop_t *out_nh)
+static bool bgp_subgroup_apply_nexthop(const bgp_nh_subgroup_t *sg, const bgp_route_node_t *best, bgp_nexthop_t *out_nh)
 {
-    memcpy(out_nh, &best->nexthop, sizeof(*out_nh));
+    if (bgp_nexthop_get_route_bgp(best, out_nh) != ERRCODE_SUCCESS)
+    {
+        return false;
+    }
 
     if (!sg || sg->key.rule != BGP_NH_RULE_LOCAL)
     {
-        return; /* PASS / CONFIG：保留原 nh */
+        return true; /* PASS / CONFIG：保留原 nh */
     }
 
     const net_addr_t *local = &sg->key.effective_local_addr;
     if (local->family == 0 || net_addr_is_zero(local))
     {
-        return; /* 本端地址无效：无法替换，保留原 nh */
+        return true; /* 本端地址无效：无法替换，保留原 nh */
     }
 
     /* 同族 nexthop 替换（传统场景） */
@@ -582,7 +587,7 @@ static void bgp_subgroup_apply_nexthop(const bgp_nh_subgroup_t *sg, const bgp_ro
         out_nh->global = *local;
         out_nh->has_link_local = false;
         memset(&out_nh->link_local, 0, sizeof(out_nh->link_local));
-        return;
+        return true;
     }
 
     /* 双栈：IPv6 路由 + IPv4 本端 → 使用本端 IPv4 */
@@ -591,7 +596,7 @@ static void bgp_subgroup_apply_nexthop(const bgp_nh_subgroup_t *sg, const bgp_ro
         out_nh->global = *local;
         out_nh->has_link_local = false;
         memset(&out_nh->link_local, 0, sizeof(out_nh->link_local));
-        return;
+        return true;
     }
 
     /* RFC 8950：IPv4 路由 + IPv6 本端（需 EXT_NEXTHOP 能力）
@@ -603,6 +608,7 @@ static void bgp_subgroup_apply_nexthop(const bgp_nh_subgroup_t *sg, const bgp_ro
         out_nh->has_link_local = false;
         memset(&out_nh->link_local, 0, sizeof(out_nh->link_local));
     }
+    return true;
 }
 
 bool bgp_subgroup_eval_export(const bgp_nh_subgroup_t *sg, const bgp_route_node_t *best, const bgp_nlri_entry_t *nlri,
@@ -687,8 +693,7 @@ bool bgp_subgroup_eval_export(const bgp_nh_subgroup_t *sg, const bgp_route_node_
     }
 
     /* nexthop 策略应用 */
-    bgp_subgroup_apply_nexthop(sg, best, out_nh);
-    return true;
+    return bgp_subgroup_apply_nexthop(sg, best, out_nh);
 }
 
 void bgp_update_group_enqueue_announce(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)

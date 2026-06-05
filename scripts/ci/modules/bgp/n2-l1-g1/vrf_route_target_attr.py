@@ -71,10 +71,10 @@ def _cleanup(rt: TopologyRuntime, base: dict[str, dict[str, str | int]]) -> None
         commands = [
             "end",
             "config",
-            f"no route static ipv4 {CE_PREFIX_ADDR} {CE_PREFIX_LEN} {R2_V4} vrf {VRF_NAME}",
-            f"no route static ipv4 {LOCAL_PREFIX_ADDR} {LOCAL_PREFIX_LEN} {R1_V4} vrf {VRF_NAME}",
-            f"no route static ipv6 {CE_V6_PREFIX_ADDR} {CE_V6_PREFIX_LEN} {R2_V6} vrf {VRF_NAME}",
-            f"no route static ipv6 {LOCAL_V6_PREFIX_ADDR} {LOCAL_V6_PREFIX_LEN} {R1_V6} vrf {VRF_NAME}",
+            f"no route static ipv4 vrf {VRF_NAME} {CE_PREFIX_ADDR} {CE_PREFIX_LEN} {R2_V4}",
+            f"no route static ipv4 vrf {VRF_NAME} {LOCAL_PREFIX_ADDR} {LOCAL_PREFIX_LEN} {R1_V4}",
+            f"no route static ipv6 vrf {VRF_NAME} {CE_V6_PREFIX_ADDR} {CE_V6_PREFIX_LEN} {R2_V6}",
+            f"no route static ipv6 vrf {VRF_NAME} {LOCAL_V6_PREFIX_ADDR} {LOCAL_V6_PREFIX_LEN} {R1_V6}",
         ]
         if _module_ipc_up(rt, dev, "bgp"):
             commands.append("no bgp")
@@ -157,7 +157,7 @@ def _wait_vrf_link_routes(rt: TopologyRuntime) -> None:
         [
             {
                 "device": dev,
-                "command": f"show route ipv4 10.97.0.0 {V4_LEN} vrf {VRF_NAME}",
+                "command": f"show route ipv4 vrf {VRF_NAME} 10.97.0.0 {V4_LEN}",
                 "regex": [r"(?im)^\s*Path\s*\[\d+\]\s*:\s*connected\b"],
                 "label": f"{dev} vrf ipv4 link route ready",
             }
@@ -166,7 +166,7 @@ def _wait_vrf_link_routes(rt: TopologyRuntime) -> None:
         + [
             {
                 "device": dev,
-                "command": f"show route ipv6 2001:db8:97:: {V6_LEN} vrf {VRF_NAME}",
+                "command": f"show route ipv6 vrf {VRF_NAME} 2001:db8:97:: {V6_LEN}",
                 "regex": [r"(?im)^\s*Path\s*\[\d+\]\s*:\s*connected\b"],
                 "label": f"{dev} vrf ipv6 link route ready",
             }
@@ -315,8 +315,8 @@ def _install_static_sources(rt: TopologyRuntime) -> None:
         device="r1",
         commands=[
             "config",
-            f"route static ipv4 {CE_PREFIX_ADDR} {CE_PREFIX_LEN} {R2_V4} vrf {VRF_NAME}",
-            f"route static ipv6 {CE_V6_PREFIX_ADDR} {CE_V6_PREFIX_LEN} {R2_V6} vrf {VRF_NAME}",
+            f"route static ipv4 vrf {VRF_NAME} {CE_PREFIX_ADDR} {CE_PREFIX_LEN} {R2_V4}",
+            f"route static ipv6 vrf {VRF_NAME} {CE_V6_PREFIX_ADDR} {CE_V6_PREFIX_LEN} {R2_V6}",
             "end",
         ],
     )
@@ -325,8 +325,8 @@ def _install_static_sources(rt: TopologyRuntime) -> None:
         device="r2",
         commands=[
             "config",
-            f"route static ipv4 {LOCAL_PREFIX_ADDR} {LOCAL_PREFIX_LEN} {R1_V4} vrf {VRF_NAME}",
-            f"route static ipv6 {LOCAL_V6_PREFIX_ADDR} {LOCAL_V6_PREFIX_LEN} {R1_V6} vrf {VRF_NAME}",
+            f"route static ipv4 vrf {VRF_NAME} {LOCAL_PREFIX_ADDR} {LOCAL_PREFIX_LEN} {R1_V4}",
+            f"route static ipv6 vrf {VRF_NAME} {LOCAL_V6_PREFIX_ADDR} {LOCAL_V6_PREFIX_LEN} {R1_V6}",
             "end",
         ],
     )
@@ -335,28 +335,28 @@ def _install_static_sources(rt: TopologyRuntime) -> None:
         [
             {
                 "device": "r1",
-                "command": f"show route ipv4 {CE_PREFIX_ADDR} {CE_PREFIX_LEN} vrf {VRF_NAME}",
+                "command": f"show route ipv4 vrf {VRF_NAME} {CE_PREFIX_ADDR} {CE_PREFIX_LEN}",
                 "contains": [CE_PREFIX, R2_V4],
                 "regex": [r"(?im)^\s*Path\s*\[\d+\]\s*:\s*static\b"],
                 "label": "r1 CE static source route",
             },
             {
                 "device": "r1",
-                "command": f"show route ipv6 {CE_V6_PREFIX_ADDR} {CE_V6_PREFIX_LEN} vrf {VRF_NAME}",
+                "command": f"show route ipv6 vrf {VRF_NAME} {CE_V6_PREFIX_ADDR} {CE_V6_PREFIX_LEN}",
                 "contains": [CE_V6_PREFIX, R2_V6],
                 "regex": [r"(?im)^\s*Path\s*\[\d+\]\s*:\s*static\b"],
                 "label": "r1 CE static ipv6 source route",
             },
             {
                 "device": "r2",
-                "command": f"show route ipv4 {LOCAL_PREFIX_ADDR} {LOCAL_PREFIX_LEN} vrf {VRF_NAME}",
+                "command": f"show route ipv4 vrf {VRF_NAME} {LOCAL_PREFIX_ADDR} {LOCAL_PREFIX_LEN}",
                 "contains": [LOCAL_PREFIX, R1_V4],
                 "regex": [r"(?im)^\s*Path\s*\[\d+\]\s*:\s*static\b"],
                 "label": "r2 local PE static source route",
             },
             {
                 "device": "r2",
-                "command": f"show route ipv6 {LOCAL_V6_PREFIX_ADDR} {LOCAL_V6_PREFIX_LEN} vrf {VRF_NAME}",
+                "command": f"show route ipv6 vrf {VRF_NAME} {LOCAL_V6_PREFIX_ADDR} {LOCAL_V6_PREFIX_LEN}",
                 "contains": [LOCAL_V6_PREFIX, R1_V6],
                 "regex": [r"(?im)^\s*Path\s*\[\d+\]\s*:\s*static\b"],
                 "label": "r2 local PE static ipv6 source route",

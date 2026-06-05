@@ -14,6 +14,7 @@
 #include "bgp_calc.h"
 #include "bgp_ext_community.h"
 #include "bgp_instance.h"
+#include "bgp_nexthop.h"
 #include "bgp_peer.h"
 #include "bgp_pkt.h"
 #include "bgp_protocol.h"
@@ -370,7 +371,8 @@ static void import_upsert(bgp_instance_t *uc, const bgp_nlri_entry_t *uc_nlri, c
 
     /* 拷贝 best 属性作为本地导入路径(import_proto=BGP → 置 BGP_ROUTE_FLAG_IMPORT) */
     bgp_attr_t attr = *BGP_ROUTE_ATTR(best);
-    if (bgp_rib_route_apply_reach(route, ROUTE_PROTOCOL_BGP, &attr, &best->nexthop) != 0)
+    bgp_nexthop_reset_route(route);
+    if (bgp_rib_route_apply_reach(route, ROUTE_PROTOCOL_BGP, &attr) != 0)
     {
         return;
     }

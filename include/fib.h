@@ -21,6 +21,8 @@
 #define FIB_MSG_TYPE_ROUTE_RESULT DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_FIB, 0x0005)
 #define FIB_MSG_TYPE_ILM_UPSERT DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_FIB, 0x0006)
 #define FIB_MSG_TYPE_ILM_DELETE DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_FIB, 0x0007)
+#define FIB_MSG_TYPE_NEXTHOP_UPSERT DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_FIB, 0x0008)
+#define FIB_MSG_TYPE_NEXTHOP_DELETE DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_FIB, 0x0009)
 #define FIB_MSG_TYPE_ACK DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_FIB, 0x00FF)
 
 typedef enum fib_nh_type
@@ -43,6 +45,7 @@ typedef struct fib_route_entry
     uint8_t nh_type;
     uint8_t _pad0[3];
     uint32_t tunnel_id;
+    uint32_t nexthop_id; /**< nh_type=IP/BLACKHOLE 时引用的 nexthop 对象 ID（由 ROUTE 分配，0=未对象化） */
     uint32_t out_ifindex;
     net_addr_t prefix_addr;
     net_addr_t nexthop_addr;
@@ -58,6 +61,17 @@ typedef struct fib_tunnel_entry
     net_addr_t relay_addr;
     uint32_t labels[FIB_MAX_LABEL_STACK];
 } fib_tunnel_entry_t;
+
+typedef struct fib_nexthop_entry
+{
+    uint32_t nexthop_id;
+    uint32_t vrf_id;
+    uint16_t afi;
+    uint8_t nh_type; /**< FIB_NH_TYPE_IP / FIB_NH_TYPE_BLACKHOLE */
+    uint8_t state;   /**< 1=就绪 */
+    uint32_t out_ifindex;
+    net_addr_t gateway_addr;
+} fib_nexthop_entry_t;
 
 typedef struct fib_ilm_entry
 {
@@ -91,5 +105,7 @@ int fib_rpc_tunnel_upsert(dev_ipc_context_t *ctx, const fib_tunnel_entry_t *entr
 int fib_rpc_tunnel_delete(dev_ipc_context_t *ctx, const fib_tunnel_entry_t *entry);
 int fib_rpc_ilm_upsert(dev_ipc_context_t *ctx, const fib_ilm_entry_t *entry);
 int fib_rpc_ilm_delete(dev_ipc_context_t *ctx, const fib_ilm_entry_t *entry);
+int fib_rpc_nexthop_upsert(dev_ipc_context_t *ctx, const fib_nexthop_entry_t *entry);
+int fib_rpc_nexthop_delete(dev_ipc_context_t *ctx, const fib_nexthop_entry_t *entry);
 
 #endif /* FIB_H */

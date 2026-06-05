@@ -108,6 +108,78 @@ int route_rpc_nh_register(dev_ipc_context_t *ctx, const route_nh_iter_req_t *req
     return route_rpc_nh_iter_send(ctx, ROUTE_MSG_TYPE_NH_REGISTER, req);
 }
 
+int route_rpc_nhobj_acquire_wait(dev_ipc_context_t *ctx, const route_nhobj_msg_t *req, uint32_t timeout_ms,
+                                 uint32_t *nexthop_id_out)
+{
+    if (!ctx || !req || !nexthop_id_out)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    route_nhobj_msg_t *payload = (route_nhobj_msg_t *)g_memdup2(req, sizeof(route_nhobj_msg_t));
+    if (!payload)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    dev_ipc_message_t *msg = dev_ipc_message_create(ROUTE_MSG_TYPE_NHOBJ_ACQUIRE, dev_ipc_get_module_id(ctx),
+                                                    DEV_MODULE_ID_ROUTE, 0, payload, sizeof(route_nhobj_msg_t), g_free);
+    if (!msg)
+    {
+        g_free(payload);
+        return ERRCODE_FAIL;
+    }
+
+    uint32_t wait_ms = (timeout_ms == 0) ? ROUTE_RPC_DEFAULT_TIMEOUT_MS : timeout_ms;
+    dev_ipc_message_t *resp = dev_ipc_query(ctx, DEV_MODULE_ID_ROUTE, msg, wait_ms);
+    dev_ipc_message_free(msg);
+    if (!resp)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    int result = ERRCODE_FAIL;
+    if (resp->msg_type == ROUTE_MSG_TYPE_ACK && resp->payload && resp->payload_len >= sizeof(route_msg_ack_t))
+    {
+        const route_msg_ack_t *ack = (const route_msg_ack_t *)resp->payload;
+        if (ack->result == ERRCODE_SUCCESS && ack->nexthop_id != 0u)
+        {
+            *nexthop_id_out = ack->nexthop_id;
+            result = ERRCODE_SUCCESS;
+        }
+    }
+    dev_ipc_message_free(resp);
+    return result;
+}
+
+int route_rpc_nhobj_release(dev_ipc_context_t *ctx, uint32_t nexthop_id)
+{
+    if (!ctx || nexthop_id == 0u)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    route_nhobj_release_req_t *payload = (route_nhobj_release_req_t *)g_malloc0(sizeof(*payload));
+    if (!payload)
+    {
+        return ERRCODE_FAIL;
+    }
+    payload->nexthop_id = nexthop_id;
+
+    dev_ipc_message_t *msg =
+        dev_ipc_message_create(ROUTE_MSG_TYPE_NHOBJ_RELEASE, dev_ipc_get_module_id(ctx), DEV_MODULE_ID_ROUTE, 0,
+                               payload, sizeof(route_nhobj_release_req_t), g_free);
+    if (!msg)
+    {
+        g_free(payload);
+        return ERRCODE_FAIL;
+    }
+
+    int ret = dev_ipc_send(ctx, DEV_MODULE_ID_ROUTE, msg);
+    dev_ipc_message_free(msg);
+    return (ret == 0) ? ERRCODE_SUCCESS : ERRCODE_FAIL;
+}
+
 int route_rpc_del(dev_ipc_context_t *ctx, const route_msg_entry_t *entry)
 {
     if (!entry)

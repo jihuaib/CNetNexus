@@ -10,12 +10,14 @@
 #include <sys/socket.h>
 
 #include "bgp_import_rib.h"
+#include "bgp_nexthop.h"
 #include "bgp_rib.h"
 #include "bgp_route_flush.h"
 #include "bgp_update_group.h"
 #include "bgp_vrf_export.h"
 #include "bgp_vrf_import.h"
 #include "bgp_worker.h"
+#include "errcode.h"
 #include "log.h"
 
 // ============================================================================
@@ -121,8 +123,12 @@ static bool route_is_better(const bgp_route_node_t *candidate, const bgp_route_n
     }
     if (prefix_family == AF_INET || prefix_family == AF_INET6)
     {
-        bool ca_same_family = (candidate->nexthop.global.family == prefix_family);
-        bool cu_same_family = (current->nexthop.global.family == prefix_family);
+        net_addr_t ca_nh;
+        net_addr_t cu_nh;
+        bool ca_same_family =
+            (bgp_nexthop_get_route_addr(candidate, &ca_nh) == ERRCODE_SUCCESS && ca_nh.family == prefix_family);
+        bool cu_same_family =
+            (bgp_nexthop_get_route_addr(current, &cu_nh) == ERRCODE_SUCCESS && cu_nh.family == prefix_family);
         if (ca_same_family != cu_same_family)
         {
             return ca_same_family;

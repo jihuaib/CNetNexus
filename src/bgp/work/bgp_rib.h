@@ -51,24 +51,19 @@ typedef struct bgp_rthead bgp_rthead_t;
  */
 typedef struct bgp_route_node
 {
-    bgp_rthead_t *head;         /**< 所属 rthead（借用引用） */
-    net_addr_t source;          /**< 路由来源标识（peer 路由=邻居IP，import 路由=来源地址） */
-    bgp_attr_ref_t *attr;       /**< 当前生效路径属性（共享引用，intern 后不可变） */
-    bgp_attr_ref_t *base_attr;  /**< peer 原始属性（未合入本 VRF export RT）；本地 import 路径为 NULL */
-    bgp_nexthop_t nexthop;      /**< 下一跳 */
-    net_addr_t iter_relay_addr; /**< nexthop 迭代得到的 relay 地址（family=0 表示未知） */
-    gint64 added_at_usec;       /**< 路由首次加入时间（g_get_real_time，仅新增时写入） */
-    gint64 updated_at_usec;     /**< 路由最近更新时间（g_get_real_time，每次 reach 写入） */
-    uint32_t iter_out_ifindex;  /**< nexthop 迭代得到的出接口索引（0 表示未知） */
-    uint32_t tunnel_id;         /**< nexthop 迭代得到的隧道 ID（0 表示未使用隧道） */
-    uint32_t label;             /**< labeled-unicast 路径标签，语义由 label_source 区分 */
-    uint8_t iter_watched;       /**< 是否已挂 relay watch（1=是，0=否） */
-    uint8_t iter_resolved;      /**< nexthop 迭代是否可达（1=可达，0=不可达） */
-    uint8_t has_label;          /**< label 是否有效 */
-    uint8_t label_source;       /**< BGP_ROUTE_LABEL_SOURCE_* */
-    uint8_t _pad0[2];           /**< 对齐填充 */
-    uint32_t flags;             /**< 路由标记位，见 BGP_ROUTE_FLAG_* */
-    uint32_t import_proto;      /**< IMPORT 路由来源协议（非 import-route 为 0） */
+    bgp_rthead_t *head;        /**< 所属 rthead（借用引用） */
+    net_addr_t source;         /**< 路由来源标识（peer 路由=邻居IP，import 路由=来源地址） */
+    bgp_attr_ref_t *attr;      /**< 当前生效路径属性（共享引用，intern 后不可变） */
+    bgp_attr_ref_t *base_attr; /**< peer 原始属性（未合入本 VRF export RT）；本地 import 路径为 NULL */
+    gint64 added_at_usec;      /**< 路由首次加入时间（g_get_real_time，仅新增时写入） */
+    gint64 updated_at_usec;    /**< 路由最近更新时间（g_get_real_time，每次 reach 写入） */
+    uint32_t nexthop_id;       /**< ROUTE nexthop 对象 ID（key.nexthop 保存 BGP 下一跳地址） */
+    uint32_t label;            /**< labeled-unicast 路径标签，语义由 label_source 区分 */
+    uint8_t has_label;         /**< label 是否有效 */
+    uint8_t label_source;      /**< BGP_ROUTE_LABEL_SOURCE_* */
+    uint8_t _pad0[2];          /**< 对齐填充 */
+    uint32_t flags;            /**< 路由标记位，见 BGP_ROUTE_FLAG_* */
+    uint32_t import_proto;     /**< IMPORT 路由来源协议（非 import-route 为 0） */
     struct bgp_route_node *src_route; /**< mirror 节点指向源 labeled/VPN 节点；源节点为 NULL */
     uint32_t borrow_refcnt;           /**< 外部借用引用计数（import_rib mirror、bgp_relay watch 等） */
 } bgp_route_node_t;
@@ -178,8 +173,7 @@ bgp_route_node_t *bgp_rthead_create_route(bgp_rib_t *rib, bgp_rthead_t *head, co
  *
  * 不负责创建 rthead/route，仅更新已有 route。
  */
-int bgp_rib_route_apply_reach(bgp_route_node_t *route, uint32_t import_proto, const bgp_attr_t *attr,
-                              const bgp_nexthop_t *nexthop);
+int bgp_rib_route_apply_reach(bgp_route_node_t *route, uint32_t import_proto, const bgp_attr_t *attr);
 /**
  * @brief 设置 peer 原始属性快照
  *

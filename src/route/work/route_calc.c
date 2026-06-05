@@ -16,6 +16,7 @@
 #include "net_addr.h"
 #include "route.h"
 #include "route_main.h"
+#include "route_nhobj.h"
 #include "route_pub.h"
 #include "route_rib.h"
 #include "route_worker.h"
@@ -202,9 +203,15 @@ static void build_report_entry(route_msg_entry_t *e, const route_head_t *head, c
     e->metric = path->metric;
     e->preference = path->preference;
     e->out_ifindex = path->out_ifindex;
-    e->iter_out_ifindex = path->iter_out_ifindex;
-    e->nexthop_addr = path->nexthop;
-    e->iter_nexthop_addr = path->relay_addr;
+    e->nexthop_id = path->nexthop_id;
+    /* nexthop / relay 信息从 nexthop 对象读取（route_path 不再各存一份） */
+    route_nhobj_info_t info;
+    if (route_nhobj_lookup(path->nexthop_id, &info) == 0)
+    {
+        e->nexthop_addr = info.key.nexthop;
+        e->iter_nexthop_addr = info.relay_addr;
+        e->iter_out_ifindex = info.relay_ifindex;
+    }
     e->source_addr = path->key.source;
     e->is_withdraw = 0;
     /* 透传 path->entry_flags（如 ROUTE_ENTRY_FLAG_NO_ADV），由上层模块根据语义决定是否对外发布 */
@@ -257,18 +264,80 @@ static void build_fib_entry(fib_route_entry_t *fib, const route_msg_entry_t *rou
                             : route->nexthop_addr;
 }
 
-static int route_calc_fib_upsert(const route_msg_entry_t *route)
+// ============================================================================
+// 辅助：nexthop 对象化下发
+//   - 普通/blackhole 路由先申请 nexthop 对象（route_nhobj_acquire 内部下刷 FIB），
+//     再携带 nexthop_id 下发路由；FIB 等对象就绪后才下 OS。
+//   - 连接路由（SKIP_OS）与隧道路由不走 nexthop 对象（返回 0）。
+//   - 不变量：同一前缀仅“当前 OS 安装路径”持有一个 nexthop 对象引用。
+// ============================================================================
+
+/* 该路由是否需要把其 nexthop 对象下刷 FIB（连接路由 SKIP_OS、隧道路由走 tunnel_id join，均不需要） */
+static gboolean route_fib_needs_nhobj(const route_msg_entry_t *route)
 {
-    fib_route_entry_t fib;
-    build_fib_entry(&fib, route);
-    return fib_rpc_route_upsert(route_local_ipc_ctx(), &fib);
+    if (route->protocol == ROUTE_PROTOCOL_CONNECTED)
+    {
+        return FALSE;
+    }
+    if (route->nh_type == ROUTE_NH_TYPE_TUNNEL && route->tunnel_id != 0u)
+    {
+        return FALSE;
+    }
+    return TRUE;
 }
 
-static int route_calc_fib_delete(const route_msg_entry_t *route)
+/* 安装 best 路径到 OS：先把其 nexthop 对象 attach（下刷 FIB），再下发携带 nexthop_id 的路由；
+ * 成功后在最优切换时 detach 上一安装路径的 FIB 引用。
+ * prev_installed 为该前缀此前 OS 安装的路径（可能 == new_best，或切换前的旧路径，或 NULL）。
+ * nexthop 对象的 registry 引用由 route_rib 在 path 增删时维护，这里只动 FIB 引用。 */
+static int calc_fib_install(route_path_t *new_best, route_path_t *prev_installed, const route_msg_entry_t *route)
+{
+    gboolean fib_eligible = route_fib_needs_nhobj(route);
+
+    /* 先确保对象已下刷 FIB（attach 一次），避免 FIB 收到引用未知对象的路由而挂起 */
+    if (fib_eligible && !new_best->fib_attached)
+    {
+        route_nhobj_fib_attach(new_best->nexthop_id);
+        new_best->fib_attached = 1u;
+    }
+
+    fib_route_entry_t fib;
+    build_fib_entry(&fib, route);
+    fib.nexthop_id = fib_eligible ? new_best->nexthop_id : 0u;
+
+    int rc = fib_rpc_route_upsert(route_local_ipc_ctx(), &fib);
+    if (rc != 0)
+    {
+        /* 下发失败：保留 attach 状态（重试时复用，不重复 attach），仅返回错误 */
+        return rc;
+    }
+
+    /* 成功：最优切换场景下 detach 旧安装路径的 FIB 引用（同路径更新则保持 attach） */
+    if (prev_installed && prev_installed != new_best && prev_installed->fib_attached)
+    {
+        route_nhobj_fib_detach(prev_installed->nexthop_id);
+        prev_installed->fib_attached = 0u;
+    }
+    return 0;
+}
+
+/* 撤销前缀的 OS 路由并 detach 其 nexthop 对象 FIB 引用 */
+static int calc_fib_withdraw(route_path_t *installed, const route_msg_entry_t *route)
 {
     fib_route_entry_t fib;
     build_fib_entry(&fib, route);
-    return fib_rpc_route_delete(route_local_ipc_ctx(), &fib);
+
+    int rc = fib_rpc_route_delete(route_local_ipc_ctx(), &fib);
+    if (rc != 0)
+    {
+        return rc;
+    }
+    if (installed && installed->fib_attached)
+    {
+        route_nhobj_fib_detach(installed->nexthop_id);
+        installed->fib_attached = 0u;
+    }
+    return 0;
 }
 
 // ============================================================================
@@ -347,7 +416,7 @@ static void update_prefix(const route_head_t *head, const route_path_key_t *skip
             LOG_INFO("[route_calc] %s/%u vrf=%u 无可用路径，撤销 FIB 及通知: proto=%u", addr_str,
                      (unsigned)head->key.prefix_len, head->key.vrf_id, cur_installed->key.protocol);
 
-            if (route_calc_fib_delete(&cur_os_entry) != 0)
+            if (calc_fib_withdraw(cur_installed, &cur_os_entry) != 0)
             {
                 LOG_WARN("[route_calc] FIB 撤销失败，保留当前最优状态: %s/%u vrf=%u proto=%u", addr_str,
                          (unsigned)head->key.prefix_len, head->key.vrf_id, cur_installed->key.protocol);
@@ -376,7 +445,7 @@ static void update_prefix(const route_head_t *head, const route_path_key_t *skip
         LOG_DEBUG("[route_calc] 最优路径更新: %s/%u vrf=%u proto=%u", addr_str, (unsigned)head->key.prefix_len,
                   head->key.vrf_id, new_best->key.protocol);
 
-        if (route_calc_fib_upsert(&new_os_entry) != 0)
+        if (calc_fib_install((route_path_t *)new_best, cur_installed, &new_os_entry) != 0)
         {
             LOG_WARN("[route_calc] FIB 更新失败，保持旧最优: %s/%u vrf=%u proto=%u", addr_str,
                      (unsigned)head->key.prefix_len, head->key.vrf_id, new_best->key.protocol);
@@ -405,7 +474,7 @@ static void update_prefix(const route_head_t *head, const route_path_key_t *skip
                  (unsigned)head->key.prefix_len, head->key.vrf_id, cur_installed->key.protocol, cur_entry.preference,
                  new_best->key.protocol, new_best->preference);
 
-        if (route_calc_fib_upsert(&new_os_entry) != 0)
+        if (calc_fib_install((route_path_t *)new_best, cur_installed, &new_os_entry) != 0)
         {
             LOG_WARN("[route_calc] FIB 安装失败，保持当前最优不变: %s/%u vrf=%u proto=%u", addr_str,
                      (unsigned)head->key.prefix_len, head->key.vrf_id, new_best->key.protocol);
@@ -429,7 +498,7 @@ static void update_prefix(const route_head_t *head, const route_path_key_t *skip
                  (unsigned)head->key.prefix_len, head->key.vrf_id, new_best->key.protocol, new_best->preference,
                  new_best->metric);
 
-        if (route_calc_fib_upsert(&new_os_entry) != 0)
+        if (calc_fib_install((route_path_t *)new_best, NULL, &new_os_entry) != 0)
         {
             LOG_WARN("[route_calc] FIB 安装失败，保持当前最优不变: %s/%u vrf=%u proto=%u", addr_str,
                      (unsigned)head->key.prefix_len, head->key.vrf_id, new_best->key.protocol);
@@ -484,7 +553,7 @@ static void cleanup_withdraw_fib_cb(const route_head_t *head, const route_path_t
     build_os_entry(&os_entry, head, path);
     net_addr_to_str(&head->key.addr, addr_str, sizeof(addr_str));
 
-    if (route_calc_fib_delete(&os_entry) == 0)
+    if (calc_fib_withdraw((route_path_t *)path, &os_entry) == 0)
     {
         ctx->withdrawn++;
     }

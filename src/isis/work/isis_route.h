@@ -35,6 +35,22 @@ void isis_route_head_free(gpointer data);
 /** route_state 精确比较 */
 int isis_route_state_same(const isis_route_state_t *a, const isis_route_state_t *b);
 
+/** 释放 route_state 持有的 nexthop 引用并清零 id */
+void isis_route_state_reset(isis_route_state_t *state);
+
+/** 深拷贝 route_state，并为 nexthop_id 增加引用 */
+int isis_route_state_copy(isis_route_state_t *dst, const isis_route_state_t *src);
+
+/** 按 ROUTE nexthop key 规则设置 nexthop 引用；key_ifindex 参与身份，out_ifindex 写入 value */
+int isis_route_state_set_nexthop(isis_route_state_t *state, isis_nexthop_table_t *table, uint32_t key_ifindex,
+                                 uint32_t out_ifindex, const net_addr_t *nexthop);
+
+/** 读取 route_state 的 nexthop 地址 */
+int isis_route_state_get_nexthop(const isis_route_state_t *state, net_addr_t *nexthop_out);
+
+/** 读取 route_state 的 nexthop value 出接口 */
+int isis_route_state_get_out_ifindex(const isis_route_state_t *state, uint32_t *out_ifindex);
+
 /**
  * 生成路径键：<route_key>|oif=<ifindex>|nh=<addr>|src=<addr>
  */
