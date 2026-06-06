@@ -218,6 +218,7 @@ static void build_report_entry(route_msg_entry_t *e, const route_head_t *head, c
     e->flags = (uint8_t)(path->entry_flags & 0xFFu);
     e->nh_type = path->nh_type ? path->nh_type : ROUTE_NH_TYPE_IP;
     e->tunnel_id = (e->nh_type == ROUTE_NH_TYPE_TUNNEL) ? path->tunnel_id : 0u;
+    e->out_label = (e->nh_type == ROUTE_NH_TYPE_TUNNEL) ? path->out_label : 0u;
 }
 
 static void build_os_entry(route_msg_entry_t *e, const route_head_t *head, const route_path_t *path)
@@ -252,6 +253,7 @@ static void build_fib_entry(fib_route_entry_t *fib, const route_msg_entry_t *rou
     {
         fib->nh_type = FIB_NH_TYPE_TUNNEL;
         fib->tunnel_id = route->tunnel_id;
+        fib->out_label = route->out_label;
     }
     else
     {

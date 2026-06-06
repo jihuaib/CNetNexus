@@ -144,10 +144,15 @@ int route_db_delete_static_by_vrf(dev_ipc_context_t *ctx, const char *vrf_name)
     return (rc == ERRCODE_SUCCESS) ? 0 : -1;
 }
 
-void route_db_upsert_batch(dev_ipc_context_t *ctx, const char *name, uint16_t afi, const char *start_addr,
-                           uint8_t prefix_len, int64_t count, const char *nexthop)
+void route_db_upsert_batch(dev_ipc_context_t *ctx, const char *name, const char *vrf_name, uint16_t afi,
+                           const char *start_addr, uint8_t prefix_len, int64_t count, const char *nexthop,
+                           int32_t metric, int32_t preference, const char *ifname)
 {
-    /* PK：name；可变列：afi/start_addr/prefix_len/count/nexthop */
+    const char *safe_vrf = route_db_safe_vrf_name(vrf_name);
+    const char *safe_nexthop = nexthop ? nexthop : "";
+    const char *safe_ifname = ifname ? ifname : "";
+
+    /* PK：name；可变列：vrf/afi/start/prefix/count/nexthop/metric/preference/ifname */
     db_filter_builder_t pk;
     db_filter_init(&pk);
     db_filter_add_text(&pk, "name", name);
@@ -162,8 +167,15 @@ void route_db_upsert_batch(dev_ipc_context_t *ctx, const char *name, uint16_t af
     if (exists)
     {
         db_col_t cols[] = {
-            DB_COL_INT("afi", afi),     DB_COL_TEXT("start_addr", start_addr), DB_COL_INT("prefix_len", prefix_len),
-            DB_COL_INT("count", count), DB_COL_TEXT("nexthop", nexthop),
+            DB_COL_TEXT("vrf_name", safe_vrf),
+            DB_COL_INT("afi", afi),
+            DB_COL_TEXT("start_addr", start_addr),
+            DB_COL_INT("prefix_len", prefix_len),
+            DB_COL_INT("count", count),
+            DB_COL_TEXT("nexthop", safe_nexthop),
+            DB_COL_INT("metric", metric),
+            DB_COL_INT("preference", preference),
+            DB_COL_TEXT("ifname", safe_ifname),
         };
         (void)db_rpc_update_cols(ctx, "route_batch", &pk.filter, cols, G_N_ELEMENTS(cols));
         db_filter_clear(&pk);
@@ -173,11 +185,15 @@ void route_db_upsert_batch(dev_ipc_context_t *ctx, const char *name, uint16_t af
 
     db_col_t cols[] = {
         DB_COL_TEXT("name", name),
+        DB_COL_TEXT("vrf_name", safe_vrf),
         DB_COL_INT("afi", afi),
         DB_COL_TEXT("start_addr", start_addr),
         DB_COL_INT("prefix_len", prefix_len),
         DB_COL_INT("count", count),
-        DB_COL_TEXT("nexthop", nexthop),
+        DB_COL_TEXT("nexthop", safe_nexthop),
+        DB_COL_INT("metric", metric),
+        DB_COL_INT("preference", preference),
+        DB_COL_TEXT("ifname", safe_ifname),
     };
     (void)db_rpc_insert_cols(ctx, "route_batch", cols, G_N_ELEMENTS(cols));
 }
@@ -364,31 +380,109 @@ static int route_restore_batch_from_db(dev_ipc_context_t *ctx)
     {
         db_row_t *row = result->rows[i];
         const char *name = db_row_get_text(row, "name", NULL);
+        const char *vrf_name = db_row_get_text(row, "vrf_name", VRF_PUBLIC_VRF_NAME);
         const char *start_addr = db_row_get_text(row, "start_addr", NULL);
-        const char *nexthop = db_row_get_text(row, "nexthop", NULL);
+        const char *nexthop = db_row_get_text(row, "nexthop", "");
+        const char *ifname = db_row_get_text(row, "ifname", "");
         uint16_t afi = (uint16_t)db_row_get_int(row, "afi", ROUTE_AFI_IPV4);
         uint8_t prefix_len = (uint8_t)db_row_get_int(row, "prefix_len", 0);
         int64_t count = db_row_get_int(row, "count", 0);
+        int32_t metric = (int32_t)db_row_get_int(row, "metric", 0);
+        int32_t preference = (int32_t)db_row_get_int(row, "preference", ROUTE_ADMIN_DIST_STATIC);
 
-        if (!name || !start_addr || !nexthop || count <= 0)
+        if (!name || !start_addr || count <= 0 || count > 100000)
         {
             continue;
+        }
+
+        sa_family_t expect_family;
+        if (afi == ROUTE_AFI_IPV4)
+        {
+            if (prefix_len < 1 || prefix_len > 32)
+            {
+                LOG_WARN("Route restore: invalid batch IPv4 prefix length name='%s' len=%u, skipped", name, prefix_len);
+                continue;
+            }
+            expect_family = AF_INET;
+        }
+        else if (afi == ROUTE_AFI_IPV6)
+        {
+            if (prefix_len < 1 || prefix_len > 128)
+            {
+                LOG_WARN("Route restore: invalid batch IPv6 prefix length name='%s' len=%u, skipped", name, prefix_len);
+                continue;
+            }
+            expect_family = AF_INET6;
+        }
+        else
+        {
+            LOG_WARN("Route restore: invalid batch afi name='%s' afi=%u, skipped", name, afi);
+            continue;
+        }
+
+        if ((!nexthop || nexthop[0] == '\0') && (!ifname || ifname[0] == '\0'))
+        {
+            LOG_WARN("Route restore: batch name='%s' has neither nexthop nor interface, skipped", name);
+            continue;
+        }
+
+        uint32_t vrf_id = ROUTE_VRF_DEFAULT;
+        if (route_worker_resolve_vrf_id_by_name(vrf_name, &vrf_id) != ERRCODE_SUCCESS)
+        {
+            LOG_WARN("Route restore: batch name='%s' references unknown vrf '%s', skipped", name, vrf_name);
+            continue;
+        }
+
+        net_addr_t start;
+        net_addr_t nh;
+        memset(&nh, 0, sizeof(nh));
+        if (net_addr_from_str(start_addr, &start) != 0 || net_addr_prefix_normalize(&start, prefix_len) != 0)
+        {
+            LOG_WARN("Route restore: invalid batch start name='%s' start=%s/%u, skipped", name, start_addr, prefix_len);
+            continue;
+        }
+        if (start.family != expect_family)
+        {
+            LOG_WARN("Route restore: batch start family mismatch name='%s' start=%s, skipped", name, start_addr);
+            continue;
+        }
+
+        if (nexthop && nexthop[0] != '\0')
+        {
+            if (net_addr_from_str(nexthop, &nh) != 0)
+            {
+                LOG_WARN("Route restore: invalid batch nexthop name='%s' nh=%s, skipped", name, nexthop);
+                continue;
+            }
+            if (nh.family != expect_family)
+            {
+                LOG_WARN("Route restore: batch nexthop family mismatch name='%s' nh=%s, skipped", name, nexthop);
+                continue;
+            }
+        }
+        else
+        {
+            nh.family = start.family;
         }
 
         route_apply_cmd_t apply;
         memset(&apply, 0, sizeof(apply));
         apply.op = ROUTE_APPLY_BATCH_ADD;
         snprintf(apply.u.batch_add.name, sizeof(apply.u.batch_add.name), "%s", name);
+        apply.u.batch_add.vrf_id = vrf_id;
         apply.u.batch_add.afi = afi;
         apply.u.batch_add.prefix_len = prefix_len;
-        snprintf(apply.u.batch_add.start_addr, sizeof(apply.u.batch_add.start_addr), "%s", start_addr);
+        apply.u.batch_add.start_addr = start;
         apply.u.batch_add.count = count;
-        snprintf(apply.u.batch_add.nexthop, sizeof(apply.u.batch_add.nexthop), "%s", nexthop);
+        apply.u.batch_add.nexthop_addr = nh;
+        apply.u.batch_add.metric = metric;
+        apply.u.batch_add.preference = preference;
+        snprintf(apply.u.batch_add.out_ifname, sizeof(apply.u.batch_add.out_ifname), "%s", ifname ? ifname : "");
 
         if (route_worker_dispatch_apply(&apply) != 0 || apply.rc < 0)
         {
-            LOG_WARN("Route restore: batch apply failed name='%s' afi=%u start=%s/%u count=%lld nh=%s", name, afi,
-                     start_addr, prefix_len, (long long)count, nexthop);
+            LOG_WARN("Route restore: batch apply failed name='%s' afi=%u start=%s/%u count=%lld nh=%s if=%s", name, afi,
+                     start_addr, prefix_len, (long long)count, nexthop ? nexthop : "", ifname ? ifname : "");
             continue;
         }
 

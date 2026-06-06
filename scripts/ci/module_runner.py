@@ -1108,6 +1108,7 @@ def write_check_log(log_path: Path, result: CheckResult) -> None:
         result.stderr,
         "",
     ]
+    log_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.write_text("\n".join(lines), encoding="utf-8")
 
 

@@ -238,7 +238,7 @@ static void access_accept_on_listener(access_listener_t *lis)
     if (!line)
     {
         const char *busy = "\r\nAll lines are busy. Try again later.\r\n";
-        (void)write(conn_fd, busy, strlen(busy));
+        ssize_t __attribute__((unused)) wr = write(conn_fd, busy, strlen(busy));
         close(conn_fd);
         LOG_WARN("%s line pool exhausted, rejected connection from %s", line_type_name(lis->line_type), ip);
         return;

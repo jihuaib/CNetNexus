@@ -83,12 +83,17 @@ typedef struct route_apply_cmd
         /** ROUTE_APPLY_BATCH_ADD */
         struct
         {
-            char name[64];       /**< batch 名称 */
-            uint16_t afi;        /**< 地址族 */
-            uint8_t prefix_len;  /**< 前缀长度 */
-            char start_addr[64]; /**< 起始地址字符串 */
-            int64_t count;       /**< 路由数量 */
-            char nexthop[64];    /**< 下一跳地址字符串 */
+            char name[64];                        /**< batch 名称 */
+            uint32_t vrf_id;                      /**< VRF ID */
+            uint16_t afi;                         /**< 地址族 */
+            uint8_t prefix_len;                   /**< 前缀长度 */
+            net_addr_t start_addr;                /**< 起始前缀地址（二进制，已规范化） */
+            net_addr_t nexthop_addr;              /**< 下一跳地址（二进制，interface-only 时全零） */
+            int64_t count;                        /**< 路由数量 */
+            int32_t metric;                       /**< 度量值 */
+            int32_t preference;                   /**< 管理距离 */
+            char out_ifname[IF_LOGICAL_NAME_MAX]; /**< 出接口逻辑名（空字符串=不约束） */
+            char conflict_name[64];               /**< 与不同 batch name 冲突时由 worker 回填 */
         } batch_add;
 
         /** ROUTE_APPLY_BATCH_DEL */

@@ -27,6 +27,16 @@ V6_TARGET_PREFIX_LEN = 64
 V6_TARGET_PREFIX = f"{V6_TARGET_PREFIX_ADDR}/{V6_TARGET_PREFIX_LEN}"
 
 
+def _route_path_regex(nexthop: str, if_name: str, metric: int) -> str:
+    path_boundary = r"^\s*Path\s*\[\d+\]\s*:"
+    return (
+        rf"(?ims){path_boundary}\s*static\b"
+        rf"(?:(?!{path_boundary}).)*?^\s*Nexthop\s*:\s*{re.escape(nexthop)}\b"
+        rf"(?:(?!{path_boundary}).)*?^\s*(?:Interface|Iter OIF)\s*:\s*{re.escape(if_name)}\b"
+        rf"(?:(?!{path_boundary}).)*?^\s*Metric\s*:\s*{metric}\b"
+    )
+
+
 def _wait_path_total(
     rt: TopologyRuntime,
     *,
@@ -57,7 +67,7 @@ def _wait_route_paths(
     interval: int = 2,
 ) -> None:
     path_regex = [
-        rf"(?is)Nexthop\s*:\s*{re.escape(nh)}\b.*?Interface\s*:\s*{re.escape(if_name)}\b.*?Metric\s*:\s*{metric}\b"
+        _route_path_regex(nh, if_name, metric)
         for nh, (if_name, metric) in expect_paths.items()
     ]
     wait_check(
@@ -204,7 +214,7 @@ def _wait_route_paths_ipv6(
     interval: int = 2,
 ) -> None:
     path_regex = [
-        rf"(?is)Nexthop\s*:\s*{re.escape(nh)}\b.*?Interface\s*:\s*{re.escape(if_name)}\b.*?Metric\s*:\s*{metric}\b"
+        _route_path_regex(nh, if_name, metric)
         for nh, (if_name, metric) in expect_paths.items()
     ]
     wait_check(

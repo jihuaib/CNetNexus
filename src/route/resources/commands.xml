@@ -375,11 +375,13 @@
         </group>
 
         <!-- ================================================================
-             Group 3: 批量路由命令
-             cfg-id: 1=no, 2=batch, 3=ipv4, 4=ipv6,
-                     5=start_addr, 6=prefix_len(IPv4,0-32), 7=prefix_len(IPv6,0-128),
-                     8=count_value, 9=nexthop_value, 10=name
-             元素顺序：no route batch <name> ipv4 ipv6 <start> <pfx4> <pfx6> count <count> nexthop <nexthop>
+             Group 3: 批量静态路由命令
+             cfg-id: 1=no, 2=static-batch, 3=ipv4, 4=ipv6,
+                     5=start_addr, 6=prefix_len(IPv4), 7=prefix_len(IPv6),
+                     8=count_value, 9=nexthop, 10=name, 11=metric_value,
+                     12=interface, 13=ifname, 14=vrf, 15=vrf-name
+             元素顺序：no route static-batch <name> ipv4 ipv6 vrf <vrf-name> <start> <pfx4> <pfx6>
+                       <nexthop> interface <ifname> metric <metric> count <count>
              ================================================================ -->
         <group group-id="3">
             <elements>
@@ -392,8 +394,8 @@
                     <description>Route</description>
                 </element>
                 <element id="3" cfg-id="2" type="keyword">
-                    <name>batch</name>
-                    <description>Batch route operation</description>
+                    <name>static-batch</name>
+                    <description>Static batch route operation</description>
                 </element>
                 <element id="4" cfg-id="10" type="parameter">
                     <name>&lt;name&gt;</name>
@@ -415,46 +417,120 @@
                 </element>
                 <element id="8" cfg-id="6" type="parameter">
                     <name>&lt;prefix-length&gt;</name>
-                    <type>uint(0-32)</type>
-                    <description>Prefix length (IPv4, 0-32)</description>
+                    <type>uint(1-32)</type>
+                    <description>Prefix length (IPv4, 1-32)</description>
                 </element>
                 <element id="9" cfg-id="7" type="parameter">
                     <name>&lt;prefix-length&gt;</name>
-                    <type>uint(0-128)</type>
-                    <description>Prefix length (IPv6, 0-128)</description>
+                    <type>uint(1-128)</type>
+                    <description>Prefix length (IPv6, 1-128)</description>
                 </element>
-                <element id="10" type="keyword">
-                    <name>count</name>
-                    <description>Route count</description>
-                </element>
-                <element id="11" cfg-id="8" type="parameter">
-                    <name>&lt;count&gt;</name>
-                    <type>uint(1-100000)</type>
-                    <description>Number of routes to generate</description>
-                </element>
-                <element id="12" type="keyword">
-                    <name>nexthop</name>
-                    <description>Next-hop</description>
-                </element>
-                <element id="13" cfg-id="9" type="parameter">
+                <element id="10" cfg-id="9" type="parameter">
                     <name>&lt;nexthop&gt;</name>
                     <type>string</type>
                     <description>Next-hop address</description>
                 </element>
+                <element id="11" type="keyword">
+                    <name>metric</name>
+                    <description>Set metric value</description>
+                </element>
+                <element id="12" cfg-id="11" type="parameter">
+                    <name>&lt;metric-value&gt;</name>
+                    <type>uint(0-255)</type>
+                    <description>Route metric value (0-255)</description>
+                </element>
+                <element id="13" cfg-id="12" type="keyword">
+                    <name>interface</name>
+                    <description>Specify output interface</description>
+                </element>
+                <element id="14" cfg-id="13" type="parameter">
+                    <name>&lt;ifname&gt;</name>
+                    <type>dynamic(5:1,string(1-31))</type>
+                    <description>Output interface name</description>
+                </element>
+                <element id="15" type="keyword">
+                    <name>count</name>
+                    <description>Route count</description>
+                </element>
+                <element id="16" cfg-id="8" type="parameter">
+                    <name>&lt;count&gt;</name>
+                    <type>uint(1-100000)</type>
+                    <description>Number of routes to generate</description>
+                </element>
+                <element id="17" cfg-id="14" type="keyword">
+                    <name>vrf</name>
+                    <description>Route VRF</description>
+                </element>
+                <element id="18" cfg-id="15" type="parameter">
+                    <name>&lt;vrf-name&gt;</name>
+                    <type>dynamic(4:1,string(1-63))</type>
+                    <description>VRF name</description>
+                </element>
             </elements>
 
             <commands>
-                <!-- route batch <name> ipv4 <start> <pfx4> count <N> nexthop <nh> -->
+                <!-- route static-batch <name> ipv4 [vrf <name>] <start> <pfx4> <nexthop> count <N> -->
                 <command>
-                    <expression>2 3 4 5 7 8 10 11 12 13</expression>
+                    <expression>2 3 4 5 [17 18] 7 8 10 15 16</expression>
                     <views>config</views>
                 </command>
-                <!-- route batch <name> ipv6 <start> <pfx6> count <N> nexthop <nh> -->
+                <!-- route static-batch <name> ipv4 [vrf <name>] <start> <pfx4> <nexthop> metric <value> count <N> -->
                 <command>
-                    <expression>2 3 4 6 7 9 10 11 12 13</expression>
+                    <expression>2 3 4 5 [17 18] 7 8 10 11 12 15 16</expression>
                     <views>config</views>
                 </command>
-                <!-- no route batch <name> -->
+                <!-- route static-batch <name> ipv4 [vrf <name>] <start> <pfx4> <nexthop> interface <ifname> count <N> -->
+                <command>
+                    <expression>2 3 4 5 [17 18] 7 8 10 13 14 15 16</expression>
+                    <views>config</views>
+                </command>
+                <!-- route static-batch <name> ipv4 [vrf <name>] <start> <pfx4> <nexthop> interface <ifname> metric <value> count <N> -->
+                <command>
+                    <expression>2 3 4 5 [17 18] 7 8 10 13 14 11 12 15 16</expression>
+                    <views>config</views>
+                </command>
+                <!-- route static-batch <name> ipv4 [vrf <name>] <start> <pfx4> interface <ifname> count <N> -->
+                <command>
+                    <expression>2 3 4 5 [17 18] 7 8 13 14 15 16</expression>
+                    <views>config</views>
+                </command>
+                <!-- route static-batch <name> ipv4 [vrf <name>] <start> <pfx4> interface <ifname> metric <value> count <N> -->
+                <command>
+                    <expression>2 3 4 5 [17 18] 7 8 13 14 11 12 15 16</expression>
+                    <views>config</views>
+                </command>
+
+                <!-- route static-batch <name> ipv6 [vrf <name>] <start> <pfx6> <nexthop> count <N> -->
+                <command>
+                    <expression>2 3 4 6 [17 18] 7 9 10 15 16</expression>
+                    <views>config</views>
+                </command>
+                <!-- route static-batch <name> ipv6 [vrf <name>] <start> <pfx6> <nexthop> metric <value> count <N> -->
+                <command>
+                    <expression>2 3 4 6 [17 18] 7 9 10 11 12 15 16</expression>
+                    <views>config</views>
+                </command>
+                <!-- route static-batch <name> ipv6 [vrf <name>] <start> <pfx6> <nexthop> interface <ifname> count <N> -->
+                <command>
+                    <expression>2 3 4 6 [17 18] 7 9 10 13 14 15 16</expression>
+                    <views>config</views>
+                </command>
+                <!-- route static-batch <name> ipv6 [vrf <name>] <start> <pfx6> <nexthop> interface <ifname> metric <value> count <N> -->
+                <command>
+                    <expression>2 3 4 6 [17 18] 7 9 10 13 14 11 12 15 16</expression>
+                    <views>config</views>
+                </command>
+                <!-- route static-batch <name> ipv6 [vrf <name>] <start> <pfx6> interface <ifname> count <N> -->
+                <command>
+                    <expression>2 3 4 6 [17 18] 7 9 13 14 15 16</expression>
+                    <views>config</views>
+                </command>
+                <!-- route static-batch <name> ipv6 [vrf <name>] <start> <pfx6> interface <ifname> metric <value> count <N> -->
+                <command>
+                    <expression>2 3 4 6 [17 18] 7 9 13 14 11 12 15 16</expression>
+                    <views>config</views>
+                </command>
+                <!-- no route static-batch <name> -->
                 <command>
                     <expression>1 2 3 4</expression>
                     <views>config</views>

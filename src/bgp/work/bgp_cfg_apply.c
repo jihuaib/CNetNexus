@@ -30,6 +30,7 @@
 #include "bgp_update_group.h"
 #include "bgp_vrf.h"
 #include "bgp_vrf_export.h"
+#include "bgp_vrf_import.h"
 #include "bgp_worker.h"
 #include "errcode.h"
 #include "route.h"
@@ -341,6 +342,7 @@ void bgp_cfg_apply_vrf(bgp_apply_cmd_t *apply)
         return;
     }
     bgp_listen_start_vrf(vrf);
+    bgp_vrf_import_backfill();
 
     apply->rc = BGP_APPLY_RC_OK;
 }
@@ -524,6 +526,11 @@ void bgp_cfg_apply_instance(bgp_apply_cmd_t *apply)
             apply->u.instance.safi == BGP_SAFI_VPN_UNICAST)
         {
             (void)bgp_vrf_export_enable(inst);
+        }
+        if (vrf->vrf_id != BGP_VRF_PUBLIC_ID && apply->u.instance.afi == BGP_AFI_IPV4 &&
+            apply->u.instance.safi == BGP_SAFI_UNICAST)
+        {
+            bgp_vrf_import_backfill();
         }
     }
     apply->rc = BGP_APPLY_RC_OK;

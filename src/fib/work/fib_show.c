@@ -314,6 +314,12 @@ static void append_route_detail_cb(gpointer key, gpointer value, gpointer user_d
         state->entry.tunnel_id, state->entry.metric, state->entry.preference, state->installed ? "yes" : "no",
         (state->entry.flags & FIB_ROUTE_FLAG_SKIP_OS) ? "yes" : "no");
 
+    if (state->entry.out_label != 0u)
+    {
+        /* 路由自带的出标签（L3VPN 私网/VPN 标签）：转发时压在隧道传输标签内层 */
+        g_string_append_printf(ctx->buf, "    Out-Label : %u\r\n", state->entry.out_label);
+    }
+
     if (state->entry.nh_type == FIB_NH_TYPE_TUNNEL && state->entry.tunnel_id != 0u)
     {
         fib_tunnel_state_t *tun =

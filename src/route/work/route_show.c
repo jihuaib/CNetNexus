@@ -453,13 +453,14 @@ static void detail_path_cb(const route_head_t *head, const route_path_t *path, v
                            "    Iter OIF  : %s\r\n"
                            "    NH-Type   : %s\r\n"
                            "    Tunnel-ID : %u\r\n"
+                           "    Out-Label : %u\r\n"
                            "    Flags     : 0x%08X\r\n"
                            "    Metric    : %d\r\n"
                            "    Preference: %d\r\n"
                            "    Updated   : %s\r\n",
                            ctx->count, proto_name_long(path->key.protocol), nh_str, path->nexthop_id, oif_str,
                            iter_nh_str, iter_oif_str, route_nh_type_name(path->nh_type), path->tunnel_id,
-                           (unsigned int)path->flags, path->metric, path->preference, time_str);
+                           path->out_label, (unsigned int)path->flags, path->metric, path->preference, time_str);
 }
 
 // ============================================================================

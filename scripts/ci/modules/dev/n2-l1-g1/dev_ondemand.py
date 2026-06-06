@@ -26,6 +26,7 @@ from top_runner import TopologyRuntime, run_cmd  # noqa: E402
 SBMP_PORT = 17777
 WAIT_SPAWN_SEC = 10
 WAIT_EXIT_SEC = 8
+AUTO_START_RE = re.compile(r"\bstarting\s+module\b", re.IGNORECASE)
 
 
 def _list_module_pids(container: str, mod_name: str) -> list[int]:
@@ -78,6 +79,13 @@ def _show_retry(rt, device: str, command: str, *, must_contain: str, timeout: fl
     raise AssertionError(f"timeout waiting '{must_contain}' in `{command}`; last output:\n{last}")
 
 
+def _assert_auto_start(out: str, phase: str) -> None:
+    if AUTO_START_RE.search(out):
+        return
+    mark_step_failed()
+    raise AssertionError(f"{phase}: expected auto-start prompt:\n{out}")
+
+
 def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
     require_devices(top, ("r1",))
     container = rt.container_name("r1")
@@ -101,9 +109,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         step("Phase B: 'bmp-server' triggers SBMP spawn")
         out = cmd(rt, "r1", "config")
         out += cmd(rt, "r1", "bmp-server", timeout=15)
-        if "Starting module" not in out:
-            mark_step_failed()
-            raise AssertionError(f"Phase B: missing 'Starting module' prompt:\n{out}")
+        _assert_auto_start(out, "Phase B")
         pids_after_spawn = _wait_for_pids(
             container, predicate=lambda p: len(p) == 1, timeout=WAIT_SPAWN_SEC,
             what="exactly 1 sbmp pid after bmp-server")
@@ -199,9 +205,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         # 进 ldp 配置视图：触发 LDP 按需启动
         out = cmd(rt, "r1", "config", timeout=10)
         out += cmd(rt, "r1", "ldp", timeout=15)
-        if "Starting module" not in out:
-            mark_step_failed()
-            raise AssertionError(f"Phase G: expected 'Starting module' prompt for LDP:\n{out}")
+        _assert_auto_start(out, "Phase G")
         ldp_pids = _wait_for_pids(
             container, predicate=lambda p: len(p) == 1, timeout=WAIT_SPAWN_SEC,
             what="LDP to spawn", mod="ldp")
@@ -220,9 +224,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             raise AssertionError(f"Phase H: ISIS should not run at boot; got {isis_pids_boot}")
         out = cmd(rt, "r1", "config", timeout=5)
         out += cmd(rt, "r1", "isis 1", timeout=15)
-        if "Starting module" not in out:
-            mark_step_failed()
-            raise AssertionError(f"Phase H: expected 'Starting module' for ISIS:\n{out}")
+        _assert_auto_start(out, "Phase H")
         isis_pids = _wait_for_pids(
             container, predicate=lambda p: len(p) == 1, timeout=WAIT_SPAWN_SEC,
             what="ISIS to spawn", mod="isis")
@@ -237,9 +239,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             raise AssertionError(f"Phase I: BGP should not run at boot; got {bgp_pids_boot}")
         out = cmd(rt, "r1", "config", timeout=5)
         out += cmd(rt, "r1", "bgp 65001", timeout=15)
-        if "Starting module" not in out:
-            mark_step_failed()
-            raise AssertionError(f"Phase I: expected 'Starting module' for BGP:\n{out}")
+        _assert_auto_start(out, "Phase I")
         bgp_pids = _wait_for_pids(
             container, predicate=lambda p: len(p) == 1, timeout=WAIT_SPAWN_SEC,
             what="BGP to spawn", mod="bgp")
@@ -258,6 +258,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
     finally:
         # 清理：把 SBMP/LDP/ISIS/BGP 配置清掉
         try:
+            cmd(rt, "r1", "end", strict=False)
             cmd(rt, "r1", "config", strict=False)
             cmd(rt, "r1", "no bmp-server", strict=False)
             cmd(rt, "r1", "no ldp", strict=False)

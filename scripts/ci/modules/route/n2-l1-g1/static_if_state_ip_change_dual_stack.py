@@ -61,6 +61,10 @@ def _wait_rib_static(
     interval: int = 2,
 ) -> None:
     if expect_present:
+        if nexthop in ("0.0.0.0", "::"):
+            nexthop_re = rf"(?:{re.escape(nexthop)}|-)"
+        else:
+            nexthop_re = re.escape(nexthop)
         wait_check(
             rt,
             device="r1",
@@ -71,7 +75,7 @@ def _wait_rib_static(
             not_contains=["(no routes)", "(no matching routes)"],
             regex=[
                 r"(?im)^\s*Path\s*\[1\]\s*:\s*static\b",
-                rf"(?im)^\s*Nexthop\s*:\s*{re.escape(nexthop)}\s*$",
+                rf"(?im)^\s*Nexthop\s*:\s*{nexthop_re}\s*$",
             ],
             label=f"r1 {afi} route {prefix} via {nexthop} present",
         )
@@ -130,11 +134,15 @@ def _wait_static_candidate(
 ) -> None:
     resolved = "yes" if expect_resolved else "no"
     in_rib = "yes" if expect_in_rib else "no"
+    if nexthop in ("0.0.0.0", "::"):
+        nexthop_re = rf"(?:{re.escape(nexthop)}|-)"
+    else:
+        nexthop_re = re.escape(nexthop)
     # Newer `show route <afi> static` includes Interface column:
     # AFI Prefix Nexthop Interface Met Pref Resolved InRIB
     # Keep interface token optional to remain compatible with older output.
     row_regex = (
-        rf"(?im)^\s*{re.escape(afi)}\s+{re.escape(prefix)}\s+{re.escape(nexthop)}\s+"
+        rf"(?im)^\s*{re.escape(afi)}\s+{re.escape(prefix)}\s+{nexthop_re}\s+"
         rf"(?:\S+\s+)?\d+\s+\d+\s+{resolved}\s+{in_rib}\s*$"
     )
     wait_check(

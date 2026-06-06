@@ -68,14 +68,19 @@ int route_db_delete_static_by_vrf(dev_ipc_context_t *ctx, const char *vrf_name);
  *
  * @param ctx        IPC 上下文
  * @param name       batch 名称（主键）
+ * @param vrf_name   VRF 名称（NULL/空字符串视为公网 "public"）
  * @param afi        地址族
  * @param start_addr 起始地址字符串
  * @param prefix_len 前缀长度
  * @param count      路由数量
- * @param nexthop    下一跳地址字符串
+ * @param nexthop    下一跳地址字符串（interface-only 时传空字符串）
+ * @param metric     度量值
+ * @param preference 管理距离
+ * @param ifname     出接口逻辑名（不约束时传空字符串）
  */
-void route_db_upsert_batch(dev_ipc_context_t *ctx, const char *name, uint16_t afi, const char *start_addr,
-                           uint8_t prefix_len, int64_t count, const char *nexthop);
+void route_db_upsert_batch(dev_ipc_context_t *ctx, const char *name, const char *vrf_name, uint16_t afi,
+                           const char *start_addr, uint8_t prefix_len, int64_t count, const char *nexthop,
+                           int32_t metric, int32_t preference, const char *ifname);
 
 /**
  * @brief 删除 batch 路由记录

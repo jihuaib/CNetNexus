@@ -182,10 +182,14 @@ static int bgp_relay_build_nh_key_from_route(const bgp_route_node_t *route, bgp_
 
     /* vrf-import 远端跨表路由（REMOTE_CROSS）：下一跳是远端 PE（eBGP vpnv4 邻居），
      * 在公网表对该 PE 地址做隧道迭代 → 命中 eBGP-vpnv4 假隧道（BGP_ADJ），用于 VRF 转发。
-     * 注意 endpoint 是「下一跳 PE 地址」而非前缀（与 labeled 的 endpoint=前缀不同）。 */
+     * 注意 endpoint 是「下一跳 PE 地址」而非前缀（与 labeled 的 endpoint=前缀不同）。
+     * safi 必须用隧道 watch 的规范值 BGP_SAFI_LABELED：TUNNEL 只按 (vrf,afi,endpoint) 标识 watch，
+     * 不携带 safi，而 tunnel notify 回来时 bgp_relay_handle_tunnel_notify 固定用 BGP_SAFI_LABELED
+     * 构造查找键。若这里用导入路由派生的 unicast safi（=1），notify 将查不到本 watch、
+     * REMOTE_CROSS 路由永远解析不出隧道、无法下刷 VRF FIB。 */
     if (BIT_TEST(route->flags, BGP_ROUTE_FLAG_REMOTE_CROSS))
     {
-        bgp_relay_make_tunnel_key(nh_key_out, BGP_VRF_PUBLIC_ID, route->head->nlri.afi, route->head->nlri.safi,
+        bgp_relay_make_tunnel_key(nh_key_out, BGP_VRF_PUBLIC_ID, route->head->nlri.afi, BGP_SAFI_LABELED,
                                   &nexthop_addr);
         return 1;
     }

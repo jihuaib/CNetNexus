@@ -427,14 +427,14 @@ static void worker_handle_inject(dev_ipc_message_t *msg)
             ret = route_rib_add_nexthop_id(g_route_work_local->rib, entry->vrf_id, entry->afi, &entry->prefix_addr,
                                            entry->prefix_len, entry->protocol, &entry->source_addr, entry->nexthop_id,
                                            entry->metric, entry->preference, entry->out_ifindex, entry->nh_type,
-                                           entry->tunnel_id, (uint32_t)entry->flags);
+                                           entry->tunnel_id, entry->out_label, (uint32_t)entry->flags);
         }
         else
         {
             ret = route_rib_add(g_route_work_local->rib, entry->vrf_id, entry->afi, &entry->prefix_addr,
                                 entry->prefix_len, entry->protocol, &entry->source_addr, &entry->nexthop_addr,
                                 entry->metric, entry->preference, entry->out_ifindex, entry->nh_type, entry->tunnel_id,
-                                (uint32_t)entry->flags);
+                                entry->out_label, (uint32_t)entry->flags);
         }
         if (ret >= 0)
         {
@@ -1227,7 +1227,7 @@ int route_add_and_notify_nexthop_id(uint32_t vrf_id, uint16_t afi, const net_add
     /* 只带 nexthop_id：relay 已由对象维护（发布方在「添加下一跳」时写入），此处不 set_relay */
     int ret =
         route_rib_add_nexthop_id(g_route_work_local->rib, vrf_id, afi, prefix_addr, prefix_len, protocol, source_addr,
-                                 nexthop_id, metric, preference, out_ifindex, ROUTE_NH_TYPE_IP, 0u, 0u);
+                                 nexthop_id, metric, preference, out_ifindex, ROUTE_NH_TYPE_IP, 0u, 0u, 0u);
     if (ret < 0)
     {
         return ret;

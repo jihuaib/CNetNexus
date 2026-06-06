@@ -50,11 +50,15 @@ static const db_table_def_t ROUTE_STATIC_TABLE = {
 /* route_batch 表：批量路由配置（name 为主键，存储 batch 参数用于重启恢复） */
 static const db_column_def_t ROUTE_BATCH_COLS[] = {
     {"name", DB_TYPE_TEXT, DB_COL_PRIMARY_KEY | DB_COL_NOT_NULL, NULL},
+    {"vrf_name", DB_TYPE_TEXT, DB_COL_NOT_NULL, VRF_PUBLIC_VRF_NAME},
     {"afi", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"},
     {"start_addr", DB_TYPE_TEXT, DB_COL_NOT_NULL, NULL},
     {"prefix_len", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
     {"count", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
-    {"nexthop", DB_TYPE_TEXT, DB_COL_NOT_NULL, NULL},
+    {"nexthop", DB_TYPE_TEXT, DB_COL_NOT_NULL, "''"},
+    {"metric", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},
+    {"preference", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"},
+    {"ifname", DB_TYPE_TEXT, 0, ""},
 };
 
 static const db_table_def_t ROUTE_BATCH_TABLE = {

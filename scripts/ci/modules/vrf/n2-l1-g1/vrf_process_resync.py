@@ -454,7 +454,8 @@ def _run_inner(rt: TopologyRuntime, container: str) -> None:
     # ============================ Phase C: stop ============================
     step(f"Phase C: process stop vrf on r1 (pid={pid_phase_b})")
     out = process_stop(rt, "r1", "vrf")
-    if "stop vrf requested" not in out:
+    out_l = out.lower()
+    if "stop vrf requested" not in out_l and "stop vrf ok" not in out_l:
         mark_step_failed()
         raise AssertionError(f"Phase C: unexpected `process stop vrf` response:\n{out}")
 

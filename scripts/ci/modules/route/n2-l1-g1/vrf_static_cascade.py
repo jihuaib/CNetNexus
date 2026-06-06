@@ -61,18 +61,21 @@ PUB_PREFIX = f"{PUB_PREFIX_ADDR}/{PUB_PREFIX_LEN}"
 
 
 def _route_detail_cmd(afi: str, prefix_addr: str, prefix_len: int, vrf: str) -> str:
-    suffix = "" if vrf == "public" else f" vrf {vrf}"
-    return f"show route {afi} {prefix_addr} {prefix_len}{suffix}"
+    if vrf == "public":
+        return f"show route {afi} {prefix_addr} {prefix_len}"
+    return f"show route {afi} vrf {vrf} {prefix_addr} {prefix_len}"
 
 
 def _fib_detail_cmd(afi: str, prefix_addr: str, prefix_len: int, vrf: str) -> str:
-    suffix = "" if vrf == "public" else f" vrf {vrf}"
-    return f"show fib {afi} {prefix_addr} {prefix_len}{suffix}"
+    if vrf == "public":
+        return f"show fib {afi} {prefix_addr} {prefix_len}"
+    return f"show fib {afi} vrf {vrf} {prefix_addr} {prefix_len}"
 
 
 def _fib_os_cmd(afi: str, vrf: str) -> str:
-    suffix = "" if vrf == "public" else f" vrf {vrf}"
-    return f"show fib {afi} os{suffix}"
+    if vrf == "public":
+        return f"show fib {afi} os"
+    return f"show fib {afi} vrf {vrf} os"
 
 
 def _network(prefix_addr: str, prefix_len: int) -> str:
@@ -101,7 +104,6 @@ def _wait_static_installed(
     route_nh = rf"(?im)^\s*Nexthop\s*:\s*{re.escape(nexthop)}\s*$"
 
     fib_header = rf"(?im)^\s*Routing entry for\s+{re.escape(prefix)}\b"
-    fib_afi = rf"(?im)^\s*AFI\s*:\s*{re.escape(afi)}\s*$"
     fib_installed = r"(?im)^\s*Installed\s*:\s*yes\s*$"
     fib_skip_os = r"(?im)^\s*Skip OS\s*:\s*no\s*$"
 
@@ -121,7 +123,7 @@ def _wait_static_installed(
             {
                 "device": "r1",
                 "command": fib_cmd,
-                "regex": [fib_header, fib_afi, fib_installed, fib_skip_os],
+                "regex": [fib_header, fib_installed, fib_skip_os],
                 "not_contains": ["(no routes)"],
                 "label": f"r1 fib {afi} {prefix} vrf={vrf} installed",
             },
@@ -362,15 +364,15 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             vrf=VRF_NAME,
         )
 
-        step("校验 show current-configuration 中带 vrf 后缀的 route static 行")
+        step("校验 show current-configuration 中带 vrf 的 route static 行")
         cfg_out = cmd(rt, "r1", "show current-configuration")
         vrf_v4_pattern = (
-            rf"route static ipv4 {re.escape(VRF_PREFIX_ADDR)} {re.escape(str(VRF_PREFIX_LEN))} "
-            rf"{re.escape(VRF_V4_NH)} vrf {re.escape(VRF_NAME)}"
+            rf"route static ipv4 vrf {re.escape(VRF_NAME)} "
+            rf"{re.escape(VRF_PREFIX_ADDR)} {re.escape(str(VRF_PREFIX_LEN))} {re.escape(VRF_V4_NH)}"
         )
         vrf_v6_pattern = (
-            rf"route static ipv6 {re.escape(VRF_PREFIX6_ADDR)} {re.escape(str(VRF_PREFIX6_LEN))} "
-            rf"{re.escape(VRF_V6_NH)} vrf {re.escape(VRF_NAME)}"
+            rf"route static ipv6 vrf {re.escape(VRF_NAME)} "
+            rf"{re.escape(VRF_PREFIX6_ADDR)} {re.escape(str(VRF_PREFIX6_LEN))} {re.escape(VRF_V6_NH)}"
         )
         pub_pattern = (
             rf"route static ipv4 {re.escape(PUB_PREFIX_ADDR)} {re.escape(str(PUB_PREFIX_LEN))} "

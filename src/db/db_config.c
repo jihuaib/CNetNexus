@@ -77,7 +77,7 @@ static int db_config_mkdir_p(const char *path)
 
 int db_config_running_path(char *path_buf, size_t buf_size)
 {
-    char data_dir[512];
+    char data_dir[480];
     db_config_data_dir(data_dir, sizeof(data_dir));
     snprintf(path_buf, buf_size, "%s/running.db", data_dir);
     return ERRCODE_SUCCESS;
@@ -118,7 +118,7 @@ static void db_config_meta_path(const char *name, char *buf, size_t size)
  */
 static void db_config_startup_ptr_path(char *buf, size_t size)
 {
-    char data_dir[512];
+    char data_dir[480];
     db_config_data_dir(data_dir, sizeof(data_dir));
     snprintf(buf, size, "%s/startup.cfg", data_dir);
 }

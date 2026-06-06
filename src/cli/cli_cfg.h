@@ -12,17 +12,18 @@
 #include "cli_tree.h"
 
 /** CFG CLI group_id 定义（与 commands.xml 中 group-id 一致） */
-#define CLI_GROUP_ID_SHOW_COMMANDS 1   /**< show cli command-info */
-#define CLI_GROUP_ID_SHOW_HISTORY 2    /**< show cli history */
-#define CLI_GROUP_ID_SHOW_CONFIG 3     /**< show current-configuration */
-#define CLI_GROUP_ID_EXIT 4            /**< exit */
-#define CLI_GROUP_ID_CONFIG 5          /**< config */
-#define CLI_GROUP_ID_END 6             /**< end */
-#define CLI_GROUP_ID_SHOW_CONTEXT 8    /**< show cli context */
-#define CLI_GROUP_ID_SHOW_THIS 10      /**< show this */
-#define CLI_GROUP_ID_SHOW_CLIENT 11    /**< show cli client */
-#define CLI_GROUP_ID_SHOW_CONF_DIFF 12 /**< show configuration difference current-configuration <configuration-file>   \
-                                        */
+#define CLI_GROUP_ID_SHOW_COMMANDS 1 /**< show cli command-info */
+#define CLI_GROUP_ID_SHOW_HISTORY 2  /**< show cli history */
+#define CLI_GROUP_ID_SHOW_CONFIG 3   /**< show current-configuration */
+#define CLI_GROUP_ID_EXIT 4          /**< exit */
+#define CLI_GROUP_ID_CONFIG 5        /**< config */
+#define CLI_GROUP_ID_END 6           /**< end */
+#define CLI_GROUP_ID_SHOW_CONTEXT 8  /**< show cli context */
+#define CLI_GROUP_ID_SHOW_THIS 10    /**< show this */
+#define CLI_GROUP_ID_SHOW_CLIENT 11  /**< show cli client */
+#define CLI_GROUP_ID_SHOW_CONF_DIFF                                                                                    \
+    12 /**< show configuration difference current-configuration <configuration-file>                                   \
+        */
 
 /**
  * @brief 响应输出结构

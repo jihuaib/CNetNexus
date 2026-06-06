@@ -153,8 +153,10 @@ static int fib_worker_prepare_os(void)
 
 static int tunnel_ready(const fib_tunnel_entry_t *tunnel)
 {
-    return tunnel && tunnel->state && tunnel->label_count > 0 &&
-           (tunnel->relay_addr.family == AF_INET || tunnel->relay_addr.family == AF_INET6);
+    /* 隧道就绪 = 状态 up + relay 地址有效。不再要求 label_count>0：
+     * inter-AS Option A 的 BGP 邻接假隧道（label-less）以纯 IP 转发到直连 PE，无 MPLS 标签栈，
+     * 同样可下刷 OS（见 fib_os_route_install_tunnel 的 label_count==0 分支）。 */
+    return tunnel && tunnel->state && (tunnel->relay_addr.family == AF_INET || tunnel->relay_addr.family == AF_INET6);
 }
 
 static int nexthop_ready(const fib_nexthop_entry_t *nh)

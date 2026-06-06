@@ -16,8 +16,8 @@ r1 的 VRF red 配 export RT，r2 的 VRF red 配 import RT，二者取同一 RT
 3a. **r2 尚无 import-RT → 收到的 vpnv4 路由因 IRT 不匹配被丢弃**：r2 vpnv4 表 / VRF red 均无该路由。
 3b. **r2 配置 vpn-target import → 自动触发 ROUTE-REFRESH → r2 重新收到**：vpnv4 表出现该 RD 下的路由，
     且按 import-RT 导入 r2 的 VRF red ipv4-unicast RIB。
-3c. **[WIP/xfail] 数据面转发**：导入私网的路由经 eBGP-vpnv4 邻接假隧道（BGP_ADJ）以 NH-Type=tunnel
-    下刷 r2 的 VRF FIB（Option A，inter-AS vpnv4 转发，进行中；当前作 xfail 不阻塞）。
+3c. **数据面转发**：导入私网的路由经 eBGP-vpnv4 邻接假隧道（BGP_ADJ）以 NH-Type=tunnel 下刷 r2 的
+    VRF FIB，并压入对端 PE 通告的私网 VPN 标签（Out-Label）——r1 据此标签 demux 到正确 VRF。
 4. ``show bgp route af vpnv4 rd <rd>`` RD 过滤：命中/不命中。
 4b. 前缀详情（跨 RD / 单 RD）+ 接收标签语义。
 5. 增量：vpnv4 已起来后 r1 新增私网路由 → r2 vpnv4 + VRF red 自动出现。
@@ -273,41 +273,39 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             timeout=40,
         )
 
-        step("场景3c[WIP/xfail]：数据面——r2 导入私网路由经 eBGP-vpnv4 假隧道下刷 VRF FIB")
-        # Option A（inter-AS vpnv4 转发）进行中：导入私网的路由（REMOTE_CROSS）下一跳是远端 PE
-        # （r1=r2_peer），应在公网表做隧道迭代命中「eBGP-vpnv4 邻接假隧道」(BGP_ADJ)，以
-        # NH-Type=tunnel 进 r2 的 VRF red 转发表（公网 vpnv4 仍走 IP，仅导入私网后迭代隧道）。
-        # 当前转发链路尚未打通（REMOTE_CROSS 隧道 watch 未解析→路由未下刷 ROUTE），故本场景
-        # 暂作 xfail：跑命令保留覆盖与意图，但不让其失败阻塞用例。转发打通后去掉 try/except 即可。
-        try:
-            wait_checks(
-                rt,
-                [
-                    {
-                        "device": "r2",
-                        "command": f"show route ipv4 vrf {VRF_NAME} {LOOP1_ADDR} {LOOP1_LEN}",
-                        "contains": ["Path [1]: bgp"],
-                        "regex": [
-                            r"(?is)Path\s*\[1\]\s*:\s*bgp\b.*?NH-Type\s*:\s*tunnel\b.*?Tunnel-ID\s*:\s*[1-9]\d*",
-                        ],
-                        "label": "r2 imported VRF route iterates eBGP-vpnv4 tunnel",
-                    },
-                    {
-                        "device": "r2",
-                        "command": f"show fib ipv4 vrf {VRF_NAME} {LOOP1_ADDR} {LOOP1_LEN}",
-                        "contains": [f"Routing entry for {PFX1}"],
-                        "regex": [
-                            r"(?im)^\s*NH-Type\s*:\s*tunnel\s*$",
-                            r"(?im)^\s*Installed\s*:\s*yes\s*$",
-                        ],
-                        "label": "r2 imported VRF route installed to FIB via tunnel",
-                    },
-                ],
-                timeout=8,
-            )
-            print("场景3c: vpnv4 数据面转发已打通（可移除 xfail 包装）", flush=True)
-        except RuntimeError as e:
-            print(f"场景3c[xfail]: vpnv4 转发尚未打通（Option A 进行中），暂不阻塞用例: {e}", flush=True)
+        step("场景3c：数据面——r2 导入私网路由经 eBGP-vpnv4 假隧道 + 压私网 VPN 标签下刷 VRF FIB")
+        # 导入私网的路由（REMOTE_CROSS）下一跳是远端 PE（r1=r2_peer），在公网表做隧道迭代命中
+        # 「eBGP-vpnv4 邻接假隧道」(BGP_ADJ)，以 NH-Type=tunnel 进 r2 的 VRF red 转发表。
+        # 关键：转发时必须压入对端 PE 通告的私网 VPN 标签（Out-Label，非 0），r1 收到后才能据此
+        # 标签 demux 到正确 VRF——共享 GE-1 无 per-VRF 子接口，没有标签无法区分 VRF。
+        wait_checks(
+            rt,
+            [
+                {
+                    "device": "r2",
+                    "command": f"show route ipv4 vrf {VRF_NAME} {LOOP1_ADDR} {LOOP1_LEN}",
+                    "contains": ["Path [1]: bgp"],
+                    "regex": [
+                        # NH-Type=tunnel + Tunnel-ID 非 0 + Out-Label（VPN 私网标签）非 0
+                        r"(?is)Path\s*\[1\]\s*:\s*bgp\b.*?NH-Type\s*:\s*tunnel\b.*?Tunnel-ID\s*:\s*[1-9]\d*"
+                        r".*?Out-Label\s*:\s*[1-9]\d*",
+                    ],
+                    "label": "r2 imported VRF route iterates eBGP-vpnv4 tunnel with VPN label",
+                },
+                {
+                    "device": "r2",
+                    "command": f"show fib ipv4 vrf {VRF_NAME} {LOOP1_ADDR} {LOOP1_LEN}",
+                    "contains": [f"Routing entry for {PFX1}"],
+                    "regex": [
+                        r"(?im)^\s*NH-Type\s*:\s*tunnel\s*$",
+                        r"(?im)^\s*Out-Label\s*:\s*[1-9]\d*\s*$",
+                        r"(?im)^\s*Installed\s*:\s*yes\s*$",
+                    ],
+                    "label": "r2 imported VRF route installed to FIB via tunnel with VPN label",
+                },
+            ],
+            timeout=15,
+        )
 
         step("场景4：show bgp route af vpnv4 rd <rd> 过滤（命中 + 不命中）")
         wait_checks(

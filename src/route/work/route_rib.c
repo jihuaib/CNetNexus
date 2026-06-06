@@ -186,7 +186,8 @@ void route_rib_destroy(route_rib_t *rib)
 
 int route_rib_add(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr, uint8_t prefix_len,
                   uint32_t protocol, const net_addr_t *source, const net_addr_t *nexthop, int32_t metric,
-                  int32_t preference, uint32_t out_ifindex, uint8_t nh_type, uint32_t tunnel_id, uint32_t entry_flags)
+                  int32_t preference, uint32_t out_ifindex, uint8_t nh_type, uint32_t tunnel_id, uint32_t out_label,
+                  uint32_t entry_flags)
 {
     if (!rib || !prefix_addr || !source || !nexthop)
     {
@@ -222,6 +223,7 @@ int route_rib_add(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, const net_add
     path->out_ifindex = out_ifindex;
     path->nh_type = (nh_type == ROUTE_NH_TYPE_TUNNEL && tunnel_id != 0u) ? ROUTE_NH_TYPE_TUNNEL : ROUTE_NH_TYPE_IP;
     path->tunnel_id = (path->nh_type == ROUTE_NH_TYPE_TUNNEL) ? tunnel_id : 0u;
+    path->out_label = (path->nh_type == ROUTE_NH_TYPE_TUNNEL) ? out_label : 0u;
     path->entry_flags = entry_flags;
     path->updated_at_usec = g_get_real_time();
 
@@ -275,7 +277,7 @@ int route_rib_add(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, const net_add
 int route_rib_add_nexthop_id(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr,
                              uint8_t prefix_len, uint32_t protocol, const net_addr_t *source, uint32_t nexthop_id,
                              int32_t metric, int32_t preference, uint32_t out_ifindex, uint8_t nh_type,
-                             uint32_t tunnel_id, uint32_t entry_flags)
+                             uint32_t tunnel_id, uint32_t out_label, uint32_t entry_flags)
 {
     if (!rib || !prefix_addr || !source || nexthop_id == 0u)
     {
@@ -332,6 +334,7 @@ int route_rib_add_nexthop_id(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, co
     path->out_ifindex = out_ifindex;
     path->nh_type = (nh_type == ROUTE_NH_TYPE_TUNNEL && tunnel_id != 0u) ? ROUTE_NH_TYPE_TUNNEL : ROUTE_NH_TYPE_IP;
     path->tunnel_id = (path->nh_type == ROUTE_NH_TYPE_TUNNEL) ? tunnel_id : 0u;
+    path->out_label = (path->nh_type == ROUTE_NH_TYPE_TUNNEL) ? out_label : 0u;
     path->entry_flags = entry_flags;
     path->updated_at_usec = g_get_real_time();
 

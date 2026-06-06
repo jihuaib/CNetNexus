@@ -45,6 +45,7 @@ typedef struct fib_route_entry
     uint8_t nh_type;
     uint8_t _pad0[3];
     uint32_t tunnel_id;
+    uint32_t out_label; /**< 隧道转发时压入的出标签（如 L3VPN 私网/VPN 标签），0=无需压标签 */
     uint32_t nexthop_id; /**< nh_type=IP/BLACKHOLE 时引用的 nexthop 对象 ID（由 ROUTE 分配，0=未对象化） */
     uint32_t out_ifindex;
     net_addr_t prefix_addr;

@@ -43,87 +43,72 @@ int route_bdr_handle_show_config(dev_ipc_message_t *msg)
 
     db_result_t *result = NULL;
     int ret = db_rpc_query(g_route_local->dev_ipc_ctx, "route_static", NULL, 0, NULL, &result);
-    if (ret != ERRCODE_SUCCESS || !result || result->num_rows == 0)
+    if (ret == ERRCODE_SUCCESS && result && result->num_rows > 0)
     {
-        if (result)
+        for (uint32_t i = 0; i < result->num_rows; i++)
         {
-            db_result_free(result);
-        }
-        route_bdr_send_cli_response(msg, out->str);
-        g_string_free(out, TRUE);
-        return ERRCODE_SUCCESS;
-    }
+            db_row_t *row = result->rows[i];
+            int64_t afi = db_row_get_int(row, "afi", ROUTE_AFI_IPV4);
+            const char *prefix = db_row_get_text(row, "prefix", NULL);
+            int64_t prefix_len = db_row_get_int(row, "prefix_len", 0);
+            const char *nexthop = db_row_get_text(row, "nexthop", NULL);
+            int64_t metric = db_row_get_int(row, "metric", 0);
+            const char *ifname = db_row_get_text(row, "ifname", "");
+            const char *vrf_name = db_row_get_text(row, "vrf_name", VRF_PUBLIC_VRF_NAME);
 
-    for (uint32_t i = 0; i < result->num_rows; i++)
+            if (!prefix)
+            {
+                continue;
+            }
+
+            int has_nh = (nexthop && nexthop[0] != '\0');
+            int has_if = (ifname && ifname[0] != '\0');
+
+            if (!has_nh && !has_if)
+            {
+                continue;
+            }
+
+            const char *afi_str = (afi == ROUTE_AFI_IPV6) ? "ipv6" : "ipv4";
+            if (afi != ROUTE_AFI_IPV4 && afi != ROUTE_AFI_IPV6)
+            {
+                continue;
+            }
+
+            char vrf_clause[80] = "";
+            if (vrf_name && vrf_name[0] != '\0' && strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) != 0)
+            {
+                snprintf(vrf_clause, sizeof(vrf_clause), " vrf %s", vrf_name);
+            }
+
+            g_string_append(out, "!\r\n");
+            if (has_nh && has_if)
+            {
+                g_string_append_printf(out, "route static %s%s %s %ld %s interface %s", afi_str, vrf_clause, prefix,
+                                       prefix_len, nexthop, ifname);
+            }
+            else if (has_if)
+            {
+                g_string_append_printf(out, "route static %s%s %s %ld interface %s", afi_str, vrf_clause, prefix,
+                                       prefix_len, ifname);
+            }
+            else
+            {
+                g_string_append_printf(out, "route static %s%s %s %ld %s", afi_str, vrf_clause, prefix, prefix_len,
+                                       nexthop);
+            }
+
+            if (metric != 0)
+            {
+                g_string_append_printf(out, " metric %ld", metric);
+            }
+            g_string_append(out, "\r\n");
+        }
+    }
+    if (result)
     {
-        db_row_t *row = result->rows[i];
-        int64_t afi = db_row_get_int(row, "afi", ROUTE_AFI_IPV4);
-        const char *prefix = db_row_get_text(row, "prefix", NULL);
-        int64_t prefix_len = db_row_get_int(row, "prefix_len", 0);
-        const char *nexthop = db_row_get_text(row, "nexthop", NULL);
-        int64_t metric = db_row_get_int(row, "metric", 0);
-        const char *ifname = db_row_get_text(row, "ifname", "");
-        const char *vrf_name = db_row_get_text(row, "vrf_name", VRF_PUBLIC_VRF_NAME);
-
-        if (!prefix)
-        {
-            continue;
-        }
-
-        int has_nh = (nexthop && nexthop[0] != '\0');
-        int has_if = (ifname && ifname[0] != '\0');
-
-        if (!has_nh && !has_if)
-        {
-            continue;
-        }
-
-        const char *afi_str = (afi == ROUTE_AFI_IPV6) ? "ipv6" : "ipv4";
-        if (afi != ROUTE_AFI_IPV4 && afi != ROUTE_AFI_IPV6)
-        {
-            continue;
-        }
-
-        /* vrf 紧跟 afi（与 show / 配置命令语法保持一致：route static <afi> [vrf <name>] ...） */
-        char vrf_clause[80] = "";
-        if (vrf_name && vrf_name[0] != '\0' && strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) != 0)
-        {
-            snprintf(vrf_clause, sizeof(vrf_clause), " vrf %s", vrf_name);
-        }
-
-        g_string_append(out, "!\r\n");
-        if (has_nh && has_if)
-        {
-            /* nexthop + interface */
-            g_string_append_printf(out, "route static %s%s %s %ld %s interface %s", afi_str, vrf_clause, prefix,
-                                   prefix_len, nexthop, ifname);
-        }
-        else if (has_if)
-        {
-            /* interface-only */
-            g_string_append_printf(out, "route static %s%s %s %ld interface %s", afi_str, vrf_clause, prefix,
-                                   prefix_len, ifname);
-        }
-        else
-        {
-            /* 纯 nexthop */
-            g_string_append_printf(out, "route static %s%s %s %ld %s", afi_str, vrf_clause, prefix, prefix_len,
-                                   nexthop);
-        }
-
-        if (metric != 0)
-        {
-            g_string_append_printf(out, " metric %ld", metric);
-        }
-        g_string_append(out, "\r\n");
+        db_result_free(result);
     }
-
-    if (out->len > 0)
-    {
-        g_string_append(out, "!\r\n");
-    }
-
-    db_result_free(result);
 
     /* 输出 batch 路由配置 */
     db_result_t *batch_result = NULL;
@@ -138,30 +123,60 @@ int route_bdr_handle_show_config(dev_ipc_message_t *msg)
             const char *start_addr = db_row_get_text(row, "start_addr", NULL);
             int64_t prefix_len = db_row_get_int(row, "prefix_len", 0);
             int64_t count = db_row_get_int(row, "count", 0);
-            const char *nexthop = db_row_get_text(row, "nexthop", NULL);
+            const char *nexthop = db_row_get_text(row, "nexthop", "");
+            int64_t metric = db_row_get_int(row, "metric", 0);
+            const char *ifname = db_row_get_text(row, "ifname", "");
+            const char *vrf_name = db_row_get_text(row, "vrf_name", VRF_PUBLIC_VRF_NAME);
 
-            if (!name || !start_addr || !nexthop)
+            if (!name || !start_addr)
             {
                 continue;
             }
 
-            g_string_append(out, "!\r\n");
-            if (afi == ROUTE_AFI_IPV4)
+            int has_nh = (nexthop && nexthop[0] != '\0');
+            int has_if = (ifname && ifname[0] != '\0');
+            if (!has_nh && !has_if)
             {
-                g_string_append_printf(out, "route batch %s ipv4 %s %ld count %ld nexthop %s\r\n", name, start_addr,
-                                       prefix_len, count, nexthop);
+                continue;
             }
-            else
+            const char *afi_str = (afi == ROUTE_AFI_IPV6) ? "ipv6" : "ipv4";
+            if (afi != ROUTE_AFI_IPV4 && afi != ROUTE_AFI_IPV6)
             {
-                g_string_append_printf(out, "route batch %s ipv6 %s %ld count %ld nexthop %s\r\n", name, start_addr,
-                                       prefix_len, count, nexthop);
+                continue;
             }
-        }
-        if (out->len > 0)
-        {
+
+            char vrf_clause[80] = "";
+            if (vrf_name && vrf_name[0] != '\0' && strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) != 0)
+            {
+                snprintf(vrf_clause, sizeof(vrf_clause), " vrf %s", vrf_name);
+            }
+
             g_string_append(out, "!\r\n");
+            g_string_append_printf(out, "route static-batch %s %s%s %s %ld", name, afi_str, vrf_clause, start_addr,
+                                   prefix_len);
+            if (has_nh)
+            {
+                g_string_append_printf(out, " %s", nexthop);
+            }
+            if (has_if)
+            {
+                g_string_append_printf(out, " interface %s", ifname);
+            }
+            if (metric != 0)
+            {
+                g_string_append_printf(out, " metric %ld", metric);
+            }
+            g_string_append_printf(out, " count %ld\r\n", count);
         }
+    }
+    if (batch_result)
+    {
         db_result_free(batch_result);
+    }
+
+    if (out->len > 0)
+    {
+        g_string_append(out, "!\r\n");
     }
 
     route_bdr_send_cli_response(msg, out->str);

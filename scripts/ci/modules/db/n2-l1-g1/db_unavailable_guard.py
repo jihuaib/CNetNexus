@@ -321,7 +321,8 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         # ---- Phase 3: 停掉 db ----
         step("Phase 3: process stop db")
         out_stop = process_stop(rt, device, "db")
-        if "stop db requested" not in out_stop:
+        out_stop_l = out_stop.lower()
+        if "stop db requested" not in out_stop_l and "stop db ok" not in out_stop_l:
             mark_step_failed()
             raise AssertionError(f"unexpected 'process stop db' output:\n{out_stop}")
         _wait_db_state(rt, device, expect_up=False, timeout=20)

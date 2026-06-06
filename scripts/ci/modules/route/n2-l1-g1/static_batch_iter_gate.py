@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Route static nexthop iteration gate check with 10 routes, dual-stack.
+Route static-batch nexthop iteration gate check with 10 routes, dual-stack.
 
 Goal:
-- add 10 static IPv4/IPv6 routes while nexthop is unresolved
+- add 10 IPv4/IPv6 static-batch routes while nexthop is unresolved
 - unresolved routes must not appear in `show route`
 - `show route static` must always keep all configured routes
 - `show route relay static` must reflect static nexthop resolve state
@@ -25,11 +25,13 @@ PREFIX_COUNT = 10
 PREFIX_BASE_OCTET = 66
 RESOLVER_MASK = "32"
 UNRESOLVED_NH = "198.51.100.1"
+BATCH_V4 = "iter_gate_v4"
 
 GE_IF = "GE-1"
 V6_PREFIX_LEN = 64
 V6_RESOLVER_LEN = 128
 V6_UNRESOLVED_NH = "2001:db8:198:51::1"
+BATCH_V6 = "iter_gate_v6"
 
 
 def _build_prefixes() -> list[tuple[str, str]]:
@@ -141,6 +143,7 @@ def _cleanup_case_config(
     routes: list[tuple[str, str]],
 ) -> None:
     commands = ["config"]
+    commands.append(f"no route static-batch {BATCH_V4}")
     for addr, _ in routes:
         commands.append(f"no route static ipv4 {addr} {PREFIX_MASK} {route_nexthop}")
     commands.append(f"no route static ipv4 {UNRESOLVED_NH} {RESOLVER_MASK} {resolver_nexthop}")
@@ -244,6 +247,7 @@ def _cleanup_case_config_ipv6(
     routes: list[tuple[str, str]],
 ) -> None:
     commands = ["config"]
+    commands.append(f"no route static-batch {BATCH_V6}")
     for addr, _ in routes:
         commands.append(f"no route static ipv6 {addr} {V6_PREFIX_LEN} {route_nexthop}")
     commands.append(f"no route static ipv6 {V6_UNRESOLVED_NH} {V6_RESOLVER_LEN} {resolver_nexthop}")
@@ -261,7 +265,7 @@ def _cleanup_case_config_ipv6(
 def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
     _run_ipv4(rt, top)
     _run_ipv6(rt, top)
-    print("Route static batch nexthop iteration gate dual-stack check passed.")
+    print("Route static-batch nexthop iteration gate dual-stack check passed.")
 
 
 def _run_ipv4(rt: TopologyRuntime, top: dict[str, object]) -> None:
@@ -281,12 +285,17 @@ def _run_ipv4(rt: TopologyRuntime, top: dict[str, object]) -> None:
             routes=routes,
         )
 
-        step("Add 10 static routes with unresolved nexthop")
-        add_cmds = ["config"]
-        for addr, _ in routes:
-            add_cmds.append(f"route static ipv4 {addr} {PREFIX_MASK} {route_nexthop}")
-        add_cmds.append("end")
-        run_cmds(rt=rt, device="r1", strict=False, commands=add_cmds)
+        step("Add IPv4 static-batch routes with unresolved nexthop")
+        run_cmds(
+            rt=rt,
+            device="r1",
+            strict=False,
+            commands=[
+                "config",
+                f"route static-batch {BATCH_V4} ipv4 {routes[0][0]} {PREFIX_MASK} {route_nexthop} count {PREFIX_COUNT}",
+                "end",
+            ],
+        )
 
         step("Verify unresolved gate behavior")
         _wait_route_presence(rt, device="r1", routes=routes, expect_present=False, timeout=30)
@@ -382,7 +391,7 @@ def _run_ipv4(rt: TopologyRuntime, top: dict[str, object]) -> None:
         )
 
     finally:
-        step("Cleanup static batch routes")
+        step("Cleanup static-batch IPv4 routes")
         _cleanup_case_config(
             rt,
             device="r1",
@@ -428,12 +437,17 @@ def _run_ipv6(rt: TopologyRuntime, top: dict[str, object]) -> None:
             interval=2,
         )
 
-        step("Add 10 IPv6 static routes with unresolved nexthop")
-        add_cmds = ["config"]
-        for addr, _ in routes:
-            add_cmds.append(f"route static ipv6 {addr} {V6_PREFIX_LEN} {route_nexthop}")
-        add_cmds.append("end")
-        run_cmds(rt=rt, device="r1", strict=False, commands=add_cmds)
+        step("Add IPv6 static-batch routes with unresolved nexthop")
+        run_cmds(
+            rt=rt,
+            device="r1",
+            strict=False,
+            commands=[
+                "config",
+                f"route static-batch {BATCH_V6} ipv6 {routes[0][0]} {V6_PREFIX_LEN} {route_nexthop} count {PREFIX_COUNT}",
+                "end",
+            ],
+        )
 
         step("Verify unresolved IPv6 gate behavior")
         _wait_route_presence_ipv6(rt, device="r1", routes=routes, expect_present=False, timeout=30)
@@ -528,7 +542,7 @@ def _run_ipv6(rt: TopologyRuntime, top: dict[str, object]) -> None:
             interval=2,
         )
     finally:
-        step("Cleanup static batch IPv6 routes")
+        step("Cleanup static-batch IPv6 routes")
         _cleanup_case_config_ipv6(
             rt,
             device="r1",

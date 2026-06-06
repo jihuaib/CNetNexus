@@ -53,13 +53,16 @@ typedef enum route_worker_cmd_type
  */
 typedef struct route_batch_entry
 {
-    char name[64];           /**< batch 名称（DB 主键） */
-    uint32_t vrf_id;         /**< VRF ID */
-    uint16_t afi;            /**< 地址族 */
-    uint8_t prefix_len;      /**< 前缀长度 */
-    uint8_t _pad;            /**< 填充对齐 */
-    net_addr_t prefix_addr;  /**< 前缀地址（二进制） */
-    net_addr_t nexthop_addr; /**< 下一跳地址（二进制） */
+    char name[64];                        /**< batch 名称（DB 主键） */
+    uint32_t vrf_id;                      /**< VRF ID */
+    uint16_t afi;                         /**< 地址族 */
+    uint8_t prefix_len;                   /**< 前缀长度 */
+    uint8_t _pad;                         /**< 填充对齐 */
+    int32_t metric;                       /**< 度量值 */
+    int32_t preference;                   /**< 管理距离 */
+    net_addr_t prefix_addr;               /**< 前缀地址（二进制） */
+    net_addr_t nexthop_addr;              /**< 下一跳地址（二进制） */
+    char out_ifname[IF_LOGICAL_NAME_MAX]; /**< 出接口逻辑名（空字符串=不约束） */
 } route_batch_entry_t;
 
 /**

@@ -129,6 +129,10 @@ static int route_node_to_route_entry(uint32_t vrf_id, const bgp_nlri_entry_t *nl
     {
         entry_out->nh_type = ROUTE_NH_TYPE_TUNNEL;
         entry_out->tunnel_id = nh_value.tunnel_id;
+        /* L3VPN 私网标签：导入的 vpnv4 路由（REMOTE_CROSS）携带对端 PE 通告的 VPN 标签，
+         * 转发时必须压入此标签，对端 PE 才能据此 demux 到正确 VRF。隧道（BGP 邻接假隧道）
+         * 仅提供到 PE 的传输路径，VPN 标签是每路由/每 VRF 的服务标签，随路由下发。 */
+        entry_out->out_label = route->has_label ? route->label : 0u;
         /* 隧道路由不申请 ROUTE nexthop 对象（nexthop_id=0），ROUTE 不会自行迭代隧道，
          * 故把已解析的迭代结果（relay 端点 + 出接口）随条目带过去，由 ROUTE 据此 set_relay，
          * 使 show route 的 Iter NH / Iter OIF 正确显示。 */

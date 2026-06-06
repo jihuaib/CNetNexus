@@ -171,6 +171,7 @@ typedef struct route_msg_entry
     uint8_t nh_type;      /**< ROUTE_NH_TYPE_* */
     uint8_t _pad;         /**< 对齐填充 */
     uint32_t tunnel_id;   /**< nh_type=ROUTE_NH_TYPE_TUNNEL 时的隧道 ID */
+    uint32_t out_label;   /**< 隧道转发时压入的出标签（如 L3VPN 私网/VPN 标签），0=无需压标签 */
     uint32_t nexthop_id;  /**< nh_type=IP/BLACKHOLE 时引用的 nexthop 对象 ID（0=按旧 value 字段生成） */
     uint32_t out_ifindex; /**< 原始出接口索引（由发布方携带，0=不指定） */
     uint32_t iter_out_ifindex;    /**< 迭代解析后的出接口索引（0=未知） */

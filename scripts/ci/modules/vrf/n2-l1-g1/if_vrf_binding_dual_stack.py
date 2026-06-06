@@ -45,18 +45,21 @@ def _network_prefix(addr: str, prefix_len: int) -> tuple[str, str]:
 
 
 def _route_detail_cmd(afi: str, prefix_addr: str, prefix_len: int, vrf: str) -> str:
-    suffix = "" if vrf == "public" else f" vrf {vrf}"
-    return f"show route {afi} {prefix_addr} {prefix_len}{suffix}"
+    if vrf == "public":
+        return f"show route {afi} {prefix_addr} {prefix_len}"
+    return f"show route {afi} vrf {vrf} {prefix_addr} {prefix_len}"
 
 
 def _fib_detail_cmd(afi: str, prefix_addr: str, prefix_len: int, vrf: str) -> str:
-    suffix = "" if vrf == "public" else f" vrf {vrf}"
-    return f"show fib {afi} {prefix_addr} {prefix_len}{suffix}"
+    if vrf == "public":
+        return f"show fib {afi} {prefix_addr} {prefix_len}"
+    return f"show fib {afi} vrf {vrf} {prefix_addr} {prefix_len}"
 
 
 def _fib_os_cmd(afi: str, vrf: str) -> str:
-    suffix = "" if vrf == "public" else f" vrf {vrf}"
-    return f"show fib {afi} os{suffix}"
+    if vrf == "public":
+        return f"show fib {afi} os"
+    return f"show fib {afi} vrf {vrf} os"
 
 
 def _wait_if_state(
@@ -109,7 +112,6 @@ def _wait_route_fib_os(
 
     route_header = rf"(?im)^\s*Routing entry for {re.escape(prefix)} \(VRF: {re.escape(vrf)}\)\s*$"
     fib_header = rf"(?im)^\s*Routing entry for\s+{re.escape(prefix)}\b"
-    fib_afi = rf"(?im)^\s*AFI\s*:\s*{re.escape(afi)}\s*$"
     fib_skip_os = r"(?im)^\s*Skip OS\s*:\s*yes\s*$"
     os_row = (
         rf"(?im)^\s*\S+\s+unicast\s+{re.escape(prefix)}\s+-\s+\S+\s+kernel\s+\d+\s+\S+\s*$"
@@ -133,7 +135,7 @@ def _wait_route_fib_os(
                 {
                     "device": "r1",
                     "command": fib_cmd,
-                    "regex": [fib_header, fib_afi, fib_skip_os],
+                    "regex": [fib_header, fib_skip_os],
                     "not_contains": ["(no routes)"],
                     "label": f"r1 fib {afi} {prefix} vrf={vrf} present",
                 },
@@ -193,7 +195,6 @@ def _wait_ipv4_host_route_fib_os(
     route_header = rf"(?im)^\s*Routing entry for {re.escape(prefix)} \(VRF: {re.escape(vrf)}\)\s*$"
     route_path = r"(?im)^\s*Path\s*\[1\]\s*:\s*(?:connected|local)\b"
     fib_header = rf"(?im)^\s*Routing entry for\s+{re.escape(prefix)}\b"
-    fib_afi = r"(?im)^\s*AFI\s*:\s*ipv4\s*$"
     fib_skip_os = r"(?im)^\s*Skip OS\s*:\s*yes\s*$"
     os_local_row = (
         rf"(?im)^\s*\S+\s+local\s+{re.escape(prefix)}\s+-\s+\S+\s+kernel\s+\d+\s+\S+\s*$"
@@ -217,7 +218,7 @@ def _wait_ipv4_host_route_fib_os(
                 {
                     "device": "r1",
                     "command": fib_cmd,
-                    "regex": [fib_header, fib_afi, fib_skip_os],
+                    "regex": [fib_header, fib_skip_os],
                     "not_contains": ["(no routes)"],
                     "label": f"r1 fib ipv4 host {prefix} vrf={vrf} present",
                 },

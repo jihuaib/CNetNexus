@@ -529,9 +529,28 @@ static int fib_os_mpls_route_send(int cmd, const fib_ilm_entry_t *ilm)
             return ERRCODE_FAIL;
         }
 
-        if (ilm->out_ifindex != 0 && ilm->action != TUNNEL_ACTION_DROP)
+        /* POP/PHP 的出接口由 ilm->vrf_id 语义决定，而非依赖入参 out_ifindex：
+         * 私网 VRF 的 POP 弹标签后，内层包必须送进该 VRF 的 l3mdev 设备（设备名=VRF 名），
+         * 才会在该 VRF 表里查找（L3VPN 出口按 VPN 标签 demux 到 VRF）。等价于
+         * `ip -f mpls route add <label> dev <vrf>`。公网 VRF 维持原有 out_ifindex / 本地交付。
+         * 缺此 OIF 时内核会按 main 表查 popped 内层包，找不到私网前缀而丢弃。 */
+        uint32_t pop_out_ifindex = ilm->out_ifindex;
+        if (ilm->vrf_id != VRF_PUBLIC_VRF_ID && (ilm->action == TUNNEL_ACTION_POP || ilm->action == TUNNEL_ACTION_PHP))
         {
-            nl_add_attr(nlh, sizeof(buf), RTA_OIF, &ilm->out_ifindex, (int)sizeof(ilm->out_ifindex));
+            const vrf_api_cache_entry_t *vrf = vrf_api_cache_lookup(ilm->vrf_id);
+            if (vrf && vrf->name[0] != '\0')
+            {
+                unsigned int vrf_ifindex = if_nametoindex(vrf->name);
+                if (vrf_ifindex != 0u)
+                {
+                    pop_out_ifindex = (uint32_t)vrf_ifindex;
+                }
+            }
+        }
+
+        if (pop_out_ifindex != 0u && ilm->action != TUNNEL_ACTION_DROP)
+        {
+            nl_add_attr(nlh, sizeof(buf), RTA_OIF, &pop_out_ifindex, (int)sizeof(pop_out_ifindex));
         }
         if (!net_addr_is_zero(&ilm->relay_addr) &&
             nl_add_gateway_or_via(nlh, sizeof(buf), AF_MPLS, &ilm->relay_addr) != ERRCODE_SUCCESS)
@@ -554,15 +573,32 @@ int fib_os_route_install_ip(const fib_route_entry_t *route)
 
 int fib_os_route_install_tunnel(const fib_route_entry_t *route, const fib_tunnel_entry_t *tunnel)
 {
-    if (!route || !tunnel || !tunnel->state || tunnel->label_count == 0)
+    if (!route || !tunnel || !tunnel->state)
     {
         return ERRCODE_FAIL;
+    }
+
+    /* 合成实际压栈标签：隧道自带的传输标签（外层）+ 路由携带的出标签（L3VPN VPN 标签，最内层）。
+     * L3VPN 转发栈自顶向下 = [传输标签...][VPN 标签]，VPN 标签在底部（BOS），对端 PE 据此 demux VRF。
+     * 直连 inter-AS（BGP 邻接假隧道）无传输标签，栈即 [VPN 标签]。 */
+    fib_tunnel_entry_t combined = *tunnel;
+    if (route->out_label != 0u && combined.label_count < FIB_MAX_LABEL_STACK)
+    {
+        combined.labels[combined.label_count++] = route->out_label;
     }
 
     fib_route_entry_t via_tunnel = *route;
     via_tunnel.nexthop_addr = tunnel->relay_addr;
     via_tunnel.out_ifindex = tunnel->out_ifindex;
-    return fib_os_route_send(RTM_NEWROUTE, &via_tunnel, tunnel);
+
+    /* 既无传输标签也无 VPN 标签：退化为纯 IP 转发到 relay（如真正的 Option A per-VRF 子接口场景）。 */
+    if (combined.label_count == 0)
+    {
+        via_tunnel.nh_type = FIB_NH_TYPE_IP;
+        return fib_os_route_send(RTM_NEWROUTE, &via_tunnel, NULL);
+    }
+
+    return fib_os_route_send(RTM_NEWROUTE, &via_tunnel, &combined);
 }
 
 int fib_os_route_withdraw(const fib_route_entry_t *route)

@@ -381,12 +381,13 @@ static int handle_route_config(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 }
 
 // ============================================================================
-// Group 3: 批量路由命令
+// Group 3: 批量静态路由命令
 //
 // cfg-id 映射：
-//   1=no, 2=batch, 3=ipv4, 4=ipv6,
-//   5=start_addr, 6=prefix_len(IPv4 0-32), 7=prefix_len(IPv6 0-128),
-//   8=count_value, 9=nexthop_value, 10=name
+//   1=no, 2=static-batch, 3=ipv4, 4=ipv6, 5=start_addr,
+//   6=prefix_len(IPv4), 7=prefix_len(IPv6), 8=count_value,
+//   9=nexthop, 10=name, 11=metric value, 12=interface,
+//   13=ifname, 14=vrf, 15=vrf-name
 // ============================================================================
 
 static int handle_route_batch(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
@@ -400,12 +401,17 @@ static int handle_route_batch(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     int64_t ipv6_prefix_len = 0;
     int64_t count = 0;
     char nexthop[64] = {0};
+    char ifname_str[IF_LOGICAL_NAME_MAX] = {0};
+    char vrf_name[VRF_NAME_MAX_LEN] = {0};
+    int64_t metric = 0;
     int has_name = 0;
     int has_start = 0;
     int has_ipv4_pfxlen = 0;
-    int has_pfxlen = 0;
+    int has_ipv6_pfxlen = 0;
     int has_count = 0;
     int has_nexthop = 0;
+    int has_metric = 0;
+    int has_interface = 0;
 
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
@@ -422,7 +428,7 @@ static int handle_route_batch(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                 is_no = 1;
                 break;
             case 2:
-                /* batch 关键字 */
+                /* static-batch 关键字 */
                 break;
             case 3:
                 is_ipv4 = 1;
@@ -446,7 +452,7 @@ static int handle_route_batch(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                 break;
             case 7:
                 ipv6_prefix_len = cli_tlv_entry_get_int(&entry);
-                has_pfxlen = 1;
+                has_ipv6_pfxlen = 1;
                 break;
             case 8:
                 count = cli_tlv_entry_get_int(&entry);
@@ -472,6 +478,31 @@ static int handle_route_batch(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                 }
                 break;
             }
+            case 11:
+                metric = cli_tlv_entry_get_int(&entry);
+                has_metric = 1;
+                break;
+            case 12:
+                has_interface = 1;
+                break;
+            case 13:
+            {
+                const char *text = cli_tlv_entry_get_text(&entry);
+                if (text)
+                {
+                    g_strlcpy(ifname_str, text, sizeof(ifname_str));
+                }
+                break;
+            }
+            case 15:
+            {
+                const char *text = cli_tlv_entry_get_text(&entry);
+                if (text)
+                {
+                    g_strlcpy(vrf_name, text, sizeof(vrf_name));
+                }
+                break;
+            }
             default:
                 break;
         }
@@ -486,30 +517,34 @@ static int handle_route_batch(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 
     if (is_no)
     {
-        /* 先删除 DB 记录 */
-        route_db_delete_batch(g_route_local->dev_ipc_ctx, name);
-
-        /* 向 worker 派发内存删除操作 */
         route_apply_cmd_t apply;
         memset(&apply, 0, sizeof(apply));
         apply.op = ROUTE_APPLY_BATCH_DEL;
         g_strlcpy(apply.u.batch_del.name, name, sizeof(apply.u.batch_del.name));
         route_worker_dispatch_apply(&apply);
 
+        route_db_delete_batch(g_route_local->dev_ipc_ctx, name);
+
         char buf[128];
-        snprintf(buf, sizeof(buf), "Cleared %d batch route(s) for '%s'\r\n", apply.rc > 0 ? apply.rc : 0, name);
+        snprintf(buf, sizeof(buf), "Cleared %d static-batch route(s) for '%s'\r\n", apply.rc > 0 ? apply.rc : 0, name);
         send_resp(msg, buf);
         return ERRCODE_SUCCESS;
     }
 
-    if (!has_start || !has_count || !has_nexthop)
+    if (!has_start || !has_count)
     {
         send_resp(msg, "Error: Missing required parameters\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (count < 1 || count > 100000)
+    {
+        send_resp(msg, "Error: Static-batch count must be 1-100000\r\n");
         return ERRCODE_FAIL;
     }
 
     uint16_t afi;
     uint8_t prefix_len;
+    sa_family_t expect_family;
 
     if (is_ipv4)
     {
@@ -518,18 +553,30 @@ static int handle_route_batch(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             send_resp(msg, "Error: IPv4 batch route requires prefix length\r\n");
             return ERRCODE_FAIL;
         }
+        if (ipv4_prefix_len < 1 || ipv4_prefix_len > 32)
+        {
+            send_resp(msg, "Error: IPv4 prefix length must be 1-32\r\n");
+            return ERRCODE_FAIL;
+        }
         afi = ROUTE_AFI_IPV4;
         prefix_len = (uint8_t)ipv4_prefix_len;
+        expect_family = AF_INET;
     }
     else if (is_ipv6)
     {
-        if (!has_pfxlen)
+        if (!has_ipv6_pfxlen)
         {
             send_resp(msg, "Error: IPv6 batch route requires prefix length\r\n");
             return ERRCODE_FAIL;
         }
+        if (ipv6_prefix_len < 1 || ipv6_prefix_len > 128)
+        {
+            send_resp(msg, "Error: IPv6 prefix length must be 1-128\r\n");
+            return ERRCODE_FAIL;
+        }
         afi = ROUTE_AFI_IPV6;
         prefix_len = (uint8_t)ipv6_prefix_len;
+        expect_family = AF_INET6;
     }
     else
     {
@@ -537,29 +584,110 @@ static int handle_route_batch(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         return ERRCODE_FAIL;
     }
 
-    /* 先写入 DB */
-    route_db_upsert_batch(g_route_local->dev_ipc_ctx, name, afi, start_addr, prefix_len, count, nexthop);
-
-    /* 向 worker 派发内存添加操作 */
-    route_apply_cmd_t apply;
-    memset(&apply, 0, sizeof(apply));
-    apply.op = ROUTE_APPLY_BATCH_ADD;
-    g_strlcpy(apply.u.batch_add.name, name, sizeof(apply.u.batch_add.name));
-    apply.u.batch_add.afi = afi;
-    apply.u.batch_add.prefix_len = prefix_len;
-    g_strlcpy(apply.u.batch_add.start_addr, start_addr, sizeof(apply.u.batch_add.start_addr));
-    apply.u.batch_add.count = count;
-    g_strlcpy(apply.u.batch_add.nexthop, nexthop, sizeof(apply.u.batch_add.nexthop));
-    route_worker_dispatch_apply(&apply);
-
-    if (apply.rc < 0)
+    net_addr_t start;
+    if (net_addr_from_str(start_addr, &start) != 0)
     {
         send_resp(msg, "Error: Invalid start address\r\n");
         return ERRCODE_FAIL;
     }
+    if (start.family != expect_family)
+    {
+        send_resp(msg, "Error: Start address family does not match route type\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (net_addr_prefix_normalize(&start, prefix_len) != 0)
+    {
+        send_resp(msg, "Error: Invalid prefix length\r\n");
+        return ERRCODE_FAIL;
+    }
+    char normalized_start[64] = {0};
+    net_addr_to_str(&start, normalized_start, sizeof(normalized_start));
+
+    uint32_t vrf_id = ROUTE_VRF_DEFAULT;
+    if (route_cli_resolve_vrf_id(vrf_name, &vrf_id) != ERRCODE_SUCCESS)
+    {
+        char resp[160];
+        snprintf(resp, sizeof(resp), "Error: VRF %s not found\r\n", vrf_name);
+        send_resp(msg, resp);
+        return ERRCODE_FAIL;
+    }
+
+    if (!has_nexthop && !has_interface)
+    {
+        send_resp(msg, "Error: Missing next-hop address or interface\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (has_interface && ifname_str[0] == '\0')
+    {
+        send_resp(msg, "Error: Missing interface name\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (has_metric && (metric < 0 || metric > 255))
+    {
+        send_resp(msg, "Error: Route metric value must be 0-255\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    net_addr_t nexthop_addr;
+    memset(&nexthop_addr, 0, sizeof(nexthop_addr));
+    char normalized_nexthop[64] = {0};
+    if (has_nexthop)
+    {
+        if (net_addr_from_str(nexthop, &nexthop_addr) != 0)
+        {
+            send_resp(msg, "Error: Invalid nexthop address\r\n");
+            return ERRCODE_FAIL;
+        }
+        if (nexthop_addr.family != expect_family)
+        {
+            send_resp(msg, "Error: Nexthop address family does not match route type\r\n");
+            return ERRCODE_FAIL;
+        }
+        net_addr_to_str(&nexthop_addr, normalized_nexthop, sizeof(normalized_nexthop));
+    }
+    else
+    {
+        nexthop_addr.family = expect_family;
+    }
+
+    int32_t pref = ROUTE_ADMIN_DIST_STATIC;
+    int32_t m = has_metric ? (int32_t)metric : 0;
+
+    route_apply_cmd_t apply;
+    memset(&apply, 0, sizeof(apply));
+    apply.op = ROUTE_APPLY_BATCH_ADD;
+    g_strlcpy(apply.u.batch_add.name, name, sizeof(apply.u.batch_add.name));
+    apply.u.batch_add.vrf_id = vrf_id;
+    apply.u.batch_add.afi = afi;
+    apply.u.batch_add.prefix_len = prefix_len;
+    apply.u.batch_add.start_addr = start;
+    apply.u.batch_add.nexthop_addr = nexthop_addr;
+    apply.u.batch_add.count = count;
+    apply.u.batch_add.metric = m;
+    apply.u.batch_add.preference = pref;
+    g_strlcpy(apply.u.batch_add.out_ifname, ifname_str, sizeof(apply.u.batch_add.out_ifname));
+    route_worker_dispatch_apply(&apply);
+
+    if (apply.rc == -2)
+    {
+        char resp[160];
+        snprintf(resp, sizeof(resp), "Error: Static-batch route overlaps with batch '%s'\r\n",
+                 apply.u.batch_add.conflict_name[0] ? apply.u.batch_add.conflict_name : "?");
+        send_resp(msg, resp);
+        return ERRCODE_FAIL;
+    }
+    if (apply.rc < 0)
+    {
+        send_resp(msg, "Error: Invalid static-batch address range\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    route_db_upsert_batch(g_route_local->dev_ipc_ctx, name, vrf_name, afi, normalized_start, prefix_len, count,
+                          has_nexthop ? normalized_nexthop : "", m, pref, ifname_str);
 
     char buf[128];
-    snprintf(buf, sizeof(buf), "Added %d batch %s route(s) for '%s'\r\n", apply.rc, is_ipv4 ? "IPv4" : "IPv6", name);
+    snprintf(buf, sizeof(buf), "Added %d static-batch %s route(s) for '%s'\r\n", apply.rc, is_ipv4 ? "IPv4" : "IPv6",
+             name);
     send_resp(msg, buf);
     return ERRCODE_SUCCESS;
 }

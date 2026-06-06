@@ -72,6 +72,7 @@ typedef struct route_path
     uint8_t fib_attached; /**< 1=本路径已对 nexthop 对象持有一份 FIB 引用（仅 OS 安装路径） */
     uint8_t _pad0[2];     /**< 对齐填充 */
     uint32_t tunnel_id;   /**< nh_type=ROUTE_NH_TYPE_TUNNEL 时的隧道 ID */
+    uint32_t out_label;   /**< 隧道转发时压入的出标签（L3VPN 私网/VPN 标签），0=无 */
     uint32_t nexthop_id; /**< nexthop 对象 ID（registry 引用，承载下一跳/relay 信息，见 route_nhobj） */
     uint32_t flags;      /**< 路径状态标志（ROUTE_PATH_FLAG_*） */
     uint32_t entry_flags;   /**< 路径语义标志（ROUTE_ENTRY_FLAG_*，由发布方携带） */
@@ -141,7 +142,8 @@ void route_rib_destroy(route_rib_t *rib);
  */
 int route_rib_add(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr, uint8_t prefix_len,
                   uint32_t protocol, const net_addr_t *source, const net_addr_t *nexthop, int32_t metric,
-                  int32_t preference, uint32_t out_ifindex, uint8_t nh_type, uint32_t tunnel_id, uint32_t entry_flags);
+                  int32_t preference, uint32_t out_ifindex, uint8_t nh_type, uint32_t tunnel_id, uint32_t out_label,
+                  uint32_t entry_flags);
 
 /**
  * @brief 向 RIB 添加或更新一条路径，nexthop 已由发布方预先申请为对象 ID
@@ -149,7 +151,7 @@ int route_rib_add(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, const net_add
 int route_rib_add_nexthop_id(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr,
                              uint8_t prefix_len, uint32_t protocol, const net_addr_t *source, uint32_t nexthop_id,
                              int32_t metric, int32_t preference, uint32_t out_ifindex, uint8_t nh_type,
-                             uint32_t tunnel_id, uint32_t entry_flags);
+                             uint32_t tunnel_id, uint32_t out_label, uint32_t entry_flags);
 
 /**
  * @brief 从 RIB 删除一条路径（可选回调，在删除前触发）
