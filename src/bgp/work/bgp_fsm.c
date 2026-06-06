@@ -200,7 +200,7 @@ static void fsm_close_primary(bgp_session_t *sess, gboolean purge_routes, gboole
     {
         /* 先让 relay 拆除针对该 peer 的 nh watch（解除 watch->route_list 对路由节点的借用），
          * 再做 RIB purge 物理删除路由节点。否则 borrow_refcnt 会阻止节点真正释放，
-         * 节点退化为 PENDING_FREE 直到 inst 销毁才回收。 */
+         * 节点只被标 STALE 留在 RIB 链表上，直到借用解除或 inst 销毁才回收。 */
         bgp_relay_flush_peer_routes(sess->vrf->vrf_id, &sess->neighbor_addr);
         (void)bgp_vrf_purge_session_routes(sess->vrf, &sess->neighbor_addr);
     }
@@ -243,7 +243,7 @@ static void fsm_close_all(bgp_session_t *sess, gboolean purge_routes, gboolean a
     {
         /* 先让 relay 拆除针对该 peer 的 nh watch（解除 watch->route_list 对路由节点的借用），
          * 再做 RIB purge 物理删除路由节点。否则 borrow_refcnt 会阻止节点真正释放，
-         * 节点退化为 PENDING_FREE 直到 inst 销毁才回收。 */
+         * 节点只被标 STALE 留在 RIB 链表上，直到借用解除或 inst 销毁才回收。 */
         bgp_relay_flush_peer_routes(sess->vrf->vrf_id, &sess->neighbor_addr);
         (void)bgp_vrf_purge_session_routes(sess->vrf, &sess->neighbor_addr);
     }

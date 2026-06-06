@@ -283,11 +283,12 @@ bgp_route_src_class_t bgp_classify_route_src(const bgp_route_node_t *best)
     {
         return BGP_RSRC_IMPORT;
     }
-    if (BIT_TEST(best->flags, BGP_ROUTE_FLAG_IMPORT))
+    /* 本地起源（重分发 IMPORT 或 vrf-export 本地跨表 LOCAL_CROSS）：按本地源处理 */
+    if (bgp_route_is_local_origin(best))
     {
         return BGP_RSRC_IMPORT;
     }
-    /* 非 IMPORT 路由：根据源 session 类型分类 */
+    /* 非本地起源路由：根据源 session 类型分类 */
     if (best->head && best->head->inst && best->head->inst->vrf)
     {
         const bgp_session_t *src = bgp_vrf_find_session(best->head->inst->vrf, (net_addr_t *)&best->source);
@@ -547,8 +548,7 @@ static uint32_t bgp_update_group_local_as(void)
 
 static const bgp_session_t *bgp_best_source_session(const bgp_route_node_t *best)
 {
-    if (!best || BIT_TEST(best->flags, BGP_ROUTE_FLAG_IMPORT) || !best->head || !best->head->inst ||
-        !best->head->inst->vrf)
+    if (!best || bgp_route_is_local_origin(best) || !best->head || !best->head->inst || !best->head->inst->vrf)
     {
         return NULL;
     }
@@ -625,7 +625,7 @@ bool bgp_subgroup_eval_export(const bgp_nh_subgroup_t *sg, const bgp_route_node_
     bool is_reflecting = false;
 
     /* iBGP→iBGP 反射检查：仅当目标 peer 是 RR client 时允许反射，否则 split-horizon */
-    if (stype == BGP_SESS_TYPE_IBGP && !BIT_TEST(best->flags, BGP_ROUTE_FLAG_IMPORT))
+    if (stype == BGP_SESS_TYPE_IBGP && !bgp_route_is_local_origin(best))
     {
         const bgp_session_t *src_sess = bgp_best_source_session(best);
         if (src_sess && src_sess->sess_type == BGP_SESS_TYPE_IBGP)
@@ -1425,7 +1425,7 @@ int bgp_subgroup_process_queues(bgp_nh_subgroup_t *sg, bgp_instance_t *inst, int
 
         /* vpnv4 本地导出路由：loc-rib 不带标签，发送时按 per-vrf 申请标签注入 NLRI;
          * 申请不到则 hold（本次不通告），待标签可得后下次 pub 重试。 */
-        if (best && inst->safi == BGP_SAFI_VPN_UNICAST && BIT_TEST(best->flags, BGP_ROUTE_FLAG_IMPORT))
+        if (best && inst->safi == BGP_SAFI_VPN_UNICAST && bgp_route_is_local_origin(best))
         {
             uint32_t label = bgp_vrf_export_resolve_send_label(best);
             if (label == 0u)
@@ -1443,7 +1443,7 @@ int bgp_subgroup_process_queues(bgp_nh_subgroup_t *sg, bgp_instance_t *inst, int
         if (best)
         {
             item->source = best->source;
-            item->is_import = BIT_TEST(best->flags, BGP_ROUTE_FLAG_IMPORT);
+            item->is_import = bgp_route_is_local_origin(best);
         }
         else
         {

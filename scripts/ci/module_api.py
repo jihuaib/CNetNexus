@@ -516,10 +516,10 @@ def reboot_device(
     running.db 是临时库，整机 reboot 即丢（见 db_config_boot_prepare）；设备只在拓扑启动时
     配一次接口 IP。若用例期望重启后 running 配置（接口 IP / sysname / 业务配置）存活——例如
     reboot 后还要等 eBGP 邻居重新 Established——传 ``save_config=True``：reboot 前把当前
-    running 配置存成命名快照并设为 startup 指针，重启时框架据指针从快照恢复 running.db。
+    running 配置存成命名快照并设为 startup/db 指针，重启时框架据指针从快照恢复 running.db。
 
     注意：`save configuration` 只写快照、不设 startup 指针（光 save 重启仍是空库）；必须再
-    `startup configuration <name>` 把指针指向该快照，boot_prepare 才会恢复它。
+    `startup configuration <name> db` 把指针指向该快照，boot_prepare 才会恢复它。
 
     默认 ``False``：保持"未保存即丢"的真实语义，避免污染显式测试 save/startup 行为的用例
     （如 db_config_management 的"未保存改动重启后丢弃"断言）。
@@ -530,7 +530,7 @@ def reboot_device(
             rt=rt,
             device=device,
             strict=False,
-            commands=["end", f"save configuration {_REBOOT_SNAPSHOT}", f"startup configuration {_REBOOT_SNAPSHOT}"],
+            commands=["end", f"save configuration {_REBOOT_SNAPSHOT}", f"startup configuration {_REBOOT_SNAPSHOT} db"],
         )
     rt.reboot_device(device, reconnect_timeout=timeout)
 

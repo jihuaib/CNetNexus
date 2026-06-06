@@ -309,12 +309,14 @@ int main(int argc, char *argv[])
                                     LOG_ERROR("Module %s respawn failed", m->name);
                                 }
                             }
-                            else if (!m->on_demand)
+                            else
                             {
-                                /* 常驻模块意外退出 (SIGSEGV / ASan abort / OOM kill 等) —
-                                 * 自动 respawn 恢复服务；用窗口内崩溃次数做指数式停手，
-                                 * 防止启动期常驻 bug 把宿主 CPU 打满。
-                                 * on-demand 模块这里不动，等下次 SUBSCRIBE 时再 fork。 */
+                                /* 意外退出 (SIGSEGV / ASan abort / OOM kill 等) — 自动 respawn 恢复服务；
+                                 * 用窗口内崩溃次数做指数式停手，防止持续崩溃的模块把宿主 CPU 打满。
+                                 * on-demand 模块同样自愈：能走到这里说明它已被 fork 且在服务中（冷启动未
+                                 * fork 的 on-demand 模块无 child_pid，不会触发 SIGCHLD），崩溃后必须拉起
+                                 * 让它 DB restore 并继续对外服务，否则其它模块会残留它无法再撤销的状态
+                                 * （如 BGP 崩溃后 ROUTE 残留撤不掉的路由）。 */
                                 time_t now = time(NULL);
                                 if (now - m->last_crash_time > DEV_MODULE_CRASH_WINDOW_SEC)
                                 {

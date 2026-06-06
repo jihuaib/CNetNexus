@@ -23,7 +23,9 @@
 
 #include "access.h"
 #include "cli.h"
+#include "cli_cfg.h"
 #include "cli_handler.h"
+#include "cli_restore.h"
 #include "cli_xml_parser.h"
 #include "dev.h"
 #include "errcode.h"
@@ -282,6 +284,30 @@ static void cli_send_text_resp(dev_ipc_context_t *ctx, dev_ipc_message_t *req, u
     }
 }
 
+static void cli_notify_line_closed(uint32_t line_id)
+{
+    if (!g_cli_local || !g_cli_local->dev_ipc_ctx)
+    {
+        return;
+    }
+
+    uint32_t *payload = g_new(uint32_t, 1);
+    *payload = line_id;
+    dev_ipc_message_t *notify = dev_ipc_message_create(CLI_MSG_TYPE_LINE_CLOSED, DEV_MODULE_ID_CLI, DEV_MODULE_ID_DEV,
+                                                       0, payload, sizeof(*payload), g_free);
+    if (!notify)
+    {
+        g_free(payload);
+        return;
+    }
+
+    if (dev_ipc_send(g_cli_local->dev_ipc_ctx, DEV_MODULE_ID_DEV, notify) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("CLI: failed to notify DEV that line %u closed", line_id);
+    }
+    dev_ipc_message_free(notify);
+}
+
 /** @brief 处理 ACCESS_MSG_SESSION_OPEN：建逻辑会话，回 welcome + 初始提示符 */
 static void cli_handle_session_open(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
@@ -342,8 +368,13 @@ static void cli_handle_session_close(dev_ipc_context_t *ctx, dev_ipc_message_t *
     if (msg->payload && msg->payload_len >= sizeof(uint32_t))
     {
         uint32_t line_id = *(uint32_t *)msg->payload;
-        g_hash_table_remove(g_cli_local->sessions, &line_id);
+        gboolean removed = g_hash_table_remove(g_cli_local->sessions, &line_id);
+        cli_notify_line_closed(line_id);
         LOG_INFO("CLI: line %u session closed", line_id);
+        if (!removed)
+        {
+            LOG_WARN("CLI: line %u session close had no logical session", line_id);
+        }
     }
     cli_send_text_resp(ctx, msg, ACCESS_MSG_CLOSE_RESP, 0, NULL, "", "");
 }
@@ -417,6 +448,13 @@ static void cli_handle_help_req(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     }
 }
 
+/** @brief 处理 DB 内部 RPC：导出 show current-configuration 的 BDR 文本 */
+static void cli_handle_export_config(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+{
+    GString *out = cli_cfg_collect_current_config(DEV_MODULE_ID_DB);
+    (void)cli_chunk_stream_start(&g_cli_local->export_stream, ctx, DEV_MODULE_ID_CLI, msg, out);
+}
+
 // ============================================================================
 // IPC 消息处理回调
 // ============================================================================
@@ -444,6 +482,14 @@ void cli_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
         case ACCESS_MSG_HELP_REQ:
             cli_handle_help_req(ctx, msg);
+            break;
+
+        case CLI_MSG_TYPE_EXPORT_CONFIG:
+            cli_handle_export_config(ctx, msg);
+            break;
+
+        case CLI_MSG_TYPE_CONTINUE:
+            (void)cli_chunk_stream_continue(&g_cli_local->export_stream, ctx, DEV_MODULE_ID_CLI, msg);
             break;
 
         case CLI_MSG_TYPE_SYSNAME_UPDATE:
@@ -509,6 +555,8 @@ int cli_module_init(void)
     }
     LOG_INFO("CLI: module ready");
 
+    cli_restore_startup_if_needed();
+
     return 0;
 }
 
@@ -544,6 +592,8 @@ void cli_module_cleanup(void)
     {
         dev_ipc_destroy(ctx);
     }
+
+    cli_chunk_stream_reset(&g_cli_local->export_stream);
 
     if (g_cli_local->listen_sock != DEV_INVALID_FD)
     {

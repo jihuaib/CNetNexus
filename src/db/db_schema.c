@@ -128,7 +128,7 @@ int db_create_database_file(const char *db_name, const char *db_path, sqlite3 **
  * @brief 打开运行库文件，建立 main_conn（仅执行一次）
  *
  * 运行库（running.db）为临时库：开机前先 db_config_boot_prepare() 清掉上次残留，
- * 并按 startup 指针恢复对应命名快照；无 startup 指针时为空库（出厂启动）。
+ * 并按 startup/db 指针恢复对应命名快照；无 startup 指针或 cfg 模式时为空库。
  * 因此直接写运行库的配置不会跨重启保留，须经 save/startup configuration 显式落盘。
  */
 int db_initialize_database(void)
@@ -138,7 +138,7 @@ int db_initialize_database(void)
         return ERRCODE_SUCCESS;
     }
 
-    /* 开机预处理：重建运行库（清残留 + 按 startup 指针恢复快照），
+    /* 开机预处理：重建运行库（清残留 + 按 startup/db 指针恢复快照），
      * 纯本地文件操作，必须在打开句柄前完成 */
     db_config_boot_prepare();
 

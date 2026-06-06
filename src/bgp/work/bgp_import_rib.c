@@ -202,6 +202,11 @@ static void bgp_import_rib_mirror_withdraw(bgp_instance_t *tgt_inst, bgp_rib_t *
     bgp_route_node_t *src = mirror->src_route;
     net_addr_t src_source = mirror->source;
 
+    /* 先断开 mirror→src 溯源指针，再 borrow_unref 释放 src：否则 src 被回收后
+     * mirror->src_route 变悬挂指针，后续任意经 bgp_nexthop_route_owner 的解析
+     * （nexthop/relay）都会踩到已释放内存（-O2 下表现为 SIGSEGV）。 */
+    mirror->src_route = NULL;
+
     if (src)
     {
         g_hash_table_remove(st->mirror_by_src, src);
@@ -387,11 +392,10 @@ static int bgp_import_rib_process_one(bgp_instance_t *tgt_inst, bgp_rthead_t *sr
     bgp_rib_t *src_rib = bgp_inst_rib_for_nlri(src_inst, &src_head->nlri);
     const bgp_route_node_t *src_best = src_rib ? bgp_rib_find_best(src_rib, &src_head->nlri) : NULL;
 
-    /* 仅镜像 peer 路由：本地 import-route 引入的 best（带 BGP_ROUTE_FLAG_IMPORT）已经被
-     * `bgp_import_route_entry_to_safi` 同步灌进目标 unicast inst，重复 mirror 不仅多余，
-     * 还会因 source 与 import-route 节点重合而污染 unicast RIB（lookup_route_mut 按 source 命中后
-     * 会被 mirror_create 当成 existing mirror 改写）。 */
-    if (src_best && BIT_TEST(src_best->flags, BGP_ROUTE_FLAG_IMPORT))
+    /* 仅镜像 peer 路由：合成 best（重分发 import-route / vrf 跨表 import/export）已由各自子系统
+     * 灌进目标 unicast inst，重复 mirror 不仅多余，还会因 source 重合污染 unicast RIB
+     * （lookup_route_mut 按 source 命中后会被 mirror_create 当成 existing mirror 改写）。 */
+    if (src_best && bgp_route_is_synthetic(src_best))
     {
         src_best = NULL;
     }

@@ -76,6 +76,18 @@
                     <description>Configuration name (A-Z a-z 0-9 _ - , max 63)</description>
                     <type>string(1-63)</type>
                 </element>
+                <element id="6" cfg-id="5" type="keyword">
+                    <name>db</name>
+                    <description>Restore the saved SQLite database snapshot on next boot</description>
+                </element>
+                <element id="7" cfg-id="6" type="keyword">
+                    <name>cfg</name>
+                    <description>Replay the saved BDR configuration text on next boot</description>
+                </element>
+                <element id="8" cfg-id="7" type="keyword">
+                    <name>replay-failures</name>
+                    <description>Display startup cfg replay failures</description>
+                </element>
             </elements>
 
             <commands>
@@ -89,14 +101,24 @@
                     <expression>1 4 5</expression>
                     <views>global</views>
                 </command>
-                <!-- startup configuration <name> -->
+                <!-- startup configuration <name> db -->
                 <command>
-                    <expression>2 4 5</expression>
+                    <expression>2 4 5 6</expression>
+                    <views>global</views>
+                </command>
+                <!-- startup configuration <name> cfg -->
+                <command>
+                    <expression>2 4 5 7</expression>
                     <views>global</views>
                 </command>
                 <!-- show startup configuration -->
                 <command>
                     <expression>3 2 4</expression>
+                    <views>global</views>
+                </command>
+                <!-- show configuration replay-failures -->
+                <command>
+                    <expression>3 4 8</expression>
                     <views>global</views>
                 </command>
             </commands>

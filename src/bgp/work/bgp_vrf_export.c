@@ -200,7 +200,7 @@ static void bgp_vrf_export_detach_rib_cb(bgp_instance_t *inst, bgp_rd_entry_t *e
         for (GList *r = head->route_list; r; r = r->next)
         {
             bgp_route_node_t *route = (bgp_route_node_t *)r->data;
-            if (route && BIT_TEST(route->flags, BGP_ROUTE_FLAG_IMPORT))
+            if (route && BIT_TEST(route->flags, BGP_ROUTE_FLAG_LOCAL_CROSS))
             {
                 bgp_vrf_export_detach_src(route);
             }
@@ -321,9 +321,12 @@ static int bgp_vrf_export_process_one(bgp_instance_t *vpn_inst, bgp_rthead_t *sr
     bgp_rthead_t *tgt_head = (bgp_rthead_t *)bgp_rib_lookup_head(tgt_rib, &vpn_nlri);
     bgp_route_node_t *route = tgt_head ? bgp_rthead_lookup_route_mut(tgt_head, &synth) : NULL;
 
-    if (!src_best || !BIT_TEST(src_best->flags, BGP_ROUTE_FLAG_VALID))
+    /* REMOTE_CROSS：该 best 是从 peer 的 vpnv4 导入到本 VRF 的路由，绝不能再导出回 vpnv4
+     * （否则 r1→r2 导入后 r2 又用自己 RD 导出回去，撤销时续命成环）。等同 best 缺失：撤销本地导出。 */
+    if (!src_best || !BIT_TEST(src_best->flags, BGP_ROUTE_FLAG_VALID) ||
+        BIT_TEST(src_best->flags, BGP_ROUTE_FLAG_REMOTE_CROSS))
     {
-        /* best 缺失：解除溯源关联并撤销 vpnv4 中该 (rd, prefix) 的本地导出路由 */
+        /* best 缺失/不可导出：解除溯源关联并撤销 vpnv4 中该 (rd, prefix) 的本地导出路由 */
         if (route)
         {
             bgp_vrf_export_detach_src(route);
@@ -364,6 +367,10 @@ static int bgp_vrf_export_process_one(bgp_instance_t *vpn_inst, bgp_rthead_t *sr
     {
         return 0;
     }
+    /* 本地跨表合成路由：清 IMPORT、置 LOCAL_CROSS。它是本地起源（通告语义等同重分发），
+     * 但不是 import-route，避免被 import-route 清理误删；也便于对端区分回灌成环。 */
+    BIT_CLR(route->flags, BGP_ROUTE_FLAG_IMPORT);
+    BIT_SET(route->flags, BGP_ROUTE_FLAG_LOCAL_CROSS);
     /* loc-rib 不带标签：标签在 update_group 发送时按 per-vrf 申请并注入 NLRI */
 
     /* 维护溯源前向指针：best 切换来源时换 borrow 引用 */
@@ -617,7 +624,7 @@ static void bgp_vrf_export_purge_rib_cb(bgp_instance_t *inst, bgp_rd_entry_t *en
         {
             bgp_route_node_t *route = (bgp_route_node_t *)r->data;
             r = r->next;
-            if (route && BIT_TEST(route->flags, BGP_ROUTE_FLAG_IMPORT))
+            if (route && BIT_TEST(route->flags, BGP_ROUTE_FLAG_LOCAL_CROSS))
             {
                 net_addr_t src = route->source;
                 bgp_vrf_export_detach_src(route);

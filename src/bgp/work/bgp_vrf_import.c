@@ -19,6 +19,7 @@
 #include "bgp_pkt.h"
 #include "bgp_protocol.h"
 #include "bgp_rd.h"
+#include "bgp_relay.h"
 #include "bgp_rib.h"
 #include "bgp_session.h"
 #include "bgp_vrf.h"
@@ -340,6 +341,8 @@ static void import_detach_src(bgp_route_node_t *route)
     {
         return;
     }
+    /* 先注销自有隧道 watch（按当前 key），再断 src_route */
+    bgp_relay_synthetic_nexthop_unregister(route);
     bgp_route_node_t *old = route->src_route;
     route->src_route = NULL;
     bgp_route_node_borrow_unref(old);
@@ -369,13 +372,17 @@ static void import_upsert(bgp_instance_t *uc, const bgp_nlri_entry_t *uc_nlri, c
         }
     }
 
-    /* 拷贝 best 属性作为本地导入路径(import_proto=BGP → 置 BGP_ROUTE_FLAG_IMPORT) */
+    /* 拷贝 best 属性作为合成导入路径 */
     bgp_attr_t attr = *BGP_ROUTE_ATTR(best);
     bgp_nexthop_reset_route(route);
     if (bgp_rib_route_apply_reach(route, ROUTE_PROTOCOL_BGP, &attr) != 0)
     {
         return;
     }
+    /* 远端跨表合成路由：清 IMPORT、置 REMOTE_CROSS。来源是 peer 的 vpnv4（pick_import_source
+     * 已跳过本地导出合成），非本地起源，绝不可被 vrf-export 回灌 vpnv4（防环）。 */
+    BIT_CLR(route->flags, BGP_ROUTE_FLAG_IMPORT);
+    BIT_SET(route->flags, BGP_ROUTE_FLAG_REMOTE_CROSS);
 
     /* 携带 received VPN 标签，供后续基于标签的隧道转发迭代(转发实现属后续工作) */
     if (vpn_nlri && vpn_nlri->type == BGP_NLRI_PREFIX && vpn_nlri->prefix.has_label)
@@ -391,6 +398,14 @@ static void import_upsert(bgp_instance_t *uc, const bgp_nlri_entry_t *uc_nlri, c
         import_detach_src(route);
         route->src_route = (bgp_route_node_t *)best;
         bgp_route_node_borrow_ref((bgp_route_node_t *)best);
+    }
+
+    /* 注册自有隧道 watch：下一跳（远端 PE）在公网表迭代命中 eBGP-vpnv4 假隧道。
+     * 隧道未解析则置 invalid（不优选/不下刷），待 TUNNEL notify 解析后由 relay 重评。 */
+    gboolean nh_resolved = bgp_relay_synthetic_nexthop_register(route);
+    if (!nh_resolved)
+    {
+        BIT_CLR(route->flags, BGP_ROUTE_FLAG_VALID);
     }
 
     if (uc->calc_queue)
@@ -426,19 +441,20 @@ static void import_withdraw(bgp_instance_t *uc, const bgp_nlri_entry_t *uc_nlri,
  * 导入的"接受"判据是 import-RT 匹配，而非 FIB 下一跳可达性：L3VPN 的 vpnv4 下一跳是远端 PE，
  * 需经隧道/LSP 迭代(本实现的转发部分属后续工作)，此处不要求 BGP_ROUTE_FLAG_VALID，否则在无
  * LSP 的拓扑里收到的 vpnv4 路由永远 Unresolved → 永远无法导入。优先取 VALID best，其次取
- * route_list 中首个非本地导出(IMPORT)的收来路径。跳过本地导出合成路径(避免把导出路由再导入成环)。
+ * route_list 中首个非本地导出(LOCAL_CROSS)的收来路径。跳过本地导出合成路径(避免把导出路由再导入成环)，
+ * 也跳过 STALE(已撤销待回收)路径——否则源被 withdraw 后仍会被当作来源不断重新导入，撤销撤不掉。
  */
 static const bgp_route_node_t *pick_import_source(bgp_rib_t *src_rib, bgp_rthead_t *head)
 {
     const bgp_route_node_t *best = src_rib ? bgp_rib_find_best(src_rib, &head->nlri) : NULL;
-    if (best && !BIT_TEST(best->flags, BGP_ROUTE_FLAG_IMPORT))
+    if (best && !BIT_TEST(best->flags, BGP_ROUTE_FLAG_LOCAL_CROSS))
     {
         return best;
     }
     for (GList *l = head->route_list; l; l = l->next)
     {
         bgp_route_node_t *r = (bgp_route_node_t *)l->data;
-        if (r && !BIT_TEST(r->flags, BGP_ROUTE_FLAG_IMPORT))
+        if (r && !BIT_TEST(r->flags, BGP_ROUTE_FLAG_LOCAL_CROSS) && !BIT_TEST(r->flags, BGP_ROUTE_FLAG_STALE))
         {
             return r;
         }

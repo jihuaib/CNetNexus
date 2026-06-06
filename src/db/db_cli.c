@@ -6,7 +6,9 @@
  */
 #include "db_cli.h"
 
+#include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "cli.h"
@@ -17,19 +19,45 @@
 #include "errcode.h"
 #include "log.h"
 
+#define DB_CLI_REPLAY_FAILURES_FILE "startup-replay-failures.log"
+
 // ============================================================================
 // 发送 CLI 响应辅助
 // ============================================================================
 
+static void db_send_cli_response_to(uint32_t dst_module_id, uint32_t request_id, const char *text);
+
 static void db_send_cli_response(dev_ipc_message_t *msg, const char *text)
 {
-    char *resp_data = g_strdup(text);
-    dev_ipc_message_t *resp = dev_ipc_message_create(CLI_MSG_TYPE_RESP, DEV_MODULE_ID_DB, msg->src_module_id,
-                                                     msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
+    if (!msg)
+    {
+        return;
+    }
+    db_send_cli_response_to(msg->src_module_id, msg->request_id, text);
+}
+
+static void db_send_cli_response_to(uint32_t dst_module_id, uint32_t request_id, const char *text)
+{
+    const char *safe_text = text ? text : "";
+    char *resp_data = g_strdup(safe_text);
+    dev_ipc_message_t *resp = dev_ipc_message_create(CLI_MSG_TYPE_RESP, DEV_MODULE_ID_DB, dst_module_id, request_id,
+                                                     resp_data, strlen(resp_data) + 1, g_free);
     if (resp)
     {
         dev_ipc_send_response(db_local_ipc_ctx(), resp);
         dev_ipc_message_free(resp);
+    }
+    else
+    {
+        g_free(resp_data);
+    }
+}
+
+static void db_cli_set_err(char **err, const char *msg)
+{
+    if (err)
+    {
+        *err = g_strdup(msg);
     }
 }
 
@@ -333,16 +361,335 @@ static int handle_db_show_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 // ============================================================================
 
 /* config 组动作（与 commands.xml cfg-id 对齐） */
-#define DB_CFG_ACT_SAVE 1    /**< save configuration [<name>] */
-#define DB_CFG_ACT_STARTUP 2 /**< startup configuration <name> */
-#define DB_CFG_ACT_SHOW 3    /**< show startup configuration */
-#define DB_CFG_PARAM_NAME 4  /**< <name> 参数 */
+#define DB_CFG_ACT_SAVE 1             /**< save configuration [<name>] */
+#define DB_CFG_ACT_STARTUP 2          /**< startup configuration <name> {db|cfg} */
+#define DB_CFG_ACT_SHOW 3             /**< show startup configuration */
+#define DB_CFG_PARAM_NAME 4           /**< <name> 参数 */
+#define DB_CFG_STARTUP_DB 5           /**< startup db mode */
+#define DB_CFG_STARTUP_CFG 6          /**< startup cfg mode */
+#define DB_CFG_SHOW_REPLAY_FAILURES 7 /**< show configuration replay-failures */
+
+typedef struct db_config_save_job
+{
+    uint32_t dst_module_id;
+    uint32_t request_id;
+    char *name;
+} db_config_save_job_t;
+
+static pthread_mutex_t g_db_config_save_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void db_cli_data_dir(char *buf, size_t size)
+{
+    const char *work_dir = getenv("NN_WORK_DIR");
+    if (work_dir)
+    {
+        snprintf(buf, size, "%s/data", work_dir);
+    }
+    else
+    {
+        snprintf(buf, size, "./data");
+    }
+}
+
+static void db_cli_replay_failures_path(char *path, size_t path_size)
+{
+    char data_dir[512];
+    db_cli_data_dir(data_dir, sizeof(data_dir));
+    snprintf(path, path_size, "%s/%s", data_dir, DB_CLI_REPLAY_FAILURES_FILE);
+}
+
+static gboolean db_cli_config_name_valid(const char *name)
+{
+    if (!name || name[0] == '\0')
+    {
+        return TRUE;
+    }
+    if (strlen(name) > DB_CONFIG_NAME_MAX)
+    {
+        return FALSE;
+    }
+    for (const char *p = name; *p; p++)
+    {
+        char c = *p;
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-'))
+        {
+            return FALSE;
+        }
+    }
+    return TRUE;
+}
+
+static gint db_cmp_uint32_asc(gconstpointer a, gconstpointer b)
+{
+    uint32_t va = *(const uint32_t *)a;
+    uint32_t vb = *(const uint32_t *)b;
+    if (va < vb)
+    {
+        return -1;
+    }
+    if (va > vb)
+    {
+        return 1;
+    }
+    return 0;
+}
+
+static GArray *db_collect_connected_modules_for_bdr(void)
+{
+    GArray *modules = g_array_new(FALSE, FALSE, sizeof(uint32_t));
+    dev_ipc_context_t *ctx = db_local_ipc_ctx();
+    if (!ctx)
+    {
+        return modules;
+    }
+
+    pthread_mutex_lock(&ctx->comutex);
+    for (int i = 0; i < ctx->num_connections; i++)
+    {
+        dev_ipc_connection_t *conn = ctx->connections[i];
+        if (!conn || conn->state != DEV_IPC_COCONNECTED)
+        {
+            continue;
+        }
+
+        uint32_t mod_id = conn->remote_module_id;
+        if (mod_id == DEV_MODULE_ID_DB || mod_id == DEV_MODULE_ID_CLI)
+        {
+            continue;
+        }
+
+        gboolean exists = FALSE;
+        for (guint j = 0; j < modules->len; j++)
+        {
+            if (g_array_index(modules, uint32_t, j) == mod_id)
+            {
+                exists = TRUE;
+                break;
+            }
+        }
+        if (!exists)
+        {
+            g_array_append_val(modules, mod_id);
+        }
+    }
+    pthread_mutex_unlock(&ctx->comutex);
+
+    g_array_sort(modules, db_cmp_uint32_asc);
+    return modules;
+}
+
+static dev_ipc_message_t *db_create_show_config_request(uint32_t mod_id)
+{
+    return dev_ipc_message_create(CLI_MSG_TYPE_SHOW_CONFIG, DEV_MODULE_ID_DB, mod_id, 0, NULL, 0, NULL);
+}
+
+static void db_collect_module_bdr(uint32_t mod_id, GString *output)
+{
+    if (output)
+    {
+        g_string_truncate(output, 0);
+    }
+
+    dev_ipc_message_t *req = db_create_show_config_request(mod_id);
+    if (!req)
+    {
+        return;
+    }
+
+    const uint32_t max_chunks = 4096;
+    uint32_t chunks = 0;
+    while (req && chunks < max_chunks)
+    {
+        uint32_t timeout_ms = (chunks == 0) ? 1000 : 5000;
+        dev_ipc_message_t *resp = dev_ipc_query(db_local_ipc_ctx(), mod_id, req, timeout_ms);
+        dev_ipc_message_free(req);
+        req = NULL;
+        chunks++;
+
+        if (!resp)
+        {
+            break;
+        }
+
+        if (resp->msg_type == CLI_MSG_TYPE_RESP || resp->msg_type == CLI_MSG_TYPE_RESP_MORE)
+        {
+            if (output && resp->payload && resp->payload_len > 1)
+            {
+                g_string_append(output, (const char *)resp->payload);
+            }
+
+            if (resp->msg_type == CLI_MSG_TYPE_RESP_MORE)
+            {
+                req = dev_ipc_message_create(CLI_MSG_TYPE_CONTINUE, DEV_MODULE_ID_DB, mod_id, 0, NULL, 0, NULL);
+                if (!req)
+                {
+                    LOG_WARN("DB-CONFIG: create CONTINUE failed for module 0x%08X", mod_id);
+                }
+            }
+        }
+        else
+        {
+            LOG_WARN("DB-CONFIG: module 0x%08X returned unexpected BDR msg_type=0x%08X", mod_id, resp->msg_type);
+        }
+
+        dev_ipc_message_free(resp);
+    }
+
+    if (req)
+    {
+        dev_ipc_message_free(req);
+    }
+
+    if (chunks >= max_chunks)
+    {
+        LOG_WARN("DB-CONFIG: module 0x%08X exceeded BDR chunk limit", mod_id);
+    }
+}
+
+static int db_collect_bdr_config(char **cfg_text, char **err)
+{
+    if (cfg_text)
+    {
+        *cfg_text = NULL;
+    }
+    if (err)
+    {
+        *err = NULL;
+    }
+    if (!cfg_text)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    /* save configuration 本身来自 CLI worker；若 DB worker 同步反向 RPC 到 CLI，
+     * CLI worker 正在等 DB 响应，会形成等待环。这里由后台 job 直接按 SHOW_CONFIG
+     * 协议汇聚各模块 BDR，DB worker 保持空闲以服务模块 BDR 期间的 DB 查询。 */
+    cli_cfg_anchor_aggregator_t *agg = cli_cfg_anchor_agg_new();
+    GString *module_out = g_string_new("");
+    GArray *modules = db_collect_connected_modules_for_bdr();
+
+    for (guint i = 0; i < modules->len; i++)
+    {
+        uint32_t mod_id = g_array_index(modules, uint32_t, i);
+        db_collect_module_bdr(mod_id, module_out);
+        if (module_out->len > 0)
+        {
+            cli_cfg_anchor_agg_feed(agg, module_out->str);
+        }
+    }
+
+    GString *full = g_string_new("");
+    cli_cfg_anchor_agg_render(agg, full);
+
+    g_array_free(modules, TRUE);
+    g_string_free(module_out, TRUE);
+    cli_cfg_anchor_agg_free(agg);
+
+    *cfg_text = g_string_free(full, FALSE);
+    return ERRCODE_SUCCESS;
+}
+
+static void *db_config_save_job_main(void *arg)
+{
+    db_config_save_job_t *job = (db_config_save_job_t *)arg;
+    if (!job)
+    {
+        return NULL;
+    }
+
+    char *err = NULL;
+    char *cfg_text = NULL;
+    int ret = ERRCODE_FAIL;
+    char saved[DB_CONFIG_NAME_MAX + 1] = "";
+
+    pthread_mutex_lock(&g_db_config_save_mutex);
+    ret = db_collect_bdr_config(&cfg_text, &err);
+    if (ret == ERRCODE_SUCCESS)
+    {
+        ret = db_config_save(job->name, cfg_text, saved, sizeof(saved), &err);
+    }
+    pthread_mutex_unlock(&g_db_config_save_mutex);
+
+    char outbuf[256];
+    if (ret == ERRCODE_SUCCESS)
+    {
+        snprintf(outbuf, sizeof(outbuf), "Configuration saved as '%s'.\r\n", saved);
+    }
+    else
+    {
+        snprintf(outbuf, sizeof(outbuf), "Error: %s.\r\n", err ? err : "save failed");
+    }
+    db_send_cli_response_to(job->dst_module_id, job->request_id, outbuf);
+
+    g_free(cfg_text);
+    g_free(err);
+    g_free(job->name);
+    g_free(job);
+    return NULL;
+}
+
+static int db_config_save_async(dev_ipc_message_t *msg, const char *name, char **err)
+{
+    if (err)
+    {
+        *err = NULL;
+    }
+
+    db_config_save_job_t *job = g_malloc0(sizeof(*job));
+    job->dst_module_id = msg->src_module_id;
+    job->request_id = msg->request_id;
+    job->name = g_strdup(name ? name : "");
+
+    pthread_t tid;
+    int rc = pthread_create(&tid, NULL, db_config_save_job_main, job);
+    if (rc != 0)
+    {
+        g_free(job->name);
+        g_free(job);
+        db_cli_set_err(err, "Failed to start save job");
+        return ERRCODE_FAIL;
+    }
+    pthread_detach(tid);
+    return ERRCODE_SUCCESS;
+}
+
+static int db_cli_show_replay_failures(dev_ipc_message_t *msg)
+{
+    char path[700];
+    db_cli_replay_failures_path(path, sizeof(path));
+
+    gchar *content = NULL;
+    gsize len = 0;
+    GString *out = g_string_new("Configuration replay failures:\r\n");
+    if (g_file_get_contents(path, &content, &len, NULL) && content && len > 0)
+    {
+        gchar **lines = g_strsplit(content, "\n", -1);
+        for (guint i = 0; lines && lines[i]; i++)
+        {
+            if (lines[i][0] == '\0')
+            {
+                continue;
+            }
+            g_string_append_printf(out, "  %s\r\n", lines[i]);
+        }
+        g_strfreev(lines);
+    }
+    else
+    {
+        g_string_append(out, "  <none>\r\n");
+    }
+
+    g_free(content);
+    return cli_chunk_stream_start(&g_db_local->show_stream, db_local_ipc_ctx(), DEV_MODULE_ID_DB, msg, out);
+}
 
 static int handle_db_config_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
     gboolean has_save = FALSE;
     gboolean has_startup = FALSE;
     gboolean has_show = FALSE;
+    gboolean has_replay_failures = FALSE;
+    db_config_startup_mode_t startup_mode = DB_CONFIG_STARTUP_MODE_NONE;
     char *name = NULL;
 
     cli_tlv_entry_t entry;
@@ -365,6 +712,15 @@ static int handle_db_config_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser
             case DB_CFG_ACT_SHOW:
                 has_show = TRUE;
                 break;
+            case DB_CFG_STARTUP_DB:
+                startup_mode = DB_CONFIG_STARTUP_MODE_DB;
+                break;
+            case DB_CFG_STARTUP_CFG:
+                startup_mode = DB_CONFIG_STARTUP_MODE_CFG;
+                break;
+            case DB_CFG_SHOW_REPLAY_FAILURES:
+                has_replay_failures = TRUE;
+                break;
             case DB_CFG_PARAM_NAME:
             {
                 const char *text = cli_tlv_entry_get_text(&entry);
@@ -385,14 +741,20 @@ static int handle_db_config_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser
     char *err = NULL;
     char outbuf[256];
 
-    if (has_show)
+    if (has_show && has_replay_failures)
+    {
+        ret = db_cli_show_replay_failures(msg);
+    }
+    else if (has_show)
     {
         /* show startup configuration */
         char cur[DB_CONFIG_NAME_MAX + 1];
-        db_config_get_startup(cur, sizeof(cur));
+        db_config_startup_mode_t mode = DB_CONFIG_STARTUP_MODE_NONE;
+        db_config_get_startup(cur, sizeof(cur), &mode);
         if (cur[0] != '\0')
         {
-            snprintf(outbuf, sizeof(outbuf), "Startup configuration: %s\r\n", cur);
+            snprintf(outbuf, sizeof(outbuf), "Startup configuration: %s (%s)\r\n", cur,
+                     db_config_startup_mode_name(mode));
         }
         else
         {
@@ -404,45 +766,44 @@ static int handle_db_config_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser
     else if (has_save)
     {
         /* save configuration [<name>] */
-        ret = db_config_save(name, &err);
-        if (ret == ERRCODE_SUCCESS)
+        if (!db_cli_config_name_valid(name))
         {
-            char saved[DB_CONFIG_NAME_MAX + 1];
-            if (name && name[0] != '\0')
-            {
-                snprintf(saved, sizeof(saved), "%s", name);
-            }
-            else
-            {
-                db_config_get_startup(saved, sizeof(saved));
-                if (saved[0] == '\0')
-                {
-                    snprintf(saved, sizeof(saved), "%s", DB_CONFIG_DEFAULT_NAME);
-                }
-            }
-            snprintf(outbuf, sizeof(outbuf), "Configuration saved as '%s'.\r\n", saved);
-            db_send_cli_response(msg, outbuf);
+            db_send_cli_response(msg, "Error: Invalid configuration name (allowed: A-Z a-z 0-9 _ - , max 63).\r\n");
+            ret = ERRCODE_FAIL;
         }
         else
         {
-            snprintf(outbuf, sizeof(outbuf), "Error: %s.\r\n", err ? err : "save failed");
-            db_send_cli_response(msg, outbuf);
+            ret = db_config_save_async(msg, name, &err);
+        }
+        if (ret != ERRCODE_SUCCESS)
+        {
+            if (err)
+            {
+                snprintf(outbuf, sizeof(outbuf), "Error: %s.\r\n", err);
+                db_send_cli_response(msg, outbuf);
+            }
         }
     }
     else if (has_startup)
     {
-        /* startup configuration <name> */
+        /* startup configuration <name> {db|cfg} */
         if (!name || name[0] == '\0')
         {
             db_send_cli_response(msg, "Error: Missing configuration name.\r\n");
             ret = ERRCODE_FAIL;
         }
+        else if (startup_mode == DB_CONFIG_STARTUP_MODE_NONE)
+        {
+            db_send_cli_response(msg, "Error: Missing startup mode (db|cfg).\r\n");
+            ret = ERRCODE_FAIL;
+        }
         else
         {
-            ret = db_config_set_startup(name, &err);
+            ret = db_config_set_startup(name, startup_mode, &err);
             if (ret == ERRCODE_SUCCESS)
             {
-                snprintf(outbuf, sizeof(outbuf), "Startup configuration set to '%s'.\r\n", name);
+                snprintf(outbuf, sizeof(outbuf), "Startup configuration set to '%s' (%s).\r\n", name,
+                         db_config_startup_mode_name(startup_mode));
                 db_send_cli_response(msg, outbuf);
             }
             else

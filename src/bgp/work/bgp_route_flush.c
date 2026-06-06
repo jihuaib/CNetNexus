@@ -39,8 +39,17 @@ static int bgp_route_flush_process_event(bgp_instance_t *inst, gboolean allow_re
  *
  * @return 1 成功填充 entry_out；0 无法转换（跳过）
  */
+/**
+ * @brief 把一个 BGP 路径节点转成下刷 ROUTE 的条目
+ *
+ * @param for_withdraw TRUE=构造撤销条目。撤销只需 (vrf/afi/前缀/协议/来源) 即可让 ROUTE
+ *        按键删除，不依赖下一跳是否还能解析——这点很关键：路由被撤销时其隧道 watch/源
+ *        节点可能已拆除，下一跳不再可解析，但撤销仍必须送达 ROUTE。FALSE=构造新增条目，
+ *        要求下一跳可解析（IP 对象或隧道），否则返回 0 不下刷。
+ * @return 1=成功填充 entry_out；0=不应下刷该条目
+ */
 static int route_node_to_route_entry(uint32_t vrf_id, const bgp_nlri_entry_t *nlri, const bgp_route_node_t *route,
-                                     route_msg_entry_t *entry_out)
+                                     gboolean for_withdraw, route_msg_entry_t *entry_out)
 {
     if (!nlri || !route || !entry_out)
     {
@@ -65,6 +74,21 @@ static int route_node_to_route_entry(uint32_t vrf_id, const bgp_nlri_entry_t *nl
     if (nlri->prefix.prefix.prefix_len > max_len)
     {
         return 0;
+    }
+
+    /* 撤销：只填键字段即可，跳过下一跳解析（此刻可能已不可解析）。 */
+    if (for_withdraw)
+    {
+        memset(entry_out, 0, sizeof(*entry_out));
+        entry_out->vrf_id = vrf_id;
+        entry_out->afi = (prefix->family == AF_INET) ? ROUTE_AFI_IPV4 : ROUTE_AFI_IPV6;
+        entry_out->safi = ROUTE_SAFI_UNICAST;
+        entry_out->prefix_len = nlri->prefix.prefix.prefix_len;
+        entry_out->protocol = ROUTE_PROTOCOL_BGP;
+        entry_out->is_withdraw = 1u;
+        entry_out->prefix_addr = *prefix;
+        entry_out->source_addr = route->source;
+        return 1;
     }
 
     net_addr_t nexthop_addr;
@@ -105,6 +129,11 @@ static int route_node_to_route_entry(uint32_t vrf_id, const bgp_nlri_entry_t *nl
     {
         entry_out->nh_type = ROUTE_NH_TYPE_TUNNEL;
         entry_out->tunnel_id = nh_value.tunnel_id;
+        /* 隧道路由不申请 ROUTE nexthop 对象（nexthop_id=0），ROUTE 不会自行迭代隧道，
+         * 故把已解析的迭代结果（relay 端点 + 出接口）随条目带过去，由 ROUTE 据此 set_relay，
+         * 使 show route 的 Iter NH / Iter OIF 正确显示。 */
+        entry_out->iter_nexthop_addr = nh_value.iter_relay_addr;
+        entry_out->iter_out_ifindex = nh_value.iter_out_ifindex;
     }
     else
     {
@@ -113,6 +142,9 @@ static int route_node_to_route_entry(uint32_t vrf_id, const bgp_nlri_entry_t *nl
     }
     entry_out->out_ifindex = 0u;
     entry_out->prefix_addr = *prefix;
+    /* 原始 BGP 下一跳地址：ROUTE 用它作 nexthop 对象身份键并显示为 Nexthop；
+     * 隧道分支下还兜底用作 Iter NH（当 iter_relay_addr 为空时）。 */
+    entry_out->nexthop_addr = nexthop_addr;
     entry_out->nexthop_id = use_tunnel ? 0u : route->nexthop_id;
     entry_out->source_addr = route->source;
     return 1;
@@ -219,6 +251,8 @@ int bgp_route_flush_queue_process(bgp_route_flush_queue_t *q, bgp_instance_t *in
         bgp_rib_t *rib = bgp_inst_rib_for_nlri(inst, &head->nlri);
         const bgp_route_node_t *best = rib ? bgp_rib_find_best(rib, &head->nlri) : NULL;
         /* import-route 仅用于 BGP 内部参考，不下刷到 ROUTE。 */
+        /* 不下刷到 ROUTE：仅重分发(IMPORT，本就源自 ROUTE)。REMOTE_CROSS(vrf-import) 走隧道转发，
+         * 需下刷进 VRF FIB。 */
         const bgp_route_node_t *flush_best = (best && !BIT_TEST(best->flags, BGP_ROUTE_FLAG_IMPORT)) ? best : NULL;
 
         if (head)
@@ -241,7 +275,7 @@ int bgp_route_flush_queue_process(bgp_route_flush_queue_t *q, bgp_instance_t *in
                 }
 
                 route_msg_entry_t withdraw_entry;
-                if (!route_node_to_route_entry(vrf_id, &head->nlri, route, &withdraw_entry))
+                if (!route_node_to_route_entry(vrf_id, &head->nlri, route, TRUE, &withdraw_entry))
                 {
                     continue;
                 }
@@ -263,7 +297,7 @@ int bgp_route_flush_queue_process(bgp_route_flush_queue_t *q, bgp_instance_t *in
                 if (!BIT_TEST(best_mut->flags, BGP_ROUTE_FLAG_FLUSHED))
                 {
                     route_msg_entry_t add_entry;
-                    if (route_node_to_route_entry(vrf_id, &head->nlri, flush_best, &add_entry) &&
+                    if (route_node_to_route_entry(vrf_id, &head->nlri, flush_best, FALSE, &add_entry) &&
                         route_rpc_add(ctx, &add_entry) == ERRCODE_SUCCESS)
                     {
                         BIT_SET(best_mut->flags, BGP_ROUTE_FLAG_FLUSHED);
@@ -444,7 +478,7 @@ static gboolean shutdown_withdraw_head_cb(gpointer key, gpointer value, gpointer
             continue;
         }
         route_msg_entry_t withdraw_entry;
-        if (!route_node_to_route_entry(fctx->vrf_id, &head->nlri, route, &withdraw_entry))
+        if (!route_node_to_route_entry(fctx->vrf_id, &head->nlri, route, TRUE, &withdraw_entry))
         {
             continue;
         }

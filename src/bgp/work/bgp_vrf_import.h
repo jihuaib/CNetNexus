@@ -113,7 +113,7 @@ void bgp_vrf_import_request_refresh(void);
  * @brief public vpnv4 instance 销毁前调用：撤销其名下所有已导入到各 VRF 的合成路径
  *
  * 必须在 vpnv4 instance 的 RIB 释放前调用(此时源 vpnv4 节点仍存活)，否则导入节点持有的
- * borrow 引用会让源节点变成 PENDING_FREE 孤儿。由 bgp_instance_destroy() 调用。
+ * borrow 引用会让源节点滞留为 STALE 孤儿。由 bgp_instance_destroy() 调用。
  * @param vpn_inst 即将销毁的 public vpnv4 instance
  */
 void bgp_vrf_import_purge_target_inst(bgp_instance_t *vpn_inst);

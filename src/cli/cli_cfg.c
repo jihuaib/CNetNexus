@@ -13,6 +13,7 @@
 #include <pty.h>
 #include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/wait.h>
@@ -440,12 +441,38 @@ static GArray *collect_connected_modules_for_show_config(void)
     return modules;
 }
 
-static void render_show_config_output(cli_session_t *session, cli_cfg_anchor_aggregator_t *agg)
+GString *cli_cfg_collect_current_config(uint32_t exclude_module_id)
 {
+    cli_cfg_anchor_aggregator_t *agg = cli_cfg_anchor_agg_new();
+    GString *buf = g_string_new("");
     GString *output = g_string_new("");
-    cli_cfg_anchor_agg_render(agg, output);
 
-    if (output->len > 0)
+    GArray *modules = collect_connected_modules_for_show_config();
+    for (guint i = 0; i < modules->len; i++)
+    {
+        uint32_t mod_id = g_array_index(modules, uint32_t, i);
+        if (exclude_module_id != 0 && mod_id == exclude_module_id)
+        {
+            continue;
+        }
+
+        /* 先完整拉取当前模块的响应再喂给聚合器, 再切下一个模块 */
+        collect_module_show_config(mod_id, NULL, 0, buf);
+        if (buf->len > 0)
+        {
+            cli_cfg_anchor_agg_feed(agg, buf->str);
+        }
+    }
+    g_array_free(modules, TRUE);
+    g_string_free(buf, TRUE);
+    cli_cfg_anchor_agg_render(agg, output);
+    cli_cfg_anchor_agg_free(agg);
+    return output;
+}
+
+static void render_show_config_output(cli_session_t *session, GString *output)
+{
+    if (output && output->len > 0)
     {
         cli_pager_output(session, output->str);
     }
@@ -453,8 +480,248 @@ static void render_show_config_output(cli_session_t *session, cli_cfg_anchor_agg
     {
         cli_send_message(session, "No configuration found.\r\n");
     }
+}
 
-    g_string_free(output, TRUE);
+#define CLI_CFG_DIFF_PARAM_FILE 1
+
+typedef struct cli_cfg_diff_line
+{
+    char *key;
+    char *display;
+} cli_cfg_diff_line_t;
+
+typedef struct cli_cfg_diff_config
+{
+    GHashTable *seen;
+    GPtrArray *lines;
+} cli_cfg_diff_config_t;
+
+static void cli_cfg_diff_line_free(gpointer data)
+{
+    cli_cfg_diff_line_t *line = (cli_cfg_diff_line_t *)data;
+    if (!line)
+    {
+        return;
+    }
+
+    g_free(line->key);
+    g_free(line->display);
+    g_free(line);
+}
+
+static cli_cfg_diff_config_t *cli_cfg_diff_config_new(void)
+{
+    cli_cfg_diff_config_t *cfg = g_malloc0(sizeof(*cfg));
+    cfg->seen = g_hash_table_new(g_str_hash, g_str_equal);
+    cfg->lines = g_ptr_array_new_with_free_func(cli_cfg_diff_line_free);
+    return cfg;
+}
+
+static void cli_cfg_diff_config_free(cli_cfg_diff_config_t *cfg)
+{
+    if (!cfg)
+    {
+        return;
+    }
+
+    if (cfg->seen)
+    {
+        g_hash_table_destroy(cfg->seen);
+    }
+    if (cfg->lines)
+    {
+        g_ptr_array_free(cfg->lines, TRUE);
+    }
+    g_free(cfg);
+}
+
+static void cli_cfg_diff_config_add_line(cli_cfg_diff_config_t *cfg, const char *line)
+{
+    if (!cfg || !line)
+    {
+        return;
+    }
+
+    char *display = g_strdup(line);
+    g_strchomp(display);
+
+    char *key = g_strdup(display);
+    g_strstrip(key);
+
+    if (key[0] == '\0' || strcmp(key, "!") == 0 || g_hash_table_contains(cfg->seen, key))
+    {
+        g_free(key);
+        g_free(display);
+        return;
+    }
+
+    cli_cfg_diff_line_t *item = g_malloc0(sizeof(*item));
+    item->key = key;
+    item->display = display;
+    g_hash_table_add(cfg->seen, item->key);
+    g_ptr_array_add(cfg->lines, item);
+}
+
+static cli_cfg_diff_config_t *cli_cfg_diff_config_from_text(const char *text)
+{
+    cli_cfg_diff_config_t *cfg = cli_cfg_diff_config_new();
+    if (!text || text[0] == '\0')
+    {
+        return cfg;
+    }
+
+    gchar **lines = g_strsplit(text, "\n", -1);
+    for (guint i = 0; lines && lines[i]; i++)
+    {
+        cli_cfg_diff_config_add_line(cfg, lines[i]);
+    }
+    g_strfreev(lines);
+    return cfg;
+}
+
+static GString *cli_cfg_diff_build_text(const char *current_text, const char *target_text)
+{
+    cli_cfg_diff_config_t *current = cli_cfg_diff_config_from_text(current_text);
+    cli_cfg_diff_config_t *target = cli_cfg_diff_config_from_text(target_text);
+    GString *out = g_string_new("");
+
+    for (guint i = 0; i < target->lines->len; i++)
+    {
+        cli_cfg_diff_line_t *line = g_ptr_array_index(target->lines, i);
+        if (!g_hash_table_contains(current->seen, line->key))
+        {
+            g_string_append_printf(out, "+%s\r\n", line->display);
+        }
+    }
+
+    for (guint i = 0; i < current->lines->len; i++)
+    {
+        cli_cfg_diff_line_t *line = g_ptr_array_index(current->lines, i);
+        if (!g_hash_table_contains(target->seen, line->key))
+        {
+            g_string_append_printf(out, "-%s\r\n", line->display);
+        }
+    }
+
+    cli_cfg_diff_config_free(current);
+    cli_cfg_diff_config_free(target);
+    return out;
+}
+
+static char *cli_cfg_diff_resolve_cfg_path(const char *arg)
+{
+    if (!arg || arg[0] == '\0')
+    {
+        return NULL;
+    }
+
+    if (access(arg, R_OK) == 0 || g_path_is_absolute(arg) || strchr(arg, '/'))
+    {
+        return g_strdup(arg);
+    }
+
+    const char *work_dir = getenv("NN_WORK_DIR");
+    char *config_dir = (work_dir && work_dir[0] != '\0') ? g_build_filename(work_dir, "data", "configs", NULL)
+                                                         : g_build_filename(".", "data", "configs", NULL);
+
+    char *path = g_build_filename(config_dir, arg, NULL);
+    if (access(path, R_OK) == 0)
+    {
+        g_free(config_dir);
+        return path;
+    }
+    g_free(path);
+
+    if (!g_str_has_suffix(arg, ".cfg"))
+    {
+        char *with_suffix = g_strdup_printf("%s.cfg", arg);
+        path = g_build_filename(config_dir, with_suffix, NULL);
+        g_free(with_suffix);
+        if (access(path, R_OK) == 0)
+        {
+            g_free(config_dir);
+            return path;
+        }
+        g_free(path);
+    }
+
+    g_free(config_dir);
+    return g_strdup(arg);
+}
+
+/**
+ * @brief show configuration difference current-configuration <configuration-file> (group_id=12)
+ */
+static void handle_show_conf_diff(cli_session_t *session, cli_tlv_parser_t *parser)
+{
+    char *cfg_file = NULL;
+
+    cli_tlv_entry_t entry;
+    int rc = 0;
+    while ((rc = cli_tlv_next(parser, &entry)) == 1)
+    {
+        if (!CLI_TLV_IS_CTX(&entry) && entry.cfg_id == CLI_CFG_DIFF_PARAM_FILE)
+        {
+            const char *text = cli_tlv_entry_get_text(&entry);
+            if (text && text[0] != '\0')
+            {
+                g_free(cfg_file);
+                cfg_file = g_strdup(text);
+            }
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    if (rc < 0)
+    {
+        cli_send_message(session, "Error: Invalid command parameters.\r\n");
+        g_free(cfg_file);
+        return;
+    }
+
+    if (!cfg_file)
+    {
+        cli_send_message(session, "Error: Missing configuration file.\r\n");
+        return;
+    }
+
+    char *path = cli_cfg_diff_resolve_cfg_path(cfg_file);
+    gchar *target_text = NULL;
+    GError *gerr = NULL;
+    if (!path || !g_file_get_contents(path, &target_text, NULL, &gerr))
+    {
+        char *msg = g_strdup_printf("Error: Unable to read configuration file '%s': %s.\r\n", path ? path : cfg_file,
+                                    gerr ? gerr->message : "read failed");
+        cli_send_message(session, msg);
+        g_free(msg);
+        if (gerr)
+        {
+            g_error_free(gerr);
+        }
+        g_free(path);
+        g_free(cfg_file);
+        return;
+    }
+
+    GString *current = cli_cfg_collect_current_config(0);
+    GString *diff = cli_cfg_diff_build_text(current ? current->str : "", target_text ? target_text : "");
+    if (diff->len > 0)
+    {
+        cli_pager_output(session, diff->str);
+    }
+    else
+    {
+        cli_send_message(session, "No configuration difference.\r\n");
+    }
+
+    g_string_free(diff, TRUE);
+    if (current)
+    {
+        g_string_free(current, TRUE);
+    }
+    g_free(target_text);
+    g_free(path);
+    g_free(cfg_file);
 }
 
 /**
@@ -467,24 +734,9 @@ static void render_show_config_output(cli_session_t *session, cli_cfg_anchor_agg
  */
 static void handle_show_config(cli_session_t *session)
 {
-    cli_cfg_anchor_aggregator_t *agg = cli_cfg_anchor_agg_new();
-    GString *buf = g_string_new("");
-
-    GArray *modules = collect_connected_modules_for_show_config();
-    for (guint i = 0; i < modules->len; i++)
-    {
-        uint32_t mod_id = g_array_index(modules, uint32_t, i);
-        /* 先完整拉取当前模块的响应再喂给聚合器, 再切下一个模块 */
-        collect_module_show_config(mod_id, NULL, 0, buf);
-        if (buf->len > 0)
-        {
-            cli_cfg_anchor_agg_feed(agg, buf->str);
-        }
-    }
-    g_array_free(modules, TRUE);
-    g_string_free(buf, TRUE);
-    render_show_config_output(session, agg);
-    cli_cfg_anchor_agg_free(agg);
+    GString *output = cli_cfg_collect_current_config(0);
+    render_show_config_output(session, output);
+    g_string_free(output, TRUE);
 }
 
 /**
@@ -541,9 +793,12 @@ static void handle_show_this(cli_session_t *session)
         }
     }
 
+    GString *output = g_string_new("");
+    cli_cfg_anchor_agg_render(agg, output);
+    render_show_config_output(session, output);
+    g_string_free(output, TRUE);
     g_free(payload);
     g_string_free(buf, TRUE);
-    render_show_config_output(session, agg);
     cli_cfg_anchor_agg_free(agg);
 }
 
@@ -829,6 +1084,9 @@ int cli_handle(dev_ipc_message_t *msg, cli_session_t *session)
             break;
         case CLI_GROUP_ID_SHOW_CLIENT:
             handle_show_client(session);
+            break;
+        case CLI_GROUP_ID_SHOW_CONF_DIFF:
+            handle_show_conf_diff(session, &parser);
             break;
         default:
             LOG_WARN("Unknown group_id: %u", parser.group_id);

@@ -2,19 +2,23 @@
 """
 端到端验证常驻模块意外退出 (SIGKILL 模拟 crash) 后由 DEV 自动 respawn 的能力。
 
-DEV 在 SIGCHLD handler 里对 `!on_demand` 模块走 crash 自愈分支：
+DEV 在 SIGCHLD handler 里对意外退出的模块走 crash 自愈分支（常驻 + on-demand 一视同仁）：
   - last_crash_time 距今超 DEV_MODULE_CRASH_WINDOW_SEC (60s)，crash_count 归零
   - crash_count++，<= DEV_MODULE_CRASH_MAX_RETRIES (5) 时自动 respawn + connect
   - 超过上限放弃，phase=REGISTERED，等待人工 process start <mod> 重置 crash_count
+  - on-demand 模块同样自愈：能收到 SIGCHLD 说明它已被 fork 且在服务中，崩溃后必须拉起
+    让它 db_restore 续上服务，否则其它模块残留它再也撤不掉的状态
 
-覆盖的 Phase（目标模块 fib，常驻、依赖较少）：
-  Phase A. 基线：fib 已 READY，取当前 pid
+覆盖的 Phase：
+  Phase A. 基线：fib（常驻）已 READY，取当前 pid
   Phase B. SIGKILL fib → DEV 自动 respawn，pid 变更
   Phase C. 连续 SIGKILL 4 次，每次都自动 respawn（crash_count 累计到 5，未超上限）
   Phase D. 第 6 次 SIGKILL → crash_count=6 > 5 → DEV 放弃 → show dev modules 中 fib 行 pid=-
   Phase E. process start fib → crash_count 归零，模块重新可用；再 kill 一次仍能自动 respawn
   Phase F. SIGKILL DEV 进程本身 → supervise.sh 在容器里把整个 netnexus 拉回来，
             所有模块（含 fib）重新 READY，CLI 重连后命令可用
+  Phase G. on-demand 模块（sbmp）崩溃自愈：按需 fork 起来后 SIGKILL，DEV 应自动 respawn
+            并 db_restore 续上配置（这是「on-demand 崩溃不自愈」修复点的回归保护）
 
 仅用 r1。
 """
@@ -262,8 +266,66 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         mark_step_failed()
         raise AssertionError(f"Phase F: DEV 重启后 fib 行应 READY，实得: {fib_row!r}")
 
+    step("Phase G: on-demand 模块（sbmp）崩溃也应自动 respawn + db_restore")
+    on_demand_mod = "sbmp"
+    sbmp_port = 17777
+    # 冷启动 on-demand 不 fork；若前置 case 残留先清掉
+    if _list_module_pids(container, on_demand_mod):
+        cmd(rt, "r1", "config", strict=False)
+        cmd(rt, "r1", "no bmp-server", strict=False)
+        cmd(rt, "r1", "end", strict=False)
+        _wait_for_pids(container, predicate=lambda p: not p, timeout=WAIT_RESPAWN_SEC,
+                       what=f"{on_demand_mod} 预清理退出", mod=on_demand_mod)
+    # 用 bmp-server 触发 DEV 按订阅 fork，并写一份 DB 配置（respawn 后验证 db_restore）。
+    # 不对提示文案做断言（auto-start 文案可能是 "[auto-start] starting module"）；
+    # 是否真的 fork 起来由紧随其后的 _wait_for_pids 判定。
+    cmd(rt, "r1", "config")
+    cmd(rt, "r1", "bmp-server", timeout=15)
+    cmd(rt, "r1", f"server port {sbmp_port}")
+    cmd(rt, "r1", "exit", strict=False)
+    cmd(rt, "r1", "end", strict=False)
+    od_pids = _wait_for_pids(container, predicate=lambda p: len(p) == 1, timeout=WAIT_RESPAWN_SEC,
+                             what=f"{on_demand_mod} 按需 fork", mod=on_demand_mod)
+    od_pid_v1 = od_pids[0]
+    print(f"  on-demand {on_demand_mod} 已起 pid={od_pid_v1}", flush=True)
+
+    # 关键断言：SIGKILL 一个 on-demand 模块，DEV 也应自动 respawn。
+    # 修复前 on-demand 崩溃不自愈，只置 REGISTERED 等下次 SUBSCRIBE → 这里会拿不到新 pid 而失败。
+    _kill_module(container, od_pid_v1)
+    od_pids_v2 = _wait_for_pids(
+        container,
+        predicate=lambda p, op=od_pid_v1: len(p) == 1 and p[0] != op,
+        timeout=WAIT_RESPAWN_SEC,
+        what=f"on-demand {on_demand_mod} auto-respawn after crash",
+        mod=on_demand_mod,
+    )
+    print(f"  on-demand crash 自愈: {od_pid_v1} → {od_pids_v2[0]}", flush=True)
+
+    # respawn 后应自动 db_restore：重试 show 直到端口回来（init 中 subscribe(CLI) 在 restore 之后）
+    deadline = time.monotonic() + 10.0
+    restored = False
+    while time.monotonic() < deadline:
+        if str(sbmp_port) in cmd(rt, "r1", "show bmp-server", strict=False, timeout=10):
+            restored = True
+            break
+        time.sleep(0.5)
+    if not restored:
+        mark_step_failed()
+        raise AssertionError(
+            f"Phase G: {on_demand_mod} respawn 后应 db_restore 出 port {sbmp_port}"
+        )
+    print(f"  on-demand {on_demand_mod} respawn 后 db_restore 成功 (port={sbmp_port})", flush=True)
+
+    # 清理 on-demand 配置
+    cmd(rt, "r1", "config", strict=False)
+    cmd(rt, "r1", "no bmp-server", strict=False)
+    cmd(rt, "r1", "end", strict=False)
+    _wait_for_pids(container, predicate=lambda p: not p, timeout=WAIT_RESPAWN_SEC,
+                   what=f"{on_demand_mod} 清理退出", mod=on_demand_mod)
+
     print(
-        f"CrashRespawn check passed: 5 次 kill 全部自动 respawn → 第 6 次放弃 → "
-        f"process start 重置 → 再 kill 仍可 respawn → DEV 自身 kill 也被 supervise 拉回",
+        f"CrashRespawn check passed: 常驻 fib 5 次 kill 全自动 respawn → 第 6 次放弃 → "
+        f"process start 重置 → 再 kill 仍 respawn → DEV 自身 kill 被 supervise 拉回 → "
+        f"on-demand sbmp 崩溃也自动 respawn+db_restore",
         flush=True,
     )

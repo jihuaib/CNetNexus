@@ -145,13 +145,13 @@ def _wait_vrf_connected_routes(rt: TopologyRuntime) -> None:
             [
                 {
                     "device": dev,
-                    "command": f"show route ipv4 {v4_net.split('/')[0]} {V4_LEN} vrf {VRF_NAME}",
+                    "command": f"show route ipv4 vrf {VRF_NAME} {v4_net.split('/')[0]} {V4_LEN}",
                     "regex": [r"(?im)^\s*Path\s*\[\d+\]\s*:\s*connected\b"],
                     "label": f"{dev} vrf ipv4 connected route ready",
                 },
                 {
                     "device": dev,
-                    "command": f"show route ipv6 {v6_net.split('/')[0]} {V6_LEN} vrf {VRF_NAME}",
+                    "command": f"show route ipv6 vrf {VRF_NAME} {v6_net.split('/')[0]} {V6_LEN}",
                     "regex": [r"(?im)^\s*Path\s*\[\d+\]\s*:\s*connected\b"],
                     "label": f"{dev} vrf ipv6 connected route ready",
                 },
@@ -716,8 +716,8 @@ def _wait_r1_vrf_data_plane(rt: TopologyRuntime) -> None:
                 "device": "r1",
                 "command": f"show fib ipv4 vrf {VRF_NAME} {LOOP_V4} {LOOP_V4_LEN}",
                 "contains": [f"Routing entry for {LOOP_V4_PREFIX}", f"Nexthop   : {R2_V4}"],
+                # 单前缀 show fib 详情格式为 "Routing entry for .../Installed: yes"，无 "AFI:" 表头
                 "regex": [
-                    r"(?im)^\s*AFI\s*:\s*ipv4\s*$",
                     r"(?im)^\s*NH-Type\s*:\s*ip\s*$",
                     r"(?im)^\s*Installed\s*:\s*yes\s*$",
                     r"(?im)^\s*Skip OS\s*:\s*no\s*$",
@@ -728,8 +728,8 @@ def _wait_r1_vrf_data_plane(rt: TopologyRuntime) -> None:
                 "device": "r1",
                 "command": f"show fib ipv6 vrf {VRF_NAME} {LOOP_V6} {LOOP_V6_LEN}",
                 "contains": [f"Routing entry for {LOOP_V6_PREFIX}", f"Nexthop   : {R2_V6}"],
+                # 单前缀 show fib 详情格式无 "AFI:" 表头
                 "regex": [
-                    r"(?im)^\s*AFI\s*:\s*ipv6\s*$",
                     r"(?im)^\s*NH-Type\s*:\s*ip\s*$",
                     r"(?im)^\s*Installed\s*:\s*yes\s*$",
                     r"(?im)^\s*Skip OS\s*:\s*no\s*$",

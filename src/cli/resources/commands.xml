@@ -194,5 +194,39 @@
                 </command>
             </commands>
         </group>
+
+        <!-- show configuration difference current-configuration <configuration-file> -->
+        <group group-id="12">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>show</name>
+                    <description>Display system information</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>configuration</name>
+                    <description>Configuration information</description>
+                </element>
+                <element id="3" type="keyword">
+                    <name>difference</name>
+                    <description>Compare configurations</description>
+                </element>
+                <element id="4" type="keyword">
+                    <name>current-configuration</name>
+                    <description>Use current configuration as baseline</description>
+                </element>
+                <element id="5" cfg-id="1" type="parameter">
+                    <name>&lt;configuration-file&gt;</name>
+                    <description>Configuration file path or saved cfg name</description>
+                    <type>string(1-255)</type>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>1 2 3 4 5</expression>
+                    <views>global</views>
+                </command>
+            </commands>
+        </group>
     </command_groups>
 </configuration>

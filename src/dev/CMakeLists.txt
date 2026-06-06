@@ -5,6 +5,7 @@ add_subdirectory(lib)
 set(DEV_SOURCES
     dev_main.c
     dev_cli.c
+    dev_fs_cli.c
     dev_module.c
     dev_conf_parser.c
     dev_db.c

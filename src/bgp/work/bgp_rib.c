@@ -39,6 +39,7 @@ static bgp_rthead_t *rthead_create(const bgp_nlri_entry_t *nlri, bgp_rib_t *rib)
     }
     /* inst 经 rd_entry 反向解引用得到（rd_entry 在 bgp_rib_create 之后由调用方装填） */
     head->inst = (rib && rib->rd_entry) ? rib->rd_entry->inst : NULL;
+    head->rib = rib;         /* 反指针：reap 时无需逐层回查即可拿到所属 RIB */
     head->route_list = NULL; /* 路径列表，首元素为当前最优路径 */
     head->queue_refcnt = 0;
     return head;
@@ -57,6 +58,94 @@ static void route_node_release_attrs(bgp_route_node_t *route)
     bgp_nexthop_reset_route(route);
 }
 
+/**
+ * @brief 逻辑删除：只打"待删"标记，不摘链、不释放
+ *
+ * 清除有效/最优/导入态并置 STALE，真正的物理回收交给 rib_reap_head。
+ * 这样删除入口（unreach/purge/gc）全部收敛为"打标记"，物理删除只剩 reap 一处。
+ */
+static void rib_mark_deleted(bgp_route_node_t *route)
+{
+    if (!route)
+    {
+        return;
+    }
+    BIT_CLR(route->flags, BGP_ROUTE_FLAG_VALID);
+    BIT_CLR(route->flags, BGP_ROUTE_FLAG_BEST);
+    BIT_CLR(route->flags, BGP_ROUTE_FLAG_IMPORT);
+    route->import_proto = 0;
+    BIT_SET(route->flags, BGP_ROUTE_FLAG_STALE);
+    route->updated_at_usec = g_get_real_time();
+}
+
+/**
+ * @brief 物理回收唯一出口：reap 一个 head 下已逻辑删除的路径节点，必要时销毁 head
+ *
+ * 回收条件：节点 STALE（已逻辑删除）+ !FLUSHED（已完成对 ROUTE 的撤销下刷）+
+ * borrow_refcnt==0（无外部借用）。三者满足才摘链 + 释放。
+ *  - 被借用（borrow_refcnt>0）的 STALE 节点留在链表上（同时撑住 head 不被释放），
+ *    待 bgp_route_node_borrow_unref 归零后再次 reap 时回收——这是修复跨 AF
+ *    import-rib 借用 UAF 的关键：head 在仍有外部借用指向其子节点时绝不提前释放。
+ *  - queue_refcnt>0（head 仍在 calc 队列中）时整体延后，不做任何物理删除。
+ * 扫描后若 route_list 空且无队列引用，则从树中摘除并销毁 head 本身。
+ *
+ * @param out_head_destroyed 非空时回填 head 是否在本次被销毁（销毁后不得再访问 head）
+ * @return 本次物理删除的节点数
+ */
+static uint32_t rib_reap_head(bgp_rib_t *rib, bgp_rthead_t *head, gboolean *out_head_destroyed)
+{
+    if (out_head_destroyed)
+    {
+        *out_head_destroyed = FALSE;
+    }
+    /* 仍有队列引用时不做物理删除，避免过早释放正在被 calc 处理的 head/node。 */
+    if (!rib || !head || head->queue_refcnt > 0)
+    {
+        return 0;
+    }
+
+    uint32_t reaped = 0;
+    GList *node = head->route_list;
+    while (node)
+    {
+        GList *next = node->next;
+        bgp_route_node_t *route = (bgp_route_node_t *)node->data;
+        /* 已逻辑删除(STALE) + 已完成对 ROUTE 的撤销下刷(!FLUSHED) + 无外部借用，
+         * 三者满足才物理回收；仍被借用的 STALE 节点留链保活（连带保活 head），
+         * 待 bgp_route_node_borrow_unref 归零后再次 reap 时回收。 */
+        if (route && BIT_TEST(route->flags, BGP_ROUTE_FLAG_STALE) && !BIT_TEST(route->flags, BGP_ROUTE_FLAG_FLUSHED) &&
+            route->borrow_refcnt == 0)
+        {
+            head->route_list = g_list_delete_link(head->route_list, node);
+            route_node_release_attrs(route);
+            g_free(route);
+            if (rib->route_count > 0)
+            {
+                rib->route_count--;
+            }
+            reaped++;
+        }
+        node = next;
+    }
+
+    if (!head->route_list && head->queue_refcnt == 0)
+    {
+        /* 键指向 head->nlri，移除后再销毁 head（含 nlri 内存） */
+        g_tree_remove(rib->head_tree, &head->nlri);
+        g_free(head);
+        if (rib->head_count > 0)
+        {
+            rib->head_count--;
+        }
+        if (out_head_destroyed)
+        {
+            *out_head_destroyed = TRUE;
+        }
+    }
+
+    return reaped;
+}
+
 /** 释放路径节点前先 release 共享属性 */
 static void route_node_free(gpointer data)
 {
@@ -66,11 +155,9 @@ static void route_node_free(gpointer data)
         return;
     }
     /* 外部借用引用门控：若有 import_rib mirror 或 relay watch 仍持有借用指针，
-     * 标 PENDING_FREE 并跳过实际释放；待最后一次 bgp_route_node_borrow_unref
-     * 触发真正释放。 */
+     * 跳过实际释放（节点留给最后一次 bgp_route_node_borrow_unref 回收）。 */
     if (route->borrow_refcnt > 0)
     {
-        BIT_SET(route->flags, BGP_ROUTE_FLAG_PENDING_FREE);
         return;
     }
     route_node_release_attrs(route);
@@ -93,12 +180,16 @@ void bgp_route_node_borrow_unref(bgp_route_node_t *route)
         return;
     }
     route->borrow_refcnt--;
-    if (route->borrow_refcnt == 0 && BIT_TEST(route->flags, BGP_ROUTE_FLAG_PENDING_FREE))
+    if (route->borrow_refcnt != 0)
     {
-        /* 节点早已被 RIB 路径上的清理流程（unreach/purge）从 head->route_list 摘除，
-         * 这里只需释放节点本身内存即可。 */
-        route_node_release_attrs(route);
-        g_free(route);
+        return;
+    }
+    /* 借用归零：若节点之前被逻辑删除（标 STALE）而因借用留在链表上，此刻触发 reap
+     * 完成物理回收（摘链 + 释放，并在 head 变空时连带销毁 head）。
+     * 若节点未被标删（仍是有效借用路径刚释放），则什么都不做，节点继续存活。 */
+    if (route->head && BIT_TEST(route->flags, BGP_ROUTE_FLAG_STALE))
+    {
+        (void)rib_reap_head(route->head->rib, route->head, NULL);
     }
 }
 
@@ -123,31 +214,6 @@ static gboolean destroy_tree_cb(gpointer key, gpointer value, gpointer user_data
     (void)user_data;
     rthead_destroy((bgp_rthead_t *)value);
     return FALSE;
-}
-
-/**
- * @brief 按 NLRI 从树中移除并销毁对应 rthead
- */
-static gboolean remove_head_by_nlri(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri)
-{
-    bgp_rthead_t *head = g_tree_lookup(rib->head_tree, nlri);
-    if (!head)
-    {
-        return FALSE;
-    }
-    if (head->queue_refcnt > 0)
-    {
-        return FALSE;
-    }
-    /* 键指向 head->nlri，移除后再销毁 head（含 nlri 内存） */
-    g_tree_remove(rib->head_tree, nlri);
-    rthead_destroy(head);
-
-    if (rib->head_count > 0)
-    {
-        rib->head_count--;
-    }
-    return TRUE;
 }
 
 void bgp_rib_head_ref(bgp_rthead_t *head)
@@ -349,31 +415,10 @@ int bgp_rib_unreach_one(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const net_
         return 0;
     }
 
-    if (BIT_TEST(route->flags, BGP_ROUTE_FLAG_FLUSHED))
-    {
-        BIT_CLR(route->flags, BGP_ROUTE_FLAG_VALID);
-        BIT_CLR(route->flags, BGP_ROUTE_FLAG_BEST);
-        BIT_CLR(route->flags, BGP_ROUTE_FLAG_IMPORT);
-        route->import_proto = 0;
-        BIT_SET(route->flags, BGP_ROUTE_FLAG_STALE);
-        route->updated_at_usec = g_get_real_time();
-    }
-    else
-    {
-        head->route_list = g_list_remove(head->route_list, route);
-        route_node_free(route);
-
-        if (rib->route_count > 0)
-        {
-            rib->route_count--;
-        }
-
-        if (!head->route_list)
-        {
-            remove_head_by_nlri(rib, &head->nlri);
-        }
-    }
-
+    /* 逻辑删除（打标记）+ 尝试物理回收。FLUSHED 节点会被 reap 跳过、留待下刷撤销后清理；
+     * 未下刷且无借用的节点当场被 reap 摘链释放。head 可能在 reap 中销毁，之后不得再访问。 */
+    rib_mark_deleted(route);
+    (void)rib_reap_head(rib, head, NULL);
     return 1;
 }
 
@@ -418,9 +463,8 @@ int bgp_rib_set_route_valid(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri, const 
 typedef struct source_purge_ctx
 {
     const net_addr_t *source;
-    uint32_t removed_routes;      /* 逻辑删除数量（包含转 stale） */
-    uint32_t removed_phys_routes; /* 物理删除数量（用于 route_count 递减） */
-    GPtrArray *empty_heads;       /* bgp_rthead_t*，route_list 已清空，待从树中移除 */
+    uint32_t marked_routes;   /* 逻辑删除（打标记）的节点数 */
+    GPtrArray *touched_heads; /* bgp_rthead_t*，命中并打标记的 head，待遍历结束后统一 reap */
 } source_purge_ctx_t;
 
 static gboolean purge_source_cb(gpointer key, gpointer value, gpointer user_data)
@@ -430,40 +474,26 @@ static gboolean purge_source_cb(gpointer key, gpointer value, gpointer user_data
     bgp_rthead_t *head = (bgp_rthead_t *)value;
 
     bgp_route_node_t *route = route_list_find(head->route_list, ctx->source);
-    if (route)
+    if (!route)
     {
-        /* 会话来源清理只处理 peer 路由；本地 import-route 即使 source 相同也不能被清掉。 */
-        if (BIT_TEST(route->flags, BGP_ROUTE_FLAG_IMPORT))
-        {
-            return FALSE;
-        }
-
-        if (BIT_TEST(route->flags, BGP_ROUTE_FLAG_STALE))
-        {
-            return FALSE;
-        }
-        ctx->removed_routes++;
-
-        if (BIT_TEST(route->flags, BGP_ROUTE_FLAG_FLUSHED))
-        {
-            BIT_CLR(route->flags, BGP_ROUTE_FLAG_VALID);
-            BIT_CLR(route->flags, BGP_ROUTE_FLAG_BEST);
-            BIT_CLR(route->flags, BGP_ROUTE_FLAG_IMPORT);
-            route->import_proto = 0;
-            BIT_SET(route->flags, BGP_ROUTE_FLAG_STALE);
-            route->updated_at_usec = g_get_real_time();
-        }
-        else
-        {
-            head->route_list = g_list_remove(head->route_list, route);
-            route_node_free(route);
-            ctx->removed_phys_routes++;
-            if (!head->route_list)
-            {
-                g_ptr_array_add(ctx->empty_heads, head);
-            }
-        }
+        return FALSE;
     }
+
+    /* 会话来源清理只处理 peer 路由；合成路由（重分发/跨表 import/export）source 相同也不能被清掉。 */
+    if (bgp_route_is_synthetic(route))
+    {
+        return FALSE;
+    }
+    if (BIT_TEST(route->flags, BGP_ROUTE_FLAG_STALE))
+    {
+        return FALSE;
+    }
+
+    /* 仅打标记，不在 g_tree_foreach 期间改动树结构；物理回收（含 head 销毁）
+     * 留到遍历结束后对 touched_heads 统一 reap。 */
+    rib_mark_deleted(route);
+    ctx->marked_routes++;
+    g_ptr_array_add(ctx->touched_heads, head);
     return FALSE;
 }
 
@@ -484,36 +514,33 @@ void bgp_rib_remove_source(bgp_rib_t *rib, const net_addr_t *source, uint32_t *r
 
     source_purge_ctx_t ctx;
     ctx.source = source;
-    ctx.removed_routes = 0;
-    ctx.removed_phys_routes = 0;
-    ctx.empty_heads = g_ptr_array_new();
+    ctx.marked_routes = 0;
+    ctx.touched_heads = g_ptr_array_new();
 
     g_tree_foreach(rib->head_tree, purge_source_cb, &ctx);
 
-    for (guint i = 0; i < ctx.empty_heads->len; i++)
+    uint32_t heads_destroyed = 0;
+    for (guint i = 0; i < ctx.touched_heads->len; i++)
     {
-        bgp_rthead_t *head = (bgp_rthead_t *)g_ptr_array_index(ctx.empty_heads, i);
-        if (remove_head_by_nlri(rib, &head->nlri) && removed_heads)
+        bgp_rthead_t *head = (bgp_rthead_t *)g_ptr_array_index(ctx.touched_heads, i);
+        gboolean destroyed = FALSE;
+        (void)rib_reap_head(rib, head, &destroyed);
+        if (destroyed)
         {
-            (*removed_heads)++;
+            heads_destroyed++;
         }
-    }
-
-    if (rib->route_count >= ctx.removed_phys_routes)
-    {
-        rib->route_count -= ctx.removed_phys_routes;
-    }
-    else
-    {
-        rib->route_count = 0;
     }
 
     if (removed_routes)
     {
-        *removed_routes = ctx.removed_routes;
+        *removed_routes = ctx.marked_routes;
+    }
+    if (removed_heads)
+    {
+        *removed_heads = heads_destroyed;
     }
 
-    g_ptr_array_free(ctx.empty_heads, TRUE);
+    g_ptr_array_free(ctx.touched_heads, TRUE);
 }
 
 uint32_t bgp_rib_cleanup_stale(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri)
@@ -534,50 +561,8 @@ uint32_t bgp_rib_cleanup_stale(bgp_rib_t *rib, const bgp_nlri_entry_t *nlri)
 
 uint32_t bgp_rib_gc_head(bgp_rib_t *rib, bgp_rthead_t *head)
 {
-    if (!rib || !head)
-    {
-        return 0;
-    }
-
-    /* 仍有队列引用时不做物理删除，避免过早释放。 */
-    if (head->queue_refcnt > 0)
-    {
-        return 0;
-    }
-
-    uint32_t cleaned = 0;
-    GList *node = head->route_list;
-    while (node)
-    {
-        GList *next = node->next;
-        bgp_route_node_t *route = (bgp_route_node_t *)node->data;
-        if (route && BIT_TEST(route->flags, BGP_ROUTE_FLAG_STALE) && !BIT_TEST(route->flags, BGP_ROUTE_FLAG_FLUSHED))
-        {
-            head->route_list = g_list_delete_link(head->route_list, node);
-            route_node_free(route);
-            cleaned++;
-        }
-        node = next;
-    }
-
-    if (cleaned > 0)
-    {
-        if (rib->route_count >= cleaned)
-        {
-            rib->route_count -= cleaned;
-        }
-        else
-        {
-            rib->route_count = 0;
-        }
-    }
-
-    if (!head->route_list)
-    {
-        (void)remove_head_by_nlri(rib, &head->nlri);
-    }
-
-    return cleaned;
+    /* GC 即物理回收：收敛到唯一出口 rib_reap_head（含 head 空时销毁）。 */
+    return rib_reap_head(rib, head, NULL);
 }
 
 /* ============================================================================
@@ -597,7 +582,7 @@ static gboolean foreach_source_tree_cb(gpointer key, gpointer value, gpointer us
     foreach_source_ctx_t *ctx = user_data;
     bgp_rthead_t *head = value;
     const bgp_route_node_t *route = route_list_find(head->route_list, ctx->source);
-    if (route && !BIT_TEST(route->flags, BGP_ROUTE_FLAG_IMPORT))
+    if (route && !bgp_route_is_synthetic(route))
     {
         ctx->cb(&head->nlri, ctx->user_data);
     }

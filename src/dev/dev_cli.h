@@ -21,6 +21,10 @@
 #define DEV_CLI_GROUP_ID_SWAP_IMAGE 8
 #define DEV_CLI_GROUP_ID_PROCESS_CMD 9
 #define DEV_CLI_GROUP_ID_SHOW_SUBSCRIPTIONS 10
+#define DEV_CLI_GROUP_ID_LS 11
+#define DEV_CLI_GROUP_ID_CD 12
+#define DEV_CLI_GROUP_ID_MORE 13
+#define DEV_CLI_GROUP_ID_PWD 14
 
 typedef struct dev_cli_out
 {
@@ -41,6 +45,7 @@ typedef struct dev_cli_resp_out
 int dev_cli_handle_message(dev_ipc_message_t *msg);
 int dev_cli_handle_continue(dev_ipc_message_t *msg);
 void dev_cli_cleanup_state(void);
+void dev_cli_handle_line_closed(dev_ipc_message_t *msg);
 void dev_cli_handle_query_candidates(dev_ipc_message_t *msg);
 
 #endif // DEV_CLI_H

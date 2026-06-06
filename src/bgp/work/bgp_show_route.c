@@ -141,6 +141,14 @@ static void bgp_route_flags_to_str(uint32_t flags, char *buf, size_t sz)
     {
         g_strlcat(buf, "IMPORT|", sz);
     }
+    if (BIT_TEST(flags, BGP_ROUTE_FLAG_LOCAL_CROSS))
+    {
+        g_strlcat(buf, "LOCAL_CROSS|", sz);
+    }
+    if (BIT_TEST(flags, BGP_ROUTE_FLAG_REMOTE_CROSS))
+    {
+        g_strlcat(buf, "REMOTE_CROSS|", sz);
+    }
     if (BIT_TEST(flags, BGP_ROUTE_FLAG_VALID))
     {
         g_strlcat(buf, "VALID|", sz);
@@ -160,10 +168,6 @@ static void bgp_route_flags_to_str(uint32_t flags, char *buf, size_t sz)
     if (BIT_TEST(flags, BGP_ROUTE_FLAG_IMPORT_RIB))
     {
         g_strlcat(buf, "IMPORT_RIB|", sz);
-    }
-    if (BIT_TEST(flags, BGP_ROUTE_FLAG_PENDING_FREE))
-    {
-        g_strlcat(buf, "PENDING_FREE|", sz);
     }
 
     size_t n = strlen(buf);
@@ -424,7 +428,7 @@ static void bgp_show_route_detail(GString *buf, const bgp_rthead_t *head)
         /* 路由标记：'>'=BEST，'v'=VALID */
         g_string_append_printf(buf, "%c%c ", BIT_TEST(route->flags, BGP_ROUTE_FLAG_BEST) ? '>' : ' ',
                                BIT_TEST(route->flags, BGP_ROUTE_FLAG_VALID) ? 'v' : ' ');
-        if (!BIT_TEST(route->flags, BGP_ROUTE_FLAG_IMPORT))
+        if (!bgp_route_is_synthetic(route))
         {
             char peer_str[64];
             net_addr_to_str(&route->source, peer_str, sizeof(peer_str));

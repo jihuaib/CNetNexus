@@ -42,7 +42,7 @@ typedef struct bgp_vrf_export_state
  * 指针生命周期约定（重要）：
  *  - 唯一长期持有的跨节点指针是导出节点的 export->src_route，指向其来源(私网 unicast best)节点，
  *    并对来源节点 bgp_route_node_borrow_ref 钉住，防止来源被 unreach/RIB 销毁时提前释放
- *    (来源被借用时只会被标 PENDING_FREE，待 borrow_unref 真正释放)。
+ *    (来源被借用时只被标 STALE 留在 RIB 链表上，待 borrow_unref 归零后真正释放)。
  *  - 不存"来源->导出"反向表：给定来源节点的 head + 该 VRF 的 RD 即可现推 vpn_nlri，
  *    在 vpnv4 RIB 中查到导出节点，无需额外裸指针，避免导出节点被回收后反表悬空。
  *  - 导出节点本身(vpnv4 RIB 内、合成来源、BGP_ROUTE_FLAG_IMPORT)仅由本子系统管理；
@@ -121,7 +121,7 @@ void bgp_vrf_export_release_vrf_label(bgp_vrf_t *vrf);
  * @brief 私网 VRF 的 ipv4-unicast instance 销毁前调用：撤销其名下所有已导出 VPN 路由
  *
  * 必须在源 instance 的 RIB 释放前调用(此时源 route 节点仍存活)，否则导出节点持有的
- * borrow 引用会让源节点变成 PENDING_FREE 孤儿且 VPN 路由残留。
+ * borrow 引用会让源节点滞留为 STALE 孤儿且 VPN 路由残留。
  * 由 bgp_instance_destroy() 在 (私网 VRF, ipv4, unicast) 实例上调用。
  * @param src_inst 即将销毁的源 instance
  */

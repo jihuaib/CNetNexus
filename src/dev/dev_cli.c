@@ -28,6 +28,7 @@
 #include "cli.h"
 #include "db.h"
 #include "dev_db.h"
+#include "dev_fs_cli.h"
 #include "dev_main.h"
 #include "dev_module.h"
 #include "dev_ping.h"
@@ -90,68 +91,6 @@ static const char *asan_enabled_string(void)
 #else
     return "no";
 #endif
-}
-
-static int file_read_first_line(const char *path, char *out, size_t out_size)
-{
-    FILE *fp = fopen(path, "r");
-    if (!fp)
-    {
-        return ERRCODE_FAIL;
-    }
-
-    if (!fgets(out, (int)out_size, fp))
-    {
-        fclose(fp);
-        return ERRCODE_FAIL;
-    }
-    fclose(fp);
-
-    size_t n = strcspn(out, "\r\n");
-    out[n] = '\0';
-    return (out[0] != '\0') ? ERRCODE_SUCCESS : ERRCODE_FAIL;
-}
-
-static int resolve_version_file(char *path, size_t path_size)
-{
-    char *p = NULL;
-
-    /* 生产环境 1: 环境变量 NN_WORK_DIR */
-    const char *work_dir = getenv("NN_WORK_DIR");
-    if (work_dir && work_dir[0] != '\0')
-    {
-        p = g_build_filename(work_dir, "VERSION", NULL);
-        if (access(p, R_OK) == 0)
-        {
-            strlcpy(path, p, path_size);
-            g_free(p);
-            return ERRCODE_SUCCESS;
-        }
-        g_free(p);
-    }
-
-    /* 开发环境: 相对于可执行文件的路径 */
-    char exe_dir[PATH_MAX];
-    if (get_exe_dir(exe_dir, sizeof(exe_dir)) == 0)
-    {
-        p = g_build_filename(exe_dir, "..", "..", "VERSION", NULL);
-        if (access(p, R_OK) == 0)
-        {
-            strlcpy(path, p, path_size);
-            g_free(p);
-            return ERRCODE_SUCCESS;
-        }
-        g_free(p);
-    }
-
-    /* 回退: 当前目录 */
-    strlcpy(path, "VERSION", path_size);
-    if (access(path, R_OK) == 0)
-    {
-        return ERRCODE_SUCCESS;
-    }
-
-    return ERRCODE_FAIL;
 }
 
 /* 解析 image_tag 文件路径(由 swap-image.sh 写入)：
@@ -568,9 +507,9 @@ static int handle_show_version(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         return ERRCODE_FAIL;
     }
 
-    if (resolve_version_file(version_path, sizeof(version_path)) == ERRCODE_SUCCESS)
+    if (resolve_version_file(version_path, sizeof(version_path)) == 0)
     {
-        if (file_read_first_line(version_path, version, sizeof(version)) != ERRCODE_SUCCESS)
+        if (file_read_first_line(version_path, version, sizeof(version)) != 0)
         {
             strlcpy(version, "unknown", sizeof(version));
         }
@@ -581,7 +520,7 @@ static int handle_show_version(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     char image_tag_path[PATH_MAX];
     if (resolve_image_tag_file(image_tag_path, sizeof(image_tag_path)) == ERRCODE_SUCCESS)
     {
-        if (file_read_first_line(image_tag_path, image_tag, sizeof(image_tag)) != ERRCODE_SUCCESS)
+        if (file_read_first_line(image_tag_path, image_tag, sizeof(image_tag)) != 0)
         {
             strlcpy(image_tag, "n/a", sizeof(image_tag));
         }
@@ -2139,6 +2078,19 @@ int dev_cli_handle_continue(dev_ipc_message_t *msg)
 void dev_cli_cleanup_state(void)
 {
     cli_chunk_stream_reset(&g_dev_local->show_stream);
+    dev_fs_cli_cleanup_all();
+}
+
+void dev_cli_handle_line_closed(dev_ipc_message_t *msg)
+{
+    if (!msg || !msg->payload || msg->payload_len < sizeof(uint32_t))
+    {
+        return;
+    }
+
+    uint32_t line_id = UINT32_MAX;
+    memcpy(&line_id, msg->payload, sizeof(line_id));
+    dev_fs_cli_cleanup_line(line_id);
 }
 
 int dev_cli_handle_message(dev_ipc_message_t *msg)
@@ -2193,6 +2145,18 @@ int dev_cli_handle_message(dev_ipc_message_t *msg)
             break;
         case DEV_CLI_GROUP_ID_SHOW_SUBSCRIPTIONS:
             result = handle_show_subscriptions(ctx, msg);
+            break;
+        case DEV_CLI_GROUP_ID_LS:
+            result = dev_fs_cli_handle_ls(ctx, msg, &parser);
+            break;
+        case DEV_CLI_GROUP_ID_CD:
+            result = dev_fs_cli_handle_cd(ctx, msg, &parser);
+            break;
+        case DEV_CLI_GROUP_ID_MORE:
+            result = dev_fs_cli_handle_more(ctx, msg, &parser);
+            break;
+        case DEV_CLI_GROUP_ID_PWD:
+            result = dev_fs_cli_handle_pwd(ctx, msg, &parser);
             break;
         default:
             LOG_WARN("Unknown group_id: %u", parser.group_id);

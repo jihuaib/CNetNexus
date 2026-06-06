@@ -155,6 +155,10 @@ void dev_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             dev_bdr_show_config(msg);
             break;
 
+        case CLI_MSG_TYPE_LINE_CLOSED:
+            dev_cli_handle_line_closed(msg);
+            break;
+
         default:
             break;
     }

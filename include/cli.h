@@ -40,6 +40,10 @@
 #define CLI_MSG_TYPE_SYSNAME_UPDATE DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x0009)
 /** DEV → CFG：sysname 命令成功响应，同时携带新系统名（空字符串=恢复默认） */
 #define CLI_MSG_TYPE_SYSNAME_UPDATE_RESP DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x000A)
+/** DB → CFG：内部 RPC，请求导出 show current-configuration 的 BDR 文本 */
+#define CLI_MSG_TYPE_EXPORT_CONFIG DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x000B)
+/** CFG → DEV：ACCESS line 已关闭，payload=uint32_t line_id；用于清理 line-scoped 模块状态 */
+#define CLI_MSG_TYPE_LINE_CLOSED DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x000C)
 
 /** 系统名最大长度（含 null） */
 #define CLI_SYSNAME_MAX_LEN 64

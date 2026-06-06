@@ -357,5 +357,87 @@
                 </command>
             </commands>
         </group>
+
+        <!-- ls -->
+        <group group-id="11">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>ls</name>
+                    <description>List files in current work directory</description>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>1</expression>
+                    <views>user</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- cd [path] -->
+        <group group-id="12">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>cd</name>
+                    <description>Change current work directory</description>
+                </element>
+                <element id="2" cfg-id="1" type="parameter">
+                    <name>&lt;path&gt;</name>
+                    <description>Directory path under work directory</description>
+                    <type>string(1-255)</type>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>1</expression>
+                    <views>user</views>
+                </command>
+                <command>
+                    <expression>1 2</expression>
+                    <views>user</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- more <file> -->
+        <group group-id="13">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>more</name>
+                    <description>Display file content</description>
+                </element>
+                <element id="2" cfg-id="1" type="parameter">
+                    <name>&lt;file&gt;</name>
+                    <description>File path under work directory</description>
+                    <type>string(1-255)</type>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>1 2</expression>
+                    <views>user</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- pwd -->
+        <group group-id="14">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>pwd</name>
+                    <description>Print current work directory</description>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>1</expression>
+                    <views>user</views>
+                </command>
+            </commands>
+        </group>
     </command_groups>
 </configuration>

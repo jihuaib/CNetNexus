@@ -18,6 +18,7 @@
 #include "db_main.h"
 #include "errcode.h"
 #include "log.h"
+#include "path_utils.h"
 
 // ============================================================================
 // 路径辅助
@@ -93,6 +94,26 @@ static void db_config_snapshot_path(const char *name, char *buf, size_t size)
 }
 
 /**
+ * @brief 命名 BDR 文本路径：data/configs/<name>.cfg
+ */
+static void db_config_cfg_path(const char *name, char *buf, size_t size)
+{
+    char data_dir[512];
+    db_config_data_dir(data_dir, sizeof(data_dir));
+    snprintf(buf, size, "%s/configs/%s.cfg", data_dir, name);
+}
+
+/**
+ * @brief 命名配置元数据路径：data/configs/<name>.meta
+ */
+static void db_config_meta_path(const char *name, char *buf, size_t size)
+{
+    char data_dir[512];
+    db_config_data_dir(data_dir, sizeof(data_dir));
+    snprintf(buf, size, "%s/configs/%s.meta", data_dir, name);
+}
+
+/**
  * @brief startup 指针文件路径：data/startup.cfg
  */
 static void db_config_startup_ptr_path(char *buf, size_t size)
@@ -130,49 +151,101 @@ static gboolean db_config_name_valid(const char *name)
     return TRUE;
 }
 
+const char *db_config_startup_mode_name(db_config_startup_mode_t mode)
+{
+    switch (mode)
+    {
+        case DB_CONFIG_STARTUP_MODE_DB:
+            return "db";
+        case DB_CONFIG_STARTUP_MODE_CFG:
+            return "cfg";
+        case DB_CONFIG_STARTUP_MODE_NONE:
+        default:
+            return "none";
+    }
+}
+
+static gboolean db_config_parse_startup_mode(const char *text, db_config_startup_mode_t *mode)
+{
+    if (!text || !mode)
+    {
+        return FALSE;
+    }
+
+    if (strcmp(text, "db") == 0)
+    {
+        *mode = DB_CONFIG_STARTUP_MODE_DB;
+        return TRUE;
+    }
+    if (strcmp(text, "cfg") == 0)
+    {
+        *mode = DB_CONFIG_STARTUP_MODE_CFG;
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+static gboolean db_config_startup_mode_valid(db_config_startup_mode_t mode)
+{
+    return mode == DB_CONFIG_STARTUP_MODE_DB || mode == DB_CONFIG_STARTUP_MODE_CFG;
+}
+
 // ============================================================================
 // startup 指针读写
 // ============================================================================
 
-int db_config_get_startup(char *name_buf, size_t buf_size)
+int db_config_get_startup(char *name_buf, size_t buf_size, db_config_startup_mode_t *mode)
 {
-    name_buf[0] = '\0';
+    if (name_buf && buf_size > 0)
+    {
+        name_buf[0] = '\0';
+    }
+    if (mode)
+    {
+        *mode = DB_CONFIG_STARTUP_MODE_NONE;
+    }
 
     char ptr_path[512];
     db_config_startup_ptr_path(ptr_path, sizeof(ptr_path));
 
-    FILE *fp = fopen(ptr_path, "r");
-    if (!fp)
+    gchar *content = NULL;
+    if (!g_file_get_contents(ptr_path, &content, NULL, NULL))
     {
         return ERRCODE_SUCCESS; /* 无指针 = 出厂启动 */
     }
 
-    if (fgets(name_buf, (int)buf_size, fp))
+    char mode_text[16] = "";
+    char parsed_name[DB_CONFIG_NAME_MAX + 1] = "";
+    char extra[2] = "";
+    char *trimmed = g_strstrip(content);
+    int fields = sscanf(trimmed, "%15s %63s %1s", mode_text, parsed_name, extra);
+
+    db_config_startup_mode_t parsed_mode = DB_CONFIG_STARTUP_MODE_NONE;
+    if (fields == 2 && db_config_parse_startup_mode(mode_text, &parsed_mode) && db_config_name_valid(parsed_name))
     {
-        /* 去掉尾部空白/换行 */
-        size_t n = strlen(name_buf);
-        while (n > 0 && (name_buf[n - 1] == '\n' || name_buf[n - 1] == '\r' || name_buf[n - 1] == ' ' ||
-                         name_buf[n - 1] == '\t'))
+        if (name_buf && buf_size > 0)
         {
-            name_buf[--n] = '\0';
+            snprintf(name_buf, buf_size, "%s", parsed_name);
+        }
+        if (mode)
+        {
+            *mode = parsed_mode;
         }
     }
-    fclose(fp);
-
-    /* 防御：文件内容若被污染则当作无指针 */
-    if (name_buf[0] != '\0' && !db_config_name_valid(name_buf))
+    else if (trimmed[0] != '\0')
     {
         LOG_WARN("DB-CONFIG: invalid startup pointer content, ignoring");
-        name_buf[0] = '\0';
     }
 
+    g_free(content);
     return ERRCODE_SUCCESS;
 }
 
 /**
  * @brief 原子写 startup 指针：写临时文件后 rename
  */
-static int db_config_write_startup_ptr(const char *name)
+static int db_config_write_startup_ptr(const char *name, db_config_startup_mode_t mode)
 {
     char data_dir[512];
     db_config_data_dir(data_dir, sizeof(data_dir));
@@ -193,7 +266,7 @@ static int db_config_write_startup_ptr(const char *name)
         LOG_ERROR("DB-CONFIG: failed to open %s: %s", tmp_path, strerror(errno));
         return ERRCODE_FAIL;
     }
-    fprintf(fp, "%s\n", name);
+    fprintf(fp, "%s %s\n", db_config_startup_mode_name(mode), name);
     fflush(fp);
     fsync(fileno(fp));
     fclose(fp);
@@ -205,6 +278,121 @@ static int db_config_write_startup_ptr(const char *name)
         return ERRCODE_FAIL;
     }
     return ERRCODE_SUCCESS;
+}
+
+// ============================================================================
+// 版本兼容判断
+// ============================================================================
+
+static gboolean db_config_parse_major_version(const char *version, int *major)
+{
+    if (!version || !major)
+    {
+        return FALSE;
+    }
+
+    while (*version == ' ' || *version == '\t')
+    {
+        version++;
+    }
+    if (*version < '0' || *version > '9')
+    {
+        return FALSE;
+    }
+
+    char *end = NULL;
+    long parsed = strtol(version, &end, 10);
+    if (end == version || parsed < 0 || parsed > 255)
+    {
+        return FALSE;
+    }
+
+    *major = (int)parsed;
+    return TRUE;
+}
+
+static gboolean db_config_read_saved_version(const char *name, char *version, size_t version_size)
+{
+    if (version && version_size > 0)
+    {
+        version[0] = '\0';
+    }
+
+    char meta_path[700];
+    db_config_meta_path(name, meta_path, sizeof(meta_path));
+
+    gchar *content = NULL;
+    if (!g_file_get_contents(meta_path, &content, NULL, NULL))
+    {
+        return FALSE;
+    }
+
+    gboolean found = FALSE;
+    gchar **lines = g_strsplit(content, "\n", -1);
+    for (guint i = 0; lines && lines[i]; i++)
+    {
+        char *line = g_strstrip(lines[i]);
+        if (g_str_has_prefix(line, "version="))
+        {
+            char *value = g_strstrip(line + strlen("version="));
+            if (value[0] != '\0')
+            {
+                g_strlcpy(version, value, version_size);
+                found = TRUE;
+                break;
+            }
+        }
+    }
+
+    g_strfreev(lines);
+    g_free(content);
+    return found;
+}
+
+static gboolean db_config_startup_major_mismatch(const char *name, char *saved_version, size_t saved_size,
+                                                 char *current_version, size_t current_size)
+{
+    if (saved_version && saved_size > 0)
+    {
+        saved_version[0] = '\0';
+    }
+    if (current_version && current_size > 0)
+    {
+        current_version[0] = '\0';
+    }
+
+    char saved[64] = "";
+    char current[64] = "";
+    if (!db_config_read_saved_version(name, saved, sizeof(saved)))
+    {
+        LOG_WARN("DB-CONFIG: startup config '%s' has no version metadata, allowing db restore", name);
+        return FALSE;
+    }
+    if (read_current_version(current, sizeof(current)) != 0)
+    {
+        LOG_WARN("DB-CONFIG: current version unavailable, allowing db restore for startup config '%s'", name);
+        return FALSE;
+    }
+
+    if (saved_version && saved_size > 0)
+    {
+        g_strlcpy(saved_version, saved, saved_size);
+    }
+    if (current_version && current_size > 0)
+    {
+        g_strlcpy(current_version, current, current_size);
+    }
+
+    int saved_major = 0;
+    int current_major = 0;
+    if (!db_config_parse_major_version(saved, &saved_major) || !db_config_parse_major_version(current, &current_major))
+    {
+        LOG_WARN("DB-CONFIG: version metadata not parseable (saved='%s', current='%s'), allowing db restore", saved,
+                 current);
+        return FALSE;
+    }
+
+    return saved_major != current_major;
 }
 
 // ============================================================================
@@ -310,15 +498,32 @@ int db_config_boot_prepare(void)
 
     /* 2. 读 startup 指针 */
     char name[DB_CONFIG_NAME_MAX + 1];
-    db_config_get_startup(name, sizeof(name));
+    db_config_startup_mode_t mode = DB_CONFIG_STARTUP_MODE_NONE;
+    db_config_get_startup(name, sizeof(name), &mode);
 
     if (name[0] == '\0')
     {
         LOG_INFO("DB-CONFIG: no startup configuration, booting with empty running db");
         return ERRCODE_SUCCESS;
     }
+    if (mode == DB_CONFIG_STARTUP_MODE_CFG)
+    {
+        LOG_INFO("DB-CONFIG: startup configuration '%s' uses cfg mode, booting empty for CLI replay", name);
+        return ERRCODE_SUCCESS;
+    }
 
-    /* 3. startup 指向的快照存在则恢复到运行库 */
+    char saved_version[64] = "";
+    char current_version[64] = "";
+    if (db_config_startup_major_mismatch(name, saved_version, sizeof(saved_version), current_version,
+                                         sizeof(current_version)))
+    {
+        LOG_WARN("DB-CONFIG: startup db configuration '%s' saved by version '%s' cannot restore on current version "
+                 "'%s' (major mismatch); booting empty for cfg replay",
+                 name, saved_version, current_version);
+        return ERRCODE_SUCCESS;
+    }
+
+    /* 3. startup/db 指向的快照存在则恢复到运行库 */
     char snap_path[600];
     db_config_snapshot_path(name, snap_path, sizeof(snap_path));
 
@@ -336,7 +541,7 @@ int db_config_boot_prepare(void)
         return ERRCODE_SUCCESS;
     }
 
-    LOG_INFO("DB-CONFIG: restored startup configuration '%s' into running db", name);
+    LOG_INFO("DB-CONFIG: restored startup db configuration '%s' into running db", name);
     return ERRCODE_SUCCESS;
 }
 
@@ -355,11 +560,138 @@ static void db_config_set_err(char **err, const char *msg)
     }
 }
 
-int db_config_save(const char *name, char **err)
+static int db_config_write_text_tmp(const char *path, const char *text, char **err)
+{
+    FILE *fp = fopen(path, "w");
+    if (!fp)
+    {
+        LOG_ERROR("DB-CONFIG: failed to open %s: %s", path, strerror(errno));
+        db_config_set_err(err, "Failed to create cfg text file");
+        return ERRCODE_FAIL;
+    }
+
+    const char *safe_text = text ? text : "";
+    if (fputs(safe_text, fp) == EOF)
+    {
+        LOG_ERROR("DB-CONFIG: failed to write %s: %s", path, strerror(errno));
+        db_config_set_err(err, "Failed to write cfg text file");
+        fclose(fp);
+        unlink(path);
+        return ERRCODE_FAIL;
+    }
+    fflush(fp);
+    fsync(fileno(fp));
+    fclose(fp);
+    return ERRCODE_SUCCESS;
+}
+
+static int db_config_write_meta_tmp(const char *path, char **err)
+{
+    char version[64] = "unknown";
+    if (read_current_version(version, sizeof(version)) != 0)
+    {
+        snprintf(version, sizeof(version), "unknown");
+    }
+
+    GString *meta = g_string_new("");
+    g_string_append_printf(meta, "version=%s\n", version);
+
+    int ret = db_config_write_text_tmp(path, meta->str, err);
+    g_string_free(meta, TRUE);
+    return ret;
+}
+
+static void db_config_restore_backup(const char *dst, const char *bak, gboolean had_backup)
+{
+    if (had_backup)
+    {
+        unlink(dst);
+        if (rename(bak, dst) != 0)
+        {
+            LOG_ERROR("DB-CONFIG: failed to restore backup %s -> %s: %s", bak, dst, strerror(errno));
+        }
+    }
+    else
+    {
+        unlink(dst);
+    }
+}
+
+static void db_config_restore_backups(const char **dst_paths, const char bak_paths[][800], const gboolean *had_backup,
+                                      size_t count)
+{
+    for (size_t i = 0; i < count; i++)
+    {
+        db_config_restore_backup(dst_paths[i], bak_paths[i], had_backup[i]);
+    }
+}
+
+static int db_config_publish_files(const char **tmp_paths, const char **dst_paths, size_t count, char **err)
+{
+    char bak_paths[3][800];
+    gboolean had_backup[3] = {FALSE, FALSE, FALSE};
+
+    if (count > G_N_ELEMENTS(bak_paths))
+    {
+        db_config_set_err(err, "Too many configuration files to publish");
+        return ERRCODE_FAIL;
+    }
+
+    size_t backed = 0;
+    for (size_t i = 0; i < count; i++)
+    {
+        snprintf(bak_paths[i], sizeof(bak_paths[i]), "%s.bak", dst_paths[i]);
+        unlink(bak_paths[i]);
+        had_backup[i] = (access(dst_paths[i], F_OK) == 0);
+        if (had_backup[i] && rename(dst_paths[i], bak_paths[i]) != 0)
+        {
+            LOG_ERROR("DB-CONFIG: backup %s -> %s failed: %s", dst_paths[i], bak_paths[i], strerror(errno));
+            db_config_restore_backups(dst_paths, bak_paths, had_backup, backed);
+            db_config_set_err(err, "Failed to prepare old configuration files");
+            return ERRCODE_FAIL;
+        }
+        backed++;
+    }
+
+    size_t published = 0;
+    for (size_t i = 0; i < count; i++)
+    {
+        if (rename(tmp_paths[i], dst_paths[i]) != 0)
+        {
+            LOG_ERROR("DB-CONFIG: rename %s -> %s failed: %s", tmp_paths[i], dst_paths[i], strerror(errno));
+            for (size_t j = 0; j < published; j++)
+            {
+                unlink(dst_paths[j]);
+            }
+            db_config_restore_backups(dst_paths, bak_paths, had_backup, count);
+            db_config_set_err(err, "Failed to commit configuration files");
+            return ERRCODE_FAIL;
+        }
+        published++;
+    }
+
+    for (size_t i = 0; i < count; i++)
+    {
+        unlink(bak_paths[i]);
+    }
+    return ERRCODE_SUCCESS;
+}
+
+int db_config_save(const char *name, const char *cfg_text, char *saved_name, size_t saved_name_cap, char **err)
 {
     if (err)
     {
         *err = NULL;
+    }
+    if (saved_name && saved_name_cap > 0)
+    {
+        saved_name[0] = '\0';
+    }
+
+    if (!cfg_text)
+    {
+        db_config_set_err(err, "BDR cfg text is not available");
+        return ERRCODE_FAIL;
     }
 
     /* 省略名称时回退到当前 startup 名或默认名 */
@@ -370,7 +702,7 @@ int db_config_save(const char *name, char **err)
     }
     else
     {
-        db_config_get_startup(resolved, sizeof(resolved));
+        db_config_get_startup(resolved, sizeof(resolved), NULL);
         if (resolved[0] == '\0')
         {
             snprintf(resolved, sizeof(resolved), "%s", DB_CONFIG_DEFAULT_NAME);
@@ -381,6 +713,10 @@ int db_config_save(const char *name, char **err)
     {
         db_config_set_err(err, "Invalid configuration name (allowed: A-Z a-z 0-9 _ - , max 63)");
         return ERRCODE_FAIL;
+    }
+    if (saved_name && saved_name_cap > 0)
+    {
+        snprintf(saved_name, saved_name_cap, "%s", resolved);
     }
 
     db_connection_t *conn = g_db_local ? g_db_local->main_conn : NULL;
@@ -403,11 +739,21 @@ int db_config_save(const char *name, char **err)
 
     char dst_path[700];
     char tmp_path[760];
+    char cfg_path[700];
+    char cfg_tmp_path[760];
+    char meta_path[700];
+    char meta_tmp_path[760];
     db_config_snapshot_path(resolved, dst_path, sizeof(dst_path));
+    db_config_cfg_path(resolved, cfg_path, sizeof(cfg_path));
+    db_config_meta_path(resolved, meta_path, sizeof(meta_path));
     snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", dst_path);
+    snprintf(cfg_tmp_path, sizeof(cfg_tmp_path), "%s.tmp", cfg_path);
+    snprintf(meta_tmp_path, sizeof(meta_tmp_path), "%s.tmp", meta_path);
 
     /* 清掉可能残留的临时文件 */
     db_config_remove_running(tmp_path); /* 复用：删 tmp 及其旁文件 */
+    unlink(cfg_tmp_path);
+    unlink(meta_tmp_path);
 
     /* 用 backup API 把运行库（含未 checkpoint 的 WAL）快照到临时文件，
      * src 直接读 main_conn 句柄以保证拿到内存中最新一致状态 */
@@ -453,16 +799,30 @@ int db_config_save(const char *name, char **err)
         return ERRCODE_FAIL;
     }
 
-    /* 原子落盘 */
-    if (rename(tmp_path, dst_path) != 0)
+    if (db_config_write_text_tmp(cfg_tmp_path, cfg_text, err) != ERRCODE_SUCCESS)
     {
-        LOG_ERROR("DB-CONFIG: rename %s -> %s failed: %s", tmp_path, dst_path, strerror(errno));
-        db_config_set_err(err, "Failed to commit snapshot");
-        unlink(tmp_path);
+        db_config_remove_running(tmp_path);
         return ERRCODE_FAIL;
     }
 
-    LOG_INFO("DB-CONFIG: saved running configuration as '%s'", resolved);
+    if (db_config_write_meta_tmp(meta_tmp_path, err) != ERRCODE_SUCCESS)
+    {
+        db_config_remove_running(tmp_path);
+        unlink(cfg_tmp_path);
+        return ERRCODE_FAIL;
+    }
+
+    const char *tmp_paths[] = {tmp_path, cfg_tmp_path, meta_tmp_path};
+    const char *dst_paths[] = {dst_path, cfg_path, meta_path};
+    if (db_config_publish_files(tmp_paths, dst_paths, G_N_ELEMENTS(tmp_paths), err) != ERRCODE_SUCCESS)
+    {
+        db_config_remove_running(tmp_path);
+        unlink(cfg_tmp_path);
+        unlink(meta_tmp_path);
+        return ERRCODE_FAIL;
+    }
+
+    LOG_INFO("DB-CONFIG: saved running configuration as '%s' (.db + .cfg + .meta)", resolved);
     ret = ERRCODE_SUCCESS;
     return ret;
 }
@@ -471,7 +831,7 @@ int db_config_save(const char *name, char **err)
 // startup configuration
 // ============================================================================
 
-int db_config_set_startup(const char *name, char **err)
+int db_config_set_startup(const char *name, db_config_startup_mode_t mode, char **err)
 {
     if (err)
     {
@@ -483,21 +843,34 @@ int db_config_set_startup(const char *name, char **err)
         db_config_set_err(err, "Invalid configuration name (allowed: A-Z a-z 0-9 _ - , max 63)");
         return ERRCODE_FAIL;
     }
+    if (!db_config_startup_mode_valid(mode))
+    {
+        db_config_set_err(err, "Invalid startup mode (allowed: db, cfg)");
+        return ERRCODE_FAIL;
+    }
 
-    char snap_path[700];
-    db_config_snapshot_path(name, snap_path, sizeof(snap_path));
-    if (access(snap_path, R_OK) != 0)
+    char config_path[700];
+    if (mode == DB_CONFIG_STARTUP_MODE_DB)
+    {
+        db_config_snapshot_path(name, config_path, sizeof(config_path));
+    }
+    else
+    {
+        db_config_cfg_path(name, config_path, sizeof(config_path));
+    }
+
+    if (access(config_path, R_OK) != 0)
     {
         db_config_set_err(err, "Configuration not found; use 'save configuration <name>' first");
         return ERRCODE_FAIL;
     }
 
-    if (db_config_write_startup_ptr(name) != ERRCODE_SUCCESS)
+    if (db_config_write_startup_ptr(name, mode) != ERRCODE_SUCCESS)
     {
         db_config_set_err(err, "Failed to write startup pointer");
         return ERRCODE_FAIL;
     }
 
-    LOG_INFO("DB-CONFIG: startup configuration set to '%s'", name);
+    LOG_INFO("DB-CONFIG: startup configuration set to '%s' (%s)", name, db_config_startup_mode_name(mode));
     return ERRCODE_SUCCESS;
 }

@@ -47,6 +47,20 @@ void bgp_relay_flush_peer_routes(uint32_t vrf_id, const net_addr_t *source);
 int bgp_relay_get_route_iter_value(const bgp_route_node_t *route, bgp_nexthop_value_t *value_out);
 
 /**
+ * @brief 为合成路由（vrf-import REMOTE_CROSS）注册自有 nexthop 迭代 watch
+ *
+ * 合成路由不走 peer-update 摄取路径，需调用方在创建/刷新时显式注册，使其下一跳（远端 PE）
+ * 在公网表做隧道迭代命中 eBGP-vpnv4 假隧道。
+ * @return 该 nexthop 当前是否已解析（resolved），调用方据此置路由 valid
+ */
+gboolean bgp_relay_synthetic_nexthop_register(bgp_route_node_t *route);
+
+/**
+ * @brief 注销合成路由的 nexthop 迭代 watch（撤销/拆除时调用）
+ */
+void bgp_relay_synthetic_nexthop_unregister(bgp_route_node_t *route);
+
+/**
  * @brief 处理 ROUTE nexthop 通知（可达/不可达）
  * @return 受影响路由数
  */

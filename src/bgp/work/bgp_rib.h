@@ -34,8 +34,12 @@ typedef struct bgp_rthead bgp_rthead_t;
 #define BGP_ROUTE_FLAG_NO_ADV (1U << 5)
 /** 路由标记位：import-rib 镜像路由（mirror 节点本身置位；源节点不置位） */
 #define BGP_ROUTE_FLAG_IMPORT_RIB (1U << 6)
-/** 路由标记位：源节点等待释放（refcnt 归零后由 bgp_import_rib 触发真正 free） */
-#define BGP_ROUTE_FLAG_PENDING_FREE (1U << 7)
+/** 路由标记位：vrf-export 本地跨表合成路由（本地 VRF 单播 → vpnv4）。属本地起源，正常对外通告；
+ *  与 IMPORT(重分发) 区分，避免被 import-route 清理/再导入误伤 */
+#define BGP_ROUTE_FLAG_LOCAL_CROSS (1U << 7)
+/** 路由标记位：vrf-import 远端跨表合成路由（peer 的 vpnv4 → 本地 VRF 单播）。非本地起源，
+ *  绝不可被 vrf-export 回灌 vpnv4（否则成环） */
+#define BGP_ROUTE_FLAG_REMOTE_CROSS (1U << 8)
 
 #define BGP_ROUTE_LABEL_SOURCE_NONE 0u
 #define BGP_ROUTE_LABEL_SOURCE_LOCAL 1u
@@ -69,6 +73,30 @@ typedef struct bgp_route_node
 } bgp_route_node_t;
 
 /**
+ * @brief 是否本地起源路由：重分发(IMPORT) 或 vrf-export 本地跨表(LOCAL_CROSS)
+ *
+ * 对外通告/源分类/iBGP split-horizon/vpnv4 标签注入等"本地起源"判定一律用本谓词，
+ * 这样 vrf-export 合成的 vpnv4 路由（LOCAL_CROSS）与重分发路由享同样的通告语义。
+ * REMOTE_CROSS（vrf-import 自 peer）不属本地起源。
+ */
+static inline gboolean bgp_route_is_local_origin(const bgp_route_node_t *r)
+{
+    return r && (BIT_TEST(r->flags, BGP_ROUTE_FLAG_IMPORT) || BIT_TEST(r->flags, BGP_ROUTE_FLAG_LOCAL_CROSS));
+}
+
+/**
+ * @brief 是否合成路由（非 peer 会话直接学习）：IMPORT / LOCAL_CROSS / REMOTE_CROSS 任一
+ *
+ * 合成路由的 source 是合成标识而非邻居 IP，不参与 peer 会话级清理（purge_source/flush_peer），
+ * 也不作为 import-rib 的镜像来源。
+ */
+static inline gboolean bgp_route_is_synthetic(const bgp_route_node_t *r)
+{
+    return r && (BIT_TEST(r->flags, BGP_ROUTE_FLAG_IMPORT) || BIT_TEST(r->flags, BGP_ROUTE_FLAG_LOCAL_CROSS) ||
+                 BIT_TEST(r->flags, BGP_ROUTE_FLAG_REMOTE_CROSS));
+}
+
+/**
  * @brief 路由头（Route Head）：表示一个唯一 NLRI 前缀
  *
  * 树键为 NLRI 二进制内容（RIB 已按 AFI/SAFI 分实例）
@@ -77,6 +105,7 @@ struct bgp_rthead
 {
     bgp_nlri_entry_t nlri; /**< NLRI（前缀/EVPN/FlowSpec 等，含 afi/safi/type） */
     bgp_instance_t *inst;  /**< 所属 AF 实例（借用引用，可为 NULL） */
+    struct bgp_rib *rib;   /**< 所属 RIB（借用引用，供物理回收时回查树/计数） */
     GList *route_list;     /**< bgp_route_node_t* 双向链表，首元素为当前最优路径 */
     uint32_t queue_refcnt; /**< 工作队列引用计数（>0 时禁止删除该 rthead） */
 };
@@ -194,8 +223,9 @@ void bgp_route_node_borrow_ref(bgp_route_node_t *route);
 /**
  * @brief 释放路径节点的外部借用引用
  *
- * 当 refcnt 减为 0 且节点已被打上 BGP_ROUTE_FLAG_PENDING_FREE，本函数会触发
- * 真正的内存释放（attr release + g_free）。调用者无需再次调用 free。
+ * 借用期间节点即使被逻辑删除（标 STALE）也只会留在 RIB 链表上，不会被物理回收。
+ * 当 refcnt 减为 0 且节点处于 STALE 状态时，本函数触发一次 reap：摘链 + 释放节点，
+ * 并在 head 变空时一并销毁 head。调用者无需再次调用 free。
  */
 void bgp_route_node_borrow_unref(bgp_route_node_t *route);
 

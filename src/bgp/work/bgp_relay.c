@@ -180,6 +180,16 @@ static int bgp_relay_build_nh_key_from_route(const bgp_route_node_t *route, bgp_
         return 0;
     }
 
+    /* vrf-import 远端跨表路由（REMOTE_CROSS）：下一跳是远端 PE（eBGP vpnv4 邻居），
+     * 在公网表对该 PE 地址做隧道迭代 → 命中 eBGP-vpnv4 假隧道（BGP_ADJ），用于 VRF 转发。
+     * 注意 endpoint 是「下一跳 PE 地址」而非前缀（与 labeled 的 endpoint=前缀不同）。 */
+    if (BIT_TEST(route->flags, BGP_ROUTE_FLAG_REMOTE_CROSS))
+    {
+        bgp_relay_make_tunnel_key(nh_key_out, BGP_VRF_PUBLIC_ID, route->head->nlri.afi, route->head->nlri.safi,
+                                  &nexthop_addr);
+        return 1;
+    }
+
     if (bgp_relay_route_is_lu(route))
     {
         const net_addr_t *endpoint = &route->head->nlri.prefix.prefix.addr;
@@ -578,8 +588,10 @@ static bgp_relay_nh_watch_t *bgp_relay_attach_route_to_watch(bgp_route_node_t *r
         watch->route_list = NULL;
 
         int register_rc = ERRCODE_FAIL;
-        /* 携带标签的地址族（labeled / vpnv4）走隧道迭代：向 TUNNEL 解析远端端点（nexthop）。 */
-        if (watch->key.safi == BGP_SAFI_LABELED || bgp_safi_is_vpn(watch->key.safi))
+        /* 按 key 类型分派（与 unregister 一致）：隧道 key（nexthop_id==0，含 endpoint）走隧道迭代，
+         * 路由 nh key（nexthop_id!=0）走 IP 迭代。这样 labeled / REMOTE_CROSS 走隧道，
+         * vpnv4 公网（route nh key）走 IP 迭代。 */
+        if (watch->key.nexthop_id == 0u)
         {
             tunnel_resolve_req_t req;
             bgp_relay_fill_tunnel_resolve_req(&req, &watch->key);
@@ -624,7 +636,10 @@ int bgp_relay_get_route_iter_value(const bgp_route_node_t *route, bgp_nexthop_va
 
     memset(value_out, 0, sizeof(*value_out));
 
-    const bgp_route_node_t *owner = route->src_route ? route->src_route : route;
+    /* REMOTE_CROSS 用自己的隧道 watch（不跟 src_route 去读源 vpnv4 的 IP 解析值）；
+     * import-rib mirror 等仍跟 src_route 继承源解析。 */
+    const bgp_route_node_t *owner =
+        (route->src_route && !BIT_TEST(route->flags, BGP_ROUTE_FLAG_REMOTE_CROSS)) ? route->src_route : route;
     if (owner->nexthop_id != 0u && owner->head && owner->head->inst &&
         bgp_nexthop_get_value(owner->head->inst, owner->nexthop_id, value_out) == ERRCODE_SUCCESS)
     {
@@ -645,6 +660,35 @@ int bgp_relay_get_route_iter_value(const bgp_route_node_t *route, bgp_nexthop_va
 
     bgp_relay_value_from_watch(watch, value_out);
     return ERRCODE_SUCCESS;
+}
+
+gboolean bgp_relay_synthetic_nexthop_register(bgp_route_node_t *route)
+{
+    if (!route)
+    {
+        return FALSE;
+    }
+    bgp_relay_nh_key_t nh_key;
+    if (!bgp_relay_build_nh_key_from_route(route, &nh_key))
+    {
+        return FALSE;
+    }
+    bgp_relay_nh_watch_t *watch = bgp_relay_attach_route_to_watch(route, &nh_key);
+    return (watch && watch->resolved) ? TRUE : FALSE;
+}
+
+void bgp_relay_synthetic_nexthop_unregister(bgp_route_node_t *route)
+{
+    if (!route)
+    {
+        return;
+    }
+    bgp_relay_nh_key_t nh_key;
+    if (!bgp_relay_build_nh_key_from_route(route, &nh_key))
+    {
+        return;
+    }
+    bgp_relay_detach_route_from_watch(route, &nh_key, TRUE);
 }
 
 static int bgp_relay_route_remove_from_inst(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri,
@@ -1194,7 +1238,10 @@ void bgp_relay_session_lu_adj_sync(bgp_session_t *session, gboolean up)
     for (GList *l = session->peer_list; l; l = l->next)
     {
         bgp_peer_t *peer = (bgp_peer_t *)l->data;
-        if (!peer || !peer->inst || peer->inst->safi != BGP_SAFI_LABELED)
+        /* labeled-unicast 与 vpnv4 邻居都下发「邻接假隧道」：endpoint=邻居地址，out_ifindex
+         * 取直连接口（非直连=0 时不下发，天然只对直连 eBGP 生效）。vpnv4 用它让导入私网的
+         * REMOTE_CROSS 路由能在公网表迭代到该假隧道、走隧道转发。 */
+        if (!peer || !peer->inst || (peer->inst->safi != BGP_SAFI_LABELED && peer->inst->safi != BGP_SAFI_VPN_UNICAST))
         {
             continue;
         }
@@ -1210,7 +1257,7 @@ void bgp_relay_session_lu_adj_sync(bgp_session_t *session, gboolean up)
         candidate.source_type = TUNNEL_SOURCE_BGP_ADJ;
         candidate.preference = 10u;
         candidate.owner_module_id = DEV_MODULE_ID_BGP;
-        candidate.owner_id = ((uint32_t)candidate.afi << 16) | (uint32_t)BGP_SAFI_LABELED;
+        candidate.owner_id = ((uint32_t)candidate.afi << 16) | (uint32_t)peer->inst->safi;
         candidate.endpoint = session->neighbor_addr;
         candidate.relay_addr = session->neighbor_addr;
         candidate.out_ifindex = bgp_if_cache_direct_ifindex(&session->neighbor_addr);

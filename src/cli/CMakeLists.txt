@@ -11,6 +11,7 @@ set(CLI_SOURCES
     cli_history.c
     cli_main.c
     cli_cfg.c
+    cli_restore.c
 )
 
 add_executable(netnexus-cli cli_proc.c ${CLI_SOURCES})
