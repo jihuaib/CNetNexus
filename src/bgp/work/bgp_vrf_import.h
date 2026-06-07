@@ -118,4 +118,49 @@ void bgp_vrf_import_request_refresh(void);
  */
 void bgp_vrf_import_purge_target_inst(bgp_instance_t *vpn_inst);
 
+/* ============================================================================
+ * VRF 本地交叉（local route leaking）：本机 VRF→VRF 直接泄漏，复用 IRT 索引
+ *
+ * 与上面的 vpnv4 导入对称但「源在本机」：某私网 VRF 的 ipv4-unicast best 按该 VRF 的
+ * export-RT 直接命中其它私网 VRF 的 import-RT(IRT 索引)，命中即把该前缀作为合成路径
+ * (BGP_ROUTE_FLAG_LOCAL_CROSS、目标路由自有 nexthop 对象在源 VRF 内迭代)插入目标 VRF 的 unicast RIB。
+ * 完全独立于 vpnv4；单跳不传递(LOCAL_CROSS/REMOTE_CROSS 不再作泄漏源)。
+ * ========================================================================== */
+
+/**
+ * @brief 私网 VRF ipv4-unicast 某 head best 变化后调用：按源 VRF export-RT 直接泄漏到命中的本机 VRF
+ *
+ * 由 bgp_calc_route_select 末尾调用(与 vpnv4 import/export 并列)。源非私网 ipv4-unicast 时为 no-op。
+ * @param src_inst 源 instance(私网 VRF, ipv4, unicast)
+ * @param head     发生 best 变化的 unicast rthead
+ */
+void bgp_vrf_import_local_on_calc_done(bgp_instance_t *src_inst, bgp_rthead_t *head);
+
+/**
+ * @brief 某 VRF 的 import-RT 配置变更后：重扫所有私网 VRF unicast RIB，补/撤本地泄漏
+ *
+ * 新增 import-RT → 其它 VRF 已有路由若 export-RT 命中则补泄漏进本 VRF；删除则撤销不再命中的。
+ * 由 bgp_apply_vrf.c 处理 IMPORT_RT_ADD/DEL(ipv4-unicast) 后调用。
+ * @param tgt_vrf_id 发生 import-RT 变更的 VRF(此处仅作日志/语义标识，实际全量重评)
+ */
+void bgp_vrf_import_local_backfill_target_vrf(uint32_t tgt_vrf_id);
+
+/**
+ * @brief 某 VRF 的 export-RT 配置变更后：重扫该 VRF unicast RIB，按新 export-RT 补/撤本地泄漏
+ *
+ * 由 bgp_apply_vrf.c 处理 EXPORT_RT_ADD/DEL(ipv4-unicast) 后调用。
+ * @param src_vrf_id 发生 export-RT 变更的源 VRF
+ */
+void bgp_vrf_import_local_backfill_source_vrf(uint32_t src_vrf_id);
+
+/**
+ * @brief 私网 VRF ipv4-unicast instance 销毁前调用：双角色清理本地泄漏路径
+ *
+ * (a) 作为源：撤销其它 VRF 中由本 inst 泄漏出去的合成路径(解除 borrow，本 inst RIB 尚存活)；
+ * (b) 作为目标：对本 inst RIB 内的泄漏合成路径 detach 来源 borrow。
+ * 必须在本 inst 的 RIB 释放前调用。由 bgp_instance_destroy() 调用。
+ * @param inst 即将销毁的私网 ipv4-unicast instance
+ */
+void bgp_vrf_import_local_purge_inst(bgp_instance_t *inst);
+
 #endif /* BGP_VRF_IMPORT_H */

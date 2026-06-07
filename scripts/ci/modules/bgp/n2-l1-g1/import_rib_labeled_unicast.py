@@ -132,7 +132,7 @@ def _assert_r2_route_table_absent(rt: TopologyRuntime, *, timeout: int) -> None:
             },
             {
                 "device": "r2",
-                "command": "show fib ipv4 os",
+                "command": "show fib os ipv4",
                 "not_regex": [
                     rf"(?im)^\s*main\s+unicast\s+{re.escape(TEST_PREFIX)}\s+\S+\s+\S+\s+bgp\b",
                 ],
@@ -194,7 +194,7 @@ def _assert_r2_route_table_present_tunnel(rt: TopologyRuntime, *, lu_nexthop: st
     wait_check(
         rt,
         device="r2",
-        command="show fib ipv4 os",
+        command="show fib os ipv4",
         timeout=timeout,
         interval=2,
         regex=[row_regex],

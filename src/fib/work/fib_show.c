@@ -125,8 +125,6 @@ static const char *proto_name_long(uint32_t protocol)
             return "ospf";
         case ROUTE_PROTOCOL_ISIS:
             return "isis";
-        case ROUTE_PROTOCOL_BLACKHOLE:
-            return "static(blackhole)";
         default:
             return "unknown";
     }
@@ -205,6 +203,20 @@ static void nexthop_to_str(const fib_route_entry_t *route, char *buf, size_t sz)
     snprintf(buf, sz, "-");
 }
 
+static void oif_to_str(uint32_t out_ifindex, char *buf, size_t sz)
+{
+    if (!buf || sz == 0)
+    {
+        return;
+    }
+    if (out_ifindex == ROUTE_INLOOP_IFINDEX)
+    {
+        g_strlcpy(buf, ROUTE_INLOOP_IFNAME, sz);
+        return;
+    }
+    snprintf(buf, sz, "%u", out_ifindex);
+}
+
 static void labels_to_str(uint8_t count, const uint32_t *labels, char *buf, size_t sz)
 {
     if (!buf || sz == 0)
@@ -248,12 +260,14 @@ static void append_route_cb(gpointer key, gpointer value, gpointer user_data)
 
     char prefix[96] = "-";
     char nexthop[64] = "-";
+    char oif[32] = "-";
     prefix_to_str(&state->entry, prefix, sizeof(prefix));
     nexthop_to_str(&state->entry, nexthop, sizeof(nexthop));
+    oif_to_str(state->entry.out_ifindex, oif, sizeof(oif));
 
-    g_string_append_printf(ctx->buf, "%-7s %-26s %-20s %-10s %-8u %-8d %-8d %-9s %-7s\r\n", afi_name(state->entry.afi),
-                           prefix, nexthop, nh_type_name(state->entry.nh_type), state->entry.out_ifindex,
-                           state->entry.metric, state->entry.preference, state->installed ? "yes" : "no",
+    g_string_append_printf(ctx->buf, "%-7s %-26s %-20s %-10s %-8s %-8d %-8d %-9s %-7s\r\n", afi_name(state->entry.afi),
+                           prefix, nexthop, nh_type_name(state->entry.nh_type), oif, state->entry.metric,
+                           state->entry.preference, state->installed ? "yes" : "no",
                            (state->entry.flags & FIB_ROUTE_FLAG_SKIP_OS) ? "yes" : "no");
     ctx->count++;
 }
@@ -275,12 +289,15 @@ static void append_route_detail_cb(gpointer key, gpointer value, gpointer user_d
 
     char prefix[96] = "-";
     char nexthop[64] = "-";
+    char oif[32] = "-";
+    char iter_oif_str[32] = "-";
     prefix_to_str(&state->entry, prefix, sizeof(prefix));
     nexthop_to_str(&state->entry, nexthop, sizeof(nexthop));
+    oif_to_str(state->entry.out_ifindex, oif, sizeof(oif));
 
     /* 取关联 nexthop 对象（按 nexthop_id），展示解析后的网关/出接口（Iter NH / Iter OIF） */
     char iter_nh[64] = "-";
-    uint32_t iter_oif = 0u;
+    uint32_t iter_oif = state->entry.out_ifindex;
     fib_nexthop_state_t *nh =
         fib_rib_nexthop_lookup(g_fib_work_local ? g_fib_work_local->rib : NULL, state->entry.nexthop_id);
     if (nh)
@@ -291,28 +308,29 @@ static void append_route_detail_cb(gpointer key, gpointer value, gpointer user_d
         }
         iter_oif = nh->entry.out_ifindex;
     }
+    oif_to_str(iter_oif, iter_oif_str, sizeof(iter_oif_str));
 
     ctx->count++;
     /* 与 `show route <prefix> <len>` 详情格式对齐，并新增 NH-ID 显示 */
-    g_string_append_printf(
-        ctx->buf,
-        "\r\nRouting entry for %s (VRF: %s)\r\n"
-        "  Path [%u]: %s\r\n"
-        "    Nexthop   : %s\r\n"
-        "    NH-ID     : %u\r\n"
-        "    Interface : %u\r\n"
-        "    Iter NH   : %s\r\n"
-        "    Iter OIF  : %u\r\n"
-        "    NH-Type   : %s\r\n"
-        "    Tunnel-ID : %u\r\n"
-        "    Metric    : %d\r\n"
-        "    Preference: %d\r\n"
-        "    Installed : %s\r\n"
-        "    Skip OS   : %s\r\n",
-        prefix, ctx->vrf_name ? ctx->vrf_name : "-", ctx->count, proto_name_long(state->entry.protocol), nexthop,
-        state->entry.nexthop_id, state->entry.out_ifindex, iter_nh, iter_oif, nh_type_name(state->entry.nh_type),
-        state->entry.tunnel_id, state->entry.metric, state->entry.preference, state->installed ? "yes" : "no",
-        (state->entry.flags & FIB_ROUTE_FLAG_SKIP_OS) ? "yes" : "no");
+    g_string_append_printf(ctx->buf,
+                           "\r\nRouting entry for %s (VRF: %s)\r\n"
+                           "  Path [%u]: %s\r\n"
+                           "    Nexthop   : %s\r\n"
+                           "    NH-ID     : %u\r\n"
+                           "    Interface : %s\r\n"
+                           "    Iter NH   : %s\r\n"
+                           "    Iter OIF  : %s\r\n"
+                           "    NH-Type   : %s\r\n"
+                           "    Tunnel-ID : %u\r\n"
+                           "    Metric    : %d\r\n"
+                           "    Preference: %d\r\n"
+                           "    Installed : %s\r\n"
+                           "    Skip OS   : %s\r\n",
+                           prefix, ctx->vrf_name ? ctx->vrf_name : "-", ctx->count,
+                           proto_name_long(state->entry.protocol), nexthop, state->entry.nexthop_id, oif, iter_nh,
+                           iter_oif_str, nh_type_name(state->entry.nh_type), state->entry.tunnel_id,
+                           state->entry.metric, state->entry.preference, state->installed ? "yes" : "no",
+                           (state->entry.flags & FIB_ROUTE_FLAG_SKIP_OS) ? "yes" : "no");
 
     if (state->entry.out_label != 0u)
     {
@@ -575,12 +593,14 @@ static void append_nexthop_cb(gpointer key, gpointer value, gpointer user_data)
     }
 
     char gw[64] = "-";
+    char oif[32] = "-";
     if (e->gateway_addr.family == AF_INET || e->gateway_addr.family == AF_INET6)
     {
         net_addr_to_str(&e->gateway_addr, gw, sizeof(gw));
     }
-    g_string_append_printf(ctx->buf, "%-10u %-6u %-5s %-10s %-6s %-20s %-6u\r\n", e->nexthop_id, e->vrf_id,
-                           afi_name(e->afi), nh_type_name(e->nh_type), e->state ? "up" : "down", gw, e->out_ifindex);
+    oif_to_str(e->out_ifindex, oif, sizeof(oif));
+    g_string_append_printf(ctx->buf, "%-10u %-6u %-5s %-10s %-6s %-20s %-6s\r\n", e->nexthop_id, e->vrf_id,
+                           afi_name(e->afi), nh_type_name(e->nh_type), e->state ? "up" : "down", gw, oif);
     ctx->count++;
 }
 

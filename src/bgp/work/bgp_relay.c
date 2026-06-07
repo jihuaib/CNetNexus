@@ -166,6 +166,13 @@ static bgp_instance_t *bgp_relay_lookup_instance(uint32_t vrf_id, uint16_t afi, 
     return (bgp_instance_t *)g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(afi_key, safi_key));
 }
 
+static gboolean bgp_relay_route_is_local_cross_uc(const bgp_route_node_t *route)
+{
+    return route && BIT_TEST(route->flags, BGP_ROUTE_FLAG_LOCAL_CROSS) && route->head && route->head->inst &&
+           route->head->inst->vrf && route->head->inst->vrf->vrf_id != BGP_VRF_PUBLIC_ID &&
+           route->head->inst->safi == BGP_SAFI_UNICAST;
+}
+
 static int bgp_relay_build_nh_key_from_route(const bgp_route_node_t *route, bgp_relay_nh_key_t *nh_key_out)
 {
     if (!route || !route->head || !route->head->inst || !route->head->inst->vrf || !nh_key_out)
@@ -522,6 +529,7 @@ static void bgp_relay_route_iter_update_from_watch(bgp_route_node_t *route, cons
 
     bgp_nexthop_value_t value;
     bgp_relay_value_from_watch(watch, &value);
+
     (void)bgp_nexthop_set_value(route->head->inst, route->nexthop_id, &value);
 }
 
@@ -640,10 +648,12 @@ int bgp_relay_get_route_iter_value(const bgp_route_node_t *route, bgp_nexthop_va
 
     memset(value_out, 0, sizeof(*value_out));
 
-    /* REMOTE_CROSS 用自己的隧道 watch（不跟 src_route 去读源 vpnv4 的 IP 解析值）；
-     * import-rib mirror 等仍跟 src_route 继承源解析。 */
-    const bgp_route_node_t *owner =
-        (route->src_route && !BIT_TEST(route->flags, BGP_ROUTE_FLAG_REMOTE_CROSS)) ? route->src_route : route;
+    /* REMOTE_CROSS 用自己的隧道 watch；私网 unicast LOCAL_CROSS 用自己的 nexthop-vrf watch；
+     * vpnv4 export LOCAL_CROSS 与 import-rib mirror 仍通过 src_route 继承源解析。 */
+    const bgp_route_node_t *owner = (route->src_route && !BIT_TEST(route->flags, BGP_ROUTE_FLAG_REMOTE_CROSS) &&
+                                     !bgp_relay_route_is_local_cross_uc(route))
+                                        ? route->src_route
+                                        : route;
     if (owner->nexthop_id != 0u && owner->head && owner->head->inst &&
         bgp_nexthop_get_value(owner->head->inst, owner->nexthop_id, value_out) == ERRCODE_SUCCESS)
     {

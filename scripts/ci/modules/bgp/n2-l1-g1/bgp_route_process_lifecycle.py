@@ -273,7 +273,7 @@ def _wait_os_prefix(
     wait_check(
         rt,
         device=device,
-        command="show fib ipv4 os",
+        command="show fib os ipv4",
         timeout=timeout,
         interval=2,
         contains=[prefix] if present else [],

@@ -221,7 +221,14 @@ int route_rib_add(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, const net_add
     path->metric = metric;
     path->preference = preference;
     path->out_ifindex = out_ifindex;
-    path->nh_type = (nh_type == ROUTE_NH_TYPE_TUNNEL && tunnel_id != 0u) ? ROUTE_NH_TYPE_TUNNEL : ROUTE_NH_TYPE_IP;
+    if (nh_type == ROUTE_NH_TYPE_BLACKHOLE)
+    {
+        path->nh_type = ROUTE_NH_TYPE_BLACKHOLE;
+    }
+    else
+    {
+        path->nh_type = (nh_type == ROUTE_NH_TYPE_TUNNEL && tunnel_id != 0u) ? ROUTE_NH_TYPE_TUNNEL : ROUTE_NH_TYPE_IP;
+    }
     path->tunnel_id = (path->nh_type == ROUTE_NH_TYPE_TUNNEL) ? tunnel_id : 0u;
     path->out_label = (path->nh_type == ROUTE_NH_TYPE_TUNNEL) ? out_label : 0u;
     path->entry_flags = entry_flags;
@@ -235,8 +242,7 @@ int route_rib_add(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, const net_add
     nk.vrf_id = vrf_id;
     nk.protocol = protocol;
     nk.afi = afi;
-    nk.nh_type = (protocol == ROUTE_PROTOCOL_BLACKHOLE || nh_type == ROUTE_NH_TYPE_BLACKHOLE) ? FIB_NH_TYPE_BLACKHOLE
-                                                                                              : FIB_NH_TYPE_IP;
+    nk.nh_type = (nh_type == ROUTE_NH_TYPE_BLACKHOLE) ? ROUTE_NH_TYPE_BLACKHOLE : ROUTE_NH_TYPE_IP;
     nk.key_ifindex = out_ifindex;
     nk.nexthop = *nexthop;
 
@@ -332,7 +338,14 @@ int route_rib_add_nexthop_id(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, co
     path->metric = metric;
     path->preference = preference;
     path->out_ifindex = out_ifindex;
-    path->nh_type = (nh_type == ROUTE_NH_TYPE_TUNNEL && tunnel_id != 0u) ? ROUTE_NH_TYPE_TUNNEL : ROUTE_NH_TYPE_IP;
+    if (nh_type == ROUTE_NH_TYPE_BLACKHOLE || info.key.nh_type == ROUTE_NH_TYPE_BLACKHOLE)
+    {
+        path->nh_type = ROUTE_NH_TYPE_BLACKHOLE;
+    }
+    else
+    {
+        path->nh_type = (nh_type == ROUTE_NH_TYPE_TUNNEL && tunnel_id != 0u) ? ROUTE_NH_TYPE_TUNNEL : ROUTE_NH_TYPE_IP;
+    }
     path->tunnel_id = (path->nh_type == ROUTE_NH_TYPE_TUNNEL) ? tunnel_id : 0u;
     path->out_label = (path->nh_type == ROUTE_NH_TYPE_TUNNEL) ? out_label : 0u;
     path->entry_flags = entry_flags;
@@ -514,14 +527,9 @@ static gboolean walk_head(gpointer key, gpointer value, gpointer data)
         {
             continue;
         }
-        /* 协议过滤：ROUTE_PROTOCOL_STATIC 同时匹配 ROUTE_PROTOCOL_BLACKHOLE
-         * （null0 黑洞路由也是通过 `route ipv4 ... null0` 配置的用户静态路由）。 */
         if (ctx->proto_filter != ROUTE_PROTOCOL_MAX)
         {
-            int proto_match =
-                (path->key.protocol == ctx->proto_filter) ||
-                (ctx->proto_filter == ROUTE_PROTOCOL_STATIC && path->key.protocol == ROUTE_PROTOCOL_BLACKHOLE);
-            if (!proto_match)
+            if (path->key.protocol != ctx->proto_filter)
             {
                 continue;
             }

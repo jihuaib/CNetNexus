@@ -295,7 +295,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 },
                 {
                     "device": "r2",
-                    "command": "show fib ipv4 os",
+                    "command": "show fib os ipv4",
                     "not_regex": [
                         rf"(?im)^\s*main\s+unicast\s+{re.escape(TEST_PREFIX)}\s+\S+\s+\S+\s+bgp\b",
                     ],

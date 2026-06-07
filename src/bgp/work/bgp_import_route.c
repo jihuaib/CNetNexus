@@ -10,6 +10,7 @@
  */
 #include "bgp_import_route.h"
 
+#include <arpa/inet.h>
 #include <glib.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -39,6 +40,42 @@ typedef struct bgp_import_route_sub_key
     uint32_t vrf_id;
     uint16_t afi;
 } bgp_import_route_sub_key_t;
+
+static gboolean route_entry_nexthop_is_localhost(const route_msg_entry_t *entry)
+{
+    if (!entry)
+    {
+        return FALSE;
+    }
+    if (entry->nexthop_addr.family == AF_INET)
+    {
+        return ntohl(entry->nexthop_addr.u.v4.s_addr) == INADDR_LOOPBACK;
+    }
+    if (entry->nexthop_addr.family == AF_INET6)
+    {
+        static const uint8_t loopback[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+        return memcmp(entry->nexthop_addr.u.v6.s6_addr, loopback, sizeof(loopback)) == 0;
+    }
+    return FALSE;
+}
+
+static gboolean route_entry_is_local_delivery(const route_msg_entry_t *entry, bgp_afi_t afi)
+{
+    if (!entry)
+    {
+        return FALSE;
+    }
+    if ((entry->flags & ROUTE_ENTRY_FLAG_LOCAL) != 0u)
+    {
+        return TRUE;
+    }
+    if (entry->protocol != ROUTE_PROTOCOL_CONNECTED)
+    {
+        return FALSE;
+    }
+    uint8_t host_len = (afi == BGP_AFI_IPV4) ? 32u : 128u;
+    return entry->prefix_len == host_len && route_entry_nexthop_is_localhost(entry);
+}
 
 static int bgp_import_route_send_subscribe(uint32_t msg_type, uint32_t import_proto, uint32_t vrf_id, uint16_t afi,
                                            uint32_t flags)
@@ -318,7 +355,7 @@ static gboolean bgp_import_proto_matches(uint32_t route_proto, uint32_t import_p
     {
         return TRUE;
     }
-    return import_proto == ROUTE_PROTOCOL_STATIC && route_proto == ROUTE_PROTOCOL_BLACKHOLE;
+    return FALSE;
 }
 
 static gboolean bgp_import_collect_rib_cb(gpointer key, gpointer value, gpointer user_data)
@@ -460,14 +497,7 @@ static int bgp_import_route_entry_to_safi(const route_msg_entry_t *entry, bgp_vr
         return 0;
     }
 
-    /* ROUTE_PROTOCOL_BLACKHOLE（null0 黑洞路由）在用户视角下也是静态路由，
-     * 因此在 import-route static 开关打开时一并允许导入。 */
-    uint32_t effective_proto = entry->protocol;
-    if (effective_proto == ROUTE_PROTOCOL_BLACKHOLE)
-    {
-        effective_proto = ROUTE_PROTOCOL_STATIC;
-    }
-    if (!(inst->import_protos & (1u << effective_proto)))
+    if (!(inst->import_protos & (1u << entry->protocol)))
     {
         /* import-route 路径遵循 import-route 协议开关 */
         return 0;
@@ -519,8 +549,14 @@ static int bgp_import_route_entry_to_safi(const route_msg_entry_t *entry, bgp_vr
         bgp_attr_build_imported(&attr);
         bgp_ext_community_merge_vrf_export_rts(&attr, vrf->vrf_id, afi);
 
-        bgp_nexthop_t nexthop;
-        bgp_nexthop_from_addr(&nexthop, &entry->nexthop_addr);
+        route_nhobj_key_t nh_key;
+        memset(&nh_key, 0, sizeof(nh_key));
+        nh_key.vrf_id = entry->vrf_id;
+        nh_key.protocol = ROUTE_PROTOCOL_BGP;
+        nh_key.afi = entry->afi;
+        nh_key.nh_type = entry->nh_type ? entry->nh_type : ROUTE_NH_TYPE_IP;
+        nh_key.key_ifindex = 0u;
+        nh_key.nexthop = entry->nexthop_addr;
 
         bgp_rthead_t *head = bgp_rib_ensure_head(rib, &nlri);
         if (!head)
@@ -540,7 +576,7 @@ static int bgp_import_route_entry_to_safi(const route_msg_entry_t *entry, bgp_vr
             rc = 1;
         }
         if (bgp_rib_route_apply_reach(route, (uint32_t)entry->protocol, &attr) != 0 ||
-            bgp_nexthop_set_route(route, &nexthop) != ERRCODE_SUCCESS)
+            bgp_nexthop_set_route_key(route, &nh_key) != ERRCODE_SUCCESS)
         {
             return 0;
         }
@@ -551,6 +587,14 @@ static int bgp_import_route_entry_to_safi(const route_msg_entry_t *entry, bgp_vr
         else
         {
             BIT_CLR(route->flags, BGP_ROUTE_FLAG_NO_ADV);
+        }
+        if (route_entry_is_local_delivery(entry, afi))
+        {
+            BIT_SET(route->flags, BGP_ROUTE_FLAG_LOCAL_DELIVERY);
+        }
+        else
+        {
+            BIT_CLR(route->flags, BGP_ROUTE_FLAG_LOCAL_DELIVERY);
         }
         bgp_route_set_label_from_nlri(route, &nlri, BGP_ROUTE_LABEL_SOURCE_LOCAL);
         if (rc >= 0 && inst->calc_queue)

@@ -250,14 +250,14 @@ def _wait_import_subscriptions(rt: TopologyRuntime, *, present: bool) -> None:
         checks = [
             {
                 "device": "r2",
-                "command": f"show route ipv4 vrf {VRF_NAME} subscribe",
+                "command": f"show route subscribe ipv4 vrf {VRF_NAME}",
                 "contains": ["Route Subscribers", f"VRF filter: {VRF_NAME}"],
                 "regex": [r"(?im)^\s*bgp\s+static\s+[1-9]\d*\s+ipv4\s*$"],
                 "label": "r2 vrf ipv4 static subscription installed",
             },
             {
                 "device": "r2",
-                "command": f"show route ipv6 vrf {VRF_NAME} subscribe",
+                "command": f"show route subscribe ipv6 vrf {VRF_NAME}",
                 "contains": ["Route Subscribers", f"VRF filter: {VRF_NAME}"],
                 "regex": [r"(?im)^\s*bgp\s+static\s+[1-9]\d*\s+ipv6\s*$"],
                 "label": "r2 vrf ipv6 static subscription installed",
@@ -267,14 +267,14 @@ def _wait_import_subscriptions(rt: TopologyRuntime, *, present: bool) -> None:
         checks = [
             {
                 "device": "r2",
-                "command": f"show route ipv4 vrf {VRF_NAME} subscribe",
+                "command": f"show route subscribe ipv4 vrf {VRF_NAME}",
                 "contains": ["(no subscribers)"],
                 "not_regex": [r"(?im)^\s*bgp\s+static\s+\d+\s+ipv4\s*$"],
                 "label": "r2 vrf ipv4 static subscription removed",
             },
             {
                 "device": "r2",
-                "command": f"show route ipv6 vrf {VRF_NAME} subscribe",
+                "command": f"show route subscribe ipv6 vrf {VRF_NAME}",
                 "contains": ["(no subscribers)"],
                 "not_regex": [r"(?im)^\s*bgp\s+static\s+\d+\s+ipv6\s*$"],
                 "label": "r2 vrf ipv6 static subscription removed",
@@ -615,14 +615,14 @@ def _wait_connected_subscriptions(rt: TopologyRuntime, *, present: bool) -> None
         checks = [
             {
                 "device": "r2",
-                "command": f"show route ipv4 vrf {VRF_NAME} subscribe",
+                "command": f"show route subscribe ipv4 vrf {VRF_NAME}",
                 "contains": ["Route Subscribers", f"VRF filter: {VRF_NAME}"],
                 "regex": [r"(?im)^\s*bgp\s+connected\s+[1-9]\d*\s+ipv4\s*$"],
                 "label": "r2 vrf ipv4 connected subscription installed",
             },
             {
                 "device": "r2",
-                "command": f"show route ipv6 vrf {VRF_NAME} subscribe",
+                "command": f"show route subscribe ipv6 vrf {VRF_NAME}",
                 "contains": ["Route Subscribers", f"VRF filter: {VRF_NAME}"],
                 "regex": [r"(?im)^\s*bgp\s+connected\s+[1-9]\d*\s+ipv6\s*$"],
                 "label": "r2 vrf ipv6 connected subscription installed",
@@ -632,14 +632,14 @@ def _wait_connected_subscriptions(rt: TopologyRuntime, *, present: bool) -> None
         checks = [
             {
                 "device": "r2",
-                "command": f"show route ipv4 vrf {VRF_NAME} subscribe",
+                "command": f"show route subscribe ipv4 vrf {VRF_NAME}",
                 "contains": ["(no subscribers)"],
                 "not_regex": [r"(?im)^\s*bgp\s+connected\s+\d+\s+ipv4\s*$"],
                 "label": "r2 vrf ipv4 connected subscription removed",
             },
             {
                 "device": "r2",
-                "command": f"show route ipv6 vrf {VRF_NAME} subscribe",
+                "command": f"show route subscribe ipv6 vrf {VRF_NAME}",
                 "contains": ["(no subscribers)"],
                 "not_regex": [r"(?im)^\s*bgp\s+connected\s+\d+\s+ipv6\s*$"],
                 "label": "r2 vrf ipv6 connected subscription removed",
@@ -738,13 +738,13 @@ def _wait_r1_vrf_data_plane(rt: TopologyRuntime) -> None:
             },
             {
                 "device": "r1",
-                "command": f"show fib ipv4 vrf {VRF_NAME} os",
+                "command": f"show fib os ipv4 vrf {VRF_NAME}",
                 "contains": [LOOP_V4_PREFIX],
                 "label": "r1 vrf os fib ipv4 installed",
             },
             {
                 "device": "r1",
-                "command": f"show fib ipv6 vrf {VRF_NAME} os",
+                "command": f"show fib os ipv6 vrf {VRF_NAME}",
                 "contains": [LOOP_V6_PREFIX],
                 "label": "r1 vrf os fib ipv6 installed",
             },

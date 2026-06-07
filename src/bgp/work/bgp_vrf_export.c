@@ -321,10 +321,11 @@ static int bgp_vrf_export_process_one(bgp_instance_t *vpn_inst, bgp_rthead_t *sr
     bgp_rthead_t *tgt_head = (bgp_rthead_t *)bgp_rib_lookup_head(tgt_rib, &vpn_nlri);
     bgp_route_node_t *route = tgt_head ? bgp_rthead_lookup_route_mut(tgt_head, &synth) : NULL;
 
-    /* REMOTE_CROSS：该 best 是从 peer 的 vpnv4 导入到本 VRF 的路由，绝不能再导出回 vpnv4
-     * （否则 r1→r2 导入后 r2 又用自己 RD 导出回去，撤销时续命成环）。等同 best 缺失：撤销本地导出。 */
+    /* REMOTE_CROSS：从 peer 的 vpnv4 导入到本 VRF 的路由；LOCAL_CROSS：本机另一 VRF 泄漏进来的路由。
+     * 二者都不能再导出回 vpnv4（REMOTE_CROSS 会与对端续命成环；LOCAL_CROSS 属本地交叉单跳，
+     * 不应经 vpnv4 再传递）。等同 best 缺失：撤销本地导出。 */
     if (!src_best || !BIT_TEST(src_best->flags, BGP_ROUTE_FLAG_VALID) ||
-        BIT_TEST(src_best->flags, BGP_ROUTE_FLAG_REMOTE_CROSS))
+        BIT_TEST(src_best->flags, BGP_ROUTE_FLAG_REMOTE_CROSS) || BIT_TEST(src_best->flags, BGP_ROUTE_FLAG_LOCAL_CROSS))
     {
         /* best 缺失/不可导出：解除溯源关联并撤销 vpnv4 中该 (rd, prefix) 的本地导出路由 */
         if (route)

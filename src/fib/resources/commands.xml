@@ -3,7 +3,7 @@
     <views>
     </views>
     <command_groups>
-        <!-- Group 1: show fib ipv4|ipv6 [<prefix> <mask>] [os], show fib mpls [<label>] [os] -->
+        <!-- Group 1: show fib os {ipv4|ipv6} [<prefix> <mask>], show fib mpls [os] [<label>] -->
         <group group-id="1">
             <elements>
                 <element id="1" type="keyword">
@@ -94,14 +94,24 @@
                     <expression>1 2 4 [11 12] 6 8</expression>
                     <views>global</views>
                 </command>
-                <!-- show fib ipv4 os -->
+                <!-- show fib os ipv4 -->
                 <command>
-                    <expression>1 2 3 [11 12] 5</expression>
+                    <expression>1 2 5 3 [11 12]</expression>
                     <views>global</views>
                 </command>
-                <!-- show fib ipv6 os -->
+                <!-- show fib os ipv6 -->
                 <command>
-                    <expression>1 2 4 [11 12] 5</expression>
+                    <expression>1 2 5 4 [11 12]</expression>
+                    <views>global</views>
+                </command>
+                <!-- show fib os ipv4 <prefix> <prefix-length> -->
+                <command>
+                    <expression>1 2 5 3 [11 12] 6 7</expression>
+                    <views>global</views>
+                </command>
+                <!-- show fib os ipv6 <prefix> <prefix-length> -->
+                <command>
+                    <expression>1 2 5 4 [11 12] 6 8</expression>
                     <views>global</views>
                 </command>
                 <!-- show fib mpls -->
@@ -109,14 +119,14 @@
                     <expression>1 2 9 [11 12]</expression>
                     <views>global</views>
                 </command>
-                <!-- show fib mpls <label> -->
-                <command>
-                    <expression>1 2 9 [11 12] 10</expression>
-                    <views>global</views>
-                </command>
                 <!-- show fib mpls os -->
                 <command>
-                    <expression>1 2 9 [11 12] 5</expression>
+                    <expression>1 2 9 5 [11 12]</expression>
+                    <views>global</views>
+                </command>
+                <!-- show fib mpls os [vrf <name>] <label> -->
+                <command>
+                    <expression>1 2 9 5 [11 12] 10</expression>
                     <views>global</views>
                 </command>
                 <!-- show fib nexthop {ipv4|ipv6} [vrf <name>] [id <id>]（afi 必填，vrf 在 id 之前） -->

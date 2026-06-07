@@ -32,7 +32,7 @@ uint32_t bgp_import_route_on_report(const dev_ipc_message_t *msg);
 /**
  * @brief 清理指定 AF instance 下由 import-route 指定协议导入的本地 BGP RIB 路由。
  *
- * ROUTE_PROTOCOL_STATIC 同时清理 ROUTE_PROTOCOL_BLACKHOLE，因为 null0 在 import-route static 语义下导入。
+ * null0 路径由 STATIC + nh_type=BLACKHOLE 表示，按普通 STATIC import-route 清理。
  *
  * @return 已撤销的 BGP route 节点数量
  */

@@ -138,7 +138,7 @@ def _wait_static_candidate(
         nexthop_re = rf"(?:{re.escape(nexthop)}|-)"
     else:
         nexthop_re = re.escape(nexthop)
-    # Newer `show route <afi> static` includes Interface column:
+    # Newer `show route static <afi>` includes Interface column:
     # AFI Prefix Nexthop Interface Met Pref Resolved InRIB
     # Keep interface token optional to remain compatible with older output.
     row_regex = (
@@ -148,7 +148,7 @@ def _wait_static_candidate(
     wait_check(
         rt,
         device="r1",
-        command=f"show route {afi} static",
+        command=f"show route static {afi}",
         timeout=timeout,
         interval=interval,
         contains=[f"Total {total_count} static route(s)"],
@@ -173,7 +173,7 @@ def _wait_os_route(
     wait_check(
         rt,
         device="r1",
-        command=f"show fib {afi} os",
+        command=f"show fib os {afi}",
         timeout=timeout,
         interval=interval,
         regex=[row_regex] if expect_present else (),

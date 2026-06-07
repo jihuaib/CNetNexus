@@ -89,7 +89,7 @@ def _wait_os_best_proto_ipv4(
     wait_check(
         rt,
         device=device,
-        command="show fib ipv4 os",
+        command="show fib os ipv4",
         timeout=timeout,
         interval=2,
         regex=[best_row_regex],
@@ -165,7 +165,7 @@ def _wait_os_best_proto_ipv6(
     wait_check(
         rt,
         device=device,
-        command="show fib ipv6 os",
+        command="show fib os ipv6",
         timeout=timeout,
         interval=2,
         regex=[best_row_regex],

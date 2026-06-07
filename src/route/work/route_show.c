@@ -60,8 +60,9 @@ int route_show_send_chunked(dev_ipc_message_t *msg, GString *full_text)
 // cfg-id 映射：
 //   1=ipv4, 2=ipv6, 4=dest_filter,
 //   5=proto:static, 6=proto:bgp, 7=proto:ospf, 8=summary,
-//   9=proto:connected, 10=os, 11=proto:isis,
-//   12=prefix_len_v4, 13=prefix_len_v6, 14=subscribe
+//   9=proto:connected, 11=proto:isis,
+//   12=prefix_len_v4, 13=prefix_len_v6, 14=subscribe,
+//   15=vrf, 16=vrf_name
 // ============================================================================
 
 typedef struct
@@ -171,8 +172,6 @@ static const char *proto_name(uint32_t protocol)
             return "O";
         case ROUTE_PROTOCOL_ISIS:
             return "I";
-        case ROUTE_PROTOCOL_BLACKHOLE:
-            return "S";
         default:
             return "?";
     }
@@ -192,8 +191,6 @@ static const char *proto_name_long(uint32_t protocol)
             return "ospf";
         case ROUTE_PROTOCOL_ISIS:
             return "isis";
-        case ROUTE_PROTOCOL_BLACKHOLE:
-            return "static(blackhole)";
         case ROUTE_PROTOCOL_MAX:
             return "all";
         default:
@@ -323,6 +320,11 @@ static void ifindex_to_name(uint32_t ifindex, char *buf)
         g_strlcpy(buf, "-", IF_NAMESIZE);
         return;
     }
+    if (ifindex == ROUTE_INLOOP_IFINDEX)
+    {
+        g_strlcpy(buf, ROUTE_INLOOP_IFNAME, IF_NAMESIZE);
+        return;
+    }
     const char *logical = if_api_cache_get_logical_name(ifindex);
     if (logical)
     {
@@ -364,7 +366,7 @@ static void show_path_cb(const route_head_t *head, const route_path_t *path, voi
     net_addr_to_str(&head->key.addr, addr_str, sizeof(addr_str));
     net_addr_to_str(nh_addr, nh_str, sizeof(nh_str));
     snprintf(prefix_str, sizeof(prefix_str), "%s/%u", addr_str, head->key.prefix_len);
-    if (path->key.protocol == ROUTE_PROTOCOL_BLACKHOLE)
+    if (path->nh_type == ROUTE_NH_TYPE_BLACKHOLE)
     {
         g_strlcpy(oif_str, "Null0", IF_NAMESIZE);
     }
@@ -422,7 +424,7 @@ static void detail_path_cb(const route_head_t *head, const route_path_t *path, v
     net_addr_to_str(&head->key.addr, addr_str, sizeof(addr_str));
     net_addr_to_str(nh_addr, nh_str, sizeof(nh_str));
     net_addr_to_str(relay_addr, iter_nh_str, sizeof(iter_nh_str));
-    if (path->key.protocol == ROUTE_PROTOCOL_BLACKHOLE)
+    if (path->nh_type == ROUTE_NH_TYPE_BLACKHOLE)
     {
         g_strlcpy(oif_str, "Null0", IF_NAMESIZE);
         g_strlcpy(iter_oif_str, "Null0", IF_NAMESIZE);

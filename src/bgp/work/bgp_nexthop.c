@@ -31,8 +31,19 @@ typedef struct bgp_nexthop_entry
     uint32_t refcount;
 } bgp_nexthop_entry_t;
 
+static gboolean bgp_route_is_local_cross_uc(const bgp_route_node_t *route)
+{
+    return route && BIT_TEST(route->flags, BGP_ROUTE_FLAG_LOCAL_CROSS) && route->head && route->head->inst &&
+           route->head->inst->vrf && route->head->inst->vrf->vrf_id != BGP_VRF_PUBLIC_ID &&
+           route->head->inst->safi == BGP_SAFI_UNICAST;
+}
+
 static const bgp_route_node_t *bgp_nexthop_route_owner(const bgp_route_node_t *route)
 {
+    if (bgp_route_is_local_cross_uc(route))
+    {
+        return route;
+    }
     return (route && route->src_route) ? route->src_route : route;
 }
 
@@ -107,10 +118,30 @@ void bgp_nexthop_make_route_key(const bgp_route_node_t *route, const net_addr_t 
     memset(key, 0, sizeof(*key));
     key->vrf_id = (route && route->head && route->head->inst && route->head->inst->vrf) ? route->head->inst->vrf->vrf_id
                                                                                         : ROUTE_VRF_DEFAULT;
+    /* vrf 本地交叉(LOCAL_CROSS)：本路由落在目标 VRF，但下一跳要在「源 VRF」里迭代解析(nexthop-vrf)。
+     * 让 nexthop 对象的 key.vrf_id=源 VRF，ROUTE 即在源 VRF 迭代该对象，BGP 收解析结果后下刷目标 VRF FIB。 */
+    if (route && BIT_TEST(route->flags, BGP_ROUTE_FLAG_LOCAL_CROSS) && route->src_route && route->src_route->head &&
+        route->src_route->head->inst && route->src_route->head->inst->vrf)
+    {
+        key->vrf_id = route->src_route->head->inst->vrf->vrf_id;
+        route_nhobj_key_t src_key;
+        if (bgp_nexthop_get_route_key(route->src_route, &src_key) == ERRCODE_SUCCESS)
+        {
+            key->nh_type = src_key.nh_type;
+        }
+    }
     key->protocol = ROUTE_PROTOCOL_BGP;
     key->afi = (route && route->head) ? (uint16_t)route->head->nlri.afi : ROUTE_AFI_IPV4;
-    key->nh_type = ROUTE_NH_TYPE_IP;
-    key->key_ifindex = 0u;
+    if (key->nh_type == 0u)
+    {
+        key->nh_type = ROUTE_NH_TYPE_IP;
+    }
+    key->key_ifindex = ROUTE_NHOBJ_KEY_IFINDEX_LOCAL_CROSS;
+    if (route && (!BIT_TEST(route->flags, BGP_ROUTE_FLAG_LOCAL_CROSS) || !route->src_route || !route->src_route->head ||
+                  !route->src_route->head->inst || !route->src_route->head->inst->vrf))
+    {
+        key->key_ifindex = 0u;
+    }
     if (nexthop)
     {
         key->nexthop = *nexthop;
@@ -363,26 +394,24 @@ void bgp_nexthop_clear_value(bgp_instance_t *inst, uint32_t id)
     entry->value.updated_at_usec = g_get_real_time();
 }
 
-int bgp_nexthop_set_route(bgp_route_node_t *route, const bgp_nexthop_t *nexthop)
+int bgp_nexthop_set_route_key(bgp_route_node_t *route, const route_nhobj_key_t *key)
 {
-    if (!route || !route->head || !route->head->inst || !nexthop || nexthop->global.family == 0)
+    if (!route || !route->head || !route->head->inst || !key || key->nexthop.family == 0 || key->nh_type == 0u)
     {
         return ERRCODE_FAIL;
     }
 
     bgp_instance_t *inst = route->head->inst;
-    route_nhobj_key_t key;
-    bgp_nexthop_make_route_key(route, &nexthop->global, &key);
 
     route_nhobj_key_t cur_key;
     if (route->nexthop_id != 0u && bgp_nexthop_lookup(inst, route->nexthop_id, &cur_key) == ERRCODE_SUCCESS &&
-        bgp_nexthop_key_equal(&cur_key, &key))
+        bgp_nexthop_key_equal(&cur_key, key))
     {
         return ERRCODE_SUCCESS;
     }
 
     uint32_t new_id = 0u;
-    if (bgp_nexthop_acquire(inst, &key, &new_id) != ERRCODE_SUCCESS)
+    if (bgp_nexthop_acquire(inst, key, &new_id) != ERRCODE_SUCCESS)
     {
         return ERRCODE_FAIL;
     }
@@ -390,6 +419,18 @@ int bgp_nexthop_set_route(bgp_route_node_t *route, const bgp_nexthop_t *nexthop)
     bgp_nexthop_reset_route(route);
     route->nexthop_id = new_id;
     return ERRCODE_SUCCESS;
+}
+
+int bgp_nexthop_set_route(bgp_route_node_t *route, const bgp_nexthop_t *nexthop)
+{
+    if (!route || !route->head || !route->head->inst || !nexthop || nexthop->global.family == 0)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    route_nhobj_key_t key;
+    bgp_nexthop_make_route_key(route, &nexthop->global, &key);
+    return bgp_nexthop_set_route_key(route, &key);
 }
 
 void bgp_nexthop_reset_route(bgp_route_node_t *route)

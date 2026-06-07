@@ -34,13 +34,19 @@ typedef struct bgp_rthead bgp_rthead_t;
 #define BGP_ROUTE_FLAG_NO_ADV (1U << 5)
 /** 路由标记位：import-rib 镜像路由（mirror 节点本身置位；源节点不置位） */
 #define BGP_ROUTE_FLAG_IMPORT_RIB (1U << 6)
-/** 路由标记位：vrf-export 本地跨表合成路由（本地 VRF 单播 → vpnv4）。属本地起源，正常对外通告；
- *  与 IMPORT(重分发) 区分，避免被 import-route 清理/再导入误伤 */
+/** 路由标记位：本地跨表合成路由，两种来源共用此标记，按所在 instance 区分：
+ *  (1) vrf-export：本地 VRF 单播 → vpnv4（合成节点位于 public vpnv4 inst）；
+ *  (2) vrf 本地交叉：本机另一 VRF 单播 → 本 VRF 单播（合成节点位于私网 unicast inst，
+ *      源 VRF export-RT 直接命中本 VRF import-RT 泄漏而来）。
+ *  二者都属本地起源、正常对外通告；与 IMPORT(重分发) 区分，避免被 import-route 清理/再导入误伤。
+ *  单跳防环：LOCAL_CROSS（已泄漏）不再作为本地交叉的泄漏源，也不被 vrf-export 回灌 vpnv4。 */
 #define BGP_ROUTE_FLAG_LOCAL_CROSS (1U << 7)
 /** 路由标记位：vrf-import 远端跨表合成路由（peer 的 vpnv4 → 本地 VRF 单播）。非本地起源，
  *  绝不可被 vrf-export 回灌 vpnv4（否则成环） */
 #define BGP_ROUTE_FLAG_REMOTE_CROSS (1U << 8)
-
+/** 路由标记位：本地接收前缀（如接口/loopback 地址的 host route）。跨 VRF 本地泄漏到 ROUTE/FIB
+ *  时需保留 local-delivery 语义，使目标 VRF 表安装 RTN_LOCAL 而不是 via 127.0.0.1 的 unicast。 */
+#define BGP_ROUTE_FLAG_LOCAL_DELIVERY (1U << 9)
 #define BGP_ROUTE_LABEL_SOURCE_NONE 0u
 #define BGP_ROUTE_LABEL_SOURCE_LOCAL 1u
 #define BGP_ROUTE_LABEL_SOURCE_RECEIVED 2u

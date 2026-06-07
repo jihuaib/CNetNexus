@@ -250,7 +250,7 @@ def _wait_os_route(rt: TopologyRuntime, device: str, *, prefix: str, present: bo
     wait_check(
         rt,
         device=device,
-        command="show fib ipv4 os",
+        command="show fib os ipv4",
         timeout=timeout,
         interval=2,
         contains=[prefix] if present else [],

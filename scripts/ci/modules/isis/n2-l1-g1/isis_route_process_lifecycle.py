@@ -358,7 +358,7 @@ def _wait_os_prefix(
     wait_check(
         rt,
         device=device,
-        command=f"show fib {afi} os",
+        command=f"show fib os {afi}",
         timeout=timeout,
         interval=2,
         contains=[prefix] if present else [],

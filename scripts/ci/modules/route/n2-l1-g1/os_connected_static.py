@@ -58,7 +58,7 @@ def _wait_os_route(
     wait_check(
         rt,
         device=device,
-        command="show fib ipv4 os",
+        command="show fib os ipv4",
         timeout=timeout,
         interval=interval,
         regex=[row_regex] if expect_present else (),
@@ -109,7 +109,7 @@ def _wait_os_route_ipv6(
     wait_check(
         rt,
         device=device,
-        command="show fib ipv6 os",
+        command="show fib os ipv6",
         timeout=timeout,
         interval=interval,
         regex=[row_regex] if expect_present else (),

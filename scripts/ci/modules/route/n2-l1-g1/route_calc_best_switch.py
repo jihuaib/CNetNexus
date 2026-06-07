@@ -152,7 +152,7 @@ def _wait_os_main_gateway(
     wait_check(
         rt,
         device=device,
-        command="show fib ipv4 os",
+        command="show fib os ipv4",
         timeout=timeout,
         interval=interval,
         regex=[row_regex],
@@ -324,7 +324,7 @@ def _wait_os_main_gateway_ipv6(
     wait_check(
         rt,
         device=device,
-        command="show fib ipv6 os",
+        command="show fib os ipv6",
         timeout=timeout,
         interval=interval,
         regex=[row_regex],

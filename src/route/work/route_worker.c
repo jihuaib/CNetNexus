@@ -6,7 +6,9 @@
  */
 #include "route_worker.h"
 
+#include <arpa/inet.h>
 #include <errno.h>
+#include <stddef.h>
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
@@ -237,7 +239,157 @@ static int route_worker_post_calc_event(const route_head_key_t *key)
     return 0;
 }
 
-/* SMOOTHSTART 时回调：收集 cache 内所有非 public VRF id，拆除其在 RIB 中的静态路由。
+static void on_inject_path_del(const route_head_t *head, const route_path_t *path, void *userdata);
+
+// ============================================================================
+// 本地回环路由：VRF 创建时自动下发 127.0.0.0/8、127.0.0.1/32 和 ::1/128
+// ============================================================================
+
+static void worker_make_ipv4_addr(net_addr_t *addr, uint32_t host_order)
+{
+    memset(addr, 0, sizeof(*addr));
+    addr->family = AF_INET;
+    addr->u.v4.s_addr = htonl(host_order);
+}
+
+static void worker_make_ipv6_loopback_addr(net_addr_t *addr)
+{
+    memset(addr, 0, sizeof(*addr));
+    addr->family = AF_INET6;
+    addr->u.v6.s6_addr[15] = 1u;
+}
+
+static int worker_install_loopback_route(uint32_t vrf_id, uint32_t prefix_host_order, uint8_t prefix_len)
+{
+    net_addr_t nh_addr;
+    net_addr_t prefix_addr;
+    worker_make_ipv4_addr(&nh_addr, 0x7F000001u);
+    worker_make_ipv4_addr(&prefix_addr, prefix_host_order);
+
+    uint32_t entry_flags = ROUTE_ENTRY_FLAG_NO_ADV | ROUTE_ENTRY_FLAG_LOCAL;
+    int ret = route_rib_add(g_route_work_local->rib, vrf_id, ROUTE_AFI_IPV4, &prefix_addr, prefix_len,
+                            ROUTE_PROTOCOL_CONNECTED, &nh_addr, &nh_addr, 0, ROUTE_ADMIN_DIST_CONNECTED,
+                            ROUTE_INLOOP_IFINDEX, ROUTE_NH_TYPE_IP, 0u, 0u, entry_flags);
+    if (ret < 0)
+    {
+        return ret;
+    }
+
+    const route_head_t *head =
+        route_rib_lookup_head(g_route_work_local->rib, vrf_id, ROUTE_AFI_IPV4, &prefix_addr, prefix_len);
+    if (head)
+    {
+        const route_path_t *path = route_rib_lookup_path(head, ROUTE_PROTOCOL_CONNECTED, &nh_addr);
+        if (path)
+        {
+            route_nhobj_set_relay(path->nexthop_id, &nh_addr, ROUTE_INLOOP_IFINDEX);
+        }
+        route_work_handle_calc_event(&head->key);
+    }
+
+    return ret;
+}
+
+static int worker_install_loopback_route_v6(uint32_t vrf_id)
+{
+    net_addr_t nh_addr;
+    net_addr_t prefix_addr;
+    worker_make_ipv6_loopback_addr(&nh_addr);
+    worker_make_ipv6_loopback_addr(&prefix_addr);
+
+    uint32_t entry_flags = ROUTE_ENTRY_FLAG_NO_ADV | ROUTE_ENTRY_FLAG_LOCAL;
+    int ret = route_rib_add(g_route_work_local->rib, vrf_id, ROUTE_AFI_IPV6, &prefix_addr, 128,
+                            ROUTE_PROTOCOL_CONNECTED, &nh_addr, &nh_addr, 0, ROUTE_ADMIN_DIST_CONNECTED,
+                            ROUTE_INLOOP_IFINDEX, ROUTE_NH_TYPE_IP, 0u, 0u, entry_flags);
+    if (ret < 0)
+    {
+        return ret;
+    }
+
+    const route_head_t *head =
+        route_rib_lookup_head(g_route_work_local->rib, vrf_id, ROUTE_AFI_IPV6, &prefix_addr, 128);
+    if (head)
+    {
+        const route_path_t *path = route_rib_lookup_path(head, ROUTE_PROTOCOL_CONNECTED, &nh_addr);
+        if (path)
+        {
+            route_nhobj_set_relay(path->nexthop_id, &nh_addr, ROUTE_INLOOP_IFINDEX);
+        }
+        route_work_handle_calc_event(&head->key);
+    }
+
+    return ret;
+}
+
+/**
+ * @brief 为指定 VRF 安装本地回环路由
+ *
+ * 下发三条路由：
+ *   - 127.0.0.0/8   nexthop 127.0.0.1  出接口 inloop0
+ *   - 127.0.0.1/32  nexthop 127.0.0.1  出接口 inloop0
+ *   - ::1/128       nexthop ::1        出接口 inloop0
+ *
+ * 使用 ROUTE_PROTOCOL_CONNECTED 协议类型，source_addr 设为 localhost 地址作为路径标识。
+ * ROUTE_ENTRY_FLAG_LOCAL 表示 FIB 对非 public VRF 下发 RTN_LOCAL；public 只保留内部视图。
+ */
+static void worker_install_loopback_routes(uint32_t vrf_id)
+{
+    if (!g_route_work_local || !g_route_work_local->rib)
+    {
+        return;
+    }
+
+    int ret1 = worker_install_loopback_route(vrf_id, 0x7F000000u, 8);
+    int ret2 = worker_install_loopback_route(vrf_id, 0x7F000001u, 32);
+    int ret3 = worker_install_loopback_route_v6(vrf_id);
+
+    LOG_INFO("[route_worker] installed loopback routes for vrf_id=%u (127.0.0.0/8 rc=%d, 127.0.0.1/32 rc=%d, "
+             "::1/128 rc=%d)",
+             vrf_id, ret1, ret2, ret3);
+}
+
+/**
+ * @brief 撤销指定 VRF 的本地回环路由
+ *
+ * 在 VRF 删除时调用，撤销 127.0.0.0/8、127.0.0.1/32 和 ::1/128 三条路由。
+ */
+static void worker_withdraw_loopback_routes(uint32_t vrf_id)
+{
+    if (!g_route_work_local || !g_route_work_local->rib)
+    {
+        return;
+    }
+
+    net_addr_t source;
+    worker_make_ipv4_addr(&source, 0x7F000001u);
+
+    net_addr_t prefix_8;
+    worker_make_ipv4_addr(&prefix_8, 0x7F000000u);
+
+    int del1 = route_rib_del(g_route_work_local->rib, vrf_id, ROUTE_AFI_IPV4, &prefix_8, 8, ROUTE_PROTOCOL_CONNECTED,
+                             &source, on_inject_path_del, NULL);
+
+    net_addr_t prefix_32;
+    worker_make_ipv4_addr(&prefix_32, 0x7F000001u);
+
+    int del2 = route_rib_del(g_route_work_local->rib, vrf_id, ROUTE_AFI_IPV4, &prefix_32, 32, ROUTE_PROTOCOL_CONNECTED,
+                             &source, on_inject_path_del, NULL);
+
+    net_addr_t source_v6;
+    worker_make_ipv6_loopback_addr(&source_v6);
+
+    net_addr_t prefix_v6;
+    worker_make_ipv6_loopback_addr(&prefix_v6);
+
+    int del3 = route_rib_del(g_route_work_local->rib, vrf_id, ROUTE_AFI_IPV6, &prefix_v6, 128, ROUTE_PROTOCOL_CONNECTED,
+                             &source_v6, on_inject_path_del, NULL);
+
+    LOG_INFO("[route_worker] withdrew loopback routes for vrf_id=%u (127.0.0.0/8 rc=%d, 127.0.0.1/32 rc=%d, "
+             "::1/128 rc=%d)",
+             vrf_id, del1, del2, del3);
+}
+
+/* SMOOTHSTART 时回调：收集 cache 内所有非 public VRF id，拆除其在 RIB 中的 VRF 相关业务。
  * 注意只清内存，不动 DB（DB 是后续 SMOOTHEND 重恢复的依据）。 */
 static gboolean purge_collect_cb(const vrf_api_cache_entry_t *entry, void *user_data)
 {
@@ -257,8 +409,9 @@ void route_worker_purge_non_public_vrf_business(void)
     for (guint i = 0; i < vrf_ids->len; i++)
     {
         uint32_t vid = g_array_index(vrf_ids, uint32_t, i);
+        worker_withdraw_loopback_routes(vid);
         int rc = route_static_del_vrf(vid);
-        LOG_INFO("Route resync: purged %d static path(s) for vrf_id=%u", rc > 0 ? rc : 0, vid);
+        LOG_INFO("Route resync: purged loopback + %d static path(s) for vrf_id=%u", rc > 0 ? rc : 0, vid);
     }
     g_array_free(vrf_ids, TRUE);
 }
@@ -706,9 +859,34 @@ static int worker_dispatch_cmd(route_worker_cmd_t *cmd)
             break;
 
         case ROUTE_WORKER_CMD_VRF_EVENT:
+        {
             /* SMOOTHSTART/EVENT 直接交给 lib：DOWN 路径已在前面拆掉非 public VRF 业务，
              * 这里只负责让 cache 跟随 REPLAY 流重建。 */
+            uint32_t vrf_evt = 0;
+            uint32_t vrf_evt_id = 0;
+            if (cmd->msg && cmd->msg->payload && cmd->msg->payload_len >= offsetof(vrf_event_msg_t, rts))
+            {
+                const vrf_event_msg_t *evt = (const vrf_event_msg_t *)cmd->msg->payload;
+                vrf_evt = evt->event;
+                vrf_evt_id = evt->vrf_id;
+            }
+
+            if (vrf_evt == VRF_EVENT_SMOOTHSTART)
+            {
+                route_worker_purge_non_public_vrf_business();
+            }
+            else if (vrf_evt == VRF_EVENT_VRF_DEL)
+            {
+                worker_withdraw_loopback_routes(vrf_evt_id);
+            }
+
             vrf_api_cache_on_event(cmd->msg);
+
+            if (vrf_evt == VRF_EVENT_VRF_ADD)
+            {
+                worker_install_loopback_routes(vrf_evt_id);
+            }
+
             if (cmd->msg)
             {
                 dev_ipc_message_free(cmd->msg);
@@ -716,6 +894,7 @@ static int worker_dispatch_cmd(route_worker_cmd_t *cmd)
             }
             worker_cmd_complete(cmd, ERRCODE_SUCCESS);
             return 0;
+        }
 
         case ROUTE_WORKER_CMD_VRF_DOWN:
             /* VRF 模块 DOWN：先拆 RIB 中所有非 public VRF 的静态路由，再清 vrf_api cache。 */
@@ -836,6 +1015,9 @@ static void *route_worker_thread_fn(void *arg)
     struct epoll_event events[ROUTE_MAX_EPOLL_EVENTS];
 
     LOG_INFO("[route_worker] worker 线程启动");
+
+    /* 公网 VRF（vrf_id=0）启动时即安装本地回环路由 */
+    worker_install_loopback_routes(VRF_PUBLIC_VRF_ID);
 
     /* 恢复结束后做一次全量 nexthop 重算（在 route worker 线程内执行） */
     route_recompute_iter_paths();
@@ -1217,7 +1399,7 @@ void route_worker_shutdown(void)
 
 int route_add_and_notify_nexthop_id(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr, uint8_t prefix_len,
                                     uint32_t protocol, const net_addr_t *source_addr, uint32_t nexthop_id,
-                                    int32_t metric, int32_t preference, uint32_t out_ifindex)
+                                    int32_t metric, int32_t preference, uint32_t out_ifindex, uint8_t nh_type)
 {
     if (!g_route_work_local || !g_route_work_local->rib || !prefix_addr || !source_addr || nexthop_id == 0u)
     {
@@ -1225,9 +1407,8 @@ int route_add_and_notify_nexthop_id(uint32_t vrf_id, uint16_t afi, const net_add
     }
 
     /* 只带 nexthop_id：relay 已由对象维护（发布方在「添加下一跳」时写入），此处不 set_relay */
-    int ret =
-        route_rib_add_nexthop_id(g_route_work_local->rib, vrf_id, afi, prefix_addr, prefix_len, protocol, source_addr,
-                                 nexthop_id, metric, preference, out_ifindex, ROUTE_NH_TYPE_IP, 0u, 0u, 0u);
+    int ret = route_rib_add_nexthop_id(g_route_work_local->rib, vrf_id, afi, prefix_addr, prefix_len, protocol,
+                                       source_addr, nexthop_id, metric, preference, out_ifindex, nh_type, 0u, 0u, 0u);
     if (ret < 0)
     {
         return ret;

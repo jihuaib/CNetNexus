@@ -90,6 +90,15 @@ static gboolean static_rkey_equal(gconstpointer a, gconstpointer b)
            ka->nexthop_id == kb->nexthop_id && net_addr_equal(&ka->prefix_addr, &kb->prefix_addr);
 }
 
+static int static_relay_addr_equal(const net_addr_t *a, const net_addr_t *b)
+{
+    if (net_addr_is_zero(a) && net_addr_is_zero(b))
+    {
+        return 1;
+    }
+    return net_addr_equal(a, b) ? 1 : 0;
+}
+
 // ============================================================================
 // 辅助：撤销 RIB 条目时的通知回调
 // ============================================================================
@@ -216,8 +225,8 @@ static void build_nh_key(route_nhobj_key_t *key, uint32_t vrf_id, uint16_t afi, 
     memset(key, 0, sizeof(*key));
     key->vrf_id = vrf_id;
     key->afi = afi;
-    key->protocol = is_null0 ? ROUTE_PROTOCOL_BLACKHOLE : ROUTE_PROTOCOL_STATIC;
-    key->nh_type = is_null0 ? FIB_NH_TYPE_BLACKHOLE : FIB_NH_TYPE_IP;
+    key->protocol = ROUTE_PROTOCOL_STATIC;
+    key->nh_type = is_null0 ? ROUTE_NH_TYPE_BLACKHOLE : ROUTE_NH_TYPE_IP;
     key->key_ifindex = cfg_ifindex;
     key->nexthop = *nexthop; /* has_nexthop=真实地址；否则 zero-with-family（由调用方构造） */
 }
@@ -243,6 +252,7 @@ static void nh_resolve_initial(route_static_nh_t *nh)
     if (nh->is_null0)
     {
         nh->resolved = 1u; /* null0 黑洞配置即生效 */
+        nh->resolved_nh_type = ROUTE_NH_TYPE_BLACKHOLE;
         return;
     }
     if (!nh->has_nexthop)
@@ -250,6 +260,7 @@ static void nh_resolve_initial(route_static_nh_t *nh)
         /* interface-only：基于直连路由判断 */
         uint32_t oif = nh->key.key_ifindex;
         nh->resolved = ((oif != 0) && rib_has_active_connected(vrf_id, afi, oif)) ? 1u : 0u;
+        nh->resolved_nh_type = ROUTE_NH_TYPE_IP;
         nh->relay_ifindex = oif;
         nh_set_object_relay(nh);
         return;
@@ -258,14 +269,16 @@ static void nh_resolve_initial(route_static_nh_t *nh)
     /* IP nexthop：注册迭代并取首解析结果 */
     net_addr_t relay;
     uint32_t oif = 0;
+    uint8_t resolved_nh_type = ROUTE_NH_TYPE_IP;
     memset(&relay, 0, sizeof(relay));
-    int resolved = route_relay_register_direct(nh->nexthop_id, DEV_MODULE_ID_ROUTE, &relay, &oif);
+    int resolved = route_relay_register_direct(nh->nexthop_id, DEV_MODULE_ID_ROUTE, &relay, &oif, &resolved_nh_type);
     /* nexthop+interface：relay 解析出接口须与配置接口一致 */
     if (resolved && nh->key.key_ifindex != 0 && oif != nh->key.key_ifindex)
     {
         resolved = 0;
     }
     nh->resolved = resolved ? 1u : 0u;
+    nh->resolved_nh_type = resolved ? resolved_nh_type : ROUTE_NH_TYPE_IP;
     if (resolved)
     {
         nh->relay_addr = relay;
@@ -344,7 +357,7 @@ static void nh_rib_params(const route_static_nh_t *nh, net_addr_t *source, net_a
 
     if (nh->is_null0)
     {
-        *protocol = ROUTE_PROTOCOL_BLACKHOLE;
+        *protocol = ROUTE_PROTOCOL_STATIC;
         *source = zero;
         *nexthop = zero;
         *relay = NULL;
@@ -385,9 +398,11 @@ static void route_apply(route_static_entry_t *entry, route_static_nh_t *nh)
 
     if (nh->resolved)
     {
+        uint8_t route_nh_type =
+            (nh->resolved_nh_type == ROUTE_NH_TYPE_BLACKHOLE) ? ROUTE_NH_TYPE_BLACKHOLE : nh->key.nh_type;
         int ret = route_add_and_notify_nexthop_id(entry->key.vrf_id, entry->key.afi, &entry->key.prefix_addr,
                                                   entry->key.prefix_len, protocol, &source, nh->nexthop_id,
-                                                  entry->metric, entry->preference, out_ifindex);
+                                                  entry->metric, entry->preference, out_ifindex, route_nh_type);
         if (ret >= 0)
         {
             entry->in_rib = 1u;
@@ -674,6 +689,7 @@ typedef struct
 {
     uint32_t nexthop_id;
     int resolved;
+    uint8_t resolved_nh_type;
     const net_addr_t *gateway;
     uint32_t out_ifindex;
     uint32_t changed;
@@ -691,20 +707,33 @@ static void static_nh_change_cb(gpointer key_ptr, gpointer value_ptr, gpointer u
     }
 
     int resolved = ctx->resolved;
+    uint8_t resolved_nh_type = ctx->resolved_nh_type ? ctx->resolved_nh_type : ROUTE_NH_TYPE_IP;
     uint32_t oif = ctx->out_ifindex;
+    net_addr_t relay;
+    memset(&relay, 0, sizeof(relay));
+    if (ctx->gateway)
+    {
+        relay = *ctx->gateway;
+    }
     /* nexthop+interface：校验 relay 出接口与配置接口一致 */
     if (resolved && nh->key.key_ifindex != 0 && oif != nh->key.key_ifindex)
     {
         resolved = 0;
     }
 
-    nh->resolved = resolved ? 1u : 0u;
+    uint8_t new_resolved = resolved ? 1u : 0u;
+    uint8_t new_nh_type = resolved ? resolved_nh_type : ROUTE_NH_TYPE_IP;
+    if (nh->resolved == new_resolved && nh->resolved_nh_type == new_nh_type && nh->relay_ifindex == oif &&
+        static_relay_addr_equal(&nh->relay_addr, &relay))
+    {
+        return;
+    }
+
+    nh->resolved = new_resolved;
+    nh->resolved_nh_type = new_nh_type;
     if (resolved)
     {
-        if (ctx->gateway)
-        {
-            nh->relay_addr = *ctx->gateway;
-        }
+        nh->relay_addr = relay;
         nh->relay_ifindex = oif;
         nh_set_object_relay(nh); /* 同步 relay 到 nexthop 对象（再按 id 整组重写） */
     }
@@ -712,7 +741,8 @@ static void static_nh_change_cb(gpointer key_ptr, gpointer value_ptr, gpointer u
     ctx->changed++;
 }
 
-void route_static_on_nh_change(uint32_t nexthop_id, int resolved, const net_addr_t *gateway, uint32_t out_ifindex)
+void route_static_on_nh_change(uint32_t nexthop_id, int resolved, uint8_t resolved_nh_type, const net_addr_t *gateway,
+                               uint32_t out_ifindex)
 {
     if (!g_static_nh_table || g_hash_table_size(g_static_nh_table) == 0 || nexthop_id == 0u)
     {
@@ -721,6 +751,7 @@ void route_static_on_nh_change(uint32_t nexthop_id, int resolved, const net_addr
     static_nh_change_ctx_t ctx = {
         .nexthop_id = nexthop_id,
         .resolved = resolved,
+        .resolved_nh_type = resolved_nh_type,
         .gateway = gateway,
         .out_ifindex = out_ifindex,
         .changed = 0u,
@@ -747,6 +778,7 @@ static void static_if_change_cb(gpointer key_ptr, gpointer value_ptr, gpointer u
     uint32_t ifindex = nh->key.key_ifindex;
     int reachable = (ifindex != 0) && rib_has_active_connected(nh->key.vrf_id, nh->key.afi, ifindex);
     nh->resolved = reachable ? 1u : 0u;
+    nh->resolved_nh_type = ROUTE_NH_TYPE_IP;
     nh->relay_ifindex = ifindex;
     nh_set_object_relay(nh); /* 同步 relay 到 nexthop 对象 */
     apply_routes_of_nh(nh);

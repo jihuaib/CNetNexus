@@ -14,6 +14,7 @@ VRF 配置面 + OS 下刷 全链路验证。
 
 from __future__ import annotations
 
+import re
 import subprocess
 import time
 
@@ -59,6 +60,34 @@ def _wait_kernel_vrf(rt: TopologyRuntime, device: str, name: str, *, present: bo
     raise AssertionError(
         f"kernel vrf {name} present={present} timeout; last output:\n{last}"
     )
+
+
+def _wait_kernel_vrf_loopback_local_routes(
+    rt: TopologyRuntime,
+    device: str,
+    name: str,
+    *,
+    timeout: int = 10,
+) -> None:
+    """轮询 VRF table，确认 ROUTE/FIB 下发 VRF 专属 localhost local 路由。"""
+    deadline = time.time() + timeout
+    last = ""
+    while time.time() < deadline:
+        rc, link_out = _docker_exec(rt, device, f"ip -d link show {name} 2>&1")
+        last = link_out
+        match = re.search(r"vrf table (\d+)", link_out)
+        if rc == 0 and match:
+            table_id = match.group(1)
+            rc4, out4 = _docker_exec(rt, device, f"ip -4 route show table {table_id} 2>&1")
+            rc6, out6 = _docker_exec(rt, device, f"ip -6 route show table {table_id} 2>&1")
+            last = f"IPv4:\n{out4}\nIPv6:\n{out6}"
+            has_127_8 = re.search(r"(?m)^local\s+127\.0\.0\.0/8\s+dev\s+lo\b", out4) is not None
+            has_127_1 = re.search(r"(?m)^local\s+127\.0\.0\.1(?:/32)?\s+dev\s+lo\b", out4) is not None
+            has_v6_loop = re.search(r"(?m)^local\s+::1(?:/128)?\s+dev\s+lo\b", out6) is not None
+            if rc4 == 0 and rc6 == 0 and has_127_8 and has_127_1 and has_v6_loop:
+                return
+        time.sleep(1)
+    raise AssertionError(f"kernel vrf {name} missing localhost local routes; last output:\n{last}")
 
 
 def _verify_show_vrf_os(rt: TopologyRuntime, *, contains_names: list[str], not_contains_names: list[str]) -> None:
@@ -135,6 +164,7 @@ def _run_inner(rt: TopologyRuntime) -> None:
     )
     # 内核侧同步
     _wait_kernel_vrf(rt, "r1", VRF_NAME, present=True)
+    _wait_kernel_vrf_loopback_local_routes(rt, "r1", VRF_NAME)
     _verify_show_vrf_os(rt, contains_names=[VRF_NAME], not_contains_names=[])
 
     # ---- Phase 2: af ipv4-unicast + RD + 多种 vpn-target 方向 ----
@@ -240,6 +270,7 @@ def _run_inner(rt: TopologyRuntime) -> None:
         ],
     )
     _wait_kernel_vrf(rt, "r1", VRF_NAME2, present=True)
+    _wait_kernel_vrf_loopback_local_routes(rt, "r1", VRF_NAME2)
     _verify_show_vrf_os(rt, contains_names=[VRF_NAME, VRF_NAME2], not_contains_names=[])
 
     # show current-configuration 必须包含两个 VRF 块和 RD/RT 文本
@@ -302,6 +333,8 @@ def _run_inner(rt: TopologyRuntime) -> None:
     )
     _wait_kernel_vrf(rt, "r1", VRF_NAME, present=True, timeout=30)
     _wait_kernel_vrf(rt, "r1", VRF_NAME2, present=True, timeout=30)
+    _wait_kernel_vrf_loopback_local_routes(rt, "r1", VRF_NAME, timeout=30)
+    _wait_kernel_vrf_loopback_local_routes(rt, "r1", VRF_NAME2, timeout=30)
     wait_check(
         rt,
         device="r1",

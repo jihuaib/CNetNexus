@@ -7,7 +7,7 @@ VRF 静态路由级联删除验证（含 RIB / FIB / FIB-OS 数据面校验，IP
 - `route static ipv4 vrf red` ... / `route static ipv6 vrf red` ... 配置后：
     * VRF RIB（show route）中能看到 S 路径，nexthop 解析正确；
     * VRF FIB（show fib）中有详情条目，Installed=yes，Skip OS=no；
-    * VRF OS FIB（show fib ipv{4,6} os vrf red）有内核条目。
+    * VRF OS FIB（show fib os vrf red ipv{4,6}）有内核条目。
 - `show current-configuration` 包含带 ``vrf red`` 后缀的 ``route static`` 行。
 - ``no vrf red`` 删除 VRF 后：
     * VRF 视图 RIB/FIB/FIB-OS 全部消失（命令直接报 VRF not found）；
@@ -74,8 +74,8 @@ def _fib_detail_cmd(afi: str, prefix_addr: str, prefix_len: int, vrf: str) -> st
 
 def _fib_os_cmd(afi: str, vrf: str) -> str:
     if vrf == "public":
-        return f"show fib {afi} os"
-    return f"show fib {afi} vrf {vrf} os"
+        return f"show fib os {afi}"
+    return f"show fib os {afi} vrf {vrf} "
 
 
 def _network(prefix_addr: str, prefix_len: int) -> str:

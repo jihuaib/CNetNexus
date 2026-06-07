@@ -244,8 +244,19 @@ static void build_fib_entry(fib_route_entry_t *fib, const route_msg_entry_t *rou
     fib->protocol = route->protocol;
     fib->metric = route->metric;
     fib->preference = route->preference;
-    fib->flags = (route->protocol == ROUTE_PROTOCOL_CONNECTED) ? FIB_ROUTE_FLAG_SKIP_OS : 0u;
-    if (route->protocol == ROUTE_PROTOCOL_BLACKHOLE)
+    if ((route->flags & ROUTE_ENTRY_FLAG_LOCAL) != 0u)
+    {
+        fib->flags |= FIB_ROUTE_FLAG_LOCAL;
+        if (route->vrf_id == ROUTE_VRF_DEFAULT)
+        {
+            fib->flags |= FIB_ROUTE_FLAG_SKIP_OS;
+        }
+    }
+    else if (route->protocol == ROUTE_PROTOCOL_CONNECTED)
+    {
+        fib->flags |= FIB_ROUTE_FLAG_SKIP_OS;
+    }
+    if (route->nh_type == ROUTE_NH_TYPE_BLACKHOLE)
     {
         fib->nh_type = FIB_NH_TYPE_BLACKHOLE;
     }
@@ -278,6 +289,10 @@ static void build_fib_entry(fib_route_entry_t *fib, const route_msg_entry_t *rou
 static gboolean route_fib_needs_nhobj(const route_msg_entry_t *route)
 {
     if (route->protocol == ROUTE_PROTOCOL_CONNECTED)
+    {
+        return FALSE;
+    }
+    if (route->nh_type == ROUTE_NH_TYPE_BLACKHOLE)
     {
         return FALSE;
     }
@@ -751,36 +766,73 @@ void route_calc_pub_dump(uint32_t dst_module_id, uint32_t protocol, uint32_t vrf
     };
     route_rib_walk(g_route_work_local->rib, protocol, vrf_id, dump_collect_best, &dctx);
 
-    size_t report_size = sizeof(route_msg_report_t) + dctx.count * sizeof(route_msg_entry_t);
-    route_msg_report_t *report = (route_msg_report_t *)g_malloc(report_size);
-    if (!report)
+    size_t max_payload = DEV_IPC_RECV_BUF_SIZE - DEV_IPC_FRAME_HEADER_SIZE;
+    size_t max_entries_per_report = (max_payload > sizeof(route_msg_report_t))
+                                        ? (max_payload - sizeof(route_msg_report_t)) / sizeof(route_msg_entry_t)
+                                        : 0u;
+    if (max_entries_per_report == 0u)
     {
+        LOG_WARN("[route_calc] 全量快照无法发送: IPC payload 上限过小(max=%zu)", max_payload);
         g_free(dctx.entries);
         return;
     }
 
-    report->protocol = protocol;
-    report->route_count = dctx.count;
-    if (dctx.count > 0)
+    uint32_t sent = 0;
+    uint32_t chunks = 0;
+    uint32_t failures = 0;
+    uint32_t total = dctx.count;
+    uint32_t offset = 0;
+    do
     {
-        memcpy(report->routes, dctx.entries, dctx.count * sizeof(route_msg_entry_t));
-    }
+        uint32_t remaining = total - offset;
+        uint32_t chunk_count = remaining;
+        if ((size_t)chunk_count > max_entries_per_report)
+        {
+            chunk_count = (uint32_t)max_entries_per_report;
+        }
+
+        size_t chunk_size = sizeof(route_msg_report_t) + (size_t)chunk_count * sizeof(route_msg_entry_t);
+        route_msg_report_t *chunk = (route_msg_report_t *)g_malloc(chunk_size);
+        if (!chunk)
+        {
+            failures++;
+            break;
+        }
+
+        chunk->protocol = protocol;
+        chunk->route_count = chunk_count;
+        if (chunk_count > 0)
+        {
+            memcpy(chunk->routes, &dctx.entries[offset], (size_t)chunk_count * sizeof(route_msg_entry_t));
+        }
+
+        dev_ipc_message_t *msg = dev_ipc_message_create(ROUTE_MSG_TYPE_REPORT, DEV_MODULE_ID_ROUTE, dst_module_id,
+                                                        request_id, chunk, (uint32_t)chunk_size, g_free);
+        if (!msg)
+        {
+            g_free(chunk);
+            failures++;
+            break;
+        }
+
+        if (dev_ipc_send_response(pub_ctx, msg) != ERRCODE_SUCCESS)
+        {
+            LOG_WARN("[route_calc] 全量快照分片发送失败 -> module 0x%08X offset=%u count=%u", dst_module_id, offset,
+                     chunk_count);
+            failures++;
+        }
+        else
+        {
+            sent += chunk_count;
+        }
+        dev_ipc_message_free(msg);
+
+        chunks++;
+        offset += chunk_count;
+    } while (offset < total);
+
     g_free(dctx.entries);
 
-    dev_ipc_message_t *msg = dev_ipc_message_create(ROUTE_MSG_TYPE_REPORT, DEV_MODULE_ID_ROUTE, dst_module_id,
-                                                    request_id, report, (uint32_t)report_size, g_free);
-    if (!msg)
-    {
-        g_free(report);
-        return;
-    }
-
-    if (dev_ipc_send_response(pub_ctx, msg) != ERRCODE_SUCCESS)
-    {
-        LOG_WARN("[route_calc] 全量快照发送失败 -> module 0x%08X", dst_module_id);
-    }
-    dev_ipc_message_free(msg);
-
-    LOG_INFO("[route_calc] 全量最优路径快照: %u 条 -> module 0x%08X protocol=%u vrf=%u afi=%u", dctx.count,
-             dst_module_id, protocol, vrf_id, afi);
+    LOG_INFO("[route_calc] 全量最优路径快照: %u/%u 条 -> module 0x%08X protocol=%u vrf=%u afi=%u chunks=%u failures=%u",
+             sent, total, dst_module_id, protocol, vrf_id, afi, chunks, failures);
 }

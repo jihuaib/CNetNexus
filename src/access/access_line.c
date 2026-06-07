@@ -13,6 +13,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <glib.h>
+#include <poll.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -230,6 +231,24 @@ static void access_write_best_effort(int fd, const void *data, size_t len)
         if (n < 0 && errno == EINTR)
         {
             continue;
+        }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+        {
+            struct pollfd pfd = {
+                .fd = fd,
+                .events = POLLOUT,
+                .revents = 0,
+            };
+            int rc;
+            do
+            {
+                rc = poll(&pfd, 1, 1000);
+            } while (rc < 0 && errno == EINTR);
+
+            if (rc > 0 && (pfd.revents & POLLOUT))
+            {
+                continue;
+            }
         }
         break;
     }
@@ -748,6 +767,23 @@ static void access_exec_line_cmd(access_line_t *line, uint32_t line_cmd, uint32_
     }
 }
 
+static dev_ipc_message_t *access_line_query_input_continue(access_line_t *line)
+{
+    uint32_t *req = g_new(uint32_t, 1);
+    *req = line->line_id;
+    dev_ipc_message_t *m = dev_ipc_message_create(ACCESS_MSG_INPUT_CONTINUE, DEV_MODULE_ID_ACCESS, DEV_MODULE_ID_CLI, 0,
+                                                  req, sizeof(*req), g_free);
+    if (!m)
+    {
+        g_free(req);
+        return NULL;
+    }
+
+    dev_ipc_message_t *resp = dev_ipc_query(access_ipc_ctx(), DEV_MODULE_ID_CLI, m, 65000);
+    dev_ipc_message_free(m);
+    return resp;
+}
+
 /** 一整行命令就绪：向 CLI 发 LINE_INPUT，拿回输出文本 + 新提示符 + close 标志 */
 static void handle_line_submit(access_line_t *line)
 {
@@ -773,24 +809,85 @@ static void handle_line_submit(access_line_t *line)
         access_line_send(line, "% command engine timeout or unavailable\r\n");
         return;
     }
-    if (resp->payload && resp->payload_len >= sizeof(access_text_resp_t))
+
+    GString *full_output = g_string_new("");
+    uint32_t final_flags = 0;
+    uint32_t final_line_cmd = ACCESS_LINE_CMD_NONE;
+    uint32_t final_line_cmd_no = 0;
+    uint32_t final_line_arg1 = 0;
+    uint32_t final_line_arg2 = 0;
+    char final_prompt[ACCESS_PROMPT_MAX_LEN] = "";
+    int final_resp_seen = 0;
+
+    while (resp)
     {
+        if (!resp->payload || resp->payload_len < sizeof(access_text_resp_t))
+        {
+            g_string_append(full_output, "% invalid command engine response\r\n");
+            dev_ipc_message_free(resp);
+            break;
+        }
+
         access_text_resp_t *r = (access_text_resp_t *)resp->payload;
-        g_strlcpy(line->prompt, r->prompt, sizeof(line->prompt));
+        size_t text_cap = resp->payload_len - sizeof(access_text_resp_t);
+        if (!memchr(r->text, '\0', text_cap))
+        {
+            g_string_append(full_output, "% invalid command engine response\r\n");
+            dev_ipc_message_free(resp);
+            break;
+        }
+
         if (r->text[0] != '\0')
         {
-            access_pager_output(line, r->text);
+            g_string_append(full_output, r->text);
         }
-        if (r->flags & ACCESS_RESP_FLAG_CLOSE_SESSION)
+
+        int has_more = (r->flags & ACCESS_RESP_FLAG_MORE) ? 1 : 0;
+        if (!has_more)
         {
-            line->close_requested = 1;
+            final_flags = r->flags;
+            final_line_cmd = r->line_cmd;
+            final_line_cmd_no = r->line_cmd_no;
+            final_line_arg1 = r->line_arg1;
+            final_line_arg2 = r->line_arg2;
+            g_strlcpy(final_prompt, r->prompt, sizeof(final_prompt));
+            final_resp_seen = 1;
         }
-        if (r->line_cmd != ACCESS_LINE_CMD_NONE)
+
+        dev_ipc_message_free(resp);
+        resp = NULL;
+
+        if (!has_more)
         {
-            access_exec_line_cmd(line, r->line_cmd, r->line_cmd_no, r->line_arg1, r->line_arg2);
+            break;
+        }
+
+        resp = access_line_query_input_continue(line);
+        if (!resp)
+        {
+            g_string_append(full_output, "% command engine timeout or unavailable\r\n");
+            break;
         }
     }
-    dev_ipc_message_free(resp);
+
+    if (final_resp_seen)
+    {
+        g_strlcpy(line->prompt, final_prompt, sizeof(line->prompt));
+    }
+    if (full_output->len > 0)
+    {
+        access_pager_output(line, full_output->str);
+    }
+    if (final_resp_seen && (final_flags & ACCESS_RESP_FLAG_CLOSE_SESSION))
+    {
+        line->close_requested = 1;
+    }
+    if (final_resp_seen && final_line_cmd != ACCESS_LINE_CMD_NONE)
+    {
+        access_exec_line_cmd(line, final_line_cmd, final_line_cmd_no, final_line_arg1, final_line_arg2);
+    }
+
+    g_string_free(full_output, TRUE);
 }
 
 void access_line_close_on_cli(uint32_t line_id)

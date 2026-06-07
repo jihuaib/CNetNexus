@@ -102,7 +102,12 @@ static int route_node_to_route_entry(uint32_t vrf_id, const bgp_nlri_entry_t *nl
     bgp_nexthop_value_t nh_value;
     memset(&nh_value, 0, sizeof(nh_value));
     (void)bgp_relay_get_route_iter_value(route, &nh_value);
+    route_nhobj_key_t nh_key;
+    memset(&nh_key, 0, sizeof(nh_key));
+    (void)bgp_nexthop_get_route_key(route, &nh_key);
     gboolean use_tunnel = (nh_value.iter_watched && nh_value.iter_resolved && nh_value.tunnel_id != 0u);
+    gboolean local_cross_local_delivery =
+        BIT_TEST(route->flags, BGP_ROUTE_FLAG_LOCAL_CROSS) && BIT_TEST(route->flags, BGP_ROUTE_FLAG_LOCAL_DELIVERY);
 
     if (!use_tunnel && (route->nexthop_id == 0u || nlri->safi == BGP_SAFI_LABELED))
     {
@@ -125,7 +130,16 @@ static int route_node_to_route_entry(uint32_t vrf_id, const bgp_nlri_entry_t *nl
     entry_out->preference = ROUTE_ADMIN_DIST_BGP;
     entry_out->is_withdraw = 0u;
     entry_out->flags = 0u;
-    if (use_tunnel)
+    if (BIT_TEST(route->flags, BGP_ROUTE_FLAG_LOCAL_DELIVERY) && !local_cross_local_delivery)
+    {
+        entry_out->flags |= ROUTE_ENTRY_FLAG_LOCAL;
+    }
+    if (nh_key.nh_type == ROUTE_NH_TYPE_BLACKHOLE)
+    {
+        entry_out->nh_type = ROUTE_NH_TYPE_BLACKHOLE;
+        entry_out->tunnel_id = 0u;
+    }
+    else if (use_tunnel)
     {
         entry_out->nh_type = ROUTE_NH_TYPE_TUNNEL;
         entry_out->tunnel_id = nh_value.tunnel_id;
@@ -150,6 +164,21 @@ static int route_node_to_route_entry(uint32_t vrf_id, const bgp_nlri_entry_t *nl
      * 隧道分支下还兜底用作 Iter NH（当 iter_relay_addr 为空时）。 */
     entry_out->nexthop_addr = nexthop_addr;
     entry_out->nexthop_id = use_tunnel ? 0u : route->nexthop_id;
+    /*
+     * LOCAL_CROSS 泄漏本地地址时不能下成 RTN_LOCAL，否则回包从源 VRF 的出接口进入后会被
+     * 交付到源 VRF，而不是目标 VRF socket。内核可通模型是：
+     *   <local-prefix> dev <target-vrf-master> scope link
+     * 所以清 gateway/nexthop_id，仅保留 nexthop-vrf 解析出的目标 VRF master ifindex。
+     */
+    if (local_cross_local_delivery && nh_value.iter_watched && nh_value.iter_resolved &&
+        nh_value.iter_out_ifindex != 0u)
+    {
+        memset(&entry_out->nexthop_addr, 0, sizeof(entry_out->nexthop_addr));
+        memset(&entry_out->iter_nexthop_addr, 0, sizeof(entry_out->iter_nexthop_addr));
+        entry_out->out_ifindex = nh_value.iter_out_ifindex;
+        entry_out->iter_out_ifindex = nh_value.iter_out_ifindex;
+        entry_out->nexthop_id = 0u;
+    }
     entry_out->source_addr = route->source;
     return 1;
 }

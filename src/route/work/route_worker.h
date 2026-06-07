@@ -177,7 +177,7 @@ void route_worker_shutdown(void);
  */
 int route_add_and_notify_nexthop_id(uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr, uint8_t prefix_len,
                                     uint32_t protocol, const net_addr_t *source_addr, uint32_t nexthop_id,
-                                    int32_t metric, int32_t preference, uint32_t out_ifindex);
+                                    int32_t metric, int32_t preference, uint32_t out_ifindex, uint8_t nh_type);
 
 /**
  * @brief 全量重算"已注册 nexthop watch"的可达性，并按状态变化回推

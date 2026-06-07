@@ -102,7 +102,7 @@ def _wait_connected_os_if(
     deadline = time.time() + timeout
     last_out = ""
     while time.time() < deadline:
-        out = cmd(rt, device, "show fib ipv4 os", strict=False)
+        out = cmd(rt, device, "show fib os ipv4", strict=False)
         last_out = out
         os_if = _extract_connected_os_if(out, prefix=prefix)
         if os_if is not None:
@@ -112,7 +112,7 @@ def _wait_connected_os_if(
     raise RuntimeError(
         f"{device} connected OS interface detect timeout after {timeout}s\n"
         f"expect: main unicast {prefix} - <if> kernel\n"
-        f"command: show fib ipv4 os\n"
+        f"command: show fib os ipv4\n"
         f"last output:\n{last_out}"
     )
 
@@ -142,7 +142,7 @@ def _wait_os_best(
     wait_check(
         rt,
         device=device,
-        command="show fib ipv4 os",
+        command="show fib os ipv4",
         timeout=timeout,
         interval=interval,
         regex=[row_regex],
@@ -239,7 +239,7 @@ def _wait_connected_os_if_ipv6(
     deadline = time.time() + timeout
     last_out = ""
     while time.time() < deadline:
-        out = cmd(rt, device, "show fib ipv6 os", strict=False)
+        out = cmd(rt, device, "show fib os ipv6", strict=False)
         last_out = out
         os_if = _extract_connected_os_if(out, prefix=prefix)
         if os_if is not None:
@@ -249,7 +249,7 @@ def _wait_connected_os_if_ipv6(
     raise RuntimeError(
         f"{device} connected OS interface detect timeout after {timeout}s\n"
         f"expect: main unicast {prefix} - <if> kernel\n"
-        f"command: show fib ipv6 os\n"
+        f"command: show fib os ipv6\n"
         f"last output:\n{last_out}"
     )
 
@@ -279,7 +279,7 @@ def _wait_os_best_ipv6(
     wait_check(
         rt,
         device=device,
-        command="show fib ipv6 os",
+        command="show fib os ipv6",
         timeout=timeout,
         interval=interval,
         regex=[row_regex],

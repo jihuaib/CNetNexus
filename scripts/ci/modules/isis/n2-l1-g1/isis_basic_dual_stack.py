@@ -524,25 +524,25 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             [
                 {
                     "device": "r1",
-                    "command": "show fib ipv4 os",
+                    "command": "show fib os ipv4",
                     "contains": [R2_LOOP_V4_PREFIX],
                     "label": "r1 os ipv4 has r2 loop",
                 },
                 {
                     "device": "r1",
-                    "command": "show fib ipv6 os",
+                    "command": "show fib os ipv6",
                     "contains": [R2_LOOP_V6_PREFIX],
                     "label": "r1 os ipv6 has r2 loop",
                 },
                 {
                     "device": "r2",
-                    "command": "show fib ipv4 os",
+                    "command": "show fib os ipv4",
                     "contains": [R1_LOOP_V4_PREFIX],
                     "label": "r2 os ipv4 has r1 loop",
                 },
                 {
                     "device": "r2",
-                    "command": "show fib ipv6 os",
+                    "command": "show fib os ipv6",
                     "contains": [R1_LOOP_V6_PREFIX],
                     "label": "r2 os ipv6 has r1 loop",
                 },

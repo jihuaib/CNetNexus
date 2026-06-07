@@ -39,6 +39,8 @@ static inline const char *access_console_sock_path(void)
 #define ACCESS_MSG_HELP_REQ DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ACCESS, 0x0004)
 /** ACCESS→CLI：线断开，请求销毁逻辑会话；CLI 回空 ACCESS_MSG_CLOSE_RESP */
 #define ACCESS_MSG_SESSION_CLOSE DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ACCESS, 0x0005)
+/** ACCESS→CLI：继续拉取 LINE_INPUT 的分片响应，payload=uint32_t line_id；CLI 回 ACCESS_MSG_INPUT_RESP */
+#define ACCESS_MSG_INPUT_CONTINUE DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ACCESS, 0x0006)
 
 /** CLI→ACCESS：SESSION_OPEN 响应（access_text_resp_t，text=welcome 文本） */
 #define ACCESS_MSG_OPEN_RESP DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ACCESS, 0x0081)
@@ -75,6 +77,7 @@ enum
 
 /** access_text_resp_t.flags 位定义 */
 #define ACCESS_RESP_FLAG_CLOSE_SESSION (1U << 0) /**< 命令要求关闭本线（如顶层 exit） */
+#define ACCESS_RESP_FLAG_MORE (1U << 1)          /**< 本响应后还有更多 text 分片，ACCESS 需继续拉取 */
 
 /** ACCESS line 层本地命令（在 ACCESS 的 commands.xml 注册，module-id=ACCESS；CLI 匹配后回传
  *  group 让 ACCESS 本地执行，不走 IPC 分发）。取值即 ACCESS commands.xml 的 group-id。 */

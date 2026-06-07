@@ -220,6 +220,7 @@ void bgp_calc_run_one(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
         bgp_import_rib_on_calc_done(inst, head, old_best, NULL);
         bgp_vrf_export_on_calc_done(inst, head);
         bgp_vrf_import_on_calc_done(inst, head);
+        bgp_vrf_import_local_on_calc_done(inst, head);
         char key[BGP_NLRI_KEY_MAX];
         bgp_nlri_to_str(nlri, key, sizeof(key));
         LOG_DEBUG("BGP: calc_run_one WITHDRAW key=%s afi=%u safi=%u", key, (unsigned)inst->afi, (unsigned)inst->safi);
@@ -248,6 +249,7 @@ void bgp_calc_run_one(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
         bgp_import_rib_on_calc_done(inst, head, old_best, NULL);
         bgp_vrf_export_on_calc_done(inst, head);
         bgp_vrf_import_on_calc_done(inst, head);
+        bgp_vrf_import_local_on_calc_done(inst, head);
         char key[BGP_NLRI_KEY_MAX];
         bgp_nlri_to_str(nlri, key, sizeof(key));
         LOG_DEBUG("BGP: calc_run_one WITHDRAW(all-invalid) key=%s afi=%u safi=%u", key, (unsigned)inst->afi,
@@ -290,6 +292,8 @@ void bgp_calc_run_one(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
     bgp_vrf_export_on_calc_done(inst, head);
     /* public vpnv4 best 变化时，按 import-RT 把 best 导入/撤出命中的私网 VRF */
     bgp_vrf_import_on_calc_done(inst, head);
+    /* 私网 VRF ipv4-unicast best 变化时，按源 VRF export-RT 直接泄漏到命中的本机 VRF（本地交叉） */
+    bgp_vrf_import_local_on_calc_done(inst, head);
 
     char key[BGP_NLRI_KEY_MAX];
     bgp_nlri_to_str(&head->nlri, key, sizeof(key));

@@ -169,6 +169,10 @@ static void bgp_route_flags_to_str(uint32_t flags, char *buf, size_t sz)
     {
         g_strlcat(buf, "IMPORT_RIB|", sz);
     }
+    if (BIT_TEST(flags, BGP_ROUTE_FLAG_LOCAL_DELIVERY))
+    {
+        g_strlcat(buf, "LOCAL_DELIVERY|", sz);
+    }
 
     size_t n = strlen(buf);
     if (n == 0)

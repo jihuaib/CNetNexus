@@ -100,7 +100,7 @@ def _wait_static_state(
     wait_check(
         rt,
         device=device,
-        command="show route ipv4 static",
+        command="show route static ipv4",
         timeout=timeout,
         interval=interval,
         contains=[f"Total {expect_total} static route(s)"],
@@ -123,7 +123,7 @@ def _wait_relay_state(
     wait_check(
         rt,
         device=device,
-        command="show route ipv4 relay static",
+        command="show route relay ipv4 proto static",
         timeout=timeout,
         interval=interval,
         regex=[
@@ -204,7 +204,7 @@ def _wait_static_state_ipv6(
     wait_check(
         rt,
         device=device,
-        command="show route ipv6 static",
+        command="show route static ipv6",
         timeout=timeout,
         interval=interval,
         contains=[f"Total {expect_total} static route(s)"],
@@ -227,7 +227,7 @@ def _wait_relay_state_ipv6(
     wait_check(
         rt,
         device=device,
-        command="show route ipv6 relay static",
+        command="show route relay ipv6 proto static",
         timeout=timeout,
         interval=interval,
         regex=[

@@ -208,6 +208,8 @@ void bgp_apply_vrf_event(const dev_ipc_message_t *msg)
                 bgp_vrf_import_backfill();
                 /* 新增 import-RT：让 vpnv4 邻居重传，re-ingest 命中新 IRT 索引(此前被丢弃的路由) */
                 bgp_vrf_import_request_refresh();
+                /* 本地交叉：新增 import-RT 后，其它 VRF 已有路由若 export-RT 命中则补泄漏进本 VRF */
+                bgp_vrf_import_local_backfill_target_vrf(evt->vrf_id);
             }
             break;
 
@@ -217,14 +219,23 @@ void bgp_apply_vrf_event(const dev_ipc_message_t *msg)
             {
                 bgp_vrf_import_irt_del(evt->vrf_id, &evt->rts[0]);
                 bgp_vrf_import_backfill();
+                /* 本地交叉：删除 import-RT 后，撤销不再命中的泄漏路径 */
+                bgp_vrf_import_local_backfill_target_vrf(evt->vrf_id);
+            }
+            break;
+
+        case VRF_EVENT_AF_EXPORT_RT_ADD:
+        case VRF_EVENT_AF_EXPORT_RT_DEL:
+            /* export-RT 仅 vrf_api_cache 持有(发送时从缓存读)；本地交叉据此重评该源 VRF 的泄漏 */
+            if (evt->afi == VRF_AFI_IPV4 && evt->safi == VRF_SAFI_UNICAST)
+            {
+                bgp_vrf_import_local_backfill_source_vrf(evt->vrf_id);
             }
             break;
 
         case VRF_EVENT_VRF_ADD:
         case VRF_EVENT_VRF_STATE:
         case VRF_EVENT_AF_ENABLE:
-        case VRF_EVENT_AF_EXPORT_RT_ADD:
-        case VRF_EVENT_AF_EXPORT_RT_DEL:
             /* 当前阶段仅由 vrf_api_cache 持有；BGP 内部使用从缓存按需读取 */
             break;
 

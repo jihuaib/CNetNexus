@@ -32,6 +32,12 @@ NULL0_MASK = "24"
 NULL0_PREFIX = f"{NULL0_PREFIX_ADDR}/{NULL0_MASK}"
 NULL0_ADD_CMD = f"route static ipv4 {NULL0_PREFIX_ADDR} {NULL0_MASK} interface null0"
 NULL0_DEL_CMD = f"no route static ipv4 {NULL0_PREFIX_ADDR} {NULL0_MASK} interface null0"
+RECUR_PREFIX_ADDR = "203.0.113.0"
+RECUR_MASK = "24"
+RECUR_PREFIX = f"{RECUR_PREFIX_ADDR}/{RECUR_MASK}"
+RECUR_NEXTHOP = "198.51.100.1"
+RECUR_ADD_CMD = f"route static ipv4 {RECUR_PREFIX_ADDR} {RECUR_MASK} {RECUR_NEXTHOP}"
+RECUR_DEL_CMD = f"no route static ipv4 {RECUR_PREFIX_ADDR} {RECUR_MASK} {RECUR_NEXTHOP}"
 
 
 def _wait_os_blackhole(
@@ -50,7 +56,7 @@ def _wait_os_blackhole(
     wait_check(
         rt,
         device=device,
-        command="show fib ipv4 os",
+        command="show fib os ipv4",
         timeout=timeout,
         interval=interval,
         regex=[row_regex] if expect_present else (),
@@ -113,6 +119,7 @@ def _cleanup(rt: TopologyRuntime) -> None:
         strict=False,
         commands=[
             "config",
+            RECUR_DEL_CMD,
             NULL0_DEL_CMD,
             "no bgp",
             "end",
@@ -186,7 +193,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             device="r2",
             command=f"show route ipv4 {NULL0_PREFIX_ADDR} {NULL0_MASK}",
             timeout=10,
-            contains=[NULL0_PREFIX, "static(blackhole)", "Null0"],
+            contains=[NULL0_PREFIX, "static", "blackhole", "Null0"],
             label="r2 null0 route detail",
         )
 
@@ -197,6 +204,42 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             prefix=NULL0_PREFIX,
             expect_present=True,
             timeout=30,
+        )
+
+        step("Configure static route whose nexthop recursively resolves to null0")
+        run_cmds(
+            rt=rt,
+            device="r2",
+            commands=[
+                "config",
+                RECUR_ADD_CMD,
+                "end",
+            ],
+        )
+        _wait_rib_blackhole(
+            rt,
+            device="r2",
+            prefix=RECUR_PREFIX,
+            expect_present=True,
+            timeout=30,
+        )
+        _wait_os_blackhole(
+            rt,
+            device="r2",
+            prefix=RECUR_PREFIX,
+            expect_present=True,
+            timeout=30,
+        )
+        wait_check(
+            rt,
+            device="r2",
+            command="show route relay ipv4 proto static",
+            timeout=10,
+            regex=[
+                rf"(?im)^\s*0x[0-9a-fA-F]+\s+\d+\s+\d+\s+ipv4\s+unicast\s+"
+                rf"{re.escape(RECUR_NEXTHOP)}\s+blackhole\s+yes\s*$"
+            ],
+            label="r2 recursive static relay resolved via null0",
         )
 
         step("Bring up BGP with import-route static on r2 and peer on r1")
@@ -282,6 +325,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             device="r2",
             commands=[
                 "config",
+                RECUR_DEL_CMD,
                 NULL0_DEL_CMD,
                 "end",
             ],
@@ -299,6 +343,20 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             rt,
             device="r2",
             prefix=NULL0_PREFIX,
+            expect_present=False,
+            timeout=30,
+        )
+        _wait_rib_blackhole(
+            rt,
+            device="r2",
+            prefix=RECUR_PREFIX,
+            expect_present=False,
+            timeout=30,
+        )
+        _wait_os_blackhole(
+            rt,
+            device="r2",
+            prefix=RECUR_PREFIX,
             expect_present=False,
             timeout=30,
         )

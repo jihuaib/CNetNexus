@@ -79,8 +79,8 @@ def _route_gone(rt: TopologyRuntime, device: str, prefix: str, *, timeout: float
 
 
 def _fib_os_has(rt: TopologyRuntime, device: str, prefix: str) -> bool:
-    """通过 `show fib ipv4 os` 查 FIB 实际编入 OS 的 IPv4 路由是否包含 prefix。"""
-    out = cmd(rt, device, "show fib ipv4 os", timeout=10)
+    """通过 `show fib os ipv4` 查 FIB 实际编入 OS 的 IPv4 路由是否包含 prefix。"""
+    out = cmd(rt, device, "show fib os ipv4", timeout=10)
     return prefix in out
 
 
@@ -88,7 +88,7 @@ def _wait_fib_os_gone(rt: TopologyRuntime, device: str, prefix: str, *, timeout:
     deadline = time.monotonic() + timeout
     last = ""
     while time.monotonic() < deadline:
-        out = cmd(rt, device, "show fib ipv4 os", timeout=10)
+        out = cmd(rt, device, "show fib os ipv4", timeout=10)
         if prefix not in out:
             return
         last = out
@@ -100,7 +100,7 @@ def _wait_fib_os(rt: TopologyRuntime, device: str, prefix: str, *, timeout: floa
     deadline = time.monotonic() + timeout
     last = ""
     while time.monotonic() < deadline:
-        out = cmd(rt, device, "show fib ipv4 os", timeout=10)
+        out = cmd(rt, device, "show fib os ipv4", timeout=10)
         if prefix in out:
             return
         last = out

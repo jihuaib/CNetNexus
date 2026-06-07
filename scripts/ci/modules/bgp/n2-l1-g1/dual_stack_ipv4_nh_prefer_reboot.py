@@ -325,7 +325,7 @@ def _wait_os_best_ipv4_nexthop(
     wait_check(
         rt,
         device=device,
-        command="show fib ipv4 os",
+        command="show fib os ipv4",
         timeout=timeout,
         interval=2,
         regex=[best_row_regex],
@@ -363,7 +363,7 @@ def _wait_os_ipv6_bgp_route(
     wait_check(
         rt,
         device=device,
-        command="show fib ipv6 os",
+        command="show fib os ipv6",
         timeout=timeout,
         interval=2,
         regex=[best_row_regex],

@@ -356,7 +356,7 @@ def _wait_os_best_v6_linklocal(
     wait_check(
         rt,
         device=device,
-        command="show fib ipv6 os",
+        command="show fib os ipv6",
         timeout=timeout,
         interval=interval,
         regex=[
@@ -402,7 +402,7 @@ def _wait_connected_os_if(
     deadline = time.time() + timeout
     last_out = ""
     while time.time() < deadline:
-        out = cmd(rt, device, f"show fib {afi} os", strict=False)
+        out = cmd(rt, device, f"show fib os {afi}", strict=False)
         last_out = out
         os_if = _extract_connected_os_if(out, prefix=prefix)
         if os_if is not None:
@@ -412,7 +412,7 @@ def _wait_connected_os_if(
     raise RuntimeError(
         f"{device} connected OS interface detect timeout after {timeout}s\n"
         f"expect: main unicast {prefix} - <if> kernel\n"
-        f"command: show fib {afi} os\n"
+        f"command: show fib os {afi}\n"
         f"last output:\n{last_out}"
     )
 
@@ -444,7 +444,7 @@ def _wait_os_best(
     wait_check(
         rt,
         device=device,
-        command=f"show fib {afi} os",
+        command=f"show fib os {afi}",
         timeout=timeout,
         interval=interval,
         regex=[row_regex],

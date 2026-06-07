@@ -102,7 +102,7 @@ def _wait_relay_state_ipv4(
     timeout: int,
     interval: int = 2,
 ) -> None:
-    command = "show route ipv4 relay bgp"
+    command = "show route relay ipv4 proto bgp"
     if expect_resolved:
         regex = [rf"(?im)^.*\b{re.escape(nexthop)}\b\s+yes\s*$"]
     else:
@@ -127,7 +127,7 @@ def _wait_relay_state_ipv6(
     timeout: int,
     interval: int = 2,
 ) -> None:
-    command = "show route ipv6 relay bgp"
+    command = "show route relay ipv6 proto bgp"
     if expect_resolved:
         regex = [rf"(?im)^.*{re.escape(nexthop)}\s+yes\s*$"]
     else:

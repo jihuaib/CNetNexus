@@ -80,6 +80,8 @@ void bgp_instance_destroy(bgp_instance_t *inst)
     bgp_vrf_export_inst_destroy(inst);
     /* public vpnv4 实例销毁前，先撤销其导入到各 VRF 的合成路径(解除 borrow，源 RIB 尚存活) */
     bgp_vrf_import_purge_target_inst(inst);
+    /* 私网 unicast 实例销毁前，双角色清理本地交叉泄漏(作为源撤其它 VRF 内泄漏、作为目标解 borrow) */
+    bgp_vrf_import_local_purge_inst(inst);
     bgp_import_rib_inst_destroy(inst);
     bgp_calc_queue_destroy(inst->calc_queue, inst);
     inst->calc_queue = NULL;

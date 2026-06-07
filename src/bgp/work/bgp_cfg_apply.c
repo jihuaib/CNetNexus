@@ -531,6 +531,9 @@ void bgp_cfg_apply_instance(bgp_apply_cmd_t *apply)
             apply->u.instance.safi == BGP_SAFI_UNICAST)
         {
             bgp_vrf_import_backfill();
+            /* 本地交叉：新建的私网 unicast 实例可能是其它 VRF 路由的泄漏目标(其 bgp_vrf_t 之前
+             * 不存在、源 VRF calc 时无法 upsert 进来)。实例就绪后重评所有源，把已有路由补泄漏进来。 */
+            bgp_vrf_import_local_backfill_target_vrf(vrf->vrf_id);
         }
     }
     apply->rc = BGP_APPLY_RC_OK;

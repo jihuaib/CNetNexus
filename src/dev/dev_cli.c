@@ -2004,6 +2004,12 @@ static int handle_ping(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_p
             dev_send_cli_response(ctx, msg, out);
             return ERRCODE_FAIL;
         }
+        /*
+         * ping vrf 必须绑定到 L3VRF 设备。即使显式指定 -a，源地址也属于该 VRF
+         * 的地址域；不绑定 VRF 时，内核会在默认地址域 bind(source)，VRF loopback
+         * 源地址会报 EADDRNOTAVAIL。local-cross 转发依赖的是该 VRF FIB 中已安装的
+         * 泄漏路由，而不是绕过 VRF 绑定。
+         */
         bind_ifname = vrf_name;
     }
     dev_ping_session_t *session =

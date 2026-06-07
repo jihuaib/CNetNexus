@@ -23,8 +23,6 @@
 #define ROUTE_PROTOCOL_BGP 2u
 /** OSPF 路由协议 */
 #define ROUTE_PROTOCOL_OSPF 3u
-/** 黑洞路由（null0 接口，静默丢弃） */
-#define ROUTE_PROTOCOL_BLACKHOLE 4u
 /** ISIS 路由协议 */
 #define ROUTE_PROTOCOL_ISIS 5u
 /** 通配符：匹配所有协议（用于订阅/查询过滤） */
@@ -38,6 +36,15 @@
 #define ROUTE_VRF_DEFAULT 0u
 /** 通配符：匹配所有 VRF（用于订阅/查询过滤） */
 #define ROUTE_VRF_ALL 0xFFFFFFFFu
+
+// ============================================================================
+// ROUTE 内部接口常量
+// ============================================================================
+
+/** 内部回环接口名称：用于 VRF 本地 127/8、127.0.0.1/32 与 ::1/128 路由展示 */
+#define ROUTE_INLOOP_IFNAME "inloop0"
+/** 内部回环保留 ifindex：仅 ROUTE/FIB 内存态使用，不对应 Linux ifindex */
+#define ROUTE_INLOOP_IFINDEX 0xFFFFFFFEu
 
 // ============================================================================
 // AFI/SAFI 常量（与 BGP 保持一致）
@@ -114,6 +121,8 @@
 
 /** 不允许对外发布（被引入到协议时不参与对外通告） */
 #define ROUTE_ENTRY_FLAG_NO_ADV (1u << 0)
+/** 本地接收路由（例如 VRF 内部 127/8、::1/128），FIB 按 local route 处理 */
+#define ROUTE_ENTRY_FLAG_LOCAL (1u << 1)
 
 // ============================================================================
 // IPC 载荷结构
@@ -132,6 +141,9 @@ typedef struct route_nhobj_key
     uint32_t key_ifindex; /**< 明确参与 nexthop 身份的接口索引，0=不按接口区分 */
     net_addr_t nexthop;   /**< 原始下一跳地址（blackhole/interface-only 为空地址） */
 } route_nhobj_key_t;
+
+/** LOCAL_CROSS 专用标记：仅在 BGP nexthop key_ifindex 填充该值，用于识别“源 VRF 迭代目标 */
+#define ROUTE_NHOBJ_KEY_IFINDEX_LOCAL_CROSS 0xFFFFFFFFu
 
 /**
  * nexthop 对象 id 按协议分区：ROUTE 在 [protocol*SPAN+1, (protocol+1)*SPAN+1) 区间内分配。

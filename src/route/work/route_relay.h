@@ -59,10 +59,11 @@ void route_relay_publish_unreachable_for_shutdown(void);
  * @param owner_module_id 注册方模块 ID
  * @param gateway_out    解析后的直连网关地址（输出，可为 NULL）
  * @param ifindex_out    解析出的出接口索引（输出，可为 NULL）
+ * @param nh_type_out    解析后的下一跳类型（输出，可为 NULL）
  * @return 1=当前可达，0=当前不可达
  */
 int route_relay_register_direct(uint32_t nexthop_id, uint32_t owner_module_id, net_addr_t *gateway_out,
-                                uint32_t *ifindex_out);
+                                uint32_t *ifindex_out, uint8_t *nh_type_out);
 
 /**
  * @brief 直接从 relay watch 表移除 nexthop（供模块内部使用，不经过 IPC）

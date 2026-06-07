@@ -41,6 +41,7 @@ int bgp_nexthop_key_equal(const route_nhobj_key_t *a, const route_nhobj_key_t *b
 int bgp_nexthop_get_route_key(const bgp_route_node_t *route, route_nhobj_key_t *key_out);
 int bgp_nexthop_get_route_addr(const bgp_route_node_t *route, net_addr_t *nexthop_out);
 int bgp_nexthop_get_route_bgp(const bgp_route_node_t *route, bgp_nexthop_t *nexthop_out);
+int bgp_nexthop_set_route_key(bgp_route_node_t *route, const route_nhobj_key_t *key);
 int bgp_nexthop_set_route(bgp_route_node_t *route, const bgp_nexthop_t *nexthop);
 void bgp_nexthop_reset_route(bgp_route_node_t *route);
 

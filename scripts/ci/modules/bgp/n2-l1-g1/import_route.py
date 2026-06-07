@@ -127,14 +127,14 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             [
                 {
                     "device": "r2",
-                    "command": "show route ipv4 subscribe",
+                    "command": "show route subscribe ipv4",
                     "contains": ["Route Subscribers", "bgp", "static", "ipv4"],
                     "regex": [r"(?im)^\s*bgp\s+static\s+0\s+ipv4\s*$"],
                     "label": "r2 route ipv4 static subscription installed",
                 },
                 {
                     "device": "r2",
-                    "command": "show route ipv6 subscribe",
+                    "command": "show route subscribe ipv6",
                     "contains": ["Route Subscribers", "bgp", "static", "ipv6"],
                     "regex": [r"(?im)^\s*bgp\s+static\s+0\s+ipv6\s*$"],
                     "label": "r2 route ipv6 static subscription installed",
@@ -248,14 +248,14 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             [
                 {
                     "device": "r2",
-                    "command": "show route ipv4 subscribe",
+                    "command": "show route subscribe ipv4",
                     "contains": ["(no subscribers)"],
                     "not_regex": [r"(?im)^\s*bgp\s+static\s+0\s+ipv4\s*$"],
                     "label": "r2 route ipv4 static subscription removed",
                 },
                 {
                     "device": "r2",
-                    "command": "show route ipv6 subscribe",
+                    "command": "show route subscribe ipv6",
                     "contains": ["(no subscribers)"],
                     "not_regex": [r"(?im)^\s*bgp\s+static\s+0\s+ipv6\s*$"],
                     "label": "r2 route ipv6 static subscription removed",
@@ -294,13 +294,13 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 },
                 {
                     "device": "r2",
-                    "command": "show route ipv4 static",
+                    "command": "show route static ipv4",
                     "contains": [TEST_V4_PREFIX, r2_route_nh],
                     "label": "r2 original IPv4 static route remains",
                 },
                 {
                     "device": "r2",
-                    "command": "show route ipv6 static",
+                    "command": "show route static ipv6",
                     "contains": [TEST_V6_PREFIX, r2_route_nh6],
                     "label": "r2 original IPv6 static route remains",
                 },

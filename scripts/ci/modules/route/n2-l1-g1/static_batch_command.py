@@ -69,8 +69,8 @@ def _fib_detail_cmd(afi: str, prefix: str, vrf: str) -> str:
 
 def _fib_os_cmd(afi: str, vrf: str) -> str:
     if vrf == "public":
-        return f"show fib {afi} os"
-    return f"show fib {afi} vrf {vrf} os"
+        return f"show fib os {afi}"
+    return f"show fib os {afi} vrf {vrf} "
 
 
 def _wait_route_fib_os(
@@ -175,7 +175,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         wait_check(
             rt,
             device="r1",
-            command="show route ipv4 static",
+            command="show route static ipv4",
             timeout=20,
             interval=2,
             contains=["Total 2 static route(s)"],
@@ -221,7 +221,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         wait_check(
             rt,
             device="r1",
-            command="show route ipv4 static",
+            command="show route static ipv4",
             timeout=20,
             interval=2,
             regex=[rf"(?im)^\s*ipv4\s+{re.escape(V4_REPLACED)}/24\s+{re.escape(V4_NH)}\s+-\s+0\s+1\s+no\s+no\s*$"],
@@ -251,7 +251,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         wait_check(
             rt,
             device="r1",
-            command=f"show route ipv4 vrf {VRF_NAME} static",
+            command=f"show route static ipv4 vrf {VRF_NAME}",
             timeout=20,
             interval=2,
             contains=["Total 2 static route(s)"],
@@ -284,7 +284,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         wait_check(
             rt,
             device="r1",
-            command="show route ipv6 static",
+            command="show route static ipv6",
             timeout=20,
             interval=2,
             contains=["Total 2 static route(s)"],

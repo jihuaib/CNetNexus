@@ -232,14 +232,14 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 },
                 {
                     "device": "r2",
-                    "command": "show route ipv4 subscribe",
+                    "command": "show route subscribe ipv4",
                     "regex": [r"(?im)^\s*bgp\s+static\s+0\s+ipv4\s*$"],
                     "not_regex": [r"(?im)^\s*bgp\s+connected\s+0\s+ipv4\s*$"],
                     "label": "r2 ipv4 订阅切到 static",
                 },
                 {
                     "device": "r2",
-                    "command": "show route ipv6 subscribe",
+                    "command": "show route subscribe ipv6",
                     "regex": [r"(?im)^\s*bgp\s+static\s+0\s+ipv6\s*$"],
                     "not_regex": [r"(?im)^\s*bgp\s+connected\s+0\s+ipv6\s*$"],
                     "label": "r2 ipv6 订阅切到 static",
@@ -282,14 +282,14 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 },
                 {
                     "device": "r2",
-                    "command": "show route ipv4 subscribe",
+                    "command": "show route subscribe ipv4",
                     "regex": [r"(?im)^\s*bgp\s+connected\s+0\s+ipv4\s*$"],
                     "not_regex": [r"(?im)^\s*bgp\s+static\s+0\s+ipv4\s*$"],
                     "label": "r2 ipv4 订阅切回 connected",
                 },
                 {
                     "device": "r2",
-                    "command": "show route ipv6 subscribe",
+                    "command": "show route subscribe ipv6",
                     "regex": [r"(?im)^\s*bgp\s+connected\s+0\s+ipv6\s*$"],
                     "not_regex": [r"(?im)^\s*bgp\s+static\s+0\s+ipv6\s*$"],
                     "label": "r2 ipv6 订阅切回 connected",
@@ -481,7 +481,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 },
                 {
                     "device": "r2",
-                    "command": "show route ipv4 subscribe",
+                    "command": "show route subscribe ipv4",
                     "not_regex": [r"(?im)^\s*bgp\s+connected\s+0\s+ipv4\s*$"],
                     "label": "r2 ipv4 connected 订阅取消",
                 },

@@ -4,6 +4,7 @@
  */
 #include "route_relay.h"
 
+#include <net/if.h>
 #include <string.h>
 #include <sys/socket.h>
 
@@ -15,6 +16,7 @@
 #include "route_nhobj.h"
 #include "route_static.h"
 #include "route_worker.h"
+#include "vrf.h"
 
 #define ROUTE_ITER_NH_MAX_DEPTH 8u
 
@@ -32,7 +34,7 @@ typedef struct route_nh_watch
     uint32_t vrf_id;
     uint16_t afi;
     uint8_t resolved;
-    uint8_t _pad0;
+    uint8_t resolved_nh_type;
     uint32_t out_ifindex; /**< 解析出的出接口索引 */
     net_addr_t nexthop_addr;
     net_addr_t relay_addr; /**< 解析出的 relay 地址 */
@@ -40,6 +42,31 @@ typedef struct route_nh_watch
 } route_nh_watch_t;
 
 static GHashTable *g_route_nh_watch_table = NULL;
+
+static gboolean relay_addr_equal(const net_addr_t *a, const net_addr_t *b)
+{
+    if (!a || !b)
+    {
+        return FALSE;
+    }
+    if (a->family == 0 && b->family == 0)
+    {
+        return TRUE;
+    }
+    return net_addr_equal(a, b);
+}
+
+static uint32_t route_relay_local_cross_ifindex(uint32_t vrf_id)
+{
+    const vrf_api_cache_entry_t *vrf = vrf_api_cache_lookup(vrf_id);
+    if (!vrf || vrf->name[0] == '\0')
+    {
+        return 0u;
+    }
+
+    unsigned int ifindex = if_nametoindex(vrf->name);
+    return (uint32_t)ifindex;
+}
 
 static guint route_nh_watch_key_hash(gconstpointer p)
 {
@@ -292,7 +319,7 @@ static route_path_t *route_lookup_best_cover(route_rib_t *rib, uint32_t vrf_id, 
  * @return 1=可达，0=不可达
  */
 static int route_nh_resolve(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, const net_addr_t *nexthop,
-                            net_addr_t *gateway_out, uint32_t *ifindex_out)
+                            net_addr_t *gateway_out, uint32_t *ifindex_out, uint8_t *nh_type_out)
 {
     if (!rib || !nexthop)
     {
@@ -373,6 +400,26 @@ static int route_nh_resolve(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, con
             {
                 *ifindex_out = resolver->out_ifindex;
             }
+            if (nh_type_out)
+            {
+                *nh_type_out = ROUTE_NH_TYPE_IP;
+            }
+            return 1;
+        }
+        if (resolver->nh_type == ROUTE_NH_TYPE_BLACKHOLE)
+        {
+            if (gateway_out)
+            {
+                memset(gateway_out, 0, sizeof(*gateway_out));
+            }
+            if (ifindex_out)
+            {
+                *ifindex_out = 0u;
+            }
+            if (nh_type_out)
+            {
+                *nh_type_out = ROUTE_NH_TYPE_BLACKHOLE;
+            }
             return 1;
         }
         /* 非直连解析路径：取其 nexthop（来自 nexthop 对象）继续递归 */
@@ -385,6 +432,10 @@ static int route_nh_resolve(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, con
         }
         if (resolver_nh.family == 0)
         {
+            if (nh_type_out)
+            {
+                *nh_type_out = ROUTE_NH_TYPE_IP;
+            }
             return 1;
         }
         if (resolver_nh.family != AF_INET && resolver_nh.family != AF_INET6)
@@ -409,7 +460,8 @@ static void route_relay_notify_state(const route_nh_watch_t *watch)
     /* 自模块注册的 nexthop（静态路由）：走统一回调流程，不发 IPC */
     if (watch->key.owner_module_id == DEV_MODULE_ID_ROUTE)
     {
-        route_static_on_nh_change(watch->key.nexthop_id, watch->resolved, &watch->relay_addr, watch->out_ifindex);
+        route_static_on_nh_change(watch->key.nexthop_id, watch->resolved, watch->resolved_nh_type, &watch->relay_addr,
+                                  watch->out_ifindex);
         return;
     }
 
@@ -490,6 +542,7 @@ static gboolean route_relay_refresh_watch(route_nh_watch_t *watch)
     uint32_t old_vrf_id = watch->vrf_id;
     uint16_t old_afi = watch->afi;
     uint8_t old_resolved = watch->resolved;
+    uint8_t old_resolved_nh_type = watch->resolved_nh_type;
     uint32_t old_oif = watch->out_ifindex;
     net_addr_t old_nh = watch->nexthop_addr;
     net_addr_t old_relay = watch->relay_addr;
@@ -499,11 +552,12 @@ static gboolean route_relay_refresh_watch(route_nh_watch_t *watch)
     if (route_nhobj_lookup(watch->key.nexthop_id, &info) != ERRCODE_SUCCESS || info.key.nexthop.family == 0)
     {
         watch->resolved = 0u;
+        watch->resolved_nh_type = ROUTE_NH_TYPE_IP;
         watch->out_ifindex = 0u;
         memset(&watch->relay_addr, 0, sizeof(watch->relay_addr));
         watch->updated_at_usec = g_get_real_time();
-        return old_resolved != watch->resolved || old_oif != watch->out_ifindex ||
-               !net_addr_equal(&old_relay, &watch->relay_addr);
+        return old_resolved != watch->resolved || old_resolved_nh_type != watch->resolved_nh_type ||
+               old_oif != watch->out_ifindex || !relay_addr_equal(&old_relay, &watch->relay_addr);
     }
 
     watch->vrf_id = info.key.vrf_id;
@@ -512,12 +566,23 @@ static gboolean route_relay_refresh_watch(route_nh_watch_t *watch)
 
     net_addr_t gw;
     uint32_t oif = 0;
+    uint8_t resolved_nh_type = ROUTE_NH_TYPE_IP;
     memset(&gw, 0, sizeof(gw));
     int res = route_nh_resolve(g_route_work_local ? g_route_work_local->rib : NULL, watch->vrf_id, watch->afi,
-                               &watch->nexthop_addr, &gw, &oif);
+                               &watch->nexthop_addr, &gw, &oif, &resolved_nh_type);
+    uint32_t resolved_oif = oif;
+    if (info.key.key_ifindex == ROUTE_NHOBJ_KEY_IFINDEX_LOCAL_CROSS)
+    {
+        uint32_t local_cross_ifindex = route_relay_local_cross_ifindex(watch->vrf_id);
+        if (local_cross_ifindex != 0u)
+        {
+            resolved_oif = local_cross_ifindex;
+        }
+    }
     watch->resolved = res ? 1u : 0u;
+    watch->resolved_nh_type = watch->resolved ? resolved_nh_type : ROUTE_NH_TYPE_IP;
     watch->relay_addr = gw;
-    watch->out_ifindex = oif;
+    watch->out_ifindex = resolved_oif;
     watch->updated_at_usec = g_get_real_time();
 
     if (watch->key.owner_module_id != DEV_MODULE_ID_ROUTE)
@@ -527,8 +592,8 @@ static gboolean route_relay_refresh_watch(route_nh_watch_t *watch)
     }
 
     return old_vrf_id != watch->vrf_id || old_afi != watch->afi || old_resolved != watch->resolved ||
-           old_oif != watch->out_ifindex || !net_addr_equal(&old_nh, &watch->nexthop_addr) ||
-           !net_addr_equal(&old_relay, &watch->relay_addr);
+           old_resolved_nh_type != watch->resolved_nh_type || old_oif != watch->out_ifindex ||
+           !relay_addr_equal(&old_nh, &watch->nexthop_addr) || !relay_addr_equal(&old_relay, &watch->relay_addr);
 }
 
 void route_relay_handle_nh_register(dev_ipc_message_t *msg)
@@ -735,7 +800,7 @@ void route_relay_publish_unreachable_for_shutdown(void)
 }
 
 int route_relay_register_direct(uint32_t nexthop_id, uint32_t owner_module_id, net_addr_t *gateway_out,
-                                uint32_t *ifindex_out)
+                                uint32_t *ifindex_out, uint8_t *nh_type_out)
 {
     route_nhobj_info_t info;
     memset(&info, 0, sizeof(info));
@@ -780,6 +845,10 @@ int route_relay_register_direct(uint32_t nexthop_id, uint32_t owner_module_id, n
     if (ifindex_out)
     {
         *ifindex_out = watch->out_ifindex;
+    }
+    if (nh_type_out)
+    {
+        *nh_type_out = watch->resolved_nh_type;
     }
 
     return (int)watch->resolved;
@@ -848,9 +917,14 @@ static void relay_show_cb(gpointer key, gpointer value, gpointer user_data)
     const char *afi_str = (watch->afi == ROUTE_AFI_IPV4) ? "ipv4" : (watch->afi == ROUTE_AFI_IPV6) ? "ipv6" : "?";
     const char *safi_str = (watch->key.safi == ROUTE_SAFI_UNICAST) ? "unicast" : "?";
     const char *resolved_str = watch->resolved ? "yes" : "no";
+    const char *type_str = "ip";
+    if (watch->resolved && watch->resolved_nh_type == ROUTE_NH_TYPE_BLACKHOLE)
+    {
+        type_str = "blackhole";
+    }
 
-    g_string_append_printf(ctx->buf, "0x%08X  %-10u  %4u  %-4s  %-7s  %-20s  %s\r\n", watch->key.owner_module_id,
-                           watch->key.nexthop_id, watch->vrf_id, afi_str, safi_str, nh_str, resolved_str);
+    g_string_append_printf(ctx->buf, "0x%08X  %-10u  %4u  %-4s  %-7s  %-20s  %-9s  %s\r\n", watch->key.owner_module_id,
+                           watch->key.nexthop_id, watch->vrf_id, afi_str, safi_str, nh_str, type_str, resolved_str);
     ctx->count++;
 }
 
@@ -864,9 +938,9 @@ void route_relay_show(GString *buf, uint32_t module_filter, int has_filter, uint
 
     g_string_append_printf(buf, "\r\nRoute Relay (VRF: %s)\r\n", vrf_name ? vrf_name : "public");
     g_string_append_printf(buf,
-                           "\r\n%-10s  %-10s  %4s  %-4s  %-7s  %-20s  %s\r\n"
-                           "----------  ----------  ----  ----  -------  --------------------  --------\r\n",
-                           "Module", "NexthopID", "VRF", "AFI", "SAFI", "Nexthop", "Resolved");
+                           "\r\n%-10s  %-10s  %4s  %-4s  %-7s  %-20s  %-9s  %s\r\n"
+                           "----------  ----------  ----  ----  -------  --------------------  ---------  --------\r\n",
+                           "Module", "NexthopID", "VRF", "AFI", "SAFI", "Nexthop", "Type", "Resolved");
 
     if (!g_route_nh_watch_table || g_hash_table_size(g_route_nh_watch_table) == 0)
     {

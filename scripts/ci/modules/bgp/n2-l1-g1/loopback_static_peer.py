@@ -187,25 +187,25 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             [
                 {
                     "device": "r1",
-                    "command": "show route ipv4 static",
+                    "command": "show route static ipv4",
                     "contains": [f"{R2_LOOP_V4}/{HOST_MASK_V4}", r1_peer_ip],
                     "label": "r1 static IPv4 route to r2 loopback",
                 },
                 {
                     "device": "r1",
-                    "command": "show route ipv6 static",
+                    "command": "show route static ipv6",
                     "contains": [f"{R2_LOOP_V6}/{HOST_MASK_V6}", r1_peer_ip6],
                     "label": "r1 static IPv6 route to r2 loopback",
                 },
                 {
                     "device": "r2",
-                    "command": "show route ipv4 static",
+                    "command": "show route static ipv4",
                     "contains": [f"{R1_LOOP_V4}/{HOST_MASK_V4}", r2_peer_ip],
                     "label": "r2 static IPv4 route to r1 loopback",
                 },
                 {
                     "device": "r2",
-                    "command": "show route ipv6 static",
+                    "command": "show route static ipv6",
                     "contains": [f"{R1_LOOP_V6}/{HOST_MASK_V6}", r2_peer_ip6],
                     "label": "r2 static IPv6 route to r1 loopback",
                 },

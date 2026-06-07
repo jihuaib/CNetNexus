@@ -652,6 +652,20 @@ static void process_received_data(dev_ipc_context_t *ctx, dev_ipc_connection_t *
             return;
         }
 
+        uint32_t max_payload = DEV_IPC_RECV_BUF_SIZE - DEV_IPC_FRAME_HEADER_SIZE;
+        if (header.payload_len > max_payload)
+        {
+            LOG_WARN("<%s> Received oversized frame payload_len=%u max=%u from module=0x%08X, disconnecting", ctx->name,
+                     header.payload_len, max_payload, conn->remote_module_id);
+            notify_connection_down(ctx, conn);
+            if (conn->fd >= 0)
+            {
+                epoll_ctl(ctx->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
+            }
+            io_close_connection(ctx, conn, 0);
+            return;
+        }
+
         /* 检查是否有完整帧 */
         uint32_t frame_total = DEV_IPC_FRAME_HEADER_SIZE + header.payload_len;
         if (conn->recv_len < frame_total)

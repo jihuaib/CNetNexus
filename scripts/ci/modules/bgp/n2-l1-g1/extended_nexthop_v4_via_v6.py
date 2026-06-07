@@ -196,7 +196,7 @@ def _wait_os_ipv4_via_v6(
     timeout: int,
 ) -> None:
     """
-    OS 路由表（show fib ipv4 os）从 netlink RTM_GETROUTE 解析；
+    OS 路由表（show fib os ipv4）从 netlink RTM_GETROUTE 解析；
     Gateway 列若显示 IPv6 地址，意味着内核以 RTA_VIA AF_INET6 安装了该 IPv4 路由，
     即 RFC 8950 跨族 nexthop 数据面已生效。
     """
@@ -206,7 +206,7 @@ def _wait_os_ipv4_via_v6(
     wait_check(
         rt,
         device=device,
-        command="show fib ipv4 os",
+        command="show fib os ipv4",
         timeout=timeout,
         interval=2,
         regex=[best_row_regex],

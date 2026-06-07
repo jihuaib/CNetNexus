@@ -199,14 +199,26 @@ static void if_prefix_log_str(const net_prefix_t *prefix, char *buf, size_t buf_
     net_prefix_to_str(prefix, buf, buf_len);
 }
 
-static void if_make_zero_addr(sa_family_t family, net_addr_t *out)
+static int if_make_localhost_addr(sa_family_t family, net_addr_t *out)
 {
     if (!out)
     {
-        return;
+        return ERRCODE_FAIL;
     }
+
     memset(out, 0, sizeof(*out));
     out->family = family;
+    if (family == AF_INET)
+    {
+        out->u.v4.s_addr = htonl(0x7F000001u);
+        return ERRCODE_SUCCESS;
+    }
+    if (family == AF_INET6)
+    {
+        out->u.v6.s6_addr[15] = 1u;
+        return ERRCODE_SUCCESS;
+    }
+    return ERRCODE_FAIL;
 }
 
 static gboolean if_physical_is_loopback(const char *physical_name)
@@ -352,9 +364,6 @@ static int if_sync_connected_host_routes(const if_map_entry_t *if_entry, const n
         return ERRCODE_FAIL;
     }
 
-    net_addr_t zero_nh;
-    if_make_zero_addr(prefix->addr.family, &zero_nh);
-
     /* 出接口索引必须有效，避免将 ifindex=0 下发到路由模块。 */
     uint32_t out_ifindex = if_cfg_wait_ifindex(if_entry->physical_name);
     if (out_ifindex == 0u)
@@ -363,17 +372,24 @@ static int if_sync_connected_host_routes(const if_map_entry_t *if_entry, const n
         return ERRCODE_FAIL;
     }
 
-    uint32_t nexthop_id = 0u;
-    if (if_acquire_connected_nexthop(ctx, vrf_id, afi, &zero_nh, out_ifindex, &nexthop_id) != ERRCODE_SUCCESS)
+    net_addr_t host_nh;
+    if (if_make_localhost_addr(prefix->addr.family, &host_nh) != ERRCODE_SUCCESS)
     {
-        LOG_ERROR("IF: failed to acquire connected nexthop for %s ifindex=%u", if_entry->physical_name, out_ifindex);
+        return ERRCODE_FAIL;
+    }
+
+    uint32_t host_nexthop_id = 0u;
+    if (if_acquire_connected_nexthop(ctx, vrf_id, afi, &host_nh, out_ifindex, &host_nexthop_id) != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("IF: failed to acquire connected host nexthop for %s ifindex=%u", if_entry->physical_name,
+                  out_ifindex);
         return ERRCODE_FAIL;
     }
 
     uint8_t host_len = (prefix->addr.family == AF_INET) ? 32u : 128u;
 
-    route_msg_entry_t network_entry;
-    if_fill_connected_route_entry(&network_entry, afi, prefix->prefix_len, &network_addr, &prefix->addr, nexthop_id,
+    route_msg_entry_t host_entry;
+    if_fill_connected_route_entry(&host_entry, afi, host_len, &prefix->addr, &prefix->addr, host_nexthop_id,
                                   out_ifindex, if_entry->physical_name, vrf_id);
 
     /* 主机前缀（/32 或 /128）下，network 与 host 重合，只下发一条。 */
@@ -382,52 +398,68 @@ static int if_sync_connected_host_routes(const if_map_entry_t *if_entry, const n
         int rc;
         if (is_withdraw)
         {
-            rc = route_rpc_del_wait(ctx, &network_entry, IF_ROUTE_SYNC_TIMEOUT_MS);
+            rc = route_rpc_del_wait(ctx, &host_entry, IF_ROUTE_SYNC_TIMEOUT_MS);
         }
         else
         {
-            rc = route_rpc_add_wait(ctx, &network_entry, IF_ROUTE_SYNC_TIMEOUT_MS);
+            rc = route_rpc_add_wait(ctx, &host_entry, IF_ROUTE_SYNC_TIMEOUT_MS);
         }
-        if_release_connected_nexthop(ctx, nexthop_id);
+        if_release_connected_nexthop(ctx, host_nexthop_id);
         return rc;
     }
 
-    /* 非主机前缀：显式下发 host + network，避免 ROUTE 侧隐式派生 /32(/128) 导致 RIB 与 OS 不一致。 */
-    route_msg_entry_t host_entry = network_entry;
-    host_entry.prefix_addr = prefix->addr;
-    host_entry.prefix_len = host_len;
+    uint32_t network_nexthop_id = 0u;
+    if (if_acquire_connected_nexthop(ctx, vrf_id, afi, &prefix->addr, out_ifindex, &network_nexthop_id) !=
+        ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("IF: failed to acquire connected network nexthop for %s ifindex=%u", if_entry->physical_name,
+                  out_ifindex);
+        if_release_connected_nexthop(ctx, host_nexthop_id);
+        return ERRCODE_FAIL;
+    }
+
+    /* 非主机前缀：显式下发 host + network。host 递归到 localhost，network 递归到 host。 */
+    route_msg_entry_t network_entry;
+    if_fill_connected_route_entry(&network_entry, afi, prefix->prefix_len, &network_addr, &prefix->addr,
+                                  network_nexthop_id, out_ifindex, if_entry->physical_name, vrf_id);
 
     if (is_withdraw)
     {
         /* 先撤网段路由，再撤 host 路由。 */
         if (route_rpc_del_wait(ctx, &network_entry, IF_ROUTE_SYNC_TIMEOUT_MS) != ERRCODE_SUCCESS)
         {
-            if_release_connected_nexthop(ctx, nexthop_id);
+            if_release_connected_nexthop(ctx, network_nexthop_id);
+            if_release_connected_nexthop(ctx, host_nexthop_id);
             return ERRCODE_FAIL;
         }
         if (route_rpc_del_wait(ctx, &host_entry, IF_ROUTE_SYNC_TIMEOUT_MS) != ERRCODE_SUCCESS)
         {
             (void)route_rpc_add_wait(ctx, &network_entry, IF_ROUTE_SYNC_TIMEOUT_MS);
-            if_release_connected_nexthop(ctx, nexthop_id);
+            if_release_connected_nexthop(ctx, network_nexthop_id);
+            if_release_connected_nexthop(ctx, host_nexthop_id);
             return ERRCODE_FAIL;
         }
-        if_release_connected_nexthop(ctx, nexthop_id);
+        if_release_connected_nexthop(ctx, network_nexthop_id);
+        if_release_connected_nexthop(ctx, host_nexthop_id);
         return ERRCODE_SUCCESS;
     }
 
     /* 先下发 host 路由，再下发 network 路由。 */
     if (route_rpc_add_wait(ctx, &host_entry, IF_ROUTE_SYNC_TIMEOUT_MS) != ERRCODE_SUCCESS)
     {
-        if_release_connected_nexthop(ctx, nexthop_id);
+        if_release_connected_nexthop(ctx, network_nexthop_id);
+        if_release_connected_nexthop(ctx, host_nexthop_id);
         return ERRCODE_FAIL;
     }
     if (route_rpc_add_wait(ctx, &network_entry, IF_ROUTE_SYNC_TIMEOUT_MS) != ERRCODE_SUCCESS)
     {
         (void)route_rpc_del_wait(ctx, &host_entry, IF_ROUTE_SYNC_TIMEOUT_MS);
-        if_release_connected_nexthop(ctx, nexthop_id);
+        if_release_connected_nexthop(ctx, network_nexthop_id);
+        if_release_connected_nexthop(ctx, host_nexthop_id);
         return ERRCODE_FAIL;
     }
-    if_release_connected_nexthop(ctx, nexthop_id);
+    if_release_connected_nexthop(ctx, network_nexthop_id);
+    if_release_connected_nexthop(ctx, host_nexthop_id);
     return ERRCODE_SUCCESS;
 }
 
@@ -1248,36 +1280,51 @@ static int if_withdraw_connected_with_ifindex(const if_map_entry_t *if_entry, co
         return ERRCODE_FAIL;
     }
 
-    net_addr_t zero_nh;
-    if_make_zero_addr(prefix->addr.family, &zero_nh);
-
-    uint32_t nexthop_id = 0u;
-    if (if_acquire_connected_nexthop(ctx, vrf_id, afi, &zero_nh, saved_ifindex, &nexthop_id) != ERRCODE_SUCCESS)
+    net_addr_t host_nh;
+    if (if_make_localhost_addr(prefix->addr.family, &host_nh) != ERRCODE_SUCCESS)
     {
-        LOG_ERROR("IF: failed to acquire connected nexthop for %s ifindex=%u", if_entry->physical_name, saved_ifindex);
+        return ERRCODE_FAIL;
+    }
+
+    uint32_t host_nexthop_id = 0u;
+    if (if_acquire_connected_nexthop(ctx, vrf_id, afi, &host_nh, saved_ifindex, &host_nexthop_id) != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("IF: failed to acquire connected host nexthop for %s ifindex=%u", if_entry->physical_name,
+                  saved_ifindex);
         return ERRCODE_FAIL;
     }
 
     uint8_t host_len = (prefix->addr.family == AF_INET) ? 32u : 128u;
 
-    route_msg_entry_t network_entry;
-    if_fill_connected_route_entry(&network_entry, afi, prefix->prefix_len, &network_addr, &prefix->addr, nexthop_id,
+    route_msg_entry_t host_entry;
+    if_fill_connected_route_entry(&host_entry, afi, host_len, &prefix->addr, &prefix->addr, host_nexthop_id,
                                   saved_ifindex, if_entry->physical_name, vrf_id);
 
     if (prefix->prefix_len == host_len)
     {
-        int rc = route_rpc_del_wait(ctx, &network_entry, IF_ROUTE_SYNC_TIMEOUT_MS);
-        if_release_connected_nexthop(ctx, nexthop_id);
+        int rc = route_rpc_del_wait(ctx, &host_entry, IF_ROUTE_SYNC_TIMEOUT_MS);
+        if_release_connected_nexthop(ctx, host_nexthop_id);
         return rc;
     }
 
-    route_msg_entry_t host_entry = network_entry;
-    host_entry.prefix_addr = prefix->addr;
-    host_entry.prefix_len = host_len;
+    uint32_t network_nexthop_id = 0u;
+    if (if_acquire_connected_nexthop(ctx, vrf_id, afi, &prefix->addr, saved_ifindex, &network_nexthop_id) !=
+        ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("IF: failed to acquire connected network nexthop for %s ifindex=%u", if_entry->physical_name,
+                  saved_ifindex);
+        if_release_connected_nexthop(ctx, host_nexthop_id);
+        return ERRCODE_FAIL;
+    }
+
+    route_msg_entry_t network_entry;
+    if_fill_connected_route_entry(&network_entry, afi, prefix->prefix_len, &network_addr, &prefix->addr,
+                                  network_nexthop_id, saved_ifindex, if_entry->physical_name, vrf_id);
 
     (void)route_rpc_del_wait(ctx, &network_entry, IF_ROUTE_SYNC_TIMEOUT_MS);
     (void)route_rpc_del_wait(ctx, &host_entry, IF_ROUTE_SYNC_TIMEOUT_MS);
-    if_release_connected_nexthop(ctx, nexthop_id);
+    if_release_connected_nexthop(ctx, network_nexthop_id);
+    if_release_connected_nexthop(ctx, host_nexthop_id);
     return ERRCODE_SUCCESS;
 }
 

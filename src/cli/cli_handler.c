@@ -791,6 +791,11 @@ void cli_session_destroy(cli_session_t *session)
         g_string_free(session->out, TRUE);
         session->out = NULL;
     }
+    if (session->access_out_pending)
+    {
+        g_string_free(session->access_out_pending, TRUE);
+        session->access_out_pending = NULL;
+    }
 
     g_free(session);
 }

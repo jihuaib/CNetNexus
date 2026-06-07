@@ -222,6 +222,8 @@ void cli_init_local(dev_ipc_context_t *ctx)
 
 /** 连接建立后发给 ACCESS 的欢迎语 */
 #define CLI_WELCOME_TEXT "\r\nWelcome to NetNexus CLI\r\nType '?' for available commands\r\n\r\n"
+/** ACCESS 文本响应正文分片大小；保持远小于 DEV_IPC_RECV_BUF_SIZE，和业务模块 CLI 分片一致。 */
+#define CLI_ACCESS_TEXT_CHUNK_MAX (CLI_MAX_RESP_LEN - 1)
 
 /**
  * @brief 建立一条逻辑会话（以 ACCESS 线号为键）
@@ -246,11 +248,24 @@ static cli_session_t *cli_logical_session_create(uint32_t line_id, const char *i
     return session;
 }
 
-/** @brief 构造并发送 access_text_resp_t 响应（OPEN_RESP / INPUT_RESP / CLOSE_RESP） */
-static void cli_send_text_resp(dev_ipc_context_t *ctx, dev_ipc_message_t *req, uint32_t msg_type, uint32_t flags,
-                               const cli_session_t *line_src, const char *prompt, const char *text)
+static void cli_access_output_reset(cli_session_t *session)
 {
-    size_t text_len = text ? strlen(text) : 0;
+    if (!session)
+    {
+        return;
+    }
+    if (session->access_out_pending)
+    {
+        g_string_free(session->access_out_pending, TRUE);
+        session->access_out_pending = NULL;
+    }
+    session->access_out_offset = 0;
+}
+
+/** @brief 构造并发送 access_text_resp_t 响应（OPEN_RESP / INPUT_RESP / CLOSE_RESP） */
+static int cli_send_text_resp_len(dev_ipc_context_t *ctx, dev_ipc_message_t *req, uint32_t msg_type, uint32_t flags,
+                                  const cli_session_t *line_src, const char *prompt, const char *text, size_t text_len)
+{
     size_t payload_len = sizeof(access_text_resp_t) + text_len + 1;
     access_text_resp_t *r = g_malloc0(payload_len);
     r->flags = flags;
@@ -265,7 +280,7 @@ static void cli_send_text_resp(dev_ipc_context_t *ctx, dev_ipc_message_t *req, u
     {
         g_strlcpy(r->prompt, prompt, sizeof(r->prompt));
     }
-    if (text_len > 0)
+    if (text && text_len > 0)
     {
         memcpy(r->text, text, text_len);
     }
@@ -275,13 +290,82 @@ static void cli_send_text_resp(dev_ipc_context_t *ctx, dev_ipc_message_t *req, u
                                                      r, payload_len, g_free);
     if (resp)
     {
-        dev_ipc_send_response(ctx, resp);
+        int ret = dev_ipc_send_response(ctx, resp);
         dev_ipc_message_free(resp);
+        return (ret == ERRCODE_SUCCESS) ? ERRCODE_SUCCESS : ERRCODE_FAIL;
     }
-    else
+
+    g_free(r);
+    return ERRCODE_FAIL;
+}
+
+static int cli_send_text_resp(dev_ipc_context_t *ctx, dev_ipc_message_t *req, uint32_t msg_type, uint32_t flags,
+                              const cli_session_t *line_src, const char *prompt, const char *text)
+{
+    size_t text_len = text ? strlen(text) : 0;
+    return cli_send_text_resp_len(ctx, req, msg_type, flags, line_src, prompt, text, text_len);
+}
+
+static int cli_send_input_resp_next_chunk(dev_ipc_context_t *ctx, dev_ipc_message_t *req, cli_session_t *session)
+{
+    if (!session || !session->access_out_pending)
     {
-        g_free(r);
+        return cli_send_text_resp(ctx, req, ACCESS_MSG_INPUT_RESP, 0, NULL, "", "");
     }
+
+    gsize full_len = session->access_out_pending->len;
+    if (session->access_out_offset >= full_len)
+    {
+        cli_access_output_reset(session);
+        return cli_send_text_resp(ctx, req, ACCESS_MSG_INPUT_RESP, 0, NULL, "", "");
+    }
+
+    gsize remaining = full_len - session->access_out_offset;
+    gsize chunk_len = remaining > CLI_ACCESS_TEXT_CHUNK_MAX ? CLI_ACCESS_TEXT_CHUNK_MAX : remaining;
+    gsize next_offset = session->access_out_offset + chunk_len;
+    int has_more = (next_offset < full_len) ? 1 : 0;
+
+    char prompt[ACCESS_PROMPT_MAX_LEN] = "";
+    uint32_t flags = has_more ? ACCESS_RESP_FLAG_MORE : (session->close_requested ? ACCESS_RESP_FLAG_CLOSE_SESSION : 0);
+    const cli_session_t *line_src = NULL;
+    if (!has_more)
+    {
+        cli_render_prompt(session, prompt, sizeof(prompt));
+        line_src = session;
+    }
+
+    int ret = cli_send_text_resp_len(ctx, req, ACCESS_MSG_INPUT_RESP, flags, line_src, prompt,
+                                     session->access_out_pending->str + session->access_out_offset, chunk_len);
+    if (ret == ERRCODE_SUCCESS)
+    {
+        session->access_out_offset = next_offset;
+        if (!has_more)
+        {
+            cli_access_output_reset(session);
+        }
+    }
+    return ret;
+}
+
+static int cli_send_input_resp_chunked(dev_ipc_context_t *ctx, dev_ipc_message_t *req, uint32_t flags,
+                                       cli_session_t *session, const char *prompt, const char *text)
+{
+    if (!session)
+    {
+        return cli_send_text_resp(ctx, req, ACCESS_MSG_INPUT_RESP, flags, NULL, prompt, text);
+    }
+
+    cli_access_output_reset(session);
+
+    size_t text_len = text ? strlen(text) : 0;
+    if (text_len <= CLI_ACCESS_TEXT_CHUNK_MAX)
+    {
+        return cli_send_text_resp_len(ctx, req, ACCESS_MSG_INPUT_RESP, flags, session, prompt, text, text_len);
+    }
+
+    session->access_out_pending = g_string_new_len(text, (gssize)text_len);
+    session->access_out_offset = 0;
+    return cli_send_input_resp_next_chunk(ctx, req, session);
 }
 
 static void cli_notify_line_closed(uint32_t line_id)
@@ -346,6 +430,7 @@ static void cli_handle_line_input(dev_ipc_context_t *ctx, dev_ipc_message_t *msg
     s->line_cmd_no = 0;
     s->line_cmd_arg1 = 0;
     s->line_cmd_arg2 = 0;
+    cli_access_output_reset(s);
     g_string_truncate(s->out, 0);
     process_command(req->cmdline, s);
 
@@ -359,7 +444,28 @@ static void cli_handle_line_input(dev_ipc_context_t *ctx, dev_ipc_message_t *msg
     char prompt[ACCESS_PROMPT_MAX_LEN];
     cli_render_prompt(s, prompt, sizeof(prompt));
     uint32_t flags = s->close_requested ? ACCESS_RESP_FLAG_CLOSE_SESSION : 0;
-    cli_send_text_resp(ctx, msg, ACCESS_MSG_INPUT_RESP, flags, s, prompt, s->out->str);
+    (void)cli_send_input_resp_chunked(ctx, msg, flags, s, prompt, s->out->str);
+}
+
+/** @brief 处理 ACCESS_MSG_INPUT_CONTINUE：继续回传上一条 LINE_INPUT 的文本分片 */
+static void cli_handle_input_continue(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
+{
+    if (!msg->payload || msg->payload_len < sizeof(uint32_t))
+    {
+        cli_send_text_resp(ctx, msg, ACCESS_MSG_INPUT_RESP, 0, NULL, "", "");
+        return;
+    }
+
+    uint32_t line_id = 0;
+    memcpy(&line_id, msg->payload, sizeof(line_id));
+    cli_session_t *s = g_hash_table_lookup(g_cli_local->sessions, &line_id);
+    if (!s)
+    {
+        cli_send_text_resp(ctx, msg, ACCESS_MSG_INPUT_RESP, ACCESS_RESP_FLAG_CLOSE_SESSION, NULL, "", "");
+        return;
+    }
+
+    (void)cli_send_input_resp_next_chunk(ctx, msg, s);
 }
 
 /** @brief 处理 ACCESS_MSG_SESSION_CLOSE：销毁逻辑会话 */
@@ -470,6 +576,10 @@ void cli_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
         case ACCESS_MSG_LINE_INPUT:
             cli_handle_line_input(ctx, msg);
+            break;
+
+        case ACCESS_MSG_INPUT_CONTINUE:
+            cli_handle_input_continue(ctx, msg);
             break;
 
         case ACCESS_MSG_SESSION_CLOSE:

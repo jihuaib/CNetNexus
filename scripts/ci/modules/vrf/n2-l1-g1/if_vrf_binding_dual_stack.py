@@ -58,8 +58,8 @@ def _fib_detail_cmd(afi: str, prefix_addr: str, prefix_len: int, vrf: str) -> st
 
 def _fib_os_cmd(afi: str, vrf: str) -> str:
     if vrf == "public":
-        return f"show fib {afi} os"
-    return f"show fib {afi} vrf {vrf} os"
+        return f"show fib os {afi}"
+    return f"show fib os {afi} vrf {vrf} "
 
 
 def _wait_if_state(
@@ -103,11 +103,12 @@ def _wait_route_fib_os(
     prefix_len: int,
     vrf: str,
     expect_present: bool,
+    nexthop: str | None = None,
     timeout: int = 30,
 ) -> None:
-    _, prefix = _network_prefix(prefix_addr, prefix_len)
-    route_cmd = _route_detail_cmd(afi, prefix_addr, prefix_len, vrf)
-    fib_cmd = _fib_detail_cmd(afi, prefix_addr, prefix_len, vrf)
+    network_addr, prefix = _network_prefix(prefix_addr, prefix_len)
+    route_cmd = _route_detail_cmd(afi, network_addr, prefix_len, vrf)
+    fib_cmd = _fib_detail_cmd(afi, network_addr, prefix_len, vrf)
     fib_os_cmd = _fib_os_cmd(afi, vrf)
 
     route_header = rf"(?im)^\s*Routing entry for {re.escape(prefix)} \(VRF: {re.escape(vrf)}\)\s*$"
@@ -118,17 +119,20 @@ def _wait_route_fib_os(
     )
 
     if expect_present:
+        route_regex = [
+            route_header,
+            r"(?im)^\s*Path\s*\[1\]\s*:\s*connected\b",
+            rf"(?im)^\s*Interface\s*:\s*{re.escape(GE_IF)}\s*$",
+        ]
+        if nexthop is not None:
+            route_regex.append(rf"(?im)^\s*Nexthop\s*:\s*{re.escape(nexthop)}\s*$")
         wait_checks(
             rt,
             [
                 {
                     "device": "r1",
                     "command": route_cmd,
-                    "regex": [
-                        route_header,
-                        r"(?im)^\s*Path\s*\[1\]\s*:\s*connected\b",
-                        rf"(?im)^\s*Interface\s*:\s*{re.escape(GE_IF)}\s*$",
-                    ],
+                    "regex": route_regex,
                     "not_contains": ["(no routes)", "(no matching routes)"],
                     "label": f"r1 route {afi} {prefix} vrf={vrf} present",
                 },
@@ -179,21 +183,25 @@ def _wait_route_fib_os(
     )
 
 
-def _wait_ipv4_host_route_fib_os(
+def _wait_host_route_fib_os(
     rt: TopologyRuntime,
     *,
+    afi: str,
     host_addr: str,
+    host_len: int,
+    localhost_nh: str,
     vrf: str,
     expect_present: bool,
     timeout: int = 30,
 ) -> None:
-    prefix = f"{host_addr}/32"
-    route_cmd = _route_detail_cmd("ipv4", host_addr, 32, vrf)
-    fib_cmd = _fib_detail_cmd("ipv4", host_addr, 32, vrf)
-    fib_os_cmd = _fib_os_cmd("ipv4", vrf)
+    prefix = f"{host_addr}/{host_len}"
+    route_cmd = _route_detail_cmd(afi, host_addr, host_len, vrf)
+    fib_cmd = _fib_detail_cmd(afi, host_addr, host_len, vrf)
+    fib_os_cmd = _fib_os_cmd(afi, vrf)
 
     route_header = rf"(?im)^\s*Routing entry for {re.escape(prefix)} \(VRF: {re.escape(vrf)}\)\s*$"
     route_path = r"(?im)^\s*Path\s*\[1\]\s*:\s*(?:connected|local)\b"
+    route_nh = rf"(?im)^\s*Nexthop\s*:\s*{re.escape(localhost_nh)}\s*$"
     fib_header = rf"(?im)^\s*Routing entry for\s+{re.escape(prefix)}\b"
     fib_skip_os = r"(?im)^\s*Skip OS\s*:\s*yes\s*$"
     os_local_row = (
@@ -210,23 +218,24 @@ def _wait_ipv4_host_route_fib_os(
                     "regex": [
                         route_header,
                         route_path,
+                        route_nh,
                         rf"(?im)^\s*Interface\s*:\s*{re.escape(GE_IF)}\s*$",
                     ],
                     "not_contains": ["(no routes)", "(no matching routes)"],
-                    "label": f"r1 route ipv4 host {prefix} vrf={vrf} present",
+                    "label": f"r1 route {afi} host {prefix} vrf={vrf} present",
                 },
                 {
                     "device": "r1",
                     "command": fib_cmd,
                     "regex": [fib_header, fib_skip_os],
                     "not_contains": ["(no routes)"],
-                    "label": f"r1 fib ipv4 host {prefix} vrf={vrf} present",
+                    "label": f"r1 fib {afi} host {prefix} vrf={vrf} present",
                 },
                 {
                     "device": "r1",
                     "command": fib_os_cmd,
                     "regex": [os_local_row],
-                    "label": f"r1 fib-os ipv4 host {prefix} vrf={vrf} present",
+                    "label": f"r1 fib-os {afi} host {prefix} vrf={vrf} present",
                 },
             ],
             timeout=timeout,
@@ -242,23 +251,54 @@ def _wait_ipv4_host_route_fib_os(
                 "command": route_cmd,
                 "regex": [r"(?im)\((?:no routes|no matching routes)\)"],
                 "not_regex": [route_path],
-                "label": f"r1 route ipv4 host {prefix} vrf={vrf} absent",
+                "label": f"r1 route {afi} host {prefix} vrf={vrf} absent",
             },
             {
                 "device": "r1",
                 "command": fib_cmd,
                 "not_regex": [fib_header],
-                "label": f"r1 fib ipv4 host {prefix} vrf={vrf} absent",
+                "label": f"r1 fib {afi} host {prefix} vrf={vrf} absent",
             },
             {
                 "device": "r1",
                 "command": fib_os_cmd,
                 "not_regex": [os_local_row],
-                "label": f"r1 fib-os ipv4 host {prefix} vrf={vrf} absent",
+                "label": f"r1 fib-os {afi} host {prefix} vrf={vrf} absent",
             },
         ],
         timeout=timeout,
         interval=2,
+    )
+
+
+def _wait_dual_stack_host_routes(
+    rt: TopologyRuntime,
+    *,
+    v4_host: str,
+    v6_host: str,
+    vrf: str,
+    expect_present: bool,
+    timeout: int = 30,
+) -> None:
+    _wait_host_route_fib_os(
+        rt,
+        afi="ipv4",
+        host_addr=v4_host,
+        host_len=32,
+        localhost_nh="127.0.0.1",
+        vrf=vrf,
+        expect_present=expect_present,
+        timeout=timeout,
+    )
+    _wait_host_route_fib_os(
+        rt,
+        afi="ipv6",
+        host_addr=v6_host,
+        host_len=128,
+        localhost_nh="::1",
+        vrf=vrf,
+        expect_present=expect_present,
+        timeout=timeout,
     )
 
 
@@ -282,6 +322,7 @@ def _wait_dual_stack_routes(
         prefix_len=v4_len,
         vrf=vrf,
         expect_present=expect_present,
+        nexthop=v4_addr if expect_present else None,
         timeout=timeout,
     )
     _wait_route_fib_os(
@@ -291,6 +332,7 @@ def _wait_dual_stack_routes(
         prefix_len=v6_len,
         vrf=vrf,
         expect_present=expect_present,
+        nexthop=v6_addr if expect_present else None,
         timeout=timeout,
     )
 
@@ -392,14 +434,14 @@ def _run_inner(rt: TopologyRuntime, base_v4: str, base_v4_len: int) -> None:
     )
     _wait_dual_stack_routes(
         rt,
-        v4_addr=base_v4_net,
+        v4_addr=base_v4,
         v4_len=base_v4_len,
-        v6_addr=base_v6_net,
+        v6_addr=BASE_V6,
         v6_len=BASE_V6_LEN,
         vrf="public",
         expect_present=True,
     )
-    _wait_ipv4_host_route_fib_os(rt, host_addr=base_v4, vrf="public", expect_present=True)
+    _wait_dual_stack_host_routes(rt, v4_host=base_v4, v6_host=BASE_V6, vrf="public", expect_present=True)
 
     step("Bind GE-1 to VRF blue and verify IP/routes are cleared")
     run_cmds(
@@ -416,24 +458,24 @@ def _run_inner(rt: TopologyRuntime, base_v4: str, base_v4_len: int) -> None:
     _wait_if_state(rt, vrf=VRF_NAME, ip4="-", ip4_len=None, ip6="-", ip6_len=None, proto_state="DOWN")
     _wait_dual_stack_routes(
         rt,
-        v4_addr=base_v4_net,
+        v4_addr=base_v4,
         v4_len=base_v4_len,
-        v6_addr=base_v6_net,
+        v6_addr=BASE_V6,
         v6_len=BASE_V6_LEN,
         vrf="public",
         expect_present=False,
     )
-    _wait_ipv4_host_route_fib_os(rt, host_addr=base_v4, vrf="public", expect_present=False)
+    _wait_dual_stack_host_routes(rt, v4_host=base_v4, v6_host=BASE_V6, vrf="public", expect_present=False)
     _wait_dual_stack_routes(
         rt,
-        v4_addr=base_v4_net,
+        v4_addr=base_v4,
         v4_len=base_v4_len,
-        v6_addr=base_v6_net,
+        v6_addr=BASE_V6,
         v6_len=BASE_V6_LEN,
         vrf=VRF_NAME,
         expect_present=False,
     )
-    _wait_ipv4_host_route_fib_os(rt, host_addr=base_v4, vrf=VRF_NAME, expect_present=False)
+    _wait_dual_stack_host_routes(rt, v4_host=base_v4, v6_host=BASE_V6, vrf=VRF_NAME, expect_present=False)
 
     step("Configure IPv4/IPv6 on GE-1 inside VRF blue")
     run_cmds(
@@ -459,24 +501,24 @@ def _run_inner(rt: TopologyRuntime, base_v4: str, base_v4_len: int) -> None:
     )
     _wait_dual_stack_routes(
         rt,
-        v4_addr=vrf_v4_net,
+        v4_addr=VRF_V4,
         v4_len=VRF_V4_LEN,
-        v6_addr=vrf_v6_net,
+        v6_addr=VRF_V6,
         v6_len=VRF_V6_LEN,
         vrf=VRF_NAME,
         expect_present=True,
     )
-    _wait_ipv4_host_route_fib_os(rt, host_addr=VRF_V4, vrf=VRF_NAME, expect_present=True)
+    _wait_dual_stack_host_routes(rt, v4_host=VRF_V4, v6_host=VRF_V6, vrf=VRF_NAME, expect_present=True)
     _wait_dual_stack_routes(
         rt,
-        v4_addr=vrf_v4_net,
+        v4_addr=VRF_V4,
         v4_len=VRF_V4_LEN,
-        v6_addr=vrf_v6_net,
+        v6_addr=VRF_V6,
         v6_len=VRF_V6_LEN,
         vrf="public",
         expect_present=False,
     )
-    _wait_ipv4_host_route_fib_os(rt, host_addr=VRF_V4, vrf="public", expect_present=False)
+    _wait_dual_stack_host_routes(rt, v4_host=VRF_V4, v6_host=VRF_V6, vrf="public", expect_present=False)
 
     step("Modify IPv4/IPv6 addresses inside VRF blue")
     run_cmds(
@@ -504,24 +546,24 @@ def _run_inner(rt: TopologyRuntime, base_v4: str, base_v4_len: int) -> None:
     )
     _wait_dual_stack_routes(
         rt,
-        v4_addr=vrf_v4_net,
+        v4_addr=VRF_V4,
         v4_len=VRF_V4_LEN,
-        v6_addr=vrf_v6_net,
+        v6_addr=VRF_V6,
         v6_len=VRF_V6_LEN,
         vrf=VRF_NAME,
         expect_present=False,
     )
-    _wait_ipv4_host_route_fib_os(rt, host_addr=VRF_V4, vrf=VRF_NAME, expect_present=False)
+    _wait_dual_stack_host_routes(rt, v4_host=VRF_V4, v6_host=VRF_V6, vrf=VRF_NAME, expect_present=False)
     _wait_dual_stack_routes(
         rt,
-        v4_addr=new_v4_net,
+        v4_addr=NEW_V4,
         v4_len=NEW_V4_LEN,
-        v6_addr=new_v6_net,
+        v6_addr=NEW_V6,
         v6_len=NEW_V6_LEN,
         vrf=VRF_NAME,
         expect_present=True,
     )
-    _wait_ipv4_host_route_fib_os(rt, host_addr=NEW_V4, vrf=VRF_NAME, expect_present=True)
+    _wait_dual_stack_host_routes(rt, v4_host=NEW_V4, v6_host=NEW_V6, vrf=VRF_NAME, expect_present=True)
 
     step("Shutdown GE-1 in VRF blue and verify routes withdraw")
     run_cmds(
@@ -546,14 +588,14 @@ def _run_inner(rt: TopologyRuntime, base_v4: str, base_v4_len: int) -> None:
     )
     _wait_dual_stack_routes(
         rt,
-        v4_addr=new_v4_net,
+        v4_addr=NEW_V4,
         v4_len=NEW_V4_LEN,
-        v6_addr=new_v6_net,
+        v6_addr=NEW_V6,
         v6_len=NEW_V6_LEN,
         vrf=VRF_NAME,
         expect_present=False,
     )
-    _wait_ipv4_host_route_fib_os(rt, host_addr=NEW_V4, vrf=VRF_NAME, expect_present=False)
+    _wait_dual_stack_host_routes(rt, v4_host=NEW_V4, v6_host=NEW_V6, vrf=VRF_NAME, expect_present=False)
 
     step("No shutdown GE-1 in VRF blue and verify routes restore")
     run_cmds(
@@ -578,14 +620,14 @@ def _run_inner(rt: TopologyRuntime, base_v4: str, base_v4_len: int) -> None:
     )
     _wait_dual_stack_routes(
         rt,
-        v4_addr=new_v4_net,
+        v4_addr=NEW_V4,
         v4_len=NEW_V4_LEN,
-        v6_addr=new_v6_net,
+        v6_addr=NEW_V6,
         v6_len=NEW_V6_LEN,
         vrf=VRF_NAME,
         expect_present=True,
     )
-    _wait_ipv4_host_route_fib_os(rt, host_addr=NEW_V4, vrf=VRF_NAME, expect_present=True)
+    _wait_dual_stack_host_routes(rt, v4_host=NEW_V4, v6_host=NEW_V6, vrf=VRF_NAME, expect_present=True)
 
     step("Reboot r1 and verify VRF binding and routes restore")
     # reboot 后要验证 VRF 绑定/路由从 DB 恢复，配置必须存活：先 save 落盘到 startup-config
@@ -615,15 +657,17 @@ def _run_inner(rt: TopologyRuntime, base_v4: str, base_v4_len: int) -> None:
     )
     _wait_dual_stack_routes(
         rt,
-        v4_addr=new_v4_net,
+        v4_addr=NEW_V4,
         v4_len=NEW_V4_LEN,
-        v6_addr=new_v6_net,
+        v6_addr=NEW_V6,
         v6_len=NEW_V6_LEN,
         vrf=VRF_NAME,
         expect_present=True,
         timeout=40,
     )
-    _wait_ipv4_host_route_fib_os(rt, host_addr=NEW_V4, vrf=VRF_NAME, expect_present=True, timeout=40)
+    _wait_dual_stack_host_routes(
+        rt, v4_host=NEW_V4, v6_host=NEW_V6, vrf=VRF_NAME, expect_present=True, timeout=40
+    )
 
     step("Delete IPv4/IPv6 from VRF blue and verify routes withdraw")
     run_cmds(
@@ -641,14 +685,14 @@ def _run_inner(rt: TopologyRuntime, base_v4: str, base_v4_len: int) -> None:
     _wait_if_state(rt, vrf=VRF_NAME, ip4="-", ip4_len=None, ip6="-", ip6_len=None, proto_state="DOWN")
     _wait_dual_stack_routes(
         rt,
-        v4_addr=new_v4_net,
+        v4_addr=NEW_V4,
         v4_len=NEW_V4_LEN,
-        v6_addr=new_v6_net,
+        v6_addr=NEW_V6,
         v6_len=NEW_V6_LEN,
         vrf=VRF_NAME,
         expect_present=False,
     )
-    _wait_ipv4_host_route_fib_os(rt, host_addr=NEW_V4, vrf=VRF_NAME, expect_present=False)
+    _wait_dual_stack_host_routes(rt, v4_host=NEW_V4, v6_host=NEW_V6, vrf=VRF_NAME, expect_present=False)
 
     step("Unbind GE-1 from VRF blue and verify public routes after reconfigure")
     run_cmds(
@@ -675,21 +719,21 @@ def _run_inner(rt: TopologyRuntime, base_v4: str, base_v4_len: int) -> None:
     )
     _wait_dual_stack_routes(
         rt,
-        v4_addr=base_v4_net,
+        v4_addr=base_v4,
         v4_len=base_v4_len,
-        v6_addr=base_v6_net,
+        v6_addr=BASE_V6,
         v6_len=BASE_V6_LEN,
         vrf="public",
         expect_present=True,
     )
-    _wait_ipv4_host_route_fib_os(rt, host_addr=base_v4, vrf="public", expect_present=True)
+    _wait_dual_stack_host_routes(rt, v4_host=base_v4, v6_host=BASE_V6, vrf="public", expect_present=True)
     _wait_dual_stack_routes(
         rt,
-        v4_addr=base_v4_net,
+        v4_addr=base_v4,
         v4_len=base_v4_len,
-        v6_addr=base_v6_net,
+        v6_addr=BASE_V6,
         v6_len=BASE_V6_LEN,
         vrf=VRF_NAME,
         expect_present=False,
     )
-    _wait_ipv4_host_route_fib_os(rt, host_addr=base_v4, vrf=VRF_NAME, expect_present=False)
+    _wait_dual_stack_host_routes(rt, v4_host=base_v4, v6_host=BASE_V6, vrf=VRF_NAME, expect_present=False)

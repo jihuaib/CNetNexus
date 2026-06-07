@@ -50,7 +50,6 @@ static uint8_t fib_route_protocol_to_rtproto(uint32_t protocol)
         case ROUTE_PROTOCOL_ISIS:
             return RTPROT_ISIS;
         case ROUTE_PROTOCOL_STATIC:
-        case ROUTE_PROTOCOL_BLACKHOLE:
         default:
             return RTPROT_STATIC;
     }
@@ -405,6 +404,27 @@ static int fib_os_route_send(int cmd, const fib_route_entry_t *route, const fib_
         table_id = vrf->l3vrf_table_id;
     }
 
+    gboolean is_local_route = (route->flags & FIB_ROUTE_FLAG_LOCAL) != 0u;
+    uint32_t out_ifindex = route->out_ifindex;
+    if (is_local_route)
+    {
+        out_ifindex = (uint32_t)if_nametoindex("lo");
+        if (out_ifindex == 0u)
+        {
+            LOG_WARN("[fib_os] local route requires kernel lo ifindex");
+            return ERRCODE_FAIL;
+        }
+    }
+    else if (out_ifindex == ROUTE_INLOOP_IFINDEX)
+    {
+        out_ifindex = (uint32_t)if_nametoindex("lo");
+        if (out_ifindex == 0u)
+        {
+            LOG_WARN("[fib_os] inloop route requires kernel lo ifindex");
+            return ERRCODE_FAIL;
+        }
+    }
+
     if (table_id < 256)
     {
         rtm->rtm_table = (unsigned char)table_id;
@@ -415,12 +435,17 @@ static int fib_os_route_send(int cmd, const fib_route_entry_t *route, const fib_
         rtm->rtm_table = RT_TABLE_UNSPEC;
     }
 
-    if (route->nh_type == FIB_NH_TYPE_BLACKHOLE)
+    if (is_local_route)
+    {
+        rtm->rtm_type = RTN_LOCAL;
+        rtm->rtm_scope = RT_SCOPE_HOST;
+    }
+    else if (route->nh_type == FIB_NH_TYPE_BLACKHOLE)
     {
         rtm->rtm_type = RTN_BLACKHOLE;
         rtm->rtm_scope = RT_SCOPE_UNIVERSE;
     }
-    else if (net_addr_is_zero(&route->nexthop_addr) && route->out_ifindex != 0)
+    else if (net_addr_is_zero(&route->nexthop_addr) && out_ifindex != 0)
     {
         rtm->rtm_type = RTN_UNICAST;
         rtm->rtm_scope = RT_SCOPE_LINK;
@@ -447,18 +472,18 @@ static int fib_os_route_send(int cmd, const fib_route_entry_t *route, const fib_
         return ERRCODE_FAIL;
     }
 
-    if (route->out_ifindex != 0 && route->nh_type != FIB_NH_TYPE_BLACKHOLE)
+    if (out_ifindex != 0 && route->nh_type != FIB_NH_TYPE_BLACKHOLE)
     {
-        nl_add_attr(nlh, sizeof(buf), RTA_OIF, &route->out_ifindex, (int)sizeof(route->out_ifindex));
+        nl_add_attr(nlh, sizeof(buf), RTA_OIF, &out_ifindex, (int)sizeof(out_ifindex));
     }
 
-    if (cmd == RTM_NEWROUTE && route->out_ifindex != 0 && route->nh_type != FIB_NH_TYPE_BLACKHOLE &&
+    if (cmd == RTM_NEWROUTE && !is_local_route && out_ifindex != 0 && route->nh_type != FIB_NH_TYPE_BLACKHOLE &&
         !net_addr_is_zero(&route->nexthop_addr))
     {
         rtm->rtm_flags |= RTNH_F_ONLINK;
     }
 
-    if (route->nh_type == FIB_NH_TYPE_IP && !net_addr_is_zero(&route->nexthop_addr) &&
+    if (!is_local_route && route->nh_type == FIB_NH_TYPE_IP && !net_addr_is_zero(&route->nexthop_addr) &&
         nl_add_gateway_or_via(nlh, sizeof(buf), route->prefix_addr.family, &route->nexthop_addr) != ERRCODE_SUCCESS)
     {
         return ERRCODE_FAIL;
