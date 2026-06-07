@@ -52,7 +52,7 @@ typedef struct access_local
     dev_ipc_context_t *dev_ipc_ctx;
     volatile int running;
     int epoll_fd;
-    access_listener_t telnet_lis;  /**< telnet/vty 监听（TCP 3788） */
+    access_listener_t telnet_lis;  /**< telnet/vty 监听（按配置启用） */
     access_listener_t console_lis; /**< console 监听（AF_UNIX，永远在线） */
     char console_path[256];        /**< console unix socket 路径 */
     pthread_t server_thread;
@@ -74,13 +74,26 @@ typedef struct
 {
     access_line_t *line;
     int epoll_fd;
+    int line_fd;
+    int client_fd;
+    uint32_t generation;
 } access_bash_ctx_t;
+
+static int access_line_same_session(access_line_t *line, uint32_t generation, int fd)
+{
+    return line && line->generation == generation && line->fd == fd;
+}
+
+static int access_line_still_current(access_line_t *line, uint32_t generation, int fd)
+{
+    return access_line_same_session(line, generation, fd) && line->in_use && !line->close_requested;
+}
 
 /** 把 client fd 重新挂回 epoll，使 server 线程恢复接管本线 */
 static void access_bash_rearm(int epoll_fd, access_line_t *line)
 {
     struct epoll_event ev;
-    ev.events = EPOLLIN;
+    ev.events = EPOLLIN | EPOLLRDHUP;
     ev.data.ptr = line;
     epoll_ctl(epoll_fd, EPOLL_CTL_ADD, line->fd, &ev);
 }
@@ -91,8 +104,10 @@ static void *access_bash_bridge(void *arg)
     pthread_setname_np(pthread_self(), "access-bash");
     access_bash_ctx_t *c = (access_bash_ctx_t *)arg;
     access_line_t *line = c->line;
-    int client_fd = line->fd;
     int epoll_fd = c->epoll_fd;
+    int line_fd = c->line_fd;
+    int client_fd = c->client_fd;
+    uint32_t generation = c->generation;
     g_free(c);
 
     int pty_master = -1;
@@ -100,9 +115,17 @@ static void *access_bash_bridge(void *arg)
     pid_t pid = forkpty(&pty_master, NULL, NULL, &ws);
     if (pid < 0)
     {
-        access_line_send(line, "Error: Failed to start bash.\r\n");
-        access_line_send_prompt(line);
-        access_bash_rearm(epoll_fd, line);
+        if (access_line_same_session(line, generation, line_fd))
+        {
+            line->bash_active = 0;
+            if (access_line_still_current(line, generation, line_fd))
+            {
+                access_line_send(line, "Error: Failed to start bash.\r\n");
+                access_line_send_prompt(line);
+                access_bash_rearm(epoll_fd, line);
+            }
+        }
+        close(client_fd);
         return NULL;
     }
     if (pid == 0)
@@ -162,10 +185,18 @@ static void *access_bash_bridge(void *arg)
         waitpid(pid, NULL, 0);
     }
     close(pty_master);
+    close(client_fd);
 
-    access_line_send(line, "\r\nBash session ended, returning to CLI...\r\n");
-    access_line_send_prompt(line);
-    access_bash_rearm(epoll_fd, line);
+    if (access_line_same_session(line, generation, line_fd))
+    {
+        line->bash_active = 0;
+        if (access_line_still_current(line, generation, line_fd))
+        {
+            access_line_send(line, "\r\nBash session ended, returning to CLI...\r\n");
+            access_line_send_prompt(line);
+            access_bash_rearm(epoll_fd, line);
+        }
+    }
     return NULL;
 }
 
@@ -173,11 +204,23 @@ static void *access_bash_bridge(void *arg)
 static void access_bash_enter(access_line_t *line)
 {
     epoll_ctl(g_access.epoll_fd, EPOLL_CTL_DEL, line->fd, NULL);
+    int bridge_fd = dup(line->fd);
+    if (bridge_fd < 0)
+    {
+        access_line_send(line, "Error: Failed to enter bash.\r\n");
+        access_line_send_prompt(line);
+        access_bash_rearm(g_access.epoll_fd, line);
+        return;
+    }
+    line->bash_active = 1;
     access_line_send(line, "\r\nEntering bash shell, type 'exit' to return to CLI.\r\n\r\n");
 
     access_bash_ctx_t *c = g_malloc(sizeof(*c));
     c->line = line;
     c->epoll_fd = g_access.epoll_fd;
+    c->line_fd = line->fd;
+    c->client_fd = bridge_fd;
+    c->generation = line->generation;
 
     pthread_t tid;
     pthread_attr_t attr;
@@ -186,6 +229,8 @@ static void access_bash_enter(access_line_t *line)
     if (pthread_create(&tid, &attr, access_bash_bridge, c) != 0)
     {
         g_free(c);
+        close(bridge_fd);
+        line->bash_active = 0;
         access_line_send(line, "Error: Failed to create bash thread.\r\n");
         access_line_send_prompt(line);
         access_bash_rearm(g_access.epoll_fd, line);
@@ -201,6 +246,36 @@ static void access_bash_enter(access_line_t *line)
 static const char *line_type_name(uint16_t t)
 {
     return t == ACCESS_LINE_TYPE_CON ? "con" : "vty";
+}
+
+static void access_disconnect_line(access_line_t *line, const char *reason, const char *client_msg)
+{
+    if (!line)
+    {
+        return;
+    }
+
+    int fd = line->fd;
+    uint32_t line_id = line->line_id;
+    uint16_t line_type = line->line_type;
+    if (client_msg && client_msg[0] != '\0')
+    {
+        access_line_send(line, client_msg);
+    }
+    line->close_requested = 1;
+    if (fd >= 0)
+    {
+        epoll_ctl(g_access.epoll_fd, EPOLL_CTL_DEL, fd, NULL);
+        shutdown(fd, SHUT_RDWR);
+    }
+    for (int i = 0; line->bash_active && i < 20; i++)
+    {
+        usleep(50000);
+    }
+    access_line_close_on_cli(line_id);
+    access_line_free(line);
+    LOG_INFO("Line %s%u disconnected (fd=%d, reason=%s)", line_type_name(line_type), line_id, fd,
+             reason ? reason : "closed");
 }
 
 /** 在某个监听 socket 上 accept 一条新线 */
@@ -234,6 +309,16 @@ static void access_accept_on_listener(access_listener_t *lis)
         g_strlcpy(ip, "console", sizeof(ip));
     }
 
+    if (lis->line_type == ACCESS_LINE_TYPE_CON)
+    {
+        access_line_t *old = access_line_find(ACCESS_CON_LINE_ID);
+        if (old)
+        {
+            LOG_INFO("Line con0 preempted by a new console connection");
+            access_disconnect_line(old, "preempted", "\r\nConsole session replaced by a new connection.\r\n");
+        }
+    }
+
     access_line_t *line = access_line_alloc(conn_fd, ip, port, lis->line_type);
     if (!line)
     {
@@ -245,7 +330,7 @@ static void access_accept_on_listener(access_listener_t *lis)
     }
 
     struct epoll_event client_ev;
-    client_ev.events = EPOLLIN;
+    client_ev.events = EPOLLIN | EPOLLRDHUP;
     client_ev.data.ptr = line;
     if (epoll_ctl(g_access.epoll_fd, EPOLL_CTL_ADD, conn_fd, &client_ev) < 0)
     {
@@ -288,13 +373,10 @@ static void *access_server_thread(void *arg)
             }
 
             access_line_t *line = (access_line_t *)events[i].data.ptr;
-            int fd = line->fd;
-            if (access_line_process_input(line) < 0)
+            uint32_t ev = events[i].events;
+            if ((ev & (EPOLLHUP | EPOLLERR | EPOLLRDHUP)) || access_line_process_input(line) < 0)
             {
-                LOG_INFO("Line %s%u disconnected (fd=%d)", line_type_name(line->line_type), line->line_id, fd);
-                epoll_ctl(g_access.epoll_fd, EPOLL_CTL_DEL, fd, NULL);
-                access_line_close_on_cli(line->line_id);
-                access_line_free(line);
+                access_disconnect_line(line, "peer closed", NULL);
             }
             else if (line->enter_bash)
             {

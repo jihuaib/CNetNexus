@@ -198,11 +198,11 @@
 
         <!-- ================================================================
              Group 2: show route 命令
-             元素位置：1=show, 2=route, 3=ipv4, 4=ipv6, 5=<destination>,
+             元素位置：1=show, 2=route, 3=ipv4, 4=ipv6, 5=<ipv4-destination>,
                        6=proto, 7=static, 8=bgp, 9=ospf, 10=summary,
                        11=connected, 12=isis,
                        13=<prefix-length-v4>, 14=<prefix-length-v6>,
-                       15=subscribe, 16=vrf, 17=vrf-name
+                       15=subscribe, 16=vrf, 17=vrf-name, 18=<ipv6-destination>
              cfg-id: 1=ipv4, 2=ipv6, 4=dest_filter,
                      5=proto:static, 6=proto:bgp, 7=proto:ospf, 8=summary,
                      9=proto:connected, 11=proto:isis,
@@ -228,9 +228,9 @@
                     <description>IPv6 routes</description>
                 </element>
                 <element id="5" cfg-id="4" type="parameter">
-                    <name>&lt;destination&gt;</name>
-                    <type>string</type>
-                    <description>Filter by destination address</description>
+                    <name>&lt;ipv4-destination&gt;</name>
+                    <type>ipv4</type>
+                    <description>Filter by IPv4 destination address</description>
                 </element>
                 <element id="6" type="keyword">
                     <name>proto</name>
@@ -283,6 +283,11 @@
                     <type>dynamic(4:1,string(1-63))</type>
                     <description>VRF name</description>
                 </element>
+                <element id="18" cfg-id="4" type="parameter">
+                    <name>&lt;ipv6-destination&gt;</name>
+                    <type>ipv6</type>
+                    <description>Filter by IPv6 destination address</description>
+                </element>
             </elements>
 
             <commands>
@@ -291,14 +296,14 @@
                     <expression>1 2 { 3 | 4 } [16 17]</expression>
                     <views>global</views>
                 </command>
-                <!-- show route { ipv4 | ipv6 } [vrf <name>] <destination> <prefix-length> -->
+                <!-- show route ipv4 [vrf <name>] <ipv4-destination> <prefix-length> -->
                 <command>
-                    <expression>1 2 {3 | 4} [16 17] 5 13</expression>
+                    <expression>1 2 3 [16 17] 5 13</expression>
                     <views>global</views>
                 </command>
-                <!-- show route { ipv4 | ipv6 } [vrf <name>] <destination> <prefix-length> -->
+                <!-- show route ipv6 [vrf <name>] <ipv6-destination> <prefix-length> -->
                 <command>
-                    <expression>1 2 {3 | 4} [16 17] 5 14</expression>
+                    <expression>1 2 4 [16 17] 18 14</expression>
                     <views>global</views>
                 </command>
                 <!-- show route { ipv4 | ipv6 } [vrf <name>] proto static -->

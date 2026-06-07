@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-mkdir -p /etc/frr /run/frr /var/log/frr
+mkdir -p /etc/frr /run/frr /run/lldpd /var/log/frr
 touch /etc/frr/zebra.conf /etc/frr/bgpd.conf /etc/frr/staticd.conf /etc/frr/vtysh.conf
 
 cat >/etc/frr/daemons <<'EOF'
@@ -47,5 +47,19 @@ fi
 while ! vtysh -c "show version" >/dev/null 2>&1; do
   sleep 1
 done
+
+if command -v lldpd >/dev/null 2>&1; then
+  lldpd -d -I eth1 >/var/log/frr/lldpd.log 2>&1 &
+  for _ in $(seq 1 20); do
+    if lldpcli show configuration >/dev/null 2>&1; then
+      lldpcli configure system hostname "$(hostname)" >/dev/null 2>&1 || true
+      lldpcli configure system description "CNetNexus FRR CI peer" >/dev/null 2>&1 || true
+      lldpcli configure lldp tx-interval 5 >/dev/null 2>&1 || true
+      lldpcli configure lldp tx-hold 2 >/dev/null 2>&1 || true
+      break
+    fi
+    sleep 1
+  done
+fi
 
 tail -F /var/log/frr/*.log /dev/null

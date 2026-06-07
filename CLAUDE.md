@@ -33,7 +33,7 @@ rm -rf build
 ./scripts/dev/start.sh
 
 # 3. 连接
-telnet localhost 3788
+./build/bin/netnexus-console
 ```
 
 ### 开发脚本
@@ -243,8 +243,8 @@ gprof ./bin/netnexus gmon.out > analysis.txt
 ## 运行
 
 ```bash
-cd build/bin && ./netnexus     # 在端口 3788 启动服务器
-telnet localhost 3788          # 连接到 CLI
+cd build/bin && ./netnexus     # 启动服务器
+./netnexus-console             # 连接到 CLI
 ```
 
 ## 构建产物
@@ -531,7 +531,7 @@ docker-compose down
 ```
 
 Docker 配置：
-- 暴露端口：`3788`（telnet）
+- 默认连接：console socket（telnet/vty 需显式配置）
 - 持久化数据：`/opt/netnexus/data`（卷）
 - 配置目录：`/opt/netnexus/resources`
 - 环境变量：`NN_WORK_DIR=/opt/netnexus`

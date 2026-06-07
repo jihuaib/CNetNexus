@@ -1,72 +1,38 @@
-# Interface CLI Documentation
+# 接口 CLI 文档
 
-This document describes the interface management commands provided by the IF module (module-id: 5).
+IF 模块（module-id: 5）负责物理接口、loopback、null0、接口地址、管理状态和 VRF 绑定。
 
-## 1. Interface Entry Commands (config view)
+## 接口进入命令
 
-### 1.1 `if { GE-1 | GE-2 | GE-3 | GE-4 }`
-Enters the interface configuration view for a specific GigabitEthernet interface.
+| 命令 | 视图 | 说明 |
+| --- | --- | --- |
+| `if GE-1` ... `if GE-8` | config | 进入 GE 接口视图 |
+| `if null0` | config | 进入 null0 接口视图 |
+| `if loop <loop-id>` | config | 创建或进入 loopback 接口视图，`<loop-id>` 范围 1-1024 |
+| `no if loop <loop-id>` | config | 删除 loopback 接口 |
 
-- **Usage**: `if GE-1` / `if GE-2` / `if GE-3` / `if GE-4`
-- **View**: `config`
-- **Transition**: Switches to the `config-if-GE-<N>` view.
+GE 视图提示符为 `<NetNexus(config-if-GE-{ctx:4})>`，loopback 视图提示符为 `<NetNexus(config-if-loop{ctx:6})>`。
 
-## 2. Interface Configuration Commands (`config-if-GE-*` view)
+## 接口配置命令
 
-`ip address` and `ipv6 address` are stored independently, so a single interface can keep both IPv4 and IPv6 at the same time.
+| 命令 | 视图 | 说明 |
+| --- | --- | --- |
+| `ip address <ip-address> <prefix-len>` | if, if-loop | 配置 IPv4 地址 |
+| `no ip address <ip-address> <prefix-len>` | if, if-loop | 删除指定 IPv4 地址 |
+| `ipv6 address <ipv6-address> <prefix-len>` | if, if-loop | 配置 IPv6 地址 |
+| `no ipv6 address <ipv6-address> <prefix-len>` | if, if-loop | 删除指定 IPv6 地址 |
+| `shutdown` | if | 管理关闭 GE 接口 |
+| `no shutdown` | if | 管理开启 GE 接口 |
+| `vrf forwarding <vrf-name>` | if, if-loop | 将接口绑定到 VRF，执行时会清空该接口 IP 地址 |
+| `no vrf forwarding` | if, if-loop | 解绑 VRF，执行时会清空该接口 IP 地址 |
 
-### 2.1 `ip address <ip-address> <prefix-len>`
-Configures an IPv4 address on the current interface.
+IPv4 和 IPv6 地址独立保存，同一接口可以同时配置两种地址族。
 
-- **Usage**: `ip address <ip-address> <prefix-len>`
-- **View**: `config-if-GE-*`
-- **Parameters**:
-  - `<ip-address>`: IPv4 address (`ip`).
-  - `<prefix-len>`: Prefix length (`integer`, 0-32).
+## 查看命令
 
-### 2.2 `ipv6 address <ipv6-address> <prefix-len>`
-Configures an IPv6 address on the current interface.
-
-- **Usage**: `ipv6 address <ipv6-address> <prefix-len>`
-- **View**: `config-if-GE-*`
-- **Parameters**:
-  - `<ipv6-address>`: IPv6 address (`ipv6`).
-  - `<prefix-len>`: Prefix length (`integer`, 0-128).
-
-### 2.3 `shutdown`
-Administratively disables the current interface.
-
-- **Usage**: `shutdown`
-- **View**: `config-if-GE-*`
-
-### 2.4 `no shutdown`
-Administratively enables the current interface.
-
-- **Usage**: `no shutdown`
-- **View**: `config-if-GE-*`
-
-## 3. Show Commands (global view)
-
-### 3.1 `show if`
-Displays a summary table of all interfaces with name, state, and IP address.
-
-- **Usage**: `show if`
-- **View**: `global` (available in all views)
-
-### 3.2 `show if { GE-1 | GE-2 | GE-3 | GE-4 }`
-Displays detailed information for a specific interface, including name, ifindex, type, state, IP address, MAC address, and MTU.
-
-- **Usage**: `show if GE-1` / `show if GE-2` / `show if GE-3` / `show if GE-4`
-- **View**: `global` (available in all views)
-
-### 3.3 `show if subscribe`
-Displays IF event subscribers, including subscriber module, interface type mask, event mask, and replay state.
-
-- **Usage**: `show if subscribe`
-- **View**: `global` (available in all views)
-
-## 4. View Contexts
-
-| View Name | Prompt Template | Description |
-|---|---|---|
-| `config-if-GE-*` | `<NetNexus(config-if-GE-{ctx:4})>` | Interface configuration view. `{ctx:4}` displays the interface index. |
+| 命令 | 视图 | 说明 |
+| --- | --- | --- |
+| `show if` | global | 显示所有接口概要 |
+| `show if GE-1` ... `show if GE-8` | global | 显示指定 GE 接口详情 |
+| `show if loop <loop-id>` | global | 显示指定 loopback 接口详情 |
+| `show if subscribe` | global | 显示 IF 事件订阅者 |

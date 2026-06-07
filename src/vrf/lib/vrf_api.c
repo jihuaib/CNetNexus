@@ -509,6 +509,11 @@ int vrf_api_subscribe_all(dev_ipc_context_t *ctx)
     return vrf_api_subscribe(ctx, VRF_AF_MASK_ALL, VRF_EVENT_ALL, VRF_SUBSCRIBE_FLAG_REPLAY);
 }
 
+int vrf_api_subscribe_vrf(dev_ipc_context_t *ctx)
+{
+    return vrf_api_subscribe(ctx, VRF_AF_MASK_ALL, VRF_EVENT_VRF_ONLY, VRF_SUBSCRIBE_FLAG_REPLAY);
+}
+
 int vrf_api_unsubscribe(dev_ipc_context_t *ctx, uint32_t af_mask, uint32_t event_mask)
 {
     return subscribe_send(ctx, VRF_MSG_TYPE_UNSUBSCRIBE, af_mask, event_mask, 0);

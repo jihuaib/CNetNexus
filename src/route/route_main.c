@@ -76,7 +76,7 @@ static const db_table_def_t ROUTE_BATCH_TABLE = {
 // ============================================================================
 
 /* VRF dep 事件回调（含初次 + 重启）。
- *   READY → 投递 VRF_READY，IPC 线程做 vrf_api_subscribe_all。
+ *   READY → 投递 VRF_READY，IPC 线程做 VRF lifecycle 订阅。
  *   DOWN  → 投递 VRF_DOWN，worker 拆非 public VRF 业务 + 清 cache。 */
 static void route_on_vrf_ready_cb(uint32_t module_id, uint8_t event, const char *host, uint16_t port, uint32_t epoch,
                                   void *user)
@@ -118,13 +118,13 @@ static void route_handle_vrf_ready(void)
         LOG_WARN("Route: VRF not connected in time; vrf_api_subscribe deferred");
         return;
     }
-    if (vrf_api_subscribe_all(ctx) != ERRCODE_SUCCESS)
+    if (vrf_api_subscribe_vrf(ctx) != ERRCODE_SUCCESS)
     {
-        LOG_WARN("Route: vrf_api_subscribe_all failed");
+        LOG_WARN("Route: vrf_api_subscribe_vrf failed");
     }
     else
     {
-        LOG_INFO("Route: subscribed to VRF events");
+        LOG_INFO("Route: subscribed to VRF lifecycle events");
     }
 }
 

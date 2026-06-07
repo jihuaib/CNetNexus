@@ -1,50 +1,44 @@
-# VRF CLI Documentation
+# VRF CLI 文档
 
-This document describes the VRF management commands provided by the VRF module (module-id: 4).
+VRF 模块（module-id: 4）负责 VRF 实例、地址族、RD/RT、label 分配策略和 OS 侧 VRF 状态展示。
 
-## 1. Configuration Commands (config view)
+## 实例命令
 
-### 1.1 `vrf <vrf-name>`
-Creates a VRF instance and enters the VRF configuration view. If the VRF already exists, directly enters the view.
+| 命令 | 视图 | 说明 |
+| --- | --- | --- |
+| `vrf <vrf-name>` | config | 创建或进入 VRF 视图 |
+| `no vrf <vrf-name>` | config | 删除 VRF 实例 |
 
-- **Usage**: `vrf <vrf-name>`
-- **View**: `config`
-- **Transition**: Switches to the `config-vrf-<name>` view.
-- **Parameters**:
-    - `<vrf-name>`: VRF name (`dynamic(string(1-63))`). Supports Tab completion. The public VRF cannot be manually created.
+VRF 视图提示符为 `<NetNexus(config-vrf-{ctx:5})>`。
 
-### 1.2 `no vrf <vrf-name>`
-Deletes a VRF instance. The public VRF cannot be deleted.
+## 地址族命令
 
-- **Usage**: `no vrf <vrf-name>`
-- **View**: `config`
-- **Parameters**:
-    - `<vrf-name>`: VRF name (`dynamic(string(1-63))`).
+| 命令 | 视图 | 说明 |
+| --- | --- | --- |
+| `af ipv4-unicast` | vrf | 进入 IPv4 unicast 地址族视图 |
+| `af ipv6-unicast` | vrf | 进入 IPv6 unicast 地址族视图 |
+| `no af {ipv4-unicast|ipv6-unicast}` | vrf | 删除对应地址族配置 |
 
-## 2. Show Commands (global view)
+地址族视图提示符为 `<NetNexus(config-vrf-<name>-af-ipv4-uni)>` 或 `<NetNexus(config-vrf-<name>-af-ipv6-uni)>`。
 
-### 2.1 `show vrf`
-Displays a table of all VRF instances with VRF-ID and name.
+## 地址族配置
 
-- **Usage**: `show vrf`
-- **View**: `global` (available in all views)
+| 命令 | 视图 | 说明 |
+| --- | --- | --- |
+| `route-distinguisher <rd>` | vrf-af | 配置 RD，格式如 `65000:1` 或 `1.1.1.1:1` |
+| `no route-distinguisher` | vrf-af | 删除 RD |
+| `vpn-target <rt>` | vrf-af | 配置 import/export 均生效的 RT |
+| `vpn-target <rt> {import|export|both}` | vrf-af | 配置指定方向 RT |
+| `no vpn-target <rt>` | vrf-af | 删除 RT |
+| `no vpn-target <rt> {import|export|both}` | vrf-af | 删除指定方向 RT |
+| `apply-label {per-vrf|per-route}` | vrf-af | 设置导出到 VPNv4 时的 label 分配策略 |
+| `no apply-label` | vrf-af | 恢复默认 `per-vrf` |
 
-### 2.2 `show vrf <vrf-name>`
-Displays detailed information for a specific VRF instance.
+## 查看命令
 
-- **Usage**: `show vrf <vrf-name>`
-- **View**: `global` (available in all views)
-- **Parameters**:
-    - `<vrf-name>`: VRF name (`dynamic(string(1-63))`). Supports Tab completion.
-
-### 2.3 `show vrf subscribe`
-Displays VRF event subscribers, including subscriber module, AF mask, event mask, and replay state.
-
-- **Usage**: `show vrf subscribe`
-- **View**: `global` (available in all views)
-
-## 3. View Contexts
-
-| View Name | Prompt Template | Description |
-|---|---|---|
-| `config-vrf-*` | `<NetNexus(config-vrf-{ctx:5})>` | VRF configuration view. `{ctx:5}` displays the VRF name. |
+| 命令 | 视图 | 说明 |
+| --- | --- | --- |
+| `show vrf` | global | 显示所有 VRF |
+| `show vrf name <vrf-name>` | global | 显示指定 VRF 详情 |
+| `show vrf subscribe` | global | 显示 VRF 事件订阅者 |
+| `show vrf os` | global | 通过 netlink 显示 OS 侧 L3VRF 设备 |

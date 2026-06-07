@@ -656,7 +656,7 @@ int cli_module_init(void)
         LOG_ERROR("CLI: timed out waiting for DEV connection");
     }
 
-    /* Telnet 接入由 ACCESS 模块（line 层）承担，CLI 不再监听 3788，
+    /* Telnet 接入由 ACCESS 模块（line 层）承担，CLI 不再监听固定业务端口，
      * 仅作为命令引擎按 line_id 处理 ACCESS 转发来的会话/命令 RPC。 */
 
     if (dev_ipc_notify_ready(ctx) != ERRCODE_SUCCESS)

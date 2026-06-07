@@ -127,7 +127,7 @@ LABEL com.gns3.capabilities="SYS_PTRACE,NET_ADMIN"
 LABEL com.gns3.security-opt="seccomp=unconfined"
 
 # 健康检查探 console（串口）通道 unix socket：它永远在线，不依赖 telnet 使能；
-# telnet 3788 现在默认关闭、需配置 transport input 才开，不能再作为存活判据。
+# telnet/vty 默认关闭、需配置 transport input 才开，不能再作为存活判据。
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD test -S "${NN_WORK_DIR}/run/console.sock" || exit 1
 

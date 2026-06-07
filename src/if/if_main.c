@@ -104,13 +104,13 @@ static void if_handle_vrf_ready(void)
         LOG_WARN("IF: VRF not connected in time; vrf_api_subscribe deferred");
         return;
     }
-    if (vrf_api_subscribe_all(ctx) != ERRCODE_SUCCESS)
+    if (vrf_api_subscribe_vrf(ctx) != ERRCODE_SUCCESS)
     {
-        LOG_WARN("IF: vrf_api_subscribe_all failed");
+        LOG_WARN("IF: vrf_api_subscribe_vrf failed");
     }
     else
     {
-        LOG_INFO("IF: subscribed to VRF events");
+        LOG_INFO("IF: subscribed to VRF lifecycle events");
     }
 }
 
@@ -248,7 +248,7 @@ void if_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             dev_ipc_message_free(msg);
             return;
 
-        /* ---- 内部：VRF 模块就绪 → worker 线程做 vrf_api_subscribe_all ---- */
+        /* ---- 内部：VRF 模块就绪 → 订阅 VRF lifecycle 事件 ---- */
         case IF_MSG_TYPE_INTERNAL_VRF_READY:
             if_handle_vrf_ready();
             dev_ipc_message_free(msg);

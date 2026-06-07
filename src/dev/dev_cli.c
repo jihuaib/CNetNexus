@@ -581,6 +581,21 @@ static void dev_push_sysname_to_cli(dev_ipc_context_t *ctx, const char *sysname)
     dev_ipc_message_free(m);
 }
 
+static int dev_set_kernel_hostname(const char *hostname)
+{
+    if (!hostname || hostname[0] == '\0')
+    {
+        return -1;
+    }
+
+    if (sethostname(hostname, strlen(hostname)) != 0)
+    {
+        LOG_WARN("DEV: failed to set kernel hostname to %s: %s", hostname, strerror(errno));
+        return -1;
+    }
+    return 0;
+}
+
 static int handle_sysname(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     /* DB 不在线时拒绝：避免 sysname 改了内存（CLI 提示）但 DB 写不到 */
@@ -613,11 +628,24 @@ static int handle_sysname(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     }
     cli_tlv_cleanup(&parser);
 
+    const char *kernel_hostname = is_no ? CLI_SYSNAME_DEFAULT : hostname;
+    char old_kernel_hostname[CLI_SYSNAME_MAX_LEN] = {0};
+    (void)gethostname(old_kernel_hostname, sizeof(old_kernel_hostname) - 1u);
+
     if (is_no)
     {
-        /* no sysname：清空 DB + 通知 CLI 恢复默认 */
+        /* no sysname：清空 DB + 通知 CLI/内核 hostname 恢复默认 */
+        if (dev_set_kernel_hostname(kernel_hostname) != 0)
+        {
+            dev_send_cli_response(ctx, msg, "Dev Error: failed to set kernel hostname\r\n");
+            return ERRCODE_FAIL;
+        }
         if (dev_db_set_sysname("") != 0)
         {
+            if (old_kernel_hostname[0] != '\0')
+            {
+                (void)dev_set_kernel_hostname(old_kernel_hostname);
+            }
             dev_send_cli_response(ctx, msg, "Dev Error: failed to clear sysname\r\n");
             return ERRCODE_FAIL;
         }
@@ -632,8 +660,18 @@ static int handle_sysname(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         return ERRCODE_FAIL;
     }
 
+    if (dev_set_kernel_hostname(kernel_hostname) != 0)
+    {
+        dev_send_cli_response(ctx, msg, "Dev Error: failed to set kernel hostname\r\n");
+        return ERRCODE_FAIL;
+    }
+
     if (dev_db_set_sysname(hostname) != 0)
     {
+        if (old_kernel_hostname[0] != '\0')
+        {
+            (void)dev_set_kernel_hostname(old_kernel_hostname);
+        }
         dev_send_cli_response(ctx, msg, "Dev Error: failed to persist sysname\r\n");
         return ERRCODE_FAIL;
     }

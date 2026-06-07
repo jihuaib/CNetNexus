@@ -1,154 +1,113 @@
-# BGP CLI Documentation
+# BGP CLI 文档
 
-This document describes the BGP-related commands provided by the BGP module (module-id: 6).
+BGP 模块（module-id: 6）提供全局 BGP、VRF BGP、多个地址族、邻居、路由导入、路由反射、Route Refresh、QP 路由和 BMP 采集器配置。
 
-## 1. Configuration Commands (config view)
+## 实例命令
 
-### 1.1 `bgp <as-number>`
-Configures the BGP protocol with a specific AS number and enters the BGP view.
+| 命令 | 视图 | 说明 |
+| --- | --- | --- |
+| `bgp <as-number>` | config | 创建或进入全局 BGP 视图 |
+| `no bgp [as-number]` | config | 删除 BGP 配置 |
+| `vrf <vrf-name>` | bgp | 进入 BGP VRF 视图 |
 
-- **Usage**: `bgp <as-number>`
-- **View**: `config`
-- **Transition**: Switches to the `config-bgp` view.
-- **Parameters**:
-    - `<as-number>`: BGP Autonomous System number (`uint`, 1-4294967295).
+全局 BGP 视图提示符为 `<NetNexus(config-bgp)>`，VRF BGP 视图提示符为 `<NetNexus(config-bgp-vrf-<name>)>`。
 
-### 1.2 `no bgp`
-Deletes the BGP protocol configuration.
+## BGP 视图命令
 
-- **Usage**: `no bgp`
-- **View**: `config`
+| 命令 | 视图 | 说明 |
+| --- | --- | --- |
+| `router-id <ip-address>` | bgp, bgp-vrf | 设置 Router ID |
+| `no router-id` | bgp, bgp-vrf | 恢复默认 Router ID |
+| `timer connect-retry <seconds>` | bgp, bgp-vrf | 设置连接重试时间 |
+| `no timer connect-retry` | bgp, bgp-vrf | 恢复连接重试默认值 |
+| `timer keepalive <keepalive-time> hold <hold-time>` | bgp, bgp-vrf | 设置 keepalive/hold timer |
+| `no timer keepalive` | bgp, bgp-vrf | 恢复 keepalive/hold 默认值 |
+| `neighbor <ipv4|ipv6> as <as-num>` | bgp, bgp-vrf | 配置邻居和远端 AS |
+| `no neighbor <ipv4|ipv6>` | bgp, bgp-vrf | 删除邻居 |
+| `neighbor <ipv4|ipv6> open-capability {as4|route-refresh}` | bgp, bgp-vrf | 打开邻居能力 |
+| `no neighbor <ipv4|ipv6> open-capability {as4|route-refresh}` | bgp, bgp-vrf | 关闭邻居能力 |
+| `neighbor <ipv4|ipv6> source-interface <if-name>` | bgp, bgp-vrf | 指定邻居源接口 |
+| `no neighbor <ipv4|ipv6> source-interface` | bgp, bgp-vrf | 删除邻居源接口 |
+| `neighbor <ipv4|ipv6> ebgp-multihop <ttl>` | bgp, bgp-vrf | 配置 EBGP multihop TTL |
+| `no neighbor <ipv4|ipv6> ebgp-multihop` | bgp, bgp-vrf | 删除 EBGP multihop |
 
-## 2. BGP View Commands (`config-bgp`)
+## 地址族命令
 
-These commands are available after entering the BGP view via `bgp <as-number>`.
+| 命令 | 视图 | 说明 |
+| --- | --- | --- |
+| `af ipv4-unicast` | bgp, bgp-vrf | 进入 IPv4 unicast AF |
+| `af ipv6-unicast` | bgp, bgp-vrf | 进入 IPv6 unicast AF |
+| `af vpnv4` | bgp | 进入全局 VPNv4 AF |
+| `af ipv4-qp` | bgp | 进入 IPv4 QP AF |
+| `af ipv6-qp` | bgp | 进入 IPv6 QP AF |
+| `af ipv4-labeled` | bgp | 进入 IPv4 labeled-unicast AF |
+| `no af {ipv4-unicast|ipv6-unicast|ipv4-qp|ipv6-qp|ipv4-labeled|vpnv4}` | bgp, bgp-vrf | 删除 AF |
 
-### 2.1 `neighbor <ip-address> as <as-number>`
-Configures a BGP neighbor session with a remote AS number.
+## 地址族视图命令
 
-- **Usage**: `neighbor <ip-address> as <as-number>`
-- **View**: `config-bgp`
-- **Parameters**:
-    - `<ip-address>`: Neighbor IP address (`ip`).
-    - `<as-number>`: Remote AS number (`uint`, 1-4294967295).
+| 命令 | 视图 | 说明 |
+| --- | --- | --- |
+| `neighbor <ipv4|ipv6> enable` | bgp-af, bgp-vrf-af | 在当前 AF 激活邻居 |
+| `no neighbor <ipv4|ipv6> enable` | bgp-af, bgp-vrf-af | 在当前 AF 取消激活邻居 |
+| `import-route static` | bgp-af, bgp-vrf-af | 导入静态路由 |
+| `no import-route static` | bgp-af, bgp-vrf-af | 停止导入静态路由 |
+| `import-route connected` | bgp-af, bgp-vrf-af | 导入直连路由 |
+| `no import-route connected` | bgp-af, bgp-vrf-af | 停止导入直连路由 |
+| `reflector cluster-id <ipv4>` | bgp-af, bgp-vrf-af | 配置当前 AF 的 route-reflector cluster-id |
+| `no reflector cluster-id` | bgp-af, bgp-vrf-af | 删除 cluster-id |
+| `neighbor <ip> reflect-client` | bgp-af, bgp-vrf-af | 将邻居设为 RR client |
+| `no neighbor <ip> reflect-client` | bgp-af, bgp-vrf-af | 取消 RR client |
 
-### 2.2 `no neighbor <ip-address>`
-Deletes a BGP neighbor session.
+`import-rib public ipv4-labeled-unicast` / `no import-rib public ipv4-labeled-unicast` 在 IPv4 unicast AF 视图下可用，用于从 public IPv4 labeled-unicast 导入。
 
-- **Usage**: `no neighbor <ip-address>`
-- **View**: `config-bgp`
-- **Parameters**:
-    - `<ip-address>`: Neighbor IP address (`ip`).
+QP AF 还支持：
 
-### 2.3 `af ipv4-unicast`
-Enters the IPv4 unicast address family sub-view and creates the address family instance.
+```text
+route start-dqpn <dqpn> ip <ipv4> mask <mask> count <count> bid <ipv6>
+route start-dqpn <dqpn> ipv6 <ipv6> mask <mask> count <count> bid <ipv6>
+route-select enable
+no route-select enable
+```
 
-- **Usage**: `af ipv4-unicast`
-- **View**: `config-bgp`
-- **Transition**: Switches to the `config-bgp-af-ipv4-uni` view.
+## Route Refresh 命令
 
-### 2.4 `af ipv6-unicast`
-Enters the IPv6 unicast address family sub-view and creates the address family instance.
+| 命令 | 视图 | 说明 |
+| --- | --- | --- |
+| `refresh bgp neighbor <ipv4-address> {import|export} af {ipv4-unicast|ipv6-unicast} [vrf <vrf-name>]` | global | 对指定 IPv4 邻居发起 route refresh |
+| `refresh bgp neighbor <ipv6-address> {import|export} af {ipv4-unicast|ipv6-unicast} [vrf <vrf-name>]` | global | 对指定 IPv6 邻居发起 route refresh |
+| `refresh bgp af {ipv4-unicast|ipv6-unicast} [vrf <vrf-name>] {import|export}` | global | 对 AF 批量发起 route refresh |
 
-- **Usage**: `af ipv6-unicast`
-- **View**: `config-bgp`
-- **Transition**: Switches to the `config-bgp-af-ipv6-uni` view.
+## BMP 采集器命令
 
-### 2.5 `no af ipv4-unicast` / `no af ipv6-unicast`
-Deletes an address family instance and all associated neighbor entries.
+这些命令在 BGP 模块内配置向外部 BMP 采集器上报。
 
-- **Usage**: `no af { ipv4-unicast | ipv6-unicast }`
-- **View**: `config-bgp`
+| 命令 | 视图 | 说明 |
+| --- | --- | --- |
+| `bmp instance <name>` | bgp | 创建或进入 BMP 实例视图 |
+| `no bmp instance <name>` | bgp | 删除 BMP 实例 |
+| `collector <ip> port <port>` | bgp-bmp | 配置采集器地址和端口 |
+| `no collector` | bgp-bmp | 删除采集器 |
+| `stats-report interval <seconds>` | bgp-bmp | 配置统计上报周期 |
+| `no stats-report interval` | bgp-bmp | 恢复统计上报默认值 |
+| `reconnect interval <seconds>` | bgp-bmp | 配置重连周期 |
+| `no reconnect interval` | bgp-bmp | 恢复重连默认值 |
+| `monitor neighbor all` | bgp-bmp | 监控所有邻居 |
+| `monitor neighbor <ip>` | bgp-bmp | 监控指定邻居 |
+| `no monitor neighbor <ip>` | bgp-bmp | 删除指定邻居监控 |
+| `show bgp bmp [instance <name>]` | global | 显示 BMP 采集器状态 |
 
-### 2.6 `router-id <ip-address>`
-Sets the BGP router ID for the current VRF.
+## 查看命令
 
-- **Usage**: `router-id <ip-address>`
-- **View**: `config-bgp`
-- **Parameters**:
-    - `<ip-address>`: Router ID as an IPv4 address (`ip`).
+| 命令 | 视图 | 说明 |
+| --- | --- | --- |
+| `show bgp neighbor af vpnv4 [<ip-address>]` | global | 显示 VPNv4 邻居 |
+| `show bgp neighbor af ipv4-unicast [vrf <vrf-name>] [<ip-address>]` | global | 显示 IPv4 unicast 邻居 |
+| `show bgp neighbor af ipv6-unicast [vrf <vrf-name>] [<ip-address>]` | global | 显示 IPv6 unicast 邻居 |
+| `show bgp neighbor af ipv4-qp [<ip-address>]` | global | 显示 IPv4 QP 邻居 |
+| `show bgp neighbor af ipv6-qp [<ip-address>]` | global | 显示 IPv6 QP 邻居 |
+| `show bgp neighbor af ipv4-labeled [<ip-address>]` | global | 显示 IPv4 labeled 邻居 |
+| `show bgp route af <af> ...` | global | 显示指定 AF 路由，支持前缀、VRF、RD 或 QP key 过滤 |
+| `show bgp attr af <af> ...` | global | 显示路径属性表 |
+| `show bgp update-group af <af> ...` | global | 显示 update-group |
 
-### 2.7 `no router-id`
-Resets the BGP router ID to default.
-
-- **Usage**: `no router-id`
-- **View**: `config-bgp`
-
-### 2.8 `timer keepalive <keepalive-time> hold <hold-time>`
-Configures BGP keepalive and hold timers.
-
-- **Usage**: `timer keepalive <keepalive-time> hold <hold-time>`
-- **View**: `config-bgp`
-- **Parameters**:
-    - `<keepalive-time>`: Keepalive interval in seconds (`uint`, 1-65535).
-    - `<hold-time>`: Hold time in seconds (`uint`, 1-65535). Must be greater than keepalive.
-
-### 2.9 `timer connect-retry <seconds>`
-Configures the connect-retry timer for BGP sessions.
-
-- **Usage**: `timer connect-retry <seconds>`
-- **View**: `config-bgp`
-- **Parameters**:
-    - `<seconds>`: Reconnect interval in seconds (`uint`, 1-65535).
-
-### 2.10 `no timer keepalive` / `no timer connect-retry`
-Resets the respective timer to default values.
-
-- **Usage**: `no timer keepalive` / `no timer connect-retry`
-- **View**: `config-bgp`
-
-### 2.11 `neighbor <ip-address> open-capability as4`
-Enables 4-byte AS number capability (RFC 6793) for a neighbor.
-
-- **Usage**: `neighbor <ip-address> open-capability as4`
-- **View**: `config-bgp`
-- **Parameters**:
-    - `<ip-address>`: Neighbor IP address (`ip`).
-
-### 2.12 `neighbor <ip-address> open-capability route-refresh`
-Enables Route Refresh capability (RFC 2918) for a neighbor.
-
-- **Usage**: `neighbor <ip-address> open-capability route-refresh`
-- **View**: `config-bgp`
-- **Parameters**:
-    - `<ip-address>`: Neighbor IP address (`ip`).
-
-### 2.13 `no neighbor <ip-address> open-capability as4|route-refresh`
-Disables the corresponding capability for a neighbor.
-
-- **Usage**: `no neighbor <ip-address> open-capability { as4 | route-refresh }`
-- **View**: `config-bgp`
-
-## 3. Address Family View Commands (`config-bgp-af-*`)
-
-### 3.1 `neighbor <ip-address> enable`
-Enables a neighbor for the current address family.
-
-- **Usage**: `neighbor <ip-address> enable`
-- **View**: `config-bgp-af-ipv4-uni`, `config-bgp-af-ipv6-uni`
-- **Parameters**:
-    - `<ip-address>`: Neighbor IP address (`ip`).
-
-### 3.2 `no neighbor <ip-address>`
-Disables a neighbor for the current address family.
-
-- **Usage**: `no neighbor <ip-address>`
-- **View**: `config-bgp-af-ipv4-uni`, `config-bgp-af-ipv6-uni`
-- **Parameters**:
-    - `<ip-address>`: Neighbor IP address (`ip`).
-
-## 4. Show Commands (global view)
-
-### 4.1 `show bgp [peer]`
-Displays BGP protocol configuration, sessions, and address-family neighbor information.
-
-- **Usage**: `show bgp` / `show bgp peer`
-- **View**: `global`
-
-## 5. View Contexts
-
-| View Name | Prompt Template | Description |
-|---|---|---|
-| `config-bgp` | `<NetNexus(config-bgp)>` | BGP configuration view |
-| `config-bgp-af-ipv4-uni` | `<NetNexus(config-bgp-af-ipv4-uni)>` | IPv4 unicast address family view |
-| `config-bgp-af-ipv6-uni` | `<NetNexus(config-bgp-af-ipv6-uni)>` | IPv6 unicast address family view |
+`<af>` 当前包括 `vpnv4`、`ipv4-unicast`、`ipv6-unicast`、`ipv4-qp`、`ipv6-qp`、`ipv4-labeled`。

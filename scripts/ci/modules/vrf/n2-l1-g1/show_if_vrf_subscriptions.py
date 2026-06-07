@@ -21,9 +21,9 @@ IF_SUBSCRIBER_PATTERNS = [
 ]
 
 VRF_SUBSCRIBER_PATTERNS = [
-    r"(?im)^\s*if\s+0x00000005\s+all\s+all\s+ready\s*$",
-    r"(?im)^\s*route\s+0x00000007\s+all\s+all\s+ready\s*$",
-    r"(?im)^\s*fib\s+0x0000000B\s+all\s+all\s+ready\s*$",
+    r"(?im)^\s*if\s+0x00000005\s+all\s+vrf-add\|vrf-del\|vrf-state\s+ready\s*$",
+    r"(?im)^\s*route\s+0x00000007\s+all\s+vrf-add\|vrf-del\|vrf-state\s+ready\s*$",
+    r"(?im)^\s*fib\s+0x0000000B\s+all\s+vrf-add\|vrf-del\|vrf-state\s+ready\s*$",
 ]
 
 ERROR_TOKENS = [

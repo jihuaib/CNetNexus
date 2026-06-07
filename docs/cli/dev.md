@@ -1,62 +1,57 @@
-# Dev CLI Documentation
+# DEV CLI 文档
 
-This document describes the device management commands provided by the Dev module (module-id: 1).
+DEV 模块（module-id: 1）负责 supervisor 侧的设备信息、模块生命周期、IPC 状态、日志级别、基础 ping 和少量文件查看命令。
 
-## 1. Show Commands
+## 查看命令
 
-### 1.1 `show version`
-Displays system version information including build profile, compiler, ASAN status, log level, and PID.
+| 命令 | 视图 | 说明 |
+| --- | --- | --- |
+| `show version` | global | 显示版本、编译信息、ASAN 状态、日志级别和进程信息 |
+| `show dev modules` | global | 显示已注册模块的 ID、名称、阶段、端口和 IPC 状态 |
+| `show dev subscribe` | global | 显示 DEV 视角的模块订阅关系 |
+| `show dev ipc <module-name>` | global | 显示指定模块的 IPC 连接详情 |
 
-- **Usage**: `show version`
-- **View**: `global` (available in all views)
+`<module-name>` 使用已注册模块名，例如 `if`、`route`、`bgp`、`lldp`。
 
-### 1.2 `show dev modules`
-Displays all registered modules with their ID, name, phase, port, and IPC connection status.
+## 配置命令
 
-- **Usage**: `show dev modules`
-- **View**: `global` (available in all views)
-- **Output**: Table with columns: ID, Name, Phase, Port, IPC.
+| 命令 | 视图 | 说明 |
+| --- | --- | --- |
+| `sysname <hostname>` | config | 设置系统名称 |
+| `no sysname` | config | 恢复默认系统名称 |
+| `dev log log-level {debug|info|warn|error}` | config | 设置运行时日志级别 |
 
-### 1.3 `show dev ipc <module-name>`
-Displays IPC connection details for a specific module, including connection direction, state, remote address, heartbeat timestamps, and reconnect delay.
+## 进程命令
 
-- **Usage**: `show dev ipc <module-name>`
-- **View**: `global` (available in all views)
-- **Parameters**:
-    - `<module-name>`: Module name (`dynamic(string(1-12))`). Supports Tab completion with registered module names.
+| 命令 | 视图 | 说明 |
+| --- | --- | --- |
+| `reboot` | global | 重启 NetNexus 软件栈 |
+| `process reboot <module-name>` | global | 终止并重启指定模块进程，保留 DB 配置 |
+| `process start <module-name>` | global | 启动已停止的模块进程 |
+| `process stop <module-name>` | global | 优雅停止指定模块进程，不自动拉起 |
+| `dev swap-image <image-name>` | global | 从指定 Docker image 替换 bin/lib 后重启 |
 
-## 2. Configuration Commands
+## 网络命令
 
-### 2.1 `sysname <hostname>`
-Sets the system hostname (placeholder, not yet implemented).
+| 命令 | 视图 | 说明 |
+| --- | --- | --- |
+| `ping <ipv4-address> [vrf <vrf-name>]` | global | IPv4 ping，可指定 VRF |
+| `ping <ipv4-address> -a <src-ipv4> [vrf <vrf-name>]` | global | 指定源地址的 IPv4 ping |
+| `ping ipv6 <ipv6-address> [vrf <vrf-name>]` | global | IPv6 ping，可指定 VRF |
+| `ping ipv6 <ipv6-address> -a <src-ipv6> [vrf <vrf-name>]` | global | 指定源地址的 IPv6 ping |
+| `ping mpls ipv4 <ipv4-prefix>` | global | 按 IPv4 FEC 触发 MPLS tunnel ping，例如 `3.3.3.3/32` |
+| `ping mpls ipv4 <ipv4-prefix> -a <src-ipv4>` | global | 指定源地址的 MPLS IPv4 FEC ping |
 
-- **Usage**: `sysname <hostname>`
-- **View**: `config`
-- **Parameters**:
-    - `<hostname>`: System hostname (`string(1-63)`).
+MPLS ping 依赖运行环境具备 `cap_net_raw` 和 Linux MPLS 内核模块。
 
-### 2.2 `dev log-level <level>`
-Sets the runtime log level for all modules.
+## 文件命令
 
-- **Usage**: `dev log-level <level>`
-- **View**: `config`
-- **Parameters**:
-    - `<level>`: Log level (`string(4-5)`). Valid values: `debug`, `info`, `warn`, `error`.
+这些命令在 user view 可用，路径限制在运行工作目录内。
 
-## 3. Network Commands
-
-### 3.1 `ping <ipv4-address>`
-Sends 4 ICMP echo requests to the specified IPv4 address.
-
-- **Usage**: `ping <ipv4-address>`
-- **View**: `global` (available in all views)
-- **Parameters**:
-  - `<ipv4-address>`: Target IPv4 address (`ipv4`).
-
-### 3.2 `ping ipv6 <ipv6-address>`
-Sends 4 ICMPv6 echo requests to the specified IPv6 address.
-
-- **Usage**: `ping ipv6 <ipv6-address>`
-- **View**: `global` (available in all views)
-- **Parameters**:
-  - `<ipv6-address>`: Target IPv6 address (`ipv6`).
+| 命令 | 说明 |
+| --- | --- |
+| `pwd` | 显示当前工作目录 |
+| `ls` | 列出当前工作目录文件 |
+| `cd` | 回到工作目录根 |
+| `cd <path>` | 切换到工作目录内的子路径 |
+| `more <file>` | 查看文件内容 |

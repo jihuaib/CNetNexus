@@ -44,6 +44,7 @@ DEVICE_KIND_FRR = "frr"
 SUPPORTED_DEVICE_KINDS = {DEVICE_KIND_NETNEXUS, DEVICE_KIND_FRR}
 DEFAULT_FRR_IMAGE = "netnexus-frr-ci:localtest"
 FRR_IMAGE_ENV = "CNETNEXUS_FRR_IMAGE"
+LLDP_GROUP_FWD_MASK = 1 << 14
 
 
 def get_core_dump_dir() -> str | None:
@@ -81,6 +82,29 @@ def run_cmd(cmd: list[str], check: bool = True) -> str:
             f"stderr:\n{proc.stderr}"
         )
     return (proc.stdout or "").strip()
+
+
+def docker_network_bridge_name(network_name: str) -> str | None:
+    out = run_cmd(
+        [
+            "docker",
+            "network",
+            "inspect",
+            "-f",
+            "{{.Id}} {{index .Options \"com.docker.network.bridge.name\"}}",
+            network_name,
+        ],
+        check=False,
+    ).strip()
+    if not out:
+        return None
+
+    parts = out.split()
+    if len(parts) >= 2 and parts[1] and not parts[1].startswith("<"):
+        return parts[1]
+    if parts and len(parts[0]) >= 12:
+        return f"br-{parts[0][:12]}"
+    return None
 
 
 def sanitize_name(name: str) -> str:
@@ -144,7 +168,7 @@ class _ConsolePipe:
     def __init__(self, container: str) -> None:
         self.container = container
         self.proc = subprocess.Popen(
-            ["docker", "exec", "-i", container, self.NETNEXUS_CONSOLE_BIN],
+            ["docker", "exec", "-i", "-e", "NN_CONSOLE_SOCK=/opt/netnexus/run/console.sock", container, self.NETNEXUS_CONSOLE_BIN],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -806,8 +830,9 @@ class TopologyRuntime:
                 (
                     "ulimit -c unlimited || true; "
                     f"{core_setup}"
-                    "mkdir -p /opt/netnexus/log /opt/netnexus/log/asan /opt/netnexus/data && "
+                    "mkdir -p /opt/netnexus/log /opt/netnexus/log/asan /opt/netnexus/data /opt/netnexus/run && "
                     "export NN_WORK_DIR=/opt/netnexus && "
+                    "export NN_CONSOLE_SOCK=/opt/netnexus/run/console.sock && "
                     "export LD_LIBRARY_PATH=/opt/netnexus/lib:${LD_LIBRARY_PATH} && "
                     "export ASAN_OPTIONS="
                     "\"${ASAN_OPTIONS:-detect_leaks=1:halt_on_error=0:abort_on_error=0:"
@@ -883,7 +908,7 @@ class TopologyRuntime:
         # 经串口/console 连接：telnet 默认关闭，console（容器内 unix socket）是唯一稳定入口。
         cli = NetNexusCli(
             host,
-            3788,
+            0,
             device,
             cmd_timeout=self.cmd_timeout,
             verbose=self.verbose,
@@ -1002,6 +1027,55 @@ class TopologyRuntime:
             self.stub_networks.add(name)
         return name
 
+    def _allow_lldp_on_bridge(self, network_name: str) -> None:
+        """Allow LLDP link-local frames through the Docker bridge used by a CI link network."""
+        bridge = docker_network_bridge_name(network_name)
+        if not bridge:
+            print(f"warn: failed to resolve docker bridge for network {network_name}; LLDP frames may be filtered", flush=True)
+            return
+
+        mask_path = Path("/sys/class/net") / bridge / "bridge" / "group_fwd_mask"
+        if not mask_path.exists():
+            print(f"warn: bridge group_fwd_mask not found for {bridge}; LLDP frames may be filtered", flush=True)
+            return
+
+        try:
+            current = int(mask_path.read_text(encoding="ascii").strip() or "0", 0)
+            desired = current | LLDP_GROUP_FWD_MASK
+            if desired != current:
+                mask_path.write_text(f"{desired}\n", encoding="ascii")
+            return
+        except OSError:
+            pass
+        except ValueError:
+            pass
+
+        script = (
+            f"path=/sys/class/net/{shlex.quote(bridge)}/bridge/group_fwd_mask; "
+            "cur=$(cat \"$path\" 2>/dev/null || echo 0); "
+            f"printf '%d\\n' $((cur | {LLDP_GROUP_FWD_MASK})) > \"$path\""
+        )
+        try:
+            run_cmd(
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "--privileged",
+                    "--network",
+                    "host",
+                    self.image,
+                    "sh",
+                    "-c",
+                    script,
+                ]
+            )
+        except RuntimeError as exc:
+            print(
+                f"warn: failed to enable LLDP forwarding on bridge {bridge} ({network_name}): {exc}",
+                flush=True,
+            )
+
     def _remove_stub_network(self, device: str, ge_idx: int) -> None:
         name = self._stub_network_name(device, ge_idx)
         run_cmd(["docker", "network", "rm", name], check=False)
@@ -1082,7 +1156,7 @@ class TopologyRuntime:
                 if core_dir:
                     docker_run_cmd.extend(["--ulimit", "core=-1", "-v", f"{core_dir}:{core_dir}"])
                 if dev in self.cli_publish_ports:
-                    docker_run_cmd.extend(["-p", f"{self.cli_publish_ports[dev]}:3788"])
+                    docker_run_cmd.extend(["-p", f"{self.cli_publish_ports[dev]}:23"])
             docker_run_cmd.extend([self.device_images[dev], "sleep", "infinity"])
             run_cmd(docker_run_cmd)
             self.container_names.append(cname)
@@ -1094,6 +1168,7 @@ class TopologyRuntime:
             lname = str(link["name"])
             net_name = f"{self.prefix}-lnk-{sanitize_name(lname)}"
             run_cmd(["docker", "network", "create", "--ipv6", net_name])
+            self._allow_lldp_on_bridge(net_name)
             self.link_to_net[lname] = net_name
             self.link_networks.append(net_name)
 

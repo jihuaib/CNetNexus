@@ -1,95 +1,61 @@
-# Route CLI Documentation
+# 路由 CLI 文档
 
-This document describes the static route commands provided by the Route module (module-id: 7).
+Route 模块（module-id: 7）负责 RIB、静态路由、批量静态路由、协议路由接收、下一跳对象和路由订阅展示。
 
-## 1. Configuration Commands (config view)
+## 静态路由命令
 
-### 1.1 `route ipv4 <destination> <mask> <next-hop> [<metric>]`
-Adds a static IPv4 route.
+| 命令 | 视图 | 说明 |
+| --- | --- | --- |
+| `route static ipv4 <prefix> <prefix-length> <nexthop>` | config | 添加 IPv4 静态路由 |
+| `route static ipv4 <prefix> <prefix-length> <nexthop> metric <value>` | config | 添加带 metric 的 IPv4 静态路由 |
+| `route static ipv4 <prefix> <prefix-length> <nexthop> interface <ifname>` | config | 添加指定出接口的 IPv4 静态路由 |
+| `route static ipv4 <prefix> <prefix-length> interface <ifname>` | config | 添加 interface-only IPv4 静态路由 |
+| `route static ipv6 <prefix> <prefix-length> <nexthop>` | config | 添加 IPv6 静态路由 |
+| `route static ipv6 <prefix> <prefix-length> <nexthop> metric <value>` | config | 添加带 metric 的 IPv6 静态路由 |
+| `route static ipv6 <prefix> <prefix-length> <nexthop> interface <ifname>` | config | 添加指定出接口的 IPv6 静态路由 |
+| `route static ipv6 <prefix> <prefix-length> interface <ifname>` | config | 添加 interface-only IPv6 静态路由 |
 
-- **Usage**: `route ipv4 <destination> <mask> <next-hop> [<metric>]`
-- **View**: `config`
-- **Parameters**:
-    - `<destination>`: Destination network address (`string`).
-    - `<mask>`: Subnet mask (`string`).
-    - `<next-hop>`: Next hop address (`string`).
-    - `<metric>`: Route metric (`uint`, 0-255, optional, default: 0).
+以上命令的 IPv4/IPv6 interface 形式也支持 `metric <value>`。
 
-### 1.2 `no route ipv4 <destination> <mask> [<next-hop>]`
-Deletes a static IPv4 route.
+删除命令：
 
-- **Usage**: `no route ipv4 <destination> <mask> [<next-hop>]`
-- **View**: `config`
-- **Parameters**:
-    - `<destination>`: Destination network address (`string`).
-    - `<mask>`: Subnet mask (`string`).
-    - `<next-hop>`: Next hop address (`string`, optional. If omitted, all matching routes are deleted).
+| 命令 | 视图 |
+| --- | --- |
+| `no route static ipv4 <prefix> <prefix-length>` | config |
+| `no route static ipv4 <prefix> <prefix-length> <nexthop>` | config |
+| `no route static ipv4 <prefix> <prefix-length> <nexthop> interface <ifname>` | config |
+| `no route static ipv4 <prefix> <prefix-length> interface <ifname>` | config |
+| `no route static ipv6 <prefix> <prefix-length>` | config |
+| `no route static ipv6 <prefix> <prefix-length> <nexthop>` | config |
+| `no route static ipv6 <prefix> <prefix-length> <nexthop> interface <ifname>` | config |
+| `no route static ipv6 <prefix> <prefix-length> interface <ifname>` | config |
 
-### 1.3 `route ipv6 <destination> <prefix-length> <next-hop> [<metric>]`
-Adds a static IPv6 route.
+## 批量静态路由命令
 
-- **Usage**: `route ipv6 <destination> <prefix-length> <next-hop> [<metric>]`
-- **View**: `config`
-- **Parameters**:
-    - `<destination>`: Destination network address (`string`).
-    - `<prefix-length>`: Prefix length (`uint`, 0-128).
-    - `<next-hop>`: Next hop address (`string`).
-    - `<metric>`: Route metric (`uint`, 0-255, optional, default: 0).
+`route static-batch` 用于生成大量连续静态路由，支持 IPv4/IPv6、VRF、nexthop、interface-only、metric 和 count。
 
-### 1.4 `no route ipv6 <destination> <prefix-length> [<next-hop>]`
-Deletes a static IPv6 route.
+常用形式：
 
-- **Usage**: `no route ipv6 <destination> <prefix-length> [<next-hop>]`
-- **View**: `config`
-- **Parameters**:
-    - `<destination>`: Destination network address (`string`).
-    - `<prefix-length>`: Prefix length (`uint`, 0-128).
-    - `<next-hop>`: Next hop address (`string`, optional).
+```text
+route static-batch <name> ipv4 [vrf <name>] <start> <pfx4> <nexthop> [metric <value>] count <N>
+route static-batch <name> ipv4 [vrf <name>] <start> <pfx4> interface <ifname> [metric <value>] count <N>
+route static-batch <name> ipv6 [vrf <name>] <start> <pfx6> <nexthop> [metric <value>] count <N>
+route static-batch <name> ipv6 [vrf <name>] <start> <pfx6> interface <ifname> [metric <value>] count <N>
+no route static-batch <name>
+```
 
-## 2. Show Commands (global view)
+## 查看命令
 
-### 2.1 `show route {ipv4|ipv6} [vrf <vrf-name>]`
-Displays the routing table for the selected address family (or both if AF is omitted).
-
-- **Usage**: `show route ipv4`, `show route ipv6`, `show route ipv4 vrf red`
-- **View**: `global` (available in all views)
-- **Parameters**:
-
-### 2.2 `show route {ipv4|ipv6} [vrf <vrf-name>] <destination> <prefix-length>`
-Displays detailed route entry matching destination/prefix.
-
-- **Usage**: `show route ipv4 vrf red 10.1.1.0 24`, `show route ipv6 vrf blue 2001:db8:: 64`
-- **View**: `global` (available in all views)
-- **Parameters**:
-    - `<destination>`: Filter by destination address (`string`)
-    - `<prefix-length>`: Prefix length (`uint`)
-    - `<vrf-name>`: Optional VRF name after `vrf` keyword
-
-### 2.3 `show route {ipv4|ipv6} [vrf <vrf-name>] proto <proto>`
-Filters routes by protocol type.
-
-- **Usage**: `show route ipv4 proto isis`, `show route ipv6 vrf red proto bgp`, `show route ipv4 vrf blue proto static`
-- **View**: `global` (available in all views)
-- **Valid** `<proto>` values: `static`, `bgp`, `ospf`, `connected`, `isis`
-
-### 2.4 `show route summary [vrf <vrf-name>] {ipv4|ipv6}`
-Displays route summary statistics.
-
-- **Usage**: `show route summary`, `show route summary ipv4`, `show route summary vrf red ipv6`
-- **View**: `global` (available in all views)
-
-### 2.5 `show route subscribe [vrf <vrf-name>] {ipv4|ipv6}`
-Displays route subscription information.
-
-- **Usage**: `show route subscribe`, `show route subscribe ipv4`, `show route subscribe vrf red ipv6`
-- **View**: `global` (available in all views)
-
-## 3. Protocol Filter Keywords
-
-For `show route proto ...`, current protocol keywords include:
-
-- `connected`
-- `static`
-- `bgp`
-- `ospf`
-- `isis`
+| 命令 | 视图 | 说明 |
+| --- | --- | --- |
+| `show route {ipv4|ipv6} [vrf <name>]` | global | 显示 RIB 路由 |
+| `show route ipv4 [vrf <name>] <destination> <prefix-length>` | global | 查询指定 IPv4 前缀 |
+| `show route ipv6 [vrf <name>] <destination> <prefix-length>` | global | 查询指定 IPv6 前缀 |
+| `show route {ipv4|ipv6} [vrf <name>] proto {static|bgp|ospf|connected|isis}` | global | 按协议过滤 |
+| `show route summary {ipv4|ipv6} [vrf <name>]` | global | 显示路由统计 |
+| `show route subscribe {ipv4|ipv6} [vrf <name>]` | global | 显示路由订阅者 |
+| `show route static {ipv4|ipv6} [vrf <name>]` | global | 显示候选静态路由表 |
+| `show route relay {ipv4|ipv6} [vrf <name>]` | global | 显示协议模块送入 route 的 relay 路由 |
+| `show route relay {ipv4|ipv6} [vrf <name>] proto {bgp|static}` | global | 按 relay 来源过滤 |
+| `show route nexthop {ipv4|ipv6} [vrf <name>] [id <id>]` | global | 显示下一跳对象 |
+| `show route static nexthop {ipv4|ipv6} [vrf <name>] [id <id>]` | global | 显示静态路由下一跳组 |

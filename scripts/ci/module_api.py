@@ -12,6 +12,7 @@ import ipaddress
 import os
 import re
 import shlex
+import sys
 import time
 from typing import Any, Iterable
 
@@ -305,12 +306,16 @@ def step(title: str) -> None:
 
 def should_skip_cleanup() -> bool:
     """
-    Scripts call this in their `finally:` block; if a check has failed (set by
-    `mark_step_failed`) AND `NN_PAUSE_ON_FAIL` is set in env (by module_runner's
-    `--pause-on-fail`), skip cleanup so the operator can `docker exec` into the
-    container and inspect live state.
+    Scripts call this in their ``finally:`` block.
+
+    With ``--pause-on-fail``, module_runner sets ``NN_PAUSE_ON_FAIL``. The
+    runner can only call ``mark_step_failed`` after ``run_fn`` returns, but a
+    script's own ``finally`` runs before that. Detect an active exception here
+    so cleanup is skipped at the point where live failure state still exists.
     """
     if os.environ.get("NN_PAUSE_ON_FAIL", "").strip() not in ("", "0", "false", "False"):
+        if _failed_step_title is None and sys.exc_info()[0] is not None:
+            mark_step_failed()
         if _failed_step_title is not None:
             print(
                 f"\n===== PAUSE-ON-FAIL: skipping cleanup; failed step: {_failed_step_title} =====",

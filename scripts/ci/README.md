@@ -168,8 +168,8 @@ Notes:
 - add `--cleanup` to remove resources before exit
 - add `--pull` to force `docker pull` first
 - uses image built-in `if_map.conf.gns3` (no runtime override in `top-up`)
-- script will print per-device CLI connect targets automatically (`telnet <mgmt-ip> 3788`)
-- add `--publish-cli` (or `--publish-cli <base-port>`) to expose CLI on host, for example `127.0.0.1:13788`
+- script will print per-device CLI connect targets automatically (`docker exec -it -e NN_CONSOLE_SOCK=/opt/netnexus/run/console.sock <container> /opt/netnexus/bin/netnexus-console`)
+- add `--publish-cli` (or `--publish-cli <base-port>`) only when explicitly debugging a published telnet/vty path
 
 ## Run All Modules (Scan + Execute)
 

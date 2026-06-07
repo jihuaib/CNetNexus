@@ -285,20 +285,29 @@ static void build_fib_entry(fib_route_entry_t *fib, const route_msg_entry_t *rou
 //   - 不变量：同一前缀仅“当前 OS 安装路径”持有一个 nexthop 对象引用。
 // ============================================================================
 
-/* 该路由是否需要把其 nexthop 对象下刷 FIB（连接路由 SKIP_OS、隧道路由走 tunnel_id join，均不需要） */
+/* 该路由是否需要把其 nexthop 对象下刷 FIB（连接路由 SKIP_OS、隧道路由走 tunnel_id join，均不需要）。
+ * blackhole 路由也使用 nexthop object，FIB 通过该对象统一等待/展示 NH-Type=blackhole。 */
 static gboolean route_fib_needs_nhobj(const route_msg_entry_t *route)
 {
     if (route->protocol == ROUTE_PROTOCOL_CONNECTED)
     {
         return FALSE;
     }
-    if (route->nh_type == ROUTE_NH_TYPE_BLACKHOLE)
-    {
-        return FALSE;
-    }
     if (route->nh_type == ROUTE_NH_TYPE_TUNNEL && route->tunnel_id != 0u)
     {
         return FALSE;
+    }
+    if (route->nh_type == ROUTE_NH_TYPE_BLACKHOLE && route->nexthop_id != 0u)
+    {
+        route_nhobj_info_t info;
+        if (route_nhobj_lookup(route->nexthop_id, &info) == 0 && info.key.nh_type != ROUTE_NH_TYPE_BLACKHOLE)
+        {
+            /* A recursive route can resolve through an IP nexthop object to a blackhole route.
+             * The effective FIB route must be installed as blackhole directly; waiting on the
+             * original IP nexthop object leaves the route pending forever because that object has
+             * no gateway/out-ifindex in the blackhole resolution case. */
+            return FALSE;
+        }
     }
     return TRUE;
 }

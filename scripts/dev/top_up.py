@@ -57,9 +57,9 @@ def main() -> int:
         "--publish-cli",
         nargs="?",
         type=int,
-        const=13788,
+        const=15000,
         metavar="BASE_PORT",
-        help="publish each device CLI to host: 127.0.0.1:(BASE_PORT + idx). Default base=13788 when omitted.",
+        help="legacy/debug only: publish each device telnet/vty path to host: 127.0.0.1:(BASE_PORT + idx).",
     )
     parser.add_argument(
         "--cleanup",
@@ -103,10 +103,12 @@ def main() -> int:
 
         print("\nCLI connect targets:", flush=True)
         for dev in sorted(rt.devices.keys()):
-            mgmt_ip = rt.get_mgmt_ip(dev)
             kind = rt.get_device_kind(dev)
             if kind == DEVICE_KIND_NETNEXUS:
-                print(f"  - {dev} (mgmt): telnet {mgmt_ip} 3788")
+                print(
+                    f"  - {dev} (console): docker exec -it -e NN_CONSOLE_SOCK=/opt/netnexus/run/console.sock "
+                    f"{rt.container_name(dev)} /opt/netnexus/bin/netnexus-console"
+                )
                 host_port = rt.get_published_cli_port(dev)
                 if host_port is not None:
                     print(f"  - {dev} (host): telnet 127.0.0.1 {host_port}")

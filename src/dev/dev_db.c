@@ -6,7 +6,10 @@
  */
 #include "dev_db.h"
 
+#include <errno.h>
 #include <glib.h>
+#include <string.h>
+#include <unistd.h>
 
 #include "cli.h"
 #include "db.h"
@@ -249,14 +252,25 @@ static void push_sysname_to_cli(const char *sysname)
     dev_ipc_message_free(m);
 }
 
+static void restore_kernel_hostname(const char *sysname)
+{
+    const char *v = (sysname && sysname[0] != '\0') ? sysname : CLI_SYSNAME_DEFAULT;
+    if (sethostname(v, strlen(v)) != 0)
+    {
+        LOG_WARN("DEV: failed to restore kernel hostname to %s: %s", v, strerror(errno));
+    }
+}
+
 int dev_db_restore(void)
 {
     char sysname[64] = {0};
-    if (dev_db_get_sysname(sysname, sizeof(sysname)) == 0 && sysname[0] != '\0')
+    int sysname_rc = dev_db_get_sysname(sysname, sizeof(sysname));
+    if (sysname_rc == 0 && sysname[0] != '\0')
     {
         push_sysname_to_cli(sysname);
         LOG_INFO("DEV: Restored sysname=%s from DB", sysname);
     }
+    restore_kernel_hostname((sysname_rc == 0) ? sysname : "");
 
     log_level_t level;
     int rc = dev_db_get_log_level(&level);

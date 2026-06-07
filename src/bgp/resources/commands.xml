@@ -1260,12 +1260,12 @@
                 <!-- reflector cluster-id <ipv4> -->
                 <command>
                     <expression>2 3 4</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-vpnv4,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
                 </command>
                 <!-- no reflector cluster-id -->
                 <command>
                     <expression>1 2 3</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-vpnv4,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
                 </command>
             </commands>
         </group>
@@ -1300,11 +1300,11 @@
             <commands>
                 <command>
                     <expression>2 {3 | 4} 5</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-vpnv4,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
                 </command>
                 <command>
                     <expression>1 2 {3 | 4} 5</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-vpnv4,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
                 </command>
             </commands>
         </group>

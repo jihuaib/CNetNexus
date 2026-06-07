@@ -1,185 +1,60 @@
-# ISIS CLI Documentation
+# ISIS CLI 文档
 
-This document describes the ISIS commands provided by the ISIS module (module-id: 9).
+ISIS 模块（module-id: 9）提供实例配置、接口使能、LAN 邻居、LSDB、SPF 和路由同步。
 
-## 1. Instance Commands (`config` / `config-isis-*`)
+## 实例命令
 
-### 1.1 `isis <tag>`
-Creates (or enters) an ISIS instance and switches to `config-isis-<tag>` view.
+| 命令 | 视图 | 说明 |
+| --- | --- | --- |
+| `isis <tag>` | config | 创建或进入 ISIS 实例视图 |
+| `no isis [<tag>]` | config, isis | 删除实例；在 ISIS 视图中可省略 `<tag>` 删除当前实例 |
 
-- **Usage**: `isis <tag>`
-- **View**: `config`
-- **Parameters**:
-  - `<tag>`: Instance tag (`uint`, 1-4294967295)
+ISIS 视图提示符为 `<NetNexus(config-isis-{ctx:8})>`。
 
-### 1.2 `no isis [<tag>]`
-Deletes an ISIS instance.
+## ISIS 视图命令
 
-- **Usage**: `no isis` / `no isis <tag>`
-- **View**: `config`, `config-isis-*`
-- **Notes**:
-  - In `config-isis-*` view, omitting `<tag>` deletes the current context instance.
+| 命令 | 视图 | 说明 |
+| --- | --- | --- |
+| `net <system-id>` | isis | 设置 NET/System-ID |
+| `is-type {level-1|level-2|level-1-2}` | isis | 设置实例 level 类型 |
+| `cost-style {narrow|wide}` | isis | 设置 metric 风格 |
+| `af ipv4` | isis | 启用 IPv4 AF |
+| `af ipv6` | isis | 启用 IPv6 AF |
+| `no af ipv4` | isis | 关闭 IPv4 AF |
+| `no af ipv6` | isis | 关闭 IPv6 AF |
 
-## 2. ISIS View Commands (`config-isis-*`)
+## 接口视图命令
 
-### 2.1 `net <net>`
-Sets NET/System-ID string for the current instance.
+ISIS 接口命令在 `if` 和 `if-loop` 视图可用，IPv4 与 IPv6 使用不同命令前缀。
 
-- **Usage**: `net <net>`
-- **View**: `config-isis-*`
+| IPv4 命令 | IPv6 命令 | 说明 |
+| --- | --- | --- |
+| `isis enable <tag>` | `isis ipv6 enable <tag>` | 在接口启用 ISIS |
+| `no isis enable <tag>` | `no isis ipv6 enable <tag>` | 在接口关闭 ISIS |
+| `isis metric <tag> <metric>` | `isis ipv6 metric <tag> <metric>` | 设置接口 metric，范围 1-16777215 |
+| `no isis metric <tag>` | `no isis ipv6 metric <tag>` | 恢复接口 metric |
+| `isis hello-interval <tag> <seconds>` | `isis ipv6 hello-interval <tag> <seconds>` | 设置 hello 间隔 |
+| `no isis hello-interval <tag>` | `no isis ipv6 hello-interval <tag>` | 恢复 hello 间隔 |
+| `isis hold-multiplier <tag> <value>` | `isis ipv6 hold-multiplier <tag> <value>` | 设置 hold multiplier，范围 1-100 |
+| `no isis hold-multiplier <tag>` | `no isis ipv6 hold-multiplier <tag>` | 恢复 hold multiplier |
+| `isis passive <tag>` | `isis ipv6 passive <tag>` | 设置 passive |
+| `no isis passive <tag>` | `no isis ipv6 passive <tag>` | 取消 passive |
 
-### 2.2 `is-type { level-1 | level-2 | level-1-2 }`
-Sets the instance level type.
+## 查看命令
 
-- **Usage**: `is-type level-1` / `is-type level-2` / `is-type level-1-2`
-- **View**: `config-isis-*`
+| 命令 | 视图 | 说明 |
+| --- | --- | --- |
+| `show isis summary ipv4 <tag>` | global | 显示 IPv4 AF 实例概要 |
+| `show isis summary ipv6 <tag>` | global | 显示 IPv6 AF 实例概要 |
+| `show isis interface ipv4 <tag>` | global | 显示 IPv4 ISIS 接口状态 |
+| `show isis interface ipv6 <tag>` | global | 显示 IPv6 ISIS 接口状态 |
+| `show isis neighbor <tag>` | global | 显示邻居 |
+| `show isis neighbor <tag> verbose` | global | 显示邻居详细信息 |
+| `show isis lsdb ipv4 <tag>` | global | 显示 IPv4 LSDB |
+| `show isis lsdb ipv6 <tag>` | global | 显示 IPv6 LSDB |
+| `show isis route ipv4 <tag>` | global | 显示 IPv4 ISIS 路由 |
+| `show isis route ipv6 <tag>` | global | 显示 IPv6 ISIS 路由 |
+| `show isis route ipv4 <tag> <destination> <mask>` | global | 查询 IPv4 ISIS 前缀 |
+| `show isis route ipv6 <tag> <destination> <mask>` | global | 查询 IPv6 ISIS 前缀 |
 
-### 2.3 `af { ipv4 | ipv6 }`
-Enables IPv4 or IPv6 AF on the instance.
-
-- **Usage**: `af ipv4` / `af ipv6`
-- **View**: `config-isis-*`
-
-### 2.4 `no af { ipv4 | ipv6 }`
-Disables IPv4 or IPv6 AF on the instance.
-
-- **Usage**: `no af ipv4` / `no af ipv6`
-- **View**: `config-isis-*`
-
-## 3. Interface View Commands (`config-if-*` / `config-if-loop*`)
-
-ISIS interface commands are split by IP type and instance tag.
-
-- **IPv4 family command prefix**: `isis ... <tag> [...]`
-- **IPv6 family command prefix**: `isis ipv6 ... <tag> [...]`
-- **View**: `config-if-*`, `config-if-loop*`
-
-### 3.1 Enable/Disable
-- **IPv4**: `isis enable <tag>` / `no isis enable <tag>`
-- **IPv6**: `isis ipv6 enable <tag>` / `no isis ipv6 enable <tag>`
-
-### 3.2 Metric
-- **IPv4**: `isis metric <tag> <metric>` / `no isis metric <tag>`
-- **IPv6**: `isis ipv6 metric <tag> <metric>` / `no isis ipv6 metric <tag>`
-- **`<metric>`**: `uint`, 1-16777215
-
-### 3.3 Hello Interval
-- **IPv4**: `isis hello-interval <tag> <hello-interval>` / `no isis hello-interval <tag>`
-- **IPv6**: `isis ipv6 hello-interval <tag> <hello-interval>` / `no isis ipv6 hello-interval <tag>`
-- **`<hello-interval>`**: `uint`, 1-65535
-
-### 3.4 Hold Multiplier
-- **IPv4**: `isis hold-multiplier <tag> <hold-multiplier>` / `no isis hold-multiplier <tag>`
-- **IPv6**: `isis ipv6 hold-multiplier <tag> <hold-multiplier>` / `no isis ipv6 hold-multiplier <tag>`
-- **`<hold-multiplier>`**: `uint`, 1-100
-
-### 3.5 Passive
-- **IPv4**: `isis passive <tag>` / `no isis passive <tag>`
-- **IPv6**: `isis ipv6 passive <tag>` / `no isis ipv6 passive <tag>`
-
-## 4. Show Commands (`global`)
-
-### 4.1 `show isis [ipv4|ipv6] summary <tag>`
-Displays ISIS instance summary.
-
-### 4.2 `show isis [ipv4|ipv6] interface <tag>`
-Displays ISIS interface status per instance.
-
-### 4.3 `show isis neighbor <tag> [verbose]`
-Displays learned ISIS LAN neighbors for the specified instance tag.
-
-- Neighbor negotiation is interface-based (not per AF), so IPv4/IPv6 variants are not provided for this command.
-- `verbose` shows full per-neighbor negotiation details, including:
-  - instance/interface status
-  - LAN SNPA echo state
-  - IIH validation result
-  - area/circuit-type/NLPID checks
-  - per-AF local enable/passive state
-  - remote AF advertisement / remote NLPID advertisement
-  - per-AF negotiated result (`yes`/`no`)
-
-- Fields:
-  - `Tag`: ISIS instance tag
-  - `Interface`: Logical interface name
-  - `Level`: `L1` or `L2`
-  - `System-ID`: Neighbor system-id
-  - `State`: `Down` / `Init` / `Up`
-  - `Valid`: Whether the received IIH passed standard LAN adjacency checks
-  - `SeenSelf`: Whether the remote `IS Neighbors` TLV echoed the local SNPA
-  - `Hold`: Hold time (seconds)
-  - `LastSeen`: Seconds since last IIH received
-  - `IPv4`: Neighbor IPv4 interface address (if advertised)
-  - `IPv6`: Neighbor IPv6 interface address (if advertised)
-
-### 4.4 `show isis [ipv4|ipv6] lsdb <tag>`
-Displays ISIS LSDB entries learned from received LSPs.
-
-- Fields:
-  - `Tag`: ISIS instance tag
-  - `Rx-If`: Interface that received the latest LSP
-  - `Level`: `L1` or `L2`
-  - `System-ID`: LSP origin system-id
-  - `Seq`: Latest LSP sequence
-  - `Life`: Remaining lifetime in LSP header
-  - `Cksm`: LSP checksum
-  - `IPv4`: Count of IPv4 reachability entries
-  - `IPv6`: Count of IPv6 reachability entries
-  - `LastRx`: Seconds since latest LSP received
-
-### 4.5 `show isis [ipv4|ipv6] route <tag>`
-Displays all ISIS route states for the specified instance tag, including:
-- local interface-originated ISIS routes
-- neighbor host routes
-- SPF/LSP learned routes
-
-### 4.6 `show isis [ipv4|ipv6] route <tag> <destination> <mask>`
-Displays detailed information for routes matching the given destination prefix in the specified instance.
-
-- IPv4 detail form:
-  - `show isis ipv4 route <tag> <destination> <mask>` (`mask`: `0-32`)
-- IPv6 detail form:
-  - `show isis ipv6 route <tag> <destination6> <mask6>` (`mask6`: `0-128`)
-
-## 5. Route Learning Behavior (Current Stage)
-
-- If an interface is ISIS-enabled and the instance AF is enabled:
-  - Interface UP/DOWN and address ADD/DEL events are consumed from IF module.
-  - IPv4/IPv6 prefixes are injected/withdrawn into Route module with protocol `ISIS`.
-- If a neighbor advertises interface addresses in LAN IIH:
-  - Neighbor host-route learning is only active for established (`Up`) adjacencies.
-  - Neighbor IPv4/IPv6 addresses are learned and injected as one-hop host routes (`/32`, `/128`) with protocol `ISIS`.
-  - Learned routes age out with neighbor hold timer or AF/interface state changes.
-- ISIS also sends/receives LSP (L1/L2) periodically:
-  - LSP carries Extended IS reachability (TLV 22) and IPv4/IPv6 reachability TLVs.
-  - Prefix reachability is encoded with IPv4/IPv6 reachability TLVs.
-  - Received LSPs are stored in LSDB (with raw TLVs), and SPF computes shortest paths from local system-id to LSP origins.
-  - Route nexthop/outgoing interface is derived from SPF first-hop adjacency; learned IPv4/IPv6 routes are installed with accumulated path metric.
-  - LSP-learned routes are withdrawn on neighbor loss, LSDB lifetime expiration, AF disable, or interface participation loss.
-- Current scope:
-  - Route learning is origin-keyed and based on topology SPF shortest-path computation.
-  - LSP flooding, LSDB aging, and per-level SPF recomputation are implemented.
-  - IPv4/IPv6 route learning from LSP prefixes is supported.
-- Route table visibility:
-  - `show route ipv4 proto isis`
-  - `show route ipv6 proto isis`
-
-## 6. Neighbor Discovery Behavior (Current Stage)
-
-- ISIS worker opens raw socket + 1s timer tick.
-- For ISIS-enabled interfaces (for example `isis enable <tag>` / `isis ipv6 enable <tag>`), LAN IIH is sent periodically (default hello 10s, hold-multiplier 3).
-- ISIS LSP (L1/L2) is sent periodically on active non-passive ISIS interfaces.
-- Received LAN IIH updates in-memory neighbor table per instance/interface/level.
-- Standard LAN adjacency uses `IS Neighbors` TLV echo to drive `Down -> Init -> Up`.
-- IIH validation checks include area matching for `L1`, circuit-type compatibility, non-zero hold time, and remote `Protocols Supported` NLPIDs compatibility.
-- Received LSP updates are written into in-memory LSDB (`show isis [ipv4|ipv6] lsdb <tag>`) and used for SPF route learning.
-- Newer LSPs are flooded to other active non-passive ISIS interfaces (except ingress interface).
-- SPF builds topology from LSDB adjacency TLVs and computes first-hop nexthop for route installation.
-- Neighbor entries age out by hold timer or are removed on interface disable/down.
-- AF-specific passive (`isis passive <tag>` / `isis ipv6 passive <tag>`) controls participation per family.
-- If at least one AF on an interface remains enabled and non-passive, IIH/LSP transmission still stays active on that interface.
-
-## 7. Deep Dive: Single-LSDB Entry vs Multipath Result
-
-For a detailed explanation of why ISIS can still produce non-best (backup) paths even when LSDB keeps one latest LSP per `(level, system-id)`, see:
-
-- [`docs/dev/isis-spf-multipath.md`](../dev/isis-spf-multipath.md)
+ISIS 当前实现包括 LAN DIS/pseudonode、邻居地址学习、SPF 多路径和到 Route 模块的路由同步。

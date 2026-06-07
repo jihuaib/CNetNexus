@@ -162,6 +162,8 @@ typedef gboolean (*vrf_api_cache_iter_fn)(const vrf_api_cache_entry_t *entry, vo
 #define VRF_EVENT_SMOOTHEND (1u << 12)
 /** AF 下 apply-label 模式变更（apply_label_mode 有效） */
 #define VRF_EVENT_AF_APPLY_LABEL (1u << 13)
+/** VRF 容器级事件（不含 AF/RD/RT 等地址族配置事件） */
+#define VRF_EVENT_VRF_ONLY (VRF_EVENT_VRF_ADD | VRF_EVENT_VRF_DEL | VRF_EVENT_VRF_STATE)
 /** 通配：匹配所有事件 */
 #define VRF_EVENT_ALL 0xFFFFFFFFu
 
@@ -317,6 +319,11 @@ int vrf_api_subscribe(dev_ipc_context_t *ctx, uint32_t af_mask, uint32_t event_m
  * @brief 订阅全部 AF 与全部事件，并请求初始全量回放
  */
 int vrf_api_subscribe_all(dev_ipc_context_t *ctx);
+
+/**
+ * @brief 仅订阅 VRF 容器级事件，并请求初始全量回放
+ */
+int vrf_api_subscribe_vrf(dev_ipc_context_t *ctx);
 
 /**
  * @brief 取消订阅（mask 全 0 表示清除该模块的全部订阅）

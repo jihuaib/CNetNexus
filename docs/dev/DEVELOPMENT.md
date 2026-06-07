@@ -1,456 +1,284 @@
-# NetNexus Development Guide
+# NetNexus 开发指南
 
-Quick reference for NetNexus development.
+本文档记录当前代码形态下的本地开发流程。NetNexus 现在是一个 DEV supervisor + 多模块独立进程的系统，不再是单体 telnet server，也不是共享库插件式模块。
 
-## Quick Start
+## 快速开始
 
 ```bash
-# 1. Build
 ./scripts/dev/build.sh
-
-# 2. Run
 ./scripts/dev/start.sh
-
-# 3. Connect
-telnet localhost 3788
 ```
 
-## Development Commands
+另开终端连接本地 console：
 
-### Build
 ```bash
-./scripts/dev/build.sh              # Debug build
-./scripts/dev/build.sh --release    # Release build
-./scripts/dev/build.sh --clean      # Clean + rebuild
-./scripts/dev/build.sh -j 8         # 8 parallel jobs
+./build/bin/netnexus-console
 ```
 
-### Run
+默认管理入口是 Unix socket console。telnet/vty 需要通过 ACCESS 命令显式开启。
+
+## 构建
+
 ```bash
-./scripts/dev/start.sh              # Normal start
-./scripts/dev/debug.sh              # Start with gdb
+./scripts/dev/build.sh              # Debug 构建
+./scripts/dev/build.sh --release    # Release 构建
+./scripts/dev/build.sh --clean      # 清理后重建
+./scripts/dev/build.sh -j 8         # 指定并行数
 ```
 
-### Clean
+等价 CMake 流程：
+
 ```bash
-./scripts/dev/clean.sh              # Clean build only
-./scripts/dev/clean.sh --data       # Also clean data
-./scripts/dev/clean.sh --all        # Clean everything
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build -j"$(nproc)"
 ```
 
-### Docker（本地测试）
+构建产物：
+
+```text
+build/bin/netnexus          # DEV supervisor 主进程
+build/bin/netnexus-console  # console 客户端
+build/bin/netnexus-*        # 各模块独立进程
+build/lib/                  # utils/dev/模块 API 共享库
+```
+
+## 运行和调试
 
 ```bash
-# 安装 Docker（首次）
+./scripts/dev/start.sh      # 正常启动
+./scripts/dev/debug.sh      # gdb 启动 supervisor
+```
+
+`start.sh` 会：
+
+- 保持 cwd 在项目根目录，使默认数据落到 `data/`。
+- 不设置 `NN_WORK_DIR`，资源文件从 `src/*/resources` 自动发现。
+- 尽力加载 `mpls_router`、`mpls_iptunnel`、`mpls_gso`。
+- 设置 `LD_LIBRARY_PATH=build/lib`。
+- 放开 core dump 限制。
+
+常用清理：
+
+```bash
+./scripts/dev/clean.sh
+./scripts/dev/clean.sh --data
+./scripts/dev/clean.sh --all
+```
+
+## 运行时目录
+
+开发模式未设置 `NN_WORK_DIR`：
+
+```text
+src/<module>/resources/     # commands.xml/module.conf
+data/                       # SQLite、配置快照、core
+build/bin/                  # 可执行文件
+build/lib/                  # 共享库
+```
+
+部署模式设置 `NN_WORK_DIR=/opt/netnexus`：
+
+```text
+/opt/netnexus/bin/
+/opt/netnexus/lib/
+/opt/netnexus/resources/<module>/
+/opt/netnexus/data/
+/opt/netnexus/log/
+/opt/netnexus/run/console.sock
+```
+
+## 模块模型
+
+当前模块以独立进程方式构建。新增模块时至少需要：
+
+1. `src/<module>/CMakeLists.txt`，生成 `netnexus-<module>`。
+2. `src/<module>/<module>_proc.c` 作为进程入口。
+3. `src/<module>/<module>_main.c` 或等价 init/cleanup 逻辑。
+4. `src/<module>/resources/module.conf`，供 supervisor 扫描。
+5. `src/<module>/resources/commands.xml`，供 CLI 命令树加载。
+6. 必要时在 `include/` 增加跨模块公共头文件。
+7. 在 `src/CMakeLists.txt` 添加 `add_subdirectory(<module>)`。
+
+已有模块包括 `access`、`cli`、`db`、`dev`、`if`、`vrf`、`route`、`fib`、`bgp`、`sbmp`、`isis`、`ldp`、`lldp`、`tunnel`。
+
+## CLI 开发
+
+命令树由各模块 `src/<module>/resources/commands.xml` 描述。修改命令后重新构建并启动：
+
+```bash
+./scripts/dev/build.sh
+./scripts/dev/start.sh
+```
+
+运行时可用以下命令检查注册结果：
+
+```text
+show cli command-info
+show cli context
+show current-configuration
+show this
+show dev modules
+show dev ipc <module-name>
+```
+
+CLI 文档入口位于 `docs/cli/`。
+
+## 数据库和配置
+
+当前配置数据通过 DB/BDR 机制和 SQLite 持久化。常用 CLI：
+
+```text
+save configuration [name]
+startup configuration <name> db
+startup configuration <name> cfg
+show startup configuration
+show configuration replay-failures
+show current-configuration
+```
+
+开发环境数据默认在 `data/`，不要假设存在旧式 `data/bgp/bgp_db.db` 单模块路径。需要查看实际表时，先通过 CLI 查询：
+
+```text
+show db table-list
+show db table-field <table-name>
+show db table-data <table-name>
+```
+
+也可以直接检查当前 SQLite 文件：
+
+```bash
+find data -name '*.db' -print
+```
+
+## Docker
+
+```bash
 ./scripts/docker/install-docker.sh
-
-# 构建 Docker 镜像（本地，当前架构）
 ./scripts/dev/build-docker-image.sh
-
-# 运行容器测试
-docker run -it --rm -p 3788:3788 netnexus:latest
-telnet localhost 3788
-
-# 进入容器调试
-docker exec -it <container_id> /bin/bash
 ```
 
-## VSCode Shortcuts
-
-- `Ctrl+Shift+B` - Build
-- `F5` - Start debugging
-- `Ctrl+F5` - Run without debugging
-- `F9` - Toggle breakpoint
-- `F10` - Step over
-- `F11` - Step into
-
-## IDE Configuration
-
-### clangd Setup
-
-clangd 提供代码补全、跳转定义、错误提示等 IDE 功能。
-
-**1. 安装 clangd:**
+本地容器测试：
 
 ```bash
-# Ubuntu/Debian
-sudo apt update
-sudo apt install clangd
+docker run -d --rm --name netnexus-dev \
+  --cap-add NET_ADMIN \
+  --cap-add NET_RAW \
+  --sysctl net.ipv6.conf.all.disable_ipv6=0 \
+  --sysctl net.ipv6.conf.default.disable_ipv6=0 \
+  netnexus:latest
 
-# 或安装特定版本
-sudo apt install clangd-14
+docker exec -it \
+  -e NN_CONSOLE_SOCK=/opt/netnexus/run/console.sock \
+  netnexus-dev \
+  /opt/netnexus/bin/netnexus-console
 ```
 
-**2. 生成编译数据库:**
+## CI 和拓扑测试
 
-项目使用 CMake，需要生成 `compile_commands.json` 让 clangd 理解项目结构：
+CI case 目录形态：
+
+```text
+scripts/ci/modules/<module>/<top_case>/
+  top.yaml
+  *.py
+```
+
+构建 CI 镜像并运行：
 
 ```bash
-# 重新配置 CMake 并生成编译数据库
-cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-
-# 创建符号链接到项目根目录
-ln -sf build/compile_commands.json compile_commands.json
+./scripts/dev/build-docker-image.sh --docker-image netnexus-ci:localtest
+scripts/ci/run_all.sh --no-build --image netnexus-ci:localtest
 ```
 
-**3. 重启编辑器**
-
-重启 VSCode 或你的编辑器，clangd 会自动加载配置。
-
-> [!NOTE]
-> 如果修改了 `CMakeLists.txt` 或添加了新文件，需要重新运行上述 cmake 命令更新编译数据库。
-
-> [!TIP]
-> `compile_commands.json` 和 `.cache/` 目录已添加到 `.gitignore`，不会提交到版本控制。
-
-## Project Structure
-
-```
-NetNexus/
-├── src/              # Source code
-│   ├── cfg/         # CLI framework
-│   ├── db/          # Database module
-│   ├── bgp/         # BGP module
-│   ├── dev/         # Dev module
-│   └── utils/       # Utilities
-├── include/          # Public headers
-├── build/            # Build output
-│   ├── bin/         # Executables
-│   └── lib/         # Libraries
-├── data/             # Development databases
-├── scripts/          # Dev/deployment scripts
-└── .vscode/          # VSCode config
-```
-
-## Common Tasks
-
-### Add New Module
-
-1. **Create module directory:**
-   ```bash
-   mkdir -p src/mymodule
-   ```
-
-2. **Create main file** (`src/mymodule/mymodule_main.c`):
-   ```c
-   #include "dev.h"
-   #include "errcode.h"
-
-   static int32_t mymodule_init(void *module) {
-       printf("[mymodule] Initializing\n");
-       return NN_ERRCODE_SUCCESS;
-   }
-
-   static void mymodule_cleanup(void) {
-       printf("[mymodule] Cleaning up\n");
-   }
-   ```
-
-3. **Create CMakeLists.txt:**
-   ```cmake
-   add_library(mymodule SHARED mymodule_main.c)
-   target_include_directories(mymodule PRIVATE ${PROJECT_SOURCE_DIR}/include)
-   install(TARGETS mymodule LIBRARY DESTINATION lib)
-   ```
-
-4. **Create commands.xml:**
-   ```xml
-   <?xml version="1.0" encoding="UTF-8"?>
-   <configuration module-id="13">
-       <views></views>
-       <command_groups></command_groups>
-   </configuration>
-   ```
-
-5. **Update src/CMakeLists.txt:**
-   ```cmake
-   add_subdirectory(mymodule)
-   ```
-
-6. **Link in main binary:**
-   ```cmake
-   target_link_libraries(netnexus PRIVATE mymodule)
-   ```
-
-### Add New CLI Command
-
-1. **Edit module's commands.xml:**
-   ```xml
-   <element cfg-id="1" type="keyword">
-       <name>mycommand</name>
-       <description>My custom command</description>
-   </element>
-
-   <command>
-       <expression>1</expression>
-       <views>3</views>  <!-- USER view -->
-   </command>
-   ```
-
-2. **Implement handler in module code**
-
-3. **Rebuild and test:**
-   ```bash
-   ./scripts/dev/build.sh
-   ./scripts/dev/start.sh
-   ```
-
-### Debug a Crash
-
-1. **Build with debug symbols:**
-   ```bash
-   ./scripts/dev/build.sh
-   ```
-
-2. **Run with gdb:**
-   ```bash
-   ./scripts/dev/debug.sh
-   ```
-
-3. **In GDB:**
-   ```gdb
-   (gdb) break main
-   (gdb) run
-   (gdb) continue
-   # ... crash occurs ...
-   (gdb) backtrace
-   (gdb) info locals
-   (gdb) print variable_name
-   ```
-
-### Check Memory Leaks
+运行单个 case：
 
 ```bash
-valgrind --leak-check=full \
-         --show-leak-kinds=all \
-         --track-origins=yes \
-         ./build/bin/netnexus
+python3 scripts/ci/module_runner.py \
+  --image netnexus-ci:localtest \
+  --modules-dir scripts/ci/modules/bgp/n2-l1-g1 \
+  --report-dir scripts/ci/reports/single-case
 ```
 
-### Profile Performance
+只拉起拓扑：
 
 ```bash
-# Install perf
-sudo apt install linux-tools-generic
-
-# Record
-perf record -g ./build/bin/netnexus
-
-# Analyze
-perf report
+scripts/dev/top-up.sh \
+  --top scripts/ci/modules/if/n2-l1-g1/top.yaml \
+  --image netnexus-ci:localtest
 ```
 
-## Database Development
+更多细节见 `scripts/ci/README.md`。
 
-### View Database Schema
+## 内存和崩溃调试
+
+ASAN：
 
 ```bash
-sqlite3 data/bgp/bgp_db.db ".schema"
+./scripts/dev/build-with-asan.sh
+./build-asan/bin/netnexus
 ```
 
-### Query Database
+Valgrind：
 
 ```bash
-sqlite3 data/bgp/bgp_db.db "SELECT * FROM bgp_protocol;"
+./scripts/dev/check-memory-leaks.sh
 ```
 
-### Reset Database
-
-```bash
-rm -rf data/
-./scripts/dev/start.sh  # Will recreate from XML
-```
-
-### Add Database Table
-
-1. **Edit module's commands.xml:**
-   ```xml
-   <dbs>
-       <db db-name="mymodule_db">
-           <tables>
-               <table table-name="my_table">
-                   <fields>
-                       <field field-name="my_field" type="uint(0-65535)"/>
-                   </fields>
-               </table>
-           </tables>
-       </db>
-   </dbs>
-   ```
-
-2. **Use in code:**
-   ```c
-   #include "db.h"
-
-   db_value_t values[1];
-   values[0] = db_value_int(12345);
-   const char *fields[1] = {"my_field"};
-
-   db_insert("mymodule_db", "my_table", fields, values, 1);
-   ```
-
-## Testing
-
-### Manual Testing
-
-```bash
-# Terminal 1: Run server
-./scripts/dev/start.sh
-
-# Terminal 2: Connect
-telnet localhost 3788
-
-# Test commands
-netnexus> help
-netnexus> show version
-netnexus> config
-netnexus(config)> ?
-```
-
-### Automated CLI Testing
-
-```bash
-# Using expect script
-cat > test.exp <<'EOF'
-#!/usr/bin/expect
-spawn telnet localhost 3788
-expect "netnexus>"
-send "help\r"
-expect "netnexus>"
-send "exit\r"
-expect eof
-EOF
-
-chmod +x test.exp
-./test.exp
-```
-
-## Debugging Tips
-
-### Enable Core Dumps
+Core dump：
 
 ```bash
 ulimit -c unlimited
-echo "core.%e.%p" | sudo tee /proc/sys/kernel/core_pattern
-```
-
-### Analyze Core Dump
-
-```bash
-gdb ./build/bin/netnexus core.*
-(gdb) backtrace full
-(gdb) info registers
-(gdb) disassemble
-```
-
-### Attach to Running Process
-
-```bash
-# Terminal 1: Run
 ./scripts/dev/start.sh
-
-# Terminal 2: Get PID
-ps aux | grep netnexus
-
-# Attach gdb
-sudo gdb -p <PID>
-(gdb) continue
-# ... trigger issue ...
-(gdb) backtrace
+gdb ./build/bin/netnexus core.*
 ```
 
-### Print Debug Messages
-
-```c
-// Add to code
-#define DEBUG_PRINT(fmt, ...) \
-    fprintf(stderr, "[DEBUG] %s:%d - " fmt "\n", __FILE__, __LINE__, ##__VA_ARGS__)
-
-DEBUG_PRINT("Variable value: %d", my_var);
-```
-
-### Trace Function Calls
+运行中 attach：
 
 ```bash
-# Using ltrace
-ltrace -f ./build/bin/netnexus
-
-# Using strace
-strace -f ./build/bin/netnexus
+pgrep -af netnexus
+sudo gdb -p <pid>
 ```
 
-## Configuration
+## IDE
 
-### XML Path Resolution
-
-Priority order:
-1. `$NN_WORK_DIR/{module}/commands.xml`
-2. `/opt/netnexus/resources/{module}/commands.xml`
-3. `<exe_dir>/../../src/{module}/commands.xml` (development)
-4. `../../src/{module}/commands.xml` (fallback)
-
-### Database Path Resolution
-
-- Development: `./data/{module}/{db_name}.db`
-- Production: `/opt/netnexus/data/{module}/{db_name}.db`
-
-## Troubleshooting
-
-### Build Errors
+生成 clangd 编译数据库：
 
 ```bash
-# Clean build
-./scripts/dev/clean.sh
-./scripts/dev/build.sh --verbose
+cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+ln -sf build/compile_commands.json compile_commands.json
+```
 
-# Check dependencies
+格式化：
+
+```bash
+./scripts/dev/format-code.sh
+```
+
+## 故障排查
+
+构建依赖：
+
+```bash
 pkg-config --modversion glib-2.0 libxml-2.0 sqlite3
 ```
 
-### Runtime Errors
+库加载：
 
 ```bash
-# Check library path
 ldd ./build/bin/netnexus
-
-# Run with verbose
 LD_DEBUG=libs ./scripts/dev/start.sh
-
-# Check config files
-ls -la src/*/commands.xml
 ```
 
-### Port Already in Use
+资源文件：
 
 ```bash
-# Find process using port 3788
-sudo lsof -i :3788
-
-# Kill process
-sudo kill <PID>
-
-# Or use different port (modify code)
+find src -path '*/resources/commands.xml' -print
+find src -path '*/resources/module.conf' -print
 ```
 
-### Permission Denied
+console socket：
 
 ```bash
-# Check permissions
-ls -la build/bin/netnexus
-
-# Make executable
-chmod +x build/bin/netnexus
+./build/bin/netnexus-console
+docker exec -it -e NN_CONSOLE_SOCK=/opt/netnexus/run/console.sock <container> /opt/netnexus/bin/netnexus-console
 ```
-
-## Resources
-
-- [CLAUDE.md](CLAUDE.md) - Full architecture guide
-- [DEPLOYMENT.md](DEPLOYMENT.md) - Deployment guide
-- [scripts/README.md](scripts/README.md) - Script documentation
-
-## Getting Help
-
-1. Check build output: `./scripts/dev/build.sh --verbose`
-2. Run with debugger: `./scripts/dev/debug.sh`
-3. Check logs when running
-4. Review architecture: [CLAUDE.md](CLAUDE.md)

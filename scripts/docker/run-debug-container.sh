@@ -49,7 +49,6 @@ sudo docker run -d \
     --ulimit core=-1 \
     -v "${CORES_DIR}:${CORES_DIR}" \
     -v /var/run/docker.sock:/var/run/docker.sock \
-    -p 3788:3788 \
     ${IMAGE_NAME}:${IMAGE_TAG}
 
 # Wait for container to be healthy
@@ -76,8 +75,8 @@ if sudo docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
     echo "4. View logs:"
     echo -e "   ${BLUE}sudo docker logs -f ${CONTAINER_NAME}${NC}"
     echo ""
-    echo "5. Connect via telnet:"
-    echo -e "   ${BLUE}telnet localhost 3788${NC}"
+    echo "5. Connect via console:"
+    echo -e "   ${BLUE}sudo docker exec -it -e NN_CONSOLE_SOCK=/opt/netnexus/run/console.sock ${CONTAINER_NAME} /opt/netnexus/bin/netnexus-console${NC}"
     echo ""
     echo "6. Stop container:"
     echo -e "   ${BLUE}sudo docker stop ${CONTAINER_NAME}${NC}"

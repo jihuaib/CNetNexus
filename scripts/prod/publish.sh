@@ -574,7 +574,8 @@ else
     echo "  docker run --rm --cap-add NET_ADMIN --cap-add NET_RAW \\"
     echo "    --sysctl net.ipv6.conf.all.disable_ipv6=0 \\"
     echo "    --sysctl net.ipv6.conf.default.disable_ipv6=0 \\"
-    echo "    -p 3788:3788 ${IMAGE_NAME}:${VERSION}-amd64"
+    echo "    --name netnexus ${IMAGE_NAME}:${VERSION}-amd64"
+    echo "  docker exec -it -e NN_CONSOLE_SOCK=/opt/netnexus/run/console.sock netnexus /opt/netnexus/bin/netnexus-console"
 fi
 
 echo ""

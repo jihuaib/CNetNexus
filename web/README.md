@@ -1,12 +1,12 @@
 # NetNexus 拓扑编排 Web UI
 
-一个 Vue 3 + Node.js 实现的轻量拓扑编排面板，用于把 NetNexus 设备拖到画布上、选择镜像、连线、启动，并直接在浏览器里通过 Web 终端连接到容器内的 telnet CLI（端口 3788）。
+一个 Vue 3 + Node.js 实现的轻量拓扑编排面板，用于把 NetNexus 设备拖到画布上、选择镜像、连线、启动，并直接在浏览器里通过 Web 终端连接到容器内的 console CLI。
 
 ## 目录结构
 
 ```
 web/
-├── backend/         # Express + WebSocket，调用 docker，桥接浏览器 <-> telnet
+├── backend/         # Express + WebSocket，调用 docker，桥接浏览器 <-> console
 │   ├── server.js
 │   └── package.json
 ├── frontend/        # Vue 3 + Vite：官网落地页 + 拓扑编排（`/top`）
@@ -67,9 +67,9 @@ USE_SUDO=1 ./web/start.sh
    docker run -d --name nn-topo-<id> \
      --cap-add=SYS_PTRACE --cap-add=NET_ADMIN \
      --security-opt seccomp=unconfined \
-     -p <宿主机端口>:3788 <image>
+     <image>
    ```
-4. 节点变成 `running` 后，点击 **网页连接**（或双击节点），弹出 **xterm 终端**，浏览器与容器内 telnet 3788 实时双向通信，回车即可看到 CLI 提示符。
+4. 节点变成 `running` 后，点击 **网页连接**（或双击节点），弹出 **xterm 终端**，浏览器通过后端 `docker exec -i -e NN_CONSOLE_SOCK=/opt/netnexus/run/console.sock /opt/netnexus/bin/netnexus-console` 与容器内 console CLI 实时双向通信，回车即可看到 CLI 提示符。
 5. 拖动节点右侧的小蓝点到另一个节点，可以创建一条**连线**（当前为逻辑连线，仅记录拓扑关系；真正的多设备 veth 组网建议结合 GNS3 使用 `gns3/netnexus.gns3a`）。
 6. 单击一条**连线**后，右侧会显示链路详情和 **抓包** 面板：
    - 点击 **开始抓包**，后端会启动一个辅助 `tcpdump` 容器抓取该链路的 docker bridge 流量
@@ -92,7 +92,7 @@ USE_SUDO=1 ./web/start.sh
 | POST | `/api/links/:id/capture/start` | 启动链路抓包 |
 | POST | `/api/links/:id/capture/stop` | 停止链路抓包 |
 | GET | `/api/captures/:id/download` | 下载抓包 `pcap` |
-| WS | `/ws/terminal?id=<instId>` | 浏览器 ↔ 容器 telnet 3788 桥接 |
+| WS | `/ws/terminal?id=<instId>` | 浏览器 ↔ 容器 console CLI 桥接 |
 
 ## 自定义
 

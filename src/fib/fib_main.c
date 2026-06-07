@@ -56,13 +56,13 @@ static void fib_handle_vrf_ready(void)
         LOG_WARN("FIB: VRF not connected in time; vrf_api_subscribe deferred");
         return;
     }
-    if (vrf_api_subscribe_all(ctx) != ERRCODE_SUCCESS)
+    if (vrf_api_subscribe_vrf(ctx) != ERRCODE_SUCCESS)
     {
-        LOG_WARN("FIB: vrf_api_subscribe_all failed");
+        LOG_WARN("FIB: vrf_api_subscribe_vrf failed");
     }
     else
     {
-        LOG_INFO("FIB: subscribed to VRF events");
+        LOG_INFO("FIB: subscribed to VRF lifecycle events");
     }
 }
 
@@ -90,7 +90,7 @@ static int fib_init_local(void)
         LOG_WARN("FIB: notify_ready to DEV failed");
     }
 
-    /* VRF（常驻）：auto_start=0；cb 在 VRF READY（含重启）时触发 vrf_api_subscribe_all。 */
+    /* VRF（常驻）：auto_start=0；cb 在 VRF READY（含重启）时触发 VRF lifecycle 订阅。 */
     if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_VRF, 0, fib_on_vrf_ready_cb, NULL) != ERRCODE_SUCCESS)
     {
         LOG_WARN("FIB: subscribe(VRF) failed");

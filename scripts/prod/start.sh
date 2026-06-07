@@ -9,11 +9,13 @@ INSTALL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # 统一工作目录：resources/data/log 均从此派生
 export NN_WORK_DIR="${INSTALL_DIR}"
+export NN_CONSOLE_SOCK="${INSTALL_DIR}/run/console.sock"
 export LD_LIBRARY_PATH="${INSTALL_DIR}/lib:${LD_LIBRARY_PATH}"
 
 # 创建必要目录
 mkdir -p "${INSTALL_DIR}/data"
 mkdir -p "${INSTALL_DIR}/log"
+mkdir -p "${INSTALL_DIR}/run"
 mkdir -p "${INSTALL_DIR}/data/cores"
 
 # 放开 core dump 限制（异常退出时尽可能产出 core）
@@ -87,7 +89,7 @@ fi
 
 # Start NetNexus
 echo "Starting NetNexus server..."
-echo "Listening on port 3788"
+echo "Console socket: ${NN_WORK_DIR}/run/console.sock"
 echo "Press Ctrl+C to stop"
 echo ""
 

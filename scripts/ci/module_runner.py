@@ -862,30 +862,6 @@ def run_case(
             module_logs_cleared = False
             script_token = make_script_log_token(idx, script)
             result = run_check(script, rt, top, previous_result=previous_result)
-            if idx == 1:
-                # Script 1 的 log 顶部嵌入 topology 启动记录，附明显分隔；
-                # 同样的内容也独立写到 logs/<module>/<top>/00-runtime.log
-                prefix_parts: list[str] = []
-                runtime_log_rel = os.path.relpath(runtime_log_path, logs_dir).replace(os.sep, "/")
-                banner = (
-                    f"========================================================================\n"
-                    f"===== TOPOLOGY STARTUP (shared by all scripts in this case) ============\n"
-                    f"===== full record: logs/{runtime_log_rel} =============================\n"
-                    f"========================================================================"
-                )
-                if startup_stdout:
-                    prefix_parts.append(banner + "\n" + startup_stdout)
-                if startup_stderr:
-                    prefix_parts.append(f"===== STEP: Runtime startup stderr =====\n{startup_stderr}")
-                if prefix_parts:
-                    end_banner = (
-                        "========================================================================\n"
-                        "===== END TOPOLOGY STARTUP =============================================\n"
-                        "========================================================================\n"
-                    )
-                    result.stdout = (
-                        "\n\n".join(prefix_parts) + "\n" + end_banner + ("\n" if result.stdout else "") + result.stdout
-                    )
             results.append(result)
             if result.returncode != 0:
                 case_failed = True
@@ -1087,6 +1063,27 @@ def make_check_log_path(logs_dir: Path, index: int, result: CheckResult, modules
     )
 
 
+TOPOLOGY_STARTUP_BLOCK_RE = re.compile(
+    r"(?s)^=+\n"
+    r"===== TOPOLOGY STARTUP \(shared by all scripts in this case\) =+\n"
+    r".*?"
+    r"===== END TOPOLOGY STARTUP =+\n"
+    r"=+\n+"
+)
+
+
+def strip_embedded_topology_startup(text: str) -> str:
+    """Keep per-check logs/pages focused on the check itself.
+
+    The runtime startup has its own per-case 00-runtime.log and report link. Older
+    runs or future call paths may still pass a CheckResult whose stdout contains
+    the historical embedded startup block; strip it before rendering artifacts.
+    """
+    if not text:
+        return text
+    return TOPOLOGY_STARTUP_BLOCK_RE.sub("", text, count=1)
+
+
 def write_check_log(log_path: Path, result: CheckResult) -> None:
     lines = [
         f"case: {result.case_dir}",
@@ -1102,7 +1099,7 @@ def write_check_log(log_path: Path, result: CheckResult) -> None:
         f"command: {' '.join(shlex.quote(part) for part in result.command)}",
         "",
         "===== STDOUT =====",
-        result.stdout,
+        strip_embedded_topology_startup(result.stdout),
         "",
         "===== STDERR =====",
         result.stderr,
@@ -1256,7 +1253,7 @@ def write_check_html(path: Path, result: CheckResult, *, index: int, runtime_log
     previous_status = result.previous_status or "-"
     previous_meta = html.escape(f"{previous_label} [{previous_status}]" if result.previous_script else previous_label)
 
-    combined = result.stdout
+    combined = strip_embedded_topology_startup(result.stdout)
     if result.stderr:
         combined = f"{combined}\n\n===== STEP: STDERR =====\n{result.stderr}"
     steps = split_output_steps(combined)

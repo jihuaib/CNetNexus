@@ -373,7 +373,8 @@ def _verify_first_last_details(rt: TopologyRuntime) -> None:
             route_out,
             [
                 rf"(?im)^\s*Routing entry for\s+{re.escape(prefix)}\s+\(VRF:\s*public\)\s*$",
-                r"(?im)^\s*Path\s*\[\d+\]\s*:\s*static\(blackhole\)\s*$",
+                r"(?im)^\s*Path\s*\[\d+\]\s*:\s*static\s*$",
+                r"(?im)^\s*NH-Type\s*:\s*blackhole\s*$",
                 r"(?im)^\s*Interface\s*:\s*Null0\s*$",
             ],
         )

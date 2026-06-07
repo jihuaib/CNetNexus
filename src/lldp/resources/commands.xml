@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration module-id="14">
+    <show-this>
+        <view name="if"/>
+        <view name="if-loop"/>
+    </show-this>
+
+    <command_groups>
+        <group group-id="1">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>lldp</name>
+                    <description>LLDP protocol</description>
+                </element>
+                <element id="3" cfg-id="1" type="keyword">
+                    <name>timer</name>
+                    <description>LLDP transmit interval</description>
+                </element>
+                <element id="4" cfg-id="2" type="keyword">
+                    <name>hold-multiplier</name>
+                    <description>LLDP hold multiplier</description>
+                </element>
+                <element id="5" cfg-id="3" type="parameter">
+                    <name>&lt;value&gt;</name>
+                    <type>uint(5-32768)</type>
+                    <description>Transmit interval in seconds</description>
+                </element>
+                <element id="6" cfg-id="4" type="parameter">
+                    <name>&lt;value&gt;</name>
+                    <type>uint(2-10)</type>
+                    <description>Hold multiplier</description>
+                </element>
+            </elements>
+            <commands>
+                <command auto-start="true">
+                    <expression>2</expression>
+                    <views>config</views>
+                </command>
+                <command>
+                    <expression>1 2</expression>
+                    <views>config</views>
+                </command>
+                <command auto-start="true">
+                    <expression>2 3 5</expression>
+                    <views>config</views>
+                </command>
+                <command auto-start="true">
+                    <expression>2 4 6</expression>
+                    <views>config</views>
+                </command>
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>config</views>
+                </command>
+                <command>
+                    <expression>1 2 4</expression>
+                    <views>config</views>
+                </command>
+            </commands>
+        </group>
+
+        <group group-id="2">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>lldp</name>
+                    <description>LLDP protocol</description>
+                </element>
+                <element id="3" cfg-id="1" type="keyword">
+                    <name>enable</name>
+                    <description>Enable LLDP on this interface</description>
+                </element>
+                <element id="4" cfg-id="2" type="keyword">
+                    <name>admin-status</name>
+                    <description>LLDP admin status</description>
+                </element>
+                <element id="5" cfg-id="3" type="keyword">
+                    <name>txrx</name>
+                    <description>Transmit and receive LLDP</description>
+                </element>
+                <element id="6" cfg-id="4" type="keyword">
+                    <name>rxonly</name>
+                    <description>Receive LLDP only</description>
+                </element>
+                <element id="7" cfg-id="5" type="keyword">
+                    <name>txonly</name>
+                    <description>Transmit LLDP only</description>
+                </element>
+                <element id="8" cfg-id="6" type="keyword">
+                    <name>disabled</name>
+                    <description>Disable LLDP transmit and receive</description>
+                </element>
+                <element id="9" cfg-id="7" type="keyword">
+                    <name>port-description</name>
+                    <description>LLDP port description</description>
+                </element>
+                <element id="10" cfg-id="9" type="parameter">
+                    <name>&lt;text&gt;</name>
+                    <type>string(1-255)</type>
+                    <description>Port description text</description>
+                </element>
+            </elements>
+            <commands>
+                <command>
+                    <expression>2 3</expression>
+                    <views>if,if-loop</views>
+                </command>
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>if,if-loop</views>
+                </command>
+                <command>
+                    <expression>2 4 5</expression>
+                    <views>if,if-loop</views>
+                </command>
+                <command>
+                    <expression>2 4 6</expression>
+                    <views>if,if-loop</views>
+                </command>
+                <command>
+                    <expression>2 4 7</expression>
+                    <views>if,if-loop</views>
+                </command>
+                <command>
+                    <expression>2 4 8</expression>
+                    <views>if,if-loop</views>
+                </command>
+                <command>
+                    <expression>1 2 4</expression>
+                    <views>if,if-loop</views>
+                </command>
+                <command>
+                    <expression>2 9 10</expression>
+                    <views>if,if-loop</views>
+                </command>
+                <command>
+                    <expression>1 2 9</expression>
+                    <views>if,if-loop</views>
+                </command>
+            </commands>
+        </group>
+
+        <group group-id="3">
+            <elements>
+                <element id="1" type="keyword"><name>show</name><description>Display system information</description></element>
+                <element id="2" type="keyword"><name>lldp</name><description>LLDP information</description></element>
+                <element id="3" cfg-id="1" type="keyword"><name>interface</name><description>LLDP interface state</description></element>
+                <element id="4" cfg-id="2" type="keyword"><name>neighbors</name><description>LLDP neighbors</description></element>
+                <element id="5" cfg-id="3" type="keyword"><name>detail</name><description>Detailed LLDP neighbor information</description></element>
+                <element id="6" cfg-id="4" type="keyword"><name>statistics</name><description>LLDP statistics</description></element>
+            </elements>
+            <commands>
+                <command><expression>1 2</expression><views>global</views></command>
+                <command><expression>1 2 3</expression><views>global</views></command>
+                <command><expression>1 2 4</expression><views>global</views></command>
+                <command><expression>1 2 4 5</expression><views>global</views></command>
+                <command><expression>1 2 6</expression><views>global</views></command>
+            </commands>
+        </group>
+    </command_groups>
+</configuration>

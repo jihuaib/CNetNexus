@@ -157,9 +157,15 @@ access_line_t *access_line_alloc(int fd, const char *ip, uint16_t port, uint16_t
     }
 
     uint32_t saved_id = line->line_id;
+    uint32_t saved_generation = line->generation + 1;
+    if (saved_generation == 0)
+    {
+        saved_generation = 1;
+    }
     memset(line, 0, sizeof(*line));
     line->ep_kind = ACCESS_EP_LINE;
     line->line_id = saved_id;
+    line->generation = saved_generation;
     line->in_use = 1;
     line->fd = fd;
     line->line_type = line_type;

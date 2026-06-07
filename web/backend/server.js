@@ -11,7 +11,7 @@
  *   3) 按 GE 端口序号从小到大 `docker network connect` 链路网络，保证 ethX
  *      的命名顺序与 GE-X 一致。
  *   4) 接口都就位后，`docker exec -d` 在容器里拉起 /opt/netnexus/bin/netnexus。
- *   5) NetNexus 暴露一个端口映射到容器 3788，FRR 终端通过 docker exec vtysh 桥接。
+ *   5) NetNexus 终端通过 docker exec netnexus-console 桥接，FRR 终端通过 docker exec vtysh 桥接。
  *
  * 接口:
  *   GET    /api/images                列出本地可用的 netnexus 镜像
@@ -26,7 +26,7 @@
  *   POST   /api/links/:id/capture/start  启动链路抓包
  *   POST   /api/links/:id/capture/stop   停止链路抓包
  *   GET    /api/captures/:id/download 下载抓包 pcap
- *   WS     /ws/terminal?id=<instId>   浏览器 <-> NetNexus telnet 3788 或 FRR vtysh 双向桥接
+ *   WS     /ws/terminal?id=<instId>   浏览器 <-> NetNexus console 或 FRR vtysh 双向桥接
  */
 
 const express = require('express');
@@ -34,7 +34,6 @@ const cors = require('cors');
 const { WebSocketServer } = require('ws');
 const { execFile, spawn } = require('child_process');
 const http = require('http');
-const net = require('net');
 const url = require('url');
 const fs = require('fs');
 const os = require('os');
@@ -62,8 +61,9 @@ try { fs.mkdirSync(CAPTURE_TMP_HOST_DIR, { recursive: true }); } catch (_) { /* 
 
 /** 容器内启动 netnexus 的 bash 片段（与 CI 基本一致） */
 const NN_START_SH = [
-    'mkdir -p /opt/netnexus/log /opt/netnexus/log/asan /opt/netnexus/data',
+    'mkdir -p /opt/netnexus/log /opt/netnexus/log/asan /opt/netnexus/data /opt/netnexus/run',
     'export NN_WORK_DIR=/opt/netnexus',
+    'export NN_CONSOLE_SOCK=/opt/netnexus/run/console.sock',
     'export LD_LIBRARY_PATH=/opt/netnexus/lib:${LD_LIBRARY_PATH}',
     // 某些 x86 线上环境默认把容器内 IPv6 关掉（disable_ipv6=1），会导致 if_addr_apply 返回 Permission denied。
     // 这里在进程启动前统一尝试打开 all/default/已存在接口的 IPv6 开关。
@@ -77,6 +77,7 @@ const DEVICE_KIND_FRR = 'frr';
 const SUPPORTED_DEVICE_KINDS = new Set([DEVICE_KIND_NETNEXUS, DEVICE_KIND_FRR]);
 const DEFAULT_FRR_IMAGE = 'netnexus-frr-ci:localtest';
 const FRR_START_SH = 'exec /usr/local/bin/ci-start-frr.sh > /tmp/frr-ci-start.log 2>&1';
+const LLDP_GROUP_FWD_MASK = 1 << 14;
 
 const app = express();
 app.set('trust proxy', true); // nginx 反代场景下取真实客户端 IP 做限流
@@ -177,8 +178,6 @@ const captureByLink = new Map();   // linkId -> captureId
 /** 停机时把容器里 /opt/netnexus/data 整个 tar.base64 存这里，下次 start 再灌回。
  *  单独存避免挂在 inst 对象上让 GET /api/instances 列表返回巨大 payload。 */
 const stoppedDbs = new Map(); // id -> base64 string
-
-let nextHostPort = 13788;
 
 /** NetNexus 固定对外呈现 8 个 GE 口，FRR 与 CI runtime 对齐为 4 个槽位。
  *  没用到的 GE 槽位挂一个该设备私有的 stub 网络，保证容器里 ethN 顺序稳定。
@@ -311,12 +310,7 @@ function instanceKind(inst)
 function isNetNexusInstance(inst) { return instanceKind(inst) === DEVICE_KIND_NETNEXUS; }
 function isFrrInstance(inst)      { return instanceKind(inst) === DEVICE_KIND_FRR; }
 
-/**
- * 等 netnexus 进程起来 + 3788 端口进入 LISTEN。
- * 为兼容各类镜像（可能没装 ss/netstat/awk），用多种手段串联：
- *   1) `pgrep -x netnexus` 先确认进程活着
- *   2) 再通过 `/proc/net/tcp(6)` 的 grep 判断 0xECC(=3788) 在 0A(=LISTEN)
- */
+/** 等 netnexus 进程起来 + console socket 就绪。 */
 async function waitForNetnexusReady(containerName, maxMs = 5000)
 {
     const deadline = Date.now() + maxMs;
@@ -325,15 +319,8 @@ async function waitForNetnexusReady(containerName, maxMs = 5000)
         try
         {
             await runDocker(['exec', containerName, 'pgrep', '-x', 'netnexus']);
-            // /proc/net/tcp 每行形如：
-            //   sl local_address rem_address st ...
-            // 列 2 = "<hex-ip>:<hex-port>"（port 4 位大写 hex），列 4 = 2 位 hex state。
-            // 我们要匹配 port 0ECC 且 state 0A。用 grep 的字段约束（端口后跟空格 + remote）：
-            const { stdout } = await runDocker([
-                'exec', containerName, '/bin/sh', '-c',
-                "grep -E ':0ECC [0-9A-F]+:[0-9A-F]+ 0A ' /proc/net/tcp /proc/net/tcp6 2>/dev/null | head -n1"
-            ]);
-            if (stdout.trim().length > 0) return true;
+            await runDocker(['exec', containerName, 'test', '-S', '/opt/netnexus/run/console.sock']);
+            return true;
         }
         catch (_) { /* 继续重试 */ }
         await sleep(200);
@@ -359,35 +346,6 @@ async function waitForFrrReady(containerName, maxMs = 30000)
         await sleep(500);
     }
     console.warn(`[backend] ${containerName} FRR not ready: ${last || 'timeout'}`);
-    return false;
-}
-
-/** 等宿主机映射端口真正可连；WebSocket 终端走的就是这个路径。 */
-async function waitForHostTcpReady(host, port, maxMs = 5000)
-{
-    if (!port || port <= 0) return false;
-    const deadline = Date.now() + maxMs;
-    while (Date.now() < deadline)
-    {
-        const ok = await new Promise(resolve =>
-        {
-            const sock = net.createConnection({ host, port });
-            let done = false;
-            function finish(v)
-            {
-                if (done) return;
-                done = true;
-                try { sock.destroy(); } catch (_) { /* ignore */ }
-                resolve(v);
-            }
-            sock.setTimeout(1000);
-            sock.on('connect', () => finish(true));
-            sock.on('timeout', () => finish(false));
-            sock.on('error', () => finish(false));
-        });
-        if (ok) return true;
-        await sleep(200);
-    }
     return false;
 }
 
@@ -1054,6 +1012,75 @@ async function createBridgeNetwork(name, { internal = false } = {})
     );
 }
 
+async function dockerBridgeNameForNetwork(networkName)
+{
+    try
+    {
+        const { stdout } = await runDocker([
+            'network', 'inspect', '-f',
+            '{{.Id}} {{index .Options "com.docker.network.bridge.name"}}',
+            networkName
+        ]);
+        const parts = stdout.trim().split(/\s+/).filter(Boolean);
+        if (parts.length >= 2 && parts[1] && !parts[1].startsWith('<'))
+        {
+            return parts[1];
+        }
+        if (parts[0] && parts[0].length >= 12)
+        {
+            return `br-${parts[0].slice(0, 12)}`;
+        }
+    }
+    catch (_) { /* ignore */ }
+    return null;
+}
+
+async function allowLldpOnBridgeNetwork(networkName)
+{
+    const bridge = await dockerBridgeNameForNetwork(networkName);
+    if (!bridge)
+    {
+        console.warn(`[backend] cannot resolve docker bridge for ${networkName}; LLDP frames may be filtered`);
+        return;
+    }
+
+    const maskPath = `/sys/class/net/${bridge}/bridge/group_fwd_mask`;
+    try
+    {
+        if (fs.existsSync(maskPath))
+        {
+            const current = parseInt(fs.readFileSync(maskPath, 'ascii').trim() || '0', 0);
+            const desired = current | LLDP_GROUP_FWD_MASK;
+            if (desired !== current)
+            {
+                fs.writeFileSync(maskPath, `${desired}\n`, 'ascii');
+            }
+            return;
+        }
+    }
+    catch (_) { /* fall back to privileged helper */ }
+
+    const script = [
+        `path=${shQuote(maskPath)}`,
+        'cur=$(cat "$path" 2>/dev/null || echo 0)',
+        `printf '%d\\n' $((cur | ${LLDP_GROUP_FWD_MASK})) > "$path"`
+    ].join('; ');
+    for (const image of config.CAPTURE_HELPER_IMAGES)
+    {
+        if (!(await dockerImageExists(image))) continue;
+        try
+        {
+            await runDocker(['run', '--rm', '--privileged', '--network', 'host', image, 'sh', '-c', script]);
+            return;
+        }
+        catch (e)
+        {
+            console.warn(`[backend] LLDP bridge helper ${image} failed for ${bridge}: ${String(e.stderr || e.message).trim()}`);
+        }
+    }
+    console.warn(`[backend] failed to enable LLDP forwarding on bridge ${bridge} (${networkName})`);
+}
+
 async function ensureLinkNetwork(link)
 {
     const name = link.networkName || linkNetworkName(link.id);
@@ -1078,6 +1105,7 @@ async function ensureLinkNetwork(link)
     {
         await createBridgeNetwork(name, { internal: false });
     }
+    await allowLldpOnBridgeNetwork(name);
     return name;
 }
 
@@ -1199,9 +1227,6 @@ app.post('/api/instances', async (req, res) =>
 
     const containerName = `nn-topo-${id}`;
 
-    // 复用上次停机时的 hostPort（让前端 terminal URL 保持稳定）
-    let reservedHostPort = null;
-
     // 幂等：如果已经有容器且在跑，直接返回现有实例，不做任何破坏性操作。
     // 这样用户即便误点"启动"也不会丢容器内数据。
     if (instances.has(id))
@@ -1234,11 +1259,10 @@ app.post('/api/instances', async (req, res) =>
                         'exec', '-d', existing.containerName, '/bin/bash', '-lc', NN_START_SH
                     ]);
                     const ready = await waitForNetnexusReady(existing.containerName, 15000);
-                    const hostReady = ready && await waitForHostTcpReady('127.0.0.1', existing.hostPort, 5000);
-                    if (!ready || !hostReady)
+                    if (!ready)
                     {
                         const tail = await tailNetnexusLog(existing.containerName);
-                        console.warn(`[backend] ${existing.containerName} terminal not ready (container=${ready}, host=${hostReady}), log tail:\n${tail}`);
+                        console.warn(`[backend] ${existing.containerName} console not ready, log tail:\n${tail}`);
                         return res.status(500).json({ error: 'netnexus terminal did not become ready', detail: tail || 'no log' });
                     }
                 }
@@ -1253,8 +1277,7 @@ app.post('/api/instances', async (req, res) =>
         }
 
         // 走到这里：status=stopped，或者容器被外力（docker daemon 重启等）搞没了。
-        // 按当前 links 重建：复用 hostPort + 回灌 stoppedDbs 的 db。
-        reservedHostPort = existing.hostPort || null;
+        // 按当前 links 重建，回灌 stoppedDbs 的 db。
 
         // 迁移/降级场景：后端 restart 时 registerExistingOnBoot 把旧 container 置为 stopped
         // 但容器还在，db 没导出到 stoppedDbs —— 这里补救，rm 前先导一次
@@ -1291,8 +1314,7 @@ app.post('/api/instances', async (req, res) =>
         });
     }
 
-    const hostPort = kind === DEVICE_KIND_NETNEXUS ? (reservedHostPort || nextHostPort++) : 0;
-    if (kind === DEVICE_KIND_NETNEXUS && hostPort >= nextHostPort) nextHostPort = hostPort + 1;
+    const hostPort = 0;
 
     try
     {
@@ -1316,7 +1338,7 @@ app.post('/api/instances', async (req, res) =>
         }
 
         // 3) 以 sleep infinity 拉起容器
-        //    eth0 是 docker 默认 bridge，承载 -p 端口映射和 CLI 3788；eth1..eth8 后面 connect
+        //    eth0 是 docker 默认 bridge；eth1..eth8 后面 connect 到拓扑网络
         const dockerRunArgs = [
             'run', '-d',
             '--name', containerName,
@@ -1327,9 +1349,9 @@ app.post('/api/instances', async (req, res) =>
         {
             dockerRunArgs.push(
                 '-e', 'NN_WORK_DIR=/opt/netnexus',
+                '-e', 'NN_CONSOLE_SOCK=/opt/netnexus/run/console.sock',
                 '-e', 'LD_LIBRARY_PATH=/opt/netnexus/lib',
-                '-v', '/var/run/docker.sock:/var/run/docker.sock',
-                '-p', `${hostPort}:3788`
+                '-v', '/var/run/docker.sock:/var/run/docker.sock'
             );
         }
         dockerRunArgs.push(image, 'sleep', 'infinity');
@@ -1363,7 +1385,7 @@ app.post('/api/instances', async (req, res) =>
         else
         {
             await runDocker(['exec', '-d', containerName, '/bin/bash', '-lc', NN_START_SH]);
-            console.log(`[backend] ${containerName} created, netnexus exec'd; hostPort=${hostPort}`);
+            console.log(`[backend] ${containerName} created, netnexus exec'd`);
         }
 
         // 标记已接通的 link：两端都在跑（status=running）才算真的 wired
@@ -1394,11 +1416,8 @@ app.post('/api/instances', async (req, res) =>
         const ready = kind === DEVICE_KIND_FRR
             ? await waitForFrrReady(containerName, 30000)
             : await waitForNetnexusReady(containerName, 20000);
-        const hostReady = kind === DEVICE_KIND_FRR
-            ? true
-            : ready && await waitForHostTcpReady('127.0.0.1', hostPort, 5000);
         const t1 = Date.now();
-        if (ready && hostReady)
+        if (ready)
         {
             inst.status = 'running';
             console.log(`[backend] ${containerName} ${kind} ready in ${t1 - t0}ms`);
@@ -1406,7 +1425,7 @@ app.post('/api/instances', async (req, res) =>
         else
         {
             const tail = kind === DEVICE_KIND_FRR ? await tailFrrLog(containerName) : await tailNetnexusLog(containerName);
-            const err = new Error(`${kind} did not become ready (container=${ready}, host=${hostReady})`);
+            const err = new Error(`${kind} did not become ready`);
             err.stderr = tail || err.message;
             console.warn(`[backend] ${containerName} ${err.message} after ${t1 - t0}ms, log tail:\n${tail}`);
             throw err;
@@ -1574,7 +1593,7 @@ app.post('/api/instances/:id/stop', async (req, res) =>
             }
         }
 
-        // 6) 保留 inst 记录（id/image/hostPort 给 start 复用），db 单独存
+        // 6) 保留 inst 记录，db 单独存
         if (savedDb) stoppedDbs.set(inst.id, savedDb);
         else stoppedDbs.delete(inst.id);
         inst.status = 'stopped';
@@ -1951,14 +1970,13 @@ app.delete('/api/links/:id', async (req, res) =>
  * 后端进程重启时，把本机上所有 nn-topo-* 容器继承回来：
  *   - 停着的容器先 docker start；
  *   - 启动后如果容器里没有 netnexus 进程，帮它 exec 起一次（netnexus 会从自己的 db 恢复）；
- *   - 读 hostPort / 已连的 docker 网络，重建内存里的 instances 记录；
- *   - nextHostPort 避让已经占用的端口号。
+ *   - 读已连的 docker 网络，重建内存里的 instances 记录；
  *
  * 用户的配置始终保留在容器内部（/opt/netnexus/data 等），不会因为后端重启被清掉。
  * 只有用户在 UI 里显式"删除 / 清空"时才会走 DELETE /api/instances/:id 真正移除容器。
  */
 /**
- * 继承单个已有容器。start + 重新 exec netnexus（幂等），读端口 / 挂载 / 网络，
+ * 继承单个已有容器。start + 重新 exec netnexus（幂等），读挂载 / 网络，
  * 写入 instances Map。imageHint 可从 docker ps 来，否则自己 inspect。
  */
 async function tryAdoptOne(containerName, idOverride = null, imageHint = null, kindHint = null)
@@ -1989,17 +2007,7 @@ async function tryAdoptOne(containerName, idOverride = null, imageHint = null, k
         return null;
     }
 
-    let hostPort = 0;
-    if (kind === DEVICE_KIND_NETNEXUS)
-    {
-        try
-        {
-            const { stdout: po } = await runDocker(['port', containerName, '3788/tcp']);
-            const m = /:(\d+)\s*$/.exec((po.trim().split('\n')[0] || '').trim());
-            if (m) hostPort = parseInt(m[1], 10);
-        }
-        catch (_) { /* ignore */ }
-    }
+    const hostPort = 0;
 
     // 控制平面可能因为 docker stop 丢掉了，幂等地重新 exec 一次
     if (kind === DEVICE_KIND_FRR)
@@ -2031,8 +2039,6 @@ async function tryAdoptOne(containerName, idOverride = null, imageHint = null, k
         }
     }
     catch (_) { /* ignore */ }
-
-    if (hostPort >= nextHostPort) nextHostPort = hostPort + 1;
 
     const inst = {
         id,
@@ -2150,17 +2156,7 @@ async function registerExistingOnBoot()
             else await killNetnexusInContainer(name);
         }
 
-        let hostPort = 0;
-        if (kind === DEVICE_KIND_NETNEXUS)
-        {
-            try
-            {
-                const { stdout: po } = await runDocker(['port', name, '3788/tcp']);
-                const m = /:(\d+)\s*$/.exec((po.trim().split('\n')[0] || '').trim());
-                if (m) hostPort = parseInt(m[1], 10);
-            }
-            catch (_) { /* ignore */ }
-        }
+        const hostPort = 0;
 
         const linkNets = [];
         const stubNets = [];
@@ -2176,8 +2172,6 @@ async function registerExistingOnBoot()
         }
         catch (_) { /* ignore */ }
 
-        if (hostPort >= nextHostPort) nextHostPort = hostPort + 1;
-
         const inst = {
             id,
             kind,
@@ -2191,7 +2185,7 @@ async function registerExistingOnBoot()
             adopted: true
         };
         instances.set(id, inst);
-        console.log(`  registered ${name}  image=${inst.image}  status=${inst.status}  port=${inst.hostPort}  linkNets=${linkNets.length}  stubNets=${stubNets.length}`);
+        console.log(`  registered ${name}  image=${inst.image}  status=${inst.status}  terminal=${isFrrInstance(inst) ? 'vtysh' : 'console'}  linkNets=${linkNets.length}  stubNets=${stubNets.length}`);
     }
 }
 
@@ -2199,6 +2193,7 @@ async function registerExistingOnBoot()
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ noServer: true });
+const activeConsoleBridges = new Map(); // containerName -> close(reason)
 
 server.on('upgrade', (req, socket, head) =>
 {
@@ -2249,7 +2244,7 @@ server.on('upgrade', (req, socket, head) =>
         socket.destroy();
         return;
     }
-    console.log(`[ws] upgrade id=${query.id} → ${inst.containerName} kind=${instanceKind(inst)} port=${inst.hostPort || '-'}`);
+    console.log(`[ws] upgrade id=${query.id} → ${inst.containerName} kind=${instanceKind(inst)} terminal=${isFrrInstance(inst) ? 'vtysh' : 'console'}`);
     wss.handleUpgrade(req, socket, head, (ws) =>
     {
         if (isFrrInstance(inst)) bridgeFrrTerminal(ws, inst);
@@ -2302,122 +2297,100 @@ function bridgeFrrTerminal(ws, inst)
     ws.on('close', closeAll);
 }
 
-/** 带重试的 TCP 桥接，因为 netnexus 进程起来后需要一点时间开始 listen 3788 */
+/** NetNexus console 桥接：docker exec 内置 console 客户端，经 stdio 双向转发。 */
 function bridgeTerminal(ws, inst)
 {
+    const previous = activeConsoleBridges.get(inst.containerName);
+    if (previous)
+    {
+        previous('replaced by a new web console');
+    }
+
     let alive = true;
-    let tcp = null;
-    let retryTimer = null;
-    let retries = 0;
-    let connected = false;
-    const MAX_RETRIES = 60;
-    const RETRY_INTERVAL_MS = 500;
+    let closed = false;
+    let cleanupTimer = null;
+    const execArgs = [
+        'exec', '-i',
+        '-e', 'NN_CONSOLE_SOCK=/opt/netnexus/run/console.sock',
+        inst.containerName,
+        '/opt/netnexus/bin/netnexus-console'
+    ];
+    const p = spawn(dockerBin(), dockerArgs(execArgs), { stdio: ['pipe', 'pipe', 'pipe'] });
 
     function sendSafe(data)
     {
         try { ws.send(data); } catch (_) { /* ignore */ }
     }
 
-    function closeWs()
+    function closeAll(reason = 'closed')
     {
+        if (!alive) return;
         alive = false;
-        if (retryTimer)
+        if (activeConsoleBridges.get(inst.containerName) === closeAll)
         {
-            clearTimeout(retryTimer);
-            retryTimer = null;
+            activeConsoleBridges.delete(inst.containerName);
         }
-        if (tcp)
+        try
         {
-            try { tcp.destroy(); } catch (_) { /* ignore */ }
-            tcp = null;
+            if (p.stdin.writable)
+            {
+                // netnexus-console treats Ctrl-] as a clean disconnect and closes the AF_UNIX console socket.
+                p.stdin.write(Buffer.from([0x1d]));
+                p.stdin.end();
+            }
         }
+        catch (_) { /* ignore */ }
+
+        cleanupTimer = setTimeout(() =>
+        {
+            if (closed) return;
+            try { p.kill('SIGTERM'); } catch (_) { /* ignore */ }
+            setTimeout(() =>
+            {
+                if (closed) return;
+                try { p.kill('SIGKILL'); } catch (_) { /* ignore */ }
+                const active = activeConsoleBridges.get(inst.containerName);
+                if (!active || active === closeAll)
+                {
+                    runDocker([
+                        'exec', inst.containerName, '/bin/sh', '-c',
+                        "pkill -f '[n]etnexus-console' 2>/dev/null || true"
+                    ]).catch(() => {});
+                }
+            }, 800).unref?.();
+        }, 300).unref?.();
+        console.log(`[ws] console bridge ${inst.containerName} closing: ${reason}`);
         try { ws.close(); } catch (_) { /* ignore */ }
     }
 
-    function scheduleRetry(reason)
+    activeConsoleBridges.set(inst.containerName, closeAll);
+
+    sendSafe(`\r\n*** Connected to ${inst.containerName} (${inst.image}) via NetNexus console ***\r\n`);
+    p.stdin.on('error', () => { /* docker exec 已退出时吞掉 EPIPE */ });
+    p.stdout.on('data', chunk => { if (alive) sendSafe(chunk); });
+    p.stderr.on('data', chunk => { if (alive) sendSafe(chunk); });
+    p.on('error', err =>
     {
-        if (!alive || connected || retryTimer) return;
-        if (retries >= MAX_RETRIES)
-        {
-            console.warn(`[ws] TCP not ready ${inst.containerName} 127.0.0.1:${inst.hostPort}: ${reason}; retries exhausted`);
-            sendSafe(`\r\n*** TCP error: device terminal not ready after ${(MAX_RETRIES * RETRY_INTERVAL_MS / 1000).toFixed(0)}s ***\r\n`);
-            closeWs();
-            return;
-        }
-        retries++;
-        if (retries === 1)
-        {
-            sendSafe('\r\n*** Waiting for device terminal ... ***\r\n');
-        }
-        console.log(`[ws] TCP not ready ${inst.containerName} 127.0.0.1:${inst.hostPort}: ${reason}, retry ${retries}/${MAX_RETRIES}`);
-        retryTimer = setTimeout(() =>
-        {
-            retryTimer = null;
-            tryConnect();
-        }, RETRY_INTERVAL_MS);
-    }
-
-    function tryConnect()
+        sendSafe(`\r\n*** terminal error: ${err.message} ***\r\n`);
+        closeAll();
+    });
+    p.on('close', () =>
     {
-        if (!alive || connected) return;
-        if (tcp)
-        {
-            try { tcp.destroy(); } catch (_) { /* ignore */ }
-            tcp = null;
-        }
-
-        const sock = net.createConnection({ host: '127.0.0.1', port: inst.hostPort }, () =>
-        {
-            connected = true;
-            console.log(`[ws] TCP connected ${inst.containerName} 127.0.0.1:${inst.hostPort} (retries=${retries})`);
-            sendSafe(`\r\n*** Connected to ${inst.containerName} (${inst.image}) at 127.0.0.1:${inst.hostPort} ***\r\n`);
-        });
-        tcp = sock;
-        let retryHandled = false;
-
-        sock.on('data', (buf) =>
-        {
-            if (!alive) return;
-            sendSafe(buf);
-        });
-        sock.on('error', (err) =>
-        {
-            if (!alive) return;
-            if (!connected && ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EHOSTUNREACH'].includes(err.code))
-            {
-                retryHandled = true;
-                scheduleRetry(err.code || err.message);
-                return;
-            }
-            console.warn(`[ws] TCP error ${inst.containerName} 127.0.0.1:${inst.hostPort}: ${err.code || ''} ${err.message}`);
-            sendSafe(`\r\n*** TCP error: ${err.message} ***\r\n`);
-            closeWs();
-        });
-        sock.on('close', () =>
-        {
-            if (!alive) return;
-            if (tcp === sock) tcp = null;
-            if (!connected)
-            {
-                if (!retryHandled) scheduleRetry('closed before connect');
-                return;
-            }
-            closeWs();
-        });
-    }
+        closed = true;
+        if (cleanupTimer) clearTimeout(cleanupTimer);
+        closeAll('docker exec exited');
+    });
 
     ws.on('message', (data) =>
     {
-        if (!alive || !tcp || !connected) return;
+        if (!alive || !p.stdin.writable) return;
         const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
-        try { tcp.write(buf); } catch (_) { /* ignore */ }
+        try { p.stdin.write(buf); } catch (_) { /* ignore */ }
     });
     ws.on('close', () =>
     {
-        closeWs();
+        closeAll();
     });
-
-    tryConnect();
 }
 
 server.listen(PORT, config.BIND_HOST, async () =>

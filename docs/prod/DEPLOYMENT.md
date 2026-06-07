@@ -1,473 +1,269 @@
-# NetNexus Deployment Guide
+# NetNexus 部署指南
 
-This guide covers deployment and running NetNexus in various environments.
+本文档描述当前 NetNexus 的部署方式。当前实现推荐使用 Docker/GNS3 镜像，也支持用 `scripts/prod/package.sh` 生成 `/opt/netnexus` 目录结构的传统安装包。
 
-## Table of Contents
+## 运行要求
 
-- [Prerequisites](#prerequisites)
-- [Building](#building)
-- [Deployment Options](#deployment-options)
-  - [Docker（推荐）](#docker-deployment)
-  - [Production Server](#production-server-deployment)
-  - [Development](#development-deployment)
-- [Configuration Management](#configuration-management)
-- [Troubleshooting](#troubleshooting)
-
-## Prerequisites
-
-### Build Dependencies
+Ubuntu/Debian 构建依赖：
 
 ```bash
-# Ubuntu/Debian
-sudo apt install build-essential cmake libxml2-dev libsqlite3-dev pkg-config
-
-# RHEL/CentOS
-sudo yum install gcc gcc-c++ cmake libxml2-devel sqlite-devel pkgconfig
+sudo apt update
+sudo apt install build-essential cmake pkg-config libglib2.0-dev libxml2-dev libsqlite3-dev
 ```
 
-### Runtime Dependencies
+运行依赖：
 
 ```bash
-# Ubuntu/Debian
-sudo apt install libxml2 libsqlite3-0
-
-# RHEL/CentOS
-sudo yum install libxml2 sqlite
+sudo apt install libglib2.0-0 libxml2 libsqlite3-0 iproute2 iputils-ping tcpdump telnet
 ```
 
-## Building
+MPLS 转发相关功能需要宿主机内核模块：
 
 ```bash
-# Clone repository
-git clone <repository-url>
-cd NetNexus
-
-# Build
-mkdir build && cd build
-cmake ..
-make -j$(nproc)
-
-# Verify build
-./bin/netnexus --help || echo "Build successful"
+sudo modprobe mpls_router
+sudo modprobe mpls_iptunnel
+sudo modprobe mpls_gso
 ```
 
-## Deployment Options
+容器运行建议带上：
 
-### Production Server Deployment
-
-#### 1. Extract Package
-
-```bash
-tar xzf netnexus-1.0.0.tar.gz
-cd netnexus-1.0.0
+```text
+--cap-add NET_ADMIN
+--cap-add NET_RAW
+--sysctl net.ipv6.conf.all.disable_ipv6=0
+--sysctl net.ipv6.conf.default.disable_ipv6=0
 ```
 
-#### 2. Deploy
+## 本地构建
 
 ```bash
-sudo ./scripts/deploy.sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j"$(nproc)"
 ```
 
-This installs to `/opt/netnexus`:
-- Binaries → `/opt/netnexus/bin/`
-- Libraries → `/opt/netnexus/lib/`
-- Config → `/opt/netnexus/resources/`
-- Data → `/opt/netnexus/data/`
-- Systemd service → `/etc/systemd/system/netnexus.service`
-
-#### 3. Start Service
+或使用脚本：
 
 ```bash
-# Start immediately
-sudo systemctl start netnexus
-
-# Enable on boot
-sudo systemctl enable netnexus
-
-# Check status
-sudo systemctl status netnexus
-
-# View logs
-sudo journalctl -u netnexus -f
+./scripts/dev/build.sh --release
 ```
 
-#### 4. Verify
+构建后的 supervisor 为 `build/bin/netnexus`，console 客户端为 `build/bin/netnexus-console`，各模块为 `build/bin/netnexus-*`。
+
+## Docker 部署
+
+构建本地生产镜像：
 
 ```bash
-# Check if listening
-sudo netstat -tuln | grep 3788
-
-# Connect via telnet
-telnet localhost 3788
-```
-
-### Docker Deployment
-
-#### 安装 Docker（首次）
-
-```bash
-./scripts/docker/install-docker.sh
-```
-
-#### 构建镜像
-
-```bash
-# 本地快速构建（当前架构，适合开发 / GNS3 直接导入）
 ./scripts/dev/build-docker-image.sh
+```
 
-# 多架构发布包（生成 .tar.gz，用于 GitHub Release）
-./scripts/prod/publish.sh                      # amd64 + arm64
-./scripts/prod/publish.sh amd64                # 仅 amd64
+运行：
 
-# 自动创建/更新 GitHub Release 并上传产物（token 文件不会入库）
+```bash
+docker volume create netnexus-data
+
+docker run -d \
+  --name netnexus \
+  --cap-add NET_ADMIN \
+  --cap-add NET_RAW \
+  --sysctl net.ipv6.conf.all.disable_ipv6=0 \
+  --sysctl net.ipv6.conf.default.disable_ipv6=0 \
+  -v netnexus-data:/opt/netnexus/data \
+  --restart unless-stopped \
+  netnexus:latest
+```
+
+连接 console：
+
+```bash
+docker exec -it \
+  -e NN_CONSOLE_SOCK=/opt/netnexus/run/console.sock \
+  netnexus \
+  /opt/netnexus/bin/netnexus-console
+```
+
+健康检查使用 `/opt/netnexus/run/console.sock`，不依赖 telnet。telnet/vty 默认关闭，需要 CLI 配置开启。
+
+## Docker 镜像目标
+
+Dockerfile 当前提供：
+
+| 目标 | 说明 |
+| --- | --- |
+| `dev` | 开发基础镜像，含构建和调试工具 |
+| `debug` | 可部署调试镜像，含 gdb/tcpdump |
+| `production` | 默认生产镜像 |
+
+示例：
+
+```bash
+docker build --target production -t netnexus:latest .
+docker build --target debug --build-arg BUILD_TYPE=Debug -t netnexus:debug .
+docker build --target dev -t netnexus:dev .
+```
+
+## 发布 Docker 包
+
+生成发布包：
+
+```bash
+./scripts/prod/publish.sh          # amd64 + arm64
+./scripts/prod/publish.sh amd64    # 仅 amd64
+```
+
+加载发布镜像：
+
+```bash
+docker load < package/netnexus-1.0.0-docker-amd64.tar.gz
+```
+
+发布到 GitHub Release：
+
+```bash
 mkdir -p .secrets
 chmod 700 .secrets
 printf '%s\n' '<YOUR_GITHUB_TOKEN>' > .secrets/github_token
 chmod 600 .secrets/github_token
 ./scripts/prod/publish.sh --github-release
-# 默认会自动创建/校验并 push tag(v版本号) 到 origin；如需关闭加 --no-sync-tag
-# 仅发布 package/ 已有产物到 GitHub（跳过构建、跳过本地 tag 校验）
-./scripts/prod/publish.sh --publish-only --tag v1.0.0
-
-# 输出
-package/
-├── netnexus-1.0.0-docker-amd64.tar.gz
-└── netnexus-1.0.0-docker-arm64.tar.gz
 ```
 
-> 多架构构建前置条件（一次性设置）：
-> ```bash
-> docker run --privileged --rm tonistiigi/binfmt --install all
-> docker buildx create --name netnexus-builder --driver docker-container --driver-opt network=host --use
-> docker buildx inspect --bootstrap
-> ```
-
-#### 加载发布镜像
+多架构构建前置：
 
 ```bash
-docker load < netnexus-1.0.0-docker-amd64.tar.gz
+docker run --privileged --rm tonistiigi/binfmt --install all
+docker buildx create --name netnexus-builder --driver docker-container --driver-opt network=host --use
+docker buildx inspect --bootstrap
 ```
 
-#### Run Container
+## 传统安装包部署
 
-##### Using docker-compose (Recommended)
+生成安装包：
 
 ```bash
-# Start
-docker-compose up -d
-
-# View logs
-docker-compose logs -f
-
-# Stop
-docker-compose down
-
-# Stop and remove volumes
-docker-compose down -v
+./scripts/dev/build.sh --release
+VERSION=1.0.0 ./scripts/prod/package.sh
 ```
 
-##### Using Docker CLI
+安装：
 
 ```bash
-# Create volume for persistent data
-docker volume create netnexus-data
+cd package
+tar xzf netnexus-1.0.0.tar.gz
+cd netnexus-1.0.0
+sudo ./scripts/deploy.sh
+```
 
-# Run container
-docker run -d \
-  --name netnexus \
-  --cap-add NET_ADMIN \
-  --cap-add NET_RAW \
-  --sysctl net.ipv6.conf.all.disable_ipv6=0 \
-  --sysctl net.ipv6.conf.default.disable_ipv6=0 \
-  -p 3788:3788 \
-  -v netnexus-data:/opt/netnexus/data \
-  --restart unless-stopped \
-  netnexus:latest
+启动：
 
-# View logs
-docker logs -f netnexus
+```bash
+sudo /opt/netnexus/scripts/start.sh
+```
 
-# Stop
+连接 console：
+
+```bash
+sudo NN_CONSOLE_SOCK=/opt/netnexus/run/console.sock /opt/netnexus/bin/netnexus-console
+```
+
+当前 `deploy.sh` 安装 `/opt/netnexus/{bin,lib,resources,scripts,data}`，并尝试配置 MPLS 内核模块开机加载。它不创建 systemd unit；如需守护运行，可自行创建 systemd service 调用 `/opt/netnexus/scripts/start.sh`。
+
+## 运行时目录
+
+```text
+/opt/netnexus/
+├── bin/                 # netnexus、netnexus-console、netnexus-* 模块进程
+├── lib/                 # 共享库
+├── resources/<module>/  # commands.xml, module.conf
+├── scripts/             # start/supervise/gns3/swap-image/deploy
+├── data/                # SQLite 和配置快照
+├── log/                 # 设置 NN_WORK_DIR 后的模块日志
+└── run/console.sock     # 本地 console socket
+```
+
+核心环境变量：
+
+| 变量 | 说明 |
+| --- | --- |
+| `NN_WORK_DIR` | 工作目录；部署镜像默认为 `/opt/netnexus` |
+| `NN_CONSOLE_SOCK` | console socket 路径 |
+| `LD_LIBRARY_PATH` | 共享库搜索路径 |
+
+## 配置管理
+
+常用 CLI：
+
+```text
+save configuration [name]
+startup configuration <name> db
+startup configuration <name> cfg
+show startup configuration
+show configuration replay-failures
+show current-configuration
+```
+
+`db` 模式恢复 SQLite 快照；`cfg` 模式从空 running DB 启动后回放配置文本。
+
+资源文件位于：
+
+```text
+/opt/netnexus/resources/<module>/commands.xml
+/opt/netnexus/resources/<module>/module.conf
+```
+
+修改资源文件后需要重启 NetNexus。
+
+## 升级
+
+Docker：
+
+```bash
+./scripts/dev/build-docker-image.sh
 docker stop netnexus
 docker rm netnexus
+# 使用同一个 netnexus-data 数据卷重新运行 docker run
 ```
 
-#### Docker Environment Variables
-
-- `NN_WORK_DIR`: 工作目录（默认：`/opt/netnexus`），resources/data/log 均从此派生
-- `LD_LIBRARY_PATH`: Library path (default: `/opt/netnexus/lib`)
-
-#### Custom Configuration
-
-Mount custom config directory:
+传统安装：
 
 ```bash
-docker run -d \
-  --name netnexus \
-  --cap-add NET_ADMIN \
-  --cap-add NET_RAW \
-  --sysctl net.ipv6.conf.all.disable_ipv6=0 \
-  --sysctl net.ipv6.conf.default.disable_ipv6=0 \
-  -p 3788:3788 \
-  -v /path/to/custom/config:/opt/netnexus/resources:ro \
-  -v netnexus-data:/opt/netnexus/data \
-  netnexus:latest
+sudo tar czf netnexus-backup-$(date +%Y%m%d).tar.gz /opt/netnexus
+VERSION=1.1.0 ./scripts/prod/package.sh
+cd package
+tar xzf netnexus-1.1.0.tar.gz
+cd netnexus-1.1.0
+sudo ./scripts/deploy.sh
+sudo /opt/netnexus/scripts/start.sh
 ```
 
-### Development Deployment
+## 故障排查
 
-For development, run directly from build directory:
+检查容器：
 
 ```bash
-cd build/bin
-./netnexus
-```
-
-Or use the start script:
-
-```bash
-cd build/bin
-../../scripts/start.sh
-```
-
-Configuration files are automatically resolved from `src/*/commands.xml`.
-
-## Configuration Management
-
-### Configuration Files
-
-Each module has its own `commands.xml`:
-
-```
-/opt/netnexus/resources/
-├── cfg/commands.xml      # Core CLI commands
-├── dev/commands.xml      # Development/debug commands
-├── bgp/commands.xml      # BGP protocol commands
-└── db/commands.xml       # Database module (empty)
-```
-
-### Modifying Configuration
-
-1. **Edit config files** in `/opt/netnexus/resources/`
-2. **Restart service** to apply changes:
-   ```bash
-   sudo systemctl restart netnexus
-   ```
-
-### Backup Configuration
-
-```bash
-# Backup entire config directory
-sudo tar czf netnexus-config-backup-$(date +%Y%m%d).tar.gz \
-  /opt/netnexus/resources/
-
-# Restore from backup
-sudo tar xzf netnexus-config-backup-20260127.tar.gz -C /
-```
-
-### Configuration Precedence
-
-The system searches for configuration files in this order:
-
-1. `$NN_WORK_DIR/{module}/commands.xml` (if NN_WORK_DIR set)
-2. `/opt/netnexus/resources/{module}/commands.xml` (production)
-3. `<exe_dir>/../../src/{module}/commands.xml` (development)
-4. `../../src/{module}/commands.xml` (fallback)
-
-## Database Storage
-
-SQLite databases store persistent configuration:
-
-**Production:**
-```
-/opt/netnexus/data/
-└── bgp/
-    └── bgp_db.db
-```
-
-**Development:**
-```
-./data/
-└── bgp/
-    └── bgp_db.db
-```
-
-### Backup Databases
-
-```bash
-# Backup all databases
-sudo tar czf netnexus-data-backup-$(date +%Y%m%d).tar.gz \
-  /opt/netnexus/data/
-
-# Backup specific database
-sudo cp /opt/netnexus/data/bgp/bgp_db.db \
-  /backup/bgp_db-$(date +%Y%m%d).db
-```
-
-## Troubleshooting
-
-### Service won't start
-
-```bash
-# Check service status
-sudo systemctl status netnexus
-
-# View detailed logs
-sudo journalctl -u netnexus -xe
-
-# Check if port is already in use
-sudo netstat -tuln | grep 3788
-
-# Verify binary exists and is executable
-ls -l /opt/netnexus/bin/netnexus
-```
-
-### Configuration not found
-
-```bash
-# Check environment variable
-sudo systemctl show netnexus | grep NN_WORK_DIR
-
-# Verify config files exist
-ls -la /opt/netnexus/resources/*/commands.xml
-
-# Test manual start with verbose output
-sudo /opt/netnexus/bin/start.sh
-```
-
-### Database errors
-
-```bash
-# Check database directory permissions
-ls -ld /opt/netnexus/data
-
-# Verify SQLite is installed
-sqlite3 --version
-
-# Test database access
-sqlite3 /opt/netnexus/data/bgp/bgp_db.db ".tables"
-```
-
-### Permission denied errors
-
-```bash
-# Fix ownership
-sudo chown -R root:root /opt/netnexus
-
-# Fix permissions
-sudo chmod 755 /opt/netnexus
-sudo chmod 755 /opt/netnexus/bin
-sudo chmod 644 /opt/netnexus/resources/*/commands.xml
-```
-
-### Docker container issues
-
-```bash
-# Check container status
 docker ps -a | grep netnexus
-
-# View container logs
 docker logs netnexus
-
-# Exec into container
-docker exec -it netnexus /bin/bash
-
-# Check environment
 docker exec netnexus env | grep NN_
-
-# Verify files inside container
-docker exec netnexus ls -la /opt/netnexus/resources/
+docker exec netnexus ls -la /opt/netnexus/resources
+docker exec netnexus test -S /opt/netnexus/run/console.sock
 ```
 
-### Library not found
+检查传统安装：
 
 ```bash
-# Check library path
-echo $LD_LIBRARY_PATH
-
-# Verify libraries exist
-ls -la /opt/netnexus/lib/
-
-# Test library loading
+ls -l /opt/netnexus/bin/netnexus
+ls -la /opt/netnexus/resources/*/commands.xml
 ldd /opt/netnexus/bin/netnexus
 ```
 
-## Uninstallation
-
-### Remove systemd service
+检查 MPLS：
 
 ```bash
-sudo systemctl stop netnexus
-sudo systemctl disable netnexus
-sudo rm /etc/systemd/system/netnexus.service
-sudo systemctl daemon-reload
+lsmod | grep mpls
+sudo modprobe mpls_router mpls_iptunnel mpls_gso
 ```
 
-### Remove installation
+检查数据：
 
 ```bash
-# Backup data first!
-sudo tar czf netnexus-backup-$(date +%Y%m%d).tar.gz /opt/netnexus
-
-# Remove installation
-sudo rm -rf /opt/netnexus
+find /opt/netnexus/data -maxdepth 3 -type f -print
 ```
-
-### Remove Docker
-
-```bash
-# Stop and remove container
-docker-compose down -v
-
-# Remove image
-docker rmi netnexus:latest
-
-# Remove volumes
-docker volume rm netnexus-data
-```
-
-## Upgrading
-
-### Production Server
-
-1. **Stop service:**
-   ```bash
-   sudo systemctl stop netnexus
-   ```
-
-2. **Backup:**
-   ```bash
-   sudo tar czf netnexus-backup-$(date +%Y%m%d).tar.gz /opt/netnexus
-   ```
-
-3. **Deploy new version:**
-   ```bash
-   tar xzf netnexus-1.1.0.tar.gz
-   cd netnexus-1.1.0
-   sudo ./scripts/deploy.sh
-   ```
-
-4. **Start service:**
-   ```bash
-   sudo systemctl start netnexus
-   ```
-
-### Docker
-
-```bash
-# 构建新版本镜像
-./scripts/dev/build-docker-image.sh
-
-# 或从发布包加载
-docker load < netnexus-1.1.0-docker-amd64.tar.gz
-
-# 更新 docker-compose.yml 中的版本号，然后重启
-docker-compose up -d
-```
-
-## Support
-
-For issues or questions:
-- Check logs: `sudo journalctl -u netnexus -f`
-- Review configuration: `/opt/netnexus/resources/`
-- Verify installation: `/opt/netnexus/bin/netnexus --version`

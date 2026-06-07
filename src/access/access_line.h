@@ -55,6 +55,7 @@ typedef struct access_line
     uint16_t line_type;       /**< 线类型，见 ACCESS_LINE_TYPE_* */
     int in_use;               /**< 1=已分配 */
     int fd;                   /**< 客户端 socket */
+    uint32_t generation;      /**< 线槽复用代次，防止旧桥接线程误操作新会话 */
 
     char client_ip[ACCESS_MAX_CLIENT_IP_LEN]; /**< 客户端地址 */
     uint16_t client_port;                     /**< 客户端源端口 */
@@ -82,6 +83,7 @@ typedef struct access_line
 
     uint32_t close_requested; /**< 1=命令要求关闭本线（顶层 exit） */
     uint32_t enter_bash;      /**< 1=本行是 bash 命令，server 线程应在本线 fd 上桥接 PTY */
+    uint32_t bash_active;     /**< 1=本线 fd 正由 bash PTY 桥接线程接管 */
 } access_line_t;
 
 // ============================================================================

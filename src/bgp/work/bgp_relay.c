@@ -122,6 +122,12 @@ static uint8_t bgp_relay_normalize_safi(uint8_t safi)
     return (safi == 0) ? BGP_SAFI_UNICAST : safi;
 }
 
+static uint8_t bgp_relay_route_nh_safi(uint8_t safi)
+{
+    (void)safi;
+    return BGP_SAFI_UNICAST;
+}
+
 static int bgp_relay_make_route_nh_key(bgp_relay_nh_key_t *key, uint32_t nexthop_id, uint8_t safi)
 {
     if (!key || nexthop_id == 0u)
@@ -131,7 +137,7 @@ static int bgp_relay_make_route_nh_key(bgp_relay_nh_key_t *key, uint32_t nexthop
 
     memset(key, 0, sizeof(*key));
     key->nexthop_id = nexthop_id;
-    key->safi = bgp_relay_normalize_safi(safi);
+    key->safi = bgp_relay_route_nh_safi(safi);
     return 1;
 }
 
