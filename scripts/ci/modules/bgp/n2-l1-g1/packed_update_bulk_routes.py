@@ -268,6 +268,37 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 f"--- r1 update-group ---\n{r1_ug}\n"
             )
 
+        step("Verify r1 advertise-routes exposes the packed group's IPv4 Adj-RIB-Out")
+        wait_check(
+            rt,
+            device="r1",
+            command=f"show bgp route af ipv4-unicast peer {r1_peer_ip} advertise-routes",
+            timeout=20,
+            interval=2,
+            contains=["BGP Peer Adj-RIB-Out", "Update-Group"] + sampled_prefixes,
+            regex=[rf"(?im)^Total:\s*{ROUTE_COUNT}\s+advertised routes\s*$"],
+            label="r1 advertise-routes shows all advertised IPv4 unicast routes",
+        )
+
+        first_addr, first_mask = _prefix_cli_args(0)
+        second_prefix = _prefix_str(1)
+        filtered_out = cmd(
+            rt,
+            "r1",
+            f"show bgp route af ipv4-unicast peer {r1_peer_ip} advertise-routes {first_addr} {first_mask}",
+            strict=False,
+        )
+        if _prefix_str(0) not in filtered_out or second_prefix in filtered_out:
+            raise RuntimeError(
+                "advertise-routes IPv4 prefix filter did not isolate the requested route.\n"
+                f"--- filtered output ---\n{filtered_out}"
+            )
+        if not re.search(r"(?im)^Total:\s*1\s+advertised routes\s*$", filtered_out):
+            raise RuntimeError(
+                "advertise-routes IPv4 prefix filter did not report exactly one route.\n"
+                f"--- filtered output ---\n{filtered_out}"
+            )
+
         step("Spot-check every injected prefix is present on r2")
         all_routes_output = cmd(rt, "r2", "show bgp route af ipv4-unicast", strict=False)
         missing: list[str] = []

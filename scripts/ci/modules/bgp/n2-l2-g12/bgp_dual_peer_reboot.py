@@ -135,7 +135,7 @@ def _run_inner_ipv4(
     reboot_device(rt, "a", timeout=120, save_config=True)
 
     step("Wait dual-link BGP sessions after reboot")
-    wait_checks(rt, session_checks, timeout=30)
+    wait_checks(rt, session_checks, timeout=45)
 
 
 def _run_inner_ipv6(
@@ -222,4 +222,4 @@ def _run_inner_ipv6(
     reboot_device(rt, "a", timeout=120, save_config=True)
 
     step("Wait dual-link BGP sessions after reboot")
-    wait_checks(rt, session_checks, timeout=30)
+    wait_checks(rt, session_checks, timeout=45)

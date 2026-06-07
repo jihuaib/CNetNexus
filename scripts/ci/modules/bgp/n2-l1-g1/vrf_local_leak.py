@@ -29,6 +29,8 @@ RED = "red"
 BLUE = "blue"
 RED_RD = "65001:1"
 BLUE_RD = "65001:2"
+BLUE_EXPORT_RT = f"vpn-target {RT} export"
+BLUE_EXPORT_RT_DEL = f"no vpn-target {RT} export"
 
 LINK_NET = "10.0.12.0"
 R1_GE = "10.0.12.1"
@@ -156,6 +158,31 @@ def _setup(rt: TopologyRuntime) -> None:
     time.sleep(2)
 
 
+def _set_blue_export_rt(rt: TopologyRuntime, *, enabled: bool) -> None:
+    run_cmds(rt=rt, device="r1", commands=[
+        "config",
+        f"vrf {BLUE}",
+        "af ipv4-unicast",
+        BLUE_EXPORT_RT if enabled else BLUE_EXPORT_RT_DEL,
+        "exit",
+        "exit",
+        "end",
+    ])
+
+
+def _wait_red_blue_loop_leak(rt: TopologyRuntime, *, present: bool, label: str) -> None:
+    wait_checks(rt, [{
+        "device": "r1",
+        "command": f"show fib os ipv4 vrf {RED}",
+        "contains": [f"{BLUE_LOOP}/{LOOP_LEN}"] if present else [],
+        "not_contains": [] if present else [f"{BLUE_LOOP}/{LOOP_LEN}"],
+        "regex": [
+            rf"(?im)^\s*\S+\s+(?:unicast|local)\s+{re.escape(BLUE_LOOP)}/{LOOP_LEN}\s+",
+        ] if present else [],
+        "label": label,
+    }], timeout=40)
+
+
 def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
     require_devices(top, ("r1", "r2"))
     try:
@@ -203,6 +230,22 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             ],
             "label": "red OS FIB has reverse leaked blue loopback",
         }], timeout=40)
+
+        step("删除 blue export RT：red 中 blue loopback 泄漏路由应撤销")
+        _set_blue_export_rt(rt, enabled=False)
+        _wait_red_blue_loop_leak(
+            rt,
+            present=False,
+            label="red OS FIB withdrew leaked blue loopback after blue export RT delete",
+        )
+
+        step("恢复 blue export RT：red 中 blue loopback 泄漏路由重新下发")
+        _set_blue_export_rt(rt, enabled=True)
+        _wait_red_blue_loop_leak(
+            rt,
+            present=True,
+            label="red OS FIB has leaked blue loopback after blue export RT restore",
+        )
 
         step("数据面 ping：blue loopback -> r2 loopback（经 red 出接口转发）")
         ok = False

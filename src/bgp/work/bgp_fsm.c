@@ -713,6 +713,20 @@ static void act_estab_ka_timer(bgp_session_t *sess)
 }
 
 /**
+ * @brief Event 16/17（TCP 失败）in Established：关闭会话并重连
+ *
+ * 对端进程重启、TCP reset/close 都是 Established 状态下的正常断链路径，
+ * 不应按 FSM error 发送 NOTIFICATION。
+ */
+static void act_estab_tcp_fails(bgp_session_t *sess)
+{
+    char addr_str[64];
+    net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
+    LOG_WARN("BGP FSM: neighbor=%s Established: TCP lost, reconnecting", addr_str);
+    fsm_close_all(sess, TRUE, TRUE);
+}
+
+/**
  * @brief Event 10（HoldTimer_Expires）in Established：NOTIFICATION Hold Timer → Active
  */
 static void act_estab_hold_expired(bgp_session_t *sess)
@@ -859,6 +873,8 @@ static const bgp_fsm_action_fn fsm_table[BGP_FSM_STATE_MAX][BGP_EVT_MAX] = {
             [BGP_EVT_AUTO_STOP] = act_estab_stop,                   /* Event 8 */
             [BGP_EVT_KEEPALIVE_TIMER_EXPIRED] = act_estab_ka_timer, /* Event 11 */
             [BGP_EVT_HOLD_TIMER_EXPIRED] = act_estab_hold_expired,  /* Event 10 */
+            [BGP_EVT_TCP_CR_FATAL] = act_estab_tcp_fails,           /* Event 16 */
+            [BGP_EVT_TCP_CONNECTION_FAILS] = act_estab_tcp_fails,   /* Event 17 */
             [BGP_EVT_NOTIF_MSG] = act_estab_notif,                  /* Event 25 */
             [BGP_EVT_UPDATE_MSG_ERR] = act_estab_update_err,        /* Event 28 */
             /* Event 26/27（KA/UPDATE）在 Established 状态 hold_reset 由调用方处理（NULL）*/

@@ -586,7 +586,7 @@ void bgp_vrf_export_backfill_vrf(uint32_t vrf_id)
     bgp_inst_foreach_rib(uc_inst, bgp_vrf_export_scan_rib_cb, st);
     if (st->pending_count > before)
     {
-        LOG_INFO("BGP vrf-export: backfill VRF %u queued %u source heads (RD configured)", vrf_id,
+        LOG_INFO("BGP vrf-export: backfill VRF %u queued %u source heads (VRF config changed)", vrf_id,
                  st->pending_count - before);
         (void)bgp_worker_post_vrf_export_event();
     }

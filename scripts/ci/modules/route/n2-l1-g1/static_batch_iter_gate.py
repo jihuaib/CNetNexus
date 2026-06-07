@@ -128,7 +128,7 @@ def _wait_relay_state(
         interval=interval,
         regex=[
             rf"(?im)\bTotal\s+{expect_total_entries}\s+entry\b",
-            rf"(?im)^.*\b{re.escape(nexthop)}\b\s+{expect_resolved_str}\s*$",
+            rf"(?im)^.*\s{re.escape(nexthop)}\s+\S+\s+{expect_resolved_str}\s*$",
         ],
         label=f"{device} static relay state",
     )
@@ -232,7 +232,7 @@ def _wait_relay_state_ipv6(
         interval=interval,
         regex=[
             rf"(?im)\bTotal\s+{expect_total_entries}\s+entry\b",
-            rf"(?im)^.*\b{re.escape(nexthop)}\b\s+{expect_resolved_str}\s*$",
+            rf"(?im)^.*\s{re.escape(nexthop)}\s+\S+\s+{expect_resolved_str}\s*$",
         ],
         label=f"{device} ipv6 static relay state",
     )
@@ -427,7 +427,8 @@ def _run_ipv6(rt: TopologyRuntime, top: dict[str, object]) -> None:
                     "command": f"show if {GE_IF}",
                     "contains": [
                         f"Interface {GE_IF} Detail:",
-                        "State      : UP",
+                        "Proto State: UP",
+                        "Link State : UP",
                         f"IPv6 Addr  : {ipaddress.ip_address(str(g_top.r1.GE_1.ip6))}/{int(g_top.r1.GE_1.prefix6)}",
                     ],
                     "label": "r1 GE-1 ipv6 up from top",

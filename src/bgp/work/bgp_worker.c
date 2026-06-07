@@ -15,6 +15,7 @@
 #include "bgp_adj_rib_in.h"
 #include "bgp_attr_intern.h"
 #include "bgp_bmp_thread.h"
+#include "bgp_bulk.h"
 #include "bgp_calc.h"
 #include "bgp_cmd.h"
 #include "bgp_conn.h"
@@ -50,6 +51,7 @@ typedef enum bgp_worker_event_type
     BGP_WORKER_EVENT_ROUTE_FLUSH = 2,
     BGP_WORKER_EVENT_SESSION_PUB = 3,
     BGP_WORKER_EVENT_VRF_EXPORT = 4,
+    BGP_WORKER_EVENT_BULK = 5,
 } bgp_worker_event_type_t;
 
 typedef struct bgp_worker_event
@@ -58,6 +60,7 @@ typedef struct bgp_worker_event
     uint32_t vrf_id;
     bgp_afi_t afi;
     bgp_safi_t safi;
+    void *payload;
 } bgp_worker_event_t;
 
 // ============================================================================
@@ -120,6 +123,7 @@ static bgp_worker_event_t *bgp_worker_event_create(bgp_worker_event_type_t type,
     evt->vrf_id = vrf_id;
     evt->afi = afi;
     evt->safi = safi;
+    evt->payload = NULL;
     return evt;
 }
 
@@ -128,6 +132,11 @@ static void bgp_worker_event_destroy(bgp_worker_event_t *evt)
     if (!evt)
     {
         return;
+    }
+    if (evt->type == BGP_WORKER_EVENT_BULK && evt->payload)
+    {
+        bgp_bulk_task_destroy((bgp_bulk_task_t *)evt->payload);
+        evt->payload = NULL;
     }
     g_free(evt);
 }
@@ -342,6 +351,28 @@ int bgp_worker_post_vrf_export_event(void)
     return 0;
 }
 
+int bgp_worker_post_bulk_task(bgp_bulk_task_t *task)
+{
+    if (!task)
+    {
+        return -1;
+    }
+    bgp_worker_event_t *evt =
+        bgp_worker_event_create(BGP_WORKER_EVENT_BULK, BGP_VRF_PUBLIC_ID, BGP_AFI_IPV4, BGP_SAFI_UNICAST);
+    if (!evt)
+    {
+        return -1;
+    }
+    evt->payload = task;
+    if (bgp_worker_event_enqueue(evt) != 0)
+    {
+        evt->payload = NULL;
+        bgp_worker_event_destroy(evt);
+        return -1;
+    }
+    return 0;
+}
+
 void bgp_worker_drain_work_events(void)
 {
     if (!g_bgp_work_local || g_bgp_work_local->work_eventfd < 0 || !g_bgp_work_local->work_queue)
@@ -387,6 +418,16 @@ void bgp_worker_drain_work_events(void)
                     {
                         (void)bgp_worker_post_vrf_export_event();
                     }
+                }
+                break;
+            }
+            case BGP_WORKER_EVENT_BULK:
+            {
+                bgp_bulk_task_t *task = (bgp_bulk_task_t *)evt->payload;
+                evt->payload = NULL;
+                if (bgp_bulk_task_handle(task))
+                {
+                    bgp_bulk_task_destroy(task);
                 }
                 break;
             }

@@ -104,9 +104,9 @@ def _wait_relay_state_ipv4(
 ) -> None:
     command = "show route relay ipv4 proto bgp"
     if expect_resolved:
-        regex = [rf"(?im)^.*\b{re.escape(nexthop)}\b\s+yes\s*$"]
+        regex = [rf"(?im)^.*\b{re.escape(nexthop)}\b\s+\S+\s+yes\s*$"]
     else:
-        regex = [rf"(?im)(?:^.*\b{re.escape(nexthop)}\b\s+no\s*$|^\s*\(no entries\)\s*$)"]
+        regex = [rf"(?im)(?:^.*\b{re.escape(nexthop)}\b\s+\S+\s+no\s*$|^\s*\(no entries\)\s*$)"]
     wait_check(
         rt,
         device=device,
@@ -129,9 +129,9 @@ def _wait_relay_state_ipv6(
 ) -> None:
     command = "show route relay ipv6 proto bgp"
     if expect_resolved:
-        regex = [rf"(?im)^.*{re.escape(nexthop)}\s+yes\s*$"]
+        regex = [rf"(?im)^.*{re.escape(nexthop)}\s+\S+\s+yes\s*$"]
     else:
-        regex = [rf"(?im)(?:^.*{re.escape(nexthop)}\s+no\s*$|^\s*\(no entries\)\s*$)"]
+        regex = [rf"(?im)(?:^.*{re.escape(nexthop)}\s+\S+\s+no\s*$|^\s*\(no entries\)\s*$)"]
     wait_check(
         rt,
         device=device,

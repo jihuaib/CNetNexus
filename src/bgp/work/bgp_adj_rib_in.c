@@ -11,6 +11,7 @@
 #include "bgp_peer.h"
 #include "bgp_relay.h"
 #include "bgp_session.h"
+#include "bgp_vrf_import.h"
 #include "bgp_worker.h"
 #include "errcode.h"
 
@@ -210,6 +211,12 @@ void bgp_adj_rib_in_ingest_peer_update(bgp_session_t *session, const bgp_update_
         if (!peer || !peer->rib_in || !peer->inst)
         {
             reach_failed++;
+            continue;
+        }
+        if (nlri->safi == BGP_SAFI_VPN_UNICAST && !bgp_vrf_import_attr_has_match(&upd->attr))
+        {
+            (void)bgp_adj_rib_in_remove(peer->rib_in, nlri);
+            g_array_append_val(unreach, *nlri);
             continue;
         }
         bgp_attr_ref_t *attr_ref = bgp_attr_intern(peer->inst, &ribin_attr);

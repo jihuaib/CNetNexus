@@ -322,6 +322,34 @@ typedef void (*bgp_rib_best_cb)(const bgp_rthead_t *head, const bgp_route_node_t
 void bgp_rib_foreach_best(const bgp_rib_t *rib, bgp_rib_best_cb cb, gpointer user_data);
 
 /**
+ * @brief 分片遍历回调：对一个 rthead 调用
+ *
+ * 回调返回 TRUE 表示继续本批处理，FALSE 表示提前停止。
+ */
+typedef gboolean (*bgp_rib_head_walk_cb)(bgp_rthead_t *head, gpointer user_data);
+
+/**
+ * @brief 从 last_nlri 之后分片遍历 RIB 的 rthead
+ *
+ * 断点按业务 key 保存，而不是保存 GTree 内部迭代状态。若 last_nlri 对应 head 已删除，
+ * 遍历会继续处理第一个 key 大于 last_nlri 的 head。
+ *
+ * @param rib          目标 RIB
+ * @param last_nlri    上次已处理的 NLRI；has_last 为 FALSE 时忽略
+ * @param has_last     是否存在断点
+ * @param budget       本批最多处理的 head 数；0 表示不处理
+ * @param cb           head 处理回调
+ * @param user_data    回调上下文
+ * @param out_last     输出本批最后处理的 NLRI，可为 NULL
+ * @param out_has_last 输出本批是否处理过 head，可为 NULL
+ * @param out_processed 输出本批处理 head 数，可为 NULL
+ * @return TRUE 表示已遍历到 RIB 末尾，FALSE 表示仍有未处理 head 或被回调提前停止
+ */
+gboolean bgp_rib_walk_heads_from(bgp_rib_t *rib, const bgp_nlri_entry_t *last_nlri, gboolean has_last, uint32_t budget,
+                                 bgp_rib_head_walk_cb cb, gpointer user_data, bgp_nlri_entry_t *out_last,
+                                 gboolean *out_has_last, uint32_t *out_processed);
+
+/**
  * @brief 清理指定 NLRI 下已 stale 且未 flushed 的路由节点
  *
  * 典型场景：下刷队列完成撤销后清理 tombstone 路由，必要时连同空 rthead 一并删除。

@@ -10,19 +10,23 @@
 #include <glib.h>
 #include <net/if.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "bgp.h"
+#include "bgp_adj_rib_in.h"
 #include "bgp_attr_intern.h"
 #include "bgp_ext_community.h"
 #include "bgp_instance.h"
 #include "bgp_main.h"
 #include "bgp_nexthop.h"
+#include "bgp_peer.h"
 #include "bgp_pkt.h"
 #include "bgp_rd.h"
 #include "bgp_relay.h"
 #include "bgp_rib.h"
 #include "bgp_show.h"
+#include "bgp_update_group.h"
 #include "bgp_vrf.h"
 #include "bgp_worker.h"
 #include "bit.h"
@@ -230,36 +234,60 @@ typedef struct bgp_show_route_width_ctx
     guint net_col_width;
 } bgp_show_route_width_ctx_t;
 
+typedef struct bgp_show_rib_in_ctx
+{
+    GString *buf;
+    guint net_col_width;
+    const bgp_nlri_entry_t *filter;
+    gboolean filter_is_vpn_prefix;
+    uint32_t listed_routes;
+} bgp_show_rib_in_ctx_t;
+
+typedef struct bgp_show_rib_out_ctx
+{
+    GString *buf;
+    guint net_col_width;
+    const bgp_nlri_entry_t *filter;
+    gboolean filter_is_vpn_prefix;
+    uint32_t listed_routes;
+} bgp_show_rib_out_ctx_t;
+
 /**
  * @brief 将单条路径的各字段格式化到 lp/med/as_path 缓冲区
  */
-static void bgp_route_fmt_fields(const bgp_route_node_t *route, char *lp, size_t lp_sz, char *med, size_t med_sz,
-                                 char *as_path, size_t as_sz)
+static void bgp_attr_fmt_fields(const bgp_attr_t *attr, char *lp, size_t lp_sz, char *med, size_t med_sz, char *as_path,
+                                size_t as_sz)
 {
-    if (BGP_ROUTE_ATTR(route)->has_local_pref)
+    if (attr && attr->has_local_pref)
     {
-        snprintf(lp, lp_sz, "%u", BGP_ROUTE_ATTR(route)->local_pref);
+        snprintf(lp, lp_sz, "%u", attr->local_pref);
     }
     else
     {
         snprintf(lp, lp_sz, "-");
     }
-    if (BGP_ROUTE_ATTR(route)->has_med)
+    if (attr && attr->has_med)
     {
-        snprintf(med, med_sz, "%u", BGP_ROUTE_ATTR(route)->med);
+        snprintf(med, med_sz, "%u", attr->med);
     }
     else
     {
         snprintf(med, med_sz, "-");
     }
-    if (BGP_ROUTE_ATTR(route)->as_path[0] != '\0')
+    if (attr && attr->as_path[0] != '\0')
     {
-        snprintf(as_path, as_sz, "%.*s", (int)(as_sz - 1), BGP_ROUTE_ATTR(route)->as_path);
+        snprintf(as_path, as_sz, "%.*s", (int)(as_sz - 1), attr->as_path);
     }
     else
     {
         snprintf(as_path, as_sz, "-");
     }
+}
+
+static void bgp_route_fmt_fields(const bgp_route_node_t *route, char *lp, size_t lp_sz, char *med, size_t med_sz,
+                                 char *as_path, size_t as_sz)
+{
+    bgp_attr_fmt_fields(route ? BGP_ROUTE_ATTR(route) : NULL, lp, lp_sz, med, med_sz, as_path, as_sz);
 }
 
 static const char *bgp_route_label_name(const bgp_route_node_t *route)
@@ -663,6 +691,407 @@ static gboolean bgp_show_parse_qp_query(const char *query, bgp_afi_t afi, bgp_nl
     return TRUE;
 }
 
+static gboolean bgp_show_parse_prefix_query(const char *query, bgp_afi_t afi, bgp_safi_t safi, bgp_nlri_entry_t *nlri,
+                                            char *err, size_t err_sz)
+{
+    if (err && err_sz > 0)
+    {
+        err[0] = '\0';
+    }
+    if (!query || !nlri)
+    {
+        if (err && err_sz > 0)
+        {
+            snprintf(err, err_sz, "BGP Error: Invalid prefix query.\r\n");
+        }
+        return FALSE;
+    }
+    if (safi == BGP_SAFI_QP)
+    {
+        return bgp_show_parse_qp_query(query, afi, nlri, err, err_sz);
+    }
+
+    const char *slash = strrchr(query, '/');
+    if (!slash || slash == query || slash[1] == '\0')
+    {
+        if (err && err_sz > 0)
+        {
+            snprintf(err, err_sz, "BGP Error: Prefix must use CIDR format, e.g. 10.0.0.0/24.\r\n");
+        }
+        return FALSE;
+    }
+
+    char addr_buf[INET6_ADDRSTRLEN];
+    size_t addr_len = (size_t)(slash - query);
+    if (addr_len == 0 || addr_len >= sizeof(addr_buf))
+    {
+        if (err && err_sz > 0)
+        {
+            snprintf(err, err_sz, "BGP Error: Invalid prefix address.\r\n");
+        }
+        return FALSE;
+    }
+    memcpy(addr_buf, query, addr_len);
+    addr_buf[addr_len] = '\0';
+
+    net_addr_t addr = {0};
+    if (net_addr_from_str(addr_buf, &addr) != 0)
+    {
+        if (err && err_sz > 0)
+        {
+            snprintf(err, err_sz, "BGP Error: Invalid prefix address.\r\n");
+        }
+        return FALSE;
+    }
+    if ((afi == BGP_AFI_IPV4 && addr.family != AF_INET) || (afi == BGP_AFI_IPV6 && addr.family != AF_INET6))
+    {
+        if (err && err_sz > 0)
+        {
+            snprintf(err, err_sz, "BGP Error: Prefix AF mismatch.\r\n");
+        }
+        return FALSE;
+    }
+
+    char *endp = NULL;
+    unsigned long mask_ul = strtoul(slash + 1, &endp, 10);
+    unsigned long max_mask = (afi == BGP_AFI_IPV6) ? 128ul : 32ul;
+    if (!endp || *endp != '\0' || mask_ul > max_mask)
+    {
+        if (err && err_sz > 0)
+        {
+            snprintf(err, err_sz, "BGP Error: Invalid prefix length.\r\n");
+        }
+        return FALSE;
+    }
+    if (net_addr_prefix_normalize(&addr, (uint8_t)mask_ul) != 0)
+    {
+        if (err && err_sz > 0)
+        {
+            snprintf(err, err_sz, "BGP Error: Invalid prefix.\r\n");
+        }
+        return FALSE;
+    }
+
+    memset(nlri, 0, sizeof(*nlri));
+    nlri->afi = (uint16_t)afi;
+    nlri->safi = (uint8_t)safi;
+    nlri->type = BGP_NLRI_PREFIX;
+    nlri->prefix.prefix.addr = addr;
+    nlri->prefix.prefix.prefix_len = (uint8_t)mask_ul;
+    return TRUE;
+}
+
+static gboolean bgp_show_rib_in_nlri_matches(const bgp_nlri_entry_t *nlri, const bgp_nlri_entry_t *filter,
+                                             gboolean filter_is_vpn_prefix)
+{
+    if (!filter)
+    {
+        return TRUE;
+    }
+    if (!nlri)
+    {
+        return FALSE;
+    }
+    if (filter_is_vpn_prefix)
+    {
+        return nlri->type == BGP_NLRI_PREFIX && nlri->afi == filter->afi && nlri->safi == filter->safi &&
+               nlri->prefix.prefix.prefix_len == filter->prefix.prefix.prefix_len &&
+               net_addr_equal(&nlri->prefix.prefix.addr, &filter->prefix.prefix.addr);
+    }
+    return bgp_nlri_equal(nlri, filter);
+}
+
+static void bgp_show_rib_in_width_foreach(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)value;
+    const bgp_nlri_entry_t *nlri = (const bgp_nlri_entry_t *)key;
+    bgp_show_rib_in_ctx_t *ctx = (bgp_show_rib_in_ctx_t *)user_data;
+    if (!nlri || !ctx || !bgp_show_rib_in_nlri_matches(nlri, ctx->filter, ctx->filter_is_vpn_prefix))
+    {
+        return;
+    }
+
+    char nlri_str[BGP_NLRI_KEY_MAX];
+    bgp_nlri_to_str(nlri, nlri_str, sizeof(nlri_str));
+    guint required_width = (guint)strlen(nlri_str);
+    if (required_width > ctx->net_col_width)
+    {
+        ctx->net_col_width = required_width;
+    }
+}
+
+static void bgp_show_rib_in_route_foreach(gpointer key, gpointer value, gpointer user_data)
+{
+    const bgp_nlri_entry_t *nlri = (const bgp_nlri_entry_t *)key;
+    const bgp_adj_rib_in_entry_t *entry = (const bgp_adj_rib_in_entry_t *)value;
+    bgp_show_rib_in_ctx_t *ctx = (bgp_show_rib_in_ctx_t *)user_data;
+    if (!nlri || !entry || !ctx || !bgp_show_rib_in_nlri_matches(nlri, ctx->filter, ctx->filter_is_vpn_prefix))
+    {
+        return;
+    }
+
+    char nlri_str[BGP_NLRI_KEY_MAX];
+    char nh[64], lp[16], med[16], as_path[64];
+    bgp_nlri_to_str(nlri, nlri_str, sizeof(nlri_str));
+    bgp_nexthop_to_str(&entry->nexthop, nh, sizeof(nh));
+    bgp_attr_fmt_fields(entry->attr_ref ? &entry->attr_ref->attr : NULL, lp, sizeof(lp), med, sizeof(med), as_path,
+                        sizeof(as_path));
+
+    const bgp_attr_t *attr = entry->attr_ref ? &entry->attr_ref->attr : NULL;
+    g_string_append_printf(ctx->buf, "%-*s %-*s %-*s %-*s %-*s %s\r\n", (int)ctx->net_col_width, nlri_str,
+                           BGP_RT_COL_NH, nh, BGP_RT_COL_LP, lp, BGP_RT_COL_MED, med, BGP_RT_COL_ORIG,
+                           bgp_origin_str(attr ? attr->origin : BGP_ORIGIN_INCOMPLETE), as_path);
+    ctx->listed_routes++;
+}
+
+static const char *bgp_show_nh_rule_str(bgp_nh_rule_t rule)
+{
+    switch (rule)
+    {
+        case BGP_NH_RULE_LOCAL:
+            return "LOCAL";
+        case BGP_NH_RULE_PASS:
+            return "PASS";
+        case BGP_NH_RULE_CONFIG:
+            return "CONFIG";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+static void bgp_show_rib_out_width_cb(const bgp_nlri_entry_t *nlri, const bgp_adj_rib_out_entry_t *entry,
+                                      gpointer user_data)
+{
+    (void)entry;
+    bgp_show_rib_out_ctx_t *ctx = (bgp_show_rib_out_ctx_t *)user_data;
+    if (!nlri || !ctx || !bgp_show_rib_in_nlri_matches(nlri, ctx->filter, ctx->filter_is_vpn_prefix))
+    {
+        return;
+    }
+
+    char nlri_str[BGP_NLRI_KEY_MAX];
+    bgp_nlri_to_str(nlri, nlri_str, sizeof(nlri_str));
+    guint required_width = (guint)strlen(nlri_str);
+    if (required_width > ctx->net_col_width)
+    {
+        ctx->net_col_width = required_width;
+    }
+}
+
+static void bgp_show_rib_out_route_cb(const bgp_nlri_entry_t *nlri, const bgp_adj_rib_out_entry_t *entry,
+                                      gpointer user_data)
+{
+    bgp_show_rib_out_ctx_t *ctx = (bgp_show_rib_out_ctx_t *)user_data;
+    if (!nlri || !entry || !ctx || !bgp_show_rib_in_nlri_matches(nlri, ctx->filter, ctx->filter_is_vpn_prefix))
+    {
+        return;
+    }
+
+    char nlri_str[BGP_NLRI_KEY_MAX];
+    char nh[64], lp[16], med[16], as_path[64];
+    bgp_nlri_to_str(nlri, nlri_str, sizeof(nlri_str));
+    bgp_nexthop_to_str(&entry->nexthop, nh, sizeof(nh));
+    bgp_attr_fmt_fields(entry->attr_ref ? &entry->attr_ref->attr : NULL, lp, sizeof(lp), med, sizeof(med), as_path,
+                        sizeof(as_path));
+
+    const bgp_attr_t *attr = entry->attr_ref ? &entry->attr_ref->attr : NULL;
+    g_string_append_printf(ctx->buf, "%-*s %-*s %-*s %-*s %-*s %s\r\n", (int)ctx->net_col_width, nlri_str,
+                           BGP_RT_COL_NH, nh, BGP_RT_COL_LP, lp, BGP_RT_COL_MED, med, BGP_RT_COL_ORIG,
+                           bgp_origin_str(attr ? attr->origin : BGP_ORIGIN_INCOMPLETE), as_path);
+    ctx->listed_routes++;
+}
+
+static int bgp_show_peer_rib_in(dev_ipc_message_t *msg, const bgp_cli_ctx_t *ctx, bgp_instance_t *inst,
+                                const net_addr_t *peer_addr, const char *prefix_filter)
+{
+    if (!inst || !inst->peer_hash)
+    {
+        bgp_show_send_cli_response(msg, "BGP Error: AF instance not found.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    bgp_peer_t *peer = (bgp_peer_t *)g_hash_table_lookup(inst->peer_hash, peer_addr);
+    if (!peer)
+    {
+        bgp_show_send_cli_response(msg, "BGP Error: Peer not found in this AF/VRF.\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (!peer->rib_in || !peer->rib_in->table)
+    {
+        bgp_show_send_cli_response(msg, "BGP Error: Peer Adj-RIB-In not available.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    bgp_nlri_entry_t filter_nlri;
+    bgp_nlri_entry_t *filter = NULL;
+    gboolean filter_is_vpn_prefix = FALSE;
+    char filter_str[BGP_NLRI_KEY_MAX] = "-";
+    if (prefix_filter && prefix_filter[0] != '\0')
+    {
+        char err[160];
+        if (!bgp_show_parse_prefix_query(prefix_filter, ctx->afi, ctx->safi, &filter_nlri, err, sizeof(err)))
+        {
+            bgp_show_send_cli_response(msg, err);
+            return ERRCODE_FAIL;
+        }
+        filter = &filter_nlri;
+        filter_is_vpn_prefix = bgp_safi_is_vpn(ctx->safi);
+        bgp_nlri_to_str(filter, filter_str, sizeof(filter_str));
+    }
+
+    GString *resp_buf = g_string_new("");
+    if (!resp_buf)
+    {
+        bgp_show_send_cli_response(msg, "BGP Error: Out of memory.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    char peer_str[64];
+    net_addr_to_str(peer_addr, peer_str, sizeof(peer_str));
+    g_string_append_printf(resp_buf, "\r\nBGP Peer Adj-RIB-In (AF: %s, VRF: %s)\r\n", bgp_af_str(ctx->afi, ctx->safi),
+                           ctx->vrf_name);
+    g_string_append(resp_buf, "============================================================\r\n");
+    g_string_append_printf(resp_buf, "  Peer   : %s\r\n", peer_str);
+    g_string_append_printf(resp_buf, "  Prefix : %s\r\n", filter ? filter_str : "all");
+    g_string_append_printf(resp_buf, "  Routes : %u\r\n\r\n", bgp_adj_rib_in_count(peer->rib_in));
+
+    bgp_show_rib_in_ctx_t show_ctx;
+    memset(&show_ctx, 0, sizeof(show_ctx));
+    show_ctx.buf = resp_buf;
+    show_ctx.net_col_width = BGP_RT_COL_NET_MIN;
+    show_ctx.filter = filter;
+    show_ctx.filter_is_vpn_prefix = filter_is_vpn_prefix;
+
+    g_hash_table_foreach(peer->rib_in->table, bgp_show_rib_in_width_foreach, &show_ctx);
+
+    char *net_rule = g_strnfill(show_ctx.net_col_width, '-');
+    g_string_append_printf(resp_buf, "%-*s %-*s %-*s %-*s %-*s %s\r\n", (int)show_ctx.net_col_width, "Network",
+                           BGP_RT_COL_NH, "NextHop", BGP_RT_COL_LP, "LocPref", BGP_RT_COL_MED, "MED", BGP_RT_COL_ORIG,
+                           "Origin", "AS-Path");
+    g_string_append_printf(resp_buf, "%-*s %-*s %-*s %-*s %-*s %s\r\n", (int)show_ctx.net_col_width, net_rule,
+                           BGP_RT_COL_NH, "--------------------", BGP_RT_COL_LP, "--------", BGP_RT_COL_MED, "--------",
+                           BGP_RT_COL_ORIG, "------------", "--------");
+    g_free(net_rule);
+
+    g_hash_table_foreach(peer->rib_in->table, bgp_show_rib_in_route_foreach, &show_ctx);
+
+    if (show_ctx.listed_routes == 0)
+    {
+        g_string_append(resp_buf, "  (no received routes)\r\n");
+    }
+    g_string_append_printf(resp_buf, "\r\nTotal: %u received routes\r\n\r\n", show_ctx.listed_routes);
+    return bgp_work_send_chunked_response(msg, resp_buf);
+}
+
+static int bgp_show_peer_rib_out(dev_ipc_message_t *msg, const bgp_cli_ctx_t *ctx, bgp_instance_t *inst,
+                                 const net_addr_t *peer_addr, const char *prefix_filter)
+{
+    if (!inst || !inst->peer_hash)
+    {
+        bgp_show_send_cli_response(msg, "BGP Error: AF instance not found.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    bgp_peer_t *peer = (bgp_peer_t *)g_hash_table_lookup(inst->peer_hash, peer_addr);
+    if (!peer)
+    {
+        bgp_show_send_cli_response(msg, "BGP Error: Peer not found in this AF/VRF.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    bgp_nlri_entry_t filter_nlri;
+    bgp_nlri_entry_t *filter = NULL;
+    gboolean filter_is_vpn_prefix = FALSE;
+    char filter_str[BGP_NLRI_KEY_MAX] = "-";
+    if (prefix_filter && prefix_filter[0] != '\0')
+    {
+        char err[160];
+        if (!bgp_show_parse_prefix_query(prefix_filter, ctx->afi, ctx->safi, &filter_nlri, err, sizeof(err)))
+        {
+            bgp_show_send_cli_response(msg, err);
+            return ERRCODE_FAIL;
+        }
+        filter = &filter_nlri;
+        filter_is_vpn_prefix = bgp_safi_is_vpn(ctx->safi);
+        bgp_nlri_to_str(filter, filter_str, sizeof(filter_str));
+    }
+
+    GString *resp_buf = g_string_new("");
+    if (!resp_buf)
+    {
+        bgp_show_send_cli_response(msg, "BGP Error: Out of memory.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    char peer_str[64];
+    net_addr_to_str(peer_addr, peer_str, sizeof(peer_str));
+    g_string_append_printf(resp_buf, "\r\nBGP Peer Adj-RIB-Out (AF: %s, VRF: %s)\r\n", bgp_af_str(ctx->afi, ctx->safi),
+                           ctx->vrf_name);
+    g_string_append(resp_buf, "============================================================\r\n");
+    g_string_append_printf(resp_buf, "  Peer   : %s\r\n", peer_str);
+    g_string_append_printf(resp_buf, "  Prefix : %s\r\n", filter ? filter_str : "all");
+
+    uint32_t total_routes = 0;
+    for (const GList *sl = peer->subgroups; sl; sl = sl->next)
+    {
+        const bgp_nh_subgroup_t *sg = (const bgp_nh_subgroup_t *)sl->data;
+        total_routes += bgp_adj_rib_out_count(sg ? sg->adj_rib_out : NULL);
+    }
+    g_string_append_printf(resp_buf, "  Routes : %u\r\n\r\n", total_routes);
+
+    bgp_show_rib_out_ctx_t show_ctx;
+    memset(&show_ctx, 0, sizeof(show_ctx));
+    show_ctx.buf = resp_buf;
+    show_ctx.net_col_width = BGP_RT_COL_NET_MIN;
+    show_ctx.filter = filter;
+    show_ctx.filter_is_vpn_prefix = filter_is_vpn_prefix;
+
+    for (const GList *sl = peer->subgroups; sl; sl = sl->next)
+    {
+        const bgp_nh_subgroup_t *sg = (const bgp_nh_subgroup_t *)sl->data;
+        bgp_adj_rib_out_foreach(sg ? sg->adj_rib_out : NULL, bgp_show_rib_out_width_cb, &show_ctx);
+    }
+
+    char *net_rule = g_strnfill(show_ctx.net_col_width, '-');
+    g_string_append_printf(resp_buf, "%-*s %-*s %-*s %-*s %-*s %s\r\n", (int)show_ctx.net_col_width, "Network",
+                           BGP_RT_COL_NH, "NextHop", BGP_RT_COL_LP, "LocPref", BGP_RT_COL_MED, "MED", BGP_RT_COL_ORIG,
+                           "Origin", "AS-Path");
+    g_string_append_printf(resp_buf, "%-*s %-*s %-*s %-*s %-*s %s\r\n", (int)show_ctx.net_col_width, net_rule,
+                           BGP_RT_COL_NH, "--------------------", BGP_RT_COL_LP, "--------", BGP_RT_COL_MED, "--------",
+                           BGP_RT_COL_ORIG, "------------", "--------");
+    g_free(net_rule);
+
+    uint32_t sg_index = 0;
+    for (const GList *sl = peer->subgroups; sl; sl = sl->next)
+    {
+        const bgp_nh_subgroup_t *sg = (const bgp_nh_subgroup_t *)sl->data;
+        if (!sg || !sg->adj_rib_out || bgp_adj_rib_out_count(sg->adj_rib_out) == 0)
+        {
+            continue;
+        }
+        sg_index++;
+        gsize header_pos = resp_buf->len;
+        uint32_t before = show_ctx.listed_routes;
+        if (sg->parent)
+        {
+            g_string_append_printf(resp_buf, "\r\n  Update-Group %u / Subgroup %u (%s)\r\n", sg->parent->group_id,
+                                   sg_index, bgp_show_nh_rule_str(sg->key.rule));
+        }
+        bgp_adj_rib_out_foreach(sg->adj_rib_out, bgp_show_rib_out_route_cb, &show_ctx);
+        if (show_ctx.listed_routes == before && filter)
+        {
+            g_string_truncate(resp_buf, header_pos);
+        }
+    }
+
+    if (show_ctx.listed_routes == 0)
+    {
+        g_string_append(resp_buf, "  (no advertised routes)\r\n");
+    }
+    g_string_append_printf(resp_buf, "\r\nTotal: %u advertised routes\r\n\r\n", show_ctx.listed_routes);
+    return bgp_work_send_chunked_response(msg, resp_buf);
+}
+
 /**
  * @brief 处理 show bgp route af ipv4-unicast|ipv6-unicast [<ip> <masklen>] / ipv4-qp|ipv6-qp [<qp-key>] 命令
  *
@@ -681,6 +1110,11 @@ int handle_bgp_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     gboolean has_qp_query = FALSE;
     bgp_rd_t rd_filter;
     gboolean has_rd_filter = FALSE;
+    net_addr_t peer_addr;
+    gboolean has_peer = FALSE;
+    gboolean show_peer_rib_in = FALSE;
+    gboolean show_peer_rib_out = FALSE;
+    memset(&peer_addr, 0, sizeof(peer_addr));
     memset(&rd_filter, 0, sizeof(rd_filter));
 
     cli_tlv_entry_t entry;
@@ -768,6 +1202,34 @@ int handle_bgp_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                 }
                 break;
             }
+            case 12:
+            {
+                /* peer <peer-ipv4-address> */
+                const char *s = cli_tlv_entry_get_text(&entry);
+                if (s && net_addr_from_str(s, &peer_addr) == 0)
+                {
+                    has_peer = TRUE;
+                }
+                break;
+            }
+            case 13:
+                /* recieve-routes / receive-routes */
+                show_peer_rib_in = TRUE;
+                break;
+            case 14:
+                /* advertise-routes */
+                show_peer_rib_out = TRUE;
+                break;
+            case 15:
+            {
+                /* peer <peer-ipv6-address> */
+                const char *s = cli_tlv_entry_get_text(&entry);
+                if (s && net_addr_from_str(s, &peer_addr) == 0)
+                {
+                    has_peer = TRUE;
+                }
+                break;
+            }
             default:
                 break;
         }
@@ -795,6 +1257,37 @@ int handle_bgp_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     }
 
     bgp_instance_t *inst = g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(ctx.afi, ctx.safi));
+
+    if (show_peer_rib_in || show_peer_rib_out)
+    {
+        if (!has_peer)
+        {
+            bgp_show_send_cli_response(msg, "BGP Error: Missing or invalid peer address.\r\n");
+            return ERRCODE_FAIL;
+        }
+        char rib_in_prefix[128] = {0};
+        const char *prefix_filter = NULL;
+        if (ctx.safi == BGP_SAFI_QP)
+        {
+            prefix_filter = has_qp_query ? qp_query : NULL;
+        }
+        else if (has_ip || has_masklen)
+        {
+            if (!has_ip || !has_masklen)
+            {
+                bgp_show_send_cli_response(msg,
+                                           "BGP Error: Prefix filter requires both IP address and mask length.\r\n");
+                return ERRCODE_FAIL;
+            }
+            snprintf(rib_in_prefix, sizeof(rib_in_prefix), "%s/%u", ip_str, masklen);
+            prefix_filter = rib_in_prefix;
+        }
+        if (show_peer_rib_out)
+        {
+            return bgp_show_peer_rib_out(msg, &ctx, inst, &peer_addr, prefix_filter);
+        }
+        return bgp_show_peer_rib_in(msg, &ctx, inst, &peer_addr, prefix_filter);
+    }
 
     GString *resp_buf = g_string_new("");
     if (!resp_buf)

@@ -7,7 +7,9 @@
 #include <string.h>
 #include <sys/socket.h>
 
+#include "bgp_bulk.h"
 #include "bgp_calc.h"
+#include "bgp_ext_community.h"
 #include "bgp_if_cache.h"
 #include "bgp_instance.h"
 #include "bgp_main.h"
@@ -918,6 +920,153 @@ void bgp_relay_cleanup(void)
     }
 }
 
+static gboolean bgp_relay_route_rebuild_export_attr(bgp_route_node_t *route)
+{
+    if (!route || !route->head || !route->head->inst || !route->attr || BIT_TEST(route->flags, BGP_ROUTE_FLAG_STALE))
+    {
+        return FALSE;
+    }
+
+    bgp_instance_t *inst = route->head->inst;
+    if (!inst->vrf || inst->safi != BGP_SAFI_UNICAST || inst->vrf->vrf_id == BGP_VRF_PUBLIC_ID)
+    {
+        return FALSE;
+    }
+
+    bgp_attr_t attr;
+    if (route->base_attr)
+    {
+        attr = route->base_attr->attr;
+    }
+    else if (BIT_TEST(route->flags, BGP_ROUTE_FLAG_IMPORT) && !BIT_TEST(route->flags, BGP_ROUTE_FLAG_LOCAL_CROSS) &&
+             !BIT_TEST(route->flags, BGP_ROUTE_FLAG_REMOTE_CROSS))
+    {
+        bgp_attr_build_imported(&attr);
+    }
+    else
+    {
+        return FALSE;
+    }
+
+    bgp_ext_community_merge_vrf_export_rts(&attr, inst->vrf->vrf_id, inst->afi);
+    if (memcmp(&route->attr->attr, &attr, sizeof(attr)) == 0)
+    {
+        return FALSE;
+    }
+
+    bgp_attr_ref_t *new_ref = bgp_attr_intern(inst, &attr);
+    if (!new_ref)
+    {
+        return FALSE;
+    }
+    bgp_attr_release(route->attr);
+    route->attr = new_ref;
+    BIT_CLR(route->flags, BGP_ROUTE_FLAG_BEST);
+    BIT_CLR(route->flags, BGP_ROUTE_FLAG_FLUSHED);
+    route->updated_at_usec = g_get_real_time();
+    return TRUE;
+}
+
+static gboolean bgp_relay_vrf_export_attr_process_head(bgp_rthead_t *head, uint32_t *changed_heads)
+{
+    if (!head || !head->inst)
+    {
+        return FALSE;
+    }
+
+    gboolean changed = FALSE;
+    for (GList *l = head->route_list; l; l = l->next)
+    {
+        if (bgp_relay_route_rebuild_export_attr((bgp_route_node_t *)l->data))
+        {
+            changed = TRUE;
+        }
+    }
+
+    if (changed && head->inst->calc_queue)
+    {
+        bgp_calc_queue_push(head->inst->calc_queue, head->inst, &head->nlri);
+        if (changed_heads)
+        {
+            (*changed_heads)++;
+        }
+    }
+    return FALSE;
+}
+
+typedef struct bgp_relay_export_attr_bulk_ctx
+{
+    uint32_t changed_heads;
+    uint32_t vrf_id;
+    bgp_afi_t afi;
+} bgp_relay_export_attr_bulk_ctx_t;
+
+static void bgp_relay_vrf_export_attr_bulk_head_cb(bgp_instance_t *inst, bgp_rd_entry_t *entry, bgp_rthead_t *head,
+                                                   gpointer user_data)
+{
+    (void)inst;
+    (void)entry;
+    bgp_relay_export_attr_bulk_ctx_t *ctx = (bgp_relay_export_attr_bulk_ctx_t *)user_data;
+    (void)bgp_relay_vrf_export_attr_process_head(head, ctx ? &ctx->changed_heads : NULL);
+}
+
+static void bgp_relay_vrf_export_attr_bulk_done(gpointer user_data)
+{
+    bgp_relay_export_attr_bulk_ctx_t *ctx = (bgp_relay_export_attr_bulk_ctx_t *)user_data;
+    if (!ctx || ctx->changed_heads == 0)
+    {
+        return;
+    }
+    LOG_INFO("BGP: rebuilt VRF export effective attr for VRF %u afi=%u changed_heads=%u", ctx->vrf_id,
+             (unsigned)ctx->afi, ctx->changed_heads);
+}
+
+uint32_t bgp_relay_vrf_export_attr_rebuild(uint32_t vrf_id, bgp_afi_t afi)
+{
+    if (!g_bgp_work_local || !g_bgp_work_local->protocol || vrf_id == BGP_VRF_PUBLIC_ID ||
+        (afi != BGP_AFI_IPV4 && afi != BGP_AFI_IPV6))
+    {
+        return 0;
+    }
+
+    bgp_vrf_t *vrf = bgp_protocol_get_vrf(g_bgp_work_local->protocol, vrf_id);
+    if (!vrf || !vrf->inst_hash)
+    {
+        return 0;
+    }
+
+    bgp_instance_t *inst =
+        (bgp_instance_t *)g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(afi, BGP_SAFI_UNICAST));
+    if (!inst)
+    {
+        return 0;
+    }
+
+    bgp_relay_export_attr_bulk_ctx_t *ctx = g_malloc0(sizeof(*ctx));
+    if (ctx)
+    {
+        ctx->vrf_id = vrf_id;
+        ctx->afi = afi;
+        bgp_bulk_task_t *task =
+            bgp_bulk_inst_rib_walk_create(vrf_id, afi, BGP_SAFI_UNICAST, bgp_relay_vrf_export_attr_bulk_head_cb,
+                                          bgp_relay_vrf_export_attr_bulk_done, ctx, g_free);
+        if (task && bgp_worker_post_bulk_task(task) == 0)
+        {
+            return 0;
+        }
+        if (task)
+        {
+            bgp_bulk_task_destroy(task);
+            ctx = NULL;
+        }
+        else
+        {
+            g_free(ctx);
+        }
+    }
+    return 0;
+}
+
 void bgp_relay_ingest_peer_update(bgp_session_t *session, const bgp_update_result_t *upd, const bgp_attr_t *base_attr,
                                   bgp_peer_update_ingest_stats_t *stats)
 {
@@ -932,9 +1081,6 @@ void bgp_relay_ingest_peer_update(bgp_session_t *session, const bgp_update_resul
 
     uint32_t vrf_id = session->vrf->vrf_id;
     const bgp_attr_t *route_base_attr = base_attr ? base_attr : &upd->attr;
-
-    /* vpnv4 入向 RT 过滤判据(本 UPDATE 内 RT 属性共享，仅需计算一次)：-1 未算/1 命中/0 不命中 */
-    int vpn_rt_match = -1;
 
     for (uint32_t i = 0; i < upd->reach_len; ++i)
     {
@@ -965,20 +1111,6 @@ void bgp_relay_ingest_peer_update(bgp_session_t *session, const bgp_update_resul
         if (nlri->type != BGP_NLRI_PREFIX)
         {
             continue;
-        }
-
-        /* vpnv4 入向按 import-RT 过滤：本路由的 RT 不命中任何私网 VRF → 整条丢弃(不入 vpnv4 RIB)。
-         * 命中则正常入公网 vpnv4 RIB，导入对应 VRF 由 vpnv4 calc 完成后的 reconcile 处理。 */
-        if (nlri->safi == BGP_SAFI_VPN_UNICAST)
-        {
-            if (vpn_rt_match < 0)
-            {
-                vpn_rt_match = bgp_vrf_import_attr_has_match(&upd->attr) ? 1 : 0;
-            }
-            if (vpn_rt_match == 0)
-            {
-                continue; /* 无 IRT 匹配，丢弃；不计入 injected/failed */
-            }
         }
 
         if (bgp_relay_route_upsert(vrf_id, nlri, &session->neighbor_addr, &upd->attr, route_base_attr, &upd->nexthop) ==

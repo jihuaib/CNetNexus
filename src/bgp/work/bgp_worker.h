@@ -20,6 +20,7 @@
 #include "vrf.h"
 
 typedef struct bgp_session bgp_session_t;
+typedef struct bgp_bulk_task bgp_bulk_task_t;
 
 /** 每次工作事件处理时每个数据队列处理的最大条目数 */
 #define BGP_WORK_BATCH_SIZE 64
@@ -315,6 +316,11 @@ int bgp_worker_post_session_pub_event(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t
  * @brief 向 BGP worker 投递一条 vrf-export 工作事件(触发 vpnv4 pending 分批处理)
  */
 int bgp_worker_post_vrf_export_event(void);
+
+/**
+ * @brief 投递一个 bulk task 工作事件；成功后 worker 持有 task
+ */
+int bgp_worker_post_bulk_task(bgp_bulk_task_t *task);
 
 /**
  * @brief 在 worker 线程内同步抽干所有待处理工作事件

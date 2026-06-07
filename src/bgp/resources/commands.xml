@@ -818,18 +818,114 @@
                     <type>string(3-32)</type>
                     <description>RD format ASN:NN or IP:NN</description>
                 </element>
+                <element id="18" type="keyword">
+                    <name>peer</name>
+                    <description>Filter by peer Adj-RIB</description>
+                </element>
+                <element id="19" cfg-id="12" type="parameter">
+                    <name>&lt;peer-ipv4-address&gt;</name>
+                    <type>ipv4</type>
+                    <description>BGP peer IPv4 address</description>
+                </element>
+                <element id="20" cfg-id="13" type="keyword">
+                    <name>recieve-routes</name>
+                    <description>Show received routes from peer Adj-RIB-In</description>
+                </element>
+                <element id="21" cfg-id="15" type="parameter">
+                    <name>&lt;peer-ipv6-address&gt;</name>
+                    <type>ipv6</type>
+                    <description>BGP peer IPv6 address</description>
+                </element>
+                <element id="22" cfg-id="13" type="keyword">
+                    <name>receive-routes</name>
+                    <description>Show received routes from peer Adj-RIB-In</description>
+                </element>
+                <element id="23" cfg-id="3" type="parameter">
+                    <name>&lt;ipv4-address&gt;</name>
+                    <type>ipv4</type>
+                    <description>IPv4 network address to query</description>
+                </element>
+                <element id="24" cfg-id="4" type="parameter">
+                    <name>&lt;ipv4-masklen&gt;</name>
+                    <type>uint(0-32)</type>
+                    <description>IPv4 prefix length (0-32)</description>
+                </element>
+                <element id="25" cfg-id="14" type="keyword">
+                    <name>advertise-routes</name>
+                    <description>Show advertised routes from peer Adj-RIB-Out</description>
+                </element>
             </elements>
 
             <commands>
+                <!-- show bgp route af vpnv4 peer <peer-ipv4|ipv6-address> recieve-routes [<ip-address> <masklen>] -->
+                <command>
+                    <expression>1 2 3 4 15 18 {19 | 21} {20 | 22} [23 24]</expression>
+                    <views>global</views>
+                </command>
+                <!-- show bgp route af vpnv4 peer <peer-ipv4|ipv6-address> advertise-routes [<ipv4-address> <ipv4-masklen>] -->
+                <command>
+                    <expression>1 2 3 4 15 18 {19 | 21} 25 [23 24]</expression>
+                    <views>global</views>
+                </command>
+                <!-- show bgp route af ipv4-unicast [vrf <vrf-name>] peer <peer-ipv4|ipv6-address> recieve-routes [<ip-address> <masklen>] -->
+                <command>
+                    <expression>1 2 3 4 5 [13 14] 18 {19 | 21} {20 | 22} [23 24]</expression>
+                    <views>global</views>
+                </command>
+                <!-- show bgp route af ipv4-unicast [vrf <vrf-name>] peer <peer-ipv4|ipv6-address> advertise-routes [<ipv4-address> <ipv4-masklen>] -->
+                <command>
+                    <expression>1 2 3 4 5 [13 14] 18 {19 | 21} 25 [23 24]</expression>
+                    <views>global</views>
+                </command>
+                <!-- show bgp route af ipv6-unicast [vrf <vrf-name>] peer <peer-ipv4|ipv6-address> recieve-routes [<ip-address> <masklen>] -->
+                <command>
+                    <expression>1 2 3 4 6 [13 14] 18 {19 | 21} {20 | 22} [7 8]</expression>
+                    <views>global</views>
+                </command>
+                <!-- show bgp route af ipv6-unicast [vrf <vrf-name>] peer <peer-ipv4|ipv6-address> advertise-routes [<ip-address> <masklen>] -->
+                <command>
+                    <expression>1 2 3 4 6 [13 14] 18 {19 | 21} 25 [7 8]</expression>
+                    <views>global</views>
+                </command>
+                <!-- show bgp route af ipv4-qp peer <peer-ipv4|ipv6-address> recieve-routes [<qp-route-key>] -->
+                <command>
+                    <expression>1 2 3 4 9 18 {19 | 21} {20 | 22} [11]</expression>
+                    <views>global</views>
+                </command>
+                <!-- show bgp route af ipv4-qp peer <peer-ipv4|ipv6-address> advertise-routes [<qp-route-key>] -->
+                <command>
+                    <expression>1 2 3 4 9 18 {19 | 21} 25 [11]</expression>
+                    <views>global</views>
+                </command>
+                <!-- show bgp route af ipv6-qp peer <peer-ipv4|ipv6-address> recieve-routes [<qp-route-key>] -->
+                <command>
+                    <expression>1 2 3 4 10 18 {19 | 21} {20 | 22} [11]</expression>
+                    <views>global</views>
+                </command>
+                <!-- show bgp route af ipv6-qp peer <peer-ipv4|ipv6-address> advertise-routes [<qp-route-key>] -->
+                <command>
+                    <expression>1 2 3 4 10 18 {19 | 21} 25 [11]</expression>
+                    <views>global</views>
+                </command>
+                <!-- show bgp route af ipv4-labeled peer <peer-ipv4|ipv6-address> recieve-routes [<ip-address> <masklen>] -->
+                <command>
+                    <expression>1 2 3 4 12 18 {19 | 21} {20 | 22} [23 24]</expression>
+                    <views>global</views>
+                </command>
+                <!-- show bgp route af ipv4-labeled peer <peer-ipv4|ipv6-address> advertise-routes [<ipv4-address> <ipv4-masklen>] -->
+                <command>
+                    <expression>1 2 3 4 12 18 {19 | 21} 25 [23 24]</expression>
+                    <views>global</views>
+                </command>
                 <!-- show bgp route af vpnv4 [<ip-address> <masklen>] [rd <rd>]（vpnv4 全局表按 RD 分段；
                      不带前缀=列全部，带前缀不带 rd=跨所有 RD 查该前缀，带 rd=缩到单个 RD） -->
                 <command>
-                    <expression>1 2 3 4 15 [7 8] [16 17]</expression>
+                    <expression>1 2 3 4 15 [23 24] [16 17]</expression>
                     <views>global</views>
                 </command>
                 <!-- show bgp route af ipv4-unicast [vrf <vrf-name>] [<ip-address> <masklen>] -->
                 <command>
-                    <expression>1 2 3 4 5 [13 14] [7 8]</expression>
+                    <expression>1 2 3 4 5 [13 14] [23 24]</expression>
                     <views>global</views>
                 </command>
                 <!-- show bgp route af ipv6-unicast [vrf <vrf-name>] [<ip-address> <masklen>] -->
@@ -849,7 +945,7 @@
                 </command>
                 <!-- show bgp route af ipv4-labeled [<ip-address> <masklen>] -->
                 <command>
-                    <expression>1 2 3 4 12 [7 8]</expression>
+                    <expression>1 2 3 4 12 [23 24]</expression>
                     <views>global</views>
                 </command>
             </commands>

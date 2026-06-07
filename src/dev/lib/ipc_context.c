@@ -86,13 +86,27 @@ static dev_ipc_message_t g_worker_exit_sentinel;
 /* 判定消息类型是否为“响应语义”，用于过滤超时后晚到响应。 */
 static int is_response_like_msg_type(uint32_t msg_type)
 {
+    uint32_t category = msg_type >> 16;
+    uint32_t subtype = DEV_IPC_MSG_SUBTYPE(msg_type);
+
     if (msg_type == DEV_IPC_MSG_TYPE_DEV_MODULE_RESP || msg_type == DEV_IPC_MSG_TYPE_DEV_QUERY_IPC_CONNS_RESP ||
-        msg_type == DEV_IPC_MSG_TYPE_DEV_QUERY_SUBS_RESP || msg_type == DEV_IPC_MSG_TYPE_DB_RESP)
+        msg_type == DEV_IPC_MSG_TYPE_DEV_QUERY_SUBS_RESP || msg_type == DEV_IPC_MSG_TYPE_DEV_PRE_EXIT_RESP ||
+        msg_type == DEV_IPC_MSG_TYPE_DB_RESP)
     {
         return 1;
     }
 
-    return DEV_IPC_MSG_SUBTYPE(msg_type) == 0x00FF;
+    if (category == DEV_IPC_CATEGORY_CLI)
+    {
+        return subtype == 0x0002 || subtype == 0x0003 || subtype == 0x0004 || subtype == 0x0008 || subtype == 0x000A;
+    }
+
+    if (category == DEV_IPC_CATEGORY_ACCESS)
+    {
+        return subtype >= 0x0081 && subtype <= 0x0085;
+    }
+
+    return subtype == 0x001F || subtype == 0x00FF;
 }
 
 // ============================================================================
@@ -608,8 +622,9 @@ static void handle_frame(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn, dev
                 break;
             }
 
-            /* 检查是否是对同步查询的响应 */
-            if (app_msg->request_id != 0 && ctx->query_mgr)
+            /* 检查是否是对同步查询的响应。请求帧也会携带 request_id，不能用它唤醒 pending query；
+             * 否则双向 RPC 的 request_id 碰撞会把请求误投给等待者，真正的目标 worker 收不到请求。 */
+            if (app_msg->request_id != 0 && ctx->query_mgr && is_response_like_msg_type(app_msg->msg_type))
             {
                 int completed = dev_ipc_query_mgr_complete(ctx->query_mgr, app_msg->request_id, app_msg);
                 if (completed == ERRCODE_SUCCESS)
@@ -617,13 +632,10 @@ static void handle_frame(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn, dev
                     break; /* 已交付给等待者，不调用 msg_handler */
                 }
 
-                if (is_response_like_msg_type(app_msg->msg_type))
-                {
-                    LOG_WARN("<%s> Drop unmatched response: src=0x%08X type=0x%08X request_id=%u", ctx->name,
-                             app_msg->src_module_id, app_msg->msg_type, app_msg->request_id);
-                    dev_ipc_message_free(app_msg);
-                    break;
-                }
+                LOG_WARN("<%s> Drop unmatched response: src=0x%08X type=0x%08X request_id=%u", ctx->name,
+                         app_msg->src_module_id, app_msg->msg_type, app_msg->request_id);
+                dev_ipc_message_free(app_msg);
+                break;
             }
 
             /* 推入 worker 队列，IO 线程立即返回继续 epoll */

@@ -13,6 +13,7 @@ set(BGP_SOURCES
     db/bgp_db_qp_route.c
     bgp_bdr.c
     work/bgp_cfg_apply.c
+    work/bgp_bulk.c
     work/bgp_adj_rib_in.c
     work/bgp_if_cache.c
     work/bgp_peer.c

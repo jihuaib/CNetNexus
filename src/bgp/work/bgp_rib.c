@@ -736,3 +736,88 @@ void bgp_rib_foreach_best(const bgp_rib_t *rib, bgp_rib_best_cb cb, gpointer use
     foreach_best_ctx_t ctx = {cb, user_data};
     g_tree_foreach(rib->head_tree, foreach_best_tree_cb, &ctx);
 }
+
+typedef struct rib_walk_heads_ctx
+{
+    const bgp_nlri_entry_t *last_nlri;
+    gboolean has_last;
+    uint32_t budget;
+    uint32_t processed;
+    bgp_rib_head_walk_cb cb;
+    gpointer user_data;
+    bgp_nlri_entry_t *out_last;
+    gboolean stopped;
+} rib_walk_heads_ctx_t;
+
+static gboolean walk_heads_from_tree_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    rib_walk_heads_ctx_t *ctx = (rib_walk_heads_ctx_t *)user_data;
+    bgp_rthead_t *head = (bgp_rthead_t *)value;
+    if (!ctx || !head)
+    {
+        return FALSE;
+    }
+
+    if (ctx->has_last && bgp_nlri_cmp(&head->nlri, ctx->last_nlri) <= 0)
+    {
+        return FALSE;
+    }
+    if (ctx->processed >= ctx->budget)
+    {
+        ctx->stopped = TRUE;
+        return TRUE;
+    }
+    if (ctx->cb && !ctx->cb(head, ctx->user_data))
+    {
+        ctx->stopped = TRUE;
+        return TRUE;
+    }
+
+    if (ctx->out_last)
+    {
+        memcpy(ctx->out_last, &head->nlri, sizeof(*ctx->out_last));
+    }
+    ctx->processed++;
+    return FALSE;
+}
+
+gboolean bgp_rib_walk_heads_from(bgp_rib_t *rib, const bgp_nlri_entry_t *last_nlri, gboolean has_last, uint32_t budget,
+                                 bgp_rib_head_walk_cb cb, gpointer user_data, bgp_nlri_entry_t *out_last,
+                                 gboolean *out_has_last, uint32_t *out_processed)
+{
+    if (out_has_last)
+    {
+        *out_has_last = FALSE;
+    }
+    if (out_processed)
+    {
+        *out_processed = 0;
+    }
+    if (!rib || !rib->head_tree || !cb || budget == 0)
+    {
+        return TRUE;
+    }
+
+    rib_walk_heads_ctx_t ctx = {
+        .last_nlri = last_nlri,
+        .has_last = has_last,
+        .budget = budget,
+        .processed = 0,
+        .cb = cb,
+        .user_data = user_data,
+        .out_last = out_last,
+        .stopped = FALSE,
+    };
+
+    g_tree_foreach(rib->head_tree, walk_heads_from_tree_cb, &ctx);
+    if (out_has_last)
+    {
+        *out_has_last = (ctx.processed > 0);
+    }
+    if (out_processed)
+    {
+        *out_processed = ctx.processed;
+    }
+    return !ctx.stopped;
+}

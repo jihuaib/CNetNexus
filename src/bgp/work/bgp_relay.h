@@ -35,6 +35,15 @@ void bgp_relay_ingest_peer_update(bgp_session_t *session, const bgp_update_resul
                                   bgp_peer_update_ingest_stats_t *stats);
 
 /**
+ * @brief VRF export-RT 变化后，重建该 VRF unicast RIB 已有路由的 effective attr
+ *
+ * peer 路由从 route->base_attr（对端原始属性）重新合当前 VRF export-RT；
+ * import-route 路由从默认 imported 属性重新合当前 VRF export-RT。
+ * 正常路径异步分片处理并返回 0；仅投递失败的同步兜底路径返回实际 changed head 数。
+ */
+uint32_t bgp_relay_vrf_export_attr_rebuild(uint32_t vrf_id, bgp_afi_t afi);
+
+/**
  * @brief 清理指定 source 的所有 relay 路由
  */
 void bgp_relay_flush_peer_routes(uint32_t vrf_id, const net_addr_t *source);

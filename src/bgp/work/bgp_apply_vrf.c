@@ -12,6 +12,7 @@
 #include "bgp_instance.h"
 #include "bgp_protocol.h"
 #include "bgp_rd.h"
+#include "bgp_relay.h"
 #include "bgp_vrf.h"
 #include "bgp_vrf_export.h"
 #include "bgp_vrf_import.h"
@@ -219,6 +220,8 @@ void bgp_apply_vrf_event(const dev_ipc_message_t *msg)
             {
                 bgp_vrf_import_irt_del(evt->vrf_id, &evt->rts[0]);
                 bgp_vrf_import_backfill();
+                /* 删除 import-RT：让 vpnv4 邻居重传，re-ingest 不命中新 IRT 索引时撤销旧 vpnv4 副本。 */
+                bgp_vrf_import_request_refresh();
                 /* 本地交叉：删除 import-RT 后，撤销不再命中的泄漏路径 */
                 bgp_vrf_import_local_backfill_target_vrf(evt->vrf_id);
             }
@@ -226,10 +229,19 @@ void bgp_apply_vrf_event(const dev_ipc_message_t *msg)
 
         case VRF_EVENT_AF_EXPORT_RT_ADD:
         case VRF_EVENT_AF_EXPORT_RT_DEL:
-            /* export-RT 仅 vrf_api_cache 持有(发送时从缓存读)；本地交叉据此重评该源 VRF 的泄漏 */
+            /* export-RT 由 vrf_api_cache 持有。其变化会影响：
+             * 1) 本地交叉泄漏的目标集合；
+             * 2) 本 VRF unicast RIB 已有路由的 effective ERT；
+             * 3) 已导出到 vpnv4 的本地路由属性(ERT)。 */
             if (evt->afi == VRF_AFI_IPV4 && evt->safi == VRF_SAFI_UNICAST)
             {
+                (void)bgp_relay_vrf_export_attr_rebuild(evt->vrf_id, BGP_AFI_IPV4);
+                bgp_vrf_export_backfill_vrf(evt->vrf_id);
                 bgp_vrf_import_local_backfill_source_vrf(evt->vrf_id);
+            }
+            else if (evt->afi == VRF_AFI_IPV6 && evt->safi == VRF_SAFI_UNICAST)
+            {
+                (void)bgp_relay_vrf_export_attr_rebuild(evt->vrf_id, BGP_AFI_IPV6);
             }
             break;
 

@@ -106,7 +106,11 @@ no route-select enable
 | `show bgp neighbor af ipv4-qp [<ip-address>]` | global | 显示 IPv4 QP 邻居 |
 | `show bgp neighbor af ipv6-qp [<ip-address>]` | global | 显示 IPv6 QP 邻居 |
 | `show bgp neighbor af ipv4-labeled [<ip-address>]` | global | 显示 IPv4 labeled 邻居 |
-| `show bgp route af <af> ...` | global | 显示指定 AF 路由，支持前缀、VRF、RD 或 QP key 过滤 |
+| `show bgp route af <af> ...` | global | 显示指定 AF 路由，支持前缀、VRF、RD、QP key 或 peer Adj-RIB-In/Out 过滤 |
+| `show bgp route af <af> [vrf <vrf-name>] peer <ipv4-address\|ipv6-address> recieve-routes [<ip-address> <masklen>]` | global | 显示指定 peer 的 Adj-RIB-In；同时兼容 `receive-routes` 拼写 |
+| `show bgp route af {ipv4-qp\|ipv6-qp} peer <ipv4-address\|ipv6-address> recieve-routes [<qp-route-key>]` | global | 显示指定 peer 的 QP Adj-RIB-In，可按 `dqpn=<n>,ip=<prefix>/<mask>` 或 `dqpn=<n>,ipv6=<prefix>/<mask>` 过滤 |
+| `show bgp route af <af> [vrf <vrf-name>] peer <ipv4-address\|ipv6-address> advertise-routes [<ip-address> <masklen>]` | global | 显示指定 peer 所在打包组发出的 Adj-RIB-Out 路由 |
+| `show bgp route af {ipv4-qp\|ipv6-qp} peer <ipv4-address\|ipv6-address> advertise-routes [<qp-route-key>]` | global | 显示指定 peer 所在打包组发出的 QP Adj-RIB-Out 路由 |
 | `show bgp attr af <af> ...` | global | 显示路径属性表 |
 | `show bgp update-group af <af> ...` | global | 显示 update-group |
 

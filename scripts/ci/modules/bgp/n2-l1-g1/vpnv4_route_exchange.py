@@ -16,6 +16,8 @@ r1 的 VRF red 配 export RT，r2 的 VRF red 配 import RT，二者取同一 RT
 3a. **r2 尚无 import-RT → 收到的 vpnv4 路由因 IRT 不匹配被丢弃**：r2 vpnv4 表 / VRF red 均无该路由。
 3b. **r2 配置 vpn-target import → 自动触发 ROUTE-REFRESH → r2 重新收到**：vpnv4 表出现该 RD 下的路由，
     且按 import-RT 导入 r2 的 VRF red ipv4-unicast RIB。
+3d. **r2 删除 import-RT → 已导入的 vpnv4/VRF/FIB 路由撤销**。
+3e. **r2 重新配置 import-RT → 自动重新学习并导入 VRF**。
 3c. **数据面转发**：导入私网的路由经 eBGP-vpnv4 邻接假隧道（BGP_ADJ）以 NH-Type=tunnel 下刷 r2 的
     VRF FIB，并压入对端 PE 通告的私网 VPN 标签（Out-Label）——r1 据此标签 demux 到正确 VRF。
 4. ``show bgp route af vpnv4 rd <rd>`` RD 过滤：命中/不命中。
@@ -65,6 +67,8 @@ LOOP2 = 11
 LOOP2_ADDR = "100.2.2.2"
 LOOP2_LEN = 32
 PFX2 = "100.2.2.2/32"
+R2_IMPORT_RT = f"vpn-target {RT} import"
+R2_IMPORT_RT_DEL = f"no vpn-target {RT} import"
 
 
 def _rd_header_check(device: str, rd: str, prefix: str, label: str) -> dict:
@@ -142,6 +146,52 @@ def _setup_vrf(rt: TopologyRuntime, device: str, rd: str, *, rt_export: bool, rt
             }
         ],
         timeout=15,
+    )
+
+
+def _set_r2_import_rt(rt: TopologyRuntime, *, enabled: bool) -> None:
+    run_cmds(
+        rt=rt,
+        device="r2",
+        commands=[
+            "config",
+            f"vrf {VRF_NAME}",
+            "af ipv4-unicast",
+            R2_IMPORT_RT if enabled else R2_IMPORT_RT_DEL,
+            "exit",
+            "exit",
+            "end",
+        ],
+    )
+
+
+def _wait_r2_imported_route(rt: TopologyRuntime, *, present: bool, label_suffix: str, timeout: int = 40) -> None:
+    wait_checks(
+        rt,
+        [
+            {
+                "device": "r2",
+                "command": "show bgp route af vpnv4",
+                "contains": [PFX1] if present else [],
+                "not_contains": [] if present else [PFX1],
+                "label": f"r2 vpnv4 route {label_suffix}",
+            },
+            {
+                "device": "r2",
+                "command": f"show bgp route af ipv4-unicast vrf {VRF_NAME}",
+                "contains": [PFX1] if present else [],
+                "not_contains": [] if present else [PFX1],
+                "label": f"r2 VRF red BGP route {label_suffix}",
+            },
+            {
+                "device": "r2",
+                "command": f"show fib ipv4 vrf {VRF_NAME} {LOOP1_ADDR} {LOOP1_LEN}",
+                "contains": [f"Routing entry for {PFX1}"] if present else [],
+                "not_contains": [] if present else [f"Routing entry for {PFX1}"],
+                "label": f"r2 VRF red FIB route {label_suffix}",
+            },
+        ],
+        timeout=timeout,
     )
 
 
@@ -251,19 +301,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         )
 
         step("场景3b：r2 配置 vpn-target import → 自动 ROUTE-REFRESH → 重新收到并导入 VRF")
-        run_cmds(
-            rt=rt,
-            device="r2",
-            commands=[
-                "config",
-                f"vrf {VRF_NAME}",
-                "af ipv4-unicast",
-                f"vpn-target {RT} import",
-                "exit",
-                "exit",
-                "end",
-            ],
-        )
+        _set_r2_import_rt(rt, enabled=True)
         wait_checks(
             rt,
             [
@@ -272,6 +310,14 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             ],
             timeout=40,
         )
+
+        step("场景3d：r2 删除 import RT → 已学习的 vpnv4 路由/VRF 路由/FIB 应撤销")
+        _set_r2_import_rt(rt, enabled=False)
+        _wait_r2_imported_route(rt, present=False, label_suffix="withdrawn after import-RT delete")
+
+        step("场景3e：r2 恢复 import RT → vpnv4 路由重新学习并再次导入 VRF")
+        _set_r2_import_rt(rt, enabled=True)
+        _wait_r2_imported_route(rt, present=True, label_suffix="relearned after import-RT restore")
 
         step("场景3c：数据面——r2 导入私网路由经 eBGP-vpnv4 假隧道 + 压私网 VPN 标签下刷 VRF FIB")
         # 导入私网的路由（REMOTE_CROSS）下一跳是远端 PE（r1=r2_peer），在公网表做隧道迭代命中
