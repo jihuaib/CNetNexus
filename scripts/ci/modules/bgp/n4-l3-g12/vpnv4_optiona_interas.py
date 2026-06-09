@@ -73,19 +73,24 @@ def _ping_ok(output: str) -> bool:
     return not (m and int(m.group(1)) >= 100)
 
 
-def _vrf_fib_tunnel_check(device: str, dst: str, label: str) -> dict:
-    """对端私网前缀已在本 PE 的 VRF red FIB 安装为隧道路由 + 压 VPN 标签。"""
-    return {
-        "device": device,
-        "command": f"show fib ipv4 vrf {VRF_NAME} {dst} {LEN}",
-        "contains": [f"Routing entry for {dst}/{LEN}"],
-        "regex": [
-            r"(?im)^\s*NH-Type\s*:\s*tunnel\s*$",
-            r"(?im)^\s*Out-Label\s*:\s*[1-9]\d*\s*$",
-            r"(?im)^\s*Installed\s*:\s*yes\s*$",
-        ],
-        "label": label,
-    }
+def _topology_if_addresses(device: str, ifname: str) -> list[str]:
+    iface = g_top.devices[device].ifs[ifname]
+    commands = [f"ip address {iface.ip} {iface.prefix}"]
+    if iface.ip6:
+        commands.append(f"ipv6 address {iface.ip6} {iface.prefix6}")
+    return commands
+
+
+def _restore_topology_if(device: str, ifname: str) -> list[str]:
+    return [
+        f"if {ifname}",
+        "no ldp enable",
+        f"no isis enable {TAG}",
+        "no vrf forwarding",
+        *_topology_if_addresses(device, ifname),
+        "no shutdown",
+        "exit",
+    ]
 
 
 def _cleanup(rt: TopologyRuntime) -> None:
@@ -99,12 +104,27 @@ def _cleanup(rt: TopologyRuntime) -> None:
     for dev, ifaces, loops in specs:
         cmds = ["end", "config", "no bgp"]
         for ifname in ifaces:
-            cmds += [f"if {ifname}", "no ldp enable", f"no isis enable {TAG}", "no vrf forwarding", "exit"]
+            cmds += _restore_topology_if(dev, ifname)
         cmds += ["no ldp", f"no isis {TAG}"]
         for lp in loops:
             cmds.append(f"no if loop {lp}")
         cmds += [f"no vrf {VRF_NAME}", "end"]
         run_cmds(rt=rt, device=dev, commands=cmds, strict=False)
+
+
+def _vrf_fib_tunnel_check(device: str, dst: str, label: str) -> dict:
+    """对端私网前缀已在本 PE 的 VRF red FIB 安装为隧道路由 + 压 VPN 标签。"""
+    return {
+        "device": device,
+        "command": f"show fib ipv4 vrf {VRF_NAME} {dst} {LEN}",
+        "contains": [f"Routing entry for {dst}/{LEN}"],
+        "regex": [
+            r"(?im)^\s*NH-Type\s*:\s*tunnel\s*$",
+            r"(?im)^\s*Out-Label\s*:\s*[1-9]\d*\s*$",
+            r"(?im)^\s*Installed\s*:\s*yes\s*$",
+        ],
+        "label": label,
+    }
 
 
 def _configure_core(rt: TopologyRuntime, device: str, *, net: str, lsr_id: str, loop_id: int, loop_v4: str,
