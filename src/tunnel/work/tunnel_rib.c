@@ -54,6 +54,10 @@ typedef struct tunnel_ilm
     uint32_t out_ifindex;
     uint8_t action;
     uint8_t state;
+    /* 直挂出口（nhlfe_id==0 的 SWAP：中转换标 ILM，出口/出标签栈不经 NHLFE，直接挂在 ILM 上） */
+    uint8_t label_count;
+    net_addr_t relay_addr;
+    uint32_t labels[TUNNEL_MAX_LABEL_STACK];
 } tunnel_ilm_t;
 
 typedef struct tunnel_label_binding
@@ -423,6 +427,14 @@ static void tunnel_fill_fib_ilm(fib_ilm_entry_t *entry, const tunnel_rib_t *rib,
         {
             /* keep entry->state from ilm->state, entry->out_ifindex from ilm->out_ifindex */
         }
+        else if (ilm->action == TUNNEL_ACTION_SWAP && ilm->nhlfe_id == 0u)
+        {
+            /* inter-AS Option B 中转换标 ILM：出口/出标签栈直挂在 ILM 上（不经 NHLFE）。 */
+            entry->out_ifindex = ilm->out_ifindex;
+            entry->relay_addr = ilm->relay_addr;
+            entry->label_count = ilm->label_count;
+            memcpy(entry->labels, ilm->labels, sizeof(entry->labels));
+        }
         else
         {
             const tunnel_nhlfe_t *nhlfe = tunnel_nhlfe_lookup(rib, ilm->nhlfe_id);
@@ -496,9 +508,10 @@ static void tunnel_append_local_pop_ilms(tunnel_rib_t *rib)
     for (const GList *it = rib->label_bindings; it; it = it->next)
     {
         const tunnel_label_binding_t *binding = it->data;
-        if (!binding || tunnel_ilm_exists_for_label(rib, binding->req.vrf_id, binding->label))
+        if (!binding || binding->req.action == TUNNEL_ACTION_SWAP ||
+            tunnel_ilm_exists_for_label(rib, binding->req.vrf_id, binding->label))
         {
-            continue;
+            continue; /* SWAP 中转换标绑定由 tunnel_append_transit_swap_ilms 处理 */
         }
 
         tunnel_ilm_t *ilm = g_malloc0(sizeof(*ilm));
@@ -680,6 +693,75 @@ static gboolean tunnel_notify_equal(const tunnel_resolve_notify_t *a, const tunn
     return memcmp(a, b, sizeof(*a)) == 0;
 }
 
+/**
+ * @brief 为 SWAP 中转换标绑定（inter-AS Option B ASBR）构建换标 ILM
+ *
+ * 每条 action=SWAP 的 label binding：本地入标签 = binding->label，按 req.endpoint（下游 BGP 下一跳）
+ * 在公网解析出口隧道（BGP_ADJ 直连 / LDP 传输 LSP），出标签栈 = 解析到的传输标签栈 + req.swap_label
+ * （收到的对端 VPN 标签），出口直挂在 ILM 上（nhlfe_id=0）。端点未解析则不建 ILM（待解析后 recompute 重建）。
+ */
+static void tunnel_append_transit_swap_ilms(tunnel_rib_t *rib)
+{
+    if (!rib)
+    {
+        return;
+    }
+
+    for (const GList *it = rib->label_bindings; it; it = it->next)
+    {
+        const tunnel_label_binding_t *binding = it->data;
+        if (!binding || binding->req.action != TUNNEL_ACTION_SWAP ||
+            tunnel_ilm_exists_for_label(rib, binding->req.vrf_id, binding->label))
+        {
+            continue;
+        }
+        if (binding->req.endpoint.family == 0u)
+        {
+            continue;
+        }
+
+        tunnel_resolve_req_t req = {
+            .vrf_id = binding->req.vrf_id,
+            .afi = binding->req.afi,
+            .endpoint = binding->req.endpoint,
+        };
+        tunnel_resolve_notify_t resolved = tunnel_resolve(rib, &req);
+        if (!resolved.resolved || resolved.out_ifindex == 0u)
+        {
+            continue; /* 出口未解析：暂不建 ILM，端点解析后 recompute 会重建 */
+        }
+        if ((uint32_t)resolved.label_count + 1u > TUNNEL_MAX_LABEL_STACK)
+        {
+            continue;
+        }
+
+        tunnel_ilm_t *ilm = g_malloc0(sizeof(*ilm));
+        if (!ilm)
+        {
+            continue;
+        }
+        ilm->vrf_id = binding->req.vrf_id;
+        ilm->in_label = binding->label;
+        ilm->nhlfe_id = 0u;
+        ilm->action = TUNNEL_ACTION_SWAP;
+        ilm->state = 1u;
+        ilm->out_ifindex = resolved.out_ifindex;
+        ilm->relay_addr = resolved.relay_addr;
+        /* 出标签栈：传输标签（LDP 等，直连 BGP_ADJ 为空）在外层，换成的 VPN 标签在最内层（BoS） */
+        uint8_t n = 0;
+        for (uint8_t i = 0; i < resolved.label_count && n < TUNNEL_MAX_LABEL_STACK; i++)
+        {
+            ilm->labels[n++] = resolved.labels[i];
+        }
+        if (n < TUNNEL_MAX_LABEL_STACK)
+        {
+            ilm->labels[n++] = binding->req.swap_label;
+        }
+        ilm->label_count = n;
+        rib->ilms = g_list_prepend(rib->ilms, ilm);
+    }
+}
+
 static void tunnel_rebuild_forwarding_tables(tunnel_rib_t *rib)
 {
     if (!rib)
@@ -748,6 +830,7 @@ static void tunnel_rebuild_forwarding_tables(tunnel_rib_t *rib)
     }
 
     tunnel_append_local_pop_ilms(rib);
+    tunnel_append_transit_swap_ilms(rib);
     tunnel_sync_fib_ilm_upsert_all(rib);
 }
 
@@ -1055,6 +1138,14 @@ static const char *module_name(uint32_t module_id)
             return "isis";
         case DEV_MODULE_ID_TUNNEL:
             return "tunnel";
+        case DEV_MODULE_ID_FIB:
+            return "fib";
+        case DEV_MODULE_ID_LDP:
+            return "ldp";
+        case DEV_MODULE_ID_ACCESS:
+            return "access";
+        case DEV_MODULE_ID_LLDP:
+            return "lldp";
         default:
             return "unknown";
     }

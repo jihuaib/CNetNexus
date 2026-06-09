@@ -1409,6 +1409,51 @@ void bgp_cfg_apply_route_select(bgp_apply_cmd_t *apply)
     apply->rc = BGP_APPLY_RC_OK;
 }
 
+void bgp_cfg_apply_vpn_target_policy(bgp_apply_cmd_t *apply)
+{
+    bgp_protocol_t *proto = g_bgp_work_local ? g_bgp_work_local->protocol : NULL;
+    if (!proto)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: BGP not configured.");
+        return;
+    }
+
+    /* policy vpn-target 挂在公网 VPN 类实例上(vpnv4/未来 vpnv6/evpn)，按 apply 携带的 afi/safi 定位 */
+    bgp_vrf_t *pub = bgp_protocol_get_vrf(proto, BGP_VRF_PUBLIC_ID);
+    bgp_instance_t *inst =
+        (pub && pub->inst_hash)
+            ? (bgp_instance_t *)g_hash_table_lookup(
+                  pub->inst_hash, bgp_inst_hash_key(apply->u.vpn_target.afi, apply->u.vpn_target.safi))
+            : NULL;
+    if (!inst)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: VPN address-family not enabled.");
+        return;
+    }
+
+    const gboolean want = apply->isNo ? FALSE : TRUE; /* 默认(非 no)=启用过滤 */
+    const gboolean cur = (inst->flags & BGP_INST_FLAG_VPN_TARGET_FILTER) ? TRUE : FALSE;
+    if (cur == want)
+    {
+        apply->rc = BGP_APPLY_RC_NOOP;
+        return;
+    }
+    if (want)
+    {
+        inst->flags |= BGP_INST_FLAG_VPN_TARGET_FILTER;
+    }
+    else
+    {
+        inst->flags &= ~(uint32_t)BGP_INST_FLAG_VPN_TARGET_FILTER;
+    }
+
+    /* 策略变更后需让对端重传 vpnv4 路由，以新策略重新评估接收：
+     *  - 关闭(want=FALSE)：之前因 IRT 不命中被丢弃的路由需重新拉回并接受；
+     *  - 开启(want=TRUE) ：之前无条件接受的不命中路由需在重收时被入向过滤丢弃。 */
+    bgp_vrf_import_request_refresh();
+    apply->rc = BGP_APPLY_RC_OK;
+}
+
 /* ============================================================================
  * refresh bgp neighbor <ip> import|export af <afi-safi>     ← 单 peer
  * refresh bgp af <afi-safi> import|export                    ← 整 AF 所有 peer

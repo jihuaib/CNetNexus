@@ -168,6 +168,9 @@ typedef dev_ipc_disconnect_handler_fn dev_ipc_disconnect_handler_fn;
 
 /** DEV IPC 帧头部大小（网络传输时只序列化前 24 字节） */
 #define DEV_IPC_FRAME_HEADER_SIZE 24
+/** request_id 高位作为同步查询响应标记，低 31 位为查询 ID */
+#define DEV_IPC_REQUEST_ID_RESPONSE_FLAG 0x80000000u
+#define DEV_IPC_REQUEST_ID_MASK 0x7FFFFFFFu
 
 /**
  * @brief 统一 DEV IPC 消息结构

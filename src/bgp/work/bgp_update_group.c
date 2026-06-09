@@ -21,6 +21,7 @@
 #include "bgp_rib.h"
 #include "bgp_vrf.h"
 #include "bgp_vrf_export.h"
+#include "bgp_vrf_import.h"
 #include "bgp_worker.h"
 #include "errcode.h"
 #include "log.h"
@@ -301,7 +302,8 @@ bgp_route_src_class_t bgp_classify_route_src(const bgp_route_node_t *best)
     return BGP_RSRC_FROM_EBGP;
 }
 
-bool bgp_select_nh_rule(const bgp_update_group_key_t *ug_key, bgp_route_src_class_t src_class, bgp_nh_rule_t *out_rule)
+bool bgp_select_nh_rule(const bgp_update_group_key_t *ug_key, bgp_route_src_class_t src_class, gboolean is_vpn,
+                        bgp_nh_rule_t *out_rule)
 {
     if (!ug_key || !out_rule)
     {
@@ -320,7 +322,9 @@ bool bgp_select_nh_rule(const bgp_update_group_key_t *ug_key, bgp_route_src_clas
             *out_rule = BGP_NH_RULE_LOCAL; /* 本地 IMPORT：用本端地址 */
             return true;
         case BGP_RSRC_FROM_EBGP:
-            *out_rule = BGP_NH_RULE_PASS; /* 保留 eBGP 原始 nh */
+            /* VPN 族（inter-AS Option B ASBR 中转）：默认 next-hop-self，本域 PE 才能解析下一跳；
+             * 非 VPN 族保留 eBGP 原始 nh（PASS）。 */
+            *out_rule = is_vpn ? BGP_NH_RULE_LOCAL : BGP_NH_RULE_PASS;
             return true;
         case BGP_RSRC_FROM_IBGP:
         default:
@@ -740,7 +744,7 @@ void bgp_update_group_enqueue_announce(bgp_instance_t *inst, const bgp_nlri_entr
         }
         else
         {
-            accepted = bgp_select_nh_rule(&ug->key, src_class, &rule);
+            accepted = bgp_select_nh_rule(&ug->key, src_class, bgp_safi_is_vpn(inst->safi), &rule);
         }
         if (!accepted)
         {
@@ -1431,6 +1435,19 @@ int bgp_subgroup_process_queues(bgp_nh_subgroup_t *sg, bgp_instance_t *inst, int
             if (label == 0u)
             {
                 continue; /* hold：nlri 堆副本最终随 ann_nlris 统一释放 */
+            }
+            nlri->prefix.label = label;
+            nlri->prefix.has_label = true;
+        }
+        /* inter-AS Option B 中转：vpnv4 路由改下一跳为本端（next-hop-self，sg rule=LOCAL）通告时，
+         * 给路由分配本地入标签并注入 NLRI（替换收到的对端标签），TUNNEL 据此装 SWAP 换标 ILM。
+         * 申请不到则 hold。仅对非本地起源（收来再中转）的 vpnv4 路由生效。 */
+        else if (best && inst->safi == BGP_SAFI_VPN_UNICAST && sg->key.rule == BGP_NH_RULE_LOCAL && best->has_label)
+        {
+            uint32_t label = bgp_vrf_import_transit_alloc_label((bgp_route_node_t *)best);
+            if (label == 0u)
+            {
+                continue; /* hold */
             }
             nlri->prefix.label = label;
             nlri->prefix.has_label = true;

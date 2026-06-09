@@ -255,6 +255,16 @@ int bgp_db_del_neighbors_by_afi(const char *vrf_name, bgp_afi_t afi, bgp_safi_t 
 int bgp_db_set_route_select(const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi, bool enabled);
 
 /**
+ * @brief 设置 VPN 地址族 policy vpn-target 入向过滤开关的持久化状态
+ * @param vrf_name VRF 名称（policy vpn-target 挂公网实例，应为 public）
+ * @param afi     地址族（VPN 类，如 ipv4）
+ * @param safi    子地址族（VPN 类，如 vpn-unicast）
+ * @param enabled TRUE=启用过滤（默认），FALSE=关闭（no policy vpn-target）
+ * @return 0 成功，-1 失败
+ */
+int bgp_db_set_vpn_target_policy(const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi, bool enabled);
+
+/**
  * @brief 持久化一条 QP 自产生路由配置
  * @param vrf_name    VRF 名称
  * @param afi         地址族

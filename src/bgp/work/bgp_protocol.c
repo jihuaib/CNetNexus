@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "bgp_rd.h"
+#include "bgp_relay.h"
 #include "log.h"
 #include "vrf.h"
 
@@ -43,6 +44,9 @@ void bgp_protocol_destroy(bgp_protocol_t *proto)
         return;
     }
     LOG_INFO("BGP protocol structure destroyed: AS %u", proto->as_number);
+    /* 先清理 relay watch 与对应借用引用，避免借用计数未归零的路径节点在
+     * RIB 销毁阶段被保留导致 ASAN 退出泄漏。 */
+    bgp_relay_cleanup();
     /* 先销毁 vrf_hash（间接触发 instance 销毁，instance 会从 rd_hash 摘除自己的 entry），
      * 再销毁残留的 rd_hash（理论上应已为空） */
     if (proto->vrf_hash)

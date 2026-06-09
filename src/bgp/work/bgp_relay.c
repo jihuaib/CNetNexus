@@ -577,6 +577,47 @@ static void bgp_relay_detach_route_from_watch(bgp_route_node_t *route, const bgp
     }
 }
 
+static void bgp_relay_detach_route_from_watch_no_reap(bgp_route_node_t *route, const bgp_relay_nh_key_t *nh_key,
+                                                      gboolean clear_state)
+{
+    if (!route || !nh_key || !g_bgp_relay_nh_table)
+    {
+        if (clear_state)
+        {
+            bgp_relay_route_iter_clear(route);
+        }
+        return;
+    }
+
+    bgp_relay_nh_watch_t *watch = bgp_relay_nh_watch_lookup(nh_key);
+    if (!watch)
+    {
+        if (clear_state)
+        {
+            bgp_relay_route_iter_clear(route);
+        }
+        return;
+    }
+
+    GList *link = g_list_find(watch->route_list, route);
+    if (link)
+    {
+        watch->route_list = g_list_delete_link(watch->route_list, link);
+        /* instance teardown 即将销毁整个 RIB。这里不能调用 bgp_route_node_borrow_unref()：
+         * 对 STALE route 可能触发 rib_reap_head()，从而在批量遍历期间释放同一 head 下的其它节点。
+         * 只解除 relay watch 对 borrow_refcnt 的占用，最终由 RIB destroy 统一释放 route。 */
+        if (route->borrow_refcnt > 0)
+        {
+            route->borrow_refcnt--;
+        }
+    }
+    bgp_relay_nh_watch_remove_if_empty(watch);
+    if (clear_state)
+    {
+        bgp_relay_route_iter_clear(route);
+    }
+}
+
 static bgp_relay_nh_watch_t *bgp_relay_attach_route_to_watch(bgp_route_node_t *route, const bgp_relay_nh_key_t *nh_key)
 {
     if (!route || !nh_key)
@@ -1219,6 +1260,73 @@ void bgp_relay_flush_peer_routes(uint32_t vrf_id, const net_addr_t *source)
 
         g_ptr_array_free(nlri_list, TRUE);
     }
+}
+
+static gboolean bgp_relay_collect_route_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    bgp_rthead_t *head = (bgp_rthead_t *)value;
+    GPtrArray *routes = (GPtrArray *)user_data;
+    if (!head || !routes)
+    {
+        return FALSE;
+    }
+
+    for (GList *l = head->route_list; l; l = l->next)
+    {
+        if (l->data)
+        {
+            g_ptr_array_add(routes, l->data);
+        }
+    }
+    return FALSE;
+}
+
+static void bgp_relay_collect_inst_rib_cb(bgp_instance_t *inst, bgp_rd_entry_t *entry, bgp_rib_t *rib,
+                                          gpointer user_data)
+{
+    (void)inst;
+    (void)entry;
+    if (!rib || !rib->head_tree || !user_data)
+    {
+        return;
+    }
+    g_tree_foreach(rib->head_tree, bgp_relay_collect_route_cb, user_data);
+}
+
+void bgp_relay_flush_instance_routes(bgp_instance_t *inst)
+{
+    if (!inst || !g_bgp_relay_nh_table)
+    {
+        return;
+    }
+
+    GPtrArray *routes = g_ptr_array_new();
+    if (!routes)
+    {
+        return;
+    }
+
+    bgp_inst_foreach_rib(inst, bgp_relay_collect_inst_rib_cb, routes);
+    for (guint i = 0; i < routes->len; i++)
+    {
+        bgp_route_node_t *route = (bgp_route_node_t *)g_ptr_array_index(routes, i);
+        if (!route || !route->head || route->head->inst != inst)
+        {
+            continue;
+        }
+
+        bgp_relay_nh_key_t nh_key;
+        if (!bgp_relay_build_nh_key_from_route(route, &nh_key))
+        {
+            continue;
+        }
+
+        bgp_relay_publish_lu_candidate(route, FALSE);
+        bgp_relay_detach_route_from_watch_no_reap(route, &nh_key, TRUE);
+    }
+
+    g_ptr_array_free(routes, TRUE);
 }
 
 uint32_t bgp_relay_handle_nh_notify(const route_nh_iter_notify_t *notify)

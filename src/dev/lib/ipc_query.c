@@ -58,9 +58,9 @@ uint32_t dev_ipc_query_mgr_register(dev_ipc_query_mgr_t *mgr, uint32_t target_mo
     pthread_mutex_lock(&mgr->lock);
 
     uint32_t id = mgr->next_id++;
-    if (mgr->next_id == 0)
+    if (mgr->next_id == 0 || (mgr->next_id & DEV_IPC_REQUEST_ID_RESPONSE_FLAG) != 0)
     {
-        mgr->next_id = 1; /* 避免 0 */
+        mgr->next_id = 1; /* 避免 0，并保留高位作为响应标记 */
     }
 
     dev_ipc_pending_query_t *pq = g_malloc0(sizeof(dev_ipc_pending_query_t));

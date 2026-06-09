@@ -217,14 +217,21 @@ bgp_route_src_class_t bgp_classify_route_src(const bgp_route_node_t *best);
  * @brief 为 (ug, 路由来源类别) 选择 nh 计算规则
  *
  * eBGP 目标：任何来源 → LOCAL
- * iBGP 目标：IMPORT → LOCAL；FROM_EBGP → PASS；FROM_IBGP → 过滤（split-horizon，返回 -1）
+ * iBGP 目标：IMPORT → LOCAL；FROM_EBGP → PASS（VPN 族默认 LOCAL，见下）；
+ *            FROM_IBGP → 过滤（split-horizon，返回 -1；RR 客户端反射时 PASS）
+ *
+ * VPN 地址族（vpnv4 等）特例：把 eBGP 学到的路由回告本域 iBGP 时默认 next-hop-self（LOCAL）。
+ * inter-AS Option B 下 ASBR 无 VRF、靠 vpnv4 中转，对端 ASBR 的 inter-AS 下一跳在本域不可达，
+ * 必须改为本端地址，本域 PE 才能经 IGP/LDP 解析下一跳并转发。
  *
  * @param ug_key  目标 ug 键
  * @param src_class 路由来源分类
+ * @param is_vpn  源实例是否为 VPN 类地址族（影响 FROM_EBGP→iBGP 的 nh 规则）
  * @param out_rule 输出的 rule
  * @return true=可发布；false=过滤（split-horizon 或不适用）
  */
-bool bgp_select_nh_rule(const bgp_update_group_key_t *ug_key, bgp_route_src_class_t src_class, bgp_nh_rule_t *out_rule);
+bool bgp_select_nh_rule(const bgp_update_group_key_t *ug_key, bgp_route_src_class_t src_class, gboolean is_vpn,
+                        bgp_nh_rule_t *out_rule);
 
 /**
  * @brief 在 ug 中查找某 rule 对应的子组（peer 加入后必然存在）

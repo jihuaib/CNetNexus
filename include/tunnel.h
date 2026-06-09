@@ -88,6 +88,10 @@ typedef struct tunnel_label_req
     uint32_t owner_id;
     uint32_t out_ifindex;
     tunnel_fec_t fec;
+    uint8_t action; /**< tunnel_forward_action_t：默认 0(POP，本地出标签)；SWAP=中转换标(inter-AS Option B ASBR) */
+    uint8_t _pad1[3];    /**< 对齐 */
+    uint32_t swap_label; /**< action=SWAP 时换成的下游标签（收到的对端 VPN 标签） */
+    net_addr_t endpoint; /**< action=SWAP 时解析出口用的隧道端点（下游 BGP 下一跳，公网迭代） */
 } tunnel_label_req_t;
 
 typedef struct tunnel_resolve_notify

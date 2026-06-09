@@ -75,6 +75,30 @@ void bgp_vrf_import_purge_all(void);
  */
 gboolean bgp_vrf_import_attr_has_match(const bgp_attr_t *attr);
 
+/* ============================================================================
+ * inter-AS Option B 中转换标（ASBR 转发面）
+ *
+ * ASBR 无 VRF、把收到的 vpnv4 路由改下一跳为本端再通告给上游时，必须给该路由分配一个本地入标签
+ * 并装一条 MPLS SWAP 表项（本地入标签 → 换成收到的对端 VPN 标签 → 经下游隧道转发）。这两个 API
+ * 负责本地标签的申请/释放（向 TUNNEL，TUNNEL 据 swap_label+endpoint 装 SWAP ILM 下到 FIB）。
+ * ========================================================================== */
+
+/**
+ * @brief 为一条 vpnv4 中转路由申请本地入标签（用于改下一跳通告 + SWAP 转发），幂等缓存在节点上
+ *
+ * 要求 best 携带收到的 VPN 标签(has_label)且有可解析的 BGP 下一跳。成功后 best->out_local_label 缓存
+ * 返回值，并向 TUNNEL 注册 SWAP 绑定(swap_label=收到的标签, endpoint=BGP 下一跳)。
+ * @param best vpnv4 中转最优路径节点
+ * @return 本地入标签(>0)；0=暂不可得(无标签/无下一跳/TUNNEL 不可用)，调用方应 hold 不通告
+ */
+uint32_t bgp_vrf_import_transit_alloc_label(bgp_route_node_t *best);
+
+/**
+ * @brief 释放某节点先前申请的中转本地入标签（节点回收时调用），并撤销对应 SWAP ILM
+ * @param route 路由节点（out_local_label==0 时为 no-op）
+ */
+void bgp_vrf_import_transit_release_label(bgp_route_node_t *route);
+
 /**
  * @brief public vpnv4 instance 某 head best 变化后调用：把 best 导入命中的 VRF、
  *        撤销不再命中的 VRF。由 bgp_calc_route_select 末尾调用(与 export 并列)。

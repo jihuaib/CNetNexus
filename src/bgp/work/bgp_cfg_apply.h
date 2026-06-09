@@ -82,6 +82,14 @@ void bgp_cfg_apply_qp_route(bgp_apply_cmd_t *apply);
 void bgp_cfg_apply_route_select(bgp_apply_cmd_t *apply);
 
 /**
+ * @brief 应用 VPN 地址族 policy vpn-target 入向过滤开关（默认启用；no 清除实例标志位）
+ *
+ * 切换后对 VPN 类实例(public，按 apply 携带 afi/safi 定位)置/清 BGP_INST_FLAG_VPN_TARGET_FILTER，
+ * 并触发 vpnv4 ROUTE-REFRESH 让对端重传以按新策略重新评估接收。
+ */
+void bgp_cfg_apply_vpn_target_policy(bgp_apply_cmd_t *apply);
+
+/**
  * @brief 应用 refresh bgp 命令：import 向对端发 ROUTE-REFRESH，export 本端重发 Adj-RIB-Out
  */
 void bgp_cfg_apply_refresh(bgp_apply_cmd_t *apply);

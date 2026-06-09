@@ -11,6 +11,7 @@
 #include "bgp_attr_intern.h"
 #include "bgp_nexthop.h"
 #include "bgp_rd.h"
+#include "bgp_vrf_import.h"
 #include "net_addr.h"
 #include "route.h"
 
@@ -56,6 +57,8 @@ static void route_node_release_attrs(bgp_route_node_t *route)
     bgp_attr_release(route->base_attr);
     route->base_attr = NULL;
     bgp_nexthop_reset_route(route);
+    /* inter-AS Option B 中转换标：节点回收时释放其本地入标签 + 撤销 SWAP ILM */
+    bgp_vrf_import_transit_release_label(route);
 }
 
 /**

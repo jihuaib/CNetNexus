@@ -188,6 +188,13 @@ typedef struct bgp_apply_cmd
             bgp_safi_t safi; /**< 子地址族（必为 BGP_SAFI_QP） */
         } route_select;
 
+        /** BGP_CLI_GROUP_ID_VPN_TARGET_POLICY */
+        struct
+        {
+            bgp_afi_t afi;   /**< 地址族（VPN 类，如 ipv4） */
+            bgp_safi_t safi; /**< 子地址族（VPN 类，如 vpn-unicast） */
+        } vpn_target;
+
         /** BGP_CLI_GROUP_ID_REFRESH */
         struct
         {

@@ -61,6 +61,14 @@ uint32_t bgp_inst_effective_cluster_id(const bgp_instance_t *inst);
 
 /** 实例策略位：所有出向邻居保留原下一跳（不影响 update-group 划分） */
 #define BGP_INST_FLAG_NH_UNCHANGED (1U << 0)
+/**
+ * 实例策略位：VPN 类地址族(vpnv4/vpnv6/evpn)入向按 import route-target 过滤。
+ *
+ * 仅 VPN 类 SAFI 实例使用，创建时默认置位(`policy vpn-target`)。置位时收到的 VPN 路由
+ * 必须 IRT 命中才接受进本实例 RIB，否则入向丢弃；`no policy vpn-target` 清除该位后
+ * VPN 路由一律接受(供 RR 透传)，但导入私网 VRF 仍在 reconcile 阶段按 IRT 命中决定。
+ */
+#define BGP_INST_FLAG_VPN_TARGET_FILTER (1U << 1)
 
 /**
  * @brief QP 自产生路由配置条目（每个对应一组 [start_dqpn, start_dqpn+count) 的 NLRI）

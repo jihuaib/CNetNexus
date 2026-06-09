@@ -362,10 +362,17 @@ static void bdr_append_qp_routes(GString *out, const char *vrf_name, int64_t afi
  */
 static void bdr_append_af_block(GString *out, const char *vrf_name, const char *afi_str, int64_t afi, int64_t safi,
                                 int64_t import_protos, gboolean route_select_enabled, int64_t cluster_id,
-                                int64_t import_rib_sources, const char *block_indent, const char *body_indent)
+                                int64_t import_rib_sources, gboolean vpn_target_policy, const char *block_indent,
+                                const char *body_indent)
 {
     g_string_append_printf(out, "%s!\r\n", block_indent);
     g_string_append_printf(out, "%saf %s\r\n", block_indent, afi_str);
+
+    /* VPN AF 入向过滤策略：默认启用，仅关闭(no policy vpn-target)时进 running-config */
+    if (safi == BGP_SAFI_VPN_UNICAST && !vpn_target_policy)
+    {
+        g_string_append_printf(out, "%sno policy vpn-target\r\n", body_indent);
+    }
 
     /* 反射器 cluster-id（per-AF） */
     if (cluster_id != 0)
@@ -434,6 +441,7 @@ static void bdr_append_af_instances_scoped(GString *out, const char *vrf_name, c
         gboolean route_select_enabled = db_row_get_int(row, "route_select_enabled", 0) != 0;
         int64_t cluster_id = db_row_get_int(row, "cluster_id", 0);
         int64_t import_rib_sources = db_row_get_int(row, "import_rib_sources", 0);
+        gboolean vpn_target_policy = db_row_get_int(row, "vpn_target_policy", 1) != 0;
         const char *afi_str = afi_safi_to_str(afi_int, safi_int);
 
         if (!afi_str)
@@ -442,7 +450,7 @@ static void bdr_append_af_instances_scoped(GString *out, const char *vrf_name, c
         }
 
         bdr_append_af_block(out, vrf_name, afi_str, afi_int, safi_int, import_protos, route_select_enabled, cluster_id,
-                            import_rib_sources, block_indent, body_indent);
+                            import_rib_sources, vpn_target_policy, block_indent, body_indent);
     }
 
     db_value_free(&cond.value);
@@ -535,12 +543,13 @@ static void bdr_append_scoped_af_instance(GString *out, const char *vrf_name, in
         gboolean route_select_enabled = db_row_get_int(row, "route_select_enabled", 0) != 0;
         int64_t cluster_id = db_row_get_int(row, "cluster_id", 0);
         int64_t import_rib_sources = db_row_get_int(row, "import_rib_sources", 0);
+        gboolean vpn_target_policy = db_row_get_int(row, "vpn_target_policy", 1) != 0;
         const char *afi_str = afi_safi_to_str(afi, safi);
 
         if (afi_str)
         {
             bdr_append_af_block(out, vrf_name, afi_str, afi, safi, import_protos, route_select_enabled, cluster_id,
-                                import_rib_sources, block_indent, body_indent);
+                                import_rib_sources, vpn_target_policy, block_indent, body_indent);
         }
     }
 

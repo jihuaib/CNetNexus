@@ -1621,6 +1621,71 @@ static int handle_bgp_route_select(dev_ipc_message_t *msg, cli_tlv_parser_t *par
 }
 
 /**
+ * @brief 处理 policy vpn-target / no policy vpn-target（group_id=24，vpnv4 AF 视图）
+ *
+ * 默认启用：收到的 vpnv4 路由必须 import-RT 命中才接受；no 关闭后一律接受进 vpnv4 RIB，
+ * 但导入私网 VRF 仍按 import-RT 命中决定。无 cfg-id 参数，afi/safi 来自视图上下文。
+ */
+static int handle_bgp_vpn_target_policy(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    bgp_apply_cmd_t apply;
+    memset(&apply, 0, sizeof(apply));
+    apply.group_id = BGP_CLI_GROUP_ID_VPN_TARGET_POLICY;
+    apply.isNo = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
+    bgp_cli_ctx_t ctx = bgp_cli_ctx_default();
+
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (CLI_TLV_IS_CTX(&entry))
+        {
+            bgp_cli_ctx_parse(&ctx, &entry);
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    /* 仅 VPN 类地址族(当前 vpnv4)视图下有效 */
+    if (ctx.afi != BGP_AFI_IPV4 || ctx.safi != BGP_SAFI_VPN_UNICAST)
+    {
+        bgp_send_cli_response(msg, "BGP Error: command only valid under vpnv4 address-family.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    /* policy vpn-target 是公网 VPN 实例的全局策略，不随某个 VRF 上下文 */
+    snprintf(apply.vrf_name, sizeof(apply.vrf_name), "%s", VRF_PUBLIC_VRF_NAME);
+    apply.u.vpn_target.afi = ctx.afi;
+    apply.u.vpn_target.safi = ctx.safi;
+
+    if (bgp_worker_dispatch_apply(&apply) != 0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Server unavailable.\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (apply.rc == BGP_APPLY_RC_NOOP)
+    {
+        bgp_send_cli_response(msg, "");
+        return ERRCODE_SUCCESS;
+    }
+    if (apply.rc != BGP_APPLY_RC_OK)
+    {
+        char buf[280];
+        snprintf(buf, sizeof(buf), "%s\r\n", apply.errmsg);
+        bgp_send_cli_response(msg, buf);
+        return ERRCODE_FAIL;
+    }
+
+    /* 持久化：写公网 vpnv4 instance 行的 vpn_target_policy 列（!isNo=启用） */
+    if (bgp_db_set_vpn_target_policy(VRF_PUBLIC_VRF_NAME, ctx.afi, ctx.safi, !apply.isNo) != 0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    bgp_send_cli_response(msg, "");
+    return ERRCODE_SUCCESS;
+}
+
+/**
  * @brief 处理 refresh bgp 命令（group_id=18）
  *
  * 两种形态：
@@ -1957,6 +2022,9 @@ int bgp_cli_handle_config_msg(dev_ipc_message_t *msg)
             break;
         case BGP_CLI_GROUP_ID_ROUTE_SELECT:
             result = handle_bgp_route_select(msg, &parser);
+            break;
+        case BGP_CLI_GROUP_ID_VPN_TARGET_POLICY:
+            result = handle_bgp_vpn_target_policy(msg, &parser);
             break;
         case BGP_CLI_GROUP_ID_REFRESH:
             result = handle_bgp_refresh(msg, &parser);

@@ -213,7 +213,10 @@ void bgp_adj_rib_in_ingest_peer_update(bgp_session_t *session, const bgp_update_
             reach_failed++;
             continue;
         }
-        if (nlri->safi == BGP_SAFI_VPN_UNICAST && !bgp_vrf_import_attr_has_match(&upd->attr))
+        /* vpn-target 入向过滤(实例默认置位)：无 IRT 命中则整条丢弃。`no policy vpn-target`
+         * 清除该实例标志位后一律接受进 VPN RIB(导入私网 VRF 仍在 reconcile 阶段按 IRT 命中决定)。 */
+        if (nlri->safi == BGP_SAFI_VPN_UNICAST && (peer->inst->flags & BGP_INST_FLAG_VPN_TARGET_FILTER) &&
+            !bgp_vrf_import_attr_has_match(&upd->attr))
         {
             (void)bgp_adj_rib_in_remove(peer->rib_in, nlri);
             g_array_append_val(unreach, *nlri);

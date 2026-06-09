@@ -14,6 +14,7 @@
 #include "tunnel.h"
 
 typedef struct bgp_session bgp_session_t;
+typedef struct bgp_instance bgp_instance_t;
 typedef struct bgp_peer_update_ingest_stats bgp_peer_update_ingest_stats_t;
 
 /**
@@ -47,6 +48,14 @@ uint32_t bgp_relay_vrf_export_attr_rebuild(uint32_t vrf_id, bgp_afi_t afi);
  * @brief 清理指定 source 的所有 relay 路由
  */
 void bgp_relay_flush_peer_routes(uint32_t vrf_id, const net_addr_t *source);
+
+/**
+ * @brief 实例销毁前清理该实例所有 route 持有的 relay nexthop watch 借用
+ *
+ * instance/RIB teardown 不走 peer withdraw 路径；若不先解除 watch 对 route 的 borrow，
+ * RIB destroy 会因 borrow_refcnt > 0 跳过 route_node_free，造成 route 泄漏。
+ */
+void bgp_relay_flush_instance_routes(bgp_instance_t *inst);
 
 /**
  * @brief 读取 route 当前 nexthop 迭代 value。

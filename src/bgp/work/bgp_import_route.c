@@ -503,6 +503,13 @@ static int bgp_import_route_entry_to_safi(const route_msg_entry_t *entry, bgp_vr
         return 0;
     }
 
+    if ((entry->flags & ROUTE_ENTRY_FLAG_LOCAL) != 0u && !entry->is_withdraw)
+    {
+        /* ROUTE 内部本地投递路由（127/8、127.0.0.1/32、::1/128 等）只服务本机/VRF，
+         * 不应被 import-route 带入 BGP RIB。普通接口 NO_ADV 路由仍按原语义本地引入但不对外发布。 */
+        return 0;
+    }
+
     /* 构建 NLRI entry（直接使用二进制地址，无字符串转换） */
     bgp_nlri_entry_t nlri;
     memset(&nlri, 0, sizeof(nlri));

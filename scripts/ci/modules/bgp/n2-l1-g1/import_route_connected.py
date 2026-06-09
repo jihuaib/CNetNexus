@@ -22,6 +22,11 @@ LOOP_V4 = "1.1.1.1"
 LOOP_V4_PREFIX = 32
 LOOP_V6 = "2001:db8:1::1"
 LOOP_V6_PREFIX = 128
+LOCAL_V4_ROUTE_REGEXES = [
+    r"(?m)^\s*[>v ]*\s*127\.0\.0\.0/8\s+",
+    r"(?m)^\s*[>v ]*\s*127\.0\.0\.1/32\s+",
+]
+LOCAL_V6_ROUTE_REGEXES = [r"(?m)^\s*[>v ]*\s*::1/128\s+"]
 
 
 def _cleanup(rt: TopologyRuntime) -> None:
@@ -164,6 +169,26 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 },
             ],
             timeout=30,
+        )
+
+        step("内部本地路由：127/8、127.0.0.1/32、::1/128 不应进入 BGP RIB")
+        wait_checks(
+            rt,
+            [
+                {
+                    "device": "r2",
+                    "command": "show bgp route af ipv4-unicast",
+                    "not_regex": LOCAL_V4_ROUTE_REGEXES,
+                    "label": "r2 本地 BGP RIB 不含 IPv4 内部本地路由",
+                },
+                {
+                    "device": "r2",
+                    "command": "show bgp route af ipv6-unicast",
+                    "not_regex": LOCAL_V6_ROUTE_REGEXES,
+                    "label": "r2 本地 BGP RIB 不含 IPv6 内部本地路由",
+                },
+            ],
+            timeout=15,
         )
 
         step("ETH 直连路由：r2 本地 BGP RIB 含有，但 r1 不应收到")

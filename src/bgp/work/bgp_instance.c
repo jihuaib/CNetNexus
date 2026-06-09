@@ -14,6 +14,7 @@
 #include "bgp_nexthop.h"
 #include "bgp_protocol.h"
 #include "bgp_rd.h"
+#include "bgp_relay.h"
 #include "bgp_rib.h"
 #include "bgp_route_flush.h"
 #include "bgp_update_group.h"
@@ -49,6 +50,11 @@ bgp_instance_t *bgp_instance_create(bgp_afi_t afi, bgp_safi_t safi, bgp_vrf_t *v
     {
         inst->flags |= BGP_INST_FLAG_NH_UNCHANGED;
     }
+    /* VPN 类地址族(vpnv4/vpnv6/evpn)默认启用 vpn-target 入向过滤(policy vpn-target)。 */
+    if (bgp_safi_is_vpn(safi))
+    {
+        inst->flags |= BGP_INST_FLAG_VPN_TARGET_FILTER;
+    }
     /* key: net_addr_t*（堆分配，g_free 释放），value: bgp_peer_t*（负责销毁） */
     inst->peer_hash =
         g_hash_table_new_full(net_addr_hash, net_addr_hash_equal, g_free, (GDestroyNotify)bgp_peer_destroy);
@@ -83,6 +89,9 @@ void bgp_instance_destroy(bgp_instance_t *inst)
     /* 私网 unicast 实例销毁前，双角色清理本地交叉泄漏(作为源撤其它 VRF 内泄漏、作为目标解 borrow) */
     bgp_vrf_import_local_purge_inst(inst);
     bgp_import_rib_inst_destroy(inst);
+    /* instance teardown 不一定经过 peer withdraw，需先解除 relay watch 对本实例 route 的借用；
+     * 否则 RIB destroy 会因 borrow_refcnt > 0 跳过 route_node_free，留下 ASAN leak。 */
+    bgp_relay_flush_instance_routes(inst);
     bgp_calc_queue_destroy(inst->calc_queue, inst);
     inst->calc_queue = NULL;
     bgp_route_flush_queue_destroy(inst->route_flush_queue, inst);

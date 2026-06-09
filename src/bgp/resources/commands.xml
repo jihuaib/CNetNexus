@@ -696,6 +696,37 @@
             </commands>
         </group>
 
+        <!-- policy vpn-target / no policy vpn-target（vpnv4 AF 视图：入向 import-RT 过滤，默认启用） -->
+        <group group-id="24">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>policy</name>
+                    <description>VPN route import policy</description>
+                </element>
+                <element id="3" type="keyword">
+                    <name>vpn-target</name>
+                    <description>Filter received VPN routes by import route-target (default)</description>
+                </element>
+            </elements>
+
+            <commands>
+                <!-- policy vpn-target（恢复默认：需 import-RT 命中才接受） -->
+                <command>
+                    <expression>2 3</expression>
+                    <views>bgp-af-vpnv4</views>
+                </command>
+                <!-- no policy vpn-target（关闭过滤：一律接受 vpnv4 路由，导入 VRF 仍按 RT 命中） -->
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>bgp-af-vpnv4</views>
+                </command>
+            </commands>
+        </group>
+
         <!-- import-route static|connected / no import-route ...（地址族视图） -->
         <!-- cfg-id: 1=static, 2=connected -->
         <group group-id="11">

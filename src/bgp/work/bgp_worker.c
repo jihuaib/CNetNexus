@@ -625,8 +625,6 @@ static void bgp_worker_runtime_cleanup(void)
         bgp_protocol_destroy(g_bgp_work_local->protocol);
         g_bgp_work_local->protocol = NULL;
     }
-
-    bgp_relay_cleanup();
     if_api_cache_cleanup();
 }
 

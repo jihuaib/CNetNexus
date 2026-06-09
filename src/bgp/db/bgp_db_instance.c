@@ -29,6 +29,7 @@ static const db_column_def_t BGP_INSTANCE_COLS[] = {
     {"route_select_enabled", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"}, /* QP route-select 开关 */
     {"cluster_id", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"}, /* 主机序 32 位 cluster-id（0=用 router-id） */
     {"import_rib_sources", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"}, /* import-rib 源位掩码（bgp_import_src_t） */
+    {"vpn_target_policy", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"}, /* VPN AF 入向 vpn-target 过滤（默认 1=启用） */
 };
 
 const db_table_def_t BGP_INSTANCE_TABLE = {
@@ -231,6 +232,35 @@ int bgp_db_set_route_select(const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi
     return 0;
 }
 
+int bgp_db_set_vpn_target_policy(const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi, bool enabled)
+{
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
+    if (!ctx || !vrf_name)
+    {
+        return -1;
+    }
+
+    db_filter_builder_t pk;
+    bgp_db_instance_pk(&pk, vrf_name, afi, safi);
+
+    db_col_t cols[] = {
+        DB_COL_INT("vpn_target_policy", enabled ? 1 : 0),
+    };
+    int rows = db_rpc_update_cols(ctx, BGP_TABLE_INSTANCE, &pk.filter, cols, G_N_ELEMENTS(cols));
+    db_filter_clear(&pk);
+
+    if (rows <= 0)
+    {
+        LOG_ERROR("BGP 写入 vpn-target policy vrf=%s afi=%u safi=%u enabled=%d 失败", vrf_name, (unsigned)afi,
+                  (unsigned)safi, enabled ? 1 : 0);
+        return -1;
+    }
+
+    LOG_INFO("BGP vpn-target policy vrf=%s afi=%u safi=%u enabled=%d 已写入", vrf_name, (unsigned)afi, (unsigned)safi,
+             enabled ? 1 : 0);
+    return 0;
+}
+
 // ============================================================================
 // 启动恢复
 // ============================================================================
@@ -340,6 +370,21 @@ void bgp_db_restore_instances(void)
             (void)bgp_worker_dispatch_apply(&cid);
             LOG_INFO("BGP restore: VRF %s afi=%u safi=%u cluster-id=%u", vrf_name, (unsigned)afi, (unsigned)safi,
                      cluster_id);
+        }
+
+        /* 恢复 VPN AF 入向 vpn-target 过滤策略（默认启用；仅当显式关闭即列值为 0 时下发 no） */
+        if (safi == BGP_SAFI_VPN_UNICAST && db_row_get_int(row, "vpn_target_policy", 1) == 0)
+        {
+            bgp_apply_cmd_t vt;
+            memset(&vt, 0, sizeof(vt));
+            vt.group_id = BGP_CLI_GROUP_ID_VPN_TARGET_POLICY;
+            vt.isNo = true;
+            snprintf(vt.vrf_name, sizeof(vt.vrf_name), "%s", vrf_name);
+            vt.u.vpn_target.afi = afi;
+            vt.u.vpn_target.safi = safi;
+            (void)bgp_worker_dispatch_apply(&vt);
+            LOG_INFO("BGP restore: VRF %s afi=%u safi=%u no policy vpn-target", vrf_name, (unsigned)afi,
+                     (unsigned)safi);
         }
     }
 

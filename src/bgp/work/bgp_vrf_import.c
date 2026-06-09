@@ -14,6 +14,7 @@
 #include "bgp_calc.h"
 #include "bgp_ext_community.h"
 #include "bgp_instance.h"
+#include "bgp_main.h"
 #include "bgp_nexthop.h"
 #include "bgp_peer.h"
 #include "bgp_pkt.h"
@@ -29,6 +30,7 @@
 #include "log.h"
 #include "net_addr.h"
 #include "route.h"
+#include "tunnel.h"
 #include "vrf.h"
 
 /* IRT 索引：规范化 8 字节 RT(g_malloc 持有) → inner GHashTable<vrf_id → refcount>。
@@ -236,6 +238,97 @@ gboolean bgp_vrf_import_attr_has_match(const bgp_attr_t *attr)
         }
     }
     return FALSE;
+}
+
+/* ============================================================================
+ * inter-AS Option B 中转换标（ASBR 转发面）：本地标签申请/释放
+ *
+ * SWAP 绑定的 owner_id 用全局自增序列保证每路由唯一；fec 用固定占位（owner_id 已唯一区分），
+ * 以便 alloc/release 用同一 (owner_id + 占位 fec) 命中同一 TUNNEL 绑定。仅 worker 线程访问。
+ * ========================================================================== */
+
+static uint32_t g_bgp_transit_owner_seq = 0x01000000u; /* 高位起始，避开 export 的小 owner_id */
+
+#define BGP_TRANSIT_LABEL_TIMEOUT_MS 1000u
+
+/** 构造一条 SWAP 中转标签请求（alloc/release 共用，确保命中同一绑定） */
+static void transit_build_req(tunnel_label_req_t *req, uint32_t owner_id, uint16_t afi, uint32_t swap_label,
+                              const net_addr_t *endpoint)
+{
+    memset(req, 0, sizeof(*req));
+    req->vrf_id = BGP_VRF_PUBLIC_ID; /* ASBR 无 VRF，公网迭代 */
+    req->afi = afi;
+    req->source_type = TUNNEL_SOURCE_BGP_LU;
+    req->owner_module_id = DEV_MODULE_ID_BGP;
+    req->owner_id = owner_id;
+    req->fec.vrf_id = BGP_VRF_PUBLIC_ID;
+    req->fec.afi = afi;
+    req->fec.prefix_len = 0;        /* 占位：owner_id 已唯一标识本绑定 */
+    req->fec.addr.family = AF_INET; /* TUNNEL 要求 fec.addr.family 非 0 */
+    req->action = TUNNEL_ACTION_SWAP;
+    req->swap_label = swap_label;
+    if (endpoint)
+    {
+        req->endpoint = *endpoint;
+    }
+}
+
+uint32_t bgp_vrf_import_transit_alloc_label(bgp_route_node_t *best)
+{
+    if (!best || !best->has_label || best->label == 0u)
+    {
+        return 0; /* 无收到的 VPN 标签，无从换标 */
+    }
+    if (best->out_local_label != 0u)
+    {
+        return best->out_local_label; /* 已分配，复用 */
+    }
+    if (!g_bgp_local || !g_bgp_local->dev_ipc_ctx)
+    {
+        return 0;
+    }
+
+    /* 下游端点 = 本路由的 BGP 下一跳（改下一跳前的原始下一跳，公网可迭代到隧道） */
+    bgp_nexthop_t nh;
+    memset(&nh, 0, sizeof(nh));
+    if (bgp_nexthop_get_route_bgp(best, &nh) != ERRCODE_SUCCESS || nh.global.family == 0)
+    {
+        return 0;
+    }
+    uint16_t afi = (nh.global.family == AF_INET6) ? (uint16_t)BGP_AFI_IPV6 : (uint16_t)BGP_AFI_IPV4;
+
+    uint32_t owner_id = ++g_bgp_transit_owner_seq;
+    tunnel_label_req_t req;
+    transit_build_req(&req, owner_id, afi, best->label, &nh.global);
+
+    uint32_t label = 0;
+    if (tunnel_rpc_label_alloc(g_bgp_local->dev_ipc_ctx, &req, &label, BGP_TRANSIT_LABEL_TIMEOUT_MS) !=
+            ERRCODE_SUCCESS ||
+        label == 0u)
+    {
+        LOG_WARN("BGP vrf-import: transit swap-label alloc pending (TUNNEL unavailable), hold advertise");
+        return 0;
+    }
+    best->out_local_label = label;
+    best->transit_owner_id = owner_id;
+    LOG_INFO("BGP vrf-import: transit swap-label %u -> recv-label %u allocated (Option B ASBR)", label, best->label);
+    return label;
+}
+
+void bgp_vrf_import_transit_release_label(bgp_route_node_t *route)
+{
+    if (!route || route->out_local_label == 0u)
+    {
+        return;
+    }
+    if (g_bgp_local && g_bgp_local->dev_ipc_ctx)
+    {
+        tunnel_label_req_t req;
+        transit_build_req(&req, route->transit_owner_id, (uint16_t)BGP_AFI_IPV4, 0, NULL);
+        (void)tunnel_rpc_label_release(g_bgp_local->dev_ipc_ctx, &req);
+    }
+    route->out_local_label = 0u;
+    route->transit_owner_id = 0u;
 }
 
 /* ============================================================================

@@ -76,6 +76,10 @@ typedef struct bgp_route_node
     uint32_t import_proto;     /**< IMPORT 路由来源协议（非 import-route 为 0） */
     struct bgp_route_node *src_route; /**< mirror 节点指向源 labeled/VPN 节点；源节点为 NULL */
     uint32_t borrow_refcnt;           /**< 外部借用引用计数（import_rib mirror、bgp_relay watch 等） */
+    /* inter-AS Option B 中转换标：本节点作为 vpnv4 中转路由(改下一跳为本端)时，向 TUNNEL 申请的
+     * 本地入标签（advertise 给上游），TUNNEL 据此装 SWAP ILM（本地入标签→换成 label 出口转发）。 */
+    uint32_t out_local_label;  /**< 本地分配并向上游通告的中转入标签（0=未分配） */
+    uint32_t transit_owner_id; /**< 向 TUNNEL 申请标签时的 owner_id（用于释放，0=未分配） */
 } bgp_route_node_t;
 
 /**

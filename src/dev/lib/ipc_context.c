@@ -83,32 +83,6 @@ dev_ipc_context_t *g_ipc_context = NULL;
 /* Worker 退出哨兵（GAsyncQueue 不能推送 NULL）。 */
 static dev_ipc_message_t g_worker_exit_sentinel;
 
-/* 判定消息类型是否为“响应语义”，用于过滤超时后晚到响应。 */
-static int is_response_like_msg_type(uint32_t msg_type)
-{
-    uint32_t category = msg_type >> 16;
-    uint32_t subtype = DEV_IPC_MSG_SUBTYPE(msg_type);
-
-    if (msg_type == DEV_IPC_MSG_TYPE_DEV_MODULE_RESP || msg_type == DEV_IPC_MSG_TYPE_DEV_QUERY_IPC_CONNS_RESP ||
-        msg_type == DEV_IPC_MSG_TYPE_DEV_QUERY_SUBS_RESP || msg_type == DEV_IPC_MSG_TYPE_DEV_PRE_EXIT_RESP ||
-        msg_type == DEV_IPC_MSG_TYPE_DB_RESP)
-    {
-        return 1;
-    }
-
-    if (category == DEV_IPC_CATEGORY_CLI)
-    {
-        return subtype == 0x0002 || subtype == 0x0003 || subtype == 0x0004 || subtype == 0x0008 || subtype == 0x000A;
-    }
-
-    if (category == DEV_IPC_CATEGORY_ACCESS)
-    {
-        return subtype >= 0x0081 && subtype <= 0x0085;
-    }
-
-    return subtype == 0x001F || subtype == 0x00FF;
-}
-
 // ============================================================================
 // 内部函数前向声明
 // ============================================================================
@@ -563,7 +537,7 @@ static void handle_frame(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn, dev
             resp_hdr.msg_type = DEV_IPC_MSG_TYPE_DEV_QUERY_IPC_CONNS_RESP;
             resp_hdr.src_module_id = ctx->module_id;
             resp_hdr.dst_module_id = header->src_module_id;
-            resp_hdr.request_id = header->request_id;
+            resp_hdr.request_id = (header->request_id & DEV_IPC_REQUEST_ID_MASK) | DEV_IPC_REQUEST_ID_RESPONSE_FLAG;
             resp_hdr.payload = pl;
             resp_hdr.payload_len = pl_len;
 
@@ -596,7 +570,7 @@ static void handle_frame(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn, dev
             resp_hdr.msg_type = DEV_IPC_MSG_TYPE_DEV_QUERY_SUBS_RESP;
             resp_hdr.src_module_id = ctx->module_id;
             resp_hdr.dst_module_id = header->src_module_id;
-            resp_hdr.request_id = header->request_id;
+            resp_hdr.request_id = (header->request_id & DEV_IPC_REQUEST_ID_MASK) | DEV_IPC_REQUEST_ID_RESPONSE_FLAG;
             resp_hdr.payload = (uint8_t *)pl;
             resp_hdr.payload_len = pl_len;
 
@@ -622,11 +596,13 @@ static void handle_frame(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn, dev
                 break;
             }
 
-            /* 检查是否是对同步查询的响应。请求帧也会携带 request_id，不能用它唤醒 pending query；
-             * 否则双向 RPC 的 request_id 碰撞会把请求误投给等待者，真正的目标 worker 收不到请求。 */
-            if (app_msg->request_id != 0 && ctx->query_mgr && is_response_like_msg_type(app_msg->msg_type))
+            /* 同步 query 响应由 request_id 高位标记；请求帧即使携带 request_id 也必须投递给业务层。 */
+            if ((app_msg->request_id & DEV_IPC_REQUEST_ID_RESPONSE_FLAG) != 0)
             {
-                int completed = dev_ipc_query_mgr_complete(ctx->query_mgr, app_msg->request_id, app_msg);
+                uint32_t request_id = app_msg->request_id & DEV_IPC_REQUEST_ID_MASK;
+                app_msg->request_id = request_id;
+                int completed =
+                    ctx->query_mgr ? dev_ipc_query_mgr_complete(ctx->query_mgr, request_id, app_msg) : ERRCODE_FAIL;
                 if (completed == ERRCODE_SUCCESS)
                 {
                     break; /* 已交付给等待者，不调用 msg_handler */
@@ -1493,7 +1469,7 @@ dev_ipc_message_t *dev_ipc_query(dev_ipc_context_t *ctx, uint32_t target_module_
     {
         return NULL;
     }
-    msg->request_id = request_id;
+    msg->request_id = request_id & DEV_IPC_REQUEST_ID_MASK;
     msg->src_module_id = ctx->module_id;
 
     /* 发送消息 */
@@ -1517,6 +1493,10 @@ int dev_ipc_send_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
     /* 根据 dst_module_id 路由到目标模块 */
     uint32_t target_id = msg->dst_module_id;
     msg->src_module_id = ctx->module_id;
+    if (msg->request_id != 0)
+    {
+        msg->request_id = (msg->request_id & DEV_IPC_REQUEST_ID_MASK) | DEV_IPC_REQUEST_ID_RESPONSE_FLAG;
+    }
 
     /* 查找连接 */
     pthread_mutex_lock(&ctx->comutex);
