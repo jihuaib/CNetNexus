@@ -2,6 +2,7 @@
 add_library(utils SHARED
     path_utils.c
     log.c
+    syslog_report.c
     mpls_config.c
     net_addr.c
 )

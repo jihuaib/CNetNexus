@@ -20,6 +20,10 @@ DEV 模块（module-id: 1）负责 supervisor 侧的设备信息、模块生命�
 | `sysname <hostname>` | config | 设置系统名称 |
 | `no sysname` | config | 恢复默认系统名称 |
 | `dev log log-level {debug|info|warn|error}` | config | 设置运行时日志级别 |
+| `syslog server <server> [port <port>]` | config | 配置远端 syslog 服务器，端口默认 514 |
+| `no syslog server` | config | 关闭远端 syslog 上报 |
+| `snmp trap server <server> [port <port>]` | config | 配置 SNMP trap 接收端，端口默认 162（命令由 SNMP 模块注册和处理） |
+| `no snmp trap server` | config | 关闭 SNMP trap 上报（命令由 SNMP 模块注册和处理） |
 
 ## 进程命令
 

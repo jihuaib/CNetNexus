@@ -22,11 +22,14 @@
 #include "if.h"
 #include "isis.h"
 #include "isis_lsp.h"
+#include "isis_main.h"
 #include "isis_route.h"
 #include "isis_route_sync.h"
 #include "isis_spf.h"
 #include "log.h"
 #include "route.h"
+#include "snmp.h"
+#include "syslog_report.h"
 
 #define ISIS_NEIGHBOR_PKT_MAX 2048u
 #define ISIS_NEIGHBOR_KEY_MAX (IF_LOGICAL_NAME_MAX + 32u)
@@ -292,6 +295,151 @@ static void isis_sysid_to_hex(const uint8_t sysid[6], char *buf, size_t sz)
         return;
     }
     g_snprintf(buf, sz, "%02x%02x%02x%02x%02x%02x", sysid[0], sysid[1], sysid[2], sysid[3], sysid[4], sysid[5]);
+}
+
+static const char *isis_adj_state_name(uint8_t state)
+{
+    switch (state)
+    {
+        case ISIS_ADJ_STATE_DOWN:
+            return "Down";
+        case ISIS_ADJ_STATE_INIT:
+            return "Init";
+        case ISIS_ADJ_STATE_UP:
+            return "Up";
+        default:
+            return "Unknown";
+    }
+}
+
+static uint32_t isis_snmp_adj_state_value(uint8_t state)
+{
+    switch (state)
+    {
+        case ISIS_ADJ_STATE_INIT:
+            return 2u;
+        case ISIS_ADJ_STATE_UP:
+            return 3u;
+        case ISIS_ADJ_STATE_DOWN:
+        default:
+            return 1u;
+    }
+}
+
+static void isis_snmp_lsp_id_hex(const uint8_t sysid[6], char *buf, size_t sz)
+{
+    if (!buf || sz == 0)
+    {
+        return;
+    }
+    if (!sysid)
+    {
+        g_strlcpy(buf, "00 00 00 00 00 00 00 00", sz);
+        return;
+    }
+    g_snprintf(buf, sz, "%02x %02x %02x %02x %02x %02x 00 00", sysid[0], sysid[1], sysid[2], sysid[3], sysid[4],
+               sysid[5]);
+}
+
+static uint32_t isis_snmp_circ_ifindex(const isis_neighbor_t *nbr)
+{
+    if (!nbr || nbr->ifname[0] == '\0')
+    {
+        return 1u;
+    }
+
+    const if_api_cache_entry_t *if_entry = if_api_cache_lookup(nbr->ifname);
+    if (if_entry && if_entry->ifindex != 0u)
+    {
+        return if_entry->ifindex;
+    }
+    return 10000u + (g_str_hash(nbr->ifname) % 50000u);
+}
+
+static void isis_neighbor_snmp_trap(const isis_neighbor_t *nbr, uint8_t old_state, uint8_t new_state)
+{
+    if (!nbr)
+    {
+        return;
+    }
+    if ((old_state == ISIS_ADJ_STATE_UP) == (new_state == ISIS_ADJ_STATE_UP))
+    {
+        return;
+    }
+
+    dev_ipc_context_t *ctx = isis_local_ipc_ctx();
+    if (!ctx || !dev_ipc_is_connected(ctx, DEV_MODULE_ID_SNMP))
+    {
+        return;
+    }
+
+    snmp_trap_msg_t payload;
+    memset(&payload, 0, sizeof(payload));
+    payload.owner_module_id = DEV_MODULE_ID_ISIS;
+    g_strlcpy(payload.trap_oid, ".1.3.6.1.2.1.138.0.17", sizeof(payload.trap_oid));
+    payload.var_count = 4;
+
+    g_strlcpy(payload.vars[0].oid, ".1.3.6.1.2.1.138.1.10.1.1", sizeof(payload.vars[0].oid));
+    payload.vars[0].value_type = SNMP_VALUE_INTEGER;
+    snprintf(payload.vars[0].value, sizeof(payload.vars[0].value), "%u", (unsigned)nbr->level);
+
+    g_strlcpy(payload.vars[1].oid, ".1.3.6.1.2.1.138.1.10.1.2", sizeof(payload.vars[1].oid));
+    payload.vars[1].value_type = SNMP_VALUE_INTEGER;
+    snprintf(payload.vars[1].value, sizeof(payload.vars[1].value), "%u", isis_snmp_circ_ifindex(nbr));
+
+    g_strlcpy(payload.vars[2].oid, ".1.3.6.1.2.1.138.1.10.1.3", sizeof(payload.vars[2].oid));
+    payload.vars[2].value_type = SNMP_VALUE_OCTETS;
+    isis_snmp_lsp_id_hex(nbr->system_id, payload.vars[2].value, sizeof(payload.vars[2].value));
+
+    g_strlcpy(payload.vars[3].oid, ".1.3.6.1.2.1.138.1.10.1.12", sizeof(payload.vars[3].oid));
+    payload.vars[3].value_type = SNMP_VALUE_INTEGER;
+    snprintf(payload.vars[3].value, sizeof(payload.vars[3].value), "%u", isis_snmp_adj_state_value(new_state));
+
+    snmp_trap_msg_t *dup = (snmp_trap_msg_t *)g_memdup2(&payload, sizeof(payload));
+    if (!dup)
+    {
+        return;
+    }
+
+    dev_ipc_message_t *msg = dev_ipc_message_create(SNMP_MSG_TYPE_TRAP_SEND, DEV_MODULE_ID_ISIS, DEV_MODULE_ID_SNMP, 0,
+                                                    dup, sizeof(*dup), g_free);
+    if (!msg)
+    {
+        g_free(dup);
+        return;
+    }
+
+    if (dev_ipc_send(ctx, DEV_MODULE_ID_SNMP, msg) != 0)
+    {
+        LOG_DEBUG("ISIS: skip SNMP adjacency trap if=%s", nbr->ifname);
+    }
+    dev_ipc_message_free(msg);
+}
+
+static void isis_neighbor_syslog_state(const isis_instance_cfg_t *inst, const isis_neighbor_t *nbr, uint8_t old_state,
+                                       uint8_t new_state, const char *reason)
+{
+    if (!inst || !nbr)
+    {
+        return;
+    }
+
+    char sysid[13] = {0};
+    isis_sysid_to_hex(nbr->system_id, sysid, sizeof(sysid));
+    syslog_report_severity_t sev = SYSLOG_REPORT_INFO;
+    if (new_state == ISIS_ADJ_STATE_UP)
+    {
+        sev = SYSLOG_REPORT_NOTICE;
+    }
+    else if (old_state == ISIS_ADJ_STATE_UP)
+    {
+        sev = SYSLOG_REPORT_WARNING;
+    }
+
+    syslog_report(sev, "isis", "neighbor-state", "tag=%u interface=%s level=%u system_id=%s old=%s new=%s reason=%s",
+                  (unsigned)inst->tag, nbr->ifname, (unsigned)nbr->level, sysid, isis_adj_state_name(old_state),
+                  isis_adj_state_name(new_state), reason ? reason : "update");
+    isis_neighbor_snmp_trap(nbr, old_state, new_state);
 }
 
 static void isis_neighbor_key_format(char *buf, size_t sz, const char *ifname, uint8_t level, const uint8_t sysid[6])
@@ -1158,6 +1306,8 @@ static void isis_neighbor_reconcile_instance_now(isis_instance_cfg_t *inst, uint
         const isis_neighbor_t *nbr = (const isis_neighbor_t *)value;
         if (isis_neighbor_should_remove(inst, nbr, now_msec, if_filter))
         {
+            isis_neighbor_syslog_state(inst, nbr, nbr ? nbr->state : ISIS_ADJ_STATE_DOWN, ISIS_ADJ_STATE_DOWN,
+                                       "remove");
             isis_neighbor_withdraw_learned_all(inst, nbr);
             isis_spf_withdraw_neighbor_routes(inst, nbr);
             isis_lsp_remove_origin(inst, nbr->level, nbr->system_id);
@@ -1188,6 +1338,7 @@ void isis_neighbor_on_if_removed(isis_instance_cfg_t *inst, const char *ifname)
         const isis_neighbor_t *nbr = (const isis_neighbor_t *)value;
         if (nbr && strcmp(nbr->ifname, ifname) == 0)
         {
+            isis_neighbor_syslog_state(inst, nbr, nbr->state, ISIS_ADJ_STATE_DOWN, "interface-remove");
             isis_neighbor_withdraw_learned_all(inst, nbr);
             isis_spf_withdraw_neighbor_routes(inst, nbr);
             isis_lsp_remove_origin(inst, nbr->level, nbr->system_id);
@@ -1352,6 +1503,11 @@ static void isis_rx_neighbor_apply_instance(gpointer key, gpointer value, gpoint
     nbr->ipv4_addr = ctx->has_ipv4 ? ctx->ipv4_addr : (net_addr_t){0};
     nbr->ipv6_addr = ctx->has_ipv6 ? ctx->ipv6_addr : (net_addr_t){0};
     nbr->last_seen_msec = ctx->now_msec;
+
+    if (prev_state != new_state)
+    {
+        isis_neighbor_syslog_state(inst, nbr, prev_state, new_state, "hello");
+    }
 
     if (prev_state == ISIS_ADJ_STATE_UP && new_state != ISIS_ADJ_STATE_UP)
     {

@@ -26,6 +26,7 @@ add_subdirectory(sbmp)
 add_subdirectory(isis)
 add_subdirectory(ldp)
 add_subdirectory(lldp)
+add_subdirectory(snmp)
 
 # =========================
 # DEV 主进程（supervisor）

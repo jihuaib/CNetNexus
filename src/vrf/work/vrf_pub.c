@@ -262,8 +262,7 @@ static void replay_af(uint32_t module_id, uint32_t event_mask, uint32_t af_mask,
     }
     if (af->apply_label_mode != VRF_APPLY_LABEL_PER_VRF)
     {
-        replay_one(module_id, event_mask, af_mask, VRF_EVENT_AF_APPLY_LABEL, e, af->afi, af, NULL, 0,
-                   VRF_RT_TYPE_VPN);
+        replay_one(module_id, event_mask, af_mask, VRF_EVENT_AF_APPLY_LABEL, e, af->afi, af, NULL, 0, VRF_RT_TYPE_VPN);
     }
     if (af->import_rts && af->import_rts->len > 0)
     {
@@ -336,8 +335,7 @@ static void replay_full(uint32_t module_id, uint32_t af_mask, uint32_t event_mas
             replay_one(module_id, event_mask, af_mask, VRF_EVENT_VRF_ADD, e, 0, NULL, NULL, 0, VRF_RT_TYPE_VPN);
             if (e->os_state != VRF_OS_STATE_UNKNOWN)
             {
-                replay_one(module_id, event_mask, af_mask, VRF_EVENT_VRF_STATE, e, 0, NULL, NULL, 0,
-                           VRF_RT_TYPE_VPN);
+                replay_one(module_id, event_mask, af_mask, VRF_EVENT_VRF_STATE, e, 0, NULL, NULL, 0, VRF_RT_TYPE_VPN);
             }
             if (!e->afs)
             {

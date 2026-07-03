@@ -28,6 +28,7 @@ set(BGP_SOURCES
     work/bgp_pkt_build_ipv6qp.c
     work/bgp_calc.c
     work/bgp_fsm.c
+    work/bgp_snmp_report.c
     work/bgp_session.c
     work/bgp_instance.c
     work/bgp_vrf.c

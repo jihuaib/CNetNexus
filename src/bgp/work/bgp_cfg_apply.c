@@ -1470,8 +1470,7 @@ void bgp_cfg_apply_advertise_evpn_route(bgp_apply_cmd_t *apply)
         snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: private VRF address-family required.");
         return;
     }
-    if (apply->u.advertise_evpn_route.afi != BGP_AFI_IPV4 ||
-        apply->u.advertise_evpn_route.safi != BGP_SAFI_UNICAST)
+    if (apply->u.advertise_evpn_route.afi != BGP_AFI_IPV4 || apply->u.advertise_evpn_route.safi != BGP_SAFI_UNICAST)
     {
         snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: IPv4 unicast VRF address-family required.");
         return;

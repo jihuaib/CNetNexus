@@ -10,6 +10,7 @@
 #include <stdint.h>
 
 #include "log.h"
+#include "syslog_report.h"
 
 /** DEV 配置表名（单行，存放 log_level 等运行时配置） */
 #define DEV_TABLE_CONFIG "dev_config"
@@ -60,5 +61,17 @@ int dev_db_get_sysname(char *out, size_t cap);
  * @return 0 成功，-1 失败
  */
 int dev_db_set_sysname(const char *sysname);
+
+/**
+ * @brief 读取远端 syslog 配置
+ * @return 0=已读取（out->enabled 可能为 0）, 1=DB 中不存在, -1=失败
+ */
+int dev_db_get_syslog_remote(syslog_report_remote_config_t *out);
+
+/**
+ * @brief 持久化远端 syslog 配置；server 为空或 port 为 0 表示禁用远端上报
+ * @return 0 成功，-1 失败
+ */
+int dev_db_set_syslog_remote(const char *server, uint16_t port);
 
 #endif /* DEV_DB_H */

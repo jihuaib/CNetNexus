@@ -55,5 +55,19 @@ void dev_bdr_show_config(dev_ipc_message_t *msg)
         }
     }
 
+    syslog_report_remote_config_t syslog_cfg;
+    if (dev_db_get_syslog_remote(&syslog_cfg) == 0 && syslog_cfg.enabled && syslog_cfg.server[0] != '\0')
+    {
+        g_string_append(out, "!\r\n");
+        if (syslog_cfg.port == 514u)
+        {
+            g_string_append_printf(out, "syslog server %s\r\n", syslog_cfg.server);
+        }
+        else
+        {
+            g_string_append_printf(out, "syslog server %s port %u\r\n", syslog_cfg.server, (unsigned)syslog_cfg.port);
+        }
+    }
+
     (void)cli_chunk_stream_start(&g_dev_local->show_stream, dev_get_ipc_ctx(), DEV_MODULE_ID_DEV, msg, out);
 }

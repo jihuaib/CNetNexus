@@ -356,6 +356,11 @@ int isis_module_init(void)
     /* 阻塞直到所有订阅 peer IPC 都 CONNECTED 再 notify_ready，避免 CFG 端发命令 race。 */
     (void)dev_ipc_wait_all_subscribed_connected(ctx, 0);
 
+    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_SNMP, 0, NULL, NULL) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("ISIS: optional subscribe(SNMP) failed");
+    }
+
     if (dev_ipc_is_connected(ctx, DEV_MODULE_ID_DB))
     {
         isis_handle_db_ready();

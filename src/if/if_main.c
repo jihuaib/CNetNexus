@@ -417,6 +417,11 @@ int if_module_init(void)
      * 不能用超时后继续 —— DEV 视角 READY 而 CFG 还连不上 IF 会让命令派发踩到 race。 */
     (void)dev_ipc_wait_all_subscribed_connected(ctx, 0);
 
+    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_SNMP, 0, NULL, NULL) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("IF: optional subscribe(SNMP) failed");
+    }
+
     if (dev_ipc_is_connected(ctx, DEV_MODULE_ID_DB))
     {
         if_handle_db_ready();

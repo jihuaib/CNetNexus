@@ -75,19 +75,19 @@ typedef struct vrf_rt
  */
 typedef struct vrf_api_af
 {
-    uint16_t afi;             /**< VRF_AFI_* */
-    uint8_t has_rd;           /**< 1=已配置 RD */
-    uint8_t _pad;             /**< 对齐填充 */
-    vrf_rd_t rd;              /**< RD（has_rd=1 时有效） */
-    uint8_t apply_label_mode; /**< VRF_APPLY_LABEL_*（默认 per-vrf=0） */
-    uint16_t import_rt_count; /**< import RT 数量 */
-    uint16_t export_rt_count; /**< export RT 数量 */
+    uint16_t afi;                  /**< VRF_AFI_* */
+    uint8_t has_rd;                /**< 1=已配置 RD */
+    uint8_t _pad;                  /**< 对齐填充 */
+    vrf_rd_t rd;                   /**< RD（has_rd=1 时有效） */
+    uint8_t apply_label_mode;      /**< VRF_APPLY_LABEL_*（默认 per-vrf=0） */
+    uint16_t import_rt_count;      /**< import RT 数量 */
+    uint16_t export_rt_count;      /**< export RT 数量 */
     uint16_t evpn_import_rt_count; /**< EVPN import RT 数量 */
     uint16_t evpn_export_rt_count; /**< EVPN export RT 数量 */
-    vrf_rt_t *import_rts;     /**< import RT 数组（lib 持有） */
-    vrf_rt_t *export_rts;     /**< export RT 数组（lib 持有） */
-    vrf_rt_t *evpn_import_rts; /**< EVPN import RT 数组（lib 持有） */
-    vrf_rt_t *evpn_export_rts; /**< EVPN export RT 数组（lib 持有） */
+    vrf_rt_t *import_rts;          /**< import RT 数组（lib 持有） */
+    vrf_rt_t *export_rts;          /**< export RT 数组（lib 持有） */
+    vrf_rt_t *evpn_import_rts;     /**< EVPN import RT 数组（lib 持有） */
+    vrf_rt_t *evpn_export_rts;     /**< EVPN export RT 数组（lib 持有） */
 } vrf_api_af_t;
 
 /**

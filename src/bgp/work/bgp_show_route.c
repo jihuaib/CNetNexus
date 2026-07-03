@@ -320,8 +320,8 @@ static void bgp_show_evpn_esi_to_str(const bgp_esi_t *esi, char *buf, size_t sz)
         return;
     }
     const uint8_t *b = esi->bytes;
-    snprintf(buf, sz, "%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x", b[0], b[1], b[2], b[3], b[4], b[5],
-             b[6], b[7], b[8], b[9]);
+    snprintf(buf, sz, "%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x", b[0], b[1], b[2], b[3], b[4], b[5], b[6],
+             b[7], b[8], b[9]);
 }
 
 static gboolean bgp_show_route_width_cb(gpointer key, gpointer value, gpointer user_data)

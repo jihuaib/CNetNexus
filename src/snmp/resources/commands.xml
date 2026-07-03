@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration module-id="15">
+    <command_groups>
+        <!-- snmp trap server <server> [port <port>] / no snmp trap server -->
+        <group group-id="1">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>snmp</name>
+                    <description>SNMP configuration</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>trap</name>
+                    <description>SNMP trap configuration</description>
+                </element>
+                <element id="3" type="keyword">
+                    <name>server</name>
+                    <description>SNMP trap receiver</description>
+                </element>
+                <element id="4" cfg-id="1" type="parameter">
+                    <name>&lt;server&gt;</name>
+                    <description>SNMP trap receiver address or hostname</description>
+                    <type>string(1-127)</type>
+                </element>
+                <element id="5" type="keyword">
+                    <name>port</name>
+                    <description>SNMP trap UDP port</description>
+                </element>
+                <element id="6" cfg-id="2" type="parameter">
+                    <name>&lt;port&gt;</name>
+                    <description>SNMP trap UDP port</description>
+                    <type>uint(1-65535)</type>
+                </element>
+                <element id="7" type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+            </elements>
+
+            <commands>
+                <command auto-start="true">
+                    <expression>1 2 3 4 [5 6]</expression>
+                    <views>config</views>
+                </command>
+                <command>
+                    <expression>7 1 2 3</expression>
+                    <views>config</views>
+                </command>
+            </commands>
+        </group>
+    </command_groups>
+</configuration>

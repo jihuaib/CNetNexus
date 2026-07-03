@@ -893,6 +893,9 @@ int32_t dev_init_all_modules(void)
         {
             /* 恢复后立即广播给所有已连接模块，使日志级别全局一致 */
             dev_broadcast_log_level((uint32_t)log_get_level());
+            syslog_report_remote_config_t syslog_cfg;
+            syslog_report_get_remote(&syslog_cfg);
+            dev_broadcast_syslog_remote(&syslog_cfg);
         }
     }
 

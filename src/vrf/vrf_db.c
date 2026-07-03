@@ -31,10 +31,8 @@ static const db_table_def_t VRF_INSTANCE_TBL = {
 };
 
 static const db_column_def_t VRF_AF_COLS[] = {
-    {"vrf_id", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
-    {"afi", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
-    {"has_rd", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},
-    {"rd", DB_TYPE_TEXT, DB_COL_NONE, NULL},
+    {"vrf_id", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},          {"afi", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
+    {"has_rd", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},           {"rd", DB_TYPE_TEXT, DB_COL_NONE, NULL},
     {"apply_label_mode", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},
 };
 static const db_table_def_t VRF_AF_TBL = {
@@ -44,7 +42,7 @@ static const db_table_def_t VRF_AF_TBL = {
 };
 
 static const db_column_def_t VRF_RT_COLS[] = {
-    {"vrf_id", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL}, {"afi", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
+    {"vrf_id", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},    {"afi", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
     {"direction", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL}, {"rt_type", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},
     {"rt", DB_TYPE_BLOB, DB_COL_NOT_NULL, NULL},
 };

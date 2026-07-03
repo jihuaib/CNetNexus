@@ -404,8 +404,7 @@ static int bgp_vrf_export_process_one(bgp_instance_t *vpn_inst, bgp_rthead_t *sr
      * 二者都不能再导出回 vpnv4（REMOTE_CROSS 会与对端续命成环；LOCAL_CROSS 属本地交叉单跳，
      * 不应经 vpnv4 再传递）。等同 best 缺失：撤销本地导出。 */
     if (!src_best || !BIT_TEST(src_best->flags, BGP_ROUTE_FLAG_VALID) ||
-        (bgp_vrf_export_is_evpn_target(vpn_inst) &&
-         !BIT_TEST(src_inst->flags, BGP_INST_FLAG_ADVERTISE_EVPN_ROUTE)) ||
+        (bgp_vrf_export_is_evpn_target(vpn_inst) && !BIT_TEST(src_inst->flags, BGP_INST_FLAG_ADVERTISE_EVPN_ROUTE)) ||
         BIT_TEST(src_best->flags, BGP_ROUTE_FLAG_REMOTE_CROSS) || BIT_TEST(src_best->flags, BGP_ROUTE_FLAG_LOCAL_CROSS))
     {
         /* best 缺失/不可导出：解除溯源关联并撤销 vpnv4 中该 (rd, prefix) 的本地导出路由 */

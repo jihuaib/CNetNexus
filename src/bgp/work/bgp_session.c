@@ -20,10 +20,12 @@
 #include "bgp_fsm.h"
 #include "bgp_pkt.h"
 #include "bgp_relay.h"
+#include "bgp_snmp_report.h"
 #include "bgp_update_group.h"
 #include "bgp_vrf.h"
 #include "bgp_worker.h"
 #include "log.h"
+#include "syslog_report.h"
 
 bgp_session_t *bgp_session_create(const net_addr_t *addr, uint32_t remote_as, bgp_vrf_t *vrf)
 {
@@ -225,6 +227,7 @@ void bgp_neighbor_down(bgp_session_t *sess, int epoll_fd)
     char addr_str[64];
     net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
     LOG_INFO("BGP: neighbor %s admin down — sending NOTIFICATION and resetting session", addr_str);
+    bgp_fsm_state_t old_state = sess->fsm_state;
 
     /* BMP Peer Down 通知（在连接关闭前发送，确保 per-peer header 信息完整） */
     if (sess->fsm_state == BGP_FSM_STATE_ESTABLISHED)
@@ -276,6 +279,10 @@ void bgp_neighbor_down(bgp_session_t *sess, int epoll_fd)
      * 若保留 Established/OpenSent 等旧状态，后续 ConnectRetryTimer_Expires /
      * TcpConnectionConfirmed 会走到错误分支，导致本可重建的会话卡死。 */
     sess->fsm_state = BGP_FSM_STATE_ACTIVE;
+    syslog_report(old_state == BGP_FSM_STATE_ESTABLISHED ? SYSLOG_REPORT_WARNING : SYSLOG_REPORT_NOTICE, "bgp",
+                  "neighbor-admin-down", "neighbor=%s old=%s new=%s remote_as=%u", addr_str,
+                  bgp_fsm_state_str(old_state), bgp_fsm_state_str(sess->fsm_state), (unsigned)sess->remote_as);
+    bgp_snmp_report_neighbor_state(sess, old_state, sess->fsm_state);
 
     /* 步骤 6：按 VRF 配置的 connect-retry 间隔调度重连定时器
      *         到期后触发 bgp_session_start_active → bgp_pkt_send_open */
@@ -521,6 +528,7 @@ void bgp_session_stop_all(bgp_session_t *session)
         return;
     }
     int epoll_fd = g_bgp_work_local->epoll_fd;
+    bgp_fsm_state_t old_state = session->fsm_state;
 
     bgp_session_cancel_retry(session, epoll_fd);
     bgp_session_cancel_keepalive(session, epoll_fd);
@@ -542,4 +550,5 @@ void bgp_session_stop_all(bgp_session_t *session)
     (void)bgp_vrf_purge_session_routes(session->vrf, &session->neighbor_addr);
     bgp_session_reset_negotiated(session);
     session->fsm_state = BGP_FSM_STATE_IDLE;
+    bgp_snmp_report_neighbor_state(session, old_state, session->fsm_state);
 }

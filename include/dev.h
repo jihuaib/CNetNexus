@@ -46,6 +46,8 @@
 #define DEV_MODULE_ID_ACCESS 0x0000000D
 /** LLDP 模块 */
 #define DEV_MODULE_ID_LLDP 0x0000000E
+/** SNMP 模块 */
+#define DEV_MODULE_ID_SNMP 0x0000000F
 
 /** 无效文件描述符 */
 #define DEV_INVALID_FD (-1)
@@ -88,6 +90,8 @@
 #define DEV_MODULE_PORT_ACCESS 4013
 /** LLDP 模块 IPC 监听端口 */
 #define DEV_MODULE_PORT_LLDP 4014
+/** SNMP 模块 IPC 监听端口 */
+#define DEV_MODULE_PORT_SNMP 4015
 
 // ============================================================================
 // IPC 前向声明
@@ -158,6 +162,8 @@ typedef dev_ipc_disconnect_handler_fn dev_ipc_disconnect_handler_fn;
 #define DEV_IPC_CATEGORY_ACCESS 0x000D
 /** LLDP 模块消息大类 */
 #define DEV_IPC_CATEGORY_LLDP 0x000E
+/** SNMP 模块消息大类 */
+#define DEV_IPC_CATEGORY_SNMP 0x000F
 
 // ============================================================================
 // DEV IPC 消息结构
@@ -390,6 +396,8 @@ extern dev_ipc_context_t *g_dev_ipc_context;
 #define DEV_IPC_MSG_TYPE_DEV_QUERY_IPC_CONNS_RESP DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_DEV, 0x0007)
 /** 设置目标模块的日志级别（payload = 4 字节 uint32 网络字节序，由 IPC 库层自动处理） */
 #define DEV_IPC_MSG_TYPE_DEV_SET_LOG_LEVEL DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_DEV, 0x0008)
+/** 设置目标模块的远端 syslog（payload = syslog_report_remote_config_t，整数字段为网络字节序） */
+#define DEV_IPC_MSG_TYPE_DEV_SET_SYSLOG_REMOTE DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_DEV, 0x000D)
 /** 模块阶段响应 */
 #define DEV_IPC_MSG_TYPE_DEV_MODULE_RESP DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_DEV, 0x000F)
 /** 查询目标模块的本地 sub_mgr 订阅表（由 IPC 库层自动处理，无需应用层介入） */

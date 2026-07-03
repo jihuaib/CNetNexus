@@ -36,6 +36,7 @@
 #include "log.h"
 #include "net_addr.h"
 #include "path_utils.h"
+#include "syslog_report.h"
 #include "vrf.h"
 
 static gint g_reboot_in_progress = 0;
@@ -1573,6 +1574,79 @@ static int handle_set_log_level(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, 
     return ERRCODE_SUCCESS;
 }
 
+static int handle_set_syslog_remote(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    gboolean is_no = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
+    char server[SYSLOG_REPORT_SERVER_MAX] = {0};
+    uint16_t port = 514u;
+
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (CLI_TLV_IS_CTX(&entry))
+        {
+            cli_tlv_entry_free(&entry);
+            continue;
+        }
+
+        if (entry.cfg_id == 1 && entry.value && entry.length > 0)
+        {
+            size_t n = entry.length < sizeof(server) - 1u ? entry.length : sizeof(server) - 1u;
+            memcpy(server, entry.value, n);
+            server[n] = '\0';
+        }
+        else if (entry.cfg_id == 2 && entry.value && entry.length == 8)
+        {
+            uint32_t hi = 0;
+            uint32_t lo = 0;
+            memcpy(&hi, entry.value, 4);
+            memcpy(&lo, entry.value + 4, 4);
+            uint64_t v = ((uint64_t)ntohl(hi) << 32) | ntohl(lo);
+            if (v > 0 && v <= 65535)
+            {
+                port = (uint16_t)v;
+            }
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    if (is_no)
+    {
+        syslog_report_disable_remote();
+        syslog_report_remote_config_t cfg = {0};
+        dev_broadcast_syslog_remote(&cfg);
+        if (dev_db_set_syslog_remote("", 0) != 0)
+        {
+            dev_send_cli_response(ctx, msg, "Dev: syslog remote disabled but failed to persist to DB.\r\n");
+            return ERRCODE_FAIL;
+        }
+        dev_send_cli_response(ctx, msg, "Dev: syslog remote disabled.\r\n");
+        return ERRCODE_SUCCESS;
+    }
+
+    if (server[0] == '\0')
+    {
+        dev_send_cli_response(ctx, msg, "Dev Error: syslog server required.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    syslog_report_set_remote(server, port);
+    syslog_report_remote_config_t cfg;
+    syslog_report_get_remote(&cfg);
+    dev_broadcast_syslog_remote(&cfg);
+
+    if (dev_db_set_syslog_remote(server, port) != 0)
+    {
+        dev_send_cli_response(ctx, msg, "Dev: syslog remote applied but failed to persist to DB.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    char resp[256];
+    snprintf(resp, sizeof(resp), "Dev: syslog remote set to %s:%u.\r\n", server, (unsigned)port);
+    dev_send_cli_response(ctx, msg, resp);
+    return ERRCODE_SUCCESS;
+}
+
 static const char *ipc_state_to_string(dev_ipc_costate_t state)
 {
     switch (state)
@@ -2171,6 +2245,9 @@ int dev_cli_handle_message(dev_ipc_message_t *msg)
             break;
         case DEV_CLI_GROUP_ID_LOG_LEVEL:
             result = handle_set_log_level(ctx, msg, &parser);
+            break;
+        case DEV_CLI_GROUP_ID_SYSLOG_REMOTE:
+            result = handle_set_syslog_remote(ctx, msg, &parser);
             break;
         case DEV_CLI_GROUP_ID_PING:
             result = handle_ping(ctx, msg, &parser);

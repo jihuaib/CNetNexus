@@ -55,6 +55,9 @@ pkg_check_modules(GLIB REQUIRED glib-2.0)
 find_package(SQLite3 REQUIRED)
 include_directories(${SQLite3_INCLUDE_DIRS})
 
+# Find Net-SNMP for the SNMP agent module
+pkg_check_modules(NETSNMP_AGENT REQUIRED netsnmp-agent)
+
 # Include directories (global)
 include_directories(${PROJECT_SOURCE_DIR}/include)
 include_directories(${GLIB_INCLUDE_DIRS})

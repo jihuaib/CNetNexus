@@ -231,6 +231,42 @@ void dev_broadcast_log_level(uint32_t level)
     dev_module_foreach(broadcast_log_level_cb, &level_be);
 }
 
+static gboolean broadcast_syslog_remote_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    dev_module_t *module = (dev_module_t *)value;
+    const syslog_report_remote_config_t *cfg = (const syslog_report_remote_config_t *)user_data;
+
+    if (!cfg || module->module_id == DEV_MODULE_ID_DEV || module->phase < DEV_PHASE_LOADED)
+    {
+        return FALSE;
+    }
+
+    syslog_report_remote_config_t payload = *cfg;
+    payload.enabled = htonl(payload.enabled);
+    payload.port = htonl(payload.port);
+    payload.server[sizeof(payload.server) - 1] = '\0';
+
+    dev_ipc_message_t *req = dev_ipc_message_create(DEV_IPC_MSG_TYPE_DEV_SET_SYSLOG_REMOTE, DEV_MODULE_ID_DEV,
+                                                    module->module_id, 0, &payload, sizeof(payload), NULL);
+    if (!req)
+    {
+        return FALSE;
+    }
+    dev_ipc_send(g_dev_local->dev_ipc_ctx, module->module_id, req);
+    dev_ipc_message_free(req);
+    return FALSE;
+}
+
+void dev_broadcast_syslog_remote(const syslog_report_remote_config_t *cfg)
+{
+    if (!cfg)
+    {
+        return;
+    }
+    dev_module_foreach(broadcast_syslog_remote_cb, (void *)cfg);
+}
+
 /**
  * @brief 获取 DEV 的 IPC context
  * @return DEV 的 IPC context

@@ -67,9 +67,13 @@ ISIS_V6_METRIC = 77
 ISIS_V6_HELLO = 11
 ISIS_V6_HOLD = 6
 
+SYSLOG_SERVER = "192.0.2.250"
+SYSLOG_PORT = 5514
+
 
 CONFIG_COMMANDS = [
     "config",
+    f"syslog server {SYSLOG_SERVER} port {SYSLOG_PORT}",
     f"if loop {LOOP_ID}",
     f"ip address {LOOP_V4} {LOOP_V4_PREFIX}",
     f"ipv6 address {LOOP_V6} {LOOP_V6_PREFIX}",
@@ -153,6 +157,7 @@ EXPECTED_FRAGMENTS = [
     f"isis ipv6 hello-interval {ISIS_TAG} {ISIS_V6_HELLO}",
     f"isis ipv6 hold-multiplier {ISIS_TAG} {ISIS_V6_HOLD}",
     f"isis ipv6 passive {ISIS_TAG}",
+    f"syslog server {SYSLOG_SERVER} port {SYSLOG_PORT}",
 ]
 EXPECTED_COUNTS = {
     "import-route static": 2,
@@ -163,6 +168,15 @@ FINAL_ABSENT_FRAGMENTS = list(dict.fromkeys(EXPECTED_FRAGMENTS))
 
 
 DELETE_STEPS: list[dict[str, object]] = [
+    {
+        "label": "Syslog remote server",
+        "commands": [
+            "config",
+            "no syslog server",
+            "end",
+        ],
+        "not_contains": [f"syslog server {SYSLOG_SERVER} port {SYSLOG_PORT}"],
+    },
     {
         "label": "BMP monitor neighbor",
         "commands": [
@@ -531,6 +545,7 @@ def _hard_cleanup(rt: TopologyRuntime) -> None:
             "no bgp",
             f"no isis {ISIS_TAG}",
             f"no if loop {LOOP_ID}",
+            "no syslog server",
             "end",
         ],
     )

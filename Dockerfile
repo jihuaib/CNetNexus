@@ -17,6 +17,8 @@ RUN apt-get update && \
     libglib2.0-dev \
     libxml2-dev \
     libsqlite3-dev \
+    libsnmp-dev \
+    snmp \
     clang-format \
     clang-tidy \
     gdb \
@@ -86,6 +88,8 @@ RUN apt-get update && \
     libglib2.0-0 \
     libxml2 \
     libsqlite3-0 \
+    libsnmp40t64 \
+    snmp \
     tcpdump \
     iproute2 \
     iputils-ping \

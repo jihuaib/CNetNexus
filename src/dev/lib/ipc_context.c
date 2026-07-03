@@ -22,6 +22,7 @@
 #include "dev.h"
 #include "errcode.h"
 #include "log.h"
+#include "syslog_report.h"
 
 /** 将模块 ID 格式化为可读字符串（用于日志），结果写入 buf */
 static const char *fmt_module_id(uint32_t module_id, char *buf, size_t buf_size)
@@ -509,6 +510,29 @@ static void handle_frame(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn, dev
                 else
                 {
                     LOG_WARN("<%s> Ignore SET_LOG_LEVEL: invalid level %u", ctx->name, level);
+                }
+            }
+            break;
+        }
+
+        case DEV_IPC_MSG_TYPE_DEV_SET_SYSLOG_REMOTE:
+        {
+            if (header->payload_len >= sizeof(syslog_report_remote_config_t) && payload)
+            {
+                syslog_report_remote_config_t cfg;
+                memcpy(&cfg, payload, sizeof(cfg));
+                cfg.enabled = ntohl(cfg.enabled);
+                cfg.port = ntohl(cfg.port);
+                cfg.server[sizeof(cfg.server) - 1] = '\0';
+                if (cfg.enabled && cfg.server[0] != '\0' && cfg.port > 0 && cfg.port <= 65535)
+                {
+                    syslog_report_set_remote(cfg.server, (uint16_t)cfg.port);
+                    LOG_INFO("<%s> Syslog remote set to %s:%u via IPC", ctx->name, cfg.server, (unsigned)cfg.port);
+                }
+                else
+                {
+                    syslog_report_disable_remote();
+                    LOG_INFO("<%s> Syslog remote disabled via IPC", ctx->name);
                 }
             }
             break;

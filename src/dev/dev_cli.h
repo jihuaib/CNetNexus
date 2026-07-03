@@ -25,6 +25,7 @@
 #define DEV_CLI_GROUP_ID_CD 12
 #define DEV_CLI_GROUP_ID_MORE 13
 #define DEV_CLI_GROUP_ID_PWD 14
+#define DEV_CLI_GROUP_ID_SYSLOG_REMOTE 15
 
 typedef struct dev_cli_out
 {

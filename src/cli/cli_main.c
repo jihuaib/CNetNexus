@@ -31,6 +31,7 @@
 #include "errcode.h"
 #include "log.h"
 #include "path_utils.h"
+#include "syslog_report.h"
 
 cli_local_t *g_cli_local = NULL;
 
@@ -432,6 +433,12 @@ static void cli_handle_line_input(dev_ipc_context_t *ctx, dev_ipc_message_t *msg
     s->line_cmd_arg2 = 0;
     cli_access_output_reset(s);
     g_string_truncate(s->out, 0);
+    if (req->cmdline[0] != '\0')
+    {
+        const char *view = s->current_view ? s->current_view->view_name : "unknown";
+        syslog_report(SYSLOG_REPORT_NOTICE, "cli", "command", "line=%u peer=%s view=%s cmd=\"%s\"",
+                      (unsigned)s->line_id, s->client_ip, view, req->cmdline);
+    }
     process_command(req->cmdline, s);
 
     if (req->cmdline[0] != '\0')

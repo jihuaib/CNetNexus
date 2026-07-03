@@ -9,6 +9,7 @@
 
 #include "cli.h"
 #include "dev.h"
+#include "syslog_report.h"
 
 typedef struct dev_local
 {
@@ -40,5 +41,10 @@ void dev_cleanup_self(void);
  * @param level 目标日志级别（log_level_t 取值）
  */
 void dev_broadcast_log_level(uint32_t level);
+
+/**
+ * @brief 广播远端 syslog 配置给所有已就绪模块（IPC 库层透明应用）
+ */
+void dev_broadcast_syslog_remote(const syslog_report_remote_config_t *cfg);
 
 #endif // DEV_MAIN_H

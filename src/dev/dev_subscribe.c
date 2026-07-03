@@ -234,5 +234,10 @@ void dev_subscribe_handle_notify_ready(dev_ipc_message_t *msg)
     LOG_INFO("Module %s ready (epoch=%u), broadcasting to %u subscriber(s)", sender->name, sender->epoch,
              g_list_length(sender->subscribers));
 
+    dev_broadcast_log_level((uint32_t)log_get_level());
+    syslog_report_remote_config_t syslog_cfg;
+    syslog_report_get_remote(&syslog_cfg);
+    dev_broadcast_syslog_remote(&syslog_cfg);
+
     dev_subscribe_broadcast_event(sender, DEV_MODULE_EVENT_READY);
 }

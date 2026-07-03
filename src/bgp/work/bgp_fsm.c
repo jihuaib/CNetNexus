@@ -26,12 +26,14 @@
 #include "bgp_relay.h"
 #include "bgp_rib.h"
 #include "bgp_session.h"
+#include "bgp_snmp_report.h"
 #include "bgp_update_group.h"
 #include "bgp_vrf.h"
 #include "bgp_worker.h"
 #include "errcode.h"
 #include "log.h"
 #include "net_addr.h"
+#include "syslog_report.h"
 
 /** 动作函数统一签名 */
 typedef void (*bgp_fsm_action_fn)(bgp_session_t *sess);
@@ -934,5 +936,18 @@ void bgp_fsm_event(bgp_session_t *sess, bgp_fsm_event_t evt)
     {
         LOG_INFO("BGP FSM: neighbor=%s %s → %s (event=%s)", addr_str, bgp_fsm_state_str(old_state),
                  bgp_fsm_state_str(sess->fsm_state), bgp_fsm_event_str(evt));
+        syslog_report_severity_t sev = SYSLOG_REPORT_INFO;
+        if (sess->fsm_state == BGP_FSM_STATE_ESTABLISHED)
+        {
+            sev = SYSLOG_REPORT_NOTICE;
+        }
+        else if (old_state == BGP_FSM_STATE_ESTABLISHED)
+        {
+            sev = SYSLOG_REPORT_WARNING;
+        }
+        syslog_report(sev, "bgp", "neighbor-state", "neighbor=%s old=%s new=%s event=%s remote_as=%u", addr_str,
+                      bgp_fsm_state_str(old_state), bgp_fsm_state_str(sess->fsm_state), bgp_fsm_event_str(evt),
+                      (unsigned)sess->remote_as);
+        bgp_snmp_report_neighbor_state(sess, old_state, sess->fsm_state);
     }
 }

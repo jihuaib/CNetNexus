@@ -367,8 +367,8 @@ static void bdr_append_qp_routes(GString *out, const char *vrf_name, int64_t afi
  */
 static void bdr_append_af_block(GString *out, const char *vrf_name, const char *afi_str, int64_t afi, int64_t safi,
                                 int64_t import_protos, gboolean route_select_enabled, int64_t cluster_id,
-                                int64_t import_rib_sources, gboolean vpn_target_policy,
-                                gboolean advertise_evpn_route, const char *block_indent, const char *body_indent)
+                                int64_t import_rib_sources, gboolean vpn_target_policy, gboolean advertise_evpn_route,
+                                const char *block_indent, const char *body_indent)
 {
     g_string_append_printf(out, "%s!\r\n", block_indent);
     g_string_append_printf(out, "%saf %s\r\n", block_indent, afi_str);
@@ -562,8 +562,7 @@ static void bdr_append_scoped_af_instance(GString *out, const char *vrf_name, in
         if (afi_str)
         {
             bdr_append_af_block(out, vrf_name, afi_str, afi, safi, import_protos, route_select_enabled, cluster_id,
-                                import_rib_sources, vpn_target_policy, advertise_evpn_route, block_indent,
-                                body_indent);
+                                import_rib_sources, vpn_target_policy, advertise_evpn_route, block_indent, body_indent);
         }
     }
 

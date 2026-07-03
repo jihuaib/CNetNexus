@@ -273,6 +273,49 @@
             </commands>
         </group>
 
+        <!-- syslog server <server> [port <port>] / no syslog server -->
+        <group group-id="15">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>syslog</name>
+                    <description>Syslog reporting configuration</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>server</name>
+                    <description>Remote syslog server</description>
+                </element>
+                <element id="3" cfg-id="1" type="parameter">
+                    <name>&lt;server&gt;</name>
+                    <description>Remote syslog server address or hostname</description>
+                    <type>string(1-127)</type>
+                </element>
+                <element id="4" type="keyword">
+                    <name>port</name>
+                    <description>Remote syslog UDP port</description>
+                </element>
+                <element id="5" cfg-id="2" type="parameter">
+                    <name>&lt;port&gt;</name>
+                    <description>Remote syslog UDP port</description>
+                    <type>uint(1-65535)</type>
+                </element>
+                <element id="6" type="keyword">
+                    <name>no</name>
+                    <description>Disable remote syslog reporting</description>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>1 2 3 [4 5]</expression>
+                    <views>config</views>
+                </command>
+                <command>
+                    <expression>6 1 2</expression>
+                    <views>config</views>
+                </command>
+            </commands>
+        </group>
+
         <!-- reboot -->
         <group group-id="7">
             <elements>
