@@ -86,7 +86,7 @@ def _setup_vrf(rt: TopologyRuntime, device: str, rd: str, *, rt_export: bool, rt
     commands = [
         "config",
         f"vrf {VRF_NAME}",
-        "af ipv4-unicast",
+        "af ipv4",
         f"route-distinguisher {rd}",
         "apply-label per-vrf",
     ]
@@ -133,7 +133,7 @@ def _set_r2_import_rt(rt: TopologyRuntime, *, enabled: bool) -> None:
         commands=[
             "config",
             f"vrf {VRF_NAME}",
-            "af ipv4-unicast",
+            "af ipv4",
             f"vpn-target {RT} import" if enabled else f"no vpn-target {RT} import",
             "exit",
             "exit",

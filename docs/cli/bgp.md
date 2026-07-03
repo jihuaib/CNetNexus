@@ -38,10 +38,12 @@ BGP 模块（module-id: 6）提供全局 BGP、VRF BGP、多个地址族、邻�
 | `af ipv4-unicast` | bgp, bgp-vrf | 进入 IPv4 unicast AF |
 | `af ipv6-unicast` | bgp, bgp-vrf | 进入 IPv6 unicast AF |
 | `af vpnv4` | bgp | 进入全局 VPNv4 AF |
+| `af evpn` | bgp | 进入全局 EVPN AF |
 | `af ipv4-qp` | bgp | 进入 IPv4 QP AF |
 | `af ipv6-qp` | bgp | 进入 IPv6 QP AF |
 | `af ipv4-labeled` | bgp | 进入 IPv4 labeled-unicast AF |
-| `no af {ipv4-unicast|ipv6-unicast|ipv4-qp|ipv6-qp|ipv4-labeled|vpnv4}` | bgp, bgp-vrf | 删除 AF |
+| `no af {ipv4-unicast|ipv6-unicast|ipv4-qp|ipv6-qp|ipv4-labeled|vpnv4|evpn}` | bgp | 删除全局 AF |
+| `no af {ipv4-unicast|ipv6-unicast}` | bgp-vrf | 删除 VRF AF |
 
 ## 地址族视图命令
 
@@ -101,17 +103,19 @@ no route-select enable
 | 命令 | 视图 | 说明 |
 | --- | --- | --- |
 | `show bgp neighbor af vpnv4 [<ip-address>]` | global | 显示 VPNv4 邻居 |
+| `show bgp neighbor af evpn [<ip-address>]` | global | 显示 EVPN 邻居 |
 | `show bgp neighbor af ipv4-unicast [vrf <vrf-name>] [<ip-address>]` | global | 显示 IPv4 unicast 邻居 |
 | `show bgp neighbor af ipv6-unicast [vrf <vrf-name>] [<ip-address>]` | global | 显示 IPv6 unicast 邻居 |
 | `show bgp neighbor af ipv4-qp [<ip-address>]` | global | 显示 IPv4 QP 邻居 |
 | `show bgp neighbor af ipv6-qp [<ip-address>]` | global | 显示 IPv6 QP 邻居 |
 | `show bgp neighbor af ipv4-labeled [<ip-address>]` | global | 显示 IPv4 labeled 邻居 |
-| `show bgp route af <af> ...` | global | 显示指定 AF 路由，支持前缀、VRF、RD、QP key 或 peer Adj-RIB-In/Out 过滤 |
+| `show bgp route af <af> ...` | global | 显示指定 AF 路由，支持前缀、VRF、RD、QP/EVPN key 或 peer Adj-RIB-In/Out 过滤 |
 | `show bgp route af <af> [vrf <vrf-name>] peer <ipv4-address\|ipv6-address> recieve-routes [<ip-address> <masklen>]` | global | 显示指定 peer 的 Adj-RIB-In；同时兼容 `receive-routes` 拼写 |
 | `show bgp route af {ipv4-qp\|ipv6-qp} peer <ipv4-address\|ipv6-address> recieve-routes [<qp-route-key>]` | global | 显示指定 peer 的 QP Adj-RIB-In，可按 `dqpn=<n>,ip=<prefix>/<mask>` 或 `dqpn=<n>,ipv6=<prefix>/<mask>` 过滤 |
+| `show bgp route af evpn [rd <rd>] [<evpn-route-key>]` | global | 显示 EVPN 路由；Type-5 可按展示中的 `evpn:type=5,rd=<rd>,ethag=<n>,prefix=<prefix>/<mask>` 查询，ESI/GW/Label 在详情中显示 |
 | `show bgp route af <af> [vrf <vrf-name>] peer <ipv4-address\|ipv6-address> advertise-routes [<ip-address> <masklen>]` | global | 显示指定 peer 所在打包组发出的 Adj-RIB-Out 路由 |
 | `show bgp route af {ipv4-qp\|ipv6-qp} peer <ipv4-address\|ipv6-address> advertise-routes [<qp-route-key>]` | global | 显示指定 peer 所在打包组发出的 QP Adj-RIB-Out 路由 |
 | `show bgp attr af <af> ...` | global | 显示路径属性表 |
 | `show bgp update-group af <af> ...` | global | 显示 update-group |
 
-`<af>` 当前包括 `vpnv4`、`ipv4-unicast`、`ipv6-unicast`、`ipv4-qp`、`ipv6-qp`、`ipv4-labeled`。
+`<af>` 当前包括 `vpnv4`、`evpn`、`ipv4-unicast`、`ipv6-unicast`、`ipv4-qp`、`ipv6-qp`、`ipv4-labeled`。

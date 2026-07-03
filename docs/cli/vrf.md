@@ -15,11 +15,11 @@ VRF 视图提示符为 `<NetNexus(config-vrf-{ctx:5})>`。
 
 | 命令 | 视图 | 说明 |
 | --- | --- | --- |
-| `af ipv4-unicast` | vrf | 进入 IPv4 unicast 地址族视图 |
-| `af ipv6-unicast` | vrf | 进入 IPv6 unicast 地址族视图 |
-| `no af {ipv4-unicast|ipv6-unicast}` | vrf | 删除对应地址族配置 |
+| `af ipv4` | vrf | 进入 IPv4 地址族视图 |
+| `af ipv6` | vrf | 进入 IPv6 地址族视图 |
+| `no af {ipv4|ipv6}` | vrf | 删除对应地址族配置 |
 
-地址族视图提示符为 `<NetNexus(config-vrf-<name>-af-ipv4-uni)>` 或 `<NetNexus(config-vrf-<name>-af-ipv6-uni)>`。
+地址族视图提示符为 `<NetNexus(config-vrf-<name>-af-ipv4)>` 或 `<NetNexus(config-vrf-<name>-af-ipv6)>`。
 
 ## 地址族配置
 

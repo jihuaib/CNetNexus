@@ -164,7 +164,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             commands=[
                 "config",
                 f"vrf {BGP_VRF_NAME}",
-                "af ipv4-unicast",
+                "af ipv4",
                 f"route-distinguisher {BGP_VRF_RD}",
                 "exit",
                 "exit",

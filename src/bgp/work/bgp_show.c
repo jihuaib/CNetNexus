@@ -146,6 +146,10 @@ const char *bgp_af_str(bgp_afi_t afi, bgp_safi_t safi)
     {
         return "vpnv4";
     }
+    if (afi == BGP_AFI_L2VPN && safi == BGP_SAFI_EVPN)
+    {
+        return "evpn";
+    }
     return "unknown";
 }
 
@@ -441,6 +445,11 @@ static int handle_bgp_show_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
             case 8:
                 ctx.afi = BGP_AFI_IPV4;
                 ctx.safi = BGP_SAFI_VPN_UNICAST;
+                has_af = TRUE;
+                break;
+            case 9:
+                ctx.afi = BGP_AFI_L2VPN;
+                ctx.safi = BGP_SAFI_EVPN;
                 has_af = TRUE;
                 break;
             case 7:

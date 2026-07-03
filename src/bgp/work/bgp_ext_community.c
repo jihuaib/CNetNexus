@@ -77,23 +77,17 @@ gboolean bgp_ext_community_is_rt(const uint8_t entry[8])
     return (entry[1] == 0x02 && (kind == 0x00 || kind == 0x01 || kind == 0x02)) ? TRUE : FALSE;
 }
 
-void bgp_ext_community_merge_vrf_export_rts(bgp_attr_t *attr, uint32_t vrf_id, uint16_t afi)
+static void merge_rt_list(bgp_attr_t *attr, const vrf_rt_t *rts, uint16_t count, uint32_t vrf_id, uint16_t afi)
 {
-    if (!attr || vrf_id == VRF_PUBLIC_VRF_ID)
+    if (!attr || !rts || count == 0)
     {
         return;
     }
 
-    const vrf_api_af_t *af = vrf_api_cache_get_af(vrf_id, vrf_afi_from_bgp(afi), VRF_SAFI_UNICAST);
-    if (!af || !af->export_rts || af->export_rt_count == 0)
-    {
-        return;
-    }
-
-    for (uint16_t i = 0; i < af->export_rt_count; i++)
+    for (uint16_t i = 0; i < count; i++)
     {
         uint8_t ext[8];
-        if (!bgp_ext_community_rt_canon(&af->export_rts[i], ext) || ext_community_exists(attr, ext))
+        if (!bgp_ext_community_rt_canon(&rts[i], ext) || ext_community_exists(attr, ext))
         {
             continue;
         }
@@ -106,6 +100,38 @@ void bgp_ext_community_merge_vrf_export_rts(bgp_attr_t *attr, uint32_t vrf_id, u
         memcpy(attr->ext_communities + attr->ext_communities_len, ext, sizeof(ext));
         attr->ext_communities_len = (uint16_t)(attr->ext_communities_len + sizeof(ext));
     }
+}
+
+void bgp_ext_community_merge_vrf_export_rts(bgp_attr_t *attr, uint32_t vrf_id, uint16_t afi)
+{
+    if (!attr || vrf_id == VRF_PUBLIC_VRF_ID)
+    {
+        return;
+    }
+
+    const vrf_api_af_t *af = vrf_api_cache_get_af(vrf_id, vrf_afi_from_bgp(afi));
+    if (!af || !af->export_rts || af->export_rt_count == 0)
+    {
+        return;
+    }
+
+    merge_rt_list(attr, af->export_rts, af->export_rt_count, vrf_id, afi);
+}
+
+void bgp_ext_community_merge_vrf_evpn_export_rts(bgp_attr_t *attr, uint32_t vrf_id, uint16_t afi)
+{
+    if (!attr || vrf_id == VRF_PUBLIC_VRF_ID)
+    {
+        return;
+    }
+
+    const vrf_api_af_t *af = vrf_api_cache_get_af(vrf_id, vrf_afi_from_bgp(afi));
+    if (!af || !af->evpn_export_rts || af->evpn_export_rt_count == 0)
+    {
+        return;
+    }
+
+    merge_rt_list(attr, af->evpn_export_rts, af->evpn_export_rt_count, vrf_id, afi);
 }
 
 static void format_one(const uint8_t *d, char *buf, size_t bufsz)

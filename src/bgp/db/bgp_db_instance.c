@@ -30,6 +30,7 @@ static const db_column_def_t BGP_INSTANCE_COLS[] = {
     {"cluster_id", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"}, /* 主机序 32 位 cluster-id（0=用 router-id） */
     {"import_rib_sources", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"}, /* import-rib 源位掩码（bgp_import_src_t） */
     {"vpn_target_policy", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"}, /* VPN AF 入向 vpn-target 过滤（默认 1=启用） */
+    {"advertise_evpn_route", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"}, /* VRF route 导出到 EVPN */
 };
 
 const db_table_def_t BGP_INSTANCE_TABLE = {
@@ -261,6 +262,35 @@ int bgp_db_set_vpn_target_policy(const char *vrf_name, bgp_afi_t afi, bgp_safi_t
     return 0;
 }
 
+int bgp_db_set_advertise_evpn_route(const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi, bool enabled)
+{
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
+    if (!ctx || !vrf_name)
+    {
+        return -1;
+    }
+
+    db_filter_builder_t pk;
+    bgp_db_instance_pk(&pk, vrf_name, afi, safi);
+
+    db_col_t cols[] = {
+        DB_COL_INT("advertise_evpn_route", enabled ? 1 : 0),
+    };
+    int rows = db_rpc_update_cols(ctx, BGP_TABLE_INSTANCE, &pk.filter, cols, G_N_ELEMENTS(cols));
+    db_filter_clear(&pk);
+
+    if (rows <= 0)
+    {
+        LOG_ERROR("BGP 写入 advertise evpn route vrf=%s afi=%u safi=%u enabled=%d 失败", vrf_name, (unsigned)afi,
+                  (unsigned)safi, enabled ? 1 : 0);
+        return -1;
+    }
+
+    LOG_INFO("BGP advertise evpn route vrf=%s afi=%u safi=%u enabled=%d 已写入", vrf_name, (unsigned)afi,
+             (unsigned)safi, enabled ? 1 : 0);
+    return 0;
+}
+
 // ============================================================================
 // 启动恢复
 // ============================================================================
@@ -384,6 +414,20 @@ void bgp_db_restore_instances(void)
             vt.u.vpn_target.safi = safi;
             (void)bgp_worker_dispatch_apply(&vt);
             LOG_INFO("BGP restore: VRF %s afi=%u safi=%u no policy vpn-target", vrf_name, (unsigned)afi,
+                     (unsigned)safi);
+        }
+
+        if (afi == BGP_AFI_IPV4 && safi == BGP_SAFI_UNICAST && db_row_get_int(row, "advertise_evpn_route", 0) != 0)
+        {
+            bgp_apply_cmd_t adv;
+            memset(&adv, 0, sizeof(adv));
+            adv.group_id = BGP_CLI_GROUP_ID_ADVERTISE_EVPN_ROUTE;
+            adv.isNo = false;
+            snprintf(adv.vrf_name, sizeof(adv.vrf_name), "%s", vrf_name);
+            adv.u.advertise_evpn_route.afi = afi;
+            adv.u.advertise_evpn_route.safi = safi;
+            (void)bgp_worker_dispatch_apply(&adv);
+            LOG_INFO("BGP restore: VRF %s afi=%u safi=%u advertise evpn route", vrf_name, (unsigned)afi,
                      (unsigned)safi);
         }
     }

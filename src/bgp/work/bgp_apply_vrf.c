@@ -28,11 +28,6 @@ static bgp_protocol_t *bgp_proto(void)
     return g_bgp_work_local ? g_bgp_work_local->protocol : NULL;
 }
 
-static bgp_safi_t map_safi(uint8_t safi)
-{
-    return (safi == VRF_SAFI_UNICAST) ? BGP_SAFI_UNICAST : (bgp_safi_t)safi;
-}
-
 static bgp_afi_t map_afi(uint16_t afi)
 {
     if (afi == VRF_AFI_IPV4)
@@ -85,12 +80,12 @@ static void delete_vrf_af(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi, const
              reason ? reason : "VRF event");
 }
 
-static void on_af_disable(uint32_t vrf_id, uint16_t afi, uint8_t safi)
+static void on_af_disable(uint32_t vrf_id, uint16_t afi)
 {
-    delete_vrf_af(vrf_id, map_afi(afi), map_safi(safi), "driven by VRF_EVENT_AF_DISABLE");
+    delete_vrf_af(vrf_id, map_afi(afi), BGP_SAFI_UNICAST, "driven by VRF_EVENT_AF_DISABLE");
 }
 
-static void on_af_rd_add(uint32_t vrf_id, uint16_t afi, uint8_t safi, const vrf_rd_t *rd)
+static void on_af_rd_add(uint32_t vrf_id, uint16_t afi, const vrf_rd_t *rd)
 {
     if (vrf_id == BGP_VRF_PUBLIC_ID)
     {
@@ -98,7 +93,7 @@ static void on_af_rd_add(uint32_t vrf_id, uint16_t afi, uint8_t safi, const vrf_
     }
 
     bgp_afi_t bafi = map_afi(afi);
-    bgp_safi_t bsafi = map_safi(safi);
+    bgp_safi_t bsafi = BGP_SAFI_UNICAST;
 
     bgp_protocol_t *proto = bgp_proto();
     if (!proto)
@@ -121,7 +116,7 @@ static void on_af_rd_add(uint32_t vrf_id, uint16_t afi, uint8_t safi, const vrf_
     bgp_rd_t bgp_rd;
     memcpy(bgp_rd.bytes, rd->bytes, sizeof(bgp_rd.bytes));
     (void)bgp_protocol_ensure_rd_entry(proto, inst, &bgp_rd);
-    LOG_INFO("BGP: VRF %u afi=%u safi=%u RD ensured", vrf_id, afi, safi);
+    LOG_INFO("BGP: VRF %u afi=%u safi=%u RD ensured", vrf_id, afi, (unsigned)bsafi);
 
     /* vpnv4 已使能时,RD 配置晚于使能 → 把该 VRF 已有 ipv4-unicast 路由补灌导出 */
     if (bafi == BGP_AFI_IPV4 && bsafi == BGP_SAFI_UNICAST)
@@ -130,9 +125,9 @@ static void on_af_rd_add(uint32_t vrf_id, uint16_t afi, uint8_t safi, const vrf_
     }
 }
 
-static void on_af_rd_del(uint32_t vrf_id, uint16_t afi, uint8_t safi)
+static void on_af_rd_del(uint32_t vrf_id, uint16_t afi)
 {
-    delete_vrf_af(vrf_id, map_afi(afi), map_safi(safi), "driven by VRF_EVENT_AF_RD_DEL");
+    delete_vrf_af(vrf_id, map_afi(afi), BGP_SAFI_UNICAST, "driven by VRF_EVENT_AF_RD_DEL");
 }
 
 void bgp_apply_vrf_purge_non_public(void)
@@ -183,26 +178,26 @@ void bgp_apply_vrf_event(const dev_ipc_message_t *msg)
             break;
 
         case VRF_EVENT_AF_DISABLE:
-            /* 仅 ipv4-unicast AF 关闭才影响 vpnv4 导入的 IRT 索引 */
-            if (evt->afi == VRF_AFI_IPV4 && evt->safi == VRF_SAFI_UNICAST)
+            /* VRF 只通知 AFI；BGP 侧映射为 unicast SAFI。 */
+            if (evt->afi == VRF_AFI_IPV4)
             {
                 bgp_vrf_import_purge_vrf(evt->vrf_id);
             }
-            on_af_disable(evt->vrf_id, evt->afi, evt->safi);
+            on_af_disable(evt->vrf_id, evt->afi);
             bgp_vrf_import_backfill();
             break;
 
         case VRF_EVENT_AF_RD_ADD:
-            on_af_rd_add(evt->vrf_id, evt->afi, evt->safi, &evt->rd);
+            on_af_rd_add(evt->vrf_id, evt->afi, &evt->rd);
             break;
 
         case VRF_EVENT_AF_RD_DEL:
-            on_af_rd_del(evt->vrf_id, evt->afi, evt->safi);
+            on_af_rd_del(evt->vrf_id, evt->afi);
             break;
 
         case VRF_EVENT_AF_IMPORT_RT_ADD:
             /* 仅 ipv4-unicast import RT 参与 vpnv4 导入匹配；维护 IRT 索引并补评估已有 vpnv4 路由 */
-            if (evt->afi == VRF_AFI_IPV4 && evt->safi == VRF_SAFI_UNICAST &&
+            if (evt->afi == VRF_AFI_IPV4 && evt->rt_type == VRF_RT_TYPE_VPN &&
                 msg->payload_len >= offsetof(vrf_event_msg_t, rts) + sizeof(vrf_rt_t) && evt->rt_count >= 1)
             {
                 bgp_vrf_import_irt_add(evt->vrf_id, &evt->rts[0]);
@@ -215,7 +210,7 @@ void bgp_apply_vrf_event(const dev_ipc_message_t *msg)
             break;
 
         case VRF_EVENT_AF_IMPORT_RT_DEL:
-            if (evt->afi == VRF_AFI_IPV4 && evt->safi == VRF_SAFI_UNICAST &&
+            if (evt->afi == VRF_AFI_IPV4 && evt->rt_type == VRF_RT_TYPE_VPN &&
                 msg->payload_len >= offsetof(vrf_event_msg_t, rts) + sizeof(vrf_rt_t) && evt->rt_count >= 1)
             {
                 bgp_vrf_import_irt_del(evt->vrf_id, &evt->rts[0]);
@@ -233,13 +228,16 @@ void bgp_apply_vrf_event(const dev_ipc_message_t *msg)
              * 1) 本地交叉泄漏的目标集合；
              * 2) 本 VRF unicast RIB 已有路由的 effective ERT；
              * 3) 已导出到 vpnv4 的本地路由属性(ERT)。 */
-            if (evt->afi == VRF_AFI_IPV4 && evt->safi == VRF_SAFI_UNICAST)
+            if (evt->afi == VRF_AFI_IPV4)
             {
-                (void)bgp_relay_vrf_export_attr_rebuild(evt->vrf_id, BGP_AFI_IPV4);
+                if (evt->rt_type == VRF_RT_TYPE_VPN)
+                {
+                    (void)bgp_relay_vrf_export_attr_rebuild(evt->vrf_id, BGP_AFI_IPV4);
+                    bgp_vrf_import_local_backfill_source_vrf(evt->vrf_id);
+                }
                 bgp_vrf_export_backfill_vrf(evt->vrf_id);
-                bgp_vrf_import_local_backfill_source_vrf(evt->vrf_id);
             }
-            else if (evt->afi == VRF_AFI_IPV6 && evt->safi == VRF_SAFI_UNICAST)
+            else if (evt->afi == VRF_AFI_IPV6)
             {
                 (void)bgp_relay_vrf_export_attr_rebuild(evt->vrf_id, BGP_AFI_IPV6);
             }

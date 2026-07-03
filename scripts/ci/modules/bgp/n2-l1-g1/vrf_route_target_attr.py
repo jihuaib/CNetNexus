@@ -113,12 +113,12 @@ def _setup_vrf_interface(
     commands = [
         "config",
         f"vrf {VRF_NAME}",
-        "af ipv4-unicast",
+        "af ipv4",
         f"route-distinguisher {rd_v4}",
     ]
     if export_rt:
         commands.append(f"vpn-target {export_rt} export")
-    commands.extend(["exit", "af ipv6-unicast", f"route-distinguisher {rd_v6}"])
+    commands.extend(["exit", "af ipv6", f"route-distinguisher {rd_v6}"])
     if export_rt:
         commands.append(f"vpn-target {export_rt} export")
     commands.extend(["exit", "exit", "end"])

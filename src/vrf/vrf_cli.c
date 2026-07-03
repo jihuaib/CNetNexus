@@ -32,6 +32,7 @@
 #define VRF_CFGID_VRF_NAME 1
 #define VRF_CFGID_RD_RT_STR 1
 #define VRF_CFGID_RT_DIRECTION 2
+#define VRF_CFGID_RT_TYPE 3
 #define VRF_CFGID_APPLY_LABEL_MODE 3
 
 // ============================================================================
@@ -153,14 +154,11 @@ static int ctx_str_copy(const cli_tlv_entry_t *entry, char *out, size_t out_cap)
     return 1;
 }
 
-static int parse_af_ctx(cli_tlv_parser_t *parser, char *vrf_name, size_t vrf_name_size, uint16_t *afi_out,
-                        uint8_t *safi_out)
+static int parse_af_ctx(cli_tlv_parser_t *parser, char *vrf_name, size_t vrf_name_size, uint16_t *afi_out)
 {
     cli_tlv_entry_t entry;
     int got_vrf = 0;
     int got_afi = 0;
-
-    *safi_out = (uint8_t)VRF_SAFI_UNICAST;
 
     while (cli_tlv_next(parser, &entry) == 1)
     {
@@ -180,14 +178,6 @@ static int parse_af_ctx(cli_tlv_parser_t *parser, char *vrf_name, size_t vrf_nam
                 {
                     *afi_out = (uint16_t)v;
                     got_afi = 1;
-                }
-            }
-            else if (entry.cfg_id == CLI_CTX_ID_VRF_SAFI)
-            {
-                uint32_t v = 0;
-                if (cli_tlv_entry_get_u32(&entry, &v) == 0)
-                {
-                    *safi_out = (uint8_t)v;
                 }
             }
         }
@@ -254,6 +244,26 @@ static int parse_rt_dir(cli_tlv_parser_t *parser)
     return dir;
 }
 
+static uint8_t parse_rt_type(cli_tlv_parser_t *parser)
+{
+    uint8_t rt_type = VRF_RT_TYPE_VPN;
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (!CLI_TLV_IS_CTX(&entry) && entry.cfg_id == VRF_CFGID_RT_TYPE)
+        {
+            const char *s = cli_tlv_entry_get_text(&entry);
+            if (s && strcmp(s, "evpn") == 0)
+            {
+                rt_type = VRF_RT_TYPE_EVPN;
+            }
+        }
+        cli_tlv_entry_free(&entry);
+    }
+    cli_tlv_rewind(parser);
+    return rt_type;
+}
+
 // ============================================================================
 // 命令处理：构造 apply 同步 dispatch
 // ============================================================================
@@ -310,26 +320,25 @@ static int handle_create(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 }
 
 /**
- * @brief AF 关键字 cfg-id → (afi, safi) 映射
+ * @brief AF 关键字 cfg-id → afi 映射
  *
  * 与 commands.xml group 3 的关键字 cfg-id 一致：
- *   cfg-id=1 → ipv4-unicast
- *   cfg-id=2 → ipv6-unicast
- * 后续新增 vpn/labeled 等 SAFI 时在此追加，不再写死 SAFI。
+ *   cfg-id=1 → ipv4
+ *   cfg-id=2 → ipv6
+ *
+ * VRF CLI 只暴露 AFI。
  *
  * @return 0 命中并填充，-1 未识别
  */
-static int af_cfgid_to_pair(uint32_t cfg_id, uint16_t *afi_out, uint8_t *safi_out)
+static int af_cfgid_to_afi(uint32_t cfg_id, uint16_t *afi_out)
 {
     switch (cfg_id)
     {
         case 1:
             *afi_out = VRF_AFI_IPV4;
-            *safi_out = (uint8_t)VRF_SAFI_UNICAST;
             return 0;
         case 2:
             *afi_out = VRF_AFI_IPV6;
-            *safi_out = (uint8_t)VRF_SAFI_UNICAST;
             return 0;
         default:
             return -1;
@@ -341,10 +350,9 @@ static int handle_af(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     gboolean is_no = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
     char vrf_name[VRF_NAME_MAX_LEN] = {0};
     uint16_t afi = 0;
-    uint8_t safi = 0;
 
-    /* AF 命令本身切换视图，CLI_CTX_ID_VRF_AFI/SAFI 此刻尚未注入；
-     * (afi, safi) 由关键字 cfg-id 唯一决定（见 af_cfgid_to_pair），
+    /* AF 命令本身切换视图，CLI_CTX_ID_VRF_AFI 此刻尚未注入；
+     * afi 由关键字 cfg-id 唯一决定（见 af_cfgid_to_afi），
      * vrf_name 仍来自父视图已累积的 CLI_CTX_ID_VRF_NAME 上下文。 */
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
@@ -358,12 +366,12 @@ static int handle_af(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         }
         else
         {
-            (void)af_cfgid_to_pair(entry.cfg_id, &afi, &safi);
+            (void)af_cfgid_to_afi(entry.cfg_id, &afi);
         }
         cli_tlv_entry_free(&entry);
     }
 
-    if (vrf_name[0] == '\0' || afi == 0 || safi == 0)
+    if (vrf_name[0] == '\0' || afi == 0)
     {
         send_resp(msg, "VRF Error: Address-family context missing\r\n");
         return ERRCODE_FAIL;
@@ -373,7 +381,6 @@ static int handle_af(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     cmd.op = is_no ? VRF_APPLY_OP_AF_DELETE : VRF_APPLY_OP_AF_CREATE;
     g_strlcpy(cmd.vrf_name, vrf_name, sizeof(cmd.vrf_name));
     cmd.afi = afi;
-    cmd.safi = safi;
     int rc = dispatch_apply(&cmd);
     if (rc == VRF_APPLY_RC_FAIL)
     {
@@ -387,11 +394,11 @@ static int handle_af(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     }
     if (is_no)
     {
-        (void)vrf_db_delete_af(cmd.vrf_id, cmd.afi, cmd.safi);
+        (void)vrf_db_delete_af(cmd.vrf_id, cmd.afi);
     }
     else
     {
-        (void)vrf_db_set_af_rd(cmd.vrf_id, cmd.afi, cmd.safi, NULL);
+        (void)vrf_db_set_af_rd(cmd.vrf_id, cmd.afi, NULL);
     }
     send_resp(msg, "");
     return ERRCODE_SUCCESS;
@@ -402,8 +409,7 @@ static int handle_rd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     gboolean is_no = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
     char vrf_name[VRF_NAME_MAX_LEN] = {0};
     uint16_t afi = 0;
-    uint8_t safi = 0;
-    if (parse_af_ctx(parser, vrf_name, sizeof(vrf_name), &afi, &safi) != 0)
+    if (parse_af_ctx(parser, vrf_name, sizeof(vrf_name), &afi) != 0)
     {
         send_resp(msg, "VRF Error: Address-family context missing\r\n");
         return ERRCODE_FAIL;
@@ -417,7 +423,6 @@ static int handle_rd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     vrf_apply_cmd_t cmd = {0};
     g_strlcpy(cmd.vrf_name, vrf_name, sizeof(cmd.vrf_name));
     cmd.afi = afi;
-    cmd.safi = safi;
 
     if (is_no)
     {
@@ -450,7 +455,7 @@ static int handle_rd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         send_resp(msg, "");
         return ERRCODE_SUCCESS;
     }
-    (void)vrf_db_set_af_rd(cmd.vrf_id, cmd.afi, cmd.safi, is_no ? NULL : &cmd.rd);
+    (void)vrf_db_set_af_rd(cmd.vrf_id, cmd.afi, is_no ? NULL : &cmd.rd);
     send_resp(msg, "");
     return ERRCODE_SUCCESS;
 }
@@ -460,8 +465,7 @@ static int handle_rt(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     gboolean is_no = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
     char vrf_name[VRF_NAME_MAX_LEN] = {0};
     uint16_t afi = 0;
-    uint8_t safi = 0;
-    if (parse_af_ctx(parser, vrf_name, sizeof(vrf_name), &afi, &safi) != 0)
+    if (parse_af_ctx(parser, vrf_name, sizeof(vrf_name), &afi) != 0)
     {
         send_resp(msg, "VRF Error: Address-family context missing\r\n");
         return ERRCODE_FAIL;
@@ -483,9 +487,9 @@ static int handle_rt(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     cmd.op = VRF_APPLY_OP_RT_MODIFY;
     g_strlcpy(cmd.vrf_name, vrf_name, sizeof(cmd.vrf_name));
     cmd.afi = afi;
-    cmd.safi = safi;
     cmd.add = is_no ? 0 : 1;
     cmd.direction = (uint8_t)parse_rt_dir(parser);
+    cmd.rt_type = parse_rt_type(parser);
     if (parse_rd_rt(rt_str, cmd.rt.bytes) != 0)
     {
         send_resp(msg, "VRF Error: Invalid RT format (expect ASN:NN or IP:NN)\r\n");
@@ -500,11 +504,11 @@ static int handle_rt(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     /* both 方向写两次 */
     if (cmd.direction == 0 || cmd.direction == 2)
     {
-        (void)vrf_db_modify_rt(cmd.vrf_id, cmd.afi, cmd.safi, 0, cmd.add ? 1 : 0, &cmd.rt);
+        (void)vrf_db_modify_rt(cmd.vrf_id, cmd.afi, 0, cmd.rt_type, cmd.add ? 1 : 0, &cmd.rt);
     }
     if (cmd.direction == 1 || cmd.direction == 2)
     {
-        (void)vrf_db_modify_rt(cmd.vrf_id, cmd.afi, cmd.safi, 1, cmd.add ? 1 : 0, &cmd.rt);
+        (void)vrf_db_modify_rt(cmd.vrf_id, cmd.afi, 1, cmd.rt_type, cmd.add ? 1 : 0, &cmd.rt);
     }
     send_resp(msg, "");
     return ERRCODE_SUCCESS;
@@ -536,8 +540,7 @@ static int handle_apply_label(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     gboolean is_no = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
     char vrf_name[VRF_NAME_MAX_LEN] = {0};
     uint16_t afi = 0;
-    uint8_t safi = 0;
-    if (parse_af_ctx(parser, vrf_name, sizeof(vrf_name), &afi, &safi) != 0)
+    if (parse_af_ctx(parser, vrf_name, sizeof(vrf_name), &afi) != 0)
     {
         send_resp(msg, "VRF Error: Address-family context missing\r\n");
         return ERRCODE_FAIL;
@@ -551,7 +554,6 @@ static int handle_apply_label(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     vrf_apply_cmd_t cmd = {0};
     g_strlcpy(cmd.vrf_name, vrf_name, sizeof(cmd.vrf_name));
     cmd.afi = afi;
-    cmd.safi = safi;
     cmd.op = VRF_APPLY_OP_APPLY_LABEL_SET;
     /* no apply-label 恢复默认 per-vrf；否则取命令中的模式 */
     cmd.apply_label_mode = is_no ? VRF_APPLY_LABEL_PER_VRF : parse_apply_label_mode(parser);
@@ -567,7 +569,7 @@ static int handle_apply_label(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         send_resp(msg, "");
         return ERRCODE_SUCCESS;
     }
-    (void)vrf_db_set_af_apply_label(cmd.vrf_id, cmd.afi, cmd.safi, cmd.apply_label_mode);
+    (void)vrf_db_set_af_apply_label(cmd.vrf_id, cmd.afi, cmd.apply_label_mode);
     send_resp(msg, "");
     return ERRCODE_SUCCESS;
 }

@@ -40,14 +40,18 @@ void vrf_pub_handle_unsubscribe(dev_ipc_message_t *msg);
 void vrf_pub_notify_vrf_add(const vrf_entry_t *e);
 void vrf_pub_notify_vrf_del(const vrf_entry_t *e);
 void vrf_pub_notify_vrf_state(const vrf_entry_t *e);
-void vrf_pub_notify_af_enable(const vrf_entry_t *e, uint16_t afi, uint8_t safi);
-void vrf_pub_notify_af_disable(const vrf_entry_t *e, uint16_t afi, uint8_t safi);
+void vrf_pub_notify_af_enable(const vrf_entry_t *e, uint16_t afi);
+void vrf_pub_notify_af_disable(const vrf_entry_t *e, uint16_t afi);
 void vrf_pub_notify_af_rd_add(const vrf_entry_t *e, const vrf_af_state_t *af);
-void vrf_pub_notify_af_rd_del(const vrf_entry_t *e, uint16_t afi, uint8_t safi);
+void vrf_pub_notify_af_rd_del(const vrf_entry_t *e, uint16_t afi);
 void vrf_pub_notify_af_apply_label(const vrf_entry_t *e, const vrf_af_state_t *af);
-void vrf_pub_notify_af_import_rt_add(const vrf_entry_t *e, const vrf_af_state_t *af, const vrf_rt_t *rt);
-void vrf_pub_notify_af_import_rt_del(const vrf_entry_t *e, const vrf_af_state_t *af, const vrf_rt_t *rt);
-void vrf_pub_notify_af_export_rt_add(const vrf_entry_t *e, const vrf_af_state_t *af, const vrf_rt_t *rt);
-void vrf_pub_notify_af_export_rt_del(const vrf_entry_t *e, const vrf_af_state_t *af, const vrf_rt_t *rt);
+void vrf_pub_notify_af_import_rt_add(const vrf_entry_t *e, const vrf_af_state_t *af, const vrf_rt_t *rt,
+                                     uint8_t rt_type);
+void vrf_pub_notify_af_import_rt_del(const vrf_entry_t *e, const vrf_af_state_t *af, const vrf_rt_t *rt,
+                                     uint8_t rt_type);
+void vrf_pub_notify_af_export_rt_add(const vrf_entry_t *e, const vrf_af_state_t *af, const vrf_rt_t *rt,
+                                     uint8_t rt_type);
+void vrf_pub_notify_af_export_rt_del(const vrf_entry_t *e, const vrf_af_state_t *af, const vrf_rt_t *rt,
+                                     uint8_t rt_type);
 
 #endif /* VRF_PUB_H */

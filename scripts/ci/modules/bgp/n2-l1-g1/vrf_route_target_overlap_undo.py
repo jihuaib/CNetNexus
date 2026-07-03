@@ -93,7 +93,7 @@ def _setup_vrf_and_if(rt: TopologyRuntime, device: str, local_ip: str, rd: str, 
     commands = [
         "config",
         f"vrf {VRF_NAME}",
-        "af ipv4-unicast",
+        "af ipv4",
         f"route-distinguisher {rd}",
     ]
     if export_rt:
@@ -251,7 +251,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             commands=[
                 "config",
                 f"vrf {VRF_NAME}",
-                "af ipv4-unicast",
+                "af ipv4",
                 *[f"vpn-target {rt_value} export" for rt_value in R2_EXPORT_RTS],
                 "exit",
                 "exit",
@@ -279,7 +279,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             commands=[
                 "config",
                 f"vrf {VRF_NAME}",
-                "af ipv4-unicast",
+                "af ipv4",
                 *[f"no vpn-target {rt_value} export" for rt_value in R2_UNDO_EXPORT_RTS],
                 "exit",
                 "exit",

@@ -89,6 +89,8 @@
 #define CLI_VIEW_BGP_AF_IPV4_LABELED "bgp-af-ipv4-labeled"
 /** BGP 地址族 VPNv4（MPLS L3VPN）视图 */
 #define CLI_VIEW_BGP_AF_VPNV4 "bgp-af-vpnv4"
+/** BGP 地址族 EVPN 视图 */
+#define CLI_VIEW_BGP_AF_EVPN "bgp-af-evpn"
 /** BGP VRF 配置视图 */
 #define CLI_VIEW_BGP_VRF "bgp-vrf"
 /** BGP VRF IPv4 单播地址族视图 */
@@ -99,10 +101,10 @@
 #define CLI_VIEW_BGP_BMP "bgp-bmp"
 /** VRF 配置视图 */
 #define CLI_VIEW_VRF "vrf"
-/** VRF IPv4 单播地址族视图 */
-#define CLI_VIEW_VRF_AF_IPV4 "vrf-af-ipv4-uni"
-/** VRF IPv6 单播地址族视图 */
-#define CLI_VIEW_VRF_AF_IPV6 "vrf-af-ipv6-uni"
+/** VRF IPv4 地址族视图 */
+#define CLI_VIEW_VRF_AF_IPV4 "vrf-af-ipv4"
+/** VRF IPv6 地址族视图 */
+#define CLI_VIEW_VRF_AF_IPV6 "vrf-af-ipv6"
 /** BMP server 配置视图 */
 #define CLI_VIEW_SBMP "sbmp"
 /** VTY line 配置视图 */
@@ -133,8 +135,6 @@
 #define CLI_CTX_ID_ISIS_TAG 8
 /** VRF 视图当前 AF AFI 上下文（整数：VRF_AFI_*） */
 #define CLI_CTX_ID_VRF_AFI 9
-/** VRF 视图当前 AF SAFI 上下文（整数：VRF_SAFI_*） */
-#define CLI_CTX_ID_VRF_SAFI 10
 /** LDP 视图占位上下文（无字段，单实例 LDP；保留给将来多实例使用） */
 #define CLI_CTX_ID_LDP_INST 11
 /** ACCESS line_id 系统上下文（CLI 分发时注入，供业务模块输出实时进度） */

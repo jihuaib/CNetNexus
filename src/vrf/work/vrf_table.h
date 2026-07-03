@@ -18,12 +18,14 @@
 typedef struct vrf_af_state
 {
     uint16_t afi;
-    uint8_t safi;
+    uint8_t _pad[2];
     uint8_t has_rd;
     vrf_rd_t rd;
     uint8_t apply_label_mode; /**< VRF_APPLY_LABEL_*（默认 per-vrf=0） */
     GArray *import_rts;       /**< vrf_rt_t 数组 */
     GArray *export_rts;
+    GArray *evpn_import_rts;  /**< EVPN vrf_rt_t 数组 */
+    GArray *evpn_export_rts;
 } vrf_af_state_t;
 
 /**
@@ -35,7 +37,7 @@ typedef struct vrf_entry
     char name[VRF_NAME_MAX_LEN];
     uint32_t l3vrf_table_id;
     uint8_t os_state;
-    GHashTable *afs; /**< (afi<<8|safi) → vrf_af_state_t* */
+    GHashTable *afs; /**< afi → vrf_af_state_t* */
 } vrf_entry_t;
 
 /**
@@ -76,10 +78,10 @@ int vrf_table_delete(vrf_table_t *t, uint32_t vrf_id);
 /**
  * @brief AF 操作（无事件副作用，由 cfg_apply 在调用前后驱动 pub）
  */
-vrf_af_state_t *vrf_af_get_or_create(vrf_entry_t *e, uint16_t afi, uint8_t safi);
-vrf_af_state_t *vrf_af_find(const vrf_entry_t *e, uint16_t afi, uint8_t safi);
-int vrf_af_delete(vrf_entry_t *e, uint16_t afi, uint8_t safi);
+vrf_af_state_t *vrf_af_get_or_create(vrf_entry_t *e, uint16_t afi);
+vrf_af_state_t *vrf_af_find(const vrf_entry_t *e, uint16_t afi);
+int vrf_af_delete(vrf_entry_t *e, uint16_t afi);
 int vrf_af_set_rd(vrf_af_state_t *af, const vrf_rd_t *rd);
-int vrf_af_modify_rt(vrf_af_state_t *af, int direction, int add, const vrf_rt_t *rt);
+int vrf_af_modify_rt(vrf_af_state_t *af, int direction, uint8_t rt_type, int add, const vrf_rt_t *rt);
 
 #endif /* VRF_TABLE_H */

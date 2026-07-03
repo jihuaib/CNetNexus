@@ -37,11 +37,6 @@ static bgp_afi_t bgp_vrf_event_map_afi(uint16_t afi)
     return BGP_AFI_IPV4;
 }
 
-static bgp_safi_t bgp_vrf_event_map_safi(uint8_t safi)
-{
-    return (safi == VRF_SAFI_UNICAST) ? BGP_SAFI_UNICAST : (bgp_safi_t)safi;
-}
-
 static void bgp_handle_vrf_event_db_side_effect(const dev_ipc_message_t *msg)
 {
     if (!msg || !msg->payload || msg->payload_len < offsetof(vrf_event_msg_t, rts))
@@ -62,11 +57,11 @@ static void bgp_handle_vrf_event_db_side_effect(const dev_ipc_message_t *msg)
             break;
 
         case VRF_EVENT_AF_DISABLE:
-            (void)bgp_db_del_instance(evt->name, bgp_vrf_event_map_afi(evt->afi), bgp_vrf_event_map_safi(evt->safi));
+            (void)bgp_db_del_instance(evt->name, bgp_vrf_event_map_afi(evt->afi), BGP_SAFI_UNICAST);
             break;
 
         case VRF_EVENT_AF_RD_DEL:
-            (void)bgp_db_del_instance(evt->name, bgp_vrf_event_map_afi(evt->afi), bgp_vrf_event_map_safi(evt->safi));
+            (void)bgp_db_del_instance(evt->name, bgp_vrf_event_map_afi(evt->afi), BGP_SAFI_UNICAST);
             break;
 
         default:

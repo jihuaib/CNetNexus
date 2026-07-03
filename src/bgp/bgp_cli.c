@@ -215,6 +215,10 @@ static const char *bgp_af_str(bgp_afi_t afi, bgp_safi_t safi)
     {
         return "vpnv4";
     }
+    if (afi == BGP_AFI_L2VPN && safi == BGP_SAFI_EVPN)
+    {
+        return "evpn";
+    }
     return "unknown";
 }
 
@@ -538,6 +542,10 @@ static int handle_bgp_addr_family(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
             case 6:
                 ctx.afi = BGP_AFI_IPV4;
                 ctx.safi = BGP_SAFI_VPN_UNICAST;
+                break;
+            case 7:
+                ctx.afi = BGP_AFI_L2VPN;
+                ctx.safi = BGP_SAFI_EVPN;
                 break;
             default:
                 break;
@@ -1685,6 +1693,62 @@ static int handle_bgp_vpn_target_policy(dev_ipc_message_t *msg, cli_tlv_parser_t
     return ERRCODE_SUCCESS;
 }
 
+static int handle_bgp_advertise_evpn_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    bgp_apply_cmd_t apply;
+    memset(&apply, 0, sizeof(apply));
+    apply.group_id = BGP_CLI_GROUP_ID_ADVERTISE_EVPN_ROUTE;
+    apply.isNo = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
+    bgp_cli_ctx_t ctx = bgp_cli_ctx_default();
+
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (CLI_TLV_IS_CTX(&entry))
+        {
+            bgp_cli_ctx_parse(&ctx, &entry);
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    if (strcmp(ctx.vrf_name, VRF_PUBLIC_VRF_NAME) == 0 || ctx.afi != BGP_AFI_IPV4 || ctx.safi != BGP_SAFI_UNICAST)
+    {
+        bgp_send_cli_response(msg, "BGP Error: command only valid under private VRF ipv4-unicast address-family.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    bgp_cli_apply_ctx_set(&apply, &ctx);
+    apply.u.advertise_evpn_route.afi = ctx.afi;
+    apply.u.advertise_evpn_route.safi = ctx.safi;
+
+    if (bgp_worker_dispatch_apply(&apply) != 0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Server unavailable.\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (apply.rc == BGP_APPLY_RC_NOOP)
+    {
+        bgp_send_cli_response(msg, "");
+        return ERRCODE_SUCCESS;
+    }
+    if (apply.rc != BGP_APPLY_RC_OK)
+    {
+        char buf[280];
+        snprintf(buf, sizeof(buf), "%s\r\n", apply.errmsg);
+        bgp_send_cli_response(msg, buf);
+        return ERRCODE_FAIL;
+    }
+
+    if (bgp_db_set_advertise_evpn_route(ctx.vrf_name, ctx.afi, ctx.safi, !apply.isNo) != 0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    bgp_send_cli_response(msg, "");
+    return ERRCODE_SUCCESS;
+}
+
 /**
  * @brief 处理 refresh bgp 命令（group_id=18）
  *
@@ -2025,6 +2089,9 @@ int bgp_cli_handle_config_msg(dev_ipc_message_t *msg)
             break;
         case BGP_CLI_GROUP_ID_VPN_TARGET_POLICY:
             result = handle_bgp_vpn_target_policy(msg, &parser);
+            break;
+        case BGP_CLI_GROUP_ID_ADVERTISE_EVPN_ROUTE:
+            result = handle_bgp_advertise_evpn_route(msg, &parser);
             break;
         case BGP_CLI_GROUP_ID_REFRESH:
             result = handle_bgp_refresh(msg, &parser);

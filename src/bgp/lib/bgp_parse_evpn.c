@@ -254,39 +254,50 @@ static bool parse_evpn_type5(const uint8_t *val, uint8_t vlen, bgp_nlri_evpn_t *
     {
         return false;
     }
-    uint8_t plen = val[pos++];
+    uint8_t wire_plen = val[pos++];
 
-    /* 根据前缀长度判断 IPv4/IPv6 */
-    int af;
-    uint8_t ip_bytes;
-    if (plen <= 32)
+    /*
+     * Type-5 的 IP Prefix 字段按 NLRI 字节数变长携带。这里用 value length
+     * 反推前缀字节数，并按字节对齐后的长度作为本地 key mask，保证展示 key
+     * 和后续 prefix 查询能稳定重建 raw NLRI。
+     */
+    int af = 0;
+    uint8_t addr_bytes = 0;
+    uint8_t pfx_bytes = 0;
+    if (vlen >= 30 && vlen <= 34 && wire_plen <= 32)
     {
         af = AF_INET;
-        ip_bytes = 4;
+        addr_bytes = 4;
+        pfx_bytes = (uint8_t)(vlen - 30);
+    }
+    else if (vlen >= 42 && vlen <= 58)
+    {
+        af = AF_INET6;
+        addr_bytes = 16;
+        pfx_bytes = (uint8_t)(vlen - 42);
     }
     else
     {
-        af = AF_INET6;
-        ip_bytes = 16;
+        return false;
     }
 
-    if (pos + ip_bytes + ip_bytes + 3 > vlen)
+    if (pfx_bytes > addr_bytes || pos + pfx_bytes + addr_bytes + 3 > vlen)
     {
         return false;
     }
 
     /* IP Prefix */
     e->ip_prefix.addr.family = (sa_family_t)af;
-    e->ip_prefix.prefix_len = plen;
+    e->ip_prefix.prefix_len = (uint8_t)(pfx_bytes * 8u);
     if (af == AF_INET)
     {
-        memcpy(&e->ip_prefix.addr.u.v4, val + pos, 4);
+        memcpy(&e->ip_prefix.addr.u.v4, val + pos, pfx_bytes);
     }
     else
     {
-        memcpy(e->ip_prefix.addr.u.v6.s6_addr, val + pos, 16);
+        memcpy(e->ip_prefix.addr.u.v6.s6_addr, val + pos, pfx_bytes);
     }
-    pos += ip_bytes;
+    pos += pfx_bytes;
 
     /* Gateway IP */
     e->gw_ip.family = (sa_family_t)af;
@@ -298,7 +309,7 @@ static bool parse_evpn_type5(const uint8_t *val, uint8_t vlen, bgp_nlri_evpn_t *
     {
         memcpy(e->gw_ip.u.v6.s6_addr, val + pos, 16);
     }
-    pos += ip_bytes;
+    pos += addr_bytes;
 
     /* Label */
     e->label1 = bgp_label_decode(val + pos);
@@ -361,8 +372,8 @@ static void evpn_entry_to_str(const bgp_nlri_entry_t *entry, char *buf, size_t s
         {
             char prefix_str[INET6_ADDRSTRLEN];
             addr_to_str(&e->ip_prefix.addr, prefix_str, sizeof(prefix_str));
-            snprintf(buf, sz, "evpn:5:rd=%s:ethag=%u:%s/%u:label=%u", rd_str, e->eth_tag, prefix_str,
-                     e->ip_prefix.prefix_len, e->label1);
+            snprintf(buf, sz, "evpn:type=5,rd=%s,ethag=%u,prefix=%s/%u", rd_str, e->eth_tag, prefix_str,
+                     e->ip_prefix.prefix_len);
             break;
         }
 

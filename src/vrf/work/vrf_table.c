@@ -8,9 +8,9 @@
 
 #include <string.h>
 
-static gpointer af_key_make(uint16_t afi, uint8_t safi)
+static gpointer af_key_make(uint16_t afi)
 {
-    return GUINT_TO_POINTER(((guint32)afi << 8) | (guint32)safi);
+    return GUINT_TO_POINTER((guint32)afi);
 }
 
 static void af_state_destroy(gpointer data)
@@ -27,6 +27,14 @@ static void af_state_destroy(gpointer data)
     if (af->export_rts)
     {
         g_array_free(af->export_rts, TRUE);
+    }
+    if (af->evpn_import_rts)
+    {
+        g_array_free(af->evpn_import_rts, TRUE);
+    }
+    if (af->evpn_export_rts)
+    {
+        g_array_free(af->evpn_export_rts, TRUE);
     }
     g_free(af);
 }
@@ -153,42 +161,43 @@ int vrf_table_delete(vrf_table_t *t, uint32_t vrf_id)
     return 0;
 }
 
-vrf_af_state_t *vrf_af_find(const vrf_entry_t *e, uint16_t afi, uint8_t safi)
+vrf_af_state_t *vrf_af_find(const vrf_entry_t *e, uint16_t afi)
 {
     if (!e || !e->afs)
     {
         return NULL;
     }
-    return g_hash_table_lookup(e->afs, af_key_make(afi, safi));
+    return g_hash_table_lookup(e->afs, af_key_make(afi));
 }
 
-vrf_af_state_t *vrf_af_get_or_create(vrf_entry_t *e, uint16_t afi, uint8_t safi)
+vrf_af_state_t *vrf_af_get_or_create(vrf_entry_t *e, uint16_t afi)
 {
-    vrf_af_state_t *af = vrf_af_find(e, afi, safi);
+    vrf_af_state_t *af = vrf_af_find(e, afi);
     if (af)
     {
         return af;
     }
     af = g_malloc0(sizeof(*af));
     af->afi = afi;
-    af->safi = safi;
     af->import_rts = g_array_new(FALSE, FALSE, sizeof(vrf_rt_t));
     af->export_rts = g_array_new(FALSE, FALSE, sizeof(vrf_rt_t));
-    g_hash_table_insert(e->afs, af_key_make(afi, safi), af);
+    af->evpn_import_rts = g_array_new(FALSE, FALSE, sizeof(vrf_rt_t));
+    af->evpn_export_rts = g_array_new(FALSE, FALSE, sizeof(vrf_rt_t));
+    g_hash_table_insert(e->afs, af_key_make(afi), af);
     return af;
 }
 
-int vrf_af_delete(vrf_entry_t *e, uint16_t afi, uint8_t safi)
+int vrf_af_delete(vrf_entry_t *e, uint16_t afi)
 {
     if (!e || !e->afs)
     {
         return -1;
     }
-    if (!g_hash_table_contains(e->afs, af_key_make(afi, safi)))
+    if (!g_hash_table_contains(e->afs, af_key_make(afi)))
     {
         return -1;
     }
-    g_hash_table_remove(e->afs, af_key_make(afi, safi));
+    g_hash_table_remove(e->afs, af_key_make(afi));
     return 0;
 }
 
@@ -228,13 +237,21 @@ static int rt_array_find(const GArray *arr, const vrf_rt_t *rt)
     return -1;
 }
 
-int vrf_af_modify_rt(vrf_af_state_t *af, int direction, int add, const vrf_rt_t *rt)
+int vrf_af_modify_rt(vrf_af_state_t *af, int direction, uint8_t rt_type, int add, const vrf_rt_t *rt)
 {
     if (!af || !rt)
     {
         return -1;
     }
-    GArray *arr = (direction == 0) ? af->import_rts : af->export_rts;
+    GArray *arr = NULL;
+    if (rt_type == VRF_RT_TYPE_EVPN)
+    {
+        arr = (direction == 0) ? af->evpn_import_rts : af->evpn_export_rts;
+    }
+    else
+    {
+        arr = (direction == 0) ? af->import_rts : af->export_rts;
+    }
     if (!arr)
     {
         return -1;

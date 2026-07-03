@@ -52,15 +52,14 @@ static size_t event_payload_size(uint16_t rt_count)
     return offsetof(vrf_event_msg_t, rts) + sizeof(vrf_rt_t) * rt_count;
 }
 
-static vrf_event_msg_t *build_event(const vrf_entry_t *e, uint32_t event, uint16_t afi, uint8_t safi,
-                                    const vrf_af_state_t *af, const vrf_rt_t *rts, uint16_t rt_count, size_t *out_size)
+static vrf_event_msg_t *build_event(const vrf_entry_t *e, uint32_t event, uint16_t afi, const vrf_af_state_t *af,
+                                    const vrf_rt_t *rts, uint16_t rt_count, uint8_t rt_type, size_t *out_size)
 {
     size_t sz = event_payload_size(rt_count);
     vrf_event_msg_t *evt = g_malloc0(sz);
     evt->event = event;
     evt->vrf_id = e ? e->vrf_id : 0;
     evt->afi = afi;
-    evt->safi = safi;
     evt->os_state = e ? e->os_state : VRF_OS_STATE_UNKNOWN;
     evt->l3vrf_table_id = e ? e->l3vrf_table_id : 0;
     if (e)
@@ -73,6 +72,7 @@ static vrf_event_msg_t *build_event(const vrf_entry_t *e, uint32_t event, uint16
         evt->rd = af->rd;
         evt->apply_label_mode = af->apply_label_mode;
     }
+    evt->rt_type = rt_type;
     evt->rt_count = rt_count;
     if (rt_count > 0 && rts)
     {
@@ -108,8 +108,8 @@ static void send_event_to(uint32_t module_id, const vrf_event_msg_t *src, size_t
     dev_ipc_message_free(msg);
 }
 
-static void notify_all(uint32_t event, const vrf_entry_t *e, uint16_t afi, uint8_t safi, const vrf_af_state_t *af,
-                       const vrf_rt_t *rts, uint16_t rt_count)
+static void notify_all(uint32_t event, const vrf_entry_t *e, uint16_t afi, const vrf_af_state_t *af,
+                       const vrf_rt_t *rts, uint16_t rt_count, uint8_t rt_type)
 {
     GList *subs = vrf_worker_subscribers();
     if (!subs)
@@ -117,7 +117,7 @@ static void notify_all(uint32_t event, const vrf_entry_t *e, uint16_t afi, uint8
         return;
     }
     size_t sz = 0;
-    vrf_event_msg_t *src = build_event(e, event, afi, safi, af, rts, rt_count, &sz);
+    vrf_event_msg_t *src = build_event(e, event, afi, af, rts, rt_count, rt_type, &sz);
     if (!src)
     {
         return;
@@ -138,7 +138,7 @@ void vrf_pub_notify_vrf_add(const vrf_entry_t *e)
 {
     if (e)
     {
-        notify_all(VRF_EVENT_VRF_ADD, e, 0, 0, NULL, NULL, 0);
+        notify_all(VRF_EVENT_VRF_ADD, e, 0, NULL, NULL, 0, VRF_RT_TYPE_VPN);
     }
 }
 
@@ -146,7 +146,7 @@ void vrf_pub_notify_vrf_del(const vrf_entry_t *e)
 {
     if (e)
     {
-        notify_all(VRF_EVENT_VRF_DEL, e, 0, 0, NULL, NULL, 0);
+        notify_all(VRF_EVENT_VRF_DEL, e, 0, NULL, NULL, 0, VRF_RT_TYPE_VPN);
     }
 }
 
@@ -154,23 +154,23 @@ void vrf_pub_notify_vrf_state(const vrf_entry_t *e)
 {
     if (e)
     {
-        notify_all(VRF_EVENT_VRF_STATE, e, 0, 0, NULL, NULL, 0);
+        notify_all(VRF_EVENT_VRF_STATE, e, 0, NULL, NULL, 0, VRF_RT_TYPE_VPN);
     }
 }
 
-void vrf_pub_notify_af_enable(const vrf_entry_t *e, uint16_t afi, uint8_t safi)
+void vrf_pub_notify_af_enable(const vrf_entry_t *e, uint16_t afi)
 {
     if (e)
     {
-        notify_all(VRF_EVENT_AF_ENABLE, e, afi, safi, NULL, NULL, 0);
+        notify_all(VRF_EVENT_AF_ENABLE, e, afi, NULL, NULL, 0, VRF_RT_TYPE_VPN);
     }
 }
 
-void vrf_pub_notify_af_disable(const vrf_entry_t *e, uint16_t afi, uint8_t safi)
+void vrf_pub_notify_af_disable(const vrf_entry_t *e, uint16_t afi)
 {
     if (e)
     {
-        notify_all(VRF_EVENT_AF_DISABLE, e, afi, safi, NULL, NULL, 0);
+        notify_all(VRF_EVENT_AF_DISABLE, e, afi, NULL, NULL, 0, VRF_RT_TYPE_VPN);
     }
 }
 
@@ -178,15 +178,15 @@ void vrf_pub_notify_af_rd_add(const vrf_entry_t *e, const vrf_af_state_t *af)
 {
     if (e && af && af->has_rd)
     {
-        notify_all(VRF_EVENT_AF_RD_ADD, e, af->afi, af->safi, af, NULL, 0);
+        notify_all(VRF_EVENT_AF_RD_ADD, e, af->afi, af, NULL, 0, VRF_RT_TYPE_VPN);
     }
 }
 
-void vrf_pub_notify_af_rd_del(const vrf_entry_t *e, uint16_t afi, uint8_t safi)
+void vrf_pub_notify_af_rd_del(const vrf_entry_t *e, uint16_t afi)
 {
     if (e)
     {
-        notify_all(VRF_EVENT_AF_RD_DEL, e, afi, safi, NULL, NULL, 0);
+        notify_all(VRF_EVENT_AF_RD_DEL, e, afi, NULL, NULL, 0, VRF_RT_TYPE_VPN);
     }
 }
 
@@ -194,36 +194,41 @@ void vrf_pub_notify_af_apply_label(const vrf_entry_t *e, const vrf_af_state_t *a
 {
     if (e && af)
     {
-        notify_all(VRF_EVENT_AF_APPLY_LABEL, e, af->afi, af->safi, af, NULL, 0);
+        notify_all(VRF_EVENT_AF_APPLY_LABEL, e, af->afi, af, NULL, 0, VRF_RT_TYPE_VPN);
     }
 }
 
-static void notify_rt_one(uint32_t event, const vrf_entry_t *e, const vrf_af_state_t *af, const vrf_rt_t *rt)
+static void notify_rt_one(uint32_t event, const vrf_entry_t *e, const vrf_af_state_t *af, const vrf_rt_t *rt,
+                          uint8_t rt_type)
 {
     if (e && af && rt)
     {
-        notify_all(event, e, af->afi, af->safi, af, rt, 1);
+        notify_all(event, e, af->afi, af, rt, 1, rt_type);
     }
 }
 
-void vrf_pub_notify_af_import_rt_add(const vrf_entry_t *e, const vrf_af_state_t *af, const vrf_rt_t *rt)
+void vrf_pub_notify_af_import_rt_add(const vrf_entry_t *e, const vrf_af_state_t *af, const vrf_rt_t *rt,
+                                     uint8_t rt_type)
 {
-    notify_rt_one(VRF_EVENT_AF_IMPORT_RT_ADD, e, af, rt);
+    notify_rt_one(VRF_EVENT_AF_IMPORT_RT_ADD, e, af, rt, rt_type);
 }
 
-void vrf_pub_notify_af_import_rt_del(const vrf_entry_t *e, const vrf_af_state_t *af, const vrf_rt_t *rt)
+void vrf_pub_notify_af_import_rt_del(const vrf_entry_t *e, const vrf_af_state_t *af, const vrf_rt_t *rt,
+                                     uint8_t rt_type)
 {
-    notify_rt_one(VRF_EVENT_AF_IMPORT_RT_DEL, e, af, rt);
+    notify_rt_one(VRF_EVENT_AF_IMPORT_RT_DEL, e, af, rt, rt_type);
 }
 
-void vrf_pub_notify_af_export_rt_add(const vrf_entry_t *e, const vrf_af_state_t *af, const vrf_rt_t *rt)
+void vrf_pub_notify_af_export_rt_add(const vrf_entry_t *e, const vrf_af_state_t *af, const vrf_rt_t *rt,
+                                     uint8_t rt_type)
 {
-    notify_rt_one(VRF_EVENT_AF_EXPORT_RT_ADD, e, af, rt);
+    notify_rt_one(VRF_EVENT_AF_EXPORT_RT_ADD, e, af, rt, rt_type);
 }
 
-void vrf_pub_notify_af_export_rt_del(const vrf_entry_t *e, const vrf_af_state_t *af, const vrf_rt_t *rt)
+void vrf_pub_notify_af_export_rt_del(const vrf_entry_t *e, const vrf_af_state_t *af, const vrf_rt_t *rt,
+                                     uint8_t rt_type)
 {
-    notify_rt_one(VRF_EVENT_AF_EXPORT_RT_DEL, e, af, rt);
+    notify_rt_one(VRF_EVENT_AF_EXPORT_RT_DEL, e, af, rt, rt_type);
 }
 
 // ============================================================================
@@ -231,14 +236,14 @@ void vrf_pub_notify_af_export_rt_del(const vrf_entry_t *e, const vrf_af_state_t 
 // ============================================================================
 
 static void replay_one(uint32_t module_id, uint32_t event_mask, uint32_t af_mask, uint32_t event, const vrf_entry_t *e,
-                       uint16_t afi, uint8_t safi, const vrf_af_state_t *af, const vrf_rt_t *rts, uint16_t rt_count)
+                       uint16_t afi, const vrf_af_state_t *af, const vrf_rt_t *rts, uint16_t rt_count, uint8_t rt_type)
 {
     if (!subscriber_match(event_mask, af_mask, event, afi))
     {
         return;
     }
     size_t sz = 0;
-    vrf_event_msg_t *src = build_event(e, event, afi, safi, af, rts, rt_count, &sz);
+    vrf_event_msg_t *src = build_event(e, event, afi, af, rts, rt_count, rt_type, &sz);
     if (!src)
     {
         return;
@@ -250,21 +255,23 @@ static void replay_one(uint32_t module_id, uint32_t event_mask, uint32_t af_mask
 static void replay_af(uint32_t module_id, uint32_t event_mask, uint32_t af_mask, const vrf_entry_t *e,
                       const vrf_af_state_t *af)
 {
-    replay_one(module_id, event_mask, af_mask, VRF_EVENT_AF_ENABLE, e, af->afi, af->safi, af, NULL, 0);
+    replay_one(module_id, event_mask, af_mask, VRF_EVENT_AF_ENABLE, e, af->afi, af, NULL, 0, VRF_RT_TYPE_VPN);
     if (af->has_rd)
     {
-        replay_one(module_id, event_mask, af_mask, VRF_EVENT_AF_RD_ADD, e, af->afi, af->safi, af, NULL, 0);
+        replay_one(module_id, event_mask, af_mask, VRF_EVENT_AF_RD_ADD, e, af->afi, af, NULL, 0, VRF_RT_TYPE_VPN);
     }
     if (af->apply_label_mode != VRF_APPLY_LABEL_PER_VRF)
     {
-        replay_one(module_id, event_mask, af_mask, VRF_EVENT_AF_APPLY_LABEL, e, af->afi, af->safi, af, NULL, 0);
+        replay_one(module_id, event_mask, af_mask, VRF_EVENT_AF_APPLY_LABEL, e, af->afi, af, NULL, 0,
+                   VRF_RT_TYPE_VPN);
     }
     if (af->import_rts && af->import_rts->len > 0)
     {
         for (guint i = 0; i < af->import_rts->len; i++)
         {
             const vrf_rt_t *rt = &g_array_index(af->import_rts, vrf_rt_t, i);
-            replay_one(module_id, event_mask, af_mask, VRF_EVENT_AF_IMPORT_RT_ADD, e, af->afi, af->safi, af, rt, 1);
+            replay_one(module_id, event_mask, af_mask, VRF_EVENT_AF_IMPORT_RT_ADD, e, af->afi, af, rt, 1,
+                       VRF_RT_TYPE_VPN);
         }
     }
     if (af->export_rts && af->export_rts->len > 0)
@@ -272,7 +279,26 @@ static void replay_af(uint32_t module_id, uint32_t event_mask, uint32_t af_mask,
         for (guint i = 0; i < af->export_rts->len; i++)
         {
             const vrf_rt_t *rt = &g_array_index(af->export_rts, vrf_rt_t, i);
-            replay_one(module_id, event_mask, af_mask, VRF_EVENT_AF_EXPORT_RT_ADD, e, af->afi, af->safi, af, rt, 1);
+            replay_one(module_id, event_mask, af_mask, VRF_EVENT_AF_EXPORT_RT_ADD, e, af->afi, af, rt, 1,
+                       VRF_RT_TYPE_VPN);
+        }
+    }
+    if (af->evpn_import_rts && af->evpn_import_rts->len > 0)
+    {
+        for (guint i = 0; i < af->evpn_import_rts->len; i++)
+        {
+            const vrf_rt_t *rt = &g_array_index(af->evpn_import_rts, vrf_rt_t, i);
+            replay_one(module_id, event_mask, af_mask, VRF_EVENT_AF_IMPORT_RT_ADD, e, af->afi, af, rt, 1,
+                       VRF_RT_TYPE_EVPN);
+        }
+    }
+    if (af->evpn_export_rts && af->evpn_export_rts->len > 0)
+    {
+        for (guint i = 0; i < af->evpn_export_rts->len; i++)
+        {
+            const vrf_rt_t *rt = &g_array_index(af->evpn_export_rts, vrf_rt_t, i);
+            replay_one(module_id, event_mask, af_mask, VRF_EVENT_AF_EXPORT_RT_ADD, e, af->afi, af, rt, 1,
+                       VRF_RT_TYPE_EVPN);
         }
     }
 }
@@ -283,7 +309,7 @@ static void replay_af(uint32_t module_id, uint32_t event_mask, uint32_t af_mask,
 static void send_smooth_marker(uint32_t module_id, uint32_t event)
 {
     size_t sz = 0;
-    vrf_event_msg_t *src = build_event(NULL, event, 0, 0, NULL, NULL, 0, &sz);
+    vrf_event_msg_t *src = build_event(NULL, event, 0, NULL, NULL, 0, VRF_RT_TYPE_VPN, &sz);
     if (!src)
     {
         return;
@@ -307,10 +333,11 @@ static void replay_full(uint32_t module_id, uint32_t af_mask, uint32_t event_mas
         {
             (void)key;
             const vrf_entry_t *e = (const vrf_entry_t *)val;
-            replay_one(module_id, event_mask, af_mask, VRF_EVENT_VRF_ADD, e, 0, 0, NULL, NULL, 0);
+            replay_one(module_id, event_mask, af_mask, VRF_EVENT_VRF_ADD, e, 0, NULL, NULL, 0, VRF_RT_TYPE_VPN);
             if (e->os_state != VRF_OS_STATE_UNKNOWN)
             {
-                replay_one(module_id, event_mask, af_mask, VRF_EVENT_VRF_STATE, e, 0, 0, NULL, NULL, 0);
+                replay_one(module_id, event_mask, af_mask, VRF_EVENT_VRF_STATE, e, 0, NULL, NULL, 0,
+                           VRF_RT_TYPE_VPN);
             }
             if (!e->afs)
             {

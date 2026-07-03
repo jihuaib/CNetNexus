@@ -47,9 +47,6 @@
 /** AFI：IPv6 */
 #define VRF_AFI_IPV6 2u
 
-/** SAFI：单播 */
-#define VRF_SAFI_UNICAST 1u
-
 // ============================================================================
 // 数据类型
 // ============================================================================
@@ -79,14 +76,18 @@ typedef struct vrf_rt
 typedef struct vrf_api_af
 {
     uint16_t afi;             /**< VRF_AFI_* */
-    uint8_t safi;             /**< VRF_SAFI_* */
     uint8_t has_rd;           /**< 1=已配置 RD */
+    uint8_t _pad;             /**< 对齐填充 */
     vrf_rd_t rd;              /**< RD（has_rd=1 时有效） */
     uint8_t apply_label_mode; /**< VRF_APPLY_LABEL_*（默认 per-vrf=0） */
     uint16_t import_rt_count; /**< import RT 数量 */
     uint16_t export_rt_count; /**< export RT 数量 */
+    uint16_t evpn_import_rt_count; /**< EVPN import RT 数量 */
+    uint16_t evpn_export_rt_count; /**< EVPN export RT 数量 */
     vrf_rt_t *import_rts;     /**< import RT 数组（lib 持有） */
     vrf_rt_t *export_rts;     /**< export RT 数组（lib 持有） */
+    vrf_rt_t *evpn_import_rts; /**< EVPN import RT 数组（lib 持有） */
+    vrf_rt_t *evpn_export_rts; /**< EVPN export RT 数组（lib 持有） */
 } vrf_api_af_t;
 
 /**
@@ -99,7 +100,7 @@ typedef struct vrf_api_cache_entry
     uint32_t l3vrf_table_id;     /**< OS L3VRF 路由表 ID */
     uint8_t os_state;            /**< VRF_OS_STATE_* */
     uint8_t _pad[3];             /**< 对齐填充 */
-    GHashTable *afs;             /**< (afi<<8|safi) → vrf_api_af_t*（lib 持有） */
+    GHashTable *afs;             /**< afi → vrf_api_af_t*（lib 持有） */
 } vrf_api_cache_entry_t;
 
 /**
@@ -140,9 +141,9 @@ typedef gboolean (*vrf_api_cache_iter_fn)(const vrf_api_cache_entry_t *entry, vo
 #define VRF_EVENT_VRF_DEL (1u << 1)
 /** VRF OS 状态变更（os_state 字段有效） */
 #define VRF_EVENT_VRF_STATE (1u << 2)
-/** AF 启用（首次出现某 afi/safi） */
+/** AF 启用（首次出现某 afi） */
 #define VRF_EVENT_AF_ENABLE (1u << 3)
-/** AF 关闭（最后一个 afi/safi 配置被清空） */
+/** AF 关闭 */
 #define VRF_EVENT_AF_DISABLE (1u << 4)
 /** AF 下 RD 新增（has_rd=1 / rd 字段有效） */
 #define VRF_EVENT_AF_RD_ADD (1u << 5)
@@ -172,13 +173,18 @@ typedef gboolean (*vrf_api_cache_iter_fn)(const vrf_api_cache_entry_t *entry, vo
 /** apply-label 模式：per-route 每前缀一标签 */
 #define VRF_APPLY_LABEL_PER_ROUTE 1u
 
+/** RT 类型：普通 VPN RT（vpnv4 / 本地 VRF 泄漏） */
+#define VRF_RT_TYPE_VPN 0u
+/** RT 类型：EVPN RT（独立于普通 VPN RT） */
+#define VRF_RT_TYPE_EVPN 1u
+
 // ----------------------------------------------------------------------------
 // AF 位图（订阅 af_mask 用）
 // ----------------------------------------------------------------------------
 
-/** AF 位图：IPv4 unicast */
+/** AF 位图：IPv4 */
 #define VRF_AF_MASK_IPV4 (1u << 0)
-/** AF 位图：IPv6 unicast */
+/** AF 位图：IPv6 */
 #define VRF_AF_MASK_IPV6 (1u << 1)
 /** AF 位图：通配（匹配所有 AF） */
 #define VRF_AF_MASK_ALL 0xFFFFFFFFu
@@ -209,24 +215,26 @@ typedef struct vrf_subscribe_req
  *
  * 总长度 = sizeof(vrf_event_msg_t) + rt_count * sizeof(vrf_rt_t)。
  * 不同 event 字段使用规则：
- *   - VRF_ADD / VRF_DEL：vrf_id, name, l3vrf_table_id 有效；afi/safi=0
+ *   - VRF_ADD / VRF_DEL：vrf_id, name, l3vrf_table_id 有效；afi=0
  *   - VRF_STATE       ：vrf_id, os_state 有效
- *   - AF_ENABLE/DISABLE：vrf_id, afi, safi 有效
- *   - AF_RD_ADD       ：vrf_id, afi, safi, has_rd=1, rd 有效
- *   - AF_RD_DEL       ：vrf_id, afi, safi 有效
- *   - AF_IMPORT_RT_ADD/DEL / AF_EXPORT_RT_ADD/DEL：vrf_id, afi, safi, rt_count=1, rts[0] 有效
+ *   - AF_ENABLE/DISABLE：vrf_id, afi 有效
+ *   - AF_RD_ADD       ：vrf_id, afi, has_rd=1, rd 有效
+ *   - AF_RD_DEL       ：vrf_id, afi 有效
+ *   - AF_IMPORT_RT_ADD/DEL / AF_EXPORT_RT_ADD/DEL：vrf_id, afi, rt_count=1, rts[0] 有效
  */
 typedef struct vrf_event_msg
 {
     uint32_t event;              /**< 单值事件类型（VRF_EVENT_* 某一位） */
     uint32_t vrf_id;             /**< VRF ID */
     uint16_t afi;                /**< 地址族（0=N/A） */
-    uint8_t safi;                /**< 子地址族（0=N/A） */
     uint8_t os_state;            /**< OS 状态（VRF_OS_STATE_*） */
+    uint8_t _pad;                /**< 对齐填充 */
     uint32_t l3vrf_table_id;     /**< OS L3VRF 路由表 ID */
     char name[VRF_NAME_MAX_LEN]; /**< VRF 名称 */
     uint8_t has_rd;              /**< RD 是否有效 */
     uint8_t apply_label_mode;    /**< VRF_APPLY_LABEL_*（每个 AF 事件都携带当前值） */
+    uint8_t rt_type;             /**< VRF_RT_TYPE_*（RT 事件有效） */
+    uint8_t _pad2;               /**< 对齐填充 */
     vrf_rd_t rd;                 /**< RD（has_rd=1 时有效） */
     uint16_t rt_count;           /**< rts[] 元素数 */
     vrf_rt_t rts[];              /**< 变长 RT 数组 */
@@ -295,10 +303,10 @@ const vrf_api_cache_entry_t *vrf_api_cache_lookup(uint32_t vrf_id);
 const vrf_api_cache_entry_t *vrf_api_cache_lookup_by_name(const char *name);
 
 /**
- * @brief 查询指定 (vrf_id, afi, safi) 的 AF 配置
+ * @brief 查询指定 (vrf_id, afi) 的 AF 配置
  * @return AF 配置指针（借用），未配置返回 NULL
  */
-const vrf_api_af_t *vrf_api_cache_get_af(uint32_t vrf_id, uint16_t afi, uint8_t safi);
+const vrf_api_af_t *vrf_api_cache_get_af(uint32_t vrf_id, uint16_t afi);
 
 /**
  * @brief 遍历所有缓存条目

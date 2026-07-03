@@ -39,25 +39,26 @@ int vrf_db_insert_vrf(uint32_t vrf_id, const char *name, uint32_t l3vrf_table_id
 int vrf_db_delete_vrf(uint32_t vrf_id);
 
 /**
- * @brief 写入 / 更新 (vrf_id, afi, safi) 的 RD（rd=NULL 表示清除）
+ * @brief 写入 / 更新 (vrf_id, afi) 的 RD（rd=NULL 表示清除）
  */
-int vrf_db_set_af_rd(uint32_t vrf_id, uint16_t afi, uint8_t safi, const vrf_rd_t *rd);
+int vrf_db_set_af_rd(uint32_t vrf_id, uint16_t afi, const vrf_rd_t *rd);
 
 /**
- * @brief 写入 / 更新 (vrf_id, afi, safi) 的 apply-label 模式（VRF_APPLY_LABEL_*）
+ * @brief 写入 / 更新 (vrf_id, afi) 的 apply-label 模式（VRF_APPLY_LABEL_*）
  */
-int vrf_db_set_af_apply_label(uint32_t vrf_id, uint16_t afi, uint8_t safi, uint8_t mode);
+int vrf_db_set_af_apply_label(uint32_t vrf_id, uint16_t afi, uint8_t mode);
 
 /**
  * @brief 删除一条 AF 配置（含级联 RT）
  */
-int vrf_db_delete_af(uint32_t vrf_id, uint16_t afi, uint8_t safi);
+int vrf_db_delete_af(uint32_t vrf_id, uint16_t afi);
 
 /**
  * @brief 增删一条 RT
  * @param direction 0=import, 1=export
+ * @param rt_type   VRF_RT_TYPE_*
  * @param add       1=插入，0=删除
  */
-int vrf_db_modify_rt(uint32_t vrf_id, uint16_t afi, uint8_t safi, int direction, int add, const vrf_rt_t *rt);
+int vrf_db_modify_rt(uint32_t vrf_id, uint16_t afi, int direction, uint8_t rt_type, int add, const vrf_rt_t *rt);
 
 #endif /* VRF_DB_H */

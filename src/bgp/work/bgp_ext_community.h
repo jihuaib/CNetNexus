@@ -31,6 +31,11 @@ gboolean bgp_ext_community_is_rt(const uint8_t entry[8]);
 void bgp_ext_community_merge_vrf_export_rts(bgp_attr_t *attr, uint32_t vrf_id, uint16_t afi);
 
 /**
+ * @brief 将 VRF EVPN export RT 按 EXT_COMMUNITY 原始 8 字节条目合入属性
+ */
+void bgp_ext_community_merge_vrf_evpn_export_rts(bgp_attr_t *attr, uint32_t vrf_id, uint16_t afi);
+
+/**
  * @brief 将 EXT_COMMUNITY 原始 buffer 格式化为 show 字符串
  */
 void bgp_ext_community_format(const uint8_t *data, uint16_t len, char *buf, size_t bufsz);

@@ -173,7 +173,7 @@ static int bgp_cfg_vrf_af_has_rd(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi
     }
 
     uint16_t vafi = (afi == BGP_AFI_IPV6) ? VRF_AFI_IPV6 : VRF_AFI_IPV4;
-    const vrf_api_af_t *af = vrf_api_cache_get_af(vrf_id, vafi, VRF_SAFI_UNICAST);
+    const vrf_api_af_t *af = vrf_api_cache_get_af(vrf_id, vafi);
     return af && af->has_rd;
 }
 
@@ -503,9 +503,10 @@ void bgp_cfg_apply_instance(bgp_apply_cmd_t *apply)
             }
             g_list_free_full(addr_strs, g_free);
         }
-        /* public vpnv4 去使能：先撤销所有已导出 VPN 路由，再删实例 */
-        if (vrf->vrf_id == BGP_VRF_PUBLIC_ID && apply->u.instance.afi == BGP_AFI_IPV4 &&
-            apply->u.instance.safi == BGP_SAFI_VPN_UNICAST)
+        /* public VPN 类 AF 去使能：先撤销所有已导出 VPN/EVPN 路由，再删实例 */
+        if (vrf->vrf_id == BGP_VRF_PUBLIC_ID &&
+            ((apply->u.instance.afi == BGP_AFI_IPV4 && apply->u.instance.safi == BGP_SAFI_VPN_UNICAST) ||
+             (apply->u.instance.afi == BGP_AFI_L2VPN && apply->u.instance.safi == BGP_SAFI_EVPN)))
         {
             (void)bgp_vrf_export_disable(inst);
             bgp_cfg_drain_instance_work(inst);
@@ -521,9 +522,10 @@ void bgp_cfg_apply_instance(bgp_apply_cmd_t *apply)
             snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: Failed to apply instance configuration.");
             return;
         }
-        /* public vpnv4 使能：把所有私网 VRF 的 unicast 路由按 RD 全量导出到 vpnv4(分批) */
-        if (vrf->vrf_id == BGP_VRF_PUBLIC_ID && apply->u.instance.afi == BGP_AFI_IPV4 &&
-            apply->u.instance.safi == BGP_SAFI_VPN_UNICAST)
+        /* public VPN 类 AF 使能：把所有私网 VRF 的 unicast 路由按 RD 全量导出(分批) */
+        if (vrf->vrf_id == BGP_VRF_PUBLIC_ID &&
+            ((apply->u.instance.afi == BGP_AFI_IPV4 && apply->u.instance.safi == BGP_SAFI_VPN_UNICAST) ||
+             (apply->u.instance.afi == BGP_AFI_L2VPN && apply->u.instance.safi == BGP_SAFI_EVPN)))
         {
             (void)bgp_vrf_export_enable(inst);
         }
@@ -1451,6 +1453,55 @@ void bgp_cfg_apply_vpn_target_policy(bgp_apply_cmd_t *apply)
      *  - 关闭(want=FALSE)：之前因 IRT 不命中被丢弃的路由需重新拉回并接受；
      *  - 开启(want=TRUE) ：之前无条件接受的不命中路由需在重收时被入向过滤丢弃。 */
     bgp_vrf_import_request_refresh();
+    apply->rc = BGP_APPLY_RC_OK;
+}
+
+void bgp_cfg_apply_advertise_evpn_route(bgp_apply_cmd_t *apply)
+{
+    bgp_protocol_t *proto = g_bgp_work_local ? g_bgp_work_local->protocol : NULL;
+    if (!proto)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: BGP not configured.");
+        return;
+    }
+    bgp_vrf_t *vrf = bgp_cfg_lookup_vrf(proto, apply, NULL);
+    if (!vrf || vrf->vrf_id == BGP_VRF_PUBLIC_ID)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: private VRF address-family required.");
+        return;
+    }
+    if (apply->u.advertise_evpn_route.afi != BGP_AFI_IPV4 ||
+        apply->u.advertise_evpn_route.safi != BGP_SAFI_UNICAST)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: IPv4 unicast VRF address-family required.");
+        return;
+    }
+
+    bgp_instance_t *inst =
+        (bgp_instance_t *)g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(BGP_AFI_IPV4, BGP_SAFI_UNICAST));
+    if (!inst)
+    {
+        snprintf(apply->errmsg, sizeof(apply->errmsg), "BGP Error: address-family not enabled.");
+        return;
+    }
+
+    gboolean want = apply->isNo ? FALSE : TRUE;
+    gboolean cur = BIT_TEST(inst->flags, BGP_INST_FLAG_ADVERTISE_EVPN_ROUTE) ? TRUE : FALSE;
+    if (cur == want)
+    {
+        apply->rc = BGP_APPLY_RC_NOOP;
+        return;
+    }
+    if (want)
+    {
+        BIT_SET(inst->flags, BGP_INST_FLAG_ADVERTISE_EVPN_ROUTE);
+    }
+    else
+    {
+        BIT_CLR(inst->flags, BGP_INST_FLAG_ADVERTISE_EVPN_ROUTE);
+    }
+
+    bgp_vrf_export_backfill_vrf(vrf->vrf_id);
     apply->rc = BGP_APPLY_RC_OK;
 }
 

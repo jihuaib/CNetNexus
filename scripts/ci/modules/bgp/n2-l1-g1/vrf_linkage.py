@@ -62,6 +62,14 @@ def _extract_bgp_block(output: str) -> str:
     return "\n".join(block)
 
 
+def _vrf_af(af: str) -> str:
+    if af == "ipv4-unicast":
+        return "ipv4"
+    if af == "ipv6-unicast":
+        return "ipv6"
+    return af
+
+
 def _wait_bgp_config(
     rt: TopologyRuntime,
     *,
@@ -92,6 +100,7 @@ def _wait_bgp_config(
 
 
 def _create_vrf_with_af_rd(rt: TopologyRuntime, af: str, rd: str) -> None:
+    vrf_af = _vrf_af(af)
     run_cmds(
         rt=rt,
         device="r1",
@@ -99,7 +108,7 @@ def _create_vrf_with_af_rd(rt: TopologyRuntime, af: str, rd: str) -> None:
             "end",
             "config",
             f"vrf {VRF_NAME}",
-            f"af {af}",
+            f"af {vrf_af}",
             "no route-distinguisher",
             f"route-distinguisher {rd}",
             "exit",
@@ -127,6 +136,7 @@ def _configure_bgp_vrf_af(rt: TopologyRuntime, af: str) -> None:
 
 
 def _delete_vrf_af(rt: TopologyRuntime, af: str) -> None:
+    vrf_af = _vrf_af(af)
     run_cmds(
         rt=rt,
         device="r1",
@@ -134,7 +144,7 @@ def _delete_vrf_af(rt: TopologyRuntime, af: str) -> None:
             "end",
             "config",
             f"vrf {VRF_NAME}",
-            f"no af {af}",
+            f"no af {vrf_af}",
             "exit",
             "end",
         ],
@@ -142,6 +152,7 @@ def _delete_vrf_af(rt: TopologyRuntime, af: str) -> None:
 
 
 def _delete_vrf_af_rd(rt: TopologyRuntime, af: str) -> None:
+    vrf_af = _vrf_af(af)
     run_cmds(
         rt=rt,
         device="r1",
@@ -149,7 +160,7 @@ def _delete_vrf_af_rd(rt: TopologyRuntime, af: str) -> None:
             "end",
             "config",
             f"vrf {VRF_NAME}",
-            f"af {af}",
+            f"af {vrf_af}",
             "no route-distinguisher",
             "exit",
             "exit",

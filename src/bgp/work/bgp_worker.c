@@ -408,16 +408,26 @@ void bgp_worker_drain_work_events(void)
                 break;
             case BGP_WORKER_EVENT_VRF_EXPORT:
             {
-                bgp_instance_t *vpn_inst = bgp_vrf_export_target_inst();
-                if (vpn_inst)
+                bgp_instance_t *targets[] = {
+                    bgp_vrf_export_target_inst_by_af(BGP_AFI_IPV4, BGP_SAFI_VPN_UNICAST),
+                    bgp_vrf_export_target_inst_by_af(BGP_AFI_L2VPN, BGP_SAFI_EVPN),
+                };
+                gboolean has_more = FALSE;
+                for (size_t i = 0; i < G_N_ELEMENTS(targets); i++)
                 {
-                    (void)bgp_vrf_export_queue_process(vpn_inst, BGP_VRF_EXPORT_BATCH);
-                    /* pending 未抽干则再投事件自重排，让出 epoll 处理报文/定时器 */
-                    if (vpn_inst->vrf_export_state &&
-                        ((bgp_vrf_export_state_t *)vpn_inst->vrf_export_state)->pending_count > 0)
+                    bgp_instance_t *vpn_inst = targets[i];
+                    if (!vpn_inst)
                     {
-                        (void)bgp_worker_post_vrf_export_event();
+                        continue;
                     }
+                    (void)bgp_vrf_export_queue_process(vpn_inst, BGP_VRF_EXPORT_BATCH);
+                    has_more |= (vpn_inst->vrf_export_state &&
+                                 ((bgp_vrf_export_state_t *)vpn_inst->vrf_export_state)->pending_count > 0);
+                }
+                /* pending 未抽干则再投事件自重排，让出 epoll 处理报文/定时器 */
+                if (has_more)
+                {
+                    (void)bgp_worker_post_vrf_export_event();
                 }
                 break;
             }

@@ -89,7 +89,7 @@ def _setup_pe(rt: TopologyRuntime, device: str, *, local_as: int, rd: str, peer_
         commands=[
             "config",
             f"vrf {VRF_NAME}",
-            "af ipv4-unicast",
+            "af ipv4",
             f"route-distinguisher {rd}",
             "apply-label per-vrf",
             f"vpn-target {RT} export",

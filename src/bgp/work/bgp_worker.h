@@ -195,6 +195,13 @@ typedef struct bgp_apply_cmd
             bgp_safi_t safi; /**< 子地址族（VPN 类，如 vpn-unicast） */
         } vpn_target;
 
+        /** BGP_CLI_GROUP_ID_ADVERTISE_EVPN_ROUTE */
+        struct
+        {
+            bgp_afi_t afi;   /**< 源地址族（当前支持 IPv4） */
+            bgp_safi_t safi; /**< 源子地址族（当前支持 unicast） */
+        } advertise_evpn_route;
+
         /** BGP_CLI_GROUP_ID_REFRESH */
         struct
         {

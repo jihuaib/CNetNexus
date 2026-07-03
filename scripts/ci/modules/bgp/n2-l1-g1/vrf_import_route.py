@@ -98,10 +98,10 @@ def _setup_vrf_and_interface(
         commands=[
             "config",
             f"vrf {VRF_NAME}",
-            "af ipv4-unicast",
+            "af ipv4",
             f"route-distinguisher {rd_v4}",
             "exit",
-            "af ipv6-unicast",
+            "af ipv6",
             f"route-distinguisher {rd_v6}",
             "exit",
             "exit",

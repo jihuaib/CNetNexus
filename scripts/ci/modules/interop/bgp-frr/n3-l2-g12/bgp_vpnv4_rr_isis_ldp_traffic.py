@@ -185,7 +185,7 @@ def _configure_netnexus_vrf(rt: TopologyRuntime, device: str, *, rd: str) -> Non
         commands=[
             "config",
             f"vrf {VRF_NAME}",
-            "af ipv4-unicast",
+            "af ipv4",
             f"route-distinguisher {rd}",
             "apply-label per-vrf",
             f"vpn-target {RT} export",

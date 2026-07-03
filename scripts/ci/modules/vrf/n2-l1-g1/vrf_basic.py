@@ -4,7 +4,7 @@ VRF 配置面 + OS 下刷 全链路验证。
 
 覆盖：
   1) vrf <name> 创建 / no vrf <name> 删除（含 OS L3VRF 设备 install/remove）
-  2) af ipv4-unicast / af ipv6-unicast 进入 + no af 删除
+  2) af ipv4 / af ipv6 进入 + no af 删除
   3) route-distinguisher / no route-distinguisher
   4) vpn-target import / export / both / no vpn-target
   5) show vrf | show vrf name <name> 详情含 RD/RT/OS State
@@ -167,7 +167,7 @@ def _run_inner(rt: TopologyRuntime) -> None:
     _wait_kernel_vrf_loopback_local_routes(rt, "r1", VRF_NAME)
     _verify_show_vrf_os(rt, contains_names=[VRF_NAME], not_contains_names=[])
 
-    # ---- Phase 2: af ipv4-unicast + RD + 多种 vpn-target 方向 ----
+    # ---- Phase 2: af ipv4 + RD + 多种 vpn-target 方向 ----
     step(f"Configure AF ipv4-unicast under VRF {VRF_NAME}: RD + import/export/both RT")
     run_cmds(
         rt=rt,
@@ -175,7 +175,7 @@ def _run_inner(rt: TopologyRuntime) -> None:
         commands=[
             "config",
             f"vrf {VRF_NAME}",
-            "af ipv4-unicast",
+            "af ipv4",
             f"route-distinguisher {RD}",
             f"vpn-target {RT_IMP} import",
             f"vpn-target {RT_EXP} export",
@@ -191,7 +191,7 @@ def _run_inner(rt: TopologyRuntime) -> None:
         command=f"show vrf name {VRF_NAME}",
         timeout=10,
         contains=[
-            "af ipv4-unicast:",
+            "af ipv4:",
             f"RD            : {RD}",
             "Import-RT     :",
             "Export-RT     :",
@@ -210,7 +210,7 @@ def _run_inner(rt: TopologyRuntime) -> None:
         commands=[
             "config",
             f"vrf {VRF_NAME}",
-            "af ipv4-unicast",
+            "af ipv4",
         ],
     )
     out = rt.exec_cmd("r1", "route-distinguisher 65000:101", strict=False)
@@ -226,7 +226,7 @@ def _run_inner(rt: TopologyRuntime) -> None:
         label="direct RD modify failure keeps original RD in DB config",
     )
 
-    # ---- Phase 3: af ipv6-unicast 仅 RD ----
+    # ---- Phase 3: af ipv6 仅 RD ----
     step(f"Configure AF ipv6-unicast under VRF {VRF_NAME}: RD only")
     run_cmds(
         rt=rt,
@@ -234,7 +234,7 @@ def _run_inner(rt: TopologyRuntime) -> None:
         commands=[
             "config",
             f"vrf {VRF_NAME}",
-            "af ipv6-unicast",
+            "af ipv6",
             f"route-distinguisher {RD}",
             "exit",
             "exit",
@@ -247,7 +247,7 @@ def _run_inner(rt: TopologyRuntime) -> None:
         command=f"show vrf name {VRF_NAME}",
         timeout=10,
         contains=[
-            "af ipv6-unicast:",
+            "af ipv6:",
             f"RD            : {RD}",
         ],
         label=f"r1 ipv6-unicast RD visible",
@@ -261,7 +261,7 @@ def _run_inner(rt: TopologyRuntime) -> None:
         commands=[
             "config",
             f"vrf {VRF_NAME2}",
-            "af ipv4-unicast",
+            "af ipv4",
             "route-distinguisher 65000:500",
             "vpn-target 65000:600 import",
             "exit",
@@ -282,8 +282,8 @@ def _run_inner(rt: TopologyRuntime) -> None:
         contains=[
             f"vrf {VRF_NAME}",
             f"vrf {VRF_NAME2}",
-            "af ipv4-unicast",
-            "af ipv6-unicast",
+            "af ipv4",
+            "af ipv6",
             "route-distinguisher 65000:100",
             "route-distinguisher 65000:500",
             f"vpn-target {RT_IMP}",
@@ -302,19 +302,19 @@ def _run_inner(rt: TopologyRuntime) -> None:
         commands=[
             "config",
             f"vrf {VRF_NAME}",
-            "af ipv4-unicast",
+            "af ipv4",
             f"no vpn-target {RT_IMP} import",
             f"no vpn-target {RT_EXP} export",
             f"no vpn-target {RT_BOTH} both",
             "no route-distinguisher",
             "exit",
-            "no af ipv4-unicast",
+            "no af ipv4",
             "exit",
             "end",
         ],
     )
     out = rt.exec_cmd("r1", f"show vrf name {VRF_NAME}", timeout=5)
-    assert "af ipv4-unicast" not in out, f"ipv4-unicast still present:\n{out}"
+    assert "af ipv4" not in out, f"ipv4 AF still present:\n{out}"
     assert RT_IMP not in out and RT_EXP not in out and RT_BOTH not in out, (
         f"RT still present:\n{out}"
     )
@@ -341,7 +341,7 @@ def _run_inner(rt: TopologyRuntime) -> None:
         command=f"show vrf name {VRF_NAME}",
         timeout=15,
         contains=[
-            "af ipv6-unicast:",
+            "af ipv6:",
             f"RD            : {RD}",
             "OS State       : UP",
         ],
@@ -353,7 +353,7 @@ def _run_inner(rt: TopologyRuntime) -> None:
         command=f"show vrf name {VRF_NAME2}",
         timeout=15,
         contains=[
-            "af ipv4-unicast:",
+            "af ipv4:",
             "RD            : 65000:500",
             "65000:600",
         ],

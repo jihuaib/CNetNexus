@@ -5,19 +5,19 @@
     <views>
         <view view-name="vrf">
             <template>&lt;NetNexus(config-vrf-{ctx:5})&gt;</template>
-            <view view-name="vrf-af-ipv4-uni">
-                <template>&lt;NetNexus(config-vrf-{ctx:5}-af-ipv4-uni)&gt;</template>
+            <view view-name="vrf-af-ipv4">
+                <template>&lt;NetNexus(config-vrf-{ctx:5}-af-ipv4)&gt;</template>
             </view>
-            <view view-name="vrf-af-ipv6-uni">
-                <template>&lt;NetNexus(config-vrf-{ctx:5}-af-ipv6-uni)&gt;</template>
+            <view view-name="vrf-af-ipv6">
+                <template>&lt;NetNexus(config-vrf-{ctx:5}-af-ipv6)&gt;</template>
             </view>
         </view>
     </views>
 
     <show-this>
         <view name="vrf"/>
-        <view name="vrf-af-ipv4-uni"/>
-        <view name="vrf-af-ipv6-uni"/>
+        <view name="vrf-af-ipv4"/>
+        <view name="vrf-af-ipv6"/>
     </show-this>
 
     <command_groups>
@@ -98,7 +98,7 @@
             </commands>
         </group>
 
-        <!-- group 3: af ipv4-unicast / af ipv6-unicast / no af ... -->
+        <!-- group 3: af ipv4 / af ipv6 / no af ... -->
         <group group-id="3">
             <elements>
                 <element id="1" type="keyword">
@@ -110,37 +110,35 @@
                     <description>Enter address family configuration</description>
                 </element>
                 <element id="3" cfg-id="1" type="keyword">
-                    <name>ipv4-unicast</name>
-                    <description>IPv4 unicast address family</description>
+                    <name>ipv4</name>
+                    <description>IPv4 address family</description>
                 </element>
                 <element id="4" cfg-id="2" type="keyword">
-                    <name>ipv6-unicast</name>
-                    <description>IPv6 unicast address family</description>
+                    <name>ipv6</name>
+                    <description>IPv6 address family</description>
                 </element>
             </elements>
 
             <commands>
-                <!-- af ipv4-unicast -->
+                <!-- af ipv4 -->
                 <command>
                     <expression>2 3</expression>
                     <views>vrf</views>
-                    <to-view>vrf-af-ipv4-uni</to-view>
+                    <to-view>vrf-af-ipv4</to-view>
                     <context-out>
                         <entry ctx-id="9" value="1"/>
-                        <entry ctx-id="10" value="1"/>
                     </context-out>
                 </command>
-                <!-- af ipv6-unicast -->
+                <!-- af ipv6 -->
                 <command>
                     <expression>2 4</expression>
                     <views>vrf</views>
-                    <to-view>vrf-af-ipv6-uni</to-view>
+                    <to-view>vrf-af-ipv6</to-view>
                     <context-out>
                         <entry ctx-id="9" value="2"/>
-                        <entry ctx-id="10" value="1"/>
                     </context-out>
                 </command>
-                <!-- no af { ipv4-unicast | ipv6-unicast } -->
+                <!-- no af { ipv4 | ipv6 } -->
                 <command>
                     <expression>1 2 { 3 | 4 }</expression>
                     <views>vrf</views>
@@ -169,11 +167,11 @@
             <commands>
                 <command>
                     <expression>1 2</expression>
-                    <views>vrf-af-ipv4-uni,vrf-af-ipv6-uni</views>
+                    <views>vrf-af-ipv4,vrf-af-ipv6</views>
                 </command>
                 <command>
                     <expression>3 1</expression>
-                    <views>vrf-af-ipv4-uni,vrf-af-ipv6-uni</views>
+                    <views>vrf-af-ipv4,vrf-af-ipv6</views>
                 </command>
             </commands>
         </group>
@@ -231,26 +229,46 @@
                     <name>no</name>
                     <description>Delete</description>
                 </element>
+                <element id="7" cfg-id="3" type="keyword">
+                    <name>evpn</name>
+                    <description>EVPN route-target type</description>
+                </element>
             </elements>
 
             <commands>
-                <!-- vpn-target <rt> [import|export|both] -->
+                <!-- vpn-target <rt> [import|export|both] [evpn] -->
                 <command>
                     <expression>1 2</expression>
-                    <views>vrf-af-ipv4-uni,vrf-af-ipv6-uni</views>
+                    <views>vrf-af-ipv4,vrf-af-ipv6</views>
                 </command>
                 <command>
                     <expression>1 2 { 3 | 4 | 5 }</expression>
-                    <views>vrf-af-ipv4-uni,vrf-af-ipv6-uni</views>
+                    <views>vrf-af-ipv4,vrf-af-ipv6</views>
                 </command>
-                <!-- no vpn-target <rt> [import|export|both] -->
+                <command>
+                    <expression>1 2 7</expression>
+                    <views>vrf-af-ipv4,vrf-af-ipv6</views>
+                </command>
+                <command>
+                    <expression>1 2 { 3 | 4 | 5 } 7</expression>
+                    <views>vrf-af-ipv4,vrf-af-ipv6</views>
+                </command>
+                <!-- no vpn-target <rt> [import|export|both] [evpn] -->
                 <command>
                     <expression>6 1 2</expression>
-                    <views>vrf-af-ipv4-uni,vrf-af-ipv6-uni</views>
+                    <views>vrf-af-ipv4,vrf-af-ipv6</views>
                 </command>
                 <command>
                     <expression>6 1 2 { 3 | 4 | 5 }</expression>
-                    <views>vrf-af-ipv4-uni,vrf-af-ipv6-uni</views>
+                    <views>vrf-af-ipv4,vrf-af-ipv6</views>
+                </command>
+                <command>
+                    <expression>6 1 2 7</expression>
+                    <views>vrf-af-ipv4,vrf-af-ipv6</views>
+                </command>
+                <command>
+                    <expression>6 1 2 { 3 | 4 | 5 } 7</expression>
+                    <views>vrf-af-ipv4,vrf-af-ipv6</views>
                 </command>
             </commands>
         </group>
@@ -279,11 +297,11 @@
             <commands>
                 <command>
                     <expression>1 { 2 | 3 }</expression>
-                    <views>vrf-af-ipv4-uni,vrf-af-ipv6-uni</views>
+                    <views>vrf-af-ipv4,vrf-af-ipv6</views>
                 </command>
                 <command>
                     <expression>4 1</expression>
-                    <views>vrf-af-ipv4-uni,vrf-af-ipv6-uni</views>
+                    <views>vrf-af-ipv4,vrf-af-ipv6</views>
                 </command>
             </commands>
         </group>

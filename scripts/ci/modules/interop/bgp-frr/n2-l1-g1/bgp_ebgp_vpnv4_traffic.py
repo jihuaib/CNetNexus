@@ -117,7 +117,7 @@ def _configure_netnexus(rt: TopologyRuntime, peer_ip: str) -> None:
         commands=[
             "config",
             f"vrf {VRF_NAME}",
-            "af ipv4-unicast",
+            "af ipv4",
             f"route-distinguisher {NN_RD}",
             "apply-label per-vrf",
             f"vpn-target {RT} export",

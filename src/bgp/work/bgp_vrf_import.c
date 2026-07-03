@@ -823,7 +823,7 @@ static guint local_collect_targets(uint32_t src_vrf_id, GHashTable *set)
     {
         return 0;
     }
-    const vrf_api_af_t *af = vrf_api_cache_get_af(src_vrf_id, VRF_AFI_IPV4, VRF_SAFI_UNICAST);
+    const vrf_api_af_t *af = vrf_api_cache_get_af(src_vrf_id, VRF_AFI_IPV4);
     if (!af || !af->export_rts || af->export_rt_count == 0)
     {
         return 0;

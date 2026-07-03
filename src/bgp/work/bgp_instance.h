@@ -69,6 +69,8 @@ uint32_t bgp_inst_effective_cluster_id(const bgp_instance_t *inst);
  * VPN 路由一律接受(供 RR 透传)，但导入私网 VRF 仍在 reconcile 阶段按 IRT 命中决定。
  */
 #define BGP_INST_FLAG_VPN_TARGET_FILTER (1U << 1)
+/** 实例策略位：私网 VRF unicast AF 是否把本 VRF 路由导出到 public EVPN RIB。 */
+#define BGP_INST_FLAG_ADVERTISE_EVPN_ROUTE (1U << 2)
 
 /**
  * @brief QP 自产生路由配置条目（每个对应一组 [start_dqpn, start_dqpn+count) 的 NLRI）

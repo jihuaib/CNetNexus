@@ -180,7 +180,7 @@ int  bgp_vpn_export_process_pending(bgp_instance_t *vpnv4_inst);
 1. src_inst = src_head->inst;校验 src_inst->safi==UNICAST 且 vrf_id≠public
 2. src_best = bgp_rib_find_best(src_rib, src_head->nlri)
       - 取 VALID 的 best;peer 与 import-route 路由都导出(已确认)
-3. 取 RD: af = vrf_api_cache_get_af(vrf_id, IPV4, UNICAST)
+3. 取 RD: af = vrf_api_cache_get_af(vrf_id, IPV4)
       - 若 !af->has_rd → 跳过该条,记 WARN(无 RD 不能进 VPN 表)
 4. 取/分配 per-VRF VPN label(vrf->vpn_label,0 则分配)
 5. 构造目标 VPN NLRI:

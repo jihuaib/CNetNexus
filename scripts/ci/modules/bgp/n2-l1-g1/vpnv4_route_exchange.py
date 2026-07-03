@@ -125,7 +125,7 @@ def _setup_vrf(rt: TopologyRuntime, device: str, rd: str, *, rt_export: bool, rt
     commands = [
         "config",
         f"vrf {VRF_NAME}",
-        "af ipv4-unicast",
+        "af ipv4",
         f"route-distinguisher {rd}",
         "apply-label per-vrf",
     ]
@@ -156,7 +156,7 @@ def _set_r2_import_rt(rt: TopologyRuntime, *, enabled: bool) -> None:
         commands=[
             "config",
             f"vrf {VRF_NAME}",
-            "af ipv4-unicast",
+            "af ipv4",
             R2_IMPORT_RT if enabled else R2_IMPORT_RT_DEL,
             "exit",
             "exit",
@@ -388,7 +388,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 },
                 {
                     "device": "r2",
-                    "command": f"show bgp route af vpnv4 {LOOP1_ADDR} {LOOP1_LEN} rd {R1_RD}",
+                    "command": f"show bgp route af vpnv4 rd {R1_RD} {LOOP1_ADDR} {LOOP1_LEN}",
                     "contains": ["BGP Route Detail", f"RD: {R1_RD}", "RecvLabel"],
                     "label": "r2 prefix detail with rd",
                 },
@@ -474,7 +474,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             commands=[
                 "config",
                 f"vrf {VRF_NAME}",
-                "af ipv4-unicast",
+                "af ipv4",
                 "apply-label per-route",
                 "exit",
                 "exit",

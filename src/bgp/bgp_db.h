@@ -265,6 +265,11 @@ int bgp_db_set_route_select(const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi
 int bgp_db_set_vpn_target_policy(const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi, bool enabled);
 
 /**
+ * @brief 设置私网 VRF unicast AF 的 advertise evpn route 开关
+ */
+int bgp_db_set_advertise_evpn_route(const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi, bool enabled);
+
+/**
  * @brief 持久化一条 QP 自产生路由配置
  * @param vrf_name    VRF 名称
  * @param afi         地址族

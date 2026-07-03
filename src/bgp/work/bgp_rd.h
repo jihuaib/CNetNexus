@@ -45,11 +45,11 @@ typedef struct bgp_rd_entry
 /**
  * @brief 判断 SAFI 是否属于 VPN 类（NLRI 自带 RD）
  * @param safi 子地址族
- * @return TRUE 表示 VPN 类（VPN_UNICAST / VPN_FLOWSPEC），FALSE 否则
+ * @return TRUE 表示 VPN 类（VPN_UNICAST / VPN_FLOWSPEC / EVPN），FALSE 否则
  */
 static inline bool bgp_safi_is_vpn(bgp_safi_t safi)
 {
-    return safi == BGP_SAFI_VPN_UNICAST || safi == BGP_SAFI_VPN_FLOWSPEC;
+    return safi == BGP_SAFI_VPN_UNICAST || safi == BGP_SAFI_VPN_FLOWSPEC || safi == BGP_SAFI_EVPN;
 }
 
 /**

@@ -31,6 +31,9 @@
             <view view-name="bgp-af-vpnv4">
                 <template>&lt;NetNexus(config-bgp-af-vpnv4)&gt;</template>
             </view>
+            <view view-name="bgp-af-evpn">
+                <template>&lt;NetNexus(config-bgp-af-evpn)&gt;</template>
+            </view>
             <view view-name="bgp-bmp">
                 <template>&lt;NetNexus(config-bgp-bmp-{ctx:7})&gt;</template>
             </view>
@@ -48,6 +51,7 @@
         <view name="bgp-af-ipv6-qp"/>
         <view name="bgp-af-ipv4-labeled"/>
         <view name="bgp-af-vpnv4"/>
+        <view name="bgp-af-evpn"/>
         <view name="bgp-bmp"/>
     </show-this>
 
@@ -199,6 +203,10 @@
                     <name>vpnv4</name>
                     <description>VPNv4 (MPLS L3VPN) address family</description>
                 </element>
+                <element id="9" cfg-id="7" type="keyword">
+                    <name>evpn</name>
+                    <description>EVPN (L2VPN) address family</description>
+                </element>
             </elements>
 
             <commands>
@@ -258,6 +266,15 @@
                     </context-out>
                 </command>
                 <command>
+                    <expression>2 9</expression>
+                    <views>bgp</views>
+                    <to-view>bgp-af-evpn</to-view>
+                    <context-out>
+                        <entry ctx-id="2" value="25"/>
+                        <entry ctx-id="3" value="70"/>
+                    </context-out>
+                </command>
+                <command>
                     <expression>2 3</expression>
                     <views>bgp-vrf</views>
                     <to-view>bgp-vrf-af-ipv4-uni</to-view>
@@ -275,9 +292,9 @@
                         <entry ctx-id="3" value="1"/>
                     </context-out>
                 </command>
-                <!-- no af {ipv4-unicast | ipv6-unicast | ipv4-qp | ipv6-qp | ipv4-labeled | vpnv4} -->
+                <!-- no af {ipv4-unicast | ipv6-unicast | ipv4-qp | ipv6-qp | ipv4-labeled | vpnv4 | evpn} -->
                 <command>
-                    <expression>1  2  { 3 | 4 | 5 | 6 | 7 | 8 }</expression>
+                    <expression>1  2  { 3 | 4 | 5 | 6 | 7 | 8 | 9 }</expression>
                     <views>bgp</views>
                 </command>
                 <command>
@@ -318,12 +335,12 @@
                 <!-- neighbor <ipv4|ipv6> enable -->
                 <command>
                     <expression>2 {3 | 4} 5</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-qp,bgp-af-ipv6-qp,bgp-af-ipv4-labeled,bgp-af-vpnv4,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-qp,bgp-af-ipv6-qp,bgp-af-ipv4-labeled,bgp-af-vpnv4,bgp-af-evpn,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
                 </command>
                 <!-- no neighbor <ipv4|ipv6> enable -->
                 <command>
                     <expression>1 2 {3 | 4} 5</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-qp,bgp-af-ipv6-qp,bgp-af-ipv4-labeled,bgp-af-vpnv4,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-qp,bgp-af-ipv6-qp,bgp-af-ipv4-labeled,bgp-af-vpnv4,bgp-af-evpn,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
                 </command>
             </commands>
         </group>
@@ -624,12 +641,21 @@
                     <name>vpnv4</name>
                     <description>VPNv4 (MPLS L3VPN) address family</description>
                 </element>
+                <element id="14" cfg-id="9" type="keyword">
+                    <name>evpn</name>
+                    <description>EVPN (L2VPN) address family</description>
+                </element>
             </elements>
 
             <commands>
                 <!-- show bgp neighbor af vpnv4 [<ip-address>] -->
                 <command>
                     <expression>1 2 3 4 13 [7]</expression>
+                    <views>global</views>
+                </command>
+                <!-- show bgp neighbor af evpn [<ip-address>] -->
+                <command>
+                    <expression>1 2 3 4 14 [7]</expression>
                     <views>global</views>
                 </command>
                 <!-- show bgp neighbor af ipv4-unicast [vrf <vrf-name>] [<ip-address>] -->
@@ -727,6 +753,39 @@
             </commands>
         </group>
 
+        <!-- advertise evpn route / no advertise evpn route（BGP VRF IPv4 unicast AF 视图） -->
+        <group group-id="25">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>advertise</name>
+                    <description>Advertise routes to another address family</description>
+                </element>
+                <element id="3" type="keyword">
+                    <name>evpn</name>
+                    <description>EVPN address family</description>
+                </element>
+                <element id="4" type="keyword">
+                    <name>route</name>
+                    <description>VRF route</description>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>2 3 4</expression>
+                    <views>bgp-vrf-af-ipv4-uni</views>
+                </command>
+                <command>
+                    <expression>1 2 3 4</expression>
+                    <views>bgp-vrf-af-ipv4-uni</views>
+                </command>
+            </commands>
+        </group>
+
         <!-- import-route static|connected / no import-route ...（地址族视图） -->
         <!-- cfg-id: 1=static, 2=connected -->
         <group group-id="11">
@@ -819,9 +878,9 @@
                     <description>Show IPv6 qp routes</description>
                 </element>
                 <element id="11" cfg-id="7" type="parameter">
-                    <name>&lt;qp-route-key&gt;</name>
+                    <name>&lt;route-key&gt;</name>
                     <type>string(1-255)</type>
-                    <description>QP route key, e.g. dqpn=1000,ip=10.99.99.0/24 or dqpn=1000,ipv6=2001:db8::/64</description>
+                    <description>Route key, e.g. dqpn=1000,ip=10.99.99.0/24 or evpn:type=5,rd=65000:1,ethag=0,prefix=10.0.0.0/24</description>
                 </element>
                 <element id="12" cfg-id="8" type="keyword">
                     <name>ipv4-labeled</name>
@@ -885,6 +944,10 @@
                     <name>advertise-routes</name>
                     <description>Show advertised routes from peer Adj-RIB-Out</description>
                 </element>
+                <element id="26" cfg-id="16" type="keyword">
+                    <name>evpn</name>
+                    <description>Show EVPN (L2VPN) routes</description>
+                </element>
             </elements>
 
             <commands>
@@ -938,6 +1001,16 @@
                     <expression>1 2 3 4 10 18 {19 | 21} 25 [11]</expression>
                     <views>global</views>
                 </command>
+                <!-- show bgp route af evpn peer <peer-ipv4|ipv6-address> recieve-routes [<route-key>] -->
+                <command>
+                    <expression>1 2 3 4 26 18 {19 | 21} {20 | 22} [11]</expression>
+                    <views>global</views>
+                </command>
+                <!-- show bgp route af evpn peer <peer-ipv4|ipv6-address> advertise-routes [<route-key>] -->
+                <command>
+                    <expression>1 2 3 4 26 18 {19 | 21} 25 [11]</expression>
+                    <views>global</views>
+                </command>
                 <!-- show bgp route af ipv4-labeled peer <peer-ipv4|ipv6-address> recieve-routes [<ip-address> <masklen>] -->
                 <command>
                     <expression>1 2 3 4 12 18 {19 | 21} {20 | 22} [23 24]</expression>
@@ -948,10 +1021,15 @@
                     <expression>1 2 3 4 12 18 {19 | 21} 25 [23 24]</expression>
                     <views>global</views>
                 </command>
-                <!-- show bgp route af vpnv4 [<ip-address> <masklen>] [rd <rd>]（vpnv4 全局表按 RD 分段；
+                <!-- show bgp route af vpnv4 [rd <rd>] [<ip-address> <masklen>]（vpnv4 全局表按 RD 分段；
                      不带前缀=列全部，带前缀不带 rd=跨所有 RD 查该前缀，带 rd=缩到单个 RD） -->
                 <command>
-                    <expression>1 2 3 4 15 [23 24] [16 17]</expression>
+                    <expression>1 2 3 4 15 [16 17] [23 24]</expression>
+                    <views>global</views>
+                </command>
+                <!-- show bgp route af evpn [rd <rd>] [<route-key>] -->
+                <command>
+                    <expression>1 2 3 4 26 [16 17] [11]</expression>
                     <views>global</views>
                 </command>
                 <!-- show bgp route af ipv4-unicast [vrf <vrf-name>] [<ip-address> <masklen>] -->
@@ -1387,12 +1465,12 @@
                 <!-- reflector cluster-id <ipv4> -->
                 <command>
                     <expression>2 3 4</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-vpnv4,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-vpnv4,bgp-af-evpn,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
                 </command>
                 <!-- no reflector cluster-id -->
                 <command>
                     <expression>1 2 3</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-vpnv4,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-vpnv4,bgp-af-evpn,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
                 </command>
             </commands>
         </group>
@@ -1427,11 +1505,11 @@
             <commands>
                 <command>
                     <expression>2 {3 | 4} 5</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-vpnv4,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-vpnv4,bgp-af-evpn,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
                 </command>
                 <command>
                     <expression>1 2 {3 | 4} 5</expression>
-                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-vpnv4,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-vpnv4,bgp-af-evpn,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
                 </command>
             </commands>
         </group>

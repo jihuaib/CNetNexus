@@ -69,11 +69,6 @@ static const char *afi_kw(int64_t afi)
     return (afi == VRF_AFI_IPV4) ? "ipv4" : (afi == VRF_AFI_IPV6) ? "ipv6" : NULL;
 }
 
-static const char *safi_kw(int64_t safi)
-{
-    return (safi == VRF_SAFI_UNICAST) ? "unicast" : NULL;
-}
-
 static void send_resp(dev_ipc_message_t *msg, GString *buf)
 {
     char *data = buf ? g_string_free(buf, FALSE) : g_strdup("");
@@ -108,14 +103,12 @@ static void emit_vrf_block(GString *out, dev_ipc_context_t *ctx, uint32_t vrf_id
         {
             db_row_t *row = res->rows[i];
             int64_t afi = db_row_get_int(row, "afi", 0);
-            int64_t safi = db_row_get_int(row, "safi", VRF_SAFI_UNICAST);
             const char *akw = afi_kw(afi);
-            const char *skw = safi_kw(safi);
-            if (!akw || !skw)
+            if (!akw)
             {
                 continue;
             }
-            g_string_append_printf(out, " af %s-%s\r\n", akw, skw);
+            g_string_append_printf(out, " af %s\r\n", akw);
             int has_rd = (int)db_row_get_int(row, "has_rd", 0);
             const char *rd_hex = db_row_get_text(row, "rd", NULL);
             if (has_rd && rd_hex)
@@ -141,7 +134,6 @@ static void emit_vrf_block(GString *out, dev_ipc_context_t *ctx, uint32_t vrf_id
             db_filter_init(&rfb);
             db_filter_add_int(&rfb, "vrf_id", (int64_t)vrf_id);
             db_filter_add_int(&rfb, "afi", afi);
-            db_filter_add_int(&rfb, "safi", safi);
 
             db_result_t *rt_res = NULL;
             if (db_rpc_query(ctx, VRF_TABLE_RT, NULL, 0, &rfb.filter, &rt_res) == ERRCODE_SUCCESS && rt_res)
@@ -151,6 +143,7 @@ static void emit_vrf_block(GString *out, dev_ipc_context_t *ctx, uint32_t vrf_id
                     db_row_t *r = rt_res->rows[k];
                     const char *hex = db_row_get_text(r, "rt", NULL);
                     int64_t dir = db_row_get_int(r, "direction", 0);
+                    int64_t rt_type = db_row_get_int(r, "rt_type", VRF_RT_TYPE_VPN);
                     if (!hex)
                     {
                         continue;
@@ -163,7 +156,8 @@ static void emit_vrf_block(GString *out, dev_ipc_context_t *ctx, uint32_t vrf_id
                     char rt_str[40];
                     rd_to_str(rt_bytes, rt_str, sizeof(rt_str));
                     const char *dir_kw = (dir == 0) ? "import" : "export";
-                    g_string_append_printf(out, "  vpn-target %s %s\r\n", rt_str, dir_kw);
+                    g_string_append_printf(out, "  vpn-target %s %s%s\r\n", rt_str, dir_kw,
+                                           (rt_type == VRF_RT_TYPE_EVPN) ? " evpn" : "");
                 }
                 db_result_free(rt_res);
             }

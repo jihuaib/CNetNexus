@@ -442,6 +442,9 @@ static void bgp_cmd_dispatch_apply(bgp_apply_cmd_t *apply)
         case BGP_CLI_GROUP_ID_VPN_TARGET_POLICY:
             bgp_cfg_apply_vpn_target_policy(apply);
             break;
+        case BGP_CLI_GROUP_ID_ADVERTISE_EVPN_ROUTE:
+            bgp_cfg_apply_advertise_evpn_route(apply);
+            break;
         case BGP_CLI_GROUP_ID_REFRESH:
             bgp_cfg_apply_refresh(apply);
             break;

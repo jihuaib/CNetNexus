@@ -19,7 +19,7 @@ g_bgp_irt_index : GHashTable<规范化 8B RT → inner GHashTable<vrf_id → ref
 ```
 
 - 只索引 **ipv4-unicast** 方向的 import RT（vpnv4 → ipv4 VRF），由 `bgp_apply_vrf.c`
-  在 `VRF_EVENT_AF_IMPORT_RT_ADD/DEL` 时按 `afi==IPV4 && safi==UNICAST` 增量维护。
+  在 `VRF_EVENT_AF_IMPORT_RT_ADD/DEL` 时按 VRF 事件 `afi==IPV4` 增量维护，BGP 侧映射为 unicast SAFI。
 - RT 规范化复用 `bgp_ext_community_rt_canon()`（与 export 合 RT 同一套规范化），使配置 RT
   与线上 ext-community RT 8 字节直接可比。
 - 生命周期：`VRF_DEL` → `purge_vrf`；`AF_DISABLE`(ipv4-uc) → `purge_vrf`；VRF 进程重启

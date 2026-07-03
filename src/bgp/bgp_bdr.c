@@ -54,6 +54,10 @@ static const char *afi_safi_to_str(int64_t afi, int64_t safi)
     {
         return "vpnv4";
     }
+    if (afi == BGP_AFI_L2VPN && safi == BGP_SAFI_EVPN)
+    {
+        return "evpn";
+    }
     return NULL;
 }
 
@@ -67,7 +71,8 @@ static gboolean bgp_bdr_is_af_view(const char *view_name)
            (strcmp(view_name, CLI_VIEW_BGP_AF_IPV4) == 0 || strcmp(view_name, CLI_VIEW_BGP_AF_IPV6) == 0 ||
             strcmp(view_name, CLI_VIEW_BGP_AF_IPV4_QP) == 0 || strcmp(view_name, CLI_VIEW_BGP_AF_IPV6_QP) == 0 ||
             strcmp(view_name, CLI_VIEW_BGP_AF_IPV4_LABELED) == 0 || strcmp(view_name, CLI_VIEW_BGP_AF_VPNV4) == 0 ||
-            strcmp(view_name, CLI_VIEW_BGP_VRF_AF_IPV4) == 0 || strcmp(view_name, CLI_VIEW_BGP_VRF_AF_IPV6) == 0);
+            strcmp(view_name, CLI_VIEW_BGP_AF_EVPN) == 0 || strcmp(view_name, CLI_VIEW_BGP_VRF_AF_IPV4) == 0 ||
+            strcmp(view_name, CLI_VIEW_BGP_VRF_AF_IPV6) == 0);
 }
 
 static gboolean bgp_bdr_is_vrf_scoped_view(const char *view_name)
@@ -362,8 +367,8 @@ static void bdr_append_qp_routes(GString *out, const char *vrf_name, int64_t afi
  */
 static void bdr_append_af_block(GString *out, const char *vrf_name, const char *afi_str, int64_t afi, int64_t safi,
                                 int64_t import_protos, gboolean route_select_enabled, int64_t cluster_id,
-                                int64_t import_rib_sources, gboolean vpn_target_policy, const char *block_indent,
-                                const char *body_indent)
+                                int64_t import_rib_sources, gboolean vpn_target_policy,
+                                gboolean advertise_evpn_route, const char *block_indent, const char *body_indent)
 {
     g_string_append_printf(out, "%s!\r\n", block_indent);
     g_string_append_printf(out, "%saf %s\r\n", block_indent, afi_str);
@@ -401,6 +406,12 @@ static void bdr_append_af_block(GString *out, const char *vrf_name, const char *
         (import_rib_sources & (1 << 0 /* BGP_IMPORT_SRC_LABELED_UC */)))
     {
         g_string_append_printf(out, "%simport-rib public ipv4-labeled-unicast\r\n", body_indent);
+    }
+
+    if (afi == BGP_AFI_IPV4 && safi == BGP_SAFI_UNICAST && strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) != 0 &&
+        advertise_evpn_route)
+    {
+        g_string_append_printf(out, "%sadvertise evpn route\r\n", body_indent);
     }
 
     if (safi == BGP_SAFI_QP)
@@ -442,6 +453,7 @@ static void bdr_append_af_instances_scoped(GString *out, const char *vrf_name, c
         int64_t cluster_id = db_row_get_int(row, "cluster_id", 0);
         int64_t import_rib_sources = db_row_get_int(row, "import_rib_sources", 0);
         gboolean vpn_target_policy = db_row_get_int(row, "vpn_target_policy", 1) != 0;
+        gboolean advertise_evpn_route = db_row_get_int(row, "advertise_evpn_route", 0) != 0;
         const char *afi_str = afi_safi_to_str(afi_int, safi_int);
 
         if (!afi_str)
@@ -450,7 +462,7 @@ static void bdr_append_af_instances_scoped(GString *out, const char *vrf_name, c
         }
 
         bdr_append_af_block(out, vrf_name, afi_str, afi_int, safi_int, import_protos, route_select_enabled, cluster_id,
-                            import_rib_sources, vpn_target_policy, block_indent, body_indent);
+                            import_rib_sources, vpn_target_policy, advertise_evpn_route, block_indent, body_indent);
     }
 
     db_value_free(&cond.value);
@@ -544,12 +556,14 @@ static void bdr_append_scoped_af_instance(GString *out, const char *vrf_name, in
         int64_t cluster_id = db_row_get_int(row, "cluster_id", 0);
         int64_t import_rib_sources = db_row_get_int(row, "import_rib_sources", 0);
         gboolean vpn_target_policy = db_row_get_int(row, "vpn_target_policy", 1) != 0;
+        gboolean advertise_evpn_route = db_row_get_int(row, "advertise_evpn_route", 0) != 0;
         const char *afi_str = afi_safi_to_str(afi, safi);
 
         if (afi_str)
         {
             bdr_append_af_block(out, vrf_name, afi_str, afi, safi, import_protos, route_select_enabled, cluster_id,
-                                import_rib_sources, vpn_target_policy, block_indent, body_indent);
+                                import_rib_sources, vpn_target_policy, advertise_evpn_route, block_indent,
+                                body_indent);
         }
     }
 

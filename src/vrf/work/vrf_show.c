@@ -78,17 +78,6 @@ static const char *afi_to_str(uint16_t afi)
     return (afi == VRF_AFI_IPV4) ? "ipv4" : (afi == VRF_AFI_IPV6) ? "ipv6" : "unknown";
 }
 
-static const char *safi_to_str(uint8_t safi)
-{
-    switch (safi)
-    {
-        case VRF_SAFI_UNICAST:
-            return "unicast";
-        default:
-            return "unknown";
-    }
-}
-
 static const char *module_name(uint32_t module_id)
 {
     switch (module_id)
@@ -360,7 +349,7 @@ static int handle_show(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                 {
                     (void)k;
                     const vrf_af_state_t *af = (const vrf_af_state_t *)v;
-                    g_string_append_printf(buf, "  af %s-%s:\r\n", afi_to_str(af->afi), safi_to_str(af->safi));
+                    g_string_append_printf(buf, "  af %s:\r\n", afi_to_str(af->afi));
                     if (af->has_rd)
                     {
                         char rd[40];

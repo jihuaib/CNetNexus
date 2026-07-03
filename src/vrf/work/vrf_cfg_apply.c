@@ -88,16 +88,16 @@ static int apply_af_create(vrf_apply_cmd_t *cmd)
         return -1;
     }
     cmd->vrf_id = e->vrf_id; /* 回传 */
-    if (vrf_af_find(e, cmd->afi, cmd->safi))
+    if (vrf_af_find(e, cmd->afi))
     {
         return VRF_APPLY_RC_NOOP;
     }
-    vrf_af_state_t *af = vrf_af_get_or_create(e, cmd->afi, cmd->safi);
+    vrf_af_state_t *af = vrf_af_get_or_create(e, cmd->afi);
     if (!af)
     {
         return VRF_APPLY_RC_FAIL;
     }
-    vrf_pub_notify_af_enable(e, cmd->afi, cmd->safi);
+    vrf_pub_notify_af_enable(e, cmd->afi);
     return VRF_APPLY_RC_OK;
 }
 
@@ -110,12 +110,12 @@ static int apply_af_delete(vrf_apply_cmd_t *cmd)
         return -1;
     }
     cmd->vrf_id = e->vrf_id; /* 回传 */
-    if (!vrf_af_find(e, cmd->afi, cmd->safi))
+    if (!vrf_af_find(e, cmd->afi))
     {
         return VRF_APPLY_RC_NOOP;
     }
-    vrf_pub_notify_af_disable(e, cmd->afi, cmd->safi);
-    return vrf_af_delete(e, cmd->afi, cmd->safi);
+    vrf_pub_notify_af_disable(e, cmd->afi);
+    return vrf_af_delete(e, cmd->afi);
 }
 
 static int apply_rd_set(vrf_apply_cmd_t *cmd, int clear)
@@ -128,7 +128,7 @@ static int apply_rd_set(vrf_apply_cmd_t *cmd, int clear)
         return VRF_APPLY_RC_FAIL;
     }
     cmd->vrf_id = e->vrf_id; /* 回传 */
-    vrf_af_state_t *af = vrf_af_find(e, cmd->afi, cmd->safi);
+    vrf_af_state_t *af = vrf_af_find(e, cmd->afi);
     if (clear)
     {
         if (!af || !af->has_rd)
@@ -145,7 +145,7 @@ static int apply_rd_set(vrf_apply_cmd_t *cmd, int clear)
         }
         if (!af)
         {
-            af = vrf_af_get_or_create(e, cmd->afi, cmd->safi);
+            af = vrf_af_get_or_create(e, cmd->afi);
             if (!af)
             {
                 snprintf(cmd->errmsg, sizeof(cmd->errmsg), "VRF Error: AF create failed\r\n");
@@ -160,7 +160,7 @@ static int apply_rd_set(vrf_apply_cmd_t *cmd, int clear)
     }
     if (clear)
     {
-        vrf_pub_notify_af_rd_del(e, cmd->afi, cmd->safi);
+        vrf_pub_notify_af_rd_del(e, cmd->afi);
     }
     else
     {
@@ -179,7 +179,7 @@ static int apply_apply_label_set(vrf_apply_cmd_t *cmd)
         return VRF_APPLY_RC_FAIL;
     }
     cmd->vrf_id = e->vrf_id; /* 回传 */
-    vrf_af_state_t *af = vrf_af_get_or_create(e, cmd->afi, cmd->safi);
+    vrf_af_state_t *af = vrf_af_get_or_create(e, cmd->afi);
     if (!af)
     {
         snprintf(cmd->errmsg, sizeof(cmd->errmsg), "VRF Error: AF create failed\r\n");
@@ -213,9 +213,17 @@ static gboolean rt_array_contains(const GArray *arr, const vrf_rt_t *rt)
 
 static int apply_rt_modify_dir(vrf_entry_t *e, vrf_af_state_t *af, vrf_apply_cmd_t *cmd, int direction)
 {
-    GArray *arr = (direction == 0) ? af->import_rts : af->export_rts;
+    GArray *arr = NULL;
+    if (cmd->rt_type == VRF_RT_TYPE_EVPN)
+    {
+        arr = (direction == 0) ? af->evpn_import_rts : af->evpn_export_rts;
+    }
+    else
+    {
+        arr = (direction == 0) ? af->import_rts : af->export_rts;
+    }
     gboolean existed = rt_array_contains(arr, &cmd->rt);
-    if (vrf_af_modify_rt(af, direction, cmd->add ? 1 : 0, &cmd->rt) != 0)
+    if (vrf_af_modify_rt(af, direction, cmd->rt_type, cmd->add ? 1 : 0, &cmd->rt) != 0)
     {
         return -1;
     }
@@ -227,22 +235,22 @@ static int apply_rt_modify_dir(vrf_entry_t *e, vrf_af_state_t *af, vrf_apply_cmd
     {
         if (cmd->add)
         {
-            vrf_pub_notify_af_import_rt_add(e, af, &cmd->rt);
+            vrf_pub_notify_af_import_rt_add(e, af, &cmd->rt, cmd->rt_type);
         }
         else
         {
-            vrf_pub_notify_af_import_rt_del(e, af, &cmd->rt);
+            vrf_pub_notify_af_import_rt_del(e, af, &cmd->rt, cmd->rt_type);
         }
     }
     else
     {
         if (cmd->add)
         {
-            vrf_pub_notify_af_export_rt_add(e, af, &cmd->rt);
+            vrf_pub_notify_af_export_rt_add(e, af, &cmd->rt, cmd->rt_type);
         }
         else
         {
-            vrf_pub_notify_af_export_rt_del(e, af, &cmd->rt);
+            vrf_pub_notify_af_export_rt_del(e, af, &cmd->rt, cmd->rt_type);
         }
     }
     return 0;
@@ -257,7 +265,7 @@ static int apply_rt_modify(vrf_apply_cmd_t *cmd)
         return -1;
     }
     cmd->vrf_id = e->vrf_id; /* 回传 */
-    vrf_af_state_t *af = vrf_af_get_or_create(e, cmd->afi, cmd->safi);
+    vrf_af_state_t *af = vrf_af_get_or_create(e, cmd->afi);
     if (!af)
     {
         return -1;

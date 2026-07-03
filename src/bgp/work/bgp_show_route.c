@@ -308,6 +308,22 @@ static const char *bgp_route_label_name(const bgp_route_node_t *route)
     }
 }
 
+static void bgp_show_evpn_esi_to_str(const bgp_esi_t *esi, char *buf, size_t sz)
+{
+    if (!buf || sz == 0)
+    {
+        return;
+    }
+    if (!esi)
+    {
+        snprintf(buf, sz, "-");
+        return;
+    }
+    const uint8_t *b = esi->bytes;
+    snprintf(buf, sz, "%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x", b[0], b[1], b[2], b[3], b[4], b[5],
+             b[6], b[7], b[8], b[9]);
+}
+
 static gboolean bgp_show_route_width_cb(gpointer key, gpointer value, gpointer user_data)
 {
     (void)key;
@@ -415,10 +431,36 @@ static gboolean bgp_show_route_head_cb(gpointer key, gpointer value, gpointer us
 /**
  * @brief 显示单条前缀的所有路径详情（供 show bgp route af ... <ip> <masklen> 使用）
  */
+static void bgp_show_route_append_nlri_detail(GString *buf, const bgp_nlri_entry_t *nlri)
+{
+    if (!buf || !nlri || nlri->type != BGP_NLRI_EVPN || nlri->evpn.route_type != 5)
+    {
+        return;
+    }
+
+    char rd_str[48];
+    char esi_str[32];
+    char prefix_str[80];
+    char gw_str[64];
+    bgp_rd_to_str(&nlri->evpn.rd, rd_str, sizeof(rd_str));
+    bgp_show_evpn_esi_to_str(&nlri->evpn.esi, esi_str, sizeof(esi_str));
+    net_prefix_to_str(&nlri->evpn.ip_prefix, prefix_str, sizeof(prefix_str));
+    net_addr_to_str(&nlri->evpn.gw_ip, gw_str, sizeof(gw_str));
+
+    g_string_append_printf(buf, "  EVPN Type     : 5 (IP Prefix)\r\n");
+    g_string_append_printf(buf, "  EVPN RD       : %s\r\n", rd_str);
+    g_string_append_printf(buf, "  EVPN ESI      : %s\r\n", esi_str);
+    g_string_append_printf(buf, "  EVPN EthTag   : %u\r\n", nlri->evpn.eth_tag);
+    g_string_append_printf(buf, "  EVPN Prefix   : %s\r\n", prefix_str);
+    g_string_append_printf(buf, "  EVPN Gateway  : %s\r\n", gw_str);
+    g_string_append_printf(buf, "  EVPN Label    : %u\r\n", nlri->evpn.label1);
+}
+
 static void bgp_show_route_detail(GString *buf, const bgp_rthead_t *head)
 {
     uint32_t path_count = (uint32_t)g_list_length(head->route_list);
     g_string_append_printf(buf, "  Head QueueRefCnt: %u\r\n", head->queue_refcnt);
+    bgp_show_route_append_nlri_detail(buf, &head->nlri);
     g_string_append_printf(buf, "  Paths          : %u\r\n\r\n", path_count);
 
     for (const GList *l = head->route_list; l; l = l->next)
@@ -691,6 +733,349 @@ static gboolean bgp_show_parse_qp_query(const char *query, bgp_afi_t afi, bgp_nl
     return TRUE;
 }
 
+static int bgp_show_hex_nibble(char c)
+{
+    if (c >= '0' && c <= '9')
+    {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f')
+    {
+        return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'F')
+    {
+        return c - 'A' + 10;
+    }
+    return -1;
+}
+
+static gboolean bgp_show_parse_evpn_esi(const char *s, bgp_esi_t *esi)
+{
+    if (!s || !esi)
+    {
+        return FALSE;
+    }
+
+    const char *p = s;
+    for (uint8_t i = 0; i < 10; i++)
+    {
+        int hi = bgp_show_hex_nibble(p[0]);
+        int lo = bgp_show_hex_nibble(p[1]);
+        if (hi < 0 || lo < 0)
+        {
+            return FALSE;
+        }
+        esi->bytes[i] = (uint8_t)((hi << 4) | lo);
+        p += 2;
+        if (i < 9)
+        {
+            if (*p != ':')
+            {
+                return FALSE;
+            }
+            p++;
+        }
+    }
+    return *p == '\0';
+}
+
+static uint16_t bgp_show_evpn_type5_build_raw(const bgp_nlri_evpn_t *e, uint8_t raw[512])
+{
+    if (!e || !raw || (e->ip_prefix.addr.family != AF_INET && e->ip_prefix.addr.family != AF_INET6))
+    {
+        return 0;
+    }
+
+    uint8_t addr_bytes = (e->ip_prefix.addr.family == AF_INET6) ? 16u : 4u;
+    uint8_t pfx_bytes = (uint8_t)((e->ip_prefix.prefix_len + 7u) / 8u);
+    if (pfx_bytes > addr_bytes)
+    {
+        return 0;
+    }
+
+    uint8_t vlen = (uint8_t)(8u + 10u + 4u + 1u + pfx_bytes + addr_bytes + 3u);
+    uint16_t pos = 0;
+    raw[pos++] = 5u;
+    raw[pos++] = vlen;
+    memcpy(raw + pos, e->rd.bytes, 8);
+    pos += 8;
+    memcpy(raw + pos, e->esi.bytes, 10);
+    pos += 10;
+    raw[pos++] = (uint8_t)(e->eth_tag >> 24);
+    raw[pos++] = (uint8_t)(e->eth_tag >> 16);
+    raw[pos++] = (uint8_t)(e->eth_tag >> 8);
+    raw[pos++] = (uint8_t)e->eth_tag;
+    raw[pos++] = (uint8_t)(pfx_bytes * 8u);
+    if (pfx_bytes > 0)
+    {
+        if (e->ip_prefix.addr.family == AF_INET)
+        {
+            memcpy(raw + pos, &e->ip_prefix.addr.u.v4, pfx_bytes);
+        }
+        else
+        {
+            memcpy(raw + pos, e->ip_prefix.addr.u.v6.s6_addr, pfx_bytes);
+        }
+        pos += pfx_bytes;
+    }
+    if (e->gw_ip.family == AF_INET)
+    {
+        memcpy(raw + pos, &e->gw_ip.u.v4, 4);
+    }
+    else if (e->gw_ip.family == AF_INET6)
+    {
+        memcpy(raw + pos, e->gw_ip.u.v6.s6_addr, 16);
+    }
+    else
+    {
+        memset(raw + pos, 0, addr_bytes);
+    }
+    pos += addr_bytes;
+    raw[pos++] = (uint8_t)(e->label1 >> 12);
+    raw[pos++] = (uint8_t)(e->label1 >> 4);
+    raw[pos++] = (uint8_t)(((e->label1 & 0xFu) << 4) | 0x01u);
+    return pos;
+}
+
+static gboolean bgp_show_parse_evpn_prefix_value(const char *value, net_prefix_t *prefix)
+{
+    if (!value || !prefix)
+    {
+        return FALSE;
+    }
+
+    const char *slash = strrchr(value, '/');
+    if (!slash || slash == value || slash[1] == '\0')
+    {
+        return FALSE;
+    }
+
+    char addr_buf[INET6_ADDRSTRLEN];
+    size_t addr_len = (size_t)(slash - value);
+    if (addr_len == 0 || addr_len >= sizeof(addr_buf))
+    {
+        return FALSE;
+    }
+    memcpy(addr_buf, value, addr_len);
+    addr_buf[addr_len] = '\0';
+
+    net_addr_t addr = {0};
+    if (net_addr_from_str(addr_buf, &addr) != 0 || (addr.family != AF_INET && addr.family != AF_INET6))
+    {
+        return FALSE;
+    }
+
+    char *endp = NULL;
+    unsigned long mask_ul = strtoul(slash + 1, &endp, 10);
+    unsigned long max_mask = (addr.family == AF_INET6) ? 128ul : 32ul;
+    if (!endp || *endp != '\0' || mask_ul > max_mask)
+    {
+        return FALSE;
+    }
+
+    uint8_t wire_mask = (uint8_t)(((mask_ul + 7ul) / 8ul) * 8ul);
+    if (net_addr_prefix_normalize(&addr, wire_mask) != 0)
+    {
+        return FALSE;
+    }
+
+    memset(prefix, 0, sizeof(*prefix));
+    prefix->addr = addr;
+    prefix->prefix_len = wire_mask;
+    return TRUE;
+}
+
+static gboolean bgp_show_parse_evpn_query(const char *query, bgp_nlri_entry_t *nlri, char *err, size_t err_sz)
+{
+    if (err && err_sz > 0)
+    {
+        err[0] = '\0';
+    }
+    if (!query || !nlri)
+    {
+        if (err && err_sz > 0)
+        {
+            snprintf(err, err_sz, "BGP Error: Invalid EVPN route query format.\r\n");
+        }
+        return FALSE;
+    }
+
+    char work[BGP_NLRI_KEY_MAX];
+    if (strlen(query) >= sizeof(work))
+    {
+        if (err && err_sz > 0)
+        {
+            snprintf(err, err_sz, "BGP Error: EVPN route query is too long.\r\n");
+        }
+        return FALSE;
+    }
+    snprintf(work, sizeof(work), "%s", query);
+
+    bgp_nlri_entry_t tmp;
+    memset(&tmp, 0, sizeof(tmp));
+    tmp.afi = BGP_AFI_L2VPN;
+    tmp.safi = BGP_SAFI_EVPN;
+    tmp.type = BGP_NLRI_EVPN;
+    tmp.evpn.route_type = 5;
+
+    gboolean has_type = FALSE;
+    gboolean has_rd = FALSE;
+    gboolean has_ethag = FALSE;
+    gboolean has_prefix = FALSE;
+
+    char *saveptr = NULL;
+    for (char *tok = strtok_r(work, ",", &saveptr); tok; tok = strtok_r(NULL, ",", &saveptr))
+    {
+        if (g_str_has_prefix(tok, "evpn:"))
+        {
+            tok += 5;
+        }
+        char *eq = strchr(tok, '=');
+        if (!eq || eq == tok || eq[1] == '\0')
+        {
+            if (err && err_sz > 0)
+            {
+                snprintf(err, err_sz,
+                         "BGP Error: Invalid EVPN route query format. Use "
+                         "evpn:type=5,rd=<rd>,ethag=<n>,prefix=<prefix>/<mask>.\r\n");
+            }
+            return FALSE;
+        }
+        *eq = '\0';
+        const char *key = tok;
+        const char *value = eq + 1;
+
+        if (strcmp(key, "type") == 0)
+        {
+            char *endp = NULL;
+            unsigned long type_ul = strtoul(value, &endp, 10);
+            if (!endp || *endp != '\0' || type_ul != 5ul)
+            {
+                if (err && err_sz > 0)
+                {
+                    snprintf(err, err_sz, "BGP Error: Only EVPN type=5 route query is supported.\r\n");
+                }
+                return FALSE;
+            }
+            has_type = TRUE;
+        }
+        else if (strcmp(key, "rd") == 0)
+        {
+            if (bgp_show_rd_from_str(value, &tmp.evpn.rd) != 0)
+            {
+                if (err && err_sz > 0)
+                {
+                    snprintf(err, err_sz, "BGP Error: Invalid EVPN route query RD.\r\n");
+                }
+                return FALSE;
+            }
+            has_rd = TRUE;
+        }
+        else if (strcmp(key, "esi") == 0)
+        {
+            if (!bgp_show_parse_evpn_esi(value, &tmp.evpn.esi))
+            {
+                if (err && err_sz > 0)
+                {
+                    snprintf(err, err_sz, "BGP Error: Invalid EVPN route query ESI.\r\n");
+                }
+                return FALSE;
+            }
+        }
+        else if (strcmp(key, "ethag") == 0)
+        {
+            char *endp = NULL;
+            unsigned long ethag_ul = strtoul(value, &endp, 10);
+            if (!endp || *endp != '\0' || ethag_ul > 0xFFFFFFFFul)
+            {
+                if (err && err_sz > 0)
+                {
+                    snprintf(err, err_sz, "BGP Error: Invalid EVPN route query Ethernet Tag.\r\n");
+                }
+                return FALSE;
+            }
+            tmp.evpn.eth_tag = (uint32_t)ethag_ul;
+            has_ethag = TRUE;
+        }
+        else if (strcmp(key, "prefix") == 0)
+        {
+            if (!bgp_show_parse_evpn_prefix_value(value, &tmp.evpn.ip_prefix))
+            {
+                if (err && err_sz > 0)
+                {
+                    snprintf(err, err_sz, "BGP Error: Invalid EVPN route query prefix.\r\n");
+                }
+                return FALSE;
+            }
+            has_prefix = TRUE;
+        }
+        else if (strcmp(key, "gw") == 0)
+        {
+            if (net_addr_from_str(value, &tmp.evpn.gw_ip) != 0 ||
+                (tmp.evpn.gw_ip.family != AF_INET && tmp.evpn.gw_ip.family != AF_INET6))
+            {
+                if (err && err_sz > 0)
+                {
+                    snprintf(err, err_sz, "BGP Error: Invalid EVPN route query gateway.\r\n");
+                }
+                return FALSE;
+            }
+        }
+        else if (strcmp(key, "label") == 0)
+        {
+            char *endp = NULL;
+            unsigned long label_ul = strtoul(value, &endp, 10);
+            if (!endp || *endp != '\0' || label_ul > 0xFFFFFul)
+            {
+                if (err && err_sz > 0)
+                {
+                    snprintf(err, err_sz, "BGP Error: Invalid EVPN route query label.\r\n");
+                }
+                return FALSE;
+            }
+            tmp.evpn.label1 = (uint32_t)label_ul;
+        }
+    }
+
+    if (!has_type || !has_rd || !has_ethag || !has_prefix)
+    {
+        if (err && err_sz > 0)
+        {
+            snprintf(err, err_sz,
+                     "BGP Error: Invalid EVPN route query format. Use "
+                     "evpn:type=5,rd=<rd>,ethag=<n>,prefix=<prefix>/<mask>.\r\n");
+        }
+        return FALSE;
+    }
+
+    if (tmp.evpn.gw_ip.family != 0 && tmp.evpn.gw_ip.family != tmp.evpn.ip_prefix.addr.family)
+    {
+        if (err && err_sz > 0)
+        {
+            snprintf(err, err_sz, "BGP Error: EVPN route query gateway AF mismatch.\r\n");
+        }
+        return FALSE;
+    }
+    if (tmp.evpn.gw_ip.family == 0)
+    {
+        tmp.evpn.gw_ip.family = tmp.evpn.ip_prefix.addr.family;
+    }
+
+    tmp.evpn.raw_len = bgp_show_evpn_type5_build_raw(&tmp.evpn, tmp.evpn.raw);
+    if (tmp.evpn.raw_len == 0)
+    {
+        if (err && err_sz > 0)
+        {
+            snprintf(err, err_sz, "BGP Error: Invalid EVPN route query key.\r\n");
+        }
+        return FALSE;
+    }
+
+    *nlri = tmp;
+    return TRUE;
+}
+
 static gboolean bgp_show_parse_prefix_query(const char *query, bgp_afi_t afi, bgp_safi_t safi, bgp_nlri_entry_t *nlri,
                                             char *err, size_t err_sz)
 {
@@ -709,6 +1094,10 @@ static gboolean bgp_show_parse_prefix_query(const char *query, bgp_afi_t afi, bg
     if (safi == BGP_SAFI_QP)
     {
         return bgp_show_parse_qp_query(query, afi, nlri, err, err_sz);
+    }
+    if (afi == BGP_AFI_L2VPN && safi == BGP_SAFI_EVPN)
+    {
+        return bgp_show_parse_evpn_query(query, nlri, err, err_sz);
     }
 
     const char *slash = strrchr(query, '/');
@@ -781,6 +1170,27 @@ static gboolean bgp_show_parse_prefix_query(const char *query, bgp_afi_t afi, bg
     return TRUE;
 }
 
+static gboolean bgp_show_evpn_type5_matches(const bgp_nlri_entry_t *nlri, const bgp_nlri_entry_t *filter)
+{
+    if (!nlri || !filter)
+    {
+        return FALSE;
+    }
+    if (nlri->afi != BGP_AFI_L2VPN || nlri->safi != BGP_SAFI_EVPN || nlri->type != BGP_NLRI_EVPN ||
+        filter->afi != BGP_AFI_L2VPN || filter->safi != BGP_SAFI_EVPN || filter->type != BGP_NLRI_EVPN)
+    {
+        return FALSE;
+    }
+    if (nlri->evpn.route_type != 5 || filter->evpn.route_type != 5)
+    {
+        return FALSE;
+    }
+    return memcmp(nlri->evpn.rd.bytes, filter->evpn.rd.bytes, sizeof(nlri->evpn.rd.bytes)) == 0 &&
+           nlri->evpn.eth_tag == filter->evpn.eth_tag &&
+           nlri->evpn.ip_prefix.prefix_len == filter->evpn.ip_prefix.prefix_len &&
+           net_addr_equal(&nlri->evpn.ip_prefix.addr, &filter->evpn.ip_prefix.addr);
+}
+
 static gboolean bgp_show_rib_in_nlri_matches(const bgp_nlri_entry_t *nlri, const bgp_nlri_entry_t *filter,
                                              gboolean filter_is_vpn_prefix)
 {
@@ -797,6 +1207,10 @@ static gboolean bgp_show_rib_in_nlri_matches(const bgp_nlri_entry_t *nlri, const
         return nlri->type == BGP_NLRI_PREFIX && nlri->afi == filter->afi && nlri->safi == filter->safi &&
                nlri->prefix.prefix.prefix_len == filter->prefix.prefix.prefix_len &&
                net_addr_equal(&nlri->prefix.prefix.addr, &filter->prefix.prefix.addr);
+    }
+    if (filter->afi == BGP_AFI_L2VPN && filter->safi == BGP_SAFI_EVPN && filter->type == BGP_NLRI_EVPN)
+    {
+        return bgp_show_evpn_type5_matches(nlri, filter);
     }
     return bgp_nlri_equal(nlri, filter);
 }
@@ -935,7 +1349,7 @@ static int bgp_show_peer_rib_in(dev_ipc_message_t *msg, const bgp_cli_ctx_t *ctx
             return ERRCODE_FAIL;
         }
         filter = &filter_nlri;
-        filter_is_vpn_prefix = bgp_safi_is_vpn(ctx->safi);
+        filter_is_vpn_prefix = bgp_safi_is_vpn(ctx->safi) && filter_nlri.type == BGP_NLRI_PREFIX;
         bgp_nlri_to_str(filter, filter_str, sizeof(filter_str));
     }
 
@@ -1012,7 +1426,7 @@ static int bgp_show_peer_rib_out(dev_ipc_message_t *msg, const bgp_cli_ctx_t *ct
             return ERRCODE_FAIL;
         }
         filter = &filter_nlri;
-        filter_is_vpn_prefix = bgp_safi_is_vpn(ctx->safi);
+        filter_is_vpn_prefix = bgp_safi_is_vpn(ctx->safi) && filter_nlri.type == BGP_NLRI_PREFIX;
         bgp_nlri_to_str(filter, filter_str, sizeof(filter_str));
     }
 
@@ -1090,6 +1504,30 @@ static int bgp_show_peer_rib_out(dev_ipc_message_t *msg, const bgp_cli_ctx_t *ct
     }
     g_string_append_printf(resp_buf, "\r\nTotal: %u advertised routes\r\n\r\n", show_ctx.listed_routes);
     return bgp_work_send_chunked_response(msg, resp_buf);
+}
+
+typedef struct bgp_show_evpn_detail_ctx
+{
+    GString *buf;
+    const bgp_nlri_entry_t *filter;
+    const char *rd_str;
+    uint32_t found;
+} bgp_show_evpn_detail_ctx_t;
+
+static gboolean bgp_show_evpn_detail_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    const bgp_rthead_t *head = (const bgp_rthead_t *)value;
+    bgp_show_evpn_detail_ctx_t *ctx = (bgp_show_evpn_detail_ctx_t *)user_data;
+    if (!head || !ctx || !bgp_show_evpn_type5_matches(&head->nlri, ctx->filter))
+    {
+        return FALSE;
+    }
+
+    g_string_append_printf(ctx->buf, "\r\n RD: %s\r\n", ctx->rd_str ? ctx->rd_str : "-");
+    bgp_show_route_detail(ctx->buf, head);
+    ctx->found++;
+    return FALSE;
 }
 
 /**
@@ -1170,6 +1608,11 @@ int handle_bgp_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
             case 10:
                 ctx.afi = BGP_AFI_IPV4;
                 ctx.safi = BGP_SAFI_VPN_UNICAST;
+                has_af = TRUE;
+                break;
+            case 16:
+                ctx.afi = BGP_AFI_L2VPN;
+                ctx.safi = BGP_SAFI_EVPN;
                 has_af = TRUE;
                 break;
             case 7:
@@ -1267,7 +1710,7 @@ int handle_bgp_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         }
         char rib_in_prefix[128] = {0};
         const char *prefix_filter = NULL;
-        if (ctx.safi == BGP_SAFI_QP)
+        if (ctx.safi == BGP_SAFI_QP || ctx.safi == BGP_SAFI_EVPN)
         {
             prefix_filter = has_qp_query ? qp_query : NULL;
         }
@@ -1296,16 +1739,17 @@ int handle_bgp_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         return ERRCODE_FAIL;
     }
 
-    if ((ctx.safi != BGP_SAFI_QP && has_ip && has_masklen) || (ctx.safi == BGP_SAFI_QP && has_qp_query))
+    if ((ctx.safi != BGP_SAFI_QP && ctx.safi != BGP_SAFI_EVPN && has_ip && has_masklen) ||
+        ((ctx.safi == BGP_SAFI_QP || ctx.safi == BGP_SAFI_EVPN) && has_qp_query))
     {
         bgp_nlri_entry_t nlri;
         memset(&nlri, 0, sizeof(nlri));
         char nlri_str[BGP_NLRI_KEY_MAX];
 
-        if (ctx.safi == BGP_SAFI_QP)
+        if (ctx.safi == BGP_SAFI_QP || ctx.safi == BGP_SAFI_EVPN)
         {
             char err[160];
-            if (!bgp_show_parse_qp_query(qp_query, ctx.afi, &nlri, err, sizeof(err)))
+            if (!bgp_show_parse_prefix_query(qp_query, ctx.afi, ctx.safi, &nlri, err, sizeof(err)))
             {
                 g_string_free(resp_buf, TRUE);
                 bgp_show_send_cli_response(msg, err);
@@ -1336,6 +1780,43 @@ int handle_bgp_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         if (!inst || !inst->rd_entries)
         {
             g_string_append(resp_buf, "  (no RIB)\r\n");
+            return bgp_work_send_chunked_response(msg, resp_buf);
+        }
+
+        if (ctx.safi == BGP_SAFI_EVPN && nlri.type == BGP_NLRI_EVPN)
+        {
+            uint32_t found = 0;
+            GHashTableIter rd_iter;
+            gpointer rd_key = NULL;
+            gpointer rd_val = NULL;
+            g_hash_table_iter_init(&rd_iter, inst->rd_entries);
+            while (g_hash_table_iter_next(&rd_iter, &rd_key, &rd_val))
+            {
+                (void)rd_key;
+                bgp_rd_entry_t *e = (bgp_rd_entry_t *)rd_val;
+                if (!e || !e->rib)
+                {
+                    continue;
+                }
+                if (has_rd_filter && memcmp(e->key.rd.bytes, rd_filter.bytes, sizeof(rd_filter.bytes)) != 0)
+                {
+                    continue;
+                }
+                char rd_str[48];
+                bgp_rd_to_str(&e->key.rd, rd_str, sizeof(rd_str));
+                bgp_show_evpn_detail_ctx_t detail_ctx = {
+                    .buf = resp_buf,
+                    .filter = &nlri,
+                    .rd_str = rd_str,
+                    .found = 0,
+                };
+                g_tree_foreach(e->rib->head_tree, bgp_show_evpn_detail_cb, &detail_ctx);
+                found += detail_ctx.found;
+            }
+            if (found == 0)
+            {
+                g_string_append_printf(resp_buf, "  Route %s not found.\r\n", nlri_str);
+            }
             return bgp_work_send_chunked_response(msg, resp_buf);
         }
 

@@ -59,9 +59,9 @@ static GHashTable *g_vrf_cache_by_id = NULL;
 /* key = entry->name (借用 entry 内部缓冲区), value = vrf_api_cache_entry_t* */
 static GHashTable *g_vrf_cache_by_name = NULL;
 
-static gpointer af_key_make(uint16_t afi, uint8_t safi)
+static gpointer af_key_make(uint16_t afi)
 {
-    return GUINT_TO_POINTER(((guint32)afi << 8) | (guint32)safi);
+    return GUINT_TO_POINTER((guint32)afi);
 }
 
 static void af_destroy(gpointer data)
@@ -73,6 +73,8 @@ static void af_destroy(gpointer data)
     }
     g_free(af->import_rts);
     g_free(af->export_rts);
+    g_free(af->evpn_import_rts);
+    g_free(af->evpn_export_rts);
     g_free(af);
 }
 
@@ -136,13 +138,13 @@ static vrf_api_cache_entry_t *cache_get_or_create(uint32_t vrf_id, const char *n
     return e;
 }
 
-static vrf_api_af_t *af_get_or_create(vrf_api_cache_entry_t *e, uint16_t afi, uint8_t safi)
+static vrf_api_af_t *af_get_or_create(vrf_api_cache_entry_t *e, uint16_t afi)
 {
     if (!e || !e->afs)
     {
         return NULL;
     }
-    gpointer key = af_key_make(afi, safi);
+    gpointer key = af_key_make(afi);
     vrf_api_af_t *af = g_hash_table_lookup(e->afs, key);
     if (af)
     {
@@ -150,7 +152,6 @@ static vrf_api_af_t *af_get_or_create(vrf_api_cache_entry_t *e, uint16_t afi, ui
     }
     af = g_malloc0(sizeof(*af));
     af->afi = afi;
-    af->safi = safi;
     g_hash_table_insert(e->afs, key, af);
     return af;
 }
@@ -265,14 +266,14 @@ const vrf_api_cache_entry_t *vrf_api_cache_lookup_by_name(const char *name)
     return g_hash_table_lookup(g_vrf_cache_by_name, name);
 }
 
-const vrf_api_af_t *vrf_api_cache_get_af(uint32_t vrf_id, uint16_t afi, uint8_t safi)
+const vrf_api_af_t *vrf_api_cache_get_af(uint32_t vrf_id, uint16_t afi)
 {
     const vrf_api_cache_entry_t *e = vrf_api_cache_lookup(vrf_id);
     if (!e || !e->afs)
     {
         return NULL;
     }
-    return g_hash_table_lookup(e->afs, af_key_make(afi, safi));
+    return g_hash_table_lookup(e->afs, af_key_make(afi));
 }
 
 void vrf_api_cache_foreach(vrf_api_cache_iter_fn iter_fn, void *user_data)
@@ -371,7 +372,7 @@ void vrf_api_cache_on_event(const dev_ipc_message_t *msg)
         case VRF_EVENT_AF_ENABLE:
         {
             vrf_api_cache_entry_t *e = cache_get_or_create(evt->vrf_id, evt->name, evt->l3vrf_table_id);
-            vrf_api_af_t *af = af_get_or_create(e, evt->afi, evt->safi);
+            vrf_api_af_t *af = af_get_or_create(e, evt->afi);
             if (af)
             {
                 af->apply_label_mode = evt->apply_label_mode;
@@ -381,7 +382,7 @@ void vrf_api_cache_on_event(const dev_ipc_message_t *msg)
         case VRF_EVENT_AF_APPLY_LABEL:
         {
             vrf_api_cache_entry_t *e = cache_get_or_create(evt->vrf_id, evt->name, evt->l3vrf_table_id);
-            vrf_api_af_t *af = af_get_or_create(e, evt->afi, evt->safi);
+            vrf_api_af_t *af = af_get_or_create(e, evt->afi);
             if (af)
             {
                 af->apply_label_mode = evt->apply_label_mode;
@@ -393,14 +394,14 @@ void vrf_api_cache_on_event(const dev_ipc_message_t *msg)
             vrf_api_cache_entry_t *e = g_hash_table_lookup(g_vrf_cache_by_id, GUINT_TO_POINTER(evt->vrf_id));
             if (e && e->afs)
             {
-                g_hash_table_remove(e->afs, af_key_make(evt->afi, evt->safi));
+                g_hash_table_remove(e->afs, af_key_make(evt->afi));
             }
             break;
         }
         case VRF_EVENT_AF_RD_ADD:
         {
             vrf_api_cache_entry_t *e = cache_get_or_create(evt->vrf_id, evt->name, evt->l3vrf_table_id);
-            vrf_api_af_t *af = af_get_or_create(e, evt->afi, evt->safi);
+            vrf_api_af_t *af = af_get_or_create(e, evt->afi);
             if (af)
             {
                 af->has_rd = 1;
@@ -411,7 +412,7 @@ void vrf_api_cache_on_event(const dev_ipc_message_t *msg)
         case VRF_EVENT_AF_RD_DEL:
         {
             vrf_api_cache_entry_t *e = g_hash_table_lookup(g_vrf_cache_by_id, GUINT_TO_POINTER(evt->vrf_id));
-            vrf_api_af_t *af = (e && e->afs) ? g_hash_table_lookup(e->afs, af_key_make(evt->afi, evt->safi)) : NULL;
+            vrf_api_af_t *af = (e && e->afs) ? g_hash_table_lookup(e->afs, af_key_make(evt->afi)) : NULL;
             if (af)
             {
                 af->has_rd = 0;
@@ -422,40 +423,68 @@ void vrf_api_cache_on_event(const dev_ipc_message_t *msg)
         case VRF_EVENT_AF_IMPORT_RT_ADD:
         {
             vrf_api_cache_entry_t *e = cache_get_or_create(evt->vrf_id, evt->name, evt->l3vrf_table_id);
-            vrf_api_af_t *af = af_get_or_create(e, evt->afi, evt->safi);
+            vrf_api_af_t *af = af_get_or_create(e, evt->afi);
             if (af && evt->rt_count > 0)
             {
-                af_add_rt(&af->import_rts, &af->import_rt_count, &evt->rts[0]);
+                if (evt->rt_type == VRF_RT_TYPE_EVPN)
+                {
+                    af_add_rt(&af->evpn_import_rts, &af->evpn_import_rt_count, &evt->rts[0]);
+                }
+                else
+                {
+                    af_add_rt(&af->import_rts, &af->import_rt_count, &evt->rts[0]);
+                }
             }
             break;
         }
         case VRF_EVENT_AF_IMPORT_RT_DEL:
         {
             vrf_api_cache_entry_t *e = g_hash_table_lookup(g_vrf_cache_by_id, GUINT_TO_POINTER(evt->vrf_id));
-            vrf_api_af_t *af = (e && e->afs) ? g_hash_table_lookup(e->afs, af_key_make(evt->afi, evt->safi)) : NULL;
+            vrf_api_af_t *af = (e && e->afs) ? g_hash_table_lookup(e->afs, af_key_make(evt->afi)) : NULL;
             if (af && evt->rt_count > 0)
             {
-                af_del_rt(&af->import_rts, &af->import_rt_count, &evt->rts[0]);
+                if (evt->rt_type == VRF_RT_TYPE_EVPN)
+                {
+                    af_del_rt(&af->evpn_import_rts, &af->evpn_import_rt_count, &evt->rts[0]);
+                }
+                else
+                {
+                    af_del_rt(&af->import_rts, &af->import_rt_count, &evt->rts[0]);
+                }
             }
             break;
         }
         case VRF_EVENT_AF_EXPORT_RT_ADD:
         {
             vrf_api_cache_entry_t *e = cache_get_or_create(evt->vrf_id, evt->name, evt->l3vrf_table_id);
-            vrf_api_af_t *af = af_get_or_create(e, evt->afi, evt->safi);
+            vrf_api_af_t *af = af_get_or_create(e, evt->afi);
             if (af && evt->rt_count > 0)
             {
-                af_add_rt(&af->export_rts, &af->export_rt_count, &evt->rts[0]);
+                if (evt->rt_type == VRF_RT_TYPE_EVPN)
+                {
+                    af_add_rt(&af->evpn_export_rts, &af->evpn_export_rt_count, &evt->rts[0]);
+                }
+                else
+                {
+                    af_add_rt(&af->export_rts, &af->export_rt_count, &evt->rts[0]);
+                }
             }
             break;
         }
         case VRF_EVENT_AF_EXPORT_RT_DEL:
         {
             vrf_api_cache_entry_t *e = g_hash_table_lookup(g_vrf_cache_by_id, GUINT_TO_POINTER(evt->vrf_id));
-            vrf_api_af_t *af = (e && e->afs) ? g_hash_table_lookup(e->afs, af_key_make(evt->afi, evt->safi)) : NULL;
+            vrf_api_af_t *af = (e && e->afs) ? g_hash_table_lookup(e->afs, af_key_make(evt->afi)) : NULL;
             if (af && evt->rt_count > 0)
             {
-                af_del_rt(&af->export_rts, &af->export_rt_count, &evt->rts[0]);
+                if (evt->rt_type == VRF_RT_TYPE_EVPN)
+                {
+                    af_del_rt(&af->evpn_export_rts, &af->evpn_export_rt_count, &evt->rts[0]);
+                }
+                else
+                {
+                    af_del_rt(&af->export_rts, &af->export_rt_count, &evt->rts[0]);
+                }
             }
             break;
         }

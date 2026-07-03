@@ -90,6 +90,11 @@ void bgp_cfg_apply_route_select(bgp_apply_cmd_t *apply);
 void bgp_cfg_apply_vpn_target_policy(bgp_apply_cmd_t *apply);
 
 /**
+ * @brief 应用 advertise evpn route / no advertise evpn route（私网 VRF unicast AF）
+ */
+void bgp_cfg_apply_advertise_evpn_route(bgp_apply_cmd_t *apply);
+
+/**
  * @brief 应用 refresh bgp 命令：import 向对端发 ROUTE-REFRESH，export 本端重发 Adj-RIB-Out
  */
 void bgp_cfg_apply_refresh(bgp_apply_cmd_t *apply);

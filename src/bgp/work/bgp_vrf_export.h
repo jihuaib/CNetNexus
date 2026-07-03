@@ -71,6 +71,11 @@ void bgp_vrf_export_inst_destroy(bgp_instance_t *inst);
 bgp_instance_t *bgp_vrf_export_target_inst(void);
 
 /**
+ * @brief 取指定 public VPN 类 instance(当前支持 vpnv4 / EVPN)；未使能返回 NULL
+ */
+bgp_instance_t *bgp_vrf_export_target_inst_by_af(bgp_afi_t afi, bgp_safi_t safi);
+
+/**
  * @brief 使能 vpnv4 导出：全量扫描所有私网 VRF 的 unicast RIB 入 pending 并投事件
  * @param vpn_inst public vpnv4 instance
  * @return 0 成功，-1 参数非法
@@ -140,5 +145,10 @@ int bgp_vrf_export_queue_process(bgp_instance_t *vpn_inst, int batch);
  * @return 实际处理条目数
  */
 int bgp_vrf_export_process_pending(bgp_instance_t *vpn_inst);
+
+/**
+ * @brief 同步抽干所有 VRF export 目标 instance 的 pending 队列
+ */
+int bgp_vrf_export_process_all_pending(void);
 
 #endif /* BGP_VRF_EXPORT_H */

@@ -151,7 +151,7 @@ def _setup_vrf_if(rt: TopologyRuntime, device: str, local_v4: str, rd: str, *, e
     commands = [
         "config",
         f"vrf {VRF_NAME}",
-        "af ipv4-unicast",
+        "af ipv4",
         f"route-distinguisher {rd}",
     ]
     if export_rt:
@@ -266,7 +266,7 @@ def _add_then_delete_export_rt(rt: TopologyRuntime) -> None:
         commands=[
             "config",
             f"vrf {VRF_NAME}",
-            "af ipv4-unicast",
+            "af ipv4",
             f"no vpn-target {OLD_EXPORT_RT} export",
             f"vpn-target {NEW_EXPORT_RT} export",
             f"no vpn-target {NEW_EXPORT_RT} export",

@@ -127,9 +127,9 @@ def _setup(rt: TopologyRuntime) -> None:
     # r1: VRFs + RT + GE-1 in red + blue loopback + static to r2 loop + null0 static + bgp import
     run_cmds(rt=rt, device="r1", commands=[
         "config",
-        f"vrf {RED}", "af ipv4-unicast", f"route-distinguisher {RED_RD}",
+        f"vrf {RED}", "af ipv4", f"route-distinguisher {RED_RD}",
         f"vpn-target {RT} export", f"vpn-target {RT} import", "exit", "exit",
-        f"vrf {BLUE}", "af ipv4-unicast", f"route-distinguisher {BLUE_RD}",
+        f"vrf {BLUE}", "af ipv4", f"route-distinguisher {BLUE_RD}",
         f"vpn-target {RT} export", f"vpn-target {RT} import", "exit", "exit",
         f"if {GE_IF}", "no shutdown", f"vrf forwarding {RED}", f"ip address {R1_GE} {LINK_LEN}", "exit",
         f"if loop {BLUE_LOOP_IDX}", f"vrf forwarding {BLUE}", f"ip address {BLUE_LOOP} {LOOP_LEN}", "exit",
@@ -162,7 +162,7 @@ def _set_blue_export_rt(rt: TopologyRuntime, *, enabled: bool) -> None:
     run_cmds(rt=rt, device="r1", commands=[
         "config",
         f"vrf {BLUE}",
-        "af ipv4-unicast",
+        "af ipv4",
         BLUE_EXPORT_RT if enabled else BLUE_EXPORT_RT_DEL,
         "exit",
         "exit",

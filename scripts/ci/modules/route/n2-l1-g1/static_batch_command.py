@@ -240,7 +240,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             commands=[
                 "config",
                 f"vrf {VRF_NAME}",
-                "af ipv4-unicast",
+                "af ipv4",
                 "route-distinguisher 65001:220",
                 "exit",
                 "exit",
