@@ -32,6 +32,9 @@ SWAP_TAG_SUFFIX = "swaptest"
 BOGUS_IMAGE = "netnexus-ci:does-not-exist-9999"
 IMAGE_RE = re.compile(r"^\s*Image\s*:\s*(\S+)", re.MULTILINE)
 PID_RE = re.compile(r"^\s*PID\s*:\s*(\d+)", re.MULTILINE)
+MODULES_ROW_RE = re.compile(
+    r"^\s*\d+\s+(?P<name>\S+)\s+(?P<phase>\S+)\s+\d+\s+(?P<ipc>\S+)\s+\S+\s*$"
+)
 COMMAND_ENGINE_UNAVAILABLE = "% command engine timeout or unavailable"
 
 
@@ -153,6 +156,86 @@ def _wait_show_version_stable(
     )
 
 
+def _parse_module_rows(show_dev_modules_out: str) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for line in show_dev_modules_out.splitlines():
+        m = MODULES_ROW_RE.match(line)
+        if m:
+            rows.append(m.groupdict())
+    return rows
+
+
+def _module_rows_ready(rows: list[dict[str, str]]) -> tuple[bool, list[str]]:
+    bad: list[str] = []
+    for row in rows:
+        phase = row["phase"].upper()
+        ipc = row["ipc"].lower()
+        if phase == "READY" and ipc == "up":
+            continue
+        if phase == "ON-DEMAND" and ipc == "down":
+            continue
+        bad.append(f"{row['name']}(phase={row['phase']},ipc={row['ipc']})")
+    return not bad, bad
+
+
+def _wait_modules_ready_stable(
+    rt: TopologyRuntime,
+    device: str,
+    *,
+    timeout: int = 60,
+    consecutive: int = 1,
+) -> str:
+    """Wait for show dev modules with reconnects after swap-image re-exec."""
+    cli = rt.cli_map.get(device)
+    if cli is None:
+        raise RuntimeError(f"device '{device}' has no active CLI session")
+    host = cli.host
+    port = cli.port
+
+    deadline = time.monotonic() + timeout
+    ok_count = 0
+    last_out = ""
+    last_bad: list[str] = []
+    last_err: Exception | None = None
+
+    while time.monotonic() < deadline:
+        try:
+            cur = rt.cli_map.get(device)
+            if cur is None:
+                cur = _reconnect_cli(rt, device, host, port)
+
+            last_out = cur.cmd("show dev modules", strict=False, timeout=8)
+            rows = _parse_module_rows(last_out)
+            if not rows or COMMAND_ENGINE_UNAVAILABLE in last_out:
+                ok_count = 0
+                last_bad = ["(parse failed)"]
+                _reconnect_cli(rt, device, host, port)
+            else:
+                ready, bad = _module_rows_ready(rows)
+                last_bad = bad
+                if ready:
+                    ok_count += 1
+                    if ok_count >= consecutive:
+                        return last_out
+                else:
+                    ok_count = 0
+        except Exception as exc:
+            last_err = exc
+            ok_count = 0
+            try:
+                _reconnect_cli(rt, device, host, port)
+            except Exception as reconnect_exc:
+                last_err = reconnect_exc
+        time.sleep(1)
+
+    mark_step_failed()
+    pending = ", ".join(last_bad) if last_bad else "(unknown)"
+    raise RuntimeError(
+        f"{device}: modules not ready within {timeout}s; pending: {pending}; "
+        f"last_err={last_err}\nlast output:\n{last_out}"
+    )
+
+
 def _trigger_swap_and_reconnect(rt: TopologyRuntime, device: str, target_image: str,
                                 reconnect_timeout: int = 180) -> None:
     """发送 dev swap-image,轮询直到 Image 字段变成 target_image(说明 execv 已生效)。
@@ -201,7 +284,12 @@ def _trigger_swap_and_reconnect(rt: TopologyRuntime, device: str, target_image: 
                 # Image 翻到目标 tag → execv 已生效;再确认所有子模块 READY,
                 # 以及 show version 连续可用，避开 cleanup_all_modules 尾部竞态。
                 remaining = max(10, int(deadline - time.time()))
-                rt.wait_modules_ready(device, timeout=remaining)
+                _wait_modules_ready_stable(
+                    rt,
+                    device,
+                    timeout=remaining,
+                    consecutive=2,
+                )
                 _wait_show_version_stable(
                     rt,
                     device,
