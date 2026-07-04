@@ -43,7 +43,7 @@ def _copy_shard_report(src_dir: Path, dst_root: Path) -> Path:
     shard_dir = dst_root / src_dir.name
     if shard_dir.exists():
         shutil.rmtree(shard_dir)
-    ignore = shutil.ignore_patterns("*.tar", "*.tar.gz")
+    ignore = shutil.ignore_patterns("*.tar", "*.tar.gz", "debug-build")
     shutil.copytree(src_dir, shard_dir, ignore=ignore)
     return shard_dir
 

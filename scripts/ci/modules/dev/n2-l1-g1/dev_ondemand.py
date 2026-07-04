@@ -27,6 +27,7 @@ SBMP_PORT = 17777
 WAIT_SPAWN_SEC = 10
 WAIT_EXIT_SEC = 8
 AUTO_START_RE = re.compile(r"\bstarting\s+module\b", re.IGNORECASE)
+POST_CLEANUP_SNAPSHOT = "ci_reboot"
 
 
 def _list_module_pids(container: str, mod_name: str) -> list[int]:
@@ -265,5 +266,10 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             cmd(rt, "r1", "no isis 1", strict=False)
             cmd(rt, "r1", "no bgp", strict=False)
             cmd(rt, "r1", "end", strict=False)
+            # Phase D deliberately points startup at a config containing SBMP.
+            # Overwrite it after cleanup so later re-exec/reboot tests restore
+            # the clean base topology instead of this case's middle state.
+            cmd(rt, "r1", f"save configuration {POST_CLEANUP_SNAPSHOT}", strict=False)
+            cmd(rt, "r1", f"startup configuration {POST_CLEANUP_SNAPSHOT} db", strict=False)
         except Exception as e:
             print(f"cleanup warn: {e}", flush=True)

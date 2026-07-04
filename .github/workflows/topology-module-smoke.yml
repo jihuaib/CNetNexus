@@ -44,6 +44,24 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+      - name: Collect Debug Symbols
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/netnexus-debug-build
+          docker run --rm \
+            -v /tmp/netnexus-debug-build:/out \
+            "netnexus-ci:${{ github.sha }}" \
+            /bin/bash -lc 'cp -a /opt/netnexus/bin /out/ && cp -a /opt/netnexus/lib /out/'
+          find /tmp/netnexus-debug-build -maxdepth 2 -type f -ls
+
+      - name: Upload Debug Symbols
+        uses: actions/upload-artifact@v4
+        with:
+          name: topology-debug-build-${{ github.run_id }}
+          path: /tmp/netnexus-debug-build
+          if-no-files-found: error
+          retention-days: 3
+
   topology-module-smoke:
     needs: build-ci-images
     runs-on: ubuntu-latest
@@ -149,21 +167,6 @@ jobs:
             --shard-count "${{ matrix.shard.count }}" \
             --shard-index "${{ matrix.shard.index }}"
 
-      - name: Collect Debug Symbols
-        if: always()
-        run: |
-          set -e
-          mkdir -p "${REPORT_DIR}/debug-build"
-          if docker image inspect "netnexus-ci:${{ github.sha }}" >/dev/null 2>&1; then
-            docker run --rm \
-              -v "$PWD/${REPORT_DIR}/debug-build:/out" \
-              "netnexus-ci:${{ github.sha }}" \
-              /bin/bash -lc 'cp -a /opt/netnexus/bin /out/ && cp -a /opt/netnexus/lib /out/'
-            find "${REPORT_DIR}/debug-build" -maxdepth 2 -type f -ls
-          else
-            echo "Debug image netnexus-ci:${{ github.sha }} not found; skip symbol collection"
-          fi
-
       - name: Generate Core Backtraces
         if: always()
         run: |
@@ -250,8 +253,8 @@ jobs:
               "Download artifact `topology-module-report-<run_id>-<shard>` for full "
               "`report.html`, `summary.json`, `logs/*.log`, `containers/*/*/modules/*.log`, "
               "and any `core-dumps/<case>/<script>/core.*` files. CI-generated x86 "
-              "backtraces are `core.*.gdb.txt`; debug binaries are under `debug-build/bin` "
-              "and `debug-build/lib`."
+              "backtraces are `core.*.gdb.txt`. Debug binaries are attached once to the "
+              "combined artifact under `debug-build/bin` and `debug-build/lib`."
           )
           lines.append("")
 
@@ -263,7 +266,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: topology-module-report-${{ github.run_id }}-${{ matrix.shard.name }}
-          path: scripts/ci/reports/${{ matrix.shard.name }}
+          path: |
+            scripts/ci/reports/${{ matrix.shard.name }}
+            !scripts/ci/reports/${{ matrix.shard.name }}/debug-build
+            !scripts/ci/reports/${{ matrix.shard.name }}/debug-build/**
           if-no-files-found: error
 
   merge-topology-report:
@@ -300,6 +306,13 @@ jobs:
             --input-root /tmp/topology-shard-reports \
             --output-dir scripts/ci/reports/combined \
             --modules-dir scripts/ci/modules
+
+      - name: Download Debug Symbols
+        if: always()
+        uses: actions/download-artifact@v4
+        with:
+          name: topology-debug-build-${{ github.run_id }}
+          path: scripts/ci/reports/combined/debug-build
 
       - name: Publish Combined CI Summary
         if: always()
@@ -345,7 +358,8 @@ jobs:
 
           lines.append(
               "Download artifact `topology-module-report-<run_id>` for the combined `report.html`. "
-              "The merged artifact keeps each shard report under `shards/`."
+              "The merged artifact keeps each shard report under `shards/` and one shared "
+              "`debug-build/` at the artifact root."
           )
           lines.append("")
 

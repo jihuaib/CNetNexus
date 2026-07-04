@@ -32,6 +32,7 @@ SWAP_TAG_SUFFIX = "swaptest"
 BOGUS_IMAGE = "netnexus-ci:does-not-exist-9999"
 IMAGE_RE = re.compile(r"^\s*Image\s*:\s*(\S+)", re.MULTILINE)
 PID_RE = re.compile(r"^\s*PID\s*:\s*(\d+)", re.MULTILINE)
+COMMAND_ENGINE_UNAVAILABLE = "% command engine timeout or unavailable"
 
 
 def _build_swap_target(base_image: str) -> str:
@@ -70,6 +71,86 @@ def _parse_image_field(show_version_out: str) -> str:
 def _parse_pid_field(show_version_out: str) -> str:
     m = PID_RE.search(show_version_out)
     return m.group(1) if m else ""
+
+
+def _reconnect_cli(rt: TopologyRuntime, device: str, host: str, port: int) -> NetNexusCli:
+    old = rt.cli_map.pop(device, None)
+    if old is not None:
+        try:
+            old.close()
+        except Exception:
+            pass
+    new_cli = NetNexusCli(
+        host, port, device, cmd_timeout=rt.cmd_timeout, verbose=rt.verbose,
+        container=rt._container_name(device),
+    )
+    new_cli.connect(timeout=5)
+    rt.cli_map[device] = new_cli
+    return new_cli
+
+
+def _wait_show_version_stable(
+    rt: TopologyRuntime,
+    device: str,
+    *,
+    expected_image: str,
+    expected_pid: str | None = None,
+    timeout: int = 45,
+    consecutive: int = 1,
+) -> tuple[str, str, str]:
+    """Wait until show version is usable after a DEV re-exec.
+
+    swap-image first flips the Image field, then child modules may still finish
+    PRE_EXIT/cleanup/reconnect. During that narrow window CLI can answer with
+    the command-engine-unavailable placeholder. Treat that as transient.
+    """
+    cli = rt.cli_map.get(device)
+    if cli is None:
+        raise RuntimeError(f"device '{device}' has no active CLI session")
+    host = cli.host
+    port = cli.port
+
+    deadline = time.monotonic() + timeout
+    ok_count = 0
+    last_out = ""
+    last_image = ""
+    last_pid = ""
+    last_err: Exception | None = None
+
+    while time.monotonic() < deadline:
+        try:
+            cur = rt.cli_map.get(device)
+            if cur is None:
+                cur = _reconnect_cli(rt, device, host, port)
+
+            last_out = cur.cmd("show version", strict=False, timeout=8)
+            last_image = _parse_image_field(last_out)
+            last_pid = _parse_pid_field(last_out)
+            image_ok = last_image == expected_image
+            pid_ok = bool(last_pid) and (expected_pid is None or last_pid == expected_pid)
+            if image_ok and pid_ok and COMMAND_ENGINE_UNAVAILABLE not in last_out:
+                ok_count += 1
+                if ok_count >= consecutive:
+                    return last_out, last_image, last_pid
+            else:
+                ok_count = 0
+        except Exception as exc:
+            last_err = exc
+            ok_count = 0
+            try:
+                _reconnect_cli(rt, device, host, port)
+            except Exception as reconnect_exc:
+                last_err = reconnect_exc
+        time.sleep(1)
+
+    mark_step_failed()
+    expected_pid_text = expected_pid if expected_pid is not None else "<any>"
+    raise RuntimeError(
+        f"{device}: show version did not stabilize within {timeout}s "
+        f"(expected Image='{expected_image}', PID='{expected_pid_text}', "
+        f"last Image='{last_image}', last PID='{last_pid}', last_err={last_err})\n"
+        f"last output:\n{last_out}"
+    )
 
 
 def _trigger_swap_and_reconnect(rt: TopologyRuntime, device: str, target_image: str,
@@ -117,9 +198,17 @@ def _trigger_swap_and_reconnect(rt: TopologyRuntime, device: str, target_image: 
             image = _parse_image_field(out)
             last_image = image
             if image == target_image:
-                # Image 翻到目标 tag → execv 已生效;再确认所有子模块 READY
+                # Image 翻到目标 tag → execv 已生效;再确认所有子模块 READY,
+                # 以及 show version 连续可用，避开 cleanup_all_modules 尾部竞态。
                 remaining = max(10, int(deadline - time.time()))
                 rt.wait_modules_ready(device, timeout=remaining)
+                _wait_show_version_stable(
+                    rt,
+                    device,
+                    expected_image=target_image,
+                    timeout=min(45, remaining),
+                    consecutive=2,
+                )
                 return
         except Exception as exc:
             last_err = exc
@@ -164,8 +253,9 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         _trigger_swap_and_reconnect(rt, "r1", target_image, reconnect_timeout=180)
 
         step("Phase C: verify 'show version' Image field equals the new tag")
-        out_b = cmd(rt, "r1", "show version", strict=False)
-        after_image = _parse_image_field(out_b)
+        out_b, after_image, _after_pid = _wait_show_version_stable(
+            rt, "r1", expected_image=target_image, timeout=45, consecutive=2,
+        )
         if after_image != target_image:
             raise RuntimeError(
                 f"Image field mismatch: expected '{target_image}', got '{after_image}'\n"
@@ -198,9 +288,9 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         # 状态保持。
 
         step("Phase E: capture pre-failure state (Image/PID) for rollback comparison")
-        out_pre = cmd(rt, "r1", "show version", strict=False)
-        pre_image = _parse_image_field(out_pre)
-        pre_pid = _parse_pid_field(out_pre)
+        _out_pre, pre_image, pre_pid = _wait_show_version_stable(
+            rt, "r1", expected_image=target_image, timeout=45, consecutive=2,
+        )
         if pre_image != target_image:
             raise RuntimeError(
                 f"pre-failure Image expected '{target_image}', got '{pre_image}'"
@@ -225,9 +315,9 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         print(f"[swap-image-test] bogus swap accepted (background will fail), waited 5s for unwind")
 
         step("Phase G: verify dev did NOT re-exec (PID/Image unchanged) and modules still READY")
-        out_post = cmd(rt, "r1", "show version", strict=False)
-        post_image = _parse_image_field(out_post)
-        post_pid = _parse_pid_field(out_post)
+        _out_post, post_image, post_pid = _wait_show_version_stable(
+            rt, "r1", expected_image=pre_image, expected_pid=pre_pid, timeout=30,
+        )
         if post_image != pre_image:
             raise RuntimeError(
                 f"Image changed after failed swap: pre='{pre_image}' post='{post_image}' "
