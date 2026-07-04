@@ -1,0 +1,98 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish, for example v1.0.0"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Resolve Release Tag
+        id: release
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+          version="${tag#v}"
+          if [ -z "${tag}" ] || [ -z "${version}" ]; then
+            echo "invalid tag: ${tag}" >&2
+            exit 1
+          fi
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "release_name=NetNexus ${tag}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker-container
+          driver-opts: network=host
+          buildkitd-flags: --debug
+
+      - name: Rename Buildx Builder For Publish Script
+        run: |
+          set -euo pipefail
+          if ! docker buildx ls | awk '{print $1}' | grep -qx "netnexus-builder"; then
+            docker buildx create \
+              --name netnexus-builder \
+              --driver docker-container \
+              --driver-opt network=host \
+              --use
+          fi
+          docker buildx use netnexus-builder
+          docker buildx inspect --bootstrap
+
+      - name: Publish GitHub Release
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          TAG_NAME: ${{ steps.release.outputs.tag }}
+          RELEASE_NAME: ${{ steps.release.outputs.release_name }}
+          GITHUB_REPO: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          scripts/prod/publish.sh \
+            --github-release \
+            --no-sync-tag \
+            --repo "${GITHUB_REPO}" \
+            --tag "${TAG_NAME}" \
+            --release-name "${RELEASE_NAME}"
+
+      - name: Upload Release Build Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-build-logs-${{ steps.release.outputs.tag }}
+          path: |
+            package/docker-build-*.log
+          if-no-files-found: ignore

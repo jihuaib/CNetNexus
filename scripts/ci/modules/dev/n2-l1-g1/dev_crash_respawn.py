@@ -28,7 +28,7 @@ from __future__ import annotations
 import subprocess
 import time
 
-from module_api import cmd, mark_step_failed, process_start, require_devices, step
+from module_api import cmd, g_top, mark_step_failed, process_start, require_devices, run_cmds, step
 from top_runner import TopologyRuntime
 
 
@@ -39,6 +39,26 @@ CRASH_MAX_RETRIES = 5
 
 WAIT_RESPAWN_SEC = 8
 WAIT_AFTER_GIVEUP_SEC = 3
+
+
+def _restore_r1_topology_config(rt: TopologyRuntime) -> None:
+    """Phase F kills DEV, so the volatile topology bootstrap config must be put back."""
+    r1_ip = str(g_top.r1.GE_1.ip)
+    r1_prefix = int(g_top.r1.GE_1.prefix)
+    run_cmds(
+        rt,
+        "r1",
+        strict=False,
+        commands=[
+            "end",
+            "config",
+            "sysname r1",
+            "if GE-1",
+            f"ip address {r1_ip} {r1_prefix}",
+            "no shutdown",
+            "end",
+        ],
+    )
 
 
 def _list_module_pids(container: str, mod_name: str) -> list[int]:
@@ -322,6 +342,9 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
     cmd(rt, "r1", "end", strict=False)
     _wait_for_pids(container, predicate=lambda p: not p, timeout=WAIT_RESPAWN_SEC,
                    what=f"{on_demand_mod} 清理退出", mod=on_demand_mod)
+
+    step("Phase H: 恢复 r1 拓扑基础配置")
+    _restore_r1_topology_config(rt)
 
     print(
         f"CrashRespawn check passed: 常驻 fib 5 次 kill 全自动 respawn → 第 6 次放弃 → "

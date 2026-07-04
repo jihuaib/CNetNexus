@@ -331,6 +331,50 @@ def resolve_script_selector(selector: str, modules_dir: Path) -> Path:
     raise RuntimeError(f"script not found: {selector}")
 
 
+def select_case_scripts(args: argparse.Namespace, modules_dir: Path) -> tuple[dict[Path, list[Path]], list[Path]] | None:
+    selected_scripts: list[Path] = []
+    if args.script:
+        for raw_selector in args.script:
+            try:
+                selected_scripts.append(resolve_script_selector(raw_selector, modules_dir))
+            except Exception as exc:
+                print(f"invalid --script '{raw_selector}': {exc}", file=sys.stderr)
+                return None
+    else:
+        for case_dir in discover_case_dirs(modules_dir):
+            selected_scripts.extend(discover_case_scripts(case_dir))
+
+    selected_scripts = sorted(set(script.resolve() for script in selected_scripts))
+
+    if args.shard_count < 1:
+        print("--shard-count must be >= 1", file=sys.stderr)
+        return None
+    if args.shard_index < 0 or args.shard_index >= args.shard_count:
+        print("--shard-index must be in range [0, --shard-count)", file=sys.stderr)
+        return None
+
+    if args.shard_count > 1:
+        total = len(selected_scripts)
+        chunk_size = (total + args.shard_count - 1) // args.shard_count
+        start = args.shard_index * chunk_size
+        end = min(start + chunk_size, total)
+        selected_scripts = selected_scripts[start:end]
+        print(
+            f"CI shard {args.shard_index + 1}/{args.shard_count}: "
+            f"selected scripts {start + 1 if total and start < total else 0}-{end} of {total}",
+            flush=True,
+        )
+
+    selected_by_case: dict[Path, list[Path]] = {}
+    for script in selected_scripts:
+        selected_by_case.setdefault(script.parent.resolve(), []).append(script)
+
+    for case, scripts in selected_by_case.items():
+        selected_by_case[case] = sorted(set(scripts))
+
+    return selected_by_case, sorted(selected_by_case.keys())
+
+
 def load_run_callable(script: Path):
     mod_name = "ci_case_" + sanitize_name(str(script.relative_to(CI_DIR))).replace("-", "_").replace(".", "_")
     spec = importlib.util.spec_from_file_location(mod_name, script)
@@ -1775,6 +1819,7 @@ def write_html_report(
     ended_at: float,
     check_html_relpaths: list[str],
     modules_dir: Path | None = None,
+    include_runtime_links: bool = True,
 ) -> None:
     passed = sum(1 for r in results if r.returncode == 0)
     failed = sum(1 for r in results if r.returncode != 0)
@@ -1848,7 +1893,7 @@ def write_html_report(
 
             # Runtime log link: 同一 testbed 的所有 script 共用一份 topology 启动记录
             runtime_link_html = ""
-            if rows and modules_dir is not None:
+            if include_runtime_links and rows and modules_dir is not None:
                 try:
                     runtime_log_path = make_runtime_log_path(Path(""), rows[0][1].case_dir, modules_dir)
                     runtime_log_rel = f"logs/{runtime_log_path.as_posix()}"
@@ -2426,6 +2471,18 @@ def parse_args() -> argparse.Namespace:
             "path relative to --modules-dir, or unique basename"
         ),
     )
+    parser.add_argument(
+        "--shard-count",
+        type=int,
+        default=1,
+        help="split the selected check scripts into this many contiguous shards",
+    )
+    parser.add_argument(
+        "--shard-index",
+        type=int,
+        default=0,
+        help="0-based shard index to run when --shard-count is greater than 1",
+    )
     return parser.parse_args()
 
 
@@ -2440,22 +2497,10 @@ def main() -> int:
     report_html, summary_json, logs_dir, checks_dir = ensure_report_dir(report_dir)
 
     run_started = time.time()
-    selected_by_case: dict[Path, list[Path]] = {}
-    if args.script:
-        for raw_selector in args.script:
-            try:
-                script = resolve_script_selector(raw_selector, modules_dir)
-            except Exception as exc:
-                print(f"invalid --script '{raw_selector}': {exc}", file=sys.stderr)
-                return 1
-            case = script.parent.resolve()
-            selected_by_case.setdefault(case, []).append(script)
-
-        for case, scripts in selected_by_case.items():
-            selected_by_case[case] = sorted(set(scripts))
-        case_dirs = sorted(selected_by_case.keys())
-    else:
-        case_dirs = discover_case_dirs(modules_dir)
+    selected = select_case_scripts(args, modules_dir)
+    if selected is None:
+        return 1
+    selected_by_case, case_dirs = selected
 
     results: list[CheckResult] = []
 

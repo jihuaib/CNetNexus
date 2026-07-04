@@ -6,9 +6,61 @@ on:
   pull_request:
 
 jobs:
-  topology-module-smoke:
+  build-ci-images:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build ASAN CI Images
+        run: |
+          set -euo pipefail
+          docker build \
+            --target debug \
+            --build-arg BUILD_TYPE=Debug \
+            --build-arg ENABLE_ASAN=ON \
+            -t "netnexus-ci:${{ github.sha }}" \
+            .
+          docker build \
+            -f scripts/ci/images/frr/Dockerfile \
+            -t "netnexus-frr-ci:${{ github.sha }}" \
+            scripts/ci/images/frr
+
+      - name: Export CI Images
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/netnexus-ci-images
+          docker save "netnexus-ci:${{ github.sha }}" | gzip -1 > /tmp/netnexus-ci-images/netnexus-ci.tar.gz
+          docker save "netnexus-frr-ci:${{ github.sha }}" | gzip -1 > /tmp/netnexus-ci-images/netnexus-frr-ci.tar.gz
+          ls -lh /tmp/netnexus-ci-images
+
+      - name: Upload CI Images
+        uses: actions/upload-artifact@v4
+        with:
+          name: topology-ci-images-${{ github.run_id }}
+          path: /tmp/netnexus-ci-images
+          if-no-files-found: error
+          retention-days: 3
+
+  topology-module-smoke:
+    needs: build-ci-images
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - { name: shard-1, index: 0, count: 6 }
+          - { name: shard-2, index: 1, count: 6 }
+          - { name: shard-3, index: 2, count: 6 }
+          - { name: shard-4, index: 3, count: 6 }
+          - { name: shard-5, index: 4, count: 6 }
+          - { name: shard-6, index: 5, count: 6 }
+    name: Topology Module Smoke (${{ matrix.shard.name }})
+    env:
+      REPORT_DIR: scripts/ci/reports/${{ matrix.shard.name }}
 
     steps:
       - name: Checkout
@@ -23,6 +75,22 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pyyaml
+
+      - name: Download CI Images
+        uses: actions/download-artifact@v4
+        with:
+          name: topology-ci-images-${{ github.run_id }}
+          path: /tmp/netnexus-ci-images
+
+      - name: Load CI Images
+        run: |
+          set -euo pipefail
+          gzip -dc /tmp/netnexus-ci-images/netnexus-ci.tar.gz | docker load
+          gzip -dc /tmp/netnexus-ci-images/netnexus-frr-ci.tar.gz | docker load
+          rm -f /tmp/netnexus-ci-images/*.tar.gz
+          docker image inspect "netnexus-ci:${{ github.sha }}" >/dev/null
+          docker image inspect "netnexus-frr-ci:${{ github.sha }}" >/dev/null
+          docker system df
 
       - name: Probe & enable VRF kernel module on host
         run: |
@@ -65,31 +133,33 @@ jobs:
           sudo sysctl -w kernel.core_uses_pid=0
           cat /proc/sys/kernel/core_pattern
 
-      - name: Run All CI Modules With ASAN And Generate Report
+      - name: Run CI Module Shard
         env:
           NN_CORE_DIR: /var/lib/netnexus-cores
+          CNETNEXUS_FRR_IMAGE: netnexus-frr-ci:${{ github.sha }}
         run: |
+          set -euo pipefail
           ulimit -c unlimited
-          scripts/ci/run_all.sh \
+          rm -rf "${REPORT_DIR}"
+          python3 scripts/ci/module_runner.py \
             --image "netnexus-ci:${{ github.sha }}" \
-            --frr-image "netnexus-frr-ci:${{ github.sha }}" \
-            --report-dir "scripts/ci/reports" \
-            --debug \
-            --asan \
+            --report-dir "${REPORT_DIR}" \
             --cmd-timeout 90 \
-            --connect-timeout 90
+            --connect-timeout 90 \
+            --shard-count "${{ matrix.shard.count }}" \
+            --shard-index "${{ matrix.shard.index }}"
 
       - name: Collect Debug Symbols
         if: always()
         run: |
           set -e
-          mkdir -p scripts/ci/reports/debug-build
+          mkdir -p "${REPORT_DIR}/debug-build"
           if docker image inspect "netnexus-ci:${{ github.sha }}" >/dev/null 2>&1; then
             docker run --rm \
-              -v "$PWD/scripts/ci/reports/debug-build:/out" \
+              -v "$PWD/${REPORT_DIR}/debug-build:/out" \
               "netnexus-ci:${{ github.sha }}" \
               /bin/bash -lc 'cp -a /opt/netnexus/bin /out/ && cp -a /opt/netnexus/lib /out/'
-            find scripts/ci/reports/debug-build -maxdepth 2 -type f -ls
+            find "${REPORT_DIR}/debug-build" -maxdepth 2 -type f -ls
           else
             echo "Debug image netnexus-ci:${{ github.sha }} not found; skip symbol collection"
           fi
@@ -102,13 +172,13 @@ jobs:
             echo "Debug image netnexus-ci:${{ github.sha }} not found; skip core backtraces"
             exit 0
           fi
-          if ! find scripts/ci/reports/core-dumps -type f -name 'core.*' ! -name '*.gdb.txt' -print -quit 2>/dev/null | grep -q .; then
+          if ! find "${REPORT_DIR}/core-dumps" -type f -name 'core.*' ! -name '*.gdb.txt' -print -quit 2>/dev/null | grep -q .; then
             echo "No core dumps found; skip core backtraces"
             exit 0
           fi
           docker run --rm \
             -v "$PWD:/build:ro" \
-            -v "$PWD/scripts/ci/reports:/reports" \
+            -v "$PWD/${REPORT_DIR}:/reports" \
             "netnexus-ci:${{ github.sha }}" \
             /bin/bash -lc '
               set -e
@@ -136,17 +206,20 @@ jobs:
         run: |
           python3 - <<'PY'
           import json
+          import os
           from pathlib import Path
 
-          summary_path = Path("scripts/ci/reports/summary.json")
-          out = Path("${GITHUB_STEP_SUMMARY}")
+          report_dir = Path(os.environ["REPORT_DIR"])
+          summary_path = report_dir / "summary.json"
+          out = Path(os.environ["GITHUB_STEP_SUMMARY"])
 
           lines = []
           lines.append("## Topology Module Smoke Report")
           lines.append("")
+          lines.append(f"- Shard: **${{ matrix.shard.name }}**")
 
           if not summary_path.exists():
-              lines.append("summary.json not found. Please check runner logs.")
+              lines.append("- summary.json not found. Please check runner logs.")
           else:
               data = json.loads(summary_path.read_text(encoding="utf-8"))
               total = int(data.get("total", 0))
@@ -174,10 +247,11 @@ jobs:
                   lines.append("")
 
           lines.append(
-              "Download artifact `topology-module-report-<run_id>` for full `report.html`, "
-              "`summary.json`, `logs/*.log`, `containers/*/*/modules/*.log`, and any "
-              "`core-dumps/<case>/<script>/core.*` files. CI-generated x86 backtraces are "
-              "`core.*.gdb.txt`; debug binaries are under `debug-build/bin` and `debug-build/lib`."
+              "Download artifact `topology-module-report-<run_id>-<shard>` for full "
+              "`report.html`, `summary.json`, `logs/*.log`, `containers/*/*/modules/*.log`, "
+              "and any `core-dumps/<case>/<script>/core.*` files. CI-generated x86 "
+              "backtraces are `core.*.gdb.txt`; debug binaries are under `debug-build/bin` "
+              "and `debug-build/lib`."
           )
           lines.append("")
 
@@ -188,6 +262,100 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
+          name: topology-module-report-${{ github.run_id }}-${{ matrix.shard.name }}
+          path: scripts/ci/reports/${{ matrix.shard.name }}
+          if-no-files-found: error
+
+  merge-topology-report:
+    needs: topology-module-smoke
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml
+
+      - name: Download Shard Reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: topology-module-report-${{ github.run_id }}-shard-*
+          path: /tmp/topology-shard-reports
+
+      - name: Merge Shard Reports
+        run: |
+          set -euo pipefail
+          rm -rf scripts/ci/reports/combined
+          python3 scripts/ci/merge_module_reports.py \
+            --input-root /tmp/topology-shard-reports \
+            --output-dir scripts/ci/reports/combined \
+            --modules-dir scripts/ci/modules
+
+      - name: Publish Combined CI Summary
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          summary_path = Path("scripts/ci/reports/combined/summary.json")
+          out = Path("${GITHUB_STEP_SUMMARY}")
+
+          lines = []
+          lines.append("## Combined Topology Module Smoke Report")
+          lines.append("")
+
+          if not summary_path.exists():
+              lines.append("summary.json not found. Please check merge job logs.")
+          else:
+              data = json.loads(summary_path.read_text(encoding="utf-8"))
+              total = int(data.get("total", 0))
+              passed = int(data.get("passed", 0))
+              failed = int(data.get("failed", 0))
+              duration = data.get("duration_sec", "n/a")
+
+              lines.append(f"- Total checks: **{total}**")
+              lines.append(f"- Passed: **{passed}**")
+              lines.append(f"- Failed: **{failed}**")
+              lines.append(f"- Wall-clock span: **{duration}s**")
+              lines.append("")
+
+              if failed:
+                  lines.append("### Failed Checks")
+                  lines.append("")
+                  lines.append("| Case | Script | Return Code |")
+                  lines.append("| --- | --- | --- |")
+                  for item in data.get("results", []):
+                      if int(item.get("returncode", 0)) != 0:
+                          case = item.get("case", "")
+                          script = item.get("script", "")
+                          rc = item.get("returncode", "")
+                          lines.append(f"| `{case}` | `{script}` | `{rc}` |")
+                  lines.append("")
+
+          lines.append(
+              "Download artifact `topology-module-report-<run_id>` for the combined `report.html`. "
+              "The merged artifact keeps each shard report under `shards/`."
+          )
+          lines.append("")
+
+          out.write_text("\n".join(lines), encoding="utf-8")
+          PY
+
+      - name: Upload Combined Module Report Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
           name: topology-module-report-${{ github.run_id }}
-          path: scripts/ci/reports
+          path: scripts/ci/reports/combined
           if-no-files-found: error
