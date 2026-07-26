@@ -178,7 +178,9 @@ BLOCKED_STEPS: list[dict[str, object]] = [
         ],
         "expect_error_in": [DOWN_ISIS_TAG_CHANGE],
         "expect_keywords": ["ISIS Error", "DB module is not available"],
-        "absent_after": [f"is-type level-2"],
+        # This fragment is scoped to the BASE_ISIS_TAG block below; sibling
+        # ISIS instances may legitimately use the same is-type.
+        "absent_after": [],
     },
 ]
 
@@ -214,6 +216,47 @@ def _assert_show_absent(rt: TopologyRuntime, device: str, fragments: list[str], 
         raise AssertionError(
             f"{label}: configuration leaked into show despite DB down: "
             f"{'; '.join(violations)}\noutput:\n{cur}"
+        )
+
+
+def _top_level_config_block(config: str, header: str) -> str:
+    """Return one top-level configuration block without matching siblings."""
+    block: list[str] = []
+    in_block = False
+    for raw_line in config.replace("\r", "").splitlines():
+        line = raw_line.rstrip()
+        if not in_block:
+            if line == header:
+                in_block = True
+                block.append(line)
+            continue
+        if line.startswith((" ", "\t")) or not line:
+            block.append(line)
+            continue
+        break
+    return "\n".join(block)
+
+
+def _assert_isis_change_state(
+    rt: TopologyRuntime,
+    device: str,
+    *,
+    expect_present: bool,
+    label: str,
+) -> None:
+    cur = _show_current(rt, device)
+    header = f"isis {BASE_ISIS_TAG}"
+    block = _top_level_config_block(cur, header)
+    if not block:
+        mark_step_failed(label)
+        raise AssertionError(f"{label}: missing configuration block '{header}'\noutput:\n{cur}")
+    present = DOWN_ISIS_TAG_CHANGE in block
+    if present != expect_present:
+        mark_step_failed(label)
+        expectation = "present" if expect_present else "absent"
+        raise AssertionError(
+            f"{label}: expected '{DOWN_ISIS_TAG_CHANGE}' to be {expectation} "
+            f"inside '{header}' only\nblock:\n{block}"
         )
 
 
@@ -354,6 +397,12 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         for blocked in BLOCKED_STEPS:
             all_blocked_fragments.extend([str(x) for x in blocked.get("absent_after", [])])  # type: ignore[arg-type]
         _assert_show_absent(rt, device, all_blocked_fragments, label="Phase 5 no silent apply leaked into DB")
+        _assert_isis_change_state(
+            rt,
+            device,
+            expect_present=False,
+            label="Phase 5 ISIS change absent from its own instance",
+        )
         _ = baseline_dump  # 保留供调试
 
         # ---- Phase 6: 再次下发同样的配置，应成功 ----
@@ -374,7 +423,6 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             f"route static ipv4 {DOWN_ROUTE_PREFIX} {DOWN_ROUTE_MASK} {DOWN_ROUTE_NH}",
             f"vrf {DOWN_VRF}",
             f"router-id {DOWN_BGP_RTR_ID}",
-            "is-type level-2",
         ]
         wait_check(
             rt,
@@ -384,6 +432,12 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             interval=2,
             contains=expected_after_recover,
             label="Phase 6 previously-blocked configs now applied",
+        )
+        _assert_isis_change_state(
+            rt,
+            device,
+            expect_present=True,
+            label="Phase 6 ISIS change applied to its own instance",
         )
 
         # ---- Phase 7: reboot db, 业务配置应继续可见（持久层数据未丢） ----
@@ -418,6 +472,12 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             interval=2,
             contains=survive_fragments,
             label="Phase 7 baseline + Phase 6 configs survive db reboot",
+        )
+        _assert_isis_change_state(
+            rt,
+            device,
+            expect_present=True,
+            label="Phase 7 ISIS change survives DB reboot in its own instance",
         )
 
         print("DB unavailable guard check passed.")

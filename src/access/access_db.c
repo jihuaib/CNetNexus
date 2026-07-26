@@ -151,9 +151,12 @@ int access_db_save_telnet_server(int enabled)
     db_filter_add_text(&fb, "skey", ACCESS_SETTING_TELNET);
     int delete_rc = db_rpc_delete(ctx, ACCESS_TABLE_SETTING, &fb.filter);
     db_filter_clear(&fb);
-    if (delete_rc != ERRCODE_SUCCESS)
+    /* db_rpc_delete returns the affected-row count; deleting one existing
+     * setting is successful, while a negative value indicates an RPC/SQL
+     * failure. */
+    if (delete_rc < 0)
     {
-        return delete_rc;
+        return ERRCODE_FAIL;
     }
 
     db_col_t cols[] = {DB_COL_TEXT("skey", ACCESS_SETTING_TELNET), DB_COL_INT("sval", enabled ? 1 : 0)};

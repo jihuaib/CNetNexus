@@ -995,6 +995,18 @@ static gboolean collect_module_callback(gpointer key, gpointer value, gpointer d
     return FALSE;
 }
 
+static void dev_module_free(dev_module_t *module)
+{
+    if (!module)
+    {
+        return;
+    }
+
+    g_list_free(module->subscribers);
+    module->subscribers = NULL;
+    g_free(module);
+}
+
 void cleanup_all_modules(void)
 {
     LOG_INFO("==================== Cleaning up modules ====================");
@@ -1036,36 +1048,74 @@ void cleanup_all_modules(void)
             continue;
         }
 
+        const pid_t child_pid = module->child_pid;
         int exited = 0;
+        int wait_failed = 0;
         for (int i = 0; i < 30; i++)
         {
             int status;
-            pid_t r = waitpid(module->child_pid, &status, WNOHANG);
-            if (r == module->child_pid)
+            pid_t r;
+            do
             {
-                LOG_INFO("Module %s (pid=%d) exited", module->name, module->child_pid);
+                r = waitpid(child_pid, &status, WNOHANG);
+            } while (r < 0 && errno == EINTR);
+
+            if (r == child_pid)
+            {
+                LOG_INFO("Module %s (pid=%d) exited", module->name, child_pid);
                 exited = 1;
+                break;
+            }
+            if (r < 0)
+            {
+                if (errno == ECHILD)
+                {
+                    /* The main SIGCHLD loop may already have reaped this pid. */
+                    LOG_INFO("Module %s (pid=%d) was already reaped", module->name, child_pid);
+                    exited = 1;
+                }
+                else
+                {
+                    LOG_WARN("waitpid for module %s (pid=%d) failed: %s", module->name, child_pid, strerror(errno));
+                    wait_failed = 1;
+                }
                 break;
             }
             usleep(100000); /* 100ms */
         }
 
-        if (!exited)
+        if (!exited && !wait_failed)
         {
-            LOG_WARN("Module %s (pid=%d) not responding, force killing", module->name, module->child_pid);
-            kill(module->child_pid, SIGKILL);
-            waitpid(module->child_pid, NULL, 0);
-        }
+            LOG_WARN("Module %s (pid=%d) not responding, force killing", module->name, child_pid);
+            kill(child_pid, SIGKILL);
 
-        g_free(module);
+            pid_t r;
+            do
+            {
+                r = waitpid(child_pid, NULL, 0);
+            } while (r < 0 && errno == EINTR);
+
+            if (r < 0 && errno != ECHILD)
+            {
+                LOG_WARN("waitpid after force killing module %s (pid=%d) failed: %s", module->name, child_pid,
+                         strerror(errno));
+            }
+        }
     }
 
-    /* Step 3: Destroying DEV */
-    LOG_INFO("Destroying DEV");
-    dev_module_t *dev_self = (dev_module_t *)g_tree_lookup(g_module_registry, GUINT_TO_POINTER(DEV_MODULE_ID_DEV));
-    if (dev_self)
+    /*
+     * Step 3: release every registry value exactly once.
+     *
+     * child_pid only describes process state; it must not decide ownership of
+     * the registry object.  In particular, on-demand/down modules have
+     * child_pid == 0 and still own both dev_module_t and their subscriber
+     * GList.  The tree has no value destroy callback, so free all collected
+     * values before destroying its nodes.
+     */
+    LOG_INFO("Destroying module registry");
+    for (GList *l = modules; l != NULL; l = l->next)
     {
-        g_free(dev_self);
+        dev_module_free((dev_module_t *)l->data);
     }
 
     g_list_free(modules);

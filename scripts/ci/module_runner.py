@@ -588,6 +588,10 @@ def run_check(
                 print(f"===== PREVIOUS CHECK: {previous_script} [{previous_status}] =====")
             load_global_top(top)
             ensure_cli_sessions_alive(rt, top)
+            # Every case starts from a known session state. This also prevents
+            # one failed/paged case from poisoning later scripts that reuse the
+            # same topology runtime.
+            ensure_cli_pager_disabled(rt, top)
             print_device_versions(rt, top)
             print_device_subscriptions(rt, top)
 

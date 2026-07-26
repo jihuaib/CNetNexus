@@ -38,6 +38,8 @@ except ImportError:
 PROMPT_RE = re.compile(br"^<[A-Za-z0-9_.-]+(?:\([^>\r\n]*\))?>", re.MULTILINE)
 IF_RE = re.compile(r"^GE-(\d+)$")
 PAGER_DISABLE_CMD = "terminal length 0"
+PAGER_DISABLE_CONFIRM = "pager disabled for this line."
+STARTUP_REPLAY_REJECT = "startup configuration replay in progress"
 CORE_DIR_ENV = "NN_CORE_DIR"
 DEVICE_KIND_NETNEXUS = "netnexus"
 DEVICE_KIND_FRR = "frr"
@@ -262,9 +264,28 @@ class NetNexusCli:
 
     def disable_pager(self, timeout: int | None = None) -> None:
         eff_timeout = timeout if timeout is not None else min(self.cmd_timeout, 8)
-        # terminal-length command is user-view scoped; ensure we are not left in sub-views.
-        self.cmd("end", timeout=eff_timeout, strict=False)
-        self.cmd(PAGER_DISABLE_CMD, timeout=eff_timeout, strict=True)
+        deadline = time.time() + eff_timeout
+        last_output = ""
+        while time.time() < deadline:
+            remaining = max(1, int(deadline - time.time()) + 1)
+            # terminal-length is user-view scoped; ensure we are not left in
+            # a sub-view. The startup replay gate returns a normal prompt, so
+            # retry its explicit rejection instead of treating it as success.
+            end_out = self.cmd("end", timeout=remaining, strict=False)
+            out = self.cmd(PAGER_DISABLE_CMD, timeout=remaining, strict=True)
+            last_output = f"{end_out}\n{out}"
+            if PAGER_DISABLE_CONFIRM in out.lower():
+                return
+            if STARTUP_REPLAY_REJECT in last_output.lower():
+                time.sleep(0.5)
+                continue
+            raise RuntimeError(
+                f"{self.name}: unexpected pager setup response: {out.strip() or '<empty>'}"
+            )
+        raise RuntimeError(
+            f"{self.name}: startup replay did not accept pager setup within {eff_timeout}s: "
+            f"{last_output.strip() or '<empty>'}"
+        )
 
     def close(self) -> None:
         if self.tn:
@@ -1212,8 +1233,7 @@ class TopologyRuntime:
                 ready_cli = self.cli_map.get(dev)
                 if ready_cli is None:
                     raise RuntimeError(f"{dev}: CLI disappeared during topology startup")
-                ready_cli.cmd("end", strict=False, timeout=min(10, self.cmd_timeout))
-                ready_cli.cmd(PAGER_DISABLE_CMD, strict=False, timeout=min(10, self.cmd_timeout))
+                ready_cli.disable_pager(timeout=min(10, self.cmd_timeout))
 
         # 5b) Apply per-device sysname == top.yaml device key (so prompt 显示 r1 / r2 ...)
         for dev in self.devices:
@@ -1287,6 +1307,10 @@ class TopologyRuntime:
                 # 等待所有模块 Phase=READY 且 IPC=up，再返回给调用方
                 remaining = max(10, int(deadline - time.time()))
                 self.wait_modules_ready(device, timeout=remaining)
+                # ACCESS was restarted with its default pager length. Replay
+                # may have rejected connect()-time session setup, so enforce
+                # it again after the readiness gate opens.
+                new_cli.disable_pager(timeout=min(10, self.cmd_timeout))
                 return
             except Exception as exc:
                 last_err = exc
@@ -1363,8 +1387,7 @@ class TopologyRuntime:
         ready_cli = self.cli_map.get(device)
         if ready_cli is None:
             raise RuntimeError(f"{device}: CLI disappeared after cold reboot")
-        ready_cli.cmd("end", strict=False, timeout=min(10, self.cmd_timeout))
-        ready_cli.cmd(PAGER_DISABLE_CMD, strict=False, timeout=min(10, self.cmd_timeout))
+        ready_cli.disable_pager(timeout=min(10, self.cmd_timeout))
 
     def ensure_cli_alive(self, device: str, *, reconnect_timeout: int = 30) -> bool:
         """探活 + 必要时重连 device 的 CLI 会话。
@@ -1413,6 +1436,7 @@ class TopologyRuntime:
                 self.cli_map[device] = new_cli
                 remaining = max(10, int(deadline - time.time()))
                 self.wait_modules_ready(device, timeout=remaining)
+                new_cli.disable_pager(timeout=min(10, self.cmd_timeout))
                 return False
             except Exception as exc:
                 last_err = exc
@@ -1444,7 +1468,7 @@ class TopologyRuntime:
             cli = self.cli_map.get(dev)
             if cli is None:
                 raise RuntimeError(f"device '{dev}' has no active CLI session")
-            cli.disable_pager(timeout=min(self.cmd_timeout, 8))
+            cli.disable_pager(timeout=min(self.connect_timeout, 30))
 
     def on(self, device: str) -> DeviceExec:
         if device not in self.devices:

@@ -87,7 +87,10 @@ def _wait_route_invalid_or_absent(
         command=command,
         timeout=timeout,
         interval=interval,
-        regex=[rf"(?im)(?:{re.escape(token)}|\(no routes\))"],
+        # Success is either an absent token (even when other routes remain) or
+        # a present token without BEST/VALID markers. Requiring "(no routes)"
+        # incorrectly rejects the first case when the table is non-empty.
+        regex=[r"(?im)^\s*BGP Routes \(AF:"],
         not_regex=[best_pattern, valid_pattern],
         label=f"{device} route-invalid-or-absent {token}",
     )

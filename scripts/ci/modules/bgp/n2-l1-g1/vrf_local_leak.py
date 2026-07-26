@@ -13,6 +13,7 @@ import re
 import time
 
 from module_api import (  # noqa: E402
+    g_top,
     require_devices,
     mark_step_failed,
     run_cmds,
@@ -106,6 +107,8 @@ def _cleanup(rt: TopologyRuntime) -> None:
         NULL0_ROUTE_DEL,
         f"if {GE_IF}",
         "no vrf forwarding",
+        f"ip address {g_top.r1.GE_1.ip} {g_top.r1.GE_1.prefix}",
+        f"ipv6 address {g_top.r1.GE_1.ip6} {g_top.r1.GE_1.prefix6}",
         "exit",
         f"no if loop {BLUE_LOOP_IDX}",
         f"no vrf {RED}",
@@ -118,6 +121,8 @@ def _cleanup(rt: TopologyRuntime) -> None:
         f"no if loop {R2_LOOP_IDX}",
         f"if {GE_IF}",
         f"no ip address {R2_GE} {LINK_LEN}",
+        f"ip address {g_top.r2.GE_1.ip} {g_top.r2.GE_1.prefix}",
+        f"ipv6 address {g_top.r2.GE_1.ip6} {g_top.r2.GE_1.prefix6}",
         "exit",
         "end",
     ])

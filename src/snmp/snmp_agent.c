@@ -596,7 +596,8 @@ static void configure_access(void)
     (void)read_config_with_type("snmpd", line);
 
     snprintf(line, sizeof(line), "rocommunity %s", g_community);
-    netsnmp_config_remember(g_strdup(line));
+    /* Net-SNMP copies remembered lines into its own list. */
+    netsnmp_config_remember(line);
 }
 
 int snmp_agent_init(void)

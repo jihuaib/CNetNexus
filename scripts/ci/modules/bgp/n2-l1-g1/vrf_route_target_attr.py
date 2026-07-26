@@ -59,7 +59,9 @@ LOCAL_V6_PREFIX = f"{LOCAL_V6_PREFIX_ADDR}/{LOCAL_V6_PREFIX_LEN}"
 
 def _module_ipc_up(rt: TopologyRuntime, device: str, module_name: str) -> bool:
     out = cmd(rt, device, "show dev modules", strict=False, timeout=10)
-    pattern = rf"(?im)^\s*\d+\s+{re.escape(module_name)}\s+\S+\s+\d+\s+up\s*$"
+    # Rows end with a PID (or '-' for a down module):
+    #   id name phase port ipc pid
+    pattern = rf"(?im)^\s*\d+\s+{re.escape(module_name)}\s+\S+\s+\d+\s+up\s+\S+\s*$"
     return re.search(pattern, out) is not None
 
 
