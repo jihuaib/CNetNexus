@@ -12,7 +12,6 @@
 
 static const db_column_def_t RPM_POLICY_COLS[] = {
     {"name", DB_TYPE_TEXT, DB_COL_PRIMARY_KEY, NULL},
-    {"type_mask", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
     {"revision", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"},
 };
 
@@ -98,7 +97,6 @@ int rpm_db_get_policy(const char *name, rpm_policy_t *policy)
     }
 
     g_strlcpy(policy->name, db_row_get_text(result->rows[0], "name", ""), sizeof(policy->name));
-    policy->type_mask = (uint32_t)db_row_get_int(result->rows[0], "type_mask", 0);
     policy->revision = (uint32_t)db_row_get_int(result->rows[0], "revision", 1);
     db_result_free(result);
 
@@ -152,7 +150,7 @@ int rpm_db_get_policy(const char *name, rpm_policy_t *policy)
     return ERRCODE_SUCCESS;
 }
 
-static int rpm_db_bump_revision(const char *name, uint32_t type_mask)
+static int rpm_db_bump_revision(const char *name)
 {
     rpm_policy_t current;
     int found = rpm_db_get_policy(name, &current);
@@ -161,7 +159,6 @@ static int rpm_db_bump_revision(const char *name, uint32_t type_mask)
     if (found == ERRCODE_SUCCESS)
     {
         db_col_t cols[] = {
-            DB_COL_INT("type_mask", type_mask),
             DB_COL_INT("revision", current.revision + 1u),
         };
         int rows = db_rpc_update_cols(rpm_local_ipc_ctx(), RPM_TABLE_POLICY, &fb.filter, cols, G_N_ELEMENTS(cols));
@@ -171,15 +168,14 @@ static int rpm_db_bump_revision(const char *name, uint32_t type_mask)
     db_filter_clear(&fb);
     db_col_t cols[] = {
         DB_COL_TEXT("name", name),
-        DB_COL_INT("type_mask", type_mask),
         DB_COL_INT("revision", 1),
     };
     return db_rpc_insert_cols(rpm_local_ipc_ctx(), RPM_TABLE_POLICY, cols, G_N_ELEMENTS(cols));
 }
 
-int rpm_db_upsert_node(const char *name, uint32_t type_mask, const rpm_policy_node_t *node)
+int rpm_db_upsert_node(const char *name, const rpm_policy_node_t *node)
 {
-    if (!name || !node || rpm_db_bump_revision(name, type_mask) != ERRCODE_SUCCESS)
+    if (!name || !node || rpm_db_bump_revision(name) != ERRCODE_SUCCESS)
     {
         return ERRCODE_FAIL;
     }
@@ -218,8 +214,7 @@ int rpm_db_update_node(const char *name, const rpm_policy_node_t *node)
         return ERRCODE_FAIL;
     }
     rpm_policy_t policy;
-    if (rpm_db_get_policy(name, &policy) != ERRCODE_SUCCESS ||
-        rpm_db_bump_revision(name, policy.type_mask) != ERRCODE_SUCCESS)
+    if (rpm_db_get_policy(name, &policy) != ERRCODE_SUCCESS || rpm_db_bump_revision(name) != ERRCODE_SUCCESS)
     {
         return ERRCODE_FAIL;
     }
@@ -258,7 +253,7 @@ int rpm_db_delete_node(const char *name, uint32_t sequence)
     db_filter_clear(&fb);
     if (rows > 0)
     {
-        (void)rpm_db_bump_revision(name, policy.type_mask);
+        (void)rpm_db_bump_revision(name);
     }
     return rows;
 }

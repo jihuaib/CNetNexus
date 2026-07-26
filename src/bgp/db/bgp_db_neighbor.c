@@ -259,8 +259,7 @@ void bgp_db_restore_neighbors(void)
             g_strlcpy(ep.u.export_policy.policy.name, export_policy, sizeof(ep.u.export_policy.policy.name));
             rpm_policy_get_resp_t found;
             memset(&found, 0, sizeof(found));
-            if (rpm_api_policy_get(ctx, export_policy, RPM_POLICY_TYPE_BGP_EXPORT, &found) == ERRCODE_SUCCESS &&
-                found.found)
+            if (rpm_api_policy_get(ctx, export_policy, &found) == ERRCODE_SUCCESS && found.found)
             {
                 ep.u.export_policy.policy = found.policy;
                 ep.u.export_policy.policy_valid = true;

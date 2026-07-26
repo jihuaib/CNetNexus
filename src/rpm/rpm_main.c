@@ -59,10 +59,11 @@ static void rpm_send_ack(const dev_ipc_message_t *msg)
     }
 }
 
-static void rpm_send_policy_event(uint32_t module_id, uint32_t event, const rpm_policy_t *policy)
+static void rpm_send_policy_event(uint32_t module_id, uint32_t event, uint32_t object_mask, const rpm_policy_t *policy)
 {
     rpm_policy_event_t *payload = g_new0(rpm_policy_event_t, 1);
     payload->event = event;
+    payload->object_mask = object_mask;
     if (policy)
     {
         payload->policy = *policy;
@@ -90,7 +91,7 @@ void rpm_policy_publish(uint32_t event, const rpm_policy_t *policy)
     while (g_hash_table_iter_next(&iter, &key, &value))
     {
         uint32_t mask = GPOINTER_TO_UINT(value);
-        if ((mask & policy->type_mask) != 0u)
+        if ((mask & RPM_OBJECT_ROUTE_POLICY) != 0u)
         {
             uint32_t id = GPOINTER_TO_UINT(key);
             g_array_append_val(targets, id);
@@ -99,35 +100,33 @@ void rpm_policy_publish(uint32_t event, const rpm_policy_t *policy)
     g_mutex_unlock(&g_rpm_local->lock);
     for (guint i = 0; i < targets->len; i++)
     {
-        rpm_send_policy_event(g_array_index(targets, uint32_t, i), event, policy);
+        rpm_send_policy_event(g_array_index(targets, uint32_t, i), event, RPM_OBJECT_ROUTE_POLICY, policy);
     }
     g_array_free(targets, TRUE);
 }
 
-void rpm_policy_publish_all_to(uint32_t module_id, uint32_t type_mask)
+void rpm_policy_publish_all_to(uint32_t module_id, uint32_t interest_mask)
 {
     GPtrArray *snapshot = g_ptr_array_new_with_free_func(g_free);
-    g_mutex_lock(&g_rpm_local->lock);
-    GHashTableIter iter;
-    gpointer value;
-    g_hash_table_iter_init(&iter, g_rpm_local->policies);
-    while (g_hash_table_iter_next(&iter, NULL, &value))
+    if ((interest_mask & RPM_OBJECT_ROUTE_POLICY) != 0u)
     {
-        const rpm_policy_t *policy = value;
-        if ((policy->type_mask & type_mask) != 0u)
+        g_mutex_lock(&g_rpm_local->lock);
+        GHashTableIter iter;
+        gpointer value;
+        g_hash_table_iter_init(&iter, g_rpm_local->policies);
+        while (g_hash_table_iter_next(&iter, NULL, &value))
         {
+            const rpm_policy_t *policy = value;
             g_ptr_array_add(snapshot, g_memdup2(policy, sizeof(*policy)));
         }
+        g_mutex_unlock(&g_rpm_local->lock);
     }
-    g_mutex_unlock(&g_rpm_local->lock);
     for (guint i = 0; i < snapshot->len; i++)
     {
-        rpm_send_policy_event(module_id, RPM_POLICY_EVENT_UPSERT, g_ptr_array_index(snapshot, i));
+        rpm_send_policy_event(module_id, RPM_POLICY_EVENT_UPSERT, RPM_OBJECT_ROUTE_POLICY,
+                              g_ptr_array_index(snapshot, i));
     }
-    rpm_policy_t end;
-    memset(&end, 0, sizeof(end));
-    end.type_mask = type_mask;
-    rpm_send_policy_event(module_id, RPM_POLICY_EVENT_SMOOTH_END, &end);
+    rpm_send_policy_event(module_id, RPM_POLICY_EVENT_SMOOTH_END, interest_mask, NULL);
     g_ptr_array_free(snapshot, TRUE);
 }
 
@@ -140,7 +139,7 @@ static void rpm_handle_subscribe(const dev_ipc_message_t *msg)
     }
     rpm_subscribe_req_t req;
     memcpy(&req, msg->payload, sizeof(req));
-    uint32_t mask = ntohl(req.type_mask);
+    uint32_t mask = ntohl(req.interest_mask);
     uint32_t flags = ntohl(req.flags);
     g_mutex_lock(&g_rpm_local->lock);
     g_hash_table_replace(g_rpm_local->subscribers, GUINT_TO_POINTER(msg->src_module_id), GUINT_TO_POINTER(mask));
@@ -160,10 +159,9 @@ static void rpm_handle_policy_get(const dev_ipc_message_t *msg)
         rpm_policy_get_req_t req;
         memcpy(&req, msg->payload, sizeof(req));
         req.name[sizeof(req.name) - 1] = '\0';
-        uint32_t required = ntohl(req.required_type_mask);
         g_mutex_lock(&g_rpm_local->lock);
         const rpm_policy_t *policy = g_hash_table_lookup(g_rpm_local->policies, req.name);
-        if (policy && (required == 0u || (policy->type_mask & required) != 0u))
+        if (policy)
         {
             payload->found = 1u;
             payload->policy = *policy;

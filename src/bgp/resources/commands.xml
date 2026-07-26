@@ -373,7 +373,7 @@
                 <element id="6" cfg-id="3" type="parameter">
                     <name>&lt;policy-name&gt;</name>
                     <type>dynamic(18:1,string(1-63))</type>
-                    <description>Existing RPM BGP export policy</description>
+                    <description>Existing generic RPM route policy</description>
                 </element>
                 <element id="7" type="keyword">
                     <name>export</name>

@@ -195,7 +195,7 @@ static void bgp_handle_rpm_ready(void)
         LOG_WARN("BGP: RPM not connected in time; policy subscribe deferred");
         return;
     }
-    if (rpm_api_subscribe(ctx, RPM_POLICY_TYPE_BGP_EXPORT, RPM_SUBSCRIBE_FLAG_REPLAY) != ERRCODE_SUCCESS)
+    if (rpm_api_subscribe(ctx, RPM_OBJECT_ROUTE_POLICY, RPM_SUBSCRIBE_FLAG_REPLAY) != ERRCODE_SUCCESS)
     {
         LOG_WARN("BGP: RPM policy subscribe failed");
     }

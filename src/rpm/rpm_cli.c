@@ -140,7 +140,7 @@ static int rpm_cli_handle_policy(dev_ipc_message_t *msg, cli_tlv_parser_t *parse
     memset(&node, 0, sizeof(node));
     node.sequence = sequence;
     node.permit = permit;
-    if (!has_sequence || rpm_db_upsert_node(name, RPM_POLICY_TYPE_BGP_EXPORT, &node) != ERRCODE_SUCCESS)
+    if (!has_sequence || rpm_db_upsert_node(name, &node) != ERRCODE_SUCCESS)
     {
         rpm_cli_send_response(msg, "RPM Error: failed to create policy node.\r\n");
         return ERRCODE_FAIL;
@@ -371,7 +371,7 @@ void rpm_cli_handle_candidates(dev_ipc_message_t *msg)
     while (g_hash_table_iter_next(&iter, NULL, &value))
     {
         const rpm_policy_t *policy = value;
-        if (query_id == RPM_CANDIDATE_QUERY_BGP_EXPORT && (policy->type_mask & RPM_POLICY_TYPE_BGP_EXPORT) == 0u)
+        if (query_id != RPM_CANDIDATE_QUERY_ROUTE_POLICY)
         {
             continue;
         }

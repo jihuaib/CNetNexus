@@ -24,6 +24,6 @@ const rpm_policy_t *rpm_policy_lookup(const char *name);
 void rpm_policy_store(const rpm_policy_t *policy);
 void rpm_policy_remove(const char *name);
 void rpm_policy_publish(uint32_t event, const rpm_policy_t *policy);
-void rpm_policy_publish_all_to(uint32_t module_id, uint32_t type_mask);
+void rpm_policy_publish_all_to(uint32_t module_id, uint32_t interest_mask);
 
 #endif /* RPM_MAIN_H */

@@ -11,7 +11,7 @@
     </show-this>
 
     <command_groups>
-        <!-- route-policy <name> type bgp-export {permit|deny} node <sequence> -->
+        <!-- route-policy <name> {permit|deny} node <sequence> -->
         <group group-id="1">
             <elements>
                 <element id="1" type="keyword">
@@ -27,27 +27,19 @@
                     <type>string(1-63)</type>
                     <description>Policy name</description>
                 </element>
-                <element id="4" type="keyword">
-                    <name>type</name>
-                    <description>Policy consumer type</description>
-                </element>
-                <element id="5" type="keyword">
-                    <name>bgp-export</name>
-                    <description>BGP outbound policy</description>
-                </element>
-                <element id="6" cfg-id="2" type="keyword">
+                <element id="4" cfg-id="2" type="keyword">
                     <name>permit</name>
                     <description>Permit matching routes</description>
                 </element>
-                <element id="7" cfg-id="3" type="keyword">
+                <element id="5" cfg-id="3" type="keyword">
                     <name>deny</name>
                     <description>Deny matching routes</description>
                 </element>
-                <element id="8" type="keyword">
+                <element id="6" type="keyword">
                     <name>node</name>
                     <description>Policy node sequence</description>
                 </element>
-                <element id="9" cfg-id="4" type="parameter">
+                <element id="7" cfg-id="4" type="parameter">
                     <name>&lt;sequence&gt;</name>
                     <type>uint(0-65535)</type>
                     <description>Node sequence number</description>
@@ -55,7 +47,7 @@
             </elements>
             <commands>
                 <command auto-start="true">
-                    <expression>2 3 4 5 {6 | 7} 8 9</expression>
+                    <expression>2 3 {4 | 5} 6 7</expression>
                     <views>config</views>
                     <to-view>route-policy</to-view>
                     <context-out>
@@ -68,7 +60,7 @@
                     <views>config</views>
                 </command>
                 <command>
-                    <expression>1 2 3 8 9</expression>
+                    <expression>1 2 3 6 7</expression>
                     <views>config</views>
                 </command>
             </commands>

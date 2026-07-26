@@ -8,15 +8,15 @@ RPM 是策略的唯一配置与持久化入口，业务模块只负责消费：
 CLI / DB -> RPM -> 查询或事件 -> BGP 等业务模块 -> 路由求值
 ```
 
-公共协议位于 `include/rpm.h`。策略用途、匹配条件和动作都使用 bitmask，避免为每个新用途或字段复制一套 IPC：
+公共协议位于 `include/rpm.h`。策略定义不携带 BGP export/import 等业务用途。bitmask 分别用于业务订阅、匹配条件和动作：
 
-- `type_mask`：策略用途；当前支持 `BGP_EXPORT`，已预留 `BGP_IMPORT` 和 `REDISTRIBUTE`。
+- `interest_mask`：业务模块关注的 RPM 对象类别；当前 BGP 订阅 `ROUTE_POLICY`，已为 prefix-list、community-filter 和 AS-path-filter 预留对象位。
 - `match_mask`：节点实际配置的匹配条件；当前支持 `PREFIX`。
 - `apply_mask`：节点实际配置的属性动作；当前支持 `LOCAL_PREF`、`MED` 和 `COMMUNITY`。
 
-业务模块用 `rpm_api_subscribe(type_mask, flags)` 订阅自己关心的用途。RPM 只推送与订阅位图有交集的策略；`REPLAY` 标志先回放当前策略快照，再发送 `SMOOTH_END`。业务配置引用策略前必须用 `rpm_api_policy_get(name, required_type_mask)` 做同步存在性和类型校验。
+业务模块用 `rpm_api_subscribe(interest_mask, flags)` 告诉 RPM 自己关注哪些对象。RPM 只推送与订阅位图有交集的对象；`REPLAY` 标志先回放当前快照，再发送 `SMOOTH_END`。业务配置引用策略前必须用 `rpm_api_policy_get(name)` 做同步存在性校验。
 
-`type_mask` 表示“此策略可被哪些消费场景使用”，不是求值阶段的条件。因此，策略类型用 bitmask 是合适的；业务模块不需要解析不属于自己的策略。
+RPM 不关心某个 route-policy 最终用于 BGP 出口、BGP 入口还是协议重分发。同一个策略可以被多个业务场景引用，具体用途只存在于业务模块自己的配置中。
 
 ## 求值语义
 
@@ -38,6 +38,8 @@ CLI / DB -> RPM -> 查询或事件 -> BGP 等业务模块 -> 路由求值
 ```text
 route -> match -> permit/deny -> modify attributes -> Adj-RIB-Out
 ```
+
+CLI 层级采用华为式模型：`route-policy <name> permit|deny node <n>` 创建节点并进入 Route-Policy 视图，`if-match` 和 `apply` 都只能在该视图执行；`if-match` 本身不会再进入下一层视图。
 
 后续扩展建议优先复用独立对象，而不是把大型列表复制进 RPM 节点：
 

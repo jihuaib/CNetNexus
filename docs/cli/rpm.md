@@ -5,12 +5,12 @@ RPM（Routing Policy Manager，module-id: 18）集中保存路由策略，并按
 ## 策略与节点
 
 ```text
-route-policy <name> type bgp-export {permit|deny} node <sequence>
+route-policy <name> {permit|deny} node <sequence>
 no route-policy <name>
 no route-policy <name> node <sequence>
 ```
 
-创建或进入节点后，提示符为：
+`route-policy` 是通用策略，不声明由 BGP、OSPF 或重分发等哪个业务使用。创建或进入节点时会切换到 Route-Policy 视图，提示符为：
 
 ```text
 <NetNexus(config-route-policy-<name>-node-<sequence>)>
@@ -48,17 +48,17 @@ neighbor <ip-address> route-policy <name> export
 no neighbor <ip-address> route-policy export
 ```
 
-BGP 在写入配置前同步查询 RPM。策略不存在或不包含 `bgp-export` 类型时，命令失败，不会留下悬空的新引用。策略绑定后如被删除，BGP 保留配置名称但立即进入 fail-closed 状态，撤销该邻居已有的 Adj-RIB-Out，并拒绝继续发布路由；同名策略重建后自动恢复并重新计算。
+BGP 在写入配置前同步查询 RPM。策略不存在时命令失败，不会留下悬空的新引用。策略绑定后如被删除，BGP 保留配置名称但立即进入 fail-closed 状态，撤销该邻居已有的 Adj-RIB-Out，并拒绝继续发布路由；同名策略重建后自动恢复并重新计算。
 
 ## 示例
 
 ```text
-route-policy TO-UPLINK type bgp-export permit node 10
+route-policy TO-UPLINK permit node 10
  if-match network ipv4 10.0.0.0 8
  apply med 50
  apply community 65000:100
 exit
-route-policy TO-UPLINK type bgp-export deny node 100
+route-policy TO-UPLINK deny node 100
 exit
 
 bgp 65000

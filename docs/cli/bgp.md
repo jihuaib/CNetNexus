@@ -59,12 +59,12 @@ BGP 模块（module-id: 6）提供全局 BGP、VRF BGP、多个地址族、邻�
 | `no reflector cluster-id` | bgp-af, bgp-vrf-af | 删除 cluster-id |
 | `neighbor <ip> reflect-client` | bgp-af, bgp-vrf-af | 将邻居设为 RR client |
 | `no neighbor <ip> reflect-client` | bgp-af, bgp-vrf-af | 取消 RR client |
-| `neighbor <ip> route-policy <name> export` | bgp-af, bgp-vrf-af | 绑定已存在且包含 `bgp-export` 类型的 RPM 出口策略 |
+| `neighbor <ip> route-policy <name> export` | bgp-af, bgp-vrf-af | 将已存在的通用 RPM 策略用于邻居出口 |
 | `no neighbor <ip> route-policy export` | bgp-af, bgp-vrf-af | 删除邻居出口策略绑定 |
 
 `import-rib public ipv4-labeled-unicast` / `no import-rib public ipv4-labeled-unicast` 在 IPv4 unicast AF 视图下可用，用于从 public IPv4 labeled-unicast 导入。
 
-出口策略由 RPM 模块集中配置，详见 [RPM CLI](rpm.md)。BGP 配置时会同步校验策略名称和用途；不存在或类型不兼容的策略不会写入业务配置。
+出口策略由 RPM 模块集中配置，详见 [RPM CLI](rpm.md)。RPM 不记录策略的业务用途；BGP 配置时同步校验策略名称是否存在，不存在的策略不会写入业务配置。
 
 QP AF 还支持：
 

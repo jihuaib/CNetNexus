@@ -8,7 +8,7 @@
 #define RPM_CLI_GROUP_APPLY_MED 3
 #define RPM_CLI_GROUP_APPLY_LOCAL_PREF 4
 #define RPM_CLI_GROUP_APPLY_COMMUNITY 5
-#define RPM_CANDIDATE_QUERY_BGP_EXPORT 1
+#define RPM_CANDIDATE_QUERY_ROUTE_POLICY 1
 
 int rpm_cli_handle_config_msg(dev_ipc_message_t *msg);
 void rpm_cli_send_response(dev_ipc_message_t *msg, const char *text);

@@ -7,15 +7,6 @@
 #include "rpm_cli.h"
 #include "rpm_db.h"
 
-static const char *rpm_type_name(uint32_t type_mask)
-{
-    if ((type_mask & RPM_POLICY_TYPE_BGP_EXPORT) != 0u)
-    {
-        return "bgp-export";
-    }
-    return "unknown";
-}
-
 static void rpm_bdr_append_policy(GString *out, const rpm_policy_t *policy, uint32_t only_sequence,
                                   gboolean sequence_filter)
 {
@@ -26,8 +17,8 @@ static void rpm_bdr_append_policy(GString *out, const rpm_policy_t *policy, uint
         {
             continue;
         }
-        g_string_append_printf(out, "route-policy %s type %s %s node %u\r\n", policy->name,
-                               rpm_type_name(policy->type_mask), node->permit ? "permit" : "deny", node->sequence);
+        g_string_append_printf(out, "route-policy %s %s node %u\r\n", policy->name, node->permit ? "permit" : "deny",
+                               node->sequence);
         if ((node->match_mask & RPM_MATCH_PREFIX) != 0u)
         {
             char addr[64];

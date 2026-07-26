@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-端到端验证按需模块 (SBMP) + 订阅启动 + process reboot + 自动恢复机制。
+端到端验证按需模块 (SBMP/RPM 等) + 订阅启动 + process reboot + 自动恢复机制。
 
 覆盖：
   Phase A. boot 完成 → SBMP 进程不存在（DB 空）
@@ -233,14 +233,28 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         cmd(rt, "r1", "exit", strict=False)
         cmd(rt, "r1", "end", strict=False)
 
-        step("Phase I: BGP on-demand + 拉起 TUNNEL（依赖关系）")
+        step("Phase I: RPM on-demand + route-policy 视图")
+        rpm_pids_boot = _list_module_pids(container, "rpm")
+        if rpm_pids_boot:
+            mark_step_failed()
+            raise AssertionError(f"Phase I: RPM should not run before first policy; got {rpm_pids_boot}")
+        out = cmd(rt, "r1", "config", timeout=5)
+        out += cmd(rt, "r1", "route-policy DEV_OD_RPM permit node 10", timeout=15)
+        _assert_auto_start(out, "Phase I")
+        rpm_pids = _wait_for_pids(
+            container, predicate=lambda p: len(p) == 1, timeout=WAIT_SPAWN_SEC,
+            what="RPM to spawn", mod="rpm")
+        cmd(rt, "r1", "apply med 100", timeout=5)
+        cmd(rt, "r1", "end", strict=False)
+
+        step("Phase J: BGP on-demand + uses the already-running RPM dependency")
         bgp_pids_boot = _list_module_pids(container, "bgp")
         if bgp_pids_boot:
             mark_step_failed()
-            raise AssertionError(f"Phase I: BGP should not run at boot; got {bgp_pids_boot}")
+            raise AssertionError(f"Phase J: BGP should not run at boot; got {bgp_pids_boot}")
         out = cmd(rt, "r1", "config", timeout=5)
         out += cmd(rt, "r1", "bgp 65001", timeout=15)
-        _assert_auto_start(out, "Phase I")
+        _assert_auto_start(out, "Phase J")
         bgp_pids = _wait_for_pids(
             container, predicate=lambda p: len(p) == 1, timeout=WAIT_SPAWN_SEC,
             what="BGP to spawn", mod="bgp")
@@ -253,11 +267,12 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             f", TUNNEL(idle then pulled by LDP pid={tun_pids[0]})"
             f", LDP(spawn pid={ldp_pids[0]})"
             f", ISIS(spawn pid={isis_pids[0]})"
+            f", RPM(spawn pid={rpm_pids[0]})"
             f", BGP(spawn pid={bgp_pids[0]})"
         )
 
     finally:
-        # 清理：把 SBMP/LDP/ISIS/BGP 配置清掉
+        # 清理：把 SBMP/LDP/ISIS/RPM/BGP 配置清掉
         try:
             cmd(rt, "r1", "end", strict=False)
             cmd(rt, "r1", "config", strict=False)
@@ -265,6 +280,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             cmd(rt, "r1", "no ldp", strict=False)
             cmd(rt, "r1", "no isis 1", strict=False)
             cmd(rt, "r1", "no bgp", strict=False)
+            cmd(rt, "r1", "no route-policy DEV_OD_RPM", strict=False)
             cmd(rt, "r1", "end", strict=False)
             # Phase D deliberately points startup at a config containing SBMP.
             # Overwrite it after cleanup so later re-exec/reboot tests restore

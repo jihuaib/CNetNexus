@@ -4,14 +4,14 @@
 #include "errcode.h"
 #include "rpm.h"
 
-int rpm_api_subscribe(dev_ipc_context_t *ctx, uint32_t type_mask, uint32_t flags)
+int rpm_api_subscribe(dev_ipc_context_t *ctx, uint32_t interest_mask, uint32_t flags)
 {
-    if (!ctx || type_mask == 0u)
+    if (!ctx || interest_mask == 0u)
     {
         return ERRCODE_FAIL;
     }
     rpm_subscribe_req_t req = {
-        .type_mask = htonl(type_mask),
+        .interest_mask = htonl(interest_mask),
         .flags = htonl(flags),
     };
     dev_ipc_message_t *msg = dev_ipc_message_create(RPM_MSG_TYPE_SUBSCRIBE, dev_ipc_get_module_id(ctx),
@@ -46,8 +46,7 @@ int rpm_api_unsubscribe(dev_ipc_context_t *ctx)
     return rc;
 }
 
-int rpm_api_policy_get(dev_ipc_context_t *ctx, const char *name, uint32_t required_type_mask,
-                       rpm_policy_get_resp_t *out)
+int rpm_api_policy_get(dev_ipc_context_t *ctx, const char *name, rpm_policy_get_resp_t *out)
 {
     if (!ctx || !name || !out)
     {
@@ -56,7 +55,6 @@ int rpm_api_policy_get(dev_ipc_context_t *ctx, const char *name, uint32_t requir
     rpm_policy_get_req_t req;
     memset(&req, 0, sizeof(req));
     g_strlcpy(req.name, name, sizeof(req.name));
-    req.required_type_mask = htonl(required_type_mask);
 
     dev_ipc_message_t *msg = dev_ipc_message_create(RPM_MSG_TYPE_POLICY_GET, dev_ipc_get_module_id(ctx),
                                                     DEV_MODULE_ID_RPM, 0, &req, sizeof(req), NULL);

@@ -73,16 +73,19 @@ static int fib_init_local(void)
 {
     dev_ipc_context_t *ctx = fib_local_ipc_ctx();
 
-    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DEV, DEV_IPC_WAIT_DEV_MS) != ERRCODE_SUCCESS)
-    {
-        LOG_ERROR("FIB: timed out waiting for DEV connection");
-    }
-
-    if (fib_worker_prepare() != ERRCODE_SUCCESS || fib_worker_launch() != ERRCODE_SUCCESS)
+    /* fib_worker_prepare() 必须在 dev_ipc_init() 开放监听端口前完成。
+     * STARTING 模块允许其它模块提前建联；DEV 尚未连接时，ROUTE 已可能下发
+     * 初始路由。此处只负责启动预先建好的 worker，积压消息随后按序处理。 */
+    if (fib_worker_launch() != ERRCODE_SUCCESS)
     {
         LOG_ERROR("FIB: worker start failed");
         fib_worker_shutdown();
         return -1;
+    }
+
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_DEV, DEV_IPC_WAIT_DEV_MS) != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("FIB: timed out waiting for DEV connection");
     }
 
     if (dev_ipc_notify_ready(ctx) != ERRCODE_SUCCESS)
@@ -191,19 +194,32 @@ int fib_module_init(void)
     log_set_tag("fib");
     LOG_INFO("Module initialization");
 
-    dev_ipc_context_t *ctx = dev_ipc_init(DEV_MODULE_ID_FIB, "fib", DEV_MODULE_PORT_FIB, fib_ipc_msg_handler);
-    if (!ctx)
+    /* 先创建 worker 队列，再开放 IPC listener。模块处于 STARTING 时其它 peer
+     * 可以主动连接；队列必须已经存在，才能无损缓存 READY 前到达的业务消息。 */
+    if (fib_worker_prepare() != ERRCODE_SUCCESS)
     {
-        LOG_ERROR("IPC initialization failed");
+        LOG_ERROR("FIB: worker prepare failed");
+        fib_worker_shutdown();
         return -1;
     }
 
     g_fib_local = g_malloc0(sizeof(*g_fib_local));
     if (!g_fib_local)
     {
-        dev_ipc_destroy(ctx);
+        fib_worker_shutdown();
         return -1;
     }
+
+    dev_ipc_context_t *ctx = dev_ipc_init(DEV_MODULE_ID_FIB, "fib", DEV_MODULE_PORT_FIB, fib_ipc_msg_handler);
+    if (!ctx)
+    {
+        LOG_ERROR("IPC initialization failed");
+        g_free(g_fib_local);
+        g_fib_local = NULL;
+        fib_worker_shutdown();
+        return -1;
+    }
+
     g_fib_local->dev_ipc_ctx = ctx;
     return fib_init_local();
 }

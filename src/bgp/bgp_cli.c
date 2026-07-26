@@ -2094,11 +2094,9 @@ static int handle_bgp_export_policy(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
         }
         rpm_policy_get_resp_t found;
         memset(&found, 0, sizeof(found));
-        if (rpm_api_policy_get(bgp_local_ipc_ctx(), policy_name, RPM_POLICY_TYPE_BGP_EXPORT, &found) !=
-                ERRCODE_SUCCESS ||
-            !found.found)
+        if (rpm_api_policy_get(bgp_local_ipc_ctx(), policy_name, &found) != ERRCODE_SUCCESS || !found.found)
         {
-            bgp_send_cli_response(msg, "BGP Error: Export policy does not exist or has incompatible type.\r\n");
+            bgp_send_cli_response(msg, "BGP Error: Export policy does not exist.\r\n");
             return ERRCODE_FAIL;
         }
         apply.u.export_policy.policy = found.policy;

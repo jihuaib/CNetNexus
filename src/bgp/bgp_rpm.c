@@ -130,7 +130,7 @@ void bgp_rpm_handle_event(dev_ipc_message_t *msg)
         return;
     }
     const rpm_policy_event_t *event = msg->payload;
-    if (event->event == RPM_POLICY_EVENT_SMOOTH_END || (event->policy.type_mask & RPM_POLICY_TYPE_BGP_EXPORT) == 0u)
+    if (event->event == RPM_POLICY_EVENT_SMOOTH_END || (event->object_mask & RPM_OBJECT_ROUTE_POLICY) == 0u)
     {
         return;
     }
