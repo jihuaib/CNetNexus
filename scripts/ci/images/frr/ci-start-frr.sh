@@ -2,14 +2,14 @@
 set -euo pipefail
 
 mkdir -p /etc/frr /run/frr /run/lldpd /var/log/frr
-touch /etc/frr/zebra.conf /etc/frr/bgpd.conf /etc/frr/staticd.conf /etc/frr/vtysh.conf
+touch /etc/frr/zebra.conf /etc/frr/bgpd.conf /etc/frr/ospfd.conf /etc/frr/ospf6d.conf /etc/frr/staticd.conf /etc/frr/vtysh.conf
 
 cat >/etc/frr/daemons <<'EOF'
 zebra=yes
 bgpd=yes
 staticd=yes
-ospfd=no
-ospf6d=no
+ospfd=yes
+ospf6d=yes
 ripd=no
 ripngd=no
 isisd=yes
@@ -29,6 +29,8 @@ vtysh_enable=yes
 zebra_options="  -A 127.0.0.1 -s 90000000"
 bgpd_options="   -A 127.0.0.1"
 staticd_options="-A 127.0.0.1"
+ospfd_options="  -A 127.0.0.1"
+ospf6d_options=" -A 127.0.0.1"
 isisd_options="  -A 127.0.0.1"
 ldpd_options="   -A 127.0.0.1"
 EOF
@@ -42,6 +44,8 @@ else
   /usr/lib/frr/zebra -d -A 127.0.0.1 -s 90000000
   /usr/lib/frr/staticd -d -A 127.0.0.1
   /usr/lib/frr/bgpd -d -A 127.0.0.1
+  /usr/lib/frr/ospfd -d -A 127.0.0.1
+  /usr/lib/frr/ospf6d -d -A 127.0.0.1
 fi
 
 while ! vtysh -c "show version" >/dev/null 2>&1; do

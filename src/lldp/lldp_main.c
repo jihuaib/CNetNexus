@@ -16,6 +16,7 @@
 #include "lldp_cli.h"
 #include "lldp_db.h"
 #include "log.h"
+#include "work/lldp_snmp_report.h"
 #include "work/lldp_worker.h"
 
 lldp_local_t *g_lldp_local = NULL;
@@ -154,6 +155,27 @@ static void lldp_on_db_event_cb(uint32_t module_id, uint8_t event, const char *h
     }
 }
 
+static void lldp_on_snmp_event_cb(uint32_t module_id, uint8_t event, const char *host, uint16_t port, uint32_t epoch,
+                                  void *user)
+{
+    (void)module_id;
+    (void)host;
+    (void)port;
+    (void)epoch;
+    (void)user;
+
+    if (event != DEV_MODULE_EVENT_READY || !g_lldp_local || !g_lldp_local->dev_ipc_ctx)
+    {
+        return;
+    }
+    dev_ipc_message_t *m = dev_ipc_message_create(LLDP_MSG_TYPE_INTERNAL_SNMP_READY, DEV_MODULE_ID_LLDP,
+                                                  DEV_MODULE_ID_LLDP, 0, NULL, 0, NULL);
+    if (m)
+    {
+        g_async_queue_push(g_lldp_local->dev_ipc_ctx->msg_queue, m);
+    }
+}
+
 void lldp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     (void)ctx;
@@ -172,6 +194,10 @@ void lldp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             break;
         case LLDP_MSG_TYPE_INTERNAL_IF_DOWN:
             (void)lldp_worker_post_if_down();
+            break;
+        case LLDP_MSG_TYPE_INTERNAL_SNMP_READY:
+            (void)dev_ipc_wait_connected(ctx, DEV_MODULE_ID_SNMP, DEV_IPC_WAIT_PEER_MS);
+            lldp_snmp_report_refresh();
             break;
         case CLI_MSG_TYPE:
         {
@@ -277,6 +303,11 @@ int lldp_module_init(void)
 
     (void)dev_ipc_wait_all_subscribed_connected(ctx, 0);
 
+    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_SNMP, 0, lldp_on_snmp_event_cb, NULL) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("LLDP: optional subscribe(SNMP) failed");
+    }
+
     if (dev_ipc_is_connected(ctx, DEV_MODULE_ID_DB))
     {
         lldp_handle_db_ready();
@@ -288,6 +319,7 @@ int lldp_module_init(void)
     }
 
     LOG_INFO("LLDP: module ready");
+    lldp_snmp_report_refresh();
     return 0;
 }
 

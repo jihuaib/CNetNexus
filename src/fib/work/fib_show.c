@@ -123,6 +123,8 @@ static const char *proto_name_long(uint32_t protocol)
             return "bgp";
         case ROUTE_PROTOCOL_OSPF:
             return "ospf";
+        case ROUTE_PROTOCOL_OSPFV3:
+            return "ospfv3";
         case ROUTE_PROTOCOL_ISIS:
             return "isis";
         default:

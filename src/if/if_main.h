@@ -25,6 +25,10 @@
  *  category=IF, subtype=0xFFFC */
 #define IF_MSG_TYPE_INTERNAL_DB_READY DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_IF, 0xFFFC)
 
+/** IF 内部消息：SNMP 模块就绪，worker 线程重刷标准 IF-MIB
+ *  category=IF, subtype=0xFFFB */
+#define IF_MSG_TYPE_INTERNAL_SNMP_READY DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_IF, 0xFFFB)
+
 /**
  * @brief IF 模块 IPC 线程本地上下文（仅保留 IPC 相关，不包含业务数据）
  *

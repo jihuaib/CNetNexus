@@ -47,6 +47,8 @@ static uint8_t fib_route_protocol_to_rtproto(uint32_t protocol)
             return RTPROT_BGP;
         case ROUTE_PROTOCOL_OSPF:
             return RTPROT_OSPF;
+        case ROUTE_PROTOCOL_OSPFV3:
+            return RTPROT_OSPF;
         case ROUTE_PROTOCOL_ISIS:
             return RTPROT_ISIS;
         case ROUTE_PROTOCOL_STATIC:

@@ -558,6 +558,42 @@ static void access_handle_line_progress(dev_ipc_message_t *msg)
     access_line_send_to(p->line_id, p->text);
 }
 
+static void access_handle_config_apply(dev_ipc_message_t *msg)
+{
+    const char *text = "Error: invalid ACCESS configuration replay request.\r\n";
+    if (msg && (msg->src_module_id != DEV_MODULE_ID_CLI || msg->dst_module_id != DEV_MODULE_ID_ACCESS ||
+                msg->ingress_peer_module_id != DEV_MODULE_ID_CLI || !msg->ingress_on_initiator))
+    {
+        text = "Error: unauthorized ACCESS configuration replay request.\r\n";
+    }
+    else if (msg && msg->payload && msg->payload_len == sizeof(access_config_apply_t))
+    {
+        const access_config_apply_t *req = (const access_config_apply_t *)msg->payload;
+        if (access_apply_config_command(req->line_cmd, req->line_cmd_no, req->line_arg1, req->line_arg2) == 0)
+        {
+            text = "";
+        }
+        else
+        {
+            text = "Error: ACCESS configuration command cannot be replayed.\r\n";
+        }
+    }
+
+    char *payload = g_strdup(text);
+    dev_ipc_message_t *resp =
+        dev_ipc_message_create(ACCESS_MSG_CONFIG_APPLY_RESP, DEV_MODULE_ID_ACCESS, msg->src_module_id, msg->request_id,
+                               payload, (uint32_t)strlen(payload) + 1, g_free);
+    if (resp)
+    {
+        dev_ipc_send_response(g_access.dev_ipc_ctx, resp);
+        dev_ipc_message_free(resp);
+    }
+    else
+    {
+        g_free(payload);
+    }
+}
+
 void access_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     /* ACCESS→CLI 的命令/会话 RPC 走 query/response，响应由 dev_ipc_query 直接返回，不经此回调。
@@ -575,6 +611,9 @@ void access_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             break;
         case ACCESS_MSG_LINE_PROGRESS:
             access_handle_line_progress(msg);
+            break;
+        case ACCESS_MSG_CONFIG_APPLY:
+            access_handle_config_apply(msg);
             break;
         default:
             break;

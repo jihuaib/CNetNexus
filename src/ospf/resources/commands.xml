@@ -1,0 +1,427 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration module-id="16">
+    <views>
+        <view view-name="ospf">
+            <template>&lt;NetNexus(config-ospf-{ctx:10})&gt;</template>
+        </view>
+    </views>
+
+    <show-this>
+        <view name="ospf"/>
+        <view name="if"/>
+        <view name="if-null0"/>
+        <view name="if-loop"/>
+    </show-this>
+
+    <command_groups>
+        <!-- Group 1: ospf <process-id> / no ospf <process-id> -->
+        <group group-id="1">
+            <elements>
+                <element id="1" cfg-id="1" type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>ospf</name>
+                    <description>OSPFv2 protocol</description>
+                </element>
+                <element id="3" cfg-id="2" type="parameter">
+                    <name>&lt;process-id&gt;</name>
+                    <type>uint(1-4294967295)</type>
+                    <description>OSPF process ID</description>
+                </element>
+                <element id="4" type="keyword">
+                    <name>vrf</name>
+                    <description>Bind the process to a VRF</description>
+                </element>
+                <element id="5" cfg-id="3" type="parameter">
+                    <name>&lt;vrf-name&gt;</name>
+                    <type>dynamic(4:1,string(1-63))</type>
+                    <description>VRF name</description>
+                </element>
+            </elements>
+            <commands>
+                <command auto-start="true">
+                    <expression>2 3</expression>
+                    <views>config</views>
+                    <to-view>ospf</to-view>
+                    <context-out>
+                        <entry ctx-id="10" from-param="2"/>
+                    </context-out>
+                </command>
+                <command auto-start="true">
+                    <expression>2 3 4 5</expression>
+                    <views>config</views>
+                    <to-view>ospf</to-view>
+                    <context-out>
+                        <entry ctx-id="10" from-param="2"/>
+                    </context-out>
+                </command>
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>config</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- Group 2: [no] router-id <ipv4> -->
+        <group group-id="2">
+            <elements>
+                <element id="1" cfg-id="1" type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>router-id</name>
+                    <description>Configure the OSPF router ID</description>
+                </element>
+                <element id="3" cfg-id="2" type="parameter">
+                    <name>&lt;ipv4-address&gt;</name>
+                    <type>ipv4</type>
+                    <description>OSPF router ID</description>
+                </element>
+            </elements>
+            <commands>
+                <command>
+                    <expression>2 3</expression>
+                    <views>ospf</views>
+                </command>
+                <command>
+                    <expression>1 2</expression>
+                    <views>ospf</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- Group 9: [no] area <area-id> -->
+        <group group-id="9">
+            <elements>
+                <element id="1" cfg-id="1" type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>area</name>
+                    <description>Configure an OSPF area</description>
+                </element>
+                <element id="3" cfg-id="2" type="parameter">
+                    <name>&lt;area-id&gt;</name>
+                    <type>uint(0-4294967295)</type>
+                    <description>OSPF area ID</description>
+                </element>
+            </elements>
+            <commands>
+                <command>
+                    <expression>2 3</expression>
+                    <views>ospf</views>
+                </command>
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>ospf</views>
+                </command>
+            </commands>
+        </group>
+
+        <!--
+          Group 3 interface cfg-id contract:
+          1=no, 2=enable, 3=cost, 4=hello, 5=dead, 6=priority,
+          7=network-type, 8=passive, 9=pid, 10=area keyword,
+          11=area value, 12=numeric value, 13=broadcast, 14=p2p.
+        -->
+        <group group-id="3">
+            <elements>
+                <element id="1" cfg-id="1" type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>ospf</name>
+                    <description>OSPFv2 interface configuration</description>
+                </element>
+                <element id="3" cfg-id="2" type="keyword">
+                    <name>enable</name>
+                    <description>Enable OSPF on this interface</description>
+                </element>
+                <element id="4" cfg-id="3" type="keyword">
+                    <name>cost</name>
+                    <description>Configure interface cost</description>
+                </element>
+                <element id="5" cfg-id="4" type="keyword">
+                    <name>hello-interval</name>
+                    <description>Configure hello interval</description>
+                </element>
+                <element id="6" cfg-id="5" type="keyword">
+                    <name>dead-interval</name>
+                    <description>Configure dead interval</description>
+                </element>
+                <element id="7" cfg-id="6" type="keyword">
+                    <name>priority</name>
+                    <description>Configure router priority</description>
+                </element>
+                <element id="8" cfg-id="7" type="keyword">
+                    <name>network-type</name>
+                    <description>Configure OSPF network type</description>
+                </element>
+                <element id="9" cfg-id="8" type="keyword">
+                    <name>passive</name>
+                    <description>Suppress OSPF packets on this interface</description>
+                </element>
+                <element id="10" cfg-id="9" type="parameter">
+                    <name>&lt;process-id&gt;</name>
+                    <type>uint(1-4294967295)</type>
+                    <description>OSPF process ID</description>
+                </element>
+                <element id="11" cfg-id="10" type="keyword">
+                    <name>area</name>
+                    <description>Associate the interface with an area</description>
+                </element>
+                <element id="12" cfg-id="11" type="parameter">
+                    <name>&lt;area-id&gt;</name>
+                    <type>uint(0-4294967295)</type>
+                    <description>OSPF area ID</description>
+                </element>
+                <element id="13" cfg-id="12" type="parameter">
+                    <name>&lt;cost&gt;</name>
+                    <type>uint(1-65535)</type>
+                    <description>OSPF interface cost</description>
+                </element>
+                <element id="14" cfg-id="12" type="parameter">
+                    <name>&lt;hello-seconds&gt;</name>
+                    <type>uint(1-65535)</type>
+                    <description>Hello interval in seconds</description>
+                </element>
+                <element id="15" cfg-id="12" type="parameter">
+                    <name>&lt;dead-seconds&gt;</name>
+                    <type>uint(1-4294967295)</type>
+                    <description>Dead interval in seconds</description>
+                </element>
+                <element id="16" cfg-id="12" type="parameter">
+                    <name>&lt;priority&gt;</name>
+                    <type>uint(0-255)</type>
+                    <description>Router priority</description>
+                </element>
+                <element id="17" cfg-id="13" type="keyword">
+                    <name>broadcast</name>
+                    <description>Broadcast network</description>
+                </element>
+                <element id="18" cfg-id="14" type="keyword">
+                    <name>point-to-point</name>
+                    <description>Point-to-point network</description>
+                </element>
+            </elements>
+            <commands>
+                <command>
+                    <expression>2 3 10 11 12</expression>
+                    <views>if,if-loop</views>
+                </command>
+                <command>
+                    <expression>1 2 3 10</expression>
+                    <views>if,if-loop</views>
+                </command>
+                <command>
+                    <expression>1 2 3 10 11 12</expression>
+                    <views>if,if-loop</views>
+                </command>
+
+                <command>
+                    <expression>2 4 10 13</expression>
+                    <views>if,if-loop</views>
+                </command>
+                <command>
+                    <expression>1 2 4 10</expression>
+                    <views>if,if-loop</views>
+                </command>
+
+                <command>
+                    <expression>2 5 10 14</expression>
+                    <views>if,if-loop</views>
+                </command>
+                <command>
+                    <expression>1 2 5 10</expression>
+                    <views>if,if-loop</views>
+                </command>
+
+                <command>
+                    <expression>2 6 10 15</expression>
+                    <views>if,if-loop</views>
+                </command>
+                <command>
+                    <expression>1 2 6 10</expression>
+                    <views>if,if-loop</views>
+                </command>
+
+                <command>
+                    <expression>2 7 10 16</expression>
+                    <views>if,if-loop</views>
+                </command>
+                <command>
+                    <expression>1 2 7 10</expression>
+                    <views>if,if-loop</views>
+                </command>
+
+                <command>
+                    <expression>2 8 10 17</expression>
+                    <views>if,if-loop</views>
+                </command>
+                <command>
+                    <expression>2 8 10 18</expression>
+                    <views>if,if-loop</views>
+                </command>
+                <command>
+                    <expression>1 2 8 10</expression>
+                    <views>if,if-loop</views>
+                </command>
+
+                <command>
+                    <expression>2 9 10</expression>
+                    <views>if,if-loop</views>
+                </command>
+                <command>
+                    <expression>1 2 9 10</expression>
+                    <views>if,if-loop</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- Group 4: show ospf summary [process-id] -->
+        <group group-id="4">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>show</name>
+                    <description>Display system information</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>ospf</name>
+                    <description>OSPFv2 information</description>
+                </element>
+                <element id="3" type="keyword">
+                    <name>summary</name>
+                    <description>OSPF process summary</description>
+                </element>
+                <element id="4" cfg-id="1" type="parameter">
+                    <name>&lt;process-id&gt;</name>
+                    <type>uint(1-4294967295)</type>
+                    <description>OSPF process filter</description>
+                </element>
+            </elements>
+            <commands>
+                <command><expression>1 2 3</expression><views>global</views></command>
+                <command><expression>1 2 3 4</expression><views>global</views></command>
+            </commands>
+        </group>
+
+        <!-- Group 5: show ospf interface [process-id] -->
+        <group group-id="5">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>show</name>
+                    <description>Display system information</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>ospf</name>
+                    <description>OSPFv2 information</description>
+                </element>
+                <element id="3" type="keyword">
+                    <name>interface</name>
+                    <description>OSPF interface status</description>
+                </element>
+                <element id="4" cfg-id="1" type="parameter">
+                    <name>&lt;process-id&gt;</name>
+                    <type>uint(1-4294967295)</type>
+                    <description>OSPF process filter</description>
+                </element>
+            </elements>
+            <commands>
+                <command><expression>1 2 3</expression><views>global</views></command>
+                <command><expression>1 2 3 4</expression><views>global</views></command>
+            </commands>
+        </group>
+
+        <!-- Group 6: show ospf neighbor [process-id] [verbose] -->
+        <group group-id="6">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>show</name>
+                    <description>Display system information</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>ospf</name>
+                    <description>OSPFv2 information</description>
+                </element>
+                <element id="3" type="keyword">
+                    <name>neighbor</name>
+                    <description>OSPF neighbor status</description>
+                </element>
+                <element id="4" cfg-id="1" type="parameter">
+                    <name>&lt;process-id&gt;</name>
+                    <type>uint(1-4294967295)</type>
+                    <description>OSPF process filter</description>
+                </element>
+                <element id="5" cfg-id="2" type="keyword">
+                    <name>verbose</name>
+                    <description>Display neighbor synchronization details</description>
+                </element>
+            </elements>
+            <commands>
+                <command><expression>1 2 3</expression><views>global</views></command>
+                <command><expression>1 2 3 4</expression><views>global</views></command>
+                <command><expression>1 2 3 5</expression><views>global</views></command>
+                <command><expression>1 2 3 4 5</expression><views>global</views></command>
+            </commands>
+        </group>
+
+        <!-- Group 7: show ospf lsdb [process-id] -->
+        <group group-id="7">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>show</name>
+                    <description>Display system information</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>ospf</name>
+                    <description>OSPFv2 information</description>
+                </element>
+                <element id="3" type="keyword">
+                    <name>lsdb</name>
+                    <description>OSPF link-state database</description>
+                </element>
+                <element id="4" cfg-id="1" type="parameter">
+                    <name>&lt;process-id&gt;</name>
+                    <type>uint(1-4294967295)</type>
+                    <description>OSPF process filter</description>
+                </element>
+            </elements>
+            <commands>
+                <command><expression>1 2 3</expression><views>global</views></command>
+                <command><expression>1 2 3 4</expression><views>global</views></command>
+            </commands>
+        </group>
+
+        <!-- Group 8: show ospf route [process-id] -->
+        <group group-id="8">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>show</name>
+                    <description>Display system information</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>ospf</name>
+                    <description>OSPFv2 information</description>
+                </element>
+                <element id="3" type="keyword">
+                    <name>route</name>
+                    <description>OSPF learned routes</description>
+                </element>
+                <element id="4" cfg-id="1" type="parameter">
+                    <name>&lt;process-id&gt;</name>
+                    <type>uint(1-4294967295)</type>
+                    <description>OSPF process filter</description>
+                </element>
+            </elements>
+            <commands>
+                <command><expression>1 2 3</expression><views>global</views></command>
+                <command><expression>1 2 3 4</expression><views>global</views></command>
+            </commands>
+        </group>
+    </command_groups>
+</configuration>

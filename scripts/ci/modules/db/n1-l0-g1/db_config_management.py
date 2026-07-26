@@ -5,13 +5,15 @@ Coverage:
 1. Factory display state: no selected startup configuration.
 2. Error paths: missing startup snapshot and invalid configuration name.
 3. DB show commands reflect the temporary running.db and dev_config data.
-4. `save configuration` without a selected startup saves `startup` but does not select it.
-5. Named `save configuration <name>` + `startup configuration <name> db` survives reboot.
-6. Unsaved running changes are discarded on reboot and startup snapshot is restored.
-7. `save configuration` without a name uses the currently selected startup snapshot.
-8. Switching startup to a second named snapshot in cfg mode changes the next reboot restore source.
-9. Minor-version metadata changes still boot from `.db`; removing `.cfg` must not matter.
-10. Major-version metadata changes fall back to `.cfg`; removing `.db` must not matter.
+4. A configured but disconnected on-demand module makes snapshot capture fail closed.
+5. Empty manually-started BGP/ISIS modules emit no BDR text and `no` returns them to on-demand.
+6. `save configuration` without a selected startup saves `startup` but does not select it.
+7. Named `save configuration <name>` + `startup configuration <name> db` survives reboot.
+8. Unsaved running changes are discarded on reboot and startup snapshot is restored.
+9. `save configuration` without a name uses the currently selected startup snapshot.
+10. Switching startup to a second named snapshot in cfg mode changes the next reboot restore source.
+11. Minor-version metadata changes still boot from `.db`; removing `.cfg` must not matter.
+12. Major-version metadata changes fall back to `.cfg`; removing `.db` must not matter.
 """
 
 from __future__ import annotations
@@ -43,6 +45,9 @@ BETA_SYSNAME = "dbbeta"
 
 ALPHA_CFG = "ci_alpha"
 BETA_CFG = "ci-beta_1"
+INCOMPLETE_CFG = "ci_incomplete_capture"
+INCOMPLETE_BGP_AS = 65099
+EMPTY_ISIS_TAG = 424242
 
 
 def _show(rt: TopologyRuntime, command: str) -> str:
@@ -78,7 +83,10 @@ def _remove_saved_configs(rt: TopologyRuntime) -> None:
         f"/opt/netnexus/data/configs/{ALPHA_CFG}.db* /opt/netnexus/data/configs/{ALPHA_CFG}.cfg* "
         f"/opt/netnexus/data/configs/{ALPHA_CFG}.meta* "
         f"/opt/netnexus/data/configs/{BETA_CFG}.db* /opt/netnexus/data/configs/{BETA_CFG}.cfg* "
-        f"/opt/netnexus/data/configs/{BETA_CFG}.meta*",
+        f"/opt/netnexus/data/configs/{BETA_CFG}.meta* "
+        f"/opt/netnexus/data/configs/{INCOMPLETE_CFG}.db* "
+        f"/opt/netnexus/data/configs/{INCOMPLETE_CFG}.cfg* "
+        f"/opt/netnexus/data/configs/{INCOMPLETE_CFG}.meta*",
         check=False,
     )
 
@@ -131,6 +139,18 @@ def _assert_current_contains_cfg_commands(rt: TopologyRuntime, expected: list[st
 def _assert_replay_failures_empty(rt: TopologyRuntime, *, label: str) -> None:
     out = _show(rt, "show configuration replay-failures")
     _assert(label, out, contains=["Configuration replay failures:", "<none>"])
+
+
+def _normalize_running_config(text: str) -> str:
+    lines: list[str] = []
+    for raw in text.replace("\r", "").splitlines():
+        stripped = raw.strip()
+        if not stripped or stripped == "show current-configuration":
+            continue
+        if re.match(r"^<[^>]+>(?:\s.*)?$", stripped):
+            continue
+        lines.append(raw.rstrip())
+    return "\n".join(lines)
 
 
 def _parse_major_version(version: str | None) -> int | None:
@@ -235,6 +255,15 @@ def _wait_sysname_absent(rt: TopologyRuntime, name: str, *, label: str) -> None:
 
 def _cleanup(rt: TopologyRuntime) -> None:
     step("Cleanup DB config snapshots and restore sysname")
+    _show(rt, "process start bgp")
+    run_cmds(
+        rt=rt,
+        device=DEV,
+        strict=False,
+        commands=["config", "no bgp", "end"],
+    )
+    _show(rt, "process stop bgp")
+    _show(rt, "process stop isis")
     _set_sysname(rt, BASE_SYSNAME)
     _remove_saved_configs(rt)
 
@@ -272,7 +301,143 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         out = _show(rt, "show db table-data dev_config")
         _assert("show db table-data dev_config", out, contains=["Table: dev_config", BASE_SYSNAME])
 
-        step("Phase C: save configuration without startup pointer does not select it")
+        step("Phase C: configured but disconnected module makes capture fail closed")
+        run_cmds(
+            rt=rt,
+            device=DEV,
+            strict=True,
+            commands=["config", f"bgp {INCOMPLETE_BGP_AS}", "end"],
+        )
+        wait_check(
+            rt,
+            device=DEV,
+            command="show dev modules",
+            timeout=30,
+            interval=2,
+            regex=[r"(?m)^\s*6\s+bgp\s+READY\s+"],
+            label="BGP ready before incomplete capture test",
+        )
+        _show(rt, "process stop bgp")
+        wait_check(
+            rt,
+            device=DEV,
+            command="show dev modules",
+            timeout=30,
+            interval=2,
+            regex=[r"(?m)^\s*6\s+bgp\s+ON-DEMAND\s+\S+\s+down\s+"],
+            label="configured BGP deliberately disconnected",
+        )
+        out = _show(rt, f"save configuration {INCOMPLETE_CFG}")
+        _assert(
+            "incomplete capture rejected",
+            out,
+            contains=[
+                "Error: Configuration capture incomplete:",
+                "required module bgp",
+                "is not connected",
+            ],
+        )
+        _assert_file_missing(rt, f"configs/{INCOMPLETE_CFG}.db")
+        _assert_file_missing(rt, f"configs/{INCOMPLETE_CFG}.cfg")
+
+        _show(rt, "process start bgp")
+        wait_check(
+            rt,
+            device=DEV,
+            command="show dev modules",
+            timeout=30,
+            interval=2,
+            regex=[r"(?m)^\s*6\s+bgp\s+READY\s+"],
+            label="BGP restarted for cleanup",
+        )
+        run_cmds(rt=rt, device=DEV, strict=True, commands=["config", "no bgp", "end"])
+        wait_check(
+            rt,
+            device=DEV,
+            command="show dev modules",
+            timeout=30,
+            interval=2,
+            regex=[r"(?m)^\s*6\s+bgp\s+ON-DEMAND\s+\S+\s+down\s+"],
+            label="configured BGP exits after its configuration is removed",
+        )
+
+        step("Phase C2: empty BGP BDR is stable and no bgp returns it to on-demand")
+        bdr_without_bgp = _normalize_running_config(_show(rt, "show current-configuration"))
+        _show(rt, "process start bgp")
+        wait_check(
+            rt,
+            device=DEV,
+            command="show dev modules",
+            timeout=30,
+            interval=2,
+            regex=[r"(?m)^\s*6\s+bgp\s+READY\s+"],
+            label="empty BGP manually started",
+        )
+        bdr_with_empty_bgp = _normalize_running_config(_show(rt, "show current-configuration"))
+        if bdr_with_empty_bgp != bdr_without_bgp:
+            raise AssertionError(
+                "empty BGP changed show current-configuration\n"
+                f"without BGP:\n{bdr_without_bgp}\n"
+                f"with empty BGP:\n{bdr_with_empty_bgp}"
+            )
+
+        run_cmds(rt=rt, device=DEV, strict=True, commands=["config", "no bgp", "end"])
+        wait_check(
+            rt,
+            device=DEV,
+            command="show dev modules",
+            timeout=30,
+            interval=2,
+            regex=[r"(?m)^\s*6\s+bgp\s+ON-DEMAND\s+\S+\s+down\s+"],
+            label="no bgp exits an empty manually-started BGP process",
+        )
+        bdr_after_empty_bgp = _normalize_running_config(_show(rt, "show current-configuration"))
+        if bdr_after_empty_bgp != bdr_without_bgp:
+            raise AssertionError(
+                "show current-configuration changed after empty BGP exited\n"
+                f"before:\n{bdr_without_bgp}\n"
+                f"after:\n{bdr_after_empty_bgp}"
+            )
+
+        step("Phase C3: empty ISIS BDR is stable and no isis returns it to on-demand")
+        bdr_without_isis = bdr_after_empty_bgp
+        _show(rt, "process start isis")
+        wait_check(
+            rt,
+            device=DEV,
+            command="show dev modules",
+            timeout=30,
+            interval=2,
+            regex=[r"(?m)^\s*9\s+isis\s+READY\s+"],
+            label="empty ISIS manually started",
+        )
+        bdr_with_empty_isis = _normalize_running_config(_show(rt, "show current-configuration"))
+        if bdr_with_empty_isis != bdr_without_isis:
+            raise AssertionError(
+                "empty ISIS changed show current-configuration\n"
+                f"without ISIS:\n{bdr_without_isis}\n"
+                f"with empty ISIS:\n{bdr_with_empty_isis}"
+            )
+
+        run_cmds(rt=rt, device=DEV, strict=True, commands=["config", f"no isis {EMPTY_ISIS_TAG}", "end"])
+        wait_check(
+            rt,
+            device=DEV,
+            command="show dev modules",
+            timeout=30,
+            interval=2,
+            regex=[r"(?m)^\s*9\s+isis\s+ON-DEMAND\s+\S+\s+down\s+"],
+            label="no isis exits an empty manually-started ISIS process",
+        )
+        bdr_after_empty_isis = _normalize_running_config(_show(rt, "show current-configuration"))
+        if bdr_after_empty_isis != bdr_without_isis:
+            raise AssertionError(
+                "show current-configuration changed after empty ISIS exited\n"
+                f"before:\n{bdr_without_isis}\n"
+                f"after:\n{bdr_after_empty_isis}"
+            )
+
+        step("Phase D: save configuration without startup pointer does not select it")
         _set_sysname(rt, DEFAULT_SYSNAME)
         out = _show(rt, "save configuration")
         _assert("default save name", out, contains=["Configuration saved as 'startup'."])
@@ -286,7 +451,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         out = _show(rt, "show startup configuration")
         _assert("startup still none after reboot", out, contains=["Startup configuration: <none> (factory default)"])
 
-        step("Phase D: named save + startup db selection restores after reboot")
+        step("Phase E: named save + startup db selection restores after reboot")
         _set_sysname(rt, ALPHA_SYSNAME)
         out = _show(rt, f"save configuration {ALPHA_CFG}")
         _assert("save alpha", out, contains=[f"Configuration saved as '{ALPHA_CFG}'."])
@@ -305,7 +470,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         out = _show(rt, "show db table-data dev_config")
         _assert("dev_config restored from alpha snapshot", out, contains=["Table: dev_config", ALPHA_SYSNAME])
 
-        step("Phase E: minor-version startup/db does not require cfg text")
+        step("Phase F: minor-version startup/db does not require cfg text")
         _write_saved_version(rt, ALPHA_CFG, _minor_mismatch_version(current_version, current_major))
         _remove_config_file(rt, ALPHA_CFG, "cfg")
         _assert_file_missing(rt, f"configs/{ALPHA_CFG}.cfg")
@@ -315,7 +480,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         _assert("minor-version restore used alpha db snapshot", out, contains=["Table: dev_config", ALPHA_SYSNAME])
         _assert_replay_failures_empty(rt, label="minor-version db startup did not attempt missing cfg replay")
 
-        step("Phase F: unsaved running change is discarded on reboot")
+        step("Phase G: unsaved running change is discarded on reboot")
         _set_sysname(rt, SCRATCH_SYSNAME)
         _wait_sysname(rt, SCRATCH_SYSNAME, label="scratch sysname applied before reboot")
         reboot_device(rt, DEV, timeout=120)
@@ -326,7 +491,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             label="alpha startup restored over unsaved scratch change",
         )
 
-        step("Phase G: save configuration uses current startup name when omitted")
+        step("Phase H: save configuration uses current startup name when omitted")
         _set_sysname(rt, ALPHA2_SYSNAME)
         out = _show(rt, "save configuration")
         _assert("unnamed save uses current startup", out, contains=[f"Configuration saved as '{ALPHA_CFG}'."])
@@ -338,7 +503,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             label="alpha snapshot overwritten by unnamed save",
         )
 
-        step("Phase H: switch startup to second named snapshot in cfg mode")
+        step("Phase I: switch startup to second named snapshot in cfg mode")
         _set_sysname(rt, BETA_SYSNAME)
         out = _show(rt, f"save configuration {BETA_CFG}")
         _assert("save beta", out, contains=[f"Configuration saved as '{BETA_CFG}'."])
@@ -366,7 +531,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
         )
         _assert_replay_failures_empty(rt, label="cfg startup replay failure list is empty")
 
-        step("Phase I: major-version startup/db falls back to cfg when db snapshot is missing")
+        step("Phase J: major-version startup/db falls back to cfg when db snapshot is missing")
         out = _show(rt, f"startup configuration {BETA_CFG} db")
         _assert("set beta startup back to db", out, contains=[f"Startup configuration set to '{BETA_CFG}' (db)."])
         _assert_startup_pointer(rt, BETA_CFG, "db")

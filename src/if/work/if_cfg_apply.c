@@ -984,6 +984,7 @@ int if_cfg_apply_shutdown(gboolean is_no, const char *logical_name)
                 }
             }
         }
+        if_pub_snmp_admin_state_change(entry, up ? 1u : 0u, entry->ifindex);
         goto sync_done;
 
     sync_rollback:

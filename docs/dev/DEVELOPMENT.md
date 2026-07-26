@@ -99,7 +99,7 @@ build/lib/                  # 共享库
 6. 必要时在 `include/` 增加跨模块公共头文件。
 7. 在 `src/CMakeLists.txt` 添加 `add_subdirectory(<module>)`。
 
-已有模块包括 `access`、`cli`、`db`、`dev`、`if`、`vrf`、`route`、`fib`、`bgp`、`sbmp`、`isis`、`ldp`、`lldp`、`tunnel`。
+已有模块包括 `access`、`cli`、`db`、`dev`、`if`、`vrf`、`route`、`fib`、`bgp`、`sbmp`、`isis`、`ospf`、`ldp`、`lldp`、`tunnel`。
 
 ## CLI 开发
 
@@ -134,6 +134,8 @@ startup configuration <name> cfg
 show startup configuration
 show configuration replay-failures
 show current-configuration
+show configuration difference current-configuration <name>
+rollback configuration <name>
 ```
 
 开发环境数据默认在 `data/`，不要假设存在旧式 `data/bgp/bgp_db.db` 单模块路径。需要查看实际表时，先通过 CLI 查询：

@@ -144,13 +144,17 @@ int access_db_save_telnet_server(int enabled)
     dev_ipc_context_t *ctx = access_ipc_ctx();
     if (!db_rpc_is_available(ctx))
     {
-        return ERRCODE_SUCCESS; /* DB 未就绪：仅内存生效，不持久化 */
+        return ERRCODE_FAIL;
     }
     db_filter_builder_t fb;
     db_filter_init(&fb);
     db_filter_add_text(&fb, "skey", ACCESS_SETTING_TELNET);
-    db_rpc_delete(ctx, ACCESS_TABLE_SETTING, &fb.filter);
+    int delete_rc = db_rpc_delete(ctx, ACCESS_TABLE_SETTING, &fb.filter);
     db_filter_clear(&fb);
+    if (delete_rc != ERRCODE_SUCCESS)
+    {
+        return delete_rc;
+    }
 
     db_col_t cols[] = {DB_COL_TEXT("skey", ACCESS_SETTING_TELNET), DB_COL_INT("sval", enabled ? 1 : 0)};
     return db_rpc_insert_cols(ctx, ACCESS_TABLE_SETTING, cols, G_N_ELEMENTS(cols));
@@ -354,7 +358,7 @@ int access_db_save_vty_transport(uint32_t vty_num, uint8_t transport)
     dev_ipc_context_t *ctx = access_ipc_ctx();
     if (!db_rpc_is_available(ctx))
     {
-        return ERRCODE_SUCCESS; /* DB 未就绪：仅内存生效 */
+        return ERRCODE_FAIL;
     }
     char key[16];
     snprintf(key, sizeof(key), "vty%u", vty_num);

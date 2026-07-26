@@ -36,6 +36,7 @@ typedef struct ldp_if_cfg
 
 int ldp_db_init(void);
 int ldp_db_restore(void);
+int ldp_db_delete_config(void);
 
 int ldp_db_set_proto_admin(uint8_t admin_up);
 int ldp_db_set_lsr_id(uint32_t lsr_id);

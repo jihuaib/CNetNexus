@@ -22,8 +22,9 @@
 #define CLI_GROUP_ID_SHOW_THIS 10    /**< show this */
 #define CLI_GROUP_ID_SHOW_CLIENT 11  /**< show cli client */
 #define CLI_GROUP_ID_SHOW_CONF_DIFF                                                                                    \
-    12 /**< show configuration difference current-configuration <configuration-file>                                   \
-        */
+    12                                  /**< show configuration difference current-configuration <snapshot-name>       \
+                                         */
+#define CLI_GROUP_ID_CONFIG_ROLLBACK 13 /**< rollback configuration <snapshot-name> */
 
 /**
  * @brief 响应输出结构
@@ -50,5 +51,13 @@ int cli_handle(dev_ipc_message_t *msg, cli_session_t *session);
  * @return 新分配的 GString，失败时返回空串
  */
 GString *cli_cfg_collect_current_config(uint32_t exclude_module_id);
+
+/**
+ * @brief 汇聚当前配置，并报告所有已连接模块是否都完整响应
+ *
+ * show 命令可继续使用上面的兼容接口；配置保存、比较和回滚必须检查 complete，
+ * 防止把部分 BDR 当作完整 running 配置。
+ */
+GString *cli_cfg_collect_current_config_checked(uint32_t exclude_module_id, gboolean *complete);
 
 #endif // CLI_CFG_H

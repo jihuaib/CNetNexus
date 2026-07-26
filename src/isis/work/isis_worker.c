@@ -55,6 +55,13 @@ static char g_isis_tick_tag;
 
 isis_work_local_t *g_isis_work_local = NULL;
 
+gboolean isis_if_entry_matches_instance(const isis_instance_cfg_t *inst, const if_api_cache_entry_t *entry)
+{
+    const char *expected = (inst && inst->vrf_name[0] != '\0') ? inst->vrf_name : "public";
+    const char *actual = (entry && entry->vrf_name[0] != '\0') ? entry->vrf_name : "public";
+    return inst && entry && strcmp(expected, actual) == 0;
+}
+
 static void isis_if_cfg_free(gpointer data)
 {
     g_free(data);
@@ -144,6 +151,7 @@ static isis_instance_cfg_t *isis_instance_create(uint32_t tag)
     }
 
     inst->tag = tag;
+    g_strlcpy(inst->vrf_name, "public", sizeof(inst->vrf_name));
     inst->is_type = ISIS_IS_TYPE_LEVEL_1_2;
     inst->admin_up = 1u;
     inst->af_ipv4 = 1u;

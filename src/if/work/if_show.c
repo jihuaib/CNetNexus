@@ -93,6 +93,10 @@ static const char *module_name(uint32_t module_id)
             return "fib";
         case DEV_MODULE_ID_LDP:
             return "ldp";
+        case DEV_MODULE_ID_OSPF:
+            return "ospf";
+        case DEV_MODULE_ID_OSPFV3:
+            return "ospfv3";
         default:
             return "unknown";
     }

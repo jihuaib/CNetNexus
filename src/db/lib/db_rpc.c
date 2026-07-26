@@ -319,6 +319,23 @@ static int rpc_build_create_table_sql(const db_table_def_t *def, char *buf, size
     return offset;
 }
 
+static gboolean rpc_is_valid_identifier(const char *identifier)
+{
+    if (!identifier || identifier[0] == '\0' || (!g_ascii_isalpha(identifier[0]) && identifier[0] != '_'))
+    {
+        return FALSE;
+    }
+
+    for (const char *cursor = identifier + 1; *cursor != '\0'; ++cursor)
+    {
+        if (!g_ascii_isalnum(*cursor) && *cursor != '_')
+        {
+            return FALSE;
+        }
+    }
+    return TRUE;
+}
+
 /**
  * @brief 检查 PRAGMA table_info 结果中是否包含指定列名
  */
@@ -705,6 +722,32 @@ int db_rpc_create_table_from_def(dev_ipc_context_t *ctx, const db_table_def_t *d
     }
 
     return rpc_sync_table_columns(ctx, def);
+}
+
+int db_rpc_create_delete_cascade(dev_ipc_context_t *ctx, const char *trigger_name, const char *parent_table,
+                                 const char *parent_column, const char *child_table, const char *child_column)
+{
+    if (!ctx || !rpc_is_valid_identifier(trigger_name) || !rpc_is_valid_identifier(parent_table) ||
+        !rpc_is_valid_identifier(parent_column) || !rpc_is_valid_identifier(child_table) ||
+        !rpc_is_valid_identifier(child_column))
+    {
+        LOG_ERROR("Failed to create delete cascade: invalid SQL identifier");
+        return ERRCODE_FAIL;
+    }
+
+    char sql[1024];
+    int length = snprintf(sql, sizeof(sql),
+                          "CREATE TRIGGER IF NOT EXISTS %s AFTER DELETE ON %s FOR EACH ROW BEGIN "
+                          "DELETE FROM %s WHERE %s = OLD.%s; END;",
+                          trigger_name, parent_table, child_table, child_column, parent_column);
+    if (length < 0 || (size_t)length >= sizeof(sql))
+    {
+        LOG_ERROR("Failed to create delete cascade: SQL buffer is too small");
+        return ERRCODE_FAIL;
+    }
+
+    LOG_INFO("[SQL] %s", sql);
+    return send_exec_sql(ctx, sql) >= 0 ? ERRCODE_SUCCESS : ERRCODE_FAIL;
 }
 
 // ============================================================================

@@ -20,6 +20,7 @@
 #include "isis_main.h"
 #include "isis_worker.h"
 #include "log.h"
+#include "vrf.h"
 
 /* 表名重复但保持就近：避免引 isis_db_internal.h（仅 db/ 子目录可见） */
 #define ISIS_TABLE_INSTANCE_NAME "isis_instance"
@@ -70,13 +71,7 @@ static const char *if_ctx_idx_to_name(uint32_t if_idx)
     }
 }
 
-/**
- * 派发 apply 并按 BGP 风格处理响应。返回：
- *    1 = apply.rc == OK，调用方需继续写 DB，最后 send_resp("")
- *    0 = apply.rc == NOOP，响应已发空串，调用方直接 return ERRCODE_SUCCESS
- *   -1 = apply.rc == FAIL 或派发失败，响应已发 errmsg，调用方直接 return ERRCODE_FAIL
- */
-static int dispatch_and_respond(dev_ipc_message_t *msg, isis_apply_cmd_t *apply)
+static int dispatch_and_respond_ex(dev_ipc_message_t *msg, isis_apply_cmd_t *apply, gboolean respond_on_noop)
 {
     if (!apply || isis_worker_dispatch_apply(apply) != ERRCODE_SUCCESS)
     {
@@ -85,7 +80,10 @@ static int dispatch_and_respond(dev_ipc_message_t *msg, isis_apply_cmd_t *apply)
     }
     if (apply->rc == ISIS_APPLY_RC_NOOP)
     {
-        send_resp(msg, "");
+        if (respond_on_noop)
+        {
+            send_resp(msg, "");
+        }
         return 0;
     }
     if (apply->rc != ISIS_APPLY_RC_OK)
@@ -98,11 +96,24 @@ static int dispatch_and_respond(dev_ipc_message_t *msg, isis_apply_cmd_t *apply)
     return 1;
 }
 
+/**
+ * 派发 apply 并按 BGP 风格处理响应。返回：
+ *    1 = apply.rc == OK，调用方需继续写 DB，最后 send_resp("")
+ *    0 = apply.rc == NOOP，响应已发空串，调用方直接 return ERRCODE_SUCCESS
+ *   -1 = apply.rc == FAIL 或派发失败，响应已发 errmsg，调用方直接 return ERRCODE_FAIL
+ */
+static int dispatch_and_respond(dev_ipc_message_t *msg, isis_apply_cmd_t *apply)
+{
+    return dispatch_and_respond_ex(msg, apply, TRUE);
+}
+
 static int handle_instance_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
     const int is_no = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
     uint32_t tag = 0u;
     uint32_t ctx_tag = 0u;
+    char requested_vrf[IF_VRF_NAME_MAX] = VRF_PUBLIC_VRF_NAME;
+    gboolean vrf_specified = FALSE;
 
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)
@@ -125,6 +136,15 @@ static int handle_instance_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                 tag = (uint32_t)v;
             }
         }
+        else if (entry.cfg_id == 3)
+        {
+            const char *text = cli_tlv_entry_get_text(&entry);
+            if (text)
+            {
+                g_strlcpy(requested_vrf, text, sizeof(requested_vrf));
+                vrf_specified = TRUE;
+            }
+        }
         cli_tlv_entry_free(&entry);
     }
 
@@ -144,14 +164,14 @@ static int handle_instance_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         memset(&apply, 0, sizeof(apply));
         apply.op = ISIS_APPLY_OP_INSTANCE_DEL;
         apply.u.instance_del.tag = tag;
-        int dr = dispatch_and_respond(msg, &apply);
+        /*
+         * 删除实例时 NOOP 只代表内存中没有该实例，DB 中仍可能残留
+         * revive 配置。因此暂不回复，继续统一执行 DB 删除和全表空检查。
+         */
+        int dr = dispatch_and_respond_ex(msg, &apply, FALSE);
         if (dr < 0)
         {
             return ERRCODE_FAIL;
-        }
-        if (dr == 0)
-        {
-            return ERRCODE_SUCCESS;
         }
 
         if (isis_db_del_instance(tag) != ERRCODE_SUCCESS)
@@ -181,8 +201,29 @@ static int handle_instance_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 
     isis_apply_cmd_t apply;
     memset(&apply, 0, sizeof(apply));
+    uint32_t vrf_id = VRF_PUBLIC_VRF_ID;
+    char vrf_name[IF_VRF_NAME_MAX] = VRF_PUBLIC_VRF_NAME;
+    int exists = isis_db_get_instance_vrf(tag, &vrf_id, vrf_name, sizeof(vrf_name)) == ERRCODE_SUCCESS;
+    if (exists && vrf_specified && strcmp(vrf_name, requested_vrf) != 0)
+    {
+        char buf[180];
+        g_snprintf(buf, sizeof(buf), "ISIS Error: process %u is already bound to VRF %s\r\n", tag, vrf_name);
+        send_resp(msg, buf);
+        return ERRCODE_FAIL;
+    }
+    if (!exists)
+    {
+        g_strlcpy(vrf_name, requested_vrf, sizeof(vrf_name));
+        if (isis_db_resolve_vrf(vrf_name, &vrf_id) != ERRCODE_SUCCESS)
+        {
+            send_resp(msg, "ISIS Error: VRF does not exist\r\n");
+            return ERRCODE_FAIL;
+        }
+    }
     apply.op = ISIS_APPLY_OP_INSTANCE_SET;
     apply.u.instance_set.tag = tag;
+    apply.u.instance_set.vrf_id = vrf_id;
+    g_strlcpy(apply.u.instance_set.vrf_name, vrf_name, sizeof(apply.u.instance_set.vrf_name));
     apply.u.instance_set.admin_up = 1u;
     apply.u.instance_set.is_type = ISIS_IS_TYPE_LEVEL_1_2;
     apply.u.instance_set.net[0] = '\0';
@@ -196,7 +237,7 @@ static int handle_instance_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         return ERRCODE_SUCCESS;
     }
 
-    if (isis_db_set_instance(tag) != ERRCODE_SUCCESS)
+    if (isis_db_set_instance(tag, vrf_id, vrf_name) != ERRCODE_SUCCESS)
     {
         send_resp(msg, "ISIS Error: Failed to persist instance\r\n");
         return ERRCODE_FAIL;
@@ -207,6 +248,7 @@ static int handle_instance_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 
 static int handle_net_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
+    const gboolean is_no = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
     uint32_t tag = 0u;
     char net[ISIS_NET_STR_MAX] = {0};
 
@@ -234,7 +276,7 @@ static int handle_net_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         cli_tlv_entry_free(&entry);
     }
 
-    if (tag == 0u || net[0] == '\0')
+    if (tag == 0u || (!is_no && net[0] == '\0'))
     {
         send_resp(msg, "ISIS Error: Missing tag or net\r\n");
         return ERRCODE_FAIL;
@@ -244,7 +286,7 @@ static int handle_net_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     memset(&apply, 0, sizeof(apply));
     apply.op = ISIS_APPLY_OP_NET_SET;
     apply.u.net_set.tag = tag;
-    g_strlcpy(apply.u.net_set.net, net, sizeof(apply.u.net_set.net));
+    g_strlcpy(apply.u.net_set.net, is_no ? "" : net, sizeof(apply.u.net_set.net));
     int dr = dispatch_and_respond(msg, &apply);
     if (dr < 0)
     {
@@ -255,7 +297,7 @@ static int handle_net_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         return ERRCODE_SUCCESS;
     }
 
-    if (isis_db_set_net(tag, net) != ERRCODE_SUCCESS)
+    if (isis_db_set_net(tag, is_no ? "" : net) != ERRCODE_SUCCESS)
     {
         send_resp(msg, "ISIS Error: Failed to persist net\r\n");
         return ERRCODE_FAIL;

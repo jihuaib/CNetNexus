@@ -121,6 +121,12 @@ int access_telnet_server_enabled(void);
 /** @brief 设置全局 telnet server 使能标志（不触发监听起停，供 DB restore 用） */
 void access_set_telnet_server_enabled(int enabled);
 
+/**
+ * @brief 无终端内部会话应用持久化 ACCESS 配置命令
+ * @return 0 成功，-1 表示该命令不是可回放的持久化配置
+ */
+int access_apply_config_command(uint32_t line_cmd, uint32_t line_cmd_no, uint32_t arg1, uint32_t arg2);
+
 // ============================================================================
 // 终端交互 API
 // ============================================================================

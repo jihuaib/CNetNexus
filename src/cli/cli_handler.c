@@ -722,9 +722,10 @@ int process_command(const char *cmd_line, cli_session_t *session)
         }
 
         // Dispatch to module if module_id is set
+        int dispatch_ret = ERRCODE_SUCCESS;
         if (match_result && match_result->module_id != 0)
         {
-            cli_dispatch_to_module(match_result, session);
+            dispatch_ret = cli_dispatch_to_module(match_result, session);
         }
 
         // Free match result
@@ -732,7 +733,7 @@ int process_command(const char *cmd_line, cli_session_t *session)
         {
             cli_match_result_free(match_result);
         }
-        return 1; // Success
+        return dispatch_ret == ERRCODE_SUCCESS ? 1 : 0;
     }
     else
     {

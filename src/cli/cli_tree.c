@@ -71,6 +71,76 @@ static void cli_tree_node_merge_cfg_bindings(cli_tree_node_t *dst, const cli_tre
     }
 }
 
+void cli_tree_node_set_inverse_template(cli_tree_node_t *node, uint32_t module_id, uint32_t group_id,
+                                        const char *template_text)
+{
+    if (!node || !template_text || template_text[0] == '\0')
+    {
+        return;
+    }
+
+    for (uint32_t i = 0; i < node->num_inverse_bindings; i++)
+    {
+        cli_inverse_binding_t *binding = &node->inverse_bindings[i];
+        if (binding->module_id == module_id && binding->group_id == group_id)
+        {
+            g_free(binding->template_text);
+            binding->template_text = g_strdup(template_text);
+            return;
+        }
+    }
+
+    if (node->num_inverse_bindings >= node->inverse_bindings_capacity)
+    {
+        uint32_t new_capacity = node->inverse_bindings_capacity == 0 ? 2 : node->inverse_bindings_capacity * 2;
+        cli_inverse_binding_t *new_bindings =
+            g_realloc(node->inverse_bindings, new_capacity * sizeof(cli_inverse_binding_t));
+        if (!new_bindings)
+        {
+            return;
+        }
+        node->inverse_bindings = new_bindings;
+        node->inverse_bindings_capacity = new_capacity;
+    }
+
+    cli_inverse_binding_t *binding = &node->inverse_bindings[node->num_inverse_bindings++];
+    binding->module_id = module_id;
+    binding->group_id = group_id;
+    binding->template_text = g_strdup(template_text);
+}
+
+const char *cli_tree_node_get_inverse_template(const cli_tree_node_t *node, uint32_t module_id, uint32_t group_id)
+{
+    if (!node)
+    {
+        return NULL;
+    }
+
+    for (uint32_t i = 0; i < node->num_inverse_bindings; i++)
+    {
+        const cli_inverse_binding_t *binding = &node->inverse_bindings[i];
+        if (binding->module_id == module_id && binding->group_id == group_id)
+        {
+            return binding->template_text;
+        }
+    }
+    return NULL;
+}
+
+static void cli_tree_node_merge_inverse_bindings(cli_tree_node_t *dst, const cli_tree_node_t *src)
+{
+    if (!dst || !src)
+    {
+        return;
+    }
+
+    for (uint32_t i = 0; i < src->num_inverse_bindings; i++)
+    {
+        const cli_inverse_binding_t *binding = &src->inverse_bindings[i];
+        cli_tree_node_set_inverse_template(dst, binding->module_id, binding->group_id, binding->template_text);
+    }
+}
+
 static uint32_t cli_tree_node_find_cfg_binding(const cli_tree_node_t *node, uint32_t module_id, uint32_t group_id)
 {
     if (!node)
@@ -112,6 +182,9 @@ cli_tree_node_t *cli_tree_create_node(uint32_t cfg_id, const char *name, const c
     node->cfg_bindings = NULL;
     node->num_cfg_bindings = 0;
     node->cfg_bindings_capacity = 0;
+    node->inverse_bindings = NULL;
+    node->num_inverse_bindings = 0;
+    node->inverse_bindings_capacity = 0;
     cli_tree_node_add_cfg_binding(node, module_id, group_id, cfg_id);
 
     return node;
@@ -132,6 +205,7 @@ void cli_tree_add_child(cli_tree_node_t *parent, cli_tree_node_t *child)
     {
         /* 合并 cfg 绑定，确保同名共享节点可按 module/group 还原 cfg-id */
         cli_tree_node_merge_cfg_bindings(existing, child);
+        cli_tree_node_merge_inverse_bindings(existing, child);
 
         // Merge children from new node into existing node
         for (uint32_t i = 0; i < child->num_children; i++)
@@ -186,6 +260,11 @@ void cli_tree_add_child(cli_tree_node_t *parent, cli_tree_node_t *child)
         g_free(child->context_out);
         g_free(child->target_view_name);
         g_free(child->cfg_bindings);
+        for (uint32_t i = 0; i < child->num_inverse_bindings; i++)
+        {
+            g_free(child->inverse_bindings[i].template_text);
+        }
+        g_free(child->inverse_bindings);
         g_free(child->children);
         g_free(child);
         return;
@@ -357,6 +436,11 @@ void cli_tree_free(cli_tree_node_t *root)
     g_free(root->target_view_name);
     g_free(root->context_out);
     g_free(root->cfg_bindings);
+    for (uint32_t i = 0; i < root->num_inverse_bindings; i++)
+    {
+        g_free(root->inverse_bindings[i].template_text);
+    }
+    g_free(root->inverse_bindings);
     if (root->param_type)
     {
         cli_param_type_free(root->param_type);
@@ -407,6 +491,12 @@ cli_tree_node_t *cli_tree_clone(cli_tree_node_t *node)
         memcpy(clone->cfg_bindings, node->cfg_bindings, node->num_cfg_bindings * sizeof(cli_cfg_binding_t));
         clone->num_cfg_bindings = node->num_cfg_bindings;
         clone->cfg_bindings_capacity = node->num_cfg_bindings;
+    }
+
+    for (uint32_t i = 0; i < node->num_inverse_bindings; i++)
+    {
+        const cli_inverse_binding_t *binding = &node->inverse_bindings[i];
+        cli_tree_node_set_inverse_template(clone, binding->module_id, binding->group_id, binding->template_text);
     }
 
     // Clone all children recursively

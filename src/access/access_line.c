@@ -631,11 +631,13 @@ static void access_line_open_on_cli(access_line_t *line)
 
 /** 设置 vty 线区间 transport（per-line 接入门控）+ 回显。监听由全局 telnet server 开关控制，
  *  与此无关——这里只改"哪些线允许 telnet 接入"。 */
-static void access_set_transport(access_line_t *line, uint32_t first, uint32_t last, uint8_t bits, const char *what)
+static int access_set_transport(access_line_t *line, uint32_t first, uint32_t last, uint8_t bits, const char *what)
 {
+    uint8_t old_transport[ACCESS_VTY_COUNT];
+    memcpy(old_transport, g_vty_transport, sizeof(old_transport));
     access_vty_set_transport(first, last, bits);
 
-    /* 持久化区间内每条 vty 的 transport（best-effort，DB 未就绪则仅内存生效） */
+    /* 持久化区间内每条 vty；内部回放必须能感知失败，不能把仅内存生效误报为成功。 */
     uint32_t f = first, l = last;
     if (f > l)
     {
@@ -647,14 +649,64 @@ static void access_set_transport(access_line_t *line, uint32_t first, uint32_t l
     {
         l = ACCESS_VTY_COUNT - 1;
     }
+    int persist_failed = 0;
     for (uint32_t i = f; i <= l && i < ACCESS_VTY_COUNT; i++)
     {
-        access_db_save_vty_transport(i, bits);
+        if (access_db_save_vty_transport(i, bits) != 0)
+        {
+            persist_failed = 1;
+            break;
+        }
+    }
+
+    if (persist_failed)
+    {
+        /* 尽力撤销已经落库的前缀，并始终恢复本地门控状态。 */
+        for (uint32_t i = f; i <= l && i < ACCESS_VTY_COUNT; i++)
+        {
+            (void)access_db_save_vty_transport(i, old_transport[i]);
+        }
+        memcpy(g_vty_transport, old_transport, sizeof(g_vty_transport));
+        if (line)
+        {
+            access_line_send(line, "Error: failed to persist line transport configuration.\r\n");
+        }
+        return -1;
     }
 
     char buf[96];
     snprintf(buf, sizeof(buf), "transport input %s applied to vty %u-%u.\r\n", what, first, last);
-    access_line_send(line, buf);
+    if (line)
+    {
+        access_line_send(line, buf);
+    }
+    return 0;
+}
+
+/** 原子地更新 telnet server 的持久化状态和内存/监听状态。 */
+static int access_set_telnet_server(access_line_t *line, int enabled)
+{
+    int old_enabled = g_telnet_server_enabled;
+    enabled = enabled ? 1 : 0;
+
+    /* 先持久化，避免 DB 失败时短暂开放监听；失败后尽力恢复旧 DB 值。 */
+    if (access_db_save_telnet_server(enabled) != 0)
+    {
+        (void)access_db_save_telnet_server(old_enabled);
+        if (line)
+        {
+            access_line_send(line, "Error: failed to persist telnet server configuration.\r\n");
+        }
+        return -1;
+    }
+
+    g_telnet_server_enabled = enabled;
+    access_telnet_apply_gating();
+    if (line)
+    {
+        access_line_send(line, enabled ? "Telnet server enabled.\r\n" : "Telnet server disabled.\r\n");
+    }
+    return 0;
 }
 
 /** transport 位掩码 → 可读字符串 */
@@ -735,33 +787,32 @@ static void access_exec_line_cmd(access_line_t *line, uint32_t line_cmd, uint32_
             break;
 
         case ACCESS_LINE_CMD_LINE_ENTER:
+        case ACCESS_LINE_CMD_CONSOLE_ENTER:
             /* 进入 line 视图：视图切换由 CLI 完成，ACCESS 无需动作 */
             break;
 
         case ACCESS_LINE_CMD_TRANSPORT_TELNET:
-            access_set_transport(line, arg1, arg2, ACCESS_TRANSPORT_TELNET, "telnet");
+            (void)access_set_transport(line, arg1, arg2, ACCESS_TRANSPORT_TELNET, "telnet");
             break;
 
         case ACCESS_LINE_CMD_TRANSPORT_SSH:
-            access_set_transport(line, arg1, arg2, ACCESS_TRANSPORT_SSH, "ssh");
-            access_line_send(line, "Note: ssh server not yet implemented; configuration recorded only.\r\n");
+            if (access_set_transport(line, arg1, arg2, ACCESS_TRANSPORT_SSH, "ssh") == 0)
+            {
+                access_line_send(line, "Note: ssh server not yet implemented; configuration recorded only.\r\n");
+            }
             break;
 
         case ACCESS_LINE_CMD_TRANSPORT_ALL:
-            access_set_transport(line, arg1, arg2, ACCESS_TRANSPORT_TELNET | ACCESS_TRANSPORT_SSH, "all");
+            (void)access_set_transport(line, arg1, arg2, ACCESS_TRANSPORT_TELNET | ACCESS_TRANSPORT_SSH, "all");
             break;
 
         case ACCESS_LINE_CMD_TRANSPORT_NONE:
-            access_set_transport(line, arg1, arg2, 0, "none");
+            (void)access_set_transport(line, arg1, arg2, 0, "none");
             break;
 
         case ACCESS_LINE_CMD_TELNET_SERVER:
             /* 全局监听开关：enable 起 23 监听，no/disable 关。per-line 仍各自控制能否接入。 */
-            g_telnet_server_enabled = line_cmd_no ? 0 : 1;
-            access_telnet_apply_gating();
-            access_db_save_telnet_server(g_telnet_server_enabled);
-            access_line_send(line,
-                             g_telnet_server_enabled ? "Telnet server enabled.\r\n" : "Telnet server disabled.\r\n");
+            (void)access_set_telnet_server(line, line_cmd_no ? 0 : 1);
             break;
 
         case ACCESS_LINE_CMD_SHOW_LINE:
@@ -770,6 +821,29 @@ static void access_exec_line_cmd(access_line_t *line, uint32_t line_cmd, uint32_
 
         default:
             break;
+    }
+}
+
+int access_apply_config_command(uint32_t line_cmd, uint32_t line_cmd_no, uint32_t arg1, uint32_t arg2)
+{
+    switch (line_cmd)
+    {
+        case ACCESS_LINE_CMD_LINE_ENTER:
+        case ACCESS_LINE_CMD_CONSOLE_ENTER:
+            /* 仅负责 CLI 视图切换，无持久化动作。 */
+            return 0;
+        case ACCESS_LINE_CMD_TRANSPORT_TELNET:
+            return access_set_transport(NULL, arg1, arg2, ACCESS_TRANSPORT_TELNET, "telnet");
+        case ACCESS_LINE_CMD_TRANSPORT_SSH:
+            return access_set_transport(NULL, arg1, arg2, ACCESS_TRANSPORT_SSH, "ssh");
+        case ACCESS_LINE_CMD_TRANSPORT_ALL:
+            return access_set_transport(NULL, arg1, arg2, ACCESS_TRANSPORT_TELNET | ACCESS_TRANSPORT_SSH, "all");
+        case ACCESS_LINE_CMD_TRANSPORT_NONE:
+            return access_set_transport(NULL, arg1, arg2, 0, "none");
+        case ACCESS_LINE_CMD_TELNET_SERVER:
+            return access_set_telnet_server(NULL, line_cmd_no ? 0 : 1);
+        default:
+            return -1;
     }
 }
 

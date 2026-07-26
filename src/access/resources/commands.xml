@@ -126,6 +126,7 @@
                 <command>
                     <expression>1 2 3</expression>
                     <views>line</views>
+                    <inverse>no transport input</inverse>
                 </command>
             </commands>
         </group>
@@ -150,6 +151,7 @@
                 <command>
                     <expression>1 2 3</expression>
                     <views>line</views>
+                    <inverse>no transport input</inverse>
                 </command>
             </commands>
         </group>
@@ -174,6 +176,7 @@
                 <command>
                     <expression>1 2 3</expression>
                     <views>line</views>
+                    <inverse>no transport input</inverse>
                 </command>
             </commands>
         </group>
@@ -242,7 +245,7 @@
             </commands>
         </group>
 
-        <!-- line console 0：进入 console 线视图（group-id=10，仅视图切换，无配置动作） -->
+        <!-- line console 0：进入 console 线视图（ACCESS_LINE_CMD_CONSOLE_ENTER=10，仅视图切换） -->
         <group group-id="10">
             <elements>
                 <element id="1" type="keyword">

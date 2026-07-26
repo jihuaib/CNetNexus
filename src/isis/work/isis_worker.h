@@ -90,6 +90,7 @@ static inline int isis_if_cfg_any_enabled(const isis_if_cfg_t *cfg)
 
 typedef struct isis_route_state
 {
+    uint32_t vrf_id;
     uint16_t afi;
     uint8_t prefix_len;
     uint8_t _pad0;
@@ -158,6 +159,8 @@ typedef struct isis_lsdb_entry
 typedef struct isis_instance_cfg
 {
     uint32_t tag;
+    uint32_t vrf_id;
+    char vrf_name[IF_VRF_NAME_MAX];
     char net[ISIS_NET_STR_MAX];
     uint8_t is_type;
     uint8_t admin_up;
@@ -226,6 +229,8 @@ typedef struct isis_apply_cmd
         struct
         {
             uint32_t tag;
+            uint32_t vrf_id;
+            char vrf_name[IF_VRF_NAME_MAX];
             char net[ISIS_NET_STR_MAX];
             uint8_t is_type;
             uint8_t admin_up;
@@ -284,6 +289,8 @@ typedef struct isis_work_local
 } isis_work_local_t;
 
 extern isis_work_local_t *g_isis_work_local;
+
+gboolean isis_if_entry_matches_instance(const isis_instance_cfg_t *inst, const if_api_cache_entry_t *entry);
 
 int isis_worker_prepare(void);
 int isis_worker_launch(void);

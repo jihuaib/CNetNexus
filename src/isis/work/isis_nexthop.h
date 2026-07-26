@@ -31,7 +31,8 @@ int isis_nexthop_lookup(isis_nexthop_table_t *table, uint32_t id, route_nhobj_ke
 int isis_nexthop_get_value(isis_nexthop_table_t *table, uint32_t id, isis_nexthop_value_t *value_out);
 int isis_nexthop_key_equal(const route_nhobj_key_t *a, const route_nhobj_key_t *b);
 
-void isis_nexthop_make_route_key(uint16_t afi, uint32_t key_ifindex, const net_addr_t *nexthop, route_nhobj_key_t *key);
+void isis_nexthop_make_route_key(uint32_t vrf_id, uint16_t afi, uint32_t key_ifindex, const net_addr_t *nexthop,
+                                 route_nhobj_key_t *key);
 
 /**
  * @brief ROUTE 进程重启后，把本表所有 nexthop 对象按原 id 反刷给 ROUTE（重建对象）

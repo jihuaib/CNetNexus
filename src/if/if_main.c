@@ -85,6 +85,26 @@ static void if_on_route_ready_cb(uint32_t module_id, uint8_t event, const char *
     }
 }
 
+static void if_on_snmp_ready_cb(uint32_t module_id, uint8_t event, const char *host, uint16_t port, uint32_t epoch,
+                                void *user)
+{
+    (void)module_id;
+    (void)host;
+    (void)port;
+    (void)epoch;
+    (void)user;
+    if (event != DEV_MODULE_EVENT_READY || !g_if_local || !g_if_local->dev_ipc_ctx)
+    {
+        return;
+    }
+    dev_ipc_message_t *m =
+        dev_ipc_message_create(IF_MSG_TYPE_INTERNAL_SNMP_READY, DEV_MODULE_ID_IF, DEV_MODULE_ID_IF, 0, NULL, 0, NULL);
+    if (m)
+    {
+        g_async_queue_push(g_if_local->dev_ipc_ctx->msg_queue, m);
+    }
+}
+
 static void if_on_ipc_disconnect(dev_ipc_context_t *ctx, uint32_t remote_module_id, void *user)
 {
     (void)ctx;
@@ -270,6 +290,12 @@ void if_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             dev_ipc_message_free(msg);
             return;
 
+        case IF_MSG_TYPE_INTERNAL_SNMP_READY:
+            (void)dev_ipc_wait_connected(ctx, DEV_MODULE_ID_SNMP, DEV_IPC_WAIT_PEER_MS);
+            (void)if_worker_post_snmp_refresh();
+            dev_ipc_message_free(msg);
+            return;
+
         case VRF_MSG_TYPE_EVENT:
         {
             /* VRF 事件到达后，唤醒等待该 VRF 出现的挂起项。
@@ -417,7 +443,7 @@ int if_module_init(void)
      * 不能用超时后继续 —— DEV 视角 READY 而 CFG 还连不上 IF 会让命令派发踩到 race。 */
     (void)dev_ipc_wait_all_subscribed_connected(ctx, 0);
 
-    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_SNMP, 0, NULL, NULL) != ERRCODE_SUCCESS)
+    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_SNMP, 0, if_on_snmp_ready_cb, NULL) != ERRCODE_SUCCESS)
     {
         LOG_WARN("IF: optional subscribe(SNMP) failed");
     }

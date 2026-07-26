@@ -248,9 +248,15 @@ static void append_instance_global_block(GString *out, db_row_t *row)
     int64_t af4 = db_row_get_int(row, "af_ipv4", 1);
     int64_t af6 = db_row_get_int(row, "af_ipv6", 1);
     int64_t cost_style = db_row_get_int(row, "cost_style", ISIS_DEFAULT_COST_STYLE);
+    const char *vrf_name = db_row_get_text(row, "vrf_name", "public");
 
     g_string_append(out, "!\r\n");
-    g_string_append_printf(out, "isis %u\r\n", tag);
+    g_string_append_printf(out, "isis %u", tag);
+    if (vrf_name && vrf_name[0] != '\0' && strcmp(vrf_name, "public") != 0)
+    {
+        g_string_append_printf(out, " vrf %s", vrf_name);
+    }
+    g_string_append(out, "\r\n");
     if (net && net[0] != '\0')
     {
         g_string_append_printf(out, " net %s\r\n", net);

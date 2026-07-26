@@ -24,6 +24,7 @@ static inline dev_ipc_context_t *lldp_local_ipc_ctx(void)
 #define LLDP_MSG_TYPE_INTERNAL_IF_READY DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_LLDP, 0xFFFE)
 #define LLDP_MSG_TYPE_INTERNAL_IF_DOWN DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_LLDP, 0xFFFD)
 #define LLDP_MSG_TYPE_INTERNAL_DB_READY DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_LLDP, 0xFFFC)
+#define LLDP_MSG_TYPE_INTERNAL_SNMP_READY DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_LLDP, 0xFFFB)
 
 void lldp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
 int lldp_module_init(void);

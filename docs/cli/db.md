@@ -34,7 +34,10 @@
 - **用法**：`save configuration [name]`
 - **输出文件**：
     - `data/configs/<name>.db`：SQLite 运行数据库快照。
-    - `data/configs/<name>.cfg`：来自 `show current-configuration` 的 BDR 文本。
+    - `data/configs/<name>.cfg`：来自 `show current-configuration` 的层级 BDR 文本。
+    - `data/configs/<name>.meta`：版本、`format=bdr-indent-v1`、完整采集标记和
+      CFG SHA-256。
+- **完整性**：任一已连接模块 BDR 超时、断开或分片异常时保存失败，不再发布部分快照。
 - **默认名称**：当前 startup 名称；未选择 startup 配置时为 `startup`。
 - **保存条件**：`.db` 和 `.cfg` 都写入成功才算保存成功。
 
@@ -44,6 +47,8 @@
 - **用法**：
     - `startup configuration <name> db`：将 `data/configs/<name>.db` 恢复为 `running.db`。
     - `startup configuration <name> cfg`：以空 `running.db` 启动，DEV 就绪后回放 `data/configs/<name>.cfg`。
+      回放前会完成文件完整性、层级和整棵命令树预检；配置行缩进变浅时由回放器
+      执行真实 `exit` 命令，不再直接修改内部 view 指针。
 - **指针文件**：`data/startup.cfg` 保存 `<mode> <name>`。
 
 ### 2.3 `show startup configuration`

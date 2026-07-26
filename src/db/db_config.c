@@ -20,6 +20,8 @@
 #include "log.h"
 #include "path_utils.h"
 
+#define DB_CONFIG_CFG_MAX_BYTES (16U * 1024U * 1024U)
+
 // ============================================================================
 // 路径辅助
 // ============================================================================
@@ -585,7 +587,7 @@ static int db_config_write_text_tmp(const char *path, const char *text, char **e
     return ERRCODE_SUCCESS;
 }
 
-static int db_config_write_meta_tmp(const char *path, char **err)
+static int db_config_write_meta_tmp(const char *path, const char *cfg_text, char **err)
 {
     char version[64] = "unknown";
     if (read_current_version(version, sizeof(version)) != 0)
@@ -595,6 +597,18 @@ static int db_config_write_meta_tmp(const char *path, char **err)
 
     GString *meta = g_string_new("");
     g_string_append_printf(meta, "version=%s\n", version);
+    g_string_append(meta, "format=bdr-indent-v1\n");
+    g_string_append(meta, "capture_complete=1\n");
+
+    gchar *checksum = g_compute_checksum_for_string(G_CHECKSUM_SHA256, cfg_text ? cfg_text : "", -1);
+    if (!checksum)
+    {
+        g_string_free(meta, TRUE);
+        db_config_set_err(err, "Failed to checksum cfg text");
+        return ERRCODE_FAIL;
+    }
+    g_string_append_printf(meta, "cfg_sha256=%s\n", checksum);
+    g_free(checksum);
 
     int ret = db_config_write_text_tmp(path, meta->str, err);
     g_string_free(meta, TRUE);
@@ -617,7 +631,7 @@ static void db_config_restore_backup(const char *dst, const char *bak, gboolean 
     }
 }
 
-static void db_config_restore_backups(const char **dst_paths, const char bak_paths[][800], const gboolean *had_backup,
+static void db_config_restore_backups(const char **dst_paths, char bak_paths[][800], const gboolean *had_backup,
                                       size_t count)
 {
     for (size_t i = 0; i < count; i++)
@@ -805,7 +819,7 @@ int db_config_save(const char *name, const char *cfg_text, char *saved_name, siz
         return ERRCODE_FAIL;
     }
 
-    if (db_config_write_meta_tmp(meta_tmp_path, err) != ERRCODE_SUCCESS)
+    if (db_config_write_meta_tmp(meta_tmp_path, cfg_text, err) != ERRCODE_SUCCESS)
     {
         db_config_remove_running(tmp_path);
         unlink(cfg_tmp_path);
@@ -830,6 +844,98 @@ int db_config_save(const char *name, const char *cfg_text, char *saved_name, siz
 // ============================================================================
 // startup configuration
 // ============================================================================
+
+/**
+ * @brief 校验新格式 cfg 快照的完整性元数据
+ *
+ * 旧快照可能没有 cfg_sha256/capture_complete，继续兼容；一旦元数据声明了这些
+ * 字段，就必须完整且匹配，避免选择一个已截断或捕获失败的 cfg 作为启动源。
+ */
+static int db_config_validate_cfg_integrity(const char *name, char **err)
+{
+    char cfg_path[700];
+    db_config_cfg_path(name, cfg_path, sizeof(cfg_path));
+
+    gchar *cfg_text = NULL;
+    gsize cfg_len = 0;
+    if (!g_file_get_contents(cfg_path, &cfg_text, &cfg_len, NULL))
+    {
+        db_config_set_err(err, "Configuration cfg file is not readable");
+        return ERRCODE_FAIL;
+    }
+    if (cfg_len == 0 || cfg_len > DB_CONFIG_CFG_MAX_BYTES)
+    {
+        g_free(cfg_text);
+        db_config_set_err(err,
+                          cfg_len == 0 ? "Configuration cfg file is empty" : "Configuration cfg file is too large");
+        return ERRCODE_FAIL;
+    }
+
+    char meta_path[700];
+    db_config_meta_path(name, meta_path, sizeof(meta_path));
+    gchar *meta_text = NULL;
+    if (!g_file_get_contents(meta_path, &meta_text, NULL, NULL))
+    {
+        /* pre-metadata legacy snapshot */
+        g_free(cfg_text);
+        return ERRCODE_SUCCESS;
+    }
+
+    char expected_sha[65] = "";
+    char format[64] = "";
+    gboolean capture_declared = FALSE;
+    gboolean capture_complete = FALSE;
+    gchar **lines = g_strsplit(meta_text, "\n", -1);
+    for (guint i = 0; lines && lines[i]; i++)
+    {
+        char *line = g_strstrip(lines[i]);
+        if (g_str_has_prefix(line, "cfg_sha256="))
+        {
+            g_strlcpy(expected_sha, g_strstrip(line + strlen("cfg_sha256=")), sizeof(expected_sha));
+        }
+        else if (g_str_has_prefix(line, "capture_complete="))
+        {
+            capture_declared = TRUE;
+            capture_complete = strcmp(g_strstrip(line + strlen("capture_complete=")), "1") == 0;
+        }
+        else if (g_str_has_prefix(line, "format="))
+        {
+            g_strlcpy(format, g_strstrip(line + strlen("format=")), sizeof(format));
+        }
+    }
+    g_strfreev(lines);
+    g_free(meta_text);
+
+    if (capture_declared && !capture_complete)
+    {
+        g_free(cfg_text);
+        db_config_set_err(err, "Configuration capture is marked incomplete");
+        return ERRCODE_FAIL;
+    }
+    if (format[0] != '\0' && strcmp(format, "bdr-indent-v1") != 0)
+    {
+        g_free(cfg_text);
+        db_config_set_err(err, "Unsupported configuration cfg format");
+        return ERRCODE_FAIL;
+    }
+
+    if (expected_sha[0] != '\0')
+    {
+        gchar *actual_sha = g_compute_checksum_for_data(G_CHECKSUM_SHA256, (const guchar *)cfg_text, cfg_len);
+        gboolean matches =
+            actual_sha && strlen(expected_sha) == 64 && g_ascii_strcasecmp(actual_sha, expected_sha) == 0;
+        g_free(actual_sha);
+        if (!matches)
+        {
+            g_free(cfg_text);
+            db_config_set_err(err, "Configuration cfg checksum mismatch");
+            return ERRCODE_FAIL;
+        }
+    }
+
+    g_free(cfg_text);
+    return ERRCODE_SUCCESS;
+}
 
 int db_config_set_startup(const char *name, db_config_startup_mode_t mode, char **err)
 {
@@ -862,6 +968,11 @@ int db_config_set_startup(const char *name, db_config_startup_mode_t mode, char 
     if (access(config_path, R_OK) != 0)
     {
         db_config_set_err(err, "Configuration not found; use 'save configuration <name>' first");
+        return ERRCODE_FAIL;
+    }
+
+    if (mode == DB_CONFIG_STARTUP_MODE_CFG && db_config_validate_cfg_integrity(name, err) != ERRCODE_SUCCESS)
+    {
         return ERRCODE_FAIL;
     }
 

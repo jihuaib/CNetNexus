@@ -1,0 +1,427 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration module-id="17">
+    <views>
+        <view view-name="ospfv3">
+            <template>&lt;NetNexus(config-ospfv3-{ctx:13})&gt;</template>
+        </view>
+    </views>
+
+    <show-this>
+        <view name="ospfv3"/>
+        <view name="if"/>
+        <view name="if-null0"/>
+        <view name="if-loop"/>
+    </show-this>
+
+    <command_groups>
+        <!-- Group 1: ospfv3 <process-id> / no ospfv3 <process-id> -->
+        <group group-id="1">
+            <elements>
+                <element id="1" cfg-id="1" type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>ospfv3</name>
+                    <description>OSPFv3 protocol</description>
+                </element>
+                <element id="3" cfg-id="2" type="parameter">
+                    <name>&lt;process-id&gt;</name>
+                    <type>uint(1-4294967295)</type>
+                    <description>OSPFV3 process ID</description>
+                </element>
+                <element id="4" type="keyword">
+                    <name>vrf</name>
+                    <description>Bind the process to a VRF</description>
+                </element>
+                <element id="5" cfg-id="3" type="parameter">
+                    <name>&lt;vrf-name&gt;</name>
+                    <type>dynamic(4:1,string(1-63))</type>
+                    <description>VRF name</description>
+                </element>
+            </elements>
+            <commands>
+                <command auto-start="true">
+                    <expression>2 3</expression>
+                    <views>config</views>
+                    <to-view>ospfv3</to-view>
+                    <context-out>
+                        <entry ctx-id="13" from-param="2"/>
+                    </context-out>
+                </command>
+                <command auto-start="true">
+                    <expression>2 3 4 5</expression>
+                    <views>config</views>
+                    <to-view>ospfv3</to-view>
+                    <context-out>
+                        <entry ctx-id="13" from-param="2"/>
+                    </context-out>
+                </command>
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>config</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- Group 2: [no] router-id <ipv4> -->
+        <group group-id="2">
+            <elements>
+                <element id="1" cfg-id="1" type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>router-id</name>
+                    <description>Configure the OSPFV3 router ID</description>
+                </element>
+                <element id="3" cfg-id="2" type="parameter">
+                    <name>&lt;ipv4-address&gt;</name>
+                    <type>ipv4</type>
+                    <description>OSPFV3 router ID</description>
+                </element>
+            </elements>
+            <commands>
+                <command>
+                    <expression>2 3</expression>
+                    <views>ospfv3</views>
+                </command>
+                <command>
+                    <expression>1 2</expression>
+                    <views>ospfv3</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- Group 9: [no] area <area-id> -->
+        <group group-id="9">
+            <elements>
+                <element id="1" cfg-id="1" type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>area</name>
+                    <description>Configure an OSPFV3 area</description>
+                </element>
+                <element id="3" cfg-id="2" type="parameter">
+                    <name>&lt;area-id&gt;</name>
+                    <type>uint(0-4294967295)</type>
+                    <description>OSPFV3 area ID</description>
+                </element>
+            </elements>
+            <commands>
+                <command>
+                    <expression>2 3</expression>
+                    <views>ospfv3</views>
+                </command>
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>ospfv3</views>
+                </command>
+            </commands>
+        </group>
+
+        <!--
+          Group 3 interface cfg-id contract:
+          1=no, 2=enable, 3=cost, 4=hello, 5=dead, 6=priority,
+          7=network-type, 8=passive, 9=pid, 10=area keyword,
+          11=area value, 12=numeric value, 13=broadcast, 14=p2p.
+        -->
+        <group group-id="3">
+            <elements>
+                <element id="1" cfg-id="1" type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>ospfv3</name>
+                    <description>OSPFv3 interface configuration</description>
+                </element>
+                <element id="3" cfg-id="2" type="keyword">
+                    <name>enable</name>
+                    <description>Enable OSPFV3 on this interface</description>
+                </element>
+                <element id="4" cfg-id="3" type="keyword">
+                    <name>cost</name>
+                    <description>Configure interface cost</description>
+                </element>
+                <element id="5" cfg-id="4" type="keyword">
+                    <name>hello-interval</name>
+                    <description>Configure hello interval</description>
+                </element>
+                <element id="6" cfg-id="5" type="keyword">
+                    <name>dead-interval</name>
+                    <description>Configure dead interval</description>
+                </element>
+                <element id="7" cfg-id="6" type="keyword">
+                    <name>priority</name>
+                    <description>Configure router priority</description>
+                </element>
+                <element id="8" cfg-id="7" type="keyword">
+                    <name>network-type</name>
+                    <description>Configure OSPFV3 network type</description>
+                </element>
+                <element id="9" cfg-id="8" type="keyword">
+                    <name>passive</name>
+                    <description>Suppress OSPFV3 packets on this interface</description>
+                </element>
+                <element id="10" cfg-id="9" type="parameter">
+                    <name>&lt;process-id&gt;</name>
+                    <type>uint(1-4294967295)</type>
+                    <description>OSPFV3 process ID</description>
+                </element>
+                <element id="11" cfg-id="10" type="keyword">
+                    <name>area</name>
+                    <description>Associate the interface with an area</description>
+                </element>
+                <element id="12" cfg-id="11" type="parameter">
+                    <name>&lt;area-id&gt;</name>
+                    <type>uint(0-4294967295)</type>
+                    <description>OSPFV3 area ID</description>
+                </element>
+                <element id="13" cfg-id="12" type="parameter">
+                    <name>&lt;cost&gt;</name>
+                    <type>uint(1-65535)</type>
+                    <description>OSPFV3 interface cost</description>
+                </element>
+                <element id="14" cfg-id="12" type="parameter">
+                    <name>&lt;hello-seconds&gt;</name>
+                    <type>uint(1-65535)</type>
+                    <description>Hello interval in seconds</description>
+                </element>
+                <element id="15" cfg-id="12" type="parameter">
+                    <name>&lt;dead-seconds&gt;</name>
+                    <type>uint(1-65535)</type>
+                    <description>Dead interval in seconds</description>
+                </element>
+                <element id="16" cfg-id="12" type="parameter">
+                    <name>&lt;priority&gt;</name>
+                    <type>uint(0-255)</type>
+                    <description>Router priority</description>
+                </element>
+                <element id="17" cfg-id="13" type="keyword">
+                    <name>broadcast</name>
+                    <description>Broadcast network</description>
+                </element>
+                <element id="18" cfg-id="14" type="keyword">
+                    <name>point-to-point</name>
+                    <description>Point-to-point network</description>
+                </element>
+            </elements>
+            <commands>
+                <command>
+                    <expression>2 3 10 11 12</expression>
+                    <views>if,if-loop</views>
+                </command>
+                <command>
+                    <expression>1 2 3 10</expression>
+                    <views>if,if-loop</views>
+                </command>
+                <command>
+                    <expression>1 2 3 10 11 12</expression>
+                    <views>if,if-loop</views>
+                </command>
+
+                <command>
+                    <expression>2 4 10 13</expression>
+                    <views>if,if-loop</views>
+                </command>
+                <command>
+                    <expression>1 2 4 10</expression>
+                    <views>if,if-loop</views>
+                </command>
+
+                <command>
+                    <expression>2 5 10 14</expression>
+                    <views>if,if-loop</views>
+                </command>
+                <command>
+                    <expression>1 2 5 10</expression>
+                    <views>if,if-loop</views>
+                </command>
+
+                <command>
+                    <expression>2 6 10 15</expression>
+                    <views>if,if-loop</views>
+                </command>
+                <command>
+                    <expression>1 2 6 10</expression>
+                    <views>if,if-loop</views>
+                </command>
+
+                <command>
+                    <expression>2 7 10 16</expression>
+                    <views>if,if-loop</views>
+                </command>
+                <command>
+                    <expression>1 2 7 10</expression>
+                    <views>if,if-loop</views>
+                </command>
+
+                <command>
+                    <expression>2 8 10 17</expression>
+                    <views>if,if-loop</views>
+                </command>
+                <command>
+                    <expression>2 8 10 18</expression>
+                    <views>if,if-loop</views>
+                </command>
+                <command>
+                    <expression>1 2 8 10</expression>
+                    <views>if,if-loop</views>
+                </command>
+
+                <command>
+                    <expression>2 9 10</expression>
+                    <views>if,if-loop</views>
+                </command>
+                <command>
+                    <expression>1 2 9 10</expression>
+                    <views>if,if-loop</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- Group 4: show ospfv3 summary [process-id] -->
+        <group group-id="4">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>show</name>
+                    <description>Display system information</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>ospfv3</name>
+                    <description>OSPFv3 information</description>
+                </element>
+                <element id="3" type="keyword">
+                    <name>summary</name>
+                    <description>OSPFV3 process summary</description>
+                </element>
+                <element id="4" cfg-id="1" type="parameter">
+                    <name>&lt;process-id&gt;</name>
+                    <type>uint(1-4294967295)</type>
+                    <description>OSPFV3 process filter</description>
+                </element>
+            </elements>
+            <commands>
+                <command><expression>1 2 3</expression><views>global</views></command>
+                <command><expression>1 2 3 4</expression><views>global</views></command>
+            </commands>
+        </group>
+
+        <!-- Group 5: show ospfv3 interface [process-id] -->
+        <group group-id="5">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>show</name>
+                    <description>Display system information</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>ospfv3</name>
+                    <description>OSPFv3 information</description>
+                </element>
+                <element id="3" type="keyword">
+                    <name>interface</name>
+                    <description>OSPFV3 interface status</description>
+                </element>
+                <element id="4" cfg-id="1" type="parameter">
+                    <name>&lt;process-id&gt;</name>
+                    <type>uint(1-4294967295)</type>
+                    <description>OSPFV3 process filter</description>
+                </element>
+            </elements>
+            <commands>
+                <command><expression>1 2 3</expression><views>global</views></command>
+                <command><expression>1 2 3 4</expression><views>global</views></command>
+            </commands>
+        </group>
+
+        <!-- Group 6: show ospfv3 neighbor [process-id] [verbose] -->
+        <group group-id="6">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>show</name>
+                    <description>Display system information</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>ospfv3</name>
+                    <description>OSPFv3 information</description>
+                </element>
+                <element id="3" type="keyword">
+                    <name>neighbor</name>
+                    <description>OSPFV3 neighbor status</description>
+                </element>
+                <element id="4" cfg-id="1" type="parameter">
+                    <name>&lt;process-id&gt;</name>
+                    <type>uint(1-4294967295)</type>
+                    <description>OSPFV3 process filter</description>
+                </element>
+                <element id="5" cfg-id="2" type="keyword">
+                    <name>verbose</name>
+                    <description>Display neighbor synchronization details</description>
+                </element>
+            </elements>
+            <commands>
+                <command><expression>1 2 3</expression><views>global</views></command>
+                <command><expression>1 2 3 4</expression><views>global</views></command>
+                <command><expression>1 2 3 5</expression><views>global</views></command>
+                <command><expression>1 2 3 4 5</expression><views>global</views></command>
+            </commands>
+        </group>
+
+        <!-- Group 7: show ospfv3 lsdb [process-id] -->
+        <group group-id="7">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>show</name>
+                    <description>Display system information</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>ospfv3</name>
+                    <description>OSPFv3 information</description>
+                </element>
+                <element id="3" type="keyword">
+                    <name>lsdb</name>
+                    <description>OSPFV3 link-state database</description>
+                </element>
+                <element id="4" cfg-id="1" type="parameter">
+                    <name>&lt;process-id&gt;</name>
+                    <type>uint(1-4294967295)</type>
+                    <description>OSPFV3 process filter</description>
+                </element>
+            </elements>
+            <commands>
+                <command><expression>1 2 3</expression><views>global</views></command>
+                <command><expression>1 2 3 4</expression><views>global</views></command>
+            </commands>
+        </group>
+
+        <!-- Group 8: show ospfv3 route [process-id] -->
+        <group group-id="8">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>show</name>
+                    <description>Display system information</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>ospfv3</name>
+                    <description>OSPFv3 information</description>
+                </element>
+                <element id="3" type="keyword">
+                    <name>route</name>
+                    <description>OSPFV3 learned routes</description>
+                </element>
+                <element id="4" cfg-id="1" type="parameter">
+                    <name>&lt;process-id&gt;</name>
+                    <type>uint(1-4294967295)</type>
+                    <description>OSPFV3 process filter</description>
+                </element>
+            </elements>
+            <commands>
+                <command><expression>1 2 3</expression><views>global</views></command>
+                <command><expression>1 2 3 4</expression><views>global</views></command>
+            </commands>
+        </group>
+    </command_groups>
+</configuration>

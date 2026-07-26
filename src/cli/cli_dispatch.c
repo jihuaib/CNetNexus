@@ -517,6 +517,52 @@ static void cli_apply_view_switch(cli_session_t *session, cli_match_result_t *re
     LOG_DEBUG("Framework auto-switched to view %s, context %u bytes", tgt_view->view_name, new_ctx_len);
 }
 
+static int cli_dispatch_access_internal(cli_match_result_t *result, cli_session_t *session, uint32_t arg1,
+                                        uint32_t arg2)
+{
+    access_config_apply_t *req_data = g_new0(access_config_apply_t, 1);
+    req_data->line_cmd = result->group_id;
+    req_data->line_cmd_no = result->has_no_prefix ? 1 : 0;
+    req_data->line_arg1 = arg1;
+    req_data->line_arg2 = arg2;
+
+    dev_ipc_message_t *req = dev_ipc_message_create(ACCESS_MSG_CONFIG_APPLY, DEV_MODULE_ID_CLI, DEV_MODULE_ID_ACCESS, 0,
+                                                    req_data, sizeof(*req_data), g_free);
+    if (!req)
+    {
+        g_free(req_data);
+        cli_send_message(session, "Error: failed to create ACCESS configuration replay request.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    dev_ipc_message_t *resp = dev_ipc_query(g_cli_local->dev_ipc_ctx, DEV_MODULE_ID_ACCESS, req, DEV_IPC_WAIT_PEER_MS);
+    dev_ipc_message_free(req);
+    if (!resp)
+    {
+        cli_send_message(session, "Error: ACCESS module unavailable during configuration replay.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    int ret = ERRCODE_SUCCESS;
+    if (resp->msg_type != ACCESS_MSG_CONFIG_APPLY_RESP)
+    {
+        cli_send_message(session, "Error: invalid ACCESS configuration replay response.\r\n");
+        ret = ERRCODE_FAIL;
+    }
+    else if (resp->payload && ((const char *)resp->payload)[0] != '\0')
+    {
+        cli_send_message(session, (const char *)resp->payload);
+        ret = ERRCODE_FAIL;
+    }
+    dev_ipc_message_free(resp);
+
+    if (ret == ERRCODE_SUCCESS)
+    {
+        cli_apply_view_switch(session, result);
+    }
+    return ret;
+}
+
 int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
 {
     if (!result || result->module_id == 0 || !session)
@@ -529,17 +575,25 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
      * 若命令带 to-view（如 line vty）仍由 CLI 完成视图切换 + context-out。 */
     if (result->module_id == DEV_MODULE_ID_ACCESS)
     {
-        session->line_cmd = result->group_id;
-        session->line_cmd_no = result->has_no_prefix ? 1 : 0;
-        session->line_cmd_arg1 = 0;
-        session->line_cmd_arg2 = 0;
+        uint32_t arg1 = 0;
+        uint32_t arg2 = 0;
         uint32_t clen = 0;
         const uint8_t *cdata = cli_context_get(session, &clen);
         if (cdata)
         {
-            cli_ctx_lookup_uint32(cdata, clen, ACCESS_CTX_ID_LINE_FIRST, &session->line_cmd_arg1);
-            cli_ctx_lookup_uint32(cdata, clen, ACCESS_CTX_ID_LINE_LAST, &session->line_cmd_arg2);
+            cli_ctx_lookup_uint32(cdata, clen, ACCESS_CTX_ID_LINE_FIRST, &arg1);
+            cli_ctx_lookup_uint32(cdata, clen, ACCESS_CTX_ID_LINE_LAST, &arg2);
         }
+
+        if (session->internal_session)
+        {
+            return cli_dispatch_access_internal(result, session, arg1, arg2);
+        }
+
+        session->line_cmd = result->group_id;
+        session->line_cmd_no = result->has_no_prefix ? 1 : 0;
+        session->line_cmd_arg1 = arg1;
+        session->line_cmd_arg2 = arg2;
         cli_apply_view_switch(session, result);
         return ERRCODE_SUCCESS;
     }
@@ -550,6 +604,14 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
      * 避免例如 BGP 协议已删除后，在 BGP 视图里敲普通命令拉起一个无法自退出的空进程。 */
     if (result->module_id != DEV_MODULE_ID_CLI && !dev_ipc_is_connected(g_cli_local->dev_ipc_ctx, result->module_id))
     {
+        /* 启动回放/回滚必须 fail closed：把断开模块上的 no 当作“已经撤销”
+         * 会令完整性校验同样漏掉该模块，并错误报告成功。普通交互仍保留幂等提示。 */
+        if (session->internal_session &&
+            (result->has_show_prefix || result->has_no_prefix || !result->allow_auto_start))
+        {
+            cli_send_message(session, "Error: target module is not running; internal configuration not applied.\r\n");
+            return ERRCODE_FAIL;
+        }
         if (result->has_show_prefix)
         {
             cli_send_message(session, "Info: target module is not running; no data to show.\r\n");

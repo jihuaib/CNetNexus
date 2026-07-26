@@ -47,6 +47,11 @@ void isis_cfg_apply_instance_set(isis_apply_cmd_t *apply)
     isis_instance_cfg_t *inst = isis_lookup_instance(tag);
     if (inst)
     {
+        if (inst->vrf_id != apply->u.instance_set.vrf_id || strcmp(inst->vrf_name, apply->u.instance_set.vrf_name) != 0)
+        {
+            apply_fail(apply, "ISIS Error: process is already bound to VRF %s", inst->vrf_name);
+            return;
+        }
         apply->rc = ISIS_APPLY_RC_NOOP;
         return;
     }
@@ -59,6 +64,8 @@ void isis_cfg_apply_instance_set(isis_apply_cmd_t *apply)
     }
 
     g_strlcpy(inst->net, apply->u.instance_set.net, sizeof(inst->net));
+    inst->vrf_id = apply->u.instance_set.vrf_id;
+    g_strlcpy(inst->vrf_name, apply->u.instance_set.vrf_name, sizeof(inst->vrf_name));
     inst->is_type = apply->u.instance_set.is_type;
     inst->admin_up = apply->u.instance_set.admin_up ? 1u : 0u;
     isis_neighbor_reconcile_instance(inst);
@@ -196,6 +203,13 @@ void isis_cfg_apply_if_set(isis_apply_cmd_t *apply)
     if (apply->u.if_set.cfg.ifname[0] == '\0')
     {
         apply_fail(apply, "ISIS Error: Missing interface name");
+        return;
+    }
+    const if_api_cache_entry_t *if_entry =
+        isis_if_cfg_any_enabled(&apply->u.if_set.cfg) ? if_api_cache_lookup(apply->u.if_set.cfg.ifname) : NULL;
+    if (if_entry && !isis_if_entry_matches_instance(inst, if_entry))
+    {
+        apply_fail(apply, "ISIS Error: interface %s is not in VRF %s", apply->u.if_set.cfg.ifname, inst->vrf_name);
         return;
     }
 

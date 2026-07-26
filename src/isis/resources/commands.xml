@@ -29,11 +29,28 @@
                     <type>uint(1-4294967295)</type>
                     <description>ISIS instance tag</description>
                 </element>
+                <element id="4" type="keyword">
+                    <name>vrf</name>
+                    <description>Bind the process to a VRF</description>
+                </element>
+                <element id="5" cfg-id="3" type="parameter">
+                    <name>&lt;vrf-name&gt;</name>
+                    <type>dynamic(4:1,string(1-63))</type>
+                    <description>VRF name</description>
+                </element>
             </elements>
 
             <commands>
                 <command auto-start="true">
                     <expression>2 3</expression>
+                    <views>config</views>
+                    <to-view>isis</to-view>
+                    <context-out>
+                        <entry ctx-id="8" from-param="2"/>
+                    </context-out>
+                </command>
+                <command auto-start="true">
+                    <expression>2 3 4 5</expression>
                     <views>config</views>
                     <to-view>isis</to-view>
                     <context-out>
@@ -63,11 +80,19 @@
                     <type>string(1-63)</type>
                     <description>NET/System-ID</description>
                 </element>
+                <element id="3" type="keyword">
+                    <name>no</name>
+                    <description>Remove NET/System-ID</description>
+                </element>
             </elements>
 
             <commands>
                 <command>
                     <expression>1 2</expression>
+                    <views>isis</views>
+                </command>
+                <command>
+                    <expression>3 1</expression>
                     <views>isis</views>
                 </command>
             </commands>
@@ -98,10 +123,12 @@
                 <command>
                     <expression>1 2</expression>
                     <views>isis</views>
+                    <inverse>is-type level-1-2</inverse>
                 </command>
                 <command>
                     <expression>1 3</expression>
                     <views>isis</views>
+                    <inverse>is-type level-1-2</inverse>
                 </command>
                 <command>
                     <expression>1 4</expression>
@@ -135,6 +162,7 @@
                 <command>
                     <expression>1 3</expression>
                     <views>isis</views>
+                    <inverse>cost-style narrow</inverse>
                 </command>
             </commands>
         </group>

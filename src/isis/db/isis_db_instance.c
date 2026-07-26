@@ -9,12 +9,16 @@
 
 #include "errcode.h"
 #include "isis_db_internal.h"
+#include "vrf.h"
+
+#define ISIS_VRF_TABLE_INSTANCE "vrf_instance"
 
 static const db_column_def_t ISIS_INSTANCE_COLS[] = {
     {"tag", DB_TYPE_INTEGER, DB_COL_PRIMARY_KEY, NULL},    {"net", DB_TYPE_TEXT, DB_COL_NOT_NULL, "''"},
     {"is_type", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "3"},    {"admin_up", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"},
     {"af_ipv4", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"},    {"af_ipv6", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"},
-    {"cost_style", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"},
+    {"cost_style", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"}, {"vrf_id", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},
+    {"vrf_name", DB_TYPE_TEXT, DB_COL_NOT_NULL, "public"},
 };
 
 const db_table_def_t ISIS_INSTANCE_TABLE = {
@@ -61,7 +65,7 @@ static int isis_db_update_instance_field_text(uint32_t tag, const char *field, c
     return (rows > 0) ? ERRCODE_SUCCESS : ERRCODE_FAIL;
 }
 
-int isis_db_set_instance(uint32_t tag)
+int isis_db_set_instance(uint32_t tag, uint32_t vrf_id, const char *vrf_name)
 {
     if (tag == 0u)
     {
@@ -86,7 +90,14 @@ int isis_db_set_instance(uint32_t tag)
     }
     if (exists)
     {
-        return ERRCODE_SUCCESS;
+        db_col_t update_cols[] = {
+            DB_COL_INT("vrf_id", vrf_id),
+            DB_COL_TEXT("vrf_name", vrf_name),
+        };
+        isis_db_instance_pk(&pk, tag);
+        int rows = db_rpc_update_cols(ctx, ISIS_TABLE_INSTANCE, &pk.filter, update_cols, G_N_ELEMENTS(update_cols));
+        db_filter_clear(&pk);
+        return rows >= 0 ? ERRCODE_SUCCESS : ERRCODE_FAIL;
     }
 
     db_col_t cols[] = {
@@ -97,8 +108,80 @@ int isis_db_set_instance(uint32_t tag)
         DB_COL_INT("af_ipv4", 1),
         DB_COL_INT("af_ipv6", 1),
         DB_COL_INT("cost_style", ISIS_DEFAULT_COST_STYLE),
+        DB_COL_INT("vrf_id", vrf_id),
+        DB_COL_TEXT("vrf_name", vrf_name),
     };
     return db_rpc_insert_cols(ctx, ISIS_TABLE_INSTANCE, cols, G_N_ELEMENTS(cols));
+}
+
+int isis_db_get_instance_vrf(uint32_t tag, uint32_t *vrf_id_out, char *vrf_name_out, size_t vrf_name_out_size)
+{
+    if (tag == 0u)
+    {
+        return ERRCODE_FAIL;
+    }
+    db_filter_builder_t pk;
+    isis_db_instance_pk(&pk, tag);
+    db_result_t *result = NULL;
+    int rc = db_rpc_query(isis_local_ipc_ctx(), ISIS_TABLE_INSTANCE, NULL, 0, &pk.filter, &result);
+    db_filter_clear(&pk);
+    if (rc != ERRCODE_SUCCESS || !result || result->num_rows == 0u)
+    {
+        if (result)
+        {
+            db_result_free(result);
+        }
+        return ERRCODE_FAIL;
+    }
+    int64_t vrf_id = db_row_get_int(result->rows[0], "vrf_id", VRF_PUBLIC_VRF_ID);
+    if (vrf_id_out)
+    {
+        *vrf_id_out = (vrf_id >= 0 && (uint64_t)vrf_id <= UINT32_MAX) ? (uint32_t)vrf_id : VRF_PUBLIC_VRF_ID;
+    }
+    if (vrf_name_out && vrf_name_out_size > 0u)
+    {
+        g_strlcpy(vrf_name_out, db_row_get_text(result->rows[0], "vrf_name", VRF_PUBLIC_VRF_NAME), vrf_name_out_size);
+    }
+    db_result_free(result);
+    return ERRCODE_SUCCESS;
+}
+
+int isis_db_resolve_vrf(const char *vrf_name, uint32_t *vrf_id_out)
+{
+    const char *name = (vrf_name && vrf_name[0] != '\0') ? vrf_name : VRF_PUBLIC_VRF_NAME;
+    if (!vrf_id_out)
+    {
+        return ERRCODE_FAIL;
+    }
+    if (strcmp(name, VRF_PUBLIC_VRF_NAME) == 0)
+    {
+        *vrf_id_out = VRF_PUBLIC_VRF_ID;
+        return ERRCODE_SUCCESS;
+    }
+    db_filter_builder_t filter;
+    db_filter_init(&filter);
+    db_filter_add_text(&filter, "name", name);
+    const char *fields[] = {"vrf_id"};
+    db_result_t *result = NULL;
+    int rc = db_rpc_query(isis_local_ipc_ctx(), ISIS_VRF_TABLE_INSTANCE, fields, G_N_ELEMENTS(fields), &filter.filter,
+                          &result);
+    db_filter_clear(&filter);
+    if (rc != ERRCODE_SUCCESS || !result || result->num_rows == 0u)
+    {
+        if (result)
+        {
+            db_result_free(result);
+        }
+        return ERRCODE_FAIL;
+    }
+    int64_t vrf_id = db_row_get_int(result->rows[0], "vrf_id", -1);
+    db_result_free(result);
+    if (vrf_id <= 0 || (uint64_t)vrf_id > UINT32_MAX)
+    {
+        return ERRCODE_FAIL;
+    }
+    *vrf_id_out = (uint32_t)vrf_id;
+    return ERRCODE_SUCCESS;
 }
 
 int isis_db_del_instance(uint32_t tag)
@@ -119,12 +202,12 @@ int isis_db_del_instance(uint32_t tag)
     isis_db_instance_pk(&inst_pk, tag);
     isis_db_interface_tag_pk(&if_pk, tag);
 
-    (void)db_rpc_delete(ctx, ISIS_TABLE_INSTANCE, &inst_pk.filter);
-    (void)db_rpc_delete(ctx, ISIS_TABLE_INTERFACE, &if_pk.filter);
+    int inst_rc = db_rpc_delete(ctx, ISIS_TABLE_INSTANCE, &inst_pk.filter);
+    int if_rc = db_rpc_delete(ctx, ISIS_TABLE_INTERFACE, &if_pk.filter);
 
     db_filter_clear(&inst_pk);
     db_filter_clear(&if_pk);
-    return ERRCODE_SUCCESS;
+    return (inst_rc >= 0 && if_rc >= 0) ? ERRCODE_SUCCESS : ERRCODE_FAIL;
 }
 
 int isis_db_set_net(uint32_t tag, const char *net)
@@ -300,6 +383,10 @@ void isis_db_restore_instances(void)
         apply.u.instance_set.tag = tag;
         apply.u.instance_set.is_type = (uint8_t)db_row_get_int(row, "is_type", ISIS_IS_TYPE_LEVEL_1_2);
         apply.u.instance_set.admin_up = (uint8_t)(db_row_get_int(row, "admin_up", 1) ? 1 : 0);
+        apply.u.instance_set.vrf_id = (uint32_t)db_row_get_int(row, "vrf_id", VRF_PUBLIC_VRF_ID);
+        const char *vrf_name = db_row_get_text(row, "vrf_name", VRF_PUBLIC_VRF_NAME);
+        g_strlcpy(apply.u.instance_set.vrf_name, (vrf_name && vrf_name[0] != '\0') ? vrf_name : VRF_PUBLIC_VRF_NAME,
+                  sizeof(apply.u.instance_set.vrf_name));
         const char *net = db_row_get_text(row, "net", "");
         g_strlcpy(apply.u.instance_set.net, net ? net : "", sizeof(apply.u.instance_set.net));
         (void)isis_worker_dispatch_apply(&apply);

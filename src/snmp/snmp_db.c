@@ -115,15 +115,19 @@ int snmp_db_set_config(const snmp_config_msg_t *cfg)
         return ERRCODE_FAIL;
     }
 
-    const char *stored_host =
-        (cfg->trap_enabled && cfg->trap_host[0] != '\0' && cfg->trap_port > 0 && cfg->trap_port <= 65535)
-            ? cfg->trap_host
-            : "";
-    int64_t stored_port = stored_host[0] != '\0' ? (int64_t)cfg->trap_port : 0;
-
     dev_ipc_context_t *ctx = snmp_local_ipc_ctx();
     db_condition_t cond;
     db_filter_t filter = make_pk_filter(&cond);
+
+    /*
+     * snmp_config is also DEV's revive marker.  A disabled/invalid singleton
+     * must therefore have no row at all; an empty placeholder would make an
+     * unconfigured on-demand SNMP process revive after every reboot.
+     */
+    if (!cfg->trap_enabled || cfg->trap_host[0] == '\0' || cfg->trap_port == 0 || cfg->trap_port > 65535)
+    {
+        return db_rpc_delete(ctx, SNMP_TABLE_CONFIG, &filter) < 0 ? ERRCODE_FAIL : ERRCODE_SUCCESS;
+    }
 
     gboolean exists = FALSE;
     if (db_rpc_exists(ctx, SNMP_TABLE_CONFIG, &filter, &exists) != ERRCODE_SUCCESS)
@@ -134,8 +138,8 @@ int snmp_db_set_config(const snmp_config_msg_t *cfg)
     if (exists)
     {
         db_col_t cols[] = {
-            DB_COL_TEXT("trap_host", stored_host),
-            DB_COL_INT("trap_port", stored_port),
+            DB_COL_TEXT("trap_host", cfg->trap_host),
+            DB_COL_INT("trap_port", (int64_t)cfg->trap_port),
         };
         int rows = db_rpc_update_cols(ctx, SNMP_TABLE_CONFIG, &filter, cols, G_N_ELEMENTS(cols));
         return rows < 0 ? ERRCODE_FAIL : ERRCODE_SUCCESS;
@@ -143,15 +147,16 @@ int snmp_db_set_config(const snmp_config_msg_t *cfg)
 
     db_col_t cols[] = {
         DB_COL_INT("id", SNMP_CONFIG_PK_VALUE),
-        DB_COL_TEXT("trap_host", stored_host),
-        DB_COL_INT("trap_port", stored_port),
+        DB_COL_TEXT("trap_host", cfg->trap_host),
+        DB_COL_INT("trap_port", (int64_t)cfg->trap_port),
     };
     return db_rpc_insert_cols(ctx, SNMP_TABLE_CONFIG, cols, G_N_ELEMENTS(cols));
 }
 
 int snmp_db_disable_trap(void)
 {
-    snmp_config_msg_t cfg;
-    snmp_config_default(&cfg);
-    return snmp_db_set_config(&cfg);
+    dev_ipc_context_t *ctx = snmp_local_ipc_ctx();
+    db_condition_t cond;
+    db_filter_t filter = make_pk_filter(&cond);
+    return db_rpc_delete(ctx, SNMP_TABLE_CONFIG, &filter) < 0 ? ERRCODE_FAIL : ERRCODE_SUCCESS;
 }

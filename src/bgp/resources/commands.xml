@@ -436,12 +436,21 @@
                     <type>uint(1-65535)</type>
                     <description>Hold time in seconds (must be greater than keepalive)</description>
                 </element>
+                <element id="6" type="keyword">
+                    <name>no</name>
+                    <description>Restore default BGP timers</description>
+                </element>
             </elements>
 
             <commands>
                 <!-- timer keepalive <n> hold <n> -->
                 <command>
                     <expression>1 2 3 4 5</expression>
+                    <views>bgp,bgp-vrf</views>
+                </command>
+                <!-- no timer keepalive -->
+                <command>
+                    <expression>6 1 2</expression>
                     <views>bgp,bgp-vrf</views>
                 </command>
             </commands>

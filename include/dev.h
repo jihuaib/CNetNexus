@@ -48,6 +48,10 @@
 #define DEV_MODULE_ID_LLDP 0x0000000E
 /** SNMP 模块 */
 #define DEV_MODULE_ID_SNMP 0x0000000F
+/** OSPFv2 模块 */
+#define DEV_MODULE_ID_OSPF 0x00000010
+/** OSPFv3 模块 */
+#define DEV_MODULE_ID_OSPFV3 0x00000011
 
 /** 无效文件描述符 */
 #define DEV_INVALID_FD (-1)
@@ -92,6 +96,10 @@
 #define DEV_MODULE_PORT_LLDP 4014
 /** SNMP 模块 IPC 监听端口 */
 #define DEV_MODULE_PORT_SNMP 4015
+/** OSPFv2 模块 IPC 监听端口 */
+#define DEV_MODULE_PORT_OSPF 4016
+/** OSPFv3 模块 IPC 监听端口 */
+#define DEV_MODULE_PORT_OSPFV3 4017
 
 // ============================================================================
 // IPC 前向声明
@@ -164,6 +172,10 @@ typedef dev_ipc_disconnect_handler_fn dev_ipc_disconnect_handler_fn;
 #define DEV_IPC_CATEGORY_LLDP 0x000E
 /** SNMP 模块消息大类 */
 #define DEV_IPC_CATEGORY_SNMP 0x000F
+/** OSPFv2 模块消息大类 */
+#define DEV_IPC_CATEGORY_OSPF 0x0010
+/** OSPFv3 模块消息大类 */
+#define DEV_IPC_CATEGORY_OSPFV3 0x0011
 
 // ============================================================================
 // DEV IPC 消息结构
@@ -186,14 +198,16 @@ typedef dev_ipc_disconnect_handler_fn dev_ipc_disconnect_handler_fn;
  */
 struct dev_ipc_message
 {
-    uint32_t magic;          /**< 魔数 0x4E4E4950 ("NNIP") */
-    uint32_t msg_type;       /**< 消息类型 = (大类 << 16) | 子类 */
-    uint32_t src_module_id;  /**< 源模块 ID */
-    uint32_t dst_module_id;  /**< 目标模块 ID */
-    uint32_t request_id;     /**< 请求 ID，用于请求/响应配对 */
-    uint32_t payload_len;    /**< 负载长度 */
-    void *payload;           /**< 负载数据（内存中使用） */
-    void (*free_fn)(void *); /**< 负载释放函数（内存中使用） */
+    uint32_t magic;                  /**< 魔数 0x4E4E4950 ("NNIP") */
+    uint32_t msg_type;               /**< 消息类型 = (大类 << 16) | 子类 */
+    uint32_t src_module_id;          /**< 源模块 ID */
+    uint32_t dst_module_id;          /**< 目标模块 ID */
+    uint32_t request_id;             /**< 请求 ID，用于请求/响应配对 */
+    uint32_t payload_len;            /**< 负载长度 */
+    void *payload;                   /**< 负载数据（内存中使用） */
+    void (*free_fn)(void *);         /**< 负载释放函数（内存中使用） */
+    uint32_t ingress_peer_module_id; /**< 接收连接握手确认的对端 ID；仅本地元数据，不上线路 */
+    uint8_t ingress_on_initiator;    /**< 消息是否来自本模块主动建立的连接；仅本地元数据 */
 };
 
 // ============================================================================
@@ -289,6 +303,7 @@ typedef struct dev_ipc_connection
     /* 重连 */
     uint32_t reconnect_delay_ms; /**< 当前重连延迟 */
     time_t next_reconnect_time;  /**< 下次重连时间 */
+    int draining;                /**< DEV 已广播 DOWN；仅排空在途响应，不再承载新消息 */
 
     /* 是否为主动发起方 */
     int is_initiator; /**< 1=主动连接方，0=被接受方 */
@@ -337,6 +352,7 @@ struct dev_ipc_context
     dev_ipc_connection_t *connections[DEV_IPC_MAX_CONNECTIONS]; /**< 连接数组 */
     int num_connections;                                        /**< 连接数 */
     pthread_mutex_t comutex;                                    /**< 连接锁 */
+    GHashTable *target_lifecycle_states; /**< target -> 最新 epoch/READY-DOWN 状态（受 comutex 保护） */
 
     /* 监听 */
     int listen_fd; /**< 监听 socket（本模块 IPC 端口） */
@@ -533,6 +549,20 @@ void dev_ipc_destroy(dev_ipc_context_t *ctx);
  * @return 成功返回 0，失败返回 -1
  */
 int dev_ipc_connect(dev_ipc_context_t *ctx, uint32_t target_module_id, const char *host, uint16_t port);
+
+/**
+ * @brief 按 epoch 应用目标模块的权威 READY/DOWN 事件
+ * @param ctx              IPC 上下文
+ * @param target_module_id 目标模块 ID
+ * @param epoch            目标进程 epoch
+ * @param available        0=DOWN，1=READY
+ * @return 事件被接受返回 1；旧 epoch 或同 epoch DOWN 后的 READY 返回 0
+ *
+ * DOWN 只暂停该目标主动连接的后续重连，不会立即关闭现有 socket，以便在途的
+ * RESP_EXITING 等响应仍能被消费；READY 解除暂停并重置退避，由 dev_ipc_connect
+ * 复用或重建连接。本接口可在 IPC IO 线程调用。
+ */
+int dev_ipc_apply_target_event(dev_ipc_context_t *ctx, uint32_t target_module_id, uint32_t epoch, int available);
 
 /**
  * @brief 清空 IPC 上下文中的所有连接（用于 DEV 软件重启前重置连接状态）

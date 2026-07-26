@@ -43,6 +43,22 @@ typedef struct
     uint32_t cfg_id;
 } cli_cfg_binding_t;
 
+/**
+ * @brief 命令逆操作模板绑定
+ *
+ * 同一个命令树叶子可能由多个模块/命令组共享，因此逆操作模板也必须按
+ * (module_id, group_id) 保存，不能只挂一个裸字符串。
+ *
+ * 模板中的 ``{cfg:N}`` 在生成回滚计划时替换为原命令匹配结果中 cfg-id=N
+ * 的实际 token。例如 ``no vrf {cfg:1}``。
+ */
+typedef struct
+{
+    uint32_t module_id;
+    uint32_t group_id;
+    char *template_text;
+} cli_inverse_binding_t;
+
 // CLI tree node structure
 struct cli_tree_node
 {
@@ -65,6 +81,11 @@ struct cli_tree_node
     cli_cfg_binding_t *cfg_bindings;
     uint32_t num_cfg_bindings;
     uint32_t cfg_bindings_capacity;
+
+    /** XML <inverse> 声明，按命令来源保存 */
+    cli_inverse_binding_t *inverse_bindings;
+    uint32_t num_inverse_bindings;
+    uint32_t inverse_bindings_capacity;
 
     // Children nodes
     cli_tree_node_t **children; // Array of child nodes
@@ -115,6 +136,18 @@ void cli_tree_add_child(cli_tree_node_t *parent, cli_tree_node_t *child);
 cli_tree_node_t *cli_tree_find_child(cli_tree_node_t *parent, const char *name);
 
 void cli_tree_set_param_type(cli_tree_node_t *node, cli_param_type_t *param_type);
+
+/**
+ * @brief 为命令叶子设置声明式逆操作模板
+ */
+void cli_tree_node_set_inverse_template(cli_tree_node_t *node, uint32_t module_id, uint32_t group_id,
+                                        const char *template_text);
+
+/**
+ * @brief 查询命令叶子的声明式逆操作模板
+ * @return 节点持有的字符串；未声明时返回 NULL
+ */
+const char *cli_tree_node_get_inverse_template(const cli_tree_node_t *node, uint32_t module_id, uint32_t group_id);
 
 void cli_tree_free(cli_tree_node_t *root);
 

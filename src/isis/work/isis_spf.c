@@ -43,6 +43,7 @@ typedef struct isis_spf_node
 typedef struct isis_spf_local_hop
 {
     uint8_t node_id[ISIS_SPF_NODE_ID_LEN];
+    uint32_t vrf_id;
     uint32_t local_metric;
     uint32_t out_ifindex;
     isis_nexthop_table_t *nexthop_table;
@@ -398,7 +399,7 @@ static void isis_spf_add_root_edges(isis_instance_cfg_t *inst, uint8_t level, co
         }
 
         const if_api_cache_entry_t *if_entry = if_api_cache_lookup(nbr->ifname);
-        if (!if_entry || !if_entry->proto_up || if_entry->ifindex == 0u)
+        if (!isis_if_entry_matches_instance(inst, if_entry) || !if_entry->proto_up || if_entry->ifindex == 0u)
         {
             continue;
         }
@@ -496,6 +497,7 @@ static void isis_spf_parse_narrow_ip_reach_entries(const uint8_t *val, size_t va
 
         isis_route_state_t route;
         memset(&route, 0, sizeof(route));
+        route.vrf_id = hop->vrf_id;
         route.afi = ROUTE_AFI_IPV4;
         route.prefix_len = prefix_len;
         route.prefix_addr.family = AF_INET;
@@ -783,7 +785,7 @@ static void isis_spf_collect_local_hops(const isis_instance_cfg_t *inst, uint8_t
         }
 
         const if_api_cache_entry_t *if_entry = if_api_cache_lookup(nbr->ifname);
-        if (!if_entry || !if_entry->proto_up || if_entry->ifindex == 0u)
+        if (!isis_if_entry_matches_instance(inst, if_entry) || !if_entry->proto_up || if_entry->ifindex == 0u)
         {
             continue;
         }
@@ -801,6 +803,7 @@ static void isis_spf_collect_local_hops(const isis_instance_cfg_t *inst, uint8_t
             hop->local_metric = 0x00FFFFFFu;
         }
         hop->out_ifindex = if_entry->ifindex;
+        hop->vrf_id = inst->vrf_id;
         hop->nexthop_table = isis_instance_nexthop_table((isis_instance_cfg_t *)inst, afi);
         if (!hop->nexthop_table)
         {
@@ -905,6 +908,7 @@ static void isis_spf_parse_prefix_entries(const uint8_t *val, size_t val_len, ui
 
         isis_route_state_t route;
         memset(&route, 0, sizeof(route));
+        route.vrf_id = hop->vrf_id;
         route.afi = afi;
         route.prefix_len = prefix_len;
 

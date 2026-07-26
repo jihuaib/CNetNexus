@@ -1,0 +1,8 @@
+version: 1
+image: netnexus-ci:latest
+
+# SNMP revive-marker lifecycle is local to one device.
+devices:
+  r1: {}
+
+links: []

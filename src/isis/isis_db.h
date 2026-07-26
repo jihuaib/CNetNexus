@@ -7,6 +7,7 @@
 #ifndef ISIS_DB_H
 #define ISIS_DB_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include "isis_worker.h"
@@ -17,7 +18,9 @@
 int isis_db_init(void);
 int isis_db_restore(void);
 
-int isis_db_set_instance(uint32_t tag);
+int isis_db_set_instance(uint32_t tag, uint32_t vrf_id, const char *vrf_name);
+int isis_db_get_instance_vrf(uint32_t tag, uint32_t *vrf_id_out, char *vrf_name_out, size_t vrf_name_out_size);
+int isis_db_resolve_vrf(const char *vrf_name, uint32_t *vrf_id_out);
 int isis_db_del_instance(uint32_t tag);
 int isis_db_set_net(uint32_t tag, const char *net);
 int isis_db_set_is_type(uint32_t tag, uint8_t is_type);

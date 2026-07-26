@@ -88,7 +88,6 @@ static dev_ipc_message_t g_worker_exit_sentinel;
 // 内部函数前向声明
 // ============================================================================
 
-static dev_ipc_connection_t *find_connection(dev_ipc_context_t *ctx, uint32_t module_id);
 static dev_ipc_connection_t *find_connection_by_fd(dev_ipc_context_t *ctx, int fd);
 static int send_handshake(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn);
 static int send_heartbeat(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn);
@@ -105,24 +104,17 @@ static int arm_initiator_connection(dev_ipc_context_t *ctx, dev_ipc_connection_t
 // 连接查找
 // ============================================================================
 
-static dev_ipc_connection_t *find_connection(dev_ipc_context_t *ctx, uint32_t module_id)
+static dev_ipc_connection_t *find_sendable_connection(dev_ipc_context_t *ctx, uint32_t module_id)
 {
-    dev_ipc_connection_t *fallback = NULL;
     for (int i = 0; i < ctx->num_connections; i++)
     {
-        if (ctx->connections[i] && ctx->connections[i]->remote_module_id == module_id)
+        dev_ipc_connection_t *conn = ctx->connections[i];
+        if (conn && conn->remote_module_id == module_id && conn->state == DEV_IPC_COCONNECTED && !conn->draining)
         {
-            if (ctx->connections[i]->state == DEV_IPC_COCONNECTED)
-            {
-                return ctx->connections[i]; // 优先返回connected的
-            }
-            if (!fallback)
-            {
-                fallback = ctx->connections[i];
-            }
+            return conn;
         }
     }
-    return fallback;
+    return NULL;
 }
 
 static dev_ipc_connection_t *find_connection_by_fd(dev_ipc_context_t *ctx, int fd)
@@ -137,6 +129,51 @@ static dev_ipc_connection_t *find_connection_by_fd(dev_ipc_context_t *ctx, int f
     return NULL;
 }
 
+typedef struct ipc_target_lifecycle
+{
+    uint32_t epoch;
+    int available;
+} ipc_target_lifecycle_t;
+
+static ipc_target_lifecycle_t *target_lifecycle_locked(dev_ipc_context_t *ctx, uint32_t module_id)
+{
+    return ctx->target_lifecycle_states ? g_hash_table_lookup(ctx->target_lifecycle_states, GUINT_TO_POINTER(module_id))
+                                        : NULL;
+}
+
+static int reconnect_suppressed_locked(dev_ipc_context_t *ctx, uint32_t module_id)
+{
+    ipc_target_lifecycle_t *state = target_lifecycle_locked(ctx, module_id);
+    return state && !state->available;
+}
+
+static int reconnect_suppressed(dev_ipc_context_t *ctx, uint32_t module_id)
+{
+    int suppressed;
+    pthread_mutex_lock(&ctx->comutex);
+    suppressed = reconnect_suppressed_locked(ctx, module_id);
+    pthread_mutex_unlock(&ctx->comutex);
+    return suppressed;
+}
+
+static int has_other_live_connection_locked(dev_ipc_context_t *ctx, const dev_ipc_connection_t *candidate)
+{
+    for (int i = 0; i < ctx->num_connections; i++)
+    {
+        const dev_ipc_connection_t *other = ctx->connections[i];
+        if (!other || other == candidate || other->remote_module_id != candidate->remote_module_id)
+        {
+            continue;
+        }
+        if (other->state == DEV_IPC_COCONNECTING || other->state == DEV_IPC_COHANDSHAKING ||
+            other->state == DEV_IPC_COCONNECTED)
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static void notify_connection_down(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn)
 {
     if (!ctx || !conn || conn->remote_module_id == 0 || conn->state != DEV_IPC_COCONNECTED)
@@ -144,8 +181,10 @@ static void notify_connection_down(dev_ipc_context_t *ctx, dev_ipc_connection_t 
         return;
     }
 
-    /* 立即唤醒所有打到该目标的挂起 query，避免等满 60s 超时 */
-    if (ctx->query_mgr)
+    /* 瞬时断线时立即唤醒目标 query。权威 DOWN 的 draining 连接可能与新 epoch
+     * 连接短暂并存，不能按 target 粗粒度取消，否则会误杀新连接上的 query。
+     * self-exit 的 RESP_EXITING 会在 EOF 前完成；其它旧 epoch query 走自身超时。 */
+    if (ctx->query_mgr && !conn->draining)
     {
         dev_ipc_query_mgr_cancel_by_target(ctx->query_mgr, conn->remote_module_id);
     }
@@ -157,7 +196,8 @@ static void notify_connection_down(dev_ipc_context_t *ctx, dev_ipc_connection_t 
 }
 
 /* IO 线程关闭并回收连接。
- * 主动方：close + backoff_reconnect，保留 slot 让 attempt_reconnects 复用。
+ * 主动方：close；目标可用时 backoff_reconnect，DEV 已明确 DOWN 时保持暂停，
+ *         保留 slot 供后续 READY 复用。
  * 被动方：从 ctx->connections[] 摘除并 destroy，避免 slot 永久泄漏。
  * lock_held=1 表示调用者已持有 ctx->comutex；为 0 时本函数自行加解锁。
  * 返回后被动方 conn 指针失效，调用者不得再访问。
@@ -169,10 +209,22 @@ static int io_close_connection(dev_ipc_context_t *ctx, dev_ipc_connection_t *con
         return 0;
     }
 
-    if (conn->is_initiator)
+    if (conn->is_initiator && !conn->draining)
     {
+        if (!lock_held)
+        {
+            pthread_mutex_lock(&ctx->comutex);
+        }
+        int suppressed = reconnect_suppressed_locked(ctx, conn->remote_module_id);
         dev_ipc_connection_close(conn);
-        dev_ipc_connection_backoff_reconnect(conn);
+        if (!suppressed)
+        {
+            dev_ipc_connection_backoff_reconnect(conn);
+        }
+        if (!lock_held)
+        {
+            pthread_mutex_unlock(&ctx->comutex);
+        }
         return 0;
     }
 
@@ -619,6 +671,8 @@ static void handle_frame(dev_ipc_context_t *ctx, dev_ipc_connection_t *conn, dev
             {
                 break;
             }
+            app_msg->ingress_peer_module_id = conn->remote_module_id;
+            app_msg->ingress_on_initiator = conn->is_initiator ? 1 : 0;
 
             /* 同步 query 响应由 request_id 高位标记；请求帧即使携带 request_id 也必须投递给业务层。 */
             if ((app_msg->request_id & DEV_IPC_REQUEST_ID_RESPONSE_FLAG) != 0)
@@ -727,10 +781,19 @@ static void check_heartbeats(dev_ipc_context_t *ctx)
         /* 检查心跳超时 */
         if (now - conn->last_heartbeat_recv > DEV_IPC_HEARTBEAT_TIMEOUT)
         {
+            int expected_down = reconnect_suppressed_locked(ctx, conn->remote_module_id);
             {
                 char _buf[16];
-                LOG_WARN("<%s> Heartbeat timeout, disconnecting %s", ctx->name,
-                         fmt_module_id(conn->remote_module_id, _buf, sizeof(_buf)));
+                if (expected_down)
+                {
+                    LOG_INFO("<%s> Closing stopped target %s after heartbeat timeout", ctx->name,
+                             fmt_module_id(conn->remote_module_id, _buf, sizeof(_buf)));
+                }
+                else
+                {
+                    LOG_WARN("<%s> Heartbeat timeout, disconnecting %s", ctx->name,
+                             fmt_module_id(conn->remote_module_id, _buf, sizeof(_buf)));
+                }
             }
             notify_connection_down(ctx, conn);
             epoll_ctl(ctx->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
@@ -766,6 +829,25 @@ static void check_pending_connects(dev_ipc_context_t *ctx)
             continue;
         }
 
+        /* DOWN 后旧 epoch 仍可能停在 CONNECTING/HANDSHAKING；若新 epoch
+         * READY 先到，target 已解除 suppress，但这个 transport 仍是
+         * draining，不能 close+backoff 后再被复用。直接回收 slot，让
+         * READY 建立的新 placeholder 接管。 */
+        if (conn->draining)
+        {
+            if (conn->fd >= 0)
+            {
+                epoll_ctl(ctx->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
+            }
+            if (io_close_connection(ctx, conn, 1))
+            {
+                i--;
+            }
+            continue;
+        }
+
+        int expected_down = reconnect_suppressed_locked(ctx, conn->remote_module_id);
+        if (!expected_down)
         {
             char _buf[16];
             LOG_WARN("<%s> Connection setup timeout, resetting %s (state=%d)", ctx->name,
@@ -776,7 +858,10 @@ static void check_pending_connects(dev_ipc_context_t *ctx)
             epoll_ctl(ctx->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
         }
         dev_ipc_connection_close(conn);
-        dev_ipc_connection_backoff_reconnect(conn);
+        if (!expected_down)
+        {
+            dev_ipc_connection_backoff_reconnect(conn);
+        }
     }
     pthread_mutex_unlock(&ctx->comutex);
 }
@@ -793,7 +878,19 @@ static void attempt_reconnects(dev_ipc_context_t *ctx)
         {
             continue;
         }
+        if (reconnect_suppressed_locked(ctx, conn->remote_module_id))
+        {
+            continue;
+        }
+        if (conn->draining)
+        {
+            continue;
+        }
         if (conn->state != DEV_IPC_CODISCONNECTED)
+        {
+            continue;
+        }
+        if (has_other_live_connection_locked(ctx, conn))
         {
             continue;
         }
@@ -967,7 +1064,10 @@ static void *dev_ipc_io_thread(void *arg)
                     /* 检查连接是否成功 */
                     int err = 0;
                     socklen_t len = sizeof(err);
-                    getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len);
+                    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) != 0)
+                    {
+                        err = errno;
+                    }
 
                     if (err == 0)
                     {
@@ -978,16 +1078,20 @@ static void *dev_ipc_io_thread(void *arg)
                         if (arm_initiator_connection(ctx, conn, EPOLL_CTL_MOD) != ERRCODE_SUCCESS)
                         {
                             epoll_ctl(ctx->epoll_fd, EPOLL_CTL_DEL, fd, NULL);
-                            dev_ipc_connection_close(conn);
-                            dev_ipc_connection_backoff_reconnect(conn);
+                            io_close_connection(ctx, conn, 0);
+                            continue;
                         }
                     }
                     else
                     {
-                        /* 连接失败 */
+                        /* 非阻塞 connect 失败后必须终止本次 event；同一个 epoll
+                         * 事件往往还带 EPOLLIN/ERR/HUP，继续处理会 read 已关闭 fd，
+                         * 把 ECONNREFUSED 误报成 Connection lost 并重复退避。 */
+                        LOG_DEBUG("<%s> Connect to module(0x%08X) failed: %s", ctx->name, conn->remote_module_id,
+                                  strerror(err));
                         epoll_ctl(ctx->epoll_fd, EPOLL_CTL_DEL, fd, NULL);
-                        dev_ipc_connection_close(conn);
-                        dev_ipc_connection_backoff_reconnect(conn);
+                        io_close_connection(ctx, conn, 0);
+                        continue;
                     }
                 }
             }
@@ -1001,10 +1105,25 @@ static void *dev_ipc_io_thread(void *arg)
                 {
                     if (n == 0 || (errno != EAGAIN && errno != EINTR))
                     {
+                        int expected_down = reconnect_suppressed(ctx, conn->remote_module_id);
                         {
                             char _buf[16];
-                            LOG_WARN("<%s> Connection lost (module=%s)", ctx->name,
-                                     fmt_module_id(conn->remote_module_id, _buf, sizeof(_buf)));
+                            if (n == 0)
+                            {
+                                LOG_INFO("<%s> Peer closed connection%s (module=%s)", ctx->name,
+                                         expected_down ? " after module DOWN" : "",
+                                         fmt_module_id(conn->remote_module_id, _buf, sizeof(_buf)));
+                            }
+                            else if (expected_down)
+                            {
+                                LOG_INFO("<%s> Connection ended after module DOWN (module=%s)", ctx->name,
+                                         fmt_module_id(conn->remote_module_id, _buf, sizeof(_buf)));
+                            }
+                            else
+                            {
+                                LOG_WARN("<%s> Connection lost (module=%s)", ctx->name,
+                                         fmt_module_id(conn->remote_module_id, _buf, sizeof(_buf)));
+                            }
                         }
                         notify_connection_down(ctx, conn);
                         epoll_ctl(ctx->epoll_fd, EPOLL_CTL_DEL, fd, NULL);
@@ -1130,6 +1249,7 @@ dev_ipc_context_t *dev_ipc_init(uint32_t module_id, const char *name, uint16_t l
     ctx->shutdown_requested = 0;
     ctx->num_connections = 0;
     pthread_mutex_init(&ctx->comutex, NULL);
+    ctx->target_lifecycle_states = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
 
     /* 创建查询管理器 */
     ctx->query_mgr = dev_ipc_query_mgr_create();
@@ -1266,6 +1386,12 @@ void dev_ipc_destroy(dev_ipc_context_t *ctx)
         ctx->sub_mgr = NULL;
     }
 
+    if (ctx->target_lifecycle_states)
+    {
+        g_hash_table_destroy(ctx->target_lifecycle_states);
+        ctx->target_lifecycle_states = NULL;
+    }
+
     pthread_mutex_destroy(&ctx->comutex);
     g_free(ctx);
 }
@@ -1384,6 +1510,59 @@ void dev_ipc_drop_connection(dev_ipc_context_t *ctx, uint32_t target_module_id)
     }
 }
 
+int dev_ipc_apply_target_event(dev_ipc_context_t *ctx, uint32_t target_module_id, uint32_t epoch, int available)
+{
+    if (!ctx || target_module_id == 0)
+    {
+        return 0;
+    }
+
+    pthread_mutex_lock(&ctx->comutex);
+    ipc_target_lifecycle_t *state = target_lifecycle_locked(ctx, target_module_id);
+    if (state && (epoch < state->epoch || (epoch == state->epoch && !state->available && available)))
+    {
+        pthread_mutex_unlock(&ctx->comutex);
+        return 0;
+    }
+    if (!state)
+    {
+        state = g_malloc0(sizeof(*state));
+        g_hash_table_insert(ctx->target_lifecycle_states, GUINT_TO_POINTER(target_module_id), state);
+    }
+    state->epoch = epoch;
+    state->available = available ? 1 : 0;
+
+    if (available)
+    {
+        for (int i = 0; i < ctx->num_connections; i++)
+        {
+            dev_ipc_connection_t *conn = ctx->connections[i];
+            if (conn && conn->is_initiator && conn->remote_module_id == target_module_id)
+            {
+                dev_ipc_connection_reset_reconnect(conn);
+                conn->next_reconnect_time = 0;
+                if (conn->state == DEV_IPC_CODISCONNECTED)
+                {
+                    conn->draining = 0;
+                }
+            }
+        }
+    }
+    else
+    {
+        for (int i = 0; i < ctx->num_connections; i++)
+        {
+            dev_ipc_connection_t *conn = ctx->connections[i];
+            if (conn && conn->remote_module_id == target_module_id)
+            {
+                conn->draining = 1;
+            }
+        }
+    }
+    pthread_mutex_unlock(&ctx->comutex);
+    return 1;
+}
+
 int dev_ipc_connect(dev_ipc_context_t *ctx, uint32_t target_module_id, const char *host, uint16_t port)
 {
     if (!ctx || !host || port == 0)
@@ -1393,24 +1572,76 @@ int dev_ipc_connect(dev_ipc_context_t *ctx, uint32_t target_module_id, const cha
 
     pthread_mutex_lock(&ctx->comutex);
 
-    /* 检查是否已有连接 */
-    if (find_connection(ctx, target_module_id))
+    /* DEV 的权威 DOWN 优先于迟到的 STARTING/READY 响应。后续真正的
+     * MODULE_EVENT_READY 会先解除抑制，再重新调用本函数。 */
+    if (reconnect_suppressed_locked(ctx, target_module_id))
     {
         pthread_mutex_unlock(&ctx->comutex);
         return ERRCODE_SUCCESS;
     }
 
-    if (ctx->num_connections >= DEV_IPC_MAX_CONNECTIONS)
+    dev_ipc_connection_t *conn = NULL;
+    int has_sendable_live = 0;
+    int has_draining_live = 0;
+    for (int i = 0; i < ctx->num_connections; i++)
+    {
+        dev_ipc_connection_t *candidate = ctx->connections[i];
+        if (!candidate || candidate->remote_module_id != target_module_id)
+        {
+            continue;
+        }
+        int live = candidate->state == DEV_IPC_COCONNECTING || candidate->state == DEV_IPC_COHANDSHAKING ||
+                   candidate->state == DEV_IPC_COCONNECTED;
+        if (live && candidate->draining)
+        {
+            has_draining_live = 1;
+        }
+        else if (live)
+        {
+            has_sendable_live = 1;
+        }
+        if (candidate->is_initiator)
+        {
+            snprintf(candidate->remote_host, sizeof(candidate->remote_host), "%s", host);
+            candidate->remote_port = port;
+            if (!conn && candidate->state == DEV_IPC_CODISCONNECTED && !candidate->draining)
+            {
+                conn = candidate;
+            }
+        }
+    }
+
+    if (has_sendable_live)
+    {
+        pthread_mutex_unlock(&ctx->comutex);
+        return ERRCODE_SUCCESS;
+    }
+
+    if (!conn && ctx->num_connections >= DEV_IPC_MAX_CONNECTIONS)
     {
         pthread_mutex_unlock(&ctx->comutex);
         return ERRCODE_FAIL;
     }
 
-    dev_ipc_connection_t *conn = dev_ipc_connection_create(target_module_id, 1);
-    /* 存储目标地址，供断连后重连使用 */
-    snprintf(conn->remote_host, sizeof(conn->remote_host), "%s", host);
-    conn->remote_port = port;
-    ctx->connections[ctx->num_connections++] = conn;
+    if (!conn)
+    {
+        conn = dev_ipc_connection_create(target_module_id, 1);
+        /* 存储目标地址，供断连后重连使用 */
+        snprintf(conn->remote_host, sizeof(conn->remote_host), "%s", host);
+        conn->remote_port = port;
+        ctx->connections[ctx->num_connections++] = conn;
+    }
+
+    /* 新 epoch READY 可能先于旧 socket 的 EOF。保留一个新 initiator
+     * placeholder，但等旧 draining transport 回收后再由 attempt_reconnects
+     * 建联，避免新旧连接上的 query 相互误取消。 */
+    if (has_draining_live)
+    {
+        dev_ipc_connection_reset_reconnect(conn);
+        conn->next_reconnect_time = 0;
+        pthread_mutex_unlock(&ctx->comutex);
+        return ERRCODE_SUCCESS;
+    }
 
     /* 在持锁期间发起连接，使 conn->state 立即进入 COCONNECTING，
      * 避免 IO 线程的 attempt_reconnects() 看到 DISCONNECTED 状态后重复发起连接 */
@@ -1426,8 +1657,7 @@ int dev_ipc_connect(dev_ipc_context_t *ctx, uint32_t target_module_id, const cha
             {
                 epoll_ctl(ctx->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
             }
-            dev_ipc_connection_close(conn);
-            dev_ipc_connection_backoff_reconnect(conn);
+            io_close_connection(ctx, conn, 0);
         }
         return ERRCODE_SUCCESS;
     }
@@ -1452,7 +1682,7 @@ int dev_ipc_send(dev_ipc_context_t *ctx, uint32_t target_module_id, dev_ipc_mess
     msg->dst_module_id = target_module_id;
 
     pthread_mutex_lock(&ctx->comutex);
-    dev_ipc_connection_t *conn = find_connection(ctx, target_module_id);
+    dev_ipc_connection_t *conn = find_sendable_connection(ctx, target_module_id);
     if (!conn || conn->state != DEV_IPC_COCONNECTED)
     {
         pthread_mutex_unlock(&ctx->comutex);
@@ -1524,7 +1754,7 @@ int dev_ipc_send_response(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 
     /* 查找连接 */
     pthread_mutex_lock(&ctx->comutex);
-    dev_ipc_connection_t *conn = find_connection(ctx, target_id);
+    dev_ipc_connection_t *conn = find_sendable_connection(ctx, target_id);
     if (!conn || conn->state != DEV_IPC_COCONNECTED)
     {
         char _buf[16];
@@ -1576,8 +1806,8 @@ int dev_ipc_is_connected(dev_ipc_context_t *ctx, uint32_t target_module_id)
     }
 
     pthread_mutex_lock(&ctx->comutex);
-    dev_ipc_connection_t *conn = find_connection(ctx, target_module_id);
-    int connected = (conn && conn->state == DEV_IPC_COCONNECTED) ? 1 : 0;
+    dev_ipc_connection_t *conn = find_sendable_connection(ctx, target_module_id);
+    int connected = conn ? 1 : 0;
     pthread_mutex_unlock(&ctx->comutex);
 
     return connected;

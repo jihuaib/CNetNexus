@@ -49,6 +49,7 @@ typedef enum if_worker_cmd_type
     IF_WORKER_CMD_MODULE_DOWN = 10,         /**< 对端模块 IPC 断开，清理运行态订阅 */
     IF_WORKER_CMD_VRF_DOWN = 11,            /**< VRF 模块 DOWN：清接口 VRF 绑定 + 清 cache */
     IF_WORKER_CMD_RESTORE_DONE = 12,        /**< DB restore 完成：flush pending REPLAY */
+    IF_WORKER_CMD_SNMP_REFRESH = 13,        /**< SNMP READY 后重刷标准 IF-MIB */
 } if_worker_cmd_type_t;
 
 /**
@@ -451,6 +452,10 @@ static void *if_worker_thread_fn(void *arg)
                 if_msg_flush_pending_replays();
                 break;
 
+            case IF_WORKER_CMD_SNMP_REFRESH:
+                if_pub_snmp_refresh_all();
+                break;
+
             default:
                 LOG_WARN("IF-WORKER: unknown cmd type=%d", (int)cmd->type);
                 if (cmd->msg)
@@ -651,6 +656,25 @@ int if_worker_post_restore_done(void)
         return ERRCODE_SUCCESS;
     }
     if_worker_cmd_t *cmd = worker_cmd_create(IF_WORKER_CMD_RESTORE_DONE, NULL, 0);
+    if (!cmd)
+    {
+        return ERRCODE_FAIL;
+    }
+    if (worker_cmd_enqueue(cmd) != ERRCODE_SUCCESS)
+    {
+        worker_cmd_destroy(cmd);
+        return ERRCODE_FAIL;
+    }
+    return ERRCODE_SUCCESS;
+}
+
+int if_worker_post_snmp_refresh(void)
+{
+    if (!g_if_work_local || !g_if_work_local->running || g_if_work_local->thread == 0)
+    {
+        return ERRCODE_SUCCESS;
+    }
+    if_worker_cmd_t *cmd = worker_cmd_create(IF_WORKER_CMD_SNMP_REFRESH, NULL, 0);
     if (!cmd)
     {
         return ERRCODE_FAIL;

@@ -11,6 +11,8 @@ set(CLI_SOURCES
     cli_history.c
     cli_main.c
     cli_cfg.c
+    cli_config_model.c
+    cli_config_plan.c
     cli_restore.c
 )
 
@@ -24,6 +26,7 @@ target_include_directories(netnexus-cli PUBLIC
 target_link_libraries(netnexus-cli PRIVATE
     dev_api
     cli_api
+    db_api
     utils
     ${LIBXML2_LIBRARIES}
     ${GLIB_LIBRARIES}

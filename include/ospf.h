@@ -1,0 +1,38 @@
+/**
+ * @file   ospf.h
+ * @brief  OSPF Version 2 public constants
+ */
+#ifndef OSPF_H
+#define OSPF_H
+
+#include <stdint.h>
+
+#define OSPF_VERSION 2u
+#define OSPF_IP_PROTOCOL 89u
+
+#define OSPF_AREA_BACKBONE 0u
+
+#define OSPF_DEFAULT_COST 10u
+#define OSPF_MAX_COST 65535u
+#define OSPF_DEFAULT_HELLO_INTERVAL 10u
+#define OSPF_DEFAULT_DEAD_INTERVAL 40u
+#define OSPF_DEFAULT_PRIORITY 1u
+
+#define OSPF_NETWORK_BROADCAST 1u
+#define OSPF_NETWORK_POINT_TO_POINT 2u
+
+#define OSPF_PACKET_HELLO 1u
+#define OSPF_PACKET_DBD 2u
+#define OSPF_PACKET_LS_REQUEST 3u
+#define OSPF_PACKET_LS_UPDATE 4u
+#define OSPF_PACKET_LS_ACK 5u
+
+#define OSPF_LSA_ROUTER 1u
+#define OSPF_LSA_NETWORK 2u
+
+#define OSPF_LSA_MAX_AGE 3600u
+#define OSPF_LSA_REFRESH_TIME 1800u
+#define OSPF_LSA_MIN_INTERVAL 5u
+#define OSPF_LSA_INITIAL_SEQUENCE 0x80000001u
+
+#endif /* OSPF_H */

@@ -127,7 +127,7 @@ static void show_summary_cb(gpointer key, gpointer value, gpointer user_data)
     }
 
     const char *cs_name = (inst->cost_style == ISIS_COST_STYLE_WIDE) ? "wide" : "narrow";
-    g_string_append_printf(ctx->buf, "%-8u %-10s %-6s %-6u %-6u %-8u %-4u %-6u\r\n", inst->tag,
+    g_string_append_printf(ctx->buf, "%-8u %-15s %-10s %-6s %-6u %-6u %-8u %-4u %-6u\r\n", inst->tag, inst->vrf_name,
                            is_type_name(inst->is_type), cs_name, inst->af_ipv4 ? 1u : 0u, inst->af_ipv6 ? 1u : 0u,
                            inst->admin_up ? 1u : 0u, g_hash_table_size(inst->if_cfgs), route_count);
     ctx->count++;
@@ -216,7 +216,7 @@ static void show_interface_cb(gpointer key, gpointer value, gpointer user_data)
         return;
     }
 
-    g_string_append_printf(ctx->buf, "Tag %u (%s)\r\n", inst->tag, is_type_name(inst->is_type));
+    g_string_append_printf(ctx->buf, "Tag %u (%s), VRF %s\r\n", inst->tag, is_type_name(inst->is_type), inst->vrf_name);
     if (g_hash_table_size(inst->if_cfgs) == 0)
     {
         g_string_append(ctx->buf, "  (no interfaces)\r\n");
@@ -293,8 +293,8 @@ static int handle_show_summary(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     }
 
     g_string_append(buf, "\r\nISIS Summary\r\n"
-                         "Tag      IS-Type    Cost   IPv4   IPv6   AdminUp  Ifs  Routes\r\n"
-                         "-------- ---------- ------ ------ ------ -------- ---- ------\r\n");
+                         "Tag      VRF             IS-Type    Cost   IPv4   IPv6   AdminUp  Ifs  Routes\r\n"
+                         "-------- --------------- ---------- ------ ------ ------ -------- ---- ------\r\n");
 
     show_instance_ctx_t ctx = {
         .buf = buf,

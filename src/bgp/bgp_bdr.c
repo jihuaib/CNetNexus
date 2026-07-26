@@ -738,7 +738,10 @@ static void bgp_bdr_show_config_scoped(dev_ipc_message_t *msg, const cli_show_sc
             bdr_append_af_instances_scoped(out, vrf_name, "  ", "   ");
             g_string_append(out, " !\r\n");
         }
-        g_string_append(out, "!\r\n");
+        if (out->len > 0)
+        {
+            g_string_append(out, "!\r\n");
+        }
     }
     else if (bgp_bdr_is_af_view(scope->view_name))
     {
@@ -798,7 +801,10 @@ void bgp_bdr_show_config(dev_ipc_message_t *msg)
     bdr_append_af_instances_scoped(out, VRF_PUBLIC_VRF_NAME, " ", "  ");
     bdr_append_non_public_vrf_blocks(out);
     bdr_append_bmp_instances(out);
-    g_string_append(out, "!\r\n");
+    if (out->len > 0)
+    {
+        g_string_append(out, "!\r\n");
+    }
 
     bgp_send_cli_response(msg, out->str);
     g_string_free(out, TRUE);

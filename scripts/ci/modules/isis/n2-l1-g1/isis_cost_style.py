@@ -174,7 +174,7 @@ def _verify_default_narrow_summary(rt: TopologyRuntime) -> None:
                 "command": f"show isis summary ipv4 {TAG}",
                 "contains": ["ISIS Summary"],
                 "regex": [
-                    rf"(?im)^\s*{TAG}\s+level-1-2\s+narrow\b",
+                    rf"(?im)^\s*{TAG}\s+public\s+level-1-2\s+narrow\b",
                 ],
                 "label": "r1 default narrow in summary",
             },
@@ -183,7 +183,7 @@ def _verify_default_narrow_summary(rt: TopologyRuntime) -> None:
                 "command": f"show isis summary ipv4 {TAG}",
                 "contains": ["ISIS Summary"],
                 "regex": [
-                    rf"(?im)^\s*{TAG}\s+level-1-2\s+narrow\b",
+                    rf"(?im)^\s*{TAG}\s+public\s+level-1-2\s+narrow\b",
                 ],
                 "label": "r2 default narrow in summary",
             },
@@ -424,13 +424,13 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
                 {
                     "device": "r1",
                     "command": f"show isis summary ipv4 {TAG}",
-                    "regex": [rf"(?im)^\s*{TAG}\s+level-1-2\s+wide\b"],
+                    "regex": [rf"(?im)^\s*{TAG}\s+public\s+level-1-2\s+wide\b"],
                     "label": "r1 wide in summary",
                 },
                 {
                     "device": "r2",
                     "command": f"show isis summary ipv4 {TAG}",
-                    "regex": [rf"(?im)^\s*{TAG}\s+level-1-2\s+wide\b"],
+                    "regex": [rf"(?im)^\s*{TAG}\s+public\s+level-1-2\s+wide\b"],
                     "label": "r2 wide in summary",
                 },
             ],
@@ -583,7 +583,7 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             command=f"show isis summary ipv4 {TAG}",
             timeout=20,
             interval=2,
-            regex=[rf"(?im)^\s*{TAG}\s+level-1-2\s+narrow\b"],
+            regex=[rf"(?im)^\s*{TAG}\s+public\s+level-1-2\s+narrow\b"],
             label="r1 narrow restored",
         )
 

@@ -9,8 +9,11 @@
 #include <arpa/inet.h>
 #include <string.h>
 
+#include "errcode.h"
 #include "if.h"
 #include "if_main.h"
+#include "if_netlink.h"
+#include "if_worker.h"
 #include "log.h"
 #include "net_addr.h"
 #include "route.h"
@@ -75,6 +78,34 @@ static uint32_t if_pub_snmp_ifindex(const if_map_entry_t *entry, uint32_t out_if
     return 10000u + (g_str_hash(entry->logical_name) % 50000u);
 }
 
+static uint8_t if_pub_snmp_admin_status(const if_map_entry_t *entry)
+{
+    return (entry && !entry->shutdown) ? 1u : 2u;
+}
+
+static uint8_t if_pub_snmp_oper_status(const if_map_entry_t *entry, uint8_t event_link_up)
+{
+    if (!entry || entry->shutdown)
+    {
+        return 2u;
+    }
+    if (if_map_is_virtual_entry(entry->logical_name))
+    {
+        return 1u;
+    }
+    if (entry->link_up >= 0)
+    {
+        return entry->link_up ? 1u : 2u;
+    }
+
+    if_info_t info;
+    if (entry->physical_name[0] != '\0' && if_get_info(entry->physical_name, &info) == ERRCODE_SUCCESS)
+    {
+        return (info.state == IF_STATE_UP) ? 1u : 2u;
+    }
+    return event_link_up ? 1u : 2u;
+}
+
 static void if_pub_snmp_value(dev_ipc_context_t *ctx, const char *oid, snmp_value_type_t type, const char *value)
 {
     if (!ctx || !oid || !value || !dev_ipc_is_connected(ctx, DEV_MODULE_ID_SNMP))
@@ -121,12 +152,17 @@ static void if_pub_snmp_if_table(dev_ipc_context_t *ctx, const if_map_entry_t *e
     const uint32_t ifindex = if_pub_snmp_ifindex(entry, out_ifindex);
     char oid[SNMP_OID_MAX_LEN];
     char value[SNMP_VALUE_MAX_LEN];
+    const uint8_t admin_status = if_pub_snmp_admin_status(entry);
+    const uint8_t oper_status = if_pub_snmp_oper_status(entry, link_up);
 
     snprintf(oid, sizeof(oid), ".1.3.6.1.2.1.2.2.1.1.%u", ifindex);
     snprintf(value, sizeof(value), "%u", ifindex);
     if_pub_snmp_value(ctx, oid, SNMP_VALUE_INTEGER, value);
 
     snprintf(oid, sizeof(oid), ".1.3.6.1.2.1.2.2.1.2.%u", ifindex);
+    if_pub_snmp_value(ctx, oid, SNMP_VALUE_STRING, entry->logical_name);
+
+    snprintf(oid, sizeof(oid), ".1.3.6.1.2.1.31.1.1.1.1.%u", ifindex);
     if_pub_snmp_value(ctx, oid, SNMP_VALUE_STRING, entry->logical_name);
 
     snprintf(oid, sizeof(oid), ".1.3.6.1.2.1.2.2.1.3.%u", ifindex);
@@ -139,13 +175,39 @@ static void if_pub_snmp_if_table(dev_ipc_context_t *ctx, const if_map_entry_t *e
     if_pub_snmp_value(ctx, oid, SNMP_VALUE_GAUGE, "1000000000");
 
     snprintf(oid, sizeof(oid), ".1.3.6.1.2.1.2.2.1.7.%u", ifindex);
-    if_pub_snmp_value(ctx, oid, SNMP_VALUE_INTEGER, "1");
+    snprintf(value, sizeof(value), "%u", (unsigned)admin_status);
+    if_pub_snmp_value(ctx, oid, SNMP_VALUE_INTEGER, value);
 
     snprintf(oid, sizeof(oid), ".1.3.6.1.2.1.2.2.1.8.%u", ifindex);
-    if_pub_snmp_value(ctx, oid, SNMP_VALUE_INTEGER, link_up ? "1" : "2");
+    snprintf(value, sizeof(value), "%u", (unsigned)oper_status);
+    if_pub_snmp_value(ctx, oid, SNMP_VALUE_INTEGER, value);
 
     snprintf(oid, sizeof(oid), ".1.3.6.1.2.1.2.2.1.9.%u", ifindex);
     if_pub_snmp_value(ctx, oid, SNMP_VALUE_TIMETICKS, "0");
+}
+
+static gboolean if_pub_snmp_refresh_entry_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    dev_ipc_context_t *ctx = (dev_ipc_context_t *)user_data;
+    if_map_entry_t *entry = (if_map_entry_t *)value;
+    if (!entry || entry->logical_name[0] == '\0')
+    {
+        return FALSE;
+    }
+    if_pub_snmp_if_table(ctx, entry, entry->link_up > 0 ? 1u : 0u, entry->ifindex);
+    return FALSE;
+}
+
+void if_pub_snmp_refresh_all(void)
+{
+    dev_ipc_context_t *ctx = if_local_ipc_ctx();
+    if (!ctx || !dev_ipc_is_connected(ctx, DEV_MODULE_ID_SNMP) || !g_if_work_local ||
+        !g_if_work_local->interface_map.all_entries)
+    {
+        return;
+    }
+    g_tree_foreach(g_if_work_local->interface_map.all_entries, if_pub_snmp_refresh_entry_cb, ctx);
 }
 
 static void if_pub_snmp_trap(dev_ipc_context_t *ctx, const if_map_entry_t *entry, uint32_t event, uint8_t link_up,
@@ -209,6 +271,20 @@ static void if_pub_snmp_event(dev_ipc_context_t *ctx, const if_map_entry_t *entr
         return;
     }
 
+    if_pub_snmp_if_table(ctx, entry, link_up, out_ifindex);
+    if_pub_snmp_trap(ctx, entry, event, link_up, out_ifindex);
+}
+
+void if_pub_snmp_admin_state_change(const if_map_entry_t *entry, uint8_t admin_up, uint32_t out_ifindex)
+{
+    dev_ipc_context_t *ctx = if_local_ipc_ctx();
+    if (!ctx || !entry)
+    {
+        return;
+    }
+
+    const uint8_t link_up = admin_up ? 1u : 0u;
+    const uint32_t event = admin_up ? IF_EVENT_LINK_UP : IF_EVENT_LINK_DOWN;
     if_pub_snmp_if_table(ctx, entry, link_up, out_ifindex);
     if_pub_snmp_trap(ctx, entry, event, link_up, out_ifindex);
 }

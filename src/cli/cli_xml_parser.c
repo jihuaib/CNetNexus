@@ -765,6 +765,26 @@ static void set_auto_start_on_leaves(cli_tree_node_t *node)
     }
 }
 
+/**
+ * @brief 在虚拟命令树的全部终点保存声明式逆操作模板
+ */
+static void set_inverse_on_leaves(cli_tree_node_t *node, uint32_t module_id, uint32_t group_id,
+                                  const char *inverse_template)
+{
+    if (!node || !inverse_template || inverse_template[0] == '\0')
+    {
+        return;
+    }
+    if (node->is_end_node)
+    {
+        cli_tree_node_set_inverse_template(node, module_id, group_id, inverse_template);
+    }
+    for (uint32_t i = 0; i < node->num_children; i++)
+    {
+        set_inverse_on_leaves(node->children[i], module_id, group_id, inverse_template);
+    }
+}
+
 // Parse command group and register commands to views
 static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree, uint32_t module_id)
 {
@@ -836,6 +856,7 @@ static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree,
                     char *expression = NULL;
                     char *views = NULL;
                     char *target_view_name = NULL; /* <to-view> 内容，命令执行后切换到的视图名称 */
+                    char *inverse_template = NULL; /* <inverse> 声明式逆操作模板 */
                     gboolean allow_auto_start = parse_bool_attr(cmd, "auto-start");
 
                     /* context-out 条目临时数组（最多 16 条） */
@@ -868,6 +889,17 @@ static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree,
                             xmlChar *content = xmlNodeGetContent(child);
                             g_free(target_view_name);
                             target_view_name = g_strdup((const char *)content);
+                            xmlFree(content);
+                        }
+                        else if (xmlStrcmp(child->name, (const xmlChar *)"inverse") == ERRCODE_SUCCESS)
+                        {
+                            xmlChar *content = xmlNodeGetContent(child);
+                            g_free(inverse_template);
+                            inverse_template = g_strdup((const char *)content);
+                            if (inverse_template)
+                            {
+                                g_strstrip(inverse_template);
+                            }
                             xmlFree(content);
                         }
                         else if (xmlStrcmp(child->name, (const xmlChar *)"context-out") == ERRCODE_SUCCESS)
@@ -937,6 +969,10 @@ static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree,
                         {
                             set_auto_start_on_leaves(virtual_root);
                         }
+                        if (virtual_root && inverse_template && inverse_template[0] != '\0')
+                        {
+                            set_inverse_on_leaves(virtual_root, module_id, group->group_id, inverse_template);
+                        }
 
                         if (virtual_root)
                         {
@@ -1003,6 +1039,7 @@ static void parse_command_group(xmlNode *group_node, cli_view_tree_t *view_tree,
                     g_free(expression);
                     g_free(views);
                     g_free(target_view_name);
+                    g_free(inverse_template);
                 }
             }
         }

@@ -62,7 +62,7 @@ int route_show_send_chunked(dev_ipc_message_t *msg, GString *full_text)
 //   5=proto:static, 6=proto:bgp, 7=proto:ospf, 8=summary,
 //   9=proto:connected, 11=proto:isis,
 //   12=prefix_len_v4, 13=prefix_len_v6, 14=subscribe,
-//   15=vrf, 16=vrf_name
+//   15=vrf, 16=vrf_name, 17=proto:ospfv3
 // ============================================================================
 
 typedef struct
@@ -79,6 +79,7 @@ typedef struct
     uint32_t static_;   /**< 静态路由条数 */
     uint32_t bgp;       /**< BGP 路由条数 */
     uint32_t ospf;      /**< OSPF 路由条数 */
+    uint32_t ospfv3;    /**< OSPFv3 路由条数 */
     uint32_t isis;      /**< ISIS 路由条数 */
     uint32_t other;     /**< 其他协议路由条数 */
     int show_ipv4;
@@ -149,6 +150,9 @@ static void summary_path_cb(const route_head_t *head, const route_path_t *path, 
         case ROUTE_PROTOCOL_OSPF:
             ctx->ospf++;
             break;
+        case ROUTE_PROTOCOL_OSPFV3:
+            ctx->ospfv3++;
+            break;
         case ROUTE_PROTOCOL_ISIS:
             ctx->isis++;
             break;
@@ -170,6 +174,8 @@ static const char *proto_name(uint32_t protocol)
             return "B";
         case ROUTE_PROTOCOL_OSPF:
             return "O";
+        case ROUTE_PROTOCOL_OSPFV3:
+            return "O3";
         case ROUTE_PROTOCOL_ISIS:
             return "I";
         default:
@@ -189,6 +195,8 @@ static const char *proto_name_long(uint32_t protocol)
             return "bgp";
         case ROUTE_PROTOCOL_OSPF:
             return "ospf";
+        case ROUTE_PROTOCOL_OSPFV3:
+            return "ospfv3";
         case ROUTE_PROTOCOL_ISIS:
             return "isis";
         case ROUTE_PROTOCOL_MAX:
@@ -226,6 +234,10 @@ static const char *module_name(uint32_t module_id)
             return "fib";
         case DEV_MODULE_ID_LDP:
             return "ldp";
+        case DEV_MODULE_ID_OSPF:
+            return "ospf";
+        case DEV_MODULE_ID_OSPFV3:
+            return "ospfv3";
         default:
             return "unknown";
     }
@@ -542,6 +554,9 @@ int route_show_handle_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                 }
                 break;
             }
+            case 17:
+                proto_filter = ROUTE_PROTOCOL_OSPFV3;
+                break;
             default:
                 break;
         }
@@ -607,7 +622,7 @@ int route_show_handle_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         sctx.show_ipv4 = show_ipv4;
         sctx.show_ipv6 = show_ipv6;
         route_rib_walk(g_route_work_local->rib, ROUTE_PROTOCOL_MAX, vrf_filter.vrf_id, summary_path_cb, &sctx);
-        uint32_t total = sctx.connected + sctx.static_ + sctx.bgp + sctx.ospf + sctx.isis + sctx.other;
+        uint32_t total = sctx.connected + sctx.static_ + sctx.bgp + sctx.ospf + sctx.ospfv3 + sctx.isis + sctx.other;
         char buf[512];
         snprintf(buf, sizeof(buf),
                  "\r\nRoute Summary (VRF: %s):\r\n"
@@ -617,9 +632,10 @@ int route_show_handle_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                  "  %-12s %u\r\n"
                  "  %-12s %u\r\n"
                  "  %-12s %u\r\n"
+                 "  %-12s %u\r\n"
                  "  %-12s %u\r\n\r\n",
                  vrf_filter.name, "Connected:", sctx.connected, "Static:", sctx.static_, "BGP:", sctx.bgp,
-                 "OSPF:", sctx.ospf, "ISIS:", sctx.isis, "Other:", sctx.other, "Total:", total);
+                 "OSPF:", sctx.ospf, "OSPFv3:", sctx.ospfv3, "ISIS:", sctx.isis, "Other:", sctx.other, "Total:", total);
         send_resp(msg, buf);
         return ERRCODE_SUCCESS;
     }

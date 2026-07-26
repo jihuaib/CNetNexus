@@ -38,4 +38,20 @@ typedef struct if_subscriber
 void if_pub_notify(GList *subscribers, const if_map_entry_t *entry, uint32_t if_type, uint32_t event, uint8_t link_up,
                    const net_prefix_t *prefix, uint32_t out_ifindex);
 
+/**
+ * @brief Refresh standard IF-MIB rows for all known interfaces.
+ *
+ * Must be called from the IF worker thread because interface_map is worker-owned.
+ */
+void if_pub_snmp_refresh_all(void);
+
+/**
+ * @brief Report a CLI/admin state change to standard IF-MIB and IF-MIB traps.
+ *
+ * This is intentionally SNMP-only: CLI shutdown/no shutdown should expose
+ * standard linkDown/linkUp traps to NMS, but it must not be replayed as a
+ * generic IF link event to protocol subscribers.
+ */
+void if_pub_snmp_admin_state_change(const if_map_entry_t *entry, uint8_t admin_up, uint32_t out_ifindex);
+
 #endif /* IF_PUB_H */

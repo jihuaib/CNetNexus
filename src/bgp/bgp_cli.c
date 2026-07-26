@@ -267,11 +267,20 @@ static int handle_bgp_protocol(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 
     if (apply.rc == BGP_APPLY_RC_NOOP)
     {
-        bgp_send_cli_response(msg, "");
-        return ERRCODE_SUCCESS;
+        if (!apply.isNo)
+        {
+            bgp_send_cli_response(msg, "");
+            return ERRCODE_SUCCESS;
+        }
+        /*
+         * `process start bgp` 可以把没有协议配置的按需模块手工拉起。
+         * NOOP 仅表示内存中没有协议对象，不能据此假定 DB 已清空：
+         * 上一次删除可能已改内存、但 DB 清理失败。继续走统一的
+         * bgp_db_del_as()，只有持久化配置清理成功后才允许进程退出。
+         */
     }
 
-    if (apply.rc != BGP_APPLY_RC_OK)
+    if (apply.rc != BGP_APPLY_RC_OK && apply.rc != BGP_APPLY_RC_NOOP)
     {
         char buf[280];
         snprintf(buf, sizeof(buf), "%s\r\n", apply.errmsg);
@@ -468,15 +477,11 @@ static int handle_bgp_vrf_view(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     }
     if (apply.isNo)
     {
-        int rows = 0;
-        if (apply.rc == BGP_APPLY_RC_OK)
+        int rows = bgp_db_del_vrf(vrf_name);
+        if (rows < 0)
         {
-            rows = bgp_db_del_vrf(vrf_name);
-            if (rows < 0)
-            {
-                bgp_send_cli_response(msg, "BGP Error: Database cleanup failed.\r\n");
-                return ERRCODE_FAIL;
-            }
+            bgp_send_cli_response(msg, "BGP Error: Database cleanup failed.\r\n");
+            return ERRCODE_FAIL;
         }
 
         char buf[160];
@@ -485,7 +490,12 @@ static int handle_bgp_vrf_view(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         return ERRCODE_SUCCESS;
     }
 
-    if (apply.rc == BGP_APPLY_RC_OK && bgp_db_ensure_vrf(vrf_name) != 0)
+    /*
+     * 路由泄漏等运行态事件可能已经隐式创建 VRF。此时显式 `vrf`
+     * 返回 NOOP，但它仍然是一条配置命令，必须把配置态收敛到 DB，
+     * 否则空 VRF 会从 running BDR/快照中消失。
+     */
+    if (bgp_db_ensure_vrf(vrf_name) != 0)
     {
         bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
         return ERRCODE_FAIL;
@@ -577,12 +587,7 @@ static int handle_bgp_addr_family(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
         return ERRCODE_FAIL;
     }
 
-    if (apply.rc == BGP_APPLY_RC_NOOP && !apply.isNo)
-    {
-        bgp_send_cli_response(msg, "");
-        return ERRCODE_SUCCESS;
-    }
-    if (apply.rc != BGP_APPLY_RC_OK && !(apply.isNo && apply.rc == BGP_APPLY_RC_NOOP))
+    if (apply.rc != BGP_APPLY_RC_OK && apply.rc != BGP_APPLY_RC_NOOP)
     {
         char buf[280];
         snprintf(buf, sizeof(buf), "%s\r\n", apply.errmsg);
@@ -601,6 +606,11 @@ static int handle_bgp_addr_family(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
     }
     else
     {
+        /*
+         * 本地路由泄漏可能已隐式创建运行态 AF，显式 `af` 因而返回
+         * NOOP。NOOP 只说明运行态无需重复创建，不代表配置 DB 已有
+         * 该空 AF；仍需执行幂等写入，供 BDR、保存和回滚校验使用。
+         */
         if (bgp_db_set_instance(ctx.vrf_name, ctx.afi, ctx.safi) != 0)
         {
             bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");

@@ -23,6 +23,8 @@
 #define ROUTE_PROTOCOL_BGP 2u
 /** OSPF 路由协议 */
 #define ROUTE_PROTOCOL_OSPF 3u
+/** OSPFv3 路由协议 */
+#define ROUTE_PROTOCOL_OSPFV3 4u
 /** ISIS 路由协议 */
 #define ROUTE_PROTOCOL_ISIS 5u
 /** 通配符：匹配所有协议（用于订阅/查询过滤） */
@@ -76,6 +78,8 @@
 #define ROUTE_ADMIN_DIST_STATIC 1
 /** OSPF 路由管理距离 */
 #define ROUTE_ADMIN_DIST_OSPF 110
+/** OSPFv3 路由管理距离 */
+#define ROUTE_ADMIN_DIST_OSPFV3 110
 /** ISIS 路由管理距离 */
 #define ROUTE_ADMIN_DIST_ISIS 115
 /** BGP 路由管理距离 */

@@ -1,0 +1,21 @@
+version: 1
+image: netnexus-ci:latest
+
+images:
+  frr: netnexus-frr-ci:localtest
+
+devices:
+  r1:
+    kind: netnexus
+  f1:
+    kind: frr
+
+links:
+  - name: r1-f1
+    endpoints:
+      - device: r1
+        if: GE-1
+        cidr: 10.12.0.1/30
+      - device: f1
+        if: GE-1
+        cidr: 10.12.0.2/30

@@ -246,6 +246,24 @@ int db_rpc_exists(dev_ipc_context_t *ctx, const char *table_name, const db_filte
  */
 int db_rpc_create_table_from_def(dev_ipc_context_t *ctx, const db_table_def_t *def);
 
+/**
+ * @brief 创建父表删除后的单子表级联删除触发器
+ *
+ * 所有名称都必须是合法 SQL 标识符。触发器使用
+ * CREATE TRIGGER IF NOT EXISTS 创建，父表 DELETE 与子表 DELETE
+ * 由 SQLite 作为同一条语句原子执行。
+ *
+ * @param ctx           调用方模块的 IPC 上下文
+ * @param trigger_name  触发器名称
+ * @param parent_table  父表名称
+ * @param parent_column 父表关联列
+ * @param child_table   子表名称
+ * @param child_column  子表关联列
+ * @return ERRCODE_SUCCESS 或 ERRCODE_FAIL
+ */
+int db_rpc_create_delete_cascade(dev_ipc_context_t *ctx, const char *trigger_name, const char *parent_table,
+                                 const char *parent_column, const char *child_table, const char *child_column);
+
 // ============================================================================
 // db_record_t — 写操作键值构建器
 // ============================================================================

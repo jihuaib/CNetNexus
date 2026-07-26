@@ -57,6 +57,21 @@ static const oid OID_SYS_NAME[] = {1, 3, 6, 1, 2, 1, 1, 5, 0};
 static const oid OID_NETNEXUS_OBJECT[] = {1, 3, 6, 1, 4, 1, NETNEXUS_ENTERPRISE, 1};
 static const oid OID_SNMP_TRAP_OID[] = {1, 3, 6, 1, 6, 3, 1, 1, 4, 1, 0};
 
+static void snmp_value_entry_free(gpointer data)
+{
+    snmp_value_entry_t *entry = (snmp_value_entry_t *)data;
+    if (!entry)
+    {
+        return;
+    }
+    if (entry->registered)
+    {
+        (void)unregister_mib(entry->oid_buf, entry->oid_len);
+        entry->registered = 0;
+    }
+    g_free(entry);
+}
+
 static int parse_u16_env(const char *name, uint16_t *out)
 {
     const char *v = getenv(name);
@@ -307,7 +322,7 @@ int snmp_agent_value_set(const snmp_value_msg_t *value)
     g_mutex_lock(&g_snmp_agent_lock);
     if (!g_values_by_oid)
     {
-        g_values_by_oid = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+        g_values_by_oid = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, snmp_value_entry_free);
     }
 
     snmp_value_entry_t *entry = (snmp_value_entry_t *)g_hash_table_lookup(g_values_by_oid, key);
@@ -611,7 +626,7 @@ int snmp_agent_init(void)
 
     if (!g_values_by_oid)
     {
-        g_values_by_oid = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+        g_values_by_oid = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, snmp_value_entry_free);
     }
 
     if (init_master_agent() != 0)

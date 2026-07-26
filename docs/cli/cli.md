@@ -64,11 +64,37 @@ CLI 模块（module-id: 3）负责命令树、视图切换、命令历史、当�
 - **用法**：`show cli client`
 - **视图**：`global`
 
-### 2.7 `show configuration difference current-configuration <configuration-file>`
-比较当前运行配置和指定配置文件的差异。
+### 2.7 `show configuration difference current-configuration <snapshot-name>`
 
-- **用法**：`show configuration difference current-configuration <configuration-file>`
+按完整父视图路径比较当前运行配置和命名快照。重复命令使用 multiset 语义，
+不同 VRF/AF 下的同名命令不会互相抵消。这是回滚前唯一的只读预览入口：
+共同父视图用空格标记，目标快照独有项用 `+`（回滚会新增），当前运行配置
+独有项用 `-`（回滚会删除）。
+
+- **用法**：`show configuration difference current-configuration <snapshot-name>`
 - **视图**：`global`
+- **参数限制**：只接受 `data/configs` 下的命名快照，可带或不带 `.cfg` 后缀；
+  不接受绝对路径或包含 `/` 的路径。
+- **边界**：该命令只比较配置树，不校验每条差异是否存在安全逆命令；
+  真正执行回滚时会在修改 running 前完成正向和补偿路径预检。
+
+### 2.8 `rollback configuration <snapshot-name>`
+
+执行已经完整预检的回滚计划。流程为：
+
+1. 校验快照名、大小、capture 状态和 SHA-256。
+2. 完整采集 running BDR，并生成 `current -> target` 计划。
+3. 预检 `target -> current` 补偿路径。
+4. 执行前再次采集 running；若配置已变化则拒绝旧计划。
+5. 逐条校验期望视图深度，执行后重新采集并与 target 配置树比较。
+6. 执行或验证失败时，从实际 running 状态重算补偿计划，恢复并验证原配置。
+
+执行前可用
+`show configuration difference current-configuration <snapshot-name>` 预览层级差异。
+内部生成的 `undo/add/exit` 执行计划不再作为独立 CLI 输出。
+
+回滚不是跨进程的分布式事务；若业务模块故障导致补偿也失败，CLI 会明确报告
+running 可能处于部分状态，不会输出成功。
 
 ## 3. 系统命令
 

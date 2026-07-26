@@ -9,6 +9,7 @@
 #   ./scripts/prod/publish.sh --github-release --token-file ./.secrets/github_token
 #   ./scripts/prod/publish.sh --github-release --no-sync-tag
 #   ./scripts/prod/publish.sh --publish-only
+#   ./scripts/prod/publish.sh --local-build amd64
 #
 
 set -euo pipefail
@@ -47,6 +48,7 @@ DEFAULT_ARCHS=("amd64" "arm64")
 PUBLISH_GITHUB=0
 SYNC_TAG=1
 PUBLISH_ONLY=0
+LOCAL_BUILD=0
 GITHUB_REPO="${GITHUB_REPO:-}"
 GITHUB_TOKEN_FILE="${GITHUB_TOKEN_FILE:-${PROJECT_ROOT}/.secrets/github_token}"
 GITHUB_TOKEN_ENV="${GITHUB_TOKEN_ENV:-GITHUB_TOKEN}"
@@ -66,6 +68,8 @@ print_usage() {
   ./scripts/prod/publish.sh [选项] [amd64] [arm64]
 
 选项:
+  --local-build, --build-only
+                            只本地构建 package/ 产物，不发布 GitHub Release
   --github-release          构建后自动创建/更新 GitHub Release 并上传产物
   --publish-only            仅发布 package/ 现有产物到 GitHub（跳过构建与 tag 同步）
   --no-sync-tag             发布 GitHub Release 时不自动同步 git tag 到 origin
@@ -381,6 +385,9 @@ while [ $# -gt 0 ]; do
         --github-release)
             PUBLISH_GITHUB=1
             ;;
+        --local-build|--build-only)
+            LOCAL_BUILD=1
+            ;;
         --publish-only)
             PUBLISH_ONLY=1
             PUBLISH_GITHUB=1
@@ -423,6 +430,8 @@ while [ $# -gt 0 ]; do
     shift
 done
 
+[ "$LOCAL_BUILD" -eq 1 ] && [ "$PUBLISH_GITHUB" -eq 1 ] && die "--local-build 不能与 --github-release 或 --publish-only 同时使用"
+[ "$LOCAL_BUILD" -eq 1 ] && SYNC_TAG=0
 [ ${#TARGETS[@]} -eq 0 ] && [ "$PUBLISH_ONLY" -eq 0 ] && TARGETS=("${DEFAULT_ARCHS[@]}")
 
 # 校验架构名
@@ -456,6 +465,8 @@ if [ "$PUBLISH_GITHUB" -eq 1 ]; then
 fi
 if [ "$PUBLISH_ONLY" -eq 1 ]; then
     echo "模式    : publish-only（跳过构建，跳过 tag 同步）"
+elif [ "$LOCAL_BUILD" -eq 1 ]; then
+    echo "模式    : local-build（只生成本地产物）"
 fi
 echo ""
 
@@ -569,7 +580,7 @@ if [ "$PUBLISH_GITHUB" -eq 1 ]; then
     fi
 else
     echo ""
-    echo "GitHub Release 上传后使用方式:"
+    echo "本地产物使用方式:"
     echo "  docker load < ${IMAGE_NAME}-${VERSION}-docker-amd64.tar.gz"
     echo "  docker run --rm --cap-add NET_ADMIN --cap-add NET_RAW \\"
     echo "    --sysctl net.ipv6.conf.all.disable_ipv6=0 \\"

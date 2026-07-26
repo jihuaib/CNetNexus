@@ -1,6 +1,6 @@
 # NetNexus
 
-NetNexus 是一个用 C 实现的模块化网络控制平面实验系统。当前实现采用 DEV supervisor + 多模块独立进程的架构，提供本地 console CLI、配置持久化、接口/VRF/路由/FIB 管理，以及 BGP、BMP Server、ISIS、LDP、LLDP、Tunnel 等协议或转发相关模块。
+NetNexus 是一个用 C 实现的模块化网络控制平面实验系统。当前实现采用 DEV supervisor + 多模块独立进程的架构，提供本地 console CLI、配置持久化、接口/VRF/路由/FIB 管理，以及 BGP、BMP Server、ISIS、OSPFv2、OSPFv3、LDP、LLDP、Tunnel 等协议或转发相关模块。
 
 项目主要面向本地开发、Docker/GNS3 拓扑验证和协议功能实验。
 
@@ -16,6 +16,8 @@ NetNexus 是一个用 C 实现的模块化网络控制平面实验系统。当�
   - BGP：IPv4/IPv6 unicast、VPNv4、IPv4 labeled、QP AF、邻居、update-group、route refresh、VRF import/export、BMP collector 配置。
   - SBMP：BMP server 监听、client/peer/route 展示。
   - ISIS：实例、AF、接口使能、邻居、LSDB、SPF/路由同步。
+  - OSPFv2：进程和接口配置、邻居、Router/Network LSA、区域内 SPF、RIB/FIB 路由同步。
+  - OSPFv3：IPv6 链路本地邻接、Router/Network/Link/Intra-Area-Prefix LSA、区域内 SPF、IPv6 RIB/FIB 路由同步。
   - LDP：全局/接口使能、hello/hold 定时器、发现与会话基础处理、状态展示。
   - LLDP：全局/接口使能、timer/hold 配置、接口状态展示。
   - Tunnel：candidate、NHLFE、FTN、ILM、watch、label 等 MPLS tunnel 状态展示。
@@ -39,6 +41,8 @@ NetNexus 是一个用 C 实现的模块化网络控制平面实验系统。当�
 | `netnexus-bgp` | BGP/BMP collector 模块进程 |
 | `netnexus-sbmp` | BMP server 模块进程 |
 | `netnexus-isis` | ISIS 模块进程 |
+| `netnexus-ospf` | OSPFv2 模块进程 |
+| `netnexus-ospfv3` | OSPFv3/IPv6 模块进程 |
 | `netnexus-ldp` | LDP 模块进程 |
 | `netnexus-lldp` | LLDP 模块进程 |
 | `netnexus-tunnel` | MPLS tunnel 模块进程 |
@@ -63,6 +67,8 @@ NetNexus 是一个用 C 实现的模块化网络控制平面实验系统。当�
 │   ├── bgp/                 # BGP、VPNv4、BMP collector
 │   ├── sbmp/                # BMP server
 │   ├── isis/                # ISIS
+│   ├── ospf/                # OSPFv2
+│   ├── ospfv3/              # OSPFv3
 │   ├── ldp/                 # LDP
 │   ├── lldp/                # LLDP
 │   ├── tunnel/              # MPLS tunnel
@@ -160,6 +166,7 @@ cmake --build build -j"$(nproc)"
 - `docs/cli/fib.md`
 - `docs/cli/bgp.md`
 - `docs/cli/isis.md`
+- `docs/cli/ospf.md`
 - `docs/cli/ldp.md`
 - `docs/cli/lldp.md`
 - `docs/cli/sbmp.md`
@@ -176,9 +183,12 @@ startup configuration <name> cfg
 show startup configuration
 show configuration replay-failures
 show current-configuration
+show configuration difference current-configuration <name>
+rollback configuration <name>
 ```
 
 `db` 模式在冷启动时恢复 SQLite 快照；`cfg` 模式从空 running DB 启动后回放配置文本。
+回滚设计和安全边界见 `docs/dev/cfg-startup-rollback.md`。
 
 ## Docker 和 GNS3
 
@@ -276,4 +286,6 @@ Valgrind：
 - GNS3 Server：`docs/dev/gns3-server-setup.md`
 - BGP VPNv4/VRF 设计记录：`docs/dev/bgp-vpnv4-vrf-import.md`、`docs/dev/bgp-vpnv4-vrf-export.md`
 - ISIS 设计记录：`docs/dev/isis-standard-protocol.md`、`docs/dev/isis-spf-multipath.md`
+- OSPFv2 CLI 与实现说明：`docs/cli/ospf.md`
+- OSPFv3 CLI 与实现说明：`docs/cli/ospfv3.md`
 - LLDP 进度记录：`docs/dev/lldp-progress.md`

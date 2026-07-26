@@ -208,6 +208,11 @@ int if_worker_post_vrf_down(void);
 int if_worker_post_restore_done(void);
 
 /**
+ * @brief SNMP READY 后异步刷新标准 IF-MIB 数据。
+ */
+int if_worker_post_snmp_refresh(void);
+
+/**
  * @brief 查询 worker restore_done 标志（worker 线程内调用）
  */
 int if_worker_is_restore_done(void);

@@ -365,12 +365,63 @@ void cli_cfg_anchor_agg_feed(cli_cfg_anchor_aggregator_t *agg, const char *modul
     }
 }
 
+static gboolean line_is_config_separator(const char *line, gsize len)
+{
+    gsize start = 0;
+    gsize end = len;
+
+    while (start < end && (line[start] == ' ' || line[start] == '\t' || line[start] == '\r'))
+    {
+        start++;
+    }
+    while (end > start && (line[end - 1] == ' ' || line[end - 1] == '\t' || line[end - 1] == '\r'))
+    {
+        end--;
+    }
+
+    return end - start == 1 && line[start] == '!';
+}
+
+/*
+ * 各模块独立生成配置片段，模块边界或相邻 anchor 边界可能形成多条
+ * 连续的 `!`。配置模型本来就忽略分隔符；这里在统一渲染出口将其
+ * 规范为一条，同时保留其它行及原始 LF/CRLF 字节。
+ */
+static void append_collapsed_config_separators(GString *out, const char *text, gsize len)
+{
+    gsize pos = 0;
+    gboolean previous_was_separator = FALSE;
+
+    while (pos < len)
+    {
+        gsize line_start = pos;
+        while (pos < len && text[pos] != '\n')
+        {
+            pos++;
+        }
+        gsize line_end = pos;
+        if (pos < len)
+        {
+            pos++;
+        }
+
+        gboolean is_separator = line_is_config_separator(text + line_start, line_end - line_start);
+        if (!is_separator || !previous_was_separator)
+        {
+            g_string_append_len(out, text + line_start, pos - line_start);
+        }
+        previous_was_separator = is_separator;
+    }
+}
+
 void cli_cfg_anchor_agg_render(cli_cfg_anchor_aggregator_t *agg, GString *out)
 {
     if (!agg || !out)
     {
         return;
     }
+
+    gsize render_start = out->len;
 
     /* 1) 先输出全局片段 */
     if (agg->global && agg->global->len > 0)
@@ -409,5 +460,14 @@ void cli_cfg_anchor_agg_render(cli_cfg_anchor_aggregator_t *agg, GString *out)
         {
             g_string_append(out, CLI_CFG_ANCHOR_DEFAULT_FOOTER);
         }
+    }
+
+    if (out->len > render_start)
+    {
+        GString *canonical = g_string_sized_new(out->len - render_start);
+        append_collapsed_config_separators(canonical, out->str + render_start, out->len - render_start);
+        g_string_truncate(out, render_start);
+        g_string_append_len(out, canonical->str, canonical->len);
+        g_string_free(canonical, TRUE);
     }
 }

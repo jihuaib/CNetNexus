@@ -41,6 +41,8 @@ static inline const char *access_console_sock_path(void)
 #define ACCESS_MSG_SESSION_CLOSE DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ACCESS, 0x0005)
 /** ACCESS→CLI：继续拉取 LINE_INPUT 的分片响应，payload=uint32_t line_id；CLI 回 ACCESS_MSG_INPUT_RESP */
 #define ACCESS_MSG_INPUT_CONTINUE DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ACCESS, 0x0006)
+/** CLI→ACCESS：内部 CFG 回放/回滚直接应用持久化 line 配置 */
+#define ACCESS_MSG_CONFIG_APPLY DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ACCESS, 0x0007)
 
 /** CLI→ACCESS：SESSION_OPEN 响应（access_text_resp_t，text=welcome 文本） */
 #define ACCESS_MSG_OPEN_RESP DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ACCESS, 0x0081)
@@ -54,6 +56,8 @@ static inline const char *access_console_sock_path(void)
 #define ACCESS_MSG_CLOSE_RESP DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ACCESS, 0x0085)
 /** CLI→ACCESS：LINE_INPUT 执行期间的单向进度输出（access_line_progress_t） */
 #define ACCESS_MSG_LINE_PROGRESS DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ACCESS, 0x0086)
+/** ACCESS→CLI：内部配置应用响应（payload 为 null 结尾文本） */
+#define ACCESS_MSG_CONFIG_APPLY_RESP DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ACCESS, 0x0087)
 
 /** ACCESS 内部消息：DB READY（DB 事件回调投递到 worker 线程做建表/恢复，回调本身不能阻塞） */
 #define ACCESS_MSG_INTERNAL_DB_READY DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ACCESS, 0x00F1)
@@ -86,13 +90,14 @@ enum
     ACCESS_LINE_CMD_NONE = 0,            /**< 非 line 命令（普通命令，已由 CLI 处理） */
     ACCESS_LINE_CMD_BASH = 1,            /**< bash：进入 shell */
     ACCESS_LINE_CMD_TERMINAL_LENGTH = 2, /**< terminal length 0 / no terminal length 0 */
-    ACCESS_LINE_CMD_LINE_ENTER = 3, /**< line vty/console：进入 line 视图（视图切换由 CLI 完成，ACCESS no-op） */
+    ACCESS_LINE_CMD_LINE_ENTER = 3, /**< line vty：进入 line 视图（视图切换由 CLI 完成，ACCESS no-op） */
     ACCESS_LINE_CMD_TRANSPORT_TELNET = 4, /**< transport input telnet */
     ACCESS_LINE_CMD_TRANSPORT_SSH = 5,    /**< transport input ssh（占位，暂不支持） */
     ACCESS_LINE_CMD_TRANSPORT_ALL = 6,    /**< transport input all */
     ACCESS_LINE_CMD_TRANSPORT_NONE = 7,   /**< transport input none / no transport input */
     ACCESS_LINE_CMD_TELNET_SERVER = 8,    /**< telnet server enable / no telnet server enable（全局监听开关） */
     ACCESS_LINE_CMD_SHOW_LINE = 9,        /**< show line（显示各线类型/transport/状态） */
+    ACCESS_LINE_CMD_CONSOLE_ENTER = 10,   /**< line console 0：进入 console 视图（ACCESS no-op） */
 };
 
 /** line 视图上下文 ID（全局唯一，避开 BGP 的 2/5/7/10/11/12） */
@@ -155,6 +160,20 @@ typedef struct access_line_progress
     uint32_t line_id; /**< 线号 */
     char text[];      /**< 变长，null 结尾 */
 } access_line_progress_t;
+
+/**
+ * @brief CFG 内部会话直接应用 ACCESS 持久化配置
+ *
+ * 正常交互命令仍随 INPUT_RESP 回到发起该命令的 ACCESS line 执行；冷启动 CFG
+ * 回放没有真实 line，因此通过此 RPC 显式应用，避免命令被静默丢弃。
+ */
+typedef struct access_config_apply
+{
+    uint32_t line_cmd;
+    uint32_t line_cmd_no;
+    uint32_t line_arg1;
+    uint32_t line_arg2;
+} access_config_apply_t;
 
 /**
  * @brief TAB_RESP 响应

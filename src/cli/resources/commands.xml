@@ -195,7 +195,7 @@
             </commands>
         </group>
 
-        <!-- show configuration difference current-configuration <configuration-file> -->
+        <!-- show configuration difference current-configuration <snapshot-name> -->
         <group group-id="12">
             <elements>
                 <element id="1" type="keyword">
@@ -215,15 +215,41 @@
                     <description>Use current configuration as baseline</description>
                 </element>
                 <element id="5" cfg-id="1" type="parameter">
-                    <name>&lt;configuration-file&gt;</name>
-                    <description>Configuration file path or saved cfg name</description>
-                    <type>string(1-255)</type>
+                    <name>&lt;snapshot-name&gt;</name>
+                    <description>Saved snapshot name, with optional .cfg suffix</description>
+                    <type>string(1-67)</type>
                 </element>
             </elements>
 
             <commands>
                 <command>
                     <expression>1 2 3 4 5</expression>
+                    <views>global</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- 层级配置回滚；差异预览统一使用 group 12 的 difference 命令 -->
+        <group group-id="13">
+            <elements>
+                <element id="1" cfg-id="1" type="keyword">
+                    <name>rollback</name>
+                    <description>Apply a preflighted configuration rollback</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>configuration</name>
+                    <description>Configuration snapshot</description>
+                </element>
+                <element id="3" cfg-id="2" type="parameter">
+                    <name>&lt;snapshot-name&gt;</name>
+                    <description>Saved snapshot name, with optional .cfg suffix</description>
+                    <type>string(1-67)</type>
+                </element>
+            </elements>
+
+            <commands>
+                <command>
+                    <expression>1 2 3</expression>
                     <views>global</views>
                 </command>
             </commands>

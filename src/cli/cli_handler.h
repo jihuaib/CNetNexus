@@ -34,6 +34,7 @@ typedef struct
     GString *access_out_pending; // LINE_INPUT 超长输出的待发送分片缓存
     gsize access_out_offset;     // access_out_pending 已发送偏移
     uint32_t close_requested;    // 1=命令要求关闭本会话（顶层 exit）
+    uint32_t internal_session;   // 1=启动回放/在线回滚使用的无终端内部会话
 
     // ACCESS line 层本地命令：CLI 匹配到 module=ACCESS 的命令时填这两个字段，
     // 经 INPUT_RESP 回传给 ACCESS 本地执行（bash/terminal length），不走 IPC 分发。

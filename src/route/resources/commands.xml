@@ -202,12 +202,13 @@
                        6=proto, 7=static, 8=bgp, 9=ospf, 10=summary,
                        11=connected, 12=isis,
                        13=<prefix-length-v4>, 14=<prefix-length-v6>,
-                       15=subscribe, 16=vrf, 17=vrf-name, 18=<ipv6-destination>
+                       15=subscribe, 16=vrf, 17=vrf-name, 18=<ipv6-destination>,
+                       19=ospfv3
              cfg-id: 1=ipv4, 2=ipv6, 4=dest_filter,
                      5=proto:static, 6=proto:bgp, 7=proto:ospf, 8=summary,
                      9=proto:connected, 11=proto:isis,
                      12=dest_prefix_len_v4, 13=dest_prefix_len_v6,
-                     14=subscribe, 15=vrf, 16=vrf-name
+                     14=subscribe, 15=vrf, 16=vrf-name, 17=proto:ospfv3
              ================================================================ -->
         <group group-id="2">
             <elements>
@@ -288,6 +289,10 @@
                     <type>ipv6</type>
                     <description>Filter by IPv6 destination address</description>
                 </element>
+                <element id="19" cfg-id="17" type="keyword">
+                    <name>ospfv3</name>
+                    <description>OSPFv3 routes</description>
+                </element>
             </elements>
 
             <commands>
@@ -319,6 +324,11 @@
                 <!-- show route { ipv4 | ipv6 } [vrf <name>] proto ospf -->
                 <command>
                     <expression>1 2 {3 | 4} [16 17] 6 9</expression>
+                    <views>global</views>
+                </command>
+                <!-- show route ipv6 [vrf <name>] proto ospfv3 -->
+                <command>
+                    <expression>1 2 4 [16 17] 6 19</expression>
                     <views>global</views>
                 </command>
                 <!-- show route { ipv4 | ipv6 } [vrf <name>] proto connected -->

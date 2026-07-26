@@ -1512,8 +1512,9 @@ static int handle_dev_swap_image(dev_ipc_context_t *ctx, dev_ipc_message_t *msg,
 static int handle_set_log_level(dev_ipc_context_t *ctx, dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
     /* cfg_id 1=debug 2=info 3=warn 4=error，由 commands.xml 中 keyword 元素定义 */
-    log_level_t selected = LOG_LEVEL_DEBUG;
-    int found = 0;
+    gboolean is_no = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
+    log_level_t selected = is_no ? dev_db_default_log_level() : LOG_LEVEL_DEBUG;
+    int found = is_no ? 1 : 0;
 
     cli_tlv_entry_t entry;
     while (cli_tlv_next(parser, &entry) == 1)

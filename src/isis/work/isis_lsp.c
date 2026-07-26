@@ -825,7 +825,7 @@ static void isis_lsp_collect_reach_cb(gpointer key, gpointer value, gpointer use
     }
 
     const if_api_cache_entry_t *if_entry = if_api_cache_lookup(if_cfg->ifname);
-    if (!if_entry || !if_entry->proto_up || if_entry->ifindex == 0u)
+    if (!isis_if_entry_matches_instance(ctx->inst, if_entry) || !if_entry->proto_up || if_entry->ifindex == 0u)
     {
         return;
     }
@@ -1329,7 +1329,7 @@ static void isis_lsp_flood_if_cb(gpointer key, gpointer value, gpointer user_dat
     }
 
     const if_api_cache_entry_t *if_entry = if_api_cache_lookup(if_cfg->ifname);
-    if (!if_entry || !if_entry->proto_up || if_entry->ifindex == 0u)
+    if (!isis_if_entry_matches_instance(ctx->inst, if_entry) || !if_entry->proto_up || if_entry->ifindex == 0u)
     {
         return;
     }
@@ -1363,7 +1363,7 @@ static void isis_lsp_send_if_cb(gpointer key, gpointer value, gpointer user_data
     }
 
     const if_api_cache_entry_t *if_entry = if_api_cache_lookup(if_cfg->ifname);
-    if (!if_entry || !if_entry->proto_up || if_entry->ifindex == 0u)
+    if (!isis_if_entry_matches_instance(ctx->inst, if_entry) || !if_entry->proto_up || if_entry->ifindex == 0u)
     {
         return;
     }
@@ -1470,7 +1470,7 @@ void isis_lsp_send_due(isis_instance_cfg_t *inst, int raw_fd, uint64_t now_msec)
             continue;
         }
         const if_api_cache_entry_t *pn_if_entry = if_api_cache_lookup(pn_if_cfg->ifname);
-        if (!pn_if_entry || !pn_if_entry->proto_up || pn_if_entry->ifindex == 0u)
+        if (!isis_if_entry_matches_instance(inst, pn_if_entry) || !pn_if_entry->proto_up || pn_if_entry->ifindex == 0u)
         {
             continue;
         }
@@ -1613,7 +1613,8 @@ static void isis_lsp_apply_instance_cb(gpointer key, gpointer value, gpointer us
         return;
     }
 
-    if (!inst->admin_up || !isis_level_enabled(inst, ctx->level))
+    if (!inst->admin_up || !isis_level_enabled(inst, ctx->level) ||
+        !isis_if_entry_matches_instance(inst, ctx->if_entry))
     {
         return;
     }

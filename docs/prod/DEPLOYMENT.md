@@ -199,6 +199,8 @@ startup configuration <name> cfg
 show startup configuration
 show configuration replay-failures
 show current-configuration
+show configuration difference current-configuration <name>
+rollback configuration <name>
 ```
 
 `db` 模式恢复 SQLite 快照；`cfg` 模式从空 running DB 启动后回放配置文本。

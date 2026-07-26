@@ -7,9 +7,12 @@ ISIS 模块（module-id: 9）提供实例配置、接口使能、LAN 邻居、LS
 | 命令 | 视图 | 说明 |
 | --- | --- | --- |
 | `isis <tag>` | config | 创建或进入 ISIS 实例视图 |
+| `isis <tag> vrf <vrf-name>` | config | 创建或进入指定 VRF 的 ISIS 实例；`vrf` 位于 tag 之后 |
 | `no isis [<tag>]` | config, isis | 删除实例；在 ISIS 视图中可省略 `<tag>` 删除当前实例 |
 
 ISIS 视图提示符为 `<NetNexus(config-isis-{ctx:8})>`。
+未带 `vrf` 的实例属于 `public`。接口所属 VRF 必须与实例绑定的 VRF 一致，IPv4 和
+IPv6 路由会写入该 VRF 的 RIB、FIB 和 Linux 路由表。
 
 ## ISIS 视图命令
 

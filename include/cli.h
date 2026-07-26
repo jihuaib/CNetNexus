@@ -77,6 +77,10 @@
 #define CLI_VIEW_ISIS "isis"
 /** LDP 配置视图 */
 #define CLI_VIEW_LDP "ldp"
+/** OSPFv2 配置视图 */
+#define CLI_VIEW_OSPF "ospf"
+/** OSPFv3 配置视图 */
+#define CLI_VIEW_OSPFV3 "ospfv3"
 /** BGP 地址族 IPv4 单播视图 */
 #define CLI_VIEW_BGP_AF_IPV4 "bgp-af-ipv4-uni"
 /** BGP 地址族 IPv6 单播视图 */
@@ -135,10 +139,14 @@
 #define CLI_CTX_ID_ISIS_TAG 8
 /** VRF 视图当前 AF AFI 上下文（整数：VRF_AFI_*） */
 #define CLI_CTX_ID_VRF_AFI 9
+/** OSPFv2 进程 ID 上下文（整数） */
+#define CLI_CTX_ID_OSPF_PROCESS 10
 /** LDP 视图占位上下文（无字段，单实例 LDP；保留给将来多实例使用） */
 #define CLI_CTX_ID_LDP_INST 11
 /** ACCESS line_id 系统上下文（CLI 分发时注入，供业务模块输出实时进度） */
 #define CLI_CTX_ID_ACCESS_LINE 12
+/** OSPFv3 进程 ID 上下文（整数） */
+#define CLI_CTX_ID_OSPFV3_PROCESS 13
 
 /** 视图名称最大长度 */
 #define CLI_CLI_MAX_VIEW_LEN 20
@@ -470,6 +478,7 @@ void cli_cfg_anchor_agg_feed(cli_cfg_anchor_aggregator_t *agg, const char *modul
  *        - 若某 anchor 无 header: 视为孤儿, 丢弃其 body 并记录日志。
  *        - 若某 anchor 无 footer: 使用默认 "!\r\n" 作为保底段尾。
  *        - 若某 anchor 的合并 body 为空: 整段跳过, 不输出空壳块。
+ *        - 聚合完成后将连续的配置分隔符行折叠为一条。
  */
 void cli_cfg_anchor_agg_render(cli_cfg_anchor_aggregator_t *agg, GString *out);
 

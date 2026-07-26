@@ -67,7 +67,8 @@ static void isis_zero_addr_for_afi(uint16_t afi, net_addr_t *out)
     out->family = (afi == ROUTE_AFI_IPV6) ? AF_INET6 : AF_INET;
 }
 
-void isis_nexthop_make_route_key(uint16_t afi, uint32_t key_ifindex, const net_addr_t *nexthop, route_nhobj_key_t *key)
+void isis_nexthop_make_route_key(uint32_t vrf_id, uint16_t afi, uint32_t key_ifindex, const net_addr_t *nexthop,
+                                 route_nhobj_key_t *key)
 {
     if (!key)
     {
@@ -75,7 +76,7 @@ void isis_nexthop_make_route_key(uint16_t afi, uint32_t key_ifindex, const net_a
     }
 
     memset(key, 0, sizeof(*key));
-    key->vrf_id = ROUTE_VRF_DEFAULT;
+    key->vrf_id = vrf_id;
     key->protocol = ROUTE_PROTOCOL_ISIS;
     key->afi = afi;
     key->nh_type = ROUTE_NH_TYPE_IP;

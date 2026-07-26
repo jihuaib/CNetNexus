@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include "cli.h"
+#include "config_capture.h"
 #include "db.h"
 #include "db_config.h"
 #include "db_main.h"
@@ -447,7 +448,9 @@ static GArray *db_collect_connected_modules_for_bdr(void)
     for (int i = 0; i < ctx->num_connections; i++)
     {
         dev_ipc_connection_t *conn = ctx->connections[i];
-        if (!conn || conn->state != DEV_IPC_COCONNECTED)
+        /* DEV DOWN 后旧 socket 会短暂保留以排空在途响应，但不能再承载
+         * SHOW_CONFIG query；不要把这种 draining transport 当成可采集模块。 */
+        if (!conn || conn->state != DEV_IPC_COCONNECTED || conn->draining)
         {
             continue;
         }
@@ -478,12 +481,137 @@ static GArray *db_collect_connected_modules_for_bdr(void)
     return modules;
 }
 
+static gboolean db_module_array_contains(const GArray *modules, uint32_t module_id)
+{
+    for (guint i = 0; modules && i < modules->len; i++)
+    {
+        if (g_array_index((GArray *)modules, uint32_t, i) == module_id)
+        {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+/** 在本地 running DB 中安全检查配置标识表是否存在且非空。 */
+static int db_capture_table_has_rows(const char *table_name, gboolean *has_rows)
+{
+    if (!table_name || !has_rows || !g_db_local || !g_db_local->main_conn || !g_db_local->main_conn->handle)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    *has_rows = FALSE;
+    db_connection_t *conn = g_db_local->main_conn;
+    sqlite3_stmt *stmt = NULL;
+    int ret = ERRCODE_FAIL;
+
+    g_mutex_lock(&conn->db_mutex);
+    int rc = sqlite3_prepare_v2(conn->handle, "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1 LIMIT 1;", -1,
+                                &stmt, NULL);
+    if (rc != SQLITE_OK)
+    {
+        goto out;
+    }
+    sqlite3_bind_text(stmt, 1, table_name, -1, SQLITE_TRANSIENT);
+    int step_rc = sqlite3_step(stmt);
+    gboolean table_exists = FALSE;
+    if (step_rc == SQLITE_ROW)
+    {
+        table_exists = TRUE;
+    }
+    else if (step_rc != SQLITE_DONE)
+    {
+        goto out;
+    }
+    sqlite3_finalize(stmt);
+    stmt = NULL;
+    if (!table_exists)
+    {
+        ret = ERRCODE_SUCCESS;
+        goto out;
+    }
+
+    char *sql = sqlite3_mprintf("SELECT 1 FROM \"%w\" LIMIT 1;", table_name);
+    if (!sql)
+    {
+        goto out;
+    }
+    rc = sqlite3_prepare_v2(conn->handle, sql, -1, &stmt, NULL);
+    sqlite3_free(sql);
+    if (rc != SQLITE_OK)
+    {
+        goto out;
+    }
+    step_rc = sqlite3_step(stmt);
+    if (step_rc == SQLITE_ROW)
+    {
+        *has_rows = TRUE;
+    }
+    else if (step_rc == SQLITE_DONE)
+    {
+        *has_rows = FALSE;
+    }
+    else
+    {
+        goto out;
+    }
+    ret = ERRCODE_SUCCESS;
+
+out:
+    if (stmt)
+    {
+        sqlite3_finalize(stmt);
+    }
+    g_mutex_unlock(&conn->db_mutex);
+    return ret;
+}
+
+static int db_validate_bdr_module_coverage(const GArray *modules, GHashTable *inactive_optional_modules, char **err)
+{
+    for (guint i = 0; i < CONFIG_CAPTURE_OWNER_COUNT; i++)
+    {
+        const config_capture_owner_t *owner = &CONFIG_CAPTURE_OWNERS[i];
+        gboolean required = owner->always_required;
+        if (!required && owner->revive_table)
+        {
+            if (db_capture_table_has_rows(owner->revive_table, &required) != ERRCODE_SUCCESS)
+            {
+                if (err)
+                {
+                    *err = g_strdup_printf("Configuration capture could not inspect %s table '%s'", owner->module_name,
+                                           owner->revive_table);
+                }
+                return ERRCODE_FAIL;
+            }
+        }
+
+        if (!required && !owner->always_required && inactive_optional_modules)
+        {
+            /* revive_table 是“是否存在可回放配置”的权威 marker。最后一项
+             * 配置已删除后，退出模块的被动 socket 可能尚未收到 EOF；此时
+             * 不应因为物理连接仍在就继续请求 BDR。 */
+            g_hash_table_add(inactive_optional_modules, GUINT_TO_POINTER(owner->module_id));
+        }
+        if (required && !db_module_array_contains(modules, owner->module_id))
+        {
+            if (err)
+            {
+                *err = g_strdup_printf("Configuration capture incomplete: required module %s (0x%08X) is not connected",
+                                       owner->module_name, owner->module_id);
+            }
+            return ERRCODE_FAIL;
+        }
+    }
+    return ERRCODE_SUCCESS;
+}
+
 static dev_ipc_message_t *db_create_show_config_request(uint32_t mod_id)
 {
     return dev_ipc_message_create(CLI_MSG_TYPE_SHOW_CONFIG, DEV_MODULE_ID_DB, mod_id, 0, NULL, 0, NULL);
 }
 
-static void db_collect_module_bdr(uint32_t mod_id, GString *output)
+static int db_collect_module_bdr(uint32_t mod_id, GString *output)
 {
     if (output)
     {
@@ -493,11 +621,12 @@ static void db_collect_module_bdr(uint32_t mod_id, GString *output)
     dev_ipc_message_t *req = db_create_show_config_request(mod_id);
     if (!req)
     {
-        return;
+        return ERRCODE_FAIL;
     }
 
     const uint32_t max_chunks = 4096;
     uint32_t chunks = 0;
+    int ret = ERRCODE_FAIL;
     while (req && chunks < max_chunks)
     {
         uint32_t timeout_ms = (chunks == 0) ? 1000 : 5000;
@@ -508,6 +637,7 @@ static void db_collect_module_bdr(uint32_t mod_id, GString *output)
 
         if (!resp)
         {
+            LOG_WARN("DB-CONFIG: module 0x%08X BDR query timed out or disconnected", mod_id);
             break;
         }
 
@@ -526,6 +656,10 @@ static void db_collect_module_bdr(uint32_t mod_id, GString *output)
                     LOG_WARN("DB-CONFIG: create CONTINUE failed for module 0x%08X", mod_id);
                 }
             }
+            else
+            {
+                ret = ERRCODE_SUCCESS;
+            }
         }
         else
         {
@@ -543,7 +677,9 @@ static void db_collect_module_bdr(uint32_t mod_id, GString *output)
     if (chunks >= max_chunks)
     {
         LOG_WARN("DB-CONFIG: module 0x%08X exceeded BDR chunk limit", mod_id);
+        ret = ERRCODE_FAIL;
     }
+    return ret;
 }
 
 static int db_collect_bdr_config(char **cfg_text, char **err)
@@ -567,11 +703,36 @@ static int db_collect_bdr_config(char **cfg_text, char **err)
     cli_cfg_anchor_aggregator_t *agg = cli_cfg_anchor_agg_new();
     GString *module_out = g_string_new("");
     GArray *modules = db_collect_connected_modules_for_bdr();
+    GHashTable *inactive_optional_modules = g_hash_table_new(g_direct_hash, g_direct_equal);
+
+    if (db_validate_bdr_module_coverage(modules, inactive_optional_modules, err) != ERRCODE_SUCCESS)
+    {
+        g_hash_table_destroy(inactive_optional_modules);
+        g_array_free(modules, TRUE);
+        g_string_free(module_out, TRUE);
+        cli_cfg_anchor_agg_free(agg);
+        return ERRCODE_FAIL;
+    }
 
     for (guint i = 0; i < modules->len; i++)
     {
         uint32_t mod_id = g_array_index(modules, uint32_t, i);
-        db_collect_module_bdr(mod_id, module_out);
+        if (g_hash_table_contains(inactive_optional_modules, GUINT_TO_POINTER(mod_id)))
+        {
+            continue;
+        }
+        if (db_collect_module_bdr(mod_id, module_out) != ERRCODE_SUCCESS)
+        {
+            if (err)
+            {
+                *err = g_strdup_printf("Configuration capture failed for module 0x%08X", mod_id);
+            }
+            g_hash_table_destroy(inactive_optional_modules);
+            g_array_free(modules, TRUE);
+            g_string_free(module_out, TRUE);
+            cli_cfg_anchor_agg_free(agg);
+            return ERRCODE_FAIL;
+        }
         if (module_out->len > 0)
         {
             cli_cfg_anchor_agg_feed(agg, module_out->str);
@@ -581,6 +742,7 @@ static int db_collect_bdr_config(char **cfg_text, char **err)
     GString *full = g_string_new("");
     cli_cfg_anchor_agg_render(agg, full);
 
+    g_hash_table_destroy(inactive_optional_modules);
     g_array_free(modules, TRUE);
     g_string_free(module_out, TRUE);
     cli_cfg_anchor_agg_free(agg);

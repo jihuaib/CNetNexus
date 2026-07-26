@@ -6,6 +6,7 @@
  */
 #include "lldp_worker.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <linux/if_packet.h>
 #include <net/ethernet.h>
@@ -27,7 +28,9 @@
 #include "lldp.h"
 #include "lldp_packet.h"
 #include "lldp_show.h"
+#include "lldp_snmp_report.h"
 #include "log.h"
+#include "syslog_report.h"
 
 #define LLDP_MAX_EPOLL_EVENTS 8
 #define LLDP_MAX_FRAME_LEN 1500u
@@ -301,35 +304,119 @@ static char *neighbor_key(const char *ifname, const lldp_packet_t *pkt)
     return g_string_free(s, FALSE);
 }
 
-static void upsert_neighbor(const char *ifname, const lldp_packet_t *pkt, uint64_t now)
+static void lldp_neighbor_id_text(const uint8_t *data, uint16_t data_len, char *buf, size_t len)
+{
+    if (!buf || len == 0)
+    {
+        return;
+    }
+    buf[0] = '\0';
+    if (!data || data_len == 0u)
+    {
+        return;
+    }
+
+    int printable = 1;
+    for (uint16_t i = 0; i < data_len; ++i)
+    {
+        if (!isprint((unsigned char)data[i]))
+        {
+            printable = 0;
+            break;
+        }
+    }
+    if (printable)
+    {
+        size_t copy = data_len < len - 1u ? data_len : len - 1u;
+        memcpy(buf, data, copy);
+        buf[copy] = '\0';
+        return;
+    }
+
+    size_t used = 0u;
+    for (uint16_t i = 0; i < data_len && used + 3u < len; ++i)
+    {
+        int n = snprintf(buf + used, len - used, "%s%02x", i == 0u ? "" : ":", data[i]);
+        if (n < 0 || (size_t)n >= len - used)
+        {
+            buf[len - 1u] = '\0';
+            return;
+        }
+        used += (size_t)n;
+    }
+}
+
+static void lldp_neighbor_syslog(const lldp_neighbor_t *n, const char *state, const char *reason)
+{
+    if (!n)
+    {
+        return;
+    }
+
+    char chassis[128] = {0};
+    char port[128] = {0};
+    lldp_neighbor_id_text(n->chassis_id, n->chassis_len, chassis, sizeof(chassis));
+    lldp_neighbor_id_text(n->port_id, n->port_len, port, sizeof(port));
+
+    syslog_report(strcmp(state, "up") == 0 ? SYSLOG_REPORT_NOTICE : SYSLOG_REPORT_WARNING, "lldp",
+                  strcmp(state, "up") == 0 ? "neighbor-up" : "neighbor-down",
+                  "interface=%s neighbor=%s state=%s reason=%s chassis_subtype=%u chassis=%s port_subtype=%u port=%s "
+                  "port_desc=\"%s\" ttl=%u",
+                  n->ifname, n->system_name[0] ? n->system_name : "-", state, reason ? reason : "update",
+                  (unsigned)n->chassis_subtype, chassis[0] ? chassis : "-", (unsigned)n->port_subtype,
+                  port[0] ? port : "-", n->port_desc, (unsigned)n->ttl);
+}
+
+static gboolean upsert_neighbor(const char *ifname, const lldp_packet_t *pkt, uint64_t now)
 {
     char *key = neighbor_key(ifname, pkt);
     if (!key)
     {
-        return;
+        return FALSE;
     }
 
     if (pkt->ttl == 0u)
     {
+        gboolean removed = FALSE;
+        lldp_neighbor_t *old = g_hash_table_lookup(g_lldp_work_local->neighbors, key);
+        if (old)
+        {
+            lldp_neighbor_syslog(old, "down", "ttl-zero");
+        }
         if (g_hash_table_remove(g_lldp_work_local->neighbors, key))
         {
             g_lldp_work_local->stats.neighbor_deletes++;
+            removed = TRUE;
         }
         g_free(key);
-        return;
+        return removed;
     }
 
     lldp_neighbor_t *n = g_hash_table_lookup(g_lldp_work_local->neighbors, key);
+    gboolean changed = FALSE;
+    gboolean is_new = FALSE;
     if (!n)
     {
         n = g_malloc0(sizeof(*n));
         if (!n)
         {
             g_free(key);
-            return;
+            return FALSE;
         }
         g_hash_table_insert(g_lldp_work_local->neighbors, key, n);
         key = NULL;
+        changed = TRUE;
+        is_new = TRUE;
+    }
+    else if (n->chassis_subtype != pkt->chassis_id.subtype || n->chassis_len != pkt->chassis_id.len ||
+             memcmp(n->chassis_id, pkt->chassis_id.data, pkt->chassis_id.len) != 0 ||
+             n->port_subtype != pkt->port_id.subtype || n->port_len != pkt->port_id.len ||
+             memcmp(n->port_id, pkt->port_id.data, pkt->port_id.len) != 0 ||
+             g_strcmp0(n->system_name, pkt->system_name) != 0 || g_strcmp0(n->port_desc, pkt->port_desc) != 0 ||
+             g_strcmp0(n->system_desc, pkt->system_desc) != 0 || n->caps_supported != pkt->caps_supported ||
+             n->caps_enabled != pkt->caps_enabled)
+    {
+        changed = TRUE;
     }
 
     g_strlcpy(n->ifname, ifname, sizeof(n->ifname));
@@ -348,7 +435,12 @@ static void upsert_neighbor(const char *ifname, const lldp_packet_t *pkt, uint64
     n->caps_supported = pkt->caps_supported;
     n->caps_enabled = pkt->caps_enabled;
     g_lldp_work_local->stats.neighbor_updates++;
+    if (is_new)
+    {
+        lldp_neighbor_syslog(n, "up", "learned");
+    }
     g_free(key);
+    return changed;
 }
 
 static void handle_raw_event(void)
@@ -394,6 +486,7 @@ static void handle_raw_event(void)
         }
 
         lldp_worker_lock();
+        gboolean snmp_refresh = FALSE;
         g_lldp_work_local->stats.rx_frames++;
         lldp_iface_state_t *iface = g_hash_table_lookup(g_lldp_work_local->interfaces, ifname);
         if (!iface)
@@ -411,18 +504,23 @@ static void handle_raw_event(void)
         lldp_packet_t pkt;
         if (lldp_packet_parse(frame + ETH_HLEN, (size_t)n - ETH_HLEN, &pkt) == ERRCODE_SUCCESS)
         {
-            upsert_neighbor(ifname, &pkt, lldp_now_msec());
+            snmp_refresh = upsert_neighbor(ifname, &pkt, lldp_now_msec());
         }
         else
         {
             g_lldp_work_local->stats.rx_parse_errors++;
         }
         lldp_worker_unlock();
+        if (snmp_refresh)
+        {
+            lldp_snmp_report_refresh();
+        }
     }
 }
 
-static void expire_neighbors(uint64_t now)
+static gboolean expire_neighbors(uint64_t now)
 {
+    gboolean changed = FALSE;
     GHashTableIter it;
     gpointer key = NULL;
     gpointer val = NULL;
@@ -432,10 +530,13 @@ static void expire_neighbors(uint64_t now)
         lldp_neighbor_t *n = (lldp_neighbor_t *)val;
         if (n && n->expire_msec <= now)
         {
+            lldp_neighbor_syslog(n, "down", "expired");
             g_lldp_work_local->stats.neighbor_expires++;
             g_hash_table_iter_remove(&it);
+            changed = TRUE;
         }
     }
+    return changed;
 }
 
 static void tick(void)
@@ -449,7 +550,7 @@ static void tick(void)
     uint64_t now = lldp_now_msec();
     lldp_worker_lock();
     if_api_cache_foreach(ensure_default_iface_cb, NULL);
-    expire_neighbors(now);
+    gboolean snmp_refresh = expire_neighbors(now);
     if (g_lldp_work_local->proto.admin_up && g_lldp_work_local->interfaces)
     {
         GHashTableIter it;
@@ -475,6 +576,10 @@ static void tick(void)
         }
     }
     lldp_worker_unlock();
+    if (snmp_refresh)
+    {
+        lldp_snmp_report_refresh();
+    }
 }
 
 static void send_shutdown_ttl0(void)
@@ -744,6 +849,7 @@ int lldp_worker_dispatch_apply(lldp_apply_cmd_t *apply)
             break;
     }
     lldp_worker_unlock();
+    lldp_snmp_report_refresh();
     return apply->rc;
 }
 
@@ -794,6 +900,7 @@ int lldp_worker_post_if_event(dev_ipc_message_t *msg)
             lldp_worker_lock();
             refresh_iface_from_event(e);
             lldp_worker_unlock();
+            lldp_snmp_report_refresh();
         }
     }
     dev_ipc_message_free(msg);
@@ -821,9 +928,18 @@ int lldp_worker_post_if_down(void)
     }
     if (g_lldp_work_local && g_lldp_work_local->neighbors)
     {
+        GHashTableIter it;
+        gpointer key = NULL;
+        gpointer val = NULL;
+        g_hash_table_iter_init(&it, g_lldp_work_local->neighbors);
+        while (g_hash_table_iter_next(&it, &key, &val))
+        {
+            lldp_neighbor_syslog((const lldp_neighbor_t *)val, "down", "if-down");
+        }
         g_hash_table_remove_all(g_lldp_work_local->neighbors);
     }
     lldp_worker_unlock();
+    lldp_snmp_report_refresh();
     LOG_INFO("LLDP: IF down, cache cleared");
     return ERRCODE_SUCCESS;
 }

@@ -9,6 +9,7 @@ set(LLDP_SOURCES
     work/lldp_worker.c
     work/lldp_packet.c
     work/lldp_show.c
+    work/lldp_snmp_report.c
 )
 
 add_executable(netnexus-lldp lldp_proc.c ${LLDP_SOURCES})

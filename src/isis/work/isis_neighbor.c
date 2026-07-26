@@ -162,7 +162,7 @@ static void isis_dis_run_election(isis_instance_cfg_t *inst, const char *ifname,
     }
 
     const if_api_cache_entry_t *if_entry = if_api_cache_lookup(ifname);
-    if (!if_entry || if_entry->ifindex == 0u)
+    if (!isis_if_entry_matches_instance(inst, if_entry) || if_entry->ifindex == 0u)
     {
         return;
     }
@@ -1014,7 +1014,7 @@ static void isis_send_hello_if_cb(gpointer key, gpointer value, gpointer user_da
     }
 
     const if_api_cache_entry_t *if_entry = if_api_cache_lookup(if_cfg->ifname);
-    if (!if_entry || !if_entry->proto_up || if_entry->ifindex == 0u)
+    if (!isis_if_entry_matches_instance(ctx->inst, if_entry) || !if_entry->proto_up || if_entry->ifindex == 0u)
     {
         return;
     }
@@ -1095,8 +1095,9 @@ static void isis_neighbor_reconcile_learned_afi(isis_instance_cfg_t *inst, const
     isis_route_state_t desired;
     memset(&desired, 0, sizeof(desired));
 
-    if (nbr->state == ISIS_ADJ_STATE_UP && inst->admin_up && af_enabled && af_cfg && if_entry && if_entry->proto_up &&
-        if_entry->ifindex != 0u && !af_cfg->passive && isis_level_enabled(inst, nbr->level))
+    if (nbr->state == ISIS_ADJ_STATE_UP && inst->admin_up && af_enabled && af_cfg &&
+        isis_if_entry_matches_instance(inst, if_entry) && if_entry->proto_up && if_entry->ifindex != 0u &&
+        !af_cfg->passive && isis_level_enabled(inst, nbr->level))
     {
         isis_nexthop_table_t *nh_table = isis_instance_nexthop_table(inst, afi);
         if (!nh_table)
@@ -1104,6 +1105,7 @@ static void isis_neighbor_reconcile_learned_afi(isis_instance_cfg_t *inst, const
             return;
         }
         desired.afi = afi;
+        desired.vrf_id = inst->vrf_id;
         desired.metric = ((af_cfg->metric == 0u) ? ISIS_DEFAULT_IF_METRIC : af_cfg->metric) + ISIS_NEIGHBOR_ROUTE_COST;
 
         if (afi == ROUTE_AFI_IPV4 && nbr->ipv4_addr.family == AF_INET)
@@ -1271,7 +1273,7 @@ static int isis_neighbor_should_remove(const isis_instance_cfg_t *inst, const is
     }
 
     const if_api_cache_entry_t *if_entry = if_api_cache_lookup(nbr->ifname);
-    if (!if_entry || !if_entry->proto_up || if_entry->ifindex == 0u)
+    if (!isis_if_entry_matches_instance(inst, if_entry) || !if_entry->proto_up || if_entry->ifindex == 0u)
     {
         return 1;
     }
@@ -1424,7 +1426,8 @@ static void isis_rx_neighbor_apply_instance(gpointer key, gpointer value, gpoint
         return;
     }
 
-    if (!inst->admin_up || !isis_level_enabled(inst, ctx->level))
+    if (!inst->admin_up || !isis_level_enabled(inst, ctx->level) ||
+        !isis_if_entry_matches_instance(inst, ctx->if_entry))
     {
         return;
     }

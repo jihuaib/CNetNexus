@@ -69,7 +69,7 @@ static void isis_fill_route_msg_entry(const isis_route_state_t *state, route_msg
     }
 
     memset(entry, 0, sizeof(*entry));
-    entry->vrf_id = ROUTE_VRF_DEFAULT;
+    entry->vrf_id = state->vrf_id;
     entry->afi = state->afi;
     entry->safi = ROUTE_SAFI_UNICAST;
     entry->prefix_len = state->prefix_len;
@@ -111,7 +111,8 @@ static int isis_route_sync_state_same(const isis_route_state_t *a, const isis_ro
 static int isis_build_desired_route_state(isis_instance_cfg_t *inst, const if_api_cache_entry_t *if_entry, uint16_t afi,
                                           uint32_t metric, isis_route_state_t *out)
 {
-    if (!inst || !if_entry || !out || !if_entry->proto_up || if_entry->ifindex == 0u)
+    if (!inst || !if_entry || !out || !isis_if_entry_matches_instance(inst, if_entry) || !if_entry->proto_up ||
+        if_entry->ifindex == 0u)
     {
         return 0;
     }
@@ -123,6 +124,7 @@ static int isis_build_desired_route_state(isis_instance_cfg_t *inst, const if_ap
     }
 
     memset(out, 0, sizeof(*out));
+    out->vrf_id = inst->vrf_id;
     out->afi = afi;
     out->metric = (metric == 0u) ? ISIS_DEFAULT_IF_METRIC : metric;
 

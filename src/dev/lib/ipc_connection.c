@@ -31,6 +31,7 @@ dev_ipc_connection_t *dev_ipc_connection_create(uint32_t remote_module_id, int i
     conn->last_heartbeat_recv = 0;
     conn->reconnect_delay_ms = DEV_IPC_RECONNECT_DELAY_MIN;
     conn->next_reconnect_time = 0;
+    conn->draining = 0;
     conn->is_initiator = is_initiator;
     return conn;
 }

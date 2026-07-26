@@ -105,7 +105,7 @@ int isis_route_state_set_nexthop(isis_route_state_t *state, isis_nexthop_table_t
     }
 
     route_nhobj_key_t key;
-    isis_nexthop_make_route_key(state->afi, key_ifindex, nexthop, &key);
+    isis_nexthop_make_route_key(state->vrf_id, state->afi, key_ifindex, nexthop, &key);
 
     isis_nexthop_value_t value;
     memset(&value, 0, sizeof(value));
@@ -175,7 +175,7 @@ int isis_route_state_same(const isis_route_state_t *a, const isis_route_state_t 
         return 0;
     }
 
-    if (a->afi != b->afi || a->prefix_len != b->prefix_len || a->metric != b->metric ||
+    if (a->vrf_id != b->vrf_id || a->afi != b->afi || a->prefix_len != b->prefix_len || a->metric != b->metric ||
         !net_addr_equal(&a->prefix_addr, &b->prefix_addr) || !net_addr_equal(&a->source_addr, &b->source_addr))
     {
         return 0;

@@ -30,6 +30,8 @@ typedef struct ipc_subscription
     dev_module_event_fn callback;
     void *user;
     uint32_t last_epoch; /**< 上次收到 READY 时的 epoch，0=尚未收到 */
+    uint32_t down_epoch; /**< 最近一次接受的 DOWN epoch */
+    int target_down;     /**< 已接受 DOWN，等待更高 epoch 的 READY */
     int auto_start;      /**< 初次 subscribe 时的 auto_start 标志，wait_all 中重订阅时复用 */
     char last_host[64];  /**< 上次见过的目标 host（订阅响应或 MODULE_EVENT），用于强制重连 */
     uint16_t last_port;  /**< 上次见过的目标 port */
@@ -92,10 +94,21 @@ void dev_ipc_dispatch_module_event(dev_ipc_context_t *ctx, const dev_module_even
     uint16_t port = ntohs(pl->port);
     uint32_t epoch = ntohl(pl->epoch);
 
+    /* 先在 ctx 的单一线性化点按 epoch 应用事件。即使首次 SUBSCRIBE
+     * 尚未插入本地条目，DOWN tombstone 也必须保留，阻止同 epoch 的
+     * 迟到合成 READY 重新打开重连。 */
+    int available = event == DEV_MODULE_EVENT_READY;
+    if (!dev_ipc_apply_target_event(ctx, module_id, epoch, available))
+    {
+        LOG_DEBUG("<%s> Drop stale MODULE_EVENT for 0x%08X (event=%u epoch=%u)", ctx->name, module_id, event, epoch);
+        return;
+    }
+
     /* 拷贝订阅条目的回调/user，避免持锁期间触发业务回调导致死锁 */
     dev_module_event_fn cb = NULL;
     void *user = NULL;
     uint32_t prev_epoch = 0;
+    int stale_event = 0;
 
     pthread_mutex_lock(&ctx->sub_mgr->lock);
     ipc_subscription_t *sub = sub_mgr_find_locked(ctx->sub_mgr, module_id);
@@ -106,12 +119,34 @@ void dev_ipc_dispatch_module_event(dev_ipc_context_t *ctx, const dev_module_even
         prev_epoch = sub->last_epoch;
         if (event == DEV_MODULE_EVENT_READY)
         {
-            sub->last_epoch = epoch;
-            /* 缓存最新 host/port：之后 wait_all 卡住时可拿来强制重连 */
-            if (pl->host[0] != '\0' && port != 0)
+            /* 同 epoch 的 DOWN 权威性更高：拒绝 SUBSCRIBE 响应线程迟到合成的
+             * READY，避免刚停止的按需模块重新进入永久重连。 */
+            if ((sub->target_down && epoch <= sub->down_epoch) || (sub->last_epoch != 0 && epoch < sub->last_epoch))
             {
-                snprintf(sub->last_host, sizeof(sub->last_host), "%s", pl->host);
-                sub->last_port = port;
+                stale_event = 1;
+            }
+            else
+            {
+                sub->target_down = 0;
+                sub->last_epoch = epoch;
+                /* 缓存最新 host/port：之后 wait_all 卡住时可拿来强制重连 */
+                if (pl->host[0] != '\0' && port != 0)
+                {
+                    snprintf(sub->last_host, sizeof(sub->last_host), "%s", pl->host);
+                    sub->last_port = port;
+                }
+            }
+        }
+        else if (event == DEV_MODULE_EVENT_DOWN)
+        {
+            if (sub->last_epoch != 0 && epoch < sub->last_epoch)
+            {
+                stale_event = 1;
+            }
+            else
+            {
+                sub->target_down = 1;
+                sub->down_epoch = epoch;
             }
         }
     }
@@ -120,6 +155,13 @@ void dev_ipc_dispatch_module_event(dev_ipc_context_t *ctx, const dev_module_even
     if (!sub)
     {
         LOG_DEBUG("<%s> Drop MODULE_EVENT for 0x%08X (not subscribed)", ctx->name, module_id);
+        return;
+    }
+
+    if (stale_event)
+    {
+        LOG_DEBUG("<%s> Drop stale MODULE_EVENT for 0x%08X (event=%u epoch=%u last_ready=%u)", ctx->name, module_id,
+                  event, epoch, prev_epoch);
         return;
     }
 
@@ -138,7 +180,11 @@ void dev_ipc_dispatch_module_event(dev_ipc_context_t *ctx, const dev_module_even
             dev_ipc_connect(ctx, module_id, pl->host, port);
         }
     }
-    /* DOWN 事件：连接由 IPC 库的心跳/断连机制自动清理，无需在此干预 */
+    else if (event == DEV_MODULE_EVENT_DOWN)
+    {
+        /* 不立即关闭 socket：BGP/ISIS 等 self-exit 模块可能刚写出 RESP_EXITING。
+         * 只暂停主动重连，等 EOF 正常回收；下一个更高 epoch READY 再恢复。 */
+    }
 
     if (cb)
     {
