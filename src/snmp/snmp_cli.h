@@ -13,5 +13,6 @@
 
 int snmp_cli_handle_config_msg(dev_ipc_message_t *msg);
 void snmp_cli_send_response(dev_ipc_message_t *msg, const char *text);
+void snmp_cli_send_response_typed(dev_ipc_message_t *msg, uint32_t msg_type, const char *text);
 
 #endif /* SNMP_CLI_H */

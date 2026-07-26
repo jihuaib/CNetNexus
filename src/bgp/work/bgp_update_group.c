@@ -19,6 +19,7 @@
 #include "bgp_pkt.h"
 #include "bgp_rd.h"
 #include "bgp_rib.h"
+#include "bgp_rpm.h"
 #include "bgp_vrf.h"
 #include "bgp_vrf_export.h"
 #include "bgp_vrf_import.h"
@@ -36,7 +37,8 @@ static uint32_t g_next_group_id = 1;
 
 static gboolean ug_key_equal(const bgp_update_group_key_t *a, const bgp_update_group_key_t *b)
 {
-    return a->sess_type == b->sess_type && a->policy_hash == b->policy_hash && a->peer_family == b->peer_family &&
+    return a->sess_type == b->sess_type && a->policy_hash == b->policy_hash &&
+           strcmp(a->policy_name, b->policy_name) == 0 && a->peer_family == b->peer_family &&
            a->remote_as == b->remote_as && a->negotiated_caps == b->negotiated_caps && a->flags == b->flags;
 }
 
@@ -68,7 +70,7 @@ void bgp_session_compute_ug_key(const bgp_session_t *sess, bgp_update_group_key_
         return;
     }
     out->sess_type = sess->sess_type;
-    out->policy_hash = 0; /* 预留：Phase 4 引入 route-map 时填入 */
+    out->policy_hash = 0;
     out->peer_family = (uint16_t)sess->neighbor_addr.family;
     out->remote_as = sess->remote_as;
     out->negotiated_caps = sess->negotiated_caps;
@@ -78,6 +80,12 @@ void bgp_session_compute_ug_key(const bgp_session_t *sess, bgp_update_group_key_
 void bgp_peer_compute_ug_key(const bgp_peer_t *peer, const bgp_session_t *sess, bgp_update_group_key_t *out)
 {
     bgp_session_compute_ug_key(sess, out);
+    if (peer && peer->export_policy.name[0] != '\0')
+    {
+        g_strlcpy(out->policy_name, peer->export_policy.name, sizeof(out->policy_name));
+        out->policy_hash = g_str_hash(out->policy_name) ^ peer->export_policy.revision ^
+                           (peer->export_policy_valid ? 0x9E3779B9u : 0x85EBCA6Bu);
+    }
     if (peer && BIT_TEST(peer->flags, BGP_PEER_FLAG_RR_CLIENT))
     {
         BIT_SET(out->flags, BGP_UG_FLAG_TARGET_RR_CLIENT);
@@ -694,6 +702,11 @@ bool bgp_subgroup_eval_export(const bgp_nh_subgroup_t *sg, const bgp_route_node_
                      sg->parent ? sg->parent->group_id : 0u, local_as);
             return false;
         }
+    }
+
+    if (!bgp_rpm_eval_export(sg, nlri, out_attr))
+    {
+        return false;
     }
 
     /* nexthop 策略应用 */

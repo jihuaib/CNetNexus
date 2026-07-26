@@ -66,7 +66,8 @@ lldp_interface
 
 运行时邻居表只保存在 worker 内存中，不写入 DB。
 
-全局 `lldp` admin-up 后，IF cache 中符合条件的物理以太接口会成为 LLDP 候选接口。接口级 `lldp enable` / `no lldp enable` 是显式 override，会持久化并体现在 `show current-configuration`。
+全局 `lldp` admin-up 后，IF cache 中符合条件的物理以太接口会成为 LLDP 候选接口。接口隐式默认是 enable；
+`no lldp enable` 是持久化的 negative override，`lldp enable` 则恢复隐式默认并删除该 override。
 
 ## CLI
 

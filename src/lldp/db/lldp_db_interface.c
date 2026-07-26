@@ -25,15 +25,124 @@ const db_table_def_t LLDP_IF_TABLE = {
     .num_cols = G_N_ELEMENTS(LLDP_IF_COLS),
 };
 
+gboolean lldp_db_interface_is_implicit_default(const lldp_if_cfg_t *cfg)
+{
+    return cfg && cfg->enabled != 0u && cfg->admin_status == LLDP_IF_ADMIN_TX_RX && cfg->tx_interval_sec == 0u &&
+           cfg->hold_multiplier == 0u && cfg->port_desc[0] == '\0';
+}
+
+int lldp_db_prune_implicit_default_interfaces(void)
+{
+    dev_ipc_context_t *ctx = lldp_local_ipc_ctx();
+    if (!ctx)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    db_result_t *result = NULL;
+    if (db_rpc_query(ctx, LLDP_TABLE_INTERFACE, NULL, 0, NULL, &result) != ERRCODE_SUCCESS)
+    {
+        if (result)
+        {
+            db_result_free(result);
+        }
+        return ERRCODE_FAIL;
+    }
+    if (!result)
+    {
+        return ERRCODE_SUCCESS;
+    }
+
+    GPtrArray *stale_ifnames = g_ptr_array_new_with_free_func(g_free);
+    GPtrArray *hidden_ifnames = g_ptr_array_new_with_free_func(g_free);
+    for (uint32_t i = 0; i < result->num_rows; ++i)
+    {
+        db_row_t *row = result->rows[i];
+        lldp_if_cfg_t cfg;
+        memset(&cfg, 0, sizeof(cfg));
+        cfg.enabled = (uint8_t)(db_row_get_int(row, "enabled", 1) ? 1 : 0);
+        cfg.admin_status = (uint8_t)db_row_get_int(row, "admin_status", LLDP_IF_ADMIN_TX_RX);
+        cfg.tx_interval_sec = (uint32_t)db_row_get_int(row, "tx_interval_sec", 0);
+        cfg.hold_multiplier = (uint32_t)db_row_get_int(row, "hold_multiplier", 0);
+        g_strlcpy(cfg.port_desc, db_row_get_text(row, "port_desc", ""), sizeof(cfg.port_desc));
+        const gboolean has_hidden_values = cfg.tx_interval_sec != 0u || cfg.hold_multiplier != 0u;
+        cfg.tx_interval_sec = 0u;
+        cfg.hold_multiplier = 0u;
+        const char *ifname = db_row_get_text(row, "ifname", "");
+        if (lldp_db_interface_is_implicit_default(&cfg))
+        {
+            if (ifname[0] != '\0')
+            {
+                g_ptr_array_add(stale_ifnames, g_strdup(ifname));
+            }
+        }
+        else if (has_hidden_values && ifname[0] != '\0')
+        {
+            g_ptr_array_add(hidden_ifnames, g_strdup(ifname));
+        }
+    }
+    db_result_free(result);
+
+    int rc = ERRCODE_SUCCESS;
+    for (guint i = 0; i < hidden_ifnames->len; ++i)
+    {
+        db_filter_builder_t pk;
+        lldp_db_if_pk(&pk, g_ptr_array_index(hidden_ifnames, i));
+        db_col_t defaults[] = {
+            DB_COL_INT("tx_interval_sec", 0),
+            DB_COL_INT("hold_multiplier", 0),
+        };
+        int rows = db_rpc_update_cols(ctx, LLDP_TABLE_INTERFACE, &pk.filter, defaults, G_N_ELEMENTS(defaults));
+        db_filter_clear(&pk);
+        if (rows < 0)
+        {
+            rc = ERRCODE_FAIL;
+            break;
+        }
+    }
+    for (guint i = 0; i < stale_ifnames->len; ++i)
+    {
+        db_filter_builder_t pk;
+        lldp_db_if_pk(&pk, g_ptr_array_index(stale_ifnames, i));
+        int rows = db_rpc_delete(ctx, LLDP_TABLE_INTERFACE, &pk.filter);
+        db_filter_clear(&pk);
+        if (rows < 0)
+        {
+            rc = ERRCODE_FAIL;
+            break;
+        }
+    }
+    g_ptr_array_free(hidden_ifnames, TRUE);
+    g_ptr_array_free(stale_ifnames, TRUE);
+    return rc;
+}
+
 int lldp_db_set_interface(const char *ifname, const lldp_if_cfg_t *cfg)
 {
     if (!ifname || ifname[0] == '\0' || !cfg)
     {
         return ERRCODE_FAIL;
     }
+    /*
+     * Worker 会为合格接口隐式创建 enabled/txrx 默认状态；相同的 DB 行不含
+     * 任何可回放差异。恢复到该状态时删除 override，避免 undo 反而造 marker。
+     * enabled=0 的 negative override 仍然是合法配置，必须保留。
+     */
+    if (lldp_db_interface_is_implicit_default(cfg))
+    {
+        return lldp_db_del_interface(ifname);
+    }
 
     dev_ipc_context_t *ctx = lldp_local_ipc_ctx();
     if (!ctx)
+    {
+        return ERRCODE_FAIL;
+    }
+    /*
+     * 先发布 revive marker，再写接口配置。这样并发配置快照最多把 LLDP
+     * 保守地视为 required，不会在接口行已落库而 marker 尚未建立的窗口漏采。
+     */
+    if (lldp_db_ensure_proto_marker() != ERRCODE_SUCCESS)
     {
         return ERRCODE_FAIL;
     }
@@ -46,6 +155,7 @@ int lldp_db_set_interface(const char *ifname, const lldp_if_cfg_t *cfg)
     if (rc != ERRCODE_SUCCESS)
     {
         db_filter_clear(&pk);
+        (void)lldp_db_sync_proto_marker();
         return ERRCODE_FAIL;
     }
 
@@ -60,7 +170,12 @@ int lldp_db_set_interface(const char *ifname, const lldp_if_cfg_t *cfg)
         };
         int rows = db_rpc_update_cols(ctx, LLDP_TABLE_INTERFACE, &pk.filter, cols, G_N_ELEMENTS(cols));
         db_filter_clear(&pk);
-        return (rows >= 0) ? ERRCODE_SUCCESS : ERRCODE_FAIL;
+        if (rows < 0)
+        {
+            (void)lldp_db_sync_proto_marker();
+            return ERRCODE_FAIL;
+        }
+        return ERRCODE_SUCCESS;
     }
 
     db_filter_clear(&pk);
@@ -73,7 +188,12 @@ int lldp_db_set_interface(const char *ifname, const lldp_if_cfg_t *cfg)
         DB_COL_INT("hold_multiplier", (int64_t)cfg->hold_multiplier),
         DB_COL_TEXT("port_desc", cfg->port_desc),
     };
-    return db_rpc_insert_cols(ctx, LLDP_TABLE_INTERFACE, cols, G_N_ELEMENTS(cols));
+    if (db_rpc_insert_cols(ctx, LLDP_TABLE_INTERFACE, cols, G_N_ELEMENTS(cols)) != ERRCODE_SUCCESS)
+    {
+        (void)lldp_db_sync_proto_marker();
+        return ERRCODE_FAIL;
+    }
+    return ERRCODE_SUCCESS;
 }
 
 int lldp_db_del_interface(const char *ifname)
@@ -93,7 +213,11 @@ int lldp_db_del_interface(const char *ifname)
     lldp_db_if_pk(&pk, ifname);
     int rc = db_rpc_delete(ctx, LLDP_TABLE_INTERFACE, &pk.filter);
     db_filter_clear(&pk);
-    return (rc >= 0) ? ERRCODE_SUCCESS : ERRCODE_FAIL;
+    if (rc < 0)
+    {
+        return ERRCODE_FAIL;
+    }
+    return lldp_db_sync_proto_marker();
 }
 
 int lldp_db_get_interface(const char *ifname, lldp_if_cfg_t *cfg_out)

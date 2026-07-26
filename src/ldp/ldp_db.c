@@ -34,16 +34,33 @@ int ldp_db_init(void)
         LOG_INFO("LDP database table %s ready", LDP_TABLES[i]->table_name);
     }
 
+    /*
+     * DEV 会根据 protocol/interface 任一表在模块启动前决定是否 revive。
+     * 模块一旦由旧脏 marker 或孤立子表拉起，建表后立即归一化，不再等待
+     * IF smooth-end 的 restore。
+     */
+    if (ldp_db_sync_revive_marker(ctx) != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("LDP: failed to normalize revive marker");
+        return ERRCODE_FAIL;
+    }
+
     return ERRCODE_SUCCESS;
 }
 
 int ldp_db_restore(void)
 {
-    if (!ldp_local_ipc_ctx())
+    dev_ipc_context_t *ctx = ldp_local_ipc_ctx();
+    if (!ctx)
     {
         return ERRCODE_FAIL;
     }
 
+    if (ldp_db_sync_revive_marker(ctx) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("LDP: failed to reconcile revive marker before restore");
+        return ERRCODE_FAIL;
+    }
     ldp_db_restore_proto();
     ldp_db_restore_interfaces();
     return ERRCODE_SUCCESS;
@@ -58,7 +75,7 @@ int ldp_db_delete_config(void)
     }
 
     /*
-     * ldp_protocol 是 DEV 的 revive marker，必须最后删除。这样并发的配置
+     * ldp_protocol 是 canonical revive marker，必须最后删除。这样并发的配置
      * 捕获/整机保存只会看到两种安全状态：
      *   1. marker 仍在，LDP 必须在线并参与捕获；
      *   2. 所有 LDP 配置已清空，marker 不在，可安全跳过 LDP。

@@ -18,6 +18,8 @@ extern const db_table_def_t LDP_IF_TABLE;
 
 void ldp_db_proto_pk(db_filter_builder_t *pk);
 void ldp_db_if_pk(db_filter_builder_t *pk, const char *ifname);
+int ldp_db_ensure_proto_row(dev_ipc_context_t *ctx);
+int ldp_db_sync_revive_marker(dev_ipc_context_t *ctx);
 
 void ldp_db_restore_proto(void);
 void ldp_db_restore_interfaces(void);

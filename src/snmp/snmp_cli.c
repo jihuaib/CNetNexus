@@ -14,14 +14,12 @@
 #include "snmp_db.h"
 #include "snmp_main.h"
 
-static void snmp_cli_send_response_typed(dev_ipc_message_t *msg, uint32_t msg_type, const char *text);
-
 void snmp_cli_send_response(dev_ipc_message_t *msg, const char *text)
 {
     snmp_cli_send_response_typed(msg, CLI_MSG_TYPE_RESP, text);
 }
 
-static void snmp_cli_send_response_typed(dev_ipc_message_t *msg, uint32_t msg_type, const char *text)
+void snmp_cli_send_response_typed(dev_ipc_message_t *msg, uint32_t msg_type, const char *text)
 {
     const char *safe_text = text ? text : "";
     char *resp_data = g_strdup(safe_text);

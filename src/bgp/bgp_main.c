@@ -23,6 +23,7 @@
 #include "if.h"
 #include "log.h"
 #include "route.h"
+#include "rpm.h"
 #include "tunnel.h"
 #include "vrf.h"
 
@@ -169,6 +170,34 @@ static void bgp_on_route_ready_cb(uint32_t module_id, uint8_t event, const char 
     if (event == DEV_MODULE_EVENT_READY)
     {
         bgp_post_internal(BGP_MSG_TYPE_INTERNAL_ROUTE_READY);
+    }
+}
+
+static void bgp_on_rpm_ready_cb(uint32_t module_id, uint8_t event, const char *host, uint16_t port, uint32_t epoch,
+                                void *user)
+{
+    (void)module_id;
+    (void)host;
+    (void)port;
+    (void)epoch;
+    (void)user;
+    if (event == DEV_MODULE_EVENT_READY)
+    {
+        bgp_post_internal(BGP_MSG_TYPE_INTERNAL_RPM_READY);
+    }
+}
+
+static void bgp_handle_rpm_ready(void)
+{
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
+    if (dev_ipc_wait_connected(ctx, DEV_MODULE_ID_RPM, DEV_IPC_WAIT_PEER_MS) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("BGP: RPM not connected in time; policy subscribe deferred");
+        return;
+    }
+    if (rpm_api_subscribe(ctx, RPM_POLICY_TYPE_BGP_EXPORT, RPM_SUBSCRIBE_FLAG_REPLAY) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("BGP: RPM policy subscribe failed");
     }
 }
 
@@ -356,6 +385,9 @@ void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
                 LOG_WARN("BGP: failed to post IF-down teardown");
             }
             break;
+        case BGP_MSG_TYPE_INTERNAL_RPM_READY:
+            bgp_handle_rpm_ready();
+            break;
 
         case CLI_MSG_TYPE:
         {
@@ -433,6 +465,14 @@ void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             }
             return;
         }
+
+        case RPM_MSG_TYPE_POLICY_EVENT:
+            if (bgp_worker_post_rpm_event(msg) != 0)
+            {
+                LOG_WARN("BGP: Failed to forward RPM policy event to worker");
+                dev_ipc_message_free(msg);
+            }
+            return;
 
         /* ---- IF 事件通知 ---- */
         case IF_MSG_TYPE_EVENT:
@@ -563,6 +603,10 @@ int bgp_module_init(void)
     {
         LOG_WARN("BGP: subscribe(IF) failed");
     }
+    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_RPM, 1, bgp_on_rpm_ready_cb, NULL) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("BGP: subscribe(RPM) failed");
+    }
     if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_DB, 0, bgp_on_db_event_cb, NULL) != ERRCODE_SUCCESS)
     {
         LOG_WARN("BGP: subscribe(DB) failed");
@@ -575,6 +619,7 @@ int bgp_module_init(void)
     /* DEPS_READY：阻塞直到所有订阅 peer 的 IPC 都 CONNECTED 才继续 db_init/restore + notify_ready。
      * 不能用超时后继续 —— DEV 视角 READY 而 CFG 还连不上 BGP 会让命令派发踩到 race。 */
     (void)dev_ipc_wait_all_subscribed_connected(ctx, 0);
+    bgp_handle_rpm_ready();
 
     if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_SNMP, 0, NULL, NULL) != ERRCODE_SUCCESS)
     {

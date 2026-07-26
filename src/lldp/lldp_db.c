@@ -34,6 +34,16 @@ int lldp_db_init(void)
         LOG_INFO("LLDP database table %s ready", LLDP_TABLES[i]->table_name);
     }
 
+    /*
+     * 兼容旧 running.db：旧实现只要读过默认配置就会留下 singleton 行，
+     * 进而让 DEV 每次启动都误 revive LLDP。
+     */
+    if (lldp_db_sync_proto_marker() != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("LLDP: failed to normalize revive marker");
+        return ERRCODE_FAIL;
+    }
+
     return ERRCODE_SUCCESS;
 }
 

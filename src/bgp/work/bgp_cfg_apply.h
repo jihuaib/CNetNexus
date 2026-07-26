@@ -109,4 +109,7 @@ void bgp_cfg_apply_cluster_id(bgp_apply_cmd_t *apply);
  */
 void bgp_cfg_apply_reflect_client(bgp_apply_cmd_t *apply);
 
+/** 应用邻居出口策略绑定。 */
+void bgp_cfg_apply_export_policy(bgp_apply_cmd_t *apply);
+
 #endif /* BGP_CFG_APPLY_H */

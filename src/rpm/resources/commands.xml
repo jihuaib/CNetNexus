@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration module-id="18">
+    <views>
+        <view view-name="route-policy">
+            <template>&lt;NetNexus(config-route-policy-{ctx:14}-node-{ctx:15})&gt;</template>
+        </view>
+    </views>
+
+    <show-this>
+        <view name="route-policy"/>
+    </show-this>
+
+    <command_groups>
+        <!-- route-policy <name> type bgp-export {permit|deny} node <sequence> -->
+        <group group-id="1">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>route-policy</name>
+                    <description>Configure a routing policy</description>
+                </element>
+                <element id="3" cfg-id="1" type="parameter">
+                    <name>&lt;policy-name&gt;</name>
+                    <type>string(1-63)</type>
+                    <description>Policy name</description>
+                </element>
+                <element id="4" type="keyword">
+                    <name>type</name>
+                    <description>Policy consumer type</description>
+                </element>
+                <element id="5" type="keyword">
+                    <name>bgp-export</name>
+                    <description>BGP outbound policy</description>
+                </element>
+                <element id="6" cfg-id="2" type="keyword">
+                    <name>permit</name>
+                    <description>Permit matching routes</description>
+                </element>
+                <element id="7" cfg-id="3" type="keyword">
+                    <name>deny</name>
+                    <description>Deny matching routes</description>
+                </element>
+                <element id="8" type="keyword">
+                    <name>node</name>
+                    <description>Policy node sequence</description>
+                </element>
+                <element id="9" cfg-id="4" type="parameter">
+                    <name>&lt;sequence&gt;</name>
+                    <type>uint(0-65535)</type>
+                    <description>Node sequence number</description>
+                </element>
+            </elements>
+            <commands>
+                <command auto-start="true">
+                    <expression>2 3 4 5 {6 | 7} 8 9</expression>
+                    <views>config</views>
+                    <to-view>route-policy</to-view>
+                    <context-out>
+                        <entry ctx-id="14" from-param="1"/>
+                        <entry ctx-id="15" from-param="4"/>
+                    </context-out>
+                </command>
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>config</views>
+                </command>
+                <command>
+                    <expression>1 2 3 8 9</expression>
+                    <views>config</views>
+                </command>
+            </commands>
+        </group>
+
+        <group group-id="2">
+            <elements>
+                <element id="1" type="keyword"><name>no</name><description>Delete</description></element>
+                <element id="2" type="keyword"><name>if-match</name><description>Match conditions</description></element>
+                <element id="3" type="keyword"><name>network</name><description>Match a route prefix</description></element>
+                <element id="4" type="keyword"><name>ipv4</name><description>IPv4 prefix</description></element>
+                <element id="5" type="keyword"><name>ipv6</name><description>IPv6 prefix</description></element>
+                <element id="6" cfg-id="1" type="parameter">
+                    <name>&lt;ipv4-address&gt;</name><type>ipv4</type><description>IPv4 network</description>
+                </element>
+                <element id="7" cfg-id="2" type="parameter">
+                    <name>&lt;ipv6-address&gt;</name><type>ipv6</type><description>IPv6 network</description>
+                </element>
+                <element id="8" cfg-id="3" type="parameter">
+                    <name>&lt;prefix-length&gt;</name><type>uint(0-32)</type><description>IPv4 prefix length</description>
+                </element>
+                <element id="9" cfg-id="4" type="parameter">
+                    <name>&lt;prefix-length&gt;</name><type>uint(0-128)</type><description>IPv6 prefix length</description>
+                </element>
+            </elements>
+            <commands>
+                <command><expression>2 3 4 6 8</expression><views>route-policy</views></command>
+                <command><expression>2 3 5 7 9</expression><views>route-policy</views></command>
+                <command><expression>1 2 3</expression><views>route-policy</views></command>
+            </commands>
+        </group>
+
+        <group group-id="3">
+            <elements>
+                <element id="1" type="keyword"><name>no</name><description>Delete</description></element>
+                <element id="2" type="keyword"><name>apply</name><description>Set route attributes</description></element>
+                <element id="3" type="keyword"><name>med</name><description>Set BGP MED</description></element>
+                <element id="4" cfg-id="1" type="parameter">
+                    <name>&lt;med&gt;</name><type>uint(0-4294967295)</type><description>MED value</description>
+                </element>
+            </elements>
+            <commands>
+                <command><expression>2 3 4</expression><views>route-policy</views></command>
+                <command><expression>1 2 3</expression><views>route-policy</views></command>
+            </commands>
+        </group>
+
+        <group group-id="4">
+            <elements>
+                <element id="1" type="keyword"><name>no</name><description>Delete</description></element>
+                <element id="2" type="keyword"><name>apply</name><description>Set route attributes</description></element>
+                <element id="3" type="keyword"><name>local-preference</name><description>Set BGP local preference</description></element>
+                <element id="4" cfg-id="1" type="parameter">
+                    <name>&lt;local-preference&gt;</name><type>uint(0-4294967295)</type><description>Local preference</description>
+                </element>
+            </elements>
+            <commands>
+                <command><expression>2 3 4</expression><views>route-policy</views></command>
+                <command><expression>1 2 3</expression><views>route-policy</views></command>
+            </commands>
+        </group>
+
+        <group group-id="5">
+            <elements>
+                <element id="1" type="keyword"><name>no</name><description>Delete</description></element>
+                <element id="2" type="keyword"><name>apply</name><description>Set route attributes</description></element>
+                <element id="3" type="keyword"><name>community</name><description>Set BGP community</description></element>
+                <element id="4" cfg-id="1" type="parameter">
+                    <name>&lt;community&gt;</name><type>string(3-11)</type><description>Community in ASN:VALUE format</description>
+                </element>
+            </elements>
+            <commands>
+                <command><expression>2 3 4</expression><views>route-policy</views></command>
+                <command><expression>1 2 3</expression><views>route-policy</views></command>
+            </commands>
+        </group>
+    </command_groups>
+</configuration>

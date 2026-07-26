@@ -20,17 +20,31 @@
 #include "ldp_main.h"
 #include "log.h"
 
-static void ldp_bdr_send_resp(dev_ipc_message_t *msg, const char *text)
+static void ldp_bdr_send_resp_typed(dev_ipc_message_t *msg, uint32_t msg_type, const char *text)
 {
     const char *safe_text = text ? text : "";
     char *resp_data = g_strdup(safe_text);
-    dev_ipc_message_t *resp = dev_ipc_message_create(CLI_MSG_TYPE_RESP, DEV_MODULE_ID_LDP, msg->src_module_id,
-                                                     msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
+    dev_ipc_message_t *resp = dev_ipc_message_create(msg_type, DEV_MODULE_ID_LDP, msg->src_module_id, msg->request_id,
+                                                     resp_data, strlen(resp_data) + 1, g_free);
     if (resp)
     {
         dev_ipc_send_response(ldp_local_ipc_ctx(), resp);
         dev_ipc_message_free(resp);
     }
+    else
+    {
+        g_free(resp_data);
+    }
+}
+
+static void ldp_bdr_send_resp(dev_ipc_message_t *msg, const char *text)
+{
+    ldp_bdr_send_resp_typed(msg, CLI_MSG_TYPE_RESP, text);
+}
+
+static void ldp_bdr_send_error(dev_ipc_message_t *msg, const char *text)
+{
+    ldp_bdr_send_resp_typed(msg, CLI_MSG_TYPE_RESP_ERROR, text);
 }
 
 static void append_global_block(GString *out, const ldp_proto_cfg_t *cfg)
@@ -62,22 +76,26 @@ static void append_global_block(GString *out, const ldp_proto_cfg_t *cfg)
     g_string_append(out, "!\r\n");
 }
 
-static void append_if_anchor_entries(GString *out)
+static int append_if_anchor_entries(GString *out)
 {
     dev_ipc_context_t *ctx = ldp_local_ipc_ctx();
     if (!ctx)
     {
-        return;
+        return ERRCODE_FAIL;
     }
 
     db_result_t *result = NULL;
-    if (db_rpc_query(ctx, LDP_TABLE_INTERFACE, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
+    if (db_rpc_query(ctx, LDP_TABLE_INTERFACE, NULL, 0, NULL, &result) != ERRCODE_SUCCESS)
     {
         if (result)
         {
             db_result_free(result);
         }
-        return;
+        return ERRCODE_FAIL;
+    }
+    if (!result)
+    {
+        return ERRCODE_SUCCESS;
     }
 
     for (uint32_t i = 0; i < result->num_rows; i++)
@@ -114,6 +132,7 @@ static void append_if_anchor_entries(GString *out)
     }
 
     db_result_free(result);
+    return ERRCODE_SUCCESS;
 }
 
 static int ldp_bdr_show_config_full(dev_ipc_message_t *msg)
@@ -121,16 +140,28 @@ static int ldp_bdr_show_config_full(dev_ipc_message_t *msg)
     GString *out = g_string_new("");
     if (!out)
     {
-        ldp_bdr_send_resp(msg, "");
+        ldp_bdr_send_error(msg, "LDP BDR: out of memory");
         return ERRCODE_FAIL;
     }
 
     ldp_proto_cfg_t cfg;
-    if (ldp_db_get_proto_cfg(&cfg) == ERRCODE_SUCCESS)
+    gboolean proto_found = FALSE;
+    if (ldp_db_query_proto_cfg(&cfg, &proto_found) != ERRCODE_SUCCESS)
+    {
+        ldp_bdr_send_error(msg, "LDP BDR: protocol configuration query failed");
+        g_string_free(out, TRUE);
+        return ERRCODE_FAIL;
+    }
+    if (proto_found)
     {
         append_global_block(out, &cfg);
     }
-    append_if_anchor_entries(out);
+    if (append_if_anchor_entries(out) != ERRCODE_SUCCESS)
+    {
+        ldp_bdr_send_error(msg, "LDP BDR: interface configuration query failed");
+        g_string_free(out, TRUE);
+        return ERRCODE_FAIL;
+    }
 
     ldp_bdr_send_resp(msg, out->str);
     g_string_free(out, TRUE);
@@ -142,14 +173,21 @@ static int ldp_bdr_show_config_scoped(dev_ipc_message_t *msg, const cli_show_sco
     GString *out = g_string_new("");
     if (!out)
     {
-        ldp_bdr_send_resp(msg, "");
+        ldp_bdr_send_error(msg, "LDP BDR: out of memory");
         return ERRCODE_FAIL;
     }
 
     if (strcmp(scope->view_name, CLI_VIEW_LDP) == 0)
     {
         ldp_proto_cfg_t cfg;
-        if (ldp_db_get_proto_cfg(&cfg) == ERRCODE_SUCCESS)
+        gboolean proto_found = FALSE;
+        if (ldp_db_query_proto_cfg(&cfg, &proto_found) != ERRCODE_SUCCESS)
+        {
+            ldp_bdr_send_error(msg, "LDP BDR: protocol configuration query failed");
+            g_string_free(out, TRUE);
+            return ERRCODE_FAIL;
+        }
+        if (proto_found)
         {
             append_global_block(out, &cfg);
         }
@@ -157,7 +195,12 @@ static int ldp_bdr_show_config_scoped(dev_ipc_message_t *msg, const cli_show_sco
     else if (strcmp(scope->view_name, CLI_VIEW_IF) == 0 || strcmp(scope->view_name, CLI_VIEW_IF_LOOP) == 0)
     {
         /* M1: 接口范围 show this 暂不细分到具体 ifname，回放整体接口贡献 */
-        append_if_anchor_entries(out);
+        if (append_if_anchor_entries(out) != ERRCODE_SUCCESS)
+        {
+            ldp_bdr_send_error(msg, "LDP BDR: interface configuration query failed");
+            g_string_free(out, TRUE);
+            return ERRCODE_FAIL;
+        }
     }
 
     ldp_bdr_send_resp(msg, out->str);
@@ -171,7 +214,7 @@ int ldp_bdr_handle_show_config(dev_ipc_message_t *msg)
     if (cli_show_scope_payload_parse((const uint8_t *)msg->payload, msg->payload_len, &scope) != 0)
     {
         LOG_WARN("LDP BDR: invalid SHOW_CONFIG scope payload");
-        ldp_bdr_send_resp(msg, "");
+        ldp_bdr_send_error(msg, "LDP BDR: invalid SHOW_CONFIG scope");
         return ERRCODE_FAIL;
     }
 

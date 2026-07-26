@@ -348,4 +348,8 @@ int bgp_db_set_import_rib_sources(const char *vrf_name, bgp_afi_t afi, bgp_safi_
 int bgp_db_set_neighbor_rr_client(const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi, const char *neighbor_ip,
                                   bool is_client);
 
+/** 设置/清除 AF 邻居出口策略名；空字符串表示清除。 */
+int bgp_db_set_neighbor_export_policy(const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi, const char *neighbor_ip,
+                                      const char *policy_name);
+
 #endif /* BGP_DB_H */

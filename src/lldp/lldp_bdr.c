@@ -16,12 +16,12 @@
 #include "lldp_main.h"
 #include "log.h"
 
-static void send_resp(dev_ipc_message_t *msg, const char *text)
+static void send_resp_typed(dev_ipc_message_t *msg, uint32_t msg_type, const char *text)
 {
     const char *safe_text = text ? text : "";
     char *resp_data = g_strdup(safe_text);
-    dev_ipc_message_t *resp = dev_ipc_message_create(CLI_MSG_TYPE_RESP, DEV_MODULE_ID_LLDP, msg->src_module_id,
-                                                     msg->request_id, resp_data, strlen(resp_data) + 1, g_free);
+    dev_ipc_message_t *resp = dev_ipc_message_create(msg_type, DEV_MODULE_ID_LLDP, msg->src_module_id, msg->request_id,
+                                                     resp_data, strlen(resp_data) + 1, g_free);
     if (resp)
     {
         dev_ipc_send_response(lldp_local_ipc_ctx(), resp);
@@ -29,12 +29,23 @@ static void send_resp(dev_ipc_message_t *msg, const char *text)
     }
 }
 
-static void append_global(GString *out)
+static void send_resp(dev_ipc_message_t *msg, const char *text)
+{
+    send_resp_typed(msg, CLI_MSG_TYPE_RESP, text);
+}
+
+static void send_error_resp(dev_ipc_message_t *msg, const char *text)
+{
+    send_resp_typed(msg, CLI_MSG_TYPE_RESP_ERROR, text);
+}
+
+static int append_global(GString *out)
 {
     lldp_proto_cfg_t cfg;
     if (lldp_db_get_proto_cfg(&cfg) != ERRCODE_SUCCESS)
     {
-        return;
+        LOG_WARN("LLDP BDR: failed to query protocol configuration");
+        return ERRCODE_FAIL;
     }
 
     if (cfg.admin_up || cfg.tx_interval_sec != LLDP_DEFAULT_TX_INTERVAL_SEC ||
@@ -54,6 +65,7 @@ static void append_global(GString *out)
     {
         g_string_append_printf(out, "lldp hold-multiplier %u\r\n", cfg.hold_multiplier);
     }
+    return ERRCODE_SUCCESS;
 }
 
 static const char *admin_status_str(uint8_t s)
@@ -72,22 +84,28 @@ static const char *admin_status_str(uint8_t s)
     }
 }
 
-static void append_interfaces(GString *out)
+static int append_interfaces(GString *out)
 {
     dev_ipc_context_t *ctx = lldp_local_ipc_ctx();
     if (!ctx)
     {
-        return;
+        LOG_WARN("LLDP BDR: local IPC context is unavailable");
+        return ERRCODE_FAIL;
     }
 
     db_result_t *result = NULL;
-    if (db_rpc_query(ctx, LLDP_TABLE_INTERFACE, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
+    if (db_rpc_query(ctx, LLDP_TABLE_INTERFACE, NULL, 0, NULL, &result) != ERRCODE_SUCCESS)
     {
         if (result)
         {
             db_result_free(result);
         }
-        return;
+        LOG_WARN("LLDP BDR: failed to query interface configuration");
+        return ERRCODE_FAIL;
+    }
+    if (!result)
+    {
+        return ERRCODE_SUCCESS;
     }
 
     for (uint32_t i = 0; i < result->num_rows; i++)
@@ -99,7 +117,18 @@ static void append_interfaces(GString *out)
             continue;
         }
         GString *body = g_string_new("");
-        g_string_append(body, db_row_get_int(row, "enabled", 0) ? " lldp enable\r\n" : " no lldp enable\r\n");
+        if (db_row_get_int(row, "enabled", 0))
+        {
+            /*
+             * 显式接口行继续输出正向 enable，保持与旧版 cfg/rollback 快照
+             * 的 canonical 文本兼容。隐式默认接口没有 DB 行，因此不会输出。
+             */
+            g_string_append(body, " lldp enable\r\n");
+        }
+        else
+        {
+            g_string_append(body, " no lldp enable\r\n");
+        }
         uint8_t admin_status = (uint8_t)db_row_get_int(row, "admin_status", LLDP_IF_ADMIN_TX_RX);
         if (admin_status != LLDP_IF_ADMIN_TX_RX)
         {
@@ -117,6 +146,7 @@ static void append_interfaces(GString *out)
     }
 
     db_result_free(result);
+    return ERRCODE_SUCCESS;
 }
 
 int lldp_bdr_handle_show_config(dev_ipc_message_t *msg)
@@ -125,19 +155,29 @@ int lldp_bdr_handle_show_config(dev_ipc_message_t *msg)
     if (cli_show_scope_payload_parse((const uint8_t *)msg->payload, msg->payload_len, &scope) != 0)
     {
         LOG_WARN("LLDP BDR: invalid SHOW_CONFIG scope payload");
-        send_resp(msg, "");
+        send_error_resp(msg, "LLDP BDR: invalid SHOW_CONFIG scope payload\r\n");
         return ERRCODE_FAIL;
     }
 
     GString *out = g_string_new("");
+    int rc = ERRCODE_SUCCESS;
     if (scope.mode != CLI_SHOW_SCOPE_MODE_THIS)
     {
-        append_global(out);
-        append_interfaces(out);
+        if (append_global(out) != ERRCODE_SUCCESS || append_interfaces(out) != ERRCODE_SUCCESS)
+        {
+            rc = ERRCODE_FAIL;
+        }
     }
     else if (strcmp(scope.view_name, CLI_VIEW_IF) == 0 || strcmp(scope.view_name, CLI_VIEW_IF_LOOP) == 0)
     {
-        append_interfaces(out);
+        rc = append_interfaces(out);
+    }
+
+    if (rc != ERRCODE_SUCCESS)
+    {
+        send_error_resp(msg, "LLDP BDR: failed to read configuration\r\n");
+        g_string_free(out, TRUE);
+        return ERRCODE_FAIL;
     }
 
     send_resp(msg, out->str);

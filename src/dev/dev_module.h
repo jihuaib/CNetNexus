@@ -46,8 +46,8 @@ typedef struct module
     time_t last_crash_time; /**< 上一次意外退出时间戳，用于 crash backoff 窗口判定 */
     uint32_t crash_count;   /**< 当前窗口内的连续意外退出次数 */
     char exe_name[64];      /**< 可执行文件名（按需启动时使用） */
-    char revive_table[64]; /**< on-demand 模块的"配置存在标识表"，DEV 在 boot 时扫到非空即自动 fork */
-    uint32_t epoch;        /**< 每次启动 +1，订阅方据此判断对端是否重启过 */
+    char revive_table[64]; /**< on-demand 模块的逗号分隔"配置存在标识表"，DEV 扫到任一非空即自动 fork */
+    uint32_t epoch; /**< 每次启动 +1，订阅方据此判断对端是否重启过 */
     GList *subscribers; /**< 订阅者列表 GList<GUINT_TO_POINTER(subscriber_module_id)>，本模块 READY/DOWN 时推送给他们 */
 } dev_module_t;
 

@@ -4,6 +4,7 @@ set(BGP_SOURCES
     bgp_bmp_cli.c
     bgp_bmp_db.c
     bgp_db.c
+    bgp_rpm.c
     db/bgp_db_common.c
     db/bgp_db_protocol.c
     db/bgp_db_session.c
@@ -71,6 +72,7 @@ target_link_libraries(netnexus-bgp PRIVATE
     vrf_api
     route_api
     tunnel_api
+    rpm_api
     utils
     bgp_api
 )

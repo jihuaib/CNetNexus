@@ -19,6 +19,14 @@ extern const db_table_def_t LLDP_IF_TABLE;
 void lldp_db_proto_pk(db_filter_builder_t *pk);
 void lldp_db_if_pk(db_filter_builder_t *pk, const char *ifname);
 
+/*
+ * lldp_protocol 同时是 DEV 的 revive marker。只有协议存在非默认配置，
+ * 或 lldp_interface 确有配置行时才保留 singleton 行。
+ */
+int lldp_db_ensure_proto_marker(void);
+int lldp_db_sync_proto_marker(void);
+int lldp_db_prune_implicit_default_interfaces(void);
+
 void lldp_db_restore_proto(void);
 void lldp_db_restore_interfaces(void);
 

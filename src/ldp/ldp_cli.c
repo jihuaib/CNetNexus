@@ -393,9 +393,10 @@ static int handle_if_view_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     {
         if (is_no)
         {
-            if (have_existing)
+            if (have_existing && ldp_db_del_interface(ifname) != ERRCODE_SUCCESS)
             {
-                (void)ldp_db_del_interface(ifname);
+                send_resp(msg, "LDP Error: Failed to delete interface config\r\n");
+                return ERRCODE_FAIL;
             }
             (void)dispatch_if_apply(ifname, 0);
             send_resp(msg, "");

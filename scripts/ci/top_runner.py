@@ -1207,6 +1207,13 @@ class TopologyRuntime:
             if self._is_netnexus(dev):
                 print(f"===== STEP: Wait modules ready on {dev} =====")
                 self.wait_modules_ready(dev)
+                # CLI may have gated connect()-time session setup until its
+                # startup replay completed. Re-apply it after readiness.
+                ready_cli = self.cli_map.get(dev)
+                if ready_cli is None:
+                    raise RuntimeError(f"{dev}: CLI disappeared during topology startup")
+                ready_cli.cmd("end", strict=False, timeout=min(10, self.cmd_timeout))
+                ready_cli.cmd(PAGER_DISABLE_CMD, strict=False, timeout=min(10, self.cmd_timeout))
 
         # 5b) Apply per-device sysname == top.yaml device key (so prompt 显示 r1 / r2 ...)
         for dev in self.devices:
@@ -1294,6 +1301,70 @@ class TopologyRuntime:
         raise RuntimeError(
             f"{device}: failed to reconnect after reboot within {reconnect_timeout}s: {last_err}"
         )
+
+    def cold_reboot_device(self, device: str, *, reconnect_timeout: int = 90) -> None:
+        """Restart the complete NetNexus control plane with a fresh supervisor.
+
+        Unlike the in-process ``reboot`` command, this ends the supervisor and
+        starts a new root ``netnexus`` process without ``NN_WARM_RESTART``.
+        DB therefore executes its real boot path and consumes the selected
+        startup/db or startup/cfg snapshot.  The Docker container and its
+        attached topology networks remain intact.
+        """
+        if device not in self.devices:
+            raise ValueError(f"unknown device '{device}'")
+        if not self._is_netnexus(device):
+            raise ValueError(f"cold_reboot_device is only supported for NetNexus nodes, got {device}")
+
+        cli = self.cli_map.get(device)
+        if cli is None:
+            raise RuntimeError(f"device '{device}' has no active CLI session to cold reboot")
+
+        cname = self._container_name(device)
+        print(f"\n===== STEP: Cold reboot control plane on {device} =====", flush=True)
+        cli.close()
+
+        stopped = subprocess.run(
+            ["docker", "exec", cname, "pkill", "-TERM", "-x", "supervise.sh"],
+            text=True,
+            capture_output=True,
+        )
+        if stopped.returncode not in (0, 1):
+            raise RuntimeError(
+                f"{device}: failed to stop NetNexus supervisor ({stopped.returncode}): "
+                f"{stopped.stderr or stopped.stdout}"
+            )
+
+        stop_deadline = time.time() + min(30, reconnect_timeout)
+        last_processes = ""
+        while time.time() < stop_deadline:
+            probe = subprocess.run(
+                ["docker", "exec", cname, "ps", "-C", "supervise.sh", "-C", "netnexus", "-o", "comm="],
+                text=True,
+                capture_output=True,
+            )
+            if probe.returncode not in (0, 1):
+                raise RuntimeError(
+                    f"{device}: failed to inspect old control-plane processes "
+                    f"({probe.returncode}): {probe.stderr or probe.stdout}"
+                )
+            last_processes = (probe.stdout or "").strip()
+            if not last_processes:
+                break
+            time.sleep(0.2)
+        else:
+            raise RuntimeError(f"{device}: old control plane did not stop: {last_processes}")
+
+        self._start_netnexus_process(cname)
+        self.ensure_cli_alive(device, reconnect_timeout=reconnect_timeout)
+        # connect() may have sent pager setup while startup/cfg replay was still
+        # gated. wait_modules_ready() above only returns after the gate opens;
+        # apply the session setup once more before handing control to a case.
+        ready_cli = self.cli_map.get(device)
+        if ready_cli is None:
+            raise RuntimeError(f"{device}: CLI disappeared after cold reboot")
+        ready_cli.cmd("end", strict=False, timeout=min(10, self.cmd_timeout))
+        ready_cli.cmd(PAGER_DISABLE_CMD, strict=False, timeout=min(10, self.cmd_timeout))
 
     def ensure_cli_alive(self, device: str, *, reconnect_timeout: int = 30) -> bool:
         """探活 + 必要时重连 device 的 CLI 会话。

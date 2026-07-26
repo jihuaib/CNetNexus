@@ -59,6 +59,9 @@ static inline dev_ipc_context_t *bgp_local_ipc_ctx(void)
  *  category=BGP, subtype=0xFFF9 */
 #define BGP_MSG_TYPE_INTERNAL_VRF_DOWN DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_BGP, 0xFFF9)
 
+/** BGP 内部消息：RPM 模块 READY，重新订阅 BGP 出口策略 */
+#define BGP_MSG_TYPE_INTERNAL_RPM_READY DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_BGP, 0xFFF8)
+
 void bgp_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
 
 /**

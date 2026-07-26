@@ -44,6 +44,8 @@
 #define CLI_MSG_TYPE_EXPORT_CONFIG DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x000B)
 /** CFG → DEV：ACCESS line 已关闭，payload=uint32_t line_id；用于清理 line-scoped 模块状态 */
 #define CLI_MSG_TYPE_LINE_CLOSED DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x000C)
+/** 模块 → CFG/DB：请求处理失败；配置采集必须整体失败，不得把错误当作空配置 */
+#define CLI_MSG_TYPE_RESP_ERROR DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_CLI, 0x000D)
 
 /** 系统名最大长度（含 null） */
 #define CLI_SYSNAME_MAX_LEN 64
@@ -115,6 +117,8 @@
 #define CLI_VIEW_LINE "line"
 /** console line 配置视图 */
 #define CLI_VIEW_LINE_CONSOLE "line-console"
+/** Routing Policy 节点配置视图 */
+#define CLI_VIEW_ROUTE_POLICY "route-policy"
 
 // ============================================================================
 // CLI 上下文变量 ID 定义（全局唯一，新增时在此处登记，避免冲突）
@@ -147,6 +151,10 @@
 #define CLI_CTX_ID_ACCESS_LINE 12
 /** OSPFv3 进程 ID 上下文（整数） */
 #define CLI_CTX_ID_OSPFV3_PROCESS 13
+/** RPM 策略名称上下文（字符串） */
+#define CLI_CTX_ID_RPM_POLICY_NAME 14
+/** RPM 策略节点序号上下文（整数） */
+#define CLI_CTX_ID_RPM_NODE 15
 
 /** 视图名称最大长度 */
 #define CLI_CLI_MAX_VIEW_LEN 20

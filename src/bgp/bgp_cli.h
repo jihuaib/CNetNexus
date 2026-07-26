@@ -35,6 +35,7 @@
 #define BGP_CLI_GROUP_ID_VRF_VIEW 23             /**< BGP VRF 子视图入口 */
 #define BGP_CLI_GROUP_ID_VPN_TARGET_POLICY 24    /**< policy vpn-target 入向过滤开关（vpnv4 AF 视图） */
 #define BGP_CLI_GROUP_ID_ADVERTISE_EVPN_ROUTE 25 /**< VRF AF 路由导出到 EVPN 开关 */
+#define BGP_CLI_GROUP_ID_EXPORT_POLICY 26        /**< 邻居出口 route-policy */
 
 /**
  * @brief 处理配置类 CLI 命令（group 1-8, 11-13），在 IPC worker 线程调用

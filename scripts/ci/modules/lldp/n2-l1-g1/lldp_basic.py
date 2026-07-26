@@ -42,7 +42,7 @@ def _cleanup(rt: TopologyRuntime) -> None:
                 f"if {GE_IF}",
                 "no lldp port-description",
                 "no lldp admin-status",
-                "no lldp enable",
+                "lldp enable",
                 "exit",
                 "no lldp hold-multiplier",
                 "no lldp timer",

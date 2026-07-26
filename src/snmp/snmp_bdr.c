@@ -18,7 +18,7 @@ int snmp_bdr_handle_show_config(dev_ipc_message_t *msg)
     if (cli_show_scope_payload_parse((const uint8_t *)msg->payload, msg->payload_len, &scope) != 0)
     {
         LOG_WARN("SNMP BDR: invalid SHOW_CONFIG scope payload");
-        snmp_cli_send_response(msg, "");
+        snmp_cli_send_response_typed(msg, CLI_MSG_TYPE_RESP_ERROR, "SNMP BDR: invalid SHOW_CONFIG scope payload.");
         return ERRCODE_FAIL;
     }
     if (scope.mode == CLI_SHOW_SCOPE_MODE_THIS)
@@ -28,10 +28,24 @@ int snmp_bdr_handle_show_config(dev_ipc_message_t *msg)
     }
 
     snmp_config_msg_t cfg;
-    if (snmp_db_get_config(&cfg) != ERRCODE_SUCCESS || !cfg.trap_enabled || cfg.trap_host[0] == '\0')
+    int rc = snmp_db_get_config(&cfg);
+    if (rc == ERRCODE_FAIL)
+    {
+        LOG_WARN("SNMP BDR: failed to read %s", SNMP_TABLE_CONFIG);
+        snmp_cli_send_response_typed(msg, CLI_MSG_TYPE_RESP_ERROR, "SNMP BDR: failed to read configuration.");
+        return ERRCODE_FAIL;
+    }
+    if (rc == SNMP_DB_CONFIG_NOT_FOUND)
     {
         snmp_cli_send_response(msg, "");
         return ERRCODE_SUCCESS;
+    }
+    if (!cfg.trap_enabled || cfg.trap_host[0] == '\0')
+    {
+        LOG_WARN("SNMP BDR: singleton row exists but is not replayable");
+        snmp_cli_send_response_typed(msg, CLI_MSG_TYPE_RESP_ERROR,
+                                     "SNMP BDR: singleton configuration is not replayable.");
+        return ERRCODE_FAIL;
     }
 
     GString *out = g_string_new("!\r\n");

@@ -567,6 +567,43 @@ out:
     return ret;
 }
 
+/** 按逗号分隔的 revive-table 清单检查；任一表非空即视为存在配置。 */
+static int db_capture_tables_have_rows(const char *table_names, gboolean *has_rows)
+{
+    if (!table_names || !has_rows)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    *has_rows = FALSE;
+    gboolean saw_table = FALSE;
+    int ret = ERRCODE_SUCCESS;
+    gchar **tables = g_strsplit(table_names, ",", -1);
+    for (guint i = 0; tables && tables[i]; ++i)
+    {
+        char *table = g_strstrip(tables[i]);
+        if (table[0] == '\0')
+        {
+            continue;
+        }
+        saw_table = TRUE;
+
+        gboolean table_has_rows = FALSE;
+        if (db_capture_table_has_rows(table, &table_has_rows) != ERRCODE_SUCCESS)
+        {
+            ret = ERRCODE_FAIL;
+            break;
+        }
+        if (table_has_rows)
+        {
+            *has_rows = TRUE;
+            break;
+        }
+    }
+    g_strfreev(tables);
+    return saw_table ? ret : ERRCODE_FAIL;
+}
+
 static int db_validate_bdr_module_coverage(const GArray *modules, GHashTable *inactive_optional_modules, char **err)
 {
     for (guint i = 0; i < CONFIG_CAPTURE_OWNER_COUNT; i++)
@@ -575,7 +612,7 @@ static int db_validate_bdr_module_coverage(const GArray *modules, GHashTable *in
         gboolean required = owner->always_required;
         if (!required && owner->revive_table)
         {
-            if (db_capture_table_has_rows(owner->revive_table, &required) != ERRCODE_SUCCESS)
+            if (db_capture_tables_have_rows(owner->revive_table, &required) != ERRCODE_SUCCESS)
             {
                 if (err)
                 {
@@ -660,6 +697,12 @@ static int db_collect_module_bdr(uint32_t mod_id, GString *output)
             {
                 ret = ERRCODE_SUCCESS;
             }
+        }
+        else if (resp->msg_type == CLI_MSG_TYPE_RESP_ERROR)
+        {
+            const char *detail =
+                (resp->payload && resp->payload_len > 1) ? (const char *)resp->payload : "unspecified module error";
+            LOG_WARN("DB-CONFIG: module 0x%08X BDR failed: %s", mod_id, detail);
         }
         else
         {

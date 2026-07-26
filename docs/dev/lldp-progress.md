@@ -75,5 +75,5 @@ python3 scripts/ci/module_runner.py \
 - LLDP 在 worker 中直接使用 raw `AF_PACKET` 以太网 socket。
 - LLDP 依赖 IF cache 获取逻辑接口名、物理接口名、ifindex 和链路状态。
 - 全局 `lldp` admin-up 默认启用符合条件的物理以太接口。
-- 接口 `no lldp enable` 会作为显式关闭 override 持久化。
+- 接口 `no lldp enable` 会作为显式关闭 override 持久化；`lldp enable` 恢复隐式默认并删除该 override。
 - 邻居状态仅运行时保存，不持久化。

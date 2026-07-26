@@ -606,8 +606,12 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
     {
         /* 启动回放/回滚必须 fail closed：把断开模块上的 no 当作“已经撤销”
          * 会令完整性校验同样漏掉该模块，并错误报告成功。普通交互仍保留幂等提示。 */
-        if (session->internal_session &&
-            (result->has_show_prefix || result->has_no_prefix || !result->allow_auto_start))
+        /*
+         * 内部回放中的 no 不能一概按“已经撤销”跳过：LLDP 等模块会把显式
+         * negative override 写入配置，只有 XML 明确授权 auto-start 的这类
+         * 命令才可拉起模块并真正落库。show 始终禁止拉起。
+         */
+        if (session->internal_session && (result->has_show_prefix || !result->allow_auto_start))
         {
             cli_send_message(session, "Error: target module is not running; internal configuration not applied.\r\n");
             return ERRCODE_FAIL;
@@ -617,7 +621,7 @@ int cli_dispatch_to_module(cli_match_result_t *result, cli_session_t *session)
             cli_send_message(session, "Info: target module is not running; no data to show.\r\n");
             return ERRCODE_SUCCESS;
         }
-        if (result->has_no_prefix)
+        if (result->has_no_prefix && !session->internal_session)
         {
             cli_send_message(session, "Info: target module is not running; nothing to undo.\r\n");
             return ERRCODE_SUCCESS;

@@ -40,6 +40,27 @@ static void snmp_config_default(snmp_config_msg_t *cfg)
     cfg->trap_port = SNMP_TRAP_DEFAULT_PORT;
 }
 
+static int snmp_db_prune_noncanonical_rows(dev_ipc_context_t *ctx)
+{
+    db_condition_t condition = {
+        .field_name = "id",
+        .op = DB_CMP_NE,
+        .value = db_value_int(SNMP_CONFIG_PK_VALUE),
+    };
+    db_filter_t filter = {.conditions = &condition, .num_conditions = 1};
+    int rows = db_rpc_delete(ctx, SNMP_TABLE_CONFIG, &filter);
+    db_value_free(&condition.value);
+    if (rows < 0)
+    {
+        return ERRCODE_FAIL;
+    }
+    if (rows > 0)
+    {
+        LOG_WARN("SNMP: removed %d non-canonical singleton row(s) from %s", rows, SNMP_TABLE_CONFIG);
+    }
+    return ERRCODE_SUCCESS;
+}
+
 int snmp_db_init(void)
 {
     dev_ipc_context_t *ctx = snmp_local_ipc_ctx();
@@ -48,6 +69,39 @@ int snmp_db_init(void)
         LOG_ERROR("SNMP: failed to create table %s", SNMP_TABLE_CONFIG);
         return ERRCODE_FAIL;
     }
+
+    if (snmp_db_prune_noncanonical_rows(ctx) != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("SNMP: failed to normalize singleton keys in %s", SNMP_TABLE_CONFIG);
+        return ERRCODE_FAIL;
+    }
+
+    /*
+     * Older releases represented "disabled" with an empty singleton row.
+     * The table is also DEV's on-demand revive marker, so normalize that
+     * legacy state as soon as the module can access DB.
+     */
+    snmp_config_msg_t cfg;
+    int rc = snmp_db_get_config(&cfg);
+    if (rc == ERRCODE_FAIL)
+    {
+        LOG_ERROR("SNMP: failed to validate singleton row in %s", SNMP_TABLE_CONFIG);
+        return ERRCODE_FAIL;
+    }
+    if (rc == SNMP_DB_CONFIG_NOT_FOUND)
+    {
+        return ERRCODE_SUCCESS;
+    }
+    if (!cfg.trap_enabled)
+    {
+        if (snmp_db_disable_trap() != ERRCODE_SUCCESS)
+        {
+            LOG_ERROR("SNMP: failed to remove invalid legacy singleton row from %s", SNMP_TABLE_CONFIG);
+            return ERRCODE_FAIL;
+        }
+        LOG_WARN("SNMP: removed invalid legacy singleton row from %s", SNMP_TABLE_CONFIG);
+    }
+
     return ERRCODE_SUCCESS;
 }
 
@@ -74,7 +128,7 @@ int snmp_db_get_config(snmp_config_msg_t *cfg)
         {
             db_result_free(result);
         }
-        return 1;
+        return SNMP_DB_CONFIG_NOT_FOUND;
     }
 
     const char *trap_host = db_row_get_text(result->rows[0], "trap_host", "");
@@ -98,7 +152,7 @@ int snmp_db_restore(void)
     {
         return ERRCODE_FAIL;
     }
-    if (rc == 1)
+    if (rc == SNMP_DB_CONFIG_NOT_FOUND)
     {
         LOG_INFO("SNMP: database has no trap config");
         return ERRCODE_SUCCESS;

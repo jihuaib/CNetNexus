@@ -174,12 +174,28 @@ static int handle_proto_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         send_resp(msg, "LLDP Error: Failed to persist protocol config\r\n");
         return ERRCODE_FAIL;
     }
-    (void)dispatch_proto_apply();
+    if (dispatch_proto_apply() != ERRCODE_SUCCESS)
+    {
+        send_resp(msg, "LLDP Error: Failed to apply protocol config\r\n");
+        return ERRCODE_FAIL;
+    }
 
     if (kw_count == 0 && is_no)
     {
-        send_resp_typed(msg, CLI_MSG_TYPE_RESP_EXITING, "LLDP: admin disabled, process exiting.\r\n");
-        kill(getpid(), SIGTERM);
+        gboolean has_config = FALSE;
+        if (lldp_db_has_config(&has_config) != ERRCODE_SUCCESS)
+        {
+            send_resp(msg, "LLDP Error: Failed to verify remaining configuration\r\n");
+            return ERRCODE_FAIL;
+        }
+        if (!has_config)
+        {
+            send_resp_typed(msg, CLI_MSG_TYPE_RESP_EXITING, "LLDP: admin disabled, process exiting.\r\n");
+            kill(getpid(), SIGTERM);
+            return ERRCODE_SUCCESS;
+        }
+        /* 接口 override 仍需 BDR owner 在线；仅关闭全局协议，不退出。 */
+        send_resp(msg, "");
         return ERRCODE_SUCCESS;
     }
 
@@ -334,12 +350,24 @@ static int handle_if_view_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         }
     }
 
+    const gboolean implicit_default = lldp_db_interface_is_implicit_default(&cfg);
     if (lldp_db_set_interface(ifname, &cfg) != ERRCODE_SUCCESS)
     {
         send_resp(msg, "LLDP Error: Failed to persist interface config\r\n");
         return ERRCODE_FAIL;
     }
-    (void)dispatch_if_apply(ifname, 1);
+    if (dispatch_if_apply(ifname, implicit_default ? 0 : 1) != ERRCODE_SUCCESS)
+    {
+        send_resp(msg, "LLDP Error: Failed to apply interface config\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    /*
+     * 接口命令把最后一项 override 恢复为隐式默认时，DB marker 会立即清空，
+     * 但进程暂不退出。旧 cfg 常按 `lldp enable` 后接 admin/description 回放；
+     * 若在第一条命令后退出，后续命令会在重连窗口丢失。显式 `no lldp`
+     * 仍可退出空模块，冷启动也会因 marker 为空保持 on-demand/down。
+     */
     send_resp(msg, "");
     return ERRCODE_SUCCESS;
 }

@@ -36,7 +36,7 @@ def _cleanup(rt: TopologyRuntime, *, restore_topology_sysname: bool = False) -> 
                 "config",
                 f"if {GE_IF}",
                 "no lldp admin-status",
-                "no lldp enable",
+                "lldp enable",
                 "exit",
                 "no lldp hold-multiplier",
                 "no lldp timer",

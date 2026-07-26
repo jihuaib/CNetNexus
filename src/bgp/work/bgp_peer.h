@@ -12,6 +12,7 @@
 #include <stdint.h>
 
 #include "net_addr.h"
+#include "rpm.h"
 
 /** per-peer 配置标记位 */
 #define BGP_PEER_FLAG_RR_CLIENT (1U << 0) /**< 标记为 Route Reflector 客户端（RFC 4456） */
@@ -39,13 +40,15 @@ typedef enum bgp_peer_state
 /** BGP per-AF peer：在某地址族下使能的邻居实例 */
 typedef struct bgp_peer
 {
-    net_addr_t addr;          /**< 邻居 IP 地址 */
-    bgp_peer_state_t state;   /**< 本 AF 下的协商状态 */
-    uint32_t flags;           /**< per-peer 配置位（BGP_PEER_FLAG_*） */
-    bgp_vrf_t *vrf;           /**< 所属 VRF（借用引用，不持有所有权） */
-    bgp_instance_t *inst;     /**< 所属 AF 实例（借用引用，不持有所有权） */
-    bgp_adj_rib_in_t *rib_in; /**< 入向 Adj-RIB-In（peer 持有所有权） */
-    GList *subgroups;         /**< bgp_nh_subgroup_t* 借用引用列表（可同时归属多个子组） */
+    net_addr_t addr;            /**< 邻居 IP 地址 */
+    bgp_peer_state_t state;     /**< 本 AF 下的协商状态 */
+    uint32_t flags;             /**< per-peer 配置位（BGP_PEER_FLAG_*） */
+    rpm_policy_t export_policy; /**< 出口策略快照；name 为空表示未绑定 */
+    bool export_policy_valid;   /**< RPM 中仍存在且类型匹配；无效引用按 fail-closed 处理 */
+    bgp_vrf_t *vrf;             /**< 所属 VRF（借用引用，不持有所有权） */
+    bgp_instance_t *inst;       /**< 所属 AF 实例（借用引用，不持有所有权） */
+    bgp_adj_rib_in_t *rib_in;   /**< 入向 Adj-RIB-In（peer 持有所有权） */
+    GList *subgroups;           /**< bgp_nh_subgroup_t* 借用引用列表（可同时归属多个子组） */
 } bgp_peer_t;
 
 /**

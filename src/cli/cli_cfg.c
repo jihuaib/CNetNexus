@@ -345,6 +345,12 @@ static gboolean collect_module_show_config(uint32_t mod_id, const uint8_t *scope
                 complete = TRUE;
             }
         }
+        else if (resp->msg_type == CLI_MSG_TYPE_RESP_ERROR)
+        {
+            const char *detail =
+                (resp->payload && resp->payload_len > 1) ? (const char *)resp->payload : "unspecified module error";
+            LOG_WARN("SHOW_CONFIG: module 0x%08X failed: %s", mod_id, detail);
+        }
         else
         {
             LOG_WARN("SHOW_CONFIG: module 0x%08X returned unexpected msg_type=0x%08X", mod_id, resp->msg_type);
@@ -493,6 +499,43 @@ static gboolean cli_cfg_remote_table_has_rows(const char *table_name, gboolean *
     return db_rpc_exists(g_cli_local->dev_ipc_ctx, table_name, NULL, has_rows) == ERRCODE_SUCCESS;
 }
 
+/** 按逗号分隔的 revive-table 清单检查；任一表非空即视为存在配置。 */
+static gboolean cli_cfg_remote_tables_have_rows(const char *table_names, gboolean *has_rows)
+{
+    if (!table_names || !has_rows)
+    {
+        return FALSE;
+    }
+
+    *has_rows = FALSE;
+    gboolean saw_table = FALSE;
+    gboolean ok = TRUE;
+    gchar **tables = g_strsplit(table_names, ",", -1);
+    for (guint i = 0; tables && tables[i]; ++i)
+    {
+        char *table = g_strstrip(tables[i]);
+        if (table[0] == '\0')
+        {
+            continue;
+        }
+        saw_table = TRUE;
+
+        gboolean table_has_rows = FALSE;
+        if (!cli_cfg_remote_table_has_rows(table, &table_has_rows))
+        {
+            ok = FALSE;
+            break;
+        }
+        if (table_has_rows)
+        {
+            *has_rows = TRUE;
+            break;
+        }
+    }
+    g_strfreev(tables);
+    return ok && saw_table;
+}
+
 static gboolean cli_cfg_required_modules_connected(const GArray *modules, uint32_t exclude_module_id,
                                                    GHashTable *inactive_optional_modules,
                                                    gboolean inspect_optional_markers)
@@ -512,7 +555,7 @@ static gboolean cli_cfg_required_modules_connected(const GArray *modules, uint32
              * owner，但 optional owner 保持 best-effort 采集。 */
             continue;
         }
-        if (!required && owner->revive_table && !cli_cfg_remote_table_has_rows(owner->revive_table, &required))
+        if (!required && owner->revive_table && !cli_cfg_remote_tables_have_rows(owner->revive_table, &required))
         {
             LOG_WARN("SHOW_CONFIG: cannot inspect revive table '%s' for module %s", owner->revive_table,
                      owner->module_name);
@@ -1314,7 +1357,15 @@ static void handle_config_rollback(cli_session_t *session, cli_tlv_parser_t *par
  */
 static void handle_show_config(cli_session_t *session)
 {
-    GString *output = cli_cfg_collect_current_config(0);
+    gboolean complete = TRUE;
+    GString *output = cli_cfg_collect_current_config_checked(0, &complete);
+    if (!complete)
+    {
+        g_string_free(output, TRUE);
+        cli_send_message(session,
+                         "Error: Current configuration capture is incomplete; no partial output was shown.\r\n");
+        return;
+    }
     render_show_config_output(session, output);
     g_string_free(output, TRUE);
 }
@@ -1355,6 +1406,7 @@ static void handle_show_this(cli_session_t *session)
     uint8_t *payload = cli_show_scope_payload_build(&scope, &payload_len);
     cli_cfg_anchor_aggregator_t *agg = cli_cfg_anchor_agg_new();
     GString *buf = g_string_new("");
+    gboolean complete = TRUE;
 
     uint32_t num_mod_ids = 0;
     const uint32_t *mod_ids = cli_view_get_show_this_modules(session->current_view, &num_mod_ids);
@@ -1366,7 +1418,11 @@ static void handle_show_this(cli_session_t *session)
             continue;
         }
 
-        collect_module_show_config(mod_id, payload, payload_len, buf);
+        if (!collect_module_show_config(mod_id, payload, payload_len, buf))
+        {
+            complete = FALSE;
+            break;
+        }
         if (buf->len > 0)
         {
             cli_cfg_anchor_agg_feed(agg, buf->str);
@@ -1374,8 +1430,15 @@ static void handle_show_this(cli_session_t *session)
     }
 
     GString *output = g_string_new("");
-    cli_cfg_anchor_agg_render(agg, output);
-    render_show_config_output(session, output);
+    if (complete)
+    {
+        cli_cfg_anchor_agg_render(agg, output);
+        render_show_config_output(session, output);
+    }
+    else
+    {
+        cli_send_message(session, "Error: Current view configuration capture failed; no partial output was shown.\r\n");
+    }
     g_string_free(output, TRUE);
     g_free(payload);
     g_string_free(buf, TRUE);

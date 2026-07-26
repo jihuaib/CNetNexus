@@ -798,8 +798,10 @@ static int dev_require_all_modules_phase(uint8_t required_phase, const char *pha
 // ============================================================================
 
 /**
- * 对每个 on_demand 且声明了 revive_table 的模块，检查表中是否存在配置；
- * 存在即 fork 该模块（使其完成 db_restore 并自动 listen/服务）。
+ * 对每个 on_demand 且声明了 revive_table 的模块，检查任一标识表中是否存在
+ * 配置；存在即 fork 该模块（使其完成 db_restore 并自动 listen/服务）。
+ * revive-table 支持逗号分隔的表名，用于兼容旧版本可能只留下子表配置、
+ * 尚未建立 canonical singleton marker 的 running DB。
  *
  * Why: 用户配置过的模块在 NetNexus 重启后应该自动恢复业务，无需用户重新触发 CLI。
  */
@@ -818,22 +820,44 @@ static gboolean revive_on_demand_cb(gpointer key, gpointer value, gpointer data)
         return FALSE; /* 已经在跑（可能刚被另一个 CLI 命令触发） */
     }
 
-    /* 查表是否非空：db_rpc_exists 内部用 EXISTS 查询，表不存在或为空都返回 FALSE */
+    /*
+     * 查任一表是否非空。模块尚未创建过的表会查询失败，按“不存在”跳过；
+     * 只要一个表可查且非空，就必须拉起模块完成恢复/历史数据归一化。
+     */
     gboolean exists = FALSE;
-    int rc = db_rpc_exists(g_dev_local->dev_ipc_ctx, module->revive_table, NULL, &exists);
-    if (rc != ERRCODE_SUCCESS)
+    char matched_table[64] = {0};
+    gchar **tables = g_strsplit(module->revive_table, ",", -1);
+    for (guint i = 0; tables && tables[i]; ++i)
     {
-        /* 表不存在等错误：说明该模块从未配置过，跳过 */
-        LOG_DEBUG("Revive check: %s/%s not present in DB, skip", module->name, module->revive_table);
-        return FALSE;
+        char *table = g_strstrip(tables[i]);
+        if (table[0] == '\0')
+        {
+            continue;
+        }
+
+        gboolean table_has_rows = FALSE;
+        int rc = db_rpc_exists(g_dev_local->dev_ipc_ctx, table, NULL, &table_has_rows);
+        if (rc != ERRCODE_SUCCESS)
+        {
+            LOG_DEBUG("Revive check: %s/%s not present in DB, skip", module->name, table);
+            continue;
+        }
+        if (table_has_rows)
+        {
+            exists = TRUE;
+            g_strlcpy(matched_table, table, sizeof(matched_table));
+            break;
+        }
     }
+    g_strfreev(tables);
+
     if (!exists)
     {
-        LOG_INFO("Revive check: %s has no rows in %s, skip", module->name, module->revive_table);
+        LOG_INFO("Revive check: %s has no rows in [%s], skip", module->name, module->revive_table);
         return FALSE;
     }
 
-    LOG_INFO("Revive: %s has config in %s, auto-spawning", module->name, module->revive_table);
+    LOG_INFO("Revive: %s has config in %s, auto-spawning", module->name, matched_table);
     if (dev_module_spawn_on_demand(module) != ERRCODE_SUCCESS)
     {
         LOG_ERROR("Revive: failed to spawn %s", module->name);

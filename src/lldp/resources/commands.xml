@@ -108,27 +108,27 @@
                 </element>
             </elements>
             <commands>
-                <command>
+                <command auto-start="true">
                     <expression>2 3</expression>
                     <views>if,if-loop</views>
                 </command>
-                <command>
+                <command auto-start="true">
                     <expression>1 2 3</expression>
                     <views>if,if-loop</views>
                 </command>
-                <command>
+                <command auto-start="true">
                     <expression>2 4 5</expression>
                     <views>if,if-loop</views>
                 </command>
-                <command>
+                <command auto-start="true">
                     <expression>2 4 6</expression>
                     <views>if,if-loop</views>
                 </command>
-                <command>
+                <command auto-start="true">
                     <expression>2 4 7</expression>
                     <views>if,if-loop</views>
                 </command>
-                <command>
+                <command auto-start="true">
                     <expression>2 4 8</expression>
                     <views>if,if-loop</views>
                 </command>
@@ -136,7 +136,7 @@
                     <expression>1 2 4</expression>
                     <views>if,if-loop</views>
                 </command>
-                <command>
+                <command auto-start="true">
                     <expression>2 9 10</expression>
                     <views>if,if-loop</views>
                 </command>

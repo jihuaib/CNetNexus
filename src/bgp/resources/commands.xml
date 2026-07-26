@@ -344,6 +344,53 @@
                 </command>
             </commands>
         </group>
+
+        <!-- neighbor <ip> route-policy <name> export -->
+        <group group-id="26">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>neighbor</name>
+                    <description>BGP neighbor</description>
+                </element>
+                <element id="3" cfg-id="1" type="parameter">
+                    <name>&lt;ipv4-address&gt;</name>
+                    <type>ipv4</type>
+                    <description>Neighbor IPv4 address</description>
+                </element>
+                <element id="4" cfg-id="2" type="parameter">
+                    <name>&lt;ipv6-address&gt;</name>
+                    <type>ipv6</type>
+                    <description>Neighbor IPv6 address</description>
+                </element>
+                <element id="5" type="keyword">
+                    <name>route-policy</name>
+                    <description>Apply a routing policy</description>
+                </element>
+                <element id="6" cfg-id="3" type="parameter">
+                    <name>&lt;policy-name&gt;</name>
+                    <type>dynamic(18:1,string(1-63))</type>
+                    <description>Existing RPM BGP export policy</description>
+                </element>
+                <element id="7" type="keyword">
+                    <name>export</name>
+                    <description>Apply to advertised routes</description>
+                </element>
+            </elements>
+            <commands>
+                <command>
+                    <expression>2 {3 | 4} 5 6 7</expression>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-qp,bgp-af-ipv6-qp,bgp-af-ipv4-labeled,bgp-af-vpnv4,bgp-af-evpn,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
+                </command>
+                <command>
+                    <expression>1 2 {3 | 4} 5 7</expression>
+                    <views>bgp-af-ipv4-uni,bgp-af-ipv6-uni,bgp-af-ipv4-qp,bgp-af-ipv6-qp,bgp-af-ipv4-labeled,bgp-af-vpnv4,bgp-af-evpn,bgp-vrf-af-ipv4-uni,bgp-vrf-af-ipv6-uni</views>
+                </command>
+            </commands>
+        </group>
         <!-- router-id <ip-address> / no router-id (在 BGP 视图下) -->
         <group group-id="5">
             <elements>

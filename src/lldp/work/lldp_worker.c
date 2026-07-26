@@ -841,6 +841,9 @@ int lldp_worker_dispatch_apply(lldp_apply_cmd_t *apply)
             if (apply->u.if_del.ifname[0])
             {
                 g_hash_table_remove(g_lldp_work_local->interfaces, apply->u.if_del.ifname);
+                /* 删除 DB override 后立即恢复与无配置启动相同的隐式默认状态。 */
+                const if_api_cache_entry_t *if_entry = if_api_cache_lookup(apply->u.if_del.ifname);
+                (void)ensure_default_iface_from_cache(if_entry);
             }
             break;
 

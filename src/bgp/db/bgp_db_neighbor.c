@@ -14,6 +14,7 @@
 #include "errcode.h"
 #include "log.h"
 #include "net_addr.h"
+#include "rpm.h"
 #include "vrf.h"
 
 // ============================================================================
@@ -26,6 +27,7 @@ static const db_column_def_t BGP_NEIGHBOR_COLS[] = {
     {"safi", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
     {"neighbor_ip", DB_TYPE_TEXT, DB_COL_NOT_NULL, NULL},
     {"is_rr_client", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"}, /* RFC 4456: 1=RR 客户端 */
+    {"export_policy", DB_TYPE_TEXT, 0, NULL},                /* RPM BGP export policy 引用 */
 };
 
 const db_table_def_t BGP_NEIGHBOR_TABLE = {
@@ -135,6 +137,22 @@ int bgp_db_set_neighbor_rr_client(const char *vrf_name, bgp_afi_t afi, bgp_safi_
     return 0;
 }
 
+int bgp_db_set_neighbor_export_policy(const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi, const char *neighbor_ip,
+                                      const char *policy_name)
+{
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
+    if (!ctx || !vrf_name || !neighbor_ip)
+    {
+        return -1;
+    }
+    db_filter_builder_t pk;
+    bgp_db_neighbor_pk(&pk, vrf_name, afi, safi, neighbor_ip);
+    db_col_t col = DB_COL_TEXT("export_policy", policy_name ? policy_name : "");
+    int rows = db_rpc_update_cols(ctx, BGP_TABLE_NEIGHBOR, &pk.filter, &col, 1);
+    db_filter_clear(&pk);
+    return rows <= 0 ? -1 : 0;
+}
+
 int bgp_db_del_neighbors_by_afi(const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi)
 {
     dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
@@ -226,6 +244,28 @@ void bgp_db_restore_neighbors(void)
             (void)bgp_worker_dispatch_apply(&rr);
             LOG_INFO("BGP restore: VRF %s %s afi=%u safi=%u reflect-client", vrf_name, nb_ip, (unsigned)afi,
                      (unsigned)safi);
+        }
+
+        const char *export_policy = db_row_get_text(row, "export_policy", "");
+        if (export_policy && export_policy[0] != '\0')
+        {
+            bgp_apply_cmd_t ep;
+            memset(&ep, 0, sizeof(ep));
+            ep.group_id = BGP_CLI_GROUP_ID_EXPORT_POLICY;
+            snprintf(ep.vrf_name, sizeof(ep.vrf_name), "%s", vrf_name);
+            ep.u.export_policy.afi = afi;
+            ep.u.export_policy.safi = safi;
+            ep.u.export_policy.addr = nb_addr;
+            g_strlcpy(ep.u.export_policy.policy.name, export_policy, sizeof(ep.u.export_policy.policy.name));
+            rpm_policy_get_resp_t found;
+            memset(&found, 0, sizeof(found));
+            if (rpm_api_policy_get(ctx, export_policy, RPM_POLICY_TYPE_BGP_EXPORT, &found) == ERRCODE_SUCCESS &&
+                found.found)
+            {
+                ep.u.export_policy.policy = found.policy;
+                ep.u.export_policy.policy_valid = true;
+            }
+            (void)bgp_worker_dispatch_apply(&ep);
         }
     }
 

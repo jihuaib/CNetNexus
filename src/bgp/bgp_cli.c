@@ -33,6 +33,7 @@
 #include "log.h"
 #include "net_addr.h"
 #include "route.h"
+#include "rpm.h"
 #include "vrf.h"
 
 // ============================================================================
@@ -2030,6 +2031,103 @@ static int handle_bgp_reflect_client(dev_ipc_message_t *msg, cli_tlv_parser_t *p
 }
 
 /**
+ * @brief 处理 neighbor <ip> route-policy <name> export / no neighbor <ip> route-policy export
+ */
+static int handle_bgp_export_policy(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    bgp_apply_cmd_t apply;
+    memset(&apply, 0, sizeof(apply));
+    apply.group_id = BGP_CLI_GROUP_ID_EXPORT_POLICY;
+    apply.isNo = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
+    bgp_cli_ctx_t ctx = bgp_cli_ctx_default();
+    char ip_buf[64] = "";
+    char policy_name[RPM_POLICY_NAME_MAX] = "";
+
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (CLI_TLV_IS_CTX(&entry))
+        {
+            bgp_cli_ctx_parse(&ctx, &entry);
+            cli_tlv_entry_free(&entry);
+            continue;
+        }
+        if (entry.cfg_id == 1 || entry.cfg_id == 2)
+        {
+            const char *text = cli_tlv_entry_get_text(&entry);
+            if (text)
+            {
+                g_strlcpy(ip_buf, text, sizeof(ip_buf));
+            }
+        }
+        else if (entry.cfg_id == 3)
+        {
+            const char *text = cli_tlv_entry_get_text(&entry);
+            if (text)
+            {
+                g_strlcpy(policy_name, text, sizeof(policy_name));
+            }
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    if (net_addr_from_str(ip_buf, &apply.u.export_policy.addr) != 0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Invalid neighbor address.\r\n");
+        return ERRCODE_FAIL;
+    }
+    bgp_cli_apply_ctx_set(&apply, &ctx);
+    apply.u.export_policy.afi = ctx.afi;
+    apply.u.export_policy.safi = ctx.safi;
+
+    if (!apply.isNo)
+    {
+        if (policy_name[0] == '\0')
+        {
+            bgp_send_cli_response(msg, "BGP Error: Export policy name is required.\r\n");
+            return ERRCODE_FAIL;
+        }
+        if (dev_ipc_wait_module_ready(bgp_local_ipc_ctx(), DEV_MODULE_ID_RPM, DEV_IPC_WAIT_READY_MS) != ERRCODE_SUCCESS)
+        {
+            bgp_send_cli_response(msg, "BGP Error: RPM module is unavailable.\r\n");
+            return ERRCODE_FAIL;
+        }
+        rpm_policy_get_resp_t found;
+        memset(&found, 0, sizeof(found));
+        if (rpm_api_policy_get(bgp_local_ipc_ctx(), policy_name, RPM_POLICY_TYPE_BGP_EXPORT, &found) !=
+                ERRCODE_SUCCESS ||
+            !found.found)
+        {
+            bgp_send_cli_response(msg, "BGP Error: Export policy does not exist or has incompatible type.\r\n");
+            return ERRCODE_FAIL;
+        }
+        apply.u.export_policy.policy = found.policy;
+        apply.u.export_policy.policy_valid = true;
+    }
+
+    if (bgp_worker_dispatch_apply(&apply) != 0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Server unavailable.\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (apply.rc != BGP_APPLY_RC_OK && apply.rc != BGP_APPLY_RC_NOOP)
+    {
+        char out[300];
+        snprintf(out, sizeof(out), "%s\r\n", apply.errmsg);
+        bgp_send_cli_response(msg, out);
+        return ERRCODE_FAIL;
+    }
+    if (apply.rc == BGP_APPLY_RC_OK &&
+        bgp_db_set_neighbor_export_policy(ctx.vrf_name, ctx.afi, ctx.safi, ip_buf, apply.isNo ? "" : policy_name) != 0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
+        return ERRCODE_FAIL;
+    }
+    bgp_send_cli_response(msg, "");
+    return ERRCODE_SUCCESS;
+}
+
+/**
  * @brief 处理配置类 CLI 命令（group 1-8, 11-13），在 IPC worker 线程调用
  *
  * 配置命令通过 bgp_worker_dispatch_apply() 将状态变更派发到 BGP worker 线程，
@@ -2111,6 +2209,9 @@ int bgp_cli_handle_config_msg(dev_ipc_message_t *msg)
             break;
         case BGP_CLI_GROUP_ID_REFLECT_CLIENT:
             result = handle_bgp_reflect_client(msg, &parser);
+            break;
+        case BGP_CLI_GROUP_ID_EXPORT_POLICY:
+            result = handle_bgp_export_policy(msg, &parser);
             break;
         case BGP_CLI_GROUP_ID_IMPORT_RIB:
             result = handle_bgp_import_rib(msg, &parser);

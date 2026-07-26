@@ -36,6 +36,11 @@ int ldp_db_set_interface(const char *ifname, const ldp_if_cfg_t *cfg)
     {
         return ERRCODE_FAIL;
     }
+    /* 接口配置本身可回放；即使 LDP 是手工拉起的，也要先建立 revive marker。 */
+    if (ldp_db_ensure_proto_row(ctx) != ERRCODE_SUCCESS)
+    {
+        return ERRCODE_FAIL;
+    }
 
     db_filter_builder_t pk;
     ldp_db_if_pk(&pk, ifname);
@@ -45,6 +50,7 @@ int ldp_db_set_interface(const char *ifname, const ldp_if_cfg_t *cfg)
     if (rc != ERRCODE_SUCCESS)
     {
         db_filter_clear(&pk);
+        (void)ldp_db_sync_revive_marker(ctx);
         return ERRCODE_FAIL;
     }
 
@@ -57,6 +63,10 @@ int ldp_db_set_interface(const char *ifname, const ldp_if_cfg_t *cfg)
         };
         int rows = db_rpc_update_cols(ctx, LDP_TABLE_INTERFACE, &pk.filter, cols, G_N_ELEMENTS(cols));
         db_filter_clear(&pk);
+        if (rows < 0)
+        {
+            (void)ldp_db_sync_revive_marker(ctx);
+        }
         return (rows >= 0) ? ERRCODE_SUCCESS : ERRCODE_FAIL;
     }
 
@@ -68,7 +78,12 @@ int ldp_db_set_interface(const char *ifname, const ldp_if_cfg_t *cfg)
         DB_COL_INT("hello_interval_ms", (int64_t)cfg->hello_interval_ms),
         DB_COL_INT("hold_time_ms", (int64_t)cfg->hold_time_ms),
     };
-    return db_rpc_insert_cols(ctx, LDP_TABLE_INTERFACE, cols, G_N_ELEMENTS(cols));
+    rc = db_rpc_insert_cols(ctx, LDP_TABLE_INTERFACE, cols, G_N_ELEMENTS(cols));
+    if (rc != ERRCODE_SUCCESS)
+    {
+        (void)ldp_db_sync_revive_marker(ctx);
+    }
+    return rc;
 }
 
 int ldp_db_del_interface(const char *ifname)
@@ -88,7 +103,11 @@ int ldp_db_del_interface(const char *ifname)
     ldp_db_if_pk(&pk, ifname);
     int rc = db_rpc_delete(ctx, LDP_TABLE_INTERFACE, &pk.filter);
     db_filter_clear(&pk);
-    return (rc >= 0) ? ERRCODE_SUCCESS : ERRCODE_FAIL;
+    if (rc < 0)
+    {
+        return ERRCODE_FAIL;
+    }
+    return ldp_db_sync_revive_marker(ctx);
 }
 
 int ldp_db_get_interface(const char *ifname, ldp_if_cfg_t *cfg_out)

@@ -31,6 +31,7 @@
 #include "bgp_protocol.h"
 #include "bgp_relay.h"
 #include "bgp_route_flush.h"
+#include "bgp_rpm.h"
 #include "bgp_session.h"
 #include "bgp_vrf.h"
 #include "bgp_vrf_import.h"
@@ -61,6 +62,7 @@ typedef enum bgp_cmd_type
     BGP_CMD_TYPE_ROUTE_READY = 8, /**< ROUTE READY/restart 后重订阅/重注册/重下刷 */
     BGP_CMD_TYPE_IF_DOWN = 9,     /**< IF 模块下线，清缓存 + 拆 source-if 会话 + 重注册 nexthop */
     BGP_CMD_TYPE_VRF_DOWN = 10,   /**< VRF 模块下线，拆非 public bgp_vrf_t + 清 vrf_api cache */
+    BGP_CMD_TYPE_RPM_EVENT = 11,  /**< RPM 策略变更事件 */
 } bgp_cmd_type_t;
 
 typedef struct bgp_cmd
@@ -359,6 +361,21 @@ int bgp_worker_post_vrf_event(dev_ipc_message_t *msg)
     return 0;
 }
 
+int bgp_worker_post_rpm_event(dev_ipc_message_t *msg)
+{
+    bgp_cmd_t *cmd = bgp_cmd_create(BGP_CMD_TYPE_RPM_EVENT, msg, FALSE);
+    if (!cmd)
+    {
+        return -1;
+    }
+    if (bgp_cmd_enqueue(cmd) != 0)
+    {
+        bgp_cmd_destroy(cmd);
+        return -1;
+    }
+    return 0;
+}
+
 void bgp_cmd_post_shutdown(void)
 {
     if (!g_bgp_work_local)
@@ -453,6 +470,9 @@ static void bgp_cmd_dispatch_apply(bgp_apply_cmd_t *apply)
             break;
         case BGP_CLI_GROUP_ID_REFLECT_CLIENT:
             bgp_cfg_apply_reflect_client(apply);
+            break;
+        case BGP_CLI_GROUP_ID_EXPORT_POLICY:
+            bgp_cfg_apply_export_policy(apply);
             break;
         case BGP_CLI_GROUP_ID_IMPORT_RIB:
             bgp_cfg_apply_import_rib(apply);
@@ -600,6 +620,12 @@ gboolean bgp_cmd_process_event(void)
 
             case BGP_CMD_TYPE_ROUTE_MSG:
                 bgp_cmd_dispatch_route_msg(cmd->msg);
+                cmd->msg = NULL;
+                break;
+
+            case BGP_CMD_TYPE_RPM_EVENT:
+                bgp_rpm_handle_event(cmd->msg);
+                dev_ipc_message_free(cmd->msg);
                 cmd->msg = NULL;
                 break;
 

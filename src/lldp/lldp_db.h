@@ -42,7 +42,9 @@ int lldp_db_set_proto_admin(uint8_t admin_up);
 int lldp_db_set_proto_tx_interval(uint32_t tx_interval_sec);
 int lldp_db_set_proto_hold_multiplier(uint32_t hold_multiplier);
 int lldp_db_get_proto_cfg(lldp_proto_cfg_t *cfg_out);
+int lldp_db_has_config(gboolean *has_config_out);
 
+gboolean lldp_db_interface_is_implicit_default(const lldp_if_cfg_t *cfg);
 int lldp_db_set_interface(const char *ifname, const lldp_if_cfg_t *cfg);
 int lldp_db_del_interface(const char *ifname);
 int lldp_db_get_interface(const char *ifname, lldp_if_cfg_t *cfg_out);

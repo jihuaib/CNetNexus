@@ -327,6 +327,12 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
             regex=[r"(?m)^\s*6\s+bgp\s+ON-DEMAND\s+\S+\s+down\s+"],
             label="configured BGP deliberately disconnected",
         )
+        out = _show(rt, "show current-configuration")
+        _assert(
+            "incomplete running configuration rejected",
+            out,
+            contains=["Error: Current configuration capture is incomplete", "no partial output was shown"],
+        )
         out = _show(rt, f"save configuration {INCOMPLETE_CFG}")
         _assert(
             "incomplete capture rejected",

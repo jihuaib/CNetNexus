@@ -17,6 +17,7 @@
 #include "dev.h"
 #include "if.h"
 #include "net_addr.h"
+#include "rpm.h"
 #include "vrf.h"
 
 typedef struct bgp_session bgp_session_t;
@@ -227,6 +228,16 @@ typedef struct bgp_apply_cmd
             bgp_safi_t safi; /**< 子地址族 */
         } reflect_client;
 
+        /** BGP_CLI_GROUP_ID_EXPORT_POLICY */
+        struct
+        {
+            net_addr_t addr;     /**< 邻居 IP 地址 */
+            bgp_afi_t afi;       /**< 地址族 */
+            bgp_safi_t safi;     /**< 子地址族 */
+            rpm_policy_t policy; /**< RPM 返回的完整策略快照 */
+            bool policy_valid;   /**< 查询时策略存在且类型匹配 */
+        } export_policy;
+
         /** BGP_CLI_GROUP_ID_IMPORT_RIB */
         struct
         {
@@ -430,6 +441,9 @@ int bgp_worker_post_if_event(dev_ipc_message_t *msg);
  * 并联动 bgp_rd_entry_t 等内部结构。
  */
 int bgp_worker_post_vrf_event(dev_ipc_message_t *msg);
+
+/** 向 BGP worker 投递 RPM 策略事件。 */
+int bgp_worker_post_rpm_event(dev_ipc_message_t *msg);
 
 /**
  * @brief 将对端 UPDATE 写入 BGP relay（维护 nexthop<->route 关系，并向 ROUTE 注册 nexthop 门禁）

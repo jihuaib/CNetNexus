@@ -427,6 +427,20 @@ static void cli_handle_line_input(dev_ipc_context_t *ctx, dev_ipc_message_t *msg
         return;
     }
 
+    /*
+     * CLI 必须先 notify READY，startup/cfg 内部回放才能等待 DEV 的整体 READY；
+     * 因而 ACCESS 可能在回放结束前已连入。此窗口内拒绝外部命令，防止 show/
+     * 配置命令与内部 session 并发，读到半份配置或抢先 auto-start 同一模块。
+     */
+    if (!g_atomic_int_get(&g_cli_local->startup_restore_complete))
+    {
+        char prompt[ACCESS_PROMPT_MAX_LEN];
+        cli_render_prompt(s, prompt, sizeof(prompt));
+        cli_send_text_resp(ctx, msg, ACCESS_MSG_INPUT_RESP, 0, s, prompt,
+                           "CLI: startup configuration replay in progress; retry.\r\n");
+        return;
+    }
+
     s->line_cmd = 0;
     s->line_cmd_no = 0;
     s->line_cmd_arg1 = 0;
@@ -673,6 +687,7 @@ int cli_module_init(void)
     LOG_INFO("CLI: module ready");
 
     cli_restore_startup_if_needed();
+    g_atomic_int_set(&g_cli_local->startup_restore_complete, 1);
 
     return 0;
 }

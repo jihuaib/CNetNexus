@@ -540,6 +540,28 @@ def reboot_device(
     rt.reboot_device(device, reconnect_timeout=timeout)
 
 
+def cold_reboot_device(
+    rt: TopologyRuntime,
+    device: str,
+    *,
+    timeout: int = 90,
+    save_config: bool = False,
+) -> None:
+    """真实 DB/CFG 启动路径的控制面冷重启。
+
+    容器与拓扑网络保持不变，但 supervisor/root netnexus 会完整退出并重新
+    启动，DB 不携带 ``NN_WARM_RESTART``，因此会重新加载 startup 指针。
+    """
+    if save_config:
+        run_cmds(
+            rt=rt,
+            device=device,
+            strict=False,
+            commands=["end", f"save configuration {_REBOOT_SNAPSHOT}", f"startup configuration {_REBOOT_SNAPSHOT} db"],
+        )
+    rt.cold_reboot_device(device, reconnect_timeout=timeout)
+
+
 def process_reboot(
     rt: TopologyRuntime,
     device: str,

@@ -307,6 +307,11 @@ static void bdr_append_af_peers(GString *out, const char *vrf_name, int64_t afi,
         {
             g_string_append_printf(out, "%sneighbor %s reflect-client\r\n", line_indent, ip);
         }
+        const char *export_policy = db_row_get_text(row, "export_policy", "");
+        if (export_policy && export_policy[0] != '\0')
+        {
+            g_string_append_printf(out, "%sneighbor %s route-policy %s export\r\n", line_indent, ip, export_policy);
+        }
     }
 
     db_result_free(result);
@@ -806,6 +811,14 @@ void bgp_bdr_show_config(dev_ipc_message_t *msg)
         g_string_append(out, "!\r\n");
     }
 
-    bgp_send_cli_response(msg, out->str);
+    /*
+     * BGP 出口策略引用依赖 RPM 策略已经创建。完整配置通过 anchor 延后到
+     * 全局配置段之后渲染，使 module-id 更大的 RPM 仍能先于 BGP 回放；
+     * show this 保持上面的普通文本输出。
+     */
+    GString *wrapped = g_string_new("");
+    cli_cfg_anchor_emit_header(wrapped, "bgp/global", out->str);
+    bgp_send_cli_response(msg, wrapped->str);
+    g_string_free(wrapped, TRUE);
     g_string_free(out, TRUE);
 }

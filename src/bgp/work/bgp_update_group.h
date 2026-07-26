@@ -28,6 +28,7 @@
 #include "bgp_rib.h"
 #include "bgp_session.h"
 #include "net_addr.h"
+#include "rpm.h"
 
 /* 前向声明，避免循环包含 */
 typedef struct bgp_instance bgp_instance_t;
@@ -74,12 +75,13 @@ typedef enum bgp_route_src_class
 
 typedef struct bgp_update_group_key
 {
-    bgp_sess_type_t sess_type; /**< iBGP / eBGP（不同类型走不同属性准备逻辑） */
-    uint32_t policy_hash;      /**< 出向 route-map 哈希（Phase 4 启用；当前恒为 0） */
-    uint16_t peer_family;      /**< peer 地址族（AF_INET / AF_INET6，用于区分双栈邻居） */
-    uint32_t remote_as;        /**< 远端 AS 号（AS_PATH 防环检查基准；同 UG 内结果一致） */
-    uint32_t negotiated_caps;  /**< 协商能力集（AS4/EXT_NEXTHOP 等，影响报文编码） */
-    uint32_t flags;            /**< UG 扩展标记位（BGP_UG_FLAG_*） */
+    bgp_sess_type_t sess_type;             /**< iBGP / eBGP（不同类型走不同属性准备逻辑） */
+    uint32_t policy_hash;                  /**< 出向 route-map 哈希（Phase 4 启用；当前恒为 0） */
+    char policy_name[RPM_POLICY_NAME_MAX]; /**< 出向策略名；用于避免 hash 碰撞 */
+    uint16_t peer_family;                  /**< peer 地址族（AF_INET / AF_INET6，用于区分双栈邻居） */
+    uint32_t remote_as;       /**< 远端 AS 号（AS_PATH 防环检查基准；同 UG 内结果一致） */
+    uint32_t negotiated_caps; /**< 协商能力集（AS4/EXT_NEXTHOP 等，影响报文编码） */
+    uint32_t flags;           /**< UG 扩展标记位（BGP_UG_FLAG_*） */
 } bgp_update_group_key_t;
 
 /**

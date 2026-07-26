@@ -17,8 +17,8 @@ LLDP 模块（module-id: 14）提供全局 LLDP 开关、全局 timer/hold 配�
 
 | 命令 | 视图 | 说明 |
 | --- | --- | --- |
-| `lldp enable` | if, if-loop | 在接口启用 LLDP |
-| `no lldp enable` | if, if-loop | 在接口关闭 LLDP |
+| `lldp enable` | if, if-loop | 恢复接口隐式启用状态，并清除显式关闭 override |
+| `no lldp enable` | if, if-loop | 在接口显式关闭 LLDP（持久化 negative override） |
 | `lldp admin-status txrx` | if, if-loop | 接口收发 LLDP |
 | `lldp admin-status rxonly` | if, if-loop | 接口仅接收 LLDP |
 | `lldp admin-status txonly` | if, if-loop | 接口仅发送 LLDP |

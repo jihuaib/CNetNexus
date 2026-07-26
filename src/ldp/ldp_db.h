@@ -43,6 +43,7 @@ int ldp_db_set_lsr_id(uint32_t lsr_id);
 int ldp_db_set_hello_interval(uint32_t hello_ms);
 int ldp_db_set_hold_time(uint32_t hold_ms);
 int ldp_db_set_keepalive(uint32_t keepalive_ms);
+int ldp_db_query_proto_cfg(ldp_proto_cfg_t *cfg_out, gboolean *found_out);
 int ldp_db_get_proto_cfg(ldp_proto_cfg_t *cfg_out);
 
 int ldp_db_set_interface(const char *ifname, const ldp_if_cfg_t *cfg);

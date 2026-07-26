@@ -35,6 +35,7 @@ typedef struct cli_local
     dev_ipc_context_t *dev_ipc_ctx;    /**< IPC 上下文 */
     char sysname[CLI_SYSNAME_MAX_LEN]; /**< 当前系统名（默认 "NetNexus"，由 DEV 通过 IPC 推送） */
     cli_chunk_stream_t export_stream;  /**< 内部 RPC 导出 current-configuration 的分片状态 */
+    gint startup_restore_complete; /**< 原子布尔：startup/cfg 回放完成前拒绝外部命令，避免并发配置 */
 } cli_local_t;
 
 extern cli_local_t *g_cli_local;
