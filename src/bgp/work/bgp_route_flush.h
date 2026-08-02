@@ -32,8 +32,9 @@ typedef struct bgp_rthead bgp_rthead_t;
  */
 typedef struct bgp_route_flush_queue
 {
-    GQueue *q;      /**< FIFO 队列（元素为 bgp_rthead_t*） */
-    uint32_t count; /**< 当前队列中的条目数 */
+    GQueue *q;                  /**< FIFO 队列（元素为 bgp_rthead_t*） */
+    uint32_t count;             /**< 当前队列中的条目数 */
+    gboolean defer_until_ready; /**< ROUTE IPC 失败后等 READY 重放，避免自旋 */
 } bgp_route_flush_queue_t;
 
 bgp_route_flush_queue_t *bgp_route_flush_queue_create(void);
@@ -62,6 +63,17 @@ void bgp_route_flush_handle_event(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t saf
  * @return 实际处理条目数
  */
 int bgp_route_flush_process_pending(bgp_instance_t *inst);
+
+/**
+ * @brief 销毁实例前的 ROUTE 同步撤销屏障。
+ *
+ * 遍历实例所有 RIB，对带 BGP_ROUTE_FLAG_FLUSHED 的路径调用
+ * route_rpc_del_wait()；只有收到 ROUTE 成功 ACK 才清除已下刷标记。
+ * 可幂等重试：部分成功后遇到失败时，未确认条目保留标记。
+ *
+ * @return ERRCODE_SUCCESS=已确认撤销所有已下刷路径；ERRCODE_FAIL=不允许销毁实例
+ */
+int bgp_route_flush_withdraw_instance_sync(bgp_instance_t *inst);
 
 /**
  * @brief ROUTE READY/restart 后，将已标记 FLUSHED 的 best 路由清标并重新入队下刷。

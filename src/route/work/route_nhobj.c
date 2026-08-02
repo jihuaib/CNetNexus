@@ -25,7 +25,7 @@ typedef struct route_nhobj_entry
     uint32_t relay_ifindex; /**< relay 解析后的出接口（下 FIB 用） */
 } route_nhobj_entry_t;
 
-#define ROUTE_NHOBJ_PROTO_SLOTS 8u /**< 协议分区数（覆盖 ROUTE_PROTOCOL_* 0..5） */
+#define ROUTE_NHOBJ_PROTO_SLOTS 8u /**< 协议分区数（覆盖 ROUTE_PROTOCOL_* 0..6） */
 
 static GHashTable *g_nhobj_by_key = NULL;                    /**< route_nhobj_key_t* -> entry*（拥有 value） */
 static GHashTable *g_nhobj_by_id = NULL;                     /**< nexthop_id -> entry*（借用，不拥有） */

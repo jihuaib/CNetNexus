@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #include "bgp_adj_rib_in.h"
+#include "bgp_apply_vrf.h"
 #include "bgp_attr_intern.h"
 #include "bgp_bmp_thread.h"
 #include "bgp_bulk.h"
@@ -410,6 +411,7 @@ void bgp_worker_drain_work_events(void)
             {
                 bgp_instance_t *targets[] = {
                     bgp_vrf_export_target_inst_by_af(BGP_AFI_IPV4, BGP_SAFI_VPN_UNICAST),
+                    bgp_vrf_export_target_inst_by_af(BGP_AFI_IPV6, BGP_SAFI_VPN_UNICAST),
                     bgp_vrf_export_target_inst_by_af(BGP_AFI_L2VPN, BGP_SAFI_EVPN),
                 };
                 gboolean has_more = FALSE;
@@ -421,8 +423,9 @@ void bgp_worker_drain_work_events(void)
                         continue;
                     }
                     (void)bgp_vrf_export_queue_process(vpn_inst, BGP_VRF_EXPORT_BATCH);
-                    has_more |= (vpn_inst->vrf_export_state &&
-                                 ((bgp_vrf_export_state_t *)vpn_inst->vrf_export_state)->pending_count > 0);
+                    /* SID RPC 失败的队列已被 retry_due 门禁；只对当前
+                     * 可消费的 pending 自重排，避免 eventfd busy-loop。 */
+                    has_more |= bgp_vrf_export_queue_ready(vpn_inst);
                 }
                 /* pending 未抽干则再投事件自重排，让出 epoll 处理报文/定时器 */
                 if (has_more)
@@ -584,6 +587,14 @@ static void *bgp_worker_thread(void *arg)
 
         /* 释放本轮 epoll 事件处理期间关闭的连接 */
         bgp_conn_flush_deferred();
+        if (g_bgp_work_local->running)
+        {
+            /* epoll 本身以 1s 上限唤醒；两类重试都有 monotonic due
+             * 和指数退避，未到期时不投 eventfd、不发 RPC。 */
+            bgp_vrf_export_retry_tick();
+            bgp_apply_vrf_cleanup_retry_tick();
+            bgp_update_group_label_retry_tick();
+        }
     }
 
     bgp_conn_flush_deferred();

@@ -20,6 +20,7 @@
 #include "isis_main.h"
 #include "isis_worker.h"
 #include "log.h"
+#include "srv6.h"
 #include "vrf.h"
 
 /* 表名重复但保持就近：避免引 isis_db_internal.h（仅 db/ 子目录可见） */
@@ -484,6 +485,89 @@ static int handle_af_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
     if (isis_db_set_af(tag, afi, enable) != ERRCODE_SUCCESS)
     {
         send_resp(msg, "ISIS Error: Failed to persist AF setting\r\n");
+        return ERRCODE_FAIL;
+    }
+    send_resp(msg, "");
+    return ERRCODE_SUCCESS;
+}
+
+static int handle_srv6_locator_cmd(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    const gboolean is_no = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
+    uint32_t tag = 0u;
+    char locator[SRV6_LOCATOR_NAME_MAX] = {0};
+
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (CLI_TLV_IS_CTX(&entry))
+        {
+            if (entry.cfg_id == CLI_CTX_ID_ISIS_TAG)
+            {
+                tag = cli_tlv_entry_get_ctx_uint32(&entry);
+            }
+        }
+        else if (entry.cfg_id == 1)
+        {
+            const char *name = cli_tlv_entry_get_text(&entry);
+            if (name)
+            {
+                g_strlcpy(locator, name, sizeof(locator));
+            }
+        }
+        cli_tlv_entry_free(&entry);
+    }
+
+    if (tag == 0u || (!is_no && locator[0] == '\0'))
+    {
+        send_resp(msg, "ISIS Error: Missing instance tag or SRv6 locator name\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (!is_no)
+    {
+        if (dev_ipc_wait_module_ready(isis_local_ipc_ctx(), DEV_MODULE_ID_SRV6, DEV_IPC_WAIT_READY_MS) !=
+                ERRCODE_SUCCESS ||
+            dev_ipc_wait_connected(isis_local_ipc_ctx(), DEV_MODULE_ID_SRV6, DEV_IPC_WAIT_PEER_MS) != ERRCODE_SUCCESS ||
+            srv6_rpc_locator_exists(isis_local_ipc_ctx(), locator, SRV6_RPC_DEFAULT_TIMEOUT_MS) != ERRCODE_SUCCESS)
+        {
+            send_resp(msg, "ISIS Error: SRv6 locator does not exist or the SRV6 module is unavailable\r\n");
+            return ERRCODE_FAIL;
+        }
+    }
+
+    char old_locator[SRV6_LOCATOR_NAME_MAX] = {0};
+    if (isis_db_get_srv6_locator(tag, old_locator, sizeof(old_locator)) != ERRCODE_SUCCESS)
+    {
+        send_resp(msg, "ISIS Error: Failed to read the current SRv6 locator setting\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    isis_apply_cmd_t apply;
+    memset(&apply, 0, sizeof(apply));
+    apply.op = ISIS_APPLY_OP_SRV6_LOCATOR_SET;
+    apply.u.srv6_locator_set.tag = tag;
+    g_strlcpy(apply.u.srv6_locator_set.locator, is_no ? "" : locator, sizeof(apply.u.srv6_locator_set.locator));
+    /* A runtime NOOP must still repair persistent state after a previous
+     * DB-commit/rollback split. Suppress the helper's early response and
+     * always drive the idempotent DB update below. */
+    int dr = dispatch_and_respond_ex(msg, &apply, FALSE);
+    if (dr < 0)
+    {
+        return ERRCODE_FAIL;
+    }
+    if (isis_db_set_srv6_locator(tag, is_no ? "" : locator) != ERRCODE_SUCCESS)
+    {
+        isis_apply_cmd_t rollback;
+        memset(&rollback, 0, sizeof(rollback));
+        rollback.op = ISIS_APPLY_OP_SRV6_LOCATOR_SET;
+        rollback.u.srv6_locator_set.tag = tag;
+        g_strlcpy(rollback.u.srv6_locator_set.locator, old_locator, sizeof(rollback.u.srv6_locator_set.locator));
+        if (isis_worker_dispatch_apply(&rollback) != ERRCODE_SUCCESS ||
+            (rollback.rc != ISIS_APPLY_RC_OK && rollback.rc != ISIS_APPLY_RC_NOOP))
+        {
+            LOG_ERROR("ISIS: failed to roll back SRv6 locator runtime state for process %u", tag);
+        }
+        send_resp(msg, "ISIS Error: Failed to persist the SRv6 locator setting\r\n");
         return ERRCODE_FAIL;
     }
     send_resp(msg, "");
@@ -995,6 +1079,9 @@ int isis_cli_handle_config_msg(dev_ipc_message_t *msg)
             break;
         case ISIS_CLI_GROUP_ID_COST_STYLE:
             rc = handle_cost_style_cmd(msg, &parser);
+            break;
+        case ISIS_CLI_GROUP_ID_SRV6_LOCATOR:
+            rc = handle_srv6_locator_cmd(msg, &parser);
             break;
         default:
             send_resp(msg, "ISIS Error: Unknown command group\r\n");

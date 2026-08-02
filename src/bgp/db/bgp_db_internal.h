@@ -71,8 +71,8 @@ extern gboolean g_bgp_db_resync_only_vrf_bound;
 uint32_t bgp_db_restore_protocol(void);
 void bgp_db_restore_vrf(void);
 void bgp_db_restore_sessions(void);
-void bgp_db_restore_instances(void);
-void bgp_db_restore_neighbors(void);
+uint32_t bgp_db_restore_instances(void);
+uint32_t bgp_db_restore_neighbors(void);
 void bgp_db_restore_qp_routes(void);
 void bgp_db_restore_qp_route_select(void);
 

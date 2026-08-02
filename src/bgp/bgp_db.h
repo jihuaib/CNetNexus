@@ -60,6 +60,20 @@ void bgp_db_ensure_defaults(void);
  */
 int bgp_db_set_as(uint32_t as_number);
 
+/** Set/clear the service-SID locator on a private unicast address-family instance. */
+int bgp_db_set_instance_srv6_locator(const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi, const char *locator);
+
+/** Read the service-SID locator on a private unicast address-family instance. */
+int bgp_db_get_instance_srv6_locator(const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi, char *locator,
+                                     size_t locator_len);
+
+/** Persist/read SRv6 best-effort nexthop mode on a private unicast AF. */
+int bgp_db_set_srv6_be(const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi, bool enabled);
+int bgp_db_get_srv6_be(const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi, bool *enabled);
+
+/** SRv6 locator 只允许挂在非 public VRF 的 IPv4/IPv6 unicast tuple。 */
+gboolean bgp_db_srv6_instance_key_valid(const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi);
+
 /**
  * @brief 从数据库删除 BGP 协议及关联配置（protocol/session/neighbor/instance/qp_route/vrf/bmp_instance/bmp_monitor）
  * @return 删除的行数，错误返回 -1
@@ -351,5 +365,11 @@ int bgp_db_set_neighbor_rr_client(const char *vrf_name, bgp_afi_t afi, bgp_safi_
 /** 设置/清除 AF 邻居出口策略名；空字符串表示清除。 */
 int bgp_db_set_neighbor_export_policy(const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi, const char *neighbor_ip,
                                       const char *policy_name);
+
+/** Persist/read `neighbor <peer> srv6-sid` under a public VPN AF. */
+int bgp_db_set_neighbor_srv6_sid(const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi, const char *neighbor_ip,
+                                 bool enabled);
+int bgp_db_get_neighbor_srv6_sid(const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi, const char *neighbor_ip,
+                                 bool *enabled);
 
 #endif /* BGP_DB_H */

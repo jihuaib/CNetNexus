@@ -417,6 +417,15 @@ static void bgp_cmd_dispatch_apply(bgp_apply_cmd_t *apply)
         case BGP_CLI_GROUP_ID_PROTOCOL:
             bgp_cfg_apply_protocol(apply);
             break;
+        case BGP_CLI_GROUP_ID_SRV6:
+            bgp_cfg_apply_srv6(apply);
+            break;
+        case BGP_CLI_GROUP_ID_NEIGHBOR_SRV6_SID:
+            bgp_cfg_apply_neighbor_srv6_sid(apply);
+            break;
+        case BGP_CLI_GROUP_ID_SRV6_BE:
+            bgp_cfg_apply_srv6_be(apply);
+            break;
         case BGP_CLI_GROUP_ID_VRF_VIEW:
             bgp_cfg_apply_vrf(apply);
             break;

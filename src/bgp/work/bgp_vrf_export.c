@@ -31,6 +31,11 @@
 
 /** 发送时 per-vrf 标签申请 RPC 超时 */
 #define BGP_VRF_EXPORT_LABEL_TIMEOUT_MS 3000u
+#define BGP_VRF_EXPORT_SID_TIMEOUT_MS 5000u
+/** SID RPC 失败使用 1,2,4,8,16,30s 有界指数退避，成功抽干后清零。 */
+#define BGP_VRF_EXPORT_RETRY_BASE_USEC ((gint64)G_USEC_PER_SEC)
+#define BGP_VRF_EXPORT_RETRY_MAX_USEC (30 * (gint64)G_USEC_PER_SEC)
+#define BGP_VRF_EXPORT_RETRY_MAX_EXP 5u
 
 /** g_tree_foreach 回调：收集 head 指针到 GList(避免遍历期修改 tree)；定义见文件后段 */
 static gboolean bgp_vrf_export_collect_head_cb(gpointer key, gpointer value, gpointer user_data);
@@ -144,6 +149,208 @@ void bgp_vrf_export_release_vrf_label(bgp_vrf_t *vrf)
     vrf->vpn_label = 0u;
 }
 
+static srv6_sid_entry_t *bgp_vrf_export_sid_slot(bgp_vrf_t *vrf, bgp_afi_t afi)
+{
+    if (!vrf)
+    {
+        return NULL;
+    }
+    return (afi == BGP_AFI_IPV4) ? &vrf->srv6_sid_v4 : (afi == BGP_AFI_IPV6) ? &vrf->srv6_sid_v6 : NULL;
+}
+
+/** 从私网 unicast AF 配置重建 BGP 的稳定 SID key。BGP 重启后本地 cache 为空，
+ * 但 SRV6 会从自己的 DB 恢复 binding；删除配置不能因 cache 为空而跳过释放。 */
+static gboolean bgp_vrf_export_build_sid_key(const bgp_vrf_t *vrf, bgp_afi_t afi, srv6_sid_key_t *key)
+{
+    bgp_instance_t *src_inst = (vrf && vrf->inst_hash && (afi == BGP_AFI_IPV4 || afi == BGP_AFI_IPV6))
+                                   ? g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(afi, BGP_SAFI_UNICAST))
+                                   : NULL;
+    if (!vrf || vrf->vrf_id == BGP_VRF_PUBLIC_ID || !key || !src_inst || src_inst->srv6_locator[0] == '\0')
+    {
+        return FALSE;
+    }
+
+    memset(key, 0, sizeof(*key));
+    g_strlcpy(key->locator, src_inst->srv6_locator, sizeof(key->locator));
+    key->vrf_id = vrf->vrf_id;
+    key->behavior = (afi == BGP_AFI_IPV4) ? SRV6_BEHAVIOR_END_DT4 : SRV6_BEHAVIOR_END_DT6;
+    key->owner_module_id = DEV_MODULE_ID_BGP;
+    key->owner_id = ((uint32_t)afi << 16) | (uint32_t)BGP_SAFI_UNICAST;
+    return TRUE;
+}
+
+int bgp_vrf_export_release_srv6_sid(bgp_vrf_t *vrf, bgp_afi_t afi)
+{
+    srv6_sid_entry_t *entry = bgp_vrf_export_sid_slot(vrf, afi);
+    if (!entry)
+    {
+        return ERRCODE_SUCCESS;
+    }
+
+    if (entry->key.locator[0] == '\0')
+    {
+        srv6_sid_key_t recovered_key;
+        if (!bgp_vrf_export_build_sid_key(vrf, afi, &recovered_key))
+        {
+            return ERRCODE_SUCCESS;
+        }
+        entry->key = recovered_key;
+    }
+    if (!g_bgp_local || !g_bgp_local->dev_ipc_ctx ||
+        srv6_rpc_sid_release(g_bgp_local->dev_ipc_ctx, &entry->key, BGP_VRF_EXPORT_SID_TIMEOUT_MS) != ERRCODE_SUCCESS)
+    {
+        /* RPC 超时存在“服务端已释放、响应丢失”的不确定态。保留稳定 key
+         * 以便下一次 release/alloc 幂等确认，但清掉 SID，禁止直接复用并广告。 */
+        srv6_sid_key_t uncertain_key = entry->key;
+        memset(entry, 0, sizeof(*entry));
+        entry->key = uncertain_key;
+        LOG_WARN("BGP vrf-export: failed to release service SID vrf=%u afi=%u", vrf ? vrf->vrf_id : 0u, (unsigned)afi);
+        return ERRCODE_FAIL;
+    }
+    memset(entry, 0, sizeof(*entry));
+    return ERRCODE_SUCCESS;
+}
+
+int bgp_vrf_export_reconcile_srv6_sid_absent(bgp_vrf_t *vrf, bgp_afi_t afi)
+{
+    srv6_sid_entry_t *slot = bgp_vrf_export_sid_slot(vrf, afi);
+    if (!vrf || vrf->vrf_id == BGP_VRF_PUBLIC_ID || !slot || (afi != BGP_AFI_IPV4 && afi != BGP_AFI_IPV6) ||
+        !g_bgp_local || !g_bgp_local->dev_ipc_ctx)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    srv6_sid_owner_scope_t scope;
+    memset(&scope, 0, sizeof(scope));
+    scope.vrf_id = vrf->vrf_id;
+    scope.behavior = (afi == BGP_AFI_IPV4) ? SRV6_BEHAVIOR_END_DT4 : SRV6_BEHAVIOR_END_DT6;
+    scope.owner_id = ((uint32_t)afi << 16) | (uint32_t)BGP_SAFI_UNICAST;
+    if (srv6_rpc_sid_release_owner(g_bgp_local->dev_ipc_ctx, &scope, BGP_VRF_EXPORT_SID_TIMEOUT_MS) != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("BGP vrf-export: owner-scope SID reconcile failed vrf=%u afi=%u", vrf->vrf_id, (unsigned)afi);
+        return ERRCODE_FAIL;
+    }
+    memset(slot, 0, sizeof(*slot));
+    return ERRCODE_SUCCESS;
+}
+
+void bgp_vrf_export_release_srv6_sids(bgp_vrf_t *vrf)
+{
+    (void)bgp_vrf_export_release_srv6_sid(vrf, BGP_AFI_IPV4);
+    (void)bgp_vrf_export_release_srv6_sid(vrf, BGP_AFI_IPV6);
+}
+
+static const srv6_sid_entry_t *bgp_vrf_export_alloc_service_sid(bgp_instance_t *src_inst)
+{
+    bgp_vrf_t *src_vrf = src_inst ? src_inst->vrf : NULL;
+    if (!src_inst || !src_vrf || src_vrf->vrf_id == BGP_VRF_PUBLIC_ID ||
+        (src_inst->afi != BGP_AFI_IPV4 && src_inst->afi != BGP_AFI_IPV6) || src_inst->safi != BGP_SAFI_UNICAST ||
+        src_inst->srv6_locator[0] == '\0' || !g_bgp_local || !g_bgp_local->dev_ipc_ctx)
+    {
+        return NULL;
+    }
+    srv6_sid_entry_t *slot = bgp_vrf_export_sid_slot(src_vrf, src_inst->afi);
+    if (!slot)
+    {
+        return NULL;
+    }
+
+    srv6_sid_key_t key;
+    if (!bgp_vrf_export_build_sid_key(src_vrf, src_inst->afi, &key))
+    {
+        return NULL;
+    }
+
+    const gboolean same_key = slot->key.locator[0] != '\0' && strcmp(slot->key.locator, key.locator) == 0 &&
+                              slot->key.vrf_id == key.vrf_id && slot->key.behavior == key.behavior &&
+                              slot->key.owner_module_id == key.owner_module_id && slot->key.owner_id == key.owner_id;
+    if (same_key && slot->sid.family == AF_INET6)
+    {
+        return slot;
+    }
+    if (slot->key.locator[0] != '\0' && !same_key &&
+        bgp_vrf_export_release_srv6_sid(src_vrf, src_inst->afi) != ERRCODE_SUCCESS)
+    {
+        return NULL;
+    }
+
+    srv6_sid_entry_t confirmed;
+    memset(&confirmed, 0, sizeof(confirmed));
+    if (srv6_rpc_sid_alloc(g_bgp_local->dev_ipc_ctx, &key, &confirmed, BGP_VRF_EXPORT_SID_TIMEOUT_MS) !=
+            ERRCODE_SUCCESS ||
+        confirmed.sid.family != AF_INET6)
+    {
+        /* alloc 同样可能只丢了响应；保存 key、不保存未经确认的 SID，下次
+         * alloc 会以同一 key 查询/重装，而不会误当成可广告缓存。 */
+        memset(slot, 0, sizeof(*slot));
+        slot->key = key;
+        LOG_WARN("BGP vrf-export: service SID pending vrf=%u afi=%u locator=%s", src_vrf->vrf_id,
+                 (unsigned)src_inst->afi, src_inst->srv6_locator);
+        return NULL;
+    }
+    *slot = confirmed;
+    return slot;
+}
+
+int bgp_vrf_export_prepare_srv6_sid(bgp_instance_t *src_inst)
+{
+    if (!src_inst || !src_inst->vrf || src_inst->vrf->vrf_id == BGP_VRF_PUBLIC_ID ||
+        (src_inst->afi != BGP_AFI_IPV4 && src_inst->afi != BGP_AFI_IPV6) || src_inst->safi != BGP_SAFI_UNICAST)
+    {
+        return ERRCODE_FAIL;
+    }
+    if (src_inst->srv6_locator[0] == '\0')
+    {
+        return ERRCODE_SUCCESS;
+    }
+    return bgp_vrf_export_alloc_service_sid(src_inst) ? ERRCODE_SUCCESS : ERRCODE_FAIL;
+}
+
+int bgp_vrf_export_apply_srv6_sid(const bgp_route_node_t *best, bgp_attr_t *out_attr)
+{
+    if (!best || !out_attr)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    /* A public VPN route imported directly into that table has no private-AF
+     * owner and therefore no End.DT service SID.  Keep its MPLS encoding. */
+    if (!best->src_route || !best->src_route->head || !best->src_route->head->inst)
+    {
+        return ERRCODE_SUCCESS;
+    }
+
+    bgp_instance_t *src_inst = best->src_route->head->inst;
+    bgp_vrf_t *src_vrf = src_inst->vrf;
+    if (!src_vrf || src_vrf->vrf_id == BGP_VRF_PUBLIC_ID ||
+        (src_inst->afi != BGP_AFI_IPV4 && src_inst->afi != BGP_AFI_IPV6) || src_inst->safi != BGP_SAFI_UNICAST)
+    {
+        return ERRCODE_SUCCESS;
+    }
+
+    /* `neighbor ... srv6-sid` selects the wire encoding.  A source AF with no
+     * locator still uses the normal MPLS VPN label for that neighbor. */
+    if (src_inst->srv6_locator[0] == '\0')
+    {
+        return ERRCODE_SUCCESS;
+    }
+
+    srv6_sid_key_t expected;
+    srv6_sid_entry_t *slot = bgp_vrf_export_sid_slot(src_vrf, src_inst->afi);
+    if (!slot || !bgp_vrf_export_build_sid_key(src_vrf, src_inst->afi, &expected) || slot->sid.family != AF_INET6 ||
+        strcmp(slot->key.locator, expected.locator) != 0 || slot->key.vrf_id != expected.vrf_id ||
+        slot->key.behavior != expected.behavior || slot->key.owner_module_id != expected.owner_module_id ||
+        slot->key.owner_id != expected.owner_id)
+    {
+        /* Locator is configured, so silently falling back to MPLS would hide a
+         * broken LocalSID transaction.  Hold this SID subgroup fail closed. */
+        return ERRCODE_FAIL;
+    }
+
+    return bgp_attr_set_srv6_l3_service(out_attr, &slot->sid, slot->key.behavior, 0u, NULL) == 0 ? ERRCODE_SUCCESS
+                                                                                                 : ERRCODE_FAIL;
+}
+
 void bgp_vrf_export_inst_init(bgp_instance_t *inst)
 {
     if (!inst || inst->vrf_export_state)
@@ -152,7 +359,7 @@ void bgp_vrf_export_inst_init(bgp_instance_t *inst)
     }
     /* 仅 public VRF 的 VPN 类 instance 承载导出状态 */
     if (!inst->vrf || inst->vrf->vrf_id != BGP_VRF_PUBLIC_ID ||
-        !((inst->afi == BGP_AFI_IPV4 && inst->safi == BGP_SAFI_VPN_UNICAST) ||
+        !(((inst->afi == BGP_AFI_IPV4 || inst->afi == BGP_AFI_IPV6) && inst->safi == BGP_SAFI_VPN_UNICAST) ||
           (inst->afi == BGP_AFI_L2VPN && inst->safi == BGP_SAFI_EVPN)))
     {
         return;
@@ -351,7 +558,9 @@ static int bgp_vrf_export_process_one(bgp_instance_t *vpn_inst, bgp_rthead_t *sr
         return 0;
     }
     bgp_instance_t *src_inst = src_head->inst;
-    if (!src_inst || !src_inst->vrf || src_inst->safi != BGP_SAFI_UNICAST || src_inst->afi != BGP_AFI_IPV4)
+    gboolean evpn_target = bgp_vrf_export_is_evpn_target(vpn_inst);
+    bgp_afi_t source_afi = evpn_target ? BGP_AFI_IPV4 : vpn_inst->afi;
+    if (!src_inst || !src_inst->vrf || src_inst->safi != BGP_SAFI_UNICAST || src_inst->afi != source_afi)
     {
         return 0;
     }
@@ -362,7 +571,7 @@ static int bgp_vrf_export_process_one(bgp_instance_t *vpn_inst, bgp_rthead_t *sr
     }
 
     /* 取该 VRF 的 RD(无 RD 不能进 VPN 表) */
-    const vrf_api_af_t *af = vrf_api_cache_get_af(vrf_id, VRF_AFI_IPV4);
+    const vrf_api_af_t *af = vrf_api_cache_get_af(vrf_id, (uint16_t)source_afi);
     if (!af || !af->has_rd)
     {
         char nbuf[BGP_NLRI_KEY_MAX];
@@ -375,7 +584,7 @@ static int bgp_vrf_export_process_one(bgp_instance_t *vpn_inst, bgp_rthead_t *sr
     memcpy(rd.bytes, af->rd.bytes, sizeof(rd.bytes));
 
     bgp_nlri_entry_t vpn_nlri;
-    if (bgp_vrf_export_is_evpn_target(vpn_inst))
+    if (evpn_target)
     {
         bgp_vrf_export_derive_evpn_nlri(&src_head->nlri, &rd, &vpn_nlri);
     }
@@ -404,7 +613,7 @@ static int bgp_vrf_export_process_one(bgp_instance_t *vpn_inst, bgp_rthead_t *sr
      * 二者都不能再导出回 vpnv4（REMOTE_CROSS 会与对端续命成环；LOCAL_CROSS 属本地交叉单跳，
      * 不应经 vpnv4 再传递）。等同 best 缺失：撤销本地导出。 */
     if (!src_best || !BIT_TEST(src_best->flags, BGP_ROUTE_FLAG_VALID) ||
-        (bgp_vrf_export_is_evpn_target(vpn_inst) && !BIT_TEST(src_inst->flags, BGP_INST_FLAG_ADVERTISE_EVPN_ROUTE)) ||
+        (evpn_target && !BIT_TEST(src_inst->flags, BGP_INST_FLAG_ADVERTISE_EVPN_ROUTE)) ||
         BIT_TEST(src_best->flags, BGP_ROUTE_FLAG_REMOTE_CROSS) || BIT_TEST(src_best->flags, BGP_ROUTE_FLAG_LOCAL_CROSS))
     {
         /* best 缺失/不可导出：解除溯源关联并撤销 vpnv4 中该 (rd, prefix) 的本地导出路由 */
@@ -421,14 +630,18 @@ static int bgp_vrf_export_process_one(bgp_instance_t *vpn_inst, bgp_rthead_t *sr
 
     /* best 存在：拷贝属性 + 合 export RT，作为本地导出路径写入 vpnv4 RIB */
     bgp_attr_t attr = *BGP_ROUTE_ATTR(src_best);
-    if (bgp_vrf_export_is_evpn_target(vpn_inst))
+    if (evpn_target)
     {
         bgp_ext_community_merge_vrf_evpn_export_rts(&attr, vrf_id, BGP_AFI_IPV4);
     }
     else
     {
-        bgp_ext_community_merge_vrf_export_rts(&attr, vrf_id, BGP_AFI_IPV4);
+        bgp_ext_community_merge_vrf_export_rts(&attr, vrf_id, source_afi);
     }
+
+    /* A private unicast route may itself carry Prefix-SID. A VPN export owns
+     * its service attribute, so never leak that unrelated value. */
+    bgp_attr_clear_prefix_sid(&attr);
 
     if (!tgt_head)
     {
@@ -491,6 +704,54 @@ static void bgp_vrf_export_push_head(bgp_vrf_export_state_t *st, bgp_rthead_t *h
     st->pending_count++;
 }
 
+static void bgp_vrf_export_retry_reset(bgp_vrf_export_state_t *st)
+{
+    if (!st)
+    {
+        return;
+    }
+    st->failed_count = 0u;
+    st->retry_due_usec = 0;
+    st->retry_backoff_exp = 0u;
+    st->retry_event_armed = FALSE;
+}
+
+static void bgp_vrf_export_retry_schedule(bgp_instance_t *vpn_inst, bgp_vrf_export_state_t *st)
+{
+    if (!st)
+    {
+        return;
+    }
+    guint exp = MIN((guint)st->retry_backoff_exp, (guint)BGP_VRF_EXPORT_RETRY_MAX_EXP);
+    gint64 delay = BGP_VRF_EXPORT_RETRY_BASE_USEC << exp;
+    delay = MIN(delay, BGP_VRF_EXPORT_RETRY_MAX_USEC);
+    st->retry_due_usec = g_get_monotonic_time() + delay;
+    st->retry_event_armed = FALSE;
+    if (st->retry_backoff_exp < BGP_VRF_EXPORT_RETRY_MAX_EXP)
+    {
+        st->retry_backoff_exp++;
+    }
+    LOG_WARN("BGP vrf-export: deferred retry afi=%u safi=%u in %" G_GINT64_FORMAT " ms (pending=%u)",
+             vpn_inst ? (unsigned)vpn_inst->afi : 0u, vpn_inst ? (unsigned)vpn_inst->safi : 0u, delay / 1000,
+             st->pending_count);
+}
+
+gboolean bgp_vrf_export_queue_ready(const bgp_instance_t *vpn_inst)
+{
+    const bgp_vrf_export_state_t *st = vpn_inst ? vpn_inst->vrf_export_state : NULL;
+    if (!st || !st->pending || st->pending_count == 0u)
+    {
+        return FALSE;
+    }
+    return st->retry_due_usec == 0 || g_get_monotonic_time() >= st->retry_due_usec;
+}
+
+uint32_t bgp_vrf_export_pending_count(const bgp_instance_t *vpn_inst)
+{
+    const bgp_vrf_export_state_t *st = vpn_inst ? vpn_inst->vrf_export_state : NULL;
+    return st ? st->pending_count : 0u;
+}
+
 int bgp_vrf_export_queue_process(bgp_instance_t *vpn_inst, int batch)
 {
     if (!vpn_inst || !vpn_inst->vrf_export_state || batch <= 0)
@@ -502,6 +763,15 @@ int bgp_vrf_export_queue_process(bgp_instance_t *vpn_inst, int batch)
     {
         return 0;
     }
+    st->retry_event_armed = FALSE;
+    if (st->retry_due_usec != 0)
+    {
+        if (g_get_monotonic_time() < st->retry_due_usec)
+        {
+            return 0;
+        }
+        st->retry_due_usec = 0;
+    }
 
     int processed = 0;
     bgp_rthead_t *head = NULL;
@@ -511,7 +781,25 @@ int bgp_vrf_export_queue_process(bgp_instance_t *vpn_inst, int batch)
         {
             st->pending_count--;
         }
-        (void)bgp_vrf_export_process_one(vpn_inst, head);
+        int rc = bgp_vrf_export_process_one(vpn_inst, head);
+        if (rc < 0)
+        {
+            st->failed_count++;
+            /* 保留出队时已持有的 head ref，放回队尾后停止本批。
+             * 失败通常表示 SRV6 模块级故障，继续消费只会放大 RPC 超时；
+             * retry_due 到期后由 worker tick 重投，不在 eventfd 队列中自旋。 */
+            g_queue_push_tail(st->pending, head);
+            st->pending_count++;
+            bgp_vrf_export_retry_schedule(vpn_inst, st);
+            processed++;
+            break;
+        }
+        /* 任意一条成功证明 SRV6 RPC 通路已恢复；后续若再失败
+         * 应从 1s 重新起算，不继承故障期的高退避。failed_count 仍保留，
+         * 供本次同步 drain 正确返回失败。 */
+        st->retry_due_usec = 0;
+        st->retry_backoff_exp = 0u;
+        st->retry_event_armed = FALSE;
 
         /* 收尾 GC：源 head 来自私网 unicast inst，unref 后若已无队列引用且为空则摘除 */
         bgp_instance_t *src_inst = head->inst;
@@ -523,7 +811,45 @@ int bgp_vrf_export_queue_process(bgp_instance_t *vpn_inst, int batch)
         }
         processed++;
     }
+    if (st->pending_count == 0u)
+    {
+        bgp_vrf_export_retry_reset(st);
+    }
     return processed;
+}
+
+void bgp_vrf_export_retry_tick(void)
+{
+    bgp_instance_t *targets[] = {
+        bgp_vrf_export_target_inst_by_af(BGP_AFI_IPV4, BGP_SAFI_VPN_UNICAST),
+        bgp_vrf_export_target_inst_by_af(BGP_AFI_IPV6, BGP_SAFI_VPN_UNICAST),
+        bgp_vrf_export_target_inst_by_af(BGP_AFI_L2VPN, BGP_SAFI_EVPN),
+    };
+    gint64 now = g_get_monotonic_time();
+    gboolean due = FALSE;
+    for (size_t i = 0; i < G_N_ELEMENTS(targets); ++i)
+    {
+        bgp_vrf_export_state_t *st = targets[i] ? targets[i]->vrf_export_state : NULL;
+        if (st && st->pending_count > 0u && st->retry_due_usec != 0 && now >= st->retry_due_usec &&
+            !st->retry_event_armed)
+        {
+            due = TRUE;
+        }
+    }
+    if (!due || bgp_worker_post_vrf_export_event() != 0)
+    {
+        return;
+    }
+    /* 一条全局 export 事件会消费所有 target；标记所有已到期队列，
+     * 防止 epoll 下一轮在前一事件未处理时重复投递。 */
+    for (size_t i = 0; i < G_N_ELEMENTS(targets); ++i)
+    {
+        bgp_vrf_export_state_t *st = targets[i] ? targets[i]->vrf_export_state : NULL;
+        if (st && st->pending_count > 0u && st->retry_due_usec != 0 && now >= st->retry_due_usec)
+        {
+            st->retry_event_armed = TRUE;
+        }
+    }
 }
 
 int bgp_vrf_export_process_pending(bgp_instance_t *vpn_inst)
@@ -533,6 +859,7 @@ int bgp_vrf_export_process_pending(bgp_instance_t *vpn_inst)
         return 0;
     }
     bgp_vrf_export_state_t *st = (bgp_vrf_export_state_t *)vpn_inst->vrf_export_state;
+    st->failed_count = 0u;
     int total = 0;
     while (st->pending_count > 0)
     {
@@ -543,7 +870,9 @@ int bgp_vrf_export_process_pending(bgp_instance_t *vpn_inst)
         }
         total += n;
     }
-    return total;
+    /* 退避窗口内 queue_process 返回 0；只要 pending 仍非空，
+     * 同步 drain 就必须报告“未收敛”，不能把延时重试误当成功。 */
+    return (st->failed_count > 0u || st->pending_count > 0u) ? -1 : total;
 }
 
 /* ============================================================================
@@ -556,7 +885,7 @@ void bgp_vrf_export_on_calc_done(bgp_instance_t *src_inst, bgp_rthead_t *head)
     {
         return;
     }
-    if (src_inst->afi != BGP_AFI_IPV4 || src_inst->safi != BGP_SAFI_UNICAST)
+    if ((src_inst->afi != BGP_AFI_IPV4 && src_inst->afi != BGP_AFI_IPV6) || src_inst->safi != BGP_SAFI_UNICAST)
     {
         return;
     }
@@ -564,10 +893,12 @@ void bgp_vrf_export_on_calc_done(bgp_instance_t *src_inst, bgp_rthead_t *head)
     {
         return;
     }
-    bgp_instance_t *targets[] = {
-        bgp_vrf_export_target_inst_by_af(BGP_AFI_IPV4, BGP_SAFI_VPN_UNICAST),
-        bgp_vrf_export_target_inst_by_af(BGP_AFI_L2VPN, BGP_SAFI_EVPN),
-    };
+    bgp_instance_t *targets[2] = {0};
+    targets[0] = bgp_vrf_export_target_inst_by_af(src_inst->afi, BGP_SAFI_VPN_UNICAST);
+    if (src_inst->afi == BGP_AFI_IPV4)
+    {
+        targets[1] = bgp_vrf_export_target_inst_by_af(BGP_AFI_L2VPN, BGP_SAFI_EVPN);
+    }
     gboolean queued = FALSE;
     for (size_t i = 0; i < G_N_ELEMENTS(targets); i++)
     {
@@ -577,6 +908,10 @@ void bgp_vrf_export_on_calc_done(bgp_instance_t *src_inst, bgp_rthead_t *head)
             continue;
         }
         bgp_vrf_export_state_t *st = (bgp_vrf_export_state_t *)target->vrf_export_state;
+        if (!st || !st->enabled)
+        {
+            continue;
+        }
         bgp_vrf_export_push_head(st, head);
         queued = TRUE;
     }
@@ -625,8 +960,14 @@ int bgp_vrf_export_enable(bgp_instance_t *vpn_inst)
         return 0;
     }
     bgp_vrf_export_state_t *st = (bgp_vrf_export_state_t *)vpn_inst->vrf_export_state;
+    if (st->enabled)
+    {
+        return 0;
+    }
+    st->enabled = TRUE;
+    st->failed_count = 0u;
 
-    /* 遍历所有私网 VRF 的 ipv4-unicast inst，全部 head 入 pending */
+    /* 遍历所有私网 VRF 的 matching unicast inst，全部 head 入 pending */
     GHashTableIter iter;
     gpointer key = NULL;
     gpointer val = NULL;
@@ -638,8 +979,9 @@ int bgp_vrf_export_enable(bgp_instance_t *vpn_inst)
         {
             continue;
         }
+        bgp_afi_t source_afi = bgp_vrf_export_is_evpn_target(vpn_inst) ? BGP_AFI_IPV4 : vpn_inst->afi;
         bgp_instance_t *uc_inst =
-            (bgp_instance_t *)g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(BGP_AFI_IPV4, BGP_SAFI_UNICAST));
+            (bgp_instance_t *)g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(source_afi, BGP_SAFI_UNICAST));
         if (uc_inst)
         {
             bgp_inst_foreach_rib(uc_inst, bgp_vrf_export_scan_rib_cb, st);
@@ -652,6 +994,63 @@ int bgp_vrf_export_enable(bgp_instance_t *vpn_inst)
     return 0;
 }
 
+typedef struct
+{
+    bgp_instance_t *vpn_inst;
+    int processed;
+    gboolean failed;
+} bgp_vrf_export_reprocess_ctx_t;
+
+static gboolean bgp_vrf_export_reprocess_head_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    bgp_vrf_export_reprocess_ctx_t *ctx = (bgp_vrf_export_reprocess_ctx_t *)user_data;
+    bgp_rthead_t *head = (bgp_rthead_t *)value;
+    if (!ctx || !ctx->vpn_inst || !head)
+    {
+        return FALSE;
+    }
+    int rc = bgp_vrf_export_process_one(ctx->vpn_inst, head);
+    if (rc < 0)
+    {
+        ctx->failed = TRUE;
+    }
+    else
+    {
+        ctx->processed += rc;
+    }
+    return FALSE;
+}
+
+static void bgp_vrf_export_reprocess_rib_cb(bgp_instance_t *inst, bgp_rd_entry_t *entry, bgp_rib_t *rib,
+                                            gpointer user_data)
+{
+    (void)inst;
+    (void)entry;
+    if (rib && rib->head_tree)
+    {
+        g_tree_foreach(rib->head_tree, bgp_vrf_export_reprocess_head_cb, user_data);
+    }
+}
+
+int bgp_vrf_export_reprocess_instance(bgp_instance_t *src_inst)
+{
+    if (!src_inst || !src_inst->vrf || src_inst->vrf->vrf_id == BGP_VRF_PUBLIC_ID ||
+        (src_inst->afi != BGP_AFI_IPV4 && src_inst->afi != BGP_AFI_IPV6) || src_inst->safi != BGP_SAFI_UNICAST)
+    {
+        return -1;
+    }
+    bgp_instance_t *vpn_inst = bgp_vrf_export_target_inst_by_af(src_inst->afi, BGP_SAFI_VPN_UNICAST);
+    if (!vpn_inst)
+    {
+        return 0;
+    }
+
+    bgp_vrf_export_reprocess_ctx_t ctx = {.vpn_inst = vpn_inst};
+    bgp_inst_foreach_rib(src_inst, bgp_vrf_export_reprocess_rib_cb, &ctx);
+    return ctx.failed ? -1 : ctx.processed;
+}
+
 void bgp_vrf_export_backfill_vrf(uint32_t vrf_id)
 {
     if (vrf_id == BGP_VRF_PUBLIC_ID)
@@ -660,6 +1059,7 @@ void bgp_vrf_export_backfill_vrf(uint32_t vrf_id)
     }
     bgp_instance_t *targets[] = {
         bgp_vrf_export_target_inst_by_af(BGP_AFI_IPV4, BGP_SAFI_VPN_UNICAST),
+        bgp_vrf_export_target_inst_by_af(BGP_AFI_IPV6, BGP_SAFI_VPN_UNICAST),
         bgp_vrf_export_target_inst_by_af(BGP_AFI_L2VPN, BGP_SAFI_EVPN),
     };
     bgp_protocol_t *proto = bgp_vrf_export_proto();
@@ -672,13 +1072,6 @@ void bgp_vrf_export_backfill_vrf(uint32_t vrf_id)
     {
         return;
     }
-    bgp_instance_t *uc_inst =
-        (bgp_instance_t *)g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(BGP_AFI_IPV4, BGP_SAFI_UNICAST));
-    if (!uc_inst)
-    {
-        return; /* 该 VRF 还没有 ipv4-unicast 路由 */
-    }
-
     gboolean queued = FALSE;
     for (size_t i = 0; i < G_N_ELEMENTS(targets); i++)
     {
@@ -687,7 +1080,18 @@ void bgp_vrf_export_backfill_vrf(uint32_t vrf_id)
         {
             continue;
         }
+        bgp_afi_t source_afi = bgp_vrf_export_is_evpn_target(target) ? BGP_AFI_IPV4 : target->afi;
+        bgp_instance_t *uc_inst =
+            (bgp_instance_t *)g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(source_afi, BGP_SAFI_UNICAST));
+        if (!uc_inst)
+        {
+            continue;
+        }
         bgp_vrf_export_state_t *st = (bgp_vrf_export_state_t *)target->vrf_export_state;
+        if (!st || !st->enabled)
+        {
+            continue;
+        }
         uint32_t before = st->pending_count;
         bgp_inst_foreach_rib(uc_inst, bgp_vrf_export_scan_rib_cb, st);
         if (st->pending_count > before)
@@ -757,6 +1161,9 @@ int bgp_vrf_export_disable(bgp_instance_t *vpn_inst)
         return -1;
     }
     bgp_vrf_export_state_t *st = (bgp_vrf_export_state_t *)vpn_inst->vrf_export_state;
+    /* 先关生产门，再清 pending/RIB；同一 worker 后续 calc 不得重建
+     * 已 quiesce 的 VPN 路由，更不能在 LocalSID 释放后重新申请。 */
+    st->enabled = FALSE;
 
     /* 1. 清空 pending(disable 后不应再消费重建) */
     if (st->pending)
@@ -771,6 +1178,7 @@ int bgp_vrf_export_disable(bgp_instance_t *vpn_inst)
             }
         }
     }
+    bgp_vrf_export_retry_reset(st);
 
     /* 2. 撤销所有已导出 VPN 路由(同时解除溯源 borrow) */
     bgp_inst_foreach_rib(vpn_inst, bgp_vrf_export_purge_rib_cb, st);
@@ -817,68 +1225,123 @@ static void bgp_vrf_export_collect_victims_cb(bgp_instance_t *inst, bgp_rd_entry
     g_list_free(heads);
 }
 
-void bgp_vrf_export_purge_source_inst(bgp_instance_t *src_inst)
+static gboolean bgp_vrf_export_is_private_source_inst(const bgp_instance_t *src_inst)
 {
-    if (!src_inst || !src_inst->vrf || src_inst->afi != BGP_AFI_IPV4 || src_inst->safi != BGP_SAFI_UNICAST)
-    {
-        return;
-    }
-    if (src_inst->vrf->vrf_id == BGP_VRF_PUBLIC_ID)
-    {
-        return;
-    }
-    bgp_instance_t *targets[] = {
-        bgp_vrf_export_target_inst_by_af(BGP_AFI_IPV4, BGP_SAFI_VPN_UNICAST),
-        bgp_vrf_export_target_inst_by_af(BGP_AFI_L2VPN, BGP_SAFI_EVPN),
-    };
+    return src_inst && src_inst->vrf && src_inst->vrf->vrf_id != BGP_VRF_PUBLIC_ID &&
+           (src_inst->afi == BGP_AFI_IPV4 || src_inst->afi == BGP_AFI_IPV6) && src_inst->safi == BGP_SAFI_UNICAST;
+}
 
-    for (size_t ti = 0; ti < G_N_ELEMENTS(targets); ti++)
+/** Drop queued source heads before withdrawing their current exports.  This
+ * prevents an old-locator task from recreating the route between withdraw and
+ * SID release, and removes borrowed heads before source-instance teardown. */
+static void bgp_vrf_export_drop_pending_source(bgp_instance_t *target, const bgp_instance_t *src_inst)
+{
+    bgp_vrf_export_state_t *st = target ? (bgp_vrf_export_state_t *)target->vrf_export_state : NULL;
+    if (!st || !st->pending || !src_inst)
     {
-        bgp_instance_t *vpn_inst = targets[ti];
-        if (!vpn_inst)
+        return;
+    }
+
+    for (GList *link = st->pending->head; link;)
+    {
+        GList *next = link->next;
+        bgp_rthead_t *head = (bgp_rthead_t *)link->data;
+        if (head && head->inst == src_inst)
+        {
+            g_queue_delete_link(st->pending, link);
+            if (st->pending_count > 0u)
+            {
+                st->pending_count--;
+            }
+            bgp_rib_head_unref(head);
+        }
+        link = next;
+    }
+    if (st->pending_count == 0u)
+    {
+        bgp_vrf_export_retry_reset(st);
+    }
+}
+
+static void bgp_vrf_export_purge_source_target(bgp_instance_t *src_inst, bgp_instance_t *target)
+{
+    if (!bgp_vrf_export_is_private_source_inst(src_inst) || !target)
+    {
+        return;
+    }
+
+    bgp_vrf_export_drop_pending_source(target, src_inst);
+    GPtrArray *victims = g_ptr_array_new();
+    bgp_vrf_export_purge_ctx_t ctx = {.src_inst = src_inst, .victims = victims};
+    bgp_inst_foreach_rib(target, bgp_vrf_export_collect_victims_cb, &ctx);
+
+    for (guint i = 0; i < victims->len; i++)
+    {
+        bgp_route_node_t *exp_route = (bgp_route_node_t *)g_ptr_array_index(victims, i);
+        if (!exp_route || !exp_route->head)
         {
             continue;
         }
-        GPtrArray *victims = g_ptr_array_new();
-        bgp_vrf_export_purge_ctx_t ctx = {.src_inst = src_inst, .victims = victims};
-        bgp_inst_foreach_rib(vpn_inst, bgp_vrf_export_collect_victims_cb, &ctx);
+        bgp_rib_t *tgt_rib =
+            exp_route->head->inst ? bgp_inst_rib_for_nlri(exp_route->head->inst, &exp_route->head->nlri) : NULL;
+        net_addr_t synth = exp_route->source;
+        bgp_nlri_entry_t nlri = exp_route->head->nlri;
+        bgp_vrf_export_detach_src(exp_route);
+        if (tgt_rib && bgp_rib_unreach_one(tgt_rib, &nlri, &synth) == 1 && target->calc_queue)
+        {
+            bgp_calc_queue_push(target->calc_queue, target, &nlri);
+        }
+    }
+    if (victims->len > 0)
+    {
+        LOG_INFO("BGP vrf-export: purged %u routes sourced from VRF %u afi=%u safi=%u", victims->len,
+                 src_inst->vrf->vrf_id, (unsigned)target->afi, (unsigned)target->safi);
+    }
+    g_ptr_array_free(victims, TRUE);
+}
 
-        for (guint i = 0; i < victims->len; i++)
-        {
-            bgp_route_node_t *exp_route = (bgp_route_node_t *)g_ptr_array_index(victims, i);
-            if (!exp_route || !exp_route->head)
-            {
-                continue;
-            }
-            bgp_rib_t *tgt_rib =
-                exp_route->head->inst ? bgp_inst_rib_for_nlri(exp_route->head->inst, &exp_route->head->nlri) : NULL;
-            net_addr_t synth = exp_route->source;
-            bgp_nlri_entry_t nlri = exp_route->head->nlri;
-            bgp_vrf_export_detach_src(exp_route);
-            if (tgt_rib && bgp_rib_unreach_one(tgt_rib, &nlri, &synth) == 1 && vpn_inst->calc_queue)
-            {
-                bgp_calc_queue_push(vpn_inst->calc_queue, vpn_inst, &nlri);
-            }
-        }
-        if (victims->len > 0)
-        {
-            LOG_INFO("BGP vrf-export: purged %u routes sourced from VRF %u afi=%u safi=%u (inst teardown)",
-                     victims->len, src_inst->vrf->vrf_id, (unsigned)vpn_inst->afi, (unsigned)vpn_inst->safi);
-        }
-        g_ptr_array_free(victims, TRUE);
+void bgp_vrf_export_purge_source_vpn_inst(bgp_instance_t *src_inst)
+{
+    if (!bgp_vrf_export_is_private_source_inst(src_inst))
+    {
+        return;
+    }
+    bgp_vrf_export_purge_source_target(src_inst, bgp_vrf_export_target_inst_by_af(src_inst->afi, BGP_SAFI_VPN_UNICAST));
+}
+
+void bgp_vrf_export_purge_source_inst(bgp_instance_t *src_inst)
+{
+    if (!bgp_vrf_export_is_private_source_inst(src_inst))
+    {
+        return;
+    }
+    bgp_vrf_export_purge_source_vpn_inst(src_inst);
+    if (src_inst->afi == BGP_AFI_IPV4)
+    {
+        bgp_vrf_export_purge_source_target(src_inst, bgp_vrf_export_target_inst_by_af(BGP_AFI_L2VPN, BGP_SAFI_EVPN));
     }
 }
 
 int bgp_vrf_export_process_all_pending(void)
 {
     int total = 0;
+    gboolean failed = FALSE;
     bgp_instance_t *targets[] = {
         bgp_vrf_export_target_inst_by_af(BGP_AFI_IPV4, BGP_SAFI_VPN_UNICAST),
+        bgp_vrf_export_target_inst_by_af(BGP_AFI_IPV6, BGP_SAFI_VPN_UNICAST),
         bgp_vrf_export_target_inst_by_af(BGP_AFI_L2VPN, BGP_SAFI_EVPN),
     };
     for (size_t i = 0; i < G_N_ELEMENTS(targets); i++)
     {
-        total += bgp_vrf_export_process_pending(targets[i]);
+        int rc = bgp_vrf_export_process_pending(targets[i]);
+        if (rc < 0)
+        {
+            failed = TRUE;
+        }
+        else
+        {
+            total += rc;
+        }
     }
-    return total;
+    return failed ? -1 : total;
 }

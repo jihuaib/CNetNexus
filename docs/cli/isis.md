@@ -22,9 +22,27 @@ IPv6 路由会写入该 VRF 的 RIB、FIB 和 Linux 路由表。
 | `is-type {level-1|level-2|level-1-2}` | isis | 设置实例 level 类型 |
 | `cost-style {narrow|wide}` | isis | 设置 metric 风格 |
 | `af ipv4` | isis | 启用 IPv4 AF |
-| `af ipv6` | isis | 启用 IPv6 AF |
+| `af ipv6` | isis | 启用 IPv6 AF，并进入 ISIS IPv6 AF 子视图 |
 | `no af ipv4` | isis | 关闭 IPv4 AF |
 | `no af ipv6` | isis | 关闭 IPv6 AF |
+
+IPv6 AF 子视图提示符为 `<NetNexus(config-isis-{tag}-af-ipv6)>`。SRv6 locator
+默认不发布，必须在该子视图显式选择：
+
+```text
+isis 160
+ cost-style wide
+ af ipv6
+  segment-routing srv6 locator loc-r1-be
+```
+
+| 命令 | 视图 | 说明 |
+| --- | --- | --- |
+| `segment-routing srv6 locator <locator-name>` | isis-af-ipv6 | 将指定的本地 locator 前缀发布到 ISIS IPv6；只发布所选 locator |
+| `no segment-routing srv6` | isis-af-ipv6 | 停止发布 locator，并触发 LSP 更新与远端路由撤销 |
+
+locator 必须已在 SRv6 模块中创建。当前只允许 public VRF、已启用 IPv6 AF 且
+`cost-style wide` 的 ISIS 实例配置该功能；配置 locator 发布期间不能关闭 IPv6 AF。
 
 ## 接口视图命令
 

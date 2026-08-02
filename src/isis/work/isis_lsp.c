@@ -20,6 +20,7 @@
 #include "isis_main.h"
 #include "isis_spf.h"
 #include "log.h"
+#include "route.h"
 
 #define ISIS_NLPID 0x83u
 #define ISIS_LLC_DSAP 0xFEu
@@ -867,6 +868,17 @@ static void isis_lsp_collect_reach_cb(gpointer key, gpointer value, gpointer use
     }
 }
 
+static void isis_lsp_append_srv6_locator(GByteArray *v6_entries, const isis_srv6_locator_prefix_t *locator)
+{
+    if (!locator || !v6_entries || locator->prefix.family != AF_INET6 || locator->prefix_len > 127u)
+    {
+        return;
+    }
+    /* 本机 locator aggregate 属于本地内部可达前缀；和 loopback 前缀一样以
+     * metric 0 进入 RFC 5308 TLV 236。远端 ISIS 路由不会进入此专用缓存。 */
+    (void)isis_lsp_append_reach_entry(v6_entries, &locator->prefix, locator->prefix_len, 0u);
+}
+
 /** 检查该 (instance, ifname, level) 是否有 UP 邻居（用于判断 LAN 是否上行） */
 static int isis_lsp_lan_has_up_adj(const isis_instance_cfg_t *inst, const char *ifname, uint8_t level)
 {
@@ -1004,6 +1016,13 @@ static int isis_lsp_build_pdu(const isis_instance_cfg_t *inst, uint8_t level, ui
         g_hash_table_foreach(inst->if_cfgs, isis_lsp_collect_reach_cb, &adv_ctx);
         /* IS 邻接走 per-interface 聚合，目标是 LAN 的 DIS LAN-ID（伪节点）而非每个邻居 sysid。 */
         g_hash_table_foreach(inst->if_cfgs, isis_lsp_collect_is_reach_per_if_cb, &adv_ctx);
+    }
+    if (inst->vrf_id == ROUTE_VRF_DEFAULT && inst->af_ipv6 && inst->cost_style != ISIS_COST_STYLE_NARROW &&
+        inst->srv6_locator[0] != '\0' && g_isis_work_local && g_isis_work_local->srv6_locators)
+    {
+        const isis_srv6_locator_prefix_t *locator =
+            g_hash_table_lookup(g_isis_work_local->srv6_locators, inst->srv6_locator);
+        isis_lsp_append_srv6_locator(v6_entries, locator);
     }
 
     size_t p = 0;

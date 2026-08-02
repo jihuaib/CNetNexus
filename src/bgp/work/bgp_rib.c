@@ -291,7 +291,11 @@ int bgp_rib_route_apply_reach(bgp_route_node_t *route, uint32_t import_proto, co
 
     /* 按 import_proto 置/清 IMPORT 标记；reach 默认置为 valid，路径变更后清除 BEST（等待 calc 重新评选）。
      * ROUTE_PROTOCOL_MAX 作为"非 import"的哨兵值（直接邻居路径调用方传入），其余值（含 CONNECTED=0）
-     * 一律视为 import 路径来源协议。 */
+     * 一律视为 import 路径来源协议。
+     *
+     * FLUSHED 表示旧 incarnation 已真实存在于 ROUTE/FIB，原地更新时不能提前清除；
+     * 否则新 nexthop/SRv6 watch 失败后 calc 将看不到任何已安装路径，旧 FIB 项无法撤销。
+     * 用 FIB_DIRTY 单独表示新 desired state 需要 replace。 */
     if (import_proto != ROUTE_PROTOCOL_MAX)
     {
         BIT_SET(route->flags, BGP_ROUTE_FLAG_IMPORT);
@@ -306,7 +310,7 @@ int bgp_rib_route_apply_reach(bgp_route_node_t *route, uint32_t import_proto, co
     }
     BIT_SET(route->flags, BGP_ROUTE_FLAG_VALID);
     BIT_CLR(route->flags, BGP_ROUTE_FLAG_BEST);
-    BIT_CLR(route->flags, BGP_ROUTE_FLAG_FLUSHED);
+    BIT_SET(route->flags, BGP_ROUTE_FLAG_FIB_DIRTY);
     BIT_CLR(route->flags, BGP_ROUTE_FLAG_STALE);
     route->has_label = 0u;
     route->label_source = BGP_ROUTE_LABEL_SOURCE_NONE;

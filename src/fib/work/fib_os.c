@@ -10,6 +10,9 @@
 #include <linux/mpls_iptunnel.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
+#include <linux/seg6.h>
+#include <linux/seg6_iptunnel.h>
+#include <linux/seg6_local.h>
 #include <net/if.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -175,6 +178,41 @@ static int nl_add_mpls_encap(struct nlmsghdr *nlh, size_t maxlen, const fib_tunn
     return ERRCODE_SUCCESS;
 }
 
+/** Encode the SRv6 BE steering action as one encapsulated service SID. */
+static int nl_add_srv6_encap(struct nlmsghdr *nlh, size_t maxlen, const net_addr_t *sid)
+{
+    if (!nlh || !sid || sid->family != AF_INET6 || net_addr_is_zero(sid))
+    {
+        return ERRCODE_FAIL;
+    }
+
+    uint16_t encap_type = LWTUNNEL_ENCAP_SEG6;
+    nl_add_attr(nlh, maxlen, RTA_ENCAP_TYPE, &encap_type, (int)sizeof(encap_type));
+
+    struct rtattr *encap_attr = nl_attr_nest_start(nlh, maxlen, RTA_ENCAP);
+    if (!encap_attr)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    uint8_t payload[sizeof(struct seg6_iptunnel_encap) + sizeof(struct ipv6_sr_hdr) + sizeof(struct in6_addr)];
+    memset(payload, 0, sizeof(payload));
+    struct seg6_iptunnel_encap *tun = (struct seg6_iptunnel_encap *)(void *)payload;
+    struct ipv6_sr_hdr *srh = (struct ipv6_sr_hdr *)(void *)(payload + sizeof(*tun));
+    struct in6_addr *segments = (struct in6_addr *)(void *)(payload + sizeof(*tun) + sizeof(*srh));
+
+    tun->mode = SEG6_IPTUN_MODE_ENCAP;
+    srh->hdrlen = 2u; /* fixed SRH (8 bytes) + one 16-byte segment */
+    srh->type = 4u;
+    srh->segments_left = 0u;
+    srh->first_segment = 0u;
+    segments[0] = sid->u.v6;
+
+    nl_add_attr(nlh, maxlen, SEG6_IPTUNNEL_SRH, payload, (int)sizeof(payload));
+    nl_attr_nest_end(nlh, encap_attr);
+    return ERRCODE_SUCCESS;
+}
+
 static int encode_mpls_label(uint32_t label, gboolean bos, struct mpls_label *out)
 {
     if (!out || label > 0xFFFFFu)
@@ -218,7 +256,7 @@ static int fib_os_write_uint_file(const char *path, uint32_t value)
     FILE *fp = fopen(path, "w");
     if (!fp)
     {
-        LOG_WARN("fib_os: open %s failed: %s (kernel MPLS support not loaded?)", path, strerror(errno));
+        LOG_WARN("fib_os: open %s failed: %s (kernel feature unavailable?)", path, strerror(errno));
         return ERRCODE_FAIL;
     }
     int rc = (fprintf(fp, "%u\n", value) > 0) ? ERRCODE_SUCCESS : ERRCODE_FAIL;
@@ -322,6 +360,106 @@ int fib_os_mpls_configure(uint32_t platform_labels, gboolean mpls_input)
     LOG_INFO("fib_os: MPLS kernel config applied platform_labels=%u mpls_input=%s", g_mpls_platform_labels,
              g_mpls_input ? "true" : "false");
     return ERRCODE_SUCCESS;
+}
+
+int fib_os_srv6_configure(void)
+{
+    /* SRv6 transit and endpoint processing run through the IPv6 forwarding
+     * path even when the inner payload is IPv4 (End.DT4). */
+    int rc = fib_os_write_uint_file("/proc/sys/net/ipv6/conf/all/forwarding", 1u);
+
+    DIR *dir = opendir("/proc/sys/net/ipv6/conf");
+    if (!dir)
+    {
+        LOG_WARN("fib_os: opendir /proc/sys/net/ipv6/conf failed: %s", strerror(errno));
+        return ERRCODE_FAIL;
+    }
+
+    gboolean found = FALSE;
+    struct dirent *de = NULL;
+    while ((de = readdir(dir)) != NULL)
+    {
+        if (de->d_name[0] == '.')
+        {
+            continue;
+        }
+
+        char path[256];
+        int n = snprintf(path, sizeof(path), "/proc/sys/net/ipv6/conf/%s/seg6_enabled", de->d_name);
+        if (n < 0 || (size_t)n >= sizeof(path))
+        {
+            rc = ERRCODE_FAIL;
+            continue;
+        }
+        found = TRUE;
+        if (fib_os_write_uint_file(path, 1u) != ERRCODE_SUCCESS)
+        {
+            rc = ERRCODE_FAIL;
+        }
+    }
+    closedir(dir);
+
+    if (!found)
+    {
+        LOG_WARN("fib_os: no IPv6 interface sysctls found for SRv6");
+        return ERRCODE_FAIL;
+    }
+    if (rc != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("fib_os: SRv6 requires seg6_enabled=1 on every ingress interface");
+    }
+    return rc;
+}
+
+/** End.DT4 reinjects the decapsulated packet into a private VRF. Reverse-path
+ * filtering against the public ingress interface would otherwise reject a
+ * valid private source before the VRF lookup. Linux evaluates the maximum of
+ * all/interface rp_filter, so update every existing interface as well as the
+ * default inherited by interfaces created later. */
+static int fib_os_srv6_prepare_end_dt4(void)
+{
+    int rc = fib_os_write_uint_file("/proc/sys/net/ipv4/ip_forward", 1u);
+    DIR *dir = opendir("/proc/sys/net/ipv4/conf");
+    if (!dir)
+    {
+        LOG_WARN("fib_os: opendir /proc/sys/net/ipv4/conf failed: %s", strerror(errno));
+        return ERRCODE_FAIL;
+    }
+
+    gboolean found = FALSE;
+    struct dirent *de = NULL;
+    while ((de = readdir(dir)) != NULL)
+    {
+        if (de->d_name[0] == '.')
+        {
+            continue;
+        }
+
+        char path[256];
+        int n = snprintf(path, sizeof(path), "/proc/sys/net/ipv4/conf/%s/rp_filter", de->d_name);
+        if (n < 0 || (size_t)n >= sizeof(path))
+        {
+            rc = ERRCODE_FAIL;
+            continue;
+        }
+        found = TRUE;
+        if (fib_os_write_uint_file(path, 0u) != ERRCODE_SUCCESS)
+        {
+            rc = ERRCODE_FAIL;
+        }
+    }
+    closedir(dir);
+
+    if (!found)
+    {
+        LOG_WARN("fib_os: no IPv4 interface sysctls found for End.DT4");
+        return ERRCODE_FAIL;
+    }
+    if (rc != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("fib_os: End.DT4 requires IPv4 forwarding with rp_filter disabled");
+    }
+    return rc;
 }
 
 static int nl_exchange(struct nlmsghdr *nlh, int cmd)
@@ -485,7 +623,8 @@ static int fib_os_route_send(int cmd, const fib_route_entry_t *route, const fib_
         rtm->rtm_flags |= RTNH_F_ONLINK;
     }
 
-    if (!is_local_route && route->nh_type == FIB_NH_TYPE_IP && !net_addr_is_zero(&route->nexthop_addr) &&
+    if (!is_local_route && (route->nh_type == FIB_NH_TYPE_IP || route->nh_type == FIB_NH_TYPE_SRV6) &&
+        !net_addr_is_zero(&route->nexthop_addr) &&
         nl_add_gateway_or_via(nlh, sizeof(buf), route->prefix_addr.family, &route->nexthop_addr) != ERRCODE_SUCCESS)
     {
         return ERRCODE_FAIL;
@@ -501,6 +640,11 @@ static int fib_os_route_send(int cmd, const fib_route_entry_t *route, const fib_
         {
             return ERRCODE_FAIL;
         }
+    }
+    if (cmd == RTM_NEWROUTE && route->nh_type == FIB_NH_TYPE_SRV6 &&
+        nl_add_srv6_encap(nlh, sizeof(buf), &route->srv6_sid) != ERRCODE_SUCCESS)
+    {
+        return ERRCODE_FAIL;
     }
 
     return nl_exchange(nlh, cmd);
@@ -626,6 +770,110 @@ int fib_os_route_install_tunnel(const fib_route_entry_t *route, const fib_tunnel
     }
 
     return fib_os_route_send(RTM_NEWROUTE, &via_tunnel, &combined);
+}
+
+int fib_os_route_install_srv6(const fib_route_entry_t *route)
+{
+    if (!route || route->nh_type != FIB_NH_TYPE_SRV6 || route->srv6_sid.family != AF_INET6 ||
+        net_addr_is_zero(&route->srv6_sid))
+    {
+        return ERRCODE_FAIL;
+    }
+    return fib_os_route_send(RTM_NEWROUTE, route, NULL);
+}
+
+static int fib_os_srv6_localsid_send(int cmd, const fib_srv6_localsid_entry_t *entry)
+{
+    if (!entry || entry->sid.family != AF_INET6 || net_addr_is_zero(&entry->sid) ||
+        (entry->behavior != FIB_SRV6_BEHAVIOR_END_DT4 && entry->behavior != FIB_SRV6_BEHAVIOR_END_DT6))
+    {
+        return ERRCODE_FAIL;
+    }
+
+    const vrf_api_cache_entry_t *vrf = NULL;
+    uint32_t vrf_ifindex = 0u;
+    if (cmd == RTM_NEWROUTE)
+    {
+        if (fib_os_srv6_configure() != ERRCODE_SUCCESS)
+        {
+            return ERRCODE_FAIL;
+        }
+        if (entry->behavior == FIB_SRV6_BEHAVIOR_END_DT4 && fib_os_srv6_prepare_end_dt4() != ERRCODE_SUCCESS)
+        {
+            return ERRCODE_FAIL;
+        }
+        vrf = vrf_api_cache_lookup(entry->vrf_id);
+        if (!vrf || vrf->os_state != VRF_OS_STATE_UP || vrf->l3vrf_table_id == 0u ||
+            entry->vrf_id == VRF_PUBLIC_VRF_ID || vrf->name[0] == '\0')
+        {
+            LOG_WARN("fib_os: SRv6 LocalSID requires a private Linux VRF (vrf_id=%u)", entry->vrf_id);
+            return ERRCODE_FAIL;
+        }
+        vrf_ifindex = (uint32_t)if_nametoindex(vrf->name);
+        if (vrf_ifindex == 0u)
+        {
+            LOG_WARN("fib_os: SRv6 LocalSID VRF device %s is not ready", vrf->name);
+            return ERRCODE_FAIL;
+        }
+        if (fib_os_write_uint_file("/proc/sys/net/vrf/strict_mode", 1u) != ERRCODE_SUCCESS)
+        {
+            LOG_WARN("fib_os: End.DT4/End.DT6 requires net.vrf.strict_mode=1");
+            return ERRCODE_FAIL;
+        }
+    }
+
+    char buf[FIB_OS_NL_BUFSIZE];
+    memset(buf, 0, sizeof(buf));
+    struct nlmsghdr *nlh = (struct nlmsghdr *)(void *)buf;
+    struct rtmsg *rtm = (struct rtmsg *)NLMSG_DATA(nlh);
+    nlh->nlmsg_len = NLMSG_LENGTH(sizeof(*rtm));
+    nlh->nlmsg_type = (unsigned short)cmd;
+    nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+    if (cmd == RTM_NEWROUTE)
+    {
+        nlh->nlmsg_flags |= NLM_F_CREATE | NLM_F_REPLACE;
+    }
+    nlh->nlmsg_seq = 3u;
+
+    rtm->rtm_family = AF_INET6;
+    rtm->rtm_dst_len = entry->prefix_len ? entry->prefix_len : 128u;
+    rtm->rtm_table = RT_TABLE_MAIN;
+    rtm->rtm_protocol = RTPROT_STATIC;
+    rtm->rtm_scope = RT_SCOPE_UNIVERSE;
+    rtm->rtm_type = RTN_UNICAST;
+
+    uint32_t main_table = RT_TABLE_MAIN;
+    nl_add_attr(nlh, sizeof(buf), RTA_TABLE, &main_table, (int)sizeof(main_table));
+    nl_add_attr(nlh, sizeof(buf), RTA_DST, entry->sid.u.v6.s6_addr, 16);
+
+    if (cmd == RTM_NEWROUTE)
+    {
+        uint16_t encap_type = LWTUNNEL_ENCAP_SEG6_LOCAL;
+        uint32_t action =
+            (entry->behavior == FIB_SRV6_BEHAVIOR_END_DT4) ? SEG6_LOCAL_ACTION_END_DT4 : SEG6_LOCAL_ACTION_END_DT6;
+        uint32_t table_id = vrf->l3vrf_table_id;
+        nl_add_attr(nlh, sizeof(buf), RTA_OIF, &vrf_ifindex, (int)sizeof(vrf_ifindex));
+        nl_add_attr(nlh, sizeof(buf), RTA_ENCAP_TYPE, &encap_type, (int)sizeof(encap_type));
+        struct rtattr *encap = nl_attr_nest_start(nlh, sizeof(buf), RTA_ENCAP);
+        if (!encap)
+        {
+            return ERRCODE_FAIL;
+        }
+        nl_add_attr(nlh, sizeof(buf), SEG6_LOCAL_ACTION, &action, (int)sizeof(action));
+        nl_add_attr(nlh, sizeof(buf), SEG6_LOCAL_VRFTABLE, &table_id, (int)sizeof(table_id));
+        nl_attr_nest_end(nlh, encap);
+    }
+    return nl_exchange(nlh, cmd);
+}
+
+int fib_os_srv6_localsid_install(const fib_srv6_localsid_entry_t *entry)
+{
+    return fib_os_srv6_localsid_send(RTM_NEWROUTE, entry);
+}
+
+int fib_os_srv6_localsid_withdraw(const fib_srv6_localsid_entry_t *entry)
+{
+    return fib_os_srv6_localsid_send(RTM_DELROUTE, entry);
 }
 
 int fib_os_route_withdraw(const fib_route_entry_t *route)

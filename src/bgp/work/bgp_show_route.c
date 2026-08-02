@@ -1531,9 +1531,10 @@ static gboolean bgp_show_evpn_detail_cb(gpointer key, gpointer value, gpointer u
 }
 
 /**
- * @brief 处理 show bgp route af ipv4-unicast|ipv6-unicast [<ip> <masklen>] / ipv4-qp|ipv6-qp [<qp-key>] 命令
+ * @brief 处理 show bgp route af <address-family> 查询命令
  *
- * group_id=10, cfg_id: 1=ipv4-unicast, 2=ipv6-unicast, 3=ip-address, 4=masklen, 7=qp-route-key
+ * group_id=10, cfg_id: 1=ipv4-unicast, 2=ipv6-unicast, 10=vpnv4, 17=vpnv6,
+ *              3=ip-address, 4=masklen, 7=qp-route-key
  * 不带查询参数时显示路由表；unicast 详情使用 ip/masklen，QP 详情使用 dqpn=<n>,ip=<pfx>/<mask>
  */
 int handle_bgp_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
@@ -1610,6 +1611,11 @@ int handle_bgp_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                 ctx.safi = BGP_SAFI_VPN_UNICAST;
                 has_af = TRUE;
                 break;
+            case 17:
+                ctx.afi = BGP_AFI_IPV6;
+                ctx.safi = BGP_SAFI_VPN_UNICAST;
+                has_af = TRUE;
+                break;
             case 16:
                 ctx.afi = BGP_AFI_L2VPN;
                 ctx.safi = BGP_SAFI_EVPN;
@@ -1681,8 +1687,7 @@ int handle_bgp_show_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 
     if (!has_af)
     {
-        bgp_show_send_cli_response(msg, "BGP Error: Missing address-family. Use 'af ipv4-unicast', 'af ipv6-unicast', "
-                                        "'af ipv4-qp', or 'af ipv6-qp'.\r\n");
+        bgp_show_send_cli_response(msg, "BGP Error: Missing address-family selector.\r\n");
         return ERRCODE_FAIL;
     }
 

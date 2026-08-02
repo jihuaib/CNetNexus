@@ -227,7 +227,18 @@ int route_rib_add(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, const net_add
     }
     else
     {
-        path->nh_type = (nh_type == ROUTE_NH_TYPE_TUNNEL && tunnel_id != 0u) ? ROUTE_NH_TYPE_TUNNEL : ROUTE_NH_TYPE_IP;
+        if (nh_type == ROUTE_NH_TYPE_TUNNEL && tunnel_id != 0u)
+        {
+            path->nh_type = ROUTE_NH_TYPE_TUNNEL;
+        }
+        else if (nh_type == ROUTE_NH_TYPE_SRV6)
+        {
+            path->nh_type = ROUTE_NH_TYPE_SRV6;
+        }
+        else
+        {
+            path->nh_type = ROUTE_NH_TYPE_IP;
+        }
     }
     path->tunnel_id = (path->nh_type == ROUTE_NH_TYPE_TUNNEL) ? tunnel_id : 0u;
     path->out_label = (path->nh_type == ROUTE_NH_TYPE_TUNNEL) ? out_label : 0u;
@@ -344,7 +355,18 @@ int route_rib_add_nexthop_id(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, co
     }
     else
     {
-        path->nh_type = (nh_type == ROUTE_NH_TYPE_TUNNEL && tunnel_id != 0u) ? ROUTE_NH_TYPE_TUNNEL : ROUTE_NH_TYPE_IP;
+        if (nh_type == ROUTE_NH_TYPE_TUNNEL && tunnel_id != 0u)
+        {
+            path->nh_type = ROUTE_NH_TYPE_TUNNEL;
+        }
+        else if (nh_type == ROUTE_NH_TYPE_SRV6)
+        {
+            path->nh_type = ROUTE_NH_TYPE_SRV6;
+        }
+        else
+        {
+            path->nh_type = ROUTE_NH_TYPE_IP;
+        }
     }
     path->tunnel_id = (path->nh_type == ROUTE_NH_TYPE_TUNNEL) ? tunnel_id : 0u;
     path->out_label = (path->nh_type == ROUTE_NH_TYPE_TUNNEL) ? out_label : 0u;
@@ -479,6 +501,48 @@ const route_path_t *route_rib_lookup_path(const route_head_t *head, uint32_t pro
     return (const route_path_t *)head_lookup_path_mut((route_head_t *)head, &key);
 }
 
+int route_rib_set_srv6_sid(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr,
+                           uint8_t prefix_len, uint32_t protocol, const net_addr_t *source, const net_addr_t *srv6_sid)
+{
+    if (!rib || !prefix_addr || !source)
+    {
+        return -1;
+    }
+    const route_head_t *head = route_rib_lookup_head(rib, vrf_id, afi, prefix_addr, prefix_len);
+    route_path_t *path = (route_path_t *)route_rib_lookup_path(head, protocol, source);
+    if (!path)
+    {
+        return -1;
+    }
+    memset(&path->srv6_sid, 0, sizeof(path->srv6_sid));
+    if (path->nh_type == ROUTE_NH_TYPE_SRV6 && srv6_sid && srv6_sid->family == AF_INET6)
+    {
+        path->srv6_sid = *srv6_sid;
+    }
+    return 0;
+}
+
+int route_rib_set_source_name(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr,
+                              uint8_t prefix_len, uint32_t protocol, const net_addr_t *source, const char *source_name)
+{
+    if (!rib || !prefix_addr || !source)
+    {
+        return -1;
+    }
+    const route_head_t *head = route_rib_lookup_head(rib, vrf_id, afi, prefix_addr, prefix_len);
+    route_path_t *path = (route_path_t *)route_rib_lookup_path(head, protocol, source);
+    if (!path)
+    {
+        return -1;
+    }
+    memset(path->source_name, 0, sizeof(path->source_name));
+    if (source_name && source_name[0] != '\0')
+    {
+        g_strlcpy(path->source_name, source_name, sizeof(path->source_name));
+    }
+    return 0;
+}
+
 void route_rib_promote_path_first(route_head_t *head, route_path_t *path)
 {
     if (!head || !path || !head->path_list || head->path_list->data == path)
@@ -554,6 +618,70 @@ void route_rib_walk(route_rib_t *rib, uint32_t proto_filter, uint32_t vrf_filter
         .userdata = userdata,
     };
     g_tree_foreach(rib->head_tree, walk_head, &ctx);
+}
+
+typedef struct route_rib_delete_target
+{
+    route_head_key_t head;
+    net_addr_t source;
+} route_rib_delete_target_t;
+
+typedef struct route_rib_delete_collect_ctx
+{
+    GArray *targets;
+    uint16_t afi_filter;
+} route_rib_delete_collect_ctx_t;
+
+static void route_rib_delete_collect(const route_head_t *head, const route_path_t *path, void *userdata)
+{
+    route_rib_delete_collect_ctx_t *ctx = userdata;
+    if (!head || !path || !ctx || !ctx->targets)
+    {
+        return;
+    }
+    if (ctx->afi_filter != ROUTE_AFI_ALL && head->key.afi != ctx->afi_filter)
+    {
+        return;
+    }
+
+    route_rib_delete_target_t target;
+    memset(&target, 0, sizeof(target));
+    target.head = head->key;
+    target.source = path->key.source;
+    g_array_append_val(ctx->targets, target);
+}
+
+int route_rib_del_protocol(route_rib_t *rib, uint32_t protocol, uint32_t vrf_filter, uint16_t afi_filter,
+                           route_path_cb cb, void *userdata)
+{
+    if (!rib || protocol == ROUTE_PROTOCOL_MAX ||
+        (afi_filter != ROUTE_AFI_IPV4 && afi_filter != ROUTE_AFI_IPV6 && afi_filter != ROUTE_AFI_ALL))
+    {
+        return -1;
+    }
+
+    GArray *targets = g_array_new(FALSE, FALSE, sizeof(route_rib_delete_target_t));
+    route_rib_delete_collect_ctx_t collect = {
+        .targets = targets,
+        .afi_filter = afi_filter,
+    };
+    route_rib_walk(rib, protocol, vrf_filter, route_rib_delete_collect, &collect);
+
+    int deleted = 0;
+    for (guint i = 0u; i < targets->len; ++i)
+    {
+        const route_rib_delete_target_t *target = &g_array_index(targets, route_rib_delete_target_t, i);
+        int rc = route_rib_del(rib, target->head.vrf_id, target->head.afi, &target->head.addr, target->head.prefix_len,
+                               protocol, &target->source, cb, userdata);
+        if (rc < 0)
+        {
+            deleted = -1;
+            break;
+        }
+        deleted += rc;
+    }
+    g_array_free(targets, TRUE);
+    return deleted;
 }
 
 uint32_t route_rib_head_count(const route_rib_t *rib)

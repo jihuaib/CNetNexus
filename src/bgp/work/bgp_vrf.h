@@ -13,6 +13,7 @@
 
 #include "bgp_instance.h"
 #include "bgp_session.h"
+#include "srv6.h"
 
 /* 前向声明：避免在头文件中引入 bgp.h 与 bgp_peer.h 常量名冲突 */
 typedef struct bgp_update_result bgp_update_result_t;
@@ -33,16 +34,23 @@ typedef struct bgp_rib_update_stats bgp_rib_update_stats_t;
  */
 typedef struct bgp_vrf
 {
-    uint32_t vrf_id;        /**< VRF ID，0 为默认公网 VRF */
-    uint32_t router_id;     /**< VRF Router ID（主机序 32 位，0 表示未配置） */
-    uint16_t keepalive;     /**< keepalive 定时器（秒），默认 60 */
-    uint16_t hold_time;     /**< hold time（秒），默认 180，须大于 keepalive */
-    uint16_t connect_retry; /**< TCP 主动连接失败后重试间隔（秒），默认 10 */
-    int listen_fd;          /**< IPv4 BGP listen socket fd，-1 表示未监听 */
-    int listen_fd_v6;       /**< IPv6 BGP listen socket fd，-1 表示未监听 */
-    uint32_t vpn_label;     /**< 本 VRF 导出到 vpnv4 的 per-VRF 单标签（0 表示未分配） */
-    GHashTable *sess_hash;  /**< addr_str -> bgp_session_t*（持有所有权） */
-    GHashTable *inst_hash;  /**< (afi<<16|safi) -> bgp_instance_t*（持有所有权，g_direct_hash） */
+    uint32_t vrf_id;                     /**< VRF ID，0 为默认公网 VRF */
+    uint32_t router_id;                  /**< VRF Router ID（主机序 32 位，0 表示未配置） */
+    uint16_t keepalive;                  /**< keepalive 定时器（秒），默认 60 */
+    uint16_t hold_time;                  /**< hold time（秒），默认 180，须大于 keepalive */
+    uint16_t connect_retry;              /**< TCP 主动连接失败后重试间隔（秒），默认 10 */
+    int listen_fd;                       /**< IPv4 BGP listen socket fd，-1 表示未监听 */
+    int listen_fd_v6;                    /**< IPv6 BGP listen socket fd，-1 表示未监听 */
+    uint32_t vpn_label;                  /**< 本 VRF 导出到 vpnv4 的 per-VRF 单标签（0 表示未分配） */
+    srv6_sid_entry_t srv6_sid_v4;        /**< End.DT4 per-VRF SID cache */
+    srv6_sid_entry_t srv6_sid_v6;        /**< End.DT6 per-VRF SID cache */
+    uint8_t srv6_cleanup_pending_mask;   /**< 待重试 release 的 AF bitmask（bit0=v4, bit1=v6） */
+    uint8_t srv6_cleanup_delete_af_mask; /**< release 成功后需完成删除的 unicast AF */
+    uint8_t srv6_cleanup_retry_exp;      /**< 生命周期 cleanup 的有界退避指数 */
+    gboolean srv6_cleanup_delete_vrf;    /**< 全 VRF 删除正等待 SID release 收敛 */
+    gint64 srv6_cleanup_retry_due_usec;  /**< 下次 cleanup 重试 monotonic 时刻 */
+    GHashTable *sess_hash;               /**< addr_str -> bgp_session_t*（持有所有权） */
+    GHashTable *inst_hash;               /**< (afi<<16|safi) -> bgp_instance_t*（持有所有权，g_direct_hash） */
 } bgp_vrf_t;
 
 /**
@@ -154,6 +162,9 @@ uint32_t bgp_vrf_rib_route_count(const bgp_vrf_t *vrf);
  * bgp_neighbor_down，让其发送 NOTIFICATION 并按 connect-retry 调度重连。
  */
 void bgp_vrf_reset_all_sessions(bgp_vrf_t *vrf);
+
+/** 按当前已使能 AF（含 VPNv4 SRv6）重算各 session 的 RFC 8950 能力标志。 */
+void bgp_vrf_recompute_ext_nexthop_capability(bgp_vrf_t *vrf);
 
 /**
  * @brief 按当前 VRF connect-retry 配置，重排已挂起的 retry 定时器

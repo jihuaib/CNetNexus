@@ -47,6 +47,32 @@ static gboolean bgp_af_array_contains(const GArray *afs, guint32 packed)
     return FALSE;
 }
 
+static gboolean bgp_ext_nh_array_contains(const GArray *tuples, const bgp_ext_nh_entry_t *wanted)
+{
+    if (!tuples || !wanted)
+    {
+        return FALSE;
+    }
+    for (guint i = 0; i < tuples->len; ++i)
+    {
+        const bgp_ext_nh_entry_t *entry = &g_array_index(tuples, bgp_ext_nh_entry_t, i);
+        if (entry->nlri_afi == wanted->nlri_afi && entry->nlri_safi == wanted->nlri_safi &&
+            entry->nh_afi == wanted->nh_afi)
+        {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+static void bgp_ext_nh_array_append_unique(GArray *tuples, const bgp_ext_nh_entry_t *entry)
+{
+    if (tuples && entry && !bgp_ext_nh_array_contains(tuples, entry))
+    {
+        g_array_append_val(tuples, *entry);
+    }
+}
+
 static gboolean bgp_open_af_requires_ext_nexthop(const bgp_peer_t *peer, const net_addr_t *remote_addr)
 {
     if (!peer || !peer->inst || peer->inst->afi != BGP_AFI_IPV4)
@@ -56,6 +82,13 @@ static gboolean bgp_open_af_requires_ext_nexthop(const bgp_peer_t *peer, const n
 
     /* RFC 8950: only IPv4 NLRI with an IPv6 next hop needs Capability 5. */
     if (remote_addr && remote_addr->family == AF_INET6)
+    {
+        return TRUE;
+    }
+
+    /* VPNv4 always advertises its IPv6-NH tuple. Locator ownership lives on
+     * private unicast AFs and may change without reopening this session. */
+    if (peer->inst->safi == BGP_SAFI_VPN_UNICAST)
     {
         return TRUE;
     }
@@ -243,6 +276,28 @@ int bgp_pkt_send_open(bgp_conn_t *conn, uint32_t local_as, uint32_t router_id, G
             if (!bgp_af_array_contains(conn->session->local_afs, packed))
             {
                 g_array_append_val(conn->session->local_afs, packed);
+            }
+        }
+        if (conn->session->local_ext_nh)
+        {
+            g_array_free(conn->session->local_ext_nh, TRUE);
+        }
+        conn->session->local_ext_nh = g_array_new(FALSE, FALSE, sizeof(bgp_ext_nh_entry_t));
+        if (send_ext_nh)
+        {
+            for (GList *l = af_peers; l != NULL; l = l->next)
+            {
+                bgp_peer_t *ap = (bgp_peer_t *)l->data;
+                if (!bgp_open_af_requires_ext_nexthop(ap, &conn->peer_addr))
+                {
+                    continue;
+                }
+                bgp_ext_nh_entry_t tuple = {
+                    .nlri_afi = (uint16_t)ap->inst->afi,
+                    .nlri_safi = (uint16_t)ap->inst->safi,
+                    .nh_afi = BGP_AFI_IPV6,
+                };
+                bgp_ext_nh_array_append_unique(conn->session->local_ext_nh, &tuple);
             }
         }
         bgp_session_tx_msg_count(conn->session, BGP_MSG_OPEN);
@@ -587,6 +642,51 @@ static int encode_ext_communities(uint8_t *buf, int buf_size, const bgp_attr_t *
 }
 
 /**
+ * @brief 编码 BGP Prefix-SID（Optional Transitive，RFC 8669）
+ *
+ * attr 保留完整 value，因此 RR 在 nexthop 不变时可保真传播未识别
+ * TLV 和 Reserved 字段。属性头的 Extended-Length 由当前长度重新计算，
+ * Partial 位则从接收属性保留。
+ */
+static int encode_prefix_sid(uint8_t *buf, int buf_size, const bgp_attr_t *attr)
+{
+    if (!attr || !attr->has_prefix_sid)
+    {
+        return 0;
+    }
+    if (attr->prefix_sid_raw_len > BGP_ATTR_PREFIX_SID_MAX)
+    {
+        return -1;
+    }
+
+    gboolean ext_len = attr->prefix_sid_raw_len > 255u;
+    int hdr_len = ext_len ? 4 : 3;
+    int attr_total = hdr_len + (int)attr->prefix_sid_raw_len;
+    if (!buf || buf_size < attr_total)
+    {
+        return -1;
+    }
+
+    uint8_t preserved = attr->prefix_sid_attr_flags & BGP_PA_FLAG_PARTIAL;
+    buf[0] = BGP_PA_FLAG_OPTIONAL | BGP_PA_FLAG_TRANSITIVE | preserved | (ext_len ? BGP_PA_FLAG_EXT_LEN : 0u);
+    buf[1] = BGP_PA_TYPE_PREFIX_SID;
+    if (ext_len)
+    {
+        uint16_t len_be = htons(attr->prefix_sid_raw_len);
+        memcpy(buf + 2, &len_be, 2);
+    }
+    else
+    {
+        buf[2] = (uint8_t)attr->prefix_sid_raw_len;
+    }
+    if (attr->prefix_sid_raw_len > 0u)
+    {
+        memcpy(buf + hdr_len, attr->prefix_sid_raw, attr->prefix_sid_raw_len);
+    }
+    return attr_total;
+}
+
+/**
  * @brief 编码 ORIGINATOR_ID 路径属性（optional non-transitive，4 字节，RFC 4456）
  * @return 写入字节数，0=未携带，-1=空间不足
  */
@@ -730,6 +830,13 @@ int bgp_pkt_build_packed_update(uint8_t *buf, int buf_size, const bgp_nlri_entry
     pos += n;
 
     n = encode_ext_communities(buf + pos, buf_size - pos, attr);
+    if (n < 0)
+    {
+        return -1;
+    }
+    pos += n;
+
+    n = encode_prefix_sid(buf + pos, buf_size - pos, attr);
     if (n < 0)
     {
         return -1;
@@ -924,7 +1031,22 @@ static int parse_bgp_open(bgp_conn_t *conn, const uint8_t *body, uint16_t body_l
         conn->session->remote_id = 0;
     }
 
-    /* 记录远端能力集 */
+    /* 保存对端 OPEN 实际携带的 RFC 8950 tuple。Capability 5 是 tuple
+     * 集合，不能仅以“双方各自出现过任意 Cap5”视为协商成功。 */
+    if (conn->session->remote_ext_nh)
+    {
+        g_array_free(conn->session->remote_ext_nh, TRUE);
+    }
+    conn->session->remote_ext_nh = g_array_new(FALSE, FALSE, sizeof(bgp_ext_nh_entry_t));
+    for (uint8_t i = 0; i < msg.ext_nh_count; ++i)
+    {
+        bgp_ext_nh_array_append_unique(conn->session->remote_ext_nh, &msg.ext_nh[i]);
+        LOG_INFO("BGP: peer %s Extended-Nexthop capability: AFI=%u SAFI=%u NH-AFI=%u", _ip, msg.ext_nh[i].nlri_afi,
+                 msg.ext_nh[i].nlri_safi, msg.ext_nh[i].nh_afi);
+    }
+
+    /* 记录远端能力集。EXT_NEXTHOP 全局 bit 只表示至少存在一个精确
+     * 协商成功的 tuple；实际 AF 决策必须调用 per-AF helper。 */
     uint32_t remote_caps = 0;
     if (msg.cap_route_refresh)
     {
@@ -934,12 +1056,22 @@ static int parse_bgp_open(bgp_conn_t *conn, const uint8_t *body, uint16_t body_l
     {
         BIT_SET(remote_caps, BGP_SESS_CAP_AS4);
     }
-    if (msg.cap_ext_nexthop)
+    if (conn->session->remote_ext_nh->len > 0)
     {
         BIT_SET(remote_caps, BGP_SESS_CAP_EXT_NEXTHOP);
     }
     conn->session->remote_caps = remote_caps;
     conn->session->negotiated_caps = conn->session->local_caps & remote_caps;
+    BIT_CLR(conn->session->negotiated_caps, BGP_SESS_CAP_EXT_NEXTHOP);
+    for (guint i = 0; conn->session->local_ext_nh && i < conn->session->local_ext_nh->len; ++i)
+    {
+        const bgp_ext_nh_entry_t *tuple = &g_array_index(conn->session->local_ext_nh, bgp_ext_nh_entry_t, i);
+        if (bgp_session_ext_nh_negotiated(conn->session, tuple->nlri_afi, tuple->nlri_safi, tuple->nh_afi))
+        {
+            BIT_SET(conn->session->negotiated_caps, BGP_SESS_CAP_EXT_NEXTHOP);
+            break;
+        }
+    }
 
     /* 记录并协商 Hold Time（取本地与远端的较小值，RFC 4271 §4.2） */
     conn->session->remote_hold = msg.hold_time;
@@ -1305,6 +1437,26 @@ void bgp_pkt_on_data(bgp_conn_t *conn)
                 }
                 if (bgp_update_parse(body, body_len, parse_flags, &upd) == 0 && upd)
                 {
+                    if (upd->nexthop.global.family == AF_INET6)
+                    {
+                        for (uint32_t i = 0; i < upd->reach_len; ++i)
+                        {
+                            const bgp_nlri_entry_t *nlri = &upd->reach[i];
+                            /* A single UPDATE may also carry legacy IPv4 NLRI.
+                             * r->nexthop belongs to MP_REACH, so validate only
+                             * entries from that MP_REACH AFI/SAFI. */
+                            if (nlri->afi == upd->afi && nlri->safi == upd->safi && nlri->afi == BGP_AFI_IPV4 &&
+                                !bgp_session_ext_nh_negotiated(sess, nlri->afi, nlri->safi, BGP_AFI_IPV6))
+                            {
+                                LOG_WARN("BGP: peer %s sent IPv4 NLRI afi=%u safi=%u with IPv6 nexthop without "
+                                         "the matching RFC 8950 tuple",
+                                         _ip, nlri->afi, nlri->safi);
+                                bgp_update_result_free(upd);
+                                bgp_fsm_event(sess, BGP_EVT_UPDATE_MSG_ERR);
+                                return;
+                            }
+                        }
+                    }
                     bgp_peer_update_ingest_stats_t ingest_stats = {0};
                     bgp_worker_ingest_peer_update(sess, upd, &ingest_stats);
 

@@ -31,12 +31,19 @@ typedef struct fib_ilm_state
     uint8_t installed;
 } fib_ilm_state_t;
 
+typedef struct fib_srv6_localsid_state
+{
+    fib_srv6_localsid_entry_t entry;
+    uint8_t installed;
+} fib_srv6_localsid_state_t;
+
 typedef struct fib_rib
 {
     GHashTable *routes;
     GHashTable *tunnels;
     GHashTable *nexthops;
     GHashTable *ilms;
+    GHashTable *srv6_localsids;
 } fib_rib_t;
 
 fib_rib_t *fib_rib_create(void);
@@ -63,5 +70,11 @@ gboolean fib_rib_ilm_delete(fib_rib_t *rib, const fib_ilm_entry_t *entry, fib_il
 void fib_rib_foreach_route(fib_rib_t *rib, GHFunc func, gpointer user_data);
 void fib_rib_foreach_ilm(fib_rib_t *rib, GHFunc func, gpointer user_data);
 void fib_rib_foreach_nexthop(fib_rib_t *rib, GHFunc func, gpointer user_data);
+
+fib_srv6_localsid_state_t *fib_rib_srv6_localsid_upsert(fib_rib_t *rib, const fib_srv6_localsid_entry_t *entry);
+fib_srv6_localsid_state_t *fib_rib_srv6_localsid_lookup(fib_rib_t *rib, const net_addr_t *sid);
+gboolean fib_rib_srv6_localsid_delete(fib_rib_t *rib, const fib_srv6_localsid_entry_t *entry,
+                                      fib_srv6_localsid_entry_t *old_entry, uint8_t *old_installed);
+void fib_rib_foreach_srv6_localsid(fib_rib_t *rib, GHFunc func, gpointer user_data);
 
 #endif /* FIB_RIB_H */

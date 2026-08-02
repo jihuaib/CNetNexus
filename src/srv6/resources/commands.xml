@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration module-id="19">
+    <views>
+        <view view-name="srv6">
+            <template>&lt;NetNexus(config-srv6)&gt;</template>
+        </view>
+    </views>
+
+    <show-this>
+        <view name="srv6"/>
+    </show-this>
+
+    <command_groups>
+        <group group-id="1">
+            <elements>
+                <element id="1" type="keyword"><name>no</name><description>Delete</description></element>
+                <element id="2" type="keyword"><name>srv6</name><description>Configure Segment Routing over IPv6</description></element>
+            </elements>
+            <commands>
+                <command auto-start="true">
+                    <expression>2</expression>
+                    <views>config</views>
+                    <to-view>srv6</to-view>
+                </command>
+                <command><expression>1 2</expression><views>config</views></command>
+            </commands>
+        </group>
+
+        <group group-id="2">
+            <elements>
+                <element id="1" type="keyword"><name>no</name><description>Delete</description></element>
+                <element id="2" type="keyword"><name>locator</name><description>Configure an SRv6 locator</description></element>
+                <element id="3" cfg-id="1" type="parameter">
+                    <name>&lt;locator-name&gt;</name><type>string(1-63)</type><description>Locator name</description>
+                </element>
+                <element id="4" type="keyword"><name>prefix</name><description>Locator IPv6 prefix</description></element>
+                <element id="5" cfg-id="2" type="parameter">
+                    <name>&lt;ipv6-prefix&gt;</name><type>ipv6</type><description>Locator IPv6 address</description>
+                </element>
+                <element id="6" cfg-id="3" type="parameter">
+                    <name>&lt;prefix-length&gt;</name><type>uint(0-127)</type><description>Locator prefix length</description>
+                </element>
+                <element id="7" type="keyword"><name>function-bits</name><description>Function field width</description></element>
+                <element id="8" cfg-id="4" type="parameter">
+                    <name>&lt;bits&gt;</name><type>uint(1-32)</type><description>Function field width</description>
+                </element>
+            </elements>
+            <commands>
+                <command><expression>2 3 4 5 6</expression><views>srv6</views></command>
+                <command><expression>2 3 4 5 6 7 8</expression><views>srv6</views></command>
+                <command><expression>1 2 3</expression><views>srv6</views></command>
+            </commands>
+        </group>
+
+        <group group-id="3">
+            <elements>
+                <element id="1" type="keyword"><name>show</name><description>Display system information</description></element>
+                <element id="2" type="keyword"><name>srv6</name><description>SRv6 state</description></element>
+                <element id="3" cfg-id="1" type="keyword"><name>locator</name><description>Locator state</description></element>
+                <element id="4" cfg-id="2" type="keyword"><name>sid</name><description>Local service SID state</description></element>
+            </elements>
+            <commands>
+                <command><expression>1 2</expression><views>global</views></command>
+                <command><expression>1 2 3</expression><views>global</views></command>
+                <command><expression>1 2 4</expression><views>global</views></command>
+            </commands>
+        </group>
+    </command_groups>
+</configuration>

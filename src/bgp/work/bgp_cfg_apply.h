@@ -16,6 +16,15 @@ typedef struct bgp_apply_cmd bgp_apply_cmd_t;
  */
 void bgp_cfg_apply_protocol(bgp_apply_cmd_t *apply);
 
+/** Apply or remove the locator available for this private AF's service SID. */
+void bgp_cfg_apply_srv6(bgp_apply_cmd_t *apply);
+
+/** Apply `neighbor <peer> srv6-sid` in a public VPN address-family. */
+void bgp_cfg_apply_neighbor_srv6_sid(bgp_apply_cmd_t *apply);
+
+/** Apply `srv6 be` for received VPN service-SID recursion. */
+void bgp_cfg_apply_srv6_be(bgp_apply_cmd_t *apply);
+
 /**
  * @brief 应用 BGP VRF 视图入口到内存（创建 BGP 侧 VRF 容器）
  */

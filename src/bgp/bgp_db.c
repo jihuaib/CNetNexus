@@ -47,8 +47,14 @@ uint32_t bgp_db_restore(void)
 
     bgp_db_restore_vrf();
     bgp_db_restore_sessions();
-    bgp_db_restore_instances();
-    bgp_db_restore_neighbors();
+    if (bgp_db_restore_instances() != ERRCODE_SUCCESS)
+    {
+        return ERRCODE_FAIL;
+    }
+    if (bgp_db_restore_neighbors() != ERRCODE_SUCCESS)
+    {
+        return ERRCODE_FAIL;
+    }
     bgp_db_restore_qp_routes();
     bgp_db_restore_qp_route_select();
     bgp_bmp_db_restore();
@@ -68,8 +74,16 @@ uint32_t bgp_db_restore_vrf_bound(void)
     g_bgp_db_resync_only_vrf_bound = TRUE;
     bgp_db_restore_vrf();
     bgp_db_restore_sessions();
-    bgp_db_restore_instances();
-    bgp_db_restore_neighbors();
+    if (bgp_db_restore_instances() != ERRCODE_SUCCESS)
+    {
+        g_bgp_db_resync_only_vrf_bound = FALSE;
+        return ERRCODE_FAIL;
+    }
+    if (bgp_db_restore_neighbors() != ERRCODE_SUCCESS)
+    {
+        g_bgp_db_resync_only_vrf_bound = FALSE;
+        return ERRCODE_FAIL;
+    }
     bgp_db_restore_qp_routes();
     bgp_db_restore_qp_route_select();
     g_bgp_db_resync_only_vrf_bound = FALSE;

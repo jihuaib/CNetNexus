@@ -28,5 +28,7 @@ void isis_cfg_apply_if_set(isis_apply_cmd_t *apply);
 void isis_cfg_apply_if_del(isis_apply_cmd_t *apply);
 /** 切换 cost-style（narrow/wide） */
 void isis_cfg_apply_cost_style_set(isis_apply_cmd_t *apply);
+/** IPv6 AF 选择/撤销一个本地 SRv6 locator 的发布 */
+void isis_cfg_apply_srv6_locator_set(isis_apply_cmd_t *apply);
 
 #endif /* ISIS_CFG_APPLY_H */

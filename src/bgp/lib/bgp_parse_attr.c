@@ -30,6 +30,10 @@
 #define ATTR_AS4_PATH 17
 #define ATTR_AS4_AGGREGATOR 18
 #define ATTR_LARGE_COMMUNITY 32
+#define ATTR_PREFIX_SID BGP_ATTR_TYPE_PREFIX_SID
+
+#define ATTR_FLAG_OPTIONAL 0x80u
+#define ATTR_FLAG_TRANSITIVE 0x40u
 
 /* ============================================================================
  * AS_PATH 解析
@@ -191,8 +195,15 @@ static void parse_large_communities(const uint8_t *data, uint16_t len, char *buf
 int bgp_parse_path_attrs(const uint8_t *data, uint16_t len, uint32_t flags, bgp_attr_t *attr, bgp_nexthop_t *nexthop,
                          mp_reach_info_t *mp_reach, mp_unreach_info_t *mp_unreach)
 {
+    if (!data || !attr || !nexthop || !mp_reach || !mp_unreach)
+    {
+        return BGP_PATH_ATTR_PARSE_ERROR;
+    }
+
     bool as4 = (flags & BGP_PARSE_FLAG_AS4) || !(flags); /* 默认 AS4 */
     uint16_t pos = 0;
+    bgp_path_attr_parse_result_t result = BGP_PATH_ATTR_PARSE_OK;
+    bool prefix_sid_seen = false;
 
     while (pos + 3 <= len)
     {
@@ -205,7 +216,7 @@ int bgp_parse_path_attrs(const uint8_t *data, uint16_t len, uint32_t flags, bgp_
         {
             if (pos + 2 > len)
             {
-                break;
+                return BGP_PATH_ATTR_PARSE_ERROR;
             }
             attr_len = ((uint16_t)data[pos] << 8) | data[pos + 1];
             pos += 2;
@@ -217,7 +228,7 @@ int bgp_parse_path_attrs(const uint8_t *data, uint16_t len, uint32_t flags, bgp_
 
         if (pos + attr_len > len)
         {
-            break;
+            return BGP_PATH_ATTR_PARSE_ERROR;
         }
 
         const uint8_t *val = data + pos;
@@ -388,6 +399,33 @@ int bgp_parse_path_attrs(const uint8_t *data, uint16_t len, uint32_t flags, bgp_
                 parse_large_communities(val, attr_len, attr->large_communities, sizeof(attr->large_communities));
                 break;
 
+            case ATTR_PREFIX_SID:
+            {
+                /* RFC 8669: Prefix-SID is Optional Transitive.  RFC 9252
+                 * requires treat-as-withdraw for a malformed SRv6 Service
+                 * TLV; keep parsing so a later MP_REACH can still supply the
+                 * affected NLRI set. */
+                if (prefix_sid_seen)
+                {
+                    break; /* duplicate: retain and propagate the first */
+                }
+                prefix_sid_seen = true;
+                if ((aflags & (ATTR_FLAG_OPTIONAL | ATTR_FLAG_TRANSITIVE)) !=
+                    (ATTR_FLAG_OPTIONAL | ATTR_FLAG_TRANSITIVE))
+                {
+                    result = BGP_PATH_ATTR_PARSE_TREAT_AS_WITHDRAW;
+                    break;
+                }
+                int prefix_sid_rc = bgp_parse_prefix_sid_value(val, attr_len, aflags, attr);
+                if (prefix_sid_rc == BGP_PREFIX_SID_PARSE_TREAT_AS_WITHDRAW)
+                {
+                    result = BGP_PATH_ATTR_PARSE_TREAT_AS_WITHDRAW;
+                }
+                /* ATTRIBUTE_DISCARD is already reflected by clearing the
+                 * Prefix-SID fields; the remaining UPDATE stays usable. */
+                break;
+            }
+
             /* AS4_PATH / AS4_AGGREGATOR：已通过 AS4 能力处理，忽略 */
             case ATTR_AS4_PATH:
             case ATTR_AS4_AGGREGATOR:
@@ -398,5 +436,11 @@ int bgp_parse_path_attrs(const uint8_t *data, uint16_t len, uint32_t flags, bgp_
         pos += attr_len;
     }
 
-    return 0;
+    /* A trailing partial attribute header is a malformed path-attribute
+     * block, not padding. */
+    if (pos != len)
+    {
+        return BGP_PATH_ATTR_PARSE_ERROR;
+    }
+    return result;
 }

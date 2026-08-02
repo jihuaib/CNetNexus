@@ -29,6 +29,8 @@ static const config_capture_owner_t CONFIG_CAPTURE_OWNERS[] = {
     {DEV_MODULE_ID_ROUTE, "route", TRUE, NULL},
     {DEV_MODULE_ID_ACCESS, "access", TRUE, NULL},
     {DEV_MODULE_ID_RPM, "rpm", FALSE, "rpm_policy"},
+    /* BGP/ISIS 的 SRv6 locator 引用必须在 locator 本体之后回放。 */
+    {DEV_MODULE_ID_SRV6, "srv6", FALSE, "srv6_locator"},
     {DEV_MODULE_ID_BGP, "bgp", FALSE, "bgp_protocol"},
     {DEV_MODULE_ID_SBMP, "sbmp", FALSE, "sbmp_server"},
     {DEV_MODULE_ID_ISIS, "isis", FALSE, "isis_instance"},

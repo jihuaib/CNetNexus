@@ -14,6 +14,7 @@
 #include "dev.h"
 #include "if.h"
 #include "isis.h"
+#include "srv6.h"
 
 #define ISIS_NET_STR_MAX 64
 
@@ -166,19 +167,28 @@ typedef struct isis_instance_cfg
     uint8_t admin_up;
     uint8_t af_ipv4;
     uint8_t af_ipv6;
-    uint8_t cost_style;               /**< ISIS_COST_STYLE_NARROW / ISIS_COST_STYLE_WIDE */
-    GHashTable *if_cfgs;              /**< key=ifname(strdup), value=isis_if_cfg_t* */
-    GHashTable *route_states;         /**< key=ifname|afi(strdup), value=isis_route_state_t* */
-    GHashTable *learned_route_heads;  /**< key=learned-route-id(strdup),
-                                         value=isis_route_head_t*（多路径，首路径为best且已下发） */
-    GHashTable *neighbors;            /**< key=ifname|level|sysid(strdup), value=isis_neighbor_t* */
-    GHashTable *lsdb_entries;         /**< key=level|sysid(strdup), value=isis_lsdb_entry_t* */
-    isis_nexthop_table_t *nexthop_v4; /**< IPv4 地址组 nexthop registry */
-    isis_nexthop_table_t *nexthop_v6; /**< IPv6 地址组 nexthop registry */
+    uint8_t cost_style;                       /**< ISIS_COST_STYLE_NARROW / ISIS_COST_STYLE_WIDE */
+    char srv6_locator[SRV6_LOCATOR_NAME_MAX]; /**< IPv6 AF 显式选择发布的本地 SRv6 locator */
+    GHashTable *if_cfgs;                      /**< key=ifname(strdup), value=isis_if_cfg_t* */
+    GHashTable *route_states;                 /**< key=ifname|afi(strdup), value=isis_route_state_t* */
+    GHashTable *learned_route_heads;          /**< key=learned-route-id(strdup),
+                                                 value=isis_route_head_t*（多路径，首路径为best且已下发） */
+    GHashTable *neighbors;                    /**< key=ifname|level|sysid(strdup), value=isis_neighbor_t* */
+    GHashTable *lsdb_entries;                 /**< key=level|sysid(strdup), value=isis_lsdb_entry_t* */
+    isis_nexthop_table_t *nexthop_v4;         /**< IPv4 地址组 nexthop registry */
+    isis_nexthop_table_t *nexthop_v6;         /**< IPv6 地址组 nexthop registry */
     uint32_t lsp_seq_l1;
     uint32_t lsp_seq_l2;
     uint64_t last_lsp_tx_msec;
 } isis_instance_cfg_t;
+
+/** ROUTE_PROTOCOL_SRV6 全量/增量快照中的本地 locator 前缀。 */
+typedef struct isis_srv6_locator_prefix
+{
+    net_addr_t prefix;
+    uint8_t prefix_len;
+    uint8_t _pad0[3];
+} isis_srv6_locator_prefix_t;
 
 static inline isis_nexthop_table_t *isis_instance_nexthop_table(isis_instance_cfg_t *inst, uint16_t afi)
 {
@@ -208,6 +218,7 @@ typedef enum isis_apply_op
     ISIS_APPLY_OP_IF_SET = 7,
     ISIS_APPLY_OP_IF_DEL = 8,
     ISIS_APPLY_OP_COST_STYLE_SET = 9,
+    ISIS_APPLY_OP_SRV6_LOCATOR_SET = 10,
 } isis_apply_op_t;
 
 /** 应用命令执行结果码（与 BGP 对齐） */
@@ -274,12 +285,19 @@ typedef struct isis_apply_cmd
             uint32_t tag;
             uint8_t cost_style;
         } cost_style_set;
+        struct
+        {
+            uint32_t tag;
+            char locator[SRV6_LOCATOR_NAME_MAX];
+        } srv6_locator_set;
     } u;
 } isis_apply_cmd_t;
 
 typedef struct isis_work_local
 {
-    GHashTable *instances; /**< key=GUINT_TO_POINTER(tag), value=isis_instance_cfg_t* */
+    GHashTable *instances;     /**< key=GUINT_TO_POINTER(tag), value=isis_instance_cfg_t* */
+    GHashTable *srv6_locators; /**< key=locator name, value=isis_srv6_locator_prefix_t* */
+    gboolean route_ready;
 
     int epoll_fd;
     int cmd_eventfd;
@@ -299,6 +317,8 @@ void isis_worker_shutdown(void);
 int isis_worker_post_show_cli(dev_ipc_message_t *msg);
 int isis_worker_post_if_event(dev_ipc_message_t *msg);
 int isis_worker_post_route_ready(void);
+int isis_worker_post_route_down(void);
+int isis_worker_post_route_msg(dev_ipc_message_t *msg);
 
 /**
  * @brief IPC 线程通知 worker：IF 模块下线，执行 IF 缓存清空 + 邻接撤销 + 路由收回。

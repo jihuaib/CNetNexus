@@ -10,7 +10,9 @@
 
 #include "bgp_db_internal.h"
 #include "bgp_main.h"
+#include "bgp_protocol.h"
 #include "bgp_vrf.h"
+#include "bgp_vrf_export.h"
 #include "bgp_worker.h"
 #include "errcode.h"
 #include "log.h"
@@ -31,6 +33,8 @@ static const db_column_def_t BGP_INSTANCE_COLS[] = {
     {"import_rib_sources", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"}, /* import-rib 源位掩码（bgp_import_src_t） */
     {"vpn_target_policy", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"}, /* VPN AF 入向 vpn-target 过滤（默认 1=启用） */
     {"advertise_evpn_route", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"}, /* VRF route 导出到 EVPN */
+    {"srv6_locator", DB_TYPE_TEXT, DB_COL_NOT_NULL, ""},             /* 私网 unicast AF 的 service-SID locator */
+    {"srv6_be", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},              /* SRv6 BE SID 下一跳迭代 */
 };
 
 const db_table_def_t BGP_INSTANCE_TABLE = {
@@ -83,6 +87,118 @@ int bgp_db_set_instance(const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi)
 
     LOG_INFO("BGP instance vrf=%s afi=%u safi=%u written", vrf_name, (unsigned)afi, (unsigned)safi);
     return 0;
+}
+
+int bgp_db_set_instance_srv6_locator(const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi, const char *locator)
+{
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
+    if (!ctx || !locator || !bgp_db_srv6_instance_key_valid(vrf_name, afi, safi))
+    {
+        return -1;
+    }
+    db_filter_builder_t pk;
+    bgp_db_instance_pk(&pk, vrf_name, afi, safi);
+    db_col_t col = DB_COL_TEXT("srv6_locator", locator);
+    int rows = db_rpc_update_cols(ctx, BGP_TABLE_INSTANCE, &pk.filter, &col, 1);
+    db_filter_clear(&pk);
+    return (rows > 0) ? 0 : -1;
+}
+
+gboolean bgp_db_srv6_instance_key_valid(const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi)
+{
+    return vrf_name && vrf_name[0] != '\0' && strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) != 0 &&
+           (afi == BGP_AFI_IPV4 || afi == BGP_AFI_IPV6) && safi == BGP_SAFI_UNICAST;
+}
+
+int bgp_db_get_instance_srv6_locator(const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi, char *locator,
+                                     size_t locator_len)
+{
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
+    if (!ctx || !locator || locator_len == 0u || !bgp_db_srv6_instance_key_valid(vrf_name, afi, safi))
+    {
+        return -1;
+    }
+    locator[0] = '\0';
+
+    db_filter_builder_t pk;
+    bgp_db_instance_pk(&pk, vrf_name, afi, safi);
+    const char *columns[] = {"srv6_locator"};
+    db_result_t *result = NULL;
+    int rc = db_rpc_query(ctx, BGP_TABLE_INSTANCE, columns, G_N_ELEMENTS(columns), &pk.filter, &result);
+    db_filter_clear(&pk);
+    if (rc != ERRCODE_SUCCESS || !result || result->num_rows != 1u)
+    {
+        if (result)
+        {
+            db_result_free(result);
+        }
+        return -1;
+    }
+    g_strlcpy(locator, db_row_get_text(result->rows[0], "srv6_locator", ""), locator_len);
+    db_result_free(result);
+    return 0;
+}
+
+static int bgp_db_set_srv6_mode_column(const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi, const char *column,
+                                       bool enabled)
+{
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
+    if (!ctx || !column || !bgp_db_srv6_instance_key_valid(vrf_name, afi, safi))
+    {
+        return -1;
+    }
+
+    db_filter_builder_t pk;
+    bgp_db_instance_pk(&pk, vrf_name, afi, safi);
+    db_col_t col = DB_COL_INT(column, enabled ? 1 : 0);
+    int rows = db_rpc_update_cols(ctx, BGP_TABLE_INSTANCE, &pk.filter, &col, 1);
+    db_filter_clear(&pk);
+    if (rows <= 0)
+    {
+        LOG_ERROR("BGP write %s vrf=%s afi=%u safi=%u enabled=%d failed", column, vrf_name, (unsigned)afi,
+                  (unsigned)safi, enabled ? 1 : 0);
+        return -1;
+    }
+    return 0;
+}
+
+static int bgp_db_get_srv6_mode_column(const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi, const char *column,
+                                       bool *enabled)
+{
+    dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
+    if (!ctx || !column || !enabled || !bgp_db_srv6_instance_key_valid(vrf_name, afi, safi))
+    {
+        return -1;
+    }
+    *enabled = false;
+
+    db_filter_builder_t pk;
+    bgp_db_instance_pk(&pk, vrf_name, afi, safi);
+    const char *columns[] = {column};
+    db_result_t *result = NULL;
+    int rc = db_rpc_query(ctx, BGP_TABLE_INSTANCE, columns, G_N_ELEMENTS(columns), &pk.filter, &result);
+    db_filter_clear(&pk);
+    if (rc != ERRCODE_SUCCESS || !result || result->num_rows != 1u)
+    {
+        if (result)
+        {
+            db_result_free(result);
+        }
+        return -1;
+    }
+    *enabled = db_row_get_int(result->rows[0], column, 0) != 0;
+    db_result_free(result);
+    return 0;
+}
+
+int bgp_db_set_srv6_be(const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi, bool enabled)
+{
+    return bgp_db_set_srv6_mode_column(vrf_name, afi, safi, "srv6_be", enabled);
+}
+
+int bgp_db_get_srv6_be(const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi, bool *enabled)
+{
+    return bgp_db_get_srv6_mode_column(vrf_name, afi, safi, "srv6_be", enabled);
 }
 
 int bgp_db_del_instance(const char *vrf_name, bgp_afi_t afi, bgp_safi_t safi)
@@ -295,19 +411,25 @@ int bgp_db_set_advertise_evpn_route(const char *vrf_name, bgp_afi_t afi, bgp_saf
 // 启动恢复
 // ============================================================================
 
-void bgp_db_restore_instances(void)
+uint32_t bgp_db_restore_instances(void)
 {
     dev_ipc_context_t *ctx = bgp_local_ipc_ctx();
     if (!ctx)
     {
-        return;
+        return ERRCODE_FAIL;
     }
 
     db_result_t *result = NULL;
-    if (db_rpc_query(ctx, BGP_TABLE_INSTANCE, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
+    if (db_rpc_query(ctx, BGP_TABLE_INSTANCE, NULL, 0, NULL, &result) != ERRCODE_SUCCESS)
     {
-        return;
+        return ERRCODE_FAIL;
     }
+    if (!result)
+    {
+        return ERRCODE_SUCCESS;
+    }
+
+    uint32_t restore_rc = ERRCODE_SUCCESS;
 
     for (uint32_t i = 0; i < result->num_rows; i++)
     {
@@ -318,10 +440,24 @@ void bgp_db_restore_instances(void)
 
         if (afi == 0 || safi == 0)
         {
+            LOG_ERROR("BGP restore: invalid AF instance tuple vrf=%s afi=%u safi=%u", vrf_name, (unsigned)afi,
+                      (unsigned)safi);
+            restore_rc = ERRCODE_FAIL;
             continue;
         }
         if (g_bgp_db_resync_only_vrf_bound && (!vrf_name || strcmp(vrf_name, VRF_PUBLIC_VRF_NAME) == 0))
         {
+            continue;
+        }
+
+        /* Labeled-unicast/VPN 实例恢复会立即重建 MPLS watch、ILM 与标签状态。
+         * TUNNEL 是按需模块，冷启动不能依赖交互 CLI 曾经拉起过它。 */
+        if ((safi == BGP_SAFI_LABELED || safi == BGP_SAFI_VPN_UNICAST) &&
+            dev_ipc_wait_module_ready(ctx, DEV_MODULE_ID_TUNNEL, DEV_IPC_WAIT_READY_MS) != ERRCODE_SUCCESS)
+        {
+            LOG_ERROR("BGP restore: TUNNEL module unavailable for MPLS AF vrf=%s afi=%u safi=%u", vrf_name,
+                      (unsigned)afi, (unsigned)safi);
+            restore_rc = ERRCODE_FAIL;
             continue;
         }
 
@@ -333,12 +469,83 @@ void bgp_db_restore_instances(void)
         snprintf(apply.vrf_name, sizeof(apply.vrf_name), "%s", vrf_name);
         apply.u.instance.afi = afi;
         apply.u.instance.safi = safi;
-        if (bgp_worker_dispatch_apply(&apply) != 0 || apply.rc != BGP_APPLY_RC_OK)
+        if (bgp_worker_dispatch_apply(&apply) != 0 || (apply.rc != BGP_APPLY_RC_OK && apply.rc != BGP_APPLY_RC_NOOP))
         {
-            LOG_WARN("BGP restore: AF instance vrf=%s afi=%u safi=%u failed", vrf_name, (unsigned)afi, (unsigned)safi);
+            LOG_ERROR("BGP restore: AF instance vrf=%s afi=%u safi=%u failed", vrf_name, (unsigned)afi, (unsigned)safi);
+            restore_rc = ERRCODE_FAIL;
             continue;
         }
         LOG_INFO("BGP restore: VRF %s AF instance afi=%u safi=%u", vrf_name, (unsigned)afi, (unsigned)safi);
+
+        const gboolean srv6_key_valid = bgp_db_srv6_instance_key_valid(vrf_name, afi, safi);
+        const char *srv6_locator = db_row_get_text(row, "srv6_locator", "");
+        if (srv6_key_valid)
+        {
+            /* Empty is an explicit recovery operation too: a prior crash may
+             * have committed the empty DB value after the SRV6 service had
+             * installed an End.DT SID.  Reconcile the whole stable owner
+             * scope before restoring the remaining AF fields. */
+            if (dev_ipc_wait_module_ready(bgp_local_ipc_ctx(), DEV_MODULE_ID_SRV6, DEV_IPC_WAIT_READY_MS) ==
+                ERRCODE_SUCCESS)
+            {
+                bgp_apply_cmd_t srv6;
+                memset(&srv6, 0, sizeof(srv6));
+                srv6.group_id = BGP_CLI_GROUP_ID_SRV6;
+                srv6.isNo = !srv6_locator || srv6_locator[0] == '\0';
+                g_strlcpy(srv6.vrf_name, vrf_name, sizeof(srv6.vrf_name));
+                srv6.u.srv6.afi = afi;
+                srv6.u.srv6.safi = safi;
+                if (srv6_locator)
+                {
+                    g_strlcpy(srv6.u.srv6.locator, srv6_locator, sizeof(srv6.u.srv6.locator));
+                }
+                if (bgp_worker_dispatch_apply(&srv6) != 0 ||
+                    (srv6.rc != BGP_APPLY_RC_OK && srv6.rc != BGP_APPLY_RC_NOOP))
+                {
+                    LOG_ERROR("BGP restore: private unicast AF SRv6 locator %s failed",
+                              srv6.isNo ? "<absent>" : srv6_locator);
+                    restore_rc = ERRCODE_FAIL;
+                }
+            }
+            else
+            {
+                LOG_ERROR("BGP restore: SRV6 module unavailable while reconciling locator %s",
+                          (!srv6_locator || srv6_locator[0] == '\0') ? "<absent>" : srv6_locator);
+                restore_rc = ERRCODE_FAIL;
+            }
+        }
+        else if (srv6_locator && srv6_locator[0] != '\0')
+        {
+            LOG_ERROR("BGP restore: invalid SRv6 instance tuple vrf=%s afi=%u safi=%u", vrf_name, (unsigned)afi,
+                      (unsigned)safi);
+            restore_rc = ERRCODE_FAIL;
+        }
+
+        const gboolean srv6_be = db_row_get_int(row, "srv6_be", 0) != 0;
+        if (srv6_be && !srv6_key_valid)
+        {
+            LOG_ERROR("BGP restore: invalid SRv6 mode tuple vrf=%s afi=%u safi=%u", vrf_name, (unsigned)afi,
+                      (unsigned)safi);
+            restore_rc = ERRCODE_FAIL;
+        }
+        else
+        {
+            /* BE controls received service-SID recursion and is independent of the local locator. */
+            if (srv6_be)
+            {
+                bgp_apply_cmd_t be;
+                memset(&be, 0, sizeof(be));
+                be.group_id = BGP_CLI_GROUP_ID_SRV6_BE;
+                g_strlcpy(be.vrf_name, vrf_name, sizeof(be.vrf_name));
+                be.u.srv6_mode.afi = afi;
+                be.u.srv6_mode.safi = safi;
+                if (bgp_worker_dispatch_apply(&be) != 0 || (be.rc != BGP_APPLY_RC_OK && be.rc != BGP_APPLY_RC_NOOP))
+                {
+                    LOG_ERROR("BGP restore: private unicast AF srv6 be failed vrf=%s afi=%u", vrf_name, (unsigned)afi);
+                    restore_rc = ERRCODE_FAIL;
+                }
+            }
+        }
 
         /* 恢复 import-route（支持 static / connected） */
         uint32_t import_protos = (uint32_t)db_row_get_int(row, "import_protos", 0);
@@ -433,6 +640,7 @@ void bgp_db_restore_instances(void)
     }
 
     db_result_free(result);
+    return restore_rc;
 }
 
 void bgp_db_restore_qp_route_select(void)

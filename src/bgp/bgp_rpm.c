@@ -3,7 +3,6 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "bgp_adj_rib_out.h"
 #include "bgp_instance.h"
 #include "bgp_peer.h"
 #include "bgp_protocol.h"
@@ -15,40 +14,10 @@
 #include "rpm.h"
 #include "vrf.h"
 
-static void bgp_rpm_withdraw_peer_aro(bgp_peer_t *peer, bgp_session_t *sess)
-{
-    if (!peer || !peer->inst || !sess || !sess->pri_conn || !peer->subgroups)
-    {
-        return;
-    }
-    for (GList *sl = peer->subgroups; sl; sl = sl->next)
-    {
-        bgp_nh_subgroup_t *sg = sl->data;
-        if (!sg || !sg->adj_rib_out || bgp_adj_rib_out_count(sg->adj_rib_out) == 0u)
-        {
-            continue;
-        }
-        GPtrArray *nlris = g_ptr_array_new_with_free_func(g_free);
-        GHashTableIter iter;
-        gpointer key;
-        g_hash_table_iter_init(&iter, sg->adj_rib_out->table);
-        while (g_hash_table_iter_next(&iter, &key, NULL))
-        {
-            g_ptr_array_add(nlris, g_memdup2(key, sizeof(bgp_nlri_entry_t)));
-        }
-        if (nlris->len > 0u)
-        {
-            bgp_send_packed_withdraws_to_session(sess, (uint16_t)peer->inst->afi, (uint8_t)peer->inst->safi,
-                                                 (const bgp_nlri_entry_t *const *)nlris->pdata, (int)nlris->len);
-        }
-        g_ptr_array_free(nlris, TRUE);
-    }
-}
-
 static void bgp_rpm_rebind_peer(bgp_peer_t *peer, bgp_session_t *sess, const rpm_policy_t *policy, bool valid,
                                 bool clear)
 {
-    bgp_rpm_withdraw_peer_aro(peer, sess);
+    (void)bgp_update_group_withdraw_peer_aro(peer, sess);
     if (peer->subgroups)
     {
         bgp_subgroup_peer_leave(peer, sess);

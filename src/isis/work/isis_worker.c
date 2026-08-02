@@ -6,6 +6,7 @@
  */
 #include "isis_worker.h"
 
+#include <arpa/inet.h>
 #include <errno.h>
 #include <string.h>
 #include <sys/epoll.h>
@@ -23,6 +24,7 @@
 #include "isis_route_sync.h"
 #include "isis_show.h"
 #include "log.h"
+#include "route.h"
 
 #define ISIS_MAX_EPOLL_EVENTS 8
 
@@ -34,6 +36,8 @@ typedef enum isis_worker_cmd_type
     ISIS_WORKER_CMD_SHUTDOWN = 4,
     ISIS_WORKER_CMD_ROUTE_READY = 5,
     ISIS_WORKER_CMD_IF_DOWN = 6,
+    ISIS_WORKER_CMD_ROUTE_DOWN = 7,
+    ISIS_WORKER_CMD_ROUTE_MSG = 8,
 } isis_worker_cmd_type_t;
 
 typedef struct isis_worker_cmd
@@ -54,6 +58,156 @@ static char g_isis_raw_tag;
 static char g_isis_tick_tag;
 
 isis_work_local_t *g_isis_work_local = NULL;
+
+static void isis_srv6_locator_mark_lsp_dirty(const char *locator_name)
+{
+    if (!g_isis_work_local || !g_isis_work_local->instances)
+    {
+        return;
+    }
+    GHashTableIter iter;
+    gpointer value = NULL;
+    g_hash_table_iter_init(&iter, g_isis_work_local->instances);
+    while (g_hash_table_iter_next(&iter, NULL, &value))
+    {
+        isis_instance_cfg_t *inst = value;
+        if (inst && inst->vrf_id == ROUTE_VRF_DEFAULT && inst->af_ipv6 && inst->srv6_locator[0] != '\0' &&
+            (!locator_name || strcmp(inst->srv6_locator, locator_name) == 0))
+        {
+            inst->last_lsp_tx_msec = 0u;
+        }
+    }
+}
+
+static void isis_srv6_locator_clear(void)
+{
+    if (!g_isis_work_local || !g_isis_work_local->srv6_locators)
+    {
+        return;
+    }
+    if (g_hash_table_size(g_isis_work_local->srv6_locators) > 0u)
+    {
+        g_hash_table_remove_all(g_isis_work_local->srv6_locators);
+        isis_srv6_locator_mark_lsp_dirty(NULL);
+    }
+}
+
+static int isis_srv6_locator_subscribe(void)
+{
+    route_subscribe_req_t *req = g_new0(route_subscribe_req_t, 1);
+    req->protocol = ROUTE_PROTOCOL_SRV6;
+    req->vrf_id = ROUTE_VRF_DEFAULT;
+    req->afi = ROUTE_AFI_IPV6;
+    req->flags = ROUTE_SUBSCRIBE_FLAG_FULL;
+
+    dev_ipc_message_t *msg = dev_ipc_message_create(ROUTE_MSG_TYPE_SUBSCRIBE, DEV_MODULE_ID_ISIS, DEV_MODULE_ID_ROUTE,
+                                                    0, req, sizeof(*req), g_free);
+    if (!msg)
+    {
+        g_free(req);
+        return ERRCODE_FAIL;
+    }
+    int rc = dev_ipc_send(isis_local_ipc_ctx(), DEV_MODULE_ID_ROUTE, msg);
+    dev_ipc_message_free(msg);
+    if (rc != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("ISIS: failed to subscribe to SRv6 locator routes");
+        return ERRCODE_FAIL;
+    }
+    LOG_INFO("ISIS: subscribed to local SRv6 locator routes (IPv6, public VRF)");
+    return ERRCODE_SUCCESS;
+}
+
+static gboolean isis_srv6_locator_entry_valid(const route_msg_entry_t *entry)
+{
+    if (!entry || entry->protocol != ROUTE_PROTOCOL_SRV6 || entry->vrf_id != ROUTE_VRF_DEFAULT ||
+        entry->afi != ROUTE_AFI_IPV6 || entry->safi != ROUTE_SAFI_UNICAST || entry->prefix_len > 127u ||
+        entry->prefix_addr.family != AF_INET6 || entry->source_addr.family != AF_INET6 ||
+        entry->nh_type != ROUTE_NH_TYPE_BLACKHOLE || entry->source_name[0] == '\0' ||
+        memchr(entry->source_name, '\0', sizeof(entry->source_name)) == NULL ||
+        !net_addr_equal(&entry->source_addr, &entry->prefix_addr))
+    {
+        return FALSE;
+    }
+    net_addr_t normalized = entry->prefix_addr;
+    return net_addr_prefix_normalize(&normalized, entry->prefix_len) == 0 &&
+           net_addr_equal(&normalized, &entry->prefix_addr);
+}
+
+static void isis_srv6_locator_apply_entry(const route_msg_entry_t *entry)
+{
+    if (!g_isis_work_local || !g_isis_work_local->srv6_locators || !isis_srv6_locator_entry_valid(entry))
+    {
+        return;
+    }
+
+    char prefix[INET6_ADDRSTRLEN];
+    net_addr_to_str(&entry->prefix_addr, prefix, sizeof(prefix));
+    const char *name = entry->source_name;
+
+    gboolean changed = FALSE;
+    isis_srv6_locator_prefix_t *current = g_hash_table_lookup(g_isis_work_local->srv6_locators, name);
+    if (entry->is_withdraw)
+    {
+        /* locator 更新按“先加新前缀、再撤旧前缀”到达。旧前缀的 withdraw
+         * 不能误删同名 locator 已经换成的新映射。 */
+        if (current && current->prefix_len == entry->prefix_len &&
+            net_addr_equal(&current->prefix, &entry->prefix_addr))
+        {
+            changed = g_hash_table_remove(g_isis_work_local->srv6_locators, name);
+        }
+    }
+    else if (!current || current->prefix_len != entry->prefix_len ||
+             !net_addr_equal(&current->prefix, &entry->prefix_addr))
+    {
+        isis_srv6_locator_prefix_t *locator = g_new0(isis_srv6_locator_prefix_t, 1);
+        locator->prefix = entry->prefix_addr;
+        locator->prefix_len = entry->prefix_len;
+        g_hash_table_replace(g_isis_work_local->srv6_locators, g_strdup(name), locator);
+        changed = TRUE;
+    }
+
+    if (changed)
+    {
+        LOG_INFO("ISIS: %s SRv6 locator %s reachability %s/%u", entry->is_withdraw ? "withdrew" : "learned", name,
+                 prefix, (unsigned)entry->prefix_len);
+        isis_srv6_locator_mark_lsp_dirty(name);
+    }
+}
+
+static void isis_srv6_locator_handle_route_msg(const dev_ipc_message_t *msg)
+{
+    if (!msg || !msg->payload || msg->src_module_id != DEV_MODULE_ID_ROUTE || !g_isis_work_local ||
+        !g_isis_work_local->route_ready)
+    {
+        return;
+    }
+    if (msg->msg_type == ROUTE_MSG_TYPE_UPDATE)
+    {
+        if (msg->payload_len >= sizeof(route_msg_entry_t))
+        {
+            isis_srv6_locator_apply_entry((const route_msg_entry_t *)msg->payload);
+        }
+        return;
+    }
+    if (msg->msg_type != ROUTE_MSG_TYPE_REPORT || msg->payload_len < sizeof(route_msg_report_t))
+    {
+        return;
+    }
+
+    const route_msg_report_t *report = msg->payload;
+    size_t available = (msg->payload_len - sizeof(*report)) / sizeof(route_msg_entry_t);
+    if (report->protocol != ROUTE_PROTOCOL_SRV6 || (size_t)report->route_count > available)
+    {
+        LOG_WARN("ISIS: invalid SRv6 locator route report (protocol=%u count=%u available=%zu)", report->protocol,
+                 report->route_count, available);
+        return;
+    }
+    for (uint32_t i = 0u; i < report->route_count; ++i)
+    {
+        isis_srv6_locator_apply_entry(&report->routes[i]);
+    }
+}
 
 gboolean isis_if_entry_matches_instance(const isis_instance_cfg_t *inst, const if_api_cache_entry_t *entry)
 {
@@ -356,6 +510,9 @@ static int worker_apply_cmd(isis_apply_cmd_t *apply)
         case ISIS_APPLY_OP_IF_DEL:
             isis_cfg_apply_if_del(apply);
             break;
+        case ISIS_APPLY_OP_SRV6_LOCATOR_SET:
+            isis_cfg_apply_srv6_locator_set(apply);
+            break;
         default:
             g_snprintf(apply->errmsg, sizeof(apply->errmsg), "ISIS Error: Unknown apply op %d", apply->op);
             apply->rc = ISIS_APPLY_RC_FAIL;
@@ -420,10 +577,30 @@ static int worker_dispatch_cmd(isis_worker_cmd_t *cmd)
                 LOG_WARN("ISIS: ROUTE connection not ready in time; route replay deferred to next READY");
                 break;
             }
+            g_isis_work_local->route_ready = TRUE;
+            /* ROUTE 重启后旧快照已无效；先清理，再用 protocol=SRV6 的 FULL
+             * 订阅重建。locator owner 的重放与订阅存在先后竞态也安全：
+             * 先注入会进入 FULL，后注入会作为 UPDATE 到达。 */
+            isis_srv6_locator_clear();
+            (void)isis_srv6_locator_subscribe();
             /* 先按原 id 反刷 nexthop 对象（ROUTE 重建），再对账/重放路由（复用同一 id） */
             isis_nexthop_resync_all_instances();
             isis_route_sync_reconcile_all_instances();
             isis_route_sync_replay_all_instances();
+            break;
+
+        case ISIS_WORKER_CMD_ROUTE_DOWN:
+            g_isis_work_local->route_ready = FALSE;
+            isis_srv6_locator_clear();
+            break;
+
+        case ISIS_WORKER_CMD_ROUTE_MSG:
+            isis_srv6_locator_handle_route_msg(cmd->msg);
+            if (cmd->msg)
+            {
+                dev_ipc_message_free(cmd->msg);
+                cmd->msg = NULL;
+            }
             break;
 
         case ISIS_WORKER_CMD_IF_DOWN:
@@ -542,6 +719,11 @@ int isis_worker_prepare(void)
     {
         return ERRCODE_FAIL;
     }
+    g_isis_work_local->srv6_locators = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+    if (!g_isis_work_local->srv6_locators)
+    {
+        return ERRCODE_FAIL;
+    }
 
     if_api_cache_init();
 
@@ -631,6 +813,37 @@ int isis_worker_post_route_ready(void)
     }
     if (worker_cmd_enqueue(cmd) != 0)
     {
+        worker_cmd_destroy(cmd);
+        return ERRCODE_FAIL;
+    }
+    return ERRCODE_SUCCESS;
+}
+
+int isis_worker_post_route_down(void)
+{
+    isis_worker_cmd_t *cmd = worker_cmd_create(ISIS_WORKER_CMD_ROUTE_DOWN, NULL, 0);
+    if (!cmd)
+    {
+        return ERRCODE_FAIL;
+    }
+    if (worker_cmd_enqueue(cmd) != 0)
+    {
+        worker_cmd_destroy(cmd);
+        return ERRCODE_FAIL;
+    }
+    return ERRCODE_SUCCESS;
+}
+
+int isis_worker_post_route_msg(dev_ipc_message_t *msg)
+{
+    isis_worker_cmd_t *cmd = worker_cmd_create(ISIS_WORKER_CMD_ROUTE_MSG, msg, 0);
+    if (!cmd)
+    {
+        return ERRCODE_FAIL;
+    }
+    if (worker_cmd_enqueue(cmd) != 0)
+    {
+        cmd->msg = NULL;
         worker_cmd_destroy(cmd);
         return ERRCODE_FAIL;
     }
@@ -748,6 +961,12 @@ void isis_worker_shutdown(void)
         }
         g_hash_table_destroy(g_isis_work_local->instances);
         g_isis_work_local->instances = NULL;
+    }
+
+    if (g_isis_work_local->srv6_locators)
+    {
+        g_hash_table_destroy(g_isis_work_local->srv6_locators);
+        g_isis_work_local->srv6_locators = NULL;
     }
 
     if_api_cache_cleanup();

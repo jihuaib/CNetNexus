@@ -72,6 +72,7 @@ target_link_libraries(netnexus-bgp PRIVATE
     vrf_api
     route_api
     tunnel_api
+    srv6_api
     rpm_api
     utils
     bgp_api

@@ -30,6 +30,7 @@ add_subdirectory(lldp)
 add_subdirectory(snmp)
 add_subdirectory(ospf)
 add_subdirectory(ospfv3)
+add_subdirectory(srv6)
 
 # =========================
 # DEV 主进程（supervisor）

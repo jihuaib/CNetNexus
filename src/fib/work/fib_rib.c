@@ -127,6 +127,16 @@ static void ilm_state_free(gpointer p)
     g_free(p);
 }
 
+static guint localsid_key_hash(gconstpointer p)
+{
+    return net_addr_hash((const net_addr_t *)p);
+}
+
+static gboolean localsid_key_equal(gconstpointer a, gconstpointer b)
+{
+    return net_addr_equal((const net_addr_t *)a, (const net_addr_t *)b);
+}
+
 fib_rib_t *fib_rib_create(void)
 {
     fib_rib_t *rib = g_malloc0(sizeof(*rib));
@@ -139,7 +149,8 @@ fib_rib_t *fib_rib_create(void)
     rib->tunnels = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, tunnel_state_free);
     rib->nexthops = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, nexthop_state_free);
     rib->ilms = g_hash_table_new_full(ilm_key_hash, ilm_key_equal, g_free, ilm_state_free);
-    if (!rib->routes || !rib->tunnels || !rib->nexthops || !rib->ilms)
+    rib->srv6_localsids = g_hash_table_new_full(localsid_key_hash, localsid_key_equal, g_free, g_free);
+    if (!rib->routes || !rib->tunnels || !rib->nexthops || !rib->ilms || !rib->srv6_localsids)
     {
         fib_rib_destroy(rib);
         return NULL;
@@ -168,6 +179,10 @@ void fib_rib_destroy(fib_rib_t *rib)
     if (rib->ilms)
     {
         g_hash_table_destroy(rib->ilms);
+    }
+    if (rib->srv6_localsids)
+    {
+        g_hash_table_destroy(rib->srv6_localsids);
     }
     g_free(rib);
 }
@@ -422,4 +437,71 @@ void fib_rib_foreach_nexthop(fib_rib_t *rib, GHFunc func, gpointer user_data)
         return;
     }
     g_hash_table_foreach(rib->nexthops, func, user_data);
+}
+
+fib_srv6_localsid_state_t *fib_rib_srv6_localsid_lookup(fib_rib_t *rib, const net_addr_t *sid)
+{
+    if (!rib || !rib->srv6_localsids || !sid)
+    {
+        return NULL;
+    }
+    return (fib_srv6_localsid_state_t *)g_hash_table_lookup(rib->srv6_localsids, sid);
+}
+
+fib_srv6_localsid_state_t *fib_rib_srv6_localsid_upsert(fib_rib_t *rib, const fib_srv6_localsid_entry_t *entry)
+{
+    if (!rib || !rib->srv6_localsids || !entry || entry->sid.family != AF_INET6)
+    {
+        return NULL;
+    }
+    fib_srv6_localsid_state_t *state = fib_rib_srv6_localsid_lookup(rib, &entry->sid);
+    if (state)
+    {
+        uint8_t installed = state->installed;
+        state->entry = *entry;
+        state->installed = installed;
+        return state;
+    }
+    net_addr_t *key = g_memdup2(&entry->sid, sizeof(*key));
+    state = g_malloc0(sizeof(*state));
+    if (!key || !state)
+    {
+        g_free(key);
+        g_free(state);
+        return NULL;
+    }
+    state->entry = *entry;
+    g_hash_table_insert(rib->srv6_localsids, key, state);
+    return state;
+}
+
+gboolean fib_rib_srv6_localsid_delete(fib_rib_t *rib, const fib_srv6_localsid_entry_t *entry,
+                                      fib_srv6_localsid_entry_t *old_entry, uint8_t *old_installed)
+{
+    if (!rib || !rib->srv6_localsids || !entry)
+    {
+        return FALSE;
+    }
+    fib_srv6_localsid_state_t *state = fib_rib_srv6_localsid_lookup(rib, &entry->sid);
+    if (!state)
+    {
+        return FALSE;
+    }
+    if (old_entry)
+    {
+        *old_entry = state->entry;
+    }
+    if (old_installed)
+    {
+        *old_installed = state->installed;
+    }
+    return g_hash_table_remove(rib->srv6_localsids, &entry->sid);
+}
+
+void fib_rib_foreach_srv6_localsid(fib_rib_t *rib, GHFunc func, gpointer user_data)
+{
+    if (rib && rib->srv6_localsids && func)
+    {
+        g_hash_table_foreach(rib->srv6_localsids, func, user_data);
+    }
 }

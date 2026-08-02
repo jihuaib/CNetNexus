@@ -16,7 +16,7 @@ static const db_column_def_t LLDP_IF_COLS[] = {
     {"admin_status", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "3"},
     {"tx_interval_sec", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},
     {"hold_multiplier", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},
-    {"port_desc", DB_TYPE_TEXT, 0, "''"},
+    {"port_desc", DB_TYPE_TEXT, 0, ""},
 };
 
 const db_table_def_t LLDP_IF_TABLE = {

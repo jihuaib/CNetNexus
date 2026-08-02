@@ -565,6 +565,36 @@ static void worker_handle_inject(dev_ipc_message_t *msg)
     const route_msg_entry_t *entry = (const route_msg_entry_t *)msg->payload;
     int ret = -1;
 
+    if (entry->protocol == ROUTE_PROTOCOL_SRV6)
+    {
+        net_addr_t normalized = entry->prefix_addr;
+        if (msg->src_module_id != DEV_MODULE_ID_SRV6 || msg->ingress_peer_module_id != DEV_MODULE_ID_SRV6 ||
+            msg->dst_module_id != DEV_MODULE_ID_ROUTE || entry->vrf_id != ROUTE_VRF_DEFAULT ||
+            entry->afi != ROUTE_AFI_IPV6 || entry->safi != ROUTE_SAFI_UNICAST || entry->prefix_len > 127u ||
+            entry->prefix_addr.family != AF_INET6 || entry->source_addr.family != AF_INET6 ||
+            entry->nh_type != ROUTE_NH_TYPE_BLACKHOLE || entry->source_name[0] == '\0' ||
+            memchr(entry->source_name, '\0', sizeof(entry->source_name)) == NULL ||
+            net_addr_prefix_normalize(&normalized, entry->prefix_len) != 0 ||
+            !net_addr_equal(&normalized, &entry->prefix_addr) ||
+            !net_addr_equal(&entry->source_addr, &entry->prefix_addr))
+        {
+            LOG_WARN("[route_worker] reject invalid/non-owner SRv6 locator route from module 0x%08X",
+                     msg->src_module_id);
+            worker_send_inject_ack(msg, ERRCODE_FAIL);
+            dev_ipc_message_free(msg);
+            return;
+        }
+    }
+
+    if (!entry->is_withdraw && entry->nh_type == ROUTE_NH_TYPE_SRV6 &&
+        (entry->srv6_sid.family != AF_INET6 || net_addr_is_zero(&entry->srv6_sid)))
+    {
+        LOG_WARN("[route_worker] reject SRv6 route with invalid service SID");
+        worker_send_inject_ack(msg, ERRCODE_FAIL);
+        dev_ipc_message_free(msg);
+        return;
+    }
+
     if (entry->is_withdraw)
     {
         ret = route_rib_del(g_route_work_local->rib, entry->vrf_id, entry->afi, &entry->prefix_addr, entry->prefix_len,
@@ -591,6 +621,12 @@ static void worker_handle_inject(dev_ipc_message_t *msg)
         }
         if (ret >= 0)
         {
+            (void)route_rib_set_srv6_sid(g_route_work_local->rib, entry->vrf_id, entry->afi, &entry->prefix_addr,
+                                         entry->prefix_len, entry->protocol, &entry->source_addr,
+                                         (entry->nh_type == ROUTE_NH_TYPE_SRV6) ? &entry->srv6_sid : NULL);
+            (void)route_rib_set_source_name(g_route_work_local->rib, entry->vrf_id, entry->afi, &entry->prefix_addr,
+                                            entry->prefix_len, entry->protocol, &entry->source_addr,
+                                            entry->source_name);
             const route_head_t *head = route_rib_lookup_head(g_route_work_local->rib, entry->vrf_id, entry->afi,
                                                              &entry->prefix_addr, entry->prefix_len);
             if (head)
@@ -615,6 +651,61 @@ static void worker_handle_inject(dev_ipc_message_t *msg)
     }
 
     worker_send_inject_ack(msg, (ret >= 0) ? ERRCODE_SUCCESS : ERRCODE_FAIL);
+    dev_ipc_message_free(msg);
+}
+
+/* 只有被 ROUTE 明确建立了“协议号独占所有者”不变式的协议才能使用批量清理。
+ * CONNECTED/STATIC 包含 ROUTE 内部生成路径，不得在此登记。当前仅 SRV6 的 INJECT
+ * 入口已对源模块和路径形态做强校验，因此只开放该协议。 */
+static uint32_t worker_protocol_flush_owner(uint32_t protocol)
+{
+    return protocol == ROUTE_PROTOCOL_SRV6 ? DEV_MODULE_ID_SRV6 : 0u;
+}
+
+static void worker_handle_protocol_flush(dev_ipc_message_t *msg)
+{
+    if (!msg || !msg->payload || msg->payload_len < sizeof(route_protocol_flush_req_t))
+    {
+        worker_send_inject_ack(msg, ERRCODE_FAIL);
+        if (msg)
+        {
+            dev_ipc_message_free(msg);
+        }
+        return;
+    }
+
+    const route_protocol_flush_req_t *req = msg->payload;
+    uint32_t owner = worker_protocol_flush_owner(req->protocol);
+    gboolean valid = owner != 0u && owner == msg->src_module_id && owner == msg->ingress_peer_module_id &&
+                     msg->dst_module_id == DEV_MODULE_ID_ROUTE && req->_pad == 0u &&
+                     (req->afi == ROUTE_AFI_IPV4 || req->afi == ROUTE_AFI_IPV6 || req->afi == ROUTE_AFI_ALL);
+
+    /* SRV6 locator aggregate 的所有权范围是公网 IPv6 RIB。即使未来有其他 SRV6
+     * 用途，本恢复 RPC 也不能跨 VRF/AFI 删除它们的路径。 */
+    if (req->protocol == ROUTE_PROTOCOL_SRV6 && (req->vrf_id != ROUTE_VRF_DEFAULT || req->afi != ROUTE_AFI_IPV6))
+    {
+        valid = FALSE;
+    }
+
+    if (!valid)
+    {
+        LOG_WARN("[route_worker] reject unauthenticated protocol flush: src=0x%08X ingress=0x%08X proto=%u "
+                 "vrf=%u afi=%u",
+                 msg->src_module_id, msg->ingress_peer_module_id, req->protocol, req->vrf_id, req->afi);
+        worker_send_inject_ack(msg, ERRCODE_FAIL);
+        dev_ipc_message_free(msg);
+        return;
+    }
+
+    int deleted =
+        route_rib_del_protocol(g_route_work_local->rib, req->protocol, req->vrf_id, req->afi, on_inject_path_del, NULL);
+    route_recompute_iter_paths();
+    if (deleted >= 0)
+    {
+        LOG_INFO("[route_worker] protocol flush complete: owner=0x%08X proto=%u vrf=%u afi=%u deleted=%d",
+                 msg->src_module_id, req->protocol, req->vrf_id, req->afi, deleted);
+    }
+    worker_send_inject_ack(msg, deleted >= 0 ? ERRCODE_SUCCESS : ERRCODE_FAIL);
     dev_ipc_message_free(msg);
 }
 
@@ -746,6 +837,11 @@ static int worker_dispatch_cmd(route_worker_cmd_t *cmd)
     {
         case ROUTE_WORKER_CMD_INJECT:
             worker_handle_inject(cmd->msg);
+            cmd->msg = NULL;
+            break;
+
+        case ROUTE_WORKER_CMD_PROTOCOL_FLUSH:
+            worker_handle_protocol_flush(cmd->msg);
             cmd->msg = NULL;
             break;
 

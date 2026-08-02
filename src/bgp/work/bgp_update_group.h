@@ -72,6 +72,7 @@ typedef enum bgp_route_src_class
  */
 /** UG-key 扩展标记位：影响 update-group 划分的目标 peer 属性 */
 #define BGP_UG_FLAG_TARGET_RR_CLIENT (1U << 0) /**< 目标 peer 是 RR 客户端（影响 iBGP 反射决策） */
+#define BGP_UG_FLAG_SRV6_SID (1U << 1)         /**< 目标 peer 要求 VPN Prefix-SID 编码 */
 
 typedef struct bgp_update_group_key
 {
@@ -109,6 +110,8 @@ struct bgp_nh_subgroup
     GQueue *withdraw_queue;         /**< 待撤销 NLRI 队列（元素为 bgp_nlri_entry_t 堆副本） */
     uint32_t announce_count;        /**< 累计宣告计数（调试用） */
     uint32_t withdraw_count;        /**< 累计撤销计数（调试用） */
+    gint64 label_retry_due_usec; /**< announce 依赖/发送失败后的重试时刻（monotonic；0=立即可试） */
+    uint8_t label_retry_backoff_exp; /**< announce 重试指数（成功后清零） */
 };
 
 /**
@@ -282,9 +285,26 @@ void bgp_update_group_enqueue_announce(bgp_instance_t *inst, const bgp_nlri_entr
 void bgp_update_group_enqueue_withdraw(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri);
 
 /**
+ * @brief 仅补发一个 per-AF peer，并按其当前配置重新加入正确的 update-group
+ *
+ * 用于会改变 UG key 的邻居配置切换，避免重归组同一 session 的其它 AF peer。
+ * @return 本次挂入 announce queue 的 NLRI 数量
+ */
+uint32_t bgp_update_group_catchup_peer(bgp_peer_t *peer, bgp_session_t *sess);
+
+/**
  * @brief 邻居进入 ESTABLISHED 后，将其加入各 AF subgroup 并补发路由
  */
 void bgp_update_group_catchup_session(bgp_session_t *sess);
+
+/**
+ * @brief 将 peer 当前各 subgroup 的共享 Adj-RIB-Out 定向撤销给该 peer
+ *
+ * 不修改 subgroup 的共享 ARO；用于 peer 离组/切换 UG key 前清理其远端视图。
+ * 发送短写时会关闭 session，以 session-down 保证对端撤路。
+ * @return TRUE=撤路已发送或由 session-down 保证；FALSE=参数/组包失败
+ */
+gboolean bgp_update_group_withdraw_peer_aro(bgp_peer_t *peer, bgp_session_t *sess);
 
 /**
  * @brief 向指定 session 直接发送一组 NLRI 的 packed WITHDRAW
@@ -326,6 +346,14 @@ int bgp_subgroup_process_queues(bgp_nh_subgroup_t *sg, bgp_instance_t *inst, int
  * @brief 处理一条 BGP session-pub 工作事件（worker 线程调用）
  */
 void bgp_update_group_handle_pub_event(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi);
+
+/**
+ * @brief 唤醒已到期的 announce 重试队列（worker 周期调用）
+ *
+ * 标签 RPC 或 packed send 暂时失败时，announce NLRI 保留在原 subgroup 中；
+ * 本函数按退避时刻重新投递发布事件，避免依赖/transport 恢复后永久漏通告。
+ */
+void bgp_update_group_label_retry_tick(void);
 
 /**
  * @brief 在当前线程同步抽干 inst 下所有 subgroup 队列（不允许重新调度事件）

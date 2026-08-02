@@ -391,9 +391,16 @@ static int rpc_build_add_column_sql(const char *table_name, const db_column_def_
         return -1;
     }
 
-    if ((col->constraints & DB_COL_NOT_NULL) && (!col->default_val || col->default_val[0] == '\0'))
+    /* NULL 表示没有默认值；TEXT 的空字符串是合法且常用的默认值，必须与
+     * CREATE TABLE builder 一样生成 DEFAULT ''。 */
+    if ((col->constraints & DB_COL_NOT_NULL) && !col->default_val)
     {
         LOG_ERROR("New NOT NULL column must have a default value: %s.%s", table_name, col->name);
+        return -1;
+    }
+    if (col->default_val && col->type != DB_TYPE_TEXT && col->default_val[0] == '\0')
+    {
+        LOG_ERROR("New non-TEXT column has an empty default expression: %s.%s", table_name, col->name);
         return -1;
     }
 
@@ -405,9 +412,16 @@ static int rpc_build_add_column_sql(const char *table_name, const db_column_def_
         offset += snprintf(buf + offset, buf_size - offset, " NOT NULL");
     }
 
-    if (col->default_val && col->default_val[0] != '\0')
+    if (col->default_val)
     {
-        offset += snprintf(buf + offset, buf_size - offset, " DEFAULT %s", col->default_val);
+        if (col->type == DB_TYPE_TEXT)
+        {
+            offset += snprintf(buf + offset, buf_size - offset, " DEFAULT '%s'", col->default_val);
+        }
+        else
+        {
+            offset += snprintf(buf + offset, buf_size - offset, " DEFAULT %s", col->default_val);
+        }
     }
 
     offset += snprintf(buf + offset, buf_size - offset, ";");

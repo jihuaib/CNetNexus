@@ -27,6 +27,8 @@
 #define ROUTE_PROTOCOL_OSPFV3 4u
 /** ISIS 路由协议 */
 #define ROUTE_PROTOCOL_ISIS 5u
+/** SRv6 locator 所有者路由（SRV6 模块注入的 IPv6 discard aggregate） */
+#define ROUTE_PROTOCOL_SRV6 6u
 /** 通配符：匹配所有协议（用于订阅/查询过滤） */
 #define ROUTE_PROTOCOL_MAX 0xFFFFFFFFu
 
@@ -67,6 +69,11 @@
 #define ROUTE_NH_TYPE_TUNNEL 2u
 /** 黑洞下一跳 */
 #define ROUTE_NH_TYPE_BLACKHOLE 3u
+/** SRv6 BE 单段封装，service SID 由 route_msg_entry_t.srv6_sid 携带 */
+#define ROUTE_NH_TYPE_SRV6 4u
+
+/** 协议路径来源名称上限；当前用于在 SRV6 locator 路由上保留 locator 名。 */
+#define ROUTE_SOURCE_NAME_MAX 64u
 
 // ============================================================================
 // 管理距离（Administrative Distance）
@@ -84,6 +91,11 @@
 #define ROUTE_ADMIN_DIST_ISIS 115
 /** BGP 路由管理距离 */
 #define ROUTE_ADMIN_DIST_BGP 200
+/**
+ * SRv6 locator 是本机拥有的聚合前缀，必须稳定成为该前缀的 best path，
+ * 才能同时安装 discard route 并通过 protocol=SRV6 的订阅交给 IGP 发布。
+ */
+#define ROUTE_ADMIN_DIST_SRV6 (-1)
 
 // ============================================================================
 // IPC 消息类型
@@ -109,6 +121,11 @@
 #define ROUTE_MSG_TYPE_NHOBJ_ACQUIRE DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ROUTE, 0x0014)
 /** nexthop 对象释放（其他模块 -> ROUTE，payload=route_nhobj_release_req_t） */
 #define ROUTE_MSG_TYPE_NHOBJ_RELEASE DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ROUTE, 0x0015)
+/**
+ * 清理独占协议路径（协议模块 -> ROUTE，payload=route_protocol_flush_req_t）。
+ * ROUTE 会校验请求模块是该协议的唯一所有者，不接受通配协议。
+ */
+#define ROUTE_MSG_TYPE_PROTOCOL_FLUSH DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ROUTE, 0x0016)
 /** 通用应答 */
 #define ROUTE_MSG_TYPE_ACK DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ROUTE, 0x00FF)
 
@@ -195,6 +212,8 @@ typedef struct route_msg_entry
     net_addr_t nexthop_addr;      /**< 原始下一跳地址（二进制） */
     net_addr_t iter_nexthop_addr; /**< 迭代解析后的下一跳地址（二进制，family=0 表示未知） */
     net_addr_t source_addr;       /**< 路径来源标识（二进制 IP） */
+    net_addr_t srv6_sid;          /**< nh_type=ROUTE_NH_TYPE_SRV6 时的远端 L3 service SID */
+    char source_name[ROUTE_SOURCE_NAME_MAX]; /**< 协议路径来源名称；SRV6 locator 路由携带 locator 名 */
 } route_msg_entry_t;
 
 /**
@@ -259,6 +278,20 @@ typedef struct route_nh_iter_notify
     net_addr_t relay_addr; /**< 迭代后的 relay 地址（二进制） */
 } route_nh_iter_notify_t;
 
+/**
+ * @brief 独占协议路径清理请求
+ *
+ * 仅适用于 ROUTE 明确认证为调用模块独占的协议。vrf_id/afi 可用
+ * ROUTE_VRF_ALL/ROUTE_AFI_ALL 通配；特定协议可在 ROUTE 端进一步收紧范围。
+ */
+typedef struct route_protocol_flush_req
+{
+    uint32_t protocol; /**< ROUTE_PROTOCOL_*（不允许 ROUTE_PROTOCOL_MAX） */
+    uint32_t vrf_id;   /**< 目标 VRF，ROUTE_VRF_ALL=全部 */
+    uint16_t afi;      /**< ROUTE_AFI_IPV4/IPV6/ALL */
+    uint16_t _pad;     /**< 对齐填充，必须为 0 */
+} route_protocol_flush_req_t;
+
 // ============================================================================
 // ROUTE 注入 API（供其他模块调用）
 // ============================================================================
@@ -315,6 +348,14 @@ int route_rpc_del(dev_ipc_context_t *ctx, const route_msg_entry_t *entry);
  * @return 成功返回 ERRCODE_SUCCESS，失败返回 ERRCODE_FAIL
  */
 int route_rpc_del_wait(dev_ipc_context_t *ctx, const route_msg_entry_t *entry, uint32_t timeout_ms);
+
+/**
+ * @brief 同步清理调用模块独占的协议路径
+ *
+ * ROUTE 端会用 IPC 源模块 ID 对 protocol 做强认证，并仅删除匹配
+ * protocol + vrf_id + afi 的路径。同前缀的其他协议路径不受影响。
+ */
+int route_rpc_flush_protocol_wait(dev_ipc_context_t *ctx, const route_protocol_flush_req_t *req, uint32_t timeout_ms);
 
 /**
  * @brief 通过 IPC 取消 nexthop 迭代监听

@@ -30,7 +30,7 @@ void isis_db_if_af_cfg_sanitize(isis_if_af_cfg_t *cfg);
 void isis_db_if_cfg_defaults(isis_if_cfg_t *cfg, const char *ifname);
 void isis_db_if_apply_row_to_af(db_row_t *row, isis_if_af_cfg_t *af_cfg);
 
-void isis_db_restore_instances(void);
+int isis_db_restore_instances(void);
 void isis_db_restore_interfaces(void);
 
 #endif /* ISIS_DB_INTERNAL_H */

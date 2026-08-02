@@ -114,7 +114,7 @@ typedef struct db_column_def
     const char *name;        /**< 列名 */
     db_value_type_t type;    /**< 数据类型 */
     uint32_t constraints;    /**< 约束标志位（db_column_constraint_t 的位组合） */
-    const char *default_val; /**< 默认值表达式（SQL 字面量），NULL 表示无默认值 */
+    const char *default_val; /**< 默认值；TEXT 为未加引号的逻辑值，NULL 表示无默认值 */
 } db_column_def_t;
 
 /** 建表定义（结构化描述，替代裸 DDL 字符串） */

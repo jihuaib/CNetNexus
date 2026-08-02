@@ -10,6 +10,7 @@
 #include <glib.h>
 #include <stdint.h>
 
+#include "bgp.h"
 #include "bgp_conn.h"
 #include "bgp_fsm.h"
 #include "bit.h"
@@ -125,9 +126,11 @@ typedef struct bgp_session
     int sec_last_socket_error; /**< 次连接槽最近一次 socket 错误码（0=无） */
     uint32_t remote_id;        /**< 对端 BGP Router ID（主机序 32 位，由 OPEN 填入，0 表示未建立） */
     uint32_t local_router_id; /**< 本地 BGP Router ID（主机序 32 位，发送 OPEN 时保存，用于 RFC §6.8 比较） */
-    GArray *local_afs;  /**< 本端发送 OPEN 携带的 MP 能力快照（每元素 (afi<<16|safi) 打包） */
-    GArray *remote_afs; /**< 对端 OPEN 携带的 MP 能力（每元素 (afi<<16|safi) 打包） */
-    GList *peer_list;   /**< 各 AF 下使能的 bgp_peer_t*（借用引用） */
+    GArray *local_afs;     /**< 本端发送 OPEN 携带的 MP 能力快照（每元素 (afi<<16|safi) 打包） */
+    GArray *remote_afs;    /**< 对端 OPEN 携带的 MP 能力（每元素 (afi<<16|safi) 打包） */
+    GArray *local_ext_nh;  /**< 本端 OPEN 携带的 RFC 8950 tuple（bgp_ext_nh_entry_t） */
+    GArray *remote_ext_nh; /**< 对端 OPEN 携带的 RFC 8950 tuple（bgp_ext_nh_entry_t） */
+    GList *peer_list;      /**< 各 AF 下使能的 bgp_peer_t*（借用引用） */
 
     /* ---- 能力字段 ---- */
     uint32_t flags;           /**< 已配置的本地能力集（BGP_SESS_CAP_*） */
@@ -180,6 +183,15 @@ void bgp_session_update_type(bgp_session_t *sess, uint32_t local_as);
  * @param sess 目标会话
  */
 void bgp_session_reset_negotiated(bgp_session_t *sess);
+
+/**
+ * @brief 判断 RFC 8950 Extended Next Hop 三元组是否完成双向协商
+ *
+ * 只有本端与对端最近一次 OPEN 都携带完全相同的
+ * (NLRI AFI, NLRI SAFI, Nexthop AFI) 时才返回 TRUE。
+ */
+gboolean bgp_session_ext_nh_negotiated(const bgp_session_t *sess, uint16_t nlri_afi, uint16_t nlri_safi,
+                                       uint16_t nh_afi);
 
 /**
  * @brief 触发本 session 发起主动 TCP 连接（仅 worker 线程调用）

@@ -17,15 +17,7 @@
 
 static guint nlri_hash(gconstpointer p)
 {
-    const bgp_nlri_entry_t *nlri = p;
-    const uint8_t *bytes = (const uint8_t *)nlri;
-    uint64_t h = 1469598103934665603ULL;
-    for (size_t i = 0; i < sizeof(*nlri); i++)
-    {
-        h ^= bytes[i];
-        h *= 1099511628211ULL;
-    }
-    return (guint)h;
+    return (guint)bgp_nlri_hash((const bgp_nlri_entry_t *)p);
 }
 
 static gboolean nlri_equal(gconstpointer a, gconstpointer b)
@@ -92,13 +84,27 @@ bgp_ari_change_t bgp_adj_rib_in_update(bgp_adj_rib_in_t *ari, const bgp_nlri_ent
         return BGP_ARI_UNCHANGED;
     }
 
-    bgp_adj_rib_in_entry_t *existing = (bgp_adj_rib_in_entry_t *)g_hash_table_lookup(ari->table, nlri);
+    gpointer original_key = NULL;
+    gpointer original_value = NULL;
+    gboolean found = g_hash_table_lookup_extended(ari->table, nlri, &original_key, &original_value);
+    bgp_adj_rib_in_entry_t *existing = found ? (bgp_adj_rib_in_entry_t *)original_value : NULL;
     if (existing)
     {
+        /* VPN label 是路径转发属性，不是 NLRI 身份，hash/equal 故意忽略它。
+         * 命中旧 key 时仍需同步 label，避免 show/soft-reconfig 保留旧值。 */
+        bgp_nlri_entry_t *stored_nlri = (bgp_nlri_entry_t *)original_key;
+        gboolean label_changed = FALSE;
+        if (stored_nlri && stored_nlri->type == BGP_NLRI_PREFIX && nlri->type == BGP_NLRI_PREFIX)
+        {
+            label_changed = stored_nlri->prefix.label != nlri->prefix.label ||
+                            stored_nlri->prefix.has_label != nlri->prefix.has_label;
+            stored_nlri->prefix.label = nlri->prefix.label;
+            stored_nlri->prefix.has_label = nlri->prefix.has_label;
+        }
         gboolean attr_same = (existing->attr_ref == attr_ref) ||
                              (existing->attr_ref && existing->attr_ref->attr_id == attr_ref->attr_id);
         gboolean nh_same = memcmp(&existing->nexthop, nh, sizeof(*nh)) == 0;
-        if (attr_same && nh_same)
+        if (attr_same && nh_same && !label_changed)
         {
             return BGP_ARI_UNCHANGED;
         }
@@ -216,7 +222,7 @@ void bgp_adj_rib_in_ingest_peer_update(bgp_session_t *session, const bgp_update_
         /* vpn-target 入向过滤(实例默认置位)：无 IRT 命中则整条丢弃。`no policy vpn-target`
          * 清除该实例标志位后一律接受进 VPN RIB(导入私网 VRF 仍在 reconcile 阶段按 IRT 命中决定)。 */
         if (nlri->safi == BGP_SAFI_VPN_UNICAST && (peer->inst->flags & BGP_INST_FLAG_VPN_TARGET_FILTER) &&
-            !bgp_vrf_import_attr_has_match(&upd->attr))
+            !bgp_vrf_import_attr_has_match(&upd->attr, (bgp_afi_t)nlri->afi))
         {
             (void)bgp_adj_rib_in_remove(peer->rib_in, nlri);
             g_array_append_val(unreach, *nlri);

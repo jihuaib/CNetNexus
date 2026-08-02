@@ -24,6 +24,8 @@
 #define FIB_MSG_TYPE_ILM_DELETE DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_FIB, 0x0007)
 #define FIB_MSG_TYPE_NEXTHOP_UPSERT DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_FIB, 0x0008)
 #define FIB_MSG_TYPE_NEXTHOP_DELETE DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_FIB, 0x0009)
+#define FIB_MSG_TYPE_SRV6_LOCALSID_UPSERT DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_FIB, 0x000A)
+#define FIB_MSG_TYPE_SRV6_LOCALSID_DELETE DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_FIB, 0x000B)
 #define FIB_MSG_TYPE_ACK DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_FIB, 0x00FF)
 
 typedef enum fib_nh_type
@@ -31,7 +33,16 @@ typedef enum fib_nh_type
     FIB_NH_TYPE_IP = 1,
     FIB_NH_TYPE_TUNNEL = 2,
     FIB_NH_TYPE_BLACKHOLE = 3,
+    /** SRv6 BE：向 srv6_sid 做单段 IPv6 encapsulation。 */
+    FIB_NH_TYPE_SRV6 = 4,
 } fib_nh_type_t;
+
+/** RFC 8986/IANA SRv6 Endpoint Behavior codepoints used on the IPC boundary. */
+typedef enum fib_srv6_behavior
+{
+    FIB_SRV6_BEHAVIOR_END_DT6 = 18,
+    FIB_SRV6_BEHAVIOR_END_DT4 = 19,
+} fib_srv6_behavior_t;
 
 typedef struct fib_route_entry
 {
@@ -51,7 +62,19 @@ typedef struct fib_route_entry
     uint32_t out_ifindex;
     net_addr_t prefix_addr;
     net_addr_t nexthop_addr;
+    /** nh_type=FIB_NH_TYPE_SRV6 时的远端 L3 service SID。 */
+    net_addr_t srv6_sid;
 } fib_route_entry_t;
+
+/** SRv6 local SID owned by the SRV6 module and programmed by FIB. */
+typedef struct fib_srv6_localsid_entry
+{
+    uint32_t vrf_id;
+    uint16_t behavior;  /**< FIB_SRV6_BEHAVIOR_END_DT4/END_DT6 */
+    uint8_t prefix_len; /**< basic service SID is installed as /128 */
+    uint8_t flags;
+    net_addr_t sid;
+} fib_srv6_localsid_entry_t;
 
 typedef struct fib_tunnel_entry
 {
@@ -109,5 +132,11 @@ int fib_rpc_ilm_upsert(dev_ipc_context_t *ctx, const fib_ilm_entry_t *entry);
 int fib_rpc_ilm_delete(dev_ipc_context_t *ctx, const fib_ilm_entry_t *entry);
 int fib_rpc_nexthop_upsert(dev_ipc_context_t *ctx, const fib_nexthop_entry_t *entry);
 int fib_rpc_nexthop_delete(dev_ipc_context_t *ctx, const fib_nexthop_entry_t *entry);
+int fib_rpc_srv6_localsid_upsert(dev_ipc_context_t *ctx, const fib_srv6_localsid_entry_t *entry);
+int fib_rpc_srv6_localsid_delete(dev_ipc_context_t *ctx, const fib_srv6_localsid_entry_t *entry);
+int fib_rpc_srv6_localsid_upsert_wait(dev_ipc_context_t *ctx, const fib_srv6_localsid_entry_t *entry,
+                                      uint32_t timeout_ms);
+int fib_rpc_srv6_localsid_delete_wait(dev_ipc_context_t *ctx, const fib_srv6_localsid_entry_t *entry,
+                                      uint32_t timeout_ms);
 
 #endif /* FIB_H */

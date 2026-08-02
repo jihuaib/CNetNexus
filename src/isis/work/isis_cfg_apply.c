@@ -18,6 +18,7 @@
 #include "isis_neighbor.h"
 #include "isis_route_sync.h"
 #include "isis_worker.h"
+#include "route.h"
 
 static void apply_fail(isis_apply_cmd_t *apply, const char *fmt, ...) G_GNUC_PRINTF(2, 3);
 
@@ -180,6 +181,11 @@ void isis_cfg_apply_af_del(isis_apply_cmd_t *apply)
         apply_fail(apply, "ISIS Error: Invalid AF %u", afi);
         return;
     }
+    if (afi == ISIS_AFI_IPV6 && inst->srv6_locator[0] != '\0')
+    {
+        apply_fail(apply, "ISIS Error: Disable the SRv6 locator advertisement before disabling IPv6 AF");
+        return;
+    }
     uint8_t *flag = (afi == ISIS_AFI_IPV4) ? &inst->af_ipv4 : &inst->af_ipv6;
     if (*flag == 0u)
     {
@@ -189,6 +195,44 @@ void isis_cfg_apply_af_del(isis_apply_cmd_t *apply)
     *flag = 0u;
     isis_neighbor_reconcile_instance(inst);
     isis_route_sync_reconcile_instance_all_if(inst);
+    apply->rc = ISIS_APPLY_RC_OK;
+}
+
+void isis_cfg_apply_srv6_locator_set(isis_apply_cmd_t *apply)
+{
+    isis_instance_cfg_t *inst = isis_lookup_instance(apply->u.srv6_locator_set.tag);
+    if (!inst)
+    {
+        apply_fail(apply, "ISIS Error: Instance %u not found", apply->u.srv6_locator_set.tag);
+        return;
+    }
+    const char *locator = apply->u.srv6_locator_set.locator;
+    if (locator[0] != '\0')
+    {
+        if (inst->vrf_id != ROUTE_VRF_DEFAULT)
+        {
+            apply_fail(apply, "ISIS Error: SRv6 locator advertisement is only valid in the public VRF");
+            return;
+        }
+        if (!inst->af_ipv6)
+        {
+            apply_fail(apply, "ISIS Error: IPv6 AF is not enabled");
+            return;
+        }
+        if (inst->cost_style == ISIS_COST_STYLE_NARROW)
+        {
+            apply_fail(apply, "ISIS Error: SRv6 locator advertisement requires 'cost-style wide'");
+            return;
+        }
+    }
+    if (strcmp(inst->srv6_locator, locator) == 0)
+    {
+        apply->rc = ISIS_APPLY_RC_NOOP;
+        return;
+    }
+    g_strlcpy(inst->srv6_locator, locator, sizeof(inst->srv6_locator));
+    /* 立即生成一个新序列 LSP；清空配置时，缺失的前缀即构成撤销。 */
+    inst->last_lsp_tx_msec = 0u;
     apply->rc = ISIS_APPLY_RC_OK;
 }
 

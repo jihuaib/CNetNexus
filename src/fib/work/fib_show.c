@@ -142,6 +142,8 @@ static const char *nh_type_name(uint8_t nh_type)
             return "tunnel";
         case FIB_NH_TYPE_BLACKHOLE:
             return "blackhole";
+        case FIB_NH_TYPE_SRV6:
+            return "srv6";
         default:
             return "unknown";
     }
@@ -192,6 +194,13 @@ static void nexthop_to_str(const fib_route_entry_t *route, char *buf, size_t sz)
     if (route->nh_type == FIB_NH_TYPE_BLACKHOLE)
     {
         snprintf(buf, sz, "blackhole");
+        return;
+    }
+    if (route->nh_type == FIB_NH_TYPE_SRV6)
+    {
+        char sid[64] = "-";
+        net_addr_to_str(&route->srv6_sid, sid, sizeof(sid));
+        snprintf(buf, sz, "srv6:%s", sid);
         return;
     }
     if (route->nexthop_addr.family == AF_INET || route->nexthop_addr.family == AF_INET6)

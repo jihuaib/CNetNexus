@@ -52,6 +52,26 @@ static GHashTable *g_bgp_relay_nh_table = NULL; /* bgp_relay_nh_key_t* -> bgp_re
 
 static gboolean bgp_relay_route_is_lu(const bgp_route_node_t *route);
 
+/** watch 的 resolved 仅表示控制面迭代完成；远端跨表路由还必须
+ * 拥有真正可下刷的转发对象，否则一律 fail closed。 */
+static gboolean bgp_relay_watch_usable_for_route(const bgp_route_node_t *route, const bgp_relay_nh_watch_t *watch)
+{
+    if (!route || !watch || !watch->resolved)
+    {
+        return FALSE;
+    }
+    if (BIT_TEST(route->flags, BGP_ROUTE_FLAG_REMOTE_CROSS) && BIT_TEST(route->flags, BGP_ROUTE_FLAG_SRV6_BE))
+    {
+        return watch->key.nexthop_id != 0u && watch->out_ifindex != 0u &&
+               (watch->relay_addr.family == AF_INET || watch->relay_addr.family == AF_INET6);
+    }
+    if (watch->key.nexthop_id == 0u)
+    {
+        return watch->tunnel_id != 0u;
+    }
+    return TRUE;
+}
+
 static guint bgp_relay_nh_key_hash(gconstpointer p)
 {
     const bgp_relay_nh_key_t *k = (const bgp_relay_nh_key_t *)p;
@@ -188,6 +208,14 @@ static int bgp_relay_build_nh_key_from_route(const bgp_route_node_t *route, bgp_
         return 0;
     }
 
+    /* SRv6 REMOTE_CROSS 的合成路由自身持有 public IPv6 service-SID
+     * nexthop 对象。不能调 bgp_nexthop_get_route_addr()：该通用帮助函数会沿
+     * src_route 回溯到 VPN 源路径，取到 MP_REACH 的 PE nexthop 而非 service SID。 */
+    if (BIT_TEST(route->flags, BGP_ROUTE_FLAG_REMOTE_CROSS) && BIT_TEST(route->flags, BGP_ROUTE_FLAG_SRV6_BE))
+    {
+        return bgp_relay_make_route_nh_key(nh_key_out, route->nexthop_id, BGP_SAFI_UNICAST);
+    }
+
     net_addr_t nexthop_addr;
     if (bgp_nexthop_get_route_addr(route, &nexthop_addr) != ERRCODE_SUCCESS ||
         (nexthop_addr.family != AF_INET && nexthop_addr.family != AF_INET6))
@@ -195,7 +223,7 @@ static int bgp_relay_build_nh_key_from_route(const bgp_route_node_t *route, bgp_
         return 0;
     }
 
-    /* vrf-import 远端跨表路由（REMOTE_CROSS）：下一跳是远端 PE（eBGP vpnv4 邻居），
+    /* MPLS vrf-import 远端跨表路由（REMOTE_CROSS）：下一跳是远端 PE，
      * 在公网表对该 PE 地址做隧道迭代 → 命中 eBGP-vpnv4 假隧道（BGP_ADJ），用于 VRF 转发。
      * 注意 endpoint 是「下一跳 PE 地址」而非前缀（与 labeled 的 endpoint=前缀不同）。
      * safi 必须用隧道 watch 的规范值 BGP_SAFI_LABELED：TUNNEL 只按 (vrf,afi,endpoint) 标识 watch，
@@ -204,8 +232,10 @@ static int bgp_relay_build_nh_key_from_route(const bgp_route_node_t *route, bgp_
      * REMOTE_CROSS 路由永远解析不出隧道、无法下刷 VRF FIB。 */
     if (BIT_TEST(route->flags, BGP_ROUTE_FLAG_REMOTE_CROSS))
     {
-        bgp_relay_make_tunnel_key(nh_key_out, BGP_VRF_PUBLIC_ID, route->head->nlri.afi, BGP_SAFI_LABELED,
-                                  &nexthop_addr);
+        /* 传输 AF 由 PE nexthop 的 family 决定，不能用客户前缀 AF。
+         * 否则 VPNv6-over-IPv4 和 VPNv4 RFC8950 IPv6 nexthop 都会挂错 tunnel watch。 */
+        uint16_t transport_afi = (nexthop_addr.family == AF_INET6) ? (uint16_t)BGP_AFI_IPV6 : (uint16_t)BGP_AFI_IPV4;
+        bgp_relay_make_tunnel_key(nh_key_out, BGP_VRF_PUBLIC_ID, transport_afi, BGP_SAFI_LABELED, &nexthop_addr);
         return 1;
     }
 
@@ -292,9 +322,16 @@ static int bgp_relay_reach_route_to_rib(bgp_instance_t *inst, const bgp_nlri_ent
     }
     bgp_route_set_label_from_nlri(route, nlri, BGP_ROUTE_LABEL_SOURCE_RECEIVED);
 
-    if (bgp_rib_set_route_valid(rib, nlri, source, FALSE) < 0)
+    int valid_rc = bgp_rib_set_route_valid(rib, nlri, source, FALSE);
+    if (valid_rc < 0)
     {
         return -1;
+    }
+    if (valid_rc > 0 && inst->calc_queue)
+    {
+        /* 后续 nexthop/watch 构建可能失败；先排一次 calc，确保旧 FLUSHED
+         * incarnation 最终会被替换或撤销，而不是残留在 FIB。 */
+        bgp_calc_queue_push(inst->calc_queue, inst, nlri);
     }
 
     if (route_out)
@@ -650,8 +687,8 @@ static bgp_relay_nh_watch_t *bgp_relay_attach_route_to_watch(bgp_route_node_t *r
 
         int register_rc = ERRCODE_FAIL;
         /* 按 key 类型分派（与 unregister 一致）：隧道 key（nexthop_id==0，含 endpoint）走隧道迭代，
-         * 路由 nh key（nexthop_id!=0）走 IP 迭代。这样 labeled / REMOTE_CROSS 走隧道，
-         * vpnv4 公网（route nh key）走 IP 迭代。 */
+         * 路由 nh key（nexthop_id!=0）走 IP 迭代。这样 labeled / MPLS REMOTE_CROSS
+         * 走隧道，SRv6 REMOTE_CROSS 与普通公网路由走 ROUTE nexthop 迭代。 */
         if (watch->key.nexthop_id == 0u)
         {
             tunnel_resolve_req_t req;
@@ -697,8 +734,9 @@ int bgp_relay_get_route_iter_value(const bgp_route_node_t *route, bgp_nexthop_va
 
     memset(value_out, 0, sizeof(*value_out));
 
-    /* REMOTE_CROSS 用自己的隧道 watch；私网 unicast LOCAL_CROSS 用自己的 nexthop-vrf watch；
-     * vpnv4 export LOCAL_CROSS 与 import-rib mirror 仍通过 src_route 继承源解析。 */
+    /* REMOTE_CROSS 用自己的 watch（MPLS=tunnel，SRv6=route nexthop）；
+     * 私网 unicast LOCAL_CROSS 用自己的 nexthop-vrf watch；VPN export
+     * LOCAL_CROSS 与 import-rib mirror 仍通过 src_route 继承源解析。 */
     const bgp_route_node_t *owner = (route->src_route && !BIT_TEST(route->flags, BGP_ROUTE_FLAG_REMOTE_CROSS) &&
                                      !bgp_relay_route_is_local_cross_uc(route))
                                         ? route->src_route
@@ -737,7 +775,7 @@ gboolean bgp_relay_synthetic_nexthop_register(bgp_route_node_t *route)
         return FALSE;
     }
     bgp_relay_nh_watch_t *watch = bgp_relay_attach_route_to_watch(route, &nh_key);
-    return (watch && watch->resolved) ? TRUE : FALSE;
+    return bgp_relay_watch_usable_for_route(route, watch);
 }
 
 void bgp_relay_synthetic_nexthop_unregister(bgp_route_node_t *route)
@@ -746,12 +784,39 @@ void bgp_relay_synthetic_nexthop_unregister(bgp_route_node_t *route)
     {
         return;
     }
-    bgp_relay_nh_key_t nh_key;
-    if (!bgp_relay_build_nh_key_from_route(route, &nh_key))
+
+    /* A synthetic route can be reprocessed several times while nexthop/tunnel
+     * notifications from the previous incarnation are still queued.  Its
+     * mutable fields only describe the newest incarnation, so deriving one key
+     * here is not sufficient: an older watch may still own the same route and
+     * keep borrow_refcnt pinned after withdraw.  Locate every watch by route
+     * identity first, then detach them outside the hash-table iteration. */
+    if (!g_bgp_relay_nh_table)
     {
+        bgp_relay_route_iter_clear(route);
         return;
     }
-    bgp_relay_detach_route_from_watch(route, &nh_key, TRUE);
+
+    GArray *keys = g_array_new(FALSE, FALSE, sizeof(bgp_relay_nh_key_t));
+    GHashTableIter iter;
+    gpointer value = NULL;
+    g_hash_table_iter_init(&iter, g_bgp_relay_nh_table);
+    while (g_hash_table_iter_next(&iter, NULL, &value))
+    {
+        const bgp_relay_nh_watch_t *watch = (const bgp_relay_nh_watch_t *)value;
+        if (watch && g_list_find(watch->route_list, route))
+        {
+            g_array_append_val(keys, watch->key);
+        }
+    }
+
+    for (guint i = 0; i < keys->len; i++)
+    {
+        const bgp_relay_nh_key_t *key = &g_array_index(keys, bgp_relay_nh_key_t, i);
+        bgp_relay_detach_route_from_watch(route, key, FALSE);
+    }
+    g_array_free(keys, TRUE);
+    bgp_relay_route_iter_clear(route);
 }
 
 static int bgp_relay_route_remove_from_inst(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri,
@@ -1003,7 +1068,7 @@ static gboolean bgp_relay_route_rebuild_export_attr(bgp_route_node_t *route)
     bgp_attr_release(route->attr);
     route->attr = new_ref;
     BIT_CLR(route->flags, BGP_ROUTE_FLAG_BEST);
-    BIT_CLR(route->flags, BGP_ROUTE_FLAG_FLUSHED);
+    BIT_SET(route->flags, BGP_ROUTE_FLAG_FIB_DIRTY);
     route->updated_at_usec = g_get_real_time();
     return TRUE;
 }
@@ -1358,6 +1423,8 @@ uint32_t bgp_relay_handle_nh_notify(const route_nh_iter_notify_t *notify)
 
     uint8_t new_state = notify->resolved ? 1u : 0u;
     gboolean state_changed = (watch->resolved != new_state);
+    gboolean forwarding_changed =
+        watch->out_ifindex != notify->out_ifindex || !net_addr_equal(&watch->relay_addr, &notify->relay_addr);
 
     watch->resolved = new_state;
     watch->out_ifindex = notify->out_ifindex;
@@ -1375,14 +1442,30 @@ uint32_t bgp_relay_handle_nh_notify(const route_nh_iter_notify_t *notify)
         }
 
         bgp_relay_route_iter_update_from_watch(route, watch);
-        if (!state_changed)
+        if (!state_changed && !forwarding_changed)
         {
             continue;
         }
 
         bgp_instance_t *inst = route->head->inst;
-        if (bgp_relay_set_route_valid(inst, &route->head->nlri, &route->source, watch->resolved ? TRUE : FALSE) > 0)
+        gboolean usable = bgp_relay_watch_usable_for_route(route, watch);
+        gboolean needs_replace = usable && forwarding_changed;
+        if (needs_replace)
         {
+            /* valid 位可能同时从 0 回到 1；无论 rc_valid 是否报告状态变化，
+             * relay/OIF 已变化都必须替换旧 FLUSHED incarnation。 */
+            BIT_SET(route->flags, BGP_ROUTE_FLAG_FIB_DIRTY);
+        }
+        int rc_valid = bgp_relay_set_route_valid(inst, &route->head->nlri, &route->source, usable);
+        if (rc_valid > 0)
+        {
+            touched++;
+        }
+        else if (rc_valid == 0 && needs_replace)
+        {
+            /* resolved 位不变但递归 relay/OIF 已变化：强制替换 FIB。
+             * 首次 resolved=1 但 OIF=0 的 SRv6 路由也由此获得重试。 */
+            bgp_relay_trigger_calc(inst, &route->head->nlri);
             touched++;
         }
     }
@@ -1449,6 +1532,8 @@ uint32_t bgp_relay_handle_tunnel_notify(const tunnel_resolve_notify_t *notify)
     uint8_t new_state = notify->resolved ? 1u : 0u;
     gboolean state_changed = (watch->resolved != new_state);
     gboolean tunnel_changed = (watch->tunnel_id != notify->tunnel_id);
+    gboolean forwarding_changed =
+        watch->out_ifindex != notify->out_ifindex || !net_addr_equal(&watch->relay_addr, &notify->relay_addr);
 
     watch->resolved = new_state;
     watch->out_ifindex = notify->out_ifindex;
@@ -1466,20 +1551,27 @@ uint32_t bgp_relay_handle_tunnel_notify(const tunnel_resolve_notify_t *notify)
         }
 
         bgp_relay_route_iter_update_from_watch(route, watch);
-        if (!state_changed && !tunnel_changed)
+        if (!state_changed && !tunnel_changed && !forwarding_changed)
         {
             continue;
         }
 
         bgp_instance_t *inst = route->head->inst;
-        int rc_valid =
-            bgp_relay_set_route_valid(inst, &route->head->nlri, &route->source, watch->resolved ? TRUE : FALSE);
+        gboolean usable = bgp_relay_watch_usable_for_route(route, watch);
+        gboolean needs_replace = usable && (tunnel_changed || forwarding_changed);
+        if (needs_replace)
+        {
+            BIT_SET(route->flags, BGP_ROUTE_FLAG_FIB_DIRTY);
+        }
+        int rc_valid = bgp_relay_set_route_valid(inst, &route->head->nlri, &route->source, usable);
         if (rc_valid > 0)
         {
             touched++;
         }
-        else if (rc_valid == 0 && tunnel_changed && watch->resolved)
+        else if (rc_valid == 0 && needs_replace)
         {
+            /* 同一 best 的转发对象变化时必须标记 dirty，否则 calc 会认为
+             * 已下刷而跳过，FIB 永久引用旧 tunnel/relay。 */
             bgp_relay_trigger_calc(inst, &route->head->nlri);
             touched++;
         }
@@ -1513,7 +1605,9 @@ void bgp_relay_session_lu_adj_sync(bgp_session_t *session, gboolean up)
         tunnel_candidate_t candidate;
         memset(&candidate, 0, sizeof(candidate));
         candidate.vrf_id = peer->vrf ? peer->vrf->vrf_id : BGP_VRF_PUBLIC_ID;
-        candidate.afi = peer->inst->afi;
+        /* RFC 8950 下 VPNv4 也可以通过 IPv6 MP_REACH next-hop 承载。
+         * 邻接假隧道的 AF 必须跟传输邻居地址，而非客户 NLRI AF。 */
+        candidate.afi = (session->neighbor_addr.family == AF_INET6) ? BGP_AFI_IPV6 : BGP_AFI_IPV4;
         candidate.source_type = TUNNEL_SOURCE_BGP_ADJ;
         candidate.preference = 10u;
         candidate.owner_module_id = DEV_MODULE_ID_BGP;

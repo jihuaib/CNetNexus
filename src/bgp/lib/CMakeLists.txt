@@ -4,6 +4,7 @@ set(BGP_API_SOURCES
     bgp_parse.c
     bgp_parse_af.c
     bgp_parse_attr.c
+    bgp_prefix_sid.c
     bgp_parse_common.c
     bgp_parse_ipv4uc.c
     bgp_parse_ipv6uc.c

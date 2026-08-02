@@ -268,6 +268,33 @@ static inline uint32_t bgp_label_decode(const uint8_t *b)
 /** Extended Community 原始报文 buffer 最大长度（8 字节对齐） */
 #define BGP_ATTR_EXT_COMMUNITY_MAX 1024
 
+/** BGP Prefix-SID 路径属性类型码（RFC 8669） */
+#define BGP_ATTR_TYPE_PREFIX_SID 40u
+
+/** Prefix-SID 属性值保留上限，覆盖本项目完整 4096B UPDATE 上限 */
+#define BGP_ATTR_PREFIX_SID_MAX 4096
+
+/** SRv6 L3 Service TLV 及子 TLV 类型码（RFC 9252） */
+#define BGP_PREFIX_SID_TLV_SRV6_L3_SERVICE 5u
+#define BGP_SRV6_SERVICE_SUBTLV_SID_INFO 1u
+#define BGP_SRV6_SERVICE_DATA_SUBSUBTLV_SID_STRUCTURE 1u
+
+/**
+ * @brief SRv6 SID Structure Sub-Sub-TLV 的值（RFC 9252 section 3.2.1）
+ *
+ * 传入 bgp_attr_set_srv6_l3_service() 时可设为 NULL，表示整 SID
+ * 直接携带且不通告 SID Structure。
+ */
+typedef struct bgp_srv6_sid_structure
+{
+    uint8_t locator_block_len;
+    uint8_t locator_node_len;
+    uint8_t function_len;
+    uint8_t argument_len;
+    uint8_t transposition_len;
+    uint8_t transposition_offset;
+} bgp_srv6_sid_structure_t;
+
 /**
  * @brief BGP ORIGIN 值
  */
@@ -301,7 +328,43 @@ typedef struct bgp_attr
     bool has_originator_id;                              /**< ORIGINATOR_ID 是否存在 */
     net_addr_t cluster_list[16];                         /**< CLUSTER_LIST（IPv4 cluster-id 数组，RFC 4456） */
     uint8_t cluster_list_len;                            /**< CLUSTER_LIST 元素数（0 表示无） */
+
+    /* ---- BGP Prefix-SID / SRv6 L3 Service（RFC 8669 / RFC 9252） ---- */
+    bool has_prefix_sid;                             /**< 是否收到/构造 Prefix-SID 属性 */
+    uint8_t prefix_sid_attr_flags;                   /**< 原始属性 flags，用于保留 Partial 位 */
+    uint16_t prefix_sid_raw_len;                     /**< prefix_sid_raw 有效长度 */
+    uint8_t prefix_sid_raw[BGP_ATTR_PREFIX_SID_MAX]; /**< Prefix-SID 属性 value，RR 保真透传 */
+
+    bool has_srv6_l3_service_tlv; /**< 原始 Prefix-SID 中存在 SRv6 L3 Service TLV */
+    bool has_srv6_l3_service;     /**< 已解析出可用的第一条 SRv6 L3 Service SID */
+    net_addr_t srv6_sid;          /**< SRv6 Service SID（family=AF_INET6） */
+    uint16_t srv6_behavior;       /**< SRv6 Endpoint Behavior codepoint */
+    uint8_t srv6_sid_flags;       /**< SRv6 Service SID Flags */
+
+    bool has_srv6_sid_structure; /**< SID Structure 是否存在且通过语义校验 */
+    uint8_t locator_block_len;
+    uint8_t locator_node_len;
+    uint8_t function_len;
+    uint8_t argument_len;
+    uint8_t transposition_len;
+    uint8_t transposition_offset;
 } bgp_attr_t;
+
+/**
+ * @brief 清除 attr 中的 Prefix-SID/SRv6 服务信息
+ */
+void bgp_attr_clear_prefix_sid(bgp_attr_t *attr);
+
+/**
+ * @brief 构造整 SID 模式的 RFC 9252 SRv6 L3 Service Prefix-SID 属性
+ *
+ * 本函数只构造属性，VPN NLRI label（无 transposition 时为 Implicit
+ * NULL=3）由调用方设置。structure=NULL 时不携带 SID Structure。
+ *
+ * @return 0=成功，-1=参数/SID Structure 非法
+ */
+int bgp_attr_set_srv6_l3_service(bgp_attr_t *attr, const net_addr_t *sid, uint16_t behavior, uint8_t sid_flags,
+                                 const bgp_srv6_sid_structure_t *structure);
 
 /* ============================================================================
  * BGP Nexthop
@@ -462,6 +525,9 @@ int bgp_nlri_cmp(const bgp_nlri_entry_t *a, const bgp_nlri_entry_t *b);
  * @brief 判断两个 NLRI 是否相等
  */
 bool bgp_nlri_equal(const bgp_nlri_entry_t *a, const bgp_nlri_entry_t *b);
+
+/** 与 bgp_nlri_equal() 完全一致的规范化哈希（忽略 VPN wire label/padding）。 */
+uint32_t bgp_nlri_hash(const bgp_nlri_entry_t *entry);
 
 /**
  * @brief 将 NLRI 格式化为可读字符串

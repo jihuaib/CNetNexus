@@ -19,9 +19,9 @@
 #include "log.h"
 #include "net_addr.h"
 
-static gboolean af_requires_ext_nexthop(bgp_afi_t afi, bgp_safi_t safi, const net_addr_t *peer_addr)
+static gboolean af_requires_ext_nexthop(const bgp_instance_t *inst, const net_addr_t *peer_addr)
 {
-    if (afi != BGP_AFI_IPV4)
+    if (!inst || inst->afi != BGP_AFI_IPV4)
     {
         return FALSE;
     }
@@ -33,12 +33,48 @@ static gboolean af_requires_ext_nexthop(bgp_afi_t afi, bgp_safi_t safi, const ne
     }
 
     /* QP 设计约束：IPv4-QP 使用 IPv6 BID 作为 NH，必须协商 EXT_NEXTHOP。 */
-    if (safi == BGP_SAFI_QP)
+    if (inst->safi == BGP_SAFI_QP)
     {
         return TRUE;
     }
 
-    return FALSE;
+    /* VPNv4 always advertises the RFC 8950 (IPv4, VPN, IPv6-NH) tuple.
+     * Locator ownership is per private AF and can change after the session is
+     * established; Capability 5 describes support, not current route use. */
+    return inst->safi == BGP_SAFI_VPN_UNICAST;
+}
+
+void bgp_vrf_recompute_ext_nexthop_capability(bgp_vrf_t *vrf)
+{
+    if (!vrf || !vrf->sess_hash)
+    {
+        return;
+    }
+    GHashTableIter iter;
+    gpointer value = NULL;
+    g_hash_table_iter_init(&iter, vrf->sess_hash);
+    while (g_hash_table_iter_next(&iter, NULL, &value))
+    {
+        bgp_session_t *sess = value;
+        gboolean required = FALSE;
+        for (GList *l = sess ? sess->peer_list : NULL; l; l = l->next)
+        {
+            bgp_peer_t *peer = l->data;
+            if (peer && af_requires_ext_nexthop(peer->inst, &sess->neighbor_addr))
+            {
+                required = TRUE;
+                break;
+            }
+        }
+        if (sess && required)
+        {
+            BIT_SET(sess->flags, BGP_SESS_CAP_EXT_NEXTHOP);
+        }
+        else if (sess)
+        {
+            BIT_CLR(sess->flags, BGP_SESS_CAP_EXT_NEXTHOP);
+        }
+    }
 }
 
 // ============================================================================
@@ -70,14 +106,18 @@ void bgp_vrf_destroy(bgp_vrf_t *vrf)
         return;
     }
     LOG_INFO("BGP VRF destroyed: id=%u", vrf->vrf_id);
-    /* 释放本 VRF 的 per-vrf VPN 标签（若曾在发送时申请过） */
-    bgp_vrf_export_release_vrf_label(vrf);
-    /* 先销毁 inst_hash（释放 bgp_peer_t 和 RIB），再销毁 sess_hash */
+    /* 先销毁 instance：其 teardown 会撤销该 VRF 的公网 VPN/EVPN 导出。
+     * service label/SID 必须在广告撤销之后释放。 */
     if (vrf->inst_hash)
     {
         g_hash_table_destroy(vrf->inst_hash);
         vrf->inst_hash = NULL;
     }
+    bgp_vrf_export_release_vrf_label(vrf);
+    /* Service SID release 具有可失败的跨模块事务语义，必须由 no-vrf/
+     * AF disable/no-bgp 等上层路径在撤销广告并 drain 后显式执行；
+     * 通用析构器不能吞掉失败，也不应在 BGP 进程重启时删除持久 SID。 */
+    /* 再销毁 session。 */
     bgp_listen_stop_vrf(vrf);
     if (vrf->sess_hash)
     {
@@ -183,7 +223,7 @@ int bgp_vrf_af_enable_neighbor(bgp_vrf_t *vrf, bgp_afi_t afi, bgp_safi_t safi, c
     sess->peer_list = g_list_append(sess->peer_list, peer);
 
     /* 需要 IPv6 NH 编码的 AF（如 IPv4-over-IPv6、IPv4-QP BID）开启 EXT_NEXTHOP。 */
-    if (af_requires_ext_nexthop(afi, safi, addr))
+    if (af_requires_ext_nexthop(inst, addr))
     {
         BIT_SET(sess->flags, BGP_SESS_CAP_EXT_NEXTHOP);
     }
@@ -228,27 +268,9 @@ int bgp_vrf_af_disable_neighbor(bgp_vrf_t *vrf, bgp_afi_t afi, bgp_safi_t safi, 
     /* 再从 instance.peer_hash 中删除，触发 bgp_peer_destroy */
     g_hash_table_remove(inst->peer_hash, addr);
 
-    /* 仅当本次停用的 AF 依赖 EXT_NEXTHOP 时，才评估是否清位。 */
-    if (sess && af_requires_ext_nexthop(afi, safi, addr))
+    if (sess)
     {
-        gboolean still_need_ext_nh = FALSE;
-        for (GList *l = sess->peer_list; l; l = l->next)
-        {
-            bgp_peer_t *p = (bgp_peer_t *)l->data;
-            if (!p || !p->inst)
-            {
-                continue;
-            }
-            if (af_requires_ext_nexthop(p->inst->afi, p->inst->safi, &p->addr))
-            {
-                still_need_ext_nh = TRUE;
-                break;
-            }
-        }
-        if (!still_need_ext_nh)
-        {
-            BIT_CLR(sess->flags, BGP_SESS_CAP_EXT_NEXTHOP);
-        }
+        bgp_vrf_recompute_ext_nexthop_capability(vrf);
     }
 
     char addr_str[64];

@@ -221,7 +221,8 @@ static gboolean isis_bdr_resolve_scoped_tag(const cli_show_scope_t *scope, uint3
 {
     uint32_t tag = 0;
 
-    if (!scope || !tag_out || strcmp(scope->view_name, CLI_VIEW_ISIS) != 0)
+    if (!scope || !tag_out ||
+        (strcmp(scope->view_name, CLI_VIEW_ISIS) != 0 && strcmp(scope->view_name, CLI_VIEW_ISIS_AF_IPV6) != 0))
     {
         return FALSE;
     }
@@ -249,6 +250,7 @@ static void append_instance_global_block(GString *out, db_row_t *row)
     int64_t af6 = db_row_get_int(row, "af_ipv6", 1);
     int64_t cost_style = db_row_get_int(row, "cost_style", ISIS_DEFAULT_COST_STYLE);
     const char *vrf_name = db_row_get_text(row, "vrf_name", "public");
+    const char *srv6_locator = db_row_get_text(row, "srv6_locator", "");
 
     g_string_append(out, "!\r\n");
     g_string_append_printf(out, "isis %u", tag);
@@ -276,6 +278,11 @@ static void append_instance_global_block(GString *out, db_row_t *row)
     if (af6 == 0)
     {
         g_string_append(out, " no af ipv6\r\n");
+    }
+    else if (srv6_locator && srv6_locator[0] != '\0')
+    {
+        g_string_append(out, " af ipv6\r\n");
+        g_string_append_printf(out, "  segment-routing srv6 locator %s\r\n", srv6_locator);
     }
     g_string_append(out, "!\r\n");
 }
@@ -428,7 +435,7 @@ static int isis_bdr_show_config_scoped(dev_ipc_message_t *msg, const cli_show_sc
         return ERRCODE_FAIL;
     }
 
-    if (strcmp(scope->view_name, CLI_VIEW_ISIS) == 0)
+    if (strcmp(scope->view_name, CLI_VIEW_ISIS) == 0 || strcmp(scope->view_name, CLI_VIEW_ISIS_AF_IPV6) == 0)
     {
         uint32_t target_tag = 0;
         if (!isis_bdr_resolve_scoped_tag(scope, &target_tag))

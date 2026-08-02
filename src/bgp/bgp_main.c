@@ -629,6 +629,7 @@ int bgp_module_init(void)
     if (bgp_db_init() != 0)
     {
         LOG_ERROR("BGP: DB init failed");
+        return -1;
     }
     else if (bgp_db_restore() == ERRCODE_SUCCESS)
     {
@@ -636,6 +637,11 @@ int bgp_module_init(void)
          * 后续 VRF smoothend 会触发 bgp_db_restore_vrf_bound 补齐 */
         g_bgp_db_restored = TRUE;
         LOG_INFO("BGP: initial DB restore done");
+    }
+    else
+    {
+        LOG_ERROR("BGP: initial DB restore failed; refusing READY");
+        return -1;
     }
 
     /* 业务状态已恢复，进入 READY 阶段；CFG 此后才会派 config */

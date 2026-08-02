@@ -29,4 +29,10 @@ void bgp_apply_vrf_event(const dev_ipc_message_t *msg);
  */
 void bgp_apply_vrf_purge_non_public(void);
 
+/**
+ * @brief worker 周期 tick：重试 VRF/AF 删除时失败的 SRv6 SID release，
+ *        并在成功后完成原子性延后的 AF/VRF 回收。
+ */
+void bgp_apply_vrf_cleanup_retry_tick(void);
+
 #endif /* BGP_APPLY_VRF_H */

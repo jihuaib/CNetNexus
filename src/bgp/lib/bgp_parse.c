@@ -86,6 +86,7 @@ int bgp_update_parse(const uint8_t *body, uint32_t body_len, uint32_t flags, bgp
     uint32_t mp_unreach_entries_len = 0;
     mp_reach_info_t mp_reach = {0};
     mp_unreach_info_t mp_unreach = {0};
+    int attr_parse_rc = BGP_PATH_ATTR_PARSE_OK;
 
     /* ----------------------------------------------------------------
      * 1. 读取 Withdrawn Routes Length（WRL，2 字节，大端）
@@ -131,7 +132,12 @@ int bgp_update_parse(const uint8_t *body, uint32_t body_len, uint32_t flags, bgp
      * ---------------------------------------------------------------- */
     if (pal > 0)
     {
-        bgp_parse_path_attrs(body + attr_off, pal, flags, &r->attr, &r->nexthop, &mp_reach, &mp_unreach);
+        attr_parse_rc =
+            bgp_parse_path_attrs(body + attr_off, pal, flags, &r->attr, &r->nexthop, &mp_reach, &mp_unreach);
+        if (attr_parse_rc == BGP_PATH_ATTR_PARSE_ERROR)
+        {
+            goto err;
+        }
     }
 
     /* ----------------------------------------------------------------
@@ -166,6 +172,14 @@ int bgp_update_parse(const uint8_t *body, uint32_t body_len, uint32_t flags, bgp
         {
             nh_rc = p->parse_nexthop(mp_reach.nh_data, mp_reach.nh_len, flags, &r->nexthop);
         }
+        if (p && nh_rc < 0)
+        {
+            /* A registered AF rejected the nexthop encoding (including an
+             * IPv4 NLRI/IPv6 NH without any negotiated Cap5 tuple).  Do not
+             * silently turn the UPDATE into an empty MP_REACH: the session
+             * layer must observe an UPDATE error. */
+            goto err;
+        }
         if (p && nh_rc == 0)
         {
             if (p->parse_reach && mp_reach.nlri_len > 0)
@@ -174,7 +188,7 @@ int bgp_update_parse(const uint8_t *body, uint32_t body_len, uint32_t flags, bgp
                 fill_afi_safi(mp_reach_entries, mp_reach_entries_len, mp_reach.afi, mp_reach.safi);
             }
         }
-        else
+        else if (!p)
         {
             /* 未注册的 AFI/SAFI：保存为 opaque */
             if (mp_reach.nlri_len > 0)
@@ -234,6 +248,29 @@ merge:;
     free(mp_reach_entries);
     free(mp_unreach_entries);
 
+    /* RFC 9252 section 7: any malformed SRv6 Service TLV triggers
+     * treat-as-withdraw for every reachable NLRI carrying that path
+     * attribute.  Explicit withdrawals already present in the UPDATE are
+     * retained and combined with the converted reach set. */
+    if (attr_parse_rc == BGP_PATH_ATTR_PARSE_TREAT_AS_WITHDRAW && merged_reach_len > 0)
+    {
+        uint32_t converted_len = 0;
+        uint32_t expected_len = merged_unreach_len + merged_reach_len;
+        bgp_nlri_entry_t *converted =
+            merge_nlri(merged_unreach, merged_unreach_len, merged_reach, merged_reach_len, &converted_len);
+        free(merged_unreach);
+        free(merged_reach);
+        if (!converted && expected_len > 0)
+        {
+            free(r);
+            return -1;
+        }
+        merged_reach = NULL;
+        merged_reach_len = 0;
+        merged_unreach = converted;
+        merged_unreach_len = converted_len;
+    }
+
     r->reach = merged_reach;
     r->reach_len = merged_reach_len;
     r->unreach = merged_unreach;
@@ -243,6 +280,10 @@ merge:;
     return 0;
 
 err:
+    free(ipv4_reach);
+    free(ipv4_wd);
+    free(mp_reach_entries);
+    free(mp_unreach_entries);
     free(r);
     return -1;
 }

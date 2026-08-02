@@ -15,6 +15,7 @@
 #include "bgp.h"
 #include "bgp_peer.h"
 #include "net_addr.h"
+#include "srv6.h"
 
 /* bgp_peer.h 已前向声明 bgp_vrf_t，此处直接使用 */
 typedef struct bgp_rib bgp_rib_t;
@@ -47,11 +48,12 @@ typedef struct bgp_instance
     GList *qp_routes;           /**< bgp_qp_route_cfg_t*（持有所有权），已配置的 QP 自产生路由条目 */
     bool route_select_enabled; /**< 是否对该地址族启用路由优选/发布（默认 false，仅 QP 地址族使用） */
     uint32_t flags;            /**< 实例级策略位（见 BGP_INST_FLAG_*） */
-    uint32_t cluster_id;         /**< 本 AF 反射器 Cluster-ID（主机序，0=用 router-id） */
-    uint32_t next_attr_id;       /**< 本 instance 下一个可分配 attr_id（从 1 开始） */
-    uint32_t import_rib_sources; /**< import-rib 源位掩码（bgp_import_src_t），DB 持久化 */
-    void *import_rib_state;      /**< bgp_import_rib 模块内部状态（pending queue / mirror 反向索引等） */
-    void *vrf_export_state;      /**< bgp_vrf_export 状态（仅 public vpnv4 instance 非空） */
+    uint32_t cluster_id;                      /**< 本 AF 反射器 Cluster-ID（主机序，0=用 router-id） */
+    uint32_t next_attr_id;                    /**< 本 instance 下一个可分配 attr_id（从 1 开始） */
+    uint32_t import_rib_sources;              /**< import-rib 源位掩码（bgp_import_src_t），DB 持久化 */
+    char srv6_locator[SRV6_LOCATOR_NAME_MAX]; /**< 私网 unicast AF 的 SRv6 service-SID locator */
+    void *import_rib_state; /**< bgp_import_rib 模块内部状态（pending queue / mirror 反向索引等） */
+    void *vrf_export_state; /**< bgp_vrf_export 状态（public VPN/EVPN instance） */
 } bgp_instance_t;
 
 /**
@@ -71,6 +73,8 @@ uint32_t bgp_inst_effective_cluster_id(const bgp_instance_t *inst);
 #define BGP_INST_FLAG_VPN_TARGET_FILTER (1U << 1)
 /** 实例策略位：私网 VRF unicast AF 是否把本 VRF 路由导出到 public EVPN RIB。 */
 #define BGP_INST_FLAG_ADVERTISE_EVPN_ROUTE (1U << 2)
+/** 实例策略位：私网 unicast AF 对收到的 Service SID 使用 SRv6 BE 迭代。 */
+#define BGP_INST_FLAG_SRV6_BE (1U << 4)
 
 /**
  * @brief QP 自产生路由配置条目（每个对应一组 [start_dqpn, start_dqpn+count) 的 NLRI）
@@ -111,13 +115,16 @@ bgp_instance_t *bgp_instance_create(bgp_afi_t afi, bgp_safi_t safi, bgp_vrf_t *v
 void bgp_instance_destroy(bgp_instance_t *inst);
 
 /**
- * @brief 在当前线程内同步抽干实例的所有数据队列
+ * @brief 在当前线程内有界地同步抽干实例的所有工作队列
  *
- * 循环调用 bgp_calc_process_pending / bgp_route_flush_process_pending /
- * bgp_update_group_process_pending，直到所有队列都处理完毕。
- * 用于配置删除/协议关闭路径，确保销毁前完成已排队的数据队列处理。
+ * 持续 RPC 失败或标签重试尚未到期时返回 0；调用方必须再通过
+ * bgp_instance_pending_count() 判断是否已真正收敛。
+ * @return 实际消费的工作项数；0 表示本轮无进展
  */
-void bgp_instance_drain_pending(bgp_instance_t *inst);
+uint32_t bgp_instance_drain_pending(bgp_instance_t *inst);
+
+/** 返回实例尚未完成的 calc/import-rib/VRF-export/ROUTE/发布工作数。 */
+uint32_t bgp_instance_pending_count(const bgp_instance_t *inst);
 
 /**
  * @brief 取该实例下公网（rd=0）entry 的 RIB

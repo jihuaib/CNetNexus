@@ -161,7 +161,7 @@ static bgp_route_node_t *bgp_import_rib_mirror_create(bgp_instance_t *tgt_inst, 
     BIT_SET(mirror->flags, BGP_ROUTE_FLAG_VALID);
     BIT_SET(mirror->flags, BGP_ROUTE_FLAG_IMPORT_RIB);
     BIT_CLR(mirror->flags, BGP_ROUTE_FLAG_BEST);
-    BIT_CLR(mirror->flags, BGP_ROUTE_FLAG_FLUSHED);
+    BIT_SET(mirror->flags, BGP_ROUTE_FLAG_FIB_DIRTY);
     BIT_CLR(mirror->flags, BGP_ROUTE_FLAG_STALE);
 
     if (mirror->src_route != src)
@@ -298,6 +298,12 @@ bool bgp_import_rib_should_skip_flush(const bgp_instance_t *inst)
     }
     const bgp_import_rib_state_t *st = (const bgp_import_rib_state_t *)inst->import_rib_state;
     return st->no_route_flush;
+}
+
+uint32_t bgp_import_rib_pending_count(const bgp_instance_t *inst)
+{
+    const bgp_import_rib_state_t *st = inst ? (const bgp_import_rib_state_t *)inst->import_rib_state : NULL;
+    return st ? st->pending_count : 0u;
 }
 
 bool bgp_import_rib_is_mirror(const bgp_route_node_t *route)

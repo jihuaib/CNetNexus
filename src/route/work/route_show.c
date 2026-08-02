@@ -81,6 +81,7 @@ typedef struct
     uint32_t ospf;      /**< OSPF 路由条数 */
     uint32_t ospfv3;    /**< OSPFv3 路由条数 */
     uint32_t isis;      /**< ISIS 路由条数 */
+    uint32_t srv6;      /**< SRv6 locator 聚合路由条数 */
     uint32_t other;     /**< 其他协议路由条数 */
     int show_ipv4;
     int show_ipv6;
@@ -156,6 +157,9 @@ static void summary_path_cb(const route_head_t *head, const route_path_t *path, 
         case ROUTE_PROTOCOL_ISIS:
             ctx->isis++;
             break;
+        case ROUTE_PROTOCOL_SRV6:
+            ctx->srv6++;
+            break;
         default:
             ctx->other++;
             break;
@@ -178,6 +182,8 @@ static const char *proto_name(uint32_t protocol)
             return "O3";
         case ROUTE_PROTOCOL_ISIS:
             return "I";
+        case ROUTE_PROTOCOL_SRV6:
+            return "S6";
         default:
             return "?";
     }
@@ -199,6 +205,8 @@ static const char *proto_name_long(uint32_t protocol)
             return "ospfv3";
         case ROUTE_PROTOCOL_ISIS:
             return "isis";
+        case ROUTE_PROTOCOL_SRV6:
+            return "srv6";
         case ROUTE_PROTOCOL_MAX:
             return "all";
         default:
@@ -228,6 +236,8 @@ static const char *module_name(uint32_t module_id)
             return "sbmp";
         case DEV_MODULE_ID_ISIS:
             return "isis";
+        case DEV_MODULE_ID_SRV6:
+            return "srv6";
         case DEV_MODULE_ID_TUNNEL:
             return "tunnel";
         case DEV_MODULE_ID_FIB:
@@ -268,6 +278,8 @@ static const char *route_nh_type_name(uint8_t nh_type)
             return "tunnel";
         case ROUTE_NH_TYPE_BLACKHOLE:
             return "blackhole";
+        case ROUTE_NH_TYPE_SRV6:
+            return "srv6";
         default:
             return "unknown";
     }
@@ -622,7 +634,8 @@ int route_show_handle_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         sctx.show_ipv4 = show_ipv4;
         sctx.show_ipv6 = show_ipv6;
         route_rib_walk(g_route_work_local->rib, ROUTE_PROTOCOL_MAX, vrf_filter.vrf_id, summary_path_cb, &sctx);
-        uint32_t total = sctx.connected + sctx.static_ + sctx.bgp + sctx.ospf + sctx.ospfv3 + sctx.isis + sctx.other;
+        uint32_t total =
+            sctx.connected + sctx.static_ + sctx.bgp + sctx.ospf + sctx.ospfv3 + sctx.isis + sctx.srv6 + sctx.other;
         char buf[512];
         snprintf(buf, sizeof(buf),
                  "\r\nRoute Summary (VRF: %s):\r\n"
@@ -633,9 +646,11 @@ int route_show_handle_route(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
                  "  %-12s %u\r\n"
                  "  %-12s %u\r\n"
                  "  %-12s %u\r\n"
+                 "  %-12s %u\r\n"
                  "  %-12s %u\r\n\r\n",
                  vrf_filter.name, "Connected:", sctx.connected, "Static:", sctx.static_, "BGP:", sctx.bgp,
-                 "OSPF:", sctx.ospf, "OSPFv3:", sctx.ospfv3, "ISIS:", sctx.isis, "Other:", sctx.other, "Total:", total);
+                 "OSPF:", sctx.ospf, "OSPFv3:", sctx.ospfv3, "ISIS:", sctx.isis, "SRv6:", sctx.srv6,
+                 "Other:", sctx.other, "Total:", total);
         send_resp(msg, buf);
         return ERRCODE_SUCCESS;
     }

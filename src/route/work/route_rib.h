@@ -75,8 +75,10 @@ typedef struct route_path
     uint32_t out_label;   /**< 隧道转发时压入的出标签（L3VPN 私网/VPN 标签），0=无 */
     uint32_t nexthop_id; /**< nexthop 对象 ID（registry 引用，承载下一跳/relay 信息，见 route_nhobj） */
     uint32_t flags;      /**< 路径状态标志（ROUTE_PATH_FLAG_*） */
-    uint32_t entry_flags;   /**< 路径语义标志（ROUTE_ENTRY_FLAG_*，由发布方携带） */
-    gint64 updated_at_usec; /**< 最近更新时间（g_get_real_time） */
+    uint32_t entry_flags;                    /**< 路径语义标志（ROUTE_ENTRY_FLAG_*，由发布方携带） */
+    net_addr_t srv6_sid;                     /**< nh_type=ROUTE_NH_TYPE_SRV6 时的远端 service SID */
+    char source_name[ROUTE_SOURCE_NAME_MAX]; /**< 协议路径来源名称；用于 SRV6 locator 的按名发布 */
+    gint64 updated_at_usec;                  /**< 最近更新时间（g_get_real_time） */
 } route_path_t;
 
 /**
@@ -184,6 +186,16 @@ int route_rib_del(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, const net_add
 int route_rib_del_proto_for_prefix(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr,
                                    uint8_t prefix_len, uint32_t protocol, route_path_cb cb, void *userdata);
 
+/**
+ * @brief 删除符合协议/VRF/AFI 过滤的所有路径
+ *
+ * 先快照路径键再逐条删除，避免在 GTree 遍历期间修改树。
+ *
+ * @return >=0 删除路径数，-1=参数或删除失败
+ */
+int route_rib_del_protocol(route_rib_t *rib, uint32_t protocol, uint32_t vrf_filter, uint16_t afi_filter,
+                           route_path_cb cb, void *userdata);
+
 // ============================================================================
 // RIB 查询
 // ============================================================================
@@ -208,6 +220,14 @@ const route_head_t *route_rib_lookup_head(const route_rib_t *rib, uint32_t vrf_i
  * @return 路径指针（不可修改），未找到返回 NULL
  */
 const route_path_t *route_rib_lookup_path(const route_head_t *head, uint32_t protocol, const net_addr_t *source);
+
+/** Update the SRv6 service SID attached to an existing path. */
+int route_rib_set_srv6_sid(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr,
+                           uint8_t prefix_len, uint32_t protocol, const net_addr_t *source, const net_addr_t *srv6_sid);
+
+/** Update the protocol source name attached to an existing path. */
+int route_rib_set_source_name(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, const net_addr_t *prefix_addr,
+                              uint8_t prefix_len, uint32_t protocol, const net_addr_t *source, const char *source_name);
 
 /**
  * @brief 将指定路径提升到前缀链表首位（用于展示最优路径优先）

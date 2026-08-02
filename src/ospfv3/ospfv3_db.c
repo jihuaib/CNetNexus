@@ -44,7 +44,7 @@ static const db_table_def_t OSPFV3_AREA_TABLE = {
 static const db_column_def_t OSPFV3_INTERFACE_COLS[] = {
     {"id", DB_TYPE_INTEGER, DB_COL_PRIMARY_KEY | DB_COL_AUTOINCREMENT, NULL},
     {"process_id", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
-    {"ifname", DB_TYPE_TEXT, DB_COL_NOT_NULL, "''"},
+    {"ifname", DB_TYPE_TEXT, DB_COL_NOT_NULL, ""},
     {"enabled", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"},
     {"area_id", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},
     {"network_type", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"},

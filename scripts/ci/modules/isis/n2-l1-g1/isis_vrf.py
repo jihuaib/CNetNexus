@@ -80,6 +80,7 @@ def _configure(
             "af ipv4",
             "af ipv6",
             "exit",
+            "exit",
             f"if {GE_IF}",
             f"isis enable {TAG}",
             f"isis ipv6 enable {TAG}",

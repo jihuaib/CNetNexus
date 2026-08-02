@@ -22,11 +22,11 @@ static gboolean is_ipv6_nexthop(const bgp_nexthop_t *nexthop)
     return nexthop && nexthop->global.family == AF_INET6;
 }
 
-/** 判断是否需要使用 MP_UNREACH（IPv6 peer 且已协商 Extended Next Hop） */
+/** 判断是否需要使用 MP_UNREACH（精确协商 IPv4-unicast/IPv6-NH tuple） */
 static gboolean need_mp_unreach(const bgp_conn_t *conn)
 {
-    return conn && conn->peer_addr.family == AF_INET6 && conn->session &&
-           BIT_TEST(conn->session->flags, BGP_SESS_CAP_EXT_NEXTHOP);
+    return conn && conn->session &&
+           bgp_session_ext_nh_negotiated(conn->session, BGP_AFI_IPV4, BGP_SAFI_UNICAST, BGP_AFI_IPV6);
 }
 
 // ============================================================================

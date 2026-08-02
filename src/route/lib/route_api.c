@@ -212,6 +212,46 @@ int route_rpc_del_wait(dev_ipc_context_t *ctx, const route_msg_entry_t *entry, u
     return route_rpc_add_wait(ctx, &withdraw_entry, timeout_ms);
 }
 
+int route_rpc_flush_protocol_wait(dev_ipc_context_t *ctx, const route_protocol_flush_req_t *req, uint32_t timeout_ms)
+{
+    if (!ctx || !req || req->protocol == ROUTE_PROTOCOL_MAX || req->_pad != 0u ||
+        (req->afi != ROUTE_AFI_IPV4 && req->afi != ROUTE_AFI_IPV6 && req->afi != ROUTE_AFI_ALL))
+    {
+        return ERRCODE_FAIL;
+    }
+
+    route_protocol_flush_req_t *payload = g_memdup2(req, sizeof(*req));
+    if (!payload)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    dev_ipc_message_t *msg = dev_ipc_message_create(ROUTE_MSG_TYPE_PROTOCOL_FLUSH, dev_ipc_get_module_id(ctx),
+                                                    DEV_MODULE_ID_ROUTE, 0, payload, sizeof(*payload), g_free);
+    if (!msg)
+    {
+        g_free(payload);
+        return ERRCODE_FAIL;
+    }
+
+    uint32_t wait_ms = (timeout_ms == 0u) ? ROUTE_RPC_DEFAULT_TIMEOUT_MS : timeout_ms;
+    dev_ipc_message_t *resp = dev_ipc_query(ctx, DEV_MODULE_ID_ROUTE, msg, wait_ms);
+    dev_ipc_message_free(msg);
+    if (!resp)
+    {
+        return ERRCODE_FAIL;
+    }
+
+    int result = ERRCODE_FAIL;
+    if (resp->msg_type == ROUTE_MSG_TYPE_ACK && resp->payload && resp->payload_len >= sizeof(route_msg_ack_t))
+    {
+        const route_msg_ack_t *ack = resp->payload;
+        result = (ack->result == ERRCODE_SUCCESS) ? ERRCODE_SUCCESS : ERRCODE_FAIL;
+    }
+    dev_ipc_message_free(resp);
+    return result;
+}
+
 int route_rpc_nh_unregister(dev_ipc_context_t *ctx, const route_nh_iter_req_t *req)
 {
     return route_rpc_nh_iter_send(ctx, ROUTE_MSG_TYPE_NH_UNREGISTER, req);

@@ -12,19 +12,9 @@
  * NLRI hash / equal（GHashTable 使用）
  * ========================================================================== */
 
-/** FNV-1a 64 位散列（截断到 guint），bgp_nlri_entry_t 为值类型，按字节散列安全 */
 static guint nlri_hash(gconstpointer p)
 {
-    const bgp_nlri_entry_t *nlri = p;
-    const uint8_t *bytes = (const uint8_t *)nlri;
-    size_t len = sizeof(*nlri);
-    uint64_t h = 1469598103934665603ULL; /* FNV-1a offset basis */
-    for (size_t i = 0; i < len; i++)
-    {
-        h ^= bytes[i];
-        h *= 1099511628211ULL; /* FNV-1a prime */
-    }
-    return (guint)h;
+    return (guint)bgp_nlri_hash((const bgp_nlri_entry_t *)p);
 }
 
 static gboolean nlri_equal(gconstpointer a, gconstpointer b)
@@ -109,14 +99,26 @@ bgp_aro_change_t bgp_adj_rib_out_update(bgp_adj_rib_out_t *aro, const bgp_nlri_e
         return BGP_ARO_UNCHANGED;
     }
 
-    bgp_adj_rib_out_entry_t *existing = g_hash_table_lookup(aro->table, nlri);
+    gpointer original_key = NULL;
+    gpointer original_value = NULL;
+    gboolean found = g_hash_table_lookup_extended(aro->table, nlri, &original_key, &original_value);
+    bgp_adj_rib_out_entry_t *existing = found ? original_value : NULL;
     if (existing)
     {
+        bgp_nlri_entry_t *stored_nlri = original_key;
+        gboolean label_changed = FALSE;
+        if (stored_nlri && stored_nlri->type == BGP_NLRI_PREFIX && nlri->type == BGP_NLRI_PREFIX)
+        {
+            label_changed = stored_nlri->prefix.label != nlri->prefix.label ||
+                            stored_nlri->prefix.has_label != nlri->prefix.has_label;
+            stored_nlri->prefix.label = nlri->prefix.label;
+            stored_nlri->prefix.has_label = nlri->prefix.has_label;
+        }
         /* 判断是否真的变化 */
         gboolean attr_same = (existing->attr_ref == attr_ref) ||
                              (existing->attr_ref && attr_ref && existing->attr_ref->attr_id == attr_ref->attr_id);
         gboolean nh_same = (nh && memcmp(&existing->nexthop, nh, sizeof(*nh)) == 0);
-        if (attr_same && nh_same)
+        if (attr_same && nh_same && !label_changed)
         {
             return BGP_ARO_UNCHANGED;
         }

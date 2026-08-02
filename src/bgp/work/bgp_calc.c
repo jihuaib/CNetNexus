@@ -276,21 +276,31 @@ void bgp_calc_run_one(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
     /* 将最优路径移至链表首位 */
     bgp_rib_mark_best(rib, &head->nlri, best);
 
+    /* MPLS label 属于 path，而 head 只以 AF/SAFI/prefix/RD 为身份。
+     * best 变更或对端原地换标时，同步当前 effective label，
+     * 供 import 和透明传播使用（tree comparator 明确忽略 label）。 */
+    if (head->nlri.type == BGP_NLRI_PREFIX)
+    {
+        head->nlri.prefix.label = best->label;
+        head->nlri.prefix.has_label = best->has_label ? true : false;
+    }
+
     /* 将 NLRI 挂入各 ESTABLISHED 邻居的 session 发布队列 */
     bgp_update_group_enqueue_announce(inst, &head->nlri);
 
     const bgp_route_node_t *new_best = bgp_rib_find_best(rib, &head->nlri);
     int best_switched = (old_best != new_best);
-    int best_need_flush = (new_best && !BIT_TEST(new_best->flags, BGP_ROUTE_FLAG_FLUSHED));
+    int best_need_flush = (new_best && (!BIT_TEST(new_best->flags, BGP_ROUTE_FLAG_FLUSHED) ||
+                                        BIT_TEST(new_best->flags, BGP_ROUTE_FLAG_FIB_DIRTY)));
     if (inst->route_flush_queue && (best_switched || best_need_flush))
     {
         bgp_route_flush_queue_push(inst->route_flush_queue, head);
     }
 
     bgp_import_rib_on_calc_done(inst, head, old_best, new_best);
-    /* 私网 VRF 的 ipv4-unicast best 变化时，若 vpnv4 已使能，补推到 vrf-export pending */
+    /* 私网 VRF 的 unicast best 变化时，若同 AF VPN 已使能，补推到 vrf-export pending */
     bgp_vrf_export_on_calc_done(inst, head);
-    /* public vpnv4 best 变化时，按 import-RT 把 best 导入/撤出命中的私网 VRF */
+    /* public VPN best 变化时，按 (AF, import-RT) 把 best 导入/撤出命中的私网 VRF */
     bgp_vrf_import_on_calc_done(inst, head);
     /* 私网 VRF ipv4-unicast best 变化时，按源 VRF export-RT 直接泄漏到命中的本机 VRF（本地交叉） */
     bgp_vrf_import_local_on_calc_done(inst, head);

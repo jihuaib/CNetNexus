@@ -9,16 +9,17 @@
 
 #include "errcode.h"
 #include "isis_db_internal.h"
+#include "log.h"
 #include "vrf.h"
 
 #define ISIS_VRF_TABLE_INSTANCE "vrf_instance"
 
 static const db_column_def_t ISIS_INSTANCE_COLS[] = {
-    {"tag", DB_TYPE_INTEGER, DB_COL_PRIMARY_KEY, NULL},    {"net", DB_TYPE_TEXT, DB_COL_NOT_NULL, "''"},
+    {"tag", DB_TYPE_INTEGER, DB_COL_PRIMARY_KEY, NULL},    {"net", DB_TYPE_TEXT, DB_COL_NOT_NULL, ""},
     {"is_type", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "3"},    {"admin_up", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"},
     {"af_ipv4", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"},    {"af_ipv6", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"},
     {"cost_style", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"}, {"vrf_id", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},
-    {"vrf_name", DB_TYPE_TEXT, DB_COL_NOT_NULL, "public"},
+    {"vrf_name", DB_TYPE_TEXT, DB_COL_NOT_NULL, "public"}, {"srv6_locator", DB_TYPE_TEXT, DB_COL_NOT_NULL, ""},
 };
 
 const db_table_def_t ISIS_INSTANCE_TABLE = {
@@ -110,6 +111,7 @@ int isis_db_set_instance(uint32_t tag, uint32_t vrf_id, const char *vrf_name)
         DB_COL_INT("cost_style", ISIS_DEFAULT_COST_STYLE),
         DB_COL_INT("vrf_id", vrf_id),
         DB_COL_TEXT("vrf_name", vrf_name),
+        DB_COL_TEXT("srv6_locator", ""),
     };
     return db_rpc_insert_cols(ctx, ISIS_TABLE_INSTANCE, cols, G_N_ELEMENTS(cols));
 }
@@ -304,6 +306,41 @@ int isis_db_is_af_enabled(uint32_t tag, uint16_t afi, int *enabled_out)
     return ERRCODE_SUCCESS;
 }
 
+int isis_db_set_srv6_locator(uint32_t tag, const char *locator)
+{
+    if (tag == 0u || !locator || strlen(locator) >= SRV6_LOCATOR_NAME_MAX)
+    {
+        return ERRCODE_FAIL;
+    }
+    return isis_db_update_instance_field_text(tag, "srv6_locator", locator);
+}
+
+int isis_db_get_srv6_locator(uint32_t tag, char *locator_out, size_t locator_out_size)
+{
+    if (tag == 0u || !locator_out || locator_out_size == 0u)
+    {
+        return ERRCODE_FAIL;
+    }
+    locator_out[0] = '\0';
+    db_filter_builder_t pk;
+    isis_db_instance_pk(&pk, tag);
+    const char *fields[] = {"srv6_locator"};
+    db_result_t *result = NULL;
+    int rc = db_rpc_query(isis_local_ipc_ctx(), ISIS_TABLE_INSTANCE, fields, G_N_ELEMENTS(fields), &pk.filter, &result);
+    db_filter_clear(&pk);
+    if (rc != ERRCODE_SUCCESS || !result || result->num_rows == 0u)
+    {
+        if (result)
+        {
+            db_result_free(result);
+        }
+        return ERRCODE_FAIL;
+    }
+    g_strlcpy(locator_out, db_row_get_text(result->rows[0], "srv6_locator", ""), locator_out_size);
+    db_result_free(result);
+    return ERRCODE_SUCCESS;
+}
+
 int isis_db_get_default_tag(uint32_t *tag_out)
 {
     if (!tag_out)
@@ -354,19 +391,48 @@ int isis_db_get_default_tag(uint32_t *tag_out)
     return ERRCODE_SUCCESS;
 }
 
-void isis_db_restore_instances(void)
+static gboolean isis_db_restore_apply_ok(isis_apply_cmd_t *apply, const char *stage, uint32_t tag)
+{
+    if (!apply || !stage)
+    {
+        return FALSE;
+    }
+
+    if (isis_worker_dispatch_apply(apply) != ERRCODE_SUCCESS)
+    {
+        LOG_ERROR("ISIS restore: failed to dispatch %s for process %u", stage, tag);
+        return FALSE;
+    }
+    if (apply->rc == ISIS_APPLY_RC_OK || apply->rc == ISIS_APPLY_RC_NOOP)
+    {
+        return TRUE;
+    }
+
+    LOG_ERROR("ISIS restore: %s failed for process %u: %s", stage, tag,
+              apply->errmsg[0] != '\0' ? apply->errmsg : "unknown apply error");
+    return FALSE;
+}
+
+int isis_db_restore_instances(void)
 {
     dev_ipc_context_t *ctx = isis_local_ipc_ctx();
     if (!ctx)
     {
-        return;
+        return ERRCODE_FAIL;
     }
 
     db_result_t *result = NULL;
-    if (db_rpc_query(ctx, ISIS_TABLE_INSTANCE, NULL, 0, NULL, &result) != ERRCODE_SUCCESS || !result)
+    if (db_rpc_query(ctx, ISIS_TABLE_INSTANCE, NULL, 0, NULL, &result) != ERRCODE_SUCCESS)
     {
-        return;
+        LOG_ERROR("ISIS restore: failed to query instances");
+        return ERRCODE_FAIL;
     }
+    if (!result)
+    {
+        return ERRCODE_SUCCESS;
+    }
+
+    int restore_rc = ERRCODE_SUCCESS;
 
     for (uint32_t i = 0u; i < result->num_rows; ++i)
     {
@@ -389,7 +455,11 @@ void isis_db_restore_instances(void)
                   sizeof(apply.u.instance_set.vrf_name));
         const char *net = db_row_get_text(row, "net", "");
         g_strlcpy(apply.u.instance_set.net, net ? net : "", sizeof(apply.u.instance_set.net));
-        (void)isis_worker_dispatch_apply(&apply);
+        if (!isis_db_restore_apply_ok(&apply, "instance", tag))
+        {
+            restore_rc = ERRCODE_FAIL;
+            continue;
+        }
 
         uint8_t cost_style = (uint8_t)db_row_get_int(row, "cost_style", ISIS_DEFAULT_COST_STYLE);
         if (cost_style != ISIS_COST_STYLE_NARROW && cost_style != ISIS_COST_STYLE_WIDE)
@@ -417,8 +487,28 @@ void isis_db_restore_instances(void)
         af_apply.op = (af6 != 0) ? ISIS_APPLY_OP_AF_SET : ISIS_APPLY_OP_AF_DEL;
         af_apply.u.af_set.tag = tag;
         af_apply.u.af_set.afi = ISIS_AFI_IPV6;
-        (void)isis_worker_dispatch_apply(&af_apply);
+        if (!isis_db_restore_apply_ok(&af_apply, "IPv6 AF", tag))
+        {
+            restore_rc = ERRCODE_FAIL;
+            continue;
+        }
+
+        const char *srv6_locator = db_row_get_text(row, "srv6_locator", "");
+        if (srv6_locator && srv6_locator[0] != '\0')
+        {
+            isis_apply_cmd_t srv6_apply;
+            memset(&srv6_apply, 0, sizeof(srv6_apply));
+            srv6_apply.op = ISIS_APPLY_OP_SRV6_LOCATOR_SET;
+            srv6_apply.u.srv6_locator_set.tag = tag;
+            g_strlcpy(srv6_apply.u.srv6_locator_set.locator, srv6_locator,
+                      sizeof(srv6_apply.u.srv6_locator_set.locator));
+            if (!isis_db_restore_apply_ok(&srv6_apply, "SRv6 locator", tag))
+            {
+                restore_rc = ERRCODE_FAIL;
+            }
+        }
     }
 
     db_result_free(result);
+    return restore_rc;
 }

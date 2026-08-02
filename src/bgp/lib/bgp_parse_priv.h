@@ -42,6 +42,22 @@ typedef struct mp_unreach_info
     bool valid;
 } mp_unreach_info_t;
 
+/** 路径属性解析结果 */
+typedef enum bgp_path_attr_parse_result
+{
+    BGP_PATH_ATTR_PARSE_OK = 0,
+    BGP_PATH_ATTR_PARSE_TREAT_AS_WITHDRAW = 1,
+    BGP_PATH_ATTR_PARSE_ERROR = -1,
+} bgp_path_attr_parse_result_t;
+
+/** Prefix-SID 属性自身的 RFC 8669 / RFC 9252 错误动作 */
+typedef enum bgp_prefix_sid_parse_result
+{
+    BGP_PREFIX_SID_PARSE_OK = 0,
+    BGP_PREFIX_SID_PARSE_ATTRIBUTE_DISCARD = 1,
+    BGP_PREFIX_SID_PARSE_TREAT_AS_WITHDRAW = 2,
+} bgp_prefix_sid_parse_result_t;
+
 /* ============================================================================
  * 内部函数声明
  * ========================================================================== */
@@ -51,6 +67,12 @@ typedef struct mp_unreach_info
  */
 int bgp_parse_path_attrs(const uint8_t *data, uint16_t len, uint32_t flags, bgp_attr_t *attr, bgp_nexthop_t *nexthop,
                          mp_reach_info_t *mp_reach, mp_unreach_info_t *mp_unreach);
+
+/**
+ * @brief 严格解析 Prefix-SID attribute value 并保存 raw value
+ * @return bgp_prefix_sid_parse_result_t
+ */
+int bgp_parse_prefix_sid_value(const uint8_t *data, uint16_t len, uint8_t attr_flags, bgp_attr_t *attr);
 
 /**
  * @brief 各 AF 处理器注册入口（由 bgp_parse_init() 调用）

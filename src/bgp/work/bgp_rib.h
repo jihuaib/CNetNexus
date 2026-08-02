@@ -35,18 +35,25 @@ typedef struct bgp_rthead bgp_rthead_t;
 /** 路由标记位：import-rib 镜像路由（mirror 节点本身置位；源节点不置位） */
 #define BGP_ROUTE_FLAG_IMPORT_RIB (1U << 6)
 /** 路由标记位：本地跨表合成路由，两种来源共用此标记，按所在 instance 区分：
- *  (1) vrf-export：本地 VRF 单播 → vpnv4（合成节点位于 public vpnv4 inst）；
+ *  (1) vrf-export：本地 VRF 单播 → 同 AF VPN（合成节点位于 public VPN inst）；
  *  (2) vrf 本地交叉：本机另一 VRF 单播 → 本 VRF 单播（合成节点位于私网 unicast inst，
  *      源 VRF export-RT 直接命中本 VRF import-RT 泄漏而来）。
  *  二者都属本地起源、正常对外通告；与 IMPORT(重分发) 区分，避免被 import-route 清理/再导入误伤。
  *  单跳防环：LOCAL_CROSS（已泄漏）不再作为本地交叉的泄漏源，也不被 vrf-export 回灌 vpnv4。 */
 #define BGP_ROUTE_FLAG_LOCAL_CROSS (1U << 7)
-/** 路由标记位：vrf-import 远端跨表合成路由（peer 的 vpnv4 → 本地 VRF 单播）。非本地起源，
- *  绝不可被 vrf-export 回灌 vpnv4（否则成环） */
+/** 路由标记位：vrf-import 远端跨表合成路由（peer 的 VPN → 本地 VRF 单播）。非本地起源，
+ *  绝不可被 vrf-export 回灌 VPN（否则成环） */
 #define BGP_ROUTE_FLAG_REMOTE_CROSS (1U << 8)
 /** 路由标记位：本地接收前缀（如接口/loopback 地址的 host route）。跨 VRF 本地泄漏到 ROUTE/FIB
  *  时需保留 local-delivery 语义，使目标 VRF 表安装 RTN_LOCAL 而不是 via 127.0.0.1 的 unicast。 */
 #define BGP_ROUTE_FLAG_LOCAL_DELIVERY (1U << 9)
+/** 路由标记位：desired 路径已变化，已下刷的旧 incarnation 仍由 FLUSHED 表示；
+ *  新 best 可用后须以 ROUTE upsert 原地替换，成功后清除此位。 */
+#define BGP_ROUTE_FLAG_FIB_DIRTY (1U << 10)
+/** 路由标记位：REMOTE_CROSS 当前 incarnation 采用 SRv6 BE service-SID 转发。
+ * 该位记录合成路由已经实际挂载的 watch 类型，不能由 instance 配置或 attr
+ * 临时推导；模式切换时需先按旧值注销 watch，再更新此位并注册新 watch。 */
+#define BGP_ROUTE_FLAG_SRV6_BE (1U << 11)
 #define BGP_ROUTE_LABEL_SOURCE_NONE 0u
 #define BGP_ROUTE_LABEL_SOURCE_LOCAL 1u
 #define BGP_ROUTE_LABEL_SOURCE_RECEIVED 2u
@@ -78,8 +85,12 @@ typedef struct bgp_route_node
     uint32_t borrow_refcnt;           /**< 外部借用引用计数（import_rib mirror、bgp_relay watch 等） */
     /* inter-AS Option B 中转换标：本节点作为 vpnv4 中转路由(改下一跳为本端)时，向 TUNNEL 申请的
      * 本地入标签（advertise 给上游），TUNNEL 据此装 SWAP ILM（本地入标签→换成 label 出口转发）。 */
-    uint32_t out_local_label;  /**< 本地分配并向上游通告的中转入标签（0=未分配） */
-    uint32_t transit_owner_id; /**< 向 TUNNEL 申请标签时的 owner_id（用于释放，0=未分配） */
+    uint32_t out_local_label;    /**< 本地分配并向上游通告的中转入标签（0=未分配） */
+    uint32_t transit_owner_id;   /**< 向 TUNNEL 申请标签时的 owner_id（用于释放，0=未分配） */
+    uint32_t transit_swap_label; /**< 当前 SWAP 绑定的对端出标签（变更时需重建绑定） */
+    uint16_t transit_afi;        /**< SWAP 绑定的传输 AF，释放时必须与申请一致 */
+    uint16_t _pad1;
+    net_addr_t transit_endpoint; /**< SWAP 绑定的对端 BGP next-hop */
 } bgp_route_node_t;
 
 /**

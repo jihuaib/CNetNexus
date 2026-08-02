@@ -422,12 +422,40 @@ static int route_nh_resolve(route_rib_t *rib, uint32_t vrf_id, uint16_t afi, con
             }
             return 1;
         }
-        /* 非直连解析路径：取其 nexthop（来自 nexthop 对象）继续递归 */
+        /* 非直连解析路径：优先复用该路径已经完成的 relay 结果。
+         *
+         * 协议路由（例如 ISIS 学到的 SRv6 locator）在注入 ROUTE 时会把
+         * 链路下一跳/out-ifindex 写入自己的 nexthop 对象；该路径成功安装
+         * 后，这组值就是可直接转发的最终解析结果。若仍沿其“身份下一跳”
+         * 继续递归，IPv6 link-local 下一跳可能命中 ISIS 自己发布的 /128，
+         * 被自递归保护判为不可达，进而使 locator 内的完整 service SID
+         * 永远无法解析。
+         *
+         * 仅接受 OS-installed 且 relay 地址、出接口都有效的结果，避免使用
+         * 尚未收敛或已失效路径留下的中间状态。 */
         route_nhobj_info_t rinfo;
         net_addr_t resolver_nh;
         memset(&resolver_nh, 0, sizeof(resolver_nh));
         if (route_nhobj_lookup(resolver->nexthop_id, &rinfo) == 0)
         {
+            if (resolver->nh_type == ROUTE_NH_TYPE_IP && (resolver->flags & ROUTE_PATH_FLAG_OS_INSTALLED) != 0u &&
+                rinfo.relay_ifindex != 0u &&
+                (rinfo.relay_addr.family == AF_INET || rinfo.relay_addr.family == AF_INET6))
+            {
+                if (gateway_out)
+                {
+                    *gateway_out = rinfo.relay_addr;
+                }
+                if (ifindex_out)
+                {
+                    *ifindex_out = rinfo.relay_ifindex;
+                }
+                if (nh_type_out)
+                {
+                    *nh_type_out = ROUTE_NH_TYPE_IP;
+                }
+                return 1;
+            }
             resolver_nh = rinfo.key.nexthop;
         }
         if (resolver_nh.family == 0)

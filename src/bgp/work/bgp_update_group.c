@@ -17,6 +17,7 @@
 #include "bgp_nexthop.h"
 #include "bgp_peer.h"
 #include "bgp_pkt.h"
+#include "bgp_protocol.h"
 #include "bgp_rd.h"
 #include "bgp_rib.h"
 #include "bgp_rpm.h"
@@ -30,6 +31,11 @@
 
 /** 自增 group_id，仅用于日志/调试 */
 static uint32_t g_next_group_id = 1;
+
+/** 标签依赖失败重试：1s 起步，最大 30s，成功后恢复到初始退避。 */
+#define BGP_LABEL_RETRY_BASE_USEC ((gint64)G_USEC_PER_SEC)
+#define BGP_LABEL_RETRY_MAX_USEC (30 * (gint64)G_USEC_PER_SEC)
+#define BGP_LABEL_RETRY_MAX_BACKOFF_EXP 5u
 
 /* ============================================================================
  * 键相等判断
@@ -80,6 +86,15 @@ void bgp_session_compute_ug_key(const bgp_session_t *sess, bgp_update_group_key_
 void bgp_peer_compute_ug_key(const bgp_peer_t *peer, const bgp_session_t *sess, bgp_update_group_key_t *out)
 {
     bgp_session_compute_ug_key(sess, out);
+    /* Capability 5 is negotiated per (NLRI AFI, SAFI, NH AFI), not per
+     * session.  Keep the EXT bit in this peer/AF key only when the tuple for
+     * peer->inst is present in both OPEN messages. */
+    BIT_CLR(out->negotiated_caps, BGP_SESS_CAP_EXT_NEXTHOP);
+    if (peer && peer->inst &&
+        bgp_session_ext_nh_negotiated(sess, (uint16_t)peer->inst->afi, (uint16_t)peer->inst->safi, BGP_AFI_IPV6))
+    {
+        BIT_SET(out->negotiated_caps, BGP_SESS_CAP_EXT_NEXTHOP);
+    }
     if (peer && peer->export_policy.name[0] != '\0')
     {
         g_strlcpy(out->policy_name, peer->export_policy.name, sizeof(out->policy_name));
@@ -89,6 +104,10 @@ void bgp_peer_compute_ug_key(const bgp_peer_t *peer, const bgp_session_t *sess, 
     if (peer && BIT_TEST(peer->flags, BGP_PEER_FLAG_RR_CLIENT))
     {
         BIT_SET(out->flags, BGP_UG_FLAG_TARGET_RR_CLIENT);
+    }
+    if (peer && BIT_TEST(peer->flags, BGP_PEER_FLAG_SRV6_SID))
+    {
+        BIT_SET(out->flags, BGP_UG_FLAG_SRV6_SID);
     }
 }
 
@@ -544,9 +563,54 @@ void bgp_instance_foreach_subgroup(bgp_instance_t *inst, bgp_subgroup_cb cb, gpo
 static void bgp_update_group_schedule_pub(bgp_instance_t *inst);
 static int bgp_update_group_process_pub_event(bgp_instance_t *inst, gboolean allow_reschedule);
 
+static gboolean bgp_subgroup_announce_retry_ready(const bgp_nh_subgroup_t *sg, gint64 now_usec)
+{
+    return sg && sg->announce_queue && !g_queue_is_empty(sg->announce_queue) &&
+           (sg->label_retry_due_usec == 0 || now_usec >= sg->label_retry_due_usec);
+}
+
+static void bgp_subgroup_label_retry_arm(bgp_nh_subgroup_t *sg)
+{
+    if (!sg)
+    {
+        return;
+    }
+
+    const guint exp = MIN((guint)sg->label_retry_backoff_exp, BGP_LABEL_RETRY_MAX_BACKOFF_EXP);
+    const gint64 delay_usec = MIN(BGP_LABEL_RETRY_BASE_USEC << exp, BGP_LABEL_RETRY_MAX_USEC);
+    sg->label_retry_due_usec = g_get_monotonic_time() + delay_usec;
+    if (sg->label_retry_backoff_exp < BGP_LABEL_RETRY_MAX_BACKOFF_EXP)
+    {
+        sg->label_retry_backoff_exp++;
+    }
+}
+
+static void bgp_subgroup_label_retry_reset(bgp_nh_subgroup_t *sg)
+{
+    if (!sg)
+    {
+        return;
+    }
+    sg->label_retry_due_usec = 0;
+    sg->label_retry_backoff_exp = 0;
+}
+
 static gboolean bgp_session_is_publish_ready(const bgp_session_t *sess)
 {
     return sess && sess->pri_conn && sess->pri_conn->fd >= 0 && sess->fsm_state == BGP_FSM_STATE_ESTABLISHED;
+}
+
+/** 当前出向实现只支持 RFC 9252 whole-SID。收到的 Service TLV 若无法
+ * 解析成完整 SID，或 SID Structure 请求 transposition/argument，就不能
+ * 保真改写为 label=3；调用方必须 fail closed。 */
+static gboolean bgp_attr_has_whole_srv6_service(const bgp_attr_t *attr)
+{
+    if (!attr || !attr->has_srv6_l3_service_tlv || !attr->has_srv6_l3_service)
+    {
+        return FALSE;
+    }
+    return !attr->has_srv6_sid_structure ||
+           (attr->transposition_len == 0u && attr->transposition_offset == 0u && attr->argument_len == 0u);
 }
 
 static uint32_t bgp_update_group_local_as(void)
@@ -709,8 +773,76 @@ bool bgp_subgroup_eval_export(const bgp_nh_subgroup_t *sg, const bgp_route_node_
         return false;
     }
 
+    const bgp_update_group_t *ug = sg->parent;
+    const bgp_instance_t *inst = ug ? ug->inst : NULL;
+    const bool target_srv6_sid = ug && BIT_TEST(ug->key.flags, BGP_UG_FLAG_SRV6_SID);
+    const bool local_vpn = inst && inst->safi == BGP_SAFI_VPN_UNICAST && bgp_route_is_local_origin(best);
+
+    if (local_vpn)
+    {
+        /* The shared VPN Loc-RIB candidate is encoding-neutral.  Derive the
+         * peer-specific service attribute only after update-group selection,
+         * so MPLS and SRv6 peers never share an Adj-RIB-Out/packed UPDATE. */
+        bgp_attr_clear_prefix_sid(out_attr);
+        if (target_srv6_sid && bgp_vrf_export_apply_srv6_sid(best, out_attr) != ERRCODE_SUCCESS)
+        {
+            return false;
+        }
+    }
+    else if (out_attr->has_srv6_l3_service_tlv && !bgp_attr_has_whole_srv6_service(out_attr))
+    {
+        /* 当前不能透明传播 transposed SID：其 VPN label 携带 SID bits，
+         * 强制规范化为 Implicit NULL(3) 会改变远端路由语义。 */
+        return false;
+    }
+    else if (!target_srv6_sid && out_attr->has_prefix_sid)
+    {
+        /* A remote whole-SID route cannot be converted to MPLS by stripping
+         * Prefix-SID: label 3 would no longer identify a usable service. */
+        return false;
+    }
+
+    /* 收到的 Prefix-SID 仅能在 nexthop 不变时保真传播。当前没有实现
+     * SRv6 inter-AS/Option-B 的本地 service SID 重写，因此凡是需要
+     * next-hop-self 的远端 Prefix-SID 路由均 fail closed。 */
+    if (!bgp_route_is_local_origin(best) && sg->key.rule == BGP_NH_RULE_LOCAL && out_attr->has_prefix_sid)
+    {
+        return false;
+    }
+
     /* nexthop 策略应用 */
-    return bgp_subgroup_apply_nexthop(sg, best, out_nh);
+    if (!bgp_subgroup_apply_nexthop(sg, best, out_nh))
+    {
+        return false;
+    }
+
+    /* 本地 RFC 9252 whole-SID 导出必须使用 IPv6 NH。完整 Service SID
+     * 位于可路由 locator 内，直接作为递归 next-hop；不能被 IPv4 TCP
+     * session 的 effective_local_addr 改回 IPv4。 */
+    if (out_attr->has_srv6_l3_service && bgp_route_is_local_origin(best))
+    {
+        memset(out_nh, 0, sizeof(*out_nh));
+        out_nh->global = out_attr->srv6_sid;
+    }
+
+    /* RFC 9252 whole-SID 模式必须用 IPv6 nexthop。VPNv4 还必须与对端
+     * 协商 RFC 8950 Extended Next Hop；否则撤销该 subgroup 中可能残留
+     * 的通告，不能悄悄退回 IPv4 nexthop 发送一个不可用的 Service SID。 */
+    if (out_attr->has_srv6_l3_service)
+    {
+        if (out_nh->global.family != AF_INET6 || !inst)
+        {
+            return false;
+        }
+    }
+    /* Any IPv4 NLRI carried with an IPv6 nexthop requires the exact RFC 8950
+     * tuple for this update-group's AF, including non-SRv6 unicast/QP paths. */
+    if (out_nh->global.family == AF_INET6 && inst && inst->afi == BGP_AFI_IPV4 &&
+        !BIT_TEST(ug->key.negotiated_caps, BGP_SESS_CAP_EXT_NEXTHOP))
+    {
+        return false;
+    }
+    return true;
 }
 
 void bgp_update_group_enqueue_announce(bgp_instance_t *inst, const bgp_nlri_entry_t *nlri)
@@ -940,6 +1072,100 @@ static void catchup_requeue_aro_cb(const bgp_nlri_entry_t *nlri, const bgp_adj_r
     sg->announce_count++;
 }
 
+uint32_t bgp_update_group_catchup_peer(bgp_peer_t *peer, bgp_session_t *sess)
+{
+    if (!peer || !peer->inst || !sess || peer->state != BGP_PEER_STATE_ESTABLISHED)
+    {
+        return 0u;
+    }
+
+    bgp_instance_t *inst = peer->inst;
+
+    /* 加入子组（幂等）；peer 可能归属多个 rule 的子组。 */
+    bgp_subgroup_peer_join(peer, sess);
+    if (!peer->subgroups)
+    {
+        return 0u;
+    }
+
+    /* 新建/空子组需要扫描完整 RIB；已有子组则把共享 ARO 重新排队，
+     * 以便刚加入的 peer 获得与组内其它 peer 相同的视图。 */
+    bool any_empty = false;
+    bool any_populated = false;
+    for (GList *sl = peer->subgroups; sl; sl = sl->next)
+    {
+        bgp_nh_subgroup_t *sg = (bgp_nh_subgroup_t *)sl->data;
+        if (!sg || !sg->adj_rib_out)
+        {
+            continue;
+        }
+        if (bgp_adj_rib_out_count(sg->adj_rib_out) == 0U)
+        {
+            any_empty = true;
+        }
+        else
+        {
+            any_populated = true;
+        }
+    }
+
+    uint32_t before_total = 0;
+    for (GList *sl = peer->subgroups; sl; sl = sl->next)
+    {
+        bgp_nh_subgroup_t *sg = (bgp_nh_subgroup_t *)sl->data;
+        if (sg)
+        {
+            before_total += sg->announce_count;
+        }
+    }
+
+    if (any_empty && inst->rd_entries)
+    {
+        /* 跨所有 RD entry 注入 best-path 到 catchup。 */
+        GHashTableIter rd_iter;
+        gpointer rd_key = NULL;
+        gpointer rd_val = NULL;
+        g_hash_table_iter_init(&rd_iter, inst->rd_entries);
+        while (g_hash_table_iter_next(&rd_iter, &rd_key, &rd_val))
+        {
+            (void)rd_key;
+            bgp_rd_entry_t *e = (bgp_rd_entry_t *)rd_val;
+            if (e && e->rib)
+            {
+                bgp_rib_foreach_best(e->rib, catchup_populate_best_cb, inst);
+            }
+        }
+    }
+    if (any_populated)
+    {
+        for (GList *sl = peer->subgroups; sl; sl = sl->next)
+        {
+            bgp_nh_subgroup_t *sg = (bgp_nh_subgroup_t *)sl->data;
+            if (sg && sg->adj_rib_out && bgp_adj_rib_out_count(sg->adj_rib_out) > 0U)
+            {
+                bgp_adj_rib_out_foreach(sg->adj_rib_out, catchup_requeue_aro_cb, sg);
+            }
+        }
+    }
+
+    uint32_t after_total = 0;
+    for (GList *sl = peer->subgroups; sl; sl = sl->next)
+    {
+        bgp_nh_subgroup_t *sg = (bgp_nh_subgroup_t *)sl->data;
+        if (sg)
+        {
+            after_total += sg->announce_count;
+        }
+    }
+
+    uint32_t scheduled = (after_total > before_total) ? (after_total - before_total) : 0u;
+    if (scheduled > 0u)
+    {
+        bgp_update_group_schedule_pub(inst);
+    }
+    return scheduled;
+}
+
 void bgp_update_group_catchup_session(bgp_session_t *sess)
 {
     if (!sess)
@@ -950,100 +1176,7 @@ void bgp_update_group_catchup_session(bgp_session_t *sess)
     uint32_t total_scheduled = 0;
     for (GList *l = sess->peer_list; l; l = l->next)
     {
-        bgp_peer_t *peer = (bgp_peer_t *)l->data;
-        if (!peer || !peer->inst)
-        {
-            continue;
-        }
-        bgp_instance_t *inst = peer->inst;
-
-        /* peer 状态已在 fsm_on_established 中设置；未协商本 AF 的 peer 不加入子组、不回放 RIB */
-        if (peer->state != BGP_PEER_STATE_ESTABLISHED)
-        {
-            continue;
-        }
-
-        /* 加入子组（幂等）；peer 可能归属多个 rule 的子组 */
-        bgp_subgroup_peer_join(peer, sess);
-        if (!peer->subgroups)
-        {
-            continue;
-        }
-
-        /* 统计是否所有子组都是空——是则做一次 full RIB 扫描；否则对非空子组做
-         * ARO 补发。全量 RIB 扫描只需触发一次：enqueue_announce_to_subgroups 内部
-         * 会分派到正确的 rule 子组。 */
-        bool any_empty = false;
-        bool any_populated = false;
-        for (GList *sl = peer->subgroups; sl; sl = sl->next)
-        {
-            bgp_nh_subgroup_t *sg = (bgp_nh_subgroup_t *)sl->data;
-            if (!sg || !sg->adj_rib_out)
-            {
-                continue;
-            }
-            if (bgp_adj_rib_out_count(sg->adj_rib_out) == 0U)
-            {
-                any_empty = true;
-            }
-            else
-            {
-                any_populated = true;
-            }
-        }
-
-        uint32_t before_total = 0;
-        for (GList *sl = peer->subgroups; sl; sl = sl->next)
-        {
-            bgp_nh_subgroup_t *sg = (bgp_nh_subgroup_t *)sl->data;
-            if (sg)
-            {
-                before_total += sg->announce_count;
-            }
-        }
-
-        if (any_empty && inst->rd_entries)
-        {
-            /* 跨所有 RD entry 注入 best-path 到 catchup */
-            GHashTableIter rd_iter;
-            gpointer rd_key, rd_val;
-            g_hash_table_iter_init(&rd_iter, inst->rd_entries);
-            while (g_hash_table_iter_next(&rd_iter, &rd_key, &rd_val))
-            {
-                (void)rd_key;
-                bgp_rd_entry_t *e = (bgp_rd_entry_t *)rd_val;
-                if (e && e->rib)
-                {
-                    bgp_rib_foreach_best(e->rib, catchup_populate_best_cb, inst);
-                }
-            }
-        }
-        if (any_populated)
-        {
-            for (GList *sl = peer->subgroups; sl; sl = sl->next)
-            {
-                bgp_nh_subgroup_t *sg = (bgp_nh_subgroup_t *)sl->data;
-                if (sg && sg->adj_rib_out && bgp_adj_rib_out_count(sg->adj_rib_out) > 0U)
-                {
-                    bgp_adj_rib_out_foreach(sg->adj_rib_out, catchup_requeue_aro_cb, sg);
-                }
-            }
-        }
-
-        uint32_t after_total = 0;
-        for (GList *sl = peer->subgroups; sl; sl = sl->next)
-        {
-            bgp_nh_subgroup_t *sg = (bgp_nh_subgroup_t *)sl->data;
-            if (sg)
-            {
-                after_total += sg->announce_count;
-            }
-        }
-        if (after_total > before_total)
-        {
-            total_scheduled += (after_total - before_total);
-            bgp_update_group_schedule_pub(inst);
-        }
+        total_scheduled += bgp_update_group_catchup_peer((bgp_peer_t *)l->data, sess);
     }
 
     if (total_scheduled > 0u)
@@ -1224,12 +1357,12 @@ static void announce_bucket_free(announce_bucket_t *bk)
 /**
  * @brief 向单个 session 按 4096 字节报文上限循环发送 packed WITHDRAW
  */
-static void subgroup_send_packed_withdraws(bgp_session_t *sess, uint16_t afi, uint8_t safi,
-                                           const bgp_nlri_entry_t *const *nlri_list, int nlri_count)
+static gboolean subgroup_send_packed_withdraws(bgp_session_t *sess, uint16_t afi, uint8_t safi,
+                                               const bgp_nlri_entry_t *const *nlri_list, int nlri_count)
 {
     if (!sess || !sess->pri_conn || nlri_count <= 0)
     {
-        return;
+        return FALSE;
     }
     uint8_t msg[4096];
     int remaining = nlri_count;
@@ -1243,36 +1376,85 @@ static void subgroup_send_packed_withdraws(bgp_session_t *sess, uint16_t afi, ui
         {
             LOG_WARN("BGP: packed WITHDRAW build failed afi=%u safi=%u remaining=%d", (unsigned)afi, (unsigned)safi,
                      remaining);
-            break;
+            return FALSE;
         }
         ssize_t sent = send(sess->pri_conn->fd, msg, (size_t)len, MSG_NOSIGNAL);
         if (sent != (ssize_t)len)
         {
             LOG_WARN("BGP: packed WITHDRAW send incomplete (sent=%zd want=%d)", sent, len);
-            break;
+            /* 短写/EAGAIN 不能被当作 withdraw 完成。关闭传输使对端
+             * 通过 session-down 撤销全部路由，避免随后释放 SID 时对端仍持有广告。 */
+            shutdown(sess->pri_conn->fd, SHUT_RDWR);
+            return TRUE;
         }
         bgp_session_tx_msg_count(sess, BGP_MSG_UPDATE);
         cursor += packed;
         remaining -= packed;
     }
+    return TRUE;
 }
 
 void bgp_send_packed_withdraws_to_session(bgp_session_t *sess, uint16_t afi, uint8_t safi,
                                           const bgp_nlri_entry_t *const *nlri_list, int nlri_count)
 {
-    subgroup_send_packed_withdraws(sess, afi, safi, nlri_list, nlri_count);
+    (void)subgroup_send_packed_withdraws(sess, afi, safi, nlri_list, nlri_count);
+}
+
+gboolean bgp_update_group_withdraw_peer_aro(bgp_peer_t *peer, bgp_session_t *sess)
+{
+    if (!peer || !peer->inst || !sess)
+    {
+        return FALSE;
+    }
+    if (!peer->subgroups || !bgp_session_is_publish_ready(sess))
+    {
+        /* A non-established transport cannot retain this session's routes at
+         * the remote side; there is no targeted wire withdrawal to send. */
+        return TRUE;
+    }
+
+    for (GList *sl = peer->subgroups; sl; sl = sl->next)
+    {
+        bgp_nh_subgroup_t *sg = (bgp_nh_subgroup_t *)sl->data;
+        if (!sg || !sg->adj_rib_out || bgp_adj_rib_out_count(sg->adj_rib_out) == 0u)
+        {
+            continue;
+        }
+
+        GPtrArray *nlris = g_ptr_array_new_with_free_func(g_free);
+        GHashTableIter iter;
+        gpointer key = NULL;
+        g_hash_table_iter_init(&iter, sg->adj_rib_out->table);
+        while (g_hash_table_iter_next(&iter, &key, NULL))
+        {
+            g_ptr_array_add(nlris, g_memdup2(key, sizeof(bgp_nlri_entry_t)));
+        }
+
+        gboolean secured = TRUE;
+        if (nlris->len > 0u)
+        {
+            secured = subgroup_send_packed_withdraws(sess, (uint16_t)peer->inst->afi, (uint8_t)peer->inst->safi,
+                                                     (const bgp_nlri_entry_t *const *)nlris->pdata, (int)nlris->len);
+        }
+        g_ptr_array_free(nlris, TRUE);
+        if (!secured)
+        {
+            return FALSE;
+        }
+    }
+    return TRUE;
 }
 
 /**
  * @brief 向单个 session 按 4096 字节报文上限循环发送 packed UPDATE
  */
-static void subgroup_send_packed_updates(bgp_session_t *sess, uint16_t afi, uint8_t safi,
-                                         const bgp_nlri_entry_t *const *nlri_list, int nlri_count,
-                                         const bgp_attr_t *attr, const bgp_nexthop_t *nh)
+static gboolean subgroup_send_packed_updates(bgp_session_t *sess, uint16_t afi, uint8_t safi,
+                                             const bgp_nlri_entry_t *const *nlri_list, int nlri_count,
+                                             const bgp_attr_t *attr, const bgp_nexthop_t *nh)
 {
     if (!sess || !sess->pri_conn || nlri_count <= 0 || !attr || !nh)
     {
-        return;
+        return FALSE;
     }
     uint8_t msg[4096];
     int remaining = nlri_count;
@@ -1285,18 +1467,23 @@ static void subgroup_send_packed_updates(bgp_session_t *sess, uint16_t afi, uint
         {
             LOG_WARN("BGP: packed UPDATE build failed afi=%u safi=%u remaining=%d", (unsigned)afi, (unsigned)safi,
                      remaining);
-            break;
+            return FALSE;
         }
         ssize_t sent = send(sess->pri_conn->fd, msg, (size_t)len, MSG_NOSIGNAL);
         if (sent != (ssize_t)len)
         {
             LOG_WARN("BGP: packed UPDATE send incomplete (sent=%zd want=%d)", sent, len);
-            break;
+            /* A shared ARO cannot represent per-peer partial delivery.  Force
+             * this transport down so reconnect/catchup starts from a clean
+             * remote Adj-RIB-In, while the caller retains this batch. */
+            shutdown(sess->pri_conn->fd, SHUT_RDWR);
+            return FALSE;
         }
         bgp_session_tx_msg_count(sess, BGP_MSG_UPDATE);
         cursor += packed;
         remaining -= packed;
     }
+    return TRUE;
 }
 
 /**
@@ -1306,13 +1493,13 @@ static void subgroup_send_packed_updates(bgp_session_t *sess, uint16_t afi, uint
  * (attr, nh) 确定后打包结果也确定，可复用同一份字节流发给多个 peer。
  * 调用者需保证这批 NLRI 对 peer_list 中任一 peer 都不触发 split-horizon。
  */
-static void subgroup_pack_and_multicast(GList *peer_list, uint16_t afi, uint8_t safi,
-                                        const bgp_nlri_entry_t *const *nlri_list, int nlri_count,
-                                        const bgp_attr_t *attr, const bgp_nexthop_t *nh)
+static gboolean subgroup_pack_and_multicast(GList *peer_list, uint16_t afi, uint8_t safi,
+                                            const bgp_nlri_entry_t *const *nlri_list, int nlri_count,
+                                            const bgp_attr_t *attr, const bgp_nexthop_t *nh)
 {
     if (!peer_list || nlri_count <= 0 || !attr || !nh)
     {
-        return;
+        return FALSE;
     }
 
     /* 先收集 ready session，避免循环中重复查找 */
@@ -1334,7 +1521,9 @@ static void subgroup_pack_and_multicast(GList *peer_list, uint16_t afi, uint8_t 
     if (sessions->len == 0)
     {
         g_ptr_array_free(sessions, TRUE);
-        return;
+        /* 没有 publish-ready session 时，session-down 已保证对端不保留
+         * 本组路由；后续重连通过 catchup 重放共享 ARO。 */
+        return TRUE;
     }
 
     uint8_t msg[4096];
@@ -1348,7 +1537,8 @@ static void subgroup_pack_and_multicast(GList *peer_list, uint16_t afi, uint8_t 
         {
             LOG_WARN("BGP: packed UPDATE build failed afi=%u safi=%u remaining=%d", (unsigned)afi, (unsigned)safi,
                      remaining);
-            break;
+            g_ptr_array_free(sessions, TRUE);
+            return FALSE;
         }
         for (guint i = 0; i < sessions->len; i++)
         {
@@ -1361,7 +1551,9 @@ static void subgroup_pack_and_multicast(GList *peer_list, uint16_t afi, uint8_t 
             if (sent != (ssize_t)len)
             {
                 LOG_WARN("BGP: packed UPDATE multicast send incomplete (sent=%zd want=%d)", sent, len);
-                continue;
+                shutdown(sess->pri_conn->fd, SHUT_RDWR);
+                g_ptr_array_free(sessions, TRUE);
+                return FALSE;
             }
             bgp_session_tx_msg_count(sess, BGP_MSG_UPDATE);
         }
@@ -1370,6 +1562,7 @@ static void subgroup_pack_and_multicast(GList *peer_list, uint16_t afi, uint8_t 
     }
 
     g_ptr_array_free(sessions, TRUE);
+    return TRUE;
 }
 
 int bgp_subgroup_process_queues(bgp_nh_subgroup_t *sg, bgp_instance_t *inst, int batch_size)
@@ -1397,6 +1590,7 @@ int bgp_subgroup_process_queues(bgp_nh_subgroup_t *sg, bgp_instance_t *inst, int
     }
     if (wd_nlris->len > 0)
     {
+        gboolean withdraw_secured = TRUE;
         for (GList *l = sg->peer_list; l; l = l->next)
         {
             bgp_peer_t *peer = (bgp_peer_t *)l->data;
@@ -1409,8 +1603,24 @@ int bgp_subgroup_process_queues(bgp_nh_subgroup_t *sg, bgp_instance_t *inst, int
             {
                 continue;
             }
-            subgroup_send_packed_withdraws(sess, afi, safi, (const bgp_nlri_entry_t *const *)wd_nlris->pdata,
-                                           (int)wd_nlris->len);
+            if (!subgroup_send_packed_withdraws(sess, afi, safi, (const bgp_nlri_entry_t *const *)wd_nlris->pdata,
+                                                (int)wd_nlris->len))
+            {
+                withdraw_secured = FALSE;
+                break;
+            }
+        }
+        if (!withdraw_secured)
+        {
+            /* 只有组包失败到达此处；发送失败已用 session-down
+             * 保证撤路。组包失败保留队列，不允许 quiesce 误判完成。 */
+            for (gint i = (gint)wd_nlris->len - 1; i >= 0; --i)
+            {
+                g_queue_push_head(sg->withdraw_queue, g_ptr_array_index(wd_nlris, (guint)i));
+            }
+            processed -= (int)wd_nlris->len;
+            g_ptr_array_free(wd_nlris, TRUE);
+            return processed;
         }
     }
     for (guint i = 0; i < wd_nlris->len; i++)
@@ -1421,33 +1631,48 @@ int bgp_subgroup_process_queues(bgp_nh_subgroup_t *sg, bgp_instance_t *inst, int
 
     /* --- Packed ANNOUNCE：按 (attr_ref, nh) 分桶 --- */
     GList *buckets = NULL;
-    GPtrArray *ann_nlris = g_ptr_array_new(); /* 记录所有出队 NLRI 堆副本（最终统一释放） */
-    while (processed < batch_size && sg->announce_queue && !g_queue_is_empty(sg->announce_queue))
+    GPtrArray *ann_nlris = g_ptr_array_new(); /* 记录本轮已消费 NLRI 堆副本（最终统一释放） */
+    const gint64 announce_now_usec = g_get_monotonic_time();
+    while (processed < batch_size && bgp_subgroup_announce_retry_ready(sg, announce_now_usec))
     {
         bgp_nlri_entry_t *nlri = (bgp_nlri_entry_t *)g_queue_pop_head(sg->announce_queue);
         if (!nlri)
         {
             break;
         }
-        processed++;
-        g_ptr_array_add(ann_nlris, nlri);
 
         const bgp_adj_rib_out_entry_t *entry = bgp_adj_rib_out_lookup(sg->adj_rib_out, nlri);
         if (!entry || !entry->attr_ref)
         {
+            g_free(nlri);
+            processed++;
             continue;
         }
         bgp_rib_t *rib_for_nlri = bgp_inst_rib_for_nlri(inst, nlri);
         const bgp_route_node_t *best = rib_for_nlri ? bgp_rib_find_best(rib_for_nlri, nlri) : NULL;
 
-        /* vpnv4 本地导出路由：loc-rib 不带标签，发送时按 per-vrf 申请标签注入 NLRI;
+        const bgp_attr_t *send_attr = &entry->attr_ref->attr;
+
+        /* RFC 9252 whole-SID 模式不做 transposition，VPN NLRI 的 Label
+         * Value 必须携带 Implicit NULL(3)。本地导出和透明传播都统一
+         * 规范化，且绝不能再走 MPLS per-VRF/Option-B 标签分配。 */
+        if (best && inst->safi == BGP_SAFI_VPN_UNICAST && bgp_attr_has_whole_srv6_service(send_attr))
+        {
+            nlri->prefix.label = 3u;
+            nlri->prefix.has_label = true;
+        }
+        /* MPLS VPN 本地导出路由：loc-rib 不带标签，发送时按 per-vrf 申请标签注入 NLRI;
          * 申请不到则 hold（本次不通告），待标签可得后下次 pub 重试。 */
-        if (best && inst->safi == BGP_SAFI_VPN_UNICAST && bgp_route_is_local_origin(best))
+        else if (best && inst->safi == BGP_SAFI_VPN_UNICAST && bgp_route_is_local_origin(best))
         {
             uint32_t label = bgp_vrf_export_resolve_send_label(best);
             if (label == 0u)
             {
-                continue; /* hold：nlri 堆副本最终随 ann_nlris 统一释放 */
+                /* ARO 已更新，丢掉该队列项后相同属性不会再次入队。保留原
+                 * NLRI 并退避重试，直到 TUNNEL 标签依赖恢复。 */
+                g_queue_push_tail(sg->announce_queue, nlri);
+                bgp_subgroup_label_retry_arm(sg);
+                break;
             }
             nlri->prefix.label = label;
             nlri->prefix.has_label = true;
@@ -1455,16 +1680,25 @@ int bgp_subgroup_process_queues(bgp_nh_subgroup_t *sg, bgp_instance_t *inst, int
         /* inter-AS Option B 中转：vpnv4 路由改下一跳为本端（next-hop-self，sg rule=LOCAL）通告时，
          * 给路由分配本地入标签并注入 NLRI（替换收到的对端标签），TUNNEL 据此装 SWAP 换标 ILM。
          * 申请不到则 hold。仅对非本地起源（收来再中转）的 vpnv4 路由生效。 */
-        else if (best && inst->safi == BGP_SAFI_VPN_UNICAST && sg->key.rule == BGP_NH_RULE_LOCAL && best->has_label)
+        else if (best && inst->safi == BGP_SAFI_VPN_UNICAST && sg->key.rule == BGP_NH_RULE_LOCAL && best->has_label &&
+                 !send_attr->has_prefix_sid)
         {
             uint32_t label = bgp_vrf_import_transit_alloc_label((bgp_route_node_t *)best);
             if (label == 0u)
             {
-                continue; /* hold */
+                g_queue_push_tail(sg->announce_queue, nlri);
+                bgp_subgroup_label_retry_arm(sg);
+                break;
             }
             nlri->prefix.label = label;
             nlri->prefix.has_label = true;
         }
+
+        /* 任一成功消费说明当前队首不再受标签依赖阻塞；若后续 NLRI
+         * 仍失败，会在同一轮重新建立退避。 */
+        bgp_subgroup_label_retry_reset(sg);
+        processed++;
+        g_ptr_array_add(ann_nlris, nlri);
 
         announce_bucket_t *bk = announce_bucket_find_or_create(&buckets, entry->attr_ref, &entry->nexthop);
 
@@ -1483,10 +1717,16 @@ int bgp_subgroup_process_queues(bgp_nh_subgroup_t *sg, bgp_instance_t *inst, int
         g_ptr_array_add(bk->items, item);
     }
 
+    if (sg->announce_queue && g_queue_is_empty(sg->announce_queue))
+    {
+        bgp_subgroup_label_retry_reset(sg);
+    }
+
     /* 遍历桶并发送：UG 键已保证 remote_as/negotiated_caps 一致，
      * 因此 AS_PATH 防环在桶级一次判定、无 split-horizon 时组包一次多播 */
     bgp_update_group_t *ug = sg->parent;
-    for (GList *bl = buckets; bl; bl = bl->next)
+    gboolean announce_batch_secured = TRUE;
+    for (GList *bl = buckets; bl && announce_batch_secured; bl = bl->next)
     {
         announce_bucket_t *bk = (announce_bucket_t *)bl->data;
         if (!bk || !bk->attr_ref || !bk->items || bk->items->len == 0)
@@ -1533,14 +1773,15 @@ int bgp_subgroup_process_queues(bgp_nh_subgroup_t *sg, bgp_instance_t *inst, int
                     announce_item_t *it = g_ptr_array_index(bk->items, i);
                     g_ptr_array_add(nlris, (gpointer)it->nlri);
                 }
-                subgroup_pack_and_multicast(sg->peer_list, afi, safi, (const bgp_nlri_entry_t *const *)nlris->pdata,
-                                            (int)nlris->len, &bk->attr_ref->attr, &bk->nexthop);
+                announce_batch_secured =
+                    subgroup_pack_and_multicast(sg->peer_list, afi, safi, (const bgp_nlri_entry_t *const *)nlris->pdata,
+                                                (int)nlris->len, &bk->attr_ref->attr, &bk->nexthop);
                 g_ptr_array_free(nlris, TRUE);
             }
             else
             {
                 /* 慢路径：逐 peer 过滤 split-horizon */
-                for (GList *sl = sg->peer_list; sl; sl = sl->next)
+                for (GList *sl = sg->peer_list; sl && announce_batch_secured; sl = sl->next)
                 {
                     bgp_peer_t *peer = (bgp_peer_t *)sl->data;
                     if (!peer || !peer->vrf)
@@ -1565,20 +1806,45 @@ int bgp_subgroup_process_queues(bgp_nh_subgroup_t *sg, bgp_instance_t *inst, int
                     }
                     if (filtered->len > 0)
                     {
-                        subgroup_send_packed_updates(sess, afi, safi, (const bgp_nlri_entry_t *const *)filtered->pdata,
-                                                     (int)filtered->len, &bk->attr_ref->attr, &bk->nexthop);
+                        announce_batch_secured = subgroup_send_packed_updates(
+                            sess, afi, safi, (const bgp_nlri_entry_t *const *)filtered->pdata, (int)filtered->len,
+                            &bk->attr_ref->attr, &bk->nexthop);
                     }
                     g_ptr_array_free(filtered, TRUE);
                 }
             }
         }
+    }
 
-        /* 标记 advertised（无论是否因 AS_PATH 环路被跳过，均避免重复入队） */
-        for (guint i = 0; i < bk->items->len; i++)
+    if (announce_batch_secured)
+    {
+        /* 整批报文都可靠发送后才提交共享 ARO 状态。AS_PATH 环路项无需
+         * 上线发送，但同样可提交，避免无意义地重复入队。 */
+        for (GList *bl = buckets; bl; bl = bl->next)
         {
-            announce_item_t *it = g_ptr_array_index(bk->items, i);
-            bgp_adj_rib_out_mark_advertised(sg->adj_rib_out, it->nlri);
+            announce_bucket_t *bk = (announce_bucket_t *)bl->data;
+            if (!bk || !bk->items)
+            {
+                continue;
+            }
+            for (guint i = 0; i < bk->items->len; i++)
+            {
+                announce_item_t *it = g_ptr_array_index(bk->items, i);
+                bgp_adj_rib_out_mark_advertised(sg->adj_rib_out, it->nlri);
+            }
         }
+    }
+    else
+    {
+        /* 任一组包/发送失败都不能提交 advertised。把整批放回队首；已
+         * 成功收到部分 UPDATE 的 peer 接受幂等重放，失败 transport 则
+         * 由 shutdown 触发 session-down，重连后再通过 catchup 收敛。 */
+        for (gint i = (gint)ann_nlris->len - 1; i >= 0; --i)
+        {
+            g_queue_push_head(sg->announce_queue, g_ptr_array_index(ann_nlris, (guint)i));
+        }
+        processed -= (int)ann_nlris->len;
+        bgp_subgroup_label_retry_arm(sg);
     }
 
     /* 清理 */
@@ -1587,9 +1853,12 @@ int bgp_subgroup_process_queues(bgp_nh_subgroup_t *sg, bgp_instance_t *inst, int
         announce_bucket_free((announce_bucket_t *)bl->data);
     }
     g_list_free(buckets);
-    for (guint i = 0; i < ann_nlris->len; i++)
+    if (announce_batch_secured)
     {
-        g_free(g_ptr_array_index(ann_nlris, i));
+        for (guint i = 0; i < ann_nlris->len; i++)
+        {
+            g_free(g_ptr_array_index(ann_nlris, i));
+        }
     }
     g_ptr_array_free(ann_nlris, TRUE);
 
@@ -1609,6 +1878,7 @@ static int bgp_update_group_process_pub_event(bgp_instance_t *inst, gboolean all
 
     int total_processed = 0;
     gboolean need_more = FALSE;
+    const gint64 now_usec = g_get_monotonic_time();
 
     for (GList *ul = inst->update_groups; ul; ul = ul->next)
     {
@@ -1629,7 +1899,7 @@ static int bgp_update_group_process_pub_event(bgp_instance_t *inst, gboolean all
             {
                 total_processed += processed;
             }
-            if ((sg->announce_queue && !g_queue_is_empty(sg->announce_queue)) ||
+            if (bgp_subgroup_announce_retry_ready(sg, now_usec) ||
                 (sg->withdraw_queue && !g_queue_is_empty(sg->withdraw_queue)))
             {
                 need_more = TRUE;
@@ -1666,6 +1936,77 @@ static void bgp_update_group_schedule_pub(bgp_instance_t *inst)
 
     LOG_WARN("BGP: failed to enqueue session-pub work event vrf=%u afi=%u safi=%u", vrf_id, (unsigned)inst->afi,
              (unsigned)inst->safi);
+}
+
+void bgp_update_group_label_retry_tick(void)
+{
+    bgp_protocol_t *proto = g_bgp_work_local ? g_bgp_work_local->protocol : NULL;
+    if (!proto || !proto->vrf_hash)
+    {
+        return;
+    }
+
+    const gint64 now_usec = g_get_monotonic_time();
+    GHashTableIter vrf_iter;
+    gpointer vrf_key = NULL;
+    gpointer vrf_value = NULL;
+    g_hash_table_iter_init(&vrf_iter, proto->vrf_hash);
+    while (g_hash_table_iter_next(&vrf_iter, &vrf_key, &vrf_value))
+    {
+        (void)vrf_key;
+        bgp_vrf_t *vrf = (bgp_vrf_t *)vrf_value;
+        if (!vrf || !vrf->inst_hash)
+        {
+            continue;
+        }
+
+        GHashTableIter inst_iter;
+        gpointer inst_key = NULL;
+        gpointer inst_value = NULL;
+        g_hash_table_iter_init(&inst_iter, vrf->inst_hash);
+        while (g_hash_table_iter_next(&inst_iter, &inst_key, &inst_value))
+        {
+            (void)inst_key;
+            bgp_instance_t *inst = (bgp_instance_t *)inst_value;
+            gboolean retry_due = FALSE;
+            if (!inst)
+            {
+                continue;
+            }
+
+            for (GList *ug_link = inst->update_groups; ug_link; ug_link = ug_link->next)
+            {
+                bgp_update_group_t *ug = (bgp_update_group_t *)ug_link->data;
+                if (!ug)
+                {
+                    continue;
+                }
+                for (GList *sg_link = ug->subgroups; sg_link; sg_link = sg_link->next)
+                {
+                    bgp_nh_subgroup_t *sg = (bgp_nh_subgroup_t *)sg_link->data;
+                    if (!sg || sg->label_retry_due_usec == 0)
+                    {
+                        continue;
+                    }
+                    if (!sg->announce_queue || g_queue_is_empty(sg->announce_queue))
+                    {
+                        bgp_subgroup_label_retry_reset(sg);
+                        continue;
+                    }
+                    if (now_usec >= sg->label_retry_due_usec)
+                    {
+                        sg->label_retry_due_usec = 0;
+                        retry_due = TRUE;
+                    }
+                }
+            }
+
+            if (retry_due)
+            {
+                bgp_update_group_schedule_pub(inst);
+            }
+        }
+    }
 }
 
 void bgp_update_group_handle_pub_event(uint32_t vrf_id, bgp_afi_t afi, bgp_safi_t safi)

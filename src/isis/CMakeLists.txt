@@ -27,6 +27,7 @@ target_link_libraries(netnexus-isis PRIVATE
     db_api
     if_api
     route_api
+    srv6_api
     utils
 )
 

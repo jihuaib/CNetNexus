@@ -44,6 +44,8 @@ bgp_session_t *bgp_session_create(const net_addr_t *addr, uint32_t remote_as, bg
     /* remote_id / local_router_id 初始值为 0（g_malloc0 已置零） */
     sess->local_afs = NULL;
     sess->remote_afs = NULL;
+    sess->local_ext_nh = NULL;
+    sess->remote_ext_nh = NULL;
 
     /* FSM 初始状态 */
     sess->fsm_state = BGP_FSM_STATE_IDLE;
@@ -112,6 +114,16 @@ void bgp_session_destroy(bgp_session_t *session)
         g_array_free(session->remote_afs, TRUE);
         session->remote_afs = NULL;
     }
+    if (session->local_ext_nh)
+    {
+        g_array_free(session->local_ext_nh, TRUE);
+        session->local_ext_nh = NULL;
+    }
+    if (session->remote_ext_nh)
+    {
+        g_array_free(session->remote_ext_nh, TRUE);
+        session->remote_ext_nh = NULL;
+    }
 
     /* peer_list 只存借用引用，仅释放链表节点 */
     if (session->peer_list)
@@ -176,6 +188,14 @@ void bgp_session_reset_negotiated(bgp_session_t *sess)
     {
         g_array_set_size(sess->remote_afs, 0);
     }
+    if (sess->local_ext_nh)
+    {
+        g_array_set_size(sess->local_ext_nh, 0);
+    }
+    if (sess->remote_ext_nh)
+    {
+        g_array_set_size(sess->remote_ext_nh, 0);
+    }
 
     /* 同步回落 peer 状态，保证断链/重协商路径上 peer 状态与 session 一致 */
     for (GList *l = sess->peer_list; l; l = l->next)
@@ -191,6 +211,30 @@ void bgp_session_reset_negotiated(bgp_session_t *sess)
     char addr_str[64];
     net_addr_to_str(&sess->neighbor_addr, addr_str, sizeof(addr_str));
     LOG_DEBUG("BGP: neighbor %s negotiated params reset", addr_str);
+}
+
+static gboolean bgp_ext_nh_array_contains(const GArray *tuples, uint16_t nlri_afi, uint16_t nlri_safi, uint16_t nh_afi)
+{
+    if (!tuples)
+    {
+        return FALSE;
+    }
+    for (guint i = 0; i < tuples->len; ++i)
+    {
+        const bgp_ext_nh_entry_t *entry = &g_array_index(tuples, bgp_ext_nh_entry_t, i);
+        if (entry->nlri_afi == nlri_afi && entry->nlri_safi == nlri_safi && entry->nh_afi == nh_afi)
+        {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+gboolean bgp_session_ext_nh_negotiated(const bgp_session_t *sess, uint16_t nlri_afi, uint16_t nlri_safi,
+                                       uint16_t nh_afi)
+{
+    return sess && bgp_ext_nh_array_contains(sess->local_ext_nh, nlri_afi, nlri_safi, nh_afi) &&
+           bgp_ext_nh_array_contains(sess->remote_ext_nh, nlri_afi, nlri_safi, nh_afi);
 }
 
 // ============================================================================

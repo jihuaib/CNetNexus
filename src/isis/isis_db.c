@@ -57,7 +57,9 @@ int isis_db_restore(void)
         return ERRCODE_FAIL;
     }
 
-    isis_db_restore_instances();
+    int instance_rc = isis_db_restore_instances();
+    /* 接口恢复沿用原有独立、尽力而为语义；instance/IPv6 AF/locator 的
+     * 错误仍通过最终返回值上送，避免牵连无关配置的 cold restore。 */
     isis_db_restore_interfaces();
-    return ERRCODE_SUCCESS;
+    return instance_rc;
 }

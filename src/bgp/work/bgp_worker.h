@@ -18,6 +18,7 @@
 #include "if.h"
 #include "net_addr.h"
 #include "rpm.h"
+#include "srv6.h"
 #include "vrf.h"
 
 typedef struct bgp_session bgp_session_t;
@@ -98,6 +99,29 @@ typedef struct bgp_apply_cmd
         {
             uint32_t as_number; /**< 本地 AS 号 */
         } protocol;
+
+        /** BGP_CLI_GROUP_ID_SRV6 */
+        struct
+        {
+            char locator[SRV6_LOCATOR_NAME_MAX];
+            bgp_afi_t afi;
+            bgp_safi_t safi;
+        } srv6;
+
+        /** BGP_CLI_GROUP_ID_SRV6_BE */
+        struct
+        {
+            bgp_afi_t afi;
+            bgp_safi_t safi;
+        } srv6_mode;
+
+        /** BGP_CLI_GROUP_ID_NEIGHBOR_SRV6_SID */
+        struct
+        {
+            net_addr_t addr; /**< VPN AF 邻居地址 */
+            bgp_afi_t afi;   /**< BGP_AFI_IPV4 / BGP_AFI_IPV6 */
+            bgp_safi_t safi; /**< BGP_SAFI_VPN_UNICAST */
+        } neighbor_srv6_sid;
 
         /** BGP_CLI_GROUP_ID_NEIGHBOR */
         struct

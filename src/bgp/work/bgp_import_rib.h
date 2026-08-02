@@ -66,6 +66,9 @@ void bgp_import_rib_inst_destroy(bgp_instance_t *inst);
  */
 bool bgp_import_rib_should_skip_flush(const bgp_instance_t *inst);
 
+/** 只读返回实例尚未处理的 import-rib 队列长度。 */
+uint32_t bgp_import_rib_pending_count(const bgp_instance_t *inst);
+
 /**
  * @brief 判定一条 route_node 是否为 mirror（即 import-rib 镜像）
  */

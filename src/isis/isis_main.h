@@ -40,6 +40,9 @@ static inline dev_ipc_context_t *isis_local_ipc_ctx(void)
 /** ISIS 内部消息：DB 模块就绪，worker 线程做 db_init + db_restore */
 #define ISIS_MSG_TYPE_INTERNAL_DB_READY DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ISIS, 0xFFFB)
 
+/** ISIS 内部消息：ROUTE 模块下线，清除 locator 快照并触发 LSP 撤销。 */
+#define ISIS_MSG_TYPE_INTERNAL_ROUTE_DOWN DEV_IPC_MSG_TYPE(DEV_IPC_CATEGORY_ISIS, 0xFFFA)
+
 void isis_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg);
 int isis_module_init(void);
 void isis_module_cleanup(void);

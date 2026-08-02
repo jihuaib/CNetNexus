@@ -77,6 +77,8 @@
 #define CLI_VIEW_ROUTE "route"
 /** ISIS 配置视图 */
 #define CLI_VIEW_ISIS "isis"
+/** ISIS IPv6 地址族配置视图 */
+#define CLI_VIEW_ISIS_AF_IPV6 "isis-af-ipv6"
 /** LDP 配置视图 */
 #define CLI_VIEW_LDP "ldp"
 /** OSPFv2 配置视图 */
@@ -95,6 +97,8 @@
 #define CLI_VIEW_BGP_AF_IPV4_LABELED "bgp-af-ipv4-labeled"
 /** BGP 地址族 VPNv4（MPLS L3VPN）视图 */
 #define CLI_VIEW_BGP_AF_VPNV4 "bgp-af-vpnv4"
+/** BGP 地址族 VPNv6（L3VPN）视图 */
+#define CLI_VIEW_BGP_AF_VPNV6 "bgp-af-vpnv6"
 /** BGP 地址族 EVPN 视图 */
 #define CLI_VIEW_BGP_AF_EVPN "bgp-af-evpn"
 /** BGP VRF 配置视图 */

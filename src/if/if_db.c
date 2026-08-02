@@ -34,10 +34,13 @@ typedef struct
 static void if_db_apply_row(const if_db_row_snapshot_t *r);
 
 static const db_column_def_t IF_INTERFACE_COLS[] = {
-    {"name", DB_TYPE_TEXT, DB_COL_PRIMARY_KEY, NULL},           {"ip_address", DB_TYPE_TEXT, DB_COL_NOT_NULL, "''"},
-    {"prefix_len", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},      {"ipv6_address", DB_TYPE_TEXT, DB_COL_NOT_NULL, "''"},
-    {"ipv6_prefix_len", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"}, {"shutdown", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},
-    {"vrf_name", DB_TYPE_TEXT, DB_COL_NOT_NULL, "''"},
+    {"name", DB_TYPE_TEXT, DB_COL_PRIMARY_KEY, NULL},
+    {"ip_address", DB_TYPE_TEXT, DB_COL_NOT_NULL, ""},
+    {"prefix_len", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},
+    {"ipv6_address", DB_TYPE_TEXT, DB_COL_NOT_NULL, ""},
+    {"ipv6_prefix_len", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},
+    {"shutdown", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},
+    {"vrf_name", DB_TYPE_TEXT, DB_COL_NOT_NULL, ""},
 };
 
 static const db_table_def_t IF_INTERFACE_TABLE = {

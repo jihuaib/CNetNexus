@@ -27,6 +27,8 @@ int isis_db_set_is_type(uint32_t tag, uint8_t is_type);
 int isis_db_set_cost_style(uint32_t tag, uint8_t cost_style);
 int isis_db_set_af(uint32_t tag, uint16_t afi, int enabled);
 int isis_db_is_af_enabled(uint32_t tag, uint16_t afi, int *enabled_out);
+int isis_db_set_srv6_locator(uint32_t tag, const char *locator);
+int isis_db_get_srv6_locator(uint32_t tag, char *locator_out, size_t locator_out_size);
 
 int isis_db_set_interface_af_cfg(uint32_t tag, const char *ifname, uint16_t afi, const isis_if_af_cfg_t *cfg);
 int isis_db_get_interface_af_cfg(uint32_t tag, const char *ifname, uint16_t afi, isis_if_af_cfg_t *cfg_out);

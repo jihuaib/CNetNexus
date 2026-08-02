@@ -42,6 +42,7 @@ typedef enum route_worker_cmd_type
     ROUTE_WORKER_CMD_VRF_QUERY = 14,        /**< VRF 查询：其他线程同步请求 worker 查询 */
     ROUTE_WORKER_CMD_IF_DOWN = 15,          /**< IF 模块 DOWN：清 IF 缓存 + 重算 nexthop watch */
     ROUTE_WORKER_CMD_VRF_DOWN = 16,         /**< VRF 模块 DOWN：拆非 public VRF 业务 + 清 cache */
+    ROUTE_WORKER_CMD_PROTOCOL_FLUSH = 17,   /**< 已认证的独占协议路径清理 */
 } route_worker_cmd_type_t;
 
 // ============================================================================

@@ -108,6 +108,12 @@ static int parse_vpn(const uint8_t *data, uint16_t len, int af, uint16_t afi, bg
         {
             break;
         }
+        /* 当前实现只支持单标签 VPN NLRI；BoS=0 表示后续仍有标签，
+         * 不能把首标签误当成完整服务标签（尤其不能误接受 label 3）。 */
+        if ((data[pos + 2] & 0x01u) == 0u)
+        {
+            break;
+        }
         uint32_t label = bgp_label_decode(data + pos);
         pos += 3;
 
@@ -165,32 +171,57 @@ static int parse_vpn(const uint8_t *data, uint16_t len, int af, uint16_t afi, bg
 
 /* ============================================================================
  * VPN nexthop 解析
- * VPN-IPv4: RD(8B) + IPv4(4B) = 12B
- * VPN-IPv6: RD(8B) + IPv6(16B) = 24B
+ * VPN-IPv4 + IPv4 NH: RD(8B) + IPv4(4B) = 12B
+ * VPN-IPv4 + IPv6 NH: RD(8B) + IPv6(16B) = 24B（RFC 8950）
+ * VPN-IPv6 + IPv6 NH: RD(8B) + IPv6(16B) = 24B（RFC 4659）
+ * 双 IPv6 NH 为 48B：RD+global 后跟 RD+link-local。
  * ========================================================================== */
 
 static int vpn_ipv4_nexthop(const uint8_t *nh_data, uint8_t nh_len, uint32_t flags, bgp_nexthop_t *nexthop)
 {
-    (void)flags;
-    if (nh_len < 12)
+    if (!nh_data || !nexthop)
     {
         return -1;
     }
-    /* 跳过 RD（8B）*/
-    nexthop->global.family = AF_INET;
-    memcpy(&nexthop->global.u.v4, nh_data + 8, 4);
-    return 0;
+    memset(nexthop, 0, sizeof(*nexthop));
+
+    if (nh_len == 12u)
+    {
+        nexthop->global.family = AF_INET;
+        memcpy(&nexthop->global.u.v4, nh_data + 8, 4);
+        return 0;
+    }
+    if ((nh_len == 24u || nh_len == 48u) && (flags & BGP_PARSE_FLAG_EXT_NEXTHOP))
+    {
+        nexthop->global.family = AF_INET6;
+        memcpy(nexthop->global.u.v6.s6_addr, nh_data + 8, 16);
+        if (nh_len == 48u)
+        {
+            nexthop->link_local.family = AF_INET6;
+            memcpy(nexthop->link_local.u.v6.s6_addr, nh_data + 32, 16);
+            nexthop->has_link_local = true;
+        }
+        return 0;
+    }
+    return -1;
 }
 
 static int vpn_ipv6_nexthop(const uint8_t *nh_data, uint8_t nh_len, uint32_t flags, bgp_nexthop_t *nexthop)
 {
     (void)flags;
-    if (nh_len < 24)
+    if (!nh_data || !nexthop || (nh_len != 24u && nh_len != 48u))
     {
         return -1;
     }
+    memset(nexthop, 0, sizeof(*nexthop));
     nexthop->global.family = AF_INET6;
     memcpy(nexthop->global.u.v6.s6_addr, nh_data + 8, 16);
+    if (nh_len == 48u)
+    {
+        nexthop->link_local.family = AF_INET6;
+        memcpy(nexthop->link_local.u.v6.s6_addr, nh_data + 32, 16);
+        nexthop->has_link_local = true;
+    }
     return 0;
 }
 

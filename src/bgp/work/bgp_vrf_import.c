@@ -1,6 +1,6 @@
 /**
  * @file   bgp_vrf_import.c
- * @brief  vpnv4 路由按 import-RT 导入私网 VRF 实现：IRT 索引 + 入向过滤 + 导入 reconcile
+ * @brief  VPNv4/VPNv6 路由按同 AF import-RT 导入私网 VRF，支持 MPLS/SRv6 BE
  * @author jhb
  * @date   2026/06/02
  */
@@ -33,7 +33,14 @@
 #include "tunnel.h"
 #include "vrf.h"
 
-/* IRT 索引：规范化 8 字节 RT(g_malloc 持有) → inner GHashTable<vrf_id → refcount>。
+typedef struct bgp_irt_key
+{
+    uint16_t afi;
+    uint8_t rt[8];
+} bgp_irt_key_t;
+
+/* IRT 索引：(afi, 规范化 8 字节 RT)(g_malloc 持有)
+ * → inner GHashTable<vrf_id → refcount>。
  * 仅在 BGP worker 线程内访问，无需加锁。 */
 static GHashTable *g_bgp_irt_index;
 
@@ -41,21 +48,49 @@ static GHashTable *g_bgp_irt_index;
  * IRT 索引
  * ========================================================================== */
 
-static guint rt_key_hash(gconstpointer p)
+static guint irt_key_hash(gconstpointer p)
 {
-    const uint8_t *b = (const uint8_t *)p;
+    const bgp_irt_key_t *key = (const bgp_irt_key_t *)p;
+    if (!key)
+    {
+        return 0;
+    }
     guint h = 2166136261u; /* FNV-1a 32 */
+    h ^= (uint8_t)(key->afi >> 8);
+    h *= 16777619u;
+    h ^= (uint8_t)key->afi;
+    h *= 16777619u;
     for (int i = 0; i < 8; i++)
     {
-        h ^= b[i];
+        h ^= key->rt[i];
         h *= 16777619u;
     }
     return h;
 }
 
-static gboolean rt_key_equal(gconstpointer a, gconstpointer b)
+static gboolean irt_key_equal(gconstpointer a, gconstpointer b)
 {
-    return memcmp(a, b, 8) == 0;
+    const bgp_irt_key_t *ka = (const bgp_irt_key_t *)a;
+    const bgp_irt_key_t *kb = (const bgp_irt_key_t *)b;
+    return ka && kb && ka->afi == kb->afi && memcmp(ka->rt, kb->rt, sizeof(ka->rt)) == 0;
+}
+
+static gboolean irt_key_build(bgp_irt_key_t *key, bgp_afi_t afi, const vrf_rt_t *rt)
+{
+    if (!key || !rt || (afi != BGP_AFI_IPV4 && afi != BGP_AFI_IPV6))
+    {
+        return FALSE;
+    }
+    memset(key, 0, sizeof(*key));
+    key->afi = (uint16_t)afi;
+    return bgp_ext_community_rt_canon(rt, key->rt) ? TRUE : FALSE;
+}
+
+static void irt_key_build_canon(bgp_irt_key_t *key, bgp_afi_t afi, const uint8_t rt[8])
+{
+    memset(key, 0, sizeof(*key));
+    key->afi = (uint16_t)afi;
+    memcpy(key->rt, rt, sizeof(key->rt));
 }
 
 void bgp_vrf_import_init(void)
@@ -64,7 +99,7 @@ void bgp_vrf_import_init(void)
     {
         return;
     }
-    g_bgp_irt_index = g_hash_table_new_full(rt_key_hash, rt_key_equal, g_free, (GDestroyNotify)g_hash_table_destroy);
+    g_bgp_irt_index = g_hash_table_new_full(irt_key_hash, irt_key_equal, g_free, (GDestroyNotify)g_hash_table_destroy);
 }
 
 void bgp_vrf_import_cleanup(void)
@@ -76,42 +111,42 @@ void bgp_vrf_import_cleanup(void)
     }
 }
 
-void bgp_vrf_import_irt_add(uint32_t vrf_id, const vrf_rt_t *rt)
+void bgp_vrf_import_irt_add(uint32_t vrf_id, bgp_afi_t afi, const vrf_rt_t *rt)
 {
     if (!g_bgp_irt_index || vrf_id == BGP_VRF_PUBLIC_ID || !rt)
     {
         return;
     }
-    uint8_t key[8];
-    if (!bgp_ext_community_rt_canon(rt, key))
+    bgp_irt_key_t key;
+    if (!irt_key_build(&key, afi, rt))
     {
         return;
     }
 
-    GHashTable *inner = (GHashTable *)g_hash_table_lookup(g_bgp_irt_index, key);
+    GHashTable *inner = (GHashTable *)g_hash_table_lookup(g_bgp_irt_index, &key);
     if (!inner)
     {
         inner = g_hash_table_new(g_direct_hash, g_direct_equal);
-        uint8_t *kdup = (uint8_t *)g_malloc(8);
-        memcpy(kdup, key, 8);
+        bgp_irt_key_t *kdup = (bgp_irt_key_t *)g_malloc(sizeof(*kdup));
+        *kdup = key;
         g_hash_table_insert(g_bgp_irt_index, kdup, inner);
     }
     guint cnt = GPOINTER_TO_UINT(g_hash_table_lookup(inner, GUINT_TO_POINTER(vrf_id)));
     g_hash_table_insert(inner, GUINT_TO_POINTER(vrf_id), GUINT_TO_POINTER(cnt + 1));
 }
 
-void bgp_vrf_import_irt_del(uint32_t vrf_id, const vrf_rt_t *rt)
+void bgp_vrf_import_irt_del(uint32_t vrf_id, bgp_afi_t afi, const vrf_rt_t *rt)
 {
     if (!g_bgp_irt_index || !rt)
     {
         return;
     }
-    uint8_t key[8];
-    if (!bgp_ext_community_rt_canon(rt, key))
+    bgp_irt_key_t key;
+    if (!irt_key_build(&key, afi, rt))
     {
         return;
     }
-    GHashTable *inner = (GHashTable *)g_hash_table_lookup(g_bgp_irt_index, key);
+    GHashTable *inner = (GHashTable *)g_hash_table_lookup(g_bgp_irt_index, &key);
     if (!inner)
     {
         return;
@@ -133,7 +168,7 @@ void bgp_vrf_import_irt_del(uint32_t vrf_id, const vrf_rt_t *rt)
     }
     if (g_hash_table_size(inner) == 0)
     {
-        g_hash_table_remove(g_bgp_irt_index, key); /* 触发 inner 销毁 + key free */
+        g_hash_table_remove(g_bgp_irt_index, &key); /* 触发 inner 销毁 + key free */
     }
 }
 
@@ -164,6 +199,38 @@ void bgp_vrf_import_purge_vrf(uint32_t vrf_id)
     g_ptr_array_free(empties, TRUE);
 }
 
+void bgp_vrf_import_purge_vrf_afi(uint32_t vrf_id, bgp_afi_t afi)
+{
+    if (!g_bgp_irt_index || (afi != BGP_AFI_IPV4 && afi != BGP_AFI_IPV6))
+    {
+        return;
+    }
+    GPtrArray *empties = g_ptr_array_new();
+    GHashTableIter it;
+    gpointer k = NULL;
+    gpointer v = NULL;
+    g_hash_table_iter_init(&it, g_bgp_irt_index);
+    while (g_hash_table_iter_next(&it, &k, &v))
+    {
+        const bgp_irt_key_t *key = (const bgp_irt_key_t *)k;
+        GHashTable *inner = (GHashTable *)v;
+        if (!key || key->afi != (uint16_t)afi)
+        {
+            continue;
+        }
+        g_hash_table_remove(inner, GUINT_TO_POINTER(vrf_id));
+        if (g_hash_table_size(inner) == 0)
+        {
+            g_ptr_array_add(empties, k);
+        }
+    }
+    for (guint i = 0; i < empties->len; i++)
+    {
+        g_hash_table_remove(g_bgp_irt_index, g_ptr_array_index(empties, i));
+    }
+    g_ptr_array_free(empties, TRUE);
+}
+
 void bgp_vrf_import_purge_all(void)
 {
     if (g_bgp_irt_index)
@@ -173,9 +240,9 @@ void bgp_vrf_import_purge_all(void)
 }
 
 /** 收集 attr 中所有 RT 命中的私网 vrf_id 到 set(key=GUINT_TO_POINTER(vrf_id))；返回命中条数 */
-static guint collect_matched_vrfs(const bgp_attr_t *attr, GHashTable *set)
+static guint collect_matched_vrfs(const bgp_attr_t *attr, bgp_afi_t afi, GHashTable *set)
 {
-    if (!attr || !g_bgp_irt_index)
+    if (!attr || !g_bgp_irt_index || (afi != BGP_AFI_IPV4 && afi != BGP_AFI_IPV6))
     {
         return 0;
     }
@@ -192,7 +259,9 @@ static guint collect_matched_vrfs(const bgp_attr_t *attr, GHashTable *set)
         {
             continue;
         }
-        GHashTable *inner = (GHashTable *)g_hash_table_lookup(g_bgp_irt_index, ec + off);
+        bgp_irt_key_t key;
+        irt_key_build_canon(&key, afi, ec + off);
+        GHashTable *inner = (GHashTable *)g_hash_table_lookup(g_bgp_irt_index, &key);
         if (!inner)
         {
             continue;
@@ -213,9 +282,9 @@ static guint collect_matched_vrfs(const bgp_attr_t *attr, GHashTable *set)
     return matched;
 }
 
-gboolean bgp_vrf_import_attr_has_match(const bgp_attr_t *attr)
+gboolean bgp_vrf_import_attr_has_match(const bgp_attr_t *attr, bgp_afi_t afi)
 {
-    if (!attr || !g_bgp_irt_index)
+    if (!attr || !g_bgp_irt_index || (afi != BGP_AFI_IPV4 && afi != BGP_AFI_IPV6))
     {
         return FALSE;
     }
@@ -231,7 +300,9 @@ gboolean bgp_vrf_import_attr_has_match(const bgp_attr_t *attr)
         {
             continue;
         }
-        GHashTable *inner = (GHashTable *)g_hash_table_lookup(g_bgp_irt_index, ec + off);
+        bgp_irt_key_t key;
+        irt_key_build_canon(&key, afi, ec + off);
+        GHashTable *inner = (GHashTable *)g_hash_table_lookup(g_bgp_irt_index, &key);
         if (inner && g_hash_table_size(inner) > 0)
         {
             return TRUE;
@@ -279,10 +350,6 @@ uint32_t bgp_vrf_import_transit_alloc_label(bgp_route_node_t *best)
     {
         return 0; /* 无收到的 VPN 标签，无从换标 */
     }
-    if (best->out_local_label != 0u)
-    {
-        return best->out_local_label; /* 已分配，复用 */
-    }
     if (!g_bgp_local || !g_bgp_local->dev_ipc_ctx)
     {
         return 0;
@@ -296,6 +363,30 @@ uint32_t bgp_vrf_import_transit_alloc_label(bgp_route_node_t *best)
         return 0;
     }
     uint16_t afi = (nh.global.family == AF_INET6) ? (uint16_t)BGP_AFI_IPV6 : (uint16_t)BGP_AFI_IPV4;
+
+    if (best->out_local_label != 0u)
+    {
+        /* peer reach 更新会原地复用 route node。只有收到的 VPN label
+         * 和传输 next-hop 都未变时，旧 SWAP 绑定才可复用。 */
+        if (best->transit_swap_label == best->label && best->transit_afi == afi &&
+            net_addr_equal(&best->transit_endpoint, &nh.global))
+        {
+            return best->out_local_label;
+        }
+
+        tunnel_label_req_t old_req;
+        transit_build_req(&old_req, best->transit_owner_id, best->transit_afi, 0, NULL);
+        if (tunnel_rpc_label_release(g_bgp_local->dev_ipc_ctx, &old_req) != ERRCODE_SUCCESS)
+        {
+            LOG_WARN("BGP vrf-import: stale transit SWAP release failed, hold advertise");
+            return 0;
+        }
+        best->out_local_label = 0u;
+        best->transit_owner_id = 0u;
+        best->transit_swap_label = 0u;
+        best->transit_afi = 0u;
+        memset(&best->transit_endpoint, 0, sizeof(best->transit_endpoint));
+    }
 
     uint32_t owner_id = ++g_bgp_transit_owner_seq;
     tunnel_label_req_t req;
@@ -311,6 +402,9 @@ uint32_t bgp_vrf_import_transit_alloc_label(bgp_route_node_t *best)
     }
     best->out_local_label = label;
     best->transit_owner_id = owner_id;
+    best->transit_swap_label = best->label;
+    best->transit_afi = afi;
+    best->transit_endpoint = nh.global;
     LOG_INFO("BGP vrf-import: transit swap-label %u -> recv-label %u allocated (Option B ASBR)", label, best->label);
     return label;
 }
@@ -324,11 +418,15 @@ void bgp_vrf_import_transit_release_label(bgp_route_node_t *route)
     if (g_bgp_local && g_bgp_local->dev_ipc_ctx)
     {
         tunnel_label_req_t req;
-        transit_build_req(&req, route->transit_owner_id, (uint16_t)BGP_AFI_IPV4, 0, NULL);
+        uint16_t afi = (route->transit_afi == BGP_AFI_IPV6) ? (uint16_t)BGP_AFI_IPV6 : (uint16_t)BGP_AFI_IPV4;
+        transit_build_req(&req, route->transit_owner_id, afi, 0, NULL);
         (void)tunnel_rpc_label_release(g_bgp_local->dev_ipc_ctx, &req);
     }
     route->out_local_label = 0u;
     route->transit_owner_id = 0u;
+    route->transit_swap_label = 0u;
+    route->transit_afi = 0u;
+    memset(&route->transit_endpoint, 0, sizeof(route->transit_endpoint));
 }
 
 /* ============================================================================
@@ -340,9 +438,13 @@ static bgp_protocol_t *bgp_proto(void)
     return g_bgp_work_local ? g_bgp_work_local->protocol : NULL;
 }
 
-/** 当前 public vpnv4 instance(导入源)，未使能返回 NULL */
-static bgp_instance_t *vpn_inst_lookup(void)
+/** 当前 public VPN instance(导入源)，未使能返回 NULL */
+static bgp_instance_t *vpn_inst_lookup(bgp_afi_t afi)
 {
+    if (afi != BGP_AFI_IPV4 && afi != BGP_AFI_IPV6)
+    {
+        return NULL;
+    }
     bgp_protocol_t *proto = bgp_proto();
     if (!proto)
     {
@@ -353,15 +455,15 @@ static bgp_instance_t *vpn_inst_lookup(void)
     {
         return NULL;
     }
-    return (bgp_instance_t *)g_hash_table_lookup(pub->inst_hash, bgp_inst_hash_key(BGP_AFI_IPV4, BGP_SAFI_VPN_UNICAST));
+    return (bgp_instance_t *)g_hash_table_lookup(pub->inst_hash, bgp_inst_hash_key(afi, BGP_SAFI_VPN_UNICAST));
 }
 
-void bgp_vrf_import_request_refresh(void)
+void bgp_vrf_import_request_refresh_afi(bgp_afi_t afi)
 {
-    bgp_instance_t *vpn_inst = vpn_inst_lookup();
+    bgp_instance_t *vpn_inst = vpn_inst_lookup(afi);
     if (!vpn_inst || !vpn_inst->peer_hash || !vpn_inst->vrf)
     {
-        return; /* vpnv4 未使能 */
+        return;
     }
     bgp_vrf_t *pub = vpn_inst->vrf;
 
@@ -384,24 +486,30 @@ void bgp_vrf_import_request_refresh(void)
         }
         if (BIT_TEST(sess->negotiated_caps, BGP_SESS_CAP_ROUTE_REFRESH))
         {
-            (void)bgp_pkt_send_route_refresh(sess->pri_conn, (uint16_t)BGP_AFI_IPV4, (uint8_t)BGP_SAFI_VPN_UNICAST);
+            (void)bgp_pkt_send_route_refresh(sess->pri_conn, (uint16_t)afi, (uint8_t)BGP_SAFI_VPN_UNICAST);
             sent++;
         }
     }
     if (sent > 0)
     {
-        LOG_INFO("BGP vrf-import: import-RT changed, sent vpnv4 ROUTE-REFRESH to %u peer(s)", sent);
+        LOG_INFO("BGP vrf-import: import-RT changed, sent VPN afi=%u ROUTE-REFRESH to %u peer(s)", (unsigned)afi, sent);
     }
 }
 
-/** 是否为 public vpnv4(ipv4 vpn-unicast)instance —— 导入子系统只对它生效 */
-static gboolean is_public_vpn_inst(const bgp_instance_t *inst)
+void bgp_vrf_import_request_refresh(void)
 {
-    return inst && inst->vrf && inst->vrf->vrf_id == BGP_VRF_PUBLIC_ID && inst->afi == BGP_AFI_IPV4 &&
-           inst->safi == BGP_SAFI_VPN_UNICAST;
+    bgp_vrf_import_request_refresh_afi(BGP_AFI_IPV4);
+    bgp_vrf_import_request_refresh_afi(BGP_AFI_IPV6);
 }
 
-/** vpnv4 NLRI → 私网 unicast NLRI(剥 RD/标签) */
+/** 是否为 public VPN-unicast instance */
+static gboolean is_public_vpn_inst(const bgp_instance_t *inst)
+{
+    return inst && inst->vrf && inst->vrf->vrf_id == BGP_VRF_PUBLIC_ID &&
+           (inst->afi == BGP_AFI_IPV4 || inst->afi == BGP_AFI_IPV6) && inst->safi == BGP_SAFI_VPN_UNICAST;
+}
+
+/** VPN NLRI → 私网 unicast NLRI(剥 RD/标签) */
 static void derive_unicast_nlri(const bgp_nlri_entry_t *vpn, bgp_nlri_entry_t *out)
 {
     *out = *vpn;
@@ -413,6 +521,46 @@ static void derive_unicast_nlri(const bgp_nlri_entry_t *vpn, bgp_nlri_entry_t *o
         out->prefix.label = 0;
         out->prefix.has_label = false;
     }
+}
+
+/**
+ * 整 SID 模式的 SRv6 L3 Service 路径可用性校验。
+ *
+ * 本实现不支持 transposition，因而 SRv6 路径必须在 Prefix-SID 中携带
+ * 完整 IPv6 SID，VPN NLRI label 必须是 Implicit NULL(3)，且 behavior 与客户
+ * AF 严格对应。该函数只回答“能否采用 SRv6 BE incarnation”；没有
+ * Prefix-SID 的普通 MPLS VPN 路径返回 FALSE，由调用方另行校验服务标签。
+ */
+static gboolean srv6_service_route_usable(const bgp_route_node_t *route, const bgp_nlri_entry_t *vpn_nlri,
+                                          bgp_afi_t afi)
+{
+    if (!route || !route->attr || !vpn_nlri || vpn_nlri->type != BGP_NLRI_PREFIX)
+    {
+        return FALSE;
+    }
+    const bgp_attr_t *attr = BGP_ROUTE_ATTR(route);
+    if (!attr->has_srv6_l3_service_tlv || !attr->has_srv6_l3_service)
+    {
+        return FALSE;
+    }
+    uint16_t expected_behavior =
+        (afi == BGP_AFI_IPV4) ? (uint16_t)SRV6_BEHAVIOR_END_DT4 : (uint16_t)SRV6_BEHAVIOR_END_DT6;
+    if ((afi != BGP_AFI_IPV4 && afi != BGP_AFI_IPV6) || attr->srv6_behavior != expected_behavior ||
+        attr->srv6_sid.family != AF_INET6 || net_addr_is_zero(&attr->srv6_sid) ||
+        (attr->has_srv6_sid_structure &&
+         (attr->transposition_len != 0u || attr->transposition_offset != 0u || attr->argument_len != 0u)) ||
+        !route->has_label || route->label != 3u)
+    {
+        return FALSE;
+    }
+    return TRUE;
+}
+
+/** MPLS L3VPN 必须有真实的非保留服务标签；Implicit NULL(3) 仅是
+ * whole-SID SRv6 VPN NLRI 的占位值，绝不能下成 tunnel + out-label 3。 */
+static gboolean mpls_service_route_usable(const bgp_route_node_t *route)
+{
+    return route && route->has_label && route->label >= 16u;
 }
 
 /**
@@ -452,10 +600,19 @@ static void import_detach_src(bgp_route_node_t *route)
     import_drop_src_borrow(route);
 }
 
-/** 把 vpnv4 best 作为合成导入路径写入某 VRF 的 unicast RIB */
+/** 把 VPN best 作为合成导入路径写入某 VRF 的 unicast RIB */
 static void import_upsert(bgp_instance_t *uc, const bgp_nlri_entry_t *uc_nlri, const net_addr_t *synth,
-                          const bgp_route_node_t *best, const bgp_nlri_entry_t *vpn_nlri)
+                          const bgp_route_node_t *best)
 {
+    const bgp_nlri_entry_t *vpn_nlri = (best && best->head) ? &best->head->nlri : NULL;
+    const gboolean srv6_be_enabled = uc && BIT_TEST(uc->flags, BGP_INST_FLAG_SRV6_BE);
+    const gboolean has_srv6_service_tlv = best && best->attr && BGP_ROUTE_ATTR(best)->has_srv6_l3_service_tlv;
+    const gboolean use_srv6 = srv6_be_enabled && srv6_service_route_usable(best, vpn_nlri, uc->afi);
+    /* BE 开启后，对方显式携带 Service TLV 却无法构成完整 SID 时
+     * 必须 fail closed，不能借同一 NLRI 的 label 静默降级到 MPLS。 */
+    const gboolean use_mpls =
+        !use_srv6 && mpls_service_route_usable(best) && (!srv6_be_enabled || !has_srv6_service_tlv);
+
     bgp_rib_t *rib = bgp_inst_rib_ensure_for_nlri(uc, uc_nlri);
     if (!rib)
     {
@@ -476,36 +633,81 @@ static void import_upsert(bgp_instance_t *uc, const bgp_nlri_entry_t *uc_nlri, c
         }
     }
 
+    /* 必须在覆盖 attr/nexthop/src_route 前按旧 key 拆 watch。否则同一
+     * 合成节点由 MPLS↔SRv6 或 best 切换时，旧 watch 会永久残留。 */
+    import_detach_src(route);
+    bgp_nexthop_reset_route(route);
+
     /* 拷贝 best 属性作为合成导入路径 */
     bgp_attr_t attr = *BGP_ROUTE_ATTR(best);
-    bgp_nexthop_reset_route(route);
     if (bgp_rib_route_apply_reach(route, ROUTE_PROTOCOL_BGP, &attr) != 0)
     {
         return;
     }
-    /* 远端跨表合成路由：清 IMPORT、置 REMOTE_CROSS。来源是 peer 的 vpnv4（pick_import_source
-     * 已跳过本地导出合成），非本地起源，绝不可被 vrf-export 回灌 vpnv4（防环）。 */
+    /* 远端跨表合成路由：清 IMPORT、置 REMOTE_CROSS。来源是 peer 的 VPN
+     * 路由（pick_import_source 已跳过本地导出合成），绝不可被 vrf-export 回灌。 */
     BIT_CLR(route->flags, BGP_ROUTE_FLAG_IMPORT);
+    BIT_CLR(route->flags, BGP_ROUTE_FLAG_LOCAL_CROSS);
     BIT_SET(route->flags, BGP_ROUTE_FLAG_REMOTE_CROSS);
-
-    /* 携带 received VPN 标签，供后续基于标签的隧道转发迭代(转发实现属后续工作) */
-    if (vpn_nlri && vpn_nlri->type == BGP_NLRI_PREFIX && vpn_nlri->prefix.has_label)
+    BIT_CLR(route->flags, BGP_ROUTE_FLAG_SRV6_BE);
+    /* 明确清除上一个 incarnation 的服务标签。apply_reach 当前也会
+     * 清理，但模式代码不依赖该内部副作用，避免 MPLS→SID/不可用路径残留旧 label。 */
+    route->label = 0u;
+    route->has_label = 0u;
+    route->label_source = BGP_ROUTE_LABEL_SOURCE_NONE;
+    if (use_srv6)
     {
-        route->label = vpn_nlri->prefix.label;
+        BIT_SET(route->flags, BGP_ROUTE_FLAG_SRV6_BE);
+    }
+
+    if (use_mpls)
+    {
+        /* MPLS 路径：保留对端真实 VPN service label，经 TUNNEL watch 迭代远端 PE。 */
+        route->label = best->label;
         route->has_label = 1u;
         route->label_source = BGP_ROUTE_LABEL_SOURCE_RECEIVED;
     }
 
-    /* 维护溯源前向指针：best 切换来源时换 borrow 引用 */
-    if (route->src_route != best)
+    route->src_route = (bgp_route_node_t *)best;
+    bgp_route_node_borrow_ref((bgp_route_node_t *)best);
+
+    /* 没有可用的完整 service SID，也没有真实 MPLS service label。
+     * 典型场景是 srv6-be 未使能却收到 label=3 的 SID-only VPN 路径。
+     * 保留合成节点供重评估，但不注册 tunnel watch，并撤销任何旧 FIB incarnation。 */
+    if (!use_srv6 && !use_mpls)
     {
-        import_detach_src(route);
-        route->src_route = (bgp_route_node_t *)best;
-        bgp_route_node_borrow_ref((bgp_route_node_t *)best);
+        BIT_CLR(route->flags, BGP_ROUTE_FLAG_VALID);
+        if (uc->calc_queue)
+        {
+            bgp_calc_queue_push(uc->calc_queue, uc, uc_nlri);
+        }
+        return;
     }
 
-    /* 注册自有隧道 watch：下一跳（远端 PE）在公网表迭代命中 eBGP-vpnv4 假隧道。
-     * 隧道未解析则置 invalid（不优选/不下刷），待 TUNNEL notify 解析后由 relay 重评。 */
+    if (use_srv6)
+    {
+        /* SRv6 BE：不迭代 MP_REACH 的 PE nexthop，而是为完整 service SID
+         * 申请 public IPv6 nexthop 对象。ROUTE 在公网 IPv6 表解析该 SID，
+         * relay NH_NOTIFY 决定私网合成路由是否 VALID。 */
+        route_nhobj_key_t key;
+        memset(&key, 0, sizeof(key));
+        key.vrf_id = BGP_VRF_PUBLIC_ID;
+        key.protocol = ROUTE_PROTOCOL_BGP;
+        key.afi = ROUTE_AFI_IPV6;
+        key.nh_type = ROUTE_NH_TYPE_IP;
+        key.nexthop = attr.srv6_sid;
+        if (bgp_nexthop_set_route_key(route, &key) != ERRCODE_SUCCESS)
+        {
+            BIT_CLR(route->flags, BGP_ROUTE_FLAG_VALID);
+            if (uc->calc_queue)
+            {
+                bgp_calc_queue_push(uc->calc_queue, uc, uc_nlri);
+            }
+            return;
+        }
+    }
+
+    /* MPLS 挂 tunnel watch，SRv6 挂 public IPv6 nexthop watch；未解析均 fail closed。 */
     gboolean nh_resolved = bgp_relay_synthetic_nexthop_register(route);
     if (!nh_resolved)
     {
@@ -540,7 +742,7 @@ static void import_withdraw(bgp_instance_t *uc, const bgp_nlri_entry_t *uc_nlri,
 }
 
 /**
- * @brief 选取一个 vpnv4 head 的导入来源路径
+ * @brief 选取一个 VPN head 的导入来源路径
  *
  * 导入的"接受"判据是 import-RT 匹配，而非 FIB 下一跳可达性：L3VPN 的 vpnv4 下一跳是远端 PE，
  * 需经隧道/LSP 迭代(本实现的转发部分属后续工作)，此处不要求 BGP_ROUTE_FLAG_VALID，否则在无
@@ -548,17 +750,23 @@ static void import_withdraw(bgp_instance_t *uc, const bgp_nlri_entry_t *uc_nlri,
  * route_list 中首个非本地导出(LOCAL_CROSS)的收来路径。跳过本地导出合成路径(避免把导出路由再导入成环)，
  * 也跳过 STALE(已撤销待回收)路径——否则源被 withdraw 后仍会被当作来源不断重新导入，撤销撤不掉。
  */
+static gboolean import_source_eligible(const bgp_route_node_t *route)
+{
+    return route && route->attr && !BIT_TEST(route->flags, BGP_ROUTE_FLAG_LOCAL_CROSS) &&
+           !BIT_TEST(route->flags, BGP_ROUTE_FLAG_STALE);
+}
+
 static const bgp_route_node_t *pick_import_source(bgp_rib_t *src_rib, bgp_rthead_t *head)
 {
     const bgp_route_node_t *best = src_rib ? bgp_rib_find_best(src_rib, &head->nlri) : NULL;
-    if (best && !BIT_TEST(best->flags, BGP_ROUTE_FLAG_LOCAL_CROSS))
+    if (import_source_eligible(best))
     {
         return best;
     }
     for (GList *l = head->route_list; l; l = l->next)
     {
         bgp_route_node_t *r = (bgp_route_node_t *)l->data;
-        if (r && !BIT_TEST(r->flags, BGP_ROUTE_FLAG_LOCAL_CROSS) && !BIT_TEST(r->flags, BGP_ROUTE_FLAG_STALE))
+        if (import_source_eligible(r))
         {
             return r;
         }
@@ -566,11 +774,36 @@ static const bgp_route_node_t *pick_import_source(bgp_rib_t *src_rib, bgp_rthead
     return NULL;
 }
 
-/** 对一个 vpnv4 head：把来源路径导入命中 IRT 的 VRF，撤销不再命中的 VRF */
-static void reconcile_head(bgp_instance_t *vpn_inst, bgp_rthead_t *head)
+/** 对一个目标私网 unicast instance 应用单个 VPN head 的期望状态。 */
+static void reconcile_target(bgp_instance_t *uc, const bgp_route_node_t *best, gboolean eligible, GHashTable *matched,
+                             const bgp_nlri_entry_t *uc_nlri, const net_addr_t *synth)
+{
+    if (!uc || !uc->vrf || uc->vrf->vrf_id == BGP_VRF_PUBLIC_ID || uc->safi != BGP_SAFI_UNICAST ||
+        (uc->afi != BGP_AFI_IPV4 && uc->afi != BGP_AFI_IPV6))
+    {
+        return;
+    }
+
+    const vrf_api_af_t *af_cfg = vrf_api_cache_get_af(uc->vrf->vrf_id, (uint16_t)uc->afi);
+    gboolean want = eligible && af_cfg && matched && g_hash_table_contains(matched, GUINT_TO_POINTER(uc->vrf->vrf_id));
+    if (want)
+    {
+        /* 绝不因 IRT 命中自动创建私网 AF：只有已存在的
+         * unicast instance 才允许导入。 */
+        import_upsert(uc, uc_nlri, synth, best);
+    }
+    else
+    {
+        import_withdraw(uc, uc_nlri, synth);
+    }
+}
+
+/** 对一个 VPN head：把来源路径导入命中同 AF IRT 的 VRF。
+ * target_uc 非 NULL 时只重评该目标，供 srv6-be 运行态切换使用。 */
+static void reconcile_head_internal(bgp_instance_t *vpn_inst, bgp_rthead_t *head, bgp_instance_t *target_uc)
 {
     bgp_protocol_t *proto = bgp_proto();
-    if (!proto || !proto->vrf_hash)
+    if (!vpn_inst || !head || !proto || !proto->vrf_hash)
     {
         return;
     }
@@ -583,7 +816,7 @@ static void reconcile_head(bgp_instance_t *vpn_inst, bgp_rthead_t *head)
     GHashTable *matched = g_hash_table_new(g_direct_hash, g_direct_equal);
     if (eligible)
     {
-        (void)collect_matched_vrfs(BGP_ROUTE_ATTR(best), matched);
+        (void)collect_matched_vrfs(BGP_ROUTE_ATTR(best), vpn_inst->afi, matched);
     }
 
     bgp_nlri_entry_t uc_nlri;
@@ -591,7 +824,17 @@ static void reconcile_head(bgp_instance_t *vpn_inst, bgp_rthead_t *head)
     net_addr_t synth;
     synth_source_from_rd(&head->nlri.prefix.rd, &synth);
 
-    bgp_afi_t uc_afi = vpn_inst->afi; /* 当前仅 ipv4 */
+    bgp_afi_t uc_afi = vpn_inst->afi;
+
+    if (target_uc)
+    {
+        if (target_uc->afi == uc_afi)
+        {
+            reconcile_target(target_uc, best, eligible, matched, &uc_nlri, &synth);
+        }
+        g_hash_table_destroy(matched);
+        return;
+    }
 
     GHashTableIter it;
     gpointer k = NULL;
@@ -604,28 +847,18 @@ static void reconcile_head(bgp_instance_t *vpn_inst, bgp_rthead_t *head)
         {
             continue;
         }
-        gboolean want = eligible && g_hash_table_contains(matched, GUINT_TO_POINTER(vrf->vrf_id));
-        if (want)
-        {
-            bgp_instance_t *uc = bgp_vrf_get_or_create_instance(vrf, uc_afi, BGP_SAFI_UNICAST);
-            if (uc)
-            {
-                import_upsert(uc, &uc_nlri, &synth, best, &head->nlri);
-            }
-        }
-        else
-        {
-            bgp_instance_t *uc =
-                vrf->inst_hash
-                    ? (bgp_instance_t *)g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(uc_afi, BGP_SAFI_UNICAST))
-                    : NULL;
-            if (uc)
-            {
-                import_withdraw(uc, &uc_nlri, &synth);
-            }
-        }
+        bgp_instance_t *uc =
+            vrf->inst_hash
+                ? (bgp_instance_t *)g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(uc_afi, BGP_SAFI_UNICAST))
+                : NULL;
+        reconcile_target(uc, best, eligible, matched, &uc_nlri, &synth);
     }
     g_hash_table_destroy(matched);
+}
+
+static void reconcile_head(bgp_instance_t *vpn_inst, bgp_rthead_t *head)
+{
+    reconcile_head_internal(vpn_inst, head, NULL);
 }
 
 void bgp_vrf_import_on_calc_done(bgp_instance_t *src_inst, bgp_rthead_t *head)
@@ -639,11 +872,12 @@ void bgp_vrf_import_on_calc_done(bgp_instance_t *src_inst, bgp_rthead_t *head)
 
 void bgp_vrf_import_on_vpn_received(const bgp_nlri_entry_t *vpn_nlri)
 {
-    if (!vpn_nlri || vpn_nlri->afi != BGP_AFI_IPV4 || vpn_nlri->safi != BGP_SAFI_VPN_UNICAST)
+    if (!vpn_nlri || (vpn_nlri->afi != BGP_AFI_IPV4 && vpn_nlri->afi != BGP_AFI_IPV6) ||
+        vpn_nlri->safi != BGP_SAFI_VPN_UNICAST)
     {
         return;
     }
-    bgp_instance_t *vpn_inst = vpn_inst_lookup();
+    bgp_instance_t *vpn_inst = vpn_inst_lookup((bgp_afi_t)vpn_nlri->afi);
     if (!vpn_inst || !vpn_inst->calc_queue)
     {
         return;
@@ -653,7 +887,7 @@ void bgp_vrf_import_on_vpn_received(const bgp_nlri_entry_t *vpn_nlri)
 }
 
 /* ============================================================================
- * backfill（import-RT 配置变更后重评估已有 vpnv4 路由）
+ * backfill（import-RT 配置变更后重评估已有 VPN 路由）
  * ========================================================================== */
 
 /** g_tree_foreach 回调：收集 head 指针(避免遍历期触发的 reconcile 影响 tree 迭代) */
@@ -668,7 +902,7 @@ static gboolean collect_head_cb(gpointer key, gpointer value, gpointer user_data
 static void backfill_rib_cb(bgp_instance_t *inst, bgp_rd_entry_t *entry, bgp_rib_t *rib, gpointer ud)
 {
     (void)entry;
-    (void)ud;
+    bgp_instance_t *target_uc = (bgp_instance_t *)ud;
     if (!rib || !rib->head_tree)
     {
         return;
@@ -680,29 +914,52 @@ static void backfill_rib_cb(bgp_instance_t *inst, bgp_rd_entry_t *entry, bgp_rib
         bgp_rthead_t *head = (bgp_rthead_t *)l->data;
         if (head)
         {
-            reconcile_head(inst, head);
+            reconcile_head_internal(inst, head, target_uc);
         }
     }
     g_list_free(heads);
 }
 
-void bgp_vrf_import_backfill(void)
+void bgp_vrf_import_backfill_afi(bgp_afi_t afi)
 {
-    bgp_instance_t *vpn_inst = vpn_inst_lookup();
+    bgp_instance_t *vpn_inst = vpn_inst_lookup(afi);
     if (!vpn_inst)
     {
-        return; /* vpnv4 未使能 */
+        return;
     }
     bgp_inst_foreach_rib(vpn_inst, backfill_rib_cb, NULL);
 }
 
+int bgp_vrf_import_reprocess_target_inst(bgp_instance_t *uc)
+{
+    if (!uc || !uc->vrf || uc->vrf->vrf_id == BGP_VRF_PUBLIC_ID || uc->safi != BGP_SAFI_UNICAST ||
+        (uc->afi != BGP_AFI_IPV4 && uc->afi != BGP_AFI_IPV6))
+    {
+        return -1;
+    }
+
+    bgp_instance_t *vpn_inst = vpn_inst_lookup(uc->afi);
+    if (!vpn_inst)
+    {
+        return 0;
+    }
+    bgp_inst_foreach_rib(vpn_inst, backfill_rib_cb, uc);
+    return 0;
+}
+
+void bgp_vrf_import_backfill(void)
+{
+    bgp_vrf_import_backfill_afi(BGP_AFI_IPV4);
+    bgp_vrf_import_backfill_afi(BGP_AFI_IPV6);
+}
+
 /* ============================================================================
- * public vpnv4 instance 销毁前清理（撤销所有导入到各 VRF 的合成路径）
+ * public VPN instance 销毁前清理（撤销所有导入到各 VRF 的合成路径）
  * ========================================================================== */
 
 typedef struct
 {
-    bgp_instance_t *vpn_inst; /**< 即将销毁的源 vpnv4 instance */
+    bgp_instance_t *vpn_inst; /**< 即将销毁的源 VPN instance */
     GPtrArray *victims;       /**< 收集到的导入节点(其 src_route 来自 vpn_inst) */
 } purge_ctx_t;
 
@@ -727,7 +984,7 @@ static void collect_victims_cb(bgp_instance_t *inst, bgp_rd_entry_t *entry, bgp_
         for (GList *r = head->route_list; r; r = r->next)
         {
             bgp_route_node_t *route = (bgp_route_node_t *)r->data;
-            /* src_route->head 此刻仍存活(源 vpnv4 inst 尚未销毁 RIB) */
+            /* src_route->head 此刻仍存活(源 VPN inst 尚未销毁 RIB) */
             if (route && route->src_route && route->src_route->head && route->src_route->head->inst == ctx->vpn_inst)
             {
                 g_ptr_array_add(ctx->victims, route);
@@ -764,7 +1021,7 @@ void bgp_vrf_import_purge_target_inst(bgp_instance_t *vpn_inst)
             continue;
         }
         bgp_instance_t *uc =
-            (bgp_instance_t *)g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(BGP_AFI_IPV4, BGP_SAFI_UNICAST));
+            (bgp_instance_t *)g_hash_table_lookup(vrf->inst_hash, bgp_inst_hash_key(vpn_inst->afi, BGP_SAFI_UNICAST));
         if (uc)
         {
             bgp_inst_foreach_rib(uc, collect_victims_cb, &ctx);
@@ -790,7 +1047,8 @@ void bgp_vrf_import_purge_target_inst(bgp_instance_t *vpn_inst)
     }
     if (victims->len > 0)
     {
-        LOG_INFO("BGP vrf-import: purged %u imported routes (vpnv4 inst teardown)", victims->len);
+        LOG_INFO("BGP vrf-import: purged %u imported routes (VPN afi=%u inst teardown)", victims->len,
+                 (unsigned)vpn_inst->afi);
     }
     g_ptr_array_free(victims, TRUE);
 }
@@ -830,12 +1088,12 @@ static guint local_collect_targets(uint32_t src_vrf_id, GHashTable *set)
     }
     for (uint16_t i = 0; i < af->export_rt_count; i++)
     {
-        uint8_t key[8];
-        if (!bgp_ext_community_rt_canon(&af->export_rts[i], key))
+        bgp_irt_key_t key;
+        if (!irt_key_build(&key, BGP_AFI_IPV4, &af->export_rts[i]))
         {
             continue;
         }
-        GHashTable *inner = (GHashTable *)g_hash_table_lookup(g_bgp_irt_index, key);
+        GHashTable *inner = (GHashTable *)g_hash_table_lookup(g_bgp_irt_index, &key);
         if (!inner)
         {
             continue;

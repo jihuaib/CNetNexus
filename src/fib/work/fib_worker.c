@@ -27,7 +27,7 @@ typedef struct fib_worker_cmd
     dev_ipc_message_t *msg;
 } fib_worker_cmd_t;
 
-static void fib_worker_send_ack(const dev_ipc_message_t *req, int32_t result)
+void fib_worker_send_ack(const dev_ipc_message_t *req, int32_t result)
 {
     if (!req || req->request_id == 0)
     {
@@ -148,6 +148,11 @@ static int fib_worker_prepare_os(void)
         LOG_WARN("FIB: MPLS kernel setup failed; continuing startup without MPLS forwarding");
     }
 
+    if (fib_os_srv6_configure() != ERRCODE_SUCCESS)
+    {
+        LOG_WARN("FIB: SRv6 kernel setup failed; LocalSID programming will remain fail-closed");
+    }
+
     return ERRCODE_SUCCESS;
 }
 
@@ -187,7 +192,8 @@ static int fib_reconcile_route(fib_route_state_t *route_state)
     }
 
     int rc = ERRCODE_FAIL;
-    if (route->nh_type == FIB_NH_TYPE_IP || route->nh_type == FIB_NH_TYPE_BLACKHOLE)
+    if (route->nh_type == FIB_NH_TYPE_IP || route->nh_type == FIB_NH_TYPE_BLACKHOLE ||
+        route->nh_type == FIB_NH_TYPE_SRV6)
     {
         /* nexthop 对象化：路由必须等 ROUTE 下刷对应 nexthop 对象就绪后才下 OS。
          * nexthop_id==0 时退回内联 nexthop（兼容/防御路径）。 */
@@ -198,7 +204,11 @@ static int fib_reconcile_route(fib_route_state_t *route_state)
             {
                 if (route_state->installed)
                 {
-                    (void)fib_os_route_withdraw(route);
+                    int withdraw_rc = fib_os_route_withdraw(route);
+                    if (withdraw_rc != ERRCODE_SUCCESS)
+                    {
+                        return withdraw_rc;
+                    }
                     route_state->installed = 0u;
                 }
                 LOG_DEBUG("FIB: route pending nexthop=%u", route->nexthop_id);
@@ -207,14 +217,19 @@ static int fib_reconcile_route(fib_route_state_t *route_state)
 
             /* 用 nexthop 对象的网关/出接口/类型构造一份临时条目下发 OS */
             fib_route_entry_t resolved = *route;
-            resolved.nh_type = nh->entry.nh_type;
+            if (route->nh_type != FIB_NH_TYPE_SRV6)
+            {
+                resolved.nh_type = nh->entry.nh_type;
+            }
             resolved.out_ifindex = nh->entry.out_ifindex;
             resolved.nexthop_addr = nh->entry.gateway_addr;
-            rc = fib_os_route_install_ip(&resolved);
+            rc = (route->nh_type == FIB_NH_TYPE_SRV6) ? fib_os_route_install_srv6(&resolved)
+                                                      : fib_os_route_install_ip(&resolved);
         }
         else
         {
-            rc = fib_os_route_install_ip(route);
+            rc = (route->nh_type == FIB_NH_TYPE_SRV6) ? fib_os_route_install_srv6(route)
+                                                      : fib_os_route_install_ip(route);
         }
     }
     else if (route->nh_type == FIB_NH_TYPE_TUNNEL)
@@ -224,7 +239,11 @@ static int fib_reconcile_route(fib_route_state_t *route_state)
         {
             if (route_state->installed)
             {
-                (void)fib_os_route_withdraw(route);
+                int withdraw_rc = fib_os_route_withdraw(route);
+                if (withdraw_rc != ERRCODE_SUCCESS)
+                {
+                    return withdraw_rc;
+                }
                 route_state->installed = 0u;
             }
             LOG_DEBUG("FIB: route pending tunnel=%u", route->tunnel_id);
@@ -274,7 +293,8 @@ static void fib_reconcile_nexthop_route_cb(gpointer key, gpointer value, gpointe
     {
         return;
     }
-    if (route->entry.nh_type != FIB_NH_TYPE_IP && route->entry.nh_type != FIB_NH_TYPE_BLACKHOLE)
+    if (route->entry.nh_type != FIB_NH_TYPE_IP && route->entry.nh_type != FIB_NH_TYPE_BLACKHOLE &&
+        route->entry.nh_type != FIB_NH_TYPE_SRV6)
     {
         return;
     }
@@ -291,6 +311,7 @@ static int fib_handle_route_upsert(fib_worker_cmd_t *cmd)
 {
     if (!cmd || !cmd->msg || !cmd->msg->payload || cmd->msg->payload_len < sizeof(fib_route_entry_t))
     {
+        fib_worker_send_ack(cmd ? cmd->msg : NULL, ERRCODE_FAIL);
         return ERRCODE_FAIL;
     }
 
@@ -298,6 +319,7 @@ static int fib_handle_route_upsert(fib_worker_cmd_t *cmd)
     fib_route_entry_t old_entry;
     uint8_t old_installed = 0u;
     fib_route_state_t *old_state = fib_rib_route_lookup(g_fib_work_local->rib, entry);
+    gboolean had_old = old_state ? TRUE : FALSE;
     if (old_state)
     {
         old_entry = old_state->entry;
@@ -309,7 +331,17 @@ static int fib_handle_route_upsert(fib_worker_cmd_t *cmd)
     {
         if (old_state && old_installed)
         {
-            (void)fib_os_route_withdraw(&old_entry);
+            int rc = fib_os_route_withdraw(&old_entry);
+            if (rc != ERRCODE_SUCCESS)
+            {
+                /* 新 desired state 要求内核不再持有该路由；撤销失败时恢复
+                 * 旧内存态并显式失败，不能把 stale kernel route 当作成功。 */
+                state->entry = old_entry;
+                state->installed = old_installed;
+                fib_worker_send_route_result(cmd->msg, entry, rc, FIB_MSG_TYPE_ROUTE_UPSERT);
+                fib_worker_send_ack(cmd->msg, rc);
+                return rc;
+            }
         }
         state->installed = 0u;
         fib_worker_send_ack(cmd->msg, ERRCODE_SUCCESS);
@@ -319,6 +351,25 @@ static int fib_handle_route_upsert(fib_worker_cmd_t *cmd)
     int rc = state ? fib_reconcile_route(state) : ERRCODE_FAIL;
     if (rc != ERRCODE_SUCCESS)
     {
+        if (had_old && state)
+        {
+            /* RTM_NEWROUTE CREATE|REPLACE 失败时，kernel 仍可能保留旧
+             * incarnation。恢复旧 desired state，并按旧依赖重新 reconcile；
+             * 后续 delete/replay 才会携带旧 OIF/NH identity，能够清理或
+             * 重放实际仍在 kernel 中的路由。 */
+            state->entry = old_entry;
+            state->installed = old_installed;
+            if (old_installed)
+            {
+                int restore_rc = fib_reconcile_route(state);
+                if (restore_rc != ERRCODE_SUCCESS || !state->installed)
+                {
+                    LOG_ERROR("FIB: failed to restore previous route vrf=%u afi=%u safi=%u prefix-len=%u rc=%d",
+                              old_entry.vrf_id, (unsigned)old_entry.afi, (unsigned)old_entry.safi,
+                              (unsigned)old_entry.prefix_len, restore_rc);
+                }
+            }
+        }
         fib_worker_send_route_result(cmd->msg, entry, rc, FIB_MSG_TYPE_ROUTE_UPSERT);
     }
     fib_worker_send_ack(cmd->msg, rc);
@@ -329,17 +380,26 @@ static int fib_handle_route_delete(fib_worker_cmd_t *cmd)
 {
     if (!cmd || !cmd->msg || !cmd->msg->payload || cmd->msg->payload_len < sizeof(fib_route_entry_t))
     {
+        fib_worker_send_ack(cmd ? cmd->msg : NULL, ERRCODE_FAIL);
         return ERRCODE_FAIL;
     }
 
-    fib_route_entry_t old_entry;
-    uint8_t installed = 0u;
     const fib_route_entry_t *entry = (const fib_route_entry_t *)cmd->msg->payload;
-    gboolean removed = fib_rib_route_delete(g_fib_work_local->rib, entry, &old_entry, &installed);
-    if (removed && installed)
+    fib_route_state_t *state = fib_rib_route_lookup(g_fib_work_local->rib, entry);
+    const fib_route_entry_t *withdraw_entry = state ? &state->entry : entry;
+
+    /* 先确认内核撤销，再删除 RIB state。即使 FIB 重启后 state 不存在，
+     * 也发送幂等 DEL，防止内核仍留有旧 SRv6 encap/IP 路由。 */
+    if ((withdraw_entry->flags & FIB_ROUTE_FLAG_SKIP_OS) == 0u)
     {
-        (void)fib_os_route_withdraw(&old_entry);
+        int rc = fib_os_route_withdraw(withdraw_entry);
+        if (rc != ERRCODE_SUCCESS)
+        {
+            fib_worker_send_ack(cmd->msg, rc);
+            return rc;
+        }
     }
+    (void)fib_rib_route_delete(g_fib_work_local->rib, entry, NULL, NULL);
     fib_worker_send_ack(cmd->msg, ERRCODE_SUCCESS);
     return ERRCODE_SUCCESS;
 }
@@ -460,6 +520,113 @@ static int fib_handle_ilm_delete(fib_worker_cmd_t *cmd)
     return ERRCODE_SUCCESS;
 }
 
+static int fib_reconcile_srv6_localsid(fib_srv6_localsid_state_t *state)
+{
+    if (!state)
+    {
+        return ERRCODE_FAIL;
+    }
+    const vrf_api_cache_entry_t *vrf = vrf_api_cache_lookup(state->entry.vrf_id);
+    if (!vrf || vrf->os_state != VRF_OS_STATE_UP)
+    {
+        if (state->installed)
+        {
+            int withdraw_rc = fib_os_srv6_localsid_withdraw(&state->entry);
+            if (withdraw_rc != ERRCODE_SUCCESS)
+            {
+                return withdraw_rc;
+            }
+            state->installed = 0u;
+        }
+        /* 保留 desired state 等 VRF 事件 reconcile，但显式 UPSERT 必须
+         * 向 SRV6 返回依赖缺失；否则 BGP 会广告一个尚未安装的 SID。 */
+        return ERRCODE_DEP_MISSING;
+    }
+
+    /* RTM_NEWROUTE 使用 CREATE|REPLACE，本身就是幂等重放。失败时保留
+     * 先前 installed 认知，显式 delete 仍会无条件发送幂等 DEL。 */
+    uint8_t was_installed = state->installed;
+    int rc = fib_os_srv6_localsid_install(&state->entry);
+    state->installed = (rc == ERRCODE_SUCCESS) ? 1u : was_installed;
+    return rc;
+}
+
+static int fib_handle_srv6_localsid_upsert(fib_worker_cmd_t *cmd)
+{
+    if (!cmd || !cmd->msg || !cmd->msg->payload || cmd->msg->payload_len < sizeof(fib_srv6_localsid_entry_t))
+    {
+        fib_worker_send_ack(cmd ? cmd->msg : NULL, ERRCODE_FAIL);
+        return ERRCODE_FAIL;
+    }
+    const fib_srv6_localsid_entry_t *entry = (const fib_srv6_localsid_entry_t *)cmd->msg->payload;
+    /* LocalSID install 使用 RTM_NEWROUTE CREATE|REPLACE，同 SID 重放或变更
+     * 都直接原子替换，不先 DEL，避免 DEL 成功而 NEW 失败的空窗。 */
+    fib_srv6_localsid_state_t *old = fib_rib_srv6_localsid_lookup(g_fib_work_local->rib, &entry->sid);
+    fib_srv6_localsid_entry_t old_entry;
+    uint8_t old_installed = 0u;
+    gboolean had_old = old ? TRUE : FALSE;
+    if (old)
+    {
+        old_entry = old->entry;
+        old_installed = old->installed;
+    }
+    fib_srv6_localsid_state_t *state = fib_rib_srv6_localsid_upsert(g_fib_work_local->rib, entry);
+    int rc = state ? fib_reconcile_srv6_localsid(state) : ERRCODE_FAIL;
+    if (rc != ERRCODE_SUCCESS && had_old && state)
+    {
+        /* REPLACE 失败时恢复旧 desired/installed 认知，并幂等重装旧项。
+         * 这样下次 delete/replay 仍使用正确的 VRF/behavior。 */
+        state->entry = old_entry;
+        state->installed = 0u;
+        if (old_installed)
+        {
+            int restore_rc = fib_os_srv6_localsid_install(&old_entry);
+            state->installed = (restore_rc == ERRCODE_SUCCESS) ? 1u : 0u;
+            if (restore_rc != ERRCODE_SUCCESS)
+            {
+                LOG_ERROR("FIB: failed to restore previous SRv6 LocalSID vrf=%u rc=%d", old_entry.vrf_id, restore_rc);
+            }
+        }
+    }
+    fib_worker_send_ack(cmd->msg, rc);
+    return rc;
+}
+
+static int fib_handle_srv6_localsid_delete(fib_worker_cmd_t *cmd)
+{
+    if (!cmd || !cmd->msg || !cmd->msg->payload || cmd->msg->payload_len < sizeof(fib_srv6_localsid_entry_t))
+    {
+        fib_worker_send_ack(cmd ? cmd->msg : NULL, ERRCODE_FAIL);
+        return ERRCODE_FAIL;
+    }
+    const fib_srv6_localsid_entry_t *entry = (const fib_srv6_localsid_entry_t *)cmd->msg->payload;
+    fib_srv6_localsid_state_t *state = fib_rib_srv6_localsid_lookup(g_fib_work_local->rib, &entry->sid);
+    /* 即使本地 state 不存在或 installed=false，也发送幂等 DEL：进程重启、
+     * VRF 事件或早先 ACK 丢失都可能让内存状态落后于内核。 */
+    const fib_srv6_localsid_entry_t *installed_entry = state ? &state->entry : entry;
+    int rc = fib_os_srv6_localsid_withdraw(installed_entry);
+    if (rc != ERRCODE_SUCCESS)
+    {
+        /* 保留内存 state，使调用方重试仍会真正撤销 kernel route。 */
+        fib_worker_send_ack(cmd->msg, rc);
+        return rc;
+    }
+    if (state)
+    {
+        state->installed = 0u;
+    }
+    (void)fib_rib_srv6_localsid_delete(g_fib_work_local->rib, entry, NULL, NULL);
+    fib_worker_send_ack(cmd->msg, ERRCODE_SUCCESS);
+    return ERRCODE_SUCCESS;
+}
+
+static void fib_reconcile_srv6_localsid_cb(gpointer key, gpointer value, gpointer user_data)
+{
+    (void)key;
+    (void)user_data;
+    (void)fib_reconcile_srv6_localsid((fib_srv6_localsid_state_t *)value);
+}
+
 static int fib_worker_dispatch_cmd(fib_worker_cmd_t *cmd)
 {
     int stop = 0;
@@ -490,11 +657,18 @@ static int fib_worker_dispatch_cmd(fib_worker_cmd_t *cmd)
         case FIB_WORKER_CMD_NEXTHOP_DELETE:
             (void)fib_handle_nexthop_delete(cmd);
             break;
+        case FIB_WORKER_CMD_SRV6_LOCALSID_UPSERT:
+            (void)fib_handle_srv6_localsid_upsert(cmd);
+            break;
+        case FIB_WORKER_CMD_SRV6_LOCALSID_DELETE:
+            (void)fib_handle_srv6_localsid_delete(cmd);
+            break;
         case FIB_WORKER_CMD_SHOW_CLI:
             (void)fib_show_dispatch(cmd->msg);
             break;
         case FIB_WORKER_CMD_VRF_EVENT:
             vrf_api_cache_on_event(cmd->msg);
+            fib_rib_foreach_srv6_localsid(g_fib_work_local->rib, fib_reconcile_srv6_localsid_cb, NULL);
             break;
         case FIB_WORKER_CMD_SHUTDOWN:
             g_fib_work_local->running = 0;

@@ -216,6 +216,10 @@ static const char *bgp_af_str(bgp_afi_t afi, bgp_safi_t safi)
     {
         return "vpnv4";
     }
+    if (afi == BGP_AFI_IPV6 && safi == BGP_SAFI_VPN_UNICAST)
+    {
+        return "vpnv6";
+    }
     if (afi == BGP_AFI_L2VPN && safi == BGP_SAFI_EVPN)
     {
         return "evpn";
@@ -312,6 +316,288 @@ static int handle_bgp_protocol(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
         return ERRCODE_FAIL;
     }
 
+    bgp_send_cli_response(msg, "");
+    return ERRCODE_SUCCESS;
+}
+
+static int handle_bgp_srv6(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    bgp_apply_cmd_t apply;
+    memset(&apply, 0, sizeof(apply));
+    apply.group_id = BGP_CLI_GROUP_ID_SRV6;
+    apply.isNo = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
+    bgp_cli_ctx_t ctx = bgp_cli_ctx_default();
+
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (CLI_TLV_IS_CTX(&entry))
+        {
+            bgp_cli_ctx_parse(&ctx, &entry);
+        }
+        else if (entry.cfg_id == 1)
+        {
+            const char *name = cli_tlv_entry_get_text(&entry);
+            if (name)
+            {
+                g_strlcpy(apply.u.srv6.locator, name, sizeof(apply.u.srv6.locator));
+            }
+        }
+        cli_tlv_entry_free(&entry);
+    }
+    bgp_cli_apply_ctx_set(&apply, &ctx);
+    apply.u.srv6.afi = ctx.afi;
+    apply.u.srv6.safi = ctx.safi;
+    if (ctx.vrf_name[0] == '\0' || strcmp(ctx.vrf_name, VRF_PUBLIC_VRF_NAME) == 0 || ctx.safi != BGP_SAFI_UNICAST ||
+        (ctx.afi != BGP_AFI_IPV4 && ctx.afi != BGP_AFI_IPV6))
+    {
+        bgp_send_cli_response(msg, "BGP Error: SRv6 is only valid under a private unicast address-family.\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (!apply.isNo && apply.u.srv6.locator[0] == '\0')
+    {
+        bgp_send_cli_response(msg, "BGP Error: Missing SRv6 locator name.\r\n");
+        return ERRCODE_FAIL;
+    }
+    /* Locator selection is validated against SRV6 and transactionally
+     * allocates/programs this private AF's End.DT LocalSID.  Per-neighbor
+     * `srv6-sid` still decides whether the wire update uses it. */
+    if (dev_ipc_wait_module_ready(bgp_local_ipc_ctx(), DEV_MODULE_ID_SRV6, DEV_IPC_WAIT_READY_MS) != ERRCODE_SUCCESS)
+    {
+        bgp_send_cli_response(msg, "BGP Error: SRV6 module is unavailable.\r\n");
+        return ERRCODE_FAIL;
+    }
+    char old_db_locator[SRV6_LOCATOR_NAME_MAX];
+    if (bgp_db_get_instance_srv6_locator(ctx.vrf_name, ctx.afi, ctx.safi, old_db_locator, sizeof(old_db_locator)) != 0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Failed to read the current SRv6 database state.\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (bgp_worker_dispatch_apply(&apply) != 0 || (apply.rc != BGP_APPLY_RC_OK && apply.rc != BGP_APPLY_RC_NOOP))
+    {
+        char out[300];
+        snprintf(out, sizeof(out), "%s\r\n", apply.errmsg[0] ? apply.errmsg : "BGP Error: apply failed.");
+        bgp_send_cli_response(msg, out);
+        return ERRCODE_FAIL;
+    }
+    const char *desired_locator = apply.isNo ? "" : apply.u.srv6.locator;
+    if (bgp_db_set_instance_srv6_locator(ctx.vrf_name, ctx.afi, ctx.safi, desired_locator) != 0)
+    {
+        /* runtime 已切换而 DB commit 失败时，用变更前的持久值做反向补偿。
+         * runtime 已经是 desired 时 apply 会返回 NOOP；若 DB 仍是旧值，
+         * 写入失败后同样必须恢复到旧持久态，不能留下新的内存分叉。 */
+        gboolean rollback_ok = TRUE;
+        if (strcmp(old_db_locator, desired_locator) != 0)
+        {
+            bgp_apply_cmd_t rollback;
+            memset(&rollback, 0, sizeof(rollback));
+            rollback.group_id = BGP_CLI_GROUP_ID_SRV6;
+            rollback.isNo = old_db_locator[0] == '\0';
+            g_strlcpy(rollback.vrf_name, ctx.vrf_name, sizeof(rollback.vrf_name));
+            rollback.u.srv6.afi = ctx.afi;
+            rollback.u.srv6.safi = ctx.safi;
+            g_strlcpy(rollback.u.srv6.locator, old_db_locator, sizeof(rollback.u.srv6.locator));
+            rollback_ok = bgp_worker_dispatch_apply(&rollback) == 0 &&
+                          (rollback.rc == BGP_APPLY_RC_OK || rollback.rc == BGP_APPLY_RC_NOOP);
+        }
+        bgp_send_cli_response(msg, rollback_ok ? "BGP Error: Database write failed; runtime change was rolled back.\r\n"
+                                               : "BGP Error: Database write failed and runtime rollback failed.\r\n");
+        return ERRCODE_FAIL;
+    }
+    bgp_send_cli_response(msg, "");
+    return ERRCODE_SUCCESS;
+}
+
+static gboolean bgp_cli_srv6_mode_ctx_valid(const bgp_cli_ctx_t *ctx)
+{
+    return ctx && ctx->vrf_name[0] != '\0' && strcmp(ctx->vrf_name, VRF_PUBLIC_VRF_NAME) != 0 &&
+           (ctx->afi == BGP_AFI_IPV4 || ctx->afi == BGP_AFI_IPV6) && ctx->safi == BGP_SAFI_UNICAST;
+}
+
+static gboolean bgp_cli_rollback_neighbor_srv6_sid(const bgp_cli_ctx_t *ctx, const net_addr_t *addr, bool old_enabled)
+{
+    if (!ctx || !addr)
+    {
+        return FALSE;
+    }
+    /* Rolling back to the default MPLS encoding can need a per-VRF label. */
+    if (!old_enabled &&
+        dev_ipc_wait_module_ready(bgp_local_ipc_ctx(), DEV_MODULE_ID_TUNNEL, DEV_IPC_WAIT_READY_MS) != ERRCODE_SUCCESS)
+    {
+        return FALSE;
+    }
+
+    bgp_apply_cmd_t rollback;
+    memset(&rollback, 0, sizeof(rollback));
+    rollback.group_id = BGP_CLI_GROUP_ID_NEIGHBOR_SRV6_SID;
+    rollback.isNo = !old_enabled;
+    g_strlcpy(rollback.vrf_name, ctx->vrf_name, sizeof(rollback.vrf_name));
+    rollback.u.neighbor_srv6_sid.afi = ctx->afi;
+    rollback.u.neighbor_srv6_sid.safi = ctx->safi;
+    rollback.u.neighbor_srv6_sid.addr = *addr;
+    return bgp_worker_dispatch_apply(&rollback) == 0 &&
+           (rollback.rc == BGP_APPLY_RC_OK || rollback.rc == BGP_APPLY_RC_NOOP);
+}
+
+static gboolean bgp_cli_rollback_srv6_be(const bgp_cli_ctx_t *ctx, bool old_enabled)
+{
+    if (!ctx)
+    {
+        return FALSE;
+    }
+    /* 回滚目标是关闭 BE 时，必须先确认 MPLS 迭代资源可用。 */
+    if (!old_enabled &&
+        dev_ipc_wait_module_ready(bgp_local_ipc_ctx(), DEV_MODULE_ID_TUNNEL, DEV_IPC_WAIT_READY_MS) != ERRCODE_SUCCESS)
+    {
+        return FALSE;
+    }
+
+    bgp_apply_cmd_t rollback;
+    memset(&rollback, 0, sizeof(rollback));
+    rollback.group_id = BGP_CLI_GROUP_ID_SRV6_BE;
+    rollback.isNo = !old_enabled;
+    g_strlcpy(rollback.vrf_name, ctx->vrf_name, sizeof(rollback.vrf_name));
+    rollback.u.srv6_mode.afi = ctx->afi;
+    rollback.u.srv6_mode.safi = ctx->safi;
+    return bgp_worker_dispatch_apply(&rollback) == 0 &&
+           (rollback.rc == BGP_APPLY_RC_OK || rollback.rc == BGP_APPLY_RC_NOOP);
+}
+
+static int handle_bgp_neighbor_srv6_sid(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    bgp_apply_cmd_t apply;
+    memset(&apply, 0, sizeof(apply));
+    apply.group_id = BGP_CLI_GROUP_ID_NEIGHBOR_SRV6_SID;
+    apply.isNo = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
+    bgp_cli_ctx_t ctx = bgp_cli_ctx_default();
+    char ip_buf[64] = {0};
+
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (CLI_TLV_IS_CTX(&entry))
+        {
+            bgp_cli_ctx_parse(&ctx, &entry);
+        }
+        else if (entry.cfg_id == 1 || entry.cfg_id == 2)
+        {
+            const char *ip = cli_tlv_entry_get_text(&entry);
+            if (ip)
+            {
+                g_strlcpy(ip_buf, ip, sizeof(ip_buf));
+            }
+        }
+        cli_tlv_entry_free(&entry);
+    }
+    if (strcmp(ctx.vrf_name, VRF_PUBLIC_VRF_NAME) != 0 || (ctx.afi != BGP_AFI_IPV4 && ctx.afi != BGP_AFI_IPV6) ||
+        ctx.safi != BGP_SAFI_VPN_UNICAST)
+    {
+        bgp_send_cli_response(msg, "BGP Error: neighbor srv6-sid is only valid under the public VPNv4/VPNv6 "
+                                   "address-family.\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (ip_buf[0] == '\0' || net_addr_from_str(ip_buf, &apply.u.neighbor_srv6_sid.addr) != 0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Missing or invalid neighbor IP address.\r\n");
+        return ERRCODE_FAIL;
+    }
+    net_addr_to_str(&apply.u.neighbor_srv6_sid.addr, ip_buf, sizeof(ip_buf));
+
+    bgp_cli_apply_ctx_set(&apply, &ctx);
+    apply.u.neighbor_srv6_sid.afi = ctx.afi;
+    apply.u.neighbor_srv6_sid.safi = ctx.safi;
+
+    /* 关闭 SID 编码会使该邻居重新使用 per-VRF MPLS label。 */
+    if (apply.isNo &&
+        dev_ipc_wait_module_ready(bgp_local_ipc_ctx(), DEV_MODULE_ID_TUNNEL, DEV_IPC_WAIT_READY_MS) != ERRCODE_SUCCESS)
+    {
+        bgp_send_cli_response(msg, "BGP Error: TUNNEL module is unavailable for MPLS fallback.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    bool old_enabled = false;
+    if (bgp_db_get_neighbor_srv6_sid(ctx.vrf_name, ctx.afi, ctx.safi, ip_buf, &old_enabled) != 0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Failed to read the current neighbor srv6-sid state.\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (bgp_worker_dispatch_apply(&apply) != 0 || (apply.rc != BGP_APPLY_RC_OK && apply.rc != BGP_APPLY_RC_NOOP))
+    {
+        char out[300];
+        snprintf(out, sizeof(out), "%s\r\n", apply.errmsg[0] ? apply.errmsg : "BGP Error: apply failed.");
+        bgp_send_cli_response(msg, out);
+        return ERRCODE_FAIL;
+    }
+
+    const bool desired = !apply.isNo;
+    if (bgp_db_set_neighbor_srv6_sid(ctx.vrf_name, ctx.afi, ctx.safi, ip_buf, desired) != 0)
+    {
+        const gboolean rollback_ok = old_enabled == desired || bgp_cli_rollback_neighbor_srv6_sid(
+                                                                   &ctx, &apply.u.neighbor_srv6_sid.addr, old_enabled);
+        bgp_send_cli_response(msg, rollback_ok ? "BGP Error: Database write failed; runtime change was rolled back.\r\n"
+                                               : "BGP Error: Database write failed and runtime rollback failed.\r\n");
+        return ERRCODE_FAIL;
+    }
+    bgp_send_cli_response(msg, "");
+    return ERRCODE_SUCCESS;
+}
+
+static int handle_bgp_srv6_be(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
+{
+    bgp_apply_cmd_t apply;
+    memset(&apply, 0, sizeof(apply));
+    apply.group_id = BGP_CLI_GROUP_ID_SRV6_BE;
+    apply.isNo = (parser->flags & CLI_PAYLOAD_FLAG_NO_CMD) != 0;
+    bgp_cli_ctx_t ctx = bgp_cli_ctx_default();
+
+    cli_tlv_entry_t entry;
+    while (cli_tlv_next(parser, &entry) == 1)
+    {
+        if (CLI_TLV_IS_CTX(&entry))
+        {
+            bgp_cli_ctx_parse(&ctx, &entry);
+        }
+        cli_tlv_entry_free(&entry);
+    }
+    if (!bgp_cli_srv6_mode_ctx_valid(&ctx))
+    {
+        bgp_send_cli_response(msg, "BGP Error: srv6 be is only valid under a private unicast address-family.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    bgp_cli_apply_ctx_set(&apply, &ctx);
+    apply.u.srv6_mode.afi = ctx.afi;
+    apply.u.srv6_mode.safi = ctx.safi;
+
+    if (apply.isNo &&
+        dev_ipc_wait_module_ready(bgp_local_ipc_ctx(), DEV_MODULE_ID_TUNNEL, DEV_IPC_WAIT_READY_MS) != ERRCODE_SUCCESS)
+    {
+        bgp_send_cli_response(msg, "BGP Error: TUNNEL module is unavailable for MPLS fallback.\r\n");
+        return ERRCODE_FAIL;
+    }
+
+    bool old_enabled = false;
+    if (bgp_db_get_srv6_be(ctx.vrf_name, ctx.afi, ctx.safi, &old_enabled) != 0)
+    {
+        bgp_send_cli_response(msg, "BGP Error: Failed to read the current srv6 be state.\r\n");
+        return ERRCODE_FAIL;
+    }
+    if (bgp_worker_dispatch_apply(&apply) != 0 || (apply.rc != BGP_APPLY_RC_OK && apply.rc != BGP_APPLY_RC_NOOP))
+    {
+        char out[300];
+        snprintf(out, sizeof(out), "%s\r\n", apply.errmsg[0] ? apply.errmsg : "BGP Error: apply failed.");
+        bgp_send_cli_response(msg, out);
+        return ERRCODE_FAIL;
+    }
+
+    const bool desired = !apply.isNo;
+    if (bgp_db_set_srv6_be(ctx.vrf_name, ctx.afi, ctx.safi, desired) != 0)
+    {
+        const gboolean rollback_ok = old_enabled == desired || bgp_cli_rollback_srv6_be(&ctx, old_enabled);
+        bgp_send_cli_response(msg, rollback_ok ? "BGP Error: Database write failed; runtime change was rolled back.\r\n"
+                                               : "BGP Error: Database write failed and runtime rollback failed.\r\n");
+        return ERRCODE_FAIL;
+    }
     bgp_send_cli_response(msg, "");
     return ERRCODE_SUCCESS;
 }
@@ -558,13 +844,17 @@ static int handle_bgp_addr_family(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
                 ctx.afi = BGP_AFI_L2VPN;
                 ctx.safi = BGP_SAFI_EVPN;
                 break;
+            case 8:
+                ctx.afi = BGP_AFI_IPV6;
+                ctx.safi = BGP_SAFI_VPN_UNICAST;
+                break;
             default:
                 break;
         }
         cli_tlv_entry_free(&entry);
     }
 
-    /* 使能 labeled / vpnv4 地址族时需要 TUNNEL 进程做 MPLS 转发表项；按需拉起。
+    /* 使能 labeled / VPN 地址族时需要 TUNNEL 进程做 MPLS 转发表项；按需拉起。
      * UNICAST 纯 IP 不需要。 */
     if (!apply.isNo && (ctx.safi == BGP_SAFI_LABELED || ctx.safi == BGP_SAFI_VPN_UNICAST))
     {
@@ -666,6 +956,7 @@ static int handle_bgp_af_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pars
         bgp_send_cli_response(msg, "BGP Error: Invalid IP address.\r\n");
         return ERRCODE_FAIL;
     }
+    net_addr_to_str(&apply.u.af_neighbor.addr, ip_buf, sizeof(ip_buf));
     bgp_cli_apply_ctx_set(&apply, &ctx);
     apply.u.af_neighbor.afi = ctx.afi;
     apply.u.af_neighbor.safi = ctx.safi;
@@ -1640,9 +1931,9 @@ static int handle_bgp_route_select(dev_ipc_message_t *msg, cli_tlv_parser_t *par
 }
 
 /**
- * @brief 处理 policy vpn-target / no policy vpn-target（group_id=24，vpnv4 AF 视图）
+ * @brief 处理 policy vpn-target / no policy vpn-target（group_id=24，VPN AF 视图）
  *
- * 默认启用：收到的 vpnv4 路由必须 import-RT 命中才接受；no 关闭后一律接受进 vpnv4 RIB，
+ * 默认启用：收到的 VPN 路由必须 import-RT 命中才接受；no 关闭后一律接受进 VPN RIB，
  * 但导入私网 VRF 仍按 import-RT 命中决定。无 cfg-id 参数，afi/safi 来自视图上下文。
  */
 static int handle_bgp_vpn_target_policy(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
@@ -1663,10 +1954,10 @@ static int handle_bgp_vpn_target_policy(dev_ipc_message_t *msg, cli_tlv_parser_t
         cli_tlv_entry_free(&entry);
     }
 
-    /* 仅 VPN 类地址族(当前 vpnv4)视图下有效 */
-    if (ctx.afi != BGP_AFI_IPV4 || ctx.safi != BGP_SAFI_VPN_UNICAST)
+    /* 仅公网 VPNv4/VPNv6 地址族视图下有效。 */
+    if ((ctx.afi != BGP_AFI_IPV4 && ctx.afi != BGP_AFI_IPV6) || ctx.safi != BGP_SAFI_VPN_UNICAST)
     {
-        bgp_send_cli_response(msg, "BGP Error: command only valid under vpnv4 address-family.\r\n");
+        bgp_send_cli_response(msg, "BGP Error: command only valid under a VPN address-family.\r\n");
         return ERRCODE_FAIL;
     }
 
@@ -1693,7 +1984,7 @@ static int handle_bgp_vpn_target_policy(dev_ipc_message_t *msg, cli_tlv_parser_t
         return ERRCODE_FAIL;
     }
 
-    /* 持久化：写公网 vpnv4 instance 行的 vpn_target_policy 列（!isNo=启用） */
+    /* 持久化：写对应公网 VPN instance 行的 vpn_target_policy 列（!isNo=启用） */
     if (bgp_db_set_vpn_target_policy(VRF_PUBLIC_VRF_NAME, ctx.afi, ctx.safi, !apply.isNo) != 0)
     {
         bgp_send_cli_response(msg, "BGP Error: Database write failed.\r\n");
@@ -2153,6 +2444,15 @@ int bgp_cli_handle_config_msg(dev_ipc_message_t *msg)
     {
         case BGP_CLI_GROUP_ID_PROTOCOL:
             result = handle_bgp_protocol(msg, &parser);
+            break;
+        case BGP_CLI_GROUP_ID_SRV6:
+            result = handle_bgp_srv6(msg, &parser);
+            break;
+        case BGP_CLI_GROUP_ID_NEIGHBOR_SRV6_SID:
+            result = handle_bgp_neighbor_srv6_sid(msg, &parser);
+            break;
+        case BGP_CLI_GROUP_ID_SRV6_BE:
+            result = handle_bgp_srv6_be(msg, &parser);
             break;
         case BGP_CLI_GROUP_ID_NEIGHBOR:
             result = handle_bgp_neighbor(msg, &parser);

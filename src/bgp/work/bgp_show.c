@@ -146,6 +146,10 @@ const char *bgp_af_str(bgp_afi_t afi, bgp_safi_t safi)
     {
         return "vpnv4";
     }
+    if (afi == BGP_AFI_IPV6 && safi == BGP_SAFI_VPN_UNICAST)
+    {
+        return "vpnv6";
+    }
     if (afi == BGP_AFI_L2VPN && safi == BGP_SAFI_EVPN)
     {
         return "evpn";
@@ -452,6 +456,11 @@ static int handle_bgp_show_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
                 ctx.safi = BGP_SAFI_EVPN;
                 has_af = TRUE;
                 break;
+            case 10:
+                ctx.afi = BGP_AFI_IPV6;
+                ctx.safi = BGP_SAFI_VPN_UNICAST;
+                has_af = TRUE;
+                break;
             case 7:
             {
                 /* vrf <vrf-name> (仅 ipv4/ipv6 unicast 支持) */
@@ -470,9 +479,7 @@ static int handle_bgp_show_neighbor(dev_ipc_message_t *msg, cli_tlv_parser_t *pa
 
     if (!has_af)
     {
-        bgp_show_send_cli_response(
-            msg, "BGP Error: Missing address-family. Use 'af ipv4-unicast', 'af ipv6-unicast', 'af ipv4-qp', or 'af "
-                 "ipv6-qp'.\r\n");
+        bgp_show_send_cli_response(msg, "BGP Error: Missing address-family selector.\r\n");
         return ERRCODE_FAIL;
     }
 
@@ -805,6 +812,8 @@ static void bgp_show_ug_append_detail(GString *buf, const bgp_update_group_t *ug
     g_string_append_printf(buf, "  Negotiated   : 0x%08X (%s)\r\n", ug->key.negotiated_caps, caps_str);
     g_string_append_printf(buf, "  Policy-Hash  : 0x%08X\r\n", ug->key.policy_hash);
     g_string_append_printf(buf, "  Peer-Family  : %u\r\n", (unsigned)ug->key.peer_family);
+    g_string_append_printf(buf, "  SRv6-SID     : %s\r\n",
+                           BIT_TEST(ug->key.flags, BGP_UG_FLAG_SRV6_SID) ? "Yes" : "No");
     g_string_append_printf(buf, "  Subgroups    : %u\r\n", st.subgroup_count);
     g_string_append_printf(buf, "  Neighbors    : %u\r\n", st.peer_count);
     g_string_append_printf(buf, "  Adj-RIB-Out  : %u\r\n", st.aro_count);
@@ -855,9 +864,9 @@ static void bgp_show_ug_append_detail(GString *buf, const bgp_update_group_t *ug
 }
 
 /**
- * @brief 处理 show bgp update-group af ipv4-unicast|ipv6-unicast [<group-id>] 命令
+ * @brief 处理 show bgp update-group af <address-family> [<group-id>] 命令
  *
- * group_id=15, cfg_id: 1=ipv4-unicast, 2=ipv6-unicast, 3=group-id
+ * group_id=15, cfg_id: 1=ipv4-unicast, 2=ipv6-unicast, 3=group-id, 8=vpnv4, 9=vpnv6
  */
 static int handle_bgp_show_update_group(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
@@ -912,6 +921,11 @@ static int handle_bgp_show_update_group(dev_ipc_message_t *msg, cli_tlv_parser_t
                 ctx.safi = BGP_SAFI_VPN_UNICAST;
                 has_af = TRUE;
                 break;
+            case 9:
+                ctx.afi = BGP_AFI_IPV6;
+                ctx.safi = BGP_SAFI_VPN_UNICAST;
+                has_af = TRUE;
+                break;
             case 7:
             {
                 /* vrf <vrf-name> (仅 ipv4/ipv6 unicast 支持) */
@@ -930,8 +944,7 @@ static int handle_bgp_show_update_group(dev_ipc_message_t *msg, cli_tlv_parser_t
 
     if (!has_af)
     {
-        bgp_show_send_cli_response(
-            msg, "BGP Error: Missing address-family. Use 'af ipv4-unicast' or 'af ipv6-unicast'.\r\n");
+        bgp_show_send_cli_response(msg, "BGP Error: Missing address-family selector.\r\n");
         return ERRCODE_FAIL;
     }
     if (!g_bgp_work_local->protocol)
@@ -1094,7 +1107,7 @@ static void bgp_show_attr_detail(GString *buf, const bgp_attr_ref_t *ref)
 /**
  * @brief 处理 show bgp attr af <afi-safi> [vrf <vrf-name>] [<attr-id>] 命令
  *
- * group_id=14, cfg_id: 1/2/4/5/6=AF, 7=vrf-name, 8=attr-id
+ * group_id=14, cfg_id: 1/2/4/5/6/9/10=AF, 7=vrf-name, 8=attr-id
  */
 static int handle_bgp_show_attr(dev_ipc_message_t *msg, cli_tlv_parser_t *parser)
 {
@@ -1150,6 +1163,11 @@ static int handle_bgp_show_attr(dev_ipc_message_t *msg, cli_tlv_parser_t *parser
             }
             case 9:
                 ctx.afi = BGP_AFI_IPV4;
+                ctx.safi = BGP_SAFI_VPN_UNICAST;
+                has_af = TRUE;
+                break;
+            case 10:
+                ctx.afi = BGP_AFI_IPV6;
                 ctx.safi = BGP_SAFI_VPN_UNICAST;
                 has_af = TRUE;
                 break;

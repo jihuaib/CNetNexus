@@ -54,6 +54,10 @@ static const char *afi_safi_to_str(int64_t afi, int64_t safi)
     {
         return "vpnv4";
     }
+    if (afi == 2 && safi == BGP_SAFI_VPN_UNICAST)
+    {
+        return "vpnv6";
+    }
     if (afi == BGP_AFI_L2VPN && safi == BGP_SAFI_EVPN)
     {
         return "evpn";
@@ -71,8 +75,8 @@ static gboolean bgp_bdr_is_af_view(const char *view_name)
            (strcmp(view_name, CLI_VIEW_BGP_AF_IPV4) == 0 || strcmp(view_name, CLI_VIEW_BGP_AF_IPV6) == 0 ||
             strcmp(view_name, CLI_VIEW_BGP_AF_IPV4_QP) == 0 || strcmp(view_name, CLI_VIEW_BGP_AF_IPV6_QP) == 0 ||
             strcmp(view_name, CLI_VIEW_BGP_AF_IPV4_LABELED) == 0 || strcmp(view_name, CLI_VIEW_BGP_AF_VPNV4) == 0 ||
-            strcmp(view_name, CLI_VIEW_BGP_AF_EVPN) == 0 || strcmp(view_name, CLI_VIEW_BGP_VRF_AF_IPV4) == 0 ||
-            strcmp(view_name, CLI_VIEW_BGP_VRF_AF_IPV6) == 0);
+            strcmp(view_name, CLI_VIEW_BGP_AF_VPNV6) == 0 || strcmp(view_name, CLI_VIEW_BGP_AF_EVPN) == 0 ||
+            strcmp(view_name, CLI_VIEW_BGP_VRF_AF_IPV4) == 0 || strcmp(view_name, CLI_VIEW_BGP_VRF_AF_IPV6) == 0);
 }
 
 static gboolean bgp_bdr_is_vrf_scoped_view(const char *view_name)
@@ -303,6 +307,10 @@ static void bdr_append_af_peers(GString *out, const char *vrf_name, int64_t afi,
             continue;
         }
         g_string_append_printf(out, "%sneighbor %s enable\r\n", line_indent, ip);
+        if (db_row_get_int(row, "srv6_sid", 0) != 0)
+        {
+            g_string_append_printf(out, "%sneighbor %s srv6-sid\r\n", line_indent, ip);
+        }
         if (db_row_get_int(row, "is_rr_client", 0) != 0)
         {
             g_string_append_printf(out, "%sneighbor %s reflect-client\r\n", line_indent, ip);
@@ -373,7 +381,8 @@ static void bdr_append_qp_routes(GString *out, const char *vrf_name, int64_t afi
 static void bdr_append_af_block(GString *out, const char *vrf_name, const char *afi_str, int64_t afi, int64_t safi,
                                 int64_t import_protos, gboolean route_select_enabled, int64_t cluster_id,
                                 int64_t import_rib_sources, gboolean vpn_target_policy, gboolean advertise_evpn_route,
-                                const char *block_indent, const char *body_indent)
+                                const char *srv6_locator, gboolean srv6_be, const char *block_indent,
+                                const char *body_indent)
 {
     g_string_append_printf(out, "%s!\r\n", block_indent);
     g_string_append_printf(out, "%saf %s\r\n", block_indent, afi_str);
@@ -383,7 +392,15 @@ static void bdr_append_af_block(GString *out, const char *vrf_name, const char *
     {
         g_string_append_printf(out, "%sno policy vpn-target\r\n", body_indent);
     }
-
+    const gboolean srv6_key_valid = bgp_db_srv6_instance_key_valid(vrf_name, (bgp_afi_t)afi, (bgp_safi_t)safi);
+    if (srv6_key_valid && srv6_locator && srv6_locator[0] != '\0')
+    {
+        g_string_append_printf(out, "%ssegment-routing srv6 locator %s\r\n", body_indent, srv6_locator);
+    }
+    if (srv6_key_valid && srv6_be)
+    {
+        g_string_append_printf(out, "%ssrv6 be\r\n", body_indent);
+    }
     /* 反射器 cluster-id（per-AF） */
     if (cluster_id != 0)
     {
@@ -459,6 +476,8 @@ static void bdr_append_af_instances_scoped(GString *out, const char *vrf_name, c
         int64_t import_rib_sources = db_row_get_int(row, "import_rib_sources", 0);
         gboolean vpn_target_policy = db_row_get_int(row, "vpn_target_policy", 1) != 0;
         gboolean advertise_evpn_route = db_row_get_int(row, "advertise_evpn_route", 0) != 0;
+        const char *srv6_locator = db_row_get_text(row, "srv6_locator", "");
+        gboolean srv6_be = db_row_get_int(row, "srv6_be", 0) != 0;
         const char *afi_str = afi_safi_to_str(afi_int, safi_int);
 
         if (!afi_str)
@@ -467,7 +486,8 @@ static void bdr_append_af_instances_scoped(GString *out, const char *vrf_name, c
         }
 
         bdr_append_af_block(out, vrf_name, afi_str, afi_int, safi_int, import_protos, route_select_enabled, cluster_id,
-                            import_rib_sources, vpn_target_policy, advertise_evpn_route, block_indent, body_indent);
+                            import_rib_sources, vpn_target_policy, advertise_evpn_route, srv6_locator, srv6_be,
+                            block_indent, body_indent);
     }
 
     db_value_free(&cond.value);
@@ -562,12 +582,15 @@ static void bdr_append_scoped_af_instance(GString *out, const char *vrf_name, in
         int64_t import_rib_sources = db_row_get_int(row, "import_rib_sources", 0);
         gboolean vpn_target_policy = db_row_get_int(row, "vpn_target_policy", 1) != 0;
         gboolean advertise_evpn_route = db_row_get_int(row, "advertise_evpn_route", 0) != 0;
+        const char *srv6_locator = db_row_get_text(row, "srv6_locator", "");
+        gboolean srv6_be = db_row_get_int(row, "srv6_be", 0) != 0;
         const char *afi_str = afi_safi_to_str(afi, safi);
 
         if (afi_str)
         {
             bdr_append_af_block(out, vrf_name, afi_str, afi, safi, import_protos, route_select_enabled, cluster_id,
-                                import_rib_sources, vpn_target_policy, advertise_evpn_route, block_indent, body_indent);
+                                import_rib_sources, vpn_target_policy, advertise_evpn_route, srv6_locator, srv6_be,
+                                block_indent, body_indent);
         }
     }
 

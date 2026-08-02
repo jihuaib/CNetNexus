@@ -114,6 +114,25 @@ static void post_or_free(fib_worker_cmd_type_t type, dev_ipc_message_t *msg)
     if (fib_worker_post(type, msg) != ERRCODE_SUCCESS)
     {
         LOG_WARN("FIB: failed to post worker command %d", (int)type);
+        switch (type)
+        {
+            case FIB_WORKER_CMD_ROUTE_UPSERT:
+            case FIB_WORKER_CMD_ROUTE_DELETE:
+            case FIB_WORKER_CMD_TUNNEL_UPSERT:
+            case FIB_WORKER_CMD_TUNNEL_DELETE:
+            case FIB_WORKER_CMD_ILM_UPSERT:
+            case FIB_WORKER_CMD_ILM_DELETE:
+            case FIB_WORKER_CMD_NEXTHOP_UPSERT:
+            case FIB_WORKER_CMD_NEXTHOP_DELETE:
+            case FIB_WORKER_CMD_SRV6_LOCALSID_UPSERT:
+            case FIB_WORKER_CMD_SRV6_LOCALSID_DELETE:
+                fib_worker_send_ack(msg, ERRCODE_FAIL);
+                break;
+            case FIB_WORKER_CMD_SHOW_CLI:
+            case FIB_WORKER_CMD_SHUTDOWN:
+            case FIB_WORKER_CMD_VRF_EVENT:
+                break;
+        }
         dev_ipc_message_free(msg);
     }
 }
@@ -175,6 +194,12 @@ void fib_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             return;
         case FIB_MSG_TYPE_NEXTHOP_DELETE:
             post_or_free(FIB_WORKER_CMD_NEXTHOP_DELETE, msg);
+            return;
+        case FIB_MSG_TYPE_SRV6_LOCALSID_UPSERT:
+            post_or_free(FIB_WORKER_CMD_SRV6_LOCALSID_UPSERT, msg);
+            return;
+        case FIB_MSG_TYPE_SRV6_LOCALSID_DELETE:
+            post_or_free(FIB_WORKER_CMD_SRV6_LOCALSID_DELETE, msg);
             return;
         case VRF_MSG_TYPE_EVENT:
             post_or_free(FIB_WORKER_CMD_VRF_EVENT, msg);

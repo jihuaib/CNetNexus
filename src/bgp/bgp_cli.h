@@ -33,9 +33,12 @@
 #define BGP_CLI_GROUP_ID_REFLECT_CLIENT 21       /**< neighbor reflect-client 配置命令（AF 视图） */
 #define BGP_CLI_GROUP_ID_IMPORT_RIB 22           /**< import-rib 跨 AF 路由互导命令（AF 视图） */
 #define BGP_CLI_GROUP_ID_VRF_VIEW 23             /**< BGP VRF 子视图入口 */
-#define BGP_CLI_GROUP_ID_VPN_TARGET_POLICY 24    /**< policy vpn-target 入向过滤开关（vpnv4 AF 视图） */
+#define BGP_CLI_GROUP_ID_VPN_TARGET_POLICY 24    /**< policy vpn-target 入向过滤开关（VPN AF 视图） */
 #define BGP_CLI_GROUP_ID_ADVERTISE_EVPN_ROUTE 25 /**< VRF AF 路由导出到 EVPN 开关 */
 #define BGP_CLI_GROUP_ID_EXPORT_POLICY 26        /**< 邻居出口 route-policy */
+#define BGP_CLI_GROUP_ID_SRV6 27                 /**< Private unicast AF SRv6 service locator */
+#define BGP_CLI_GROUP_ID_NEIGHBOR_SRV6_SID 28    /**< VPN AF per-neighbor Prefix-SID advertisement */
+#define BGP_CLI_GROUP_ID_SRV6_BE 29              /**< Private unicast AF SRv6 BE mode */
 
 /**
  * @brief 处理配置类 CLI 命令（group 1-8, 11-13），在 IPC worker 线程调用

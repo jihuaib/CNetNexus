@@ -24,6 +24,10 @@
 #include "log.h"
 #include "net_addr.h"
 
+/* 防御队列在每轮都生成新工作时占住 worker。连续无进展会更早返回。 */
+#define BGP_INSTANCE_DRAIN_MAX_ROUNDS 1024u
+#define BGP_INSTANCE_DRAIN_MAX_STALLED_ROUNDS 4u
+
 uint32_t bgp_inst_effective_cluster_id(const bgp_instance_t *inst)
 {
     if (!inst)
@@ -81,10 +85,10 @@ void bgp_instance_destroy(bgp_instance_t *inst)
     {
         return;
     }
-    /* 私网 VRF unicast 实例销毁前，先撤销其在 vpnv4 的导出(解除 borrow，源 RIB 尚存活) */
+    /* 私网 VRF unicast 实例销毁前，先撤销其在同 AF VPN 的导出(解除 borrow，源 RIB 尚存活) */
     bgp_vrf_export_purge_source_inst(inst);
     bgp_vrf_export_inst_destroy(inst);
-    /* public vpnv4 实例销毁前，先撤销其导入到各 VRF 的合成路径(解除 borrow，源 RIB 尚存活) */
+    /* public VPN 实例销毁前，先撤销其导入到各 VRF 的合成路径(解除 borrow，源 RIB 尚存活) */
     bgp_vrf_import_purge_target_inst(inst);
     /* 私网 unicast 实例销毁前，双角色清理本地交叉泄漏(作为源撤其它 VRF 内泄漏、作为目标解 borrow) */
     bgp_vrf_import_local_purge_inst(inst);
@@ -211,23 +215,75 @@ void bgp_inst_foreach_rib(bgp_instance_t *inst, bgp_inst_rib_iter_cb cb, gpointe
     g_hash_table_foreach(inst->rd_entries, inst_rib_iter_each, &ctx);
 }
 
-void bgp_instance_drain_pending(bgp_instance_t *inst)
+uint32_t bgp_instance_drain_pending(bgp_instance_t *inst)
 {
     if (!inst)
     {
-        return;
+        return 0u;
     }
 
-    for (;;)
+    uint32_t pending_before = bgp_instance_pending_count(inst);
+    uint32_t stalled_rounds = 0u;
+    uint32_t total_processed = 0u;
+    for (uint32_t round = 0u; round < BGP_INSTANCE_DRAIN_MAX_ROUNDS; ++round)
     {
         int processed = 0;
         processed += bgp_calc_process_pending(inst);
         processed += bgp_import_rib_process_pending(inst);
+        int export_processed = bgp_vrf_export_process_pending(inst);
+        if (export_processed > 0)
+        {
+            processed += export_processed;
+        }
         processed += bgp_route_flush_process_pending(inst);
         processed += bgp_update_group_process_pending(inst);
-        if (processed <= 0)
+        if (processed > 0)
+        {
+            total_processed += (uint32_t)processed;
+        }
+        uint32_t pending_after = bgp_instance_pending_count(inst);
+        if (processed <= 0 || pending_after == 0u)
         {
             break;
         }
+
+        if (pending_after >= pending_before)
+        {
+            stalled_rounds++;
+            if (stalled_rounds >= BGP_INSTANCE_DRAIN_MAX_STALLED_ROUNDS)
+            {
+                LOG_WARN("BGP: pending drain stalled afi=%u safi=%u pending=%u", (unsigned)inst->afi,
+                         (unsigned)inst->safi, pending_after);
+                break;
+            }
+        }
+        else
+        {
+            stalled_rounds = 0u;
+        }
+        pending_before = pending_after;
     }
+    return total_processed;
+}
+
+uint32_t bgp_instance_pending_count(const bgp_instance_t *inst)
+{
+    if (!inst)
+    {
+        return 0u;
+    }
+    uint32_t pending = (inst->calc_queue ? inst->calc_queue->count : 0u) +
+                       (inst->route_flush_queue ? inst->route_flush_queue->count : 0u) +
+                       bgp_import_rib_pending_count(inst) + bgp_vrf_export_pending_count(inst);
+    for (GList *ul = inst->update_groups; ul; ul = ul->next)
+    {
+        const bgp_update_group_t *ug = ul->data;
+        for (GList *sl = ug ? ug->subgroups : NULL; sl; sl = sl->next)
+        {
+            const bgp_nh_subgroup_t *sg = sl->data;
+            pending += (sg && sg->announce_queue) ? (uint32_t)g_queue_get_length(sg->announce_queue) : 0u;
+            pending += (sg && sg->withdraw_queue) ? (uint32_t)g_queue_get_length(sg->withdraw_queue) : 0u;
+        }
+    }
+    return pending;
 }

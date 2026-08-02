@@ -55,7 +55,7 @@ static const db_column_def_t ROUTE_BATCH_COLS[] = {
     {"start_addr", DB_TYPE_TEXT, DB_COL_NOT_NULL, NULL},
     {"prefix_len", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
     {"count", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
-    {"nexthop", DB_TYPE_TEXT, DB_COL_NOT_NULL, "''"},
+    {"nexthop", DB_TYPE_TEXT, DB_COL_NOT_NULL, ""},
     {"metric", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "0"},
     {"preference", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"},
     {"ifname", DB_TYPE_TEXT, 0, ""},
@@ -366,6 +366,29 @@ static uint8_t route_cli_payload_flags(const dev_ipc_message_t *msg)
     return ((const uint8_t *)msg->payload)[0];
 }
 
+static void route_send_simple_ack(const dev_ipc_message_t *req, int32_t result)
+{
+    if (!req || req->request_id == 0u)
+    {
+        return;
+    }
+    route_msg_ack_t *ack = g_malloc0(sizeof(*ack));
+    if (!ack)
+    {
+        return;
+    }
+    ack->result = result;
+    dev_ipc_message_t *resp = dev_ipc_message_create(ROUTE_MSG_TYPE_ACK, DEV_MODULE_ID_ROUTE, req->src_module_id,
+                                                     req->request_id, ack, sizeof(*ack), g_free);
+    if (!resp)
+    {
+        g_free(ack);
+        return;
+    }
+    dev_ipc_send_response(route_local_ipc_ctx(), resp);
+    dev_ipc_message_free(resp);
+}
+
 void route_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
 {
     if (msg == NULL)
@@ -490,6 +513,16 @@ void route_ipc_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
                 dev_ipc_message_free(msg);
             }
             return;
+
+        case ROUTE_MSG_TYPE_PROTOCOL_FLUSH:
+            if (route_worker_post(ROUTE_WORKER_CMD_PROTOCOL_FLUSH, msg) != 0)
+            {
+                LOG_WARN("Route: failed to post PROTOCOL_FLUSH to worker");
+                route_send_simple_ack(msg, ERRCODE_FAIL);
+                dev_ipc_message_free(msg);
+            }
+            return;
+
         case ROUTE_MSG_TYPE_NH_REGISTER:
             if (route_worker_post(ROUTE_WORKER_CMD_NH_REGISTER, msg) != 0)
             {

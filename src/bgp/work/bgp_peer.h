@@ -16,6 +16,7 @@
 
 /** per-peer 配置标记位 */
 #define BGP_PEER_FLAG_RR_CLIENT (1U << 0) /**< 标记为 Route Reflector 客户端（RFC 4456） */
+#define BGP_PEER_FLAG_SRV6_SID (1U << 1)  /**< 向该 VPN AF 邻居发布 SRv6 L3 Service SID */
 
 /* 前向声明，避免循环包含 */
 typedef struct bgp_vrf bgp_vrf_t;

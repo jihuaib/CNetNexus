@@ -13,7 +13,7 @@
 static const db_column_def_t ISIS_IF_COLS[] = {
     {"id", DB_TYPE_INTEGER, DB_COL_PRIMARY_KEY | DB_COL_AUTOINCREMENT, NULL},
     {"tag", DB_TYPE_INTEGER, DB_COL_NOT_NULL, NULL},
-    {"ifname", DB_TYPE_TEXT, DB_COL_NOT_NULL, "''"},
+    {"ifname", DB_TYPE_TEXT, DB_COL_NOT_NULL, ""},
     {"afi", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"},
     {"enabled", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "1"},
     {"metric", DB_TYPE_INTEGER, DB_COL_NOT_NULL, "10"},

@@ -24,6 +24,8 @@ typedef enum fib_worker_cmd_type
     FIB_WORKER_CMD_VRF_EVENT = 9,
     FIB_WORKER_CMD_NEXTHOP_UPSERT = 10,
     FIB_WORKER_CMD_NEXTHOP_DELETE = 11,
+    FIB_WORKER_CMD_SRV6_LOCALSID_UPSERT = 12,
+    FIB_WORKER_CMD_SRV6_LOCALSID_DELETE = 13,
 } fib_worker_cmd_type_t;
 
 typedef struct fib_work_local
@@ -41,6 +43,8 @@ extern fib_work_local_t *g_fib_work_local;
 int fib_worker_prepare(void);
 int fib_worker_launch(void);
 int fib_worker_post(fib_worker_cmd_type_t type, dev_ipc_message_t *msg);
+/** 向带 request_id 的 FIB 请求返回 ACK；request_id=0 时无操作。 */
+void fib_worker_send_ack(const dev_ipc_message_t *req, int32_t result);
 void fib_worker_shutdown(void);
 
 #endif /* FIB_WORKER_H */

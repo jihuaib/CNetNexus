@@ -54,6 +54,8 @@
 #define DEV_MODULE_ID_OSPFV3 0x00000011
 /** RPM（Routing Policy Manager）模块 */
 #define DEV_MODULE_ID_RPM 0x00000012
+/** SRv6 控制模块 */
+#define DEV_MODULE_ID_SRV6 0x00000013
 
 /** 无效文件描述符 */
 #define DEV_INVALID_FD (-1)
@@ -104,6 +106,8 @@
 #define DEV_MODULE_PORT_OSPFV3 4017
 /** RPM 模块 IPC 监听端口 */
 #define DEV_MODULE_PORT_RPM 4018
+/** SRv6 模块 IPC 监听端口 */
+#define DEV_MODULE_PORT_SRV6 4019
 
 // ============================================================================
 // IPC 前向声明
@@ -182,6 +186,8 @@ typedef dev_ipc_disconnect_handler_fn dev_ipc_disconnect_handler_fn;
 #define DEV_IPC_CATEGORY_OSPFV3 0x0011
 /** RPM 模块消息大类 */
 #define DEV_IPC_CATEGORY_RPM 0x0012
+/** SRv6 模块消息大类 */
+#define DEV_IPC_CATEGORY_SRV6 0x0013
 
 // ============================================================================
 // DEV IPC 消息结构

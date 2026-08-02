@@ -17,6 +17,7 @@
 #include "isis_db.h"
 #include "isis_worker.h"
 #include "log.h"
+#include "route.h"
 
 isis_local_t *g_isis_local = NULL;
 
@@ -66,7 +67,7 @@ static void isis_on_if_ready_cb(uint32_t module_id, uint8_t event, const char *h
     }
 }
 
-static void isis_on_route_ready_cb(uint32_t module_id, uint8_t event, const char *host, uint16_t port, uint32_t epoch,
+static void isis_on_route_event_cb(uint32_t module_id, uint8_t event, const char *host, uint16_t port, uint32_t epoch,
                                    void *user)
 {
     (void)module_id;
@@ -75,16 +76,24 @@ static void isis_on_route_ready_cb(uint32_t module_id, uint8_t event, const char
     (void)epoch;
     (void)user;
 
-    if (event != DEV_MODULE_EVENT_READY)
-    {
-        return;
-    }
     if (!g_isis_local || !g_isis_local->dev_ipc_ctx)
     {
         return;
     }
-    dev_ipc_message_t *m = dev_ipc_message_create(ISIS_MSG_TYPE_INTERNAL_ROUTE_READY, DEV_MODULE_ID_ISIS,
-                                                  DEV_MODULE_ID_ISIS, 0, NULL, 0, NULL);
+    uint32_t msg_type;
+    if (event == DEV_MODULE_EVENT_READY)
+    {
+        msg_type = ISIS_MSG_TYPE_INTERNAL_ROUTE_READY;
+    }
+    else if (event == DEV_MODULE_EVENT_DOWN)
+    {
+        msg_type = ISIS_MSG_TYPE_INTERNAL_ROUTE_DOWN;
+    }
+    else
+    {
+        return;
+    }
+    dev_ipc_message_t *m = dev_ipc_message_create(msg_type, DEV_MODULE_ID_ISIS, DEV_MODULE_ID_ISIS, 0, NULL, 0, NULL);
     if (m)
     {
         g_async_queue_push(g_isis_local->dev_ipc_ctx->msg_queue, m);
@@ -163,12 +172,14 @@ static void isis_handle_if_smoothend(void)
     if (first)
     {
         LOG_INFO("ISIS: IF smoothend received (initial sync)");
-        isis_try_db_restore();
     }
     else
     {
         LOG_INFO("ISIS: IF smoothend received (resync)");
     }
+    /* restore 失败时 g_isis_db_restored 保持 FALSE；后续 IF replay 完成事件
+     * 重新执行幂等恢复，避免一次瞬时 worker/DB 故障永久吞掉冷恢复。 */
+    isis_try_db_restore();
 }
 
 static void isis_on_db_event_cb(uint32_t module_id, uint8_t event, const char *host, uint16_t port, uint32_t epoch,
@@ -221,6 +232,13 @@ void isis_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
             if (isis_worker_post_route_ready() != ERRCODE_SUCCESS)
             {
                 LOG_WARN("ISIS: failed to post ROUTE-ready replay");
+            }
+            break;
+
+        case ISIS_MSG_TYPE_INTERNAL_ROUTE_DOWN:
+            if (isis_worker_post_route_down() != ERRCODE_SUCCESS)
+            {
+                LOG_WARN("ISIS: failed to post ROUTE-down locator cleanup");
             }
             break;
 
@@ -288,6 +306,14 @@ void isis_msg_handler(dev_ipc_context_t *ctx, dev_ipc_message_t *msg)
         case IF_MSG_TYPE_ACK:
             break;
 
+        case ROUTE_MSG_TYPE_REPORT:
+        case ROUTE_MSG_TYPE_UPDATE:
+            if (isis_worker_post_route_msg(msg) != ERRCODE_SUCCESS)
+            {
+                dev_ipc_message_free(msg);
+            }
+            return;
+
         default:
             break;
     }
@@ -336,7 +362,7 @@ int isis_module_init(void)
         return -1;
     }
 
-    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_ROUTE, 0, isis_on_route_ready_cb, NULL) != ERRCODE_SUCCESS)
+    if (dev_ipc_subscribe_module(ctx, DEV_MODULE_ID_ROUTE, 0, isis_on_route_event_cb, NULL) != ERRCODE_SUCCESS)
     {
         LOG_WARN("ISIS: subscribe(ROUTE) failed");
     }

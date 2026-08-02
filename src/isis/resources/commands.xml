@@ -3,11 +3,15 @@
     <views>
         <view view-name="isis">
             <template>&lt;NetNexus(config-isis-{ctx:8})&gt;</template>
+            <view view-name="isis-af-ipv6">
+                <template>&lt;NetNexus(config-isis-{ctx:8}-af-ipv6)&gt;</template>
+            </view>
         </view>
     </views>
 
     <show-this>
         <view name="isis"/>
+        <view name="isis-af-ipv6"/>
         <view name="if"/>
         <view name="if-loop"/>
     </show-this>
@@ -196,6 +200,7 @@
                 <command>
                     <expression>2 4</expression>
                     <views>isis</views>
+                    <to-view>isis-af-ipv6</to-view>
                 </command>
                 <command>
                     <expression>1 2 3</expression>
@@ -204,6 +209,43 @@
                 <command>
                     <expression>1 2 4</expression>
                     <views>isis</views>
+                </command>
+            </commands>
+        </group>
+
+        <!-- Group 12: ISIS IPv6 AF selects one local SRv6 locator to advertise -->
+        <group group-id="12">
+            <elements>
+                <element id="1" type="keyword">
+                    <name>no</name>
+                    <description>Delete</description>
+                </element>
+                <element id="2" type="keyword">
+                    <name>segment-routing</name>
+                    <description>Segment routing</description>
+                </element>
+                <element id="3" type="keyword">
+                    <name>srv6</name>
+                    <description>SRv6 data plane</description>
+                </element>
+                <element id="4" type="keyword">
+                    <name>locator</name>
+                    <description>Advertise a configured local SRv6 locator</description>
+                </element>
+                <element id="5" cfg-id="1" type="parameter">
+                    <name>&lt;locator-name&gt;</name>
+                    <type>string(1-63)</type>
+                    <description>Configured SRv6 locator name</description>
+                </element>
+            </elements>
+            <commands>
+                <command>
+                    <expression>2 3 4 5</expression>
+                    <views>isis-af-ipv6</views>
+                </command>
+                <command>
+                    <expression>1 2 3</expression>
+                    <views>isis-af-ipv6</views>
                 </command>
             </commands>
         </group>
