@@ -60,6 +60,14 @@ void bgp_import_rib_inst_init(bgp_instance_t *inst);
 void bgp_import_rib_inst_destroy(bgp_instance_t *inst);
 
 /**
+ * @brief 协议全量析构前解除 import-rib 的跨 instance head/route 引用
+ *
+ * 仅抽干 pending、断开 mirror source borrow，不销毁 state；必须在任一 instance
+ * RIB 析构前执行，后续 bgp_import_rib_inst_destroy() 可幂等完成所有权回收。
+ */
+void bgp_import_rib_protocol_pre_destroy(bgp_instance_t *inst);
+
+/**
  * @brief labeled instance 是否应跳过 ROUTE 模块下刷
  *
  * 由 bgp_route_flush_queue_process() 顶部调用。labeled 直接跳过，路由停留 BGP RIB。

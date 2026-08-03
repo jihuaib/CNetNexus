@@ -159,6 +159,24 @@ void bgp_vrf_import_request_refresh_afi(bgp_afi_t afi);
  */
 void bgp_vrf_import_purge_target_inst(bgp_instance_t *vpn_inst);
 
+/**
+ * @brief 私网 unicast instance 销毁前解除 REMOTE_CROSS 对公网 VPN 路径的借用
+ *
+ * VRF 哈希表的析构顺序不固定。私网 VRF 可能先于 public VRF 销毁，因此不能只依赖
+ * bgp_vrf_import_purge_target_inst() 从公网 VPN instance 一侧回收引用。
+ * @param inst 即将销毁的私网 IPv4/IPv6 unicast instance
+ */
+void bgp_vrf_import_purge_target_unicast_inst(bgp_instance_t *inst);
+
+/**
+ * @brief 协议全量析构前，仅解除本 instance 跨表路径对 source route 的 borrow
+ *
+ * 覆盖 REMOTE_CROSS 及 LOCAL_CROSS；不注销 synthetic watch、不撤路由，供
+ * bgp_protocol_destroy() 在任一 VRF/RIB 销毁前执行。随后由 relay cleanup
+ * 统一释放 watch，避免 GHashTable 未定义析构顺序造成悬空引用或泄漏。
+ */
+void bgp_vrf_import_detach_cross_route_sources(bgp_instance_t *inst);
+
 /* ============================================================================
  * VRF 本地交叉（local route leaking）：本机 VRF→VRF 直接泄漏，复用 IRT 索引
  *

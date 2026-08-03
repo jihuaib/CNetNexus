@@ -716,6 +716,29 @@ static void bgp_vrf_export_retry_reset(bgp_vrf_export_state_t *st)
     st->retry_event_armed = FALSE;
 }
 
+void bgp_vrf_export_protocol_pre_destroy(bgp_instance_t *inst)
+{
+    bgp_vrf_export_state_t *st = inst ? (bgp_vrf_export_state_t *)inst->vrf_export_state : NULL;
+    if (!st)
+    {
+        return;
+    }
+
+    /* vrf_hash 的 value 析构顺序不固定。pending 借用的是私网 RIB head，
+     * 必须在任一私网 instance 销毁前抽干；这里只降 queue_ref，不处理任务。 */
+    st->enabled = FALSE;
+    if (st->pending)
+    {
+        bgp_rthead_t *head = NULL;
+        while ((head = (bgp_rthead_t *)g_queue_pop_head(st->pending)) != NULL)
+        {
+            bgp_rib_head_unref(head);
+        }
+    }
+    st->pending_count = 0u;
+    bgp_vrf_export_retry_reset(st);
+}
+
 static void bgp_vrf_export_retry_schedule(bgp_instance_t *vpn_inst, bgp_vrf_export_state_t *st)
 {
     if (!st)
@@ -1136,6 +1159,9 @@ static void bgp_vrf_export_purge_rib_cb(bgp_instance_t *inst, bgp_rd_entry_t *en
         {
             continue;
         }
+        /* unreach 可能同步回收最后一条 route，并连带释放 head。后续排队必须
+         * 使用独立 NLRI 副本，不能再次解引用 head->nlri。 */
+        bgp_nlri_entry_t nlri = head->nlri;
         for (GList *r = head->route_list; r;)
         {
             bgp_route_node_t *route = (bgp_route_node_t *)r->data;
@@ -1144,9 +1170,9 @@ static void bgp_vrf_export_purge_rib_cb(bgp_instance_t *inst, bgp_rd_entry_t *en
             {
                 net_addr_t src = route->source;
                 bgp_vrf_export_detach_src(route);
-                if (bgp_rib_unreach_one(rib, &head->nlri, &src) == 1 && inst->calc_queue)
+                if (bgp_rib_unreach_one(rib, &nlri, &src) == 1 && inst->calc_queue)
                 {
-                    bgp_calc_queue_push(inst->calc_queue, inst, &head->nlri);
+                    bgp_calc_queue_push(inst->calc_queue, inst, &nlri);
                 }
             }
         }

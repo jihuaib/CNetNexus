@@ -286,6 +286,47 @@ void bgp_import_rib_inst_destroy(bgp_instance_t *inst)
     inst->import_rib_state = NULL;
 }
 
+void bgp_import_rib_protocol_pre_destroy(bgp_instance_t *inst)
+{
+    bgp_import_rib_state_t *st = inst ? (bgp_import_rib_state_t *)inst->import_rib_state : NULL;
+    if (!st)
+    {
+        return;
+    }
+
+    /* pending 借用的是另一 AF instance 的 head；任一 inst 析构前先释放。 */
+    if (st->pending)
+    {
+        bgp_rthead_t *head = NULL;
+        while ((head = (bgp_rthead_t *)g_queue_pop_head(st->pending)) != NULL)
+        {
+            bgp_rib_head_unref(head);
+        }
+    }
+    st->pending_count = 0u;
+
+    /* mirror_by_src 的 key 是跨 instance 裸指针并持有 borrow。protocol teardown
+     * 中只断引用并 no-reap 降计数，route/head 由各自 RIB destroy 统一回收。 */
+    if (st->mirror_by_src)
+    {
+        GHashTableIter iter;
+        gpointer src_value = NULL;
+        gpointer mirror_value = NULL;
+        g_hash_table_iter_init(&iter, st->mirror_by_src);
+        while (g_hash_table_iter_next(&iter, &src_value, &mirror_value))
+        {
+            bgp_route_node_t *src = (bgp_route_node_t *)src_value;
+            bgp_route_node_t *mirror = (bgp_route_node_t *)mirror_value;
+            if (mirror && mirror->src_route == src)
+            {
+                mirror->src_route = NULL;
+            }
+            bgp_route_node_borrow_unref_no_reap(src);
+        }
+        g_hash_table_remove_all(st->mirror_by_src);
+    }
+}
+
 /* ============================================================================
  * 钩子 API
  * ========================================================================== */

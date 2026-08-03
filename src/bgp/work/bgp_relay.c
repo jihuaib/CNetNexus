@@ -643,10 +643,7 @@ static void bgp_relay_detach_route_from_watch_no_reap(bgp_route_node_t *route, c
         /* instance teardown 即将销毁整个 RIB。这里不能调用 bgp_route_node_borrow_unref()：
          * 对 STALE route 可能触发 rib_reap_head()，从而在批量遍历期间释放同一 head 下的其它节点。
          * 只解除 relay watch 对 borrow_refcnt 的占用，最终由 RIB destroy 统一释放 route。 */
-        if (route->borrow_refcnt > 0)
-        {
-            route->borrow_refcnt--;
-        }
+        bgp_route_node_borrow_unref_no_reap(route);
     }
     bgp_relay_nh_watch_remove_if_empty(watch);
     if (clear_state)
@@ -813,7 +810,9 @@ void bgp_relay_synthetic_nexthop_unregister(bgp_route_node_t *route)
     for (guint i = 0; i < keys->len; i++)
     {
         const bgp_relay_nh_key_t *key = &g_array_index(keys, bgp_relay_nh_key_t, i);
-        bgp_relay_detach_route_from_watch(route, key, FALSE);
+        /* 所有调用方都会在返回后继续复用 route，或显式 unreach/RIB destroy。
+         * 因此这里只解除 watch borrow，不能让最后一次 unref 同步 reap route。 */
+        bgp_relay_detach_route_from_watch_no_reap(route, key, FALSE);
     }
     g_array_free(keys, TRUE);
     bgp_relay_route_iter_clear(route);

@@ -69,6 +69,14 @@ void bgp_vrf_export_inst_init(bgp_instance_t *inst);
 void bgp_vrf_export_inst_destroy(bgp_instance_t *inst);
 
 /**
+ * @brief 协议全量析构前关闭导出生产门并抽干 pending source-head 引用
+ *
+ * 不消费导出任务、不销毁状态；必须在 vrf_hash 任一 value 析构前调用，避免
+ * public/private VRF 的未定义析构顺序留下悬空 rthead 指针。
+ */
+void bgp_vrf_export_protocol_pre_destroy(bgp_instance_t *inst);
+
+/**
  * @brief 取当前 public vpnv4 instance(导出目标)；未使能返回 NULL
  *
  * 同时作为"vpnv4 是否已使能"的判据。

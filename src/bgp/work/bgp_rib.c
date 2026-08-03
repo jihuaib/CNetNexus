@@ -196,6 +196,14 @@ void bgp_route_node_borrow_unref(bgp_route_node_t *route)
     }
 }
 
+void bgp_route_node_borrow_unref_no_reap(bgp_route_node_t *route)
+{
+    if (route && route->borrow_refcnt > 0)
+    {
+        route->borrow_refcnt--;
+    }
+}
+
 static void rthead_destroy(bgp_rthead_t *head)
 {
     if (!head)

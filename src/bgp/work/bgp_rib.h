@@ -251,6 +251,14 @@ void bgp_route_node_borrow_ref(bgp_route_node_t *route);
 void bgp_route_node_borrow_unref(bgp_route_node_t *route);
 
 /**
+ * @brief 析构 pre-pass 专用：释放借用计数但不触发同步 reap
+ *
+ * 仅用于整个 RIB 即将统一销毁的路径。即使 refcnt 归零也不摘除 STALE 节点，
+ * 避免全图清理遍历期间同步释放其它 route/head；最终由 RIB destroy 回收。
+ */
+void bgp_route_node_borrow_unref_no_reap(bgp_route_node_t *route);
+
+/**
  * @brief rthead 队列引用计数操作
  *
  * 入队时调用 bgp_rib_head_ref，出队处理完后调用 bgp_rib_head_unref。

@@ -588,6 +588,18 @@ static void import_drop_src_borrow(bgp_route_node_t *route)
     bgp_route_node_borrow_unref(old);
 }
 
+/** protocol teardown 专用：清空 source borrow，但不在全图遍历期间同步 reap。 */
+static void import_drop_src_borrow_no_reap(bgp_route_node_t *route)
+{
+    if (!route || !route->src_route)
+    {
+        return;
+    }
+    bgp_route_node_t *old = route->src_route;
+    route->src_route = NULL;
+    bgp_route_node_borrow_unref_no_reap(old);
+}
+
 /** 解除导入/泄漏节点的 synthetic nexthop watch，并清空 src_route borrow */
 static void import_detach_src(bgp_route_node_t *route)
 {
@@ -1051,6 +1063,90 @@ void bgp_vrf_import_purge_target_inst(bgp_instance_t *vpn_inst)
                  (unsigned)vpn_inst->afi);
     }
     g_ptr_array_free(victims, TRUE);
+}
+
+/** 私网 unicast instance 销毁时，解除其 REMOTE_CROSS 节点对公网 VPN route 的借用。 */
+static void import_detach_target_unicast_cb(bgp_instance_t *inst, bgp_rd_entry_t *entry, bgp_rib_t *rib,
+                                            gpointer user_data)
+{
+    (void)inst;
+    (void)entry;
+    (void)user_data;
+    if (!rib || !rib->head_tree)
+    {
+        return;
+    }
+
+    GList *heads = NULL;
+    g_tree_foreach(rib->head_tree, collect_head_cb, &heads);
+    for (GList *l = heads; l; l = l->next)
+    {
+        bgp_rthead_t *head = (bgp_rthead_t *)l->data;
+        if (!head)
+        {
+            continue;
+        }
+        for (GList *r = head->route_list; r; r = r->next)
+        {
+            bgp_route_node_t *route = (bgp_route_node_t *)r->data;
+            if (route && BIT_TEST(route->flags, BGP_ROUTE_FLAG_REMOTE_CROSS))
+            {
+                import_detach_src(route);
+            }
+        }
+    }
+    g_list_free(heads);
+}
+
+void bgp_vrf_import_purge_target_unicast_inst(bgp_instance_t *inst)
+{
+    if (!inst || !inst->vrf || inst->vrf->vrf_id == BGP_VRF_PUBLIC_ID || inst->safi != BGP_SAFI_UNICAST ||
+        (inst->afi != BGP_AFI_IPV4 && inst->afi != BGP_AFI_IPV6))
+    {
+        return;
+    }
+    bgp_inst_foreach_rib(inst, import_detach_target_unicast_cb, NULL);
+}
+
+/** protocol 全量析构 pre-pass：只解除跨表 route 对 source route 的 borrow。
+ *
+ * 这里不做逐 route watch 注销或普通 source unref；全图析构统一采用 no-reap
+ * 降计数，watch 由紧随其后的 bgp_relay_cleanup() 回收，避免遍历期间改动 RIB。 */
+static void import_detach_cross_route_sources_cb(bgp_instance_t *inst, bgp_rd_entry_t *entry, bgp_rib_t *rib,
+                                                 gpointer user_data)
+{
+    (void)inst;
+    (void)entry;
+    (void)user_data;
+    if (!rib || !rib->head_tree)
+    {
+        return;
+    }
+
+    GList *heads = NULL;
+    g_tree_foreach(rib->head_tree, collect_head_cb, &heads);
+    for (GList *l = heads; l; l = l->next)
+    {
+        bgp_rthead_t *head = (bgp_rthead_t *)l->data;
+        for (GList *r = head ? head->route_list : NULL; r; r = r->next)
+        {
+            bgp_route_node_t *route = (bgp_route_node_t *)r->data;
+            if (route && (BIT_TEST(route->flags, BGP_ROUTE_FLAG_REMOTE_CROSS) ||
+                          BIT_TEST(route->flags, BGP_ROUTE_FLAG_LOCAL_CROSS)))
+            {
+                import_drop_src_borrow_no_reap(route);
+            }
+        }
+    }
+    g_list_free(heads);
+}
+
+void bgp_vrf_import_detach_cross_route_sources(bgp_instance_t *inst)
+{
+    if (inst)
+    {
+        bgp_inst_foreach_rib(inst, import_detach_cross_route_sources_cb, NULL);
+    }
 }
 
 /* ============================================================================

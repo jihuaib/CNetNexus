@@ -9,14 +9,53 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "bgp_import_rib.h"
 #include "bgp_rd.h"
 #include "bgp_relay.h"
+#include "bgp_vrf_export.h"
+#include "bgp_vrf_import.h"
 #include "log.h"
 #include "vrf.h"
 
 // ============================================================================
 // 协议生命周期
 // ============================================================================
+
+/**
+ * protocol teardown 会由 GHashTable 以未定义顺序销毁各 VRF/instance。先在
+ * 所有 RIB 都存活时解除 export/import-rib pending head，以及跨表 route 对
+ * source route 的引用，避免析构先后差异产生悬空指针或未归零 borrow 泄漏。
+ */
+static void bgp_protocol_release_cross_instance_refs(bgp_protocol_t *proto)
+{
+    if (!proto || !proto->vrf_hash)
+    {
+        return;
+    }
+
+    GHashTableIter vrf_iter;
+    gpointer value = NULL;
+    g_hash_table_iter_init(&vrf_iter, proto->vrf_hash);
+    while (g_hash_table_iter_next(&vrf_iter, NULL, &value))
+    {
+        bgp_vrf_t *vrf = (bgp_vrf_t *)value;
+        if (!vrf || !vrf->inst_hash)
+        {
+            continue;
+        }
+
+        GHashTableIter inst_iter;
+        gpointer inst_value = NULL;
+        g_hash_table_iter_init(&inst_iter, vrf->inst_hash);
+        while (g_hash_table_iter_next(&inst_iter, NULL, &inst_value))
+        {
+            bgp_instance_t *inst = (bgp_instance_t *)inst_value;
+            bgp_vrf_export_protocol_pre_destroy(inst);
+            bgp_import_rib_protocol_pre_destroy(inst);
+            bgp_vrf_import_detach_cross_route_sources(inst);
+        }
+    }
+}
 
 bgp_protocol_t *bgp_protocol_create(uint32_t as_number)
 {
@@ -44,6 +83,7 @@ void bgp_protocol_destroy(bgp_protocol_t *proto)
         return;
     }
     LOG_INFO("BGP protocol structure destroyed: AS %u", proto->as_number);
+    bgp_protocol_release_cross_instance_refs(proto);
     /* 先清理 relay watch 与对应借用引用，避免借用计数未归零的路径节点在
      * RIB 销毁阶段被保留导致 ASAN 退出泄漏。 */
     bgp_relay_cleanup();

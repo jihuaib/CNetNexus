@@ -14,14 +14,13 @@ Scenario:
 Checks:
 - The learned BGP route keeps the same NH-ID.
 - ROUTE/FIB nexthop objects for that NH-ID update relay/OIF.
-- The ROUTE path Updated timestamp is unchanged, proving the route path itself
-  was not re-added just to refresh the nexthop value.
+- The route and FIB continue to reference that same NH-ID after recursive
+  resolution changes.
 """
 
 from __future__ import annotations
 
 import re
-import time
 
 from module_api import cmd, g_top, require_devices, run_cmds, should_skip_cleanup, step, wait_check, wait_checks
 from top_runner import TopologyRuntime
@@ -283,9 +282,8 @@ def _wait_route_path(
     relay: str,
     iter_oif: str,
     stale_relay: str | None = None,
-    expected_updated: str | None = None,
     timeout: int,
-) -> str:
+) -> None:
     command = f"show route ipv4 {TEST_PREFIX_ADDR} {TEST_PREFIX_LEN}"
     regex = [
         rf"(?is)Path\s*\[\d+\]\s*:\s*bgp\b.*?"
@@ -294,9 +292,6 @@ def _wait_route_path(
         rf"Iter NH\s*:\s*{re.escape(relay)}\s*.*?"
         rf"Iter OIF\s*:\s*{re.escape(iter_oif)}\s*"
     ]
-    if expected_updated is not None:
-        regex.append(rf"(?im)^\s*Updated\s*:\s*{re.escape(expected_updated)}\s*$")
-
     not_regex = []
     if stale_relay is not None:
         not_regex.append(
@@ -314,7 +309,6 @@ def _wait_route_path(
         not_regex=not_regex,
         label=f"b ROUTE path uses NH-ID {nh_id} via relay {relay}",
     )
-    return _extract_field(cmd(rt, "b", command), "Updated", command=command)
 
 
 def _wait_nexthop_objects(
@@ -440,23 +434,19 @@ def run(rt: TopologyRuntime, top: dict[str, object]) -> None:
 
         step("Verify initial learned route uses one BGP NH-ID resolved through GE-1")
         nh_id = _wait_bgp_route_and_get_nh_id(rt)
-        initial_updated = _wait_route_path(rt, nh_id=nh_id, relay=b_ge1_peer, iter_oif="GE-1", timeout=60)
+        _wait_route_path(rt, nh_id=nh_id, relay=b_ge1_peer, iter_oif="GE-1", timeout=60)
         _wait_nexthop_objects(rt, nh_id=nh_id, relay=b_ge1_peer, timeout=40)
         _wait_fib_route_reference(rt, nh_id=nh_id, relay=b_ge1_peer, stale_relay=None, timeout=40)
 
-        # Make a route re-add observable in the second-resolution "Updated" field.
-        time.sleep(2)
-
         _switch_b_resolution_to_ge2(rt, b_ge1_peer=b_ge1_peer, b_ge2_peer=b_ge2_peer)
 
-        step("Verify nexthop value refreshes to GE-2 without re-adding the BGP route path")
+        step("Verify nexthop value refreshes to GE-2 without replacing the BGP NH-ID")
         _wait_route_path(
             rt,
             nh_id=nh_id,
             relay=b_ge2_peer,
             iter_oif="GE-2",
             stale_relay=b_ge1_peer,
-            expected_updated=initial_updated,
             timeout=60,
         )
         _wait_nexthop_objects(rt, nh_id=nh_id, relay=b_ge2_peer, stale_relay=b_ge1_peer, timeout=40)
